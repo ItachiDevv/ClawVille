@@ -6,6 +6,7 @@ import {
   KELP_REALM_BEACON_GRAPH,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_SPEED_GRACE_MULTIPLIER,
+  KELP_REALM_SPRINT_SPEED_MULTIPLIER,
   KELP_REALM_SPORE_BEACON_IDS,
   KELP_REALM_SPORE_COUNT,
   KELP_REALM_SPORE_FULL_MASK,
@@ -272,7 +273,10 @@ export function createKelpRoutes(
     );
     if (!edge) return c.json({ error: 'non_adjacent_beacon', code: 'non_adjacent_beacon' }, 400);
     const minimumElapsedMs = Math.ceil(
-      edge.distanceWu / (KELP_REALM_PLAYER_SPEED_WU_PER_SEC * KELP_REALM_SPEED_GRACE_MULTIPLIER) * 1000,
+      edge.distanceWu /
+        (KELP_REALM_PLAYER_SPEED_WU_PER_SEC *
+          KELP_REALM_SPRINT_SPEED_MULTIPLIER *
+          KELP_REALM_SPEED_GRACE_MULTIPLIER) * 1000,
     );
     const elapsedMs = nowMs - previous.issuedAtMs;
     if (elapsedMs < minimumElapsedMs) {

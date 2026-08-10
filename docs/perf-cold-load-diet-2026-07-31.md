@@ -585,3 +585,27 @@ pathology; regression detection remains the paired statistics' job. Evidence:
 **Plan targets NOT yet reached:** reveal 11.6s vs the ≤8s target; pre-reveal wire 19.5MB vs ≤10MB. The dominant remaining row is the 15 wandering/player VRMs (12.19MB, tier-1) → Lever-2 slice 2 (needs its own pop-in acceptance since wanderers are spawn-adjacent).
 
 **Rig lessons burned in this rung (memory: feedback_windows_pid_kills_and_batch_health):** anti-occlusion flags are mandatory on probe Chromes (occluded windows park the boot on the first rAF await — task 6 holds the product-side decision); never taskkill by stored PID; kill by profile basename + smoke-test the kill; per-pair server health checks; every batch gets a health watcher AND a 10-min progress reporter.
+
+---
+
+## Rung-4 slice-A results (2026-08-09, session perf4.5 — instrumentation only, on `perf/cold-load-diet` with the §5b gameplay lane in-tree)
+
+**Acceptance MET: 3/3 fully valid webgpu solo runs (fresh profile, anti-occlusion flags, committed runner `apps/web/scripts/cold-load-ab-runner.sh` solo mode), full decomposed waterfall captured.** Evidence: `docs/perf-data/cold-load-rung4-sliceA-2026-08-09/report-{1,2,3}-B.json`. Reveals 14.68 / 13.87 / 13.13s (this is a SOLO baseline on the current tree — attribution evidence, not a paired comparison).
+
+**The 3.8s pre-warmup head, now attributed (medians of 3):**
+
+| Phase | At (ms) | Span |
+|---|---|---|
+| stage-root effect (persistent-stage tree committed) | ~250 | 0.25s of Next boot/hydration |
+| /game page chunk eval + first render + mounted effect | ~290 | ~40ms after stage root |
+| renderer factory invoked (gl factory) | ~950 | **~660ms** React commit → Canvas mount |
+| canvas size ready (`waitForCanvasSize` resolves) | ~1280 | **~330ms** waiting for layout size |
+| `renderer.init` start→end | 1280→1430 | **~150–200ms** — adapter/device is CHEAP |
+| world chunk (`World3DCanvas`) module eval | ~1530 | ~100ms after init |
+| `warmupStartAt` | ~3940 | **~2.4s** component-mount/preload-registration span — the head's biggest single opaque block |
+
+Then the known tail: barrier 55–362ms · vrmBulk **6.4–8.7s** (still the dominator) · scans ~75ms · second compile 33/1324/1298ms (high variance — run 1's raced ahead of textures) · warm render ~20ms · warmupDone ~12.6s.
+
+**Slice-F decision input (per handoff §2 slice F):** `renderer.init` is 150–200ms, far under the ~1s threshold — do NOT touch adapter/device init. The head is JS/mount-bound: the ~660ms commit→factory span plus the ~2.4s post-chunk mount span are where a boot-shell split would bite; slice F stays on the menu but gates on re-measurement after slice D (the boot-core gate reshapes both spans).
+
+**Runner bug fixed while committing it (in the script now as a comment):** capturing a function's stdout via `$(launch_chrome ...)` blocks until the backgrounded Chrome EXITS if Chrome inherits the substitution pipe — Chrome must be launched `>/dev/null 2>&1 &` inside the function. The first batch attempt hung a full run on this.

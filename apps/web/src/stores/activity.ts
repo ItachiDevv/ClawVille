@@ -1348,6 +1348,21 @@ export const useActivityStore = create<ActivityState>()(
             ...(itemHit && frame.dstAvatarId === state.selfAvatarId
               ? { lastSelfItemHitEvent: itemHit }
               : {}),
+            // Server-authoritative item spinout (whirlpool / puffer): enter
+            // the SAME prediction/control lock as an `event.obstacle_hit`
+            // spinout — the server ignores our input for this window and
+            // local steering would visibly fight the authoritative spin
+            // (Codex R19 finding 2). Never SHORTEN an existing lock.
+            ...(frame.dstAvatarId === state.selfAvatarId &&
+              typeof frame.spinoutDurationMs === 'number' &&
+              frame.spinoutDurationMs > 0
+              ? {
+                  selfObstacleControlLockedUntil: Math.max(
+                    state.selfObstacleControlLockedUntil,
+                    at + frame.spinoutDurationMs,
+                  ),
+                }
+              : {}),
             ...(itemHit ? { reefPresentationVfxEvents } : {}),
             ...(itemHit && frame.dstAvatarId === state.selfAvatarId &&
               (frame.itemKind === 'rr-tide-wave' || frame.itemKind === 'rr-whirlpool')
@@ -1623,8 +1638,17 @@ export const useActivityStore = create<ActivityState>()(
                 position: frame.position,
                 at,
               },
+              // Spinouts EXTEND the shared lock (Math.max — an item spinout
+              // from event.hit may already hold it); a bump PRESERVES it.
+              // The old `: 0` reset let a driftwood bump prematurely clear a
+              // live whirlpool/puffer lock (Codex R19 round-2 finding 1).
               selfObstacleControlLockedUntil:
-                frame.impact === 'spinout' ? at + frame.durationMs : 0,
+                frame.impact === 'spinout'
+                  ? Math.max(
+                      state.selfObstacleControlLockedUntil,
+                      at + frame.durationMs,
+                    )
+                  : state.selfObstacleControlLockedUntil,
               // Reuse the proven wall-SLAM surge/camera treatment. A bump is
               // intentionally milder than an urchin/creature spinout.
               lastWallSlamEvent: {

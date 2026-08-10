@@ -47,6 +47,7 @@ import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   db,
   coveGameEvents,
+  baccaratShoes,
   slotSessions,
   type CoveGameEvent,
 } from '@clawville/database';
@@ -60,8 +61,11 @@ import {
   type HandScript,
 } from '../services/blackjack-engine';
 import {
+  evaluateBest5,
   playHand as playHoldemHand,
   serializeHoldemHand,
+  shuffleDeck,
+  type Card,
   type HoldemActionRecord,
 } from '../services/holdem-engine';
 import {
@@ -592,6 +596,13 @@ coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
           and(eq(baccaratCoups.shoeId, event.sessionId), eq(baccaratCoups.status, 'settled')),
         )
         .orderBy(baccaratCoups.coupIndex);
+      const shoe = await db.query.baccaratShoes.findFirst({
+        where: eq(baccaratShoes.id, event.sessionId),
+        columns: { fixtureInitialDealtCount: true },
+      });
+      if (!shoe) {
+        throw new Error(`baccarat_shoe_missing_for_replay: shoeId=${event.sessionId}`);
+      }
 
       const coups: Array<{ bet: BaccaratBet; stake: bigint }> = [];
       for (let n = 0; n <= event.nonce; n++) {
@@ -609,6 +620,7 @@ coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
         clientSeed: event.clientSeed,
         targetNonce: event.nonce,
         coups,
+        initialDealtCount: shoe.fixtureInitialDealtCount,
       });
       const targetRow = coupRows.find((coup) => coup.coupIndex === event.nonce)!;
       expectedSerialized = serializeCoupResult(replayed, {
@@ -668,7 +680,8 @@ coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
     //   1. the seed commitment: sha256(revealedServerSeed) === serverSeedHash;
     //   2. consistency: the stored per-subject outcomeJson (committed/won/net for
     //      THIS seat) matches the AUTHORITATIVE persisted `poker_cash_hands`
-    //      pot_result_json for the same (table, hand, seat).
+    //      seat_result_json for the same (table, hand, seat). BA-1 reserves
+    //      pot_result_json for full-fidelity per-pot award truth.
     // A future phase adds the deterministic re-deal; until then `verified` reflects
     // hash + authoritative-consistency, and `reason` flags the deferred replay.
     const handNumber = Math.floor(event.nonce / POKER_CASH_SEAT_NONCE_STRIDE);
@@ -700,17 +713,74 @@ coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
       );
     }
 
-    // The authoritative per-seat result for THIS seat from the settled hand row.
-    const potResult = (handRow.potResultJson ?? []) as Array<{
+    type LegacyCashSeatResult = {
       seatIndex: number;
+      avatarId: string;
+      holeCards: [Card, Card] | null;
       totalCommitted: number;
       won: number;
       net: number;
-      status?: string;
-      isWinner?: boolean;
-      handRankCategory?: number | null;
-    }>;
-    const authoritative = potResult.find((p) => p.seatIndex === seatIndex);
+      status: string;
+      handRankCategory: number | null;
+      isWinner: boolean;
+    };
+
+    // Pre-BA-1 rows stored HandResult.perSeat[] directly in pot_result_json.
+    // Preserve their verifier behavior exactly; no backfill is required.
+    let authoritative = handRow.seatResultJson
+      ? null
+      : ((handRow.potResultJson ?? []) as unknown as LegacyCashSeatResult[])
+          .find((seat) => seat.seatIndex === seatIndex) ?? null;
+
+    if (handRow.seatResultJson) {
+      const persistedSeats = handRow.seatResultJson;
+      const orderedSeatIndices = persistedSeats
+        .map((seat) => seat.seatIndex)
+        .sort((a, b) => a - b);
+      const deck = shuffleDeck({
+        serverSeed: handRow.serverSeedReveal!,
+        clientSeed: handRow.clientSeed,
+        nonce: handRow.handNumber,
+      });
+      const holeBySeat = new Map<number, [Card, Card]>();
+      let top = 0;
+      for (let round = 0; round < 2; round++) {
+        for (const historicalSeatIndex of orderedSeatIndices) {
+          const hole = holeBySeat.get(historicalSeatIndex) ?? [
+            deck[top]!,
+            deck[top]!,
+          ] as [Card, Card];
+          hole[round] = deck[top++]!;
+          holeBySeat.set(historicalSeatIndex, hole);
+        }
+      }
+      const persistedSeat = persistedSeats.find((seat) => seat.seatIndex === seatIndex);
+      const hole = persistedSeat ? holeBySeat.get(persistedSeat.seatIndex) ?? null : null;
+      const board = (handRow.boardJson ?? []) as Card[];
+      const rank =
+        persistedSeat &&
+        persistedSeat.status !== 'folded' &&
+        hole &&
+        hole.length + board.length >= 5
+          ? evaluateBest5([...hole, ...board])
+          : null;
+      if (persistedSeat) {
+        authoritative = {
+          seatIndex: persistedSeat.seatIndex,
+          avatarId: persistedSeat.avatarId,
+          holeCards:
+            handRow.endedAt === 'showdown' && persistedSeat.status !== 'folded'
+              ? hole
+              : null,
+          totalCommitted: Number(persistedSeat.totalCommitted),
+          won: Number(persistedSeat.grossWon),
+          net: Number(persistedSeat.net),
+          status: persistedSeat.status,
+          handRankCategory: rank?.category ?? null,
+          isWinner: BigInt(persistedSeat.grossWon) > 0n,
+        };
+      }
+    }
     const stored = event.outcomeJson as {
       totalCommitted?: number;
       won?: number;

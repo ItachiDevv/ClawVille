@@ -462,7 +462,11 @@ describe('REEF_RACE_SEGMENTS — themed loop t-range table', () => {
 describe('REEF_RACE_TECHNICAL_ZONES — canonical v7 pinches', () => {
   const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
 
-  it('defines the S-chicane and near-hairpin cores at 450–700wu half-width', () => {
+  // Band raised 450–700 → 450–800 by the 2026-08-09 widen pass (founder:
+  // "widen the track, same structure"): the chicane pinch is now ~600-class
+  // (peaks 799.7 at its shoulders) while the hairpin apex keeps the 458-level
+  // minimum. The 450 floor still guards the technical character.
+  it('defines the S-chicane and near-hairpin cores at 450–800wu half-width', () => {
     expect(REEF_RACE_TECHNICAL_ZONES.map((zone) => zone.id)).toEqual([
       's-chicane',
       'near-hairpin',
@@ -477,7 +481,7 @@ describe('REEF_RACE_TECHNICAL_ZONES — canonical v7 pinches', () => {
         maxWidth = Math.max(maxWidth, width);
       }
       expect(minWidth).toBeGreaterThanOrEqual(450);
-      expect(maxWidth).toBeLessThanOrEqual(700);
+      expect(maxWidth).toBeLessThanOrEqual(800);
     }
   });
 });

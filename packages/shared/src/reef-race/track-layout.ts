@@ -4,12 +4,23 @@
  * LOCKED v7 "TECHNICAL SURF ROAD" default: a 52-control-point closed
  * centripetal Catmull-Rom water ribbon. It preserves broad surf sweeps while
  * adding a four-bend alternating S-chicane and a 180-degree near-hairpin.
- * Those technical cores pinch smoothly to 455–700 wu half-width; broad runs
- * remain 800–1616 wu for overtaking. Per-CP `halfWidth` is interpolated by
+ * WIDEN PASS 2026-08-09 (founder: "widen the track, same structure"): a
+ * WIDTH-ONLY pass — zero CP position moves, so arc length, curvature,
+ * reversals, and the start grid are bit-identical to v7. Technical cores now
+ * pinch to 462–800 wu half-width (chicane ~600-class, hairpin apex kept as
+ * THE deliberate tight moment at 462–465 — its minR 1020 caps carve headroom);
+ * broad runs remain 780–1616 wu for overtaking. Per-CP `halfWidth` is interpolated by
  * `ReefSpline.widthAt(t)`, so server wall-clamp math and the client ribbon read
  * the exact same C1-continuous profile. There is no parallel width function.
  *
- * The load-bearing constraint is pointwise: R(t) - widthAt(t) > 550 wu. v7
+ * The load-bearing constraint is pointwise: R(t) - widthAt(t) > 550 wu,
+ * where R(t) is the STENCIL-SMOOTHED curvature radius measured by
+ * `scripts/reef/verify-track-v7.ts` at its h=0.0005 central-difference
+ * stencil (definition made explicit 2026-08-09, Codex R19 finding 4: finer
+ * stencils resolve the C1 Catmull-Rom knot cusp at the hairpin apex to
+ * R−width ≈ 511 wu — true of the ORIGINAL v7 widths too, so 550 was always a
+ * smoothed-metric floor, not an analytic one; the ribbon is non-overlapping
+ * and the inner radius stays positive either way). v7
  * narrows before it sharpens, yielding technical minima near 1020/1195 wu
  * without recreating the v5 wall-clamp stall. The seam remains a broad straight
  * with room for the complete 2x4 start grid (568 wu rear reach, +/-320 lateral).
@@ -44,13 +55,15 @@
  *   - heading sweep        = +2.000000 pi; XZ overlaps = 0
  *   - curvature reversals  = 40 (stable at N=4000 and N=8000)
  *   - min radius overall   = 1020.1 wu @ t=0.63762
- *   - S-chicane core       = t 0.1742–0.3260, minR 1194.7, hw 466.3–699.7
- *   - near-hairpin core    = t 0.4911–0.7357, minR 1020.1, hw 454.6–699.2
+ *   - S-chicane core       = t 0.1742–0.3260, minR 1194.7, hw 597.8–799.7
+ *   - near-hairpin core    = t 0.4911–0.7357, minR 1020.1, hw 458.3–780.7
  *   - broad-section minR   = 1478.5 wu
- *   - hw sweep             = 454.6–1615.6 wu
- *   - min carve margin     = 559.6 wu (>550, >=10% over the 500 floor)
+ *   - hw sweep             = 458.3–1613.5 wu (2026-08-09 widen pass)
+ *   - min carve margin     = 554.1 wu (>550, at the hairpin apex t=0.63762)
  *   - min adjacent CP gap  = 556.0 wu (>200 Newton guard)
- *   - min inter-pass edge clearance = 487.2 wu (>300); edge overlaps = 0
+ *   - min inter-pass edge clearance = 393.9 wu (>300; consumed 487→394 by the
+ *     widen pass — the hairpin in/out legs share this budget, watch it first
+ *     on any further widening); edge overlaps = 0
  *   - max elevation grade  = 15.98%; elevation seam is C1
  *   - bank max             = 28 degrees (clamped; 20.49% sample saturation)
  *   - start-grid min inset = 1166.7 wu; min local tangent dot = 0.999996
@@ -121,9 +134,9 @@ export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
   // v7 boundaries are closest-point projections of CP0/8/17/25/44.
   // `halfWidth` here is documented intent; real geometry uses spline.widthAt(t).
   { id: 'lagoon',    tStart: 0.0000, tEnd: 0.1742, halfWidth: 1450 },
-  { id: 'kelp',      tStart: 0.1742, tEnd: 0.3366, halfWidth: 550 },
+  { id: 'kelp',      tStart: 0.1742, tEnd: 0.3366, halfWidth: 640 },
   { id: 'shipwreck', tStart: 0.3366, tEnd: 0.5086, halfWidth: 1400 },
-  { id: 'coral',     tStart: 0.5086, tEnd: 0.7885, halfWidth: 550 },
+  { id: 'coral',     tStart: 0.5086, tEnd: 0.7885, halfWidth: 580 },
   { id: 'finish',    tStart: 0.7885, tEnd: 1.0000, halfWidth: 1300 },
 ];
 
@@ -170,18 +183,21 @@ export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = ([
   { x:  6658, z:  -6658, halfWidth: 1593 }, // CP  4  broad climb
   { x:  8011, z:  -5353, halfWidth: 1403 }, // CP  5  sweep
   { x: 10320, z:  -4275, halfWidth: 1609 }, // CP  6  widening into east bend
-  { x: 13682, z:  -2721, halfWidth: 900 },
+  { x: 13682, z:  -2721, halfWidth: 980 },
 
   // ── Segment 1: kelp — pinched alternating S-chicane (CP8→CP17) ───────────
-  { x: 16369, z:      0, halfWidth: 700 },
-  { x: 16606, z:   3303, halfWidth: 650 },
-  { x: 15833, z:   4556, halfWidth: 500 },
-  { x: 14711, z:   5583, halfWidth: 470 },
-  { x: 13646, z:   6850, halfWidth: 470 },
-  { x: 12160, z:   7582, halfWidth: 470 },
-  { x: 11095, z:   8849, halfWidth: 520 },
-  { x:  9715, z:   9715, halfWidth: 650 },
-  { x:  8500, z:  10400, halfWidth: 600 },
+  // 2026-08-09 widen pass (founder: "widen the track, same structure"): the
+  // chicane's minR 1194.7 leaves carve headroom to hw≈640 (R−550), so the
+  // pinch rises 470→600-class while the spline path is untouched.
+  { x: 16369, z:      0, halfWidth: 800 },
+  { x: 16606, z:   3303, halfWidth: 750 },
+  { x: 15833, z:   4556, halfWidth: 620 },
+  { x: 14711, z:   5583, halfWidth: 600 },
+  { x: 13646, z:   6850, halfWidth: 600 },
+  { x: 12160, z:   7582, halfWidth: 600 },
+  { x: 11095, z:   8849, halfWidth: 630 },
+  { x:  9715, z:   9715, halfWidth: 760 },
+  { x:  8500, z:  10400, halfWidth: 720 },
 
   // ── Segment 2: shipwreck — broad north/west surf sweep (CP17→CP25) ───────
   { x:  7360, z:  11016, halfWidth: 1000 },
@@ -191,30 +207,43 @@ export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = ([
   { x: -2292, z:  11523, halfWidth: 1393 },
   { x: -4242, z:  10240, halfWidth: 1555 },
   { x: -5938, z:   8887, halfWidth: 1471 },
-  { x: -7927, z:   7927, halfWidth: 800 },
+  { x: -7927, z:   7927, halfWidth: 880 },
 
   // ── Segment 3: coral — pinched near-hairpin + recovery (CP25→CP44) ───────
-  { x:-10500, z:   7000, halfWidth: 550 },
-  { x:-12000, z:   6000, halfWidth: 550 },
-  { x:-13000, z:   5300, halfWidth: 550 },
-  { x:-13600, z:   4750, halfWidth: 500 },
-  { x:-14100, z:   3800, halfWidth: 500 },
-  { x:-14300, z:   2400, halfWidth: 500 },
-  { x:-13714, z:    986, halfWidth: 460 },
-  { x:-12300, z:    400, halfWidth: 455 },
-  { x:-10886, z:    986, halfWidth: 460 },
-  { x:-10300, z:   2400, halfWidth: 500 },
-  { x:-10300, z:   4000, halfWidth: 540 },
-  { x:-10178, z:   4612, halfWidth: 540 },
-  { x: -9831, z:   5131, halfWidth: 560 },
-  { x: -9312, z:   5478, halfWidth: 580 },
-  { x: -8700, z:   5600, halfWidth: 600 },
-  { x: -7858, z:   5433, halfWidth: 650 },
-  { x: -7144, z:   4956, halfWidth: 750 },
-  { x: -6667, z:   4242, halfWidth: 900 },
-  { x: -6500, z:   3400, halfWidth: 1100 },
+  // 2026-08-09 widen pass: entry/recovery legs +60-80 wu. The APEX (CP30-34)
+  // stays near its original pinch — minR 1020.1 caps carve headroom at
+  // hw≈470 (R−550), so the hairpin remains THE deliberate tight moment of the
+  // lap. The parallel in/out legs (t≈0.50 / t≈0.71) share the lap's minimum
+  // inter-pass edge clearance (487.2 baseline) — their widening budget is
+  // bounded by the >300 clearance floor; verify with
+  // `bun scripts/reef/verify-track-v7.ts` after ANY change here.
+  { x:-10500, z:   7000, halfWidth: 610 },
+  { x:-12000, z:   6000, halfWidth: 610 },
+  { x:-13000, z:   5300, halfWidth: 610 },
+  { x:-13600, z:   4750, halfWidth: 560 },
+  { x:-14100, z:   3800, halfWidth: 560 },
+  { x:-14300, z:   2400, halfWidth: 540 },
+  { x:-13714, z:    986, halfWidth: 465 },
+  { x:-12300, z:    400, halfWidth: 462 },
+  { x:-10886, z:    986, halfWidth: 465 },
+  { x:-10300, z:   2400, halfWidth: 540 },
+  // CP35-37: the tight-R stretch after the apex (R≈1110 around t≈0.68) caps
+  // hw at ~555 (R−550) — 600 here broke the carve margin in the widen pass.
+  { x:-10300, z:   4000, halfWidth: 545 },
+  { x:-10178, z:   4612, halfWidth: 545 },
+  { x: -9831, z:   5131, halfWidth: 550 },
+  { x: -9312, z:   5478, halfWidth: 605 },
+  { x: -8700, z:   5600, halfWidth: 615 },
+  { x: -7858, z:   5433, halfWidth: 690 },
+  // CP42-43: exit transition R≈1360 (t≈0.756) caps hw ~810 — trimmed from
+  // 810/960 to hold the carve margin.
+  { x: -7144, z:   4956, halfWidth: 780 },
+  { x: -6667, z:   4242, halfWidth: 920 },
+  { x: -6500, z:   3400, halfWidth: 1130 },
 
   // ── Segment 4: finish — broad south return to the seam (CP44→CP0) ────────
+  // CP44 stays 900: the local broad-section minR ≈1478 caps hw at 928
+  // (R−550); 980 broke the carve margin at t≈0.788 in the widen pass.
   { x: -6500, z:   1000, halfWidth: 900 },
   { x:-10500, z:  -2500, halfWidth: 1400 },
   { x:-13627, z:  -5645, halfWidth: 1373 },

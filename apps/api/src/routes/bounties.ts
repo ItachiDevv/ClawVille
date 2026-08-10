@@ -124,6 +124,8 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
     case 'sap_usdc_escrow_disabled':
     case 'payai_rail_disabled':
     case 'mainnet_broadcast_refused':
+    case 'gas_cap_exceeded':
+    case 'gas_sponsor_failed':
       return 503;
     case 'wallet_pubkey_missing':
     case 'avatar_wallet_missing':
@@ -141,6 +143,7 @@ function escrowFailureStatus(code: string): 400 | 403 | 404 | 409 | 500 | 502 | 
       return 400;
     case 'already_settled':
     case 'settle_in_progress':
+    case 'gas_sponsorship_in_progress':
     case 'refund_in_progress':
     case 'funding_unconfirmed':
     case 'job_not_open':

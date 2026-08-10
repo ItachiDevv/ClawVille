@@ -45,18 +45,33 @@ import {
   pokerCashHands,
   pokerCashLedgerEvents,
   coveGameEvents,
+  coveTestFixtureRuns,
   avatars,
   type PokerCashTable,
   type PokerCashSeat,
 } from '@clawville/database';
-import { and, eq, asc, desc, ne, inArray, sql } from 'drizzle-orm';
+import { and, eq, asc, desc, gt, ne, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
+import type {
+  CashSettledHandSnapshot,
+  CashSettledSeat,
+  HoldemCard,
+  SettledPotResult,
+} from '@clawville/shared';
 import * as ledgerModule from '../claw-token-ledger';
 import { createServerSeed, sha256Hex } from '../provable-rng';
+import { shuffleDeck } from '../holdem-engine';
 import { PokerTableSim } from './poker-table-sim';
 import { cashTableSim } from './cash-table-sim-singleton';
 import { houseFillTargetSeats } from './cash-house-config';
 import { cashHouseSeeder, CashBotPoolExhaustedError } from './cash-house-seeder';
 import { REAL_CLOCK } from './poker-table-types';
+import {
+  chargeFixtureExposure,
+  consumeFixtureArm,
+  fixtureEnabled,
+  hasPendingHoldemCashFixtureArm,
+  resolveCashFixtureServerSeed,
+} from '../cove-test-fixture';
 import type {
   Action,
   ApplyActionResult,
@@ -89,6 +104,11 @@ type LedgerLike = {
 export type CashSubject =
   | { kind: 'user'; userId: string; avatarId: string; agentId: null; name?: string }
   | { kind: 'agent'; userId: string; avatarId: string; agentId: string; name?: string };
+
+export interface CashFixtureAuth {
+  header: string;
+  ownerAvatarId: string;
+}
 
 export interface CashTableManagerDeps {
   db?: DbLike;
@@ -128,6 +148,22 @@ export interface CashTableManagerDeps {
   houseBankAvatarProvider?: (
     tableId: string,
   ) => Promise<string> | string;
+  /**
+   * Process-local reservation coordinator. Production defaults to
+   * `cashHouseSeeder`; tests may inject a deterministic pool.
+   */
+  seededAgentReservationController?: {
+    bindReservation(tableId: string, seatIndex: number, avatarId: string): boolean;
+    release(tableId: string, seatIndex: number): void;
+  };
+  /** W-F FIX-D2 staging-only organic-tick yield seams. */
+  fixtureEnabled?: () => boolean;
+  hasPendingHoldemCashFixtureArm?: (
+    ownerAvatarIds: readonly string[],
+    now?: Date,
+  ) => Promise<boolean>;
+  /** Existing fixture consumer, injectable only so the headered binding path is unit-testable. */
+  consumeFixtureArm?: typeof consumeFixtureArm;
 }
 
 /** Config for a new cash table (the route validates the shape; this re-checks bounds). */
@@ -144,7 +180,7 @@ export interface CreateCashTableConfig {
   joinCode?: string | null;
 }
 
-const DEFAULT_TURN_CLOCK_MS = 25_000;
+const DEFAULT_TURN_CLOCK_MS = 20_000;
 const DEFAULT_AGENT_TURN_GRACE_MS = 5_000;
 /** provable-rng requires a hex clientSeed. 'clawville-cash' → base16 'c1a4ca54'. */
 const DEFAULT_CLIENT_SEED = 'c1a4ca54';
@@ -159,6 +195,85 @@ const DEFAULT_CLIENT_SEED = 'c1a4ca54';
 const SEAT_NONCE_STRIDE = 100;
 /** Pins the engine that produced a cove_game_events poker row (verifier drift guard). */
 const POKER_CASH_ENGINE_VERSION = 'v1';
+/** Settled-result presentation window; the next hand still starts immediately. */
+export const CASH_SETTLED_DISPLAY_WINDOW_MS = 8_000;
+
+type PersistedCashSettledSeat = Omit<CashSettledSeat, 'shown'>;
+
+interface PersistedCashSettledHand {
+  tableId: string;
+  handNumber: number;
+  board: HoldemCard[];
+  endedAt: CashSettledHandSnapshot['endedAt'];
+  pots: SettledPotResult[];
+  seats: PersistedCashSettledSeat[];
+  serverSeed: string;
+  clientSeed: string;
+  settledAt: Date;
+}
+
+/**
+ * Rebuild the exact terminal wire object from durable, non-requester-masked
+ * state. Hole cards are deterministically re-dealt from the revealed seed and
+ * historical seat indices, then the frozen entitlement policy is applied.
+ */
+export function buildCashSettledHandSnapshot(
+  hand: PersistedCashSettledHand,
+): CashSettledHandSnapshot {
+  const orderedSeatIndices = hand.seats
+    .map((seat) => seat.seatIndex)
+    .sort((a, b) => a - b);
+  const deck = shuffleDeck({
+    serverSeed: hand.serverSeed,
+    clientSeed: hand.clientSeed,
+    nonce: hand.handNumber,
+  });
+  const holeBySeat = new Map<number, [HoldemCard, HoldemCard]>();
+  let top = 0;
+  for (let round = 0; round < 2; round++) {
+    for (const seatIndex of orderedSeatIndices) {
+      const current = holeBySeat.get(seatIndex) ?? [deck[top]!, deck[top]!] as [
+        HoldemCard,
+        HoldemCard,
+      ];
+      current[round] = deck[top++]!;
+      holeBySeat.set(seatIndex, current);
+    }
+  }
+
+  const settledAtMs = hand.settledAt.getTime();
+  return {
+    handId: `${hand.tableId}:${hand.handNumber}`,
+    handNumber: hand.handNumber,
+    tableId: hand.tableId,
+    board: hand.board,
+    endedAt: hand.endedAt,
+    pots: hand.pots,
+    seats: hand.seats.map((seat) => ({
+      ...seat,
+      shown:
+        hand.endedAt === 'showdown' && seat.status !== 'folded'
+          ? holeBySeat.get(seat.seatIndex) ?? null
+          : null,
+    })),
+    settledAtMs,
+    displayExpiresAtMs: settledAtMs + CASH_SETTLED_DISPLAY_WINDOW_MS,
+  };
+}
+
+/** Historical-hand authorization; deliberately independent of current seating. */
+export function assertCashSettledHandEntitlement(
+  seats: readonly PersistedCashSettledSeat[],
+  requesterAvatarId: string,
+): void {
+  if (!seats.some((seat) => seat.avatarId === requesterAvatarId)) {
+    throw new CashTableError(
+      'not_historical_participant',
+      'requester did not participate in this settled hand',
+      403,
+    );
+  }
+}
 
 /** Stable, structured error so the route can map to faithful HTTP statuses. */
 export class CashTableError extends Error {
@@ -170,6 +285,23 @@ export class CashTableError extends Error {
     super(message);
     this.name = 'CashTableError';
   }
+}
+
+class SeededSeatCollisionError extends Error {
+  constructor(public readonly avatarId: string) {
+    super(`seeded avatar ${avatarId} already has an active cash seat`);
+    this.name = 'SeededSeatCollisionError';
+  }
+}
+
+function isPgUniqueViolation(err: unknown): boolean {
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 4 && cursor && typeof cursor === 'object'; depth++) {
+    const record = cursor as { code?: unknown; cause?: unknown };
+    if (record.code === '23505') return true;
+    cursor = record.cause;
+  }
+  return false;
 }
 
 /** A `poker_cash_tables` sim tableId is the table's own uuid (one table = one uuid). */
@@ -195,6 +327,14 @@ export class CashTableManager {
   private readonly seedFn: () => string;
   private readonly seededAgentProvider: CashTableManagerDeps['seededAgentProvider'];
   private readonly houseBankAvatarProvider: CashTableManagerDeps['houseBankAvatarProvider'];
+  private readonly seededAgentReservationController: NonNullable<
+    CashTableManagerDeps['seededAgentReservationController']
+  >;
+  private readonly fixtureEnabled: NonNullable<CashTableManagerDeps['fixtureEnabled']>;
+  private readonly hasPendingHoldemCashFixtureArm: NonNullable<
+    CashTableManagerDeps['hasPendingHoldemCashFixtureArm']
+  >;
+  private readonly consumeFixtureArm: NonNullable<CashTableManagerDeps['consumeFixtureArm']>;
 
   /**
    * Per-table async mutex so concurrent sit/leave/action/settle for the SAME
@@ -226,6 +366,12 @@ export class CashTableManager {
     this.seedFn = deps.seedFn ?? (() => createServerSeed().serverSeed);
     this.seededAgentProvider = deps.seededAgentProvider;
     this.houseBankAvatarProvider = deps.houseBankAvatarProvider;
+    this.seededAgentReservationController =
+      deps.seededAgentReservationController ?? cashHouseSeeder;
+    this.fixtureEnabled = deps.fixtureEnabled ?? fixtureEnabled;
+    this.hasPendingHoldemCashFixtureArm =
+      deps.hasPendingHoldemCashFixtureArm ?? hasPendingHoldemCashFixtureArm;
+    this.consumeFixtureArm = deps.consumeFixtureArm ?? consumeFixtureArm;
 
     // This manager EXCLUSIVELY owns the hand-complete handler on ITS sim instance.
     // The sim fires it synchronously inside resolveHand; we just capture the result
@@ -497,6 +643,68 @@ export class CashTableManager {
     return row ?? null;
   }
 
+  /**
+   * Latest durable BA-1 snapshot newer than `afterHandNumber`.
+   *
+   * Authorization is intentionally evaluated against the hand's persisted seat
+   * accounting, never live seating: a participant may leave immediately after
+   * settlement and still recover the hand, while a never-seated subject gets 403.
+   */
+  async getLastSettledHand(
+    tableId: string,
+    requesterAvatarId: string,
+    afterHandNumber: number,
+  ): Promise<CashSettledHandSnapshot | null> {
+    const table = await this.getTable(tableId);
+    if (!table) {
+      throw new CashTableError('no_such_table', 'table not found', 404);
+    }
+
+    const [row] = await this.db
+      .select()
+      .from(pokerCashHands)
+      .where(
+        and(
+          eq(pokerCashHands.tableId, tableId),
+          gt(pokerCashHands.handNumber, afterHandNumber),
+          isNotNull(pokerCashHands.settledAt),
+          isNotNull(pokerCashHands.seatResultJson),
+          isNotNull(pokerCashHands.endedAt),
+        ),
+      )
+      .orderBy(desc(pokerCashHands.handNumber))
+      .limit(1);
+
+    if (!row) return null;
+    const seats = row.seatResultJson ?? [];
+    assertCashSettledHandEntitlement(seats, requesterAvatarId);
+    if (
+      !row.settledAt ||
+      !row.serverSeedReveal ||
+      !row.boardJson ||
+      !row.potResultJson ||
+      !row.endedAt
+    ) {
+      throw new CashTableError(
+        'settled_snapshot_incomplete',
+        'settled hand is missing BA-1 persistence fields',
+        500,
+      );
+    }
+
+    return buildCashSettledHandSnapshot({
+      tableId,
+      handNumber: row.handNumber,
+      board: row.boardJson as HoldemCard[],
+      endedAt: row.endedAt as CashSettledHandSnapshot['endedAt'],
+      pots: row.potResultJson,
+      seats,
+      serverSeed: row.serverSeedReveal,
+      clientSeed: row.clientSeed,
+      settledAt: row.settledAt,
+    });
+  }
+
   /** Resolve a private table by its join code (only the open ones). */
   async getTableByJoinCode(joinCode: string): Promise<PokerCashTable | null> {
     const [row] = await this.db
@@ -516,6 +724,26 @@ export class CashTableManager {
       .from(pokerCashSeats)
       .where(and(eq(pokerCashSeats.tableId, tableId), ne(pokerCashSeats.status, 'left')))
       .orderBy(asc(pokerCashSeats.seatIndex));
+  }
+
+  private async latestLedgerTxnId(
+    tableId: string,
+    seatId: string,
+    kind: 'buy_in' | 'cash_out',
+  ): Promise<string | null> {
+    const [event] = await this.db
+      .select({ ledgerTxnId: pokerCashLedgerEvents.ledgerTxnId })
+      .from(pokerCashLedgerEvents)
+      .where(
+        and(
+          eq(pokerCashLedgerEvents.tableId, tableId),
+          eq(pokerCashLedgerEvents.seatId, seatId),
+          eq(pokerCashLedgerEvents.kind, kind),
+        ),
+      )
+      .orderBy(desc(pokerCashLedgerEvents.createdAt))
+      .limit(1);
+    return event?.ledgerTxnId ?? null;
   }
 
   /** The PUBLIC table state — config + active seats (NO hole cards) + live sim snapshot. */
@@ -589,7 +817,13 @@ export class CashTableManager {
     subject: CashSubject,
     buyInCt: number,
     viaJoinCode = false,
-  ): Promise<{ seatIndex: number; stackCt: string; alreadySeated: boolean }> {
+    fixtureAuth?: CashFixtureAuth,
+  ): Promise<{
+    seatIndex: number;
+    stackCt: string;
+    alreadySeated: boolean;
+    buyInLedgerTxnId: string | null;
+  }> {
     return this.withTableLock(tableId, async () => {
       const table = await this.requireOpenTable(tableId);
 
@@ -619,6 +853,11 @@ export class CashTableManager {
           seatIndex: existing.seatIndex,
           stackCt: existing.currentStackCt,
           alreadySeated: true,
+          buyInLedgerTxnId: await this.latestLedgerTxnId(
+            tableId,
+            existing.id,
+            'buy_in',
+          ),
         };
       }
 
@@ -627,11 +866,25 @@ export class CashTableManager {
         throw new CashTableError('table_full', 'no open seat at this table', 409);
       }
 
-      await this.seatSubject(table, subject, seatIndex, buyIn, /* isSeeded */ false);
+      const buyInLedgerTxnId = await this.seatSubject(
+        table,
+        subject,
+        seatIndex,
+        buyIn,
+        /* isSeeded */ false,
+        undefined,
+        fixtureAuth,
+        seats,
+      );
 
-      await this.startAndAdvance(tableId);
+      await this.startAndAdvance(tableId, fixtureAuth);
 
-      return { seatIndex, stackCt: String(buyIn), alreadySeated: false };
+      return {
+        seatIndex,
+        stackCt: String(buyIn),
+        alreadySeated: false,
+        buyInLedgerTxnId,
+      };
     });
   }
 
@@ -640,8 +893,16 @@ export class CashTableManager {
    * agents close it (a fold-around or check-down between two seeded agents would
    * otherwise hang waiting for a human poke). Lock is already held by the caller.
    */
-  private async startAndAdvance(tableId: string): Promise<void> {
-    const started = await this.maybeStartHand(tableId);
+  private async startAndAdvance(
+    tableId: string,
+    fixtureAuth?: CashFixtureAuth,
+    yieldToPendingFixtureArm = false,
+  ): Promise<void> {
+    const started = await this.maybeStartHand(
+      tableId,
+      fixtureAuth,
+      yieldToPendingFixtureArm,
+    );
     if (!started) return;
     // BOT-YIELD: if real players grew at this house table, queue seeded bots to
     // stand up at the NEXT between-hands boundary (keeping ≥2 players), so real
@@ -656,7 +917,13 @@ export class CashTableManager {
   async joinByCode(
     joinCode: string,
     subject: CashSubject,
-  ): Promise<{ tableId: string; seatIndex: number; stackCt: string; alreadySeated: boolean }> {
+  ): Promise<{
+    tableId: string;
+    seatIndex: number;
+    stackCt: string;
+    alreadySeated: boolean;
+    buyInLedgerTxnId: string | null;
+  }> {
     const table = await this.getTableByJoinCode(joinCode);
     if (!table) {
       throw new CashTableError('no_such_table', 'no open table for that join code', 404);
@@ -688,7 +955,9 @@ export class CashTableManager {
     buyIn: number,
     isSeeded: boolean,
     fundSourceAvatarId?: string,
-  ): Promise<void> {
+    fixtureAuth?: CashFixtureAuth,
+    fixtureSeats?: PokerCashSeat[],
+  ): Promise<string | null> {
     // REAL subject → debit its own wallet. SEEDED agent → debit the house bank.
     const debitAvatarId = isSeeded ? fundSourceAvatarId : subject.avatarId;
     if (!debitAvatarId) {
@@ -708,7 +977,7 @@ export class CashTableManager {
     // with no seat). The parent table row is SELECT … FOR UPDATE first so the
     // escrow accumulator is read fresh + advanced under the lock (never trusting
     // the in-memory `table.tableEscrowCt`, which a concurrent sit could stale).
-    const newEscrow = await this.db.transaction(async (tx) => {
+    const seatResult = await this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<{ table_escrow_ct: string; status: string }>(
         sql`SELECT table_escrow_ct, status FROM poker_cash_tables WHERE id = ${table.id} FOR UPDATE`,
       );
@@ -718,6 +987,60 @@ export class CashTableManager {
       }
       if (locked.status !== 'open') {
         throw new CashTableError('table_closed', 'table is closed', 409);
+      }
+      if (isSeeded) {
+        // FIX-D: reservations are process-local while seat rows are durable. Reconcile
+        // any active seeded row BEFORE the house-bank debit. This read-only collision
+        // signal deliberately touches no stack, escrow, totals, status, or ledger.
+        const activeRows = await tx
+          .select({ id: pokerCashSeats.id })
+          .from(pokerCashSeats)
+          .where(
+            and(
+              eq(pokerCashSeats.avatarId, subject.avatarId),
+              ne(pokerCashSeats.status, 'left'),
+            ),
+          )
+          .limit(1);
+        if (activeRows.length > 0) {
+          throw new SeededSeatCollisionError(subject.avatarId);
+        }
+      }
+      if (fixtureAuth && !isSeeded) {
+        const charge = await chargeFixtureExposure(tx, {
+          header: fixtureAuth.header,
+          ownerAvatarId: fixtureAuth.ownerAvatarId,
+          arm: 'holdem-cash',
+          legStakeCt: buyIn,
+        });
+        if (!charge?.ok) return { kind: 'fixture-exhausted' as const };
+        const competitors = fixtureSeats ?? [];
+        if (competitors.some((seat) => seat.isSeeded !== 'true')) {
+          throw new CashTableError(
+            'fixture_cash_requires_isolated_table',
+            'fixture_cash_requires_isolated_table',
+            409,
+          );
+        }
+        const fundedSittingIn = competitors.filter(
+          (seat) =>
+            seat.isSeeded === 'true' &&
+            seat.status === 'sitting_in' &&
+            BigInt(seat.currentStackCt) > 0n,
+        );
+        const requiredCompetitors =
+          charge.fixture.name === 'holdem-multiway-showdown' ? 2 : 1;
+        if (fundedSittingIn.length < requiredCompetitors) {
+          throw new CashTableError(
+            charge.fixture.name === 'holdem-multiway-showdown'
+              ? 'fixture_cash_requires_three_seats'
+              : 'fixture_cash_requires_funded_opponents',
+            charge.fixture.name === 'holdem-multiway-showdown'
+              ? 'fixture_cash_requires_three_seats'
+              : 'fixture_cash_requires_funded_opponents',
+            409,
+          );
+        }
       }
 
       const res = await this.ledger.debitClawTokens(
@@ -769,11 +1092,16 @@ export class CashTableManager {
         ledgerTxnId,
       });
 
-      return escrowAfter;
+      return { kind: 'seated' as const, escrowAfter, ledgerTxnId };
     });
+    if (seatResult.kind === 'fixture-exhausted') {
+      throw new CashTableError('fixture_budget_exhausted', 'fixture_budget_exhausted', 402);
+    }
+    const { escrowAfter: newEscrow, ledgerTxnId } = seatResult;
 
     // Keep the caller's in-memory table view consistent after the committed tx.
     table.tableEscrowCt = String(newEscrow);
+    return ledgerTxnId;
   }
 
   // ── Leave (credit current stack → free seat, between hands only) ────────────
@@ -796,7 +1124,11 @@ export class CashTableManager {
   async leaveTable(
     tableId: string,
     subject: CashSubject,
-  ): Promise<{ cashedOutCt: number; queued: boolean }> {
+  ): Promise<{
+    cashedOutCt: number;
+    queued: boolean;
+    cashOutLedgerTxnId: string | null;
+  }> {
     return this.withTableLock(tableId, async () => {
       const sid = simTableId(tableId);
       const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
@@ -823,11 +1155,11 @@ export class CashTableManager {
           this.pendingLeaves.set(tableId, set);
         }
         set.add(subject.avatarId);
-        return { cashedOutCt: 0, queued: true };
+        return { cashedOutCt: 0, queued: true, cashOutLedgerTxnId: null };
       }
 
-      const cashedOutCt = await this.cashOutSeat(table, seat);
-      return { cashedOutCt, queued: false };
+      const cashOut = await this.cashOutSeat(table, seat);
+      return { ...cashOut, queued: false };
     });
   }
 
@@ -839,7 +1171,10 @@ export class CashTableManager {
    * this seat's chips. `table.tableEscrowCt` is read fresh + mutated in place so a
    * batch of cash-outs under one lock stays consistent.
    */
-  private async cashOutSeat(table: PokerCashTable, seat: PokerCashSeat): Promise<number> {
+  private async cashOutSeat(
+    table: PokerCashTable,
+    seat: PokerCashSeat,
+  ): Promise<{ cashedOutCt: number; cashOutLedgerTxnId: string | null }> {
     const isSeeded = seat.isSeeded === 'true';
 
     let creditAvatarId = seat.avatarId;
@@ -866,7 +1201,7 @@ export class CashTableManager {
     // pre-lock snapshot — so a crash after the credit but before the flip can't
     // double-pay (the whole tx rolls back together). Escrow is read fresh from
     // the FOR-UPDATE-locked TABLE row.
-    const { stack, newEscrow } = await this.db.transaction(async (tx) => {
+    const { stack, newEscrow, ledgerTxnId } = await this.db.transaction(async (tx) => {
       const seatRows = await tx.execute<{
         current_stack_ct: string;
         total_cashed_out_ct: string;
@@ -877,10 +1212,20 @@ export class CashTableManager {
       );
       const lockedSeat = seatRows[0];
       // Seat row vanished (cascade) — nothing to cash out.
-      if (!lockedSeat) return { stack: 0, newEscrow: Number(table.tableEscrowCt) };
+      if (!lockedSeat) {
+        return {
+          stack: 0,
+          newEscrow: Number(table.tableEscrowCt),
+          ledgerTxnId: null,
+        };
+      }
       // Already cashed out (idempotent replay) — do NOT credit again.
       if (lockedSeat.status === 'left') {
-        return { stack: 0, newEscrow: Number(table.tableEscrowCt) };
+        return {
+          stack: 0,
+          newEscrow: Number(table.tableEscrowCt),
+          ledgerTxnId: null,
+        };
       }
 
       const lockedStack = Number(lockedSeat.current_stack_ct);
@@ -934,7 +1279,7 @@ export class CashTableManager {
         });
       }
 
-      return { stack: lockedStack, newEscrow: escrowAfter };
+      return { stack: lockedStack, newEscrow: escrowAfter, ledgerTxnId };
     });
 
     // A SEEDED seat that just left frees its bot pool reservation so the same bot
@@ -948,7 +1293,7 @@ export class CashTableManager {
 
     // Keep the caller's in-memory table view consistent after the committed tx.
     table.tableEscrowCt = String(newEscrow);
-    return stack;
+    return { cashedOutCt: stack, cashOutLedgerTxnId: ledgerTxnId };
   }
 
   /**
@@ -995,6 +1340,10 @@ export class CashTableManager {
   }): Promise<ApplyActionResult> {
     return this.withTableLock(input.tableId, async () => {
       const sid = simTableId(input.tableId);
+      const current = this.sim.getPublicSnapshot(sid);
+      if (!current || current.handNumber !== input.handNumber) {
+        return { ok: false, reason: 'stale_hand_number' };
+      }
       const idempotencyKey = `${input.handNumber}:${input.actionSeq}:${input.subject.avatarId}`;
       const result = this.sim.applyAction(sid, input.subject.avatarId, input.action, {
         idempotencyKey,
@@ -1060,7 +1409,7 @@ export class CashTableManager {
       // DEALS only when a real player is present (Option B gate); a bot-only table
       // returns false here and stays idle (no deal, no re-buy, no bank churn).
       if (!this.sim.getPublicSnapshot(sid)) {
-        await this.startAndAdvance(tableId);
+        await this.startAndAdvance(tableId, undefined, true);
       }
     });
     // 4: lobby self-heal — keep the seated-bot count topped up toward the lobby
@@ -1103,7 +1452,11 @@ export class CashTableManager {
   }
 
   /** INTERNAL (lock already held): try to start a hand. Returns whether one started. */
-  private async maybeStartHand(tableId: string): Promise<boolean> {
+  private async maybeStartHand(
+    tableId: string,
+    fixtureAuth?: CashFixtureAuth,
+    yieldToPendingFixtureArm = false,
+  ): Promise<boolean> {
     const sid = simTableId(tableId);
     // A live, unfinished hand → nothing to do.
     if (this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid)) return false;
@@ -1128,6 +1481,23 @@ export class CashTableManager {
     const currentSeats = await this.activeSeats(tableId);
     if (!this.tableHasRealPlayer(currentSeats)) return false;
 
+    // W-F FIX-D2: on staging with the deterministic fixture enabled, the
+    // autonomous organic tick yields while any SITTING-IN REAL player's avatar
+    // owns an unconsumed, unexpired holdem-cash arm. The fixture-headered request
+    // bypasses this read-only guard and remains the sole authoritative consumer.
+    // Production never executes the query because fixtureEnabled() is false.
+    if (yieldToPendingFixtureArm && !fixtureAuth && this.fixtureEnabled()) {
+      const realPlayerAvatarIds = currentSeats
+        .filter(
+          (seat) =>
+            seat.status === 'sitting_in' &&
+            Number(seat.currentStackCt) > 0 &&
+            seat.isSeeded !== 'true',
+        )
+        .map((seat) => seat.avatarId);
+      if (await this.hasPendingHoldemCashFixtureArm(realPlayerAvatarIds)) return false;
+    }
+
     // A real player is present → top up / re-buy bots toward the fill target, then
     // deal. fillSeededAgents itself re-checks the real-player gate before any
     // re-buy (no idle re-buy), but we have already confirmed a real player here.
@@ -1138,9 +1508,6 @@ export class CashTableManager {
     if (sittingIn.length < 2) return false;
 
     const handNumber = await this.nextHandNumber(tableId);
-    const serverSeed = this.seedFn();
-    const clientSeed = DEFAULT_CLIENT_SEED;
-
     const seatAssignments: SeatAssignment[] = sittingIn.map((s) => ({
       seatIndex: s.seatIndex,
       avatarId: s.avatarId,
@@ -1149,26 +1516,110 @@ export class CashTableManager {
       agentId: s.agentId ?? undefined,
       chipStack: Number(s.currentStackCt),
     }));
-
-    // Button rotates by hand number among the occupied seat indices.
     const indices = sittingIn.map((s) => s.seatIndex).sort((a, b) => a - b);
     const buttonSeatIndex = indices[handNumber % indices.length]!;
+    const blinds = {
+      sb: Number(table.smallBlindCt),
+      bb: Number(table.bigBlindCt),
+      ante: 0,
+    };
+    let serverSeed = this.seedFn();
+    let clientSeed = DEFAULT_CLIENT_SEED;
+    let fixtureRunId: string | null = null;
+    if (fixtureAuth) {
+      const fixtureResult = await this.db.transaction(async (tx) => {
+        const consumption = await this.consumeFixtureArm(tx, {
+          header: fixtureAuth.header,
+          ownerAvatarId: fixtureAuth.ownerAvatarId,
+          arm: 'holdem-cash',
+        });
+        if (!consumption) {
+          throw new CashTableError('fixture_not_armed', 'fixture header did not arm a hand', 409);
+        }
+        if (!consumption.ok) return { kind: 'fixture-exhausted' as const };
+        const armed = consumption.fixture;
+        const fixtureServerSeed = resolveCashFixtureServerSeed({
+          scenario: armed,
+          handNumber,
+          buttonSeatIndex,
+          ownerAvatarId: fixtureAuth.ownerAvatarId,
+          seats: seatAssignments.map((seat) => ({
+            ...seat,
+            isSeeded:
+              sittingIn.find((row) => row.avatarId === seat.avatarId)?.isSeeded === 'true',
+          })),
+          blinds,
+        });
+        await tx.insert(pokerCashHands).values({
+          fixtureRunId: armed.runId,
+          tableId,
+          handNumber,
+          serverSeedCommit: hashCommit(fixtureServerSeed),
+          // Fixture seeds are deterministic catalog values. Persist their reveal
+          // on the private placeholder so hard-death recovery can tombstone the
+          // commitment without erasing its audit trail.
+          serverSeedReveal: fixtureServerSeed,
+          clientSeed: armed.clientSeed,
+        });
+        return {
+          kind: 'armed' as const,
+          fixture: { ...armed, serverSeed: fixtureServerSeed },
+        };
+      });
+      if (fixtureResult.kind === 'fixture-exhausted') {
+        throw new CashTableError(
+          'fixture_budget_exhausted',
+          'fixture budget exhausted',
+          402,
+        );
+      }
+      const fixture = fixtureResult.fixture;
+      serverSeed = fixture.serverSeed;
+      clientSeed = fixture.clientSeed;
+      fixtureRunId = fixture.runId;
+    }
 
-    this.sim.startHand({
-      tableId: sid,
-      handNumber,
-      seatAssignments,
-      blinds: {
-        sb: Number(table.smallBlindCt),
-        bb: Number(table.bigBlindCt),
-        ante: 0,
-      },
-      buttonSeatIndex,
-      serverSeed,
-      clientSeed,
-      turnClockMs: DEFAULT_TURN_CLOCK_MS,
-      agentTurnGraceMs: DEFAULT_AGENT_TURN_GRACE_MS,
-    });
+    try {
+      this.sim.startHand({
+        tableId: sid,
+        handNumber,
+        seatAssignments,
+        blinds,
+        buttonSeatIndex,
+        serverSeed,
+        clientSeed,
+        turnClockMs: DEFAULT_TURN_CLOCK_MS,
+        agentTurnGraceMs: DEFAULT_AGENT_TURN_GRACE_MS,
+      });
+    } catch (error) {
+      if (fixtureRunId) {
+        // Compensate the durable reservation if the in-memory sim refused to
+        // start. This restores the one-shot so a retry can arm; no settled BA-1
+        // row or history event can observe the placeholder.
+        await this.db.transaction(async (tx) => {
+          await tx
+            .delete(pokerCashHands)
+            .where(
+              and(
+                eq(pokerCashHands.tableId, tableId),
+                eq(pokerCashHands.handNumber, handNumber),
+                eq(pokerCashHands.fixtureRunId, fixtureRunId),
+                isNull(pokerCashHands.settledAt),
+              ),
+            );
+          await tx
+            .update(coveTestFixtureRuns)
+            .set({ consumedAt: null })
+            .where(
+              and(
+                eq(coveTestFixtureRuns.runId, fixtureRunId),
+                eq(coveTestFixtureRuns.status, 'active'),
+              ),
+            );
+        });
+      }
+      throw error;
+    }
     return true;
   }
 
@@ -1212,8 +1663,13 @@ export class CashTableManager {
         sql`SELECT id FROM poker_cash_tables WHERE id = ${tableId} FOR UPDATE`,
       );
 
-      const existingRows = await tx.execute<{ id: string; settled_at: Date | string | null }>(
-        sql`SELECT id, settled_at FROM poker_cash_hands
+      const existingRows = await tx.execute<{
+        id: string;
+        settled_at: Date | string | null;
+        fixture_run_id: string | null;
+        client_seed: string;
+      }>(
+        sql`SELECT id, settled_at, fixture_run_id, client_seed FROM poker_cash_hands
             WHERE table_id = ${tableId} AND hand_number = ${result.handNumber}
             FOR UPDATE`,
       );
@@ -1222,6 +1678,32 @@ export class CashTableManager {
 
       const seats = await this.activeSeats(tableId);
       const seatByIndex = new Map(seats.map((s) => [s.seatIndex, s]));
+      const settledSeats: PersistedCashSettledSeat[] = result.perSeat.map((ps) => {
+        const seat = seatByIndex.get(ps.seatIndex);
+        if (!seat) {
+          throw new CashTableError(
+            'settlement_seat_missing',
+            `seat ${ps.seatIndex} disappeared before settlement`,
+            500,
+          );
+        }
+        const start = Number(seat.currentStackCt);
+        const end = start - ps.totalCommitted + ps.won;
+        const net = ps.won - ps.totalCommitted;
+        return {
+          seatIndex: ps.seatIndex,
+          avatarId: ps.avatarId,
+          startStack: String(start),
+          endStack: String(end),
+          totalCommitted: String(ps.totalCommitted),
+          grossWon: String(ps.won),
+          rakeAttributed: '0',
+          net: String(net),
+          stackDelta: String(end - start),
+          status: ps.status,
+          mucked: ps.status === 'folded',
+        };
+      });
 
       // Resolve the userId for each NON-seeded seat's avatar (for the per-subject
       // cove_game_events history row). Seeded agents are house-bank-backed and do
@@ -1242,18 +1724,16 @@ export class CashTableManager {
       // Apply chip deltas: post = start - totalCommitted + won (same as the MTT
       // TM `processHandComplete`). Escrow unchanged — chips only move BETWEEN
       // seats, so Σ(post) == Σ(start) and conservation holds at rest.
-      for (const ps of result.perSeat) {
-        const seat = seatByIndex.get(ps.seatIndex);
-        if (!seat) continue;
-        const start = Number(seat.currentStackCt);
-        const post = start - ps.totalCommitted + ps.won;
+      for (const settledSeat of settledSeats) {
+        const seat = seatByIndex.get(settledSeat.seatIndex)!;
         await tx
           .update(pokerCashSeats)
-          .set({ currentStackCt: String(post), updatedAt: new Date() })
+          .set({ currentStackCt: settledSeat.endStack, updatedAt: new Date() })
           .where(eq(pokerCashSeats.id, seat.id));
       }
 
       // Persist the hand checkpoint (idempotency anchor settled_at = now()).
+      const settledAt = new Date(this.clock.now());
       if (existing) {
         await tx
           .update(pokerCashHands)
@@ -1262,8 +1742,10 @@ export class CashTableManager {
             boardJson: result.board,
             potTotalCt: String(potTotal),
             rakeTakenCt: '0',
-            potResultJson: result.perSeat,
-            settledAt: new Date(),
+            potResultJson: result.settledPots,
+            seatResultJson: settledSeats,
+            endedAt: result.endedAt,
+            settledAt,
           })
           .where(eq(pokerCashHands.id, existing.id));
       } else {
@@ -1276,8 +1758,10 @@ export class CashTableManager {
           boardJson: result.board,
           potTotalCt: String(potTotal),
           rakeTakenCt: '0',
-          potResultJson: result.perSeat,
-          settledAt: new Date(),
+          potResultJson: result.settledPots,
+          seatResultJson: settledSeats,
+          endedAt: result.endedAt,
+          settledAt,
         });
       }
 
@@ -1301,6 +1785,7 @@ export class CashTableManager {
         const userId = userIdByAvatar.get(seat.avatarId) ?? null;
         if (!userId) continue; // a real seat with no owning user — skip (no XOR subject).
         await tx.insert(coveGameEvents).values({
+          fixtureRunId: existing?.fixture_run_id ?? null,
           userId,
           guestFpHash: null,
           gameType: 'poker',
@@ -1324,7 +1809,7 @@ export class CashTableManager {
           },
           serverSeedHash: hashCommit(result.serverSeedRevealed),
           revealedServerSeed: result.serverSeedRevealed,
-          clientSeed: DEFAULT_CLIENT_SEED,
+          clientSeed: existing?.client_seed ?? DEFAULT_CLIENT_SEED,
           nonce: result.handNumber * SEAT_NONCE_STRIDE + ps.seatIndex,
           txSignature: null,
           engineVersion: `poker-cash-${POKER_CASH_ENGINE_VERSION}`,
@@ -1334,6 +1819,50 @@ export class CashTableManager {
   }
 
   // ── Seeded agents (TRIVIAL STUB policy) ─────────────────────────────────────
+
+  private async reconcileSeededReservation(
+    tableId: string,
+    claimedSeatIndex: number,
+    avatarId: string,
+  ): Promise<'free' | 'same-table' | 'other-table'> {
+    const activeRows = await this.db
+      .select()
+      .from(pokerCashSeats)
+      .where(
+        and(
+          eq(pokerCashSeats.avatarId, avatarId),
+          ne(pokerCashSeats.status, 'left'),
+        ),
+      )
+      .orderBy(asc(pokerCashSeats.seatIndex));
+
+    const sameTable = activeRows.find((seat) => seat.tableId === tableId);
+    if (sameTable) {
+      this.seededAgentReservationController.bindReservation(
+        tableId,
+        sameTable.seatIndex,
+        avatarId,
+      );
+      console.warn(
+        `[cash-table-manager] reconciled seeded bot ${avatarId} to existing ` +
+          `${tableId} seat ${sameTable.seatIndex} (claimed seat ${claimedSeatIndex}); zero money effects`,
+      );
+      return 'same-table';
+    }
+    if (activeRows.length > 0) {
+      this.seededAgentReservationController.bindReservation(
+        activeRows[0]!.tableId,
+        activeRows[0]!.seatIndex,
+        avatarId,
+      );
+      console.warn(
+        `[cash-table-manager] skipped seeded bot ${avatarId}: active at ` +
+          `${activeRows[0]!.tableId} seat ${activeRows[0]!.seatIndex}; zero money effects`,
+      );
+      return 'other-table';
+    }
+    return 'free';
+  }
 
   /**
    * Fill empty seats with seeded agents toward `CASH_HOUSE_FILL_TARGET_SEATS`
@@ -1415,7 +1944,29 @@ export class CashTableManager {
     if (toAdd <= 0) return;
 
     let live = await this.activeSeats(table.id);
-    for (let i = 0; i < toAdd; i++) {
+    // A stale process-local pool may have to skip several bots that are active on
+    // other tables. Bound the repair loop so a broken custom provider cannot spin.
+    const maxAttempts = 64;
+    let attempts = 0;
+    while (attempts++ < maxAttempts) {
+      const occupiedNow = live.filter(
+        (s) => Number(s.currentStackCt) > 0 || s.status === 'sitting_in',
+      );
+      const realNow = occupiedNow.filter((s) => s.isSeeded !== 'true').length;
+      const seededNow = live.filter((s) => s.isSeeded === 'true').length;
+      const targetNow = Math.min(
+        houseFillTargetSeats(),
+        table.seededAgentSlots + realNow,
+        table.maxSeats,
+      );
+      if (
+        occupiedNow.length >= targetNow ||
+        seededNow >= table.seededAgentSlots ||
+        occupiedNow.length >= table.maxSeats
+      ) {
+        break;
+      }
+
       const seatIndex = this.firstOpenSeatIndex(live, table.maxSeats);
       if (seatIndex === null) break;
       let a: { avatarId: string; agentId: string; name: string };
@@ -1427,6 +1978,15 @@ export class CashTableManager {
         if (err instanceof CashBotPoolExhaustedError) break;
         throw err;
       }
+      const beforeDebit = await this.reconcileSeededReservation(
+        table.id,
+        seatIndex,
+        a.avatarId,
+      );
+      if (beforeDebit !== 'free') {
+        live = await this.activeSeats(table.id);
+        continue;
+      }
       const subject: CashSubject = {
         kind: 'agent',
         userId: a.avatarId, // seeded agent: its own avatar is its identity anchor
@@ -1434,14 +1994,36 @@ export class CashTableManager {
         agentId: a.agentId,
         name: a.name,
       };
-      await this.seatSubject(
-        table,
-        subject,
-        seatIndex,
-        buyIn,
-        /* isSeeded */ true,
-        /* fundSourceAvatarId */ houseBankAvatarId,
-      );
+      try {
+        await this.seatSubject(
+          table,
+          subject,
+          seatIndex,
+          buyIn,
+          /* isSeeded */ true,
+          /* fundSourceAvatarId */ houseBankAvatarId,
+        );
+      } catch (err) {
+        // The pre-debit read closes restart divergence. A concurrent process can
+        // still win after that read; the DB unique constraint rolls our whole tx
+        // back (including the debit). Re-read, bind/skip, and retry with zero money
+        // effects from the losing attempt.
+        if (err instanceof SeededSeatCollisionError || isPgUniqueViolation(err)) {
+          const reconciled = await this.reconcileSeededReservation(
+            table.id,
+            seatIndex,
+            a.avatarId,
+          );
+          if (reconciled === 'free') {
+            // A seat-index race can produce 23505 without the claimed avatar winning.
+            // Drop this stale target reservation, refresh the roster, and retry.
+            this.seededAgentReservationController.release(table.id, seatIndex);
+          }
+          live = await this.activeSeats(table.id);
+          continue;
+        }
+        throw err;
+      }
       live = await this.activeSeats(table.id);
     }
   }

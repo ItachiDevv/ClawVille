@@ -646,4 +646,69 @@ describe('ReefSpline — closed loop', () => {
     const elapsed = performance.now() - t0;
     expect(elapsed).toBeLessThan(50);
   });
+
+  // ─── Projection-continuity window (2026-08-09, Codex R19 finding 5) ───────
+  describe('closestPointOnSpline continuity window', () => {
+    const arcDist = (s: ReefSpline, tA: number, tB: number) => {
+      const L = s.totalArcLength;
+      let d = Math.abs(s.arclengthFromT(tA) - s.arclengthFromT(tB));
+      if (s.closed) d = Math.min(d, L - d);
+      return d;
+    };
+
+    it('cyclic window spans the seam (nearT 0.99 finds a point just past t=0)', () => {
+      const truth = ring.closestPointOnSpline(ring.centerlineAt(0.005));
+      const windowed = ring.closestPointOnSpline(ring.centerlineAt(0.005), {
+        nearT: 0.99,
+        windowArcWu: 600,
+      });
+      expect(arcDist(ring, windowed.t, truth.t)).toBeLessThan(30);
+    });
+
+    it('without an escape, the result may not leave the arc window (Newton clamped)', () => {
+      // Query the point diametrically OPPOSITE the anchor: the true basin is
+      // ~half the loop away, far outside the 600 wu window.
+      const anchorT = 0.0;
+      const opposite = ring.centerlineAt(0.5);
+      const r = ring.closestPointOnSpline(opposite, {
+        nearT: anchorT,
+        windowArcWu: 600,
+      });
+      expect(
+        arcDist(ring, r.t, anchorT),
+      ).toBeLessThanOrEqual(600 + 30); // + one LUT step of slack
+    });
+
+    it('a decisively-closer global basin escapes when hysteresis is set', () => {
+      const opposite = ring.centerlineAt(0.5);
+      const truth = ring.closestPointOnSpline(opposite);
+      const r = ring.closestPointOnSpline(opposite, {
+        nearT: 0.0,
+        windowArcWu: 600,
+        escapeHysteresisWu: 200, // far basin is ~2000 wu closer — escapes
+      });
+      expect(arcDist(ring, r.t, truth.t)).toBeLessThan(30);
+    });
+
+    it('an ENORMOUS hysteresis suppresses the escape (stays clamped)', () => {
+      const opposite = ring.centerlineAt(0.5);
+      const r = ring.closestPointOnSpline(opposite, {
+        nearT: 0.0,
+        windowArcWu: 600,
+        escapeHysteresisWu: 50_000,
+      });
+      expect(arcDist(ring, r.t, 0.0)).toBeLessThanOrEqual(600 + 30);
+    });
+
+    it('OPEN spline: nearT at the far endpoint clamps, never wraps to the start', () => {
+      // Query just beyond the open S-curve's end; anchor at the very end.
+      const end = spline.centerlineAt(1);
+      const q: Vec2 = { x: end.x + 150, z: end.z + 100 };
+      const r = spline.closestPointOnSpline(q, {
+        nearT: 1,
+        windowArcWu: 600,
+      });
+      expect(r.t).toBeGreaterThan(0.9); // stayed at the end — no seam wrap
+    });
+  });
 });

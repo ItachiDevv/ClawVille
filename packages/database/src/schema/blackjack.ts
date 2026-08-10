@@ -35,11 +35,15 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
+import { coveTestFixtureRuns } from './cove-test-fixture';
 
 export const blackjackShoes = pgTable(
   'blackjack_shoes',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
+      onDelete: 'restrict',
+    }),
     /** Exactly one of (userId, guestFpHash) is set (XOR check below). */
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     guestFpHash: text('guest_fp_hash'),

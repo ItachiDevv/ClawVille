@@ -14,8 +14,9 @@
  *   POST /action          (auth optional) — one human decision (fold|check|call|
  *                                           bet|raise); server runs bots to the
  *                                           next human turn or settles at showdown
- *   POST /session/close   (user or agent)  — close the session, reveal serverSeed,
+ *   POST /session/close   (any owner)      — close the session, reveal serverSeed,
  *                                           cash out the player's remaining stack
+ *                                           (guest: own demo table, no ledger ops)
  *   GET  /session/current (user or agent)  — restore the open table
  *   GET  /session/:id     (user or agent)  — owner-only table detail (seed redacted)
  *
@@ -96,7 +97,15 @@ import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
-import { createServerSeed } from '../services/provable-rng';
+import { createServerSeed, sha256Hex } from '../services/provable-rng';
+import {
+  COVE_TEST_FIXTURE_HEADER,
+  assertFixtureResourceHeader,
+  chargeFixtureExposure,
+  consumeFixtureArm,
+  resolveFixtureOwnerAvatarId,
+  validateLinkedFixtureArmAccess,
+} from '../services/cove-test-fixture';
 import {
   playHand,
   serializeHoldemHand,
@@ -120,7 +129,10 @@ import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
-import type { HoldemResyncHandView } from '@clawville/shared';
+import type {
+  HoldemResyncHandView,
+  SerializedHoldemLogEntry,
+} from '@clawville/shared';
 
 export const coveHoldemRouter = new Hono<AppContext>();
 coveHoldemRouter.use('*', sessionMiddleware);
@@ -519,6 +531,7 @@ export function peekState(
   currentBet: string;
   humanStack: string;
   humanCommitted: string;
+  publicActionLog: SerializedHoldemLogEntry[];
 } {
   // Reconstruct the live betting context by replaying the recorded actions and
   // stopping right where the human is next to act. We do this by running the
@@ -553,7 +566,66 @@ export function peekState(
     currentBet: ctx.currentBet.toString(),
     humanStack: (BigInt(hand.startingStack) - human.committed).toString(),
     humanCommitted: human.committed.toString(),
+    publicActionLog: publicActionLogFromPeek(peek.actionLog),
   };
+}
+
+async function assertPracticeFixtureRequest(
+  c: Context<AppContext>,
+  table: Pick<HoldemTable, 'fixtureRunId'>,
+  subject: ThSubject,
+): Promise<{ runId: string; ownerAvatarId: string } | null> {
+  const header = c.req.header(COVE_TEST_FIXTURE_HEADER);
+  if (header && !table.fixtureRunId) {
+    throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+  }
+  assertFixtureResourceHeader(table.fixtureRunId, header);
+  if (!table.fixtureRunId) return null;
+  const ownerAvatarId = await resolveFixtureOwnerAvatarId({
+    header,
+    luciaUserId: c.get('user')?.id,
+    agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+  });
+  if (!ownerAvatarId) {
+    throw new HTTPException(401, { message: 'invalid_test_fixture' });
+  }
+  const fixture = await validateLinkedFixtureArmAccess({
+    header,
+    ownerAvatarId,
+    arm: 'holdem-practice',
+    fixtureRunId: table.fixtureRunId,
+  });
+  if (
+    !fixture ||
+    fixture.runId !== table.fixtureRunId
+  ) {
+    throw new HTTPException(401, { message: 'invalid_test_fixture' });
+  }
+  return { runId: fixture.runId, ownerAvatarId };
+}
+
+/**
+ * Fairness-safe log analogue to `visibleBoardCountForStreet`: a peek appends a
+ * synthetic human fold, which resolves the entire deterministic hand and lets
+ * bots continue with seed-derived FUTURE actions. The last human entry is that
+ * sentinel on every reachable in-progress peek, so only the strict prefix
+ * BEFORE it is public: posted blinds, recorded human decisions, and bot actions
+ * already revealed up to the current decision point. Fail-closed if the engine
+ * shape ever changes: dropping a real final human action is safer than leaking
+ * post-fold continuation.
+ */
+export function publicActionLogFromPeek(
+  log: readonly HoldemHandResult['actionLog'][number][],
+): SerializedHoldemLogEntry[] {
+  let syntheticFoldIndex = -1;
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    if (log[index]!.isHuman) {
+      syntheticFoldIndex = index;
+      break;
+    }
+  }
+  if (syntheticFoldIndex < 0) return [];
+  return log.slice(0, syntheticFoldIndex).map((entry) => ({ ...entry }));
 }
 
 /**
@@ -679,6 +751,7 @@ export function buildInProgressHandView(
     humanCommitted: peek.humanCommitted,
     smallBlind: SMALL_BLIND.toString(),
     bigBlind: BIG_BLIND.toString(),
+    publicActionLog: peek.publicActionLog,
     status: 'in_progress',
   };
 }
@@ -693,6 +766,7 @@ coveHoldemRouter.post('/session/open', async (c) => {
   }
   const input = parsed.data;
   const subject = await getSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
 
   // Currency seam — SOL/USDC custody is a later tier. Same 501 shape as blackjack.
   if (input.currency !== 'clawtoken') {
@@ -722,6 +796,9 @@ coveHoldemRouter.post('/session/open', async (c) => {
   });
 
   if (resumed) {
+    if (fixtureHeader) {
+      throw new HTTPException(409, { message: 'fixture_requires_fresh_shoe' });
+    }
     const walletBalance =
       isLedgerSubject(subject)
         ? (await loadAvatarForUser(subject.userId)).clawTokens
@@ -751,13 +828,44 @@ coveHoldemRouter.post('/session/open', async (c) => {
     }
     startingBalanceStr = GUEST_STARTING_BALANCE.toString();
   }
+  const fixtureOwnerAvatarId = await resolveFixtureOwnerAvatarId({
+    header: fixtureHeader,
+    luciaUserId: c.get('user')?.id,
+    agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+  });
+  if (fixtureHeader && subject.kind !== 'guest') {
+    throw new HTTPException(403, { message: 'fixture_practice_requires_guest' });
+  }
 
-  const { serverSeed, serverSeedHash } = createServerSeed();
-  const clientSeed = randomBytes(8).toString('hex');
+  const randomSeed = createServerSeed();
+  const randomClientSeed = randomBytes(8).toString('hex');
 
   let inserted: HoldemTable;
   try {
-    inserted = await db.transaction(async (tx) => {
+    const createResult = await db.transaction(async (tx) => {
+      const consumption = fixtureOwnerAvatarId
+        ? await consumeFixtureArm(tx, {
+            header: fixtureHeader,
+            ownerAvatarId: fixtureOwnerAvatarId,
+            arm: 'holdem-practice',
+          })
+        : null;
+      if (consumption && !consumption.ok) {
+        return { kind: 'fixture-exhausted' as const };
+      }
+      const fixture = consumption?.fixture ?? null;
+      if (fixture) {
+        const charge = await chargeFixtureExposure(tx, {
+          header: fixtureHeader,
+          ownerAvatarId: fixtureOwnerAvatarId!,
+          arm: 'holdem-practice',
+          legStakeCt: input.buyIn,
+        });
+        if (!charge?.ok) return { kind: 'fixture-exhausted' as const };
+      }
+      const serverSeed = fixture?.serverSeed ?? randomSeed.serverSeed;
+      const serverSeedHash = fixture ? sha256Hex(fixture.serverSeed) : randomSeed.serverSeedHash;
+      const clientSeed = fixture?.clientSeed ?? randomClientSeed;
       // Debit the buy-in from the ledger subject's avatar into the table stack.
       if (isLedgerSubject(subject) && avatar) {
         try {
@@ -784,6 +892,7 @@ coveHoldemRouter.post('/session/open', async (c) => {
       const [row] = await tx
         .insert(holdemTables)
         .values({
+          fixtureRunId: fixture?.runId ?? null,
           userId: subject.userId,
           guestFpHash: subject.guestFpHash,
           currency: 'clawtoken',
@@ -797,11 +906,18 @@ coveHoldemRouter.post('/session/open', async (c) => {
         })
         .returning();
       if (!row) throw new HTTPException(500, { message: 'table_insert_failed' });
-      return row;
+      return { kind: 'created' as const, row };
     });
+    if (createResult.kind === 'fixture-exhausted') {
+      throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+    }
+    inserted = createResult.row;
   } catch (err) {
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
+      if (fixtureHeader) {
+        throw new HTTPException(409, { message: 'fixture_requires_fresh_shoe' });
+      }
       // Race against a concurrent open — re-read + serve (no double buy-in
       // because the partial unique index rejected the second insert; the first
       // open's buy-in is the only one that landed).
@@ -866,11 +982,13 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
   const table = await db.query.holdemTables.findFirst({ where: eq(holdemTables.id, input.tableId) });
   if (!table) throw new HTTPException(404, { message: 'table_not_found' });
   if (!ownerMatch(table, subject)) throw new HTTPException(403, { message: 'table_not_owned' });
+  const fixtureAccess = await assertPracticeFixtureRequest(c, table, subject);
   if (table.status !== 'open') {
     throw new HTTPException(409, { message: `table_not_open: status=${table.status}` });
   }
 
   type DealTxResult =
+    | { kind: 'fixture-exhausted' }
     | { kind: 'replay'; handRow: HoldemHand }
     | {
         kind: 'fresh';
@@ -887,14 +1005,30 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
         hand_counter: number | string;
         player_stack: string;
         status: string;
+        fixture_run_id: string | null;
       }>(
-        sql`SELECT hand_counter, player_stack, status
+        sql`SELECT hand_counter, player_stack, status, fixture_run_id
             FROM holdem_tables WHERE id = ${table.id} FOR UPDATE`,
       );
       const lock = lockRows[0];
       if (!lock) throw new HTTPException(404, { message: 'table_not_found' });
       if (lock.status !== 'open') {
         throw new HTTPException(409, { message: `table_not_open: status=${lock.status}` });
+      }
+      if (lock.fixture_run_id !== table.fixtureRunId) {
+        throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+      }
+      if (lock.fixture_run_id) {
+        if (!fixtureAccess || fixtureAccess.runId !== lock.fixture_run_id) {
+          throw new HTTPException(401, { message: 'invalid_test_fixture' });
+        }
+        const charge = await chargeFixtureExposure(tx, {
+          header: c.req.header(COVE_TEST_FIXTURE_HEADER),
+          ownerAvatarId: fixtureAccess.ownerAvatarId,
+          arm: 'holdem-practice',
+          legStakeCt: 0,
+        });
+        if (!charge?.ok) return { kind: 'fixture-exhausted' as const };
       }
 
       // ── A1 deal-replay: a lost-response retry with the SAME Idempotency-Key
@@ -962,6 +1096,7 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
       const [handRow] = await tx
         .insert(holdemHands)
         .values({
+          fixtureRunId: lock.fixture_run_id,
           tableId: table.id,
           handIndex,
           buttonSeat,
@@ -1006,6 +1141,9 @@ coveHoldemRouter.post('/hand/deal', async (c) => {
     }
   }
 
+  if (dealResult.kind === 'fixture-exhausted') {
+    throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+  }
   if (dealResult.kind === 'replay') {
     const replayHand = dealResult.handRow;
     if (replayHand.status === 'settled') {
@@ -1075,6 +1213,7 @@ coveHoldemRouter.post('/action', async (c) => {
   const table = await db.query.holdemTables.findFirst({ where: eq(holdemTables.id, hand.tableId) });
   if (!table) throw new HTTPException(404, { message: 'table_not_found' });
   if (!ownerMatch(table, subject)) throw new HTTPException(403, { message: 'hand_not_owned' });
+  const fixtureAccess = await assertPracticeFixtureRequest(c, table, subject);
 
   // Idempotent: a re-POST to a settled hand replays the stored outcome.
   if (hand.status === 'settled') {
@@ -1090,14 +1229,15 @@ coveHoldemRouter.post('/action', async (c) => {
   };
 
   type ActionTxResult =
+    | { kind: 'fixture-exhausted' }
     | { kind: 'settled-replay'; hand: HoldemHand }
     | { kind: 'already-terminal' }
     | { kind: 'updated'; hand: HoldemHand };
 
   // ── Append the decision under the hand lock so concurrent /action serialize.
   const mutation: ActionTxResult = await db.transaction(async (tx) => {
-    const lockRows = await tx.execute<{ status: string }>(
-      sql`SELECT status FROM holdem_hands WHERE id = ${hand.id} FOR UPDATE`,
+    const lockRows = await tx.execute<{ status: string; fixture_run_id: string | null }>(
+      sql`SELECT status, fixture_run_id FROM holdem_hands WHERE id = ${hand.id} FOR UPDATE`,
     );
     const lock = lockRows[0];
     if (!lock) throw new HTTPException(404, { message: 'hand_not_found' });
@@ -1105,6 +1245,21 @@ coveHoldemRouter.post('/action', async (c) => {
       const fresh = await tx.query.holdemHands.findFirst({ where: eq(holdemHands.id, hand.id) });
       if (!fresh) throw new HTTPException(404, { message: 'hand_not_found' });
       return { kind: 'settled-replay', hand: fresh };
+    }
+    if (lock.fixture_run_id !== table.fixtureRunId) {
+      throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+    }
+    if (lock.fixture_run_id) {
+      if (!fixtureAccess || fixtureAccess.runId !== lock.fixture_run_id) {
+        throw new HTTPException(401, { message: 'invalid_test_fixture' });
+      }
+      const charge = await chargeFixtureExposure(tx, {
+        header: c.req.header(COVE_TEST_FIXTURE_HEADER),
+        ownerAvatarId: fixtureAccess.ownerAvatarId,
+        arm: 'holdem-practice',
+        legStakeCt: 0,
+      });
+      if (!charge?.ok) return { kind: 'fixture-exhausted' as const };
     }
     if (lock.status !== 'in_progress') {
       throw new HTTPException(409, { message: 'hand_not_in_progress' });
@@ -1166,6 +1321,9 @@ coveHoldemRouter.post('/action', async (c) => {
     return { kind: 'updated', hand: persisted[0] };
   });
 
+  if (mutation.kind === 'fixture-exhausted') {
+    throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+  }
   if (mutation.kind === 'settled-replay') {
     return c.json(await buildSettledResponse(mutation.hand, table, subject), 200);
   }
@@ -1188,20 +1346,11 @@ coveHoldemRouter.post('/action', async (c) => {
   );
 
   if (!terminal) {
-    const peek = peekState({ serverSeed: table.serverSeed, clientSeed: table.clientSeed }, meta, actions);
-    return c.json(
-      {
-        handId: hand.id,
-        status: 'in_progress',
-        humanHole: peek.humanHole,
-        board: peek.board,
-        toCall: peek.toCall,
-        currentBet: peek.currentBet,
-        humanStack: peek.humanStack,
-        humanCommitted: peek.humanCommitted,
-      },
-      200,
+    const view = buildInProgressHandView(
+      { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
+      updatedHand,
     );
+    return c.json(view, 200);
   }
 
   const settled = await settleHand(c, table.id, hand.id, subject, idempotencyKey);
@@ -1286,7 +1435,16 @@ async function settleHand(
   subject: ThSubject,
   idempotencyKey: string | undefined,
 ): Promise<SettledResponse> {
-  let txResult: { hand: HoldemHand; table: HoldemTable; replay: boolean };
+  const fixtureTable = await db.query.holdemTables.findFirst({
+    where: eq(holdemTables.id, tableId),
+  });
+  const fixtureAccess = fixtureTable
+    ? await assertPracticeFixtureRequest(c, fixtureTable, subject)
+    : null;
+  type SettleTxResult =
+    | { kind: 'fixture-exhausted' }
+    | { kind: 'ok'; hand: HoldemHand; table: HoldemTable; replay: boolean };
+  let txResult: SettleTxResult;
   try {
     txResult = await settleTransaction();
   } catch (err) {
@@ -1305,7 +1463,7 @@ async function settleHand(
     throw err;
   }
 
-  async function settleTransaction(): Promise<{ hand: HoldemHand; table: HoldemTable; replay: boolean }> {
+  async function settleTransaction(): Promise<SettleTxResult> {
     return db.transaction(async (tx) => {
       const tableRows = await tx.execute<{
         id: string;
@@ -1316,10 +1474,11 @@ async function settleHand(
         total_bet: string;
         total_payout: string;
         status: string;
+        fixture_run_id: string | null;
         [key: string]: unknown;
       }>(
         sql`SELECT id, server_seed, server_seed_hash, client_seed, player_stack,
-                   total_bet, total_payout, status
+                   total_bet, total_payout, status, fixture_run_id
             FROM holdem_tables WHERE id = ${tableId} FOR UPDATE`,
       );
       const tableLock = tableRows[0];
@@ -1327,11 +1486,26 @@ async function settleHand(
 
       const hand = await tx.query.holdemHands.findFirst({ where: eq(holdemHands.id, handId) });
       if (!hand) throw new HTTPException(404, { message: 'hand_not_found' });
+      if (hand.fixtureRunId !== tableLock.fixture_run_id) {
+        throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+      }
+      if (tableLock.fixture_run_id) {
+        if (!fixtureAccess || fixtureAccess.runId !== tableLock.fixture_run_id) {
+          throw new HTTPException(401, { message: 'invalid_test_fixture' });
+        }
+        const charge = await chargeFixtureExposure(tx, {
+          header: c.req.header(COVE_TEST_FIXTURE_HEADER),
+          ownerAvatarId: fixtureAccess.ownerAvatarId,
+          arm: 'holdem-practice',
+          legStakeCt: 0,
+        });
+        if (!charge?.ok) return { kind: 'fixture-exhausted' as const };
+      }
 
       // Idempotency: already settled → pure replay.
       if (hand.status === 'settled') {
         const fullTable = await tx.query.holdemTables.findFirst({ where: eq(holdemTables.id, tableId) });
-        return { hand, table: fullTable!, replay: true };
+        return { kind: 'ok' as const, hand, table: fullTable!, replay: true };
       }
 
       // Idempotency-Key pre-check: a reused key that already settled a row →
@@ -1342,7 +1516,7 @@ async function settleHand(
         });
         if (priorByKey && priorByKey.status === 'settled') {
           const fullTable = await tx.query.holdemTables.findFirst({ where: eq(holdemTables.id, tableId) });
-          return { hand: priorByKey, table: fullTable!, replay: true };
+          return { kind: 'ok' as const, hand: priorByKey, table: fullTable!, replay: true };
         }
       }
 
@@ -1429,7 +1603,7 @@ async function settleHand(
         const fresh = await tx.query.holdemHands.findFirst({ where: eq(holdemHands.id, handId) });
         if (fresh?.status === 'settled') {
           const fullTable = await tx.query.holdemTables.findFirst({ where: eq(holdemTables.id, tableId) });
-          return { hand: fresh, table: fullTable!, replay: true };
+          return { kind: 'ok' as const, hand: fresh, table: fullTable!, replay: true };
         }
         throw new HTTPException(500, { message: 'hand_settle_failed' });
       }
@@ -1487,6 +1661,7 @@ async function settleHand(
       // revealedServerSeed NULL until session close (commit-reveal). nonce =
       // handIndex; sessionId = shoeId = tableId.
       await tx.insert(coveGameEvents).values({
+        fixtureRunId: tableLock.fixture_run_id,
         userId: subject.userId,
         guestFpHash: subject.guestFpHash,
         gameType: 'holdem',
@@ -1523,10 +1698,13 @@ async function settleHand(
         .returning();
       if (!updatedTable) throw new HTTPException(500, { message: 'table_update_failed' });
 
-      return { hand: settledHand, table: updatedTable, replay: false };
+      return { kind: 'ok' as const, hand: settledHand, table: updatedTable, replay: false };
     });
   }
 
+  if (txResult.kind === 'fixture-exhausted') {
+    throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+  }
   const hand = txResult.hand;
   const table = txResult.table;
   const outcome = hand.outcomeJson as SerializedHoldemHand;
@@ -1629,11 +1807,11 @@ async function buildSettledResponse(
 //
 // Subject-resolved (NOT requireAuth) so a connected AGENT can close its own table
 // and cash its remaining stack back to its bound avatar — without this an agent's
-// buy-in could never be recovered and its table would wedge open. Ledger subjects
-// only (human or agent): a guest demo table has no real stack to cash out and the
-// prior Lucia-only gate already excluded guests, so we keep that exclusion (403).
-// ownerMatch binds the table to the resolved userId, so an agent can never close
-// another user's table.
+// buy-in could never be recovered and its table would wedge open. GUESTS may also
+// close their OWN demo table (2026-07-16 un-brick): status flip + seed reveal
+// with zero ledger ops — demo chips vaporize; nothing is credited. ownerMatch
+// binds ledger subjects by userId and guests by guestFpHash, so no subject can
+// close another owner's table.
 //
 // A4 CLOSE-REPLAY (Increment 1b): a lost-response close retry used to 409
 // `table_not_open` even though the close had actually LANDED — stranding the
@@ -1673,23 +1851,28 @@ coveHoldemRouter.post('/session/close', async (c) => {
   // not this key (see header note).
   const closeIdempotencyKey = readIdempotencyKey(c);
   const subject = await getSubject(c);
-  if (!isLedgerSubject(subject)) {
-    throw new HTTPException(403, { message: 'guest_cannot_close_table: sign in or connect an agent' });
-  }
+  // Guests MAY close their own DEMO table (P4 fix, 2026-07-16): their buy-in
+  // never debited the ledger, so close is a pure status flip + seed reveal
+  // with ZERO ledger ops — demo chips vaporize, nothing is credited. Without
+  // this, a guest whose demo stack hits 0 was bricked forever: the deal
+  // handler's own copy says "Re-buy by closing + reopening" while close
+  // returned 403, and the fingerprint-keyed table resumed on every visit.
+  const isGuestClose = !isLedgerSubject(subject);
 
   const table = await db.query.holdemTables.findFirst({
     where: eq(holdemTables.id, parsed.data.tableId),
   });
   if (!table) throw new HTTPException(404, { message: 'table_not_found' });
   if (!ownerMatch(table, subject)) throw new HTTPException(403, { message: 'table_not_owned' });
+  await assertPracticeFixtureRequest(c, table, subject);
 
   // Pre-lock replay shortcut — already closed before we even try to lock.
   if (table.status === 'closed') {
-    const avatarPre = await loadAvatarForUser(subject.userId);
-    return c.json(buildCloseReplayResponse(table, avatarPre.clawTokens), 200);
+    const balancePre = isGuestClose ? 0 : (await loadAvatarForUser(subject.userId!)).clawTokens;
+    return c.json(buildCloseReplayResponse(table, balancePre), 200);
   }
 
-  const avatar = await loadAvatarForUser(subject.userId);
+  const avatar = isGuestClose ? null : await loadAvatarForUser(subject.userId!);
 
   type CloseTxResult =
     | { kind: 'already-closed' }
@@ -1724,10 +1907,11 @@ coveHoldemRouter.post('/session/close', async (c) => {
     }
 
     // Cash out the remaining stack back to the avatar (ledger subject — human
-    // or agent, resolved + owner-checked above).
+    // or agent, resolved + owner-checked above). Guest demo chips are NEVER
+    // credited — their buy-in never debited the ledger (avatar is null).
     const cashOut = BigInt(lock.player_stack);
-    let cashOutBalance = avatar.clawTokens;
-    if (cashOut > 0n) {
+    let cashOutBalance = avatar?.clawTokens ?? 0;
+    if (avatar && cashOut > 0n) {
       if (cashOut > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new HTTPException(500, { message: 'cashout_exceeds_supported_range' });
       }
@@ -1763,14 +1947,14 @@ coveHoldemRouter.post('/session/close', async (c) => {
 
   if (closed.kind === 'already-closed') {
     const fresh = await loadTableOrThrow(table.id);
-    const avatarFresh = await loadAvatarForUser(subject.userId);
-    return c.json(buildCloseReplayResponse(fresh, avatarFresh.clawTokens), 200);
+    const balanceFresh = isGuestClose ? 0 : (await loadAvatarForUser(subject.userId!)).clawTokens;
+    return c.json(buildCloseReplayResponse(fresh, balanceFresh), 200);
   }
 
   void logEventFromContext(c, {
     eventType: 'cove.holdem.table.closed',
     userId: subject.userId,
-    avatarId: avatar.id,
+    avatarId: avatar?.id ?? null,
     agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       tableId: closed.closedTable.id,
@@ -1779,6 +1963,7 @@ coveHoldemRouter.post('/session/close', async (c) => {
       totalPayout: closed.closedTable.totalPayout,
       cashOut: closed.cashOut,
       isAgent: subject.kind === 'agent',
+      isGuest: isGuestClose,
       idempotencyKey: closeIdempotencyKey ?? null,
     },
   });

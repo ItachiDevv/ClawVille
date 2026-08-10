@@ -1337,26 +1337,33 @@ describe('ReefRaceSim — Phase 2 hazards (P2-T15..P2-T18)', () => {
 });
 
 describe('ReefRaceSim — Phase 2 placement-weighted items (P2-T19..P2-T26)', () => {
-  it('P2-T19 — getPlacementItemTable(1) returns Round 16 leader weights without seeker', () => {
+  // P2-T19/T20 updated 2026-08-09: the assertions still pinned the ROUND 16
+  // five-item tables, stale since the R2 roster expansion (puffer-mine /
+  // bubble-beam / current-swap / remora-rocket) rewrote PLACEMENT_ITEM_TABLE
+  // and last place moved to the dynamic LAST_PLACE_ITEM_TABLE. Pre-existing
+  // drift found (already failing) during the §5b whirlpool fix.
+  it('P2-T19 — getPlacementItemTable(1) returns the leader table without seeker', () => {
     const t = getPlacementItemTable(1);
     expect(t).toEqual([
-      { kind: 'rr-bubble-shield', weight: 28 },
-      { kind: 'rr-ink-slick', weight: 22 },
-      { kind: 'rr-turbo-bubble', weight: 20 },
-      { kind: 'rr-tide-wave', weight: 16 },
-      { kind: 'rr-whirlpool', weight: 14 },
+      { kind: 'rr-puffer-mine', weight: 22 },
+      { kind: 'rr-bubble-shield', weight: 18 },
+      { kind: 'rr-ink-slick', weight: 16 },
+      { kind: 'rr-turbo-bubble', weight: 14 },
+      { kind: 'rr-bubble-beam', weight: 12 },
+      { kind: 'rr-tide-wave', weight: 10 },
+      { kind: 'rr-whirlpool', weight: 8 },
     ]);
     expect(t?.map((e) => e.kind)).not.toContain('rr-seeker-jelly');
   });
 
-  it('P2-T20 — getPlacementItemTable(8) returns Round 16 comeback weights', () => {
-    const t = getPlacementItemTable(8);
+  it('P2-T20 — getPlacementItemTable(8) resolves LAST place to the dynamic comeback table', () => {
+    const t = getPlacementItemTable(8); // racerCount defaults 8 ⇒ isLast
     expect(t).toEqual([
-      { kind: 'rr-whirlpool', weight: 30 },
-      { kind: 'rr-seeker-jelly', weight: 26 },
-      { kind: 'rr-tide-wave', weight: 22 },
-      { kind: 'rr-turbo-bubble', weight: 14 },
-      { kind: 'rr-ink-slick', weight: 8 },
+      { kind: 'rr-remora-rocket', weight: 30 },
+      { kind: 'rr-whirlpool', weight: 24 },
+      { kind: 'rr-seeker-jelly', weight: 22 },
+      { kind: 'rr-tide-wave', weight: 14 },
+      { kind: 'rr-bubble-beam', weight: 10 },
     ]);
   });
 

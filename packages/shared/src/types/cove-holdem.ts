@@ -36,6 +36,61 @@ export interface HoldemCard {
   rank: HoldemRank;
 }
 
+// ---------------------------------------------------------------------------
+// Cash-table settled-hand wire truth (BA-1)
+// ---------------------------------------------------------------------------
+
+/** Serializable projection of the engine's best-five hand rank. */
+export interface TypedHandRank {
+  /** HandCategory, low-to-high (0..8). */
+  category: number;
+  /** Stable display key, e.g. "flush" or "two_pair". */
+  categoryName: string;
+  /** Category-specific rank values used to break ties, high-to-low. */
+  tiebreakers: number[];
+}
+
+/** One fully-attributed main/side-pot settlement. All amounts are bigint strings. */
+export interface SettledPotResult {
+  amount: string;
+  eligibleSeatIndices: number[];
+  awards: Array<{ seatIndex: number; amount: string }>;
+  /** Null when the pot was won without a showdown evaluation. */
+  winningRank: TypedHandRank | null;
+}
+
+/** One historical participant's immutable accounting for a settled cash hand. */
+export interface CashSettledSeat {
+  seatIndex: number;
+  avatarId: string;
+  startStack: string;
+  endStack: string;
+  totalCommitted: string;
+  grossWon: string;
+  rakeAttributed: string;
+  net: string;
+  stackDelta: string;
+  status: 'active' | 'folded' | 'allin' | 'busted' | 'sitting_out';
+  /** Folded seats are null for every requester, including the folded seat owner. */
+  shown: [HoldemCard, HoldemCard] | null;
+  /** True exactly when status is "folded"; no discretionary muck state exists. */
+  mucked: boolean;
+}
+
+/** Authoritative terminal snapshot retained while the next cash hand proceeds. */
+export interface CashSettledHandSnapshot {
+  /** Cash correlation key: `${tableId}:${handNumber}`. */
+  handId: string;
+  handNumber: number;
+  tableId: string;
+  board: HoldemCard[];
+  endedAt: 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
+  pots: SettledPotResult[];
+  seats: CashSettledSeat[];
+  settledAtMs: number;
+  displayExpiresAtMs: number;
+}
+
 /** 0–5 inclusive. Seat 0 = the human/agent player; 1..5 = house bots. */
 export type SeatIdx = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -224,6 +279,14 @@ export interface HoldemResyncHandView {
   humanCommitted: string;
   smallBlind: string;
   bigBlind: string;
+  /**
+   * Fairness-safe public history through the current human decision point.
+   * This is a strict prefix of the settled `actionLog`: it includes posted
+   * blinds, recorded human decisions, and bot responses already revealed by
+   * play, but never the peek engine's synthetic fold or bot continuation
+   * after that fold.
+   */
+  publicActionLog: SerializedHoldemLogEntry[];
   status: 'in_progress';
 }
 
@@ -253,37 +316,13 @@ export interface HoldemTableDetailResponse {
 }
 
 /** In-progress hand response from POST /hand/deal (human still has a turn). */
-export interface HoldemDealInProgressResponse {
-  handId: string;
+export interface HoldemDealInProgressResponse extends HoldemResyncHandView {
   tableId: string;
-  handIndex: number;
-  buttonSeat: number;
-  smallBlindSeat: number;
-  bigBlindSeat: number;
-  /** Stringified bigints. */
   startingStack: string;
-  humanHole: HoldemCard[];
-  board: HoldemCard[];
-  toCall: string;
-  currentBet: string;
-  humanStack: string;
-  humanCommitted: string;
-  smallBlind: string;
-  bigBlind: string;
-  status: 'in_progress';
 }
 
 /** In-progress hand response from POST /action (human still has a turn). */
-export interface HoldemActionInProgressResponse {
-  handId: string;
-  status: 'in_progress';
-  humanHole: HoldemCard[];
-  board: HoldemCard[];
-  toCall: string;
-  currentBet: string;
-  humanStack: string;
-  humanCommitted: string;
-}
+export interface HoldemActionInProgressResponse extends HoldemResyncHandView {}
 
 /** Settled hand response (terminal action, terminal-at-deal, or idempotent replay). */
 export interface HoldemSettledResponse {
@@ -320,4 +359,72 @@ export interface CloseHoldemTableResponse {
   cashOut: string;
   walletBalance: number;
   closedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Public live-state derivation
+// ---------------------------------------------------------------------------
+
+export interface HoldemPublicSeatState {
+  folded: boolean;
+  /** Last cumulative commitment on the latest street present in the log. */
+  streetCommitted: string;
+  /** Sum of each street's last cumulative commitment (never action amounts). */
+  totalCommitted: string;
+  lastAction?: Pick<SerializedHoldemLogEntry, 'type' | 'amount'>;
+}
+
+/**
+ * Derive public per-seat state from a fairness-truncated (or settled) action
+ * log. `amount` is cumulative PER STREET, so repeated actions on one street
+ * replace that street's prior value; only the last value from each street is
+ * included in `totalCommitted`. All arithmetic stays bigint-string safe.
+ */
+export function deriveHoldemPublicSeats(
+  log: readonly SerializedHoldemLogEntry[],
+): Record<number, HoldemPublicSeatState> {
+  const streetOrder: Record<HoldemStreet, number> = {
+    preflop: 0,
+    flop: 1,
+    turn: 2,
+    river: 3,
+  };
+  const bySeat = new Map<number, {
+    folded: boolean;
+    byStreet: Map<HoldemStreet, string>;
+    lastAction?: Pick<SerializedHoldemLogEntry, 'type' | 'amount'>;
+  }>();
+  let latestStreet: HoldemStreet | null = null;
+
+  for (const entry of log) {
+    if (latestStreet === null || streetOrder[entry.street] > streetOrder[latestStreet]) {
+      latestStreet = entry.street;
+    }
+    const current = bySeat.get(entry.seat) ?? {
+      folded: false,
+      byStreet: new Map<HoldemStreet, string>(),
+    };
+    // Validate while preserving the canonical decimal string on output. A wire
+    // violation should fail loudly rather than silently corrupt a displayed pot.
+    BigInt(entry.amount);
+    current.byStreet.set(entry.street, entry.amount);
+    current.folded ||= entry.type === 'fold';
+    current.lastAction = { type: entry.type, amount: entry.amount };
+    bySeat.set(entry.seat, current);
+  }
+
+  const result: Record<number, HoldemPublicSeatState> = {};
+  for (const [seat, state] of bySeat) {
+    let totalCommitted = 0n;
+    for (const amount of state.byStreet.values()) totalCommitted += BigInt(amount);
+    result[seat] = {
+      folded: state.folded,
+      streetCommitted: latestStreet === null
+        ? '0'
+        : (state.byStreet.get(latestStreet) ?? '0'),
+      totalCommitted: totalCommitted.toString(),
+      ...(state.lastAction ? { lastAction: state.lastAction } : {}),
+    };
+  }
+  return result;
 }

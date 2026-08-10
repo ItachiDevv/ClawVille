@@ -1,0 +1,247 @@
+{
+ "floor_z": -274.4,
+ "card_table_candidates": [
+  {
+   "center": [
+    -614.0,
+    304.2
+   ],
+   "extent": [
+    140.8,
+    91.3
+   ],
+   "top_z": -248.0,
+   "area": 10377.5,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.001"
+   ]
+  },
+  {
+   "center": [
+    -614.0,
+    156.5
+   ],
+   "extent": [
+    140.8,
+    91.2
+   ],
+   "top_z": -248.2,
+   "area": 10367.9,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.001"
+   ]
+  },
+  {
+   "center": [
+    -826.6,
+    156.5
+   ],
+   "extent": [
+    140.8,
+    91.2
+   ],
+   "top_z": -248.1,
+   "area": 10333.3,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.001"
+   ]
+  },
+  {
+   "center": [
+    -826.6,
+    304.2
+   ],
+   "extent": [
+    140.8,
+    91.3
+   ],
+   "top_z": -248.0,
+   "area": 10245.1,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.001"
+   ]
+  },
+  {
+   "center": [
+    -891.2,
+    -325.8
+   ],
+   "extent": [
+    142.3,
+    175.6
+   ],
+   "top_z": -244.3,
+   "area": 9262.0,
+   "objs": [
+    "Material2.001",
+    "Material3.001",
+    "Material3.004",
+    "Material3.006"
+   ]
+  },
+  {
+   "center": [
+    -549.4,
+    -325.8
+   ],
+   "extent": [
+    142.2,
+    175.6
+   ],
+   "top_z": -244.3,
+   "area": 9105.9,
+   "objs": [
+    "Material2.001",
+    "Material3.001",
+    "Material3.004",
+    "Material3.006"
+   ]
+  },
+  {
+   "center": [
+    -563.0,
+    -150.0
+   ],
+   "extent": [
+    115.0,
+    66.1
+   ],
+   "top_z": -244.2,
+   "area": 8636.5,
+   "objs": [
+    "Material2.001",
+    "Material3.001",
+    "Material3.006"
+   ]
+  },
+  {
+   "center": [
+    -877.6,
+    -150.0
+   ],
+   "extent": [
+    115.0,
+    66.1
+   ],
+   "top_z": -244.2,
+   "area": 8633.0,
+   "objs": [
+    "Material2.001",
+    "Material3.001",
+    "Material3.006"
+   ]
+  },
+  {
+   "center": [
+    -908.6,
+    -0.0
+   ],
+   "extent": [
+    107.4,
+    143.8
+   ],
+   "top_z": -250.6,
+   "area": 3299.7,
+   "objs": [
+    "Material2.001",
+    "Material3.001",
+    "Material3.004",
+    "Material3.006"
+   ]
+  }
+ ],
+ "tall_furniture_tops": [
+  {
+   "center": [
+    -949.6,
+    0.0
+   ],
+   "extent": [
+    8.2,
+    24.3
+   ],
+   "top_z": -217.2,
+   "area": 7190.3,
+   "objs": [
+    "Material2.001",
+    "Material3.006"
+   ]
+  },
+  {
+   "center": [
+    -826.6,
+    156.5
+   ],
+   "extent": [
+    136.8,
+    26.1
+   ],
+   "top_z": -221.6,
+   "area": 3028.1,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.005"
+   ]
+  },
+  {
+   "center": [
+    -613.9,
+    156.5
+   ],
+   "extent": [
+    136.8,
+    26.1
+   ],
+   "top_z": -221.7,
+   "area": 3026.6,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.005"
+   ]
+  },
+  {
+   "center": [
+    -613.9,
+    304.3
+   ],
+   "extent": [
+    136.8,
+    26.1
+   ],
+   "top_z": -221.8,
+   "area": 3024.1,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.005"
+   ]
+  },
+  {
+   "center": [
+    -826.6,
+    304.3
+   ],
+   "extent": [
+    136.8,
+    26.1
+   ],
+   "top_z": -221.8,
+   "area": 3020.9,
+   "objs": [
+    "Material2",
+    "Material2.001",
+    "Material3.005"
+   ]
+  }
+ ]
+}

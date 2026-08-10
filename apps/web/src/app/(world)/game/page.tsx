@@ -65,6 +65,16 @@ import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
 import SceneTransition from '@/components/transitions/SceneTransition';
 import { useStageStore } from '@/components/three/world-stage/stage-store';
+import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
+
+// Rung-4 slice A head decomposition: when the /game page chunk finishes
+// evaluating on the client. Never-throw; no-op on the server.
+stampColdLoadPhaseOnce('gamePageModuleEvalAt', performance.now());
+
+// Module-level latch so re-renders pay ZERO stamp cost (no performance.now(),
+// no global lookup) after the first render — the render-phase stamp below is
+// on the hottest React path in the app (Codex R19 nit 7).
+let gamePageFirstRenderStamped = false;
 
 // arena-terrain.tsx evaluates FORCE_WEBGL_TERRAIN at module scope using
 // navigator.userAgent. On the server navigator is undefined → false; on the
@@ -308,6 +318,13 @@ function NanoClawBanner({
 }
 
 export default function GamePage() {
+  // Rung-4 slice A: first client render of the page component (render-phase
+  // stamp; the module latch + "once" contract keep the cold-boot value and
+  // make every subsequent render free).
+  if (!gamePageFirstRenderStamped) {
+    gamePageFirstRenderStamped = true;
+    stampColdLoadPhaseOnce('gamePageFirstRenderAt', performance.now());
+  }
   const worldHadActivatedOnMount = useRef(
     useStageStore.getState().scenes.world?.hasEverActivated ?? false,
   );
@@ -323,7 +340,10 @@ export default function GamePage() {
   // against → impossible to hit #418. Trade-off: ~16ms extra before the
   // loading screen paints; acceptable vs an error spamming every load.
   const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    stampColdLoadPhaseOnce('gamePageMountedEffectAt', performance.now());
+    setMounted(true);
+  }, []);
   // Kick off ALL heavy world assets the moment the page mounts, in parallel
   // with the group-owned stage mounting the shared world scene. Without this,
   // fetch starts until the canvas chunk resolves and React renders it — which

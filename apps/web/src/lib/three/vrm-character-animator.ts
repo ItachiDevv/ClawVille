@@ -37,7 +37,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // strict setMeshoptDecoder signature; three-stdlib's callable does not.
 import { MeshoptDecoder } from 'meshoptimizer';
 import type { VRM } from '@pixiv/three-vrm';
-import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
+import { retargetMeshyClip, retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 import { VRM_METRICS_ENABLED } from './vrm-loader';
 import {
   createCharacterAttachmentController,
@@ -138,6 +138,7 @@ const EMOTE_BUNDLE = `/avatars/animations/_emotes.glb?v=${EMOTE_BUNDLE_VERSION}`
 // within this family.
 const EMOTE2_BUNDLE_VERSION = 1; // bump whenever _emotes2.glb changes
 const EMOTE2_BUNDLE = `/avatars/animations/_emotes2.glb?v=${EMOTE2_BUNDLE_VERSION}`;
+const COVE_SIT_BUNDLE = '/avatars/animations/_cove_sit.glb?v=4';
 
 const ANIM_PATHS = {
   // Locomotion — separate GLBs (precached by SW).
@@ -191,6 +192,17 @@ const ANIM_PATHS = {
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
   praying:         '/avatars/animations/hermes-female/praying.glb',
+  // Cove seated-bust flow — Meshy source rig, bundled at a new asset path.
+  sit_stand_to_sit: `${COVE_SIT_BUNDLE}#sit_stand_to_sit`,
+  sit_idle_m:       `${COVE_SIT_BUNDLE}#sit_idle_m`,
+  sit_idle_f:       `${COVE_SIT_BUNDLE}#sit_idle_f`,
+  sit_to_stand_m:   `${COVE_SIT_BUNDLE}#sit_to_stand_m`,
+  sit_to_stand_f:   `${COVE_SIT_BUNDLE}#sit_to_stand_f`,
+  sit_on_chair_arms_crossed: `${COVE_SIT_BUNDLE}#sit_on_chair_arms_crossed`,
+  cove_peek: `${COVE_SIT_BUNDLE}#cove_peek`,
+  cove_think: `${COVE_SIT_BUNDLE}#cove_think`,
+  cove_watch: `${COVE_SIT_BUNDLE}#cove_watch`,
+  cove_rest: `${COVE_SIT_BUNDLE}#cove_rest`,
   // Chibi-introduced emote (2026-05-21). Source bake is chibi-proportioned;
   // retargeter handles proportion drift if a non-chibi VRM ever plays it.
   // Triggered as a one-shot via the emote bus (see EMOTE_ANIM_NAMES below).
@@ -198,6 +210,31 @@ const ANIM_PATHS = {
 } as const;
 
 export type AnimName = keyof typeof ANIM_PATHS;
+
+/** Clips authored on Meshy's animation-library rig rather than Mixamo. */
+const MESHY_ANIM_NAMES: ReadonlySet<AnimName> = new Set<AnimName>([
+  'sit_stand_to_sit',
+  'sit_idle_m',
+  'sit_idle_f',
+  'sit_to_stand_m',
+  'sit_to_stand_f',
+  'sit_on_chair_arms_crossed',
+  'cove_peek',
+  'cove_think',
+  'cove_watch',
+  'cove_rest',
+]);
+
+/** Route each registered clip through the retargeter matching its source rig. */
+function retargetAnimationClip(
+  animation: MixamoGltf,
+  vrm: VRM,
+  name: AnimName,
+): THREE.AnimationClip {
+  return MESHY_ANIM_NAMES.has(name)
+    ? retargetMeshyClip(animation, vrm, name)
+    : retargetMixamoClip(animation, vrm, name);
+}
 
 // ---------------------------------------------------------------------------
 // Per-character animation overrides
@@ -710,11 +747,11 @@ export class VRMCharacterAnimator {
    * and crossfades to the correct locomotion target.
    */
   private oneShotActive = false;
-  /** Invalidates a lazy one-shot request when it is superseded or cancelled. */
-  private oneShotRequestGeneration = 0;
   /** The handler attached for the active one-shot — referenced so we can
    * remove it if a second one-shot fires before the first finishes. */
   private oneShotFinishedHandler: ((e: { action: THREE.AnimationAction }) => void) | null = null;
+  /** Monotonic latest-request-wins guard for concurrent lazy clip loads. */
+  private oneShotRequestToken = 0;
 
   // Verse Engine skeleton.update batching (B2 2026-04-24).
   // Three.js WebGLRenderer calls skeleton.update() once per SkinnedMesh before
@@ -860,7 +897,7 @@ export class VRMCharacterAnimator {
 
         let retargeted: THREE.AnimationClip;
         try {
-          retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          retargeted = retargetAnimationClip(gltf, this.vrm, name);
           if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         } catch (err) {
           console.warn(`[VRMCharacterAnimator] retarget failed for clip "${name}":`, err);
@@ -999,6 +1036,34 @@ export class VRMCharacterAnimator {
   }
 
   /**
+   * Apply one animation sample and then leave the skeleton frozen forever.
+   * Dedicated table-room figures use this instead of a useFrame loop: the
+   * action is explicitly started (cross-fades do not start stopped actions),
+   * one tiny mixer/VRM/skeleton flush uploads the pose, and callers never tick
+   * this animator again.
+   */
+  applyFrozenPose(name: AnimName, sampleDelta = 0.0001): boolean {
+    if (!this.ready || this.disposed) return false;
+    const action = this.actions[name];
+    if (!action) return false;
+
+    for (const candidate of Object.values(this.actions)) candidate?.stop();
+    action.reset();
+    action.enabled = true;
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+    action.play();
+    this.currentAction = action;
+    this.oneShotActive = false;
+
+    this.mixer.update(sampleDelta);
+    this.vrm.update(sampleDelta);
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
+    return true;
+  }
+
+  /**
    * Override the resting locomotion target when isMoving=false.
    * Call after init() resolves with the desired persistent clip.
    * In Reef Race: call with 'surf_idle' so post-one-shot crossfades return
@@ -1019,7 +1084,7 @@ export class VRMCharacterAnimator {
       void loadRawGltf(name, this.characterId)
         .then((gltf) => {
           if (this.disposed) return; // disposed mid-load — vrm/mixer nulled
-          const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          const retargeted = retargetAnimationClip(gltf, this.vrm, name);
           if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
           const action = this.mixer.clipAction(retargeted);
           action.setLoop(THREE.LoopRepeat, Infinity);
@@ -1105,6 +1170,29 @@ export class VRMCharacterAnimator {
     this.mixer.update(0);
     this.vrm.update(0);
     this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
+  }
+
+  /**
+   * Manually flush the batched skeleton.update() calls this animator patched
+   * to no-ops in its constructor (see the Verse Engine batching comment
+   * above `_skeletonUpdateFns`). `update()` already calls this internally
+   * once per frame, AFTER the mixer + vrm.update() write the current clip
+   * pose — so it is normally sufficient on its own.
+   *
+   * Exposed publicly for a caller that applies an ADDITIONAL bone override
+   * AFTER update() returns, in the SAME frame (e.g. cove-interior.tsx's
+   * seated-bust leg pose — a static per-frame override layered on top of
+   * the idle clip's upper-body life, applied every frame rather than a
+   * one-time freeze-bake). Without a second flush, `SkinnedMesh.skeleton.
+   * update` stays a no-op (patched in the constructor), so the override's
+   * new bone.matrixWorld values never reach the boneMatrices uniform the
+   * GPU actually skins from — the change would compute correctly but
+   * render completely invisibly. Caller must call `vrm.humanoid.update()`
+   * (propagate normalized→raw) and `vrm.scene.updateMatrixWorld(true)`
+   * (recompute world matrices) BEFORE calling this. (2026-07-11, Slice 2.)
+   */
+  flushSkeletonUpdates(): void {
     for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 
@@ -1320,40 +1408,85 @@ export class VRMCharacterAnimator {
    *      VRM instance). Subsequent calls reuse the cached action.
    *   2. Crossfade from the current action into the emote (CROSSFADE_DURATION).
    *   3. Suppress locomotion crossfade for the duration of the emote.
-   *   4. On 'finished' (Mixer event) crossfade back to idle/walk based on
-   *      the latest `isMoving` state we observed.
+   *   4. On 'finished' (Mixer event) crossfade into `nextLoopingClip` when
+   *      provided, otherwise return to idle/walk based on the latest
+   *      `isMoving` state we observed.
    *
    * Calling playOneShot while another one-shot is already running cancels
    * the previous one's finished handler and starts the new emote — a
    * "stomp" pattern that matches Fortnite-style emote spam.
    *
-   * @param name  Animation registry key (e.g. 'flip', 'dance_breaking').
+   * @param name Animation registry key (e.g. 'flip', 'dance_breaking').
+   * @param nextLoopingClip Optional explicit looping clip to hold after the
+   * one-shot finishes. Omit to preserve the locomotion/surface return path.
+   * @param timeScale Playback speed for this one-shot. Defaults to 1.
    */
-  async playOneShot(name: AnimName): Promise<void> {
+  async playOneShot(
+    name: AnimName,
+    nextLoopingClip?: AnimName,
+    timeScale = 1,
+  ): Promise<void> {
     if (!this.ready) return;
     if (!this.mixer) return; // disposed
-    const requestGeneration = ++this.oneShotRequestGeneration;
+    const requestToken = ++this.oneShotRequestToken;
+
+    // A single AnimationAction cannot be faded in as a loop and faded out as
+    // the outgoing one-shot in the same completion callback.
+    if (nextLoopingClip === name) {
+      console.warn(
+        `[VRMCharacterAnimator] one-shot "${name}" cannot transition to itself`,
+      );
+      return;
+    }
     this.attachment?.setState('moving');
 
     // Lazy-load + retarget if first time.
     if (!this.actions[name]) {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
-        if (this.disposed || requestGeneration !== this.oneShotRequestGeneration) return;
-        const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+        if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+        const retargeted = retargetAnimationClip(gltf, this.vrm, name);
         if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
         this.actions[name] = action;
       } catch (err) {
         console.warn(`[VRMCharacterAnimator] one-shot retarget failed for "${name}":`, err);
-        if (requestGeneration === this.oneShotRequestGeneration) {
+        if (requestToken === this.oneShotRequestToken) {
           this.setAttachmentForLocomotion(this.wasMotion);
         }
         return;
       }
     }
     // Re-check post-await — we may have been disposed mid-load.
-    if (this.disposed || requestGeneration !== this.oneShotRequestGeneration) return;
+    if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+
+    // An explicit post-transition loop must be ready before the one-shot
+    // starts; otherwise a cold network fetch could outlast the transition and
+    // leave the avatar clamped on its final frame. Existing callers omit this
+    // parameter and retain the original lazy-load/locomotion behavior.
+    if (nextLoopingClip && !this.actions[nextLoopingClip]) {
+      try {
+        const gltf = await loadRawGltf(nextLoopingClip, this.characterId);
+        if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+        const retargeted = retargetAnimationClip(gltf, this.vrm, nextLoopingClip);
+        if (shouldStripPosition(nextLoopingClip, this.characterId)) stripPositionTracks(retargeted);
+        const action = this.mixer.clipAction(retargeted);
+        action.setLoop(THREE.LoopRepeat, Infinity);
+        action.clampWhenFinished = false;
+        this.actions[nextLoopingClip] = action;
+      } catch (err) {
+        console.warn(
+          `[VRMCharacterAnimator] next-loop retarget failed for "${nextLoopingClip}":`,
+          err,
+        );
+        if (requestToken === this.oneShotRequestToken) {
+          this.setAttachmentForLocomotion(this.wasMotion);
+        }
+        return;
+      }
+    }
+    // Re-check post-await — we may have been disposed mid-load.
+    if (this.disposed || requestToken !== this.oneShotRequestToken) return;
 
     const oneShot = this.actions[name];
     if (!oneShot) {
@@ -1380,14 +1513,16 @@ export class VRMCharacterAnimator {
       this.oneShotFinishedHandler = null;
       this.oneShotActive = false;
       this.setAttachmentForLocomotion(this.wasMotion);
-      // Crossfade back to whatever locomotion state we are in NOW —
-      // including run when the player is sprinting through the emote.
-      // In surf context (surfaceClip='surf_idle') resolves to surf_idle;
-      // world context (default surfaceClip='idle') returns to idle.
+      // An explicit transition target wins over locomotion. Without one,
+      // crossfade back to whatever locomotion state we are in NOW — including
+      // run when the player is sprinting through the emote. In surf context
+      // (surfaceClip='surf_idle') this resolves to surf_idle; world context
+      // (default surfaceClip='idle') returns to idle.
       const backName: AnimName =
+        nextLoopingClip ?? (
         this.wasMotion === 'run' ? 'run'
         : this.wasMotion === 'walk' ? 'walk'
-        : this.surfaceClip;
+        : this.surfaceClip);
       const back =
         this.actions[backName] ??
         // Fallback: the run clip may not be retargeted on this VRM yet
@@ -1396,6 +1531,10 @@ export class VRMCharacterAnimator {
         (backName === 'run' ? this.actions.walk : undefined) ??
         this.actions[this.surfaceClip];
       if (back) {
+        if (nextLoopingClip) {
+          back.setLoop(THREE.LoopRepeat, Infinity);
+          back.clampWhenFinished = false;
+        }
         back.reset().fadeIn(CROSSFADE_DURATION).play();
         oneShot.fadeOut(CROSSFADE_DURATION);
         this.currentAction = back;
@@ -1410,7 +1549,7 @@ export class VRMCharacterAnimator {
     // by a locomotion transition that lands during the async clip load (while
     // oneShotActive is still false) — this is the authoritative last write.
     this.attachment?.setState('moving');
-    oneShot.reset().fadeIn(CROSSFADE_DURATION).play();
+    oneShot.reset().setEffectiveTimeScale(timeScale).fadeIn(CROSSFADE_DURATION).play();
     if (previous && previous !== oneShot) {
       previous.fadeOut(CROSSFADE_DURATION);
     }
@@ -1425,7 +1564,7 @@ export class VRMCharacterAnimator {
    */
   cancelOneShot(isMoving = false, isRunning = false): void {
     // Invalidate any playOneShot() currently awaiting its GLB/retarget work.
-    this.oneShotRequestGeneration++;
+    this.oneShotRequestToken++;
     if (this.disposed || !this.ready) return;
 
     this.wasMoving = isMoving;
@@ -1465,6 +1604,12 @@ export class VRMCharacterAnimator {
    * The VRM scene itself is not disposed here — caller manages scene lifetime.
    */
   dispose(): void {
+    // Idempotent guard — a caller that both awaits init().then(dispose()) AND
+    // disposes again on unmount (e.g. cove-interior.tsx TableSeatedBustInner)
+    // would otherwise null-deref `this.mixer` on the second call. Surfaced as
+    // repeated "Cannot read properties of null (reading 'stopAllAction')"
+    // pageerrors during the Slice 1 cove3d-holdem probe (2026-07-10).
+    if (this.disposed) return;
     // Mark disposed FIRST so any in-flight init() awaiting clip loads bails
     // before touching the about-to-be-nulled vrm/mixer refs.
     this.disposed = true;

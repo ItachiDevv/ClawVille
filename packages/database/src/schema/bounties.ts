@@ -8,7 +8,9 @@ import {
   boolean,
   jsonb,
   pgEnum,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
 import { agentConfigs } from './agent-configs';
 
@@ -145,6 +147,14 @@ export const bounties = pgTable('bounties', {
    *                                wallet, leg 2 replays idempotently. Ops re-runs.
    */
   compositionState: varchar('composition_state', { length: 32 }),
+  /** Confirmed or broadcast-unknown composed refund signature for reconciliation. */
+  compositionRefundSignature: varchar('composition_refund_signature', { length: 128 }),
+  /** Current expiry-refund owner token. Paired with the DB-time lease below. */
+  compositionRefundClaimId: uuid('composition_refund_claim_id'),
+  /** DB-owned lease timestamp; wall clocks never decide refund ownership. */
+  compositionRefundClaimedAt: timestamp('composition_refund_claimed_at', {
+    withTimezone: true,
+  }),
 
   // ── verdict provenance (v1 = requester/admin approval; Phase 3 = Covenant) ───
   /**
@@ -178,7 +188,16 @@ export const bounties = pgTable('bounties', {
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => ({
+  compositionRefundClaimLeasePair: check(
+    'bounties_composition_refund_claim_lease_pair',
+    sql`(${t.compositionRefundClaimId} IS NULL) = (${t.compositionRefundClaimedAt} IS NULL)`,
+  ),
+  compositionRefundReconcileHasSignature: check(
+    'bounties_composition_refund_reconcile_has_signature',
+    sql`${t.compositionState} <> 'reconcile_refund_unknown' OR ${t.compositionRefundSignature} IS NOT NULL`,
+  ),
+}));
 
 export const bountyRewards = pgTable('bounty_rewards', {
   id: uuid('id').primaryKey().defaultRandom(),

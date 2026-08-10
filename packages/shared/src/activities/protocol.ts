@@ -601,6 +601,16 @@ export type ServerFrame =
       power: number;
       itemKind?: ReefPowerUpKind;
       attackerAvatarId?: string;
+      /**
+       * Present when this hit ALSO put the victim into a server-authoritative
+       * spinout (whirlpool, puffer mine). The victim's client must enter the
+       * same prediction/control lock it uses for `event.obstacle_hit`
+       * spinouts — the server ignores its input for this window, and local
+       * steering would visibly fight the authoritative spin (Codex R19
+       * finding 2). ADDITIVE optional field — absent on older servers and on
+       * pure-VFX hits; no wire-shape break.
+       */
+      spinoutDurationMs?: number;
     }
   | {
       /**

@@ -54,6 +54,7 @@ import {
 } from './resource-ledger';
 import { StageCanvasErrorBoundary } from './StageCanvasErrorBoundary';
 import { StageSlotErrorBoundary } from './StageSlotErrorBoundary';
+import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import {
   getStageRendererFailure,
   getStageRendererFailureServerSnapshot,
@@ -188,6 +189,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   }, [rendererFailure]);
 
   useEffect(() => {
+    // Rung-4 slice A head decomposition: the stage root's mount effect —
+    // the moment the persistent-stage tree is committed and live.
+    stampColdLoadPhaseOnce('stageRootEffectAt', performance.now());
     markWorldStageMounted();
     return () => {
       navigationRef.current = null;
@@ -627,6 +631,10 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         camera: {
           fov: 65,
           near: 1,
+          // Install-time placeholder — StageHostedCoveScene raises this to
+          // COVE_CAMERA_FAR (room-scale-derived) after camera install; the
+          // constant lives in the lazy cove chunk to keep this root eager-
+          // bundle-free of cove-interior.
           far: 2_000,
           position: [0, 55, 400],
           lookAt: [0, 70, -411],
@@ -668,7 +676,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         capabilities: {
           jump: false,
           verticalSwim: false,
-          sprint: false,
+          sprint: true,
           emotes: false,
           interact: false,
           clickPath: false,

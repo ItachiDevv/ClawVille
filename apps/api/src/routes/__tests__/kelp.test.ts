@@ -11,6 +11,7 @@ import {
   KELP_REALM_SPORE_COUNT,
   KELP_REALM_SPORE_FULL_MASK,
   KELP_REALM_SPEED_GRACE_MULTIPLIER,
+  KELP_REALM_SPRINT_SPEED_MULTIPLIER,
   KELP_REALM_TOKEN_TTL_MS,
 } from '@clawville/shared';
 import type {
@@ -249,7 +250,9 @@ describe('Kelp Forest authenticated traversal and collectible claim', () => {
     const earlyBody = await early.json() as { error: string; code: string; retryAfterMs: number };
     const floorMs = Math.ceil(
       edge.distanceWu /
-      (KELP_REALM_PLAYER_SPEED_WU_PER_SEC * KELP_REALM_SPEED_GRACE_MULTIPLIER) * 1000,
+      (KELP_REALM_PLAYER_SPEED_WU_PER_SEC *
+        KELP_REALM_SPRINT_SPEED_MULTIPLIER *
+        KELP_REALM_SPEED_GRACE_MULTIPLIER) * 1000,
     );
     expect(earlyBody).toEqual({ error: 'too_fast', code: 'too_fast', retryAfterMs: floorMs });
 
@@ -278,7 +281,9 @@ describe('Kelp Forest authenticated traversal and collectible claim', () => {
     );
     nowMs += Math.ceil(
       edge.distanceWu /
-      (KELP_REALM_PLAYER_SPEED_WU_PER_SEC * KELP_REALM_SPEED_GRACE_MULTIPLIER) * 1000,
+      (KELP_REALM_PLAYER_SPEED_WU_PER_SEC *
+        KELP_REALM_SPRINT_SPEED_MULTIPLIER *
+        KELP_REALM_SPEED_GRACE_MULTIPLIER) * 1000,
     );
 
     const response = await post(`/beacon/${sporeId}/visit`, { prevToken: predecessorToken });

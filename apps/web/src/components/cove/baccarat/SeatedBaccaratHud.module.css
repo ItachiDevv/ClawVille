@@ -1,0 +1,315 @@
+.hud {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  color: #f7edd8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.topBar {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.panel,
+.controls,
+.outcome {
+  pointer-events: auto;
+  border: 1px solid rgba(224, 184, 98, 0.42);
+  background: rgba(18, 12, 22, 0.9);
+  box-shadow: 0 14px 45px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+}
+
+.panel {
+  border-radius: 10px;
+  padding: 10px 13px;
+}
+
+.eyebrow {
+  color: #d8ad55;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.balance {
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.seed {
+  margin-top: 3px;
+  max-width: min(340px, 52vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c8bfae;
+  font-size: 9px;
+}
+
+.topActions {
+  display: flex;
+  gap: 8px;
+}
+
+.button,
+.betButton,
+.chipButton {
+  min-height: 44px;
+  border-radius: 8px;
+  border: 1px solid rgba(229, 195, 118, 0.38);
+  background: rgba(42, 29, 43, 0.94);
+  color: #f7edd8;
+  font: 800 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  cursor: pointer;
+}
+
+.button {
+  padding: 0 15px;
+}
+
+.button:disabled,
+.betButton:disabled,
+.chipButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.primary {
+  border-color: #d5a846;
+  background: #bd842d;
+  color: #171018;
+}
+
+.danger {
+  border-color: #ef6868;
+  background: #b52f37;
+  color: white;
+}
+
+.outcome {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  width: min(520px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  border-radius: 12px;
+  padding: 12px 16px;
+  text-align: center;
+}
+
+.headline {
+  color: #f4cc72;
+  font-size: clamp(16px, 2vw, 24px);
+  font-weight: 1000;
+  letter-spacing: 0.06em;
+}
+
+.outcomeGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.metric {
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.055);
+  padding: 7px;
+  color: #ddd2bf;
+  font-size: 10px;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 3px;
+  color: #fff3d9;
+  font-size: 12px;
+}
+
+.controls {
+  position: absolute;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: min(760px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.row + .row {
+  margin-top: 9px;
+}
+
+.label {
+  min-width: 54px;
+  color: #bcb09f;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.betButton {
+  flex: 1 1 120px;
+  padding: 0 12px;
+}
+
+.betButton[aria-checked='true'],
+.chipButton[aria-pressed='true'] {
+  border-color: #f0c861;
+  background: rgba(204, 144, 42, 0.38);
+  color: #ffe4a1;
+}
+
+.chipButton {
+  min-width: 52px;
+  padding: 0 10px;
+}
+
+.actionRow {
+  justify-content: flex-end;
+}
+
+.betPill {
+  margin-right: auto;
+  border-radius: 999px;
+  border: 1px solid rgba(98, 188, 231, 0.4);
+  background: rgba(25, 83, 108, 0.32);
+  padding: 8px 12px;
+  color: #bdeaff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: min(210px, 28vh);
+  width: min(460px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  border-radius: 8px;
+  border: 1px solid rgba(224, 184, 98, 0.35);
+  background: rgba(14, 10, 18, 0.94);
+  padding: 10px 14px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  background: rgba(3, 2, 5, 0.72);
+  padding: 16px;
+}
+
+.dialog {
+  width: min(560px, 100%);
+  max-height: min(680px, calc(100dvh - 32px));
+  overflow-y: auto;
+  border: 1px solid rgba(224, 184, 98, 0.5);
+  border-radius: 12px;
+  background: #19121e;
+  padding: 20px;
+  color: #eadfca;
+}
+
+.dialog code {
+  display: block;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  color: #ffe5a8;
+  font-size: 10px;
+}
+
+.dialogActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .topBar {
+    left: 10px;
+    right: 10px;
+  }
+
+  .panel {
+    padding: 8px 10px;
+  }
+
+  .seed {
+    max-width: 42vw;
+  }
+
+  .topActions .button {
+    padding: 0 11px;
+  }
+
+  .outcome {
+    top: 15%;
+  }
+
+  .controls {
+    width: calc(100vw - 20px);
+    padding: 10px;
+  }
+
+  .label {
+    flex-basis: 100%;
+  }
+
+  .betButton {
+    flex-basis: calc(33.333% - 6px);
+  }
+
+  .chipButton {
+    flex: 1 1 44px;
+  }
+}
+
+@media (max-height: 700px) {
+  .outcome {
+    top: 13%;
+    padding: 8px 12px;
+  }
+
+  .outcomeGrid {
+    margin-top: 5px;
+  }
+
+  .metric {
+    padding: 5px;
+  }
+
+  .controls {
+    padding: 8px;
+  }
+
+  .row + .row {
+    margin-top: 6px;
+  }
+}

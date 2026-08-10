@@ -219,7 +219,12 @@ interface MotionProps {
   readonly activation: KelpActivationContext;
   readonly children: ReactNode;
   readonly baseY?: number;
-  readonly updateAnimation: (delta: number, elapsed: number, moving: boolean) => void;
+  readonly updateAnimation: (
+    delta: number,
+    elapsed: number,
+    moving: boolean,
+    running: boolean,
+  ) => void;
 }
 
 function KelpRealmAvatarMotion({
@@ -375,7 +380,7 @@ function KelpRealmAvatarMotion({
         state.z + forwardScratch.z * CAM_LOOK_AHEAD,
     );
     camera.lookAt(targetScratch);
-      updateAnimation(safeDelta, elapsed, state.moving);
+      updateAnimation(safeDelta, elapsed, state.moving, state.running);
     },
   });
 
@@ -410,9 +415,12 @@ function KelpRealmVRMPlayerInner({
     };
   }, [vrm, reg.animatorId]);
 
-  const updateAnimation = useCallback((delta: number, _elapsed: number, moving: boolean) => {
-    animatorRef.current?.update(delta, moving, false);
-  }, []);
+  const updateAnimation = useCallback(
+    (delta: number, _elapsed: number, moving: boolean, running: boolean) => {
+      animatorRef.current?.update(delta, moving, running);
+    },
+    [],
+  );
 
   return (
     <KelpRealmAvatarMotion

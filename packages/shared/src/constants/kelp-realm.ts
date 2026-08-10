@@ -7,6 +7,13 @@ export const KELP_REALM_PLAYER_SPEED_WU_PER_SEC = 430;
 export const KELP_REALM_BEACON_VISIT_RADIUS_WU = 72;
 export const KELP_REALM_TOKEN_TTL_MS = 30 * 60 * 1000;
 export const KELP_REALM_SPEED_GRACE_MULTIPLIER = 1.2;
+/**
+ * Sprint is enabled in the kelp forest, so the fastest legitimate traversal is
+ * base speed × this multiplier. MUST equal the shared controller's
+ * RUN_SPEED_MULT (apps/web player-input.ts) — the beacon time floor divides by
+ * it, and a smaller value here 429s every sprinting player as `too_fast`.
+ */
+export const KELP_REALM_SPRINT_SPEED_MULTIPLIER = 2.025;
 /** Stable claim-time lookup key. Reveal this collectible by updating this SKU row in place. */
 export const KELP_MAZE_COLLECTIBLE_SLUG = 'kelp-maze-collectible';
 export const REWARD_ONLY_COSMETIC_CURRENCY = 'REWARD_ONLY';

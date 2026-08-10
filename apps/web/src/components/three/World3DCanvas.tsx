@@ -2,6 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
 import { armDecorativeDeadline, armDecorativeReleaseOnFirstPaint, notifyWorldFramePresented } from '@/lib/three/decorative-release';
+import { stampColdLoadPhase, stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -765,28 +766,14 @@ function FPSFollowCamera({
 // internally via its store subscriber, but belt-and-suspenders — if anything
 // races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
-/**
- * Cold-load telemetry stamp (docs/perf-cold-load-diet-2026-07-31.md M0).
- * MUST be impossible to throw: a frozen/sealed/accessor-poisoned global, or a
- * primitive squatting on __W3D_PHASES, must never affect the boot path — some
- * stamps run before readiness publication, so an exception here would strand
- * the reveal. Numbers are rounded; non-object squatters are replaced when
- * writable and silently abandoned when not.
- */
-function stampColdLoadPhase(key: string, value: number | string): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const w = window as any;
-    let phases = w.__W3D_PHASES;
-    if (phases === null || typeof phases !== 'object') {
-      phases = {};
-      w.__W3D_PHASES = phases;
-    }
-    phases[key] = typeof value === 'number' ? Math.round(value) : value;
-  } catch {
-    /* telemetry never throws */
-  }
-}
+// Cold-load telemetry stamp moved to the shared cold-load-stamp module
+// (rung-4 slice A) so GamePage / WorldStageRoot / WorldStageCanvas stamp the
+// same __W3D_PHASES blob without a legacy→stage import.
+
+// Rung-4 slice A: the world chunk's module evaluation is part of the 3.8s
+// pre-warmup head. Stamped at module scope — runs when the dynamic import of
+// the world scene chunk finishes evaluating on the client.
+stampColdLoadPhaseOnce('worldChunkEvalAt', performance.now());
 
 /** Same never-throw contract for the backend stamp. */
 function stampColdLoadBackend(backend: string): void {
