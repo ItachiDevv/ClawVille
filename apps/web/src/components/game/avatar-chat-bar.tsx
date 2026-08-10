@@ -54,8 +54,9 @@ interface AvatarMessage {
   content: string;
 }
 
-export default function AvatarChatBar() {
+export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world' | 'table' }) {
   const queryClient = useQueryClient();
+  const tableSurface = surface === 'table';
   const { data: avatar } = useAvatar();
   // Read the SHARED auth-me cache (same queryKey game/page.tsx populates — no
   // extra fetch). Used to decide whether a dead-agent-session clear should keep
@@ -107,7 +108,10 @@ export default function AvatarChatBar() {
   // the human directs the agent (persisted server-side + biases the autonomous
   // planner) rather than a Q&A chat. Bearer-connected agents (agentSessionId
   // present) keep the openclawChat routing untouched.
-  const isDirectiveMode = controlMode === 'autonomous' && agentHosted && !agentSessionId;
+  const isDirectiveMode = !tableSurface
+    && controlMode === 'autonomous'
+    && agentHosted
+    && !agentSessionId;
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<AvatarMessage[]>([]);
   const [input, setInput] = useState('');
@@ -140,8 +144,20 @@ export default function AvatarChatBar() {
     if (agentConnected && sessionEnded) setSessionEnded(false);
   }, [agentConnected, sessionEnded]);
 
+  useEffect(() => {
+    if (!expanded) return;
+    const collapseOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setExpanded(false);
+    };
+    window.addEventListener('keydown', collapseOnEscape, true);
+    return () => window.removeEventListener('keydown', collapseOnEscape, true);
+  }, [expanded]);
+
   // Don't render when location chat is open or no avatar
-  if (chatOpen || !avatar) return null;
+  if ((!tableSurface && chatOpen) || !avatar) return null;
 
   // Prefer a real avatar thumbnail (Milady/Hermes PNG previews) so the chat
   // pill matches the 3D character; fall back to a category-aware emoji for
@@ -372,10 +388,20 @@ export default function AvatarChatBar() {
     // z-[60]: must WIN the hit test over the autonomy-hud (z-50, left-anchored
     // w-80) — at 390px-wide portrait they horizontally collide and the hud
     // swallowed taps on the Directing clear-✕ (viewport-sweep DEFECT 1).
-    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center w-full max-w-lg px-4 pb-3">
+    <div
+      className={tableSurface
+        ? 'fixed z-[70] flex w-[min(360px,calc(100vw-24px))] flex-col items-start'
+        : 'fixed bottom-0 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center w-full max-w-lg px-4 pb-3'}
+      style={tableSurface ? {
+        left: 'max(12px, env(safe-area-inset-left))',
+        top: 'max(70px, calc(env(safe-area-inset-top) + 58px))',
+      } : undefined}
+      data-testid={tableSurface ? 'holdem-agent-chat' : undefined}
+    >
       {/* Expanded chat area */}
       {expanded && (
-        <div className="w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className={'w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200'
+          + (tableSurface ? ' flex max-h-[min(44vh,300px)] min-h-0 flex-col' : '')}>
           {/* Chat header */}
           <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
             <AgentIcon size={22} />
@@ -404,6 +430,16 @@ export default function AvatarChatBar() {
                   ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '…' : ''}`
                   : 'your agent'}
             </span>
+            {tableSurface && (
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                aria-label="Collapse agent chat"
+                className="ml-1 inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-cyan-300/25 text-cyan-50 hover:bg-cyan-400/15"
+              >
+                ×
+              </button>
+            )}
           </div>
 
           {/* Agent-session-ended banner — shown when a send hit a dead
@@ -452,7 +488,7 @@ export default function AvatarChatBar() {
           )}
 
           {/* Messages */}
-          <div className="max-h-64 overflow-y-auto px-3 py-2 space-y-2">
+          <div className={(tableSurface ? 'min-h-0 flex-1' : 'max-h-64') + ' overflow-y-auto px-3 py-2 space-y-2'}>
             {messages.length === 0 && (
               <p className="text-cyan-300/40 text-xs text-center py-4 font-mono uppercase tracking-[0.2em]">
                 {isDirectiveMode ? `Direct ${avatar.name}…` : `Say something to ${avatar.name}…`}
@@ -510,13 +546,13 @@ export default function AvatarChatBar() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={isDirectiveMode ? 'Direct your agent…' : `Talk to ${avatar.name}…`}
-                className="flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
+                className="min-h-11 flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
                 disabled={loading}
               />
               <button
                 onClick={handleSend}
                 disabled={loading || !input.trim()}
-                className="bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-1.5 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
+                className="min-h-11 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-1.5 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
               >
                 Send
               </button>
@@ -528,7 +564,8 @@ export default function AvatarChatBar() {
       {/* Toggle pill */}
       <button
         onClick={toggleExpand}
-        className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5"
+        className={'group flex min-h-11 items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5'
+          + (tableSurface && expanded ? ' hidden' : '')}
       >
         <AgentIcon size={26} />
         {agentConnected && (

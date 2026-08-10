@@ -22,13 +22,6 @@
  * that press (mirrors blackjack/holdem). A synchronous `busyRef` lock blocks
  * double-fire before the first await.
  *
- * Agent modes (Phase 6.6.1 UI seam only):
- *   - Control     — the human taps the bet + DEAL buttons. A connected agent
- *                   acts as an ADVISOR (read-only hint panel) and NEVER submits
- *                   a bet. (Advisor wiring is a clean seam for the protocol.)
- *   - Autonomous  — a connected agent makes the bets. Disabled until the
- *                   connected-agent WebSocket protocol ships (FEATURE_GATE).
- *
  * Iris Xe safe: pure React/CSS DOM, zero Three.js. No drei Text/Billboard, no
  * InstancedMesh. No-dark-text-on-dark-panel: light tokens only on the dark
  * felt/velvet (cream / amber / explicit hex; never gray/slate-700+).
@@ -37,6 +30,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useIsGuest } from '@/hooks/use-is-guest';
+import { ParityMirror } from '@/components/cove/CardParityMirror';
 import BaccaratCard from './BaccaratCard';
 import '@/styles/cove-tokens.css';
 import {
@@ -62,6 +57,13 @@ import {
   useOpenBaccaratShoe,
   usePlayBaccaratCoup,
 } from '@/lib/cove/baccarat-api-client';
+import {
+  Baccarat2dRevealEpoch,
+  buildBaccarat2dBannerText,
+  maskBaccarat2dOutcome,
+  useBaccarat2dPublisher,
+  type Baccarat2dPhase,
+} from '@/lib/cove/baccarat-2d-publisher';
 
 // ---------------------------------------------------------------------------
 // Bet chips — must stay within engine bounds (5–500 CT).
@@ -117,7 +119,12 @@ function BetTypeSelector({ value, disabled, onChange }: {
   onChange: (b: BaccaratBet) => void;
 }) {
   return (
-    <div role="radiogroup" aria-label="Baccarat bet" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+    <div
+      role="radiogroup"
+      aria-label="Baccarat bet"
+      data-testid="bac-bet-zones"
+      style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
+    >
       {(['player', 'banker', 'tie'] as const).map((b) => {
         const meta = BET_META[b];
         const selected = value === b;
@@ -127,6 +134,7 @@ function BetTypeSelector({ value, disabled, onChange }: {
             type="button"
             role="radio"
             aria-checked={selected}
+            data-bet-zone={b}
             onClick={() => onChange(b)}
             disabled={disabled}
             style={{
@@ -159,9 +167,10 @@ function BetTypeSelector({ value, disabled, onChange }: {
 // ---------------------------------------------------------------------------
 // Hand row — Player or Banker side with its server-derived total + natural badge.
 // ---------------------------------------------------------------------------
-function HandSide({ label, cards, total, isNatural, accent, isWinner, settled }: {
+function HandSide({ label, cards, slotCount, total, isNatural, accent, isWinner, settled }: {
   label: string;
   cards: BACCard[];
+  slotCount: number;
   total: number | null;
   isNatural: boolean;
   accent: string;
@@ -208,21 +217,17 @@ function HandSide({ label, cards, total, isNatural, accent, isWinner, settled }:
             fontSize: 16, fontWeight: 800, fontFamily: 'var(--pt-display)',
             color: 'var(--pt-cream)', lineHeight: 1, minWidth: 18, textAlign: 'right',
           }}>
-            {total ?? '—'}
+            {total ?? '-'}
           </span>
         </div>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', minHeight: 68 }}>
-        {cards.length === 0 ? (
-          <>
-            <EmptyCardSlot />
-            <EmptyCardSlot />
-          </>
-        ) : (
-          cards.map((card, i) => (
-            <BaccaratCard key={i} card={card} slideIn delay={i * 70} />
-          ))
-        )}
+        {Array.from({ length: slotCount }, (_, index) => {
+          const card = cards[index];
+          return card
+            ? <BaccaratCard key={index} card={card} slideIn delay={index * 70} />
+            : <EmptyCardSlot key={index} />;
+        })}
       </div>
     </div>
   );
@@ -240,7 +245,13 @@ function EmptyCardSlot() {
 // ---------------------------------------------------------------------------
 // Outcome banner — driven entirely by the server-settled coup.
 // ---------------------------------------------------------------------------
-function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
+function OutcomeBanner({
+  outcome,
+  bannerText,
+}: {
+  outcome: SerializedBaccaratCoup;
+  bannerText: string;
+}) {
   const net = Number(outcome.net);
   const won = net > 0;
   const push = net === 0; // tie + P/B bet returns the stake (PUSH)
@@ -249,18 +260,14 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
     : push
       ? 'var(--pt-cream-soft)'
       : '#e85555';
-  const winnerLabel =
-    outcome.winner === 'player' ? 'PLAYER WINS' :
-    outcome.winner === 'banker' ? 'BANKER WINS' :
-    'TIE';
-
-  const resultLabel = won ? 'YOU WIN' : push ? 'PUSH (stake returned)' : 'YOU LOSE';
   const commission = Number(outcome.commission);
 
   return (
     <div
       role="status"
       aria-live="assertive"
+      data-testid="bac-outcome-banner"
+      data-banner-text={bannerText}
       style={{
         // IN-FLOW below the two hand columns — never absolute over the cards.
         // The old absolute center placement (top 50%) sat directly on the
@@ -291,20 +298,28 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
           color: accent, fontSize: 11, fontFamily: 'var(--pt-data)',
           letterSpacing: '0.2em', fontWeight: 700, marginBottom: 3,
         }}>
-          {winnerLabel} · {resultLabel}
+          {bannerText}
         </div>
-        <div style={{
+        <div data-testid="bac-banner-net" style={{
           color: won ? 'var(--pt-cream)' : push ? 'var(--pt-cream-soft)' : '#e85555',
           fontSize: 20, fontWeight: 700, fontFamily: 'var(--pt-display)', lineHeight: 1,
         }}>
           {net > 0 ? `+${net}` : `${net}`} vCLAW
         </div>
+        {push && (
+          <div style={{
+            marginTop: 5, fontSize: 10, fontFamily: 'var(--pt-data)',
+            color: 'var(--pt-cream-soft)', letterSpacing: '0.04em',
+          }}>
+            Stake returned
+          </div>
+        )}
         {commission > 0 && (
           <div style={{
             marginTop: 6, fontSize: 10, fontFamily: 'var(--pt-data)',
             color: 'var(--pt-brass)', letterSpacing: '0.04em',
           }}>
-            Banker win — {commission} vCLAW commission ({COVE_BACCARAT_BANKER_COMMISSION_PERCENT}%) kept
+            Banker win: {commission} vCLAW commission ({COVE_BACCARAT_BANKER_COMMISSION_PERCENT}%) kept
           </div>
         )}
       </div>
@@ -319,12 +334,6 @@ type ToastTone = 'info' | 'warn' | 'error';
 interface ToastState { message: string; tone: ToastTone; id: number; }
 
 // ---------------------------------------------------------------------------
-// Agent mode (UI seam — see AgentModeBar; no WS protocol yet)
-// ---------------------------------------------------------------------------
-type AgentMode = 'control' | 'autonomous';
-interface AdvisorMessage { id: number; text: string; }
-
-// ---------------------------------------------------------------------------
 // Main modal
 // ---------------------------------------------------------------------------
 export default function BaccaratModal() {
@@ -336,6 +345,7 @@ export default function BaccaratModal() {
   } = useCoveStore();
 
   const { data: avatar } = useAvatar();
+  const isGuest = useIsGuest();
 
   // ── Local bet-type selection (the only pre-deal choice; stake lives in store) ─
   const [betType, setBetType] = useState<BaccaratBet>('player');
@@ -343,14 +353,13 @@ export default function BaccaratModal() {
   // ── Server-mirrored state ────────────────────────────────────────────────
   const [shoe, setShoe] = useState<BaccaratShoeWire | null>(null);
   const [balance, setBalance] = useState(0);
-  const [settled, setSettled] = useState<BaccaratCoupResponse | null>(null);
+  const [pendingSettlement, setPendingSettlement] =
+    useState<BaccaratCoupResponse | null>(null);
+  const [revealedStep, setRevealedStep] = useState(0);
+  const [displayPhase, setDisplayPhase] = useState<Baccarat2dPhase>('idle');
   const [revealedSeed, setRevealedSeed] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [fairnessOpen, setFairnessOpen] = useState(false);
-
-  // ── Agent mode + advisor surface (seam) ─────────────────────────────────
-  const [agentMode, setAgentMode] = useState<AgentMode>('control');
-  const [advisorMessages] = useState<AdvisorMessage[]>([]);
 
   // ── API hooks ─────────────────────────────────────────────────────────────
   const openShoe = useOpenBaccaratShoe();
@@ -363,9 +372,37 @@ export default function BaccaratModal() {
   const toastSeqRef = useRef(0);
   const shoeRef = useRef<BaccaratShoeWire | null>(null);
   shoeRef.current = shoe;
+  const parityInstanceIdRef = useRef(crypto.randomUUID());
+  const revealEpochRef = useRef<Baccarat2dRevealEpoch | null>(null);
+  if (!revealEpochRef.current) {
+    revealEpochRef.current = new Baccarat2dRevealEpoch();
+  }
 
-  const isAuthed = Boolean(avatar);
-  const phase: 'idle' | 'settled' = settled ? 'settled' : 'idle';
+  const isRealTier = Boolean(avatar) && !isGuest;
+  const phase = displayPhase;
+  const bannerText = pendingSettlement && displayPhase === 'settled'
+    ? buildBaccarat2dBannerText(pendingSettlement.outcome)
+    : null;
+  const paritySnapshot = useMemo(() => ({
+    pendingSettlement,
+    revealedStep,
+    phase: displayPhase,
+    selectedBet: betType,
+    selectedStake: baccaratBet,
+    bannerText,
+  }), [
+    baccaratBet,
+    bannerText,
+    betType,
+    displayPhase,
+    pendingSettlement,
+    revealedStep,
+  ]);
+  useBaccarat2dPublisher({
+    open: baccaratOpen,
+    instanceId: parityInstanceIdRef.current,
+    snapshot: paritySnapshot,
+  });
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
   const showToast = useCallback((message: string, tone: ToastTone = 'info') => {
@@ -380,7 +417,10 @@ export default function BaccaratModal() {
 
   // ── Reset transient coup state ─────────────────────────────────────────────
   const resetCoup = useCallback(() => {
-    setSettled(null);
+    revealEpochRef.current?.cancel();
+    setPendingSettlement(null);
+    setRevealedStep(0);
+    setDisplayPhase('idle');
     coupKeyRef.current = null;
   }, []);
 
@@ -417,16 +457,20 @@ export default function BaccaratModal() {
     }
   }, [baccaratOpen, resetCoup]);
 
+  useEffect(() => () => {
+    revealEpochRef.current?.cancel();
+  }, []);
+
   // ── Close handler ───────────────────────────────────────────────────────────
   const handleClose = useCallback(() => {
     // Fire-and-forget close any open shoe (authed only — guests have no close
     // endpoint). Skip if a request is in flight or the seed already revealed.
     const s = shoeRef.current;
-    if (s && s.status === 'open' && isAuthed && !busyRef.current && !revealedSeed) {
+    if (s && s.status === 'open' && isRealTier && !busyRef.current && !revealedSeed) {
       closeShoe.mutate({ shoeId: s.id });
     }
     closeBaccaratTable();
-  }, [isAuthed, revealedSeed, closeShoe, closeBaccaratTable]);
+  }, [isRealTier, revealedSeed, closeShoe, closeBaccaratTable]);
 
   // ── Keyboard ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -457,20 +501,34 @@ export default function BaccaratModal() {
 
   // ── Apply a settled coup (single place balance/outcome land) ───────────────
   const applySettled = useCallback((res: BaccaratCoupResponse) => {
-    setSettled(res);
-    setBalance(res.balance);
+    revealEpochRef.current?.begin(res.coupId);
+    setPendingSettlement(res);
+    setRevealedStep(1);
+    setDisplayPhase('revealing');
     // Reflect the shoe's new dealtCount locally so the next coup's penetration
     // gate + fairness HUD are accurate without a refetch.
     setShoe((prev) => (prev ? { ...prev, dealtCount: res.dealtCount } : prev));
     if (res.reshuffleSuggested) {
-      showToast('Shoe nearly spent — next coup opens a fresh shoe.', 'info');
+      showToast('Shoe nearly spent. The next coup opens a fresh shoe.', 'info');
     }
   }, [showToast]);
+
+  useEffect(() => {
+    if (!pendingSettlement || displayPhase !== 'revealing') return;
+    revealEpochRef.current?.scheduleCommittedStep(
+      pendingSettlement,
+      revealedStep,
+      (step) => setRevealedStep(step),
+      () => {
+        setDisplayPhase('settled');
+        setBalance(pendingSettlement.balance);
+      },
+    );
+  }, [displayPhase, pendingSettlement, revealedStep]);
 
   // ── DEAL THE COUP ────────────────────────────────────────────────────────────
   const handleDeal = useCallback(async () => {
     if (busyRef.current || phase !== 'idle') return;
-    if (agentMode === 'autonomous') return; // gated — no connected-agent driver yet
     busyRef.current = true;
     try {
       const s = await ensureShoe();
@@ -488,7 +546,7 @@ export default function BaccaratModal() {
       } catch (err) {
         // 75% penetration → open a fresh shoe (new seed pair) + retry once.
         if (reshuffledBody(err)) {
-          showToast('Shoe reshuffled — dealing from a fresh shoe.', 'info');
+          showToast('Shoe reshuffled. Dealing from a fresh shoe.', 'info');
           setShoe(null);
           const fresh = await ensureShoe();
           if (!fresh) return;
@@ -510,7 +568,7 @@ export default function BaccaratModal() {
       coupKeyRef.current = null;
       busyRef.current = false;
     }
-  }, [phase, agentMode, ensureShoe, playCoup, betType, baccaratBet, applySettled, showToast]);
+  }, [phase, ensureShoe, playCoup, betType, baccaratBet, applySettled, showToast]);
 
   // ── NEXT COUP ────────────────────────────────────────────────────────────────
   const handleNextCoup = useCallback(() => {
@@ -520,24 +578,30 @@ export default function BaccaratModal() {
   // ── WALK AWAY (close shoe → reveal seed, authed) ───────────────────────────
   const handleWalkAway = useCallback(async () => {
     const s = shoeRef.current;
-    if (!s || !isAuthed) { handleClose(); return; }
+    if (!s || !isRealTier) { handleClose(); return; }
     busyRef.current = true;
     try {
       const res = await closeShoe.mutateAsync({ shoeId: s.id });
       setRevealedSeed(res.serverSeed);
       setShoe((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed } : prev));
-      showToast(`Cashed out — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
+      showToast(`Cashed out. Seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
       setTimeout(() => handleClose(), 1400);
     } catch (err) {
       showToast(describeBaccaratError(err), 'warn');
     } finally {
       busyRef.current = false;
     }
-  }, [isAuthed, closeShoe, showToast, handleClose]);
+  }, [isRealTier, closeShoe, showToast, handleClose]);
 
   const inFlight = openShoe.isPending || playCoup.isPending || closeShoe.isPending;
 
-  const outcome: SerializedBaccaratCoup | null = settled?.outcome ?? null;
+  const outcome: SerializedBaccaratCoup | null = pendingSettlement
+    ? maskBaccarat2dOutcome(
+      pendingSettlement.outcome,
+      revealedStep,
+      displayPhase === 'settled',
+    )
+    : null;
 
   // ── Fairness summary ───────────────────────────────────────────────────────
   const fairnessSummary = useMemo(() => {
@@ -554,8 +618,10 @@ export default function BaccaratModal() {
   // after settle.
   const playerCards: BACCard[] = outcome?.player.cards ?? [];
   const bankerCards: BACCard[] = outcome?.banker.cards ?? [];
-  const playerTotal = outcome ? outcome.player.total : null;
-  const bankerTotal = outcome ? outcome.banker.total : null;
+  const playerSlotCount = Math.max(2, playerCards.length);
+  const bankerSlotCount = Math.max(2, bankerCards.length);
+  const playerTotal = playerCards.length > 0 ? outcome?.player.total ?? null : null;
+  const bankerTotal = bankerCards.length > 0 ? outcome?.banker.total ?? null : null;
   const winner: BaccaratWinner | null = outcome?.winner ?? null;
 
   const toastClass = toast
@@ -567,6 +633,7 @@ export default function BaccaratModal() {
       role="dialog"
       aria-modal="true"
       aria-label="Baccarat table"
+      className="bac2d-dialog"
       style={{
         position: 'fixed', inset: 0, zIndex: 9990,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -576,7 +643,44 @@ export default function BaccaratModal() {
         animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
       }}
     >
+      <ParityMirror
+        surface="baccarat-2d"
+        instanceId={parityInstanceIdRef.current}
+      />
+      <style>{`
+        @media (max-height: 500px) and (orientation: landscape) {
+          .bac2d-dialog {
+            padding: 4px !important;
+          }
+          .bac2d-shell {
+            max-width: 820px !important;
+            max-height: calc(100dvh - 8px) !important;
+          }
+          .bac2d-header {
+            padding: 6px 10px !important;
+          }
+          .bac2d-felt {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+            grid-template-rows: 1fr auto;
+            align-items: center;
+            gap: 8px 12px !important;
+            padding: 8px 12px !important;
+          }
+          .bac2d-hands {
+            grid-row: 1 / span 2;
+          }
+          .bac2d-actions {
+            padding: 6px 10px !important;
+            gap: 4px !important;
+          }
+          .bac2d-footer {
+            display: none;
+          }
+        }
+      `}</style>
       <div
+        className="bac2d-shell"
         style={{
           position: 'relative', width: '100%', maxWidth: 640,
           maxHeight: 'min(94vh, 760px)', borderRadius: 14, overflow: 'hidden',
@@ -587,7 +691,7 @@ export default function BaccaratModal() {
         }}
       >
         {/* ── Header ───────────────────────────────────────────────────── */}
-        <header style={{
+        <header className="bac2d-header" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '12px 16px', background: 'rgba(0,0,0,0.3)',
           borderBottom: '1px solid rgba(60,180,120,0.25)', flexShrink: 0,
@@ -595,7 +699,7 @@ export default function BaccaratModal() {
           <button
             type="button"
             onClick={() => setFairnessOpen(true)}
-            aria-label={`Provably fair: ${fairnessSummary}`}
+            aria-label={`${isRealTier ? 'Provably fair' : 'Shoe commitment'}: ${fairnessSummary}`}
             title={fairnessSummary}
             style={{
               background: 'none', border: 'none', color: 'var(--pt-cream-soft)',
@@ -620,7 +724,7 @@ export default function BaccaratModal() {
               background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
               borderRadius: 6, padding: '3px 10px',
             }}>
-              {balance.toLocaleString()} vCLAW{!isAuthed ? ' demo' : ''}
+              {balance.toLocaleString()} vCLAW{!isRealTier ? ' demo' : ''}
             </div>
             <button
               type="button" onClick={handleClose} aria-label="Close baccarat table"
@@ -637,11 +741,8 @@ export default function BaccaratModal() {
           </div>
         </header>
 
-        {/* ── Agent mode toggle + advisor surface ──────────────────────── */}
-        <AgentModeBar mode={agentMode} onMode={setAgentMode} advisorMessages={advisorMessages} />
-
         {/* ── Felt ─────────────────────────────────────────────────────── */}
-        <div style={{
+        <div className="bac2d-felt" style={{
           flex: 1, position: 'relative',
           background: 'linear-gradient(180deg, #0d3a1e 0%, #0a2e18 50%, #0d3a1e 100%)',
           padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16,
@@ -654,10 +755,11 @@ export default function BaccaratModal() {
           }} />
 
           {/* Player + Banker side-by-side */}
-          <div style={{ display: 'flex', gap: 14, position: 'relative', zIndex: 1 }}>
+          <div className="bac2d-hands" style={{ display: 'flex', gap: 14, position: 'relative', zIndex: 1 }}>
             <HandSide
               label="Player"
               cards={playerCards}
+              slotCount={playerSlotCount}
               total={playerTotal}
               isNatural={outcome?.player.isNatural ?? false}
               accent={BET_META.player.accent}
@@ -667,6 +769,7 @@ export default function BaccaratModal() {
             <HandSide
               label="Banker"
               cards={bankerCards}
+              slotCount={bankerSlotCount}
               total={bankerTotal}
               isNatural={outcome?.banker.isNatural ?? false}
               accent={BET_META.banker.accent}
@@ -676,11 +779,13 @@ export default function BaccaratModal() {
           </div>
 
           {/* Settled banner — IN FLOW under the hands so it can never cover a card */}
-          {phase === 'settled' && outcome && <OutcomeBanner outcome={outcome} />}
+          {phase === 'settled' && outcome && bannerText && (
+            <OutcomeBanner outcome={outcome} bannerText={bannerText} />
+          )}
 
           {/* Your bet pill — shows the active wager once a coup is settled */}
           {phase === 'settled' && outcome && (
-            <div style={{
+            <div data-testid="bac-bet-pill" style={{
               position: 'relative', zIndex: 1, textAlign: 'center',
               fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-cream-soft)',
               letterSpacing: '0.08em',
@@ -694,37 +799,36 @@ export default function BaccaratModal() {
         </div>
 
         {/* ── Action strip ─────────────────────────────────────────────── */}
-        <div style={{
+        <div className="bac2d-actions" style={{
           flexShrink: 0, background: 'rgba(0,0,0,0.35)',
           borderTop: '1px solid rgba(60,180,120,0.2)', padding: '12px 16px',
           display: 'flex', flexDirection: 'column', gap: 10,
         }}>
-          {/* Bet-type + stake selector — idle only */}
+          {/* Keep the selected bet zone visible through settlement for parity. */}
+          <BetTypeSelector
+            value={betType}
+            disabled={inFlight || phase !== 'idle'}
+            onChange={setBetType}
+          />
+          {/* Stake selector — idle only */}
           {phase === 'idle' && (
-            <>
-              <BetTypeSelector
-                value={betType}
-                disabled={inFlight || agentMode === 'autonomous'}
-                onChange={setBetType}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{
-                  fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
-                  letterSpacing: '0.12em', textTransform: 'uppercase', flexShrink: 0,
-                }}>
-                  STAKE ({COVE_BACCARAT_MIN_BET}–{COVE_BACCARAT_MAX_BET})
-                </span>
-                {BET_STEPS.map((step) => (
-                  <BetChip
-                    key={step}
-                    value={step}
-                    selected={baccaratBet === step}
-                    disabled={inFlight || agentMode === 'autonomous'}
-                    onClick={() => setBaccaratBet(step)}
-                  />
-                ))}
-              </div>
-            </>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{
+                fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
+                letterSpacing: '0.12em', textTransform: 'uppercase', flexShrink: 0,
+              }}>
+                STAKE ({COVE_BACCARAT_MIN_BET}–{COVE_BACCARAT_MAX_BET})
+              </span>
+              {BET_STEPS.map((step) => (
+                <BetChip
+                  key={step}
+                  value={step}
+                  selected={baccaratBet === step}
+                  disabled={inFlight}
+                  onClick={() => setBaccaratBet(step)}
+                />
+              ))}
+            </div>
           )}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -733,7 +837,7 @@ export default function BaccaratModal() {
               <button
                 type="button"
                 onClick={() => { void handleDeal(); }}
-                disabled={inFlight || agentMode === 'autonomous'}
+                disabled={inFlight}
                 className="pt-btn pt-btn-primary"
                 style={{ minWidth: 130, height: 40, fontSize: 13, fontWeight: 700 }}
               >
@@ -762,18 +866,18 @@ export default function BaccaratModal() {
                   }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}>
-                  {isAuthed ? 'Walk Away' : 'Close'}
+                  {isRealTier ? 'Walk Away' : 'Close'}
                 </button>
               </>
             )}
           </div>
 
           {/* Footer line */}
-          <div style={{
+          <div className="bac2d-footer" style={{
             fontSize: 9, color: 'rgba(100,180,130,0.45)', fontFamily: 'var(--pt-data)',
             letterSpacing: '0.12em', textAlign: 'right',
           }}>
-            PHASE 6.6.1 · SERVER-AUTHORITATIVE · PROVABLY FAIR · {agentMode.toUpperCase()} MODE
+            PHASE 6.6.1 · SERVER-AUTHORITATIVE
           </div>
         </div>
       </div>
@@ -788,7 +892,8 @@ export default function BaccaratModal() {
       {/* Fairness tooltip */}
       {fairnessOpen && (
         <div
-          role="dialog" aria-modal="true" aria-label="Provably fair commitment"
+          role="dialog" aria-modal="true"
+          aria-label={isRealTier ? 'Provably fair commitment' : 'Baccarat shoe commitment'}
           onClick={() => setFairnessOpen(false)}
           style={{
             position: 'fixed', inset: 0, zIndex: 10001,
@@ -797,27 +902,37 @@ export default function BaccaratModal() {
           }}
         >
           <div onClick={(e) => e.stopPropagation()} className="pt-fairness-modal">
-            <div className="pt-fairness-eyebrow">Provably Fair</div>
-            <div className="pt-fairness-title">Commitment &amp; Reveal</div>
-            <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
-              Before any card is dealt, the server publishes <code>sha256(serverSeed)</code> as a
-              commitment. Every card in the 8-deck shoe is derived from
-              <code> (serverSeed, clientSeed, coupIndex, cursor)</code> — Punto Banco has no
-              player decisions, so the entire coup (deal + fixed third-card tableau + winner) is
-              determined by the seed and cannot be changed after you bet. The seed is revealed when
-              you walk away so you can replay every coup.
-            </p>
+            <div className="pt-fairness-eyebrow">
+              {isRealTier ? 'Provably Fair' : 'Shoe Commitment'}
+            </div>
+            <div className="pt-fairness-title">
+              {isRealTier ? 'Commitment & Reveal' : 'Commitment Visible · Demo Reveal Unavailable'}
+            </div>
+            {isRealTier ? (
+              <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
+                Before any card is dealt, the server publishes <code>sha256(serverSeed)</code> as a
+                commitment. Every card in the 8-deck shoe is derived from
+                <code> (serverSeed, clientSeed, coupIndex, cursor)</code>. The seed is revealed when
+                you walk away so you can replay every coup.
+              </p>
+            ) : (
+              <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
+                The landed demo surface exposes the pre-deal commitment, but not yet the retired
+                shoe seed required for client verification. Demo reveal verification arrives with
+                the server rotation surface; no verification is claimed here.
+              </p>
+            )}
             <div style={{ display: 'grid', gap: 8, fontSize: 12, fontFamily: 'var(--pt-data)' }}>
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Server seed hash: </span>
                 <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
-                  {shoe?.serverSeedHash ?? '— (no shoe open yet)'}
+                  {shoe?.serverSeedHash ?? 'No shoe open yet'}
                 </span>
               </div>
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Client seed: </span>
                 <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
-                  {shoe?.clientSeed ?? '—'}
+                  {shoe?.clientSeed ?? 'Not available'}
                 </span>
               </div>
               {revealedSeed ? (
@@ -825,9 +940,13 @@ export default function BaccaratModal() {
                   <span style={{ color: 'var(--pt-amber)' }}>Revealed server seed: </span>
                   <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>{revealedSeed}</span>
                 </div>
+              ) : isRealTier ? (
+                <div style={{ color: 'var(--pt-cream-soft)' }}>
+                  Server seed reveals when you walk away; then replay any coup at /cove/history.
+                </div>
               ) : (
                 <div style={{ color: 'var(--pt-cream-soft)' }}>
-                  Server seed reveals when you walk away — then replay any coup at /cove/history.
+                  Demo seed reveal and verification are not available on the landed endpoint.
                 </div>
               )}
             </div>
@@ -848,103 +967,6 @@ export default function BaccaratModal() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// AgentModeBar — Control vs Autonomous toggle + read-only advisor surface.
-//
-// FEATURE_GATE: baccarat_autonomous_agent_mode
-// Status: UI seam only — the Control/Autonomous toggle + advisor display panel
-//   are rendered, but the connected-agent WebSocket protocol that would drive
-//   Autonomous mode (or feed Control-mode advisor hints) does NOT exist yet.
-//   Autonomous is rendered disabled; the advisor panel shows a placeholder.
-// Metric to graduate: ≥ 1 connected agent completing a baccarat coup via the
-//   WS protocol in a 7-day window (event: cove.baccarat.agent.coup.settled).
-// Current reading: 0 (protocol not shipped — connected-agent protocol drop).
-// Review deadline: 2026-07-15
-// On deadline: if the WS protocol has not shipped, DELETE the Autonomous radio
-//   + advisor panel and keep Control-only until the protocol lands.
-// Reference: GameFeatures.md §18a.j (baccarat agent modes) + CLAUDE.md three-surface rule.
-//
-// SEAM: a connected-agent WS client would, in Control mode, push odds/edge hints
-//   into `advisorMessages` WITHOUT ever submitting a bet — the human's buttons
-//   stay the only decision channel. In Autonomous mode the same WS client would
-//   submit /coup calls on the agent's behalf. Neither path is wired here.
-// ---------------------------------------------------------------------------
-function AgentModeBar({ mode, onMode, advisorMessages }: {
-  mode: AgentMode;
-  onMode: (m: AgentMode) => void;
-  advisorMessages: AdvisorMessage[];
-}) {
-  return (
-    <div style={{
-      flexShrink: 0, background: 'rgba(0,0,0,0.28)',
-      borderBottom: '1px solid rgba(60,180,120,0.18)', padding: '8px 16px',
-      display: 'flex', flexDirection: 'column', gap: 6,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{
-          fontSize: 9, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
-          letterSpacing: '0.16em', textTransform: 'uppercase',
-        }}>
-          Mode
-        </span>
-        <div role="radiogroup" aria-label="Agent mode" style={{ display: 'flex', gap: 6 }}>
-          <button
-            type="button" role="radio" aria-checked={mode === 'control'}
-            onClick={() => onMode('control')}
-            style={{
-              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
-              fontWeight: mode === 'control' ? 700 : 400, cursor: 'pointer',
-              border: mode === 'control' ? '1.5px solid var(--pt-amber)' : '1.5px solid rgba(160,140,100,0.3)',
-              background: mode === 'control' ? 'rgba(200,150,50,0.18)' : 'rgba(10,30,20,0.5)',
-              color: mode === 'control' ? 'var(--pt-amber)' : 'var(--pt-cream-soft)',
-            }}
-          >
-            Control
-          </button>
-          <button
-            type="button" role="radio" aria-checked={mode === 'autonomous'}
-            disabled
-            title="Autonomous agent mode arrives with the connected-agent protocol"
-            style={{
-              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
-              cursor: 'not-allowed', opacity: 0.5,
-              border: '1.5px solid rgba(160,140,100,0.3)',
-              background: 'rgba(10,30,20,0.5)', color: 'var(--pt-cream-soft)',
-            }}
-          >
-            Autonomous (soon)
-          </button>
-        </div>
-        <span style={{
-          marginLeft: 'auto', fontSize: 9, fontFamily: 'var(--pt-data)',
-          color: 'var(--pt-mute)', letterSpacing: '0.06em',
-        }}>
-          {mode === 'control' ? 'You decide · agent advises' : 'Agent decides'}
-        </span>
-      </div>
-
-      {/* Advisor surface — read-only display channel, NEVER a decision input. */}
-      <div style={{
-        background: 'rgba(10,22,40,0.55)', border: '1px solid rgba(60,180,180,0.18)',
-        borderRadius: 6, padding: '6px 10px', minHeight: 26, maxHeight: 64,
-        overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
-      }}>
-        {advisorMessages.length === 0 ? (
-          <span style={{ fontSize: 10, color: 'var(--pt-cream-soft)', fontFamily: 'var(--pt-data)', fontStyle: 'italic' }}>
-            Advisor: connect an agent to get house-edge + bet hints here (read-only — your taps stay the decision). Coming with the connected-agent protocol.
-          </span>
-        ) : (
-          advisorMessages.map((m) => (
-            <span key={m.id} style={{ fontSize: 10, color: 'var(--pt-cream)', fontFamily: 'var(--pt-data)' }}>
-              <span style={{ color: 'var(--pt-cyan, #6fe6ff)' }}>Advisor:</span> {m.text}
-            </span>
-          ))
-        )}
-      </div>
     </div>
   );
 }

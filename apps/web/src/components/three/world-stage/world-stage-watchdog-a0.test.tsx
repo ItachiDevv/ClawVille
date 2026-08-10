@@ -35,6 +35,7 @@ let threeState: {
 mock.module('next/navigation', () => ({
   usePathname: () => '/cove',
   useRouter: () => router,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 mock.module('./WorldStageCanvas', () => ({
@@ -74,6 +75,9 @@ mock.module('@react-three/fiber', () => ({
 }));
 
 mock.module('@/lib/three/cove-interior', () => ({
+  // StageHostedCoveScene imports this named constant for its far-plane pin;
+  // the literal value is irrelevant to the renderer-warm assertions here.
+  COVE_CAMERA_FAR: 1300,
   default: ({
     onReady,
   }: {
@@ -103,6 +107,7 @@ beforeAll(() => {
     window: dom.window,
     document: dom.window.document,
     navigator: dom.window.navigator,
+    location: dom.window.location,
     Node: dom.window.Node,
     Element: dom.window.Element,
     HTMLElement: dom.window.HTMLElement,
@@ -266,7 +271,9 @@ describe('Fix C component renderer replacement', () => {
       },
     };
     threeState = {
-      camera: {},
+      // far + updateProjectionMatrix satisfy StageHostedCoveScene's
+      // COVE_CAMERA_FAR far-plane pin effect; the pin is not under test here.
+      camera: { far: 0, updateProjectionMatrix: () => {} },
       gl: firstRenderer,
       scene: {},
     };

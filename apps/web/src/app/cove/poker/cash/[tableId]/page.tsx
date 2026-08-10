@@ -291,7 +291,7 @@ export default function CashPokerTablePage({ params }: { params: Promise<RoutePa
             opacity: leaving ? 0.6 : 1,
           }}
         >
-          {leaveQueued ? 'Leaving after this hand…' : amSeated ? 'Leave' : 'Back to Cove'}
+          {leaveQueued ? 'Cashing out…' : leaving ? 'Standing…' : amSeated ? 'Walk Away' : 'Back to Cove'}
         </button>
       </div>
 

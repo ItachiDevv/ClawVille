@@ -26,7 +26,8 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(47);
+    // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
+    expect(PROTOCOL_VERSION).toBe(49);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -210,7 +211,8 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(47);
+    // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
+    expect(PROTOCOL_VERSION).toBe(49);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

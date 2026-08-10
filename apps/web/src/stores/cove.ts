@@ -144,6 +144,33 @@ export interface CoveStore {
    * sessionBalance/display balances keep rendering until a server refetch.
    */
   resetCoveStore: () => void;
+
+  // ── Sit-at-table 3D render layer (Slice 1 — 2026-07-10) ──────────────────
+  // Distinct from the 2D modal state above (holdemOpen/blackjackOpen/etc.) —
+  // this is the NEW in-world "walk up + sit at the physical table" feature.
+  // It opens no modal and settles no ClawTokens; it only moves the camera to
+  // a seated POV and hides the standing avatar. `tableId` is a free-form
+  // string key (map-doc id, e.g. 'T1') rather than a gameType enum because
+  // Slice 1 carries no game logic — the seam is deliberately generic so a
+  // later slice can bind real Hold'em table/seat state without a store
+  // shape change. null = walk-around mode.
+  seatedTable: { tableId: string; seatIndex: number } | null;
+  /** Sit at a specific table + seat. Camera transitions to that seat's POV. */
+  sitAtTable: (tableId: string, seatIndex: number) => void;
+  /** Stand up from any table and restore the walk-around follow camera. */
+  standFromTable: () => void;
+  /** One-shot navigation intent emitted by T1 proximity/click interactions. */
+  enterTableRoom: boolean;
+  requestEnterTableRoom: () => void;
+  clearEnterTableRoom: () => void;
+  /** One-shot navigation intent emitted by the blackjack-table hotspot. */
+  enterBlackjackRoom: boolean;
+  requestEnterBlackjackRoom: () => void;
+  clearEnterBlackjackRoom: () => void;
+  /** One-shot navigation intent emitted by the baccarat-table hotspot. */
+  enterBaccaratRoom: boolean;
+  requestEnterBaccaratRoom: () => void;
+  clearEnterBaccaratRoom: () => void;
 }
 
 // Empty-state factory (same pattern as poker.ts/activity.ts) — the create()
@@ -171,6 +198,12 @@ const createInitialCoveState = () => ({
   baccaratOpen: false,
   baccaratBet: 25,
   baccaratDisplayBalance: 0,
+  // Sit-at-table 3D render layer (Slice 1 — 2026-07-10). In the factory so the
+  // auth-transition sweep (`resetCoveStore`) also clears a stale seat/intent.
+  seatedTable: null as { tableId: string; seatIndex: number } | null,
+  enterTableRoom: false,
+  enterBlackjackRoom: false,
+  enterBaccaratRoom: false,
 });
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -312,4 +345,42 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   setBaccaratBet: (bet) => set({ baccaratBet: bet }),
 
   resetCoveStore: () => set(createInitialCoveState()),
+
+  // Sit-at-table 3D render layer (Slice 1 — 2026-07-10). Initial values live
+  // in createInitialCoveState.
+  sitAtTable: (tableId, seatIndex) => {
+    // Founder contract: NO 2D game modal while seated — the whole session
+    // renders on the felt. The hotspots refuse to OPEN a modal while seated,
+    // but the E-key sit path must also close any modal already open (P3.1,
+    // Codex finding: sit with the blackjack modal up left the HUD mounted
+    // behind it). One atomic set() so the hold'em controller's
+    // `modalOpen || seated` activation never blips false between states.
+    set({
+      seatedTable: { tableId, seatIndex },
+      holdemModalOpen: false,
+      blackjackOpen: false,
+      baccaratOpen: false,
+      slotScreenOpen: false,
+    });
+  },
+
+  standFromTable: () => {
+    set({ seatedTable: null });
+  },
+
+  requestEnterTableRoom: () => set({ enterTableRoom: true }),
+  clearEnterTableRoom: () => set({ enterTableRoom: false }),
+  requestEnterBlackjackRoom: () => set({ enterBlackjackRoom: true }),
+  clearEnterBlackjackRoom: () => set({ enterBlackjackRoom: false }),
+  requestEnterBaccaratRoom: () => set({ enterBaccaratRoom: true }),
+  clearEnterBaccaratRoom: () => set({ enterBaccaratRoom: false }),
 }));
+
+// E2E-harness handle (P4, 2026-07-16). Client Zustand state is already fully
+// inspectable/manipulable through React devtools — every money mutation is
+// server-authoritative — so exposing the store handle adds no attack surface
+// while letting the browser test harness drive deterministic sit/stand/modal
+// transitions instead of fragile keyboard pathfinding.
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__cvCoveStore = useCoveStore;
+}
