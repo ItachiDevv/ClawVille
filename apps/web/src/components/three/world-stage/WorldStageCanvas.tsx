@@ -22,6 +22,7 @@ import {
 } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
+import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import { resetAllHeldInputs } from '@/lib/three/input-reset';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import {
@@ -634,9 +635,14 @@ function createStageRenderer(props: {
   if (existing) return existing;
 
   const creation = (async () => {
+    // Rung-4 slice A head decomposition. "Once" stamps: only the FIRST
+    // renderer creation (the cold boot) is evidence — recovery-lane
+    // recreations must not overwrite it.
+    stampColdLoadPhaseOnce('stageRendererFactoryStartAt', performance.now());
     const route = window.location.pathname;
     const canvas = props.canvas;
     const [width, height] = await waitForCanvasSize(canvas);
+    stampColdLoadPhaseOnce('stageCanvasSizeReadyAt', performance.now());
     const dpr = Math.max(
       DPR_RANGE[0],
       Math.min(window.devicePixelRatio || 1, DPR_RANGE[1]),
@@ -644,6 +650,7 @@ function createStageRenderer(props: {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
 
+    stampColdLoadPhaseOnce('stageRendererInitStartAt', performance.now());
     const { renderer, usedWebGL } = await runStageRendererInitialization({
       route,
       forceWebGL: FORCE_WEBGL,
@@ -662,6 +669,7 @@ function createStageRenderer(props: {
         );
       },
     });
+    stampColdLoadPhaseOnce('stageRendererInitEndAt', performance.now());
     currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
     currentStageRenderer = renderer;
     previousStageRenderCalls = null;
