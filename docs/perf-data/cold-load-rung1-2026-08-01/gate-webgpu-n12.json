@@ -1,0 +1,41 @@
+{
+  "verdict": "pass",
+  "reasons": [],
+  "perMetric": {
+    "revealMs": {
+      "verdict": "pass",
+      "medianLogRatio": -0.020748384400582236,
+      "upperBoundLogRatio": 0.016364686672316418,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 12
+    },
+    "worstFrameMsIn10s": {
+      "verdict": "pass",
+      "medianLogRatio": -0.025751046353067533,
+      "upperBoundLogRatio": 0.1297197898611963,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 12
+    },
+    "stableWindowStartMsAfterReveal": {
+      "verdict": "pass",
+      "medianLogRatio": -0.10889024451673959,
+      "upperBoundLogRatio": 0.072486591439085,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 12
+    },
+    "preRevealLongtaskMs": {
+      "verdict": "pass",
+      "medianLogRatio": -0.021505552187287436,
+      "upperBoundLogRatio": 0.05036812164924577,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 12
+    },
+    "framesOver100In10s": {
+      "verdict": "pass",
+      "upperBoundDiff": 2,
+      "limit": 2,
+      "n": 12
+    }
+  },
+  "usablePairs": 12
+}

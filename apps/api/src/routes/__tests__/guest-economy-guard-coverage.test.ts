@@ -98,11 +98,15 @@ const MANIFEST: Entry[] = [
       // middleware chain, and the span-to-first-`async` matcher would bleed into
       // the NEXT route's chain and falsely bless them (Codex hotfix review,
       // LOW). Their 409 behavior is pinned by land-tenure-phaseb.test.ts.
-      p('post', '/claim-starter'),
+      p('post', '/hold-wallet'),
+      p('post', '/parcels/:parcelId/claim-rent'),
       p('post', '/parcels/:parcelId/claim-hold'),
       p('post', '/parcels/:parcelId/deposit-topup'),
       p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
+      p('post', '/parcels/:parcelId/pieces'),
+      p('patch', '/pieces/:pieceId'),
+      p('delete', '/pieces/:pieceId'),
       p('patch', '/structures/:structureId/appearance'),
       p('post', '/structures/:structureId/upgrade'),
       p('post', '/structures/:structureId/services'),
@@ -121,11 +125,15 @@ const MANIFEST: Entry[] = [
     file: 'land.ts',
     guard: 'requireLedgerCapableIdentity',
     routes: [
-      p('post', '/claim-starter'),
+      p('post', '/hold-wallet'),
+      p('post', '/parcels/:parcelId/claim-rent'),
       p('post', '/parcels/:parcelId/claim-hold'),
       p('post', '/parcels/:parcelId/deposit-topup'),
       p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
+      p('post', '/parcels/:parcelId/pieces'),
+      p('patch', '/pieces/:pieceId'),
+      p('delete', '/pieces/:pieceId'),
       p('patch', '/structures/:structureId/appearance'),
       p('post', '/structures/:structureId/upgrade'),
       p('post', '/spawn-preference'),
@@ -135,9 +143,32 @@ const MANIFEST: Entry[] = [
     ],
   },
   {
+    // The tutorial ladder joined this list in P6 (2026-08-09). It pays real
+    // vCLAW and real materials, and was cookie-gated with a hand-rolled guest
+    // check — the last live economy surface an agent could not reach as itself.
     file: 'quests.ts',
     guard: 'requireNonGuestIdentity',
-    routes: [p('post', '/:id/accept'), p('post', '/:id/start'), p('post', '/:id/submit')],
+    routes: [
+      p('post', '/:id/accept'),
+      p('post', '/:id/start'),
+      p('post', '/:id/submit'),
+      p('post', '/tutorial/:id/claim'),
+      p('get', '/tutorial/claims'),
+    ],
+  },
+  {
+    // Ledger-capability lock on the tutorial ladder: a stale, restored, or
+    // otherwise unproven agent bearer must fail closed before any reward
+    // settles, exactly as on land and cove.
+    file: 'quests.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/:id/accept'),
+      p('post', '/:id/start'),
+      p('post', '/:id/submit'),
+      p('post', '/tutorial/:id/claim'),
+      p('get', '/tutorial/claims'),
+    ],
   },
   {
     file: 'cove-cash-poker.ts',

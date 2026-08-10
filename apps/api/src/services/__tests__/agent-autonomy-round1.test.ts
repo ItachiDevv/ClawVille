@@ -169,6 +169,47 @@ describe('round 1 perception + decision prompt', () => {
     for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(verb);
   });
 
+  it('renders closed, copyable owned and claimable land targets', () => {
+    const id = 'land-target-prompt-agent';
+    const entry = registerHouse(id);
+    const prompt = agentAutonomyDriver.buildDecisionPrompt(
+      npcSimulation.buildPerception(id)!,
+      entry as never,
+      [],
+      null,
+      [],
+      {
+        owned: [{
+          parcelCode: 'parcel-starter-01',
+          displayName: 'Starter Cove #01',
+          tier: 'starter',
+          tenure: 'deposit',
+          holdThresholdClv: null,
+          weeklyRentVclaw: 1_000,
+          prepaidWeeksRemaining: 2,
+          grace: 'active',
+        }],
+        claimable: [{
+          parcelCode: 'parcel-c-01',
+          displayName: 'Outer Ward #01',
+          tier: 'c',
+          holdThresholdClv: 250_000,
+          weeklyRentVclaw: 2_500,
+          distanceWu: 420,
+        }],
+      },
+    );
+
+    expect(prompt).toContain('Land targets (server-derived; copy parcelCode exactly):');
+    expect(prompt).toContain('Starter Cove #01 (parcel-starter-01): tier=starter, tenure=deposit');
+    expect(prompt).toContain('prepaidWeeks=2');
+    expect(prompt).toContain('Outer Ward #01 (parcel-c-01): tier=c, holdThreshold=250000 CLV');
+    expect(prompt).toContain('weeklyRent=2500 vCLAW, distance=420wu');
+    for (const verb of ['claim_parcel', 'prepay_rent', 'release_parcel']) {
+      expect(prompt).toContain(verb);
+    }
+  });
+
   it('surfaces the terminal cove action when the agent is already in range', () => {
     const id = 'in-range-prompt-agent';
     const entry = registerHouse(id);

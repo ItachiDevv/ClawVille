@@ -187,6 +187,13 @@ async function runApply(client: postgres.Sql): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (LAND_HOLD_THRESHOLDS_CLV.a == null || LAND_HOLD_THRESHOLDS_CLV.b == null) {
+    console.error(
+      `${LOG} REFUSED: this legacy grandfather script includes retired a/b hold tiers and ` +
+        `cannot run after Land P2. Use migrations 0051/0052 instead.`,
+    );
+    process.exit(1);
+  }
   const apply = process.argv.includes('--apply');
   printPlan();
 

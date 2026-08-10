@@ -1,0 +1,9 @@
+{
+  "verdict": "fail",
+  "reasons": [
+    "3 pairs dropped (not strict/finite/backend-matched evidence)",
+    "order not counterbalanced: 7 AB vs 3 BA"
+  ],
+  "perMetric": {},
+  "usablePairs": 10
+}

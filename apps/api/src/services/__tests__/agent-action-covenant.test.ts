@@ -27,6 +27,7 @@ interface SimInternals {
   pendingEvents: Array<{ type: string; data: { message: string } }>;
   missingActionAttributionWarned: Set<string>;
   autonomousCovePlayLastAdmittedAt: Map<string, number>;
+  autonomousLandActionLastAdmittedAt: Map<string, number>;
   emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean>;
   autonomousCoveSlotsPlay: (input: {
     agentSessionId: string; expectedAgentId: string; expectedAvatarId: string; expectedUserId: string;
@@ -38,6 +39,8 @@ interface SimInternals {
   autonomousCoveAgentResolve: (sessionId: string) => Promise<{
     agentId: string; userId: string | null; avatarId: string | null; ledgerCapable: boolean;
   } | null>;
+  autonomousLandSettle: (input: any) => Promise<any>;
+  autonomousLandEffects: (input: any) => Promise<void>;
   initNpcs: () => void;
   executeHatcherAction: (
     npcId: string,
@@ -54,6 +57,8 @@ const originalEmoteOwnershipQuery = npcSimulation.emoteOwnershipQuery;
 const originalAutonomousCoveSlotsPlay = npcSimulation.autonomousCoveSlotsPlay;
 const originalAutonomousCoveBlackjackPlay = npcSimulation.autonomousCoveBlackjackPlay;
 const originalAutonomousCoveAgentResolve = npcSimulation.autonomousCoveAgentResolve;
+const originalAutonomousLandSettle = npcSimulation.autonomousLandSettle;
+const originalAutonomousLandEffects = npcSimulation.autonomousLandEffects;
 const AVATAR = 'executor-avatar';
 
 function body(id: string, x = 11264, y = 11264): TestNpc {
@@ -120,6 +125,7 @@ beforeEach(() => {
   sim.pendingEvents = [];
   sim.missingActionAttributionWarned.clear();
   sim.autonomousCovePlayLastAdmittedAt.clear();
+  sim.autonomousLandActionLastAdmittedAt.clear();
 });
 
 afterEach(() => {
@@ -128,6 +134,8 @@ afterEach(() => {
   npcSimulation.autonomousCoveSlotsPlay = originalAutonomousCoveSlotsPlay;
   npcSimulation.autonomousCoveBlackjackPlay = originalAutonomousCoveBlackjackPlay;
   npcSimulation.autonomousCoveAgentResolve = originalAutonomousCoveAgentResolve;
+  npcSimulation.autonomousLandSettle = originalAutonomousLandSettle;
+  npcSimulation.autonomousLandEffects = originalAutonomousLandEffects;
 });
 
 async function flushEmoteLookup(): Promise<void> {
@@ -136,6 +144,10 @@ async function flushEmoteLookup(): Promise<void> {
 }
 
 async function flushAutonomousCovePlay(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function flushAutonomousLandAction(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
@@ -263,6 +275,85 @@ describe('in-world executor covenant hooks', () => {
     });
     expect(calls[0]!.actionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(npc.intentDescription).toContain('playing blackjack at the cove');
+  });
+
+  it('settles all three Land verbs through one live binding and reserves duplicate semantics', async () => {
+    const npc = body('land-action-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('land-action-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'land-action-session');
+    npcSimulation.autonomousCoveAgentResolve = async () => ({
+      agentId: npc.id,
+      userId: 'executor-user',
+      avatarId: AVATAR,
+      ledgerCapable: true,
+    });
+    const calls: any[] = [];
+    const effects: any[] = [];
+    npcSimulation.autonomousLandSettle = async (input) => {
+      calls.push(input);
+      if (input.operation.verb === 'claim_parcel') {
+        return { kind: 'claim', fresh: true, parcel: { parcelCode: input.operation.parcelCode, tier: 'starter' }, door: input.operation.door, amountCt: 2_000 };
+      }
+      if (input.operation.verb === 'prepay_rent') {
+        return { kind: 'prepay', fresh: true, parcelCode: input.operation.parcelCode, amountCt: 3_000 };
+      }
+      return { kind: 'release', fresh: true, parcel: { parcelCode: input.operation.parcelCode, tier: 'starter' }, refundedCt: 2_000 };
+    };
+    npcSimulation.autonomousLandEffects = async (input) => { effects.push(input); };
+
+    const speech = npcSimulation.dispatchHatcherActions(
+      npc.id,
+      'Land day. [ACTION: claim_parcel(parcelCode=parcel-starter-01, door=rent, weeks=2)] [ACTION: claim_parcel(parcelCode=parcel-starter-01, door=rent, weeks=2)] [ACTION: prepay_rent(parcelCode=parcel-starter-01, weeks=3)] [ACTION: release_parcel(parcelCode=parcel-starter-01)]',
+    );
+    await flushAutonomousLandAction();
+
+    expect(speech).toBe('Land day.');
+    expect(calls.map((call) => call.operation)).toEqual([
+      { verb: 'claim_parcel', parcelCode: 'parcel-starter-01', door: 'rent', weeks: 2 },
+      { verb: 'prepay_rent', parcelCode: 'parcel-starter-01', weeks: 3 },
+      { verb: 'release_parcel', parcelCode: 'parcel-starter-01' },
+    ]);
+    expect(calls.every((call) => call.identity.userId === 'executor-user')).toBe(true);
+    expect(calls.every((call) => call.identity.avatarId === AVATAR)).toBe(true);
+    expect(calls.every((call) => call.identity.agentId === npc.id)).toBe(true);
+    expect(calls.every((call) => call.identity.sessionId === 'land-action-session')).toBe(true);
+    expect(calls.every((call) => call.idempotencyKey.length >= 8 && call.idempotencyKey.length <= 64)).toBe(true);
+    expect(effects).toHaveLength(3);
+  });
+
+  it('drops malformed or non-ledger Land actions before settlement', async () => {
+    const npc = body('land-action-drop-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('land-action-drop-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'land-action-drop-session');
+    npcSimulation.autonomousCoveAgentResolve = async () => ({
+      agentId: npc.id, userId: 'executor-user', avatarId: AVATAR, ledgerCapable: false,
+    });
+    const calls: any[] = [];
+    npcSimulation.autonomousLandSettle = async (input) => {
+      calls.push(input);
+      return {
+        kind: 'release',
+        fresh: true,
+        parcel: { parcelCode: 'parcel-starter-01', tier: 'starter' },
+        refundedCt: 0,
+      };
+    };
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: claim_parcel(parcelCode=parcel-starter-01, door=hold, weeks=2)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: prepay_rent(parcelCode=parcel-starter-01, weeks=27)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: release_parcel(parcelCode=parcel-does-not-exist)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: release_parcel(parcelCode=parcel-starter-01)]');
+    await flushAutonomousLandAction();
+
+    expect(calls).toHaveLength(0);
   });
 
   it('broadcasts an owned+equipped emote and serializes its monotonic sequence', async () => {
@@ -435,13 +526,13 @@ describe('in-world executor covenant hooks', () => {
     expect(replacement.emoteClip).toBeUndefined();
   });
 
-  it('completes late identityKey/Milady avatar attribution before connect returns', async () => {
+  it('completes owner-proven avatar attribution before connect returns', async () => {
     const source = await Bun.file(
       new URL('../../routes/agent-gateway.ts', import.meta.url),
     ).text();
-    const resolvedAt = source.indexOf('const resolved = await mintSessionTicketFromConnect');
+    const resolvedAt = source.indexOf('finalAvatarId = avatar.id');
     const bindAt = source.indexOf(
-      'npcSimulation.bindAgentAvatarAttribution(sessionId, resolved.avatarId)',
+      'npcSimulation.bindAgentAvatarAttribution(sessionId, finalAvatarId)',
       resolvedAt,
     );
     const responseAt = source.indexOf('return c.json(', bindAt);
@@ -450,7 +541,7 @@ describe('in-world executor covenant hooks', () => {
     expect(responseAt).toBeGreaterThan(bindAt);
   });
 
-  it('dispatches enter_kelp_forest through the public eight-verb whitelist', () => {
+  it('dispatches enter_kelp_forest through the public twelve-verb whitelist', () => {
     const records: CovenantActionInput[] = [];
     npcSimulation.covenantRecord = async (input) => {
       records.push(input);

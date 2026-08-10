@@ -26,6 +26,7 @@ import {
   playerKeyState,
   resetPlayerKeys,
   resetPlayerTouch,
+  RUN_SPEED_MULT,
 } from './player-input';
 import { WORLD_VRM_POLICY } from './player-motion-policy';
 import { useStageStore } from '@/components/three/world-stage/stage-store';
@@ -273,6 +274,18 @@ describe('ordered player frame contract', () => {
     });
     h.run();
     expect(h.position).toEqual({ x: 1, z: 0 });
+  });
+
+  test('navigation override and direct input share the run multiplier', () => {
+    playerKeyState.shift = true;
+    const h = harness({
+      onNavigationOverride: () => ({
+        moveOverride: { worldVx: 1, worldVz: 0 },
+      }),
+    });
+    h.run();
+    expect(RUN_SPEED_MULT).toBe(2.025);
+    expect(h.position).toEqual({ x: RUN_SPEED_MULT, z: 0 });
   });
 
   test('navigation consume skips direction and movement', () => {

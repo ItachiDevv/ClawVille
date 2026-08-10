@@ -282,6 +282,36 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
     condition: { type: 'pending' },
     prerequisites: [],
   },
+
+  // TIER 10 — the four land quests (materials rail).
+  //
+  // All `serverOnly`: each predicate is a row count the client cannot see —
+  // owned parcels, placed structures, active distinct kit pieces, and structure
+  // level — so there is no counter to mirror and no honest client-side
+  // approximation. They deliberately carry NO prerequisites: land is reachable
+  // without finishing the tutorial line, and gating it behind that would make
+  // the flagship activity an endgame, which is the exact defect this pass
+  // exists to fix.
+  homesteader: {
+    hint: 'Hold or rent your first parcel at the Land Office. Server-validated.',
+    condition: { type: 'serverOnly' },
+    prerequisites: [],
+  },
+  'first-nail': {
+    hint: 'Place your first home or shop on a parcel you hold. Server-validated.',
+    condition: { type: 'serverOnly' },
+    prerequisites: ['homesteader'],
+  },
+  'yard-work': {
+    hint: 'Have 6 kit pieces placed in your yard at once. Server-validated.',
+    condition: { type: 'serverOnly' },
+    prerequisites: ['first-nail'],
+  },
+  'curb-appeal': {
+    hint: 'Upgrade a structure to level 2 or higher. Server-validated.',
+    condition: { type: 'serverOnly' },
+    prerequisites: ['first-nail'],
+  },
 };
 
 export const QUEST_DEFINITIONS: QuestDefinition[] = TUTORIAL_QUESTS.map((entry) => {

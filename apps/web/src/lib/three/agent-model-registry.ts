@@ -69,13 +69,13 @@ export const MODEL_REGISTRY = {
   // pushed its mid-section behind the modal card.
   lobster:       { path: '/models/lobster-ktx.glb?v=2',                    scale: 10, label: 'Reef Lobster',    category: 'openclaw', avatar_type: 'glb' },
   sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb?v=2', scale: 10, label: 'Sweet Crab',      category: 'openclaw', avatar_type: 'glb' },
-  lobster_plush: { path: '/models/lobster_plush-ktx.glb?v=2',              scale: 10, label: 'Lobster Plush',   category: 'openclaw', avatar_type: 'glb' },
+  lobster_plush: { path: '/models/lobster_plush-nonorm-ktx.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw', avatar_type: 'glb' },
   hermitcrab:    { path: '/models/hermitcrab-ktx.glb?v=2',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw', avatar_type: 'glb' },
 
   // ── Other (sea creatures) ─────────────────────────────────────────────────
-  jellyfish:     { path: '/models/jellyfish-ktx.glb?v=2',                  scale: 10, label: 'Jellyfish',       category: 'other',    avatar_type: 'glb', yOffset: 1.5 },
-  octopus:       { path: '/models/octopus_toy-ktx.glb?v=2',                scale: 10, label: 'Octopus',         category: 'other',    avatar_type: 'glb' },
-  seahorse:      { path: '/models/sea_horse-ktx.glb?v=2',                  scale: 8,  label: 'Sea Horse',       category: 'other',    avatar_type: 'glb' },
+  jellyfish:     { path: '/models/jellyfish-mo-ktx.glb',                  scale: 10, label: 'Jellyfish',       category: 'other',    avatar_type: 'glb', yOffset: 1.5 },
+  octopus:       { path: '/models/octopus_toy-mo-ktx.glb',                scale: 10, label: 'Octopus',         category: 'other',    avatar_type: 'glb' },
+  seahorse:      { path: '/models/sea_horse-mo-ktx.glb',                  scale: 8,  label: 'Sea Horse',       category: 'other',    avatar_type: 'glb' },
 
   // ── Milady (VRM humanoid avatars) ─────────────────────────────────────────
   // VRM spec: human-scale models with feet at origin (Y=0 at ground plane).
@@ -131,7 +131,7 @@ export const MODEL_REGISTRY = {
   hermes_female: { path: '/avatars/hermes-female.vrm?v=2', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, preview: '/models/hermes-turnaround/female-front.png' },
   hermes_male:   { path: '/avatars/hermes-male.vrm?v=2',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, preview: '/models/hermes-turnaround/male-front.png' },
   // ?v=2 bust 2026-05-22 — Cloudflare cached a 404 for this URL from the window before the PNG was committed; CF edge TTL is 7d and our deploy token lacks cache_purge scope, so the URL query is the only invalidator. See "Asset cache-bust" kill-the-build rule in CLAUDE.md. The VRM ?v=2 (2026-06-13) is the decimation bust (separate from the preview PNG bust).
-  tekk:          { path: '/avatars/tekk.vrm?v=2',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
+  tekk:          { path: '/avatars/tekk-nonorm.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
 
   // ── Chibi VRM avatars (added 2026-05-21) ──────────────────────────────────
   // Mini-Nori-style stylized humanoids — large head, short stubby limbs.
@@ -147,12 +147,12 @@ export const MODEL_REGISTRY = {
   // the cache_purge token scope we don't have. Matches the existing pattern
   // used for the emote bundle (EMOTE_BUNDLE_VERSION in vrm-character-animator.ts).
   // faceYaw: Math.PI — chibi VRMs are Mixamo-rigged VRM 1.x (same as Hermes/Tekk).
-  // ?v=2→?v=3 bump 2026-06-13 — VRM decimated to ~40k tris + 2048² PNG texture
-  // downscaled to 1024² WebP (perf round 2, Track C+E). Stable URL content
-  // changed → ?v bump REQUIRED (see chibi cache-bust note above). Preload url in
-  // asset-preload-manifest.ts MUST match this ?v=3 exactly.
-  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=3',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
-  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=3',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
+  // History: ?v=2→?v=3 2026-06-13 (decimate + 1024² WebP, perf round 2 Track C+E);
+  // 2026-08-08 moved to -mo SIBLING FILENAMES (meshopt chain, cold-load rung 2) —
+  // the sibling name IS the cache-bust now, no ?v query needed. Preload url in
+  // asset-preload-manifest.ts MUST match these paths exactly.
+  eliza_chibi:   { path: '/avatars/eliza-chibi-mo.vrm',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
+  milady_chibi:  { path: '/avatars/milady-chibi-mo.vrm',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
 
   // ── Hatcher (placeholder — Phase 4 swap) ─────────────────────────────────
   // PLACEHOLDER (Phase 4 swap): these 8 keys point at existing Milady VRMs
@@ -186,10 +186,10 @@ export const MODEL_REGISTRY = {
   // animatorId by sex shares the existing retarget set for now — native Meshy-clip
   // animation is the deferred "wire-in" step (clips at /models/<slug>-mesh/meshy-openai/anim/).
   // ?v=2 cache-busts the prior VRMs at the same /avatars/ URLs.
-  phanes:       { path: '/avatars/phanes.vrm?v=2',       scale: 13, label: 'Phanes',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/openai/front.png?v=2' },
-  cronus:       { path: '/avatars/cronus.vrm?v=2',       scale: 13, label: 'Cronus',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/cronus-turnaround/openai/front.png?v=2' },
-  helen:        { path: '/avatars/helen.vrm?v=2',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
-  clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
+  phanes:       { path: '/avatars/phanes-w30k.vrm',       scale: 13, label: 'Phanes',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/openai/front.png?v=2' },
+  cronus:       { path: '/avatars/cronus-w35k.vrm',       scale: 13, label: 'Cronus',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/cronus-turnaround/openai/front.png?v=2' },
+  helen:        { path: '/avatars/helen-w30k.vrm',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
+  clytemnestra: { path: '/avatars/clytemnestra-w30k.vrm', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
 
   // Biggie — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-23). NOT an NPC and NOT
   // in shared AGENT_MODELS (API rejects self-assignment); granted manually via
@@ -197,7 +197,7 @@ export const MODEL_REGISTRY = {
   // asset path (never previously cached at this URL) so no ?v= query is needed.
   // animatorId 'biggie' strips idle/walk/run position tracks (adinero-pattern
   // underground-idle guard for this Meshy rig class).
-  biggie:       { path: '/avatars/biggie.vrm?v=2',           scale: 13, label: 'Biggie',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'biggie',        faceYaw: Math.PI, pickerHidden: true, preview: '/models/biggie-turnaround/openai/front.png' },
+  biggie:       { path: '/avatars/biggie-w30k.vrm',           scale: 13, label: 'Biggie',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'biggie',        faceYaw: Math.PI, pickerHidden: true, preview: '/models/biggie-turnaround/openai/front.png' },
 
   // Ansem — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-30). Deliberately
   // absent from shared AGENT_MODELS so the API rejects self-assignment; grant
@@ -208,7 +208,7 @@ export const MODEL_REGISTRY = {
   // edge-cached the 404 (7d TTL, no purge scope on our token), so the query
   // bump is the only invalidator. The kill-the-build cache-bust rule now
   // applies to this URL forever.
-  ansem:        { path: '/avatars/ansem.vrm?v=1',              scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
+  ansem:        { path: '/avatars/ansem-w30k.vrm',              scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
 
   // ── Adinero — wandering NPC clown comedian (Meshy pipeline 2026-06-19) ──
   // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar). Same OpenAI→Meshy-6
@@ -218,7 +218,7 @@ export const MODEL_REGISTRY = {
   // locomotion (walk/run/idle) — same as Cyrus (hermes_male wanderer). faceYaw Math.PI
   // (VRM1 faces +Z → flip to -Z toward camera). NOT in shared AGENT_MODELS — NPC species
   // are free strings, only the web render map needs the key.
-  adinero:      { path: '/avatars/adinero.vrm?v=1',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'adinero',       faceYaw: Math.PI, pickerHidden: true },
+  adinero:      { path: '/avatars/adinero-w30k.vrm',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'adinero',       faceYaw: Math.PI, pickerHidden: true },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and

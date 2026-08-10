@@ -25,8 +25,8 @@
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
- *   pineapple-house-opt1-ktx.glb?v=3, chum-bucket-v2-opt1-ktx.glb?v=4,
- *   krusty-krab-v2-opt1-ktx.glb?v=4, salty-spitoon-opt1-ktx.glb?v=3,
+ *   pineapple-house-opt1-mo-ktx.glb, chum-bucket-v2-opt1-mo-ktx.glb,
+ *   krusty-krab-v2-opt1-mo-ktx.glb, salty-spitoon-opt1-ktx.glb?v=3,
  *   boating-school-opt1-ktx.glb?v=3,
  *   patty-building-opt1-ktx.glb?v=3, building-lighthouse-opt1-ktx.glb?v=3,
  *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=4, cove/cove-exterior-opt1-ktx.glb?v=4,
@@ -87,16 +87,16 @@ import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
 
 /** Building GLBs from arena-buildings.tsx BUILDING_MODELS. Sandy's Treedome is procedural. */
 export const BUILDING_GLBS: readonly string[] = [
-  '/models/pineapple-house-opt1-ktx.glb?v=3',
-  '/models/chum-bucket-v2-opt1-ktx.glb?v=4',
-  '/models/krusty-krab-v2-opt1-ktx.glb?v=4',
+  '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
+  '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
+  '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
   '/models/salty-spitoon-opt1-ktx.glb?v=3',
   '/models/boating-school-opt1-ktx.glb?v=3',
-  '/models/patty-building-opt1-ktx.glb?v=3',
+  '/models/patty-building-opt1-mo-ktx.glb?v=3',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
   '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
-  '/models/patricks-rock-v2-opt1-ktx.glb?v=5',
+  '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',
 ] as const;
 
@@ -132,9 +132,9 @@ export const WANDERING_VRM_PATHS: readonly string[] = [
   // the cache. hermes/tekk = ?v=2 (geom decimate); chibis = ?v=2→?v=3 (geom + tex).
   '/avatars/hermes-female.vrm?v=2',
   '/avatars/hermes-male.vrm?v=2',
-  '/avatars/tekk.vrm?v=2',
-  '/avatars/eliza-chibi.vrm?v=3',
-  '/avatars/milady-chibi.vrm?v=3',
+  '/avatars/tekk-nonorm.vrm',
+  '/avatars/eliza-chibi-mo.vrm',
+  '/avatars/milady-chibi-mo.vrm',
 ] as const;
 
 /** All selectable player VRM paths (agent-model-registry.ts MODEL_REGISTRY).
@@ -154,9 +154,9 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
   // Identical ?v scheme as WANDERING_VRM_PATHS above; MUST match the registry.
   '/avatars/hermes-female.vrm?v=2',
   '/avatars/hermes-male.vrm?v=2',
-  '/avatars/tekk.vrm?v=2',
-  '/avatars/eliza-chibi.vrm?v=3',
-  '/avatars/milady-chibi.vrm?v=3',
+  '/avatars/tekk-nonorm.vrm',
+  '/avatars/eliza-chibi-mo.vrm',
+  '/avatars/milady-chibi-mo.vrm',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -165,18 +165,18 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
 
 /** SpongeBob character GLBs from arena-location-npcs.tsx LOCATION_NPCS */
 export const LOCATION_NPC_GLBS: readonly string[] = [
-  '/models/characters/spongebob-ktx.glb',
+  '/models/characters/spongebob-nonorm-ktx.glb',
   '/models/characters/gary-ktx.glb',       // companion at visual-creation
   '/models/characters/squidward-ktx.glb',
-  '/models/characters/flying-dutchman-ktx.glb',
-  '/models/characters/pearl-ktx.glb',
+  '/models/characters/flying-dutchman-nonorm-ktx.glb',
+  '/models/characters/pearl-nonorm-ktx.glb',
   '/models/characters/mrs-puff-ktx.glb',
   '/models/characters/mr-krabs-ktx.glb',
   '/models/characters/plankton-ktx.glb',
   '/models/characters/karen-ktx.glb',      // companion at code-development
   '/models/characters/sandy-ktx.glb',
   '/models/characters/patrick-ktx.glb',
-  '/models/lobster_plush-ktx.glb?v=2',          // Larry (deployment-ops) — shared path w/ wandering
+  '/models/lobster_plush-nonorm-ktx.glb',          // Larry (deployment-ops) — shared path w/ wandering
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -209,9 +209,9 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/quest-bounty-pavilion-ktx.glb?v=4',
+  '/models/quest-bounty-pavilion-nonorm-ktx.glb',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
-  '/models/shisha-oasis-ktx.glb?v=2',
+  '/models/shisha-oasis-mo-ktx.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
   // Auction podium removed 2026-07-15 — superseded by quest-bounty-pavilion.
 ] as const;
@@ -238,8 +238,9 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 // dynamic World3DCanvas chunk mounts. The browser will fetch + decode assets
 // in parallel with the chunk download, hiding the longest network legs.
 //
-// Ordering: critical-path assets first (buildings, locomotion, wandering NPCs),
-// then deferred assets (characters, decorations, player VRMs).
+// Runtime ordering: critical-path assets only (buildings, locomotion, wandering
+// NPCs). Deferred character/decoration paths remain in the audit manifest but
+// are demand-loaded by their release-staggered hidden consumers.
 // All calls are idempotent — useGLTF.preload() and preloadVRMBytes() are
 // no-ops if the asset is already in cache.
 //
@@ -248,10 +249,10 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 // Tier 2 — intentionally lazy:
 //   selectable player VRM bytes are loaded by the active avatar or the avatar picker,
 //   not by the open-world boot path
-// Tier 3 — fire after first rAF (exact timing matches DeferredNpcPreloads):
-//   location NPC GLBs + decoration GLBs (currently done by DeferredTerrainPreloads
-//   + DeferredNpcPreloads, which fire their own rAF preloads from game/page.tsx —
-//   those existing hooks already cover tier-3 correctly).
+// Tier 3 — demand only after each consumer's decorative-release stagger tick:
+//   location NPC GLBs + decoration GLBs. DeferredNpcPreloads intentionally
+//   excludes release-deferred models and DeferredTerrainPreloads is now a
+//   compatibility no-op; the hidden consumer subtrees own these requests.
 // ---------------------------------------------------------------------------
 
 let _preloadCalled = false;
@@ -300,11 +301,9 @@ export function preloadWorldAssets(): void {
   }
 
   // --- Tier 3 note ---
-  // Location NPC GLBs and decoration GLBs are already covered by:
-  //   DeferredNpcPreloads (rAF in game/page.tsx)
-  //   DeferredTerrainPreloads (rAF in game/page.tsx)
-  // Those hooks fire their own useGLTF.preload() calls after first paint.
-  // No duplication needed here.
+  // Release-deferred location NPC and decoration GLBs are intentionally absent
+  // here. Their hidden loader subtrees start demand after individual stagger
+  // ticks, then upload/compile through the global deferred-warm queue.
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +329,7 @@ export const ALL_WORLD_VRMS: readonly string[] = [
 //
 // Intended consumers:
 //   - Service worker cache manifest (sw.js ASSET_PATH_PREFIXES supplement)
-//   - `preloadWorldAssets()` above (uses the same ordering internally)
+//   - asset audits and service-worker inventory (not runtime preload ordering)
 //   - `docs/perf-audit-2026-05-22.md` Section B asset inventory
 //
 // Wire-up snippet for game/page.tsx (do NOT edit source files from this manifest;
@@ -358,7 +357,7 @@ export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   ...WANDERING_NPC_GLBS,
   ...WANDERING_VRM_PATHS,
   // Tier 2 — lazy player VRMs are intentionally omitted from boot preloads.
-  // Tier 3 — deferred (after first paint, handled by DeferredTerrainPreloads / DeferredNpcPreloads)
+  // Tier 3 — manifest-only audit entries; runtime demand is staggered per consumer.
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,
   EMOTE_BUNDLE,

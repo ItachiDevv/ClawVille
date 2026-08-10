@@ -64,6 +64,7 @@ import {
   MAP_LOCATIONS,
   type AutonomyStatusResponse,
   type AutonomyStatusThought,
+  WORLD_COLLIDER_MAP_HALF,
 } from '@clawville/shared';
 import { createHash } from 'crypto';
 import { NPC_WORLD_WALK_SPEED_WU_PER_S, npcSimulation } from './npc-simulation';
@@ -88,6 +89,33 @@ import { queryDurableAgentEventsNewest } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { resolveBuildingId } from './building-center';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
+import {
+  readAutonomousLandTargets,
+  type AutonomousLandTargets,
+} from './autonomous-land-targets';
+import {
+  readAutonomousSalvageTargets,
+  type AutonomousSalvageTargets,
+} from './autonomous-salvage-targets';
+
+/**
+ * The "nothing to offer" salvage projection. Used for HOUSE agents (which the
+ * salvage service refuses outright, so advertising nodes to them would be
+ * teaching an action that can only fail) and whenever the read errors.
+ */
+const EMPTY_SALVAGE_TARGETS: AutonomousSalvageTargets = {
+  nodes: [],
+  materialBalance: 0,
+  claimsRemainingToday: 0,
+  ownerClaimsRemainingToday: 0,
+};
+// Bounded server-derived claimable-quest ids for the decide prompt. Without it
+// the agent can form a `claim_tutorial_quest` call but cannot know which ids
+// are valid (world-scope consumption mandate).
+import {
+  readAutonomousQuestTargets,
+  type AutonomousQuestTarget,
+} from './autonomous-quest-targets';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -1127,9 +1155,45 @@ class AgentAutonomyDriver {
         );
       }
     }
-    const [lessons, knowledge] = await Promise.all([
+    const [lessons, knowledge, landTargets, questTargets, salvageTargets] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
+      readAutonomousLandTargets({
+        avatarId: entry.avatarId,
+        x: perception.self.x,
+        y: perception.self.y,
+      }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} land targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return { claimable: [], owned: [] } satisfies AutonomousLandTargets;
+      }),
+      readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} quest targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return [] as AutonomousQuestTarget[];
+      }),
+      // House agents never salvage (pure faucet, server-owned actor), so skip
+      // four queries per tick for the whole fleet rather than discarding the
+      // result later.
+      entry.isHouse
+        ? Promise.resolve(EMPTY_SALVAGE_TARGETS)
+        : readAutonomousSalvageTargets({
+        avatarId: entry.avatarId,
+        userId: entry.houseUserId,
+        x: perception.self.x,
+        y: perception.self.y,
+        mapHalfWu: WORLD_COLLIDER_MAP_HALF,
+      }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} salvage targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return EMPTY_SALVAGE_TARGETS;
+      }),
     ]);
     const prompt = this.buildDecisionPrompt(
       perception,
@@ -1137,6 +1201,9 @@ class AgentAutonomyDriver {
       lessons,
       directive?.text ?? null,
       knowledge,
+      landTargets,
+      questTargets,
+      salvageTargets,
     );
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
@@ -1398,6 +1465,9 @@ class AgentAutonomyDriver {
     recentLessons: string[] = [],
     directiveText: string | null = null,
     recentKnowledge: string[] = [],
+    landTargets: AutonomousLandTargets = { claimable: [], owned: [] },
+    questTargets: AutonomousQuestTarget[] = [],
+    salvageTargets: AutonomousSalvageTargets = EMPTY_SALVAGE_TARGETS,
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -1457,6 +1527,48 @@ class AgentAutonomyDriver {
       knowledgeLines.length > 0
         ? `\nKnowledge you already hold (from books and visits — apply it; prefer learning what you do NOT know):\n${knowledgeLines.join('\n')}\n`
         : '';
+    const landBlock = [
+      'Land targets (server-derived; copy parcelCode exactly):',
+      'Owned parcels:',
+      ...(landTargets.owned.length > 0
+        ? landTargets.owned.map((parcel) =>
+            `- ${parcel.displayName} (${parcel.parcelCode}): tier=${parcel.tier}, tenure=${parcel.tenure}, weeklyRent=${parcel.weeklyRentVclaw ?? 'none'} vCLAW, prepaidWeeks=${parcel.prepaidWeeksRemaining ?? 'n/a'}, holdThreshold=${parcel.holdThresholdClv ?? 'n/a'} CLV, grace=${parcel.grace}`,
+          )
+        : ['- none']),
+      'Claimable parcels (nearest first):',
+      ...(landTargets.claimable.length > 0
+        ? landTargets.claimable.map((parcel) =>
+            `- ${parcel.displayName} (${parcel.parcelCode}): tier=${parcel.tier}, holdThreshold=${parcel.holdThresholdClv ?? 'unavailable'} CLV, weeklyRent=${parcel.weeklyRentVclaw ?? 'unavailable'} vCLAW, distance=${parcel.distanceWu}wu`,
+          )
+        : ['- none available']),
+    ].join('\n');
+    // The claimable-quest block. Without it the agent can FORM a
+    // `claim_tutorial_quest` call but cannot know which ids are valid — the
+    // manual names only the four land quests. Server-derived, bounded, and
+    // advisory: the executor re-runs the real proof-of-engagement gate, so an
+    // unqualified suggestion costs one refused action, never a wrong payout.
+    const questBlock = [
+      'Claimable quests (server-derived; copy questId exactly; unclaimed and live only):',
+      ...(questTargets.length > 0
+        ? questTargets.map((quest) =>
+            `- ${quest.questId}: "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
+          )
+        : ['- none claimable right now']),
+    ].join('\n');
+    // The salvage block. Same reasoning as the quest block above, and the same
+    // failure it prevents: `salvage_node` takes an id from a frozen 48-node
+    // layout, so without this the model can form the call but cannot know a
+    // single valid id. Nodes are listed READY-first then nearest, with the
+    // caps, so "is another trip worth it" is answerable from the prompt.
+    const salvageBlock = [
+      `Salvage nodes (server-derived; copy nodeId exactly). You hold ${salvageTargets.materialBalance} materials; ${salvageTargets.claimsRemainingToday} claims left today (your account has ${salvageTargets.ownerClaimsRemainingToday} left across all its avatars):`,
+      ...(salvageTargets.nodes.length > 0
+        ? salvageTargets.nodes.map((node) =>
+            `- ${node.nodeId} (${node.band}): distance=${node.distanceWu}wu, ${node.ready ? 'READY now' : `cooling until ${node.nextClaimAt}`}`,
+          )
+        : ['- none in range']),
+      'Materials build home yards. salvage_node walks you there if you are far, then claims when you arrive — call it again on arrival.',
+    ].join('\n');
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -1478,6 +1590,11 @@ class AgentAutonomyDriver {
       learned,
       ...(knowledgeHeld ? [knowledgeHeld] : []),
       ...hereNow,
+      landBlock,
+      ...(salvageTargets.nodes.length > 0 ? [salvageBlock] : []),
+      '',
+      questBlock,
+      '',
       'Places (placeId: name — purpose — exact action — distance):',
       places,
       '',

@@ -37,6 +37,7 @@ import {
 import { useStageStore } from './stage-store';
 import {
   requestStageDeltaClamp,
+  SceneCameraProvider,
   SceneIdProvider,
   SlotCapabilityProvider,
   StageFrameScheduler,
@@ -199,6 +200,27 @@ function withInitTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/** Never-throw cold-load ACTUAL-backend stamp — same contract as World3DCanvas's
+ *  stampColdLoadBackend (duplicated locally to avoid a stage→legacy import).
+ *  The stage renderer IS the /game renderer under WorldStageRoot, so the
+ *  probe's actual-backend evidence must be published HERE: the legacy
+ *  createWebGPURenderer stamp never runs on stage-hosted routes, which left
+ *  __W3D_BACKEND stuck on the module-eval '-requested' value (probe run
+ *  invalid: "backend not actual"). Reads the renderer's REAL backend, not the
+ *  forceWebGL flag — Three's init can fall back WebGPU→WebGL2 silently. */
+function stampStageColdLoadBackend(renderer: THREE.WebGPURenderer): void {
+  if (typeof window === 'undefined') return;
+  try {
+    (window as unknown as { __W3D_BACKEND?: string }).__W3D_BACKEND = (
+      renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }
+    ).backend?.isWebGPUBackend
+      ? 'webgpu'
+      : 'webgl2';
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
 async function initializeStageRenderer(
   canvas: HTMLCanvasElement,
   forceWebGL: boolean,
@@ -220,6 +242,9 @@ async function initializeStageRenderer(
     renderer.dispose();
     throw error;
   }
+  // Single choke point: initial boot AND both recovery paths re-stamp here,
+  // so a recovery that lands on the other backend keeps the probe truthful.
+  stampStageColdLoadBackend(renderer);
   renderer.setClearColor(0x07131d, 1);
   renderer.setClearAlpha?.(1);
   renderer.setSize(width, height, false);
@@ -896,10 +921,12 @@ function StageLoopController({
 
 function StageSceneSlot({
   sceneId,
+  camera = null,
   capabilities,
   children,
 }: {
   sceneId: string;
+  camera?: THREE.PerspectiveCamera | null;
   capabilities?: Partial<PlayerCapabilityMask>;
   children: ReactNode;
 }) {
@@ -924,11 +951,13 @@ function StageSceneSlot({
       visible={visible}
     >
       {mounted ? (
-        <SceneIdProvider sceneId={sceneId}>
-          <SlotCapabilityProvider capabilities={resolvedCapabilities}>
-            {children}
-          </SlotCapabilityProvider>
-        </SceneIdProvider>
+        <SceneCameraProvider camera={camera}>
+          <SceneIdProvider sceneId={sceneId}>
+            <SlotCapabilityProvider capabilities={resolvedCapabilities}>
+              {children}
+            </SlotCapabilityProvider>
+          </SceneIdProvider>
+        </SceneCameraProvider>
       ) : null}
     </group>
   );
@@ -1072,6 +1101,7 @@ export function WorldStageCanvas({
             <StageSceneAppearance scene={scene} />
             <StageSceneSlot
               sceneId={scene.sceneId}
+              camera={cameras.get(scene.sceneId) ?? null}
               capabilities={scene.capabilities}
             >
               {scene.content}

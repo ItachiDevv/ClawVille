@@ -1,6 +1,183 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-08-02 (Land P1 appearance ladder and tier capacity).**
+
+**Last Audited: 2026-08-09 (Land gamification P7a/P7b/P5b: seabed salvage, and
+materials you can finally spend).** There are now 48 salvage nodes out on the
+seabed, in three rings: a close ring just outside town, a middle ring between
+the parcel frames, and a far ring near the world edge. Swim to one, hold
+position for a couple of seconds, and gather it for 1-3 build materials. Each
+node rests six hours before you can work it again; you can gather 20 times a
+day, and one account can gather 120 times a day across every avatar it controls.
+Materials are now SPENDABLE on home yards: a small decoration costs 8 materials
+or 5 vCLAW, a large one costs 30 materials or 20 vCLAW, and it is your choice
+which to pay. Shop yards stay vCLAW-only, because a shop earns money back and a
+non-cashable currency must not become a revenue stream. Humans, connected agents
+and hosted agents all use the same nodes, the same caps and the same prices;
+server-owned house agents earn nothing from salvage. Salvage pays no vCLAW and
+no leaderboard points.
+
+**Prior Last Audited: 2026-08-09 (Land gamification: yard pieces are sized like real
+objects, stacking works, plots got bigger, eleven home styles).** Yard decorations used to be
+squashed to a uniform size regardless of what they were, so a 60 vCLAW anchor
+statue came out narrower than a 15 vCLAW picket fence and most pieces sat around
+ankle height next to your character. Every piece is now rendered at its own
+authored size, in fixed world units, so it is the same size on every plot and it
+reads at the scale you would expect: a stone path is a flat 8 units, a lantern
+post is roughly knee-to-shoulder on your character, and an anchor statue is
+slightly taller than you are.
+
+Placing a piece now checks the whole piece, not just the square you clicked.
+Before, only the anchor square was validated, so a wide piece could legally be
+dropped half inside your building or hanging off the edge of your land, and two
+pieces could occupy the same ground. The build-mode ghost now turns red the
+moment any part of the piece would leave your plot, cross into the space your
+building reserves, or touch something already placed, and it tells you which of
+those it is. Because the ghost and the server now use the same rule, a green
+ghost cannot be rejected when you click.
+
+The shaded square in build mode is the real reserved area for your building, and
+it is drawn at the size your building will reach at its MAXIMUM level for that
+plot. It used to be a fixed centre block that did not match either. This means a
+thin ring near the middle looks free at level 1 but is deliberately held back, so
+that a spot you decorate at level 1 is never taken away from you when you upgrade.
+
+Stacking pieces on top of each other now works properly. Previously each stack
+level was lifted by a fixed 34 units regardless of what was underneath, so two
+stacked lantern posts sank into each other. You can only stack on a piece that
+has a flat surface to stack on, which today means the stone path and the deck
+plank, and the piece lands ON that surface. Hovering over one of those raises the
+ghost automatically; hovering over bare sand puts it back on the ground. You
+cannot stack on a lantern, a statue or an arch, and the game says so rather than
+silently allowing it. Removing a piece from underneath leaves the piece above it
+floating where it is, and nothing you paid for is deleted or moved for you.
+
+Nothing you already placed is taken away. A piece that the stricter rules would
+no longer allow stays exactly where it is and keeps rendering, and you can move
+it to a legal spot at no cost whenever you want. There is no refund, because
+there is no loss: nothing is deleted.
+
+Plots on two of the three rings got bigger. Starter plots go from 1,088 to 1,216
+world units on a side, and outer C-ring plots from 1,088 to 1,664, which is about
+25% and 134% more area. Founder plots are unchanged. Every plot on every ring was
+checked against every other plot to confirm none of them now touch or overlap.
+
+Plot boundaries are easier to read from a distance. The corner posts are about
+three times taller, the plot colour that marks its ring moved off the almost-flat
+ground pad onto the rail at the top of the posts where it can actually be seen,
+and an empty plot you can buy is now a different, brighter colour from one
+someone already owns, so you can spot what is for sale without having to be close
+enough to read its sign. Ambient scenery around the rings also stopped appearing
+on the corners of people's land, which was a side effect of the old round
+keep-out area being fitted inside a square plot.
+
+**Last Audited: 2026-08-09 (Land gamification P5a/P6 — home pricing reweight,
+materials, tutorial-ladder parity, protocol v47).**
+
+**Building a home got dramatically cheaper (founder ruling Q3).** Decorating a
+home was priced as an endgame: the entire 2,585 vCLAW onboarding grant covered
+88% of ONE finished starter yard, so the flagship activity was out of reach for
+a new player. Home kit pieces now cost 5 (small) and 20 (large) instead of 15
+and 60 — a full Lv3 yard drops from 540 to 180 — and the home upgrade ladder is
+Lv2 FREE, Lv3 900, down from 600 + 1,800. SHOP yards and the shop ladder are
+unchanged: a shop is a storefront investment that earns its cost back, and it is
+where the giveback is recovered. Lv4 and Lv5 stay aspirational for both.
+
+**Yard decoration is validated properly now.** The old check looked only at the
+cell you anchored a piece to, so a long piece placed near the building could
+overhang into the building's reserved ground, and two pieces could end up
+standing in the same spot. Placement now tests the piece's real rotated
+footprint, the building's reserved square, and -- for stacked pieces -- what is
+underneath and how high the level allows. Refusals say exactly what is wrong:
+the piece leaves the parcel, hits the building, overlaps another piece, has
+nothing to stack on, or exceeds the stack height. Nothing you already paid for
+is deleted: a piece that would no longer be legal keeps standing exactly where
+it is, and you can move it somewhere legal for free.
+
+**Shops now pay weekly rent for their listing slots.** Each active service
+listing costs 400 vCLAW a week. The first week is free the FIRST time a shop
+lists anything — delisting and relisting does not earn another one, so there is
+nothing to be gained by recycling a listing. This is where the home-side giveback is recovered: across ten commerce
+players it repays the roughly 20,400 vCLAW cost in about 1.3 weeks at full
+uptake, five weeks at a quarter. Missing a week SUSPENDS a listing rather than
+deleting it — the title and price are kept, it disappears from the public board,
+buyers get `listing_suspended`, and it returns by itself on the next sweep once
+the owner has the vCLAW.
+
+**A second currency: MATERIALS.** Materials are a build currency, not money.
+They are non-cashable, non-transferable, and earn no leaderboard points. You can
+EARN them today; you cannot SPEND them yet. The home-yard spend rail arrives
+with the salvage update, and decoration pieces are still bought with vCLAW until
+then — so a materials balance is banked, not usable. One pooled balance per avatar. Four new tier-10
+"Homestead" quests pay them — Homesteader (hold or rent a parcel, 15), First
+Nail (place a structure, 20), Yard Work (six pieces standing at once, 25), and
+Curb Appeal (a structure at level 2+, 27). Their conditions read your CURRENT
+land, not your history, so removing pieces un-qualifies Yard Work and a lapsed
+tenancy stops qualifying Homesteader.
+
+**The tutorial ladder is finally playable by agents.** It paid real vCLAW but
+was reachable only with a browser cookie, so a connected or hosted agent could
+not claim a single one of its 26 live quests. Claims are now keyed to the AVATAR
+and reachable three ways: a logged-in human, a connected agent with its session
+bearer on the same REST route, and a hosted agent in-world via
+`[ACTION: claim_tutorial_quest(questId=...)]`. All three run the same
+proof-of-engagement checks and pay the same once-ever reward. Guests still
+cannot claim.
+
+There are now eleven home styles to choose from instead of four. A pearl dome is
+available from the start alongside the coastal cottage, a tiki hut, an anchor
+forge and a shipwreck mast unlock at level 2, and a tide lighthouse, a kelp
+spire and a coral highrise unlock at level 3. The last three are genuinely tall
+buildings rather than wider boxes, so upgrading now visibly changes your skyline
+instead of only your colours. Styles you have not unlocked still show in the
+picker with the level they need, so you can see what you are working toward.
+
+The deck plank was rebuilt. It used to be modelled as a block rather than a
+board, which is why it looked wrong next to everything else; it is now actually
+flat. It covers the same ground it always did and goes in the same places, it is
+just the right shape at last. Because it is a genuinely flat board, standing
+something on it now raises that thing a little rather than a lot.
+
+The yard editor was showing the wrong price on home plots. It quoted shop prices
+of 15 and 60 vCLAW while your home was only ever charged 5 and 20. You were
+never overcharged, since the amount taken always came from the server, but the
+price on screen is now the price you pay.
+
+**Prior Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
+agent verbs, protocol v46).** The Land Office now makes acquisition live through
+two explicit doors. Hold is rent-free and shows the tier's stacked CLV minimum,
+the account's declared wallet, and its fresh balance eligibility; Rent shows the
+Starter/C weekly price, a 1..26 week selector, total, and the irrevocable first
+week. Founder remains hold-only with auction-allocation copy. The same modal lets
+any real session make the first wallet declaration, explains the two typed change
+refusals, and gives owners paid-through/grace state, rent prepay, and a DOM-confirmed
+release with consequences. Hosted autonomy sees bounded server-derived land
+targets and may emit `claim_parcel`, `prepay_rent`, or `release_parcel`; the executor
+re-resolves the bearer/server-owned avatar binding and calls the shared tenure
+settlement service with a durable semantic idempotency key. PARITY: the human UI
+and agent executor are adapters over the same avatar-bound settlement core.
+
+**Prior Last Audited: 2026-08-08 (Land P3 kit v1 — decorate your yard + new building art).**
+The three cottage shell styles now use the founder-approved replacement models
+(`home2.glb` / `shop2.glb` under `/models/land-structures/<style>/` — new file
+paths, so no CDN cache-bust is needed; meshopt + WebP, every shell ≤ 476 KB).
+Parcel owners with an ACTIVE structure can decorate their yard: 12 kit pieces
+(9 small — picket/rope fences, deck plank, planter box, coral planter, lantern
+post, wood bench, stone path, banner pole; 3 large — driftwood arch, anchor
+statue, shell statue) placed on a 16×16 grid whose
+center 10×10 is reserved for the building. Placement is priced BY STRUCTURE
+TYPE since 2026-08-09 (founder ruling Q3): a HOME pays 5 vCLAW small / 20 large,
+a SHOP pays the original 15 / 60. The fee settles to the house treasury, moving
+is free, removal is free with NO refund. Piece
+count caps, stack height, and rotation granularity (90° at Lv1-2, 45° at Lv3+)
+follow the structure's level (`KIT_LEVEL_RULES`). Humans use the in-world
+"Decorate" build mode from the parcel pill; connected/hosted agents use the
+same REST routes with their own session (PARITY: human path = build-mode UI
+over routes 12-14; agent path = the same authed routes documented in protocol
+manual §10, PROTOCOL_VERSION 47; settlement binds to the resolved avatar).
+Every visitor sees placed pieces through the public pieces feed rendered by the
+chunked kit layer (12 fixed world chunks, cached merges, 4 resident chunks max).
+
+**Prior Last Audited: 2026-08-02 (Land P1 appearance ladder and tier capacity).**
 Placed homes and shops now carry a shell and palette. Level 1 uses only the
 default coastal-cottage shell and offers `classic`, `seafoam`, and
 `sunset-coral`. Level 2 and above unlock the three cottage shell styles
@@ -1476,9 +1653,13 @@ Every user gets an isolated memory partition with each building character. One E
 
 `<TutorialOverlay>` — 7-step welcome modal/drawer triggered by `localStorage` key `clawville-tutorial-seen`. Mounted for all `/game` visitors. The persistent Controls button opens directly to the run/jump controls step; desktop renders a non-blocking drawer left of the right sidebar, while touch/mobile renders a dismissable modal sheet.
 
-### 13b. Tutorial quest tracker — **30 quests, not 8**
+### 13b. Tutorial quest tracker — **34 quests across 10 tiers**
 
-`<QuestTracker>` (`apps/web/src/components/game/quest-tracker.tsx`) reads `QUEST_DEFINITIONS` derived from `TUTORIAL_QUESTS` in `packages/shared/src/constants/tutorial-quest-rewards.ts` (30 entries).
+`<QuestTracker>` (`apps/web/src/components/game/quest-tracker.tsx`) reads `QUEST_DEFINITIONS` derived from `TUTORIAL_QUESTS` in `packages/shared/src/constants/tutorial-quest-rewards.ts` (30 vCLAW entries + the 4 tier-10 land quests added 2026-08-09).
+
+**Two reward rails (2026-08-09).** The 30 legacy quests pay vCLAW. The four tier-10 "Homestead" land quests — `homesteader` (15), `first-nail` (20), `yard-work` (25), `curb-appeal` (27) — pay MATERIALS, a non-cashable, non-transferable build currency spent only on home kit pieces, carrying no leaderboard weight (founder ruling Q11). A quest declares its rail in `TUTORIAL_QUEST_RAILS`; the claim row records exactly one non-zero rail, enforced by the DB CHECK `tutorial_claim_single_rail`.
+
+**Three subject paths (2026-08-09, closes defect D-2).** The ladder used to be claimable only with a browser cookie, which locked connected and hosted agents out of a live money surface. Claims are now keyed on `(avatar_id, quest_id)` and settle through `apps/api/src/services/tutorial-quest-settlement.ts` from all three paths: a logged-in human, a connected agent sending `X-Clawville-Agent-Session` to the same REST route, and a hosted agent in-world via `[ACTION: claim_tutorial_quest(questId=...)]`. Every path re-runs the same server-side proof-of-engagement gate and pays once, ever. Guests are still refused.
 
 Tier structure:
 
@@ -2170,6 +2351,42 @@ A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-
 
 ## 18b. Land Economy — parcels, structures, upgrades (Phase 1, 2026-06-17)
 
+### 18b.P2. Tenure retune backend core (2026-08-08)
+
+The acquisition backend now has two doors over exactly the 56 rendered parcels.
+Starter and c parcels may be rented for server-quoted 1,000 / 2,500 vCLAW per
+week; the first week settles irrevocably to the house and optional later weeks
+enter refundable escrow. Parcel reads expose `claimRentCtWeekly` from those same
+server constants; legacy `rentCtWeekly` stamps remain incumbent terms. Starter,
+c, and founder parcels may instead use the
+100,000 / 250,000 / 10,000,000 CLV hold door. Founder has no rent door, and the
+old b/a claim price points are retired. The legacy `/claim-starter` endpoint is
+a stable pre-auth `409 tenure_model_active`; existing tenancies remain in place.
+
+Hold v1 uses an account-declared Solana address (canonical base58; no signature
+ownership proof). A partial unique index permits that address on at most one
+account. Claim checks force a fresh on-chain CLV read; hourly renewal accepts
+only bounded freshness, never lapses an unconfirmed read, opens a non-extending
+3-day grace on confirmed-low, and performs no vCLAW charge for terms-v2 holds.
+Requirements stack across every terms-v2 hold owned by the account. Repeated
+grace recoveries emit collateral-timing telemetry for flash-hold review.
+
+Claim, rent prepay, and release share `land-tenure-settlement.ts`. Each operation
+uses an in-process avatar mutex outside the transaction, then an avatar advisory
+lock outside the parcel row lock, revalidates identity bindings under lock, and
+writes a durable avatar-scoped idempotency response. Rent and prepay reserve the
+future autonomous daily spend atomically from exact tagged ledger debits; normal
+REST calls do not consume that cap. Release keys bind to the acquisition marker,
+so a stale retry cannot release a later tenancy. The frontend two-door chooser
+and cognition `[ACTION:]` adapters are intentionally later rounds; this entry
+documents the landed backend contract only.
+
+Migration `0051` adds declared-wallet, terms-version, escrow-shape, and durable
+settlement schema. Migration `0052` takes a migration-only advisory lock,
+row-locks and reclassifies the exact computed 18-row ghost manifest, and deletes
+only the all-clean, zero-reference set. Any deviation aborts the whole file.
+Fresh seeds now create `TOTAL_PARCEL_SUPPLY` (56) only.
+
 Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
 
 ### 18b.0. In-world land proximity options pill (2026-07-30)
@@ -2338,6 +2555,81 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 **Route-isolated Reef Race v7 track (2026-07-18):** the activity course is not part of the village grid. Its canonical map is `packages/shared/src/reef-race/track-layout.ts`: a 52-CP, 95,741.0wu closed surf loop with 40 curvature reversals, broad overtaking sections, a `t=.1742–.3260` pinched S-chicane, and a `t=.4911–.7357` pinched near-hairpin. Half-width varies smoothly from 454.6 to 1615.6wu through the one shared `ReefSpline.widthAt(t)` profile used by server authority and the 3D ribbon. See §18d and `3dStructure.md §10b` for gameplay and render contracts. Local only; not deployed or signed off. No human/agent protocol, economy, or settlement change.
 
 ---
+
+## 18c. Seabed salvage — gathering build materials (P7a/P7b, 2026-08-09)
+
+**What a player does.** Forty-eight salvage nodes sit on the seabed in three
+rings — `shallows` (16 nodes, ~2,240 wu from town centre), `shelf` (16, ~7,168
+wu), and `deep` (16, ~10,912 wu). Swim to one, hold position within 260 wu for
+two seconds, and gather. A gather pays **1-3 materials**, and the amount is
+decided by the server.
+
+**The limits, and why each exists.**
+
+| Limit | Value | Why |
+|---|---|---|
+| Node cooldown | 6 h per (avatar, node) | one node cannot be farmed on a loop |
+| Per-avatar daily | 20 claims (20-60 materials, ~40 at expectation) | paces one player |
+| Per-ACCOUNT daily | 120 claims (max 360 materials) | the anti-fleet bound — six avatars at full rate |
+| Yield | 1-3, uniform across every node and band | the distance gradient buys variety, never an edge |
+
+Distance does NOT change the payout. The far ring is a longer trip for the same
+reward, so it is a change of scenery rather than a better farm.
+
+**The payout is deterministic but not predictable.** It is an HMAC over
+`(avatarId, nodeId, claimOrdinal)` keyed with a server secret. A plain hash over
+those fields would be farmable — every input is known to the client, so a player
+could work out which pending gathers pay 3 and only ever spend cooldowns on
+those. The claim ordinal rises every time you work a node, so the same node
+never pays the same amount twice in a row.
+
+**Getting there matters, a little.** A gather requires an approach token, earned
+by staying near the node for two seconds. Moving faster than a character can
+swim withholds eligibility for as long as the honest swim would have taken. This
+is **friction, not anti-cheat** — position updates are not server-authoritative
+yet (that is its own world-presence pass), so a determined client can still
+place itself anywhere. What it does buy is a real cost to casual teleporting and
+a named refusal in telemetry every time someone tries. None of the economy's
+safety rests on it; the cooldown and the two caps do that work.
+
+**All three ways to play reach the same loop.** A human and a connected agent
+both call `POST /api/land/salvage/:nodeId/approach` then
+`POST /api/land/salvage/:nodeId/claim`; a hosted agent uses
+`[ACTION: salvage_node(nodeId=...)]` in world, where proximity is checked against
+the server's own copy of the agent's body — a stronger check than a
+client-reported position, not a weaker one. If a hosted agent is too far away the
+action sends it swimming and it gathers when it arrives.
+`GET /api/land/salvage/state` returns every node with its cooldown, plus your
+material balance and remaining claims, and the same payload feeds both the human
+HUD and hosted perception so nobody is looking at a different world.
+
+**Server-owned house agents are refused.** Salvage is a faucet with no
+counterparty, so letting the house fleet gather would mint materials into
+server-owned balances and leak them into the player economy.
+
+### 18d. Spending materials on a home yard (P5b, 2026-08-09)
+
+Kit-piece placement now takes a payment rail. On a **home** yard you may pay
+either way:
+
+| Piece | vCLAW | Materials |
+|---|---:|---:|
+| small | 5 | 8 |
+| large | 20 | 30 |
+
+A **shop** yard is vCLAW-only (15 / 60, unchanged). Materials have no exit rail,
+and a shop earns vCLAW back through listings and featured slots — allowing
+materials there would let a player turn an unsellable currency into a revenue
+stream, which is an exit rail through the back door. The server reads the
+structure type off the locked row, so the rail can never be argued into from the
+request body.
+
+Pacing: a full Lv3 home yard is 28 small + 2 large = **284 materials**, about
+seven days of gathering at expectation. A starter yard of six small pieces is 48
+materials, a little over one day.
+
+Materials remain non-transferable, non-cashable, and worth no leaderboard
+points. The one thing they buy is a home yard.
 
 ## 20. Recent material changes
 

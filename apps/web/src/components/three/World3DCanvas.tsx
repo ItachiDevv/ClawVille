@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
+import { armDecorativeDeadline, armDecorativeReleaseOnFirstPaint, notifyWorldFramePresented } from '@/lib/three/decorative-release';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -8,6 +9,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { ThreeToJSXElements } from '@react-three/fiber';
 import {
   useSceneActive,
+  useSceneCamera,
   useSceneFrame,
 } from './world-stage/use-scene-frame';
 import {
@@ -53,10 +55,14 @@ import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import LandParcels, { LandParcelSignHitboxes } from '@/lib/three/land-parcels';
 import LandStructures from '@/lib/three/land-structures';
+import LandKitPieces from '@/lib/three/land-kit-pieces';
+import YardEditorThree from '@/lib/three/yard-editor-three';
 import LandShowroom from '@/lib/three/land-showroom';
 import LandRingDecorations from '@/lib/three/land-ring-decorations';
 import LandFounderApartments from '@/lib/three/land-founder-apartments';
 import LandStateHydrator from '@/lib/three/land-state-hydrator';
+import LandSalvageNodesLayer from '@/lib/three/land-salvage-render';
+import { findNearestSalvageNode, salvageApproachPositionRef } from '@/lib/three/land-salvage-nodes';
 import { findParcelAtWorldPos } from '@/lib/land-proximity';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
@@ -349,6 +355,19 @@ const CHAR_TARGET_Y = 15;
 // Frame-rate independent follow stiffness. The previous fixed 0.1/frame lerp
 // became visibly mushy when the scene dipped below 60 FPS.
 const FPS_FOLLOW_STIFFNESS = 14;
+
+// ---------------------------------------------------------------------------
+// DecorativeFirstPaintNotifier — pumps the decorative-release controller once
+// per world frame so the one-shot release anchors to the first PRESENTED
+// revealed frame instead of a warmup milestone (rung 3, Lever 1).
+// ---------------------------------------------------------------------------
+function DecorativeFirstPaintNotifier() {
+  useSceneFrame(() => {
+    notifyWorldFramePresented();
+  });
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Arrow key camera rotation — active in ALL modes
 // Reads _arrowKeys, adjusts orbit camera angles via spherical coordinates.
@@ -746,6 +765,39 @@ function FPSFollowCamera({
 // internally via its store subscriber, but belt-and-suspenders — if anything
 // races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
+/**
+ * Cold-load telemetry stamp (docs/perf-cold-load-diet-2026-07-31.md M0).
+ * MUST be impossible to throw: a frozen/sealed/accessor-poisoned global, or a
+ * primitive squatting on __W3D_PHASES, must never affect the boot path — some
+ * stamps run before readiness publication, so an exception here would strand
+ * the reveal. Numbers are rounded; non-object squatters are replaced when
+ * writable and silently abandoned when not.
+ */
+function stampColdLoadPhase(key: string, value: number | string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const w = window as any;
+    let phases = w.__W3D_PHASES;
+    if (phases === null || typeof phases !== 'object') {
+      phases = {};
+      w.__W3D_PHASES = phases;
+    }
+    phases[key] = typeof value === 'number' ? Math.round(value) : value;
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
+/** Same never-throw contract for the backend stamp. */
+function stampColdLoadBackend(backend: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    (window as any).__W3D_BACKEND = backend;
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
 function markWorldReadyIfUploadsDone(): void {
   if (typeof window === 'undefined') return;
   const bridge = window as any;
@@ -1108,6 +1160,9 @@ function createWorldWarmupGate(
       // The normal completion path already set this flag, so repeating it here
       // keeps every resume reason idempotent and prevents a safety fuse/error
       // from turning into a second, much longer apparent hang.
+      stampColdLoadPhase('resumeReadyAt', performance.now());
+      armDecorativeReleaseOnFirstPaint('resume');
+      stampColdLoadPhase('resumeReason', String(reason));
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
       // Heal both blue-until-resize boot races (WebGPU swapchain config +
@@ -1236,6 +1291,11 @@ function MinimapPositionTracker() {
 function LandProximityTracker() {
   const lastWriteRef = useRef(0);
 
+  const clearProximity = (store: ReturnType<typeof useGameStore.getState>) => {
+    if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+    if (store.nearSalvageNodeId !== null) store.setNearSalvageNodeId(null);
+  };
+
   useSceneFrame(({ clock }) => {
     const now = clock.elapsedTime;
     if (now - lastWriteRef.current < 0.2) return;
@@ -1251,30 +1311,30 @@ function LandProximityTracker() {
       mapY = avatarPositionRef.y;
     } else if (mode === 'npc') {
       if (!store.possessedNpcId) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       const npc = useNpcStore.getState().npcs.find((n) => n.id === store.possessedNpcId);
       if (!npc) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       mapX = npc.x;
       mapY = npc.y;
     } else if (mode === 'autonomous') {
       if (!store.autonomousBodyId) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       const body = useNpcStore.getState().npcs.find((n) => n.id === store.autonomousBodyId);
       if (!body) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       mapX = body.x;
       mapY = body.y;
     } else {
-      if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+      clearProximity(store);
       return;
     }
 
@@ -1282,6 +1342,17 @@ function LandProximityTracker() {
     const worldZ = mapY - HALF_H;
     const code = findParcelAtWorldPos(worldX, worldZ);
     if (code !== store.nearParcelCode) store.setNearParcelCode(code);
+
+    // The single source SalvageGatherPill's approach poll reads for the
+    // active body's live centered position — see its doc comment.
+    salvageApproachPositionRef.x = worldX;
+    salvageApproachPositionRef.z = worldZ;
+
+    // Salvage nodes are deliberately excluded FROM parcel footprints, so this
+    // is independent of the parcel lookup above, not an else-branch.
+    const nearestNode = findNearestSalvageNode(worldX, worldZ);
+    const nodeId = nearestNode?.id ?? null;
+    if (nodeId !== store.nearSalvageNodeId) store.setNearSalvageNodeId(nodeId);
   });
 
   return null;
@@ -1543,6 +1614,8 @@ function WorldWarmup({
     const publishStageReady = () => {
       if (stageReadyPublished) return;
       stageReadyPublished = true;
+      stampColdLoadPhase('stageReadyAt', performance.now());
+      armDecorativeReleaseOnFirstPaint('stage-ready');
       bridge.__W3D_CANVAS_READY = true;
       bridge.__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1834,6 +1907,8 @@ function WorldWarmup({
         onFrameloopChange('always');
         liveState.setFrameloop('always');
         liveState.invalidate();
+        stampColdLoadPhase('fallbackResumeAt', performance.now());
+        armDecorativeReleaseOnFirstPaint('fallback-resume');
         (window as any).__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         forceFirstPaintSizeSync(liveState);
@@ -1841,15 +1916,24 @@ function WorldWarmup({
       startPostReadyScans();
     };
 
+    // Cold-load phase instrumentation: progressive, probe-readable breakdown of
+    // the post-network reveal gap (docs/perf-cold-load-diet-2026-07-31.md M0).
+    // Write-only telemetry — nothing in the warmup reads it back; the helper
+    // is guaranteed non-throwing.
+    const publishPhase = stampColdLoadPhase;
+
     void (async () => {
       try {
         // The effect itself proves one React commit. The manager barrier waits
         // for all already-started world loads (8s cap), then this RAF gives
         // Suspense retries one commit opportunity before the first scan.
         const barrierStartedAt = performance.now();
+        publishPhase('warmupStartAt', barrierStartedAt);
+        armDecorativeDeadline();
         await waitForLoadingManagerIdle();
         await waitForCommitFrame();
         const barrierMs = performance.now() - barrierStartedAt;
+        publishPhase('barrierMs', barrierMs);
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
         // Initial avatar fetches are now accounted for by LoadingManager. If a
@@ -1859,6 +1943,7 @@ function WorldWarmup({
           hasBulkVRMBatchStarted() &&
           typeof (gl as any).compileAsync === 'function'
         ) {
+          const vrmBulkStartedAt = performance.now();
           await new Promise<void>((resolveBulkCompile) => {
             registerBulkVRMIdleCallback(() => {
               if (cancelled) {
@@ -1884,6 +1969,7 @@ function WorldWarmup({
                 });
             });
           });
+          publishPhase('vrmBulkMs', performance.now() - vrmBulkStartedAt);
         }
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
@@ -1909,6 +1995,8 @@ function WorldWarmup({
           console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
         }
         const scansMs = performance.now() - scansStartedAt;
+        publishPhase('scansMs', scansMs);
+        publishPhase('scansTextures', warmupUploadedTextures);
 
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
         let compileMs = 0;
@@ -1924,6 +2012,7 @@ function WorldWarmup({
             console.warn('[World3D] compileAsync failed (continuing warmup):', err);
           } finally {
             compileMs = performance.now() - compileStartedAt;
+            publishPhase('compileMs', compileMs);
             noteWorldWarmupProgress();
           }
         }
@@ -1944,6 +2033,9 @@ function WorldWarmup({
           },
         );
         const warmRenderMs = performance.now() - warmRenderStartedAt;
+        publishPhase('warmRenderMs', warmRenderMs);
+        publishPhase('warmupDoneAt', performance.now());
+        armDecorativeReleaseOnFirstPaint('warmup-complete');
         bridge.__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         console.log(
@@ -1994,17 +2086,63 @@ const isTouchDevice = typeof window !== 'undefined' &&
 export const WorldSceneContents = memo(function WorldSceneContents({
   mode,
   perfFlags,
+  perfCameraPreset = false,
   onFrameloopChange,
   stageWarmup,
   stageHosted = false,
 }: {
   mode: WorldMode;
   perfFlags?: Partial<WorldPerfFlags>;
+  /**
+   * Mount the /perf-page camera preset (fixed overview pose + [0,80,0] orbit
+   * target). MUST stay false on the live stage: wrappers resolve adaptive
+   * perfFlags so `perfFlags` is always truthy here — the old
+   * `{perfFlags && <PerfCameraPreset/>}` gate therefore mounted it on /game,
+   * and its useEffect depends on the DEFAULT camera, which the stage swaps
+   * per scene. Every swap re-ran the effect and stomped the incoming slot's
+   * camera + the orbit target (2026-08-08 kelp round-trip bug: the world
+   * view always snapped back to the origin overview after a kelp visit).
+   */
+  perfCameraPreset?: boolean;
   onFrameloopChange: (mode: 'always' | 'never') => void;
   stageWarmup?: WorldStageWarmupProps;
   stageHosted?: boolean;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  // Preserved orbit pivot across OrbitControls unmount/remount cycles (the
+  // controls instance dies with the scene-active gate below, but the world
+  // camera persists — restoring the target keeps the pre-transition
+  // composition instead of snapping the view back to the origin overview).
+  const savedOrbitTargetRef = useRef(new THREE.Vector3(0, 10, 0));
+  const bindControlsRef = useCallback(
+    (next: OrbitControlsImpl | null) => {
+      const previous = controlsRef.current;
+      if (previous && previous !== next) {
+        savedOrbitTargetRef.current.copy(previous.target);
+      }
+      controlsRef.current = next;
+      if (next) {
+        next.target.copy(savedOrbitTargetRef.current);
+        next.update();
+      }
+    },
+    [],
+  );
+  // Drei's OrbitControls binds to the CURRENT default camera reactively and
+  // registers a native (non-scene-gated) useFrame for its update(). When the
+  // stage swaps the default camera to another slot's camera (kelp/cove/
+  // activity), a mounted OrbitControls rebinds to THAT camera and its
+  // per-frame distance/polar clamps + lookAt(worldTarget) fight the other
+  // scene's chase controller at 60Hz (2026-08-08 kelp bug: maxDistance=5500
+  // measured from the world orbit target pinned the kelp camera in FRONT of
+  // the player at spawn z=6000 — reversed facing, jitter, and a rotated
+  // WASD basis). Two guards: mount only while the world scene owns the
+  // stage, AND pin the controls to the world slot's persistent camera so a
+  // remount during the default-camera swap window can never construct
+  // against another slot's camera.
+  const worldSceneActive = useSceneActive();
+  const worldSlotCamera = useSceneCamera();
+  const stageDefaultCamera = useThree((state) => state.camera);
   const isGame = mode === 'game';
   const flags = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
   const staticOnly = flags.staticWorldOnly;
@@ -2038,6 +2176,13 @@ export const WorldSceneContents = memo(function WorldSceneContents({
         stageWarmup={stageWarmup}
       />
 
+      {/* Decorative-release first-paint anchor (rung 3): pumps the release
+          controller once per WORLD frame. Frames only run when the world
+          scene is active and the frameloop is live, so the release can only
+          fire after the world has actually presented a revealed frame —
+          never during warmup, a stage transition, or another scene. */}
+      <DecorativeFirstPaintNotifier />
+
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
           by useGLTFWithKTX2. Must render before any KTX2-textured GLB loads. */}
@@ -2066,23 +2211,25 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           node ready on their first render. */}
       {showLabels && <WorldLabelsOverlayMount />}
 
-      {/* Camera controls.
-          Target at z=-50 centres on the middle building row (z ≈ -64) so the
-          initial overview shows all 3 rows symmetrically. */}
-      <OrbitControls
-        ref={controlsRef}
-        makeDefault
-        enablePan={!isTouchDevice}
-        enableZoom={true}
-        enableRotate={true}
-        minDistance={followMode ? 40 : 160}
-        maxDistance={5500}
-        maxPolarAngle={Math.PI * 0.85}
-        rotateSpeed={isTouchDevice ? 0.4 : 1}
-        zoomSpeed={isTouchDevice ? 0.6 : 1}
-        target={[0, 10, 0]}
-      />
-      {perfFlags && <PerfCameraPreset controlsRef={controlsRef} />}
+      {/* Camera controls. Target [0,10,0] = the town-center overview pivot
+          (restored from savedOrbitTargetRef on remount so a scene round-trip
+          keeps the pre-transition composition). */}
+      {worldSceneActive && (
+        <OrbitControls
+          ref={bindControlsRef}
+          camera={worldSlotCamera ?? stageDefaultCamera}
+          makeDefault
+          enablePan={!isTouchDevice}
+          enableZoom={true}
+          enableRotate={true}
+          minDistance={followMode ? 40 : 160}
+          maxDistance={5500}
+          maxPolarAngle={Math.PI * 0.85}
+          rotateSpeed={isTouchDevice ? 0.4 : 1}
+          zoomSpeed={isTouchDevice ? 0.6 : 1}
+        />
+      )}
+      {perfCameraPreset && <PerfCameraPreset controlsRef={controlsRef} />}
 
       {/* Camera controller routing based on controlMode:
             explore           → WASDCameraController (free cam, WASD pans world)
@@ -2181,6 +2328,22 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           <LandStructures />
         </group>
       </Suspense>
+      <Suspense fallback={null}>
+        <group name="perf:land-kit-pieces" userData={{ perfChunk: 'land-kit-pieces' }}>
+          <LandKitPieces />
+        </group>
+      </Suspense>
+
+      {/* Seabed salvage nodes — 48 fixed world decorations (Land gamification
+          P7b, §2.2). 3 merged draw calls total (one per look variant), no
+          chunk-admission needed since the node count is capped by design, not
+          player growth. See lib/three/land-salvage-render.tsx. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-salvage-nodes" userData={{ perfChunk: 'land-salvage-nodes' }}>
+          <LandSalvageNodesLayer />
+        </group>
+      </Suspense>
+      <YardEditorThree />
 
       {/* Land showroom — ~15 model buildings on outer starter lots with FOR RENT
           signs. Decorative only (no backend). Hides when a lot is actually owned
@@ -2196,8 +2359,8 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           Fills inter-parcel gaps on founder/starter/c-ring with merged sea-themed
           props (coral, kelp, barrels, lanterns, anchors, shells) + flat path
           ribbons connecting parcels. All geometry merged by material UUID into
-          ~10-14 draw calls total. Props already preloaded by DeferredTerrainPreloads
-          (shared model paths) so zero additional fetch cost.
+          ~10-14 draw calls total. Shared URLs dedupe through useGLTF; demand begins
+          at this consumer's release stagger, followed by hidden GPU warming.
           See lib/three/land-ring-decorations.tsx for full perf contract. */}
       <group name="perf:land-ring-decorations" userData={{ perfChunk: 'land-ring-decorations' }}>
         <LandRingDecorations />
@@ -2387,6 +2550,7 @@ export const WorldScene = memo(function WorldScene({
     <WorldSceneContents
       mode={mode}
       perfFlags={resolvedPerfFlags}
+      perfCameraPreset={perfFlags !== undefined}
       onFrameloopChange={onFrameloopChange}
       stageWarmup={stageWarmup}
       stageHosted={stageHosted}
@@ -2486,13 +2650,31 @@ const FORCE_WEBGPU_OVERRIDE =
   typeof window !== 'undefined' &&
   (new URLSearchParams(window.location.search).get('webgpu') === '1' ||
    new URLSearchParams(window.location.search).get('meshlets') === '1');
-const FORCE_WEBGL = FORCE_WEBGPU_OVERRIDE
-  ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
-  : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED);
+// `?webgl=1` — the symmetric opt-in: forces the WebGL2 backend on ANY GPU.
+// Exists for the cold-load per-backend budget runs (Iris Xe floor proxy on
+// dedicated-GPU dev boxes — docs/perf-cold-load-diet-2026-07-31.md). WebGPU
+// override wins if both are passed.
+const FORCE_WEBGL_OVERRIDE =
+  typeof window !== 'undefined' &&
+  !FORCE_WEBGPU_OVERRIDE &&
+  new URLSearchParams(window.location.search).get('webgl') === '1';
+const FORCE_WEBGL = FORCE_WEBGL_OVERRIDE
+  || (FORCE_WEBGPU_OVERRIDE
+    ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
+    : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED));
 
 if (typeof window !== 'undefined') {
+  // Probe-readable backend stamp — the REQUESTED path; overwritten with the
+  // ACTUAL backend after renderer.init() (Three may fall back WebGPU→WebGL2).
+  // NEVER clobber an existing stamp: on stage-hosted routes the stage renderer
+  // (WorldStageCanvas initializeStageRenderer) can init and stamp the ACTUAL
+  // backend BEFORE this module chunk evaluates — the '-requested' default
+  // overwriting it invalidated every probe run ("backend not actual").
+  if ((window as any).__W3D_BACKEND === undefined) {
+    stampColdLoadBackend(FORCE_WEBGL ? 'webgl2-requested' : 'webgpu-requested');
+  }
   console.log(
-    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE}`,
+    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE} webglOverride:${FORCE_WEBGL_OVERRIDE}`,
   );
 }
 
@@ -2563,6 +2745,11 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // With forceWebGL:true, init() goes straight to WebGLBackend (no adapter request).
   // Without forceWebGL, init() tries WebGPU first then falls back to WebGL2.
   await renderer.init();
+  // ACTUAL backend after init — Three's getFallback path can land on WebGL2
+  // even when WebGPU was requested; the probe must record what really runs.
+  stampColdLoadBackend(
+    (renderer as any).backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
+  );
   renderer.setClearColor(SKY_COLOR, 1);
   renderer.setClearAlpha?.(1);
   renderer.setSize(cssW, cssH, false);
@@ -2783,6 +2970,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         <WorldSceneContents
           mode={mode}
           perfFlags={resolvedPerfFlags}
+          perfCameraPreset={perfFlags !== undefined}
           onFrameloopChange={setFrameloopMode}
         />
       </Canvas>

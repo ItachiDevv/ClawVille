@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   LAND_TIERS,
@@ -24,6 +24,16 @@ const SHELL_KEYS = [
 const premiumKey = (type: LandStructureType): string =>
   type === "home" ? "premium-tower" : "premium-mall";
 
+/**
+ * Independent re-implementation of the shell gate.
+ *
+ * This used to hardcode the roster ("coastal-cottage always, driftwood/fantasy
+ * from Lv2, otherwise premium"), which made every catalog addition a test
+ * failure and tempted the fix of just appending more key names. It now reads
+ * `minLevel` and `premium` off the catalog row and re-derives the RULE from
+ * them, because the rule is what this test exists to pin — the roster is data.
+ * It still never calls `isShellAllowed`, so a bug in the real gate cannot hide.
+ */
 function expectedShellAllowed(
   type: LandStructureType,
   level: number,
@@ -31,14 +41,13 @@ function expectedShellAllowed(
   shellKey: string,
 ): boolean {
   if (level < 1 || level > TIER_STRUCTURE_RULES[tier].maxLevel) return false;
-  if (shellKey === "coastal-cottage") return true;
-  if (shellKey === "driftwood-cabin" || shellKey === "fantasy-cottage")
-    return level >= 2;
-  return (
-    shellKey === premiumKey(type) &&
-    level >= 4 &&
-    (tier === "b" || tier === "a" || tier === "founder")
+  const entry = SHELL_CATALOG.find(
+    (row) => row.structureType === type && row.key === shellKey,
   );
+  if (!entry) return false;
+  if (level < entry.minLevel) return false;
+  if (!entry.premium) return true;
+  return tier === "b" || tier === "a" || tier === "founder";
 }
 
 describe("land appearance allowlists", () => {
@@ -87,6 +96,48 @@ describe("land appearance allowlists", () => {
     expect(isPaletteAllowed(0, "classic")).toBe(false);
     expect(isPaletteAllowed(6, "classic")).toBe(false);
     expect(isPaletteAllowed(2, "not-a-palette")).toBe(false);
+  });
+
+  it("pins the home shell roster and its founder-tunable unlock levels", () => {
+    const homes = SHELL_CATALOG.filter((entry) => entry.structureType === "home");
+    expect(
+      homes.map((entry) => [entry.key, entry.minLevel, entry.premium]),
+    ).toEqual([
+      ["coastal-cottage", 1, false],
+      ["driftwood-cabin", 2, false],
+      ["fantasy-cottage", 2, false],
+      ["pearl-dome", 1, false],
+      ["tiki-hut", 2, false],
+      ["anchor-forge", 2, false],
+      ["shipwreck-mast", 2, false],
+      ["tide-lighthouse", 3, false],
+      ["kelp-spire", 3, false],
+      ["coral-highrise", 3, false],
+      ["premium-tower", 4, true],
+    ]);
+    // Every tier can reach Lv3, so the whole non-premium roster is reachable
+    // on a starter parcel. Premium stays the only tier-gated shell.
+    for (const entry of homes.filter((row) => !row.premium)) {
+      expect(
+        isShellAllowed("home", entry.minLevel, "starter", entry.key),
+        entry.key,
+      ).toBe(true);
+    }
+  });
+
+  it("points every catalog row at a GLB that actually exists on disk", () => {
+    // A catalog row naming a missing asset is a runtime 404 and a shell that
+    // silently falls back to the default, which is invisible in every other
+    // test here because they only ever exercise the allowlist logic.
+    for (const entry of SHELL_CATALOG) {
+      const absolute = join(
+        import.meta.dir,
+        "../../../../../apps/web/public",
+        entry.modelPath,
+      );
+      expect(existsSync(absolute), `${entry.structureType}/${entry.key} -> ${entry.modelPath}`)
+        .toBe(true);
+    }
   });
 
   it("keeps classic as an identity tint and names the premium shell tiers", () => {

@@ -33,7 +33,7 @@
  *
  * DEED-LOCK GUARD (marketplace C4 seam, 2026-07-07): every pool-revert branch
  * (rented/hold graceElapsed, deposit lapse) first consults
- * `parcelHasLiveDeedLock` (routes/land.ts) under the already-held locks — a
+ * `parcelHasLiveDeedLock` (land-tenure-helpers.ts) under the already-held locks — a
  * parcel whose deed is escrow-locked by a live P2P listing is PARKED (revert
  * suppressed, grace untouched, loud warn + alert post-commit) instead of
  * reverted, so a settling buyer can never be double-sold. Re-checked every pass.
@@ -77,18 +77,17 @@ import { db } from '@clawville/database';
 import { RENT_PERIOD_DAYS, RENT_GRACE_DAYS, type LandTier } from '@clawville/shared';
 import { creditClawTokens, debitClawTokens, InsufficientTokensError } from './claw-token-ledger';
 import { getHouseTreasuryAvatarId } from './house-treasury-seeder';
-import {
-  getLinkedWalletClvBalance,
-  getWalletClvBalance,
-} from './linked-wallet-clv-balance';
+import { getLinkedWalletClvBalance, getWalletClvBalance } from './linked-wallet-clv-balance';
 import { broadcastLandEvent } from '../routes/world';
 import {
   bustOwnedCache,
   bustParcelsAvailableCache,
+  bustPublicPiecesCache,
   bustPublicStructuresCache,
-  parcelHasLiveDeedLock,
 } from '../routes/land';
 import { alertError } from './alert-error';
+import { withKeyedMutex } from './keyed-mutex';
+import { parcelHasLiveDeedLock } from './land-tenure-helpers';
 
 const DEFAULT_SWEEP_PERIOD_MS = 60 * 60 * 1000; // 1 hour
 const MIN_SWEEP_PERIOD_MS = 5 * 60 * 1000; // 5 min floor (mis-set guard)
@@ -116,8 +115,19 @@ function isTrue(v: unknown): boolean {
 type SweepAction =
   | { kind: 'charged'; parcelCode: string; ownerAvatarId: string }
   | { kind: 'graced' }
-  | { kind: 'evicted'; parcelCode: string; tier: LandTier; ownerAvatarId: string }
-  | { kind: 'parked'; parcelCode: string; ownerAvatarId: string; tier: LandTier }
+  | {
+      kind: 'evicted';
+      parcelCode: string;
+      tier: LandTier;
+      ownerAvatarId: string;
+    }
+  | {
+      kind: 'parked';
+      parcelCode: string;
+      ownerAvatarId: string;
+      tier: LandTier;
+      reason?: 'hold_set_missing';
+    }
   | { kind: 'skip' };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,7 +154,10 @@ export function decideDepositSweep(input: {
   // < one week by construction: grace only opens when the remainder can't cover
   // a full week, and a full top-up clears it).
   if (input.graceElapsed) {
-    return { kind: 'lapse', forfeitCt: Math.max(0, Math.floor(input.depositRemainingCt)) };
+    return {
+      kind: 'lapse',
+      forfeitCt: Math.max(0, Math.floor(input.depositRemainingCt)),
+    };
   }
   if (!input.rentDue) return { kind: 'skip' };
   // A deposit parcel with no positive weekly rent is a data anomaly — never
@@ -152,9 +165,11 @@ export function decideDepositSweep(input: {
   if (!Number.isInteger(input.rentCtWeekly) || input.rentCtWeekly <= 0) {
     return { kind: 'skip' };
   }
-  const drawnCt = Math.min(Math.max(0, Math.floor(input.depositRemainingCt)), input.rentCtWeekly);
-  if (drawnCt <= 0) return { kind: 'grace' };
-  return { kind: 'draw', drawnCt, fullWeek: drawnCt === input.rentCtWeekly };
+  const remaining = Math.max(0, Math.floor(input.depositRemainingCt));
+  // A sub-week remainder buys nothing, so leave it untouched for a later
+  // top-up, voluntary refund, or lapse forfeit. Never confiscate a partial.
+  if (remaining < input.rentCtWeekly) return { kind: 'grace' };
+  return { kind: 'draw', drawnCt: input.rentCtWeekly, fullWeek: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,10 +188,12 @@ type LockedParcelRow = {
   owner_avatar_id: string;
   rent_ct_weekly: number | string | null;
   tenure: SweepableTenure;
+  tenure_terms_version: number | string | null;
   deposit_remaining_ct: number | string | null;
   hold_subject: 'user' | 'agent' | null;
   grandfathered: unknown;
   rent_due: unknown;
+  has_grace: unknown;
   grace_elapsed: unknown;
 };
 
@@ -194,6 +211,7 @@ async function revertParcelToPool(tx: LandTx, parcelId: string): Promise<void> {
         SET status = 'available',
             owner_avatar_id = NULL,
             tenure = NULL,
+            tenure_terms_version = NULL,
             acquired_at = NULL,
             rent_paid_through = NULL,
             grace_until = NULL,
@@ -239,15 +257,29 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
       // state is left untouched; the next pass re-checks and normal eviction
       // resumes once the listing cancels/transfers and the lock clears. LOUD
       // log + alert happen post-commit (out of the money tx).
-      return { kind: 'parked', parcelCode: p.parcel_code, ownerAvatarId, tier: p.tier };
+      return {
+        kind: 'parked',
+        parcelCode: p.parcel_code,
+        ownerAvatarId,
+        tier: p.tier,
+      };
     }
     await revertParcelToPool(tx, p.id);
-    const meta = JSON.stringify({ reason: 'rent_lapsed', tier: p.tier, parcelCode: p.parcel_code });
+    const meta = JSON.stringify({
+      reason: 'rent_lapsed',
+      tier: p.tier,
+      parcelCode: p.parcel_code,
+    });
     await tx.execute(
       sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)
           VALUES ('eviction', ${p.id}, ${ownerAvatarId}, 0, ${meta}::jsonb)`,
     );
-    return { kind: 'evicted', parcelCode: p.parcel_code, tier: p.tier, ownerAvatarId };
+    return {
+      kind: 'evicted',
+      parcelCode: p.parcel_code,
+      tier: p.tier,
+      ownerAvatarId,
+    };
   }
 
   // (B) Not in elapsed grace, and not due → nothing to do (defensive; the
@@ -272,7 +304,12 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
         amount: rentCt,
         reason: 'land_parcel_rent',
         source: 'system',
-        metadata: { parcelId: p.id, parcelCode: p.parcel_code, tier: p.tier, period: 'weekly' },
+        metadata: {
+          parcelId: p.id,
+          parcelCode: p.parcel_code,
+          tier: p.tier,
+          period: 'weekly',
+        },
         actorKind: 'system',
       },
       tx,
@@ -318,7 +355,12 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
               updated_at = now()
           WHERE id = ${p.id}`,
     );
-    const meta = JSON.stringify({ tier: p.tier, parcelCode: p.parcel_code, period: 'weekly', rentCtWeekly: rentCt });
+    const meta = JSON.stringify({
+      tier: p.tier,
+      parcelCode: p.parcel_code,
+      period: 'weekly',
+      rentCtWeekly: rentCt,
+    });
     await tx.execute(
       sql`INSERT INTO land_transactions
             (kind, parcel_id, avatar_id, amount_ct, debit_ledger_tx_id, metadata)
@@ -371,7 +413,12 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
         // parked); the next pass re-checks and normal eviction resumes once the
         // listing cancels/transfers and the lock clears. LOUD log + alert happen
         // post-commit (out of the money tx).
-        return { kind: 'parked', parcelCode: p.parcel_code, ownerAvatarId, tier: p.tier };
+        return {
+          kind: 'parked',
+          parcelCode: p.parcel_code,
+          ownerAvatarId,
+          tier: p.tier,
+        };
       }
       // Grace elapsed → the tenancy ends and any escrow remainder FORFEITS to
       // the treasury. NO tenant debit — the escrow already left the tenant at
@@ -420,7 +467,12 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
         sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, credit_ledger_tx_id, metadata)
             VALUES ('eviction', ${p.id}, ${ownerAvatarId}, ${decision.forfeitCt}, ${creditLedgerId}, ${meta}::jsonb)`,
       );
-      return { kind: 'evicted', parcelCode: p.parcel_code, tier: p.tier, ownerAvatarId };
+      return {
+        kind: 'evicted',
+        parcelCode: p.parcel_code,
+        tier: p.tier,
+        ownerAvatarId,
+      };
     }
 
     case 'grace': {
@@ -501,9 +553,7 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
               (kind, parcel_id, avatar_id, amount_ct, credit_ledger_tx_id, metadata)
             VALUES ('rent_payment', ${p.id}, ${ownerAvatarId}, ${decision.drawnCt}, ${creditLedgerId}, ${meta}::jsonb)`,
       );
-      return decision.fullWeek
-        ? { kind: 'charged', parcelCode: p.parcel_code, ownerAvatarId }
-        : { kind: 'graced' };
+      return decision.fullWeek ? { kind: 'charged', parcelCode: p.parcel_code, ownerAvatarId } : { kind: 'graced' };
     }
   }
 }
@@ -512,9 +562,180 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
 // Branch: hold (Phase B2 hold-to-keep)
 // ─────────────────────────────────────────────────────────────────────────────
 
-type HoldClvResolution =
-  | { status: 'confirmed'; uiAmount: number }
-  | { status: 'unconfirmed'; why: string };
+type HoldClvResolution = { status: 'confirmed'; uiAmount: number } | { status: 'unconfirmed'; why: string };
+
+const holdUnconfirmedPasses = new Map<string, number>();
+const holdGraceRecoveries = new Map<string, number>();
+// Observability-only counters are process-local and reset on deploy; tenure
+// correctness remains entirely DB-backed and does not depend on these alerts.
+const HOLD_UNCONFIRMED_ALERT_AFTER = 3;
+
+function recordHoldConfirmation(parcelCode: string, resolution: HoldClvResolution): void {
+  if (resolution.status === 'confirmed') {
+    holdUnconfirmedPasses.delete(parcelCode);
+    return;
+  }
+  if (!holdUnconfirmedPasses.has(parcelCode) && holdUnconfirmedPasses.size >= 2_048) {
+    const oldest = holdUnconfirmedPasses.keys().next().value as string | undefined;
+    if (oldest) holdUnconfirmedPasses.delete(oldest);
+  }
+  const passes = (holdUnconfirmedPasses.get(parcelCode) ?? 0) + 1;
+  holdUnconfirmedPasses.set(parcelCode, passes);
+  if (passes === HOLD_UNCONFIRMED_ALERT_AFTER) {
+    void alertError({
+      severity: 'warning',
+      source: 'land-rent-sweeper',
+      message: `P2 hold ${parcelCode} has been unconfirmed for ${passes} consecutive sweeps`,
+      context: { parcelCode, passes, why: resolution.why },
+    });
+  }
+}
+
+async function resolveNewHoldClv(tx: LandTx, p: LockedParcelRow): Promise<HoldClvResolution & { userId?: string }> {
+  const rows = await tx.execute<{
+    user_id: string;
+    land_hold_wallet_pubkey: string | null;
+  }>(
+    sql`SELECT a.user_id, u.land_hold_wallet_pubkey
+        FROM avatars a JOIN users u ON u.id = a.user_id
+        WHERE a.id = ${p.owner_avatar_id}`,
+  );
+  const row = rows[0];
+  if (!row?.user_id) return { status: 'unconfirmed', why: 'owner account is unresolvable' };
+  if (!row.land_hold_wallet_pubkey) {
+    return {
+      status: 'unconfirmed',
+      why: 'account has no declared land hold wallet',
+      userId: row.user_id,
+    };
+  }
+  const clv = await getWalletClvBalance(
+    row.land_hold_wallet_pubkey,
+    isTrue(p.grace_elapsed) ? { maxAgeMs: 0, maxStaleAgeMs: 0 } : undefined,
+  );
+  if (!clv.available || clv.uiAmount == null) {
+    return {
+      status: 'unconfirmed',
+      why: 'declared-wallet CLV read unavailable',
+      userId: row.user_id,
+    };
+  }
+  return { status: 'confirmed', uiAmount: clv.uiAmount, userId: row.user_id };
+}
+
+async function sweepNewHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
+  const resolution = await resolveNewHoldClv(tx, p);
+  recordHoldConfirmation(p.parcel_code, resolution);
+  // Unconfirmed never opens, clears, or expires grace. The due row is parked
+  // and retried on the next hourly pass; no money and no tenure loss occurs.
+  if (resolution.status === 'unconfirmed' || !resolution.userId) return { kind: 'skip' };
+
+  const holdRows = await tx.execute<{ id: string; hold_threshold_ct: number | string | null }>(
+    sql`SELECT lp.id, lp.hold_threshold_ct
+        FROM land_parcels lp
+        JOIN avatars a ON a.id = lp.owner_avatar_id
+        WHERE a.user_id = ${resolution.userId}
+          AND lp.tenure = 'hold' AND lp.tenure_terms_version = 2
+          AND lp.grandfathered = false
+        ORDER BY lp.acquired_at ASC NULLS LAST, lp.parcel_code ASC, lp.id ASC`,
+  );
+  let requiredClv = 0;
+  let currentIsBacked = false;
+  let currentInHoldSet = false;
+  for (const hold of holdRows) {
+    requiredClv += Number(hold.hold_threshold_ct ?? 0);
+    if (hold.id === p.id) {
+      currentInHoldSet = true;
+      currentIsBacked = resolution.uiAmount >= requiredClv;
+      break;
+    }
+  }
+  // The account-wide query is intended to include the locked parcel. If it
+  // ever does not, that is a query/data-shape anomaly, not proof of missing
+  // collateral. Park without mutating grace or tenure and page after commit.
+  if (!currentInHoldSet) {
+    return {
+      kind: 'parked',
+      parcelCode: p.parcel_code,
+      ownerAvatarId: p.owner_avatar_id,
+      tier: p.tier,
+      reason: 'hold_set_missing',
+    };
+  }
+  if (!currentIsBacked) {
+    if (isTrue(p.grace_elapsed)) {
+      if (await parcelHasLiveDeedLock(tx, p.id)) {
+        return {
+          kind: 'parked',
+          parcelCode: p.parcel_code,
+          ownerAvatarId: p.owner_avatar_id,
+          tier: p.tier,
+        };
+      }
+      await revertParcelToPool(tx, p.id);
+      const metadata = JSON.stringify({
+        reason: 'hold_lapsed',
+        tenure: 'hold',
+        termsVersion: 2,
+        requiredClv,
+        heldClv: resolution.uiAmount,
+      });
+      await tx.execute(
+        sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)
+            VALUES ('eviction', ${p.id}, ${p.owner_avatar_id}, 0, ${metadata}::jsonb)`,
+      );
+      return {
+        kind: 'evicted',
+        parcelCode: p.parcel_code,
+        tier: p.tier,
+        ownerAvatarId: p.owner_avatar_id,
+      };
+    }
+    await openGraceIfAbsent(tx, p.id);
+    return { kind: 'graced' };
+  }
+
+  if (isTrue(p.has_grace)) {
+    const recoveries = (holdGraceRecoveries.get(resolution.userId) ?? 0) + 1;
+    if (!holdGraceRecoveries.has(resolution.userId) && holdGraceRecoveries.size >= 2_048) {
+      const oldest = holdGraceRecoveries.keys().next().value as string | undefined;
+      if (oldest) holdGraceRecoveries.delete(oldest);
+    }
+    holdGraceRecoveries.set(resolution.userId, recoveries);
+    console.warn(
+      `[LandRentSweeper] P2 hold collateral recovered after grace account=${resolution.userId} parcel=${p.parcel_code} recoveries=${recoveries} held=${resolution.uiAmount} required=${requiredClv}`,
+    );
+    if (recoveries === 2) {
+      void alertError({
+        severity: 'warning',
+        source: 'land-rent-sweeper',
+        message: `P2 account ${resolution.userId} repeatedly restored hold collateral only after grace`,
+        context: {
+          userId: resolution.userId,
+          parcelCode: p.parcel_code,
+          recoveries,
+          heldClv: resolution.uiAmount,
+          requiredClv,
+        },
+      });
+    }
+  }
+
+  await tx.execute(
+    sql`UPDATE land_parcels
+        SET grace_until = NULL,
+            rent_paid_through = now() + make_interval(days => ${RENT_PERIOD_DAYS}),
+            updated_at = now()
+        WHERE id = ${p.id}`,
+  );
+  // Existing action vocabulary calls a successfully advanced cadence
+  // "charged"; P2 hold renewal reaches this state with zero ledger writes.
+  return {
+    kind: 'charged',
+    parcelCode: p.parcel_code,
+    ownerAvatarId: p.owner_avatar_id,
+  };
+}
 
 /**
  * Resolve the LIVE CLV balance backing a hold parcel by its stamped
@@ -527,10 +748,17 @@ async function resolveHoldClv(tx: LandTx, p: LockedParcelRow): Promise<HoldClvRe
       sql`SELECT wallet_address FROM avatars WHERE id = ${p.owner_avatar_id}`,
     );
     const pubkey = rows[0]?.wallet_address ?? null;
-    if (!pubkey) return { status: 'unconfirmed', why: 'agent avatar has no custodial wallet_address' };
+    if (!pubkey)
+      return {
+        status: 'unconfirmed',
+        why: 'agent avatar has no custodial wallet_address',
+      };
     const clv = await getWalletClvBalance(pubkey);
     if (clv.available !== true || clv.uiAmount == null) {
-      return { status: 'unconfirmed', why: 'CLV read unavailable (agent custodial wallet)' };
+      return {
+        status: 'unconfirmed',
+        why: 'CLV read unavailable (agent custodial wallet)',
+      };
     }
     return { status: 'confirmed', uiAmount: clv.uiAmount };
   }
@@ -539,22 +767,38 @@ async function resolveHoldClv(tx: LandTx, p: LockedParcelRow): Promise<HoldClvRe
       sql`SELECT user_id FROM avatars WHERE id = ${p.owner_avatar_id}`,
     );
     const userId = rows[0]?.user_id ?? null;
-    if (!userId) return { status: 'unconfirmed', why: 'owner avatar row missing/userless' };
+    if (!userId)
+      return {
+        status: 'unconfirmed',
+        why: 'owner avatar row missing/userless',
+      };
     const res = await getLinkedWalletClvBalance(userId);
     if (!res.linked) {
       // KNOWN LIMITATION (report): a human who UNLINKS/relinks after claiming
       // leaves the hold unverifiable — fail-open per spec, never lapse on it.
-      return { status: 'unconfirmed', why: 'user has no linked wallet (unlinked after claim?)' };
+      return {
+        status: 'unconfirmed',
+        why: 'user has no linked wallet (unlinked after claim?)',
+      };
     }
     if (res.clv.available !== true || res.clv.uiAmount == null) {
-      return { status: 'unconfirmed', why: 'CLV read unavailable (linked wallet)' };
+      return {
+        status: 'unconfirmed',
+        why: 'CLV read unavailable (linked wallet)',
+      };
     }
     return { status: 'confirmed', uiAmount: res.clv.uiAmount };
   }
-  return { status: 'unconfirmed', why: 'hold_subject NULL on a non-grandfathered hold (anomaly)' };
+  return {
+    status: 'unconfirmed',
+    why: 'hold_subject NULL on a non-grandfathered hold (anomaly)',
+  };
 }
 
 async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
+  if (Number(p.tenure_terms_version) === 2) {
+    return sweepNewHold(tx, p);
+  }
   const ownerAvatarId = p.owner_avatar_id;
   const graceElapsed = isTrue(p.grace_elapsed);
   const rentDue = isTrue(p.rent_due);
@@ -568,7 +812,12 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
       // state is left untouched; the next pass re-checks and normal eviction
       // resumes once the listing cancels/transfers and the lock clears. LOUD
       // log + alert happen post-commit (out of the money tx).
-      return { kind: 'parked', parcelCode: p.parcel_code, ownerAvatarId, tier: p.tier };
+      return {
+        kind: 'parked',
+        parcelCode: p.parcel_code,
+        ownerAvatarId,
+        tier: p.tier,
+      };
     }
     await revertParcelToPool(tx, p.id);
     const meta = JSON.stringify({
@@ -581,7 +830,12 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
       sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)
           VALUES ('eviction', ${p.id}, ${ownerAvatarId}, 0, ${meta}::jsonb)`,
     );
-    return { kind: 'evicted', parcelCode: p.parcel_code, tier: p.tier, ownerAvatarId };
+    return {
+      kind: 'evicted',
+      parcelCode: p.parcel_code,
+      tier: p.tier,
+      ownerAvatarId,
+    };
   }
 
   if (!rentDue) return { kind: 'skip' };
@@ -649,7 +903,13 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
         amount: rentCt,
         reason: 'land_parcel_rent',
         source: 'system',
-        metadata: { parcelId: p.id, parcelCode: p.parcel_code, tier: p.tier, tenure: 'hold', period: 'weekly' },
+        metadata: {
+          parcelId: p.id,
+          parcelCode: p.parcel_code,
+          tier: p.tier,
+          tenure: 'hold',
+          period: 'weekly',
+        },
         actorKind: 'system',
       },
       tx,
@@ -725,58 +985,66 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
  * never sweep the whole shared DB) and for targeted ops.
  */
 export async function processDueParcel(parcelId: string): Promise<SweepAction> {
-  return db.transaction(async (tx): Promise<SweepAction> => {
-    // (0a) UNLOCKED peek — learn the owner for the advisory key without holding
-    // any lock (see the LOCK ORDER note in the header).
-    const peekRows = await tx.execute<{ owner_avatar_id: string | null; tenure: string | null }>(
-      sql`SELECT owner_avatar_id, tenure FROM land_parcels WHERE id = ${parcelId}`,
-    );
-    const peek = peekRows[0];
-    if (
-      !peek ||
-      !peek.owner_avatar_id ||
-      !SWEEPABLE_TENURES.includes(peek.tenure as SweepableTenure)
-    ) {
-      return { kind: 'skip' };
-    }
+  const mutexPeekRows = await db.execute<{
+    owner_avatar_id: string | null;
+    tenure: string | null;
+  }>(sql`SELECT owner_avatar_id, tenure FROM land_parcels WHERE id = ${parcelId}`);
+  const mutexPeek = mutexPeekRows[0];
+  if (!mutexPeek?.owner_avatar_id || !SWEEPABLE_TENURES.includes(mutexPeek.tenure as SweepableTenure)) {
+    return { kind: 'skip' };
+  }
 
-    // (0b) Per-owner advisory lock (OUTER — matches the land routes' order).
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${peek.owner_avatar_id}, 0))`,
-    );
+  return withKeyedMutex(`land-tenure:${mutexPeek.owner_avatar_id}`, () =>
+    db.transaction(async (tx): Promise<SweepAction> => {
+      // (0a) UNLOCKED peek — learn the owner for the advisory key without holding
+      // any lock (see the LOCK ORDER note in the header).
+      const peekRows = await tx.execute<{
+        owner_avatar_id: string | null;
+        tenure: string | null;
+      }>(sql`SELECT owner_avatar_id, tenure FROM land_parcels WHERE id = ${parcelId}`);
+      const peek = peekRows[0];
+      if (!peek || !peek.owner_avatar_id || !SWEEPABLE_TENURES.includes(peek.tenure as SweepableTenure)) {
+        return { kind: 'skip' };
+      }
 
-    // (0c) Parcel row lock (INNER) + authoritative re-read against the DB clock.
-    const rows = await tx.execute<LockedParcelRow>(
-      sql`SELECT id, parcel_code, tier, owner_avatar_id, rent_ct_weekly, tenure,
+      // (0b) Per-owner advisory lock (OUTER — matches the land routes' order).
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${peek.owner_avatar_id}, 0))`);
+
+      // (0c) Parcel row lock (INNER) + authoritative re-read against the DB clock.
+      const rows = await tx.execute<LockedParcelRow>(
+        sql`SELECT id, parcel_code, tier, owner_avatar_id, rent_ct_weekly, tenure,
+                 tenure_terms_version,
                  deposit_remaining_ct, hold_subject, grandfathered,
                  (rent_paid_through IS NOT NULL AND rent_paid_through <= now()) AS rent_due,
+                 (grace_until IS NOT NULL) AS has_grace,
                  (grace_until IS NOT NULL AND grace_until <= now()) AS grace_elapsed
           FROM land_parcels
           WHERE id = ${parcelId}
           FOR UPDATE`,
-    );
-    const p = rows[0];
-    // (0d) Re-verify under the lock. If the owner changed between peek and lock
-    // (acquire/release race) our advisory key is stale — skip; the next pass
-    // reprocesses under the right key. Tenure can also have changed.
-    if (
-      !p ||
-      !p.owner_avatar_id ||
-      p.owner_avatar_id !== peek.owner_avatar_id ||
-      !SWEEPABLE_TENURES.includes(p.tenure)
-    ) {
-      return { kind: 'skip' };
-    }
+      );
+      const p = rows[0];
+      // (0d) Re-verify under the lock. If the owner changed between peek and lock
+      // (acquire/release race) our advisory key is stale — skip; the next pass
+      // reprocesses under the right key. Tenure can also have changed.
+      if (
+        !p ||
+        !p.owner_avatar_id ||
+        p.owner_avatar_id !== peek.owner_avatar_id ||
+        !SWEEPABLE_TENURES.includes(p.tenure)
+      ) {
+        return { kind: 'skip' };
+      }
 
-    switch (p.tenure) {
-      case 'rented':
-        return sweepRented(tx, p);
-      case 'deposit':
-        return sweepDeposit(tx, p);
-      case 'hold':
-        return sweepHold(tx, p);
-    }
-  });
+      switch (p.tenure) {
+        case 'rented':
+          return sweepRented(tx, p);
+        case 'deposit':
+          return sweepDeposit(tx, p);
+        case 'hold':
+          return sweepHold(tx, p);
+      }
+    }),
+  );
 }
 
 /**
@@ -840,6 +1108,7 @@ export async function sweepDueRents(): Promise<{
         bustOwnedCache(action.ownerAvatarId);
         bustParcelsAvailableCache(action.tier);
         bustPublicStructuresCache();
+        bustPublicPiecesCache();
         // Live: the parcel is back in the pool — its for-sale sign reappears for
         // every connected player. Fire-and-forget (already fully guarded).
         broadcastLandEvent({
@@ -849,6 +1118,23 @@ export async function sweepDueRents(): Promise<{
         });
       } else if (action.kind === 'parked') {
         parked++;
+        if (action.reason === 'hold_set_missing') {
+          console.warn(
+            `[LandRentSweeper] HOLD SET ANOMALY parcel=${action.parcelCode} owner=${action.ownerAvatarId} tier=${action.tier} — parked without grace or tenure mutation; re-checks next pass`,
+          );
+          void alertError({
+            severity: 'warning',
+            source: 'land-rent-sweeper',
+            message: `P2 hold ${action.parcelCode} was absent from its account hold set — parked without eviction`,
+            context: {
+              parcelCode: action.parcelCode,
+              ownerAvatarId: action.ownerAvatarId,
+              tier: action.tier,
+              reason: action.reason,
+            },
+          });
+          continue;
+        }
         console.warn(
           `[LandRentSweeper] EVICTION SUPPRESSED (deed-locked) parcel=${action.parcelCode} owner=${action.ownerAvatarId} tier=${action.tier} — a live marketplace listing holds the deed; parked (revert skipped), re-checks next pass`,
         );
@@ -856,7 +1142,11 @@ export async function sweepDueRents(): Promise<{
           severity: 'warning',
           source: 'land-rent-sweeper',
           message: `parcel ${action.parcelCode} due for eviction but deed-locked by a live marketplace listing — pool-revert suppressed`,
-          context: { parcelCode: action.parcelCode, ownerAvatarId: action.ownerAvatarId, tier: action.tier },
+          context: {
+            parcelCode: action.parcelCode,
+            ownerAvatarId: action.ownerAvatarId,
+            tier: action.tier,
+          },
         });
       }
     } catch (err) {

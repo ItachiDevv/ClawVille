@@ -13,6 +13,7 @@ import { api } from '@/lib/api';
 import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
+import { armDecorativeDeadline } from '@/lib/three/decorative-release';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -23,6 +24,8 @@ import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
 import LandOptionsPill from '@/components/game/land-options-pill';
+import SalvageGatherPill from '@/components/game/land/salvage-gather-pill';
+import YardEditorOverlay from '@/components/game/land/yard-editor-overlay';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
@@ -68,8 +71,10 @@ import { useStageStore } from '@/components/three/world-stage/stage-store';
 // client it may be true (iOS Safari). Static import causes React #418 hydration
 // mismatch because the SandFloor useMemo returns a different material type on
 // server vs client, making the React tree diverge. Dynamic + ssr:false prevents
-// the module from executing on the server at all — safe because DeferredTerrainPreloads
-// and DeferredNpcPreloads only fire useGLTF.preload() in useEffect (no server output).
+// the module from executing on the server at all — safe because these
+// compatibility mounts are now NO-OPS (all release-deferred demand belongs to
+// the hidden Canvas consumers after their stagger ticks; the only live preload
+// left in DeferredNpcPreloads covers future non-deferred slots).
 const DeferredTerrainPreloads = dynamic(
   () => import('@/lib/three/arena-terrain').then(m => ({ default: m.DeferredTerrainPreloads })),
   { ssr: false, loading: () => null },
@@ -328,7 +333,12 @@ export default function GamePage() {
   // starts emitting progress events and SeaLoadingScreen's __W3D_PROGRESS
   // bar actually fills. Fire-and-forget — duplicate preload calls inside
   // each mounting component are cheap (useGLTF.preload is idempotent).
-  useEffect(() => { preloadWorldAssets(); }, []);
+  // armDecorativeDeadline rides the same first-mount effect (Codex Lever-1
+  // review finding 1): WorldWarmup's own arm call only commits if the canvas
+  // subtree survives to its passive effect — a renderer-init failure before
+  // that would strand release-gated consumer subtrees with no 45s ceiling.
+  // Arming here guarantees the ceiling exists the moment the loading screen can.
+  useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
 
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
@@ -660,6 +670,8 @@ export default function GamePage() {
         <>
           <LocationHUD />
           <LandOptionsPill />
+          <SalvageGatherPill />
+          <YardEditorOverlay />
           <ActivityFeed />
           <ChatPanel />
           {/* AvatarChatBar lives only under the agent-connected branch below.

@@ -1,7 +1,221 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-02 (land money-route ledger-capability hotfix — §13 top
-entry; route middleware only, no structural drift).**
+**Last Audited: 2026-08-09 (Land gamification P7a/P7b/P5b — salvage core,
+hosted salvage verb, material spend rail, protocol v48).** Four changes.
+
+**(1) Salvage node topology (P7a).** `packages/shared/src/constants/land-salvage.ts`
+is the SINGLE source of truth for `SALVAGE_NODES` (48 nodes in centred world
+coords, `SALVAGE_LAYOUT_VERSION = 1`), consumed by the renderer, the claim
+service, the read model and the hosted-target service. Positions come from the
+pure deterministic `generateSalvageNodes()` — the three usable radial gaps in the
+world's square block-frame geometry, plus an FNV-1a hash-based wander per node so
+the field scatters instead of forming a lattice (no `Math.random`, no clock). Its
+output is FROZEN as a literal, with a test asserting the two still agree, because
+node positions are money-path state: computing them at module load would relocate
+nodes under mid-cooldown players whenever a building moved, without bumping the
+layout version. Positions are validated against `getServerColliders()` and every
+`LAND_PARCELS` footprint;
+`land-salvage.test.ts` RE-DERIVES those clearances from live data, so moving a
+building or re-tiering land fails the suite instead of burying a node.
+
+**(2) Salvage claim core (P7a).** Migration `0056_salvage_nodes.sql` adds
+`salvage_node_claims` (per-`(avatar, node)` cooldown + the monotonic
+`claim_ordinal` the yield is derived from), `salvage_daily_admissions`
+(per-avatar UTC-day claim + material counters) and `salvage_owner_admissions`
+(per-OWNER UTC-day claim counter, `owner_kind` pinned to `'user'`).
+`salvage_claim_receipts` already existed from 0053 and is not recreated.
+`apps/api/src/services/salvage-settlement.ts` is the sole settlement authority:
+owner-then-avatar lock order (in-process mutex OUTER, `pg_advisory_xact_lock`
+INNER), live binding revalidation under both locks, durable receipt idempotency
+on the stable fingerprint `sha256(avatarId|nodeId|layoutVersion)`, and a
+server-secret HMAC yield. Caps are ATOMIC CONDITIONAL UPSERTS
+(`... DO UPDATE ... WHERE claims_admitted < cap RETURNING`), never
+read-then-write, and every refusal inside the transaction rolls partial
+admission back. House actors are refused IN THE SERVICE so no adapter can omit
+the check. REST surface: `apps/api/src/routes/land-salvage.ts`, mounted at
+`/api/land/salvage` BEFORE `/api/land`.
+
+**(3) Material spend rail (P5b).** `POST /api/land/parcels/:parcelId/pieces`
+accepts `paymentRail: 'vclaw' | 'materials'` (defaults to `vclaw`, so existing
+clients are unchanged) and returns `costMaterials` + `paymentRail`. Materials
+are HOME-only via the shared `isKitPaymentRailAllowed`, checked against the FOR
+UPDATE-locked `structure_type`. The material leg is a SINK with no treasury
+counterparty; `land_transactions.amount_ct` stays 0 on that rail so no vCLAW
+report double-counts it, and the rail + material cost live in the audit
+metadata, which is also what the replay path reads back.
+
+**(4) Hosted verb + protocol v48.** `[ACTION: salvage_node(nodeId)]` joins the
+whitelist (13 verbs) and routes through the SAME settlement service; proximity
+is checked against the server-owned simulation body.
+`apps/api/src/services/autonomous-salvage-targets.ts` feeds bounded READY-first
+nearest nodes into `buildDecisionPrompt` (the consumption mandate — a model
+cannot invent one of 48 ids). `PROTOCOL_VERSION` 47 -> 48 with the manual, Nori
+`knowledge[]` and `CLAWVILLE_ORIENTATION_KNOWLEDGE` updated in the same diff.
+
+**Prior Last Audited: 2026-08-09 (Land gamification P4b/P5a/P6 — material ledger,
+structure-type pricing, tutorial-ladder parity, protocol v47).** Three changes.
+
+**(1) Material ledger (P4b).** Migration `0053_land_materials.sql` adds
+`avatar_material_balances` (ONE pooled non-negative balance per avatar, founder
+ruling Q4) and `salvage_claim_receipts` (idempotency receipt for the salvage
+loop, shipped ahead of its routes so the contract is frozen before anything
+writes to it). `apps/api/src/services/material-ledger.ts` is the SOLE writer, in
+the same spirit as `claw-token-ledger`: standalone calls take the per-subject
+stack (`withKeyedMutex` outer, `pg_advisory_xact_lock` inner, one transaction),
+composed calls inherit the caller's locks, and the debit is a CONDITIONAL
+DECREMENT so an unaffordable spend writes nothing. Materials have no provenance
+tags, no transfer path, no exit rail, and no leaderboard weight, so they never
+touch the vCLAW machinery. `SALVAGE_OWNER_DAILY_CLAIM_CAP = 120` (Q2) lands in
+`packages/shared/src/constants/land-salvage.ts`.
+
+**(2) Structure-type pricing (P5a, founder ruling Q3).** Kit-piece fees and the
+structure upgrade ladder are now keyed by structure type:
+`KIT_PIECE_FEE_CT_BY_STRUCTURE` (home 5/20, shop unchanged 15/60) with
+`kitPieceFeeCt()`, and `STRUCTURE_UPGRADE_COSTS_BY_TYPE` (home Lv2 free / Lv3
+900; shop and both Lv4/Lv5 rungs unchanged) with `structureUpgradeCostCt()`.
+`routes/land.ts` derives both from the LOCKED `land_structures` row — the piece
+path widens its existing `FOR UPDATE` select by one column and takes no new
+lock — and both ledger legs stamp `structureType`. A free home Lv2 skips the
+debit and the treasury credit entirely while keeping the level write, the
+`land_upgrades` audit row, and the idempotency key, so it is as replay-safe as a
+paid upgrade; both upgrade REPLAY branches report the type-keyed price.
+`GET /api/land/tiers` gains `upgradeCostsByType` and keeps `upgradeCosts` at the
+unchanged shop ladder, so no client breaks on the wire. The two flat exports are
+deprecated aliases resolving to the SHOP row for the callers with no structure
+type in scope (the yard-editor price chip, the guest demo sandbox).
+
+**(2b) Shop slot rentals — the recurring sink that funds (2).** Migration
+`0055_shop_slot_rentals.sql` adds `featured`, `slot_paid_through`,
+`featured_paid_through`, and `slot_suspended_at` to `service_listings` (existing
+rows are granted the current week, never billed retroactively).
+`apps/api/src/services/service-slot-rent-sweeper.ts` is a SEPARATE sweeper from
+`land-rent-sweeper.ts` because the parcel sweeper's single `rent_paid_through`
+cursor cannot carry two independent weekly cadences. It shares the parcel
+sweeper's exact lock order and OWNER mutex key
+(`land-tenure:<ownerAvatarId>` -> `pg_advisory_xact_lock` -> row `FOR UPDATE`),
+so no AB-BA cycle is constructible between them. Period keying is the
+`slot_paid_through` cursor read and advanced under the row lock against the DB
+clock — advancing to `now() + 7 days`, not `+=`, so an outage forgives missed
+weeks. Non-payment SUSPENDS (stamps `slot_suspended_at`, keeps the row, does not
+advance the cursor); the buy route refuses `listing_suspended` and the public
+feeds hide it, and the next successful sweep clears it. Featured is charged on
+its own cursor and never suspends the listing. Treasury policy matches the
+parcel sweeper (burn-and-proceed on a missing treasury), not the fail-closed kit
+route. Boot-wired in `index.ts`; knob `SERVICE_SLOT_SWEEP_PERIOD_MS`.
+
+**(2d) Money-review fixes (2026-08-09).** Two economic bypasses closed.
+(B1) The hosted quest-claim path resolved its actor through
+`resolveAutonomousCoveAgentBinding`, which checks `openclaw_bots.is_house`
+FIRST and returns a ledger-capable binding while ignoring the session. That
+carve-out is correct for the COVE, where the house is a wager counterparty; a
+quest is a pure FAUCET, so the server's own fleet could have minted the whole
+~1,650 vCLAW ladder into house-owned balances. Quest settlement now uses its own
+`autonomousQuestAgentResolve` seam: the connected-session resolver (which house
+bots structurally cannot satisfy) PLUS an explicit `isHouseAgentId` refusal in
+front of it — two independent barriers.
+(B2) Listing creation stamped an unconditional `now() + 7 days`, so delisting on
+day six and recreating minted a fresh free week forever and the P5a sink
+collected nothing. The free week now belongs to the STRUCTURE, granted once
+ever: `slotPaidThroughOnCreateSql` carries the shop's furthest paid-through
+forward, floored at `now()`, evaluated INSIDE the INSERT so two concurrent
+creates cannot both observe "no history".
+Also: the executor claim path now emits `tutorial_quest.claimed` with explicitly
+NULL fp/ip (hosted actions have no request context) so hosted claims are visible
+to `/dash`; the public board orders on LIVE-featured state rather than the raw
+cursor (Postgres `DESC` defaults to NULLS FIRST, which sorted non-featured
+listings ABOVE featured ones); featured placement is `FEATURE_GATE`d as DARK
+because nothing writes `featured`, and was stripped from all three knowledge
+surfaces; the material SPEND rail is `FEATURE_GATE`d as EARN-ONLY with the same
+surfaces corrected; and the decide prompt gains a bounded server-derived
+claimable-quest block so a hosted agent knows which `questId` values are valid.
+
+**(2c) Kit placement is now the SHARED predicate (P3, closes defect D-1).**
+`isCellPlaceable` validated the ANCHOR CELL ONLY, but a piece spans up to five
+cells once rotated -- so a `path-stone` on a legal perimeter cell overhung the
+shell reservation, and two pieces could occupy the same ground while both
+passed. `routes/land.ts` now runs `evaluatePlacement` from `@clawville/shared`
+(rotated-footprint AABB + level-independent `shellEnvelopeHalfWu` reservation +
+cross-level 3D occupancy) on BOTH the place and move write paths via one
+`evaluateKitWrite` seam. Its occupancy set is built through
+`resolveParcelPlacements`, which never refuses and never drops a row -- that is
+how Q5 grandfathering holds: an existing paid piece the stricter rule would now
+reject still renders, still blocks a new overlap, and is never deleted, while
+its owner may move it to a legal spot for free. A move excludes itself from both
+occupancy and the piece counts, so it never self-collides and stays cap-neutral.
+Refusals map through `kitPlacementRefusalStatus`: state conflicts
+(`level_cap_exceeded`, `stack_exceeds_height`, `unsupported_stack`,
+`outside_parcel`, `intersects_shell`, `intersects_piece`) are 409, malformed
+input (`piece_unknown`, `cell_out_of_bounds`, `rotation_not_allowed`) is 400.
+The superseded `validateKitPlacementInput` and `hasKitStackSupport` are DELETED
+rather than left callable, so there is exactly one geometry authority. The
+shared modules (`land-placement.ts`, `land-kit-manifest.ts`, the
+`shellEnvelopeHalfWu` block, `getParcelFootprintWu`) are sourced verbatim from
+the parallel geometry lane so both branches carry identical blobs.
+
+**(3) Tutorial-ladder three-path parity (P6) — closes live defect D-2.** The
+26-quest / 1,585 vCLAW corpus was cookie-gated and human-only. Migration
+`0054_tutorial_claim_avatar_authority.sql` moves authority from the user to the
+AVATAR (`user_id` nullable, unique index on `(avatar_id, quest_id)` created
+BEFORE the old one drops), adds `materials_credited`, and adds a single-rail
+CHECK; a preflight PROVES collision freedom on the live table and refuses the
+file otherwise. `apps/api/src/services/tutorial-quest-settlement.ts` owns BOTH
+the proof-of-engagement gate (moved verbatim out of the route) and the two-rail
+settlement, because the `[ACTION:]` executor has no Hono context and cannot
+reuse a route body — this is what makes the three subject paths one
+implementation. `POST /api/quests/tutorial/:id/claim` and
+`GET /api/quests/tutorial/claims` now run
+`requireAuthOrAgentSession -> requireLedgerCapableIdentity ->
+requireNonGuestIdentity`, and the read is keyed on the avatar. Four tier-10 land
+quests pay MATERIALS with predicates over canonical land state. New whitelisted
+verb `claim_tutorial_quest(questId)`; `PROTOCOL_VERSION` 46 -> 47 with the
+manual, Nori, and the orientation constant updated in the same diff. **PARITY:**
+human path authed REST; connected-agent path the same REST route with
+`X-Clawville-Agent-Session`; hosted path the `[ACTION:]` verb — all three call
+`settleTutorialQuestClaim`, binding settlement to the resolved bound avatar.
+
+**Prior Last Audited: 2026-08-08 (Land P2 round 2 — executor/UI/protocol v46).**
+`npc-simulation.ts` admits `claim_parcel`, `prepay_rent`, and `release_parcel`
+only after the existing autonomous-cove identity resolver proves a live,
+ledger-capable bound avatar (including the server-owned house-agent binding).
+It reserves `(avatar, verb, parcelCode)` before awaiting settlement and derives
+a semantic 60-second-bucket idempotency key; all money and tenancy writes remain
+inside `land-tenure-settlement.ts`. The autonomy prompt receives a bounded,
+render-backed Land target projection (claimable availability plus owned tenure,
+paid weeks, and grace) and the shared whitelist menu exposes every admitted verb.
+The Land Office is the human adapter over the same REST settlement routes: fresh
+hold-wallet eligibility and declaration, Hold/Rent acquisition, prepay, and
+fingerprinted release. Protocol v46 documents the wire and tenure contract.
+
+**Prior Last Audited: 2026-08-06 (Land P3 stage-A Opus fix round — §8/§13; piece
+schema catalog, active-feed lifecycle/cache invariant, and idempotency backstop).**
+
+**Drift note:** stage A now includes migration `0050` integrity/lifecycle fixes; stage B rendering remains untouched.
+
+**Land P2 tenure backend core (2026-08-08).** Migrations `0051` and `0052`
+introduce explicit terms versions, one-account-per-declared-hold-wallet, a
+cross-column deposit escrow invariant, durable shared settlement idempotency,
+and the all-or-nothing 18-row ghost absorption. Runtime settlement is centralized
+in `apps/api/src/services/land-tenure-settlement.ts`: claim/prepay/release all use
+`withKeyedMutex(avatar)` -> `pg_advisory_xact_lock(avatar)` -> parcel `FOR UPDATE`,
+then ledger-only effects and the idempotency response in one transaction. The
+service accepts `parcelCode`, revalidates expected user/avatar/agent bindings,
+and performs no caches/events/broadcasts; REST adapters own those fresh-only
+effects. Normal REST and future executor calls therefore share the same money
+implementation without an internal HTTP hop.
+
+Terms-v2 rent pays week one irreversibly and escrows only future whole weeks;
+the public parcel DTO's `claimRentCtWeekly` is derived from the same constants
+used for the debit and claim-time row stamp, never the legacy row quote.
+terms-v2 hold is rent-free and uses the account's signatureless declared wallet.
+Claims require a fresh CLV read. The sweeper's bounded read can renew, open a
+non-extending three-day grace, or lapse on confirmed data; unavailable data parks
+the row unchanged and alerts after three consecutive passes. Terms-v1 logic is
+kept separate; repeated low-to-healthy grace recoveries are also alerted for
+flash-hold review. `linked-wallet-clv-balance.ts` now requires every consumer to
+state freshness explicitly when needed and refuses stale fallback beyond a hard
+maximum, while retaining the marketplace consumer's default five-minute cache.
+The legacy `claim-starter` route is a stable pre-auth 409 and no new code can
+stamp terms version 1.
 
 **Prior Last Audited: 2026-07-30 (world-stage P4 activity route/overlay/downlink
 architecture).** `/activity/:activityId/:roomId` is now part of
@@ -883,7 +1097,7 @@ All schema files re-exported from `schema/index.ts`. **Single source of truth fo
 | `sap_escrow_approvals` | **SAP Option C** (2026-06-30) — the depositor's PERSISTED, authenticated approval (the #1 fix: the ONLY thing that authorizes a settle; a worker can no longer forge a request-body approval to self-release). One row per `(escrow_pda, job_id)` (unique). Cols: `id uuid PK, escrow_pda varchar(64), job_id varchar(128), approver_avatar_id`/`worker_avatar_id uuid FK→avatars(id) ON DELETE CASCADE, approved_calls varchar(32)` (optional cap; NULL ⇒ full maxCalls), `approved_at timestamptz`. Written ONLY by the recorded depositor (`POST /escrow/usdc/approve`, `identity.avatarId === depositor` asserted); `settleJob` READS it to build the verification signal SERVER-SIDE. Same migration as `sap_escrow_settlements`. |
 | `sap_agent_identities` | **Automatic SAP registration + Metaplex identity registry** (migration `0042_sap_agent_identities.sql`, 2026-07-21). One durable row per avatar (`avatar_id UNIQUE FK→avatars(id) ON DELETE CASCADE`) with deterministic `agent_pda UNIQUE`, owner `wallet`, `cluster`, non-empty on-chain `name`/`description`, JSONB capabilities, trigger provenance, attempts/error, timestamps, and registration/Metaplex pubkeys + signatures. State machine: `pending_funding → registering → registered → attaching_identity → identity_attached`, with `failed` after the capped retry budget. CHECK constraints pin cluster/status/non-empty metadata/nonnegative attempts. Additive, idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`; CI migrate gate only, never `db:push`. |
 | `sap_reputation_jobs` | **Verified composed-bounty SAP reputation queue** (migration `0043_sap_reputation_jobs.sql`, 2026-07-21). `bounty_id UNIQUE FK→bounties`, hunter avatar FK, `waiting_identity|writing|written|skipped|failed`, partial attestation/feedback signatures, attempts/error, timestamps. The unique bounty key admits at most once after the PAID CAS; the oldest-per-hunter serialized worker owns chain writes. |
-| `land_parcels` / `land_structures` / `land_upgrades` / `land_transactions` | **Land Economy (Phase 0/1, `packages/database/src/schema/land.ts`)** — was missing from this table; backfilled 2026-07-05 alongside the Slice-4 services rows below. `land_parcels`: one pre-seeded row per parcel (fixed supply), `tier` enum (`starter\|c\|b\|a\|founder`), `status` (`available\|owned\|reserved\|retired`), `tenure` (`rented\|owned\|starter`, null=unsold), server-stamped `price_ct`/`rent_ct_weekly`, `owner_avatar_id FK→avatars`. `land_structures`: one ACTIVE structure per parcel (UNIQUE `parcel_id`), `structure_type` (`home\|shop`), `catalog_key` (validated against `STRUCTURE_CATALOG`), `level` 1..5, `status` (`active\|archived` — an eviction archives rather than deletes so a re-acquire can restore the build). `land_upgrades` / `land_transactions`: append-only audit spines (upgrade ladder + the cross-domain buyer/seller/parcel/structure trail respectively); see `land.ts` route doc above for the full money-model narrative. |
+| `land_parcels` / `land_structures` / `land_structure_pieces` / `land_upgrades` / `land_transactions` | **Land Economy (Phase 0/1, `packages/database/src/schema/land.ts`)** — was missing from this table; backfilled 2026-07-05 alongside the Slice-4 services rows below. `land_parcels`: one pre-seeded row per parcel (fixed supply), `tier` enum (`starter\|c\|b\|a\|founder`), `status` (`available\|owned\|reserved\|retired`), `tenure` (`rented\|owned\|starter`, null=unsold), server-stamped `price_ct`/`rent_ct_weekly`, `owner_avatar_id FK→avatars`. `land_structures`: one ACTIVE structure per parcel (UNIQUE `parcel_id`), `structure_type` (`home\|shop`), `catalog_key` (validated against `STRUCTURE_CATALOG`), `level` 1..5, `status` (`active\|archived` — an eviction archives rather than deletes so a re-acquire can restore the build). `land_structure_pieces`: render-agnostic snap-grid decorations keyed by parcel with authoritative catalog validation, cell/stack occupancy uniqueness, and owner/parcel cascade cleanup. `land_upgrades` / `land_transactions`: append-only audit spines (upgrade ladder + the cross-domain buyer/seller/parcel/structure trail respectively); see `land.ts` route doc above for the full money-model narrative. |
 | `service_listings` / `service_purchases` | **Run-a-store — P3 Slice 4** (`land.ts` schema, 2026-07-05). `service_listings`: one row per peer CT service an avatar lists on an owned/rented ACTIVE `'shop'` structure — `structure_id FK→land_structures`, `owner_avatar_id FK→avatars`, `kind` (`peer\|partner`, only `peer` written in v1), `title varchar(120)`, `description text`, `price_ct integer CHECK >= 0`, `status` (`active\|paused\|delisted`), `platform_fee_bps` (RESERVED at 0 — v1 is a full transfer to seller, no rake). `service_purchases`: one row per settled buy — `listing_id`/`buyer_avatar_id`/`seller_avatar_id FK`s, `price_ct`, `land_transaction_id` (cross-ref into `land_transactions`), `idempotency_key` (partial-unique — the buy route's replay-not-double-charge guard). Settlement composes `debitClawTokens(buyer)` + `creditClawTokens(seller, provenance:'soft')` + the `service_purchases` insert in ONE tx (conservation). |
 | `partner_storefronts` / `ct_topups` | **Reserved / on-ramp (`land.ts` schema).** `partner_storefronts`: vetted-partner USDC storefront tier — RESERVED, `fulfillment_enabled` defaults false, admin-flip only, no v1 route writes it (see `partner-storefront.ts` §2 row). `ct_topups`: the CT-buy on-ramp ledger (Phase 4 x402/USDC rail; `stripe`/`clv` reserved) — `tx_signature` UNIQUE (partial, ignores NULL) is the double-credit guard on a settled payment. |
 | `market_listings` / `market_deed_locks` / `market_settlements` | **P2P marketplace v1 (Tokenomics C4, `market.ts` schema, migration `0017_market_p2p.sql` — 2026-07-07).** SETTLEMENT FLAG-GATED OFF (`MARKETPLACE_SETTLE_ENABLED`). `market_listings`: one row per peer listing — `seller_avatar_id FK→avatars` (E5: human or agent), `item_kind` (`land_deed\|earned_bundle` — earned REFUSED in v1), `item_ref` (parcelId), `price_vclaw CHECK>0` (¢-peg QUOTE unit, never debited), `status` (`active\|pending_settlement\|settled\|cancelled\|expired` — full machine in the schema header; `expired` is a v1 PREDICATE, not a flip), `escrow_state`, `seller_wallet_pubkey` (the license-gate wallet = default payout destination), `buyer_avatar_id`/`settlement_checkout_id` set at settlement; partial-UNIQUE `(item_kind, item_ref) WHERE status IN ('active','pending_settlement')` = the double-list guard. `market_deed_locks`: MARKET-OWNED parcel transferability lock (PK `parcel_id FK→land_parcels`) — taken with the listing in one tx, released on cancel, HELD through `settled` until the Codex+land-gated deed-transfer executor runs; chosen over an ALTER on `land_parcels` so the land schema stays untouched + db:push-safe. `market_settlements`: ONE row per settled checkout (`checkout_id` UNIQUE FK→x402_checkouts — the exactly-once settlement key): tx signature + `usd_basis`, the funded C3 buy (`clv_buy_queue_id FK`), `rake_bps`=444 + `rake_usd` (4.44% treasury CLV-rake INTENT) + `seller_payout_usd` (95.56% seller CLV-payout INTENT, `payout_status` default + only-v1-written value `'pending_review'`; `approved\|rejected\|paid` RESERVED for the Codex-gated payout executor), `deed_transferred_at` stamped ONLY by the (dark) deed-transfer executor; CHECK `rake_usd + seller_payout_usd = usd_basis` (exact — the ¢-peg µUSD split has zero rounding). **GoLive executor trail (migration `0020_market_payout_deed_executors.sql` + `0020a`/`0020b`, 2026-07-07):** `market_settlements` += deed cols (`deed_transfer_claim_id`/`deed_transfer_started_at` audit + TERMINAL `deed_transfer_failure_reason`) and payout cols (`payout_claim_id`/`payout_claimed_at` atomic claim, `payout_seller_tx_signature`/`payout_rake_tx_signature` captured-before-send + partial-UNIQUE each, `payout_clv_atomic` + `payout_executed_rate` exact-integer stamps, `payout_executed_at`, `payout_failure_reason`), partial index `market_settlements_deed_pending_idx` (deed-scan hot path); `market_payout_status` += `'sending'` (0020a) + `'reconcile'` (0020b), each ALONE per the migrate-ci ALTER TYPE rule — the executor machine is `pending_review → sending → paid \| reconcile(TERMINAL)` with pre-capture failures releasing back to `pending_review`; `approved`/`rejected` stay RESERVED for a human-review layer. LEDGER-ONLY: no market table references a CT balance. |
@@ -975,6 +1189,8 @@ UI locale layer landed 2026-05-22 (Phase 1+2). English + Simplified Chinese ship
 ---
 
 ## 13. Recent material changes
+
+- 2026-08-06. **Land P3 stage A kit-piece backend (server-only; no protocol bump).** Shared `KIT_CATALOG` owns 12 stable render-agnostic `piece_key` definitions, the exact Lv1→Lv5 small/large caps, stack heights, rotation increments, and D5 fees (15 vCLAW small / 60 large); no GLB path, collider, or pathfinding state exists in stage A. Additive idempotent migration `0049_land_structure_pieces.sql` creates `land_structure_pieces` with parcel cascade, authoritative-owner denormalization, 16×16 grid/rotation/stack CHECKs, unique `(parcel_id, grid_x, grid_y, stack_level)` occupancy, and a parcel index; fix migration `0050_land_kit_integrity.sql` aligns avatar deletion to `ON DELETE CASCADE` and adds the partial unique `land_tx_kit_piece_idem_unique` JSONB-key backstop. Guarded `POST /api/land/parcels/:parcelId/pieces` locks avatar→parcel→active structure, verifies authoritative `land_parcels.owner_avatar_id`, permits stack level N only above N−1, and serves replay only when all six stored target fields match the current request; a reused key otherwise returns `idempotency_key_conflict`. It atomically moves the server-derived fee through `claw-token-ledger` from owner to house before inserting the piece; the existing `structure_placement` audit kind stores explicit `kit_piece_placement` metadata plus both ledger IDs (no enum expansion). Guarded `PATCH`/`DELETE /api/land/pieces/:pieceId` are free and removal has no refund. Public `GET /api/land/pieces/public` inner-joins active structures and returns only `parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel` with `Cache-Control: public, max-age=30`; every structure-status cache bust now also invalidates pieces, and different-owner re-acquire purges archived-owner pieces in the locked transaction while same-owner restore preserves them. The Lv4/Lv5 renderer-stat baseline remains a tracked stage-B `FEATURE_GATE`; stage B still owns asset mapping, in-world editing, fixed-chunk cached merging, renderer statistics, player/agent knowledge surfaces, and the single player-visible `PROTOCOL_VERSION` bump.
 
 - 2026-08-03. **Graceful deploys and transient database recovery.** The API and web Docker images now install `curl` and declare container `HEALTHCHECK`s against their DB-independent `/health` endpoints (the web endpoint is the lightweight App Router route `apps/web/src/app/health/route.ts`). Once Coolify health checks are enabled on each app, deployments can keep the old container serving until the replacement is healthy, while Traefik's Docker provider gates `starting`/`unhealthy` containers for zero-downtime rolling flips. API SIGTERM handling now leaves HTTP serving for a 2s routing grace, then drains with non-force `server.stop()` for at most 5s before the existing worker teardown. Postgres.js connection-class drops are classified conservatively as retryable 503 responses with a rate-limited warning alert, `Retry-After: 1`, and `retryable: true`; other unexpected errors retain the critical 500 path. The shared web transport transparently retries GET requests once after 750ms on a network error or 502/503/504 response; mutations remain single-attempt.
 

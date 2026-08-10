@@ -312,9 +312,17 @@ function KelpRealmAvatarMotion({
         ),
     );
 
-    camera.getWorldDirection(forwardScratch);
-    forwardScratch.y = 0;
-    if (forwardScratch.lengthSq() > 0.0001) forwardScratch.normalize();
+    // Authoritative look-ahead direction from the OWNED yaw — never read it
+    // back from the camera. The persistent slot camera keeps whatever
+    // orientation the previous visit (or another writer) left on it, and a
+    // feedback read turns that stale direction into this frame's look target
+    // (2026-08-08 Codex finding 4: nondeterministic first-frame aim after
+    // re-entry). yaw 0 ⇒ exact -Z forward, matching the +Z chase offset.
+    forwardScratch.set(
+      Math.sin(cameraYaw.current),
+      0,
+      -Math.cos(cameraYaw.current),
+    );
 
     const group = groupRef.current;
       kelpRealmPlayerPositionRef.x = state.x;

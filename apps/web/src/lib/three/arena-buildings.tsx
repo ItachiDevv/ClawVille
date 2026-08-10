@@ -261,11 +261,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
 
   // Slot 0 — N (cx=180, cy=50): dx=0, dz=130 → atan2(0,130)=0
   // targetMaxDim: 1100 — pineapple house needs extra size to read from a distance.
-  'visual-creation':     { model: '/models/pineapple-house-opt1-ktx.glb?v=3',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
+  'visual-creation':     { model: '/models/pineapple-house-opt1-mo-ktx.glb?v=3',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
   // Slot 1 — NNE (cx=245, cy=67): dx=-65, dz=113 → atan2(-65,113)≈-0.522 (-π/6)
   // Phase 6.2: targetMaxDim=1000→1400 — user reports bucket reads too small vs adjacent buildings.
   // 1400 puts Chum Bucket in the same landmark tier as Squidward + Krusty Krab (5-7× avatar height).
-  'code-development':    { model: '/models/chum-bucket-v2-opt1-ktx.glb?v=4',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
+  'code-development':    { model: '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
   // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
   // GLB node tree (runtime GLTFLoader dump verified 2026-05-25): RootNode → "The_Krusty_Krab" (underscores),
@@ -277,7 +277,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // body was behind the slot. Dynamic anchor ensures the restaurant body center lands at the slot.
   // FIXED 2026-05-25: the real runtime node is "The_Krusty_Krab"; the prior
   //   "The Krusty Krab" key was a no-op and logged a body-anchor warning.
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2-opt1-ktx.glb?v=4',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
                            childScaleOverrides: { 'The_Krusty_Krab': 1.5 },
                            bodyAnchorChild: 'The_Krusty_Krab' },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
@@ -305,7 +305,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Height = 193.50×8.6 = 1664wu. XZ = 255.78×8.6 = 2200 — hits MAX_FOOTPRINT=2000.
   // Adjusted: scale×(2000/2200) = 7.82. Height = 193.50×7.82 = 1513wu (≈8.4× avatar). ✓
   // The civic anchor building visually dominates the south slot as intended.
-  'cron-automation':     { model: '/models/patty-building-opt1-ktx.glb?v=3',      yOffset: 0, rotY:  3.142, targetMaxDim: 2200 },
+  'cron-automation':     { model: '/models/patty-building-opt1-mo-ktx.glb?v=3',      yOffset: 0, rotY:  3.142, targetMaxDim: 2200 },
   // Slot 7 — SSW (cx=115, cy=293): dx=65, dz=-113 → atan2(65,-113)≈2.620 (5π/6)
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
   'deployment-ops':      { model: '/models/building-lighthouse-opt1-ktx.glb?v=3', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
@@ -325,7 +325,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
   // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.
-  'agent-security':      { model: '/models/patricks-rock-v2-opt1-ktx.glb?v=5',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
+  'agent-security':      { model: '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
   // GLB node tree (AUTHORITATIVE — verified via CDP live scene traversal 2026-05-21):
@@ -684,7 +684,7 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
 
 // Preload all 12 models (Phase 6.0.1: added cove-exterior.glb + claw-arcade-exterior.glb).
 // extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
-// GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
+// GLBs with EXT_meshopt_compression (all five -mo-ktx replaced buildings + legacy meshopt ones)
 // decode at preload time. Without this, the module-scope preload fires before
 // drei's shared loader has the decoder registered → those buildings load as
 // empty scenes and don't render.

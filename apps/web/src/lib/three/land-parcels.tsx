@@ -85,9 +85,17 @@ const PAD_EMISSIVE_INTENSITY = 0.12;
 /** Pad inset fraction relative to parcel size (0.9 = small margin around edge) */
 const PAD_INSET = 0.88;
 
-/** Corner post dimensions (wu) */
-const POST_W  = 5.5;   // square cross-section
-const POST_H  = 38;    // total height above floor
+/**
+ * Corner post dimensions (wu).
+ *
+ * Scaled up per the gamification pass §5.7. The old 38 wu post was 0.14× a
+ * 270 wu avatar — knee-high on a plot 1,216 wu across, so the boundary read as
+ * a scattering of pegs rather than a fence line. 120 wu is 0.44×, waist-height
+ * on the avatar and legible from the ring path. Still 4 boxes / 48 triangles
+ * per parcel: this costs geometry size, not draw calls.
+ */
+const POST_W  = 14;    // square cross-section (was 5.5)
+const POST_H  = 120;   // total height above floor (was 38)
 const POST_Y  = FLOOR_Y + POST_H * 0.5;  // post center Y
 
 /** Top rail dimensions (wu) */
@@ -146,6 +154,20 @@ const TIER_COLORS: Record<LandTier, number> = {
   c:       0xc49a6c, // tan
   starter: 0xa0a0a0, // light grey
 };
+
+/**
+ * Neutral ground-pad tone. The pad used to be tier-coloured, but it sits 0.9 wu
+ * above the sand — near-coplanar — so the colour read as seabed discolouration
+ * rather than a plot boundary. §5.7 moves the tier signal to the rail.
+ */
+const PAD_COLOR = 0x8d8579;
+const PAD_EMISSIVE = 0x161412;
+
+/** Owned frames lerp toward this, keeping hue but losing saturation and glow. */
+const OWNED_FRAME_DESATURATE_TARGET = new THREE.Color(0x5c5a55);
+
+/** Available frames glow harder than the pads ever did, so vacancy reads far. */
+const AVAILABLE_FRAME_EMISSIVE_INTENSITY = 0.42;
 
 /** Emissive color per tier (dim tint matching the pad color, helps readability at far fog) */
 const TIER_EMISSIVE: Record<LandTier, number> = {
@@ -367,25 +389,36 @@ function buildPremiumPartnerSignTexture(): THREE.CanvasTexture {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the full visual for one parcel: ground pad + 4 corner posts + 4 top rails.
- * All geometry is baked into world-space coordinates and returned as a single
- * merged BufferGeometry ready to be merged with other same-tier parcels.
- * UNCHANGED from previous implementation.
+ * Ground pad only, baked to world space.
+ *
+ * SPLIT FROM THE FRAME (gamification pass §5.7). The pad and the posts/rails
+ * used to be one merged geometry sharing one tier-coloured material, which put
+ * the tier colour on a plane sitting 0.9 wu above the sand — near-coplanar, so
+ * at any distance it read as a faint discolouration of the seabed rather than a
+ * plot. Tier colour now lives on the RAIL, where there is real vertical
+ * silhouette to carry it, and the pad becomes a neutral ground tone.
  */
-function buildParcelBodyGeo(parcel: ParcelSlot): THREE.BufferGeometry {
-  const padHalf = parcel.size * PAD_INSET * 0.5;
-
-  const geos: THREE.BufferGeometry[] = [];
-
-  // ----- Ground pad (PlaneGeometry, rotated flat) -----
+function buildParcelPadGeo(parcel: ParcelSlot): THREE.BufferGeometry {
   const padGeo = new THREE.PlaneGeometry(parcel.size * PAD_INSET, parcel.size * PAD_INSET, 1, 1);
   _m4.makeRotationX(-Math.PI * 0.5);
   _m4b.makeTranslation(parcel.cx, PAD_Y, parcel.cz);
   _m4b.multiply(_m4);
   padGeo.applyMatrix4(_m4b);
-  geos.push(padGeo);
+  return padGeo;
+}
 
-  // ----- 4 corner posts -----
+/**
+ * The 4 corner posts + 4 top rails for one parcel, baked to world space.
+ *
+ * This is the tier-coloured, availability-coloured part: it is merged per
+ * (tier, availability) so an empty plot you can buy and a plot someone already
+ * owns are two visibly different colours from across the ring, instead of being
+ * distinguishable only by whether a FOR SALE sign happens to be in view.
+ */
+function buildParcelFrameGeo(parcel: ParcelSlot): THREE.BufferGeometry {
+  const padHalf = parcel.size * PAD_INSET * 0.5;
+  const geos: THREE.BufferGeometry[] = [];
+
   const cornerOffsets: Array<[number, number]> = [
     [-padHalf, -padHalf],
     [ padHalf, -padHalf],
@@ -399,7 +432,6 @@ function buildParcelBodyGeo(parcel: ParcelSlot): THREE.BufferGeometry {
     geos.push(postGeo);
   }
 
-  // ----- 4 top rails (connecting corners) -----
   const railSpan = padHalf * 2 - POST_W; // inner span between posts
 
   // North & South rails (along X)
@@ -632,47 +664,69 @@ function availableSetKey(parcels: Map<string, { status: string }>): string {
 export default function LandParcels() {
   const groupRef = useRef<THREE.Group>(null);
 
-  // ── Static body meshes (pads + posts + rails per tier) — built ONCE ──────
+  // ── Static ground pads (one merged mesh per tier) — built ONCE ──────────
+  // Neutral, unsaturated: the pad no longer carries the tier signal.
   const { bodyMeshes, bodyMaterials } = useMemo(() => {
-    const tierMats = new Map<LandTier, THREE.MeshStandardMaterial>();
-    for (const tier of TIERS_ORDER) {
-      tierMats.set(tier, new THREE.MeshStandardMaterial({
-        color:             TIER_COLORS[tier],
-        emissive:          new THREE.Color(TIER_EMISSIVE[tier]),
-        emissiveIntensity: PAD_EMISSIVE_INTENSITY,
-        roughness:         PAD_ROUGHNESS,
-        metalness:         0.0,
-        side:              THREE.FrontSide,
-      }));
-    }
+    const padMaterial = new THREE.MeshStandardMaterial({
+      color:             PAD_COLOR,
+      emissive:          new THREE.Color(PAD_EMISSIVE),
+      emissiveIntensity: PAD_EMISSIVE_INTENSITY,
+      roughness:         PAD_ROUGHNESS,
+      metalness:         0.0,
+      side:              THREE.FrontSide,
+    });
 
-    const bodyGeosByTier = new Map<LandTier, THREE.BufferGeometry[]>();
-    for (const tier of TIERS_ORDER) bodyGeosByTier.set(tier, []);
-
+    const padGeosByTier = new Map<LandTier, THREE.BufferGeometry[]>();
+    for (const tier of TIERS_ORDER) padGeosByTier.set(tier, []);
     for (const parcel of LAND_PARCELS) {
-      bodyGeosByTier.get(parcel.tier)!.push(buildParcelBodyGeo(parcel));
+      padGeosByTier.get(parcel.tier)!.push(buildParcelPadGeo(parcel));
     }
 
     const bodyMeshes: THREE.Mesh[] = [];
     for (const tier of TIERS_ORDER) {
-      const geos = bodyGeosByTier.get(tier)!;
+      const geos = padGeosByTier.get(tier)!;
       if (geos.length === 0) continue;
       const merged = mergeGeometries(geos, false);
       for (const g of geos) g.dispose();
       if (!merged) continue;
       merged.computeBoundingBox();
       merged.computeBoundingSphere();
-      const mat  = tierMats.get(tier)!;
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.name             = `land-body-${tier}`;
+      const mesh = new THREE.Mesh(merged, padMaterial);
+      mesh.name             = `land-pad-${tier}`;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
       mesh.frustumCulled    = true;
       bodyMeshes.push(mesh);
     }
 
-    return { bodyMeshes, bodyMaterials: [...tierMats.values()] };
-  }, []); // LAND_PARCELS is frozen — body never changes
+    return { bodyMeshes, bodyMaterials: [padMaterial] };
+  }, []); // LAND_PARCELS is frozen — pads never change
+
+  /**
+   * Frame materials, one per (tier, availability). Six live combinations
+   * (3 populated tiers × 2 states) against the pads' 3 — nine body draws where
+   * there used to be three, inside the §5.7 3–11 budget.
+   */
+  const frameMaterials = useMemo(() => {
+    const materials = new Map<string, THREE.MeshStandardMaterial>();
+    for (const tier of TIERS_ORDER) {
+      for (const available of [true, false]) {
+        const base = new THREE.Color(TIER_COLORS[tier]);
+        // Owned plots keep their tier hue but drop most of its saturation and
+        // all of its glow, so "for sale" is the thing that catches the eye.
+        if (!available) base.lerp(OWNED_FRAME_DESATURATE_TARGET, 0.55);
+        materials.set(`${tier}:${available ? 'available' : 'owned'}`, new THREE.MeshStandardMaterial({
+          color:             base,
+          emissive:          new THREE.Color(available ? TIER_EMISSIVE[tier] : 0x000000),
+          emissiveIntensity: available ? AVAILABLE_FRAME_EMISSIVE_INTENSITY : 0,
+          roughness:         PAD_ROUGHNESS,
+          metalness:         0.0,
+          side:              THREE.FrontSide,
+        }));
+      }
+    }
+    return materials;
+  }, []);
 
   // ── Static sign materials — built ONCE, reused across every sign rebuild ──
   const staticSignMats = useMemo(() => buildStaticSignMaterials(), []);
@@ -686,6 +740,7 @@ export default function LandParcels() {
 
   // Ref to hold current sign meshes + the last key we built them from.
   const signMeshesRef = useRef<THREE.Mesh[]>([]);
+  const frameMeshesRef = useRef<THREE.Mesh[]>([]);
   const lastKeyRef    = useRef<string>('');
 
   // Recompute sign meshes whenever parcels changes (store update triggers re-render).
@@ -700,8 +755,12 @@ export default function LandParcels() {
     if (newKey === lastKeyRef.current) return;
     lastKeyRef.current = newKey;
 
-    // Remove + dispose old sign meshes from the group.
+    // Remove + dispose old sign and frame meshes from the group.
     for (const m of signMeshesRef.current) {
+      group.remove(m);
+      m.geometry.dispose();
+    }
+    for (const m of frameMeshesRef.current) {
       group.remove(m);
       m.geometry.dispose();
     }
@@ -717,7 +776,38 @@ export default function LandParcels() {
     );
     for (const m of newSignMeshes) group.add(m);
     signMeshesRef.current = newSignMeshes;
-  }, [parcels, staticSignMats]);
+
+    // Rebuild the frames on the SAME availability key, so an empty plot reads
+    // as buyable from across the ring rather than only where its sign is in
+    // view. Merged per (tier, availability); materials are memoized, so this
+    // rebuild only re-bakes geometry and only when ownership actually changes.
+    const frameGeosByKey = new Map<string, THREE.BufferGeometry[]>();
+    for (const parcel of LAND_PARCELS) {
+      const available = (parcels.get(parcel.id)?.status ?? 'available') === 'available';
+      const key = `${parcel.tier}:${available ? 'available' : 'owned'}`;
+      const bucket = frameGeosByKey.get(key);
+      if (bucket) bucket.push(buildParcelFrameGeo(parcel));
+      else frameGeosByKey.set(key, [buildParcelFrameGeo(parcel)]);
+    }
+
+    const newFrameMeshes: THREE.Mesh[] = [];
+    for (const [key, geos] of frameGeosByKey) {
+      const merged = mergeGeometries(geos, false);
+      for (const g of geos) g.dispose();
+      const material = frameMaterials.get(key);
+      if (!merged || !material) continue;
+      merged.computeBoundingBox();
+      merged.computeBoundingSphere();
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.name             = `land-frame-${key}`;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      mesh.frustumCulled    = true;
+      group.add(mesh);
+      newFrameMeshes.push(mesh);
+    }
+    frameMeshesRef.current = newFrameMeshes;
+  }, [frameMaterials, parcels, staticSignMats]);
 
   // ── Attach body meshes to R3F group (once) ────────────────────────────────
   useEffect(() => {
@@ -742,14 +832,23 @@ export default function LandParcels() {
           m.geometry.dispose();
           group.remove(m);
         }
+        for (const m of frameMeshesRef.current) {
+          m.geometry.dispose();
+          group.remove(m);
+        }
       }
       signMeshesRef.current = [];
+      frameMeshesRef.current = [];
       lastKeyRef.current = '';
 
       // Dispose shared sign materials + textures.
       for (const tex of staticSignMats.textures) tex.dispose();
       staticSignMats.signPostMat.dispose();
       for (const mat of Object.values(staticSignMats.signPlankMats)) mat.dispose();
+
+      // Frame materials are memoized for the component's whole life, so this is
+      // the only place they can be released.
+      for (const mat of frameMaterials.values()) mat.dispose();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // run only on unmount

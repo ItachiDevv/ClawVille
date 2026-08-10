@@ -79,16 +79,16 @@ const PRECACHE_GLBS = [
   '/models/building-seashell-ktx.glb?v=2',      // 108 KB
   // Building models (Phase 2 opt1 variants, ?v= queries busted). Sandy's
   // Treedome is procedural and intentionally not pre-cached.
-  '/models/pineapple-house-opt1-ktx.glb?v=3',
-  '/models/chum-bucket-v2-opt1-ktx.glb?v=4',
-  '/models/krusty-krab-v2-opt1-ktx.glb?v=4',
+  '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
+  '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
+  '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
   '/models/salty-spitoon-opt1-ktx.glb?v=3',
   '/models/boating-school-opt1-ktx.glb?v=3',
-  '/models/patty-building-opt1-ktx.glb?v=3',
+  '/models/patty-building-opt1-mo-ktx.glb?v=3',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
   '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
-  '/models/patricks-rock-v2-opt1-ktx.glb?v=5',
+  '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',
   // The 3 locomotion clips every VRM avatar needs to render without a T-pose
   // flash. Loaded eagerly on /game mount by preloadLocomotionClips() —

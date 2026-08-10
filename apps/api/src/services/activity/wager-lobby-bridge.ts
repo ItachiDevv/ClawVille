@@ -33,6 +33,7 @@ import {
   lobbies,
   lobbyPlayers,
   lobbyEvents,
+  sql,
 } from '@clawville/database';
 import {
   cancelLobby,
@@ -104,7 +105,7 @@ const WAGER_ABORT_ACTIVITY_IDS = new Set(['bumper-shells', 'reef-race']);
 const WAGER_ABORT_RECOVERY_INTERVAL_MS = 60_000;
 let wagerAbortRecoveryHandle: ReturnType<typeof setInterval> | null = null;
 
-const productionWagerAbortRecoveryDeps: WagerAbortRecoveryDeps = {
+export const productionWagerAbortRecoveryDeps: WagerAbortRecoveryDeps = {
   findLobbyForRoom,
   withResolvedFence: (lobbyRowId, run) =>
     withResolvedWagerLobbyFence(lobbyRowId, async (tx) =>
@@ -219,7 +220,9 @@ export async function handleWagerRoomAborted(
 }
 
 /** Retry durable aborted_crash escrow rows, including across process restarts. */
-export async function sweepAbortedCrashWagerLobbies(): Promise<{
+export async function sweepAbortedCrashWagerLobbies(
+  deps: WagerAbortRecoveryDeps = productionWagerAbortRecoveryDeps,
+): Promise<{
   attempted: number;
   recovered: number;
   failed: number;
@@ -227,7 +230,10 @@ export async function sweepAbortedCrashWagerLobbies(): Promise<{
   const rows = await db
     .select({ roomId: lobbies.roomId })
     .from(lobbies)
-    .innerJoin(activityRooms, eq(activityRooms.id, lobbies.roomId))
+    // activity_rooms.id is uuid; wager lobbies.room_id is text (it can carry
+    // non-uuid ids for other modes), so cast the uuid side — `uuid = text` has
+    // no operator and made every sweep tick throw 42883 since the P4 deploy.
+    .innerJoin(activityRooms, sql`${activityRooms.id}::text = ${lobbies.roomId}`)
     .where(
       and(
         eq(lobbies.mode, 'multiplayer'),
@@ -240,7 +246,7 @@ export async function sweepAbortedCrashWagerLobbies(): Promise<{
   let failed = 0;
   for (const row of rows) {
     try {
-      const result = await cancelLobbyForAbortedRoom(row.roomId);
+      const result = await cancelLobbyForAbortedRoom(row.roomId, deps);
       if (result === 'cancelled' || result === 'reconciled_cancelled') recovered++;
     } catch (err) {
       failed++;

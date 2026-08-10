@@ -181,7 +181,22 @@ export interface AgentStatusStats {
 
 /** Ownership block for a BOUND session. */
 export interface AgentStatusOwnership {
+  /** Backward-compatible parcel count on the live partner status surface. */
   landParcels: number;
+  /** Additive bounded tenure detail; older clients may ignore this sibling. */
+  landParcelDetail: {
+    count: number;
+    parcels: Array<{
+      parcelCode: string;
+      displayName: string;
+      tier: 'starter' | 'c' | 'b' | 'a' | 'founder';
+      tenure: 'hold' | 'deposit' | 'legacy';
+      weeklyRentVclaw: number | null;
+      prepaidWeeksRemaining: number | null;
+      holdThresholdClv: number | null;
+      grace: 'active' | 'grace';
+    }>;
+  };
   ownedSkills: string[];
 }
 

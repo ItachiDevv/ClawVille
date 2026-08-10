@@ -13,6 +13,7 @@
  */
 
 import { type LandTier, PARCEL_TIER_COUNTS, parcelCode } from './land-tiers';
+import { getParcelFootprintWu } from './land-parcels';
 
 // Re-export the frozen contract symbols this file builds on, so a consumer can
 // import the whole land-economy surface from one module.
@@ -52,10 +53,7 @@ export {
  * until Phase B replaces buy-outright with claim-locks) and MUST NOT be treated
  * as a coherent USD price. Migration 0011 ×10's only the starter parcel rows.
  */
-export const LAND_TIER_LADDER: Record<
-  LandTier,
-  { minCt: number | null; maxCt: number | null }
-> = {
+export const LAND_TIER_LADDER: Record<LandTier, { minCt: number | null; maxCt: number | null }> = {
   starter: { minCt: 0, maxCt: 1500 },
   // Buy-outright bands (founder-locked 2026-06-24). LEFT UNCHANGED by the A3
   // re-band — DEPRECATED/IRRELEVANT (Phase B replaces buy-outright with CLV
@@ -85,10 +83,7 @@ export const LAND_TIER_LADDER: Record<
  * rent_ct_weekly rows). At the $0.01 peg that is $0.50–24/wk (was $5–240/wk at
  * the old $0.10 rate — rent got 10× cheaper in USD, deliberately).
  */
-export const LAND_RENT_LADDER: Record<
-  LandTier,
-  { minCt: number | null; maxCt: number | null }
-> = {
+export const LAND_RENT_LADDER: Record<LandTier, { minCt: number | null; maxCt: number | null }> = {
   starter: { minCt: null, maxCt: null },
   c: { minCt: 50, maxCt: 100 },
   b: { minCt: 250, maxCt: 550 },
@@ -99,8 +94,8 @@ export const LAND_RENT_LADDER: Record<
 /** Convenience flag: which tiers are buyable with CT in v1 (founder is USDC/auction-only). */
 export const CT_BUYABLE_TIERS: readonly LandTier[] = ['starter', 'c', 'b', 'a'] as const;
 
-/** Which tiers can be RENTED with CT in v1 (starter is free+owned; founder is auction-only). */
-export const CT_RENTABLE_TIERS: readonly LandTier[] = ['c', 'b', 'a'] as const;
+/** P2 vCLAW rent door; founder is hold/auction-only and a/b are retired. */
+export const CT_RENTABLE_TIERS: readonly LandTier[] = ['starter', 'c'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase B tenure model (FOUNDER-DECIDED 2026-07-07) — deposit-escrow + hold-to-keep
@@ -140,8 +135,21 @@ export const LAND_STARTER_DEPOSIT_CT = 2000;
  */
 export const LAND_STARTER_RENT_CT_WEEKLY = 100;
 
+/** P2 claim prices. Never derive a quote from a parcel row's legacy stamp. */
+export const LAND_TENURE_RENT_CT_WEEKLY: Record<LandTier, number | null> = {
+  starter: 1_000,
+  c: 2_500,
+  b: null,
+  a: null,
+  founder: null,
+};
+
+export function tenureRentCtWeeklyForTier(tier: LandTier): number | null {
+  return LAND_TENURE_RENT_CT_WEEKLY[tier];
+}
+
 /**
- * Per-tier CLV hold thresholds for B2 hold-to-keep, in CLV **uiAmount** (human
+ * P2 per-tier CLV hold thresholds, in CLV **uiAmount** (human
  * token count — NOT atomic base units; compare against
  * `ClvBalanceResult.uiAmount`). FOUNDER-LOCKED 2026-07-07:
  * c 100k / b 500k / a 2.5M / founder 10M. `null` = the tier is not holdable
@@ -149,10 +157,10 @@ export const LAND_STARTER_RENT_CT_WEEKLY = 100;
  * multiple parcels requires the SUM of their thresholds.
  */
 export const LAND_HOLD_THRESHOLDS_CLV: Record<LandTier, number | null> = {
-  starter: null,
-  c: 100_000,
-  b: 500_000,
-  a: 2_500_000,
+  starter: 100_000,
+  c: 250_000,
+  b: null,
+  a: null,
   founder: 10_000_000,
 };
 
@@ -190,24 +198,78 @@ export const RENT_GRACE_DAYS = 3;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Server-authoritative CT cost to REACH each level. Index = target level:
- *   [0]            unused (no level 0)
- *   [1] = 0        free placement lands a structure at Lv1
- *   [2] = 600      Lv1 → Lv2
- *   [3] = 1800     Lv2 → Lv3
- *   [4] = 4500     Lv3 → Lv4
- *   [5] = 11000    Lv4 → Lv5  (~weeks of play — aspirational; ROADMAP §6.C4)
+ * Server-authoritative CT cost to REACH each level, keyed by structure type.
+ * Index = target level; `[0]` is unused (there is no level 0) and `[1] = 0`
+ * because free placement lands a structure at Lv1.
  *
- * The upgrade route derives `cost = STRUCTURE_UPGRADE_COSTS[currentLevel + 1]`
- * — never client-trusted.
+ *            Lv2     Lv3     Lv4     Lv5
+ *   home       0     900   4,500  11,000
+ *   shop     600   1,800   4,500  11,000
  *
- * A3 ¢-peg re-band (2026-07-07): LEFT UNCHANGED — structure upgrades were NOT in
- * the founder's explicit A3 re-band list, and they belong to the same land
- * buy-outright surface that Phase B (CLV hold-to-keep) supersedes, so like the
- * c/b/a purchase prices they are DEPRECATED and now ~10× cheaper in USD. Do not
- * treat these as a coherent USD price; Phase B re-sizes the land/structure sinks.
+ * Repriced 2026-08-09 (founder ruling Q3), HOME LADDER ONLY. The problem it
+ * solves: reaching Lv3 on a home cost 2,400 CT of upgrades on top of the
+ * pieces, so the whole 2,585 CT onboarding grant bought 88% of one finished
+ * yard. Lv2 is now free — every new player reaches the first real capacity
+ * bump without saving — and Lv3 is halved. Lv4/Lv5 are untouched: they are
+ * still meant to be aspirational. The SHOP ladder is unchanged; shops recover
+ * the giveback through their recurring slot rentals.
+ *
+ * The upgrade route derives
+ * `cost = structureUpgradeCostCt(structureType, currentLevel + 1)` from the
+ * LOCKED structure row — never client-trusted.
+ *
+ * A3 ¢-peg re-band (2026-07-07): these were left out of the founder's explicit
+ * re-band list, so they are not a coherent USD price. Do not read them as one.
  */
-export const STRUCTURE_UPGRADE_COSTS: readonly number[] = [0, 0, 600, 1800, 4500, 11000];
+export const STRUCTURE_UPGRADE_COSTS_BY_TYPE: Readonly<
+  Record<LandStructureType, readonly number[]>
+> = {
+  home: [0, 0, 0, 900, 4500, 11000],
+  shop: [0, 0, 600, 1800, 4500, 11000],
+};
+
+/**
+ * The authoritative upgrade-cost lookup. Returns 0 for a level outside the
+ * ladder, matching the route's `?? 0` guard.
+ */
+export function structureUpgradeCostCt(
+  structureType: LandStructureType,
+  targetLevel: number,
+): number {
+  return STRUCTURE_UPGRADE_COSTS_BY_TYPE[structureType][targetLevel] ?? 0;
+}
+
+/**
+ * @deprecated Use `structureUpgradeCostCt(structureType, targetLevel)`.
+ *
+ * Retained as the SHOP ladder so the pre-reprice shape and numbers still
+ * resolve for callers with no structure type in scope: the guest land sandbox
+ * (`apps/web/src/stores/land-guest-sandbox.ts`, `guest-land-sandbox.tsx`),
+ * which is a DEMO economy that settles nothing. Real settlement always goes
+ * through the type-keyed lookup above.
+ */
+export const STRUCTURE_UPGRADE_COSTS: readonly number[] =
+  STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop;
+
+/**
+ * Weekly rent for ONE shop service-listing slot, in whole vCLAW (founder ruling
+ * Q3). This is the recurring sink that funds the home-side giveback: home piece
+ * fees dropped to a third and the home Lv2 upgrade became free, which is a
+ * ~20,400 CT one-time cost across 10 commerce players. At 100% uptake this
+ * recovers it in about 1.3 weeks; at 25%, about 5.
+ *
+ * Charged by `service-slot-rent-sweeper.ts`, never at listing creation — a new
+ * listing is granted its first week so a shop is never billed before it has had
+ * a chance to sell anything.
+ */
+export const SERVICE_LISTING_SLOT_RENT_CT_WEEKLY = 400;
+
+/**
+ * Weekly rent for the PREMIUM featured placement, in whole vCLAW. Charged on a
+ * cursor entirely separate from the slot rent, so a shop that can afford its
+ * slot but not its feature keeps selling and only loses the placement.
+ */
+export const SERVICE_FEATURED_SLOT_RENT_CT_WEEKLY = 1200;
 
 /** Max structure level (Lv5). Matches the `land_structures.level BETWEEN 1 AND 5` DB check. */
 export const MAX_STRUCTURE_LEVEL = 5;
@@ -241,7 +303,7 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     key: 'coastal-cottage',
     label: 'Coastal Cottage',
     structureType: 'home',
-    modelPath: '/models/land-structures/coastal-cottage/home.glb',
+    modelPath: '/models/land-structures/coastal-cottage/home2.glb',
     minLevel: 1,
     premium: false,
   },
@@ -249,7 +311,7 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     key: 'driftwood-cabin',
     label: 'Driftwood Cabin',
     structureType: 'home',
-    modelPath: '/models/land-structures/driftwood-cabin/home.glb',
+    modelPath: '/models/land-structures/driftwood-cabin/home2.glb',
     minLevel: 2,
     premium: false,
   },
@@ -257,8 +319,88 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     key: 'fantasy-cottage',
     label: 'Fantasy Cottage',
     structureType: 'home',
-    modelPath: '/models/land-structures/fantasy-cottage/home.glb',
+    modelPath: '/models/land-structures/fantasy-cottage/home2.glb',
     minLevel: 2,
+    premium: false,
+  },
+  // ── Meshy catalog ramp, 2026-08-09 ────────────────────────────────────────
+  // Seven new home shells. All non-premium, so any tier may use them once the
+  // level is reached; premium remains the two Lv4 tower/mall assets below.
+  //
+  // ⚠ minLevel VALUES ARE FOUNDER-TUNABLE. They are a first pass at pacing —
+  // one more shell to choose from at Lv1, a spread of four at Lv2, and the
+  // three tall silhouettes held back to Lv3 so upgrading visibly changes your
+  // skyline rather than just your palette. Nothing structural depends on these
+  // numbers: `isShellAllowed` reads `minLevel` straight off this row, the
+  // picker locks on the same helper, and the allowlist test derives its
+  // expectations from this catalog. Retuning is a one-line edit per row.
+  //
+  // Measured at freeze (world-space bbox, meshopt + WebP, 1 material each):
+  //   pearl-dome      1.898 x 1.236 x 1.899, H/W 0.65, 3,115 tri, 238 KB
+  //   tiki-hut        1.857 x 1.165 x 1.287, H/W 0.63, 2,753 tri, 436 KB
+  //   anchor-forge    1.889 x 1.112 x 1.892, H/W 0.59, 3,069 tri, 302 KB
+  //   shipwreck-mast  1.722 x 1.897 x 0.699, H/W 1.10, 3,883 tri, 441 KB
+  //   tide-lighthouse 0.867 x 1.899 x 0.991, H/W 1.92, 4,033 tri, 335 KB
+  //   kelp-spire      0.849 x 1.898 x 0.856, H/W 2.22, 4,166 tri, 413 KB
+  //   coral-highrise  0.609 x 1.895 x 0.491, H/W 3.11, 3,785 tri, 293 KB
+  // All within the §4.3 shell budget (≤ 6,000 tri, ≤ 2 materials, ≤ 500 KB).
+  // `coral-highrise` (H/W 3.11) and `kelp-spire` (2.22) sit ABOVE the 2.254
+  // footprint/height crossover, so their rendered size is height-bound rather
+  // than footprint-bound — they read as genuinely tall on a parcel.
+  {
+    key: 'pearl-dome',
+    label: 'Pearl Dome',
+    structureType: 'home',
+    modelPath: '/models/land-structures/pearl-dome/home.glb',
+    minLevel: 1,
+    premium: false,
+  },
+  {
+    key: 'tiki-hut',
+    label: 'Tiki Hut',
+    structureType: 'home',
+    modelPath: '/models/land-structures/tiki-hut/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'anchor-forge',
+    label: 'Anchor Forge',
+    structureType: 'home',
+    modelPath: '/models/land-structures/anchor-forge/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'shipwreck-mast',
+    label: 'Shipwreck Mast',
+    structureType: 'home',
+    modelPath: '/models/land-structures/shipwreck-mast/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'tide-lighthouse',
+    label: 'Tide Lighthouse',
+    structureType: 'home',
+    modelPath: '/models/land-structures/tide-lighthouse/home.glb',
+    minLevel: 3,
+    premium: false,
+  },
+  {
+    key: 'kelp-spire',
+    label: 'Kelp Spire',
+    structureType: 'home',
+    modelPath: '/models/land-structures/kelp-spire/home.glb',
+    minLevel: 3,
+    premium: false,
+  },
+  {
+    key: 'coral-highrise',
+    label: 'Coral Highrise',
+    structureType: 'home',
+    modelPath: '/models/land-structures/coral-highrise/home.glb',
+    minLevel: 3,
     premium: false,
   },
   {
@@ -273,7 +415,7 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     key: 'coastal-cottage',
     label: 'Coastal Shop',
     structureType: 'shop',
-    modelPath: '/models/land-structures/coastal-cottage/shop.glb',
+    modelPath: '/models/land-structures/coastal-cottage/shop2.glb',
     minLevel: 1,
     premium: false,
   },
@@ -281,7 +423,7 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     key: 'driftwood-cabin',
     label: 'Driftwood Shop',
     structureType: 'shop',
-    modelPath: '/models/land-structures/driftwood-cabin/shop.glb',
+    modelPath: '/models/land-structures/driftwood-cabin/shop2.glb',
     minLevel: 2,
     premium: false,
   },
@@ -289,7 +431,7 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     key: 'fantasy-cottage',
     label: 'Fantasy Shop',
     structureType: 'shop',
-    modelPath: '/models/land-structures/fantasy-cottage/shop.glb',
+    modelPath: '/models/land-structures/fantasy-cottage/shop2.glb',
     minLevel: 2,
     premium: false,
   },
@@ -365,15 +507,8 @@ export const PALETTE_PRESETS: readonly PalettePreset[] = [
 ] as const;
 
 /** Resolve a verified shell entry for a structure type, or null for bad input. */
-export function getShellCatalogEntry(
-  structureType: LandStructureType,
-  shellKey: string,
-): ShellCatalogEntry | null {
-  return (
-    SHELL_CATALOG.find(
-      (entry) => entry.structureType === structureType && entry.key === shellKey,
-    ) ?? null
-  );
+export function getShellCatalogEntry(structureType: LandStructureType, shellKey: string): ShellCatalogEntry | null {
+  return SHELL_CATALOG.find((entry) => entry.structureType === structureType && entry.key === shellKey) ?? null;
 }
 
 /** Resolve a named palette preset, or null for bad input. */
@@ -443,31 +578,66 @@ export interface StructureCatalogEntry {
 export const STRUCTURE_CATALOG: readonly StructureCatalogEntry[] = [
   // ── Homes (utility hubs) ──
   { key: 'home-shack', label: 'Shack', structureType: 'home', tierLevel: 1 },
-  { key: 'home-cottage', label: 'Cottage', structureType: 'home', tierLevel: 2 },
+  {
+    key: 'home-cottage',
+    label: 'Cottage',
+    structureType: 'home',
+    tierLevel: 2,
+  },
   { key: 'home-house', label: 'House', structureType: 'home', tierLevel: 3 },
   { key: 'home-villa', label: 'Villa', structureType: 'home', tierLevel: 4 },
-  { key: 'home-mansion', label: 'Mansion', structureType: 'home', tierLevel: 5 },
+  {
+    key: 'home-mansion',
+    label: 'Mansion',
+    structureType: 'home',
+    tierLevel: 5,
+  },
   // ── Founder-only premium home (Founders' Row exclusive) ──
-  { key: 'home-founders-estate', label: "Founders' Estate", structureType: 'home', tierLevel: 5 },
+  {
+    key: 'home-founders-estate',
+    label: "Founders' Estate",
+    structureType: 'home',
+    tierLevel: 5,
+  },
   // ── Shops (commercial — run paid services) ──
   { key: 'shop-stall', label: 'Stall', structureType: 'shop', tierLevel: 1 },
-  { key: 'shop-shopfront', label: 'Shopfront', structureType: 'shop', tierLevel: 2 },
+  {
+    key: 'shop-shopfront',
+    label: 'Shopfront',
+    structureType: 'shop',
+    tierLevel: 2,
+  },
   { key: 'shop-market', label: 'Market', structureType: 'shop', tierLevel: 3 },
-  { key: 'shop-emporium', label: 'Emporium', structureType: 'shop', tierLevel: 4 },
-  { key: 'shop-grand-bazaar', label: 'Grand Bazaar', structureType: 'shop', tierLevel: 5 },
+  {
+    key: 'shop-emporium',
+    label: 'Emporium',
+    structureType: 'shop',
+    tierLevel: 4,
+  },
+  {
+    key: 'shop-grand-bazaar',
+    label: 'Grand Bazaar',
+    structureType: 'shop',
+    tierLevel: 5,
+  },
   // ── Founder-only premium shop (Founders' Row exclusive) ──
-  { key: 'shop-founders-exchange', label: "Founders' Exchange", structureType: 'shop', tierLevel: 5 },
+  {
+    key: 'shop-founders-exchange',
+    label: "Founders' Exchange",
+    structureType: 'shop',
+    tierLevel: 5,
+  },
 ] as const;
 
 /** Catalog keys valid for HOME placement. */
-export const HOME_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter(
-  (e) => e.structureType === 'home',
-).map((e) => e.key);
+export const HOME_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter((e) => e.structureType === 'home').map(
+  (e) => e.key,
+);
 
 /** Catalog keys valid for SHOP placement. */
-export const SHOP_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter(
-  (e) => e.structureType === 'shop',
-).map((e) => e.key);
+export const SHOP_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter((e) => e.structureType === 'shop').map(
+  (e) => e.key,
+);
 
 /** O(1) lookup of a catalog entry by key (null if not an allowlisted key). */
 export function getCatalogEntry(key: string): StructureCatalogEntry | null {
@@ -537,25 +707,12 @@ export const TIER_STRUCTURE_RULES: Record<LandTier, TierStructureRule> = {
   a: {
     maxLevel: 5,
     homeSkus: ['home-shack', 'home-cottage', 'home-house', 'home-villa', 'home-mansion'],
-    shopSkus: [
-      'shop-stall',
-      'shop-shopfront',
-      'shop-market',
-      'shop-emporium',
-      'shop-grand-bazaar',
-    ],
+    shopSkus: ['shop-stall', 'shop-shopfront', 'shop-market', 'shop-emporium', 'shop-grand-bazaar'],
     premium: false,
   },
   founder: {
     maxLevel: 5,
-    homeSkus: [
-      'home-shack',
-      'home-cottage',
-      'home-house',
-      'home-villa',
-      'home-mansion',
-      'home-founders-estate',
-    ],
+    homeSkus: ['home-shack', 'home-cottage', 'home-house', 'home-villa', 'home-mansion', 'home-founders-estate'],
     shopSkus: [
       'shop-stall',
       'shop-shopfront',
@@ -588,11 +745,7 @@ export function getTierMaxLevel(tier: LandTier): number {
  *
  * Routes MUST call this — never trust a client-asserted SKU/type/tier.
  */
-export function isSkuAllowedForTier(
-  sku: string,
-  structureType: 'home' | 'shop',
-  tier: LandTier,
-): boolean {
+export function isSkuAllowedForTier(sku: string, structureType: 'home' | 'shop', tier: LandTier): boolean {
   const entry = getCatalogEntry(sku);
   if (entry === null || entry.structureType !== structureType) return false;
   const rule = TIER_STRUCTURE_RULES[tier];
@@ -677,4 +830,70 @@ export const REST_BONUS_DAILY_CAP_CT: number | null = null;
 /** True only once the founder has set a real `REST_BONUS_DAILY_CAP_CT`. */
 export function isRestBonusEnabled(): boolean {
   return REST_BONUS_DAILY_CAP_CT !== null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Structure world-scale contract (gamification pass §5.6, Q7 RATIFIED)
+//
+// These three numbers used to live as private duplicates inside
+// `land-structures.tsx` and `land-showroom.tsx` (0.62 / 0.78→1.25 / 1.5). They
+// are promoted here because `shellEnvelopeHalfWu` — the reservation the kit
+// placement predicate subtracts from every parcel — is derived from them, and a
+// renderer-only copy would let the drawn shell and the reserved shell diverge.
+//
+// Q7 accepted the FLAT ramp: scale is not a level signal (the shell swap and the
+// palette are), so the ladder is a 2.5%-per-level nudge rather than a 60% growth
+// curve. Raising FOOTPRINT_FRACTION 0.62 → 0.64 and collapsing the ramp to
+// 0.94 → 1.04 lifts the Lv1 shell from 401 wu (1.49× a 270 wu avatar) to 558 wu
+// (2.07×) with no art change.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Fraction of a parcel's side the structure footprint targets at levelScale 1. */
+export const STRUCTURE_FOOTPRINT_FRACTION = 0.64;
+
+/** Level 1 end of the flat scale ramp. */
+export const STRUCTURE_LEVEL_SCALE_MIN = 0.94;
+
+/** Level 5 end of the flat scale ramp. */
+export const STRUCTURE_LEVEL_SCALE_MAX = 1.04;
+
+/**
+ * Height ceiling as a multiple of the parcel side. Footprint binds iff the
+ * shell's `H/W < HEIGHT_CAP_FRACTION / (FOOTPRINT_FRACTION × LEVEL_SCALE_MAX)`
+ * = 1.50 / (0.64 × 1.04) = 2.254. Every shipping shell is below that crossover,
+ * so footprint is the binding constraint today.
+ */
+export const STRUCTURE_HEIGHT_CAP_FRACTION = 1.5;
+
+/**
+ * Structure scale multiplier for a build level. Clamped to 1..5; the step is
+ * `(1.04 − 0.94)/4 = 0.025` → 0.94 / 0.965 / 0.99 / 1.015 / 1.04.
+ */
+export function structureLevelScale(level: number): number {
+  const clamped = Math.max(1, Math.min(5, Number.isFinite(level) ? level : 1));
+  return (
+    STRUCTURE_LEVEL_SCALE_MIN
+    + (clamped - 1) * ((STRUCTURE_LEVEL_SCALE_MAX - STRUCTURE_LEVEL_SCALE_MIN) / 4)
+  );
+}
+
+/**
+ * Half-side, in parcel-local world units, of the square a parcel reserves for
+ * its structure shell — the region kit pieces may never intersect.
+ *
+ * DELIBERATELY LEVEL-INDEPENDENT (defect D-1). The signature takes a tier and
+ * NOTHING ELSE: the envelope is computed at the tier's MAXIMUM level, so a
+ * placement that is legal at Lv1 stays legal after every upgrade. A level
+ * parameter here would let a Lv4/Lv5 shell grow into pieces the server had
+ * already sold as legal, and Q5 forbids deleting a paid row to resolve that.
+ *
+ * The honest cost: at Lv1 a 19–39 wu ring of ground looks free but is reserved.
+ * The yard editor draws THIS function's square, so the reservation is visible
+ * rather than a surprise at upgrade time.
+ */
+export function shellEnvelopeHalfWu(parcelTier: LandTier): number {
+  const sideWu = getParcelFootprintWu(parcelTier);
+  return (
+    (sideWu * STRUCTURE_FOOTPRINT_FRACTION * structureLevelScale(getTierMaxLevel(parcelTier))) / 2
+  );
 }

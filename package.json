@@ -52,7 +52,7 @@
   },
   "overrides": {
     "@types/three": "^0.185.0",
-    "@bonfida/spl-name-service": "file:./vendor/npm/bonfida-spl-name-service-3.0.23.tgz"
+    "@bonfida/spl-name-service": "3.0.23"
   },
   "packageManager": "bun@1.0.25",
   "dependencies": {
