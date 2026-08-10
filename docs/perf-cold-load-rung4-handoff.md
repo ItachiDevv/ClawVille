@@ -167,6 +167,15 @@ state is out of scope for this rung and needs its own review).
 - Fable (orchestrator): decomposes, freezes specs, verifies, owns ship. My own code
   gets Codex review like anyone's — the missed-release race proved why.
 
+## 5b. FOUNDER PLAYTEST FOLLOW-UPS (2026-08-09 — checkpoint APPROVED "okay it looks great"; these are the only notes. Small, run them as a parallel lane BEFORE or alongside Slice A; they are gameplay fixes, not perf work — dispatch per domain: reef items → the reef domain patterns, kelp item → the shared player controller)
+
+1. **Reef Race: whirlpool items don't work.** Founder: "whirlpool items don't seem to really work." Reproduce in a live race first (drive it — do the pickups apply no effect, a wrong effect, or no visual?); the item/boost system lives in the shared activities protocol (`packages/shared/src/activities/protocol.ts` activeBoosts edge-triggering) + the reef scene item handling (`apps/web/src/lib/three/activities/reef-race/`). Server-authoritative: check BOTH the sim applies the effect AND the client presents it. Fix = whatever the reproduce shows; verify in a real staged race.
+2. **Reef Race: widen the track, same structure.** Founder wants more lateral room without changing the course layout. The track is spline-based (`packages/shared/src/reef-race/spline.ts` + track constants); widen the drivable width/collision margins, NOT the spline path. Watch the couplings: start-grid row spacing, boost-pad/item placement lateral positions, rip-current lane widths, bot racing lines, and the anti-cheat lateral bounds — all may key off track width. (Standing preference on file: wide 4-player competitive course, validate width/lanes/overtaking before polish.)
+3. **Reef Race: urchin spin must not change final heading.** The spin disorient is approved, but the racer must exit the spin with the SAME heading they entered with (today they end up facing wrong directions). Find the urchin contact handler in the reef sim (server-authoritative contact per R18c) — make the spin purely presentational/rotational during its duration and restore the pre-contact heading (or continuously preserve the underlying velocity heading) at spin end. Verify: hit an urchin at speed mid-corner, confirm exit heading continues the racing line on BOTH self-prediction and remote views.
+4. **Kelp forest: enable sprint.** The kelp slot mounts with `sprint: false` in its capability mask (`WorldStageRoot.tsx` kelp scene `capabilities`) — flip to true. The shared controller + `KELP_POLICY` already handle sprint generically (capability-masked per the unified-controller ruling — do NOT re-implement movement). Check `KELP_REALM_PLAYER_SPEED_WU_PER_SEC` × run multiplier against corridor width/camera feel, and that the run animation triggers (state.running flows to the animator). Founder feel-check on the result.
+
+Each item: reproduce → fix → verify live in a staged run → Codex review batch (one review for the lane is fine — they're small). Same-diff docs where behavior changes (`3dStructure.md` for reef/kelp mechanics).
+
 ## 6. Punch list (carried + new)
 
 1. Commit the hardened A/B runner as `apps/web/scripts/cold-load-ab-runner.sh`.
@@ -193,11 +202,16 @@ task-6 decisions (ask if still open), and start with Slice A.
 
 ## 8. DRAFT KICKOFF PROMPT (founder: paste after your checkpoint playtest, edit freely)
 
-> Cold-load rung 4 (boot-core gate). Read `docs/perf-cold-load-rung4-handoff.md` in
+> Cold-load rung 4 (boot-core gate) + founder playtest follow-ups. Read
+> `docs/perf-cold-load-rung4-handoff.md` in
 > `C:\Users\itachi\Documents\Crypto\cv-covefreeze` (branch `perf/cold-load-diet`,
-> continue on it) and execute it. Playtest verdict on the rung-3 checkpoint:
-> [APPROVED / notes: …]. Decisions: §2b boundary amendment [symmetric / keep frozen],
-> webgl2 bounds [recalibrate / quiet-box reruns], background-tab boot [option a/b/c],
-> proxy-world first impression [I'll judge at slice D / pre-approve BuildingProxy look].
-> Start with the §7 health check, then Slice A (instrumentation). Codex xhigh
-> adversarial at every stage; 10-minute progress reports on anything long-running.
+> continue on it) and execute it. The rung-3 checkpoint is APPROVED on staging
+> (2026-08-09). Start with the §7 health check, then the §5b playtest follow-up
+> lane (reef whirlpool items broken · widen reef track keeping structure · urchin
+> spin must restore heading · enable sprint in kelp), then Slice A
+> (instrumentation). Decisions: §2b boundary amendment [symmetric / keep frozen],
+> webgl2 bounds [recalibrate / quiet-box reruns], background-tab boot [option
+> a/b/c], proxy-world first impression [I'll judge at slice D / pre-approve
+> BuildingProxy look]. Codex xhigh adversarial at every stage; 10-minute progress
+> reports on anything long-running. (Staging→master promotion is handled by a
+> separate session — do not promote from this one.)
