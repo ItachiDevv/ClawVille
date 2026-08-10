@@ -4,15 +4,10 @@
  * land-office-modal.tsx — the HUMAN in-game surface for the Land Economy.
  *
  * Opened from the sidebar ECONOMY section ("Land Office"). Lets a player:
- *   • For Sale  — browse for-sale parcels grouped by tier (founder→starter).
- *                 Hold tiers (c/b/a/founder) are acquired via CLAIM (hold-to-
- *                 keep): prove a CLV hold, pay weekly CT upkeep — no CT price.
- *                 Starter is claimed via a refundable CT DEPOSIT held in escrow
- *                 (auto-assigned parcel). The tier-ladder visibly rises toward
- *                 town.
- *   • My Land   — owned parcels + each parcel's structure + level, with a
- *                 prominent "Claim your first home" CTA (refundable starter
- *                 deposit — NOT free) when the player owns nothing.
+ *   • For Sale  — choose a specific rendered parcel and its Hold or Rent door.
+ *                 Hold is rent-free while the declared wallet meets the stacked
+ *                 CLV threshold; Starter/C also offer 1..26 prepaid rent weeks.
+ *   • My Land   — owned parcels + structure, tenure, prepay, and release state.
  *   • Build     — on a selected owned parcel: place + upgrade a building/shop,
  *                 with the TIER ADVANTAGE surfaced ("nicer options for higher
  *                 tiers" — higher tier ⇒ premium SKUs + higher max level).
@@ -29,17 +24,14 @@
  * (maxTouchPoints) collapses to a single column and never covers the joysticks.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient, useMutation, type QueryClient } from '@tanstack/react-query';
 import {
   LAND_TIERS,
+  parcelDisplayName,
+  parseParcelCode,
   tierLabel,
   getTierStructureRules,
-  MAX_PARCELS_PER_AVATAR,
-  holdThresholdForTier,
-  FOUNDER_UPKEEP_CT_WEEKLY,
-  LAND_STARTER_DEPOSIT_CT,
-  LAND_STARTER_RENT_CT_WEEKLY,
   type LandTier,
 } from '@clawville/shared';
 import { RpgModal, RpgButton } from '@/components/rpg';
@@ -47,11 +39,16 @@ import { useGameStore } from '@/stores/game';
 import { useAvatar, useSetSpawnPreference } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useIsGuest } from '@/hooks/use-is-guest';
-import { useWalletLink } from '@/hooks/use-wallet-link';
 import { api, ApiError } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/three/land-state-hydrator';
 import GuestLandSandbox from './guest-land-sandbox';
+import { StructureAppearancePicker } from './structure-appearance-picker';
+import {
+  LandTenureForSalePanel,
+  OwnedTenureControls,
+  useLandHoldWalletStatus,
+} from './tenure-office-panels';
 import type {
   LandParcelDTO,
   LandStructureDTO,
@@ -89,12 +86,6 @@ function invalidateLandServices(qc: QueryClient): void {
     predicate: (q) => q.queryKey[0] === 'landServices' && q.queryKey[1] === 'browse',
   });
 }
-
-// ---------------------------------------------------------------------------
-// Ref-based parcel focus helper — scrolls a highlighted card into view.
-// Used when the modal is opened from a 3D parcel click (landOfficeFocusParcel).
-// ---------------------------------------------------------------------------
-const FOCUSED_CARD_ID = 'land-office-focused-parcel';
 
 /** Tier accent colors — matches the 3D parcel palette in land-parcels.tsx. */
 const TIER_ACCENT: Record<LandTier, string> = {
@@ -174,214 +165,6 @@ function TierBadge({ tier }: { tier: LandTier }) {
 // Hold-to-keep helpers (Phase B2 — c/b/a/founder claim via CLV hold)
 // ---------------------------------------------------------------------------
 
-/** Hold-to-keep tiers = the ones with a CLV hold threshold (c/b/a/founder). */
-function isHoldTier(tier: LandTier): boolean {
-  return holdThresholdForTier(tier) != null;
-}
-
-/** Compact CLV formatter: 100000→"100K", 500000→"500K", 2500000→"2.5M", 10000000→"10M". */
-function formatClv(amount: number): string {
-  if (amount >= 1_000_000) {
-    const m = amount / 1_000_000;
-    return `${Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)}M`;
-  }
-  if (amount >= 1_000) {
-    const k = amount / 1_000;
-    return `${Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)}K`;
-  }
-  return amount.toLocaleString();
-}
-
-/**
- * Weekly CT upkeep for a hold-tier parcel. Available c/b/a rows carry a
- * seed-stamped `rentCtWeekly`; available FOUNDER rows carry null (the server
- * stamps FOUNDER_UPKEEP_CT_WEEKLY only AT claim), so display the constant.
- */
-function weeklyUpkeepCt(parcel: LandParcelDTO): number | null {
-  return parcel.rentCtWeekly ?? (parcel.tier === 'founder' ? FOUNDER_UPKEEP_CT_WEEKLY : null);
-}
-
-/**
- * The CLV a claim on `tier` requires ON TOP of what the caller already holds
- * against other parcels (thresholds STACK server-side). `existingHoldSum` is
- * computed client-side from the caller's owned `tenure==='hold'` parcels
- * because honoRequest drops the server's requiredClv/heldClv extras from the
- * 403 error body. KNOWN LIMITATION: the DTO does not expose `grandfathered`,
- * so a grandfathered legacy owner's holds (excluded from the SERVER sum) are
- * counted here — the display can over-state the requirement for those few
- * legacy accounts. The server is authoritative and will still accept, which is
- * why the Claim button is never disabled on a client-side "short" verdict.
- */
-function stackedRequiredClv(tier: LandTier, existingHoldSum: number): number {
-  return existingHoldSum + (holdThresholdForTier(tier) ?? 0);
-}
-
-// ---------------------------------------------------------------------------
-// For-Sale tab
-// ---------------------------------------------------------------------------
-
-function ForSaleTab({
-  onClaim,
-  onClaimStarter,
-  heldClv,
-  existingHoldSum,
-  focusParcelCode,
-  onFocusConsumed,
-}: {
-  /** Open the hold-to-keep ClaimHoldModal for a c/b/a/founder parcel. */
-  onClaim: (parcel: LandParcelDTO) => void;
-  /**
-   * Open the StarterClaimModal (deposit-escrow). Parcel-AGNOSTIC — the
-   * claim-starter route takes no parcelId and AUTO-PICKS an available lot.
-   */
-  onClaimStarter: () => void;
-  /** Linked-wallet CLV uiAmount, or null (logged out / not linked / read down). */
-  heldClv: number | null;
-  /** Σ of the caller's existing hold thresholds (stacking) — see stackedRequiredClv. */
-  existingHoldSum: number;
-  /** When set, scroll the matching parcel card into view and clear after. */
-  focusParcelCode?: string | null;
-  onFocusConsumed?: () => void;
-}) {
-  const [parcels, setParcels] = useState<LandParcelDTO[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [filterTier, setFilterTier] = useState<LandTier | 'all'>('all');
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.getLandParcels({ status: 'available' });
-      setParcels(res);
-    } catch {
-      setError('Could not load parcels — try again.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // Scroll the focused parcel into view once the parcel list has loaded and
-  // the DOM element exists. Uses the DOM id set on the ParcelCard wrapper.
-  useEffect(() => {
-    if (!focusParcelCode || loading || parcels.length === 0) return;
-    // Reset tier filter to 'all' so the target parcel is visible in any tier.
-    setFilterTier('all');
-    // Defer one tick so the list has re-rendered with filterTier='all'.
-    const tid = setTimeout(() => {
-      const el = document.getElementById(FOCUSED_CARD_ID);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        onFocusConsumed?.();
-      }
-    }, 60);
-    return () => clearTimeout(tid);
-    // Only re-run when focusParcelCode changes; loading/parcels are not deps here
-    // because we already guard on them above. eslint disable below is intentional.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusParcelCode]);
-
-  // Group available parcels by tier in the value-gradient order (founder→starter).
-  const byTier = useMemo(() => {
-    const map = new Map<LandTier, LandParcelDTO[]>();
-    for (const t of LAND_TIERS) map.set(t, []);
-    for (const p of parcels) {
-      if (p.status !== 'available') continue;
-      if (filterTier !== 'all' && p.tier !== filterTier) continue;
-      // Sort within tier by price asc later; collect first.
-      map.get(p.tier)?.push(p);
-    }
-    for (const list of map.values()) {
-      list.sort((a, b) => (a.priceCt ?? 0) - (b.priceCt ?? 0));
-    }
-    return map;
-  }, [parcels, filterTier]);
-
-  if (loading) {
-    return <p className="py-12 text-center font-mono text-xs text-slate-300">Loading parcels…</p>;
-  }
-  if (error) {
-    return (
-      <div className="py-12 text-center">
-        <p className="font-mono text-xs text-rose-300">{error}</p>
-        <RpgButton size="sm" variant="secondary" onClick={load} className="mt-3">
-          Retry
-        </RpgButton>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      {/* Tier ladder note + filter chips */}
-      <p className="mb-3 text-[12px] leading-relaxed text-slate-200">
-        Parcels closer to the town center belong to higher tiers — they unlock{' '}
-        <span className="font-semibold text-cyan-200">premium buildings</span>{' '}
-        and <span className="font-semibold text-cyan-200">higher upgrade levels</span>.
-        Higher tiers are <span className="font-semibold text-cyan-200">claimed by holding $CLAWVILLE</span>{' '}
-        in your linked wallet (no vCLAW price — hold to keep, plus a small weekly vCLAW
-        upkeep). The hold ladder rises from Starter Cove out at the rim up to
-        Founders&apos; Row.
-      </p>
-      <div className="mb-4 flex flex-wrap gap-2">
-        <FilterChip label="All" active={filterTier === 'all'} onClick={() => setFilterTier('all')} />
-        {LAND_TIERS.map((t) => (
-          <FilterChip
-            key={t}
-            label={tierLabel(t)}
-            accent={TIER_ACCENT[t]}
-            active={filterTier === t}
-            onClick={() => setFilterTier(t)}
-          />
-        ))}
-      </div>
-
-      <div className="max-h-[52vh] space-y-5 overflow-y-auto pr-1">
-        {LAND_TIERS.filter((t) => filterTier === 'all' || t === filterTier).map((tier) => {
-          const list = byTier.get(tier) ?? [];
-          const rule = getTierStructureRules(tier);
-          return (
-            <section key={tier}>
-              <div className="mb-2 flex items-center gap-2">
-                <TierBadge tier={tier} />
-                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-300">
-                  {list.length} available · max Lv{rule.maxLevel}
-                  {rule.premium ? ' · premium SKUs' : ''}
-                </span>
-              </div>
-              {list.length === 0 ? (
-                <p className="rounded-lg border border-cyan-400/10 bg-cyan-500/[0.03] px-3 py-3 font-mono text-[11px] text-slate-400">
-                  {tier === 'founder'
-                    ? 'No Founders’ Row lots open right now.'
-                    : 'Sold out in this tier right now.'}
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {list.map((p) => (
-                    <ParcelCard
-                      key={p.id}
-                      parcel={p}
-                      onClaim={onClaim}
-                      onClaimStarter={onClaimStarter}
-                      heldClv={heldClv}
-                      existingHoldSum={existingHoldSum}
-                      isFocused={!!focusParcelCode && p.parcelCode === focusParcelCode}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 function FilterChip({
   label,
   active,
@@ -411,479 +194,6 @@ function FilterChip({
   );
 }
 
-function ParcelCard({
-  parcel,
-  onClaim,
-  onClaimStarter,
-  heldClv,
-  existingHoldSum,
-  isFocused,
-}: {
-  parcel: LandParcelDTO;
-  onClaim: (p: LandParcelDTO) => void;
-  /** Open the parcel-agnostic StarterClaimModal (server auto-picks the lot). */
-  onClaimStarter: () => void;
-  /** Linked-wallet CLV uiAmount, or null (logged out / not linked / read down). */
-  heldClv: number | null;
-  existingHoldSum: number;
-  isFocused?: boolean;
-}) {
-  const accent = TIER_ACCENT[parcel.tier];
-  // Hold tiers (c/b/a/founder) acquire via CLAIM (hold-to-keep) — the old Buy
-  // route is retired (409 tenure_model_active). Starter acquires via the
-  // deposit-escrow claim (§18b.j B1) — its old Buy button was equally dead.
-  const holdTier = isHoldTier(parcel.tier);
-  const tierThreshold = holdThresholdForTier(parcel.tier);
-  const upkeep = weeklyUpkeepCt(parcel);
-  // Qualified/short badge — display-only (server is authoritative; see
-  // stackedRequiredClv for the grandfathered caveat). null = unknown.
-  const qualified =
-    holdTier && heldClv != null
-      ? heldClv >= stackedRequiredClv(parcel.tier, existingHoldSum)
-      : null;
-  return (
-    <div
-      id={isFocused ? FOCUSED_CARD_ID : undefined}
-      className="flex flex-col gap-2 rounded-xl border bg-cyan-500/[0.04] p-3"
-      style={{
-        borderColor: isFocused ? '#38bdf8' : `${accent}33`,
-        boxShadow: isFocused ? '0 0 0 2px #38bdf880' : undefined,
-      }}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-cyan-100">
-          {parcel.parcelCode}
-        </span>
-        <TierBadge tier={parcel.tier} />
-      </div>
-      {holdTier ? (
-        <>
-          {/* Hold-to-keep: show the CLV hold + Claim (replaces the retired Buy). */}
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-sm font-bold text-amber-300">
-              Hold {formatClv(tierThreshold ?? 0)} $CLAWVILLE
-            </span>
-            <RpgButton
-              size="sm"
-              variant="primary"
-              className="min-h-[44px]"
-              onClick={() => onClaim(parcel)}
-            >
-              Claim
-            </RpgButton>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[11px] text-cyan-200">
-              {upkeep != null ? (
-                <>
-                  {upkeep.toLocaleString()} vCLAW
-                  <span className="text-slate-400"> / week upkeep</span>
-                </>
-              ) : (
-                <span className="text-slate-400">weekly upkeep set at claim</span>
-              )}
-            </span>
-            {qualified != null && (
-              <span
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] ${
-                  qualified
-                    ? 'border-emerald-300/40 bg-emerald-400/15 text-emerald-200'
-                    : 'border-amber-300/40 bg-amber-400/15 text-amber-200'
-                }`}
-              >
-                {qualified ? '✓ $CLAWVILLE qualified' : '$CLAWVILLE short'}
-              </span>
-            )}
-          </div>
-        </>
-      ) : (
-        <>
-          {/* Starter = deposit-escrow (§18b.j B1). The retired Buy button
-              (always 409 tenure_model_active) is replaced by Claim → the
-              parcel-AGNOSTIC StarterClaimModal: claim-starter takes no
-              parcelId and AUTO-PICKS an available lot, so the button opens
-              the confirm without binding to THIS card's parcel. Affordability
-              is gated inside the modal (mirrors BuyModal's tooPoor pattern). */}
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-sm font-bold text-amber-300">
-              Refundable {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit
-            </span>
-            <RpgButton
-              size="sm"
-              variant="primary"
-              className="min-h-[44px]"
-              onClick={onClaimStarter}
-            >
-              Claim
-            </RpgButton>
-          </div>
-          <span className="font-mono text-[11px] text-cyan-200">
-            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW
-            <span className="text-slate-400"> / week upkeep, drawn from the deposit</span>
-          </span>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Claim (hold-to-keep) confirm modal — c/b/a/founder (Phase B2)
-// ---------------------------------------------------------------------------
-
-/**
- * One distinct message per claim-hold error code (contract: land.ts route 7b).
- * `requiredClv`/`heldClv` are CLIENT-computed — honoRequest drops the server's
- * extra fields from the 403 `insufficient_clv_hold` body (only error/code
- * survive into ApiError). Switch on errCode() output; never string-match prose.
- */
-function claimHoldErrorMessage(
-  code: string | undefined,
-  status: number | undefined,
-  parcel: LandParcelDTO,
-  requiredClv: number,
-  heldClv: number | null,
-): string {
-  switch (code) {
-    case 'guest_not_allowed':
-      return GUEST_NOT_ALLOWED_MSG;
-    case 'wallet_not_linked':
-      return 'Link a self-custody wallet first — your $CLAWVILLE hold is verified against it.';
-    // Agent-only (humans shouldn't hit this) — handled defensively.
-    case 'agent_wallet_missing':
-      return 'This agent has no custodial wallet — reconnect the agent and try again.';
-    case 'insufficient_clv_hold':
-      return `Not enough $CLAWVILLE held — this claim needs ${formatClv(requiredClv)} $CLAWVILLE in your wallet${
-        heldClv != null ? `, you hold ${heldClv.toLocaleString()}` : ''
-      }.`;
-    // FAIL-CLOSED: the chain read is down — the server never grants unverified.
-    case 'clv_balance_unavailable':
-      return 'We can’t verify your $CLAWVILLE balance right now — try again in a minute.';
-    case 'parcel_not_available':
-      return 'Someone just claimed this parcel. Pick another.';
-    case 'parcel_cap_reached':
-      return `You already hold the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
-    // Starter tier shouldn't reach this modal — defensive.
-    case 'use_claim_starter':
-      return 'Starter parcels are claimed with a refundable vCLAW deposit (For Sale or My Land), not a $CLAWVILLE hold.';
-    // Defensive — marketplace deed escrow-lock (claim-hold doesn't emit it today).
-    case 'deed_locked_by_listing':
-      return 'This deed is locked by a live marketplace listing — try again once it clears.';
-    case 'parcel_not_found':
-      return 'That parcel no longer exists.';
-    case 'invalid_parcel_id':
-    case 'invalid_body':
-      return 'Claim request was malformed — reopen the panel and try again.';
-    default:
-      if (status === 401) return 'Log in to claim land.';
-      return `Could not claim ${parcel.parcelCode} — try again.`;
-  }
-}
-
-/**
- * Hold-to-keep claim confirm (mirrors BuyModal). NO CT is spent to
- * claim — the player must HOLD the tier's CLV threshold (stacking with their
- * existing holds) in their linked wallet, and the weekly CT upkeep auto-charges
- * like rent. Not-linked users get a "Link a wallet" CTA instead of Claim.
- */
-function ClaimHoldModal({
-  parcel,
-  linked,
-  heldClv,
-  existingHoldSum,
-  onClose,
-  onClaimed,
-  onRequestWalletLink,
-}: {
-  parcel: LandParcelDTO;
-  /** Whether the caller has a linked self-custody wallet (wallet team's hook). */
-  linked: boolean;
-  /** Linked-wallet CLV uiAmount, or null (not linked / read down). */
-  heldClv: number | null;
-  existingHoldSum: number;
-  onClose: () => void;
-  onClaimed: () => void;
-  onRequestWalletLink: () => void;
-}) {
-  const [claiming, setClaiming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const addToast = useGameStore((s) => s.addToast);
-
-  const tierThreshold = holdThresholdForTier(parcel.tier) ?? 0;
-  const requiredClv = stackedRequiredClv(parcel.tier, existingHoldSum);
-  const upkeep = weeklyUpkeepCt(parcel);
-  // Display-only verdict — the server re-checks under lock and is authoritative
-  // (the client sum can over-count for grandfathered legacy owners), so Claim
-  // stays ENABLED on a "short" verdict; only not-linked disables it.
-  const qualified = heldClv != null ? heldClv >= requiredClv : null;
-
-  const handleClaim = async () => {
-    setClaiming(true);
-    setError(null);
-    try {
-      // EMPTY body — the threshold + live balance are server-derived, always.
-      const res = await api.claimHoldParcel(parcel.id);
-      addToast(
-        '🏝️',
-        `Claimed ${res.parcel.parcelCode} — held with ${formatClv(res.parcel.holdThresholdCt ?? tierThreshold)} $CLAWVILLE!`,
-      );
-      onClaimed();
-    } catch (err) {
-      const { code, status } = errCode(err);
-      setError(claimHoldErrorMessage(code, status, parcel, requiredClv, heldClv));
-      setClaiming(false);
-    }
-  };
-
-  return (
-    <RpgModal open onClose={onClose} title="Confirm Claim" subtitle="Hold to Keep" tier="epic" maxWidth={460}>
-      <div className="space-y-4 p-1">
-        <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-4">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cyan-100">
-              {parcel.parcelCode}
-            </span>
-            <TierBadge tier={parcel.tier} />
-          </div>
-          <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-slate-200">$CLAWVILLE hold required</span>
-            <span className="font-mono font-bold text-amber-300">{formatClv(requiredClv)} $CLAWVILLE</span>
-          </div>
-          {existingHoldSum > 0 && (
-            <p className="mt-1 text-right font-mono text-[10px] text-slate-300">
-              this parcel {formatClv(tierThreshold)} + {formatClv(existingHoldSum)} already held ={' '}
-              {formatClv(requiredClv)}
-            </p>
-          )}
-          <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-200">You hold</span>
-            <span
-              className={`font-mono font-bold ${
-                heldClv != null ? 'text-cyan-200' : 'text-amber-200'
-              }`}
-            >
-              {!linked
-                ? 'Wallet not linked'
-                : heldClv == null
-                  ? 'Can’t verify right now'
-                  : `${heldClv.toLocaleString()} $CLAWVILLE`}
-            </span>
-          </div>
-          {qualified != null && (
-            <p
-              className={`mt-2 rounded-lg border px-2 py-1 text-right font-mono text-[10px] font-bold uppercase tracking-[0.14em] ${
-                qualified
-                  ? 'border-emerald-300/40 bg-emerald-400/10 text-emerald-200'
-                  : 'border-amber-300/40 bg-amber-400/10 text-amber-200'
-              }`}
-            >
-              {qualified
-                ? '✓ You qualify'
-                : `${formatClv(requiredClv - (heldClv ?? 0))} $CLAWVILLE short — server has the final say`}
-            </p>
-          )}
-        </div>
-
-        {/* How hold-to-keep works — no CT spent to claim; hold CLV + weekly upkeep. */}
-        <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
-          <span className="font-semibold text-cyan-100">No vCLAW is spent to claim.</span>{' '}
-          You keep this parcel by <span className="font-semibold text-cyan-100">holding{' '}
-          {formatClv(requiredClv)} $CLAWVILLE</span> in your linked wallet, plus a weekly upkeep of{' '}
-          <span className="font-semibold text-cyan-100">
-            {upkeep != null ? `${upkeep.toLocaleString()} vCLAW` : 'vCLAW (stamped at claim)'}
-          </span>{' '}
-          auto-charged from your balance — like rent. If the upkeep can’t be paid or your
-          $CLAWVILLE drops below the hold, you get a short grace window — then the parcel is{' '}
-          <span className="font-semibold text-amber-200">evicted</span> and returns to the
-          pool (your build is preserved).
-        </p>
-
-        {error && (
-          <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
-            {error}
-          </p>
-        )}
-
-        <div className="flex justify-end gap-2">
-          <RpgButton size="sm" variant="ghost" className="min-h-[44px]" onClick={onClose} disabled={claiming}>
-            Cancel
-          </RpgButton>
-          {linked ? (
-            <RpgButton
-              size="sm"
-              variant="primary"
-              className="min-h-[44px]"
-              onClick={handleClaim}
-              loading={claiming}
-            >
-              Claim · hold {formatClv(requiredClv)} $CLAWVILLE
-            </RpgButton>
-          ) : (
-            <RpgButton size="sm" variant="primary" className="min-h-[44px]" onClick={onRequestWalletLink}>
-              Link a wallet
-            </RpgButton>
-          )}
-        </div>
-      </div>
-    </RpgModal>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Starter claim confirm modal — deposit-escrow (Phase B1)
-// ---------------------------------------------------------------------------
-
-/**
- * One distinct message per claim-starter error code (contract: land.ts
- * claim-starter route). NOTE `already_owned` is NOT an error — the route
- * replies 200 `{ parcel, alreadyOwned: true }` and NEVER re-charges, so the
- * success path handles it. Switch on errCode() output; never prose-match.
- */
-function starterClaimErrorMessage(code: string | undefined, status: number | undefined): string {
-  switch (code) {
-    case 'guest_not_allowed':
-      return GUEST_NOT_ALLOWED_MSG;
-    case 'insufficient_clawtokens':
-      return `You need ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW for the refundable deposit — top up and try again.`;
-    case 'no_starter_available':
-      return 'All Starter Coves are taken right now — check back soon.';
-    default:
-      if (status === 401) return 'Log in to claim a home.';
-      return 'Couldn’t claim a Starter Cove — try again.';
-  }
-}
-
-/**
- * Starter deposit-claim confirm (mirrors ClaimHoldModal/BuyModal). PARCEL-
- * AGNOSTIC: `POST /api/land/claim-starter` takes NO body/parcelId — the
- * server AUTO-PICKS an available starter (SKIP LOCKED), so the modal
- * discloses the auto-assignment instead of implying the user picked a lot.
- * The LAND_STARTER_DEPOSIT_CT (2000) CT deposit is REFUNDABLE escrow, NOT a
- * purchase: LAND_STARTER_RENT_CT_WEEKLY (100) CT/week upkeep auto-draws from
- * it, `release` refunds the remainder, and exhaustion → grace → the cove is
- * released with the remaining deposit forfeited. No client amount is ever
- * sent — the server derives everything.
- */
-function StarterClaimModal({
-  clawTokens,
-  onClose,
-  onClaimed,
-}: {
-  clawTokens: number;
-  onClose: () => void;
-  onClaimed: () => void;
-}) {
-  const [claiming, setClaiming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const addToast = useGameStore((s) => s.addToast);
-  const tooPoor = clawTokens < LAND_STARTER_DEPOSIT_CT;
-
-  const handleClaim = async () => {
-    setClaiming(true);
-    setError(null);
-    try {
-      // NO body — the server auto-assigns an available starter parcel.
-      const res = await api.claimStarterPlot();
-      // HONEST success copy: a refundable deposit was escrowed — never "free".
-      addToast(
-        '🏡',
-        res.alreadyOwned
-          ? `You already have your Starter Cove (${res.parcel.parcelCode}).`
-          : `Claimed ${res.parcel.parcelCode} — your Starter Cove! ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW is held as a refundable deposit.`,
-      );
-      onClaimed();
-    } catch (err) {
-      const { code, status } = errCode(err);
-      setError(starterClaimErrorMessage(code, status));
-      setClaiming(false);
-    }
-  };
-
-  return (
-    <RpgModal open onClose={onClose} title="Claim a Starter Cove" subtitle="Your first home" tier="rare" maxWidth={440}>
-      <div className="space-y-4 p-1">
-        <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-4">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cyan-100">
-              Starter Cove
-            </span>
-            <TierBadge tier="starter" />
-          </div>
-          <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Refundable deposit</span>
-            <span className="font-mono font-bold text-amber-300">
-              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW
-            </span>
-          </div>
-          <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Weekly upkeep</span>
-            <span className="font-mono font-bold text-cyan-200">
-              {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW
-              <span className="font-normal text-slate-300"> / week, from the deposit</span>
-            </span>
-          </div>
-          <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-200">Your balance</span>
-            <span className={`font-mono font-bold ${tooPoor ? 'text-amber-200' : 'text-cyan-200'}`}>
-              {clawTokens.toLocaleString()} vCLAW
-            </span>
-          </div>
-        </div>
-
-        {/* The deposit terms, honestly — escrow, not a purchase, never "free". */}
-        <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
-          <span className="font-semibold text-cyan-100">
-            An available Starter Cove is assigned to you
-          </span>{' '}
-          (you don’t pick a specific lot). The{' '}
-          <span className="font-semibold text-cyan-100">
-            {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit is refundable
-          </span>{' '}
-          — held in escrow, not a purchase: release the cove and you get back whatever
-          upkeep hasn’t already drawn. A weekly upkeep of{' '}
-          <span className="font-semibold text-cyan-100">
-            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW
-          </span>{' '}
-          auto-draws from the deposit. Running low? Top it up from My Land. If it can’t
-          cover a week you get a short grace window — then the cove is{' '}
-          <span className="font-semibold text-amber-200">
-            released and the remaining deposit is forfeited
-          </span>
-          .
-        </p>
-
-        {error && (
-          <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
-            {error}
-          </p>
-        )}
-
-        <div className="flex justify-end gap-2">
-          <RpgButton size="sm" variant="ghost" className="min-h-[44px]" onClick={onClose} disabled={claiming}>
-            Cancel
-          </RpgButton>
-          <RpgButton
-            size="sm"
-            variant="primary"
-            className="min-h-[44px]"
-            onClick={handleClaim}
-            loading={claiming}
-            disabled={tooPoor}
-          >
-            {tooPoor
-              ? 'Need more vCLAW'
-              : `Claim · ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit`}
-          </RpgButton>
-        </div>
-      </div>
-    </RpgModal>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// My-Land tab
-// ---------------------------------------------------------------------------
-
 function MyLandTab({
   parcels,
   structures,
@@ -893,8 +203,12 @@ function MyLandTab({
   homeParcelId,
   settingSpawn,
   onSetSpawn,
-  onClaim,
+  onBrowse,
   onBuild,
+  isMobile,
+  holdWallet,
+  onTenureChanged,
+  focusParcelCode,
 }: {
   parcels: LandParcelDTO[];
   structures: LandStructureDTO[];
@@ -904,15 +218,30 @@ function MyLandTab({
   homeParcelId: string | null;
   settingSpawn: boolean;
   onSetSpawn: (mode: 'home' | 'town', parcelId?: string) => void;
-  /** Opens the StarterClaimModal confirm — the claim itself happens there. */
-  onClaim: () => void;
+  /** Opens the rendered two-door parcel chooser. */
+  onBrowse: () => void;
   onBuild: (parcel: LandParcelDTO) => void;
+  isMobile: boolean;
+  holdWallet: import('./types').LandHoldWalletStatus | undefined;
+  onTenureChanged: () => Promise<void> | void;
+  focusParcelCode?: string | null;
 }) {
+  const focusedCardRef = useRef<HTMLDivElement>(null);
   const structByParcel = useMemo(() => {
     const m = new Map<string, LandStructureDTO>();
     for (const s of structures) m.set(s.parcelId, s);
     return m;
   }, [structures]);
+
+  useEffect(() => {
+    if (!focusParcelCode || loading) return;
+    if (!parcels.some((parcel) => parcel.parcelCode === focusParcelCode)) return;
+    const frame = requestAnimationFrame(() => {
+      focusedCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      focusedCardRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusParcelCode, loading, parcels]);
 
   if (!hasAvatar) {
     return (
@@ -926,36 +255,29 @@ function MyLandTab({
   // stored homeParcelId isn't in the owned set (sold / transferred), treat the
   // spawn as effectively town so the "Spawn at Town Center" revert reads right.
   const homeIsOwned = spawnPreference === 'home' && parcels.some((p) => p.id === homeParcelId);
+  const homeParcel = homeIsOwned ? parcels.find((p) => p.id === homeParcelId) : undefined;
 
   return (
     <div>
-      {/* Claim-your-first-home CTA — prominent when the player owns nothing.
-          HONEST deposit terms (§18b.j B1): NOT free — a refundable 2000 CT
-          deposit held in escrow, 100 CT/week upkeep auto-drawn from it. The
-          button only OPENS the StarterClaimModal confirm (no silent charge). */}
+      {/* Every acquisition CTA leads to the specific-parcel two-door flow. */}
       <div className="mb-4 rounded-xl border border-emerald-400/30 bg-emerald-500/[0.07] p-4">
         <div className="flex flex-col gap-1">
           <span className="font-clawville text-sm text-emerald-100">
-            🏡 Claim your first home
+            🏡 Choose how to hold your next parcel
           </span>
           <span className="text-[12px] leading-relaxed text-slate-200">
-            Claim a Starter Cove with a refundable{' '}
-            <span className="font-semibold text-emerald-200">
-              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit
-            </span>{' '}
-            ({LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW/week upkeep draws from
-            it; release refunds the rest). Build a basic home or shop (up to Lv2);
-            claim a higher tier later for premium buildings.
+            Open For Sale to choose a specific parcel. Starter and C parcels offer
+            a rent-free CLV hold or prepaid vCLAW rent; Founder parcels are hold-only.
           </span>
         </div>
         <RpgButton
           size="sm"
           variant="primary"
           rarity="uncommon"
-          onClick={onClaim}
+          onClick={onBrowse}
           className="mt-3 min-h-[44px]"
         >
-          {parcels.length > 0 ? 'Claim a Starter Cove (if available)' : 'Claim your first home'}
+          Open the two-door chooser
         </RpgButton>
       </div>
 
@@ -971,8 +293,10 @@ function MyLandTab({
               {homeIsOwned ? (
                 <>
                   You spawn at{' '}
-                  <span className="font-mono font-semibold text-cyan-100">
-                    {parcels.find((p) => p.id === homeParcelId)?.parcelCode ?? 'your home'}
+                  <span className="font-semibold text-cyan-100">
+                    {homeParcel
+                      ? parcelDisplayName(homeParcel.parcelCode, homeParcel.tier)
+                      : 'your home'}
                   </span>
                   .
                 </>
@@ -987,6 +311,7 @@ function MyLandTab({
               variant="ghost"
               onClick={() => onSetSpawn('town')}
               loading={settingSpawn}
+              className="min-h-[44px]"
             >
               Spawn at Town Center
             </RpgButton>
@@ -998,23 +323,26 @@ function MyLandTab({
         <p className="py-8 text-center font-mono text-xs text-slate-300">Loading your land…</p>
       ) : parcels.length === 0 ? (
         <p className="py-6 text-center font-mono text-xs text-slate-400">
-          You don&apos;t own any parcels yet. Claim your first home above (refundable
-          deposit), or claim a higher tier in For&nbsp;Sale.
+          You don&apos;t hold any parcels yet. Choose a parcel and tenure door in For Sale.
         </p>
       ) : (
-        <div className="max-h-[44vh] space-y-2 overflow-y-auto pr-1">
+        <div className="max-h-[44vh] space-y-3 overflow-y-auto pr-2 [scrollbar-gutter:stable]">
           {parcels.map((p) => {
             const struct = structByParcel.get(p.id);
             const isSpawnHere = homeIsOwned && homeParcelId === p.id;
+            const isFocused = focusParcelCode === p.parcelCode;
             return (
               <div
                 key={p.id}
-                className="flex flex-col gap-2 rounded-xl border border-cyan-400/15 bg-cyan-500/[0.04] p-3 sm:flex-row sm:items-center sm:justify-between"
+                ref={isFocused ? focusedCardRef : undefined}
+                tabIndex={isFocused ? -1 : undefined}
+                aria-current={isFocused ? 'true' : undefined}
+                className={`flex flex-wrap gap-2 rounded-xl border bg-cyan-500/[0.04] ${isMobile ? 'flex-col p-3' : 'flex-row items-start justify-between p-4'} ${isFocused ? 'border-cyan-200 ring-2 ring-cyan-300 ring-offset-2 ring-offset-[#071321]' : 'border-cyan-400/15'}`}
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-cyan-100">
-                      {p.parcelCode}
+                    <span className="font-semibold text-cyan-50">
+                      {parcelDisplayName(p.parcelCode, p.tier)}
                     </span>
                     <TierBadge tier={p.tier} />
                     {isSpawnHere && (
@@ -1023,6 +351,7 @@ function MyLandTab({
                       </span>
                     )}
                   </div>
+                  <div className="mt-1 font-mono text-[10px] text-slate-400">{p.parcelCode}</div>
                   <div className="mt-1 font-mono text-[11px] text-slate-300">
                     {struct
                       ? `${struct.structureType === 'home' ? '🏠' : '🏪'} ${struct.catalogKey} · Lv${struct.level}`
@@ -1036,13 +365,19 @@ function MyLandTab({
                     onClick={() => onSetSpawn('home', p.id)}
                     loading={settingSpawn}
                     disabled={isSpawnHere}
+                    className="min-h-[44px]"
                   >
                     {isSpawnHere ? 'Spawn point ✓' : 'Set as spawn point'}
                   </RpgButton>
-                  <RpgButton size="sm" variant="secondary" onClick={() => onBuild(p)}>
+                  <RpgButton size="sm" variant="secondary" className="min-h-[44px]" onClick={() => onBuild(p)}>
                     {struct ? 'Manage' : 'Build'}
                   </RpgButton>
                 </div>
+                <OwnedTenureControls
+                  parcel={p}
+                  wallet={holdWallet}
+                  onChanged={onTenureChanged}
+                />
               </div>
             );
           })}
@@ -1166,7 +501,10 @@ function BuildTab({
         catalogKey: placeSku,
       });
       setStructure(res.structure);
-      addToast('🏗️', `Built ${res.structure.catalogKey} on ${parcel.parcelCode}!`);
+      addToast(
+        '🏗️',
+        `Built ${res.structure.catalogKey} on ${parcelDisplayName(parcel.parcelCode, parcel.tier)}!`,
+      );
       onChanged();
     } catch (err) {
       const { code, status } = errCode(err);
@@ -1222,8 +560,13 @@ function BuildTab({
     <div>
       {/* Parcel header + the unmissable tier-advantage banner */}
       <div className="mb-4 flex items-center justify-between gap-2">
-        <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-cyan-100">
-          {parcel.parcelCode}
+        <span>
+          <span className="block font-semibold text-cyan-50">
+            {parcelDisplayName(parcel.parcelCode, parcel.tier)}
+          </span>
+          <span className="block font-mono text-[10px] text-slate-400">
+            {parcel.parcelCode}
+          </span>
         </span>
         <TierBadge tier={parcel.tier} />
       </div>
@@ -1260,12 +603,22 @@ function BuildTab({
         {/* Place OR Upgrade */}
         <div className="rounded-xl border border-cyan-400/15 bg-cyan-500/[0.03] p-3">
           {structure ? (
-            <UpgradePanel
-              structure={structure}
-              catalog={catalog}
-              upgrading={upgrading}
-              onUpgrade={handleUpgrade}
-            />
+            <>
+              <UpgradePanel
+                structure={structure}
+                catalog={catalog}
+                upgrading={upgrading}
+                onUpgrade={handleUpgrade}
+              />
+              <StructureAppearancePicker
+                structure={structure}
+                parcelCode={parcel.parcelCode}
+                parcelTier={parcel.tier}
+                isMobile={isMobile}
+                onStructureChange={setStructure}
+                onChanged={onChanged}
+              />
+            </>
           ) : (
             <PlacePanel
               catalog={catalog}
@@ -2050,7 +1403,6 @@ export default function LandOfficeModal() {
   const close = useGameStore((s) => s.closeLandOffice);
   const addToast = useGameStore((s) => s.addToast);
   const focusParcelCode = useGameStore((s) => s.landOfficeFocusParcel);
-  const clearLandOfficeFocus = useGameStore((s) => s.clearLandOfficeFocus);
   const setStoreParcels = useLandStore((s) => s.setParcels);
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -2072,39 +1424,12 @@ export default function LandOfficeModal() {
   const [myParcels, setMyParcels] = useState<LandParcelDTO[]>([]);
   const [myStructures, setMyStructures] = useState<LandStructureDTO[]>([]);
   const [myLoading, setMyLoading] = useState(false);
-  // Starter deposit-claim confirm (parcel-agnostic — claim-starter auto-picks).
-  // Buy-outright was REMOVED with the rest of the dead /buy path: every tier
-  // now acquires via Claim (starter → deposit-escrow, c/b/a/founder → CLV
-  // hold), so no ParcelCard renders a Buy button and there is no buyTarget.
-  const [starterClaimOpen, setStarterClaimOpen] = useState(false);
-  const [claimTarget, setClaimTarget] = useState<LandParcelDTO | null>(null);
+  // Acquisition is parcel-specific through the two-door For Sale panel.
   const [buildParcel, setBuildParcel] = useState<LandParcelDTO | null>(null);
 
-  // Hold-to-keep qualification (Phase B2): the linked wallet + its CLV balance,
-  // read via the wallet-visibility-ui team's shared hook (['wallet-link'] cache,
-  // deduped across the HUD wallet chip + here). `heldClv` collapses to the
-  // spendable-for-qualification number: the CLV uiAmount only when a wallet is
-  // linked AND the on-chain read succeeded — else null (→ "Link a wallet" /
-  // "can't verify" paths). No per-card fetch; the hook is cached.
-  const { linked: walletLinked, clvUiAmount, clvAvailable } = useWalletLink();
-  const heldClv = walletLinked && clvAvailable ? clvUiAmount : null;
-
-  // Σ of the caller's EXISTING hold thresholds — thresholds STACK server-side,
-  // so a new claim requires (this sum + the new tier's threshold) CLV. Prefer
-  // the server-stamped holdThresholdCt (mirrors the server's SUM exactly);
-  // derive from tier as a fallback. See stackedRequiredClv for the
-  // grandfathered caveat (DTO has no `grandfathered` flag).
-  const existingHoldSum = useMemo(
-    () =>
-      myParcels.reduce(
-        (sum, p) =>
-          p.tenure === 'hold'
-            ? sum + (p.holdThresholdCt ?? holdThresholdForTier(p.tier) ?? 0)
-            : sum,
-        0,
-      ),
-    [myParcels],
-  );
+  // One fresh account-declared hold-wallet read is shared by the acquisition
+  // cards and every owned hold card in this modal.
+  const holdWallet = useLandHoldWalletStatus(open && !isGuest && hasAvatar);
 
   // Owned active 'shop' structures — the Services tab's Manage surface.
   const myShops = useMemo(() => myStructures.filter((s) => s.structureType === 'shop'), [myStructures]);
@@ -2131,29 +1456,31 @@ export default function LandOfficeModal() {
       setMyParcels(res.parcels);
       setMyStructures(res.structures);
       setStoreParcels(toParcelStateRecord(res.parcels));
+      return res;
     } catch {
       /* leave prior state on transient error */
+      return undefined;
     } finally {
       setMyLoading(false);
     }
   }, [hasAvatar, setStoreParcels]);
 
-  // On open: load my land + hydrate the overlay. If opened with a focus parcel,
-  // auto-switch to the For-Sale tab so the highlighted card is visible.
+  // On open, resolve the focused parcel against the viewer's owned rows before
+  // choosing the tab. Keep the focus until close so its ring stays visible.
   useEffect(() => {
     if (!open) return;
     // Guests use the client-side sandbox — never touch the real land reads.
     if (isGuest) return;
-    refreshMyLand();
-    hydrateOverlay(avatarId);
-    if (focusParcelCode) {
-      setTab('for-sale');
-    }
-    // focusParcelCode intentionally excluded from deps — we only want this to
-    // react to the open event, not to every focus change. Tab auto-switch on
-    // each new open is the correct semantic.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, isGuest, refreshMyLand, hydrateOverlay, avatarId]);
+    let cancelled = false;
+    if (focusParcelCode) setTab('for-sale');
+    void Promise.all([refreshMyLand(), hydrateOverlay(avatarId)]).then(([owned]) => {
+      if (cancelled || !focusParcelCode || !owned) return;
+      setTab(owned.parcels.some((parcel) => parcel.parcelCode === focusParcelCode)
+        ? 'my-land'
+        : 'for-sale');
+    });
+    return () => { cancelled = true; };
+  }, [open, isGuest, refreshMyLand, hydrateOverlay, avatarId, focusParcelCode]);
 
   // Helper — invalidate the world parcel query so LandStateHydrator refetches
   // and the 3D scene reflects the new ownership without a page reload.
@@ -2161,41 +1488,21 @@ export default function LandOfficeModal() {
     queryClient.invalidateQueries({ queryKey: LAND_PARCELS_QUERY_KEY });
   }, [queryClient]);
 
-  // Starter claim success — MIRRORS handleClaimedHold exactly: the WORLD↔DB↔UI
-  // parity path (the auto-assigned starter flips available→owned; its in-world
-  // FOR-SALE sign vanishes; My Land shows it). The claim itself (POST
-  // /api/land/claim-starter, the 2000 CT deposit debit) happens inside
-  // StarterClaimModal behind an explicit confirm — the old top-level silent
-  // charge with "free" copy is gone.
-  const handleStarterClaimed = async () => {
-    setStarterClaimOpen(false);
+  // Shared post-settlement refresh for claim, prepay, and release.
+  const handleTenureChanged = async () => {
     await refreshMyLand();
     await hydrateOverlay(avatarId);
+    await holdWallet.refetch();
     invalidateLandState();
-    setTab('my-land');
   };
 
   // Claim (hold-to-keep) success — WORLD↔DB↔UI parity path (modal list + 3D
   // FOR-SALE sign + My Land all flip together). refreshMyLand also updates
   // existingHoldSum for the next claim.
-  const handleClaimedHold = async () => {
-    setClaimTarget(null);
-    await refreshMyLand();
-    await hydrateOverlay(avatarId);
-    invalidateLandState();
-    setTab('my-land');
-  };
-
   // WALLET SEAM: open the wallet-visibility-ui team's link modal (mounted
   // top-level in /game; we mount nothing). Close our claim modal first so the
   // wallet modal is the sole foreground — the user links, reopens, and the
   // ['wallet-link'] cache refresh flips `linked`/`heldClv` here automatically.
-  const openWalletLink = useGameStore((s) => s.openWalletLink);
-  const handleRequestWalletLink = useCallback(() => {
-    setClaimTarget(null);
-    openWalletLink();
-  }, [openWalletLink]);
-
   // Set / clear the spawn point. 'home' binds an owned parcel; 'town' reverts.
   // The mutation invalidates ['avatar'] so spawnPreference/homeParcelId refresh
   // here (the badge updates) and SpawnOnLoad reads the new value next load.
@@ -2223,15 +1530,29 @@ export default function LandOfficeModal() {
     setTab('build');
   };
 
+  const focusedTier = focusParcelCode
+    ? myParcels.find((parcel) => parcel.parcelCode === focusParcelCode)?.tier
+      ?? parseParcelCode(focusParcelCode)?.tier
+      ?? null
+    : null;
+  const focusedDisplayName = focusParcelCode && focusedTier
+    ? parcelDisplayName(focusParcelCode, focusedTier)
+    : null;
+
   return (
     <>
       <RpgModal
         open={open}
         onClose={close}
         title="Land Office"
-        subtitle="Browse · Claim · Build"
+        subtitle={focusedDisplayName
+          ? `Focused: ${focusedDisplayName} · ${focusParcelCode}`
+          : 'Browse · Hold or rent · Build'}
         tier="legendary"
         maxWidth={1000}
+        bodyClassName={isMobile
+          ? 'px-3 py-4 [scrollbar-gutter:stable]'
+          : 'px-5 py-5 pr-4 [scrollbar-gutter:stable]'}
       >
         {isGuest ? (
           // A guest cannot own real land (every land write 403s server-side);
@@ -2250,13 +1571,14 @@ export default function LandOfficeModal() {
         </div>
 
         {tab === 'for-sale' && (
-          <ForSaleTab
-            onClaim={setClaimTarget}
-            onClaimStarter={() => setStarterClaimOpen(true)}
-            heldClv={heldClv}
-            existingHoldSum={existingHoldSum}
+          <LandTenureForSalePanel
+            ownedParcels={myParcels}
+            isMobile={isMobile}
             focusParcelCode={focusParcelCode}
-            onFocusConsumed={clearLandOfficeFocus}
+            onChanged={async () => {
+              await handleTenureChanged();
+              setTab('my-land');
+            }}
           />
         )}
         {tab === 'my-land' && (
@@ -2269,8 +1591,12 @@ export default function LandOfficeModal() {
             homeParcelId={homeParcelId}
             settingSpawn={setSpawnPreference.isPending}
             onSetSpawn={handleSetSpawn}
-            onClaim={() => setStarterClaimOpen(true)}
+            onBrowse={() => setTab('for-sale')}
             onBuild={openBuild}
+            isMobile={isMobile}
+            holdWallet={holdWallet.data}
+            onTenureChanged={handleTenureChanged}
+            focusParcelCode={focusParcelCode}
           />
         )}
         {tab === 'build' && buildParcel && (
@@ -2292,25 +1618,6 @@ export default function LandOfficeModal() {
 
       {/* Claim confirm modals drive the real (server) write paths, so they are
           never mounted for a guest — the guest sandbox handles its own flow. */}
-      {!isGuest && claimTarget && (
-        <ClaimHoldModal
-          parcel={claimTarget}
-          linked={walletLinked}
-          heldClv={heldClv}
-          existingHoldSum={existingHoldSum}
-          onClose={() => setClaimTarget(null)}
-          onClaimed={handleClaimedHold}
-          onRequestWalletLink={handleRequestWalletLink}
-        />
-      )}
-
-      {!isGuest && starterClaimOpen && (
-        <StarterClaimModal
-          clawTokens={clawTokens}
-          onClose={() => setStarterClaimOpen(false)}
-          onClaimed={handleStarterClaimed}
-        />
-      )}
     </>
   );
 }
@@ -2320,7 +1627,7 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
     <button
       type="button"
       onClick={onClick}
-      className="min-h-[40px] rounded-lg px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.16em] transition-all"
+      className="min-h-[44px] rounded-lg px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.16em] transition-all"
       style={{
         color: active ? '#0a1628' : '#cbd5e1',
         background: active ? '#38bdf8' : 'rgba(56,189,248,0.08)',

@@ -1,12 +1,7 @@
 'use client';
 
 import { useRef, useMemo, useEffect, Suspense } from 'react';
-import { useThree, type RootState } from '@react-three/fiber';
-import {
-  useSceneActive,
-  useSceneFrame,
-} from '@/components/three/world-stage/use-scene-frame';
-import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
+import { useThree } from '@react-three/fiber';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
@@ -33,13 +28,12 @@ import {
   applyColorTint,
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
-import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
+import { jumpState } from '@/lib/three/jump-state';
 import { triggerCoveWalkIn } from './arena-buildings';
 import {
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from './kelp-forest-transition';
-import { registerInputReset } from '@/lib/three/input-reset';
 import { useVRMInstance, disposeVRMInstance, retainVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
@@ -56,6 +50,18 @@ import {
   clampMovement2D,
   ENTITY_HALF_CHIBI,
 } from '@/lib/three/collision/world-colliders';
+import { DEFAULT_PLAYER_CAPABILITIES } from '@/lib/three/player/player-capability-mask';
+import {
+  usePlayerCapabilityController,
+  type PlayerControllerFrameState,
+} from '@/lib/three/player/player-capability-controller';
+import {
+  WORLD_GLB_POLICY,
+  WORLD_VRM_POLICY,
+  type PlayerInputPolicy,
+  type PlayerMotionPolicy,
+} from '@/lib/three/player/player-motion-policy';
+import type { PlayerFrameIntent } from '@/lib/three/player/player-intent';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster-ktx.glb model = 1-2 draw calls
@@ -85,13 +91,12 @@ const AVATAR_SCALE = 40;
  * past `RUN_JOYSTICK_THRESHOLD` (mobile) promotes the player from walk to
  * run — `effectiveSpeed = isRunning ? SPEED * RUN_SPEED_MULT : SPEED`.
  *
- * 1.5× matches the Mixamo "Running" clip's natural gait speed relative
- * to "Walking"; foot-skating is minimal at this ratio. Crustacean GLB
+ * 2.025× is the founder-approved faster run pace (1.5× raised by 35%).
+ * Crustacean GLB
  * avatars (no run clip) get this same multiplier on BOTH position step
  * and the procedural-animation rate so their walk cycle visibly speeds
  * up to match the faster ground motion.
  */
-const RUN_SPEED_MULT = 1.5;
 
 /**
  * Joystick magnitude threshold for the mobile sprint trigger. Push the
@@ -100,7 +105,6 @@ const RUN_SPEED_MULT = 1.5;
  * because the joystick visual is far from the center at this point so
  * the snap is intentional.
  */
-const RUN_JOYSTICK_THRESHOLD = 0.7;
 
 // Player-controlled VRM sizing is auto-fit via computeVRMAvatarFit() from
 // vrm-avatar-sizing.ts — same target height as wandering NPCs so the player
@@ -124,9 +128,6 @@ const COLOR_TINTS: Record<string, number> = {
 //   right vx=+1, vy=0  → PI/2     (+X = screen-right)
 //   left  vx=-1, vy=0  → -PI/2    (-X = screen-left)
 //   idle: 0 (faces +Z = toward default camera at positive +Z high angle position)
-const DIR_ROTATION: Record<string, number> = {
-  down: 0, up: Math.PI, right: Math.PI / 2, left: -Math.PI / 2, idle: 0,
-};
 
 // VRM avatars face -Z natively (VRM 1.0 spec; VRM 0.x normalised to -Z by rotateVRM0).
 // For a -Z-forward model: to face direction (vx, vy) in screen space:
@@ -136,77 +137,6 @@ const DIR_ROTATION: Record<string, number> = {
 //   up    vx=0,  vy=-1 → atan2(0,  1) = 0
 //   right vx=+1, vy=0  → atan2(1,  0) = PI/2
 //   left  vx=-1, vy=0  → atan2(-1, 0) = -PI/2
-const VRM_DIR_ROTATION: Record<string, number> = {
-  down: Math.PI, up: 0, right: Math.PI / 2, left: -Math.PI / 2, idle: Math.PI,
-};
-
-interface KeyState {
-  w: boolean; a: boolean; s: boolean; d: boolean;
-  arrowup: boolean; arrowdown: boolean; arrowleft: boolean; arrowright: boolean;
-  e: boolean; escape: boolean;
-  /** Either shift key → sprint while held + WASD/joystick gives movement input. */
-  shift: boolean;
-}
-
-const keyState: KeyState = {
-  w: false, a: false, s: false, d: false,
-  arrowup: false, arrowdown: false, arrowleft: false, arrowright: false,
-  e: false, escape: false, shift: false,
-};
-let lastEState = false;
-let lastEscState = false;
-
-function resetPlayerKeys() {
-  (Object.keys(keyState) as Array<keyof KeyState>).forEach((k) => { keyState[k] = false; });
-}
-
-function attachKeyListeners(): () => void {
-  const onKeyDown = (e: KeyboardEvent) => {
-    // Target guard: don't consume WASD/E/Escape when user is typing in a chat input.
-    // Fixes pre-existing bug: typing W/A/S/D in avatar chat moved the avatar.
-    // NOTE: keyup intentionally has NO target guard — it must always clear state
-    // so keys don't get stranded 'true' when the user taps into an input mid-move.
-    if (isEditable(e.target)) return;
-    // e.key/e.code can be undefined on synthetic events (Chrome autofill).
-    const rawKey = (e.key ?? '').toLowerCase();
-    const rawCode = (e.code ?? '').toLowerCase();
-    if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
-      keyState.shift = true;
-      return;
-    }
-    keyState.shift = e.shiftKey;
-    const key = rawKey as keyof KeyState;
-    if (key in keyState) keyState[key] = true;
-  };
-  const onKeyUp = (e: KeyboardEvent) => {
-    const rawKey = (e.key ?? '').toLowerCase();
-    const rawCode = (e.code ?? '').toLowerCase();
-    if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
-      keyState.shift = false;
-      return;
-    }
-    keyState.shift = e.shiftKey;
-    const key = rawKey as keyof KeyState;
-    if (key in keyState) keyState[key] = false;
-  };
-  const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
-  const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
-  // Release all held keys on focus loss/regain (browser skips keyup when focus
-  // leaves the window). Centralized in input-reset.ts so every input vector
-  // shares one listener set — see S7.
-  const unregisterReset = registerInputReset(resetPlayerKeys);
-  return () => {
-    removeKeyDown();
-    removeKeyUp();
-    unregisterReset();
-    resetPlayerKeys();
-  };
-}
-
-function mapToWorld(px: number, py: number): [number, number, number] {
-  return [px - HALF_W, 0, py - HALF_H];
-}
-
 // Preload
 preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
 
@@ -240,12 +170,6 @@ function computeLocalMinY(scene: THREE.Object3D): number {
   return _avatarBbox.isEmpty() ? 0 : _avatarBbox.min.y;
 }
 
-// Scratch vectors for camera-relative player movement — module-scope, zero GC.
-// Mirrors npc-controller.tsx scratch vector pattern.
-const _playerCamForward = new THREE.Vector3();
-const _playerCamRight = new THREE.Vector3();
-const _playerWorldUp = new THREE.Vector3(0, 1, 0);
-
 // PERF FIX (2026-06-15, prod-trace-confirmed ~57% JS CPU):
 // The old raycast (intersectObject(cachedMesh, false)) still ran O(28,800
 // triangles) per call. Replaced by O(1) bilinear heightfield lookup.
@@ -259,6 +183,206 @@ function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
   return getTerrainHeightAt(x, z);
 }
 
+interface WorldControllerRefs {
+  readonly walkableY: { current: number };
+  readonly portalPrevX: { current: number };
+  readonly portalPrevZ: { current: number };
+  readonly portalInitialized: { current: boolean };
+}
+
+function useWorldPlayerController({
+  motion,
+  input,
+  refs,
+  onAfterMove,
+}: {
+  motion: PlayerMotionPolicy;
+  input: PlayerInputPolicy;
+  refs: WorldControllerRefs;
+  onAfterMove: (
+    frame: PlayerControllerFrameState,
+    rawDelta: number,
+    elapsed: number,
+  ) => void;
+}): void {
+  const space = useMemo(() => ({
+    speedPerSec: SPEED,
+    readPosition(out: { x: number; z: number }) {
+      out.x = avatarPositionRef.x - HALF_W;
+      out.z = avatarPositionRef.y - HALF_H;
+    },
+    clampMovement(
+      prevX: number,
+      prevZ: number,
+      desiredX: number,
+      desiredZ: number,
+      out: { x: number; z: number; groundY: number },
+    ) {
+      const boundedX = Math.max(
+        16 - HALF_W,
+        Math.min(MAP_WIDTH - 16 - HALF_W, desiredX),
+      );
+      const boundedZ = Math.max(
+        16 - HALF_H,
+        Math.min(MAP_HEIGHT - 16 - HALF_H, desiredZ),
+      );
+      const clamped = clampMovement2D(
+        prevX,
+        prevZ,
+        boundedX,
+        boundedZ,
+        ENTITY_HALF_CHIBI,
+      );
+      out.x = clamped.x;
+      out.z = clamped.z;
+      out.groundY = clamped.groundY;
+      refs.walkableY.current = clamped.groundY;
+    },
+    commitPosition(result: { x: number; z: number }) {
+      useGameStore.getState().setAvatarPosition(
+        result.x + HALF_W,
+        result.z + HALF_H,
+      );
+    },
+  }), [refs.walkableY]);
+
+  usePlayerCapabilityController({
+    sceneId: 'world',
+    capabilities: DEFAULT_PLAYER_CAPABILITIES,
+    motion,
+    input,
+    space,
+    isFrozen: () => useGameStore.getState().movementFrozen,
+    isDriving: () => useGameStore.getState().controlMode === 'player',
+    isEscapeEdgeEnabled: () =>
+      useGameStore.getState().controlMode !== 'autonomous',
+    isInteractEdgeEnabled: () =>
+      useGameStore.getState().controlMode !== 'autonomous',
+    onFrameStart: ({ x, z }) => {
+      const store = useGameStore.getState();
+      const ownsPortalMovement =
+        store.controlMode === 'player' ||
+        store.controlMode === 'autonomous';
+      if (ownsPortalMovement && refs.portalInitialized.current) {
+        refs.portalPrevX.current = x;
+        refs.portalPrevZ.current = z;
+      } else if (!ownsPortalMovement) {
+        refs.portalInitialized.current = false;
+      }
+    },
+    onEscapeWhileFrozen: () => {
+      const store = useGameStore.getState();
+      if (store.chatOpen) store.exitBuilding();
+      else if (store.guideChatOpen) store.closeGuideChat();
+    },
+    onInteractEdge: () => {
+      const store = useGameStore.getState();
+      if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+        store.openGuideChat();
+        return { consumeFrame: true };
+      }
+      if (store.nearLocation) {
+        if (store.nearLocation === 'cove') triggerCoveWalkIn();
+        else if (store.nearLocation === 'kelp-forest-portal') {
+          triggerKelpForestWalkIn();
+        } else {
+          store.enterBuilding(store.nearLocation);
+        }
+        return { consumeFrame: true };
+      }
+    },
+    onNavigationOverride: (intent: PlayerFrameIntent) => {
+      const store = useGameStore.getState();
+      if (intent.move.moving && store.clickPath) {
+        store.clearClickPath();
+        return;
+      }
+      if (!intent.move.moving && store.clickPath && store.clickPath.length > 0) {
+        const waypoint = store.clickPath[store.clickPathIndex];
+        if (!waypoint) return;
+        const dx = waypoint.x - avatarPositionRef.x;
+        const dz = waypoint.y - avatarPositionRef.y;
+        const distance = Math.hypot(dx, dz);
+        if (distance < 6) {
+          if (store.clickPathIndex >= store.clickPath.length - 1) {
+            const target = store.clickPathTarget;
+            store.clearClickPath();
+            if (target === 'cove') {
+              triggerCoveWalkIn();
+              return { consumeFrame: true };
+            }
+            if (target === 'kelp-forest-portal') {
+              triggerKelpForestWalkIn();
+              return { consumeFrame: true };
+            }
+            if (target && store.nearLocation === target) {
+              store.enterBuilding(target);
+              return { consumeFrame: true };
+            }
+          } else {
+            store.advanceClickPath();
+          }
+          return;
+        }
+        return {
+          moveOverride: {
+            worldVx: dx / distance,
+            worldVz: dz / distance,
+          },
+        };
+      }
+    },
+    onDirection: (direction) => {
+      useGameStore.getState().setMovementDirection(direction);
+    },
+    onAfterMove: (frame, rawDelta, elapsed) => {
+      const store = useGameStore.getState();
+      const ownsPortalMovement =
+        store.controlMode === 'player' ||
+        store.controlMode === 'autonomous';
+      if (ownsPortalMovement) {
+        if (!refs.portalInitialized.current) {
+          refs.portalPrevX.current = frame.x;
+          refs.portalPrevZ.current = frame.z;
+          refs.portalInitialized.current = true;
+        } else {
+          if (
+            didCrossKelpForestPortal(
+              refs.portalPrevX.current,
+              refs.portalPrevZ.current,
+              frame.x,
+              frame.z,
+            )
+          ) {
+            triggerKelpForestWalkIn();
+          }
+          refs.portalPrevX.current = frame.x;
+          refs.portalPrevZ.current = frame.z;
+        }
+      }
+
+      const nearest = findNearestCharacter(frame.x, frame.z);
+      const nearId: string | null = nearest
+        ? nearest.buildingId
+        : isCoveProximate(frame.x, frame.z)
+          ? 'cove'
+          : isKelpForestPortalProximate(frame.x, frame.z)
+            ? 'kelp-forest-portal'
+            : null;
+      const nearName = nearest ? nearest.characterName : null;
+      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
+      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+      const guideX = frame.x - NORI_WORLD_X;
+      const guideZ = frame.z - NORI_WORLD_Z;
+      const noriNear =
+        guideX * guideX + guideZ * guideZ < NORI_TALK_RADIUS_SQ;
+      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
+
+      onAfterMove(frame, rawDelta, elapsed);
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // VRM player avatar — uses useVRM + VRMCharacterAnimator
 // Separated into its own inner component so Suspense handles VRM load
@@ -268,7 +392,6 @@ function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
 
 function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const groupRef = useRef<THREE.Group>(null);
-  const rotRef = useRef(VRM_DIR_ROTATION.idle);
   const kelpPortalPrevXRef = useRef(0);
   const kelpPortalPrevZRef = useRef(0);
   const kelpPortalPrevInitializedRef = useRef(false);
@@ -287,7 +410,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // Allows stair/ramp zones (e.g. shisha-oasis) to lift the avatar's Y
   // without blocking XZ movement. Lerped via terrainYRef blend coefficient.
   const walkableYRef = useRef(-2);
-  const { scene: threeScene, camera } = useThree();
+  const { scene: threeScene } = useThree();
 
   // Load a fresh VRM instance for the player. Stable instanceId 'player-avatar'
   // since only one player avatar ever exists at a time. Per-instance loading
@@ -327,7 +450,6 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
    * rising edge of charging so chargeMode is set exactly once per charge press
    * (at the frame charging begins, when isRunning reflects the real speed class).
    */
-  const wasChargingRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!vrm) return;
@@ -357,398 +479,70 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     };
   }, [vrm]);
 
-  useSceneFrame((state, delta) => {
-    const store = useGameStore.getState();
-    const frameStartWorldX = avatarPositionRef.x - HALF_W;
-    const frameStartWorldZ = avatarPositionRef.y - HALF_H;
-    const ownsKelpPortalMovement =
-      store.controlMode === 'player' || store.controlMode === 'autonomous';
-    if (ownsKelpPortalMovement && kelpPortalPrevInitializedRef.current) {
-      // Re-seed from the authoritative frame-start position so an external
-      // spawn/teleport can never masquerade as a portal crossing.
-      kelpPortalPrevXRef.current = frameStartWorldX;
-      kelpPortalPrevZRef.current = frameStartWorldZ;
-    } else if (!ownsKelpPortalMovement) {
-      kelpPortalPrevInitializedRef.current = false;
-    }
-    if (store.movementFrozen) {
-      if (store.controlMode !== 'autonomous') {
-        const escNow = keyState.escape;
-        if (escNow && !lastEscState) {
-          // ESC closes whichever chat is open. Teacher chat wins if both
-          // are true (should never happen — openGuideChat guards against it).
-          if (store.chatOpen) store.exitBuilding();
-          else if (store.guideChatOpen) store.closeGuideChat();
-        }
-        lastEscState = escNow;
+  useWorldPlayerController({
+    motion: WORLD_VRM_POLICY.motion,
+    input: WORLD_VRM_POLICY.input,
+    refs: {
+      walkableY: walkableYRef,
+      portalPrevX: kelpPortalPrevXRef,
+      portalPrevZ: kelpPortalPrevZRef,
+      portalInitialized: kelpPortalPrevInitializedRef,
+    },
+    onAfterMove: (frame, rawDelta, elapsed) => {
+      const group = groupRef.current;
+      if (!group) return;
+      group.position.x = frame.x;
+      group.position.z = frame.z;
+
+      const frameNumber = Math.floor(elapsed * 60);
+      if (frameNumber % 3 === 0) {
+        const terrainY = getTerrainY(frame.x, frame.z, threeScene);
+        terrainYRef.current += (terrainY - terrainYRef.current) * 0.6;
       }
-      return;
-    }
-    lastEscState = keyState.escape;
+      const bob = frame.renderAirborne
+        ? 0
+        : frame.moving
+          ? 0
+          : Math.sin(elapsed * 2) * 0.08;
+      const effectiveFloorY = Math.max(
+        terrainYRef.current,
+        walkableYRef.current,
+      );
+      group.position.y = effectiveFloorY + bob + frame.jumpHeight;
 
-    if (store.controlMode !== 'autonomous') {
-      const eNow = keyState.e;
-      if (eNow && !lastEState) {
-        // Nori wins if both proximities are true — she stands at the
-        // open town center and is the discoverable greeter, so the E
-        // press should bias toward her over a flanking building.
-        if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
-          store.openGuideChat();
-          lastEState = eNow;
-          return;
-        }
-        if (store.nearLocation) {
-          // The cove is a walk-in venue (SceneTransition), not a teacher chat —
-          // E near it runs the walk-in flow, never enterBuilding's chat path.
-          if (store.nearLocation === 'cove') triggerCoveWalkIn();
-          else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
-          else store.enterBuilding(store.nearLocation);
-          lastEState = eNow;
-          return;
-        }
-      }
-      lastEState = eNow;
-    }
+      const ascending =
+        jumpState.phase === 'launch' || jumpState.phase === 'quick';
+      const pitchTarget = ascending ? -Math.PI / 3 : 0;
+      pitchRef.current += (pitchTarget - pitchRef.current) * 0.15;
+      group.rotation.order = 'YXZ';
+      group.rotation.y = frame.facing;
+      group.rotation.x = pitchRef.current;
 
-    let vx = 0, vy = 0;
-    if (store.controlMode === 'player') {
-      // Camera-relative input (mirrors npc-controller.tsx and GLB path below).
-      // Old screen-relative revert concern was mobile OrbitControls touch accumulation —
-      // does not apply to keyboard arrow-key orbit.
-      let inputFwd = 0;
-      let inputRight = 0;
-      const { joystickVelocity } = store;
-      if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        inputRight = joystickVelocity.x;
-        inputFwd = -joystickVelocity.y;
-      } else {
-        if (keyState.w) inputFwd += 1;
-        if (keyState.s) inputFwd -= 1;
-        if (keyState.a) inputRight -= 1;
-        if (keyState.d) inputRight += 1;
-      }
-      if (inputFwd !== 0 || inputRight !== 0) {
-        camera.getWorldDirection(_playerCamForward);
-        _playerCamForward.y = 0; // WASD is always flat camera-relative XZ — never couples to camera pitch
-        const fwdLen = _playerCamForward.length();
-        if (fwdLen > 0.001) {
-          _playerCamForward.divideScalar(fwdLen);
-          _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
-
-          const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
-          const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
-          vx = worldVx;
-          vy = worldVz;
-        }
-      }
-
-      // Vertical swim: arrow up/down only, gated on airborne.
-      // Decoupled from camera pitch — mouse orbit never causes altitude drift.
-      // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
-      // they ALSO drive altitude here when the avatar is airborne.
-      //
-      // Auto-sink (2026-05-18): once the jump arc finishes (phase=grounded)
-      // but playerAltitude is still > 0 — e.g. arrow keys nudged altitude
-      // up while the jump arc was active, or the user landed atop a
-      // structure and is still aloft — gently pull the avatar back down
-      // when no vertical input is held. Without this the player got
-      // stuck "swimming" mid-air after a jump because nothing decayed
-      // playerAltitude. Holding arrow-up still works to free-swim
-      // upward — auto-sink only kicks in when neither direction is held.
-      const airborne =
-        jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
-      if (airborne) {
-        let verticalInput = 0;
-        if (keyState.arrowup) verticalInput += 1;
-        if (keyState.arrowdown) verticalInput -= 1;
-        if (verticalInput !== 0) {
-          jumpState.playerAltitude = Math.max(
-            0,
-            jumpState.playerAltitude + verticalInput * SPEED * delta
-          );
-        } else if (
-          jumpState.phase === 'grounded' &&
-          jumpState.playerAltitude > 0
-        ) {
-          // Gravity pull. SPEED * 0.6 chosen empirically — slower than
-          // active arrow-down (which uses full SPEED) so a player can
-          // still briefly hover, but quick enough that an accidentally
-          // elevated landing returns to ground within ~1 s.
-          const SINK_RATE = SPEED * 0.6;
-          jumpState.playerAltitude = Math.max(
-            0,
-            jumpState.playerAltitude - SINK_RATE * delta
-          );
-        }
-      }
-    }
-
-    const hasInput = vx !== 0 || vy !== 0;
-    if (hasInput && store.clickPath) store.clearClickPath();
-
-    if (!hasInput && store.clickPath && store.clickPath.length > 0) {
-      const waypoint = store.clickPath[store.clickPathIndex];
-      if (waypoint) {
-        const dx = waypoint.x - avatarPositionRef.x;
-        const dy = waypoint.y - avatarPositionRef.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 6) {
-          if (store.clickPathIndex >= store.clickPath.length - 1) {
-            const target = store.clickPathTarget;
-            store.clearClickPath();
-            if (target === 'cove') { triggerCoveWalkIn(); return; }
-            if (target === 'kelp-forest-portal') { triggerKelpForestWalkIn(); return; }
-            if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
-          } else { store.advanceClickPath(); }
-        } else { vx = dx / dist; vy = dy / dist; }
-      }
-    }
-
-    if (vx !== 0 && vy !== 0) {
-      const len = Math.sqrt(vx * vx + vy * vy);
-      if (len > 1) { vx /= len; vy /= len; }
-    }
-
-    let dir = 'idle';
-    let continuousRot: number | null = null;
-    if (vx !== 0 || vy !== 0) {
-      dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // VRM facing — Milady VRMs in this project are rigged with Mixamo bones
-      // facing -Z natively (opposite of VRM 0.x spec). rotateVRM0 over-rotates,
-      // so body world-forward at rotation θ = (sin θ, cos θ). For body forward
-      // to equal velocity (vx, vy=z): θ = atan2(vx, vy). Verified live via
-      // dot-product probe + arrow screenshot 2026-04-25. Match arena-npcs.tsx.
-      continuousRot = Math.atan2(vx, vy);
-    }
-    store.setMovementDirection(dir as any);
-
-    // Sprint gate (2026-05-18): SHIFT held (desktop) OR joystick magnitude
-    // past threshold (mobile) promotes walk → run while moving. Identical
-    // logic in both useFrame branches (VRM + GLB) — see RUN_SPEED_MULT /
-    // RUN_JOYSTICK_THRESHOLD declarations near the top of this file.
-    const _joyMag = Math.hypot(store.joystickVelocity.x, store.joystickVelocity.y);
-    const isRunning = (vx !== 0 || vy !== 0) &&
-      (keyState.shift || _joyMag > RUN_JOYSTICK_THRESHOLD);
-    const speedMult = isRunning ? RUN_SPEED_MULT : 1;
-
-    // Charge-mode discrimination (BUG 2 fix, 2026-06-17).
-    //
-    // On the rising edge of 'charging' (first frame SPACE goes down while grounded),
-    // record whether the avatar was running or walking/idle. This single decision
-    // governs the entire charge duration:
-    //
-    //   'squat' — walking/idle speed class: halt horizontal movement, play squat
-    //             surfaceClip + procedural group lowering (squatCrouchRef ramp).
-    //   'run'   — running speed class: keep running, skip squat surfaceClip.
-    //
-    // Mobile parity is automatic: mobile jump button writes jumpState.spaceDown
-    // via setJumpPressed() → the same 'charging' rising edge fires → isRunning
-    // reflects joystick deflection > RUN_JOYSTICK_THRESHOLD at press time.
-    const phaseNow = jumpState.phase;
-    const nowCharging = phaseNow === 'charging';
-    const wasCharging = wasChargingRef.current;
-    wasChargingRef.current = nowCharging;
-
-    if (nowCharging && !wasCharging) {
-      // Rising edge of charging this frame — lock in speed class.
-      jumpState.chargeMode = isRunning ? 'run' : 'squat';
-    } else if (!nowCharging && wasCharging) {
-      // Charging just ended (released or auto-launched) — clear chargeMode.
-      jumpState.chargeMode = 'none';
-    }
-
-    // BUG 2 fix: halt horizontal movement when squatting to wind up.
-    // Run-charge keeps full locomotion (chargeMode 'run' → no zeroing).
-    if (nowCharging && jumpState.chargeMode === 'squat') {
-      vx = 0;
-      vy = 0;
-    }
-
-    if (vx !== 0 || vy !== 0) {
-      // Read from ref (zero React overhead) for current position, write via
-      // setAvatarPosition which updates both ref + throttled reactive store.
-      let newX = avatarPositionRef.x + vx * SPEED * speedMult * delta;
-      let newY = avatarPositionRef.y + vy * SPEED * speedMult * delta;
-      newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
-      newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
-      // World-space XZ disc collision — clamp against buildings and props.
-      // Convert game-px → world, clamp, convert back. Zero per-frame allocations.
-      const prevWX = avatarPositionRef.x - HALF_W;
-      const prevWZ = avatarPositionRef.y - HALF_H;
-      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H, ENTITY_HALF_CHIBI);
-      // Update walkable surface Y — used below to lift avatar onto stair zones.
-      // groundY is -2 (sand floor) when not over any walkable collider.
-      walkableYRef.current = clamped.groundY;
-      store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
-    }
-
-    // Test the actual collision-clamped movement segment, not a proximity
-    // band. The first frame only seeds the segment origin, preventing a spawn
-    // or avatar-model mount from synthesizing a crossing.
-    if (ownsKelpPortalMovement) {
-      const currentWorldX = avatarPositionRef.x - HALF_W;
-      const currentWorldZ = avatarPositionRef.y - HALF_H;
-      if (!kelpPortalPrevInitializedRef.current) {
-        kelpPortalPrevXRef.current = currentWorldX;
-        kelpPortalPrevZRef.current = currentWorldZ;
-        kelpPortalPrevInitializedRef.current = true;
-      } else {
-        if (
-          didCrossKelpForestPortal(
-            kelpPortalPrevXRef.current,
-            kelpPortalPrevZRef.current,
-            currentWorldX,
-            currentWorldZ,
-          )
-        ) {
-          triggerKelpForestWalkIn();
-        }
-        kelpPortalPrevXRef.current = currentWorldX;
-        kelpPortalPrevZRef.current = currentWorldZ;
-      }
-    }
-
-    {
-      const wx = avatarPositionRef.x - HALF_W;
-      const wz = avatarPositionRef.y - HALF_H;
-      const nearest = findNearestCharacter(wx, wz);
-      // Cove proximity (town-ux-2026-06-19): the cove has no NPC teacher, so
-      // isCoveProximate fires when within COVE_PROXIMITY_RADIUS wu and no
-      // teacher is nearer. Teacher takes priority if both are in range.
-      const nearId: string | null = nearest
-        ? nearest.buildingId
-        : isCoveProximate(wx, wz)
-          ? 'cove'
-          : isKelpForestPortalProximate(wx, wz)
-            ? 'kelp-forest-portal'
-            : null;
-      const nearName = nearest ? nearest.characterName : null;
-      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
-      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
-
-      // Town Guide proximity — same shape as findNearestCharacter, but
-      // Nori isn't in the building map so we test her singleton position
-      // inline. Squared distance avoids sqrt in the hot path.
-      const ndx = wx - NORI_WORLD_X;
-      const ndz = wz - NORI_WORLD_Z;
-      const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
-      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
-    }
-
-    const group = groupRef.current;
-    if (!group) return;
-    const [wx, , wz] = mapToWorld(avatarPositionRef.x, avatarPositionRef.y);
-    group.position.x = wx;
-    group.position.z = wz;
-
-    const isMoving = dir !== 'idle';
-    const elapsed = state.clock.elapsedTime;
-    const frame = Math.floor(elapsed * 60);
-    if (frame % 3 === 0) {
-      const ty = getTerrainY(group.position.x, group.position.z, threeScene);
-      terrainYRef.current += (ty - terrainYRef.current) * 0.6;
-    }
-    // VRM feet at Y=0 per spec — no pivot offset, no bob (humanoid avatar).
-    // playerAltitude stacks on top of heightOffset for explicit arrow-key 3D swim.
-    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
-                  || jumpState.playerAltitude > 0;
-    const bob = airborne ? 0 : (isMoving ? 0 : Math.sin(elapsed * 2) * 0.08);
-    // effectiveFloorY: when walkableYRef > terrainYRef (avatar is on a stair/ramp
-    // collider zone), use the walkable surface height so feet ride the stair.
-    // When not on any walkable zone, walkableYRef = -2 = sand floor = same as terrain.
-    const effectiveFloorY = Math.max(terrainYRef.current, walkableYRef.current);
-    group.position.y = effectiveFloorY + bob
-                     + jumpState.heightOffset + jumpState.playerAltitude;
-
-    // Procedural squat crouch (BUG 1 fix, revised 2026-06-17).
-    //
-    // The squat clip hips.position Y is CONSTANT (headless harness: raw track
-    // Y=104.226...104.226, 2 keyframes, zero descent). All squat motion is
-    // rotation-only → the pelvis stays at standing height → feet are pulled
-    // UP by the knee-bend rotations. The prior getSquatGroundLift() approach
-    // (sampling hip-Y descent) was a no-op because descent is always 0.
-    //
-    // Fix: PROCEDURALLY lower group.position.y by a target crouch depth
-    // (SQUAT_CROUCH_VRM_M × vrmRenderScale world units), ramped smoothly.
-    // After animator.update() + group.updateMatrixWorld(), read the lowest
-    // foot/toe bone world-Y and clamp so feet don't sink below effectiveFloorY.
-
-    // Rotation: see atan2(-vx, -vy) derivation above (VRM faces -Z, need sign negation).
-    if (continuousRot !== null) {
-      let rotDiff = continuousRot - rotRef.current;
-      while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-      while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-      rotRef.current += rotDiff * 0.15;
-    }
-
-    // Pitch — lean back while ascending so the swim-pose reads as
-    // "swimming upward" (head up, body tilted skyward). Zeroed out
-    // when grounded, charging, or descending so the default swim
-    // pose stays for any horizontal/downward state. 0.15 lerp matches
-    // the facing-rotation cadence so pitch + yaw smooth together.
-    const _phaseAscendingPitch = jumpState.phase === 'launch' || jumpState.phase === 'quick';
-    const PITCH_ASCEND = -Math.PI / 3; // -60° lean back, head up
-    const pitchTarget = _phaseAscendingPitch ? PITCH_ASCEND : 0;
-    pitchRef.current += (pitchTarget - pitchRef.current) * 0.15;
-
-    // YXZ order ensures pitch (.x) is applied in the local frame
-    // AFTER facing (.y) — so leaning back is always "head-up", never
-    // dependent on which direction the avatar is facing.
-    group.rotation.order = 'YXZ';
-    group.rotation.y = rotRef.current;
-    group.rotation.x = pitchRef.current;
-
-    const dt = Math.min(delta, 0.1);
-
-    // Animation pipeline (revised 2026-06-17).
-    //
-    //   CHARGING + chargeMode 'squat' (idle/walk entry): surfaceClip = 'squat'.
-    //     Mixamo squat plays (rotation-only — hips Y is CONSTANT in the asset).
-    //     group.position.y is procedurally lowered by SQUAT_CROUCH_VRM_M×scale
-    //     so the whole body visibly descends. After update(), foot replant clamps
-    //     feet to effectiveFloorY. lockIdle=true so walk↔idle crossfade stays off.
-    //
-    //   CHARGING + chargeMode 'run' (run entry): no surfaceClip change.
-    //     Avatar keeps running; swim-up arc fires on release. No crouch.
-    //
-    //   AIRBORNE: surfaceClip = 'flying' (Tekk) or 'swimming'. Pitch leans back.
-    //
-    //   GROUNDED idle/walk: surfaceClip = 'idle'. Normal walk↔idle crossfade.
-    const animator = vrmAnimatorRef.current;
-    if (animator) {
-      const phase = jumpState.phase;
-      const phaseCharging = phase === 'charging';
-      const chargeMode = jumpState.chargeMode;
-      const isSquatCharge = phaseCharging && chargeMode === 'squat';
-      const isRunCharge   = phaseCharging && chargeMode === 'run';
-      const swimClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
-
-      // BUG 1 (midair/sunk squat) — TEMPORARILY DISABLED pending a re-baked squat
-      // clip (2026-06-18). The 'squat' clip is rotation-only (raw hips Y is a flat
-      // constant, zero descent), so playing it pins the pelvis and lifts the feet
-      // toward the body (midair tuck). The v3 runtime "foot-grounding" fix that
-      // tried to compensate created a 1-frame-lagged feedback oscillation
-      // (getFootWorldYMin reads the NORMALIZED humanoid bones, which group.update-
-      // MatrixWorld does NOT refresh — same class as the 2026-05-22 stale-matrix
-      // trap) → the avatar flickered violently between standing and half-sunk.
-      // BOTH are removed here: during squat-charge we keep 'idle' (avatar stands,
-      // movement still halted by chargeMode) so nothing glitches. A real squat
-      // needs a re-baked clip with knee-bend + root descent — being done with
-      // Codex (Rule E3). See gotchas/squat-clip-rotation-only-no-runtime-crouch.md.
-      const desiredClip: AnimName =
-        isRunCharge ? 'idle'
-        : airborne  ? swimClip
-        :             'idle';   // isSquatCharge → 'idle' (no rotation-only tuck) until re-bake
+      const animator = vrmAnimatorRef.current;
+      if (!animator) return;
+      const phaseCharging = jumpState.phase === 'charging';
+      const isSquatCharge =
+        phaseCharging && jumpState.chargeMode === 'squat';
+      const isRunCharge =
+        phaseCharging && jumpState.chargeMode === 'run';
+      const swimClip = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
+      const desiredClip = isRunCharge
+        ? 'idle'
+        : frame.renderAirborne
+          ? swimClip
+          : 'idle';
       if (desiredClip !== lastSurfaceClipRef.current) {
         animator.setSurfaceClip(desiredClip);
         lastSurfaceClipRef.current = desiredClip;
       }
-
-      // lockIdle = squat-charge or airborne. Run-charge passes real isMoving/isRunning.
-      const lockIdle = isSquatCharge || airborne;
-      animator.update(dt, lockIdle ? false : isMoving, lockIdle ? false : isRunning);
-    }
-  }, -100);
+      const lockIdle = isSquatCharge || frame.renderAirborne;
+      animator.update(
+        Math.min(rawDelta, 0.1),
+        lockIdle ? false : frame.moving,
+        lockIdle ? false : frame.running,
+      );
+    },
+  });
 
   return (
     <group ref={groupRef}>
@@ -785,7 +579,6 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 function PlayerAvatarGLBInner() {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
-  const rotRef = useRef(0);
   const kelpPortalPrevXRef = useRef(0);
   const kelpPortalPrevZRef = useRef(0);
   const kelpPortalPrevInitializedRef = useRef(false);
@@ -794,7 +587,7 @@ function PlayerAvatarGLBInner() {
   // When the GLB avatar enters a walkable collider zone (e.g. shisha-oasis stairs),
   // this ref rises to the stair topY and the avatar's Y follows.
   const walkableYRef = useRef(-2);
-  const { scene: threeScene, camera } = useThree();
+  const { scene: threeScene } = useThree();
 
   // Phase 2: resolve which GLB to load from the model registry.
   // avatarModelKey is set by game/page.tsx via setAvatarAppearance when the avatar
@@ -879,347 +672,74 @@ function PlayerAvatarGLBInner() {
     };
   }, [cloned]);
 
-  useSceneFrame((state, delta) => {
-    const store = useGameStore.getState();
-    const frameStartWorldX = avatarPositionRef.x - HALF_W;
-    const frameStartWorldZ = avatarPositionRef.y - HALF_H;
-    const ownsKelpPortalMovement =
-      store.controlMode === 'player' || store.controlMode === 'autonomous';
-    if (ownsKelpPortalMovement && kelpPortalPrevInitializedRef.current) {
-      // Re-seed from the authoritative frame-start position so an external
-      // spawn/teleport can never masquerade as a portal crossing.
-      kelpPortalPrevXRef.current = frameStartWorldX;
-      kelpPortalPrevZRef.current = frameStartWorldZ;
-    } else if (!ownsKelpPortalMovement) {
-      kelpPortalPrevInitializedRef.current = false;
-    }
-    if (store.movementFrozen) {
-      // In autonomous mode, don't let Escape exit buildings — the autonomy tick handles timing
-      if (store.controlMode !== 'autonomous') {
-        const escNow = keyState.escape;
-        if (escNow && !lastEscState) {
-          // ESC closes whichever chat is open (teacher > guide fallback).
-          if (store.chatOpen) store.exitBuilding();
-          else if (store.guideChatOpen) store.closeGuideChat();
-        }
-        lastEscState = escNow;
+  useWorldPlayerController({
+    motion: WORLD_GLB_POLICY.motion,
+    input: WORLD_GLB_POLICY.input,
+    refs: {
+      walkableY: walkableYRef,
+      portalPrevX: kelpPortalPrevXRef,
+      portalPrevZ: kelpPortalPrevZRef,
+      portalInitialized: kelpPortalPrevInitializedRef,
+    },
+    onAfterMove: (frame, rawDelta, elapsed) => {
+      const group = groupRef.current;
+      if (!group) return;
+      group.position.x = frame.x;
+      group.position.z = frame.z;
+
+      const frameNumber = Math.floor(elapsed * 60);
+      if (frameNumber % 3 === 0) {
+        const terrainY = getTerrainY(frame.x, frame.z, threeScene);
+        terrainYRef.current += (terrainY - terrainYRef.current) * 0.6;
       }
-      return;
-    }
-    lastEscState = keyState.escape;
+      const finalBob = frame.renderAirborne
+        ? 0
+        : frame.moving
+          ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE
+          : Math.sin(elapsed * 2) * 0.15;
+      const effectiveFloorY = Math.max(
+        terrainYRef.current,
+        walkableYRef.current,
+      );
+      group.position.y =
+        effectiveFloorY +
+        2 +
+        (frame.renderAirborne ? 0 : finalBob) +
+        frame.jumpHeight -
+        pivotOffsetY;
+      group.rotation.y = frame.facing;
 
-    // In autonomous mode, don't let E key enter buildings — the autonomy tick handles navigation
-    if (store.controlMode !== 'autonomous') {
-      const eNow = keyState.e;
-      if (eNow && !lastEState) {
-        // Nori wins if both proximities are true — she stands at the
-        // open town center and is the discoverable greeter, so the E
-        // press should bias toward her over a flanking building.
-        if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
-          store.openGuideChat();
-          lastEState = eNow;
-          return;
-        }
-        if (store.nearLocation) {
-          // The cove is a walk-in venue (SceneTransition), not a teacher chat —
-          // E near it runs the walk-in flow, never enterBuilding's chat path.
-          if (store.nearLocation === 'cove') triggerCoveWalkIn();
-          else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
-          else store.enterBuilding(store.nearLocation);
-          lastEState = eNow;
-          return;
-        }
+      const dt = Math.min(rawDelta, 0.1);
+      const animationDelta = dt * frame.intent.move.speedMultiplier;
+      const animGroup = animGroupRef.current;
+      const direction = useGameStore.getState().movementDirection;
+      if (useNewAnimSystem && charAnimator && animGroup) {
+        charAnimator.update(
+          animGroup,
+          elapsed,
+          animationDelta,
+          frame.moving,
+        );
+      } else if (lobsterAnimator && animGroup) {
+        lobsterAnimator.update(
+          animationDelta,
+          elapsed,
+          frame.moving ? 'walk' : 'idle',
+          direction,
+        );
+        const animationState = {
+          group: animGroup,
+          isMoving: frame.moving,
+          elapsed,
+          delta: dt,
+          direction,
+          seed: 0,
+        };
+        if (frame.moving) applyWalkAnimation(animationState);
+        else applyIdleAnimation(animationState);
       }
-      lastEState = eNow;
-    }
-
-    let vx = 0, vy = 0;
-    // Only 'player' mode allows direct WASD/joystick avatar movement.
-    // explore = spectator (camera-only), npc = NpcController drives possessed NPC,
-    // autonomous = autonomy store drives via clickPath.
-    if (store.controlMode === 'player') {
-      // Camera-relative input: WASD maps to forward/strafe in camera space so the
-      // avatar moves in the direction the camera is facing. This mirrors
-      // npc-controller.tsx camera-relative pattern — same scratch vectors, same
-      // camera.getWorldDirection() projection onto the XZ plane.
-      //
-      // The old screen-relative comment ("camera-relative was tried and reverted")
-      // referred to mobile OrbitControls TOUCH orbit accumulating ~180° over 10s and
-      // inverting direction (see gotchas/camera-relative-movement-breaks-on-mobile.md).
-      // That concern does NOT apply to keyboard arrow-key orbit — arrow keys rotate
-      // intentionally and users expect WASD to track the new camera orientation.
-      let inputFwd = 0;
-      let inputRight = 0;
-      const { joystickVelocity } = store;
-      if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        inputRight = joystickVelocity.x;
-        inputFwd = -joystickVelocity.y; // joystick up (y<0) = camera forward
-      } else {
-        if (keyState.w) inputFwd += 1;
-        if (keyState.s) inputFwd -= 1;
-        if (keyState.a) inputRight -= 1;
-        if (keyState.d) inputRight += 1;
-      }
-
-      if (inputFwd !== 0 || inputRight !== 0) {
-        camera.getWorldDirection(_playerCamForward);
-        _playerCamForward.y = 0; // WASD is always flat camera-relative XZ — never couples to camera pitch
-        const fwdLen = _playerCamForward.length();
-        if (fwdLen > 0.001) {
-          _playerCamForward.divideScalar(fwdLen);
-          // Strafe right stays horizontal: crossVectors(forward_xz, worldUp) has y≈0 by property.
-          _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
-
-          const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
-          const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
-          vx = worldVx;
-          vy = worldVz;
-        }
-      }
-
-      // Vertical swim: arrow up/down only, gated on airborne.
-      // Decoupled from camera pitch — mouse orbit never causes altitude drift.
-      // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
-      // they ALSO drive altitude here when the avatar is airborne.
-      //
-      // Auto-sink (2026-05-18): once the jump arc finishes (phase=grounded)
-      // but playerAltitude is still > 0 — e.g. arrow keys nudged altitude
-      // up while the jump arc was active, or the user landed atop a
-      // structure and is still aloft — gently pull the avatar back down
-      // when no vertical input is held. Without this the player got
-      // stuck "swimming" mid-air after a jump because nothing decayed
-      // playerAltitude. Holding arrow-up still works to free-swim
-      // upward — auto-sink only kicks in when neither direction is held.
-      const airborne =
-        jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
-      if (airborne) {
-        let verticalInput = 0;
-        if (keyState.arrowup) verticalInput += 1;
-        if (keyState.arrowdown) verticalInput -= 1;
-        if (verticalInput !== 0) {
-          jumpState.playerAltitude = Math.max(
-            0,
-            jumpState.playerAltitude + verticalInput * SPEED * delta
-          );
-        } else if (
-          jumpState.phase === 'grounded' &&
-          jumpState.playerAltitude > 0
-        ) {
-          // Gravity pull. SPEED * 0.6 chosen empirically — slower than
-          // active arrow-down (which uses full SPEED) so a player can
-          // still briefly hover, but quick enough that an accidentally
-          // elevated landing returns to ground within ~1 s.
-          const SINK_RATE = SPEED * 0.6;
-          jumpState.playerAltitude = Math.max(
-            0,
-            jumpState.playerAltitude - SINK_RATE * delta
-          );
-        }
-      }
-    }
-
-    const hasInput = vx !== 0 || vy !== 0;
-    if (hasInput && store.clickPath) store.clearClickPath();
-
-    if (!hasInput && store.clickPath && store.clickPath.length > 0) {
-      const waypoint = store.clickPath[store.clickPathIndex];
-      if (waypoint) {
-        const dx = waypoint.x - avatarPositionRef.x;
-        const dy = waypoint.y - avatarPositionRef.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 6) {
-          if (store.clickPathIndex >= store.clickPath.length - 1) {
-            const target = store.clickPathTarget;
-            store.clearClickPath();
-            if (target === 'cove') { triggerCoveWalkIn(); return; }
-            if (target === 'kelp-forest-portal') { triggerKelpForestWalkIn(); return; }
-            if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
-          } else { store.advanceClickPath(); }
-        } else { vx = dx / dist; vy = dy / dist; }
-      }
-    }
-
-    if (vx !== 0 && vy !== 0) {
-      const len = Math.sqrt(vx * vx + vy * vy);
-      if (len > 1) { vx /= len; vy /= len; }
-    }
-
-    let dir = 'idle';
-    let continuousRot: number | null = null;
-    if (vx !== 0 || vy !== 0) {
-      dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // Continuous facing: atan2(vx, vy) — model faces +Z at rotation 0 (EMPIRICALLY VERIFIED 2026-04-16 late PM, clean side-view)
-      continuousRot = Math.atan2(vx, vy);
-    }
-    store.setMovementDirection(dir as any);
-
-    // Sprint gate (2026-05-18): SHIFT held (desktop) OR joystick magnitude
-    // past threshold (mobile) promotes walk → run while moving. Identical
-    // logic in both useFrame branches (VRM + GLB) — see RUN_SPEED_MULT /
-    // RUN_JOYSTICK_THRESHOLD declarations near the top of this file.
-    const _joyMag = Math.hypot(store.joystickVelocity.x, store.joystickVelocity.y);
-    const isRunning = (vx !== 0 || vy !== 0) &&
-      (keyState.shift || _joyMag > RUN_JOYSTICK_THRESHOLD);
-    const speedMult = isRunning ? RUN_SPEED_MULT : 1;
-
-    if (vx !== 0 || vy !== 0) {
-      // Read from ref (zero React overhead) for current position, write via
-      // setAvatarPosition which updates both ref + throttled reactive store.
-      let newX = avatarPositionRef.x + vx * SPEED * speedMult * delta;
-      let newY = avatarPositionRef.y + vy * SPEED * speedMult * delta;
-      newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
-      newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
-      // World-space XZ disc collision — clamp against buildings and props.
-      // Convert game-px → world, clamp, convert back. Zero per-frame allocations.
-      const prevWX = avatarPositionRef.x - HALF_W;
-      const prevWZ = avatarPositionRef.y - HALF_H;
-      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H, ENTITY_HALF_CHIBI);
-      // Update walkable surface Y — used below to lift avatar onto stair zones.
-      // groundY is -2 (sand floor) when not over any walkable collider.
-      walkableYRef.current = clamped.groundY;
-      store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
-    }
-
-    // Test the actual collision-clamped movement segment, not a proximity
-    // band. The first frame only seeds the segment origin, preventing a spawn
-    // or avatar-model mount from synthesizing a crossing.
-    if (ownsKelpPortalMovement) {
-      const currentWorldX = avatarPositionRef.x - HALF_W;
-      const currentWorldZ = avatarPositionRef.y - HALF_H;
-      if (!kelpPortalPrevInitializedRef.current) {
-        kelpPortalPrevXRef.current = currentWorldX;
-        kelpPortalPrevZRef.current = currentWorldZ;
-        kelpPortalPrevInitializedRef.current = true;
-      } else {
-        if (
-          didCrossKelpForestPortal(
-            kelpPortalPrevXRef.current,
-            kelpPortalPrevZRef.current,
-            currentWorldX,
-            currentWorldZ,
-          )
-        ) {
-          triggerKelpForestWalkIn();
-        }
-        kelpPortalPrevXRef.current = currentWorldX;
-        kelpPortalPrevZRef.current = currentWorldZ;
-      }
-    }
-
-    // Character proximity check — replaces building-zone area check.
-    // Runs every frame so nearLocation / nearCharacter stay accurate even when
-    // the avatar stops or is repositioned externally (clickPath, setAvatarPosition).
-    // findNearestCharacter takes world-space primitives — zero allocation.
-    {
-      const wx = avatarPositionRef.x - HALF_W;
-      const wz = avatarPositionRef.y - HALF_H;
-      const nearest = findNearestCharacter(wx, wz);
-      // Cove proximity (town-ux-2026-06-19): the cove has no NPC teacher, so
-      // isCoveProximate fires when within COVE_PROXIMITY_RADIUS wu and no
-      // teacher is nearer. Teacher takes priority if both are in range.
-      const nearId: string | null = nearest
-        ? nearest.buildingId
-        : isCoveProximate(wx, wz)
-          ? 'cove'
-          : isKelpForestPortalProximate(wx, wz)
-            ? 'kelp-forest-portal'
-            : null;
-      const nearName = nearest ? nearest.characterName : null;
-      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
-      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
-
-      // Town Guide proximity — same shape as findNearestCharacter, but
-      // Nori isn't in the building map so we test her singleton position
-      // inline. Squared distance avoids sqrt in the hot path.
-      const ndx = wx - NORI_WORLD_X;
-      const ndz = wz - NORI_WORLD_Z;
-      const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
-      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
-    }
-
-    const group = groupRef.current;
-    if (!group) return;
-    const [wx, , wz] = mapToWorld(avatarPositionRef.x, avatarPositionRef.y);
-    group.position.x = wx;
-    group.position.z = wz;
-
-    const isMoving = dir !== 'idle';
-    const elapsed = state.clock.elapsedTime;
-    // Raycast terrain height (every 3rd frame).
-    // Use elapsed * 60 (render-clock frames) instead of Date.now() to avoid a
-    // syscall allocation in the hot path.
-    const frame = Math.floor(elapsed * 60);
-    if (frame % 3 === 0) {
-      const ty = getTerrainY(group.position.x, group.position.z, threeScene);
-      terrainYRef.current += (ty - terrainYRef.current) * 0.6;
-    }
-    // Suppress ambient bob when airborne — it looks wrong to bob while jumping.
-    // resetJump() guarantees heightOffset=0 and playerAltitude=0 outside player/npc modes.
-    // 'charging' keeps the avatar on the ground (heightOffset=0), so it's not airborne.
-    // playerAltitude > 0 means the avatar is swimming above the ocean floor — also airborne.
-    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
-                  || jumpState.playerAltitude > 0;
-    const finalBob = airborne
-      ? 0
-      : (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
-    // effectiveFloorY: when walkableYRef > terrainYRef (avatar entered a stair/ramp
-    // collider zone), use the walkable surface height so feet ride the stair.
-    // When not on any walkable zone, walkableYRef = -2 = sand floor = terrain.
-    const effectiveFloorY = Math.max(terrainYRef.current, walkableYRef.current);
-    // Subtract pivotOffsetY to ground the avatar regardless of GLB pivot placement.
-    // pivotOffsetY = localMinY * finalScale (world units).
-    // If pivot is above feet (localMinY < 0), pivotOffsetY is negative —
-    // subtracting a negative raises the model so feet align with effectiveFloorY.
-    // jumpState.playerAltitude stacks on top of heightOffset for full 3D swim.
-    group.position.y = effectiveFloorY + 2 + (airborne ? 0 : finalBob)
-                     + jumpState.heightOffset + jumpState.playerAltitude - pivotOffsetY;
-
-    // Idle rotation freeze: don't snap back to +Z when movement stops — preserve last moved direction so the avatar doesn't twist back after every WASD release.
-    // When idle (no movement input), continuousRot is null — skip the lerp entirely
-    // and leave rotRef.current unchanged.  This mirrors how npc-controller.tsx
-    // preserves facingAngle on idle via moveNpc(..., npc.facingAngle) at line ~148.
-    if (continuousRot !== null) {
-      // Shortest-path lerp — prevents spinning the long way when crossing ±PI boundary
-      let rotDiff = continuousRot - rotRef.current;
-      while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-      while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-      rotRef.current += rotDiff * 0.15;
-    }
-    group.rotation.y = rotRef.current;
-
-    const dt = Math.min(delta, 0.1);
-    const animGroup = animGroupRef.current;
-
-    // Crustaceans have no run clip — they reuse their walk cycle but the
-    // PROCEDURAL animator advances at speedMult× the normal rate when
-    // sprinting, so the visible foot cadence matches the faster ground
-    // motion and avoids foot-skating. Both the universal character
-    // animator (charAnimator) and the legacy lobster animator
-    // (lobsterAnimator) consume a scaled dt for this reason.
-    const animDt = dt * speedMult;
-    if (useNewAnimSystem && charAnimator && animGroup) {
-      // Universal animator handles both idle and walk in one call
-      charAnimator.update(animGroup, elapsed, animDt, isMoving);
-    } else if (lobsterAnimator && animGroup) {
-      // Legacy lobster/crayfish path — skeletal + procedural squash/stretch
-      const suggestedAnim = isMoving ? 'walk' : 'idle';
-      lobsterAnimator.update(animDt, elapsed, suggestedAnim as any, dir);
-
-      const animStateData = {
-        group: animGroup,
-        isMoving,
-        elapsed,
-        delta: dt,
-        direction: dir,
-        seed: 0, // Player always seed 0
-      };
-      if (isMoving) {
-        applyWalkAnimation(animStateData);
-      } else {
-        applyIdleAnimation(animStateData);
-      }
-    }
-  }, -100);
+    },
+  });
 
   return (
     <group ref={groupRef}>
@@ -1240,15 +760,6 @@ function PlayerAvatarGLBInner() {
 // ---------------------------------------------------------------------------
 
 function PlayerAvatarRouter() {
-  const sceneActive = useSceneActive();
-  useEffect(() => {
-    if (!sceneActive) {
-      resetPlayerKeys();
-      return;
-    }
-    return attachKeyListeners();
-  }, [sceneActive]);
-
   const avatarModelKey = useGameStore((s) => s.avatarModelKey);
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;

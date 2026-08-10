@@ -1121,6 +1121,42 @@ export interface CancelLobbyResult {
   signerPubkey: string;
 }
 
+export type WagerLobbyChainState = 'open' | 'locked' | 'settled' | 'cancelled';
+
+const WAGER_LOBBY_CHAIN_STATES: readonly WagerLobbyChainState[] = [
+  'open',
+  'locked',
+  'settled',
+  'cancelled',
+];
+
+/**
+ * Read-only authoritative state probe used before retrying an abort cancel.
+ * A prior `.rpc()` may have landed even when its confirmation response was
+ * lost; callers reconcile `cancelled` forward and never force a second send.
+ */
+export async function readWagerLobbyChainState(
+  lobbyIdBigint: bigint,
+): Promise<WagerLobbyChainState> {
+  await assertWagerBroadcastCluster(connection, 'readWagerLobbyChainState');
+  const [lobbyPda] = findLobbyPda(lobbyIdBigint);
+  const account = await withChainErrors('readWagerLobbyChainState:getAccountInfo', () =>
+    connection.getAccountInfo(lobbyPda, COMMITMENT),
+  );
+  if (!account || !account.owner.equals(PROGRAM_ID)) {
+    throw new WagerClientError('wager_lobby_account_missing_or_wrong_owner', 'pubkey_mismatch');
+  }
+  const decoded = decodeWagerLobbyAccount(account.data);
+  if (!decoded || decoded.lobbyId !== lobbyIdBigint) {
+    throw new WagerClientError('wager_lobby_account_decode_mismatch', 'pubkey_mismatch');
+  }
+  const state = WAGER_LOBBY_CHAIN_STATES[decoded.state];
+  if (!state) {
+    throw new WagerClientError(`wager_lobby_chain_state_${decoded.state}`, 'on_chain_error');
+  }
+  return state;
+}
+
 export async function cancelLobby(
   input: CancelLobbyInput,
 ): Promise<CancelLobbyResult> {

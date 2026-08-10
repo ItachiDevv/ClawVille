@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ansem avatar — turnaround approval gallery</title>
+<style>
+  body { background: #0e1116; color: #e8eaed; font-family: system-ui, sans-serif; margin: 24px; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; color: #9aa4b2; margin: 28px 0 10px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  figure { margin: 0; }
+  img { height: 460px; width: auto; border-radius: 8px; background: #fff; display: block; }
+  figcaption { font-size: 12px; color: #9aa4b2; margin-top: 6px; text-align: center; }
+  .approved img { outline: 3px solid #35d07f; }
+  .rejected img { outline: 3px solid #b3423a; opacity: .55; height: 300px; }
+  .src img { background: transparent; }
+  p.note { color: #9aa4b2; font-size: 13px; max-width: 900px; }
+</style>
+</head>
+<body>
+<h1>Ansem exclusive avatar — reference set for Meshy (approval gate)</h1>
+<p class="note">Character views are generated CLEAN (no sword, no effects) so the auto-rig can't skin blade
+geometry to arm bones — the greatsword is its own asset, attached to the skeleton in engine (same idea as
+Tekk's wings, but as a separate mesh). Green horns + eyes stay emissive. Strict horizontal T-pose per the
+armspan hard gate.</p>
+
+<h2>Source art (pasted reference)</h2>
+<div class="row src"><figure><img src="../source-ref.jpg"><figcaption>source-ref (Downloads/ansem.jpg)</figcaption></figure></div>
+
+<h2>Proposed Meshy set — character (front · back · 3q · face)</h2>
+<div class="row">
+  <figure class="approved"><img src="front.png"><figcaption>front</figcaption></figure>
+  <figure class="approved"><img src="back.png"><figcaption>back (v2 — horns fixed inward)</figcaption></figure>
+  <figure class="approved"><img src="3q.png"><figcaption>3/4 diagonal</figcaption></figure>
+  <figure class="approved"><img src="face.png"><figcaption>face (v2 — clean skin, smooth horns)</figcaption></figure>
+</div>
+
+<h2>Greatsword — separate Meshy asset</h2>
+<div class="row">
+  <figure class="approved"><img src="sword.png"><figcaption>sword side profile (image-to-3D w/ symmetry)</figcaption></figure>
+</div>
+
+<h2>Rejected first rolls (for the record)</h2>
+<div class="row">
+  <figure class="rejected"><img src="back-v1-rejected.png"><figcaption>back v1 — horn tips diverged outward (impossible vs front)</figcaption></figure>
+  <figure class="rejected"><img src="face-v1-rejected.png"><figcaption>face v1 — flame horns + lightning face marks (would bake into texture)</figcaption></figure>
+</div>
+</body>
+</html>

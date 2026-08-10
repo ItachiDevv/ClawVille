@@ -7,7 +7,7 @@ import CoveInteriorScene, { COVE_CAMERA_FAR } from '@/lib/three/cove-interior';
 import { useSceneActive } from './use-scene-frame';
 import { useStageStore } from './stage-store';
 import { withStageSlotFrustumCullingDisabled } from './resource-ledger';
-import { warmCoveRendererForGeneration } from './cove-warmup-entry-manager';
+import { warmStageSlotRenderer } from './stage-warmup-entry-manager';
 
 const COVE_SCENE_ID = 'cove';
 
@@ -93,7 +93,8 @@ export default function StageHostedCoveScene({
                 ).compileAsync(scene, camera),
               )
           : undefined;
-      const result = await warmCoveRendererForGeneration({
+      const result = await warmStageSlotRenderer({
+        slotId: COVE_SCENE_ID,
         gl,
         warmedRenderer: warmedRendererRef.current?.gl ?? null,
         compile: compileAsync,

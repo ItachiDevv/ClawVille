@@ -108,5 +108,45 @@ export const reefRacePersonalBests = pgTable(
   }),
 );
 
+/**
+ * Append-only ownership record for every room that actually lowered an
+ * avatar's Reef Race best lap. Unlike `reef_race_personal_bests`, these rows
+ * are never replaced by a later/faster room, so reward settlement can prove a
+ * prior room's earned PB claim after a crash or retry.
+ */
+export const reefRacePersonalBestClaims = pgTable(
+  'reef_race_personal_best_claims',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceRoomId: uuid('source_room_id')
+      .notNull()
+      .references(() => activityRooms.id),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id),
+    activityId: text('activity_id').notNull().default('reef-race'),
+    bestLapMs: integer('best_lap_ms').notNull(),
+    previousBestLapMs: integer('previous_best_lap_ms'),
+    dailyRank: integer('daily_rank'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    roomAvatarUq: uniqueIndex('uq_reef_race_pb_claim_room_avatar').on(
+      t.sourceRoomId,
+      t.avatarId,
+    ),
+    avatarCreatedIdx: index('idx_reef_race_pb_claim_avatar_created').on(
+      t.avatarId,
+      t.createdAt.desc(),
+    ),
+  }),
+);
+
 export type ReefRacePersonalBest = typeof reefRacePersonalBests.$inferSelect;
 export type NewReefRacePersonalBest = typeof reefRacePersonalBests.$inferInsert;
+export type ReefRacePersonalBestClaim =
+  typeof reefRacePersonalBestClaims.$inferSelect;
+export type NewReefRacePersonalBestClaim =
+  typeof reefRacePersonalBestClaims.$inferInsert;

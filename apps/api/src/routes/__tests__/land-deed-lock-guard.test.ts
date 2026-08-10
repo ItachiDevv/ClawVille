@@ -58,7 +58,8 @@ if (HAS_DB) {
     const rows = await dbMod.db.execute<{ reg: string | null }>(
       dbMod.sql`SELECT to_regclass('public.market_deed_locks')::text AS reg`,
     );
-    HAS_MARKET_TABLES = Array.from(rows as Iterable<{ reg: string | null }>)[0]?.reg != null;
+    const probe = Array.from(rows as Iterable<{ reg: string | null }>)[0];
+    HAS_MARKET_TABLES = probe?.reg != null;
   } catch {
     HAS_MARKET_TABLES = false;
   }
@@ -180,6 +181,7 @@ describeIfMarketDb('deed-lock guard E2E (requires DATABASE_URL + migration 0017)
         priceCt: 500,
         ownerAvatarId: sellerAvatarId,
         tenure: 'hold' as const,
+        tenureTermsVersion: 1,
         grandfathered: true,
         holdThresholdCt: 100_000,
         rentCtWeekly: 100,
@@ -245,7 +247,7 @@ describeIfMarketDb('deed-lock guard E2E (requires DATABASE_URL + migration 0017)
     // Seller account + avatar (mirrors the phase-b harness signup flow).
     const signup = await app.request('/api/auth/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': `test-${TEST_TAG}` },
       body: JSON.stringify({ email: SELLER_EMAIL, password: PASSWORD, name: 'DeedLock Tester' }),
     });
     expect(signup.status).toBe(200);
@@ -335,7 +337,7 @@ describeIfMarketDb('deed-lock guard E2E (requires DATABASE_URL + migration 0017)
     const res = await app.request(`/api/land/parcels/${releaseParcelId}/release`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: sellerCookie },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ idempotencyKey: 'deed-lock-release-1' }),
     });
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error?: string; code?: string };
@@ -375,7 +377,7 @@ describeIfMarketDb('deed-lock guard E2E (requires DATABASE_URL + migration 0017)
     const res = await app.request(`/api/land/parcels/${orArmParcelId}/release`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: sellerCookie },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ idempotencyKey: 'deed-lock-release-2' }),
     });
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error?: string; code?: string };
@@ -402,7 +404,7 @@ describeIfMarketDb('deed-lock guard E2E (requires DATABASE_URL + migration 0017)
     const res = await app.request(`/api/land/parcels/${releaseParcelId}/release`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: sellerCookie },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ idempotencyKey: 'deed-lock-release-3' }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { released: boolean; refundedCt: number };

@@ -5,7 +5,7 @@
  * live on staging. The Land panel components + the api.ts client methods both
  * import from here so the wire shape is defined exactly once on the web side.
  */
-import type { LandTier } from '@clawville/shared';
+import type { KitPieceKey, LandTier } from '@clawville/shared';
 
 /** Parcel lifecycle status as returned by the API. */
 export type LandParcelStatus = 'available' | 'owned' | 'reserved' | 'retired';
@@ -21,6 +21,8 @@ export type LandTenure = 'rented' | 'owned' | 'starter' | 'deposit' | 'hold';
 export interface LandParcelDTO {
   id: string;
   parcelCode: string;
+  /** Deterministic human label; parcelCode remains the wire/render key. */
+  displayName: string;
   tier: LandTier;
   status: LandParcelStatus;
   gridX: number;
@@ -33,6 +35,8 @@ export interface LandParcelDTO {
    * `rentCtWeekly != null`.
    */
   rentCtWeekly: number | null;
+  /** Server quote for a fresh rent-door claim; null when that door is unavailable. */
+  claimRentCtWeekly: number | null;
   /** How the parcel is held; null = available/unsold. */
   tenure: LandTenure | null;
   /**
@@ -48,6 +52,10 @@ export interface LandParcelDTO {
    * this field only for owned parcels.
    */
   holdThresholdCt: number | null;
+  rentPaidThrough?: string | null;
+  graceUntil?: string | null;
+  /** Last authoritative tenure-row update/check exposed to the owner UI. */
+  tenureLastCheckedAt?: string | null;
 }
 
 /** A structure (home or shop) placed on an owned parcel. */
@@ -58,6 +66,29 @@ export interface LandStructureDTO {
   structureType: 'home' | 'shop';
   catalogKey: string;
   level: number;
+  shellKey: string;
+  paletteKey: string;
+}
+
+/** Public world-render feed row; owner identity and DB ids are intentionally omitted. */
+export interface PublicLandStructureDTO {
+  parcelCode: string;
+  gridX: number;
+  gridY: number;
+  tier: LandTier;
+  structureType: 'home' | 'shop';
+  level: number;
+  shellKey: string;
+  paletteKey: string;
+}
+
+export interface UpdateStructureAppearanceRequest {
+  shellKey?: string;
+  paletteKey?: string;
+}
+
+export interface UpdateStructureAppearanceResponse {
+  structure: LandStructureDTO;
 }
 
 /** Catalog SKU entry (key + display label) for a tier. */
@@ -93,28 +124,62 @@ export interface MyLandResponse extends OwnedLandResponse {
   avatarId: string;
 }
 
-/** POST /api/land/claim-starter response. */
-export interface ClaimStarterResponse {
-  parcel: LandParcelDTO;
-  alreadyOwned: boolean;
+/** Private owner mutation shape for stage-A kit routes 12-14. */
+export interface LandStructurePieceDTO {
+  id: string;
+  parcelId: string;
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
 }
 
-/** POST /api/land/parcels/:id/buy response. */
-export interface BuyParcelResponse {
-  parcel: LandParcelDTO;
-  amountCt: number;
+export interface OwnerLandPiecesResponse {
+  pieces: LandStructurePieceDTO[];
 }
 
-/**
- * POST /api/land/parcels/:id/rent response. `amountCt` = the weekly rent debited
- * for the first week (server-read `rent_ct_weekly`). `rentPaidThrough` = ISO date
- * the rent is paid through; the hourly sweeper charges the next week + grace →
- * evict if unpaid.
- */
-export interface RentParcelResponse {
-  parcel: LandParcelDTO;
-  amountCt: number;
-  rentPaidThrough: string;
+export interface PlaceLandPieceRequest {
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+  idempotencyKey: string;
+  /**
+   * OMITTED for the vCLAW rail — byte-identical to the request this route
+   * has always accepted. Included ONLY when the player picked the materials
+   * rail (HOME yards, P5b — gamification-pass-2026-08-09.md §2.9
+   * KitMutationInput.op.paymentRail). CONFIRMED SERVED 2026-08-09: the
+   * backend lane's `9824db4f` (`apps/api/src/routes/land.ts:647`) declares
+   * `paymentRail: z.enum(KIT_PAYMENT_RAILS).default('vclaw')` on the
+   * `/api/land/parcels/:parcelId/pieces` schema, so both omitting it and
+   * sending 'materials' are accepted. `yard-editor-three.tsx` still catches
+   * an unexpected 400 defensively and reverts the rail with a toast.
+   */
+  paymentRail?: 'materials';
+}
+
+export interface MoveLandPieceRequest {
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
+export interface PlaceLandPieceResponse {
+  piece: LandStructurePieceDTO;
+  costCt: number;
+  idempotencyReplay?: boolean;
+}
+
+export interface MoveLandPieceResponse {
+  piece: LandStructurePieceDTO;
+}
+
+export interface DeleteLandPieceResponse {
+  deleted: true;
+  piece: LandStructurePieceDTO;
 }
 
 /**
@@ -129,6 +194,41 @@ export interface ClaimHoldResponse {
   parcel: LandParcelDTO;
   requiredClv: number;
   heldClv: number;
+}
+
+export interface ClaimRentResponse {
+  parcel: LandParcelDTO;
+  weeks: number;
+  weeklyCt: number;
+  idempotencyReplay?: boolean;
+}
+
+export interface LandHoldWalletStatus {
+  walletAddress: string | null;
+  declaredAt: string | null;
+  balance: {
+    available: boolean;
+    amountAtomic: string | null;
+    decimals: number | null;
+    uiAmount: number | null;
+    cached: boolean;
+    fetchedAt: string | null;
+  } | null;
+}
+
+export interface RentPrepayResponse {
+  parcelCode: string;
+  depositRemainingCt: number;
+  amountCt: number;
+  graceCleared: boolean;
+  idempotencyReplay?: boolean;
+}
+
+export interface ReleaseParcelResponse {
+  released: true;
+  refundedCt: number;
+  parcel: LandParcelDTO;
+  idempotencyReplay?: boolean;
 }
 
 /** POST /api/land/parcels/:id/structure response. */
@@ -236,3 +336,115 @@ export interface BuyServiceResponse {
   priceCt: number;
   cached: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Seabed salvage (P7a/P7b — FROZEN, verified against the backend lane's
+// shipped commits `7eec61cd`/`9824db4f` on `feat/land-salvage`, merged into
+// this branch 2026-08-09: apps/api/src/routes/land-salvage.ts +
+// apps/api/src/services/{salvage-settlement,salvage-approach}.ts. These
+// shapes are copied from the real route handlers, not guessed.
+// ---------------------------------------------------------------------------
+
+/** One node's per-avatar claim state, as read from `GET /api/land/salvage/state`. */
+export interface LandSalvageNodeStatus {
+  nodeId: string;
+  band: string;
+  x: number;
+  z: number;
+  /** null = never claimed by this avatar, i.e. ready now. */
+  nextClaimAt: string | null;
+  ready: boolean;
+}
+
+export type SalvageFlavour = 'common' | 'uncommon' | 'rare';
+
+/** The exact payload both a claim response and `state.lastClaim` carry. */
+export interface LandSalvageClaimPayload {
+  nodeId: string;
+  layoutVersion: number;
+  materialsGranted: number;
+  flavour: SalvageFlavour;
+  /** Pooled material balance AFTER the credit. */
+  balanceAfter: number;
+  /** ISO8601 — when this node becomes claimable again for this avatar. */
+  nextClaimAt: string;
+  claimsRemainingToday: number;
+  ownerClaimsRemainingToday: number;
+}
+
+/** Rules the client RENDERS rather than re-derives — never hardcode these. */
+export interface LandSalvageRules {
+  approachRangeWu: number;
+  cooldownMs: number;
+  avatarDailyClaimCap: number;
+  ownerDailyClaimCap: number;
+  layoutVersion: number;
+}
+
+export interface LandSalvageStateResponse {
+  layoutVersion: number;
+  nodes: LandSalvageNodeStatus[];
+  materialBalance: number;
+  claimsUsedToday: number;
+  claimsRemainingToday: number;
+  ownerClaimsUsedToday: number;
+  ownerClaimsRemainingToday: number;
+  lastClaim: LandSalvageClaimPayload | null;
+  rules: LandSalvageRules;
+}
+
+// ---- POST /:nodeId/approach ----
+
+export interface LandSalvageApproachRequest {
+  /** Centered world coords — the SAME frame LandProximityTracker resolves. */
+  x: number;
+  z: number;
+}
+
+export type LandSalvageApproachErrorCode =
+  | 'node_unknown'
+  | 'anchor_pending'
+  | 'movement_poisoned'
+  | 'impossible_movement'
+  | 'out_of_range'
+  | 'dwell_pending'
+  | 'rate_limited';
+
+/** Success body. Failure bodies are `{ok:false,error,retryAfterMs}` — thrown as ApiError, see api.ts. */
+export interface LandSalvageApproachResponse {
+  ok: true;
+  approachToken: string;
+  /** ISO8601 — SALVAGE_APPROACH_TOKEN_TTL_MS (20s) from issuance. */
+  expiresAt: string;
+}
+
+// ---- POST /:nodeId/claim ----
+
+export interface LandSalvageClaimRequest {
+  approachToken: string;
+  /** REQUIRED, 8-64 chars. ONE per gather gesture — reuse on retry or it double-pays. */
+  idempotencyKey: string;
+}
+
+/** Success body — `ok:true` plus the claim payload spread flat, plus `replay`. */
+export interface LandSalvageClaimResponse extends LandSalvageClaimPayload {
+  ok: true;
+  replay: boolean;
+}
+
+export type LandSalvageClaimErrorCode =
+  | 'node_unknown'
+  | 'house_excluded'
+  | 'owner_unresolved'
+  | 'binding_drift'
+  | 'owner_daily_cap'
+  | 'avatar_daily_cap'
+  | 'node_on_cooldown'
+  | 'idempotency_key_conflict'
+  | 'concurrent_retry'
+  | 'idempotency_key_required'
+  | 'invalid_body'
+  | 'rate_limited'
+  /** From the approach-token verify step, surfaced as the claim route's own 403. */
+  | 'invalid_token'
+  | 'expired_token';

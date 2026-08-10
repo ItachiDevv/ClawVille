@@ -2,7 +2,11 @@
 
 import { Suspense, memo, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { AT_COVE_ACTIVITY } from '@clawville/shared';
+import {
+  AT_ACTIVITY,
+  AT_COVE_ACTIVITY,
+  AT_KELP_ACTIVITY,
+} from '@clawville/shared';
 import type { NpcSpriteState } from '@/stores/npc';
 import { usePlayerStore, type RemotePlayerState } from '@/stores/players';
 import { GLBNpcMesh, VRMNpcMesh } from '@/lib/three/arena-npcs';
@@ -48,11 +52,22 @@ import { preloadVRMBytes } from '@/lib/three/vrm-loader';
  */
 function adaptPlayer(player: RemotePlayerState): NpcSpriteState {
   const isAtCove = player.activity === AT_COVE_ACTIVITY;
+  const isAtKelp = player.activity === AT_KELP_ACTIVITY;
+  const isAtActivity = player.activity === AT_ACTIVITY;
   const direction: NpcSpriteState['direction'] =
-    player.activity === 'idle' || isAtCove ? 'idle' : 'down';
+    player.activity === 'idle' || isAtCove || isAtKelp || isAtActivity
+      ? 'idle'
+      : 'down';
+  const name = isAtCove
+    ? `${player.name} · at the Cove`
+    : isAtKelp
+      ? `${player.name} · at the Kelp Forest`
+      : isAtActivity
+        ? `${player.name} · in an activity`
+        : player.name;
   return {
     id: player.id,
-    name: isAtCove ? `${player.name} · at the Cove` : player.name,
+    name,
     x: player.x,
     y: player.y,
     prevX: player.prevX,

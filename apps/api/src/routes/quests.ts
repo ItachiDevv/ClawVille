@@ -41,6 +41,15 @@ import {
   getTutorialQuestReward,
   type TutorialQuestId,
 } from '@clawville/shared';
+// P6: qualification + settlement live in ONE service so the human REST path,
+// the connected-agent REST path, and the hosted `[ACTION:]` executor path are
+// provably the same code rather than three drifting copies.
+import {
+  settleTutorialQuestClaim,
+  validateTutorialQuestEngagement,
+  type EngagementResult,
+} from '../services/tutorial-quest-settlement';
+import { isHouseAgentId } from '../services/autonomous-cove-agent-binding';
 
 // PARITY (Rule E5, 2026-07-13): the five PLAYER routes (my-quests, quest-log,
 // accept, start, submit) resolve identity via `requireAuthOrAgentSession`, so a
@@ -54,8 +63,11 @@ import {
 // `ledgerCapable=false`, so without this gate it could read the victim's quest
 // history and lock them out of quests by squatting junk submissions on their
 // avatar. Same fail-closed shape as the cove — never a guest demotion.
-// Admin routes + the tutorial ladder (client-tracked human onboarding, keyed on
-// `userId`) intentionally stay human-only.
+// Admin routes intentionally stay human-only. The tutorial ladder NO LONGER
+// does: as of P6 (2026-08-09) it runs the same three-stage chain as the rest of
+// the board and is keyed on `avatar_id`, so a connected or user-hosted agent
+// claims as ITSELF with real settlement. It was the last Rule E5 parity gap on
+// a live money surface.
 export const questRoutes = new Hono<ActivityAuthContext>();
 questRoutes.use('*', sessionMiddleware);
 
@@ -1051,499 +1063,163 @@ const claimTutorialQuestParamSchema = z.object({
   id: z.string().min(1).max(50),
 });
 
-/**
- * Per-quest server-side proof-of-engagement check.
- *
- * Returns:
- *   - { ok: true }                                  → user has met the bar
- *   - { ok: false, pending: true,  reason: '...' }  → feature isn't shipped
- *   - { ok: false, pending: false, reason: '...' }  → user hasn't done it yet
- *
- * The route maps `pending` to error code `pending_feature` (so the client
- * knows to render "coming soon" rather than retry forever) vs the standard
- * `engagement_required` for not-yet-completed live quests.
- *
- * Q3 plan §2.6 + 2026-04-29 redesign — extended for the 30-quest ladder.
- */
-type EngagementResult = { ok: true } | { ok: false; pending: boolean; reason: string };
 
-async function validateTutorialQuestEngagement(
-  userId: string,
-  avatarId: string,
-  questId: TutorialQuestId,
-): Promise<EngagementResult> {
-  // Hard-block pending quests — their server emitter doesn't exist yet.
-  if (TUTORIAL_QUEST_STATUS[questId] === 'pending') {
-    return { ok: false, pending: true, reason: 'feature_not_shipped' };
-  }
+questRoutes.post(
+  '/tutorial/:id/claim',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
 
-  async function countEvents(predicate: ReturnType<typeof sql>): Promise<number> {
-    const rows = await db.execute<{ c: number }>(sql`
-      SELECT COUNT(*)::int AS c FROM events
-      WHERE (user_id = ${userId} OR avatar_id = ${avatarId})
-        AND ${predicate}
-    `);
-    return Number(rows[0]?.c ?? 0);
-  }
-
-  async function distinctTeacherChats(): Promise<number> {
-    const rows = await db.execute<{ c: number }>(sql`
-      SELECT COUNT(DISTINCT building_id)::int AS c FROM events
-      WHERE event_type = 'agent.chat.turn'
-        AND payload->>'chatType' IN ('character','building','location')
-        AND (user_id = ${userId} OR avatar_id = ${avatarId})
-        AND building_id IS NOT NULL
-    `);
-    return Number(rows[0]?.c ?? 0);
-  }
-
-  async function distinctBuildingsVisited(): Promise<number> {
-    const rows = await db.execute<{ c: number }>(sql`
-      SELECT COUNT(DISTINCT building_id)::int AS c FROM events
-      WHERE event_type = 'building.visited'
-        AND (user_id = ${userId} OR avatar_id = ${avatarId})
-        AND building_id IS NOT NULL
-    `);
-    return Number(rows[0]?.c ?? 0);
-  }
-
-  async function distinctBookBuildings(): Promise<number> {
-    const rows = await db.execute<{ c: number }>(sql`
-      SELECT COUNT(DISTINCT payload->>'buildingId')::int AS c FROM events
-      WHERE event_type = 'item.purchased'
-        AND coalesce(payload->>'isBook','') = 'true'
-        AND (user_id = ${userId} OR avatar_id = ${avatarId})
-        AND payload->>'buildingId' IS NOT NULL
-    `);
-    return Number(rows[0]?.c ?? 0);
-  }
-
-  async function distinctActivityTypes(): Promise<number> {
-    const rows = await db.execute<{ c: number }>(sql`
-      SELECT COUNT(DISTINCT payload->>'activityType')::int AS c FROM events
-      WHERE event_type = 'activity.match.placed'
-        AND (user_id = ${userId} OR avatar_id = ${avatarId})
-        AND coalesce(payload->>'subjectType','') <> 'bot'
-        AND payload->>'activityType' IS NOT NULL
-    `);
-    return Number(rows[0]?.c ?? 0);
-  }
-
-  const ok = (): EngagementResult => ({ ok: true });
-  const fail = (reason: string): EngagementResult => ({ ok: false, pending: false, reason });
-
-  switch (questId) {
-    // ── TIER 1 ────────────────────────────────────────────────────────
-    case 'say-hi-nori':
-      return (await countEvents(
-        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'system-agent'`,
-      )) >= 1 ? ok() : fail('no_system_chats');
-
-    case 'meet-your-agent':
-      return (await countEvents(
-        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
-      )) >= 1 ? ok() : fail('no_avatar_chats');
-
-    case 'first-steps':
-      return (await countEvents(sql`event_type = 'building.visited'`)) >= 1
-        ? ok()
-        : fail('no_building_visits');
-
-    // ── TIER 2 ────────────────────────────────────────────────────────
-    case 'town-briefing':
-      return (await countEvents(
-        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'system-agent'`,
-      )) >= 3 ? ok() : fail('insufficient_system_chats');
-
-    case 'bonded':
-      return (await countEvents(
-        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
-      )) >= 5 ? ok() : fail('insufficient_avatar_chats');
-
-    case 'door-knocker': {
-      const visits = await countEvents(sql`event_type = 'building.visited'`);
-      const teacherChats = await countEvents(
-        sql`event_type = 'agent.chat.turn'
-            AND payload->>'chatType' IN ('character','building','location')`,
-      );
-      return visits >= 1 && teacherChats >= 1 ? ok() : fail('compound_unmet');
+    const parsed = claimTutorialQuestParamSchema.safeParse({ id: c.req.param('id') });
+    if (!parsed.success) {
+      throw new HTTPException(400, { message: 'Invalid quest id' });
     }
+    const questId = parsed.data.id;
 
-    // ── TIER 3 ────────────────────────────────────────────────────────
-    case 'town-tour': {
-      const distinctVisits = await distinctBuildingsVisited();
-      const distinctTeachers = await distinctTeacherChats();
-      return distinctVisits >= 3 && distinctTeachers >= 2 ? ok() : fail('compound_unmet');
-    }
-
-    case 'star-pupil':
-      return (await distinctTeacherChats()) >= 5 ? ok() : fail('insufficient_distinct_teachers');
-
-    case 'cartographer':
-      return (await distinctBuildingsVisited()) >= 10
-        ? ok()
-        : fail('insufficient_distinct_buildings');
-
-    // ── TIER 4 ────────────────────────────────────────────────────────
-    case 'shop-and-study': {
-      const bought = await countEvents(
-        sql`event_type = 'item.purchased' AND coalesce(payload->>'isBook','') = 'true'`,
-      );
-      const learned = await countEvents(sql`event_type = 'book.read'`);
-      return bought >= 1 && learned >= 1 ? ok() : fail('compound_unmet');
-    }
-
-    case 'inventory-in-action': {
-      const bought = await countEvents(sql`event_type = 'item.purchased'`);
-      const used = await countEvents(
-        sql`event_type IN ('book.read','cosmetic.equipped')`,
-      );
-      return bought >= 1 && used >= 1 ? ok() : fail('compound_unmet');
-    }
-
-    case 'library-card': {
-      const buildings = await distinctBookBuildings();
-      const learned = await countEvents(sql`event_type = 'book.read'`);
-      return buildings >= 3 && learned >= 3 ? ok() : fail('compound_unmet');
-    }
-
-    case 'polymath':
-      return (await countEvents(sql`event_type = 'book.read'`)) >= 10
-        ? ok()
-        : fail('insufficient_knowledge');
-
-    // ── TIER 5 ────────────────────────────────────────────────────────
-    case 'first-match':
-      return (await countEvents(
-        sql`event_type = 'activity.match.placed'
-            AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      )) >= 1 ? ok() : fail('no_matches');
-
-    case 'game-day': {
-      const distinctTeachers = await distinctTeacherChats();
-      const matches = await countEvents(
-        sql`event_type = 'activity.match.placed'
-            AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      );
-      return distinctTeachers >= 2 && matches >= 1 ? ok() : fail('compound_unmet');
-    }
-
-    case 'reef-veteran':
-      return (await distinctActivityTypes()) >= 2 ? ok() : fail('insufficient_activity_types');
-
-    case 'first-victory':
-      return (await countEvents(
-        sql`event_type = 'activity.match.placed'
-            AND payload->>'placement' = '1'
-            AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      )) >= 1 ? ok() : fail('no_wins');
-
-    case 'match-maker': {
-      const matches = await countEvents(
-        sql`event_type = 'activity.match.placed'
-            AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      );
-      const wins = await countEvents(
-        sql`event_type = 'activity.match.placed'
-            AND payload->>'placement' = '1'
-            AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      );
-      return matches >= 5 && wins >= 1 ? ok() : fail('compound_unmet');
-    }
-
-    // ── TIER 6 ────────────────────────────────────────────────────────
-    case 'bot-master':
-      return (await countEvents(sql`event_type = 'agent.connected'`)) >= 1
-        ? ok()
-        : fail('no_bot_connection');
-
-    case 'open-house': {
-      const connected = await countEvents(sql`event_type = 'agent.connected'`);
-      // Bot teacher chats: chatType in (character/building/location)
-      // emitted by the agent gateway when an OpenClaw bot speaks. We
-      // count distinct buildings here.
-      const botChatRows = await db.execute<{ c: number }>(sql`
-        SELECT COUNT(DISTINCT building_id)::int AS c FROM events
-        WHERE event_type IN ('agent.chat.turn','agent.collaboration.turn')
-          AND payload->>'chatType' IN ('character','building','location')
-          AND (user_id = ${userId} OR avatar_id = ${avatarId})
-          AND building_id IS NOT NULL
-      `);
-      const distinctBotTeachers = Number(botChatRows[0]?.c ?? 0);
-      const matches = await countEvents(
-        sql`event_type = 'activity.match.placed'`,
-      );
-      return connected >= 1 && distinctBotTeachers >= 2 && matches >= 1
-        ? ok()
-        : fail('compound_unmet');
-    }
-
-    // ── TIER 7 ────────────────────────────────────────────────────────
-    case 'on-the-board':
-      // "Has any leaderboard-scoring event" — any chat / match / building
-      // visit / skill_md fetch counts.
-      return (await countEvents(
-        sql`event_type IN ('agent.chat.turn','agent.collaboration.turn',
-                           'building.visited','skill_md.fetched',
-                           'activity.match.placed')`,
-      )) >= 1 ? ok() : fail('no_scoring_events');
-
-    case 'top-100': {
-      // Compute the avatar's current rank in the agents leaderboard (24h
-      // window) and check against threshold 100. This is a heavy SQL
-      // path — leaderboard.ts already snapshot-caches similar; for
-      // tutorial gating we recompute on-demand (per claim, infrequent).
-      const rankRows = await db.execute<{ rank: number }>(sql`
-        WITH events_window AS (
-          SELECT avatar_id FROM events
-          WHERE ts > NOW() - INTERVAL '24 hours'
-            AND avatar_id IS NOT NULL
-        ),
-        ranked AS (
-          SELECT avatar_id,
-                 ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank
-          FROM events_window
-          GROUP BY avatar_id
-        )
-        SELECT rank::int FROM ranked WHERE avatar_id = ${avatarId}
-      `);
-      const rank = Number(rankRows[0]?.rank ?? 9999);
-      return rank > 0 && rank <= 100 ? ok() : fail('rank_too_low');
-    }
-
-    case 'building-champion': {
-      // Avatar is the top-visited subject for any single building (24h).
-      const rows = await db.execute<{ matched: number }>(sql`
-        WITH per_building AS (
-          SELECT building_id, avatar_id, COUNT(*) AS visits
-          FROM events
-          WHERE event_type = 'building.visited'
-            AND ts > NOW() - INTERVAL '24 hours'
-            AND building_id IS NOT NULL
-            AND avatar_id IS NOT NULL
-          GROUP BY building_id, avatar_id
-        ),
-        winners AS (
-          SELECT building_id, avatar_id,
-                 ROW_NUMBER() OVER (PARTITION BY building_id ORDER BY visits DESC) AS rk
-          FROM per_building
-        )
-        SELECT COUNT(*)::int AS matched FROM winners
-        WHERE rk = 1 AND avatar_id = ${avatarId}
-      `);
-      return Number(rows[0]?.matched ?? 0) >= 1 ? ok() : fail('not_top_visitor');
-    }
-
-    // ── TIER 8 ────────────────────────────────────────────────────────
-    case 'crossover':
-      return (await countEvents(
-        sql`event_type IN ('portal.scape.crossed','portal.scape.linked')`,
-      )) >= 1 ? ok() : fail('no_portal_cross');
-
-    // ── TIER 9 ────────────────────────────────────────────────────────
-    case 'full-house': {
-      const distinctVisits = await distinctBuildingsVisited();
-      const distinctTeachers = await distinctTeacherChats();
-      const booksBought = await countEvents(
-        sql`event_type = 'item.purchased' AND coalesce(payload->>'isBook','') = 'true'`,
-      );
-      const learned = await countEvents(sql`event_type = 'book.read'`);
-      return distinctVisits >= 10 &&
-        distinctTeachers >= 10 &&
-        booksBought >= 5 &&
-        learned >= 5
-        ? ok()
-        : fail('compound_unmet');
-    }
-
-    case 'elite-trainer': {
-      const connected = await countEvents(sql`event_type = 'agent.connected'`);
-      const wins = await countEvents(
-        sql`event_type = 'activity.match.placed'
-            AND payload->>'placement' = '1'
-            AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      );
-      const learned = await countEvents(sql`event_type = 'book.read'`);
-      // Reuse top-100 rank check.
-      const rankRows = await db.execute<{ rank: number }>(sql`
-        WITH events_window AS (
-          SELECT avatar_id FROM events
-          WHERE ts > NOW() - INTERVAL '24 hours'
-            AND avatar_id IS NOT NULL
-        ),
-        ranked AS (
-          SELECT avatar_id,
-                 ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank
-          FROM events_window
-          GROUP BY avatar_id
-        )
-        SELECT rank::int FROM ranked WHERE avatar_id = ${avatarId}
-      `);
-      const rank = Number(rankRows[0]?.rank ?? 9999);
-      return connected >= 1 && wins >= 3 && learned >= 10 && rank > 0 && rank <= 100
-        ? ok()
-        : fail('compound_unmet');
-    }
-
-    // Pending quests (style-statement, big-spender, wallet-aware,
-    // brand-ambassador) get short-circuited at the top of the function
-    // to `pending_feature`. They land here only via the type union; we
-    // double-gate as pending so a future un-pending without a case
-    // doesn't accidentally credit.
-    case 'style-statement':
-    case 'big-spender':
-    case 'wallet-aware':
-    case 'brand-ambassador':
-      return { ok: false, pending: true, reason: 'feature_not_shipped' };
-  }
-}
-
-questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-
-  const parsed = claimTutorialQuestParamSchema.safeParse({ id: c.req.param('id') });
-  if (!parsed.success) {
-    throw new HTTPException(400, { message: 'Invalid quest id' });
-  }
-  const questId = parsed.data.id;
-
-  const reward = getTutorialQuestReward(questId);
-  if (reward === null) {
-    throw new HTTPException(404, { message: 'Unknown tutorial quest' });
-  }
-
-  // Audit-fix 2026-04-29 — block guest accounts. Each guest signup creates
-  // a fresh `userId`, and the idempotency key is `(userId, questId)`. Without
-  // this guard a guest could mint the full ~175 CT tutorial reward, then
-  // re-signup and farm again. Brand carve-out (Brand Identity §"guest mode"):
-  // guests can play, queue activities, and chat with NPCs — but tutorial
-  // rewards require a real account so progress is tied to a stable identity.
-  const userRow = await db.query.users.findFirst({
-    where: eq(users.id, user.id),
-    columns: { isGuest: true },
-  });
-  if (userRow?.isGuest) {
-    return c.json(
-      {
-        ok: false,
-        error: 'guest_not_eligible',
-        message:
-          'Sign up to claim tutorial rewards. Guest play earns vCLAW through activity matches; tutorial-quest rewards are reserved for real accounts.',
-        credited: 0,
-        balance: 0,
-      },
-      403,
-    );
-  }
-
-  const avatar = await getUserAvatar(user.id);
-
-  // Idempotency: pre-check (cheap path) — unique index is the source of
-  // truth, this just avoids running the full validator + transaction when
-  // we know it'll fail.
-  const existingClaim = await db.query.tutorialQuestClaims.findFirst({
-    where: and(
-      eq(tutorialQuestClaims.userId, user.id),
-      eq(tutorialQuestClaims.questId, questId),
-    ),
-  });
-  if (existingClaim) {
-    return c.json(
-      {
-        ok: false,
-        error: 'already_claimed',
-        message: 'This tutorial quest has already been claimed.',
-        credited: 0,
-        balance: avatar.clawTokens,
-      },
-      409,
-    );
-  }
-
-  // Engagement gate — server-side proof that the user actually played.
-  const validation = await validateTutorialQuestEngagement(
-    user.id,
-    avatar.id,
-    questId as TutorialQuestId,
-  );
-  if (!validation.ok) {
-    return c.json(
-      {
-        ok: false,
-        error: validation.pending ? 'pending_feature' : 'engagement_required',
-        reason: validation.reason,
-        message: validation.pending
-          ? 'This quest is for an upcoming feature — claim opens once the backend ships.'
-          : 'Server cannot verify completion yet — keep playing and try again.',
-        credited: 0,
-        balance: avatar.clawTokens,
-      },
-      400,
-    );
-  }
-
-  // Atomic credit + claim insert. Unique index on (user_id, quest_id)
-  // serves as the authoritative idempotency barrier — a concurrent
-  // double-claim still rolls back at INSERT time.
-  try {
-    const result = await db.transaction(async (tx) => {
-      const ledger = await creditClawTokens(
+    // SECOND faucet barrier, mirroring the hosted executor path. A quest is a
+    // pure faucet with no counterparty, so a SERVER-OWNED house actor must
+    // never claim one — it would mint the ladder into house balances and leak
+    // it into the player economy. House bots are not supposed to hold a bearer
+    // session at all, which is the first barrier; this is the second, so the
+    // invariant does not depend on that remaining true.
+    if (identity.kind === 'agent' && (await isHouseAgentId(identity.agentId))) {
+      return c.json(
         {
-          avatarId: avatar.id,
-          amount: reward,
-          reason: 'tutorial_quest', // Q3 plan §0 L6 locked decision
-          source: 'quest',
-          metadata: { questId, tutorial: true },
+          ok: false,
+          error: 'house_actor_not_eligible',
+          message: 'Server-owned house agents do not claim quest rewards.',
+          credited: 0,
+          balance: 0,
         },
-        tx,
+        403,
       );
+    }
 
-      await tx.insert(tutorialQuestClaims).values({
-        userId: user.id,
-        avatarId: avatar.id,
-        questId,
-        tokensCredited: reward,
-        ledgerId: ledger.ledgerId,
-      });
-
-      return ledger;
+    // Everything below — reward lookup, the idempotency barrier, the
+    // proof-of-engagement gate, and the two-rail credit — is the shared
+    // service. This handler only translates its outcome to HTTP.
+    const outcome = await settleTutorialQuestClaim({
+      actor: {
+        kind: identity.kind,
+        userId: identity.userId,
+        avatarId: identity.avatarId,
+      },
+      questId,
     });
 
-    // Fire-and-forget event for analytics. Uses logEventFromContext so the
-    // anti-farm fp_hash + ip_prefix_hash get persisted.
+    if (outcome.kind === 'unknown_quest') {
+      throw new HTTPException(404, { message: 'Unknown tutorial quest' });
+    }
+
+    if (outcome.kind === 'not_qualified') {
+      return c.json(
+        {
+          ok: false,
+          error: outcome.pending ? 'pending_feature' : 'engagement_required',
+          reason: outcome.reason,
+          message: outcome.pending
+            ? 'This quest is for an upcoming feature — claim opens once the backend ships.'
+            : 'Server cannot verify completion yet — keep playing and try again.',
+          credited: 0,
+          balance: 0,
+        },
+        400,
+      );
+    }
+
+    if (outcome.kind === 'already_claimed') {
+      // One 409 shape for BOTH the pre-check and the unique-index race, so the
+      // client treats them identically. This is the endpoint's sole 409.
+      return c.json(
+        {
+          ok: false,
+          error: 'already_claimed',
+          message: 'This tutorial quest has already been claimed.',
+          rail: outcome.reward.kind,
+          credited: 0,
+          balance: outcome.balanceAfter,
+        },
+        409,
+      );
+    }
+
+    // Fire-and-forget analytics. `logEventFromContext` persists the anti-farm
+    // fp_hash + ip_prefix_hash; it is explicitly NOT part of claim acceptance,
+    // so a dropped event never fails a settled claim.
     void logEventFromContext(c, {
       eventType: 'tutorial_quest.claimed',
-      userId: user.id,
-      avatarId: avatar.id,
-      payload: { questId, tokensCredited: reward, ledgerId: result.ledgerId },
+      userId: identity.userId,
+      avatarId: identity.avatarId,
+      payload: {
+        questId,
+        rail: outcome.reward.kind,
+        tokensCredited: outcome.reward.kind === 'vclaw' ? outcome.reward.amount : 0,
+        materialsCredited: outcome.reward.kind === 'materials' ? outcome.reward.amount : 0,
+        ledgerId: outcome.ledgerId,
+        subjectKind: identity.kind,
+      },
     });
 
     return c.json({
       ok: true,
       questId,
-      credited: reward,
-      balance: result.balanceAfter,
+      // `rail` tells the client which currency `credited`/`balance` are in.
+      // Legacy quests all report 'vclaw', so existing readers are unaffected.
+      rail: outcome.reward.kind,
+      credited: outcome.reward.amount,
+      balance: outcome.balanceAfter,
     });
-  } catch (err) {
-    // Unique-violation race — another concurrent request beat us to the
-    // insert. Same shape as the pre-check 409 so the client can treat
-    // both branches identically.
-    const code = (err as { code?: string }).code;
-    if (code === '23505') {
-      const refreshed = await db.query.avatars.findFirst({
-        where: eq(avatars.id, avatar.id),
-      });
-      return c.json(
-        {
-          ok: false,
-          error: 'already_claimed',
-          message: 'This tutorial quest has already been claimed (race).',
-          credited: 0,
-          balance: refreshed?.clawTokens ?? avatar.clawTokens,
-        },
-        409,
-      );
-    }
-    throw err;
-  }
-});
+  },
+);
+
+// Quest-board restore (2026-07-29 prod incident): the tutorial ladder's
+// completion DISPLAY lives in client localStorage and is wiped by the
+// auth-transition identity sweep on session expiry / account switch — but
+// every claimed quest already has a durable tutorial_quest_claims row. This
+// read-back lets the SAME account re-mark its claimed quests as completed
+// after login, restoring the quest board. Human-only (`requireAuth`) by the
+// same design as the claim write above (the tutorial ladder is the human
+// onboarding surface); guest accounts have no claim rows and receive an
+// empty list. Read-only — no ledger or economy mutation.
+questRoutes.get(
+  '/tutorial/claims',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  noStorePrivate,
+  async (c) => {
+    const identity = c.get('identity');
+
+    // Keyed on the AVATAR, matching the claim write's idempotency subject
+    // (migration 0054). A connected or hosted agent reading its own progress
+    // sees exactly the rows it can no longer re-claim.
+    const rows = await db.query.tutorialQuestClaims.findMany({
+      where: eq(tutorialQuestClaims.avatarId, identity.avatarId),
+      columns: {
+        questId: true,
+        claimedAt: true,
+        tokensCredited: true,
+        materialsCredited: true,
+      },
+    });
+
+    return c.json({
+      ok: true,
+      // Echoed so the client can bind this response to the subject it started
+      // the sync for — a session that switched mid-flight fails that check
+      // instead of applying another subject's claims (Codex adversarial round
+      // 1, BLOCKING 2). `avatarId` is now the authoritative half of that bind;
+      // `userId` is retained so existing clients keep working unchanged.
+      userId: identity.userId,
+      avatarId: identity.avatarId,
+      claims: rows.map((r) => ({
+        questId: r.questId,
+        claimedAt: r.claimedAt.toISOString(),
+        rail: r.materialsCredited > 0 ? ('materials' as const) : ('vclaw' as const),
+        credited: r.materialsCredited > 0 ? r.materialsCredited : r.tokensCredited,
+      })),
+    });
+  },
+);

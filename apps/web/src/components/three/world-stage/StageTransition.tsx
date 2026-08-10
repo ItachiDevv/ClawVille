@@ -6,6 +6,7 @@ import {
   useStageStore,
   type StageRequest,
 } from './stage-store';
+import { ACTIVITY_SCENE_ID } from './stage-scene-id';
 import {
   DEFAULT_WATCHDOG_CONFIG,
   reduceWatchdog,
@@ -13,6 +14,13 @@ import {
   type WatchdogSample,
   type WatchdogState,
 } from './stage-watchdog-machine';
+
+const STAGE_SCENE_KIND_BY_ID = {
+  world: 'world',
+  cove: 'cove',
+  kelp: 'kelp',
+  activity: 'activity',
+} as const;
 
 interface StageTransitionProps {
   fadeDurationMs?: number;
@@ -50,6 +58,7 @@ export function StageTransition({
     (state) => state.firstControlledFrame,
   );
   const stageEpoch = useStageStore((state) => state.stageEpoch);
+  const outgoingOverlay = useStageStore((state) => state.outgoingOverlay);
   const machineRef = useRef<WatchdogState | null>(null);
   const resolvedWatchdogConfig = useMemo<WatchdogConfig>(
     () =>
@@ -100,7 +109,13 @@ export function StageTransition({
         stageEpoch: state.stageEpoch,
         requestId: current?.requestId ?? null,
         retryOfRequestId: current?.retryOfRequestId,
-        sceneKind: current?.sceneId === 'cove' ? 'cove' : 'world',
+        sceneKind:
+          current?.sceneId &&
+          current.sceneId in STAGE_SCENE_KIND_BY_ID
+            ? STAGE_SCENE_KIND_BY_ID[
+                current.sceneId as keyof typeof STAGE_SCENE_KIND_BY_ID
+              ]
+            : 'world',
         transitionPhase: state.transition?.phase ?? 'idle',
         terminal:
           state.transition?.phase === 'error' ||
@@ -112,9 +127,11 @@ export function StageTransition({
           cameraInstalled: current
             ? matchesRequest(state.cameraInstalled, current)
             : false,
-          firstControlledFrame: current
-            ? matchesRequest(state.firstControlledFrame, current)
-            : false,
+          firstControlledFrame:
+            current?.sceneId === ACTIVITY_SCENE_ID ||
+            (current
+              ? matchesRequest(state.firstControlledFrame, current)
+              : false),
         },
         slotStatus: slot?.status,
         recoveryCount: state.recovery.count,
@@ -190,7 +207,9 @@ export function StageTransition({
       transition.requestId !== pendingRequest.requestId ||
       requestedStatus !== 'ready' ||
       !matchesRequest(cameraInstalled, pendingRequest) ||
-      !matchesRequest(firstControlledFrame, pendingRequest)
+      (pendingRequest.sceneId !== ACTIVITY_SCENE_ID &&
+        !matchesRequest(firstControlledFrame, pendingRequest)) ||
+      outgoingOverlay?.requestId === pendingRequest.requestId
     ) {
       return;
     }
@@ -202,6 +221,7 @@ export function StageTransition({
     cameraInstalled,
     firstControlledFrame,
     pendingRequest,
+    outgoingOverlay,
     requestedStatus,
     transition,
   ]);
@@ -254,7 +274,7 @@ export function StageTransition({
         </div>
       ) : phase !== 'idle' && phase !== 'fadingIn' ? (
         <div className="text-sm font-medium tracking-[0.24em] text-cyan-100/80">
-          {phase === 'awaiting' ? 'WARMING SCENE' : 'SWITCHING SCENE'}
+          RIDING THE CURRENT…
         </div>
       ) : null}
     </div>

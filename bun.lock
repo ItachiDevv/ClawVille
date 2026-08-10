@@ -237,6 +237,7 @@
     },
   },
   "overrides": {
+    "@bonfida/spl-name-service": "3.0.23",
     "@types/three": "^0.185.0",
   },
   "packages": {

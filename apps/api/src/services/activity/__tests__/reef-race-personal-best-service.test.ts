@@ -24,30 +24,92 @@ interface MockRow {
   best_lap_ms?: number;
   ghost_replay_data?: unknown;
   ghostReplayData?: unknown;
+  source_room_id?: string;
 }
+
+interface MockClaim {
+  id: string;
+  sourceRoomId: string;
+  avatarId: string;
+  bestLapMs: number;
+  previousBestLapMs: number | null;
+  dailyRank: number | null;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+const personalBestsTable = {
+  avatarId: 'avatar_id',
+  activityId: 'activity_id',
+  bestLapMs: 'best_lap_ms',
+  sourceRoomId: 'source_room_id',
+};
+const claimsTable = {
+  id: 'claim_id',
+  sourceRoomId: 'source_room_id',
+  avatarId: 'avatar_id',
+  bestLapMs: 'best_lap_ms',
+  previousBestLapMs: 'previous_best_lap_ms',
+  dailyRank: 'daily_rank',
+};
 
 const dbState: {
   rows: MockRow[];
+  claims: MockClaim[];
   selectCalls: number;
   executeCalls: Array<{ sql: string }>;
-} = { rows: [], selectCalls: 0, executeCalls: [] };
+  nextTxId: number;
+  activeRoomId: string;
+  activeAvatarId: string;
+  nextWriteMs?: number;
+  nextRank?: number;
+  interleave?: {
+    firstUpsertReached: ReturnType<typeof deferred>;
+    secondUpsertReached: ReturnType<typeof deferred>;
+    allowFirstUpsert: ReturnType<typeof deferred>;
+    firstClaimInserted: ReturnType<typeof deferred>;
+  };
+} = {
+  rows: [],
+  claims: [],
+  selectCalls: 0,
+  executeCalls: [],
+  nextTxId: 0,
+  activeRoomId: '00000000-0000-0000-0000-000000000001',
+  activeAvatarId: 'avatar-1',
+};
 
-function mockDb() {
+function mockDb(txId = 0): Record<string, any> {
+  let executeIndex = 0;
   return {
     select(_cols: unknown) {
       return {
-        from(_t: unknown) {
+        from(table: unknown) {
           return {
             where(_w: unknown) {
               return {
                 limit(_n: number) {
                   dbState.selectCalls += 1;
-                  // Return all rows in the "table" — the SUT only reads
-                  // this for the priorBest read, so a single-row table is
-                  // sufficient.
+                  if (table === claimsTable) {
+                    const claim = dbState.claims.find(
+                      (row) =>
+                        row.sourceRoomId === dbState.activeRoomId &&
+                        row.avatarId === dbState.activeAvatarId,
+                    );
+                    return Promise.resolve(claim ? [claim] : []);
+                  }
                   return Promise.resolve(
                     dbState.rows.length > 0
-                      ? [{ bestLapMs: dbState.rows[0].best_lap_ms }]
+                      ? [{
+                          bestLapMs: dbState.rows[0].best_lap_ms,
+                          sourceRoomId: dbState.rows[0].source_room_id,
+                        }]
                       : [],
                   );
                 },
@@ -57,51 +119,75 @@ function mockDb() {
         },
       };
     },
-    execute<T>(query: { strings?: TemplateStringsArray }) {
-      // The SUT issues TWO different execute() calls:
-      //   1. INSERT ... ON CONFLICT ... RETURNING best_lap_ms
-      //   2. SELECT count(*)+1 AS rank ...
-      // We can't pattern-match the sql inside drizzle's tagged template
-      // (it returns an opaque sql object), so we infer by call ORDER
-      // within `maybeUpdatePersonalBest` — first execute is INSERT,
-      // second is rank scan.
-      const callIdx = dbState.executeCalls.length;
+    async execute<T>(query: { strings?: TemplateStringsArray }) {
+      const callIdx = executeIndex++;
       dbState.executeCalls.push({ sql: String(query) });
       if (callIdx === 0) {
-        // Simulate the upsert behavior:
-        //   - if no prior row, write + return one row
-        //   - if prior row + newer is faster, write + return one row
-        //   - else no-op (predicate-blocked) → return zero rows
-        // We'll stash the "just-written" lap on `dbState.rows[0]`.
-        // The SUT passes the new ms via the SQL — but since our mock
-        // can't inspect it, we cheat: tests set `dbState.__nextWriteMs`
-        // on the dbState before calling.
-        const w = (dbState as unknown as { __nextWriteMs?: number })
-          .__nextWriteMs;
+        if (dbState.interleave && txId === 1) {
+          dbState.interleave.firstUpsertReached.resolve();
+          await dbState.interleave.allowFirstUpsert.promise;
+        } else if (dbState.interleave && txId === 2) {
+          dbState.interleave.secondUpsertReached.resolve();
+          await dbState.interleave.firstClaimInserted.promise;
+        }
+        const w = dbState.nextWriteMs;
         if (w == null) {
-          // Default behavior: succeed with rev=1
           dbState.rows = [
-            { best_lap_ms: 1, ghost_replay_data: { frames: [] } },
+            {
+              best_lap_ms: 1,
+              source_room_id: dbState.activeRoomId,
+              ghost_replay_data: { frames: [] },
+            },
           ];
-          return Promise.resolve([
-            { best_lap_ms: 1 },
-          ] as unknown as T[]) as Promise<T[]>;
+          return [{ best_lap_ms: 1 }] as unknown as T[];
         }
         const prior = dbState.rows[0]?.best_lap_ms;
         if (prior == null || w < prior) {
-          dbState.rows = [{ best_lap_ms: w, ghost_replay_data: { frames: [] } }];
-          return Promise.resolve([
-            { best_lap_ms: w },
-          ] as unknown as T[]) as Promise<T[]>;
+          dbState.rows = [{
+            best_lap_ms: w,
+            source_room_id: dbState.activeRoomId,
+            ghost_replay_data: { frames: [] },
+          }];
+          return [{ best_lap_ms: w }] as unknown as T[];
         }
-        return Promise.resolve([] as T[]);
+        return [] as T[];
       }
-      // 2nd execute: rank scan. We just return a stub rank derived from
-      // the test's set value — defaults to 1.
-      const rank = (dbState as unknown as { __nextRank?: number }).__nextRank ?? 1;
-      return Promise.resolve([{ rank }] as unknown as T[]) as Promise<T[]>;
+      return [{ rank: dbState.nextRank ?? 1 }] as unknown as T[];
     },
-    transaction: () => Promise.resolve(),
+    insert(table: unknown) {
+      if (table !== claimsTable) throw new Error('unexpected table insert');
+      return {
+        values(values: Omit<MockClaim, 'id'>) {
+          return {
+            onConflictDoNothing() {
+              return {
+                returning() {
+                  const existing = dbState.claims.find(
+                    (row) =>
+                      row.sourceRoomId === values.sourceRoomId &&
+                      row.avatarId === values.avatarId,
+                  );
+                  if (existing) return Promise.resolve([]);
+                  const claim = {
+                    id: `claim-${dbState.claims.length + 1}`,
+                    ...values,
+                  };
+                  dbState.claims.push(claim);
+                  if (dbState.interleave && txId === 1) {
+                    dbState.interleave.firstClaimInserted.resolve();
+                  }
+                  return Promise.resolve([claim]);
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+    transaction<T>(fn: (tx: ReturnType<typeof mockDb>) => Promise<T>) {
+      const nextTxId = ++dbState.nextTxId;
+      return fn(mockDb(nextTxId));
+    },
   };
 }
 
@@ -114,11 +200,8 @@ mock.module('@clawville/database', () => ({
   // into sibling test files. Stub every column-bearing export the broader
   // import chain might reach so a sibling import doesn't error with
   // "Export named X not found".
-  reefRacePersonalBests: {
-    avatarId: 'avatar_id',
-    activityId: 'activity_id',
-    bestLapMs: 'best_lap_ms',
-  },
+  reefRacePersonalBests: personalBestsTable,
+  reefRacePersonalBestClaims: claimsTable,
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id', createdAt: 'created_at', scoreMs: 'score_ms' },
   activityRooms: { id: 'id', status: 'status', startedAt: 'started_at', endedAt: 'ended_at' },
   activityRoomParticipants: { roomId: 'room_id', avatarId: 'avatar_id' },
@@ -148,10 +231,15 @@ const {
 
 beforeEach(() => {
   dbState.rows = [];
+  dbState.claims = [];
   dbState.selectCalls = 0;
   dbState.executeCalls = [];
-  delete (dbState as unknown as { __nextWriteMs?: number }).__nextWriteMs;
-  delete (dbState as unknown as { __nextRank?: number }).__nextRank;
+  dbState.nextTxId = 0;
+  dbState.activeRoomId = '00000000-0000-0000-0000-000000000001';
+  dbState.activeAvatarId = 'avatar-1';
+  delete dbState.nextWriteMs;
+  delete dbState.nextRank;
+  delete dbState.interleave;
   _dailyInvalidations = 0;
   __resetPbGhostCacheForTest();
 });
@@ -160,8 +248,8 @@ beforeEach(() => {
 
 describe('maybeUpdatePersonalBest', () => {
   it('P4-T8 — first PB write returns improved=true with previousMs=null', async () => {
-    (dbState as unknown as { __nextWriteMs?: number }).__nextWriteMs = 12_345;
-    (dbState as unknown as { __nextRank?: number }).__nextRank = 1;
+    dbState.nextWriteMs = 12_345;
+    dbState.nextRank = 1;
     const result = await maybeUpdatePersonalBest({
       avatarId: 'avatar-1',
       activityId: 'reef-race',
@@ -170,6 +258,7 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(result.improved).toBe(true);
+    expect(result.claimedBySourceRoom).toBe(true);
     expect(result.previousMs).toBeNull();
     expect(result.dailyRank).toBe(1);
     expect(result.newGhostFrames?.length).toBe(1);
@@ -179,8 +268,8 @@ describe('maybeUpdatePersonalBest', () => {
   it('P4-T9 — improved write returns improved=true with previousMs', async () => {
     // Seed prior PB
     dbState.rows = [{ best_lap_ms: 14_000 }];
-    (dbState as unknown as { __nextWriteMs?: number }).__nextWriteMs = 12_500;
-    (dbState as unknown as { __nextRank?: number }).__nextRank = 5;
+    dbState.nextWriteMs = 12_500;
+    dbState.nextRank = 5;
     const result = await maybeUpdatePersonalBest({
       avatarId: 'avatar-1',
       activityId: 'reef-race',
@@ -189,6 +278,7 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(result.improved).toBe(true);
+    expect(result.claimedBySourceRoom).toBe(true);
     expect(result.previousMs).toBe(14_000);
     expect(result.dailyRank).toBe(5);
   });
@@ -204,14 +294,37 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(result.improved).toBe(false);
+    expect(result.claimedBySourceRoom).toBe(false);
     expect(result.previousMs).toBe(12_000);
     expect(result.dailyRank).toBeNull();
   });
 
+  it('keeps the claim and rank on an idempotent same-room retry', async () => {
+    const sourceRoomId = '00000000-0000-0000-0000-000000000001';
+    dbState.claims = [{
+      id: 'claim-existing',
+      sourceRoomId,
+      avatarId: 'avatar-1',
+      bestLapMs: 12_000,
+      previousBestLapMs: 13_000,
+      dailyRank: 3,
+    }];
+    const result = await maybeUpdatePersonalBest({
+      avatarId: 'avatar-1',
+      activityId: 'reef-race',
+      newBestLapMs: 12_000,
+      ghostReplayData: { frames: [] },
+      sourceRoomId,
+    });
+    expect(result.improved).toBe(true);
+    expect(result.claimedBySourceRoom).toBe(true);
+    expect(result.dailyRank).toBe(3);
+  });
+
   // P4-T11 — dailyRank > 100 → null
   it('P4-T11 — dailyRank > 100 collapses to null (off-board)', async () => {
-    (dbState as unknown as { __nextWriteMs?: number }).__nextWriteMs = 12_345;
-    (dbState as unknown as { __nextRank?: number }).__nextRank = 105;
+    dbState.nextWriteMs = 12_345;
+    dbState.nextRank = 105;
     const result = await maybeUpdatePersonalBest({
       avatarId: 'avatar-1',
       activityId: 'reef-race',
@@ -226,7 +339,7 @@ describe('maybeUpdatePersonalBest', () => {
   // P4-T12 (C2 fix — daily cache invalidated)
   it('P4-T12 (C2 fix) — daily-best-lap cache invalidated on improvement', async () => {
     expect(_dailyInvalidations).toBe(0);
-    (dbState as unknown as { __nextWriteMs?: number }).__nextWriteMs = 12_345;
+    dbState.nextWriteMs = 12_345;
     await maybeUpdatePersonalBest({
       avatarId: 'avatar-1',
       activityId: 'reef-race',
@@ -249,5 +362,88 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(_dailyInvalidations).toBe(0);
+  });
+
+  it('durably recognizes both concurrent duplicate settlements of one room', async () => {
+    const firstUpsertReached = deferred();
+    const secondUpsertReached = deferred();
+    const allowFirstUpsert = deferred();
+    const firstClaimInserted = deferred();
+    dbState.interleave = {
+      firstUpsertReached,
+      secondUpsertReached,
+      allowFirstUpsert,
+      firstClaimInserted,
+    };
+    dbState.nextWriteMs = 12_000;
+    const input = {
+      avatarId: 'avatar-1',
+      activityId: 'reef-race' as const,
+      newBestLapMs: 12_000,
+      ghostReplayData: { frames: [] },
+      sourceRoomId: dbState.activeRoomId,
+    };
+
+    const firstSettlement = maybeUpdatePersonalBest(input);
+    await firstUpsertReached.promise;
+    const predicateBlockedSettlement = maybeUpdatePersonalBest(input);
+    await secondUpsertReached.promise;
+    allowFirstUpsert.resolve();
+
+    const [first, second] = await Promise.all([
+      firstSettlement,
+      predicateBlockedSettlement,
+    ]);
+    expect(first.claimedBySourceRoom).toBe(true);
+    expect(second.claimedBySourceRoom).toBe(true);
+    expect(first.improved).toBe(true);
+    expect(second.improved).toBe(true);
+    expect(dbState.claims).toHaveLength(1);
+  });
+
+  it('retains room A ownership across rollback, faster room B, and room A retry', async () => {
+    const roomA = '00000000-0000-0000-0000-000000000001';
+    const roomB = '00000000-0000-0000-0000-000000000002';
+    dbState.activeRoomId = roomA;
+    dbState.nextWriteMs = 13_000;
+    const firstA = await maybeUpdatePersonalBest({
+      avatarId: 'avatar-1',
+      activityId: 'reef-race',
+      newBestLapMs: 13_000,
+      ghostReplayData: { frames: [] },
+      sourceRoomId: roomA,
+    });
+    expect(firstA.claimedBySourceRoom).toBe(true);
+
+    // The reward transaction rolls back here; PB + claim history intentionally
+    // remain committed. A later room then lowers the current PB.
+    dbState.activeRoomId = roomB;
+    dbState.nextWriteMs = 12_000;
+    const roomBResult = await maybeUpdatePersonalBest({
+      avatarId: 'avatar-1',
+      activityId: 'reef-race',
+      newBestLapMs: 12_000,
+      ghostReplayData: { frames: [] },
+      sourceRoomId: roomB,
+    });
+    expect(roomBResult.claimedBySourceRoom).toBe(true);
+    expect(dbState.rows[0]?.best_lap_ms).toBe(12_000);
+
+    dbState.activeRoomId = roomA;
+    dbState.nextWriteMs = 13_000;
+    const retriedA = await maybeUpdatePersonalBest({
+      avatarId: 'avatar-1',
+      activityId: 'reef-race',
+      newBestLapMs: 13_000,
+      ghostReplayData: { frames: [] },
+      sourceRoomId: roomA,
+    });
+    expect(retriedA.claimedBySourceRoom).toBe(true);
+    expect(retriedA.improved).toBe(true);
+    expect(retriedA.previousMs).toBeNull();
+    expect(dbState.claims.map((claim) => claim.sourceRoomId)).toEqual([
+      roomA,
+      roomB,
+    ]);
   });
 });

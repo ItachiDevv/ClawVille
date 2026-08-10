@@ -26,6 +26,8 @@ import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
+import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -101,6 +103,12 @@ type NpcModelConfig = {
  *  stands beside the primary. It does NOT register as a chat target — interaction
  *  always routes to the primary character. */
 type LocationNpcConfig = NpcModelConfig & {
+  /** Cold-load rung-1 canary (perf-cold-load-diet §3A): when true, this slot's
+   *  NpcMesh (primary AND companion) does not RENDER until the decorative
+   *  release fires, so its GLB fetch starts post-reveal instead of gating the
+   *  loading screen. Timing-only deferral — the NPC always mounts once
+   *  released (atomic, no fade); release is monotonic across canvas remounts. */
+  deferUntilDecorativeRelease?: boolean;
   companion?: NpcModelConfig & {
     /** World-unit X offset from primary NPC position (default 80). */
     offsetX?: number;
@@ -114,7 +122,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Gary lives here too: he's a passive companion (no chat target)
   'visual-creation': {
     name: 'SpongeBob',
-    model: '/models/characters/spongebob-ktx.glb',
+    model: '/models/characters/spongebob-nonorm-ktx.glb',
     companion: {
       name: 'Gary',
       model: '/models/characters/gary-ktx.glb',
@@ -123,10 +131,11 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
       // gary.glb is authored facing +X; -π/2 rotates +X forward → +Z forward (toward center)
       rotYOffset: -Math.PI / 2,
     },
+    deferUntilDecorativeRelease: true,
   },
 
   // Slot 1 — memory-rag — bb-building (interim Squidward's house)
-  'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb' },
+  'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb', deferUntilDecorativeRelease: true },
 
   // Slot 2 — api-integrations — Salty Spitoon (the tough fish bar)
   // Flying Dutchman GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — the
@@ -136,34 +145,36 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
   // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
   // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
-  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-ktx.glb', ghostFloat: true },
+  // deferUntilDecorativeRelease: rung-1 canary slot (2026-07-31) — the 0.97MB
+  // GLB is decorative at spawn distance and now loads after world reveal.
+  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-nonorm-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
 
   // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
   // scaleOverride=184 (2026-05-18 pass 3): user requested 20-25% size increase from 150.
   // Midpoint 22.5% → 150 * 1.225 ≈ 184.
-  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl-ktx.glb', scaleOverride: 184 },
+  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl-nonorm-ktx.glb', scaleOverride: 184, deferUntilDecorativeRelease: true },
 
   // Slot 4 — app-publishing — Boating School (Mrs. Puff's workplace)
   // scaleOverride=3.3 (2026-05-18 pass 3): user requested 20-25% size increase from 2.7.
   // Midpoint 22.5% → 2.7 * 1.225 ≈ 3.3.
   // mrs-puff.glb uses INT16-quantized positions; native visual height ≈ 66.5wu post-node-scale.
-  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff-ktx.glb', scaleOverride: 3.3 },
+  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff-ktx.glb', scaleOverride: 3.3, deferUntilDecorativeRelease: true },
 
   // Slot 5 — deployment-ops — Lighthouse (Larry the Lobster as lighthouse keeper)
   // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
   // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
-  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-ktx.glb?v=2', color: 0xff2020, scaleOverride: 96 },
+  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-nonorm-ktx.glb', color: 0xff2020, scaleOverride: 96, deferUntilDecorativeRelease: true },
 
   // Slot 6 — mcp-tool-use — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
   // The non-skinned path now falls back to bind-pose bbox when computed > CLAMP_MAX, which
   // gives a reliable body height. scaleOverride removed (was 148, rendered at ~11487 wu
   // because native body h ≈ 77–82 units × 148 = 11000+).
-  'mcp-tool-use': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs-ktx.glb' },
+  'mcp-tool-use': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs-ktx.glb', deferUntilDecorativeRelease: true },
 
   // Slot 7 — code-development — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
@@ -180,6 +191,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     // because localMinY*55≈121 pushed group to terrain-117 but geometry went to terrain-35).
     // 25 yields ~sy=53, offset≈55, position≈-49, feet at terrain+6.
     scaleOverride: 44, // pass 3 (2026-04-23): bumped 25→44 (×1.75) with CHARACTER_HEIGHT 55→96.
+    deferUntilDecorativeRelease: true,
     companion: {
       name: 'Karen',
       model: '/models/characters/karen-ktx.glb',
@@ -195,10 +207,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // 1 animation clip 'mixamo.com' — runtime AnimationMixer auto-plays it (idle).
   // Native bind-pose ~1.7m; computeNormalizedScale produces scale ≈ 56 → ~96wu render.
   // scaleOverride=106 (1.8x) matches the Pearl/Mrs.Puff visual ratio with player VRM.
-  'messaging-channels': { name: 'Sandy', model: '/models/characters/sandy-ktx.glb', scaleOverride: 106 },
+  'messaging-channels': { name: 'Sandy', model: '/models/characters/sandy-ktx.glb', scaleOverride: 106, deferUntilDecorativeRelease: true },
 
   // Slot 9 — agent-security — building-cave (interim Patrick's Rock)
-  'agent-security': { name: 'Patrick', model: '/models/characters/patrick-ktx.glb' },
+  'agent-security': { name: 'Patrick', model: '/models/characters/patrick-ktx.glb', deferUntilDecorativeRelease: true },
 };
 
 const extendLoaderWithMeshoptAndKTX2 = (loader: unknown) => {
@@ -379,6 +391,7 @@ const NpcMesh = memo(function NpcMesh({
   facingRotY,
   seedBase,
   showLabel,
+  attachmentVisible = true,
 }: {
   modelCfg: NpcModelConfig;
   worldX: number;
@@ -386,6 +399,7 @@ const NpcMesh = memo(function NpcMesh({
   facingRotY: number;
   seedBase: number;
   showLabel: boolean;
+  attachmentVisible?: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
@@ -411,16 +425,22 @@ const NpcMesh = memo(function NpcMesh({
   // sea-floor crustaceans (Patrick, Sandy, Squidward all read ~300-350wu
   // tall after scale). A 150wu offset sits at the chest; 320wu sits above
   // the head where the label belongs.
-  const { divRef: locationLabelRef } = useWorldLabel({
+  const {
+    divRef: locationLabelRef,
+    setVisible: setLocationLabelVisible,
+  } = useWorldLabel({
     id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
     anchorRef: groupRef,
     offset: [0, 320, 0],
-    initialVisible: showLabel,
+    initialVisible: showLabel && attachmentVisible,
     fadeNear: 15000,
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
   });
+  useEffect(() => {
+    setLocationLabelVisible(showLabel && attachmentVisible);
+  }, [attachmentVisible, setLocationLabelVisible, showLabel]);
   // extendLoaderWithMeshopt: belt-and-suspenders for location NPC GLBs that are
   // compressed with EXT_meshopt_compression (e.g. sandy.glb). The global
   // MeshoptLoaderSetup component handles most cases, but passing extendLoader
@@ -734,7 +754,39 @@ const LocationNpc = memo(function LocationNpc({
   const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
   const config = LOCATION_NPCS[zoneId];
   const { camera } = useThree();
+  const initialPriorityDx = worldX - camera.position.x;
+  const initialPriorityDz = worldZ - camera.position.z;
+  const releasePriorityRef = useRef(
+    initialPriorityDx * initialPriorityDx + initialPriorityDz * initialPriorityDz,
+  );
   const [mounted, setMounted] = useState(false);
+  // Cold-load rung-1 canary: a release-deferred slot renders nothing (so its
+  // NpcMesh never issues the useGLTF demand) until the decorative release
+  // fires. The release is one-shot module state, so on SPA returns / canvas
+  // remounts isDecorativeReleased() is already true and the NPC mounts
+  // immediately — timing-only deferral, never conditional omission.
+  const deferToRelease = config?.deferUntilDecorativeRelease === true;
+  // Staggered (rung-3 Lever 3): after the release, deferred slots mount ONE
+  // PER IDLE TICK instead of all on the release frame — 10 simultaneous GLB
+  // decode/upload chains land as a single longtask burst at the reveal
+  // boundary otherwise. Priority = squared camera distance at subscribe
+  // time, so the slots nearest the spawn camera populate first (FIFO drained
+  // a far slot ~4s before the nearest one — Codex Lever-2/3 finding 3).
+  // Post-release states (SPA returns, canvas remounts) initialize released
+  // — the one-shot contract forbids re-gating content that already released.
+  const [released, setReleased] = useState(
+    () => !deferToRelease || isDecorativeReleased(),
+  );
+  useEffect(() => {
+    if (released) return undefined;
+    const dx = worldX - camera.position.x;
+    const dz = worldZ - camera.position.z;
+    releasePriorityRef.current = dx * dx + dz * dz;
+    return onDecorativeReleaseStaggered(
+      () => setReleased(true),
+      releasePriorityRef.current,
+    );
+  }, [camera, released, worldX, worldZ]);
   // Real incrementing frame counter — replaces Math.floor(clock.elapsedTime * 60)
   // which drifted when the tab was backgrounded or the frame rate varied.
   const frameCountRef = useRef(0);
@@ -760,7 +812,7 @@ const LocationNpc = memo(function LocationNpc({
   });
 
   if (!config) return null;
-  if (!mounted) return null;
+  if (!mounted || !released) return null;
 
   const companion = config.companion;
   const companionX = companion ? worldX + (companion.offsetX ?? 80) : 0;
@@ -770,43 +822,55 @@ const LocationNpc = memo(function LocationNpc({
 
   return (
     <Suspense fallback={null}>
-      {/* Primary NPC — interactive chat target */}
-      <NpcMesh
-        modelCfg={config}
-        worldX={worldX}
-        worldZ={worldZ}
-        facingRotY={facingRotY}
-        seedBase={seed}
-        showLabel={true}
-      />
-      {/* Companion NPC (if any) — passive presence, no chat, no label */}
-      {companion && (
-        <NpcMesh
-          modelCfg={companion}
-          worldX={companionX}
-          worldZ={companionZ}
-          facingRotY={facingRotY}
-          seedBase={companionSeed}
-          showLabel={false}
-        />
-      )}
+      <DeferredWarmAttachment
+        label={`location-npc:${zoneId}`}
+        priority={releasePriorityRef.current}
+      >
+        {(warmReady) => (
+          <>
+            {/* The stagger tick starts Suspense fetch/parse. Keep the resolved
+                object and its DOM label hidden until the shared GPU warm ends. */}
+            <NpcMesh
+              modelCfg={config}
+              worldX={worldX}
+              worldZ={worldZ}
+              facingRotY={facingRotY}
+              seedBase={seed}
+              showLabel={true}
+              attachmentVisible={warmReady}
+            />
+            {companion && (
+              <NpcMesh
+                modelCfg={companion}
+                worldX={companionX}
+                worldZ={companionZ}
+                facingRotY={facingRotY}
+                seedBase={companionSeed}
+                showLabel={false}
+                attachmentVisible={warmReady}
+              />
+            )}
+          </>
+        )}
+      </DeferredWarmAttachment>
     </Suspense>
   );
 });
 
 // ---------------------------------------------------------------------------
 // DeferredNpcPreloads
-// Render OUTSIDE the Canvas — fires after first paint via requestAnimationFrame.
-// All 9 SpongeBob character GLBs + the lobster NPC are loaded here, not at
-// module-evaluation time, so they don't compete with buildings + player on the
-// initial frame. ArenaLocationNpcs is wrapped in Suspense fallback={null} so
-// NPCs render nothing until each model resolves.
+// Render OUTSIDE the Canvas. Only NON-release-deferred slots are preloaded
+// here. A release-deferred slot owns its demand load after its individual
+// stagger tick; preloading the deferred list on the shared release signal
+// would collapse network/parse work back ahead of that slot boundary.
 // ---------------------------------------------------------------------------
 export function DeferredNpcPreloads(): ReactElement | null {
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    let idleHandle = 0;
+    // Arrays, not single slots: recursive immediate preloads may have multiple
+    // handles over the component lifetime and all remain cancellable.
+    const timers: ReturnType<typeof globalThis.setTimeout>[] = [];
+    const idleHandles: number[] = [];
 
     const preloadNext = (models: string[], index: number) => {
       if (cancelled || index >= models.length) return;
@@ -818,42 +882,45 @@ export function DeferredNpcPreloads(): ReactElement | null {
       };
 
       if ('requestIdleCallback' in window) {
-        idleHandle = window.requestIdleCallback(run, { timeout: 2500 });
+        idleHandles.push(window.requestIdleCallback(run, { timeout: 2500 }));
       } else {
-        timer = globalThis.setTimeout(run, 250);
+        timers.push(globalThis.setTimeout(run, 250));
       }
     };
+
+    // A model shared with a non-deferred slot stays immediate. Models whose
+    // every consumer is release-deferred are intentionally omitted: the slot
+    // component starts that request after its own stagger callback.
+    const seen = new Set<string>();
+    const immediateModels: string[] = [];
+    const collect = (model: string) => {
+      if (seen.has(model)) return;
+      seen.add(model);
+      immediateModels.push(model);
+    };
+    for (const cfg of Object.values(LOCATION_NPCS).filter((c) => !c.deferUntilDecorativeRelease)) {
+      collect(cfg.model);
+      if (cfg.companion) collect(cfg.companion.model);
+    }
 
     const waitForReady = () => {
       if (cancelled) return;
       if (!(window as any).__W3D_READY) {
-        timer = globalThis.setTimeout(waitForReady, 500);
+        timers.push(globalThis.setTimeout(waitForReady, 500));
         return;
       }
-
-      const seen = new Set<string>();
-      const models: string[] = [];
-      Object.values(LOCATION_NPCS).forEach((cfg) => {
-        if (!seen.has(cfg.model)) {
-          seen.add(cfg.model);
-          models.push(cfg.model);
-        }
-        if (cfg.companion && !seen.has(cfg.companion.model)) {
-          seen.add(cfg.companion.model);
-          models.push(cfg.companion.model);
-        }
-      });
-
-      preloadNext(models, 0);
+      preloadNext(immediateModels, 0);
     };
 
-    timer = globalThis.setTimeout(waitForReady, 500);
+    if (immediateModels.length > 0) {
+      timers.push(globalThis.setTimeout(waitForReady, 500));
+    }
 
     return () => {
       cancelled = true;
-      if (timer !== undefined) globalThis.clearTimeout(timer);
-      if (idleHandle && 'cancelIdleCallback' in window) {
-        window.cancelIdleCallback(idleHandle);
+      for (const t of timers) globalThis.clearTimeout(t);
+      if ('cancelIdleCallback' in window) {
+        for (const h of idleHandles) window.cancelIdleCallback(h);
       }
     };
   }, []);

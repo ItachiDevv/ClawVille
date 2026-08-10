@@ -10,8 +10,10 @@ import { useAuthMe } from '@/hooks/use-auth-me';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
+import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
+import { armDecorativeDeadline } from '@/lib/three/decorative-release';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -21,6 +23,9 @@ import { GuestAvatarBootstrap } from '@/components/game/guest-avatar-bootstrap';
 import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
+import LandOptionsPill from '@/components/game/land-options-pill';
+import SalvageGatherPill from '@/components/game/land/salvage-gather-pill';
+import YardEditorOverlay from '@/components/game/land/yard-editor-overlay';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
@@ -66,8 +71,10 @@ import { useStageStore } from '@/components/three/world-stage/stage-store';
 // client it may be true (iOS Safari). Static import causes React #418 hydration
 // mismatch because the SandFloor useMemo returns a different material type on
 // server vs client, making the React tree diverge. Dynamic + ssr:false prevents
-// the module from executing on the server at all — safe because DeferredTerrainPreloads
-// and DeferredNpcPreloads only fire useGLTF.preload() in useEffect (no server output).
+// the module from executing on the server at all — safe because these
+// compatibility mounts are now NO-OPS (all release-deferred demand belongs to
+// the hidden Canvas consumers after their stagger ticks; the only live preload
+// left in DeferredNpcPreloads covers future non-deferred slots).
 const DeferredTerrainPreloads = dynamic(
   () => import('@/lib/three/arena-terrain').then(m => ({ default: m.DeferredTerrainPreloads })),
   { ssr: false, loading: () => null },
@@ -123,8 +130,8 @@ function NanoClawBanner({
   /**
    * Raw `mode` from the authoritative ['agent-session'] query — undefined
    * while unresolved. Drives the avatar-owner branch below (Codex finding
-   * 2026-07-14): 'hosted'/'external-active' ⇒ connected pill; idle/expired/
-   * none ⇒ reconnect CTA; 'dismissed' ⇒ suppressed; unresolved ⇒ render
+   * 2026-07-30): bound modes ⇒ connected pill; none ⇒ reconnect CTA;
+   * 'dismissed' ⇒ suppressed; unresolved ⇒ render
    * nothing rather than flash a wrong claim either way.
    */
   agentSessionMode?: string;
@@ -156,10 +163,10 @@ function NanoClawBanner({
   //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
   //   isAuthenticated && !showPaired &&
   //      hasAvatar                              → mode-driven (Codex 2026-07-14):
-  //                                                hosted/external-active = green
+  //                                                bound session modes = green
   //                                                "Agent Connected" pill;
-  //                                                external-idle/expired/none =
-  //                                                reconnect CTA; dismissed or
+  //                                                none = reconnect CTA;
+  //                                                dismissed or
   //                                                unresolved query = nothing
 
   if (showPaired) {
@@ -241,15 +248,10 @@ function NanoClawBanner({
   // P2 hosted-agent state (2026-07-14, founder report + Codex adversarial
   // finding #1): an avatar-owning account's banner is driven by the
   // AUTHORITATIVE `agentSessionMode` — NOT by avatar ownership alone, which
-  // would flash "Agent Connected" for external-idle/expired sessions, for
-  // provisioning-pending avatars while the query resolves, and for accounts
-  // that dismissed the surface.
-  //   'hosted' / 'external-active' → green "Agent Connected" pill (a hosted
-  //     ElizaOS runtime IS the avatar — connected by definition under P2;
-  //     the old yellow "Connect Your Agent" CTA here contradicted the
-  //     Controlled/Autonomous toggle right below it).
-  //   'external-idle' / 'external-expired' / 'none' → keep the reconnect CTA
-  //     (the agent is real but not live — connecting is meaningful).
+  // distinguishes durable account binding from runtime liveness.
+  //   hosted / external-active / external-idle / external-expired → green
+  //     "Agent Connected" pill.
+  //   'none' → keep the reconnect CTA because the account is genuinely unbound.
   //   'dismissed' → render nothing (user suppressed the surface).
   //   undefined (query unresolved) → render nothing; never flash a claim.
   // `agentPaired`/`agentConnected` keep their paired-external semantics for
@@ -258,7 +260,7 @@ function NanoClawBanner({
     if (agentSessionMode === undefined || agentSessionMode === 'dismissed') {
       return null;
     }
-    if (agentSessionMode === 'hosted' || agentSessionMode === 'external-active') {
+    if (isBoundAgentSessionMode(agentSessionMode)) {
       return (
         <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
           <button
@@ -271,8 +273,7 @@ function NanoClawBanner({
         </div>
       );
     }
-    // external-idle / external-expired / 'none' — reconnect CTA only
-    // (avatar exists, so no Create Agent button).
+    // 'none' — reconnect CTA only (avatar exists, so no Create Agent button).
     return (
       <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
         <button
@@ -332,7 +333,12 @@ export default function GamePage() {
   // starts emitting progress events and SeaLoadingScreen's __W3D_PROGRESS
   // bar actually fills. Fire-and-forget — duplicate preload calls inside
   // each mounting component are cheap (useGLTF.preload is idempotent).
-  useEffect(() => { preloadWorldAssets(); }, []);
+  // armDecorativeDeadline rides the same first-mount effect (Codex Lever-1
+  // review finding 1): WorldWarmup's own arm call only commits if the canvas
+  // subtree survives to its passive effect — a renderer-init failure before
+  // that would strand release-gated consumer subtrees with no 45s ceiling.
+  // Arming here guarantees the ceiling exists the moment the loading screen can.
+  useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
 
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
@@ -653,7 +659,8 @@ export default function GamePage() {
 
       {/* World UI that's useful for ALL avatar-bearing visitors — including
           guests minted by the auto-create flow. Shows building labels, the
-          ? help button, the global activity feed, AND the chat panel so
+          ? help button, the land proximity pill, the global activity feed,
+          AND the chat panel so
           NPC-mode guests can talk to building teachers (brand priority #2:
           open agent onboarding — no human account required). ChatPanel
           gates internally on chatOpen / guideChatOpen so it stays hidden
@@ -662,6 +669,9 @@ export default function GamePage() {
       {hasAvatar && (
         <>
           <LocationHUD />
+          <LandOptionsPill />
+          <SalvageGatherPill />
+          <YardEditorOverlay />
           <ActivityFeed />
           <ChatPanel />
           {/* AvatarChatBar lives only under the agent-connected branch below.
@@ -681,8 +691,9 @@ export default function GamePage() {
       )}
 
       {/* NPC-mode chat with a non-building wandering character. Self-gates on
-          `controlMode === 'npc' && !chatOpen && !nearLocation` — at a building
-          the proximity prompt → ChatPanel modal owns the chat (2026-06-20). */}
+          `controlMode === 'npc' && !chatOpen && !nearLocation && !nearParcelCode`;
+          at a building the proximity prompt → ChatPanel modal owns the chat,
+          and on land the proximity pill owns the bottom slot. */}
       <TalkToCharacterBar />
 
       {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.

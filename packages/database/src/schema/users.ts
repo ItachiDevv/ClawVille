@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, boolean, integer, text, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, boolean, integer, text, check, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -56,7 +56,9 @@ export const users = pgTable(
      * until they later link an agent. UNIQUE so returning agents with
      * the same identity always map to the same user.
      */
-    identityFingerprint: varchar('identity_fingerprint', { length: 64 }).unique(),
+    identityFingerprint: varchar('identity_fingerprint', {
+      length: 64,
+    }).unique(),
 
     // -----------------------------------------------------------------
     // Phase 5.1 — ed25519 identity keypair (replaces string-based
@@ -95,7 +97,9 @@ export const users = pgTable(
     // look them up or recompute.
     // -----------------------------------------------------------------
     scapePrincipalId: varchar('scape_principal_id', { length: 128 }).unique(),
-    scapeWorldCharacterId: varchar('scape_world_character_id', { length: 64 }).unique(),
+    scapeWorldCharacterId: varchar('scape_world_character_id', {
+      length: 64,
+    }).unique(),
 
     // -----------------------------------------------------------------
     // Phase 5.1 §15 — account linking (existing scape account ↔ ClawVille)
@@ -104,9 +108,15 @@ export const users = pgTable(
     // link code into scape. Once set, the portal minter uses these over
     // the auto-provisioned scape_* columns above.
     // -----------------------------------------------------------------
-    linkedScapePrincipalId: varchar('linked_scape_principal_id', { length: 128 }).unique(),
-    linkedScapeWorldCharacterId: varchar('linked_scape_world_character_id', { length: 64 }).unique(),
-    linkedScapeDisplayName: varchar('linked_scape_display_name', { length: 64 }),
+    linkedScapePrincipalId: varchar('linked_scape_principal_id', {
+      length: 128,
+    }).unique(),
+    linkedScapeWorldCharacterId: varchar('linked_scape_world_character_id', {
+      length: 64,
+    }).unique(),
+    linkedScapeDisplayName: varchar('linked_scape_display_name', {
+      length: 64,
+    }),
     linkedScapeAt: timestamp('linked_scape_at', { withTimezone: true }),
 
     // -----------------------------------------------------------------
@@ -121,16 +131,26 @@ export const users = pgTable(
     // backfill hatcher_principal_id / hatcher_world_character_id so later
     // crossings skip the recompute. Both UNIQUE.
     // -----------------------------------------------------------------
-    hatcherPrincipalId: varchar('hatcher_principal_id', { length: 128 }).unique(),
-    hatcherWorldCharacterId: varchar('hatcher_world_character_id', { length: 64 }).unique(),
+    hatcherPrincipalId: varchar('hatcher_principal_id', {
+      length: 128,
+    }).unique(),
+    hatcherWorldCharacterId: varchar('hatcher_world_character_id', {
+      length: 64,
+    }).unique(),
 
     // Account linking (existing Hatcher account ↔ ClawVille) — set by the
     // link-code redemption flow (POST /api/portal/accept-hatcher-link).
     // Once set, the portal minter prefers these over the auto-provisioned
     // hatcher_* columns above. Mirror of linked_scape_*.
-    linkedHatcherPrincipalId: varchar('linked_hatcher_principal_id', { length: 128 }).unique(),
-    linkedHatcherWorldCharacterId: varchar('linked_hatcher_world_character_id', { length: 64 }).unique(),
-    linkedHatcherDisplayName: varchar('linked_hatcher_display_name', { length: 64 }),
+    linkedHatcherPrincipalId: varchar('linked_hatcher_principal_id', {
+      length: 128,
+    }).unique(),
+    linkedHatcherWorldCharacterId: varchar('linked_hatcher_world_character_id', {
+      length: 64,
+    }).unique(),
+    linkedHatcherDisplayName: varchar('linked_hatcher_display_name', {
+      length: 64,
+    }),
     linkedHatcherAt: timestamp('linked_hatcher_at', { withTimezone: true }),
 
     // -----------------------------------------------------------------
@@ -149,6 +169,12 @@ export const users = pgTable(
     linkedWalletPubkey: varchar('linked_wallet_pubkey', { length: 44 }),
     /** When the current `linked_wallet_pubkey` was last proven + set. */
     linkedWalletAt: timestamp('linked_wallet_at', { withTimezone: true }),
+
+    /** Signatureless P2 land-hold declaration; unique per account in SQL. */
+    landHoldWalletPubkey: varchar('land_hold_wallet_pubkey', { length: 44 }),
+    landHoldWalletDeclaredAt: timestamp('land_hold_wallet_declared_at', {
+      withTimezone: true,
+    }),
 
     // -----------------------------------------------------------------
     // Guest-avatar auto-create (2026-04-23) — un-authenticated visitors get
@@ -195,6 +221,9 @@ export const users = pgTable(
       'users_username_format',
       sql`${t.username} IS NULL OR ${t.username} ~ '^[a-zA-Z0-9_]{3,20}$'`,
     ),
+    landHoldWalletUnique: uniqueIndex('users_land_hold_wallet_pubkey_unique')
+      .on(t.landHoldWalletPubkey)
+      .where(sql`${t.landHoldWalletPubkey} IS NOT NULL`),
   }),
 );
 

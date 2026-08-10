@@ -156,7 +156,7 @@ export async function createSeaCreatureAnimator(
   if (!manifest.hasRig) return null;
 
   const baseUrl = species === 'lobster'
-    ? '/models/sea-creatures/lobster/base-ktx.glb?v=2'
+    ? '/models/sea-creatures/lobster/base-mo-ktx.glb'
     : `/models/sea-creatures/${species}/base.glb`;
 
   // Load base mesh. Any error → fall back to static mesh.
@@ -194,7 +194,7 @@ export async function createSeaCreatureAnimator(
   const clipLoadPromises: Promise<void>[] = [];
   for (const state of manifest.availableStates) {
     const url = species === 'lobster'
-      ? `/models/sea-creatures/lobster/animations/${state}-ktx.glb?v=2`
+      ? `/models/sea-creatures/lobster/animations/${state}-clip-ktx.glb`
       : `/models/sea-creatures/${species}/animations/${state}.glb`;
     const p = loadGlb(url)
       .then((gltf) => {

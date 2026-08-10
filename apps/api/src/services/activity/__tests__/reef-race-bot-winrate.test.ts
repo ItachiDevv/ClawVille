@@ -140,6 +140,7 @@ mock.module('@clawville/database', () => ({
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
   },
+  reefRacePersonalBestClaims: {},
   // 2026-06-23: `activity-replay-log.ts` (transitively imported via the reward
   // pipeline) references `activityReplays`; the schema gained this table after
   // this mock was first written, so the named export was missing → Bun threw

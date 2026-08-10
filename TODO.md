@@ -24,6 +24,24 @@
 
 ---
 
+## Staking mechanics (founder direction 2026-08-06)
+
+- **Land hold-verification v1 = declared-wallet balance checks, NOT wallet binding.** For the
+  two-door tenure model (land P2 slice): the user states a wallet address, we verify on-chain
+  that it holds the tier's $Clawville minimum, and a periodic sweeper re-checks that it still
+  does. No signature/ownership binding in v1 — that comes later with the staking contract.
+  (Implementation caveat to resolve at P2 build time: without ownership proof, one whale wallet
+  could back many accounts — needs at least a one-wallet-one-account uniqueness rule.)
+- **Why this shape matters (founder, 2026-08-06): doing this allows us to introduce a BORROW or
+  LENDING mechanism on the staking protocol position.** The verified hold is the primordial
+  staking position; once it graduates to a real staking contract, the position itself becomes
+  collateral — lend against it or borrow with it — without changing the land-tier semantics
+  built on top.
+- Standing guardrail (unchanged): land mints zero vCLAW; any holder yield must be real revenue
+  share or CLV, never vCLAW emission. Full tenure design: `.claude/plans/land-economy/upgrade-redesign-2026-07-30.md` §4/§8.
+
+---
+
 ## 🟢 Active — biggest blocks first
 
 ### ⭐ FOUNDER QUEUE — decisions + sign-offs blocking "done" (keep at top; P0+P1+P2+P3 s1/s2/s4/s5 all live-proven on staging (P3s3 built+approved, cognition legs blocked on the OpenAI quota incident), Rule E4 gates open)
@@ -54,6 +72,7 @@ P1 live-proven `0b6a29a4` (2026-07-03): `docs/agent-metaverse-p1-plan.md` + `doc
 - [ ] **Directive stay-there once-semantics (spec Advisory-2):** a building-named directive re-pins the avatar every plan until cleared — v1 documented. Consider clear-on-arrival ("go to X" satisfied) or a visit-cap so a directive doesn't freeze the explore/learn loop forever.
 - [ ] **Autonomy-hud runaway log loop (client):** sweep observed "Discovered X! Heading there… Can't find a path… Picking another target…" repeating with Buildings stuck 2/10 — the CLIENT liveliness engine (stores/autonomy.ts) spamming its stream panel; cosmetic but it destabilized a WebGPU tab and it's the exact content that covered the clear-✕ pre-z-fix.
 - [ ] **contract-probe.ts labels/docstring STALE:** its "expect 400" cases (PATCH homeX/homeY/rotateScopedToken) document the pre-FIX-1..19 divergence; the contract-parity batch `802ef999` made them 200s (matching Hatcher's real client). Update the probe's documented expectations so the next reader doesn't mistake correct behavior for drift (surfaced by the P3s5 D9 run).
+- [ ] **FEATURE_GATE `wallet-unification-full-surface-hardening` ([GitHub #257](https://github.com/ItachiDevv/ClawVille/issues/257), Rule E6, owner: Agent Protocol + Token Economy domain owner, status: DEFERRED, review deadline 2026-09-30).** Execute immediately if any F2 custody consumer is edited or any custody-material, re-encrypt, or KEK write path is added. Tracked scope, trigger files, graduation metric, and frozen-spec reference: [`docs/wallet-unification-full-surface-hardening.md`](docs/wallet-unification-full-surface-hardening.md).
 - [ ] **Sub-44px tap targets in RPG modals (shared primitive, pre-existing):** slice-4 sweep measured TabButton 40px / FilterChip 36px / RpgButton sm 27px / close ✕ 32px across the Land Office (and every RPG modal using the primitives) vs the 44px touch guideline. Widths are generous; heights are under. Bump min-heights on touch (priority: the money-action Buy button). Not slice-4-introduced.
 - [ ] **Joysticks in Autonomous mode (product call, sweep DEFECT 2, pre-existing):** at 390×844 portrait the expanded chat panel covers both joystick nipples (all chat surfaces, not P3-specific). Also: should movement joysticks render at all while the agent drives (camera-only?)? Jump already correctly hidden.
 - [ ] **PATCH `/me/appearance` never reloads a hot runtime** (pre-existing) — mirrors `customization` onto `platform_agents` but never calls `agentOrchestrator.stopAgent`, so a HOT ElizaOS runtime keeps the old persona until the 30-min idle sweep. The P2 customize branch DOES stop-on-persona-rebuild; port the same fire-and-forget stop in its own small diff.
@@ -326,6 +345,7 @@ Coolify VPS hit 100% disk on 2026-04-16 from accumulated Docker images + build c
 - [ ] Building proximity interactions — currently you walk up to a character; later: explicit "enter building" with an interior scene.
 - [ ] Minimap shows player position; add NPC positions (sonar blips with species color).
 - [ ] Personality page UX bug — large empty space between archetype cards and the CREATE button on `/create-agent/personality`; habitat/hobby/greeting selectors not visible without scrolling.
+- [ ] **NPC personalities reseed** (founder ask 2026-07-30, during the Ansem promo-NPC build) — general refresh pass over ALL wanderer/system NPC `personality` seeds in `packages/shared/src/constants/npc-definitions.ts` (and Nori's `knowledge[]` where personality-adjacent). Several read as first-draft filler; the Ansem wanderer (X-API-researched voice seed) is the quality bar. Roster data only, no code change; ships in one diff with a GameFeatures drift note.
 - [ ] Tutorial Quest tracker — 2 quests have `status: 'pending'` (Style Statement, Big Spender) — wire them up when the cosmetic shop has SKUs and a "Big Spender" event aggregator exists.
 
 ---

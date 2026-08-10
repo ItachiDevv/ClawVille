@@ -24,6 +24,10 @@ import * as THREE from 'three/webgpu';
 import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 import { resetAllHeldInputs } from '@/lib/three/input-reset';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import {
+  resolvePlayerCapabilities,
+  type PlayerCapabilityMask,
+} from '@/lib/three/player/player-capability-mask';
 import { StageTransition } from './StageTransition';
 import type { WatchdogConfig } from './stage-watchdog-machine';
 import {
@@ -33,12 +37,18 @@ import {
 import { useStageStore } from './stage-store';
 import {
   requestStageDeltaClamp,
+  SceneCameraProvider,
   SceneIdProvider,
+  SlotCapabilityProvider,
   StageFrameScheduler,
 } from './use-scene-frame';
 import {
   registerStageSlotRoot,
 } from './resource-ledger';
+import {
+  reportStageRendererRecoveryFailure,
+  runStageRendererInitialization,
+} from './stage-renderer-status';
 
 declare module '@react-three/fiber' {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
@@ -66,6 +76,8 @@ const IOS_SAFARI =
 const WEBGPU_ABSENT =
   typeof navigator !== 'undefined' && !('gpu' in navigator);
 const WEBGPU_UNHEALTHY_KEY = 'world-stage-webgpu-unhealthy';
+const LEGACY_KELP_WEBGPU_UNHEALTHY_KEY =
+  'kelp-realm-webgpu-unhealthy';
 
 function belongsToActiveStageSlot(
   object: THREE.Object3D,
@@ -101,7 +113,10 @@ function readWebGpuUnhealthyFlag(): boolean {
   if (typeof window === 'undefined') return false;
   try {
     return (
-      window.sessionStorage.getItem(WEBGPU_UNHEALTHY_KEY) === '1'
+      window.sessionStorage.getItem(WEBGPU_UNHEALTHY_KEY) === '1' ||
+      window.sessionStorage.getItem(
+        LEGACY_KELP_WEBGPU_UNHEALTHY_KEY,
+      ) === '1'
     );
   } catch {
     return false;
@@ -185,6 +200,27 @@ function withInitTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/** Never-throw cold-load ACTUAL-backend stamp — same contract as World3DCanvas's
+ *  stampColdLoadBackend (duplicated locally to avoid a stage→legacy import).
+ *  The stage renderer IS the /game renderer under WorldStageRoot, so the
+ *  probe's actual-backend evidence must be published HERE: the legacy
+ *  createWebGPURenderer stamp never runs on stage-hosted routes, which left
+ *  __W3D_BACKEND stuck on the module-eval '-requested' value (probe run
+ *  invalid: "backend not actual"). Reads the renderer's REAL backend, not the
+ *  forceWebGL flag — Three's init can fall back WebGPU→WebGL2 silently. */
+function stampStageColdLoadBackend(renderer: THREE.WebGPURenderer): void {
+  if (typeof window === 'undefined') return;
+  try {
+    (window as unknown as { __W3D_BACKEND?: string }).__W3D_BACKEND = (
+      renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }
+    ).backend?.isWebGPUBackend
+      ? 'webgpu'
+      : 'webgl2';
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
 async function initializeStageRenderer(
   canvas: HTMLCanvasElement,
   forceWebGL: boolean,
@@ -206,6 +242,9 @@ async function initializeStageRenderer(
     renderer.dispose();
     throw error;
   }
+  // Single choke point: initial boot AND both recovery paths re-stamp here,
+  // so a recovery that lands on the other backend keeps the probe truthful.
+  stampStageColdLoadBackend(renderer);
   renderer.setClearColor(0x07131d, 1);
   renderer.setClearAlpha?.(1);
   renderer.setSize(width, height, false);
@@ -335,6 +374,7 @@ class StageRendererHealth {
 
   private async recover(reason: string): Promise<void> {
     if (this.recovering || !this.renderer || !this.binding) return;
+    const route = window.location.pathname;
     const binding = this.binding;
     this.recovering = true;
     const generation = ++this.generation;
@@ -360,6 +400,8 @@ class StageRendererHealth {
       current.dispose();
 
       let replacement: THREE.WebGPURenderer | null = null;
+      let webGPUError: unknown = null;
+      let webGLError: unknown = null;
       if (!this.recreatedOnce) {
         this.recreatedOnce = true;
         try {
@@ -371,6 +413,8 @@ class StageRendererHealth {
             dpr,
           );
         } catch (error) {
+          if (this.forceWebGL) webGLError = error;
+          else webGPUError = error;
           console.warn(
             '[WorldStage] in-place renderer recreation failed:',
             error,
@@ -401,6 +445,7 @@ class StageRendererHealth {
             dpr,
           );
         } catch (error) {
+          webGLError = error;
           console.error(
             '[WorldStage] terminal force-WebGL recovery failure:',
             error,
@@ -413,6 +458,15 @@ class StageRendererHealth {
           replacement?.dispose();
           return;
         }
+      }
+
+      if (!replacement) {
+        reportStageRendererRecoveryFailure({
+          webGPUError,
+          webGLError,
+          route,
+        });
+        return;
       }
 
       if (replacement) {
@@ -533,6 +587,16 @@ export function readStageRendererCounters(): StageRendererCounters {
   };
 }
 
+export function requestStageRendererRecovery(reason: string): boolean {
+  const canvas = currentStageRenderer?.domElement;
+  const health = canvas
+    ? rendererHealthByCanvas.get(canvas)
+    : undefined;
+  if (!health) return false;
+  health.requestRecovery(reason);
+  return true;
+}
+
 function StageRendererCounterSampler(): null {
   const gl = useThree((state) => state.gl);
   useFrame(() => {
@@ -570,6 +634,7 @@ function createStageRenderer(props: {
   if (existing) return existing;
 
   const creation = (async () => {
+    const route = window.location.pathname;
     const canvas = props.canvas;
     const [width, height] = await waitForCanvasSize(canvas);
     const dpr = Math.max(
@@ -579,31 +644,24 @@ function createStageRenderer(props: {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
 
-    let renderer: THREE.WebGPURenderer;
-    let usedWebGL = FORCE_WEBGL;
-    try {
-      renderer = await initializeStageRenderer(
-        canvas,
-        FORCE_WEBGL,
-        width,
-        height,
-        dpr,
-      );
-    } catch (webGpuError) {
-      if (FORCE_WEBGL) throw webGpuError;
-      console.warn(
-        '[WorldStage] WebGPU init failed; retrying force-WebGL on the same canvas:',
-        webGpuError,
-      );
-      renderer = await initializeStageRenderer(
-        canvas,
-        true,
-        width,
-        height,
-        dpr,
-      );
-      usedWebGL = true;
-    }
+    const { renderer, usedWebGL } = await runStageRendererInitialization({
+      route,
+      forceWebGL: FORCE_WEBGL,
+      initialize: (forceWebGL) =>
+        initializeStageRenderer(
+          canvas,
+          forceWebGL,
+          width,
+          height,
+          dpr,
+        ),
+      onWebGPUFailure: (error) => {
+        console.warn(
+          '[WorldStage] WebGPU init failed; retrying force-WebGL on the same canvas:',
+          error,
+        );
+      },
+    });
     currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
     currentStageRenderer = renderer;
     previousStageRenderCalls = null;
@@ -621,6 +679,8 @@ function createStageRenderer(props: {
 
 export interface WorldStageScene extends StageCameraDefinition {
   content: ReactNode;
+  overlayOpaque?: boolean;
+  capabilities?: Partial<PlayerCapabilityMask>;
   appearance?: {
     background: THREE.ColorRepresentation;
     fog?: {
@@ -861,11 +921,19 @@ function StageLoopController({
 
 function StageSceneSlot({
   sceneId,
+  camera = null,
+  capabilities,
   children,
 }: {
   sceneId: string;
+  camera?: THREE.PerspectiveCamera | null;
+  capabilities?: Partial<PlayerCapabilityMask>;
   children: ReactNode;
 }) {
+  const resolvedCapabilities = useMemo(
+    () => resolvePlayerCapabilities(capabilities),
+    [capabilities],
+  );
   const visible = useStageStore(
     (state) =>
       state.activeScene === sceneId ||
@@ -883,9 +951,13 @@ function StageSceneSlot({
       visible={visible}
     >
       {mounted ? (
-        <SceneIdProvider sceneId={sceneId}>
-          {children}
-        </SceneIdProvider>
+        <SceneCameraProvider camera={camera}>
+          <SceneIdProvider sceneId={sceneId}>
+            <SlotCapabilityProvider capabilities={resolvedCapabilities}>
+              {children}
+            </SlotCapabilityProvider>
+          </SceneIdProvider>
+        </SceneCameraProvider>
       ) : null}
     </group>
   );
@@ -1027,7 +1099,11 @@ export function WorldStageCanvas({
         {scenes.map((scene) => (
           <group key={scene.sceneId}>
             <StageSceneAppearance scene={scene} />
-            <StageSceneSlot sceneId={scene.sceneId}>
+            <StageSceneSlot
+              sceneId={scene.sceneId}
+              camera={cameras.get(scene.sceneId) ?? null}
+              capabilities={scene.capabilities}
+            >
               {scene.content}
             </StageSceneSlot>
           </group>

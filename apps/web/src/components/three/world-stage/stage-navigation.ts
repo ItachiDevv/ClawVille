@@ -1,9 +1,33 @@
 'use client';
 
+import {
+  sceneIdForPathname,
+  stagePathnameFromHref,
+} from './stage-scene-id';
+
+export type WorldStagePathname =
+  | '/game'
+  | '/cove'
+  | '/kelp'
+  | `/activity/${string}/${string}`;
+
+export type WorldStageHref =
+  | WorldStagePathname
+  | `${WorldStagePathname}?${string}`
+  | `${WorldStagePathname}#${string}`;
+
 export interface WorldStageNavigationRequest {
-  to: '/game' | '/cove';
+  to: WorldStageHref;
   onMidway?: () => void;
   onExpired?: () => void;
+}
+
+export interface WorldStageNavigationSnapshot {
+  readonly mounted: boolean;
+  readonly handlerInstalled: boolean;
+  readonly bufferedTo: WorldStageHref | null;
+  readonly bufferedPathname: WorldStagePathname | null;
+  readonly bufferedExpiresAt: number | null;
 }
 
 type WorldStageNavigationHandler = (
@@ -78,6 +102,27 @@ export function markWorldStageMounted(): void {
 
 export function markWorldStageUnmounted(): void {
   worldStageMounted = false;
+}
+
+export function isWorldStageMounted(): boolean {
+  return worldStageMounted;
+}
+
+export function readWorldStageNavigationSnapshot(): WorldStageNavigationSnapshot {
+  const bufferedTo = bufferedNavigation?.request.to ?? null;
+  const parsedPathname = bufferedTo
+    ? stagePathnameFromHref(bufferedTo)
+    : null;
+  return {
+    mounted: worldStageMounted,
+    handlerInstalled: navigationHandler !== null,
+    bufferedTo,
+    bufferedPathname:
+      parsedPathname && sceneIdForPathname(parsedPathname)
+        ? (parsedPathname as WorldStagePathname)
+        : null,
+    bufferedExpiresAt: bufferedNavigation?.expiresAt ?? null,
+  };
 }
 
 export function advanceWorldStageRoute(

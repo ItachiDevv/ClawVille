@@ -39,6 +39,10 @@ import { MeshoptDecoder } from 'meshoptimizer';
 import type { VRM } from '@pixiv/three-vrm';
 import { retargetMeshyClip, retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 import { VRM_METRICS_ENABLED } from './vrm-loader';
+import {
+  createCharacterAttachmentController,
+  type CharacterAttachmentState,
+} from './character-attachments';
 
 // ---------------------------------------------------------------------------
 // Per-frame VRM cost instrumentation (PART A — steady-state metrics)
@@ -684,6 +688,10 @@ const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
   // hips world-Y ≈ 0.9m on the 1.85m rig). Same underground-idle failure mode
   // if position tracks survive retarget; strip all three like adinero.
   biggie:          new Set(['idle', 'walk', 'run']),
+  // Ansem — same 0.01-scale Meshy VRM rig class as Adinero/Biggie. The
+  // canonicalized Meshy-native idle and global locomotion clips must all lose
+  // position tracks or the hips translate the skeleton underground.
+  ansem:           new Set(['idle', 'walk', 'run']),
 };
 
 function shouldStripPosition(name: AnimName, animatorId?: string): boolean {
@@ -783,6 +791,8 @@ export class VRMCharacterAnimator {
    */
   private characterId: string | undefined;
 
+  /** Model-intrinsic prop controller; null is the zero-work path for other rigs. */
+  private attachment: ReturnType<typeof createCharacterAttachmentController> = null;
 
   /**
    * Set by dispose(). Guards the async init() path: if the owning component
@@ -798,6 +808,9 @@ export class VRMCharacterAnimator {
   constructor(vrm: VRM, characterId?: string) {
     this.vrm = vrm;
     this.characterId = characterId;
+    // Create before skeleton.update is patched below so the configured avatar's
+    // native-height measurement can settle the bind-pose bone matrices.
+    this.attachment = createCharacterAttachmentController(vrm, characterId);
     // Mixer is rooted at vrm.scene so PropertyBinding can resolve
     // Normalized_* node names. VRMHumanoidRig (containing those nodes)
     // is a child of vrm.scene — scene.getObjectByName() finds them from here.
@@ -864,6 +877,12 @@ export class VRMCharacterAnimator {
       ? locomotion
       : [...locomotion, startClip];
 
+    const initialAttachmentState: CharacterAttachmentState =
+      startClip === 'idle' && this.surfaceClip === 'idle' ? 'idle' : 'moving';
+    const attachmentInit = this.attachment?.init(initialAttachmentState).catch((err) => {
+      console.warn('[VRMCharacterAnimator] attachment init failed:', err);
+    });
+
     try {
       const rawGltfs = await Promise.all(toLoad.map((n) => loadRawGltf(n, this.characterId)));
 
@@ -899,6 +918,9 @@ export class VRMCharacterAnimator {
       }
 
       this.ready = true;
+      if (attachmentInit) {
+        await attachmentInit;
+      }
 
       // Debug instrumentation — preserved for CDP diagnostics
       if (typeof window !== 'undefined') {
@@ -990,6 +1012,7 @@ export class VRMCharacterAnimator {
       this.wasMotion = motion;
     } else if (motion !== this.wasMotion) {
       this.applyCrossfade(motion);
+      this.setAttachmentForLocomotion(motion);
       this.wasMoving = isMoving;
       this.wasMotion = motion;
     }
@@ -1051,6 +1074,7 @@ export class VRMCharacterAnimator {
   setSurfaceClip(name: AnimName): void {
     const prev = this.surfaceClip;
     this.surfaceClip = name;
+    this.setAttachmentForLocomotion(this.wasMotion);
     if (prev === name || !this.ready) return;
 
     // Lazy-load + retarget non-locomotion surface clips (swimming, flying,
@@ -1215,6 +1239,15 @@ export class VRMCharacterAnimator {
     this.currentAction = next;
   }
 
+  private setAttachmentForLocomotion(motion: 'idle' | 'walk' | 'run'): void {
+    if (!this.attachment) return;
+    const state: CharacterAttachmentState =
+      motion === 'idle' && this.surfaceClip === 'idle' && !this.oneShotActive
+        ? 'idle'
+        : 'moving';
+    this.attachment.setState(state);
+  }
+
   /**
    * PERF split: advance the AnimationMixer only (no spring-bone physics).
    * Use this at 60Hz to keep keyframe animations smooth.
@@ -1243,6 +1276,7 @@ export class VRMCharacterAnimator {
       this.wasMotion = motion;
     } else if (motion !== this.wasMotion) {
       this.applyCrossfade(motion);
+      this.setAttachmentForLocomotion(motion);
       this.wasMoving = isMoving;
       this.wasMotion = motion;
     }
@@ -1404,6 +1438,7 @@ export class VRMCharacterAnimator {
       );
       return;
     }
+    this.attachment?.setState('moving');
 
     // Lazy-load + retarget if first time.
     if (!this.actions[name]) {
@@ -1416,6 +1451,9 @@ export class VRMCharacterAnimator {
         this.actions[name] = action;
       } catch (err) {
         console.warn(`[VRMCharacterAnimator] one-shot retarget failed for "${name}":`, err);
+        if (requestToken === this.oneShotRequestToken) {
+          this.setAttachmentForLocomotion(this.wasMotion);
+        }
         return;
       }
     }
@@ -1441,6 +1479,9 @@ export class VRMCharacterAnimator {
           `[VRMCharacterAnimator] next-loop retarget failed for "${nextLoopingClip}":`,
           err,
         );
+        if (requestToken === this.oneShotRequestToken) {
+          this.setAttachmentForLocomotion(this.wasMotion);
+        }
         return;
       }
     }
@@ -1448,7 +1489,10 @@ export class VRMCharacterAnimator {
     if (this.disposed || requestToken !== this.oneShotRequestToken) return;
 
     const oneShot = this.actions[name];
-    if (!oneShot) return;
+    if (!oneShot) {
+      this.setAttachmentForLocomotion(this.wasMotion);
+      return;
+    }
 
     oneShot.setLoop(THREE.LoopOnce, 1);
     oneShot.clampWhenFinished = true;
@@ -1468,6 +1512,7 @@ export class VRMCharacterAnimator {
       this.mixer.removeEventListener('finished', onFinished as any);
       this.oneShotFinishedHandler = null;
       this.oneShotActive = false;
+      this.setAttachmentForLocomotion(this.wasMotion);
       // An explicit transition target wins over locomotion. Without one,
       // crossfade back to whatever locomotion state we are in NOW — including
       // run when the player is sprinting through the emote. In surf context
@@ -1499,6 +1544,11 @@ export class VRMCharacterAnimator {
     this.mixer.addEventListener('finished', onFinished as any);
 
     this.oneShotActive = true;
+    // Re-assert the attachment stow at the moment the one-shot actually starts.
+    // The optimistic setState('moving') at the top of playOneShot can be undone
+    // by a locomotion transition that lands during the async clip load (while
+    // oneShotActive is still false) — this is the authoritative last write.
+    this.attachment?.setState('moving');
     oneShot.reset().setEffectiveTimeScale(timeScale).fadeIn(CROSSFADE_DURATION).play();
     if (previous && previous !== oneShot) {
       previous.fadeOut(CROSSFADE_DURATION);
@@ -1519,13 +1569,19 @@ export class VRMCharacterAnimator {
 
     this.wasMoving = isMoving;
     this.wasMotion = !isMoving ? 'idle' : isRunning ? 'run' : 'walk';
-    if (!this.oneShotActive && !this.oneShotFinishedHandler) return;
+    if (!this.oneShotActive && !this.oneShotFinishedHandler) {
+      // A lazy one-shot may still be loading: playOneShot already moved the
+      // attachment, but there is no mixer handler yet. Restore immediately.
+      this.setAttachmentForLocomotion(this.wasMotion);
+      return;
+    }
 
     if (this.oneShotFinishedHandler) {
       this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
       this.oneShotFinishedHandler = null;
     }
     this.oneShotActive = false;
+    this.setAttachmentForLocomotion(this.wasMotion);
 
     const previous = this.currentAction;
     const backName: AnimName =
@@ -1584,6 +1640,8 @@ export class VRMCharacterAnimator {
       }
     });
     this._skeletonUpdateFns.clear();
+    this.attachment?.dispose();
+    this.attachment = null;
 
     // Reset surfaceClip before null-casting refs so a dangling closure
     // referencing the animator post-dispose gets 'idle' (the safe no-op

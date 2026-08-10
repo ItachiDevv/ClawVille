@@ -68,7 +68,7 @@ const USE_SPLINE_TRACK = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true'
 preloadKTX2Bytes('/models/coral-reef1-ktx.glb?v=2');
 preloadKTX2Bytes('/models/coral-reef2-ktx.glb?v=2');
 preloadKTX2Bytes('/models/coral-reef3-ktx.glb?v=2');
-preloadKTX2Bytes('/models/jellyfish-ktx.glb?v=2');
+preloadKTX2Bytes('/models/jellyfish-mo-ktx.glb');
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
 const _mat4 = new THREE.Matrix4();

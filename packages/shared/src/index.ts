@@ -95,6 +95,7 @@ export * from './activities';
 // Multiplayer Phase 1 — room snapshot + player wire types shared by
 // `/api/world/:roomId/stream` and the web client's world-stream hook.
 export * from './types/world';
+export * from './types/world-presence-ws';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
 // Dedicated Kelp Forest realm: one authored maze layout derives client wall
@@ -116,6 +117,22 @@ export * from './constants/land-parcels';
 // Land Economy Phase 0 (2026-06-15) — economic constants (tier ladder, upgrade costs, structure
 // catalog, leaderboard event weights, founder-gated rest-bonus cap). Backend + frontend pricing.
 export * from './constants/land-economy';
+
+// Land P3 stage A — render-agnostic kit catalog, ladder, fees, and grid rules.
+export * from './constants/land-kit';
+// Land gamification P2b — the frozen MEASURED per-piece render manifest
+// (authored heights, GLB-derived extents, rotation advertisements, Q8 support
+// surfaces). Replaces the uniform cell-cube normalization (defects N-1/N-2/N-3).
+export * from './constants/land-kit-manifest';
+// Land gamification P3 — `evaluatePlacement`, the single footprint/rotation/
+// stack-aware legality predicate shared by the write path and the yard editor.
+// Replaces anchor-cell-only validation (defect D-1).
+export * from './constants/land-placement';
+
+
+// Land gamification P4b — seabed-salvage daily caps (the founder-ratified
+// per-avatar and per-owner claim bounds the material ledger settles against).
+export * from './constants/land-salvage';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';

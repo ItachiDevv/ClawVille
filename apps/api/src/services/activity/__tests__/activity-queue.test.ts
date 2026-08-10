@@ -57,6 +57,7 @@ mock.module('@clawville/database', () => ({
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
   },
+  reefRacePersonalBestClaims: {},
 }));
 
 mock.module('../../alert-error', () => ({

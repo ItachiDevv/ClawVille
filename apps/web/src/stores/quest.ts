@@ -69,6 +69,17 @@ interface QuestStoreState {
 
   /** Stamp the account that owns the current progress (watcher reconcile). */
   setQuestOwner: (userId: string) => void;
+
+  /**
+   * Quest-board restore (2026-07-29): re-mark quests the SERVER knows this
+   * account claimed (tutorial_quest_claims) as completed + serverClaimed,
+   * then unlock any quest whose prerequisite chain is now fully completed.
+   * Never downgrades local state; unknown/superseded quest ids are ignored.
+   * Counters have no server record and are NOT restored.
+   */
+  applyServerClaims: (
+    claims: Array<{ questId: string; claimedAt: string }>,
+  ) => void;
 }
 
 function getDefaultProgress(): Record<QuestId, QuestProgress> {
@@ -146,6 +157,34 @@ function buildEvalContext(state: QuestStoreState): CondEvalContext {
   };
 }
 
+/**
+ * Per-page-load dedup for the server-claims restore fetch: one successful
+ * sync per account. Cleared by resetQuestStore so a wipe (expiry/switch)
+ * followed by a re-login of the same account re-syncs, and cleared on fetch
+ * failure so the next invocation retries.
+ */
+let lastClaimsSyncAccount: string | null = null;
+
+/**
+ * Undo handle for the single pending post-hydration claims apply. A NEWER
+ * sync cancels the previous pending apply so listeners never accumulate
+ * across account transitions (Codex adversarial round 1). A store reset
+ * does NOT cancel it (Codex round 2) — the apply's own owner guard makes a
+ * stale pending apply a no-op, while a valid one must survive the
+ * reset-then-restamp the watcher performs in the same hydration pass.
+ */
+let pendingClaimsApplyUnsub: (() => void) | null = null;
+
+function cancelPendingClaimsApply(): void {
+  pendingClaimsApplyUnsub?.();
+  pendingClaimsApplyUnsub = null;
+}
+
+/** In-flight sync promise so concurrent callers await the SAME request. */
+let inflightClaimsSync: Promise<void> | null = null;
+/** Identity token for the CURRENT in-flight sync — an older sync's finally must never clear a newer sync's promise. */
+let inflightClaimsSyncToken: symbol | null = null;
+
 export const useQuestStore = create<QuestStoreState>()(
   persist(
     (set, get) => ({
@@ -158,16 +197,67 @@ export const useQuestStore = create<QuestStoreState>()(
       markServerClaimed: (id) =>
         set((s) => ({ serverClaimed: { ...s.serverClaimed, [id]: true } })),
 
-      resetQuestStore: () =>
+      resetQuestStore: () => {
+        // A wipe means whatever account resolves next must re-pull its
+        // server-side claims — drop the sync dedup marker with the state.
+        // Deliberately does NOT cancel a pending post-hydration apply
+        // (Codex adversarial round 2, BLOCKING 1): the watcher's own
+        // reconcile calls this reset when hydration surfaces a stale
+        // FOREIGN blob, BEFORE the pending apply for the CURRENT account
+        // gets its turn in the same listener pass — cancelling here would
+        // suppress that valid restore and blank the board. The apply's
+        // ownerUserId guard already makes a stale pending apply a no-op,
+        // so surviving a reset is safe in every ordering.
+        lastClaimsSyncAccount = null;
         set({
           progress: getDefaultProgress(),
           counters: { ...DEFAULT_COUNTERS },
           distinct: { ...DEFAULT_DISTINCT },
           serverClaimed: {},
           ownerUserId: null,
-        }),
+        });
+      },
 
       setQuestOwner: (userId) => set({ ownerUserId: userId }),
+
+      applyServerClaims: (claims) => {
+        const state = get();
+        const progress = { ...state.progress };
+        const serverClaimed = { ...state.serverClaimed };
+        let changed = false;
+
+        for (const claim of claims) {
+          const def = QUEST_DEFINITIONS.find((q) => q.id === claim.questId);
+          if (!def) continue; // superseded id from an older quest ladder
+          const qid = def.id;
+          if (!serverClaimed[qid]) {
+            serverClaimed[qid] = true;
+            changed = true;
+          }
+          if (progress[qid]?.status !== 'completed') {
+            const at = Date.parse(claim.claimedAt);
+            progress[qid] = {
+              status: 'completed',
+              completedAt: Number.isFinite(at) ? at : Date.now(),
+            };
+            changed = true;
+          }
+        }
+        if (!changed) return;
+
+        // Unlock pass — single sweep suffices: every server-known completion
+        // was applied above, so a locked quest whose full prerequisite chain
+        // is claimed has all prereqs already marked completed.
+        for (const quest of QUEST_DEFINITIONS) {
+          if (progress[quest.id]?.status !== 'locked') continue;
+          const allPrereqsMet = quest.prerequisites.every(
+            (pid) => progress[pid]?.status === 'completed',
+          );
+          if (allPrereqsMet) progress[quest.id] = { status: 'active' };
+        }
+
+        set({ progress, serverClaimed });
+      },
 
       incrementCounter: (key, amount = 1) => {
         set((s) => ({
@@ -339,7 +429,14 @@ async function claimTutorialQuestReward(
         useQuestStore.getState().markServerClaimed(def.id);
         return 'claimed';
       }
-      if (res.error === 'guest_not_eligible' && !opts?.silent) {
+      // Two spellings: the route's own `guest_not_eligible` (pre-P6) and the
+      // shared `requireNonGuestIdentity` middleware's `guest_not_allowed`,
+      // which replaced it when the tutorial ladder adopted the canonical
+      // three-stage auth chain. Both mean the same thing to a player.
+      if (
+        (res.error === 'guest_not_eligible' || res.code === 'guest_not_allowed')
+        && !opts?.silent
+      ) {
         useGameStore
           .getState()
           .addToast('🔒', 'Sign up to claim tutorial rewards', 4000);
@@ -357,7 +454,12 @@ async function claimTutorialQuestReward(
         return 'claimed';
       }
       if (status !== undefined && status >= 400 && status < 500) {
-        if (status === 403 && String((err as Error)?.message ?? '').includes('guest_not_eligible')) {
+        const guestBlocked =
+          status === 403
+          && /guest_not_eligible|guest_not_allowed|Guests run a demo economy/.test(
+            String((err as Error)?.message ?? ''),
+          );
+        if (guestBlocked) {
           if (!opts?.silent) {
             useGameStore
               .getState()
@@ -421,6 +523,102 @@ export function retryUnclaimedRewards(): Promise<void> {
   });
   retryUnclaimedRewardsInFlight = sweep;
   return sweep;
+}
+
+/**
+ * Quest-board restore (2026-07-29): pull the signed-in account's claimed
+ * tutorial quests from the server and re-mark them completed locally. The
+ * identity sweep deliberately wipes localStorage quest progress on session
+ * expiry / account switch (shared-machine leak guard) — but every claim has
+ * a durable tutorial_quest_claims row server-side, so the SAME account
+ * logging back in can always recover its completion display.
+ *
+ * NEVER applies before hydration: with skipHydration, ANY store set()
+ * makes the persist middleware write CURRENT state over the un-read
+ * localStorage blob (zustand persist writes on every setState), which would
+ * destroy counters and locally-completed-but-unclaimed progress before
+ * /game reads them (Codex adversarial round 1, BLOCKING 1). A pre-hydration
+ * call therefore only registers a post-hydration apply; routes that never
+ * hydrate never apply (nothing reads the store there).
+ *
+ * Cross-account guards (Codex round 1, BLOCKING 2): the response's echoed
+ * server-authenticated `userId` must match the account this sync started
+ * for (a cookie that switched mid-flight fails the check), and the apply
+ * additionally requires the store's stamped owner to still match — so a
+ * fast account switch can never graft one account's completions onto
+ * another's board.
+ */
+export function syncTutorialClaimsFromServer(
+  accountUserId: string,
+): Promise<void> {
+  if (lastClaimsSyncAccount === accountUserId) {
+    // Duplicate/concurrent caller for the same account: await the SAME
+    // in-flight request (Codex adversarial round 2, SHOULD-FIX 1) so the
+    // caller's restore-before-sweep sequencing actually holds instead of
+    // resolving while the watcher's fetch is still airborne.
+    return inflightClaimsSync ?? Promise.resolve();
+  }
+  lastClaimsSyncAccount = accountUserId;
+  const token = Symbol('claims-sync');
+  inflightClaimsSyncToken = token;
+  const sync = (async () => {
+    try {
+      const res = await api.getTutorialQuestClaims();
+      if (!res?.ok || !Array.isArray(res.claims)) return;
+      if (res.userId !== accountUserId) {
+        // The server answered for a DIFFERENT authenticated subject than this
+        // sync was started for — the cookie moved mid-flight. Never apply;
+        // allow the watcher's next resolution (which sees the new account) to
+        // start a correctly-bound sync.
+        lastClaimsSyncAccount = null;
+        return;
+      }
+      const claims = res.claims;
+      const apply = () => {
+        const s = useQuestStore.getState();
+        if (s.ownerUserId !== accountUserId) return; // owner moved on — stale sync
+        s.applyServerClaims(claims);
+      };
+      cancelPendingClaimsApply();
+      if (useQuestStore.persist.hasHydrated()) {
+        apply();
+      } else {
+        const unsub = useQuestStore.persist.onFinishHydration(() => {
+          unsub();
+          if (pendingClaimsApplyUnsub === unsub) pendingClaimsApplyUnsub = null;
+          apply();
+        });
+        pendingClaimsApplyUnsub = unsub;
+      }
+    } catch (err) {
+      // Transient failure (network / API blip): allow the next auth resolution
+      // or QuestTracker mount to retry. A 401 lands here too — harmless, the
+      // watcher won't re-invoke until an account actually resolves.
+      lastClaimsSyncAccount = null;
+      console.warn('[quest] server-claims restore fetch failed', err);
+    } finally {
+      if (inflightClaimsSyncToken === token) {
+        inflightClaimsSync = null;
+        inflightClaimsSyncToken = null;
+      }
+    }
+  })();
+  inflightClaimsSync = sync;
+  return sync;
+}
+
+/**
+ * Belt for QuestTracker mount: re-run the server-claims restore for the
+ * currently stamped owner (no-op when unstamped or already synced). Covers
+ * a transient fetch failure whose retry window the watcher already passed.
+ * Returns the sync promise so the caller can sequence the local claim sweep
+ * AFTER server-known completions land (avoids 409-spamming the claim
+ * endpoint for quests the server already recorded).
+ */
+export function retryServerClaimsRestore(): Promise<void> {
+  const owner = useQuestStore.getState().ownerUserId;
+  if (owner) return syncTutorialClaimsFromServer(owner);
+  return Promise.resolve();
 }
 
 export function triggerQuestCheck() {

@@ -42,7 +42,7 @@ const adapter = new DrizzlePostgreSQLAdapter(db, sessions, users);
  * rejected — Lucia session TTL is short enough (refresh on each
  * fresh-cookie request) that natural rotation completes in <24h.
  */
-function resolveSessionCookieDomain(): string | undefined {
+export function resolveSessionCookieDomain(): string | undefined {
   const explicit = process.env.SESSION_COOKIE_DOMAIN?.trim();
   if (explicit) return explicit;
   if (process.env.NODE_ENV === 'production') return '.clawville.world';

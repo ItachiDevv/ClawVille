@@ -179,6 +179,21 @@ export interface GameState {
   nearCharacter: string | null;
   setNearCharacter: (name: string | null) => void;
 
+  // Near land parcel — parcelCode of the parcel whose footprint the ACTIVE body
+  // is standing inside, or null. Written at 5 Hz by LandProximityTracker
+  // (World3DCanvas). Building precedence is enforced render-side by
+  // LandOptionsPill, not here.
+  nearParcelCode: string | null;
+  setNearParcelCode: (code: string | null) => void;
+
+  // Near salvage node — id of the seabed salvage node the ACTIVE body is
+  // standing within SALVAGE_INTERACT_RADIUS_WU of, or null. Written at the
+  // same 5 Hz cadence as nearParcelCode by LandProximityTracker
+  // (World3DCanvas). Independent of nearParcelCode — a node can sit outside
+  // every parcel footprint (most do; nodes are excluded FROM parcels).
+  nearSalvageNodeId: string | null;
+  setNearSalvageNodeId: (id: string | null) => void;
+
   // Near Town Guide (Nori) — true when player is within TALK_RADIUS_WORLD of
   // the town-guide anchor (0, _, 240). Drives the in-HUD "Talk to Nori" pill
   // glow + label swap so Nori gets the same proximity affordance the 10
@@ -417,8 +432,8 @@ export interface GameState {
   closeLandOffice: () => void;
   /**
    * The parcel the Land Office should pre-focus on open. Set by openLandOffice
-   * when the caller provides a parcelCode; cleared by the modal once it has
-   * consumed the focus (or on close). null = no pre-selection.
+   * when the caller provides a parcelCode; retained while open so the focused
+   * card stays highlighted, then cleared on close. null = no pre-selection.
    */
   landOfficeFocusParcel: string | null;
   clearLandOfficeFocus: () => void;
@@ -798,6 +813,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       // prompt the human could fire against a building the spectated agent has
       // long since walked away from).
       ...(mode === 'explore' || mode === 'autonomous' ? { nearLocation: null, nearCharacter: null } : {}),
+      nearParcelCode: null,
+      nearSalvageNodeId: null,
     });
   },
   toggleControlMode: () => {
@@ -905,6 +922,18 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ nearCharacter: name });
   },
 
+  nearParcelCode: null,
+  setNearParcelCode: (code) => {
+    if (code === get().nearParcelCode) return;
+    set({ nearParcelCode: code });
+  },
+
+  nearSalvageNodeId: null,
+  setNearSalvageNodeId: (id) => {
+    if (id === get().nearSalvageNodeId) return;
+    set({ nearSalvageNodeId: id });
+  },
+
   nearGuide: false,
   setNearGuide: (near) => set({ nearGuide: near }),
 
@@ -944,6 +973,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementFrozen: true,
       nearLocation: null,
       nearCharacter: null,
+      nearParcelCode: null,
+      nearSalvageNodeId: null,
     });
     // Same discovery-toast semantic as enterBuilding's chat path — clicking
     // a portal-bearing building also "meets" the character behind it.
@@ -1004,6 +1035,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementFrozen: true,
       nearLocation: null,
       nearCharacter: null,
+      nearParcelCode: null,
+      nearSalvageNodeId: null,
     });
     // Track discovery — a friendly toast the first time you meet a character
     const isNew = get().markBuildingVisited(locationId);
@@ -1465,6 +1498,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     avatarSpeed: 0,
     nearLocation: null,
     nearCharacter: null,
+    nearParcelCode: null,
+    nearSalvageNodeId: null,
     currentLocation: null,
     currentCharacter: null,
     chatOpen: false,

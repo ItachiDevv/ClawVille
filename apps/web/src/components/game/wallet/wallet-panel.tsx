@@ -45,6 +45,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { parcelDisplayName, parseParcelCode } from '@clawville/shared';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { useWalletBalances } from '@/hooks/use-wallet-balances';
@@ -907,14 +908,20 @@ function WithdrawHoldConsentPanel({
               <span className="block text-[10px] uppercase tracking-wider font-mono text-white/50">
                 At-risk parcel{many ? 's' : ''}
               </span>
-              {hold.parcels.map((p) => (
+              {hold.parcels.map((p) => {
+                const tier = parseParcelCode(p.parcelCode)?.tier;
+                const displayName = tier
+                  ? parcelDisplayName(p.parcelCode, tier)
+                  : p.parcelCode;
+                return (
                 <div key={p.parcelCode} className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-mono text-white break-all">{p.parcelCode}</span>
+                  <span className="text-xs font-semibold text-white">{displayName}</span>
                   <span className="text-[11px] font-mono text-white/60 shrink-0">
                     holds {p.holdThresholdCt.toLocaleString()} $CLAWVILLE
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

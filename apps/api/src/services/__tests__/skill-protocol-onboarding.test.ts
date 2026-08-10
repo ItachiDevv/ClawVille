@@ -3,6 +3,7 @@ import {
   KELP_REALM_FOOTPRINT_WU,
   MAP_LOCATIONS,
   SHOP_BUILDINGS,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import { describe, expect, test } from 'bun:test';
 import {
@@ -25,8 +26,8 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    // 41 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
-    expect(PROTOCOL_VERSION).toBe(41);
+    // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
+    expect(PROTOCOL_VERSION).toBe(49);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -36,6 +37,11 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('`identityKey` is a private account credential');
     expect(manual).toContain('secretIncluded:false');
     expect(manual).toContain('clawville:identity:<userId>');
+    expect(protocolManual).toContain('top-level `walletAddress` always equals `wallet.address`');
+    expect(protocolManual).toContain('`walletPending:true`');
+    expect(protocolManual).not.toContain("agent's\ninternal x402/fee wallet");
+    expect(manual).toContain('"walletAddress": "avatar settlement Solana public address"');
+    expect(manual).toContain('"walletPending": false');
     expect(manual).toContain('X-Clawville-Agent-Session');
     expect(manual).toContain('not** an Authorization');
     expect(manual).toContain('/api/agent/:sessionId/events');
@@ -124,17 +130,43 @@ describe('open-agent onboarding manuals', () => {
       'self-reported free-form string of at most 32',
     );
     expect(protocolManual).toMatch(
-      /Conventional values are `idle`, `walking`, `running`, and\s+`at-cove`\./,
+      /Conventional values are `idle`, `walking`, `running`,\s+`at-cove`, `at-kelp`, and `at-activity`\./,
     );
     expect(protocolManual).toContain(
-      'Clients render an "at the Cove" presence tag for',
+      'Clients render an\n"at the Cove" presence tag for',
     );
+      expect(protocolManual).toContain(
+        'an "at the Kelp\nForest" presence tag for `at-kelp`',
+      );
+      expect(protocolManual).toContain(
+        'an "in an activity"\npresence tag for `at-activity`',
+      );
     expect(protocolManual).toContain(
-      'this is a display convention, not\nlocation-authoritative',
+      'these are display conventions,\nnot location-authoritative',
     );
     expect(protocolManual).toContain('poker_get_state');
     expect(protocolManual).toContain('poker_advise');
     expect(protocolManual).toContain('poker_connection');
+    expect(protocolManual).toContain('/api/land/structures/public');
+    expect(protocolManual).toContain('[ACTION: claim_parcel(parcelCode=<listed code>, door=<hold|rent>, weeks=<1..26>)]');
+    expect(protocolManual).toContain('[ACTION: prepay_rent(parcelCode=<owned code>, weeks=<1..26>)]');
+    expect(protocolManual).toContain('[ACTION: release_parcel(parcelCode=<owned code>)]');
+    expect(protocolManual).toContain('Starter requires **100,000 CLV**');
+    expect(protocolManual).toContain('C requires\n  **250,000 CLV**');
+    expect(protocolManual).toContain('Founder requires **10,000,000 CLV**');
+    expect(protocolManual).toContain('first week is paid immediately and is irrevocable');
+    expect(protocolManual).toContain('**3-day grace**');
+    expect(protocolManual).toContain('wallet_change_requires_human');
+    expect(protocolManual).toContain('wallet_locked_by_hold');
+    expect(protocolManual).toContain('tenancy\'s acquisition timestamp');
+    expect(protocolManual).toContain('/api/land/structures/:structureId/appearance');
+    expect(protocolManual).toContain('there is no appearance `[ACTION:]` verb');
+    expect(protocolManual).toContain('/api/land/parcels/:parcelId/pieces');
+    expect(protocolManual).toContain('rearrange or remove existing yard pieces');
+    expect(protocolManual).toContain('/api/land/pieces/public');
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE).toContainEqual(
+      expect.stringContaining('/api/land/structures/public'),
+    );
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
@@ -179,8 +211,8 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    // 41 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
-    expect(PROTOCOL_VERSION).toBe(41);
+    // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
+    expect(PROTOCOL_VERSION).toBe(49);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
@@ -192,8 +224,11 @@ describe('open-agent onboarding manuals', () => {
       expect(manual).toContain('`wallet.secretKey` appears');
       expect(manual).toContain('relay it once to the human for their self-custody');
       expect(manual).toContain('backup; do not store it in agent config.');
-      expect(manual).toContain('Both secrets are returned once and are');
-      expect(manual).toContain('never repeated.');
+      expect(manual).toContain('The identity secret is returned once.');
+      expect(manual).toContain('The wallet secret is best-effort');
+      expect(manual).toContain('it may be absent even on first connect.');
+      expect(manual).toContain('top-level `walletAddress` always equals `wallet.address`');
+      expect(manual).toContain('`walletPending:true`');
       for (const phrase of removedMatrixPhrases) expect(manual).not.toContain(phrase);
     }
     expect(block.split(hatcherSentence)).toHaveLength(2);

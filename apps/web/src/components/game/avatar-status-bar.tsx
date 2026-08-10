@@ -6,6 +6,7 @@ import { useGameStore } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
 import { useAuthMe } from '@/hooks/use-auth-me';
+import { useSalvageStore } from '@/stores/salvage';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
@@ -37,6 +38,11 @@ export default function AvatarStatusBar() {
   // round trip.
   const { data: authData } = useAuthMe();
   const isGuest = !!(authData as any)?.user?.isGuest;
+  // Materials (Land gamification, salvage earn loop) — hidden for guests
+  // like the rest of the real economy since salvage claiming itself is
+  // sign-in-gated (§2.6: guests never earn materials, so their balance is
+  // always 0 and the chip would just be clutter).
+  const materialBalance = useSalvageStore((s) => s.materialBalance);
 
   if (isLoading) return null;
   // Hide on ALL touch devices (incl. iPad Air/Pro which exceed Tailwind's
@@ -139,6 +145,18 @@ export default function AvatarStatusBar() {
       {isGuest && (
         <div className="text-[10px] text-amber-200/80 mt-1 md:mb-3">
           Demo tokens — sign up to earn real vCLAW.
+        </div>
+      )}
+
+      {/* Materials balance — seabed salvage earn loop (Land gamification
+          P7b/P5b). Non-cashable, sink-only into HOME kit pieces; hidden for
+          guests since salvage claiming itself requires a real account. */}
+      {!isGuest && (
+        <div className="flex items-center gap-1.5 mt-1.5 mb-1.5 md:mb-2">
+          <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/20 rounded-full px-2.5 py-0.5">
+            <span className="text-xs" aria-hidden>&#x1FAB8;</span>
+            {materialBalance} material{materialBalance === 1 ? '' : 's'}
+          </span>
         </div>
       )}
 

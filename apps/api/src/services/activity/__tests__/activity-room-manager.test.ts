@@ -21,6 +21,10 @@ const dbMock = makeDbMock();
 
 mock.module('@clawville/database', () => ({
   db: dbMock,
+  and: (...args: unknown[]) => args,
+  eq: (...args: unknown[]) => args,
+  inArray: (...args: unknown[]) => args,
+  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ strings, vals }),
   activityRooms: {
     id: 'id',
     activityId: 'activity_id',
@@ -35,6 +39,14 @@ mock.module('@clawville/database', () => ({
   activityParties: { id: 'id' },
   activityPartyMembers: { partyId: 'party_id' },
   activityReplays: { id: 'id' },
+  lobbies: {
+    id: 'id',
+    roomId: 'room_id',
+    mode: 'mode',
+    state: 'state',
+  },
+  lobbyEvents: { id: 'id' },
+  lobbyPlayers: { lobbyId: 'lobby_id', avatarId: 'avatar_id' },
   // Chunk #7 — reward pipeline imports these.
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
   avatars: { id: 'id', flags: 'flags' },
@@ -48,6 +60,14 @@ mock.module('@clawville/database', () => ({
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
     ghostReplayData: 'ghost_replay_data',
+  },
+  reefRacePersonalBestClaims: {
+    id: 'claim_id',
+    sourceRoomId: 'source_room_id',
+    avatarId: 'avatar_id',
+    bestLapMs: 'best_lap_ms',
+    previousBestLapMs: 'previous_best_lap_ms',
+    dailyRank: 'daily_rank',
   },
 }));
 
@@ -82,16 +102,41 @@ mock.module('../activity-replay-log', () => ({
   },
 }));
 
+mock.module('../../wager-program-client', () => ({
+  cancelLobby: () => Promise.reject(new Error('unexpected production cancel in unit test')),
+  lockLobby: () => Promise.reject(new Error('unexpected production lock in unit test')),
+  readWagerLobbyChainState: () =>
+    Promise.reject(new Error('unexpected production chain read in unit test')),
+  settleSolLobby: () => Promise.reject(new Error('unexpected production settle in unit test')),
+  withResolvedWagerLobbyFence: () =>
+    Promise.reject(new Error('unexpected production fence in unit test')),
+  WagerClientError: class WagerClientError extends Error {
+    constructor(message: string, public readonly code: string) {
+      super(message);
+    }
+  },
+}));
+
 const {
   activityRoomManager,
   RoomCapacityError,
   MAX_ROOMS_PER_ACTIVITY,
   MAX_ROOMS_TOTAL,
   REEF_RACE_NO_SHOW_ABORT_MS,
+  LIVE_OWNER_WATCHDOG_GRACE_MS,
+  shouldCrashSweepLiveRoom,
 } = await import(
   '../activity-room-manager'
 );
 const { REEF_RACE_COUNTDOWN_DURATION_MS } = await import('@clawville/shared');
+const { bumperShellsSim } = await import('../sim/bumper-shells-sim');
+const { cancelLobbyForAbortedRoom, handleWagerRoomAborted } = await import(
+  '../wager-lobby-bridge'
+);
+import type {
+  LobbyHandle,
+  WagerAbortRecoveryDeps,
+} from '../wager-lobby-bridge';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -101,6 +146,23 @@ const ACTIVITY_CONFIG = {
   maxPlayers: 8,
   preferredPlayers: 6,
 };
+
+describe('live no-WS crash sweep', () => {
+  it('allows a bounded live owner lease to settle voluntary DNF rows', () => {
+    const now = 1_000_000;
+    const longIdle = 60_000;
+    expect(
+      shouldCrashSweepLiveRoom(0, longIdle, now + 1, now),
+    ).toBe(false);
+  });
+
+  it('retains no-WS sweeping without a lease and watchdogs expired owners', () => {
+    const now = 1_000_000;
+    expect(shouldCrashSweepLiveRoom(0, 60_000, null, now)).toBe(true);
+    expect(shouldCrashSweepLiveRoom(1, 60_000, null, now)).toBe(false);
+    expect(shouldCrashSweepLiveRoom(1, 0, now - 1, now)).toBe(true);
+  });
+});
 
 function makeParticipants(count: number) {
   return Array.from({ length: count }, (_, i) => ({
@@ -436,6 +498,174 @@ describe('Room sweeper', () => {
     room.endedAt = Date.now() - 121_000;
     await activityRoomManager.roomSweeper();
     expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
+  });
+
+  it('cancels a locked wager after lease expiry, once, while preserving the MTT filter', async () => {
+    jest.useFakeTimers();
+    const startedAt = new Date('2026-07-31T12:00:00.000Z').getTime();
+    jest.setSystemTime(startedAt);
+    const cancelInputs: Array<{
+      lobbyIdBigint: bigint;
+      signerKind: 'creator' | 'settlement-authority';
+    }> = [];
+    const chainReads: bigint[] = [];
+    const mttRecovered: string[] = [];
+    const evictedParticipants: string[][] = [];
+    let attachedRoomId = '';
+    let chainState: 'locked' | 'cancelled' = 'locked';
+    let refundable = false;
+    let cancelSig: string | null = null;
+    let lobby: LobbyHandle = {
+      rowId: '00000000-0000-0000-0000-000000000099',
+      lobbyId: 99n,
+      state: 'locked',
+      mode: 'multiplayer',
+      onChainCreateStatus: 'confirmed',
+    };
+    const wagerDeps: WagerAbortRecoveryDeps = {
+      findLobbyForRoom: async (roomId) =>
+        roomId === attachedRoomId ? { ...lobby } : null,
+      withResolvedFence: async (lobbyRowId, run) => {
+        expect(lobbyRowId).toBe(lobby.rowId);
+        return run({
+          getCurrent: async () => ({ ...lobby }),
+          markCancelled: async ({ txSig }) => {
+            lobby = { ...lobby, state: 'cancelled' };
+            cancelSig = txSig;
+            refundable = true;
+          },
+        });
+      },
+      readChainState: async (lobbyId) => {
+        chainReads.push(lobbyId);
+        return chainState;
+      },
+      cancelLobby: async (input) => {
+        cancelInputs.push(input);
+        chainState = 'cancelled';
+        return { txSig: 'cancel-sig-99', signerPubkey: 'settlement-authority' };
+      },
+    };
+    activityRoomManager.registerAbortNotifyFn((roomId, activityId, status) =>
+      handleWagerRoomAborted(roomId, activityId, status, wagerDeps),
+    );
+    activityRoomManager.registerAbortNotifyFn((roomId, activityId) => {
+      if (activityId === 'texas-holdem-mtt') mttRecovered.push(roomId);
+    });
+    activityRoomManager.setEvictionFn((room) => {
+      evictedParticipants.push(Array.from(room.participants.keys()));
+      bumperShellsSim.stopRoom(room.id);
+    });
+
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    attachedRoomId = room.id;
+    await activityRoomManager.transitionRoom(room.id, 'live');
+    const simState = bumperShellsSim.startRoom(
+      room.id,
+      room.activityId,
+      Array.from(room.participants.keys()),
+    );
+    activityRoomManager.acquireLiveOwnerLease(
+      room.id,
+      'bumper-shells-sim',
+      simState.endsAt,
+    );
+    // Deterministically model the interval owner dying without firing endRound.
+    if (simState.intervalHandle) clearInterval(simState.intervalHandle);
+    simState.intervalHandle = null;
+    for (const participant of room.participants.values()) {
+      participant.connected = true;
+    }
+
+    jest.setSystemTime(simState.endsAt + LIVE_OWNER_WATCHDOG_GRACE_MS - 1);
+    await activityRoomManager.roomSweeper();
+    expect(activityRoomManager.getRoom(room.id)).toBeDefined();
+
+    jest.setSystemTime(simState.endsAt + LIVE_OWNER_WATCHDOG_GRACE_MS + 1);
+    await activityRoomManager.roomSweeper();
+    expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
+    expect(bumperShellsSim.__getState(room.id)).toBeUndefined();
+    expect(lobby.state).toBe('cancelled');
+    expect(refundable).toBe(true);
+    expect(cancelSig as string | null).toBe('cancel-sig-99');
+    expect(chainReads).toEqual([99n]);
+    expect(cancelInputs).toEqual([
+      { lobbyIdBigint: 99n, signerKind: 'settlement-authority' },
+    ]);
+    expect(mttRecovered).toEqual([]);
+    expect(evictedParticipants).toEqual([Array.from(room.participants.keys())]);
+    expect(
+      activityRoomManager.getPlayerActiveRoom(
+        room.participants.keys().next().value!,
+      ),
+    ).toBeUndefined();
+
+    // Explicit replay is a DB-state no-op: no second chain read or cancel.
+    await expect(cancelLobbyForAbortedRoom(room.id, wagerDeps)).resolves.toBe(
+      'already_terminal',
+    );
+    expect(chainReads).toEqual([99n]);
+    expect(cancelInputs).toHaveLength(1);
+
+    const mttRoom = await activityRoomManager.createRoom(
+      'texas-holdem-mtt',
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(mttRoom.id, 'live');
+    await activityRoomManager.transitionRoom(mttRoom.id, 'aborted_crash');
+    expect(mttRecovered).toEqual([mttRoom.id]);
+    expect(cancelInputs).toHaveLength(1);
+  });
+
+  it('reconciles an ambiguous abort cancel on retry without a second send', async () => {
+    let lobby: LobbyHandle = {
+      rowId: '00000000-0000-0000-0000-000000000077',
+      lobbyId: 77n,
+      state: 'locked',
+      mode: 'multiplayer',
+      onChainCreateStatus: 'confirmed',
+    };
+    let chainState: 'locked' | 'cancelled' = 'locked';
+    let cancelCalls = 0;
+    let reconciledFromChain = false;
+    const deps: WagerAbortRecoveryDeps = {
+      findLobbyForRoom: async () => ({ ...lobby }),
+      withResolvedFence: async (_lobbyRowId, run) =>
+        run({
+          getCurrent: async () => ({ ...lobby }),
+          markCancelled: async (input) => {
+            lobby = { ...lobby, state: 'cancelled' };
+            reconciledFromChain = input.reconciledFromChain;
+          },
+        }),
+      readChainState: async () => chainState,
+      cancelLobby: async (input) => {
+        expect(input).toEqual({
+          lobbyIdBigint: 77n,
+          signerKind: 'settlement-authority',
+        });
+        cancelCalls++;
+        chainState = 'cancelled';
+        throw new Error('RPC response lost after send');
+      },
+    };
+
+    await expect(cancelLobbyForAbortedRoom('room-77', deps)).rejects.toThrow(
+      'RPC response lost after send',
+    );
+    expect(lobby.state).toBe('locked');
+
+    await expect(cancelLobbyForAbortedRoom('room-77', deps)).resolves.toBe(
+      'reconciled_cancelled',
+    );
+    expect(lobby.state).toBe('cancelled');
+    expect(reconciledFromChain).toBe(true);
+    expect(cancelCalls).toBe(1);
   });
 });
 

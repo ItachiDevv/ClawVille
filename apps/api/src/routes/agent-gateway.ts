@@ -12,6 +12,7 @@ import {
   DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_AGENT_CATEGORY,
   DEFAULT_AGENT_HARNESS,
+  parcelDisplayName,
   type NpcActivity,
   type AgentStats,
   type AgentSubstrateRegistration,
@@ -21,7 +22,7 @@ import { npcSimulation } from '../services/npc-simulation';
 import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql, type AgentBotAck } from '@clawville/database';
+import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, asc, isNull, sql, type AgentBotAck } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
@@ -46,7 +47,13 @@ import {
   gatewayCredentialZodFields,
   planReconnectSession,
 } from '../services/agent-reconnect-session';
-import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
+import {
+  type AvatarSettlementResolution,
+  avatarSettlementAddressFields,
+  ensureWalletWithFirstTimeSecret,
+  provisionAvatarWallet,
+  resolveAvatarSettlementAddress,
+} from '../services/wallet-service';
 // Shared own-property building-center guard (prototype-key CT-farm defense) used by
 // /visit-building, /building/:buildingId/chat and /move. Lives in its own
 // dependency-free module so the F1 money-path test can exercise the SAME guard.
@@ -74,6 +81,7 @@ import {
   buildReturningIdentityDisclosure,
   connectionTokenClaimError,
   planConnectOwnerBinding,
+  resolvePersistedConnectOwnerProof,
   sessionLedgerCapable,
   type AgentStatusStats,
   type AgentStatusOwnership,
@@ -691,7 +699,6 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // Never log or echo the raw key.
   let identityKeyUserId: string | null = null;
   let identityKeyAvatarId: string | null = null;
-  let identityKeyAvatarName: string | null = null;
   if (data.identityKey && tokenUserId === null) {
     try {
       const identity = resolveIdentityForTicket({
@@ -707,30 +714,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
         );
         const user = coordinated.user;
         identityKeyUserId = user.id;
-        if (pendingConn?.publicHandoff) {
-          // Account creation happens at claim, never at anonymous mint. Reuse
-          // the `/join` default-avatar semantics before ownerBinding/session
-          // construction so every downstream attribution sees one real avatar.
-          const { avatar } = await resolveOrProvisionOnboardingAvatar({
-            userId: user.id,
-            requestedName:
-              data.name
-              ?? data.miladyCharacterName
-              ?? resolvedAgentId.slice(0, 24),
-            learningFocus: pendingConn.learningFocus,
-          });
-          identityKeyAvatarId = avatar.id;
-          identityKeyAvatarName = avatar.name;
-          pendingConn.userId = user.id;
-          pendingConn.avatarId = avatar.id;
-          pendingConn.avatarName = avatar.name;
-        } else {
+        if (!pendingConn?.publicHandoff) {
           const activeAvatar = await db.query.avatars.findFirst({
             where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-            columns: { id: true, name: true },
+            columns: { id: true },
           });
           identityKeyAvatarId = activeAvatar?.id ?? null;
-          identityKeyAvatarName = activeAvatar?.name ?? null;
         }
       }
     } catch (err) {
@@ -748,6 +737,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // ONLY when ownership is proven (see below). `existingBoundUserId` records
   // whether the matched row was already bound to a human before this connect.
   let existingBoundUserId: string | null = null;
+  let persistedLiveUserId: string | null = null;
+  let ownerBindConflict = false;
   let ownerBinding = planConnectOwnerBinding({
     existingUserId: null,
     tokenUserId,
@@ -808,6 +799,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
             identityKeyUserId,
             activeAvatarId: identityKeyAvatarId,
           });
+          persistedLiveUserId = liveOwner?.userId ?? existingBoundUserId;
+        } else {
+          persistedLiveUserId = claimed.userId ?? null;
         }
       }
       if (ownerBinding.identityMismatch) {
@@ -835,7 +829,15 @@ agentGatewayRoutes.post('/connect', async (c) => {
       const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
       resolvedSpecies = persistedSpecies;
 
-      await db.update(agentBots).set({
+      const ownerCas =
+        tokenUserId !== null
+          ? existing.userId === null
+            ? isNull(agentBots.userId)
+            : eq(agentBots.userId, existing.userId)
+          : identityKeyUserId !== null
+            ? eq(agentBots.userId, identityKeyUserId)
+            : undefined;
+      const [persisted] = await db.update(agentBots).set({
         identityType,
         gatewayUrl: resolveConnectGatewayForPersistence({
           identityType,
@@ -873,7 +875,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // event for the rest of its life.
         sessionSweptAt: null,
         updatedAt: new Date(),
-      }).where(eq(agentBots.id, existing.id));
+      }).where(
+        ownerCas
+          ? and(eq(agentBots.id, existing.id), ownerCas)
+          : eq(agentBots.id, existing.id),
+      ).returning({ userId: agentBots.userId });
+      if (persisted) {
+        persistedLiveUserId = persisted.userId ?? null;
+      } else if (ownerCas) {
+        ownerBindConflict = true;
+        const liveOwner = await db.query.agentBots.findFirst({
+          where: eq(agentBots.id, existing.id),
+          columns: { userId: true },
+        });
+        persistedLiveUserId = liveOwner?.userId ?? null;
+      }
     } else {
       // First-time contact — use miladyCharacterName when present so the
       // bot is named from the Milady runtime rather than needing a separate
@@ -916,6 +932,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         sessionKeyHash: sha256Hex(sessionId),
       }).returning();
       uuid = inserted.id;
+      persistedLiveUserId = inserted.userId ?? null;
     }
   } catch (err) {
     console.error('[AgentConnect] DB error:', err);
@@ -926,16 +943,118 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: 'Database error during agent registration' }, 500);
   }
 
+  if (ownerBindConflict) {
+    if (pendingConn) releasePendingConnectionClaim(pendingConn);
+    if (pendingConn?.publicHandoff) {
+      return c.json({ error: 'Connection token claim conflicted' }, 409);
+    }
+    return c.json(
+      {
+        error: 'Owner binding changed during connect',
+        code: 'OWNER_BIND_CONFLICT',
+      },
+      409,
+    );
+  }
+
   // Fail closed: only a credential-proven owner with an active avatar gets the
   // config-level grant. Spend-time resolution rechecks the live bot row.
-  const ledgerCapable = ownerBinding.ledgerCapable;
+  const ownerProofSource =
+    tokenUserId !== null
+      ? 'connection-token'
+      : identityKeyUserId !== null
+        ? 'explicit-identity'
+        : normalized.ticketMiladyAgentId
+          ? 'milady-inferred'
+          : hasDeclaredGateway
+            ? 'gateway-inferred'
+            : 'anonymous';
+  const candidateOwnerUserId = tokenUserId ?? identityKeyUserId;
+  const preliminaryOwnerProof = resolvePersistedConnectOwnerProof({
+    source: ownerProofSource,
+    candidateUserId: candidateOwnerUserId,
+    persistedUserId: persistedLiveUserId,
+    avatarId: null,
+  });
+
+  let finalAvatarId: string | null = null;
+  let finalAvatarName: string | null = null;
+  let walletResolution: AvatarSettlementResolution = { status: 'pending' };
+  let walletBlock: {
+    address: string;
+    chain: 'solana';
+    secretKey?: string;
+  } | null = null;
+
+  // Provision only after the atomic bind/CAS reports the credential owner as
+  // the persisted live owner. Inferred identities and conflicts never mutate a
+  // wallet and remain fail-closed.
+  if (preliminaryOwnerProof.ownerProven && preliminaryOwnerProof.boundUserId) {
+    try {
+      const { avatar } = await resolveOrProvisionOnboardingAvatar({
+        userId: preliminaryOwnerProof.boundUserId,
+        requestedName:
+          data.name
+          ?? data.miladyCharacterName
+          ?? resolvedAgentId.slice(0, 24),
+        learningFocus: pendingConn?.learningFocus,
+      });
+      finalAvatarId = avatar.id;
+      finalAvatarName = avatar.name;
+      identityKeyAvatarId = avatar.id;
+      if (pendingConn) {
+        pendingConn.userId = preliminaryOwnerProof.boundUserId;
+        pendingConn.avatarId = avatar.id;
+        pendingConn.avatarName = avatar.name;
+      }
+
+      const provisionedWallet = await provisionAvatarWallet(avatar.id, { disclose: true });
+      walletResolution = await resolveAvatarSettlementAddress(avatar.id);
+      if (walletResolution.status === 'ready') {
+        walletBlock = {
+          address: walletResolution.address,
+          chain: 'solana',
+          ...(provisionedWallet.firstTimeSecretKeyBase58
+            ? { secretKey: provisionedWallet.firstTimeSecretKeyBase58 }
+            : {}),
+        };
+      }
+    } catch (err) {
+      console.error('[AgentConnect] owner-proven avatar/wallet provisioning failed (non-fatal):', err);
+      if (finalAvatarId) {
+        walletResolution = await resolveAvatarSettlementAddress(finalAvatarId).catch(
+          () => ({ status: 'pending' as const }),
+        );
+      }
+    }
+  }
+  if (walletResolution.status === 'ready' && !walletBlock) {
+    walletBlock = { address: walletResolution.address, chain: 'solana' };
+  }
+
+  const persistedOwnerConflict =
+    candidateOwnerUserId !== null && persistedLiveUserId !== candidateOwnerUserId;
+  const finalOwnerProof = resolvePersistedConnectOwnerProof({
+    source: ownerProofSource,
+    candidateUserId: candidateOwnerUserId,
+    persistedUserId: persistedLiveUserId,
+    avatarId: finalAvatarId,
+  });
+  ownerBinding = {
+    persistedUserId: persistedLiveUserId,
+    identityMismatch: persistedOwnerConflict,
+    boundUserId: finalOwnerProof.boundUserId,
+    ledgerCapable: finalOwnerProof.ledgerCapable,
+    ownershipChanged: persistedLiveUserId !== existingBoundUserId,
+  };
+  const ledgerCapable = finalOwnerProof.ledgerCapable;
 
   // `boundUserId` (Codex auth-lens hardening round 2, 2026-06-03) — the user this
   // session proves ownership of, stamped onto the session config so
   // resolveAgentSession can re-validate it against the LIVE row at spend time.
   // It is the owner actually proven and persisted by this request, never merely
   // an owner found by looking up a public agentId.
-  const boundUserId: string | null = ownerBinding.boundUserId;
+  const boundUserId: string | null = finalOwnerProof.boundUserId;
 
   // Eviction on ownership rebind (Codex auth-lens hardening round 2 — Option B,
   // the primary close). If this connect CHANGES the row's bound userId (an
@@ -958,19 +1077,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
-  // Step 2b: Ensure the bot has a custodial Solana wallet. Idempotent —
-  // returning agents keep their existing wallet across launches. Failure
-  // here is non-fatal (we log + continue without a wallet) because the
-  // agent can still play the game; only Phase 4 x402 payment features
-  // require the wallet.
-  let walletAddress: string | null = null;
-  try {
-    const wallet = await ensureWallet('agent', uuid);
-    walletAddress = wallet.publicKey;
-  } catch (err) {
-    console.error('[AgentConnect] Wallet auto-gen failed:', err);
-  }
-
+  // Wallet advertisement is derived only from the verified avatar settlement
+  // wallet after the persisted owner binding is known.
   // Step 3: Register in npc-simulation so the bot actually spawns in the world.
   // Override mode takes over an existing NPC — check it FIRST before falling
   // through to avatar mode. Avatar mode spawns a new bot (name + species).
@@ -997,7 +1105,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
-        avatarId: pendingConn?.avatarId ?? undefined,
+        avatarId: finalAvatarId ?? undefined,
       });
       const client = new AgentSubstrateClient(config);
       npcSimulation.registerAgentBot(config, client);
@@ -1058,7 +1166,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
-        avatarId: pendingConn?.avatarId ?? undefined,
+        avatarId: finalAvatarId ?? undefined,
       });
 
       // The simulation still needs a client instance for fail-soft bodies that do
@@ -1112,6 +1220,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
+  if (finalAvatarId) {
+    npcSimulation.bindAgentAvatarAttribution(sessionId, finalAvatarId);
+  }
+
   // Phase 5 — mint an agent-issued magic-link ticket so the agent can
   // reply to its human with an auto-login URL. Best-effort: if ticket
   // issuance fails for any reason we still return a successful connect
@@ -1132,9 +1244,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
     resolvedAgentId,
     identityType,
     sessionId,
-    existingUserId: pendingConn?.userId ?? identityKeyUserId,
-    existingAvatarId: pendingConn?.avatarId ?? identityKeyAvatarId,
-    existingAvatarName: pendingConn?.avatarName ?? identityKeyAvatarName,
+    existingUserId: boundUserId,
+    existingAvatarId: finalAvatarId,
+    existingAvatarName: finalAvatarName,
   });
   const sessionTicket = resolved.ticket;
   if (pendingConn?.publicHandoff) {
@@ -1177,13 +1289,6 @@ agentGatewayRoutes.post('/connect', async (c) => {
       ? ticketExpiresAt
       : Date.now() + TOKEN_TTL_MS;
   }
-  if (resolved.avatarId) {
-    // IdentityKey/Milady first-contact can resolve/create the avatar only after
-    // the body was registered above. Complete the INTERNAL attribution before
-    // returning the bearer so subsequent `[ACTION:]` records bind correctly.
-    npcSimulation.bindAgentAvatarAttribution(sessionId, resolved.avatarId);
-  }
-
   // Explicit identity credentials heal previously-unbound rows organically on
   // reconnect. A user without an active avatar is still non-ledger until `/join`
   // or the game UI creates one; bare agentId connects remain unbound.
@@ -1255,43 +1360,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
-  // Phase 6.1 — avatar wallet disclosure, now returned EVERY session when
-  // an avatar is resolved. Only the `secretKey` field is first-time-only
-  // (server never re-exposes it); the public `address` flows every time
-  // so the agent can save it to config and call /api/agent/wallet for
-  // balance reads + earnings summaries. Before this change the agent
-  // had no way to learn its avatar's wallet address on returning sessions,
-  // which broke the "report what it earned this session" loop the
-  // human needs.
+  // Phase 6.1 wallet disclosure:
+  // Both fundable fields describe the same verified avatar settlement wallet.
+  // Pending or unproven owners receive neither fundable field.
   //
-  // Top-level `walletAddress` stays the AGENT wallet (per existing
-  // contract) — this `wallet` block is the AVATAR wallet, a separate
-  // economic identity. SKILL.md disambiguates the two for the agent.
-  let walletBlock: {
-    address: string;
-    chain: 'solana';
-    secretKey?: string;
-  } | null = null;
-  if (resolved.avatarId) {
-    try {
-      const avatarWallet = await ensureWalletWithFirstTimeSecret('avatar', resolved.avatarId);
-      walletBlock = {
-        address: avatarWallet.publicKey,
-        chain: 'solana',
-        // `firstTimeSecretKeyBase58` is populated only on the mint that
-        // created the keypair. Subsequent calls for the same avatar
-        // leave it undefined, and we omit the field from the JSON
-        // below so a stale client can't misread a missing secret as a
-        // valid one.
-        ...(avatarWallet.firstTimeSecretKeyBase58
-          ? { secretKey: avatarWallet.firstTimeSecretKeyBase58 }
-          : {}),
-      };
-    } catch (err) {
-      console.error('[AgentConnect] avatar wallet provisioning failed (non-fatal):', err);
-    }
-  }
-
+  // Top-level `walletAddress` equals `wallet.address` when ready.
   // Event payload — enrich with userId/avatarId when we resolved them from a
   // connection token. Dashboard funnels join events by userId/avatarId when
   // available, by agentId otherwise.
@@ -1398,7 +1471,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     cognition: normalized.cognition,
-    walletAddress,
+    ...avatarSettlementAddressFields(walletResolution),
     // Pull-side expiry visibility (2026-06-12) — the ISO timestamp this
     // session's sliding 24h TTL currently expires at. Slides forward on every
     // activity; poll GET /api/agent/session-status (or re-read this on connect)
@@ -1520,9 +1593,12 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   //    ticket still mints (they'll be bounced to /create-agent on
   //    click).
   const userAvatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, userId),
-    columns: { id: true, name: true, walletAddress: true },
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    columns: { id: true, name: true },
   });
+  const reconnectWalletResolution = userAvatar
+    ? await resolveAvatarSettlementAddress(userAvatar.id)
+    : { status: 'pending' as const };
 
   // Find the most-recent bot row for this user (by lastSeenAt desc). The
   // `uuid` field surfaced in the response is the existing bot id so
@@ -1694,15 +1770,15 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     // identity). The agent's internal bot wallet isn't relevant on
     // reconnect — the agent already has its config and doesn't need
     // its own wallet surfaced again.
-    walletAddress: userAvatar?.walletAddress ?? null,
+    ...avatarSettlementAddressFields(reconnectWalletResolution),
     // Phase 6.1 — also return the avatar wallet in the same `wallet` block
     // shape as /connect, so the agent has ONE place to read from
     // regardless of which flow it took. `secretKey` is NEVER returned on
     // reconnect — the first-time disclosure happens only on /connect.
-    ...(userAvatar?.walletAddress
+    ...(reconnectWalletResolution.status === 'ready'
       ? {
           wallet: {
-            address: userAvatar.walletAddress,
+            address: reconnectWalletResolution.address,
             chain: 'solana' as const,
           },
         }
@@ -3802,12 +3878,45 @@ agentGatewayRoutes.get('/:sessionId/status', async (c) => {
 
       // Land — one indexed count on owner_avatar_id.
       let landCount = 0;
+      let ownedLand: AgentStatusOwnership['landParcelDetail']['parcels'] = [];
       try {
-        const [row] = await db
+        const rows = await db
+          .select({
+            parcelCode: landParcels.parcelCode,
+            tier: landParcels.tier,
+            tenure: landParcels.tenure,
+            rentCtWeekly: landParcels.rentCtWeekly,
+            depositRemainingCt: landParcels.depositRemainingCt,
+            holdThresholdCt: landParcels.holdThresholdCt,
+            graceUntil: landParcels.graceUntil,
+          })
+          .from(landParcels)
+          .where(eq(landParcels.ownerAvatarId, avatar.id))
+          .orderBy(asc(landParcels.parcelCode))
+          .limit(5);
+        const [countRow] = await db
           .select({ c: sql<number>`count(*)::int` })
           .from(landParcels)
           .where(eq(landParcels.ownerAvatarId, avatar.id));
-        landCount = row?.c ?? 0;
+        landCount = countRow?.c ?? 0;
+        ownedLand = rows.map((parcel) => ({
+          parcelCode: parcel.parcelCode,
+          displayName: parcelDisplayName(parcel.parcelCode, parcel.tier),
+          tier: parcel.tier,
+          tenure: parcel.tenure === 'hold' || parcel.tenure === 'deposit'
+            ? parcel.tenure
+            : 'legacy',
+          weeklyRentVclaw: parcel.rentCtWeekly,
+          prepaidWeeksRemaining:
+            parcel.tenure === 'deposit'
+            && parcel.rentCtWeekly != null
+            && parcel.rentCtWeekly > 0
+            && parcel.depositRemainingCt != null
+              ? Math.floor(parcel.depositRemainingCt / parcel.rentCtWeekly)
+              : null,
+          holdThresholdClv: parcel.holdThresholdCt,
+          grace: parcel.graceUntil == null ? 'active' : 'grace',
+        }));
       } catch (err) {
         console.warn('[AgentStatus] land count failed (non-fatal):', err);
       }
@@ -3833,7 +3942,11 @@ agentGatewayRoutes.get('/:sessionId/status', async (c) => {
           if (owned) ownedSkills.push(`clawville-${buildingId}`);
         }
       }
-      ownership = { landParcels: landCount, ownedSkills };
+      ownership = {
+        landParcels: landCount,
+        landParcelDetail: { count: landCount, parcels: ownedLand },
+        ownedSkills,
+      };
     }
   }
 

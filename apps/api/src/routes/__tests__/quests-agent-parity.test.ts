@@ -150,7 +150,7 @@ describe('requireLedgerCapableIdentity — ownership-proof gate (Codex HIGH #1)'
   });
 });
 
-describe('quest admin + tutorial routes — unchanged human-only surface', () => {
+describe('quest admin routes — unchanged human-only surface', () => {
   it('POST /api/quests/admin/create → 401 without a Lucia cookie', async () => {
     const res = await app.request('/api/quests/admin/create', {
       method: 'POST',
@@ -160,23 +160,62 @@ describe('quest admin + tutorial routes — unchanged human-only surface', () =>
     expect(res.status).toBe(401);
   });
 
-  it('tutorial claim is cookie-gated TODAY (tracked parity debt, not an endorsement)', async () => {
-    // The tutorial ladder pays real vCLAW on a Lucia-only route — a Rule E5
-    // parity gap OUTSIDE this branch's scope (the economy-audit P2 item was
-    // the dev quest board). Tracked as follow-up debt in
-    // docs/economy-audit-punchlist-2026-07-11.md (P2b); this test asserts the
-    // CURRENT behavior so the eventual fix flips it deliberately.
-    const res = await app.request('/api/quests/tutorial/say-hi/claim', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Clawville-Agent-Session': 'not-a-real-session',
-      },
-      body: JSON.stringify({}),
+});
+
+describe('tutorial ladder — the P6 parity flip (was tracked debt)', () => {
+  // This suite used to assert the OPPOSITE: that the tutorial ladder ignored
+  // the agent header entirely. It paid real vCLAW on a Lucia-only route, which
+  // was the last Rule E5 parity gap on a live money surface. P6 (2026-08-09)
+  // closed it, and these cases are the deliberate flip.
+  const TUTORIAL_ROUTES: Array<{ method: 'GET' | 'POST'; path: string }> = [
+    { method: 'POST', path: '/api/quests/tutorial/say-hi-nori/claim' },
+    { method: 'GET', path: '/api/quests/tutorial/claims' },
+  ];
+
+  for (const { method, path } of TUTORIAL_ROUTES) {
+    it(`${method} ${path} → 401 naming the agent header, not a cookie-only rejection`, async () => {
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        ...(method === 'POST' ? { body: JSON.stringify({}) } : {}),
+      });
+      expect(res.status).toBe(401);
+      // The parity assertion: the agent bearer is a first-class credential on
+      // the tutorial ladder now, so the 401 must be
+      // requireAuthOrAgentSession's (which names BOTH accepted credentials),
+      // never requireAuth's cookie-only one.
+      expect(await res.text()).toContain('X-Clawville-Agent-Session');
     });
-    // requireAuth ignores the agent header entirely — 401, not 403/404.
-    expect(res.status).toBe(401);
-  });
+
+  }
+});
+
+const describeIfDbTutorial = process.env.DATABASE_URL ? describe : describe.skip;
+// Resolving a bearer HITS THE DATABASE, so these cannot run in the in-memory
+// tier — `bun scripts/test-isolated.mjs` blanks DATABASE_URL and the lazy db
+// proxy throws, which would surface as a 500 rather than the 401 under test.
+describeIfDbTutorial('tutorial ladder — agent-session resolution (DB tier)', () => {
+  const TUTORIAL_ROUTES: Array<{ method: 'GET' | 'POST'; path: string }> = [
+    { method: 'POST', path: '/api/quests/tutorial/say-hi-nori/claim' },
+    { method: 'GET', path: '/api/quests/tutorial/claims' },
+  ];
+
+  for (const { method, path } of TUTORIAL_ROUTES) {
+    it(`${method} ${path} → rejects an unresolvable agent session (401, session-aware)`, async () => {
+      const res = await app.request(path, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Clawville-Agent-Session': 'not-a-real-session',
+        },
+        ...(method === 'POST' ? { body: JSON.stringify({}) } : {}),
+      });
+      // requireAuth would have ignored the header entirely. This 401 comes from
+      // SESSION RESOLUTION, which proves the header was actually read.
+      expect(res.status).toBe(401);
+      expect(await res.text()).toContain('agent session');
+    });
+  }
 });
 
 // ─── DB-gated race coverage (Codex HIGH #2) ─────────────────────────────────

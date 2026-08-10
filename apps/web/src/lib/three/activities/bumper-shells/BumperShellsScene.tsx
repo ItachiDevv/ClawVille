@@ -32,6 +32,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { playActivitySound } from '@/lib/activity-audio';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { ActivityCanvasReadyProbe } from '@/lib/three/activities/ActivityCanvasReadyProbe';
 
 import BumperShellsArena    from './BumperShellsArena';
 import BumperShellsHazard   from './BumperShellsHazard';
@@ -499,6 +500,9 @@ interface SceneContentsProps {
   spectatorTargetAvatarId?: string | null;
   shakeRef: React.MutableRefObject<number>;
   onSelfHit: () => void;
+  roomKey: string;
+  onPainted: (roomKey: string) => void;
+  onCanvas: (element: HTMLCanvasElement | null) => void;
 }
 
 function SceneContents({
@@ -509,6 +513,9 @@ function SceneContents({
   spectatorTargetAvatarId,
   shakeRef,
   onSelfHit,
+  roomKey,
+  onPainted,
+  onCanvas,
 }: SceneContentsProps) {
   return (
     <>
@@ -564,6 +571,11 @@ function SceneContents({
 
       {/* Pipeline pre-compilation — MUST be LAST inside SceneContents */}
       <PreCompilePipelines />
+      <ActivityCanvasReadyProbe
+        roomKey={roomKey}
+        onPainted={onPainted}
+        onCanvas={onCanvas}
+      />
     </>
   );
 }
@@ -591,6 +603,9 @@ export interface BumperShellsSceneProps {
    * Falls back to first alive entity if null or the entity is eliminated.
    */
   spectatorTargetAvatarId?: string | null;
+  roomKey: string;
+  onPainted: (roomKey: string) => void;
+  onCanvas: (element: HTMLCanvasElement | null) => void;
 }
 
 export default function BumperShellsScene({
@@ -598,6 +613,9 @@ export default function BumperShellsScene({
   selfAvatarId = null,
   spectatorCamMode,
   spectatorTargetAvatarId,
+  roomKey,
+  onPainted,
+  onCanvas,
 }: BumperShellsSceneProps) {
   const entities = useActivityStore((s) => s.entities as Map<string, BumperShellEntity>);
   const pickups  = useActivityStore((s) => s.pickups  as Map<string, BumperPickup>);
@@ -605,6 +623,11 @@ export default function BumperShellsScene({
   // Camera shake magnitude (shared between ChaseCameraController and HitEventProcessor)
   // Stored as a mutable ref to avoid React re-renders in the hot useFrame path.
   const shakeRef = useRef(0);
+
+  useEffect(() => {
+    _hitCheckScratch.lastHitCount = 0;
+    _elimCheckScratch.lastElimCount = 0;
+  }, [roomId]);
 
   // Screen flash state — DOM overlay, not Three.js.
   const [flashOpacity, setFlashOpacity] = useState(0);
@@ -655,6 +678,9 @@ export default function BumperShellsScene({
           spectatorTargetAvatarId={spectatorTargetAvatarId}
           shakeRef={shakeRef}
           onSelfHit={handleSelfHit}
+          roomKey={roomKey}
+          onPainted={onPainted}
+          onCanvas={onCanvas}
         />
       </Canvas>
 

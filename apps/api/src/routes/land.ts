@@ -1,21 +1,38 @@
 /**
- * Land Economy — Phase 1 / Slice A routes (`/api/land`).
+ * LAND P2 TENURE CONTRACT (supersedes legacy route notes later in this header):
+ * - POST /claim-starter: unconditional pre-auth 409 `tenure_model_active`.
+ * - POST /hold-wallet: auth -> ledger-capable -> non-guest; strict
+ *   `{ walletAddress }`; canonical base58 declaration with no signature proof;
+ *   first declaration is human/agent parity-open, but repointing is human-only
+ *   and 409 `wallet_locked_by_hold` while any live v2 hold exists.
+ * - POST /parcels/:parcelId/claim-rent: same middleware; strict
+ *   `{ weeks: 1..26, idempotencyKey: 8..64 }`; server quotes starter=1000 and
+ *   c=2500 vCLAW/week; founder has no rent door. Week one is irrevocably paid
+ *   to treasury and only future weeks enter refundable escrow.
+ *   Parcel DTOs expose `claimRentCtWeekly` from those same constants; the
+ *   legacy `rentCtWeekly` row stamp remains the incumbent tenancy's terms.
+ * - POST /parcels/:parcelId/claim-hold: same middleware; strict
+ *   `{ idempotencyKey }`; starter/c/founder require 100k/250k/10m CLV from the
+ *   account's declared wallet, freshly read on-chain; requirements stack.
+ * - POST /parcels/:parcelId/deposit-topup: same middleware; strict
+ *   preferred `{ weeks: 1..26, idempotencyKey }` derives the amount from the
+ *   locked tenancy rate; legacy `{ amountCt: 1..1_000_000, idempotencyKey }`
+ *   remains accepted for compatibility. Durable replay and atomic cap.
+ * - POST /parcels/:parcelId/release: same middleware; strict
+ *   `{ idempotencyKey }`; the key binds the acquisition marker, preventing a
+ *   stale retry from releasing a later tenancy.
+ * Shared errors include idempotency_key_conflict/concurrent_retry (409),
+ * autonomous_daily_cap (429), and fail-closed treasury/CLV 503 responses.
  *
- * The first user-facing surface on top of the Phase 0 `land_parcels` /
- * `land_transactions` schema. Slice A is the FREE starter-parcel claim + the
- * read seams the world renderer / 3da overlay consume. The PRICED primary-sale
- * buy (CT debit via the ledger) is a LATER slice — this file deliberately has
- * NO ledger touch and never writes `avatars.clawTokens`.
+ * Land Economy routes (`/api/land`). The legacy free-starter/buy/rent doors are
+ * stable 409 dead ends; P2 acquisition is the parcel-specific Hold/Rent surface
+ * above and all money-bearing writes delegate to the shared settlement service.
  *
  * RULE E5 PARITY: every write resolves the acting avatar from
  * `c.get('identity').avatarId` (set by `requireAuthOrAgentSession`), which is a
  * REAL avatar for BOTH a Lucia-authed human AND a connected/hosted agent
- * session. There is no guest fallback in that middleware, so the starter grant
- * binds to the agent's own avatar exactly as it does for a human — no
- * human-XOR-guest, no agent-locked-out path. (PARITY note —
- *   human path: POST /api/land/claim-starter via Lucia cookie;
- *   agent path: same endpoint via X-Clawville-Agent-Session → bound avatar;
- *   settlement binds to identity.avatarId.)
+ * session. There is no guest fallback: Hold/Rent claim, prepay, and release bind
+ * to the resolved identity.avatarId for humans and agents alike.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * FROZEN RESPONSE CONTRACT (the web UI + 3da overlay build to THIS next turn).
@@ -25,6 +42,7 @@
  *   type LandParcelDTO = {
  *     id: string;            // uuid
  *     parcelCode: string;    // "parcel-<tier>-<NN>"
+ *     displayName: string;   // deterministic human label; parcelCode remains the key
  *     tier: 'starter'|'c'|'b'|'a'|'founder';
  *     status: 'available'|'owned'|'reserved'|'retired';
  *     gridX: number;         // int
@@ -47,6 +65,13 @@
  *     structureType: 'home'|'shop';
  *     catalogKey: string;    // STRUCTURE_CATALOG key
  *     level: number;         // int 1..5
+ *     shellKey: string;      // SHELL_CATALOG key
+ *     paletteKey: string;    // PALETTE_PRESETS key
+ *   };
+ *
+ *   type LandStructurePieceDTO = {
+ *     id: string; parcelId: string; pieceKey: string;
+ *     gridX: number; gridY: number; rotationStep: number; stackLevel: number;
  *   };
  *
  * 1. GET /api/land/parcels?tier=&status=   (PUBLIC, 60s cache, 60/min/IP)
@@ -122,8 +147,9 @@
  *      503 → { error: 'clv_balance_unavailable' } (FAIL-CLOSED: RPC/read down)
  *
  * 7c. POST /api/land/parcels/:parcelId/deposit-topup  (AUTH, PARITY-BOUND, B1)
- *      body: { amountCt: int 1..1_000_000 } (.strict()) — the ONLY client value,
- *      and it is a self-debit ceiling-capped by Zod, never a price.
+ *      preferred body: { weeks: int 1..26, idempotencyKey } (.strict()) — the
+ *      server derives amountCt from the locked tenancy rate. Legacy
+ *      { amountCt: int 1..1_000_000, idempotencyKey } remains additive.
  *      200 → { parcelCode, depositRemainingCt, amountCt, graceCleared: boolean }
  *      400 → { error: 'invalid_body' | 'invalid_parcel_id' | 'insufficient_clawtokens' }
  *      403 → { error: 'not_parcel_owner' }   ·   404 → { error: 'parcel_not_found' }
@@ -153,7 +179,8 @@
  *            as a fresh Lv+1 upgrade — a paid double-charge. The client MUST send
  *            the same key to make a retry a no-op replay. (Frontend already does.)
  *      200 → { structure: LandStructureDTO, costCt: number, idempotencyReplay?: true }
- *            costCt = SERVER-derived STRUCTURE_UPGRADE_COSTS[target]; target=level+1.
+ *            costCt = SERVER-derived structureUpgradeCostCt(structureType, target);
+ *            target = level+1. Homes and shops have DIFFERENT ladders (Q3).
  *            idempotencyReplay=true → a prior upgrade with the same key was served
  *            (no new debit, structure already at to_level).
  *      400 → { error: 'invalid_body' | 'idempotency_key_required' |
@@ -176,7 +203,59 @@
  *              op is refused rather than charged against a stale denorm. Ownership
  *              is checked against the LOCKED parcel row (FOR UPDATE OF s, p), never
  *              the denorm alone.
+ *
+ * 10. GET /api/land/structures/public             (PUBLIC, 60/min/IP)
+ *      200 → PublicLandStructureDTO[]              (active-only, no owner identity)
+ *      Server cache 60s; HTTP Cache-Control public, max-age=30.
+ *
+ * 11. PATCH /api/land/structures/:structureId/appearance  (AUTH, PARITY-BOUND)
+ *      body: { shellKey?: string, paletteKey?: string } (.strict(), at least one)
+ *      200 → { structure: LandStructureDTO }
+ *      400 → { error: 'invalid_body' | 'invalid_structure_id' |
+ *                       'shell_not_allowed' | 'palette_not_allowed' }
+ *      403 → { error: 'not_structure_owner' }
+ *      404 → { error: 'structure_not_found' }
+ *      409 → { error: 'structure_archived' | 'ownership_desync' }
  * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * 12. POST /api/land/parcels/:parcelId/pieces (AUTH, D5 priced placement)
+ *     strict body: { pieceKey, gridX, gridY, rotationStep, stackLevel,
+ *                    idempotencyKey: string (8..64, required) }
+ *     200: { piece: LandStructurePieceDTO, costCt, idempotencyReplay?: true }
+ *     Requires an active structure; fee transfers owner-to-house in the insert tx.
+ *     404: { error: 'parcel_not_found' | 'structure_required' }
+ *     400: { error: 'unknown_piece_key' | 'structure_level_invalid' |
+ *                    'piece_unknown' | 'cell_out_of_bounds' | 'rotation_not_allowed' }
+ *     409: { error: 'level_cap_exceeded' | 'stack_exceeds_height' |
+ *                    'unsupported_stack' | 'outside_parcel' | 'intersects_shell' |
+ *                    'intersects_piece' | 'cell_occupied' | 'piece_catalog_drift' |
+ *                    'structure_not_active' | 'ownership_desync' |
+ *                    'idempotency_key_conflict' }
+ *     Geometry is decided by the SHARED `evaluatePlacement` predicate (rotated
+ *     footprint + level-independent shell envelope + cross-level 3D occupancy),
+ *     NOT the anchor cell alone. `cell_reserved` / `stack_support_required` /
+ *     `piece_cap_reached` are superseded by `intersects_shell` /
+ *     `unsupported_stack` / `level_cap_exceeded`. `cell_occupied` survives as
+ *     the unique-index backstop on an exact (x, y, stackLevel) collision.
+ * 13. PATCH /api/land/pieces/:pieceId (AUTH, FREE move)
+ *     strict body: { gridX, gridY, rotationStep, stackLevel }
+ *     Re-validated against the SAME predicate, with the moved piece excluded
+ *     from its own occupancy + counts. This is the Q5 free-move escape hatch:
+ *     a grandfathered illegal piece is never deleted, only movable to a legal
+ *     position at no fee. Same 400/409 code set as route 12.
+ * 14. DELETE /api/land/pieces/:pieceId (AUTH, FREE, NO REFUND)
+ *     200: { deleted: true, piece: LandStructurePieceDTO }
+ * 15. GET /api/land/pieces/public (PUBLIC, cached, no PII)
+ *     200: { parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel }[]
+ * 16. GET /api/land/parcels/:parcelId/pieces (AUTH, owner read, no-store)
+ *     200: { pieces: LandStructurePieceDTO[] }
+ *     Owner of the parcel's ACTIVE structure only; includes private piece IDs
+ *     so pieces remain movable/removable after a reload. READ-ONLY: no ledger
+ *     writes and no public-cache interaction.
+ *     400: { error: 'invalid_parcel_id' }
+ *     403: { error: 'not_structure_owner' }
+ *     404: { error: 'parcel_not_found' | 'structure_required' }
+ *     429: { error: 'rate_limited' }
  *
  * PHASE3: expose buy / structure / upgrade via the agent tools.json surface +
  * the npc-simulation `[ACTION:]` whitelist + a PROTOCOL_VERSION bump, so a
@@ -187,14 +266,17 @@
  * touch the partner/hatcher surface or skill-protocol.ts in THIS diff.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
+import { PublicKey } from '@solana/web3.js';
 import {
   db,
+  users,
   avatars,
   landParcels,
   landStructures,
+  landStructurePieces,
   landUpgrades,
   serviceListings,
   servicePurchases,
@@ -202,12 +284,15 @@ import {
   eq,
   and,
   desc,
+  isNull,
   sql,
 } from '@clawville/database';
 import {
   LAND_EVENT_TYPES,
+  LAND_PARCELS,
   LAND_TIERS,
-  STRUCTURE_UPGRADE_COSTS,
+  STRUCTURE_UPGRADE_COSTS_BY_TYPE,
+  structureUpgradeCostCt,
   MAX_STRUCTURE_LEVEL,
   MAX_PARCELS_PER_AVATAR,
   RENT_PERIOD_DAYS,
@@ -215,15 +300,45 @@ import {
   LAND_STARTER_RENT_CT_WEEKLY,
   FOUNDER_UPKEEP_CT_WEEKLY,
   holdThresholdForTier,
+  parcelDisplayName,
+  tenureRentCtWeeklyForTier,
   getCatalogEntry,
   getTierStructureRules,
   getTierMaxLevel,
   isSkuAllowedForTier,
+  isShellAllowed,
+  isPaletteAllowed,
+  DEFAULT_SHELL_KEY,
+  DEFAULT_PALETTE_KEY,
+  KIT_CATALOG,
+  KIT_GRID_SIZE,
+  KIT_LEVEL_RULES,
+  KIT_PAYMENT_RAILS,
+  KIT_PIECE_FEE_CT_BY_STRUCTURE,
+  isKitPaymentRailAllowed,
+  kitPieceFeeCt,
+  kitPieceFeeMaterials,
+  type LandStructureType,
+  // Land gamification P3 — the SHARED footprint/rotation/stack legality
+  // predicate. It replaces anchor-cell-only validation (defect D-1): pieces
+  // span up to five cells once rotated, so the old check let a piece overhang
+  // the shell reservation and let two pieces occupy the same ground.
+  evaluatePlacement,
+  resolveParcelPlacements,
+  type PlacementRefusalCode,
+  type PlacedFootprint,
+  type StoredPlacement,
+  type KitPaymentRail,
+  type KitPieceKey,
+  type KitPieceSize,
   type LandTier,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
-import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
-import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
+import {
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+} from '../middleware/require-auth-or-agent';
+import type { ActivityAuthContext, ActivityIdentity } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { noStorePrivate } from '../middleware/no-store';
@@ -234,6 +349,10 @@ import {
   creditClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import {
+  debitMaterials,
+  InsufficientMaterialsError,
+} from '../services/material-ledger';
 import { type CovenantActorKind } from '../services/covenant-action-recorder';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import {
@@ -242,10 +361,49 @@ import {
   type ClvBalanceResult,
 } from '../services/linked-wallet-clv-balance';
 import type { AppContext } from '../types';
+import {
+  declareLandHoldWallet,
+  LandTenureSettlementError,
+  settleRentPrepay,
+  settleTenureClaim,
+  settleTenureRelease,
+} from '../services/land-tenure-settlement';
+import { parcelHasLiveDeedLock } from '../services/land-tenure-helpers';
+
+export { parcelHasLiveDeedLock };
 
 /** Map the auth identity kind onto the covenant actor vocabulary. */
 const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
   kind === 'user' ? 'human' : 'agent';
+
+function settlementInput(identity: ActivityIdentity, parcelCode: string, idempotencyKey: string) {
+  return {
+    identity,
+    expectedAvatarId: identity.avatarId,
+    expectedUserId: identity.userId,
+    expectedAgentId: identity.kind === 'agent' ? identity.agentId : null,
+    parcelCode,
+    idempotencyKey,
+    autonomous: false,
+  } as const;
+}
+
+async function parcelCodeForId(parcelId: string): Promise<string | null> {
+  const rows = await db
+    .select({ parcelCode: landParcels.parcelCode })
+    .from(landParcels)
+    .where(eq(landParcels.id, parcelId))
+    .limit(1);
+  return rows[0]?.parcelCode ?? null;
+}
+
+function settlementError(c: Context<ActivityAuthContext>, err: unknown) {
+  if (!(err instanceof LandTenureSettlementError)) throw err;
+  return c.json(
+    { error: err.code, code: err.code, ...err.details },
+    err.status as 400 | 403 | 404 | 409 | 429 | 503,
+  );
+}
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
 
@@ -275,6 +433,7 @@ class InsufficientClvHoldError extends Error {
 interface LandParcelDTO {
   id: string;
   parcelCode: string;
+  displayName: string;
   tier: LandTier;
   status: 'available' | 'owned' | 'reserved' | 'retired';
   gridX: number;
@@ -287,6 +446,8 @@ interface LandParcelDTO {
    * rent for a 'rented' one. Null = not stamped.
    */
   rentCtWeekly: number | null;
+  /** Server-authoritative weekly quote for a fresh P2 rent claim. */
+  claimRentCtWeekly: number | null;
   /** HOW the parcel is held; null = available/unsold (mirrors `land_tenure` enum). */
   tenure: LandTenure | null;
   /** B1: original claim deposit escrowed (immutable); null on non-deposit rows. */
@@ -295,6 +456,9 @@ interface LandParcelDTO {
   depositRemainingCt: number | null;
   /** B2: stamped CLV hold threshold (CLV uiAmount); null on non-hold rows. */
   holdThresholdCt: number | null;
+  rentPaidThrough: string | null;
+  graceUntil: string | null;
+  tenureLastCheckedAt: string | null;
 }
 
 /** The frozen structure DTO returned by placement / upgrade / structure reads. */
@@ -305,10 +469,46 @@ interface LandStructureDTO {
   structureType: 'home' | 'shop';
   catalogKey: string;
   level: number;
+  shellKey: string;
+  paletteKey: string;
+}
+
+/** Public world-render feed; intentionally omits owner identity and DB UUIDs. */
+export interface PublicLandStructureDTO {
+  parcelCode: string;
+  gridX: number;
+  gridY: number;
+  tier: LandTier;
+  structureType: 'home' | 'shop';
+  level: number;
+  shellKey: string;
+  paletteKey: string;
+}
+
+/** Private mutation shape. Public reads intentionally omit both UUIDs. */
+export interface LandStructurePieceDTO {
+  id: string;
+  parcelId: string;
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
+/** Frozen no-PII shape consumed by the stage-B renderer. */
+export interface PublicLandStructurePieceDTO {
+  parcelCode: string;
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
 }
 
 /** The 4 valid parcel statuses (mirrors `landParcelStatusEnum`). */
 const PARCEL_STATUSES = ['available', 'owned', 'reserved', 'retired'] as const;
+const RENDERED_PARCEL_CODES = new Set(LAND_PARCELS.map((parcel) => parcel.id));
 
 // Zod enums built from the SHARED tier list + the status literal set, so a
 // schema drift surfaces as a compile error rather than a silent mismatch.
@@ -330,18 +530,40 @@ const claimStarterBodySchema = z.object({}).strict();
 const avatarIdSchema = z.string().uuid();
 const parcelIdSchema = z.string().uuid();
 const structureIdSchema = z.string().uuid();
+const pieceIdSchema = z.string().uuid();
 
 // claim-hold + release take NO input — every value is server-resolved. Reject
 // any stray field so a client cannot smuggle a price/tier/threshold/etc.
 const emptyStrictBodySchema = z.object({}).strict();
 
-// deposit-topup: the ONLY client value is the top-up amount — a SELF-debit into
-// the caller's own escrow, hard-capped by Zod (1..1_000_000). It is never a
-// price and never reaches any other avatar's balance.
-const depositTopupBodySchema = z
-  .object({
+// deposit-topup prefers whole weeks so the settlement derives the amount from
+// the locked tenancy rate. The bounded legacy amount form remains additive.
+const depositTopupBodySchema = z.union([
+  z.object({
+    weeks: z.number().int().min(1).max(26),
+    idempotencyKey: z.string().min(8).max(64),
+  }).strict(),
+  z.object({
     amountCt: z.number().int().min(1).max(1_000_000),
+    idempotencyKey: z.string().min(8).max(64),
+  }).strict(),
+]);
+
+const rentClaimBodySchema = z
+  .object({
+    weeks: z.number().int().min(1).max(26),
+    idempotencyKey: z.string().min(8).max(64),
   })
+  .strict();
+
+const holdClaimBodySchema = z
+  .object({ idempotencyKey: z.string().min(8).max(64) })
+  .strict();
+
+const releaseBodySchema = holdClaimBodySchema;
+
+const declareHoldWalletBodySchema = z
+  .object({ walletAddress: z.string().min(32).max(44) })
   .strict();
 
 // placement: server validates the SKU against the parcel's tier; the body only
@@ -353,11 +575,300 @@ const placeStructureBodySchema = z
   })
   .strict();
 
+/** Appearance is a free, partial mutation; empty and stray-key patches are invalid. */
+export const appearanceBodySchema = z
+  .object({
+    shellKey: z.string().min(1).max(64).optional(),
+    paletteKey: z.string().min(1).max(64).optional(),
+  })
+  .strict()
+  .refine((value) => value.shellKey !== undefined || value.paletteKey !== undefined, {
+    message: 'at least one appearance field is required',
+  });
+
+export interface AppearanceAuthority {
+  ownerAvatarId: string;
+  parcelOwnerAvatarId: string | null;
+  status: 'active' | 'archived';
+  structureType: 'home' | 'shop';
+  level: number;
+  tier: LandTier;
+}
+
+export type AppearanceValidationError =
+  | 'not_structure_owner'
+  | 'ownership_desync'
+  | 'structure_archived'
+  | 'shell_not_allowed'
+  | 'palette_not_allowed';
+
+/** Pure authorization/allowlist seam used by the route after its locked DB read. */
+export function validateAppearanceMutation(
+  authority: AppearanceAuthority,
+  avatarId: string,
+  patch: z.infer<typeof appearanceBodySchema>,
+): AppearanceValidationError | null {
+  if (authority.parcelOwnerAvatarId !== avatarId) return 'not_structure_owner';
+  if (authority.ownerAvatarId !== authority.parcelOwnerAvatarId) return 'ownership_desync';
+  if (authority.status !== 'active') return 'structure_archived';
+  if (
+    patch.shellKey !== undefined
+    && !isShellAllowed(
+      authority.structureType,
+      authority.level,
+      authority.tier,
+      patch.shellKey,
+    )
+  ) {
+    return 'shell_not_allowed';
+  }
+  if (
+    patch.paletteKey !== undefined
+    && !isPaletteAllowed(authority.level, patch.paletteKey)
+  ) {
+    return 'palette_not_allowed';
+  }
+  return null;
+}
+
+export const createKitPieceBodySchema = z
+  .object({
+    pieceKey: z.string().min(1).max(64),
+    gridX: z.number().int(),
+    gridY: z.number().int(),
+    rotationStep: z.number().int(),
+    stackLevel: z.number().int(),
+    idempotencyKey: z.string().min(8).max(64),
+    /**
+     * P5b. Defaults to `vclaw` so every pre-existing client keeps working
+     * unchanged — the material rail is opt-in, never a silent switch of which
+     * currency a player's yard costs.
+     */
+    paymentRail: z.enum(KIT_PAYMENT_RAILS).default('vclaw'),
+  })
+  .strict();
+
+export const moveKitPieceBodySchema = z
+  .object({
+    gridX: z.number().int(),
+    gridY: z.number().int(),
+    rotationStep: z.number().int(),
+    stackLevel: z.number().int(),
+  })
+  .strict();
+
+const kitPieceSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  parcelId: z.string().uuid(),
+  pieceKey: z.string(),
+  gridX: z.number().int(),
+  gridY: z.number().int(),
+  rotationStep: z.number().int(),
+  stackLevel: z.number().int(),
+});
+
+export function isKitPieceKey(pieceKey: string): pieceKey is KitPieceKey {
+  return Object.prototype.hasOwnProperty.call(KIT_CATALOG, pieceKey);
+}
+
+/**
+ * Refusal codes the placement predicate can return that are STATE CONFLICTS
+ * (409) rather than malformed input (400). A conflict means "the request is
+ * well-formed but the yard cannot accept it right now".
+ */
+const KIT_PLACEMENT_CONFLICT_CODES: ReadonlySet<PlacementRefusalCode> = new Set([
+  'level_cap_exceeded',
+  'stack_exceeds_height',
+  'unsupported_stack',
+  'outside_parcel',
+  'intersects_shell',
+  'intersects_piece',
+]);
+
+/** HTTP status for a placement refusal. Conflicts 409, bad input 400. */
+/**
+ * The slot-rent cursor a NEW listing starts on (land gamification P5a, B2 fix).
+ *
+ * Returned as a SQL fragment rather than a value so the read and the write are
+ * ONE statement — no extra round trip, and no window in which application code
+ * holds a stale answer.
+ *
+ * That is NOT what makes it safe under concurrency, and an earlier version of
+ * this comment claimed it was. Under READ COMMITTED a subquery inside an INSERT
+ * sees exactly the snapshot a separate SELECT would, so two concurrent creates
+ * could both observe "no history" on their own. What actually serializes them
+ * is the pre-existing PER-OWNER advisory lock the create route already takes
+ * (`pg_advisory_xact_lock(hashtextextended(avatarId, 0))`, land.ts ~4083):
+ * a structure has exactly one owner, so two creates against the same structure
+ * are necessarily the same owner and cannot run concurrently. If that lock is
+ * ever removed or narrowed, THIS rule loses its serialization and needs its own.
+ *
+ * The rule: the free first week belongs to the SHOP, not to a row. It is
+ * granted once per structure, ever; every later listing inherits the furthest
+ * paid-through the shop has already bought, floored at now(). That is what
+ * closes the delist-and-recreate bypass — the delisted row keeps its cursor and
+ * the replacement inherits it, so recreating buys nothing.
+ *
+ * `GREATEST` sits inside an explicit COUNT branch because `GREATEST(now(), NULL)`
+ * returns now() in Postgres, which would have silently denied every genuinely
+ * new shop its first free week.
+ */
+export function slotPaidThroughOnCreateSql(structureId: string) {
+  return sql`(SELECT CASE
+                       WHEN count(*) = 0
+                         THEN now() + make_interval(days => ${RENT_PERIOD_DAYS})
+                       ELSE GREATEST(now(), COALESCE(max(prior.slot_paid_through), now()))
+                     END
+                FROM service_listings prior
+               WHERE prior.structure_id = ${structureId})`;
+}
+
+export function kitPlacementRefusalStatus(code: PlacementRefusalCode): 400 | 409 {
+  return KIT_PLACEMENT_CONFLICT_CODES.has(code) ? 409 : 400;
+}
+
+/**
+ * Evaluate ONE kit-piece write (a new placement or a move) against the parcel's
+ * current contents, using the shared `evaluatePlacement` predicate.
+ *
+ * GRANDFATHERING (Q5) is why this reads through `resolveParcelPlacements`
+ * rather than re-validating the stored rows: that resolver never refuses and
+ * never drops a row, so an existing paid piece the stricter predicate would now
+ * reject still occupies space and still blocks a new overlap. Validation
+ * applies to what is being WRITTEN, never to what is already stored — a legacy
+ * row is neither deleted nor hidden, and its owner may move it to a legal spot
+ * for free.
+ *
+ * `excludePieceRef` is the row being MOVED. It must be excluded from both the
+ * occupancy set (a piece cannot collide with itself) and the piece counts (a
+ * move is cap-neutral: removing then re-adding the same piece must not trip
+ * `level_cap_exceeded` on a full yard).
+ */
+export async function evaluateKitWrite(
+  tx: LandTx,
+  args: {
+    parcelId: string;
+    parcelTier: LandTier;
+    structureLevel: number;
+    request: {
+      pieceKey: KitPieceKey;
+      gridX: number;
+      gridY: number;
+      rotationStep: number;
+      stackLevel: number;
+    };
+    excludePieceRef?: string;
+  },
+): Promise<
+  { ok: true; footprint: PlacedFootprint } | { ok: false; code: PlacementRefusalCode }
+> {
+  const rows = await tx.execute<{
+    id: string;
+    piece_key: string;
+    grid_x: number | string;
+    grid_y: number | string;
+    rotation_step: number | string;
+    stack_level: number | string;
+  }>(
+    sql`SELECT id, piece_key, grid_x, grid_y, rotation_step, stack_level
+        FROM land_structure_pieces WHERE parcel_id = ${args.parcelId}`,
+  );
+
+  const stored: StoredPlacement[] = [];
+  let currentSmall = 0;
+  let currentLarge = 0;
+  for (const row of Array.from(rows)) {
+    if (args.excludePieceRef && row.id === args.excludePieceRef) continue;
+    if (!isKitPieceKey(row.piece_key)) {
+      // A stored key the catalog no longer knows. The caller's own drift guard
+      // raises on it; skip here so one bad row cannot silently widen free space.
+      continue;
+    }
+    if (KIT_CATALOG[row.piece_key].size === 'small') currentSmall += 1;
+    else currentLarge += 1;
+    stored.push({
+      pieceRef: row.id,
+      pieceKey: row.piece_key,
+      gridX: Number(row.grid_x),
+      gridY: Number(row.grid_y),
+      rotationStep: Number(row.rotation_step),
+      stackLevel: Number(row.stack_level),
+    });
+  }
+
+  const occupied = resolveParcelPlacements(stored, args.parcelTier).map((r) => r.footprint);
+
+  return evaluatePlacement(args.request, {
+    parcelTier: args.parcelTier,
+    structureLevel: args.structureLevel,
+    currentSmall,
+    currentLarge,
+    occupied,
+  });
+}
+
+export type KitAuthorityError =
+  | 'not_parcel_owner'
+  | 'ownership_desync'
+  | 'structure_required'
+  | 'structure_not_active';
+
+export interface KitAuthority {
+  parcelOwnerAvatarId: string | null;
+  pieceOwnerAvatarId?: string;
+  structureOwnerAvatarId?: string | null;
+  structureStatus?: 'active' | 'archived' | null;
+}
+
+/** Authoritative parcel ownership is checked before either denormalized owner. */
+export function validateKitAuthority(
+  authority: KitAuthority,
+  avatarId: string,
+  requireActiveStructure: boolean,
+): KitAuthorityError | null {
+  if (authority.parcelOwnerAvatarId !== avatarId) return 'not_parcel_owner';
+  if (
+    authority.pieceOwnerAvatarId !== undefined
+    && authority.pieceOwnerAvatarId !== authority.parcelOwnerAvatarId
+  ) {
+    return 'ownership_desync';
+  }
+  if (requireActiveStructure) {
+    if (!authority.structureOwnerAvatarId || !authority.structureStatus) {
+      return 'structure_required';
+    }
+    if (authority.structureOwnerAvatarId !== authority.parcelOwnerAvatarId) {
+      return 'ownership_desync';
+    }
+    if (authority.structureStatus !== 'active') return 'structure_not_active';
+  }
+  return null;
+}
+
+/**
+ * Placement fee for a piece on a given structure type (founder ruling Q3: homes
+ * are a third of the shop price). `structureType` is read from the LOCKED
+ * `land_structures` row, never from the request body.
+ */
+export function kitPlacementFeeForKey(
+  pieceKey: string,
+  structureType: LandStructureType,
+): number | null {
+  return isKitPieceKey(pieceKey)
+    ? kitPieceFeeCt(structureType, KIT_CATALOG[pieceKey].size)
+    : null;
+}
+
+function throwKitAuthorityError(error: KitAuthorityError): never {
+  const status = error === 'not_parcel_owner' ? 403 : error === 'structure_required' ? 404 : 409;
+  throw new HTTPException(status, { message: error });
+}
+
 // upgrade: the only client input is a REQUIRED idempotency key (Codex BLOCK
 // HIGH — keyless-replay double-charge). A retry MUST carry the same key or the
 // server would treat the 2nd call as a fresh Lv+1 upgrade and debit AGAIN. The
 // target level + cost are still server-derived (current level + 1 →
-// STRUCTURE_UPGRADE_COSTS) — never client-trusted. The frontend already sends
+// STRUCTURE_UPGRADE_COSTS_BY_TYPE) — never client-trusted. The frontend already sends
 // `upgradeStructure(structureId, idempotencyKey)`, so requiring it is
 // contract-compatible.
 const upgradeBodySchema = z
@@ -437,6 +948,8 @@ const spawnPreferenceBodySchema = z
 
 const READ_CACHE_TTL_MS = 60_000;
 const publicReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+const ownerPiecesReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+const holdWalletReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
 
 interface ReadCacheEntry {
   payload: LandParcelDTO[];
@@ -445,6 +958,52 @@ interface ReadCacheEntry {
 
 // Keyed on the normalized query (`parcels:<tier>:<status>` route).
 const readCache = new Map<string, ReadCacheEntry>();
+
+let publicStructuresCache: {
+  payload: PublicLandStructureDTO[];
+  expiresAt: number;
+} | null = null;
+
+let publicPiecesCache: {
+  payload: PublicLandStructurePieceDTO[];
+  expiresAt: number;
+} | null = null;
+
+function getPublicStructuresCache(): PublicLandStructureDTO[] | null {
+  if (publicStructuresCache === null) return null;
+  if (publicStructuresCache.expiresAt < Date.now()) {
+    publicStructuresCache = null;
+    return null;
+  }
+  return publicStructuresCache.payload;
+}
+
+function setPublicStructuresCache(payload: PublicLandStructureDTO[]): void {
+  publicStructuresCache = { payload, expiresAt: Date.now() + READ_CACHE_TTL_MS };
+}
+
+/** Bust after any write that can change an active structure's public render. */
+export function bustPublicStructuresCache(): void {
+  publicStructuresCache = null;
+}
+
+function getPublicPiecesCache(): PublicLandStructurePieceDTO[] | null {
+  if (publicPiecesCache === null) return null;
+  if (publicPiecesCache.expiresAt < Date.now()) {
+    publicPiecesCache = null;
+    return null;
+  }
+  return publicPiecesCache.payload;
+}
+
+function setPublicPiecesCache(payload: PublicLandStructurePieceDTO[]): void {
+  publicPiecesCache = { payload, expiresAt: Date.now() + READ_CACHE_TTL_MS };
+}
+
+/** Bust after piece mutations or any structure-status/parcel lifecycle write. */
+export function bustPublicPiecesCache(): void {
+  publicPiecesCache = null;
+}
 
 function getReadCache(key: string): LandParcelDTO[] | null {
   const hit = readCache.get(key);
@@ -528,10 +1087,14 @@ function toDTO(row: {
   depositCt: number | null;
   depositRemainingCt: number | null;
   holdThresholdCt: number | null;
+  rentPaidThrough: Date | null;
+  graceUntil: Date | null;
+  updatedAt: Date;
 }): LandParcelDTO {
   return {
     id: row.id,
     parcelCode: row.parcelCode,
+    displayName: parcelDisplayName(row.parcelCode, row.tier),
     tier: row.tier,
     status: row.status,
     gridX: row.gridX,
@@ -539,10 +1102,14 @@ function toDTO(row: {
     priceCt: row.priceCt,
     ownerAvatarId: row.ownerAvatarId,
     rentCtWeekly: row.rentCtWeekly,
+    claimRentCtWeekly: tenureRentCtWeeklyForTier(row.tier),
     tenure: row.tenure,
     depositCt: row.depositCt,
     depositRemainingCt: row.depositRemainingCt,
     holdThresholdCt: row.holdThresholdCt,
+    rentPaidThrough: row.rentPaidThrough?.toISOString() ?? null,
+    graceUntil: row.graceUntil?.toISOString() ?? null,
+    tenureLastCheckedAt: row.updatedAt.toISOString(),
   };
 }
 
@@ -563,6 +1130,9 @@ async function fetchOwnedParcels(avatarId: string): Promise<LandParcelDTO[]> {
       depositCt: landParcels.depositCt,
       depositRemainingCt: landParcels.depositRemainingCt,
       holdThresholdCt: landParcels.holdThresholdCt,
+      rentPaidThrough: landParcels.rentPaidThrough,
+      graceUntil: landParcels.graceUntil,
+      updatedAt: landParcels.updatedAt,
     })
     .from(landParcels)
     .where(eq(landParcels.ownerAvatarId, avatarId));
@@ -577,6 +1147,8 @@ function toStructureDTO(row: {
   structureType: 'home' | 'shop';
   catalogKey: string;
   level: number;
+  shellKey: string | null;
+  paletteKey: string | null;
 }): LandStructureDTO {
   return {
     id: row.id,
@@ -585,8 +1157,12 @@ function toStructureDTO(row: {
     structureType: row.structureType,
     catalogKey: row.catalogKey,
     level: row.level,
+    // Rolling-deploy safety: never rely on a renderer-side implicit default.
+    shellKey: row.shellKey ?? DEFAULT_SHELL_KEY,
+    paletteKey: row.paletteKey ?? DEFAULT_PALETTE_KEY,
   };
 }
+
 
 /** Shared owned-structures query (routes 2 + 3) — one indexed scan on owner_avatar_id. */
 async function fetchOwnedStructures(avatarId: string): Promise<LandStructureDTO[]> {
@@ -598,12 +1174,113 @@ async function fetchOwnedStructures(avatarId: string): Promise<LandStructureDTO[
       structureType: landStructures.structureType,
       catalogKey: landStructures.catalogKey,
       level: landStructures.level,
+      shellKey: landStructures.shellKey,
+      paletteKey: landStructures.paletteKey,
     })
     .from(landStructures)
     // Exclude eviction-archived structures — they belong to a parcel the avatar
     // no longer holds, so they must not show in "my structures" or the renderer.
     .where(and(eq(landStructures.ownerAvatarId, avatarId), eq(landStructures.status, 'active')));
   return rows.map(toStructureDTO);
+}
+
+/** Typed row mapper for the public world feed, including rolling-deploy fallbacks. */
+export function toPublicLandStructureDTO(row: {
+  parcelCode: string;
+  gridX: number;
+  gridY: number;
+  tier: LandTier;
+  structureType: 'home' | 'shop';
+  level: number;
+  shellKey: string | null;
+  paletteKey: string | null;
+}): PublicLandStructureDTO {
+  return {
+    parcelCode: row.parcelCode,
+    gridX: row.gridX,
+    gridY: row.gridY,
+    tier: row.tier,
+    structureType: row.structureType,
+    level: row.level,
+    shellKey: row.shellKey ?? DEFAULT_SHELL_KEY,
+    paletteKey: row.paletteKey ?? DEFAULT_PALETTE_KEY,
+  };
+}
+
+function toLandStructurePieceDTO(row: {
+  id: string;
+  parcelId: string;
+  pieceKey: string;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}): LandStructurePieceDTO {
+  if (!isKitPieceKey(row.pieceKey)) {
+    throw new Error(`[land] unknown persisted kit piece key: ${row.pieceKey}`);
+  }
+  return { ...row, pieceKey: row.pieceKey };
+}
+
+export function toPublicLandStructurePieceDTO(row: {
+  parcelCode: string;
+  pieceKey: string;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}): PublicLandStructurePieceDTO {
+  if (!isKitPieceKey(row.pieceKey)) {
+    throw new Error(`[land] unknown persisted public kit piece key: ${row.pieceKey}`);
+  }
+  return { ...row, pieceKey: row.pieceKey };
+}
+
+function pieceFromPlacementAudit(metadata: unknown): LandStructurePieceDTO | null {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const piece = (metadata as { piece?: unknown }).piece;
+  const parsed = kitPieceSnapshotSchema.safeParse(piece);
+  if (!parsed.success || !isKitPieceKey(parsed.data.pieceKey)) return null;
+  return { ...parsed.data, pieceKey: parsed.data.pieceKey };
+}
+
+/**
+ * The rail a stored placement was paid on.
+ *
+ * Audit rows written before P5b carry no `paymentRail`, and every one of them
+ * was a vCLAW placement — that was the only rail that existed. Defaulting to
+ * `vclaw` is therefore a statement of fact about those rows, not a guess.
+ */
+export function railFromPlacementAudit(metadata: unknown): KitPaymentRail {
+  if (!metadata || typeof metadata !== 'object') return 'vclaw';
+  const rail = (metadata as { paymentRail?: unknown }).paymentRail;
+  return rail === 'materials' ? 'materials' : 'vclaw';
+}
+
+/** Materials charged by a stored placement. Zero for every vCLAW row. */
+export function materialsCostFromPlacementAudit(metadata: unknown): number {
+  if (!metadata || typeof metadata !== 'object') return 0;
+  const cost = (metadata as { costMaterials?: unknown }).costMaterials;
+  return typeof cost === 'number' && Number.isInteger(cost) && cost >= 0 ? cost : 0;
+}
+
+export function matchesKitPlacementReplay(
+  piece: LandStructurePieceDTO,
+  request: {
+    parcelId: string;
+    pieceKey: string;
+    gridX: number;
+    gridY: number;
+    rotationStep: number;
+    stackLevel: number;
+  },
+): boolean {
+  return piece.parcelId === request.parcelId
+    && piece.pieceKey === request.pieceKey
+    && piece.gridX === request.gridX
+    && piece.gridY === request.gridY
+    && piece.rotationStep === request.rotationStep
+    && piece.stackLevel === request.stackLevel;
 }
 
 /**
@@ -639,57 +1316,8 @@ async function reconcileArchivedStructureOnAcquire(
       sql`UPDATE land_structures SET status = 'active', updated_at = now() WHERE id = ${s.id}`,
     );
   } else {
+    await tx.execute(sql`DELETE FROM land_structure_pieces WHERE parcel_id = ${parcelId}`);
     await tx.execute(sql`DELETE FROM land_structures WHERE id = ${s.id}`);
-  }
-}
-
-/**
- * Deed-lock guard (marketplace C4 cross-domain seam, 2026-07-07). A parcel is
- * DEED-LOCKED when a live P2P marketplace listing holds its deed: a
- * `market_deed_locks` row exists (the authoritative HELD marker — created in the
- * listing tx, held THROUGH 'settled' until the Codex-gated transfer executor
- * releases it), OR a live ('active'|'pending_settlement') land_deed
- * `market_listings` row references it (defense-in-depth for any future lockless
- * listing path). While locked, the parcel MUST NOT revert to the pool (voluntary
- * /release OR a rent-sweeper lapse/eviction) — doing so lets the seller
- * double-sell a deed a buyer already settled. MUST be called with the parcel row
- * already locked FOR UPDATE and under the per-owner advisory lock in `tx`, so it
- * serializes against the marketplace lister/fulfiller (same advisory OUTER +
- * parcel FOR UPDATE INNER order — no new deadlock edge). Raw SQL by table name
- * so land.ts stays decoupled from the market schema (owned by token-economy).
- */
-export async function parcelHasLiveDeedLock(tx: LandTx, parcelId: string): Promise<boolean> {
-  try {
-    const rows = await tx.execute<{ hit: number }>(
-      sql`SELECT 1 AS hit
-          WHERE EXISTS (SELECT 1 FROM market_deed_locks WHERE parcel_id = ${parcelId})
-             OR EXISTS (
-               SELECT 1 FROM market_listings
-               WHERE item_kind = 'land_deed'
-                 AND item_ref = ${parcelId}
-                 AND status IN ('active', 'pending_settlement')
-             )`,
-    );
-    return Array.from(rows as Iterable<unknown>).length > 0;
-  } catch (err) {
-    // Migration-order safety: on a DB where 0017 (market tables) is not applied,
-    // the relation doesn't exist (Postgres 42P01) — no marketplace means nothing
-    // can be deed-locked, so treat as UNLOCKED. Re-throw anything else so a real
-    // fault is never silently swallowed on a money path.
-    //
-    // Error-surface note (verified): drizzle-orm 0.33.0 + postgres-js does NOT
-    // wrap driver errors, so PostgresError's SQLSTATE lands directly on
-    // `err.code`. The `cause.code` + exact-message checks are a NARROW fallback
-    // (undefined_table's canonical message form only) in case a future drizzle
-    // upgrade wraps the driver error — never a generic swallow.
-    const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } } | undefined;
-    const undefinedTable =
-      e?.code === '42P01' ||
-      e?.cause?.code === '42P01' ||
-      (typeof e?.message === 'string' && /relation "[^"]+" does not exist/.test(e.message)) ||
-      (typeof e?.cause?.message === 'string' && /relation "[^"]+" does not exist/.test(e.cause.message));
-    if (undefinedTable) return false;
-    throw err;
   }
 }
 
@@ -725,6 +1353,10 @@ interface ServiceListingDTO {
   priceCt: number;
   status: 'active' | 'paused' | 'delisted';
   platformFeeBps: number;
+  /** Featured placement is LIVE (intent flag AND an unexpired paid-through). */
+  featured: boolean;
+  /** Slot rent lapsed — kept and restorable, but not sellable (P5a). */
+  suspended: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -807,6 +1439,13 @@ function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceL
     priceCt: row.priceCt,
     status: row.status,
     platformFeeBps: row.platformFeeBps,
+    // "Featured right now" is the INTENT flag AND a live paid-through — the
+    // flag alone never grants placement.
+    featured:
+      row.featured
+      && row.featuredPaidThrough !== null
+      && new Date(row.featuredPaidThrough).getTime() > Date.now(),
+    suspended: row.slotSuspendedAt !== null,
     // toIso (not a bare .toISOString()) so the mapper is robust even if a caller
     // ever feeds it a raw-execute row (string dates) rather than a typed one.
     createdAt: toIso(row.createdAt),
@@ -873,16 +1512,167 @@ landRoutes.get('/parcels', async (c) => {
       depositCt: landParcels.depositCt,
       depositRemainingCt: landParcels.depositRemainingCt,
       holdThresholdCt: landParcels.holdThresholdCt,
+      rentPaidThrough: landParcels.rentPaidThrough,
+      graceUntil: landParcels.graceUntil,
+      updatedAt: landParcels.updatedAt,
     })
     .from(landParcels)
     .where(where);
 
-  const payload = rows.map(toDTO);
+  const payload = rows
+    .filter((row) => RENDERED_PARCEL_CODES.has(row.parcelCode))
+    .map(toDTO);
   setReadCache(cacheKey, payload);
   return c.json(payload);
 });
 
 // ─── 2. GET /owned/:avatarId  (PUBLIC, rate-limited — multiplayer render seam) ─
+
+// Public active-structure render feed (cached 60s, shared public-read limiter).
+landRoutes.get('/structures/public', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  c.header('Cache-Control', 'public, max-age=30');
+
+  const cached = getPublicStructuresCache();
+  if (cached) return c.json(cached);
+
+  const rows = await db
+    .select({
+      parcelCode: landParcels.parcelCode,
+      gridX: landParcels.gridX,
+      gridY: landParcels.gridY,
+      tier: landParcels.tier,
+      structureType: landStructures.structureType,
+      level: landStructures.level,
+      shellKey: landStructures.shellKey,
+      paletteKey: landStructures.paletteKey,
+    })
+    .from(landStructures)
+    .innerJoin(landParcels, eq(landParcels.id, landStructures.parcelId))
+    .where(eq(landStructures.status, 'active'))
+    .orderBy(landParcels.parcelCode);
+
+  const payload = rows.map(toPublicLandStructureDTO);
+  setPublicStructuresCache(payload);
+  return c.json(payload);
+});
+
+// Public kit render feed (cached 60s, no owner identity or database UUIDs).
+landRoutes.get('/pieces/public', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  c.header('Cache-Control', 'public, max-age=30');
+
+  const cached = getPublicPiecesCache();
+  if (cached) return c.json(cached);
+
+  const rows = await db
+    .select({
+      parcelCode: landParcels.parcelCode,
+      pieceKey: landStructurePieces.pieceKey,
+      gridX: landStructurePieces.gridX,
+      gridY: landStructurePieces.gridY,
+      rotationStep: landStructurePieces.rotationStep,
+      stackLevel: landStructurePieces.stackLevel,
+    })
+    .from(landStructurePieces)
+    .innerJoin(landParcels, eq(landParcels.id, landStructurePieces.parcelId))
+    .innerJoin(landStructures, eq(landStructures.parcelId, landStructurePieces.parcelId))
+    .where(eq(landStructures.status, 'active'))
+    .orderBy(
+      landParcels.parcelCode,
+      landStructurePieces.gridX,
+      landStructurePieces.gridY,
+      landStructurePieces.stackLevel,
+    );
+
+  const payload = rows.map(toPublicLandStructurePieceDTO);
+  setPublicPiecesCache(payload);
+  return c.json(payload);
+});
+
+// Owner-scoped piece IDs complete the move/remove loop after a reload. The
+// resolved avatar id is both the authorization subject and the rate-limit key.
+landRoutes.get(
+  '/parcels/:parcelId/pieces',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  noStorePrivate,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+    if (!ownerPiecesReadLimiter.check(avatarId)) {
+      return c.json({ error: 'rate_limited' }, 429);
+    }
+
+    const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_parcel_id' }, 400);
+    }
+    const parcelId = idParsed.data;
+
+    const authorityRows = await db
+      .select({
+        parcelOwnerAvatarId: landParcels.ownerAvatarId,
+        structureOwnerAvatarId: landStructures.ownerAvatarId,
+        structureStatus: landStructures.status,
+      })
+      .from(landParcels)
+      // Join the ACTIVE structure only — archived rows can coexist on a parcel
+      // after eviction + re-placement, and a bare parcelId join with limit(1)
+      // would nondeterministically pick one (false 403/404 for the real owner).
+      .leftJoin(
+        landStructures,
+        and(
+          eq(landStructures.parcelId, landParcels.id),
+          eq(landStructures.status, 'active'),
+        ),
+      )
+      .where(eq(landParcels.id, parcelId))
+      .limit(1);
+    const authority = authorityRows[0];
+    if (!authority) {
+      return c.json({ error: 'parcel_not_found' }, 404);
+    }
+    if (
+      authority.parcelOwnerAvatarId !== avatarId
+      || (
+        authority.structureOwnerAvatarId !== null
+        && authority.structureOwnerAvatarId !== avatarId
+      )
+    ) {
+      return c.json({ error: 'not_structure_owner' }, 403);
+    }
+    if (
+      authority.structureOwnerAvatarId === null
+      || authority.structureStatus !== 'active'
+    ) {
+      return c.json({ error: 'structure_required' }, 404);
+    }
+
+    const rows = await db
+      .select({
+        id: landStructurePieces.id,
+        parcelId: landStructurePieces.parcelId,
+        pieceKey: landStructurePieces.pieceKey,
+        gridX: landStructurePieces.gridX,
+        gridY: landStructurePieces.gridY,
+        rotationStep: landStructurePieces.rotationStep,
+        stackLevel: landStructurePieces.stackLevel,
+      })
+      .from(landStructurePieces)
+      .where(eq(landStructurePieces.parcelId, parcelId))
+      .orderBy(
+        landStructurePieces.gridX,
+        landStructurePieces.gridY,
+        landStructurePieces.stackLevel,
+      );
+
+    return c.json({ pieces: rows.map(toLandStructurePieceDTO) });
+  },
+);
 
 landRoutes.get('/owned/:avatarId', async (c) => {
   if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
@@ -915,9 +1705,13 @@ landRoutes.get('/me', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   return c.json({ avatarId, ...payload });
 });
 
-// ─── 4. POST /claim-starter  (AUTH, PARITY-BOUND, idempotent, atomic) ───────
+// ─── 4. POST /claim-starter  (RETIRED, stable pre-auth refusal) ─────────────
 
-landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/claim-starter', (c) => c.json({ error: 'tenure_model_active' }, 409));
+
+// Unreachable review reference: P2 registers no legacy deposit-creation path.
+if (false) {
+landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1189,6 +1983,8 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIden
   // Fresh grant committed — bust the owner read-cache so the render seam sees
   // the new parcel within the same request, then emit the leaderboard credit.
   bustOwnedCache(avatarId);
+  bustPublicStructuresCache();
+  bustPublicPiecesCache();
 
   void logEventFromContext(c, {
     eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
@@ -1228,6 +2024,7 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIden
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 1 / Slice B — priced primary sale + structures (PARITY-BOUND)
 //
+}
 // PHASE3: expose buy / structure / upgrade via the agent tools.json surface +
 // the npc-simulation `[ACTION:]` whitelist + a PROTOCOL_VERSION bump so a
 // connected Hatcher agent can run these through its action channel. The HTTP
@@ -1257,6 +2054,8 @@ landRoutes.get('/parcels/:parcelId/structure', async (c) => {
       structureType: landStructures.structureType,
       catalogKey: landStructures.catalogKey,
       level: landStructures.level,
+      shellKey: landStructures.shellKey,
+      paletteKey: landStructures.paletteKey,
     })
     .from(landStructures)
     // Only an ACTIVE structure renders; an archived one sits on a now-available
@@ -1293,7 +2092,8 @@ landRoutes.get('/catalog', async (c) => {
       premium: rules.premium,
       homeSkus: skuList(rules.homeSkus),
       shopSkus: skuList(rules.shopSkus),
-      upgradeCosts: STRUCTURE_UPGRADE_COSTS,
+      upgradeCosts: STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop,
+      upgradeCostsByType: STRUCTURE_UPGRADE_COSTS_BY_TYPE,
     });
   }
 
@@ -1312,7 +2112,11 @@ landRoutes.get('/catalog', async (c) => {
       ];
     }),
   );
-  return c.json({ tiers, upgradeCosts: STRUCTURE_UPGRADE_COSTS });
+  return c.json({
+    tiers,
+    upgradeCosts: STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop,
+    upgradeCostsByType: STRUCTURE_UPGRADE_COSTS_BY_TYPE,
+  });
 });
 
 // ─── 7. POST /parcels/:parcelId/buy  (DISABLED — Phase B tenure model) ──────
@@ -1353,7 +2157,92 @@ landRoutes.post('/parcels/:parcelId/buy', (c) => c.json({ error: 'tenure_model_a
 // stacked-threshold SUM + the compare + the flip, and those all run inside the
 // tx under advisory(avatar) + FOR UPDATE, so two concurrent claims by the same
 // subject serialize and the second sees the first's committed hold in its SUM.
-landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.get('/hold-wallet', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, noStorePrivate, async (c) => {
+  const identity = c.get('identity');
+  if (!holdWalletReadLimiter.check(identity.userId)) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const rows = await db
+    .select({
+      walletAddress: users.landHoldWalletPubkey,
+      declaredAt: users.landHoldWalletDeclaredAt,
+    })
+    .from(users)
+    .where(eq(users.id, identity.userId))
+    .limit(1);
+  const declaration = rows[0];
+  if (!declaration) return c.json({ error: 'identity_binding_changed' }, 403);
+  const balance = declaration.walletAddress
+    ? await getWalletClvBalance(declaration.walletAddress)
+    : null;
+  return c.json({
+    walletAddress: declaration.walletAddress,
+    declaredAt: declaration.declaredAt?.toISOString() ?? null,
+    balance,
+  });
+});
+
+landRoutes.post('/hold-wallet', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const parsed = declareHoldWalletBodySchema.safeParse(rawBody);
+  if (!parsed.success) return c.json({ error: 'invalid_body' }, 400);
+  let canonical: string;
+  try {
+    canonical = new PublicKey(parsed.data.walletAddress).toBase58();
+    if (canonical !== parsed.data.walletAddress) throw new Error('non-canonical');
+  } catch {
+    return c.json({ error: 'invalid_wallet_address' }, 400);
+  }
+  try {
+    await declareLandHoldWallet(identity, canonical);
+  } catch (err) {
+    return settlementError(c, err);
+  }
+  return c.json({ walletAddress: canonical });
+});
+
+landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const body = holdClaimBodySchema.safeParse(rawBody);
+  if (!body.success) return c.json({ error: 'invalid_body' }, 400);
+  const parcelCode = await parcelCodeForId(idParsed.data);
+  if (!parcelCode) return c.json({ error: 'parcel_not_found' }, 404);
+  try {
+    const claimed = await settleTenureClaim({
+      ...settlementInput(identity, parcelCode, body.data.idempotencyKey),
+      door: 'hold',
+    });
+    if (claimed.fresh) {
+      bustOwnedCache(identity.avatarId);
+      bustParcelsAvailableCache(claimed.parcel.tier);
+      bustPublicStructuresCache();
+      bustPublicPiecesCache();
+      void logEventFromContext(c, {
+        eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
+        userId: identity.userId,
+        avatarId: identity.avatarId,
+        agentId: identity.kind === 'agent' ? identity.agentId : null,
+        payload: { parcelCode, tier: claimed.parcel.tier, amountCt: 0, tenure: 'hold' },
+      });
+      broadcastLandEvent({ parcelCode, status: 'owned', ownerAvatarId: identity.avatarId });
+    }
+    return c.json({
+      parcel: claimed.parcel,
+      requiredClv: claimed.requiredClv,
+      heldClv: claimed.heldClv,
+      idempotencyReplay: !claimed.fresh || undefined,
+    });
+  } catch (err) {
+    return settlementError(c, err);
+  }
+});
+
+if (false) {
+landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1584,6 +2473,8 @@ landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requ
   // Committed — bust the owner's combined cache AND the for-sale pool cache for
   // this tier (the parcel left 'available'). Then emit the leaderboard credit.
   bustOwnedCache(avatarId);
+  bustPublicStructuresCache();
+  bustPublicPiecesCache();
   bustParcelsAvailableCache(claimed.parcel.tier);
 
   // Acquiring a parcel (hold, like buy/rent before it) is one PARCEL_PURCHASED
@@ -1622,7 +2513,84 @@ landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requ
 // conservation shape as the claim (claimant debited, NOBODY credited, the
 // remainder number grows). A remainder that again covers a full week clears an
 // open grace window.
-landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+}
+
+landRoutes.post('/parcels/:parcelId/claim-rent', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const body = rentClaimBodySchema.safeParse(rawBody);
+  if (!body.success) return c.json({ error: 'invalid_body' }, 400);
+  const parcelCode = await parcelCodeForId(idParsed.data);
+  if (!parcelCode) return c.json({ error: 'parcel_not_found' }, 404);
+  try {
+    const claimed = await settleTenureClaim({
+      ...settlementInput(identity, parcelCode, body.data.idempotencyKey),
+      door: 'rent',
+      weeks: body.data.weeks,
+    });
+    if (claimed.fresh) {
+      bustOwnedCache(identity.avatarId);
+      bustParcelsAvailableCache(claimed.parcel.tier);
+      bustPublicStructuresCache();
+      bustPublicPiecesCache();
+      void logEventFromContext(c, {
+        eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
+        userId: identity.userId,
+        avatarId: identity.avatarId,
+        agentId: identity.kind === 'agent' ? identity.agentId : null,
+        payload: {
+          parcelCode,
+          tier: claimed.parcel.tier,
+          amountCt: (claimed.weeklyCt ?? 0) * (claimed.weeks ?? 0),
+          tenure: 'deposit',
+        },
+      });
+      broadcastLandEvent({ parcelCode, status: 'owned', ownerAvatarId: identity.avatarId });
+    }
+    return c.json({
+      parcel: claimed.parcel,
+      weeks: claimed.weeks,
+      weeklyCt: claimed.weeklyCt,
+      idempotencyReplay: !claimed.fresh || undefined,
+    });
+  } catch (err) {
+    return settlementError(c, err);
+  }
+});
+
+landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const body = depositTopupBodySchema.safeParse(rawBody);
+  if (!body.success) return c.json({ error: 'invalid_body' }, 400);
+  const parcelCode = await parcelCodeForId(idParsed.data);
+  if (!parcelCode) return c.json({ error: 'parcel_not_found' }, 404);
+  try {
+    const topped = await settleRentPrepay({
+      ...settlementInput(identity, parcelCode, body.data.idempotencyKey),
+      ...('weeks' in body.data
+        ? { weeks: body.data.weeks }
+        : { amountCt: body.data.amountCt }),
+    });
+    if (topped.fresh) bustOwnedCache(identity.avatarId);
+    return c.json({
+      parcelCode: topped.parcelCode,
+      depositRemainingCt: topped.depositRemainingCt,
+      amountCt: topped.amountCt,
+      graceCleared: topped.graceCleared,
+      idempotencyReplay: !topped.fresh || undefined,
+    });
+  } catch (err) {
+    return settlementError(c, err);
+  }
+});
+
+if (false) {
+landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1641,6 +2609,9 @@ landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, r
   }
   const bodyParsed = depositTopupBodySchema.safeParse(rawBody);
   if (!bodyParsed.success) {
+    return c.json({ error: 'invalid_body' }, 400);
+  }
+  if (!('amountCt' in bodyParsed.data)) {
     return c.json({ error: 'invalid_body' }, 400);
   }
   const amountCt = bodyParsed.data.amountCt;
@@ -1751,7 +2722,41 @@ landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, r
 // refunds. Both revert the parcel (status='available', every tenure field
 // cleared) and archive the active structure (restored on a same-avatar
 // re-acquire, purged on a re-lease — the eviction convention).
-landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+}
+
+landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
+  const identity = c.get('identity');
+  const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+  if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
+  const rawBody: unknown = await c.req.json().catch(() => null);
+  const body = releaseBodySchema.safeParse(rawBody);
+  if (!body.success) return c.json({ error: 'invalid_body' }, 400);
+  const parcelCode = await parcelCodeForId(idParsed.data);
+  if (!parcelCode) return c.json({ error: 'parcel_not_found' }, 404);
+  try {
+    const released = await settleTenureRelease(
+      settlementInput(identity, parcelCode, body.data.idempotencyKey),
+    );
+    if (released.fresh) {
+      bustOwnedCache(identity.avatarId);
+      bustParcelsAvailableCache(released.parcel.tier);
+      bustPublicStructuresCache();
+      bustPublicPiecesCache();
+      broadcastLandEvent({ parcelCode, status: 'available', ownerAvatarId: null });
+    }
+    return c.json({
+      released: true,
+      refundedCt: released.refundedCt,
+      parcel: released.parcel,
+      idempotencyReplay: !released.fresh || undefined,
+    });
+  } catch (err) {
+    return settlementError(c, err);
+  }
+});
+
+if (false) {
+landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1932,6 +2937,8 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
   // Committed — the parcel is back in the pool: bust the owner cache + the
   // for-sale pool cache, and tell every connected player live.
   bustOwnedCache(avatarId);
+  bustPublicStructuresCache();
+  bustPublicPiecesCache();
   bustParcelsAvailableCache(released.parcel.tier);
   broadcastLandEvent({
     parcelCode: released.parcel.parcelCode,
@@ -1944,7 +2951,9 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
 
 // ─── 8. POST /parcels/:parcelId/structure  (AUTH, PARITY-BOUND, free Lv1) ────
 
-landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+}
+
+landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2011,11 +3020,15 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
         structure_type: 'home' | 'shop';
         catalog_key: string;
         level: number | string;
+        shell_key: string | null;
+        palette_key: string | null;
       }>(
         sql`INSERT INTO land_structures
-              (parcel_id, owner_avatar_id, structure_type, catalog_key, level)
-            VALUES (${parcel.id}, ${avatarId}, ${structureType}, ${catalogKey}, 1)
-            RETURNING id, parcel_id, owner_avatar_id, structure_type, catalog_key, level`,
+              (parcel_id, owner_avatar_id, structure_type, catalog_key, level, shell_key, palette_key)
+            VALUES (${parcel.id}, ${avatarId}, ${structureType}, ${catalogKey}, 1,
+                    ${DEFAULT_SHELL_KEY}, ${DEFAULT_PALETTE_KEY})
+            RETURNING id, parcel_id, owner_avatar_id, structure_type, catalog_key, level,
+                      shell_key, palette_key`,
       );
       const row = insertRows[0];
 
@@ -2040,6 +3053,8 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
           structureType: row.structure_type,
           catalogKey: row.catalog_key,
           level: Number(row.level),
+          shellKey: row.shell_key ?? DEFAULT_SHELL_KEY,
+          paletteKey: row.palette_key ?? DEFAULT_PALETTE_KEY,
         },
         tier: parcel.tier,
         parcelCode: parcel.parcel_code,
@@ -2058,6 +3073,8 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
   }
 
   bustOwnedCache(avatarId);
+  bustPublicStructuresCache();
+  bustPublicPiecesCache();
 
   void logEventFromContext(c, {
     eventType: LAND_EVENT_TYPES.STRUCTURE_PLACED,
@@ -2080,7 +3097,632 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
 
 // ─── 9. POST /structures/:structureId/upgrade  (AUTH, PARITY-BOUND, priced) ──
 
-landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+// P3 stage A: paid kit-piece placement. Moving and removal are free below.
+landRoutes.post(
+  '/parcels/:parcelId/pieces',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    const avatarId = identity.avatarId;
+    const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+    if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
+    const parcelId = idParsed.data;
+
+    const PARSE_FAILED = Symbol('parse_failed');
+    const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+    if (rawBody === PARSE_FAILED) return c.json({ error: 'invalid_body' }, 400);
+    const bodyParsed = createKitPieceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) {
+      const missingKey = bodyParsed.error.issues.some(
+        (issue) => issue.path.length === 1 && issue.path[0] === 'idempotencyKey',
+      );
+      return c.json({ error: missingKey ? 'idempotency_key_required' : 'invalid_body' }, 400);
+    }
+    const body = bodyParsed.data;
+
+    type PlacementResult = {
+      kind: 'placed' | 'replay';
+      piece: LandStructurePieceDTO;
+      /** vCLAW charged. Zero on the material rail. */
+      costCt: number;
+      /** Materials charged. Zero on the vCLAW rail. */
+      costMaterials: number;
+      paymentRail: KitPaymentRail;
+    };
+    let result: PlacementResult;
+
+    try {
+      result = await db.transaction(async (tx): Promise<PlacementResult> => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+        // `tier` is selected because the shared placement predicate subtracts a
+        // TIER-scoped (level-independent) shell envelope. The row is already
+        // FOR UPDATE-locked, so this is a column widening with no new lock.
+        const parcelRows = await tx.execute<{
+          id: string;
+          owner_avatar_id: string | null;
+          tier: LandTier;
+        }>(
+          sql`SELECT id, owner_avatar_id, tier FROM land_parcels
+              WHERE id = ${parcelId} FOR UPDATE`,
+        );
+        const parcel = parcelRows[0];
+        if (!parcel) throw new HTTPException(404, { message: 'parcel_not_found' });
+
+        // `structure_type` is selected because the placement fee is type-keyed
+        // (founder ruling Q3). The row is already FOR UPDATE-locked, so this is
+        // a column widening with no new lock and no extra round trip.
+        const structureRows = await tx.execute<{
+          id: string;
+          owner_avatar_id: string;
+          status: 'active' | 'archived';
+          level: number | string;
+          structure_type: LandStructureType;
+        }>(
+          sql`SELECT id, owner_avatar_id, status, level, structure_type FROM land_structures
+              WHERE parcel_id = ${parcelId} FOR UPDATE`,
+        );
+        const structure = structureRows[0] ?? null;
+        const authorityError = validateKitAuthority(
+          {
+            parcelOwnerAvatarId: parcel.owner_avatar_id,
+            structureOwnerAvatarId: structure?.owner_avatar_id ?? null,
+            structureStatus: structure?.status ?? null,
+          },
+          avatarId,
+          true,
+        );
+        if (authorityError) throwKitAuthorityError(authorityError);
+
+        // Owner-first and idempotency-first, exactly like structure upgrades:
+        // a replay returns before validation, debit, credit, or insertion.
+        const priorRows = await tx.execute<{ metadata: unknown; amount_ct: number | string }>(
+          sql`SELECT metadata, amount_ct FROM land_transactions
+              WHERE kind = 'structure_placement'
+                AND avatar_id = ${avatarId}
+                AND metadata->>'operation' = 'kit_piece_placement'
+                AND metadata->>'idempotencyKey' = ${body.idempotencyKey}
+              ORDER BY created_at DESC LIMIT 1`,
+        );
+        const prior = priorRows[0];
+        if (prior) {
+          const piece = pieceFromPlacementAudit(prior.metadata);
+          if (!piece) throw new HTTPException(409, { message: 'idempotency_record_corrupt' });
+          const priorRail = railFromPlacementAudit(prior.metadata);
+          // The RAIL is part of the request identity. Replaying a key that
+          // bought a piece with materials while now asking to pay vCLAW is a
+          // different request, and answering it with the stored receipt would
+          // tell the client it spent a currency it did not.
+          if (
+            !matchesKitPlacementReplay(piece, { parcelId, ...body }) ||
+            priorRail !== body.paymentRail
+          ) {
+            throw new HTTPException(409, { message: 'idempotency_key_conflict' });
+          }
+          return {
+            kind: 'replay',
+            piece,
+            costCt: Number(prior.amount_ct),
+            costMaterials: materialsCostFromPlacementAudit(prior.metadata),
+            paymentRail: priorRail,
+          };
+        }
+
+        // Cheap non-geometric pre-checks ONLY (unknown key, impossible level).
+        // Every geometric rule — grid bounds, rotation, caps, stack height,
+        // support, parcel bounds, shell envelope, piece overlap — belongs to
+        // `evaluatePlacement` below, so there is exactly one geometry authority.
+        if (!isKitPieceKey(body.pieceKey)) {
+          throw new HTTPException(400, { message: 'unknown_piece_key' });
+        }
+        const placeLevel = Number(structure!.level);
+        if (!Number.isInteger(placeLevel) || placeLevel < 1 || placeLevel > 5) {
+          throw new HTTPException(400, { message: 'structure_level_invalid' });
+        }
+
+        // Catalog drift is still its own error: a stored key the catalog no
+        // longer knows must stop the write loudly rather than be skipped.
+        const driftRows = await tx.execute<{ piece_key: string }>(
+          sql`SELECT piece_key FROM land_structure_pieces WHERE parcel_id = ${parcelId}`,
+        );
+        for (const row of Array.from(driftRows)) {
+          if (!isKitPieceKey(row.piece_key)) {
+            throw new HTTPException(409, { message: 'piece_catalog_drift' });
+          }
+        }
+
+        // THE geometry gate (defect D-1). Full rotated-footprint, shell-envelope
+        // and cross-level 3D occupancy test — not the anchor cell alone.
+        const verdict = await evaluateKitWrite(tx, {
+          parcelId,
+          parcelTier: parcel.tier,
+          structureLevel: Number(structure!.level),
+          request: {
+            pieceKey: body.pieceKey as KitPieceKey,
+            gridX: body.gridX,
+            gridY: body.gridY,
+            rotationStep: body.rotationStep,
+            stackLevel: body.stackLevel,
+          },
+        });
+        if (!verdict.ok) {
+          throw new HTTPException(kitPlacementRefusalStatus(verdict.code), {
+            message: verdict.code,
+          });
+        }
+
+        const pieceKey = body.pieceKey as KitPieceKey;
+        const size: KitPieceSize = KIT_CATALOG[pieceKey].size;
+        const structureType = structure!.structure_type;
+        const paymentRail = body.paymentRail;
+
+        // THE RAIL GATE. `structureType` comes off the FOR UPDATE-locked row,
+        // never from the request, so a client cannot talk its way into paying
+        // for a shop yard with a non-cashable currency (see the reasoning on
+        // `KIT_PIECE_FEE_MATERIALS`).
+        if (!isKitPaymentRailAllowed(paymentRail, structureType)) {
+          throw new HTTPException(400, { message: 'payment_rail_not_allowed' });
+        }
+
+        let feeCt = 0;
+        let feeMaterials = 0;
+        let debitLedgerId: string | null = null;
+        let creditLedgerId: string | null = null;
+
+        if (paymentRail === 'materials') {
+          feeMaterials = kitPieceFeeMaterials(size);
+          // Materials are a SINK, not a transfer: there is no counterparty and
+          // no treasury leg, because there is nothing on the other side to pay.
+          // The debit is a conditional decrement, so a spend at balance − 1
+          // writes nothing and this transaction rolls the placement back whole.
+          await debitMaterials(
+            {
+              avatarId,
+              amount: feeMaterials,
+              reason: 'land_kit_piece_fee',
+              source: 'build',
+            },
+            tx,
+          );
+        } else {
+          feeCt = kitPieceFeeCt(structureType, size);
+          const treasuryId = await getHouseTreasuryAvatarId();
+          if (!treasuryId) {
+            // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
+            // burn fallback, this pre-settlement atomic route rolls back/fails closed.
+            throw new HTTPException(503, { message: 'house_treasury_unavailable' });
+          }
+          const debit = await debitClawTokens(
+            {
+              avatarId,
+              amount: feeCt,
+              reason: 'land_kit_piece_fee',
+              source: 'api',
+              metadata: {
+                parcelId,
+                pieceKey,
+                size,
+                structureType,
+                idempotencyKey: body.idempotencyKey,
+              },
+              actorKind: toActorKind(identity.kind),
+            },
+            tx,
+          );
+          const credit = await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: feeCt,
+              reason: 'house_fee_land_kit_piece',
+              source: 'system',
+              metadata: {
+                parcelId,
+                pieceKey,
+                size,
+                structureType,
+                ownerAvatarId: avatarId,
+                idempotencyKey: body.idempotencyKey,
+              },
+              actorKind: 'system',
+            },
+            tx,
+          );
+          debitLedgerId = debit.ledgerId;
+          creditLedgerId = credit.ledgerId;
+        }
+
+        const inserted = await tx
+          .insert(landStructurePieces)
+          .values({
+            parcelId,
+            ownerAvatarId: avatarId,
+            pieceKey,
+            gridX: body.gridX,
+            gridY: body.gridY,
+            rotationStep: body.rotationStep,
+            stackLevel: body.stackLevel,
+          })
+          .returning({
+            id: landStructurePieces.id,
+            parcelId: landStructurePieces.parcelId,
+            pieceKey: landStructurePieces.pieceKey,
+            gridX: landStructurePieces.gridX,
+            gridY: landStructurePieces.gridY,
+            rotationStep: landStructurePieces.rotationStep,
+            stackLevel: landStructurePieces.stackLevel,
+          });
+        const piece = toLandStructurePieceDTO(inserted[0]!);
+        const auditMetadata = JSON.stringify({
+          operation: 'kit_piece_placement',
+          idempotencyKey: body.idempotencyKey,
+          size,
+          piece,
+          // P5b. `amount_ct` stays the vCLAW column and is 0 on the material
+          // rail, so no CT report double-counts a material placement. The rail
+          // and the material cost live here, which is also what the replay path
+          // reads back.
+          paymentRail,
+          costMaterials: feeMaterials,
+        });
+        await tx.execute(
+          sql`INSERT INTO land_transactions
+                (kind, parcel_id, structure_id, avatar_id, amount_ct,
+                 debit_ledger_tx_id, credit_ledger_tx_id, metadata)
+              VALUES ('structure_placement', ${parcelId}, ${structure!.id}, ${avatarId}, ${feeCt},
+                      ${debitLedgerId}, ${creditLedgerId}, ${auditMetadata}::jsonb)`,
+        );
+        return {
+          kind: 'placed',
+          piece,
+          costCt: feeCt,
+          costMaterials: feeMaterials,
+          paymentRail,
+        };
+      });
+    } catch (err) {
+      const pgError = err as {
+        code?: string;
+        constraint_name?: string;
+        constraint?: string;
+      } | undefined;
+      const constraint = pgError?.constraint_name ?? pgError?.constraint;
+      if (pgError?.code === '23505' && constraint === 'land_tx_kit_piece_idem_unique') {
+        return c.json({ error: 'idempotency_key_conflict' }, 409);
+      }
+      if (pgError?.code === '23505' && constraint === 'land_structure_pieces_cell_stack_unique') {
+        return c.json({ error: 'cell_occupied' }, 409);
+      }
+      if (err instanceof InsufficientTokensError) {
+        return c.json({ error: 'insufficient_clawtokens' }, 400);
+      }
+      if (err instanceof InsufficientMaterialsError) {
+        return c.json({ error: 'insufficient_materials' }, 400);
+      }
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 400 | 403 | 404 | 409 | 503);
+      }
+      throw err;
+    }
+
+    // `costCt` stays in the response on BOTH rails so no existing reader
+    // breaks; it is simply 0 when materials paid. `paymentRail` is what a
+    // client should branch on.
+    const costs = {
+      costCt: result.costCt,
+      costMaterials: result.costMaterials,
+      paymentRail: result.paymentRail,
+    };
+    if (result.kind === 'replay') {
+      return c.json({ piece: result.piece, ...costs, idempotencyReplay: true });
+    }
+    bustPublicPiecesCache();
+    return c.json({ piece: result.piece, ...costs });
+  },
+);
+
+landRoutes.patch(
+  '/pieces/:pieceId',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+    const idParsed = pieceIdSchema.safeParse(c.req.param('pieceId'));
+    if (!idParsed.success) return c.json({ error: 'invalid_piece_id' }, 400);
+    const pieceId = idParsed.data;
+    const rawBody = await c.req.json().catch(() => ({}));
+    const bodyParsed = moveKitPieceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) return c.json({ error: 'invalid_body' }, 400);
+    const body = bodyParsed.data;
+
+    let piece: LandStructurePieceDTO;
+    try {
+      piece = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+        const pieceRows = await tx.execute<{
+          id: string;
+          parcel_id: string;
+          owner_avatar_id: string;
+          parcel_owner_avatar_id: string | null;
+          piece_key: string;
+          parcel_tier: LandTier;
+        }>(
+          sql`SELECT kp.id, kp.parcel_id, kp.owner_avatar_id,
+                     p.owner_avatar_id AS parcel_owner_avatar_id, kp.piece_key,
+                     p.tier AS parcel_tier
+              FROM land_structure_pieces kp
+              JOIN land_parcels p ON p.id = kp.parcel_id
+              WHERE kp.id = ${pieceId}
+              FOR UPDATE OF kp, p`,
+        );
+        const current = pieceRows[0];
+        if (!current) throw new HTTPException(404, { message: 'piece_not_found' });
+
+        const structureRows = await tx.execute<{
+          owner_avatar_id: string;
+          status: 'active' | 'archived';
+          level: number | string;
+        }>(
+          sql`SELECT owner_avatar_id, status, level FROM land_structures
+              WHERE parcel_id = ${current.parcel_id} FOR UPDATE`,
+        );
+        const structure = structureRows[0] ?? null;
+        const authorityError = validateKitAuthority(
+          {
+            parcelOwnerAvatarId: current.parcel_owner_avatar_id,
+            pieceOwnerAvatarId: current.owner_avatar_id,
+            structureOwnerAvatarId: structure?.owner_avatar_id ?? null,
+            structureStatus: structure?.status ?? null,
+          },
+          avatarId,
+          true,
+        );
+        if (authorityError) throwKitAuthorityError(authorityError);
+
+        if (!isKitPieceKey(current.piece_key)) {
+          throw new HTTPException(409, { message: 'piece_catalog_drift' });
+        }
+        const moveLevel = Number(structure!.level);
+        if (!Number.isInteger(moveLevel) || moveLevel < 1 || moveLevel > 5) {
+          throw new HTTPException(400, { message: 'structure_level_invalid' });
+        }
+
+        // The move is re-validated against the CURRENT predicate — this is the
+        // Q5 escape hatch: a grandfathered piece the stricter rule now refuses
+        // is never deleted, and its owner moves it to a legal position for free.
+        // The piece is excluded from its own occupancy set and piece counts, so
+        // a move on a full yard is cap-neutral and never self-collides.
+        const verdict = await evaluateKitWrite(tx, {
+          parcelId: current.parcel_id,
+          parcelTier: current.parcel_tier,
+          structureLevel: moveLevel,
+          request: {
+            pieceKey: current.piece_key,
+            gridX: body.gridX,
+            gridY: body.gridY,
+            rotationStep: body.rotationStep,
+            stackLevel: body.stackLevel,
+          },
+          excludePieceRef: pieceId,
+        });
+        if (!verdict.ok) {
+          throw new HTTPException(kitPlacementRefusalStatus(verdict.code), {
+            message: verdict.code,
+          });
+        }
+
+        const updated = await tx
+          .update(landStructurePieces)
+          .set({ ...body, updatedAt: new Date() })
+          .where(eq(landStructurePieces.id, pieceId))
+          .returning({
+            id: landStructurePieces.id,
+            parcelId: landStructurePieces.parcelId,
+            pieceKey: landStructurePieces.pieceKey,
+            gridX: landStructurePieces.gridX,
+            gridY: landStructurePieces.gridY,
+            rotationStep: landStructurePieces.rotationStep,
+            stackLevel: landStructurePieces.stackLevel,
+          });
+        return toLandStructurePieceDTO(updated[0]!);
+      });
+    } catch (err) {
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        return c.json({ error: 'cell_occupied' }, 409);
+      }
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 400 | 403 | 404 | 409);
+      }
+      throw err;
+    }
+
+    // D5: moving a placed piece is free. Deliberate bounded cost: every PATCH
+    // invalidates the shared public feed; no per-route limiter is added this round.
+    bustPublicPiecesCache();
+    return c.json({ piece });
+  },
+);
+
+landRoutes.delete(
+  '/pieces/:pieceId',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+    const idParsed = pieceIdSchema.safeParse(c.req.param('pieceId'));
+    if (!idParsed.success) return c.json({ error: 'invalid_piece_id' }, 400);
+    const pieceId = idParsed.data;
+
+    let piece: LandStructurePieceDTO;
+    try {
+      piece = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+        const rows = await tx.execute<{
+          id: string;
+          parcel_id: string;
+          owner_avatar_id: string;
+          parcel_owner_avatar_id: string | null;
+          piece_key: string;
+          grid_x: number | string;
+          grid_y: number | string;
+          rotation_step: number | string;
+          stack_level: number | string;
+        }>(
+          sql`SELECT kp.id, kp.parcel_id, kp.owner_avatar_id,
+                     p.owner_avatar_id AS parcel_owner_avatar_id, kp.piece_key,
+                     kp.grid_x, kp.grid_y, kp.rotation_step, kp.stack_level
+              FROM land_structure_pieces kp
+              JOIN land_parcels p ON p.id = kp.parcel_id
+              WHERE kp.id = ${pieceId}
+              FOR UPDATE OF kp, p`,
+        );
+        const current = rows[0];
+        if (!current) throw new HTTPException(404, { message: 'piece_not_found' });
+        const authorityError = validateKitAuthority(
+          {
+            parcelOwnerAvatarId: current.parcel_owner_avatar_id,
+            pieceOwnerAvatarId: current.owner_avatar_id,
+          },
+          avatarId,
+          false,
+        );
+        if (authorityError) throwKitAuthorityError(authorityError);
+
+        await tx.delete(landStructurePieces).where(eq(landStructurePieces.id, pieceId));
+        return toLandStructurePieceDTO({
+          id: current.id,
+          parcelId: current.parcel_id,
+          pieceKey: current.piece_key,
+          gridX: Number(current.grid_x),
+          gridY: Number(current.grid_y),
+          rotationStep: Number(current.rotation_step),
+          stackLevel: Number(current.stack_level),
+        });
+      });
+    } catch (err) {
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 403 | 404 | 409);
+      }
+      throw err;
+    }
+
+    // D5: removal is free and intentionally performs no refund ledger write.
+    bustPublicPiecesCache();
+    return c.json({ deleted: true, piece });
+  },
+);
+
+landRoutes.patch(
+  '/structures/:structureId/appearance',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+
+    const idParsed = structureIdSchema.safeParse(c.req.param('structureId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_structure_id' }, 400);
+    }
+    const structureId = idParsed.data;
+
+    const rawBody = await c.req.json().catch(() => ({}));
+    const bodyParsed = appearanceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) {
+      return c.json({ error: 'invalid_body' }, 400);
+    }
+    const patch = bodyParsed.data;
+
+    let structure: LandStructureDTO;
+    try {
+      structure = await db.transaction(async (tx) => {
+        const rows = await tx.execute<{
+          id: string;
+          parcel_id: string;
+          owner_avatar_id: string;
+          parcel_owner_avatar_id: string | null;
+          status: 'active' | 'archived';
+          structure_type: 'home' | 'shop';
+          catalog_key: string;
+          level: number | string;
+          shell_key: string | null;
+          palette_key: string | null;
+          tier: LandTier;
+        }>(
+          sql`SELECT s.id, s.parcel_id, s.owner_avatar_id,
+                     p.owner_avatar_id AS parcel_owner_avatar_id, s.status,
+                     s.structure_type, s.catalog_key, s.level,
+                     s.shell_key, s.palette_key, p.tier
+              FROM land_structures s
+              JOIN land_parcels p ON p.id = s.parcel_id
+              WHERE s.id = ${structureId}
+              FOR UPDATE OF s, p`,
+        );
+        const row = rows[0];
+        if (!row) {
+          throw new HTTPException(404, { message: 'structure_not_found' });
+        }
+
+        const validationError = validateAppearanceMutation(
+          {
+            ownerAvatarId: row.owner_avatar_id,
+            parcelOwnerAvatarId: row.parcel_owner_avatar_id,
+            status: row.status,
+            structureType: row.structure_type,
+            level: Number(row.level),
+            tier: row.tier,
+          },
+          avatarId,
+          patch,
+        );
+        if (validationError !== null) {
+          const status = validationError === 'not_structure_owner'
+            ? 403
+            : validationError === 'structure_archived' || validationError === 'ownership_desync'
+              ? 409
+              : 400;
+          throw new HTTPException(status, { message: validationError });
+        }
+
+        const updates: { shellKey?: string; paletteKey?: string; updatedAt: Date } = {
+          updatedAt: new Date(),
+        };
+        if (patch.shellKey !== undefined) updates.shellKey = patch.shellKey;
+        if (patch.paletteKey !== undefined) updates.paletteKey = patch.paletteKey;
+
+        const updatedRows = await tx
+          .update(landStructures)
+          .set(updates)
+          .where(eq(landStructures.id, structureId))
+          .returning({
+            id: landStructures.id,
+            parcelId: landStructures.parcelId,
+            ownerAvatarId: landStructures.ownerAvatarId,
+            structureType: landStructures.structureType,
+            catalogKey: landStructures.catalogKey,
+            level: landStructures.level,
+            shellKey: landStructures.shellKey,
+            paletteKey: landStructures.paletteKey,
+          });
+        return toStructureDTO(updatedRows[0]!);
+      });
+    } catch (err) {
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 400 | 403 | 404 | 409);
+      }
+      throw err;
+    }
+
+    bustOwnedCache(avatarId);
+    bustPublicStructuresCache();
+    bustPublicPiecesCache();
+    return c.json({ structure });
+  },
+);
+
+landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2153,11 +3795,13 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
         structure_type: 'home' | 'shop';
         catalog_key: string;
         level: number | string;
+        shell_key: string | null;
+        palette_key: string | null;
         tier: LandTier;
       }>(
         sql`SELECT s.id, s.parcel_id, s.owner_avatar_id,
                    p.owner_avatar_id AS parcel_owner_avatar_id,
-                   s.structure_type, s.catalog_key, s.level, p.tier
+                   s.structure_type, s.catalog_key, s.level, s.shell_key, s.palette_key, p.tier
             FROM land_structures s
             JOIN land_parcels p ON p.id = s.parcel_id
             WHERE s.id = ${structureId}
@@ -2214,8 +3858,12 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
               structureType: s.structure_type,
               catalogKey: s.catalog_key,
               level: Number(s.level),
+              shellKey: s.shell_key ?? DEFAULT_SHELL_KEY,
+              paletteKey: s.palette_key ?? DEFAULT_PALETTE_KEY,
             },
-            costCt: STRUCTURE_UPGRADE_COSTS[toLevel] ?? 0,
+            // Type-keyed like the live charge, so a replay reports the exact
+            // price that was actually paid (0 for a free home Lv2).
+            costCt: structureUpgradeCostCt(s.structure_type, toLevel),
           };
         }
       }
@@ -2234,8 +3882,12 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
         throw new HTTPException(409, { message: 'max_level_reached' });
       }
 
-      const cost = STRUCTURE_UPGRADE_COSTS[target] ?? 0;
-      // target >= 2 here always has cost > 0; guard anyway so debit never gets 0.
+      const cost = structureUpgradeCostCt(s.structure_type, target);
+      // A HOME reaching Lv2 is deliberately FREE (founder ruling Q3), so cost 0
+      // is now a real, expected value rather than only a defensive guard: the
+      // whole debit + treasury credit is skipped and no money moves. The
+      // level write, the `land_upgrades` audit row, and the idempotency key all
+      // still apply, so a free upgrade is replay-safe like a paid one.
       let ledgerId: string | null = null;
       if (cost > 0) {
         const debit = await debitClawTokens(
@@ -2306,6 +3958,8 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
           structureType: s.structure_type,
           catalogKey: s.catalog_key,
           level: target,
+          shellKey: s.shell_key ?? DEFAULT_SHELL_KEY,
+          paletteKey: s.palette_key ?? DEFAULT_PALETTE_KEY,
         },
         costCt: cost,
         tier: s.tier,
@@ -2347,6 +4001,8 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
             structureType: landStructures.structureType,
             catalogKey: landStructures.catalogKey,
             level: landStructures.level,
+            shellKey: landStructures.shellKey,
+            paletteKey: landStructures.paletteKey,
           })
           .from(landStructures)
           .where(eq(landStructures.id, structureId))
@@ -2356,7 +4012,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
           return c.json(
             {
               structure: toStructureDTO(cached),
-              costCt: STRUCTURE_UPGRADE_COSTS[winner.toLevel] ?? 0,
+              costCt: structureUpgradeCostCt(cached.structureType, winner.toLevel),
               idempotencyReplay: true,
             },
             200,
@@ -2374,6 +4030,8 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
   }
 
   bustOwnedCache(avatarId);
+  bustPublicStructuresCache();
+  bustPublicPiecesCache();
 
   if (result.kind === 'replay') {
     return c.json({
@@ -2423,7 +4081,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
 // land mutations is unnecessary (no cross-row supply invariant — a single
 // avatar row is updated), but the parcel row-lock + in-tx re-read of
 // owner_avatar_id is the authoritative ownership guard.
-landRoutes.post('/spawn-preference', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/spawn-preference', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2511,6 +4169,7 @@ landRoutes.post('/parcels/:parcelId/rent', (c) => c.json({ error: 'tenure_model_
 landRoutes.post(
   '/structures/:structureId/services',
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   requireNonGuestIdentity,
   async (c) => {
     const identity = c.get('identity');
@@ -2592,9 +4251,32 @@ landRoutes.post(
         created_at: string;
         updated_at: string;
       }>(
+        // `slot_paid_through` is CARRIED FORWARD from this shop's listing
+        // history, and the free first week is granted ONCE PER STRUCTURE, ever.
+        //
+        // The naive version (an unconditional `now() + 7 days` on every new
+        // listing) was a permanent bypass of the entire P5a sink: delist on day
+        // six, recreate with the same title, get a fresh free week, repeat.
+        // A delisted row is invisible to the sweeper and does not count against
+        // the per-structure active cap, so the recycle was unbounded and the
+        // shop paid nothing, forever.
+        //
+        // The subquery spans ALL listings on the structure regardless of status
+        // (nothing hard-deletes a listing row — delist is a status change), so:
+        //   - no prior listing on this shop  -> the genuine free week,
+        //   - prior listing paid into the future -> that cursor is inherited,
+        //     so a recreated listing is due on the ORIGINAL schedule,
+        //   - prior listing already lapsed  -> floored at now(), i.e. due on the
+        //     very next sweep.
+        // `GREATEST` is written around an explicit COUNT branch because
+        // `GREATEST(now(), NULL)` returns now() in Postgres, which would have
+        // silently swallowed the no-history case and denied every shop its
+        // first free week.
         sql`INSERT INTO service_listings
-              (structure_id, owner_avatar_id, kind, title, description, price_ct, status)
-            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active')
+              (structure_id, owner_avatar_id, kind, title, description, price_ct, status,
+               slot_paid_through)
+            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active',
+                    ${slotPaidThroughOnCreateSql(structureId)})
             RETURNING id, structure_id, owner_avatar_id, kind, title, description, price_ct, status, platform_fee_bps, created_at, updated_at`,
       );
       const row = insertRows[0]!;
@@ -2608,6 +4290,9 @@ landRoutes.post(
           title: row.title,
           description: row.description,
           priceCt: Number(row.price_ct),
+          // A brand-new listing is never featured and never suspended.
+          featured: false,
+          suspended: false,
           status: row.status,
           platformFeeBps: Number(row.platform_fee_bps),
           createdAt: toIso(row.created_at),
@@ -2642,7 +4327,7 @@ landRoutes.post(
 //   401/403 as elsewhere   ·   403 → { error: 'not_listing_owner' }
 //   404 → { error: 'listing_not_found' }
 
-landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2729,7 +4414,15 @@ landRoutes.get('/structures/:structureId/services', async (c) => {
   const rows = await db
     .select()
     .from(serviceListings)
-    .where(and(eq(serviceListings.structureId, structureId), eq(serviceListings.status, 'active')));
+    .where(
+      and(
+        eq(serviceListings.structureId, structureId),
+        eq(serviceListings.status, 'active'),
+        // A slot-rent-suspended listing stays in the table but leaves the
+        // storefront until its owner funds the next week.
+        isNull(serviceListings.slotSuspendedAt),
+      ),
+    );
 
   const payload: ServiceListingsPayload = { listings: rows.map(toServiceListingDTO) };
   setServiceListingsCache(cacheKey, payload);
@@ -2795,8 +4488,24 @@ landRoutes.get('/services', async (c) => {
   const rows = await db
     .select()
     .from(serviceListings)
-    .where(eq(serviceListings.status, 'active'))
-    .orderBy(desc(serviceListings.createdAt))
+    .where(and(eq(serviceListings.status, 'active'), isNull(serviceListings.slotSuspendedAt)))
+    // Order on LIVE-featured state, and COALESCE the three-valued result.
+    //
+    // Two separate NULL traps here, both verified against Postgres:
+    //   1. `desc(col)` emits a bare `col desc` and DESC defaults to NULLS
+    //      FIRST, so ordering on the raw cursor sorted every NON-featured
+    //      listing above every featured one.
+    //   2. `featured AND cursor > now()` is THREE-VALUED: a featured row whose
+    //      cursor is still NULL (featured just switched on, or its charge keeps
+    //      failing) evaluates to NULL, not false — and NULL sorts FIRST under
+    //      DESC. So an UNPAID featured-pending row would pin above a genuinely
+    //      paid one, permanently, for as long as it kept failing to pay.
+    // COALESCE(..., false) collapses pending and lapsed into the same bucket as
+    // not-featured, so only a row that has actually PAID ranks first.
+    .orderBy(
+      sql`COALESCE(${serviceListings.featured} AND ${serviceListings.featuredPaidThrough} > now(), false) DESC`,
+      desc(serviceListings.createdAt),
+    )
     .limit(limit + 1)
     .offset(offset);
 
@@ -2818,7 +4527,7 @@ landRoutes.get('/services', async (c) => {
 //   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
 //   401/403 as elsewhere
 //   404 → { error: 'listing_not_found' }
-//   409 → { error: 'listing_not_active' | 'not_a_peer_listing' | 'structure_unavailable'
+//   409 → { error: 'listing_not_active' | 'listing_suspended' | 'not_a_peer_listing' | 'structure_unavailable'
 //                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
 //     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
 //     structure_unavailable = the seller's shop was archived/evicted or the parcel
@@ -2831,7 +4540,7 @@ landRoutes.get('/services', async (c) => {
 // the buyer's action). A cached replay (same-key retry OR a concurrent 23505
 // loser re-served) emits NOTHING — the original request already emitted once.
 
-landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2922,8 +4631,10 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNo
         title: string;
         price_ct: number | string;
         status: string;
+        slot_suspended_at: string | Date | null;
       }>(
-        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status
+        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status,
+                   slot_suspended_at
             FROM service_listings
             WHERE id = ${listingId}
             FOR UPDATE`,
@@ -2934,6 +4645,12 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNo
       }
       if (listing.status !== 'active') {
         throw new HTTPException(409, { message: 'listing_not_active' });
+      }
+      // Slot rent lapsed (land gamification P5a). The listing is SUSPENDED, not
+      // deleted: the row, title, and price are intact and the next successful
+      // sweep restores it, but it cannot be bought meanwhile.
+      if (listing.slot_suspended_at !== null) {
+        throw new HTTPException(409, { message: 'listing_suspended' });
       }
       // (2a) CT-TIER GUARD (audit ADVISORY→FIX #2) — only a 'peer' listing
       // settles in CT. A future USDC 'partner' listing must NEVER be paid with

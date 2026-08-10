@@ -5,7 +5,8 @@
  * parcel-ownership state in sync with the database.
  *
  * Mounted once inside World3DCanvas near the LandParcels / LandStructures groups.
- * Fetches ALL parcels (available + owned) from the public /api/land/parcels endpoint,
+ * Fetches ALL parcels (available + owned + reserved + retired) from the public
+ * /api/land/parcels endpoint,
  * writes the keyed-by-parcelCode result into useLandStore, and re-fetches whenever
  * a buy/claim/place/upgrade succeeds (TanStack Query invalidation via the shared
  * 'landParcels' query key).
@@ -21,8 +22,7 @@
  *   - Never throws; all errors are best-effort (the world defaults to all-available
  *     on a fetch failure, which is visually correct and never blocks play).
  *   - Guest-safe: the endpoint is public (no auth), so guests see real ownership.
- *   - Fetches available + owned in parallel (two requests) so we cover both sides.
- *     'retired' parcels are included in the owned fetch if the server returns them.
+ *   - Fetches all four statuses in parallel so every reachable state is hydrated.
  */
 
 import { useEffect } from 'react';
@@ -53,14 +53,17 @@ function mapStatus(status: LandParcelDTO['status']): ParcelState['status'] {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch helper — combines available + owned lists into one Record<parcelCode, ParcelState>
+// Fetch helper — combines all four status lists into one Record<parcelCode, ParcelState>
 // ---------------------------------------------------------------------------
 async function fetchAllParcelStates(): Promise<Record<string, ParcelState>> {
-  // Fetch both statuses in parallel; ignore individual errors gracefully.
-  const [availableResult, ownedResult] = await Promise.allSettled([
-    api.getLandParcels({ status: 'available' }),
-    api.getLandParcels({ status: 'owned' }),
-  ]);
+  // Fetch all statuses in parallel; ignore individual errors gracefully.
+  const [availableResult, ownedResult, reservedResult, retiredResult] =
+    await Promise.allSettled([
+      api.getLandParcels({ status: 'available' }),
+      api.getLandParcels({ status: 'owned' }),
+      api.getLandParcels({ status: 'reserved' }),
+      api.getLandParcels({ status: 'retired' }),
+    ]);
 
   const rec: Record<string, ParcelState> = {};
 
@@ -75,6 +78,8 @@ async function fetchAllParcelStates(): Promise<Record<string, ParcelState>> {
 
   if (availableResult.status === 'fulfilled') merge(availableResult.value);
   if (ownedResult.status   === 'fulfilled') merge(ownedResult.value);
+  if (reservedResult.status === 'fulfilled') merge(reservedResult.value);
+  if (retiredResult.status  === 'fulfilled') merge(retiredResult.value);
 
   return rec;
 }

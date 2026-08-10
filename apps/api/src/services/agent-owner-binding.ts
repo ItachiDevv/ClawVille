@@ -74,6 +74,44 @@ export interface ConnectOwnerBindingPlan {
   ownershipChanged: boolean;
 }
 
+export type ConnectOwnerProofSource =
+  | 'connection-token'
+  | 'explicit-identity'
+  | 'milady-inferred'
+  | 'gateway-inferred'
+  | 'anonymous';
+
+export interface PersistedConnectOwnerProof {
+  ownerProven: boolean;
+  boundUserId: string | null;
+  ledgerCapable: boolean;
+}
+
+/**
+ * Wallet provisioning authorization is a persisted bind OUTPUT. Only an owned
+ * token or explicit secret identity can prove ownership, and only when the
+ * atomic write/readback reports that same live user id.
+ */
+export function resolvePersistedConnectOwnerProof(inputs: {
+  source: ConnectOwnerProofSource;
+  candidateUserId: string | null;
+  persistedUserId: string | null;
+  avatarId: string | null;
+}): PersistedConnectOwnerProof {
+  const credentialSource =
+    inputs.source === 'connection-token' || inputs.source === 'explicit-identity';
+  const ownerProven =
+    credentialSource
+    && inputs.candidateUserId !== null
+    && inputs.persistedUserId === inputs.candidateUserId;
+  const boundUserId = ownerProven ? inputs.persistedUserId : null;
+  return {
+    ownerProven,
+    boundUserId,
+    ledgerCapable: boundUserId !== null && inputs.avatarId !== null,
+  };
+}
+
 /**
  * Plan the owner write for `POST /api/agent/connect` without touching the DB.
  *
@@ -143,7 +181,22 @@ export interface AgentStatusStats {
 
 /** Ownership block for a BOUND session. */
 export interface AgentStatusOwnership {
+  /** Backward-compatible parcel count on the live partner status surface. */
   landParcels: number;
+  /** Additive bounded tenure detail; older clients may ignore this sibling. */
+  landParcelDetail: {
+    count: number;
+    parcels: Array<{
+      parcelCode: string;
+      displayName: string;
+      tier: 'starter' | 'c' | 'b' | 'a' | 'founder';
+      tenure: 'hold' | 'deposit' | 'legacy';
+      weeklyRentVclaw: number | null;
+      prepaidWeeksRemaining: number | null;
+      holdThresholdClv: number | null;
+      grace: 'active' | 'grace';
+    }>;
+  };
   ownedSkills: string[];
 }
 

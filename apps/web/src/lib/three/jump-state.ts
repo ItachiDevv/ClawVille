@@ -3,7 +3,7 @@
  *
  * Zustand is deliberately avoided for jump state. Per-frame set() at 60 Hz
  * would re-render every subscribed component (HUD, minimap, modals). This
- * mirrors the existing `keyState` object in player-avatar.tsx:74-78.
+ * mirrors the held-input state in player/player-input.ts.
  *
  * The SPACE keyboard listener lives here, co-located with the state it writes.
  * Mobile controls call setJumpPressed() so touch input uses the same state
@@ -23,7 +23,7 @@ export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking'
 
 /**
  * ChargeMode discriminates walk/idle (squat wind-up) vs run (skip squat) paths.
- * Set by player-avatar.tsx on the rising edge of 'charging' phase;
+ * Set by player-capability-controller.tsx on the rising edge of 'charging' phase;
  * reset to 'none' when charging ends. arena-npcs.tsx reads it too.
  */
 export type ChargeMode = 'none' | 'squat' | 'run';
@@ -77,7 +77,7 @@ export const jumpState = {
   lastSpaceDown:   false,      // rising-edge detector
   spaceDown:       false,      // keydown/keyup listener writes this
   /**
-   * Set by player-avatar.tsx on the rising edge of 'charging' to differentiate
+   * Set by player-capability-controller.tsx on the rising edge of 'charging' to differentiate
    * walk/idle (squat wind-up, feet stay planted) from run (skip squat, keep running).
    * Reset to 'none' when charging ends or on resetJump().
    *

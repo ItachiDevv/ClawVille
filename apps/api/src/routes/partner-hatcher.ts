@@ -76,7 +76,15 @@ import {
 } from '../services/agent-session-config';
 import { npcSimulation, OverrideTargetUnavailableError } from '../services/npc-simulation';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
-import { ensureWallet } from '../services/wallet-service';
+import {
+  provisionAvatarWallet,
+  resolveAvatarSettlementAddress,
+} from '../services/wallet-service';
+import {
+  avatarSettlementAddressFields,
+  type AvatarSettlementResolution,
+} from '../services/avatar-settlement';
+import { mergeHatcherStatsSettlement } from '../services/hatcher-wallet-advertisement';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/agent-session-sweeper';
 import { notifyHatcherSessionEnded } from '../services/hatcher-session-webhook';
@@ -689,7 +697,23 @@ export async function ensureHatcherAvatar(
 /** Public-safe view of an agent row (NEVER includes the proxy token).
  *  Exported for the Hatcher e2e self-test (apps/api/scripts/hatcher/selftest-e2e.ts),
  *  which asserts the token-never-echoed + protocol-pointer + userId-binding contract. */
-export function publicAgentRecord(row: typeof agentBots.$inferSelect) {
+async function resolveBoundAvatarSettlement(
+  userId: string | null,
+): Promise<AvatarSettlementResolution> {
+  if (!userId) return { status: 'pending' };
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    columns: { id: true },
+  });
+  return avatar
+    ? resolveAvatarSettlementAddress(avatar.id)
+    : { status: 'pending' };
+}
+
+export function publicAgentRecord(
+  row: typeof agentBots.$inferSelect,
+  settlement: AvatarSettlementResolution = { status: 'pending' },
+) {
   return {
     // Echo the RAW partner id back (strip our internal `hatcher:` namespace) so
     // Hatcher sees the id it sent, not our storage key.
@@ -704,14 +728,7 @@ export function publicAgentRecord(row: typeof agentBots.$inferSelect) {
     cognitionBackend: row.cognitionBackend,
     // proxyUrl is the partner's own URL — safe to echo back; the TOKEN is not.
     proxyUrl: row.proxyUrl,
-    walletAddress: row.walletAddress,
-    // FIX-19 (HATCHER-WALLETADDRESS-NONFATAL-NULL): wallet provisioning is
-    // try/catch + non-fatal (`ensureWallet` throw leaves `walletAddress` null on a
-    // fresh INSERT), and it self-heals on a later register/stats poll. Surface an
-    // explicit `walletPending` flag so Hatcher knows a null `walletAddress` means
-    // "re-poll", not "no wallet ever". `hatcher-types.ts:591` already types
-    // `walletAddress: string|null`, so this is purely additive.
-    walletPending: row.walletAddress == null,
+    ...avatarSettlementAddressFields(settlement),
     userId: row.userId,
     sessionExpiresAt: row.sessionExpiresAt,
     // FIX-17 (HATCHER-REGISTEREDAT-UPDATEDAT-ABSENT): Hatcher's
@@ -1011,19 +1028,6 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     // The row + its bearer hash are committed atomically. Everything below is
     // best-effort side-effect work; the bearer is already valid + restorable.
 
-    // Ensure a custodial wallet (idempotent, non-fatal).
-    try {
-      const wallet = await ensureWallet('agent', row.id);
-      if (wallet.publicKey !== row.walletAddress) {
-        await db.update(agentBots)
-          .set({ walletAddress: wallet.publicKey, updatedAt: new Date() })
-          .where(eq(agentBots.id, row.id));
-        row = { ...row, walletAddress: wallet.publicKey };
-      }
-    } catch (err) {
-      console.error('[Hatcher/register] wallet provisioning failed (non-fatal):', err);
-    }
-
     // Rule E5 — auto-provision a default avatar so the bound user is immediately
     // ledger-capable + can play the Cove for REAL CT (closes the prior
     // `agent_session_has_no_active_avatar` 403). Keyed on `row.userId` (what was
@@ -1042,6 +1046,12 @@ partnerHatcherRoutes.post('/agents', async (c) => {
         const { avatarId, created } = await ensureHatcherAvatar(row.userId, row.species, data.name);
         boundAvatarId = avatarId;
         avatarProvisioned = true;
+        const wallet = await provisionAvatarWallet(avatarId, { disclose: false });
+        if (wallet.status !== 'ready') {
+          console.error(
+            `[Hatcher/register] avatar settlement wallet pending avatar=${avatarId} branch=${wallet.branch}`,
+          );
+        }
         if (created) {
           void logEvent({
             eventType: 'avatar.created',
@@ -1198,6 +1208,7 @@ partnerHatcherRoutes.post('/agents', async (c) => {
   }
 
   const { row, avatarProvisioned, spawned } = outcome;
+  const settlement = await resolveBoundAvatarSettlement(row.userId ?? null);
 
   void logEvent({
     eventType: 'agent.connected',
@@ -1217,7 +1228,13 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     },
   });
 
-  return c.json({ ok: true, sessionId, spawned, avatarProvisioned, agent: publicAgentRecord(row) });
+  return c.json({
+    ok: true,
+    sessionId,
+    spawned,
+    avatarProvisioned,
+    agent: publicAgentRecord(row, settlement),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1700,6 +1717,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
       ? c.json({ error: 'override_target_unavailable', code: 'override_target_unavailable' }, 409)
       : c.json({ error: 'propagation_failed', code: 'propagation_failed' }, 503);
   }
+  const settlement = await resolveBoundAvatarSettlement(outcome.row.userId ?? null);
 
   // When a NEW bearer was minted (no live session to preserve), return it (+ its
   // expiry) so the partner adopts it instead of being silently orphaned holding
@@ -1715,7 +1733,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           sessionExpiresAt: outcome.rotatedSessionExpiresAt,
         }
       : {}),
-    agent: publicAgentRecord(outcome.row),
+    agent: publicAgentRecord(outcome.row, settlement),
   });
 });
 
@@ -1889,11 +1907,6 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
 
   // 60s cache keyed by the namespaced id (plan §14). Served only after auth so
   // an unauthenticated caller can never read a cached body.
-  const cached = statsCache.get(namespacedAgentId);
-  if (cached && cached.expiresAt > Date.now()) {
-    return c.json(cached.body);
-  }
-
   // Registration row — column-pinned, NEVER selects the proxy token columns.
   const row = await db.query.agentBots.findFirst({
     where: eq(agentBots.agentId, namespacedAgentId),
@@ -1905,7 +1918,6 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       name: true,
       species: true,
       cognitionBackend: true,
-      walletAddress: true,
       knowledge: true,
       userId: true,
       totalSessions: true,
@@ -1921,6 +1933,14 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
   // register/patch/delete; a Hatcher key cannot probe another framework's agent.
   if (!row || row.identityType !== 'hatcher') {
     return c.json({ error: 'not_found' }, 404);
+  }
+  const settlement = await resolveBoundAvatarSettlement(row.userId ?? null);
+
+  // Cache only non-wallet aggregates. The current persisted user binding and
+  // pure settlement resolver run after auth on every hit.
+  const cached = statsCache.get(namespacedAgentId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return c.json(mergeHatcherStatsSettlement(cached.body, settlement));
   }
 
   // Resolve the bound avatar (if any) for quest attribution. A Hatcher agent
@@ -2066,10 +2086,6 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       species: row.species ?? null,
       avatarModel: row.species ?? null,
       cognitionBackend: row.cognitionBackend ?? null,
-      walletAddress: row.walletAddress ?? null,
-      // FIX-19: explicit re-poll signal when the non-fatal wallet provision left
-      // `walletAddress` null (parity with publicAgentRecord).
-      walletPending: row.walletAddress == null,
       active,
       lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
       // Pull-side expiry visibility (2026-06-12) — the ISO timestamp the
@@ -2094,5 +2110,5 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
 
   statsCache.set(namespacedAgentId, { expiresAt: now + STATS_CACHE_TTL_MS, body });
 
-  return c.json(body);
+  return c.json(mergeHatcherStatsSettlement(body, settlement));
 });

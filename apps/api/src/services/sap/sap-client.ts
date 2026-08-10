@@ -415,6 +415,51 @@ function extractCustomErrorNumber(input: unknown): number | null {
   return null;
 }
 
+const MAX_CLASSIFIED_ERROR_MESSAGE_LENGTH = 600;
+
+function enrichSendTransactionErrorMessage(message: string, err: unknown): string {
+  if (!err || typeof err !== 'object') return message;
+
+  const candidate = err as Record<string, unknown>;
+  if (
+    !('transactionError' in candidate) &&
+    !('logs' in candidate) &&
+    !('transactionMessage' in candidate)
+  ) {
+    return message;
+  }
+
+  const transactionError = candidate.transactionError;
+  const transactionErrorRecord =
+    transactionError && typeof transactionError === 'object'
+      ? (transactionError as Record<string, unknown>)
+      : null;
+  const detail =
+    typeof candidate.transactionMessage === 'string'
+      ? candidate.transactionMessage
+      : typeof transactionErrorRecord?.message === 'string'
+        ? transactionErrorRecord.message
+        : typeof transactionError === 'string'
+          ? transactionError
+          : transactionError == null
+            ? null
+            : JSON.stringify(transactionError);
+  const logValue = Array.isArray(candidate.logs)
+    ? candidate.logs
+    : transactionErrorRecord?.logs;
+  const logs = Array.isArray(logValue)
+    ? logValue.filter((line): line is string => typeof line === 'string').slice(-5)
+    : [];
+  const parts = [message];
+  if (detail) parts.push(`Transaction error: ${detail}`);
+  if (logs.length > 0) parts.push(`Logs: ${logs.join(' | ')}`);
+
+  const enriched = parts.join(' ');
+  return enriched.length <= MAX_CLASSIFIED_ERROR_MESSAGE_LENGTH
+    ? enriched
+    : `${enriched.slice(0, MAX_CLASSIFIED_ERROR_MESSAGE_LENGTH - 3)}...`;
+}
+
 export function classifyChainError(label: string, err: unknown): SapFailure {
   const msg = err instanceof Error ? err.message : String(err);
   if (
@@ -428,7 +473,7 @@ export function classifyChainError(label: string, err: unknown): SapFailure {
     return {
       ok: false,
       code: 'rpc_unreachable',
-      message: `SAP RPC unreachable during ${label}.`,
+      message: enrichSendTransactionErrorMessage(`SAP RPC unreachable during ${label}.`, err),
     };
   }
   // Map a known deployed-program custom error to a distinct, caller-actionable code.
@@ -438,13 +483,16 @@ export function classifyChainError(label: string, err: unknown): SapFailure {
     return {
       ok: false,
       code: mapped,
-      message: `SAP ${label} rejected on-chain (error ${errNo}): ${msg}`,
+      message: enrichSendTransactionErrorMessage(
+        `SAP ${label} rejected on-chain (error ${errNo}): ${msg}`,
+        err,
+      ),
     };
   }
   return {
     ok: false,
     code: 'on_chain_error',
-    message: `SAP ${label} failed on-chain: ${msg}`,
+    message: enrichSendTransactionErrorMessage(`SAP ${label} failed on-chain: ${msg}`, err),
   };
 }
 

@@ -28,7 +28,9 @@ import type { Connection } from '@solana/web3.js';
 import { CLV_MINT } from './clv-price-oracle';
 import { readSplTokenBalance, type SplTokenBalance } from './solana-token-balance';
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per wallet
+export const CLV_BALANCE_CACHE_TTL_MS = 5 * 60 * 1000;
+export const CLV_BALANCE_HARD_STALE_MS = 15 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 2_048;
 
 interface CachedBalance {
   balance: SplTokenBalance;
@@ -37,6 +39,13 @@ interface CachedBalance {
 
 const balanceCache = new Map<string, CachedBalance>();
 
+export interface ClvBalanceReadOptions {
+  /** Maximum age accepted without an RPC read. Zero forces a fresh read. */
+  maxAgeMs?: number;
+  /** Maximum stale age accepted after RPC failure. Zero is fail-closed. */
+  maxStaleAgeMs?: number;
+}
+
 /** Lazily-built mainnet connection (CLV lives on mainnet — see file header). */
 let conn: Connection | null = null;
 function getMainnetConnection(): Connection {
@@ -44,9 +53,7 @@ function getMainnetConnection(): Connection {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
     const key = process.env.HELIUS_API_KEY?.trim();
-    const url = key
-      ? `https://mainnet.helius-rpc.com/?api-key=${key}`
-      : 'https://api.mainnet-beta.solana.com';
+    const url = key ? `https://mainnet.helius-rpc.com/?api-key=${key}` : 'https://api.mainnet-beta.solana.com';
     conn = new web3.Connection(url, 'confirmed');
   }
   return conn;
@@ -81,26 +88,36 @@ const UNAVAILABLE: ClvBalanceResult = {
  * primitive the hold-tier / land / seller-license checks call once they have a
  * pubkey. Fail-soft: never throws; returns `{ available: false }` on any error.
  */
-export async function getWalletClvBalance(walletPubkey: string): Promise<ClvBalanceResult> {
+export async function getWalletClvBalance(
+  walletPubkey: string,
+  options: ClvBalanceReadOptions = {},
+): Promise<ClvBalanceResult> {
   const now = Date.now();
   const hit = balanceCache.get(walletPubkey);
-  if (hit && now - hit.fetchedAt < CACHE_TTL_MS) {
+  const maxAgeMs = Math.max(0, options.maxAgeMs ?? CLV_BALANCE_CACHE_TTL_MS);
+  const maxStaleAgeMs = Math.max(0, options.maxStaleAgeMs ?? CLV_BALANCE_HARD_STALE_MS);
+  if (hit && maxAgeMs > 0 && now - hit.fetchedAt <= maxAgeMs) {
     return toResult(hit.balance, hit.fetchedAt, true);
   }
 
   try {
     const balance = await readSplTokenBalance(getMainnetConnection(), CLV_MINT, walletPubkey);
     const fetchedAt = Date.now();
+    if (!balanceCache.has(walletPubkey) && balanceCache.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = balanceCache.keys().next().value as string | undefined;
+      if (oldestKey) balanceCache.delete(oldestKey);
+    }
+    balanceCache.delete(walletPubkey);
     balanceCache.set(walletPubkey, { balance, fetchedAt });
     return toResult(balance, fetchedAt, false);
   } catch (err) {
-    console.warn(
-      `[clv-balance] read failed for ${walletPubkey.slice(0, 8)}… (non-fatal):`,
-      (err as Error).message,
-    );
+    console.warn(`[clv-balance] read failed for ${walletPubkey.slice(0, 8)}… (non-fatal):`, (err as Error).message);
     // Serve a STALE cache entry (if any) rather than nothing — a hold check on a
     // transient RPC blip prefers a slightly old balance to a hard "unavailable".
-    if (hit) return toResult(hit.balance, hit.fetchedAt, true);
+    const failedAt = Date.now();
+    if (hit && maxStaleAgeMs > 0 && failedAt - hit.fetchedAt <= maxStaleAgeMs) {
+      return toResult(hit.balance, hit.fetchedAt, true);
+    }
     return UNAVAILABLE;
   }
 }
@@ -110,7 +127,10 @@ export async function getWalletClvBalance(walletPubkey: string): Promise<ClvBala
  * user has not linked a wallet yet; otherwise the wallet pubkey + its cached CLV
  * balance.
  */
-export async function getLinkedWalletClvBalance(userId: string): Promise<{
+export async function getLinkedWalletClvBalance(
+  userId: string,
+  options: ClvBalanceReadOptions = {},
+): Promise<{
   linked: boolean;
   walletPubkey: string | null;
   clv: ClvBalanceResult;
@@ -123,7 +143,7 @@ export async function getLinkedWalletClvBalance(userId: string): Promise<{
   if (!walletPubkey) {
     return { linked: false, walletPubkey: null, clv: UNAVAILABLE };
   }
-  const clv = await getWalletClvBalance(walletPubkey);
+  const clv = await getWalletClvBalance(walletPubkey, options);
   return { linked: true, walletPubkey, clv };
 }
 

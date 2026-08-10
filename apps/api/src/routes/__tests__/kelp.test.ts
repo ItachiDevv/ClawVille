@@ -18,6 +18,7 @@ import type {
   ActivityIdentity,
 } from '../../middleware/require-auth-or-agent';
 import { npcSimulation } from '../../services/npc-simulation';
+import type { RewardGrantResult } from '../kelp';
 
 const SECRET = 'kelp-route-test-secret';
 const BASE_TIME = 2_000_000_000_000;
@@ -113,19 +114,24 @@ describe('Kelp Forest authenticated traversal and collectible claim', () => {
   let completionIdentities: ActivityIdentity[];
   let rewardConfigurationErrors: Array<{ slug: string; reason: string }>;
 
-  function routes() {
+  function routes(
+    grantReward: (
+      avatarId: string,
+      nowMs: number,
+    ) => Promise<RewardGrantResult> = async (avatarId) => {
+      grantCalls.push(avatarId);
+      if (rewardFailure) return { ok: false, reason: rewardFailure };
+      const result = { ok: true as const, alreadyOwned, skuId: 'collectible-sku' };
+      alreadyOwned = true;
+      return result;
+    },
+  ) {
     return createKelpRoutes({
       nowMs: () => nowMs,
       secret: () => SECRET,
       session: testSession,
       noStore: pass,
-      grantReward: async (avatarId) => {
-        grantCalls.push(avatarId);
-        if (rewardFailure) return { ok: false, reason: rewardFailure };
-        const result = { ok: true as const, alreadyOwned, skuId: 'collectible-sku' };
-        alreadyOwned = true;
-        return result;
-      },
+      grantReward,
       recordCompletion: (_c, identity) => completionIdentities.push(identity),
       logRewardConfigurationError: (details) => rewardConfigurationErrors.push(details),
     });
@@ -371,6 +377,58 @@ describe('Kelp Forest authenticated traversal and collectible claim', () => {
     expect(second.status).toBe(200);
     expect(await second.json()).toEqual({ ok: true, alreadyOwned: true });
     expect(grantCalls).toEqual([USER_IDENTITY.avatarId, USER_IDENTITY.avatarId]);
+    expect(completionIdentities).toEqual([USER_IDENTITY]);
+  });
+
+  it('concurrent duplicate claims both succeed with one ownership row and one completion', async () => {
+    const centerToken = issueKelpBeaconToken(
+      USER_IDENTITY.avatarId,
+      'center',
+      nowMs,
+      SECRET,
+      KELP_REALM_SPORE_FULL_MASK,
+    );
+    const avatarSkinRows = new Set<string>();
+    let entered = 0;
+    let releaseBoth!: () => void;
+    const bothEntered = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const app = routes(async (avatarId) => {
+      grantCalls.push(avatarId);
+      entered += 1;
+      if (entered === 2) releaseBoth();
+      await bothEntered;
+      const rowKey = `${avatarId}:collectible-sku`;
+      const alreadyOwnedByAvatar = avatarSkinRows.has(rowKey);
+      avatarSkinRows.add(rowKey);
+      return {
+        ok: true,
+        alreadyOwned: alreadyOwnedByAvatar,
+        skuId: 'collectible-sku',
+      };
+    });
+    const claim = () => app.request('/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ centerToken }),
+    });
+
+    const responses = await Promise.all([claim(), claim()]);
+    const bodies = (await Promise.all(
+      responses.map((response) => response.json()),
+    )) as Array<{ ok: boolean; alreadyOwned: boolean }>;
+    expect(responses.map(({ status }) => status)).toEqual([200, 200]);
+    expect(
+      bodies.sort(
+        (left, right) =>
+          Number(left.alreadyOwned) - Number(right.alreadyOwned),
+      ),
+    ).toEqual([
+      { ok: true, alreadyOwned: false },
+      { ok: true, alreadyOwned: true },
+    ]);
+    expect(avatarSkinRows.size).toBe(1);
     expect(completionIdentities).toEqual([USER_IDENTITY]);
   });
 

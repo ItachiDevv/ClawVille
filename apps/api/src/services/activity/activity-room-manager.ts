@@ -70,21 +70,29 @@ const PENDING_EMPTY_TTL_MS = 90_000;
 /** LIVE rooms with no live WS for > this duration are killed (backend §1.6) */
 const LIVE_NO_WS_TTL_MS = 30_000;
 
-/**
- * Activities whose LIVE rooms LEGITIMATELY have 0 connected WS sockets for long
- * stretches and must NOT be crash-swept on the 30s `LIVE_NO_WS_TTL_MS`. A poker
- * tournament table is the canonical case: between hands (and during the window
- * after seating but before a human/agent opens its socket) the room can sit with
- * zero live connections for minutes while the TournamentManager's per-table hand
- * loop keeps running server-side. Crash-aborting such a room would strand the
- * tournament's CT escrow. The TournamentManager owns these rooms' lifecycle
- * (it transitions them → results on table-break / completion), so the sweeper
- * leaves them alone entirely; they are NOT abandoned because their owner drives
- * them to a terminal state. (Poker MTT P4.)
- */
-const LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES: ReadonlySet<string> = new Set<string>([
-  'texas-holdem-mtt',
-]);
+/** Grace beyond an owner's authoritative sim deadline before crash recovery. */
+export const LIVE_OWNER_WATCHDOG_GRACE_MS = 15_000;
+
+export interface LiveOwnerLease {
+  owner: string;
+  hardDeadlineAt: number;
+  watchdogAt: number;
+}
+
+export type RoomAbortStatus = 'aborted' | 'aborted_crash';
+
+export function shouldCrashSweepLiveRoom(
+  connectedCount: number,
+  idleMs: number,
+  leaseWatchdogAt: number | null,
+  now = Date.now(),
+): boolean {
+  // A live owner suppresses the ordinary no-WS sweep only until its bounded
+  // watchdog. Once the authoritative deadline + grace passes, reap the room
+  // even if a stale client socket remains connected.
+  if (leaseWatchdogAt != null) return now > leaseWatchdogAt;
+  return connectedCount === 0 && idleMs > LIVE_NO_WS_TTL_MS;
+}
 
 /** RESULTS rooms older than this are GC'd regardless of viewers (backend §1.6) */
 const RESULTS_RETENTION_MS = 120_000;
@@ -233,15 +241,16 @@ class ActivityRoomManager {
   private evictionFn: ((room: Room) => void) | null = null;
 
   /**
-   * Abort-notification hook (Poker MTT P4). Fired with `(roomId, activityId)`
-   * whenever a room transitions to `aborted` / `aborted_crash` — so an owner that
-   * holds money/state behind the room (the TournamentManager, which escrows CT
-   * for a tournament table) can recover (settle/refund) instead of stranding it.
-   * Best-effort: the receiver's errors are swallowed (must never break a sweep).
-   * Most activities don't register one (it stays a no-op).
+   * Composed abort-recovery hooks. Each escrow/state owner registers its own
+   * activity-filtered handler, and every handler runs independently.
    */
-  private abortNotifyFn: ((roomId: string, activityId: string) => void) | null =
-    null;
+  private abortNotifyFns = new Set<
+    (
+      roomId: string,
+      activityId: string,
+      status: RoomAbortStatus,
+    ) => Promise<void> | void
+  >();
 
   /**
    * Per-activity sim → placement-list resolver. Registered at boot from
@@ -263,6 +272,9 @@ class ActivityRoomManager {
    * room GCs.
    */
   private lastResults = new Map<string, IssuedResult[]>();
+
+  /** Bounded proof that a server-side sim/tournament owner is still in charge. */
+  private liveOwnerLeases = new Map<string, LiveOwnerLease>();
 
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -559,6 +571,10 @@ class ActivityRoomManager {
       throw err;
     }
 
+    if (fromState === 'live' && toState !== 'live') {
+      this.liveOwnerLeases.delete(roomId);
+    }
+
     // Broadcast an FSM-state event for hub-attached clients (chunk #3).
     // The hub callback handles missing connections silently.
     this.broadcastFn(roomId, this.fsmEventFrame(room, toState));
@@ -647,6 +663,7 @@ class ActivityRoomManager {
     // Tracked separately so the dispatch loop below picks the right
     // target state per room.
     const toAbortCrash: Room[] = [];
+    const expiredOwnerLeaseIds = new Set<string>();
     const toGc: Room[] = [];
 
     for (const room of this.rooms.values()) {
@@ -687,18 +704,19 @@ class ActivityRoomManager {
           break;
         }
         case 'live': {
-          // Long-lived poker tables legitimately have 0 sockets between hands /
-          // before players connect — their owner (the TournamentManager) drives
-          // them to a terminal state, so the sweeper must NOT crash-abort them
-          // (would strand the tournament's CT escrow). See the exempt set above.
-          if (LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES.has(room.activityId)) {
-            break;
-          }
+          const lease = this.liveOwnerLeases.get(room.id);
           if (
-            this.connectedCount(room) === 0 &&
-            now - room.lastTouchedAt > LIVE_NO_WS_TTL_MS
+            shouldCrashSweepLiveRoom(
+              this.connectedCount(room),
+              now - room.lastTouchedAt,
+              lease?.watchdogAt ?? null,
+              now,
+            )
           ) {
             toAbortCrash.push(room);
+            if (lease && now > lease.watchdogAt) {
+              expiredOwnerLeaseIds.add(room.id);
+            }
           }
           break;
         }
@@ -745,7 +763,9 @@ class ActivityRoomManager {
           payload: {
             activityId: room.activityId,
             roomId: room.id,
-            reason: 'live_no_ws',
+            reason: expiredOwnerLeaseIds.has(room.id)
+              ? 'live_owner_lease_expired'
+              : 'live_no_ws',
             playerCount: room.participants.size,
           },
         });
@@ -875,6 +895,47 @@ class ActivityRoomManager {
   }
 
   /**
+   * Install/replace a bounded LIVE-owner lease. The deadline is supplied by
+   * the authoritative sim (or renewed tournament hand loop), never inferred
+   * from activityId.
+   */
+  acquireLiveOwnerLease(
+    roomId: string,
+    owner: string,
+    hardDeadlineAt: number,
+  ): LiveOwnerLease {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'live') {
+      throw new Error(`Cannot lease non-live room ${roomId}`);
+    }
+    if (!Number.isFinite(hardDeadlineAt)) {
+      throw new Error(`Invalid owner-lease deadline for room ${roomId}`);
+    }
+    const lease = {
+      owner,
+      hardDeadlineAt,
+      watchdogAt: hardDeadlineAt + LIVE_OWNER_WATCHDOG_GRACE_MS,
+    };
+    this.liveOwnerLeases.set(roomId, lease);
+    return lease;
+  }
+
+  /** Renew only the current owner; a stale owner cannot extend a successor. */
+  renewLiveOwnerLease(
+    roomId: string,
+    owner: string,
+    hardDeadlineAt: number,
+  ): LiveOwnerLease | null {
+    const existing = this.liveOwnerLeases.get(roomId);
+    if (!existing || existing.owner !== owner) return null;
+    return this.acquireLiveOwnerLease(roomId, owner, hardDeadlineAt);
+  }
+
+  getLiveOwnerLease(roomId: string): LiveOwnerLease | undefined {
+    return this.liveOwnerLeases.get(roomId);
+  }
+
+  /**
    * Register a callback fired immediately before a room is evicted from
    * memory (any terminal path). The receiver is responsible for cleaning
    * up auxiliary state — e.g. returning bot reservations to the pool.
@@ -885,13 +946,16 @@ class ActivityRoomManager {
     this.evictionFn = fn;
   }
 
-  /**
-   * Register the abort-notification hook (Poker MTT P4). Called when any room
-   * aborts so an owner holding escrow behind the room (the TournamentManager) can
-   * recover. Idempotent registration (last writer wins). See `abortNotifyFn`.
-   */
-  setAbortNotifyFn(fn: (roomId: string, activityId: string) => void): void {
-    this.abortNotifyFn = fn;
+  /** Register one composed abort handler and return its unregister callback. */
+  registerAbortNotifyFn(
+    fn: (
+      roomId: string,
+      activityId: string,
+      status: RoomAbortStatus,
+    ) => Promise<void> | void,
+  ): () => void {
+    this.abortNotifyFns.add(fn);
+    return () => this.abortNotifyFns.delete(fn);
   }
 
   /**
@@ -965,6 +1029,14 @@ class ActivityRoomManager {
         });
       }
 
+      // The bulk status update bypasses persistAbortedTransition(), so boot
+      // orphans must explicitly drive the same composed recovery callbacks.
+      await Promise.all(
+        orphaned.map((row) =>
+          this.notifyAbortHandlers(row.id, row.activityId, 'aborted_crash'),
+        ),
+      );
+
       void alertError({
         severity: 'warning',
         source: 'activity-room-manager',
@@ -986,7 +1058,9 @@ class ActivityRoomManager {
     this.shortCodeIndex.clear();
     this.playerToRoom.clear();
     this.lastResults.clear();
+    this.liveOwnerLeases.clear();
     this.countdownSyncAttemptedRooms.clear();
+    this.abortNotifyFns.clear();
   }
 
   // ─── Persistence helpers ────────────────────────────────────────────────
@@ -1203,16 +1277,27 @@ class ActivityRoomManager {
       });
     }
 
-    // Notify any owner holding escrow/state behind this room (Poker MTT P4) so it
-    // can recover (settle/refund) — covers BOTH abort paths. Best-effort: a
-    // throwing receiver must NEVER break the abort persistence / sweep.
-    if (this.abortNotifyFn) {
-      try {
-        this.abortNotifyFn(room.id, room.activityId);
-      } catch (err) {
+    // Notify every escrow/state owner — covers BOTH abort paths. Each receiver is
+    // best-effort and cannot break abort persistence or suppress another handler.
+    await this.notifyAbortHandlers(room.id, room.activityId, status);
+  }
+
+  /** Invoke every recovery independently; one failure cannot mask another. */
+  private async notifyAbortHandlers(
+    roomId: string,
+    activityId: string,
+    status: RoomAbortStatus,
+  ): Promise<void> {
+    const outcomes = await Promise.allSettled(
+      Array.from(this.abortNotifyFns, (handler) =>
+        Promise.resolve().then(() => handler(roomId, activityId, status)),
+      ),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') {
         console.error(
-          '[activity-room-manager] abortNotifyFn threw (swallowed):',
-          err,
+          '[activity-room-manager] abort recovery handler failed (swallowed):',
+          outcome.reason,
         );
       }
     }
@@ -1243,6 +1328,7 @@ class ActivityRoomManager {
       this.reefNoShowTimers.delete(room.id);
     }
     this.countdownSyncAttemptedRooms.delete(room.id);
+    this.liveOwnerLeases.delete(room.id);
     this.rooms.delete(room.id);
     this.shortCodeIndex.delete(room.shortCode);
     // Chunk #7 — release the in-memory result snapshot. The DB row is

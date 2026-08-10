@@ -104,6 +104,7 @@ mock.module('@clawville/database', () => ({
   activityReplays: { id: 'id' },
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
   avatars: { id: 'id', flags: 'flags' },
+  users: { id: 'id', isGuest: 'is_guest' },
   clawTokenTransactions: { id: 'id' },
   reefRacePersonalBests: {
     id: 'id',
@@ -112,6 +113,7 @@ mock.module('@clawville/database', () => ({
     bestLapMs: 'best_lap_ms',
     ghostReplayData: 'ghost_replay_data',
   },
+  reefRacePersonalBestClaims: {},
 }));
 mock.module('../../claw-token-ledger', () => ({
   creditClawTokens: () =>
