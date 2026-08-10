@@ -24,10 +24,20 @@
  * layer only adds the once-only bookkeeping on top.
  */
 
-import { db, bounties, bountyAttempts, bountyReputation, eq, and, sql } from '@clawville/database';
+import {
+  db,
+  bounties,
+  bountyAttempts,
+  bountyReputation,
+  covenantActionRecords,
+  eq,
+  and,
+  sql,
+} from '@clawville/database';
 import { asc, ne } from 'drizzle-orm';
 import {
   settleComposedBounty as settleComposedBountyImpl,
+  refundComposedBounty,
   bountySettlementRail,
   type SettleComposedBountyResult,
 } from './bounty-escrow-link';
@@ -381,6 +391,8 @@ interface ResumeContext {
   creatorAvatarId: string;
   hunterAvatarId: string | null;
   tokenReward: number;
+  expiresAt: Date | null;
+  expiryRefundRequested: boolean;
 }
 
 /** Real DB read for the crank: bounty row + its winning (approved) hunter. */
@@ -391,6 +403,7 @@ async function loadResumeContext(bountyId: string): Promise<ResumeContext | null
       escrowPda: bounties.escrowPda,
       creatorAvatarId: bounties.creatorId,
       tokenReward: bounties.tokenReward,
+      expiresAt: bounties.expiresAt,
     })
     .from(bounties)
     .where(eq(bounties.id, bountyId))
@@ -401,9 +414,29 @@ async function loadResumeContext(bountyId: string): Promise<ResumeContext | null
   const [attempt] = await db
     .select({ hunterId: bountyAttempts.hunterId })
     .from(bountyAttempts)
-    .where(and(eq(bountyAttempts.bountyId, bountyId), eq(bountyAttempts.status, 'approved')))
+    .where(
+      and(
+        eq(bountyAttempts.bountyId, bountyId),
+        sql`(
+          ${bountyAttempts.status} = 'approved'
+          OR (
+            ${bountyAttempts.status} = 'rejected'
+            AND ${bountyAttempts.reviewNote} = 'Auto-rejected: bounty escrow expired and was refund-routed to the creator'
+          )
+        )`,
+      ),
+    )
     .limit(1);
-  return { ...row, hunterAvatarId: attempt?.hunterId ?? null };
+  const [expiryIntent] = await db
+    .select({ id: covenantActionRecords.id })
+    .from(covenantActionRecords)
+    .where(eq(covenantActionRecords.dedupeKey, `bounty:${bountyId}:refund_requested:expiry`))
+    .limit(1);
+  return {
+    ...row,
+    hunterAvatarId: attempt?.hunterId ?? null,
+    expiryRefundRequested: Boolean(expiryIntent),
+  };
 }
 
 export interface ResumeComposedBountyDeps extends ApplyComposedDeps {
@@ -413,6 +446,83 @@ export interface ResumeComposedBountyDeps extends ApplyComposedDeps {
   applyOutcome?: typeof applyComposedSettleOutcome;
   /** Test seam — the persistent-wedge alert emitter (default: `alertError`). */
   alertError?: typeof alertError;
+  refundExpired?: typeof refundExpiredComposedBounty;
+  now?: () => Date;
+}
+
+export function isEscrowExpiredFailure(
+  failure: Pick<Extract<SettleComposedBountyResult, { ok: false }>, 'code' | 'message'>,
+): boolean {
+  return (
+    String(failure.code) === '6076' ||
+    /(?:custom program error:\s*0x17bc|\b6076\b|EscrowExpired)/i.test(failure.message)
+  );
+}
+
+async function refundExpiredComposedBounty(ctx: ResumeContext & {
+  bountyId: string;
+  escrowPda: string;
+}): Promise<{ ok: boolean; code?: string; message: string; signature?: string }> {
+  await db.transaction(async (tx) => {
+    const refundedAt = new Date();
+    await tx
+      .update(bounties)
+      .set({ status: 'cancelled', covenantVerificationPassed: false, updatedAt: refundedAt })
+      .where(eq(bounties.id, ctx.bountyId));
+    await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'rejected',
+        reviewNote: 'Auto-rejected: bounty escrow expired and was refund-routed to the creator',
+        reviewedAt: refundedAt,
+        updatedAt: refundedAt,
+      })
+      .where(
+        and(
+          eq(bountyAttempts.bountyId, ctx.bountyId),
+          sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted', 'approved')`,
+        ),
+      );
+    await recordCovenantAction(
+      {
+        action: 'bounty.refund_requested',
+        subjectType: 'avatar',
+        subjectId: ctx.creatorAvatarId,
+        actorKind: 'system',
+        dedupeKey: `bounty:${ctx.bountyId}:refund_requested:expiry`,
+        payload: {
+          bountyId: ctx.bountyId,
+          rail: 'sap-payai-composed',
+          tokenReward: ctx.tokenReward,
+          escrowPda: ctx.escrowPda,
+        },
+      },
+      tx,
+    );
+  });
+
+  const refund = await refundComposedBounty({
+    bountyId: ctx.bountyId,
+    escrowPda: ctx.escrowPda,
+    creatorAvatarId: ctx.creatorAvatarId,
+    tokenReward: ctx.tokenReward,
+  });
+  if (refund.ok === false) return { ok: false, code: refund.code, message: refund.message };
+
+  await recordCovenantAction({
+    action: 'bounty.refund',
+    subjectType: 'avatar',
+    subjectId: ctx.creatorAvatarId,
+    dedupeKey: `bounty:${ctx.bountyId}:refund`,
+    payload: {
+      bountyId: ctx.bountyId,
+      rail: 'sap-payai-composed',
+      tokenReward: ctx.tokenReward,
+      escrowPda: ctx.escrowPda,
+    },
+  });
+  const signature = refund.chain.ok && !refund.chain.dryRun ? refund.chain.signature : undefined;
+  return { ok: true, message: 'expired composed bounty refunded to creator', signature };
 }
 
 // ── L-3c — PERSISTENT VAULT_HELD WEDGE ALERT (throttled) ──────────────────────
@@ -446,6 +556,7 @@ export function _resetComposedWedgeAlerts(): void {
 
 export type ResumeComposedBountyOutcome =
   | { resumed: true; phase: SettleComposedBountyResult['phase'] }
+  | { resumed: true; phase: 'refunded' | 'refund_failed' }
   | {
       resumed: false;
       reason: 'not_found' | 'not_composed' | 'not_resumable' | 'no_escrow' | 'no_winner';
@@ -473,6 +584,39 @@ export async function resumeComposedBounty(
   if (!ctx.escrowPda) return { resumed: false, reason: 'no_escrow' };
   if (!ctx.hunterAvatarId) return { resumed: false, reason: 'no_winner' };
 
+  const currentTime = (deps.now ?? (() => new Date()))();
+  const driveExpiredRefund = async (): Promise<ResumeComposedBountyOutcome> => {
+    const refund = await (deps.refundExpired ?? refundExpiredComposedBounty)({
+      ...ctx,
+      bountyId,
+      escrowPda: ctx.escrowPda!,
+    });
+    await (deps.alertError ?? alertError)({
+      severity: 'warning',
+      source: 'bounty-composition-expiry',
+      message: refund.ok
+        ? `Composed bounty ${bountyId} expired and was automatically refund-routed to the creator.`
+        : `Composed bounty ${bountyId} expired but its automatic refund failed (${refund.code ?? 'unknown'}): ${refund.message}`,
+      context: {
+        bountyId,
+        tokenReward: ctx.tokenReward,
+        refundOk: refund.ok,
+        ...(refund.signature ? { refundSignature: refund.signature } : {}),
+        ...(!refund.ok && refund.code ? { code: refund.code } : {}),
+      },
+    }).catch(() => undefined);
+    wedgeAlertLastSentAt.delete(bountyId);
+    return { resumed: true, phase: refund.ok ? 'refunded' : 'refund_failed' };
+  };
+
+  if (
+    ctx.compositionState === 'vault_held' &&
+    (ctx.expiryRefundRequested ||
+      (ctx.expiresAt != null && ctx.expiresAt.getTime() <= currentTime.getTime()))
+  ) {
+    return driveExpiredRefund();
+  }
+
   const settled = await (deps.applyOutcome ?? applyComposedSettleOutcome)(
     {
       bountyId,
@@ -486,6 +630,14 @@ export async function resumeComposedBounty(
     },
     deps,
   );
+
+  if (
+    ctx.compositionState === 'vault_held' &&
+    settled.phase === 'failed' &&
+    isEscrowExpiredFailure(settled)
+  ) {
+    return driveExpiredRefund();
+  }
 
   // L-3c — page ops on a PERSISTENT vault_held wedge (an APPROVED vault_held bounty
   // whose resume ends `failed`), throttled per bounty (see WEDGE_ALERT_WINDOW_MS).
@@ -510,7 +662,10 @@ export async function resumeComposedBounty(
               `Composed bounty ${bountyId}: an APPROVED vault_held bounty keeps FAILING to settle ` +
               `on the resume crank (${settled.code}): ${settled.message}. The creator's USDC is still ` +
               `safely custodied in the vault (no money moved) but the hunter is UNPAID — a persistent ` +
-              `pre-settle wedge needs ops (reconcile the on-chain vault, or admin-fail-refund).`,
+              `pre-settle wedge needs ops (reconcile the on-chain vault, or admin-fail-refund). ` +
+              (ctx.expiresAt
+                ? `escrow expires at ${ctx.expiresAt.toISOString()} (in ${Math.max(0, Math.ceil((ctx.expiresAt.getTime() - currentTime.getTime()) / 3_600_000))}h).`
+                : 'escrow has no expiry and will not auto-refund.'),
             context: { bountyId, escrowPda: ctx.escrowPda, code: settled.code, phase: 'failed' },
           });
           wedgeAlertLastSentAt.set(bountyId, now);
@@ -590,10 +745,24 @@ export async function runComposedBountyResumePass(): Promise<void> {
       .where(
         sql`(
           ${bounties.compositionState} = 'vault_held'
-          AND EXISTS (
-            SELECT 1 FROM ${bountyAttempts}
-            WHERE ${bountyAttempts.bountyId} = ${bounties.id}
-              AND ${bountyAttempts.status} = 'approved'
+          AND (
+            EXISTS (
+              SELECT 1 FROM ${bountyAttempts}
+              WHERE ${bountyAttempts.bountyId} = ${bounties.id}
+                AND ${bountyAttempts.status} = 'approved'
+            )
+            OR (
+              EXISTS (
+                SELECT 1 FROM ${covenantActionRecords}
+                WHERE ${covenantActionRecords.dedupeKey} =
+                  ('bounty:' || ${bounties.id}::text || ':refund_requested:expiry')
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM ${covenantActionRecords}
+                WHERE ${covenantActionRecords.dedupeKey} =
+                  ('bounty:' || ${bounties.id}::text || ':refund')
+              )
+            )
           )
         )`,
       )

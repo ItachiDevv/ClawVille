@@ -41,7 +41,9 @@ describe('agent paid surfaces', () => {
     const manual = buildProtocolManual('https://api.example.test');
     // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat
     // settled-coup recovery documented in the manual; see skill-protocol.ts).
-    expect(PROTOCOL_VERSION).toBe(49);
+    // 50 = bounty gas + expiry hardening (house-sponsored settle gas,
+    // numeric SOL obligations + expiry rule in the manual).
+    expect(PROTOCOL_VERSION).toBe(50);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');

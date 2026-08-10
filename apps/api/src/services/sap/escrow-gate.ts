@@ -119,6 +119,7 @@ import {
   type SapFailure,
   type V2VaultPhysicalState,
 } from './sap-client';
+import { ensureSettleGas, type GasSponsorContext } from './sap-gas-sponsor';
 
 /**
  * R4-D — a `settling`/`finalizing` claim whose `updatedAt` is older than this is
@@ -263,6 +264,9 @@ export type EscrowGateErrorCode =
   // the physical-free clamp which fails open): we cannot prove there is no
   // untracked pending, so we refuse. Retryable. 502.
   | 'pending_state_unverifiable'
+  | 'gas_cap_exceeded'
+  | 'gas_sponsor_failed'
+  | 'gas_sponsorship_in_progress'
   // R5-1 — a stale claim whose pending PDA is ABSENT but whose settlement slot WAS
   // consumed on-chain (the monotonic escrow settlement_index advanced past our
   // persisted index): our settle landed → was finalized → the pending was CLOSED for
@@ -1889,6 +1893,8 @@ export interface SettleJobInput {
    * the escrow's remaining funded balance.
    */
   callsToSettle: bigint;
+  /** Present only for the composed-bounty rail, which house-sponsors SOL. */
+  gasSponsor?: GasSponsorContext;
   /**
    * @deprecated BLOCKING #1 — IGNORED. The verification signal is built
    * SERVER-SIDE from the PERSISTED depositor approval (`sap_escrow_approvals`),
@@ -2645,6 +2651,20 @@ export async function settleJobV2(
     if (claim.kind === 'ledger_short') return { ok: false, code: 'over_release', message: `escrow was drawn below this V2 debit (remaining=${claim.remaining}, need=${totalDebit}).` };
     if (claim.count !== 1) return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
 
+    if (input.gasSponsor) {
+      const gas = await ensureSettleGas(row.workerWalletPubkey, input.gasSponsor);
+      if (gas.ok === false) {
+        await db.update(sapEscrowSettlements).set({
+          status: preClaimStatus,
+          reservedPrincipalAmount: jobReserved.toString(),
+          feeAmount: jobFees.toString(),
+          updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), gasSponsorError: gas.code },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+        return { ok: false, code: gas.code, message: gas.message };
+      }
+    }
+
     const chain = await settleCallsV2Usdc({
       workerAvatarId: row.workerAvatarId, depositorWalletPubkey: row.depositorWalletPubkey,
       escrowNonce: nonce, callsToSettle: input.callsToSettle, auditRoot: verdict.auditRoot, amount: principal,
@@ -2802,7 +2822,13 @@ export async function settleJobV2(
   });
 }
 
-export interface FinalizeJobV2Input { escrowPda: string; jobId: string; callerAvatarId: string }
+export interface FinalizeJobV2Input {
+  escrowPda: string;
+  jobId: string;
+  callerAvatarId: string;
+  /** Present only for the composed-bounty rail, which house-sponsors SOL. */
+  gasSponsor?: GasSponsorContext;
+}
 
 /** Permissionless authenticated crank for V2 pending principal. */
 export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGateResult> {
@@ -2833,6 +2859,18 @@ export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGa
         .returning({ id: sapEscrowSettlements.id });
     });
     if (claimed.length !== 1) return { ok: false, code: 'finalize_in_progress', message: 'another crank claimed finalize.' };
+
+    if (input.gasSponsor) {
+      const gas = await ensureSettleGas(row.workerWalletPubkey, input.gasSponsor);
+      if (gas.ok === false) {
+        await db.update(sapEscrowSettlements).set({
+          status: 'pending',
+          updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), gasSponsorError: gas.code },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'finalizing')));
+        return { ok: false, code: gas.code, message: gas.message };
+      }
+    }
 
     const chain = await finalizeSettlementUsdc({
       payerAvatarId: input.callerAvatarId, workerWalletPubkey: row.workerWalletPubkey,

@@ -418,7 +418,12 @@ import {
 // recovery on `/session/current` and documents closed-shoe retry recovery.
 // Settlement, action verbs, and the [ACTION:] whitelist are unchanged; the
 // bump eagerly re-embeds the expanded manual.
-export const PROTOCOL_VERSION = 49;
+// NOTE (2026-08-10, bounty gas + expiry hardening): bumped 49 -> 50. The bounty
+// manual now states the numeric poster/settler SOL obligations and the terminal
+// expiry rule. House sponsorship and the expiry refund crank ship in the same
+// diff, so the served manual describes the live behavior rather than a future
+// promise. No Hatcher signing/auth shape or [ACTION:] verb changed.
+export const PROTOCOL_VERSION = 50;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1753,6 +1758,19 @@ paths have a **5 vCLAW ($0.05) minimum**. A \`paymentRail: "vclaw"\` bounty
 escrows the poster's in-game vCLAW; a \`paymentRail: "usdc"\` bounty escrows
 the exact on-chain amount, converting with integer math at **10,000 USDC base
 units per vCLAW**. Never treat the reward number as whole USDC.
+
+For a USDC bounty, the poster pays approximately **0.006 SOL** from the
+poster's custodial wallet when the vault is created (account rent plus network
+fees), and must provide an \`expiresAt\` timestamp. The winner does not need to
+pre-fund settle gas: ClawVille tops the SAP settle/finalize signer up to the
+configured **0.006 SOL** gas floor from a dedicated house wallet, subject to a
+fail-closed daily house cap.
+
+Expiry is terminal for settlement. Once \`expiresAt\` passes, the escrow can only
+refund to the poster; the resume crank automatically terminalizes the bounty,
+rejects its active/approved attempt, and drives the idempotent creator refund.
+It never auto-refunds before expiry, and a bounty with no expiry never enters
+this automatic refund path.
 
 ## 12. Quests — the dev quest board
 

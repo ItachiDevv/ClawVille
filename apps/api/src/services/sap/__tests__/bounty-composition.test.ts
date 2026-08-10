@@ -25,6 +25,7 @@ import {
 } from '../../bounty-escrow-link';
 import {
   resumeComposedBounty,
+  isEscrowExpiredFailure,
   _resetComposedWedgeAlerts,
   type ResumeComposedBountyDeps,
 } from '../../bounty-composition-worker';
@@ -383,6 +384,24 @@ describe('settleComposedBounty phase machine', () => {
     }
   });
 
+  it('passes bounty-scoped gas sponsorship context to both on-chain legs', async () => {
+    let settleGas: unknown;
+    let finalizeGas: unknown;
+    const settled = await settleComposedBounty(input, happyDeps({
+      settleJobV2: async (leg) => {
+        settleGas = leg.gasSponsor;
+        return settleV2Pending(AUDIT_ROOT, true);
+      },
+      finalizeJobV2: async (leg) => {
+        finalizeGas = leg.gasSponsor;
+        return settledOk();
+      },
+    }));
+    expect(settled.phase).toBe('paid');
+    expect(settleGas).toEqual({ bountyId: BOUNTY_ID, leg: 'settle' });
+    expect(finalizeGas).toEqual({ bountyId: BOUNTY_ID, leg: 'finalize' });
+  });
+
   it('AWAITING_FINALIZE — dispute window not elapsed ⇒ hunter UNPAID, leg 2 never runs', async () => {
     let leg2Opened = false;
     const settled = await settleComposedBounty(input, happyDeps({
@@ -544,11 +563,14 @@ describe('idempotent replay', () => {
 describe('resumeComposedBounty (finalize/payout crank)', () => {
   function ctx(over: Partial<any> = {}) {
     return {
+      status: 'open',
       compositionState: 'awaiting_finalize',
       escrowPda: VAULT_PDA,
       creatorAvatarId: CREATOR,
       hunterAvatarId: HUNTER,
       tokenReward: REWARD,
+      expiresAt: null,
+      expiryRefundRequested: false,
       ...over,
     };
   }
@@ -686,6 +708,84 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
     } as ResumeComposedBountyDeps);
     expect(out).toEqual({ resumed: true, phase: 'paid' });
     expect(alerted).toBe(false); // a healed resume never pages
+  });
+
+  it('expiry passed routes an approved vault_held bounty to refund without settling', async () => {
+    let settleCalled = false;
+    let refundCalled = false;
+    const alerts: any[] = [];
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({
+        compositionState: 'vault_held',
+        expiresAt: new Date('2026-08-09T10:00:00.000Z'),
+      }),
+      now: () => new Date('2026-08-09T11:00:00.000Z'),
+      applyOutcome: async () => {
+        settleCalled = true;
+        return { ok: false, phase: 'failed', escrowPda: VAULT_PDA, code: 'internal', message: 'must not run' } as any;
+      },
+      refundExpired: async () => {
+        refundCalled = true;
+        return { ok: true, message: 'refunded', signature: 'refund-sig' };
+      },
+      alertError: async (alert) => { alerts.push(alert); },
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: true, phase: 'refunded' });
+    expect(settleCalled).toBe(false);
+    expect(refundCalled).toBe(true);
+    expect(alerts[0]).toMatchObject({
+      severity: 'warning',
+      context: { bountyId: BOUNTY_ID, tokenReward: REWARD, refundSignature: 'refund-sig' },
+    });
+  });
+
+  it('pre-expiry leaves the settle path unchanged', async () => {
+    let refundCalled = false;
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({
+        compositionState: 'vault_held',
+        expiresAt: new Date('2026-08-09T12:00:00.000Z'),
+      }),
+      now: () => new Date('2026-08-09T11:00:00.000Z'),
+      applyOutcome: async () => ({
+        ok: true,
+        phase: 'paid',
+        escrowPda: VAULT_PDA,
+        payoutEscrowPda: PAYOUT_PDA,
+        auditRootHex: AUDIT_ROOT,
+        dryRun: true,
+      }),
+      refundExpired: async () => {
+        refundCalled = true;
+        return { ok: true, message: 'must not run' };
+      },
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: true, phase: 'paid' });
+    expect(refundCalled).toBe(false);
+  });
+
+  it('detects on-chain EscrowExpired 6076 and refund-routes the failed settle', async () => {
+    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'custom program error: 6076 EscrowExpired' })).toBe(true);
+    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'custom program error: 0x17bc' })).toBe(true);
+    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'some other failure' })).toBe(false);
+    let refunded = false;
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({ compositionState: 'vault_held', expiresAt: null }),
+      applyOutcome: async () => ({
+        ok: false,
+        phase: 'failed',
+        escrowPda: VAULT_PDA,
+        code: 'on_chain_error',
+        message: 'AnchorError 6076 EscrowExpired',
+      } as any),
+      refundExpired: async () => {
+        refunded = true;
+        return { ok: true, message: 'refunded' };
+      },
+      alertError: async () => undefined,
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: true, phase: 'refunded' });
+    expect(refunded).toBe(true);
   });
 
   it('skips a missing bounty / missing winning hunter / missing vault', async () => {

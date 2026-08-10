@@ -42,6 +42,9 @@ import { avatars } from './avatars';
  * - `earned-backing` (Tokenomics E2/E3, 2026-07-14): holds the real USDC
  *   backing redeemable EARNED vCLAW. It never receives agent-pay rail ④ funds;
  *   those payments go to the recipient and their EARNED lot is `none`.
+ * - `sap-gas-sponsor`: dedicated SOL wallet that tops up composed-bounty SAP
+ *   settle/finalize signers. It is deliberately isolated from every customer-
+ *   payment and treasury wallet.
  *
  * Postgres enum add: extending this list requires
  * `ALTER TYPE treasury_purpose ADD VALUE IF NOT EXISTS '<value>'` — shipped in
@@ -55,6 +58,7 @@ export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'wager-settlement-authority',
   'clv-swap',
   'earned-backing',
+  'sap-gas-sponsor',
 ]);
 
 /**
@@ -92,6 +96,9 @@ export const treasuryWallets = pgTable(
     earnedBackingSingleton: uniqueIndex('treasury_wallets_earned_backing_singleton')
       .on(t.purpose)
       .where(sql`purpose = 'earned-backing'`),
+    sapGasSponsorSingleton: uniqueIndex('treasury_wallets_sap_gas_sponsor_singleton')
+      .on(t.purpose)
+      .where(sql`purpose = 'sap-gas-sponsor'`),
   }),
 );
 

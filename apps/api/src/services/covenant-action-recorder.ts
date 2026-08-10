@@ -46,6 +46,7 @@ export type CovenantAction =
   | 'bounty.reject'
   | 'bounty.settle_requested'
   | 'bounty.settle'
+  | 'bounty.gas_sponsored'
   | 'bounty.refund_requested'
   | 'bounty.refund'
   | 'agent.move'

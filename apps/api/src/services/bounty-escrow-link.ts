@@ -754,6 +754,7 @@ export async function settleComposedBounty(
     jobId: input.bountyId,
     callerAvatarId: houseAvatarId,
     callsToSettle: 1n,
+    gasSponsor: { bountyId: input.bountyId, leg: 'settle' },
   });
   if (settledV2.ok === false) {
     // Pre-settle failure or a leg-1 reconcile state (settle_unconfirmed, etc.).
@@ -773,6 +774,7 @@ export async function settleComposedBounty(
       escrowPda: input.escrowPda,
       jobId: input.bountyId,
       callerAvatarId: houseAvatarId,
+      gasSponsor: { bountyId: input.bountyId, leg: 'finalize' },
     });
     if (finalized.ok === false) {
       // The DisputeWindow has not elapsed (`finalize_not_ready`, auto-retryable) or
