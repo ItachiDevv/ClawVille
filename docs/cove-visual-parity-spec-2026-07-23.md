@@ -9,7 +9,7 @@ The authoritative contract is [`specs/spec-parity.md`](../specs/spec-parity.md),
 - Staged felt is tray-first ordered replay; felt is asserted only at states where the application renders it.
 - `scripts/parity/atlas-fixture/normalize-atlas.ts` and `contact-sheet.ts` provide the deterministic 53-cell atlas comparison flow.
 - BA-2 is staging-only and crash-loud. Tokens are show-once, stored only as SHA-256 hashes, scoped to one owner and arm, one-shot consumed, and budgeted in atomic vCLAW.
-- Migration `packages/database/migrations/0026_test_fixture_runs.sql` is authored only. It must not be applied during this build-only wave.
+- Migration `packages/database/migrations/0058_test_fixture_runs.sql` (renumbered from 0026 at the 2026-08-09 staging merge) is authored only. It must not be applied during this build-only wave.
 
 ## Recovery and provenance safety
 
