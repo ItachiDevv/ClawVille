@@ -8,6 +8,7 @@ import {
   CashTableRoomHud,
   SeatedHoldemHud,
 } from '@/components/cove/holdem/SeatedHoldemHud';
+import { TableLobby } from '@/components/cove/holdem/TableLobby';
 import { ParityMirror } from '@/components/cove/CardParityMirror';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import { useAuthMe } from '@/hooks/use-auth-me';
@@ -15,12 +16,10 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useCoveStore } from '@/stores/cove';
 import {
   cashPokerApi,
-  CASH_TIERS,
   CoveApiError,
   describeCashPokerError,
   type CashAction,
   type CashAgentView,
-  type CashTableListItem,
   type PublicTableStateResponse,
 } from '@/lib/cove/cash-poker';
 import type { LiveTableRoomState } from '@/lib/three/holdem-table-room';
@@ -62,9 +61,9 @@ export default function HoldemTableRoomPage({
   const isLoggedIn = Boolean(authData?.user && !authData.user.isGuest);
 
   if (isLoading) return <RoomLoading />;
+  if (!tableId) return <CashTableLobbyRoom isAuthenticated={isLoggedIn} />;
   if (!isLoggedIn) return <PracticeDemoRoom />;
-  if (tableId) return <CashTableRoom tableId={tableId} />;
-  return <CashTablePicker />;
+  return <CashTableRoom tableId={tableId} />;
 }
 
 function RoomLoading() {
@@ -377,34 +376,9 @@ function CashTableRoom({ tableId }: { tableId: string }) {
   );
 }
 
-function CashTablePicker() {
+function CashTableLobbyRoom({ isAuthenticated }: { isAuthenticated: boolean }) {
   const router = useRouter();
   const instanceId = useRef(crypto.randomUUID()).current;
-  const [tables, setTables] = useState<CashTableListItem[]>([]);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      try {
-        const result = await cashPokerApi.listTables(30);
-        if (!cancelled) {
-          setTables(result.tables);
-          setNotice(null);
-        }
-      } catch (error) {
-        if (!cancelled) setNotice(`${describeCashPokerError(error)} Retrying…`);
-      } finally {
-        if (!cancelled) timer = setTimeout(tick, PUBLIC_POLL_MS);
-      }
-    };
-    void tick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
   useEffect(() => () => clearFeltParity(instanceId), [instanceId]);
 
   const handleBack = useCallback(() => router.push('/cove'), [router]);
@@ -416,31 +390,7 @@ function CashTablePicker() {
         instanceId={instanceId}
         liveTable={{ table: null, povSeatIndex: 0, settled: null }}
       />
-      <div className={styles.settlement} style={{ width: 'min(680px, calc(100vw - 32px))' }}>
-        <div className={styles.settlementHeadline}>Choose a live table</div>
-        <div className={styles.settlementDetail}>Cash tables deal automatically while a real player is seated.</div>
-        <div style={{ display: 'grid', gap: 8, marginTop: 14 }}>
-          {tables.map((table) => {
-            const tier = table.tierKey && table.tierKey in CASH_TIERS
-              ? CASH_TIERS[table.tierKey as keyof typeof CASH_TIERS]
-              : null;
-            return (
-              <button
-                key={table.id}
-                type="button"
-                onClick={() => router.push(`/cove/table?tableId=${encodeURIComponent(table.id)}`)}
-                className={styles.actionButton + ' ' + styles.primaryButton}
-                style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, textAlign: 'left' }}
-              >
-                <span>{tier?.label ?? table.tierKey ?? 'Public table'} · {table.smallBlindCt}/{table.bigBlindCt} blinds · {table.buyInCt} vCLAW buy-in</span>
-                <span>{table.occupiedSeats}/{table.maxSeats} seated</span>
-              </button>
-            );
-          })}
-          {!tables.length && <div className={styles.settlementDetail}>Looking for open house tables…</div>}
-          {notice && <div className={styles.toast + ' ' + styles.toastWarn}>{notice}</div>}
-        </div>
-      </div>
+      <TableLobby isAuthenticated={isAuthenticated} pollMs={PUBLIC_POLL_MS} />
     </RoomShell>
   );
 }

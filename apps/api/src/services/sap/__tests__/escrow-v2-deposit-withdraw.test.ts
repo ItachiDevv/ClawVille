@@ -24,8 +24,12 @@ let depositThrows = false; // M2 — force the executor to THROW (not return a f
 let withdrawThrows = false; // R4-B — force the withdraw executor to THROW
 let depositCalls = 0;
 let withdrawCalls = 0;
+let withdrawPrepareCalls = 0;
+let preparedSignaturesSent: string[] = [];
 let depositRows: Array<Record<string, unknown>>;
 let withdrawRows: Array<Record<string, unknown>>;
+let captureInjectedAtTakeover: Record<string, unknown> | null = null;
+let captureSaveBarrierWinner: Record<string, unknown> | null = null;
 
 const liveSuccess = (signature: string, accounts: Record<string, string> = { escrow: ESCROW }) => ({
   ok: true as const,
@@ -36,16 +40,57 @@ const liveSuccess = (signature: string, accounts: Record<string, string> = { esc
 
 /** Single-row update builder over a given idempotency-rows array. */
 function rowUpdateBuilder(arr: () => Array<Record<string, unknown>>, set: Record<string, unknown>) {
+  let applied = false;
+  const leaseTakeover =
+    'claimId' in set &&
+    set.claimId != null &&
+    'claimedAt' in set &&
+    !('status' in set);
+  const eligible = () => {
+    const row = arr()[0];
+    if (!leaseTakeover) return true;
+    const claimedAt = row?.claimedAt;
+    return !(claimedAt instanceof Date) || Date.now() - claimedAt.getTime() >= 10 * 60 * 1000;
+  };
   const apply = () => {
     const r = arr()[0];
-    if (r) Object.assign(r, set);
+    if (!r || !eligible()) return null;
+    if (leaseTakeover && captureInjectedAtTakeover) {
+      // Deterministic barrier: the prior owner commits capture immediately before
+      // the takeover UPDATE obtains the row lock. UPDATE ... RETURNING must see it.
+      Object.assign(r, captureInjectedAtTakeover);
+      captureInjectedAtTakeover = null;
+    }
+    if (
+      captureSaveBarrierWinner &&
+      typeof set.signature === 'string' &&
+      typeof set.serializedTransaction === 'string'
+    ) {
+      // Deterministic CAS-loss barrier: a takeover winner replaces ownership just
+      // before the old owner's capture-save. The old save affects zero rows.
+      Object.assign(r, captureSaveBarrierWinner);
+      captureSaveBarrierWinner = null;
+      applied = true;
+      return null;
+    }
+    if (!applied) Object.assign(r, set);
+    applied = true;
+    return r;
   };
-  return {
+  const chain = {
     where() {
+      return chain;
+    },
+    returning() {
+      const row = apply();
+      return Promise.resolve(row ? [row] : []);
+    },
+    then(resolve: (value: unknown) => unknown) {
       apply();
-      return Promise.resolve(undefined);
+      return Promise.resolve(resolve(undefined));
     },
   };
+  return chain;
 }
 
 // R4-B — deposit and withdraw idempotency now use the SAME claim-first pattern on
@@ -60,7 +105,9 @@ const fakeDb = {
   query: {
     wallets: { findFirst: async () => ({ publicKey: DEPOSITOR_WALLET }) },
     sapDepositRequests: { findFirst: async () => depositRows[0] ?? null },
-    sapEscrowWithdrawals: { findFirst: async () => withdrawRows[0] ?? null },
+    sapEscrowWithdrawals: {
+      findFirst: async () => withdrawRows[0] ? { ...withdrawRows[0] } : null,
+    },
   },
   insert(table: unknown) {
     const which = rowsFor(table);
@@ -92,11 +139,29 @@ const fakeDb = {
     return { set: (values: Record<string, unknown>) => rowUpdateBuilder(() => (which === 'deposit' ? depositRows : withdrawRows), values) };
   },
   delete(table: unknown) {
-    return {
-      where: async () => {
-        if (rowsFor(table) === 'deposit') depositRows = [];
-        else withdrawRows = [];
+    const which = rowsFor(table);
+    let deleted: Record<string, unknown> | null = null;
+    const apply = () => {
+      if (deleted) return deleted;
+      const arr = which === 'deposit' ? depositRows : withdrawRows;
+      deleted = arr[0] ?? null;
+      if (which === 'deposit') depositRows = [];
+      else withdrawRows = [];
+      return deleted;
+    };
+    const chain = {
+      where() { return chain; },
+      returning: async () => {
+        const row = apply();
+        return row ? [row] : [];
       },
+      then(resolve: (value: unknown) => unknown) {
+        apply();
+        return Promise.resolve(resolve(undefined));
+      },
+    };
+    return {
+      where() { return chain; },
     };
   },
 };
@@ -127,6 +192,29 @@ mock.module('../sap-client', () => ({
     if (withdrawThrows) throw new Error('unexpected withdraw executor throw');
     return withdrawOutcome;
   },
+  prepareWithdrawEscrowV2Usdc: async () => {
+    withdrawPrepareCalls += 1;
+    const signature =
+      typeof withdrawOutcome.signature === 'string'
+        ? withdrawOutcome.signature
+        : 'withdraw-prepared-signature';
+    return {
+      ok: true,
+      prepared: {
+        signature,
+        serializedTransaction: 'captured-withdraw-bytes',
+        blockhash: 'captured-blockhash',
+        lastValidBlockHeight: 123,
+        accounts: { escrow: ESCROW },
+      },
+    };
+  },
+  sendPreparedSapTransaction: async (_label: string, prepared: { signature: string }) => {
+    withdrawCalls += 1;
+    preparedSignaturesSent.push(prepared.signature);
+    if (withdrawThrows) throw new Error('unexpected withdraw executor throw');
+    return withdrawOutcome;
+  },
   // Imports escrow-gate pulls from sap-client but that deposit/withdraw never
   // reach — present so the gate module loads cleanly.
   readV2VaultPhysicalState: async () => ({ vaultBalance: null, escrowPendingAmount: 0n, escrowAbsent: false }),
@@ -152,8 +240,12 @@ beforeEach(() => {
   withdrawThrows = false;
   depositCalls = 0;
   withdrawCalls = 0;
+  withdrawPrepareCalls = 0;
+  preparedSignaturesSent = [];
   depositRows = [];
   withdrawRows = [];
+  captureInjectedAtTakeover = null;
+  captureSaveBarrierWinner = null;
   depositOutcome = liveSuccess('deposit-sig-1');
   withdrawOutcome = liveSuccess('withdraw-sig-1');
 });
@@ -167,7 +259,12 @@ function seedDepositRow(overrides: Record<string, unknown> = {}) {
       escrowPda: ESCROW,
       amount: '1000000',
       status: 'in_flight',
+      claimId: 'live-owner',
+      claimedAt: new Date(),
       signature: null,
+      serializedTransaction: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       outcomeAccounts: null,
       failureCode: null,
       ...overrides,
@@ -261,6 +358,33 @@ describe('FIX 1 — V2 deposit idempotency', () => {
     if (result.ok) expect(result.chain.ok).toBe(false);
     expect(depositCalls).toBe(1);
     // Claim deleted → a retry with the same requestId is not bricked.
+    expect(depositRows).toHaveLength(0);
+  });
+
+  it('a confirmed-reverted deposit restores the requestId and preserves the typed chain error', async () => {
+    depositOutcome = {
+      ok: false,
+      code: 'escrow_expired',
+      message: 'deposit confirmed reverted: escrow expired',
+      broadcast: true,
+      landed: 'confirmed_reverted',
+      signature: 'deposit-revert-sig',
+    };
+    const result = await gate.depositEscrowV2Idempotent({
+      depositorAvatarId: DEPOSITOR,
+      workerWalletPubkey: WORKER_WALLET,
+      escrowNonce: 9n,
+      amount: 1_000_000n,
+      requestId: REQ,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.chain).toMatchObject({
+        ok: false,
+        code: 'escrow_expired',
+        landed: 'confirmed_reverted',
+      });
+    }
     expect(depositRows).toHaveLength(0);
   });
 
@@ -362,7 +486,12 @@ function seedWithdrawRow(overrides: Record<string, unknown> = {}) {
       escrowPda: ESCROW,
       amount: '500000',
       status: 'in_flight',
+      claimId: 'live-owner',
+      claimedAt: new Date(),
       signature: null,
+      serializedTransaction: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       outcomeAccounts: null,
       failureCode: null,
       ...overrides,
@@ -403,7 +532,78 @@ describe('R4-B — V2 withdraw idempotency (claim-first, mirrors deposit)', () =
     expect(withdrawCalls).toBe(0);
   });
 
-  it('a replay after terminal success returns the recorded outcome and NEVER re-sends', async () => {
+  it('a stale in-flight lease takes over by resending the captured signature, never preparing a second withdrawal', async () => {
+    seedWithdrawRow({
+      claimId: 'stale-owner',
+      claimedAt: new Date(Date.now() - 11 * 60 * 1000),
+      signature: 'captured-original-signature',
+      serializedTransaction: 'captured-original-bytes',
+      blockhash: 'captured-original-blockhash',
+      lastValidBlockHeight: 123n,
+      outcomeAccounts: { escrow: ESCROW },
+    });
+    withdrawOutcome = liveSuccess('captured-original-signature');
+
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.replayed).toBe(true);
+    expect(withdrawPrepareCalls).toBe(0);
+    expect(preparedSignaturesSent).toEqual(['captured-original-signature']);
+    expect(withdrawCalls).toBe(1);
+    expect(withdrawRows[0]?.status).toBe('succeeded');
+  });
+
+  it('B2 — takeover atomically returns a capture saved at the row-lock barrier', async () => {
+    seedWithdrawRow({
+      claimId: 'stale-owner',
+      claimedAt: new Date(Date.now() - 11 * 60 * 1000),
+    });
+    captureInjectedAtTakeover = {
+      signature: 'barrier-captured-signature',
+      serializedTransaction: 'barrier-captured-bytes',
+      blockhash: 'barrier-captured-blockhash',
+      lastValidBlockHeight: 456n,
+      outcomeAccounts: { escrow: ESCROW },
+    };
+    withdrawOutcome = liveSuccess('barrier-captured-signature');
+
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
+
+    expect(result.ok).toBe(true);
+    expect(withdrawPrepareCalls).toBe(0);
+    expect(preparedSignaturesSent).toEqual(['barrier-captured-signature']);
+  });
+
+  it('B2 — an old owner that loses capture-save CAS stops and replays the winner', async () => {
+    withdrawOutcome = liveSuccess('losing-owner-signature');
+    captureSaveBarrierWinner = {
+      status: 'succeeded',
+      signature: 'takeover-winner-signature',
+      serializedTransaction: 'takeover-winner-bytes',
+      blockhash: 'takeover-winner-blockhash',
+      lastValidBlockHeight: 789n,
+      outcomeAccounts: { escrow: ESCROW },
+      claimId: null,
+      claimedAt: null,
+    };
+
+    const result = await gate.withdrawEscrowV2Idempotent(wd());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.replayed).toBe(true);
+      expect(result.chain.ok).toBe(true);
+      if (result.chain.ok && !result.chain.dryRun) {
+        expect(result.chain.signature).toBe('takeover-winner-signature');
+      }
+    }
+    expect(withdrawPrepareCalls).toBe(1);
+    expect(preparedSignaturesSent).toEqual([]);
+    expect(withdrawCalls).toBe(0);
+  });
+
+  it('B4 — a legacy terminal row without capture material is accepted read-only', async () => {
     seedWithdrawRow({ status: 'succeeded', signature: 'prior-withdraw-sig', outcomeAccounts: { escrow: ESCROW } });
     const result = await gate.withdrawEscrowV2Idempotent(wd());
     expect(result.ok).toBe(true);

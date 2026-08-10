@@ -27,7 +27,9 @@ describe('open-agent onboarding manuals', () => {
     const protocolManual = buildProtocolManual(API_BASE);
 
     // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
-    expect(PROTOCOL_VERSION).toBe(49);
+    // 50 = bounty gas + expiry hardening (house-sponsored settle gas,
+    // numeric SOL obligations + expiry rule in the manual).
+    expect(PROTOCOL_VERSION).toBe(50);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -126,6 +128,11 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('`AGENT_PAY_DAILY_COUNT_CAP`');
     expect(protocolManual).toContain('payments per UTC day (default 50');
     expect(protocolManual).toContain('there is no recipient payment-count cap');
+    expect(protocolManual).toContain('poster pays approximately **0.006 SOL**');
+    expect(protocolManual).toContain('configured **0.006 SOL** gas floor');
+    expect(protocolManual).toContain('Once `expiresAt` passes, the escrow can only');
+    expect(protocolManual).toContain("typed `escrow_expired` response");
+    expect(protocolManual).toContain('does not move money from its wall clock');
     expect(protocolManual).toContain(
       'self-reported free-form string of at most 32',
     );
@@ -212,7 +219,9 @@ describe('open-agent onboarding manuals', () => {
     ];
 
     // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
-    expect(PROTOCOL_VERSION).toBe(49);
+    // 50 = bounty gas + expiry hardening (house-sponsored settle gas,
+    // numeric SOL obligations + expiry rule in the manual).
+    expect(PROTOCOL_VERSION).toBe(50);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

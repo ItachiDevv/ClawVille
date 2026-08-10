@@ -74,6 +74,19 @@ mock.module('../sap-client', () => ({
   settleCallsUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   withdrawEscrowUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   resolveUsdcEscrowAddresses: () => ({ ok: false, code: 'internal', message: 'unused' }),
+  createEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  depositEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  withdrawEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  prepareWithdrawEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  sendPreparedSapTransaction: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  settleCallsV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  finalizeSettlementUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  resolveV2UsdcEscrowAddress: () => ({ ok: false, code: 'internal', message: 'unused' }),
+  inspectV2SettlementState: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  readV2VaultPhysicalState: async () => ({ vaultBalance: null, escrowPendingAmount: null, escrowAbsent: false }),
+  preflightCreateEscrowV2Coverage: async () => null,
+  preflightDepositEscrowV2Coverage: async () => null,
+  loadAvatarWalletForSigning: async () => ({ ok: false, code: 'internal', message: 'unused' }),
 }));
 
 // Import AFTER the mocks are registered.

@@ -21,6 +21,7 @@ export * from './bounties';
 // of every economic agent action; sealed by covenant-chain-sealer, served on the
 // partner-covenant read surface. See covenant-action-records.ts header.
 export * from './covenant-action-records';
+export * from './bounty-gas-sponsorships';
 export * from './building-skills';
 export * from './building-chat-reward-claims';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner

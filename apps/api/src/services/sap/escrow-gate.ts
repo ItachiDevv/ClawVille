@@ -87,6 +87,7 @@
  * structured results; the route maps them to clean HTTP codes.
  */
 
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import {
@@ -107,6 +108,8 @@ import {
   createEscrowV2Usdc,
   depositEscrowV2Usdc,
   withdrawEscrowV2Usdc,
+  prepareWithdrawEscrowV2Usdc,
+  sendPreparedSapTransaction,
   settleCallsV2Usdc,
   finalizeSettlementUsdc,
   resolveV2UsdcEscrowAddress,
@@ -118,7 +121,9 @@ import {
   type SapWriteResult,
   type SapFailure,
   type V2VaultPhysicalState,
+  type SapPreparedTransaction,
 } from './sap-client';
+import { ensureSettleGas, type GasSponsorContext } from './sap-gas-sponsor';
 
 /**
  * R4-D — a `settling`/`finalizing` claim whose `updatedAt` is older than this is
@@ -128,6 +133,7 @@ import {
  * genuinely stuck row recovers on the next attempt.
  */
 const SAP_STALE_CLAIM_MS = 10 * 60 * 1000;
+const SAP_WITHDRAW_CLAIM_LEASE_MS = 10 * 60 * 1000;
 /**
  * R6-1 / R7-1 — a PROBABILISTIC wall-clock ESTIMATE of how long a Solana `recentBlockhash`
  * typically stays valid: ~151 BLOCKS, i.e. ~60-90s at 0.4-0.6s/slot, plus margin. This is NOT
@@ -263,6 +269,10 @@ export type EscrowGateErrorCode =
   // the physical-free clamp which fails open): we cannot prove there is no
   // untracked pending, so we refuse. Retryable. 502.
   | 'pending_state_unverifiable'
+  | 'gas_cap_exceeded'
+  | 'gas_cap_configuration_mismatch'
+  | 'gas_sponsor_failed'
+  | 'gas_sponsorship_in_progress'
   // R5-1 — a stale claim whose pending PDA is ABSENT but whose settlement slot WAS
   // consumed on-chain (the monotonic escrow settlement_index advanced past our
   // persisted index): our settle landed → was finalized → the pending was CLOSED for
@@ -1235,7 +1245,7 @@ export async function openEscrowV2(input: OpenEscrowV2Input): Promise<EscrowGate
     ? await depositEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, amount: input.initialDeposit })
     : await createEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, pricePerCall: input.pricePerCall, maxCalls: input.maxCalls, initialDeposit: input.initialDeposit, expiresAt: input.expiresAt, disputeWindowSlots: input.disputeWindowSlots });
   if (chain.ok === false) {
-    if (chain.broadcast) {
+    if (chain.broadcast && chain.landed !== 'confirmed_reverted') {
       await db.update(sapEscrowSettlements).set({
         status: 'funding_unknown', fundingSignature: chain.signature ?? null, dryRun: false,
         metadata: { ...((row.metadata as object) ?? {}), isTopUp, funded: false, fundingError: chain.code }, updatedAt: new Date(),
@@ -1449,7 +1459,7 @@ export async function depositEscrowV2Idempotent(
       return { ok: true, chain, replayed: false };
     }
 
-    if (chain.broadcast) {
+    if (chain.broadcast && chain.landed !== 'confirmed_reverted') {
       // Broadcast-unknown — the deposit MAY have landed. Hold the claim terminal +
       // record the signature so a replay returns the same unconfirmed signal and
       // NEVER re-sends (mirrors funding_unknown). Reconcile-only.
@@ -1542,6 +1552,67 @@ function reconstructWithdrawChain(row: {
   };
 }
 
+function capturedWithdrawFromRow(row: {
+  signature: string | null;
+  serializedTransaction: string | null;
+  blockhash: string | null;
+  lastValidBlockHeight: bigint | null;
+  outcomeAccounts: Record<string, string> | null;
+}): SapPreparedTransaction | null {
+  if (
+    !row.signature ||
+    !row.serializedTransaction ||
+    !row.blockhash ||
+    row.lastValidBlockHeight == null
+  ) {
+    return null;
+  }
+  return {
+    signature: row.signature,
+    serializedTransaction: row.serializedTransaction,
+    blockhash: row.blockhash,
+    lastValidBlockHeight: Number(row.lastValidBlockHeight),
+    accounts: row.outcomeAccounts ?? {},
+  };
+}
+
+async function rereadWithdrawDisposition(input: {
+  subjectAvatarId: string;
+  requestId: string;
+  escrowPda: string;
+  amount: string;
+}): Promise<WithdrawEscrowV2IdempotentResult> {
+  const winner = await db.query.sapEscrowWithdrawals.findFirst({
+    where: and(
+      eq(sapEscrowWithdrawals.subjectAvatarId, input.subjectAvatarId),
+      eq(sapEscrowWithdrawals.requestId, input.requestId),
+    ),
+  });
+  if (!winner) {
+    return { ok: false, code: 'internal', message: 'withdraw ownership changed and the winner row is not readable.' };
+  }
+  if (winner.escrowPda !== input.escrowPda || winner.amount !== input.amount) {
+    return {
+      ok: false,
+      code: 'withdraw_request_mismatch',
+      message: 'requestId winner has a different withdraw fingerprint.',
+    };
+  }
+  if (winner.status === 'succeeded' || winner.status === 'broadcast_unknown') {
+    // Legacy terminal rows may lack capture columns. They are read-only outcomes
+    // and must never be upgraded into a new send.
+    return { ok: true, chain: reconstructWithdrawChain(winner), replayed: true };
+  }
+  if (winner.status === 'in_flight') {
+    return {
+      ok: false,
+      code: 'withdraw_in_flight',
+      message: 'withdraw ownership changed; the winning owner is still in flight.',
+    };
+  }
+  return { ok: false, code: 'internal', message: 'withdraw winner has an unsupported status.' };
+}
+
 /**
  * FIX 2b + R4-B (doc line 623) — a V2 self-custody withdraw with FULL idempotency
  * (mirrors `depositEscrowV2Idempotent`). `/escrow/v2/withdraw` moves USDC
@@ -1597,7 +1668,10 @@ export async function withdrawEscrowV2Idempotent(
 
   // ── CLAIM-FIRST: INSERT 'in_flight' BEFORE any wire construction. The unique index
   // is the lock; the funds ledger holds `amount` pessimistically while in-flight. ──
-  let claimId: string;
+  let claimId = randomUUID();
+  let rowId: string | null = null;
+  let captured: SapPreparedTransaction | null = null;
+  let replayed = false;
   try {
     const [claim] = await db
       .insert(sapEscrowWithdrawals)
@@ -1608,9 +1682,14 @@ export async function withdrawEscrowV2Idempotent(
         amount: amountStr,
         status: 'in_flight',
         requestId: input.requestId,
+        claimId,
+        claimedAt: sql`now()`,
       })
-      .returning({ id: sapEscrowWithdrawals.id });
-    claimId = claim.id;
+      .returning({ id: sapEscrowWithdrawals.id, claimId: sapEscrowWithdrawals.claimId });
+    if (!claim || claim.claimId !== claimId) {
+      return { ok: false, code: 'internal', message: 'withdraw claim was not durably owned.' };
+    }
+    rowId = claim.id;
   } catch (err) {
     if (isUniqueViolation(err)) {
       const existing = await db.query.sapEscrowWithdrawals.findFirst({
@@ -1630,62 +1709,230 @@ export async function withdrawEscrowV2Idempotent(
         };
       }
       if (existing.status === 'in_flight') {
-        return { ok: false, code: 'withdraw_in_flight', message: 'an identical withdraw request is already in flight.' };
+        const takeoverId = randomUUID();
+        const taken = await db
+          .update(sapEscrowWithdrawals)
+          .set({ claimId: takeoverId, claimedAt: sql`now()`, updatedAt: sql`now()` })
+          .where(
+            and(
+              eq(sapEscrowWithdrawals.id, existing.id),
+              eq(sapEscrowWithdrawals.status, 'in_flight'),
+              sql`(
+                ${sapEscrowWithdrawals.claimedAt} IS NULL
+                OR ${sapEscrowWithdrawals.claimedAt} <
+                  now() - (${SAP_WITHDRAW_CLAIM_LEASE_MS} * interval '1 millisecond')
+              )`,
+            ),
+          )
+          .returning({
+            id: sapEscrowWithdrawals.id,
+            signature: sapEscrowWithdrawals.signature,
+            serializedTransaction: sapEscrowWithdrawals.serializedTransaction,
+            blockhash: sapEscrowWithdrawals.blockhash,
+            lastValidBlockHeight: sapEscrowWithdrawals.lastValidBlockHeight,
+            outcomeAccounts: sapEscrowWithdrawals.outcomeAccounts,
+          });
+        if (taken.length !== 1) {
+          return rereadWithdrawDisposition({
+            subjectAvatarId: input.depositorAvatarId,
+            requestId: input.requestId,
+            escrowPda,
+            amount: amountStr,
+          });
+        }
+        claimId = takeoverId;
+        rowId = existing.id;
+        captured = capturedWithdrawFromRow(taken[0]!);
+        replayed = true;
+      } else {
+        // Terminal (succeeded | broadcast_unknown) replay, never another send.
+        return { ok: true, chain: reconstructWithdrawChain(existing), replayed: true };
       }
-      // Terminal (succeeded | broadcast_unknown) — replay the recorded outcome, NO re-send.
-      return { ok: true, chain: reconstructWithdrawChain(existing), replayed: true };
+    } else {
+      return { ok: false, code: 'internal', message: 'failed to claim withdraw idempotency.' };
     }
-    return { ok: false, code: 'internal', message: 'failed to claim withdraw idempotency.' };
   }
 
-  // We hold the claim — now (and only now) touch the chain. R4-B mirrors the deposit
-  // throw-park (M2/R3-3/R3-4): a throw parks broadcast_unknown + captured signature.
-  let sentSignature: string | null = null;
+  if (!rowId) {
+    return { ok: false, code: 'internal', message: 'withdraw claim row was not resolved.' };
+  }
+
+  // Capture exact signed bytes before the first send. A stale owner reuses this
+  // same signature, so takeover never creates a second logical withdrawal.
   try {
-    const chain = await withdrawEscrowV2Usdc({
-      depositorAvatarId: input.depositorAvatarId,
-      workerWalletPubkey: input.workerWalletPubkey,
-      escrowNonce: input.escrowNonce,
-      amount: input.amount,
-    });
-    sentSignature = chain.ok === true ? (chain.dryRun ? null : chain.signature) : (chain.signature ?? null);
+    if (!captured) {
+      const prepared = await prepareWithdrawEscrowV2Usdc({
+        depositorAvatarId: input.depositorAvatarId,
+        workerWalletPubkey: input.workerWalletPubkey,
+        escrowNonce: input.escrowNonce,
+        amount: input.amount,
+      });
+      if (prepared.ok === false) {
+        const deleted = await db
+          .delete(sapEscrowWithdrawals)
+          .where(
+            and(
+              eq(sapEscrowWithdrawals.id, rowId),
+              eq(sapEscrowWithdrawals.claimId, claimId),
+              eq(sapEscrowWithdrawals.status, 'in_flight'),
+            ),
+          )
+          .returning({ id: sapEscrowWithdrawals.id });
+        if (deleted.length !== 1) {
+          return rereadWithdrawDisposition({
+            subjectAvatarId: input.depositorAvatarId,
+            requestId: input.requestId,
+            escrowPda,
+            amount: amountStr,
+          });
+        }
+        return { ok: true, chain: prepared, replayed };
+      }
+      captured = prepared.prepared;
+      const saved = await db
+        .update(sapEscrowWithdrawals)
+        .set({
+          signature: captured.signature,
+          serializedTransaction: captured.serializedTransaction,
+          blockhash: captured.blockhash,
+          lastValidBlockHeight: BigInt(captured.lastValidBlockHeight),
+          outcomeAccounts: captured.accounts,
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(sapEscrowWithdrawals.id, rowId),
+            eq(sapEscrowWithdrawals.claimId, claimId),
+            eq(sapEscrowWithdrawals.status, 'in_flight'),
+          ),
+        )
+        .returning({ id: sapEscrowWithdrawals.id });
+      if (saved.length !== 1) {
+        return rereadWithdrawDisposition({
+          subjectAvatarId: input.depositorAvatarId,
+          requestId: input.requestId,
+          escrowPda,
+          amount: amountStr,
+        });
+      }
+    }
+
+    const chain = await sendPreparedSapTransaction('withdrawEscrowV2Usdc', captured);
 
     if (chain.ok === true) {
-      await db
+      const succeeded = await db
         .update(sapEscrowWithdrawals)
         .set({
           status: 'succeeded',
-          signature: chain.dryRun ? null : chain.signature,
-          outcomeAccounts: chain.dryRun ? null : chain.accounts,
-          updatedAt: new Date(),
+          signature: chain.signature,
+          outcomeAccounts: chain.accounts,
+          claimId: null,
+          claimedAt: null,
+          updatedAt: sql`now()`,
         })
-        .where(eq(sapEscrowWithdrawals.id, claimId));
-      return { ok: true, chain, replayed: false };
+        .where(and(eq(sapEscrowWithdrawals.id, rowId), eq(sapEscrowWithdrawals.claimId, claimId)))
+        .returning({ id: sapEscrowWithdrawals.id });
+      if (succeeded.length !== 1) {
+        return rereadWithdrawDisposition({
+          subjectAvatarId: input.depositorAvatarId,
+          requestId: input.requestId,
+          escrowPda,
+          amount: amountStr,
+        });
+      }
+      return { ok: true, chain, replayed };
     }
-    if (chain.broadcast) {
+    if (chain.broadcast && chain.landed !== 'confirmed_reverted') {
       // Broadcast-unknown — the withdraw MAY have moved funds. Hold terminal (reconcile-only).
-      await db
+      const quarantined = await db
         .update(sapEscrowWithdrawals)
         .set({
           status: 'broadcast_unknown',
           signature: chain.signature ?? null,
           failureCode: chain.code,
-          updatedAt: new Date(),
+          claimId: null,
+          claimedAt: null,
+          updatedAt: sql`now()`,
         })
-        .where(eq(sapEscrowWithdrawals.id, claimId));
-      return { ok: true, chain, replayed: false };
+        .where(and(eq(sapEscrowWithdrawals.id, rowId), eq(sapEscrowWithdrawals.claimId, claimId)))
+        .returning({ id: sapEscrowWithdrawals.id });
+      if (quarantined.length !== 1) {
+        return rereadWithdrawDisposition({
+          subjectAvatarId: input.depositorAvatarId,
+          requestId: input.requestId,
+          escrowPda,
+          amount: amountStr,
+        });
+      }
+      return { ok: true, chain, replayed };
     }
-    // Pre-broadcast failure — nothing left the vault. DELETE the claim (retryable).
-    await db.delete(sapEscrowWithdrawals).where(eq(sapEscrowWithdrawals.id, claimId));
-    return { ok: true, chain, replayed: false };
+    // Pre-broadcast or confirmed-reverted: no funds moved. Remove only our claim.
+    const deleted = await db
+      .delete(sapEscrowWithdrawals)
+      .where(and(eq(sapEscrowWithdrawals.id, rowId), eq(sapEscrowWithdrawals.claimId, claimId)))
+      .returning({ id: sapEscrowWithdrawals.id });
+    if (deleted.length !== 1) {
+      return rereadWithdrawDisposition({
+        subjectAvatarId: input.depositorAvatarId,
+        requestId: input.requestId,
+        escrowPda,
+        amount: amountStr,
+      });
+    }
+    return { ok: true, chain, replayed };
   } catch {
     try {
-      await db
-        .update(sapEscrowWithdrawals)
-        .set({ status: 'broadcast_unknown', failureCode: 'internal', signature: sentSignature, updatedAt: new Date() })
-        .where(eq(sapEscrowWithdrawals.id, claimId));
+      if (!captured) {
+        const deleted = await db
+          .delete(sapEscrowWithdrawals)
+          .where(
+            and(
+              eq(sapEscrowWithdrawals.id, rowId),
+              eq(sapEscrowWithdrawals.claimId, claimId),
+            ),
+          )
+          .returning({ id: sapEscrowWithdrawals.id });
+        if (deleted.length !== 1) {
+          return await rereadWithdrawDisposition({
+            subjectAvatarId: input.depositorAvatarId,
+            requestId: input.requestId,
+            escrowPda,
+            amount: amountStr,
+          });
+        }
+      } else {
+        const quarantined = await db
+          .update(sapEscrowWithdrawals)
+          .set({
+            status: 'broadcast_unknown',
+            failureCode: 'internal',
+            signature: captured.signature,
+            claimId: null,
+            claimedAt: null,
+            updatedAt: sql`now()`,
+          })
+          .where(and(eq(sapEscrowWithdrawals.id, rowId), eq(sapEscrowWithdrawals.claimId, claimId)))
+          .returning({ id: sapEscrowWithdrawals.id });
+        if (quarantined.length !== 1) {
+          return await rereadWithdrawDisposition({
+            subjectAvatarId: input.depositorAvatarId,
+            requestId: input.requestId,
+            escrowPda,
+            amount: amountStr,
+          });
+        }
+      }
     } catch {
-      // swallow — the money invariant (no double-withdraw) holds regardless.
+      try {
+        return await rereadWithdrawDisposition({
+          subjectAvatarId: input.depositorAvatarId,
+          requestId: input.requestId,
+          escrowPda,
+          amount: amountStr,
+        });
+      } catch {
+        // The money invariant still holds: an owner that lost CAS does not send.
+      }
     }
     return {
       ok: false,
@@ -1889,6 +2136,8 @@ export interface SettleJobInput {
    * the escrow's remaining funded balance.
    */
   callsToSettle: bigint;
+  /** Present only for the composed-bounty rail, which house-sponsors SOL. */
+  gasSponsor?: GasSponsorContext;
   /**
    * @deprecated BLOCKING #1 — IGNORED. The verification signal is built
    * SERVER-SIDE from the PERSISTED depositor approval (`sap_escrow_approvals`),
@@ -2645,6 +2894,20 @@ export async function settleJobV2(
     if (claim.kind === 'ledger_short') return { ok: false, code: 'over_release', message: `escrow was drawn below this V2 debit (remaining=${claim.remaining}, need=${totalDebit}).` };
     if (claim.count !== 1) return { ok: false, code: 'settle_in_progress', message: 'a settle is already in progress for this job.' };
 
+    if (input.gasSponsor) {
+      const gas = await ensureSettleGas(row.workerWalletPubkey, input.gasSponsor);
+      if (gas.ok === false) {
+        await db.update(sapEscrowSettlements).set({
+          status: preClaimStatus,
+          reservedPrincipalAmount: jobReserved.toString(),
+          feeAmount: jobFees.toString(),
+          updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), gasSponsorError: gas.code },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+        return { ok: false, code: gas.code, message: gas.message };
+      }
+    }
+
     const chain = await settleCallsV2Usdc({
       workerAvatarId: row.workerAvatarId, depositorWalletPubkey: row.depositorWalletPubkey,
       escrowNonce: nonce, callsToSettle: input.callsToSettle, auditRoot: verdict.auditRoot, amount: principal,
@@ -2737,7 +3000,10 @@ export async function settleJobV2(
         //   • broadcast falsy → provably pre-broadcast (nothing hit the wire): restore to
         //     pre-claim, release the reservation, retryable — the next call reconciles
         //     with-decode once RPC recovers. NOT terminal 'failed' (unrecoverable).
-        if (failure?.broadcast !== true) {
+        if (
+          failure?.broadcast !== true ||
+          failure.landed === 'confirmed_reverted'
+        ) {
           const restoreMessage = replayCheck.ok
             ? 'settle replay-signal but no on-chain pending found at the index; retry.'
             : 'settle replay-signal: the on-chain pending could not be read/decoded; retry.';
@@ -2745,7 +3011,11 @@ export async function settleJobV2(
             status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
             metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'simulation_error', replaySignalUnresolved: true },
           }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
-          return { ok: false, code: 'on_chain_error', message: restoreMessage };
+          return {
+            ok: false,
+            code: failure?.code ?? 'on_chain_error',
+            message: failure?.message ?? restoreMessage,
+          };
         }
         // broadcast:true + unresolved probe → fall through to the generic quarantine below.
       }
@@ -2769,7 +3039,12 @@ export async function settleJobV2(
       //     so `escrowFundsLedger` sums BYTE-IDENTICALLY; only the status label flips
       //     terminal→retryable, letting the composed resume worker's vault_held+approved
       //     sweep (L-1) self-heal the wedge (restored row → next sweep re-drives → paid).
-      const unknown = failure?.broadcast === true;
+      // A confirmed program revert DID land, but it definitively moved no money.
+      // Restore the settling reservation and preserve its typed error (notably
+      // escrow_expired/6076). Only an unobserved confirmation is quarantined.
+      const unknown =
+        failure?.broadcast === true &&
+        failure.landed !== 'confirmed_reverted';
       await db.update(sapEscrowSettlements).set({
         status: unknown ? 'settle_unknown' : preClaimStatus,
         settleSignature: unknown ? (failure?.signature ?? null) : null, updatedAt: new Date(),
@@ -2779,6 +3054,7 @@ export async function settleJobV2(
           ...((row.metadata as object) ?? {}),
           settleError: failure?.code ?? 'simulation_error',
           settleBroadcastUnconfirmed: unknown,
+          settleLandingDisposition: failure?.landed,
           simulationError: simError ?? undefined,
           // Ops/observability marker for the pre-broadcast restore; no gate effect —
           // the row is simply back at its pre-claim status, fully retryable.
@@ -2802,7 +3078,13 @@ export async function settleJobV2(
   });
 }
 
-export interface FinalizeJobV2Input { escrowPda: string; jobId: string; callerAvatarId: string }
+export interface FinalizeJobV2Input {
+  escrowPda: string;
+  jobId: string;
+  callerAvatarId: string;
+  /** Present only for the composed-bounty rail, which house-sponsors SOL. */
+  gasSponsor?: GasSponsorContext;
+}
 
 /** Permissionless authenticated crank for V2 pending principal. */
 export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGateResult> {
@@ -2834,6 +3116,18 @@ export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGa
     });
     if (claimed.length !== 1) return { ok: false, code: 'finalize_in_progress', message: 'another crank claimed finalize.' };
 
+    if (input.gasSponsor) {
+      const gas = await ensureSettleGas(row.workerWalletPubkey, input.gasSponsor);
+      if (gas.ok === false) {
+        await db.update(sapEscrowSettlements).set({
+          status: 'pending',
+          updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), gasSponsorError: gas.code },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'finalizing')));
+        return { ok: false, code: gas.code, message: gas.message };
+      }
+    }
+
     const chain = await finalizeSettlementUsdc({
       payerAvatarId: input.callerAvatarId, workerWalletPubkey: row.workerWalletPubkey,
       depositorWalletPubkey: row.depositorWalletPubkey, escrowNonce: u64(row.escrowNonce),
@@ -2842,7 +3136,7 @@ export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGa
     const simError = dryRunSimulationError(chain);
     if (chain.ok === false || simError) {
       const failure = chain.ok === false ? chain : null;
-      if (failure?.broadcast) {
+      if (failure?.broadcast && failure.landed !== 'confirmed_reverted') {
         await db.update(sapEscrowSettlements).set({
           status: 'finalize_unknown', finalizeSignature: failure.signature ?? null, updatedAt: new Date(),
           metadata: { ...((row.metadata as object) ?? {}), finalizeError: failure.code, finalizeBroadcastUnconfirmed: true },
@@ -2853,6 +3147,9 @@ export async function finalizeJobV2(input: FinalizeJobV2Input): Promise<EscrowGa
         status: 'pending', updatedAt: new Date(),
         metadata: { ...((row.metadata as object) ?? {}), finalizeError: failure?.code ?? 'simulation_error', simulationError: simError ?? undefined },
       }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'finalizing')));
+      if (failure?.landed === 'confirmed_reverted') {
+        return { ok: false, code: failure.code, message: failure.message };
+      }
       return { ok: false, code: 'finalize_not_ready', message: failure?.message ?? 'V2 finalize simulation refused before broadcast; pending remains retryable.' };
     }
 
