@@ -54,6 +54,7 @@ import {
 } from './resource-ledger';
 import { StageCanvasErrorBoundary } from './StageCanvasErrorBoundary';
 import { StageSlotErrorBoundary } from './StageSlotErrorBoundary';
+import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import {
   getStageRendererFailure,
   getStageRendererFailureServerSnapshot,
@@ -188,6 +189,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   }, [rendererFailure]);
 
   useEffect(() => {
+    // Rung-4 slice A head decomposition: the stage root's mount effect —
+    // the moment the persistent-stage tree is committed and live.
+    stampColdLoadPhaseOnce('stageRootEffectAt', performance.now());
     markWorldStageMounted();
     return () => {
       navigationRef.current = null;
@@ -668,7 +672,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         capabilities: {
           jump: false,
           verticalSwim: false,
-          sprint: false,
+          sprint: true,
           emotes: false,
           interact: false,
           clickPath: false,

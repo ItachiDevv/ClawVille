@@ -25,6 +25,7 @@ import {
   KELP_REALM_PLAYER_SPAWN,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_ROWS,
+  KELP_REALM_SPRINT_SPEED_MULTIPLIER,
   KELP_REALM_BEACON_VISIT_RADIUS_WU,
   KELP_REALM_SPORE_BEACON_IDS,
   KELP_REALM_SPORE_COUNT,
@@ -103,6 +104,9 @@ describe('Kelp Forest realm layout invariants', () => {
 
   test('shares the real movement speed, proximity radius, and entry spawn with the server', () => {
     expect(KELP_REALM_PLAYER_SPEED_WU_PER_SEC).toBe(430);
+    // Pinned to the shared controller's RUN_SPEED_MULT; the web-side
+    // cross-pin lives in player-intent.test.ts.
+    expect(KELP_REALM_SPRINT_SPEED_MULTIPLIER).toBe(2.025);
     expect(KELP_REALM_BEACON_VISIT_RADIUS_WU).toBe(72);
     expect(KELP_REALM_BEACON_VISIT_RADIUS_WU).toBeLessThan(KELP_REALM_CELL_WU / 2);
     expect(KELP_REALM_PLAYER_SPAWN).toEqual({

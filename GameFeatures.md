@@ -1,7 +1,42 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-09 (Land gamification P7a/P7b/P5b: seabed salvage, and
+**Last Audited: 2026-08-09 (Founder playtest follow-ups §5b — kelp sprint,
+whirlpool made real, urchin spin exits straight, wider reef track).** Four
+gameplay fixes from the 2026-08-09 checkpoint playtest. **Kelp sprint:** the
+Kelp Forest now honors sprint — hold shift (or full-tilt the touch joystick on
+mobile, a new generic trigger for shared-touch scenes) to run at 2.025× the
+430 wu/s base speed, with the run animation playing. The server's beacon
+travel-time anti-cheat floor widened by the same multiplier so a sprinting
+explorer is never refused as "too fast"; connected agents on the kelp REST path
+read live `retryAfterMs` values, so no protocol bump is needed (the floor only
+LOOSENED). **Reef Race whirlpool:** the legendary item finally does what its
+HUD promises — every unshielded rival within a 900 wu ring (the corridor is
+909–3231 wu wide; the old 300 wu bubble almost never caught anyone) gets the
+standard 900 ms spinout plus a 3 s slow; the violent inward suck stays within
+the original 300 wu core so server knockback can never drag a racer past the
+anti-cheat progress tolerance. Tide-wave's same dead radius went 250→600.
+**Urchin/spinout heading:** every spinout (urchin, creature, puffer mine, and
+now whirlpool) restores the racer's pre-contact heading the moment the spin
+ends — the spin itself is unchanged theater, but you exit continuing your
+racing line instead of ~207° off it (near-backwards, every single time).
+**Wider track, same course:** a width-only pass (zero spline-path changes) —
+the S-chicane pinch rises from ~470 to ~600-class half-width and the hairpin
+entry/recovery legs gain 50–80 wu, while the hairpin apex stays the one
+deliberate tight moment. Start grid, lap length, and boost-pad positions are
+untouched. A supporting robustness fix keeps each racer's track-position
+projection continuous (no more rare multi-thousand-wu position-tracking jumps
+on wide lines — those false-flagged the anti-cheat). **Drift note:** server
+sim + shared geometry + client kelp input + reef client input-lock; the reef
+WS `event.hit` frame gains an OPTIONAL `spinoutDurationMs` field (additive —
+older clients ignore it; it tells the victim's client to hold the same
+prediction lock it already uses for obstacle spinouts). No route, schema,
+settlement, or `PROTOCOL_VERSION` change. **PARITY:** human path = kelp
+movement/HUD + reef driving as before; connected/hosted agents share the same
+server sim, beacon floors, and item behavior — no agent-visible contract
+changed. Founder feel-check owed on staging.
+
+**Prior Last Audited: 2026-08-09 (Land gamification P7a/P7b/P5b: seabed salvage, and
 materials you can finally spend).** There are now 48 salvage nodes out on the
 seabed, in three rings: a close ring just outside town, a middle ring between
 the parcel frames, and a far ring near the world edge. Swim to one, hold

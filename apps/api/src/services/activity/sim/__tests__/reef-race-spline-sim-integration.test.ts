@@ -141,6 +141,8 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
     // hide. We sample EVERY tick, not just snapshot ticks.
     const maxRegressionByAvatar = new Map<string, number>();
     const lastProgressByAvatar = new Map<string, number>();
+    // Watermark into `events` for the per-tick swap-exemption scan (c).
+    let lastSwapEventScan = 0;
     for (const avatar of ALL_PETS) {
       maxRegressionByAvatar.set(avatar, 0);
       lastProgressByAvatar.set(avatar, 0);
@@ -190,14 +192,35 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
       ticksRun++;
 
       // Check progress regression on every tick — on WHOLE-RACE progress
-      // (lap + within-lap fraction). Two legitimate non-monotonic events on the
-      // closed loop are NOT regressions and must be excluded:
+      // (lap + within-lap fraction). THREE legitimate non-monotonic events on
+      // the closed loop are NOT regressions and must be excluded:
       //   (a) a forward lap wrap (progress 0.99→0.01 WITH lap++), and
       //   (b) the START GUN (progress 0.99→0.01 while lap stays 0 — body started
       //       behind the line).
-      // Both manifest as a totalProgress DROP of ~1.0 in a single tick, which a
-      // legitimately-moving body (≤ ~0.0006 of a loop/tick) can NEVER produce by
-      // going backward. So a drop > 0.5 is a forward wrap, not a regression.
+      //   (c) a RESOLVED rr-current-swap — the item deliberately teleports two
+      //       racers into each other's poses, so the rear-swapped body's
+      //       totalProgress drops by the full gap. The sim's own anti-cheat
+      //       exempts this by re-seeding progress at swap time; this harness
+      //       must apply the same exemption (2026-08-09 — surfaced as flaky
+      //       >0.02 "regressions" once the widened whirlpool spread the field
+      //       and swap gaps grew).
+      // (a)/(b) manifest as a totalProgress DROP of ~1.0 in a single tick, which
+      // a legitimately-moving body (≤ ~0.0006 of a loop/tick) can NEVER produce
+      // by going backward. So a drop > 0.5 is a forward wrap, not a regression.
+      const swapExemptAvatars = new Set<string>();
+      for (let e = lastSwapEventScan; e < events.length; e++) {
+        const event = events[e] as {
+          type: string;
+          phase?: string;
+          attackerAvatarId?: string;
+          victimAvatarId?: string;
+        };
+        if (event.type === 'event.current_swap' && event.phase === 'resolved') {
+          if (event.attackerAvatarId) swapExemptAvatars.add(event.attackerAvatarId);
+          if (event.victimAvatarId) swapExemptAvatars.add(event.victimAvatarId);
+        }
+      }
+      lastSwapEventScan = events.length;
       for (const avatar of ALL_PETS) {
         const body = state.bodies.get(avatar);
         if (!body) continue;
@@ -205,8 +228,18 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
         const curr = totalProgress(body.lap, body.progress);
         let drop = prev - curr;
         if (drop > 0.5) drop = 0; // forward lap/start-gun wrap, not a regression
+        if (swapExemptAvatars.has(avatar)) drop = 0; // (c) resolved swap teleport
         if (drop > maxRegressionByAvatar.get(avatar)!) {
           maxRegressionByAvatar.set(avatar, drop);
+          if (drop > 0.02) {
+            // Forensics for a REAL regression (not a swap): where + state.
+            console.log(
+              `[REGRESS-DIAG] tick=${i} avatar=${avatar} drop=${drop.toFixed(5)} ` +
+              `prev=${prev.toFixed(5)} curr=${curr.toFixed(5)} lap=${body.lap} ` +
+              `t=${body.progress.toFixed(5)} x=${body.x.toFixed(0)} z=${body.z.toFixed(0)} ` +
+              `spin=${body.spinoutUntil} wipe=${body.wipeoutUntil}`,
+            );
+          }
         }
         lastProgressByAvatar.set(avatar, curr);
       }

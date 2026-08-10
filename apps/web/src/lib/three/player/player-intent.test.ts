@@ -22,12 +22,14 @@ import {
   type PlayerCapabilityControllerConfig,
   type PlayerControllerFrameState,
 } from './player-capability-controller';
+import { KELP_REALM_SPRINT_SPEED_MULTIPLIER } from '@clawville/shared';
 import {
   attachPlayerKeyListeners,
   playerKeyState,
   playerTouchState,
   resetPlayerKeys,
   resetPlayerTouch,
+  RUN_SPEED_MULT,
   setPlayerTouchCamera,
   setPlayerTouchMove,
 } from './player-input';
@@ -320,6 +322,27 @@ describe('derivePlayerFrameIntent', () => {
       running: false,
       speedMultiplier: 1,
     });
+  });
+
+  test('shared-touch full tilt sprints under the same threshold; store-joystick scenes ignore touch', () => {
+    setPlayerTouchMove(0.71, 0);
+    expect(derive({ policy: KELP_POLICY.input }).move).toMatchObject({
+      running: true,
+      speedMultiplier: RUN_SPEED_MULT,
+    });
+    setPlayerTouchMove(0.69, 0);
+    expect(derive({ policy: KELP_POLICY.input }).move).toMatchObject({
+      running: false,
+      speedMultiplier: 1,
+    });
+    setPlayerTouchMove(1, 0);
+    // WORLD policy does not read shared touch: no movement, no sprint.
+    expect(derive().move.running).toBe(false);
+    resetPlayerTouch();
+  });
+
+  test('kelp server speed-gate multiplier matches the controller sprint multiplier', () => {
+    expect(KELP_REALM_SPRINT_SPEED_MULTIPLIER).toBe(RUN_SPEED_MULT);
   });
 
   test('sprint false suppresses keyboard and joystick triggers', () => {

@@ -575,13 +575,55 @@ export class ReefSpline {
    * (4×REEF_BODY_RADIUS) of itself, the coarse scan places Newton in the
    * correct basin. 6 iterations give < 0.01 wu error.
    *
+   * CONTINUITY WINDOW (2026-08-09, added with the track widen pass): a GLOBAL
+   * coarse scan re-decides the basin from scratch every call, so a body riding
+   * far laterally in a curved region (or between near passes) can see its
+   * projection JUMP thousands of wu between consecutive ticks — observed as
+   * 0.03-lap progress "regressions" and wrong-leg wall clamps once the track
+   * widened. Callers tracking a body tick-to-tick pass `opts.nearT` (last
+   * projection) + `opts.windowArcWu`: the coarse scan then PREFERS LUT samples
+   * within the arc window (cyclic in closed mode) and the Newton result is
+   * clamped to the window, keeping the projection CONTINUOUS where competing
+   * basins are nearly equidistant (the instability class). LEGITIMATE discontinuities
+   * (a teleport/swap that moves the body far from its old basin) escape via
+   * `escapeHysteresisWu`: the same scan also tracks the GLOBAL best, and when
+   * the global basin is closer by MORE than the hysteresis, the search accepts
+   * it unwindowed. Near-equidistant flips (a few wu apart) can never clear a
+   * few-hundred-wu hysteresis, so the two failure modes are cleanly separated.
+   * Omit opts for the original global search (spawn seeding, editor queries,
+   * one-shot lookups).
+   *
    * @param p  Query XZ position (wu).
+   * @param opts  Optional projection-continuity window (see above).
    * @returns  Closest point with t, unsigned distance, side, closestX/Z.
    */
-  public closestPointOnSpline(p: Vec2): ClosestPointResult {
-    // ── Step 1: Coarse scan ─────────────────────────────────────────────
+  public closestPointOnSpline(
+    p: Vec2,
+    opts?: {
+      readonly nearT: number;
+      /**
+       * Window half-width in ARC LENGTH (wu), not t: arc-per-t varies with
+       * the centripetal knot spacing (long-chord segments pack 2-3× the arc
+       * into the same Δt), so only an arc-space window gives callers a
+       * uniform bound on how far the projection can move per call.
+       */
+      readonly windowArcWu: number;
+      readonly escapeHysteresisWu?: number;
+    },
+  ): ClosestPointResult {
+    // ── Step 1: Coarse scan (windowed + global tracked in one pass) ─────
+    const windowed = opts !== undefined && opts.windowArcWu > 0;
+    const nearS = windowed
+      ? this.arclengthFromT(
+          this.closed
+            ? wrap01(opts.nearT)
+            : Math.max(0, Math.min(1, opts.nearT)),
+        )
+      : 0;
     let bestT = 0;
-    let bestDistSq = Infinity;
+    let bestDistSq = Infinity;          // global best
+    let windowBestT = Number.NaN;
+    let windowBestDistSq = Infinity;    // best within the window
 
     for (let i = 0; i < this.lut.length; i++) {
       const sample = this.lut[i];
@@ -591,6 +633,39 @@ export class ReefSpline {
       if (dsq < bestDistSq) {
         bestDistSq = dsq;
         bestT = sample.t;
+      }
+      if (windowed) {
+        let ds = Math.abs(sample.s - nearS);
+        if (this.closed) ds = Math.min(ds, this.totalArcLength - ds); // cyclic
+        if (ds <= opts.windowArcWu && dsq < windowBestDistSq) {
+          windowBestDistSq = dsq;
+          windowBestT = sample.t;
+        }
+      }
+    }
+
+    let clampToWindow = false;
+    if (windowed) {
+      if (Number.isNaN(windowBestT)) {
+        // Degenerate: window narrower than one LUT step — seed at nearT.
+        windowBestT = this.closed
+          ? wrap01(opts.nearT)
+          : Math.max(0, Math.min(1, opts.nearT));
+        windowBestDistSq = Infinity;
+      }
+      const hysteresis = opts.escapeHysteresisWu ?? 0;
+      const globalDist = Math.sqrt(bestDistSq);
+      const windowDist = Math.sqrt(windowBestDistSq);
+      if (
+        hysteresis > 0 &&
+        Number.isFinite(windowDist) &&
+        globalDist + hysteresis < windowDist
+      ) {
+        // Teleport escape: the body is DECISIVELY closer to another basin.
+        // Accept the global result unwindowed.
+      } else {
+        bestT = windowBestT;
+        clampToWindow = true;
       }
     }
 
@@ -642,6 +717,32 @@ export class ReefSpline {
         t = Math.max(0, Math.min(1, t - dt));
 
         if (Math.abs(dt) < NEWTON_TOLERANCE) break;
+      }
+    }
+
+    // ── Step 2b: Window clamp (arc space) ───────────────────────────────
+    // Newton is only LOCALLY convergent — at an ill-conditioned query (body
+    // near a curvature center) a tiny f' produces a huge step that can land
+    // far away (even a different perpendicular root on the SAME curve),
+    // defeating the continuity window. When the windowed seed was chosen,
+    // the refined result may not leave the arc window.
+    if (clampToWindow && opts) {
+      const resultS = this.arclengthFromT(t);
+      let ds = resultS - nearS;
+      if (this.closed) {
+        // Shortest signed cyclic arc delta in (-L/2, L/2].
+        const L = this.totalArcLength;
+        ds = ds - Math.round(ds / L) * L;
+      }
+      if (Math.abs(ds) > opts.windowArcWu) {
+        let clampedS = nearS + Math.sign(ds) * opts.windowArcWu;
+        if (this.closed) {
+          const L = this.totalArcLength;
+          clampedS = ((clampedS % L) + L) % L;
+        } else {
+          clampedS = Math.max(0, Math.min(this.totalArcLength, clampedS));
+        }
+        t = this.tFromArclength(clampedS);
       }
     }
 

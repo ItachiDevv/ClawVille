@@ -169,10 +169,17 @@ export function derivePlayerFrameIntent(
   const joystickMagnitude = input.policy.readsStoreJoystick
     ? Math.hypot(input.storeJoystick.x, input.storeJoystick.y)
     : 0;
+  // Shared-touch scenes (kelp) have no store joystick; a full-tilt touch
+  // joystick is their sprint trigger, mirroring the store-joystick threshold.
+  const touchMagnitude = input.policy.readsSharedTouch
+    ? Math.hypot(playerTouchState.moveX, playerTouchState.moveZ)
+    : 0;
   const running =
     input.capabilities.sprint &&
     moving &&
-    (keys.shift || joystickMagnitude > RUN_JOYSTICK_THRESHOLD);
+    (keys.shift ||
+      joystickMagnitude > RUN_JOYSTICK_THRESHOLD ||
+      touchMagnitude > RUN_JOYSTICK_THRESHOLD);
   const inputAirborne =
     input.capabilities.jump &&
     (input.jumpPhase !== 'grounded' || input.playerAltitude > 0);

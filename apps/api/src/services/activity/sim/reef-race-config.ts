@@ -1389,8 +1389,30 @@ export function buildSplineBoostPads(): SplineBoostPad[] {
 
 /** Radius (wu) within which a dropped ink-slick catches rivals BEHIND the user. */
 export const INK_SLICK_RADIUS = 260;
-/** Radius (wu) of the whirlpool rival-knock AoE. */
-export const WHIRLPOOL_RADIUS = 300;
+/**
+ * Radius (wu) of the whirlpool rival-knock AoE.
+ * 300 → 900 (founder playtest 2026-08-09 "whirlpool items don't seem to really
+ * work"): the corridor is 909–3231 wu across (track-layout halfWidth
+ * 454.6–1615.6) and at REEF_MAX_SPEED 1300 a 300 wu bubble is ~0.23 s of
+ * travel — rivals were essentially never inside it. 900 covers the full
+ * corridor at its tightest point.
+ */
+export const WHIRLPOOL_RADIUS = 900;
+/**
+ * Radius (wu) of the whirlpool's inward PULL (unchanged from the original 300
+ * AoE). Deliberately much tighter than WHIRLPOOL_RADIUS: at 900 the pull
+ * dragged victims backward along the track beyond the 0.02-lap anti-cheat
+ * progress-regression tolerance (integration test bisected 2026-08-09). The
+ * 900 ring delivers the advertised spinout + slow; only the 300 core also
+ * yanks bodies toward the vortex.
+ */
+export const WHIRLPOOL_PULL_RADIUS = 300;
+/**
+ * Radius (wu) of the tide-wave proximity slow. Same dead-radius class as the
+ * pre-2026-08-09 whirlpool (was a hardcoded 250 in the sim); 600 makes the
+ * rare item land without matching the legendary whirlpool's reach.
+ */
+export const TIDE_WAVE_RADIUS = 600;
 /** Peak inward pull speed (wu/s) applied to a rival at the whirlpool center. */
 export const WHIRLPOOL_PULL_IMPULSE = REEF_MAX_SPEED * 0.5; // 650 wu/s @ cap 1300
 /**

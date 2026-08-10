@@ -128,6 +128,8 @@ import {
   BOOST_PAD_DURATION_MS,
   // v2 mechanics — item fixes (ink-slick rival slow, whirlpool rival knock)
   INK_SLICK_RADIUS,
+  TIDE_WAVE_RADIUS,
+  WHIRLPOOL_PULL_RADIUS,
   WHIRLPOOL_RADIUS,
   WHIRLPOOL_PULL_IMPULSE,
   WHIRLPOOL_SLOW_MULT,
@@ -228,6 +230,28 @@ const WALL_WIPEOUT_DAMPING = 0.75;
 const WALL_RESPAWN_SPEED = REEF_MAX_SPEED * 0.10;
 const OBSTACLE_SPINOUT_MS = 900;
 const OBSTACLE_SPIN_RATE = Math.PI * 3.5;
+/**
+ * Projection-continuity window (ARC wu) for per-body closest-point tracking
+ * (resolveProgress + wall clamp). The documented per-tick displacement budget
+ * (Codex R19 round-2 accounting): intent integration ≤ ~80 wu at the clamped
+ * 2405 wu/s velocity cap, plus post-integrate mutations — up to two wall-clamp
+ * spring passes at WALL_MAX_CORRECTION_WU each (~240 wu) and up to seven
+ * proximity-separation pushes (~210 wu) — a HARD worst case near ~530 wu.
+ * 800 gives ~1.5× headroom over that budget, while the projection can still
+ * move at most 800/95 741 ≈ 0.0084 of a lap per tick — well under the 0.02
+ * anti-cheat regression tolerance. (First attempt used a t-space window;
+ * arc-per-t varies ~3× with centripetal knot spacing, which let clamped
+ * slides still exceed tolerance.)
+ */
+const PROGRESS_PROJECTION_WINDOW_ARC_WU = 800;
+/**
+ * Teleport-escape hysteresis (wu) for the windowed projection: when another
+ * basin is closer than the windowed one by MORE than this, the body genuinely
+ * moved (test harness placement, current-swap position exchange) and the
+ * search follows it. Near-equidistant basin flips — the instability the
+ * window exists to prevent — differ by a few wu and can never clear this.
+ */
+const PROJECTION_ESCAPE_HYSTERESIS_WU = 500;
 const OBSTACLE_CONTACT_COOLDOWN_MS = 1_500;
 const OBSTACLE_SLOW_MS = 1_200;
 const RIP_CURRENT_REFRESH_MS = 200;
@@ -373,6 +397,14 @@ interface SplineBody {
   /** R18c brief obstacle control-loss, deliberately not a full wipeout. */
   spinoutUntil: number;
   spinoutDirection: -1 | 1;
+  /**
+   * Heading at the moment the CURRENT spinout started (founder 2026-08-09):
+   * the spin is disorientation theater — the racer must exit facing exactly
+   * where they were headed at contact, so applyIntentForTick restores this on
+   * the tick the spinout expires. Captured only on a FRESH spinout (a
+   * re-trigger mid-spin keeps the original entry heading).
+   */
+  spinoutEntryRot: number;
   /** Server-internal bot catch-up multiplier; never accepted from WS input. */
   botOverdrive: number;
 
@@ -807,6 +839,7 @@ export class ReefRaceSplineSim {
         wallSlamCooldownUntil: 0,
         spinoutUntil: 0,
         spinoutDirection: 1,
+        spinoutEntryRot: 0,
         botOverdrive: 1,
         intent: {
           dir: null,
@@ -1361,6 +1394,11 @@ export class ReefRaceSplineSim {
     }
 
     if (body.remoraUntilMs > now) {
+      // Remora OWNS rot (centerline autopilot below). A spinout that was
+      // active when the rocket started must not survive it: the deferred
+      // heading restore would fire seconds later at a different track
+      // location and snap the racer to a stale heading (Codex R19 finding 1).
+      body.spinoutUntil = 0;
       body.pendingPowerUpSlots.length = 0;
       body.speedMod = 1.85;
       const current = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
@@ -1423,7 +1461,17 @@ export class ReefRaceSplineSim {
       body.z += body.vz * dt;
       return;
     }
-    if (body.spinoutUntil !== 0) body.spinoutUntil = 0;
+    if (body.spinoutUntil !== 0) {
+      // Spinout just expired: restore the pre-contact heading (founder
+      // 2026-08-09 — OBSTACLE_SPIN_RATE × OBSTACLE_SPINOUT_MS is not a whole
+      // number of turns, so racers exited ~207° off the racing line, nearly
+      // backwards, every single time). Velocity was only damped during the
+      // spin, never rotated, so restoring rot re-agrees heading with momentum
+      // and the racing line continues. Wipeout/respawn paths zero spinoutUntil
+      // directly and set their own rot, so this restore never fires there.
+      body.rot = body.spinoutEntryRot;
+      body.spinoutUntil = 0;
+    }
 
     const intent = body.intent;
 
@@ -1790,6 +1838,7 @@ export class ReefRaceSplineSim {
           expiresAt: Math.max(existingSlow?.expiresAt ?? 0, now + OBSTACLE_SLOW_MS),
           mult: 1 + HAZARD_SLOW_MULT,
         });
+        if (body.spinoutUntil <= now) body.spinoutEntryRot = body.rot;
         body.spinoutUntil = now + OBSTACLE_SPINOUT_MS;
         body.spinoutDirection = ((body.avatarId.length + obstacle.id.length) & 1) === 0 ? -1 : 1;
         body.vx *= 0.72;
@@ -1897,7 +1946,21 @@ export class ReefRaceSplineSim {
     body: SplineBody,
     reflectVelocity = true,
   ): void {
-    const closest = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
+    // Same projection-continuity window as resolveProgress: an unseeded scan
+    // here could pick the OTHER leg of a near pass and clamp the body toward
+    // the wrong corridor entirely.
+    const closest = state.spline.closestPointOnSpline(
+      { x: body.x, z: body.z },
+      body.progressInitialized
+        ? {
+            nearT: state.spline.tFromArclength(
+              body.progress * state.spline.totalArcLength,
+            ),
+            windowArcWu: PROGRESS_PROJECTION_WINDOW_ARC_WU,
+            escapeHysteresisWu: PROJECTION_ESCAPE_HYSTERESIS_WU,
+          }
+        : undefined,
+    );
     const halfW = state.spline.widthAt(closest.t);
     if (closest.distance <= halfW) return; // inside corridor, no-op
 
@@ -2014,8 +2077,26 @@ export class ReefRaceSplineSim {
         body.wipeoutUntil !== null
       ) continue;
 
-      const closest = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
+      // Projection-continuity window (2026-08-09, with the track widen pass):
+      // seed the closest-point search from the body's LAST projection so a
+      // body riding a wide inside line can never see its projection jump a
+      // multi-thousand-wu basin in one tick (observed 0.03-lap "regressions"
+      // that would false-flag the anti-cheat). The window comfortably exceeds
+      // the documented ~530 wu worst-case per-tick displacement (intent +
+      // wall-spring passes + proximity pushes — see the constant's docblock),
+      // so every legitimate motion, including whirlpool knockback, stays
+      // inside it. First sample stays GLOBAL (spawn seeding).
       const total = state.spline.totalArcLength;
+      const closest = state.spline.closestPointOnSpline(
+        { x: body.x, z: body.z },
+        body.progressInitialized
+          ? {
+              nearT: state.spline.tFromArclength(body.progress * total),
+              windowArcWu: PROGRESS_PROJECTION_WINDOW_ARC_WU,
+              escapeHysteresisWu: PROJECTION_ESCAPE_HYSTERESIS_WU,
+            }
+          : undefined,
+      );
       const arcS = state.spline.arclengthFromT(closest.t);
       const newProgress = total > 0 ? arcS / total : 0;
 
@@ -2734,7 +2815,9 @@ export class ReefRaceSplineSim {
     src: SplineBody,
     addSlow: (id: string, factor: number) => void,
   ): void {
-    const radius = 250;
+    // Was a hardcoded 250 — the same dead-radius class as the pre-2026-08-09
+    // whirlpool (corridor is 909–3231 wu across; see TIDE_WAVE_RADIUS).
+    const radius = TIDE_WAVE_RADIUS;
     for (const target of state.bodies.values()) {
       if (target.avatarId === src.avatarId) continue;
       if (
@@ -2891,6 +2974,10 @@ export class ReefRaceSplineSim {
         !target.alive || target.dnf || target.finishedAt !== null ||
         target.wipeoutUntil !== null
       ) continue;
+      // A remora-rocketing rival is untouchable (same rule as puffer mines):
+      // remora OWNS rot on the autopilot, so a spinout applied under it would
+      // strand a stale deferred heading restore (Codex R19 finding 1).
+      if (target.remoraUntilMs > now) continue;
       if (target.activeEffects.has('rr-bubble-shield')) continue;
       // Vector points FROM the rival TOWARD the whirlpool center (pull inward).
       const dx = src.x - target.x;
@@ -2898,15 +2985,38 @@ export class ReefRaceSplineSim {
       const dist = Math.hypot(dx, dz);
       if (dist > WHIRLPOOL_RADIUS) continue;
       const falloff = 1 - dist / WHIRLPOOL_RADIUS;
-      const mag = Math.max(dist, 1);
-      const pull =
-        WHIRLPOOL_PULL_IMPULSE * falloff * target.mults.knockbackResistMult;
-      addImpulse(target.avatarId, (dx / mag) * pull, (dz / mag) * pull);
+      // The violent inward pull stays inside the tight 300 wu core: at the
+      // full 900 wu ring it dragged victims backward past the 0.02-lap
+      // anti-cheat progress tolerance (2026-08-09 bisect). Spin + slow are
+      // the wide-ring payload; the pull is close-quarters flavor.
+      if (dist <= WHIRLPOOL_PULL_RADIUS) {
+        const pullFalloff = 1 - dist / WHIRLPOOL_PULL_RADIUS;
+        const mag = Math.max(dist, 1);
+        const pull =
+          WHIRLPOOL_PULL_IMPULSE * pullFalloff * target.mults.knockbackResistMult;
+        addImpulse(target.avatarId, (dx / mag) * pull, (dz / mag) * pull);
+      }
       // Brief slow — stored as a multiplier; applyIntentForTick reads (mult - 1).
       target.activeBoosts.set('hazard-slow', {
         expiresAt: now + def.effectMs,
         mult: 1 + WHIRLPOOL_SLOW_MULT,
       });
+      // The ADVERTISED effect (HUD "Spin nearby rivals · 3s", toast
+      // "WHIRLPOOL SPINOUT!") — previously never applied: the item only
+      // pulled + slowed, so even a landing whirlpool read as a no-op
+      // (founder playtest 2026-08-09). Standard OBSTACLE_SPINOUT_MS spin
+      // (same as urchin/puffer, heading restored on expiry); the 3 s
+      // hazard-slow above carries the rest of the advertised duration.
+      // Entry heading AND direction are captured only on a FRESH spinout,
+      // and the direction parity uses only the TARGET + the shared sim
+      // clock — so two same-tick whirlpools from different sources produce
+      // identical state regardless of resolution order (Codex R19 finding 3).
+      if (target.spinoutUntil <= now) {
+        target.spinoutEntryRot = target.rot;
+        target.spinoutDirection =
+          ((target.avatarId.length + now) & 1) === 0 ? -1 : 1;
+      }
+      target.spinoutUntil = now + OBSTACLE_SPINOUT_MS;
       this.broadcastFn(state.roomId, {
         type: 'event.hit',
         srcAvatarId: src.avatarId,
@@ -2915,6 +3025,9 @@ export class ReefRaceSplineSim {
         itemKind: 'rr-whirlpool',
         position: { x: target.x, y: target.z },
         power: falloff,
+        // Victim's client must enter the obstacle-spinout prediction lock —
+        // the server ignores its input for this window (Codex R19 finding 2).
+        spinoutDurationMs: OBSTACLE_SPINOUT_MS,
       });
     }
   }
@@ -2949,6 +3062,7 @@ export class ReefRaceSplineSim {
         mine.active = false;
         const blocked = target.activeEffects.has('rr-bubble-shield');
         if (!blocked) {
+          if (target.spinoutUntil <= now) target.spinoutEntryRot = target.rot;
           target.spinoutUntil = now + OBSTACLE_SPINOUT_MS;
           target.spinoutDirection = (lcgNext(state) & 1) === 0 ? -1 : 1;
           const existing = target.activeBoosts.get('hazard-slow');
@@ -2964,6 +3078,9 @@ export class ReefRaceSplineSim {
             itemKind: 'rr-puffer-mine',
             position: { x: target.x, y: target.z },
             power: 1,
+            // Same prediction-lock contract as the whirlpool hit (Codex R19
+            // finding 2 — puffer had this defect pre-existing).
+            spinoutDurationMs: OBSTACLE_SPINOUT_MS,
           });
         }
         this.broadcastFn(state.roomId, {
@@ -3005,15 +3122,28 @@ export class ReefRaceSplineSim {
         progress: attacker.progress, lap: attacker.lap,
         startCrossed: attacker.startCrossed, lastLapAt: attacker.lastLapAt,
         currentLapFrames: attacker.currentLapFrames,
+        // Spinout state travels WITH the pose (Codex R19 finding 1): a
+        // mid-spin swap that left the spin fields behind would later restore
+        // a heading captured at the OTHER track location, disagreeing with
+        // the received velocity.
+        spinoutUntil: attacker.spinoutUntil,
+        spinoutDirection: attacker.spinoutDirection,
+        spinoutEntryRot: attacker.spinoutEntryRot,
       };
       attacker.x = victim.x; attacker.z = victim.z; attacker.vx = victim.vx; attacker.vz = victim.vz;
       attacker.rot = victim.rot; attacker.progress = victim.progress; attacker.prevProgress = victim.progress;
       attacker.lap = victim.lap; attacker.startCrossed = victim.startCrossed; attacker.lastLapAt = victim.lastLapAt;
       attacker.currentLapFrames = victim.currentLapFrames;
+      attacker.spinoutUntil = victim.spinoutUntil;
+      attacker.spinoutDirection = victim.spinoutDirection;
+      attacker.spinoutEntryRot = victim.spinoutEntryRot;
       victim.x = attackerPose.x; victim.z = attackerPose.z; victim.vx = attackerPose.vx; victim.vz = attackerPose.vz;
       victim.rot = attackerPose.rot; victim.progress = attackerPose.progress; victim.prevProgress = attackerPose.progress;
       victim.lap = attackerPose.lap; victim.startCrossed = attackerPose.startCrossed; victim.lastLapAt = attackerPose.lastLapAt;
       victim.currentLapFrames = attackerPose.currentLapFrames;
+      victim.spinoutUntil = attackerPose.spinoutUntil;
+      victim.spinoutDirection = attackerPose.spinoutDirection;
+      victim.spinoutEntryRot = attackerPose.spinoutEntryRot;
       this.broadcastFn(state.roomId, {
         type: 'event.current_swap', phase: 'resolved', attackerAvatarId: attacker.avatarId,
         victimAvatarId: victim.avatarId, resolvesAtMs: pending.resolvesAtMs,
