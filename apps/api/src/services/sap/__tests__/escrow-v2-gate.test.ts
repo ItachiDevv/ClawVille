@@ -63,6 +63,7 @@ let createCoverageCalls = 0;
 let depositCoverageCalls = 0;
 let createCoverageOutcome: Record<string, unknown> | null = null;
 let depositCoverageOutcome: Record<string, unknown> | null = null;
+let createOutcome: Record<string, unknown>;
 let settleOutcome: Record<string, unknown>;
 let finalizeOutcome: Record<string, unknown>;
 // R7-1 — capture the last settle-executor input so a test can assert the send is PINNED to
@@ -265,9 +266,11 @@ mock.module('../sap-client', () => ({
   },
   createEscrowV2Usdc: async () => {
     createCalls += 1;
-    return dryRunSuccess({ escrow: ESCROW });
+    return createOutcome;
   },
   depositEscrowV2Usdc: async () => dryRunSuccess({ escrow: ESCROW }),
+  prepareWithdrawEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  sendPreparedSapTransaction: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   // V2 self-custody withdraw — NOT exercised by this file (covered by
   // escrow-v2-deposit-withdraw.test.ts). Stubbed only so escrow-gate's named import
   // resolves under this partial sap-client mock: the ae21f753 merge added the
@@ -383,6 +386,7 @@ beforeEach(() => {
   depositCoverageCalls = 0;
   createCoverageOutcome = null;
   depositCoverageOutcome = null;
+  createOutcome = dryRunSuccess({ escrow: ESCROW });
   settleOutcome = dryRunSuccess({ escrow: ESCROW, settlementIndex: '7' });
   finalizeOutcome = dryRunSuccess({ escrow: ESCROW });
   lastSettleInput = null;
@@ -462,6 +466,36 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(createCoverageCalls).toBe(1);
     expect(rows).toHaveLength(0);
     expect(createCalls).toBe(0);
+  });
+
+  it('a confirmed-reverted create restores retryability and surfaces the typed chain error', async () => {
+    createOutcome = {
+      ok: false,
+      code: 'escrow_expired',
+      message: 'create confirmed reverted: escrow expired',
+      broadcast: true,
+      landed: 'confirmed_reverted',
+      signature: 'create-revert-signature',
+    };
+
+    const result = await gate.openEscrowV2({
+      depositorAvatarId: DEPOSITOR,
+      workerAvatarId: WORKER,
+      jobId: 'job-create-reverted',
+      escrowNonce: 10n,
+      pricePerCall: 1_000_000n,
+      maxCalls: 5n,
+      initialDeposit: 5_050_000n,
+      expiresAt: 0n,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'escrow_expired',
+      message: 'create confirmed reverted: escrow expired',
+    });
+    expect(rows).toHaveLength(0);
+    expect(createCalls).toBe(1);
   });
 
   it('runs a definite top-up cap refusal before adding a sibling ledger job', async () => {
@@ -682,7 +716,35 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(2);
   });
 
-  it('L-2 — a GENERIC broadcast:UNKNOWN settle failure is UNCHANGED: quarantines settle_unknown (reservation KEPT, never auto-retried)', async () => {
+  it('B2 — a CONFIRMED Custom(6076) revert restores retryable state and returns escrow_expired', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    settleOutcome = {
+      ok: false,
+      code: 'escrow_expired',
+      message: 'SAP settleCallsV2Usdc:reverted rejected on-chain (error 6076)',
+      broadcast: true,
+      landed: 'confirmed_reverted',
+      signature: 'confirmed-revert-6076',
+    };
+
+    const result = await gate.settleJobV2({
+      escrowPda: ESCROW,
+      jobId: 'job-1',
+      callerAvatarId: WORKER,
+      callsToSettle: 1n,
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'escrow_expired' });
+    expect(rows[0]?.status).toBe('open');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('0');
+    expect(rows[0]?.feeAmount).toBe('0');
+    expect(rows[0]?.settleSignature).toBeNull();
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleLandingDisposition)
+      .toBe('confirmed_reverted');
+  });
+
+  it('B1 — a post-sign send exception classified broadcast:unknown books settle_unknown, never retryable restore', async () => {
     rows = [baseRow()];
     await persistApproval();
     // broadcast:true — the settle tx MAY have landed. This arm is byte-identical to the
@@ -1132,6 +1194,35 @@ describe('SAP V2 gate — two-phase USDC release', () => {
       callerAvatarId: STRANGER,
     });
     expect(result.ok).toBe(false);
+    expect(rows[0]?.status).toBe('pending');
+    expect(finalizeCalls).toBe(1);
+  });
+
+  it('a confirmed-reverted finalize restores pending and surfaces the typed chain error', async () => {
+    rows = [baseRow({
+      status: 'pending',
+      settlementIndex: '7',
+      reservedPrincipalAmount: '1000000',
+      callsSettled: '1',
+    })];
+    finalizeOutcome = {
+      ok: false,
+      code: 'escrow_expired',
+      message: 'finalize confirmed reverted: escrow expired',
+      broadcast: true,
+      landed: 'confirmed_reverted',
+      signature: 'finalize-revert-signature',
+    };
+    const result = await gate.finalizeJobV2({
+      escrowPda: ESCROW,
+      jobId: 'job-1',
+      callerAvatarId: STRANGER,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'escrow_expired',
+      message: 'finalize confirmed reverted: escrow expired',
+    });
     expect(rows[0]?.status).toBe('pending');
     expect(finalizeCalls).toBe(1);
   });

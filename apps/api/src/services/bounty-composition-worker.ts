@@ -24,12 +24,15 @@
  * layer only adds the once-only bookkeeping on top.
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   db,
   bounties,
   bountyAttempts,
   bountyReputation,
   covenantActionRecords,
+  sapEscrowSettlements,
+  sapEscrowWithdrawals,
   eq,
   and,
   sql,
@@ -44,6 +47,10 @@ import {
 import { alertError } from './alert-error';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { enqueueBountyReputation } from './sap/sap-reputation-writer';
+import {
+  inspectCapturedSapTransaction,
+  type SapCapturedTransactionInspection,
+} from './sap/sap-client';
 
 /**
  * A DB transaction handle (mirrors `LedgerTx` in `claw-token-ledger.ts`). Lets
@@ -175,6 +182,7 @@ export async function bookComposedBountyPaid(
           eq(bounties.id, input.bountyId),
           // CAS on the OBSERVED prior + belt-and-braces never-from-paid.
           eq(bounties.compositionState, input.expectedPriorState),
+          eq(bounties.status, 'open'),
           ne(bounties.compositionState, 'paid'),
         ),
       )
@@ -383,13 +391,19 @@ export async function applyComposedSettleOutcome(
  * is a refund-path row the crank must never settle. See the crank header for the full
  * provenance + double-book/double-pay argument.
  */
-const RESUMABLE_STATES = ['awaiting_finalize', 'reconcile_payout_failed', 'vault_held'] as const;
+const RESUMABLE_STATES = [
+  'awaiting_finalize',
+  'reconcile_payout_failed',
+  'vault_held',
+  'reconcile_refund_unknown',
+] as const;
 
 interface ResumeContext {
   compositionState: string | null;
   escrowPda: string | null;
   creatorAvatarId: string;
   hunterAvatarId: string | null;
+  approvedAttemptId: string | null;
   tokenReward: number;
   expiresAt: Date | null;
   expiryRefundRequested: boolean;
@@ -412,7 +426,7 @@ async function loadResumeContext(bountyId: string): Promise<ResumeContext | null
   // The winning hunter is the single approved attempt (a composed bounty is a
   // maxAttempts=1 single-call escrow; the approve route auto-rejects the rest).
   const [attempt] = await db
-    .select({ hunterId: bountyAttempts.hunterId })
+    .select({ id: bountyAttempts.id, hunterId: bountyAttempts.hunterId })
     .from(bountyAttempts)
     .where(
       and(
@@ -421,7 +435,11 @@ async function loadResumeContext(bountyId: string): Promise<ResumeContext | null
           ${bountyAttempts.status} = 'approved'
           OR (
             ${bountyAttempts.status} = 'rejected'
-            AND ${bountyAttempts.reviewNote} = 'Auto-rejected: bounty escrow expired and was refund-routed to the creator'
+            AND ${bountyAttempts.reviewNote} IN (
+              'Auto-rejected: typed on-chain escrow expiry claimed for creator refund',
+              'Auto-rejected: typed on-chain escrow expiry refunded to the creator',
+              'Auto-rejected: typed on-chain escrow expiry refund requires reconciliation'
+            )
           )
         )`,
       ),
@@ -435,6 +453,7 @@ async function loadResumeContext(bountyId: string): Promise<ResumeContext | null
   return {
     ...row,
     hunterAvatarId: attempt?.hunterId ?? null,
+    approvedAttemptId: attempt?.id ?? null,
     expiryRefundRequested: Boolean(expiryIntent),
   };
 }
@@ -447,42 +466,266 @@ export interface ResumeComposedBountyDeps extends ApplyComposedDeps {
   /** Test seam — the persistent-wedge alert emitter (default: `alertError`). */
   alertError?: typeof alertError;
   refundExpired?: typeof refundExpiredComposedBounty;
+  expiryRefundDeps?: ExpiryRefundDeps;
+  reconcileRefund?: typeof reconcileExpiryRefundUnknown;
+  refundReconcileDeps?: ReconcileExpiryRefundDeps;
   now?: () => Date;
 }
 
 export function isEscrowExpiredFailure(
   failure: Pick<Extract<SettleComposedBountyResult, { ok: false }>, 'code' | 'message'>,
 ): boolean {
-  return (
-    String(failure.code) === '6076' ||
-    /(?:custom program error:\s*0x17bc|\b6076\b|EscrowExpired)/i.test(failure.message)
-  );
+  return failure.code === 'escrow_expired';
 }
 
-async function refundExpiredComposedBounty(ctx: ResumeContext & {
+const EXPIRY_REFUND_CLAIM_NOTE =
+  'Auto-rejected: typed on-chain escrow expiry claimed for creator refund';
+const EXPIRY_REFUND_CONFIRMED_NOTE =
+  'Auto-rejected: typed on-chain escrow expiry refunded to the creator';
+const EXPIRY_REFUND_RECONCILE_NOTE =
+  'Auto-rejected: typed on-chain escrow expiry refund requires reconciliation';
+const EXPIRY_REFUND_CLAIM_LEASE_MS = 10 * 60 * 1000;
+
+type SapRefundPriorStatus = 'open' | 'submitted';
+
+export type ExpiryRefundClaim =
+  | {
+      kind: 'claimed';
+      priorSapStatus: SapRefundPriorStatus;
+      ownerToken: string;
+      replay: boolean;
+    }
+  | {
+      kind: 'winner';
+      winner:
+        | 'paid'
+        | 'refunded'
+        | 'refund_reconcile'
+        | 'refund_in_progress'
+        | 'state_drift';
+      signature?: string;
+    };
+
+export type ExpiryRefundResult =
+  | { ok: true; phase: 'refunded'; message: string; signature?: string }
+  | { ok: true; phase: 'superseded_paid'; message: string }
+  | {
+      ok: false;
+      phase: 'refund_failed';
+      code: 'refund_failed';
+      causeCode?: string;
+      retryable: true;
+      message: string;
+    }
+  | {
+      ok: false;
+      phase: 'refund_in_progress';
+      code: 'refund_in_progress';
+      retryable: true;
+      message: string;
+    }
+  | {
+      ok: false;
+      phase: 'refund_reconcile';
+      code: 'refund_reconcile_required';
+      causeCode?: string;
+      retryable: false;
+      signature?: string;
+      message: string;
+    };
+
+type ExpiryRefundContext = ResumeContext & {
   bountyId: string;
   escrowPda: string;
-}): Promise<{ ok: boolean; code?: string; message: string; signature?: string }> {
-  await db.transaction(async (tx) => {
-    const refundedAt = new Date();
-    await tx
-      .update(bounties)
-      .set({ status: 'cancelled', covenantVerificationPassed: false, updatedAt: refundedAt })
-      .where(eq(bounties.id, ctx.bountyId));
-    await tx
-      .update(bountyAttempts)
+};
+
+export interface ExpiryRefundDeps {
+  claim?: (ctx: ExpiryRefundContext, ownerToken: string) => Promise<ExpiryRefundClaim>;
+  refundComposed?: typeof refundComposedBounty;
+  finishConfirmed?: (
+    ctx: ExpiryRefundContext,
+    signature: string | undefined,
+    ownerToken: string,
+  ) => Promise<void>;
+  restoreRetryable?: (
+    ctx: ExpiryRefundContext,
+    priorSapStatus: SapRefundPriorStatus,
+    ownerToken: string,
+  ) => Promise<void>;
+  markReconcile?: (
+    ctx: ExpiryRefundContext,
+    signature: string | undefined,
+    causeCode: string,
+    ownerToken: string,
+  ) => Promise<void>;
+}
+
+async function claimExpiryRefund(
+  ctx: ExpiryRefundContext,
+  ownerToken: string,
+): Promise<ExpiryRefundClaim> {
+  return db.transaction(async (tx): Promise<ExpiryRefundClaim> => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const [bounty] = await tx
+      .select({
+        status: bounties.status,
+        compositionState: bounties.compositionState,
+        refundSignature: bounties.compositionRefundSignature,
+        refundClaimId: bounties.compositionRefundClaimId,
+        refundClaimedAt: bounties.compositionRefundClaimedAt,
+      })
+      .from(bounties)
+      .where(eq(bounties.id, ctx.bountyId))
+      .limit(1);
+    const [attempt] = ctx.approvedAttemptId
+      ? await tx
+          .select({ status: bountyAttempts.status, reviewNote: bountyAttempts.reviewNote })
+          .from(bountyAttempts)
+          .where(eq(bountyAttempts.id, ctx.approvedAttemptId))
+          .limit(1)
+      : [];
+    const [sap] = await tx
+      .select({ status: sapEscrowSettlements.status, metadata: sapEscrowSettlements.metadata })
+      .from(sapEscrowSettlements)
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+        ),
+      )
+      .limit(1);
+
+    if (!bounty || !sap || !attempt) return { kind: 'winner', winner: 'state_drift' };
+    if (bounty.compositionState === 'paid' || bounty.status === 'completed') {
+      return { kind: 'winner', winner: 'paid' };
+    }
+    if (bounty.compositionState === 'refunded' || sap.status === 'refunded') {
+      return { kind: 'winner', winner: 'refunded', signature: bounty.refundSignature ?? undefined };
+    }
+    if (bounty.compositionState === 'reconcile_refund_unknown') {
+      return {
+        kind: 'winner',
+        winner: 'refund_reconcile',
+        signature: bounty.refundSignature ?? undefined,
+      };
+    }
+
+    const metadata = (sap.metadata ?? {}) as Record<string, unknown>;
+    if (
+      sap.status === 'refunding' &&
+      bounty.status === 'cancelled' &&
+      bounty.compositionState === 'vault_held' &&
+      attempt.status === 'rejected' &&
+      attempt.reviewNote === EXPIRY_REFUND_CLAIM_NOTE
+    ) {
+      const prior = metadata.expiryRefundPriorStatus;
+      const priorSapStatus = prior === 'submitted' ? 'submitted' : 'open';
+      if (bounty.refundClaimId === ownerToken) {
+        return {
+          kind: 'claimed',
+          priorSapStatus,
+          ownerToken,
+          replay: true,
+        };
+      }
+      const takeover = await tx
+        .update(bounties)
+        .set({
+          compositionRefundClaimId: ownerToken,
+          compositionRefundClaimedAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(bounties.id, ctx.bountyId),
+            eq(bounties.status, 'cancelled'),
+            eq(bounties.compositionState, 'vault_held'),
+            sql`${bounties.compositionRefundClaimId} IS NOT DISTINCT FROM ${bounty.refundClaimId}`,
+            sql`(
+              ${bounties.compositionRefundClaimedAt} IS NULL
+              OR ${bounties.compositionRefundClaimedAt} <
+                now() - (${EXPIRY_REFUND_CLAIM_LEASE_MS} * interval '1 millisecond')
+            )`,
+          ),
+        )
+        .returning({ id: bounties.id });
+      if (takeover.length !== 1) {
+        return { kind: 'winner', winner: 'refund_in_progress' };
+      }
+      return {
+        kind: 'claimed',
+        priorSapStatus,
+        ownerToken,
+        replay: true,
+      };
+    }
+
+    if (
+      bounty.status !== 'open' ||
+      bounty.compositionState !== 'vault_held' ||
+      attempt.status !== 'approved' ||
+      (sap.status !== 'open' && sap.status !== 'submitted')
+    ) {
+      return { kind: 'winner', winner: 'state_drift' };
+    }
+    const priorSapStatus = sap.status;
+    const claimedSap = await tx
+      .update(sapEscrowSettlements)
       .set({
-        status: 'rejected',
-        reviewNote: 'Auto-rejected: bounty escrow expired and was refund-routed to the creator',
-        reviewedAt: refundedAt,
-        updatedAt: refundedAt,
+        status: 'refunding',
+        metadata: { ...metadata, expiryRefundPriorStatus: priorSapStatus },
+        updatedAt: new Date(),
       })
       .where(
         and(
-          eq(bountyAttempts.bountyId, ctx.bountyId),
-          sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted', 'approved')`,
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+          eq(sapEscrowSettlements.status, priorSapStatus),
         ),
-      );
+      )
+      .returning({ id: sapEscrowSettlements.id });
+    const claimedBounty = await tx
+      .update(bounties)
+      .set({
+        status: 'cancelled',
+        covenantVerificationPassed: false,
+        compositionRefundClaimId: ownerToken,
+        compositionRefundClaimedAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.compositionState, 'vault_held'),
+          eq(bounties.status, 'open'),
+        ),
+      )
+      .returning({ id: bounties.id });
+    const claimedAttempt = await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'rejected',
+        reviewNote: EXPIRY_REFUND_CLAIM_NOTE,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bountyAttempts.id, ctx.approvedAttemptId!),
+          eq(bountyAttempts.bountyId, ctx.bountyId),
+          eq(bountyAttempts.status, 'approved'),
+        ),
+      )
+      .returning({ id: bountyAttempts.id });
+    if (
+      claimedSap.length !== 1 ||
+      claimedBounty.length !== 1 ||
+      claimedAttempt.length !== 1
+    ) {
+      throw new Error('expiry refund CAS lost under the escrow lock');
+    }
     await recordCovenantAction(
       {
         action: 'bounty.refund_requested',
@@ -493,36 +736,860 @@ async function refundExpiredComposedBounty(ctx: ResumeContext & {
         payload: {
           bountyId: ctx.bountyId,
           rail: 'sap-payai-composed',
+          reason: 'typed_onchain_escrow_expired',
           tokenReward: ctx.tokenReward,
           escrowPda: ctx.escrowPda,
         },
       },
       tx,
     );
+    return { kind: 'claimed', priorSapStatus, ownerToken, replay: false };
+  }).catch(async () => {
+    const [winner] = await db
+      .select({
+        status: bounties.status,
+        compositionState: bounties.compositionState,
+        signature: bounties.compositionRefundSignature,
+        claimId: bounties.compositionRefundClaimId,
+      })
+      .from(bounties)
+      .where(eq(bounties.id, ctx.bountyId))
+      .limit(1);
+    if (winner?.compositionState === 'paid' || winner?.status === 'completed') {
+      return { kind: 'winner', winner: 'paid' };
+    }
+    if (winner?.compositionState === 'refunded') {
+      return { kind: 'winner', winner: 'refunded', signature: winner.signature ?? undefined };
+    }
+    if (winner?.compositionState === 'reconcile_refund_unknown') {
+      return {
+        kind: 'winner',
+        winner: 'refund_reconcile',
+        signature: winner.signature ?? undefined,
+      };
+    }
+    if (
+      winner?.status === 'cancelled' &&
+      winner.compositionState === 'vault_held' &&
+      winner.claimId
+    ) {
+      return { kind: 'winner', winner: 'refund_in_progress' };
+    }
+    return { kind: 'winner', winner: 'state_drift' };
   });
+}
 
-  const refund = await refundComposedBounty({
+async function finishExpiryRefundConfirmed(
+  ctx: ExpiryRefundContext,
+  signature: string | undefined,
+  ownerToken: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const finishedSap = await tx
+      .update(sapEscrowSettlements)
+      .set({ status: 'refunded', updatedAt: new Date() })
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+          eq(sapEscrowSettlements.status, 'refunding'),
+        ),
+      )
+      .returning({ id: sapEscrowSettlements.id });
+    const finishedBounty = await tx
+      .update(bounties)
+      .set({
+        status: 'cancelled',
+        compositionState: 'refunded',
+        compositionRefundSignature: signature ?? null,
+        compositionRefundClaimId: null,
+        compositionRefundClaimedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.status, 'cancelled'),
+          eq(bounties.compositionState, 'vault_held'),
+          eq(bounties.compositionRefundClaimId, ownerToken),
+        ),
+      )
+      .returning({ id: bounties.id });
+    const finishedAttempt = await tx
+      .update(bountyAttempts)
+      .set({ reviewNote: EXPIRY_REFUND_CONFIRMED_NOTE, updatedAt: new Date() })
+      .where(
+        and(
+          eq(bountyAttempts.id, ctx.approvedAttemptId!),
+          eq(bountyAttempts.status, 'rejected'),
+          eq(bountyAttempts.reviewNote, EXPIRY_REFUND_CLAIM_NOTE),
+        ),
+      )
+      .returning({ id: bountyAttempts.id });
+    if (
+      finishedSap.length !== 1 ||
+      finishedBounty.length !== 1 ||
+      finishedAttempt.length !== 1
+    ) {
+      throw new Error('expiry refund terminal CAS lost');
+    }
+    await recordCovenantAction(
+      {
+        action: 'bounty.refund',
+        subjectType: 'avatar',
+        subjectId: ctx.creatorAvatarId,
+        dedupeKey: `bounty:${ctx.bountyId}:refund`,
+        payload: {
+          bountyId: ctx.bountyId,
+          rail: 'sap-payai-composed',
+          tokenReward: ctx.tokenReward,
+          escrowPda: ctx.escrowPda,
+          ...(signature ? { signature } : {}),
+        },
+      },
+      tx,
+    );
+  });
+}
+
+async function restoreExpiryRefundRetryable(
+  ctx: ExpiryRefundContext,
+  priorSapStatus: SapRefundPriorStatus,
+  ownerToken: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const restoredSap = await tx
+      .update(sapEscrowSettlements)
+      .set({ status: priorSapStatus, updatedAt: new Date() })
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+          eq(sapEscrowSettlements.status, 'refunding'),
+        ),
+      )
+      .returning({ id: sapEscrowSettlements.id });
+    const restoredBounty = await tx
+      .update(bounties)
+      .set({
+        status: 'open',
+        compositionRefundClaimId: null,
+        compositionRefundClaimedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.status, 'cancelled'),
+          eq(bounties.compositionState, 'vault_held'),
+          eq(bounties.compositionRefundClaimId, ownerToken),
+        ),
+      )
+      .returning({ id: bounties.id });
+    const restoredAttempt = await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'approved',
+        reviewNote: null,
+        reviewedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bountyAttempts.id, ctx.approvedAttemptId!),
+          eq(bountyAttempts.status, 'rejected'),
+          eq(bountyAttempts.reviewNote, EXPIRY_REFUND_CLAIM_NOTE),
+        ),
+      )
+      .returning({ id: bountyAttempts.id });
+    if (
+      restoredSap.length !== 1 ||
+      restoredBounty.length !== 1 ||
+      restoredAttempt.length !== 1
+    ) {
+      throw new Error('expiry refund restore CAS lost');
+    }
+  });
+}
+
+async function markExpiryRefundReconcile(
+  ctx: ExpiryRefundContext,
+  signature: string | undefined,
+  causeCode: string,
+  ownerToken: string,
+): Promise<void> {
+  if (!signature) {
+    throw new Error('cannot quarantine an expiry refund without a captured signature');
+  }
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const [sap] = await tx
+      .select({ metadata: sapEscrowSettlements.metadata })
+      .from(sapEscrowSettlements)
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+        ),
+      )
+      .limit(1);
+    const reconciledSap = await tx
+      .update(sapEscrowSettlements)
+      .set({
+        status: 'failed',
+        settleSignature: signature,
+        metadata: {
+          ...((sap?.metadata ?? {}) as Record<string, unknown>),
+          expiryRefundBroadcastUnknown: true,
+          expiryRefundError: causeCode,
+        },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+          eq(sapEscrowSettlements.status, 'refunding'),
+        ),
+      )
+      .returning({ id: sapEscrowSettlements.id });
+    const reconciledBounty = await tx
+      .update(bounties)
+      .set({
+        status: 'cancelled',
+        compositionState: 'reconcile_refund_unknown',
+        compositionRefundSignature: signature,
+        compositionRefundClaimId: null,
+        compositionRefundClaimedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.status, 'cancelled'),
+          eq(bounties.compositionState, 'vault_held'),
+          eq(bounties.compositionRefundClaimId, ownerToken),
+        ),
+      )
+      .returning({ id: bounties.id });
+    const reconciledAttempt = await tx
+      .update(bountyAttempts)
+      .set({ reviewNote: EXPIRY_REFUND_RECONCILE_NOTE, updatedAt: new Date() })
+      .where(
+        and(
+          eq(bountyAttempts.id, ctx.approvedAttemptId!),
+          eq(bountyAttempts.status, 'rejected'),
+          eq(bountyAttempts.reviewNote, EXPIRY_REFUND_CLAIM_NOTE),
+        ),
+      )
+      .returning({ id: bountyAttempts.id });
+    if (
+      reconciledSap.length !== 1 ||
+      reconciledBounty.length !== 1 ||
+      reconciledAttempt.length !== 1
+    ) {
+      throw new Error('expiry refund reconcile CAS lost');
+    }
+  });
+}
+
+async function rereadExpiryRefundDisposition(
+  ctx: ExpiryRefundContext,
+): Promise<ExpiryRefundResult> {
+  const [row] = await db
+    .select({
+      status: bounties.status,
+      compositionState: bounties.compositionState,
+      signature: bounties.compositionRefundSignature,
+      claimId: bounties.compositionRefundClaimId,
+    })
+    .from(bounties)
+    .where(eq(bounties.id, ctx.bountyId))
+    .limit(1);
+  if (row?.compositionState === 'paid' || row?.status === 'completed') {
+    return { ok: true, phase: 'superseded_paid', message: 'settlement won the expiry-refund race' };
+  }
+  if (row?.compositionState === 'refunded') {
+    return {
+      ok: true,
+      phase: 'refunded',
+      message: 'expired composed bounty was already refunded',
+      signature: row.signature ?? undefined,
+    };
+  }
+  if (row?.compositionState === 'reconcile_refund_unknown') {
+    return {
+      ok: false,
+      phase: 'refund_reconcile',
+      code: 'refund_reconcile_required',
+      retryable: false,
+      signature: row.signature ?? undefined,
+      message: 'an expiry refund broadcast is already awaiting reconciliation',
+    };
+  }
+  if (row?.status === 'cancelled' && row.compositionState === 'vault_held' && row.claimId) {
+    return {
+      ok: false,
+      phase: 'refund_in_progress',
+      code: 'refund_in_progress',
+      retryable: true,
+      message: 'another expiry-refund owner won the database claim',
+    };
+  }
+  return {
+    ok: false,
+    phase: 'refund_failed',
+    code: 'refund_failed',
+    retryable: true,
+    message: 'expiry refund state changed; retry after re-read',
+  };
+}
+
+async function ownedRefundMutation(
+  ctx: ExpiryRefundContext,
+  mutation: () => Promise<void>,
+): Promise<ExpiryRefundResult | null> {
+  try {
+    await mutation();
+    return null;
+  } catch {
+    return rereadExpiryRefundDisposition(ctx);
+  }
+}
+
+type RefundReconcileClaim =
+  | { kind: 'claimed'; ownerToken: string }
+  | { kind: 'in_progress' }
+  | { kind: 'state_changed' };
+
+async function claimRefundReconciliation(
+  ctx: ExpiryRefundContext,
+  ownerToken: string,
+): Promise<RefundReconcileClaim> {
+  return db.transaction(async (tx): Promise<RefundReconcileClaim> => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const claimed = await tx
+      .update(bounties)
+      .set({
+        compositionRefundClaimId: ownerToken,
+        compositionRefundClaimedAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.status, 'cancelled'),
+          eq(bounties.compositionState, 'reconcile_refund_unknown'),
+          sql`(
+            ${bounties.compositionRefundClaimId} IS NULL
+            OR ${bounties.compositionRefundClaimedAt} <
+              now() - (${EXPIRY_REFUND_CLAIM_LEASE_MS} * interval '1 millisecond')
+          )`,
+        ),
+      )
+      .returning({ id: bounties.id });
+    if (claimed.length === 1) return { kind: 'claimed', ownerToken };
+    const [row] = await tx
+      .select({
+        state: bounties.compositionState,
+        claimId: bounties.compositionRefundClaimId,
+      })
+      .from(bounties)
+      .where(eq(bounties.id, ctx.bountyId))
+      .limit(1);
+    return row?.state === 'reconcile_refund_unknown' && row.claimId
+      ? { kind: 'in_progress' }
+      : { kind: 'state_changed' };
+  });
+}
+
+async function releaseRefundReconciliationClaim(
+  ctx: ExpiryRefundContext,
+  ownerToken: string,
+): Promise<void> {
+  await db
+    .update(bounties)
+    .set({
+      compositionRefundClaimId: null,
+      compositionRefundClaimedAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(bounties.id, ctx.bountyId),
+        eq(bounties.compositionState, 'reconcile_refund_unknown'),
+        eq(bounties.compositionRefundClaimId, ownerToken),
+      ),
+    );
+}
+
+async function finishReconciledExpiryRefund(
+  ctx: ExpiryRefundContext,
+  ownerToken: string,
+  signature: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const sapRows = await tx
+      .update(sapEscrowSettlements)
+      .set({ status: 'refunded', updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+          eq(sapEscrowSettlements.status, 'failed'),
+        ),
+      )
+      .returning({ id: sapEscrowSettlements.id });
+    const bountyRows = await tx
+      .update(bounties)
+      .set({
+        compositionState: 'refunded',
+        compositionRefundClaimId: null,
+        compositionRefundClaimedAt: null,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.status, 'cancelled'),
+          eq(bounties.compositionState, 'reconcile_refund_unknown'),
+          eq(bounties.compositionRefundClaimId, ownerToken),
+          eq(bounties.compositionRefundSignature, signature),
+        ),
+      )
+      .returning({ id: bounties.id });
+    const attemptRows = await tx
+      .update(bountyAttempts)
+      .set({ reviewNote: EXPIRY_REFUND_CONFIRMED_NOTE, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(bountyAttempts.id, ctx.approvedAttemptId!),
+          eq(bountyAttempts.status, 'rejected'),
+          eq(bountyAttempts.reviewNote, EXPIRY_REFUND_RECONCILE_NOTE),
+        ),
+      )
+      .returning({ id: bountyAttempts.id });
+    const withdrawalRows = await tx
+      .update(sapEscrowWithdrawals)
+      .set({ status: 'succeeded', failureCode: null, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(sapEscrowWithdrawals.subjectAvatarId, ctx.creatorAvatarId),
+          eq(sapEscrowWithdrawals.requestId, `${ctx.bountyId}:refund`),
+          eq(sapEscrowWithdrawals.status, 'broadcast_unknown'),
+          eq(sapEscrowWithdrawals.signature, signature),
+        ),
+      )
+      .returning({ id: sapEscrowWithdrawals.id });
+    if (
+      sapRows.length !== 1 ||
+      bountyRows.length !== 1 ||
+      attemptRows.length !== 1 ||
+      withdrawalRows.length !== 1
+    ) {
+      throw new Error('reconciled expiry refund terminal CAS lost');
+    }
+    await recordCovenantAction(
+      {
+        action: 'bounty.refund',
+        subjectType: 'avatar',
+        subjectId: ctx.creatorAvatarId,
+        dedupeKey: `bounty:${ctx.bountyId}:refund`,
+        payload: {
+          bountyId: ctx.bountyId,
+          rail: 'sap-payai-composed',
+          tokenReward: ctx.tokenReward,
+          escrowPda: ctx.escrowPda,
+          signature,
+          reconciled: true,
+        },
+      },
+      tx,
+    );
+  });
+}
+
+async function restoreReconciledExpiryRefund(
+  ctx: ExpiryRefundContext,
+  ownerToken: string,
+  signature: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${ctx.escrowPda}, 0))`,
+    );
+    const [sap] = await tx
+      .select({ metadata: sapEscrowSettlements.metadata })
+      .from(sapEscrowSettlements)
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+        ),
+      )
+      .limit(1);
+    const prior = (sap?.metadata as Record<string, unknown> | null)?.expiryRefundPriorStatus;
+    const priorStatus: SapRefundPriorStatus = prior === 'submitted' ? 'submitted' : 'open';
+    const sapRows = await tx
+      .update(sapEscrowSettlements)
+      .set({ status: priorStatus, settleSignature: null, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(sapEscrowSettlements.escrowPda, ctx.escrowPda),
+          eq(sapEscrowSettlements.jobId, ctx.bountyId),
+          eq(sapEscrowSettlements.status, 'failed'),
+        ),
+      )
+      .returning({ id: sapEscrowSettlements.id });
+    const bountyRows = await tx
+      .update(bounties)
+      .set({
+        status: 'open',
+        compositionState: 'vault_held',
+        compositionRefundSignature: null,
+        compositionRefundClaimId: null,
+        compositionRefundClaimedAt: null,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(bounties.id, ctx.bountyId),
+          eq(bounties.status, 'cancelled'),
+          eq(bounties.compositionState, 'reconcile_refund_unknown'),
+          eq(bounties.compositionRefundClaimId, ownerToken),
+          eq(bounties.compositionRefundSignature, signature),
+        ),
+      )
+      .returning({ id: bounties.id });
+    const attemptRows = await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'approved',
+        reviewNote: null,
+        reviewedAt: null,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(bountyAttempts.id, ctx.approvedAttemptId!),
+          eq(bountyAttempts.status, 'rejected'),
+          eq(bountyAttempts.reviewNote, EXPIRY_REFUND_RECONCILE_NOTE),
+        ),
+      )
+      .returning({ id: bountyAttempts.id });
+    const withdrawalRows = await tx
+      .delete(sapEscrowWithdrawals)
+      .where(
+        and(
+          eq(sapEscrowWithdrawals.subjectAvatarId, ctx.creatorAvatarId),
+          eq(sapEscrowWithdrawals.requestId, `${ctx.bountyId}:refund`),
+          eq(sapEscrowWithdrawals.status, 'broadcast_unknown'),
+          eq(sapEscrowWithdrawals.signature, signature),
+        ),
+      )
+      .returning({ id: sapEscrowWithdrawals.id });
+    if (
+      sapRows.length !== 1 ||
+      bountyRows.length !== 1 ||
+      attemptRows.length !== 1 ||
+      withdrawalRows.length !== 1
+    ) {
+      throw new Error('reconciled expiry refund restore CAS lost');
+    }
+  });
+}
+
+export interface ReconcileExpiryRefundDeps {
+  claim?: typeof claimRefundReconciliation;
+  loadCapture?: (ctx: ExpiryRefundContext) => Promise<{
+    signature: string | null;
+    lastValidBlockHeight: bigint | null;
+  } | null>;
+  release?: typeof releaseRefundReconciliationClaim;
+  inspect?: (input: {
+    signature: string;
+    lastValidBlockHeight: number;
+  }) => Promise<SapCapturedTransactionInspection>;
+  finish?: typeof finishReconciledExpiryRefund;
+  restore?: typeof restoreReconciledExpiryRefund;
+}
+
+export async function reconcileExpiryRefundUnknown(
+  ctx: ExpiryRefundContext,
+  deps: ReconcileExpiryRefundDeps = {},
+): Promise<ExpiryRefundResult> {
+  const ownerToken = randomUUID();
+  const claim = await (deps.claim ?? claimRefundReconciliation)(ctx, ownerToken);
+  if (claim.kind === 'in_progress') {
+    return {
+      ok: false,
+      phase: 'refund_in_progress',
+      code: 'refund_in_progress',
+      retryable: true,
+      message: 'refund reconciliation is already in progress',
+    };
+  }
+  if (claim.kind === 'state_changed') return rereadExpiryRefundDisposition(ctx);
+
+  const loadCapture = deps.loadCapture ?? (async () => {
+    const [row] = await db
+      .select({
+        signature: sapEscrowWithdrawals.signature,
+        lastValidBlockHeight: sapEscrowWithdrawals.lastValidBlockHeight,
+      })
+      .from(sapEscrowWithdrawals)
+      .where(
+        and(
+          eq(sapEscrowWithdrawals.subjectAvatarId, ctx.creatorAvatarId),
+          eq(sapEscrowWithdrawals.requestId, `${ctx.bountyId}:refund`),
+          eq(sapEscrowWithdrawals.status, 'broadcast_unknown'),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  });
+  const withdrawal = await loadCapture(ctx);
+  if (!withdrawal?.signature || withdrawal.lastValidBlockHeight == null) {
+    await (deps.release ?? releaseRefundReconciliationClaim)(ctx, ownerToken);
+    return {
+      ok: false,
+      phase: 'refund_reconcile',
+      code: 'refund_reconcile_required',
+      retryable: false,
+      message: 'refund reconciliation is missing captured expiry proof',
+    };
+  }
+
+  let inspection: SapCapturedTransactionInspection;
+  try {
+    inspection = await (deps.inspect ?? inspectCapturedSapTransaction)({
+      signature: withdrawal.signature,
+      lastValidBlockHeight: Number(withdrawal.lastValidBlockHeight),
+    });
+  } catch {
+    await (deps.release ?? releaseRefundReconciliationClaim)(ctx, ownerToken);
+    return {
+      ok: false,
+      phase: 'refund_reconcile',
+      code: 'refund_reconcile_required',
+      retryable: false,
+      signature: withdrawal.signature,
+      message: 'refund signature status could not be observed',
+    };
+  }
+
+  if (inspection === 'confirmed') {
+    const winner = await ownedRefundMutation(
+      ctx,
+      () => (deps.finish ?? finishReconciledExpiryRefund)(
+        ctx,
+        ownerToken,
+        withdrawal.signature!,
+      ),
+    );
+    return winner ?? {
+      ok: true,
+      phase: 'refunded',
+      message: 'refund signature proved landed and was finalized',
+      signature: withdrawal.signature,
+    };
+  }
+  if (inspection === 'confirmed_reverted') {
+    const winner = await ownedRefundMutation(
+      ctx,
+      () => (deps.restore ?? restoreReconciledExpiryRefund)(
+        ctx,
+        ownerToken,
+        withdrawal.signature!,
+      ),
+    );
+    return winner ?? {
+      ok: false,
+      phase: 'refund_failed',
+      code: 'refund_failed',
+      causeCode: inspection,
+      retryable: true,
+      message: 'refund proved not landed; restored the retryable expiry state',
+    };
+  }
+
+  if (inspection === 'expired_missing') {
+    // B3 — null signature history after blockheight expiry is not positive proof
+    // that the transfer never landed. Keep the captured withdrawal and the bounty
+    // in reconcile_refund_unknown for operator investigation; only a confirmed
+    // on-chain revert may restore the retryable state.
+    await (deps.release ?? releaseRefundReconciliationClaim)(ctx, ownerToken);
+    return {
+      ok: false,
+      phase: 'refund_reconcile',
+      code: 'refund_reconcile_required',
+      causeCode: 'expired_missing',
+      retryable: false,
+      signature: withdrawal.signature,
+      message:
+        'refund blockhash expired but signature history is absent; capture remains quarantined for ops',
+    };
+  }
+
+  await (deps.release ?? releaseRefundReconciliationClaim)(ctx, ownerToken);
+  return {
+    ok: false,
+    phase: 'refund_reconcile',
+    code: 'refund_reconcile_required',
+    retryable: false,
+    signature: withdrawal.signature,
+    message: 'refund signature is still live or pending',
+  };
+}
+
+export async function refundExpiredComposedBounty(
+  ctx: ExpiryRefundContext,
+  deps: ExpiryRefundDeps = {},
+): Promise<ExpiryRefundResult> {
+  const ownerToken = randomUUID();
+  const claim = await (deps.claim ?? claimExpiryRefund)(ctx, ownerToken);
+  if (claim.kind === 'winner') {
+    if (claim.winner === 'paid') {
+      return {
+        ok: true,
+        phase: 'superseded_paid',
+        message: 'settlement won the expiry-refund race',
+      };
+    }
+    if (claim.winner === 'refunded') {
+      return {
+        ok: true,
+        phase: 'refunded',
+        message: 'expired composed bounty was already refunded',
+        signature: claim.signature,
+      };
+    }
+    if (claim.winner === 'refund_reconcile') {
+      return {
+        ok: false,
+        phase: 'refund_reconcile',
+        code: 'refund_reconcile_required',
+        retryable: false,
+        signature: claim.signature,
+        message: 'an expiry refund broadcast is already awaiting reconciliation',
+      };
+    }
+    if (claim.winner === 'refund_in_progress') {
+      return {
+        ok: false,
+        phase: 'refund_in_progress',
+        code: 'refund_in_progress',
+        retryable: true,
+        message: 'another expiry-refund owner holds a live database lease',
+      };
+    }
+    return {
+      ok: false,
+      phase: 'refund_failed',
+      code: 'refund_failed',
+      retryable: true,
+      message: 'expiry refund CAS lost to a non-terminal state; retry after re-read',
+    };
+  }
+
+  const refund = await (deps.refundComposed ?? refundComposedBounty)({
     bountyId: ctx.bountyId,
     escrowPda: ctx.escrowPda,
     creatorAvatarId: ctx.creatorAvatarId,
     tokenReward: ctx.tokenReward,
   });
-  if (refund.ok === false) return { ok: false, code: refund.code, message: refund.message };
+  if (refund.ok === false) {
+    const winner = await ownedRefundMutation(
+      ctx,
+      () => (deps.restoreRetryable ?? restoreExpiryRefundRetryable)(
+        ctx,
+        claim.priorSapStatus,
+        claim.ownerToken,
+      ),
+    );
+    if (winner) return winner;
+    return {
+      ok: false,
+      phase: 'refund_failed',
+      code: 'refund_failed',
+      causeCode: refund.code,
+      retryable: true,
+      message: refund.message,
+    };
+  }
 
-  await recordCovenantAction({
-    action: 'bounty.refund',
-    subjectType: 'avatar',
-    subjectId: ctx.creatorAvatarId,
-    dedupeKey: `bounty:${ctx.bountyId}:refund`,
-    payload: {
-      bountyId: ctx.bountyId,
-      rail: 'sap-payai-composed',
-      tokenReward: ctx.tokenReward,
-      escrowPda: ctx.escrowPda,
-    },
-  });
-  const signature = refund.chain.ok && !refund.chain.dryRun ? refund.chain.signature : undefined;
-  return { ok: true, message: 'expired composed bounty refunded to creator', signature };
+  const chain = refund.chain;
+  if (chain.ok) {
+    const signature = chain.dryRun ? undefined : chain.signature;
+    const winner = await ownedRefundMutation(
+      ctx,
+      () => (deps.finishConfirmed ?? finishExpiryRefundConfirmed)(
+        ctx,
+        signature,
+        claim.ownerToken,
+      ),
+    );
+    if (winner) return winner;
+    return {
+      ok: true,
+      phase: 'refunded',
+      message: 'expired composed bounty refunded to creator',
+      signature,
+    };
+  }
+
+  if (chain.broadcast && chain.landed !== 'confirmed_reverted') {
+    const signature = chain.signature;
+    const winner = await ownedRefundMutation(
+      ctx,
+      () => (deps.markReconcile ?? markExpiryRefundReconcile)(
+        ctx,
+        signature,
+        chain.code,
+        claim.ownerToken,
+      ),
+    );
+    if (winner) return winner;
+    return {
+      ok: false,
+      phase: 'refund_reconcile',
+      code: 'refund_reconcile_required',
+      retryable: false,
+      signature,
+      message: chain.message,
+    };
+  }
+
+  const winner = await ownedRefundMutation(
+    ctx,
+    () => (deps.restoreRetryable ?? restoreExpiryRefundRetryable)(
+      ctx,
+      claim.priorSapStatus,
+      claim.ownerToken,
+    ),
+  );
+  if (winner) return winner;
+  return {
+    ok: false,
+    phase: 'refund_failed',
+    code: 'refund_failed',
+    causeCode: chain.code,
+    retryable: true,
+    message: chain.message,
+  };
 }
 
 // ── L-3c — PERSISTENT VAULT_HELD WEDGE ALERT (throttled) ──────────────────────
@@ -548,15 +1615,24 @@ async function refundExpiredComposedBounty(ctx: ResumeContext & {
 // pass.
 const WEDGE_ALERT_WINDOW_MS = 60 * 60 * 1000; // 1h
 const wedgeAlertLastSentAt = new Map<string, number>();
+const refundAlertLastSentAt = new Map<string, number>();
 
 /** Test-only: clear the persistent-wedge alert throttle state. */
 export function _resetComposedWedgeAlerts(): void {
   wedgeAlertLastSentAt.clear();
+  refundAlertLastSentAt.clear();
 }
 
 export type ResumeComposedBountyOutcome =
   | { resumed: true; phase: SettleComposedBountyResult['phase'] }
-  | { resumed: true; phase: 'refunded' | 'refund_failed' }
+  | {
+      resumed: true;
+      phase:
+        | 'refunded'
+        | 'refund_failed'
+        | 'refund_reconcile'
+        | 'refund_in_progress';
+    }
   | {
       resumed: false;
       reason: 'not_found' | 'not_composed' | 'not_resumable' | 'no_escrow' | 'no_winner';
@@ -582,38 +1658,113 @@ export async function resumeComposedBounty(
     return { resumed: false, reason: 'not_resumable' };
   }
   if (!ctx.escrowPda) return { resumed: false, reason: 'no_escrow' };
-  if (!ctx.hunterAvatarId) return { resumed: false, reason: 'no_winner' };
+  if (!ctx.hunterAvatarId || !ctx.approvedAttemptId) {
+    return { resumed: false, reason: 'no_winner' };
+  }
+
+  if (ctx.compositionState === 'reconcile_refund_unknown') {
+    const reconciled = await (deps.reconcileRefund ?? reconcileExpiryRefundUnknown)(
+      { ...ctx, bountyId, escrowPda: ctx.escrowPda },
+      deps.refundReconcileDeps,
+    );
+    if (reconciled.phase === 'superseded_paid') {
+      refundAlertLastSentAt.delete(`${bountyId}:refund_reconcile`);
+      return { resumed: true, phase: 'paid' };
+    }
+    if (reconciled.phase === 'refunded') {
+      refundAlertLastSentAt.delete(`${bountyId}:refund_reconcile`);
+    } else if (reconciled.phase === 'refund_reconcile') {
+      const condition = `${bountyId}:refund_reconcile`;
+      if (!refundAlertLastSentAt.has(condition)) {
+        try {
+          await (deps.alertError ?? alertError)({
+            severity: 'critical',
+            source: 'bounty-composition-expiry',
+            message:
+              `Composed bounty ${bountyId} refund remains quarantined: ${reconciled.message}`,
+            context: {
+              bountyId,
+              escrowPda: ctx.escrowPda,
+              code: reconciled.code,
+              ...('causeCode' in reconciled && reconciled.causeCode
+                ? { causeCode: reconciled.causeCode }
+                : {}),
+              ...(reconciled.signature
+                ? { refundSignature: reconciled.signature }
+                : {}),
+            },
+          });
+          // This quarantine is persistent. Page once per live condition instead
+          // of once per crank; resolution/pruning clears the entry.
+          refundAlertLastSentAt.set(condition, Date.now());
+        } catch {
+          // Failed delivery retries on the next worker pass.
+        }
+      }
+    }
+    return { resumed: true, phase: reconciled.phase };
+  }
 
   const currentTime = (deps.now ?? (() => new Date()))();
   const driveExpiredRefund = async (): Promise<ResumeComposedBountyOutcome> => {
-    const refund = await (deps.refundExpired ?? refundExpiredComposedBounty)({
-      ...ctx,
-      bountyId,
-      escrowPda: ctx.escrowPda!,
-    });
-    await (deps.alertError ?? alertError)({
-      severity: 'warning',
+    const refund = await (deps.refundExpired ?? refundExpiredComposedBounty)(
+      {
+        ...ctx,
+        bountyId,
+        escrowPda: ctx.escrowPda!,
+      },
+      deps.expiryRefundDeps,
+    );
+    const refundCondition =
+      refund.phase === 'refund_failed' || refund.phase === 'refund_reconcile'
+        ? `${bountyId}:${refund.phase}`
+        : null;
+    const now = Date.now();
+    const lastRefundAlert = refundCondition
+      ? refundAlertLastSentAt.get(refundCondition)
+      : undefined;
+    const shouldAlert =
+      refundCondition == null ||
+      lastRefundAlert == null ||
+      now - lastRefundAlert >= WEDGE_ALERT_WINDOW_MS;
+    if (shouldAlert && refund.phase !== 'refund_in_progress') {
+      try {
+        await (deps.alertError ?? alertError)({
+      severity: refund.phase === 'refund_reconcile' ? 'critical' : 'warning',
       source: 'bounty-composition-expiry',
-      message: refund.ok
-        ? `Composed bounty ${bountyId} expired and was automatically refund-routed to the creator.`
-        : `Composed bounty ${bountyId} expired but its automatic refund failed (${refund.code ?? 'unknown'}): ${refund.message}`,
+      message:
+        refund.phase === 'refunded'
+          ? `Composed bounty ${bountyId} returned typed escrow_expired and was refunded to the creator.`
+          : refund.phase === 'superseded_paid'
+            ? `Composed bounty ${bountyId} settlement won the expiry-refund race; no refund was sent.`
+            : refund.phase === 'refund_reconcile'
+              ? `Composed bounty ${bountyId} refund broadcast is unknown and requires signature reconciliation.`
+              : `Composed bounty ${bountyId} typed expiry refund failed before broadcast and remains retryable: ${refund.message}`,
       context: {
         bountyId,
         tokenReward: ctx.tokenReward,
         refundOk: refund.ok,
-        ...(refund.signature ? { refundSignature: refund.signature } : {}),
+        ...('signature' in refund && refund.signature
+          ? { refundSignature: refund.signature }
+          : {}),
         ...(!refund.ok && refund.code ? { code: refund.code } : {}),
       },
-    }).catch(() => undefined);
+        });
+        if (refundCondition) refundAlertLastSentAt.set(refundCondition, now);
+      } catch {
+        // Delivery failure retries next pass and does not advance the throttle.
+      }
+    }
+    if (refund.phase === 'refunded' || refund.phase === 'superseded_paid') {
+      refundAlertLastSentAt.delete(`${bountyId}:refund_failed`);
+      refundAlertLastSentAt.delete(`${bountyId}:refund_reconcile`);
+    }
     wedgeAlertLastSentAt.delete(bountyId);
-    return { resumed: true, phase: refund.ok ? 'refunded' : 'refund_failed' };
+    if (refund.phase === 'superseded_paid') return { resumed: true, phase: 'paid' };
+    return { resumed: true, phase: refund.phase };
   };
 
-  if (
-    ctx.compositionState === 'vault_held' &&
-    (ctx.expiryRefundRequested ||
-      (ctx.expiresAt != null && ctx.expiresAt.getTime() <= currentTime.getTime()))
-  ) {
+  if (ctx.compositionState === 'vault_held' && ctx.expiryRefundRequested) {
     return driveExpiredRefund();
   }
 
@@ -731,7 +1882,11 @@ export async function runComposedBountyResumePass(): Promise<void> {
   const priority = await db
     .select({ id: bounties.id })
     .from(bounties)
-    .where(sql`${bounties.compositionState} IN ('awaiting_finalize', 'reconcile_payout_failed')`)
+    .where(sql`${bounties.compositionState} IN (
+      'reconcile_refund_unknown',
+      'awaiting_finalize',
+      'reconcile_payout_failed'
+    )`)
     .orderBy(asc(bounties.updatedAt))
     .limit(RESUME_BATCH);
 
@@ -783,6 +1938,10 @@ export async function runComposedBountyResumePass(): Promise<void> {
   const swept = new Set(stuck.map((b) => b.id));
   for (const k of wedgeAlertLastSentAt.keys()) {
     if (!swept.has(k)) wedgeAlertLastSentAt.delete(k);
+  }
+  for (const k of refundAlertLastSentAt.keys()) {
+    const bountyId = k.slice(0, k.lastIndexOf(':'));
+    if (!swept.has(bountyId)) refundAlertLastSentAt.delete(k);
   }
 
   for (const b of stuck) {

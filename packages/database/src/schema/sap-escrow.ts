@@ -51,6 +51,8 @@ import {
   pgEnum,
   index,
   uniqueIndex,
+  bigint,
+  check,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
@@ -475,6 +477,15 @@ export const sapEscrowWithdrawals = pgTable(
     status: varchar('status', { length: 24 }).notNull(),
     /** Confirmed / broadcast-unknown withdraw tx signature (base58). */
     signature: varchar('signature', { length: 128 }),
+    /** Exact signed bytes captured before the first send and reused on takeover. */
+    serializedTransaction: text('serialized_transaction'),
+    blockhash: varchar('blockhash', { length: 128 }),
+    lastValidBlockHeight: bigint('last_valid_block_height', {
+      mode: 'bigint',
+    }),
+    /** DB-time owner lease for the in-flight executor. */
+    claimId: uuid('claim_id'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
 
     // ── R4-B idempotency (mirrors sap_deposit_requests) ──
     /**
@@ -498,6 +509,40 @@ export const sapEscrowWithdrawals = pgTable(
     subjectRequestUnique: uniqueIndex('sap_escrow_withdrawals_subject_request_unique')
       .on(t.subjectAvatarId, t.requestId)
       .where(sql`${t.requestId} IS NOT NULL`),
+    captureShape: check(
+      'sap_escrow_withdrawals_capture_shape',
+      sql`(
+        ${t.status} IN ('succeeded', 'broadcast_unknown')
+        AND ${t.serializedTransaction} IS NULL
+        AND ${t.blockhash} IS NULL
+        AND ${t.lastValidBlockHeight} IS NULL
+      ) OR (
+        ${t.status} = 'in_flight'
+        AND (
+          (
+            ${t.signature} IS NULL
+            AND ${t.serializedTransaction} IS NULL
+            AND ${t.blockhash} IS NULL
+            AND ${t.lastValidBlockHeight} IS NULL
+          ) OR (
+            ${t.signature} IS NOT NULL
+            AND ${t.serializedTransaction} IS NOT NULL
+            AND ${t.blockhash} IS NOT NULL
+            AND ${t.lastValidBlockHeight} IS NOT NULL
+          )
+        )
+      ) OR (
+        ${t.status} IN ('succeeded', 'broadcast_unknown')
+        AND ${t.signature} IS NOT NULL
+        AND ${t.serializedTransaction} IS NOT NULL
+        AND ${t.blockhash} IS NOT NULL
+        AND ${t.lastValidBlockHeight} IS NOT NULL
+      )`,
+    ),
+    claimLeasePair: check(
+      'sap_escrow_withdrawals_claim_lease_pair',
+      sql`(${t.claimId} IS NULL) = (${t.claimedAt} IS NULL)`,
+    ),
   }),
 );
 

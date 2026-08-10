@@ -131,7 +131,8 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('poster pays approximately **0.006 SOL**');
     expect(protocolManual).toContain('configured **0.006 SOL** gas floor');
     expect(protocolManual).toContain('Once `expiresAt` passes, the escrow can only');
-    expect(protocolManual).toContain('automatically terminalizes the bounty');
+    expect(protocolManual).toContain("typed `escrow_expired` response");
+    expect(protocolManual).toContain('does not move money from its wall clock');
     expect(protocolManual).toContain(
       'self-reported free-form string of at most 32',
     );

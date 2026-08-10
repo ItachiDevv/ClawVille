@@ -25,6 +25,8 @@ import {
 } from '../../bounty-escrow-link';
 import {
   resumeComposedBounty,
+  refundExpiredComposedBounty,
+  reconcileExpiryRefundUnknown,
   isEscrowExpiredFailure,
   _resetComposedWedgeAlerts,
   type ResumeComposedBountyDeps,
@@ -568,6 +570,7 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
       escrowPda: VAULT_PDA,
       creatorAvatarId: CREATOR,
       hunterAvatarId: HUNTER,
+      approvedAttemptId: '550e8400-e29b-41d4-a716-446655440001',
       tokenReward: REWARD,
       expiresAt: null,
       expiryRefundRequested: false,
@@ -710,10 +713,9 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
     expect(alerted).toBe(false); // a healed resume never pages
   });
 
-  it('expiry passed routes an approved vault_held bounty to refund without settling', async () => {
+  it('wall-clock expiry never decides money and still drives the settle probe', async () => {
     let settleCalled = false;
     let refundCalled = false;
-    const alerts: any[] = [];
     const out = await resumeComposedBounty(BOUNTY_ID, {
       loadContext: async () => ctx({
         compositionState: 'vault_held',
@@ -722,21 +724,17 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
       now: () => new Date('2026-08-09T11:00:00.000Z'),
       applyOutcome: async () => {
         settleCalled = true;
-        return { ok: false, phase: 'failed', escrowPda: VAULT_PDA, code: 'internal', message: 'must not run' } as any;
+        return { ok: false, phase: 'failed', escrowPda: VAULT_PDA, code: 'internal', message: 'not typed expired' } as any;
       },
       refundExpired: async () => {
         refundCalled = true;
-        return { ok: true, message: 'refunded', signature: 'refund-sig' };
+        return { ok: true, phase: 'refunded', message: 'must not run', signature: 'refund-sig' };
       },
-      alertError: async (alert) => { alerts.push(alert); },
+      alertError: async () => undefined,
     } as ResumeComposedBountyDeps);
-    expect(out).toEqual({ resumed: true, phase: 'refunded' });
-    expect(settleCalled).toBe(false);
-    expect(refundCalled).toBe(true);
-    expect(alerts[0]).toMatchObject({
-      severity: 'warning',
-      context: { bountyId: BOUNTY_ID, tokenReward: REWARD, refundSignature: 'refund-sig' },
-    });
+    expect(out).toEqual({ resumed: true, phase: 'failed' });
+    expect(settleCalled).toBe(true);
+    expect(refundCalled).toBe(false);
   });
 
   it('pre-expiry leaves the settle path unchanged', async () => {
@@ -757,7 +755,7 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
       }),
       refundExpired: async () => {
         refundCalled = true;
-        return { ok: true, message: 'must not run' };
+        return { ok: true, phase: 'refunded', message: 'must not run' };
       },
     } as ResumeComposedBountyDeps);
     expect(out).toEqual({ resumed: true, phase: 'paid' });
@@ -765,8 +763,9 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
   });
 
   it('detects on-chain EscrowExpired 6076 and refund-routes the failed settle', async () => {
-    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'custom program error: 6076 EscrowExpired' })).toBe(true);
-    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'custom program error: 0x17bc' })).toBe(true);
+    expect(isEscrowExpiredFailure({ code: 'escrow_expired', message: 'typed by sap-client' })).toBe(true);
+    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'custom program error: 6076 EscrowExpired' })).toBe(false);
+    expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'custom program error: 0x17bc' })).toBe(false);
     expect(isEscrowExpiredFailure({ code: 'on_chain_error', message: 'some other failure' })).toBe(false);
     let refunded = false;
     const out = await resumeComposedBounty(BOUNTY_ID, {
@@ -775,17 +774,320 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
         ok: false,
         phase: 'failed',
         escrowPda: VAULT_PDA,
-        code: 'on_chain_error',
-        message: 'AnchorError 6076 EscrowExpired',
+        code: 'escrow_expired',
+        message: 'SAP settle rejected on-chain (error 6076)',
       } as any),
       refundExpired: async () => {
         refunded = true;
-        return { ok: true, message: 'refunded' };
+        return { ok: true, phase: 'refunded', message: 'refunded' };
       },
       alertError: async () => undefined,
     } as ResumeComposedBountyDeps);
     expect(out).toEqual({ resumed: true, phase: 'refunded' });
     expect(refunded).toBe(true);
+  });
+
+  it('M1 — repeated refund-failure passes emit one transition alert within the hour', async () => {
+    _resetComposedWedgeAlerts();
+    const alerts: unknown[] = [];
+    const deps = {
+      loadContext: async () => ctx({ compositionState: 'vault_held' }),
+      applyOutcome: async () => ({
+        ok: false,
+        phase: 'failed',
+        escrowPda: VAULT_PDA,
+        code: 'escrow_expired',
+        message: 'expired',
+      }),
+      refundExpired: async () => ({
+        ok: false,
+        phase: 'refund_failed',
+        code: 'refund_failed',
+        retryable: true,
+        message: 'house unavailable',
+      }),
+      alertError: async (alert: unknown) => { alerts.push(alert); },
+    } as ResumeComposedBountyDeps;
+    await resumeComposedBounty(BOUNTY_ID, deps);
+    await resumeComposedBounty(BOUNTY_ID, deps);
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('REAL expiry-refund caller: nested pre-broadcast failure is typed retryable and restores the crank state', async () => {
+    let restored: string | null = null;
+    let reconciled = false;
+    let finished = false;
+    const out = await refundExpiredComposedBounty(
+      { ...ctx({ compositionState: 'vault_held' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({ kind: 'claimed', priorSapStatus: 'submitted', ownerToken, replay: false }),
+        refundComposed: async () => ({
+          ok: true,
+          replayed: false,
+          chain: { ok: false, code: 'rpc_unreachable', message: 'pre-broadcast RPC failure', broadcast: false },
+        }),
+        restoreRetryable: async (_ctx, prior) => { restored = prior; },
+        markReconcile: async () => { reconciled = true; },
+        finishConfirmed: async () => { finished = true; },
+      },
+    );
+    expect(out).toEqual({
+      ok: false,
+      phase: 'refund_failed',
+      code: 'refund_failed',
+      causeCode: 'rpc_unreachable',
+      retryable: true,
+      message: 'pre-broadcast RPC failure',
+    });
+    expect(String(restored)).toBe('submitted');
+    expect(reconciled).toBe(false);
+    expect(finished).toBe(false);
+  });
+
+  it('REAL expiry-refund caller: broadcast-unknown becomes signature-bearing reconcile and is not restored for blind retry', async () => {
+    let restored = false;
+    let reconciledSignature: string | undefined;
+    const out = await refundExpiredComposedBounty(
+      { ...ctx({ compositionState: 'vault_held' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({ kind: 'claimed', priorSapStatus: 'open', ownerToken, replay: false }),
+        refundComposed: async () => ({
+          ok: true,
+          replayed: false,
+          chain: {
+            ok: false,
+            code: 'rpc_unreachable',
+            message: 'confirmation unknown',
+            broadcast: true,
+            signature: 'refund-unknown-sig',
+          },
+        }),
+        restoreRetryable: async () => { restored = true; },
+        markReconcile: async (_ctx, signature) => { reconciledSignature = signature; },
+      },
+    );
+    expect(out).toEqual({
+      ok: false,
+      phase: 'refund_reconcile',
+      code: 'refund_reconcile_required',
+      retryable: false,
+      signature: 'refund-unknown-sig',
+      message: 'confirmation unknown',
+    });
+    expect(restored).toBe(false);
+    expect(reconciledSignature).toBe('refund-unknown-sig');
+  });
+
+  it('REAL expiry-refund caller records canonical success only when the nested chain result is confirmed', async () => {
+    let confirmedSignature: string | undefined;
+    const out = await refundExpiredComposedBounty(
+      { ...ctx({ compositionState: 'vault_held' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({ kind: 'claimed', priorSapStatus: 'open', ownerToken, replay: false }),
+        refundComposed: async () => ({
+          ok: true,
+          replayed: false,
+          chain: {
+            ok: true,
+            dryRun: false,
+            signature: 'refund-confirmed-sig',
+            accounts: {},
+          },
+        }),
+        finishConfirmed: async (_ctx, signature) => { confirmedSignature = signature; },
+      },
+    );
+    expect(out).toEqual({
+      ok: true,
+      phase: 'refunded',
+      message: 'expired composed bounty refunded to creator',
+      signature: 'refund-confirmed-sig',
+    });
+    expect(confirmedSignature).toBe('refund-confirmed-sig');
+  });
+
+  it('settle-vs-expiry CAS loss follows the paid winner and never invokes refund terminalization', async () => {
+    let refundCalled = false;
+    let terminalized = false;
+    const out = await refundExpiredComposedBounty(
+      { ...ctx({ compositionState: 'vault_held' }), bountyId: BOUNTY_ID },
+      {
+        claim: async () => ({ kind: 'winner', winner: 'paid' }),
+        refundComposed: async () => {
+          refundCalled = true;
+          throw new Error('must not refund after paid wins');
+        },
+        finishConfirmed: async () => { terminalized = true; },
+        markReconcile: async () => { terminalized = true; },
+      },
+    );
+    expect(out).toEqual({
+      ok: true,
+      phase: 'superseded_paid',
+      message: 'settlement won the expiry-refund race',
+    });
+    expect(refundCalled).toBe(false);
+    expect(terminalized).toBe(false);
+  });
+
+  it('B3 — a non-owner on a live refund lease returns refund_in_progress and touches no money leg', async () => {
+    let refundCalls = 0;
+    let terminalCalls = 0;
+    const out = await refundExpiredComposedBounty(
+      { ...ctx({ compositionState: 'vault_held' }), bountyId: BOUNTY_ID },
+      {
+        claim: async () => ({ kind: 'winner', winner: 'refund_in_progress' }),
+        refundComposed: async () => {
+          refundCalls += 1;
+          return { ok: false, code: 'internal', message: 'must not run' };
+        },
+        finishConfirmed: async () => { terminalCalls += 1; },
+        restoreRetryable: async () => { terminalCalls += 1; },
+        markReconcile: async () => { terminalCalls += 1; },
+      },
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      phase: 'refund_in_progress',
+      code: 'refund_in_progress',
+    });
+    expect(refundCalls).toBe(0);
+    expect(terminalCalls).toBe(0);
+  });
+
+  it('B3 — an outer house-wallet failure is pre-broadcast and restores retryable state', async () => {
+    let restored = false;
+    let quarantined = false;
+    const out = await refundExpiredComposedBounty(
+      { ...ctx({ compositionState: 'vault_held' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({
+          kind: 'claimed',
+          priorSapStatus: 'open',
+          ownerToken,
+          replay: false,
+        }),
+        refundComposed: async () => ({
+          ok: false,
+          code: 'avatar_wallet_missing',
+          message: 'house custodial wallet unavailable',
+        }),
+        restoreRetryable: async () => { restored = true; },
+        markReconcile: async () => { quarantined = true; },
+      },
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      phase: 'refund_failed',
+      code: 'refund_failed',
+      causeCode: 'avatar_wallet_missing',
+      retryable: true,
+    });
+    expect(restored).toBe(true);
+    expect(quarantined).toBe(false);
+  });
+
+  it('B3 — signature reconciliation proves landed and exits to refunded', async () => {
+    let finishedSignature: string | null = null;
+    const out = await reconcileExpiryRefundUnknown(
+      { ...ctx({ compositionState: 'reconcile_refund_unknown' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({ kind: 'claimed', ownerToken }),
+        loadCapture: async () => ({ signature: 'refund-captured-sig', lastValidBlockHeight: 123n }),
+        inspect: async () => 'confirmed',
+        finish: async (_ctx, _owner, signature) => { finishedSignature = signature; },
+        release: async () => undefined,
+      },
+    );
+    expect(out).toMatchObject({ ok: true, phase: 'refunded', signature: 'refund-captured-sig' });
+    expect(String(finishedSignature)).toBe('refund-captured-sig');
+  });
+
+  it('B3 — expired blockhash plus null signature history stays quarantined', async () => {
+    let restored = false;
+    let released = 0;
+    const out = await reconcileExpiryRefundUnknown(
+      { ...ctx({ compositionState: 'reconcile_refund_unknown' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({ kind: 'claimed', ownerToken }),
+        loadCapture: async () => ({ signature: 'refund-never-landed', lastValidBlockHeight: 123n }),
+        inspect: async () => 'expired_missing',
+        restore: async () => { restored = true; },
+        release: async () => { released += 1; },
+      },
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      phase: 'refund_reconcile',
+      causeCode: 'expired_missing',
+      retryable: false,
+      signature: 'refund-never-landed',
+    });
+    expect(restored).toBe(false);
+    expect(released).toBe(1);
+  });
+
+  it('B3 — only a confirmed revert positively restores the retryable state', async () => {
+    let restoredSignature: string | null = null;
+    const out = await reconcileExpiryRefundUnknown(
+      { ...ctx({ compositionState: 'reconcile_refund_unknown' }), bountyId: BOUNTY_ID },
+      {
+        claim: async (_ctx, ownerToken) => ({ kind: 'claimed', ownerToken }),
+        loadCapture: async () => ({ signature: 'refund-confirmed-revert', lastValidBlockHeight: 123n }),
+        inspect: async () => 'confirmed_reverted',
+        restore: async (_ctx, _owner, signature) => { restoredSignature = signature; },
+        release: async () => undefined,
+      },
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      phase: 'refund_failed',
+      causeCode: 'confirmed_reverted',
+      retryable: true,
+    });
+    expect(String(restoredSignature)).toBe('refund-confirmed-revert');
+  });
+
+  it('B3 — the persistent null-history quarantine alerts once across crank passes', async () => {
+    _resetComposedWedgeAlerts();
+    const alerts: unknown[] = [];
+    const deps = {
+      loadContext: async () => ctx({ compositionState: 'reconcile_refund_unknown' }),
+      reconcileRefund: async () => ({
+        ok: false as const,
+        phase: 'refund_reconcile' as const,
+        code: 'refund_reconcile_required' as const,
+        causeCode: 'expired_missing',
+        retryable: false as const,
+        signature: 'refund-null-history',
+        message: 'blockheight expired but signature history is absent',
+      }),
+      alertError: async (alert: unknown) => { alerts.push(alert); },
+    } satisfies ResumeComposedBountyDeps;
+
+    await resumeComposedBounty(BOUNTY_ID, deps);
+    await resumeComposedBounty(BOUNTY_ID, deps);
+
+    expect(alerts).toHaveLength(1);
+  });
+
+  it('B3 — resume worker routes reconcile_refund_unknown into the signature reconciler', async () => {
+    let reconcileCalls = 0;
+    let settleCalls = 0;
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({ compositionState: 'reconcile_refund_unknown' }),
+      reconcileRefund: async () => {
+        reconcileCalls += 1;
+        return { ok: true, phase: 'refunded', message: 'proved landed', signature: 'sig' };
+      },
+      applyOutcome: async () => {
+        settleCalls += 1;
+        return { ok: false, phase: 'failed', escrowPda: VAULT_PDA, code: 'internal', message: 'must not run' };
+      },
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: true, phase: 'refunded' });
+    expect(reconcileCalls).toBe(1);
+    expect(settleCalls).toBe(0);
   });
 
   it('skips a missing bounty / missing winning hunter / missing vault', async () => {

@@ -1766,11 +1766,12 @@ pre-fund settle gas: ClawVille tops the SAP settle/finalize signer up to the
 configured **0.006 SOL** gas floor from a dedicated house wallet, subject to a
 fail-closed daily house cap.
 
-Expiry is terminal for settlement. Once \`expiresAt\` passes, the escrow can only
-refund to the poster; the resume crank automatically terminalizes the bounty,
-rejects its active/approved attempt, and drives the idempotent creator refund.
-It never auto-refunds before expiry, and a bounty with no expiry never enters
-this automatic refund path.
+Expiry is terminal on-chain. Once \`expiresAt\` passes, the escrow can only refund
+to the poster. The resume crank does not move money from its wall clock: it first
+probes settlement, and only the SAP program's typed \`escrow_expired\` response
+claims the bounty and drives the idempotent creator refund. A failure proven to be
+pre-broadcast stays retryable; a broadcast-unknown refund is quarantined for
+signature reconciliation and is never blindly retried.
 
 ## 12. Quests — the dev quest board
 

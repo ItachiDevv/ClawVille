@@ -40,6 +40,7 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SendTransactionError,
   SystemProgram,
   Transaction,
   type Commitment,
@@ -165,6 +166,7 @@ export type SapErrorCode =
   | 'pending_settlement_deprecated' // 6161 — create_pending_settlement removed; use settle_calls_v2
   | 'stake_below_coverage'
   | 'escrow_coverage_exceeded'
+  | 'escrow_expired'
   | 'internal';
 
 export interface SapDryRunResult {
@@ -220,11 +222,36 @@ export interface SapFailure {
    * double-pay). Always falsy on a dry-run (the simulator never broadcasts).
    */
   broadcast?: boolean;
+  /**
+   * Explicit landing disposition for a broadcast failure. A confirmed program
+   * revert is definitive and retryable according to its typed code; `unknown`
+   * alone requires money-state quarantine.
+   */
+  landed?: 'confirmed_reverted' | 'unknown';
   /** The broadcast tx signature when `broadcast===true` (for reconciliation). */
   signature?: string;
 }
 
 export type SapWriteResult = SapDryRunResult | SapLiveResult | SapFailure;
+
+export interface SapPreparedTransaction {
+  signature: string;
+  serializedTransaction: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  accounts: Record<string, string>;
+}
+
+export type SapPreparedTransactionResult =
+  | { ok: true; prepared: SapPreparedTransaction }
+  | SapFailure;
+
+export type SapCapturedTransactionInspection =
+  | 'confirmed'
+  | 'confirmed_reverted'
+  | 'pending'
+  | 'missing_valid'
+  | 'expired_missing';
 
 // ─── module-scope singletons ──────────────────────────────────────────────────
 
@@ -388,6 +415,7 @@ export async function loadAvatarWalletForSigning(
  * deployed 0.25 program's (devnet-confirmed 2026-07-09); extend as new ones surface.
  */
 const SAP_ONCHAIN_ERROR_CODES: Record<number, SapErrorCode> = {
+  6076: 'escrow_expired', // 0x17bc - the escrow deadline passed; only refund may proceed
   6145: 'stake_below_coverage',
   6153: 'escrow_coverage_exceeded',
   6062: 'insufficient_escrow_balance', // 0x17ae — deposit too small for the fee (raise initialDeposit)
@@ -497,6 +525,143 @@ export function classifyChainError(label: string, err: unknown): SapFailure {
 }
 
 /**
+ * `sendRawTransaction` can throw after the RPC has accepted the signed bytes.
+ * The one safe exception is web3.js's explicit simulation/preflight rejection:
+ * that response proves the RPC rejected the transaction before broadcast.
+ */
+function isDeterministicPreflightRejection(err: unknown): boolean {
+  return err instanceof SendTransactionError && err.message.startsWith('Simulation failed.');
+}
+
+export function classifySignedSendError(
+  label: string,
+  err: unknown,
+  signedSignature: string,
+): SapFailure {
+  const failure = classifyChainError(`${label}:send`, err);
+  if (isDeterministicPreflightRejection(err)) return failure;
+  return {
+    ...failure,
+    broadcast: true,
+    landed: 'unknown',
+    signature: signedSignature,
+  };
+}
+
+export function classifyConfirmedTransactionFailure(
+  label: string,
+  err: unknown,
+  signature: string,
+): SapFailure {
+  return {
+    ...classifyChainError(`${label}:reverted`, err),
+    broadcast: true,
+    landed: 'confirmed_reverted',
+    signature,
+  };
+}
+
+async function prepareCapturedTransaction(
+  tx: Transaction,
+  signer: Keypair,
+  accounts: Record<string, string>,
+): Promise<SapPreparedTransaction> {
+  const { blockhash, lastValidBlockHeight } =
+    await getConnection().getLatestBlockhash(COMMITMENT);
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = signer.publicKey;
+  tx.sign(signer);
+  if (!tx.signature) throw new Error('signed SAP transaction is missing its signature');
+  return {
+    signature: bs58.encode(tx.signature),
+    serializedTransaction: tx.serialize().toString('base64'),
+    blockhash,
+    lastValidBlockHeight,
+    accounts,
+  };
+}
+
+/** Send/confirm exact bytes that were committed before the first wire attempt. */
+export async function sendPreparedSapTransaction(
+  label: string,
+  prepared: SapPreparedTransaction,
+): Promise<SapLiveResult | SapFailure> {
+  const cfg = getConfig();
+  const connection = getConnection();
+  const mainnetGateOn = cfg.cluster === 'mainnet' && SAP_ALLOW_MAINNET;
+  if (!mainnetGateOn) {
+    const genesisGuard = await assertNotMainnetGenesis(connection, label);
+    if (genesisGuard) return genesisGuard;
+  }
+  let signature: string;
+  try {
+    signature = await connection.sendRawTransaction(
+      Buffer.from(prepared.serializedTransaction, 'base64'),
+    );
+  } catch (err) {
+    return classifySignedSendError(label, err, prepared.signature);
+  }
+  if (signature !== prepared.signature) {
+    return {
+      ok: false,
+      code: 'on_chain_error',
+      message: 'RPC returned a different signature for the captured SAP transaction.',
+      broadcast: true,
+      landed: 'unknown',
+      signature: prepared.signature,
+    };
+  }
+  try {
+    const confirmed = await connection.confirmTransaction(
+      {
+        signature,
+        blockhash: prepared.blockhash,
+        lastValidBlockHeight: prepared.lastValidBlockHeight,
+      },
+      COMMITMENT,
+    );
+    if (confirmed.value?.err) {
+      return classifyConfirmedTransactionFailure(
+        label,
+        confirmed.value.err as unknown,
+        signature,
+      );
+    }
+    return { ok: true, dryRun: false, signature, accounts: prepared.accounts };
+  } catch (err) {
+    return {
+      ...classifyChainError(`${label}:confirm`, err),
+      broadcast: true,
+      landed: 'unknown',
+      signature,
+    };
+  }
+}
+
+export async function inspectCapturedSapTransaction(
+  prepared: Pick<SapPreparedTransaction, 'signature' | 'lastValidBlockHeight'>,
+): Promise<SapCapturedTransactionInspection> {
+  const connection = getConnection();
+  const status = (
+    await connection.getSignatureStatuses([prepared.signature], {
+      searchTransactionHistory: true,
+    })
+  ).value[0];
+  if (status?.err) return 'confirmed_reverted';
+  if (
+    status &&
+    ['confirmed', 'finalized'].includes(status.confirmationStatus ?? '')
+  ) {
+    return 'confirmed';
+  }
+  if (status) return 'pending';
+  const height = await connection.getBlockHeight(COMMITMENT);
+  return height > prepared.lastValidBlockHeight
+    ? 'expired_missing'
+    : 'missing_valid';
+}
+
+/**
  * The single execution tail shared by every WRITE builder. Takes a fully-built
  * `Transaction` + the decrypted agent `Keypair` (the fee payer + only signer)
  * and either simulates (dry-run) or signs+sends (live). The keypair is used
@@ -555,12 +720,28 @@ async function executeTx(
     // LIVE: sign + send + confirm. Reached only when SAP_DRY_RUN=false AND the
     // route already passed the enabled/escrow gate.
     tx.sign(signer);
-    // BLOCKING #5 fix — split BROADCAST from CONFIRM so a confirmation failure
-    // AFTER a successful broadcast is reported with `broadcast:true` + the
-    // signature (the tx may have LANDED). A pre-broadcast failure (build /
-    // blockhash / sendRawTransaction reject) falls through to the outer catch with
-    // NO `broadcast` flag (nothing hit the wire — a clean retry/delete is safe).
-    const signature = await connection.sendRawTransaction(tx.serialize());
+    if (!tx.signature) throw new Error('signed SAP transaction is missing its signature');
+    const signedSignature = bs58.encode(tx.signature);
+    // B1 — after signing, a send-side throw is ambiguous: the RPC may have accepted
+    // the bytes before the response was lost. Preserve the deterministic local
+    // signature and quarantine. Only an explicit web3.js simulation/preflight
+    // rejection proves that no broadcast occurred.
+    let signature: string;
+    try {
+      signature = await connection.sendRawTransaction(tx.serialize());
+    } catch (sendErr) {
+      return classifySignedSendError(label, sendErr, signedSignature);
+    }
+    if (signature !== signedSignature) {
+      return {
+        ok: false,
+        code: 'on_chain_error',
+        message: 'RPC returned a different signature for the signed SAP transaction.',
+        broadcast: true,
+        landed: 'unknown',
+        signature: signedSignature,
+      };
+    }
     let confirmed;
     try {
       confirmed = await connection.confirmTransaction(
@@ -572,7 +753,7 @@ async function executeTx(
       // failure so the caller persists a recoverable state + signature and NEVER
       // auto-deletes/retries.
       const failure = classifyChainError(`${label}:confirm`, confirmErr);
-      return { ...failure, broadcast: true, signature };
+      return { ...failure, broadcast: true, landed: 'unknown', signature };
     }
     // N1 fix — confirmTransaction RESOLVES even when the tx CONFIRMED WITH A PROGRAM
     // ERROR (it only rejects on non-landing). If `value.err` is non-null the tx landed
@@ -581,11 +762,11 @@ async function executeTx(
     // failure carrying `broadcast:true` + the signature (the reverted tx did hit the
     // wire — the caller must NOT blindly retry without checking on-chain state).
     if (confirmed.value?.err) {
-      const failure = classifyChainError(
-        `${label}:reverted`,
+      return classifyConfirmedTransactionFailure(
+        label,
         confirmed.value.err as unknown,
+        signature,
       );
-      return { ...failure, broadcast: true, signature };
     }
     return { ok: true, dryRun: false, signature, accounts };
   } catch (err) {
@@ -672,11 +853,10 @@ export async function executeSapIdentityAttachTx(input: {
       );
     } catch (confirmErr) {
       const failure = classifyChainError(`${label}:confirm`, confirmErr);
-      return { ...failure, broadcast: true, signature };
+      return { ...failure, broadcast: true, landed: 'unknown', signature };
     }
     if (confirmed.value?.err) {
-      const failure = classifyChainError(`${label}:reverted`, confirmed.value.err as unknown);
-      return { ...failure, broadcast: true, signature };
+      return classifyConfirmedTransactionFailure(label, confirmed.value.err as unknown, signature);
     }
     return { ok: true, dryRun: false, signature, accounts: input.accounts };
   } catch (err) {
@@ -3548,6 +3728,71 @@ export interface WithdrawEscrowV2UsdcInput {
   workerWalletPubkey: string;
   escrowNonce: bigint;
   amount: bigint;
+}
+
+/** Build/sign a V2 withdraw without broadcasting so its exact bytes can be captured. */
+export async function prepareWithdrawEscrowV2Usdc(
+  input: WithdrawEscrowV2UsdcInput,
+): Promise<SapPreparedTransactionResult> {
+  const cfg = getConfig();
+  const gate = usdcEscrowGate(cfg);
+  if (gate) return gate;
+  if (cfg.dryRun) {
+    return {
+      ok: false,
+      code: 'internal',
+      message: 'captured V2 withdraw preparation is live-only.',
+    };
+  }
+  if (input.amount <= 0n) {
+    return { ok: false, code: 'invalid_amount', message: 'amount must be > 0.' };
+  }
+  let workerWallet: PublicKey;
+  try {
+    workerWallet = new PublicKey(input.workerWalletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'workerWalletPubkey is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.depositorAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: depositor } = handle as AvatarWalletHandle;
+  const mint = usdcMintForEscrow(cfg);
+  const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+  const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositor, input.escrowNonce);
+  const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+  const depositorAta = getAssociatedTokenAddress(mint, depositor, false);
+  const accounts = {
+    depositor: depositor.toBase58(),
+    escrow: escrowPda.toBase58(),
+    vaultAta: vaultAta.toBase58(),
+    depositorAta: depositorAta.toBase58(),
+  };
+  try {
+    const tx = new Transaction().add(
+      createAssociatedTokenAccountIdempotentInstruction({
+        payer: depositor,
+        ata: depositorAta,
+        owner: depositor,
+        mint,
+      }),
+    );
+    tx.add(
+      await buildWithdrawEscrowV2Ix(getProgram(), {
+        depositor,
+        escrowPda,
+        amount: input.amount,
+        remaining: assembleV2SplRemaining('withdraw', {
+          vaultAta,
+          depositorAta,
+          tokenMint: mint,
+        }),
+      }),
+    );
+    return { ok: true, prepared: await prepareCapturedTransaction(tx, keypair, accounts) };
+  } catch (err) {
+    return classifyChainError('prepareWithdrawEscrowV2Usdc', err);
+  }
 }
 
 /**
