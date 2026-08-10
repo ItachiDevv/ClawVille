@@ -165,7 +165,7 @@ describe('BA-2 fixture safety gate', () => {
       join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'src', 'schema', 'cove-test-fixture.ts'),
     ).text();
     const migrationSource = await Bun.file(
-      join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0026_test_fixture_runs.sql'),
+      join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0058_test_fixture_runs.sql'),
     ).text();
     expect(schemaSource).toContain("uniqueIndex('cove_test_fixture_runs_owner_active_unique')");
     expect(schemaSource).toContain(".where(sql`status = 'active'`)");
@@ -250,7 +250,7 @@ describe('BA-2 fixture safety gate', () => {
       }
     }
     const migrationSource = await Bun.file(
-      join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0026_test_fixture_runs.sql'),
+      join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0058_test_fixture_runs.sql'),
     ).text();
     expect(migrationSource.toLowerCase()).not.toContain('on delete set null');
     expect(migrationSource.toLowerCase()).toContain('on delete restrict');
