@@ -17,7 +17,9 @@ function summary(revealMs: number, over: any = {}) {
     backendWaived: false,
     revealMs,
     frameMetrics: { worstFrameMsIn10s: 1000, stableWindowStartMsAfterReveal: 3000, framesOver100In10s: 2, ...over.fm },
-    longtasks: { preRevealTotalMs: 4000, ...over.lt },
+    // boundaryKind is REQUIRED evidence since the §2b symmetric amendment
+    // (founder 2026-08-10) — see the dedicated rejection test below.
+    longtasks: { boundaryKind: 'polled-reveal-v2', preRevealTotalMs: 4000, ...over.lt },
     ...over.top,
   };
 }
@@ -67,6 +69,16 @@ describe('evaluatePairedGate', () => {
     const r = evaluatePairedGate(pairs);
     expect(r.usablePairs).toBe(7);
     expect(r.verdict).toBe('inconclusive'); // 7 < 8 usable
+  });
+  it('rejects reports without the polled-reveal-v2 longtask boundary (§2b amendment)', () => {
+    const pairs = makePairs(9, 1.0);
+    // A historical release-boundary report (pre-amendment: no boundaryKind)
+    // and a wrong-kind report are both unusable evidence — a reused manifest
+    // must never silently compare unlike longtask metrics.
+    delete (pairs[0].baseline as any).longtasks.boundaryKind;
+    (pairs[1].candidate as any).longtasks.boundaryKind = 'release-stamp-v1';
+    const r = evaluatePairedGate(pairs);
+    expect(r.usablePairs).toBe(7);
   });
   it('fails on a non-counterbalanced order', () => {
     const pairs = makePairs(8, 1.0).map((p) => ({ ...p, order: 'AB' as const }));

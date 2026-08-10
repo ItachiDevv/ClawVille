@@ -94,7 +94,15 @@ export function sanityBreaches(summary, backend) {
 }
 
 function usableReport(summary) {
-  return summary?.validForPerformance === true && summary?.backendWaived === false;
+  return (
+    summary?.validForPerformance === true &&
+    summary?.backendWaived === false &&
+    // §2b amendment (founder 2026-08-10): only symmetric polled-reveal
+    // longtask accounting is comparable. Historical release-boundary reports
+    // (no boundaryKind, or a different kind) are unusable evidence — a
+    // reused manifest must never silently compare unlike metrics.
+    summary?.longtasks?.boundaryKind === "polled-reveal-v2"
+  );
 }
 
 /**

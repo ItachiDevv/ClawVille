@@ -284,14 +284,16 @@ describe('computeValidity — adversarial fixtures', () => {
 });
 
 
-describe('longtaskBoundaryMs (rung-3 accounting boundary)', () => {
-  it('uses the app-authored release stamp when finite and not deadline', () => {
-    expect(longtaskBoundaryMs(12000, 11500, 'first-paint:warmup-complete')).toBe(11500);
-  });
-  it('falls back to polled reveal for absolute-deadline stamps', () => {
+describe('longtaskBoundaryMs (§2b symmetric boundary — founder amendment 2026-08-10)', () => {
+  it('is ALWAYS the polled reveal, regardless of any release stamp', () => {
+    // The old release-stamp boundary was unpassable by construction for a
+    // first-paint-released candidate (its stamp sits AFTER reveal, widening
+    // its counted window vs baseline). Symmetric = both arms cut at reveal.
+    expect(longtaskBoundaryMs(12000, 11500, 'first-paint:warmup-complete')).toBe(12000);
+    expect(longtaskBoundaryMs(12000, 13100, 'first-paint:warmup-complete')).toBe(12000);
     expect(longtaskBoundaryMs(12000, 45000, 'absolute-deadline')).toBe(12000);
   });
-  it('falls back to polled reveal when the stamp is absent or non-finite', () => {
+  it('passes through absent/non-finite reveal unchanged', () => {
     expect(longtaskBoundaryMs(12000, null, null)).toBe(12000);
     expect(longtaskBoundaryMs(12000, Number.NaN, 'first-paint:resume')).toBe(12000);
     expect(longtaskBoundaryMs(null, null, null)).toBe(null);
