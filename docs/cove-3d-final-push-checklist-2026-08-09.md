@@ -24,6 +24,10 @@ commits + the 2-week staging catch-up), builds green, and is ready to deploy to
 ## THE VISUAL CHECKLIST — walk this on staging, in order
 
 ### 1. Hold'em ring — `/cove/table` (the headline)
+- [ ] **Lobby rework (2026-08-10)**: Live Tables uses designed dark table cards; walk
+      Browse, Create Table (house tier + private custom stakes/seeded agents), and Have
+      a code?, confirm guests see the sign-in gate, copy the one-time private code, and
+      confirm any table above six seats opens the classic 2D felt.
 - [ ] **Default view on entry**: all 5 opponents seated on the proper table chairs
       (not the slot-machine stools), nobody hidden behind a chair back, dealer readable
       at the far side, name badges clear of the dealer.
