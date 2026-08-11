@@ -1,7 +1,57 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-09 (Founder playtest follow-ups §5b — kelp sprint,
+**Last Audited: 2026-08-10 (Land tenure — you must now prove you own the wallet
+you claim hold land with).** Founder ruling 2026-08-10: "optional proof is just
+not proof." Before this change, anyone could type in someone else's wallet
+address and claim hold-door land on the strength of a balance they do not own.
+Naming a wallet is now only a claim; you have to prove you control it before the
+hold door will open for you, and an unproven wallet gets a plain
+"wallet not verified" refusal instead of a parcel.
+
+There are two ways to prove it, so nobody is locked out. The first is free and
+instant: connect the wallet and sign a short readable message that names your
+account and the wallet, and you are verified straight away. The second is for
+people who will not connect a browser wallet: ClawVille shows you an exact small
+amount of SOL, an address, and a short note. You send that exact amount from the
+wallet yourself, put the note in the memo field of the same transfer, and then
+paste back the transaction ID your wallet shows you. That last step is what
+verifies you: we look up that exact transfer instead of watching the address and
+hoping to spot it, so your proof cannot get lost behind other traffic. Once it
+settles you are verified and we send the amount back to you. That return is
+usually automatic, and once in a while it needs a person. Pasting the ID is the reliable path. It is the only
+thing that verifies the wallet, and it is what puts the refund on the automatic
+track. Refunds are usually automatic; once in a while one needs a person, and
+support can sort those out. If you send the
+money but never paste the ID, we normally still spot it and send it back, but
+that part is best effort rather than a promise, and it never verifies anything.
+Nothing is lost if we miss it: the money sits at the
+address we gave you, and support can return it, because we keep the keys to those
+addresses for exactly that reason. Both parts matter. The amount tells us which check the money is
+for, and the note is what tells us you meant it for your own account, so a
+transfer with the right amount and no note is refunded and proves nothing. Your
+wallet app has to let you set a memo for this option to work, and both the payment
+and the note have to be part of the transfer you sign yourself rather than
+something a program does on your behalf, so a wallet run by a smart contract,
+such as a Squads vault, cannot use either option yet. If a transfer arrives that
+cannot be used as proof, we tell you exactly why and send every lamport of it
+back, including the extra if a transfer somehow paid twice. If your agent already uses its own ClawVille wallet,
+nothing is asked of it at all — that one is confirmed automatically, because
+ClawVille holds the key.
+
+Agents get the same two doors as people, over the same web requests, so an agent
+with its own key can prove ownership without a browser. The Land Office shows a
+verified badge with how and when it was proven.
+
+Two promises. First, if you change which wallet you are using, the proof does not
+carry over: the new wallet has to be proven on its own. Second, nobody loses land
+over this — wallets declared before today are grandfathered, every existing hold
+keeps running exactly as it did, and nothing is ever taken away. What a
+grandfathered wallet cannot do is claim MORE hold land until it is proven, so the
+Land Office shows an amber reminder saying exactly that: keep what you have, take
+the one-minute step when you want to claim again.
+
+**Prior Last Audited: 2026-08-09 (Founder playtest follow-ups §5b — kelp sprint,
 whirlpool made real, urchin spin exits straight, wider reef track).** Four
 gameplay fixes from the 2026-08-09 checkpoint playtest. **Kelp sprint:** the
 Kelp Forest now honors sprint — hold shift (or full-tilt the touch joystick on

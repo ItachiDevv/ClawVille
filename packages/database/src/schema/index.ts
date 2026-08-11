@@ -127,6 +127,12 @@ export * from './land';
 // non-cashable build balance per avatar plus the salvage claim receipt. NEVER a
 // ClawToken table; materials have no exit rail. See `land-materials.ts`.
 export * from './land-materials';
+// Land hold-wallet ownership proof — door 2 (2026-08-10). One table:
+// land_hold_wallet_transfer_challenges, the exact-dust attribution + auto-refund
+// ledger behind the "verify by sending a small refunded amount" door. The users
+// verification columns live on `users` itself. Migration 0060 (idempotent, CI
+// migrate gate — NEVER db:push). See `land-hold-verify.ts` header.
+export * from './land-hold-verify';
 // SAP Option C — on-chain USDC escrow gate settlement ledger (2026-06-22).
 // sap_escrow_settlements / sap_escrow_approvals: the backend at-most-once-settle
 // + depositor-approval guard for the verify-before-release USDC rail. PURELY

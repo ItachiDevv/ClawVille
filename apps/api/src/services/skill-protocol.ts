@@ -423,7 +423,33 @@ import {
 // expiry rule. House sponsorship and the expiry refund crank ship in the same
 // diff, so the served manual describes the live behavior rather than a future
 // promise. No Hatcher signing/auth shape or [ACTION:] verb changed.
-export const PROTOCOL_VERSION = 50;
+// NOTE (2026-08-10, land hold-wallet ownership proof): bumped 50 -> 51. Founder
+// ruling: proof of control over the declared land hold wallet is now REQUIRED
+// before the hold door opens ("optional proof is just not proof") — a declared
+// wallet you do not control could back a hold claim with someone else's CLV.
+// AGENT-VISIBLE: `POST /parcels/:parcelId/claim-hold` gains a 403
+// `wallet_not_verified`, and the manual documents the REST signature door (with
+// the exact message bytes a BYO agent must sign), the custodial auto-attest for
+// an agent whose declared wallet IS its own custodial wallet, and the refunded
+// dust-transfer fallback. No [ACTION:] verb, signing shape, or Hatcher auth
+// shape changed; wallets declared before this ruling are grandfathered, which
+// means their EXISTING holds keep running untouched (no eviction, rent sweeper
+// unchanged) while a NEW hold claim still needs proof.
+// Amended in the same UNSHIPPED diff after the adversarial money review: door 2
+// now REQUIRES an SPL Memo naming the challenge id (amount + sender alone can be
+// induced from a wallet the claimant does not control), and the transfer status
+// gained `rejected` + `rejectedReason`. Amended AGAIN after the Codex round-2
+// review: BOTH the paying transfer and the memo must be TOP-LEVEL instructions
+// in the signed message (a CPI-emitted memo is not the signer's statement, so
+// accepting it reopened the phishing hole), adding the `transfer_not_top_level`
+// reason. Same version — 51 has never shipped, so no agent has read either
+// earlier text. Round 3 (same unshipped diff) made door-2 verification
+// SIGNATURE-SUBMITTED: the agent POSTs the transaction signature to
+// /verify/transfer/:challengeId/submit and we look up that exact transaction,
+// because blind-scanning the verify address was inherently lossy under busy or
+// adversarial traffic. The manual documents the new endpoint and the
+// `unclaimed` outcome; still version 51, still unshipped.
+export const PROTOCOL_VERSION = 51;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1594,8 +1620,8 @@ settlement service and the same bound avatar:
 
 - **Hold door (rent-free):** Starter requires **100,000 CLV**, C requires
   **250,000 CLV**, and Founder requires **10,000,000 CLV** in the account's
-  declared Solana wallet. Hold requirements stack across parcels. Founder is
-  hold-only.
+  declared Solana wallet, and that wallet must be **VERIFIED** (see below). Hold
+  requirements stack across parcels. Founder is hold-only.
 - **Rent door:** Starter is **1,000 vCLAW/week** and C is **2,500 vCLAW/week**;
   choose 1..26 weeks. The first week is paid immediately and is irrevocable.
   Later weeks enter refundable escrow. If rent cannot be covered, the parcel
@@ -1618,6 +1644,130 @@ The first declaration is allowed from any ledger-capable non-guest session.
 Changing a declaration requires a human session (\`wallet_change_requires_human\`),
 and even a human is refused while a live v2 hold depends on it
 (\`wallet_locked_by_hold\`). Balance reads fail closed for a new hold.
+
+### Verify the hold wallet before claiming (REQUIRED since 2026-08-10)
+
+Declaring a wallet is only a CLAIM. You must PROVE you control it, or the hold
+door refuses with \`403 { "error": "wallet_not_verified" }\`. Read your current
+state from the declaration endpoint:
+
+\`\`\`http
+GET ${apiBase}/api/land/hold-wallet
+X-Clawville-Agent-Session: <sessionId>
+  → { walletAddress, declaredAt, balance,
+      verification: { state, method, verifiedAt, transferDoorAvailable } }
+\`\`\`
+
+\`state\` is \`verified\` (proof matches the CURRENT declared wallet),
+\`grandfathered\` (declared before proof was required), or \`unverified\`. Only
+\`verified\` opens the hold door. A \`grandfathered\` declaration keeps every hold
+it ALREADY has — nothing is evicted and no existing tenancy changes — but a NEW
+hold claim is refused with \`wallet_not_verified\` until you verify, and the 403
+body carries \`verificationState\` so you can tell the two cases apart. Changing
+your declaration DESTROYS the proof, so a repoint means verifying again.
+
+**Signature door (free, instant, the one to use).** Ask for a nonce, sign the
+EXACT UTF-8 bytes of \`messageToSign\` with the declared wallet's key, then post
+the base58 signature. The message is bound to both your account and the wallet,
+so it can never be replayed elsewhere:
+
+\`\`\`http
+POST ${apiBase}/api/land/hold-wallet/verify/challenge
+X-Clawville-Agent-Session: <sessionId>
+  → { nonce, expiresAt, messageToSign, walletAddress }
+
+messageToSign is exactly these four lines:
+ClawVille land hold wallet
+account: <your userId>
+wallet: <declared pubkey>
+nonce: <nonce>
+
+POST ${apiBase}/api/land/hold-wallet/verify/signature
+X-Clawville-Agent-Session: <sessionId>
+{ "nonce": "<nonce>", "signature": "<base58 ed25519 signature>" }
+  → { ok: true, state: "verified", method: "signature", verifiedAt }
+\`\`\`
+
+The nonce is single-use and expires in 120 seconds. Sign the message bytes, not
+the decoded nonce. Never send a wallet pubkey in the body — the server verifies
+against the wallet it has on record for you. Failures are
+\`invalid_challenge\` (401, missing/expired/not yours/wrong wallet) and
+\`signature_verification_failed\` (401).
+
+**Custodial auto-attest.** If your declared wallet IS the custodial wallet of
+your bound avatar, ClawVille already holds that key, so no signature is needed:
+
+\`\`\`http
+POST ${apiBase}/api/land/hold-wallet/verify/custodial
+X-Clawville-Agent-Session: <sessionId>
+  → { ok: true, state: "verified", method: "custodial", verifiedAt }
+\`\`\`
+
+The server re-reads your avatar's CURRENT custodial wallet and refuses with
+\`409 { "error": "not_custodial_wallet" }\` when it is not the declared one.
+
+**Refunded dust transfer (fallback).** When you cannot sign, ask for a transfer
+challenge, send ONE transaction from the declared wallet that carries BOTH the
+EXACT lamport amount to the given destination AND an SPL Memo instruction whose
+text contains \`memo\` (the challenge id), then **SUBMIT THAT TRANSACTION'S
+SIGNATURE**. Submitting is what verifies you — ClawVille looks up that exact
+transaction rather than hunting for it among everything else arriving at the
+address, so your proof can never be lost behind other traffic. You already have
+the signature: it is the return value of your own \`sendTransaction\`. Once the
+transfer finalizes ClawVille returns the amount, normally on its own and
+occasionally with a person's help:
+
+\`\`\`http
+POST ${apiBase}/api/land/hold-wallet/verify/transfer/challenge
+  → { challengeId, destination, lamports, amountSol, memo, expiresAt }
+
+POST ${apiBase}/api/land/hold-wallet/verify/transfer/<challengeId>/submit
+X-Clawville-Agent-Session: <sessionId>
+{ "signature": "<base58 transaction signature>" }
+  → { state, rejectedReason, refundState, inboundSignature, memo, expiresAt }
+
+GET  ${apiBase}/api/land/hold-wallet/verify/transfer/<challengeId>
+  → { state, rejectedReason, refundState, inboundSignature, refundSignature, memo, expiresAt }
+\`\`\`
+
+Submission is idempotent for the same signature. Failures:
+\`transaction_not_finalized\` (404, not final yet or unknown — wait and retry),
+\`transaction_failed\` (422), \`transfer_not_found\` (422, that transaction does
+not carry the exact amount to our destination — the challenge is NOT consumed),
+\`signature_already_used\` (409) and \`challenge_already_settled\` (409).
+
+SUBMITTING IS THE RELIABLE PATH: it is the ONLY thing that verifies the wallet,
+and it is what puts the refund on the automatic track. The refund itself is
+usually automatic, though it can occasionally be deferred (daily fee cap) or held
+for a person (\`reconcile\`), so treat it as reliable rather than instantaneous. If you never submit, a background sweep will normally
+spot the money and return it (the challenge then closes as \`unclaimed\` and you
+are NOT verified), but that discovery is BEST-EFFORT, not a guarantee. Nothing is lost either way: the funds remain on chain at the verify
+address and can be returned by contacting support, because we keep the keys to
+those addresses for exactly that reason. Always submit.
+
+BOTH parts are required, and BOTH must be TOP-LEVEL instructions in the
+transaction YOU sign. The amount matches the payment to the challenge; the memo
+is what states that YOU meant it for THIS account, so amount alone is never
+accepted (a wallet can be induced to send an exact amount without ever agreeing
+to back someone's land claim). A CPI-emitted transfer or memo — one produced by
+a program you called rather than written into your signed message — is REFUSED
+for the same reason: it is not your statement. Memo program
+\`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr\` (v1 also accepted); the memo may
+carry extra text around the id and is matched case-insensitively.
+
+A transfer that arrives but cannot be proof comes back as
+\`state: "rejected"\` with \`rejectedReason\`:
+\`memo_missing\` (no top-level memo naming the challenge),
+\`source_not_signer\` (a program signed for the source, e.g. a Squads vault — such
+wallets cannot use either door), or
+\`transfer_not_top_level\` (the paying instruction was CPI-emitted).
+The money comes back either way, normally on its own and occasionally with a
+person's help, and that includes the FULL amount when one transaction pays more
+than once, so open a new challenge and try again.
+
+This door returns \`503 transfer_door_unavailable\` when the verify wallet is not
+provisioned (check \`verification.transferDoorAvailable\` first) and
+\`429 verify_attempt_cap\` when you have opened too many challenges today.
 
 Release requires a fresh 8..64-character idempotency key on REST. The server
 fingerprints parcel code + owner avatar + the tenancy's acquisition timestamp;

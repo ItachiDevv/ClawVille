@@ -170,11 +170,50 @@ export const users = pgTable(
     /** When the current `linked_wallet_pubkey` was last proven + set. */
     linkedWalletAt: timestamp('linked_wallet_at', { withTimezone: true }),
 
-    /** Signatureless P2 land-hold declaration; unique per account in SQL. */
+    /** P2 land-hold declaration; unique per account in SQL. A declaration is a
+     *  CLAIM, never a proof — the four columns below carry the proof. */
     landHoldWalletPubkey: varchar('land_hold_wallet_pubkey', { length: 44 }),
     landHoldWalletDeclaredAt: timestamp('land_hold_wallet_declared_at', {
       withTimezone: true,
     }),
+
+    // -----------------------------------------------------------------
+    // Land hold-wallet OWNERSHIP PROOF (founder ruling 2026-08-10).
+    // Migration 0060. Declaring a wallet you do not control used to let you
+    // claim hold-door land backed by SOMEONE ELSE'S CLV balance; proof is now
+    // REQUIRED before the hold door opens.
+    //
+    // PUBKEY-BOUND, NOT ROW-BOUND (the whole point): every gate requires
+    // `landHoldWalletVerifiedPubkey === landHoldWalletPubkey`. Storing only a
+    // verified_at timestamp would let declare-A -> verify-A -> change-to-B
+    // inherit A's proof and bypass the feature entirely. Clearing on change is
+    // ALSO done (see `declareLandHoldWallet`), but the gate never depends on
+    // the clear having happened.
+    // -----------------------------------------------------------------
+    /** When the CURRENT `landHoldWalletVerifiedPubkey` was proven. */
+    landHoldWalletVerifiedAt: timestamp('land_hold_wallet_verified_at', {
+      withTimezone: true,
+    }),
+    /** How it was proven: 'signature' | 'transfer' | 'custodial'. */
+    landHoldWalletVerifiedMethod: varchar('land_hold_wallet_verified_method', {
+      length: 16,
+    }),
+    /** The EXACT pubkey that was proven. Compared against
+     *  `landHoldWalletPubkey` on every gate; a mismatch is "unverified". */
+    landHoldWalletVerifiedPubkey: varchar('land_hold_wallet_verified_pubkey', {
+      length: 44,
+    }),
+    /**
+     * One-shot grandfather discriminator for wallets declared BEFORE proof was
+     * required. Stamped ONCE by migration 0060 against a hard-coded literal
+     * cutoff, so a fresh post-migration declare can never forge it (its
+     * `declared_at` is >= the cutoff). APPLICATION CODE MUST NEVER WRITE A
+     * NON-NULL VALUE HERE — it may only NULL it (any wallet change clears it).
+     */
+    landHoldWalletGrandfatheredPubkey: varchar(
+      'land_hold_wallet_grandfathered_pubkey',
+      { length: 44 },
+    ),
 
     // -----------------------------------------------------------------
     // Guest-avatar auto-create (2026-04-23) — un-authenticated visitors get
@@ -224,6 +263,17 @@ export const users = pgTable(
     landHoldWalletUnique: uniqueIndex('users_land_hold_wallet_pubkey_unique')
       .on(t.landHoldWalletPubkey)
       .where(sql`${t.landHoldWalletPubkey} IS NOT NULL`),
+    /** Hold-wallet proof method vocabulary (migration 0060). */
+    landHoldWalletVerifiedMethodValid: check(
+      'users_land_hold_wallet_verified_method_valid',
+      sql`${t.landHoldWalletVerifiedMethod} IS NULL OR ${t.landHoldWalletVerifiedMethod} IN ('signature', 'transfer', 'custodial')`,
+    ),
+    /** All-NULL or all-NON-NULL — a half-written verification tuple can never
+     *  be read as proof (migration 0060). */
+    landHoldWalletVerifiedShape: check(
+      'users_land_hold_wallet_verified_shape',
+      sql`(${t.landHoldWalletVerifiedAt} IS NULL AND ${t.landHoldWalletVerifiedMethod} IS NULL AND ${t.landHoldWalletVerifiedPubkey} IS NULL) OR (${t.landHoldWalletVerifiedAt} IS NOT NULL AND ${t.landHoldWalletVerifiedMethod} IS NOT NULL AND ${t.landHoldWalletVerifiedPubkey} IS NOT NULL)`,
+    ),
   }),
 );
 
