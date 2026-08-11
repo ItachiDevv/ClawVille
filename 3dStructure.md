@@ -414,7 +414,39 @@ frozen pre-P3; the live stage already contained the unified controller, Kelp
 slot, and v42 protocol baseline, so the activity slot was applied to those
 landed roles.
 
-**Last edit 2026-08-09 (Kelp sprint enabled — founder playtest follow-up §5b-4).**
+**Last edit 2026-08-11 (Cold-load rung-4 slice B — service-worker precache stand-down; sw.js v10→v11; two Codex BLOCK rounds folded).**
+The SW's install handler no longer performs ANY network work. Previously it
+fetched all 22 roster URLs (~7.8MB: 17 building/terrain GLBs + 3 locomotion
+clips + 2 basis transcoder files) with `cache:'no-store'` at `window.load`,
+racing the boot's own tier-1 downloads of the SAME files and re-paying the
+full wire on every SW version bump. The v11 model: **(1) Deferred,
+page-signaled precache** — sw-register sends `clawville:precache` after the
+world's first-paint stamp (`__W3D_DECORATIVE_RELEASED_AT`, 30s fallback for
+pages that never boot the world), retried every 10s (6-attempt budget) until
+a VERSION-carrying `clawville:precache-ack` arrives; a `controllerchange`
+(new worker takeover — promotion can trail `skipWaiting()` by a full page
+view while the active worker is mid-fetch-storm, observed live) RESETS the
+ack state and retry budget so the new worker always gets its own handshake.
+The SW runs the roster as a module-scoped singleton and enforces the 60MB
+budget after. **(2) Cache modes by URL class** — `?v=`-versioned URLs are
+immutable: skip-if-present + default cache mode (HTTP-cache hits, ~zero
+wire); UNVERSIONED roster URLs (kelp.glb, the 3 locomotion clips, both basis
+files) ALWAYS revalidate with `cache:'no-cache'` (304-cheap) so a stale
+long-lived HTTP-cache or migrated copy can never live forever, with the
+existing entry retained when revalidation fails. **(3) Upgrade without an
+offline gap** — activation MIGRATES every entry of the previous asset caches
+into the new one BEFORE deletion; a source cache is deleted ONLY when every
+entry migrated, and retained legacy caches still serve through a
+`caches.match` fallback in the fetch path. Live-verified: a v10 profile with
+84 cached assets upgraded to v11 holding all 84. Offline coverage is
+therefore preserved across BOTH steady state and the upgrade itself. §6f
+rule 9 discipline: version bumped (v11); registration already
+`updateViaCache:'none'` + explicit `reg.update()`. The before/after staging
+reveal measurements land in `docs/perf-cold-load-diet-2026-07-31.md` with the
+after-arm (pending at this entry's writing — the ledger entry is written when
+the evidence exists, not before).
+
+**Prior Last edit 2026-08-09 (Kelp sprint enabled — founder playtest follow-up §5b-4).**
 The kelp stage slot's capability mask now sets `sprint: true` (all other
 capabilities unchanged: no jump/verticalSwim/emotes/interact/clickPath). Sprint
 rides the SHARED controller unmodified: shift key or full-tilt joystick →
