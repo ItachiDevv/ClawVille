@@ -2,9 +2,25 @@
  * LAND P2 TENURE CONTRACT (supersedes legacy route notes later in this header):
  * - POST /claim-starter: unconditional pre-auth 409 `tenure_model_active`.
  * - POST /hold-wallet: auth -> ledger-capable -> non-guest; strict
- *   `{ walletAddress }`; canonical base58 declaration with no signature proof;
- *   first declaration is human/agent parity-open, but repointing is human-only
- *   and 409 `wallet_locked_by_hold` while any live v2 hold exists.
+ *   `{ walletAddress }`; canonical base58 declaration; first declaration is
+ *   human/agent parity-open, but repointing is human-only and 409
+ *   `wallet_locked_by_hold` while any live v2 hold exists. A declaration is a
+ *   CLAIM only — a repoint NULLs any existing proof in the same statement.
+ * - Hold-wallet OWNERSHIP PROOF (2026-08-10) — same middleware chain on all
+ *   five routes, so a connected agent proves AS ITSELF and a guest is 403'd:
+ *     GET  /hold-wallet                       adds
+ *          `verification: { state: 'unverified'|'verified'|'grandfathered',
+ *                           method, verifiedAt, transferDoorAvailable }`
+ *     POST /hold-wallet/verify/challenge      -> { nonce, expiresAt,
+ *                                                 messageToSign, walletAddress }
+ *     POST /hold-wallet/verify/signature      strict `{ nonce, signature }`
+ *     POST /hold-wallet/verify/custodial      strict `{}`
+ *     POST /hold-wallet/verify/transfer/challenge  strict `{}`
+ *     GET  /hold-wallet/verify/transfer/:challengeId
+ *   Errors: wallet_not_verified (403 on claim-hold), wallet_not_declared,
+ *   invalid_challenge, invalid_signature, signature_verification_failed,
+ *   not_custodial_wallet, transfer_door_unavailable, verify_attempt_cap,
+ *   challenge_expired.
  * - POST /parcels/:parcelId/claim-rent: same middleware; strict
  *   `{ weeks: 1..26, idempotencyKey: 8..64 }`; server quotes starter=1000 and
  *   c=2500 vCLAW/week; founder has no rent door. Week one is irrevocably paid
@@ -141,6 +157,10 @@
  *      401 → no identity   ·   403 → bound user has no active avatar
  *      403 → { error: 'wallet_not_linked' }      (human with no linked wallet)
  *      403 → { error: 'agent_wallet_missing' }   (agent avatar with no custodial pubkey)
+ *      403 → { error: 'wallet_not_verified', walletAddress }
+ *            (2026-08-10) the declared wallet carries no ownership proof and is
+ *            not grandfathered. Enforced at BOTH the pre-transaction read and
+ *            the in-transaction FOR SHARE re-read.
  *      403 → { error: 'insufficient_clv_hold', requiredClv, heldClv }
  *      404 → { error: 'parcel_not_found' }
  *      409 → { error: 'parcel_not_available' | 'parcel_cap_reached' }
@@ -269,6 +289,8 @@
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
 import { PublicKey } from '@solana/web3.js';
 import {
   db,
@@ -362,12 +384,27 @@ import {
 } from '../services/linked-wallet-clv-balance';
 import type { AppContext } from '../types';
 import {
+  attestCustodialLandHoldWallet,
   declareLandHoldWallet,
+  grantLandHoldWalletVerification,
   LandTenureSettlementError,
+  readHoldWalletDeclaration,
   settleRentPrepay,
   settleTenureClaim,
   settleTenureRelease,
 } from '../services/land-tenure-settlement';
+import {
+  buildLandHoldWalletMessage,
+  consumeLandHoldWalletChallenge,
+  issueLandHoldWalletChallenge,
+} from '../services/land-hold-wallet-challenge';
+import {
+  getTransferDoorAvailability,
+  LandHoldVerifyError,
+  openTransferChallenge,
+  pollTransferChallenge,
+  submitTransferSignature,
+} from '../services/land-hold-transfer-verify';
 import { parcelHasLiveDeedLock } from '../services/land-tenure-helpers';
 
 export { parcelHasLiveDeedLock };
@@ -403,6 +440,22 @@ function settlementError(c: Context<ActivityAuthContext>, err: unknown) {
     { error: err.code, code: err.code, ...err.details },
     err.status as 400 | 403 | 404 | 409 | 429 | 503,
   );
+}
+
+/**
+ * Hold-wallet verification surface error mapper. Door 1 / custodial raise
+ * `LandTenureSettlementError`; door 2 raises `LandHoldVerifyError` from the
+ * transfer service. Both carry a machine-readable code + status, so the UI's
+ * `tenureError` map reads one shape either way.
+ */
+function verifyError(c: Context<ActivityAuthContext>, err: unknown) {
+  if (err instanceof LandHoldVerifyError) {
+    return c.json(
+      { error: err.code, code: err.code, ...(err.detail ? { detail: err.detail } : {}) },
+      err.status as 400 | 401 | 403 | 404 | 409 | 429 | 503,
+    );
+  }
+  return settlementError(c, err);
 }
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
@@ -564,6 +617,29 @@ const releaseBodySchema = holdClaimBodySchema;
 
 const declareHoldWalletBodySchema = z
   .object({ walletAddress: z.string().min(32).max(44) })
+  .strict();
+
+// Door-1 signature proof. The wallet pubkey is NEVER taken from the body — the
+// server signs against the CURRENTLY DECLARED wallet it read itself, so a caller
+// cannot present a proof for a wallet the account has not declared.
+// 32-byte base58 nonce → 43-44 chars; 64-byte base58 signature → 86-88 chars.
+const holdWalletVerifySignatureBodySchema = z
+  .object({
+    nonce: z.string().min(32).max(64),
+    signature: z.string().min(80).max(96),
+  })
+  .strict();
+
+const challengeIdSchema = z.string().uuid();
+
+/**
+ * Door-2 verification is SIGNATURE-SUBMITTED: the caller tells us which
+ * transaction paid, so the proof can never be lost to a scanner's page cap,
+ * cursor reset or batch bound. A base58 ed25519 signature is 87-88 chars; the
+ * service re-checks the decoded length before any RPC work.
+ */
+const holdWalletSubmitTransferBodySchema = z
+  .object({ signature: z.string().min(64).max(90) })
   .strict();
 
 // placement: server validates the SKU against the parcel's tier; the body only
@@ -950,6 +1026,11 @@ const READ_CACHE_TTL_MS = 60_000;
 const publicReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
 const ownerPiecesReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
 const holdWalletReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+// Ownership-proof surface. Tighter than the read limiter because each call
+// either mints a single-use nonce or runs an ed25519 verify; door 2 additionally
+// enforces its own per-user daily attempt cap inside the service (a refund burns
+// real SOL fees, so an unbounded attempt loop is a drain vector).
+const holdWalletVerifyLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 60_000 });
 
 interface ReadCacheEntry {
   payload: LandParcelDTO[];
@@ -2162,25 +2243,292 @@ landRoutes.get('/hold-wallet', requireAuthOrAgentSession, requireLedgerCapableId
   if (!holdWalletReadLimiter.check(identity.userId)) {
     return c.json({ error: 'rate_limited' }, 429);
   }
-  const rows = await db
-    .select({
-      walletAddress: users.landHoldWalletPubkey,
-      declaredAt: users.landHoldWalletDeclaredAt,
-    })
-    .from(users)
-    .where(eq(users.id, identity.userId))
-    .limit(1);
-  const declaration = rows[0];
+  // One read returns the declaration AND its server-derived verification state
+  // (`verified` iff the proven pubkey IS the declared pubkey; else
+  // `grandfathered` iff the one-shot migration stamp is; else `unverified`).
+  // The route never derives the state itself, so this display can never disagree
+  // with the claim-hold gate.
+  const declaration = await readHoldWalletDeclaration(identity.userId);
   if (!declaration) return c.json({ error: 'identity_binding_changed' }, 403);
   const balance = declaration.walletAddress
     ? await getWalletClvBalance(declaration.walletAddress)
     : null;
+  // Door 2 has no enable flag (CLAUDE.md forbids dark flags in prod):
+  // availability derives from whether the verify wallet is provisioned.
+  const transferDoor = await getTransferDoorAvailability().catch(() => ({
+    available: false,
+    destination: null,
+  }));
   return c.json({
     walletAddress: declaration.walletAddress,
     declaredAt: declaration.declaredAt?.toISOString() ?? null,
     balance,
+    verification: {
+      state: declaration.state,
+      method: declaration.method,
+      verifiedAt: declaration.verifiedAt,
+      transferDoorAvailable: transferDoor.available === true,
+    },
   });
 });
+
+// ─── 7b-ii. Hold-wallet OWNERSHIP PROOF (founder ruling 2026-08-10) ──────────
+//
+// "Optional proof is just not proof." A declaration is a CLAIM; without proof of
+// control an account could claim hold-door land backed by SOMEONE ELSE'S CLV
+// balance. Proof is REQUIRED before the hold door opens, with two doors so a
+// user who will not connect a browser wallet is not locked out:
+//
+//   DOOR 1 (free, instant, primary) — sign a server nonce with the declared
+//     wallet's key. Works for a human wallet UI and, identically, for a BYO
+//     agent that holds its own key: the agent GETs a challenge and POSTs the
+//     signature over REST (E5 parity — no browser required).
+//   DOOR 2 (fallback) — send an exact unique dust amount of SOL from the
+//     declared wallet to a ClawVille verify address; attributed by exact amount
+//     + sender, granted on FINALIZED, then AUTO-REFUNDED. Implemented by
+//     `land-hold-transfer-verify.ts`; these handlers are thin.
+//   CUSTODIAL (auto) — an agent (or human) whose declared wallet IS the
+//     custodial wallet of its bound avatar is attested server-side, because we
+//     hold that key.
+//
+// Every route runs the SAME middleware chain as the declaration routes above
+// (`requireAuthOrAgentSession, requireLedgerCapableIdentity,
+// requireNonGuestIdentity`): a guest is 403'd, never silently demoted, and a
+// connected agent verifies AS ITSELF.
+
+landRoutes.post(
+  '/hold-wallet/verify/challenge',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    if (!holdWalletVerifyLimiter.check(identity.userId)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
+    }
+    const rawBody: unknown = await c.req.json().catch(() => ({}));
+    if (!emptyStrictBodySchema.safeParse(rawBody ?? {}).success) {
+      return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+    }
+    const declaration = await readHoldWalletDeclaration(identity.userId);
+    if (!declaration) return c.json({ error: 'identity_binding_changed' }, 403);
+    if (!declaration.walletAddress) {
+      return c.json({ error: 'wallet_not_declared', code: 'wallet_not_declared' }, 403);
+    }
+    // Bound to BOTH the account and the currently declared wallet, so a nonce
+    // cannot be spent after a repoint and cannot be replayed by another account.
+    return c.json(
+      issueLandHoldWalletChallenge(identity.userId, declaration.walletAddress),
+    );
+  },
+);
+
+landRoutes.post(
+  '/hold-wallet/verify/signature',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    if (!holdWalletVerifyLimiter.check(identity.userId)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
+    }
+    const rawBody: unknown = await c.req.json().catch(() => null);
+    const parsed = holdWalletVerifySignatureBodySchema.safeParse(rawBody);
+    if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+
+    const declaration = await readHoldWalletDeclaration(identity.userId);
+    if (!declaration) return c.json({ error: 'identity_binding_changed' }, 403);
+    const declaredWallet = declaration.walletAddress;
+    if (!declaredWallet) {
+      return c.json({ error: 'wallet_not_declared', code: 'wallet_not_declared' }, 403);
+    }
+
+    // 1) Consume the nonce for THIS (user, declared wallet). Single-use +
+    //    cross-account + repoint replay guard. Generic 401 so a caller cannot
+    //    distinguish missing / expired / wrong-user / wrong-wallet.
+    if (!consumeLandHoldWalletChallenge(parsed.data.nonce, identity.userId, declaredWallet)) {
+      return c.json(
+        { error: 'invalid_or_expired_challenge', code: 'invalid_challenge' },
+        401,
+      );
+    }
+
+    // 2) Verify the ed25519 signature of the ACCOUNT+WALLET-bound human-readable
+    //    message, reconstructed SERVER-SIDE. `nacl.sign.detached.verify` returns
+    //    false on malformed input, so we bs58-decode and length-check first and a
+    //    garbage input is a clean 400 rather than a confusing 500.
+    let sigBytes: Uint8Array;
+    let pubBytes: Uint8Array;
+    try {
+      sigBytes = bs58.decode(parsed.data.signature);
+      pubBytes = bs58.decode(declaredWallet);
+    } catch {
+      return c.json({ error: 'invalid_signature', code: 'invalid_signature' }, 400);
+    }
+    if (pubBytes.length !== 32) {
+      return c.json({ error: 'invalid_wallet_pubkey', code: 'invalid_wallet_pubkey' }, 400);
+    }
+    if (sigBytes.length !== 64) {
+      return c.json({ error: 'invalid_signature', code: 'invalid_signature' }, 400);
+    }
+    const messageBytes = new TextEncoder().encode(
+      buildLandHoldWalletMessage(identity.userId, declaredWallet, parsed.data.nonce),
+    );
+    if (!nacl.sign.detached.verify(messageBytes, sigBytes, pubBytes)) {
+      return c.json(
+        { error: 'signature_verification_failed', code: 'signature_verification_failed' },
+        401,
+      );
+    }
+
+    // 3) Persist under the per-user advisory lock, re-checking the declaration
+    //    so a repoint racing the proof cannot inherit it.
+    try {
+      const granted = await grantLandHoldWalletVerification({
+        userId: identity.userId,
+        expectedWallet: declaredWallet,
+        method: 'signature',
+      });
+      return c.json({
+        ok: true,
+        state: granted.state,
+        method: granted.method,
+        verifiedAt: granted.verifiedAt,
+        walletAddress: granted.walletAddress,
+      });
+    } catch (err) {
+      return verifyError(c, err);
+    }
+  },
+);
+
+landRoutes.post(
+  '/hold-wallet/verify/custodial',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    if (!holdWalletVerifyLimiter.check(identity.userId)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
+    }
+    const rawBody: unknown = await c.req.json().catch(() => ({}));
+    if (!emptyStrictBodySchema.safeParse(rawBody ?? {}).success) {
+      return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+    }
+    // The custodial pubkey is re-read from `avatars` INSIDE the attest
+    // transaction — never cached, never client-supplied.
+    try {
+      const granted = await attestCustodialLandHoldWallet({ identity });
+      return c.json({
+        ok: true,
+        state: granted.state,
+        method: granted.method,
+        verifiedAt: granted.verifiedAt,
+        walletAddress: granted.walletAddress,
+      });
+    } catch (err) {
+      return verifyError(c, err);
+    }
+  },
+);
+
+landRoutes.post(
+  '/hold-wallet/verify/transfer/challenge',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    if (!holdWalletVerifyLimiter.check(identity.userId)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
+    }
+    const rawBody: unknown = await c.req.json().catch(() => ({}));
+    if (!emptyStrictBodySchema.safeParse(rawBody ?? {}).success) {
+      return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+    }
+    const declaration = await readHoldWalletDeclaration(identity.userId);
+    if (!declaration) return c.json({ error: 'identity_binding_changed' }, 403);
+    if (!declaration.walletAddress) {
+      return c.json({ error: 'wallet_not_declared', code: 'wallet_not_declared' }, 403);
+    }
+    try {
+      const opened = await openTransferChallenge({
+        userId: identity.userId,
+        declaredWallet: declaration.walletAddress,
+      });
+      return c.json(opened);
+    } catch (err) {
+      return verifyError(c, err);
+    }
+  },
+);
+
+// THE door-2 verification path. The user sends the exact amount with the memo,
+// then hands us the transaction signature; we fetch THAT transaction at
+// finalized and run the same proof predicates. Blind scanning was inherently
+// lossy under busy or adversarial traffic, and a signature cannot be eclipsed.
+landRoutes.post(
+  '/hold-wallet/verify/transfer/:challengeId/submit',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    if (!holdWalletVerifyLimiter.check(identity.userId)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
+    }
+    const idParsed = challengeIdSchema.safeParse(c.req.param('challengeId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_challenge_id', code: 'invalid_challenge_id' }, 400);
+    }
+    const rawBody: unknown = await c.req.json().catch(() => null);
+    const parsed = holdWalletSubmitTransferBodySchema.safeParse(rawBody);
+    if (!parsed.success) return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400);
+    try {
+      // The service scopes the challenge to THIS identity and 404s otherwise, so
+      // a challenge id cannot be used to settle another account's row.
+      const status = await submitTransferSignature({
+        userId: identity.userId,
+        challengeId: idParsed.data,
+        signature: parsed.data.signature,
+      });
+      return c.json(status);
+    } catch (err) {
+      return verifyError(c, err);
+    }
+  },
+);
+
+landRoutes.get(
+  '/hold-wallet/verify/transfer/:challengeId',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  noStorePrivate,
+  async (c) => {
+    const identity = c.get('identity');
+    if (!holdWalletReadLimiter.check(identity.userId)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
+    }
+    const idParsed = challengeIdSchema.safeParse(c.req.param('challengeId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_challenge_id', code: 'invalid_challenge_id' }, 400);
+    }
+    try {
+      // The service scopes the lookup to THIS user and 404s otherwise, so a
+      // challenge id cannot be used to read another account's state.
+      const status = await pollTransferChallenge({
+        userId: identity.userId,
+        challengeId: idParsed.data,
+      });
+      return c.json(status);
+    } catch (err) {
+      return verifyError(c, err);
+    }
+  },
+);
 
 landRoutes.post('/hold-wallet', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');

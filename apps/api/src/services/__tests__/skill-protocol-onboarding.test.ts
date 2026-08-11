@@ -29,7 +29,10 @@ describe('open-agent onboarding manuals', () => {
     // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
     // 50 = bounty gas + expiry hardening (house-sponsored settle gas,
     // numeric SOL obligations + expiry rule in the manual).
-    expect(PROTOCOL_VERSION).toBe(50);
+    // 51 = land hold-wallet ownership proof (verification REQUIRED before the
+    // hold door; REST signature door + custodial attest + refunded dust
+    // fallback documented; new `wallet_not_verified` refusal).
+    expect(PROTOCOL_VERSION).toBe(51);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -221,7 +224,10 @@ describe('open-agent onboarding manuals', () => {
     // 49 = cove recovery re-land (BA-1 /last-settled + W-D baccarat recovery).
     // 50 = bounty gas + expiry hardening (house-sponsored settle gas,
     // numeric SOL obligations + expiry rule in the manual).
-    expect(PROTOCOL_VERSION).toBe(50);
+    // 51 = land hold-wallet ownership proof (verification REQUIRED before the
+    // hold door; REST signature door + custodial attest + refunded dust
+    // fallback documented; new `wallet_not_verified` refusal).
+    expect(PROTOCOL_VERSION).toBe(51);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
