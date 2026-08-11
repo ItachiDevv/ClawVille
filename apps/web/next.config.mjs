@@ -19,10 +19,14 @@ config({ path: resolve(__dirname, '../../.env.local') });
 //   tauri:                  — Tauri-based hosts (future)
 //   app:                    — generic packaged app scheme
 //   file:                   — Electrobun packaged builds on some platforms
+//   https://www.uos.agency  — uOS browser-OS shell (Mini App embed; see
+//   https://uos.agency        docs/uos-integration-plan.md — apex included
+//                             defensively, the shell lives on www)
 const FRAME_ANCESTORS =
   "frame-ancestors 'self' https://*.clawville.world " +
   'http://localhost:* https://localhost:* ' +
   'http://127.0.0.1:* https://127.0.0.1:* ' +
+  'https://www.uos.agency https://uos.agency ' +
   'electrobun: capacitor: tauri: app: file:';
 
 const BUILD_SOURCE_COMMIT =
