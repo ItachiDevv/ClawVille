@@ -62,6 +62,7 @@ import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from '@sol
 import bs58 from 'bs58';
 import type { WithdrawalRow } from '@clawville/database';
 import type {
+  BountyUsdcHoldRequirement,
   HoldRequirement,
   WalletWithdrawDb,
   WalletWithdrawDeps,
@@ -69,6 +70,7 @@ import type {
   WithdrawSubject,
 } from '../wallet-withdraw-executor';
 import type { AlertErrorParams } from '../alert-error';
+import { PosterUsdcSpendAdmissionError } from '../usdc-spend-admission';
 
 const {
   requestWithdrawal,
@@ -149,6 +151,8 @@ interface HarnessOpts {
   holdRequirement?: HoldRequirement;
   /** The consent gate FAILS OPEN on this — the withdrawal must proceed. */
   holdRequirementThrows?: boolean;
+  bountyHoldRequirement?: BountyUsdcHoldRequirement;
+  bountyHoldRequirementThrows?: boolean;
 }
 
 interface Harness {
@@ -220,6 +224,29 @@ function makeHarness(opts: HarnessOpts = {}): Harness {
       });
       rows.set(row.id, row);
       return { ...row };
+    },
+    async admitUsdcWithdrawal(input, readBalance) {
+      log.push('usdcAdmission');
+      if (opts.bountyHoldRequirementThrows) {
+        throw new Error('boom: bounty hold query died');
+      }
+      const balance = await readBalance(SOURCE);
+      const held = opts.bountyHoldRequirement?.requiredAtomic ?? 0n;
+      const amount = BigInt(input.amountAtomic);
+      if (balance < held + amount) {
+        throw new PosterUsdcSpendAdmissionError(
+          'insufficient_usdc',
+          'synthetic hold refusal',
+          {
+            balanceBaseUnits: balance.toString(),
+            openHoldsBaseUnits: held.toString(),
+            outgoingLiabilitiesBaseUnits: '0',
+            consumedHoldBaseUnits: '0',
+            requiredBaseUnits: (held + amount).toString(),
+          },
+        );
+      }
+      return this.insertWithdrawal(input);
     },
     async findById(id) {
       const r = rows.get(id);
@@ -724,6 +751,58 @@ describe('CLV HOLD CONSENT GATE — pre-row informed consent; sweeper owns enfor
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe('Tier-1 USDC bounty hold withdrawal guard', () => {
+  const bountyHold: BountyUsdcHoldRequirement = {
+    requiredAtomic: 20_000_000n,
+    bounties: [{
+      bountyId: '33333333-3333-4333-8333-333333333333',
+      amountBaseUnits: '20000000',
+    }],
+  };
+
+  it('refuses pre-row with non-overridable bounty_hold_active even when acknowledged', async () => {
+    const h = makeHarness({
+      tokenBalance: 25_000_000n,
+      bountyHoldRequirement: bountyHold,
+    });
+    const request = requestOf({ asset: 'USDC', amountAtomic: '6000000' });
+    const refused = await requestWithdrawal(request, h.deps);
+    expect(refused).toMatchObject({
+      ok: false,
+      code: 'bounty_hold_active',
+      detail: 'usdc_withdrawal_breaks_tier1_bounty_hold',
+    });
+    expect(h.rows.size).toBe(0);
+    expect(h.sentRaw).toHaveLength(0);
+
+    const acknowledged = await requestWithdrawal(
+      { ...request, acknowledgeHoldLoss: true },
+      h.deps,
+    );
+    expect(acknowledged).toMatchObject({ ok: false, code: 'bounty_hold_active' });
+    expect(h.rows.size).toBe(0);
+    expect(h.sentRaw).toHaveLength(0);
+  });
+
+  it('fails closed before row creation when bounty hold admission cannot be queried', async () => {
+    const h = makeHarness({
+      tokenBalance: 25_000_000n,
+      bountyHoldRequirementThrows: true,
+    });
+    const result = await requestWithdrawal(
+      requestOf({ asset: 'USDC', amountAtomic: '1000000', acknowledgeHoldLoss: true }),
+      h.deps,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'balance_unavailable',
+      detail: 'usdc_spend_admission_unavailable',
+    });
+    expect(h.rows.size).toBe(0);
+    expect(h.sentRaw).toHaveLength(0);
+  });
+});
+
 describe('RESUME WORKER — dark-gated boot worker; pages ops on reconcile', () => {
   const staleWorkerClaim = () => ({
     id: randomUUID(),

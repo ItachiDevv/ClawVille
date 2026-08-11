@@ -59,6 +59,11 @@ import {
   resetPayAiFacilitatorCircuitForTests,
   type PayAiCircuitPermit,
 } from './x402-facilitator-circuit';
+import {
+  admitPosterUsdcSpend,
+  lockPosterUsdcSpend,
+  PosterUsdcSpendAdmissionError,
+} from './usdc-spend-admission';
 
 export {
   resolveAgentPayBreakerCooldownMs,
@@ -166,6 +171,19 @@ export interface AgentPayInput {
   recipient: AgentPayRecipient;
   usdCents: number;
   idempotencyKey: string;
+  /**
+   * Internal platform-mediated payment. Exempts this payment only from
+   * AGENT_PAY_DAILY_COUNT_CAP; sender and recipient dollar caps still apply.
+   */
+  countCapExempt?: true;
+  /**
+   * Internal platform policy ceiling. Tier-1 bounties use their founder-set
+   * per-bounty ceiling while retaining all daily dollar caps and the breaker.
+   * Public agent-pay routes never accept or forward this field.
+   */
+  platformMediatedMaxUsdCents?: number;
+  /** Internal only: the exact Tier-1 hold backing this payment. */
+  bountyHoldId?: string;
 }
 
 export type AgentPayErrorCode =
@@ -232,8 +250,10 @@ export interface AgentPayDb {
       sendUsdCents: number;
       receiveUsdCents: number;
       dailyCountCap: number;
+      countCapExempt: boolean;
     },
     dayStart: Date,
+    readBalance: (publicKey: string) => Promise<bigint>,
   ): Promise<
     | { kind: 'inserted'; row: AgentPayment }
     | { kind: 'existing'; row: AgentPayment }
@@ -340,23 +360,14 @@ const defaultDb: AgentPayDb = {
     });
     return row ?? null;
   },
-  async admitPending(input, limits, dayStart) {
+  async admitPending(input, limits, dayStart, readBalance) {
     return db.transaction(async (tx) => {
-      const subjectIds = [input.senderAvatarId, input.recipientAvatarId]
-        .filter((value): value is string => typeof value === 'string')
-        .sort();
-      for (const avatarId of [...new Set(subjectIds)]) {
-        await tx.execute(sql`
-          SELECT pg_advisory_xact_lock(
-            hashtextextended(${`agent-pay-daily:${avatarId}`}, 0)
-          )
-        `);
+      if (!input.senderAvatarId || !input.recipientAvatarId) {
+        throw new Error('agent payment admission requires sender and recipient');
       }
+      await lockPosterUsdcSpend(tx, input.senderAvatarId);
 
-      // Replays always preserve the first request's result, even after either
-      // subject has reached its cap. This read must happen under the same locks
-      // as the usage check and insert; the unlocked read in payAgent is only a
-      // fast path.
+      // Preserve replays without requiring a fresh RPC balance probe.
       const existing = await tx.query.agentPayments.findFirst({
         where: and(
           eq(agentPayments.senderAvatarId, input.senderAvatarId),
@@ -365,23 +376,47 @@ const defaultDb: AgentPayDb = {
       });
       if (existing) return { kind: 'existing' as const, row: existing };
 
+      const spend = await admitPosterUsdcSpend(tx, {
+        posterAvatarId: input.senderAvatarId,
+        amountAtomic: BigInt(input.usdcAtomic),
+        ...(input.bountyHoldId ? { consumeBountyHoldId: input.bountyHoldId } : {}),
+        readBalance,
+      });
+      if (spend.walletPublicKey !== input.senderWallet) {
+        throw new PosterUsdcSpendAdmissionError(
+          'wallet_missing',
+          'The sender wallet changed during USDC spend admission.',
+        );
+      }
+
+      // Sender dollar/count admission is serialized by the shared spend lock.
+      // The recipient lock serializes independent senders racing its receive cap.
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${`agent-pay-daily:${input.recipientAvatarId}`}, 0)
+        )
+      `);
+
       const [usage] = await tx
         .select({
           sent: sql<string>`COALESCE(SUM(CASE
             WHEN ${agentPayments.senderAvatarId} = ${input.senderAvatarId}
+              AND ${agentPayments.capExempt} IS NOT TRUE
             THEN ${agentPayments.usdCents} ELSE 0 END), 0)`,
           received: sql<string>`COALESCE(SUM(CASE
             WHEN ${agentPayments.recipientAvatarId} = ${input.recipientAvatarId}
+              AND ${agentPayments.capExempt} IS NOT TRUE
             THEN ${agentPayments.usdCents} ELSE 0 END), 0)`,
           sentCount: sql<string>`COALESCE(SUM(CASE
             WHEN ${agentPayments.senderAvatarId} = ${input.senderAvatarId}
+              AND ${agentPayments.capExempt} IS NOT TRUE
+              AND ${agentPayments.countCapExempt} IS NOT TRUE
             THEN 1 ELSE 0 END), 0)`,
         })
         .from(agentPayments)
         .where(and(
           gte(agentPayments.createdAt, dayStart),
           inArray(agentPayments.status, [...COUNTED_DAILY_CAP_STATUSES]),
-          sql`${agentPayments.capExempt} IS NOT TRUE`,
           or(
             eq(agentPayments.senderAvatarId, input.senderAvatarId),
             eq(agentPayments.recipientAvatarId, input.recipientAvatarId),
@@ -399,7 +434,7 @@ const defaultDb: AgentPayDb = {
       if (typeof usdCents !== 'number') {
         throw new Error('agent payment admission requires integer usd cents');
       }
-      if (sentCount >= limits.dailyCountCap) {
+      if (!limits.countCapExempt && sentCount >= limits.dailyCountCap) {
         return { kind: 'daily_count_cap_exceeded' as const };
       }
       if (sent > limits.sendUsdCents - usdCents) {
@@ -959,35 +994,39 @@ async function executePendingWithPermit(
       recordPayAiCircuitAvailable(permit);
     }
   }
-    if (outcome.kind === 'meridian_failure') {
-      if (outcome.ambiguous) {
-        await d.db.markReconcile(
-          row.id,
-          settlingId,
-          `meridian:${outcome.reason}`,
-          outcome.signature,
-        );
-        return {
-          ok: false,
-          code: 'payment_reconcile',
-          paymentId: row.id,
-          status: 'reconcile',
-          detail: outcome.reason,
-        };
-      }
-      await d.db.markFailed(
+  if (outcome.kind === 'meridian_failure') {
+    const observedSignature = outcome.signature
+      ?? row.txSignature
+      ?? row.reconcileTxSignature;
+    if (outcome.ambiguous || observedSignature !== null || row.settlePayer !== null) {
+      await d.db.markReconcile(
         row.id,
         settlingId,
-        `meridian_${outcome.stage}:${outcome.reason}`,
+        `meridian:${outcome.reason}`,
+        observedSignature,
       );
       return {
         ok: false,
-        code: 'payment_failed',
+        code: 'payment_reconcile',
         paymentId: row.id,
-        status: 'failed',
+        status: 'reconcile',
         detail: outcome.reason,
       };
     }
+    await d.db.markFailed(
+      row.id,
+      settlingId,
+      `meridian_${outcome.stage}:${outcome.reason}`,
+      true,
+    );
+    return {
+      ok: false,
+      code: 'payment_failed',
+      paymentId: row.id,
+      status: 'failed',
+      detail: outcome.reason,
+    };
+  }
   if (outcome.kind === 'definitive_failure') {
     await d.db.markFailed(
       row.id,
@@ -1087,7 +1126,12 @@ async function payAgentLocked(
   if (!Number.isInteger(input.usdCents) || input.usdCents < 1) {
     return { ok: false, code: 'amount_below_min' };
   }
-  if (input.usdCents > resolveAgentPayMaxUsdCents()) {
+  const perPaymentMax = input.platformMediatedMaxUsdCents
+    ?? resolveAgentPayMaxUsdCents();
+  if (!Number.isSafeInteger(perPaymentMax) || perPaymentMax < 1) {
+    return { ok: false, code: 'invalid_request' };
+  }
+  if (input.usdCents > perPaymentMax) {
     return { ok: false, code: 'amount_above_max' };
   }
   const target = recipientIdentity(input.recipient);
@@ -1125,27 +1169,47 @@ async function payAgentLocked(
     if (!rail.allowed || !rail.rpcUrl) return { ok: false, code: 'payai_unavailable' };
 
     const atomic = usdCentsToUsdcAtomic(input.usdCents);
-    const admission = await withAdmissionMutexes(
-      input.senderAvatarId,
-      recipient.avatarId,
-      () => d.db.admitPending({
-        senderAvatarId: input.senderAvatarId,
-        recipientAvatarId: recipient.avatarId,
-        recipientKind: target.kind,
-        recipientRef: target.ref,
-        senderWallet: senderWallet.publicKey,
-        recipientWallet: recipientWallet.publicKey,
-        usdCents: input.usdCents,
-        usdcAtomic: atomic,
-        network: rail.network,
-        idempotencyKey: input.idempotencyKey,
-        metadata: { trustedInternalPayaiEligibility: true },
-      }, {
-        sendUsdCents: resolveAgentPayDailySendUsdCents(),
-        receiveUsdCents: resolveAgentPayDailyReceiveUsdCents(),
-        dailyCountCap: resolveAgentPayDailyCountCap(),
-      }, utcMidnight(d.now())),
-    );
+    let admission: Awaited<ReturnType<AgentPayDb['admitPending']>>;
+    try {
+      admission = await withAdmissionMutexes(
+        input.senderAvatarId,
+        recipient.avatarId,
+        () => d.db.admitPending({
+          senderAvatarId: input.senderAvatarId,
+          recipientAvatarId: recipient.avatarId,
+          recipientKind: target.kind,
+          recipientRef: target.ref,
+          senderWallet: senderWallet.publicKey,
+          recipientWallet: recipientWallet.publicKey,
+          usdCents: input.usdCents,
+          usdcAtomic: atomic,
+          network: rail.network,
+          idempotencyKey: input.idempotencyKey,
+          bountyHoldId: input.bountyHoldId ?? null,
+          countCapExempt: input.countCapExempt === true,
+          metadata: {
+            trustedInternalPayaiEligibility: true,
+            ...(input.countCapExempt
+              ? { countCapExemptReason: 'platform_mediated_bounty_settlement' }
+              : {}),
+          },
+        }, {
+          sendUsdCents: resolveAgentPayDailySendUsdCents(),
+          receiveUsdCents: resolveAgentPayDailyReceiveUsdCents(),
+          dailyCountCap: resolveAgentPayDailyCountCap(),
+          countCapExempt: input.countCapExempt === true,
+        }, utcMidnight(d.now()), (publicKey) => d.readUsdcBalance(rail.network, publicKey)),
+      );
+    } catch (error) {
+      if (error instanceof PosterUsdcSpendAdmissionError) {
+        return {
+          ok: false,
+          code: error.code === 'insufficient_usdc' ? 'insufficient_usdc' : 'payai_unavailable',
+          detail: error.code,
+        };
+      }
+      throw error;
+  }
     if (admission.kind === 'daily_count_cap_exceeded') {
       return {
         ok: false,

@@ -17,6 +17,7 @@ export * from './token-market';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
+export * from './bounty-usdc-holds';
 // Covenant action-record stream (2026-07-13) — append-only hash-chained record
 // of every economic agent action; sealed by covenant-chain-sealer, served on the
 // partner-covenant read surface. See covenant-action-records.ts header.

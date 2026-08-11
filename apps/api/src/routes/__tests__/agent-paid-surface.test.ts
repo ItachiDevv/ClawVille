@@ -45,7 +45,8 @@ describe('agent paid surfaces', () => {
     // numeric SOL obligations + expiry rule in the manual).
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest documented).
-    expect(PROTOCOL_VERSION).toBe(51);
+    // 52 = Tier-1 instant USDC bounties (hold + agent-pay, no chain).
+    expect(PROTOCOL_VERSION).toBe(52);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');
@@ -54,6 +55,8 @@ describe('agent paid surfaces', () => {
     expect(manual).toContain('GET https://api.example.test/api/tokenomics/redeem/:id');
     expect(manual).toContain('redeem_disabled');
     expect(manual).toContain('4.44%');
+    expect(manual).toContain('Tier 1 is the default USDC bounty rail');
+    expect(manual).toContain('zero SOL');
   });
 
   it('rejects malformed expert requests before service execution', async () => {
