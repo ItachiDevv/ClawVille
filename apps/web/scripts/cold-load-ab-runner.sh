@@ -42,6 +42,14 @@ QS=""
 # BASENAME — two concurrent/successive batches sharing "profile-1-B" would kill
 # each other's Chromes (Codex R19 finding 6).
 BATCH_ID="$(date +%s)-$$"
+# Chrome profiles MUST live on a REAL filesystem path, never under the Windows
+# Temp tree (rung-4 slice-B discovery, 2026-08-11): in Temp-dir profiles
+# Chrome's Cache Storage backend fails (`caches.open` → "UnknownError:
+# Unexpected internal error"), which kills every service-worker install
+# (installing → redundant) — so all prior probe runs measured a SW-LESS page
+# and were structurally blind to SW install/cache effects.
+PROFILE_ROOT="${COLD_LOAD_PROFILE_ROOT:-$HOME/.cold-load-probe-profiles}"
+mkdir -p "$PROFILE_ROOT"
 # Any failed run flips this; the script exits nonzero so a caller can never
 # mistake AB_RUNNER_DONE-with-failures for clean evidence.
 FAILED_RUNS=0
@@ -94,7 +102,7 @@ run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
   local PORT=$((PORT_BASE + (run % 4)))
   local target="http://localhost:3011/game$QS"
   [ "$arm" = "B" ] && target="http://localhost:3010/game$QS"
-  local profile="$OUT/probe-$BATCH_ID-$run-$arm"
+  local profile="$PROFILE_ROOT/probe-$BATCH_ID-$run-$arm"
   local report="$OUT/report-$run-$arm.json"
   local rc=1
   # A reused COLD_LOAD_OUT must never satisfy the evidence check with a STALE

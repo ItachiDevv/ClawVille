@@ -637,3 +637,34 @@ Then the known tail: barrier 55–362ms · vrmBulk **6.4–8.7s** (still the dom
    founder playtests the real BOOT_CORE_PRESENTED first impression on staging as part of
    slice D's acceptance (E4). Slice D's gate therefore includes the founder playtest
    round-trip — plan its schedule accordingly.
+
+## Rung-4 slice-B results (2026-08-11, session perf4.5 — SW precache stand-down, sw.js v10→v11, staging A/B)
+
+Shipped to staging as merge `8c40b38b` (slice-B code commit `50a22ba9`); both containers
+verified on the sha; staging serves `CACHE_VERSION = 'v11'` (bundle grep).
+
+**Before/after — 3 cold runs each vs `https://staging.clawville.world/game`, fresh
+home-path profiles, polled-reveal-v2 boundary, all 6 runs `validForPerformance` (wire
+ledger honestly incomplete — SW-routed rows report 0 upstream bytes at the page target;
+punch-listed SW-target CDP attachment is the structural fix):**
+
+| arm | sw.js | reveals (ms) | median | swEvidence |
+|---|---|---|---|---|
+| before | v10 (install-time precache) | 12642 / 12471 / 11772 | **12471** | v10 activated, cacheProbeOk |
+| after | v11 (deferred signal precache) | 12898 / 12518 / 12067 | **12518** | v11 activated, cacheProbeOk |
+
+- **Reveal: flat (+47ms median, run noise is ±400ms).** Expected shape for a COLD first
+  visit: v10's install precache fired at window.load, which on a cold run lands near/after
+  the reveal, so it never contended with tier-1 on THIS measurement. Slice B's wins are
+  structural, not cold-reveal: (1) no 7.8MB `no-store` re-download per CACHE_VERSION bump,
+  (2) no install-time contention on repeat/mid-session loads where the SW is already
+  active, (3) versioned roster entries now ride the HTTP cache instead of bypassing it.
+- **v11 upgrade path proven live:** all 3 after-runs show the new worker activated +
+  controlling + the `clawville-assets-v11` cache populated via the page-signaled
+  precache→ack handshake (the run starts cold, registers v11, reveals, then the deferred
+  signal fires — cacheProbeOk=true at capture end means the roster landed post-reveal, as
+  designed). The v10→v11 cache migration was separately live-verified pre-ship (84-asset
+  v10 profile → v11 holds all entries, no offline gap).
+- **Acceptance:** slice B never promised a cold-reveal win — its gate was "no reveal
+  regression + precache still functions + upgrade migrates". All three hold. Evidence:
+  `docs/perf-data/cold-load-rung4-sliceB-2026-08-11/{before,after}/report-{1,2,3}.json`.

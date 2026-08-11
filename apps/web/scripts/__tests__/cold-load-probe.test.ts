@@ -15,6 +15,9 @@ import {
 } from '../cold-load-probe.mjs';
 
 const REVEAL = 10_000;
+// Healthy SW lifecycle evidence — required by every validity check since the
+// slice-B finding-2 amendment (absence or ill-health fails closed).
+const SW_OK: any = { controlled: true, activeState: 'activated', cacheProbeOk: true, assetCacheName: 'clawville-assets-v11' };
 const mono = (ts: number) => ts * 1000; // test monoToPageMs: seconds → ms
 
 function driveEvents(events: any[]) {
@@ -72,11 +75,76 @@ describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () =>
         fin('1', 1000, 3),
       ]);
       const v = computeValidity({
-        all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
+        all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK,
       });
       expect(v.validForWireLedger).toBe(false);
     });
   }
+  // §SW coldness amendment (2026-08-11, rung-4 slice B): fromServiceWorker
+  // marks ROUTING (incl. cache-miss passthrough with invisible upstream), not
+  // warmth — PerformanceNavigationTiming.workerStart is the discriminator.
+  it('workerStart > 0 invalidates as warm even with zero SW-routed responses', () => {
+    const state = driveEvents([
+      rws('1', 'https://x/models/a.glb', 1), resp('1', 200), fin('1', 1000, 2),
+    ]);
+    const v = computeValidity({
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu',
+      expectedBackend: 'webgpu', navWorkerStartMs: 12.4, swEvidence: SW_OK,
+    });
+    expect(v.validForWireLedger).toBe(false);
+    expect(v.reasons.join()).toContain('service-worker-controlled at start');
+  });
+  it('SW-routed responses with workerStart === 0 stay COLD (self-warmed routing)', () => {
+    const state = driveEvents([
+      rws('1', 'https://x/models/a.glb', 1), resp('1', 200, { fromServiceWorker: true }), fin('1', 0, 2),
+    ]);
+    const v = computeValidity({
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu',
+      expectedBackend: 'webgpu', navWorkerStartMs: 0, swEvidence: SW_OK,
+    });
+    expect(v.swHits).toBe(1);
+    expect(v.swRoutedZeroWire).toBe(1); // page-target wire blind spot, disclosed
+    expect(v.validForPerformance).toBe(true);
+  });
+  it('an SW-served first occurrence with cache flags stays COLD under workerStart === 0', () => {
+    // Chrome sets fromDiskCache on responses the SW serves from Cache
+    // Storage; with a proven-cold nav those reflect the SW's OWN same-run
+    // cache (e.g. its install precache), not profile warmth.
+    const state = driveEvents([
+      rws('1', 'https://x/models/a.glb', 1),
+      resp('1', 200, { fromServiceWorker: true, fromDiskCache: true }),
+      fin('1', 0, 2),
+    ]);
+    const v = computeValidity({
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu',
+      expectedBackend: 'webgpu', navWorkerStartMs: 0, swEvidence: SW_OK,
+    });
+    expect(v.warmFirsts).toBe(0);
+    expect(v.validForPerformance).toBe(true);
+  });
+  it('a NON-SW warm first occurrence still invalidates even under workerStart === 0', () => {
+    const state = driveEvents([
+      rws('1', 'https://x/models/a.glb', 1),
+      resp('1', 200, { fromDiskCache: true }),
+      fin('1', 0, 2),
+    ]);
+    const v = computeValidity({
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu',
+      expectedBackend: 'webgpu', navWorkerStartMs: 0, swEvidence: SW_OK,
+    });
+    expect(v.validForWireLedger).toBe(false);
+    expect(v.reasons.join()).toContain('first-occurrence cache hits');
+  });
+  it('SW-routed responses with NO workerStart evidence stay fail-closed invalid', () => {
+    const state = driveEvents([
+      rws('1', 'https://x/models/a.glb', 1), resp('1', 200, { fromServiceWorker: true }), fin('1', 0, 2),
+    ]);
+    const v = computeValidity({
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK,
+    });
+    expect(v.validForWireLedger).toBe(false);
+    expect(v.reasons.join()).toContain('no workerStart discriminator');
+  });
   it('a clean network redirect chain stays cold-valid (3xx leg + 2xx terminal)', () => {
     const state = driveEvents([
       rws('1', 'https://x/models/a.glb', 1),
@@ -85,7 +153,7 @@ describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () =>
       fin('1', 1000, 3),
     ]);
     const v = computeValidity({
-      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK,
     });
     expect(v.validForPerformance).toBe(true);
   });
@@ -97,7 +165,7 @@ describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () =>
       fin('1', 1000, 3),
     ]);
     const v = computeValidity({
-      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK,
     });
     expect(v.reasons.join()).toContain('redirect legs without a 3xx');
   });
@@ -109,7 +177,7 @@ describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () =>
       fin('1', 1000, 3),
     ]);
     const v = computeValidity({
-      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK,
     });
     expect(v.reasons.join()).toContain('redirect legs without a 3xx');
   });
@@ -155,7 +223,7 @@ describe('reduceNetworkEvent — failed finite assets', () => {
     const records = collectorRecords(state);
     expect(records[0].wireBytes).toBe(300); // partial bytes retained
     const v = computeValidity({
-      all: records, revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
+      all: records, revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK,
     });
     expect(v.validForWireLedger).toBe(false);
     expect(v.reasons.join()).toContain('failed asset requests');
@@ -222,10 +290,46 @@ describe('computeValidity — adversarial fixtures', () => {
     url: 'https://x/models/a.glb', cls: 'GLB', failed: false, finished: true,
     status: 200, everFromCache: false, everFromSW: false, startPageMs: 1, endPageMs: 2, wireBytes: 10, ...over,
   });
-  const base = { revealMs: 5000, backend: 'webgpu', expectedBackend: 'webgpu' };
+  const base = { revealMs: 5000, backend: 'webgpu', expectedBackend: 'webgpu', swEvidence: SW_OK };
 
   it('accepts a clean run', () => {
     expect(computeValidity({ all: [goodAsset()], ...base }).validForPerformance).toBe(true);
+  });
+  // §SW lifecycle evidence (slice-B finding 2): "no SW signals" must never
+  // read as a pass — a dead worker makes runs FASTER and, unguarded, valid.
+  it('MISSING SW lifecycle evidence fails closed on both axes', () => {
+    const v = computeValidity({ all: [goodAsset()], ...base, swEvidence: null });
+    expect(v.validForWireLedger).toBe(false);
+    expect(v.validForPerformance).toBe(false);
+    expect(v.reasons.join()).toContain('no service-worker lifecycle evidence');
+  });
+  it('an UNHEALTHY SW (broken Cache Storage / not controlling) invalidates', () => {
+    const v = computeValidity({
+      all: [goodAsset()], ...base,
+      swEvidence: { controlled: false, activeState: 'activated', cacheProbeOk: false, assetCacheName: null } as any,
+    });
+    expect(v.validForPerformance).toBe(false);
+    expect(v.reasons.join()).toContain('service worker unhealthy');
+  });
+  // §Wire completeness split (slice-B finding 3): SW-blind byte accounting
+  // rejects WIRE claims but leaves timing evidence usable.
+  it('SW-routed zero-wire responses make the run wire-INVALID but perf-valid', () => {
+    const v = computeValidity({
+      all: [goodAsset({ everFromSW: true, wireBytes: 0 })], ...base,
+      navWorkerStartMs: 0 as any,
+    });
+    expect(v.swRoutedZeroWire).toBe(1);
+    expect(v.validForWireLedger).toBe(false);
+    expect(v.validForPerformance).toBe(true);
+    expect(v.reasons.join()).toContain('unobserved upstream bytes');
+  });
+  it('a NEGATIVE workerStart is absent evidence — SW routing fails closed', () => {
+    const v = computeValidity({
+      all: [goodAsset({ everFromSW: true, wireBytes: 0 })], ...base,
+      navWorkerStartMs: -1 as any,
+    });
+    expect(v.validForWireLedger).toBe(false);
+    expect(v.reasons.join()).toContain('no workerStart discriminator');
   });
   it('rejects arbitrary backend strings (not just -requested)', () => {
     const v = computeValidity({ all: [goodAsset()], ...base, backend: 'unknown' });
@@ -264,7 +368,7 @@ describe('computeValidity — adversarial fixtures', () => {
     expect(v.reasons.join()).toContain('reveal never observed');
   });
   it('backend waiver: only a NULL backend passes, only with the flag, and is stamped', () => {
-    const nullBackend = { all: [goodAsset()], revealMs: 5000, backend: null, expectedBackend: 'webgpu' };
+    const nullBackend = { all: [goodAsset()], revealMs: 5000, backend: null, expectedBackend: 'webgpu', swEvidence: SW_OK };
     expect(computeValidity(nullBackend).validForWireLedger).toBe(false);
     const waived = computeValidity({ ...nullBackend, waiveBackend: true });
     expect(waived.validForWireLedger).toBe(true);

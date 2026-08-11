@@ -55,8 +55,24 @@
 // 2026-07-14 v10 (P1b texture memory):
 //   - Re-precached regenerated KTX2 assets with versioned URLs after extending
 //     compression to non-color slots (UASTC normals, ETC1S data maps).
+//
+// 2026-08-11 v11 (cold-load rung-4 slice B — precache stand-down):
+//   - INSTALL NO LONGER FETCHES. The old install handler downloaded all 22
+//     roster URLs with cache:'no-store' at window.load — racing the boot's
+//     own tier-1 fetches for the SAME files and re-paying ~7.8 MB of wire on
+//     every SW version bump (staging real-network reveal measured seconds
+//     slower from the contention; localhost hides it).
+//   - The roster now precaches when the PAGE signals `clawville:precache`
+//     (sw-register sends it after the world's first paint, or after a 30 s
+//     fallback on pages that never boot the world). Fetches use the default
+//     cache mode, so files the boot just downloaded are served from the HTTP
+//     cache at ~zero wire cost — the ?v= query discipline makes every asset
+//     URL immutable, which is what made 'no-store' over-defensive.
+//   - Already-cached roster entries are skipped, so repeat signals are cheap.
+//   - Offline coverage is UNCHANGED in steady state: same roster, same
+//     runtime cache-first population via ASSET_PATH_PREFIXES.
 
-const CACHE_VERSION = 'v10';
+const CACHE_VERSION = 'v11';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -66,10 +82,14 @@ const MAX_INDIVIDUAL_BYTES = 10 * 1024 * 1024; // 10 MB
 // Total asset cache size limit. Entries are evicted oldest-first if exceeded.
 const MAX_GLB_CACHE_BYTES = 60 * 1024 * 1024; // 60 MB
 
-// Critical-path GLBs pre-cached at install time.
-// Building models (opt1 variants) + terrain decorations.
-// Phase 2 perf (2026-05-22): updated to *-opt1.glb paths that match
-// arena-buildings.tsx BUILDING_MODELS. Old roster removed.
+// Critical-path GLB roster. v11: NOT fetched at install — precached when the
+// page sends `clawville:precache` (post-first-paint, ack/retry handshake).
+// ?v=-versioned entries are immutable (skip-if-present, default cache mode);
+// UNVERSIONED entries (kelp.glb, the 3 locomotion clips, the basis files
+// below) always revalidate with cache:'no-cache' so a stale HTTP-cache or
+// migrated copy can never live forever.
+// Building models (opt1 variants) + terrain decorations; roster last synced
+// to arena-buildings.tsx BUILDING_MODELS in the Phase-2 update (2026-05-22).
 const PRECACHE_GLBS = [
   '/models/lobster-ktx.glb?v=2',           // player character, P1b KTX2 slot coverage
   '/models/coral-reef1-ktx.glb?v=2',            // 388 KB
@@ -168,30 +188,77 @@ async function evictOldest(cache, maxBytes) {
 // ─── install ──────────────────────────────────────────────────────────────────
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    (async () => {
-      const glbCache = await caches.open(GLB_CACHE);
-      // Pre-cache critical GLBs one by one — ignore individual failures so a
-      // single bad URL doesn't block the entire install.
-      await Promise.allSettled(
-        ALL_PRECACHE.map(async (path) => {
-          try {
-            const res = await fetch(path, { cache: 'no-store' });
-            if (!res.ok) return;
-            const contentLength = res.headers.get('content-length');
-            if (contentLength && parseInt(contentLength, 10) > MAX_INDIVIDUAL_BYTES) {
-              return; // oversized, skip
-            }
-            await glbCache.put(path, res);
-          } catch {
-            // Network unavailable — not fatal during install
-          }
-        })
-      );
-      // Activate immediately; don't wait for open tabs to close.
-      await self.skipWaiting();
-    })()
+  // v11: install performs NO network work — the roster precache runs on the
+  // page-sent `clawville:precache` message (post-first-paint) instead of
+  // racing the boot. Activate immediately; don't wait for open tabs to close.
+  event.waitUntil(self.skipWaiting());
+});
+
+// ─── deferred roster precache (v11) ──────────────────────────────────────────
+
+// Module-scoped singleton (Codex slice-B finding 7): concurrent signals
+// (multi-tab, retries) share ONE in-flight roster pass instead of racing the
+// per-URL match() checks and double-fetching past the cache budget.
+let precacheInFlight = null;
+
+async function precacheRoster() {
+  const glbCache = await caches.open(GLB_CACHE);
+  // One by one via allSettled — a single bad URL must not block the roster.
+  await Promise.allSettled(
+    ALL_PRECACHE.map(async (path) => {
+      try {
+        const versioned = path.includes('?v=');
+        // ?v=-VERSIONED URLs are immutable → skip-if-present, and default
+        // cache mode reads the HTTP cache the boot just filled at ~zero wire
+        // cost. UNVERSIONED roster URLs (kelp.glb, the 3 locomotion clips,
+        // both basis files) ALWAYS revalidate — skip-if-present would let a
+        // stale migrated/adopted copy live forever (Codex slice-B round-2
+        // finding 1) — via 'no-cache' (server revalidation; 304 cheap). On a
+        // failed revalidation the existing (e.g. migrated) entry is RETAINED
+        // as fallback rather than dropped.
+        if (versioned) {
+          const existing = await glbCache.match(path);
+          if (existing) return;
+        }
+        const res = await fetch(path, versioned ? undefined : { cache: 'no-cache' });
+        if (!res.ok) return; // keep whatever we already have
+        const contentLength = res.headers.get('content-length');
+        if (contentLength && parseInt(contentLength, 10) > MAX_INDIVIDUAL_BYTES) {
+          return; // oversized, skip
+        }
+        await glbCache.put(path, res);
+      } catch {
+        // Network unavailable — not fatal; existing entries stay; next
+        // signal retries.
+      }
+    })
   );
+  // The deferred path must respect the same budget the runtime path enforces
+  // (finding 7 — it previously wrote without eviction).
+  try { await evictOldest(glbCache, MAX_GLB_CACHE_BYTES); } catch {}
+}
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'clawville:precache') {
+    // Versioned ACK (Codex slice-B finding 4): during an upgrade the page's
+    // signal can land on the OLD worker (`serviceWorker.ready` resolves with
+    // whatever is active), which — pre-v11 — has no handler and silently
+    // drops it. The page keeps retrying until it receives an ack from a
+    // worker that actually ran the roster.
+    if (!precacheInFlight) {
+      precacheInFlight = precacheRoster().finally(() => { precacheInFlight = null; });
+    }
+    const done = precacheInFlight.then(() => {
+      try {
+        if (event.source) {
+          event.source.postMessage({ type: 'clawville:precache-ack', version: CACHE_VERSION });
+        }
+      } catch {
+        // A vanished client is fine — another tab's retry will re-ack.
+      }
+    });
+    event.waitUntil(done);
+  }
 });
 
 // ─── activate ─────────────────────────────────────────────────────────────────
@@ -199,17 +266,63 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      // Delete any caches whose name no longer matches our versioned names.
+      // v11 (Codex slice-B finding 1): MIGRATE the previous asset cache into
+      // the new one BEFORE deleting it — the old activate deleted a populated
+      // cache while the new one stayed empty until the deferred precache
+      // signal, leaving a returning user with ZERO offline asset coverage in
+      // the gap. Migration is local Cache Storage copying (no network); URLs
+      // are ?v=-immutable or revalidated by the deferred precache, so adopted
+      // entries are safe. Old STATIC (SWR chunk) caches stay delete-only:
+      // chunk URLs are content-hashed per deploy and repopulate naturally.
       const allKeys = await caches.keys();
+      const oldAssetKeys = allKeys.filter(
+        (key) =>
+          (key.startsWith('clawville-assets-') || key.startsWith('clawville-glb-')) &&
+          key !== GLB_CACHE
+      );
+      // A legacy asset cache is deleted ONLY when every one of its entries
+      // migrated (Codex slice-B round-2 finding 2): a quota/corrupt-entry
+      // failure retains the source cache, and the fetch path's
+      // `caches.match` fallback can still serve from it.
+      const fullyMigrated = [];
+      try {
+        const newCache = await caches.open(GLB_CACHE);
+        for (const oldKey of oldAssetKeys) {
+          let sourceClean = true;
+          try {
+            const oldCache = await caches.open(oldKey);
+            for (const req of await oldCache.keys()) {
+              try {
+                if (await newCache.match(req)) continue;
+                const res = await oldCache.match(req);
+                if (res) await newCache.put(req, res);
+                else sourceClean = false;
+              } catch {
+                sourceClean = false; // keep this source as fallback
+              }
+            }
+          } catch {
+            sourceClean = false;
+          }
+          if (sourceClean) fullyMigrated.push(oldKey);
+        }
+        await evictOldest(newCache, MAX_GLB_CACHE_BYTES);
+      } catch {
+        // Migration is best-effort — activation must never fail on it. An
+        // ABORTED pass must delete NOTHING: eviction can throw after
+        // partially removing new-cache entries, and deleting the legacy
+        // sources then would lose those assets from BOTH caches (Codex
+        // slice-B round-3 finding 1).
+        fullyMigrated.length = 0;
+      }
       await Promise.all(
         allKeys
           .filter(
             (key) =>
-              // v2's name was clawville-glb-* — delete on activate so v3
-              // doesn't double-spend the QuotaManager budget.
-              (key.startsWith('clawville-glb-') && key !== GLB_CACHE) ||
-              (key.startsWith('clawville-assets-') && key !== GLB_CACHE) ||
-              (key.startsWith('clawville-static-') && key !== STATIC_CACHE)
+              (((key.startsWith('clawville-glb-') || key.startsWith('clawville-assets-')) &&
+                key !== GLB_CACHE &&
+                fullyMigrated.includes(key)) ||
+                (key.startsWith('clawville-static-') && key !== STATIC_CACHE))
           )
           .map((key) => caches.delete(key))
       );
@@ -249,6 +362,17 @@ async function cacheFirstGlb(request, url) {
   const cache = await caches.open(GLB_CACHE);
   const cached = await cache.match(request);
   if (cached) return cached;
+
+  // Retained-legacy fallback (Codex slice-B round-2 finding 2): a legacy
+  // cache that could not fully migrate is kept on activate; caches.match
+  // scans every cache, so its entries still serve offline until the runtime
+  // path re-fetches and re-homes them in the current cache.
+  try {
+    const legacy = await caches.match(request);
+    if (legacy) return legacy;
+  } catch {
+    // Fall through to network.
+  }
 
   // Not cached — fetch from network.
   try {

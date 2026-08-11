@@ -60,6 +60,15 @@ export function buildMockMeridian(opts: MockMeridianOptions = {}): Hono {
         payer: payer(paymentPayload),
       });
     }
+    if (selected === 'settle-fail-signature') {
+      return c.json({
+        success: false,
+        errorReason: 'mock_forced_settlement_failure',
+        transaction: signature(paymentPayload),
+        network: requirements?.network ?? 'solana-devnet',
+        payer: payer(paymentPayload),
+      });
+    }
     if (selected === 'settle-empty-signature') {
       return c.json({
         success: true,

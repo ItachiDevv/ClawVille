@@ -2,9 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { createBountySchema } from '../bounties';
 
 const originalUsdcRewardMin = process.env.USDC_BOUNTY_REWARD_MIN;
+const originalTier1Max = process.env.TIER1_BOUNTY_MAX_USD_CENTS;
+const originalSapUsdcEscrow = process.env.SAP_USDC_ESCROW_ENABLED;
 
 beforeAll(() => {
   delete process.env.USDC_BOUNTY_REWARD_MIN;
+  delete process.env.TIER1_BOUNTY_MAX_USD_CENTS;
+  process.env.SAP_USDC_ESCROW_ENABLED = 'false';
 });
 
 afterAll(() => {
@@ -13,6 +17,10 @@ afterAll(() => {
   } else {
     process.env.USDC_BOUNTY_REWARD_MIN = originalUsdcRewardMin;
   }
+  if (originalTier1Max === undefined) delete process.env.TIER1_BOUNTY_MAX_USD_CENTS;
+  else process.env.TIER1_BOUNTY_MAX_USD_CENTS = originalTier1Max;
+  if (originalSapUsdcEscrow === undefined) delete process.env.SAP_USDC_ESCROW_ENABLED;
+  else process.env.SAP_USDC_ESCROW_ENABLED = originalSapUsdcEscrow;
 });
 
 const baseBounty = {
@@ -35,6 +43,21 @@ describe('bounty create reward floors', () => {
 
   it('rejects a USDC-funded bounty below 5 vCLAW', () => {
     expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 4 }).success).toBe(false);
+  });
+
+  it('accepts the Tier-1 $50 cap and rejects one cent above while SAP is paused', () => {
+    expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_000 }).success).toBe(true);
+    expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_001 }).success).toBe(false);
+  });
+
+  it('does not let env raise the founder-frozen $50 ceiling', () => {
+    process.env.TIER1_BOUNTY_MAX_USD_CENTS = '999999';
+    try {
+      expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_000 }).success).toBe(true);
+      expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_001 }).success).toBe(false);
+    } finally {
+      delete process.env.TIER1_BOUNTY_MAX_USD_CENTS;
+    }
   });
 
   it('accepts an in-game bounty at 5 vCLAW and defaults its rail to vclaw', () => {

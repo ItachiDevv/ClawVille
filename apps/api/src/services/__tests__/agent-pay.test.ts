@@ -18,6 +18,10 @@ const {
   resolveAgentPayDailyReceiveUsdCents,
   resolveAgentPayMinUsdCents,
 } = await import('../agent-pay');
+const {
+  planTier1SettlementAttempt,
+  tier1SettlementIdempotencyKey,
+} = await import('../bounty-tier1');
 
 const SENDER = '11111111-1111-4111-8111-111111111111';
 const SENDER_TWO = '33333333-3333-4333-8333-333333333333';
@@ -26,6 +30,7 @@ const SENDER_WALLET = '11111111111111111111111111111111';
 const SENDER_TWO_WALLET = '33333333333333333333333333333333';
 const RECIPIENT_WALLET = '22222222222222222222222222222222';
 const TX = 'tx-agent-pay-1';
+const BOUNTY_ID = '44444444-4444-4444-8444-444444444444';
 
 function requirement(): PaymentRequirements {
   return {
@@ -163,6 +168,40 @@ function meridianSettledOutcome(signature: string): ExecutePreparedExactPaymentO
   };
 }
 
+function meridianFailureOutcome(input: {
+  stage: 'verify' | 'settle';
+  signature?: string | null;
+  ambiguous?: boolean;
+}): ExecutePreparedExactPaymentOutcome {
+  const signature = input.signature ?? null;
+  return {
+    kind: 'meridian_failure',
+    stage: input.stage,
+    ambiguous: input.ambiguous ?? signature !== null,
+    reason: input.stage === 'verify'
+      ? 'mock_forced_invalid'
+      : 'mock_forced_settlement_failure',
+    payer: SENDER_WALLET,
+    signature,
+    payAi: { attempted: true, providerFailure: true },
+    result: {
+      settled: false,
+      isValid: input.stage === 'settle',
+      txSignature: null,
+      network: requirement().network,
+      payer: SENDER_WALLET,
+      failureReason: input.stage === 'verify'
+        ? 'mock_forced_invalid'
+        : 'mock_forced_settlement_failure',
+      outage: false,
+      httpStatus: 200,
+      raw: input.stage === 'settle'
+        ? { settle: { success: false, transaction: signature ?? '' } }
+        : {},
+    },
+  };
+}
+
 function harness(options: {
   balance?: bigint;
   recipientAtaExists?: boolean | null;
@@ -211,6 +250,7 @@ function harness(options: {
       earnedVclaw: 0, earnedUsdBasis: null, earnedLedgerId: null,
       fulfilledAt: null, failureReason: null, createdAt: now, updatedAt: now,
       capExempt: null,
+      countCapExempt: false,
       metadata: {},
       ...overrides,
     } as AgentPayment;
@@ -258,9 +298,10 @@ function harness(options: {
         .filter((row) => row.recipientAvatarId === input.recipientAvatarId)
         .reduce((sum, row) => sum + row.usdCents, 0);
       const sentCount = counted.filter(
-        (row) => row.senderAvatarId === input.senderAvatarId,
+        (row) => row.senderAvatarId === input.senderAvatarId
+          && row.countCapExempt !== true,
       ).length;
-      if (sentCount >= limits.dailyCountCap) {
+      if (!limits.countCapExempt && sentCount >= limits.dailyCountCap) {
         return { kind: 'daily_count_cap_exceeded' };
       }
       if (sent > limits.sendUsdCents - input.usdCents) {
@@ -561,6 +602,111 @@ describe('agent-pay durable x402 machine', () => {
     expect(h.mintCalls()).toBe(0);
   });
 
+  it('rearms Tier-1 attempt 2 after a signature-free Meridian verify rejection', async () => {
+    const idempotencyKey = tier1SettlementIdempotencyKey(BOUNTY_ID, 1);
+    const h = harness({
+      outcome: meridianFailureOutcome({ stage: 'verify' }),
+    });
+
+    const result = await payAgent(request({ idempotencyKey }), h.deps);
+    const row = [...h.rows.values()][0]!;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'payment_failed',
+      status: 'failed',
+      detail: 'mock_forced_invalid',
+    });
+    expect(row).toMatchObject({
+      status: 'failed',
+      failureReason: 'meridian_verify:mock_forced_invalid',
+      capExempt: true,
+      txSignature: null,
+      reconcileTxSignature: null,
+    });
+    expect(planTier1SettlementAttempt({
+      bountyId: BOUNTY_ID,
+      settlementAttempt: 1,
+      payment: row,
+    })).toMatchObject({
+      kind: 'rearm',
+      attempt: 2,
+      idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID, 2),
+    });
+  });
+
+  it('rearms Tier-1 attempt 2 after a signature-free Meridian settle failure', async () => {
+    const idempotencyKey = tier1SettlementIdempotencyKey(BOUNTY_ID, 1);
+    const h = harness({
+      outcome: meridianFailureOutcome({ stage: 'settle' }),
+    });
+
+    const result = await payAgent(request({ idempotencyKey }), h.deps);
+    const row = [...h.rows.values()][0]!;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'payment_failed',
+      status: 'failed',
+      detail: 'mock_forced_settlement_failure',
+    });
+    expect(row).toMatchObject({
+      status: 'failed',
+      failureReason: 'meridian_settle:mock_forced_settlement_failure',
+      capExempt: true,
+      txSignature: null,
+      reconcileTxSignature: null,
+    });
+    expect(planTier1SettlementAttempt({
+      bountyId: BOUNTY_ID,
+      settlementAttempt: 1,
+      payment: row,
+    })).toMatchObject({
+      kind: 'rearm',
+      attempt: 2,
+      idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID, 2),
+    });
+  });
+
+  it('reconciles any Meridian failure carrying a signature and freezes Tier-1 retry', async () => {
+    const idempotencyKey = tier1SettlementIdempotencyKey(BOUNTY_ID, 1);
+    const signature = 'meridian-partial-signature';
+    const h = harness({
+      outcome: meridianFailureOutcome({
+        stage: 'settle',
+        signature,
+        // Assert the durable boundary independently of upstream classification.
+        ambiguous: false,
+      }),
+    });
+
+    const result = await payAgent(request({ idempotencyKey }), h.deps);
+    const row = [...h.rows.values()][0]!;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'payment_reconcile',
+      status: 'reconcile',
+      detail: 'mock_forced_settlement_failure',
+    });
+    expect(row).toMatchObject({
+      status: 'reconcile',
+      failureReason: 'meridian:mock_forced_settlement_failure',
+      capExempt: null,
+      txSignature: null,
+      reconcileTxSignature: signature,
+    });
+    expect(planTier1SettlementAttempt({
+      bountyId: BOUNTY_ID,
+      settlementAttempt: 1,
+      payment: row,
+    })).toEqual({
+      kind: 'frozen',
+      reason: 'ambiguous',
+      paymentId: row.id,
+    });
+  });
+
   it('persists a definitive settle rejection as cap-exempt and replays without execution', async () => {
     const h = harness({ outcome: settleRejectedOutcome() });
     const first = await payAgent(request(), h.deps);
@@ -643,6 +789,19 @@ describe('agent-pay durable x402 machine', () => {
     process.env.AGENT_PAY_MAX_USD_CENTS = '10';
     expect(await payAgent(request({ usdCents: 11, idempotencyKey: 'over' }), h.deps)).toMatchObject({ code: 'amount_above_max' });
     expect(h.executeCalls()).toBe(0);
+  });
+
+  it('lets a bounded platform policy supply its own per-payment ceiling', async () => {
+    process.env.AGENT_PAY_MAX_USD_CENTS = '10';
+    const h = harness();
+    const result = await payAgent(request({
+      usdCents: 20,
+      idempotencyKey: 'platform-policy-max',
+      platformMediatedMaxUsdCents: 20,
+    }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 20 });
+    expect(h.executeCalls()).toBe(1);
   });
 
   it('refuses a new payment below the configured minimum before admission or PayAI', async () => {
@@ -813,6 +972,35 @@ describe('agent-pay durable x402 machine', () => {
       detail: 'daily_count_cap',
     });
     expect(h.rows.size).toBe(3);
+  });
+
+  it('exempts platform-mediated bounties from count only while retaining dollar caps', async () => {
+    process.env.AGENT_PAY_DAILY_COUNT_CAP = '1';
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '200';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '200';
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({ usdCents: 5, idempotencyKey: 'ordinary-count-slot' });
+
+    const bounty = await payAgent(request({
+      usdCents: 100,
+      idempotencyKey: 'bounty:first:tier1-settle',
+      countCapExempt: true,
+    }), h.deps);
+    const overDollarCap = await payAgent(request({
+      usdCents: 100,
+      idempotencyKey: 'bounty:second:tier1-settle',
+      countCapExempt: true,
+    }), h.deps);
+
+    expect(bounty).toMatchObject({ ok: true, usdCents: 100 });
+    expect([...h.rows.values()].find(
+      (row) => row.idempotencyKey === 'bounty:first:tier1-settle',
+    )?.countCapExempt).toBe(true);
+    expect(overDollarCap).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: { cap: 200, usedTodayUsdCents: 105 },
+    });
   });
 
   it('admits a payment whose cumulative sender and recipient usage equals each cap', async () => {
