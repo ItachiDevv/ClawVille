@@ -18,10 +18,13 @@ one verdict). Rung-3 record: the results ledger at the bottom of
   (detached; re-point it at the rung-4 fork commit before the first gate).
 - **Local rig:** web `:3010` (candidate) + `:3011` (baseline) via
   `bun run build && bun run start`, API `:4001`. NEVER `bun run dev`.
-- **Founder gates pending from rung 3** (do not silently resolve): §2b longtask-boundary
-  amendment, webgl2 sanity-bound recalibration, background-tab boot decision (task 6),
-  checkpoint playtest. Rung 4 does not need them resolved to START (slices A–C), but
-  slice D's acceptance requires the §2b decision because it REDEFINES the reveal event.
+- **Founder gates from rung 3 — ALL RESOLVED 2026-08-10** (details in the plan doc's
+  "Rung-4 FOUNDER DECISIONS" section): §2b longtask boundary → SYMMETRIC polled reveal
+  (implemented in the probe); webgl2 bounds → RECALIBRATE from identical-code baseline
+  distributions at the next webgl2 batch; background-tab boot → option (a), the overlay
+  fuse counts only visible time (implemented in sea-loading-screen.tsx); proxy-world
+  first impression → founder judges LIVE at slice D (playtest is part of D's gate).
+  The rung-3 checkpoint playtest itself was APPROVED 2026-08-09.
 - **Measured 11.6s waterfall (medians, 11 valid runs):** 3.8s pre-warmup head
   (hydration+renderer init+registration) · 0.2s barrier · 5.6s "vrmBulk" (13-VRM
   main-thread parse queue tail + the FIRST hidden whole-scene compile) · 1.1s second
@@ -129,8 +132,11 @@ slice is abandoned (no speculative churn).
   arms only if BOTH arms stamp it; against pre-rung-4 baselines compare the OLD
   reveal event to itself (`streamSettled`) AND report the new event separately.
   Never compare boot-core-presented against full-world reveal in one ratio.
-- §2b longtask boundary: pending founder amendment — until decided, report BOTH the
-  frozen asymmetric metric and the symmetric polled-boundary metric side by side.
+- §2b longtask boundary: AMENDED to the symmetric polled-reveal boundary (founder
+  2026-08-10) — implemented in the probe (`longtaskBoundaryMs`), reports stamp
+  `longtasks.boundaryKind: 'polled-reveal-v2'`, and the paired gate REJECTS
+  reports without that exact kind (historical release-boundary reports are not
+  comparable evidence). Dual reporting is retired.
 - **Rig hard rules (memory `feedback_windows_pid_kills_and_batch_health`):** probe
   Chromes launch with `--disable-backgrounding-occluded-windows
   --disable-renderer-backgrounding` (occluded windows park the boot — that "flake"

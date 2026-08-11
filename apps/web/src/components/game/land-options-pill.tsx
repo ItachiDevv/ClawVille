@@ -3,31 +3,35 @@
 import type { CSSProperties } from 'react';
 import { parcelDisplayName } from '@clawville/shared';
 import { useAvatar } from '@/hooks/use-avatar';
+import {
+  bottomPromptOffset,
+  useBottomPromptOwner,
+} from '@/hooks/use-bottom-prompt-slot';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { getParcelSlotByCode } from '@/lib/land-proximity';
+import { availableLotDoorCaption, tierDoorModel } from '@/lib/land-tenure-doors';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useLandStore } from '@/stores/land';
 
 export default function LandOptionsPill() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
-  const nearLocation = useGameStore((s: GameState) => s.nearLocation);
   const nearParcelCode = useGameStore((s: GameState) => s.nearParcelCode);
-  const chatOpen = useGameStore((s: GameState) => s.chatOpen);
-  const guideChatOpen = useGameStore((s: GameState) => s.guideChatOpen);
-  const landOfficeOpen = useGameStore((s: GameState) => s.landOfficeOpen);
   const openLandOffice = useGameStore((s: GameState) => s.openLandOffice);
   const parcels = useLandStore((s) => s.parcels);
   const structures = useLandStore((s) => s.structures);
-  const buildMode = useLandStore((s) => s.buildMode);
   const enterBuildMode = useLandStore((s) => s.enterBuildMode);
   const { data: avatar } = useAvatar();
   const isGuest = useIsGuest();
   const isMobile = useIsMobile();
+  // ONE authority for the bottom-centre slot (hooks/use-bottom-prompt-slot):
+  // explore mode, the chat panels, the Land Office modal, the yard editor, and
+  // the building-vs-parcel priority all resolve there. Standing on a lot you
+  // own now hands this pill the slot ahead of the building prompt.
+  const promptOwner = useBottomPromptOwner();
 
-  if (controlMode === 'explore') return null;
-  if (chatOpen || guideChatOpen || landOfficeOpen || buildMode) return null;
-  if (nearLocation) return null;
+  if (promptOwner !== 'parcel') return null;
+  // Narrowing only — `promptOwner === 'parcel'` already implies this.
   if (!nearParcelCode) return null;
 
   const state = parcels.get(nearParcelCode);
@@ -38,6 +42,10 @@ export default function LandOptionsPill() {
   const tier = slot?.tier ?? null;
   const displayName = tier ? parcelDisplayName(nearParcelCode, tier) : nearParcelCode;
   const myId = (avatar as { id?: string } | null | undefined)?.id ?? null;
+  // Same derivation the slot arbiter uses for `nearParcelOwnedByViewer`
+  // (hooks/use-bottom-prompt-slot) — same store, same avatar query, so the two
+  // cannot disagree. This copy drives the CTA and the caption; that one decides
+  // whether this pill outranks the building prompt. Change both together.
   const ownedByMe =
     state.status === 'owned' && !!myId && state.ownerAvatarId === myId;
   const canDecorate = ownedByMe && structures.has(nearParcelCode);
@@ -46,26 +54,41 @@ export default function LandOptionsPill() {
   let actionLabel: string | null;
 
   if (state.status === 'available') {
+    // DERIVED from the ONE door model (lib/land-tenure-doors), the same model
+    // the claim card renders its doors from. The caption used to hand-write
+    // "Choose CLV hold or vCLAW rent" for every non-founder tier, which
+    // promised a rent door to tiers b and a that have none — and captioned
+    // Founders' Row as "auction allocation" while the card under it rendered a
+    // working Claim-with-hold button.
     secondaryLine = isGuest
       ? 'Preview the Land Office'
-      : tier === 'founder'
-        ? 'CLV hold door · auction allocation'
-        : 'Choose CLV hold or vCLAW rent';
+      : availableLotDoorCaption(tierDoorModel(tier));
     actionLabel = 'View in Land Office';
   } else if (ownedByMe) {
-    secondaryLine = 'Manage your land';
-    actionLabel = 'Manage';
+    // "Open Land Office", not "Manage": inside the modal "Manage building"
+    // opens the Build tab, so one word meaning two destinations was the exact
+    // confusion this pass exists to remove. This button opens the office on
+    // THIS lot; the modal's button manages the building on it.
+    secondaryLine = canDecorate
+      ? 'Open the Land Office, or decorate the yard here'
+      : 'Open the Land Office for this lot';
+    actionLabel = 'Open Land Office';
   } else {
-    secondaryLine = 'Someone already holds this lot';
-    actionLabel = null;
+    // A lot held by ANOTHER resident. This branch used to render no button at
+    // all, which left the Land Office's "held by another resident" panel
+    // reachable only from a console `openLandOffice(code)` call: a state we
+    // built that no player could open. The action is a LOOKUP, not a claim, so
+    // the caption says so and the button only opens the office on this lot.
+    // One short line on purpose: the slot's top reserve
+    // (hooks/use-bottom-prompt-slot) is derived from a two-line pill, so a
+    // wrapping third line would push this pill under the control-mode toggle.
+    secondaryLine = 'Someone else holds this lot. You can look it up.';
+    actionLabel = 'Open Land Office';
   }
 
-  const hasBottomChatBar =
-    controlMode === 'player' || controlMode === 'autonomous';
-  // Keep character-identical with location-hud.tsx:95 when that formula changes.
-  const bottomOffset = isMobile
-    ? 'max(calc(env(safe-area-inset-bottom, 0px) + 220px), 240px)'
-    : `calc(env(safe-area-inset-bottom, 0px) + ${hasBottomChatBar ? 84 : 36}px)`;
+  // Shared with the building prompt + salvage pill so all three sit on exactly
+  // the same line. See hooks/use-bottom-prompt-slot.
+  const bottomOffset = bottomPromptOffset(isMobile, controlMode);
 
   const style: CSSProperties = {
     position: 'fixed',

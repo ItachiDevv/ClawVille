@@ -17,54 +17,59 @@
 //
 // Layout (axis-aligned SQUARE concentric BLOCK-FRAMES, inner=premium, outer=abundant):
 //
-//   3-RING layout (2026-06-24 land-builder-economics — adds the new OUTER c-tier
-//   ring enabled by the 576→704 world grow). founder + starter + c are populated:
+//   3-RING layout, LAND SCALE-UP pass (2026-08-10 — founder-ratified plot growth;
+//   supersedes the 2026-06-24 even-arc-length layout). founder + starter + c are
+//   populated; all three carry the SAME 52 t footprint:
 //
 //   Tier     | role    | half-side h (tiles) | count | footprint (tiles) | footprint (wu)
 //   ---------|---------|---------------------|-------|-------------------|---------------
-//   founder  | PREMIUM |        190          |  10   |        38         |     1216
+//   founder  | PREMIUM |        192          |  10   |        52         |     1664
 //   a/b      | unused  |         —           |   0   |         —         |       —
-//   starter  | REGULAR |        258          |  26   |        34         |     1088
-//   c        | OUTER   |        305          |  20   |        34         |     1088
+//   starter  | REGULAR |        257          |  26   |        52         |     1664
+//   c        | OUTER   |        322          |  20   |        52         |     1664
 //
-// Plots are placed at EVEN ARC-LENGTH steps around the square perimeter (P=8·h tiles)
-// so corners always receive plots. s_i = i × (P/N), i ∈ [0, N).
+// Plots use a CORNER-INSET PER-SIDE DISTRIBUTION (replacing the even arc-length
+// walk — at 52 t footprints the arc walk parks plots ON the frame corners, where
+// two sides' plots collide diagonally):
 //
-// Perimeter walk (clockwise from top-left corner, s=0):
-//   side 0 = TOP edge:    z = −h, x runs −h → +h  (local = x + h)
-//   side 1 = RIGHT edge:  x = +h, z runs −h → +h  (local = z + h)
-//   side 2 = BOTTOM edge: z = +h, x runs +h → −h  (local = −x + h  i.e. h−x)
-//   side 3 = LEFT edge:   x = −h, z runs +h → −h  (local = −z + h  i.e. h−z)
-//   side = floor(s / (2h));  local = s − side × 2h  ∈ [0, 2h)
+//   perSide[side] = floor(count/4) + (side < count % 4 ? 1 : 0), side ∈ 0..3
+//     → founder 10 = 3,3,2,2 · starter 26 = 7,7,6,6 · c 20 = 5,5,5,5
+//   inset = footprintTiles + 12 (= 64 t for every populated tier)
+//   sideLen = 2h; span = sideLen − 2·inset
+//   local(j of n) = (n === 1) ? sideLen/2 : inset + j·span/(n−1)
+//   side 0 TOP:    xt = −h + local, zt = −h
+//   side 1 RIGHT:  xt = +h,         zt = −h + local
+//   side 2 BOTTOM: xt = +h − local, zt = +h
+//   side 3 LEFT:   xt = −h,         zt = +h − local
+//   cx = round(xt·32), cz = round(zt·32); the index runs continuously across
+//   sides 0,1,2,3 so parcelCode(tier, i) — every parcel id — is UNCHANGED from
+//   the previous layout. Only centers moved.
 //
-// NO-OVERLAP + MAP-BOUNDS + BUILDING-CLEARANCE PROOF:
+// NO-OVERLAP + MAP-BOUNDS + BUILDING-CLEARANCE PROOF (measured 2026-08-10 by
+// exhaustive computation against this generator + getServerColliders()):
 //
-//   Building ring worst-case axial reach: R=130t, max building footprint ≈ 31t half-side
-//   → worst radial reach on N/E/S/W axes ≈ 130+31 = 161t.
+//   BUILDING CLEARANCE (bar: >= 256 wu = 8 t from every parcel AABB):
+//     Measured max building-collider Chebyshev reach = 157.44 t = 5038 wu
+//     (messaging-channels; the previous comment's "~161 t" was wrong).
+//     Founder inner edge = 192 − 26 = 166 t = 5312 wu
+//     → min parcel-AABB-to-collider-AABB gap = 274 wu
+//       (parcel-founder-04 vs messaging-channels) >= 256 wu ✓
 //
-//   BUILDING CLEARANCE:
-//     Founder inner edge (on-axis) = 176 − 3 (half of 6t footprint) = 173t > 161t → 12t clearance ✓
+//   PAIRWISE NO-OVERLAP (exhaustive over all C(56,2) = 1,540 parcel pairs):
+//     min Chebyshev slack = 384 wu = 12 t, binding pair
+//     parcel-founder-00 vs parcel-founder-09 (the two plots nearest the
+//     founder frame's top-left corner, one on each side of it). Every other
+//     pair has more. land-placement.test.ts §5.1 pins this exhaustively.
 //
-//   WITHIN-FRAME plot spacing (step = 8h/N tiles >> footprint):
-//     founder: 8×176/8 = 176t >> 6t ✓
-//     a:       8×200/8 = 200t >> 7t ✓
-//     b:       8×224/16 = 112t >> 7t ✓
-//     c:       8×248/40 = 49.6t >> 7t ✓
-//     starter: 8×272/108 ≈ 20.1t >> 7t ✓
+//   MAP BOUNDS (704×704 grid → half-grid 352 t = 11264 wu):
+//     Outermost frame is c: h=322 t, footprint/2=26 t → furthest edge = 348 t
+//     = 11136 wu < 11264 wu → 128 wu (4 t) margin ✓
 //
-//   RADIAL GAP between consecutive frames = (h2−h1) = 24t each.
-//     Nearest edges of adjacent tiers: 24t − (7/2 + 7/2) = 24 − 7 = 17t clear ✓
-//     (founder→a gap = 24t − (6/2+7/2) = 24 − 6.5 = 17.5t clear ✓)
-//
-//   NEW OUTER c-RING (2026-06-24, h=305t, footprint=34t, count=20) NO-OVERLAP PROOF:
-//     c inner edge   = 305 − 34/2 = 288t  > starter outer edge 275t      → 13t gap   ✓
-//     c outer edge   = 305 + 34/2 = 322t  < new half-grid 352t (704/2)   → 30t margin ✓
-//     within-ring spacing = 8·305/20 = 122t >> 34t footprint              → no self-overlap ✓
-//     founder / starter / building-ring positions are UNCHANGED by this addition.
-//
-//   MAP BOUNDS (704×704 grid → half-grid 352t):
-//     Outermost frame is now c: h=305t, footprint/2=17t → furthest edge = 322t < 352t → 30t margin ✓
-//     (pre-grow 2-ring bound: starter h=258t furthest edge 275t < 288t half-grid — still holds.)
+//   RADIAL OCCUPANCY + SALVAGE BANDS (kept in sync with land-salvage.ts):
+//     founder [166, 218] t · starter [231, 283] t · c [296, 348] t.
+//     The two 13 t inter-ring gaps centred at 224.5 t and 289.5 t are the ONLY
+//     remaining homes for the shelf/deep salvage bands — moving any half-side
+//     here moves those bands (SALVAGE_LAYOUT_VERSION bump required).
 
 import { type LandTier, LAND_TIERS, PARCEL_TIER_COUNTS, parcelCode } from './land-tiers';
 
@@ -109,29 +114,37 @@ interface TierConfig {
   footprintTiles: number;
 }
 
-// 3-RING layout (2026-06-24 land-builder-economics — adds the OUTER c ring that
-// the 576→704 world grow enabled). founder (PREMIUM inner), starter (REGULAR mid),
-// and c (OUTER) are populated — PARCEL_TIER_COUNTS zeroes only a/b now.
-// Footprints are 34-38 tiles (1088-1216 wu) — ~5x the old 6-7t plots — so a
-// building (scaled to ~0.62-0.78x the footprint) reads at ~2.5-3x a character.
-//   founder (premium): h=190t (6080wu) inner edge 171t > building reach ~161t (10t clear).
-//   starter (regular): h=258t (8256wu) outer edge 275t; c inner edge 288t → 13t gap.
-//   c       (outer):   h=305t (9760wu) outer edge 322t < new grid half 352t (30t margin).
-//   within-ring spacing >> footprint for all three (founder 176t, starter 20.1t, c 122t).
+// 3-RING layout, LAND SCALE-UP pass (2026-08-10 — founder-ratified). founder
+// (PREMIUM inner), starter (REGULAR mid) and c (OUTER) are populated —
+// PARCEL_TIER_COUNTS zeroes only a/b. All three populated tiers now carry the
+// SAME 52 t (1664 wu) footprint: founder and starter grew 38 → 52 t (+87%
+// area); c keeps the 52 t it already had.
+//
+// WHY c DID NOT GROW TO 60 t (the original brief): infeasible by measurement.
+// The founder ring is pinned at halfSide >= 157.44 (measured max collider
+// reach) + 8 (clearance) + 26 (half of 52 t) = 191.44 t, each salvage band
+// needs a >= 12.5 t radial gap to hold its 200 wu node-to-parcel clearance,
+// and 157.44 + 8 + 52 + 12.5 + 52 + 12.5 + 60 = 354.44 t > the 352 t
+// half-world. c at 60 t requires redesigning salvage placement (a live money
+// path) or growing the world grid — deliberately NOT done in this pass.
+//
+//   founder (premium): h=192t (6144wu) inner edge 166t; 274wu clear of the
+//                      farthest building collider (measured reach 157.44t).
+//   starter (regular): h=257t (8224wu) occupancy [231, 283]t.
+//   c       (outer):   h=322t (10304wu) outer edge 348t < grid half 352t
+//                      (128 wu margin).
 // a/b keep nominal configs (never generated at count 0). They come back if we grow further.
 //
-// PLOT GROWTH (gamification pass §5.1, 2026-08-09): starter 34 → 38 t (+24.9%
-// area) and c 34 → 52 t (+133.9%); founder stays 38 t. Verified by exhaustive
-// pairwise AABB over all 1,540 parcel pairs, replicating this generator
-// including `Math.round(xt × 32)`. The binding case is starter-06
-// (218.3125, −258) against starter-07 (258, −218.3125), separated 39.6875 t on
-// both axes — minimum slack 1.6875 t = 54 wu. `land-tiers.test.ts` pins it.
+// PLOT GROWTH proof: exhaustive pairwise AABB over all 1,540 parcel pairs of
+// THIS generator (including `Math.round(xt × 32)`) gives minimum slack 384 wu
+// = 12 t, binding pair parcel-founder-00 (−4096, −6144) vs parcel-founder-09
+// (−6144, −4096). `land-placement.test.ts` §5.1 pins it exhaustively.
 const TIER_CONFIG: Record<LandTier, TierConfig> = {
-  founder: { halfSideTiles: 190, footprintTiles: 38 }, // PREMIUM inner ring (big)
+  founder: { halfSideTiles: 192, footprintTiles: 52 }, // PREMIUM inner ring (grown 38→52 t)
   a: { halfSideTiles: 200, footprintTiles: 7 }, // unused (count 0)
   b: { halfSideTiles: 224, footprintTiles: 7 }, // unused (count 0)
-  c: { halfSideTiles: 305, footprintTiles: 52 }, // OUTER ring (big) — new in the 704 world
-  starter: { halfSideTiles: 258, footprintTiles: 38 }, // REGULAR mid ring (big)
+  c: { halfSideTiles: 322, footprintTiles: 52 }, // OUTER ring (52 t; ring moved 305→322)
+  starter: { halfSideTiles: 257, footprintTiles: 52 }, // REGULAR mid ring (grown 38→52 t)
 };
 
 /** Side length, in world units, of one parcel footprint on `tier`. */
@@ -145,42 +158,31 @@ export function getTierHalfSideTiles(tier: LandTier): number {
 }
 
 // ---------------------------------------------------------------------------
-// Arc-length perimeter walk — converts arc-length s (tiles) → (cx_tiles, cz_tiles)
-// on a square frame of half-side h tiles.
-// Perimeter P = 8h. Side length = 2h.
-// s=0 = top-left corner (x=−h, z=−h).
-// ---------------------------------------------------------------------------
-
-function squarePerimeterPoint(s: number, h: number): { xt: number; zt: number } {
-  const sideLen = 2 * h;
-  const side = Math.floor(s / sideLen);
-  const local = s - side * sideLen; // 0 ≤ local < 2h
-
-  switch (side) {
-    case 0: // TOP: z=−h, x: −h → +h
-      return { xt: -h + local, zt: -h };
-    case 1: // RIGHT: x=+h, z: −h → +h
-      return { xt: +h, zt: -h + local };
-    case 2: // BOTTOM: z=+h, x: +h → −h
-      return { xt: +h - local, zt: +h };
-    case 3: // LEFT: x=−h, z: +h → −h
-      return { xt: -h, zt: +h - local };
-    default:
-      // Should never happen for s ∈ [0, P); guard for floating-point edge at s≈P
-      return { xt: -h, zt: -h };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic parcel generator
+// Deterministic parcel generator — corner-inset per-side distribution
 // ---------------------------------------------------------------------------
 
 /**
+ * Tiles between a side's END (the frame corner) and the CENTER of the nearest
+ * plot on that side, beyond the plot's own footprint. inset = footprint + 12
+ * keeps the two plots flanking each corner 384 wu apart (the measured global
+ * minimum slack) at the 52 t footprint.
+ */
+const CORNER_INSET_MARGIN_TILES = 12;
+
+/**
  * Deterministically generate `count` parcel slots for ONE tier on its square
- * block-frame — the SAME arc-length perimeter walk `generateParcels()` runs,
- * extracted as its per-tier body so a consumer can generate a tier at a count
- * OTHER than `PARCEL_TIER_COUNTS[tier]` WITHOUT mutating the frozen render
- * supply. Pure (math only — no RNG/clock); `count <= 0` → `[]`.
+ * block-frame — the SAME corner-inset per-side distribution `generateParcels()`
+ * runs, extracted as its per-tier body so a consumer can generate a tier at a
+ * count OTHER than `PARCEL_TIER_COUNTS[tier]` WITHOUT mutating the frozen
+ * render supply. Pure (math only — no RNG/clock); `count <= 0` → `[]`.
+ *
+ * Distribution (2026-08-10, replaces the even arc-length walk): each side of
+ * the frame receives floor(count/4) plots, the first `count % 4` sides one
+ * extra. Along a side, plots run from `inset` to `sideLen − inset` at even
+ * spacing (a lone plot sits at the side's midpoint). The index increments
+ * continuously across sides 0 (top), 1 (right), 2 (bottom), 3 (left), so
+ * `parcelCode(tier, i)` — every parcel id, and the tier ordering — is
+ * byte-identical to the previous layout. Only centers moved.
  *
  * `LAND_PARCELS` calls this per tier at `PARCEL_TIER_COUNTS`. Tooling may also
  * call it at historical counts to audit the retired a/b ghost manifest; doing
@@ -190,28 +192,54 @@ export function generateParcelsForTier(tier: LandTier, count: number): ParcelSlo
   if (count <= 0) return [];
   const cfg = TIER_CONFIG[tier];
   const h = cfg.halfSideTiles;
-  const perimeter = 8 * h; // tiles
-  const step = perimeter / count;
+  const sideLen = 2 * h; // tiles
+  const inset = cfg.footprintTiles + CORNER_INSET_MARGIN_TILES; // tiles from each corner
+  const span = sideLen - 2 * inset; // usable run per side, tiles
   const footprintWU = cfg.footprintTiles * TILE_SIZE;
   const radiusWU = h * TILE_SIZE; // Chebyshev frame radius in wu
 
   const parcels: ParcelSlot[] = [];
-  for (let i = 0; i < count; i++) {
-    const s = i * step; // arc-length position in tiles along the perimeter
-    const { xt, zt } = squarePerimeterPoint(s, h);
-    const cx = Math.round(xt * TILE_SIZE);
-    const cz = Math.round(zt * TILE_SIZE);
+  let i = 0;
+  for (let side = 0; side < 4; side++) {
+    const n = Math.floor(count / 4) + (side < count % 4 ? 1 : 0);
+    for (let j = 0; j < n; j++) {
+      // Distance along the side from its start corner, in tiles.
+      const local = n === 1 ? sideLen / 2 : inset + (j * span) / (n - 1);
+      let xt: number;
+      let zt: number;
+      switch (side) {
+        case 0: // TOP: z=−h, x: −h → +h
+          xt = -h + local;
+          zt = -h;
+          break;
+        case 1: // RIGHT: x=+h, z: −h → +h
+          xt = +h;
+          zt = -h + local;
+          break;
+        case 2: // BOTTOM: z=+h, x: +h → −h
+          xt = +h - local;
+          zt = +h;
+          break;
+        default: // LEFT: x=−h, z: +h → −h
+          xt = -h;
+          zt = +h - local;
+          break;
+      }
+      const cx = Math.round(xt * TILE_SIZE);
+      const cz = Math.round(zt * TILE_SIZE);
 
-    parcels.push({
-      id: parcelCode(tier, i),
-      tier,
-      indexInTier: i,
-      cx,
-      cz,
-      size: footprintWU,
-      angle: Math.atan2(cz, cx),
-      radius: radiusWU,
-    });
+      parcels.push({
+        id: parcelCode(tier, i),
+        tier,
+        indexInTier: i,
+        cx,
+        cz,
+        size: footprintWU,
+        angle: Math.atan2(cz, cx),
+        radius: radiusWU,
+      });
+      i++;
+    }
   }
   return parcels;
 }
@@ -219,7 +247,8 @@ export function generateParcelsForTier(tier: LandTier, count: number): ParcelSlo
 function generateParcels(): ParcelSlot[] {
   const parcels: ParcelSlot[] = [];
   for (const tier of LAND_TIERS) {
-    // Identical to the prior inline loop — LAND_PARCELS output is unchanged.
+    // Tier order (founder→a→b→c→starter) and ids are unchanged from every
+    // prior layout; only the per-tier centers come from the new distribution.
     parcels.push(...generateParcelsForTier(tier, PARCEL_TIER_COUNTS[tier]));
   }
   return parcels;

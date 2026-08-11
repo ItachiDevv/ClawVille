@@ -21,12 +21,13 @@
  *   works via R3F's pointer-event handling. Zero extra draw calls (invisible meshes are
  *   not rendered by the GPU — Three.js skips .visible=false objects in the render pass).
  *
- * Sign categories (getLandSignCategory from land-signage.ts):
- *   regular        — clean-slate sign.  Plank 290×120wu.  Slate ground, beveled inset
+ * Sign categories (getLandSignCategory from land-signage.ts) — dims ×1.45
+ * 2026-08-10 for the 1,664wu plots:
+ *   regular        — clean-slate sign.  Plank 420×174wu.  Slate ground, beveled inset
  *                    frame, bold "FOR SALE" + "LAND PARCEL" subtitle.  Texture 1024×424.
- *   premium        — ~1.35× bigger.  Plank 380×158wu.  Gold double-border + corner studs,
+ *   premium        — ~1.31× bigger.  Plank 550×229wu.  Gold double-border + corner studs,
  *                    "FOR SALE" + "PREMIUM" subtitle.  Founder + A tiers.  Texture 1024×426.
- *   premium-partner — ~1.7× bigger.  Plank 480×200wu.  Cyan/platinum ornate border + topper
+ *   premium-partner — ~1.65× bigger.  Plank 695×290wu.  Cyan/platinum ornate border + topper
  *                    band, "FOR SALE" + "PARTNER" subtitle.  Curated subset of premium plots
  *                    (see land-signage.ts PREMIUM_PARTNER_PARCEL_IDS).  Texture 1024×426.
  *
@@ -88,19 +89,23 @@ const PAD_INSET = 0.88;
 /**
  * Corner post dimensions (wu).
  *
- * Scaled up per the gamification pass §5.7. The old 38 wu post was 0.14× a
- * 270 wu avatar — knee-high on a plot 1,216 wu across, so the boundary read as
- * a scattering of pegs rather than a fence line. 120 wu is 0.44×, waist-height
- * on the avatar and legible from the ring path. Still 4 boxes / 48 triangles
+ * Scaled up AGAIN for the 2026-08-10 land scale-up (all plots now 52 t =
+ * 1,664 wu across). The §5.7 120 wu post (0.44× a 270 wu avatar) was tuned for
+ * a 1,216 wu plot; against 1,664 wu it read as a toothpick — the boundary
+ * pillar must anchor a plot that grew +37% linear. 200 wu is 0.74× the avatar
+ * (chest height): a proper estate boundary pillar, legible from the ring path,
+ * while kit fences stay waist-high (kit pieces are avatar-anchored by design
+ * and deliberately do NOT scale with the plot). Still 4 boxes / 48 triangles
  * per parcel: this costs geometry size, not draw calls.
  */
-const POST_W  = 14;    // square cross-section (was 5.5)
-const POST_H  = 120;   // total height above floor (was 38)
+const POST_W  = 24;    // square cross-section (was 14, before that 5.5)
+const POST_H  = 200;   // total height above floor (was 120, before that 38)
 const POST_Y  = FLOOR_Y + POST_H * 0.5;  // post center Y
 
-/** Top rail dimensions (wu) */
-const RAIL_H         = 5;   // rail thickness / height
-const RAIL_THICKNESS = 4;   // rail depth
+/** Top rail dimensions (wu) — scaled with the posts (was 5/4): a 4 wu wire
+ *  spanning a ~1,464 wu pad edge disappeared at any distance. */
+const RAIL_H         = 12;  // rail thickness / height
+const RAIL_THICKNESS = 9;   // rail depth
 const RAIL_Y         = FLOOR_Y + POST_H - RAIL_H * 0.5; // sits at top of posts
 
 // ---------------------------------------------------------------------------
@@ -120,27 +125,50 @@ interface SignSizeConfig {
   postH:  number;
 }
 
-// Scaled ~4.3× (2026-06-18) for the big-plot 2-ring layout — plots are now
-// ~1088-1216wu and buildings ~530-940wu, so the old ~70-116wu signs read as
-// specks. These post-heights (220-320wu) put a readable plank at ~1/3-1/2 a
-// building's height, on par with the structures.
+// Scaled ×1.45 (2026-08-10 land scale-up) on top of the 2026-06-18 ~4.3×
+// pass. Plots are now 1,664 wu across (52 t, all three tiers) and a Lv1 shell
+// spans ~1,064 wu, so the 290-480 wu planks read small from the approach path.
+// ×1.45 tracks the +37% linear plot growth: plank tops land at ~300-430 wu
+// (~1/3 of a shell's height), plank centers sit at ~215-285 wu — right at and
+// above the 270 wu avatar's eyeline, readable from the ring path where a
+// player actually approaches. W:H ratios are preserved to <0.4% so the three
+// aspect-matched CanvasTextures (1024×424/426) stay unsquished — no texture
+// changes needed.
 const SIGN_SIZES: Record<LandSignCategory, SignSizeConfig> = {
-  'regular':         { plankW: 290, plankH: 120, plankD: 9,  postW: 16, postH: 220 },
-  'premium':         { plankW: 380, plankH: 158, plankD: 11, postW: 20, postH: 270 },
-  'premium-partner': { plankW: 480, plankH: 200, plankD: 13, postW: 24, postH: 320 },
+  'regular':         { plankW: 420, plankH: 174, plankD: 13, postW: 23, postH: 320 },
+  'premium':         { plankW: 550, plankH: 229, plankD: 16, postW: 29, postH: 390 },
+  'premium-partner': { plankW: 695, plankH: 290, plankD: 19, postW: 35, postH: 460 },
 };
 
 /** Sign radial offset: place sign near the parcel's town-facing front edge, in
  *  FRONT of any building (which sits at the plot center). 0.82 → ~0.41×size from
- *  center (the front edge is at 0.5×size), so a big sign clears a big building. */
+ *  center (the front edge is at 0.5×size), so a big sign clears a big building.
+ *  At 1,664 wu plots: sign sits ~682 wu from center; the largest shell envelope
+ *  (founder Lv5, `shellEnvelopeHalfWu`) reaches ~588 wu — sign clears every
+ *  shell by ~94 wu. (Scales with STRUCTURE_FOOTPRINT_FRACTION; recheck if the
+ *  economy lane moves that constant.) */
 const SIGN_RADIAL_OFFSET = 0.82; // fraction of parcel half-size
 
-/** Hitbox half-sizes per category for invisible click targets (generous for tap). */
-const HITBOX_HALF: Record<LandSignCategory, { hw: number; hh: number; hd: number }> = {
-  'regular':         { hw: 180, hh: 130, hd: 40 },
-  'premium':         { hw: 230, hh: 170, hd: 50 },
-  'premium-partner': { hw: 280, hh: 215, hd: 60 },
-};
+/**
+ * Hitbox half-sizes for the invisible click targets — DERIVED from SIGN_SIZES
+ * (2026-08-10), never a second hand-maintained table. The old literal table had
+ * to be edited in lockstep with SIGN_SIZES; missing that edit breaks the
+ * in-world click-to-buy bridge (sign drawn one size, tap target another —
+ * exactly the WORLD↔UI parity defect this layer exists to prevent). Padding
+ * keeps the old table's generous-tap intent: ±35 wu width, ±70 wu height
+ * (covers the post below the plank), ±42 wu depth.
+ */
+const HITBOX_PAD_W = 35;
+const HITBOX_PAD_H = 70;
+const HITBOX_PAD_D = 42;
+const HITBOX_HALF: Record<LandSignCategory, { hw: number; hh: number; hd: number }> =
+  Object.fromEntries(
+    (Object.keys(SIGN_SIZES) as LandSignCategory[]).map((cat) => [cat, {
+      hw: SIGN_SIZES[cat].plankW * 0.5 + HITBOX_PAD_W,
+      hh: SIGN_SIZES[cat].plankH * 0.5 + HITBOX_PAD_H,
+      hd: SIGN_SIZES[cat].plankD * 0.5 + HITBOX_PAD_D,
+    }]),
+  ) as Record<LandSignCategory, { hw: number; hh: number; hd: number }>;
 
 // ---------------------------------------------------------------------------
 // Tier visual scheme (UNCHANGED)
@@ -480,10 +508,10 @@ function signPosition(parcel: ParcelSlot): { signX: number; signZ: number; angle
  *   postTop     = plankBottom + 0.12*cfg.plankH (small overlap to mount the sign)
  *             ⇒ postH' = cfg.postH - 0.98*cfg.plankH
  *
- * Per-category clearance (post top vs text center, FLOOR_Y=-2):
- *   regular         postH'≈102.4  top≈100.4  textY=146    → 45.6wu clear
- *   premium         postH'≈115.2  top≈113.2  textY≈173.2  → 60.0wu clear
- *   premium-partner postH'=124    top=122    textY=198    → 76.0wu clear
+ * Per-category clearance (post top vs text center, FLOOR_Y=-2, ×1.45 sizes):
+ *   regular         postH'≈149.5  top≈147.5  textY=213.6  → 66.1wu clear
+ *   premium         postH'≈165.6  top≈163.6  textY=250.6  → 87.0wu clear
+ *   premium-partner postH'≈175.8  top≈173.8  textY=284    → 110.2wu clear
  */
 function buildSignPostGeo(
   signX: number,
@@ -891,13 +919,19 @@ export function LandParcelSignHitboxes() {
         const cat = getLandSignCategory(p);
         const cfg = SIGN_SIZES[cat];
         const hb  = HITBOX_HALF[cat];
-        const { signX, signZ } = signPosition(p);
+        const { signX, signZ, angle } = signPosition(p);
         const plankY = FLOOR_Y + cfg.postH - cfg.plankH * 0.6;
         return {
           parcelCode: p.id,
           x:          signX,
           y:          plankY,
           z:          signZ,
+          // The plank geometry is yaw-rotated by `angle` (buildSignPlankGeo ->
+          // _m4.makeRotationY). The hitbox MUST carry the same yaw: an
+          // axis-aligned box around a diagonally-facing sign misses most of it
+          // (a 45-degree `regular` plank spans ~153wu in Z while hd is 48.5),
+          // which silently breaks in-world click-to-buy on the corner lots.
+          yaw:        angle,
           hw:         hb.hw,
           hh:         hb.hh,
           hd:         hb.hd,
@@ -911,6 +945,7 @@ export function LandParcelSignHitboxes() {
         <mesh
           key={hb.parcelCode}
           position={[hb.x, hb.y, hb.z]}
+          rotation={[0, hb.yaw, 0]}
           visible={false}
           material={_hitboxMat}
           onClick={(e) => {

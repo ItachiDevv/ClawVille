@@ -272,30 +272,25 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
  * quiescence marker make the run unusable as performance evidence.
  */
 /**
- * Longtask classification boundary (rung-3 accounting fix, Codex Lever-2/3
- * review finding 5): the POLLED reveal stamp lags real reveal by any longtask
- * that spans the 50ms poll tick, so boundary work landing right AFTER reveal
- * gets misattributed to the pre-reveal window. The app-authored
- * `__W3D_DECORATIVE_RELEASED_AT` stamp is written before release listeners
- * run and (on first-paint-anchored builds) only after a complete revealed
- * frame presented — use it as the classification boundary when finite.
- * On pre-anchor baselines the stamp fires BEFORE reveal, which UNDERCOUNTS
- * the baseline's pre-reveal longtasks — a bias AGAINST the candidate in
- * B/A ratios, so gate passes under this rule remain trustworthy.
- * `revealMs` (the user-visible metric) stays polled and unchanged.
+ * Longtask classification boundary — SYMMETRIC polled reveal for BOTH arms
+ * (§2b amendment, FOUNDER DECISION 2026-08-10).
+ *
+ * History: the rung-3 accounting fix (Codex Lever-2/3 review finding 5) used
+ * the app-authored `__W3D_DECORATIVE_RELEASED_AT` stamp as the boundary when
+ * finite. That definition became UNPASSABLE BY CONSTRUCTION once the release
+ * anchored to first paint: the candidate's boundary sits ~1s later than the
+ * baseline's, so its counted window includes the reveal-adjacent warmup
+ * longtask the baseline's window excludes (+49% median on identical-quality
+ * runs; the same runs pass at −2.8% under the symmetric boundary). The
+ * founder amended §2b to the symmetric polled-reveal boundary; the release
+ * stamp remains CAPTURED in every report as evidence, it just no longer
+ * defines the metric. `revealMs` (the user-visible metric) stays polled and
+ * unchanged. The polled-lag misattribution the old rule addressed now biases
+ * BOTH arms identically, so paired ratios stay trustworthy.
  */
-export function longtaskBoundaryMs(revealMs, decorativeReleasedAt, decorativeReleaseReason) {
-  // An absolute-deadline stamp can precede the real reveal — trusting it would
-  // EXCLUDE candidate longtasks between deadline and reveal (candidate-
-  // favorable undercount; Codex final-review MEDIUM). Only first-paint /
-  // milestone stamps are trustworthy boundaries.
-  if (
-    decorativeReleaseReason !== "absolute-deadline" &&
-    typeof decorativeReleasedAt === "number" &&
-    Number.isFinite(decorativeReleasedAt)
-  ) {
-    return decorativeReleasedAt;
-  }
+export function longtaskBoundaryMs(revealMs, _decorativeReleasedAt, _decorativeReleaseReason) {
+  // §2b amendment (founder 2026-08-10): symmetric polled reveal, both arms.
+  // The release stamp is still captured as evidence but never the boundary.
   return revealMs;
 }
 
@@ -527,6 +522,12 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       longtasks: {
         count: longtasks.length,
         totalMs: longtasks.reduce((a, e) => a + e.d, 0),
+        // Metric-definition version (§2b amendment, founder 2026-08-10):
+        // `preRevealTotalMs` is classified up to the SYMMETRIC polled reveal.
+        // The paired gate REQUIRES this exact kind so a reused/hand-built
+        // manifest can never compare a historical release-boundary report
+        // against a polled-boundary one (Codex decisions-review finding 2).
+        boundaryKind: "polled-reveal-v2",
         preRevealTotalMs: preRevealLongtaskMs,
         over100ms: longtasks.filter((e) => e.d >= 100).length,
         worst: [...longtasks].sort((a, b) => b.d - a.d).slice(0, 10),

@@ -609,3 +609,31 @@ Then the known tail: barrier 55–362ms · vrmBulk **6.4–8.7s** (still the dom
 **Slice-F decision input (per handoff §2 slice F):** `renderer.init` is 150–200ms, far under the ~1s threshold — do NOT touch adapter/device init. The head is JS/mount-bound: the ~660ms commit→factory span plus the ~2.4s post-chunk mount span are where a boot-shell split would bite; slice F stays on the menu but gates on re-measurement after slice D (the boot-core gate reshapes both spans).
 
 **Runner bug fixed while committing it (in the script now as a comment):** capturing a function's stdout via `$(launch_chrome ...)` blocks until the backgrounded Chrome EXITS if Chrome inherits the substitution pipe — Chrome must be launched `>/dev/null 2>&1 &` inside the function. The first batch attempt hung a full run on this.
+
+---
+
+## Rung-4 FOUNDER DECISIONS (2026-08-10 — all four open items resolved)
+
+1. **§2b longtask boundary → SYMMETRIC (amended).** `preRevealLongtaskMs` is classified up
+   to the POLLED reveal on BOTH arms. The rung-3 release-stamp boundary was unpassable by
+   construction for a first-paint-released candidate (its stamp sits after reveal, widening
+   its counted window vs baseline; +49% median on identical-quality runs vs −2.8% symmetric).
+   Implemented in `cold-load-probe.mjs longtaskBoundaryMs` (release stamp still captured as
+   evidence, never the boundary); probe tests updated. The dual-reporting requirement from the
+   rung-3 ledger is retired — symmetric is now THE metric.
+2. **WebGL2 lane → RECALIBRATE.** Count/worst-frame bounds for the WebGL2 lane are to be
+   derived from identical-code baseline distributions (precedent: the 30→40s reveal
+   recalibration), gating on medians with full distributions published. No more grinding
+   reruns against the mode lottery. ACTION for the next WebGL2 batch: recompute the frame
+   count/max sanity bounds from that batch's identical-code baseline arm before evaluating
+   the candidate.
+3. **Background-tab boot → option (a): pause the overlay fuse while hidden.** The boot
+   still parks on its first rAF await (browser-friendly, unchanged); the SeaLoadingScreen
+   45s force-dismiss now counts only VISIBLE time (visibilitychange-driven arm/pause with a
+   remaining-budget resume), so foregrounding a parked boot finds the overlay intact.
+   Implemented in `sea-loading-screen.tsx`. Option (b) (boot while hidden) explicitly
+   rejected — it re-enters the hidden-WebGPU-init flake class.
+4. **Proxy-world first impression → JUDGE LIVE AT SLICE D.** No screenshot pre-pass; the
+   founder playtests the real BOOT_CORE_PRESENTED first impression on staging as part of
+   slice D's acceptance (E4). Slice D's gate therefore includes the founder playtest
+   round-trip — plan its schedule accordingly.

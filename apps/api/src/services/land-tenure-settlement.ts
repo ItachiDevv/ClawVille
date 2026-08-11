@@ -248,6 +248,273 @@ function isUniqueViolation(err: unknown): boolean {
   return error?.code === '23505' || error?.cause?.code === '23505';
 }
 
+// ─── Hold-wallet OWNERSHIP PROOF (founder ruling 2026-08-10) ────────────────
+//
+// A declaration is a CLAIM; these helpers are the PROOF. Declaring a wallet you
+// do not control used to let you claim hold-door land backed by SOMEONE ELSE'S
+// CLV balance, so proof is now REQUIRED before the hold door opens.
+//
+// TRAP T1 — the verification is PUBKEY-BOUND, never row-bound. Every gate below
+// compares `verifiedPubkey` against the CURRENT declared pubkey. Storing only a
+// `verified_at` would make declare-A -> verify-A -> change-to-B inherit A's
+// proof and bypass the whole feature. `declareLandHoldWallet` ALSO clears the
+// columns on a change, but no gate is allowed to depend on that clear having
+// happened.
+
+export type HoldWalletVerificationMethod = 'signature' | 'transfer' | 'custodial';
+export type HoldWalletVerificationState = 'unverified' | 'verified' | 'grandfathered';
+
+/** The four columns every hold gate reads together. */
+export interface HoldWalletProofTuple {
+  declaredWallet: string | null;
+  verifiedPubkey: string | null;
+  verifiedMethod: string | null;
+  grandfatheredPubkey: string | null;
+}
+
+/**
+ * Server-side derivation of the verification state. `verified` iff the proven
+ * pubkey IS the declared pubkey; else `grandfathered` iff the one-shot
+ * migration stamp IS the declared pubkey; else `unverified`. Anything null,
+ * anything mismatched, anything missing a declaration is `unverified` —
+ * fail-closed by construction.
+ */
+export function holdWalletVerificationState(
+  proof: HoldWalletProofTuple,
+): HoldWalletVerificationState {
+  const declared = proof.declaredWallet;
+  if (!declared) return 'unverified';
+  if (proof.verifiedPubkey != null && proof.verifiedPubkey === declared) return 'verified';
+  if (proof.grandfatheredPubkey != null && proof.grandfatheredPubkey === declared) {
+    return 'grandfathered';
+  }
+  return 'unverified';
+}
+
+/**
+ * The hold door opens for a PROVEN wallet only.
+ *
+ * Grandfathering (trap T12) means "we do not evict you": the rent sweeper is
+ * untouched, so every hold that already exists keeps running exactly as it did.
+ * It does NOT mean "keep acquiring more land on an unproven wallet" — an
+ * account that declared a wallet it does not control before the cutoff is
+ * exactly the pre-existing squatter this slice targets, and letting the
+ * migration stamp authorize NEW claims would leave that hole open forever
+ * (adversarial review 2026-08-10; the frozen spec §4 was wrong here).
+ *
+ * The GET surface still REPORTS `grandfathered`, so the UI keeps prompting for
+ * the one-minute verification instead of failing silently at claim time.
+ */
+export function holdWalletProofAccepted(proof: HoldWalletProofTuple): boolean {
+  return holdWalletVerificationState(proof) === 'verified';
+}
+
+/** The SELECT list every hold-wallet proof read uses, so the two reads in
+ *  `settleTenureClaim` can never drift apart (trap T3). */
+const HOLD_WALLET_PROOF_COLUMNS = sql`land_hold_wallet_pubkey,
+         land_hold_wallet_verified_pubkey,
+         land_hold_wallet_verified_method,
+         land_hold_wallet_verified_at,
+         land_hold_wallet_grandfathered_pubkey`;
+
+type HoldWalletProofRow = {
+  land_hold_wallet_pubkey: string | null;
+  land_hold_wallet_verified_pubkey: string | null;
+  land_hold_wallet_verified_method: string | null;
+  land_hold_wallet_verified_at: string | Date | null;
+  land_hold_wallet_grandfathered_pubkey: string | null;
+};
+
+function proofFromRow(row: HoldWalletProofRow | undefined): HoldWalletProofTuple {
+  return {
+    declaredWallet: row?.land_hold_wallet_pubkey ?? null,
+    verifiedPubkey: row?.land_hold_wallet_verified_pubkey ?? null,
+    verifiedMethod: row?.land_hold_wallet_verified_method ?? null,
+    grandfatheredPubkey: row?.land_hold_wallet_grandfathered_pubkey ?? null,
+  };
+}
+
+function sameProof(a: HoldWalletProofTuple, b: HoldWalletProofTuple): boolean {
+  return (
+    a.declaredWallet === b.declaredWallet &&
+    a.verifiedPubkey === b.verifiedPubkey &&
+    a.verifiedMethod === b.verifiedMethod &&
+    a.grandfatheredPubkey === b.grandfatheredPubkey
+  );
+}
+
+export type HoldWalletDeclarationView = {
+  walletAddress: string | null;
+  declaredAt: Date | null;
+  state: HoldWalletVerificationState;
+  method: HoldWalletVerificationMethod | null;
+  verifiedAt: string | null;
+};
+
+/**
+ * One read for the GET surface: the declaration plus its SERVER-DERIVED
+ * verification state. Returns null when the user row is gone. The route never
+ * derives the state itself, so the read and the gates share one definition.
+ */
+export async function readHoldWalletDeclaration(
+  userId: string,
+): Promise<HoldWalletDeclarationView | null> {
+  const rows = await db.execute<
+    HoldWalletProofRow & { land_hold_wallet_declared_at: string | Date | null }
+  >(
+    sql`SELECT ${HOLD_WALLET_PROOF_COLUMNS}, land_hold_wallet_declared_at
+        FROM users WHERE id = ${userId}`,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const proof = proofFromRow(row);
+  const state = holdWalletVerificationState(proof);
+  const declaredAt = row.land_hold_wallet_declared_at;
+  const verifiedAt = row.land_hold_wallet_verified_at;
+  return {
+    walletAddress: proof.declaredWallet,
+    declaredAt: declaredAt == null ? null : new Date(declaredAt),
+    state,
+    // Only surface the method when the proof actually applies to the CURRENT
+    // declaration — a stale method on a mismatched pubkey is not proof.
+    method:
+      state === 'verified'
+        ? (proof.verifiedMethod as HoldWalletVerificationMethod | null)
+        : null,
+    verifiedAt:
+      state === 'verified' && verifiedAt != null
+        ? new Date(verifiedAt).toISOString()
+        : null,
+  };
+}
+
+export type HoldWalletVerificationGrant = {
+  walletAddress: string;
+  state: 'verified';
+  method: HoldWalletVerificationMethod;
+  verifiedAt: string;
+};
+
+/**
+ * Persist a DOOR-1 (signature) or CUSTODIAL proof for `expectedWallet`.
+ *
+ * The caller has already verified the proof; this function's job is to make the
+ * write race-safe. It re-reads the declaration under the same per-user advisory
+ * lock + `FOR UPDATE` the declaration path uses, and refuses with
+ * `wallet_declaration_changed` if the account repointed between the proof and
+ * the write — otherwise a proof for wallet A could land on a declaration of B.
+ *
+ * NEVER writes `land_hold_wallet_grandfathered_pubkey` (trap T2: application
+ * code may only NULL that column).
+ */
+export async function grantLandHoldWalletVerification(input: {
+  userId: string;
+  expectedWallet: string;
+  method: Extract<HoldWalletVerificationMethod, 'signature' | 'custodial'>;
+}): Promise<HoldWalletVerificationGrant> {
+  return await db.transaction(async (tx): Promise<HoldWalletVerificationGrant> => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.userId}, 0))`);
+    const rows = await tx.execute<{ land_hold_wallet_pubkey: string | null }>(
+      sql`SELECT land_hold_wallet_pubkey FROM users WHERE id = ${input.userId} FOR UPDATE`,
+    );
+    if (rows.length === 0) {
+      throw new LandTenureSettlementError('identity_binding_changed', 403);
+    }
+    const declared = rows[0]!.land_hold_wallet_pubkey;
+    if (!declared) throw new LandTenureSettlementError('wallet_not_declared', 403);
+    if (declared !== input.expectedWallet) {
+      throw new LandTenureSettlementError('wallet_declaration_changed', 409);
+    }
+    const stamped = await tx.execute<{ land_hold_wallet_verified_at: string | Date }>(
+      sql`UPDATE users
+          SET land_hold_wallet_verified_at = now(),
+              land_hold_wallet_verified_method = ${input.method},
+              land_hold_wallet_verified_pubkey = ${declared},
+              updated_at = now()
+          WHERE id = ${input.userId}
+          RETURNING land_hold_wallet_verified_at`,
+    );
+    const verifiedAt = stamped[0]?.land_hold_wallet_verified_at ?? new Date();
+    return {
+      walletAddress: declared,
+      state: 'verified',
+      method: input.method,
+      verifiedAt: new Date(verifiedAt).toISOString(),
+    };
+  });
+}
+
+/**
+ * CUSTODIAL auto-attest: the declared wallet IS the custodial avatar wallet of
+ * the identity's bound avatar, so ClawVille itself holds the key and no external
+ * signature is needed. This is the E5 parity door for an agent that declares its
+ * own wallet, and it works identically for a human whose declaration points at
+ * their own custodial avatar wallet.
+ *
+ * The custodial pubkey is re-read from `avatars` INSIDE the transaction — never
+ * a cached value and never a client-supplied one — under the same per-user
+ * advisory lock, with the avatar's owner re-validated against the identity so a
+ * rebound avatar cannot attest for the wrong account.
+ */
+export async function attestCustodialLandHoldWallet(input: {
+  identity: ActivityIdentity;
+}): Promise<HoldWalletVerificationGrant> {
+  const { identity } = input;
+  return await db.transaction(async (tx): Promise<HoldWalletVerificationGrant> => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${identity.userId}, 0))`);
+
+    const userRows = await tx.execute<{ land_hold_wallet_pubkey: string | null }>(
+      sql`SELECT land_hold_wallet_pubkey FROM users WHERE id = ${identity.userId} FOR UPDATE`,
+    );
+    if (userRows.length === 0) {
+      throw new LandTenureSettlementError('identity_binding_changed', 403);
+    }
+    const declared = userRows[0]!.land_hold_wallet_pubkey;
+    if (!declared) throw new LandTenureSettlementError('wallet_not_declared', 403);
+
+    // CURRENT custodial wallet of the bound avatar, read in-transaction.
+    const avatarRows = await tx.execute<{ user_id: string; wallet_address: string | null }>(
+      sql`SELECT user_id, wallet_address FROM avatars
+          WHERE id = ${identity.avatarId} FOR SHARE`,
+    );
+    const avatar = avatarRows[0];
+    if (!avatar || avatar.user_id !== identity.userId) {
+      throw new LandTenureSettlementError('identity_binding_changed', 403);
+    }
+    if (identity.kind === 'agent') {
+      const agentRows = await tx.execute<{ user_id: string | null }>(
+        sql`SELECT user_id FROM openclaw_bots
+            WHERE agent_id = ${identity.agentId} FOR SHARE`,
+      );
+      if (agentRows[0]?.user_id !== identity.userId) {
+        throw new LandTenureSettlementError('identity_binding_changed', 403);
+      }
+    }
+
+    const custodial = avatar.wallet_address;
+    if (!custodial || custodial !== declared) {
+      throw new LandTenureSettlementError('not_custodial_wallet', 409);
+    }
+
+    const stamped = await tx.execute<{ land_hold_wallet_verified_at: string | Date }>(
+      sql`UPDATE users
+          SET land_hold_wallet_verified_at = now(),
+              land_hold_wallet_verified_method = 'custodial',
+              land_hold_wallet_verified_pubkey = ${declared},
+              updated_at = now()
+          WHERE id = ${identity.userId}
+          RETURNING land_hold_wallet_verified_at`,
+    );
+    const verifiedAt = stamped[0]?.land_hold_wallet_verified_at ?? new Date();
+    return {
+      walletAddress: declared,
+      state: 'verified',
+      method: 'custodial',
+      verifiedAt: new Date(verifiedAt).toISOString(),
+    };
+  });
+}
+
 export type HoldWalletDeclarationResult = {
   walletAddress: string;
   firstDeclaration: boolean;
@@ -296,10 +563,23 @@ export async function declareLandHoldWallet(
         }
       }
 
+      // A CHANGE of declaration destroys the proof in the SAME statement: the
+      // verification tuple AND the one-shot grandfather stamp are NULLed
+      // together with the repoint, so a proven wallet A can never lend its
+      // proof to a freshly declared wallet B and grandfathering can never be
+      // re-inherited (traps T1 + T2 — application code may only NULL the
+      // grandfather column, never write it). Note we reach this statement only
+      // when `current !== canonicalWallet` (the equal case returned above), so
+      // a no-op re-declare never clears a live proof.
       await tx.execute(
         sql`UPDATE users
             SET land_hold_wallet_pubkey = ${canonicalWallet},
-                land_hold_wallet_declared_at = now(), updated_at = now()
+                land_hold_wallet_declared_at = now(),
+                land_hold_wallet_verified_at = NULL,
+                land_hold_wallet_verified_method = NULL,
+                land_hold_wallet_verified_pubkey = NULL,
+                land_hold_wallet_grandfathered_pubkey = NULL,
+                updated_at = now()
             WHERE id = ${identity.userId}`,
       );
       return {
@@ -350,12 +630,32 @@ export async function settleTenureClaim(
 
     let heldClv: number | null = null;
     let declaredWallet: string | null = null;
+    let declaredProof: HoldWalletProofTuple | null = null;
+    let proofState: HoldWalletVerificationState = 'unverified';
     if (input.door === 'hold') {
-      const declaredRows = await db.execute<{
-        land_hold_wallet_pubkey: string | null;
-      }>(sql`SELECT land_hold_wallet_pubkey FROM users WHERE id = ${input.expectedUserId}`);
-      declaredWallet = declaredRows[0]?.land_hold_wallet_pubkey ?? null;
+      // GATE 1 of 2 (trap T3) — the PRE-TRANSACTION read. Both this read and the
+      // in-transaction FOR SHARE re-read below enforce the proof, and the re-read
+      // compares the SAME tuple this one validated, so a concurrent repoint or
+      // un-verify cannot race through the window between them.
+      const declaredRows = await db.execute<HoldWalletProofRow>(
+        sql`SELECT ${HOLD_WALLET_PROOF_COLUMNS} FROM users WHERE id = ${input.expectedUserId}`,
+      );
+      declaredProof = proofFromRow(declaredRows[0]);
+      declaredWallet = declaredProof.declaredWallet;
       if (!declaredWallet) throw new LandTenureSettlementError('wallet_not_declared', 403);
+      proofState = holdWalletVerificationState(declaredProof);
+      if (!holdWalletProofAccepted(declaredProof)) {
+        // Founder ruling 2026-08-10: an unproven declaration is worth nothing —
+        // it would let this claim be backed by SOMEONE ELSE'S CLV balance. A
+        // GRANDFATHERED declaration is unproven too: it keeps every EXISTING
+        // hold alive (no eviction, sweeper untouched) but it may not acquire
+        // MORE land. `verificationState` rides along so the UI can say which of
+        // the two it is.
+        throw new LandTenureSettlementError('wallet_not_verified', 403, {
+          walletAddress: declaredWallet,
+          verificationState: proofState,
+        });
+      }
       const clv = await getWalletClvBalance(declaredWallet, {
         maxAgeMs: 0,
         maxStaleAgeMs: 0,
@@ -382,14 +682,28 @@ export async function settleTenureClaim(
         if (replay) return replay;
 
         if (input.door === 'hold') {
-          const walletRows = await tx.execute<{
-            land_hold_wallet_pubkey: string | null;
-          }>(
-            sql`SELECT land_hold_wallet_pubkey FROM users
+          // GATE 2 of 2 (trap T3) — the IN-TRANSACTION re-read under FOR SHARE.
+          // It compares the WHOLE proof tuple against the one validated pre-tx,
+          // not just the declared pubkey: a concurrent repoint OR a concurrent
+          // un-verify (or re-verify onto a different pubkey) both change the
+          // tuple and are refused, so nothing can slip through the window
+          // between the balance read and the flip.
+          const walletRows = await tx.execute<HoldWalletProofRow>(
+            sql`SELECT ${HOLD_WALLET_PROOF_COLUMNS} FROM users
                 WHERE id = ${input.expectedUserId} FOR SHARE`,
           );
-          if (walletRows[0]?.land_hold_wallet_pubkey !== declaredWallet) {
+          const currentProof = proofFromRow(walletRows[0]);
+          if (!declaredProof || !sameProof(currentProof, declaredProof)) {
             throw new LandTenureSettlementError('wallet_declaration_changed', 409);
+          }
+          // Re-assert the verdict itself rather than trusting the pre-tx
+          // computation: fail-closed even if the tuple comparison above is ever
+          // relaxed.
+          if (!holdWalletProofAccepted(currentProof)) {
+            throw new LandTenureSettlementError('wallet_not_verified', 403, {
+              walletAddress: currentProof.declaredWallet,
+              verificationState: holdWalletVerificationState(currentProof),
+            });
           }
         }
 
@@ -564,6 +878,11 @@ export async function settleTenureClaim(
             requiredClv,
             heldClv,
             declaredWallet,
+            // Audit trail for the ownership-proof gate (2026-08-10): WHICH proof
+            // admitted this claim, so a later review can tell a signed/attested
+            // hold from a grandfathered one without reconstructing history.
+            walletProofState: proofState,
+            walletProofMethod: proofState === 'verified' ? declaredProof?.verifiedMethod ?? null : null,
           });
           await tx.execute(
             sql`INSERT INTO land_transactions (kind, parcel_id, avatar_id, amount_ct, metadata)

@@ -20,6 +20,10 @@ import type {
   ClaimHoldResponse,
   ClaimRentResponse,
   LandHoldWalletStatus,
+  LandHoldWalletVerifyChallenge,
+  LandHoldWalletVerifyResult,
+  LandHoldTransferChallenge,
+  LandHoldTransferChallengeStatus,
   RentPrepayResponse,
   ReleaseParcelResponse,
   PlaceStructureResponse,
@@ -1501,6 +1505,68 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ walletAddress }),
     }),
+
+  // ── Hold-wallet ownership proof (FROZEN contract §3) ────────────────────
+  // Proof is REQUIRED before the hold door opens. Door 1 signs a nonce with a
+  // browser wallet; door 2 sends an exact dust amount that is auto-refunded;
+  // a custodial wallet ClawVille already holds the key for is auto-attested.
+  // All of these carry the same identity chain the declare routes use, so a
+  // guest gets 403 rather than a silent demotion.
+
+  /**
+   * Door 1, step 1: the EXACT message the declared wallet must sign. The body
+   * is account-bound AND wallet-bound, so a signature cannot be replayed
+   * against another account or another declaration.
+   */
+  landHoldWalletVerifyChallenge: () =>
+    honoRequest<LandHoldWalletVerifyChallenge>('/api/land/hold-wallet/verify/challenge', {
+      method: 'POST',
+    }),
+
+  /** Door 1, step 2: present the base58 signature over `messageToSign`. */
+  verifyLandHoldWalletSignature: (body: { nonce: string; signature: string }) =>
+    honoRequest<LandHoldWalletVerifyResult>('/api/land/hold-wallet/verify/signature', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Auto-attest: the declared wallet IS the current ClawVille custodial wallet
+   * of the caller's bound avatar, so control is already proven. 409
+   * `not_custodial_wallet` when it is not.
+   */
+  verifyLandHoldWalletCustodial: () =>
+    honoRequest<LandHoldWalletVerifyResult>('/api/land/hold-wallet/verify/custodial', {
+      method: 'POST',
+    }),
+
+  /**
+   * Door 2, step 1: open an exact-amount transfer challenge. 503
+   * `transfer_door_unavailable` when the verify wallet is unprovisioned;
+   * 429 `verify_attempt_cap` on the per-user daily cap.
+   */
+  openLandHoldTransferChallenge: () =>
+    honoRequest<LandHoldTransferChallenge>('/api/land/hold-wallet/verify/transfer/challenge', {
+      method: 'POST',
+    }),
+
+  /**
+   * Door 2, step 2: submit the transaction signature. THIS is what verifies —
+   * the server fetches that exact transaction and checks the amount, the memo
+   * and the signer. Telling us the signature means the proof can never be lost
+   * behind other traffic at the verify address.
+   */
+  submitLandHoldTransferSignature: (challengeId: string, signature: string) =>
+    honoRequest<LandHoldTransferChallengeStatus>(
+      `/api/land/hold-wallet/verify/transfer/${encodeURIComponent(challengeId)}/submit`,
+      { method: 'POST', body: JSON.stringify({ signature }) },
+    ),
+
+  /** Door 2, step 3: poll one challenge for its settled status and refund state. */
+  getLandHoldTransferChallenge: (challengeId: string) =>
+    honoRequest<LandHoldTransferChallengeStatus>(
+      `/api/land/hold-wallet/verify/transfer/${encodeURIComponent(challengeId)}`,
+    ),
 
   claimHoldParcel: (parcelId: string, idempotencyKey: string) =>
     honoRequest<ClaimHoldResponse>(
