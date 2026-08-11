@@ -25,6 +25,7 @@ import {
   type PlacementContext,
   type PlacementRequest,
 } from '../index';
+import { getServerColliders } from './world-colliders-data';
 
 /** The three tiers that actually generate parcels. */
 const LIVE_TIERS: readonly LandTier[] = ['starter', 'founder', 'c'];
@@ -52,16 +53,23 @@ describe('frozen world-scale constants (§5.6, Q7)', () => {
     expect(structureLevelScale(99)).toBeCloseTo(1.04, 10);
   });
 
-  it('pins the grown tier footprints (starter 38 t, founder 38 t, c 52 t)', () => {
-    expect(getParcelFootprintWu('starter')).toBe(1216);
-    expect(getParcelFootprintWu('founder')).toBe(1216);
+  it('pins the grown tier footprints (all three populated tiers 52 t)', () => {
+    // Land scale-up 2026-08-10: founder and starter grew 38 → 52 t to match c.
+    expect(getParcelFootprintWu('starter')).toBe(1664);
+    expect(getParcelFootprintWu('founder')).toBe(1664);
     expect(getParcelFootprintWu('c')).toBe(1664);
   });
 
-  it('reproduces the §5.3 envelope table', () => {
-    expect(shellEnvelopeHalfWu('starter')).toBeCloseTo(385.2, 1);
-    expect(shellEnvelopeHalfWu('founder')).toBeCloseTo(404.7, 1);
-    expect(shellEnvelopeHalfWu('c')).toBeCloseTo(540.5, 1);
+  it('reproduces the shell envelope table (FOOTPRINT_FRACTION 0.68)', () => {
+    // side 1664 × 0.68 × levelScale(maxLevel) / 2. Fraction 0.68 is the
+    // measured feasibility compromise: 0.70 gives founder (Lv5, scale 1.04) a
+    // 605.7 wu shell that leaves ring-1 kit cells only 70.3 wu of clearance —
+    // path-stone (75.05 half) and arch-driftwood (74.09) drop to ZERO founder
+    // placements and every 45° step dies. Ceiling is ≈0.6873 (statue-shell
+    // 45° anchors); 0.68 keeps 6.3 wu of margin.
+    expect(shellEnvelopeHalfWu('starter')).toBeCloseTo(560.1, 1);
+    expect(shellEnvelopeHalfWu('founder')).toBeCloseTo(588.4, 1);
+    expect(shellEnvelopeHalfWu('c')).toBeCloseTo(574.2, 1);
   });
 
   it('keeps the shell envelope level-independent by type signature (D-1)', () => {
@@ -197,19 +205,20 @@ describe('G-H placement feasibility gate (§7.2)', () => {
         (tier) => legalPlacements(pieceKey, tier, getTierMaxLevel(tier)).length,
       );
     }
-    // [starter, founder, c] — the §5.3 table, column for column.
+    // [starter, founder, c] — measured 2026-08-10 against the 52 t parcels at
+    // FOOTPRINT_FRACTION 0.68, column for column.
     expect(measured).toEqual({
       'path-stone': [208, 208, 208],
-      'deck-plank': [1248, 992, 1248],
-      'fence-picket': [624, 432, 624],
-      'fence-rope': [624, 432, 624],
+      'deck-plank': [896, 896, 896],
+      'fence-picket': [528, 432, 528],
+      'fence-rope': [528, 432, 528],
       'bench-wood': [528, 528, 528],
-      'planter-box': [416, 416, 528],
-      'planter-coral': [416, 416, 528],
-      'banner-pole': [624, 528, 864],
-      'lantern-post': [1072, 896, 1072],
-      'statue-shell': [416, 416, 528],
-      'statue-anchor': [416, 416, 528],
+      'planter-box': [528, 528, 528],
+      'planter-coral': [528, 528, 528],
+      'banner-pole': [768, 768, 768],
+      'lantern-post': [896, 896, 896],
+      'statue-shell': [528, 528, 528],
+      'statue-anchor': [528, 528, 528],
       'arch-driftwood': [208, 112, 208],
     });
   });
@@ -488,10 +497,11 @@ describe('grandfathering (Q5)', () => {
 });
 
 describe('plot growth separation (§5.1)', () => {
-  it('leaves every one of the 1,540 parcel pairs disjoint, with ≥ 54 wu slack', () => {
-    // starter 34 → 38 t and c 34 → 52 t are real world-geometry changes. If any
-    // pair of parcels overlapped, two players would own the same ground and the
-    // kit predicate would happily place pieces in the intersection.
+  it('leaves every one of the 1,540 parcel pairs disjoint, with ≥ 384 wu slack', () => {
+    // Land scale-up 2026-08-10: founder 38 → 52 t and starter 38 → 52 t (rings
+    // moved to h=192/257/322, corner-inset distribution). If any pair of
+    // parcels overlapped, two players would own the same ground and the kit
+    // predicate would happily place pieces in the intersection.
     let minSlack = Number.POSITIVE_INFINITY;
     let bindingPair = '';
     let pairs = 0;
@@ -515,9 +525,10 @@ describe('plot growth separation (§5.1)', () => {
 
     expect(pairs).toBe(1540);
     expect(minSlack).toBeGreaterThan(0);
-    // §5.1 names the binding case and its slack: 1.6875 t = 54 wu.
-    expect(minSlack).toBeCloseTo(54, 4);
-    expect(bindingPair).toContain('parcel-starter-0');
+    // The binding case is the pair flanking the founder frame's top-left
+    // corner: 384 wu = 12 t of slack (the corner-inset margin doing its job).
+    expect(minSlack).toBeCloseTo(384, 4);
+    expect(bindingPair).toBe('parcel-founder-00 vs parcel-founder-09');
   });
 
   it('keeps every parcel inside the playable grid', () => {
@@ -527,6 +538,49 @@ describe('plot growth separation (§5.1)', () => {
       expect(Math.abs(parcel.cx) + half).toBeLessThanOrEqual(halfWorldWu);
       expect(Math.abs(parcel.cz) + half).toBeLessThanOrEqual(halfWorldWu);
     }
+  });
+
+  it('clears every building collider by at least 256 wu (8 tiles) of AABB gap', () => {
+    // Design floor since the original block-frame layout, but it had NO
+    // enforcing test — which is exactly how the old header comment's "reach
+    // ≈ 161 t" drifted from the measured 157.44 t without anyone noticing.
+    // Re-derived live from getServerColliders() so moving a building or a
+    // ring fails HERE, with the offending pair named.
+    const MIN_BUILDING_CLEARANCE_WU = 256;
+    const colliders = getServerColliders();
+    expect(colliders.length).toBeGreaterThan(0);
+
+    let minGap = Number.POSITIVE_INFINITY;
+    let bindingPair = '';
+    for (const parcel of LAND_PARCELS) {
+      const half = parcel.size / 2;
+      for (const collider of colliders) {
+        // Euclidean edge-to-edge gap between two axis-aligned boxes (0 when
+        // they touch or overlap) — the same metric the salvage suite uses.
+        const dx = Math.max(
+          0,
+          Math.abs(parcel.cx - collider.centerX) - half - collider.halfX,
+        );
+        const dz = Math.max(
+          0,
+          Math.abs(parcel.cz - collider.centerZ) - half - collider.halfZ,
+        );
+        const gap = Math.hypot(dx, dz);
+        if (gap < minGap) {
+          minGap = gap;
+          bindingPair = `${parcel.id} vs ${collider.id}`;
+        }
+      }
+    }
+
+    expect({ bindingPair, ok: minGap >= MIN_BUILDING_CLEARANCE_WU }).toEqual({
+      bindingPair,
+      ok: true,
+    });
+    // Measured at the 2026-08-10 freeze: 274 wu, parcel-founder-04 vs
+    // messaging-channels. Pinned loosely (≥ bar) above; the exact reading
+    // lives in the land-parcels.ts proof comment.
+    expect(minGap).toBeGreaterThanOrEqual(MIN_BUILDING_CLEARANCE_WU);
   });
 });
 
