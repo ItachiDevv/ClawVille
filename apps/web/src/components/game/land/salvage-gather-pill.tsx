@@ -21,6 +21,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SALVAGE_APPROACH_DWELL_MS } from '@clawville/shared';
+import {
+  bottomPromptOffset,
+  useBottomPromptOwner,
+} from '@/hooks/use-bottom-prompt-slot';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api, ApiError } from '@/lib/api';
@@ -85,12 +89,11 @@ function sleep(ms: number): Promise<void> {
 export default function SalvageGatherPill() {
   const controlMode = useGameStore((s) => s.controlMode);
   const nearSalvageNodeId = useGameStore((s) => s.nearSalvageNodeId);
-  const nearLocation = useGameStore((s) => s.nearLocation);
-  const nearParcelCode = useGameStore((s) => s.nearParcelCode);
-  const chatOpen = useGameStore((s) => s.chatOpen);
-  const guideChatOpen = useGameStore((s) => s.guideChatOpen);
-  const landOfficeOpen = useGameStore((s) => s.landOfficeOpen);
   const addToast = useGameStore((s) => s.addToast);
+  // ONE authority for the bottom-centre slot (hooks/use-bottom-prompt-slot).
+  // Salvage is the slot's fallback claimant: a building or a parcel in range
+  // takes it first, exactly as the three separate rules used to arrange.
+  const promptOwner = useBottomPromptOwner();
   const nodeCooldowns = useSalvageStore((s) => s.nodeCooldowns);
   const applyClaimResult = useSalvageStore((s) => s.applyClaimResult);
   const isGuest = useIsGuest();
@@ -183,10 +186,13 @@ export default function SalvageGatherPill() {
       }
 
       applyClaimResult(claimResponse);
+      // The old toast said only "+N materials salvaged", which never told a
+      // player what materials are FOR. Naming the sink is the only thing that
+      // connects the gather loop to the yard editor in the UI.
       addToast(
         '🐚',
-        `+${claimResponse.materialsGranted} material${claimResponse.materialsGranted === 1 ? '' : 's'} salvaged`,
-        3200,
+        `+${claimResponse.materialsGranted} material${claimResponse.materialsGranted === 1 ? '' : 's'} salvaged. Spend them decorating your home yard.`,
+        3800,
       );
       window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
     } catch (error) {
@@ -218,10 +224,8 @@ export default function SalvageGatherPill() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [gather]);
 
-  if (controlMode === 'explore') return null;
-  if (chatOpen || guideChatOpen || landOfficeOpen) return null;
-  // Building/parcel prompts occupy the same bottom-center slot — they win.
-  if (nearLocation || nearParcelCode) return null;
+  if (promptOwner !== 'salvage') return null;
+  // Narrowing only — `promptOwner === 'salvage'` already implies this.
   if (!nearSalvageNodeId) return null;
 
   const node = getSalvageNodeById(nearSalvageNodeId);
@@ -230,10 +234,9 @@ export default function SalvageGatherPill() {
   const claimable = isSalvageNodeClaimable(nodeCooldowns, nearSalvageNodeId);
   const nextClaimAtMs = nodeCooldowns.get(nearSalvageNodeId) ?? 0;
 
-  const hasBottomChatBar = controlMode === 'player' || controlMode === 'autonomous';
-  const bottomOffset = isMobile
-    ? 'max(calc(env(safe-area-inset-bottom, 0px) + 220px), 240px)'
-    : `calc(env(safe-area-inset-bottom, 0px) + ${hasBottomChatBar ? 84 : 36}px)`;
+  // Shared with the building prompt + parcel pill so all three sit on exactly
+  // the same line. See hooks/use-bottom-prompt-slot.
+  const bottomOffset = bottomPromptOffset(isMobile, controlMode);
 
   return (
     <button

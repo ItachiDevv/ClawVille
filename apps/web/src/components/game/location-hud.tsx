@@ -2,6 +2,10 @@
 
 import { useGameStore, type GameState } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import {
+  bottomPromptOffset,
+  useBottomPromptOwner,
+} from '@/hooks/use-bottom-prompt-slot';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
 import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
@@ -29,15 +33,17 @@ export default function LocationHUD() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const enterBuilding = useGameStore((s: GameState) => s.enterBuilding);
-  const buildingChatOpen = useGameStore((s: GameState) => s.chatOpen);
-  const systemAgentChatOpen = useGameStore((s: GameState) => s.guideChatOpen);
   const isMobile = useIsMobile();
+  // The bottom-centre slot has ONE authority (hooks/use-bottom-prompt-slot).
+  // It folds in every rule this component used to spell out itself — explore
+  // mode, an open chat panel — plus the two it never knew about: the Land
+  // Office modal and the yard editor. It also hands the slot to the parcel
+  // pill when the player is standing on a lot they own, which is the priority
+  // change this pass is about.
+  const promptOwner = useBottomPromptOwner();
 
-  // Spectator/explore mode has no character to walk in — suppress the
-  // prompt so it doesn't dangle from the free-cam.
-  if (controlMode === 'explore') return null;
-  // A chat panel is open — the prompt would float over the chat UI.
-  if (buildingChatOpen || systemAgentChatOpen) return null;
+  if (promptOwner !== 'building') return null;
+  // Narrowing only — `promptOwner === 'building'` already implies this.
   if (!nearLocation) return null;
 
   const isKelpForest = nearLocation === 'kelp-forest-portal';
@@ -52,7 +58,6 @@ export default function LocationHUD() {
   // The old NPC-mode TalkToCharacterBar bottom bar was REMOVED (it duplicated
   // this prompt — founder report: "entrance + chatbox when only chat exists").
   // Only the Cove (a real walk-in interior with a SceneTransition) keeps "Enter".
-  const npcMode = controlMode === 'npc';
   const isCove = nearLocation === 'cove';
   const showTalk = !isCove && !isKelpForest && !!characterName;
   // Cove gets a distinct CTA — it's an entertainment venue, not a teacher building.
@@ -85,17 +90,10 @@ export default function LocationHUD() {
     }
   };
 
-  // Lift above joystick zones (joysticks anchor at
-  // max(env(safe-area-inset-bottom,0)+60px, 80px)); add another ~150px
-  // so the pill sits above the nipples on every phone/tablet.
-  // Lift above a bottom chat pill when one exists. player/autonomous mount the
-  // AvatarChatBar (~54px); npc mode no longer has a bottom bar (TalkToCharacterBar
-  // removed 2026-06-20), so the prompt can sit lower there. Mobile clears it (+220px).
-  // (AvatarChatBar's avatar comes from the useAvatar() query, NOT the game store.)
-  const hasBottomChatBar = controlMode === 'player' || controlMode === 'autonomous';
-  const bottomOffset = isMobile
-    ? 'max(calc(env(safe-area-inset-bottom, 0px) + 220px), 240px)'
-    : `calc(env(safe-area-inset-bottom, 0px) + ${hasBottomChatBar ? 84 : 36}px)`;
+  // Shared with the parcel + salvage pills so all three sit on exactly the same
+  // line. Lifts above the joystick zone on touch and above the AvatarChatBar on
+  // desktop player/autonomous. See hooks/use-bottom-prompt-slot.
+  const bottomOffset = bottomPromptOffset(isMobile, controlMode);
 
   return (
     <button

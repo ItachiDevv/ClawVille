@@ -77,9 +77,20 @@
  *
  * PLACEMENT — all 10 founder-ring gaps filled, alternating A/B/C:
  *   gap 0=A, 1=B, 2=C, 3=A, 4=B, 5=C, 6=A, 7=B, 8=C, 9=A. lateralOffset and
- *   tAlong are varied per gap for organic, non-robotic spacing. Verified math:
- *   every building clears BOTH adjacent founder parcels by >1600wu (required
- *   ~969wu), no building-to-building overlap. Max footprint <=450wu (< FOUNDER_EXCL_R 672wu).
+ *   tAlong are varied per gap for organic, non-robotic spacing.
+ *
+ *   Ring geometry comes from LAND_PARCELS (@clawville/shared) — NOT a private
+ *   copy — so tower placement tracks every future tier-config/layout change
+ *   automatically (2026-08-10 land scale-up; the old private FOUNDER_H_TILES=190
+ *   copy had already drifted from the live 192t ring).
+ *
+ *   Clearance verified 2026-08-10 against the 52t-footprint (1664wu) layout by
+ *   exhaustive tower-circumradius vs parcel-AABB check over all 10 towers x 56
+ *   parcels (tower bound = circumradius of the widest authored piece:
+ *   A=183.9, B=305.4, C=288.5wu — rotation-proof): min tower→parcel gap
+ *   >=250wu, min tower→tower gap >2600wu. The four CORNER gaps (2/5/7/9) carry
+ *   larger outward lateralOffsets (500-620) because the corner-inset parcel
+ *   layout leaves only the diagonal corner pocket free there.
  *
  * Iris Xe / WebGPU invariants:
  *   - All geometry is BoxGeometry or CylinderGeometry — both safe.
@@ -96,6 +107,7 @@
 import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { LAND_PARCELS } from '@clawville/shared';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // ---------------------------------------------------------------------------
@@ -106,51 +118,26 @@ import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
 const FLOOR_Y = -2;
 
 // ---------------------------------------------------------------------------
-// Parcel ring geometry -- local re-computation (no dep on shared package).
-// Keep in sync with land-parcels.ts TIER_CONFIG.founder and TILE_SIZE.
+// Parcel ring geometry — imported from the shared LAND_PARCELS constant
+// (2026-08-10 land scale-up). This file used to keep a PRIVATE copy of the
+// founder ring math (FOUNDER_H_TILES / FOUNDER_FOOT_TILES / its own perimeter
+// walk); that copy silently drifted when the tier configs grew. Deriving the
+// gap centers from LAND_PARCELS makes drift structurally impossible — any
+// future halfSideTiles / footprint / distribution change moves the towers
+// automatically (clearances must still be re-verified, see header).
 // ---------------------------------------------------------------------------
-
-const TILE_SIZE = 32;
-/** Founder ring half-side in tiles. */
-const FOUNDER_H_TILES = 190;
-/** Founder parcel footprint in tiles. */
-const FOUNDER_FOOT_TILES = 38;
-/** Founder ring half-side in world-units. */
-const FOUNDER_H_WU = FOUNDER_H_TILES * TILE_SIZE; // 6080
-/** Number of founder parcels. */
-const FOUNDER_COUNT = 10;
-
-/** Exclusion buffer around each parcel center (half-footprint + 2-tile gap). */
-const FOUNDER_EXCL_R = (FOUNDER_FOOT_TILES / 2 + 2) * TILE_SIZE; // 672wu
-
-function squarePerimeterPoint(s: number, h: number): { xt: number; zt: number } {
-  const sideLen = 2 * h;
-  const side = Math.floor(s / sideLen);
-  const local = s - side * sideLen;
-  switch (side) {
-    case 0: return { xt: -h + local, zt: -h };
-    case 1: return { xt: +h, zt: -h + local };
-    case 2: return { xt: +h - local, zt: +h };
-    case 3: return { xt: -h, zt: +h - local };
-    default: return { xt: -h, zt: -h };
-  }
-}
 
 interface ParcelPt { cx: number; cz: number; }
 
-function buildFounderCenters(): ParcelPt[] {
-  const h = FOUNDER_H_TILES;
-  const perimeter = 8 * h;
-  const step = perimeter / FOUNDER_COUNT;
-  const pts: ParcelPt[] = [];
-  for (let i = 0; i < FOUNDER_COUNT; i++) {
-    const { xt, zt } = squarePerimeterPoint(i * step, h);
-    pts.push({ cx: Math.round(xt * TILE_SIZE), cz: Math.round(zt * TILE_SIZE) });
-  }
-  return pts;
-}
+/** Founder parcel centers in tier order (indexInTier ascending = perimeter
+ *  walk order — the generator emits them that way). */
+const FOUNDER_CENTERS: readonly ParcelPt[] = LAND_PARCELS
+  .filter((p) => p.tier === 'founder')
+  .sort((a, b) => a.indexInTier - b.indexInTier)
+  .map((p) => ({ cx: p.cx, cz: p.cz }));
 
-const FOUNDER_CENTERS: readonly ParcelPt[] = buildFounderCenters();
+/** Number of founder parcels (derived — not a hardcoded 10). */
+const FOUNDER_COUNT = FOUNDER_CENTERS.length;
 
 // ---------------------------------------------------------------------------
 // Geometry bucket type — 5 material buckets shared by all 3 types.
@@ -628,10 +615,15 @@ const PIECES_BY_TYPE: Record<'A' | 'B' | 'C', Pieces> = {
 // ---------------------------------------------------------------------------
 // Placement table — ALL 10 founder-ring gaps filled, alternating A/B/C.
 // lateralOffset: positive = outside the ring frame line, negative = inside.
-// tAlong: position along the gap (0.5 = midpoint). Offsets/t varied per gap for
-// organic, non-robotic spacing. Math verified: every building clears BOTH
-// adjacent founder parcels by >1600wu, no building-to-building overlap.
-// Corner-spanning gaps (2, 7) nudged outward so they don't crowd ring interior.
+// tAlong: position along the gap (0.5 = midpoint).
+//
+// RETUNED 2026-08-10 for the 52t-footprint corner-inset layout (founder ring
+// h=192t, 3/3/2/2 plots per side, 64t corner inset). The four CORNER gaps
+// (2, 5, 7, 9) span diagonally across a ring corner where the grown 1664wu
+// parcels leave only the diagonal corner pocket free, so their towers push
+// further outward (500-620wu). Same-side gaps keep their old offsets (all
+// >=780wu clear). Verified by the circumradius-vs-parcel-AABB sweep in the
+// header: min tower→parcel gap >=250wu, min tower→tower gap >2600wu.
 // ---------------------------------------------------------------------------
 
 interface ApartmentPlacement {
@@ -642,26 +634,26 @@ interface ApartmentPlacement {
 }
 
 const FOUNDER_APARTMENT_PLACEMENTS: readonly ApartmentPlacement[] = [
-  // gap 0 — north-west top edge (parcels 0→1)
+  // gap 0 — top edge (parcels 0→1)
   { type: 'A', gapIdx: 0, lateralOffset: 200, tAlong: 0.5 },
-  // gap 1 — north-east top edge (parcels 1→2)
+  // gap 1 — top edge (parcels 1→2)
   { type: 'B', gapIdx: 1, lateralOffset: 160, tAlong: 0.5 },
-  // gap 2 — top-right CORNER span (parcels 2→3) — nudged outward
-  { type: 'C', gapIdx: 2, lateralOffset: 240, tAlong: 0.46 },
+  // gap 2 — top-right CORNER span (parcels 2→3) — pushed into the corner pocket
+  { type: 'C', gapIdx: 2, lateralOffset: 620, tAlong: 0.46 },
   // gap 3 — east edge upper (parcels 3→4) — placed inside the ring
   { type: 'A', gapIdx: 3, lateralOffset: -180, tAlong: 0.48 },
   // gap 4 — east edge lower (parcels 4→5)
   { type: 'B', gapIdx: 4, lateralOffset: 140, tAlong: 0.52 },
-  // gap 5 — bottom-right CORNER span (parcels 5→6)
-  { type: 'C', gapIdx: 5, lateralOffset: 220, tAlong: 0.5 },
-  // gap 6 — south edge right (parcels 6→7)
+  // gap 5 — bottom-right CORNER span (parcels 5→6) — corner pocket
+  { type: 'C', gapIdx: 5, lateralOffset: 510, tAlong: 0.5 },
+  // gap 6 — south edge (parcels 6→7, widest gap on the ring)
   { type: 'A', gapIdx: 6, lateralOffset: 200, tAlong: 0.47 },
-  // gap 7 — bottom-left CORNER span (parcels 7→8) — nudged outward
-  { type: 'B', gapIdx: 7, lateralOffset: 220, tAlong: 0.52 },
-  // gap 8 — west edge lower (parcels 8→9)
+  // gap 7 — bottom-left CORNER span (parcels 7→8) — corner pocket
+  { type: 'B', gapIdx: 7, lateralOffset: 590, tAlong: 0.52 },
+  // gap 8 — west edge (parcels 8→9, widest gap on the ring)
   { type: 'C', gapIdx: 8, lateralOffset: 180, tAlong: 0.5 },
-  // gap 9 — west edge upper (parcels 9→0)
-  { type: 'A', gapIdx: 9, lateralOffset: 160, tAlong: 0.45 },
+  // gap 9 — left-top CORNER span (parcels 9→0) — corner pocket
+  { type: 'A', gapIdx: 9, lateralOffset: 500, tAlong: 0.45 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -678,6 +670,10 @@ export default function LandFounderApartments() {
     const collected: Record<BucketKey, THREE.BufferGeometry[]> = {
       body: [], gold: [], window: [], dark: [], glow: [],
     };
+
+    // Defensive: gapCenter() needs at least 2 founder centers. If a future
+    // tier-config change empties the founder ring, render nothing (never NaN).
+    if (FOUNDER_COUNT < 2) return [];
 
     for (const placement of FOUNDER_APARTMENT_PLACEMENTS) {
       const pos = gapCenter(placement.gapIdx, placement.lateralOffset, placement.tAlong);

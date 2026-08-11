@@ -51,6 +51,197 @@ grandfathered wallet cannot do is claim MORE hold land until it is proven, so th
 Land Office shows an amber reminder saying exactly that: keep what you have, take
 the one-minute step when you want to claim again.
 
+**Prior Last Audited: 2026-08-10 (Land scale-up — every plot is now estate-sized,
+and the salvage rings moved with them).** Founder-ratified plot growth. All
+three populated land rings now carry the SAME 52-tile (1664 wu) plot footprint:
+Founders' Row and Starter Cove grew from 38 tiles (+87% area); the Outer Ward
+already had 52. The rings themselves moved to make that fit (founder half-side
+190→192 t, starter 258→257 t, c 305→322 t) and plots are now distributed
+per-side with a 64-tile corner inset instead of the old even perimeter walk —
+corners stay open, and the two plots flanking each corner keep 384 wu of
+clearance. Parcel ids/codes are UNCHANGED (ownership, deeds, escrow and yard
+pieces are untouched; yard pieces are parcel-relative and slide with their
+plot). Buildings on plots also read bigger: the structure shell now targets
+0.68 of the plot side (was 0.64), which puts a Lv1 starter home at ~4× a
+character's height. NOTE: the ratified brief asked for 0.70 and for the Outer
+Ward at 60 t; both were measured infeasible — 0.70 leaves two yard pieces with
+ZERO legal founder placements (kit cells are 104 wu; the Lv5 shell would leave
+70.3 wu of clearance where path-stone needs 75.05) and 60 t overruns the world
+budget (157.44 + 8 + 52 + 12.5 + 52 + 12.5 + 60 = 354.44 t > the 352 t
+half-world). Salvage: the grown rings swallowed the old shelf/deep homes, so
+those bands moved to the two remaining 13-tile gaps (224.5 t / 289.5 t,
+tangential-only scatter) — `SALVAGE_LAYOUT_VERSION` 1→2, same 48 node ids,
+live cooldowns carry over, old idempotency keys can never replay against moved
+nodes. DB: migration `0059_land_scaleup_grid_rederive.sql` re-derives
+`land_parcels.grid_x/grid_y` for already-seeded DBs (the seed's ON CONFLICT DO
+NOTHING never updates moved centers) — spawn-at-home and the world-map markers
+read those columns. **Drift note:** shared geometry constants + salvage layout
++ one DB migration + test re-pins; no route, wire, verb, or settlement change;
+no `PROTOCOL_VERSION` bump (positions and caps are served live, shapes
+unchanged). **PARITY:** human, connected-agent and hosted-agent paths all read
+the same shared constants and the same live feeds; nothing agent-visible
+changed shape.
+
+**Also audited 2026-08-10 (Land UX legibility — the land economy now explains
+itself).** The land economy worked but never told anyone how to use it: the
+founder's verdict was that a new landowner would give up within ten seconds. No
+mechanic changed here. What changed is what the game tells you. **One lot at a
+time:** walking up to a parcel and opening it from the pill now shows a single
+focused panel for THAT lot instead of dropping you into four tabs. It names the
+lot, its tier and who holds it, and gives you the actions that apply. A lot held
+by another resident used to show a completely blank panel; it now says so and
+points you at what is open. "Browse all parcels" goes back to the full list.
+**Decorating is findable:** the yard editor had exactly one way in, a button
+that only appeared while you physically stood inside your own lot. Your lots in
+the Land Office now carry a Decorate button too, and if you are not standing on
+the lot it tells you so where you clicked instead of failing silently.
+**Building is visible before you own a building:** the Build tab is always
+there, and says why it is unavailable rather than hiding. After you build, the
+game points you at decorating next. **The yard editor explains its own rules:**
+that pieces stack only on a Stone Path or a Plank Deck, that the preview lifts
+onto them by itself, that stacking does not unlock until your building reaches
+Lv2, that the dark square in the middle is your building's space, and what a
+piece costs before you open the editor. A one-time card on your first visit
+covers place, move, rotate, remove, and the fact that walking off your lot
+closes the editor. **The salvage loop is joined up:** the materials counter now
+explains where materials come from, what they are for and how many gathers you
+have left today, the gather toast says what you just earned is for, and the
+tutorial deck gained three land steps. **Rent reads as urgent:** the lot's rent
+section is labelled, the weeks control says weeks of rent, and inside the
+warning window the prepay button promotes itself. **One prompt at a time:**
+the three bottom-centre prompts (building, parcel, salvage) now share one
+arbiter instead of three hand-written rules that disagreed, and your own lot's
+prompt wins over a nearby building's. **Drift note:** web UI only. No route, no
+schema, no settlement path, no `PROTOCOL_VERSION` change, and no change to any
+price, threshold or cap (every number shown is derived from the existing shared
+constants). Two files outside the land domain were touched to make the new
+surfaces reachable: the quest tracker's expanded list was shortened so it stops
+covering the materials counter, and the shared tooltip primitive now exposes its
+text to screen readers. Nori's `knowledge[]` needs no update: no mechanic,
+currency, weight or connect-flow changed. **PARITY:** human path = the Land
+Office modal, the in-world pill and the yard editor; agent path = unchanged,
+since agents drive the same REST endpoints and none of their contracts moved.
+Verified on a live staging drive (focused panel on an owned lot, on a lot held
+by someone else, both Decorate branches, the structure-sync guard, the tooltip,
+the primer, the tutorial steps, a real salvage gather) plus a mobile and iPad
+viewport sweep in both orientations. Real-device safe-area behaviour still needs
+a founder screenshot; emulation cannot prove it.
+
+**Adversarial-review follow-ups (same pass, 2026-08-10).** A review of the
+finished diff found ten defects that four earlier passes missed. All ten are
+fixed here. **No double charge across surfaces:** starting a claim, a prepay or
+a release from the focused panel and then pressing "Browse all parcels" (or
+closing and reopening the office) used to unmount the control and mount an
+identical one that looked idle and would happily send a SECOND, differently
+keyed request while the first was still unresolved. The in-flight flag and the
+idempotency key now live in one registry keyed by lot and action, outside any
+component, so the pending action still reads as busy wherever you go and a retry
+reuses its original key. Nothing about the requests themselves changed.
+**Your land is your land:** the private portfolio read is now filed under the
+avatar that asked for it, and its write into the shared world state is
+re-checked against the live identity, so switching accounts can never show or
+paint one account's lots for another. **The world stops guessing:** when your
+portfolio no longer lists a lot the world still credits to you, the game now
+simply forgets its stale claim and asks the public feed what the lot really is,
+instead of declaring it for sale — that lot may have moved to another resident,
+and painting a for-sale sign on somebody else's land is exactly the kind of lie
+this pass exists to remove. **Nothing confident from an unconfirmed read:** the
+focused panel says "Checking this lot" while it revalidates, resolves to "we
+could not confirm" when a read fails or when two sources disagree, and disables
+every control that would SPEND until the read backing it lands. **Copy matches
+the rules:** the doors a lot offers are now derived from the shared tenure
+tables everywhere they are described (the in-world pill used to promise weekly
+rent on tiers that have no rent door), the For Sale intro derives its hold
+amounts and weekly prices from the same tables and the parcels' own quotes
+instead of hand-typed figures, the tutorial no longer implies every lot can be
+rented or that materials work on a shop yard, and the token is named
+"$CLAWVILLE" in prose with "CLV" kept for amounts. **Small-screen maths:** the
+bottom prompt now has a floor as well as a ceiling, so on a very short viewport
+it can never slide off the bottom or into the home-indicator strip; the
+first-time decorating card measures the gap between the safe top edge and the
+editor sheet rather than a fraction of the screen, so on a device with a real
+notch inset the two can no longer overlap. **Quest list and status bar:** the
+quest tracker measures the room actually left above the avatar status bar
+instead of assuming a floor, so on a normal window it never covers the bar, and
+on a window too short for a readable list it stacks above the bar only while
+expanded, so its own rows are never visible-but-untouchable. Collapsing it hands
+the column straight back. **Accessibility:** the always-present Build tab no
+longer tells a screen reader it is inoperable while it plainly works; its "pick
+a lot first" hint is announced instead.
+
+**Second adversarial-review follow-ups (same pass, 2026-08-10).** A second
+review of the fixed diff found seven more defects, one of them confirmed by a
+live browser drive. All seven are fixed here. No mechanic, price, threshold,
+route, schema or protocol version changed.
+
+**Buttons no longer go dead under your finger.** Every money button on a lot
+was being disabled for one full round trip every time you switched back to the
+browser tab, because the panel treated a routine background refresh of your
+portfolio as "we have not checked this yet". A press that landed inside that
+window did nothing at all and showed nothing. Measured live at 149 ms on a fast
+machine and just over 3 seconds with network latency. The panel now separates
+"never checked for this account" from "checked, refreshing quietly", and only
+the first one locks anything.
+
+**Nothing is stated about a lot while we do not know who is asking.** The panel
+could reach "held by another resident" before it knew which account was looking,
+which is how a lot's real owner could be told somebody else held it. That is
+now impossible by construction rather than by luck of ordering: no statement
+about who holds a lot is reachable without a resolved identity. Its claim doors
+also refuse to enable without one, and say so in a sentence instead of a dead
+button. A read that simply hangs now gives up after fifteen seconds and offers
+"Try again" instead of checking forever, and a lot your portfolio calls yours
+while the world plainly says otherwise now says it could not confirm rather
+than sounding certain.
+
+**Availability is re-read, not remembered.** The list of open lots was allowed
+to be up to a minute old with no fresh read of its own, so a claim could be
+offered against a stale row. Both the focused panel and the full list now
+re-read it every time the Land Office opens.
+
+**A lost reply can no longer strand a control.** An action that fails or never
+answers now keeps its safety key (so pressing again is the SAME request, not a
+second charge) and re-enables the button so you can actually press it. An action
+that SUCCEEDED but whose refresh does not land no longer spins forever: after
+twelve seconds it says plainly that the action went through but the view could
+not update, and gives you a Refresh button. The spend controls stay locked in
+that case on purpose, because the money already moved.
+
+**Actions belong to the account that started them.** In-flight actions and their
+safety keys are now filed under the acting avatar, so signing out or switching
+accounts never inherits the other account's locks. KNOWN LIMIT, deliberately not
+solved here: this is per browser tab, and the server is the real guard. Two tabs
+starting the same action at the same instant create two different safety keys
+and the server sees two separate actions.
+
+**Doors are one rule, everywhere.** The in-world pill, the tier summary, the
+focused panel's status line and the claim card all read one shared model of what
+a lot offers. A door that does not exist no longer renders a button: the hold
+panel and its Claim button used to render even on a tier with no hold door, and
+a tier with NO doors could still read "Open to claim. Pick a door below." It now
+says the lot is open but its tier offers no way in, and points at the lots that
+do. **Founders' Row correction:** the pill described it as auction-allocated
+while the card beneath it rendered a working Claim button. There is no auction
+anywhere in the game, and the server does accept a Founders' Row hold claim
+(10,000,000 CLV), so every surface now says the same true thing — hold-only,
+no rent door. Flagged for a founder decision: if Founders' Row is meant to be
+auction-only, that is a server change, not a copy change.
+
+**The screen stops contradicting itself about money.** The hold-wallet section
+compared your balance against one lot's threshold while the Claim button
+required the stacked total across every lot you already hold, so it could show
+green directly above a disabled "short by N" button. Both read the same stacked
+number now. Amounts beside a figure read "CLV" throughout; "$CLAWVILLE" is kept
+for naming the token in prose.
+
+**Quest list and status bar agree about the device.** The tracker chose its
+placement by screen width while the status bar hides itself on touch, so a wide
+tablet in landscape got the desktop tracker plus a height reserve for a bar that
+was not there. Both read the same touch check now, and the tracker MEASURES the
+bar's real height instead of assuming one, so a taller bar (guest caption,
+materials chip, skills row) shrinks the quest list rather than being covered by
+it.
+
 **Prior Last Audited: 2026-08-09 (Founder playtest follow-ups §5b — kelp sprint,
 whirlpool made real, urchin spin exits straight, wider reef track).** Four
 gameplay fixes from the 2026-08-09 checkpoint playtest. **Kelp sprint:** the
@@ -2644,10 +2835,12 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 ## 18c. Seabed salvage — gathering build materials (P7a/P7b, 2026-08-09)
 
 **What a player does.** Forty-eight salvage nodes sit on the seabed in three
-rings — `shallows` (16 nodes, ~2,240 wu from town centre), `shelf` (16, ~7,168
-wu), and `deep` (16, ~10,912 wu). Swim to one, hold position within 260 wu for
-two seconds, and gather. A gather pays **1-3 materials**, and the amount is
-decided by the server.
+rings — `shallows` (16 nodes, ~2,240 wu from town centre), `shelf` (16, 7,184
+wu — the gap between Founders' Row and Starter Cove), and `deep` (16, 9,264 wu
+— the gap between Starter Cove and the Outer Ward; both re-homed 2026-08-10
+when the plot growth closed the old gaps, layout v2). Swim to one, hold
+position within 260 wu for two seconds, and gather. A gather pays **1-3
+materials**, and the amount is decided by the server.
 
 **The limits, and why each exists.**
 

@@ -177,6 +177,82 @@ refunded dust-transfer fallback, and the `wallet_not_verified` error. No
 `[ACTION:]` verb, signing shape, or Hatcher auth shape changed. Nori's
 `knowledge[]` updated in the same diff.
 
+**Prior Last Audited: 2026-08-10 (Land scale-up — 52 t plots on moved rings, salvage
+layout v2, grid re-derive migration 0059).** Five changes, all in shared
+constants + one migration; no route, wire, or schema-shape change.
+
+**(1) Parcel geometry (`packages/shared/src/constants/land-parcels.ts`).**
+`TIER_CONFIG` is now founder `{h:192, fp:52}` (was 190/38), starter `{h:257,
+fp:52}` (was 258/38), c `{h:322, fp:52}` (was 305/52) — all three populated
+tiers share the 52 t (1664 wu) footprint. `generateParcelsForTier` was
+rewritten from the even arc-length perimeter walk to a CORNER-INSET PER-SIDE
+distribution: `perSide = floor(count/4) + (side < count%4 ? 1 : 0)` (founder
+3,3,2,2 · starter 7,7,6,6 · c 5,5,5,5), inset = footprint + 12 = 64 t, even
+spacing from `inset` to `sideLen − inset` (lone plot at side midpoint), index
+continuous across sides so every `parcelCode` id and the tier order are
+byte-identical — only centers moved. Still pure (no RNG/clock). Measured
+invariants (proof comment in-file, exhaustive): min pairwise slack 384 wu
+(binding `parcel-founder-00` vs `parcel-founder-09`, all 1,540 pairs), min
+parcel-to-building-collider AABB gap 274 wu (bar ≥ 256; binding
+`parcel-founder-04` vs `messaging-channels`; measured max collider reach is
+157.44 t — the old "~161 t" comment was wrong), world-edge margin 128 wu (c
+outer edge 348 t < 352 t). A NEW regression test in `land-placement.test.ts`
+enforces the 256 wu building-clearance floor live from `getServerColliders()`
+(it previously had no enforcing test). The brief's c=60 t was measured
+infeasible (354.44 t demand > 352 t half-world) — c keeps 52 t.
+
+**(2) Structure scale (`land-economy.ts`).** `STRUCTURE_FOOTPRINT_FRACTION`
+0.64 → **0.68** (brief said 0.70 — measured infeasible: at 0.70 the founder
+Lv5 shell is 605.7 wu, leaving ring-1 kit cells 70.3 wu of clearance, so
+path-stone (75.05 wu min-half) and arch-driftwood (74.09) drop to ZERO founder
+placements and every 45° rotation dies there; ceiling ≈ 0.6873, 0.68 keeps
+6.3 wu margin — see the envelope-table test comment). `LEVEL_SCALE` ladder and
+`STRUCTURE_HEIGHT_CAP_FRACTION` unchanged. Shell envelopes are now
+starter/founder/c = 560.1/588.4/574.2 wu; every kit feasibility gate is green
+(min placement count 112 = arch-driftwood × founder).
+
+**(3) Salvage layout v2 (`land-salvage.ts`).** The grown rings swallowed the
+old shelf/deep gaps; radial occupancy is now founder [166,218] t, starter
+[231,283] t, c [296,348] t, leaving exactly two 13 t gaps. Bands: shelf
+halfSide 224 → **224.5 t**, deep 341 → **289.5 t**, both with
+`radialJitterWu: 0` (16 wu was measured to dip deep-11 to 192 wu from
+parcel-starter-18, under the 200 wu node-to-parcel bar; tangential jitter
+unchanged). `SALVAGE_LAYOUT_VERSION` 1 → **2**; all 48 node ids retained,
+`SALVAGE_NODES` re-frozen from the generator (equality test still binds).
+Measured at freeze: ≥ 208 wu from any parcel, ≥ 430 wu from any building,
+min node-to-node 670 wu. Version semantics: cooldowns are keyed
+`(avatar_id, node_id)` with no version filter, so live cooldowns carry over
+to the moved positions (conservative — no double-claim window); ordinals keep
+counting (no yield replay); the receipt fingerprint
+`sha256(avatarId|nodeId|layoutVersion)` means a re-sent v1 idempotency key
+mismatches its stored receipt and refuses as `idempotency_key_conflict`
+instead of aliasing a moved node. `salvage_node_claims.layout_version` is
+stamped 2 on each row's next successful claim.
+
+**(4) Migration `0059_land_scaleup_grid_rederive.sql`.** Re-derives
+`land_parcels.grid_x/grid_y` (world tile coords; NOT the parcel-relative
+`land_structure_pieces` grid) for the 56 render-backed rows, because
+`seed-land-parcels.ts` is `ON CONFLICT (parcel_code) DO NOTHING` and never
+updates moved centers. Same derivation as the seed
+(`floor((c + 11264)/32)`), VALUES generated from the new constants.
+Two-phase (park at `-(target+1)`, then land) inside the file's implicit
+transaction so the non-deferrable `land_parcels_grid_unique` index can never
+transiently collide against ANY historical layout's coords; idempotent
+(both phases skip rows already at target) and self-healing after partial
+failure. Authored, NOT applied to any DB in this branch. Readers of these
+columns (all pass-through or `gridX*32` game-px consumers, verified):
+`routes/land.ts` DTOs, `land-tenure-settlement.ts`, `spawn-on-load.tsx`
+(spawn-at-home), `world-map-modal.tsx` (markers), `skill-protocol.ts` (shape
+doc only).
+
+**(5) Docs/comments.** Stale figures corrected in-file: the 161 t collider
+reach, the seed script's 9760 wu c-bound (now 10304 → gridX 674 < 704), the
+9216-era HALF_MAP comments in `spawn-on-load.tsx` / `world-map-modal.tsx`.
+
+**PARITY:** humans, connected agents and hosted agents all consume the same
+shared constants and live feeds; no agent-visible contract changed shape, no
+`PROTOCOL_VERSION` bump.
+
 **Prior Last Audited: 2026-08-09 (Land gamification P7a/P7b/P5b — salvage core,
 hosted salvage verb, material spend rail, protocol v48).** Four changes.
 

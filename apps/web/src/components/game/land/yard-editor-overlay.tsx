@@ -13,13 +13,18 @@ import {
   parseParcelCode,
   type KitPieceKey,
   type KitPieceSize,
-  type KitStructureLevel,
   type LandStructureType,
 } from "@clawville/shared";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { api } from "@/lib/api";
-import { ownerPiecesToPlacedPieces } from "@/lib/land-yard-editor";
+import {
+  YARD_RESERVED_SHELL_HINT,
+  clampKitStructureLevel,
+  isStackBasePiece,
+  ownerPiecesToPlacedPieces,
+  stackingHintLines,
+} from "@/lib/land-yard-editor";
 import { resetJump } from "@/lib/three/jump-state";
 import { useGameStore } from "@/stores/game";
 import { useSalvageStore } from "@/stores/salvage";
@@ -36,6 +41,13 @@ const TEXT = "#f0f9ff";
 const MUTED = "#bae6fd";
 const GOLD = "#fde68a";
 const EMPTY_PIECES: readonly PlacedPiece[] = Object.freeze([]);
+/** Light text on a dark panel, shared by every guidance line in the drawer. */
+const HINT_TEXT: React.CSSProperties = {
+  margin: 0,
+  color: MUTED,
+  fontSize: 12,
+  lineHeight: 1.4,
+};
 const KIT_KEYS_BY_SIZE: Readonly<Record<KitPieceSize, readonly KitPieceKey[]>> =
   {
     small: KIT_PIECE_KEYS.filter(
@@ -159,9 +171,38 @@ function CatalogGroup({
             >
               <span style={{ minWidth: 0 }}>
                 <span
-                  style={{ display: "block", fontSize: 14, fontWeight: 800 }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 6,
+                    fontSize: 14,
+                    fontWeight: 800,
+                  }}
                 >
                   {item.displayName}
+                  {/* Derived from the manifest's `supportSurfaceYWu`, never a
+                      hand-written key list — so a re-authored piece that gains
+                      or loses a support surface relabels itself. */}
+                  {isStackBasePiece(pieceKey) ? (
+                    <span
+                      title="Other pieces can be placed on top of this one."
+                      style={{
+                        borderRadius: 999,
+                        padding: "2px 7px",
+                        background: "rgba(16,185,129,0.16)",
+                        border: "1px solid rgba(110,231,183,0.42)",
+                        color: disabled ? "inherit" : "rgba(167,243,208,0.95)",
+                        fontSize: 10,
+                        fontWeight: 900,
+                        letterSpacing: "0.04em",
+                        textTransform: "uppercase",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Stackable base
+                    </span>
+                  ) : null}
                 </span>
                 <span
                   style={{
@@ -219,10 +260,9 @@ export default function YardEditorOverlay() {
   const paymentRail = useLandStore((state) => state.paymentRail);
   const setPaymentRail = useLandStore((state) => state.setPaymentRail);
   const materialBalance = useSalvageStore((state) => state.materialBalance);
-  const level = Math.min(
-    5,
-    Math.max(1, structure?.level ?? 1),
-  ) as KitStructureLevel;
+  // Clamp bounds come from the shared ladder (`KIT_LEVEL_RULES`), never a
+  // typed `5` — a level added there widens this automatically.
+  const level = clampKitStructureLevel(structure?.level);
   // Same fallback shape as `level` above, and reachable for the same reason:
   // the editor only opens on a parcel with an ACTIVE structure, so a null here
   // is the brief window before the owner overlay hydrates. The server reads the
@@ -350,6 +390,17 @@ export default function YardEditorOverlay() {
   ]);
 
   if (!buildMode) return null;
+  const modeHint =
+    mode === "move"
+      ? selectedPlacedPieceId
+        ? "Tap a grid cell to move the highlighted piece. Esc cancels selection."
+        : "Tap one of your pieces, then tap its new grid cell."
+      : mode === "remove"
+        ? "Tap a piece to remove it. Removal has no refund."
+        : isMobile
+          ? "Choose a piece, tap a cell to place it, and use Rotate for a new angle."
+          : "Choose a piece, hover a cell and click to place it, and press R to rotate.";
+  const stackingLines = stackingHintLines(level);
   const parcelTier = parseParcelCode(buildMode.parcelCode)?.tier;
   const displayName = parcelTier
     ? parcelDisplayName(buildMode.parcelCode, parcelTier)
@@ -571,42 +622,25 @@ export default function YardEditorOverlay() {
           WebkitOverflowScrolling: "touch",
         }}
       >
-        {mode === "move" ? (
-          <p
-            style={{
-              margin: "10px 2px 0",
-              color: MUTED,
-              fontSize: 12,
-              lineHeight: 1.4,
-            }}
-          >
-            {selectedPlacedPieceId
-              ? "Tap a grid cell to move the highlighted piece. Esc cancels selection."
-              : "Tap one of your pieces, then tap its new grid cell."}
-          </p>
-        ) : mode === "remove" ? (
-          <p
-            style={{
-              margin: "10px 2px 0",
-              color: MUTED,
-              fontSize: 12,
-              lineHeight: 1.4,
-            }}
-          >
-            Tap a piece to remove it. Removal has no refund.
-          </p>
-        ) : (
-          <p
-            style={{
-              margin: "10px 2px 0",
-              color: MUTED,
-              fontSize: 12,
-              lineHeight: 1.4,
-            }}
-          >
-            Choose a piece, hover or tap a cell, and use Rotate for a new angle.
-          </p>
-        )}
+        {/* Guidance block. The place-mode hint carries the stacking rules,
+            because stacking has NO player input: the ghost lifts itself to the
+            highest legal level on hover, so without this a player has no way to
+            learn it exists. Both the piece names and the unlock level are
+            DERIVED from the shared constants (see lib/land-yard-editor). */}
+        <div style={{ margin: "10px 2px 0", display: "grid", gap: 6 }}>
+          <p style={HINT_TEXT}>{modeHint}</p>
+          {mode === "place"
+            ? stackingLines.map((line) => (
+                <p key={line} style={HINT_TEXT}>
+                  {line}
+                </p>
+              ))
+            : null}
+          {/* The reserved centre is drawn at the tier's MAX building level, so
+              at Lv1 it looks far too big for the building standing in it. Named
+              here in the DOM: no 3D text ever goes in a world scene. */}
+          <p style={HINT_TEXT}>{YARD_RESERVED_SHELL_HINT}</p>
+        </div>
         <CatalogGroup
           size="small"
           used={counts.small}
