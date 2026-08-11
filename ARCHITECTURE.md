@@ -1,6 +1,22 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-11 (Tier-1 instant USDC bounties — hold + agent-pay rail, protocol v52,
+**Last Audited: 2026-08-11 (uOS Mini App embed enablement — CSP origins + static manifest; no
+route/schema/env change).** ClawVille is being listed as a Mini App in the uOS browser-OS App Store
+(uos.agency; Base-native agentic desktop; research + phased plan in `docs/uos-integration-plan.md`).
+This diff is Phase 1 only: (1) `apps/web/next.config.mjs` `FRAME_ANCESTORS` adds
+`https://www.uos.agency https://uos.agency` to the Milady-era embed CSP (X-Frame-Options stays
+deliberately unset); (2) NEW static `apps/web/public/.well-known/uos-app.json` — the uOS manifest
+(name/icon/tags, `entry.url = https://clawville.world/game`, `permissions: []`, NO `author.wallet`
+yet — that lands at founder publish time in the uOS Dev Portal, which is the outward action gating
+Phase 2). uOS fetches the manifest server-side with `redirect:'error'`, so it must stay a direct-200
+static file. The in-iframe auth story is unchanged Milady-embed plumbing (prod session cookie already
+`SameSite=None`; guest + magic-link agent flows are cookie-free). Not the protected Hatcher surface;
+no `PROTOCOL_VERSION` change; no knowledge-surface propagation (no gameplay change — and precedent:
+app-store channels are NOT advertised in Nori/orientation since the Milady sideload strip 2026-07-23).
+PARITY: acquisition surface only, no new write path; human path: uOS App Store install → iframe of
+`/game`; agent path: unchanged universal magic link.
+
+**Prior Last Audited: 2026-08-11 (Tier-1 instant USDC bounties — hold + agent-pay rail, protocol v52,
 migration 0061).** The paused SAP-escrow USDC bounty rail returns as the founder-ratified TIER MODEL
 (`.claude/plans/bounty-settlement-tiering-audit-2026-08-11.md`): Tier 1 (default, $50 cap — founder-corrected from $20 same day, protocol v53 — hard-clamped in
 `resolveTier1BountyMaxUsdCents` — env `TIER1_BOUNTY_MAX_USD_CENTS` can only LOWER it, floor 100) posts a
