@@ -154,17 +154,24 @@ splash — the splash ALSO clears on the iframe `load` event, so the SDK is opti
   real agent↔agent bridge; scope with agent-protocol-partner + SAP context.
 - **Watch:** uOS task-escrow launch vs our Covenant/SAP/PayAI three-way settlement.
 
-## 6. Founder decisions needed (blocking Phase 2 only)
-1. **Publisher EVM wallet** — which address publishes (it is the public author identity +
-   default payout wallet). Recommend a fresh dedicated team EOA.
-2. **Entry URL** — `/game` (straight into the world as guest; recommended, the landing is
-   the weaker surface today) vs `/` (landing).
-3. **Store copy + screenshots** — draft description is in the shipped manifest; screenshots
-   TBD (brag-session captures are candidates).
-4. **Verified badge now or later** — needs one `signMessage` with the publisher wallet.
-5. **Analytics unlock** — 10 USDC one-time, nice-to-have retention numbers per Brand
-   "retention is THE signal".
-6. **Go/no-go on the listing itself** — outward-facing partner action.
+## 6. Founder decisions (resolved 2026-08-11 — founder said "get started now, yes new EVM wallet")
+1. **Publisher EVM wallet — RESOLVED:** fresh dedicated EOA
+   `0x2F5AbfdA66e1eD6882255D35022fC9bafb724ff9`, generated 2026-08-11. Key custody per the
+   PK posture: plaintext ONLY in the offline Desktop backup dir
+   (`.uos-publisher-2026-08-11.json`, dotfile) + AES-256-GCM `.enc` in brain
+   `keys/agent-economy/` (round-trip verified). Never committed, never in chat/docs.
+2. **Entry URL — RESOLVED:** `/game` (founder did not object to the proposal).
+3. **Store copy — SHIPPED** in the manifest; **screenshots — FOLLOW-UP** (optional field;
+   a re-publish refreshes the listing in place once founder picks shots).
+4. **Verified badge — RESOLVED:** domain-association signature generated with the
+   publisher key and verified locally with viem `verifyMessage`; shipped in the manifest.
+   Re-sign whenever `domain`, `entry.url`, or `author.wallet` changes. If the uOS publish
+   ever fails with `Manifest signature invalid`, remove the `signature` field, publish
+   Unverified, then debug (invalid signature hard-fails the publish; absent = allowed).
+5. **Analytics unlock — OPEN** (10 USDC one-time from the publisher wallet; do after
+   listing is live if wanted).
+6. **Go/no-go — GO** (founder 2026-08-11). The Dev Portal publish click itself remains a
+   founder browser action (wallet signature).
 
 ## 7. Rules compliance notes
 - **Not the protected Hatcher partner surface**: no partner route/service/type touched; no
