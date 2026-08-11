@@ -46,7 +46,7 @@ describe('agent paid surfaces', () => {
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest documented).
     // 52 = Tier-1 instant USDC bounties (hold + agent-pay, no chain).
-    expect(PROTOCOL_VERSION).toBe(52);
+    expect(PROTOCOL_VERSION).toBe(53);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');

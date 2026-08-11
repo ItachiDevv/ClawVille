@@ -45,16 +45,16 @@ describe('bounty create reward floors', () => {
     expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 4 }).success).toBe(false);
   });
 
-  it('accepts the Tier-1 $20 cap and rejects one cent above while SAP is paused', () => {
-    expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 2_000 }).success).toBe(true);
-    expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 2_001 }).success).toBe(false);
+  it('accepts the Tier-1 $50 cap and rejects one cent above while SAP is paused', () => {
+    expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_000 }).success).toBe(true);
+    expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_001 }).success).toBe(false);
   });
 
-  it('does not let env raise the founder-frozen $20 ceiling', () => {
+  it('does not let env raise the founder-frozen $50 ceiling', () => {
     process.env.TIER1_BOUNTY_MAX_USD_CENTS = '999999';
     try {
-      expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 2_000 }).success).toBe(true);
-      expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 2_001 }).success).toBe(false);
+      expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_000 }).success).toBe(true);
+      expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_001 }).success).toBe(false);
     } finally {
       delete process.env.TIER1_BOUNTY_MAX_USD_CENTS;
     }

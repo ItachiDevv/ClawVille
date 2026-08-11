@@ -2,7 +2,7 @@
 
 **Last Audited: 2026-08-11 (Tier-1 instant USDC bounties — hold + agent-pay rail, protocol v52,
 migration 0061).** The paused SAP-escrow USDC bounty rail returns as the founder-ratified TIER MODEL
-(`.claude/plans/bounty-settlement-tiering-audit-2026-08-11.md`): Tier 1 (default, $20 cap hard-clamped in
+(`.claude/plans/bounty-settlement-tiering-audit-2026-08-11.md`): Tier 1 (default, $50 cap — founder-corrected from $20 same day, protocol v53 — hard-clamped in
 `resolveTier1BountyMaxUsdCents` — env `TIER1_BOUNTY_MAX_USD_CENTS` can only LOWER it, floor 100) posts a
 NON-OVERRIDABLE hold on the poster's own custodial USDC (NEW `bounty_usdc_holds` table, migration 0061;
 NEW `services/bounty-tier1.ts`) and settles poster->winner through the existing agent-pay/PayAI machinery
