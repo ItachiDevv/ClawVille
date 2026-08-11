@@ -24,9 +24,9 @@ import {
   PosterUsdcSpendAdmissionError,
 } from './usdc-spend-admission';
 
-const DEFAULT_TIER1_MAX_USD_CENTS = 2_000;
+const DEFAULT_TIER1_MAX_USD_CENTS = 5_000;
 const MIN_TIER1_MAX_USD_CENTS = 100;
-const HARD_TIER1_MAX_USD_CENTS = 2_000;
+const HARD_TIER1_MAX_USD_CENTS = 5_000;
 export const TIER1_OPEN_BOUNTY_CAP = 2;
 export const TIER1_SETTLEMENT_MAX_ATTEMPTS = 5;
 

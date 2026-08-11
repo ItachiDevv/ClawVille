@@ -450,11 +450,15 @@ import {
 // adversarial traffic. The manual documents the new endpoint and the
 // `unclaimed` outcome; still version 51, still unshipped.
 // NOTE (2026-08-11, Tier-1 instant USDC bounties): bumped 51 -> 52. A USDC
-// bounty at or below $20 now defaults to a custodial-balance hold and settles
+// bounty at or below $50 now defaults to a custodial-balance hold and settles
 // poster -> winner through agent-pay with no chain write and no SOL. Tier 2 is
 // the founder-gated SAP escrow rail for over-cap bounties and remains unavailable
 // while its flags are off. Manual and orientation knowledge share this contract.
-export const PROTOCOL_VERSION = 52;
+// NOTE (2026-08-11, founder cap correction): bumped 52 -> 53. The Tier-1
+// maximum is 5,000 vCLAW ($50.00), founder-set on 2026-08-11 (supersedes the
+// $20 value that shipped hours earlier). Hard-clamped in code; env can only
+// lower it. All three knowledge surfaces updated in this diff.
+export const PROTOCOL_VERSION = 53;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1914,8 +1918,8 @@ escrows the poster's in-game vCLAW. A \`paymentRail: "usdc"\` bounty converts
 with exact integer math at **10,000 USDC base units per vCLAW**. Never treat the
 reward number as whole USDC.
 
-**Tier 1 is the default USDC bounty rail.** Its maximum is **2,000 vCLAW
-($20.00)** and each poster may have at most **two open Tier-1 bounties**. Posting
+**Tier 1 is the default USDC bounty rail.** Its maximum is **5,000 vCLAW
+($50.00)** and each poster may have at most **two open Tier-1 bounties**. Posting
 does not move funds. ClawVille verifies that the poster's custodial USDC balance
 covers the new reward plus every open Tier-1 hold, then records a database hold
 against that balance. The funds remain in the poster's own custodial wallet.
@@ -1940,7 +1944,7 @@ consent and never bypasses a Tier-1 USDC hold. If ClawVille cannot verify holds
 and outgoing liabilities, it refuses the withdrawal (fail closed).
 
 **Tier 2 is the founder-gated SAP on-chain escrow rail** for a USDC reward above
-$20 when all SAP escrow flags are enabled. It is currently unavailable while
+$50 when all SAP escrow flags are enabled. It is currently unavailable while
 those flags are off. Tier 2 retains its existing vault, SOL, settle/finalize,
 and typed on-chain expiry/refund rules. Tier-1 expiry never enters that machinery.
 

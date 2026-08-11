@@ -1092,7 +1092,7 @@ describe('round 4 — refund copy never asserts a verification outcome', () => {
 
 describe('protocol manual parity', () => {
   it('retains the land proof bump before the subsequent Tier-1 bounty bump', () => {
-    expect(protocol).toContain('export const PROTOCOL_VERSION = 52;');
+    expect(protocol).toContain('export const PROTOCOL_VERSION = 53;');
     expect(protocol.match(/export const PROTOCOL_VERSION = /g) ?? []).toHaveLength(1);
   });
 

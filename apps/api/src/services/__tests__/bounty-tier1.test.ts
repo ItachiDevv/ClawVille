@@ -25,20 +25,20 @@ const POSTER = '22222222-2222-4222-8222-222222222222';
 const HUNTER = '33333333-3333-4333-8333-333333333333';
 
 describe('Tier-1 bounty rail and cap', () => {
-  it('defaults to $20 and floors an unsafe env override at $1', () => {
-    expect(resolveTier1BountyMaxUsdCents(undefined)).toBe(2_000);
+  it('defaults to $50 and floors an unsafe env override at $1', () => {
+    expect(resolveTier1BountyMaxUsdCents(undefined)).toBe(5_000);
     expect(resolveTier1BountyMaxUsdCents('50')).toBe(100);
     expect(resolveTier1BountyMaxUsdCents('1500')).toBe(1_500);
-    expect(resolveTier1BountyMaxUsdCents('2500')).toBe(2_000);
-    expect(resolveTier1BountyMaxUsdCents('999999999')).toBe(2_000);
-    expect(resolveTier1BountyMaxUsdCents('not-money')).toBe(2_000);
+    expect(resolveTier1BountyMaxUsdCents('2500')).toBe(2_500);
+    expect(resolveTier1BountyMaxUsdCents('999999999')).toBe(5_000);
+    expect(resolveTier1BountyMaxUsdCents('not-money')).toBe(5_000);
   });
 
   it('uses Tier 1 while SAP is paused and reserves Tier 2 for over-cap enabled posts', () => {
-    expect(selectUsdcBountyTier({ rewardUsdCents: 2_000, escrowGateOpen: false })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 2_001, escrowGateOpen: false })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 2_000, escrowGateOpen: true })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 2_001, escrowGateOpen: true })).toBe(2);
+    expect(selectUsdcBountyTier({ rewardUsdCents: 5_000, escrowGateOpen: false })).toBe(1);
+    expect(selectUsdcBountyTier({ rewardUsdCents: 5_001, escrowGateOpen: false })).toBe(1);
+    expect(selectUsdcBountyTier({ rewardUsdCents: 5_000, escrowGateOpen: true })).toBe(1);
+    expect(selectUsdcBountyTier({ rewardUsdCents: 5_001, escrowGateOpen: true })).toBe(2);
   });
 });
 
@@ -84,7 +84,7 @@ describe('Tier-1 approval settlement', () => {
       idempotencyKey: `bounty:${BOUNTY_ID}:tier1-settle`,
       bountyHoldId: BOUNTY_ID,
       countCapExempt: true,
-      platformMediatedMaxUsdCents: 2_000,
+      platformMediatedMaxUsdCents: 5_000,
     });
     expect(books).toBe(1);
   });
