@@ -205,23 +205,98 @@ export function computeFrameMetrics(frames, revealMs, windowMs = FRAME_WINDOW_MS
  * Fail-closed validity (delta-review blocker 2). `all` includes FAILED legs.
  * expectedBackend derives from the test lane (?webgl=1 ⇒ 'webgl2', else 'webgpu').
  */
-export function computeValidity({ all, revealMs, backend, expectedBackend, waiveBackend = false }) {
+/**
+ * @param {{
+ *   all: any[],
+ *   revealMs: number | null,
+ *   backend: string | null,
+ *   expectedBackend?: string | null,
+ *   waiveBackend?: boolean,
+ *   navWorkerStartMs?: number | null,
+ *   swEvidence?: { controlled?: boolean, activeState?: string | null, cacheProbeOk?: boolean, assetCacheName?: string | null } | null,
+ * }} args
+ */
+export function computeValidity({ all, revealMs, backend, expectedBackend, waiveBackend = false, navWorkerStartMs = null, swEvidence = null }) {
   const wireReasons = [];
+  // Wire-ONLY completeness defects (Codex slice-B finding 3): these make MB
+  // claims unusable but do NOT taint reveal/frame evidence — an SW-routed
+  // response's upstream bytes are invisible to the page target, which blinds
+  // the ledger while leaving timing intact. validForWireLedger requires both
+  // lists empty; validForPerformance ignores wireOnlyReasons.
+  const wireOnlyReasons = [];
   const perfReasons = [];
   let backendWaived = false;
+  // Positive SW lifecycle evidence (Codex slice-B finding 2): "no SW signals"
+  // must never read as a PASS — a Cache-Storage/registration regression makes
+  // runs FASTER and, without this, valid (the Temp-profile incident measured
+  // SW-less pages for a whole round). Every run must prove: an activated
+  // clawville SW controls the page, the page's Cache Storage works, and a
+  // versioned asset cache exists by capture end.
+  if (!swEvidence || typeof swEvidence !== "object") {
+    wireReasons.push("no service-worker lifecycle evidence captured");
+    perfReasons.push("no service-worker lifecycle evidence captured");
+  } else {
+    const swProblems = [];
+    if (!swEvidence.controlled) swProblems.push("page not SW-controlled");
+    if (swEvidence.activeState !== "activated") swProblems.push(`SW state ${swEvidence.activeState ?? "absent"}`);
+    if (!swEvidence.cacheProbeOk) swProblems.push("Cache Storage probe failed");
+    if (typeof swEvidence.assetCacheName !== "string" || !/^clawville-assets-v\d+$/.test(swEvidence.assetCacheName)) {
+      swProblems.push(`no versioned asset cache (${swEvidence.assetCacheName ?? "none"})`);
+    }
+    if (swProblems.length) {
+      const msg = `service worker unhealthy: ${swProblems.join("; ")}`;
+      wireReasons.push(msg);
+      perfReasons.push(msg);
+    }
+  }
   const isNetworkUrl = (u) => u.startsWith("http://") || u.startsWith("https://");
+  // ── Service-worker coldness (amended 2026-08-11, rung-4 slice B) ──────────
+  // CDP's fromServiceWorker flag marks any SW-ROUTED response — including a
+  // cache-miss PASSTHROUGH whose upstream network fetch is invisible to the
+  // page target — so "any SW hit ⇒ warm" was never sound; it merely never
+  // fired because Temp-dir profiles broke Cache Storage and killed every SW
+  // install (see memory feedback_temp_profile_cache_storage_broken). The
+  // spec-grade discriminator is PerformanceNavigationTiming.workerStart: > 0
+  // means the NAVIGATION itself was served through a pre-existing controlling
+  // SW (a warm profile); a worker registered during the capture can never
+  // control the initial navigation. Fail-closed: SW-routed responses with NO
+  // workerStart evidence still invalidate (absence must not launder to cold).
+  // workerStart is only trusted as exactly 0 (cold) or finite-positive
+  // (warm); negative/NaN/absent are ABSENT evidence and fail closed when SW
+  // routing occurred (Codex slice-B finding 5).
+  const wsValid = Number.isFinite(navWorkerStartMs) && navWorkerStartMs >= 0;
   const swHits = all.filter((r) => r.everFromSW).length;
-  if (swHits > 0) wireReasons.push(`not cold: ${swHits} service-worker hits`);
+  if (wsValid && navWorkerStartMs > 0) {
+    wireReasons.push(`not cold: navigation was service-worker-controlled at start (workerStart=${navWorkerStartMs}ms)`);
+  } else if (swHits > 0 && !wsValid) {
+    wireReasons.push(`not cold: ${swHits} service-worker-routed responses with no workerStart discriminator`);
+  }
   // Cold criterion: the FIRST leg of each network URL must not be ever-cached
   // (disk, memory-dedupe on later duplicates is fine, prefetch cache is NOT).
   // Redirect legs carry their own everFromCache from redirectResponse.
+  // SW carve-out (2026-08-11, same amendment as above): when the navigation
+  // is PROVEN cold (workerStart === 0), an SW-ROUTED row's cache flags
+  // describe the SW's own cache — which was necessarily populated during
+  // THIS capture (a same-run-installed worker has no older storage), so they
+  // are self-warming, not contamination. Chrome sets fromDiskCache on
+  // responses the SW serves from Cache Storage, which is how a fresh
+  // profile's roster reads "warm" the moment the v10-era SW finishes its
+  // install precache. Non-SW rows keep the strict rule; without workerStart
+  // evidence the SW rule above has already fail-closed the run.
+  const provenColdNav = wsValid && navWorkerStartMs === 0;
   const firstByUrl = new Map();
   for (const r of all) {
     if (!isNetworkUrl(r.url)) continue;
     const prev = firstByUrl.get(r.url);
     if (!prev || (r.startPageMs ?? Infinity) < (prev.startPageMs ?? Infinity)) firstByUrl.set(r.url, r);
   }
-  const warmFirsts = [...firstByUrl.values()].filter((r) => r.everFromCache).length;
+  // Carve-out precision (finding 5): only a row that is ITSELF the SW-served
+  // response — not a redirect leg, and not a chain that inherited flags from
+  // one — may be excused; chain-inherited warmth stays disqualifying.
+  const selfSwServed = (r) =>
+    r.everFromSW && !r.isRedirectLeg && !(r.redirectLegs > 0);
+  const warmFirsts = [...firstByUrl.values()]
+    .filter((r) => r.everFromCache && !(selfSwServed(r) && provenColdNav)).length;
   if (warmFirsts > 0) wireReasons.push(`not cold: ${warmFirsts} first-occurrence cache hits`);
   if (revealMs == null) wireReasons.push("reveal never observed");
   // Backend: a PERFORMANCE requirement always; a WIRE requirement unless the
@@ -252,16 +327,27 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
   const unfinished = terminal.filter((r) => !r.finished);
   if (unfinished.length) wireReasons.push(`${unfinished.length} unfinished asset requests at capture end`);
 
-  const validForWireLedger = wireReasons.length === 0;
-  // Performance validity is STRICT: every wire reason plus the un-waived
-  // backend requirement. Budget/canary consumers use THIS and must also
-  // reject backendWaived reports.
-  const validForPerformance = validForWireLedger && perfReasons.length === 0;
+  // A SW-routed response reports ZERO wire bytes at the page target even when
+  // the SW's invisible upstream fetch paid real network — MB metrics
+  // UNDER-COUNT by whatever the SW fetched itself. This is a WIRE-completeness
+  // defect (Codex slice-B finding 3): the run's byte claims are rejected while
+  // its timing evidence stands. Structural fix (SW-target CDP attachment)
+  // punch-listed in the plan doc.
+  const swRoutedZeroWire = all.filter((r) => r.everFromSW && (r.wireBytes || 0) === 0).length;
+  if (swRoutedZeroWire > 0) {
+    wireOnlyReasons.push(`${swRoutedZeroWire} SW-routed responses with unobserved upstream bytes (wire ledger incomplete)`);
+  }
+
+  const validForWireLedger = wireReasons.length === 0 && wireOnlyReasons.length === 0;
+  // Performance validity is STRICT on shared wire reasons (coldness, status,
+  // backend) + perf reasons — but deliberately NOT on wire-ONLY completeness
+  // defects: SW-blind byte accounting doesn't taint timing evidence.
+  const validForPerformance = wireReasons.length === 0 && perfReasons.length === 0;
   return {
     validForWireLedger,
     validForPerformance,
-    reasons: [...new Set([...wireReasons, ...perfReasons])],
-    swHits, warmFirsts, backendWaived,
+    reasons: [...new Set([...wireReasons, ...wireOnlyReasons, ...perfReasons])],
+    swHits, warmFirsts, swRoutedZeroWire, backendWaived,
   };
 }
 
@@ -391,6 +477,10 @@ if (import.meta.main) {
     const res = await send("Runtime.evaluate", { expression: expr, returnByValue: true }, session);
     return res?.result?.value;
   };
+  const evalInPageAsync = async (expr) => {
+    const res = await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true }, session);
+    return res?.result?.value;
+  };
 
   async function main() {
     await new Promise((res, rej) => { ws.onopen = res; setTimeout(() => rej(new Error("ws open timeout")), 10_000); });
@@ -439,7 +529,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     let longtasks = [], longtasksSeries = null, frames = [], navTiming = null, phases = null, backend = null;
     let decorativeReleasedAt = null, decorativeReleaseReason = null;
     try {
-      const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND),dr:(window.__W3D_DECORATIVE_RELEASED_AT===undefined?null:window.__W3D_DECORATIVE_RELEASED_AT),drr:(window.__W3D_DECORATIVE_RELEASE_REASON===undefined?null:window.__W3D_DECORATIVE_RELEASE_REASON),nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart)}:null})()})`);
+      const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND),dr:(window.__W3D_DECORATIVE_RELEASED_AT===undefined?null:window.__W3D_DECORATIVE_RELEASED_AT),drr:(window.__W3D_DECORATIVE_RELEASE_REASON===undefined?null:window.__W3D_DECORATIVE_RELEASE_REASON),nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart),ws:(typeof n.workerStart==='number'?Math.round(n.workerStart*1000)/1000:null)}:null})()})`);
       const parsed = JSON.parse(blob || "{}");
       // Preserve ABSENCE: a missing series must not launder to a valid empty
       // capture (re-review #4 finding 3).
@@ -459,6 +549,19 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       navTiming = parsed.nav || null;
     } catch {}
 
+    // Positive SW lifecycle evidence (Codex slice-B finding 2) — captured at
+    // capture end, when a healthy run's SW must be activated + controlling
+    // with functional Cache Storage and a versioned asset cache. Absence or
+    // failure of this capture is itself invalidating (computeValidity).
+    let swEvidence = null;
+    try {
+      const swBlob = await evalInPageAsync(
+        `(async()=>{try{const reg=await navigator.serviceWorker.getRegistration('/');let cacheProbeOk=false;try{const c=await caches.open('__probe_selftest__');await c.put('/x',new Response('1'));cacheProbeOk=!!(await c.match('/x'));await caches.delete('__probe_selftest__')}catch{}const keys=await caches.keys();return JSON.stringify({controlled:!!navigator.serviceWorker.controller,activeState:reg&&reg.active?reg.active.state:null,cacheProbeOk,assetCacheName:keys.find(k=>/^clawville-assets-v\\d+$/.test(k))||null})}catch(e){return JSON.stringify({captureError:String(e)})}})()`
+      );
+      const parsedSw = JSON.parse(swBlob || "null");
+      if (parsedSw && !parsedSw.captureError) swEvidence = parsedSw;
+    } catch {}
+
     const all = collectorRecords(collector);
     const ok = all.filter((r) => !r.failed);
     const totalWire = ok.reduce((a, r) => a + r.wireBytes, 0);
@@ -472,7 +575,11 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       b.count++; b.bytes += r.wireBytes; b.preBytes += pre; b.postBytes += post;
     }
 
-    const verdict = computeValidity({ all, revealMs: revealPageMs, backend, expectedBackend, waiveBackend });
+    const verdict = computeValidity({
+      all, revealMs: revealPageMs, backend, expectedBackend, waiveBackend,
+      navWorkerStartMs: navTiming && typeof navTiming.ws === "number" ? navTiming.ws : null,
+      swEvidence,
+    });
     const lastAssetEnd = Math.max(0, ...ok.filter((r) => ASSET_CLASSES.has(r.cls) && r.endPageMs != null).map((r) => r.endPageMs));
     const captureEndPageMs = revealPageMs != null ? revealPageMs + POST_REVEAL_CAPTURE_MS : null;
     const unfinishedAssets = ok.filter((r) => ASSET_CLASSES.has(r.cls) && !r.finished && (r.url.startsWith("http://") || r.url.startsWith("https://"))).length;
@@ -517,6 +624,10 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       preRevealMB: +(preTotal / 1048576).toFixed(2),
       postRevealMB: +(postTotal / 1048576).toFixed(2),
       fromSW: verdict.swHits, fromCacheFirstOccurrence: verdict.warmFirsts,
+      // SW-routed rows with zero observed wire bytes — the page-target CDP
+      // blind spot; MB metrics exclude the SW's own upstream traffic.
+      swRoutedZeroWire: verdict.swRoutedZeroWire,
+      swEvidence,
       byClass: Object.fromEntries(Object.entries(byClass).sort((a, b) => b[1].bytes - a[1].bytes)
         .map(([k, v]) => [k, { count: v.count, mb: +(v.bytes / 1048576).toFixed(2), preMB: +(v.preBytes / 1048576).toFixed(2), postMB: +(v.postBytes / 1048576).toFixed(2) }])),
       longtasks: {
@@ -548,10 +659,19 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     console.log("[probe] ==== SUMMARY ====");
     console.log(JSON.stringify(summary, null, 2));
     console.log(`[probe] report: ${reportPath}`);
-    if (!verdict.validForWireLedger) {
-      console.log(`[probe] RUN INVALID: ${verdict.reasons.join("; ")}`);
+    // Exit selection follows the validity SPLIT (Codex slice-B round-2
+    // finding 4): a run whose TIMING evidence is sound exits 0 even when the
+    // wire ledger is incomplete (SW-blind bytes) — the runner/gate consume
+    // validForPerformance, while ledger tooling stays strict on the
+    // validForWireLedger flag inside the report. Exit 3 = unusable as
+    // performance evidence.
+    if (!summary.validForPerformance) {
+      console.log(`[probe] RUN INVALID (performance evidence): ${[...verdict.reasons, ...(summary.performanceEvidenceReasons ?? [])].join("; ")}`);
       ws.close();
       process.exit(3);
+    }
+    if (!verdict.validForWireLedger) {
+      console.log(`[probe] WIRE LEDGER INCOMPLETE (timing evidence valid): ${verdict.reasons.join("; ")}`);
     }
     ws.close();
     process.exit(0);

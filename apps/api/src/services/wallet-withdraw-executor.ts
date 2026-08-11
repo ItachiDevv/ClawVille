@@ -83,6 +83,11 @@
  *   Balance-read failure ⇒ REFUSE (`balance_unavailable`) — never fail-open.
  *
  * ── LEDGER-UNTOUCHED ────────────────────────────────────────────────────────
+ * USDC Tier-1 holds are non-overridable money backing. Shared locked admission
+ * reserves open holds and in-flight outgoing USDC; a breaking withdrawal
+ * refuses pre-row with `bounty_hold_active`, and query/RPC failures fail closed.
+ * `acknowledgeHoldLoss` never bypasses this rule.
+ *
  * This moves ON-CHAIN custody assets, NOT internal vCLAW. Nothing in this file
  * (or the route) imports `claw-token-ledger` or writes `avatars.clawTokens` —
  * a withdrawal is NOT a cash-out.
@@ -123,6 +128,11 @@ import { readSplTokenBalance } from './solana-token-balance';
 import { CLV_MINT } from './clv-price-oracle';
 import { USDC_MINT_MAINNET } from './x402-payai';
 import type { ActivityIdentity } from '../middleware/require-auth-or-agent';
+import {
+  admitPosterUsdcSpend,
+  lockPosterUsdcSpend,
+  PosterUsdcSpendAdmissionError,
+} from './usdc-spend-admission';
 
 // ---------------------------------------------------------------------------
 // Gate (default OFF) + network guard
@@ -395,13 +405,27 @@ export interface HoldRequirement {
 }
 
 /** The `hold_at_risk` refusal payload (surfaced verbatim in the 409 body). */
-export interface HoldAtRiskDetail {
+export interface LandHoldAtRiskDetail {
   /** Total CLV (uiAmount, integer) the avatar's agent-subject holds require. */
   requiredUiAmount: number;
   /** Post-withdrawal CLV balance as an exact 6dp decimal string (e.g. "400.000000"). */
   postUiAmount: string;
   parcels: Array<{ parcelCode: string; holdThresholdCt: number }>;
 }
+
+export interface BountyUsdcHoldRequirement {
+  requiredAtomic: bigint;
+  bounties: Array<{ bountyId: string; amountBaseUnits: string }>;
+}
+
+export interface BountyUsdcHoldAtRiskDetail {
+  asset: 'USDC';
+  requiredBaseUnits: string;
+  postBaseUnits: string;
+  bounties: Array<{ bountyId: string; amountBaseUnits: string }>;
+}
+
+export type HoldAtRiskDetail = LandHoldAtRiskDetail | BountyUsdcHoldAtRiskDetail;
 
 /** Exact decimal string for an atomic amount (no float math on money). */
 export function atomicToDecimalString(atomic: bigint, decimals: number): string {
@@ -433,6 +457,11 @@ export interface WalletWithdrawDb {
   /** INSERT the pending row; null when the (subject, idempotency_key) UNIQUE
    *  tripped (a concurrent retry won the insert — caller re-fetches). */
   insertWithdrawal(input: WithdrawInsert): Promise<WithdrawalRow | null>;
+  /** Shared-lock admission + pending-row commit for custodial USDC. */
+  admitUsdcWithdrawal(
+    input: WithdrawInsert,
+    readBalance: (publicKey: string) => Promise<bigint>,
+  ): Promise<WithdrawalRow | null>;
   findById(id: string): Promise<WithdrawalRow | null>;
   findByIdempotencyKey(
     subjectType: 'user' | 'agent',
@@ -683,6 +712,43 @@ const defaultDb: WalletWithdrawDb = {
       parcels,
     };
   },
+  async admitUsdcWithdrawal(input, readBalance) {
+    return db.transaction(async (tx) => {
+      await lockPosterUsdcSpend(tx, input.avatarId);
+      const [existing] = await tx
+        .select()
+        .from(withdrawals)
+        .where(and(
+          eq(withdrawals.subjectType, input.subjectType),
+          eq(withdrawals.avatarId, input.avatarId),
+          eq(withdrawals.idempotencyKey, input.idempotencyKey),
+        ))
+        .limit(1);
+      if (existing) return existing;
+
+      await admitPosterUsdcSpend(tx, {
+        posterAvatarId: input.avatarId,
+        amountAtomic: BigInt(input.amountAtomic),
+        readBalance,
+      });
+      const [row] = await tx
+        .insert(withdrawals)
+        .values({
+          subjectType: input.subjectType,
+          avatarId: input.avatarId,
+          userId: input.userId,
+          asset: input.asset,
+          amountAtomic: input.amountAtomic,
+          destination: input.destination,
+          idempotencyKey: input.idempotencyKey,
+          network: input.network,
+          metadata: input.metadata,
+        })
+        .onConflictDoNothing()
+        .returning();
+      return row ?? null;
+    });
+  },
   async listStaleSending(cutoff, limit) {
     const n = Math.min(Math.max(1, Math.floor(limit)), 100);
     return db
@@ -773,6 +839,7 @@ export type WithdrawErrorCode =
   | 'insufficient_balance' // amount > on-chain balance
   | 'insufficient_sol_for_fee' // source can't keep rent-exempt min + fee (+ dest-ATA rent)
   | 'hold_at_risk' // CLV consent gate: withdrawal would break a land hold; retry with acknowledgeHoldLoss
+  | 'bounty_hold_active' // USDC backing an open Tier-1 promise is non-overridable
   | 'idempotency_conflict' // the key was reused with a DIFFERENT asset/amount/destination
   | 'withdrawal_in_flight' // a live 'sending' claim holds the row
   | 'withdrawal_failed' // replay of a terminal 'failed' row
@@ -1092,7 +1159,7 @@ export async function requestWithdrawal(
   }
 
   // 5) INSERT the pending row (durable intent BEFORE anything signs).
-  const inserted = await d.db.insertWithdrawal({
+  const insertInput: WithdrawInsert = {
     subjectType: input.subject.kind,
     avatarId: input.subject.avatarId,
     userId: input.subject.userId,
@@ -1107,7 +1174,47 @@ export async function requestWithdrawal(
       feeReserveLamports: feeReserveLamports.toString(),
       destAtaMissing,
     },
-  });
+  };
+  let inserted: WithdrawalRow | null;
+  try {
+    inserted = input.asset === 'USDC'
+      ? await d.db.admitUsdcWithdrawal(insertInput, async (lockedPublicKey) => {
+          if (lockedPublicKey !== sourcePubkey) {
+            throw new Error('custodial wallet changed during withdrawal admission');
+          }
+          const token = await d.getTokenBalance(
+            conn,
+            tokenSpec('USDC').mint.toBase58(),
+            lockedPublicKey,
+          );
+          return token.amountAtomic;
+        })
+      : await d.db.insertWithdrawal(insertInput);
+  } catch (error) {
+    if (error instanceof PosterUsdcSpendAdmissionError) {
+      if (error.code === 'insufficient_usdc') {
+        const openHolds = BigInt(error.detail?.openHoldsBaseUnits ?? '0');
+        if (openHolds > 0n) {
+          return {
+            ok: false,
+            code: 'bounty_hold_active',
+            detail: 'usdc_withdrawal_breaks_tier1_bounty_hold',
+          };
+        }
+        return { ok: false, code: 'insufficient_balance', detail: error.message };
+      }
+      return {
+        ok: false,
+        code: 'balance_unavailable',
+        detail: `usdc_spend_admission_${error.code}`,
+      };
+    }
+    console.error(
+      `[wallet-withdraw] USDC hold/liability admission failed (refusing, fail-closed): ` +
+        `${(error as Error).message}`,
+    );
+    return { ok: false, code: 'balance_unavailable', detail: 'usdc_spend_admission_unavailable' };
+  }
   if (!inserted) {
     // A concurrent retry with the same idempotency key won the INSERT — replay it.
     const winner = await d.db.findByIdempotencyKey(
@@ -1131,6 +1238,14 @@ export async function requestWithdrawal(
   // 6) Execute (claim → custody → sign → capture → send → confirm).
   //    (No daily cap — removed 2026-07-09 by founder decision; the balance +
   //    fee guards in step 4 are the only per-request limits.)
+  if (!idempotencyBodyMatches(inserted, input)) {
+    return {
+      ok: false,
+      code: 'idempotency_conflict',
+      detail: 'key_reused_with_different_request',
+      withdrawalId: inserted.id,
+    };
+  }
   return executeClaimedWithdrawal(inserted.id, d);
 }
 

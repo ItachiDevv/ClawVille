@@ -1,6 +1,28 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-10 (Land hold-wallet ownership proof — two verify doors,
+**Last Audited: 2026-08-11 (Tier-1 instant USDC bounties — hold + agent-pay rail, protocol v52,
+migration 0061).** The paused SAP-escrow USDC bounty rail returns as the founder-ratified TIER MODEL
+(`.claude/plans/bounty-settlement-tiering-audit-2026-08-11.md`): Tier 1 (default, $50 cap — founder-corrected from $20 same day, protocol v53 — hard-clamped in
+`resolveTier1BountyMaxUsdCents` — env `TIER1_BOUNTY_MAX_USD_CENTS` can only LOWER it, floor 100) posts a
+NON-OVERRIDABLE hold on the poster's own custodial USDC (NEW `bounty_usdc_holds` table, migration 0061;
+NEW `services/bounty-tier1.ts`) and settles poster->winner through the existing agent-pay/PayAI machinery
+(zero SOL gas, one PayAI credit per settle, count-cap-exempt but dollar-cap/breaker-observed). NEW
+`services/usdc-spend-admission.ts` is the ONE poster-scoped USDC admission primitive (advisory lock
+`custodial-usdc-spend:<avatarId>`; admission = live balance − open holds − ALL in-flight/ambiguous outgoing
+liabilities incl. `reconcile` rows unless `cap_exempt IS TRUE` no-broadcast proof) shared by Tier-1 post,
+USDC withdraws (typed 409 `bounty_hold_active`, fail-closed, NO acknowledge bypass — that consent stays
+CLV-land-only), ordinary agent-pay sends, and Tier-1 settlement (consumes exactly its own hold).
+Attempt-scoped retry keys (`bounty:<id>:tier1-settle[:n]`, n>=2) advance ONLY on provably-no-broadcast
+failures; any captured signature freezes the row in `reconcile`. Expiry/cancel are paired locked-CAS
+pure-DB hold releases; the Tier-1 resume rides the agent-pay resume worker (proven live: healed the
+smoke's post-settle wedge in one crank). Meridian definitive failures now stamp `capExempt: true`
+(signature-bearing ones quarantine). Tier 2 (SAP escrow, poster-pays-gas) stays designed-but-off behind
+`SAP_USDC_ESCROW_ENABLED`. `PROTOCOL_VERSION` 51 -> 52. RUNTIME GOTCHA (staging live-smoke find): raw
+drizzle sql-template params bypass column serializers — a bare `Date` throws ERR_INVALID_ARG_TYPE in
+postgres.js at runtime; always pass `toISOString()` + `::timestamptz`. Staging live-cents smoke GREEN
+end-to-end (real PayAI facilitator, $0.05, exact on-chain deltas, replay refused).
+
+**Prior Last Audited: 2026-08-10 (Land hold-wallet ownership proof — two verify doors,
 custodial auto-attest, SIGNATURE-SUBMITTED dust door, protocol v51).** Founder ruling 2026-08-10: "optional
 proof is just not proof". Declaring a land hold wallet you do not control let an
 account claim hold-door land backed by SOMEONE ELSE'S CLV balance, so proof of

@@ -1878,6 +1878,17 @@ function resolveResumePollMs(): number {
  * deferred.
  */
 export async function runComposedBountyResumePass(): Promise<void> {
+  // Tier discriminator: Tier 1 expiry is a pure DB hold release. It shares this
+  // bounty crank but never enters a SAP refund or gas-sponsor path.
+  try {
+    const { sweepExpiredTier1Bounties } = await import('./bounty-tier1');
+    await sweepExpiredTier1Bounties();
+  } catch (err) {
+    console.error('[bounty-tier1] expiry sweep failed (non-fatal):', err);
+  }
+  // Tier 2 remains founder-gated. Tier 1 above must continue while SAP is off.
+  if (bountySettlementRail() !== 'sap-payai-composed') return;
+
   // TIER 1 — money mid-flight; never starved by tier 2.
   const priority = await db
     .select({ id: bounties.id })
@@ -1963,16 +1974,13 @@ export function isComposedBountyResumeWorkerRunning(): boolean {
 }
 
 /**
- * Start the recurring composed-bounty resume worker (idempotent). DARK-SAFE double
- * gate: the index.ts boot wiring only calls this when the composed rail is fully
- * live (`bountySettlementRail() === 'sap-payai-composed'`), AND this refuses to
- * start otherwise — so no worker polls a dark rail (and no stuck rows can exist
- * while it is off: an `awaiting_finalize`/`reconcile` row only appears after the
- * rail has been on). Each pass is idempotent crash-recovery.
+ * Start the shared bounty crank (idempotent). Tier-1 DB expiry cleanup always
+ * runs. The pass itself gates Tier-2 work on the composed SAP rail, so a paused
+ * Tier-2 rail never reaches chain settlement code. Each pass
+ * is idempotent crash-recovery.
  */
 export function startComposedBountyResumeWorker(): void {
   if (resumeWorkerInterval) return;
-  if (bountySettlementRail() !== 'sap-payai-composed') return; // dark — never poll while off
   const periodMs = resolveResumePollMs();
   resumeWorkerInterval = setInterval(() => {
     runComposedBountyResumePass().catch((err) => {
@@ -1980,8 +1988,8 @@ export function startComposedBountyResumeWorker(): void {
     });
   }, periodMs);
   console.log(
-    `[bounty-composition] resume worker started — advancing stuck composed bounties every ` +
-      `${Math.round(periodMs / 60_000)}min (finalize leg 1c + retry leg 2; every leg idempotent)`,
+    `[bounty] resume worker started, sweeping Tier-1 DB expiries and founder-gated ` +
+      `Tier-2 settlement every ${Math.round(periodMs / 60_000)}min`,
   );
 }
 

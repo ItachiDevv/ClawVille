@@ -31,6 +31,10 @@
  *        `acknowledgeHoldLoss: true` — informed consent, not enforcement (the
  *        land rent sweeper owns enforcement). The refusal is PRE-ROW, so the
  *        acknowledged retry reuses the same Idempotency-Key cleanly.
+ *        USDC Tier-1 bounty holds instead back an active payment promise: a
+ *        withdrawal that would break one refuses pre-row with
+ *        `bounty_hold_active`. No acknowledgement can override it, and an
+ *        admission-query failure refuses the withdrawal.
  *   GET  /api/wallet/balances — the caller's custodial-wallet SOL+USDC+CLV
  *        balances (atomic + ui). Read-only; available regardless of the flag.
  *
@@ -85,11 +89,7 @@ const withdrawSchema = z
     amountAtomic: z.string().regex(/^\d{1,20}$/),
     /** Base58 destination pubkey (executor re-validates: 32 bytes, ON-CURVE, non-self). */
     destination: z.string().min(32).max(44),
-    /** CLV-only consent flag: a `hold_at_risk` 409 told the caller this
-     *  withdrawal drops their custodial CLV below their stacked agent-subject
-     *  land-hold requirement; retrying with `true` (same Idempotency-Key —
-     *  the refusal created no row) proceeds. Bypasses ONLY that consent gate;
-     *  NOT part of the idempotency identity. */
+    /** CLV land-hold consent only. It never overrides a USDC bounty hold. */
     acknowledgeHoldLoss: z.boolean().optional(),
   })
   .strict();
@@ -119,6 +119,7 @@ function errorStatus(code: Extract<WithdrawResult, { ok: false }>['code']): 400 
     // CLV consent gate: retry with `acknowledgeHoldLoss: true` (same key —
     // no row was created) to proceed. Body carries the `holdAtRisk` payload.
     case 'hold_at_risk':
+    case 'bounty_hold_active':
       return 409;
     case 'balance_unavailable':
     case 'transient_failure':

@@ -42,6 +42,7 @@ function payAiHeader(directive: 'verify-error' | 'verify-invalid'): string {
 
 function prepared(
   directive: 'verify-error' | 'verify-invalid',
+  meridianDirective?: 'verify-invalid' | 'settle-fail' | 'settle-fail-signature',
 ): PreparedCustodialExactPayment {
   const meridianRequirements = {
     scheme: 'exact',
@@ -68,6 +69,7 @@ function prepared(
     payload: {
       transaction: 'fallback-test-transaction',
       payer: PAYER.publicKey.toBase58(),
+      ...(meridianDirective ? { __mock: meridianDirective } : {}),
     },
   };
   const meridian = {
@@ -188,5 +190,48 @@ describe('PayAI-primary Meridian fallback execution seam', () => {
     });
     expect(payAiPaths).toEqual([]);
     expect(meridianPaths).toEqual(['/v1/verify']);
+  });
+
+  it('classifies a Meridian verify rejection as definitive with no signature', async () => {
+    const result = await executePreparedExactPayment(
+      prepared('verify-error', 'verify-invalid'),
+      { skipPayAi: true },
+    );
+    expect(result).toMatchObject({
+      kind: 'meridian_failure',
+      stage: 'verify',
+      ambiguous: false,
+      signature: null,
+    });
+    expect(meridianPaths).toEqual(['/v1/verify']);
+  });
+
+  it('classifies an explicit Meridian settle failure without a signature as definitive', async () => {
+    const result = await executePreparedExactPayment(
+      prepared('verify-error', 'settle-fail'),
+      { skipPayAi: true },
+    );
+    expect(result).toMatchObject({
+      kind: 'meridian_failure',
+      stage: 'settle',
+      ambiguous: false,
+      signature: null,
+    });
+    expect(meridianPaths).toEqual(['/v1/verify', '/v1/settle']);
+  });
+
+  it('promotes a signature on an explicit Meridian settle failure to reconciliation', async () => {
+    const result = await executePreparedExactPayment(
+      prepared('verify-error', 'settle-fail-signature'),
+      { skipPayAi: true },
+    );
+    expect(result).toMatchObject({
+      kind: 'meridian_failure',
+      stage: 'settle',
+      ambiguous: true,
+    });
+    if (result.kind !== 'meridian_failure') throw new Error('expected Meridian failure');
+    expect(result.signature?.length).toBeGreaterThan(0);
+    expect(meridianPaths).toEqual(['/v1/verify', '/v1/settle']);
   });
 });

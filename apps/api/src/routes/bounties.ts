@@ -35,6 +35,19 @@ import {
   usdcRailGateOpen,
 } from '../services/bounty-escrow-link';
 import { alertError } from '../services/alert-error';
+import {
+  findTier1BountyHold,
+  insertTier1BountyHold,
+  releaseTier1BountyHold,
+  resolveTier1BountyMaxUsdCents,
+  selectUsdcBountyTier,
+  settleTier1Bounty,
+  assertTier1BountyApprovable,
+  claimTier1BountyCancellation,
+  Tier1HoldAdmissionError,
+  Tier1LifecycleConflictError,
+} from '../services/bounty-tier1';
+import { lockPosterUsdcSpend } from '../services/usdc-spend-admission';
 import { ensureSapIdentityQueued } from '../services/sap/sap-identity-registrar';
 // R-team-lead ruling: the →paid booking (completed flip + composition_state='paid' +
 // the once-only completion/reputation bump) is the ONE transition reached by BOTH this
@@ -335,7 +348,7 @@ export const createBountySchema = z
     expiresAt: z.string().datetime().optional(),
     bonusRewards: z.array(bonusRewardSchema).max(5).optional(),
     // ── Phase 1: USDC rail (default 'vclaw' = the in-game vCLAW board) ──
-    /** Payout rail. 'usdc' opens a SAP escrow (gated OFF + dry-run by default). */
+    /** Payout rail. 'usdc' selects the default hold rail or founder-gated escrow tier. */
     paymentRail: z.enum(['vclaw', 'usdc']).default('vclaw'),
     /**
      * Human/agent-readable acceptance criteria the verdict is judged against.
@@ -363,6 +376,20 @@ export const createBountySchema = z
           message:
             `A USDC-funded bounty reward must be at least ${usdcMin} vCLAW ` +
             '(1 vCLAW = $0.01).',
+        });
+      }
+      const tier = selectUsdcBountyTier({
+        rewardUsdCents: data.tokenReward,
+        escrowGateOpen: usdcRailGateOpen(),
+      });
+      const tier1Max = resolveTier1BountyMaxUsdCents();
+      if (tier === 1 && data.tokenReward > tier1Max) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tokenReward'],
+          message:
+            `A Tier-1 USDC bounty may not exceed ${tier1Max} vCLAW ` +
+            `($${(tier1Max / 100).toFixed(2)}). Tier 2 is currently unavailable.`,
         });
       }
     }
@@ -628,6 +655,13 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   const data = parsed.data;
   const avatar = await getActingAvatar(c);
   const isUsdc = data.paymentRail === 'usdc';
+  const settlementTier = isUsdc
+    ? selectUsdcBountyTier({
+        rewardUsdCents: data.tokenReward,
+        escrowGateOpen: usdcRailGateOpen(),
+      })
+    : 0;
+  const isTier1 = settlementTier === 1;
   // COMPOSED-rail decision, computed ONCE here and reused for BOTH the insert
   // sentinel (below) AND the post-insert vault open, so the row's composition_state
   // marker and the open decision can never disagree — a live-flag flip mid-request
@@ -635,34 +669,23 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   // bounty is a usdc bounty while the live settlement rail is the two-leg composed rail;
   // vCLAW + legacy-usdc bounties are NOT composed (their marker stays NULL). The `&&`
   // short-circuits, so a vCLAW bounty never calls bountySettlementRail() (unchanged).
-  const isComposedRail = isUsdc && bountySettlementRail() === 'sap-payai-composed';
+  const isComposedRail = isUsdc && !isTier1
+    && bountySettlementRail() === 'sap-payai-composed';
 
   if (isUsdc) {
-    // A USDC bounty escrows on-chain USDC (custodial-wallet sign at settle), so a
-    // connected agent MUST have proven ledger capability. The vCLAW rail is fine for
-    // any resolved avatar. Fail closed here, mirroring the cove / SAP gate.
+    // A USDC bounty can authorize real custodial funds at settlement, so a connected
+    // agent MUST have proven ledger capability. The vCLAW rail is fine for any
+    // resolved avatar. Fail closed here, mirroring the other money routes.
     if (agentNotLedgerCapable(c.get('identity'))) {
       throw new HTTPException(403, {
         message:
           'This agent session has not proven ownership of its avatar and cannot post a ' +
-          'USDC (on-chain) bounty. Reconnect with a fresh connect-token or the signed-challenge reconnect.',
-      });
-    }
-    // The whole SAP USDC escrow rail must be enabled (even for a dry-run open) or a
-    // USDC bounty is scaffolding — reject at create so we never persist a
-    // usdc-rail bounty whose escrow can never open. NOTE: the escrow is opened
-    // LAZILY at approve time (a worker isn't known at create), so no chain leg
-    // runs here — this only asserts the rail is live enough to eventually settle.
-    if (!usdcRailGateOpen()) {
-      throw new HTTPException(503, {
-        message:
-          'The USDC bounty rail is disabled (SAP_ENABLED / SAP_ESCROW_ENABLED / ' +
-          'SAP_USDC_ESCROW_ENABLED). Post a vCLAW (payment_rail=vclaw) bounty instead.',
+          'real-USDC bounty. Reconnect with a fresh connect-token or the signed-challenge reconnect.',
       });
     }
   } else {
-    // ESCROW (vCLAW rail): Verify creator has enough vCLAW. USDC bounties do not
-    // debit vCLAW — their reward is on-chain USDC prepaid into a SAP escrow.
+    // ESCROW (vCLAW rail): Verify creator has enough vCLAW. USDC bounties never
+    // debit vCLAW; Tier 1 records a hold and Tier 2 owns its existing escrow path.
     if (avatar.clawTokens < data.tokenReward) {
       throw new HTTPException(400, {
         message: `Not enough vCLAW. Need ${data.tokenReward}, have ${avatar.clawTokens}.`,
@@ -688,9 +711,8 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
 
   // ESCROW: Debit (vCLAW rail only) + bounty INSERT in a single transaction so if
   // INSERT fails, the vCLAW debit rolls back and the creator doesn't lose tokens.
-  // For the USDC rail there is no vCLAW debit — the reward is on-chain USDC that is
-  // escrowed LAZILY at approve time (once a winning hunter is known); the row is
-  // persisted with `payment_rail='usdc'` + `verdict_required=true` + NULL escrow.
+  // For either USDC tier there is no vCLAW debit. Tier 1 inserts its hold in this
+  // transaction; Tier 2 preserves its existing vault-open behavior below.
   const bounty = await db.transaction(async (tx) => {
     if (!isUsdc) {
       // Deduct tokenReward from creator (atomic + audited) — vCLAW rail only.
@@ -736,6 +758,14 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       })
       .returning();
 
+    if (isTier1) {
+      await insertTier1BountyHold(tx, {
+        bountyId: created.id,
+        posterAvatarId: avatar.id,
+        amountBaseUnits: usdcRewardBaseUnits(created.tokenReward),
+      });
+    }
+
     // Create bonus reward records
     if (data.bonusRewards && data.bonusRewards.length > 0) {
       await tx.insert(bountyRewards).values(
@@ -761,6 +791,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
           paymentRail: created.paymentRail,
           tokenReward: created.tokenReward,
           maxAttempts: created.maxAttempts,
+          ...(isUsdc ? { settlementTier } : {}),
           ...(created.compositionState ? { compositionState: created.compositionState } : {}),
         },
       },
@@ -768,6 +799,16 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
     );
 
     return created;
+  }).catch((error) => {
+    if (error instanceof Tier1HoldAdmissionError) {
+      const status = error.code === 'balance_unavailable'
+        ? 503
+        : error.code === 'wallet_missing'
+          ? 404
+          : 409;
+      throw new HTTPException(status, { message: error.message });
+    }
+    throw error;
   });
 
   // ── COMPOSED rail (SLICE 2b): open LEG 1 (the SAP V2 vault) AT POST ──────────
@@ -909,6 +950,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       currentAttempts: bounty.currentAttempts,
       tags: bounty.tags,
       paymentRail: bounty.paymentRail,
+      settlementTier: isUsdc ? settlementTier : null,
       acceptanceCriteria: bounty.acceptanceCriteria,
       verdictRequired: bounty.verdictRequired,
       expiresAt: bounty.expiresAt?.toISOString() ?? null,
@@ -1014,6 +1056,8 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
 
   const now = new Date();
   const isUsdc = bounty.paymentRail === 'usdc';
+  const tier1Hold = isUsdc ? await findTier1BountyHold(bounty.id) : null;
+  const isTier1 = tier1Hold !== null;
   // The IMMUTABLE composed-rail marker (set to 'vault_held' at create). Every
   // post-create transition keys off THIS, never the live `bountySettlementRail()`
   // flag, so a mid-lifecycle flag flip can't re-route an existing bounty. A
@@ -1024,9 +1068,9 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
   // custodial sign at settle — require ledger capability, exactly like create.
   if (isUsdc && agentNotLedgerCapable(c.get('identity'))) {
     throw new HTTPException(403, {
-      message:
+        message:
         'This agent session has not proven ownership of its avatar and cannot settle a ' +
-        'USDC bounty escrow. Reconnect with a fresh connect-token or the signed-challenge reconnect.',
+        'real-USDC bounty. Reconnect with a fresh connect-token or the signed-challenge reconnect.',
     });
   }
 
@@ -1040,7 +1084,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
   // `approved` decision opens an escrow; a reject never does, so gate only that.
   // (Today the rail is gated off so this is the reachable outcome on staging — the
   // guard makes the failure a clean, non-committing 503 instead of a locked bounty.)
-  if (isUsdc && decision === 'approved' && !usdcRailGateOpen()) {
+  if (isUsdc && !isTier1 && decision === 'approved' && !usdcRailGateOpen()) {
     throw new HTTPException(503, {
       message:
         'The USDC bounty escrow rail is disabled (SAP_ENABLED / SAP_ESCROW_ENABLED / ' +
@@ -1077,6 +1121,23 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     // (below) — a chain call must never be held inside a DB transaction, and the
     // SAP settlement ledger has its OWN at-most-once idempotency.
     const { rewards, hunterAvatarId } = await db.transaction(async (tx) => {
+      if (isTier1) {
+        try {
+          await assertTier1BountyApprovable(tx, {
+            bountyId: bounty.id,
+            posterAvatarId: bounty.creatorId,
+            now,
+          });
+        } catch (error) {
+          if (error instanceof Tier1LifecycleConflictError) {
+            throw new HTTPException(409, {
+              message: 'This Tier-1 bounty is no longer open; approval was refused.',
+            });
+          }
+          throw error;
+        }
+      }
+
       // 1. ATOMIC APPROVAL CLAIM (SEV-1 CT double-pay fix). The pre-txn
       // `attempt.status !== 'submitted'` check above is a STALE READ under no lock:
       // two concurrent approves for the same attemptId both pass it, both enter
@@ -1195,15 +1256,19 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       // still finalizing on-chain (awaiting_finalize) — would show a paid-out state
       // for an unpaid hunter. The `paid` phase flips status='completed'; the other
       // phases (awaiting_finalize / reconcile / failed) leave it open + settling.
-      if (!isComposed) {
-        await tx
+      if (!isComposed && !isTier1) {
+        const completed = await tx
           .update(bounties)
           .set({
             status: 'completed',
             completedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')));
+          .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')))
+          .returning({ id: bounties.id });
+        if (completed.length !== 1) {
+          throw new HTTPException(409, { message: 'Bounty completion CAS lost.' });
+        }
       }
 
       // 4b. Reject all other pending attempts for this bounty (prevent orphans)
@@ -1292,6 +1357,48 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
 
       return { rewards: txRewards, hunterAvatarId: hunterAvatar.id };
     });
+
+    if (isTier1) {
+      const result = await settleTier1Bounty({
+        bountyId: bounty.id,
+        posterAvatarId: bounty.creatorId,
+        hunterAvatarId,
+        rewardUsdCents: bounty.tokenReward,
+      });
+      if (!result.ok) {
+        const ambiguous = result.payment.code === 'payment_reconcile';
+        return c.json({
+          success: true,
+          decision: 'approved',
+          paymentRail: bounty.paymentRail,
+          settlement: {
+            rail: 'tier1-agent-pay',
+            state: ambiguous ? 'payment_reconcile' : 'payment_pending',
+            paymentId: result.payment.paymentId ?? null,
+            code: result.payment.code,
+          },
+          message: ambiguous
+            ? 'Approved. The Tier-1 USDC payment outcome is ambiguous and frozen for operator reconciliation. The poster balance hold remains open.'
+            : 'Approved. The Tier-1 USDC payment is pending automatic retry or operator resolution. The poster balance hold remains open until payment is confirmed.',
+        }, 202);
+      }
+      return c.json({
+        success: true,
+        decision: 'approved',
+        paymentRail: bounty.paymentRail,
+        tokensAwarded: 0,
+        rewardVclaw: bounty.tokenReward,
+        rewardUsdcBaseUnits: tier1Hold.amountBaseUnits,
+        bonusRewardsCount: rewards.length,
+        settlement: {
+          rail: 'tier1-agent-pay',
+          state: 'paid',
+          paymentId: result.payment.paymentId,
+          txSignature: result.payment.txSignature,
+          replay: result.replay,
+        },
+      });
+    }
 
     // ── COMPOSED rail (SLICE 2b): PASS verdict → two-leg settle (SAP V2 vault →
     // PayAI x402). Branches on the IMMUTABLE `composition_state` marker, NOT the
@@ -1633,6 +1740,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     // Rejected — wrap in transaction so attempt rejection + slot release
     // + reputation update are atomic (prevents orphaned slot on crash).
     await db.transaction(async (tx) => {
+      if (isTier1) await lockPosterUsdcSpend(tx, bounty.creatorId);
       // ATOMIC REJECTION CLAIM (same SEV-1 TOCTOU class as approve). The pre-txn
       // status check is a stale read under no lock: two concurrent rejects — or a
       // reject racing an approve — could both pass it, and without a status guard
@@ -1686,14 +1794,36 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       // USDC was never escrowed. The verdict flag records the FAIL provenance; the
       // reward stays fully in the creator's wallet. (The admin fail-refund route
       // handles the distinct case where an escrow WAS opened and must be reclaimed.)
-      await tx
-        .update(bounties)
-        .set({
-          currentAttempts: sql`GREATEST(${bounties.currentAttempts} - 1, 0)`,
-          ...(isUsdc ? { covenantVerificationPassed: false } : {}),
-          updatedAt: now,
-        })
-        .where(eq(bounties.id, bounty.id));
+      if (isTier1) {
+        const terminal = await tx
+          .update(bounties)
+          .set({
+            status: 'cancelled',
+            currentAttempts: 0,
+            covenantVerificationPassed: false,
+            updatedAt: now,
+          })
+          .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')))
+          .returning({ id: bounties.id });
+        if (terminal.length !== 1) {
+          throw new HTTPException(409, { message: 'Tier-1 bounty rejection CAS lost.' });
+        }
+        await releaseTier1BountyHold(tx, {
+          bountyId: bounty.id,
+          posterAvatarId: bounty.creatorId,
+          reason: 'rejected',
+          actorKind: toActorKind(c.get('identity').kind),
+        });
+      } else {
+        await tx
+          .update(bounties)
+          .set({
+            currentAttempts: sql`GREATEST(${bounties.currentAttempts} - 1, 0)`,
+            ...(isUsdc ? { covenantVerificationPassed: false } : {}),
+            updatedAt: now,
+          })
+          .where(eq(bounties.id, bounty.id));
+      }
 
       // Update hunter's successRate after rejection
       const hunterRep = await tx.query.bountyReputation.findFirst({
@@ -2480,7 +2610,24 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
   }
 
   const isUsdc = bounty.paymentRail === 'usdc';
+  const tier1Hold = isUsdc ? await findTier1BountyHold(bounty.id) : null;
+  const isTier1 = tier1Hold !== null;
   const isComposed = bounty.compositionState != null;
+
+  if (isTier1) {
+    const approvedAttempt = await db.query.bountyAttempts.findFirst({
+      where: and(
+        eq(bountyAttempts.bountyId, bounty.id),
+        eq(bountyAttempts.status, 'approved'),
+      ),
+    });
+    if (approvedAttempt) {
+      throw new HTTPException(409, {
+        message:
+          'This Tier-1 bounty has an approved payment in progress and cannot be cancelled.',
+      });
+    }
+  }
 
   // ── COMPOSED rail (SLICE 2b): cancel refunds the LEG-1 vault to the creator ──
   // A composed bounty custodied the creator's USDC in an on-chain SAP V2 vault AT
@@ -2649,20 +2796,39 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
   // — a CLAUDE.md "never let a game be a faucet" violation. So we ONLY credit for
   // the CT rail.
   const { refundedBalance } = await db.transaction(async (tx) => {
-    // 1. Atomically claim the bounty for cancellation
-    const [claimed] = await tx
-      .update(bounties)
-      .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
-      .returning();
+    // 1. Atomically claim the bounty for cancellation. Tier 1 re-asserts every
+    // no-attempt/no-payment precondition after taking the poster lock; the
+    // earlier route reads are UX only and never authorize hold release.
+    const claimed = isTier1
+      ? await claimTier1BountyCancellation(tx, {
+          bountyId: bounty.id,
+          posterAvatarId: bounty.creatorId,
+          now: new Date(),
+        })
+      : (await tx
+          .update(bounties)
+          .set({ status: 'cancelled', updatedAt: new Date() })
+          .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
+          .returning()).length === 1;
 
     if (!claimed) {
       throw new HTTPException(409, {
-        message: 'Bounty already cancelled or no longer open',
+        message: isTier1
+          ? 'Tier-1 bounty cancellation lost to an active/approved attempt or payment.'
+          : 'Bounty already cancelled or no longer open',
       });
     }
 
     // 2. Return escrowed tokens to creator (atomic + audited) — CT rail ONLY.
+    if (isTier1) {
+      await releaseTier1BountyHold(tx, {
+        bountyId: bounty.id,
+        posterAvatarId: bounty.creatorId,
+        reason: 'cancelled',
+        actorKind: toActorKind(c.get('identity').kind),
+      });
+      return { refundedBalance: avatar.clawTokens };
+    }
     if (isUsdc) {
       return { refundedBalance: avatar.clawTokens };
     }
@@ -2679,8 +2845,10 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
 
   return c.json({
     success: true,
-    message: isUsdc
-      ? 'Bounty cancelled (USDC rail — no on-chain escrow was opened, nothing to refund)'
+    message: isTier1
+      ? 'Tier-1 USDC bounty cancelled and its custodial balance hold released.'
+      : isUsdc
+      ? 'Bounty cancelled (USDC rail, no on-chain escrow was opened and nothing was refunded)'
       : 'Bounty cancelled and tokens refunded',
     refunded: isUsdc ? 0 : bounty.tokenReward,
     clawTokens: refundedBalance,
