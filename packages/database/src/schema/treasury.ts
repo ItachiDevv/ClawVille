@@ -45,6 +45,17 @@ import { avatars } from './avatars';
  * - `sap-gas-sponsor`: dedicated SOL wallet that tops up composed-bounty SAP
  *   settle/finalize signers. It is deliberately isolated from every customer-
  *   payment and treasury wallet.
+ * - `land-hold-verify` (2026-08-10): dedicated SOL wallet that RECEIVES the
+ *   exact dust transfer proving control of a declared land hold wallet, and
+ *   sends the refund back. ONE ACTIVE row at a time (unique partial index
+ *   `treasury_wallets_land_hold_verify_singleton`, migration 0060b, scoped to
+ *   `retired_at IS NULL`) — two ACTIVE rows would mean user dust landing at an
+ *   address nothing watches. RETIRED rows persist beside it and are never
+ *   deleted or re-purposed: their keys are what keep dust already sent to a
+ *   rotated-out address recoverable. It is
+ *   deliberately isolated from every customer-payment wallet, and door 2 is
+ *   simply UNAVAILABLE (503 `transfer_door_unavailable`) until it is
+ *   provisioned, so there is no enable/disable flag.
  *
  * Postgres enum add: extending this list requires
  * `ALTER TYPE treasury_purpose ADD VALUE IF NOT EXISTS '<value>'` — shipped in
@@ -59,6 +70,7 @@ export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'clv-swap',
   'earned-backing',
   'sap-gas-sponsor',
+  'land-hold-verify',
 ]);
 
 /**
@@ -84,6 +96,14 @@ export const treasuryWallets = pgTable(
     encryptionTag: varchar('encryption_tag', { length: 32 }).notNull(),
     /** Freeform notes — e.g. "Phase 4 prep, production merchant wallet" */
     notes: text('notes'),
+    /**
+     * Set when this wallet is rotated OUT. A retired row is never deleted and
+     * never re-purposed: money already sent to that address stays recoverable
+     * only while we keep the row and its encrypted key, and land hold-verify
+     * rotation discovery reads retired addresses to record what we still owe.
+     * NULL means active; the land-hold-verify singleton is scoped to NULL.
+     */
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => ({
@@ -99,6 +119,15 @@ export const treasuryWallets = pgTable(
     sapGasSponsorSingleton: uniqueIndex('treasury_wallets_sap_gas_sponsor_singleton')
       .on(t.purpose)
       .where(sql`purpose = 'sap-gas-sponsor'`),
+    /**
+     * Exactly one ACTIVE land-hold verify wallet. Scoped to `retired_at IS NULL`
+     * so rotation is representable: an unscoped singleton permitted at most one
+     * such row ever, which made the retention obligation impossible to obey and
+     * left rotated-destination discovery structurally inert.
+     */
+    landHoldVerifySingleton: uniqueIndex('treasury_wallets_land_hold_verify_singleton')
+      .on(t.purpose)
+      .where(sql`purpose = 'land-hold-verify' AND retired_at IS NULL`),
   }),
 );
 

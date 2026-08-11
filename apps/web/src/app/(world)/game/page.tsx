@@ -26,6 +26,7 @@ import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
 import LandOptionsPill from '@/components/game/land-options-pill';
 import SalvageGatherPill from '@/components/game/land/salvage-gather-pill';
 import YardEditorOverlay from '@/components/game/land/yard-editor-overlay';
+import YardEditorPrimer from '@/components/game/land/yard-editor-primer';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
@@ -692,6 +693,10 @@ export default function GamePage() {
           <LandOptionsPill />
           <SalvageGatherPill />
           <YardEditorOverlay />
+          {/* One-time "how decorating works" card. Self-gates on build mode +
+              its own localStorage key, so it appears with the editor and never
+              again after the player dismisses it. */}
+          <YardEditorPrimer />
           <ActivityFeed />
           <ChatPanel />
           {/* AvatarChatBar lives only under the agent-connected branch below.

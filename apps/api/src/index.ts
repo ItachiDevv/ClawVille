@@ -1091,6 +1091,21 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Composed-bounty resume worker failed to start:', err);
   }
 
+  // Land hold-wallet ownership proof, DOOR 2 (exact-dust transfer + auto-refund).
+  // NOT flag-gated: availability derives from whether the verify wallet is
+  // provisioned (CLAUDE.md forbids dark flags in prod), and with no verify wallet
+  // there are no challenges, so each pass is a handful of cheap indexed reads.
+  // This worker OWNS the refund send path — without it a user's dust arrives and
+  // is never returned, so it must start on every box that serves the land routes.
+  try {
+    const { startLandHoldVerifySweeper } = await import(
+      './services/land-hold-transfer-verify'
+    );
+    startLandHoldVerifySweeper();
+  } catch (err) {
+    console.error('[API] Land hold-wallet verify sweeper failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -1788,6 +1803,15 @@ async function gracefulShutdown(signal: string) {
       stopClvPriceOracle();
     } catch {
       // If the oracle module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      // Land hold-wallet door-2 sweeper — idempotent no-op when it never started.
+      const { stopLandHoldVerifySweeper } = await import(
+        './services/land-hold-transfer-verify'
+      );
+      stopLandHoldVerifySweeper();
+    } catch {
+      // If the module failed to load earlier, there's nothing to stop.
     }
     // Tokenomics C3 + GoLive — stop whichever CLV swap worker boot selected
     // (dry-run statically imported; the LIVE module is imported only when the

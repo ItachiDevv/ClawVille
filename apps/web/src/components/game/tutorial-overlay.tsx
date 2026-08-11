@@ -90,6 +90,38 @@ const STEPS = [
       'Open the gear menu (top right) to manage your agent, configure location agents with custom personalities, or view all 10 buildings on the map.',
     tip: 'Gear icon = settings',
   },
+  // Land steps (2026-08-10). The land economy shipped with no first-session
+  // explanation at all, so a player never learned that lots, buildings and
+  // yards existed. Kept to three short cards so the deck stays a first
+  // session's worth of reading.
+  {
+    title: 'Claim a Lot',
+    icon: '🏝️',
+    // Doors are PER TIER, not universal: only Starter and C carry the weekly
+    // vCLAW rent door today, Founder is hold-only, and some tiers carry neither.
+    // The Land Office derives the real list from the shared tenure tables, so
+    // this card points at it instead of promising a door that may not exist.
+    content:
+      'Walk up to any open lot and a pill appears at the bottom of the screen. Open it in the Land Office to see that lot on its own. The panel names the doors that lot actually offers: a rent-free $CLAWVILLE hold, vCLAW rent by the week, or both.',
+    tip: 'Walk to a lot, then View in Land Office',
+  },
+  {
+    title: 'Build on It',
+    icon: '🏗️',
+    content:
+      'Once a lot is yours, open the Land Office again and use the Build tab to put a home or a shop on it. Upgrading the building raises how many yard pieces you can place and unlocks stacking.',
+    tip: 'Land Office → Build',
+  },
+  {
+    title: 'Decorate the Yard',
+    icon: '🪸',
+    // Materials are a HOME-yard rail only (`isKitPaymentRailAllowed`): the
+    // server refuses `paymentRail: 'materials'` on a shop, so saying materials
+    // work on any building would send a shop owner gathering for nothing.
+    content:
+      'Press E at a salvage pile on the seabed to gather materials. Then stand on your own lot, press Decorate, and lay out fences, planters, paths and statues around your building. A home yard can pay with materials or vCLAW; a shop yard always pays vCLAW.',
+    tip: 'Press E at a salvage pile · Decorate on your lot',
+  },
   {
     title: 'You\'re Ready!',
     icon: '🚀',

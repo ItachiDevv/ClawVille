@@ -12,7 +12,9 @@
  *
  * Coordinate conversion (EXACT, reused — see land-parcels.tsx / seed):
  *   The seed stamps  gridX = floor((parcel.cx + HALF_MAP_WU) / TILE_SIZE),
- *   HALF_MAP_WU = (576/2)*32 = 9216 = MAP_WIDTH/2 (== -OFFSET).
+ *   HALF_MAP_WU = (704/2)*32 = 11264 = MAP_WIDTH/2 (== -OFFSET; 704-tile
+ *   world since the 2026-06-24 grow — the identity below holds for ANY half
+ *   because the seed and this component use the same MAP_WIDTH).
  *   game-px = worldWu + HALF_MAP_WU, and worldWu = gridX*TILE_SIZE + OFFSET,
  *   so  game-px(parcel center) = gridX * TILE_SIZE  (and gridY * TILE_SIZE).
  *   TILE_SIZE = 32, OFFSET = -MAP_WIDTH/2 — matches land-parcels.tsx exactly.

@@ -6,7 +6,36 @@ import { useGameStore } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
 import { useAuthMe } from '@/hooks/use-auth-me';
+import { RpgTooltip } from '@/components/rpg';
+import { STATUS_BAR_HUD_PROPS } from '@/lib/hud-anchors';
 import { useSalvageStore } from '@/stores/salvage';
+
+/**
+ * One step ABOVE the rest of the left-column HUD (`z-40`).
+ *
+ * The quest tracker (`quest-tracker.tsx`, `fixed top-[...] left-4 z-40`) and
+ * this bar are both fixed to the left column and both grow. At 1424x805 they
+ * overlapped by 186px, and because the tracker renders LATER in the DOM at the
+ * same z-index it won — an `elementFromPoint` at the materials chip returned a
+ * quest row, so the chip (and its tooltip) could not be reached at all.
+ *
+ * This bar is small, always-present identity/economy chrome; the tracker is a
+ * taller transient list that already collapses. So the bar takes the overlap.
+ *
+ * The tracker MEASURES the band left above this bar — it finds this element by
+ * `STATUS_BAR_HUD_ATTR` (below), reads its real rect and observes it for
+ * resizes — and caps its expanded list to what is left, so on a normal window
+ * there is no overlap at all and raising this bar covers nothing. Only on a
+ * window too short for a readable list does the tracker take the higher layer
+ * WHILE EXPANDED, so its own rows never end up visible-but-untouchable;
+ * collapsing hands the column straight back to this bar.
+ */
+const STATUS_BAR_Z = 'z-[41]';
+
+// The marker the quest tracker finds this bar by so it can MEASURE the band
+// this bar occupies instead of hard-coding an approximate height. It lives in
+// `lib/hud-anchors.ts` rather than here because this component is `dynamic()`
+// imported on purpose — see that file.
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
@@ -43,6 +72,13 @@ export default function AvatarStatusBar() {
   // sign-in-gated (§2.6: guests never earn materials, so their balance is
   // always 0 and the chip would just be clutter).
   const materialBalance = useSalvageStore((s) => s.materialBalance);
+  // Today's remaining gathers. Already hydrated by SalvageStateHydrator and,
+  // until now, read by NOTHING. `hydratedAt === 0` means the salvage read model
+  // has not landed (it never does for a guest), so the count is omitted rather
+  // than printed as a fabricated "0 left".
+  const salvageHydrated = useSalvageStore((s) => s.hydratedAt !== 0);
+  const gathersRemaining = useSalvageStore((s) => s.avatarClaims.remaining);
+  const gathersCap = useSalvageStore((s) => s.rules.avatarDailyClaimCap);
 
   if (isLoading) return null;
   // Hide on ALL touch devices (incl. iPad Air/Pro which exceed Tailwind's
@@ -56,7 +92,7 @@ export default function AvatarStatusBar() {
     const modeLabel = controlMode === 'npc' ? 'NPC Mode' : 'Explore';
 
     return (
-      <div className="claw-panel fixed bottom-4 left-4 z-40 w-56">
+      <div className={`claw-panel fixed bottom-4 left-4 ${STATUS_BAR_Z} w-56`} {...STATUS_BAR_HUD_PROPS}>
         <div className="flex items-center gap-2 md:mb-3">
           <span className="text-xl">&#x1F9ED;</span>
           <div className="flex-1 min-w-0">
@@ -111,7 +147,7 @@ export default function AvatarStatusBar() {
   const totalBuildings = buildingZones.length;
 
   return (
-    <div className="claw-panel fixed bottom-4 left-4 z-40 w-56">
+    <div className={`claw-panel fixed bottom-4 left-4 ${STATUS_BAR_Z} w-56`} {...STATUS_BAR_HUD_PROPS}>
       {/* Avatar identity row */}
       <div className={`flex items-center gap-2 ${isGuest ? '' : 'md:mb-3'}`}>
         <span className="text-xl">{emoji}</span>
@@ -150,13 +186,35 @@ export default function AvatarStatusBar() {
 
       {/* Materials balance — seabed salvage earn loop (Land gamification
           P7b/P5b). Non-cashable, sink-only into HOME kit pieces; hidden for
-          guests since salvage claiming itself requires a real account. */}
+          guests since salvage claiming itself requires a real account.
+
+          The chip used to be a bare number with nothing anywhere in the UI
+          connecting salvage -> materials -> building. The tooltip names both
+          ends of that loop plus today's remaining gathers. This whole component
+          returns null on touch devices (see the isMobile guard above), so the
+          tooltip is desktop-only BY CONSTRUCTION. */}
       {!isGuest && (
         <div className="flex items-center gap-1.5 mt-1.5 mb-1.5 md:mb-2">
-          <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/20 rounded-full px-2.5 py-0.5">
-            <span className="text-xs" aria-hidden>&#x1FAB8;</span>
-            {materialBalance} material{materialBalance === 1 ? '' : 's'}
-          </span>
+          <RpgTooltip
+            side="top"
+            content={
+              <span>
+                Gather salvage piles on the seabed to earn materials, then spend
+                them on pieces in your home yard. Shop yards always pay in
+                vCLAW.
+                {salvageHydrated ? (
+                  <span className="mt-1 block font-bold text-emerald-200">
+                    {gathersRemaining} of {gathersCap} gathers left today.
+                  </span>
+                ) : null}
+              </span>
+            }
+          >
+            <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/20 rounded-full px-2.5 py-0.5">
+              <span className="text-xs" aria-hidden>&#x1FAB8;</span>
+              {materialBalance} material{materialBalance === 1 ? '' : 's'}
+            </span>
+          </RpgTooltip>
         </div>
       )}
 

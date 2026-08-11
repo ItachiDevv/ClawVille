@@ -48,30 +48,34 @@ export interface HouseTierConfig {
  * Default `openTables` counts are env-overridable per tier (see
  * `houseOpenTables()` below); these literals are the locked defaults.
  */
+// Stakes ladder restored to the ORIGINAL July values by founder ruling
+// 2026-08-11 ("use the old ones — I never approved the new ones"): the reland
+// had introduced a 10x-lower ladder that was never signed off. These values
+// match every live house-table row created before the reland.
 export const HOUSE_TIERS: Record<'low' | 'mid' | 'high', HouseTierConfig> = {
   low: {
     tierKey: 'low',
-    buyInCt: 20,
-    smallBlindCt: 1,
-    bigBlindCt: 2,
+    buyInCt: 200,
+    smallBlindCt: 10,
+    bigBlindCt: 20,
     openTables: 2,
     maxSeats: 6,
     seededAgentSlots: 3,
   },
   mid: {
     tierKey: 'mid',
-    buyInCt: 100,
-    smallBlindCt: 5,
-    bigBlindCt: 10,
+    buyInCt: 1000,
+    smallBlindCt: 50,
+    bigBlindCt: 100,
     openTables: 2,
     maxSeats: 6,
     seededAgentSlots: 3,
   },
   high: {
     tierKey: 'high',
-    buyInCt: 500,
-    smallBlindCt: 25,
-    bigBlindCt: 50,
+    buyInCt: 5000,
+    smallBlindCt: 250,
+    bigBlindCt: 500,
     openTables: 1,
     maxSeats: 6,
     seededAgentSlots: 3,

@@ -16,6 +16,7 @@
  *   </RpgTooltip>
  */
 
+import { useId } from 'react';
 import type { ReactNode } from 'react';
 
 export type RpgTooltipSide = 'top' | 'bottom';
@@ -33,16 +34,25 @@ export function RpgTooltip({
   className,
   children,
 }: RpgTooltipProps) {
+  // The wrapper is a tab stop (that is how keyboard users reveal the tooltip),
+  // so the explanation MUST be exposed to assistive tech. It used to be
+  // `aria-hidden`, which made the stop announce nothing at all. `describedby`
+  // + an id is the additive fix: sighted behaviour is untouched (the CSS
+  // reveal is still driven by :hover / :focus-within) and every existing call
+  // site keeps working, since neither prop is anything a caller passes.
+  const tooltipId = useId();
+
   return (
     <span
       className={['rpg-tooltip-root', className].filter(Boolean).join(' ')}
       tabIndex={0}
+      aria-describedby={tooltipId}
     >
       {children}
       <span
+        id={tooltipId}
         role="tooltip"
         className={`rpg-tooltip rpg-tooltip--${side}`}
-        aria-hidden
       >
         {content}
       </span>

@@ -84,14 +84,16 @@ export type CashTierKey = 'low' | 'mid' | 'high';
 export type CashTableSource = 'house' | 'player-public' | 'private';
 export type CashTableVisibility = 'public' | 'private';
 
-/** Fixed house tiers (mirror the route's HOUSE_TIERS — display only). */
+/** Fixed house tiers (mirror the route's HOUSE_TIERS — display only).
+ *  Founder-approved ORIGINAL ladder (ruling 2026-08-11); must match
+ *  `apps/api/src/services/poker/cash-house-config.ts` HOUSE_TIERS. */
 export const CASH_TIERS: Record<
   CashTierKey,
   { label: string; buyInCt: number; smallBlindCt: number; bigBlindCt: number }
 > = {
-  low: { label: 'House Low', buyInCt: 20, smallBlindCt: 1, bigBlindCt: 2 },
-  mid: { label: 'Mid', buyInCt: 100, smallBlindCt: 5, bigBlindCt: 10 },
-  high: { label: 'High', buyInCt: 500, smallBlindCt: 25, bigBlindCt: 50 },
+  low: { label: 'House Low', buyInCt: 200, smallBlindCt: 10, bigBlindCt: 20 },
+  mid: { label: 'Mid', buyInCt: 1000, smallBlindCt: 50, bigBlindCt: 100 },
+  high: { label: 'High', buyInCt: 5000, smallBlindCt: 250, bigBlindCt: 500 },
 };
 
 /** One row of `GET /tables` (public open tables only). */
