@@ -21,6 +21,34 @@ commits + the 2-week staging catch-up), builds green, and is ready to deploy to
 - Cove DB migrations renumbered **0057 + 0058** (branch-era 0025/0026 collided with
   staging's). Both idempotent; staging CI applies them on push.
 
+## AGENT WALKTHROUGH RESULTS (2026-08-11, run against the DEPLOYED staging build)
+
+A full scripted browser walkthrough was driven with the staging test accounts
+(`scripts/staging-walkthrough*.mjs` — reusable). What is PROVEN live:
+
+- **Two-player multiplayer hand, end to end:** one account created a private
+  table (real one-time join code), the second joined via "Have a code?", the
+  server dealt, BOTH clients acted through all four streets, the hand settled at
+  showdown with exact pot math (Pot 40 vCLAW, net -20 loser), the next hand
+  auto-dealt with the live ~20s server turn clock and raise-TO slider, and both
+  players walked away with cash-out. 7/7 checks green.
+- **Blackjack real-money hand:** bet 5 vCLAW, dealer 19 vs 14, "YOU LOSE Net -5,
+  Rake 0", balance strip consistent, provably-fair commit + client seed shown.
+- **Lobby:** all three tabs live with real data; restored stakes ladder verified
+  on the Create tab; creator-cap error surfaces as human copy ("You already have
+  the max open tables"); guest gets browse + no Deal button; 7-viewport sweep
+  (phone + iPad, both orientations) green.
+- **Fixes shipped from findings:** (1) seated players no longer see the
+  misleading "Sit down to start the game" copy (now "You are seated — the game
+  starts when another player joins."); (2) the dead "Seeded agents" knob was
+  removed from the player create form — the server seats bots ONLY at house
+  tables by design (house-bank drain guard; GameFeatures documents the P1 stub),
+  so the control silently did nothing.
+- **P1 backend follow-up (flagged, not fixed here):** abandoned EMPTY
+  player-created tables never expire, so they accumulate against the 3-table
+  creator cap forever (landtest1 is already capped from July tables). Needs an
+  idle-empty-table sweeper in `cash-table-manager` — backend money-path round.
+
 ## THE VISUAL CHECKLIST — walk this on staging, in order
 
 ### 1. Hold'em ring — `/cove/table` (the headline)
