@@ -247,12 +247,17 @@ async function bookTier1BountyPaid(input: {
       .returning({ id: bounties.id });
     if (bountyRows.length !== 1) throw new Error('Tier-1 settlement bounty CAS lost');
 
+    // Raw-template params bypass Drizzle's column serializers, and the
+    // postgres.js driver rejects a bare Date there (ERR_INVALID_ARG_TYPE,
+    // caught by the 2026-08-11 staging live smoke) — pass ISO strings.
+    const nowIso = now.toISOString();
     await tx.execute(sql`
       INSERT INTO bounty_reputation (
         avatar_id, tier, total_completed, total_earned, total_posted,
         success_rate, last_activity_at, created_at, updated_at
       ) VALUES (
-        ${input.hunterAvatarId}, 'newcomer', 1, 0, 0, 100, ${now}, ${now}, ${now}
+        ${input.hunterAvatarId}, 'newcomer', 1, 0, 0, 100,
+        ${nowIso}::timestamptz, ${nowIso}::timestamptz, ${nowIso}::timestamptz
       )
       ON CONFLICT (avatar_id) DO UPDATE SET
         total_completed = bounty_reputation.total_completed + 1,
@@ -263,8 +268,8 @@ async function bookTier1BountyPaid(input: {
           WHEN bounty_reputation.total_completed + 1 >= 3 THEN 'apprentice'::reputation_tier
           ELSE 'newcomer'::reputation_tier
         END,
-        last_activity_at = ${now},
-        updated_at = ${now}
+        last_activity_at = ${nowIso}::timestamptz,
+        updated_at = ${nowIso}::timestamptz
     `);
 
     await recordCovenantAction({
