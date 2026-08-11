@@ -93,6 +93,24 @@ interface LandStore {
    *  update are left unchanged (patch semantics, not replace). */
   setParcels: (updates: Record<string, ParcelState>) => void;
 
+  /**
+   * DROP parcel entries entirely — the removal counterpart to `setParcels`'s
+   * patch semantics.
+   *
+   * An ABSENT key is the hydrator's documented "we do not know" state (see
+   * `lib/three/land-state-hydrator.tsx`: absent ⇒ the render falls back to its
+   * default). So a caller that has learned an entry is NO LONGER TRUE, but has
+   * NOT learned what the parcel now is, removes it here and lets the
+   * authoritative public parcel feed re-establish the real status.
+   *
+   * Never invent a status instead. The Land Office's owned-portfolio read is
+   * the motivating case: `GET /api/land/me` not listing a lot proves only that
+   * the VIEWER no longer holds it — the lot may now be held by someone else,
+   * reserved, or retired — so writing `available` would paint a for-sale state
+   * onto another resident's lot from a client-side inference.
+   */
+  forgetParcels: (parcelCodes: readonly string[]) => void;
+
   /** REPLACE the public structure set (full replace, not patch), so archived or
    *  removed structures disappear rather than linger.
    *  The Map is keyed by PlacedStructure.parcelCode. */
@@ -162,6 +180,18 @@ export const useLandStore = create<LandStore>()((set) => ({
         next.set(id, ps);
       }
       return { parcels: next };
+    }),
+
+  forgetParcels: (parcelCodes) =>
+    set((state) => {
+      const next = new Map(state.parcels);
+      let changed = false;
+      for (const parcelCode of parcelCodes) {
+        if (next.delete(parcelCode)) changed = true;
+      }
+      // Keep the SAME Map reference when nothing was removed, so a no-op sweep
+      // cannot re-render every parcel selector in the 3D scene.
+      return changed ? { parcels: next } : {};
     }),
 
   setStructures: (list) =>
