@@ -139,7 +139,12 @@ export function tierDoorSentence(model: LandTenureDoorModel): string {
     return `${name}: hold ${whole(hold)} CLV rent free, or rent ${whole(rent)} vCLAW a week.`;
   }
   if (hold != null) {
-    return `${name}: hold ${whole(hold)} CLV rent free. There is no rent door.`;
+    // A missing quote means the tier HAS a rent door whose price we could not
+    // read, which is not the same thing as the tier having no rent door. Saying
+    // "there is no rent door" here would be a false statement about money.
+    return model.rentQuoteMissing
+      ? `${name}: hold ${whole(hold)} CLV rent free, or rent by the week. The weekly price is unavailable right now.`
+      : `${name}: hold ${whole(hold)} CLV rent free. There is no rent door.`;
   }
   if (rent != null) {
     return `${name}: rent ${whole(rent)} vCLAW a week. There is no hold door.`;
@@ -175,7 +180,13 @@ export function openLotStatusLine(model: LandTenureDoorModel): string {
   if (model.hasHoldDoor && model.rentWeeklyCt != null) {
     return 'Open to claim. Pick a door below.';
   }
-  if (model.hasHoldDoor) return 'Open to claim with a $CLAWVILLE hold.';
+  if (model.hasHoldDoor) {
+    // Same trap as tierDoorSentence: a hold door plus an unreadable rent quote
+    // is NOT a hold-only lot, so name the rent door we could not price.
+    return model.rentQuoteMissing
+      ? 'Open to claim with a $CLAWVILLE hold. The weekly rent price is unavailable right now.'
+      : 'Open to claim with a $CLAWVILLE hold.';
+  }
   if (model.rentWeeklyCt != null) return 'Open to claim on weekly vCLAW rent.';
   if (model.rentQuoteMissing) {
     return 'Open, but the weekly rent price is unavailable right now.';
