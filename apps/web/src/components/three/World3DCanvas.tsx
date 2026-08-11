@@ -35,6 +35,7 @@ import {
   hasBulkVRMBatchStarted,
   VRM_METRICS_ENABLED,
   registerBulkVRMIdleCallback,
+  beginWorldVrmParseEpoch,
 } from '@/lib/three/vrm-loader';
 import { withStageSlotFrustumCullingDisabled } from '@/components/three/world-stage/resource-ledger';
 import PlayerAvatar from '@/lib/three/player-avatar';
@@ -2095,6 +2096,22 @@ export const WorldSceneContents = memo(function WorldSceneContents({
   stageWarmup?: WorldStageWarmupProps;
   stageHosted?: boolean;
 }) {
+  // Slice C (Codex round-2 finding 3 + round-3 finding 1): begin the world
+  // VRM parse-counting epoch at RENDER time, BEFORE any child VRM consumer
+  // renders — a passive-effect start ran after render-time loadInstance
+  // calls, so a warm-cache boot could count the player parse on a microtask
+  // and then have it erased (false zero). beginWorldVrmParseEpoch is an
+  // IDEMPOTENT LATCH, which is what makes a render-phase call legal: React
+  // may abandon and replay this render, and a replay is a no-op instead of
+  // an erasure. Lives HERE (not the legacy World3DCanvas default export)
+  // because WorldSceneContents is the common ancestor of world content on
+  // BOTH the persistent-stage path (StageHostedWorldScene → WorldScene) and
+  // the legacy direct-canvas path — the round-3 local check caught the
+  // epoch never starting under the stage.
+  useState(() => {
+    beginWorldVrmParseEpoch();
+    return true;
+  });
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   // Preserved orbit pivot across OrbitControls unmount/remount cycles (the
   // controls instance dies with the scene-active gate below, but the world

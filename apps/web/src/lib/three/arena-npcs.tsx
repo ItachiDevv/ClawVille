@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, useState, memo, Suspense } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
@@ -26,7 +26,7 @@ import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terra
 import { jumpState } from '@/lib/three/jump-state';
 import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
 import { avatarPositionRef } from '@/stores/game';
-import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   AMBIENT_ANIM_NAMES,
   isEmoteAnimName,
@@ -35,6 +35,11 @@ import {
   type AnimName,
 } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
+import {
+  isDecorativeReleased,
+  onDecorativeReleaseStaggered,
+} from '@/lib/three/decorative-release';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import {
   computeVRMAvatarFit,
   VRM_AVATAR_TARGET_HEIGHT_WU,
@@ -452,33 +457,35 @@ const computeVRMNpcScale = computeVRMAvatarFit;
 //   Mira  → hermes-female  (replaced Maple/milady_official_3 — 2026-05-12)
 //   Tekk  → hermes-male    (replaced Ash/milady_official_4    — 2026-05-12)
 // Every concurrent wandering VRM MUST be a distinct path — vrm-loader caches one
-// instance per path. The 5 paths below cover both the live NPC roster AND the
-// retired Milady paths still selectable in the player-avatar picker (preloading
-// _3/_4 is cheap and avoids T-pose hitches when a guest picks them).
-// Full 8-Milady wanderer cast (restored 2026-05-27) — every path distinct,
-// no instance sharing via the vrm-loader cache.
-preloadVRMBytes('/avatars/milady-official-1.vrm');
-preloadVRMBytes('/avatars/milady-official-2.vrm');
-preloadVRMBytes('/avatars/milady-official-3.vrm');
-preloadVRMBytes('/avatars/milady-official-4.vrm');
-preloadVRMBytes('/avatars/milady-official-5.vrm');
-preloadVRMBytes('/avatars/milady-official-6.vrm');
-preloadVRMBytes('/avatars/milady-official-7.vrm');
-preloadVRMBytes('/avatars/milady-official-8.vrm');
-// Hermes wanderers (Mira / Cyrus / Tekk) — re-added 2026-05-12 PM after the
-// per-VRM auto-fit in VRMNpcMesh let cm-authored VRMs render at the same
-// world height as Milady (computeVRMNpcScale below).
-// ?v=2 — perf round 2 decimation bust 2026-06-13. MUST match the registry +
-// asset-preload-manifest urls exactly (a ?v mismatch double-fetches the VRM).
-preloadVRMBytes('/avatars/hermes-female.vrm?v=2');
-preloadVRMBytes('/avatars/hermes-male.vrm?v=2');
-preloadVRMBytes('/avatars/tekk-nonorm.vrm');
+// instance per path.
+//
+// Rung-4 slice C (2026-08-11): the 11 module-scope preloadVRMBytes() calls that
+// used to live here are GONE. Those fetches bypass the LoadingManager
+// (vrm-loader fetchBytes is a raw fetch()), so on a fast network the bytes
+// resolved pre-reveal, the parse batch started, and 13 ambient VRM parses
+// joined the vrmBulk reveal gate (6.4–8.7s of the pre-reveal lane — slice-A
+// decomposition), while a slow network missed the gate entirely (inversion).
+// Ambient wanderer entries are now release-deferred in NpcEntry below (same
+// slot-owns-its-demand pattern as arena-location-npcs): the stagger tick
+// starts the Suspense fetch/parse, so no bulk byte warm belongs here. The
+// avatar-picker paths this preload also warmed now fetch on demand — the
+// picker is a post-boot surface, so the one-off parse hitch is acceptable.
 preloadMixamoClips();
 
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
-export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
+export const GLBNpcMesh = memo(function GLBNpcMesh({
+  npc,
+  // Slice C: false while the wanderer's DeferredWarmAttachment is still
+  // warming. The three-subtree is hidden by the attachment's own group; this
+  // prop only gates the DOM label overlay, which would otherwise float over
+  // an invisible body.
+  attachmentVisible = true,
+}: {
+  npc: NpcSpriteState;
+  attachmentVisible?: boolean;
+}) {
   const groupRef = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
@@ -499,11 +506,11 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
   // WorldLabelsOverlay label — subtle wordmark with distance fade + occlusion.
   // Baseline opacity 0.65 at ≤800wu; fades to 0 at 3000wu.
   // 10Hz raycast against building occluder meshes hides when covered.
-  const { divRef: labelRef } = useWorldLabel({
+  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
     id: `glb-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 100, 0],
-    initialVisible: true,
+    initialVisible: attachmentVisible,
     fadeNear: 15000,
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
@@ -511,6 +518,9 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     // S4 — the possessed-player "You" label must not be hidden by its own body.
     skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
+  useEffect(() => {
+    setLabelVisible(attachmentVisible);
+  }, [attachmentVisible, setLabelVisible]);
 
   // Per-frame rendered position. The entity-interpolation smoother
   // (see useFrame below) computes an XZ target from the two latest
@@ -1008,7 +1018,15 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
 // Do NOT render two VRMNpcMesh components with the same VRM path — they would
 // share vrm.scene and clobber each other's position/animation state every frame.
 // The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
-export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
+export const VRMNpcMesh = memo(function VRMNpcMesh({
+  npc,
+  // Slice C: gates the DOM label while the wanderer's warm attachment runs —
+  // see GLBNpcMesh for the full rationale.
+  attachmentVisible = true,
+}: {
+  npc: NpcSpriteState;
+  attachmentVisible?: boolean;
+}) {
   const groupRef = useRef<THREE.Group>(null!);
   const { scene: threeScene } = useThree();
   const npcRef = useRef(npc);
@@ -1036,11 +1054,11 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
   // Y offset: VRM humanoids are ~270wu tall (vs ~45wu for GLB crustaceans),
   // so a 100wu offset would land the capsule at the VRM's waist/chest and
   // cover the body. 320wu sits cleanly above the head.
-  const { divRef: labelRef } = useWorldLabel({
+  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
     id: `vrm-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 320, 0],
-    initialVisible: true,
+    initialVisible: attachmentVisible,
     fadeNear: 15000,
     fadeFar: 25000,
     fadeBaseOpacity: 0.95,
@@ -1048,6 +1066,9 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     // S4 — the possessed-player "You" label must not be hidden by its own body.
     skipLocalAvatarOcclusion: npc.id === PLAYER_NPC_ID,
   });
+  useEffect(() => {
+    setLabelVisible(attachmentVisible);
+  }, [attachmentVisible, setLabelVisible]);
 
   // Same entity-interpolation smoother as GLBNpcMesh — see the long
   // comment block at the top of this file (around line 44) and the
@@ -1641,18 +1662,145 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
 // Main export
 // ---------------------------------------------------------------------------
 
+/**
+ * Shared release-deferral for ambient bodies (wanderers here, remote players
+ * in remote-players.tsx). Rung-4 slice C (2026-08-11): timing-only deferral,
+ * never conditional omission — the same contract as arena-location-npcs.
+ *
+ * - Pre-release mounts subscribe to onDecorativeReleaseStaggered (one body
+ *   per idle tick, squared-camera-distance priority, nearest first).
+ * - Post-release mounts (mid-session SSE spawns / remote joins) initialize
+ *   released — the one-shot contract forbids re-gating — and still carry a
+ *   REAL distance priority into the warm queue: the lazy first-render init
+ *   below exists because a 0 priority would preempt every distance-scored
+ *   location/wanderer job already queued (Codex slice-C round-1 finding 6).
+ * - Position is snapshotted via ref so pre-release movement (SSE updates)
+ *   never resubscribes the stagger callback and thrashes queue ordering.
+ */
+export function useAmbientBodyRelease(
+  mapX: number,
+  mapY: number,
+  immediate: boolean,
+): { released: boolean; priority: number } {
+  const { camera } = useThree();
+  const posRef = useRef({ x: mapX, y: mapY });
+  posRef.current = { x: mapX, y: mapY };
+  const priorityRef = useRef(-1);
+  if (priorityRef.current < 0) {
+    // Lazy ref init on first render (accepted React pattern) — post-release
+    // mounts never run the subscribe effect below, so this is their only
+    // chance to record a distance priority for DeferredWarmAttachment.
+    const [wx, , wz] = mapToWorld(posRef.current.x, posRef.current.y);
+    const dx = wx - camera.position.x;
+    const dz = wz - camera.position.z;
+    priorityRef.current = dx * dx + dz * dz;
+  }
+  const [released, setReleased] = useState(
+    () => immediate || isDecorativeReleased(),
+  );
+  useEffect(() => {
+    if (released) return undefined;
+    const [wx, , wz] = mapToWorld(posRef.current.x, posRef.current.y);
+    const dx = wx - camera.position.x;
+    const dz = wz - camera.position.z;
+    priorityRef.current = dx * dx + dz * dz;
+    return onDecorativeReleaseStaggered(
+      () => setReleased(true),
+      priorityRef.current,
+    );
+  }, [camera, released]);
+  return { released, priority: priorityRef.current };
+}
+
+/**
+ * Orphan-parse cancellation bracket (Codex slice-C round-1 finding 4): the
+ * mesh components install their retain/dispose effect only AFTER their
+ * Suspense demand resolves and they commit. If the entry unmounts while the
+ * mesh is still SUSPENDED (controlMode switch away from 'npc', SSE despawn,
+ * remote player leaving), that effect never ran, the queued/in-flight parse
+ * kept its generation, and the resulting instance was cached forever. This
+ * parent-level bracket lives on a component that commits IMMEDIATELY (its
+ * own Suspense boundary sits BELOW it), so its cleanup always runs. The
+ * cancellation is EVENTUAL, not instant (Codex round-2 finding 4): dispose
+ * schedules teardown after a ~500ms grace window, and only when that timer
+ * fires is the generation incremented — a parse that starts (or is already
+ * running) inside the window completes and may count telemetry, but its
+ * instance is then evicted and disposed rather than cached forever, which is
+ * the leak this bracket exists to close. retain-on-setup cancels the
+ * deferred dispose a StrictMode simulated unmount scheduled. Double-dispose
+ * with the mesh's own effect is a no-op (VRM_PENDING_DISPOSES dedupe).
+ */
+export function useVRMOrphanCancel(vrmPath: string | null, instanceId: string): void {
+  useEffect(() => {
+    if (!vrmPath) return undefined;
+    retainVRMInstance(vrmPath, instanceId);
+    return () => disposeVRMInstance(vrmPath, instanceId);
+  }, [vrmPath, instanceId]);
+}
+
+/** VRM path for a species — MUST mirror VRMNpcMesh's own derivation. */
+function vrmPathForSpecies(species: string): string {
+  const regEntry = MODEL_REGISTRY[species as keyof typeof MODEL_REGISTRY];
+  return regEntry?.path ?? `/avatars/${species.replace('milady_official_', 'milady-official-')}.vrm`;
+}
+
 // Per-NPC entry. All visible NPCs render as their real GLB/VRM model; visible
 // capsule/cylinder stand-ins were rejected for player-facing world quality.
+//
+// Rung-4 slice C (2026-08-11): ambient wanderer bodies are RELEASE-DEFERRED
+// (useAmbientBodyRelease above). Only the possessed/demo player body
+// (PLAYER_NPC_ID) mounts in the boot lane, so the warmup's vrmBulk gate waits
+// for AT MOST one player-class parse instead of 13 ambient ones. Deferred
+// bodies attach through DeferredWarmAttachment so GPU upload/compile rides
+// the shared warm queue instead of hitching first use.
 const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
-  if (regEntry?.avatar_type === 'vrm') {
-    return (
-      <Suspense fallback={null}>
-        <VRMNpcMesh npc={npc} />
-      </Suspense>
-    );
+  const isPlayerBody = npc.id === PLAYER_NPC_ID;
+  const { released, priority } = useAmbientBodyRelease(
+    npc.x,
+    npc.y,
+    isPlayerBody,
+  );
+  const isVrm = regEntry?.avatar_type === 'vrm';
+  useVRMOrphanCancel(isVrm ? vrmPathForSpecies(npc.species) : null, npc.id);
+
+  if (isPlayerBody) {
+    // Boot-lane body: the possessed/demo player NPC parses immediately —
+    // this is the "player ≤ 1" allowance in the slice-C acceptance.
+    if (isVrm) {
+      return (
+        <Suspense fallback={null}>
+          <VRMNpcMesh npc={npc} />
+        </Suspense>
+      );
+    }
+    return <GLBNpcMesh npc={npc} />;
   }
-  return <GLBNpcMesh npc={npc} />;
+  if (!released) return null;
+  return (
+    <Suspense fallback={null}>
+      {/* key={npc.species} (Codex round-3 finding 2): warm state must be
+          scoped to the MODEL RESOURCE, not the entity id — a species change
+          under a stable NPC id would otherwise re-suspend under an already
+          ready=true attachment and attach the new model without a warm pass
+          (the exact stale-ready failure fixed for the local player with
+          key={reg.path}). The species→path mapping is deterministic, so the
+          species string is the resource key. */}
+      <DeferredWarmAttachment
+        key={npc.species}
+        label={`wanderer:${npc.id}`}
+        priority={priority}
+      >
+        {(warmReady) =>
+          isVrm ? (
+            <VRMNpcMesh npc={npc} attachmentVisible={warmReady} />
+          ) : (
+            <GLBNpcMesh npc={npc} attachmentVisible={warmReady} />
+          )
+        }
+      </DeferredWarmAttachment>
+    </Suspense>
+  );
 });
 
 export default function ArenaNpcs() {

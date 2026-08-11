@@ -37,6 +37,8 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
 import { primeVrmHipsHeightCache } from './mixamo-retarget';
+import { isDecorativeReleased } from './decorative-release';
+import { stampColdLoadPhase } from './cold-load-stamp';
 
 // MToon plugin registration:
 //   Explicitly register MToonMaterialLoaderPlugin so VRMLoaderPlugin produces
@@ -324,6 +326,78 @@ const VRM_LOAD_GEN = new Map<string, number>();
 // to the back. This prevents the player from waiting behind all 12+ wandering
 // NPC parses (measured 19s worst case on Iris Xe).
 const PLAYER_INSTANCE_ID = 'player-avatar';
+
+// The possessed/demo player body in NPC mode (stores/npc.ts PLAYER_NPC_ID).
+// A string literal (not an import) — pulling the zustand store module into
+// the loader chunk would drag pixi/collision deps in and risks an import
+// cycle. Exported so vrm-loader-player-id-parity.test.ts can assert it never
+// drifts from the store constant (drift would silently lose the possessed
+// body's parse priority AND its player telemetry classification).
+export const PLAYER_NPC_INSTANCE_ID = '__player-npc__';
+
+// ---------------------------------------------------------------------------
+// Rung-4 slice C acceptance telemetry: how many VRM parses EXECUTED before the
+// decorative release (== before the reveal, since the release is first-paint
+// anchored). Player-class = the player avatar or the possessed demo body;
+// everything else is ambient. Acceptance: ambient === 0, player ≤ 1.
+// Stamped into __W3D_PHASES so the cold-load probe captures them and the
+// ?perf=1 HUD can display them. Telemetry only — never throws, never read back.
+// ---------------------------------------------------------------------------
+let _preRevealPlayerParses = 0;
+let _preRevealAmbientParses = 0;
+let _worldVrmEpochActive = false;
+
+/**
+ * Begin the WORLD parse-counting epoch. vrm-loader state is PAGE-GLOBAL, but
+ * the counters' epoch is the WORLD boot: VRM parses on other surfaces
+ * (avatar picker previews, cove/kelp rooms) must never count — neither
+ * before an SPA navigation into /game (Codex slice-C round-1 finding 5) nor
+ * at all: counting is DISABLED until this latch flips.
+ *
+ * IDEMPOTENT LATCH (round-3 finding 1): WorldSceneContents calls this from a
+ * render-phase useState initializer, and React may pause, abandon, and
+ * REPLAY render work — a plain "reset" initializer re-ran on the retry and
+ * erased counts a cached-bytes child parse had already recorded. The latch
+ * makes replays no-ops: the first call zeros + stamps, every later call
+ * returns immediately, so a replayed render can never erase evidence.
+ * Post-release re-mounts are additionally harmless because counting itself
+ * is release-gated.
+ *
+ * KNOWN RESIDUALS (accepted, slice-D scope): (a) parse jobs carry no epoch
+ * token, so a prior-surface parse whose fetch resolves AFTER the epoch
+ * begins would count into the world epoch. In practice pre-world surfaces
+ * unmount at navigation and their dispose brackets stale-gen the queued
+ * parses. (b) The latch cannot RESTART after an abandoned pre-release world
+ * boot (stage request cancelled → world slot unmounts → a later boot
+ * retains any parse counted by the aborted attempt and may read 2p) —
+ * telemetry-only, never affects a clean cold-load probe run (Codex round-4
+ * finding 2). A token-per-job scheme in slice D's boot-core instrumentation
+ * subsumes both.
+ */
+export function beginWorldVrmParseEpoch(): void {
+  if (_worldVrmEpochActive) return;
+  _worldVrmEpochActive = true;
+  _preRevealPlayerParses = 0;
+  _preRevealAmbientParses = 0;
+  stampColdLoadPhase('vrmPreRevealPlayerParses', 0);
+  stampColdLoadPhase('vrmPreRevealAmbientParses', 0);
+}
+
+function countPreRevealParse(instanceId: string): void {
+  try {
+    if (!_worldVrmEpochActive) return;
+    if (isDecorativeReleased()) return;
+    if (instanceId === PLAYER_INSTANCE_ID || instanceId === PLAYER_NPC_INSTANCE_ID) {
+      _preRevealPlayerParses += 1;
+      stampColdLoadPhase('vrmPreRevealPlayerParses', _preRevealPlayerParses);
+    } else {
+      _preRevealAmbientParses += 1;
+      stampColdLoadPhase('vrmPreRevealAmbientParses', _preRevealAmbientParses);
+    }
+  } catch {
+    /* telemetry never throws */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Metrics gating — evaluate once at module init (punch list 3)
@@ -854,12 +928,19 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
   const fetchDone = nowMs();
   const queuedAt = nowMs();
 
-  // Determine if this is the player avatar for priority scheduling.
+  // Determine if this is a player-class body for priority scheduling. The
+  // possessed demo body ('__player-npc__', NPC mode) is boot-lane like the
+  // player avatar — without the priority lane it would queue behind ambient
+  // parses (Codex slice-C round-1 finding 3).
   const instanceId = cacheKey.slice(path.length + 1);
-  const isPlayer = instanceId === PLAYER_INSTANCE_ID;
+  const isPlayer =
+    instanceId === PLAYER_INSTANCE_ID || instanceId === PLAYER_NPC_INSTANCE_ID;
 
   const parsed = await enqueueVRMParse(async () => {
     const queueStart = nowMs();
+    // Slice-C acceptance counter — classified at parse-EXECUTION time (a
+    // queued task that never runs pre-reveal correctly counts as post-reveal).
+    countPreRevealParse(instanceId);
     // .slice(0) gives the parser its own copy of the bytes. GLTFLoader doesn't
     // mutate the input, but the defensive copy guards against any future change
     // in three's parser semantics that could corrupt subsequent parses.

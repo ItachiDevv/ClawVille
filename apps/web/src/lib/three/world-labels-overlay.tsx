@@ -895,11 +895,24 @@ export function useWorldLabel({
   useEffect(() => {
     return () => {
       const existing = _registry.get(id);
-      if (existing) {
+      // Identity guard (cold-load slice-C Codex round-4 finding 1): a KEYED
+      // REMOUNT under the same label id (species/model swap remounting the
+      // mesh) registers the NEW instance's entry during render, BEFORE this
+      // OLD instance's cleanup runs. An unconditional delete here would
+      // permanently remove the replacement's entry — the label vanishes for
+      // the rest of the session. Ownership is matched by divRef identity
+      // (one divRef per hook instance): delete the registry row only if it
+      // is still OURS; either way, purge OUR entry from the occlude list
+      // (an overwritten row's old entry object lingers there otherwise).
+      if (existing && existing.divRef === divRef) {
         const idx = _occludeList.indexOf(existing);
         if (idx !== -1) _occludeList.splice(idx, 1);
+        _registry.delete(id);
+      } else {
+        for (let i = _occludeList.length - 1; i >= 0; i--) {
+          if (_occludeList[i].divRef === divRef) _occludeList.splice(i, 1);
+        }
       }
-      _registry.delete(id);
       _refToId.delete(divRef);
       registeredRef.current = false;
       _scheduleNotify();

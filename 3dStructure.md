@@ -1,7 +1,10 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-10 (Land scale-up render pass — "houses and plots still
+**Last Audited: 2026-08-11 (Cold-load rung-4 slice C — ambient wanderer
+VRMs release-deferred out of the pre-reveal lane; see the dated entry below).**
+
+**Prior Last Audited: 2026-08-10 (Land scale-up render pass — "houses and plots still
 not big enough").** Companion render diff to the shared-constants growth
 (`TIER_CONFIG` founder 192/52 t · starter 257/52 t · c 322/52 t, corner-inset
 per-side plot distribution, `STRUCTURE_FOOTPRINT_FRACTION` 0.64 → **0.68 as
@@ -499,6 +502,70 @@ opaque activity subtree actually unmounts; remote bodies reporting
 frozen pre-P3; the live stage already contained the unified controller, Kelp
 slot, and v42 protocol baseline, so the activity slot was applied to those
 landed roles.
+
+**Last edit 2026-08-11 (Cold-load rung-4 slice C — ambient wanderer VRMs out of the pre-reveal lane).**
+The 13 ambient wandering VRM NPCs no longer parse in the boot lane. Before:
+arena-npcs fired 11 module-scope `preloadVRMBytes()` fetches at module eval
+(+ the manifest's `WANDERING_VRM_PATHS` tier-1 loop), and because vrm-loader's
+`fetchBytes` is a raw `fetch()` that BYPASSES the LoadingManager, a fast
+network resolved the bytes pre-reveal, mounted `VRMNpcMesh` parses joined the
+warmup's vrmBulk gate (6.4–8.7s of the pre-reveal lane per the slice-A
+decomposition), while a slow network missed the gate (network-speed
+inversion). Now: `NpcEntry` release-defers every ambient wanderer — the same
+timing-only pattern as arena-location-npcs (`onDecorativeReleaseStaggered`,
+one mount per idle tick, squared-camera-distance priority, nearest first),
+each wrapped in `DeferredWarmAttachment` so GPU upload/compile rides the
+shared warm queue, with the DOM label gated by a new optional
+`attachmentVisible` prop on `VRMNpcMesh`/`GLBNpcMesh`. Only the possessed/demo
+player body (`PLAYER_NPC_ID`, a boot-lane VRM) mounts immediately — the
+"player ≤ 1" allowance. Post-release spawns (SSE adds) initialize released
+(one-shot contract) and now also get the warm attachment. Byte preloads
+removed from BOTH sources (arena-npcs module scope + manifest tier 1; the
+wanderer lists stay exported for audit — `WORLD_PRELOAD_MANIFEST` moved them
+to tier 3). GLB wanderer byte preloads (lobster) stay tier-1: the KTX2 byte warm is a
+raw fetch too (preloadKTX2Bytes), but the deferred MOUNT already prevents any
+parse joining the gate, and the file is small enough that a boot-lane warm
+beats a post-release round-trip (Codex round-1 finding 7 corrected the
+original "LoadingManager-tracked" claim here). Acceptance telemetry:
+vrm-loader counts parses EXECUTED pre-release into `__W3D_PHASES`
+(`vrmPreRevealAmbientParses` / `vrmPreRevealPlayerParses`; ambient must be 0,
+player ≤ 1) and the `?perf=1` HUD shows them as `0a/1p vrm-pre`. Wanderer
+pop-in is spawn-adjacent — the FOUNDER playtest of the pop-in is part of this
+slice's gate (E4) before it counts as done.
+
+Codex xhigh round-1 (BLOCK, 5 blocking + 2 nits) folded in the same diff:
+(1) `remote-players.tsx` remote bodies get the SAME deferral (shared
+`useAmbientBodyRelease` hook) — a multiplayer snapshot pre-reveal can no
+longer enqueue VRM parses into the gate; (2) the ACTIVE player's VRM bytes
+are warmed at `avatarModelKey` resolution (PlayerAvatarRouter effect) and a
+post-release-resolving player VRM attaches through the warm queue
+(`player-avatar:late`, priority 0 intended) — the residual mid-warmup window
+between the one-time bulk check and reveal is the PRE-EXISTING gate race,
+punch-listed for slice D's boot-core gate; (3) the possessed body
+(`__player-npc__`) now gets the parse-queue priority lane; (4)
+`useVRMOrphanCancel` brackets every ambient/remote entry on a component that
+COMMITS immediately, so unmount-while-suspended (mode switch, SSE despawn,
+remote leave) EVENTUALLY invalidates the parse (dispose grace ~500ms; an
+already-running parse completes but its instance is evicted, not cached
+forever); (5) counting is gated on an IDEMPOTENT world-epoch latch
+(`beginWorldVrmParseEpoch`), begun from a render-phase useState initializer
+in `WorldSceneContents` (the common ancestor on BOTH the persistent-stage
+and legacy canvas paths; the latch makes render replays no-ops per React
+purity rules) - round-2 moved it out of the passive warmup effect (a
+warm-cache microtask parse could land before effects and be erased) and
+round-3 made it a latch + relocated it (the legacy component never renders
+under the stage); non-world surfaces (picker/cove/kelp) never count at all
+since the latch only flips on world mount so picker/cove/kelp parses before an SPA
+navigation into /game cannot pollute the acceptance signal (the pre-game
+`_bulkBatchStarted` pollution making vrmBulk tiny-but-nonzero is pre-existing
+and also slice-D scope); (6) post-release spawns carry a real lazy-initialized
+distance priority instead of 0 (which preempted every queued distance-scored
+job); (7, round-3) every DeferredWarmAttachment for wanderers/remotes is
+keyed by species so a model swap under a stable entity id gets a fresh warm
+pass instead of attaching unwarmed under a stale ready=true attachment, and
+DeferredRemoteBody carries its own inner Suspense boundary so its
+orphan-cancel bracket commits even when a post-release join suspends
+immediately.
 
 **Last edit 2026-08-11 (Cold-load rung-4 slice B — service-worker precache stand-down; sw.js v10→v11; two Codex BLOCK rounds folded).**
 The SW's install handler no longer performs ANY network work. Previously it

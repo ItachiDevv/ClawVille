@@ -20,6 +20,11 @@ interface PerfStats {
   backend: string;
   /** Top named spike from perf-tracker (name + max ms in last second). */
   topSpike: { name: string; ms: number } | null;
+  /** Rung-4 slice-C acceptance counters (vrm-loader → __W3D_PHASES):
+   *  VRM parses that EXECUTED before the decorative release, split
+   *  ambient/player. Acceptance: ambient 0, player ≤ 1. Null until the
+   *  first parse stamps either key. */
+  vrmPreReveal: { ambient: number; player: number } | null;
 }
 
 const INITIAL_STATS: PerfStats = {
@@ -34,6 +39,7 @@ const INITIAL_STATS: PerfStats = {
   pipes: 0,
   backend: '—',
   topSpike: null,
+  vrmPreReveal: null,
 };
 
 function fpsColor(fps: number): string {
@@ -207,6 +213,23 @@ export default function PerfHud() {
           ? { name: spikes[0].name, ms: Math.round(spikes[0].maxMs * 10) / 10 }
           : null;
 
+        // Slice-C acceptance counters — stamped by vrm-loader into
+        // __W3D_PHASES. Settled by reveal time; cheap to re-read each sample.
+        let vrmPreReveal: PerfStats['vrmPreReveal'] = null;
+        try {
+          const phases = (window as any).__W3D_PHASES;
+          const ambient = phases?.vrmPreRevealAmbientParses;
+          const player = phases?.vrmPreRevealPlayerParses;
+          if (typeof ambient === 'number' || typeof player === 'number') {
+            vrmPreReveal = {
+              ambient: typeof ambient === 'number' ? ambient : 0,
+              player: typeof player === 'number' ? player : 0,
+            };
+          }
+        } catch {
+          // telemetry read never breaks the HUD
+        }
+
         setStats({
           fps,
           frameAvg: Math.round(frameAvg * 10) / 10,
@@ -219,6 +242,7 @@ export default function PerfHud() {
           pipes,
           backend,
           topSpike,
+          vrmPreReveal,
         });
 
         lastSampleTime = now;
@@ -315,6 +339,31 @@ export default function PerfHud() {
             <span style={{ fontWeight: 'bold' }}>{stats.topSpike.ms}</span>
             <span style={{ color: '#64748b' }}> ms</span>{' '}
             <span style={{ color: '#94a3b8' }}>{stats.topSpike.name}</span>
+          </span>
+        </>
+      )}
+      {stats.vrmPreReveal && (
+        <>
+          <span style={{ color: '#334155' }}>·</span>
+          <span title="VRM parses executed BEFORE the decorative release (rung-4 slice-C acceptance: ambient 0 / player ≤1)">
+            <span
+              style={{
+                color: stats.vrmPreReveal.ambient === 0 ? '#22c55e' : '#ef4444',
+                fontWeight: 'bold',
+              }}
+            >
+              {stats.vrmPreReveal.ambient}a
+            </span>
+            <span style={{ color: '#64748b' }}>/</span>
+            <span
+              style={{
+                color: stats.vrmPreReveal.player <= 1 ? '#22c55e' : '#ef4444',
+                fontWeight: 'bold',
+              }}
+            >
+              {stats.vrmPreReveal.player}p
+            </span>{' '}
+            <span style={{ color: '#64748b' }}>vrm-pre</span>
           </span>
         </>
       )}
