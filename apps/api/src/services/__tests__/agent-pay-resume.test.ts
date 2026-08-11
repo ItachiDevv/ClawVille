@@ -33,6 +33,7 @@ function payment(overrides: Partial<AgentPayment> = {}): AgentPayment {
     usdcAtomic: '10000',
     status: 'settling',
     idempotencyKey: `resume-${nextId}`,
+    bountyHoldId: null,
     settlingId: `00000000-0000-4000-9000-${String(nextId).padStart(12, '0')}`,
     settlingStartedAt: new Date(NOW - 180_001),
     txSignature: null,
@@ -50,6 +51,7 @@ function payment(overrides: Partial<AgentPayment> = {}): AgentPayment {
     fulfilledAt: null,
     failureReason: null,
     capExempt: null,
+    countCapExempt: false,
     metadata: {},
     createdAt: now,
     updatedAt: now,
@@ -89,6 +91,7 @@ function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
       if (options.expireThrows) throw new Error('synthetic pending expiry outage');
       const expired = [...rows.values()].filter((row) =>
         row.status === 'pending'
+        && row.countCapExempt === false
         && new Date(row.createdAt).getTime() < cutoff.getTime()
         && row.txSignature === null
         && row.settlePayer === null
@@ -192,6 +195,7 @@ function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
       if (options.alertThrows) throw new Error('synthetic alert outage');
     },
     logError: () => {},
+    resumeTier1: async () => 0,
   };
 
   return {
@@ -403,6 +407,24 @@ describe('agent-pay resume worker', () => {
     expect(h.rows.get(signedSurvivor.id)).toMatchObject({
       status: 'pending',
       txSignature: 'ambiguous-pending-signature',
+    });
+  });
+
+  it('keeps Tier-1 settlement payments retryable past the generic pending expiry', async () => {
+    const tier1Pending = payment({
+      status: 'pending', settlingId: null, settlingStartedAt: null,
+      countCapExempt: true,
+      createdAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 1),
+      metadata: { reason: 'platform-mediated-bounty-settlement' },
+    });
+    const h = harness([tier1Pending]);
+
+    const result = await runAgentPayResumeTick(h.deps);
+
+    expect(result).toMatchObject({ stalePendingExpired: 0, stalePending: 1 });
+    expect(h.rows.get(tier1Pending.id)).toMatchObject({
+      status: 'pending',
+      countCapExempt: true,
     });
   });
 

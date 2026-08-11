@@ -28,15 +28,10 @@ commits + the 2-week staging catch-up), builds green, and is ready to deploy to
       Browse, Create Table (house tier + private custom stakes/seeded agents), and Have
       a code?, confirm guests see the sign-in gate, copy the one-time private code, and
       confirm any table above six seats opens the classic 2D felt.
-- [ ] **FOUNDER DECISION — house stakes generation gap (found 2026-08-10):** the live
-      staging house tables were created by the July code at 10/20 blinds / 200 vCLAW
-      buy-in (low tier), but the current config creates house tables at exactly 10x
-      LOWER stakes (1/2 blinds / 20 buy-in low, 5/10/100 mid, 25/50/500 high, marked
-      "founder-locked" in `cash-house-config.ts`). Both lobby tabs display truthfully
-      (list = per-table server values; create = what a new table gets), but the two
-      generations coexist and read as a contradiction. Say which stakes are canonical:
-      keep the new low ladder (then the old staging rows should be retired/recreated),
-      or restore the 10x ladder in config. No stakes were changed without your call.
+- [x] **House stakes — RESOLVED by founder ruling 2026-08-11 ("use the old ones"):**
+      the original ladder is restored in config (low 10/20 blinds / 200 vCLAW buy-in,
+      mid 50/100 / 1,000, high 250/500 / 5,000). New house tables and the Create tab
+      now match the live table rows; the never-approved 10x-lower reland ladder is gone.
 - [ ] **Default view on entry**: all 5 opponents seated on the proper table chairs
       (not the slot-machine stools), nobody hidden behind a chair back, dealer readable
       at the far side, name badges clear of the dealer.

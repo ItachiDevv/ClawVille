@@ -16,6 +16,7 @@ import {
 import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
 import { clawTokenTransactions } from './treasury';
+import { bountyUsdcHolds } from './bounty-usdc-holds';
 
 /** Durable state machine for one custodial avatar-to-avatar PayAI payment. */
 export const agentPaymentStatusEnum = pgEnum('agent_payment_status', [
@@ -51,6 +52,10 @@ export const agentPayments = pgTable(
     usdcAtomic: numeric('usdc_atomic', { precision: 20, scale: 0 }).notNull(),
     status: agentPaymentStatusEnum('status').notNull().default('pending'),
     idempotencyKey: varchar('idempotency_key', { length: 64 }).notNull(),
+    /** Tier-1 settlement backing. NULL for every ordinary agent-pay send. */
+    bountyHoldId: uuid('bounty_hold_id').references(() => bountyUsdcHolds.bountyId, {
+      onDelete: 'restrict',
+    }),
     settlingId: uuid('settling_id'),
     settlingStartedAt: timestamp('settling_started_at', { withTimezone: true }),
     /** Facilitator-confirmed signature. Captured while status remains settling. */
@@ -83,6 +88,11 @@ export const agentPayments = pgTable(
     failureReason: text('failure_reason'),
     /** True only when the payment is proven never to have been broadcast. */
     capExempt: boolean('cap_exempt'),
+    /**
+     * Platform-mediated payments may skip only the daily transaction-count cap.
+     * Their dollars still count toward sender and recipient USD caps.
+     */
+    countCapExempt: boolean('count_cap_exempt').default(false).notNull(),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -92,6 +102,9 @@ export const agentPayments = pgTable(
       t.senderAvatarId,
       t.idempotencyKey,
     ),
+    bountyHoldUnique: uniqueIndex('agent_payments_bounty_hold_unique')
+      .on(t.bountyHoldId)
+      .where(sql`bounty_hold_id IS NOT NULL`),
     txSignatureUnique: uniqueIndex('agent_payments_txsig_unique')
       .on(t.txSignature)
       .where(sql`tx_signature IS NOT NULL`),

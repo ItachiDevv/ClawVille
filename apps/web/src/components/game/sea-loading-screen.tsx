@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useGameStore } from '@/stores/game';
+import { createVisibilityFuse } from './visibility-fuse';
 
 // ---------------------------------------------------------------------------
 // SeaLoadingScreen
@@ -174,8 +175,16 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       if (mountedRef.current) setSlow(true);
     }, slowMs);
 
-    // Force-dismiss after 30s so user isn't stuck forever
-    const forceTimer = setTimeout(() => {
+    // Force-dismiss ceiling so the user is never stuck forever — counting
+    // only VISIBLE time (founder decision (a), 2026-08-10, rung-4 task 6).
+    // A boot opened in a BACKGROUND tab parks on its first rAF await by
+    // design (browsers throttle hidden tabs); the old wall-clock fuse
+    // expired while parked, so foregrounding showed raw world assembly with
+    // no loading UI. The fuse is TERMINAL: every dismissal path disposes it
+    // so no timer or visibility listener survives the overlay (Codex
+    // decisions-review finding 1). Behavior + edge cases are unit-tested in
+    // visibility-fuse.test.ts.
+    const forceFuse = createVisibilityFuse(TIMEOUT_MS, () => {
       if (mountedRef.current) {
         readyRef.current = true;
         setProgress(1);
@@ -184,7 +193,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           if (mountedRef.current) setVisible(false);
         }, 420);
       }
-    }, TIMEOUT_MS);
+    });
 
     // Composite bar formula (2026-05-31). Three phases stitched into
     // [0, 1] so the bar's velocity reflects the user's actual wait, not
@@ -225,6 +234,11 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           }
         }
         readyRef.current = true;
+        // Normal dismissal: permanently retire the force-dismiss fuse (its
+        // timer + visibility listener) — the component stays mounted
+        // rendering null, so anything left armed would keep firing state
+        // updates in the background.
+        forceFuse.dispose();
         setPhase('ready');
         setProgress(1);
         setFading(true);
@@ -298,7 +312,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     return () => {
       mountedRef.current = false;
       clearTimeout(slowTimer);
-      clearTimeout(forceTimer);
+      forceFuse.dispose();
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, [forceReady]);

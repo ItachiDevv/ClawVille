@@ -203,6 +203,32 @@ export interface ClaimRentResponse {
   idempotencyReplay?: boolean;
 }
 
+// ── Hold-wallet ownership proof (FROZEN contract §3) ───────────────────────
+// Declaring a wallet you do not control used to let you claim hold-door land
+// backed by SOMEONE ELSE'S CLV balance, so proof is now REQUIRED before the
+// hold door opens. Two doors keep a user who will not connect a browser wallet
+// from being locked out.
+
+/**
+ * Proof state of the DECLARED wallet. Derived server-side and PUBKEY-BOUND:
+ * `verified` only while the stored verified pubkey still equals the declared
+ * pubkey, so declare-A → verify-A → change-to-B can never inherit A's proof.
+ * `grandfathered` = declared before the proof cutoff; those holds keep working
+ * untouched and the UI only invites the user to verify.
+ */
+export type LandHoldWalletVerificationState = 'unverified' | 'verified' | 'grandfathered';
+
+/** How the proof was obtained. `custodial` = ClawVille holds the key already. */
+export type LandHoldWalletVerificationMethod = 'signature' | 'transfer' | 'custodial';
+
+export interface LandHoldWalletVerification {
+  state: LandHoldWalletVerificationState;
+  method: LandHoldWalletVerificationMethod | null;
+  verifiedAt: string | null;
+  /** false when the verify wallet is unprovisioned, i.e. the transfer door is offline. */
+  transferDoorAvailable: boolean;
+}
+
 export interface LandHoldWalletStatus {
   walletAddress: string | null;
   declaredAt: string | null;
@@ -214,7 +240,109 @@ export interface LandHoldWalletStatus {
     cached: boolean;
     fetchedAt: string | null;
   } | null;
+  /**
+   * OPTIONAL on the CLIENT type on purpose. web and api deploy as separate
+   * Coolify apps, so a web bundle can briefly talk to an api that predates the
+   * verification block. A missing block renders exactly like the pre-proof UI
+   * instead of crashing on `verification.state`.
+   */
+  verification?: LandHoldWalletVerification;
 }
+
+/** POST /api/land/hold-wallet/verify/challenge — door 1 (sign a nonce). */
+export interface LandHoldWalletVerifyChallenge {
+  nonce: string;
+  expiresAt: string;
+  /**
+   * Sign this EXACT string. Account-bound AND wallet-bound, so a signature can
+   * never be replayed against a different account or a different declaration.
+   */
+  messageToSign: string;
+  walletAddress: string;
+}
+
+/** Success body of POST /verify/signature and POST /verify/custodial. */
+export interface LandHoldWalletVerifyResult {
+  ok: true;
+  state: 'verified';
+  method: LandHoldWalletVerificationMethod;
+  verifiedAt: string;
+  /** Echo of the wallet the server proved, re-read inside the grant tx. */
+  walletAddress?: string;
+}
+
+/** POST /api/land/hold-wallet/verify/transfer/challenge — door 2 (exact dust). */
+export interface LandHoldTransferChallenge {
+  challengeId: string;
+  destination: string;
+  /** EXACT lamports to send. Attribution is by exact amount, so this is literal. */
+  lamports: number;
+  amountSol: number;
+  /**
+   * The note the transfer MUST carry. The amount only matches the payment to
+   * the check; the note is what says the sender meant it for THIS account, so a
+   * transfer without it is refunded and never accepted. OPTIONAL on the client
+   * type because web and api deploy separately.
+   */
+  memo?: string;
+  expiresAt: string;
+}
+
+export type LandHoldTransferChallengeState =
+  | 'pending'
+  | 'observed'
+  | 'verified'
+  | 'expired'
+  | 'failed'
+  | 'rejected'
+  /** Money arrived but was never submitted, so it is refunded and not verified. */
+  | 'unclaimed';
+
+/**
+ * Why an exact-amount transfer arrived but could not prove ownership. Both the
+ * payment and the note must be part of the transaction the wallet SIGNED: a
+ * program acting on the user's behalf is not the user's own statement.
+ */
+export type LandHoldTransferRejectedReason =
+  | 'memo_missing'
+  | 'source_not_signer'
+  | 'transfer_not_top_level';
+
+export type LandHoldTransferRefundState = 'none' | 'sending' | 'sent' | 'reconcile' | 'skipped';
+
+/**
+ * GET /api/land/hold-wallet/verify/transfer/:challengeId.
+ * `challengeId`/`destination`/`lamports` are OPTIONAL here: the frozen route
+ * contract lists the five required fields, while the service-level status shape
+ * also carries the echo fields. Optional keeps either shape type-safe, and the
+ * UI already holds the destination/amount from the open call.
+ */
+export interface LandHoldTransferChallengeStatus {
+  state: LandHoldTransferChallengeState;
+  /** Set only when `state` is 'rejected'. */
+  rejectedReason?: LandHoldTransferRejectedReason | null;
+  refundState: LandHoldTransferRefundState | null;
+  inboundSignature: string | null;
+  refundSignature: string | null;
+  expiresAt: string;
+  challengeId?: string;
+  destination?: string;
+  lamports?: number;
+  memo?: string;
+}
+
+/** Every machine-readable refusal the verification surface can return. */
+export type LandHoldVerifyErrorCode =
+  | 'wallet_not_verified'
+  | 'wallet_not_declared'
+  | 'invalid_challenge'
+  | 'invalid_signature'
+  | 'signature_verification_failed'
+  | 'not_custodial_wallet'
+  | 'transfer_door_unavailable'
+  | 'verify_attempt_cap'
+  | 'challenge_expired'
+  | 'challenge_not_found';
 
 export interface RentPrepayResponse {
   parcelCode: string;

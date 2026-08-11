@@ -843,13 +843,21 @@ export function isRestBonusEnabled(): boolean {
 //
 // Q7 accepted the FLAT ramp: scale is not a level signal (the shell swap and the
 // palette are), so the ladder is a 2.5%-per-level nudge rather than a 60% growth
-// curve. Raising FOOTPRINT_FRACTION 0.62 → 0.64 and collapsing the ramp to
-// 0.94 → 1.04 lifts the Lv1 shell from 401 wu (1.49× a 270 wu avatar) to 558 wu
-// (2.07×) with no art change.
+// curve. Land scale-up (2026-08-10): FOOTPRINT_FRACTION 0.64 → 0.68 alongside
+// the 52 t parcel growth — the Lv1 starter shell is now 1664 × 0.68 × 0.94 ≈
+// 1064 wu (3.94× a 270 wu avatar) with no art change. The ramp (0.94 → 1.04)
+// and the height cap are UNCHANGED. The ratified brief asked for 0.70, which
+// is MEASURED-INFEASIBLE for the founder tier: its Lv5 shell (605.7 wu) leaves
+// ring-1 kit cells (|coord| = 676 wu on the 104 wu grid) only 70.3 wu of
+// clearance, so path-stone (75.05 wu min half-extent) and arch-driftwood
+// (74.09) get ZERO legal founder placements and every 45° rotation dies there.
+// The feasibility ceiling is ≈0.6873 (binding: statue-shell 45° anchors,
+// 81.32 wu at 45°); 0.68 keeps 6.3 wu of margin. Pinned by the envelope-table
+// + feasibility-gate tests in land-placement.test.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Fraction of a parcel's side the structure footprint targets at levelScale 1. */
-export const STRUCTURE_FOOTPRINT_FRACTION = 0.64;
+export const STRUCTURE_FOOTPRINT_FRACTION = 0.68;
 
 /** Level 1 end of the flat scale ramp. */
 export const STRUCTURE_LEVEL_SCALE_MIN = 0.94;
@@ -860,7 +868,7 @@ export const STRUCTURE_LEVEL_SCALE_MAX = 1.04;
 /**
  * Height ceiling as a multiple of the parcel side. Footprint binds iff the
  * shell's `H/W < HEIGHT_CAP_FRACTION / (FOOTPRINT_FRACTION × LEVEL_SCALE_MAX)`
- * = 1.50 / (0.64 × 1.04) = 2.254. Every shipping shell is below that crossover,
+ * = 1.50 / (0.68 × 1.04) = 2.121. Every shipping shell is below that crossover,
  * so footprint is the binding constraint today.
  */
 export const STRUCTURE_HEIGHT_CAP_FRACTION = 1.5;
@@ -887,7 +895,7 @@ export function structureLevelScale(level: number): number {
  * parameter here would let a Lv4/Lv5 shell grow into pieces the server had
  * already sold as legal, and Q5 forbids deleting a paid row to resolve that.
  *
- * The honest cost: at Lv1 a 19–39 wu ring of ground looks free but is reserved.
+ * The honest cost: at Lv1 a 28–57 wu ring of ground looks free but is reserved.
  * The yard editor draws THIS function's square, so the reservation is visible
  * rather than a surprise at upgrade time.
  */

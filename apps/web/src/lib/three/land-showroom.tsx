@@ -12,8 +12,9 @@
  * status === 'owned' in the land store, so a real buyer's structure cleanly
  * takes over with zero visual conflict.
  *
- * Distance cull: CULL_DIST=14000wu. All per-frame work uses module-scope
- * scratch Vector3 — ZERO per-frame allocations.
+ * Distance cull: CULL_DIST derived from LAND_PARCELS max extent + margin
+ * (never a hardcoded literal — see the constant). All per-frame work uses
+ * module-scope scratch Vector3 — ZERO per-frame allocations.
  *
  * FOR-SALE signs: The sign system was moved to land-parcels.tsx (2026-06-18
  * rework). land-parcels renders a 3-category sign (regular/premium/
@@ -47,6 +48,8 @@ import {
   LAND_PARCELS,
   LAND_SHOWROOM,
   STRUCTURE_FOOTPRINT_FRACTION,
+  STRUCTURE_HEIGHT_CAP_FRACTION,
+  STRUCTURE_LEVEL_SCALE_MAX,
   structureLevelScale,
 } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
@@ -69,14 +72,29 @@ const FLOOR_Y = -2;
  * would let the drawn and reserved shells diverge.
  */
 const FOOTPRINT_FRACTION = STRUCTURE_FOOTPRINT_FRACTION;
+const HEIGHT_CAP_FRACTION = STRUCTURE_HEIGHT_CAP_FRACTION;
+const LEVEL_SCALE_MAX = STRUCTURE_LEVEL_SCALE_MAX;
 const levelScale = structureLevelScale;
 
 /**
- * Distance cull (squared). Generous 14000wu — outer starters reach ~12309wu
- * from origin at worst, so 14000 guarantees no on-screen structure is culled.
- * Consistent with land-structures.tsx CULL_DIST.
+ * Distance cull (squared) — DERIVED from the actual parcel layout, never a
+ * literal (2026-08-10). The old hardcoded 14000 was written for the 576-grid
+ * world ("outer starters reach ~12309wu"); after the 704 grow + 52t plot
+ * growth the outermost c-ring parcels reach ~13204wu from origin, past the
+ * literal, so far showroom lots would pop out while still fog-visible.
+ *
+ * CULL_DIST = max parcel-center distance from origin + CULL_MARGIN. The margin
+ * (1800wu) covers the parcel footprint half-diagonal (~1177wu at 1664wu plots)
+ * plus slack; anything beyond fog.far=10500 / camera.far=11500 from the CAMERA
+ * is invisible anyway, so a layout-derived bound on ORIGIN distance plus this
+ * margin can never cull an on-screen structure.
  */
-const CULL_DIST = 14000;
+const MAX_PARCEL_CENTER_DIST = LAND_PARCELS.reduce(
+  (m, p) => Math.max(m, Math.hypot(p.cx, p.cz)),
+  0,
+);
+const CULL_MARGIN = 1800;
+const CULL_DIST = MAX_PARCEL_CENTER_DIST + CULL_MARGIN;
 const CULL_DIST_SQ = CULL_DIST * CULL_DIST;
 
 // ---------------------------------------------------------------------------
@@ -86,7 +104,6 @@ const CULL_DIST_SQ = CULL_DIST * CULL_DIST;
 const _camPos  = new THREE.Vector3();
 const _bbox    = new THREE.Box3();
 const _size    = new THREE.Vector3();
-const _center  = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
 // GLB path resolver (same convention as land-structures.tsx)
@@ -226,15 +243,25 @@ function GLBShowroomStructure({
     });
     c.userData.__clawClonedMats = clonedMats;
 
-    // Normalize to footprint via max(X,Y,Z) bbox + ground so feet sit on FLOOR_Y.
+    // Fit formula UNIFIED with land-structures.tsx GLBStructure (2026-08-10):
+    // widest-XZ drives the footprint fit, with an INDEPENDENT height cap, and
+    // the Lv5 base is fitted to both constraints before the level ramp. The
+    // old max(X,Y,Z) single-axis normalization here disagreed with the
+    // in-world shell renderer for tall shells (height counted against the
+    // footprint), so the showroom preview and the placed building could render
+    // the same GLB at different sizes. Keep both sites IDENTICAL.
     c.updateMatrixWorld(true);
     _bbox.setFromObject(c);
     _bbox.getSize(_size);
-    _bbox.getCenter(_center);
-    const maxDim       = Math.max(_size.x, _size.y, _size.z);
-    const targetFP     = parcel.size * FOOTPRINT_FRACTION;
-    const baseScale    = maxDim > 0.001 ? targetFP / maxDim : 1;
-    const finalScale   = baseScale * levelScale(entry.level);
+    const widestXZ        = Math.max(_size.x, _size.z);
+    const targetFP        = parcel.size * FOOTPRINT_FRACTION;
+    const footprintScale  = widestXZ > 0.001 ? targetFP / widestXZ : 1;
+    const heightCap       = parcel.size * HEIGHT_CAP_FRACTION;
+    const heightScale     = _size.y > 0.001
+      ? heightCap / _size.y
+      : Number.POSITIVE_INFINITY;
+    const fittedBaseScale = Math.min(footprintScale, heightScale / LEVEL_SCALE_MAX);
+    const finalScale      = fittedBaseScale * levelScale(entry.level);
 
     // Ground: subtract bbox.min.y * scale so model floor lands on FLOOR_Y.
     const ground = -_bbox.min.y * finalScale;

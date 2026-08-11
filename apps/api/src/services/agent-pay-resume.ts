@@ -61,6 +61,7 @@ export interface AgentPayResumeDeps {
   now?: () => number;
   alert?: (params: AlertErrorParams) => Promise<void>;
   logError?: (message: string, error: unknown) => void;
+  resumeTier1?: () => Promise<number>;
 }
 
 export interface AgentPayResumeTickResult {
@@ -106,6 +107,7 @@ const defaultDb: AgentPayResumeDb = {
       })
       .where(and(
         eq(agentPayments.status, 'pending'),
+        eq(agentPayments.countCapExempt, false),
         lt(agentPayments.createdAt, cutoff),
         isNull(agentPayments.txSignature),
         isNull(agentPayments.settlePayer),
@@ -145,6 +147,10 @@ function resolveDeps(input: AgentPayResumeDeps = {}) {
     alert: input.alert ?? alertError,
     logError: input.logError ?? ((message: string, error: unknown) => {
       console.error(message, error);
+    }),
+    resumeTier1: input.resumeTier1 ?? (async () => {
+      const { resumeTier1BountySettlements } = await import('./bounty-tier1');
+      return resumeTier1BountySettlements();
     }),
   };
 }
@@ -337,6 +343,18 @@ export async function runAgentPayResumeTick(
   } catch (error) {
     result.failed += 1;
     safeLog(d.logError, '[agent-pay-resume] pending count failed (non-fatal):', error);
+  }
+
+  // Tier-1 bounties use the same agent-pay state machine and deterministic
+  // `bounty:<id>:tier1-settle` key. Re-drive approved open holds here so both a
+  // pre-admission breaker refusal and an ordinary pending payment self-heal.
+  // The bounty service replays payAgent idempotently and books completion only
+  // after the payment is confirmed.
+  try {
+    await d.resumeTier1();
+  } catch (error) {
+    result.failed += 1;
+    safeLog(d.logError, '[agent-pay-resume] Tier-1 bounty retry failed (non-fatal):', error);
   }
 
   return result;

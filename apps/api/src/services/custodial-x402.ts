@@ -240,14 +240,18 @@ async function executeMeridianCandidate(
     };
   }
   const reason = meridianResult.failureReason ?? 'meridian_settlement_failed';
+  const signature = (
+    meridianResult.txSignature
+    ?? meridianResult.raw.settle?.transaction
+  )?.trim() || null;
   if (!meridianResult.isValid) {
     return {
       kind: 'meridian_failure',
       stage: 'verify',
-      ambiguous: false,
+      ambiguous: signature !== null,
       reason,
       payer: meridianResult.payer,
-      signature: meridianResult.txSignature,
+      signature,
       result: meridianResult,
       payAi,
     };
@@ -255,10 +259,10 @@ async function executeMeridianCandidate(
   return {
     kind: 'meridian_failure',
     stage: 'settle',
-    ambiguous: meridianResult.raw.settle?.success !== false,
+    ambiguous: signature !== null || meridianResult.raw.settle?.success !== false,
     reason,
     payer: meridianResult.payer,
-    signature: meridianResult.txSignature,
+    signature,
     result: meridianResult,
     payAi,
   };
