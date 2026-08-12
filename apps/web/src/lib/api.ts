@@ -1551,10 +1551,9 @@ export const api = {
     }),
 
   /**
-   * Door 2, step 2: submit the transaction signature. THIS is what verifies —
-   * the server fetches that exact transaction and checks the amount, the memo
-   * and the signer. Telling us the signature means the proof can never be lost
-   * behind other traffic at the verify address.
+   * Door 2 fallback: polling is the primary verifier. Exact-signature submit
+   * covers bounded-scan misses and uses the same finalized attribution path.
+   * The deprecated memo is ignored by both paths.
    */
   submitLandHoldTransferSignature: (challengeId: string, signature: string) =>
     honoRequest<LandHoldTransferChallengeStatus>(
