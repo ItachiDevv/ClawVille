@@ -238,6 +238,7 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/world/clawville-logo-banner.jpg` | article PROMO banner ("More Than A Game"), not official | A |
 | `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
 | `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
+| `graphics/banner-uos-launch.html` | uOS App Store launch banner — partner-palette variant of Register B: uOS magenta `#FF00C5` replaces lime as the accent (their brand color, deliberate), Electric Blue stays; `.keep{text-transform:none}` span preserves the lowercase "u" in "uOS" against Anton's uppercase | B |
 
 Not in the repo on purpose: `early-ideas.jpg` (Drive only). It contains recognizable
 third-party game characters; internal mood reference ONLY, never publish or commit.
@@ -256,3 +257,7 @@ third-party game characters; internal mood reference ONLY, never publish or comm
    (`clawville-logo-og.jpg`, cutout derived) and is now the default Register B hero. The
    tropical-shirt variant still exists only baked into the Recap exemplar; add it if a
    standalone version turns up.
+6. **uOS launch announcement ON HOLD (founder, 2026-08-12):** banner
+   (`graphics/banner-uos-launch.html`) + X post copy are approved, but posting waits until
+   the team is back from vacation. Founder gives the word; nothing goes out before that.
+   Full status: `docs/uos-integration-plan.md` §0.

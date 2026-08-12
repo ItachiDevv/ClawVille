@@ -4,8 +4,29 @@
 > analog is `docs/milady-integration-plan.md`. Phase 1 (embed enablement + manifest) ships
 > with this doc; publish is a founder action (wallet signature in uOS Dev Portal).
 
-**Last Audited:** 2026-08-11 — initial version, written from live uOS docs + live shell +
-repo audit the same day.
+**Last Audited:** 2026-08-12 — status block added: published live + Verified; launch
+announcement on hold (team vacation).
+
+---
+
+## 0. STATUS — PUBLISHED LIVE 2026-08-11, VERIFIED BADGE CONFIRMED
+
+- **Phases 1 + 2 are DONE.** Manifest + CSP live on prod (promotion PR #266, cherry-pick of
+  the two uOS commits onto master). Founder published from the uOS Dev Portal 2026-08-11
+  with the dedicated publisher wallet. Catalog API (`GET https://www.uos.agency/api/apps`)
+  confirms: slug `clawville`, id `90193120-0894-470e-afc6-d25c2830a15e`,
+  `authorVerified: true`. Store had 5 apps total at publish — ClawVille is the 2nd
+  third-party Mini App ever (after Meridian's Mpay) and the only real game.
+- **Launch announcement: ON HOLD (founder, 2026-08-12).** The Register B announcement
+  banner (`branding/graphics/banner-uos-launch.html`, partner-magenta variant) + the X post
+  copy are BOTH founder-approved ("good copy"). Posting waits until the team is back from
+  vacation — do not post or schedule anything until the founder gives the word. When the
+  hold lifts: render the template at 1965×800, post with the approved copy, and consider
+  the §5 Phase-2 outreach step (uOS Featured slot + co-announcement — they already repost
+  us).
+- **Open follow-ups (unchanged):** store screenshots (`screenshots: []` — add under
+  `apps/web/public/press/uos/`, a re-publish refreshes the listing in place) · optional
+  10 USDC analytics unlock from the publisher wallet · Phase 3 ideas in §5 are not scope.
 
 ---
 
