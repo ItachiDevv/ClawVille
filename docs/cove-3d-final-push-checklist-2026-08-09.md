@@ -49,6 +49,43 @@ A full scripted browser walkthrough was driven with the staging test accounts
   creator cap forever (landtest1 is already capped from July tables). Needs an
   idle-empty-table sweeper in `cash-table-manager` — backend money-path round.
 
+## 2026-08-16 FOUNDER REPORT TRIAGE — the "disastrous poker" screenshots were PROD, not staging
+
+The founder's three screenshots (settle banner over an empty table, blinds 1/2 and
+25/50, "Sit down to start the game." while seated) were taken on **production**
+(`clawville.world/cove/table`), which still serves the **July build**: prod's house
+ladder is the never-approved low **1/2** (20 buy-in — matches the shot's
+"Stack 21 · Pot 3 · +1 net" exactly), mid 5/10, high **25/50**, and prod predates the
+lobby rework, the seated-copy fix, and the scene work. Verified 2026-08-16: prod API
+lists exactly those house tables; staging lists only the restored 10/20 / 50/100 /
+250/500 ladder and has **no 25/50 table at all**.
+
+Staging re-verified the same night (scripted browser, fresh profiles): lobby loaded
+**5/5** times (guest + authed, all 5 house cards, correct ladder), auto-seat at the
+low table worked, the seeded bots ACTED through all four streets hand after hand,
+and the full scene rendered (dealer full-body, two bot avatars, badges, cards,
+correct blinds). Screenshot: `scripts/` diag set + scratchpad `diag-room-after-watch.png`.
+
+Real defects found and addressed on staging same night:
+- **Seated figures despawned between hands** (`figureVisible` derived only from
+  `live.seats`) — the exact "scene wasn't even loaded" look, worse on prod's July
+  build. FIXED: figures + HUD badges now fall back to the persistent seat roster.
+- **Expected 403 surfaced as an error**: `last-settled` 403s by design until your
+  first settled hand; the room painted "… Retrying…". FIXED: 403 no longer notices.
+
+## ⛔ NEW PROMOTION BLOCKER — prod house tables must re-tier
+
+The house scaler only fills COUNT deficits per tier; it never compares stakes. After
+promotion, prod's five old-ladder house tables (1/2, 5/10, 25/50) would count as
+"open" and **stay live at the wrong stakes forever**, and the manager has no
+close/retire path yet. Required before (or with) the promotion: a
+retire-mismatched-house-tables pass in `cash-house-scaler` — close old-stakes house
+tables with no humans seated, cash the seeded bots back to the house bank through
+existing manager paths, let the deficit refill recreate them at the approved ladder.
+This is a money-path change (house-bank chips move) — full review discipline.
+Pairs with the P1 idle-empty-table sweeper above. Owner: next backend money round;
+deadline: the staging → master promotion itself (it must not merge without this).
+
 ## THE VISUAL CHECKLIST — walk this on staging, in order
 
 ### 1. Hold'em ring — `/cove/table` (the headline)

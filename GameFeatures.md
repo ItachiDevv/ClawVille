@@ -1,7 +1,19 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-12 (Land hold-wallet door 2 now checks transfers
+**Last Audited: 2026-08-16 (Cove hold'em room — the table never looks abandoned
+between hands, and a fresh seat no longer shows a false error).** Seated players
+(house bots included) now stay visible in the 3D room and in the HTML seat
+badges between hands, during the settle banner, and while waiting for players —
+previously everyone despawned the moment a hand ended, which read as "the table
+scene never loaded" (founder report 2026-08-16, on prod). Roster badges show the
+last-known name (or "Seated") and stack without hand-scoped chips (D/SB/BB).
+Also: the settled-hand recovery poll returns 403 by design until you have been
+dealt into a settled hand at that table; the room no longer surfaces that
+expected 403 as a "… Retrying…" error. **Drift note:** display-only — no
+economy, protocol, or server change; human and agent clients render identically.
+
+**Prior Last Audited: 2026-08-12 (Land hold-wallet door 2 now checks transfers
 automatically).** The transfer option no longer asks for a memo or makes people
 paste a transaction ID as the normal flow. The Land Office opens a 45-minute
 check with a copyable destination, the exact odd SOL amount, and a prominent

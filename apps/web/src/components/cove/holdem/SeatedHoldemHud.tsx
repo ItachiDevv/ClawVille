@@ -37,6 +37,7 @@ import type {
   CashAction,
   CashActionKind,
   CashAgentView,
+  CashPublicSeat,
   PublicTableStateResponse,
 } from '@/lib/cove/cash-poker';
 
@@ -93,6 +94,17 @@ interface CashTableRoomHudProps {
   onAction: (action: CashAction) => void;
 }
 
+interface CashSeatBadgeView {
+  avatarId: string;
+  name: string;
+  chipStack: number;
+  status: CashPublicSeat['status'] | 'roster';
+  isButton: boolean;
+  isSB: boolean;
+  isBB: boolean;
+  isActing: boolean;
+}
+
 /** Live cash-table overlay. Public badges/board come only from the public
  * snapshot; the private fan/actions come only from the own-seat poll after a
  * hand-number freshness check. Physical badge slot N maps to server seat
@@ -126,6 +138,7 @@ export function CashTableRoomHud({
   );
   const [confirmingSit, setConfirmingSit] = useState(false);
   const [raiseTo, setRaiseTo] = useState(0);
+  const seatNameByAvatarRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     const deadline = ownDeadline ?? live?.toActDeadlineMs ?? null;
@@ -147,10 +160,33 @@ export function CashTableRoomHud({
     if (amSeated) setConfirmingSit(false);
   }, [amSeated]);
 
-  const physicalSeats = useMemo(() => Array.from({ length: 5 }, (_, index) => {
+  useEffect(() => {
+    if (!live) return;
+    for (const seat of live.seats) {
+      seatNameByAvatarRef.current.set(seat.avatarId, seat.name);
+    }
+  }, [live]);
+
+  const physicalSeats = useMemo<Array<CashSeatBadgeView | null>>(() => Array.from({ length: 5 }, (_, index) => {
     const serverSeatIndex = (povSeatIndex + index + 1) % 6;
-    return live?.seats.find((seat) => seat.seatIndex === serverSeatIndex) ?? null;
-  }), [live, povSeatIndex]);
+    const liveSeat = live?.seats.find((seat) => seat.seatIndex === serverSeatIndex);
+    if (liveSeat) return liveSeat;
+    if (live) return null;
+    const rosterSeat = state?.seats.find(
+      (seat) => seat.status !== 'left' && seat.seatIndex === serverSeatIndex,
+    );
+    if (!rosterSeat) return null;
+    return {
+      avatarId: rosterSeat.avatarId,
+      name: seatNameByAvatarRef.current.get(rosterSeat.avatarId) ?? 'Seated',
+      chipStack: Number(rosterSeat.stackCt),
+      status: 'roster',
+      isButton: false,
+      isSB: false,
+      isBB: false,
+      isActing: false,
+    };
+  }), [live, povSeatIndex, state?.seats]);
   const povSeat = live?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null;
   const legal: readonly CashActionKind[] = freshSelf?.legalActions ?? [];
   const canFold = legal.includes('fold');
@@ -259,7 +295,7 @@ export function CashTableRoomHud({
           <div className={styles.seatAction}>
             {seat.chipStack.toLocaleString()} vCLAW
             {' · '}
-            {seat.status === 'allin' ? 'All in' : seat.status === 'folded' ? 'Folded' : seat.isActing ? `${countdown ?? 0}s` : 'In hand'}
+            {seat.status === 'roster' ? 'Seated' : seat.status === 'allin' ? 'All in' : seat.status === 'folded' ? 'Folded' : seat.isActing ? `${countdown ?? 0}s` : 'In hand'}
           </div>
         </div>
       ) : null)}

@@ -1,7 +1,19 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-11 (Cold-load rung-4 slice C — ambient wanderer
+**Last Audited: 2026-08-16 (Cove hold'em table room — seated figures persist
+between hands).** `holdem-table-room.tsx`: opponent figure resolution now falls
+back to the PERSISTENT public seat roster (`liveTable.table.seats`, excluding
+`status==='left'`) whenever no live hand snapshot exists (`cashLive === null` —
+between hands, during the settle-banner display, and while waiting for players).
+Previously figures derived ONLY from `live.seats`, so every seated player —
+including the 3 house bots — visually despawned the moment a hand ended (the
+founder's 2026-08-16 "table scene never loaded" report on prod). During a live
+hand the behavior is unchanged (only dealt-in seats render). Same fallback
+applied to the HTML seat badges in `SeatedHoldemHud.tsx` (roster badges show
+cached name or "Seated", stack, no hand-scoped chips).
+
+**Prior Last Audited: 2026-08-11 (Cold-load rung-4 slice C — ambient wanderer
 VRMs release-deferred out of the pre-reveal lane; see the dated entry below).**
 
 **Prior Last Audited: 2026-08-10 (Land scale-up render pass — "houses and plots still
