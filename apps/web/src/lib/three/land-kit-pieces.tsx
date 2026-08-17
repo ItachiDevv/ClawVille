@@ -30,6 +30,15 @@ import {
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { BOOT_STREAM_TIER_LAND } from '@/lib/three/decorative-release';
+import { useBootStreamRelease } from '@/lib/three/use-boot-stream-release';
+import {
+  beginLandHydration,
+  bumpLandRevision,
+  declareLandSlots,
+  reportLandSlotFallback,
+  reportLandSlotResolved,
+} from '@/lib/three/land-boot-tracker';
 import {
   KIT_MAX_PIECE_FOOTPRINT_WU,
   KIT_MAX_STACK_HEIGHT_WU,
@@ -606,6 +615,10 @@ function KitPieceSource({
     undefined,
     extendLoaderWithMeshopt,
   );
+  // Slice D §4b: source RESOLVED from a commit effect (render-abandon-safe).
+  useEffect(() => {
+    reportLandSlotResolved('kit', pieceKey);
+  }, [pieceKey]);
   const source = useMemo(
     () => resolvePieceSource(scene, pieceKey),
     [pieceKey, scene],
@@ -655,16 +668,21 @@ function KitPieceSource({
  * reach StageCanvasErrorBoundary and kill the whole 3D view.
  */
 export class KitPieceSourceErrorBoundary extends Component<
-  { children: ReactNode },
+  { children: ReactNode; onErrored?: () => void },
   { errored: boolean }
 > {
-  constructor(props: { children: ReactNode }) {
+  constructor(props: { children: ReactNode; onErrored?: () => void }) {
     super(props);
     this.state = { errored: false };
   }
 
   static getDerivedStateFromError(): { errored: boolean } {
     return { errored: true };
+  }
+
+  componentDidCatch(): void {
+    // Slice D §4b [R3-F4]: fallback outcomes are measurement-counted.
+    this.props.onErrored?.();
   }
 
   render() {
@@ -708,7 +726,11 @@ function KitPieceHydrator() {
 
     const hydrate = async (fresh = false): Promise<void> => {
       const version = ++requestVersion;
+      // Slice D §4b [R3-F3]: hydration generation (terminal BEFORE the
+      // superseded/cancelled early-returns).
+      const done = beginLandHydration();
       const publicPieces = await api.getPublicLandPieces(fresh).catch(() => null);
+      done(publicPieces !== null);
       if (cancelled || version !== requestVersion) return;
       if (
         publicPieces !== null
@@ -848,6 +870,13 @@ export default function LandKitPieces() {
     [pieces, droppedParcels, pricingRevision],
   );
   const chunkGroups = useMemo(createChunkGroups, []);
+  // Slice D §1/§4b: kit GLB demand defers to the land stream tier — the
+  // hydrator + empty chunk groups stay (data path untouched); merged-chunk
+  // content changes re-open the land quiet window [R3-F3].
+  const kitStreamReleased = useBootStreamRelease(BOOT_STREAM_TIER_LAND + 2);
+  useEffect(() => {
+    bumpLandRevision();
+  }, [snapshots]);
 
   /**
    * The data generation the current drop set was derived from. Membership is
@@ -880,6 +909,12 @@ export default function LandKitPieces() {
     }
     return KIT_PIECE_KEYS.filter((pieceKey) => active.has(pieceKey));
   }, [snapshots]);
+
+  // Slice D §4b: declare the CURRENT expected source set for the land
+  // completion tracker (0 until the stream tier releases the demand).
+  useEffect(() => {
+    declareLandSlots('kit', kitStreamReleased ? activePieceKeys.length : 0);
+  }, [kitStreamReleased, activePieceKeys]);
 
   useEffect(() => {
     if (process.env.NEXT_PUBLIC_ENABLE_STAGE_PROBE !== '1') return;
@@ -1068,17 +1103,21 @@ export default function LandKitPieces() {
       {chunkGroups.map((group, index) => (
         <primitive key={KIT_CHUNKS[index]!.id} object={group} />
       ))}
-      {activePieceKeys.map((pieceKey) => (
-        <KitPieceSourceErrorBoundary key={pieceKey}>
-          <Suspense fallback={null}>
-            <KitPieceSource
-              chunkGroups={chunkGroups}
-              pieceKey={pieceKey}
-              snapshots={snapshots}
-            />
-          </Suspense>
-        </KitPieceSourceErrorBoundary>
-      ))}
+      {kitStreamReleased &&
+        activePieceKeys.map((pieceKey) => (
+          <KitPieceSourceErrorBoundary
+            key={pieceKey}
+            onErrored={() => reportLandSlotFallback('kit', pieceKey)}
+          >
+            <Suspense fallback={null}>
+              <KitPieceSource
+                chunkGroups={chunkGroups}
+                pieceKey={pieceKey}
+                snapshots={snapshots}
+              />
+            </Suspense>
+          </KitPieceSourceErrorBoundary>
+        ))}
     </>
   );
 }

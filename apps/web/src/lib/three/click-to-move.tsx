@@ -75,23 +75,26 @@ function PathDots() {
       return;
     }
 
-    // Only show dots from current index onward
-    const remaining = clickPath.slice(clickPathIndex);
-    // Thin out if too many — take every Nth dot
-    const step = remaining.length > MAX_DOTS ? Math.ceil(remaining.length / MAX_DOTS) : 1;
-    const dots: { x: number; y: number }[] = [];
-    for (let i = 0; i < remaining.length; i += step) {
-      dots.push(remaining[i]);
+    // Only show dots from current index onward. Slice D drive-by (RULE 6,
+    // Codex [F5]): index arithmetic instead of the old per-frame
+    // `slice()` + dots-array allocations — this runs every frame while a
+    // click-path is active on the Iris Xe floor.
+    const remainingCount = clickPath.length - clickPathIndex;
+    if (remainingCount <= 0) {
+      mesh.count = 0;
+      return;
     }
-    // Always include final waypoint
-    if (dots.length > 0 && dots[dots.length - 1] !== remaining[remaining.length - 1]) {
-      dots.push(remaining[remaining.length - 1]);
-    }
-
-    mesh.count = Math.min(dots.length, MAX_DOTS);
+    // Thin out if too many — take every Nth dot; the final waypoint is
+    // always included via the last slot below.
+    const step = remainingCount > MAX_DOTS ? Math.ceil(remainingCount / MAX_DOTS) : 1;
+    const thinned = Math.ceil(remainingCount / step);
+    mesh.count = Math.min(thinned, MAX_DOTS);
 
     for (let i = 0; i < mesh.count; i++) {
-      const wp = dots[i];
+      // Last slot pins to the final waypoint (the old push-final behavior).
+      const remainingIndex =
+        i === mesh.count - 1 ? remainingCount - 1 : i * step;
+      const wp = clickPath[clickPathIndex + remainingIndex];
       // PERF: toWorld() writes into _toWorldScratch (module scope, no alloc).
       // tempMatrix and _dotRotation are also module-scope — no per-dot allocation.
       const worldPos = toWorld(wp.x, wp.y);

@@ -261,6 +261,10 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 
 let _preloadCalled = false;
 
+/** AUDIT-ONLY since slice D: byte-warm routing for deferred sets now lives
+ * with each owning module's `onBootStreamEligible` warm. Retained so future
+ * tier changes keep the '-ktx.glb' routing rule in one visible place. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function preloadGlbUrl(url: string): void {
   if (url.includes('-ktx.glb')) preloadKTX2Bytes(url);
   else useGLTF.preload(url);
@@ -271,33 +275,16 @@ export function preloadWorldAssets(): void {
   if (_preloadCalled) return;
   _preloadCalled = true;
 
-  // --- Tier 1 — critical path (buildings + locomotion + wandering NPCs) ---
-
-  // Buildings: 12 GLBs. useGLTF.preload() populates the Suspense cache used
-  // by GLBBuilding's useGLTF() calls. Meshopt extension is NOT passed here
-  // (extendLoaderWithMeshopt requires the component-level loader context);
-  // if a building GLB uses EXT_meshopt_compression the per-component hook
-  // in arena-buildings.tsx will handle it. The preload still warms the
-  // HTTP cache so the fetch is free by the time the component hook fires.
-  for (const url of BUILDING_GLBS) {
-    preloadGlbUrl(url);
-  }
-
-  // Locomotion clips: 3 GLBs, critical for any VRM avatar render.
-  // preloadMixamoClips() calls preloadLocomotionClips() internally.
+  // --- Tier 1 — boot-core critical path ONLY (rung-4 slice D §3 [F3]) ---
+  //
+  // Locomotion clips: 3 GLBs, an explicit boot-core gate dependency. This is
+  // the ENTIRE tier-1 set now: building, town-prop, and wandering-species
+  // byte-warms moved behind BOOT_CORE_PRESENTED (each owning module
+  // registers an `onBootStreamEligible` warm at priority −∞) so pre-reveal
+  // bandwidth belongs to the boot actor + clips alone — the structural fix
+  // for the fast-network inversion. BUILDING_GLBS / WANDERING_NPC_GLBS /
+  // TOWN_PROP_GLBS above remain the AUDIT manifest for those deferred sets.
   preloadMixamoClips();
-
-  // Wandering NPC GLBs — 1 live crustacean species.
-  for (const url of WANDERING_NPC_GLBS) {
-    preloadGlbUrl(url);
-  }
-
-  // Town-center prop GLBs — always-present world structures (pavilion, bazaar,
-  // shisha-oasis). Added 2026-05-22 — were previously missing
-  // from the manifest, which is why they streamed in only after canvas mount.
-  for (const url of TOWN_PROP_GLBS) {
-    preloadGlbUrl(url);
-  }
 
   // --- Tier 3 note ---
   // Release-deferred location NPC and decoration GLBs are intentionally absent

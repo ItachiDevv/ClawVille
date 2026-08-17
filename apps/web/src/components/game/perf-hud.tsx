@@ -25,6 +25,9 @@ interface PerfStats {
    *  ambient/player. Acceptance: ambient 0, player ≤ 1. Null until the
    *  first parse stamps either key. */
   vrmPreReveal: { ambient: number; player: number } | null;
+  /** Rung-4 slice-D boot-core stamps (__W3D_PHASES): milestone time (s),
+   *  stream cohort terminal/total, land settled flag. Null until stamped. */
+  bootCore: { presentedS: number; cohortTerminal: number; cohortTotal: number; landSettled: boolean } | null;
 }
 
 const INITIAL_STATS: PerfStats = {
@@ -40,6 +43,7 @@ const INITIAL_STATS: PerfStats = {
   backend: '—',
   topSpike: null,
   vrmPreReveal: null,
+  bootCore: null,
 };
 
 function fpsColor(fps: number): string {
@@ -230,6 +234,23 @@ export default function PerfHud() {
           // telemetry read never breaks the HUD
         }
 
+        // Slice-D boot-core stamps.
+        let bootCore: PerfStats['bootCore'] = null;
+        try {
+          const phases = (window as any).__W3D_PHASES;
+          if (typeof phases?.bootCorePresentedAt === 'number') {
+            const cohort = phases?.streamCohort;
+            bootCore = {
+              presentedS: Math.round(phases.bootCorePresentedAt / 100) / 10,
+              cohortTerminal: typeof cohort?.terminal === 'number' ? cohort.terminal : 0,
+              cohortTotal: typeof cohort?.total === 'number' ? cohort.total : 16,
+              landSettled: typeof phases?.landSettledAt === 'number',
+            };
+          }
+        } catch {
+          // telemetry read never breaks the HUD
+        }
+
         setStats({
           fps,
           frameAvg: Math.round(frameAvg * 10) / 10,
@@ -243,6 +264,7 @@ export default function PerfHud() {
           backend,
           topSpike,
           vrmPreReveal,
+          bootCore,
         });
 
         lastSampleTime = now;
@@ -364,6 +386,35 @@ export default function PerfHud() {
               {stats.vrmPreReveal.player}p
             </span>{' '}
             <span style={{ color: '#64748b' }}>vrm-pre</span>
+          </span>
+        </>
+      )}
+      {stats.bootCore && (
+        <>
+          {' · '}
+          <span>
+            <span
+              style={{
+                color: stats.bootCore.presentedS <= 5 ? '#22c55e' : '#f59e0b',
+                fontWeight: 'bold',
+              }}
+            >
+              {stats.bootCore.presentedS}s
+            </span>{' '}
+            <span style={{ color: '#64748b' }}>boot-core</span>{' '}
+            <span
+              style={{
+                color:
+                  stats.bootCore.cohortTerminal >= stats.bootCore.cohortTotal
+                    ? '#22c55e'
+                    : '#94a3b8',
+              }}
+            >
+              {stats.bootCore.cohortTerminal}/{stats.bootCore.cohortTotal}
+            </span>
+            <span style={{ color: '#64748b' }}>
+              {stats.bootCore.landSettled ? '+land' : ''}
+            </span>
           </span>
         </>
       )}
