@@ -94,10 +94,19 @@ function ensureCheckLoop(): void {
 }
 
 /** Mark a land data request in flight. Call the returned function EXACTLY
- * once with the outcome. */
+ * once with the outcome.
+ *
+ * Revision-clock rule (second-smoke finding): hydration generations BLOCK
+ * settlement while in flight (the `inFlightRequests` guard) but only advance
+ * the revision clock BEFORE the first settle. Post-settle steady-state
+ * refresh polls (the components' 60s re-checks) whose data is UNCHANGED
+ * must not hold the stamp at capture-end forever; a poll that DOES change
+ * the workload re-opens the window through the slot/merge reporters, which
+ * always bump. */
 export function beginLandHydration(): (ok: boolean) => void {
   inFlightRequests += 1;
-  bump();
+  if (settledAtMs === null) bump();
+  else stamp();
   let done = false;
   return (ok: boolean) => {
     if (done) return;
@@ -105,7 +114,8 @@ export function beginLandHydration(): (ok: boolean) => void {
     inFlightRequests = Math.max(0, inFlightRequests - 1);
     if (ok) dataOk += 1;
     else dataFailed += 1;
-    bump();
+    if (settledAtMs === null || !ok) bump();
+    else stamp();
   };
 }
 
