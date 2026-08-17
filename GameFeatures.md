@@ -12,6 +12,10 @@ Also: the settled-hand recovery poll returns 403 by design until you have been
 dealt into a settled hand at that table; the room no longer surfaces that
 expected 403 as a "… Retrying…" error. **Drift note:** display-only — no
 economy, protocol, or server change; human and agent clients render identically.
+Same day, server-side hygiene (ARCHITECTURE §13 2026-08-16): abandoned BUSTED
+seats (0 chips, idle >10 min) auto-release between hands, and house tables whose
+stakes drifted from the approved ladder retire + recreate at the correct stakes
+— this is what heals prod's leftover July-ladder tables on the next promotion.
 
 **Prior Last Audited: 2026-08-12 (Land hold-wallet door 2 now checks transfers
 automatically).** The transfer option no longer asks for a memo or makes people

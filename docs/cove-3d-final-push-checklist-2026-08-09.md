@@ -73,18 +73,20 @@ Real defects found and addressed on staging same night:
 - **Expected 403 surfaced as an error**: `last-settled` 403s by design until your
   first settled hand; the room painted "… Retrying…". FIXED: 403 no longer notices.
 
-## ⛔ NEW PROMOTION BLOCKER — prod house tables must re-tier
+## ✅ PROMOTION BLOCKER RESOLVED (2026-08-16) — house-table re-tier BUILT + a busted-seat sweep
 
-The house scaler only fills COUNT deficits per tier; it never compares stakes. After
-promotion, prod's five old-ladder house tables (1/2, 5/10, 25/50) would count as
-"open" and **stay live at the wrong stakes forever**, and the manager has no
-close/retire path yet. Required before (or with) the promotion: a
-retire-mismatched-house-tables pass in `cash-house-scaler` — close old-stakes house
-tables with no humans seated, cash the seeded bots back to the house bank through
-existing manager paths, let the deficit refill recreate them at the approved ladder.
-This is a money-path change (house-bank chips move) — full review discipline.
-Pairs with the P1 idle-empty-table sweeper above. Owner: next backend money round;
-deadline: the staging → master promotion itself (it must not merge without this).
+The scaler pass now (1) releases abandoned BUSTED seats (0 chips, idle >10 min, no
+live hand — 0-credit release via the existing idempotent cash-out; house AND player
+tables; this also frees the founder's two stuck 0-chip prod seats from 08-13/14 that
+kept bouncing him into dead rooms), and (2) retires open house tables whose stakes
+no longer match their tier config — bots cash back to the house bank, tables close
+only when a locked read proves zero escrow, and the deficit loop recreates the tier
+at the approved ladder in the same pass. Humans with a NON-zero stack always block a
+retire. Prod's house bank (97,909 vCLAW) covers the new-ladder seeded buy-ins
+(22,200). On the promotion deploy, prod self-heals to 10/20 / 50/100 / 250/500
+within one scaler pass — the two founder-seat tables clear on the first pass after
+his 0-chip seats release. The FULL idle-table sweeper for tables/seats holding REAL
+chips stays flagged P1 (it moves player money — separate reviewed round).
 
 ## THE VISUAL CHECKLIST — walk this on staging, in order
 

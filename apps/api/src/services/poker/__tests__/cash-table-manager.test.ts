@@ -2018,6 +2018,219 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
     expect(seats.every((s) => s.is_seeded !== 'true')).toBe(true);
     expect(ledger.get(HOUSE_BANK_AVATAR)).toBe(houseBankBefore);
   });
+
+  it('retires a seeded-only house table by reclaiming every stack before closing it', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const table = await createMidHouseTable(mgr);
+    await mgr.seatHouseBots(table.id);
+
+    const escrowBefore = Number(
+      (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!
+        .table_escrow_ct,
+    );
+    expect(escrowBefore).toBeGreaterThan(0);
+
+    expect(await mgr.retireHouseTable(table.id)).toBe(true);
+
+    const storedTable = (db.stores.get(pokerCashTables) as Row[]).find(
+      (row) => row.id === table.id,
+    )!;
+    const seats = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (seat) => seat.table_id === table.id,
+    );
+    expect(storedTable.status).toBe('closed');
+    expect(Number(storedTable.table_escrow_ct)).toBe(0);
+    expect(seats.every((seat) => seat.status === 'left')).toBe(true);
+    expect(ledger.totalCredited()).toBe(escrowBefore);
+    expect(ledger.credits.every((credit) => credit.reason === 'poker_cash_house_reclaim')).toBe(
+      true,
+    );
+    expect(ledger.get(HOUSE_BANK_AVATAR)).toBe(HOUSE_BANK_START);
+  });
+
+  it('releases a busted human, reclaims bots, and retires the house table', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const table = await createMidHouseTable(mgr);
+    await mgr.seatHouseBots(table.id);
+    const escrowBefore = Number(
+      (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!
+        .table_escrow_ct,
+    );
+    const bustedSeat: Row = {
+      id: randomUUID(),
+      table_id: table.id,
+      avatar_id: 'retire-busted-human',
+      agent_id: null,
+      subject_type: 'human',
+      is_seeded: 'false',
+      seat_index: 5,
+      current_stack_ct: '0',
+      total_bought_in_ct: '1000',
+      total_cashed_out_ct: '0',
+      status: 'sitting_in',
+      seated_at: new Date(),
+      updated_at: new Date(),
+    };
+    (db.stores.get(pokerCashSeats) as Row[]).push(bustedSeat);
+
+    expect(await mgr.retireHouseTable(table.id)).toBe(true);
+
+    const storedTable = (db.stores.get(pokerCashTables) as Row[]).find(
+      (row) => row.id === table.id,
+    )!;
+    expect(storedTable.status).toBe('closed');
+    expect(storedTable.table_escrow_ct).toBe('0');
+    expect(bustedSeat).toMatchObject({ status: 'left', current_stack_ct: '0' });
+    expect(ledger.totalCredited()).toBe(escrowBefore);
+    expect(ledger.credits.every((credit) => credit.reason === 'poker_cash_house_reclaim')).toBe(
+      true,
+    );
+  });
+
+  it('does not retire an idle house table while a non-zero non-seeded seat is active', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const human = 'retire-human';
+    ledger.setBalance(human, 1_000);
+    const table = await mgr.createTable(
+      {
+        source: 'house',
+        visibility: 'public',
+        tierKey: 'low',
+        buyInCt: 20,
+        smallBlindCt: 1,
+        bigBlindCt: 2,
+        maxSeats: 6,
+        seededAgentSlots: 0,
+      },
+      houseSubject(),
+    );
+    await mgr.sitDown(table.id, humanSubject(human), 20);
+
+    expect(await mgr.retireHouseTable(table.id)).toBe(false);
+    expect(
+      (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
+    ).toBe('open');
+    expect(ledger.credits).toHaveLength(0);
+  });
+
+  it('releases an idle busted seat on a player table with no ledger credit', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const human = 'sweep-busted-human';
+    ledger.setBalance(human, 1_000);
+    const table = await mgr.createTable(
+      {
+        source: 'player-public',
+        visibility: 'public',
+        tierKey: null,
+        buyInCt: 100,
+        smallBlindCt: 5,
+        bigBlindCt: 10,
+        maxSeats: 6,
+        seededAgentSlots: 0,
+      },
+      humanSubject(human),
+    );
+    await mgr.sitDown(table.id, humanSubject(human), 100);
+    const seat = (db.stores.get(pokerCashSeats) as Row[]).find(
+      (row) => row.table_id === table.id && row.avatar_id === human,
+    )!;
+    seat.current_stack_ct = '0';
+    (db.stores.get(pokerCashTables) as Row[]).find(
+      (row) => row.id === table.id,
+    )!.table_escrow_ct = '0';
+    const creditsBefore = ledger.credits.length;
+
+    expect(await mgr.releaseBustedSeat(table.id, String(seat.id))).toBe(true);
+    expect(seat).toMatchObject({ status: 'left', current_stack_ct: '0' });
+    expect(ledger.credits).toHaveLength(creditsBefore);
+  });
+
+  it('keeps a busted seat while a live hand exists and re-checks a non-zero stack', async () => {
+    const { db, ledger, sim, mgr } = makeHouseManager();
+    const human = 'sweep-live-human';
+    ledger.setBalance(human, 1_000);
+    const table = await mgr.createTable(
+      {
+        source: 'player-public',
+        visibility: 'public',
+        tierKey: null,
+        buyInCt: 100,
+        smallBlindCt: 5,
+        bigBlindCt: 10,
+        maxSeats: 6,
+        seededAgentSlots: 0,
+      },
+      humanSubject(human),
+    );
+    await mgr.sitDown(table.id, humanSubject(human), 100);
+    const seat = (db.stores.get(pokerCashSeats) as Row[]).find(
+      (row) => row.table_id === table.id && row.avatar_id === human,
+    )!;
+    seat.current_stack_ct = '0';
+    sim.startHand({
+      tableId: `cash:${table.id}`,
+      handNumber: 1,
+      seatAssignments: [
+        { seatIndex: 0, avatarId: human, name: 'A', subjectType: 'human', chipStack: 100 },
+        { seatIndex: 1, avatarId: 'sweep-live-b', name: 'B', subjectType: 'human', chipStack: 100 },
+      ],
+      blinds: { sb: 5, bb: 10, ante: 0 },
+      buttonSeatIndex: 0,
+      serverSeed: '2'.padStart(64, '0'),
+      clientSeed: 'c1a4ca54',
+      turnClockMs: 25_000,
+      agentTurnGraceMs: 5_000,
+    });
+
+    expect(await mgr.releaseBustedSeat(table.id, String(seat.id))).toBe(false);
+    expect(seat.status).toBe('sitting_in');
+
+    sim.stopTable(`cash:${table.id}`);
+    seat.current_stack_ct = '1';
+    expect(await mgr.releaseBustedSeat(table.id, String(seat.id))).toBe(false);
+    expect(seat.status).toBe('sitting_in');
+  });
+
+  it('does not cash out or close a house table while a hand is live', async () => {
+    const { db, ledger, sim, mgr } = makeHouseManager();
+    const table = await createMidHouseTable(mgr);
+    sim.startHand({
+      tableId: `cash:${table.id}`,
+      handNumber: 1,
+      seatAssignments: [
+        { seatIndex: 0, avatarId: 'live-a', name: 'A', subjectType: 'human', chipStack: 100 },
+        { seatIndex: 1, avatarId: 'live-b', name: 'B', subjectType: 'human', chipStack: 100 },
+      ],
+      blinds: { sb: 5, bb: 10, ante: 0 },
+      buttonSeatIndex: 0,
+      serverSeed: '1'.padStart(64, '0'),
+      clientSeed: 'c1a4ca54',
+      turnClockMs: 25_000,
+      agentTurnGraceMs: 5_000,
+    });
+    expect(sim.getPublicSnapshot(`cash:${table.id}`)).not.toBeNull();
+    const creditsBefore = ledger.credits.length;
+
+    expect(await mgr.retireHouseTable(table.id)).toBe(false);
+    expect(
+      (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
+    ).toBe('open');
+    expect(ledger.credits).toHaveLength(creditsBefore);
+  });
+
+  it('refuses to close a house table when a locked orphan escrow balance remains', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const table = await createMidHouseTable(mgr);
+    const storedTable = (db.stores.get(pokerCashTables) as Row[]).find(
+      (row) => row.id === table.id,
+    )!;
+    storedTable.table_escrow_ct = '7';
+
+    expect(await mgr.retireHouseTable(table.id)).toBe(false);
+    expect(storedTable.status).toBe('open');
+    expect(storedTable.table_escrow_ct).toBe('7');
+    expect(ledger.credits).toHaveLength(0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
