@@ -644,17 +644,24 @@ describe('migration 0060 — schema contract', () => {
           [`${name}: ${label}`]: false,
         });
       }
-      // ...and each surface now names the reliable path, the best-effort caveat,
-      // and the fallback.
-      expect({ [name]: lower.includes('reliable path') }).toEqual({ [name]: true });
+      // Each surface names automatic polling as primary and preserves the exact
+      // signature fallback for bounded scan misses.
       expect({
-        [name]: lower.includes('best effort') || lower.includes('best-effort'),
+        [name]: lower.includes('automatically') || lower.includes('polling is primary'),
+      }).toEqual({ [name]: true });
+      expect({
+        [name]: lower.includes('fallback') || lower.includes('not spotted'),
       }).toEqual({ [name]: true });
       expect({ [name]: lower.includes('support') }).toEqual({ [name]: true });
       // ROUND 6: recovery is qualified on us holding the destination's key, the
       // same qualification the internal docs carry. No unconditional promise.
       expect({ [name]: lower.includes('whenever you ask') }).toEqual({ [name]: false });
-      expect({ [name]: lower.includes('keep the keys') }).toEqual({ [name]: true });
+      expect({
+        [name]:
+          lower.includes('keep the keys') ||
+          lower.includes('keeps the keys') ||
+          lower.includes('retains the destination key'),
+      }).toEqual({ [name]: true });
       // ROUND 7: the refund can legitimately defer under the fee cap or be held
       // at `reconcile`, so no surface may call it guaranteed.
       expect({ [name]: lower.includes('guarantees both the verification') }).toEqual({
@@ -758,12 +765,9 @@ describe('migration 0060 — schema contract', () => {
     expect(verifyService).toContain("reason: 'insufficient_float'");
   });
 
-  it('accepts ONLY a top-level memo and a top-level paying leg as proof (B1)', () => {
-    const memoPredicate = verifyService.slice(
-      verifyService.indexOf('export function transactionCarriesChallengeMemo('),
-      verifyService.indexOf('export function transactionSettlesChallenge('),
-    );
-    expect(memoPredicate).toContain('memo.topLevel &&');
+  it('drops the memo predicate but keeps the top-level paying leg as proof', () => {
+    expect(verifyService).not.toContain('export function transactionCarriesChallengeMemo(');
+    expect(verifyService).toContain("| 'memo_missing'");
     expect(verifyService).toContain('export function transactionHasTopLevelTransferLeg(');
     const settles = verifyService.slice(
       verifyService.indexOf('export function transactionSettlesChallenge('),
@@ -992,7 +996,7 @@ describe('trap T12 — grandfathered holders keep what they have, and nothing mo
   });
 });
 
-describe('round 3 — verification is signature-SUBMITTED, not scan-discovered', () => {
+describe('poll-primary verification with exact-signature fallback', () => {
   it('exposes a submit route with a strict, length-bounded body', () => {
     expect(routes).toContain("'/hold-wallet/verify/transfer/:challengeId/submit'");
     const schema = routes.slice(
@@ -1004,41 +1008,52 @@ describe('round 3 — verification is signature-SUBMITTED, not scan-discovered',
     expect(schema).not.toContain('walletAddress');
   });
 
-  it('runs the SAME proof predicates on the submitted transaction', () => {
+  it('routes submit and scan through one shared authoritative attribution path', () => {
     const submit = verifyService.slice(
       verifyService.indexOf('export async function submitTransferSignature('),
     );
-    expect(submit).toContain('transactionMatchesTransferLeg(probe, leg)');
-    expect(submit).toContain('transactionSignedBySource(probe, row.walletPubkey)');
-    expect(submit).toContain('transactionCarriesChallengeMemo(probe, row.id)');
-    expect(submit).toContain('transactionHasTopLevelTransferLeg(probe, leg)');
-    expect(submit).toContain('receivedLamportsFrom(probe, leg)');
+    const shared = verifyService.slice(
+      verifyService.indexOf('async function attributeSignatureToChallenge('),
+      verifyService.indexOf('function earliestScanCandidate('),
+    );
+    const scan = verifyService.slice(
+      verifyService.indexOf('async function scanSettleChallenges('),
+      verifyService.indexOf('export async function pollTransferChallenge('),
+    );
+    expect(submit).toContain('return attributeSignatureToChallenge(row, signature, probe)');
+    expect(scan).toContain('attributeSignatureToChallenge(row, candidate.signature, probe)');
+    expect(shared).toContain('transactionMatchesTransferLeg(probe, leg)');
+    expect(shared).toContain('transactionSignedBySource(probe, row.walletPubkey)');
+    expect(shared).toContain('transactionHasTopLevelTransferLeg(probe, leg)');
+    expect(shared).not.toContain('memo_missing');
+    expect(shared).toContain('receivedLamportsFrom(probe, leg)');
     // Fetched by signature at FINALIZED — no cursor, no page cap, no window.
     expect(submit).toContain("commitment: 'finalized'");
   });
 
-  it('DEMOTES the background scan: it can never grant verification', () => {
-    // The scan attributes as `unclaimed` (refund owed, never verified), so its
-    // bounds are a refund-latency concern rather than a correctness hole.
+  it('routes closed-row discovery through shared attribution before unclaimed fallback', () => {
     const attribute = verifyService.slice(
       verifyService.indexOf('async function attributeAtDestination('),
       verifyService.indexOf('export function retainedLegObligations('),
     );
+    expect(attribute).toContain('attributeSignatureToChallenge(');
     expect(attribute).toContain("nextStatus: 'unclaimed'");
     expect(attribute).not.toContain("nextStatus = 'observed'");
     expect(attribute).not.toContain('grantObserved');
-    // Only submission grants.
+    // Grant calls are the definition, shared attribution, poll recovery, and
+    // sweep recovery. Closed discovery never carries a second grant path.
     const grantCallers = verifyService.split('grantObserved(').length - 1;
-    expect(grantCallers).toBe(2); // the definition + the submit path
+    expect(grantCallers).toBe(4);
   });
 
-  it('polling is a pure status read that never scans', () => {
+  it('polling invokes bounded scan settlement for a live pending row', () => {
     const poll = verifyService.slice(
       verifyService.indexOf('export async function pollTransferChallenge('),
       verifyService.indexOf('// ------', verifyService.indexOf('export async function pollTransferChallenge(')),
     );
-    expect(poll).not.toContain('attributeChallenges');
-    expect(poll).not.toContain('grantObserved');
+    expect(poll).toContain('await scanSettleChallenges([row])');
+    expect(poll).toContain("row.status === 'pending'");
+    expect(poll).toContain('row.inboundSignature == null');
   });
 
   it('closes the door on cap-policy disagreement, not just signer health', () => {
@@ -1092,7 +1107,7 @@ describe('round 4 — refund copy never asserts a verification outcome', () => {
 
 describe('protocol manual parity', () => {
   it('retains the land proof bump before the subsequent Tier-1 bounty bump', () => {
-    expect(protocol).toContain('export const PROTOCOL_VERSION = 53;');
+    expect(protocol).toContain('export const PROTOCOL_VERSION = 54;');
     expect(protocol.match(/export const PROTOCOL_VERSION = /g) ?? []).toHaveLength(1);
   });
 
@@ -1112,5 +1127,133 @@ describe('protocol manual parity', () => {
     expect(protocol).toContain('account: <your userId>');
     expect(protocol).toContain('wallet: <declared pubkey>');
     expect(protocol).toContain('nonce: <nonce>');
+  });
+});
+
+describe('round 2 poll-primary regressions', () => {
+  const panel = readFileSync(
+    join(ROOT, 'apps', 'web', 'src', 'components', 'game', 'land', 'tenure-office-panels.tsx'),
+    'utf8',
+  );
+  const webApi = readFileSync(join(ROOT, 'apps', 'web', 'src', 'lib', 'api.ts'), 'utf8');
+
+  it('keeps expired unbound storage through the late horizon and drops it afterwards', () => {
+    const storage = panel.slice(
+      panel.indexOf('function parseStoredTransferChallenge('),
+      panel.indexOf('function VerifyCopyRow('),
+    );
+    const lateHorizon = panel.match(
+      /const TRANSFER_LATE_ATTRIBUTION_HORIZON_MS = ([^;]+);/,
+    )?.[1];
+    expect(lateHorizon).toBe('35 * 60 * 1000');
+    const body = panel.match(
+      /function isTransferChallengeWithinLateHorizon\(expiresAtMs: number, nowMs: number\): boolean \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(body).toBeDefined();
+    const isWithinLateHorizon = new Function(
+      'expiresAtMs',
+      'nowMs',
+      'TRANSFER_LATE_ATTRIBUTION_HORIZON_MS',
+      body!,
+    ) as (expiresAtMs: number, nowMs: number, horizonMs: number) => boolean;
+    const expiresAtMs = 1_000_000;
+    const horizonMs = 35 * 60 * 1000;
+    expect(isWithinLateHorizon(expiresAtMs, expiresAtMs + 1, horizonMs)).toBe(true);
+    expect(isWithinLateHorizon(expiresAtMs, expiresAtMs + horizonMs, horizonMs)).toBe(false);
+    expect(storage).toContain(
+      '!isTransferChallengeWithinLateHorizon(expiresAtMs, Date.now())',
+    );
+  });
+
+  it('shows signature recovery but hides send instructions for expired unbound state', () => {
+    const sendBody = panel.match(
+      /function showTransferSendInstructions\(closed: boolean, terminalAndBound: boolean\): boolean \{([\s\S]*?)\n\}/,
+    )?.[1];
+    const fallbackBody = panel.match(
+      /function showTransferSignatureFallback\([\s\S]*?\): boolean \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(sendBody).toBeDefined();
+    expect(fallbackBody).toBeDefined();
+    const showSend = new Function('closed', 'terminalAndBound', sendBody!) as (
+      closed: boolean,
+      terminalAndBound: boolean,
+    ) => boolean;
+    const showFallback = new Function(
+      'terminalAndBound',
+      'withinLateAttributionHorizon',
+      fallbackBody!,
+    ) as (terminalAndBound: boolean, withinLateAttributionHorizon: boolean) => boolean;
+    expect(showSend(true, false)).toBe(false);
+    expect(showFallback(false, true)).toBe(true);
+    expect(panel).toContain('{sendInstructionsVisible && (');
+    expect(panel).toContain("{signatureFallbackVisible && pollState !== 'verified' && (");
+    expect(panel).toContain(
+      'Already sent it before the deadline? Paste the transaction ID. A payment made in time can still verify.',
+    );
+  });
+
+  it('scopes storage by wallet, migrates legacy entries, and guards cleanup by challenge id', () => {
+    const storage = panel.slice(
+      panel.indexOf('function parseStoredTransferChallenge('),
+      panel.indexOf('function VerifyCopyRow('),
+    );
+    const read = storage.slice(
+      storage.indexOf('function readStoredTransferChallenge('),
+      storage.indexOf('function storedTransferChallengeMatches('),
+    );
+    expect(panel).toContain('return `${VERIFY_TRANSFER_STORAGE_KEY}:${wallet}`;');
+    expect(read).toContain('window.localStorage.getItem(scopedKey)');
+    expect(read).toContain('window.localStorage.getItem(VERIFY_TRANSFER_STORAGE_KEY)');
+    expect(read).toContain('window.sessionStorage.getItem(VERIFY_TRANSFER_STORAGE_KEY)');
+    expect(read.indexOf('const scoped = parseStoredTransferChallenge(')).toBeLessThan(
+      read.indexOf('const legacyLocal = parseStoredTransferChallenge('),
+    );
+    expect(read).toContain('writeStoredTransferChallenge(wallet, legacyLocal);');
+    expect(read).toContain('writeStoredTransferChallenge(wallet, legacy);');
+    expect(storage).toContain('stored.challengeId === challengeId');
+    expect(storage).toContain(
+      'storedTransferChallengeMatches(storage.getItem(key), wallet, challengeId)',
+    );
+    expect(storage).toContain('storage.removeItem(key);');
+    expect(storage).toContain('transferChallengeStorageKey(wallet)');
+
+    const cleanup = panel.slice(
+      panel.indexOf('// Keep unsettled money visible.'),
+      panel.indexOf('const busy ='),
+    );
+    expect(cleanup).toContain('if (!challenge || !terminalAndBound) return;');
+    expect(cleanup).toContain(
+      'clearStoredTransferChallenge(walletAddress, challenge.challengeId);',
+    );
+  });
+
+  it('documents polling as primary and exact-signature submission as the memo-free fallback', () => {
+    const comment = webApi.slice(
+      webApi.indexOf('Door 2 fallback:'),
+      webApi.indexOf('submitLandHoldTransferSignature:'),
+    );
+    expect(comment).toContain('polling is the primary verifier');
+    expect(comment).toContain('Exact-signature submit');
+    expect(comment).toContain('deprecated memo is ignored');
+    expect(comment).not.toContain('THIS is what verifies');
+    expect(comment).not.toContain('checks the amount, the memo');
+  });
+
+  it('renders the live countdown as zero-padded MM:SS', () => {
+    const countdown = panel.slice(
+      panel.indexOf('function formatCountdown('),
+      panel.indexOf('// An open transfer check survives'),
+    );
+    const body = countdown.match(/function formatCountdown\(msLeft: number\): string \{([\s\S]*?)\n\}/)?.[1];
+    expect(body).toBeDefined();
+    const format = new Function('msLeft', body!) as (msLeft: number) => string;
+    expect(format((44 * 60 + 7) * 1000)).toBe('44:07');
+    expect(format(59 * 1000)).toBe('00:59');
+    expect(countdown).toContain("String(minutes).padStart(2, '0')");
+    expect(countdown).toContain("String(seconds).padStart(2, '0')");
+    expect(countdown).toContain(':');
+    expect(countdown).not.toContain('m ');
+    expect(countdown).not.toContain('s`;');
+    expect(panel).toContain('formatCountdown(msLeft)');
   });
 });

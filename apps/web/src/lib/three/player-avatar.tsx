@@ -34,7 +34,9 @@ import {
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from './kelp-forest-transition';
-import { useVRMInstance, disposeVRMInstance, retainVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { isDecorativeReleased } from '@/lib/three/decorative-release';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import {
   VRMCharacterAnimator,
   preloadMixamoClips,
@@ -418,6 +420,15 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // the same path — no scene reparenting wars (Codex Critical #1).
   const vrm = useVRMInstance(reg.path, 'player-avatar');
 
+  // Rung-4 slice C (Codex round-1 finding 2, late-mount leg): captured ONCE
+  // at the first render AFTER the Suspense demand resolves (hooks before the
+  // useVRMInstance suspend point never reach here). If the world already
+  // revealed by then (explore→player promotion, slow fetch), the warmup gate
+  // can no longer compile this VRM — route the attach through the deferred
+  // warm queue instead of hitching its first frame. Captured-once so the
+  // wrapper choice never flips mid-life (a flip would remount the subtree).
+  const lateResolved = useMemo(() => isDecorativeReleased(), []);
+
   // Auto-fit scale + foot-grounding offset. Recomputed when the VRM swaps
   // (model picker change → new path → new instance → useMemo re-runs).
   // Cm-authored Mixamo VRMs land at the same on-screen height as m-authored
@@ -544,7 +555,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     },
   });
 
-  return (
+  const body = (
     <group ref={groupRef}>
       {/* Auto-fit scale + foot-ground offset: Milady (1.6m, feet at Y=0)
           → scale ~112, offsetY ~0. Hermes/Tekk (Mixamo cm, hips at Y=0)
@@ -573,6 +584,14 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         vrmRenderScale={vrmRenderScale}
       />
     </group>
+  );
+  if (!lateResolved) return body;
+  // Post-release resolution: warm before first draw. priority 0 is INTENDED
+  // here — the player's own body outranks every distance-scored ambient job.
+  return (
+    <DeferredWarmAttachment label="player-avatar:late" priority={0}>
+      {body}
+    </DeferredWarmAttachment>
   );
 }
 
@@ -764,10 +783,26 @@ function PlayerAvatarRouter() {
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
+  // Rung-4 slice C (Codex round-1 finding 2): with the ambient wanderer
+  // preloads gone, nothing warmed the ACTIVE player's VRM bytes early — the
+  // raw fetch would start only when the Suspense demand below fires, and a
+  // slow resolve races the warmup's one-time bulk-batch check. Warm the bytes
+  // at the earliest knowledge point (avatarModelKey resolution). The residual
+  // window (bytes resolving between the bulk check and reveal) is the
+  // PRE-EXISTING gate race, punch-listed for slice D's boot-core gate.
+  useEffect(() => {
+    if (reg.avatar_type === 'vrm') preloadVRMBytes(reg.path);
+  }, [reg]);
+
   if (reg.avatar_type === 'vrm') {
     return (
       <Suspense fallback={null}>
-        <PlayerAvatarVRMInner reg={reg} />
+        {/* key={reg.path} (Codex round-2 finding 2): a VRM→VRM avatar swap
+            must REMOUNT the inner — an unkeyed instance would carry the
+            captured-once lateResolved decision and a stale ready=true
+            DeferredWarmAttachment across the path change, attaching the NEW
+            VRM without a warm pass (first-frame hitch). */}
+        <PlayerAvatarVRMInner key={reg.path} reg={reg} />
       </Suspense>
     );
   }

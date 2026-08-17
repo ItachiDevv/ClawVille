@@ -48,13 +48,34 @@ interface FakeTableRow {
   seededAgentSlots: number;
   status: string;
   createdBy: string;
+  tableEscrowCt: number;
 }
+
+interface FakeSeatRow {
+  id: string;
+  tableId: string;
+  isSeeded: 'true' | 'false';
+  status: 'sitting_in' | 'sitting_out' | 'left';
+  currentStackCt: number;
+  updatedAt: Date;
+}
+
+const APPROVED_STAKES = {
+  low: { buyInCt: 200, smallBlindCt: 10, bigBlindCt: 20 },
+  mid: { buyInCt: 1000, smallBlindCt: 50, bigBlindCt: 100 },
+  high: { buyInCt: 5000, smallBlindCt: 250, bigBlindCt: 500 },
+} as const;
 
 const state = {
   tables: [] as FakeTableRow[],
   createCalls: [] as Array<{ config: Record<string, unknown>; creator: Record<string, unknown> }>,
   /** tableIds passed to the eager-seat path (Option B) — one per created table. */
   seatHouseBotsCalls: [] as string[],
+  retireHouseTableCalls: [] as string[],
+  releaseBustedSeatCalls: [] as Array<{ tableId: string; seatId: string }>,
+  seats: [] as FakeSeatRow[],
+  liveTableIds: new Set<string>(),
+  houseBankBalance: 1_000_000,
   /** When set, createTable throws for this tierKey (per-tier failure isolation). */
   failTier: null as string | null,
   houseBankId: 'house-bank-scaler-1',
@@ -66,6 +87,11 @@ function resetState(): void {
   state.tables = [];
   state.createCalls = [];
   state.seatHouseBotsCalls = [];
+  state.retireHouseTableCalls = [];
+  state.releaseBustedSeatCalls = [];
+  state.seats = [];
+  state.liveTableIds = new Set<string>();
+  state.houseBankBalance = 1_000_000;
   state.failTier = null;
   state.houseBankId = 'house-bank-scaler-1';
   state.bankNotReady = false;
@@ -91,6 +117,7 @@ mock.module('../cash-table-manager-singleton', () => ({
         seededAgentSlots: config.seededAgentSlots as number,
         status: 'open',
         createdBy: creator.avatarId as string,
+        tableEscrowCt: 0,
       };
       state.tables.push(row);
       return row;
@@ -103,6 +130,52 @@ mock.module('../cash-table-manager-singleton', () => ({
     // silently zero out `created`. Record the call so a test could assert it fires.
     async seatHouseBots(tableId: string) {
       state.seatHouseBotsCalls.push(tableId);
+    },
+    async retireHouseTable(tableId: string) {
+      state.retireHouseTableCalls.push(tableId);
+      const table = state.tables.find((candidate) => candidate.id === tableId);
+      if (!table || table.source !== 'house' || table.status !== 'open') return false;
+      if (state.liveTableIds.has(tableId)) return false;
+
+      const activeSeats = state.seats.filter(
+        (seat) => seat.tableId === tableId && seat.status !== 'left',
+      );
+      if (
+        activeSeats.some(
+          (seat) => seat.isSeeded === 'false' && seat.currentStackCt !== 0,
+        )
+      ) {
+        return false;
+      }
+
+      for (const seat of activeSeats) {
+        if (seat.isSeeded === 'true') {
+          state.houseBankBalance += seat.currentStackCt;
+          table.tableEscrowCt -= seat.currentStackCt;
+        }
+        seat.currentStackCt = 0;
+        seat.status = 'left';
+      }
+      if (table.tableEscrowCt > 0) return false;
+      table.status = 'closed';
+      return true;
+    },
+    async releaseBustedSeat(tableId: string, seatId: string) {
+      state.releaseBustedSeatCalls.push({ tableId, seatId });
+      if (state.liveTableIds.has(tableId)) return false;
+      const seat = state.seats.find(
+        (candidate) => candidate.id === seatId && candidate.tableId === tableId,
+      );
+      if (
+        !seat ||
+        seat.status === 'left' ||
+        seat.isSeeded !== 'false' ||
+        seat.currentStackCt !== 0
+      ) {
+        return false;
+      }
+      seat.status = 'left';
+      return true;
     },
   },
 }));
@@ -152,6 +225,32 @@ function tierKeyFromCountQuery(q: unknown): string | null {
   return null;
 }
 
+function queryText(q: unknown): string {
+  const chunks = (q as { queryChunks?: unknown[] }).queryChunks ?? [];
+  return chunks
+    .filter(
+      (chunk) =>
+        (chunk as { constructor?: { name?: string } }).constructor?.name === 'StringChunk',
+    )
+    .flatMap((chunk) => (chunk as { value?: string[] }).value ?? [])
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function isMismatchedHouseTable(table: FakeTableRow): boolean {
+  if (table.source !== 'house' || table.status !== 'open') return false;
+  const tier = table.tierKey as keyof typeof APPROVED_STAKES | null;
+  if (!tier || !(tier in APPROVED_STAKES)) return true;
+  const expected = APPROVED_STAKES[tier];
+  return (
+    table.buyInCt !== expected.buyInCt ||
+    table.smallBlindCt !== expected.smallBlindCt ||
+    table.bigBlindCt !== expected.bigBlindCt
+  );
+}
+
 mock.module('@clawville/database', () => ({
   // Spread EVERY real export (events, all schemas, types) so co-running test files
   // that import named members from @clawville/database still resolve them — only
@@ -159,6 +258,21 @@ mock.module('@clawville/database', () => ({
   ...realDatabase,
   db: {
     async execute(q: unknown) {
+      if (queryText(q).includes('from poker_cash_seats')) {
+        const cutoff = Date.now() - 10 * 60 * 1_000;
+        return state.seats
+          .filter(
+            (seat) =>
+              seat.status !== 'left' &&
+              seat.isSeeded === 'false' &&
+              seat.currentStackCt === 0 &&
+              seat.updatedAt.getTime() < cutoff,
+          )
+          .map((seat) => ({ seat_id: seat.id, table_id: seat.tableId }));
+      }
+      if (queryText(q).includes('select id from poker_cash_tables')) {
+        return state.tables.filter(isMismatchedHouseTable).map(({ id }) => ({ id }));
+      }
       const tierKey = tierKeyFromCountQuery(q);
       const n = state.tables.filter(
         (t) =>
@@ -319,5 +433,253 @@ describe('cashHouseScaler — deficit creation, never-exceed-N, idempotency', ()
     expect(total).toBe(expectedTotal);
     expect(state.tables.length).toBe(expectedTotal);
     expect(a === 0 || b === 0).toBe(true);
+  });
+});
+
+describe('cashHouseScaler — mismatched retirement and busted-seat release', () => {
+  function isolateLowTier(): void {
+    process.env.CASH_HOUSE_TABLES_LOW = '1';
+    process.env.CASH_HOUSE_TABLES_MID = '0';
+    process.env.CASH_HOUSE_TABLES_HIGH = '0';
+  }
+
+  function disableHouseCreation(): void {
+    process.env.CASH_HOUSE_TABLES_LOW = '0';
+    process.env.CASH_HOUSE_TABLES_MID = '0';
+    process.env.CASH_HOUSE_TABLES_HIGH = '0';
+  }
+
+  function addLowTable(stakes: { buyInCt: number; smallBlindCt: number; bigBlindCt: number }) {
+    const table: FakeTableRow = {
+      id: randomUUID(),
+      source: 'house',
+      visibility: 'public',
+      tierKey: 'low',
+      ...stakes,
+      maxSeats: 6,
+      seededAgentSlots: 3,
+      status: 'open',
+      createdBy: state.houseBankId,
+      tableEscrowCt: 0,
+    };
+    state.tables.push(table);
+    return table;
+  }
+
+  it('retires seeded-only old stakes and recreates the tier at approved stakes in the same pass', async () => {
+    isolateLowTier();
+    const oldTable = addLowTable({ buyInCt: 20, smallBlindCt: 1, bigBlindCt: 2 });
+    oldTable.tableEscrowCt = 40;
+    state.seats.push(
+      {
+        id: randomUUID(),
+        tableId: oldTable.id,
+        isSeeded: 'true',
+        status: 'sitting_in',
+        currentStackCt: 20,
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        tableId: oldTable.id,
+        isSeeded: 'true',
+        status: 'sitting_out',
+        currentStackCt: 20,
+        updatedAt: new Date(),
+      },
+    );
+    const bankBefore = state.houseBankBalance;
+
+    const created = await cashHouseScalerPass();
+
+    expect(created).toBe(1);
+    expect(oldTable.status).toBe('closed');
+    expect(oldTable.tableEscrowCt).toBe(0);
+    expect(
+      state.seats.every((seat) => seat.status === 'left' && seat.currentStackCt === 0),
+    ).toBe(true);
+    expect(state.houseBankBalance).toBe(bankBefore + 40);
+
+    const openLow = state.tables.filter(
+      (table) => table.source === 'house' && table.status === 'open' && table.tierKey === 'low',
+    );
+    expect(openLow).toHaveLength(1);
+    expect(openLow[0]).toMatchObject(APPROVED_STAKES.low);
+  });
+
+  it('releases a fresh busted human during retirement, reclaims bots, and recreates approved stakes', async () => {
+    isolateLowTier();
+    const oldTable = addLowTable({ buyInCt: 20, smallBlindCt: 1, bigBlindCt: 2 });
+    oldTable.tableEscrowCt = 40;
+    const bustedHuman: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: oldTable.id,
+      isSeeded: 'false',
+      status: 'sitting_in',
+      currentStackCt: 0,
+      updatedAt: new Date(),
+    };
+    state.seats.push(
+      bustedHuman,
+      {
+        id: randomUUID(),
+        tableId: oldTable.id,
+        isSeeded: 'true',
+        status: 'sitting_in',
+        currentStackCt: 20,
+        updatedAt: new Date(),
+      },
+      {
+        id: randomUUID(),
+        tableId: oldTable.id,
+        isSeeded: 'true',
+        status: 'sitting_out',
+        currentStackCt: 20,
+        updatedAt: new Date(),
+      },
+    );
+    const bankBefore = state.houseBankBalance;
+
+    expect(await cashHouseScalerPass()).toBe(1);
+    expect(state.releaseBustedSeatCalls).toEqual([]);
+    expect(state.retireHouseTableCalls).toEqual([oldTable.id]);
+    expect(oldTable).toMatchObject({ status: 'closed', tableEscrowCt: 0 });
+    expect(bustedHuman).toMatchObject({ status: 'left', currentStackCt: 0 });
+    expect(state.seats.every((seat) => seat.status === 'left')).toBe(true);
+    expect(state.houseBankBalance).toBe(bankBefore + 40);
+    expect(
+      state.tables.find(
+        (table) => table.source === 'house' && table.status === 'open' && table.tierKey === 'low',
+      ),
+    ).toMatchObject(APPROVED_STAKES.low);
+  });
+
+  it('keeps a mismatched table with a non-zero human seat open and untouched', async () => {
+    isolateLowTier();
+    const table = addLowTable({ buyInCt: 20, smallBlindCt: 1, bigBlindCt: 2 });
+    table.tableEscrowCt = 20;
+    const humanSeat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'sitting_in',
+      currentStackCt: 20,
+      updatedAt: new Date(),
+    };
+    state.seats.push(humanSeat);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireHouseTableCalls).toEqual([table.id]);
+    expect(table.status).toBe('open');
+    expect(table.tableEscrowCt).toBe(20);
+    expect(humanSeat).toMatchObject({ status: 'sitting_in', currentStackCt: 20 });
+  });
+
+  it('keeps a mismatched table with a live hand open and untouched', async () => {
+    isolateLowTier();
+    const table = addLowTable({ buyInCt: 20, smallBlindCt: 1, bigBlindCt: 2 });
+    table.tableEscrowCt = 20;
+    const seededSeat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'true',
+      status: 'sitting_in',
+      currentStackCt: 20,
+      updatedAt: new Date(),
+    };
+    state.seats.push(seededSeat);
+    state.liveTableIds.add(table.id);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireHouseTableCalls).toEqual([table.id]);
+    expect(table.status).toBe('open');
+    expect(table.tableEscrowCt).toBe(20);
+    expect(seededSeat).toMatchObject({ status: 'sitting_in', currentStackCt: 20 });
+  });
+
+  it('never sends an approved-stakes table to the retirement path', async () => {
+    isolateLowTier();
+    const table = addLowTable(APPROVED_STAKES.low);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireHouseTableCalls).toEqual([]);
+    expect(table.status).toBe('open');
+  });
+
+  it('releases an idle busted seat older than ten minutes on a player table', async () => {
+    disableHouseCreation();
+    const table = addLowTable(APPROVED_STAKES.low);
+    table.source = 'player-public';
+    const seat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'sitting_in',
+      currentStackCt: 0,
+      updatedAt: new Date(Date.now() - 11 * 60 * 1_000),
+    };
+    state.seats.push(seat);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.releaseBustedSeatCalls).toEqual([{ tableId: table.id, seatId: seat.id }]);
+    expect(seat.status).toBe('left');
+  });
+
+  it('leaves an old busted seat untouched while its table has a live hand', async () => {
+    disableHouseCreation();
+    const table = addLowTable(APPROVED_STAKES.low);
+    table.source = 'private';
+    const seat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'sitting_in',
+      currentStackCt: 0,
+      updatedAt: new Date(Date.now() - 11 * 60 * 1_000),
+    };
+    state.seats.push(seat);
+    state.liveTableIds.add(table.id);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.releaseBustedSeatCalls).toEqual([{ tableId: table.id, seatId: seat.id }]);
+    expect(seat.status).toBe('sitting_in');
+  });
+
+  it('does not discover a fresh busted seat', async () => {
+    disableHouseCreation();
+    const table = addLowTable(APPROVED_STAKES.low);
+    table.source = 'player-public';
+    const seat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'sitting_in',
+      currentStackCt: 0,
+      updatedAt: new Date(Date.now() - 9 * 60 * 1_000),
+    };
+    state.seats.push(seat);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.releaseBustedSeatCalls).toEqual([]);
+    expect(seat.status).toBe('sitting_in');
+  });
+
+  it('does not discover an old non-zero seat', async () => {
+    disableHouseCreation();
+    const table = addLowTable(APPROVED_STAKES.low);
+    table.source = 'player-public';
+    const seat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'sitting_out',
+      currentStackCt: 1,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1_000),
+    };
+    state.seats.push(seat);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.releaseBustedSeatCalls).toEqual([]);
+    expect(seat.status).toBe('sitting_out');
   });
 });

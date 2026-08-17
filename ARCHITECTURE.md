@@ -1,6 +1,20 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-11 (uOS Mini App embed enablement — CSP origins + static manifest; no
+**Last Audited: 2026-08-12 (Land hold-wallet door 2 poll-primary rework, protocol v54).**
+Founder ruling 2026-08-11 drops the inbound memo predicate and makes status polling the primary
+verification flow. A bounded scan discovers candidate signatures, but settlement never trusts scan
+facts: every candidate is fetched again at `finalized`, fully probed, and passed through the same
+`attributeSignatureToChallenge` path used by exact-signature submission. The submit route remains the
+eclipse fallback for page, parse, and match bounds. The background sweep runs the same live-pending
+scan-settle path before the unchanged closed-row refund discovery, so a paid challenge can verify after
+the panel closes. Refund, reconcile, fee-cap, obligation, and money-moving semantics are unchanged.
+Accepted residual risk: without the signer-intent memo, an owner could be induced to send the exact
+odd per-challenge amount to the verify address during the 45-minute window. Founder accepted that
+risk; pending amount uniqueness, declared-source signature, top-level System transfer, destination,
+window, and full-refund requirements remain. Drift note: service orchestration, route comments, web UX,
+agent manual, and tests changed; no schema, door-1, custodial, refund, or reconcile change.
+
+**Prior Last Audited: 2026-08-11 (uOS Mini App embed enablement — CSP origins + static manifest; no
 route/schema/env change).** ClawVille is being listed as a Mini App in the uOS browser-OS App Store
 (uos.agency; Base-native agentic desktop; research + phased plan in `docs/uos-integration-plan.md`).
 This diff is Phase 1 only: (1) `apps/web/next.config.mjs` `FRAME_ANCESTORS` adds
@@ -105,17 +119,18 @@ sibling of `wallet-link-challenge.ts` (in-memory Map, 120s TTL, delete-on-read,
 size cap + unref'd janitor) whose signed message adds a `wallet:` line to the
 account binding, so a signature can neither be redirected to another account nor
 replayed after a repoint. `apps/api/src/services/land-hold-transfer-verify.ts`
-is door 2. Door 2 verification is SIGNATURE-SUBMITTED, not scan-discovered:
-`POST /hold-wallet/verify/transfer/:challengeId/submit` takes the transaction
-signature, fetches THAT transaction at `finalized`, and runs the same proof
-predicates. Discovering deposits by blind-scanning the verify address was
-inherently lossy under adversarial or merely busy traffic (a per-invocation
-cursor, a page cap, a match window, a candidate batch and fact truncation each
-relocated the same failure), and a signature the user hands us cannot be
-eclipsed. The background scan SURVIVES but is DEMOTED to refund-obligation
-discovery: it attributes an unsubmitted deposit as `unclaimed` (refund owed,
-NEVER verified), so its bounds are a refund-latency concern rather than a
-correctness hole, and ONLY submission can reach `observed`/`verified`. Funds no
+is door 2. Door 2 verification is POLL-PRIMARY. `GET
+/hold-wallet/verify/transfer/:challengeId` scans the durable facts ledger for an
+exact sender, destination, and amount candidate, ordered by earliest block time,
+then fetches that transaction again at `finalized`. Scan facts are discovery
+only. The full `probeTransaction` result goes through the same
+`attributeSignatureToChallenge` predicate ladder and atomic attribution used by
+`POST /hold-wallet/verify/transfer/:challengeId/submit`. The submit endpoint is
+the fallback for eclipse cases where page, parse, or match bounds hide a real
+payment. The sweep reads a bounded live-pending set and runs this same scan-settle
+path before the existing closed-row discovery, preventing a paid challenge from
+aging out merely because the panel was closed. Closed late deposits can still
+become `unclaimed` for refund only. Funds no
 challenge row can return — another sender's legs in a settled transaction, dust
 at a rotated verify address, or money past every live window — are written to
 `land_hold_wallet_refund_obligations` (operator-settled), because an alert must
@@ -152,8 +167,8 @@ an OPERATIONAL OBLIGATION: the retired row and its encrypted key MUST be retaine
 unsettled. Destroying a retired key makes dust at that address permanently
 unrecoverable, and `destination_rotated` obligations name exactly the addresses
 this applies to.
-VERIFICATION IS UNAFFECTED, because that path is submission-based. Two further
-gaps in the same subsystem: the sweeper lease is PROCESS-LOCAL (`sweepInFlight`)
+Live verification mitigates bounded discovery with the exact-signature fallback.
+Two further gaps in the same subsystem: the sweeper lease is PROCESS-LOCAL (`sweepInFlight`)
 so multiple pods duplicate scan work (wasteful, not incorrect — every write is an
 idempotent CAS or ON CONFLICT DO NOTHING), and `land_hold_wallet_verify_scans.
 matched` is written but never read by the facts query (operator bookkeeping, not
@@ -166,17 +181,13 @@ one pod owning a destination's scan at a time). Door 2 has NO enable
 flag: availability derives from whether the `treasury_wallets` `land-hold-verify`
 row is provisioned, AND from signer + cap-policy health (a pod whose configured
 cap disagrees with the day's recorded policy closes the door rather than taking
-deposits into a pipeline healthy pods refuse to drain). Door 2 requires an SPL
-Memo naming the challenge id in the SAME transaction as the exact-lamport
-transfer: amount + sender prove only that a wallet sent us lamports, which a
-phished whale can be induced to do for someone else declaration, so the memo is
-the sender statement of intent and the amount is only the matching index. It is
-enforced fail-closed in the single predicate `transactionCarriesChallengeMemo`.
-BOTH the paying transfer and the memo must be TOP-LEVEL instructions in the
-SIGNED message: a CPI-emitted memo is not the signer statement, and accepting one
-reopened the phishing hole (an attacker can induce a victim to sign an opaque
-call to a program that CPIs both legs). Inner legs are still IDENTIFIED so the
-money is refunded; they are never proof (`transfer_not_top_level`).
+deposits into a pipeline healthy pods refuse to drain). Door 2 ignores inbound
+memos. Proof requires the exact per-challenge-unique amount from the declared
+wallet to the challenge destination, a declared-source signature, a top-level
+System transfer, and a block time inside the challenge window. Founder ruling
+2026-08-11 accepts the residual phishing risk from dropping the explicit intent
+statement. Inner transfer legs are still identified so the money is refunded;
+they are never proof (`transfer_not_top_level`).
 The refund pays `inbound_lamports`, the total actually received from that sender
 in that transaction, so a transaction carrying the exact leg twice is refunded in
 full rather than leaving us the surplus with only an alert. Refund transactions
@@ -1046,7 +1057,7 @@ The switch gates the driver's 30-second steady-state tick body and reconcile pas
 | `activity/wager-lobby-bridge` | Hooks `lockLobbyForRoom` into Bumper Shells + Reef Race `setLiveTransitionFn` (room → LIVE → auto-lock) and `settleLobbyForRoom` into `setEndedFn` (room → RESULTS → auto-settle using placement-1 avatar from `computeResults()`). Idempotent: re-lock/re-settle returns 409. Bot/no-show winner path logs `failed-settle` event and leaves lobby Locked. |
 
 | `land-hold-wallet-challenge` | **Door 1 of the land hold-wallet ownership proof (2026-08-10).** Verbatim sibling of `wallet-link-challenge`: in-memory `Map`, 120s TTL, delete-on-read single use (burned even on a mismatch), 10k size cap + unref'd janitor. `buildLandHoldWalletMessage(userId, wallet, nonce)` is the FROZEN four-line SIWS-lite message (`ClawVille land hold wallet` / `account:` / `wallet:` / `nonce:`) — the `account:` line kills the phished blind-signature redirect, the `wallet:` line kills a repoint-then-replay. `consumeLandHoldWalletChallenge(nonce, userId, wallet)` returns false on ANY of the three mismatching. Changing the message bytes is a `PROTOCOL_VERSION` bump (the manual publishes them verbatim for BYO agents). |
-| `land-hold-transfer-verify` | **Door 2 of the land hold-wallet ownership proof (2026-08-10).** Exact-dust transfer challenge over the MAINNET RPC seam (the same one `linked-wallet-clv-balance` uses — NOT the cluster-gated SAP config): `getTransferDoorAvailability` (derived from whether the `treasury_wallets` `land-hold-verify` row exists — no enable flag), `openTransferChallenge`, `pollTransferChallenge`, `sweepTransferChallenges`. Grants ONLY on `finalized`, then auto-refunds; the refund is fail-SOFT and never revokes or blocks a grant, is idempotent on the inbound signature, captures before sending, and parks ambiguity in `refund_state='reconcile'` with an `alertError` page. Per-user daily attempt cap + global daily refund cap bound the fee drain. It is the ONLY writer of the `transfer` verification method. |
+| `land-hold-transfer-verify` | **Door 2 of the land hold-wallet ownership proof (poll-primary 2026-08-12).** Exact-dust transfer challenge over the MAINNET RPC seam: `pollTransferChallenge` and the live-pending sweep discover candidates from durable scan facts, then full-fetch at `finalized` and call the same `attributeSignatureToChallenge` used by the submit fallback. Inbound memos are ignored; exact amount, sender signature, destination, top-level System transfer, and window remain mandatory. Refund/reconcile behavior is unchanged: fail-SOFT, idempotent by inbound signature, capture-before-send, and ambiguity parked in `refund_state='reconcile'`. Per-user attempt and global refund-fee caps remain. It is the ONLY writer of the `transfer` verification method. |
 | `land-tenure-settlement` (hold-proof exports) | `holdWalletVerificationState` / `holdWalletProofAccepted` are the SINGLE derivation shared by the read surface and both claim gates; `readHoldWalletDeclaration` backs `GET /api/land/hold-wallet`; `grantLandHoldWalletVerification` persists a door-1/custodial proof under `pg_advisory_xact_lock(user)` + `FOR UPDATE`, refusing `wallet_declaration_changed` if the declaration moved; `attestCustodialLandHoldWallet` re-reads the bound avatar's CURRENT `wallet_address` INSIDE the transaction (never cached, never client-supplied) and re-validates the avatar's owner (and the agent's `openclaw_bots` binding) before stamping `custodial`. |
 
 ### Service environment variables
@@ -1068,7 +1079,7 @@ The switch gates the driver's 30-second steady-state tick body and reconcile pas
 | `AGENT_DIRECTIVE_TTL_MS` | Hosted autonomy directive lifetime in milliseconds (default 21600000 = 6h, floor 900000 = 15m; malformed values use the default). Expired directives are ignored and lazily compare-and-cleared. |
 | `MESSAGE_MEMORY_RETENTION_DAYS` | ElizaOS conversation-transcript retention in days (default 7, minimum 1; `0` disables the sweeper). Applies only to `memories.type='messages'`; knowledge rows are never touched. |
 | `INFERENCE_USAGE_REPORT` | Hourly Telegram inference-usage report AND the 60s box-status offline/recovery watcher via the itachi-debug bot. Default is enabled only when `CLAWVILLE_ENV='production'`; exact `'on'` / `'off'` values force enable / disable in any environment. |
-| `LAND_HOLD_VERIFY_BASE_LAMPORTS` | Door-2 base dust amount for a land hold-wallet transfer challenge (default 10000000 = 0.01 SOL, floor 1000000). The per-challenge amount is derived from this base and made UNIQUE among pending challenges — it IS the attribution key. |
+| `LAND_HOLD_VERIFY_BASE_LAMPORTS` | Door-2 base dust amount for a land hold-wallet transfer challenge (default 10000000 = 0.01 SOL, floor 1000000). The per-challenge amount is unique among pending challenges and combines with declared sender signature, verify destination, top-level System transfer, and the short window as the proof predicate. Inbound memos are deprecated and ignored. Accepted residual risk: the declared wallet owner could be induced to send that exact odd amount during the window; founder accepted this on 2026-08-11. |
 | `LAND_HOLD_VERIFY_TTL_MS` | Door-2 transfer-challenge lifetime (default 2700000 = 45 min, floor 300000). An unpaid challenge expires and frees its amount for reuse. |
 | `LAND_HOLD_VERIFY_DAILY_REFUND_CAP_SOL` | GLOBAL daily cap on door-2 refund plus fee spend (default 0.5, floor 0.01). Every refund burns ~5000 lamports of OUR fee, so an unbounded attempt loop is a drain vector; hitting the cap pages ops via `alertError`, same shape as the SAP gas sponsor's cap. |
 | `LAND_HOLD_VERIFY_USER_DAILY_ATTEMPTS` | Per-user daily door-2 challenge cap (default 5, floor 1). Over cap returns 429 `verify_attempt_cap`. |
@@ -1509,6 +1520,8 @@ UI locale layer landed 2026-05-22 (Phase 1+2). English + Simplified Chinese ship
 ---
 
 ## 13. Recent material changes
+
+- 2026-08-16. **Cash-poker self-heal: house-table stakes re-tier + busted-seat sweep (scaler pass).** Motivated by live prod: the approved stakes ladder shipped in config (~08-11 promotion) but the scaler only fills COUNT deficits per tier, so prod's five `source='house'` tables kept the retired July ladder (1/2 · 5/10 · 25/50) — the founder's 2026-08-16 "disastrous poker" report. `cashHouseScalerPass()` now runs two steps before the deficit loop. (1) `releaseBustedSeats()`: one discovery query for ACTIVE non-seeded seats with `current_stack_ct=0` idle >10 min (module const; ISO-text timestamptz param — raw-sql Date serializer trap), each released via `cashTableManager.releaseBustedSeat(tableId, seatId)` under the per-table lock with live-hand + stack re-checks; credits 0 through the existing idempotent `cashOutSeat`, so NO money moves. Applies to house AND player tables (abandoned busted seats bounced their owner into dead rooms via the lobby's "returning to your table" path and held seats). (2) `retireMismatchedHouseTables()`: one discovery query for open house tables whose `(buy_in, sb, bb)` differ from `HOUSE_TIERS[tier_key]` (or unknown tier), each retired via `cashTableManager.retireHouseTable(tableId)` — under the table lock: skip on live hand, skip on any NON-zero-stack human seat (log line), release 0-stack human seats (0 credit), cash all seeded seats back to the house bank via `cashOutSeat`, then close ONLY after a fresh FOR-UPDATE read proves `table_escrow_ct=0` (non-zero escrow logs an error and leaves the table open for ops). The existing deficit loop then recreates the tier at approved stakes + eager-seats bots in the same pass. Prod house bank (97,909 vCLAW) covers the new-ladder seeded buy-ins (22,200). Review note: a round-1 rewrite of `withTableLock` (outer spanning DB transaction holding `pg_advisory_xact_lock`) was REJECTED for pool-starvation risk (outer tx pins a pooled connection while inner money txs need their own) and reverted to the original in-process per-table mutex — the API is single-process per box. Money movement stays exclusively inside `cashOutSeat`. Tests: scaler 12 + manager suites, 50 pass. **PARITY:** server-side hygiene only; no route, wire, or PROTOCOL_VERSION change; human and agent settlement paths untouched.
 
 - 2026-08-06. **Land P3 stage A kit-piece backend (server-only; no protocol bump).** Shared `KIT_CATALOG` owns 12 stable render-agnostic `piece_key` definitions, the exact Lv1→Lv5 small/large caps, stack heights, rotation increments, and D5 fees (15 vCLAW small / 60 large); no GLB path, collider, or pathfinding state exists in stage A. Additive idempotent migration `0049_land_structure_pieces.sql` creates `land_structure_pieces` with parcel cascade, authoritative-owner denormalization, 16×16 grid/rotation/stack CHECKs, unique `(parcel_id, grid_x, grid_y, stack_level)` occupancy, and a parcel index; fix migration `0050_land_kit_integrity.sql` aligns avatar deletion to `ON DELETE CASCADE` and adds the partial unique `land_tx_kit_piece_idem_unique` JSONB-key backstop. Guarded `POST /api/land/parcels/:parcelId/pieces` locks avatar→parcel→active structure, verifies authoritative `land_parcels.owner_avatar_id`, permits stack level N only above N−1, and serves replay only when all six stored target fields match the current request; a reused key otherwise returns `idempotency_key_conflict`. It atomically moves the server-derived fee through `claw-token-ledger` from owner to house before inserting the piece; the existing `structure_placement` audit kind stores explicit `kit_piece_placement` metadata plus both ledger IDs (no enum expansion). Guarded `PATCH`/`DELETE /api/land/pieces/:pieceId` are free and removal has no refund. Public `GET /api/land/pieces/public` inner-joins active structures and returns only `parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel` with `Cache-Control: public, max-age=30`; every structure-status cache bust now also invalidates pieces, and different-owner re-acquire purges archived-owner pieces in the locked transaction while same-owner restore preserves them. The Lv4/Lv5 renderer-stat baseline remains a tracked stage-B `FEATURE_GATE`; stage B still owns asset mapping, in-world editing, fixed-chunk cached merging, renderer statistics, player/agent knowledge surfaces, and the single player-visible `PROTOCOL_VERSION` bump.
 

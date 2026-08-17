@@ -22,6 +22,19 @@ import { KELP_REALM_BEACON_GRAPH } from '@clawville/shared';
 const API_BASE = 'https://api.example.test';
 
 describe('open-agent onboarding manuals', () => {
+  test('explains the bounded late-expiry recovery and unclaimed binding', () => {
+    const manual = buildProtocolManual(API_BASE);
+    expect(PROTOCOL_VERSION).toBe(54);
+    expect(manual).toContain('`expired` means you must not send a new payment');
+    expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
+    expect(manual).toMatch(/background sweep\s+re-fetches provable payments/);
+    expect(manual).toMatch(/exact-signature fallback can settle that in-window\s+payment/);
+    expect(manual).toMatch(/keep\s+polling briefly or submit the signature/);
+    expect(manual).toContain('same signature idempotently\nreturns `unclaimed`');
+    expect(manual).toContain('a NEW challenge is then the only path to verification');
+    expect(manual).not.toContain('at any time');
+  });
+
   test('public entry manual retains play, auth, tool, and ACK guidance', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
@@ -32,7 +45,18 @@ describe('open-agent onboarding manuals', () => {
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest + refunded dust
     // fallback documented; new `wallet_not_verified` refusal).
-    expect(PROTOCOL_VERSION).toBe(53);
+    expect(PROTOCOL_VERSION).toBe(54);
+    expect(protocolManual).toContain(
+      '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
+    );
+    expect(protocolManual.match(/X-Clawville-Agent-Session: <sessionId>/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(protocolManual).toContain('`observed` means the payment is attributed and\nverification is finishing');
+    expect(protocolManual).toContain('`expired` means you must not send a new payment');
+    expect(protocolManual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
+    expect(protocolManual).toMatch(/keep\s+polling briefly or submit the signature/);
+    expect(protocolManual).toContain('same signature idempotently\nreturns `unclaimed`');
+    expect(protocolManual).toContain('a NEW challenge is then the only path to verification');
+    expect(protocolManual).not.toContain('at any time');
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -230,7 +254,7 @@ describe('open-agent onboarding manuals', () => {
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest + refunded dust
     // fallback documented; new `wallet_not_verified` refusal).
-    expect(PROTOCOL_VERSION).toBe(53);
+    expect(PROTOCOL_VERSION).toBe(54);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

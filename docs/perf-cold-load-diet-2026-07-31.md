@@ -668,3 +668,49 @@ punch-listed SW-target CDP attachment is the structural fix):**
 - **Acceptance:** slice B never promised a cold-reveal win — its gate was "no reveal
   regression + precache still functions + upgrade migrates". All three hold. Evidence:
   `docs/perf-data/cold-load-rung4-sliceB-2026-08-11/{before,after}/report-{1,2,3}.json`.
+
+## Rung-4 slice-C results (2026-08-11, session perf4.5 — ambient VRMs out of the pre-reveal lane, local webgpu paired gate)
+
+Commit `4f7cc6ea` on `perf/cold-load-diet` after FIVE Codex xhigh adversarial
+rounds (r1 5-blocking / r2 3-blocking / r3 2-blocking / r4 1-blocking /
+r5 SHIP). Only the player VRM parses in the boot lane; 13 wanderer VRMs +
+remote player bodies release-defer through the stagger/warm queues (full
+design + round history in `3dStructure.md`, slice-C entry).
+
+**12-pair counterbalanced webgpu gate (baseline `b34aa58c` :3011 vs slice C
+:3010, fresh home-path profiles, polled-reveal-v2): VERDICT PASS, 11 usable
+pairs** (1 dropped — candidate quiesce flake: the deferred wanderer fetches +
+v11 SW precache legitimately extend post-reveal network activity past the
+capture's quiesce budget on some runs; benign, run-level, both batches showed
+exactly 1/12):
+
+| metric | median log-ratio (B/A) | ≈ effect | gate |
+|---|---|---|---|
+| revealMs | −0.276 | −24% (A med 12827ms → B med 9668ms, **−3.0s**) | pass |
+| worstFrameMsIn10s | −0.926 | −60% | pass |
+| stableWindowStartMsAfterReveal | −1.019 | −64% (post-reveal stabilizes ~3× sooner) | pass |
+| preRevealLongtaskMs | −0.227 | −20% | pass |
+| framesOver100In10s | upperBoundDiff 0 | no regression | pass |
+
+- Quiet-pair candidate profile: reveal 9.0–10.0s, pre-reveal longtasks
+  ~2.1–2.6s, stable window ~0.5–0.9s, framesOver100 = 1. `vrmBulkMs` ABSENT;
+  `vrmPreRevealAmbientParses`/`PlayerParses` stamp explicit 0/0 on a guest
+  boot (acceptance: ambient 0, player ≤ 1).
+- A first full batch ran into box contention mid-batch (4 lingering Codex
+  xhigh processes + 18 automation chromes → CPU 99%; baseline reveals hit
+  30s, three candidate runs breached §2b sanity bounds). The quiet re-run
+  after killing the offenders passed everything — the breaches tracked the
+  environment, not the candidate. Both batches archived? Only the passing
+  quiet batch is archived (`docs/perf-data/cold-load-rung4-sliceC-2026-08-11/`,
+  24 reports + manifest + gate-verdict.json); the contended batch remains in
+  `cold-load-runs/sliceC-pairs-webgpu/` locally, evidence of the rig rule
+  ("verify codex PIDs dead after done" — they weren't).
+- Punch list adds: (a) probe quiesce budget vs deliberately-deferred
+  post-reveal work — slice D's boot-core capture should treat the staggered
+  tail as expected, not as non-quiescence; (b) world-labels-overlay orphan
+  occlude-list slots from suspended-retry registrations (Codex r5 nit,
+  pre-existing class); (c) epoch-token-per-parse-job (subsumes two accepted
+  telemetry residuals) in slice D's instrumentation.
+- REMAINING slice-C gate item: the wanderer pop-in is spawn-adjacent — the
+  FOUNDER playtest on staging is part of this slice's acceptance (E4); not
+  done until that sign-off.

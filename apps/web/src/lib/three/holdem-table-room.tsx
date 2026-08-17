@@ -31,10 +31,7 @@ import {
   type Surface,
 } from '@/lib/cove/card-parity-mirror';
 import type { CashSettledHandSnapshot } from '@clawville/shared';
-import type {
-  CashPublicSeat,
-  PublicTableStateResponse,
-} from '@/lib/cove/cash-poker';
+import type { PublicTableStateResponse } from '@/lib/cove/cash-poker';
 import {
   getHoldemBadgeRegistryVersion,
   getHoldemSeatBadgeElement,
@@ -851,6 +848,11 @@ export interface LiveTableRoomState {
   settled: CashSettledHandSnapshot | null;
 }
 
+interface ResolvedCashFigureSeat {
+  seatIndex: number;
+  avatarId: string;
+}
+
 function HoldemTableRoomScene({
   instanceId,
   liveTable,
@@ -1109,11 +1111,16 @@ function HoldemTableRoomScene({
       {/* Round-10 table chairs share each body's faceYaw. Their measured
           y=50.32 cushion pins every humanoid hip and rigless perch profile. */}
       {roomSeats.map((seat, index) => {
-        const cashSeat: CashPublicSeat | undefined = cashLive?.seats.find(
+        const resolvedSeat: ResolvedCashFigureSeat | undefined = cashLive?.seats.find(
           (candidate) => candidate.seatIndex === seat.engineSeatIndex,
-        );
-        const modelKey = cashSeat
-          ? stableAvatarModelKey(cashSeat.avatarId)
+        ) ?? (cashLive === null
+          ? liveTable?.table?.seats.find(
+            (candidate) => candidate.status !== 'left'
+              && candidate.seatIndex === seat.engineSeatIndex,
+          )
+          : undefined);
+        const modelKey = resolvedSeat
+          ? stableAvatarModelKey(resolvedSeat.avatarId)
           : BOT_MODEL_KEYS[index]!;
         const reg = MODEL_REGISTRY[modelKey] as ModelRegistryEntry;
         const usesScale100SitFallback = reg.animatorId === 'hermes-female'
@@ -1125,7 +1132,7 @@ function HoldemTableRoomScene({
         const handSampleSeat = index === 0 || index === 3
           ? seat.engineSeatIndex
           : undefined;
-        const figureVisible = !liveTable || Boolean(cashSeat);
+        const figureVisible = !liveTable || Boolean(resolvedSeat);
         return (
           <group
             key={`holdem-seat-${seat.engineSeatIndex}`}
@@ -1145,7 +1152,7 @@ function HoldemTableRoomScene({
             ) : (
               <FrozenFigure
                 reg={reg}
-                instanceId={`holdem-room-seat-${seat.engineSeatIndex}-${cashSeat?.avatarId ?? modelKey}`}
+                instanceId={`holdem-room-seat-${seat.engineSeatIndex}-${resolvedSeat?.avatarId ?? modelKey}`}
                 pose={usesChibiSitFallback
                   ? 'idle'
                   : usesScale100SitFallback ? 'sit_idle_m' : TABLE_POSE_BY_BOT[index]!}

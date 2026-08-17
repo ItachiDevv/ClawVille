@@ -3,16 +3,19 @@
  *
  * Keeps `N` open `source='house'` public tables alive per tier at all times so a
  * visitor always finds a populated, bot-seated table to sit at. A guarded
- * `setInterval` that, each pass and per tier:
- *   1. COUNTs the open `source='house'` public tables of that `tierKey`.
- *   2. Creates the deficit `(N - open)` via `cashTableManager.createTable(...)`
+ * `setInterval` that, each pass:
+ *   1. Releases abandoned, busted non-seeded seats across all cash tables.
+ *   2. Retires safe-to-close house tables whose stakes no longer match their tier.
+ *   3. COUNTs the open `source='house'` public tables of each `tierKey`.
+ *   4. Creates the deficit `(N - open)` via `cashTableManager.createTable(...)`
  *      with the HOUSE-BANK avatar as the creator subject.
- *   3. EAGER-SEATS the bots (`cashTableManager.seatHouseBots`) so the lobby shows
+ *   5. EAGER-SEATS the bots (`cashTableManager.seatHouseBots`) so the lobby shows
  *      ~`seededAgentSlots` seated bots per table WITHOUT dealing a hand (Option B,
  *      founder-approved 2026-06-22) — the "always populated" look with NO 24/7
  *      bot-vs-bot bankroll drain (no hand deals until a REAL player sits).
- * It NEVER deletes a table — an empty house table simply idles. A bounded `N` per
- * tier (env-overridable, default 2/2/1) keeps it from running away.
+ * It never deletes rows: retired tables are closed only after their seeded stacks
+ * are reclaimed and escrow reaches zero. A bounded `N` per tier (env-overridable,
+ * default 2/2/1) keeps it from running away.
  *
  * ── WHY IT BYPASSES THE PER-CREATOR CAP ──────────────────────────────────────
  * The route's `MAX_CONCURRENT_OPEN_TABLES_PER_CREATOR=3` cap lives ONLY in
@@ -52,6 +55,9 @@ import {
 let scalerInterval: ReturnType<typeof setInterval> | null = null;
 let sweepInFlight = false;
 
+// Give a busted player ten minutes to reconnect before freeing their dead seat.
+const BUSTED_SEAT_IDLE_MS = 10 * 60 * 1_000;
+
 /** COUNT the open `source='house'` public tables of a tier. One grouped query per tier. */
 async function countOpenHouseTables(tierKey: string): Promise<number> {
   const rows = await realDb.execute<{ n: number | string }>(
@@ -60,6 +66,88 @@ async function countOpenHouseTables(tierKey: string): Promise<number> {
           AND status = 'open' AND tier_key = ${tierKey}`,
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Release abandoned zero-stack human/agent seats on house and player tables. The
+ * query supplies candidates only; the manager serializes per table and re-checks
+ * both the seat and live-hand guard before changing anything.
+ */
+async function releaseBustedSeats(): Promise<void> {
+  let rows: Array<{ seat_id: string; table_id: string }>;
+  try {
+    // Raw-sql params bypass Drizzle's column serializers — a bare Date throws at
+    // runtime on the postgres.js driver, so the timestamp goes over as ISO text.
+    const staleBefore = new Date(Date.now() - BUSTED_SEAT_IDLE_MS).toISOString();
+    rows = await realDb.execute<{ seat_id: string; table_id: string }>(
+      sql`SELECT id AS seat_id, table_id
+          FROM poker_cash_seats
+          WHERE status <> 'left'
+            AND is_seeded = 'false'
+            AND current_stack_ct = '0'
+            AND updated_at < ${staleBefore}::timestamptz`,
+    );
+  } catch (err) {
+    console.error('[cash-scaler] busted-seat discovery failed:', err);
+    return;
+  }
+
+  for (const row of rows) {
+    try {
+      await cashTableManager.releaseBustedSeat(row.table_id, row.seat_id);
+    } catch (err) {
+      console.error(
+        `[cash-scaler] busted seat ${row.seat_id} on table ${row.table_id} release failed:`,
+        err,
+      );
+    }
+  }
+}
+
+/**
+ * Close open house tables whose persisted stakes no longer match their configured
+ * tier. One discovery query is the entire common-case cost; each candidate is
+ * independently fenced and retired by the manager so one failure cannot stop the
+ * remaining candidates or escape the scaler pass.
+ */
+async function retireMismatchedHouseTables(): Promise<void> {
+  let rows: Array<{ id: string }>;
+  try {
+    rows = await realDb.execute<{ id: string }>(
+      sql`SELECT id FROM poker_cash_tables
+          WHERE source = 'house' AND status = 'open'
+            AND (
+              tier_key IS NULL
+              OR tier_key NOT IN (${HOUSE_TIER_KEYS[0]}, ${HOUSE_TIER_KEYS[1]}, ${HOUSE_TIER_KEYS[2]})
+              OR (tier_key = ${HOUSE_TIER_KEYS[0]} AND (
+                buy_in_ct IS DISTINCT FROM ${HOUSE_TIERS.low.buyInCt}
+                OR small_blind_ct IS DISTINCT FROM ${HOUSE_TIERS.low.smallBlindCt}
+                OR big_blind_ct IS DISTINCT FROM ${HOUSE_TIERS.low.bigBlindCt}
+              ))
+              OR (tier_key = ${HOUSE_TIER_KEYS[1]} AND (
+                buy_in_ct IS DISTINCT FROM ${HOUSE_TIERS.mid.buyInCt}
+                OR small_blind_ct IS DISTINCT FROM ${HOUSE_TIERS.mid.smallBlindCt}
+                OR big_blind_ct IS DISTINCT FROM ${HOUSE_TIERS.mid.bigBlindCt}
+              ))
+              OR (tier_key = ${HOUSE_TIER_KEYS[2]} AND (
+                buy_in_ct IS DISTINCT FROM ${HOUSE_TIERS.high.buyInCt}
+                OR small_blind_ct IS DISTINCT FROM ${HOUSE_TIERS.high.smallBlindCt}
+                OR big_blind_ct IS DISTINCT FROM ${HOUSE_TIERS.high.bigBlindCt}
+              ))
+            )`,
+    );
+  } catch (err) {
+    console.error('[cash-scaler] mismatched house-table discovery failed:', err);
+    return;
+  }
+
+  for (const row of rows) {
+    try {
+      await cashTableManager.retireHouseTable(row.id);
+    } catch (err) {
+      console.error(`[cash-scaler] house table ${row.id} retirement failed:`, err);
+    }
+  }
 }
 
 /**
@@ -91,6 +179,9 @@ export async function cashHouseScalerPass(): Promise<number> {
 
     const seededSlots = houseSeededSlotsPerTable();
     let created = 0;
+
+    await releaseBustedSeats();
+    await retireMismatchedHouseTables();
 
     for (const tierKey of HOUSE_TIER_KEYS) {
       try {

@@ -556,6 +556,96 @@ export class CashTableManager {
     });
   }
 
+  /**
+   * Retire one obsolete open house table when it is safe to do so.
+   *
+   * The live-hand and human-seat guards run under the same per-table mutex as
+   * sit/leave. Busted human seats and seeded stacks are released exclusively
+   * through `cashOutSeat`; the final close is allowed only after a fresh FOR UPDATE
+   * read proves escrow reached zero. Returns true only when this call closed the
+   * table.
+   */
+  async retireHouseTable(tableId: string): Promise<boolean> {
+    return this.withTableLock(tableId, async () => {
+      const table = await this.getTable(tableId);
+      if (!table || table.source !== 'house' || table.status !== 'open') return false;
+
+      const sid = simTableId(tableId);
+      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      if (handLive) return false;
+
+      const seats = await this.activeSeats(tableId);
+      if (
+        seats.some(
+          (seat) => seat.isSeeded === 'false' && Number(seat.currentStackCt) !== 0,
+        )
+      ) {
+        console.log(`[cash-manager] keeping obsolete house table ${tableId}: active human seat`);
+        return false;
+      }
+
+      for (const seat of seats) {
+        if (seat.isSeeded === 'true' || Number(seat.currentStackCt) === 0) {
+          await this.cashOutSeat(table, seat);
+        }
+      }
+
+      return this.db.transaction(async (tx) => {
+        const rows = await tx.execute<{
+          source: string;
+          status: string;
+          table_escrow_ct: string;
+        }>(
+          sql`SELECT source, status, table_escrow_ct
+              FROM poker_cash_tables WHERE id = ${tableId} FOR UPDATE`,
+        );
+        const lockedTable = rows[0];
+        if (!lockedTable || lockedTable.source !== 'house' || lockedTable.status !== 'open') {
+          return false;
+        }
+
+        const escrow = Number(lockedTable.table_escrow_ct);
+        if (!Number.isFinite(escrow) || escrow !== 0) {
+          console.error(
+            `[cash-manager] refusing to close obsolete house table ${tableId}: escrow ${escrow} CT remains`,
+          );
+          return false;
+        }
+
+        await tx
+          .update(pokerCashTables)
+          .set({ status: 'closed', updatedAt: new Date() })
+          .where(eq(pokerCashTables.id, tableId));
+        return true;
+      });
+    });
+  }
+
+  /**
+   * Release one abandoned busted human/agent seat after the scaler discovers it.
+   * The scaler owns the ten-minute age filter; this lock-held path re-checks the
+   * money and hand-safety predicates immediately before the idempotent zero-credit
+   * cash-out. Applies to every cash-table source.
+   */
+  async releaseBustedSeat(tableId: string, seatId: string): Promise<boolean> {
+    return this.withTableLock(tableId, async () => {
+      const table = await this.getTable(tableId);
+      if (!table) return false;
+
+      const sid = simTableId(tableId);
+      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      if (handLive) return false;
+
+      const seat = (await this.activeSeats(tableId)).find((candidate) => candidate.id === seatId);
+      if (!seat || seat.isSeeded !== 'false' || Number(seat.currentStackCt) !== 0) {
+        return false;
+      }
+
+      await this.cashOutSeat(table, seat);
+      return true;
+    });
+  }
+
   private validateConfig(config: CreateCashTableConfig): void {
     const { buyInCt, smallBlindCt, bigBlindCt, maxSeats, seededAgentSlots } = config;
     if (!Number.isInteger(buyInCt) || buyInCt <= 0) {

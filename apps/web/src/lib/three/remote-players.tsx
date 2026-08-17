@@ -9,7 +9,13 @@ import {
 } from '@clawville/shared';
 import type { NpcSpriteState } from '@/stores/npc';
 import { usePlayerStore, type RemotePlayerState } from '@/stores/players';
-import { GLBNpcMesh, VRMNpcMesh } from '@/lib/three/arena-npcs';
+import {
+  GLBNpcMesh,
+  VRMNpcMesh,
+  useAmbientBodyRelease,
+  useVRMOrphanCancel,
+} from '@/lib/three/arena-npcs';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 import { preloadVRMBytes } from '@/lib/three/vrm-loader';
 
@@ -102,6 +108,9 @@ function adaptPlayer(player: RemotePlayerState): NpcSpriteState {
 
 interface RemotePlayerEntryProps {
   player: RemotePlayerState;
+  /** Slice C: false while the DeferredWarmAttachment is warming — gates the
+   *  DOM label (the three subtree is hidden by the attachment's group). */
+  attachmentVisible?: boolean;
 }
 
 /**
@@ -129,7 +138,10 @@ interface RemotePlayerEntryProps {
  * store mutated in place; identity never changed; the adapter froze at mount and
  * remote players mounted once then never moved.)
  */
-const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlayerEntryProps) {
+const RemotePlayerEntry = memo(function RemotePlayerEntry({
+  player,
+  attachmentVisible = true,
+}: RemotePlayerEntryProps) {
   // Rebuilt whenever `player` identity changes — i.e. every snapshot in which
   // this player moved (immutable store update, see header). Still players keep
   // their ref so this memo bails and nothing recomputes. Cheap allocation; we
@@ -141,19 +153,60 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({ player }: RemotePlay
     // Eagerly warm the VRM byte cache (HTTP fetch only; no parse) so the
     // VRMNpcMesh Suspense boundary (in the parent) can start parsing as
     // soon as possible. Remote player VRMs like `phanes` and `eliza-chibi`
-    // are NOT in the module-scope preload list in arena-npcs.tsx (which
-    // only covers the 11 wandering NPC VRMs). Without this, the bytes
-    // fetch starts only AFTER useVRMInstance throws its first Suspense
-    // promise — adding one full HTTP round-trip to an already-queued
-    // parse. `preloadVRMBytes` is a no-op if the bytes are already cached.
+    // are NOT preloaded anywhere else. Rung-4 slice C: this entry now mounts
+    // only AFTER the decorative release (see DeferredRemoteBody below), so
+    // this render-phase warm can no longer race the boot's tier-1 fetches.
     preloadVRMBytes(regEntry.path);
     // VRMNpcMesh calls useVRMInstance which throws a Suspense promise while
     // loading. The promise is caught by the <Suspense> boundary in
     // RemotePlayers (one level up, outside this memo wrapper).
-    return <VRMNpcMesh npc={npcLike} />;
+    return <VRMNpcMesh npc={npcLike} attachmentVisible={attachmentVisible} />;
   }
-  return <GLBNpcMesh npc={npcLike} />;
+  return <GLBNpcMesh npc={npcLike} attachmentVisible={attachmentVisible} />;
 });
+
+/**
+ * Rung-4 slice C (Codex round-1 finding 1): remote bodies are ambient for
+ * boot purposes — a multiplayer snapshot arriving pre-reveal must not enqueue
+ * VRM parses into the vrmBulk gate. Same deferral + warm-queue treatment as
+ * wanderers (useAmbientBodyRelease), plus the orphan-parse cancel bracket
+ * for a remote player who LEAVES while their mesh is still suspended.
+ * Mid-session joins initialize released and mount immediately with a real
+ * distance priority.
+ */
+function DeferredRemoteBody({ player }: { player: RemotePlayerState }) {
+  const { released, priority } = useAmbientBodyRelease(player.x, player.y, false);
+  const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
+  useVRMOrphanCancel(
+    regEntry?.avatar_type === 'vrm' ? regEntry.path : null,
+    player.id,
+  );
+  if (!released) return null;
+  // The Suspense boundary must live INSIDE this component, BELOW the
+  // cancellation hook (Codex round-2 finding 1): a post-release join renders
+  // the suspending VRM subtree on this component's very first render, and
+  // with only the outer map-level boundary, this component itself would be
+  // held un-committed — the orphan-cancel effect would never install, and a
+  // player leaving before resolution would leak the parse. With the inner
+  // boundary, only the subtree below it suspends; this component commits.
+  return (
+    <Suspense fallback={null}>
+      {/* key={player.species} (Codex round-3 finding 2): remote players can
+          switch avatars under a stable id — the warm state is scoped to the
+          model resource so the replacement gets its own warm pass instead of
+          attaching unwarmed under a stale ready=true attachment. */}
+      <DeferredWarmAttachment
+        key={player.species}
+        label={`remote:${player.id}`}
+        priority={priority}
+      >
+        {(warmReady) => (
+          <RemotePlayerEntry player={player} attachmentVisible={warmReady} />
+        )}
+      </DeferredWarmAttachment>
+    </Suspense>
+  );
+}
 
 /**
  * Top-level remote-players renderer. Mounts inside `World3DCanvas` next to
@@ -180,7 +233,7 @@ export default function RemotePlayers() {
         if (p.isLocal) return null;
         return (
           <Suspense key={p.id} fallback={null}>
-            <RemotePlayerEntry player={p} />
+            <DeferredRemoteBody player={p} />
           </Suspense>
         );
       })}

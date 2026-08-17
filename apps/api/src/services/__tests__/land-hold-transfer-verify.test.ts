@@ -24,6 +24,7 @@ import {
   LandHoldVerifyError,
   REFUND_FEE_LAMPORTS,
   _landHoldVerifyAlertThrottleSizeForTest,
+  _landHoldVerifyCompletedHarvestSizeForTest,
   _resetLandHoldVerifyDepsForTest,
   _setLandHoldVerifyDepsForTest,
   blockTimeInsideWindow,
@@ -41,11 +42,12 @@ import {
   probeTransaction,
   rotatedDestinationObligations,
   scanFactsOf,
+  startLandHoldVerifySweeper,
+  stopLandHoldVerifySweeper,
   submitTransferSignature,
   sweepTransferChallenges,
   receivedLamportsFrom,
   refundMemoText,
-  transactionCarriesChallengeMemo,
   transactionHasTopLevelTransferLeg,
   transactionMatchesTransferLeg,
   transactionSettlesChallenge,
@@ -200,6 +202,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const LATE_GRACE_MS = 30 * 60 * 1000;
 /** Mirrors UNCLAIMED_CLOSED_MARGIN_MS in the service. */
 const CLOSED_MARGIN_MS = 5 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60_000;
 
 class FakeStore implements LandHoldVerifyStore {
   rows: ChallengeRow[] = [];
@@ -336,6 +339,32 @@ class FakeStore implements LandHoldVerifyStore {
     return n;
   }
 
+  async expireChallengeIfLapsed(challengeId: string): Promise<boolean> {
+    const row = this.rows.find((candidate) => candidate.id === challengeId);
+    if (
+      !row ||
+      row.status !== 'pending' ||
+      row.inboundSignature != null ||
+      row.expiresAt.getTime() >= this.clock()
+    ) {
+      return false;
+    }
+    row.status = 'expired';
+    return true;
+  }
+
+  async listPendingChallenges(limit: number): Promise<ChallengeRow[]> {
+    return this.rows
+      .filter(
+        (r) =>
+          r.status === 'pending' &&
+          r.inboundSignature == null &&
+          r.expiresAt.getTime() > this.clock(),
+      )
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
   async listScannableChallenges(
     limit: number,
     graceMs: number,
@@ -348,7 +377,7 @@ class FakeStore implements LandHoldVerifyStore {
           (r.status === 'pending' || r.status === 'expired') &&
           // CLOSED only: a live window belongs to the user, who may submit.
           r.expiresAt.getTime() <= this.clock() - closedForMs &&
-          r.expiresAt.getTime() > this.clock() - graceMs,
+          r.expiresAt.getTime() > this.clock() - (graceMs + closedForMs),
       )
       .slice(0, limit)
       .map((r) => ({ ...r }));
@@ -414,6 +443,7 @@ class FakeStore implements LandHoldVerifyStore {
     fromMs: number;
     toMs: number;
     limit: number;
+    oldestFirst?: boolean;
   }): Promise<ScanLedgerRow[]> {
     return [...this.scans.values()]
       .filter(
@@ -422,7 +452,14 @@ class FakeStore implements LandHoldVerifyStore {
           (s.blockTimeMs == null ||
             (s.blockTimeMs >= input.fromMs && s.blockTimeMs <= input.toMs)),
       )
-      .sort((a, b) => (b.blockTimeMs ?? 0) - (a.blockTimeMs ?? 0))
+      .sort((a, b) => {
+        const aTime = a.blockTimeMs;
+        const bTime = b.blockTimeMs;
+        if (aTime == null && bTime != null) return 1;
+        if (aTime != null && bTime == null) return -1;
+        const delta = (aTime ?? 0) - (bTime ?? 0);
+        return input.oldestFirst ? delta : -delta;
+      })
       .slice(0, input.limit)
       .map((s) => ({ signature: s.signature, blockTimeMs: s.blockTimeMs, facts: s.facts }));
   }
@@ -831,6 +868,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  stopLandHoldVerifySweeper();
   console.warn = realWarn;
   console.log = realLog;
   _resetLandHoldVerifyDepsForTest();
@@ -869,9 +907,8 @@ function seedRefundedFees(count: number, lamports = 1_000): void {
 }
 
 /**
- * The WHOLE door-2 flow: publish the on-chain transaction, then SUBMIT its
- * signature. Verification is submission-based since round 3, so a test that
- * expects a verified wallet must submit — a sweep alone only refunds.
+ * The exact-signature fallback flow: publish the on-chain transaction, then
+ * submit its signature. Poll and sweep use separate helpers in their tests.
  */
 async function payAndSubmit(
   userId: string,
@@ -906,8 +943,8 @@ async function openFor(userId: string, wallet: string) {
 
 /**
  * Publish a finalized inbound transfer that settles `lamports` from `from`.
- * `memo` defaults to the challenge id, because a transfer WITHOUT a memo naming
- * the challenge is deliberately not proof (see the service header).
+ * `memo` defaults to the challenge id so historical wire-compat cases stay easy
+ * to express. Settlement deliberately ignores it.
  */
 function publishInbound(
   signature: string,
@@ -919,17 +956,18 @@ function publishInbound(
     memoRaw?: boolean;
     memoInner?: boolean;
     memoProgramId?: string;
-    blockTimeMs?: number;
+    blockTimeMs?: number | null;
     err?: unknown;
     signed?: boolean;
     inner?: boolean;
   },
 ): void {
+  const blockTimeMs = opts.blockTimeMs === undefined ? clockMs : opts.blockTimeMs;
   rpc.signatures.unshift({
     signature,
     err: opts.err ?? null,
     confirmationStatus: 'finalized',
-    blockTime: Math.floor((opts.blockTimeMs ?? clockMs) / 1000),
+    blockTime: blockTimeMs == null ? null : Math.floor(blockTimeMs / 1000),
   });
   const legs: TransferLeg[] = [
     { source: opts.from, destination: opts.to, lamports: opts.lamports },
@@ -944,7 +982,7 @@ function publishInbound(
     signature,
     parsedTx({
       err: opts.err,
-      blockTimeMs: opts.blockTimeMs ?? clockMs,
+      blockTimeMs,
       signers: opts.signed === false ? [pubkey()] : [opts.from],
       readonly: opts.signed === false ? [opts.from] : [],
       top: [...(transferInner ? [] : legs), ...(memoInner ? [] : memoLeg)],
@@ -967,11 +1005,8 @@ function publishInbound(
 // they are checked by `tsc --noEmit` (this file is inside apps/api's include).
 // ===========================================================================
 
-// NOTE (adversarial review 2026-08-10): the frozen shapes gained `memo` and the
-// `rejected` / `rejectedReason` pair when the memo requirement landed. Amount +
-// sender alone proved only that a wallet sent us lamports, which a phished
-// whale can be induced to do for someone ELSE's declaration; the memo is the
-// sender's statement of intent. The scratchpad spec §9 was updated to match.
+// `memo` and `memo_missing` remain in the frozen shapes for historical wire and
+// database compatibility even though no new attribution produces that reason.
 type SpecDoorAvailability = { available: boolean; destination: string | null };
 type SpecOpenResult = {
   challengeId: string;
@@ -1529,12 +1564,7 @@ describe('attribution', () => {
     ).toBe(false);
   });
 
-  // ── BLOCKING 1 (adversarial review 2026-08-10): the memo is what makes a
-  // door-2 transfer a STATEMENT OF INTENT. Without it, an attacker who declares
-  // a whale's pubkey first can phish the whale into sending the exact amount and
-  // every other check passes.
-
-  it('rejects an exact, correctly signed transfer that carries NO memo', () => {
+  it('settles an exact, correctly signed transfer that carries no memo', () => {
     const from = pubkey();
     const to = pubkey();
     const probe = probeTransaction(
@@ -1543,7 +1573,6 @@ describe('attribution', () => {
     expect(probe!.memos).toHaveLength(0);
     expect(transactionMatchesTransferLeg(probe, { from, to, lamports: 10_000_123 })).toBe(true);
     expect(transactionSignedBySource(probe, from)).toBe(true);
-    expect(transactionCarriesChallengeMemo(probe, CHALLENGE_ID)).toBe(false);
     expect(
       transactionSettlesChallenge(probe, {
         from,
@@ -1551,10 +1580,10 @@ describe('attribution', () => {
         lamports: 10_000_123,
         challengeId: CHALLENGE_ID,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("rejects a transfer carrying a DIFFERENT challenge's memo", () => {
+  it("ignores a different challenge's memo", () => {
     const from = pubkey();
     const to = pubkey();
     const other = '00000000-0000-4000-8000-0000000fedcb';
@@ -1564,8 +1593,6 @@ describe('attribution', () => {
         top: [{ source: from, destination: to, lamports: 10_000_123 }, { memo: other }],
       }),
     );
-    expect(transactionCarriesChallengeMemo(probe, other)).toBe(true);
-    expect(transactionCarriesChallengeMemo(probe, CHALLENGE_ID)).toBe(false);
     expect(
       transactionSettlesChallenge(probe, {
         from,
@@ -1573,7 +1600,7 @@ describe('attribution', () => {
         lamports: 10_000_123,
         challengeId: CHALLENGE_ID,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   // INVERTED 2026-08-10 (Codex adversarial money review). This case previously
@@ -1583,7 +1610,7 @@ describe('attribution', () => {
   // an attacker-controlled program, which CPIs BOTH the exact transfer AND a
   // memo naming the challenge. The victim never saw a memo. Only what the signer
   // put in the message they signed can be their statement of intent.
-  it('REFUSES a memo that was CPI-emitted rather than signed (top-level only)', () => {
+  it('ignores a CPI-emitted memo when the transfer itself is top level', () => {
     const from = pubkey();
     const to = pubkey();
     const probe = probeTransaction(
@@ -1594,10 +1621,8 @@ describe('attribution', () => {
         inner: [{ memo: CHALLENGE_ID, memoRaw: true }],
       }),
     );
-    // The memo IS parsed (so a scan can describe what happened) but it is flagged
-    // as inner, and only top-level memos can establish intent.
+    // The memo remains parsed for historical scan facts but is not a predicate.
     expect(probe!.memos).toEqual([{ text: CHALLENGE_ID, topLevel: false }]);
-    expect(transactionCarriesChallengeMemo(probe, CHALLENGE_ID)).toBe(false);
     expect(
       transactionSettlesChallenge(probe, {
         from,
@@ -1605,7 +1630,7 @@ describe('attribution', () => {
         lamports: 10_000_123,
         challengeId: CHALLENGE_ID,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('accepts a TOP-LEVEL memo in raw base58 form', () => {
@@ -1644,7 +1669,6 @@ describe('attribution', () => {
         inner: [{ source: from, destination: to, lamports: 10_000_123 }],
       }),
     );
-    expect(transactionCarriesChallengeMemo(probe, CHALLENGE_ID)).toBe(true);
     // Still IDENTIFIED, so the money is refundable...
     expect(transactionMatchesTransferLeg(probe, { from, to, lamports: 10_000_123 })).toBe(true);
     // ...but never proof.
@@ -1679,7 +1703,7 @@ describe('attribution', () => {
     expect(receivedLamportsFrom(probe, { from, to: pubkey() })).toBe(0);
   });
 
-  it('accepts a decorated memo and the v1 memo program, case-insensitively', () => {
+  it('parses a decorated memo from the v1 program but does not depend on it', () => {
     const from = pubkey();
     const to = pubkey();
     const probe = probeTransaction(
@@ -1694,10 +1718,20 @@ describe('attribution', () => {
         ],
       }),
     );
-    expect(transactionCarriesChallengeMemo(probe, CHALLENGE_ID)).toBe(true);
+    expect(probe!.memos).toEqual([
+      { text: `ClawVille verify ${CHALLENGE_ID.toUpperCase()} `, topLevel: true },
+    ]);
+    expect(
+      transactionSettlesChallenge(probe, {
+        from,
+        to,
+        lamports: 10_000_123,
+        challengeId: CHALLENGE_ID,
+      }),
+    ).toBe(true);
   });
 
-  it('never treats an empty challenge id as a satisfied memo', () => {
+  it('does not use the challenge id as a settlement predicate', () => {
     const from = pubkey();
     const to = pubkey();
     const probe = probeTransaction(
@@ -1706,8 +1740,9 @@ describe('attribution', () => {
         top: [{ source: from, destination: to, lamports: 1 }, { memo: 'anything at all' }],
       }),
     );
-    expect(transactionCarriesChallengeMemo(probe, '')).toBe(false);
-    expect(transactionCarriesChallengeMemo(probe, '   ')).toBe(false);
+    expect(
+      transactionSettlesChallenge(probe, { from, to, lamports: 1, challengeId: '' }),
+    ).toBe(true);
   });
 
   it('ignores a non-system program that mimics the parsed transfer shape', () => {
@@ -1727,10 +1762,10 @@ describe('attribution', () => {
       createdAt: new Date(1_000_000),
       expiresAt: new Date(1_000_000 + 60_000),
     };
-    expect(blockTimeInsideWindow(1_030_000, row, 0)).toBe(true);
-    expect(blockTimeInsideWindow(1_000_000 - 90_000, row, 0)).toBe(false);
-    expect(blockTimeInsideWindow(1_060_000 + 90_000, row, 0)).toBe(false);
-    expect(blockTimeInsideWindow(null, row, 1_030_000)).toBe(true);
+    expect(blockTimeInsideWindow(1_030_000, row)).toBe(true);
+    expect(blockTimeInsideWindow(1_000_000 - 90_000, row)).toBe(false);
+    expect(blockTimeInsideWindow(1_060_000 + 90_000, row)).toBe(false);
+    expect(blockTimeInsideWindow(null, row)).toBe(false);
   });
 });
 
@@ -1766,8 +1801,8 @@ describe('T7 one signature, one challenge', () => {
     const first = store.seed({ userId: USER_A, walletPubkey: wallet, lamports: 10_000_777 });
     const second = store.seed({ userId: USER_A, walletPubkey: wallet, lamports: 10_000_777 });
     store.declare(USER_A, wallet);
-    // The memo is what says WHICH of the two colliding rows the sender meant,
-    // and the submission names the row explicitly on top of that.
+    // The explicit challenge id selects the row; the atomic signature guard
+    // still prevents the same transfer from satisfying the other row.
     publishInbound(sig('sig-shared'), {
       from: wallet,
       to: store.wallet!.publicKey,
@@ -1792,6 +1827,34 @@ describe('T7 one signature, one challenge', () => {
         signature: sig('sig-shared'),
       }),
     ).rejects.toMatchObject({ code: 'signature_already_used', status: 409 });
+  });
+
+  it('binds one signature at most once across a poll and submit race', async () => {
+    const wallet = pubkey();
+    store.declare(USER_A, wallet);
+    const polled = store.seed({ userId: USER_A, walletPubkey: wallet, lamports: 10_000_888 });
+    const submitted = store.seed({ userId: USER_A, walletPubkey: wallet, lamports: 10_000_888 });
+    publishInbound(sig('poll-submit-race'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: 10_000_888,
+      memo: null,
+    });
+
+    await Promise.allSettled([
+      pollTransferChallenge({ userId: USER_A, challengeId: polled.id }),
+      submitTransferSignature({
+        userId: USER_A,
+        challengeId: submitted.id,
+        signature: sig('poll-submit-race'),
+      }),
+    ]);
+
+    const bound = [polled, submitted].filter(
+      (row) => store.row(row.id).inboundSignature === sig('poll-submit-race'),
+    );
+    expect(bound).toHaveLength(1);
+    expect([store.row(polled.id).status, store.row(submitted.id).status]).toContain('verified');
   });
 
   it('pages ops when one transaction pays two challenges, so the unsettled dust is not silently kept', async () => {
@@ -1926,6 +1989,55 @@ describe('T9 grant and refund discipline', () => {
     expect(user.verifiedAt).not.toBeNull();
     // T2 — application code never writes a non-null grandfather stamp.
     expect(user.grandfatheredPubkey).toBeNull();
+  });
+
+  it('recovers an observed row on the next poll after the first grant attempt fails', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    const realGrant = store.grantVerification.bind(store);
+    let failOnce = true;
+    store.grantVerification = async (input) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('grant unavailable');
+      }
+      return realGrant(input);
+    };
+
+    await expect(payAndSubmit(USER_A, opened, sig('grant-recover-poll'))).rejects.toThrow(
+      'grant unavailable',
+    );
+    expect(store.row(opened.challengeId).status).toBe('observed');
+
+    const status = await pollTransferChallenge({
+      userId: USER_A,
+      challengeId: opened.challengeId,
+    });
+    expect(status.state).toBe('verified');
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
+  });
+
+  it('recovers an observed row on the next sweep when the panel is closed', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    const realGrant = store.grantVerification.bind(store);
+    let failOnce = true;
+    store.grantVerification = async (input) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('grant unavailable');
+      }
+      return realGrant(input);
+    };
+
+    await expect(payAndSubmit(USER_A, opened, sig('grant-recover-sweep'))).rejects.toThrow(
+      'grant unavailable',
+    );
+    expect(store.row(opened.challengeId).status).toBe('observed');
+
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId).status).toBe('verified');
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
   });
 
   it('fails CLOSED when the declaration changed under an in-flight proof, and still refunds', async () => {
@@ -2123,34 +2235,28 @@ describe('T9 grant and refund discipline', () => {
 });
 
 // ===========================================================================
-// BLOCKING 1 — the memo is what makes door 2 PROOF (adversarial review)
+// Founder ruling 2026-08-11 — memo is deprecated and ignored
 // ===========================================================================
 
-describe('memo binding, end to end', () => {
-  it('refuses an exact transfer with NO memo, refunds it, and never verifies', async () => {
+describe('memo compatibility, end to end', () => {
+  it('settles an exact transfer with no memo and refunds it', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
-    // The phished-whale shape: right sender, right amount, right destination,
-    // correctly signed — and no statement of intent naming this account.
     const submitted = await payAndSubmit(USER_A, opened, sig('sig-no-memo'), { memo: null });
-    expect(submitted.rejectedReason).toBe('memo_missing');
+    expect(submitted.state).toBe('verified');
+    expect(submitted.rejectedReason).toBeNull();
     await sweepTransferChallenges();
 
     const row = store.row(opened.challengeId);
-    expect(row.status).toBe('rejected');
-    expect(row.rejectedReason).toBe('memo_missing');
-    expect(store.user(USER_A).verifiedPubkey).toBeNull();
-    expect(store.user(USER_A).verifiedAt).toBeNull();
-    // The money is still the sender's, so it goes home.
+    expect(row.status).toBe('verified');
+    expect(row.rejectedReason).toBeNull();
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
     expect(row.inboundSignature).toBe(sig('sig-no-memo'));
     expect(row.refundState).toBe('sent');
     expect(rpc.sentRaw).toHaveLength(1);
-    expect(
-      alerts.some((a) => a.context && (a.context as { reason?: string }).reason === 'memo_missing'),
-    ).toBe(true);
   });
 
-  it("refuses a transfer carrying ANOTHER challenge's memo", async () => {
+  it("settles a transfer carrying another challenge's memo", async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
     await payAndSubmit(USER_A, opened, sig('sig-wrong-memo'), {
@@ -2159,15 +2265,13 @@ describe('memo binding, end to end', () => {
     await sweepTransferChallenges();
 
     const row = store.row(opened.challengeId);
-    expect(row.status).toBe('rejected');
-    expect(row.rejectedReason).toBe('memo_missing');
-    expect(store.user(USER_A).verifiedPubkey).toBeNull();
+    expect(row.status).toBe('verified');
+    expect(row.rejectedReason).toBeNull();
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
     expect(row.refundState).toBe('sent');
   });
 
-  // INVERTED 2026-08-10 (Codex adversarial money review): a CPI-emitted memo is
-  // not the signer's statement, so accepting it reopened the phishing hole.
-  it('REFUSES a CPI-emitted memo end to end, and refunds the money', async () => {
+  it('ignores a CPI-emitted memo and settles the top-level transfer', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
     await payAndSubmit(USER_A, opened, sig('sig-inner-memo'), {
@@ -2176,9 +2280,9 @@ describe('memo binding, end to end', () => {
     });
     await sweepTransferChallenges();
     const row = store.row(opened.challengeId);
-    expect(row.status).toBe('rejected');
-    expect(row.rejectedReason).toBe('memo_missing');
-    expect(store.user(USER_A).verifiedPubkey).toBeNull();
+    expect(row.status).toBe('verified');
+    expect(row.rejectedReason).toBeNull();
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
     expect(row.refundState).toBe('sent');
   });
 
@@ -2223,6 +2327,148 @@ describe('memo binding, end to end', () => {
 // ===========================================================================
 
 describe('scan cost control', () => {
+  it('keeps live polls from re-parsing signatures with an active defer', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    const signature = sig('live-poll-active-parse-defer');
+    publishInbound(signature, {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+    });
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let parseCalls = 0;
+    rpc.getParsedTransaction = async (candidate, config) => {
+      parseCalls += 1;
+      if (parseCalls === 1) return null;
+      return realGetParsedTransaction(candidate, config);
+    };
+
+    await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(parseCalls).toBe(1);
+    expect(store.row(opened.challengeId).status).toBe('pending');
+
+    clockMs += 5_001;
+    await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(parseCalls).toBe(1);
+    expect([...store.scans.values()].some((entry) => entry.signature === signature)).toBe(false);
+    expect(store.row(opened.challengeId).status).toBe('pending');
+  });
+
+  it('aborts the remaining harvest parse batch after a 429', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('parse-429-first'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+    });
+    publishInbound(sig('parse-429-second'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+    });
+    let parseCalls = 0;
+    rpc.getParsedTransaction = async () => {
+      parseCalls += 1;
+      throw new Error('429 rate limit');
+    };
+
+    await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(parseCalls).toBe(1);
+    expect(store.row(opened.challengeId).status).toBe('pending');
+  });
+
+  it('shares one in-flight destination harvest across concurrent polls', async () => {
+    const walletA = pubkey();
+    const walletB = pubkey();
+    const first = await openFor(USER_A, walletA);
+    store.declare(USER_B, walletB);
+    const second = await openTransferChallenge({ userId: USER_B, declaredWallet: walletB });
+    let harvestCalls = 0;
+    let releaseHarvest!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseHarvest = resolve;
+    });
+    rpc.getSignaturesForAddress = async () => {
+      harvestCalls += 1;
+      signalStarted();
+      await release;
+      return [];
+    };
+
+    const firstPoll = pollTransferChallenge({ userId: USER_A, challengeId: first.challengeId });
+    await started;
+    const secondPoll = pollTransferChallenge({ userId: USER_B, challengeId: second.challengeId });
+    releaseHarvest();
+    await Promise.all([firstPoll, secondPoll]);
+
+    expect(harvestCalls).toBe(1);
+    expect(store.row(first.challengeId).status).toBe('pending');
+    expect(store.row(second.challengeId).status).toBe('pending');
+  });
+
+  it('runs the broad seven-day harvest between narrow polls inside the destination floor', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('broad-after-narrow'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs - 6 * DAY_MS,
+    });
+    let harvestCalls = 0;
+    const realGetSignaturesForAddress = rpc.getSignaturesForAddress.bind(rpc);
+    rpc.getSignaturesForAddress = async (...args) => {
+      harvestCalls += 1;
+      return realGetSignaturesForAddress(...args);
+    };
+
+    // The live poll's narrow window sees the page but correctly skips parsing
+    // the ancient transfer. It must not throttle the broader orphan sweep.
+    await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(store.obligations.size).toBe(0);
+    await sweepTransferChallenges();
+    expect(store.obligations.size).toBe(1);
+    expect(harvestCalls).toBe(2);
+
+    // Another narrow poll immediately after the broad pass is covered by it.
+    await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(harvestCalls).toBe(2);
+  });
+
+  it('bounds and lazily prunes completed harvest windows across one-off destinations', async () => {
+    const wallet = pubkey();
+    const destinationFor = (index: number): string => {
+      const bytes = Buffer.alloc(32);
+      bytes.writeUInt32LE(index + 1, 0);
+      return bs58.encode(bytes);
+    };
+
+    for (let index = 0; index < 1_025; index += 1) {
+      const row = store.seed({
+        userId: USER_A,
+        walletPubkey: wallet,
+        destinationPubkey: destinationFor(index),
+      });
+      await pollTransferChallenge({ userId: USER_A, challengeId: row.id });
+    }
+    expect(_landHoldVerifyCompletedHarvestSizeForTest()).toBe(1_024);
+
+    clockMs += 5_001;
+    const next = store.seed({
+      userId: USER_A,
+      walletPubkey: wallet,
+      destinationPubkey: destinationFor(1_025),
+    });
+    await pollTransferChallenge({ userId: USER_A, challengeId: next.id });
+    expect(_landHoldVerifyCompletedHarvestSizeForTest()).toBe(1);
+  });
+
   it('skips signatures outside the candidate window before spending a parse', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
@@ -2244,6 +2490,8 @@ describe('scan cost control', () => {
       );
     }
     await sweepTransferChallenges();
+    clockMs += 5_001;
+    await sweepTransferChallenges();
     // The CHALLENGE scan spends no parse on them (out of its window). The
     // obligation sweep does parse them once, because money that old can no
     // longer belong to any live challenge and has to be recorded as owed.
@@ -2259,13 +2507,12 @@ describe('scan cost control', () => {
     const parsedBefore = rpc.commitments.filter((c) => c === 'tx:finalized').length;
     closeChallengeWindow();
     await sweepTransferChallenges();
-    // The challenge scan parses exactly ONE new transaction: the in-window
-    // payment. The ancient ones were already parsed by the obligation sweep.
-    expect(rpc.commitments.filter((c) => c === 'tx:finalized')).toHaveLength(parsedBefore + 1);
-    // The scan FINDS the money so it can be refunded. It does NOT verify —
-    // that only happens when the user submits the signature.
-    expect(store.row(opened.challengeId).status).toBe('unclaimed');
-    expect(store.user(USER_A).verifiedPubkey).toBeNull();
+    // One harvest parse records the payment, then the shared attribution path
+    // performs one authoritative full fetch. Ancient facts are already stored.
+    expect(rpc.commitments.filter((c) => c === 'tx:finalized')).toHaveLength(parsedBefore + 2);
+    // The closed scan full-fetches and settles through the shared attribution.
+    expect(store.row(opened.challengeId).status).toBe('verified');
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
   });
 
   it('parses an OUTBOUND in-window signature once, however many passes run', async () => {
@@ -2318,7 +2565,7 @@ describe('scan cost control', () => {
 
     closeChallengeWindow();
     await sweepTransferChallenges();
-    expect(store.row(second.challengeId).status).toBe('unclaimed');
+    expect(store.row(second.challengeId).status).toBe('verified');
     expect(store.row(second.challengeId).inboundSignature).toBe(sig('sig-other-user'));
   });
 
@@ -2434,7 +2681,7 @@ describe('amount reuse and destination rotation', () => {
     closeChallengeWindow();
     await sweepTransferChallenges();
     expect(store.row(fresh.id).inboundSignature).toBe(sig('sig-newest-wins'));
-    expect(store.row(fresh.id).status).toBe('unclaimed');
+    expect(store.row(fresh.id).status).toBe('verified');
     expect(store.row(lapsed.id).inboundSignature).toBeNull();
   });
 
@@ -2483,8 +2730,8 @@ describe('amount reuse and destination rotation', () => {
 // Codex adversarial money review 2026-08-10 — round 2 blockers
 // ===========================================================================
 
-describe('BLOCKER 1 — CPI-generated memo cannot establish intent', () => {
-  it('refuses the full attack shape: opaque program CPIs both the transfer and the memo', async () => {
+describe('top-level transfer enforcement', () => {
+  it('refuses the full attack shape because the payment is CPI-emitted', async () => {
     const victim = pubkey();
     const opened = await openFor(USER_A, victim);
     // The victim signed ONE opaque instruction to an attacker program. Both the
@@ -2513,12 +2760,12 @@ describe('BLOCKER 1 — CPI-generated memo cannot establish intent', () => {
       challengeId: opened.challengeId,
       signature: sig('sig-cpi-attack'),
     });
-    expect(submitted.rejectedReason).toBe('memo_missing');
+    expect(submitted.rejectedReason).toBe('transfer_not_top_level');
     await sweepTransferChallenges();
 
     const row = store.row(opened.challengeId);
     expect(row.status).toBe('rejected');
-    expect(row.rejectedReason).toBe('memo_missing');
+    expect(row.rejectedReason).toBe('transfer_not_top_level');
     expect(store.user(USER_A).verifiedPubkey).toBeNull();
     // The victim's money still goes home.
     expect(row.refundState).toBe('sent');
@@ -2631,6 +2878,52 @@ describe('BLOCKER 2 — the refund-fee cap is bound to an authorization window',
 });
 
 describe('BLOCKER 3 — cheap spam cannot eclipse a real deposit', () => {
+  it('defers a null-parse head so the immediate broader pass reaches older entries', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    const nullHead = Array.from({ length: 50 }, (_, index) => sig(`null-parse-head-${index}`));
+    const olderSignature = sig('older-after-null-parse-head');
+    rpc.signatures = [
+      ...nullHead.map((signature) => ({
+        signature,
+        err: null,
+        confirmationStatus: 'finalized' as const,
+        blockTime: Math.floor(clockMs / 1000),
+      })),
+      {
+        signature: olderSignature,
+        err: null,
+        confirmationStatus: 'finalized',
+        blockTime: Math.floor(clockMs / 1000),
+      },
+    ];
+    rpc.txs.set(
+      olderSignature,
+      parsedTx({
+        blockTimeMs: clockMs,
+        signers: [pubkey()],
+        top: [{ source: pubkey(), destination: store.wallet!.publicKey, lamports: 1 }],
+      }),
+    );
+    const parseCalls = new Map<string, number>();
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    rpc.getParsedTransaction = async (signature, config) => {
+      parseCalls.set(signature, (parseCalls.get(signature) ?? 0) + 1);
+      return realGetParsedTransaction(signature, config);
+    };
+
+    await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(nullHead.every((signature) => parseCalls.get(signature) === 1)).toBe(true);
+    expect(parseCalls.has(olderSignature)).toBe(false);
+
+    // The sweep's broader harvest runs immediately despite the narrow completed
+    // floor. Deferred null heads consume no slots, so the older entry advances.
+    await sweepTransferChallenges();
+    expect(nullHead.every((signature) => parseCalls.get(signature) === 1)).toBe(true);
+    expect(parseCalls.get(olderSignature)).toBe(1);
+    expect([...store.scans.values()].some((entry) => entry.signature === olderSignature)).toBe(true);
+  });
+
   it('finds a payment buried behind a page of newer spam, and parses each spam once', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
@@ -2663,18 +2956,18 @@ describe('BLOCKER 3 — cheap spam cannot eclipse a real deposit', () => {
       pass < 5 && store.row(opened.challengeId).inboundSignature == null;
       pass += 1
     ) {
+      clockMs += 5_001;
       await sweepTransferChallenges();
     }
-    // Refund discovery REACHES the buried payment. (Verification does not depend
-    // on this at all any more — the user submits the signature — but the money
-    // must still be found and returned, and that is what this proves.)
+    // Closed discovery reaches the buried payment and full-fetches it through
+    // the same attribution path used by poll and submit.
     expect(store.row(opened.challengeId).inboundSignature).toBe(sig('sig-buried-payment'));
-    expect(store.row(opened.challengeId).status).toBe('unclaimed');
+    expect(store.row(opened.challengeId).status).toBe('verified');
 
     // And every transaction cost exactly ONE parse, ever — bounded by the
     // 121 signatures that exist, not by passes x page size.
     const parsedTotal = rpc.commitments.filter((c) => c === 'tx:finalized').length;
-    expect(parsedTotal).toBeLessThanOrEqual(121);
+    expect(parsedTotal).toBeLessThanOrEqual(122);
     await sweepTransferChallenges();
     await sweepTransferChallenges();
     expect(rpc.commitments.filter((c) => c === 'tx:finalized')).toHaveLength(parsedTotal);
@@ -2709,16 +3002,18 @@ describe('BLOCKER 3 — cheap spam cannot eclipse a real deposit', () => {
     store.listScannableChallenges = async () =>
       (await all(50, LATE_GRACE_MS, CLOSED_MARGIN_MS)).filter((r) => r.id === rowA.id);
     await sweepTransferChallenges();
-    expect(store.row(rowA.id).status).toBe('unclaimed');
+    expect(store.row(rowA.id).status).toBe('verified');
     expect(store.row(rowB.id).inboundSignature).toBeNull();
     const parsedAfterFirst = rpc.commitments.filter((c) => c === 'tx:finalized').length;
-    expect(parsedAfterFirst).toBe(2);
+    expect(parsedAfterFirst).toBe(3);
 
-    // Pass 2 sees row B and settles it from the STORED facts — no new parse.
+    // Pass 2 sees row B in the stored discovery facts and performs exactly one
+    // authoritative full fetch before settling it.
     store.listScannableChallenges = all;
+    clockMs += 5_001;
     await sweepTransferChallenges();
-    expect(store.row(rowB.id).status).toBe('unclaimed');
-    expect(rpc.commitments.filter((c) => c === 'tx:finalized')).toHaveLength(parsedAfterFirst);
+    expect(store.row(rowB.id).status).toBe('verified');
+    expect(rpc.commitments.filter((c) => c === 'tx:finalized')).toHaveLength(parsedAfterFirst + 1);
   });
 });
 
@@ -2950,7 +3245,7 @@ describe('HARDENING 8 — terminal transitions are bound to their owner', () => 
 });
 
 // ===========================================================================
-// ROUND 3 — verification is SIGNATURE-SUBMITTED, not scan-discovered
+// Exact-signature fallback
 // ===========================================================================
 
 describe('submitTransferSignature', () => {
@@ -3032,6 +3327,29 @@ describe('submitTransferSignature', () => {
     expect(store.row(opened.challengeId).status).toBe('pending');
   });
 
+  it('treats a finalized transaction with null block time as retryable without consuming the challenge', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('submit-null-block-time'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: null,
+    });
+
+    await expect(
+      submitTransferSignature({
+        userId: USER_A,
+        challengeId: opened.challengeId,
+        signature: sig('submit-null-block-time'),
+      }),
+    ).rejects.toMatchObject({ code: 'transaction_not_finalized', status: 404 });
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'pending',
+      inboundSignature: null,
+    });
+  });
+
   it('is idempotent on replay, and refuses a SECOND different signature', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
@@ -3080,12 +3398,12 @@ describe('submitTransferSignature', () => {
     expect(store.row(opened.challengeId).status).toBe('pending');
   });
 
-  it('rejects a missing top-level memo, and refunds it', async () => {
+  it('settles a memo-less transfer and refunds it', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
     const status = await payAndSubmit(USER_A, opened, sig('submit-no-memo'), { memo: null });
-    expect(status.state).toBe('rejected');
-    expect(status.rejectedReason).toBe('memo_missing');
+    expect(status.state).toBe('verified');
+    expect(status.rejectedReason).toBeNull();
     await sweepTransferChallenges();
     expect(store.row(opened.challengeId).refundState).toBe('sent');
   });
@@ -3340,7 +3658,413 @@ describe('ROUND 3 — cap-policy health closes the door', () => {
 // ===========================================================================
 
 describe('submit versus sweep', () => {
-  it('the sweep REFUSES to terminalize a challenge that is still open', async () => {
+  it('verifies an in-window payment when the closed sweep wins before a late submit', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('race-closed-sweep-first'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+
+    closeChallengeWindow();
+    clockMs += LATE_GRACE_MS - CLOSED_MARGIN_MS;
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'verified',
+      inboundSignature: sig('race-closed-sweep-first'),
+    });
+
+    await expect(
+      submitTransferSignature({
+        userId: USER_A,
+        challengeId: opened.challengeId,
+        signature: sig('race-closed-sweep-first'),
+      }),
+    ).resolves.toMatchObject({ state: 'verified' });
+  });
+
+  it('refunds an out-of-window closed payment without granting verification', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    closeChallengeWindow();
+    publishInbound(sig('closed-out-of-window'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'expired',
+      inboundSignature: sig('closed-out-of-window'),
+      refundState: 'sent',
+    });
+    expect(store.user(USER_A).verifiedPubkey).toBeNull();
+  });
+
+  it('preserves the unclaimed refund when a closed candidate full fetch is unavailable', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('closed-full-fetch-unavailable'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let reads = 0;
+    rpc.getParsedTransaction = async (signature, config) => {
+      reads += 1;
+      if (reads === 1) return realGetParsedTransaction(signature, config);
+      rpc.commitments.push(`tx:${config.commitment}`);
+      return null;
+    };
+
+    closeChallengeWindow();
+    clockMs += LATE_GRACE_MS - CLOSED_MARGIN_MS;
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'unclaimed',
+      inboundSignature: sig('closed-full-fetch-unavailable'),
+      refundState: 'sent',
+    });
+    expect(store.user(USER_A).verifiedPubkey).toBeNull();
+  });
+
+  it('keeps a post-grace row scannable after one thrown closed-row full fetch', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('closed-full-fetch-one-throw'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let reads = 0;
+    rpc.getParsedTransaction = async (signature, config) => {
+      reads += 1;
+      if (reads === 1) return realGetParsedTransaction(signature, config);
+      throw new Error('persistent full-fetch RPC failure');
+    };
+
+    closeChallengeWindow();
+    clockMs += LATE_GRACE_MS - CLOSED_MARGIN_MS;
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'expired',
+      inboundSignature: null,
+      refundState: 'none',
+    });
+    expect(store.row(opened.challengeId).refundAuthorizedAt).toBeNull();
+    expect(reads).toBe(2);
+  });
+
+  it('writes unclaimed and authorizes its refund after three consecutive thrown full fetches', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('closed-full-fetch-three-throws'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let reads = 0;
+    rpc.getParsedTransaction = async (signature, config) => {
+      reads += 1;
+      if (reads === 1) return realGetParsedTransaction(signature, config);
+      throw new Error('persistent full-fetch RPC failure');
+    };
+
+    closeChallengeWindow();
+    clockMs += LATE_GRACE_MS - CLOSED_MARGIN_MS;
+    await sweepTransferChallenges();
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'expired',
+      inboundSignature: null,
+      refundState: 'none',
+    });
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'unclaimed',
+      inboundSignature: sig('closed-full-fetch-three-throws'),
+      refundState: 'sent',
+    });
+    expect(reads).toBe(4);
+    expect(store.row(opened.challengeId).refundAuthorizedAt).not.toBeNull();
+    expect(store.user(USER_A).verifiedPubkey).toBeNull();
+  });
+
+  it('counts one shared signature at most once per sweep across destination groups', async () => {
+    const wallet = pubkey();
+    const destinations = [store.wallet!.publicKey, pubkey(), pubkey()];
+    store.retiredWallets = destinations.slice(1).map((publicKey) => ({
+      publicKey,
+      retiredAt: new Date(clockMs),
+    }));
+    const rows = destinations.map((destinationPubkey, index) =>
+      store.seed({
+        userId: USER_A,
+        walletPubkey: wallet,
+        destinationPubkey,
+        lamports: 10_001 + index,
+      }),
+    );
+    const signature = sig('closed-shared-signature-three-destinations');
+    const probe = probeTransaction(
+      parsedTx({
+        blockTimeMs: clockMs,
+        signers: [wallet],
+        top: rows.map((row) => ({
+          source: wallet,
+          destination: row.destinationPubkey,
+          lamports: row.lamports,
+        })),
+      }),
+    )!;
+    const facts = scanFactsOf(probe, new Set(destinations))!;
+    for (const destination of destinations) {
+      await store.recordScannedSignature({ destination, signature, blockTimeMs: clockMs, facts });
+    }
+    let reads = 0;
+    rpc.getParsedTransaction = async () => {
+      reads += 1;
+      throw new Error('shared signature full-fetch outage');
+    };
+
+    closeChallengeWindow();
+    clockMs += LATE_GRACE_MS - CLOSED_MARGIN_MS;
+    await sweepTransferChallenges();
+    expect(reads).toBe(3);
+    expect(rows.every((row) => store.row(row.id).inboundSignature == null)).toBe(true);
+
+    clockMs += SWEEP_INTERVAL_MS;
+    await sweepTransferChallenges();
+    expect(reads).toBe(6);
+    expect(rows.every((row) => store.row(row.id).inboundSignature == null)).toBe(true);
+
+    clockMs += SWEEP_INTERVAL_MS;
+    await sweepTransferChallenges();
+    expect(rows.filter((row) => store.row(row.id).status === 'unclaimed')).toHaveLength(1);
+    expect(rows.filter((row) => store.row(row.id).inboundSignature === signature)).toHaveLength(1);
+  });
+
+  it('uses unclaimed fallback on a thrown fetch inside the final two sweep slots', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('closed-full-fetch-final-margin'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let reads = 0;
+    rpc.getParsedTransaction = async (signature, config) => {
+      reads += 1;
+      if (reads === 1) return realGetParsedTransaction(signature, config);
+      throw new Error('full-fetch RPC failure in final margin');
+    };
+
+    clockMs =
+      new Date(opened.expiresAt).getTime() +
+      LATE_GRACE_MS +
+      CLOSED_MARGIN_MS -
+      2 * SWEEP_INTERVAL_MS +
+      1;
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'unclaimed',
+      inboundSignature: sig('closed-full-fetch-final-margin'),
+      refundState: 'sent',
+    });
+    expect(reads).toBe(2);
+    expect(store.row(opened.challengeId).refundAuthorizedAt).not.toBeNull();
+  });
+
+  it('retries the oldest defer before fifty newer defers consume the final-margin tail', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    const signature = sig('closed-final-margin-parse-defer');
+    const pageWalkSignature = sig('closed-final-margin-page-walk-budget');
+    const newerDefers = Array.from({ length: 50 }, (_, index) =>
+      sig(`closed-final-margin-newer-defer-${index}`),
+    );
+    publishInbound(pageWalkSignature, {
+      from: pubkey(),
+      to: store.wallet!.publicKey,
+      lamports: 1,
+      blockTimeMs: clockMs - 1,
+    });
+    publishInbound(signature, {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs,
+    });
+
+    const realGetSignaturesForAddress = rpc.getSignaturesForAddress.bind(rpc);
+    let signatureReads = 0;
+    rpc.getSignaturesForAddress = async (...args) => {
+      signatureReads += 1;
+      // Let broad orphan discovery complete without this new signature so the
+      // first parse belongs to the retry-deferred closed-tail harvest.
+      if (signatureReads === 1) return [];
+      // Keep the unrelated older signature out of the first retry harvest. It
+      // will prove the later retry page walk retains its independent budget.
+      if (signatureReads === 2) {
+        return (await realGetSignaturesForAddress(...args)).filter(
+          (ref) => ref.signature === signature,
+        );
+      }
+      return realGetSignaturesForAddress(...args);
+    };
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    const parseCalls = new Map<string, number>();
+    const secondSweepParseOrder: string[] = [];
+    let trackingSecondSweep = false;
+    rpc.getParsedTransaction = async (candidate, config) => {
+      parseCalls.set(candidate, (parseCalls.get(candidate) ?? 0) + 1);
+      if (trackingSecondSweep) secondSweepParseOrder.push(candidate);
+      if (candidate === signature && parseCalls.get(candidate) === 1) return null;
+      if (newerDefers.includes(candidate)) return null;
+      return realGetParsedTransaction(candidate, config);
+    };
+
+    clockMs =
+      new Date(opened.expiresAt).getTime() +
+      LATE_GRACE_MS +
+      CLOSED_MARGIN_MS -
+      2 * SWEEP_INTERVAL_MS +
+      1;
+    await sweepTransferChallenges();
+    expect(parseCalls.get(signature)).toBe(1);
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'expired',
+      inboundSignature: null,
+      refundState: 'none',
+    });
+    expect([...store.scans.values()].some((entry) => entry.signature === signature)).toBe(false);
+
+    clockMs += SWEEP_INTERVAL_MS;
+    for (const deferredSignature of newerDefers) {
+      publishInbound(deferredSignature, {
+        from: pubkey(),
+        to: store.wallet!.publicKey,
+        lamports: 1,
+      });
+    }
+    expect(
+      (await store.listScannableChallenges(50, LATE_GRACE_MS, CLOSED_MARGIN_MS)).some(
+        (row) => row.id === opened.challengeId,
+      ),
+    ).toBe(true);
+    trackingSecondSweep = true;
+    await sweepTransferChallenges();
+
+    // Broad non-retry coverage first creates fifty newer defers. The dedicated
+    // retry budget then re-parses the older target first, and the ordinary page
+    // walk skips all active defers without charging them against its own budget.
+    expect(new Set(secondSweepParseOrder.slice(0, 50))).toEqual(new Set(newerDefers));
+    expect(secondSweepParseOrder[50]).toBe(signature);
+    expect(parseCalls.get(signature)).toBe(3);
+    expect(parseCalls.get(pageWalkSignature)).toBe(1);
+    expect(signatureReads).toBe(4);
+    expect([...store.scans.values()].some((entry) => entry.signature === signature)).toBe(true);
+    expect(
+      [...store.scans.values()].some((entry) => entry.signature === pageWalkSignature),
+    ).toBe(true);
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'verified',
+      inboundSignature: signature,
+      refundState: 'sent',
+    });
+    expect(store.row(opened.challengeId).refundAuthorizedAt).not.toBeNull();
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
+  });
+
+  it('scopes a multi-destination parse defer through final-margin attribution', async () => {
+    const destinationA = pubkey();
+    const destinationB = store.wallet!.publicKey;
+    const wallet = pubkey();
+    const signature = sig('closed-final-margin-multi-destination-defer');
+    store.retiredWallets = [{ publicKey: destinationA, retiredAt: new Date(clockMs) }];
+    store.seed({
+      userId: USER_B,
+      walletPubkey: pubkey(),
+      destinationPubkey: destinationA,
+      status: 'verified',
+      inboundSignature: sig('multi-destination-history-a'),
+      refundState: 'sent',
+    });
+    store.declare(USER_A, wallet);
+    const target = store.seed({
+      userId: USER_A,
+      walletPubkey: wallet,
+      destinationPubkey: destinationB,
+    });
+    rpc.signatures.unshift({
+      signature,
+      err: null,
+      confirmationStatus: 'finalized',
+      blockTime: Math.floor(clockMs / 1000),
+    });
+    rpc.txs.set(
+      signature,
+      parsedTx({
+        blockTimeMs: clockMs,
+        signers: [wallet],
+        top: [
+          { source: wallet, destination: destinationA, lamports: 1 },
+          { source: wallet, destination: destinationB, lamports: target.lamports },
+        ],
+      }),
+    );
+
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let parseCalls = 0;
+    rpc.getParsedTransaction = async (candidate, config) => {
+      if (candidate !== signature) return realGetParsedTransaction(candidate, config);
+      parseCalls += 1;
+      if (parseCalls === 1) return null;
+      return realGetParsedTransaction(candidate, config);
+    };
+
+    clockMs =
+      target.expiresAt.getTime() +
+      LATE_GRACE_MS +
+      CLOSED_MARGIN_MS -
+      2 * SWEEP_INTERVAL_MS +
+      1;
+    expect(
+      (await store.listScannableChallenges(50, LATE_GRACE_MS, CLOSED_MARGIN_MS)).some(
+        (row) => row.id === target.id,
+      ),
+    ).toBe(true);
+
+    await sweepTransferChallenges();
+
+    expect(parseCalls).toBe(3);
+    expect(
+      [...store.scans.values()]
+        .filter((entry) => entry.signature === signature)
+        .map((entry) => entry.destination),
+    ).toEqual([destinationB]);
+    expect(store.row(target.id)).toMatchObject({
+      status: 'verified',
+      inboundSignature: signature,
+      refundState: 'sent',
+    });
+    expect(store.row(target.id).refundAuthorizedAt).not.toBeNull();
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
+  });
+
+  it('the sweep settles a live paid challenge when the panel is closed', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
     publishInbound(sig('race-still-open'), {
@@ -3350,18 +4074,10 @@ describe('submit versus sweep', () => {
       memo: opened.challengeId,
     });
 
-    // Sweep FIRST, while the user is still inside their window.
+    // Sweep first, with no browser poll or signature submission.
     await sweepTransferChallenges();
-    expect(store.row(opened.challengeId).status).toBe('pending');
-    expect(store.row(opened.challengeId).inboundSignature).toBeNull();
-
-    // The user's submission still works and still VERIFIES.
-    const status = await submitTransferSignature({
-      userId: USER_A,
-      challengeId: opened.challengeId,
-      signature: sig('race-still-open'),
-    });
-    expect(status.state).toBe('verified');
+    expect(store.row(opened.challengeId).status).toBe('verified');
+    expect(store.row(opened.challengeId).inboundSignature).toBe(sig('race-still-open'));
     expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
   });
 
@@ -3410,6 +4126,33 @@ describe('submit versus sweep', () => {
         onlyIfClosedForMs: CLOSED_MARGIN_MS,
       }),
     ).resolves.toMatchObject({ bound: true });
+  });
+});
+
+describe('sweeper startup', () => {
+  it('executes one pass immediately before the first interval tick', async () => {
+    let startupReads = 0;
+    const realListGrantableChallenges = store.listGrantableChallenges.bind(store);
+    store.listGrantableChallenges = async (limit) => {
+      startupReads += 1;
+      return realListGrantableChallenges(limit);
+    };
+    let finishStartupPass!: () => void;
+    const startupPassFinished = new Promise<void>((resolve) => {
+      finishStartupPass = resolve;
+    });
+    const realPruneScanLedger = store.pruneScanLedger.bind(store);
+    store.pruneScanLedger = async (olderThanMs) => {
+      const removed = await realPruneScanLedger(olderThanMs);
+      finishStartupPass();
+      return removed;
+    };
+
+    startLandHoldVerifySweeper();
+    expect(startupReads).toBe(1);
+    await startupPassFinished;
+    expect(startupReads).toBe(1);
+    stopLandHoldVerifySweeper();
   });
 });
 
@@ -3717,10 +4460,10 @@ describe('one transaction funding two verify destinations', () => {
         ],
       }),
     );
-    // Never submitted, so only the refund-discovery sweep sees it.
+    // Never submitted, so the closed sweep discovers and authoritatively settles it.
     closeChallengeWindow();
     await sweepTransferChallenges();
-    expect(store.row(opened.challengeId).status).toBe('unclaimed');
+    expect(store.row(opened.challengeId).status).toBe('verified');
     const obligation = [...store.obligations.values()].find((o) => o.destination === retired);
     expect(obligation).toBeDefined();
     expect(obligation!.reason).toBe('destination_rotated');
@@ -3878,8 +4621,9 @@ describe('one transaction funding two verify destinations', () => {
 
     // The next sweep, with the lookup healthy, picks it up as normal.
     store.failDestinationLookup = false;
+    clockMs += 5_001;
     await sweepTransferChallenges();
-    expect(store.row(opened.challengeId).status).toBe('unclaimed');
+    expect(store.row(opened.challengeId).status).toBe('verified');
   });
 
   it('ignores legs paid to addresses that are not ours at all', async () => {
@@ -4021,16 +4765,258 @@ describe('pollTransferChallenge', () => {
     expect(touched).toBe(0);
   });
 
-  it('never touches the chain at all — polling is a pure status read now', async () => {
-    // Round 3: polling cannot verify anything, so it does no RPC work. A tight
-    // poll loop is free, and verification comes from submitting the signature.
+  it('expires only the requested lapsed row on the GET path', async () => {
+    const walletA = pubkey();
+    const walletB = pubkey();
+    const first = await openFor(USER_A, walletA);
+    store.declare(USER_B, walletB);
+    const second = await openTransferChallenge({ userId: USER_B, declaredWallet: walletB });
+    clockMs += landHoldVerifyTtlMs() + 1_000;
+    store.expireLapsedChallenges = async () => {
+      throw new Error('table-wide expiry must not run on GET');
+    };
+
+    await expect(
+      pollTransferChallenge({ userId: USER_A, challengeId: first.challengeId }),
+    ).resolves.toMatchObject({ state: 'expired' });
+    expect(store.row(second.challengeId).status).toBe('pending');
+  });
+
+  it('settles a memo-less exact transfer via scan discovery and full-fetch verification', async () => {
     const wallet = pubkey();
     const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-memo-less'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+    });
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status.state).toBe('verified');
+    expect(status.inboundSignature).toBe(sig('poll-memo-less'));
+    expect(store.user(USER_A).verifiedPubkey).toBe(wallet);
+    expect(rpc.commitments.filter((entry) => entry === 'tx:finalized')).toHaveLength(2);
+
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId).refundState).toBe('sent');
+  });
+
+  it('skips a poll candidate with null block time and leaves it pending for retry', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-null-block-time'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      blockTimeMs: null,
+    });
+
+    const status = await pollTransferChallenge({
+      userId: USER_A,
+      challengeId: opened.challengeId,
+    });
+    expect(status).toMatchObject({ state: 'pending', inboundSignature: null });
+    expect(store.row(opened.challengeId)).toMatchObject({
+      status: 'pending',
+      inboundSignature: null,
+    });
+  });
+
+  it('continues past an earlier null-block-time candidate and verifies the later payment', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-null-block-earliest'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      blockTimeMs: clockMs - 2_000,
+    });
+    publishInbound(sig('poll-valid-later'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      blockTimeMs: clockMs - 1_000,
+    });
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    const readsBySignature = new Map<string, number>();
+    rpc.getParsedTransaction = async (signature, config) => {
+      const reads = (readsBySignature.get(signature) ?? 0) + 1;
+      readsBySignature.set(signature, reads);
+      if (signature === sig('poll-null-block-earliest') && reads > 1) {
+        return parsedTx({
+          blockTimeMs: null,
+          signers: [wallet],
+          top: [
+            { source: wallet, destination: store.wallet!.publicKey, lamports: opened.lamports },
+          ],
+        });
+      }
+      return realGetParsedTransaction(signature, config);
+    };
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status).toMatchObject({
+      state: 'verified',
+      inboundSignature: sig('poll-valid-later'),
+    });
+    expect(readsBySignature.get(sig('poll-null-block-earliest'))).toBe(2);
+    expect(readsBySignature.get(sig('poll-valid-later'))).toBe(2);
+  });
+
+  it('stops a multi-candidate batch after one destination-set attribution outage', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('destination-outage-first'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs - 2_000,
+    });
+    publishInbound(sig('destination-outage-second'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      blockTimeMs: clockMs - 1_000,
+    });
+
+    const realListVerifyDestinations = store.listVerifyDestinations.bind(store);
+    let harvestLookupCompleted = false;
+    let attributionDestinationAttempts = 0;
+    store.listVerifyDestinations = async () => {
+      if (!harvestLookupCompleted) {
+        harvestLookupCompleted = true;
+        return realListVerifyDestinations();
+      }
+      attributionDestinationAttempts += 1;
+      throw new Error('destination set unavailable during attribution');
+    };
+    const realGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    const readsBySignature = new Map<string, number>();
+    rpc.getParsedTransaction = async (signature, config) => {
+      readsBySignature.set(signature, (readsBySignature.get(signature) ?? 0) + 1);
+      return realGetParsedTransaction(signature, config);
+    };
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status).toMatchObject({ state: 'pending', inboundSignature: null });
+    expect(attributionDestinationAttempts).toBe(1);
+    expect(readsBySignature.get(sig('destination-outage-first'))).toBe(2);
+    expect(readsBySignature.get(sig('destination-outage-second'))).toBe(1);
+  });
+
+  it('attributes the earliest matching block time first', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-earliest'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      blockTimeMs: clockMs - 2_000,
+    });
+    publishInbound(sig('poll-later'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      blockTimeMs: clockMs - 1_000,
+    });
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status.inboundSignature).toBe(sig('poll-earliest'));
+  });
+
+  it('attributes source_not_signer through the same poll path and refunds it', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-unsigned'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      signed: false,
+    });
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status).toMatchObject({ state: 'rejected', rejectedReason: 'source_not_signer' });
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId).refundState).toBe('sent');
+  });
+
+  it('attributes transfer_not_top_level through the same poll path and refunds it', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-inner-transfer'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+      inner: true,
+    });
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status).toMatchObject({ state: 'rejected', rejectedReason: 'transfer_not_top_level' });
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId).refundState).toBe('sent');
+  });
+
+  it('uses the full fetch when scan facts disagree and refunds a rejected candidate', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    publishInbound(sig('poll-facts-disagree'), {
+      from: wallet,
+      to: store.wallet!.publicKey,
+      lamports: opened.lamports,
+      memo: null,
+    });
+    const originalGetParsedTransaction = rpc.getParsedTransaction.bind(rpc);
+    let reads = 0;
+    rpc.getParsedTransaction = async (signature, config) => {
+      reads += 1;
+      if (reads === 1) return originalGetParsedTransaction(signature, config);
+      return parsedTx({
+        blockTimeMs: clockMs,
+        signers: [wallet],
+        opaqueTop: true,
+        inner: [
+          { source: wallet, destination: store.wallet!.publicKey, lamports: opened.lamports },
+        ],
+      });
+    };
+
+    const status = await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
+    expect(status).toMatchObject({ state: 'rejected', rejectedReason: 'transfer_not_top_level' });
+    expect(reads).toBe(2);
+    await sweepTransferChallenges();
+    expect(store.row(opened.challengeId).refundState).toBe('sent');
+  });
+
+  it('does no scan or RPC work for a settled row', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    await payAndSubmit(USER_A, opened, sig('poll-settled'));
     const before = rpc.commitments.length;
     for (let i = 0; i < 6; i += 1) {
       await pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId });
     }
     expect(rpc.commitments).toHaveLength(before);
+  });
+
+  it('returns pending without throwing when scan RPC fails', async () => {
+    const wallet = pubkey();
+    const opened = await openFor(USER_A, wallet);
+    rpc.getSignaturesForAddress = async () => {
+      throw new Error('rpc unavailable');
+    };
+
+    await expect(
+      pollTransferChallenge({ userId: USER_A, challengeId: opened.challengeId }),
+    ).resolves.toMatchObject({ state: 'pending', inboundSignature: null });
+    expect(store.row(opened.challengeId).status).toBe('pending');
   });
 
   it('reports the full frozen status shape', async () => {

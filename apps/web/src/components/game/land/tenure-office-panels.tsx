@@ -279,6 +279,26 @@ function WeeksSelect({ value, onChange, label }: { value: number; onChange: (wee
 // out, plus a one-click attest for the ClawVille wallet we already hold.
 
 const VERIFY_TRANSFER_STORAGE_KEY = 'clawville:land-hold-verify-transfer';
+const TRANSFER_LATE_ATTRIBUTION_HORIZON_MS = 35 * 60 * 1000;
+
+function transferChallengeStorageKey(wallet: string): string {
+  return `${VERIFY_TRANSFER_STORAGE_KEY}:${wallet}`;
+}
+
+function isTransferChallengeWithinLateHorizon(expiresAtMs: number, nowMs: number): boolean {
+  return expiresAtMs + TRANSFER_LATE_ATTRIBUTION_HORIZON_MS > nowMs;
+}
+
+function showTransferSendInstructions(closed: boolean, terminalAndBound: boolean): boolean {
+  return !closed && !terminalAndBound;
+}
+
+function showTransferSignatureFallback(
+  terminalAndBound: boolean,
+  withinLateAttributionHorizon: boolean,
+): boolean {
+  return !terminalAndBound && withinLateAttributionHorizon;
+}
 
 const VERIFY_METHOD_LABEL: Record<LandHoldWalletVerificationMethod, string> = {
   signature: 'signed from your wallet',
@@ -287,14 +307,14 @@ const VERIFY_METHOD_LABEL: Record<LandHoldWalletVerificationMethod, string> = {
 };
 
 const TRANSFER_STATE_COPY: Record<LandHoldTransferChallengeState, string> = {
-  pending: 'Send the amount with the note, then paste the transaction ID below.',
+  pending: 'Waiting for the exact transfer. We check automatically about every 30 seconds.',
   observed: 'Your transfer checked out. Finishing up.',
   verified: 'Verified. This wallet is proven.',
   expired: 'This check closed before a matching transfer arrived. Start a new one.',
   failed: 'This check could not be completed. Start a new one, or use connect and sign.',
   rejected: 'Your transfer arrived, but it could not be used as proof. It is on its way back to you.',
   unclaimed:
-    'We found your transfer, but it was never submitted here, so it could not be used to verify. It is on its way back to you. Start a new check and paste the transaction ID next time.',
+    'We found your transfer after this check closed, so it could not be used to verify. It is on its way back to you. Start a new check if you still need to verify this wallet.',
 };
 
 /**
@@ -308,7 +328,7 @@ const TRANSFER_REJECTED_COPY: Record<LandHoldTransferRejectedReason, string> = {
   source_not_signer:
     'That transfer was signed by a smart contract wallet, such as a Squads vault, rather than by the wallet key itself. We cannot verify that kind of wallet yet, with either option. Declare a wallet whose key you hold and verify that one instead.',
   transfer_not_top_level:
-    'The payment was made by a program on your behalf rather than by the transfer you signed, so it cannot prove the wallet is yours. Send the exact amount and the note directly from your wallet, as one plain transfer.',
+    'The payment was made by a program on your behalf rather than by the transfer you signed, so it cannot prove the wallet is yours. Send the exact amount directly from your wallet as one plain transfer.',
 };
 
 /**
@@ -369,30 +389,39 @@ function formatCountdown(msLeft: number): string {
   const total = Math.max(0, Math.ceil(msLeft / 1000));
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
-  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 // An open transfer check survives closing the Land Office: the user may already
 // have sent the amount, and losing the destination would leave them staring at
-// a payment they cannot track. sessionStorage only — nothing sensitive here.
-function readStoredTransferChallenge(wallet: string): LandHoldTransferChallenge | null {
-  if (typeof window === 'undefined') return null;
+// a payment they cannot track. Prefer durable localStorage while accepting an
+// older sessionStorage value until the next read or write migrates it.
+function parseStoredTransferChallenge(
+  raw: string | null,
+  wallet: string,
+): LandHoldTransferChallenge | null {
+  if (!raw) return null;
   try {
-    const raw = window.sessionStorage.getItem(VERIFY_TRANSFER_STORAGE_KEY);
-    if (!raw) return null;
     const stored = JSON.parse(raw) as Partial<LandHoldTransferChallenge & { wallet: string }>;
     const lamports = Number(stored.lamports);
-    if (stored.wallet !== wallet || !stored.challengeId || !stored.destination) return null;
+    if (stored.wallet !== wallet) return null;
+    if (typeof stored.challengeId !== 'string' || stored.challengeId.length === 0) return null;
+    if (typeof stored.destination !== 'string' || stored.destination.length === 0) return null;
     if (!Number.isSafeInteger(lamports) || lamports <= 0) return null;
-    if (!stored.expiresAt || new Date(stored.expiresAt).getTime() <= Date.now()) return null;
+    if (typeof stored.expiresAt !== 'string') return null;
+    const expiresAtMs = new Date(stored.expiresAt).getTime();
+    if (
+      !Number.isFinite(expiresAtMs) ||
+      !isTransferChallengeWithinLateHorizon(expiresAtMs, Date.now())
+    ) return null;
     return {
       challengeId: stored.challengeId,
       destination: stored.destination,
       lamports,
-      amountSol: Number(stored.amountSol ?? lamports / 1_000_000_000),
+      amountSol: lamports / 1_000_000_000,
       // Older stored blobs predate the note; fall back to the check id, which
       // is what the server asks for.
-      memo: stored.memo ?? stored.challengeId,
+      memo: typeof stored.memo === 'string' ? stored.memo : stored.challengeId,
       expiresAt: stored.expiresAt,
     };
   } catch {
@@ -400,22 +429,118 @@ function readStoredTransferChallenge(wallet: string): LandHoldTransferChallenge 
   }
 }
 
-function writeStoredTransferChallenge(wallet: string, challenge: LandHoldTransferChallenge): void {
-  if (typeof window === 'undefined') return;
+function readStoredTransferChallenge(wallet: string): LandHoldTransferChallenge | null {
+  if (typeof window === 'undefined') return null;
+  const scopedKey = transferChallengeStorageKey(wallet);
+  let scopedRaw: string | null = null;
   try {
-    window.sessionStorage.setItem(VERIFY_TRANSFER_STORAGE_KEY, JSON.stringify({ ...challenge, wallet }));
+    scopedRaw = window.localStorage.getItem(scopedKey);
   } catch {
-    // Private mode / quota — the check just does not survive a reload.
+    // A blocked local store must not mask a valid legacy entry.
+  }
+  const scoped = parseStoredTransferChallenge(scopedRaw, wallet);
+  if (scoped) return scoped;
+
+  let legacyLocalRaw: string | null = null;
+  try {
+    legacyLocalRaw = window.localStorage.getItem(VERIFY_TRANSFER_STORAGE_KEY);
+  } catch {
+    // Keep trying the independent legacy session store.
+  }
+  const legacyLocal = parseStoredTransferChallenge(legacyLocalRaw, wallet);
+  if (legacyLocal) {
+    writeStoredTransferChallenge(wallet, legacyLocal);
+    return legacyLocal;
+  }
+
+  let legacySessionRaw: string | null = null;
+  try {
+    legacySessionRaw = window.sessionStorage.getItem(VERIFY_TRANSFER_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+  const legacy = parseStoredTransferChallenge(legacySessionRaw, wallet);
+  if (!legacy) return null;
+  writeStoredTransferChallenge(wallet, legacy);
+  return legacy;
+}
+
+function storedTransferChallengeMatches(
+  raw: string | null,
+  wallet: string,
+  challengeId: string,
+): boolean {
+  if (!raw) return false;
+  try {
+    const stored = JSON.parse(raw) as { wallet?: unknown; challengeId?: unknown };
+    return stored.wallet === wallet && stored.challengeId === challengeId;
+  } catch {
+    return false;
   }
 }
 
-function clearStoredTransferChallenge(): void {
-  if (typeof window === 'undefined') return;
+function removeStoredTransferChallengeIfMatches(
+  storage: Storage,
+  key: string,
+  wallet: string,
+  challengeId: string,
+): void {
   try {
-    window.sessionStorage.removeItem(VERIFY_TRANSFER_STORAGE_KEY);
+    if (storedTransferChallengeMatches(storage.getItem(key), wallet, challengeId)) {
+      storage.removeItem(key);
+    }
   } catch {
-    // Nothing to recover from; the value expires server-side regardless.
+    // Storage failures are isolated so the other store can still be cleaned.
   }
+}
+
+function writeStoredTransferChallenge(wallet: string, challenge: LandHoldTransferChallenge): void {
+  if (typeof window === 'undefined') return;
+  let persisted = false;
+  try {
+    window.localStorage.setItem(
+      transferChallengeStorageKey(wallet),
+      JSON.stringify({ ...challenge, wallet }),
+    );
+    persisted = true;
+  } catch {
+    // Private mode or quota: preserve any legacy session entry.
+  }
+  if (!persisted) return;
+  removeStoredTransferChallengeIfMatches(
+    window.localStorage,
+    VERIFY_TRANSFER_STORAGE_KEY,
+    wallet,
+    challenge.challengeId,
+  );
+  removeStoredTransferChallengeIfMatches(
+    window.sessionStorage,
+    VERIFY_TRANSFER_STORAGE_KEY,
+    wallet,
+    challenge.challengeId,
+  );
+}
+
+function clearStoredTransferChallenge(wallet: string, challengeId: string): void {
+  if (typeof window === 'undefined') return;
+  removeStoredTransferChallengeIfMatches(
+    window.localStorage,
+    transferChallengeStorageKey(wallet),
+    wallet,
+    challengeId,
+  );
+  removeStoredTransferChallengeIfMatches(
+    window.localStorage,
+    VERIFY_TRANSFER_STORAGE_KEY,
+    wallet,
+    challengeId,
+  );
+  removeStoredTransferChallengeIfMatches(
+    window.sessionStorage,
+    VERIFY_TRANSFER_STORAGE_KEY,
+    wallet,
+    challengeId,
+  );
 }
 
 function VerifyCopyRow({ label, value, display }: { label: string; value: string; display: string }) {
@@ -462,6 +587,7 @@ function HoldWalletVerification({
   const [notice, setNotice] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [checkCooldownUntil, setCheckCooldownUntil] = useState(0);
   const [txSignature, setTxSignature] = useState('');
   const [challenge, setChallenge] = useState<LandHoldTransferChallenge | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -493,6 +619,8 @@ function HoldWalletVerification({
     refetchInterval: (query) => {
       const data = query.state.data;
       const state = data?.state;
+      if (state == null || state === 'pending') return 30_000;
+      if (state === 'observed') return 6_000;
       const settled =
         state === 'verified' ||
         state === 'expired' ||
@@ -501,13 +629,19 @@ function HoldWalletVerification({
         state === 'unclaimed';
       // Keep polling a settled row while its refund is still in flight.
       const refundPending = data?.refundState === 'none' || data?.refundState === 'sending';
-      return settled && !refundPending ? false : 6_000;
+      return settled && refundPending ? 6_000 : false;
     },
   });
 
   const pollState = poll.data?.state ?? null;
   const refundState = poll.data?.refundState ?? null;
   const rejectedReason = poll.data?.rejectedReason ?? null;
+  const inboundSignature = poll.data?.inboundSignature ?? null;
+  const terminalAndBound =
+    pollState === 'verified' ||
+    pollState === 'rejected' ||
+    pollState === 'unclaimed' ||
+    ((pollState === 'expired' || pollState === 'failed') && inboundSignature != null);
 
   useEffect(() => {
     if (pollState !== 'verified') return;
@@ -515,25 +649,30 @@ function HoldWalletVerification({
     addToast('✅', 'Hold wallet verified. Your transfer is on its way back to you.', 6000);
   }, [pollState, queryClient, addToast]);
 
-  // The check is only cleared once the money is actually home, so the refund
-  // panel cannot vanish while a refund is still moving or held for review.
+  // Keep unsettled money visible. Once a terminal challenge either has no
+  // refund obligation or its refund was sent, both durable stores can clear.
   useEffect(() => {
-    if (pollState !== 'verified') return;
-    if (refundState !== 'sent') return;
-    clearStoredTransferChallenge();
-  }, [pollState, refundState]);
+    if (!challenge || !terminalAndBound) return;
+    if (refundState !== 'sent' && refundState !== null) return;
+    clearStoredTransferChallenge(walletAddress, challenge.challengeId);
+  }, [challenge, refundState, terminalAndBound, walletAddress]);
 
   const busy = signing || attesting || opening || submitting;
   const msLeft = challenge ? new Date(challenge.expiresAt).getTime() - now : 0;
   const closed = challenge != null && msLeft <= 0;
-  const terminal =
-    pollState === 'expired' ||
-    pollState === 'failed' ||
-    pollState === 'rejected' ||
-    pollState === 'unclaimed';
+  const checkCoolingDown = now < checkCooldownUntil;
+  const withinLateAttributionHorizon =
+    challenge != null &&
+    isTransferChallengeWithinLateHorizon(new Date(challenge.expiresAt).getTime(), now);
+  const sendInstructionsVisible = showTransferSendInstructions(closed, terminalAndBound);
+  const signatureFallbackVisible = showTransferSignatureFallback(
+    terminalAndBound,
+    withinLateAttributionHorizon,
+  );
+  const lateRecoveryOpen = closed && signatureFallbackVisible;
 
   const finishVerified = async () => {
-    clearStoredTransferChallenge();
+    if (challenge) clearStoredTransferChallenge(walletAddress, challenge.challengeId);
     setChallenge(null);
     setNotice(null);
     await queryClient.invalidateQueries({ queryKey: HOLD_WALLET_KEY });
@@ -595,11 +734,7 @@ function HoldWalletVerification({
     }
   };
 
-  /**
-   * THE verification step for this option. We look up the exact transaction the
-   * person hands us instead of hunting for it among everything else arriving at
-   * our address, which is both faster for them and impossible to lose.
-   */
+  /** Exact-signature fallback when bounded scanning has not found the payment. */
   const submitSignature = async () => {
     if (!challenge) return;
     const signature = txSignature.trim();
@@ -647,9 +782,6 @@ function HoldWalletVerification({
   }
 
   const amountText = challenge ? lamportsToSolText(challenge.lamports) : '';
-  // The server derives the note from the check id, so an older api that does not
-  // send one still gives the right value.
-  const memoText = challenge ? challenge.memo ?? challenge.challengeId : '';
 
   return (
     <div className="mt-3">
@@ -707,18 +839,21 @@ function HoldWalletVerification({
           <div className="font-semibold text-cyan-100">Send a small amount, and we send it back</div>
           <p className="mt-1 text-[11px] text-slate-200">
             For a wallet you would rather not connect. Send one exact amount of SOL from the declared
-            wallet, with the note we give you in the memo field, then paste back the transaction ID.
-            We match it, verify you, and send the amount back. That return is usually automatic, and
-            once in a while it needs a person, in which case support sorts it out. Solana charges a
-            small network fee on each transfer, and that fee is not refundable. Your wallet has to
-            let you set a memo, so check that before you start.
+            wallet. We check for it automatically, verify you, and send the amount back. That return
+            is usually automatic, and once in a while it needs a person, in which case support sorts
+            it out. Solana charges a small network fee on each transfer, and that fee is not
+            refundable.
           </p>
           {!verification.transferDoorAvailable ? (
             <p className="mt-3 text-[11px] text-amber-200">
               This option is offline right now. Use connect and sign, or check back shortly.
             </p>
-          ) : challenge && !closed && !terminal ? (
-            <p className="mt-3 text-[11px] text-cyan-100">A check is open. The details are below.</p>
+          ) : challenge && !terminalAndBound && withinLateAttributionHorizon ? (
+            <p className="mt-3 text-[11px] text-cyan-100">
+              {closed
+                ? 'This check is closed to new payments. Recovery is still available below for a payment already sent.'
+                : 'A check is open. The details are below.'}
+            </p>
           ) : (
             <RpgButton
               size="sm"
@@ -736,34 +871,33 @@ function HoldWalletVerification({
 
       {challenge && (
         <div className="mt-2 rounded-lg border border-cyan-300/25 bg-slate-950/60 p-3">
-          <p className="font-semibold text-cyan-100">
-            Send exactly this amount from {shortWallet(walletAddress)}, with this note
-          </p>
-          <VerifyCopyRow label="Send to" value={challenge.destination} display={challenge.destination} />
-          <VerifyCopyRow label="Exact amount" value={amountText} display={`${amountText} SOL`} />
-          <VerifyCopyRow
-            label="Note (memo field)"
-            value={memoText}
-            display={memoText}
-          />
-          <p className="mt-2 text-[11px] text-slate-200">
-            Both parts have to match. The amount has to be exact to the last digit, which is{' '}
-            {challenge.lamports.toLocaleString()} lamports, and the note has to go in the memo field
-            of the same transfer. The amount tells us which check the money is for, and the note is
-            what tells us you meant it for this account. Send both straight from your wallet as one
-            plain transfer. A transfer without the note, or one a program makes for you, is returned
-            to you and does not verify anything.
-          </p>
-          {!closed && !terminal && pollState !== 'verified' && (
-            <div className="mt-3 rounded-lg border border-cyan-300/25 bg-cyan-400/[0.06] p-3">
-              <p className="font-semibold text-cyan-100">Then paste the transaction ID</p>
-              <p className="mt-1 text-[11px] text-slate-200">
-                Your wallet shows a transaction ID as soon as the transfer is sent. Some wallets call
-                it a signature. Paste it here and we look up that exact transfer, which is what proves
-                the wallet is yours. This is the reliable path. If you send the money without pasting
-                the ID we normally still spot it and send it back, but that part is best effort, and
-                it never verifies anything.
+          {sendInstructionsVisible && (
+            <>
+              <p className="font-semibold text-cyan-100">
+                Send exactly {amountText} SOL from your declared wallet to this address. We check for
+                it automatically about every 30 seconds. It comes right back after the check.
               </p>
+              <VerifyCopyRow
+                label="Send to"
+                value={challenge.destination}
+                display={challenge.destination}
+              />
+              <VerifyCopyRow label="Exact amount" value={amountText} display={`${amountText} SOL`} />
+              <p className="mt-2 text-[11px] text-slate-200">
+                The amount has to be exact to the last digit, which is{' '}
+                {challenge.lamports.toLocaleString()} lamports. Send it straight from{' '}
+                {shortWallet(walletAddress)} as one plain transfer. A transfer a program makes for you
+                is returned and does not verify anything.
+              </p>
+            </>
+          )}
+          {signatureFallbackVisible && pollState !== 'verified' && (
+            <details className="mt-3 rounded-lg border border-cyan-300/20 bg-cyan-400/[0.04] p-3">
+              <summary className="cursor-pointer text-[11px] font-semibold text-cyan-100">
+                {closed
+                  ? 'Already sent it before the deadline? Paste the transaction ID. A payment made in time can still verify.'
+                  : 'Sent it but we have not spotted it? Paste the transaction ID and we check that exact transfer.'}
+              </summary>
               <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                 <input
                   aria-label="Transaction ID"
@@ -783,13 +917,19 @@ function HoldWalletVerification({
                   Verify this transfer
                 </RpgButton>
               </div>
-            </div>
+            </details>
           )}
-          <p className="mt-2 text-[11px] text-cyan-100">
-            {closed ? 'This check has closed. Start a new one.' : `This check closes in ${formatCountdown(msLeft)}.`}
+          <p className="mt-3 text-base font-bold text-cyan-100">
+            {lateRecoveryOpen
+              ? 'This check is closed to new payments.'
+              : closed
+                ? 'This check has closed. Start a new one.'
+                : `This check stays open for ${formatCountdown(msLeft)}`}
           </p>
           <p className="mt-1 text-[11px] text-slate-200">
-            {TRANSFER_STATE_COPY[pollState ?? (closed ? 'expired' : 'pending')]}
+            {lateRecoveryOpen
+              ? 'A payment sent before the deadline can still be checked with its transaction ID.'
+              : TRANSFER_STATE_COPY[pollState ?? (closed ? 'expired' : 'pending')]}
           </p>
           {pollState === 'rejected' && rejectedReason && (
             <p className="mt-1 text-[11px] text-amber-200">
@@ -819,9 +959,8 @@ function HoldWalletVerification({
               variant="secondary"
               className="min-h-[44px]"
               onClick={async () => {
-                // Deliberately NOT `poll.isFetching`: that flips true on every
-                // background poll, so the button would sit disabled and read
-                // "loading" while nobody pressed anything.
+                setCheckCooldownUntil(Date.now() + 5_000);
+                setNow(Date.now());
                 setChecking(true);
                 try {
                   await poll.refetch();
@@ -830,26 +969,29 @@ function HoldWalletVerification({
                 }
               }}
               loading={checking}
-              disabled={busy}
+              disabled={busy || poll.isFetching || checkCoolingDown}
             >
               Check now
             </RpgButton>
-            {(closed || terminal) && verification.transferDoorAvailable && (
-              <RpgButton
-                size="sm"
-                variant="primary"
-                className="min-h-[44px]"
-                onClick={openTransfer}
-                loading={opening}
-                disabled={busy}
-              >
-                Start a new check
-              </RpgButton>
-            )}
+            {(terminalAndBound || (closed && !withinLateAttributionHorizon)) &&
+              verification.transferDoorAvailable && (
+                <RpgButton
+                  size="sm"
+                  variant="primary"
+                  className="min-h-[44px]"
+                  onClick={openTransfer}
+                  loading={opening}
+                  disabled={busy}
+                >
+                  Start a new check
+                </RpgButton>
+              )}
           </div>
-          <p className="mt-2 text-[11px] text-slate-300">
-            If you change your mind, send nothing. The check closes on its own.
-          </p>
+          {!closed && (
+            <p className="mt-2 text-[11px] text-slate-300">
+              If you change your mind, send nothing. The check closes on its own.
+            </p>
+          )}
         </div>
       )}
 

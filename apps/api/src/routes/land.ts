@@ -6,8 +6,9 @@
  *   human/agent parity-open, but repointing is human-only and 409
  *   `wallet_locked_by_hold` while any live v2 hold exists. A declaration is a
  *   CLAIM only — a repoint NULLs any existing proof in the same statement.
- * - Hold-wallet OWNERSHIP PROOF (2026-08-10) — same middleware chain on all
- *   five routes, so a connected agent proves AS ITSELF and a guest is 403'd:
+ * - Hold-wallet OWNERSHIP PROOF (poll-primary door 2, founder ruling
+ *   2026-08-11) — same middleware chain on every route, so a connected agent
+ *   proves AS ITSELF and a guest is 403'd:
  *     GET  /hold-wallet                       adds
  *          `verification: { state: 'unverified'|'verified'|'grandfathered',
  *                           method, verifiedAt, transferDoorAvailable }`
@@ -16,7 +17,8 @@
  *     POST /hold-wallet/verify/signature      strict `{ nonce, signature }`
  *     POST /hold-wallet/verify/custodial      strict `{}`
  *     POST /hold-wallet/verify/transfer/challenge  strict `{}`
- *     GET  /hold-wallet/verify/transfer/:challengeId
+ *     GET  /hold-wallet/verify/transfer/:challengeId  primary auto-discovery
+ *     POST /hold-wallet/verify/transfer/:challengeId/submit  fallback
  *   Errors: wallet_not_verified (403 on claim-hold), wallet_not_declared,
  *   invalid_challenge, invalid_signature, signature_verification_failed,
  *   not_custodial_wallet, transfer_door_unavailable, verify_attempt_cap,
@@ -633,10 +635,9 @@ const holdWalletVerifySignatureBodySchema = z
 const challengeIdSchema = z.string().uuid();
 
 /**
- * Door-2 verification is SIGNATURE-SUBMITTED: the caller tells us which
- * transaction paid, so the proof can never be lost to a scanner's page cap,
- * cursor reset or batch bound. A base58 ed25519 signature is 87-88 chars; the
- * service re-checks the decoded length before any RPC work.
+ * Door-2 exact-signature FALLBACK: the caller names the transaction when the
+ * poll-primary bounded scan has not found it. A base58 ed25519 signature is
+ * 87-88 chars; the service re-checks the decoded length before any RPC work.
  */
 const holdWalletSubmitTransferBodySchema = z
   .object({ signature: z.string().min(64).max(90) })
@@ -2465,10 +2466,9 @@ landRoutes.post(
   },
 );
 
-// THE door-2 verification path. The user sends the exact amount with the memo,
-// then hands us the transaction signature; we fetch THAT transaction at
-// finalized and run the same proof predicates. Blind scanning was inherently
-// lossy under busy or adversarial traffic, and a signature cannot be eclipsed.
+// FALLBACK door-2 path for scan eclipse or bounded misses. The service fetches
+// this exact finalized transaction and routes it through the same attribution
+// predicates as the poll-primary GET path.
 landRoutes.post(
   '/hold-wallet/verify/transfer/:challengeId/submit',
   requireAuthOrAgentSession,

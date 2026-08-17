@@ -59,27 +59,26 @@
  *   - the declared wallet SIGNED the transaction (a plain system transfer always
  *     requires it, so this is belt and braces; `transferWithSeed` is deliberately
  *     NOT accepted because its source is a derived account the base signs for),
- *   - the SAME transaction carries an SPL Memo naming THIS challenge id,
  *   - the block time is inside the challenge window.
  *
- * ── VERIFICATION IS SUBMISSION-BASED, NOT SCAN-DISCOVERED (round 3) ──────────
- * The user (or agent) TELLS US THE SIGNATURE via
- * `POST /verify/transfer/:challengeId/submit`, and we fetch THAT EXACT
- * transaction at `finalized` and run the predicates below on it.
+ * ── VERIFICATION IS POLL-PRIMARY (founder ruling 2026-08-11) ────────────────
+ * Polling discovers candidates from the bounded durable scan ledger, then
+ * fetches each exact transaction at `finalized` and runs the same authoritative
+ * probe + attribution path as signature submission. Scan facts only discover a
+ * signature. They never settle a challenge by themselves.
  *
  * The previous design discovered deposits by blind-scanning the verify address's
  * recent signatures, which is inherently lossy under adversarial or merely busy
  * traffic: a cursor that resets each invocation, a page cap, a match window, a
  * candidate batch, and fact truncation each relocated the same failure rather
  * than removing it. A signature the user hands us cannot be eclipsed by spam,
- * and it costs nothing in UX — every wallet, explorer and SDK surfaces the
- * signature immediately after sending.
+ * so `submitTransferSignature` remains the escape hatch when a real transfer is
+ * buried past scan page, parse, or match bounds.
  *
- * The background scan SURVIVES but is DEMOTED to refund-obligation discovery:
- * money that arrived and was never submitted still has to be found and returned.
- * It attributes such a deposit as `unclaimed` (refund owed, NEVER verified), so
- * its bounds are a refund-latency concern, not a correctness hole. Only
- * `submitTransferSignature` can move a challenge to `observed`/`verified`.
+ * The background sweep also runs the poll-primary settle attempt for live
+ * pending challenges, so closing the panel cannot make a valid payment age out.
+ * Its existing closed-row scan still attributes late deposits as `unclaimed`
+ * for refund only.
  *
  * Money that cannot be bound to a challenge at all (another sender's legs in the
  * same transaction, or dust at a rotated verify address) is written to
@@ -90,10 +89,9 @@
  * Automatic discovery of orphaned deposits is BEST-EFFORT and incomplete. It can
  * miss facts older than the scan reaches, verify addresses that are no longer
  * referenced by a recent challenge, and transactions too large to record whole.
- * What is best-effort is only whether we NOTICE it automatically and open a
- * refund obligation without a person looking. VERIFICATION IS UNAFFECTED — that
- * path is submission-based, so a user who submits their signature is never
- * dependent on any of this.
+ * What is best-effort is whether we NOTICE orphaned money automatically and open
+ * a refund obligation without a person looking. A user whose live challenge is
+ * eclipsed can still use the exact-signature submit fallback.
  *
  * FUNDS ARE NOT LOST, WITH ONE OPERATIONAL PRECONDITION. The money stays on
  * chain at the verify address it was paid to, so it is recoverable — but ONLY
@@ -152,32 +150,25 @@
  *   this gate without a fresh reading.
  * Reference: ARCHITECTURE.md (land hold-wallet ownership proof entry)
  *
- * ── WHY THE MEMO IS LOAD BEARING (adversarial review 2026-08-10) ─────────────
- * Amount + sender alone prove only "this wallet sent us N lamports" — they do
- * NOT prove the sender meant to bind that wallet to THIS account. An attacker
- * who declares a whale's pubkey first (winning the users_land_hold_wallet_pubkey
- * _unique race) can phish or support-desk the whale into sending exactly
- * 0.010042 SOL to our verify address; every amount/sender/destination check
- * would pass and the attacker's declaration would be stamped verified against
- * the whale's balance. That is precisely the defect this whole slice exists to
- * close. Door 1 is immune because the signed text NAMES the claiming account; a
- * bare SOL transfer names nothing.
- *
- * So the memo is the STATEMENT OF INTENT and the exact amount is only the
- * matching index. `transactionCarriesChallengeMemo` is the single, deliberately
- * isolated predicate for that requirement: it fails CLOSED, and relaxing it (if
- * the founder ever rules that the Phantom-style send UIs without a memo field
- * make it unusable) is a one-line change there and nowhere else.
+ * ── ACCEPTED RESIDUAL RISK (founder ruling 2026-08-11) ───────────────────────
+ * Founder ruling 2026-08-11 accepts the narrow phishing risk where the declared
+ * wallet's owner is induced to send the exact odd amount during the live window.
+ * A memo is ignored and never required. The remaining proof is a top-level
+ * System transfer of the per-challenge-unique amount, signed by the declared
+ * wallet, to our destination inside the short window. Pending amount uniqueness,
+ * the TTL, source signer enforcement, top-level-only transfer, and full-refund
+ * discipline remain in force.
  *
  * ── STATE MACHINE ────────────────────────────────────────────────────────────
- *   pending  → observed  (inbound attributed inside the TTL, memo present)
+ *   pending  → observed  (inbound attributed inside the TTL)
  *            → expired   (TTL lapsed with nothing attributed, OR an inbound
  *                         arrived late — money still gets refunded, but NO
  *                         verification is granted)
  *            → rejected  (an EXACT-amount inbound from the declared wallet
- *                         arrived but cannot be proof: `memo_missing` (no memo
- *                         naming this challenge) or `source_not_signer` (a
- *                         program/smart-wallet signed for the source). The
+ *                         arrived but cannot be proof: `source_not_signer` (a
+ *                         program/smart-wallet signed for the source) or
+ *                         `transfer_not_top_level`. Historical `memo_missing`
+ *                         rows remain readable but it is no longer produced. The
  *                         signature is still consumed so the money is REFUNDED,
  *                         and the user is told exactly what went wrong instead
  *                         of waiting out the TTL.)
@@ -220,7 +211,7 @@ export type OpenTransferChallengeResult = {
   destination: string;
   lamports: number;
   amountSol: number;
-  /** The SPL Memo text the transfer MUST carry. Without it the send is refunded, never accepted. */
+  /** Deprecated wire-compatibility field. A present memo is ignored and never required. */
   memo: string;
   expiresAt: string;
 };
@@ -233,9 +224,8 @@ export type TransferChallengeState =
   | 'failed'
   | 'rejected'
   /**
-   * The background scan found this challenge's money on chain, but the user
-   * never SUBMITTED the signature, so it is refunded and NOT verified.
-   * Verification is submission-only by design — see the header.
+   * The closed-row refund scan found this challenge's money after its live
+   * verification window, so it is refunded and NOT verified.
    */
   | 'unclaimed';
 export type TransferRejectedReason =
@@ -270,7 +260,7 @@ export class LandHoldVerifyError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Configuration (spec §6). Documented in CLAUDE.md + .env.example.
+// Configuration (spec §6). Documented in ARCHITECTURE.md + .env.example.
 // ---------------------------------------------------------------------------
 
 const BASE_LAMPORTS_DEFAULT = 10_000_000; // 0.01 SOL
@@ -553,6 +543,9 @@ export interface LandHoldVerifyStore {
   }): Promise<OpenChallengeOutcome>;
   getChallengeForUser(challengeId: string, userId: string): Promise<ChallengeRow | null>;
   expireLapsedChallenges(): Promise<number>;
+  expireChallengeIfLapsed(challengeId: string): Promise<boolean>;
+  /** Live pending rows eligible for poll-primary scan settlement. */
+  listPendingChallenges(limit: number): Promise<ChallengeRow[]>;
   /** CLOSED challenges only — `closedForMs` keeps a live window off the scan. */
   listScannableChallenges(
     limit: number,
@@ -599,12 +592,13 @@ export interface LandHoldVerifyStore {
     blockTimeMs: number | null;
     facts: ScanFacts;
   }): Promise<void>;
-  /** Durable facts inside the window, NEWEST first, for matching. */
+  /** Durable facts inside the window; closed discovery defaults newest-first. */
   listScannedSignatures(input: {
     destination: string;
     fromMs: number;
     toMs: number;
     limit: number;
+    oldestFirst?: boolean;
   }): Promise<ScanLedgerRow[]>;
   markSignatureMatched(destination: string, signature: string): Promise<void>;
   /** Retention sweep so the scan ledger stays bounded. Returns rows removed. */
@@ -800,7 +794,7 @@ const MEMO_PROGRAM_IDS = new Set([
 /** Longest base58 memo payload we will decode. A memo is a few dozen bytes. */
 const MEMO_DATA_MAX_CHARS = 2_048;
 
-/** The exact memo text a door-2 transfer must carry: the challenge id itself. */
+/** Deprecated memo wire field retained for older clients; settlement ignores it. */
 export function challengeMemo(challengeId: string): string {
   return challengeId;
 }
@@ -974,40 +968,9 @@ export function transactionSignedBySource(probe: TransferProbe | null, from: str
 }
 
 /**
- * PROOF PREDICATE 2 — the sender NAMED this challenge in the message they
- * SIGNED. The amount only says "someone sent us N lamports"; the memo is what
- * makes the transfer a statement of intent by the key holder, which is what
- * kills the phished-whale attack.
- *
- * ONLY TOP-LEVEL MEMOS COUNT. A CPI-emitted memo is not the signer's statement:
- * an attacker who declares a victim's wallet can induce the victim to sign an
- * opaque call to an attacker-controlled program, and that program can CPI both
- * the exact transfer AND a memo naming the challenge. The victim never saw a
- * memo, yet we would have granted verification — reopening the exact phishing
- * hole the memo exists to close. Inner memos are still PARSED (so a scan can
- * describe what happened) but they can never establish intent.
- *
- * Matching stays forgiving about surrounding text and case so a wallet that
- * decorates the field still passes.
- *
- * THIS IS THE SINGLE PLACE THE MEMO REQUIREMENT LIVES. If the founder ever
- * rules that memo-less send UIs make door 2 unusable, relaxing it is one line
- * here and nowhere else.
- */
-export function transactionCarriesChallengeMemo(
-  probe: TransferProbe | null,
-  challengeId: string,
-): boolean {
-  if (!probe) return false;
-  const token = challengeMemo(challengeId).trim().toLowerCase();
-  if (!token) return false;
-  return probe.memos.some((memo) => memo.topLevel && memo.text.toLowerCase().includes(token));
-}
-
-/**
- * Full proof: a TOP-LEVEL exact leg AND the source signed AND a TOP-LEVEL memo
- * naming this challenge. Kept as one call for readers and tests; the attribution
- * loop uses the parts separately so it can tell the user WHICH one failed.
+ * Full proof predicate: a TOP-LEVEL exact leg whose source signed. The challenge
+ * id remains in the parameter shape for wire/test compatibility, but memos are
+ * ignored under the founder ruling of 2026-08-11.
  */
 export function transactionSettlesChallenge(
   probe: TransferProbe | null,
@@ -1015,8 +978,7 @@ export function transactionSettlesChallenge(
 ): boolean {
   return (
     transactionHasTopLevelTransferLeg(probe, params) &&
-    transactionSignedBySource(probe, params.from) &&
-    transactionCarriesChallengeMemo(probe, params.challengeId)
+    transactionSignedBySource(probe, params.from)
   );
 }
 
@@ -1024,12 +986,11 @@ export function transactionSettlesChallenge(
 export function blockTimeInsideWindow(
   blockTimeMs: number | null,
   row: Pick<ChallengeRow, 'createdAt' | 'expiresAt'>,
-  fallbackNowMs: number,
 ): boolean {
-  const at = blockTimeMs ?? fallbackNowMs;
+  if (blockTimeMs == null) return false;
   return (
-    at >= row.createdAt.getTime() - BLOCK_TIME_SKEW_MS &&
-    at <= row.expiresAt.getTime() + BLOCK_TIME_SKEW_MS
+    blockTimeMs >= row.createdAt.getTime() - BLOCK_TIME_SKEW_MS &&
+    blockTimeMs <= row.expiresAt.getTime() + BLOCK_TIME_SKEW_MS
   );
 }
 
@@ -1231,19 +1192,43 @@ const databaseStore: LandHoldVerifyStore = {
     return rows.length;
   },
 
+  async expireChallengeIfLapsed(challengeId) {
+    const rows = await db.execute<{ id: string }>(sql`
+      UPDATE land_hold_wallet_transfer_challenges
+      SET status = 'expired', updated_at = now()
+      WHERE id = ${challengeId}::uuid
+        AND status = 'pending'
+        AND inbound_signature IS NULL
+        AND expires_at < now()
+      RETURNING id`);
+    return rows.length === 1;
+  },
+
+  async listPendingChallenges(limit) {
+    const rows = await db.execute<RawChallenge>(sql`
+      SELECT ${CHALLENGE_COLUMNS}
+      FROM land_hold_wallet_transfer_challenges
+      WHERE status = 'pending'
+        AND inbound_signature IS NULL
+        AND expires_at > now()
+      ORDER BY created_at ASC
+      LIMIT ${limit}`);
+    return rows.map(mapChallenge);
+  },
+
   async listScannableChallenges(limit, graceMs, closedForMs) {
     // CLOSED rows only. A challenge still inside its window belongs to the USER:
     // they may be about to submit, and terminalizing it as `unclaimed` under
-    // them would destroy a valid proof. Once closed, the row stays scannable for
-    // the grace window so a LATE transfer is still attributed and REFUNDED — it
-    // never grants verification (T8).
+    // them would destroy a valid proof. The row stays scannable through the
+    // grace window for authoritative settlement, plus one closed-margin tail so
+    // an unusable full fetch can still fall back to `unclaimed` and refund.
     const rows = await db.execute<RawChallenge>(sql`
       SELECT ${CHALLENGE_COLUMNS}
       FROM land_hold_wallet_transfer_challenges
       WHERE inbound_signature IS NULL
         AND status IN ('pending', 'expired')
         AND expires_at <= now() - (${closedForMs} * interval '1 millisecond')
-        AND expires_at > now() - (${graceMs} * interval '1 millisecond')
+        AND expires_at > now() - (${graceMs + closedForMs} * interval '1 millisecond')
       ORDER BY created_at ASC
       LIMIT ${limit}`);
     return rows.map(mapChallenge);
@@ -1308,10 +1293,13 @@ const databaseStore: LandHoldVerifyStore = {
         SET facts = EXCLUDED.facts, block_time = EXCLUDED.block_time`);
   },
 
-  async listScannedSignatures({ destination, fromMs, toMs, limit }) {
+  async listScannedSignatures({ destination, fromMs, toMs, limit, oldestFirst = false }) {
     // A NULL block_time is kept: the RPC omits it occasionally and dropping the
-    // row would lose a real payment. Ordering puts the newest first so a fresh
-    // payment settles before an older look-alike.
+    // row would lose a real payment. Closed-row discovery defaults newest-first;
+    // live poll verification explicitly asks for the earliest candidate.
+    const orderBy = oldestFirst
+      ? sql`block_time ASC NULLS LAST, scanned_at ASC`
+      : sql`block_time DESC NULLS LAST, scanned_at DESC`;
     const rows = await db.execute<{
       signature: string;
       block_time: string | Date | null;
@@ -1325,7 +1313,7 @@ const databaseStore: LandHoldVerifyStore = {
           OR block_time BETWEEN ${new Date(fromMs).toISOString()}::timestamptz
                             AND ${new Date(toMs).toISOString()}::timestamptz
         )
-      ORDER BY block_time DESC NULLS LAST, scanned_at DESC
+      ORDER BY ${orderBy}
       LIMIT ${limit}`);
     return rows.map((row) => ({
       signature: row.signature,
@@ -1424,6 +1412,11 @@ const databaseStore: LandHoldVerifyStore = {
               inbound_lamports = ${inboundLamports},
               rejected_reason = ${rejectedReason}, updated_at = now()
           WHERE id = ${challengeId}::uuid AND inbound_signature IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM land_hold_wallet_transfer_challenges AS attributed
+              WHERE attributed.inbound_signature = ${signature}
+            )
             ${closedGuard}
           RETURNING id`);
         if (rows.length !== 1) return { bound: false, refundQuarantined: false };
@@ -1717,6 +1710,11 @@ export function _resetLandHoldVerifyDepsForTest(): void {
   connectionCache = null;
   doorAvailabilityCache = null;
   lastScanAt.clear();
+  harvestInFlight.clear();
+  completedHarvestWindows.clear();
+  harvestParseDeferredUntil.clear();
+  closedFetchFailures.clear();
+  nextSweepEpoch = 0;
   alertLastSentAt.clear();
   alertCapacitySuppressed = 0;
 }
@@ -1724,6 +1722,11 @@ export function _resetLandHoldVerifyDepsForTest(): void {
 /** Test-only — throttle bookkeeping size. */
 export function _landHoldVerifyAlertThrottleSizeForTest(): number {
   return alertLastSentAt.size;
+}
+
+/** Test-only — completed destination-floor bookkeeping size. */
+export function _landHoldVerifyCompletedHarvestSizeForTest(): number {
+  return completedHarvestWindows.size;
 }
 
 // ---------------------------------------------------------------------------
@@ -1951,9 +1954,8 @@ export async function openTransferChallenge(input: {
     destination: row.destinationPubkey,
     lamports: row.lamports,
     amountSol: row.lamports / LAMPORTS_PER_SOL,
-    // The transfer MUST carry this memo. The amount only matches the payment to
-    // the row; the memo is what makes it a statement of intent by the key
-    // holder, which is the whole point of door 2 being proof at all.
+    // Deprecated and ignored for wire compatibility with already-connected
+    // agents that opened a challenge before the poll-primary revision.
     memo: challengeMemo(row.id),
     expiresAt: row.expiresAt.toISOString(),
   };
@@ -1964,7 +1966,142 @@ export async function openTransferChallenge(input: {
 // ---------------------------------------------------------------------------
 
 const lastScanAt = new Map<string, number>();
+interface DestinationHarvest {
+  windowFromMs: number;
+  retryDeferred: boolean;
+  promise: Promise<void>;
+}
+
+const harvestInFlight = new Map<string, DestinationHarvest>();
+interface CompletedHarvestWindow {
+  windowFromMs: number;
+  retryDeferred: boolean;
+  completedAt: number;
+}
+
+interface ClosedFetchFailures {
+  count: number;
+  lastFailedAt: number;
+  lastEpoch: number;
+}
+
+interface HarvestParseDefer {
+  lastAttemptAt: number;
+  deferredUntil: number;
+}
+
+const completedHarvestWindows = new Map<string, CompletedHarvestWindow>();
+const harvestParseDeferredUntil = new Map<string, HarvestParseDefer>();
+const closedFetchFailures = new Map<string, ClosedFetchFailures>();
 const LAST_SCAN_MAX_ENTRIES = 4_096;
+const COMPLETED_HARVEST_MAX_ENTRIES = 1_024;
+const HARVEST_PARSE_DEFER_MS = 5 * 60 * 1000;
+const HARVEST_PARSE_DEFER_MAX_ENTRIES = 4_096;
+const CLOSED_FETCH_FAILURE_THRESHOLD = 3;
+
+function pruneCompletedHarvestWindows(now: number): void {
+  for (const [destination, completed] of completedHarvestWindows) {
+    if (now - completed.completedAt >= POLL_SCAN_MIN_INTERVAL_MS) {
+      completedHarvestWindows.delete(destination);
+    }
+  }
+}
+
+function recordCompletedHarvest(
+  destination: string,
+  windowFromMs: number,
+  retryDeferred: boolean,
+  completedAt: number,
+): void {
+  pruneCompletedHarvestWindows(completedAt);
+  const existing = completedHarvestWindows.get(destination);
+  if (
+    existing &&
+    existing.windowFromMs <= windowFromMs &&
+    (!retryDeferred || existing.retryDeferred)
+  ) {
+    return;
+  }
+  if (!existing && completedHarvestWindows.size >= COMPLETED_HARVEST_MAX_ENTRIES) {
+    let oldestDestination: string | null = null;
+    let oldestCompletedAt = Number.POSITIVE_INFINITY;
+    for (const [candidate, completed] of completedHarvestWindows) {
+      if (completed.completedAt < oldestCompletedAt) {
+        oldestDestination = candidate;
+        oldestCompletedAt = completed.completedAt;
+      }
+    }
+    if (oldestDestination != null) completedHarvestWindows.delete(oldestDestination);
+  }
+  completedHarvestWindows.set(destination, { windowFromMs, retryDeferred, completedAt });
+}
+
+function recordClosedFetchFailure(signature: string, epoch: number): number {
+  const now = deps.now();
+  for (const [candidate, failure] of closedFetchFailures) {
+    if (now - failure.lastFailedAt > LATE_ARRIVAL_GRACE_MS + UNCLAIMED_CLOSED_MARGIN_MS) {
+      closedFetchFailures.delete(candidate);
+    }
+  }
+  const prior = closedFetchFailures.get(signature);
+  if (prior?.lastEpoch === epoch) return prior.count;
+  if (!prior && closedFetchFailures.size >= LAST_SCAN_MAX_ENTRIES) {
+    let oldestSignature: string | null = null;
+    let oldestFailedAt = Number.POSITIVE_INFINITY;
+    for (const [candidate, failure] of closedFetchFailures) {
+      if (failure.lastFailedAt < oldestFailedAt) {
+        oldestSignature = candidate;
+        oldestFailedAt = failure.lastFailedAt;
+      }
+    }
+    if (oldestSignature != null) closedFetchFailures.delete(oldestSignature);
+  }
+  const count = (prior?.count ?? 0) + 1;
+  closedFetchFailures.set(signature, { count, lastFailedAt: now, lastEpoch: epoch });
+  return count;
+}
+
+function harvestParseDeferKey(destination: string, signature: string): string {
+  return `${destination}:${signature}`;
+}
+
+function harvestParseIsDeferred(destination: string, signature: string, now: number): boolean {
+  const key = harvestParseDeferKey(destination, signature);
+  const deferred = harvestParseDeferredUntil.get(key);
+  if (deferred == null) return false;
+  if (deferred.deferredUntil <= now) {
+    harvestParseDeferredUntil.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function deferHarvestParse(destination: string, signature: string): void {
+  const now = deps.now();
+  const key = harvestParseDeferKey(destination, signature);
+  for (const [candidate, deferred] of harvestParseDeferredUntil) {
+    if (deferred.deferredUntil <= now) harvestParseDeferredUntil.delete(candidate);
+  }
+  if (
+    !harvestParseDeferredUntil.has(key) &&
+    harvestParseDeferredUntil.size >= HARVEST_PARSE_DEFER_MAX_ENTRIES
+  ) {
+    let oldestKey: string | null = null;
+    let oldestAttemptAt = Number.POSITIVE_INFINITY;
+    for (const [candidate, deferred] of harvestParseDeferredUntil) {
+      if (deferred.lastAttemptAt < oldestAttemptAt) {
+        oldestKey = candidate;
+        oldestAttemptAt = deferred.lastAttemptAt;
+      }
+    }
+    if (oldestKey != null) harvestParseDeferredUntil.delete(oldestKey);
+  }
+  harvestParseDeferredUntil.delete(key);
+  harvestParseDeferredUntil.set(key, {
+    lastAttemptAt: now,
+    deferredUntil: now + HARVEST_PARSE_DEFER_MS,
+  });
+}
 
 function scanAllowed(key: string): boolean {
   const now = deps.now();
@@ -2041,6 +2178,51 @@ function probeFromFacts(facts: ScanFacts, blockTimeMs: number | null): TransferP
   };
 }
 
+async function recordHarvestProbe(
+  destination: string,
+  signature: string,
+  probe: TransferProbe,
+  knownDestinations: ReadonlySet<string>,
+  fallbackBlockTimeMs: number | null,
+): Promise<void> {
+  const blockTimeMs = probe.blockTimeMs ?? fallbackBlockTimeMs;
+  const facts = scanFactsOf(probe, knownDestinations);
+  if (!facts) {
+    // Too large to represent WHOLE. Leave it unscanned so a later full parse
+    // can retry, and page ops — recording a truncated view as settled fact
+    // would silently drop a qualifying leg or a correct memo.
+    await emitConditionAlert(`scan-facts-too-large:${signature}`, {
+      severity: 'warning',
+      source: ALERT_SOURCE,
+      message:
+        'A transaction at the land hold-wallet verify address is too large to record whole; it was left unscanned rather than truncated. The exact-signature fallback can still verify it; automatic discovery is delayed.',
+      context: {
+        signature,
+        destination,
+        signers: probe.signers.length,
+        transfers: probe.transfers.length,
+        memos: probe.memos.length,
+      },
+    });
+    deferHarvestParse(destination, signature);
+    return;
+  }
+  try {
+    await deps.store.recordScannedSignature({
+      destination,
+      signature,
+      blockTimeMs,
+      facts,
+    });
+    harvestParseDeferredUntil.delete(harvestParseDeferKey(destination, signature));
+  } catch (err) {
+    console.warn(
+      `[${ALERT_SOURCE}] scan-ledger write failed for ${signature} (re-parsed next pass):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 /**
  * PHASE 1 — HARVEST. Page BACKWARDS through this address's signatures until the
  * oldest open challenge window is covered, parse everything not already in the
@@ -2050,11 +2232,18 @@ function probeFromFacts(facts: ScanFacts, blockTimeMs: number | null): TransferP
  * newer than a real deposit were re-parsed on every pass while the deposit at
  * position 26 was never examined at all, so after its grace window the user's
  * SOL was neither attributed nor refunded. Cursor pagination reaches it, and
- * because every parse is RECORDED, each signature costs a parse exactly once
- * ever — the queue drains monotonically instead of spinning on the same spam,
- * and it survives a restart.
+ * recorded facts cost one parse ever and survive a restart. Null parses and
+ * deliberately over-cap facts stay unrecorded but enter a bounded five-minute
+ * in-memory defer window, so ordinary passes skip that head and advance to older
+ * entries before retrying it after cooldown. Closed-tail retry passes directly
+ * re-parse the oldest destination-scoped defers under their own budget before
+ * the page walk. Anything still eclipsed retains the exact-signature fallback.
  */
-async function harvestSignatures(destination: string, windowFromMs: number): Promise<void> {
+async function harvestSignatures(
+  destination: string,
+  windowFromMs: number,
+  retryDeferred: boolean,
+): Promise<void> {
   // Facts keep legs to ANY verify address we know about, so one row can later
   // reveal that this transaction ALSO paid a retired address. THROWS when that
   // set is unavailable: persisting facts scoped to only the attributed
@@ -2062,6 +2251,45 @@ async function harvestSignatures(destination: string, windowFromMs: number): Pro
   // never re-parsed.
   const knownDestinations = new Set(await knownVerifyDestinations());
   knownDestinations.add(destination);
+
+  if (retryDeferred) {
+    const destinationPrefix = `${destination}:`;
+    const retryEntries = [...harvestParseDeferredUntil.entries()]
+      .filter(([key]) => key.startsWith(destinationPrefix))
+      .sort(
+        ([keyA, a], [keyB, b]) =>
+          a.lastAttemptAt - b.lastAttemptAt || keyA.localeCompare(keyB),
+      )
+      .slice(0, SCAN_PARSE_LIMIT);
+    for (const [key] of retryEntries) {
+      const signature = key.slice(destinationPrefix.length);
+      let probe: TransferProbe | null;
+      try {
+        probe = probeTransaction(
+          await deps.rpc().getParsedTransaction(signature, {
+            commitment: 'finalized',
+            maxSupportedTransactionVersion: 0,
+          }),
+        );
+      } catch (err) {
+        // Provider transport failure is backpressure for the entire pass. Do
+        // not refresh the entry: it remains oldest for the next retry attempt.
+        console.warn(
+          `[${ALERT_SOURCE}] deferred parse failed for ${signature} (non-fatal):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+      if (!probe) {
+        // Refreshing the attempt time moves this entry behind older untouched
+        // work, yielding bounded round-robin fairness across retry passes.
+        deferHarvestParse(destination, signature);
+        continue;
+      }
+      await recordHarvestProbe(destination, signature, probe, knownDestinations, null);
+    }
+  }
+
   const address = new PublicKey(destination);
   let before: string | undefined;
   let parsed = 0;
@@ -2116,6 +2344,10 @@ async function harvestSignatures(destination: string, windowFromMs: number): Pro
       // worth a parse. NOT recorded either — the window belongs to the rows this
       // pass holds, and a later pass may hold older ones.
       if (typeof ref.blockTime === 'number' && ref.blockTime * 1000 < windowFromMs) continue;
+      // Retry work has its own direct, oldest-first budget above. The newest-
+      // first page walk always skips active defers and spends this budget only
+      // on signatures that are new to the retry scheduler.
+      if (harvestParseIsDeferred(destination, ref.signature, deps.now())) continue;
       parsed += 1;
       let probe: TransferProbe | null;
       try {
@@ -2127,49 +2359,26 @@ async function harvestSignatures(destination: string, windowFromMs: number): Pro
         );
       } catch (err) {
         // Leave it UNRECORDED so the next pass retries; a transient RPC error
-        // must never look like "this transaction has nothing for us".
+        // must never look like "this transaction has nothing for us". Abort the
+        // batch as backpressure instead of issuing more parses into an active
+        // provider rate limit.
         console.warn(
           `[${ALERT_SOURCE}] parse failed for ${ref.signature} (non-fatal):`,
           err instanceof Error ? err.message : String(err),
         );
+        return;
+      }
+      if (!probe) {
+        deferHarvestParse(destination, ref.signature);
         continue;
       }
-      if (!probe) continue;
-      const blockTimeMs =
-        probe.blockTimeMs ?? (typeof ref.blockTime === 'number' ? ref.blockTime * 1000 : null);
-      const facts = scanFactsOf(probe, knownDestinations);
-      if (!facts) {
-        // Too large to represent WHOLE. Leave it unscanned so a later full parse
-        // can retry, and page ops — recording a truncated view as settled fact
-        // would silently drop a qualifying leg or a correct memo.
-        await emitConditionAlert(`scan-facts-too-large:${ref.signature}`, {
-          severity: 'warning',
-          source: ALERT_SOURCE,
-          message:
-            'A transaction at the land hold-wallet verify address is too large to record whole; it was left unscanned rather than truncated. Verification is unaffected (that path is submission-based); this only delays refund discovery.',
-          context: {
-            signature: ref.signature,
-            destination,
-            signers: probe.signers.length,
-            transfers: probe.transfers.length,
-            memos: probe.memos.length,
-          },
-        });
-        continue;
-      }
-      try {
-        await deps.store.recordScannedSignature({
-          destination,
-          signature: ref.signature,
-          blockTimeMs,
-          facts,
-        });
-      } catch (err) {
-        console.warn(
-          `[${ALERT_SOURCE}] scan-ledger write failed for ${ref.signature} (re-parsed next pass):`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await recordHarvestProbe(
+        destination,
+        ref.signature,
+        probe,
+        knownDestinations,
+        typeof ref.blockTime === 'number' ? ref.blockTime * 1000 : null,
+      );
     }
 
     const last = refs[refs.length - 1]!;
@@ -2193,7 +2402,7 @@ async function harvestSignatures(destination: string, windowFromMs: number): Pro
  * T8: signatures AND transactions are read at `finalized`. A `confirmed` read
  * would let a reorg roll the transfer back while the verification persists.
  */
-async function attributeChallenges(candidates: ChallengeRow[]): Promise<void> {
+async function attributeChallenges(candidates: ChallengeRow[], epoch: number): Promise<void> {
   if (candidates.length === 0) return;
   // Group by destination rather than assuming one: if the verify treasury row
   // is ever rotated, challenges still pointing at the RETIRED address would
@@ -2206,13 +2415,14 @@ async function attributeChallenges(candidates: ChallengeRow[]): Promise<void> {
     else byDestination.set(row.destinationPubkey, [row]);
   }
   for (const [destination, rows] of byDestination) {
-    await attributeAtDestination(destination, rows);
+    await attributeAtDestination(destination, rows, epoch);
   }
 }
 
 async function attributeAtDestination(
   destination: string,
   candidates: ChallengeRow[],
+  epoch: number,
 ): Promise<void> {
   if (candidates.length === 0) return;
 
@@ -2236,6 +2446,21 @@ async function attributeAtDestination(
     );
   }
 
+  const now = deps.now();
+  const retryDeferred = ordered.some(
+    (row) =>
+      now >
+      row.expiresAt.getTime() +
+        LATE_ARRIVAL_GRACE_MS +
+        UNCLAIMED_CLOSED_MARGIN_MS -
+        2 * SWEEP_INTERVAL_MS,
+  );
+  // In the final margin, retry destination-scoped parse defers oldest-first on
+  // every remaining closed sweep. This is fair for organic defer volumes. An
+  // attacker continuously saturating the verify address with unparseable work
+  // degrades to the documented exact-signature submit fallback and orphan
+  // discovery, which is the accepted bounded-scan design boundary.
+
   // FAIL CLOSED: harvest needs the complete destination set to decide which legs
   // to PERSIST, and facts scoped to only the attributed destination would hide a
   // retired-address leg permanently. `harvestSignatures` throws when that lookup
@@ -2243,7 +2468,7 @@ async function attributeAtDestination(
   // consumed. (The obligation derivation itself reads destinations FRESH inside
   // the attribution transaction, so it never depends on anything cached here.)
   try {
-    await harvestSignatures(destination, windowFromMs);
+    await harvestDestination(destination, windowFromMs, retryDeferred);
   } catch (err) {
     await emitConditionAlert('destination-set-unavailable', {
       severity: 'critical',
@@ -2286,22 +2511,80 @@ async function attributeAtDestination(
     );
     if (legMatches.length === 0) continue;
 
-    // The leg identifies this money as a specific user's. When more than one
-    // open row shares the amount — only possible for rows the uniqueness guards
-    // could not cover — the memo decides which one the sender meant; otherwise
-    // the newest takes it (`ordered` above).
-    const row =
-      legMatches.find(
-        (candidate) =>
-          transactionSignedBySource(probe, candidate.walletPubkey) &&
-          transactionCarriesChallengeMemo(probe, candidate.id),
-      ) ?? legMatches[0]!;
+    // The exact sender, destination and amount identify the challenge. If a
+    // lapsed amount has already been reused, the newest row wins, matching the
+    // amount-reservation rule above. Memos are ignored.
+    const row = legMatches[0]!;
 
-    // DEMOTED (round 3): the scan NEVER verifies. Verification comes only from
-    // `submitTransferSignature`, where the user hands us the exact signature and
-    // cannot be eclipsed by spam. All this pass does is find money that arrived
-    // and was never submitted, so it can be REFUNDED. `unclaimed` is terminal:
-    // refund owed, no proof granted, and the poll surface explains why.
+    // Closed-row discovery first re-fetches the full finalized transaction and
+    // uses the SAME attribution path as poll and exact-signature submit. This
+    // lets an in-window payment verify even when the closed sweep wins a race
+    // with a late submit. Scan facts remain discovery-only and are used for an
+    // `unclaimed` refund only when the full fetch cannot provide proof.
+    let parsed: ParsedTransactionWithMeta | null = null;
+    let fetchThrew = false;
+    try {
+      parsed = await deps.rpc().getParsedTransaction(entry.signature, {
+        commitment: 'finalized',
+        maxSupportedTransactionVersion: 0,
+      });
+      // Reset-on-transport-success is intentional. The finite-tail refund
+      // guarantee comes from the immediate boot sweep plus final-margin bypass,
+      // never from this volatile process-local counter.
+      closedFetchFailures.delete(entry.signature);
+    } catch (err) {
+      fetchThrew = true;
+      console.warn(
+        `[${ALERT_SOURCE}] closed-row full fetch failed for ${entry.signature} (retried next pass):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    const authoritativeProbe = probeTransaction(parsed);
+    if (authoritativeProbe?.blockTimeMs != null) {
+      try {
+        const status = await attributeSignatureToChallenge(
+          row,
+          entry.signature,
+          authoritativeProbe,
+        );
+        if (status.inboundSignature != null) open.delete(row.id);
+        continue;
+      } catch (err) {
+        if (
+          err instanceof LandHoldVerifyError &&
+          (err.code === 'transfer_not_found' || err.code === 'transaction_failed')
+        ) {
+          // The durable scan proves an exact inbound leg but the full fetch can
+          // no longer prove settlement. Preserve the existing refund guarantee
+          // through the guarded `unclaimed` write below.
+        } else {
+          console.warn(
+            `[${ALERT_SOURCE}] closed-row attribution failed for ${entry.signature} (retried next pass):`,
+            err instanceof Error ? err.message : String(err),
+          );
+          continue;
+        }
+      }
+    }
+
+    // A null parse means the RPC answered authoritatively but does not know the
+    // transaction, so the existing immediate post-grace fallback remains safe.
+    // A thrown transport fetch needs repeated evidence before scan facts may
+    // drive the irreversible `unclaimed` write. The last two sweep slots bypass
+    // that evidence budget so the row cannot age out without a refund.
+    const now = deps.now();
+    if (now <= row.expiresAt.getTime() + LATE_ARRIVAL_GRACE_MS) continue;
+    if (fetchThrew) {
+      const failures = recordClosedFetchFailure(entry.signature, epoch);
+      const finalMarginStartsAt =
+        row.expiresAt.getTime() +
+        LATE_ARRIVAL_GRACE_MS +
+        UNCLAIMED_CLOSED_MARGIN_MS -
+        2 * SWEEP_INTERVAL_MS;
+      if (failures < CLOSED_FETCH_FAILURE_THRESHOLD && now <= finalMarginStartsAt) continue;
+    }
+
     const inboundLamports =
       receivedLamportsFrom(probe, { from: row.walletPubkey, to: row.destinationPubkey }) ||
       row.lamports;
@@ -2331,6 +2614,7 @@ async function attributeAtDestination(
       legs: probe.transfers,
     });
     if (outcome.bound) {
+      closedFetchFailures.delete(entry.signature);
       open.delete(row.id);
       await deps.store
         .markSignatureMatched(destination, entry.signature)
@@ -2873,13 +3157,340 @@ function toStatus(row: ChallengeRow): TransferChallengeStatus {
 }
 
 /**
+ * The single authoritative attribution path for both poll discovery and exact
+ * signature submission. Callers may discover a signature differently, but no
+ * caller may duplicate or weaken these predicates.
+ */
+async function attributeSignatureToChallenge(
+  row: ChallengeRow,
+  signature: string,
+  probe: TransferProbe,
+): Promise<TransferChallengeStatus> {
+  if (probe.failed) throw new LandHoldVerifyError('transaction_failed', 422);
+  if (probe.blockTimeMs == null) {
+    // Finality without an authoritative block time cannot prove that this
+    // transfer landed inside the challenge window. Leave the row untouched so
+    // submit or poll can retry when the RPC begins returning block time.
+    throw new LandHoldVerifyError('transaction_not_finalized', 404);
+  }
+
+  const leg = {
+    from: row.walletPubkey,
+    to: row.destinationPubkey,
+    lamports: row.lamports,
+  };
+  if (!transactionMatchesTransferLeg(probe, leg)) {
+    // Without an authoritative exact leg there is no challenge money to
+    // attribute or refund. Scan facts are never trusted over this full probe.
+    throw new LandHoldVerifyError('transfer_not_found', 422, {
+      expectedLamports: row.lamports,
+      expectedDestination: row.destinationPubkey,
+      expectedSender: row.walletPubkey,
+    });
+  }
+
+  // From here the money IS this challenge's, so every outcome attributes and
+  // therefore authorizes the unchanged refund path. Memos are ignored.
+  let nextStatus: 'observed' | 'expired' | 'rejected';
+  let rejectedReason: TransferRejectedReason | null = null;
+  if (!transactionSignedBySource(probe, row.walletPubkey)) {
+    nextStatus = 'rejected';
+    rejectedReason = 'source_not_signer';
+  } else if (!transactionHasTopLevelTransferLeg(probe, leg)) {
+    nextStatus = 'rejected';
+    rejectedReason = 'transfer_not_top_level';
+  } else if (!blockTimeInsideWindow(probe.blockTimeMs, row)) {
+    nextStatus = 'expired';
+  } else {
+    nextStatus = 'observed';
+  }
+
+  // FAIL CLOSED before touching the row. The authoritative destination read is
+  // inside the attribution transaction; this is a health probe so an unavailable
+  // treasury table becomes retryable without partially touching the challenge.
+  try {
+    await knownVerifyDestinations();
+  } catch (err) {
+    console.warn(
+      `[${ALERT_SOURCE}] verify-destination lookup failed; refusing to attribute ${signature}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    throw new LandHoldVerifyError('destination_set_unavailable', 503);
+  }
+
+  const inboundLamports = receivedLamportsFrom(probe, leg) || row.lamports;
+  const outcome = await deps.store.attributeInbound({
+    challengeId: row.id,
+    userId: row.userId,
+    destination: row.destinationPubkey,
+    signature,
+    inboundLamports,
+    nextStatus,
+    rejectedReason,
+    // Poll and submit both own the live challenge window. The closed-row refund
+    // discovery path remains separate and keeps its onlyIfClosedForMs guard.
+    obligations: retainedLegObligations(
+      row.destinationPubkey,
+      signature,
+      probe,
+      row.walletPubkey,
+      row.id,
+    ),
+    legs: probe.transfers,
+  });
+  if (!outcome.bound) {
+    // Another writer took the row or signature between discovery and the atomic
+    // CAS. Returning the current row makes poll/submit races idempotent.
+    const current = await deps.store.getChallengeForUser(row.id, row.userId);
+    if (current) return toStatus(current);
+    throw new LandHoldVerifyError('challenge_not_found', 404);
+  }
+
+  await deps.store
+    .markSignatureMatched(row.destinationPubkey, signature)
+    .catch(() => undefined);
+  await alertRefundQuarantined(outcome, row.id, signature);
+  await alertRetainedLegs(row.destinationPubkey, signature, probe, row.walletPubkey, row.id);
+
+  if (nextStatus === 'rejected') {
+    await emitConditionAlert(`inbound-rejected:${rejectedReason}:${row.userId}`, {
+      severity: 'warning',
+      source: ALERT_SOURCE,
+      message:
+        'A land hold-wallet transfer could not be proof; it is being refunded and the user was told why.',
+      context: { challengeId: row.id, userId: row.userId, reason: rejectedReason },
+    });
+  }
+  if (inboundLamports > row.lamports) {
+    await emitConditionAlert(`over-payment:${signature}`, {
+      severity: 'warning',
+      source: ALERT_SOURCE,
+      message:
+        'A land hold-wallet transfer sent MORE than the challenge amount; the full received total is recorded and refunded.',
+      context: {
+        challengeId: row.id,
+        signature,
+        askedLamports: row.lamports,
+        receivedLamports: inboundLamports,
+      },
+    });
+  }
+
+  if (nextStatus === 'observed') {
+    await grantObserved([{ ...row, status: 'observed', inboundSignature: signature }]);
+  }
+  const settled = await deps.store.getChallengeForUser(row.id, row.userId);
+  return settled ? toStatus(settled) : toStatus({ ...row, status: nextStatus });
+}
+
+function earliestScanCandidate(a: ScanLedgerRow, b: ScanLedgerRow): number {
+  if (a.blockTimeMs == null && b.blockTimeMs != null) return 1;
+  if (a.blockTimeMs != null && b.blockTimeMs == null) return -1;
+  if (a.blockTimeMs != null && b.blockTimeMs != null && a.blockTimeMs !== b.blockTimeMs) {
+    return a.blockTimeMs - b.blockTimeMs;
+  }
+  return a.signature.localeCompare(b.signature);
+}
+
+/**
+ * Discover candidates from bounded scan facts, then re-fetch and settle only
+ * through `attributeSignatureToChallenge`. All scan/RPC failures are soft.
+ */
+async function scanSettleChallenges(rows: ChallengeRow[]): Promise<void> {
+  const now = deps.now();
+  const eligible = rows.filter(
+    (row) =>
+      row.status === 'pending' &&
+      row.inboundSignature == null &&
+      row.expiresAt.getTime() > now &&
+      scanAllowed(row.id),
+  );
+  if (eligible.length === 0) return;
+
+  const byDestination = new Map<string, ChallengeRow[]>();
+  for (const row of eligible) {
+    const bucket = byDestination.get(row.destinationPubkey);
+    if (bucket) bucket.push(row);
+    else byDestination.set(row.destinationPubkey, [row]);
+  }
+
+  for (const [destination, destinationRows] of byDestination) {
+    const oldestFromMs = Math.min(
+      ...destinationRows.map((row) => row.createdAt.getTime() - BLOCK_TIME_SKEW_MS),
+    );
+    try {
+      await harvestDestination(destination, oldestFromMs, false);
+    } catch (err) {
+      console.warn(
+        `[${ALERT_SOURCE}] verification scan harvest failed for ${destination} (retried next pass):`,
+        err instanceof Error ? err.message : String(err),
+      );
+      continue;
+    }
+
+    for (const row of destinationRows) {
+      let entries: ScanLedgerRow[];
+      try {
+        entries = await deps.store.listScannedSignatures({
+          destination,
+          fromMs: row.createdAt.getTime() - BLOCK_TIME_SKEW_MS,
+          toMs: deps.now(),
+          limit: SCAN_MATCH_LIMIT,
+          oldestFirst: true,
+        });
+      } catch (err) {
+        console.warn(
+          `[${ALERT_SOURCE}] verification scan-ledger read failed for ${row.id} (retried next pass):`,
+          err instanceof Error ? err.message : String(err),
+        );
+        continue;
+      }
+
+      const candidates = entries
+        .filter((entry) => {
+          const discoveryProbe = probeFromFacts(entry.facts, entry.blockTimeMs);
+          return (
+            !discoveryProbe.failed &&
+            transactionMatchesTransferLeg(discoveryProbe, {
+              from: row.walletPubkey,
+              to: row.destinationPubkey,
+              lamports: row.lamports,
+            })
+          );
+        })
+        .sort(earliestScanCandidate);
+
+      for (const candidate of candidates) {
+        try {
+          if (await deps.store.isSignatureAttributed(candidate.signature)) continue;
+        } catch (err) {
+          console.warn(
+            `[${ALERT_SOURCE}] signature attribution lookup failed for ${candidate.signature} (retried next pass):`,
+            err instanceof Error ? err.message : String(err),
+          );
+          break;
+        }
+        let parsed: ParsedTransactionWithMeta | null;
+        try {
+          parsed = await deps.rpc().getParsedTransaction(candidate.signature, {
+            commitment: 'finalized',
+            maxSupportedTransactionVersion: 0,
+          });
+        } catch (err) {
+          // One provider failure is backpressure for this candidate batch. Do
+          // not issue later full-fetches into the same active rate limit.
+          console.warn(
+            `[${ALERT_SOURCE}] verification candidate fetch failed for ${candidate.signature} (retried next pass):`,
+            err instanceof Error ? err.message : String(err),
+          );
+          break;
+        }
+
+        try {
+          const probe = probeTransaction(parsed);
+          // Unknown or not finalized yet is retryable. Continue so one stale
+          // candidate cannot eclipse a later finalized payment in this pass.
+          if (!probe) continue;
+          const status = await attributeSignatureToChallenge(row, candidate.signature, probe);
+          if (status.state !== 'pending') break;
+        } catch (err) {
+          // Full-fetch disagreement with scan facts is not proof and never
+          // consumes the row. A semantic null block time is retryable, but it
+          // must not eclipse a later fully provable candidate in this pass.
+          console.warn(
+            `[${ALERT_SOURCE}] verification candidate ${candidate.signature} was not attributed (retried or skipped):`,
+            err instanceof Error ? err.message : String(err),
+          );
+          let current: ChallengeRow | null;
+          try {
+            current = await deps.store.getChallengeForUser(row.id, row.userId);
+          } catch (reloadErr) {
+            console.warn(
+              `[${ALERT_SOURCE}] verification candidate state reload failed for ${candidate.signature} (batch stopped):`,
+              reloadErr instanceof Error ? reloadErr.message : String(reloadErr),
+            );
+            break;
+          }
+          if (current?.inboundSignature != null) break;
+          if (
+            err instanceof LandHoldVerifyError &&
+            (err.code === 'transaction_not_finalized' ||
+              err.code === 'transaction_failed' ||
+              err.code === 'transfer_not_found')
+          ) {
+            continue;
+          }
+          break;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Destination-wide backpressure for the shared RPC seam. Coverage is the
+ * earliest block-time window harvested, not merely the destination: broader
+ * callers may wait for narrow work, but must then run their own broad harvest.
+ * Successful work retains recent five-second coverage per destination. A
+ * retry-deferred caller requires coverage that also bypassed active defers. The
+ * global map is lazily pruned and capped so one-off retired destinations cannot
+ * remain in process memory forever.
+ */
+async function harvestDestination(
+  destination: string,
+  windowFromMs: number,
+  retryDeferred: boolean,
+): Promise<void> {
+  for (;;) {
+    const active = harvestInFlight.get(destination);
+    if (active) {
+      if (
+        windowFromMs >= active.windowFromMs &&
+        (!retryDeferred || active.retryDeferred)
+      ) {
+        await active.promise;
+        return;
+      }
+      // This caller needs older history. Narrow work cannot satisfy it, even if
+      // that work fails, so wait for the destination slot and retry broadly.
+      await active.promise.catch(() => undefined);
+      continue;
+    }
+
+    const now = deps.now();
+    pruneCompletedHarvestWindows(now);
+    const completed = completedHarvestWindows.get(destination);
+    if (
+      completed &&
+      windowFromMs >= completed.windowFromMs &&
+      (!retryDeferred || completed.retryDeferred)
+    ) {
+      return;
+    }
+
+    const promise = harvestSignatures(destination, windowFromMs, retryDeferred);
+    const harvest: DestinationHarvest = { windowFromMs, retryDeferred, promise };
+    harvestInFlight.set(destination, harvest);
+    try {
+      await promise;
+      recordCompletedHarvest(destination, windowFromMs, retryDeferred, deps.now());
+      return;
+    } finally {
+      if (harvestInFlight.get(destination) === harvest) {
+        harvestInFlight.delete(destination);
+      }
+    }
+  }
+}
+
+/**
  * Read one challenge's status.
  *
- * This is READ-ONLY with respect to verification (round 3): only
- * `submitTransferSignature` can settle a challenge. Polling still lapses an
- * expired row so the UI reflects the closed window, and it never drives refunds
- * — `sweepTransferChallenges` owns the send path so there is exactly one
- * money-mover.
+ * Polling is the primary verification path. A live pending row gets one bounded
+ * scan-discovery attempt at most every five seconds. Discovery facts only select
+ * candidates; finalized full transaction probes drive the shared attribution.
+ * Poll never sends refunds. `sweepTransferChallenges` remains the only money
+ * mover.
  */
 export async function pollTransferChallenge(input: {
   userId: string;
@@ -2891,13 +3502,30 @@ export async function pollTransferChallenge(input: {
   let row = await deps.store.getChallengeForUser(input.challengeId, input.userId);
   if (!row) throw new LandHoldVerifyError('challenge_not_found', 404);
 
+  if (row.status === 'observed') {
+    const observedRow = row;
+    await grantObserved([observedRow]).catch((err) => {
+      console.warn(
+        `[${ALERT_SOURCE}] observed grant recovery failed for ${observedRow.id} (retried next poll):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+    const refreshed = await deps.store.getChallengeForUser(input.challengeId, input.userId);
+    if (refreshed) row = refreshed;
+  }
+
+  if (row.status === 'pending' && row.inboundSignature == null && row.expiresAt.getTime() <= deps.now()) {
+    await deps.store.expireChallengeIfLapsed(row.id).catch(() => false);
+    const refreshed = await deps.store.getChallengeForUser(input.challengeId, input.userId);
+    if (refreshed) row = refreshed;
+  }
+
   if (
     row.status === 'pending' &&
     row.inboundSignature == null &&
-    row.expiresAt.getTime() <= deps.now() &&
-    scanAllowed(row.id)
+    row.expiresAt.getTime() > deps.now()
   ) {
-    await deps.store.expireLapsedChallenges().catch(() => 0);
+    await scanSettleChallenges([row]);
     const refreshed = await deps.store.getChallengeForUser(input.challengeId, input.userId);
     if (refreshed) row = refreshed;
   }
@@ -2938,12 +3566,19 @@ async function discoverUnclaimedInbound(): Promise<void> {
 
   for (const destination of destinations.slice(0, OBLIGATION_DESTINATION_LIMIT)) {
     try {
-      await harvestSignatures(destination, now - SCAN_LEDGER_RETENTION_MS);
+      await harvestDestination(destination, now - SCAN_LEDGER_RETENTION_MS, false);
     } catch (err) {
       console.warn(
         `[${ALERT_SOURCE}] destination set unavailable, obligation sweep deferred for ${destination}:`,
         err instanceof Error ? err.message : String(err),
       );
+      await emitConditionAlert('destination-set-unavailable', {
+        severity: 'critical',
+        source: ALERT_SOURCE,
+        message:
+          'The land hold-wallet verify destination set could not be read, so attribution is deferred rather than risking an unrecorded debt at another verify address.',
+        context: { destination, error: err instanceof Error ? err.message : String(err) },
+      });
       continue;
     }
     let entries: ScanLedgerRow[];
@@ -2976,20 +3611,15 @@ async function discoverUnclaimedInbound(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Signature submission — THE verification path (round 3)
+// Exact-signature submission — fallback for scan eclipse and bounded misses
 // ---------------------------------------------------------------------------
 
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
 
 /**
- * Verify a door-2 challenge from a signature the USER hands us.
- *
- * This replaced blind scanning as the verification path. We fetch THAT EXACT
- * transaction at `finalized` and run the same predicates the scan used to run —
- * top-level System transfer, top-level memo naming the challenge, sender is a
- * signer, exact amount, our destination — none of which changed. Only HOW we
- * find the transaction changed, and a signature handed to us cannot be eclipsed
- * by spam, buried past a page cap, or lost to a batch bound.
+ * Verify a door-2 challenge from a signature the user hands us. Polling is the
+ * primary path; this fallback cannot be eclipsed by spam, buried past a page
+ * cap, or lost to a batch bound. Both paths call the same attribution function.
  *
  * A transfer that arrives but cannot be proof is still ATTRIBUTED (so the money
  * is refunded) and returned with a reason, exactly as before.
@@ -3053,127 +3683,7 @@ export async function submitTransferSignature(input: {
   // Null covers both "unknown" and "not finalized yet" — T8 means we never grant
   // on anything softer, so the caller is told to wait and retry.
   if (!probe) throw new LandHoldVerifyError('transaction_not_finalized', 404);
-  if (probe.failed) throw new LandHoldVerifyError('transaction_failed', 422);
-
-  const leg = {
-    from: row.walletPubkey,
-    to: row.destinationPubkey,
-    lamports: row.lamports,
-  };
-  if (!transactionMatchesTransferLeg(probe, leg)) {
-    // Nothing in this transaction pays this challenge, so there is no money of
-    // ours to attribute. Refuse WITHOUT consuming the challenge.
-    throw new LandHoldVerifyError('transfer_not_found', 422, {
-      expectedLamports: row.lamports,
-      expectedDestination: row.destinationPubkey,
-      expectedSender: row.walletPubkey,
-    });
-  }
-
-  // From here the money IS this challenge's, so every outcome attributes and
-  // therefore refunds. Strongest refusal first.
-  let nextStatus: 'observed' | 'expired' | 'rejected';
-  let rejectedReason: TransferRejectedReason | null = null;
-  if (!transactionSignedBySource(probe, row.walletPubkey)) {
-    nextStatus = 'rejected';
-    rejectedReason = 'source_not_signer';
-  } else if (!transactionCarriesChallengeMemo(probe, row.id)) {
-    nextStatus = 'rejected';
-    rejectedReason = 'memo_missing';
-  } else if (!transactionHasTopLevelTransferLeg(probe, leg)) {
-    nextStatus = 'rejected';
-    rejectedReason = 'transfer_not_top_level';
-  } else if (!blockTimeInsideWindow(probe.blockTimeMs, row, deps.now())) {
-    nextStatus = 'expired';
-  } else {
-    nextStatus = 'observed';
-  }
-
-  // FAIL CLOSED before touching the row. The authoritative destination read is
-  // inside the attribution transaction; this is a health probe so an unavailable
-  // treasury table becomes a clean 503 the caller can retry, rather than an
-  // opaque failure after the row was touched.
-  try {
-    await knownVerifyDestinations();
-  } catch (err) {
-    console.warn(
-      `[${ALERT_SOURCE}] verify-destination lookup failed; refusing to attribute ${signature}:`,
-      err instanceof Error ? err.message : String(err),
-    );
-    throw new LandHoldVerifyError('destination_set_unavailable', 503);
-  }
-
-  const inboundLamports = receivedLamportsFrom(probe, leg) || row.lamports;
-  const outcome = await deps.store.attributeInbound({
-    challengeId: row.id,
-    userId: row.userId,
-    destination: row.destinationPubkey,
-    signature,
-    inboundLamports,
-    nextStatus,
-    rejectedReason,
-    // NO `onlyIfClosedForMs`: the user owns their own window, and submission
-    // always beats the sweep because the sweep refuses to touch a live row.
-    //
-    // Two classes of money this challenge's refund can NEVER return, both
-    // recorded in the SAME transaction as the attribution: another sender's legs
-    // to our address, and legs paid to a DIFFERENT verify address of ours. The
-    // second matters because attributing consumes the signature globally, so
-    // nothing would ever look at that transaction again.
-    obligations: retainedLegObligations(
-      row.destinationPubkey,
-      signature,
-      probe,
-      row.walletPubkey,
-      row.id,
-    ),
-    // Rotated-destination debts come from a FRESH read inside the attribution
-    // transaction, never from anything this function cached.
-    legs: probe.transfers,
-  });
-  if (!outcome.bound) {
-    // Another writer took the row or the signature between our checks.
-    const current = await deps.store.getChallengeForUser(input.challengeId, input.userId);
-    if (current) return toStatus(current);
-    throw new LandHoldVerifyError('challenge_not_found', 404);
-  }
-
-  await deps.store
-    .markSignatureMatched(row.destinationPubkey, signature)
-    .catch(() => undefined);
-  await alertRefundQuarantined(outcome, row.id, signature);
-  // The obligation rows were written ATOMICALLY above; this only pages ops.
-  await alertRetainedLegs(row.destinationPubkey, signature, probe, row.walletPubkey, row.id);
-
-  if (nextStatus === 'rejected') {
-    await emitConditionAlert(`inbound-rejected:${rejectedReason}:${row.userId}`, {
-      severity: 'warning',
-      source: ALERT_SOURCE,
-      message:
-        'A submitted land hold-wallet transfer could not be proof; it is being refunded and the user was told why.',
-      context: { challengeId: row.id, userId: row.userId, reason: rejectedReason },
-    });
-  }
-  if (inboundLamports > row.lamports) {
-    await emitConditionAlert(`over-payment:${signature}`, {
-      severity: 'warning',
-      source: ALERT_SOURCE,
-      message:
-        'A land hold-wallet transfer sent MORE than the challenge amount; the full received total is recorded and refunded.',
-      context: {
-        challengeId: row.id,
-        signature,
-        askedLamports: row.lamports,
-        receivedLamports: inboundLamports,
-      },
-    });
-  }
-
-  if (nextStatus === 'observed') {
-    await grantObserved([{ ...row, status: 'observed', inboundSignature: signature }]);
-  }
-  const settled = await deps.store.getChallengeForUser(input.challengeId, input.userId);
-  return settled ? toStatus(settled) : toStatus({ ...row, status: nextStatus });
+  return attributeSignatureToChallenge(row, signature, probe);
 }
 
 // ---------------------------------------------------------------------------
@@ -3181,12 +3691,22 @@ export async function submitTransferSignature(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * Background entrypoint. Since round 3 this sweep NEVER verifies anything: it
- * expires lapsed challenges, finds money that arrived but was never submitted so
- * it can be REFUNDED, records refund obligations for funds no challenge can
- * return, and moves refunds forward. Never throws — a failed pass is retried.
+ * Background entrypoint. It first gives live pending challenges the same
+ * poll-primary scan-settle attempt used by the status route, then keeps the
+ * existing closed-row refund discovery, orphan ledger, and refund executor.
+ * Never throws; a failed pass is retried.
  */
 export async function sweepTransferChallenges(): Promise<void> {
+  const epoch = ++nextSweepEpoch;
+  try {
+    const grantable = await deps.store.listGrantableChallenges(SWEEP_CHALLENGE_LIMIT);
+    await grantObserved(grantable);
+  } catch (err) {
+    console.warn(
+      `[${ALERT_SOURCE}] observed grant recovery sweep failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   try {
     await deps.store.expireLapsedChallenges();
   } catch (err) {
@@ -3196,25 +3716,37 @@ export async function sweepTransferChallenges(): Promise<void> {
     );
   }
   try {
+    // Take the destination-wide harvest slot with the broad retention window
+    // before narrower live/closed matching. Those later passes reuse the same
+    // durable facts, so destination backpressure cannot starve old orphan work.
+    await discoverUnclaimedInbound();
+  } catch (err) {
+    console.warn(
+      `[${ALERT_SOURCE}] refund-obligation sweep failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  try {
+    const pending = await deps.store.listPendingChallenges(SWEEP_CHALLENGE_LIMIT);
+    await scanSettleChallenges(pending);
+  } catch (err) {
+    console.warn(
+      `[${ALERT_SOURCE}] live verification sweep failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  try {
     const scannable = await deps.store.listScannableChallenges(
       SWEEP_CHALLENGE_LIMIT,
       LATE_ARRIVAL_GRACE_MS,
       UNCLAIMED_CLOSED_MARGIN_MS,
     );
-    // REFUND DISCOVERY ONLY. Bounds here cost refund LATENCY, never correctness:
-    // verification cannot be lost to them because it does not come from here.
-    await attributeChallenges(scannable);
+    // Closed rows also use the shared full-probe attribution path when possible;
+    // scan-backed `unclaimed` remains the refund fallback when proof is absent.
+    await attributeChallenges(scannable, epoch);
   } catch (err) {
     console.warn(
       `[${ALERT_SOURCE}] attribution sweep failed:`,
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-  try {
-    await discoverUnclaimedInbound();
-  } catch (err) {
-    console.warn(
-      `[${ALERT_SOURCE}] refund-obligation sweep failed:`,
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -3241,6 +3773,15 @@ export async function sweepTransferChallenges(): Promise<void> {
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let sweepInFlight = false;
+let nextSweepEpoch = 0;
+
+function triggerLandHoldVerifySweep(): void {
+  if (sweepInFlight) return;
+  sweepInFlight = true;
+  void sweepTransferChallenges().finally(() => {
+    sweepInFlight = false;
+  });
+}
 
 /**
  * Boot wiring for the sweeper. Refunds only flow when this runs, so it MUST be
@@ -3248,13 +3789,8 @@ let sweepInFlight = false;
  */
 export function startLandHoldVerifySweeper(): void {
   if (sweepTimer) return;
-  sweepTimer = setInterval(() => {
-    if (sweepInFlight) return;
-    sweepInFlight = true;
-    void sweepTransferChallenges().finally(() => {
-      sweepInFlight = false;
-    });
-  }, SWEEP_INTERVAL_MS);
+  triggerLandHoldVerifySweep();
+  sweepTimer = setInterval(triggerLandHoldVerifySweep, SWEEP_INTERVAL_MS);
   sweepTimer.unref?.();
   console.log(`[${ALERT_SOURCE}] sweeper started (every ${SWEEP_INTERVAL_MS}ms)`);
 }

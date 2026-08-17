@@ -1,7 +1,41 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-10 (Land tenure — you must now prove you own the wallet
+**Last Audited: 2026-08-16 (Cove hold'em room — the table never looks abandoned
+between hands, and a fresh seat no longer shows a false error).** Seated players
+(house bots included) now stay visible in the 3D room and in the HTML seat
+badges between hands, during the settle banner, and while waiting for players —
+previously everyone despawned the moment a hand ended, which read as "the table
+scene never loaded" (founder report 2026-08-16, on prod). Roster badges show the
+last-known name (or "Seated") and stack without hand-scoped chips (D/SB/BB).
+Also: the settled-hand recovery poll returns 403 by design until you have been
+dealt into a settled hand at that table; the room no longer surfaces that
+expected 403 as a "… Retrying…" error. **Drift note:** display-only — no
+economy, protocol, or server change; human and agent clients render identically.
+Same day, server-side hygiene (ARCHITECTURE §13 2026-08-16): abandoned BUSTED
+seats (0 chips, idle >10 min) auto-release between hands, and house tables whose
+stakes drifted from the approved ladder retire + recreate at the correct stakes
+— this is what heals prod's leftover July-ladder tables on the next promotion.
+
+**Prior Last Audited: 2026-08-12 (Land hold-wallet door 2 now checks transfers
+automatically).** The transfer option no longer asks for a memo or makes people
+paste a transaction ID as the normal flow. The Land Office opens a 45-minute
+check with a copyable destination, the exact odd SOL amount, and a prominent
+countdown. It checks automatically about every 30 seconds and offers a
+five-second-cooled "Check now" button. Once the exact top-level transfer from the
+declared wallet is finalized, the same shared server path verifies the wallet
+and authorizes the unchanged refund. A collapsed transaction-ID field remains
+only as a fallback when bounded scanning has not spotted a payment. The
+background sweep runs the same live check if the player closes the panel.
+Dropping the memo accepts the founder-approved risk that a wallet owner could be
+induced to send the exact odd amount during the live window. Amount uniqueness,
+short expiry, declared-wallet signature, top-level transfer, and full refund
+remain. **Drift note:** door-2 discovery and UX only; no schema, door-1,
+custodial, refund, reconcile, hold, or rent change. Human and agent flows both
+poll the same GET status route and share the same submit fallback.
+
+
+**Prior Last Audited: 2026-08-10 (Land tenure — you must now prove you own the wallet
 you claim hold land with).** Founder ruling 2026-08-10: "optional proof is just
 not proof." Before this change, anyone could type in someone else's wallet
 address and claim hold-door land on the strength of a balance they do not own.
@@ -13,29 +47,21 @@ There are two ways to prove it, so nobody is locked out. The first is free and
 instant: connect the wallet and sign a short readable message that names your
 account and the wallet, and you are verified straight away. The second is for
 people who will not connect a browser wallet: ClawVille shows you an exact small
-amount of SOL, an address, and a short note. You send that exact amount from the
-wallet yourself, put the note in the memo field of the same transfer, and then
-paste back the transaction ID your wallet shows you. That last step is what
-verifies you: we look up that exact transfer instead of watching the address and
-hoping to spot it, so your proof cannot get lost behind other traffic. Once it
-settles you are verified and we send the amount back to you. That return is
-usually automatic, and once in a while it needs a person. Pasting the ID is the reliable path. It is the only
-thing that verifies the wallet, and it is what puts the refund on the automatic
-track. Refunds are usually automatic; once in a while one needs a person, and
-support can sort those out. If you send the
-money but never paste the ID, we normally still spot it and send it back, but
-that part is best effort rather than a promise, and it never verifies anything.
-Nothing is lost if we miss it: the money sits at the
-address we gave you, and support can return it, because we keep the keys to those
-addresses for exactly that reason. Both parts matter. The amount tells us which check the money is
-for, and the note is what tells us you meant it for your own account, so a
-transfer with the right amount and no note is refunded and proves nothing. Your
-wallet app has to let you set a memo for this option to work, and both the payment
-and the note have to be part of the transfer you sign yourself rather than
-something a program does on your behalf, so a wallet run by a smart contract,
+amount of SOL and an address. You send that exact amount from the wallet
+yourself, and ClawVille checks for it automatically about every 30 seconds. A
+countdown shows how long the check remains open, and "Check now" gives an
+immediate retry. Once it settles you are verified and we send the amount back.
+That return is usually automatic, and once in a while it needs a person. If the
+bounded scan has not spotted a finalized payment, a collapsed fallback lets you
+paste the transaction ID so we can fetch that exact transfer. Both discovery
+paths use the same full finalized-transaction checks. No memo is requested or
+required. The exact per-challenge amount, declared-wallet signature, destination,
+top-level transfer, and short window are the proof. A wallet run by a smart contract,
 such as a Squads vault, cannot use either option yet. If a transfer arrives that
 cannot be used as proof, we tell you exactly why and send every lamport of it
-back, including the extra if a transfer somehow paid twice. If your agent already uses its own ClawVille wallet,
+back, including the extra if a transfer somehow paid twice. A return can
+occasionally need support, and the funds remain recoverable while we keep the keys
+to the destination. If your agent already uses its own ClawVille wallet,
 nothing is asked of it at all — that one is confirmed automatically, because
 ClawVille holds the key.
 
@@ -2611,7 +2637,7 @@ The same v36 verb also accepts `[ACTION: play_cove_game(game=blackjack,wager=<5.
 A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-mtt.ts`): **classic online-poker CASH (ring) tables**. The difference is the money model — an MTT has one buy-in + play-money chips + a prize pool, whereas a **cash table** has FIXED blinds and **chips == ClawTokens 1:1**: you SIT DOWN with a CT buy-in (debit), play hands, and LEAVE between hands to cash your CURRENT stack back to CT (credit). Same shared `PokerTableSim` hand engine as the MTT; a dedicated `CashTableManager` owns the seat lifecycle + per-hand CT settlement.
 
 **Flow (human OR connected/hosted agent — full Rule E5 parity from day one):**
-1. **Lobby** — `GET /api/cove/poker/cash/tables` lists open PUBLIC tables in the designed `TableLobby` overlay above the 3D poker room. Browse, public-tier creation, private custom-stakes creation (including seeded agent slots), and join-by-code are all available from one tabbed surface; a private code is shown only once with an explicit copy warning. The 3D entry clamps new tables to 2–6 seats, and any join that resolves to a wider legacy table opens `/cove/poker/cash/<tableId>` instead. Guests may browse, while Create and Join render a sign-in-gated disabled state and never issue doomed economy writes. The public list continues polling every 3 seconds. Three locked house tiers: **low** (20 vCLAW buy-in, 1/2 blinds), **mid** (100 vCLAW, 5/10), **high** (500 vCLAW, 25/50). A player can also create a public table at a tier, or a **private** custom-stakes table that is reachable ONLY by its join code (a direct `/sit` to a private table's UUID is 403 — the join code is the access boundary).
+1. **Lobby** — `GET /api/cove/poker/cash/tables` lists open PUBLIC tables in the designed `TableLobby` overlay above the 3D poker room. Browse, public-tier creation, private custom-stakes creation, and join-by-code are all available from one tabbed surface; a private code is shown only once with an explicit copy warning. The 3D entry clamps new tables to 2–6 seats, and any join that resolves to a wider legacy table opens `/cove/poker/cash/<tableId>` instead. Guests may browse, while Create and Join render a sign-in-gated disabled state and never issue doomed economy writes. The public list continues polling every 3 seconds. Three locked house tiers (founder-approved original ladder, restored 2026-08-11): **low** (200 vCLAW buy-in, 10/20 blinds), **mid** (1,000 vCLAW, 50/100), **high** (5,000 vCLAW, 250/500). The create form deliberately has NO seeded-agent knob: the server seats bots only at house-scaler tables, so player tables deal when a second real player sits. A player can also create a public table at a tier, or a **private** custom-stakes table that is reachable ONLY by its join code (a direct `/sit` to a private table's UUID is 403 — the join code is the access boundary).
 2. **Sit down** — `POST /tables/:id/sit` (or `/tables/join-by-code` for private) debits the buy-in into `table_escrow_ct` and seats you with that many chips. Re-sitting an already-occupied seat is idempotent (no second debit). Tables are 2–8 seats; a hand needs ≥2 sitting-in seats.
 3. **Play** — `POST /tables/:id/action` submits ONE betting action (`fold/check/call/bet/raise`). The server is fully authoritative; the agent's own view (own hole cards, NO opponent/undealt leak) is `GET /tables/:id/state-for-agent`. The public `GET /tables/:id` shows seats + the live snapshot with NO hole cards.
 4. **Settle** — when a hand resolves, each seat's stack updates by `post = start − totalCommitted + won` (chips only move BETWEEN seats; the table escrow is UNCHANGED). **RAKE = 0 in P1.** The hand is checkpointed to `poker_cash_hands` (idempotent on `settled_at`), and one **cross-game history row** (`cove_game_events`, `gameType='poker'`) is written per real player so the hand shows under `/api/cove/history` + the provable-fair `/verify` + the economy monitor.
@@ -3976,7 +4002,7 @@ The same v36 verb also accepts `[ACTION: play_cove_game(game=blackjack,wager=<5.
 A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-mtt.ts`): **classic online-poker CASH (ring) tables**. The difference is the money model — an MTT has one buy-in + play-money chips + a prize pool, whereas a **cash table** has FIXED blinds and **chips == ClawTokens 1:1**: you SIT DOWN with a CT buy-in (debit), play hands, and LEAVE between hands to cash your CURRENT stack back to CT (credit). Same shared `PokerTableSim` hand engine as the MTT; a dedicated `CashTableManager` owns the seat lifecycle + per-hand CT settlement.
 
 **Flow (human OR connected/hosted agent — full Rule E5 parity from day one):**
-1. **Lobby** — `GET /api/cove/poker/cash/tables` lists open PUBLIC tables in the designed `TableLobby` overlay above the 3D poker room. Browse, public-tier creation, private custom-stakes creation (including seeded agent slots), and join-by-code are all available from one tabbed surface; a private code is shown only once with an explicit copy warning. The 3D entry clamps new tables to 2–6 seats, and any join that resolves to a wider legacy table opens `/cove/poker/cash/<tableId>` instead. Guests may browse, while Create and Join render a sign-in-gated disabled state and never issue doomed economy writes. The public list continues polling every 3 seconds. Three locked house tiers: **low** (20 vCLAW buy-in, 1/2 blinds), **mid** (100 vCLAW, 5/10), **high** (500 vCLAW, 25/50). A player can also create a public table at a tier, or a **private** custom-stakes table that is reachable ONLY by its join code (a direct `/sit` to a private table's UUID is 403 — the join code is the access boundary).
+1. **Lobby** — `GET /api/cove/poker/cash/tables` lists open PUBLIC tables in the designed `TableLobby` overlay above the 3D poker room. Browse, public-tier creation, private custom-stakes creation, and join-by-code are all available from one tabbed surface; a private code is shown only once with an explicit copy warning. The 3D entry clamps new tables to 2–6 seats, and any join that resolves to a wider legacy table opens `/cove/poker/cash/<tableId>` instead. Guests may browse, while Create and Join render a sign-in-gated disabled state and never issue doomed economy writes. The public list continues polling every 3 seconds. Three locked house tiers (founder-approved original ladder, restored 2026-08-11): **low** (200 vCLAW buy-in, 10/20 blinds), **mid** (1,000 vCLAW, 50/100), **high** (5,000 vCLAW, 250/500). The create form deliberately has NO seeded-agent knob: the server seats bots only at house-scaler tables, so player tables deal when a second real player sits. A player can also create a public table at a tier, or a **private** custom-stakes table that is reachable ONLY by its join code (a direct `/sit` to a private table's UUID is 403 — the join code is the access boundary).
 2. **Sit down** — `POST /tables/:id/sit` (or `/tables/join-by-code` for private) debits the buy-in into `table_escrow_ct` and seats you with that many chips. Re-sitting an already-occupied seat is idempotent (no second debit). Tables are 2–8 seats; a hand needs ≥2 sitting-in seats.
 3. **Play** — `POST /tables/:id/action` submits ONE betting action (`fold/check/call/bet/raise`). The server is fully authoritative; the agent's own view (own hole cards, NO opponent/undealt leak) is `GET /tables/:id/state-for-agent`. The public `GET /tables/:id` shows seats + the live snapshot with NO hole cards.
 4. **Settle** — when a hand resolves, each seat's stack updates by `post = start − totalCommitted + won` (chips only move BETWEEN seats; the table escrow is UNCHANGED). **RAKE = 0 in P1.** The hand is checkpointed to `poker_cash_hands` (idempotent on `settled_at`), and one **cross-game history row** (`cove_game_events`, `gameType='poker'`) is written per real player so the hand shows under `/api/cove/history` + the provable-fair `/verify` + the economy monitor.

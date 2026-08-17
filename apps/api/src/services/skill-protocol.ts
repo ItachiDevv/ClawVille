@@ -458,7 +458,10 @@ import {
 // maximum is 5,000 vCLAW ($50.00), founder-set on 2026-08-11 (supersedes the
 // $20 value that shipped hours earlier). Hard-clamped in code; env can only
 // lower it. All three knowledge surfaces updated in this diff.
-export const PROTOCOL_VERSION = 53;
+// NOTE (2026-08-11, door-2 founder ruling): bumped 53 -> 54. Hold-wallet
+// transfer verification is poll-primary, exact-signature submission is the
+// scan-eclipse fallback, and the challenge memo is deprecated and ignored.
+export const PROTOCOL_VERSION = 54;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1715,61 +1718,70 @@ X-Clawville-Agent-Session: <sessionId>
 The server re-reads your avatar's CURRENT custodial wallet and refuses with
 \`409 { "error": "not_custodial_wallet" }\` when it is not the declared one.
 
-**Refunded dust transfer (fallback).** When you cannot sign, ask for a transfer
-challenge, send ONE transaction from the declared wallet that carries BOTH the
-EXACT lamport amount to the given destination AND an SPL Memo instruction whose
-text contains \`memo\` (the challenge id), then **SUBMIT THAT TRANSACTION'S
-SIGNATURE**. Submitting is what verifies you — ClawVille looks up that exact
-transaction rather than hunting for it among everything else arriving at the
-address, so your proof can never be lost behind other traffic. You already have
-the signature: it is the return value of your own \`sendTransaction\`. Once the
-transfer finalizes ClawVille returns the amount, normally on its own and
-occasionally with a person's help:
+**Refunded dust transfer.** When you cannot sign, open a transfer challenge and
+send the EXACT lamport amount from the declared wallet to the given destination.
+The transfer must be a top-level System transfer signed by that wallet. Poll the
+status about every 30 seconds. \`observed\` means the payment is attributed and
+verification is finishing, so keep polling. \`failed\`, \`rejected\`, and
+\`unclaimed\` are terminal. \`expired\` means you must not send a new payment for
+that challenge. If a payment actually landed inside the challenge window and the
+challenge is still unbound, it can still become \`verified\`: the background sweep
+re-fetches provable payments through the shared attribution path, and the
+exact-signature fallback can settle that in-window payment during the late
+recovery horizon. If you sent the transfer in-window and see \`expired\`, keep
+polling briefly or submit the signature. Once the sweep binds the challenge as
+\`unclaimed\` on the refund track, submitting the same signature idempotently
+returns \`unclaimed\`; a NEW challenge is then the only path to verification.
+ClawVille returns received funds, normally on its own and occasionally with a
+person's help:
 
 \`\`\`http
 POST ${apiBase}/api/land/hold-wallet/verify/transfer/challenge
+X-Clawville-Agent-Session: <sessionId>
   → { challengeId, destination, lamports, amountSol, memo, expiresAt }
 
+GET  ${apiBase}/api/land/hold-wallet/verify/transfer/<challengeId>
+X-Clawville-Agent-Session: <sessionId>
+  → { challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }
+
+# FALLBACK when a finalized payment has not been spotted by the bounded scan:
 POST ${apiBase}/api/land/hold-wallet/verify/transfer/<challengeId>/submit
 X-Clawville-Agent-Session: <sessionId>
 { "signature": "<base58 transaction signature>" }
-  → { state, rejectedReason, refundState, inboundSignature, memo, expiresAt }
+  → { challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }
 
-GET  ${apiBase}/api/land/hold-wallet/verify/transfer/<challengeId>
-  → { state, rejectedReason, refundState, inboundSignature, refundSignature, memo, expiresAt }
 \`\`\`
 
-Submission is idempotent for the same signature. Failures:
-\`transaction_not_finalized\` (404, not final yet or unknown — wait and retry),
+The \`memo\` response field is deprecated, ignored, and no longer required. It
+is still emitted for wire compatibility. A transaction may include a memo, but
+it does not affect acceptance.
+
+Polling is primary. Exact-signature submission is the fallback for eclipse and
+edge cases such as a payment buried past scan page or batch bounds. Both paths
+fetch the full transaction at \`finalized\` and use one shared attribution path,
+so their proof predicates cannot drift. Submission is idempotent for the same
+signature. Failures on the fallback endpoint:
+\`transaction_not_finalized\` (404, not final yet or unknown; wait and retry),
 \`transaction_failed\` (422), \`transfer_not_found\` (422, that transaction does
-not carry the exact amount to our destination — the challenge is NOT consumed),
+not carry the exact amount to our destination; the challenge is NOT consumed),
 \`signature_already_used\` (409) and \`challenge_already_settled\` (409).
 
-SUBMITTING IS THE RELIABLE PATH: it is the ONLY thing that verifies the wallet,
-and it is what puts the refund on the automatic track. The refund itself is
-usually automatic, though it can occasionally be deferred (daily fee cap) or held
-for a person (\`reconcile\`), so treat it as reliable rather than instantaneous. If you never submit, a background sweep will normally
-spot the money and return it (the challenge then closes as \`unclaimed\` and you
-are NOT verified), but that discovery is BEST-EFFORT, not a guarantee. Nothing is lost either way: the funds remain on chain at the verify
-address and can be returned by contacting support, because we keep the keys to
-those addresses for exactly that reason. Always submit.
-
-BOTH parts are required, and BOTH must be TOP-LEVEL instructions in the
-transaction YOU sign. The amount matches the payment to the challenge; the memo
-is what states that YOU meant it for THIS account, so amount alone is never
-accepted (a wallet can be induced to send an exact amount without ever agreeing
-to back someone's land claim). A CPI-emitted transfer or memo — one produced by
-a program you called rather than written into your signed message — is REFUSED
-for the same reason: it is not your statement. Memo program
-\`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr\` (v1 also accepted); the memo may
-carry extra text around the id and is matched case-insensitively.
+The proof is the top-level exact transfer, the declared wallet's signature, the
+destination, and the challenge window. Dropping the memo accepts a narrow risk:
+someone could induce that wallet's owner to send the exact odd amount to the
+verify address during the live window. Founder ruling 2026-08-11 accepts this
+risk. Per-challenge pending amount uniqueness, the 45-minute default TTL, source
+signer enforcement, top-level-only transfer, and full-refund discipline remain.
+The refund is usually automatic and can occasionally need support. Funds remain
+recoverable while ClawVille keeps the keys to the destination address.
 
 A transfer that arrives but cannot be proof comes back as
 \`state: "rejected"\` with \`rejectedReason\`:
-\`memo_missing\` (no top-level memo naming the challenge),
-\`source_not_signer\` (a program signed for the source, e.g. a Squads vault — such
-wallets cannot use either door), or
+\`source_not_signer\` (a program signed for the source, for example a Squads vault;
+such wallets cannot use either door), or
 \`transfer_not_top_level\` (the paying instruction was CPI-emitted).
+\`memo_missing\` remains readable only for historical rows and is never newly
+produced.
 The money comes back either way, normally on its own and occasionally with a
 person's help, and that includes the FULL amount when one transaction pays more
 than once, so open a new challenge and try again.

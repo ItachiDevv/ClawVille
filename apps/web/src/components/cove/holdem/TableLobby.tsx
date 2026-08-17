@@ -35,7 +35,6 @@ const privateTableSchema = z
       .int("Enter a whole vCLAW amount.")
       .positive("Big blind must be at least 1 vCLAW."),
     maxSeats: z.number().int().min(2).max(SIX_MAX),
-    seededAgentSlots: z.number().int().min(0).max(SIX_MAX),
   })
   .superRefine((value, context) => {
     if (value.bigBlindCt < value.smallBlindCt) {
@@ -52,19 +51,12 @@ const privateTableSchema = z
         message: "Buy-in must cover at least one big blind.",
       });
     }
-    if (value.seededAgentSlots > value.maxSeats) {
-      context.addIssue({
-        code: "custom",
-        path: ["seededAgentSlots"],
-        message: "Seeded agents cannot exceed the seat count.",
-      });
-    }
   });
 
 type LobbyTab = "browse" | "create" | "join";
 type CreateMode = "house" | "private";
 type PrivateField = "buyInCt" | "smallBlindCt" | "bigBlindCt";
-type FieldErrors = Partial<Record<PrivateField | "seededAgentSlots", string>>;
+type FieldErrors = Partial<Record<PrivateField, string>>;
 
 interface CreatedPrivateTable {
   tableId: string;
@@ -428,7 +420,6 @@ function CreatePanel({
   const [mode, setMode] = useState<CreateMode>("house");
   const [tierKey, setTierKey] = useState<CashTierKey>("mid");
   const [maxSeats, setMaxSeats] = useState(SIX_MAX);
-  const [seededAgentSlots, setSeededAgentSlots] = useState(0);
   const [privateValues, setPrivateValues] = useState<
     Record<PrivateField, string>
   >({
@@ -450,7 +441,6 @@ function CreatePanel({
       smallBlindCt: Number(privateValues.smallBlindCt),
       bigBlindCt: Number(privateValues.bigBlindCt),
       maxSeats,
-      seededAgentSlots,
     });
     if (result.success) return { data: result.data, errors: {} as FieldErrors };
     const errors: FieldErrors = {};
@@ -459,12 +449,10 @@ function CreatePanel({
       if (field && !errors[field]) errors[field] = issue.message;
     }
     return { data: null, errors };
-  }, [maxSeats, privateValues, seededAgentSlots]);
+  }, [maxSeats, privateValues]);
 
   const updateSeats = useCallback((next: number) => {
-    const clamped = Math.max(2, Math.min(SIX_MAX, next));
-    setMaxSeats(clamped);
-    setSeededAgentSlots((current) => Math.min(current, clamped));
+    setMaxSeats(Math.max(2, Math.min(SIX_MAX, next)));
   }, []);
 
   const handleCreate = useCallback(async () => {
@@ -476,16 +464,21 @@ function CreatePanel({
     setBusy(true);
     setError(null);
     try {
+      // seededAgentSlots is always 0: the server seats bots ONLY at house-scaler
+      // tables (cash-table-manager gates on source === 'house' — house-bank-funded
+      // bots at player-set stakes would be a drain vector), so offering a bot
+      // knob on player creates was a dead control. Player tables deal when a
+      // second real player sits.
       const body: CreateTableBody =
         mode === "house"
-          ? { source: "player-public", tierKey, maxSeats, seededAgentSlots }
+          ? { source: "player-public", tierKey, maxSeats, seededAgentSlots: 0 }
           : {
               source: "private",
               buyInCt: validation.data!.buyInCt,
               smallBlindCt: validation.data!.smallBlindCt,
               bigBlindCt: validation.data!.bigBlindCt,
               maxSeats,
-              seededAgentSlots,
+              seededAgentSlots: 0,
             };
       const result = await cashPokerApi.createTable(body);
 
@@ -515,7 +508,6 @@ function CreatePanel({
     maxSeats,
     mode,
     routeToTable,
-    seededAgentSlots,
     tierKey,
     validation.data,
   ]);
@@ -694,20 +686,11 @@ function CreatePanel({
           max={SIX_MAX}
           onChange={updateSeats}
         />
-        <Stepper
-          label="Seeded agents"
-          value={seededAgentSlots}
-          min={0}
-          max={maxSeats}
-          onChange={setSeededAgentSlots}
-        />
       </div>
       <p className={styles.helperText}>
-        This room is six-max. Seeded agents use the original table-fill bounds.
+        This room is six-max. Tables deal once a second player sits — share your
+        join code or pick a house table to play against the house lineup.
       </p>
-      {validation.errors.seededAgentSlots ? (
-        <Notice tone="warning">{validation.errors.seededAgentSlots}</Notice>
-      ) : null}
       {error ? <Notice tone="warning">{error}</Notice> : null}
       <button
         type="button"

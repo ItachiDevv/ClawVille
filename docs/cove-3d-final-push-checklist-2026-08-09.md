@@ -21,6 +21,73 @@ commits + the 2-week staging catch-up), builds green, and is ready to deploy to
 - Cove DB migrations renumbered **0057 + 0058** (branch-era 0025/0026 collided with
   staging's). Both idempotent; staging CI applies them on push.
 
+## AGENT WALKTHROUGH RESULTS (2026-08-11, run against the DEPLOYED staging build)
+
+A full scripted browser walkthrough was driven with the staging test accounts
+(`scripts/staging-walkthrough*.mjs` — reusable). What is PROVEN live:
+
+- **Two-player multiplayer hand, end to end:** one account created a private
+  table (real one-time join code), the second joined via "Have a code?", the
+  server dealt, BOTH clients acted through all four streets, the hand settled at
+  showdown with exact pot math (Pot 40 vCLAW, net -20 loser), the next hand
+  auto-dealt with the live ~20s server turn clock and raise-TO slider, and both
+  players walked away with cash-out. 7/7 checks green.
+- **Blackjack real-money hand:** bet 5 vCLAW, dealer 19 vs 14, "YOU LOSE Net -5,
+  Rake 0", balance strip consistent, provably-fair commit + client seed shown.
+- **Lobby:** all three tabs live with real data; restored stakes ladder verified
+  on the Create tab; creator-cap error surfaces as human copy ("You already have
+  the max open tables"); guest gets browse + no Deal button; 7-viewport sweep
+  (phone + iPad, both orientations) green.
+- **Fixes shipped from findings:** (1) seated players no longer see the
+  misleading "Sit down to start the game" copy (now "You are seated — the game
+  starts when another player joins."); (2) the dead "Seeded agents" knob was
+  removed from the player create form — the server seats bots ONLY at house
+  tables by design (house-bank drain guard; GameFeatures documents the P1 stub),
+  so the control silently did nothing.
+- **P1 backend follow-up (flagged, not fixed here):** abandoned EMPTY
+  player-created tables never expire, so they accumulate against the 3-table
+  creator cap forever (landtest1 is already capped from July tables). Needs an
+  idle-empty-table sweeper in `cash-table-manager` — backend money-path round.
+
+## 2026-08-16 FOUNDER REPORT TRIAGE — the "disastrous poker" screenshots were PROD, not staging
+
+The founder's three screenshots (settle banner over an empty table, blinds 1/2 and
+25/50, "Sit down to start the game." while seated) were taken on **production**
+(`clawville.world/cove/table`), which still serves the **July build**: prod's house
+ladder is the never-approved low **1/2** (20 buy-in — matches the shot's
+"Stack 21 · Pot 3 · +1 net" exactly), mid 5/10, high **25/50**, and prod predates the
+lobby rework, the seated-copy fix, and the scene work. Verified 2026-08-16: prod API
+lists exactly those house tables; staging lists only the restored 10/20 / 50/100 /
+250/500 ladder and has **no 25/50 table at all**.
+
+Staging re-verified the same night (scripted browser, fresh profiles): lobby loaded
+**5/5** times (guest + authed, all 5 house cards, correct ladder), auto-seat at the
+low table worked, the seeded bots ACTED through all four streets hand after hand,
+and the full scene rendered (dealer full-body, two bot avatars, badges, cards,
+correct blinds). Screenshot: `scripts/` diag set + scratchpad `diag-room-after-watch.png`.
+
+Real defects found and addressed on staging same night:
+- **Seated figures despawned between hands** (`figureVisible` derived only from
+  `live.seats`) — the exact "scene wasn't even loaded" look, worse on prod's July
+  build. FIXED: figures + HUD badges now fall back to the persistent seat roster.
+- **Expected 403 surfaced as an error**: `last-settled` 403s by design until your
+  first settled hand; the room painted "… Retrying…". FIXED: 403 no longer notices.
+
+## ✅ PROMOTION BLOCKER RESOLVED (2026-08-16) — house-table re-tier BUILT + a busted-seat sweep
+
+The scaler pass now (1) releases abandoned BUSTED seats (0 chips, idle >10 min, no
+live hand — 0-credit release via the existing idempotent cash-out; house AND player
+tables; this also frees the founder's two stuck 0-chip prod seats from 08-13/14 that
+kept bouncing him into dead rooms), and (2) retires open house tables whose stakes
+no longer match their tier config — bots cash back to the house bank, tables close
+only when a locked read proves zero escrow, and the deficit loop recreates the tier
+at the approved ladder in the same pass. Humans with a NON-zero stack always block a
+retire. Prod's house bank (97,909 vCLAW) covers the new-ladder seeded buy-ins
+(22,200). On the promotion deploy, prod self-heals to 10/20 / 50/100 / 250/500
+within one scaler pass — the two founder-seat tables clear on the first pass after
+his 0-chip seats release. The FULL idle-table sweeper for tables/seats holding REAL
+chips stays flagged P1 (it moves player money — separate reviewed round).
+
 ## THE VISUAL CHECKLIST — walk this on staging, in order
 
 ### 1. Hold'em ring — `/cove/table` (the headline)

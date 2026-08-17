@@ -42,9 +42,11 @@
  * WANDERING NPC GLBs (1 live species, arena-npcs.tsx SPECIES_MODEL):
  *   lobster-ktx.glb?v=2
  *
- * WANDERING NPC VRMs (6 distinct paths, arena-npcs.tsx preloadVRMBytes):
- *   milady-official-1..8.vrm (8 wanderers + Hermes/chibi),
- *   hermes-female.vrm, hermes-male.vrm, tekk.vrm
+ * WANDERING NPC VRMs (13 paths, WANDERING_VRM_PATHS below — audit-only since
+ * rung-4 slice C 2026-08-11; NOT boot-preloaded):
+ *   milady-official-1..8.vrm, hermes-female.vrm, hermes-male.vrm,
+ *   tekk-nonorm.vrm, eliza-chibi-mo.vrm, milady-chibi-mo.vrm — each wanderer
+ *   entry is release-deferred in arena-npcs and fetches after its stagger tick
  *
  * PLAYER VRMs (8 Milady + 3 Hermes/Tekk + 2 Chibi, agent-model-registry.ts):
  *   milady-official-1..8.vrm, hermes-female.vrm, hermes-male.vrm, tekk.vrm,
@@ -74,7 +76,6 @@
  */
 
 import { useGLTF } from '@react-three/drei';
-import { preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
 
@@ -116,7 +117,9 @@ export const WANDERING_NPC_GLBS: readonly string[] = [
 // ---------------------------------------------------------------------------
 
 /** VRM paths used by the 13 wandering VRM NPCs (arena-npcs.tsx).
- *  2026-05-27: restored full 8-Milady cast; was 3 Miladys + 3 Hermes. */
+ *  2026-05-27: restored full 8-Milady cast; was 3 Miladys + 3 Hermes.
+ *  Rung-4 slice C (2026-08-11): AUDIT-ONLY — no longer preloaded at boot;
+ *  wanderer slots fetch on demand after their decorative-release stagger. */
 export const WANDERING_VRM_PATHS: readonly string[] = [
   '/avatars/milady-official-1.vrm',
   '/avatars/milady-official-2.vrm',
@@ -245,7 +248,8 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 // no-ops if the asset is already in cache.
 //
 // Tier 1 — fire immediately (parallel with canvas chunk download):
-//   buildings + locomotion + wandering NPC GLBs + wandering VRM bytes
+//   buildings + locomotion + wandering NPC GLBs (wandering VRM bytes moved to
+//   tier 3 in rung-4 slice C — the wanderer slot owns its demand post-release)
 // Tier 2 — intentionally lazy:
 //   selectable player VRM bytes are loaded by the active avatar or the avatar picker,
 //   not by the open-world boot path
@@ -295,15 +299,18 @@ export function preloadWorldAssets(): void {
     preloadGlbUrl(url);
   }
 
-  // Wandering VRM bytes — 6 paths used by the live wandering VRM NPC roster.
-  for (const url of WANDERING_VRM_PATHS) {
-    preloadVRMBytes(url);
-  }
-
   // --- Tier 3 note ---
   // Release-deferred location NPC and decoration GLBs are intentionally absent
   // here. Their hidden loader subtrees start demand after individual stagger
   // ticks, then upload/compile through the global deferred-warm queue.
+  //
+  // Rung-4 slice C (2026-08-11): the WANDERING_VRM_PATHS byte-preload loop is
+  // GONE from the boot tier. Those 13 fetches bypass the LoadingManager (raw
+  // fetch() in vrm-loader), so on a fast network the resolved bytes started
+  // the ambient parse batch pre-reveal and joined the vrmBulk gate; on a slow
+  // one they missed it — a network-speed inversion. Ambient wanderers are now
+  // release-deferred in arena-npcs NpcEntry (slot owns its demand after its
+  // stagger tick), so ONLY the player VRM belongs to the boot lane.
 }
 
 // ---------------------------------------------------------------------------
@@ -355,9 +362,10 @@ export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   ...TOWN_PROP_GLBS,
   ...LOCOMOTION_ANIM_GLBS,
   ...WANDERING_NPC_GLBS,
-  ...WANDERING_VRM_PATHS,
   // Tier 2 — lazy player VRMs are intentionally omitted from boot preloads.
   // Tier 3 — manifest-only audit entries; runtime demand is staggered per consumer.
+  // Wandering VRMs moved here from tier 1 in rung-4 slice C (2026-08-11).
+  ...WANDERING_VRM_PATHS,
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,
   EMOTE_BUNDLE,

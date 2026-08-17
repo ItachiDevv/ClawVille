@@ -6,10 +6,10 @@
  * Door 1 is a free ed25519 signature over a server nonce and needs no table.
  * Door 2 exists so a user who will not connect a browser wallet is not locked
  * out: they send an EXACT unique dust amount of SOL from the declared wallet to
- * a ClawVille verify address WITH an SPL Memo naming the challenge id, we
- * attribute by exact amount + sender, require the memo as the sender's
- * statement of intent (amount + sender alone can be induced from a wallet the
- * claimant does not control), grant on FINALIZED commitment, then AUTO-REFUND.
+ * a ClawVille verify address. We attribute by destination + exact amount +
+ * sender + authoritative challenge window, require the sender to sign a
+ * top-level System transfer, grant on FINALIZED commitment, then AUTO-REFUND.
+ * The legacy memo field remains for wire compatibility but is ignored.
  *
  * This is a REAL MAINNET SOL money path (CLV lives on mainnet), so the row
  * carries the same durable claim/capture discipline as the bounty gas sponsor:

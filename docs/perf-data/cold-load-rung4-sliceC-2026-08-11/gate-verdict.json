@@ -1,0 +1,43 @@
+{
+  "verdict": "pass",
+  "reasons": [
+    "1 pairs dropped (not strict/finite/backend-matched evidence)"
+  ],
+  "perMetric": {
+    "revealMs": {
+      "verdict": "pass",
+      "medianLogRatio": -0.2758836279249303,
+      "upperBoundLogRatio": -0.25247337065295566,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 11
+    },
+    "worstFrameMsIn10s": {
+      "verdict": "pass",
+      "medianLogRatio": -0.9256618071251953,
+      "upperBoundLogRatio": -0.7133498878774648,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 11
+    },
+    "stableWindowStartMsAfterReveal": {
+      "verdict": "pass",
+      "medianLogRatio": -1.0194936124773888,
+      "upperBoundLogRatio": -0.9253569771119082,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 11
+    },
+    "preRevealLongtaskMs": {
+      "verdict": "pass",
+      "medianLogRatio": -0.2267022739312038,
+      "upperBoundLogRatio": -0.1497823829741559,
+      "limitLogRatio": 0.13976194237515863,
+      "n": 11
+    },
+    "framesOver100In10s": {
+      "verdict": "pass",
+      "upperBoundDiff": 0,
+      "limit": 2,
+      "n": 11
+    }
+  },
+  "usablePairs": 11
+}

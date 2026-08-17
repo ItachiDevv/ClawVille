@@ -184,7 +184,9 @@ function CashTableRoom({ tableId }: { tableId: string }) {
           setSettled(Date.now() < snapshot.displayExpiresAtMs ? snapshot : null);
         }
       } catch (error) {
-        if (!cancelled) setPollNotice(`${describeCashPokerError(error)} Retrying…`);
+        if (!cancelled && !(error instanceof CoveApiError && error.status === 403)) {
+          setPollNotice(`${describeCashPokerError(error)} Retrying…`);
+        }
       } finally {
         if (!cancelled) timer = setTimeout(tick, PUBLIC_POLL_MS);
       }
