@@ -81,10 +81,15 @@ function ensureCheckLoop(): void {
   if (checkTimer !== null || typeof window === 'undefined') return;
   checkTimer = setInterval(() => {
     if (!conditionsHold()) return;
-    settledAtMs = nowMs();
-    stamp();
-    // Keep the loop alive at low cost — a later revision bump re-opens the
-    // window and the next quiet condition re-stamps a later settle.
+    // The settle MOMENT is when the quiet window after the last revision
+    // closed — deterministic, and it only advances when a NEW revision
+    // re-opened the window (first smoke bug: stamping `now` on every
+    // passing check tick made the stamp read ≈ capture end, always).
+    const candidate = lastRevisionAt + QUIET_MS;
+    if (settledAtMs === null || candidate > settledAtMs) {
+      settledAtMs = candidate;
+      stamp();
+    }
   }, CHECK_MS);
 }
 
