@@ -405,9 +405,20 @@ export function assessPerformanceEvidence({ revealMs, frameMetrics, longtaskSeri
 if (import.meta.main) {
   const cliArgs = process.argv.slice(2);
   const waiveBackend = cliArgs.includes("--allow-uninstrumented-backend");
-  const [wsUrl, targetUrl, reportPath] = cliArgs.filter((a) => !a.startsWith("--"));
+  // Slice D [R2-F13]: authenticated-lane inputs. --storage-state injects
+  // cookies via CDP BEFORE navigation (reproducible fixture, no login flow
+  // inside the measured window); --expect-boot-actor stamps the expected
+  // kind into the report so the gate's fail-closed assertions bind.
+  const argValue = (flag) => {
+    const i = cliArgs.indexOf(flag);
+    return i >= 0 && cliArgs[i + 1] ? cliArgs[i + 1] : null;
+  };
+  const storageStatePath = argValue("--storage-state");
+  const expectBootActor = argValue("--expect-boot-actor");
+  const flagValues = new Set([storageStatePath, expectBootActor].filter(Boolean));
+  const [wsUrl, targetUrl, reportPath] = cliArgs.filter((a) => !a.startsWith("--") && !flagValues.has(a));
   if (!wsUrl || !targetUrl || !reportPath) {
-    console.error("usage: bun cold-load-probe.mjs <cdp-ws-url> <target-url> <report-path> [--allow-uninstrumented-backend]");
+    console.error("usage: bun cold-load-probe.mjs <cdp-ws-url> <target-url> <report-path> [--allow-uninstrumented-backend] [--storage-state <json>] [--expect-boot-actor <kind>]");
     process.exit(2);
   }
   const expectedBackend = targetUrl.includes("webgl=1") ? "webgl2" : "webgpu";
@@ -501,6 +512,21 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
 (()=>{const P=window.__COLD_PROBE__;let last=performance.now();const tick=(now)=>{P.frames.push({t:Math.round(now),d:Math.round(now-last)});last=now;if(P.frames.length>6000)P.frames.splice(0,P.frames.length-6000);requestAnimationFrame(tick);};requestAnimationFrame(tick);})();
 (()=>{const P=window.__COLD_PROBE__;const iv=setInterval(()=>{try{if(P.revealAt==null&&window.__W3D_READY===true&&!document.querySelector('.claw-loading-overlay')){P.revealAt=Math.round(performance.now());clearInterval(iv);}}catch(e){}},50);})();`,
     }, session);
+
+    if (storageStatePath) {
+      // Cookie injection BEFORE navigation: { cookies: [{ name, value,
+      // domain?, path?, url? }] }. Host-only localhost cookies (the local
+      // API session) inject with url so ports resolve correctly.
+      const state = JSON.parse(await Bun.file(storageStatePath).text());
+      for (const c of state.cookies ?? []) {
+        const params = c.url
+          ? { name: c.name, value: c.value, url: c.url, path: c.path ?? "/" }
+          : { name: c.name, value: c.value, domain: c.domain, path: c.path ?? "/" };
+        const res = await send("Network.setCookie", params, session);
+        if (!res?.success) throw new Error(`storage-state cookie rejected: ${c.name}`);
+      }
+      console.log(`[probe] injected ${state.cookies?.length ?? 0} cookies from storage state`);
+    }
 
     await send("Page.navigate", { url: targetUrl }, session);
     console.log(`[probe] navigating to ${targetUrl}`);
@@ -602,6 +628,9 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
 
     const summary = {
       targetUrl, capturedAt: new Date().toISOString(),
+      // Slice D authenticated-lane inputs (null on guest runs).
+      expectedBootActor: expectBootActor ?? null,
+      storageStateInjected: storageStatePath != null,
       // Scoped validity (re-review #2 finding 3): the wire ledger accepts
       // validForWireLedger; budget/canary consumers require the STRICT
       // validForPerformance AND backendWaived === false. `valid` mirrors the

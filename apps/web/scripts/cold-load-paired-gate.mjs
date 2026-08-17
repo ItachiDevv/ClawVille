@@ -199,15 +199,177 @@ function median(vals) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
+// ---------------------------------------------------------------------------
+// Rung-4 slice D gate mode (spec §5, FROZEN rev 5 [R2-F13][R3-F7][F15][F16]).
+// DISJOINT fail-closed schema: the baseline arm (pre-slice-D build) never
+// stamps the new events, so NO candidate-vs-baseline ratio uses them. The
+// candidate is judged on (a) absolute bootCorePresentedAt, (b) the existing
+// like-for-like paired framesOver100In10s statistic, (c) per-run fail-closed
+// validity (drift, cohort 16/16, land failure counters, settle-in-window,
+// expected boot actor + ordering, post-settle stable interval), (d) §2b
+// sanity bounds. worstFrame/stable log-ratios are REPORTED, never judged
+// (the candidate's post-reveal window deliberately CONTAINS the stream).
+// ---------------------------------------------------------------------------
+
+/** Measured-window widening — a RECORDED rig decision (spec §4b): the first
+ * slice-D smoke settled the stream 9.5s after reveal, so a 3s post-settle
+ * stable interval cannot exist inside the historical 10s window. 15s =
+ * observed settle (~9.5s) + 3s stable + margin. framesOver100In10s stays on
+ * the 10s window (like-for-like with the baseline arm). */
+export const SLICE_D_WINDOW_MS = 15_000;
+export const SLICE_D_PRESENTED_LIMIT_MS = 5_000;
+export const SLICE_D_REQUIRED_PAIRS = 12;
+export const SLICE_D_STABLE_SPAN_MS = 3_000;
+export const SLICE_D_STABLE_FRAME_LIMIT_MS = 100;
+export const SLICE_D_BODY_KINDS = new Set(["player-vrm", "player-glb", "npc-body"]);
+
+/** 3s span after `settleMs` (absolute page-clock ms) containing zero frames
+ * over 100ms, ending no later than revealMs + SLICE_D_WINDOW_MS. Frames:
+ * [{ t, d }] page-clock ms + duration. Returns the span start or null. */
+export function sliceDPostSettleStable(frames, revealMs, settleMs, windowMs = SLICE_D_WINDOW_MS) {
+  if (!Array.isArray(frames) || !Number.isFinite(revealMs) || !Number.isFinite(settleMs)) return null;
+  const windowEnd = revealMs + windowMs;
+  if (settleMs + SLICE_D_STABLE_SPAN_MS > windowEnd) return null;
+  const bad = frames
+    .filter((f) => f.t >= settleMs && f.t <= windowEnd && f.d > SLICE_D_STABLE_FRAME_LIMIT_MS)
+    .map((f) => f.t)
+    .sort((a, b) => a - b);
+  let spanStart = settleMs;
+  for (const t of bad) {
+    if (t - spanStart >= SLICE_D_STABLE_SPAN_MS) return spanStart;
+    spanStart = t; // restart the span after the offending frame
+  }
+  return windowEnd - spanStart >= SLICE_D_STABLE_SPAN_MS ? spanStart : null;
+}
+
+/** Per-run fail-closed candidate validity (spec §5). Returns defect strings. */
+export function sliceDCandidateDefects(summary, frames, expectBootActor) {
+  const defects = [];
+  const ph = summary?.phases ?? {};
+  const reveal = summary?.revealMs;
+  for (const key of ["bootCorePresentedAt", "streamSettledAt", "landSettledAt"]) {
+    if (typeof ph[key] !== "number" || !Number.isFinite(ph[key])) defects.push(`${key} not finite (${ph[key]})`);
+  }
+  if ((ph.bootCoreDriftCount ?? null) !== 0) defects.push(`bootCoreDriftCount ${ph.bootCoreDriftCount} (must be 0; drift='${ph.bootCoreDriftChunks}')`);
+  const cohort = ph.streamCohort;
+  if (!cohort || cohort.total !== 16 || cohort.terminal !== 16) defects.push(`streamCohort not 16/16 (${JSON.stringify(cohort)})`);
+  else {
+    if (cohort.failed !== 0) defects.push(`streamCohort.failed ${cohort.failed}`);
+    if (cohort.failopen !== 0) defects.push(`streamCohort.failopen ${cohort.failopen} (ready-failopen invalidates measurement)`);
+  }
+  const land = ph.landTracker;
+  if (!land) defects.push("landTracker missing");
+  else {
+    if (land.dataFailed !== 0) defects.push(`landTracker.dataFailed ${land.dataFailed}`);
+    if (land.glbFallback !== 0) defects.push(`landTracker.glbFallback ${land.glbFallback}`);
+    if (land.glbFailed !== 0) defects.push(`landTracker.glbFailed ${land.glbFailed}`);
+    if (land.inFlightRequests !== 0) defects.push(`landTracker.inFlightRequests ${land.inFlightRequests} at capture end`);
+  }
+  if (Number.isFinite(reveal) && Number.isFinite(ph.streamSettledAt) && Number.isFinite(ph.landSettledAt)) {
+    const settle = Math.max(ph.streamSettledAt, ph.landSettledAt);
+    if (settle - reveal > SLICE_D_WINDOW_MS) defects.push(`settle ${Math.round(settle - reveal)}ms after reveal > window ${SLICE_D_WINDOW_MS}`);
+    else if (sliceDPostSettleStable(frames, reveal, settle) == null) defects.push("no 3s stable interval after settle inside the window");
+  }
+  if (expectBootActor) {
+    if (ph.bootActorKind !== expectBootActor) defects.push(`bootActorKind '${ph.bootActorKind}' != expected '${expectBootActor}'`);
+    if (typeof ph.bootActorResolvedAt !== "number" || !(ph.bootActorResolvedAt <= ph.bootCorePresentedAt)) {
+      defects.push(`bootActorResolvedAt ${ph.bootActorResolvedAt} not ≤ bootCorePresentedAt ${ph.bootCorePresentedAt}`);
+    }
+    if (SLICE_D_BODY_KINDS.has(expectBootActor)) {
+      if (typeof ph.bootActorReadyAt !== "number" || !(ph.bootActorReadyAt <= ph.bootCorePresentedAt)) {
+        defects.push(`bootActorReadyAt ${ph.bootActorReadyAt} not ≤ bootCorePresentedAt ${ph.bootCorePresentedAt} (body kind)`);
+      }
+    }
+    if (ph.bootActorGateTimedOut === true) defects.push("bootActorGateTimedOut (fail-open gate on a measurement run)");
+  }
+  return defects;
+}
+
+/**
+ * Slice-D gate. `pairs`: [{ order, baseline: summary, candidate: summary,
+ * candidateFrames }]. Requires EXACTLY SLICE_D_REQUIRED_PAIRS usable pairs —
+ * an invalid run invalidates its PAIR; re-run pairs, never top up
+ * asymmetrically [F16].
+ */
+export function evaluateSliceDGate(pairs, { backend = null, expectBootActor = null } = {}) {
+  const reasons = [];
+  const badOrders = pairs.filter((p) => p.order !== "AB" && p.order !== "BA").length;
+  if (badOrders) return { verdict: "fail", reasons: [`${badOrders} pairs with invalid order token`], perMetric: {} };
+
+  const pairDefects = pairs.map((p, i) => {
+    const defects = [];
+    if (!usableReport(p.baseline)) defects.push("baseline not usable (strict/boundaryKind)");
+    if (!usableReport(p.candidate)) defects.push("candidate not usable (strict/boundaryKind)");
+    defects.push(...sliceDCandidateDefects(p.candidate, p.candidateFrames, expectBootActor).map((d) => `candidate: ${d}`));
+    if (backend) defects.push(...sanityBreaches(p.candidate, backend).map((d) => `candidate: ${d}`));
+    return { i, defects };
+  });
+  const usable = pairs.filter((_, i) => pairDefects[i].defects.length === 0);
+  for (const { i, defects } of pairDefects) {
+    if (defects.length) reasons.push(`pair ${i + 1} INVALID: ${defects.join("; ")}`);
+  }
+  if (usable.length !== SLICE_D_REQUIRED_PAIRS) {
+    return {
+      verdict: usable.length < SLICE_D_REQUIRED_PAIRS ? "inconclusive" : "fail",
+      reasons: [...reasons, `exactly ${SLICE_D_REQUIRED_PAIRS} usable pairs required (have ${usable.length}) — re-run invalid PAIRS, never top up`],
+      perMetric: {}, usablePairs: usable.length,
+    };
+  }
+  const ab = usable.filter((p) => p.order === "AB").length;
+  const ba = usable.filter((p) => p.order === "BA").length;
+  if (Math.abs(ab - ba) > 1) {
+    return { verdict: "fail", reasons: [...reasons, `order not counterbalanced: ${ab} AB vs ${ba} BA`], perMetric: {}, usablePairs: usable.length };
+  }
+
+  const perMetric = {};
+  // PRIMARY: absolute candidate bootCorePresentedAt median ≤ 5s.
+  const presented = usable.map((p) => p.candidate.phases.bootCorePresentedAt);
+  perMetric.bootCorePresentedAt = {
+    verdict: median(presented) <= SLICE_D_PRESENTED_LIMIT_MS ? "pass" : "fail",
+    median: median(presented), limit: SLICE_D_PRESENTED_LIMIT_MS, values: presented,
+  };
+  // Like-for-like frame gate (both arms measure [reveal, reveal+10s]).
+  const diffs = usable.map((p) => p.candidate.frameMetrics.framesOver100In10s - p.baseline.frameMetrics.framesOver100In10s);
+  const ubDiff = upperBoundOfMedian(diffs, CONFIDENCE);
+  perMetric.framesOver100In10s = {
+    verdict: ubDiff != null && ubDiff <= COUNT_DIFF_LIMIT ? "pass" : ubDiff == null ? "inconclusive" : "fail",
+    upperBoundDiff: ubDiff, limit: COUNT_DIFF_LIMIT, n: diffs.length,
+  };
+  // REPORT-ONLY distributions (no verdict weight — unlike events vs baseline).
+  const report = (vals) => ({ median: median(vals), min: Math.min(...vals), max: Math.max(...vals) });
+  perMetric.reportOnly = {
+    streamSettledAfterRevealMs: report(usable.map((p) => p.candidate.phases.streamSettledAt - p.candidate.revealMs)),
+    landSettledAfterRevealMs: report(usable.map((p) => p.candidate.phases.landSettledAt - p.candidate.revealMs)),
+    candidateRevealMs: report(usable.map((p) => p.candidate.revealMs)),
+    baselineRevealMs: report(usable.map((p) => p.baseline.revealMs)),
+    worstFrameLogRatio: report(usable.map((p) => Math.log(p.candidate.frameMetrics.worstFrameMsIn10s / p.baseline.frameMetrics.worstFrameMsIn10s))),
+  };
+  const anyFail = perMetric.bootCorePresentedAt.verdict === "fail" || perMetric.framesOver100In10s.verdict === "fail";
+  const anyInconclusive = perMetric.framesOver100In10s.verdict === "inconclusive";
+  return {
+    verdict: anyFail ? "fail" : anyInconclusive ? "inconclusive" : "pass",
+    reasons, perMetric, usablePairs: usable.length,
+  };
+}
+
 if (import.meta.main) {
-  const [manifestPath] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const sliceD = args.includes("--slice-d");
+  const manifestPath = args.find((a) => !a.startsWith("--"));
   if (!manifestPath) {
-    console.error("usage: bun cold-load-paired-gate.mjs <pairs-manifest.json>");
+    console.error("usage: bun cold-load-paired-gate.mjs <pairs-manifest.json> [--slice-d]");
     process.exit(2);
   }
   const manifest = JSON.parse(await Bun.file(manifestPath).text());
   if (manifest.backend !== "webgpu" && manifest.backend !== "webgl2") {
     console.error(`[paired-gate] manifest.backend must be webgpu|webgl2 (got ${manifest.backend})`);
+    process.exit(2);
+  }
+  if (sliceD && !manifest.expectBootActor) {
+    // Fail-closed [R2-F13]: the slice-D headline lane is the AUTHENTICATED
+    // actor lane — a manifest without the expected kind cannot silently
+    // regress to the guest path.
+    console.error("[paired-gate] --slice-d requires manifest.expectBootActor (e.g. 'player-vrm')");
     process.exit(2);
   }
   const seenPaths = new Set();
@@ -224,11 +386,18 @@ if (import.meta.main) {
       }
       seenPaths.add(path);
     }
-    const baseline = JSON.parse(await Bun.file(p.baseline).text()).summary;
-    const candidate = JSON.parse(await Bun.file(p.candidate).text()).summary;
-    pairs.push({ order: p.order, baseline, candidate });
+    const baselineReport = JSON.parse(await Bun.file(p.baseline).text());
+    const candidateReport = JSON.parse(await Bun.file(p.candidate).text());
+    pairs.push({
+      order: p.order,
+      baseline: baselineReport.summary,
+      candidate: candidateReport.summary,
+      candidateFrames: candidateReport.frames,
+    });
   }
-  const result = evaluatePairedGate(pairs, { backend: manifest.backend });
+  const result = sliceD
+    ? evaluateSliceDGate(pairs, { backend: manifest.backend, expectBootActor: manifest.expectBootActor })
+    : evaluatePairedGate(pairs, { backend: manifest.backend });
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.verdict === "pass" ? 0 : result.verdict === "inconclusive" ? 4 : 3);
 }
