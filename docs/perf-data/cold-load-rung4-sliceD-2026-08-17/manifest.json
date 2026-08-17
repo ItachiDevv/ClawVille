@@ -1,0 +1,66 @@
+{
+ "backend": "webgpu",
+ "pairs": [
+  {
+   "order": "AB",
+   "baseline": "report-1-A.json",
+   "candidate": "report-1-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "report-2-A.json",
+   "candidate": "report-2-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "report-3-A.json",
+   "candidate": "report-3-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "report-4-A.json",
+   "candidate": "report-4-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "report-5-A.json",
+   "candidate": "report-5-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "report-6-A.json",
+   "candidate": "report-6-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "report-7-A.json",
+   "candidate": "report-7-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "report-8-A.json",
+   "candidate": "report-8-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "report-9-A.json",
+   "candidate": "report-9-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "report-10-A.json",
+   "candidate": "report-10-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "report-11-A.json",
+   "candidate": "report-11-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "report-12-A.json",
+   "candidate": "report-12-B.json"
+  }
+ ],
+ "expectBootActor": "player-vrm"
+}

@@ -669,6 +669,66 @@ punch-listed SW-target CDP attachment is the structural fix):**
   regression + precache still functions + upgrade migrates". All three hold. Evidence:
   `docs/perf-data/cold-load-rung4-sliceB-2026-08-11/{before,after}/report-{1,2,3}.json`.
 
+## Rung-4 slice-D results (2026-08-17, session perr4.5 — the boot-core gate; AUTHENTICATED 12-pair webgpu gate PASS)
+
+Spec: `docs/perf-cold-load-rung4-sliceD-spec.md` (FROZEN rev 5 — Codex xhigh
+spec rounds 19/15/8/2/SHIP, implementation rounds I1 10 / I2 7 / I3 1 /
+I4 SHIP-no-findings). Loading screen dismisses on BOOT_CORE_PRESENTED (an
+explicit whitelist of procedural boot content + the resolved boot ACTOR);
+buildings/props/NPCs/land stream after eligibility through the per-epoch
+warm queue (buildings proxy->warmed atomic swap).
+
+**Headline gate (authenticated VRM player, landtest1 storage-state fixture,
+12 counterbalanced pairs, fail-closed --slice-d schema): VERDICT PASS,
+12/12 usable.** Baseline = branch merge-base 8b9ee2a8 (slice-C state).
+
+| Metric | Result | Bound |
+|---|---|---|
+| bootCorePresentedAt (candidate, absolute) | **median 3359ms** | <=5000ms PASS |
+| framesOver100In10s (paired diff, 95% UB) | **1** | <=2 PASS |
+| candidate revealMs (report-only) | median 3823ms (3773-4017) | — |
+| baseline revealMs (report-only) | median 9170ms (8814-10068) | **-58%** |
+| streamSettled after reveal | median 9516ms (8920-10058) | <15000 window |
+| landSettled after reveal | median 5892ms (5628-6503) | <15000 window |
+| worstFrame log-ratio (report-only) | median -1.17 | candidate ~3x BETTER |
+
+Every candidate run: drift 0, cohort 16/16 all ready-warmed (0 fail-open,
+0 failed), land failures 0/0/0, actor ordering resolved<=ready<=presented,
+storage-state injected, phasesAtWindow snapshot judged. Pair 4's first
+candidate run hit the known post-reveal network-quiesce flake (1/24 runs,
+slice-C-era class) — the PAIR was re-run per the zero-defect rule (both
+arms, BA order preserved), never topped up.
+
+**Watchdog singles (same build):** guest (actor `none`, reveal 3072ms,
+presented 2590ms, ordering PASS) · authenticated GLB player (landtest2
+lobster — the I1-flagged gap — actor `player-glb`, reveal 3779ms,
+presented 3290ms, ordering PASS) · cold `/cove` + `/kelp` scene-leak
+asserts (ZERO world-building GLBs fetched; eligibility never fires outside
+the world — `cold-load-scene-leak-probe.mjs`). Covered by UNIT tests
+rather than live singles (328 suite green): mode transitions
+before/after closure, pre-closure same-kind resource swap, avatar
+transient-error pendency, loader-remount / stage-before-loader epoch
+safety, deadline progress-freeze, hidden-tab queue parking, member-keyed
+late-mount delivery, post-settle stable coverage proofs (incl. all three
+Codex false-pass counterexamples). Deferred to the staging playtest:
+NPC-possession and autonomous live boots (kinds unit-covered; autonomous
+is gate-equivalent to `none` by design), SPA round-trip feel.
+
+Evidence: `docs/perf-data/cold-load-rung4-sliceD-2026-08-17/` (24 pair
+reports + manifest + gate-verdict + 2 watchdog reports). Rig additions:
+probe `--storage-state`/`--expect-boot-actor`/`phasesAtWindow(@15s +
+actual-time stamp)`; gate `--slice-d` (exactly-12, zero-defect,
+player-vrm headline hard-required, `--watchdog-lane` for other kinds);
+`cold-load-auth-state.mjs` fixture minter; `SLICE_D_WINDOW_MS = 15000`
+recorded as the deliberate §4b widening (stream settles ~9.5s post-reveal
+by design — the 10s window predates streaming). NIT declared: land trio
+priorities use tier offsets (tier, +1, +2) instead of tier+distSq — three
+far, world-wide sets; within-tier ordering has no measured effect.
+
+**REMAINING GATES: founder proxy-world playtest on staging (E4 — the
+proxy look is a product decision) + the slice-C wanderer pop-in playtest
+still owed from 2026-08-11.**
+
 ## Rung-4 slice-C results (2026-08-11, session perf4.5 — ambient VRMs out of the pre-reveal lane, local webgpu paired gate)
 
 Commit `4f7cc6ea` on `perf/cold-load-diet` after FIVE Codex xhigh adversarial

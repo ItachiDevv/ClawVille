@@ -1,7 +1,64 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-16 (Cove hold'em table room — seated figures persist
+**Last Audited: 2026-08-17 (Cold-load rung-4 slice D — the boot-core gate;
+spec FROZEN rev 5 in `docs/perf-cold-load-rung4-sliceD-spec.md`, Codex xhigh
+spec rounds 19/15/8/2/0 findings + implementation rounds I1(10)/I2).** The
+loading screen now dismisses when an explicit BOOT CORE is on screen, not
+when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
+~4.0s authenticated VRM player.
+
+- **Boot-core whitelist** (`BOOT_CORE_CHUNKS`, `World3DCanvas.tsx`): terrain,
+  building PROXIES, land-parcels(+sign hitboxes, `perfNonRendered`),
+  land-salvage-nodes, kelp-forest, seaweed, kelp-forest-portal, cove-beacon,
+  cove-entrance, town-directory-sign, boot-actor, click-to-move,
+  land-founder-apartments, land-ring-decorations, activity-indicators,
+  floating-texts. The warmup gate scans/compiles/warm-draws ONLY these
+  (per-group `compileAsync`, exactly once each); mesh content outside them is
+  HIDDEN for the warm draw and stamped as probe-invalidating drift
+  (`bootCoreDriftChunks`). The global `DefaultLoadingManager` idle barrier is
+  DELETED.
+- **Boot actor** (`boot-actor.ts`): mode-independent body dependency —
+  ONE GamePage coordinator resolves {none | player-vrm | player-glb |
+  npc-body | autonomous-remote} on authoritative auth+avatar settlement and
+  closes REGISTRATION; COVERAGE closes only on the matching claim token's
+  COMMIT (per-token timestamps) or the 8s epoch deadline. On-time bodies
+  mount RAW and are visible at reveal; post-closure/uncovered bodies attach
+  through the deferred-warm queue (`requiresDeferredAttach` state table).
+  The possessed demo body moved OUT of ArenaNpcs into `perf:boot-actor`
+  (`BootActorNpcBody`).
+- **BOOT_CORE_PRESENTED** (`decorative-release.ts`): render-proven milestone
+  — chained scene `onAfterRender` (world slot active + world camera + epoch
+  qualified), 2 consecutive qualifying frames, predicate WITHOUT the sea
+  overlay (the overlay dismisses BECAUSE of it; 10s visible-time fallback +
+  45s fuse retained). SeaLoadingScreen reads module getters; its progress
+  download band = five epoch-owned dependency units (3 locomotion clips +
+  actor fetch + commit, deadline-frozen).
+- **Boot streaming**: buildings (proxy -> warmed atomic swap via
+  `DeferredWarmAttachment placeholder`, per-building ErrorBoundary, proxy
+  carries its own label id + clicks until the flip), town props, Nori +
+  quest crab stream AFTER `onBootStreamEligible` (= release AND milestone
+  AND overlay/curtain gone AND visible; per-epoch queue, 1.5s quiet, parks
+  while hidden). Tiers: buildings -1e14, props -1e13, land -1e12 (+distSq
+  from boot camera). Cohort of exactly 16 units tracked to terminal
+  (`boot-stream-cohort.ts` — `streamSettledAt`, fail-opens counted). Land
+  trio release-gates GLB demand only (data fetches stay at mount) with the
+  `land-boot-tracker.ts` hydration-generation + exact-slot-ID contract
+  (`landSettledAt`; the probe judges the reveal+16s `phasesAtWindow`
+  snapshot). Module-scope byte-warms for all deferred sets moved behind
+  eligibility; tier-1 manifest = locomotion clips ONLY.
+- **Texture claims** (`deferred-warm.ts`): renderer-keyed execution-time
+  `tryClaimTexture` handles — the warmup scanners and deferred warms can
+  never double-upload against an in-flight compile; ONE shared
+  `TEXTURE_SLOTS` constant.
+- **Rig**: probe `--storage-state` (authenticated lane; landtest fixtures
+  via `cold-load-auth-state.mjs`) + `--expect-boot-actor` +
+  `phasesAtWindow`; paired gate `--slice-d` fail-closed schema (drift=0,
+  cohort 16/16, land failures 0, settle<=15s window [recorded widening],
+  actor ordering, exactly-12 pairs). HUD `?perf=1` shows
+  `<t>s boot-core <n>/16 (+land)`.
+
+**Prior Last Audited: 2026-08-16 (Cove hold'em table room — seated figures persist
 between hands).** `holdem-table-room.tsx`: opponent figure resolution now falls
 back to the PERSISTENT public seat roster (`liveTable.table.seats`, excluding
 `status==='left'`) whenever no live hand snapshot exists (`cashLive === null` —
