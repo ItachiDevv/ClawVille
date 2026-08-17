@@ -79,6 +79,27 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
   // this the raw, replayable real-CT bearer lands on Telegram + stdout/Coolify.
   const message = redactBearerTokens(params.message);
 
+  // DEPLOYED-BOX GATE (2026-08-17): only the staging/prod boxes may PAGE.
+  // A local dev/test process inherits the real bot token from the shell profile
+  // (~/.itachi-api-keys wins over .env.local), points at the staging DB, and
+  // lacks the deployed-only secrets — e.g. a local api without
+  // VANITY_ENCRYPTION_KEY paged ops hourly with "verify signer unusable" for a
+  // wallet only the deployed box can decrypt. CLAWVILLE_ENV is the immutable
+  // per-box deploy signal (same discriminator partner-signature trusts;
+  // NODE_ENV is 'production' on both boxes AND locally-built bundles, so it
+  // cannot discriminate). Non-deployed runs degrade to console.warn with the
+  // full payload. ALERT_TELEGRAM_FORCE='true' is the deliberate local override
+  // for testing the pipe itself.
+  const clawvilleEnv = process.env.CLAWVILLE_ENV;
+  const deployed = clawvilleEnv === 'staging' || clawvilleEnv === 'production';
+  if (!deployed && process.env.ALERT_TELEGRAM_FORCE !== 'true') {
+    console.warn(
+      '[alert-error] non-deployed environment (CLAWVILLE_ENV unset) — alert logged, NOT paged',
+      { severity, source, message, context: context ? redactBearerTokens(JSON.stringify(context)) : undefined },
+    );
+    return;
+  }
+
   if (!TOKEN || !CHAT_ID) {
     console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
       source,
