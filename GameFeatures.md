@@ -16,6 +16,10 @@ Same day, server-side hygiene (ARCHITECTURE §13 2026-08-16): abandoned BUSTED
 seats (0 chips, idle >10 min) auto-release between hands, and house tables whose
 stakes drifted from the approved ladder retire + recreate at the correct stakes
 — this is what heals prod's leftover July-ladder tables on the next promotion.
+2026-08-17 (from the Codex live certification, Low finding): the between-hands
+banner is now state-aware — when you are seated AND others are at the table it
+says "Next hand / The next hand is starting…" instead of wrongly claiming the
+game waits for another player while bots are about to redeal.
 
 **Prior Last Audited: 2026-08-12 (Land hold-wallet door 2 now checks transfers
 automatically).** The transfer option no longer asks for a memo or makes people

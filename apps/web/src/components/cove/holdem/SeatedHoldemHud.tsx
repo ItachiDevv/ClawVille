@@ -302,10 +302,14 @@ export function CashTableRoomHud({
 
       {!live && cashedOutCt == null && (
         <div className={styles.settlement} data-testid="cash-table-waiting">
-          <div className={styles.settlementHeadline}>Waiting for players</div>
+          <div className={styles.settlementHeadline}>
+            {amSeated && physicalSeats.some(Boolean) ? 'Next hand' : 'Waiting for players'}
+          </div>
           <div className={styles.settlementDetail}>
             {amSeated
-              ? 'You are seated — the game starts when another player joins.'
+              ? physicalSeats.some(Boolean)
+                ? 'The next hand is starting…'
+                : 'You are seated — the game starts when another player joins.'
               : 'Sit down to start the game.'}
           </div>
         </div>
