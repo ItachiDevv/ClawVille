@@ -12,12 +12,25 @@ import {
   enqueueDeferredWarm,
   warmDeferredObject,
   type DeferredWarmRenderer,
+  type DeferredWarmResultKind,
 } from '@/lib/three/deferred-warm';
 
 type DeferredWarmAttachmentProps = {
   children: ReactNode | ((ready: boolean) => ReactNode);
   label: string;
   priority?: number;
+  /**
+   * Slice D (§3): rendered as a SIBLING outside the hidden group while
+   * `!ready` — the commit that flips `ready` unmounts the placeholder and
+   * reveals the warmed subtree in the same commit (atomic on the success
+   * path). On warm FAIL-OPEN the real content still appears (may hitch
+   * once — pre-existing product behavior); `onWarmResult` reports which.
+   */
+  placeholder?: ReactNode;
+  /** Reports the warm outcome once: 'warmed' (upload+compile completed) or
+   * 'failopen' (any fail-open leg). Measurement runs reject 'failopen'
+   * [R2-F11]; product behavior is unchanged. */
+  onWarmResult?: (kind: DeferredWarmResultKind) => void;
 };
 
 /**
@@ -30,28 +43,41 @@ export function DeferredWarmAttachment({
   children,
   label,
   priority = 0,
+  placeholder,
+  onWarmResult,
 }: DeferredWarmAttachmentProps) {
   const rootRef = useRef<THREE.Group>(null);
   const [ready, setReady] = useState(false);
   const { gl, camera, scene } = useThree();
+  const onWarmResultRef = useRef(onWarmResult);
+  onWarmResultRef.current = onWarmResult;
 
   useEffect(() => {
     const object = rootRef.current;
     if (!object) return undefined;
 
+    let resultKind: DeferredWarmResultKind = 'failopen';
     return enqueueDeferredWarm({
       priority,
-      warm: (isCancelled) =>
-        warmDeferredObject({
+      warm: async (isCancelled) => {
+        resultKind = await warmDeferredObject({
           renderer: gl as unknown as DeferredWarmRenderer,
           scene,
           camera,
           object,
           isCancelled,
           label,
-        }),
+        });
+      },
       onStateChange: (state) => {
-        if (state === 'ready') setReady(true);
+        if (state === 'ready') {
+          setReady(true);
+          try {
+            onWarmResultRef.current?.(resultKind);
+          } catch (error) {
+            console.warn(`[DeferredWarm] ${label}: onWarmResult threw:`, error);
+          }
+        }
       },
       onError: (error) => {
         console.warn(`[DeferredWarm] ${label}: warm job failed open:`, error);
@@ -60,8 +86,11 @@ export function DeferredWarmAttachment({
   }, [camera, gl, label, priority, scene]);
 
   return (
-    <group ref={rootRef} visible={ready}>
-      {typeof children === 'function' ? children(ready) : children}
-    </group>
+    <>
+      {!ready && placeholder}
+      <group ref={rootRef} visible={ready}>
+        {typeof children === 'function' ? children(ready) : children}
+      </group>
+    </>
   );
 }

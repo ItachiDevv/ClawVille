@@ -24,11 +24,23 @@ import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  BOOT_STREAM_TIER_PROPS,
+  onBootStreamEligible,
+} from '@/lib/three/decorative-release';
+import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
+import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
 // ---------------------------------------------------------------------------
-// Preload at module scope so Suspense has the data ready before first render.
+// Rung-4 slice D (§3 preload demotion): byte-warm fires at boot-stream
+// eligibility, not module scope.
 // ---------------------------------------------------------------------------
-preloadKTX2Bytes('/models/shisha-oasis-mo-ktx.glb');
+if (typeof window !== 'undefined') {
+  onBootStreamEligible(
+    () => preloadKTX2Bytes('/models/shisha-oasis-mo-ktx.glb'),
+    Number.NEGATIVE_INFINITY,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — same canonical
@@ -133,5 +145,13 @@ const MarketplaceStallInner = memo(function MarketplaceStallInner() {
 });
 
 export default function MarketplaceStall() {
-  return <MarketplaceStallInner />;
+  // Slice D: streamed post-boot-core (spec §3) — cohort 'prop:marketplace-stall'.
+  return (
+    <BootStreamedContent
+      cohortId="prop:marketplace-stall"
+      priority={bootStreamPriority(BOOT_STREAM_TIER_PROPS, STALL_X, STALL_Z)}
+    >
+      <MarketplaceStallInner />
+    </BootStreamedContent>
+  );
 }

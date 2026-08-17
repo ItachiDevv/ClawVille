@@ -497,8 +497,47 @@ const LOCOMOTION_CLIPS: AnimName[] = ['idle', 'walk', 'run'];
  */
 export function preloadLocomotionClips(): void {
   for (const name of LOCOMOTION_CLIPS) {
-    loadRawGltf(name).catch(() => undefined);
+    trackLocomotionClipSettled(name, loadRawGltf(name));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rung-4 slice D (§2d [R2-F14][R3-F6]): per-clip SETTLED promises so the
+// boot-core gate and the loading-screen progress units observe real terminal
+// states (success OR failure — a rejected clip is a terminal fail-open unit,
+// never a stalled bar). Idempotent per clip name; the first preload call
+// wins. `whenLocomotionClipsSettled` resolves when ALL three clips settled.
+// ---------------------------------------------------------------------------
+
+const _locomotionClipSettled = new Map<string, Promise<void>>();
+
+function trackLocomotionClipSettled(name: string, load: Promise<unknown>): void {
+  if (_locomotionClipSettled.has(name)) {
+    // Still swallow this call's rejection (dedup path).
+    void load.catch(() => undefined);
+    return;
+  }
+  _locomotionClipSettled.set(
+    name,
+    load.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+}
+
+/** Per-clip settled promises (allSettled semantics), keyed by clip name. */
+export function getLocomotionClipSettledPromises(): ReadonlyMap<string, Promise<void>> {
+  return _locomotionClipSettled;
+}
+
+/** Resolves when every locomotion clip's load has SETTLED (never rejects).
+ * Calling before preloadLocomotionClips() starts the loads itself. */
+export function whenLocomotionClipsSettled(): Promise<void> {
+  if (_locomotionClipSettled.size < LOCOMOTION_CLIPS.length) {
+    preloadLocomotionClips();
+  }
+  return Promise.all([..._locomotionClipSettled.values()]).then(() => undefined);
 }
 
 /**

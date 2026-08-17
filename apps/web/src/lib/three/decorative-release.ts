@@ -66,6 +66,9 @@ function fire(reason: string): void {
     }
   }
   listeners.clear();
+  // Slice D: the release is one of the two boot-stream eligibility legs
+  // (hoisted function declaration — defined in the slice-D section below).
+  evaluateBootStreamEligibility();
 }
 
 /** Release now (idempotent). Deadline/test escape hatch — app warmup paths
@@ -88,7 +91,13 @@ export function armDecorativeReleaseOnFirstPaint(reason: string): void {
   if (firstPaintArmedReason === null) firstPaintArmedReason = reason;
 }
 
-function revealConditionHolds(): boolean {
+/**
+ * Shared reveal predicate (slice D [F6]): the decorative milestone requires
+ * the sea overlay GONE; the boot-core milestone omits ONLY that check (the
+ * overlay dismisses BECAUSE boot-core presented) but keeps the hidden-tab
+ * and stage-curtain guards — SPA frames can run behind an opaque curtain.
+ */
+function revealConditionHolds(requireSeaOverlayGone: boolean): boolean {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return false;
   }
@@ -98,7 +107,12 @@ function revealConditionHolds(): boolean {
   if ((window as any).__W3D_READY !== true) return false;
   // The cold-boot loading overlay (unmounted on dismiss — no cache: a
   // remounted loader must re-gate; the query is a single class lookup).
-  if (document.querySelector('.claw-loading-overlay') !== null) return false;
+  if (
+    requireSeaOverlayGone &&
+    document.querySelector('.claw-loading-overlay') !== null
+  ) {
+    return false;
+  }
   // The stage transition curtain: a fast SPA return can run world frames
   // while the curtain is still opaque (Codex Lever-1 review finding 2 —
   // ~170ms window where hasEverActivated skips the sea loader). Only count
@@ -125,7 +139,7 @@ function revealConditionHolds(): boolean {
  */
 export function notifyWorldFramePresented(): void {
   if (released || firstPaintArmedReason === null) return;
-  if (!revealConditionHolds()) {
+  if (!revealConditionHolds(true)) {
     qualifyingFramesSeen = 0;
     return;
   }
@@ -292,6 +306,320 @@ export function onDecorativeReleaseStaggered(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Rung-4 slice D — world boot epoch, BOOT_CORE_PRESENTED milestone, and the
+// boot-stream eligibility queue. Spec: docs/perf-cold-load-rung4-sliceD-spec.md
+// (FROZEN rev 5). Everything below is per-boot-epoch module state exposed via
+// GETTERS: SeaLoadingScreen (and any other DOM consumer) reads the getters —
+// its mount-time re-zero of legacy window flags can never clear milestone
+// state [R2-F7]. Window mirrors are WRITE-ONLY probe telemetry.
+// ---------------------------------------------------------------------------
+
+/** Stagger priority tiers for slice-D boot-deferred content (§1). Priority
+ * passed to the queue = TIER + squared distance from the static boot camera,
+ * so ALL buildings precede ALL props precede ALL land content, nearest-first
+ * within each tier. NPC-tier consumers pass plain distSq. */
+export const BOOT_STREAM_TIER_BUILDINGS = -1e14;
+export const BOOT_STREAM_TIER_PROPS = -1e13;
+export const BOOT_STREAM_TIER_LAND = -1e12;
+/** Static boot camera position (world units) for tier distance math — the
+ * town-center overview the camera boots at. Never read per-frame. */
+export const BOOT_CAMERA_POSITION = [0, 600, 1300] as const;
+
+const BOOT_STREAM_FAILOPEN_VISIBLE_MS = 10_000;
+const BOOT_STREAM_EVAL_POLL_MS = 250;
+
+export type WorldBootEpoch = { readonly id: number };
+
+let _epochCounter = 0;
+let currentEpoch: WorldBootEpoch | null = null;
+const epochSubscribers = new Set<Listener>();
+
+/**
+ * Render-time idempotent latch (the proven beginWorldVrmParseEpoch pattern —
+ * replay-safe, so calling from a useState initializer is legal). Creates the
+ * boot epoch ONCE per page load; SPA returns and warmup-effect restarts
+ * ADOPT it [R2-F2]. Notifies epoch subscribers exactly once on creation so a
+ * coordinator mounted before the lazy world exists re-runs [R3-F8].
+ */
+export function ensureWorldBootEpoch(): WorldBootEpoch {
+  if (currentEpoch) return currentEpoch;
+  currentEpoch = { id: ++_epochCounter };
+  for (const cb of [...epochSubscribers]) {
+    try {
+      cb();
+    } catch (err) {
+      console.warn('[boot-epoch] subscriber threw:', err);
+    }
+  }
+  return currentEpoch;
+}
+
+export function getWorldBootEpoch(): WorldBootEpoch | null {
+  return currentEpoch;
+}
+
+/** Subscription bridge for useSyncExternalStore consumers [R3-F8]. */
+export function subscribeWorldBootEpoch(cb: Listener): () => void {
+  epochSubscribers.add(cb);
+  return () => epochSubscribers.delete(cb);
+}
+
+// --- BOOT_CORE_PRESENTED milestone (§2c) -----------------------------------
+
+let bootCoreArmedReason: string | null = null;
+let bootCorePresented = false;
+let bootCorePresentedAtMs: number | null = null;
+let bootCoreQualifyingFrames = 0;
+
+/** Armed from EVERY warmup resume path (complete, error, fallback,
+ * stage-ready) — one-shot, first reason kept for telemetry. */
+export function armBootCorePresented(reason: string): void {
+  if (bootCorePresented) return;
+  if (bootCoreArmedReason === null) bootCoreArmedReason = reason;
+}
+
+/**
+ * Called from the STAGE SCENE's chained `onAfterRender` (three r185 fires the
+ * scene-level callback after actual render completion — Groups never receive
+ * object-level callbacks [R2-F1]). Caller pre-qualifies world-slot ownership
+ * and camera; this function applies the reveal predicate (WITHOUT the sea
+ * overlay check — the overlay dismisses BECAUSE of this milestone) and the
+ * two-consecutive-frame discipline.
+ */
+export function notifyBootCoreScenePresented(): void {
+  if (bootCorePresented || bootCoreArmedReason === null) return;
+  if (!revealConditionHolds(false)) {
+    bootCoreQualifyingFrames = 0;
+    return;
+  }
+  bootCoreQualifyingFrames += 1;
+  if (bootCoreQualifyingFrames < 2) return;
+  bootCorePresented = true;
+  bootCorePresentedAtMs =
+    typeof performance !== 'undefined'
+      ? Math.round(performance.now())
+      : Date.now();
+  try {
+    (window as any).__W3D_BOOT_CORE_PRESENTED = true;
+    (window as any).__W3D_PHASES = (window as any).__W3D_PHASES ?? {};
+    (window as any).__W3D_PHASES.bootCorePresentedAt = bootCorePresentedAtMs;
+  } catch {
+    /* telemetry never throws */
+  }
+  evaluateBootStreamEligibility();
+}
+
+export function isBootCorePresented(): boolean {
+  return bootCorePresented;
+}
+
+export function getBootCorePresentedAt(): number | null {
+  return bootCorePresentedAtMs;
+}
+
+// --- Boot-stream eligibility (§2e) -----------------------------------------
+// Per-epoch queue with its OWN quiet period + visibility parking [R2-F7]:
+// the legacy stagger queue's process-global firstDrainDelayDone flag can be
+// consumed by legacy consumers while hidden; slice-D delivery must not
+// inherit that, and must never start while the tab is hidden.
+
+let streamEligible = false;
+let streamEligibleAtMs: number | null = null;
+let streamEligibleReason: string | null = null;
+const streamQueue: StaggerEntry[] = [];
+let streamScheduled = false;
+let streamSequence = 0;
+let streamFirstDrainDelayDone = false;
+let streamEvalTimer: ReturnType<typeof setInterval> | null = null;
+let streamVisibleMsSinceRelease = 0;
+let streamLastEvalAt: number | null = null;
+let streamVisibilityListenerInstalled = false;
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function installStreamVisibilityListener(): void {
+  if (
+    streamVisibilityListenerInstalled ||
+    typeof document === 'undefined' ||
+    typeof document.addEventListener !== 'function'
+  ) {
+    return;
+  }
+  streamVisibilityListenerInstalled = true;
+  document.addEventListener('visibilitychange', () => {
+    // Foregrounding re-arms a parked drain and lets the evaluator re-check.
+    evaluateBootStreamEligibility();
+    drainStreamQueue();
+  });
+}
+
+function overlayAndCurtainGone(): boolean {
+  if (typeof document === 'undefined') return false;
+  if (document.querySelector('.claw-loading-overlay') !== null) return false;
+  const transition =
+    document.querySelector<HTMLElement>('[data-stage-transition]');
+  const phase = transition?.dataset.stageTransition;
+  if (phase && phase !== 'idle') return false;
+  return true;
+}
+
+function markStreamEligible(reason: string): void {
+  if (streamEligible) return;
+  streamEligible = true;
+  streamEligibleAtMs = Math.round(nowMs());
+  streamEligibleReason = reason;
+  if (streamEvalTimer !== null) {
+    clearInterval(streamEvalTimer);
+    streamEvalTimer = null;
+  }
+  try {
+    (window as any).__W3D_PHASES = (window as any).__W3D_PHASES ?? {};
+    (window as any).__W3D_PHASES.bootStreamEligibleAt = streamEligibleAtMs;
+    (window as any).__W3D_PHASES.bootStreamEligibleReason = reason;
+  } catch {
+    /* telemetry never throws */
+  }
+  drainStreamQueue();
+}
+
+/**
+ * Eligibility = decorative release fired AND boot-core presented AND the sea
+ * overlay + stage curtain actually gone AND the tab visible. Fail-open: the
+ * release fired but the milestone never stamps → eligible after 10s of
+ * VISIBLE time post-release (a broken milestone cannot strand an empty
+ * world; hidden tabs keep parking by design) [R2-F7][F8].
+ */
+function evaluateBootStreamEligibility(): void {
+  if (streamEligible || !released) return;
+  installStreamVisibilityListener();
+
+  const t = nowMs();
+  if (streamLastEvalAt !== null && typeof document !== 'undefined') {
+    if (!document.hidden) {
+      streamVisibleMsSinceRelease += t - streamLastEvalAt;
+    }
+  }
+  streamLastEvalAt = t;
+
+  if (typeof document !== 'undefined' && document.hidden) return;
+
+  if (bootCorePresented && overlayAndCurtainGone()) {
+    markStreamEligible('milestone');
+    return;
+  }
+  if (
+    !bootCorePresented &&
+    streamVisibleMsSinceRelease >= BOOT_STREAM_FAILOPEN_VISIBLE_MS
+  ) {
+    markStreamEligible('fail-open-visible');
+    return;
+  }
+  // Keep a bounded poll alive while release-fired-but-not-eligible: it
+  // accumulates visible time and watches the overlay/curtain DOM (neither
+  // has an event we can subscribe to). Self-disposes on eligibility.
+  if (streamEvalTimer === null && typeof window !== 'undefined') {
+    streamEvalTimer = setInterval(
+      evaluateBootStreamEligibility,
+      BOOT_STREAM_EVAL_POLL_MS,
+    );
+  }
+}
+
+function takeNextStream(): StaggerEntry | undefined {
+  if (streamQueue.length === 0) return undefined;
+  let best = 0;
+  for (let i = 1; i < streamQueue.length; i += 1) {
+    const candidate = streamQueue[i]!;
+    const current = streamQueue[best]!;
+    if (
+      candidate.priority < current.priority ||
+      (candidate.priority === current.priority &&
+        candidate.sequence < current.sequence)
+    ) {
+      best = i;
+    }
+  }
+  return streamQueue.splice(best, 1)[0];
+}
+
+function drainStreamQueue(): void {
+  if (!streamEligible || streamScheduled || streamQueue.length === 0) return;
+  // Park while hidden — the visibilitychange listener re-arms this drain.
+  if (typeof document !== 'undefined' && document.hidden) return;
+
+  const run = () => {
+    streamScheduled = false;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    let next = takeNextStream();
+    while (next && !next.active) next = takeNextStream();
+    if (!next) return;
+    try {
+      next.listener();
+    } catch (err) {
+      console.warn('[boot-stream] staggered listener threw:', err);
+    }
+    drainStreamQueue();
+  };
+
+  if (typeof window === 'undefined') {
+    run();
+    return;
+  }
+  streamScheduled = true;
+  const w = window as any;
+  if (!streamFirstDrainDelayDone) {
+    streamFirstDrainDelayDone = true;
+    w.setTimeout(run, STAGGER_FIRST_DRAIN_QUIET_MS);
+    return;
+  }
+  if (typeof w.requestIdleCallback === 'function') {
+    w.requestIdleCallback(run, { timeout: 500 });
+  } else {
+    w.setTimeout(run, 120);
+  }
+}
+
+export function isBootStreamEligible(): boolean {
+  return streamEligible;
+}
+
+export function bootStreamEligibleReason(): string | null {
+  return streamEligibleReason;
+}
+
+/**
+ * Subscribe slice-D boot-deferred content. Delivery is staggered ONE per
+ * idle tick through the per-epoch stream queue (own 1.5s quiet period from
+ * eligibility; parks while hidden). Ascending priority — pass
+ * `TIER + distSq` (see the tier constants above). Late subscribers join the
+ * same queue. Returns an unsubscribe that is honored until execution.
+ */
+export function onBootStreamEligible(
+  listener: Listener,
+  priority = 0,
+): () => void {
+  const entry: StaggerEntry = {
+    listener,
+    active: true,
+    priority,
+    sequence: streamSequence++,
+  };
+  streamQueue.push(entry);
+  if (streamEligible) {
+    drainStreamQueue();
+  } else {
+    evaluateBootStreamEligibility();
+  }
+  return () => {
+    entry.active = false;
+    const index = streamQueue.indexOf(entry);
+    if (index >= 0) streamQueue.splice(index, 1);
+  };
+}
+
 /** TEST-ONLY: reset module state between unit tests. Never call from app code. */
 export function __resetDecorativeReleaseForTests(): void {
   released = false;
@@ -308,4 +636,24 @@ export function __resetDecorativeReleaseForTests(): void {
     deadlineTimer = null;
   }
   listeners.clear();
+  // Slice-D state
+  currentEpoch = null;
+  epochSubscribers.clear();
+  bootCoreArmedReason = null;
+  bootCorePresented = false;
+  bootCorePresentedAtMs = null;
+  bootCoreQualifyingFrames = 0;
+  streamEligible = false;
+  streamEligibleAtMs = null;
+  streamEligibleReason = null;
+  streamQueue.length = 0;
+  streamScheduled = false;
+  streamSequence = 0;
+  streamFirstDrainDelayDone = false;
+  streamVisibleMsSinceRelease = 0;
+  streamLastEvalAt = null;
+  if (streamEvalTimer !== null) {
+    clearInterval(streamEvalTimer);
+    streamEvalTimer = null;
+  }
 }

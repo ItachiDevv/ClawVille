@@ -30,6 +30,9 @@ import { color, float, sin, time } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { onBootStreamEligible } from '@/lib/three/decorative-release';
+import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
+import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
 // ---------------------------------------------------------------------------
 // World-space position
@@ -45,13 +48,15 @@ const QUEST_NPC_X = -110;
 const QUEST_NPC_Z = -60;
 const QUEST_NPC_FLOOR_Y = -2;
 
-// Preload so GLB is ready before first render.
-// SHARED-CRITICAL classification (rung-3 Lever 2, deliberate): the quest
-// giver is an interactive gameplay element near spawn, NOT decoration — it
-// stays on the immediate path. crayfish-ktx.glb is therefore the ONE
-// decoration-adjacent URL excluded from the release deferral (11 of 12
-// scatter/prop URLs are deferred).
-preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2');
+// Rung-4 slice D (§3 preload demotion [R2-F6] — supersedes the rung-3
+// "SHARED-CRITICAL" classification): the quest giver streams post-boot-core
+// like every other town-center unit; its byte-warm fires at eligibility.
+if (typeof window !== 'undefined') {
+  onBootStreamEligible(
+    () => preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2'),
+    Number.NEGATIVE_INFINITY,
+  );
+}
 
 // Gold color for the quest marker octahedron
 const MARKER_COLOR = 0xffd700;
@@ -188,9 +193,14 @@ const QuestNpcInner = memo(function QuestNpcInner() {
 });
 
 export default function QuestNpc() {
+  // Slice D (§4c): the internal Suspense is replaced by BootStreamedContent's
+  // boundary → Suspense → DWA chain [F9]. Cohort 'npc:quest-npc'.
   return (
-    <Suspense fallback={null}>
+    <BootStreamedContent
+      cohortId="npc:quest-npc"
+      priority={bootStreamPriority(0, QUEST_NPC_X, QUEST_NPC_Z)}
+    >
       <QuestNpcInner />
-    </Suspense>
+    </BootStreamedContent>
   );
 }

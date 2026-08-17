@@ -38,11 +38,23 @@ import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 import { useWorldLabel, WorldLabel, resetLabelPrevOpacity } from '@/lib/three/world-labels-overlay';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  BOOT_STREAM_TIER_PROPS,
+  onBootStreamEligible,
+} from '@/lib/three/decorative-release';
+import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
+import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
 // ---------------------------------------------------------------------------
-// Preload at module scope so Suspense has the asset ready
+// Rung-4 slice D (§3 preload demotion): byte-warm fires at boot-stream
+// eligibility, not module scope.
 // ---------------------------------------------------------------------------
-preloadKTX2Bytes('/models/quest-bounty-pavilion-nonorm-ktx.glb');
+if (typeof window !== 'undefined') {
+  onBootStreamEligible(
+    () => preloadKTX2Bytes('/models/quest-bounty-pavilion-nonorm-ktx.glb'),
+    Number.NEGATIVE_INFINITY,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // World position — 1100 wu behind town-directory-sign at (0, 0, -120)
@@ -87,7 +99,13 @@ const LABEL_Y_OFFSET = TARGET_HEIGHT_WU * 0.95;    // above the roof line
 // ---------------------------------------------------------------------------
 // Inner component (memoized — pavilion never moves)
 // ---------------------------------------------------------------------------
-const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner() {
+const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner({
+  attachmentVisible = true,
+}: {
+  /** Slice D: false while the DeferredWarmAttachment is warming — gates the
+   * two DOM labels (the three subtree is hidden by the attachment group). */
+  attachmentVisible?: boolean;
+}) {
   const { scene } = useGLTFWithKTX2('/models/quest-bounty-pavilion-nonorm-ktx.glb');
 
   // Clone so we don't mutate the cached GLB
@@ -116,6 +134,7 @@ const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner() {
     id: 'pavilion-quest',
     anchorRef: questAnchorRef,
     offset: [0, 0, 0],
+    initialVisible: attachmentVisible,
     fadeNear: 800,
     fadeFar: 4500,
     fadeBaseOpacity: 0.85,
@@ -126,10 +145,18 @@ const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner() {
     id: 'pavilion-bounty',
     anchorRef: bountyAnchorRef,
     offset: [0, 0, 0],
+    initialVisible: attachmentVisible,
     fadeNear: 800,
     fadeFar: 4500,
     fadeBaseOpacity: 0.85,
   });
+
+  // Slice D: DOM labels are not hidden by the attachment's three-group —
+  // track the warm state explicitly (slice-C pattern).
+  useEffect(() => {
+    questLabel.setVisible(attachmentVisible);
+    bountyLabel.setVisible(attachmentVisible);
+  }, [attachmentVisible, questLabel.setVisible, bountyLabel.setVisible]);
 
   // Dispose cloned geometry/materials on unmount
   useEffect(() => {
@@ -379,5 +406,13 @@ const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner() {
 });
 
 export default function QuestBountyPavilion() {
-  return <QuestBountyPavilionInner />;
+  // Slice D: streamed post-boot-core (spec §3) — cohort 'prop:quest-bounty-pavilion'.
+  return (
+    <BootStreamedContent
+      cohortId="prop:quest-bounty-pavilion"
+      priority={bootStreamPriority(BOOT_STREAM_TIER_PROPS, PAV_X, PAV_Z)}
+    >
+      {(ready) => <QuestBountyPavilionInner attachmentVisible={ready} />}
+    </BootStreamedContent>
+  );
 }

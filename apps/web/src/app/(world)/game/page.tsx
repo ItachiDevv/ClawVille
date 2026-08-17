@@ -14,6 +14,10 @@ import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
 import { armDecorativeDeadline } from '@/lib/three/decorative-release';
+import { useBootActorCoordinator } from '@/lib/three/boot-actor';
+import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
+import { vrmPathForSpecies } from '@/lib/three/arena-npcs';
+import { useNpcStore, PLAYER_NPC_ID } from '@/stores/npc';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -361,7 +365,7 @@ export default function GamePage() {
   // Arming here guarantees the ceiling exists the moment the loading screen can.
   useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
 
-  const { data: avatar, isLoading } = useAvatar();
+  const { data: avatar, isLoading, isError: avatarQueryError } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const openActivityLobby = useGameStore((s: GameState) => s.openActivityLobby);
@@ -565,6 +569,45 @@ export default function GamePage() {
       useGameStore.getState().setAvatarAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
     }
   }, [avatar]);
+
+  // Slice D §2a — the SINGLE boot-actor closure authority [R2-F3]. Hook
+  // order is LOAD-BEARING: this is called AFTER the mode-promotion and
+  // appearance-sync effects above, and `getInputs` reads the stores LIVE at
+  // effect time — the promotion effect writes controlMode synchronously in
+  // the same flush, so a render-captured snapshot would close a fresh
+  // authenticated boot as 'none' (the exact race the round-5 spec fixed).
+  useBootActorCoordinator(() => {
+    const store = useGameStore.getState();
+    const liveMode = store.controlMode;
+    const playerReg =
+      MODEL_REGISTRY[store.avatarModelKey as keyof typeof MODEL_REGISTRY] ??
+      MODEL_REGISTRY.lobster;
+    const npcBody = useNpcStore
+      .getState()
+      .npcs.find((n) => n.id === PLAYER_NPC_ID);
+    const npcReg = npcBody
+      ? MODEL_REGISTRY[npcBody.species as keyof typeof MODEL_REGISTRY]
+      : undefined;
+    const npcBodyResourceKey = npcBody
+      ? npcReg?.avatar_type === 'vrm'
+        ? vrmPathForSpecies(npcBody.species)
+        : (npcReg?.path ?? null)
+      : null;
+    return {
+      authSettled: !authLoading && !isLoading,
+      avatarOutcome: avatarQueryError
+        ? ('error' as const)
+        : isLoading || authLoading
+          ? ('loading' as const)
+          : avatar
+            ? ('success' as const)
+            : ('absent' as const),
+      controlMode: liveMode,
+      playerResourceKey: playerReg.path,
+      playerAvatarType: playerReg.avatar_type === 'vrm' ? ('vrm' as const) : ('glb' as const),
+      npcBodyResourceKey,
+    };
+  }, [avatar, isLoading, authLoading, avatarQueryError, controlMode]);
 
   // hasAvatar is safe to derive even while loading — avatar is undefined during
   // the fetch so this is false, which correctly hides avatar-gated UI until resolved.

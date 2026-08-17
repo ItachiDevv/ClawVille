@@ -10,9 +10,16 @@ export function useAvatar() {
     queryFn: async () => {
       try {
         return await api.getMyAvatar();
-      } catch {
-        // Gracefully return null when unauthenticated (401) or no avatar
-        return { avatar: null };
+      } catch (err) {
+        // Slice D [R3-F5]: CONFIRMED absence (unauthenticated 401 / no
+        // avatar 404) settles to null; a TRANSIENT failure (5xx/network)
+        // now SURFACES as a query error instead of masquerading as
+        // "no avatar" — the boot-actor coordinator must not close 'none'
+        // off a blip. Existing consumers see `data === undefined` on error,
+        // which is falsy exactly like the old null (behavior-compatible).
+        const status = (err as { status?: number } | null)?.status;
+        if (status === 401 || status === 404) return { avatar: null };
+        throw err;
       }
     },
     select: (data) => data.avatar,

@@ -1,7 +1,18 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
-import { armDecorativeDeadline, armDecorativeReleaseOnFirstPaint, notifyWorldFramePresented } from '@/lib/three/decorative-release';
+import {
+  armBootCorePresented,
+  armDecorativeDeadline,
+  armDecorativeReleaseOnFirstPaint,
+  ensureWorldBootEpoch,
+  notifyBootCoreScenePresented,
+  notifyWorldFramePresented,
+} from '@/lib/three/decorative-release';
+import { awaitBootActorGate } from '@/lib/three/boot-actor';
+import { whenLocomotionClipsSettled } from '@/lib/three/vrm-character-animator';
+import { tryClaimTexture } from '@/lib/three/deferred-warm';
+import { BootActorNpcBody } from '@/lib/three/arena-npcs';
 import { stampColdLoadPhase, stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -367,6 +378,66 @@ function DecorativeFirstPaintNotifier() {
   useSceneFrame(() => {
     notifyWorldFramePresented();
   });
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Rung-4 slice D (§2b): the explicit boot-core chunk whitelist. The warmup
+// gate scans, compiles, and warm-draws ONLY content inside these perfChunk
+// groups — content mounted outside them pre-reveal is hidden during the warm
+// draw and stamped as probe-invalidating drift. Adding a chunk here is the
+// ONLY way new content joins the boot gate (spec: FROZEN rev 5, "never
+// scene"). `land-ring-decorations` is release-gated (empty at warmup) but
+// whitelisted so its group node itself never reads as drift.
+// ---------------------------------------------------------------------------
+export const BOOT_CORE_CHUNKS: ReadonlySet<string> = new Set([
+  'terrain',
+  'buildings',
+  'land-parcels',
+  'land-salvage-nodes',
+  'kelp-forest',
+  'seaweed',
+  'kelp-forest-portal',
+  'cove-beacon',
+  'cove-entrance',
+  'town-directory-sign',
+  'boot-actor',
+  'click-to-move',
+  'land-founder-apartments',
+  'land-ring-decorations',
+]);
+
+// ---------------------------------------------------------------------------
+// BootCorePresentedNotifier (slice D §2c [R2-F1]) — chains the STAGE SCENE's
+// `onAfterRender` (three r185's common Renderer fires the scene-level
+// callback after ACTUAL render completion; Groups never receive object-level
+// callbacks, and the world slot renders through R3F's default loop with no
+// explicit gl.render to hook). Qualification: only count firings while the
+// WORLD slot owns the stage (an active cove/kelp slot renders the same stage
+// scene); the milestone module applies the reveal predicate + two-frame run.
+// Saves and restores any prior handler.
+// ---------------------------------------------------------------------------
+function BootCorePresentedNotifier() {
+  const sceneActive = useSceneActive();
+  const activeRef = useRef(sceneActive);
+  activeRef.current = sceneActive;
+  const { scene } = useThree();
+  useEffect(() => {
+    const prior = scene.onAfterRender;
+    scene.onAfterRender = function chainedOnAfterRender(
+      this: THREE.Scene,
+      ...args: Parameters<NonNullable<THREE.Scene['onAfterRender']>>
+    ) {
+      try {
+        prior?.apply(this, args);
+      } finally {
+        if (activeRef.current) notifyBootCoreScenePresented();
+      }
+    } as THREE.Scene['onAfterRender'];
+    return () => {
+      scene.onAfterRender = prior;
+    };
+  }, [scene]);
   return null;
 }
 
@@ -1150,6 +1221,7 @@ function createWorldWarmupGate(
       // from turning into a second, much longer apparent hang.
       stampColdLoadPhase('resumeReadyAt', performance.now());
       armDecorativeReleaseOnFirstPaint('resume');
+      armBootCorePresented('resume');
       stampColdLoadPhase('resumeReason', String(reason));
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1584,10 +1656,8 @@ function WorldWarmup({
     let idleHandle: number | undefined;
     let uploadRaf: number | undefined;
     let settleRaf: number | undefined;
-    let managerCapTimer: number | undefined;
     let postScanTimer: number | undefined;
     let postStopTimer: number | undefined;
-    let managerIdleCleanup: (() => void) | undefined;
     let activeUploadResolve: (() => void) | undefined;
     let settleRafResolve: (() => void) | undefined;
     let uploadQueue = Promise.resolve();
@@ -1604,6 +1674,7 @@ function WorldWarmup({
       stageReadyPublished = true;
       stampColdLoadPhase('stageReadyAt', performance.now());
       armDecorativeReleaseOnFirstPaint('stage-ready');
+      armBootCorePresented('stage-ready');
       bridge.__W3D_CANVAS_READY = true;
       bridge.__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1642,22 +1713,75 @@ function WorldWarmup({
       uploadMetrics.totalTextures = Math.max(uploadMetrics.totalTextures, discoveredTotal);
     };
 
-    const scanForUnseenTextures = (): THREE.Texture[] => {
+    // Slice D (§2b [F5]): traversal-based inventory from the registered
+    // world-slot root (perf groups are NESTED under `world-stage:world`, not
+    // scene children; the legacy path falls back to the scene). Collects
+    // every perfChunk node (a chunk name may own several nodes — e.g. the
+    // boot actor mounts in two places) plus mesh-bearing subtree roots under
+    // NO chunk (excluding `perfNonRendered` — invisible click hitboxes).
+    const worldRoot = (): THREE.Object3D =>
+      scene.getObjectByName('world-stage:world') ?? scene;
+    const collectBootInventory = (): {
+      chunks: Map<string, THREE.Object3D[]>;
+      unownedMeshes: THREE.Mesh[];
+    } => {
+      const chunks = new Map<string, THREE.Object3D[]>();
+      const unownedMeshes: THREE.Mesh[] = [];
+      const walk = (
+        node: THREE.Object3D,
+        owned: boolean,
+        nonRendered: boolean,
+      ): void => {
+        const chunkName = node.userData?.perfChunk as string | undefined;
+        const nr = nonRendered || node.userData?.perfNonRendered === true;
+        if (chunkName) {
+          const list = chunks.get(chunkName) ?? [];
+          list.push(node);
+          chunks.set(chunkName, list);
+        }
+        const isOwned = owned || chunkName !== undefined;
+        if (!isOwned && !nr && (node as THREE.Mesh).isMesh) {
+          unownedMeshes.push(node as THREE.Mesh);
+        }
+        for (const child of node.children) walk(child, isOwned, nr);
+      };
+      walk(worldRoot(), false, false);
+      return { chunks, unownedMeshes };
+    };
+    const bootCoreGroups = (): THREE.Object3D[] => {
+      const { chunks } = collectBootInventory();
+      const groups: THREE.Object3D[] = [];
+      for (const [name, nodes] of chunks) {
+        if (BOOT_CORE_CHUNKS.has(name)) groups.push(...nodes);
+      }
+      return groups;
+    };
+
+    // Slice D (§2b): pre-reveal scans cover ONLY whitelisted boot-core
+    // groups. `startPostReadyScans` keeps whole-scene coverage as the
+    // post-reveal safety net — the texture claim scheduler [F12] prevents
+    // it racing an in-flight deferred warm.
+    const scanTargets = (
+      targets: readonly THREE.Object3D[],
+    ): THREE.Texture[] => {
       const fresh: THREE.Texture[] = [];
-      scene.traverse((obj) => {
-        if (!(obj instanceof THREE.Mesh)) return;
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-        for (const mat of mats) {
-          if (!mat) continue;
-          for (const slot of TEXTURE_SLOTS) {
-            const tex = (mat as any)[slot];
-            if (tex instanceof THREE.Texture && !seen.has(tex)) {
-              seen.add(tex);
-              fresh.push(tex);
+      const visit = (obj: THREE.Object3D) => {
+        if (obj instanceof THREE.Mesh) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const mat of mats) {
+            if (!mat) continue;
+            for (const slot of TEXTURE_SLOTS) {
+              const tex = (mat as any)[slot];
+              if (tex instanceof THREE.Texture && !seen.has(tex)) {
+                seen.add(tex);
+                fresh.push(tex);
+              }
             }
           }
         }
-      });
+        for (const child of obj.children) visit(child);
+      };
+      for (const target of targets) visit(target);
       if (fresh.length > 0) {
         noteWorldWarmupProgress();
         discoveredTotal += fresh.length;
@@ -1665,6 +1789,9 @@ function WorldWarmup({
       }
       return fresh;
     };
+    const scanForUnseenTextures = (): THREE.Texture[] =>
+      scanTargets(bootCoreGroups());
+    const scanWholeScene = (): THREE.Texture[] => scanTargets([scene]);
 
     const finishActiveUpload = () => {
       const resolve = activeUploadResolve;
@@ -1691,10 +1818,18 @@ function WorldWarmup({
       };
 
       const uploadOne = (texture: THREE.Texture) => {
-        try {
-          (gl as any).initTexture(texture);
-        } catch (err) {
-          console.warn('[World3D] initTexture error (non-fatal):', err);
+        // Slice D [F12][R3-F2]: execution-time claim — if a deferred warm
+        // owns this texture right now, ITS upload covers us (skip; counters
+        // still advance so the bar's accounting stays monotonic).
+        const claim = tryClaimTexture(gl as object, texture);
+        if (claim.owned) {
+          try {
+            (gl as any).initTexture(texture);
+            claim.complete();
+          } catch (err) {
+            claim.fail(err);
+            console.warn('[World3D] initTexture error (non-fatal):', err);
+          }
         }
         uploadedDone += 1;
         if (recordMetrics) warmupUploadedTextures += 1;
@@ -1791,38 +1926,19 @@ function WorldWarmup({
       });
     });
 
-    const waitForLoadingManagerIdle = (): Promise<void> => new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        defaultLoadingManagerIdleListeners.delete(finish);
-        managerIdleCleanup = undefined;
-        if (managerCapTimer !== undefined) {
-          window.clearTimeout(managerCapTimer);
-          managerCapTimer = undefined;
-        }
-        resolve();
-      };
-      defaultLoadingManagerIdleListeners.add(finish);
-      managerIdleCleanup = finish;
-      managerCapTimer = window.setTimeout(finish, 8_000);
-
-      // LoadingManager exposes no public isLoading/counts. A synthetic balanced
-      // item is an exact barrier that cannot miss tier-1 preloads already active
-      // before this dynamically imported module installed its callbacks: onLoad
-      // fires now when idle, or after every pre-existing item drains.
-      const barrierUrl = `__w3d-warmup-barrier-${performance.now()}`;
-      THREE.DefaultLoadingManager.itemStart(barrierUrl);
-      THREE.DefaultLoadingManager.itemEnd(barrierUrl);
-    });
+    // Slice D: `waitForLoadingManagerIdle` (the global synthetic-item
+    // barrier) is DELETED — replaced by the explicit boot-core dependency
+    // list in the async body below (§2a). The DefaultLoadingManager
+    // onProgress bridge stays module-level for probe telemetry only.
 
     const startPostReadyScans = () => {
       if (cancelled || postScanStarted || !canInitTexture) return;
       postScanStarted = true;
       const scan = () => {
         if (cancelled) return;
-        const fresh = scanForUnseenTextures();
+        // Whole-scene coverage post-reveal (streamed content textures); the
+        // claim scheduler prevents racing an in-flight deferred warm [F12].
+        const fresh = scanWholeScene();
         if (fresh.length > 0) {
           // Serialize with any still-finishing initial batch if the safety
           // watchdog resumed early. Nothing uploads concurrently with another batch.
@@ -1897,6 +2013,7 @@ function WorldWarmup({
         liveState.invalidate();
         stampColdLoadPhase('fallbackResumeAt', performance.now());
         armDecorativeReleaseOnFirstPaint('fallback-resume');
+        armBootCorePresented('fallback-resume');
         (window as any).__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         forceFirstPaintSizeSync(liveState);
@@ -1912,130 +2029,163 @@ function WorldWarmup({
 
     void (async () => {
       try {
-        // The effect itself proves one React commit. The manager barrier waits
-        // for all already-started world loads (8s cap), then this RAF gives
-        // Suspense retries one commit opportunity before the first scan.
-        const barrierStartedAt = performance.now();
-        publishPhase('warmupStartAt', barrierStartedAt);
+        // Slice D (§2a, FROZEN rev 5): the global LoadingManager barrier is
+        // DELETED. The gate awaits an EXPLICIT boot-core dependency list —
+        // locomotion clips + the resolved boot actor — nothing else can join
+        // it (the structural kill for the fast-network-joins-the-gate
+        // inversion). 8s overall cap, fail-open, same direction as the old
+        // barrier cap. The actor gate's own deadline is epoch-anchored.
+        const depsStartedAt = performance.now();
+        publishPhase('warmupStartAt', depsStartedAt);
         armDecorativeDeadline();
-        await waitForLoadingManagerIdle();
+        const clipsPromise = whenLocomotionClipsSettled().then(() => {
+          publishPhase('bootCoreDepClipsMs', performance.now() - depsStartedAt);
+        });
+        const actorPromise = awaitBootActorGate().then((actor) => {
+          publishPhase('bootCoreDepActorMs', performance.now() - depsStartedAt);
+          publishPhase('bootActorGateCommitted', actor.committed ? 1 : 0);
+        });
+        await Promise.race([
+          Promise.all([clipsPromise, actorPromise]),
+          new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 8_000);
+          }),
+        ]);
         await waitForCommitFrame();
-        const barrierMs = performance.now() - barrierStartedAt;
-        publishPhase('barrierMs', barrierMs);
+        const barrierMs = performance.now() - depsStartedAt;
+        publishPhase('bootCoreDepsMs', barrierMs);
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
-        // Initial avatar fetches are now accounted for by LoadingManager. If a
-        // bulk VRM parse batch started, do not publish stage readiness until it
-        // drains and every resulting world-slot object has been compiled once.
-        if (
-          hasBulkVRMBatchStarted() &&
-          typeof (gl as any).compileAsync === 'function'
-        ) {
+        // Player-class VRM parse drain (slice C contract, player-only). No
+        // whole-scene compile here — the whitelist loop below compiles the
+        // boot-actor group exactly once [F19].
+        if (hasBulkVRMBatchStarted()) {
           const vrmBulkStartedAt = performance.now();
-          await new Promise<void>((resolveBulkCompile) => {
+          await new Promise<void>((resolveBulkDrain) => {
             registerBulkVRMIdleCallback(() => {
-              if (cancelled) {
-                resolveBulkCompile();
-                return;
-              }
               noteWorldWarmupProgress();
-              void withStageSlotFrustumCullingDisabled(
-                'world',
-                () => (gl as any).compileAsync(scene, camera),
-              )
-                .then(() => {
-                  if (!cancelled) {
-                    bridge.__W3D_VRM_COMPILE_DONE = performance.now();
-                  }
-                })
-                .catch((err: unknown) => {
-                  console.warn('[World3D] bulk-VRM compileAsync failed:', err);
-                })
-                .finally(() => {
-                  noteWorldWarmupProgress();
-                  resolveBulkCompile();
-                });
+              resolveBulkDrain();
             });
           });
           publishPhase('vrmBulkMs', performance.now() - vrmBulkStartedAt);
         }
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
-        const scansStartedAt = performance.now();
-        if (!canInitTexture) {
-          console.warn('[World3D] WorldWarmup: renderer.initTexture() not available, skipping uploads');
-          publishProgress();
-        } else {
-          console.log(`[World3D] WorldWarmup: pre-uploading textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
-          let zeroScans = 0;
-          while (!cancelled && zeroScans < 2) {
-            const fresh = scanForUnseenTextures();
-            if (fresh.length > 0) {
-              zeroScans = 0;
-              await queueUpload(fresh, true, true);
-            } else {
-              zeroScans += 1;
+        // Inventory + drift (§2b [F4][F5]): mesh content mounted pre-reveal
+        // OUTSIDE the whitelist is hidden across scans/compile/warm-draw and
+        // stamped as probe-invalidating drift. Normally the set is EMPTY.
+        const inventory = collectBootInventory();
+        const driftNames = [
+          ...new Set(
+            inventory.unownedMeshes.map(
+              (mesh) => mesh.name || mesh.parent?.name || mesh.uuid,
+            ),
+          ),
+        ];
+        // Comma-joined (stamp values are string|number); '' = no drift.
+        publishPhase('bootCoreDriftChunks', driftNames.join(','));
+        publishPhase('bootCoreDriftCount', driftNames.length);
+        if (driftNames.length > 0) {
+          console.warn(
+            '[World3D] non-boot-core mesh content mounted pre-reveal (hidden for warmup, probe-invalidating):',
+            driftNames,
+          );
+        }
+        const hiddenDrift: THREE.Object3D[] = [];
+        for (const mesh of inventory.unownedMeshes) {
+          if (mesh.visible) {
+            mesh.visible = false;
+            hiddenDrift.push(mesh);
+          }
+        }
+
+        try {
+          const scansStartedAt = performance.now();
+          if (!canInitTexture) {
+            console.warn('[World3D] WorldWarmup: renderer.initTexture() not available, skipping uploads');
+            publishProgress();
+          } else {
+            console.log(`[World3D] WorldWarmup: pre-uploading boot-core textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
+            let zeroScans = 0;
+            while (!cancelled && zeroScans < 2) {
+              const fresh = scanForUnseenTextures();
+              if (fresh.length > 0) {
+                zeroScans = 0;
+                await queueUpload(fresh, true, true);
+              } else {
+                zeroScans += 1;
+              }
+              if (zeroScans < 2) await waitForCommitFrame();
+              if (stageWarmup ? stageResumed : livePendingGateResumed()) return;
             }
-            if (zeroScans < 2) await waitForCommitFrame();
-            if (stageWarmup ? stageResumed : livePendingGateResumed()) return;
+            completeTextureUploadMetrics(uploadMetrics);
+            console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
           }
-          completeTextureUploadMetrics(uploadMetrics);
-          console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
-        }
-        const scansMs = performance.now() - scansStartedAt;
-        publishPhase('scansMs', scansMs);
-        publishPhase('scansTextures', warmupUploadedTextures);
+          const scansMs = performance.now() - scansStartedAt;
+          publishPhase('scansMs', scansMs);
+          publishPhase('scansTextures', warmupUploadedTextures);
 
-        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
-        let compileMs = 0;
-        if (typeof (gl as any).compileAsync === 'function') {
-          const compileStartedAt = performance.now();
-          noteWorldWarmupProgress();
-          try {
-            await withStageSlotFrustumCullingDisabled(
-              'world',
-              () => (gl as any).compileAsync(scene, camera),
-            );
-          } catch (err) {
-            console.warn('[World3D] compileAsync failed (continuing warmup):', err);
-          } finally {
-            compileMs = performance.now() - compileStartedAt;
-            publishPhase('compileMs', compileMs);
+          if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
+          // Whitelist compile — each boot-core group EXACTLY ONCE (§2b
+          // [F19]; slot-level culling save/restore is equivalent to
+          // per-group here since every group lives in the world slot).
+          let compileMs = 0;
+          if (typeof (gl as any).compileAsync === 'function') {
+            const compileStartedAt = performance.now();
             noteWorldWarmupProgress();
+            const groups = bootCoreGroups();
+            try {
+              await withStageSlotFrustumCullingDisabled('world', async () => {
+                for (const group of groups) {
+                  if (cancelled) return;
+                  await (gl as any).compileAsync(group, camera, scene);
+                }
+              });
+            } catch (err) {
+              console.warn('[World3D] boot-core compileAsync failed (continuing warmup):', err);
+            } finally {
+              compileMs = performance.now() - compileStartedAt;
+              publishPhase('bootCoreCompileMs', compileMs);
+              noteWorldWarmupProgress();
+            }
           }
-        }
-        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
+          if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
-        // One controlled warm draw behind the overlay. On WebGL2 this is also
-        // the synchronous shader compile. Never run it after the safety watchdog
-        // has resumed R3F or it could recreate the historic double-render blue screen.
-        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
-        const warmRenderStartedAt = performance.now();
-        noteWorldWarmupProgress();
-        gl.setClearColor(SKY_COLOR, 1);
-        gl.setClearAlpha?.(1);
-        await withStageSlotFrustumCullingDisabled(
-          'world',
-          async () => {
-            gl.render(scene, camera);
-          },
-        );
-        const warmRenderMs = performance.now() - warmRenderStartedAt;
-        publishPhase('warmRenderMs', warmRenderMs);
-        publishPhase('warmupDoneAt', performance.now());
-        armDecorativeReleaseOnFirstPaint('warmup-complete');
-        bridge.__W3D_TEXTURES_READY = true;
-        markWorldReadyIfUploadsDone();
-        console.log(
-          `[World3D] WorldWarmup done: barrier ${barrierMs.toFixed(1)}ms, `
-          + `scans ${scansMs.toFixed(1)}ms (${warmupUploadedTextures} textures), `
-          + `compile ${compileMs.toFixed(1)}ms, warmRender ${warmRenderMs.toFixed(1)}ms`,
-        );
+          // One controlled warm draw behind the overlay (drift content is
+          // hidden — the render cannot upload or compile it [F4]). On WebGL2
+          // this is also the synchronous shader compile. Never run it after
+          // the safety watchdog resumed R3F (double-render blue screen).
+          const warmRenderStartedAt = performance.now();
+          noteWorldWarmupProgress();
+          gl.setClearColor(SKY_COLOR, 1);
+          gl.setClearAlpha?.(1);
+          await withStageSlotFrustumCullingDisabled(
+            'world',
+            async () => {
+              gl.render(scene, camera);
+            },
+          );
+          const warmRenderMs = performance.now() - warmRenderStartedAt;
+          publishPhase('warmRenderMs', warmRenderMs);
+          publishPhase('warmupDoneAt', performance.now());
+          armDecorativeReleaseOnFirstPaint('warmup-complete');
+          armBootCorePresented('warmup-complete');
+          bridge.__W3D_TEXTURES_READY = true;
+          markWorldReadyIfUploadsDone();
+          console.log(
+            `[World3D] WorldWarmup done: deps ${barrierMs.toFixed(1)}ms, `
+            + `scans ${scansMs.toFixed(1)}ms (${warmupUploadedTextures} textures), `
+            + `bootCoreCompile ${compileMs.toFixed(1)}ms, warmRender ${warmRenderMs.toFixed(1)}ms`,
+          );
+        } finally {
+          for (const obj of hiddenDrift) obj.visible = true;
+        }
 
         resumeLiveWarmup('warmup-complete');
       } catch (err) {
         if (cancelled) return;
         console.warn('[World3D] WorldWarmup failed; resuming render loop:', err);
+        armBootCorePresented('warmup-error');
         resumeLiveWarmup('warmup-error');
       }
     })();
@@ -2044,8 +2194,6 @@ function WorldWarmup({
       cancelled = true;
       unsubscribeResume();
       clearStageWatchdogs();
-      if (managerCapTimer !== undefined) window.clearTimeout(managerCapTimer);
-      managerIdleCleanup?.();
       if (postScanTimer !== undefined) window.clearTimeout(postScanTimer);
       if (postStopTimer !== undefined) window.clearTimeout(postStopTimer);
       if (settleRaf !== undefined) cancelAnimationFrame(settleRaf);
@@ -2110,6 +2258,11 @@ export const WorldSceneContents = memo(function WorldSceneContents({
   // epoch never starting under the stage.
   useState(() => {
     beginWorldVrmParseEpoch();
+    // Slice D [R2-F2][R3-F8]: the world boot epoch is created by the SAME
+    // replay-safe render-time latch pattern — the restartable warmup effect
+    // ADOPTS it, and the boot-actor coordinator (GamePage, a sibling of the
+    // lazy world) observes its creation via subscription.
+    ensureWorldBootEpoch();
     return true;
   });
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
@@ -2186,6 +2339,11 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           fire after the world has actually presented a revealed frame —
           never during warmup, a stage transition, or another scene. */}
       <DecorativeFirstPaintNotifier />
+
+      {/* BOOT_CORE_PRESENTED render proof (slice D §2c): scene-level
+          onAfterRender chain — fires only on ACTUAL renderer completion of
+          the stage scene while the world slot is active. */}
+      <BootCorePresentedNotifier />
 
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
@@ -2390,6 +2548,15 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           <ArenaNpcs />
         </group>
       )}
+      {/* Slice D [R2-F4]: the possessed/demo player body renders in its OWN
+          whitelisted boot-actor chunk — physically outside the ambient NPC
+          root, so hide/drift/compile decisions on `perf:wandering-npcs` can
+          never touch the boot actor. */}
+      {showNpcs && (
+        <group name="perf:boot-actor-npc" userData={{ perfChunk: 'boot-actor' }}>
+          <BootActorNpcBody />
+        </group>
+      )}
       {showNpcs && (
         <group name="perf:location-npcs" userData={{ perfChunk: 'location-npcs' }}>
           <ArenaLocationNpcs />
@@ -2503,7 +2670,14 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           (see click-to-move.tsx header). warpTo() is gated to controlMode
           === 'player' only, so this stays player-only too — mounting it in
           Autonomous would render dead space for a warp that can never fire. */}
-      {isGame && !staticOnly && controlMode === 'player' && <ClickToMove />}
+      {/* Slice D [F5]: ClickToMove owns a perfChunk so its InstancedMesh
+          (standard material — allowed) is boot-core-inventoried instead of
+          reading as unowned drift. */}
+      {isGame && !staticOnly && controlMode === 'player' && (
+        <group name="perf:click-to-move" userData={{ perfChunk: 'click-to-move' }}>
+          <ClickToMove />
+        </group>
+      )}
 
       {/* Player avatar lobster — the LOCALLY-DRIVEN body. Renders ONLY in
           'player' (Controlled): the human is driving it directly, camera
@@ -2518,8 +2692,11 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           position WHILE the streamed agent body also rendered nearby — two
           visible copies of the same character. Explore = floating spectator
           (no character), NPC = user controls a spawned NPC. */}
+      {/* Slice D [R2-F4]: chunk RENAMED player-avatar → boot-actor (the
+          whitelisted mode-independent boot-body chunk; the possessed NPC
+          body mounts under the same chunk name above). */}
       {isGame && !staticOnly && controlMode === 'player' && (
-        <group name="perf:player-avatar" userData={{ perfChunk: 'player-avatar' }}>
+        <group name="perf:boot-actor" userData={{ perfChunk: 'boot-actor' }}>
           <PlayerAvatar />
         </group>
       )}

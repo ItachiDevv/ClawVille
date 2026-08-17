@@ -1229,10 +1229,15 @@ export function retainVRMInstance(path: string, instanceId: string): void {
  * Warm the byte cache for a path so the first useVRMInstance call doesn't
  * pay the network round-trip. No parse — just fetch into VRM_BYTES.
  */
-export function preloadVRMBytes(path: string): void {
-  fetchBytes(path).catch(() => {
-    // Errors will surface when useVRMInstance actually tries to parse.
-  });
+export function preloadVRMBytes(path: string): Promise<void> {
+  // Returns the SETTLED fetch (never rejects) so slice-D boot-actor fetch
+  // units can observe terminal state; existing void callers are unaffected.
+  return fetchBytes(path).then(
+    () => undefined,
+    () => {
+      // Errors will surface when useVRMInstance actually tries to parse.
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

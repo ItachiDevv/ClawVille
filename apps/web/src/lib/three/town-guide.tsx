@@ -41,15 +41,20 @@
  *   - No per-frame allocations — mixer/action refs at component scope
  */
 
-import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, memo } from 'react';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
+import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
-useGLTF.preload('/models/guide-rigged.glb');
+// Rung-4 slice D (§3 preload demotion [R2-F6]): the module-scope
+// `useGLTF.preload('/models/guide-rigged.glb')` is REMOVED — it started a
+// fetch AND parse on the boot critical path regardless of component gating.
+// Demand now begins at Nori's release-staggered mount below.
 
 const GROUND_Y    = -2;
 // 2026-05-21 — moved Nori south by 160 wu (240→400) to give the bigger
@@ -319,9 +324,16 @@ const TownGuideInner = memo(function TownGuideInner() {
 });
 
 export default function TownGuide() {
+  // Slice D (§4c topology surgery): the old internal `<Suspense>` here would
+  // have made a DeferredWarmAttachment wrapper commit-and-warm an empty
+  // fallback [F9]. BootStreamedContent owns boundary → Suspense → DWA;
+  // TownGuideInner suspends directly beneath it. Cohort 'npc:town-guide'.
   return (
-    <Suspense fallback={null}>
+    <BootStreamedContent
+      cohortId="npc:town-guide"
+      priority={bootStreamPriority(0, NORI_WORLD_X, NORI_WORLD_Z)}
+    >
       <TownGuideInner />
-    </Suspense>
+    </BootStreamedContent>
   );
 }

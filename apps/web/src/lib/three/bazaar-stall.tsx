@@ -25,11 +25,24 @@ import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  BOOT_STREAM_TIER_PROPS,
+  onBootStreamEligible,
+} from '@/lib/three/decorative-release';
+import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
+import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
 // ---------------------------------------------------------------------------
-// Preload at module scope so Suspense has the data ready before first render.
+// Rung-4 slice D (§3 preload demotion): byte-warm fires at boot-stream
+// eligibility, not module scope — pre-reveal it competed with boot-actor
+// bytes (the fast-network inversion class).
 // ---------------------------------------------------------------------------
-preloadKTX2Bytes('/models/bazaar-merchant-stand-ktx.glb?v=3');
+if (typeof window !== 'undefined') {
+  onBootStreamEligible(
+    () => preloadKTX2Bytes('/models/bazaar-merchant-stand-ktx.glb?v=3'),
+    Number.NEGATIVE_INFINITY,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — see below).
@@ -135,5 +148,13 @@ const BazaarStallInner = memo(function BazaarStallInner() {
 });
 
 export default function BazaarStall() {
-  return <BazaarStallInner />;
+  // Slice D: streamed post-boot-core (spec §3) — cohort 'prop:bazaar-stall'.
+  return (
+    <BootStreamedContent
+      cohortId="prop:bazaar-stall"
+      priority={bootStreamPriority(BOOT_STREAM_TIER_PROPS, STALL_X, STALL_Z)}
+    >
+      <BazaarStallInner />
+    </BootStreamedContent>
+  );
 }

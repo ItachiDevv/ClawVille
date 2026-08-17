@@ -201,6 +201,85 @@ type WarmObjectOptions = {
 const uploadedTexturesByRenderer = new WeakMap<object, WeakSet<THREE.Texture>>();
 const compileTimedOutRenderers = new WeakSet<object>();
 
+// ---------------------------------------------------------------------------
+// Texture claim scheduler (slice D §4c [F12][R2-F9][R3-F2]) — renderer-keyed
+// in-flight ownership so the WorldWarmup scanners and DWA warm jobs can never
+// upload the same texture concurrently against an in-flight compile. Claims
+// are taken at EXECUTION time only (never at enqueue — a claim held by a
+// queued job in the single-active warm queue would deadlock a higher-priority
+// job awaiting an owner that can never run). The `uploaded` WeakSet above
+// stays the DONE record; claims are the IN-FLIGHT record.
+// ---------------------------------------------------------------------------
+
+type TextureClaimEntry = {
+  token: symbol;
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+};
+
+const textureClaimsByRenderer = new WeakMap<
+  object,
+  Map<THREE.Texture, TextureClaimEntry>
+>();
+
+export type TextureClaimResult =
+  | { owned: true; token: symbol; complete: () => void; fail: (err?: unknown) => void }
+  | { owned: false; ownerPromise: Promise<void> };
+
+export function tryClaimTexture(
+  renderer: object,
+  texture: THREE.Texture,
+  ownToken?: symbol,
+): TextureClaimResult {
+  let claims = textureClaimsByRenderer.get(renderer);
+  if (!claims) {
+    claims = new Map();
+    textureClaimsByRenderer.set(renderer, claims);
+  }
+  const existing = claims.get(texture);
+  if (existing) {
+    // Token guards self-reentrancy: an owner re-checking its own claim is
+    // recognized, never self-awaited [R3-F2].
+    if (ownToken !== undefined && existing.token === ownToken) {
+      return makeOwnedResult(claims, texture, existing);
+    }
+    return { owned: false, ownerPromise: existing.promise };
+  }
+  let resolve!: () => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // Waiters observing a rejected owner RETRY their own claim; an unhandled-
+  // rejection trap on the raw promise is prevented here (retriers attach
+  // their own handlers).
+  promise.catch(() => {});
+  const entry: TextureClaimEntry = { token: Symbol('tex-claim'), promise, resolve, reject };
+  claims.set(texture, entry);
+  return makeOwnedResult(claims, texture, entry);
+}
+
+function makeOwnedResult(
+  claims: Map<THREE.Texture, TextureClaimEntry>,
+  texture: THREE.Texture,
+  entry: TextureClaimEntry,
+): TextureClaimResult {
+  return {
+    owned: true,
+    token: entry.token,
+    complete: () => {
+      if (claims.get(texture) === entry) claims.delete(texture);
+      entry.resolve();
+    },
+    fail: (err?: unknown) => {
+      if (claims.get(texture) === entry) claims.delete(texture);
+      entry.reject(err ?? new Error('texture claim failed'));
+    },
+  };
+}
+
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
@@ -238,12 +317,12 @@ export async function uploadDeferredObjectTextures({
   object,
   isCancelled,
   label = 'object',
-}: Pick<WarmObjectOptions, 'renderer' | 'object' | 'isCancelled' | 'label'>): Promise<void> {
+}: Pick<WarmObjectOptions, 'renderer' | 'object' | 'isCancelled' | 'label'>): Promise<boolean> {
   if (typeof renderer.initTexture !== 'function') {
     console.warn(
       `[DeferredWarm] ${label}: renderer.initTexture() unavailable; compile/direct warm will fall through`,
     );
-    return;
+    return false;
   }
 
   let uploaded = uploadedTexturesByRenderer.get(renderer as object);
@@ -254,16 +333,30 @@ export async function uploadDeferredObjectTextures({
   const textures = collectDeferredObjectTextures(object).filter(
     (texture) => !uploaded!.has(texture),
   );
-  if (textures.length === 0 || isCancelled()) return;
+  if (textures.length === 0 || isCancelled()) return true;
+  let uploadFailures = 0;
+
+  // Textures owned by another in-flight uploader (WorldWarmup scanner or a
+  // concurrent warm) are awaited AFTER the main slice loop [R3-F2].
+  const ownerWaits: Array<{ texture: THREE.Texture; promise: Promise<void> }> = [];
 
   await new Promise<void>((resolve) => {
     let index = 0;
 
     const uploadOne = (texture: THREE.Texture) => {
+      if (uploaded!.has(texture)) return;
+      const claim = tryClaimTexture(renderer as object, texture);
+      if (!claim.owned) {
+        ownerWaits.push({ texture, promise: claim.ownerPromise });
+        return;
+      }
       try {
         renderer.initTexture!(texture);
         uploaded!.add(texture);
+        claim.complete();
       } catch (error) {
+        claim.fail(error);
+        uploadFailures += 1;
         console.warn(`[DeferredWarm] ${label}: initTexture failed:`, error);
       }
     };
@@ -326,6 +419,33 @@ export async function uploadDeferredObjectTextures({
       resolve();
     }
   });
+
+  // Await other owners' in-flight uploads; a REJECTED owner (failed/
+  // cancelled claim) gets ONE retry claim from us [R3-F2].
+  if (ownerWaits.length > 0 && !isCancelled()) {
+    const results = await Promise.allSettled(ownerWaits.map((w) => w.promise));
+    for (let i = 0; i < results.length; i += 1) {
+      if (isCancelled()) break;
+      const { texture } = ownerWaits[i]!;
+      if (results[i]!.status === 'fulfilled' || uploaded.has(texture)) continue;
+      const retry = tryClaimTexture(renderer as object, texture);
+      if (!retry.owned) {
+        // A third party re-claimed meanwhile — their completion covers us.
+        await retry.ownerPromise.catch(() => {});
+        continue;
+      }
+      try {
+        renderer.initTexture!(texture);
+        uploaded.add(texture);
+        retry.complete();
+      } catch (error) {
+        retry.fail(error);
+        uploadFailures += 1;
+        console.warn(`[DeferredWarm] ${label}: retry initTexture failed:`, error);
+      }
+    }
+  }
+  return uploadFailures === 0;
 }
 
 export async function withDeferredFrustumCullingDisabled<T>(
@@ -497,18 +617,21 @@ async function directWarmWithoutPresent({
  * successful compileAsync the pipelines are built and the direct warm adds
  * nothing worth that risk.
  */
+export type DeferredWarmResultKind = 'warmed' | 'failopen';
+
 export async function warmDeferredObject(
   options: WarmObjectOptions,
-): Promise<void> {
+): Promise<DeferredWarmResultKind> {
+  let uploadClean = false;
   try {
-    await uploadDeferredObjectTextures(options);
+    uploadClean = await uploadDeferredObjectTextures(options);
   } catch (error) {
     console.warn(
       `[DeferredWarm] ${options.label ?? 'object'}: texture upload failed; continuing:`,
       error,
     );
   }
-  if (options.isCancelled()) return;
+  if (options.isCancelled()) return 'failopen';
   let compiled = false;
   try {
     compiled = await compileDeferredObject(options);
@@ -518,6 +641,12 @@ export async function warmDeferredObject(
       error,
     );
   }
-  if (options.isCancelled() || compiled) return;
-  await directWarmWithoutPresent(options);
+  // 'warmed' = the full success path (clean uploads + completed compile) —
+  // anything else is fail-open: content still shows, may hitch once, and
+  // measurement runs reject it (spec §3 [R2-F11]).
+  if (compiled && uploadClean) return 'warmed';
+  if (!options.isCancelled() && !compiled) {
+    await directWarmWithoutPresent(options);
+  }
+  return 'failopen';
 }

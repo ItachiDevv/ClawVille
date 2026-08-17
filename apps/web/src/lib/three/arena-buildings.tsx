@@ -1,8 +1,18 @@
 'use client';
 
-import { useMemo, useRef, useState, useEffect, useCallback, Suspense } from 'react';
+import { useMemo, useRef, useState, useEffect, useCallback, Suspense, Component, type ReactNode } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
+import {
+  BOOT_STREAM_TIER_BUILDINGS,
+  onBootStreamEligible,
+} from '@/lib/three/decorative-release';
+import {
+  bootStreamPriority,
+  useBootStreamRelease,
+} from '@/lib/three/use-boot-stream-release';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
+import { reportCohortState } from '@/lib/three/boot-stream-cohort';
 import { useWorldLabel, WorldLabel, resetLabelPrevOpacity } from '@/lib/three/world-labels-overlay';
 import { useThree } from '@react-three/fiber';
 import {
@@ -682,16 +692,20 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
   });
 }
 
-// Preload all 12 models (Phase 6.0.1: added cove-exterior.glb + claw-arcade-exterior.glb).
-// extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
-// GLBs with EXT_meshopt_compression (all five -mo-ktx replaced buildings + legacy meshopt ones)
-// decode at preload time. Without this, the module-scope preload fires before
-// drei's shared loader has the decoder registered → those buildings load as
-// empty scenes and don't render.
-Object.entries(BUILDING_MODELS).forEach(([id, { model }]) => {
-  if (id === 'messaging-channels') return;
-  preloadKTX2Bytes(model);
-});
+// Rung-4 slice D (§3, preload demotion [F3][R2-F6]): the 11 building
+// byte-warms no longer fire at module scope — pre-reveal they competed with
+// the boot actor's bytes for bandwidth (the fast-network inversion class).
+// They now fire as the FIRST boot-stream subscriber (priority −∞ — ahead of
+// every building mount tick), so the network warms the moment the world has
+// presented, well before each building's staggered parse wants the bytes.
+if (typeof window !== 'undefined') {
+  onBootStreamEligible(() => {
+    Object.entries(BUILDING_MODELS).forEach(([id, { model }]) => {
+      if (id === 'messaging-channels') return;
+      preloadKTX2Bytes(model);
+    });
+  }, Number.NEGATIVE_INFINITY);
+}
 
 // Entertainment building labels (cove, claw-arcade) — not in BUILDING_OPENCLAW_THEMES
 // (those are shop-only). Defined here so GLBBuilding can render a label for them.
@@ -726,13 +740,26 @@ const _buildingProxyRoofMaterial = new THREE.MeshBasicMaterial({
   toneMapped: false,
 });
 
-function BuildingProxy({ zone, index }: { zone: BuildingZone; index: number }) {
+function BuildingProxy({
+  zone,
+  index,
+  withLabel = false,
+}: {
+  zone: BuildingZone;
+  index: number;
+  /** Slice D: the streaming placeholder renders the building NAME label
+   * (distinct id `building-proxy-label-*` — never shares a registry row
+   * with the real building's label [F10]) so wayfinding works during the
+   * proxy window. `fullDetail=false` static surfaces keep no label. */
+  withLabel?: boolean;
+}) {
   const [cx, , cz] = zoneCenter(zone);
   const config = BUILDING_MODELS[zone.id];
   const material = BUILDING_PROXY_MATERIALS[index % BUILDING_PROXY_MATERIALS.length] ?? BUILDING_PROXY_MATERIALS[0];
+  const groupRef = useRef<THREE.Group>(null);
 
   return (
-    <group position={[cx, -2, cz]} rotation={[0, config?.rotY ?? 0, 0]}>
+    <group ref={groupRef} position={[cx, -2, cz]} rotation={[0, config?.rotY ?? 0, 0]}>
       <mesh
         geometry={_buildingProxyGeometry}
         material={material}
@@ -747,7 +774,64 @@ function BuildingProxy({ zone, index }: { zone: BuildingZone; index: number }) {
         position={[0, 548, 0]}
         frustumCulled
       />
+      {withLabel && (
+        <BuildingProxyLabel zone={zone} anchorRef={groupRef} />
+      )}
     </group>
+  );
+}
+
+/** Proxy-window name label — its OWN registry id (never the real building's
+ * row [F10]); mounted only on the streaming path so static `fullDetail=false`
+ * surfaces register nothing. */
+function BuildingProxyLabel({
+  zone,
+  anchorRef,
+}: {
+  zone: BuildingZone;
+  anchorRef: React.RefObject<THREE.Group | null>;
+}) {
+  const config = BUILDING_MODELS[zone.id];
+  const theme = BUILDING_OPENCLAW_THEMES[zone.id] ?? ENTERTAINMENT_LABELS[zone.id];
+  const labelYOffset = (config?.targetMaxDim ?? BUILDING_TARGET_HEIGHT) + 20;
+  const { divRef } = useWorldLabel({
+    id: `building-proxy-label-${zone.id}`,
+    anchorRef,
+    offset: [0, labelYOffset, 0],
+    initialVisible: true,
+    fadeNear: 15000,
+    fadeFar: 25000,
+    fadeBaseOpacity: 0.85,
+    occlude: false,
+  });
+  if (!theme) return null;
+  return (
+    <WorldLabel divRef={divRef} pointerEvents="none">
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          transform: 'translateY(-50%)',
+        }}
+      >
+        <div
+          style={{
+            background: 'rgba(10,25,47,0.85)',
+            border: '1px solid rgba(120,220,255,0.35)',
+            borderRadius: 14,
+            padding: '4px 12px',
+            color: '#dff6ff',
+            fontFamily: 'Fraunces, serif',
+            fontSize: 15,
+            whiteSpace: 'nowrap',
+            textAlign: 'center',
+          }}
+        >
+          {theme.label}
+        </div>
+      </div>
+    </WorldLabel>
   );
 }
 
@@ -916,7 +1000,16 @@ function ProceduralSandyTreedome({ zone }: { zone: BuildingZone }) {
 // Normal mode: static buildings with terrain raycasting
 // ---------------------------------------------------------------------------
 
-function GLBBuilding({ zone }: { zone: BuildingZone }) {
+function GLBBuilding({
+  zone,
+  attachmentVisible = true,
+}: {
+  zone: BuildingZone;
+  /** Slice D: false while the DeferredWarmAttachment is warming — gates the
+   * DOM label and the click volume (the three subtree is hidden by the
+   * attachment's group; the proxy owns label + clicks until the flip). */
+  attachmentVisible?: boolean;
+}) {
   const config = BUILDING_MODELS[zone.id];
   if (!config) return null;
 
@@ -934,11 +1027,11 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // Label floats above the building: use per-building targetMaxDim so tall buildings
   // (lighthouse 1400) get a proportionally elevated label. Fallback to BUILDING_TARGET_HEIGHT.
   const labelYOffset = (config.targetMaxDim ?? BUILDING_TARGET_HEIGHT) + 20;
-  const { divRef: labelDivRef } = useWorldLabel({
+  const { divRef: labelDivRef, setVisible: setLabelVisible } = useWorldLabel({
     id: `building-label-${zone.id}`,
     anchorRef: groupRef,
     offset: [0, labelYOffset, 0],
-    initialVisible: true,
+    initialVisible: attachmentVisible,
     // Buildings are permanent landmarks, NOT proximity-faded. World diagonal
     // is ~16300wu; fadeNear=15000 / fadeFar=25000 keeps every label at full
     // opacity within the playable area.
@@ -947,6 +1040,11 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     fadeBaseOpacity: 0.85,
     occlude: false,
   });
+  // Slice D: DOM labels are not hidden by the attachment's three-group —
+  // track the warm state explicitly (slice-C pattern).
+  useEffect(() => {
+    setLabelVisible(attachmentVisible);
+  }, [attachmentVisible, setLabelVisible]);
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
@@ -1149,7 +1247,9 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
         {/* Invisible click volume — used by entertainment buildings (cove, claw-arcade)
             that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT
             to give a generous click target without needing a visible mesh. */}
-        {config.onClick && (
+        {/* Slice D: click volume gated on attachment — the proxy owns clicks
+            until the warmed swap [F10]. */}
+        {config.onClick && attachmentVisible && (
           <mesh
             position={[0, (config.targetMaxDim ?? BUILDING_TARGET_HEIGHT) * 0.4, 0]}
             onClick={(e) => { e.stopPropagation(); config.onClick!(); }}
@@ -1566,6 +1666,92 @@ function EditMode() {
 }
 
 // ---------------------------------------------------------------------------
+// Rung-4 slice D — per-building streaming (spec §3). Each building is its own
+// boundary → Suspense → DeferredWarmAttachment chain: the proxy stays until
+// the real GLB is fetched, parsed, uploaded, and compiled, then swaps in one
+// commit. The old single shared Suspense (all 11 buildings appear only when
+// the LAST one resolves) dies here.
+// ---------------------------------------------------------------------------
+
+/** Load-rejection containment [F11]: drei useGLTF REJECTS (not suspends) on
+ * a 404/parse failure and one failed building must not damage the world
+ * tree — the boundary pins the PERMANENT proxy and reports `failed`
+ * (terminal) to the stream cohort. */
+class BuildingStreamBoundary extends Component<
+  { fallback: ReactNode; onFailed: () => void; children: ReactNode },
+  { errored: boolean }
+> {
+  constructor(props: { fallback: ReactNode; onFailed: () => void; children: ReactNode }) {
+    super(props);
+    this.state = { errored: false };
+  }
+  static getDerivedStateFromError(): { errored: boolean } {
+    return { errored: true };
+  }
+  componentDidCatch(error: unknown): void {
+    console.warn('[ArenaBuildings] building GLB failed; proxy pinned:', error);
+    this.props.onFailed();
+  }
+  render() {
+    return this.state.errored ? this.props.fallback : this.props.children;
+  }
+}
+
+/** Commit probe — reports `warm-pending` when the suspended GLB subtree
+ * actually commits (render-time reporting is banned: React may abandon
+ * renders [R2-F8 cohort rule]). */
+function CohortCommitProbe({ cohortId }: { cohortId: string }) {
+  useEffect(() => {
+    reportCohortState(cohortId, 'warm-pending');
+  }, [cohortId]);
+  return null;
+}
+
+function StreamedGLBBuilding({ zone, index }: { zone: BuildingZone; index: number }) {
+  const [cx, , cz] = zoneCenter(zone);
+  const priority = bootStreamPriority(BOOT_STREAM_TIER_BUILDINGS, cx, cz);
+  const released = useBootStreamRelease(priority);
+  const cohortId = `building:${zone.id}`;
+
+  useEffect(() => {
+    reportCohortState(cohortId, 'mounted');
+  }, [cohortId]);
+  useEffect(() => {
+    if (released) reportCohortState(cohortId, 'loading');
+  }, [released, cohortId]);
+
+  if (!released) return <BuildingProxy zone={zone} index={index} withLabel />;
+  return (
+    <BuildingStreamBoundary
+      fallback={<BuildingProxy zone={zone} index={index} withLabel />}
+      onFailed={() => reportCohortState(cohortId, 'failed')}
+    >
+      <Suspense fallback={<BuildingProxy zone={zone} index={index} withLabel />}>
+        <DeferredWarmAttachment
+          key={zone.id}
+          label={`building:${zone.id}`}
+          priority={priority}
+          placeholder={<BuildingProxy zone={zone} index={index} withLabel />}
+          onWarmResult={(kind) =>
+            reportCohortState(
+              cohortId,
+              kind === 'warmed' ? 'ready-warmed' : 'ready-failopen',
+            )
+          }
+        >
+          {(ready) => (
+            <>
+              <CohortCommitProbe cohortId={cohortId} />
+              <GLBBuilding zone={zone} attachmentVisible={ready} />
+            </>
+          )}
+        </DeferredWarmAttachment>
+      </Suspense>
+    </BuildingStreamBoundary>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main export — switches between normal and edit mode
 // ---------------------------------------------------------------------------
 export default function ArenaBuildings({ fullDetail = true }: { fullDetail?: boolean }) {
@@ -1585,15 +1771,16 @@ export default function ArenaBuildings({ fullDetail = true }: { fullDetail?: boo
     );
   }
 
+  // Slice D: per-building streaming — no shared Suspense (each building's
+  // boundary lives inside StreamedGLBBuilding). The procedural treedome is
+  // boot-core (zero network) and stays direct.
   return (
-    <Suspense fallback={null}>
-      <group>
-        {buildingZones.map((zone) => (
-          zone.id === 'messaging-channels'
-            ? <ProceduralSandyTreedome key={zone.id} zone={zone} />
-            : <GLBBuilding key={zone.id} zone={zone} />
-        ))}
-      </group>
-    </Suspense>
+    <group>
+      {buildingZones.map((zone, index) => (
+        zone.id === 'messaging-channels'
+          ? <ProceduralSandyTreedome key={zone.id} zone={zone} />
+          : <StreamedGLBBuilding key={zone.id} zone={zone} index={index} />
+      ))}
+    </group>
   );
 }
