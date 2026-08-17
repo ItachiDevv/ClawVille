@@ -120,7 +120,7 @@ run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
     echo "RUN $run ARM $arm: FAILED (CDP never came up)"
   else
     cd "$CANDIDATE_DIR" && \
-    bun apps/web/scripts/cold-load-probe.mjs "$ws" "$target" "$report" 2>&1 | grep -E "INVALID" | head -1
+    bun apps/web/scripts/cold-load-probe.mjs "$ws" "$target" "$report" $COLD_LOAD_PROBE_EXTRA_ARGS 2>&1 | grep -E "INVALID" | head -1
     # PIPESTATUS[0] = the probe's own exit, not grep's (grep finding nothing
     # is the HAPPY path). Evidence = probe exited 0 AND the report exists.
     rc=${PIPESTATUS[0]}
@@ -178,7 +178,7 @@ done
 
 # Build the pairs manifest for cold-load-paired-gate.mjs. A manifest failure
 # is an evidence failure — it must flip the exit code (round-2 finding 2).
-if ! OUT="$OUT" BACKEND="$BACKEND" COUNT="$COUNT" bun -e "
+if ! OUT="$OUT" BACKEND="$BACKEND" COUNT="$COUNT" EXPECT_ACTOR="$COLD_LOAD_EXPECT_ACTOR" bun -e "
 const fs = require('fs');
 const out = process.env.OUT;
 const pairs = [];
@@ -190,7 +190,10 @@ for (let p = 1; p <= Number(process.env.COUNT); p++) {
     pairs.push({ order, baseline: a, candidate: b });
   }
 }
-fs.writeFileSync(out + '/manifest.json', JSON.stringify({ backend: process.env.BACKEND, pairs }, null, 1));
+const manifest = { backend: process.env.BACKEND, pairs };
+// Slice D authenticated lane: the gate's --slice-d mode requires this.
+if (process.env.EXPECT_ACTOR) manifest.expectBootActor = process.env.EXPECT_ACTOR;
+fs.writeFileSync(out + '/manifest.json', JSON.stringify(manifest, null, 1));
 console.log('manifest pairs:', pairs.length);
 "; then
   echo "MANIFEST GENERATION FAILED"
