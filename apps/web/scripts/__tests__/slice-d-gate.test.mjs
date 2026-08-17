@@ -14,9 +14,11 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("sliceDPostSettleStable", () => {
-  const denseFrames = (fromMs, toMs, stepMs = 100) => {
+  // TILING series (d = step): frame entries tile time by construction in
+  // the real probe (d = now − last), and the coverage proof requires it.
+  const denseFrames = (fromMs, toMs, stepMs = 50) => {
     const out = [];
-    for (let t = fromMs; t <= toMs; t += stepMs) out.push({ t, d: 16 });
+    for (let t = fromMs + stepMs; t <= toMs; t += stepMs) out.push({ t, d: stepMs });
     return out;
   };
 
@@ -51,6 +53,41 @@ describe("sliceDPostSettleStable", () => {
   test("settle too close to the window edge can never pass", () => {
     expect(sliceDPostSettleStable(denseFrames(12500, 15000), 0, 12500)).toBeNull();
   });
+
+  test("I3 counterexample: a single later frame is NOT continuous coverage", () => {
+    // Claimed span [13000,16000] with the ONLY frame at {t:20000,d:16} —
+    // nothing covers the span; a later frame existing proves nothing.
+    expect(sliceDPostSettleStable([{ t: 20000, d: 16 }], 4000, 13000, 16000)).toBeNull();
+  });
+
+  test("series beginning AFTER the claimed span is not coverage", () => {
+    expect(sliceDPostSettleStable(denseFrames(9000, 12000), 0, 5000)).toBeNull();
+  });
+
+  test("a coverage seam inside the span (trimmed ring) rejects the span", () => {
+    // Frames cover [5000,6000] and [7000,9000] — a 1s hole mid-span.
+    const frames = [...denseFrames(5000, 6000), ...denseFrames(7000, 9000, 100)];
+    // The 7000-start entries have d=16-ish? denseFrames uses d:16 with step
+    // 100 — intervals [t-16,t] leave seams > tolerance, so coverage itself
+    // must come from tiling frames; build a tiling series instead.
+    const tile = (from, to, step = 30) => {
+      const out = [];
+      for (let t = from + step; t <= to; t += step) out.push({ t, d: step });
+      return out;
+    };
+    const holed = [...tile(5000, 6000), ...tile(7000, 9000)];
+    expect(sliceDPostSettleStable(holed, 0, 5000)).toBeNull();
+    void frames;
+  });
+
+  test("tiling frames covering the span pass", () => {
+    const tile = (from, to, step = 30) => {
+      const out = [];
+      for (let t = from + step; t <= to; t += step) out.push({ t, d: step });
+      return out;
+    };
+    expect(sliceDPostSettleStable(tile(5000, 8200), 0, 5000)).toBe(5000);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -75,7 +112,8 @@ const goodPhases = () => ({
 const framesFor = (summaryPhases) => {
   const settle = Math.max(summaryPhases.streamSettledAt, summaryPhases.landSettledAt);
   const out = [];
-  for (let t = REVEAL; t <= settle + 3600; t += 100) out.push({ t, d: 16 });
+  // Tiling 50ms frames from reveal through settle+3.6s (coverage proof).
+  for (let t = REVEAL + 50; t <= settle + 3600; t += 50) out.push({ t, d: 50 });
   return out;
 };
 

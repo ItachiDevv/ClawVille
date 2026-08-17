@@ -226,32 +226,62 @@ export const SLICE_D_BODY_KINDS = new Set(["player-vrm", "player-glb", "npc-body
 /** 3s span after `settleMs` (absolute page-clock ms) containing zero frames
  * over 100ms, ending no later than revealMs + SLICE_D_WINDOW_MS. Frames:
  * [{ t, d }] page-clock ms + duration. Returns the span start or null. */
+/** Max tolerated seam between consecutive frame intervals when proving
+ * continuous coverage. Frame entries tile time by construction
+ * (d = now − last), so real seams are rounding-only (±1ms per stamp); one
+ * 30fps frame of slack absorbs accumulated rounding without materially
+ * weakening the proof. */
+export const SLICE_D_COVERAGE_GAP_TOLERANCE_MS = 34;
+
+/** [I3-F1] CONTINUOUS coverage proof: the union of frame intervals
+ * [t−d, t] must tile the claimed span with no seam beyond the rounding
+ * tolerance. A later frame merely EXISTING proves nothing about the span. */
+export function sliceDSpanCovered(frames, spanStart, spanEnd) {
+  const relevant = frames
+    .filter(
+      (f) =>
+        Number.isFinite(f.t) &&
+        Number.isFinite(f.d) &&
+        f.t > spanStart &&
+        f.t - f.d < spanEnd,
+    )
+    .sort((a, b) => (a.t - a.d) - (b.t - b.d));
+  let cover = spanStart;
+  for (const f of relevant) {
+    if (f.t - f.d > cover + SLICE_D_COVERAGE_GAP_TOLERANCE_MS) return false;
+    if (f.t > cover) cover = f.t;
+    if (cover >= spanEnd) return true;
+  }
+  return cover >= spanEnd;
+}
+
 export function sliceDPostSettleStable(frames, revealMs, settleMs, windowMs = SLICE_D_WINDOW_MS) {
   if (!Array.isArray(frames) || frames.length === 0) return null;
   if (!Number.isFinite(revealMs) || !Number.isFinite(settleMs)) return null;
   const windowEnd = revealMs + windowMs;
   if (settleMs + SLICE_D_STABLE_SPAN_MS > windowEnd) return null;
-  // [I2-F6-rig/F4] frames are INTERVALS [t-d, t]: a bad frame overlapping
-  // any part of the candidate span breaks it — the clean gap runs to the
-  // bad interval's START (t-d) and restarts after its END (t).
+  // [I2-F4] frames are INTERVALS [t-d, t]: a bad frame overlapping any part
+  // of the candidate span breaks it — the clean gap runs to the bad
+  // interval's START (t-d) and restarts after its END (t). A span is
+  // accepted only when the frame series CONTINUOUSLY covers it [I3-F1].
   const bad = frames
     .filter((f) => Number.isFinite(f.t) && Number.isFinite(f.d) && f.d > SLICE_D_STABLE_FRAME_LIMIT_MS)
     .map((f) => ({ start: f.t - f.d, end: f.t }))
     .filter((iv) => iv.end > settleMs && iv.start < windowEnd)
     .sort((a, b) => a.start - b.start);
-  // COVERAGE PROOF: the frame series must extend past the claimed span —
-  // time arithmetic over an absent series proves nothing.
-  const lastFrameT = frames.reduce((m, f) => (Number.isFinite(f.t) && f.t > m ? f.t : m), -Infinity);
   let spanStart = settleMs;
   for (const iv of bad) {
-    if (iv.start - spanStart >= SLICE_D_STABLE_SPAN_MS && lastFrameT >= spanStart + SLICE_D_STABLE_SPAN_MS) {
+    if (
+      iv.start - spanStart >= SLICE_D_STABLE_SPAN_MS &&
+      sliceDSpanCovered(frames, spanStart, spanStart + SLICE_D_STABLE_SPAN_MS)
+    ) {
       return spanStart;
     }
     if (iv.end > spanStart) spanStart = iv.end;
   }
   if (
     windowEnd - spanStart >= SLICE_D_STABLE_SPAN_MS &&
-    lastFrameT >= spanStart + SLICE_D_STABLE_SPAN_MS
+    sliceDSpanCovered(frames, spanStart, spanStart + SLICE_D_STABLE_SPAN_MS)
   ) {
     return spanStart;
   }
