@@ -430,6 +430,9 @@ let streamEligibleReason: string | null = null;
 const streamQueue: StaggerEntry[] = [];
 let streamScheduled = false;
 let streamSequence = 0;
+/** [I2-F2] stable member ids whose stagger tick already DELIVERED — the
+ * only members allowed to skip the queue on a later visible remount. */
+const deliveredStreamMembers = new Set<string>();
 let streamFirstDrainDelayDone = false;
 let streamEvalTimer: ReturnType<typeof setInterval> | null = null;
 let streamVisibleMsSinceRelease = 0;
@@ -594,6 +597,13 @@ export function isBootStreamEligible(): boolean {
   return streamEligible;
 }
 
+/** [I2-F2] true only when this member's OWN stagger tick already ran —
+ * a NEW consumer (no delivery record) must always enter the epoch queue,
+ * even while visible and globally eligible. */
+export function isStreamMemberDelivered(memberId: string): boolean {
+  return deliveredStreamMembers.has(memberId);
+}
+
 export function bootStreamEligibleReason(): string | null {
   return streamEligibleReason;
 }
@@ -608,9 +618,15 @@ export function bootStreamEligibleReason(): string | null {
 export function onBootStreamEligible(
   listener: Listener,
   priority = 0,
+  memberId?: string,
 ): () => void {
   const entry: StaggerEntry = {
-    listener,
+    listener: memberId
+      ? () => {
+          deliveredStreamMembers.add(memberId);
+          listener();
+        }
+      : listener,
     active: true,
     priority,
     sequence: streamSequence++,
@@ -660,6 +676,7 @@ export function __resetDecorativeReleaseForTests(): void {
   streamFirstDrainDelayDone = false;
   streamVisibleMsSinceRelease = 0;
   streamLastEvalAt = null;
+  deliveredStreamMembers.clear();
   if (streamEvalTimer !== null) {
     clearInterval(streamEvalTimer);
     streamEvalTimer = null;

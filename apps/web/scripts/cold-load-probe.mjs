@@ -19,7 +19,11 @@
 //
 // Usage: bun apps/web/scripts/cold-load-probe.mjs <cdp-ws-url> <target-url> <report-path>
 
+import { SLICE_D_WINDOW_MS } from "./cold-load-paired-gate.mjs";
+
 export const POST_REVEAL_CAPTURE_MS = 60_000;
+/** Snapshot lands AT the slice-D window bound [I2-F7]. */
+export const SLICE_D_WINDOW_SNAPSHOT_MS = SLICE_D_WINDOW_MS;
 export const FRAME_WINDOW_MS = 10_000;
 export const STABLE_WINDOW_MS = 3_000;
 export const STABLE_FRAME_LIMIT_MS = 100;
@@ -534,6 +538,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     const deadline = t0 + HARD_CAP_MS;
     let loaderFirstSeenAt = null, canvasFirstSeenAt = null;
     let phasesAtWindow = null;
+    let phasesAtWindowAtMs = null;
     while (Date.now() < deadline && !finished) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       let st;
@@ -549,20 +554,23 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
         revealPageMs = s.reveal;
         console.log(`[probe] WORLD REVEALED at +${(revealPageMs / 1000).toFixed(1)}s (page clock) — capturing ${POST_REVEAL_CAPTURE_MS / 1000}s tail`);
         setTimeout(() => { finished = true; }, POST_REVEAL_CAPTURE_MS);
-        // Slice D [I1-F7]: snapshot __W3D_PHASES at the measured-window
-        // close (reveal + 16s > the gate's 15s window) — the slice-D gate
-        // reads THIS snapshot, so steady-state refresh polls after the
-        // window cannot churn the boot-assembly stamps it judges.
+        // Slice D [I1-F7][I2-F7]: snapshot __W3D_PHASES at the EXACT
+        // measured-window close (shared constant with the gate) — the
+        // slice-D gate reads THIS snapshot, so steady-state refresh polls
+        // after the window cannot churn the boot-assembly stamps it
+        // judges. The snapshot's actual page-clock time is recorded.
         setTimeout(() => {
           void (async () => {
             try {
-              const snap = await evalInPage("JSON.stringify(window.__W3D_PHASES||null)");
-              phasesAtWindow = snap ? JSON.parse(snap) : null;
+              const snap = await evalInPage("JSON.stringify({ph:window.__W3D_PHASES||null,at:Math.round(performance.now())})");
+              const parsed = snap ? JSON.parse(snap) : null;
+              phasesAtWindow = parsed?.ph ?? null;
+              phasesAtWindowAtMs = parsed?.at ?? null;
             } catch {
               phasesAtWindow = null;
             }
           })();
-        }, 16_000);
+        }, SLICE_D_WINDOW_SNAPSHOT_MS);
       }
     }
     if (revealPageMs == null) console.log(`[probe] WARNING: reveal never observed within ${HARD_CAP_MS / 1000}s`);
@@ -646,10 +654,11 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       // Slice D authenticated-lane inputs (null on guest runs).
       expectedBootActor: expectBootActor ?? null,
       storageStateInjected: storageStatePath != null,
-      // Slice D [I1-F7]: __W3D_PHASES snapshot at reveal+16s (the measured-
-      // window close) — the slice-D gate judges THIS, immune to post-window
-      // refresh churn. Null when the tail ended before the snapshot fired.
+      // Slice D [I1-F7][I2-F7]: __W3D_PHASES snapshot at the measured-window
+      // close — the slice-D gate judges THIS, immune to post-window refresh
+      // churn. Null when the tail ended before the snapshot fired.
       phasesAtWindow,
+      phasesAtWindowAtMs,
       // Scoped validity (re-review #2 finding 3): the wire ledger accepts
       // validForWireLedger; budget/canary consumers require the STRICT
       // validForPerformance AND backendWaived === false. `valid` mirrors the

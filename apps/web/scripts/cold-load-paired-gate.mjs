@@ -227,19 +227,35 @@ export const SLICE_D_BODY_KINDS = new Set(["player-vrm", "player-glb", "npc-body
  * over 100ms, ending no later than revealMs + SLICE_D_WINDOW_MS. Frames:
  * [{ t, d }] page-clock ms + duration. Returns the span start or null. */
 export function sliceDPostSettleStable(frames, revealMs, settleMs, windowMs = SLICE_D_WINDOW_MS) {
-  if (!Array.isArray(frames) || !Number.isFinite(revealMs) || !Number.isFinite(settleMs)) return null;
+  if (!Array.isArray(frames) || frames.length === 0) return null;
+  if (!Number.isFinite(revealMs) || !Number.isFinite(settleMs)) return null;
   const windowEnd = revealMs + windowMs;
   if (settleMs + SLICE_D_STABLE_SPAN_MS > windowEnd) return null;
+  // [I2-F6-rig/F4] frames are INTERVALS [t-d, t]: a bad frame overlapping
+  // any part of the candidate span breaks it — the clean gap runs to the
+  // bad interval's START (t-d) and restarts after its END (t).
   const bad = frames
-    .filter((f) => f.t >= settleMs && f.t <= windowEnd && f.d > SLICE_D_STABLE_FRAME_LIMIT_MS)
-    .map((f) => f.t)
-    .sort((a, b) => a - b);
+    .filter((f) => Number.isFinite(f.t) && Number.isFinite(f.d) && f.d > SLICE_D_STABLE_FRAME_LIMIT_MS)
+    .map((f) => ({ start: f.t - f.d, end: f.t }))
+    .filter((iv) => iv.end > settleMs && iv.start < windowEnd)
+    .sort((a, b) => a.start - b.start);
+  // COVERAGE PROOF: the frame series must extend past the claimed span —
+  // time arithmetic over an absent series proves nothing.
+  const lastFrameT = frames.reduce((m, f) => (Number.isFinite(f.t) && f.t > m ? f.t : m), -Infinity);
   let spanStart = settleMs;
-  for (const t of bad) {
-    if (t - spanStart >= SLICE_D_STABLE_SPAN_MS) return spanStart;
-    spanStart = t; // restart the span after the offending frame
+  for (const iv of bad) {
+    if (iv.start - spanStart >= SLICE_D_STABLE_SPAN_MS && lastFrameT >= spanStart + SLICE_D_STABLE_SPAN_MS) {
+      return spanStart;
+    }
+    if (iv.end > spanStart) spanStart = iv.end;
   }
-  return windowEnd - spanStart >= SLICE_D_STABLE_SPAN_MS ? spanStart : null;
+  if (
+    windowEnd - spanStart >= SLICE_D_STABLE_SPAN_MS &&
+    lastFrameT >= spanStart + SLICE_D_STABLE_SPAN_MS
+  ) {
+    return spanStart;
+  }
+  return null;
 }
 
 /** Per-run fail-closed candidate validity (spec §5). Returns defect strings. */
@@ -277,6 +293,14 @@ export function sliceDCandidateDefects(summary, frames, expectBootActor) {
     else if (sliceDPostSettleStable(frames, reveal, settle) == null) defects.push("no 3s stable interval after settle inside the window");
   }
   if (expectBootActor) {
+    // [I2-F6] the REPORT must have been captured expecting this lane — a
+    // guest report cannot satisfy an authenticated manifest.
+    if (summary?.expectedBootActor !== expectBootActor) {
+      defects.push(`report expectedBootActor '${summary?.expectedBootActor}' != manifest '${expectBootActor}'`);
+    }
+    if (SLICE_D_BODY_KINDS.has(expectBootActor) && summary?.storageStateInjected !== true) {
+      defects.push("authenticated body lane requires storageStateInjected=true");
+    }
     if (ph.bootActorKind !== expectBootActor) defects.push(`bootActorKind '${ph.bootActorKind}' != expected '${expectBootActor}'`);
     if (typeof ph.bootActorResolvedAt !== "number" || !(ph.bootActorResolvedAt <= ph.bootCorePresentedAt)) {
       defects.push(`bootActorResolvedAt ${ph.bootActorResolvedAt} not ≤ bootCorePresentedAt ${ph.bootCorePresentedAt}`);
@@ -302,10 +326,22 @@ export function evaluateSliceDGate(pairs, { backend = null, expectBootActor = nu
   const badOrders = pairs.filter((p) => p.order !== "AB" && p.order !== "BA").length;
   if (badOrders) return { verdict: "fail", reasons: [`${badOrders} pairs with invalid order token`], perMetric: {} };
 
+  // [I2-F5] EXACTLY 12 manifest entries: a 13-pair manifest with one
+  // invalid pair must never pass off the other 12 (that IS topping up).
+  if (pairs.length !== SLICE_D_REQUIRED_PAIRS) {
+    return {
+      verdict: "fail",
+      reasons: [`manifest must contain exactly ${SLICE_D_REQUIRED_PAIRS} pairs (has ${pairs.length}) — re-run invalid PAIRS, never top up`],
+      perMetric: {}, usablePairs: 0,
+    };
+  }
   const pairDefects = pairs.map((p, i) => {
     const defects = [];
     if (!usableReport(p.baseline)) defects.push("baseline not usable (strict/boundaryKind)");
     if (!usableReport(p.candidate)) defects.push("candidate not usable (strict/boundaryKind)");
+    if (backend && (p.baseline?.backend !== backend || p.candidate?.backend !== backend)) {
+      defects.push(`backend mismatch (baseline ${p.baseline?.backend}, candidate ${p.candidate?.backend}, want ${backend})`);
+    }
     defects.push(...sliceDCandidateDefects(p.candidate, p.candidateFrames, expectBootActor).map((d) => `candidate: ${d}`));
     if (backend) defects.push(...sanityBreaches(p.candidate, backend).map((d) => `candidate: ${d}`));
     return { i, defects };
@@ -315,9 +351,11 @@ export function evaluateSliceDGate(pairs, { backend = null, expectBootActor = nu
     if (defects.length) reasons.push(`pair ${i + 1} INVALID: ${defects.join("; ")}`);
   }
   if (usable.length !== SLICE_D_REQUIRED_PAIRS) {
+    // Any defective pair fails the batch [I2-F5]: fix the environment or
+    // re-run those exact pairs; statistics never run around a hole.
     return {
-      verdict: usable.length < SLICE_D_REQUIRED_PAIRS ? "inconclusive" : "fail",
-      reasons: [...reasons, `exactly ${SLICE_D_REQUIRED_PAIRS} usable pairs required (have ${usable.length}) — re-run invalid PAIRS, never top up`],
+      verdict: "fail",
+      reasons: [...reasons, `all ${SLICE_D_REQUIRED_PAIRS} pairs must be valid (have ${usable.length}) — re-run invalid PAIRS, never top up`],
       perMetric: {}, usablePairs: usable.length,
     };
   }
@@ -372,11 +410,20 @@ if (import.meta.main) {
     console.error(`[paired-gate] manifest.backend must be webgpu|webgl2 (got ${manifest.backend})`);
     process.exit(2);
   }
+  const watchdogLane = args.includes("--watchdog-lane");
   if (sliceD && !manifest.expectBootActor) {
     // Fail-closed [R2-F13]: the slice-D headline lane is the AUTHENTICATED
     // actor lane — a manifest without the expected kind cannot silently
     // regress to the guest path.
     console.error("[paired-gate] --slice-d requires manifest.expectBootActor (e.g. 'player-vrm')");
+    process.exit(2);
+  }
+  if (sliceD && !watchdogLane && manifest.expectBootActor !== "player-vrm") {
+    // [I2-F6] the HEADLINE gate is the authenticated VRM lane, full stop.
+    // Guest/GLB/NPC lanes run with an explicit --watchdog-lane flag so a
+    // manifest can never quietly substitute a weaker lane for the ship
+    // number.
+    console.error(`[paired-gate] --slice-d headline requires expectBootActor 'player-vrm' (got '${manifest.expectBootActor}'); pass --watchdog-lane for non-headline lanes`);
     process.exit(2);
   }
   const seenPaths = new Set();

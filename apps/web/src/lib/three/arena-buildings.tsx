@@ -1710,8 +1710,8 @@ function CohortCommitProbe({ cohortId }: { cohortId: string }) {
 function StreamedGLBBuilding({ zone, index }: { zone: BuildingZone; index: number }) {
   const [cx, , cz] = zoneCenter(zone);
   const priority = bootStreamPriority(BOOT_STREAM_TIER_BUILDINGS, cx, cz);
-  const released = useBootStreamRelease(priority);
   const cohortId = `building:${zone.id}`;
+  const released = useBootStreamRelease(priority, cohortId);
 
   useEffect(() => {
     reportCohortState(cohortId, 'mounted');

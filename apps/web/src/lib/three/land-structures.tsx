@@ -552,7 +552,7 @@ export default function LandStructures() {
   // Slice D §1: land streams post-boot-core — the DATA fetch stays at outer
   // mount (owned structures never hydrate late [F9 risk-4]); only the GLB
   // slot subtree defers to the land stream tier.
-  const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND + 1);
+  const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND + 1, 'land:structures');
   return (
     <>
       <StructureHydrator />

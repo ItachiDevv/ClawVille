@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 import {
   BOOT_CAMERA_POSITION,
   isBootStreamEligible,
+  isStreamMemberDelivered,
   onBootStreamEligible,
 } from '@/lib/three/decorative-release';
 
@@ -38,18 +39,25 @@ export function bootStreamPriority(
  * this is correct in every interleaving. One-shot monotonic per mount;
  * post-eligibility remounts initialize released.
  */
-export function useBootStreamRelease(priority: number): boolean {
-  // [I1-F5] a post-eligibility remount initializes released ONLY while the
-  // tab is visible — a hidden late consumer must go through the queue
-  // (which parks while hidden) instead of bypassing §2e parking entirely.
+export function useBootStreamRelease(
+  priority: number,
+  memberId?: string,
+): boolean {
+  // [I1-F5][I2-F2] instant initialization is allowed ONLY for a member whose
+  // own stagger tick already delivered (a REMOUNT of released content — the
+  // one-shot monotonic contract) while the tab is visible. Every NEW member
+  // — even visible, even after global eligibility — enters the epoch queue
+  // (priority ordering, one per idle tick, hidden parking).
   const [released, setReleased] = useState(
     () =>
       isBootStreamEligible() &&
+      memberId !== undefined &&
+      isStreamMemberDelivered(memberId) &&
       (typeof document === 'undefined' || !document.hidden),
   );
   useEffect(() => {
     if (released) return undefined;
-    return onBootStreamEligible(() => setReleased(true), priority);
-  }, [released, priority]);
+    return onBootStreamEligible(() => setReleased(true), priority, memberId);
+  }, [released, priority, memberId]);
   return released;
 }

@@ -198,10 +198,9 @@ function closeCoverage(timedOut: boolean): void {
     resolvedAtMs = nowMs();
     stampPhase('bootActorResolvedAt', resolvedAtMs);
   }
-  if (deadlineTimer !== null) {
-    clearTimeout(deadlineTimer);
-    deadlineTimer = null;
-  }
+  // [I2-F1] the epoch deadline timer is NOT cancelled here: it must still
+  // fire to FREEZE the five progress units (late clip settlements may not
+  // mutate DONE past the epoch deadline) even after a successful closure.
   stampPhase('bootActorKind', coverage.coveredKind ?? 'unresolved');
   stampPhase('bootActorGateTimedOut', timedOut);
   notifySubscribers();
@@ -230,10 +229,10 @@ function armDeadlineForEpoch(): void {
   if (typeof window === 'undefined') return;
   deadlineTimer = setTimeout(() => {
     deadlineTimer = null;
+    // ALWAYS freezes progress membership [I2-F1]; additionally closes
+    // coverage UNCOVERED when the actor never made it [R2-F5].
     deadlineFired = true;
     if (!coverage.closed) {
-      // Unresolved or uncommitted at the deadline: close UNCOVERED —
-      // the late actor routes through requiresDeferredAttach [R2-F5].
       closeCoverage(true);
     }
     notifySubscribers();

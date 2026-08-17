@@ -873,7 +873,7 @@ export default function LandKitPieces() {
   // Slice D §1/§4b: kit GLB demand defers to the land stream tier — the
   // hydrator + empty chunk groups stay (data path untouched); merged-chunk
   // content changes re-open the land quiet window [R3-F3].
-  const kitStreamReleased = useBootStreamRelease(BOOT_STREAM_TIER_LAND + 2);
+  const kitStreamReleased = useBootStreamRelease(BOOT_STREAM_TIER_LAND + 2, 'land:kit');
   useEffect(() => {
     bumpLandRevision();
   }, [snapshots]);

@@ -428,21 +428,34 @@ export async function uploadDeferredObjectTextures({
       if (isCancelled()) break;
       const { texture } = ownerWaits[i]!;
       if (results[i]!.status === 'fulfilled' || uploaded.has(texture)) continue;
-      const retry = tryClaimTexture(renderer as object, texture);
-      if (!retry.owned) {
-        // A third party re-claimed meanwhile — their completion covers us.
-        await retry.ownerPromise.catch(() => {});
-        continue;
+      // Retry rejected owners (bounded) until we own-and-upload or a live
+      // owner fulfills [I2-F3] — a rejected third-party reclaim must never
+      // be silently accepted as coverage.
+      let covered = false;
+      let attempts = 0;
+      while (!covered && !isCancelled() && attempts < 6) {
+        const retry = tryClaimTexture(renderer as object, texture);
+        if (retry.owned) {
+          try {
+            renderer.initTexture!(texture);
+            uploaded.add(texture);
+            retry.complete();
+            covered = true;
+          } catch (error) {
+            retry.fail(error);
+            attempts += 1;
+            console.warn(`[DeferredWarm] ${label}: retry initTexture failed:`, error);
+          }
+        } else {
+          try {
+            await retry.ownerPromise;
+            covered = true;
+          } catch {
+            attempts += 1;
+          }
+        }
       }
-      try {
-        renderer.initTexture!(texture);
-        uploaded.add(texture);
-        retry.complete();
-      } catch (error) {
-        retry.fail(error);
-        uploadFailures += 1;
-        console.warn(`[DeferredWarm] ${label}: retry initTexture failed:`, error);
-      }
+      if (!covered) uploadFailures += 1;
     }
   }
   return uploadFailures === 0;

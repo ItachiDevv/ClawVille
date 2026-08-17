@@ -56,7 +56,7 @@ export function BootStreamedContent({
   priority: number;
   children: ReactNode | ((ready: boolean) => ReactNode);
 }) {
-  const released = useBootStreamRelease(priority);
+  const released = useBootStreamRelease(priority, cohortId);
 
   useEffect(() => {
     reportCohortState(cohortId, 'mounted');

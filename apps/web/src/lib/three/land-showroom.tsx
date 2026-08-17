@@ -387,7 +387,7 @@ export default function LandShowroom() {
   // Slice D §1/§4b: showroom GLB demand defers to the land stream tier
   // (decorative outer-ring content); expected slots declared for the land
   // completion tracker.
-  const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND);
+  const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND, 'land:showroom');
   useEffect(() => {
     // [I1-F7] exact slot id set, empty until the stream tier releases.
     declareLandSlots(

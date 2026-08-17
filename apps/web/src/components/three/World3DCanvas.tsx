@@ -1846,6 +1846,20 @@ function WorldWarmup({
       // slice loop — never silently skipped and never counted as done
       // before the owner (or our retry) actually uploads them [I1-F9].
       const ownerWaits: Array<{ texture: THREE.Texture; promise: Promise<void> }> = [];
+      const countUploaded = () => {
+        uploadedDone += 1;
+        if (recordMetrics) warmupUploadedTextures += 1;
+        noteWorldWarmupProgress();
+      };
+      const countUploadFailure = () => {
+        // [I2-F3] terminal failures are EVIDENCE, never progress: stamped
+        // for the probe (fail-open — the boot continues) and excluded from
+        // uploadedDone so the accounting can never claim proof it lacks.
+        bridge.__W3D_PHASES = bridge.__W3D_PHASES ?? {};
+        bridge.__W3D_PHASES.textureUploadFailures =
+          (Number(bridge.__W3D_PHASES.textureUploadFailures) || 0) + 1;
+        noteWorldWarmupProgress();
+      };
       const finish = () => {
         idleHandle = undefined;
         uploadRaf = undefined;
@@ -1859,32 +1873,35 @@ function WorldWarmup({
             } catch {
               covered = false;
             }
-            // Retry rejected/cancelled owners until we own or a live owner
-            // covers us (bounded — each iteration either uploads, adopts a
-            // new owner, or the claim table empties).
-            while (!covered && !cancelled) {
+            // Retry rejected/cancelled owners (bounded [I2-F3]) until we
+            // own-and-upload or a live owner fulfills.
+            let attempts = 0;
+            let failedTerminally = false;
+            while (!covered && !cancelled && !failedTerminally) {
               const retry = tryClaimTexture(gl as object, texture);
               if (retry.owned) {
                 try {
                   (gl as any).initTexture(texture);
                   retry.complete();
+                  covered = true;
                 } catch (err) {
                   retry.fail(err);
+                  attempts += 1;
                   console.warn('[World3D] initTexture retry error (non-fatal):', err);
+                  if (attempts >= 3) failedTerminally = true;
                 }
-                covered = true;
               } else {
                 try {
                   await retry.ownerPromise;
                   covered = true;
                 } catch {
-                  covered = false;
+                  attempts += 1;
+                  if (attempts >= 6) failedTerminally = true;
                 }
               }
             }
-            uploadedDone += 1;
-            if (recordMetrics) warmupUploadedTextures += 1;
-            noteWorldWarmupProgress();
+            if (covered) countUploaded();
+            else if (failedTerminally) countUploadFailure();
             publishProgress();
           }
           finishActiveUpload();
@@ -1894,7 +1911,7 @@ function WorldWarmup({
       const uploadOne = (texture: THREE.Texture) => {
         // Slice D [F12][R3-F2][I1-F9]: execution-time claim — an owned
         // claim uploads here; a lost claim defers to the owner-await pass
-        // in finish() (counted only when actually covered).
+        // in finish(). Progress counts ONLY proven uploads [I2-F3].
         const claim = tryClaimTexture(gl as object, texture);
         if (!claim.owned) {
           ownerWaits.push({ texture, promise: claim.ownerPromise });
@@ -1903,13 +1920,12 @@ function WorldWarmup({
         try {
           (gl as any).initTexture(texture);
           claim.complete();
+          countUploaded();
         } catch (err) {
           claim.fail(err);
           console.warn('[World3D] initTexture error (non-fatal):', err);
+          countUploadFailure();
         }
-        uploadedDone += 1;
-        if (recordMetrics) warmupUploadedTextures += 1;
-        noteWorldWarmupProgress();
       };
 
       const uploadIdle = (deadline: IdleDeadline) => {
