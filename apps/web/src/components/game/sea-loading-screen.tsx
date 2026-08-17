@@ -5,11 +5,7 @@ import { createPortal } from 'react-dom';
 import { useGameStore } from '@/stores/game';
 import { createVisibilityFuse } from './visibility-fuse';
 import { isBootCorePresented } from '@/lib/three/decorative-release';
-import { getBootActorProgress } from '@/lib/three/boot-actor';
-import {
-  getLocomotionClipSettledPromises,
-  whenLocomotionClipsSettled,
-} from '@/lib/three/vrm-character-animator';
+import { getBootDepProgress } from '@/lib/three/boot-actor';
 
 // ---------------------------------------------------------------------------
 // SeaLoadingScreen
@@ -201,20 +197,6 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       }
     });
 
-    // Slice D (§2d): boot-core dependency units for the download band —
-    // 3 locomotion clips (allSettled; a rejection is a TERMINAL fail-open
-    // unit, the bar never stalls on it) + the boot actor's fetch/commit
-    // units (exposed only after coordinator closure [R3-F6]).
-    let clipsDone = 0;
-    void whenLocomotionClipsSettled();
-    const clipPromises = getLocomotionClipSettledPromises();
-    const clipsTotal = clipPromises.size || 3;
-    for (const promise of clipPromises.values()) {
-      void promise.then(() => {
-        clipsDone += 1;
-      });
-    }
-
     // Slice D (§2d [F8]): bounded fallback — __W3D_READY true but the
     // BOOT_CORE_PRESENTED milestone unstamped for >10s of VISIBLE time
     // (notifier regression) dismisses with a warning. Terminal like the
@@ -303,18 +285,18 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         __W3D_TEXTURES_READY?: boolean;
       };
 
-      // Phase 1 — boot-core dependency progress (slice D §2d): clips +
-      // actor units replace the retired LoadingManager ratio. TOTAL is
-      // known only after coordinator closure; pre-closure the band shows a
-      // bounded time-ease creep (≤30% of the band) so the bar never reads
-      // frozen, and never lies past it.
-      const actorProgress = getBootActorProgress();
-      const depsKnown = actorProgress.total !== null;
-      const depsTotal = (depsKnown ? actorProgress.total! : 0) + clipsTotal;
-      const depsDone = Math.min(depsTotal, clipsDone + actorProgress.done);
+      // Phase 1 — boot-core dependency progress (slice D §2d): the FIVE
+      // epoch-owned units (3 clips + actor fetch + commit) from the
+      // boot-actor module [I1-F3] replace the retired LoadingManager ratio.
+      // TOTAL is known only after coordinator closure; pre-closure the band
+      // shows a bounded time-ease creep (≤30% of the band) so the bar never
+      // reads frozen, and never lies past it. The epoch deadline freezes
+      // membership (getter returns done=total after it fires).
+      const deps = getBootDepProgress();
+      const depsKnown = deps.total !== null;
       const downloadFrac = depsKnown
-        ? depsTotal > 0
-          ? Math.max(0, Math.min(1, depsDone / depsTotal))
+        ? deps.total! > 0
+          ? Math.max(0, Math.min(1, deps.done / deps.total!))
           : 1
         : 0;
       const elapsed = performance.now() - startedAtRef.current;

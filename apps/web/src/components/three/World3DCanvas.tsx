@@ -6,12 +6,13 @@ import {
   armDecorativeDeadline,
   armDecorativeReleaseOnFirstPaint,
   ensureWorldBootEpoch,
+  getWorldBootEpoch,
   notifyBootCoreScenePresented,
   notifyWorldFramePresented,
 } from '@/lib/three/decorative-release';
 import { awaitBootActorGate } from '@/lib/three/boot-actor';
 import { whenLocomotionClipsSettled } from '@/lib/three/vrm-character-animator';
-import { tryClaimTexture } from '@/lib/three/deferred-warm';
+import { TEXTURE_SLOTS, tryClaimTexture } from '@/lib/three/deferred-warm';
 import { BootActorNpcBody } from '@/lib/three/arena-npcs';
 import { stampColdLoadPhase, stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
@@ -405,6 +406,13 @@ export const BOOT_CORE_CHUNKS: ReadonlySet<string> = new Set([
   'click-to-move',
   'land-founder-apartments',
   'land-ring-decorations',
+  // Procedural HUD-adjacent world FX (zero network, primitive geometry):
+  // activity-indicators mounts a mesh pre-reveal the moment the NPC SSE
+  // roster lands on an authenticated boot (first auth smoke caught it as
+  // drift under the hardened [I1-F4] inventory); floating-texts is the same
+  // class on a pre-reveal token earn.
+  'activity-indicators',
+  'floating-texts',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -421,8 +429,18 @@ function BootCorePresentedNotifier() {
   const sceneActive = useSceneActive();
   const activeRef = useRef(sceneActive);
   activeRef.current = sceneActive;
+  // [I1-F6] two extra qualifiers: (a) the render CAMERA must be the world
+  // slot's persistent camera (the shared stage scene also renders for other
+  // slots and during the outgoing-camera transition window, where
+  // useSceneActive can already read active); (b) the epoch captured at
+  // install must still be current (a future epoch's frames must not credit
+  // a stale milestone run).
+  const worldSlotCamera = useSceneCamera();
+  const cameraRef = useRef(worldSlotCamera);
+  cameraRef.current = worldSlotCamera;
   const { scene } = useThree();
   useEffect(() => {
+    const installEpoch = getWorldBootEpoch();
     const prior = scene.onAfterRender;
     scene.onAfterRender = function chainedOnAfterRender(
       this: THREE.Scene,
@@ -431,7 +449,14 @@ function BootCorePresentedNotifier() {
       try {
         prior?.apply(this, args);
       } finally {
-        if (activeRef.current) notifyBootCoreScenePresented();
+        const renderCamera = args[2] as THREE.Camera | undefined;
+        if (
+          activeRef.current &&
+          getWorldBootEpoch() === installEpoch &&
+          (cameraRef.current == null || renderCamera === cameraRef.current)
+        ) {
+          notifyBootCoreScenePresented();
+        }
       }
     } as THREE.Scene['onAfterRender'];
     return () => {
@@ -1545,13 +1570,9 @@ const FAST_MAX_TEXTURES_PER_SLICE = 32;
 const RAF_FAST_BATCH = 24;
 
 // All standard texture slot names on MeshStandardMaterial and related.
-const TEXTURE_SLOTS = [
-  'map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap',
-  'emissiveMap', 'lightMap', 'envMap', 'alphaMap', 'bumpMap',
-  'displacementMap', 'clearcoatMap', 'clearcoatNormalMap',
-  'clearcoatRoughnessMap', 'sheenColorMap', 'sheenRoughnessMap',
-  'transmissionMap', 'thicknessMap', 'specularMap', 'specularColorMap',
-] as const;
+// Slice D [I1-F9]: ONE shared texture-slot constant with the deferred-warm
+// scheduler (the local copy omitted five slots — divergent coverage between
+// the two upload systems).
 
 type TextureUploadSliceMetric = {
   mode: 'idle' | 'raf';
@@ -1723,30 +1744,40 @@ function WorldWarmup({
       scene.getObjectByName('world-stage:world') ?? scene;
     const collectBootInventory = (): {
       chunks: Map<string, THREE.Object3D[]>;
-      unownedMeshes: THREE.Mesh[];
+      /** Mesh content that must NOT be in the boot lane [I1-F4]: meshes under
+       *  NO chunk (label = mesh name) AND meshes under a NAMED chunk that is
+       *  not whitelisted (label = chunk name) — a pre-reveal `wandering-npcs`
+       *  regression must show up in drift AND be hidden from the warm draw,
+       *  not slip through because its ancestor happens to carry a name. */
+      driftMeshes: Array<{ mesh: THREE.Mesh; label: string }>;
     } => {
       const chunks = new Map<string, THREE.Object3D[]>();
-      const unownedMeshes: THREE.Mesh[] = [];
+      const driftMeshes: Array<{ mesh: THREE.Mesh; label: string }> = [];
       const walk = (
         node: THREE.Object3D,
-        owned: boolean,
+        chunk: string | null,
         nonRendered: boolean,
       ): void => {
-        const chunkName = node.userData?.perfChunk as string | undefined;
+        const chunkName = (node.userData?.perfChunk as string | undefined) ?? null;
         const nr = nonRendered || node.userData?.perfNonRendered === true;
+        const effectiveChunk = chunkName ?? chunk;
         if (chunkName) {
           const list = chunks.get(chunkName) ?? [];
           list.push(node);
           chunks.set(chunkName, list);
         }
-        const isOwned = owned || chunkName !== undefined;
-        if (!isOwned && !nr && (node as THREE.Mesh).isMesh) {
-          unownedMeshes.push(node as THREE.Mesh);
+        if (!nr && (node as THREE.Mesh).isMesh) {
+          if (effectiveChunk === null) {
+            const mesh = node as THREE.Mesh;
+            driftMeshes.push({ mesh, label: mesh.name || mesh.parent?.name || mesh.uuid });
+          } else if (!BOOT_CORE_CHUNKS.has(effectiveChunk)) {
+            driftMeshes.push({ mesh: node as THREE.Mesh, label: `chunk:${effectiveChunk}` });
+          }
         }
-        for (const child of node.children) walk(child, isOwned, nr);
+        for (const child of node.children) walk(child, effectiveChunk, nr);
       };
-      walk(worldRoot(), false, false);
-      return { chunks, unownedMeshes };
+      walk(worldRoot(), null, false);
+      return { chunks, driftMeshes };
     };
     const bootCoreGroups = (): THREE.Object3D[] => {
       const { chunks } = collectBootInventory();
@@ -1811,25 +1842,70 @@ function WorldWarmup({
 
       let i = 0;
       activeUploadResolve = resolve;
+      // Textures owned by an in-flight deferred warm are AWAITED after the
+      // slice loop — never silently skipped and never counted as done
+      // before the owner (or our retry) actually uploads them [I1-F9].
+      const ownerWaits: Array<{ texture: THREE.Texture; promise: Promise<void> }> = [];
       const finish = () => {
         idleHandle = undefined;
         uploadRaf = undefined;
-        finishActiveUpload();
+        void (async () => {
+          for (const { texture, promise } of ownerWaits) {
+            if (cancelled) break;
+            let covered = false;
+            try {
+              await promise;
+              covered = true;
+            } catch {
+              covered = false;
+            }
+            // Retry rejected/cancelled owners until we own or a live owner
+            // covers us (bounded — each iteration either uploads, adopts a
+            // new owner, or the claim table empties).
+            while (!covered && !cancelled) {
+              const retry = tryClaimTexture(gl as object, texture);
+              if (retry.owned) {
+                try {
+                  (gl as any).initTexture(texture);
+                  retry.complete();
+                } catch (err) {
+                  retry.fail(err);
+                  console.warn('[World3D] initTexture retry error (non-fatal):', err);
+                }
+                covered = true;
+              } else {
+                try {
+                  await retry.ownerPromise;
+                  covered = true;
+                } catch {
+                  covered = false;
+                }
+              }
+            }
+            uploadedDone += 1;
+            if (recordMetrics) warmupUploadedTextures += 1;
+            noteWorldWarmupProgress();
+            publishProgress();
+          }
+          finishActiveUpload();
+        })();
       };
 
       const uploadOne = (texture: THREE.Texture) => {
-        // Slice D [F12][R3-F2]: execution-time claim — if a deferred warm
-        // owns this texture right now, ITS upload covers us (skip; counters
-        // still advance so the bar's accounting stays monotonic).
+        // Slice D [F12][R3-F2][I1-F9]: execution-time claim — an owned
+        // claim uploads here; a lost claim defers to the owner-await pass
+        // in finish() (counted only when actually covered).
         const claim = tryClaimTexture(gl as object, texture);
-        if (claim.owned) {
-          try {
-            (gl as any).initTexture(texture);
-            claim.complete();
-          } catch (err) {
-            claim.fail(err);
-            console.warn('[World3D] initTexture error (non-fatal):', err);
-          }
+        if (!claim.owned) {
+          ownerWaits.push({ texture, promise: claim.ownerPromise });
+          return;
+        }
+        try {
+          (gl as any).initTexture(texture);
+          claim.complete();
+        } catch (err) {
+          claim.fail(err);
+          console.warn('[World3D] initTexture error (non-fatal):', err);
         }
         uploadedDone += 1;
         if (recordMetrics) warmupUploadedTextures += 1;
@@ -2076,11 +2152,7 @@ function WorldWarmup({
         // stamped as probe-invalidating drift. Normally the set is EMPTY.
         const inventory = collectBootInventory();
         const driftNames = [
-          ...new Set(
-            inventory.unownedMeshes.map(
-              (mesh) => mesh.name || mesh.parent?.name || mesh.uuid,
-            ),
-          ),
+          ...new Set(inventory.driftMeshes.map((d) => d.label)),
         ];
         // Comma-joined (stamp values are string|number); '' = no drift.
         publishPhase('bootCoreDriftChunks', driftNames.join(','));
@@ -2092,7 +2164,7 @@ function WorldWarmup({
           );
         }
         const hiddenDrift: THREE.Object3D[] = [];
-        for (const mesh of inventory.unownedMeshes) {
+        for (const { mesh } of inventory.driftMeshes) {
           if (mesh.visible) {
             mesh.visible = false;
             hiddenDrift.push(mesh);
@@ -2471,14 +2543,13 @@ export const WorldSceneContents = memo(function WorldSceneContents({
       <Suspense fallback={null}>
         <group name="perf:land-parcels" userData={{ perfChunk: 'land-parcels' }}>
           <LandParcels />
+          {/* Land parcel sign hitboxes — invisible click targets on available
+              FOR-SALE signs (visible=false, ZERO draw calls; tagged
+              perfNonRendered). Mounted INSIDE the land-parcels chunk so the
+              boot inventory sees one owned subtree [I1-F10]. */}
+          <LandParcelSignHitboxes />
         </group>
       </Suspense>
-
-      {/* Land parcel sign hitboxes — invisible click targets on available FOR-SALE
-          signs.  R3F onClick → openLandOffice(parcelCode) → Land Office modal opens
-          focused on the clicked parcel.  Rebuilt reactively when parcels change.
-          Invisible meshes (visible=false) have ZERO GPU draw calls. */}
-      <LandParcelSignHitboxes />
 
       {/* Land structures — placed homes/shops rendered on owned parcels (Phase 1
           Stage 2). Clean low-poly primitive fallback today; real GLBs swap in

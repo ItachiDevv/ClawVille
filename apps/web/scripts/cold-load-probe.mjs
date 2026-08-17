@@ -533,6 +533,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
 
     const deadline = t0 + HARD_CAP_MS;
     let loaderFirstSeenAt = null, canvasFirstSeenAt = null;
+    let phasesAtWindow = null;
     while (Date.now() < deadline && !finished) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       let st;
@@ -548,6 +549,20 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
         revealPageMs = s.reveal;
         console.log(`[probe] WORLD REVEALED at +${(revealPageMs / 1000).toFixed(1)}s (page clock) — capturing ${POST_REVEAL_CAPTURE_MS / 1000}s tail`);
         setTimeout(() => { finished = true; }, POST_REVEAL_CAPTURE_MS);
+        // Slice D [I1-F7]: snapshot __W3D_PHASES at the measured-window
+        // close (reveal + 16s > the gate's 15s window) — the slice-D gate
+        // reads THIS snapshot, so steady-state refresh polls after the
+        // window cannot churn the boot-assembly stamps it judges.
+        setTimeout(() => {
+          void (async () => {
+            try {
+              const snap = await evalInPage("JSON.stringify(window.__W3D_PHASES||null)");
+              phasesAtWindow = snap ? JSON.parse(snap) : null;
+            } catch {
+              phasesAtWindow = null;
+            }
+          })();
+        }, 16_000);
       }
     }
     if (revealPageMs == null) console.log(`[probe] WARNING: reveal never observed within ${HARD_CAP_MS / 1000}s`);
@@ -631,6 +646,10 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       // Slice D authenticated-lane inputs (null on guest runs).
       expectedBootActor: expectBootActor ?? null,
       storageStateInjected: storageStatePath != null,
+      // Slice D [I1-F7]: __W3D_PHASES snapshot at reveal+16s (the measured-
+      // window close) — the slice-D gate judges THIS, immune to post-window
+      // refresh churn. Null when the tail ended before the snapshot fired.
+      phasesAtWindow,
       // Scoped validity (re-review #2 finding 3): the wire ledger accepts
       // validForWireLedger; budget/canary consumers require the STRICT
       // validForPerformance AND backendWaived === false. `valid` mirrors the

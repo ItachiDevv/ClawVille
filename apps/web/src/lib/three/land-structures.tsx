@@ -391,10 +391,11 @@ function BoundedStructureSlots({ slots }: { slots: readonly StructureRenderSlot[
     setMountedSlots(selectNearestSlots(slots, x, z));
   }, [slots]);
 
-  // Slice D §4b: declare the CURRENT expected slot set (revision-aware —
-  // camera reselection and data changes re-declare).
+  // Slice D §4b [I1-F7]: declare the CURRENT expected slot ID SET (exact
+  // identity — replacing N slots with N different slots must read as
+  // unresolved until the new ids resolve).
   useEffect(() => {
-    declareLandSlots('structures', mountedSlots.length);
+    declareLandSlots('structures', mountedSlots.map((s) => s.parcel.id));
   }, [mountedSlots]);
 
   useSceneFrame(({ camera }) => {
@@ -433,17 +434,22 @@ function StructureHydrator() {
 
     const hydrate = async (includeOwned: boolean): Promise<void> => {
       const version = ++requestVersion;
-      // Slice D §4b [R3-F3]: hydration generation — pending at request
-      // start, terminal at completion, BEFORE the superseded/cancelled
-      // early-returns (a superseded request still terminated).
-      const done = beginLandHydration();
+      // Slice D §4b [R3-F3][I1-F8]: TWO hydration generations — the public
+      // list and the authenticated owner overlay are separate requests with
+      // separate outcomes (a failed getMyLand() must count as dataFailed,
+      // never ride the public request's success). Terminal BEFORE the
+      // superseded/cancelled early-returns.
+      const donePublic = beginLandHydration();
+      const wantsOwned = includeOwned && !!avatar;
+      const doneOwned = wantsOwned ? beginLandHydration() : null;
       const [publicStructures, ownedResult] = await Promise.all([
         api.getPublicLandStructures().catch(() => null),
-        includeOwned && avatar
+        wantsOwned
           ? api.getMyLand().catch(() => null)
           : Promise.resolve(undefined),
       ]);
-      done(publicStructures !== null);
+      donePublic(publicStructures !== null);
+      doneOwned?.(ownedResult !== null && ownedResult !== undefined);
       if (cancelled || version !== requestVersion) return;
       if (ownedResult) ownedOverlay = ownedResult;
 

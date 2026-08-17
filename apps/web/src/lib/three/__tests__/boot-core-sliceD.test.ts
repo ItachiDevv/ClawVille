@@ -23,9 +23,10 @@ import {
   __classifyBootActorForTests,
   __fireBootActorDeadlineForTests,
   __resetBootActorForTests,
+  __setClipTrackingForTests,
   awaitBootActorGate,
   closeBootActorRegistration,
-  getBootActorProgress,
+  getBootDepProgress,
   getBootActorStamps,
   isBodyKind,
   notifyBootActorCommitted,
@@ -286,14 +287,48 @@ describe('boot-actor contract', () => {
     expect(requiresDeferredAttach('player-glb', '/models/x.glb')).toBe(true);
   });
 
-  test('stale same-kind swap: A commit cannot close coverage for B [R4-F1]', () => {
+  test('PRODUCTION ORDERING [I1-F1]: registration closes BEFORE the suspended body retries — body still RAW, commit closes coverage', () => {
+    ensureWorldBootEpoch();
+    resolveBootActor('player-vrm', '/avatars/a.vrm');
+    closeBootActorRegistration();
+    // COVERAGE stays open: the body's first post-resolve render must mount
+    // RAW (visible), never DWA-hidden.
+    expect(requiresDeferredAttach('player-vrm', '/avatars/a.vrm')).toBe(false);
+    const token = registerBootActorClaim('player-vrm', '/avatars/a.vrm');
+    notifyBootActorCommitted(token);
+    expect(requiresDeferredAttach('player-vrm', '/avatars/a.vrm')).toBe(false);
+    expect(requiresDeferredAttach('player-vrm', '/avatars/b.vrm')).toBe(true);
+    expect(getBootActorStamps().readyAt).not.toBeNull();
+  });
+
+  test('early commit before adoption carries its timestamp [I1-F2]', () => {
+    ensureWorldBootEpoch();
+    const tokenA = registerBootActorClaim('player-vrm', '/avatars/a.vrm');
+    notifyBootActorCommitted(tokenA); // commit BEFORE any resolution exists
+    expect(getBootActorStamps().readyAt).toBeNull();
+    resolveBootActor('player-vrm', '/avatars/a.vrm'); // adopts the tuple
+    expect(getBootActorStamps().readyAt).not.toBeNull();
+    closeBootActorRegistration();
+    expect(requiresDeferredAttach('player-vrm', '/avatars/a.vrm')).toBe(false);
+  });
+
+  test('unresolved timeout still stamps a resolution time [I1-F2]', () => {
+    ensureWorldBootEpoch();
+    __fireBootActorDeadlineForTests();
+    expect(getBootActorStamps().resolvedAt).not.toBeNull();
+  });
+
+  test('stale same-kind swap: A commit cannot close coverage for B [R4-F1][I1-F1]', () => {
     ensureWorldBootEpoch();
     const tokenA = registerBootActorClaim('player-vrm', '/avatars/a.vrm');
     notifyBootActorCommitted(tokenA);
     // Coordinator replaces the resolution to B before closure.
     resolveBootActor('player-vrm', '/avatars/b.vrm');
     closeBootActorRegistration();
-    // B never committed — coverage must NOT be committed off A's commit.
+    // B never committed — coverage stays OPEN (B's on-time RAW leg); A's
+    // commit never closes it. The deadline then closes UNCOVERED.
+    expect(requiresDeferredAttach('player-vrm', '/avatars/b.vrm')).toBe(false);
+    __fireBootActorDeadlineForTests();
     expect(requiresDeferredAttach('player-vrm', '/avatars/b.vrm')).toBe(true);
     expect(requiresDeferredAttach('player-vrm', '/avatars/a.vrm')).toBe(true);
   });
@@ -328,24 +363,38 @@ describe('boot-actor contract', () => {
     expect(requiresDeferredAttach('player-vrm', '/avatars/a.vrm')).toBe(true);
   });
 
-  test('progress: TOTAL unexposed before closure; body units terminalize', () => {
+  test('progress: TOTAL unexposed pre-closure; five units; commit implies fetch [I1-F3]', () => {
     ensureWorldBootEpoch();
-    expect(getBootActorProgress().total).toBeNull();
+    __setClipTrackingForTests(1, 3);
+    expect(getBootDepProgress().total).toBeNull();
     resolveBootActor('player-glb', '/models/lobster.glb');
     const token = registerBootActorClaim('player-glb', '/models/lobster.glb');
     closeBootActorRegistration();
-    expect(getBootActorProgress()).toEqual({ total: 2, done: 0 });
+    expect(getBootDepProgress()).toEqual({ total: 5, done: 1 }); // 1 clip
     notifyBootActorFetchSettled(token);
-    expect(getBootActorProgress()).toEqual({ total: 2, done: 1 });
+    expect(getBootDepProgress()).toEqual({ total: 5, done: 2 });
     notifyBootActorCommitted(token);
-    expect(getBootActorProgress()).toEqual({ total: 2, done: 2 });
+    expect(getBootDepProgress()).toEqual({ total: 5, done: 3 });
+    __setClipTrackingForTests(3, 3);
+    expect(getBootDepProgress()).toEqual({ total: 5, done: 5 });
   });
 
-  test('progress: none-kind exposes zero units at closure', () => {
+  test('progress: deadline terminalizes all units [I1-F3]', () => {
     ensureWorldBootEpoch();
+    __setClipTrackingForTests(0, 3);
+    resolveBootActor('player-vrm', '/avatars/a.vrm');
+    registerBootActorClaim('player-vrm', '/avatars/a.vrm');
+    closeBootActorRegistration();
+    __fireBootActorDeadlineForTests();
+    expect(getBootDepProgress()).toEqual({ total: 5, done: 5 });
+  });
+
+  test('progress: none-kind exposes clip units only at closure', () => {
+    ensureWorldBootEpoch();
+    __setClipTrackingForTests(2, 3);
     resolveBootActor('none', null);
     closeBootActorRegistration();
-    expect(getBootActorProgress()).toEqual({ total: 0, done: 0 });
+    expect(getBootDepProgress()).toEqual({ total: 3, done: 2 });
   });
 
   test('classify: transient avatar error stays pending; confirmed absent closes none [R3-F5]', () => {

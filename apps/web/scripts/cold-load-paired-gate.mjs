@@ -245,7 +245,13 @@ export function sliceDPostSettleStable(frames, revealMs, settleMs, windowMs = SL
 /** Per-run fail-closed candidate validity (spec §5). Returns defect strings. */
 export function sliceDCandidateDefects(summary, frames, expectBootActor) {
   const defects = [];
-  const ph = summary?.phases ?? {};
+  // [I1-F7] judge the WINDOW-CLOSE snapshot when present: land/cohort
+  // stamps read at capture end can be churned by post-window refresh
+  // polls; the boot-assembly question is answered at reveal+window.
+  const ph = summary?.phasesAtWindow ?? summary?.phases ?? {};
+  if (summary?.phasesAtWindow == null) {
+    defects.push("phasesAtWindow snapshot missing (probe predates slice-D or tail ended early)");
+  }
   const reveal = summary?.revealMs;
   for (const key of ["bootCorePresentedAt", "streamSettledAt", "landSettledAt"]) {
     if (typeof ph[key] !== "number" || !Number.isFinite(ph[key])) defects.push(`${key} not finite (${ph[key]})`);
@@ -322,8 +328,9 @@ export function evaluateSliceDGate(pairs, { backend = null, expectBootActor = nu
   }
 
   const perMetric = {};
+  const phasesOf = (summary) => summary.phasesAtWindow ?? summary.phases;
   // PRIMARY: absolute candidate bootCorePresentedAt median ≤ 5s.
-  const presented = usable.map((p) => p.candidate.phases.bootCorePresentedAt);
+  const presented = usable.map((p) => phasesOf(p.candidate).bootCorePresentedAt);
   perMetric.bootCorePresentedAt = {
     verdict: median(presented) <= SLICE_D_PRESENTED_LIMIT_MS ? "pass" : "fail",
     median: median(presented), limit: SLICE_D_PRESENTED_LIMIT_MS, values: presented,
@@ -338,8 +345,8 @@ export function evaluateSliceDGate(pairs, { backend = null, expectBootActor = nu
   // REPORT-ONLY distributions (no verdict weight — unlike events vs baseline).
   const report = (vals) => ({ median: median(vals), min: Math.min(...vals), max: Math.max(...vals) });
   perMetric.reportOnly = {
-    streamSettledAfterRevealMs: report(usable.map((p) => p.candidate.phases.streamSettledAt - p.candidate.revealMs)),
-    landSettledAfterRevealMs: report(usable.map((p) => p.candidate.phases.landSettledAt - p.candidate.revealMs)),
+    streamSettledAfterRevealMs: report(usable.map((p) => phasesOf(p.candidate).streamSettledAt - p.candidate.revealMs)),
+    landSettledAfterRevealMs: report(usable.map((p) => phasesOf(p.candidate).landSettledAt - p.candidate.revealMs)),
     candidateRevealMs: report(usable.map((p) => p.candidate.revealMs)),
     baselineRevealMs: report(usable.map((p) => p.baseline.revealMs)),
     worstFrameLogRatio: report(usable.map((p) => Math.log(p.candidate.frameMetrics.worstFrameMsIn10s / p.baseline.frameMetrics.worstFrameMsIn10s))),

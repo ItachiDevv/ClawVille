@@ -499,7 +499,15 @@ function evaluateBootStreamEligibility(): void {
   const t = nowMs();
   if (streamLastEvalAt !== null && typeof document !== 'undefined') {
     if (!document.hidden) {
-      streamVisibleMsSinceRelease += t - streamLastEvalAt;
+      // [I1-F5] credit is CAPPED per tick: hidden-tab timer throttling can
+      // suppress polls for 30s+, and attributing that whole interval on
+      // foregrounding (document reads visible at the END of the interval)
+      // would instantly trip the 10s fail-open. A visible tick can never
+      // credit more than two poll periods.
+      streamVisibleMsSinceRelease += Math.min(
+        t - streamLastEvalAt,
+        BOOT_STREAM_EVAL_POLL_MS * 2,
+      );
     }
   }
   streamLastEvalAt = t;

@@ -39,7 +39,14 @@ export function bootStreamPriority(
  * post-eligibility remounts initialize released.
  */
 export function useBootStreamRelease(priority: number): boolean {
-  const [released, setReleased] = useState(isBootStreamEligible);
+  // [I1-F5] a post-eligibility remount initializes released ONLY while the
+  // tab is visible — a hidden late consumer must go through the queue
+  // (which parks while hidden) instead of bypassing §2e parking entirely.
+  const [released, setReleased] = useState(
+    () =>
+      isBootStreamEligible() &&
+      (typeof document === 'undefined' || !document.hidden),
+  );
   useEffect(() => {
     if (released) return undefined;
     return onBootStreamEligible(() => setReleased(true), priority);

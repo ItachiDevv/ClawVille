@@ -182,7 +182,11 @@ barrier:
 `BOOT_CORE_CHUNKS`: `terrain`, `buildings`, `land-parcels`,
 `land-salvage-nodes`, `kelp-forest`, `seaweed`, `kelp-forest-portal`,
 `cove-beacon`, `cove-entrance`, `town-directory-sign`, `boot-actor`,
-`click-to-move`, `land-founder-apartments`, `land-ring-decorations`.
+`click-to-move`, `land-founder-apartments`, `land-ring-decorations`,
+`activity-indicators`, `floating-texts` (the last two added post-I1:
+procedural primitive world FX, zero network — the hardened [I1-F4]
+inventory caught activity-indicators mounting a mesh pre-reveal on
+authenticated boots).
 
 - **Chunk topology changes [R2-F4]:** `perf:player-avatar` is RENAMED
   `perf:boot-actor`. The possessed/demo body is physically SPLIT out of

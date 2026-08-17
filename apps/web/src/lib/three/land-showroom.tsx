@@ -389,8 +389,12 @@ export default function LandShowroom() {
   // completion tracker.
   const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND);
   useEffect(() => {
-    declareLandSlots('showroom', released ? slots.length : 0);
-  }, [released, slots.length]);
+    // [I1-F7] exact slot id set, empty until the stream tier releases.
+    declareLandSlots(
+      'showroom',
+      released ? slots.map((s) => s.parcel.id) : [],
+    );
+  }, [released, slots]);
   if (!released) return null;
   return (
     <>

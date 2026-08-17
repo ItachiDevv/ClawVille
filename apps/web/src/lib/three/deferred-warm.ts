@@ -8,7 +8,7 @@ export const DEFERRED_WARM_IDLE_MAX_TEXTURES_PER_SLICE = 4;
 export const DEFERRED_WARM_RAF_FALLBACK_BATCH = 4;
 export const DEFERRED_WARM_COMPILE_TIMEOUT_MS = 20_000;
 
-const TEXTURE_SLOTS = [
+export const TEXTURE_SLOTS = [
   'map',
   'normalMap',
   'roughnessMap',

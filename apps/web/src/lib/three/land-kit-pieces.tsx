@@ -36,7 +36,7 @@ import {
   beginLandHydration,
   bumpLandRevision,
   declareLandSlots,
-  reportLandSlotFallback,
+  reportLandSlotFailed,
   reportLandSlotResolved,
 } from '@/lib/three/land-boot-tracker';
 import {
@@ -910,10 +910,10 @@ export default function LandKitPieces() {
     return KIT_PIECE_KEYS.filter((pieceKey) => active.has(pieceKey));
   }, [snapshots]);
 
-  // Slice D §4b: declare the CURRENT expected source set for the land
-  // completion tracker (0 until the stream tier releases the demand).
+  // Slice D §4b [I1-F7]: declare the CURRENT expected source id set
+  // (empty until the stream tier releases the demand).
   useEffect(() => {
-    declareLandSlots('kit', kitStreamReleased ? activePieceKeys.length : 0);
+    declareLandSlots('kit', kitStreamReleased ? activePieceKeys : []);
   }, [kitStreamReleased, activePieceKeys]);
 
   useEffect(() => {
@@ -1107,7 +1107,7 @@ export default function LandKitPieces() {
         activePieceKeys.map((pieceKey) => (
           <KitPieceSourceErrorBoundary
             key={pieceKey}
-            onErrored={() => reportLandSlotFallback('kit', pieceKey)}
+            onErrored={() => reportLandSlotFailed('kit', pieceKey)}
           >
             <Suspense fallback={null}>
               <KitPieceSource

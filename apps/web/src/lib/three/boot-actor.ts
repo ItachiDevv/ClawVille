@@ -4,31 +4,39 @@
  *
  * Replaces the deleted global LoadingManager warmup barrier with an explicit,
  * mode-independent dependency: the ACTIVE BOOT ACTOR (the body the camera
- * will present at reveal). Design contract, hardened over 5 Codex rounds:
+ * will present at reveal). Design contract, hardened over 5 spec rounds and
+ * the I1 implementation review:
  *
  *  - ONE coordinator (the `useBootActorCoordinator` hook, mounted in
  *    GamePage) has EXCLUSIVE authority to resolve the actor and CLOSE
- *    registration. It closes only on authoritative settlement: auth resolved
- *    AND the avatar query SETTLED (confirmed 401/not-found ≠ transient error
- *    [R3-F5]) AND the synchronous mode promotion applied. Pre-closure
- *    changes REPLACE the pending resolution; closure is one-shot per epoch.
- *  - LOADERS CLAIM, NEVER RESOLVE [R4-F1]: the actor components register
- *    `(kind, resourceKey)` claims and commit them by TOKEN. Only the token
- *    matching the coordinator's CURRENT resolution can close the gate,
- *    stamp readiness, or credit a progress unit — a stale same-kind
- *    resource swap (VRM path-A → path-B before closure) is telemetry-only.
- *  - GATE COVERAGE + requiresDeferredAttach [R3-F1][R4-F2]: an OPEN gate
- *    means RAW mount (the on-time actor must mount visible and commit so
- *    the gate CAN close). After closure, any actor resource that did not
- *    participate in the closed gate attaches through the deferred-warm
- *    path — never raw.
+ *    REGISTRATION (freeze WHICH resource is covered). Closure requires
+ *    authoritative settlement: auth resolved AND the avatar query SETTLED
+ *    (confirmed 401/not-found ≠ transient error [R3-F5]) AND the
+ *    synchronous mode promotion applied. Pre-closure changes REPLACE the
+ *    pending resolution; registration closure is one-shot per epoch.
+ *  - REGISTRATION closure ≠ COVERAGE closure [I1-F1]: for body kinds the
+ *    COVERAGE stays OPEN (and `requiresDeferredAttach` keeps returning
+ *    false — the on-time RAW leg) until the MATCHING claim token COMMITS or
+ *    the epoch deadline fires. Closing coverage at resolution time would
+ *    route the still-suspended on-time body through the hidden warm path —
+ *    the exact §R4-F2 cycle the frozen state table prohibits.
+ *  - LOADERS CLAIM, NEVER RESOLVE [R4-F1]: actor components register
+ *    `(kind, resourceKey)` claims and commit them by TOKEN, with PER-TOKEN
+ *    commit timestamps [I1-F2] — a commit that lands before the coordinator
+ *    adopts its tuple still carries its time, adopted when the tuple
+ *    becomes current. Stale tuples are telemetry-only.
  *  - ONE epoch-owned deadline (8s, anchored to EPOCH START, surviving
- *    warmup-effect restarts [R3-F8]): at the deadline unresolved state
- *    closes UNCOVERED (fail-open — the reveal is never held hostage) and
- *    progress membership FREEZES [R3-F6].
+ *    warmup-effect restarts [R3-F8]): at the deadline unresolved or
+ *    uncommitted state closes UNCOVERED (fail-open — the reveal is never
+ *    held hostage), `bootActorResolvedAt` is stamped even when unresolved
+ *    [I1-F2], and dependency-progress membership FREEZES [R3-F6][I1-F3].
+ *  - The five §2d progress units (3 locomotion clips + actor byte-fetch +
+ *    actor commit) are ALL epoch-owned here [I1-F3]; a commit implies the
+ *    byte fetch settled (covers the npc-body path, which has no separate
+ *    fetch reporter).
  *
- * All state is per-boot-epoch module state exposed via getters; nothing
- * here is cleared by SeaLoadingScreen's legacy window-flag re-zero [R2-F7].
+ * All state is exposed via getters; nothing here is cleared by
+ * SeaLoadingScreen's legacy window-flag re-zero [R2-F7].
  */
 
 import { useEffect, useSyncExternalStore } from 'react';
@@ -37,6 +45,10 @@ import {
   getWorldBootEpoch,
   subscribeWorldBootEpoch,
 } from '@/lib/three/decorative-release';
+import {
+  getLocomotionClipSettledPromises,
+  whenLocomotionClipsSettled,
+} from '@/lib/three/vrm-character-animator';
 
 export const BOOT_ACTOR_DEADLINE_MS = 8_000;
 
@@ -85,7 +97,8 @@ let coverage: Coverage = {
   timedOut: false,
 };
 const claims = new Map<number, BootActorClaimToken>();
-const committedTokenIds = new Set<number>();
+/** token id → commit timestamp (page ms) [I1-F2]. */
+const commitTimes = new Map<number, number>();
 const fetchSettledTokenIds = new Set<number>();
 let resolvedAtMs: number | null = null;
 let readyAtMs: number | null = null;
@@ -93,6 +106,11 @@ let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
 let deadlineFired = false;
 const stateSubscribers = new Set<Listener>();
 const gateWaiters = new Set<Listener>();
+// §2d clip units — epoch-owned here so ONE deadline governs all five
+// progress units [I1-F3]. Lazily initialized (starts the loads if needed).
+let clipTrackingStarted = false;
+let clipsSettled = 0;
+let clipsTotal = 0;
 
 function nowMs(): number {
   return typeof performance !== 'undefined'
@@ -120,21 +138,23 @@ function notifySubscribers(): void {
   checkGateComplete();
 }
 
-/** Is the coordinator's current resolution satisfied by a committed claim? */
-function currentResolutionCommitted(): boolean {
-  if (!pendingResolution) return false;
-  if (!isBodyKind(pendingResolution.kind)) return true;
-  for (const id of committedTokenIds) {
+/** The committed claim matching the current resolution, with the EARLIEST
+ * commit time (adoption rule [I1-F2]), or null. */
+function matchingCommittedClaim(): { token: BootActorClaimToken; at: number } | null {
+  if (!pendingResolution) return null;
+  let best: { token: BootActorClaimToken; at: number } | null = null;
+  for (const [id, at] of commitTimes) {
     const claim = claims.get(id);
     if (
       claim &&
       claim.kind === pendingResolution.kind &&
-      claim.resourceKey === pendingResolution.resourceKey
+      claim.resourceKey === pendingResolution.resourceKey &&
+      (best === null || at < best.at)
     ) {
-      return true;
+      best = { token: claim, at };
     }
   }
-  return false;
+  return best;
 }
 
 function checkGateComplete(): void {
@@ -149,19 +169,35 @@ function checkGateComplete(): void {
   }
 }
 
-function closeGate(timedOut: boolean): void {
+/** Close COVERAGE (the terminal event): via commit, via non-body
+ * resolution, or via the deadline. Never called at bare registration
+ * closure for body kinds [I1-F1]. */
+function closeCoverage(timedOut: boolean): void {
   if (coverage.closed) return;
   registrationClosed = true;
-  const committed = currentResolutionCommitted();
+  const match = matchingCommittedClaim();
+  const bodyResolution =
+    pendingResolution !== null && isBodyKind(pendingResolution.kind);
+  const committed = !timedOut && (bodyResolution ? match !== null : pendingResolution !== null);
   coverage = {
     closed: true,
     coveredKind: pendingResolution?.kind ?? null,
     coveredResourceKey: timedOut
       ? null
       : (pendingResolution?.resourceKey ?? null),
-    committed: committed && !timedOut,
+    committed,
     timedOut,
   };
+  if (committed && bodyResolution && match && readyAtMs === null) {
+    readyAtMs = match.at;
+    stampPhase('bootActorReadyAt', readyAtMs);
+  }
+  // Every closure stamps a resolution time — including an unresolved
+  // timeout [I1-F2].
+  if (resolvedAtMs === null) {
+    resolvedAtMs = nowMs();
+    stampPhase('bootActorResolvedAt', resolvedAtMs);
+  }
   if (deadlineTimer !== null) {
     clearTimeout(deadlineTimer);
     deadlineTimer = null;
@@ -169,6 +205,20 @@ function closeGate(timedOut: boolean): void {
   stampPhase('bootActorKind', coverage.coveredKind ?? 'unresolved');
   stampPhase('bootActorGateTimedOut', timedOut);
   notifySubscribers();
+}
+
+/** After registration closes, coverage closes as soon as its terminal
+ * condition is available (immediately for non-body kinds; on the matching
+ * commit for body kinds). */
+function maybeCloseCoverage(): void {
+  if (coverage.closed || !registrationClosed || !pendingResolution) return;
+  if (!isBodyKind(pendingResolution.kind)) {
+    closeCoverage(false);
+    return;
+  }
+  if (matchingCommittedClaim() !== null) {
+    closeCoverage(false);
+  }
 }
 
 /** Arm the epoch-anchored deadline the moment the epoch exists [R3-F8]. */
@@ -184,7 +234,7 @@ function armDeadlineForEpoch(): void {
     if (!coverage.closed) {
       // Unresolved or uncommitted at the deadline: close UNCOVERED —
       // the late actor routes through requiresDeferredAttach [R2-F5].
-      closeGate(true);
+      closeCoverage(true);
     }
     notifySubscribers();
   }, BOOT_ACTOR_DEADLINE_MS);
@@ -230,39 +280,28 @@ export function registerBootActorClaim(
 }
 
 /** Commit a claim (post-Suspense passive effect — commit proves the resource
- * resolved). Only the token matching the CURRENT resolution stamps readiness
- * or closes the gate; stale tokens are telemetry-only [R4-F1]. */
+ * resolved). The commit TIME is stored per token [I1-F2]; whether it counts
+ * is decided by the coordinator's resolution (now or on later adoption). A
+ * commit also implies the byte fetch settled (npc-body has no separate
+ * fetch reporter [I1-F3]). Closes body coverage when registration already
+ * froze the matching tuple [I1-F1]. */
 export function notifyBootActorCommitted(token: BootActorClaimToken): void {
-  if (!claims.has(token.id) || committedTokenIds.has(token.id)) return;
-  committedTokenIds.add(token.id);
+  if (!claims.has(token.id) || commitTimes.has(token.id)) return;
+  const at = nowMs();
+  commitTimes.set(token.id, at);
+  fetchSettledTokenIds.add(token.id);
   const matchesCurrent =
     !!pendingResolution &&
     pendingResolution.kind === token.kind &&
     pendingResolution.resourceKey === token.resourceKey;
-  if (matchesCurrent && readyAtMs === null) {
-    readyAtMs = nowMs();
+  if (matchesCurrent && readyAtMs === null && !coverage.closed) {
+    readyAtMs = at;
     stampPhase('bootActorReadyAt', readyAtMs);
   }
   if (!matchesCurrent) {
     stampPhase('bootActorStaleCommit', `${token.kind}:${token.resourceKey}`);
   }
-  // Late-commit upgrade: the gate may CLOSE covering a body resource whose
-  // commit lands moments later — that commit COMPLETES the coverage (the
-  // resource participated in the closed gate; it mounted raw and stays
-  // raw). A timeout closure (coveredResourceKey null) never upgrades.
-  if (
-    coverage.closed &&
-    !coverage.committed &&
-    !coverage.timedOut &&
-    coverage.coveredKind === token.kind &&
-    coverage.coveredResourceKey === token.resourceKey
-  ) {
-    coverage = { ...coverage, committed: true };
-    if (readyAtMs === null) {
-      readyAtMs = nowMs();
-      stampPhase('bootActorReadyAt', readyAtMs);
-    }
-  }
+  maybeCloseCoverage();
   notifySubscribers();
 }
 
@@ -279,33 +318,41 @@ export function notifyBootActorFetchSettled(token: BootActorClaimToken): void {
 // ---------------------------------------------------------------------------
 
 /** Replace the pending resolution (pre-closure only; the coordinator is the
- * single caller). */
+ * single caller). Adopting a tuple whose claim ALREADY committed picks up
+ * that commit's timestamp [I1-F2]. */
 export function resolveBootActor(
   kind: BootActorKind,
   resourceKey: string | null,
 ): void {
-  if (coverage.closed) return;
+  if (registrationClosed) return;
   pendingResolution = { kind, resourceKey };
   if (resolvedAtMs === null) {
     resolvedAtMs = nowMs();
   }
   stampPhase('bootActorResolvedAt', resolvedAtMs);
   stampPhase('bootActorKind', kind);
+  const match = matchingCommittedClaim();
+  if (match && readyAtMs === null) {
+    readyAtMs = match.at;
+    stampPhase('bootActorReadyAt', readyAtMs);
+  }
   notifySubscribers();
 }
 
-/** Close registration (coordinator only; one-shot). For body kinds the gate
- * still awaits the matching commit — closure freezes WHICH resource is
- * covered, commit-completion is observed by the gate await below. */
+/** Close REGISTRATION (coordinator only; one-shot): freezes WHICH resource
+ * the gate covers. Coverage for body kinds stays open until the matching
+ * commit or the deadline [I1-F1]. */
 export function closeBootActorRegistration(): void {
-  if (coverage.closed) return;
+  if (registrationClosed) return;
   if (!pendingResolution) {
     // Coordinator settled with nothing to resolve — explicit 'none'.
     pendingResolution = { kind: 'none', resourceKey: null };
     if (resolvedAtMs === null) resolvedAtMs = nowMs();
     stampPhase('bootActorResolvedAt', resolvedAtMs);
   }
-  closeGate(false);
+  registrationClosed = true;
+  maybeCloseCoverage();
+  notifySubscribers();
 }
 
 export function isBootActorRegistrationClosed(): boolean {
@@ -324,33 +371,16 @@ export type BootActorGateResult = {
 };
 
 /**
- * Await the actor dependency: resolves when the gate is CLOSED and — for
- * body kinds — the covered resource committed, or immediately at the epoch
- * deadline (fail-open). The deadline is epoch-anchored, so a warmup-effect
- * restart re-awaits the same clock [R3-F8].
+ * Await the actor dependency: resolves when COVERAGE closes — non-body
+ * registration closure, the body's matching commit, or the epoch deadline
+ * (fail-open). The deadline is epoch-anchored, so a warmup-effect restart
+ * re-awaits the same clock [R3-F8].
  */
 export function awaitBootActorGate(): Promise<BootActorGateResult> {
   armDeadlineForEpoch();
   return new Promise((resolve) => {
     const settle = () => {
-      const bodyPending =
-        !deadlineFired &&
-        coverage.closed &&
-        !coverage.timedOut &&
-        coverage.coveredKind !== null &&
-        isBodyKind(coverage.coveredKind) &&
-        !coverage.committed &&
-        !currentResolutionCommitted();
-      if (coverage.closed && !bodyPending) {
-        // Late-commit upgrade: a body commit that landed after closure but
-        // before this await settles still counts as covered.
-        if (
-          coverage.closed &&
-          !coverage.committed &&
-          currentResolutionCommitted()
-        ) {
-          coverage = { ...coverage, committed: true };
-        }
+      if (coverage.closed) {
         resolve({
           kind: coverage.coveredKind,
           resourceKey: coverage.coveredResourceKey,
@@ -366,7 +396,9 @@ export function awaitBootActorGate(): Promise<BootActorGateResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Attach routing [R3-F1][R4-F2] — the exact reviewed state table
+// Attach routing [R3-F1][R4-F2] — the exact reviewed state table. With
+// coverage now staying open until the body commits [I1-F1], the open-gate
+// RAW leg genuinely covers the on-time suspended body's first render.
 // ---------------------------------------------------------------------------
 
 export function requiresDeferredAttach(
@@ -382,37 +414,58 @@ export function requiresDeferredAttach(
 }
 
 // ---------------------------------------------------------------------------
-// Progress + stamps surface (read by SeaLoadingScreen via getters [R2-F7])
+// §2d progress surface — ALL FIVE units epoch-owned here [I1-F3]; read by
+// SeaLoadingScreen via getters [R2-F7].
 // ---------------------------------------------------------------------------
 
-export type BootActorProgress = {
+function ensureClipTracking(): void {
+  if (clipTrackingStarted || typeof window === 'undefined') return;
+  clipTrackingStarted = true;
+  void whenLocomotionClipsSettled(); // starts loads + populates the map
+  const promises = getLocomotionClipSettledPromises();
+  clipsTotal = promises.size || 3;
+  for (const promise of promises.values()) {
+    void promise.then(() => {
+      clipsSettled += 1;
+      notifySubscribers();
+    });
+  }
+}
+
+export type BootDepProgress = {
   /** null until registration closes — TOTAL is unexposed before closure. */
   total: number | null;
   done: number;
 };
 
-export function getBootActorProgress(): BootActorProgress {
-  if (!coverage.closed) return { total: null, done: 0 };
+/** Combined dependency progress: 3 clips + (body kinds) fetch + commit.
+ * Membership FREEZES at the epoch deadline — unresolved units terminalize
+ * as timed-out (DONE reaches TOTAL; late results are telemetry-only)
+ * [R3-F6][I1-F3]. */
+export function getBootDepProgress(): BootDepProgress {
+  ensureClipTracking();
+  if (!registrationClosed) return { total: null, done: 0 };
   const body =
-    coverage.coveredKind !== null && isBodyKind(coverage.coveredKind);
-  if (!body) return { total: 0, done: 0 };
-  // Two actor units: byte-fetch settled + commit. Membership froze at
-  // closure; late results update telemetry, never TOTAL [R3-F6]. The
-  // deadline terminalizes unresolved units (counted done as timed-out).
-  let done = 0;
-  const fetchDone =
-    deadlineFired ||
-    [...fetchSettledTokenIds].some((id) => {
-      const c = claims.get(id);
-      return (
-        c &&
-        c.kind === coverage.coveredKind &&
-        c.resourceKey === coverage.coveredResourceKey
-      );
-    });
-  if (fetchDone) done += 1;
-  if (coverage.committed || deadlineFired) done += 1;
-  return { total: 2, done };
+    pendingResolution !== null && isBodyKind(pendingResolution.kind);
+  const total = clipsTotal + (body ? 2 : 0);
+  if (deadlineFired) return { total, done: total };
+  let done = Math.min(clipsSettled, clipsTotal);
+  if (body) {
+    const match = matchingCommittedClaim();
+    const fetchDone =
+      match !== null ||
+      [...fetchSettledTokenIds].some((id) => {
+        const c = claims.get(id);
+        return (
+          c &&
+          c.kind === pendingResolution!.kind &&
+          c.resourceKey === pendingResolution!.resourceKey
+        );
+      });
+    if (fetchDone) done += 1;
+    if (coverage.closed ? coverage.committed : match !== null) done += 1;
+  }
+  return { total, done };
 }
 
 export function getBootActorStamps(): {
@@ -510,6 +563,14 @@ export function useBootActorCoordinator(
   }, [epoch, ...deps]);
 }
 
+/** TEST-ONLY: deterministic clip-unit state (the real per-clip promises
+ * load GLBs — nondeterministic in unit scope). */
+export function __setClipTrackingForTests(settled: number, total: number): void {
+  clipTrackingStarted = true;
+  clipsSettled = settled;
+  clipsTotal = total;
+}
+
 /** TEST-ONLY: fire the epoch deadline synchronously (the real 8s timer is
  * untestable in unit scope). Mirrors the timer body exactly. */
 export function __fireBootActorDeadlineForTests(): void {
@@ -518,7 +579,7 @@ export function __fireBootActorDeadlineForTests(): void {
     deadlineTimer = null;
   }
   deadlineFired = true;
-  if (!coverage.closed) closeGate(true);
+  if (!coverage.closed) closeCoverage(true);
   notifySubscribers();
 }
 
@@ -542,7 +603,7 @@ export function __resetBootActorForTests(): void {
     timedOut: false,
   };
   claims.clear();
-  committedTokenIds.clear();
+  commitTimes.clear();
   fetchSettledTokenIds.clear();
   resolvedAtMs = null;
   readyAtMs = null;
@@ -553,4 +614,7 @@ export function __resetBootActorForTests(): void {
   }
   stateSubscribers.clear();
   gateWaiters.clear();
+  clipTrackingStarted = false;
+  clipsSettled = 0;
+  clipsTotal = 0;
 }
