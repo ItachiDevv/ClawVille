@@ -20,6 +20,10 @@
 #  - free_probe_port before launch; ensure_server health check per run
 #  - no builds/tests while a batch is running (contention corrupts runs)
 set -u
+# Optional env knobs must survive set -u when unset (slice-E session hit
+# "COLD_LOAD_PROBE_EXTRA_ARGS: unbound variable" on a bare solo run).
+COLD_LOAD_PROBE_EXTRA_ARGS="${COLD_LOAD_PROBE_EXTRA_ARGS:-}"
+COLD_LOAD_EXPECT_ACTOR="${COLD_LOAD_EXPECT_ACTOR:-}"
 MODE="${1:-pairs}"
 CANDIDATE_DIR="C:/Users/itachi/Documents/Crypto/cv-covefreeze"
 BASELINE_DIR="C:/Users/itachi/Documents/Crypto/cv-perf-baseline"
@@ -176,9 +180,35 @@ for pair in $(seq 1 "$COUNT"); do
   fi
 done
 
+# Build identity [R2-6]: SHAs are DERIVED from the measured worktrees, never
+# trusted from the caller. Tracked modifications mark the SHA -dirty (the
+# slice-E gate refuses dirty/identical SHAs); untracked files (run outputs,
+# hook mirrors) don't affect the build and are ignored.
+derive_sha() { # $1 = worktree dir
+  local sha=$(git -C "$1" rev-parse --short=12 HEAD 2>/dev/null || echo "")
+  [ -z "$sha" ] && { echo ""; return; }
+  if [ -n "$(git -C "$1" status --porcelain 2>/dev/null | grep -v '^??')" ]; then
+    sha="${sha}-dirty"
+  fi
+  echo "$sha"
+}
+DERIVED_BASELINE_SHA=$(derive_sha "$BASELINE_DIR")
+DERIVED_CANDIDATE_SHA=$(derive_sha "$CANDIDATE_DIR")
+# An operator override that disagrees with the measured tree is an evidence
+# failure, not a preference.
+if [ -n "${COLD_LOAD_BASELINE_SHA:-}" ] && [ "$COLD_LOAD_BASELINE_SHA" != "$DERIVED_BASELINE_SHA" ]; then
+  echo "SHA OVERRIDE MISMATCH: COLD_LOAD_BASELINE_SHA=$COLD_LOAD_BASELINE_SHA vs derived $DERIVED_BASELINE_SHA"
+  FAILED_RUNS=$((FAILED_RUNS + 1))
+fi
+if [ -n "${COLD_LOAD_CANDIDATE_SHA:-}" ] && [ "$COLD_LOAD_CANDIDATE_SHA" != "$DERIVED_CANDIDATE_SHA" ]; then
+  echo "SHA OVERRIDE MISMATCH: COLD_LOAD_CANDIDATE_SHA=$COLD_LOAD_CANDIDATE_SHA vs derived $DERIVED_CANDIDATE_SHA"
+  FAILED_RUNS=$((FAILED_RUNS + 1))
+fi
+
 # Build the pairs manifest for cold-load-paired-gate.mjs. A manifest failure
 # is an evidence failure — it must flip the exit code (round-2 finding 2).
-if ! OUT="$OUT" BACKEND="$BACKEND" COUNT="$COUNT" EXPECT_ACTOR="$COLD_LOAD_EXPECT_ACTOR" bun -e "
+if ! OUT="$OUT" BACKEND="$BACKEND" COUNT="$COUNT" EXPECT_ACTOR="$COLD_LOAD_EXPECT_ACTOR" \
+  BASELINE_SHA="$DERIVED_BASELINE_SHA" CANDIDATE_SHA="$DERIVED_CANDIDATE_SHA" bun -e "
 const fs = require('fs');
 const out = process.env.OUT;
 const pairs = [];
@@ -193,6 +223,10 @@ for (let p = 1; p <= Number(process.env.COUNT); p++) {
 const manifest = { backend: process.env.BACKEND, pairs };
 // Slice D authenticated lane: the gate's --slice-d mode requires this.
 if (process.env.EXPECT_ACTOR) manifest.expectBootActor = process.env.EXPECT_ACTOR;
+// Slice E build identity [R1-9]: the gate's --slice-e mode refuses a
+// manifest without both SHAs.
+if (process.env.BASELINE_SHA) manifest.baselineSha = process.env.BASELINE_SHA;
+if (process.env.CANDIDATE_SHA) manifest.candidateSha = process.env.CANDIDATE_SHA;
 fs.writeFileSync(out + '/manifest.json', JSON.stringify(manifest, null, 1));
 console.log('manifest pairs:', pairs.length);
 "; then

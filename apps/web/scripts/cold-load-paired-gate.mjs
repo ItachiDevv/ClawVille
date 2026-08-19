@@ -427,12 +427,166 @@ export function evaluateSliceDGate(pairs, { backend = null, expectBootActor = nu
   };
 }
 
+// ---------------------------------------------------------------------------
+// Slice E (rev 2, docs/perf-cold-load-rung4-sliceE-spec.md §3 [R1-7][R1-9]):
+// additive evaluator layered ON TOP of the frozen slice-D schema. Rejects
+// candidates whose compile stamps are missing/non-finite, whose mode is not
+// the serial-early mode, whose coverage counts disagree, or with any failed
+// group; then gates the compile TAIL (the on-critical-path portion after the
+// texture scans) absolutely AND against the baseline's slice-D compile wall.
+// ---------------------------------------------------------------------------
+
+// [R2-9] improvement-primary: the binding statistic is the PAIRED per-run
+// improvement (baseline compileMs − candidate tailMs, median ≥ 300ms); the
+// absolute ceiling is a safety net against a poisoned-slow baseline
+// relaxing acceptance, recalibrated 800→1000ms (800 was the pre-analysis
+// handoff guess; the width-1 main-thread compile floor is structural).
+export const SLICE_E_COMPILE_TAIL_LIMIT_MS = 1000;
+export const SLICE_E_COMPILE_IMPROVEMENT_MS = 300;
+export const SLICE_E_COMPILE_MODE = "group-serial-early-1";
+// [R2-4] EVERY advertised stamp is required — a slice-D-era build or a
+// partial-publish run cannot pass on incidental fields.
+const SLICE_E_DURATION_STAMPS = [
+  "bootCoreCompileMs",
+  "bootCoreCompileTailMs",
+  "bootCoreCompileEarlyHiddenMs",
+  "bootCoreCompileEarlyMs",
+  "bootCoreCompileLateMs",
+];
+const SLICE_E_COUNT_STAMPS = [
+  "bootCoreCompileRequested",
+  "bootCoreCompileDispatched",
+  "bootCoreCompileSettled",
+  "bootCoreCompileFailedGroups",
+  "bootCoreCompileRenderables",
+];
+const SLICE_E_ACCOUNTING_TOLERANCE_MS = 1.5;
+
+export function sliceECandidateDefects(summary) {
+  const defects = [];
+  const ph = summary?.phasesAtWindow ?? summary?.phases ?? {};
+  for (const k of SLICE_E_DURATION_STAMPS) {
+    if (!Number.isFinite(ph[k]) || ph[k] < 0) defects.push(`missing/negative ${k} (${ph[k]})`);
+  }
+  for (const k of SLICE_E_COUNT_STAMPS) {
+    if (!Number.isInteger(ph[k]) || ph[k] < 0) defects.push(`missing/non-integer ${k} (${ph[k]})`);
+  }
+  if (ph.bootCoreCompileMode !== SLICE_E_COMPILE_MODE) {
+    defects.push(`bootCoreCompileMode ${JSON.stringify(ph.bootCoreCompileMode ?? null)} != "${SLICE_E_COMPILE_MODE}"`);
+  }
+  if (defects.length > 0) return defects; // numeric invariants below assume sane stamps
+  if (ph.bootCoreCompileFailedGroups !== 0) {
+    defects.push(`bootCoreCompileFailedGroups ${ph.bootCoreCompileFailedGroups} != 0`);
+  }
+  if (ph.bootCoreCompileRequested <= 0) defects.push("bootCoreCompileRequested must be > 0");
+  if (ph.bootCoreCompileRenderables <= 0) defects.push("bootCoreCompileRenderables must be > 0");
+  if (
+    ph.bootCoreCompileDispatched !== ph.bootCoreCompileRequested
+    || ph.bootCoreCompileSettled !== ph.bootCoreCompileRequested
+  ) {
+    defects.push(
+      `compile coverage mismatch (requested ${ph.bootCoreCompileRequested}, dispatched ${ph.bootCoreCompileDispatched}, settled ${ph.bootCoreCompileSettled})`,
+    );
+  }
+  // [R2-4] accounting invariants: tail is part of the wall, and
+  // hidden = wall − tail by construction.
+  if (ph.bootCoreCompileTailMs > ph.bootCoreCompileMs + SLICE_E_ACCOUNTING_TOLERANCE_MS) {
+    defects.push(`tail ${ph.bootCoreCompileTailMs} exceeds wall ${ph.bootCoreCompileMs}`);
+  }
+  const accounting = Math.abs(
+    ph.bootCoreCompileMs - (ph.bootCoreCompileEarlyHiddenMs + ph.bootCoreCompileTailMs),
+  );
+  if (accounting > SLICE_E_ACCOUNTING_TOLERANCE_MS) {
+    defects.push(`wall ≠ hidden + tail (off by ${accounting.toFixed(1)}ms)`);
+  }
+  return defects;
+}
+
+export function evaluateSliceEGate(
+  pairs,
+  { backend = null, expectBootActor = null, baselineSha = null, candidateSha = null } = {},
+) {
+  // Build identity is REQUIRED [R1-9][R2-6] — runner-derived, differing,
+  // clean-tree SHAs. A dirty-tree SHA cannot identify what was measured.
+  const shaDefects = [];
+  if (!baselineSha || !candidateSha) shaDefects.push("manifest must carry baselineSha + candidateSha [R1-9]");
+  else {
+    if (baselineSha === candidateSha) shaDefects.push(`baselineSha === candidateSha (${baselineSha}) — candidate must be a distinct committed build [R2-6]`);
+    if (String(baselineSha).includes("dirty") || String(candidateSha).includes("dirty")) {
+      shaDefects.push(`dirty-tree SHA (${baselineSha} / ${candidateSha}) — measure committed clean worktrees [R2-6]`);
+    }
+  }
+  // [R2-5] the SHIP lane is the authenticated player-vrm lane, enforced in
+  // the evaluator itself — CLI plumbing alone must not be load-bearing.
+  if (expectBootActor !== "player-vrm") {
+    shaDefects.push(`--slice-e requires expectBootActor 'player-vrm' (got '${expectBootActor}') [R2-5]`);
+  }
+  if (shaDefects.length > 0) {
+    return { verdict: "fail", reasons: shaDefects, perMetric: {}, usablePairs: 0, baselineSha, candidateSha };
+  }
+  const base = evaluateSliceDGate(pairs, { backend, expectBootActor });
+  const reasons = [...base.reasons];
+  const eDefects = [];
+  pairs.forEach((p, i) => {
+    for (const d of sliceECandidateDefects(p.candidate)) {
+      eDefects.push(`pair ${i + 1} candidate: ${d}`);
+    }
+  });
+  reasons.push(...eDefects);
+  if (base.verdict === "fail" || eDefects.length > 0) {
+    return {
+      verdict: "fail", reasons,
+      perMetric: base.perMetric, usablePairs: base.usablePairs ?? 0,
+      baselineSha, candidateSha,
+    };
+  }
+  const phasesOf = (summary) => summary.phasesAtWindow ?? summary.phases;
+  const tails = pairs.map((p) => phasesOf(p.candidate).bootCoreCompileTailMs);
+  const perMetric = { ...base.perMetric };
+  perMetric.bootCoreCompileTailMs = {
+    verdict: median(tails) < SLICE_E_COMPILE_TAIL_LIMIT_MS ? "pass" : "fail",
+    median: median(tails), limit: SLICE_E_COMPILE_TAIL_LIMIT_MS, values: tails,
+  };
+  // [R2-3] PAIRED improvement: median of the WITHIN-PAIR improvements
+  // (median-of-diffs ≠ diff-of-medians). Report the 95% one-sided lower
+  // bound alongside (order statistic via the existing machinery).
+  const baselineCompiles = pairs.map((p) => phasesOf(p.baseline)?.bootCoreCompileMs);
+  if (baselineCompiles.every((v) => Number.isFinite(v))) {
+    const improvements = pairs.map(
+      (p) => phasesOf(p.baseline).bootCoreCompileMs - phasesOf(p.candidate).bootCoreCompileTailMs,
+    );
+    const negUB = upperBoundOfMedian(improvements.map((v) => -v), CONFIDENCE);
+    perMetric.compileImprovement = {
+      verdict: median(improvements) >= SLICE_E_COMPILE_IMPROVEMENT_MS ? "pass" : "fail",
+      pairedImprovementMedian: median(improvements),
+      pairedImprovementLower95: negUB == null ? null : -negUB,
+      requiredImprovementMs: SLICE_E_COMPILE_IMPROVEMENT_MS,
+      baselineCompileMedian: median(baselineCompiles),
+      candidateTailMedian: median(tails),
+      values: improvements,
+    };
+  } else {
+    perMetric.compileImprovement = {
+      verdict: "fail",
+      reason: "baseline bootCoreCompileMs missing — wrong baseline build for the paired improvement bound",
+    };
+  }
+  const anyFail = perMetric.bootCoreCompileTailMs.verdict === "fail"
+    || perMetric.compileImprovement.verdict === "fail";
+  return {
+    verdict: anyFail ? "fail" : base.verdict,
+    reasons, perMetric, usablePairs: base.usablePairs,
+    baselineSha, candidateSha,
+  };
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const sliceD = args.includes("--slice-d");
+  const sliceE = args.includes("--slice-e");
+  const sliceD = args.includes("--slice-d") || sliceE;
   const manifestPath = args.find((a) => !a.startsWith("--"));
   if (!manifestPath) {
-    console.error("usage: bun cold-load-paired-gate.mjs <pairs-manifest.json> [--slice-d]");
+    console.error("usage: bun cold-load-paired-gate.mjs <pairs-manifest.json> [--slice-d|--slice-e] [--watchdog-lane]");
     process.exit(2);
   }
   const manifest = JSON.parse(await Bun.file(manifestPath).text());
@@ -479,7 +633,22 @@ if (import.meta.main) {
       candidateFrames: candidateReport.frames,
     });
   }
-  const result = sliceD
+  if (sliceE && watchdogLane) {
+    // [R2-5] the slice-E SHIP verdict is the authenticated player-vrm lane,
+    // full stop — no weaker lane may produce it.
+    console.error("[paired-gate] --slice-e cannot be combined with --watchdog-lane");
+    process.exit(2);
+  }
+  if (sliceE && (!manifest.baselineSha || !manifest.candidateSha)) {
+    console.error("[paired-gate] --slice-e requires manifest.baselineSha + manifest.candidateSha [R1-9]");
+    process.exit(2);
+  }
+  const result = sliceE
+    ? evaluateSliceEGate(pairs, {
+        backend: manifest.backend, expectBootActor: manifest.expectBootActor,
+        baselineSha: manifest.baselineSha, candidateSha: manifest.candidateSha,
+      })
+    : sliceD
     ? evaluateSliceDGate(pairs, { backend: manifest.backend, expectBootActor: manifest.expectBootActor })
     : evaluatePairedGate(pairs, { backend: manifest.backend });
   console.log(JSON.stringify(result, null, 2));

@@ -11,6 +11,7 @@ import {
   notifyWorldFramePresented,
 } from '@/lib/three/decorative-release';
 import { awaitBootActorGate } from '@/lib/three/boot-actor';
+import { chainBootCompile, runBootCoreCompileQueue } from '@/lib/three/boot-core-compile';
 import { whenLocomotionClipsSettled } from '@/lib/three/vrm-character-animator';
 import { TEXTURE_SLOTS, tryClaimTexture } from '@/lib/three/deferred-warm';
 import { BootActorNpcBody } from '@/lib/three/arena-npcs';
@@ -49,7 +50,7 @@ import {
   registerBulkVRMIdleCallback,
   beginWorldVrmParseEpoch,
 } from '@/lib/three/vrm-loader';
-import { withStageSlotFrustumCullingDisabled } from '@/components/three/world-stage/resource-ledger';
+import { withStageSlotFrustumCullingDisabledSync } from '@/components/three/world-stage/resource-ledger';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -2130,6 +2131,129 @@ function WorldWarmup({
         const depsStartedAt = performance.now();
         publishPhase('warmupStartAt', depsStartedAt);
         armDecorativeDeadline();
+
+        // Slice E (spec §2): EXACTLY ONE compileAsync in flight, started
+        // EARLY — the serial whitelist compile overlaps the idle dep wait +
+        // vrmBulk + texture scans instead of running after them (Codex R1
+        // killed compile-vs-compile concurrency: WebGPU error-scope LIFO,
+        // shared LightsNode mutation, WebGL2 currentProgram races — spec §6).
+        // Exactly-once is keyed by root uuid (the boot-actor chunk owns two
+        // roots); the late phase picks up roots that mount after the early
+        // kick. Abort-on-failure: a rejection leaves renderer front state
+        // unrestored, so stop compiling — the warm draw is the fail-open.
+        // Exactly-once is keyed by (root uuid, SUBTREE SIGNATURE) [R2-2]: a
+        // root that exists EMPTY at the early kick (activity-indicators) and
+        // gains meshes before reveal must be recompiled by the late phase —
+        // a bare uuid set would skip it forever and silently launder its
+        // compile cost into the warm draw, outside the measured tail.
+        const compiledRootSignatures = new Map<string, string>();
+        const rootSignature = (root: THREE.Object3D): string => {
+          let meshCount = 0;
+          const materialIds: string[] = [];
+          root.traverse((node) => {
+            const mesh = node as THREE.Mesh;
+            if (!mesh.isMesh || !mesh.visible) return;
+            meshCount += 1;
+            const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            for (const mat of mats) {
+              if (mat) materialIds.push((mat as THREE.Material).uuid);
+            }
+          });
+          materialIds.sort();
+          return `${meshCount}:${materialIds.join(',')}`;
+        };
+        const compileTotals = {
+          requested: 0,
+          dispatched: 0,
+          settled: 0,
+          failed: 0,
+          renderables: 0,
+          aborted: false,
+          firstKickAt: 0,
+          lastSettleAt: 0,
+          earlyMs: 0,
+          lateMs: 0,
+        };
+        const compileGenerationLive = () =>
+          !cancelled && !(stageWarmup ? stageResumed : livePendingGateResumed());
+        const runCompilePhase = async (phase: 'early' | 'late'): Promise<void> => {
+          if (compileTotals.aborted || !compileGenerationLive()) return;
+          if (typeof (gl as any).compileAsync !== 'function') return;
+          // The compileAsync front is only synchronous once the renderer is
+          // initialized (spec §2c); the world renderer is initialized long
+          // before warmup, this is a defensive guard.
+          if ((gl as any)._initialized === false && typeof (gl as any).init === 'function') {
+            try {
+              await (gl as any).init();
+            } catch {
+              return;
+            }
+          }
+          const seenThisPhase = new Set<string>();
+          const groups = bootCoreGroups().filter((group) => {
+            if (seenThisPhase.has(group.uuid)) {
+              console.warn(
+                `[World3D] duplicate boot-core root uuid in inventory (compiling once): ${group.uuid} chunk=${String(group.userData?.perfChunk ?? group.name)}`,
+              );
+              return false;
+            }
+            seenThisPhase.add(group.uuid);
+            // Recompile when the subtree signature changed since the last
+            // front (empty-then-populated roots, [R2-2]).
+            return compiledRootSignatures.get(group.uuid) !== rootSignature(group);
+          });
+          if (groups.length === 0) return;
+          const phaseStartedAt = performance.now();
+          if (compileTotals.firstKickAt === 0) compileTotals.firstKickAt = phaseStartedAt;
+          // Renderer-wide FIFO [R2-1]: a successor generation's phase waits
+          // for any orphan in-flight compile before its first front.
+          const result = await chainBootCompile(() => runBootCoreCompileQueue({
+            groups,
+            compile: (group) => {
+              // Culling override scoped to the SYNCHRONOUS compile front —
+              // zero awaits inside the disabled window (spec §2c [R1-5]).
+              // The signature is captured INSIDE the sync window so it
+              // records exactly what the front traversed.
+              let front: Promise<unknown> = Promise.resolve();
+              withStageSlotFrustumCullingDisabledSync('world', () => {
+                const signature = rootSignature(group);
+                compiledRootSignatures.set(group.uuid, signature);
+                compileTotals.renderables += Number(signature.split(':')[0]) || 0;
+                front = (gl as any).compileAsync(group, camera, scene);
+              });
+              return front;
+            },
+            isCancelled: () => !compileGenerationLive(),
+            onGroupSettled: (group, failed, err) => {
+              compileTotals.lastSettleAt = performance.now();
+              if (!compileGenerationLive()) return; // [R1-6] no cross-generation side effects
+              if (failed) {
+                console.warn(
+                  `[World3D] boot-core compileAsync failed for chunk ${String(group.userData?.perfChunk ?? group.name ?? 'unknown')} root=${group.uuid} (aborting queue, warm draw covers the rest):`,
+                  err,
+                );
+              }
+              noteWorldWarmupProgress();
+            },
+            stopOnFailure: true,
+          }));
+          compileTotals.requested += result.requested;
+          compileTotals.dispatched += result.dispatched;
+          compileTotals.settled += result.settled;
+          compileTotals.failed += result.failed;
+          // Failure-abort blocks later phases; a cancellation-abort is
+          // already covered by the generation guards (stamps never publish).
+          if (result.failed > 0) compileTotals.aborted = true;
+          if (phase === 'early') compileTotals.earlyMs += performance.now() - phaseStartedAt;
+          else compileTotals.lateMs += performance.now() - phaseStartedAt;
+          console.log(
+            `[World3D] boot-core compile ${phase}: ${result.settled}/${result.requested} roots settled, ${result.failed} failed`,
+          );
+        };
+        const earlyCompilePromise = runCompilePhase('early').catch((err) => {
+          console.warn('[World3D] early boot-core compile phase failed:', err);
+        });
+
         const clipsPromise = whenLocomotionClipsSettled().then(() => {
           publishPhase('bootCoreDepClipsMs', performance.now() - depsStartedAt);
         });
@@ -2214,28 +2338,38 @@ function WorldWarmup({
           publishPhase('scansTextures', warmupUploadedTextures);
 
           if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
-          // Whitelist compile — each boot-core group EXACTLY ONCE (§2b
-          // [F19]; slot-level culling save/restore is equivalent to
-          // per-group here since every group lives in the world slot).
-          let compileMs = 0;
-          if (typeof (gl as any).compileAsync === 'function') {
-            const compileStartedAt = performance.now();
+
+          // Slice E (spec §2): drain the EARLY serial compile (it overlapped
+          // the dep wait + scans), then the LATE phase compiles roots that
+          // mounted after the early kick — the boot-actor roots, chiefly.
+          // Exactly-once per root uuid across both phases [§2b/F19].
+          const scansEndAt = performance.now();
+          await earlyCompilePromise;
+          await runCompilePhase('late');
+          if (compileGenerationLive()) {
+            const compileWallMs =
+              compileTotals.firstKickAt > 0 && compileTotals.lastSettleAt > 0
+                ? compileTotals.lastSettleAt - compileTotals.firstKickAt
+                : 0;
+            const compileTailMs = Math.max(
+              0,
+              (compileTotals.lastSettleAt || scansEndAt) - scansEndAt,
+            );
+            publishPhase('bootCoreCompileMs', compileWallMs);
+            publishPhase('bootCoreCompileTailMs', compileTailMs);
+            publishPhase(
+              'bootCoreCompileEarlyHiddenMs',
+              Math.max(0, compileWallMs - compileTailMs),
+            );
+            publishPhase('bootCoreCompileEarlyMs', compileTotals.earlyMs);
+            publishPhase('bootCoreCompileLateMs', compileTotals.lateMs);
+            publishPhase('bootCoreCompileRenderables', compileTotals.renderables);
+            publishPhase('bootCoreCompileRequested', compileTotals.requested);
+            publishPhase('bootCoreCompileDispatched', compileTotals.dispatched);
+            publishPhase('bootCoreCompileSettled', compileTotals.settled);
+            publishPhase('bootCoreCompileFailedGroups', compileTotals.failed);
+            publishPhase('bootCoreCompileMode', 'group-serial-early-1');
             noteWorldWarmupProgress();
-            const groups = bootCoreGroups();
-            try {
-              await withStageSlotFrustumCullingDisabled('world', async () => {
-                for (const group of groups) {
-                  if (cancelled) return;
-                  await (gl as any).compileAsync(group, camera, scene);
-                }
-              });
-            } catch (err) {
-              console.warn('[World3D] boot-core compileAsync failed (continuing warmup):', err);
-            } finally {
-              compileMs = performance.now() - compileStartedAt;
-              publishPhase('bootCoreCompileMs', compileMs);
-              noteWorldWarmupProgress();
-            }
           }
           if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
@@ -2243,16 +2377,15 @@ function WorldWarmup({
           // hidden — the render cannot upload or compile it [F4]). On WebGL2
           // this is also the synchronous shader compile. Never run it after
           // the safety watchdog resumed R3F (double-render blue screen).
+          // Sync culling scope (spec §2c): gl.render is synchronous, the
+          // disabled window is atomic.
           const warmRenderStartedAt = performance.now();
           noteWorldWarmupProgress();
           gl.setClearColor(SKY_COLOR, 1);
           gl.setClearAlpha?.(1);
-          await withStageSlotFrustumCullingDisabled(
-            'world',
-            async () => {
-              gl.render(scene, camera);
-            },
-          );
+          withStageSlotFrustumCullingDisabledSync('world', () => {
+            gl.render(scene, camera);
+          });
           const warmRenderMs = performance.now() - warmRenderStartedAt;
           publishPhase('warmRenderMs', warmRenderMs);
           publishPhase('warmupDoneAt', performance.now());
@@ -2263,7 +2396,9 @@ function WorldWarmup({
           console.log(
             `[World3D] WorldWarmup done: deps ${barrierMs.toFixed(1)}ms, `
             + `scans ${scansMs.toFixed(1)}ms (${warmupUploadedTextures} textures), `
-            + `bootCoreCompile ${compileMs.toFixed(1)}ms, warmRender ${warmRenderMs.toFixed(1)}ms`,
+            + `bootCoreCompile ${compileTotals.settled}/${compileTotals.requested} roots `
+            + `(tail after scans ${Math.max(0, (compileTotals.lastSettleAt || scansEndAt) - scansEndAt).toFixed(1)}ms), `
+            + `warmRender ${warmRenderMs.toFixed(1)}ms`,
           );
         } finally {
           for (const obj of hiddenDrift) obj.visible = true;

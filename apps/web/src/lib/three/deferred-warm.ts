@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { awaitBootCompileIdle } from '@/lib/three/boot-core-compile';
 
 // Keep this gentle path aligned with WorldWarmup's proven post-ready uploader.
 // WorldWarmup itself stays untouched: its 2026-07-14 loader/commit ordering is a
@@ -647,6 +648,9 @@ export async function warmDeferredObject(
   if (options.isCancelled()) return 'failopen';
   let compiled = false;
   try {
+    // [R2-1] never overlap an in-flight boot compile (a safety-fuse reveal
+    // can start the deferred stream while an orphan boot tail drains).
+    await awaitBootCompileIdle();
     compiled = await compileDeferredObject(options);
   } catch (error) {
     console.warn(
