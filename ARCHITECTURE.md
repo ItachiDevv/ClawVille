@@ -1,6 +1,19 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-12 (Land hold-wallet door 2 poll-primary rework, protocol v54).**
+**Last Audited: 2026-08-19 (Autonomous status wallet + economy narration; no protocol
+change).** The Lucia-owner `GET /api/world/autonomy/status` enrolled response now includes a
+fail-soft `wallet` block: current `avatars.claw_tokens`, plus positive earnings and absolute
+negative spending summed from `claw_token_transactions` since UTC midnight. A 30-second
+per-user in-process cache (stale entries evicted after ten minutes, with a hard size bound)
+keeps the four-second HUD poll from hammering Postgres; missing avatars, invalid aggregates,
+and query failures return `wallet:null` without failing the rest of the status response.
+Unenrolled responses remain `{ enrolled:false }` and do no wallet work. The autonomy driver's
+presentation-only `decisionThought` now names all six economy verbs (`play_cove_game`,
+`claim_tutorial_quest`, `salvage_node`, `claim_parcel`, `prepay_rent`, `release_parcel`) with
+safe fallbacks for absent or malformed string parameters. `AutonomyStatusThought`, settlement,
+the protected partner surfaces, and `PROTOCOL_VERSION` are unchanged.
+
+**Prior Last Audited: 2026-08-12 (Land hold-wallet door 2 poll-primary rework, protocol v54).**
 Founder ruling 2026-08-11 drops the inbound memo predicate and makes status polling the primary
 verification flow. A bounded scan discovers candidate signatures, but settlement never trusts scan
 facts: every candidate is fetched again at `finalized`, fully probed, and passed through the same
@@ -1520,6 +1533,8 @@ UI locale layer landed 2026-05-22 (Phase 1+2). English + Simplified Chinese ship
 ---
 
 ## 13. Recent material changes
+
+- 2026-08-19. **Autonomous owner activity + vCLAW transparency (no protocol change).** `GET /api/world/autonomy/status` now augments enrolled Lucia-owner responses with fail-soft `wallet:{balance,earnedToday,spentToday}|null`: current avatar balance plus signed `claw_token_transactions` totals since UTC midnight. A bounded 30-second per-user process cache prevents the four-second HUD poll from hammering Postgres (null failures cached; entries older than ten minutes evicted on writes; 2,048-entry hard cap); unenrolled responses do no wallet work. The driver now narrates `play_cove_game`, `claim_tutorial_quest`, `salvage_node`, `claim_parcel`, `prepay_rent`, and `release_parcel` with validated amounts and non-throwing fallbacks. Owner presentation and read-only accounting only; settlement, `AutonomyStatusThought`, protected partner surfaces, and `PROTOCOL_VERSION` are unchanged.
 
 - 2026-08-16. **Cash-poker self-heal: house-table stakes re-tier + busted-seat sweep (scaler pass).** Motivated by live prod: the approved stakes ladder shipped in config (~08-11 promotion) but the scaler only fills COUNT deficits per tier, so prod's five `source='house'` tables kept the retired July ladder (1/2 · 5/10 · 25/50) — the founder's 2026-08-16 "disastrous poker" report. `cashHouseScalerPass()` now runs two steps before the deficit loop. (1) `releaseBustedSeats()`: one discovery query for ACTIVE non-seeded seats with `current_stack_ct=0` idle >10 min (module const; ISO-text timestamptz param — raw-sql Date serializer trap), each released via `cashTableManager.releaseBustedSeat(tableId, seatId)` under the per-table lock with live-hand + stack re-checks; credits 0 through the existing idempotent `cashOutSeat`, so NO money moves. Applies to house AND player tables (abandoned busted seats bounced their owner into dead rooms via the lobby's "returning to your table" path and held seats). (2) `retireMismatchedHouseTables()`: one discovery query for open house tables whose `(buy_in, sb, bb)` differ from `HOUSE_TIERS[tier_key]` (or unknown tier), each retired via `cashTableManager.retireHouseTable(tableId)` — under the table lock: skip on live hand, skip on any NON-zero-stack human seat (log line), release 0-stack human seats (0 credit), cash all seeded seats back to the house bank via `cashOutSeat`, then close ONLY after a fresh FOR-UPDATE read proves `table_escrow_ct=0` (non-zero escrow logs an error and leaves the table open for ops). The existing deficit loop then recreates the tier at approved stakes + eager-seats bots in the same pass. Prod house bank (97,909 vCLAW) covers the new-ladder seeded buy-ins (22,200). Review note: a round-1 rewrite of `withTableLock` (outer spanning DB transaction holding `pg_advisory_xact_lock`) was REJECTED for pool-starvation risk (outer tx pins a pooled connection while inner money txs need their own) and reverted to the original in-process per-table mutex — the API is single-process per box. Money movement stays exclusively inside `cashOutSeat`. Tests: scaler 12 + manager suites, 50 pass. **PARITY:** server-side hygiene only; no route, wire, or PROTOCOL_VERSION change; human and agent settlement paths untouched.
 

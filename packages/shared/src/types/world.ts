@@ -85,7 +85,9 @@ export interface AutonomyStatusThought {
 /**
  * Lucia-owner view of the in-memory Autonomous driver. `bodyId` is the public
  * snapshot id already sent to world clients; no agent bearer or platform id is
- * part of this contract.
+ * part of this contract. Enrolled responses include a fail-soft vCLAW wallet
+ * snapshot: the current integer balance plus ledger-derived UTC-day earnings
+ * and spending, or null when that read was unavailable for this poll.
  */
 export type AutonomyStatusResponse =
   | { enrolled: false }
@@ -97,4 +99,5 @@ export type AutonomyStatusResponse =
       bodyId: string;
       phaseSince: number;
       thoughts: AutonomyStatusThought[];
+      wallet: { balance: number; earnedToday: number; spentToday: number } | null;
     };

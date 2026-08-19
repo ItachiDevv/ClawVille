@@ -64,6 +64,7 @@ export default function AutonomyHUD() {
   // visible connection interruption, not as current server truth.
   const isEnrolled = status?.enrolled === true && !statusQuery.isError;
   const thoughts = isEnrolled ? status.thoughts : EMPTY_THOUGHTS;
+  const wallet = isEnrolled ? status.wallet : null;
 
   // Session elapsed starts only once the server confirms enrollment; a cached
   // response from an earlier toggle never starts this clock.
@@ -126,6 +127,20 @@ export default function AutonomyHUD() {
           </div>
           <div className="text-xs text-white/80 truncate">{phaseText}</div>
         </div>
+
+        {wallet && (
+          <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-cyan-500/10 text-[10px] font-mono">
+            <span className="text-white/80 whitespace-nowrap">
+              Balance: {wallet.balance.toLocaleString()} vCLAW
+            </span>
+            <span className="whitespace-nowrap">
+              <span className="text-green-400">Today: +{wallet.earnedToday}</span>
+              <span className="text-white/40"> / </span>
+              <span className="text-red-300">−{wallet.spentToday}</span>
+              <span className="text-white/40"> vCLAW</span>
+            </span>
+          </div>
+        )}
 
         {/* Thought Feed */}
         <div

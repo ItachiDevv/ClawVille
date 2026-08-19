@@ -1,7 +1,18 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-19 (Cove entry UX — clicking the Texas Hold'em table or
+**Last Audited: 2026-08-19 (Autonomous activity and vCLAW transparency).** The
+Activity Log now opens above the sonar map instead of being permanently buried
+under it, and stays within short screens. Autonomous agents now say what they
+are doing when they play a Cove game, claim a quest reward, salvage materials,
+claim or rent land, prepay rent, or release land; Cove play lines include the
+game and wager when both are valid. The Autonomous panel also shows the owner's
+current vCLAW balance and today's earned and spent totals from the real ledger,
+so a player can see whether their bot is spending vCLAW. Daily totals use the
+UTC day and disappear quietly for a poll if the wallet read is unavailable.
+No agent protocol or settlement rule changed.
+
+**Prior Last Audited: 2026-08-19 (Cove entry UX — clicking the Texas Hold'em table or
 its floating sign works from anywhere in the room).** Before this fix, clicking
 the hold'em table or its sign from near the Cove entrance opened the CLASSIC
 slot screen instead (the invisible slot click zones sit between the door and

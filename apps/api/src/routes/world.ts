@@ -28,13 +28,14 @@ import { setCookie } from 'hono/cookie';
 import { HTTPException } from 'hono/http-exception';
 import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
 import {
   SPAWN_PX,
   WORLD_PRESENCE_WS_CLOSE_CODES,
   WORLD_PX_HEIGHT,
   WORLD_PX_WIDTH,
+  type AutonomyStatusResponse,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
@@ -87,6 +88,135 @@ import type { AppContext } from '../types';
 // bump auto-propagates here — no edit to this line, only the comment.
 const TOWN_CENTER_X = SPAWN_PX.x;
 const TOWN_CENTER_Y = SPAWN_PX.y;
+
+type AutonomyWallet = Extract<AutonomyStatusResponse, { enrolled: true }>['wallet'];
+
+interface AutonomyWalletReadDeps {
+  findAvatar: (ownerUserId: string) => Promise<{ id: string; clawTokens: number } | null>;
+  readDailyTotals: (
+    avatarId: string,
+    utcMidnightIso: string,
+  ) => Promise<{ earnedToday: number | string; spentToday: number | string } | null>;
+}
+
+const AUTONOMY_WALLET_CACHE_TTL_MS = 30_000;
+const AUTONOMY_WALLET_CACHE_STALE_MS = 10 * 60_000;
+const AUTONOMY_WALLET_CACHE_MAX = 2_048;
+const autonomyWalletCache = new Map<
+  string,
+  { wallet: AutonomyWallet; cachedAt: number }
+>();
+
+const autonomyWalletReadDeps: AutonomyWalletReadDeps = {
+  async findAvatar(ownerUserId) {
+    const avatar = await db.query.avatars.findFirst({
+      columns: { id: true, clawTokens: true },
+      where: eq(avatars.userId, ownerUserId),
+    });
+    return avatar ?? null;
+  },
+  async readDailyTotals(avatarId, utcMidnightIso) {
+    const rows = await db.execute<{
+      earned_today: number | string;
+      spent_today: number | string;
+    }>(sql`
+      SELECT
+        COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS earned_today,
+        COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS spent_today
+      FROM claw_token_transactions
+      WHERE avatar_id = ${avatarId}
+        AND created_at >= ${utcMidnightIso}::timestamptz
+    `);
+    const row = rows[0];
+    return row
+      ? { earnedToday: row.earned_today, spentToday: row.spent_today }
+      : null;
+  },
+};
+
+function walletInteger(value: number | string): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error('Invalid vCLAW wallet aggregate');
+  }
+  return parsed;
+}
+
+/** Uncached ledger read. Exported as a deterministic route seam for tests. */
+export async function readAutonomyWalletUncached(
+  ownerUserId: string,
+  nowMs: number = Date.now(),
+  deps: AutonomyWalletReadDeps = autonomyWalletReadDeps,
+): Promise<AutonomyWallet> {
+  const avatar = await deps.findAvatar(ownerUserId);
+  if (!avatar) return null;
+  const midnight = new Date(nowMs);
+  midnight.setUTCHours(0, 0, 0, 0);
+  const totals = await deps.readDailyTotals(avatar.id, midnight.toISOString());
+  if (!totals) return null;
+  return {
+    balance: walletInteger(avatar.clawTokens),
+    earnedToday: walletInteger(totals.earnedToday),
+    spentToday: walletInteger(totals.spentToday),
+  };
+}
+
+/** 30-second per-owner cache; failures are cached as null to avoid DB hammer. */
+export async function readAutonomyWalletCached(
+  ownerUserId: string,
+  nowMs: number = Date.now(),
+  reader: (ownerUserId: string, nowMs: number) => Promise<AutonomyWallet> =
+    readAutonomyWalletUncached,
+): Promise<AutonomyWallet> {
+  const cached = autonomyWalletCache.get(ownerUserId);
+  if (cached && nowMs - cached.cachedAt < AUTONOMY_WALLET_CACHE_TTL_MS) {
+    return cached.wallet;
+  }
+
+  let wallet: AutonomyWallet = null;
+  try {
+    wallet = await reader(ownerUserId, nowMs);
+  } catch {
+    wallet = null;
+  }
+
+  for (const [userId, entry] of autonomyWalletCache) {
+    if (nowMs - entry.cachedAt > AUTONOMY_WALLET_CACHE_STALE_MS) {
+      autonomyWalletCache.delete(userId);
+    }
+  }
+  autonomyWalletCache.delete(ownerUserId);
+  while (autonomyWalletCache.size >= AUTONOMY_WALLET_CACHE_MAX) {
+    const oldestUserId = autonomyWalletCache.keys().next().value;
+    if (typeof oldestUserId !== 'string') break;
+    autonomyWalletCache.delete(oldestUserId);
+  }
+  autonomyWalletCache.set(ownerUserId, { wallet, cachedAt: nowMs });
+  return wallet;
+}
+
+/** Route contract builder: unenrolled owners never trigger a wallet read. */
+export async function resolveAutonomyStatusForOwner(
+  ownerUserId: string,
+  statusReader: (ownerUserId: string) => AutonomyStatusResponse = (userId) =>
+    agentAutonomyDriver.getOwnerStatus(userId),
+  walletReader: (ownerUserId: string) => Promise<AutonomyWallet> = (userId) =>
+    readAutonomyWalletCached(userId),
+): Promise<AutonomyStatusResponse> {
+  const status = statusReader(ownerUserId);
+  if (!status.enrolled) return status;
+  let wallet: AutonomyWallet = null;
+  try {
+    wallet = await walletReader(ownerUserId);
+  } catch {
+    wallet = null;
+  }
+  return { ...status, wallet };
+}
+
+export function resetAutonomyWalletCacheForTest(): void {
+  autonomyWalletCache.clear();
+}
 
 export const worldRoutes = new Hono<AppContext>();
 
@@ -495,7 +625,7 @@ worldRoutes.post('/autonomy', async (c) => {
  *
  * Keep this static control route grouped before the dynamic world stream.
  */
-worldRoutes.get('/autonomy/status', (c) => {
+worldRoutes.get('/autonomy/status', async (c) => {
   const ip = getClientIp(c.req.raw.headers);
   if (!autonomyStatusRateLimiter.check(ip)) {
     return c.json(
@@ -507,7 +637,7 @@ worldRoutes.get('/autonomy/status', (c) => {
   if (!user) {
     return c.json({ error: 'Login required to view agent autonomy', code: 'auth_required' }, 401);
   }
-  return c.json(agentAutonomyDriver.getOwnerStatus(user.id));
+  return c.json(await resolveAutonomyStatusForOwner(user.id));
 });
 
 const { upgradeWebSocket } = getBunWebSocketHelper();

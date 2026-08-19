@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { MAP_LOCATIONS, type AutonomyStatusThought } from '@clawville/shared';
-import { agentAutonomyDriver } from '../agent-autonomy-driver';
+import { agentAutonomyDriver, decisionThought } from '../agent-autonomy-driver';
 import { npcSimulation } from '../npc-simulation';
 import type {
   AgentDirectiveState,
@@ -119,9 +119,58 @@ describe('round 2 owner status and thought feed', () => {
       bodyId: BODY,
       phaseSince: expect.any(Number),
       thoughts: [],
+      wallet: null,
     });
     expect(JSON.stringify(status)).not.toContain(AGENT);
     expect(JSON.stringify(status)).not.toContain('round2-platform');
+  });
+
+  it('narrates each economy action instead of falling back to generic noise', () => {
+    expect(decisionThought({
+      verb: 'play_cove_game',
+      params: { game: 'blackjack', wager: '25' },
+    })).toBe('Playing blackjack at the Cove — wagering 25 vCLAW');
+    expect(decisionThought({ verb: 'claim_tutorial_quest', params: {} }))
+      .toBe('Claiming a quest reward');
+    expect(decisionThought({ verb: 'salvage_node', params: {} }))
+      .toBe('Salvaging materials from a seabed node');
+    expect(decisionThought({
+      verb: 'claim_parcel',
+      params: { parcelCode: 'A-12', door: 'hold' },
+    })).toBe('Claiming parcel A-12 (hold — no vCLAW spent)');
+    expect(decisionThought({
+      verb: 'prepay_rent',
+      params: { parcelCode: 'A-12', weeks: '3' },
+    })).toBe('Prepaying 3 week(s) of rent on A-12');
+    expect(decisionThought({
+      verb: 'release_parcel',
+      params: { parcelCode: 'A-12' },
+    })).toBe('Releasing parcel A-12');
+  });
+
+  it('falls back safely for malformed economy parameters', () => {
+    expect(decisionThought({
+      verb: 'play_cove_game',
+      params: { game: 'roulette', wager: 'garbage' },
+    })).toBe('Playing at the Cove');
+    expect(decisionThought({
+      verb: 'claim_parcel',
+      params: { parcelCode: 'B-7', door: 'rent' },
+    })).toBe('Renting parcel B-7 — paying week 1 now');
+    expect(decisionThought({
+      verb: 'claim_parcel',
+      params: {},
+    })).toBe('Claiming parcel');
+    expect(decisionThought({
+      verb: 'claim_parcel',
+      params: { parcelCode: '   ', door: 'hold' },
+    })).toBe('Claiming parcel (hold — no vCLAW spent)');
+    expect(decisionThought({
+      verb: 'prepay_rent',
+      params: { parcelCode: '   ', weeks: '2x' },
+    })).toBe('Prepaying rent on a parcel');
+    expect(decisionThought({ verb: 'release_parcel', params: { parcelCode: '   ' } }))
+      .toBe('Releasing parcel');
   });
 
   it('records a new directive once, acts once per sha, and caps thoughts at 20', async () => {
