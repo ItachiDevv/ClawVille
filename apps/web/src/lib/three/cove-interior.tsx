@@ -1195,6 +1195,47 @@ function BankBanner({ label, color, position }: { label: string; color: string; 
 }
 
 // ---------------------------------------------------------------------------
+// Hotspot click-yield rule (user report 2026-08-19 + certification Low #3).
+//
+// Every cove click hotspot is an INVISIBLE box that is deliberately larger
+// than the geometry it fronts, and several of them line up on the same sight
+// lines (slot bank → hold'em T1 from the spawn; blackjack T2 → baccarat on
+// the right lane). A generous box can therefore swallow a ray the player
+// aimed THROUGH its empty air at a farther table/sign — the exact "clicked
+// hold'em, got slots" failure a live user and the 2026-08-17 certification
+// both hit.
+//
+// Rule (applied by EVERY hotspot's onClick): if the same click ray also hits
+// a FARTHER hotspot, raycast the visible room geometry once — when no
+// visible surface sits in front of that farther hotspot, the pixel the
+// player clicked belongs to the farther region, so this hotspot returns
+// WITHOUT stopPropagation and R3F delivers the click onward. Clicks that
+// land on real geometry inside this hotspot (cabinet faces, the near felt)
+// keep today's behavior. Click-only cost — never runs per frame.
+// ---------------------------------------------------------------------------
+const _hotspotYieldRaycaster = new THREE.Raycaster();
+
+/** Cloned room GLB root — set by InteriorScene while mounted, read by the
+ *  click-yield occlusion raycast. Module-scope ref (no React plumbing). */
+const _coveRoomRootRef: { current: THREE.Object3D | null } = { current: null };
+
+function _shouldYieldClickToFartherHotspot(
+  e: { distance: number; ray: THREE.Ray; intersections: Array<{ distance: number; object: THREE.Object3D }> },
+  selfMesh: THREE.Object3D | null,
+): boolean {
+  const farther = e.intersections.find(
+    (i) => i.object !== selfMesh && i.distance > e.distance && i.object.userData?.coveHotspot,
+  );
+  if (!farther) return false;
+  const roomRoot = _coveRoomRootRef.current;
+  _hotspotYieldRaycaster.ray.copy(e.ray);
+  _hotspotYieldRaycaster.far = Infinity;
+  const sceneHits = roomRoot ? _hotspotYieldRaycaster.intersectObject(roomRoot, true) : [];
+  const dScene = sceneHits[0]?.distance ?? null;
+  return dScene === null || dScene > farther.distance;
+}
+
+// ---------------------------------------------------------------------------
 // Slot hotspot click box
 // ---------------------------------------------------------------------------
 function SlotHotspot({ def }: { def: HotspotDef }) {
@@ -1205,6 +1246,7 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    mesh.userData.coveHotspot = true;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
   }, []);
@@ -1227,6 +1269,7 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
+        if (_shouldYieldClickToFartherHotspot(e, meshRef.current)) return;
         e.stopPropagation();
         handleClick();
       }}
@@ -1248,9 +1291,9 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 // of the table face (toward the player spawn at +Z), so the invisible
 // hit-test box sits between the player and the dealer station.
 //
-// Size: 200wu wide × 200wu tall × 150wu deep — generous so the player
+// Size: 200wu wide × 340wu tall × 150wu deep — generous so the player
 // can click from normal approach distance without pixel-perfect aim.
-// Y: 0→200 wu range, centre at 100 wu (covers table-top + standing zone).
+// Y: 0→340 wu range, centre at 170 wu (covers table-top + floating sign).
 //
 // Iris Xe safe: meshBasicMaterial visible=false = no draw call.
 // matrixAutoUpdate=false after first frame = zero matrix recomputes.
@@ -1258,10 +1301,10 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 
 const _BJ_HOTSPOT_POS: [number, number, number] = [
   _DEALER_CENTER_X,      // X = dealer station X (poker table center)
-  100,                   // Y centre = halfway up the table height
+  170,                   // Y centre covers the table and floating sign
   _DEALER_CENTER_Z,      // Z = dealer station Z (poker table center)
 ];
-const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 340, 150];
 
 // ---------------------------------------------------------------------------
 // Phase 6.5.0 — Texas Hold'em hotspot.
@@ -1282,10 +1325,10 @@ const _HOLDEM_CENTER_X = glbToWorldX(_HOLDEM_GLB_X);
 const _HOLDEM_CENTER_Z = glbToWorldZ(_HOLDEM_GLB_Y);
 const _HOLDEM_HOTSPOT_POS: [number, number, number] = [
   _HOLDEM_CENTER_X,
-  100,
+  170,
   _HOLDEM_CENTER_Z,
 ];
-const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 340, 150];
 
 // TABLE-IDENTITY SWAP (2026-07-16, founder live-test): the seated hold'em
 // experience (T1_SEATS, busts, felt cards, E-to-sit) was built at the table
@@ -1302,6 +1345,7 @@ function BlackjackTableHotspot() {
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    mesh.userData.coveHotspot = true;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
   }, []);
@@ -1331,6 +1375,7 @@ function BlackjackTableHotspot() {
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
+        if (_shouldYieldClickToFartherHotspot(e, meshRef.current)) return;
         e.stopPropagation();
         handleClick();
       }}
@@ -1355,6 +1400,7 @@ function HoldemTableHotspot() {
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    mesh.userData.coveHotspot = true;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
   }, []);
@@ -1376,6 +1422,7 @@ function HoldemTableHotspot() {
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
+        if (_shouldYieldClickToFartherHotspot(e, meshRef.current)) return;
         e.stopPropagation();
         handleClick();
       }}
@@ -1405,10 +1452,10 @@ const _BACCARAT_CENTER_X = glbToWorldX(_BACCARAT_GLB_X);
 const _BACCARAT_CENTER_Z = glbToWorldZ(_BACCARAT_GLB_Y);
 const _BACCARAT_HOTSPOT_POS: [number, number, number] = [
   _BACCARAT_CENTER_X,
-  100,
+  170,
   _BACCARAT_CENTER_Z,
 ];
-const _BACCARAT_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
+const _BACCARAT_HOTSPOT_SIZE: [number, number, number] = [200, 340, 150];
 
 function BaccaratTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -1416,6 +1463,7 @@ function BaccaratTableHotspot() {
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    mesh.userData.coveHotspot = true;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
   }, []);
@@ -1440,6 +1488,7 @@ function BaccaratTableHotspot() {
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
+        if (_shouldYieldClickToFartherHotspot(e, meshRef.current)) return;
         e.stopPropagation();
         handleClick();
       }}
@@ -2965,11 +3014,19 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty, onReady }
   }, [scene, useFallback]);
 
   useEffect(() => {
+    // Expose the visible room root to the hotspot click-yield occlusion
+    // raycast (see _shouldYieldClickToFartherHotspot). Set before the group
+    // guard so the ref is valid as soon as the cloned GLB exists.
+    _coveRoomRootRef.current = cloned;
     const g = groupRef.current;
-    if (!g) return;
-    g.matrixAutoUpdate = false;
-    g.updateMatrix();
-    onReady();
+    if (g) {
+      g.matrixAutoUpdate = false;
+      g.updateMatrix();
+      onReady();
+    }
+    return () => {
+      if (_coveRoomRootRef.current === cloned) _coveRoomRootRef.current = null;
+    };
   }, [cloned, onReady]);
 
   // Camera debug log
