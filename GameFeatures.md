@@ -1,7 +1,20 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-16 (Cove hold'em room — the table never looks abandoned
+**Last Audited: 2026-08-19 (Cove entry UX — clicking the Texas Hold'em table or
+its floating sign works from anywhere in the room).** Before this fix, clicking
+the hold'em table or its sign from near the Cove entrance opened the CLASSIC
+slot screen instead (the invisible slot click zones sit between the door and
+the poker table and swallowed the click) — reported live by a player's OpenClaw
+agent 2026-08-19 and independently flagged by the 2026-08-17 certification.
+Now: each game table's floating sign is clickable (routes the same as the
+table), and clicks aimed across the room at a farther table/sign pass through
+nearer click zones unless the player actually clicked visible geometry (slot
+cabinet faces still open slots as before). Applies to hold'em, blackjack, and
+baccarat symmetrically — blackjack no longer shadows the baccarat sign on
+their shared lane. Render layer only; no economy/route changes.
+
+**Prior Last Audited: 2026-08-16 (Cove hold'em room — the table never looks abandoned
 between hands, and a fresh seat no longer shows a false error).** Seated players
 (house bots included) now stay visible in the 3D room and in the HTML seat
 badges between hands, during the settle banner, and while waiting for players —

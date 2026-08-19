@@ -1,7 +1,30 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-17 (Cold-load rung-4 slice D — the boot-core gate;
+**Last Audited: 2026-08-19 (Cove interior — hotspot click-yield rule + sign-height
+table hotspots).** `cove-interior.tsx`: fixes the double-confirmed entry defect
+(live user report 2026-08-19 + certification Low #3, 2026-08-17) where the two
+oversized invisible slot click boxes (~316×220×~415wu, between the spawn and
+hold'em T1) swallowed clicks aimed across the room at the Texas Hold'em
+table/sign — the player got the CLASSIC slot screen instead of `/cove/table`
+(live-reproduced on staging pre-fix). Two changes: (1) the three table hotspot
+boxes (hold'em @T1, blackjack @T2, baccarat) grew from 200×200×150 to
+**200×340×150, center Y 170** so each box now covers its floating `BankBanner`
+sign (y∈[250,310]) — clicking a sign routes like clicking the table. (2) A
+symmetric **click-yield rule** on ALL five cove hotspots
+(`_shouldYieldClickToFartherHotspot`): every hotspot mesh carries
+`userData.coveHotspot`; on click, if the same ray also hits a FARTHER hotspot,
+one module-scope `THREE.Raycaster` checks the visible room GLB (via the
+module-scope `_coveRoomRootRef` set by `InteriorScene`) — when no visible
+surface sits in front of that farther hotspot, the handler returns WITHOUT
+`stopPropagation()` and R3F delivers the click onward. Clicks landing on real
+geometry (cabinet faces, near felt) behave exactly as before. Symmetric on
+purpose: the taller blackjack box would otherwise shadow the baccarat sign on
+the shared right lane (and the table-area version of that shadowing was
+pre-existing). Click-only cost — zero per-frame work; Iris Xe invariants
+untouched. See §10c hotspot procedure note.
+
+**Prior Last Audited: 2026-08-17 (Cold-load rung-4 slice D — the boot-core gate;
 spec FROZEN rev 5 in `docs/perf-cold-load-rung4-sliceD-spec.md`, Codex xhigh
 spec rounds 19/15/8/2/0 findings + implementation rounds I1(10)/I2).** The
 loading screen now dismisses when an explicit BOOT CORE is on screen, not
@@ -1951,6 +1974,7 @@ Slot-machine hotspots are discovered at runtime from the GLB instead of being ha
    `halfHotspotW = halfW * 0.92` — 4% seam gap at the split prevents both hotspots double-hitting a click on the exact center line. The Phase 6.1.16 bug (`halfW + reach`) had the boxes overlapping the full bank width; the array-first (classic) hotspot then always won the raycast, so bonus clicks opened classic.
 5. **Always render TWO `BankBanner` labels** (procedural `THREE.CanvasTexture` + `PlaneGeometry`) at `(classicCentroid[0], 280, classicCentroid[2])` and `(bonusCentroid[0], 280, bonusCentroid[2])`. Banner Y is **pinned to 280wu** (just above cabinet tops, below ceiling) — never computed from bbox centroid + offset, since floor decals + ceiling trim in the same material can drag the centroid out of view.
 6. **Fall back to `GAMEREADY_HOTSPOTS`** (hardcoded by tile-zone) if no cluster mesh matches. Last-resort `FALLBACK_HOTSPOTS` is for the cartoon GLB path.
+7. **Click-yield rule (2026-08-19, MANDATORY for every new interior hotspot):** every invisible click hotspot mesh MUST set `userData.coveHotspot = true` and gate its `onClick` through `_shouldYieldClickToFartherHotspot(e, mesh)` — when the click ray also hits a FARTHER hotspot and no visible room surface (raycast against `_coveRoomRootRef`) sits in front of it, return WITHOUT `stopPropagation()` so R3F delivers the click to the hotspot the player was actually aiming at. Oversized boxes on shared sight lines otherwise swallow cross-room clicks (the "clicked hold'em, got slots" defect — live user report 2026-08-19 + cert Low #3). Table hotspot boxes are 200×340×150 (center Y=170) so they include their floating signs — a sign click is a table click.
 
 **`HotspotDef` shape:** `{ position: [x,y,z], size: [w,h,d], machineSlug: MachineSlug, paytableId: MachineSlug, isBonus: boolean }`.
 
