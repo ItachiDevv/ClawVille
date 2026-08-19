@@ -940,7 +940,9 @@ export function LandParcelSignHitboxes() {
   }, [parcels]);
 
   return (
-    <>
+    // Slice D [R2-F4]: explicit non-rendered ownership — 180 invisible click
+    // meshes must not read as unowned drift in the boot-core inventory.
+    <group userData={{ perfNonRendered: true }}>
       {hitboxes.map((hb) => (
         <mesh
           key={hb.parcelCode}
@@ -956,6 +958,6 @@ export function LandParcelSignHitboxes() {
           <boxGeometry args={[hb.hw * 2, hb.hh * 2, hb.hd * 2]} />
         </mesh>
       ))}
-    </>
+    </group>
   );
 }

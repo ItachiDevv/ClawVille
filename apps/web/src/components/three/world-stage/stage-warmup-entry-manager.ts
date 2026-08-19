@@ -1,3 +1,5 @@
+import { awaitBootCompileIdle } from '@/lib/three/boot-core-compile';
+
 export const STAGE_COMPILE_TIMEOUT_MS = 20_000;
 
 interface StageCompileEntry {
@@ -104,6 +106,9 @@ export async function warmStageSlotRenderer(input: {
   }
 
   if (input.compile) {
+    // [R2-1] a scene entered mid-world-boot must not run its stage compile
+    // while an orphan boot compileAsync tail is still draining.
+    await awaitBootCompileIdle();
     const compileResult = await waitForStageSlotCompile(
       input.slotId,
       input.gl,

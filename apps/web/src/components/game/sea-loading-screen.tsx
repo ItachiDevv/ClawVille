@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useGameStore } from '@/stores/game';
 import { createVisibilityFuse } from './visibility-fuse';
+import { isBootCorePresented } from '@/lib/three/decorative-release';
+import { getBootDepProgress } from '@/lib/three/boot-actor';
 
 // ---------------------------------------------------------------------------
 // SeaLoadingScreen
@@ -195,6 +197,12 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       }
     });
 
+    // Slice D (§2d [F8]): bounded fallback — __W3D_READY true but the
+    // BOOT_CORE_PRESENTED milestone unstamped for >10s of VISIBLE time
+    // (notifier regression) dismisses with a warning. Terminal like the
+    // 45s fuse; disposed on every normal dismissal path.
+    let milestoneFallbackFuse: { dispose: () => void } | null = null;
+
     // Composite bar formula (2026-05-31). Three phases stitched into
     // [0, 1] so the bar's velocity reflects the user's actual wait, not
     // just network downloads. Old bar: pure `__W3D_PROGRESS` capped at
@@ -215,9 +223,28 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     let highWaterMark = 0;
     function tick() {
       if (!mountedRef.current) return;
-      // Dismiss only when both canvas AND textures are ready (keeps the
-      // blue-flash fix from 2026-05-26).
-      const ready = forceReady || !!(window as any).__W3D_READY;
+      // Slice D (§2c/§2d): dismissal keys on the BOOT_CORE_PRESENTED
+      // milestone — render-proven via the scene onAfterRender chain, read
+      // through the module GETTER so this component's legacy flag re-zero
+      // can never clear it [R2-F7]. The 45s visibility fuse and the 10s
+      // milestone fallback below are the only other dismissal paths.
+      const ready = forceReady || isBootCorePresented();
+      if (!ready && !!(window as any).__W3D_READY && milestoneFallbackFuse === null) {
+        milestoneFallbackFuse = createVisibilityFuse(10_000, () => {
+          if (!mountedRef.current || readyRef.current) return;
+          console.warn(
+            '[SeaLoading] BOOT_CORE_PRESENTED never stamped within 10s of __W3D_READY; dismissing via fallback',
+          );
+          readyRef.current = true;
+          forceFuse.dispose();
+          setPhase('ready');
+          setProgress(1);
+          setFading(true);
+          setTimeout(() => {
+            if (mountedRef.current) setVisible(false);
+          }, 420);
+        });
+      }
       if (ready) {
         // Record this machine's real mount→ready time so the slow-hint
         // threshold self-calibrates on the next load. Only on a genuine
@@ -239,6 +266,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         // rendering null, so anything left armed would keep firing state
         // updates in the background.
         forceFuse.dispose();
+        milestoneFallbackFuse?.dispose();
+        milestoneFallbackFuse = null;
         setPhase('ready');
         setProgress(1);
         setFading(true);
@@ -256,14 +285,26 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         __W3D_TEXTURES_READY?: boolean;
       };
 
-      // Phase 1 — asset download (THREE.DefaultLoadingManager loaded/total).
-      const downloadFrac = Math.max(0, Math.min(1, bridge.__W3D_PROGRESS ?? 0));
+      // Phase 1 — boot-core dependency progress (slice D §2d): the FIVE
+      // epoch-owned units (3 clips + actor fetch + commit) from the
+      // boot-actor module [I1-F3] replace the retired LoadingManager ratio.
+      // TOTAL is known only after coordinator closure; pre-closure the band
+      // shows a bounded time-ease creep (≤30% of the band) so the bar never
+      // reads frozen, and never lies past it. The epoch deadline freezes
+      // membership (getter returns done=total after it fires).
+      const deps = getBootDepProgress();
+      const depsKnown = deps.total !== null;
+      const downloadFrac = depsKnown
+        ? deps.total! > 0
+          ? Math.max(0, Math.min(1, deps.done / deps.total!))
+          : 1
+        : 0;
       const elapsed = performance.now() - startedAtRef.current;
       const downloadEase = Math.min(1, elapsed / DOWNLOAD_EASE_MS);
-      // Displayed download fill = the slower of real progress vs the time-ease
-      // cap. Caps the LoadingManager spike without ever inflating a genuinely
-      // slow download.
-      const downloadShown = Math.min(downloadFrac, downloadEase);
+      // Displayed fill = the slower of real progress vs the time-ease cap.
+      const downloadShown = depsKnown
+        ? Math.min(downloadFrac, downloadEase)
+        : Math.min(0.3, downloadEase);
 
       // Phase 2 — GPU texture upload (StaggeredTextureUpload counter).
       // Only counts once asset downloads are essentially complete AND
@@ -313,6 +354,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       mountedRef.current = false;
       clearTimeout(slowTimer);
       forceFuse.dispose();
+      milestoneFallbackFuse?.dispose();
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, [forceReady]);

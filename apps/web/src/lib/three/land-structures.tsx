@@ -58,6 +58,14 @@ import {
 import type { ParcelSlot } from '@clawville/shared';
 import { api } from '@/lib/api';
 import { useAvatar } from '@/hooks/use-avatar';
+import { BOOT_STREAM_TIER_LAND } from '@/lib/three/decorative-release';
+import { useBootStreamRelease } from '@/lib/three/use-boot-stream-release';
+import {
+  beginLandHydration,
+  declareLandSlots,
+  reportLandSlotFallback,
+  reportLandSlotResolved,
+} from '@/lib/three/land-boot-tracker';
 import { useLandStore, type PlacedStructure } from '@/stores/land';
 import { LAND_STRUCTURES_REFRESH_EVENT } from '@/lib/land-query-keys';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
@@ -201,16 +209,20 @@ function PrimitiveStructure({ parcel, structure }: { parcel: ParcelSlot; structu
 // ---------------------------------------------------------------------------
 
 class GLBErrorBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
+  { fallback: ReactNode; onErrored?: () => void; children: ReactNode },
   { errored: boolean }
 > {
-  constructor(props: { fallback: ReactNode; children: ReactNode }) {
+  constructor(props: { fallback: ReactNode; onErrored?: () => void; children: ReactNode }) {
     super(props);
     this.state = { errored: false };
   }
   static getDerivedStateFromError(): { errored: boolean } {
     // A GLB load rejection (missing/failed file) bubbles here — show the primitive.
     return { errored: true };
+  }
+  componentDidCatch(): void {
+    // Slice D §4b [R3-F4]: fallback outcomes are measurement-counted.
+    this.props.onErrored?.();
   }
   // Intentionally no componentDidCatch logging spam — a missing GLB during the
   // Stage-1→Stage-2 swap window is EXPECTED, not an error to surface.
@@ -234,6 +246,11 @@ function GLBStructure({
 }) {
   const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
   const groupRef = useRef<THREE.Group>(null);
+
+  // Slice D §4b: slot RESOLVED from a commit effect (render-abandon-safe).
+  useEffect(() => {
+    reportLandSlotResolved('structures', parcel.id);
+  }, [parcel.id]);
 
   // Clone the cached scene graph and each authored material. Geometry/textures
   // remain cache-shared; palette swatches multiply material color, preserving
@@ -334,7 +351,10 @@ function StructureSlot({
   const primitive = <PrimitiveStructure parcel={parcel} structure={structure} />;
 
   return (
-    <GLBErrorBoundary fallback={primitive}>
+    <GLBErrorBoundary
+      fallback={primitive}
+      onErrored={() => reportLandSlotFallback('structures', parcel.id)}
+    >
       <Suspense fallback={primitive}>
         <GLBStructure parcel={parcel} structure={structure} path={path} />
       </Suspense>
@@ -370,6 +390,13 @@ function BoundedStructureSlots({ slots }: { slots: readonly StructureRenderSlot[
     const { x, z } = lastCameraPosition.current;
     setMountedSlots(selectNearestSlots(slots, x, z));
   }, [slots]);
+
+  // Slice D §4b [I1-F7]: declare the CURRENT expected slot ID SET (exact
+  // identity — replacing N slots with N different slots must read as
+  // unresolved until the new ids resolve).
+  useEffect(() => {
+    declareLandSlots('structures', mountedSlots.map((s) => s.parcel.id));
+  }, [mountedSlots]);
 
   useSceneFrame(({ camera }) => {
     camera.getWorldPosition(_camPos);
@@ -407,12 +434,22 @@ function StructureHydrator() {
 
     const hydrate = async (includeOwned: boolean): Promise<void> => {
       const version = ++requestVersion;
+      // Slice D §4b [R3-F3][I1-F8]: TWO hydration generations — the public
+      // list and the authenticated owner overlay are separate requests with
+      // separate outcomes (a failed getMyLand() must count as dataFailed,
+      // never ride the public request's success). Terminal BEFORE the
+      // superseded/cancelled early-returns.
+      const donePublic = beginLandHydration();
+      const wantsOwned = includeOwned && !!avatar;
+      const doneOwned = wantsOwned ? beginLandHydration() : null;
       const [publicStructures, ownedResult] = await Promise.all([
         api.getPublicLandStructures().catch(() => null),
-        includeOwned && avatar
+        wantsOwned
           ? api.getMyLand().catch(() => null)
           : Promise.resolve(undefined),
       ]);
+      donePublic(publicStructures !== null);
+      doneOwned?.(ownedResult !== null && ownedResult !== undefined);
       if (cancelled || version !== requestVersion) return;
       if (ownedResult) ownedOverlay = ownedResult;
 
@@ -512,10 +549,14 @@ export default function LandStructures() {
     return out;
   }, [structures, parcelById]);
 
+  // Slice D §1: land streams post-boot-core — the DATA fetch stays at outer
+  // mount (owned structures never hydrate late [F9 risk-4]); only the GLB
+  // slot subtree defers to the land stream tier.
+  const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND + 1, 'land:structures');
   return (
     <>
       <StructureHydrator />
-      <BoundedStructureSlots slots={slots} />
+      {released && <BoundedStructureSlots slots={slots} />}
     </>
   );
 }

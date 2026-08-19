@@ -66,7 +66,7 @@ export default function ActivityFeed() {
   if (!activityFeedOpen) return null;
 
   return (
-    <div className="absolute top-16 left-4 z-30 w-72 max-h-80 bg-amber-50 border-2 border-amber-700 rounded-lg shadow-lg overflow-hidden flex flex-col">
+    <div className="fixed left-4 z-50 top-16 md:top-64 w-72 max-h-[min(20rem,calc(100dvh-18rem))] bg-amber-50 border-2 border-amber-700 rounded-lg shadow-lg overflow-hidden flex flex-col">
       <div className="flex items-center justify-between px-3 py-2 bg-amber-200 border-b border-amber-400">
         <span className="font-bold text-amber-900 text-sm">Activity Log</span>
         <button
@@ -82,7 +82,7 @@ export default function ActivityFeed() {
         )}
         {!loading && entries.length === 0 && (
           <p className="text-xs text-amber-600 text-center py-4">
-            No activity yet. Your agent will log visits when it explores autonomously!
+            No activity yet — your agent&apos;s visits and rewards will appear here.
           </p>
         )}
         {entries.map((entry) => (

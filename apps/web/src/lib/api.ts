@@ -938,7 +938,7 @@ export const api = {
     }),
 
   // Persists `avatars.flags.agentBannerDismissed = true` server-side so the
-  // green "Bot Training Active" pill stops re-asserting on every page reload
+  // green "Agent Training Active" pill stops re-asserting on every page reload
   // for Milady-only accounts (no external bot to expire). Cleared again
   // automatically the next time the user mints a Connect URL.
   dismissAgentBanner: () =>

@@ -283,7 +283,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
       // Dead agent session — the server lost the in-memory session (API
       // restart/deploy) or it expired. Detect via the stable machine code
       // (`agent_session_not_found`), never by matching the de-branded copy.
-      // Clear the stale connected-state so the "Bot Training Active" pill +
+      // Clear the stale connected-state so the "Agent Training Active" pill +
       // connection routing stop, and surface a reconnect prompt. No
       // auto-retry: we hold no credentials to redo the agent handshake.
       //

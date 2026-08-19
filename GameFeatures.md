@@ -1,7 +1,36 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-16 (Cove hold'em room — the table never looks abandoned
+**Last Audited: 2026-08-19 (Autonomous activity and vCLAW transparency).** The
+Activity Log now opens above the sonar map instead of being permanently buried
+under it, and stays within short screens. Autonomous agents now say what they
+are doing when they play a Cove game, claim a quest reward, salvage materials,
+claim or rent land, prepay rent, or release land; Cove play lines include the
+game and wager when both are valid. The Autonomous panel also shows the owner's
+current vCLAW balance and today's earned and spent totals from the real ledger,
+so a player can see whether their bot is spending vCLAW. Daily totals use the
+UTC day and disappear quietly for a poll if the wallet read is unavailable.
+No agent protocol or settlement rule changed. Same-day follow-up (founder
+screenshot): the green connected-agent pill now reads "Agent Training Active"
+(was "Bot Training Active"), and the touch-layout quest tracker moved from
+top-16px — where the agent pill covered it, leaving only its chevron visible —
+to 124px, below the pill (~12–52px) and the Controlled/Autonomous toggle
+(~80–116px), with its expanded-body height budget adjusted to match.
+
+**Prior Last Audited: 2026-08-19 (Cove entry UX — clicking the Texas Hold'em table or
+its floating sign works from anywhere in the room).** Before this fix, clicking
+the hold'em table or its sign from near the Cove entrance opened the CLASSIC
+slot screen instead (the invisible slot click zones sit between the door and
+the poker table and swallowed the click) — reported live by a player's OpenClaw
+agent 2026-08-19 and independently flagged by the 2026-08-17 certification.
+Now: each game table's floating sign is clickable (routes the same as the
+table), and clicks aimed across the room at a farther table/sign pass through
+nearer click zones unless the player actually clicked visible geometry (slot
+cabinet faces still open slots as before). Applies to hold'em, blackjack, and
+baccarat symmetrically — blackjack no longer shadows the baccarat sign on
+their shared lane. Render layer only; no economy/route changes.
+
+**Prior Last Audited: 2026-08-16 (Cove hold'em room — the table never looks abandoned
 between hands, and a fresh seat no longer shows a false error).** Seated players
 (house bots included) now stay visible in the 3D room and in the HTML seat
 badges between hands, during the settle banner, and while waiting for players —
@@ -16,6 +45,10 @@ Same day, server-side hygiene (ARCHITECTURE §13 2026-08-16): abandoned BUSTED
 seats (0 chips, idle >10 min) auto-release between hands, and house tables whose
 stakes drifted from the approved ladder retire + recreate at the correct stakes
 — this is what heals prod's leftover July-ladder tables on the next promotion.
+2026-08-17 (from the Codex live certification, Low finding): the between-hands
+banner is now state-aware — when you are seated AND others are at the table it
+says "Next hand / The next hand is starting…" instead of wrongly claiming the
+game waits for another player while bots are about to redeal.
 
 **Prior Last Audited: 2026-08-12 (Land hold-wallet door 2 now checks transfers
 automatically).** The transfer option no longer asks for a memo or makes people

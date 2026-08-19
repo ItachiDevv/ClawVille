@@ -1,0 +1,68 @@
+{
+ "backend": "webgpu",
+ "pairs": [
+  {
+   "order": "AB",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-1-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-1-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-2-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-2-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-3-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-3-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-4-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-4-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-5-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-5-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-6-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-6-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-7-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-7-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-8-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-8-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-9-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-9-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-10-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-10-B.json"
+  },
+  {
+   "order": "AB",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-11-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-11-B.json"
+  },
+  {
+   "order": "BA",
+   "baseline": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-12-A.json",
+   "candidate": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/cold-load-runs/sliceE-gate-batch4/report-12-B.json"
+  }
+ ],
+ "expectBootActor": "player-vrm",
+ "baselineSha": "dc44a10d8ca8",
+ "candidateSha": "807b4fc52a8c"
+}

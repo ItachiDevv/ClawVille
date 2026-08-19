@@ -3,6 +3,12 @@
 import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useThree } from '@react-three/fiber';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  notifyBootActorCommitted,
+  notifyBootActorFetchSettled,
+  registerBootActorClaim,
+  requiresDeferredAttach,
+} from '@/lib/three/boot-actor';
 import * as THREE from 'three';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import {
@@ -139,8 +145,10 @@ const COLOR_TINTS: Record<string, number> = {
 //   up    vx=0,  vy=-1 → atan2(0,  1) = 0
 //   right vx=+1, vy=0  → atan2(1,  0) = PI/2
 //   left  vx=-1, vy=0  → atan2(-1, 0) = -PI/2
-// Preload
-preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
+// Rung-4 slice D (§3 preload demotion [R2-F6]): the unconditional module-
+// scope lobster byte-warm is REMOVED — it fired on EVERY boot (guests,
+// VRM players, spectators) and competed with the resolved actor's bytes.
+// The router below warms exactly the resolved actor's bytes instead.
 
 // Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
 const _avatarBbox = new THREE.Box3();
@@ -420,14 +428,27 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // the same path — no scene reparenting wars (Codex Critical #1).
   const vrm = useVRMInstance(reg.path, 'player-avatar');
 
-  // Rung-4 slice C (Codex round-1 finding 2, late-mount leg): captured ONCE
-  // at the first render AFTER the Suspense demand resolves (hooks before the
-  // useVRMInstance suspend point never reach here). If the world already
-  // revealed by then (explore→player promotion, slow fetch), the warmup gate
-  // can no longer compile this VRM — route the attach through the deferred
-  // warm queue instead of hitching its first frame. Captured-once so the
-  // wrapper choice never flips mid-life (a flip would remount the subtree).
-  const lateResolved = useMemo(() => isDecorativeReleased(), []);
+  // Slice D boot-actor claim + commit [R4-F1]: the claim is render-time
+  // legal (replayable epoch state, idempotent per (epoch, kind, resource));
+  // the COMMIT fires from a passive effect — this line only executes after
+  // the useVRMInstance suspend point resolved, so the effect commit proves
+  // the body subtree is real.
+  const actorToken = registerBootActorClaim('player-vrm', reg.path);
+  useEffect(() => {
+    notifyBootActorCommitted(actorToken);
+  }, [actorToken]);
+
+  // Rung-4 slice C (Codex round-1 finding 2, late-mount leg), extended by
+  // slice D [R3-F1][R4-F2]: captured ONCE at the first render AFTER the
+  // Suspense demand resolves. Deferred-warm attach when the world already
+  // revealed (decorative release) OR when this exact actor resource did not
+  // participate in the closed boot gate (none/timeout closure, post-closure
+  // kind/resource replacement). An on-time covered actor mounts RAW.
+  const lateResolved = useMemo(
+    () => isDecorativeReleased() || requiresDeferredAttach('player-vrm', reg.path),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // Auto-fit scale + foot-grounding offset. Recomputed when the VRM swaps
   // (model picker change → new path → new instance → useMemo re-runs).
@@ -617,6 +638,25 @@ function PlayerAvatarGLBInner() {
 
   const { scene } = useGLTFWithKTX2(reg.path);
 
+  // Slice D boot-actor claim + commit [R2-F2 gap closed]: the GLB-species
+  // player (drei/LoadingManager-routed) was covered implicitly by the old
+  // global barrier; the explicit gate needs the same commit proof the VRM
+  // path has. This line runs only after the useGLTFWithKTX2 suspend
+  // resolved; the passive effect below is the commit.
+  const actorToken = registerBootActorClaim('player-glb', reg.path);
+  useEffect(() => {
+    notifyBootActorCommitted(actorToken);
+  }, [actorToken]);
+
+  // Slice D [R3-F1][R4-F2]: same captured-once deferred-attach decision as
+  // the VRM inner — an uncovered/post-closure GLB body warms hidden instead
+  // of attaching raw.
+  const lateResolved = useMemo(
+    () => isDecorativeReleased() || requiresDeferredAttach('player-glb', reg.path),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   // Whether to use the legacy LobsterAnimator (skeletal bone discovery) or
   // the universal CharacterAnimator. Mirrors the same routing in arena-npcs.tsx
   // and SelectAgentCanvas.tsx.
@@ -760,7 +800,7 @@ function PlayerAvatarGLBInner() {
     },
   });
 
-  return (
+  const body = (
     <group ref={groupRef}>
       <group ref={animGroupRef}>
         {/* Phase 2: lobster/crayfish use AVATAR_SCALE (40) for the slightly-larger
@@ -771,6 +811,14 @@ function PlayerAvatarGLBInner() {
         />
       </group>
     </group>
+  );
+  if (!lateResolved) return body;
+  // Uncovered/post-release resolution: warm before first draw. priority 0 —
+  // the player's own body outranks every distance-scored ambient job.
+  return (
+    <DeferredWarmAttachment label="player-avatar-glb:late" priority={0}>
+      {body}
+    </DeferredWarmAttachment>
   );
 }
 
@@ -783,15 +831,19 @@ function PlayerAvatarRouter() {
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
-  // Rung-4 slice C (Codex round-1 finding 2): with the ambient wanderer
-  // preloads gone, nothing warmed the ACTIVE player's VRM bytes early — the
-  // raw fetch would start only when the Suspense demand below fires, and a
-  // slow resolve races the warmup's one-time bulk-batch check. Warm the bytes
-  // at the earliest knowledge point (avatarModelKey resolution). The residual
-  // window (bytes resolving between the bulk check and reveal) is the
-  // PRE-EXISTING gate race, punch-listed for slice D's boot-core gate.
+  // Slice C earliest-knowledge byte warm, extended by slice D: warm the
+  // RESOLVED actor's bytes (VRM or GLB — the GLB player was previously
+  // unwarmed here) and report the fetch-settled progress unit against the
+  // actor claim [R2-F14]. The old bulk-check race this used to mitigate is
+  // structurally closed by the boot-actor gate (commit proof, not timing).
   useEffect(() => {
-    if (reg.avatar_type === 'vrm') preloadVRMBytes(reg.path);
+    const kind = reg.avatar_type === 'vrm' ? ('player-vrm' as const) : ('player-glb' as const);
+    const token = registerBootActorClaim(kind, reg.path);
+    const settled =
+      reg.avatar_type === 'vrm'
+        ? preloadVRMBytes(reg.path)
+        : preloadKTX2Bytes(reg.path);
+    void settled.finally(() => notifyBootActorFetchSettled(token));
   }, [reg]);
 
   if (reg.avatar_type === 'vrm') {
@@ -807,7 +859,9 @@ function PlayerAvatarRouter() {
     );
   }
 
-  return <PlayerAvatarGLBInner />;
+  // key={reg.path} (slice D): GLB swaps re-capture the deferred-attach
+  // decision and get a fresh warm pass, mirroring the VRM leg above.
+  return <PlayerAvatarGLBInner key={reg.path} />;
 }
 
 export default function PlayerAvatar() {

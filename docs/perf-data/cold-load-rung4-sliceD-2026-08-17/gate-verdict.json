@@ -1,0 +1,59 @@
+{
+  "verdict": "pass",
+  "reasons": [],
+  "perMetric": {
+    "bootCorePresentedAt": {
+      "verdict": "pass",
+      "median": 3359,
+      "limit": 5000,
+      "values": [
+        3546,
+        3353,
+        3326,
+        3456,
+        3318,
+        3298,
+        3329,
+        3499,
+        3436,
+        3523,
+        3365,
+        3285
+      ]
+    },
+    "framesOver100In10s": {
+      "verdict": "pass",
+      "upperBoundDiff": 1,
+      "limit": 2,
+      "n": 12
+    },
+    "reportOnly": {
+      "streamSettledAfterRevealMs": {
+        "median": 9516,
+        "min": 8920,
+        "max": 10058
+      },
+      "landSettledAfterRevealMs": {
+        "median": 5891.5,
+        "min": 5628,
+        "max": 6503
+      },
+      "candidateRevealMs": {
+        "median": 3822.5,
+        "min": 3773,
+        "max": 4017
+      },
+      "baselineRevealMs": {
+        "median": 9169.5,
+        "min": 8814,
+        "max": 10068
+      },
+      "worstFrameLogRatio": {
+        "median": -1.1665664197855974,
+        "min": -1.4182970922060645,
+        "max": -0.795212800320919
+      }
+    }
+  },
+  "usablePairs": 12
+}

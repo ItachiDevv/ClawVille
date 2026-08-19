@@ -46,6 +46,33 @@ export function registerStageSlotRoot(
   }
 }
 
+/**
+ * Slice E (spec §2c): SYNC variant with ZERO awaits between disable, fn, and
+ * restore — the disabled window is atomic, so stage watchdog timers and other
+ * warmup generations can never observe an uncullable world. Used around each
+ * boot-core compileAsync FRONT (r185 runs synchronously through
+ * `_projectObject` — the only culling reader — up to the tail's first await
+ * when the renderer is initialized) and around the single warm draw.
+ */
+export function withStageSlotFrustumCullingDisabledSync<T>(
+  sceneId: string,
+  task: () => T,
+): T {
+  const root = rootsByScene.get(sceneId);
+  if (!root) return task();
+  const changed: THREE.Object3D[] = [];
+  root.traverse((object) => {
+    if (!object.frustumCulled) return;
+    object.frustumCulled = false;
+    changed.push(object);
+  });
+  try {
+    return task();
+  } finally {
+    for (const object of changed) object.frustumCulled = true;
+  }
+}
+
 export async function withStageSlotFrustumCullingDisabled<T>(
   sceneId: string,
   task: () => Promise<T>,

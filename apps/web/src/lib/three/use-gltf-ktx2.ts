@@ -52,9 +52,14 @@ useGLTFWithKTX2.preload = (path: string | string[]) => {
  * Warm the browser HTTP cache for KTX2 GLBs without parsing them. Use this
  * before <KTX2LoaderSetup /> exists, such as page-level boot preloads.
  */
-export function preloadKTX2Bytes(path: string): void {
-  if (typeof window === 'undefined') return;
-  void fetch(path, { cache: 'force-cache' }).catch(() => {});
+export function preloadKTX2Bytes(path: string): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  // Returns the SETTLED fetch (never rejects) so slice-D boot-actor fetch
+  // units can observe terminal state; existing void callers are unaffected.
+  return fetch(path, { cache: 'force-cache' }).then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 /**

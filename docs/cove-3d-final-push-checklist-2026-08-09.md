@@ -88,6 +88,41 @@ within one scaler pass — the two founder-seat tables clear on the first pass a
 his 0-chip seats release. The FULL idle-table sweeper for tables/seats holding REAL
 chips stays flagged P1 (it moves player money — separate reviewed round).
 
+## ✅ 2026-08-19 — COVE ENTRY HOTSPOT FIX (punch-list #2 from certification) SHIPPED + LIVE-VERIFIED
+
+A real player's OpenClaw agent ("Casper") independently hit certification Low #3:
+from the Cove entrance, clicking the Texas Hold'em table/sign opened the CLASSIC
+slot screen (the oversized invisible slot boxes sit between the spawn and T1 and
+swallowed the ray), and the TEXAS HOLD'EM sign was not clickable at all.
+Live-reproduced pre-fix on staging (Codex computer-use, real Chrome, landtest3 —
+`codex-hotspot-shots/repro-*.png` in the cv-cove-hotspot worktree). FIXED in
+`975e5d5e` (staging): table hotspot boxes grew to cover their signs (200×340×150,
+center Y 170) and ALL five cove hotspots now run a symmetric click-yield rule —
+a hotspot passes the click onward when the ray also hits a farther hotspot and no
+visible room geometry sits in front of it. Post-deploy verification on staging:
+**PASS 6/6** (sign from spawn → `/cove/table`; distant table → `/cove/table`;
+CLASSIC + BONUS cabinet faces still open slots; blackjack direct; baccarat sign
+behind blackjack → `/cove/baccarat`, not blackjack) — `codex-hotspot-verify-report.md`
++ `verify-*.png`, key shots eyes-verified by Fable.
+
+**Tracked follow-ups from this round (next cove money round, alongside the P1
+idle-empty-table sweeper — review by the next cove round, owner: cove domain):**
+- **Baccarat idle "Walk Away" observation (unconfirmed, account-state-dependent):**
+  in an idle `/cove/baccarat` room (no deal), two click methods on Walk Away did
+  not navigate; code review says with no open shoe it must `location.assign('/cove')`
+  immediately, so the likely cause is a stale OPEN server shoe on landtest3 whose
+  `closeAndVerifyShoe` failed (the same "409 on close" class Casper reported on
+  slots). Needs: server-state check for landtest3's shoe + a decide-and-fix on
+  close-conflict handling (money-adjacent — reviewed round, not a rider).
+- **Poker provably-fair not surfaced:** `/cove/verify` session pages never show
+  poker hands although hold'em uses the same serverSeed/clientSeed/nonce commit
+  scheme (`shuffleDeck`, nonce = hand number). Casper explicitly asked. UI-only
+  surfacing round.
+- **Hotspot early-load fail-open (Codex advisory, non-blocking):** before the room
+  GLB finishes loading, `_coveRoomRootRef` is null and the yield check fails open;
+  a click in that window could yield through a nearer table hotspot. Harden to
+  fail closed in a later pass.
+
 ## THE VISUAL CHECKLIST — walk this on staging, in order
 
 ### 1. Hold'em ring — `/cove/table` (the headline)

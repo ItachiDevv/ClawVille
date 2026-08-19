@@ -20,6 +20,10 @@
 #  - free_probe_port before launch; ensure_server health check per run
 #  - no builds/tests while a batch is running (contention corrupts runs)
 set -u
+# Optional env knobs must survive set -u when unset (slice-E session hit
+# "COLD_LOAD_PROBE_EXTRA_ARGS: unbound variable" on a bare solo run).
+COLD_LOAD_PROBE_EXTRA_ARGS="${COLD_LOAD_PROBE_EXTRA_ARGS:-}"
+COLD_LOAD_EXPECT_ACTOR="${COLD_LOAD_EXPECT_ACTOR:-}"
 MODE="${1:-pairs}"
 CANDIDATE_DIR="C:/Users/itachi/Documents/Crypto/cv-covefreeze"
 BASELINE_DIR="C:/Users/itachi/Documents/Crypto/cv-perf-baseline"
@@ -60,7 +64,20 @@ kill_probe_chrome() { # $1 = profile dir (unique per run) - NEVER kill by raw PI
 }
 
 free_probe_port() { # $1 = cdp port - kill any leftover CHROME listening there
-  powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { \$p = Get-Process -Id \$_ -ErrorAction SilentlyContinue; if (\$p -and \$p.ProcessName -eq 'chrome') { Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue } }" >/dev/null 2>&1
+  # VERIFIED free (slice-E batch2 finding): a dispatched Stop-Process can lag
+  # past the old 'fire and hope' window, leaving a dying chrome that still
+  # answers /json/version for the next run. Kill, then WAIT until no chrome
+  # listens (bounded ~10s); report if it never frees so the run fails loudly
+  # instead of attaching to a stale browser.
+  local i
+  for i in 1 2 3 4 5; do
+    powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { \$p = Get-Process -Id \$_ -ErrorAction SilentlyContinue; if (\$p -and \$p.ProcessName -eq 'chrome') { Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue } }" >/dev/null 2>&1
+    local busy=$(powershell -NoProfile -Command "(Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -d '\r')
+    [ "${busy:-0}" = "0" ] && return 0
+    sleep 2
+  done
+  echo "WARN: CDP port $1 still occupied after kill+wait"
+  return 1
 }
 
 ensure_server() { # $1=port $2=worktree dir — returns nonzero if still dead
@@ -99,7 +116,15 @@ launch_chrome() { # $1=port $2=profile — echoes ws url or empty
 
 run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
   local arm="$1" run="$2"
-  local PORT=$((PORT_BASE + (run % 4)))
+  # Per-ARM CDP ports (slice-E batch2 finding): both arms of a pair sharing
+  # one port let a lagging/failed kill of arm 1's chrome hand arm 2's probe
+  # the STALE chrome via /json/version — the second run then executes the
+  # FIRST arm's build/origin (observed: candidate reports full of baseline
+  # traffic + dc44a10d stamps). Distinct ports make cross-arm attachment
+  # structurally impossible even when a kill lags.
+  local armIdx=0
+  [ "$arm" = "B" ] && armIdx=1
+  local PORT=$((PORT_BASE + ((run * 2 + armIdx) % 8)))
   local target="http://localhost:3011/game$QS"
   [ "$arm" = "B" ] && target="http://localhost:3010/game$QS"
   local profile="$PROFILE_ROOT/probe-$BATCH_ID-$run-$arm"
@@ -109,7 +134,13 @@ run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
   # report from a previous batch (Codex R19 round-2 finding 2).
   rm -f "$report"
   rm -rf "$profile"; mkdir -p "$profile"
-  free_probe_port $PORT
+  if ! free_probe_port $PORT; then
+    # Never attach to a stale browser — that produced cross-arm runs where
+    # the candidate report recorded the baseline's boot (batch2 pairs 1-2).
+    echo "RUN $run ARM $arm: FAILED (CDP port $PORT never freed)"
+    FAILED_RUNS=$((FAILED_RUNS + 1))
+    return 1
+  fi
   local ws=$(launch_chrome $PORT "$profile")
   if [ -z "$ws" ]; then
     kill_probe_chrome "$profile"
@@ -120,7 +151,7 @@ run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
     echo "RUN $run ARM $arm: FAILED (CDP never came up)"
   else
     cd "$CANDIDATE_DIR" && \
-    bun apps/web/scripts/cold-load-probe.mjs "$ws" "$target" "$report" 2>&1 | grep -E "INVALID" | head -1
+    bun apps/web/scripts/cold-load-probe.mjs "$ws" "$target" "$report" $COLD_LOAD_PROBE_EXTRA_ARGS 2>&1 | grep -E "INVALID" | head -1
     # PIPESTATUS[0] = the probe's own exit, not grep's (grep finding nothing
     # is the HAPPY path). Evidence = probe exited 0 AND the report exists.
     rc=${PIPESTATUS[0]}
@@ -176,9 +207,35 @@ for pair in $(seq 1 "$COUNT"); do
   fi
 done
 
+# Build identity [R2-6]: SHAs are DERIVED from the measured worktrees, never
+# trusted from the caller. Tracked modifications mark the SHA -dirty (the
+# slice-E gate refuses dirty/identical SHAs); untracked files (run outputs,
+# hook mirrors) don't affect the build and are ignored.
+derive_sha() { # $1 = worktree dir
+  local sha=$(git -C "$1" rev-parse --short=12 HEAD 2>/dev/null || echo "")
+  [ -z "$sha" ] && { echo ""; return; }
+  if [ -n "$(git -C "$1" status --porcelain 2>/dev/null | grep -v '^??')" ]; then
+    sha="${sha}-dirty"
+  fi
+  echo "$sha"
+}
+DERIVED_BASELINE_SHA=$(derive_sha "$BASELINE_DIR")
+DERIVED_CANDIDATE_SHA=$(derive_sha "$CANDIDATE_DIR")
+# An operator override that disagrees with the measured tree is an evidence
+# failure, not a preference.
+if [ -n "${COLD_LOAD_BASELINE_SHA:-}" ] && [ "$COLD_LOAD_BASELINE_SHA" != "$DERIVED_BASELINE_SHA" ]; then
+  echo "SHA OVERRIDE MISMATCH: COLD_LOAD_BASELINE_SHA=$COLD_LOAD_BASELINE_SHA vs derived $DERIVED_BASELINE_SHA"
+  FAILED_RUNS=$((FAILED_RUNS + 1))
+fi
+if [ -n "${COLD_LOAD_CANDIDATE_SHA:-}" ] && [ "$COLD_LOAD_CANDIDATE_SHA" != "$DERIVED_CANDIDATE_SHA" ]; then
+  echo "SHA OVERRIDE MISMATCH: COLD_LOAD_CANDIDATE_SHA=$COLD_LOAD_CANDIDATE_SHA vs derived $DERIVED_CANDIDATE_SHA"
+  FAILED_RUNS=$((FAILED_RUNS + 1))
+fi
+
 # Build the pairs manifest for cold-load-paired-gate.mjs. A manifest failure
 # is an evidence failure — it must flip the exit code (round-2 finding 2).
-if ! OUT="$OUT" BACKEND="$BACKEND" COUNT="$COUNT" bun -e "
+if ! OUT="$OUT" BACKEND="$BACKEND" COUNT="$COUNT" EXPECT_ACTOR="$COLD_LOAD_EXPECT_ACTOR" \
+  BASELINE_SHA="$DERIVED_BASELINE_SHA" CANDIDATE_SHA="$DERIVED_CANDIDATE_SHA" bun -e "
 const fs = require('fs');
 const out = process.env.OUT;
 const pairs = [];
@@ -190,7 +247,14 @@ for (let p = 1; p <= Number(process.env.COUNT); p++) {
     pairs.push({ order, baseline: a, candidate: b });
   }
 }
-fs.writeFileSync(out + '/manifest.json', JSON.stringify({ backend: process.env.BACKEND, pairs }, null, 1));
+const manifest = { backend: process.env.BACKEND, pairs };
+// Slice D authenticated lane: the gate's --slice-d mode requires this.
+if (process.env.EXPECT_ACTOR) manifest.expectBootActor = process.env.EXPECT_ACTOR;
+// Slice E build identity [R1-9]: the gate's --slice-e mode refuses a
+// manifest without both SHAs.
+if (process.env.BASELINE_SHA) manifest.baselineSha = process.env.BASELINE_SHA;
+if (process.env.CANDIDATE_SHA) manifest.candidateSha = process.env.CANDIDATE_SHA;
+fs.writeFileSync(out + '/manifest.json', JSON.stringify(manifest, null, 1));
 console.log('manifest pairs:', pairs.length);
 "; then
   echo "MANIFEST GENERATION FAILED"

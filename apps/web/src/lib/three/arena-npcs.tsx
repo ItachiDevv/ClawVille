@@ -37,9 +37,15 @@ import {
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import {
   isDecorativeReleased,
+  onBootStreamEligible,
   onDecorativeReleaseStaggered,
 } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
+import {
+  notifyBootActorCommitted,
+  registerBootActorClaim,
+  requiresDeferredAttach,
+} from '@/lib/three/boot-actor';
 import {
   computeVRMAvatarFit,
   VRM_AVATAR_TARGET_HEIGHT_WU,
@@ -379,10 +385,16 @@ function resolveSpecies(raw: string): string {
   return LEGACY_SPECIES_REMAP[raw] ?? raw;
 }
 
-// Preload only the live roaming GLB species. Legacy / user-configured species
-// still resolve through SPECIES_MODEL, but they load on demand instead of adding
-// every retired sea-creature GLB to the open-world boot path.
-preloadKTX2Bytes(DEFAULT_SPECIES.path);
+// Rung-4 slice D (§3 preload demotion [R2-F6]): the roaming-species byte-warm
+// fires at boot-stream eligibility, not module scope — wanderer bodies are
+// release-deferred (slice C), so nothing needs these bytes pre-reveal, and
+// the possessed demo body is a Milady VRM (stores/npc.ts), not this GLB.
+if (typeof window !== 'undefined') {
+  onBootStreamEligible(
+    () => preloadKTX2Bytes(DEFAULT_SPECIES.path),
+    Number.NEGATIVE_INFINITY,
+  );
+}
 
 // Per-species npcScale override. computeNpcScale measures the bind-pose
 // Per-species scale overrides — calibrated AFTER the SkeletonUtils.clone fix.
@@ -1739,7 +1751,7 @@ export function useVRMOrphanCancel(vrmPath: string | null, instanceId: string): 
 }
 
 /** VRM path for a species — MUST mirror VRMNpcMesh's own derivation. */
-function vrmPathForSpecies(species: string): string {
+export function vrmPathForSpecies(species: string): string {
   const regEntry = MODEL_REGISTRY[species as keyof typeof MODEL_REGISTRY];
   return regEntry?.path ?? `/avatars/${species.replace('milady_official_', 'milady-official-')}.vrm`;
 }
@@ -1755,27 +1767,15 @@ function vrmPathForSpecies(species: string): string {
 // the shared warm queue instead of hitching first use.
 const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
-  const isPlayerBody = npc.id === PLAYER_NPC_ID;
-  const { released, priority } = useAmbientBodyRelease(
-    npc.x,
-    npc.y,
-    isPlayerBody,
-  );
+  const { released, priority } = useAmbientBodyRelease(npc.x, npc.y, false);
   const isVrm = regEntry?.avatar_type === 'vrm';
   useVRMOrphanCancel(isVrm ? vrmPathForSpecies(npc.species) : null, npc.id);
 
-  if (isPlayerBody) {
-    // Boot-lane body: the possessed/demo player NPC parses immediately —
-    // this is the "player ≤ 1" allowance in the slice-C acceptance.
-    if (isVrm) {
-      return (
-        <Suspense fallback={null}>
-          <VRMNpcMesh npc={npc} />
-        </Suspense>
-      );
-    }
-    return <GLBNpcMesh npc={npc} />;
-  }
+  // Slice D [R2-F4]: the possessed/demo player body (PLAYER_NPC_ID) no
+  // longer renders here — it moved to BootActorNpcBody below, mounted under
+  // the whitelisted `perf:boot-actor` chunk. ArenaNpcs is ambient-only, so
+  // hiding/compiling decisions on `perf:wandering-npcs` can never touch the
+  // boot actor.
   if (!released) return null;
   return (
     <Suspense fallback={null}>
@@ -1811,17 +1811,10 @@ export default function ArenaNpcs() {
   // re-evaluate npcs.filter(); useShallow checks element-by-element so an
   // unchanged 18-NPC array stays referentially equal for React.
   const allNpcs = useNpcStore(useShallow((s) => s.npcs));
-  const controlMode = useGameStore((s) => s.controlMode);
 
-  // Filter out the dedicated player NPC when not in NPC mode.
-  // spawnPlayerNpc() places PLAYER_NPC_ID at world center (3840,3840) for NPC-mode
-  // possession. In agent modes ('player' / 'autonomous') this NPC must not render —
-  // it obscures the bazaar / town-center buildings at the world center.
-  const unposessedNpcs = controlMode === 'npc'
-    ? allNpcs
-    : allNpcs.filter((n) => n.id !== PLAYER_NPC_ID);
-
-  const npcs = unposessedNpcs;
+  // Slice D [R2-F4]: PLAYER_NPC_ID is ALWAYS excluded here — the possessed
+  // body renders through BootActorNpcBody under `perf:boot-actor`.
+  const npcs = allNpcs.filter((n) => n.id !== PLAYER_NPC_ID);
 
   return (
     <Suspense fallback={null}>
@@ -1830,6 +1823,80 @@ export default function ArenaNpcs() {
           <NpcEntry key={npc.id} npc={npc} />
         ))}
       </group>
+    </Suspense>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BootActorNpcBody — the possessed/demo player body, physically split out of
+// the ambient NPC root (slice D [R2-F4]) and mounted by World3DCanvas inside
+// the whitelisted `perf:boot-actor` chunk. Registers the `npc-body` actor
+// claim and commits it post-Suspense; a body arriving AFTER the boot gate
+// closed (late possession, mode switch) attaches through the deferred warm
+// queue instead of raw [R3-F1][R4-F2].
+// ---------------------------------------------------------------------------
+
+function BootActorNpcBodyInner({ npc }: { npc: NpcSpriteState }) {
+  const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
+  const isVrm = regEntry?.avatar_type === 'vrm';
+  const path = isVrm ? vrmPathForSpecies(npc.species) : (regEntry?.path ?? null);
+
+  // Claim at render (replayable, idempotent [R2-F2]); commit from the
+  // passive effect — this subtree only commits once the mesh below resolved
+  // its Suspense demand, so the effect IS the commit proof.
+  const token = path ? registerBootActorClaim('npc-body', path) : null;
+  useEffect(() => {
+    if (token) notifyBootActorCommitted(token);
+  }, [token]);
+
+  // Captured-once deferred-attach decision (same rule as the player inners).
+  const deferred = useMemo(
+    () =>
+      isDecorativeReleased() ||
+      (path !== null && requiresDeferredAttach('npc-body', path)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  if (!deferred) {
+    return isVrm ? <VRMNpcMesh npc={npc} /> : <GLBNpcMesh npc={npc} />;
+  }
+  return (
+    <DeferredWarmAttachment
+      key={npc.species}
+      label="boot-actor:npc-body"
+      priority={0}
+    >
+      {(warmReady) =>
+        isVrm ? (
+          <VRMNpcMesh npc={npc} attachmentVisible={warmReady} />
+        ) : (
+          <GLBNpcMesh npc={npc} attachmentVisible={warmReady} />
+        )
+      }
+    </DeferredWarmAttachment>
+  );
+}
+
+export function BootActorNpcBody() {
+  const controlMode = useGameStore((s) => s.controlMode);
+  const allNpcs = useNpcStore(useShallow((s) => s.npcs));
+  const npc = allNpcs.find((n) => n.id === PLAYER_NPC_ID);
+  const regEntry = npc
+    ? MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY]
+    : undefined;
+  const isVrm = regEntry?.avatar_type === 'vrm';
+  // Orphan-cancel bracket on the OUTER component (commits immediately — its
+  // own Suspense boundary sits BELOW it), so a possession toggled off while
+  // the parse is still in flight cancels instead of leaking.
+  useVRMOrphanCancel(
+    npc && isVrm ? vrmPathForSpecies(npc.species) : null,
+    PLAYER_NPC_ID,
+  );
+  if (controlMode !== 'npc' || !npc) return null;
+  return (
+    <Suspense fallback={null}>
+      <BootActorNpcBodyInner key={npc.species} npc={npc} />
     </Suspense>
   );
 }

@@ -14,6 +14,10 @@ import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
 import { armDecorativeDeadline } from '@/lib/three/decorative-release';
+import { useBootActorCoordinator } from '@/lib/three/boot-actor';
+import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
+import { vrmPathForSpecies } from '@/lib/three/arena-npcs';
+import { useNpcStore, PLAYER_NPC_ID } from '@/stores/npc';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -151,7 +155,7 @@ function NanoClawBanner({
   // green pill). agentConnected is the union (paired and/or live bearer); the
   // pill shows for either. The bearer slice is appended ONLY when a live
   // in-session bearer is actually held — after a reload agentSessionId is null
-  // (the server never re-emits it), so the pill reads "Bot Training Active"
+  // (the server never re-emits it), so the pill reads "Agent Training Active"
   // without the session-id suffix rather than an empty span. (Codex finding #2.)
   const agentPaired = useGameStore((s: GameState) => s.agentPaired);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
@@ -161,7 +165,7 @@ function NanoClawBanner({
 
   // Banner has five states keyed on (isAuthenticated, showPaired,
   // provisioningPending, hasAvatar):
-  //   showPaired=true                           → green "Bot Training Active" pill
+  //   showPaired=true                           → green "Agent Training Active" pill
   //   !isAuthenticated || guest user            → in-game Connect + Log In; Sign Up exits
   //   provisioningPending (non-guest only —
   //     evaluated AFTER the guest branch)       → single amber CTA → /create-agent
@@ -188,7 +192,7 @@ function NanoClawBanner({
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-600/90 backdrop-blur-sm border border-green-400/40 shadow-lg hover:bg-green-600 transition-colors"
         >
           <span className="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(74,222,128,0.6)] animate-pulse" />
-          <span className="text-white font-bold text-sm">Bot Training Active</span>
+          <span className="text-white font-bold text-sm">Agent Training Active</span>
           {agentSessionId && (
             <span className="text-green-200/70 text-xs font-mono hidden md:inline">{agentSessionId.slice(0, 12)}</span>
           )}
@@ -361,7 +365,7 @@ export default function GamePage() {
   // Arming here guarantees the ceiling exists the moment the loading screen can.
   useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
 
-  const { data: avatar, isLoading } = useAvatar();
+  const { data: avatar, isLoading, isError: avatarQueryError } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const openActivityLobby = useGameStore((s: GameState) => s.openActivityLobby);
@@ -565,6 +569,45 @@ export default function GamePage() {
       useGameStore.getState().setAvatarAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
     }
   }, [avatar]);
+
+  // Slice D §2a — the SINGLE boot-actor closure authority [R2-F3]. Hook
+  // order is LOAD-BEARING: this is called AFTER the mode-promotion and
+  // appearance-sync effects above, and `getInputs` reads the stores LIVE at
+  // effect time — the promotion effect writes controlMode synchronously in
+  // the same flush, so a render-captured snapshot would close a fresh
+  // authenticated boot as 'none' (the exact race the round-5 spec fixed).
+  useBootActorCoordinator(() => {
+    const store = useGameStore.getState();
+    const liveMode = store.controlMode;
+    const playerReg =
+      MODEL_REGISTRY[store.avatarModelKey as keyof typeof MODEL_REGISTRY] ??
+      MODEL_REGISTRY.lobster;
+    const npcBody = useNpcStore
+      .getState()
+      .npcs.find((n) => n.id === PLAYER_NPC_ID);
+    const npcReg = npcBody
+      ? MODEL_REGISTRY[npcBody.species as keyof typeof MODEL_REGISTRY]
+      : undefined;
+    const npcBodyResourceKey = npcBody
+      ? npcReg?.avatar_type === 'vrm'
+        ? vrmPathForSpecies(npcBody.species)
+        : (npcReg?.path ?? null)
+      : null;
+    return {
+      authSettled: !authLoading && !isLoading,
+      avatarOutcome: avatarQueryError
+        ? ('error' as const)
+        : isLoading || authLoading
+          ? ('loading' as const)
+          : avatar
+            ? ('success' as const)
+            : ('absent' as const),
+      controlMode: liveMode,
+      playerResourceKey: playerReg.path,
+      playerAvatarType: playerReg.avatar_type === 'vrm' ? ('vrm' as const) : ('glb' as const),
+      npcBodyResourceKey,
+    };
+  }, [avatar, isLoading, authLoading, avatarQueryError, controlMode]);
 
   // hasAvatar is safe to derive even while loading — avatar is undefined during
   // the fetch so this is false, which correctly hides avatar-gated UI until resolved.

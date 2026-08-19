@@ -55,6 +55,13 @@ import {
 import type { ParcelSlot } from '@clawville/shared';
 import type { ShowroomEntry } from '@clawville/shared';
 import { useLandStore, getParcelStatus } from '@/stores/land';
+import { BOOT_STREAM_TIER_LAND } from '@/lib/three/decorative-release';
+import { useBootStreamRelease } from '@/lib/three/use-boot-stream-release';
+import {
+  declareLandSlots,
+  reportLandSlotFallback,
+  reportLandSlotResolved,
+} from '@/lib/three/land-boot-tracker';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 
@@ -150,15 +157,19 @@ const DOOR_MAT      = new THREE.MeshStandardMaterial({ color: 0x4a3422, roughnes
 // ---------------------------------------------------------------------------
 
 class GLBErrorBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
+  { fallback: ReactNode; onErrored?: () => void; children: ReactNode },
   { errored: boolean }
 > {
-  constructor(props: { fallback: ReactNode; children: ReactNode }) {
+  constructor(props: { fallback: ReactNode; onErrored?: () => void; children: ReactNode }) {
     super(props);
     this.state = { errored: false };
   }
   static getDerivedStateFromError(): { errored: boolean } {
     return { errored: true };
+  }
+  componentDidCatch(): void {
+    // Slice D §4b [R3-F4]: fallback outcomes are measurement-counted.
+    this.props.onErrored?.();
   }
   render() {
     return this.state.errored ? this.props.fallback : this.props.children;
@@ -217,6 +228,11 @@ function GLBShowroomStructure({
 }) {
   const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
   const groupRef  = useRef<THREE.Group>(null);
+
+  // Slice D §4b: slot RESOLVED from a commit effect (render-abandon-safe).
+  useEffect(() => {
+    reportLandSlotResolved('showroom', parcel.id);
+  }, [parcel.id]);
 
   // Clone scene + materials (same pattern as land-structures.tsx GLBStructure).
   // NEVER dispose geometry or textures — they are shared with the GLB cache.
@@ -337,7 +353,10 @@ function ShowroomSlot({
   return (
     <group ref={outerRef}>
       {/* Building — GLB with primitive fallback */}
-      <GLBErrorBoundary fallback={primitive}>
+      <GLBErrorBoundary
+        fallback={primitive}
+        onErrored={() => reportLandSlotFallback('showroom', parcel.id)}
+      >
         <Suspense fallback={primitive}>
           <GLBShowroomStructure parcel={parcel} entry={entry} path={path} />
         </Suspense>
@@ -365,6 +384,18 @@ export default function LandShowroom() {
       .filter((x): x is { parcel: ParcelSlot; entry: ShowroomEntry } => x.parcel !== undefined);
   }, [parcelById]);
 
+  // Slice D §1/§4b: showroom GLB demand defers to the land stream tier
+  // (decorative outer-ring content); expected slots declared for the land
+  // completion tracker.
+  const released = useBootStreamRelease(BOOT_STREAM_TIER_LAND, 'land:showroom');
+  useEffect(() => {
+    // [I1-F7] exact slot id set, empty until the stream tier releases.
+    declareLandSlots(
+      'showroom',
+      released ? slots.map((s) => s.parcel.id) : [],
+    );
+  }, [released, slots]);
+  if (!released) return null;
   return (
     <>
       {slots.map(({ parcel, entry }) => (

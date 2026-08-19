@@ -364,7 +364,7 @@ const RECENT_THOUGHTS_MAX = 20;
 const TALK_ACTION_RE = /\[ACTION:\s*talk_to_npc\(([^)]*)\)\]/;
 const DRIVER_ACTION_RE = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/;
 
-interface ParsedDriverAction {
+export interface ParsedDriverAction {
   verb: string;
   params: Record<string, string>;
 }
@@ -393,7 +393,17 @@ function destinationLabel(destination: string | null): string | null {
     ?? canonical;
 }
 
-function decisionThought(action: ParsedDriverAction): string {
+function positiveIntegerParam(value: string | undefined): number | null {
+  if (!value || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function nonEmptyParam(value: string | undefined): string | null {
+  return value?.trim() || null;
+}
+
+export function decisionThought(action: ParsedDriverAction): string {
   switch (action.verb) {
     case 'enter_cove':
     case 'enter_poker_room':
@@ -418,6 +428,39 @@ function decisionThought(action: ParsedDriverAction): string {
     }
     case 'emote':
       return `Emoting: ${action.params.name ?? 'reacting'}`;
+    case 'play_cove_game': {
+      const game = action.params.game;
+      const wager = positiveIntegerParam(action.params.wager);
+      return (game === 'slots' || game === 'blackjack') && wager !== null
+        ? `Playing ${game} at the Cove — wagering ${wager} vCLAW`
+        : 'Playing at the Cove';
+    }
+    case 'claim_tutorial_quest':
+      return 'Claiming a quest reward';
+    case 'salvage_node':
+      return 'Salvaging materials from a seabed node';
+    case 'claim_parcel': {
+      const parcelCode = nonEmptyParam(action.params.parcelCode);
+      const parcel = parcelCode ? ` ${parcelCode}` : '';
+      if (action.params.door === 'hold') {
+        return `Claiming parcel${parcel} (hold — no vCLAW spent)`;
+      }
+      if (action.params.door === 'rent') {
+        return `Renting parcel${parcel} — paying week 1 now`;
+      }
+      return `Claiming parcel${parcel}`.trimEnd();
+    }
+    case 'prepay_rent': {
+      const parcelCode = nonEmptyParam(action.params.parcelCode);
+      const weeks = positiveIntegerParam(action.params.weeks);
+      return weeks !== null
+        ? `Prepaying ${weeks} week(s) of rent on ${parcelCode ?? 'a parcel'}`
+        : `Prepaying rent on ${parcelCode ?? 'a parcel'}`;
+    }
+    case 'release_parcel': {
+      const parcelCode = nonEmptyParam(action.params.parcelCode);
+      return `Releasing parcel${parcelCode ? ` ${parcelCode}` : ''}`.trimEnd();
+    }
     default:
       return 'Choosing the next action';
   }
@@ -707,6 +750,7 @@ class AgentAutonomyDriver {
       bodyId: entry.bodyId,
       phaseSince: entry.phaseSince,
       thoughts: entry.recentThoughts.map((thought) => ({ ...thought })),
+      wallet: null,
     };
   }
 

@@ -18,6 +18,7 @@ const enrolled = (
   bodyId: 'ocb-public-body',
   phaseSince: 1,
   thoughts: [],
+  wallet: null,
 });
 
 describe('AutonomyHUD server-state presentation', () => {

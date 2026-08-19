@@ -1,0 +1,13 @@
+{
+  "verdict": "fail",
+  "reasons": [
+    "pair 2 INVALID: candidate: no 3s stable interval after settle inside the window",
+    "pair 4 INVALID: baseline not usable (strict/boundaryKind)",
+    "pair 5 INVALID: candidate: no 3s stable interval after settle inside the window",
+    "all 12 pairs must be valid (have 9) — re-run invalid PAIRS, never top up"
+  ],
+  "perMetric": {},
+  "usablePairs": 9,
+  "baselineSha": "dc44a10d8ca8",
+  "candidateSha": "807b4fc52a8c"
+}

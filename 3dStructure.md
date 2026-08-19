@@ -1,7 +1,106 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-16 (Cove hold'em table room — seated figures persist
+**Last Audited: 2026-08-19 (Cold-load rung-4 slice E — compile-overlap
+EXPERIMENT measured out and reverted; the compile HARDENING ships; the rung-4
+round is CLOSED. Spec + outcome: `docs/perf-cold-load-rung4-sliceE-spec.md`
+rev 3 §8; Codex xhigh R1/R2/R3 all folded.)** Drift note: the boot-core
+compile still runs serially at the slice-D post-scans position (mode
+`group-serial-1`) but now goes through `boot-core-compile.ts` — a
+renderer-wide boot-compile FIFO across warmup generations (deferred-warm +
+stage-warm compiles await boot idleness), abort-on-failure with an in-chain
+healing render, ATOMIC sync frustum-culling windows
+(`withStageSlotFrustumCullingDisabledSync` — the culling override can never
+span an await; the warm draw uses it too), (uuid → subtree-signature)
+exactly-once coverage (an empty-then-populated root like activity-indicators
+is recompiled by a second sweep), and generation-guarded probe stamps
+(requested/dispatched/settled/failed/renderables + wall/tail/hidden with
+exact invariants). Width > 1 is FORBIDDEN on r185 (WebGPU error-scope LIFO,
+shared LightsNode, WebGL2 currentProgram — see the spec); the ~500ms pooled
+prize awaits an upstream three batch-compile primitive. Ship singles: guest
+presented 2439ms · auth VRM 3074ms · GLB 3046ms · webgl2 2897ms · drift 0.
+
+**Prior Last Audited: 2026-08-19 (Cove interior — hotspot click-yield rule + sign-height
+table hotspots).** `cove-interior.tsx`: fixes the double-confirmed entry defect
+(live user report 2026-08-19 + certification Low #3, 2026-08-17) where the two
+oversized invisible slot click boxes (~316×220×~415wu, between the spawn and
+hold'em T1) swallowed clicks aimed across the room at the Texas Hold'em
+table/sign — the player got the CLASSIC slot screen instead of `/cove/table`
+(live-reproduced on staging pre-fix). Two changes: (1) the three table hotspot
+boxes (hold'em @T1, blackjack @T2, baccarat) grew from 200×200×150 to
+**200×340×150, center Y 170** so each box now covers its floating `BankBanner`
+sign (y∈[250,310]) — clicking a sign routes like clicking the table. (2) A
+symmetric **click-yield rule** on ALL five cove hotspots
+(`_shouldYieldClickToFartherHotspot`): every hotspot mesh carries
+`userData.coveHotspot`; on click, if the same ray also hits a FARTHER hotspot,
+one module-scope `THREE.Raycaster` checks the visible room GLB (via the
+module-scope `_coveRoomRootRef` set by `InteriorScene`) — when no visible
+surface sits in front of that farther hotspot, the handler returns WITHOUT
+`stopPropagation()` and R3F delivers the click onward. Clicks landing on real
+geometry (cabinet faces, near felt) behave exactly as before. Symmetric on
+purpose: the taller blackjack box would otherwise shadow the baccarat sign on
+the shared right lane (and the table-area version of that shadowing was
+pre-existing). Click-only cost — zero per-frame work; Iris Xe invariants
+untouched. See §10c hotspot procedure note.
+
+**Prior Last Audited: 2026-08-17 (Cold-load rung-4 slice D — the boot-core gate;
+spec FROZEN rev 5 in `docs/perf-cold-load-rung4-sliceD-spec.md`, Codex xhigh
+spec rounds 19/15/8/2/0 findings + implementation rounds I1(10)/I2).** The
+loading screen now dismisses when an explicit BOOT CORE is on screen, not
+when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
+~4.0s authenticated VRM player.
+
+- **Boot-core whitelist** (`BOOT_CORE_CHUNKS`, `World3DCanvas.tsx`): terrain,
+  building PROXIES, land-parcels(+sign hitboxes, `perfNonRendered`),
+  land-salvage-nodes, kelp-forest, seaweed, kelp-forest-portal, cove-beacon,
+  cove-entrance, town-directory-sign, boot-actor, click-to-move,
+  land-founder-apartments, land-ring-decorations, activity-indicators,
+  floating-texts. The warmup gate scans/compiles/warm-draws ONLY these
+  (per-group `compileAsync`, exactly once each); mesh content outside them is
+  HIDDEN for the warm draw and stamped as probe-invalidating drift
+  (`bootCoreDriftChunks`). The global `DefaultLoadingManager` idle barrier is
+  DELETED.
+- **Boot actor** (`boot-actor.ts`): mode-independent body dependency —
+  ONE GamePage coordinator resolves {none | player-vrm | player-glb |
+  npc-body | autonomous-remote} on authoritative auth+avatar settlement and
+  closes REGISTRATION; COVERAGE closes only on the matching claim token's
+  COMMIT (per-token timestamps) or the 8s epoch deadline. On-time bodies
+  mount RAW and are visible at reveal; post-closure/uncovered bodies attach
+  through the deferred-warm queue (`requiresDeferredAttach` state table).
+  The possessed demo body moved OUT of ArenaNpcs into `perf:boot-actor`
+  (`BootActorNpcBody`).
+- **BOOT_CORE_PRESENTED** (`decorative-release.ts`): render-proven milestone
+  — chained scene `onAfterRender` (world slot active + world camera + epoch
+  qualified), 2 consecutive qualifying frames, predicate WITHOUT the sea
+  overlay (the overlay dismisses BECAUSE of it; 10s visible-time fallback +
+  45s fuse retained). SeaLoadingScreen reads module getters; its progress
+  download band = five epoch-owned dependency units (3 locomotion clips +
+  actor fetch + commit, deadline-frozen).
+- **Boot streaming**: buildings (proxy -> warmed atomic swap via
+  `DeferredWarmAttachment placeholder`, per-building ErrorBoundary, proxy
+  carries its own label id + clicks until the flip), town props, Nori +
+  quest crab stream AFTER `onBootStreamEligible` (= release AND milestone
+  AND overlay/curtain gone AND visible; per-epoch queue, 1.5s quiet, parks
+  while hidden). Tiers: buildings -1e14, props -1e13, land -1e12 (+distSq
+  from boot camera). Cohort of exactly 16 units tracked to terminal
+  (`boot-stream-cohort.ts` — `streamSettledAt`, fail-opens counted). Land
+  trio release-gates GLB demand only (data fetches stay at mount) with the
+  `land-boot-tracker.ts` hydration-generation + exact-slot-ID contract
+  (`landSettledAt`; the probe judges the reveal+16s `phasesAtWindow`
+  snapshot). Module-scope byte-warms for all deferred sets moved behind
+  eligibility; tier-1 manifest = locomotion clips ONLY.
+- **Texture claims** (`deferred-warm.ts`): renderer-keyed execution-time
+  `tryClaimTexture` handles — the warmup scanners and deferred warms can
+  never double-upload against an in-flight compile; ONE shared
+  `TEXTURE_SLOTS` constant.
+- **Rig**: probe `--storage-state` (authenticated lane; landtest fixtures
+  via `cold-load-auth-state.mjs`) + `--expect-boot-actor` +
+  `phasesAtWindow`; paired gate `--slice-d` fail-closed schema (drift=0,
+  cohort 16/16, land failures 0, settle<=15s window [recorded widening],
+  actor ordering, exactly-12 pairs). HUD `?perf=1` shows
+  `<t>s boot-core <n>/16 (+land)`.
+
+**Prior Last Audited: 2026-08-16 (Cove hold'em table room — seated figures persist
 between hands).** `holdem-table-room.tsx`: opponent figure resolution now falls
 back to the PERSISTENT public seat roster (`liveTable.table.seats`, excluding
 `status==='left'`) whenever no live hand snapshot exists (`cashLive === null` —
@@ -1894,6 +1993,7 @@ Slot-machine hotspots are discovered at runtime from the GLB instead of being ha
    `halfHotspotW = halfW * 0.92` — 4% seam gap at the split prevents both hotspots double-hitting a click on the exact center line. The Phase 6.1.16 bug (`halfW + reach`) had the boxes overlapping the full bank width; the array-first (classic) hotspot then always won the raycast, so bonus clicks opened classic.
 5. **Always render TWO `BankBanner` labels** (procedural `THREE.CanvasTexture` + `PlaneGeometry`) at `(classicCentroid[0], 280, classicCentroid[2])` and `(bonusCentroid[0], 280, bonusCentroid[2])`. Banner Y is **pinned to 280wu** (just above cabinet tops, below ceiling) — never computed from bbox centroid + offset, since floor decals + ceiling trim in the same material can drag the centroid out of view.
 6. **Fall back to `GAMEREADY_HOTSPOTS`** (hardcoded by tile-zone) if no cluster mesh matches. Last-resort `FALLBACK_HOTSPOTS` is for the cartoon GLB path.
+7. **Click-yield rule (2026-08-19, MANDATORY for every new interior hotspot):** every invisible click hotspot mesh MUST set `userData.coveHotspot = true` and gate its `onClick` through `_shouldYieldClickToFartherHotspot(e, mesh)` — when the click ray also hits a FARTHER hotspot and no visible room surface (raycast against `_coveRoomRootRef`) sits in front of it, return WITHOUT `stopPropagation()` so R3F delivers the click to the hotspot the player was actually aiming at. Oversized boxes on shared sight lines otherwise swallow cross-room clicks (the "clicked hold'em, got slots" defect — live user report 2026-08-19 + cert Low #3). Table hotspot boxes are 200×340×150 (center Y=170) so they include their floating signs — a sign click is a table click.
 
 **`HotspotDef` shape:** `{ position: [x,y,z], size: [w,h,d], machineSlug: MachineSlug, paytableId: MachineSlug, isBonus: boolean }`.
 
