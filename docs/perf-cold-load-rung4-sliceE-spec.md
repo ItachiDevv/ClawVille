@@ -43,9 +43,15 @@ A generation's cleanup flips `cancelled` but cannot cancel an in-flight `compile
 tail. Every boot compile phase runs through `chainBootCompile` (module-level strict FIFO in
 `boot-core-compile.ts`) so a successor generation's first front waits for the orphan tail;
 the deferred-warm (`warmDeferredObject`) and stage-warm (`warmStageSlotRenderer`) compile
-paths `awaitBootCompileIdle()` before their first compile. Concurrency across generations
-and across the boot/deferred/stage paths is therefore structurally impossible, not merely
-unlikely.
+paths `awaitBootCompileIdle()` before their first compile. Boot-vs-boot overlap across
+generations is structurally impossible; the deferred/stage gating is a pre-compile idle
+SNAPSHOT, so a residual window remains where a superseded stage compile's uncancellable
+tail (or a cosmetic-loader compile, which predates slice E entirely) can overlap a boot
+front — a window that exists in EVERY shipped build including prod today [R3-2]. Closing
+it needs one renderer-keyed compile arbiter across boot/stage/deferred/cosmetic paths —
+DECLARED as the follow-up bundled with the three batch-primitive item (§5), owner: the
+next perf lane, review at the next rung kickoff. Slice E strictly SHRINKS the historical
+overlap surface; it does not claim to eliminate it.
 
 ### 2a. Compile queue (`boot-core-compile.ts` — serial, abort-on-failure)
 
@@ -221,8 +227,47 @@ semantics recorded here, no probe change.
 | 10 | SHOULD-FIX | Added: chain/generation tests, sync-culling throw/restore tests, negative/fractional/accounting stamp tests, unpaired-counterexample test, identity tests, lane tests. A live same-root-gains-mesh case is exercised by every authenticated batch run (activity-indicators populates pre-reveal). |
 | 11 | INFO | R2 independently verified the r185 sync-front claims, render() state re-seat, rejection handling, scansEndAt scoping, and generation-guarded stamps. |
 
+## 6c. Codex R3 findings ledger (reduction review)
+
+| # | Sev | Resolution |
+|---|---|---|
+| 1 | BLOCKING | `computeBootCompileStamps` — tail boundary is max(scansEndAt, firstKickAt); tail ≤ wall and wall = hidden + tail hold EXACTLY by construction in both shapes; unit-tested incl. the post-scans kick-after-scans case. |
+| 2 | BLOCKING | Scope ruling: the residual stage/cosmetic overlap window is PRE-EXISTING in every shipped build; slice E strictly shrinks the surface (boot FIFO + idle-gated deferred/stage). Full renderer-keyed arbiter = tracked follow-up (§2a-pre, §5). |
+| 3 | BLOCKING | Failure-abort now HEALS the renderer inside the chained task (controlled culling-scoped render behind the overlay, generation-live only) before the chain releases — no queued successor front can run against unrestored state. Note: r185 fronts also self-seat `_handleObjectFunction`/`_compilationPromises` at entry, bounding the original exposure. |
+| 4 | SHOULD-FIX | Coordinator logic extracted to pure helpers (`selectRootsToCompile`, `computeBootCompileStamps`, `BOOT_CORE_COMPILE_SHIPPED_MODE`) + 8 unit tests: unchanged-sig no-op, changed-sig single-root recompile, duplicate skip, both timing shapes, mode literal. |
+| 5 | LOW | Module header rewritten for the shipped post-scans shape. |
+
 ## 7. Revert plan
 
 Single-commit revert restores the slice-D state (`dc44a10d`). Runtime files: `World3DCanvas.tsx`,
 `boot-core-compile.ts` (new), `resource-ledger.ts` (additive sync helper). Rig: `cold-load-paired-gate.mjs`
 (additive `--slice-e`), `cold-load-ab-runner.sh` (manifest SHA fields), tests. No schema/asset/contract changes.
+
+## 8. EXPERIMENT OUTCOME (2026-08-19, batch4 — the verdict this spec's gate produced)
+
+The early-kick overlap was MEASURED OUT. 12-pair authenticated batch
+(`cold-load-runs/sliceE-gate-batch4`, baseline `dc44a10d` vs candidate `807b4fc5`,
+arm-isolated rig, 11 valid pairs — pair 4 hit the known cold-start SW flake):
+
+- paired compile improvement (baseline compileMs − candidate tailMs): **median +193ms**
+  (range −262…+748) — BELOW the 300ms ship bar (§3);
+- candidate tail median **1322ms** — OVER the 1000ms ceiling;
+- presented paired diff: **+241ms median in the candidate's favor** (baseline median
+  3899ms → candidate 3830ms) — a real but modest, noisy win;
+- candidate mechanics flawless on all 12 runs: drift 0, failed groups 0, coverage
+  requested=dispatched=settled, mode/stamps correct, actor ordering held.
+
+Physics: the early compile hides ~350-500ms behind the dep wait + scans, but it
+CONTENDS with those same main-thread phases, inflating its own wall and returning most
+of the overlap. The verdict is honored: **the early kick is REVERTED** (compile runs
+once, post-scans, at the slice-D position, mode `group-serial-1`). Everything else in
+this spec SHIPS — the R1/R2 hardening fixes real latent defects in the slice-D code:
+renderer-wide compile FIFO across generations + deferred/stage warm gating (R2-1),
+subtree-signature compile coverage (R2-2), atomic sync culling windows (R1-5),
+abort-on-poisoned-renderer (R1-4), generation-guarded telemetry (R1-6), the honest
+stamp schema, the `--slice-e` evaluator (retained as this experiment's record), and
+the rig's per-arm CDP ports + derived build identity.
+
+The real compile-time prize remains the upstream three batch-compile primitive (§5):
+rev-1's unsafe pool measured 643-818ms walls vs ~1300 serial — that ~500ms is what a
+safe batch API in three r18x would buy.

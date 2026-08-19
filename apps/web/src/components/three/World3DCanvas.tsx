@@ -11,7 +11,13 @@ import {
   notifyWorldFramePresented,
 } from '@/lib/three/decorative-release';
 import { awaitBootActorGate } from '@/lib/three/boot-actor';
-import { chainBootCompile, runBootCoreCompileQueue } from '@/lib/three/boot-core-compile';
+import {
+  BOOT_CORE_COMPILE_SHIPPED_MODE,
+  chainBootCompile,
+  computeBootCompileStamps,
+  runBootCoreCompileQueue,
+  selectRootsToCompile,
+} from '@/lib/three/boot-core-compile';
 import { whenLocomotionClipsSettled } from '@/lib/three/vrm-character-animator';
 import { TEXTURE_SLOTS, tryClaimTexture } from '@/lib/three/deferred-warm';
 import { BootActorNpcBody } from '@/lib/three/arena-npcs';
@@ -2132,20 +2138,20 @@ function WorldWarmup({
         publishPhase('warmupStartAt', depsStartedAt);
         armDecorativeDeadline();
 
-        // Slice E (spec §2): EXACTLY ONE compileAsync in flight, started
-        // EARLY — the serial whitelist compile overlaps the idle dep wait +
-        // vrmBulk + texture scans instead of running after them (Codex R1
-        // killed compile-vs-compile concurrency: WebGPU error-scope LIFO,
-        // shared LightsNode mutation, WebGL2 currentProgram races — spec §6).
-        // Exactly-once is keyed by root uuid (the boot-actor chunk owns two
-        // roots); the late phase picks up roots that mount after the early
-        // kick. Abort-on-failure: a rejection leaves renderer front state
-        // unrestored, so stop compiling — the warm draw is the fail-open.
+        // Slice E (spec §2): EXACTLY ONE compileAsync in flight, serial,
+        // post-scans (the slice-D position) — Codex R1 killed
+        // compile-vs-compile concurrency (WebGPU error-scope LIFO, shared
+        // LightsNode mutation, WebGL2 currentProgram races — spec §6), and
+        // batch4 measured the early-kick overlap OUT (+193ms paired median
+        // < the 300ms ship bar — spec §8). Abort-on-failure: a rejection
+        // leaves renderer front state unrestored, so stop compiling — the
+        // warm draw is the fail-open.
         // Exactly-once is keyed by (root uuid, SUBTREE SIGNATURE) [R2-2]: a
-        // root that exists EMPTY at the early kick (activity-indicators) and
-        // gains meshes before reveal must be recompiled by the late phase —
-        // a bare uuid set would skip it forever and silently launder its
-        // compile cost into the warm draw, outside the measured tail.
+        // root that exists EMPTY at the first sweep (activity-indicators
+        // before its SSE data) and gains meshes before reveal must be
+        // recompiled by the second sweep — a bare uuid set would skip it
+        // forever and silently launder its compile cost into the warm draw,
+        // outside the measured tail.
         const compiledRootSignatures = new Map<string, string>();
         const rootSignature = (root: THREE.Object3D): string => {
           let meshCount = 0;
@@ -2176,7 +2182,7 @@ function WorldWarmup({
         };
         const compileGenerationLive = () =>
           !cancelled && !(stageWarmup ? stageResumed : livePendingGateResumed());
-        const runCompilePhase = async (phase: 'early' | 'late'): Promise<void> => {
+        const runCompilePhase = async (phase: 'main' | 'late'): Promise<void> => {
           if (compileTotals.aborted || !compileGenerationLive()) return;
           if (typeof (gl as any).compileAsync !== 'function') return;
           // The compileAsync front is only synchronous once the renderer is
@@ -2189,25 +2195,23 @@ function WorldWarmup({
               return;
             }
           }
-          const seenThisPhase = new Set<string>();
-          const groups = bootCoreGroups().filter((group) => {
-            if (seenThisPhase.has(group.uuid)) {
+          const groups = selectRootsToCompile(
+            bootCoreGroups(),
+            compiledRootSignatures,
+            rootSignature,
+            (group) => {
               console.warn(
                 `[World3D] duplicate boot-core root uuid in inventory (compiling once): ${group.uuid} chunk=${String(group.userData?.perfChunk ?? group.name)}`,
               );
-              return false;
-            }
-            seenThisPhase.add(group.uuid);
-            // Recompile when the subtree signature changed since the last
-            // front (empty-then-populated roots, [R2-2]).
-            return compiledRootSignatures.get(group.uuid) !== rootSignature(group);
-          });
+            },
+          );
           if (groups.length === 0) return;
           const phaseStartedAt = performance.now();
           if (compileTotals.firstKickAt === 0) compileTotals.firstKickAt = phaseStartedAt;
           // Renderer-wide FIFO [R2-1]: a successor generation's phase waits
           // for any orphan in-flight compile before its first front.
-          const result = await chainBootCompile(() => runBootCoreCompileQueue({
+          const result = await chainBootCompile(async () => {
+            const queueResult = await runBootCoreCompileQueue({
             groups,
             compile: (group) => {
               // Culling override scoped to the SYNCHRONOUS compile front —
@@ -2236,7 +2240,26 @@ function WorldWarmup({
               noteWorldWarmupProgress();
             },
             stopOnFailure: true,
-          }));
+            });
+            if (queueResult.failed > 0 && compileGenerationLive()) {
+              // [R3-3] heal the renderer INSIDE the chained task, before any
+              // queued successor front runs: a controlled render re-seats the
+              // front state the throwing compileAsync left behind (r185
+              // render() entry re-seats _handleObjectFunction /
+              // _currentRenderContext). Drift is hidden and the overlay is up
+              // — the same conditions as the warm draw. Never after a safety
+              // resume (double-render blue screen) — the generation guard
+              // above covers that.
+              try {
+                withStageSlotFrustumCullingDisabledSync('world', () => {
+                  gl.render(scene, camera);
+                });
+              } catch (healErr) {
+                console.warn('[World3D] post-abort healing render failed:', healErr);
+              }
+            }
+            return queueResult;
+          });
           compileTotals.requested += result.requested;
           compileTotals.dispatched += result.dispatched;
           compileTotals.settled += result.settled;
@@ -2244,15 +2267,19 @@ function WorldWarmup({
           // Failure-abort blocks later phases; a cancellation-abort is
           // already covered by the generation guards (stamps never publish).
           if (result.failed > 0) compileTotals.aborted = true;
-          if (phase === 'early') compileTotals.earlyMs += performance.now() - phaseStartedAt;
+          if (phase === 'main') compileTotals.earlyMs += performance.now() - phaseStartedAt;
           else compileTotals.lateMs += performance.now() - phaseStartedAt;
           console.log(
             `[World3D] boot-core compile ${phase}: ${result.settled}/${result.requested} roots settled, ${result.failed} failed`,
           );
         };
-        const earlyCompilePromise = runCompilePhase('early').catch((err) => {
-          console.warn('[World3D] early boot-core compile phase failed:', err);
-        });
+        // The EARLY kick was measured OUT (batch4, 2026-08-19, 11 valid
+        // pairs): paired compile improvement median +193ms < the 300ms ship
+        // bar, tail median 1322ms > the 1000ms ceiling — the early compile
+        // contends with the very phases it hides behind and gives most of
+        // the overlap back. The hardened queue/chain/culling/stamp machinery
+        // ships; the compile runs once, post-scans, at the slice-D position.
+        // Full record: sliceE spec §8 + the perf ledger slice-E entry.
 
         const clipsPromise = whenLocomotionClipsSettled().then(() => {
           publishPhase('bootCoreDepClipsMs', performance.now() - depsStartedAt);
@@ -2339,28 +2366,26 @@ function WorldWarmup({
 
           if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
-          // Slice E (spec §2): drain the EARLY serial compile (it overlapped
-          // the dep wait + scans), then the LATE phase compiles roots that
-          // mounted after the early kick — the boot-actor roots, chiefly.
-          // Exactly-once per root uuid across both phases [§2b/F19].
+          // Slice E (spec §2): the serial whitelist compile, exactly-once
+          // per (root uuid, subtree signature) across both sweeps [§2b/F19].
           const scansEndAt = performance.now();
-          await earlyCompilePromise;
+          await runCompilePhase('main');
+          // A second sweep catches roots that mounted while the main phase
+          // ran (signature-keyed, normally a no-op).
           await runCompilePhase('late');
           if (compileGenerationLive()) {
-            const compileWallMs =
-              compileTotals.firstKickAt > 0 && compileTotals.lastSettleAt > 0
-                ? compileTotals.lastSettleAt - compileTotals.firstKickAt
-                : 0;
-            const compileTailMs = Math.max(
-              0,
-              (compileTotals.lastSettleAt || scansEndAt) - scansEndAt,
-            );
-            publishPhase('bootCoreCompileMs', compileWallMs);
-            publishPhase('bootCoreCompileTailMs', compileTailMs);
-            publishPhase(
-              'bootCoreCompileEarlyHiddenMs',
-              Math.max(0, compileWallMs - compileTailMs),
-            );
+            // [R3-1] tail boundary is max(scansEndAt, firstKickAt) so the
+            // invariants tail ≤ wall and wall = hidden + tail hold EXACTLY
+            // in the shipped post-scans shape (inventory runs between the
+            // two timestamps).
+            const stampTimes = computeBootCompileStamps({
+              firstKickAt: compileTotals.firstKickAt,
+              lastSettleAt: compileTotals.lastSettleAt,
+              scansEndAt,
+            });
+            publishPhase('bootCoreCompileMs', stampTimes.wallMs);
+            publishPhase('bootCoreCompileTailMs', stampTimes.tailMs);
+            publishPhase('bootCoreCompileEarlyHiddenMs', stampTimes.hiddenMs);
             publishPhase('bootCoreCompileEarlyMs', compileTotals.earlyMs);
             publishPhase('bootCoreCompileLateMs', compileTotals.lateMs);
             publishPhase('bootCoreCompileRenderables', compileTotals.renderables);
@@ -2368,7 +2393,7 @@ function WorldWarmup({
             publishPhase('bootCoreCompileDispatched', compileTotals.dispatched);
             publishPhase('bootCoreCompileSettled', compileTotals.settled);
             publishPhase('bootCoreCompileFailedGroups', compileTotals.failed);
-            publishPhase('bootCoreCompileMode', 'group-serial-early-1');
+            publishPhase('bootCoreCompileMode', BOOT_CORE_COMPILE_SHIPPED_MODE);
             noteWorldWarmupProgress();
           }
           if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;

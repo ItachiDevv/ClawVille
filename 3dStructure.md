@@ -1,7 +1,26 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-17 (Cold-load rung-4 slice D — the boot-core gate;
+**Last Audited: 2026-08-19 (Cold-load rung-4 slice E — compile-overlap
+EXPERIMENT measured out and reverted; the compile HARDENING ships; the rung-4
+round is CLOSED. Spec + outcome: `docs/perf-cold-load-rung4-sliceE-spec.md`
+rev 3 §8; Codex xhigh R1/R2/R3 all folded.)** Drift note: the boot-core
+compile still runs serially at the slice-D post-scans position (mode
+`group-serial-1`) but now goes through `boot-core-compile.ts` — a
+renderer-wide boot-compile FIFO across warmup generations (deferred-warm +
+stage-warm compiles await boot idleness), abort-on-failure with an in-chain
+healing render, ATOMIC sync frustum-culling windows
+(`withStageSlotFrustumCullingDisabledSync` — the culling override can never
+span an await; the warm draw uses it too), (uuid → subtree-signature)
+exactly-once coverage (an empty-then-populated root like activity-indicators
+is recompiled by a second sweep), and generation-guarded probe stamps
+(requested/dispatched/settled/failed/renderables + wall/tail/hidden with
+exact invariants). Width > 1 is FORBIDDEN on r185 (WebGPU error-scope LIFO,
+shared LightsNode, WebGL2 currentProgram — see the spec); the ~500ms pooled
+prize awaits an upstream three batch-compile primitive. Ship singles: guest
+presented 2439ms · auth VRM 3074ms · GLB 3046ms · webgl2 2897ms · drift 0.
+
+**Prior Last Audited: 2026-08-17 (Cold-load rung-4 slice D — the boot-core gate;
 spec FROZEN rev 5 in `docs/perf-cold-load-rung4-sliceD-spec.md`, Codex xhigh
 spec rounds 19/15/8/2/0 findings + implementation rounds I1(10)/I2).** The
 loading screen now dismisses when an explicit BOOT CORE is on screen, not

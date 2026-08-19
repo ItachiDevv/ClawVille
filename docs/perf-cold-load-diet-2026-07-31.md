@@ -669,6 +669,69 @@ punch-listed SW-target CDP attachment is the structural fix):**
   regression + precache still functions + upgrade migrates". All three hold. Evidence:
   `docs/perf-data/cold-load-rung4-sliceB-2026-08-11/{before,after}/report-{1,2,3}.json`.
 
+## Rung-4 slice E results (2026-08-19, session prf — compile-overlap EXPERIMENT measured out; the HARDENING ships; ROUND CLOSED)
+
+Spec: `docs/perf-cold-load-rung4-sliceE-spec.md` (rev 3 + §8 outcome; Codex xhigh
+rounds R1 8-blocking / R2 8-blocking / R3 3-blocking — every finding folded or
+tracked). Slice E ran as an honest EXPERIMENT with a fail-closed gate, and the
+gate said no:
+
+**Rev 1 — width-4 pooled compileAsync:** measured compile wall 1279→643-818ms
+across lanes, but Codex R1 PROVED r185 concurrency unsafe (WebGPU error scopes
+are device-wide LIFO; the shared RenderList/LightsNode mutates per front while
+cove chunks carry real point lights; WebGL2 readiness polls read the shared
+materialProperties.currentProgram). Killed pre-ship. The ~500ms it measured is
+the prize an UPSTREAM three batch-compile primitive would buy (declared
+follow-up).
+
+**Rev 2/3 — serial-early (one compileAsync in flight, kicked at warmupStart to
+overlap the dep wait + scans):** 12-pair authenticated batch (`batch4`,
+baseline dc44a10d8ca8 vs candidate 807b4fc52a8c, arm-isolated rig): paired
+compile improvement **median +193ms** (range −262…+748, 11 valid pairs) —
+below the 300ms ship bar; candidate tail median **1322ms** > the 1000ms
+ceiling; presented paired diff +241ms — real but modest. Physics: the early
+compile CONTENDS with the phases it hides behind and returns most of the
+overlap. Formal gate verdict: **fail** (also 9/12 valid at the evidence layer
+— the known cold-start SW flake + two post-settle-stability breaches under
+ambient load). **The early kick was REVERTED. No perf claim ships.**
+
+**What SHIPS (hardening-only, mode `group-serial-1`, compile at the slice-D
+post-scans position):** the R1/R2/R3 correctness fixes to latent slice-D-era
+defects — renderer-wide boot-compile FIFO across warmup generations +
+deferred/stage warms gated on boot-compile idleness; abort-on-failure with an
+in-chain healing render (a throwing compileAsync front leaves renderer state
+unrestored); ATOMIC sync frustum-culling windows (the async wrapper held
+across awaits could leave the world uncullable if a watchdog resumed
+mid-compile); (uuid → subtree-signature) compile coverage (an empty-then-
+populated root like activity-indicators is recompiled, not silently laundered
+into the warm draw); generation-guarded stamps; the honest stamp schema
+(requested/dispatched/settled/failed/renderables + wall/tail/hidden with
+exact invariants). Rig: per-arm CDP ports + verified port-free waits (the
+cross-arm stale-chrome class), runner-derived build SHAs, the `--slice-e`
+evaluator retained as the experiment's frozen record.
+
+**Ship evidence (post-reduction singles, quiet box, all green):** guest
+presented 2439ms (slice-D watchdog 2590) · auth VRM 3074ms (slice-D median
+3359) · GLB player 3046ms (3290) · webgl2 2897ms · cold /cove + /kelp zero
+building bytes · drift 0 / failed 0 / coverage exact on every lane · suite
+567 green, tsc 0. Two PRE-EXISTING land pin-test failures reproduce on
+pristine dc44a10d (staging-merge drift) — filed to the land domain, not
+slice-E debt.
+
+**Also root-caused this session:** the itachi-env sync hook was overwriting
+`.env.example` (and `.env.local`) in every checkout with a corrupt 1-line
+remote v7 on session events — fixed at the source (v8 pushed). Harness
+background tasks clamp at 10 minutes — three batches died to it before the
+detached-launch recipe; memorialized.
+
+**ROUND CLOSE:** rung 4 ends here. A(§instrumentation)+B(SW)+§5b on prod;
+C+D+E on staging. Remaining follow-ups: upstream three batch-compile
+primitive (+ the renderer-keyed compile arbiter across boot/stage/cosmetic
+paths, R3-2) · WebGL2 lane distributions · the cold-start SW flake class ·
+mobile-class probe lane + field telemetry (founder: "flag later"). E4 gates
+UNCHANGED: founder staging playtests — slice-D proxy-world first impression +
+slice-C wanderer pop-in.
+
 ## Rung-4 slice-D results (2026-08-17, session perr4.5 — the boot-core gate; AUTHENTICATED 12-pair webgpu gate PASS)
 
 Spec: `docs/perf-cold-load-rung4-sliceD-spec.md` (FROZEN rev 5 — Codex xhigh

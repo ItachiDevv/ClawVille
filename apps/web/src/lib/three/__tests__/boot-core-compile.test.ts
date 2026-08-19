@@ -191,3 +191,73 @@ describe('chainBootCompile', () => {
     expect(isBootCompileIdle()).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// computeBootCompileStamps [R3-1] + selectRootsToCompile [R3-4] + shipped mode.
+// ---------------------------------------------------------------------------
+import {
+  BOOT_CORE_COMPILE_SHIPPED_MODE,
+  computeBootCompileStamps,
+  selectRootsToCompile,
+} from '../boot-core-compile';
+
+describe('computeBootCompileStamps', () => {
+  test('post-scans shape (kick AFTER scans, the R3-1 case): invariants hold exactly', () => {
+    // Inventory ran between scansEnd (1000) and firstKick (1040).
+    const s = computeBootCompileStamps({ firstKickAt: 1040, lastSettleAt: 2340, scansEndAt: 1000 });
+    expect(s.wallMs).toBe(1300);
+    expect(s.tailMs).toBe(1300); // boundary = max(1000, 1040) = 1040
+    expect(s.hiddenMs).toBe(0);
+    expect(s.tailMs).toBeLessThanOrEqual(s.wallMs);
+    expect(s.wallMs).toBe(s.hiddenMs + s.tailMs);
+  });
+
+  test('early-kick shape (kick BEFORE scans): hidden = the overlapped span', () => {
+    const s = computeBootCompileStamps({ firstKickAt: 500, lastSettleAt: 2000, scansEndAt: 900 });
+    expect(s.wallMs).toBe(1500);
+    expect(s.tailMs).toBe(1100); // boundary = 900
+    expect(s.hiddenMs).toBe(400);
+    expect(s.wallMs).toBe(s.hiddenMs + s.tailMs);
+  });
+
+  test('settle before scans end clamps tail to zero, invariant preserved', () => {
+    const s = computeBootCompileStamps({ firstKickAt: 500, lastSettleAt: 800, scansEndAt: 900 });
+    expect(s.wallMs).toBe(300);
+    expect(s.tailMs).toBe(0);
+    expect(s.hiddenMs).toBe(300);
+  });
+
+  test('never-dispatched returns zeros', () => {
+    expect(computeBootCompileStamps({ firstKickAt: 0, lastSettleAt: 0, scansEndAt: 900 }))
+      .toEqual({ wallMs: 0, tailMs: 0, hiddenMs: 0 });
+  });
+});
+
+describe('selectRootsToCompile', () => {
+  const sig = (g: { uuid: string; s: string }) => g.s;
+
+  test('unchanged signatures make the second sweep a no-op', () => {
+    const roots = [{ uuid: 'a', s: '3:m1' }, { uuid: 'b', s: '2:m2' }];
+    const compiled = new Map([['a', '3:m1'], ['b', '2:m2']]);
+    expect(selectRootsToCompile(roots, compiled, sig)).toEqual([]);
+  });
+
+  test('a changed signature recompiles ONLY that root (empty-then-populated class)', () => {
+    const roots = [{ uuid: 'a', s: '3:m1' }, { uuid: 'act', s: '5:m9' }];
+    const compiled = new Map([['a', '3:m1'], ['act', '0:']]); // was empty at first sweep
+    const out = selectRootsToCompile(roots, compiled, sig);
+    expect(out.map((r) => r.uuid)).toEqual(['act']);
+  });
+
+  test('new roots are selected; duplicate uuids are reported and skipped', () => {
+    const dupes: string[] = [];
+    const roots = [{ uuid: 'a', s: '1:x' }, { uuid: 'a', s: '1:x' }, { uuid: 'n', s: '2:y' }];
+    const out = selectRootsToCompile(roots, new Map(), sig, (g) => dupes.push(g.uuid));
+    expect(out.map((r) => r.uuid)).toEqual(['a', 'n']);
+    expect(dupes).toEqual(['a']);
+  });
+
+  test('shipped mode constant is the post-scans serial mode, distinct from the experiment', () => {
+    expect(BOOT_CORE_COMPILE_SHIPPED_MODE).toBe('group-serial-1');
+  });
+});
