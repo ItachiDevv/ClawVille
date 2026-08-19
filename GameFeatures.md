@@ -10,7 +10,12 @@ game and wager when both are valid. The Autonomous panel also shows the owner's
 current vCLAW balance and today's earned and spent totals from the real ledger,
 so a player can see whether their bot is spending vCLAW. Daily totals use the
 UTC day and disappear quietly for a poll if the wallet read is unavailable.
-No agent protocol or settlement rule changed.
+No agent protocol or settlement rule changed. Same-day follow-up (founder
+screenshot): the green connected-agent pill now reads "Agent Training Active"
+(was "Bot Training Active"), and the touch-layout quest tracker moved from
+top-16px — where the agent pill covered it, leaving only its chevron visible —
+to 124px, below the pill (~12–52px) and the Controlled/Autonomous toggle
+(~80–116px), with its expanded-body height budget adjusted to match.
 
 **Prior Last Audited: 2026-08-19 (Cove entry UX — clicking the Texas Hold'em table or
 its floating sign works from anywhere in the room).** Before this fix, clicking

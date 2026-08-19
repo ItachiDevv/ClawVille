@@ -229,10 +229,15 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   // was not rendered at all.
   if (isMobile) {
     return (
-      // Mobile: floating pill top-center. The status bar returns null on every
-      // touch device, so the desktop left-column reserve does not apply here;
-      // this keeps the height rule the mobile pill has always had.
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40">
+      // Mobile: floating pill top-center, BELOW the top-center stack — the
+      // "Agent Training Active" pill sits at top-3 (~12→52px) and the
+      // control-mode toggle at top-[5rem] (~80→116px), both z-50; the old
+      // `top-4` put this z-40 pill directly UNDER the agent pill (founder
+      // report 2026-08-19, iPad screenshot — only the chevron peeked out).
+      // 124px clears the whole stack whether or not the agent pill renders.
+      // The status bar returns null on every touch device, so the desktop
+      // left-column reserve does not apply here.
+      <div className="fixed top-[7.75rem] left-1/2 -translate-x-1/2 z-40">
         <QuestPanel
           expanded={expanded}
           onToggle={() => setExpanded((e) => !e)}
@@ -243,7 +248,7 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
           progress={progress}
           getProgress={getProgress}
           isNew={isNew}
-          bodyMaxHeight={`min(${QUEST_BODY_MAX_PX}px, max(${QUEST_BODY_MIN_PX}px, calc(100dvh - 180px)))`}
+          bodyMaxHeight={`min(${QUEST_BODY_MAX_PX}px, max(${QUEST_BODY_MIN_PX}px, calc(100dvh - 288px)))`}
           mobile
         />
       </div>
