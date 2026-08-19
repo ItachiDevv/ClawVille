@@ -64,7 +64,20 @@ kill_probe_chrome() { # $1 = profile dir (unique per run) - NEVER kill by raw PI
 }
 
 free_probe_port() { # $1 = cdp port - kill any leftover CHROME listening there
-  powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { \$p = Get-Process -Id \$_ -ErrorAction SilentlyContinue; if (\$p -and \$p.ProcessName -eq 'chrome') { Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue } }" >/dev/null 2>&1
+  # VERIFIED free (slice-E batch2 finding): a dispatched Stop-Process can lag
+  # past the old 'fire and hope' window, leaving a dying chrome that still
+  # answers /json/version for the next run. Kill, then WAIT until no chrome
+  # listens (bounded ~10s); report if it never frees so the run fails loudly
+  # instead of attaching to a stale browser.
+  local i
+  for i in 1 2 3 4 5; do
+    powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { \$p = Get-Process -Id \$_ -ErrorAction SilentlyContinue; if (\$p -and \$p.ProcessName -eq 'chrome') { Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue } }" >/dev/null 2>&1
+    local busy=$(powershell -NoProfile -Command "(Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -d '\r')
+    [ "${busy:-0}" = "0" ] && return 0
+    sleep 2
+  done
+  echo "WARN: CDP port $1 still occupied after kill+wait"
+  return 1
 }
 
 ensure_server() { # $1=port $2=worktree dir — returns nonzero if still dead
@@ -103,7 +116,15 @@ launch_chrome() { # $1=port $2=profile — echoes ws url or empty
 
 run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
   local arm="$1" run="$2"
-  local PORT=$((PORT_BASE + (run % 4)))
+  # Per-ARM CDP ports (slice-E batch2 finding): both arms of a pair sharing
+  # one port let a lagging/failed kill of arm 1's chrome hand arm 2's probe
+  # the STALE chrome via /json/version — the second run then executes the
+  # FIRST arm's build/origin (observed: candidate reports full of baseline
+  # traffic + dc44a10d stamps). Distinct ports make cross-arm attachment
+  # structurally impossible even when a kill lags.
+  local armIdx=0
+  [ "$arm" = "B" ] && armIdx=1
+  local PORT=$((PORT_BASE + ((run * 2 + armIdx) % 8)))
   local target="http://localhost:3011/game$QS"
   [ "$arm" = "B" ] && target="http://localhost:3010/game$QS"
   local profile="$PROFILE_ROOT/probe-$BATCH_ID-$run-$arm"
@@ -113,7 +134,13 @@ run_probe() { # $1=arm(A|B) $2=run index — returns nonzero on missing evidence
   # report from a previous batch (Codex R19 round-2 finding 2).
   rm -f "$report"
   rm -rf "$profile"; mkdir -p "$profile"
-  free_probe_port $PORT
+  if ! free_probe_port $PORT; then
+    # Never attach to a stale browser — that produced cross-arm runs where
+    # the candidate report recorded the baseline's boot (batch2 pairs 1-2).
+    echo "RUN $run ARM $arm: FAILED (CDP port $PORT never freed)"
+    FAILED_RUNS=$((FAILED_RUNS + 1))
+    return 1
+  fi
   local ws=$(launch_chrome $PORT "$profile")
   if [ -z "$ws" ]; then
     kill_probe_chrome "$profile"
