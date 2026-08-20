@@ -1,4 +1,8 @@
-import { awaitBootCompileIdle } from '@/lib/three/boot-core-compile';
+import {
+  chainBootCompile,
+  isRendererCompileTimedOut,
+  markRendererCompileTimedOut,
+} from '@/lib/three/boot-core-compile';
 
 export const STAGE_COMPILE_TIMEOUT_MS = 20_000;
 
@@ -105,16 +109,56 @@ export async function warmStageSlotRenderer(input: {
     };
   }
 
-  if (input.compile) {
-    // [R2-1] a scene entered mid-world-boot must not run its stage compile
-    // while an orphan boot compileAsync tail is still draining.
-    await awaitBootCompileIdle();
-    const compileResult = await waitForStageSlotCompile(
-      input.slotId,
-      input.gl,
-      input.compile,
-      input.timeoutMs,
-    );
+  let healAttemptedInChain = false;
+  if (input.compile && !isRendererCompileTimedOut(input.gl)) {
+    // [R2-1 → BGR R2-NF1/impl-B1] the stage compile JOINS the renderer-wide
+    // FIFO (an idle-await only observes work ALREADY chained — a compile
+    // that starts before a successor generation chains its boot compile
+    // could still overlap it). waitForStageSlotCompile self-bounds via
+    // timeoutMs, so the chain cannot wedge; a TIMEOUT poisons the renderer
+    // in the shared registry BEFORE the chain releases (the orphan tail is
+    // uncancellable — poisoning is what makes releasing safe), and a
+    // REJECTION heals the renderer front state with the direct warm INSIDE
+    // the chained critical section (never skipped on supersession) so a
+    // queued successor's compile never runs against a poisoned front.
+    const compileResult = await chainBootCompile(async (): Promise<StageCompileWaitResult> => {
+      // [fix-NF1] TOCTOU recheck: a predecessor in the chain may have timed
+      // out and poisoned THIS renderer after the enqueue-time check above.
+      if (isRendererCompileTimedOut(input.gl)) return { kind: 'bypassed' };
+      const result = await waitForStageSlotCompile(
+        input.slotId,
+        input.gl,
+        input.compile!,
+        input.timeoutMs,
+      );
+      if (result.kind === 'timed-out') {
+        markRendererCompileTimedOut(input.gl);
+      } else if (result.kind === 'rejected') {
+        // [fix-NF4] EVERY heal attempt stays in-chain, exactly once: a heal
+        // that itself rejects poisons the renderer BEFORE the chain
+        // releases (the front state is unrestored and unhealable — no
+        // later compile may run against it). Never retried outside.
+        healAttemptedInChain = true;
+        try {
+          await input.directWarm();
+        } catch (error) {
+          // [fix-R5-1] POISON FIRST — the safety write must never depend on
+          // an observer behaving: a throwing onDirectWarmRejected would
+          // otherwise reject the chained task and release the FIFO with the
+          // renderer unpoisoned. Observer exceptions are contained.
+          markRendererCompileTimedOut(input.gl);
+          try {
+            input.onDirectWarmRejected?.(error);
+          } catch (observerError) {
+            console.warn(
+              '[stage-warmup] onDirectWarmRejected threw (contained):',
+              observerError,
+            );
+          }
+        }
+      }
+      return result;
+    });
     if (compileResult.kind === 'rejected') {
       input.onCompileRejected?.(compileResult.error);
     } else if (compileResult.kind === 'timed-out') {
@@ -126,14 +170,16 @@ export async function warmStageSlotRenderer(input: {
     return {
       status: 'superseded',
       warmedRenderer: input.warmedRenderer,
-      warmAttempted: false,
+      warmAttempted: healAttemptedInChain,
     };
   }
 
-  try {
-    await input.directWarm();
-  } catch (error) {
-    input.onDirectWarmRejected?.(error);
+  if (!healAttemptedInChain) {
+    try {
+      await input.directWarm();
+    } catch (error) {
+      input.onDirectWarmRejected?.(error);
+    }
   }
 
   if (!input.isCurrent()) {

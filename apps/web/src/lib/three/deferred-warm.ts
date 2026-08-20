@@ -1,5 +1,9 @@
 import * as THREE from 'three/webgpu';
-import { awaitBootCompileIdle } from '@/lib/three/boot-core-compile';
+import {
+  chainBootCompile,
+  isRendererCompileTimedOut,
+  markRendererCompileTimedOut,
+} from '@/lib/three/boot-core-compile';
 
 // Keep this gentle path aligned with WorldWarmup's proven post-ready uploader.
 // WorldWarmup itself stays untouched: its 2026-07-14 loader/commit ordering is a
@@ -200,7 +204,6 @@ type WarmObjectOptions = {
 };
 
 const uploadedTexturesByRenderer = new WeakMap<object, WeakSet<THREE.Texture>>();
-const compileTimedOutRenderers = new WeakSet<object>();
 
 // ---------------------------------------------------------------------------
 // Texture claim scheduler (slice D §4c [F12][R2-F9][R3-F2]) — renderer-keyed
@@ -515,7 +518,7 @@ async function compileDeferredObject({
   if (
     isCancelled() ||
     typeof renderer.compileAsync !== 'function' ||
-    compileTimedOutRenderers.has(renderer as object)
+    isRendererCompileTimedOut(renderer)
   ) {
     return false;
   }
@@ -553,7 +556,10 @@ async function compileDeferredObject({
   if (result.status === 'timed-out') {
     // compileAsync cannot be cancelled. Never start a second compile on this
     // renderer after a timeout; jobs still fail open through direct warm/attach.
-    compileTimedOutRenderers.add(renderer as object);
+    // Shared registry [impl-B1]: the boot whitelist sweep and stage warms
+    // honor this too, so the FIFO release below cannot enable a
+    // same-renderer overlap with the orphan tail.
+    markRendererCompileTimedOut(renderer);
     console.warn(
       `[DeferredWarm] ${label ?? 'object'}: compileAsync exceeded 20s; bypassing it for this renderer`,
     );
@@ -648,22 +654,36 @@ export async function warmDeferredObject(
   if (options.isCancelled()) return 'failopen';
   let compiled = false;
   try {
-    // [R2-1] never overlap an in-flight boot compile (a safety-fuse reveal
-    // can start the deferred stream while an orphan boot tail drains).
-    await awaitBootCompileIdle();
-    compiled = await compileDeferredObject(options);
+    // [R2-1 → BGR R2-NF1] the compile front JOINS the renderer-wide
+    // boot-compile FIFO instead of snapshotting its idleness: an idle-await
+    // observes only work ALREADY chained, so a deferred compile starting
+    // while a successor generation had not yet chained its boot compile
+    // could still overlap it (the exact r185 race slice E proved unsafe).
+    // Chained, any two compiles are totally ordered no matter which
+    // generation chains first — a recovery boot compile chained after a
+    // building rewarm simply waits behind it (latency, never corruption).
+    // compileDeferredObject self-bounds at 20s (a timeout POISONS the
+    // renderer via the shared registry before the chain releases), so the
+    // chain cannot wedge AND a release never enables same-renderer overlap.
+    // [impl-B1] the direct-warm fallback runs INSIDE the chained task: a
+    // rejected compileAsync leaves renderer front state unrestored, and the
+    // healing render must complete before any queued successor's compile
+    // front runs — not after the chain has already moved on.
+    compiled = await chainBootCompile(async () => {
+      const ok = await compileDeferredObject(options);
+      if (!ok && !options.isCancelled()) {
+        await directWarmWithoutPresent(options);
+      }
+      return ok;
+    });
   } catch (error) {
     console.warn(
-      `[DeferredWarm] ${options.label ?? 'object'}: compileAsync threw; continuing to direct warm:`,
+      `[DeferredWarm] ${options.label ?? 'object'}: compileAsync threw; continuing:`,
       error,
     );
   }
   // 'warmed' = the full success path (clean uploads + completed compile) —
   // anything else is fail-open: content still shows, may hitch once, and
   // measurement runs reject it (spec §3 [R2-F11]).
-  if (compiled && uploadClean) return 'warmed';
-  if (!options.isCancelled() && !compiled) {
-    await directWarmWithoutPresent(options);
-  }
-  return 'failopen';
+  return compiled && uploadClean ? 'warmed' : 'failopen';
 }

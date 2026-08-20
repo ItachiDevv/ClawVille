@@ -554,8 +554,16 @@ export default function GameLanguageControl() {
       className="fixed z-50"
       style={isMobile
         ? {
-            top: 'calc(env(safe-area-inset-top, 0px) + 128px)',
-            left: 'calc(env(safe-area-inset-left, 0px) + 12px)',
+            // Touch: RIGHT column, below Nori (y16) → gear FAB (y72) →
+            // Controls (y128) → this (y184). Was top:128 LEFT:12, which on
+            // iPad landed inside the minimap (`hidden md:block` shows it at
+            // ≥768px while useIsMobile is also true there) — z-50 over the
+            // z-40 map, so taps on the map's lower-left corner opened the
+            // language menu instead (live-measured 42×44px overlap at
+            // 820×1180, HUD Slice 2b 2026-08-20). The right column has no
+            // minimap at any touch width.
+            top: 'calc(env(safe-area-inset-top, 0px) + 184px)',
+            right: 'calc(env(safe-area-inset-right, 0px) + 12px)',
           }
         : {
             // Desktop: icon-only, side by side with the Controls icon under
@@ -582,7 +590,7 @@ export default function GameLanguageControl() {
 
       {panelOpen && (
         <div
-          className={`absolute ${isMobile ? 'left-0' : 'right-0'} w-72 overflow-hidden rounded-lg border border-emerald-200/24 bg-[#071c23]/96 p-3 text-emerald-50 shadow-[0_18px_70px_rgba(0,0,0,0.42)] backdrop-blur-md`}
+          className={`absolute right-0 w-72 overflow-hidden rounded-lg border border-emerald-200/24 bg-[#071c23]/96 p-3 text-emerald-50 shadow-[0_18px_70px_rgba(0,0,0,0.42)] backdrop-blur-md`}
           style={isMobile ? { top: 52 } : { bottom: 52 }}
         >
           <div className="mb-3 flex items-start gap-3">

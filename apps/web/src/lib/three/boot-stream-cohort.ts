@@ -50,8 +50,18 @@ export const BOOT_STREAM_COHORT_IDS = [
 
 export type CohortId = (typeof BOOT_STREAM_COHORT_IDS)[number];
 
+/** BGR (buildings-gated reveal, 2026-08-20): the 11 building members form a
+ * tracked SUBSET with their own settle stamp — the loading overlay's
+ * buildings leg keys on presentation (decorative-release ack protocol), but
+ * this data-settled stamp is the sticky MEASUREMENT record. `failed` and
+ * `ready-failopen` count (a 404'd building must never hold the overlay). */
+const BUILDING_COHORT_IDS: readonly string[] = BOOT_STREAM_COHORT_IDS.filter(
+  (id) => id.startsWith('building:'),
+);
+
 const states = new Map<string, CohortState>();
 let settledAtMs: number | null = null;
+let buildingsSettledAtMs: number | null = null;
 
 function seed(): void {
   for (const id of BOOT_STREAM_COHORT_IDS) states.set(id, 'seeded');
@@ -80,6 +90,36 @@ function isTerminal(state: CohortState): boolean {
 }
 
 function checkSettled(): void {
+  // BGR buildings-subset stamp — once, monotonic, sticky.
+  if (buildingsSettledAtMs === null) {
+    let allBuildingsTerminal = true;
+    for (const id of BUILDING_COHORT_IDS) {
+      const state = states.get(id);
+      if (!state || !isTerminal(state)) {
+        allBuildingsTerminal = false;
+        break;
+      }
+    }
+    if (allBuildingsTerminal) {
+      buildingsSettledAtMs =
+        typeof performance !== 'undefined'
+          ? Math.round(performance.now())
+          : Date.now();
+      try {
+        const phases = ((window as any).__W3D_PHASES =
+          (window as any).__W3D_PHASES ?? {});
+        phases.bootBuildingsSettledAt = buildingsSettledAtMs;
+        // Provenance copy-stamps [impl-B8] — read from the phases object the
+        // declaring/observing modules already write (no import cycle with
+        // decorative-release): the mode and renderer generation IN EFFECT
+        // when the buildings data-settled.
+        phases.bootBuildingsSettledMode = phases.bootBuildingsMode ?? null;
+        phases.bootBuildingsSettledGen = phases.bootRendererGeneration ?? 1;
+      } catch {
+        /* telemetry never throws */
+      }
+    }
+  }
   if (settledAtMs !== null) return;
   for (const id of BOOT_STREAM_COHORT_IDS) {
     const state = states.get(id);
@@ -145,9 +185,19 @@ export function getStreamSettledAt(): number | null {
   return settledAtMs;
 }
 
+/** BGR: all 11 building members terminal (data-settled; sticky). */
+export function areBootBuildingsSettled(): boolean {
+  return buildingsSettledAtMs !== null;
+}
+
+export function getBootBuildingsSettledAt(): number | null {
+  return buildingsSettledAtMs;
+}
+
 /** TEST-ONLY. */
 export function __resetBootStreamCohortForTests(): void {
   states.clear();
   seed();
   settledAtMs = null;
+  buildingsSettledAtMs = null;
 }

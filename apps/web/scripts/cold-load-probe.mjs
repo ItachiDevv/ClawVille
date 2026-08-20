@@ -20,6 +20,7 @@
 // Usage: bun apps/web/scripts/cold-load-probe.mjs <cdp-ws-url> <target-url> <report-path>
 
 import { SLICE_D_WINDOW_MS } from "./cold-load-paired-gate.mjs";
+import { computeBgrEvidence } from "./bgr-evidence.mjs";
 
 export const POST_REVEAL_CAPTURE_MS = 60_000;
 /** Snapshot lands AT the slice-D window bound [I2-F7]. */
@@ -671,6 +672,11 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       validForPerformance: verdict.validForPerformance && perfEvidence.complete,
       performanceEvidenceReasons: perfEvidence.reasons,
       invalidReasons: verdict.reasons, backendWaived: verdict.backendWaived,
+      // BGR (spec D5 [R2-NF7]): machine-enforced buildings-gated-reveal ship
+      // evidence — additive verdict computed from the END-of-run phases
+      // capture (which includes the dismissal stamps; the windowed snapshot
+      // may predate them). Does NOT redefine validForPerformance.
+      bgrEvidence: computeBgrEvidence(phases),
       backend, expectedBackend, phases, navTiming,
       decorativeReleasedAt, decorativeReleaseReason,
       revealMs: revealPageMs,

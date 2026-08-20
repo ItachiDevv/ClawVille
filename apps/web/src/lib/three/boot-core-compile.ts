@@ -27,6 +27,35 @@
 // await `awaitBootCompileIdle()` before their first compile.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Poisoned-renderer registry (BGR impl-B1). compileAsync cannot be
+// cancelled: a TIMED-OUT compile releases the FIFO (holding it would wedge
+// every later compile behind a hung one — the anti-wedge property) while its
+// orphan tail is still live on that renderer. Releasing is safe ONLY because
+// the renderer is marked here and EVERY compile entrypoint (deferred warm,
+// stage warm, the boot whitelist sweep) refuses to compile on a poisoned
+// renderer again — same-renderer overlap (the r185-proven race class:
+// device-LIFO error scopes, shared RenderList/LightsNode, shared
+// currentProgram) is thereby impossible; a REPLACEMENT renderer has its own
+// device/lists and may compile freely.
+// ---------------------------------------------------------------------------
+
+let compileTimedOutRenderers = new WeakSet<object>();
+
+export function markRendererCompileTimedOut(renderer: unknown): void {
+  if (renderer && typeof renderer === 'object') {
+    compileTimedOutRenderers.add(renderer as object);
+  }
+}
+
+export function isRendererCompileTimedOut(renderer: unknown): boolean {
+  return (
+    !!renderer &&
+    typeof renderer === 'object' &&
+    compileTimedOutRenderers.has(renderer as object)
+  );
+}
+
 let bootCompileChain: Promise<void> = Promise.resolve();
 let bootCompileBusy = 0;
 
@@ -56,10 +85,12 @@ export async function awaitBootCompileIdle(): Promise<void> {
   }
 }
 
-/** Test-only reset. */
+/** Test-only reset. Recreates the poison registry too (a WeakSet cannot be
+ * cleared) so reused renderer fixtures never stay poisoned across tests. */
 export function __resetBootCompileChainForTests(): void {
   bootCompileChain = Promise.resolve();
   bootCompileBusy = 0;
+  compileTimedOutRenderers = new WeakSet<object>();
 }
 
 export type BootCoreCompileResult = {

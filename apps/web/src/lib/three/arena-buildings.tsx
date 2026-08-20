@@ -5,11 +5,18 @@ import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 import {
   BOOT_STREAM_TIER_BUILDINGS,
-  onBootStreamEligible,
+  ackBuildingCommit,
+  ackBuildingFailed,
+  ackBuildingWarm,
+  declareBootBuildingsMode,
+  onBootBuildingsFetch,
+  resetBootBuildingsMode,
+  revokeBuildingCommit,
+  revokeBuildingInstance,
 } from '@/lib/three/decorative-release';
 import {
   bootStreamPriority,
-  useBootStreamRelease,
+  useBootBuildingsStreamRelease,
 } from '@/lib/three/use-boot-stream-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { reportCohortState } from '@/lib/three/boot-stream-cohort';
@@ -692,19 +699,20 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
   });
 }
 
-// Rung-4 slice D (§3, preload demotion [F3][R2-F6]): the 11 building
-// byte-warms no longer fire at module scope — pre-reveal they competed with
-// the boot actor's bytes for bandwidth (the fast-network inversion class).
-// They now fire as the FIRST boot-stream subscriber (priority −∞ — ahead of
-// every building mount tick), so the network warms the moment the world has
-// presented, well before each building's staggered parse wants the bytes.
+// BGR stage A (spec D1): the 11 building byte-warms fire on the
+// byte-fetch-only lane — eligible the moment the world boot epoch exists
+// (tab visible, buildings mode 'glb'), i.e. BEHIND the loading overlay, so
+// downloads fully overlap the boot-core dependency wait. Pure network warm:
+// zero React/renderer/GPU work, so it cannot race the boot compile chain.
+// (Slice D had demoted these to post-reveal; the overlay now WAITS for the
+// buildings, so post-reveal warming would deadlock into the fuses.)
 if (typeof window !== 'undefined') {
-  onBootStreamEligible(() => {
+  onBootBuildingsFetch(() => {
     Object.entries(BUILDING_MODELS).forEach(([id, { model }]) => {
       if (id === 'messaging-channels') return;
       preloadKTX2Bytes(model);
     });
-  }, Number.NEGATIVE_INFINITY);
+  });
 }
 
 // Entertainment building labels (cove, claw-arcade) — not in BUILDING_OPENCLAW_THEMES
@@ -714,126 +722,12 @@ const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> 
   'claw-arcade': { label: 'Arcade City',    category: 'Arcade' },
 };
 
-const _buildingProxyGeometry = new THREE.BoxGeometry(360, 520, 360);
-_buildingProxyGeometry.clearGroups();
-const _buildingProxyRoofGeometry = new THREE.ConeGeometry(255, 180, 4);
-_buildingProxyRoofGeometry.clearGroups();
-const BUILDING_PROXY_COLORS = [
-  0xf5c84c,
-  0x8bd3ff,
-  0xff8a5c,
-  0x8fe388,
-  0xd7a8ff,
-  0xffabc8,
-  0x72e0d1,
-  0xffdf7a,
-  0x8fa4ff,
-  0x7dd3fc,
-  0xff9f6e,
-  0xb5e48c,
-] as const;
-const BUILDING_PROXY_MATERIALS = BUILDING_PROXY_COLORS.map(
-  (color) => new THREE.MeshBasicMaterial({ color, toneMapped: false }),
-);
-const _buildingProxyRoofMaterial = new THREE.MeshBasicMaterial({
-  color: 0xe8f7ff,
-  toneMapped: false,
-});
-
-function BuildingProxy({
-  zone,
-  index,
-  withLabel = false,
-}: {
-  zone: BuildingZone;
-  index: number;
-  /** Slice D: the streaming placeholder renders the building NAME label
-   * (distinct id `building-proxy-label-*` — never shares a registry row
-   * with the real building's label [F10]) so wayfinding works during the
-   * proxy window. `fullDetail=false` static surfaces keep no label. */
-  withLabel?: boolean;
-}) {
-  const [cx, , cz] = zoneCenter(zone);
-  const config = BUILDING_MODELS[zone.id];
-  const material = BUILDING_PROXY_MATERIALS[index % BUILDING_PROXY_MATERIALS.length] ?? BUILDING_PROXY_MATERIALS[0];
-  const groupRef = useRef<THREE.Group>(null);
-
-  return (
-    <group ref={groupRef} position={[cx, -2, cz]} rotation={[0, config?.rotY ?? 0, 0]}>
-      <mesh
-        geometry={_buildingProxyGeometry}
-        material={material}
-        position={[0, 260, 0]}
-        onClick={config?.onClick}
-        userData={{ isOccluder: true, buildingId: zone.id }}
-        frustumCulled
-      />
-      <mesh
-        geometry={_buildingProxyRoofGeometry}
-        material={_buildingProxyRoofMaterial}
-        position={[0, 548, 0]}
-        frustumCulled
-      />
-      {withLabel && (
-        <BuildingProxyLabel zone={zone} anchorRef={groupRef} />
-      )}
-    </group>
-  );
-}
-
-/** Proxy-window name label — its OWN registry id (never the real building's
- * row [F10]); mounted only on the streaming path so static `fullDetail=false`
- * surfaces register nothing. */
-function BuildingProxyLabel({
-  zone,
-  anchorRef,
-}: {
-  zone: BuildingZone;
-  anchorRef: React.RefObject<THREE.Group | null>;
-}) {
-  const config = BUILDING_MODELS[zone.id];
-  const theme = BUILDING_OPENCLAW_THEMES[zone.id] ?? ENTERTAINMENT_LABELS[zone.id];
-  const labelYOffset = (config?.targetMaxDim ?? BUILDING_TARGET_HEIGHT) + 20;
-  const { divRef } = useWorldLabel({
-    id: `building-proxy-label-${zone.id}`,
-    anchorRef,
-    offset: [0, labelYOffset, 0],
-    initialVisible: true,
-    fadeNear: 15000,
-    fadeFar: 25000,
-    fadeBaseOpacity: 0.85,
-    occlude: false,
-  });
-  if (!theme) return null;
-  return (
-    <WorldLabel divRef={divRef} pointerEvents="none">
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          transform: 'translateY(-50%)',
-        }}
-      >
-        <div
-          style={{
-            background: 'rgba(10,25,47,0.85)',
-            border: '1px solid rgba(120,220,255,0.35)',
-            borderRadius: 14,
-            padding: '4px 12px',
-            color: '#dff6ff',
-            fontFamily: 'Fraunces, serif',
-            fontSize: 15,
-            whiteSpace: 'nowrap',
-            textAlign: 'center',
-          }}
-        >
-          {theme.label}
-        </div>
-      </div>
-    </WorldLabel>
-  );
-}
+// BGR (founder ruling 2026-08-20): the BuildingProxy placeholder system is
+// DELETED — "we tried this once, it was a disaster." Nothing renders in a
+// building spot until the real GLB has downloaded, parsed, uploaded, warmed,
+// and committed; the SeaLoadingScreen holds until all 11 have (spec D7). On
+// a fuse fail-open (slow network) the spot is simply EMPTY until the real
+// building pops in — never a fake stand-in.
 
 function ProceduralSandyTreedome({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -1201,13 +1095,9 @@ function GLBBuilding({
   // ~30+ static meshes per building × 10 buildings every frame.
   // Was contributing to the 9.9% updateMatrixWorld cost in the DevTools profile.
   //
-  // Also tag the group as an occluder so arena-npcs.tsx label-occlusion raycast
-  // can find building geometry via scene traversal without a hardcoded name list.
-  // The tag is read once on first useFrame call in ArenaNpcs and cached.
   useEffect(() => {
     const g = groupRef.current;
     if (!g) return;
-    g.userData.isOccluder = true;
     g.matrixAutoUpdate = false;
     g.updateMatrix();
     cloned.traverse((obj) => {
@@ -1215,6 +1105,24 @@ function GLBBuilding({
       obj.updateMatrix();
     });
   }, [cloned]);
+
+  // Occluder tag for the label-occlusion scan (world-labels-overlay rebuilds
+  // its box list every ~2s from a scene traversal that IGNORES visibility).
+  // BGR [R2-NF8→F8]: tag only while the warm attachment is VISIBLE — a
+  // hidden warming subtree (proxy deleted, spot empty during a fuse window)
+  // must never occlude NPC labels behind an invisible box.
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    if (attachmentVisible) {
+      g.userData.isOccluder = true;
+      return () => {
+        delete g.userData.isOccluder;
+      };
+    }
+    delete g.userData.isOccluder;
+    return undefined;
+  }, [attachmentVisible]);
 
   // Shop buildings use BUILDING_OPENCLAW_THEMES; entertainment buildings (cove,
   // claw-arcade) use ENTERTAINMENT_LABELS fallback. Both render the same label UI.
@@ -1666,17 +1574,20 @@ function EditMode() {
 }
 
 // ---------------------------------------------------------------------------
-// Rung-4 slice D — per-building streaming (spec §3). Each building is its own
-// boundary → Suspense → DeferredWarmAttachment chain: the proxy stays until
-// the real GLB is fetched, parsed, uploaded, and compiled, then swaps in one
-// commit. The old single shared Suspense (all 11 buildings appear only when
-// the LAST one resolves) dies here.
+// BGR per-building streaming (spec D1/D2/D7; supersedes the slice-D §3
+// proxy chain). Each building is its own boundary → Suspense → DWA chain,
+// admitted through the boot-critical stage-B lane (eligible at the first
+// boot-core presentation — BEHIND the loading overlay, which now waits for
+// all 11). No placeholder anywhere: pre-release, suspended, warming, and
+// failed states all render NOTHING.
 // ---------------------------------------------------------------------------
 
 /** Load-rejection containment [F11]: drei useGLTF REJECTS (not suspends) on
  * a 404/parse failure and one failed building must not damage the world
- * tree — the boundary pins the PERMANENT proxy and reports `failed`
- * (terminal) to the stream cohort. */
+ * tree — the boundary pins a PERMANENT empty spot, reports `failed`
+ * (terminal) to the stream cohort, and acks the reveal tokens per renderer
+ * generation via the fallback probe (spec D2 — `componentDidCatch` fires
+ * once, so the ack must come from a generation-reactive commit effect). */
 class BuildingStreamBoundary extends Component<
   { fallback: ReactNode; onFailed: () => void; children: ReactNode },
   { errored: boolean }
@@ -1689,7 +1600,7 @@ class BuildingStreamBoundary extends Component<
     return { errored: true };
   }
   componentDidCatch(error: unknown): void {
-    console.warn('[ArenaBuildings] building GLB failed; proxy pinned:', error);
+    console.warn('[ArenaBuildings] building GLB failed; spot left empty:', error);
     this.props.onFailed();
   }
   render() {
@@ -1707,41 +1618,95 @@ function CohortCommitProbe({ cohortId }: { cohortId: string }) {
   return null;
 }
 
-function StreamedGLBBuilding({ zone, index }: { zone: BuildingZone; index: number }) {
+/** BGR D2 commit leg — all legs of ONE StreamedGLBBuilding mount share ONE
+ * instance owner [fix-NF3], so a token can never be assembled from an
+ * outgoing canvas's commit and an incoming canvas's warm. An acked tree
+ * unmounting before the milestone's second qualifying frame still drops its
+ * commit leg here; the whole instance record dies with the parent. */
+function BuildingCommitAckProbe({
+  cohortId,
+  owner,
+  ready,
+}: {
+  cohortId: string;
+  owner: symbol;
+  ready: boolean;
+}) {
+  useEffect(() => {
+    if (!ready) return undefined;
+    ackBuildingCommit(cohortId, owner);
+    return () => revokeBuildingCommit(cohortId, owner);
+  }, [ready, cohortId, owner]);
+  return null;
+}
+
+/** BGR D2 failure ack: the boundary fallback (visually null). A failed
+ * boundary never retries for the life of this tree, so the marker is
+ * DURABLE (valid across renderer swaps — there is no renderer work to
+ * re-prove); it shares the parent instance owner [fix-NF3] and dies with
+ * the parent's instance record. */
+function FailedBuildingAckProbe({
+  cohortId,
+  owner,
+}: {
+  cohortId: string;
+  owner: symbol;
+}) {
+  useEffect(() => {
+    ackBuildingFailed(cohortId, owner);
+  }, [cohortId, owner]);
+  return null;
+}
+
+function StreamedGLBBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const priority = bootStreamPriority(BOOT_STREAM_TIER_BUILDINGS, cx, cz);
   const cohortId = `building:${zone.id}`;
-  const released = useBootStreamRelease(priority, cohortId);
+  const released = useBootBuildingsStreamRelease(priority, cohortId);
+  // ONE instance owner for ALL of this mount's ack legs [fix-NF3].
+  const ownerRef = useRef<symbol | null>(null);
+  if (ownerRef.current === null) ownerRef.current = Symbol(cohortId);
+  const owner = ownerRef.current;
 
   useEffect(() => {
     reportCohortState(cohortId, 'mounted');
-  }, [cohortId]);
+    // The whole instance ack record dies with this mount — covers both the
+    // success tree and the failed-boundary fallback.
+    return () => revokeBuildingInstance(cohortId, owner);
+  }, [cohortId, owner]);
   useEffect(() => {
     if (released) reportCohortState(cohortId, 'loading');
   }, [released, cohortId]);
 
-  if (!released) return <BuildingProxy zone={zone} index={index} withLabel />;
+  if (!released) return null;
   return (
     <BuildingStreamBoundary
-      fallback={<BuildingProxy zone={zone} index={index} withLabel />}
+      fallback={<FailedBuildingAckProbe cohortId={cohortId} owner={owner} />}
       onFailed={() => reportCohortState(cohortId, 'failed')}
     >
-      <Suspense fallback={<BuildingProxy zone={zone} index={index} withLabel />}>
+      <Suspense fallback={null}>
         <DeferredWarmAttachment
           key={zone.id}
           label={`building:${zone.id}`}
           priority={priority}
-          placeholder={<BuildingProxy zone={zone} index={index} withLabel />}
-          onWarmResult={(kind) =>
+          onWarmResult={(kind, renderer) => {
             reportCohortState(
               cohortId,
               kind === 'warmed' ? 'ready-warmed' : 'ready-failopen',
-            )
-          }
+            );
+            // Warm leg of the reveal token — fires on EVERY warm completion
+            // (the DWA re-warms per renderer replacement) and records the
+            // RENDERER the warm ran against, for THIS instance, ADDITIVELY
+            // [impl-B4][fix-NF2/NF3]: a warm finishing for renderer B before
+            // B's first observed frame becomes valid the moment B is
+            // observed; a stale renderer-A completion never overwrites it.
+            ackBuildingWarm(cohortId, owner, renderer);
+          }}
         >
           {(ready) => (
             <>
               <CohortCommitProbe cohortId={cohortId} />
+              <BuildingCommitAckProbe cohortId={cohortId} owner={owner} ready={ready} />
               <GLBBuilding zone={zone} attachmentVisible={ready} />
             </>
           )}
@@ -1754,32 +1719,83 @@ function StreamedGLBBuilding({ zone, index }: { zone: BuildingZone; index: numbe
 // ---------------------------------------------------------------------------
 // Main export — switches between normal and edit mode
 // ---------------------------------------------------------------------------
-export default function ArenaBuildings({ fullDetail = true }: { fullDetail?: boolean }) {
+
+/** Shared edit-mode query check (stable per mount). */
+function useEditModeFlag(): boolean {
   const [editMode] = useState(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('edit'),
   );
+  return editMode;
+}
 
-  if (editMode) return <EditMode />;
+/** BGR D6 [impl-B6]: per-canvas buildings-mode declaration, latest-wins,
+ * OWNER-KEYED — each mount owns a symbol; the cleanup resets to 'pending'
+ * only while it still owns the declaration, so an outgoing canvas's late
+ * cleanup (React runs it AFTER the incoming canvas's effect during an SPA
+ * overlap) can never clobber a fresh declaration. Exported for the
+ * World3DCanvas meshlet branch, which never mounts ArenaBuildings. */
+export function DeclareBuildingsMode({ mode }: { mode: 'glb' | 'absent' }) {
+  const ownerRef = useRef<symbol | null>(null);
+  if (ownerRef.current === null) ownerRef.current = Symbol('buildings-mode');
+  useEffect(() => {
+    const owner = ownerRef.current!;
+    declareBootBuildingsMode(mode, owner);
+    return () => resetBootBuildingsMode(owner);
+  }, [mode]);
+  return null;
+}
 
-  if (!fullDetail) {
+/**
+ * BGR D8 [impl-B2]: the 11 streamed buildings are a SEPARATE export mounted
+ * by World3DCanvas under its OWN SIBLING root (`perf:buildings-streamed`) —
+ * NOT nested inside the boot-core `perf:buildings` root, whose group node
+ * the boot inventory/scans/compile sweep select and then traverse
+ * recursively. Nesting made the "exclusion" a fiction: scans and the
+ * whitelist compile crossed straight into the streamed subtree.
+ */
+export function ArenaBuildingsStreamed({ fullDetail = true }: { fullDetail?: boolean }) {
+  const editMode = useEditModeFlag();
+  if (editMode || !fullDetail) return null;
+  return (
+    <group>
+      {buildingZones.map((zone) => (
+        zone.id === 'messaging-channels'
+          ? null
+          : <StreamedGLBBuilding key={zone.id} zone={zone} />
+      ))}
+    </group>
+  );
+}
+
+export default function ArenaBuildings({ fullDetail = true }: { fullDetail?: boolean }) {
+  const editMode = useEditModeFlag();
+
+  if (editMode) {
     return (
-      <group>
-        {buildingZones.map((zone, index) => (
-          <BuildingProxy key={zone.id} zone={zone} index={index} />
-        ))}
-      </group>
+      <>
+        <DeclareBuildingsMode mode="absent" />
+        <EditMode />
+      </>
     );
   }
 
-  // Slice D: per-building streaming — no shared Suspense (each building's
-  // boundary lives inside StreamedGLBBuilding). The procedural treedome is
-  // boot-core (zero network) and stays direct.
+  if (!fullDetail) {
+    // BGR D7: proxies are deleted — the perf-audit `buildingDetail=false`
+    // flag now means NO buildings at all (dev/perf surface; the overlay's
+    // buildings leg is satisfied trivially via the 'absent' declaration).
+    return <DeclareBuildingsMode mode="absent" />;
+  }
+
+  // BGR: this default export is the BOOT-CORE half only — the procedural
+  // treedome (zero network) + the mode declaration. The streamed 11 mount
+  // via <ArenaBuildingsStreamed/> under the sibling deferred root (D8).
   return (
     <group>
-      {buildingZones.map((zone, index) => (
+      <DeclareBuildingsMode mode="glb" />
+      {buildingZones.map((zone) => (
         zone.id === 'messaging-channels'
           ? <ProceduralSandyTreedome key={zone.id} zone={zone} />
-          : <StreamedGLBBuilding key={zone.id} zone={zone} index={index} />
+          : null
       ))}
     </group>
   );

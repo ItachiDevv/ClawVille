@@ -4,7 +4,15 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useGameStore } from '@/stores/game';
 import { createVisibilityFuse } from './visibility-fuse';
-import { isBootCorePresented } from '@/lib/three/decorative-release';
+import {
+  forceBootBuildingsStreamEligible,
+  getBootBuildingsAckProgress,
+  getBootBuildingsMode,
+  isBootBuildingsRevealLegSatisfied,
+  isBootCorePresented,
+  stampLoadingDismiss,
+  type LoadingDismissReason,
+} from '@/lib/three/decorative-release';
 import { getBootDepProgress } from '@/lib/three/boot-actor';
 
 // ---------------------------------------------------------------------------
@@ -128,7 +136,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
    * gap after GLBs finish but before the GPU texture-upload counter starts
    * ticking (VRM parse + scene assembly + compileAsync kick).
    */
-  const [phase, setPhase] = useState<'downloading' | 'preparing' | 'uploading' | 'compiling' | 'ready'>('downloading');
+  const [phase, setPhase] = useState<'downloading' | 'preparing' | 'uploading' | 'compiling' | 'building' | 'ready'>('downloading');
   const rafRef     = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const startedAtRef = useRef<number>(0);
@@ -177,6 +185,60 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       if (mountedRef.current) setSlow(true);
     }, slowMs);
 
+    // Slice D (§2d [F8]) / BGR: bounded fallback — __W3D_READY true but the
+    // composite reveal predicate unsatisfied for >10s of VISIBLE time
+    // dismisses with a warning. Terminal like the 45s fuse; disposed on
+    // every normal dismissal path.
+    let milestoneFallbackFuse: { dispose: () => void } | null = null;
+
+    // BGR D3 [R2-NF6]: ONE guarded dismissal entry, first-writer-wins —
+    // every path (45s fuse, 10s fallback, composite, forceReady) stamps its
+    // reason exactly once (stampLoadingDismiss is ALSO first-writer-wins at
+    // module level), terminally disposes both fuses AND stops the rAF poll,
+    // so a composite that becomes satisfiable during a fuse's 420ms fade can
+    // never launder the recorded reason.
+    function dismiss(reason: LoadingDismissReason, recordLoadTime: boolean) {
+      if (!mountedRef.current || readyRef.current) return;
+      readyRef.current = true;
+      // Module-level first-writer-wins [impl-A11]: `stamped` is false when a
+      // DIFFERENT loader instance already dismissed — this instance still
+      // fades itself out, but never re-records the load time (the stamp
+      // winner's reason/time stand).
+      const stamped = stampLoadingDismiss(reason);
+      if (reason !== 'composite' && reason !== 'force-ready') {
+        // [impl-B7] a fuse dismissal reveals the world RAW — the buildings
+        // must then stream in (pop-in), not stay null forever waiting for a
+        // core presentation that may never come.
+        forceBootBuildingsStreamEligible(`loading-${reason}`);
+      }
+      if (stamped && recordLoadTime && typeof window !== 'undefined') {
+        // Record this machine's real mount→ready time so the slow-hint
+        // threshold self-calibrates. Only on a genuine composite dismissal —
+        // a fuse/timeout never poisons the baseline upward.
+        try {
+          const dur = performance.now() - startedAtRef.current;
+          if (dur > 0 && dur < TIMEOUT_MS) {
+            window.localStorage.setItem(LOAD_TIME_KEY, String(Math.round(dur)));
+          }
+        } catch {
+          /* localStorage blocked — skip recording */
+        }
+      }
+      forceFuse.dispose();
+      milestoneFallbackFuse?.dispose();
+      milestoneFallbackFuse = null;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      setPhase('ready');
+      setProgress(1);
+      setFading(true);
+      setTimeout(() => {
+        if (mountedRef.current) setVisible(false);
+      }, 420);
+    }
+
     // Force-dismiss ceiling so the user is never stuck forever — counting
     // only VISIBLE time (founder decision (a), 2026-08-10, rung-4 task 6).
     // A boot opened in a BACKGROUND tab parks on its first rAF await by
@@ -187,21 +249,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // decisions-review finding 1). Behavior + edge cases are unit-tested in
     // visibility-fuse.test.ts.
     const forceFuse = createVisibilityFuse(TIMEOUT_MS, () => {
-      if (mountedRef.current) {
-        readyRef.current = true;
-        setProgress(1);
-        setFading(true);
-        setTimeout(() => {
-          if (mountedRef.current) setVisible(false);
-        }, 420);
-      }
+      dismiss('visibility-fuse', false);
     });
-
-    // Slice D (§2d [F8]): bounded fallback — __W3D_READY true but the
-    // BOOT_CORE_PRESENTED milestone unstamped for >10s of VISIBLE time
-    // (notifier regression) dismisses with a warning. Terminal like the
-    // 45s fuse; disposed on every normal dismissal path.
-    let milestoneFallbackFuse: { dispose: () => void } | null = null;
 
     // Composite bar formula (2026-05-31). Three phases stitched into
     // [0, 1] so the bar's velocity reflects the user's actual wait, not
@@ -211,8 +260,15 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // bar: maps each phase to a band and shows a phase label so the
     // user can SEE which step is running.
     const DOWNLOAD_BAND_END = 0.30;
-    const UPLOAD_BAND_END = 0.85;
-    const COMPILE_BAND_END = 0.97;
+    const UPLOAD_BAND_END = 0.70;
+    const COMPILE_BAND_END = 0.80;
+    // BGR D3: the overlay now holds until the 11 real buildings present —
+    // this band shows that wait moving (per-building reveal-token count)
+    // instead of freezing the bar at the old 97% for seconds. CAUSAL
+    // ORDERING [R2-NF6→F6]: the band OPENS only once boot-core GPU work is
+    // done (texturesReady && canvasReady && core presented) — under stage-B
+    // admission no building can reach a reveal token before that boundary.
+    const BUILDINGS_BAND_END = 0.97;
     // Time-ease for the download band: the GLB-only LoadingManager ratio spikes
     // to ~1.0 the instant the registered GLB batch drains, which would snap the
     // bar to the band ceiling. Capping the displayed download fill by an
@@ -221,59 +277,39 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // it's the limiter, so a genuinely slow download is shown honestly.
     const DOWNLOAD_EASE_MS = 4_000;
     let highWaterMark = 0;
+    let compositeTicks = 0;
     function tick() {
-      if (!mountedRef.current) return;
-      // Slice D (§2c/§2d): dismissal keys on the BOOT_CORE_PRESENTED
-      // milestone — render-proven via the scene onAfterRender chain, read
-      // through the module GETTER so this component's legacy flag re-zero
-      // can never clear it [R2-F7]. The 45s visibility fuse and the 10s
-      // milestone fallback below are the only other dismissal paths.
-      const ready = forceReady || isBootCorePresented();
+      if (!mountedRef.current || readyRef.current) return;
+      // BGR D3: dismissal keys on the COMPOSITE predicate — boot-core
+      // presented AND the buildings reveal leg (11 real buildings presented
+      // in 'glb' mode; trivially satisfied in 'absent' mode; unsatisfiable
+      // while 'pending'). Both are render-proven module getters, immune to
+      // this component's legacy flag re-zero [R2-F7]. The 45s visibility
+      // fuse and the 10s fallback below are the only other dismissal paths.
+      const corePresented = isBootCorePresented();
+      const buildingsLeg = isBootBuildingsRevealLegSatisfied();
+      const compositeNow = corePresented && buildingsLeg;
+      // [impl-B6] the composite must hold on TWO consecutive ticks: an
+      // 'absent'→'glb' re-declaration lands in a passive effect, so a
+      // single rAF tick could observe the stale trivially-satisfied leg and
+      // terminally dismiss as 'composite' before the effect flushes.
+      compositeTicks = compositeNow ? compositeTicks + 1 : 0;
+      const ready = forceReady || compositeTicks >= 2;
       if (!ready && !!(window as any).__W3D_READY && milestoneFallbackFuse === null) {
         milestoneFallbackFuse = createVisibilityFuse(10_000, () => {
           if (!mountedRef.current || readyRef.current) return;
+          const missing = [
+            !isBootCorePresented() ? 'boot-core-presented' : null,
+            !isBootBuildingsRevealLegSatisfied() ? 'buildings-presented' : null,
+          ].filter(Boolean);
           console.warn(
-            '[SeaLoading] BOOT_CORE_PRESENTED never stamped within 10s of __W3D_READY; dismissing via fallback',
+            `[SeaLoading] reveal legs [${missing.join(', ')}] unsatisfied within 10s of __W3D_READY; dismissing via fallback (content pops in raw)`,
           );
-          readyRef.current = true;
-          forceFuse.dispose();
-          setPhase('ready');
-          setProgress(1);
-          setFading(true);
-          setTimeout(() => {
-            if (mountedRef.current) setVisible(false);
-          }, 420);
+          dismiss('milestone-fallback', false);
         });
       }
       if (ready) {
-        // Record this machine's real mount→ready time so the slow-hint
-        // threshold self-calibrates on the next load. Only on a genuine
-        // __W3D_READY (not the forceReady test override, not the force-dismiss
-        // timeout) so a failure/timeout never poisons the baseline upward.
-        if (!forceReady && typeof window !== 'undefined') {
-          try {
-            const dur = performance.now() - startedAtRef.current;
-            if (dur > 0 && dur < TIMEOUT_MS) {
-              window.localStorage.setItem(LOAD_TIME_KEY, String(Math.round(dur)));
-            }
-          } catch {
-            /* localStorage blocked — skip recording */
-          }
-        }
-        readyRef.current = true;
-        // Normal dismissal: permanently retire the force-dismiss fuse (its
-        // timer + visibility listener) — the component stays mounted
-        // rendering null, so anything left armed would keep firing state
-        // updates in the background.
-        forceFuse.dispose();
-        milestoneFallbackFuse?.dispose();
-        milestoneFallbackFuse = null;
-        setPhase('ready');
-        setProgress(1);
-        setFading(true);
-        setTimeout(() => {
-          if (mountedRef.current) setVisible(false);
-        }, 420);
+        dismiss(forceReady ? 'force-ready' : 'composite', !forceReady);
         return;
       }
 
@@ -323,7 +359,29 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       // band; we pick the furthest-along signal present. Ordered latest→earliest.
       let composite: number;
       let currentPhase: typeof phase;
-      if (texturesReady) {
+      if (texturesReady && canvasReady && isBootCorePresented()) {
+        // BGR buildings band — opens only after boot-core GPU work is done
+        // AND core has presented (causal ordering [R2-F6]); fills by the
+        // CURRENT-GENERATION reveal-token count, never sticky resource
+        // terminals [R2-NF8]. 'absent' mode auto-completes the band;
+        // 'pending' (no canvas declaration yet) holds honestly at the top
+        // of the compile band.
+        const buildingsMode = getBootBuildingsMode();
+        if (buildingsMode === 'glb') {
+          const { acked, total } = getBootBuildingsAckProgress();
+          composite =
+            COMPILE_BAND_END +
+            (total > 0 ? Math.max(0, Math.min(1, acked / total)) : 1) *
+              (BUILDINGS_BAND_END - COMPILE_BAND_END);
+          currentPhase = 'building';
+        } else if (buildingsMode === 'absent') {
+          composite = BUILDINGS_BAND_END;
+          currentPhase = 'compiling';
+        } else {
+          composite = COMPILE_BAND_END;
+          currentPhase = 'compiling';
+        }
+      } else if (texturesReady) {
         // GPU uploads done — sit at COMPILE_BAND_END once the canvas first frame
         // paints, else hold at the top of the upload band.
         composite = canvasReady ? COMPILE_BAND_END : UPLOAD_BAND_END;
@@ -340,10 +398,12 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         currentPhase = downloadFrac >= 0.999 ? 'preparing' : 'downloading';
       }
 
-      // Ratchet — never move backward (asset retries / late re-registers
-      // could otherwise rewind the bar).
+      // Ratchet — never move backward (asset retries / late re-registers /
+      // a renderer-generation reset rewinding the ack fraction could
+      // otherwise rewind the bar; the FILL SOURCE stops advancing after a
+      // reset until re-acks catch up, but the displayed bar holds).
       highWaterMark = Math.max(highWaterMark, composite);
-      setProgress(Math.min(COMPILE_BAND_END, highWaterMark));
+      setProgress(Math.min(BUILDINGS_BAND_END, highWaterMark));
       setPhase(currentPhase);
 
       rafRef.current = requestAnimationFrame(tick);
@@ -741,6 +801,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
               {phase === 'preparing' && 'Preparing scene…'}
               {phase === 'uploading' && 'Uploading to GPU…'}
               {phase === 'compiling' && 'Compiling shaders…'}
+              {phase === 'building' && 'Building the town…'}
               {phase === 'ready' && 'Ready'}
             </div>
           </div>
