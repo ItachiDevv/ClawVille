@@ -1,6 +1,34 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-20 (alert-error reads Telegram creds per call; no behavior change on
+**Last Audited: 2026-08-20 (cove idle-empty-table sweeper + `CASH_IDLE_EMPTY_TABLE_WINDOW_MS`;
+PROTOCOL_VERSION 54→55).** Player-created poker cash tables gained their FIRST close path.
+`CashTableManager.retireIdleEmptyTable(tableId, idleBefore)` closes an open, non-house table
+only when — re-verified inside one short transaction holding `poker_cash_tables … FOR UPDATE` —
+it has zero seats with `status <> 'left'`, exactly zero `table_escrow_ct`, and is STILL idle past
+the cutoff that discovery used. Discovery is a read-only pre-step, `retireIdleEmptyTables()` in
+`cash-house-scaler.ts`, run as the third non-house pre-step of the existing maintenance pass; the
+three non-house pre-steps were hoisted ABOVE the house-bank early-return so they still run when
+the bank is not ready. Idleness is
+`GREATEST(table.updated_at, COALESCE(MAX(seat.updated_at), table.created_at)) < cutoff`.
+
+The sweep NEVER moves money: it only flips `status` to `'closed'`. Discovery deliberately does
+NOT filter on escrow — pre-filtering made the orphan-escrow refusal unreachable, so a table with
+stranded CT stayed open forever and alerted nobody; it is now surfaced, refused under the lock,
+and reported through `alertError` (critical, source `cash-idle-empty-table`). The seat check is
+intentionally NOT `FOR UPDATE`: the leave path locks seat→table, so locking seats after the table
+row would invert lock order; the table row is the shared serialization point because the sit path
+takes it `FOR UPDATE` first and re-checks `status='open'`.
+
+**New env var — `CASH_IDLE_EMPTY_TABLE_WINDOW_MS`** (`cash-house-config.ts`
+`idleEmptyTableWindowMs()`): how long an open non-house cash table with no active seats survives
+before the scaler closes it. Default **1_800_000** (30 minutes, founder-set 2026-08-20, flat for
+public AND private tables), floor **300_000** (5 min); invalid values fall back to the default.
+Closing a private table permanently invalidates its join code — there is no reopen.
+
+Knowledge surfaces updated same-diff per the three-surface rule: `buildProtocolManual`
+(`skill-protocol.ts`) and Nori's `knowledge[]` (`town-guide.ts`), with `PROTOCOL_VERSION` 54 → 55.
+
+**Prior Last Audited: 2026-08-20 (alert-error reads Telegram creds per call; no behavior change on
 deployed boxes).** `alert-error.ts` now reads `ITACHI_DEBUG_BOT_TOKEN`/`ITACHI_DEBUG_CHAT_ID`
 per call instead of capturing them at module load (same discipline as its `CLAWVILLE_ENV`
 deployed-box gate). Env is static on the boxes so paging behavior is identical; the change
