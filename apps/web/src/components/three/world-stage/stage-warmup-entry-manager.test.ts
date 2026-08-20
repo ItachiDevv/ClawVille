@@ -4,6 +4,7 @@ import {
   waitForStageSlotCompile,
   warmStageSlotRenderer,
 } from './stage-warmup-entry-manager';
+import { __resetBootCompileChainForTests } from '@/lib/three/boot-core-compile';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -17,6 +18,9 @@ function deferred<T>() {
 
 beforeEach(() => {
   resetStageWarmupEntriesForTests();
+  // The stage compiles chain through the renderer-wide boot-compile FIFO
+  // and share its poison registry — reset both between tests.
+  __resetBootCompileChainForTests();
 });
 
 describe('stage slot compile entry manager', () => {
@@ -239,5 +243,89 @@ describe('StageHostedCoveScene renderer-scoped warmup seam', () => {
     expect((await warm(replacementRenderer)).warmAttempted).toBe(true);
     expect(compileCalls).toBe(2);
     expect(directWarmCalls).toBe(2);
+  });
+
+  test('[fix-NF4] rejected compile heals exactly once, in-chain — never a second directWarm outside', async () => {
+    const gl = {};
+    let directWarmCalls = 0;
+    const result = await warmStageSlotRenderer({
+      slotId: 'cove',
+      gl,
+      warmedRenderer: null,
+      compile: async () => {
+        throw new Error('front poisoned');
+      },
+      directWarm: async () => {
+        directWarmCalls += 1;
+      },
+      isCurrent: () => true,
+    });
+    expect(result.status).toBe('completed');
+    expect(directWarmCalls).toBe(1);
+  });
+
+  test('[fix-NF4/R5-1] a heal that itself rejects poisons the renderer even when the error observer THROWS — later compiles on it are refused', async () => {
+    const gl = {};
+    let laterCompileCalls = 0;
+    await warmStageSlotRenderer({
+      slotId: 'cove',
+      gl,
+      warmedRenderer: null,
+      compile: async () => {
+        throw new Error('front poisoned');
+      },
+      directWarm: async () => {
+        throw new Error('heal failed too');
+      },
+      // [fix-R5-1] a hostile observer must not skip the poison write.
+      onDirectWarmRejected: () => {
+        throw new Error('observer throws');
+      },
+      isCurrent: () => true,
+    });
+    // A later warm on the SAME renderer must skip its compile entirely.
+    await warmStageSlotRenderer({
+      slotId: 'kelp',
+      gl,
+      warmedRenderer: null,
+      compile: async () => {
+        laterCompileCalls += 1;
+      },
+      directWarm: async () => {},
+      isCurrent: () => true,
+    });
+    expect(laterCompileCalls).toBe(0);
+  });
+
+  test('[fix-NF1] a queued compile rechecks poison IN-CHAIN — a predecessor timeout on the same renderer bypasses it', async () => {
+    const gl = {};
+    const hung = deferred<void>();
+    let secondCompileCalls = 0;
+    // Both calls start concurrently: the second passes the enqueue-time
+    // check (nothing poisoned yet) and queues behind the first in the FIFO.
+    const first = warmStageSlotRenderer({
+      slotId: 'cove',
+      gl,
+      warmedRenderer: null,
+      compile: () => hung.promise, // never settles within the 1ms timeout
+      directWarm: async () => {},
+      isCurrent: () => true,
+      timeoutMs: 1,
+    });
+    const second = warmStageSlotRenderer({
+      slotId: 'kelp',
+      gl,
+      warmedRenderer: null,
+      compile: async () => {
+        secondCompileCalls += 1;
+      },
+      directWarm: async () => {},
+      isCurrent: () => true,
+    });
+    await Promise.all([first, second]);
+    // The first timed out and poisoned the renderer BEFORE the chain
+    // released; the second's in-chain recheck must refuse to dispatch.
+    expect(secondCompileCalls).toBe(0);
+    hung.resolve();
   });
 });

@@ -12,8 +12,10 @@
 import { useEffect, useState } from 'react';
 import {
   BOOT_CAMERA_POSITION,
+  isBootBuildingsStreamEligible,
   isBootStreamEligible,
   isStreamMemberDelivered,
+  onBootBuildingsStream,
   onBootStreamEligible,
 } from '@/lib/three/decorative-release';
 
@@ -58,6 +60,31 @@ export function useBootStreamRelease(
   useEffect(() => {
     if (released) return undefined;
     return onBootStreamEligible(() => setReleased(true), priority, memberId);
+  }, [released, priority, memberId]);
+  return released;
+}
+
+/**
+ * BGR stage-B consumer hook (buildings only — spec D1): identical contract
+ * to useBootStreamRelease but on the BOOT-CRITICAL lane, which becomes
+ * eligible at the FIRST boot-core presentation (NOT at overlay dismissal —
+ * the overlay now waits for these members, so gating them on it would
+ * deadlock into the fuses). Delivered-member remounts initialize released,
+ * same as the post-reveal lane.
+ */
+export function useBootBuildingsStreamRelease(
+  priority: number,
+  memberId: string,
+): boolean {
+  const [released, setReleased] = useState(
+    () =>
+      isBootBuildingsStreamEligible() &&
+      isStreamMemberDelivered(memberId) &&
+      (typeof document === 'undefined' || !document.hidden),
+  );
+  useEffect(() => {
+    if (released) return undefined;
+    return onBootBuildingsStream(() => setReleased(true), priority, memberId);
   }, [released, priority, memberId]);
   return released;
 }

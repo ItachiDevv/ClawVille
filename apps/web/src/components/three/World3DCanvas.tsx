@@ -7,14 +7,17 @@ import {
   armDecorativeReleaseOnFirstPaint,
   ensureWorldBootEpoch,
   getWorldBootEpoch,
+  notifyBootBuildingsScenePresented,
   notifyBootCoreScenePresented,
   notifyWorldFramePresented,
+  observeBootRenderer,
 } from '@/lib/three/decorative-release';
 import { awaitBootActorGate } from '@/lib/three/boot-actor';
 import {
   BOOT_CORE_COMPILE_SHIPPED_MODE,
   chainBootCompile,
   computeBootCompileStamps,
+  isRendererCompileTimedOut,
   runBootCoreCompileQueue,
   selectRootsToCompile,
 } from '@/lib/three/boot-core-compile';
@@ -45,7 +48,7 @@ extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
-import ArenaBuildings from '@/lib/three/arena-buildings';
+import ArenaBuildings, { ArenaBuildingsStreamed, DeclareBuildingsMode } from '@/lib/three/arena-buildings';
 import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import RemotePlayers from '@/lib/three/remote-players';
@@ -422,6 +425,19 @@ export const BOOT_CORE_CHUNKS: ReadonlySet<string> = new Set([
   'floating-texts',
 ]);
 
+// BGR D8 [R2-NF4]: chunks whose pre-reveal presence is EXPECTED DEFERRED
+// content — neither boot-core (never scanned/compiled/inventoried by the
+// boot lane) nor drift (never probe-invalidating). The 11 streamed
+// buildings mount here mid-boot (stage B admits them after core
+// presentation) and on SPA/watchdog warmups delivered buildings are already
+// present. They are HIDDEN across the boot scans/compile/warm-draws (same
+// save/restore mechanism as drift meshes) so a recovery warmup can never
+// upload/compile/draw them inside the boot-core accounting — their own
+// DeferredWarmAttachment rewarms (FIFO-chained) own that work.
+export const BOOT_DEFERRED_CHUNKS: ReadonlySet<string> = new Set([
+  'buildings-streamed',
+]);
+
 // ---------------------------------------------------------------------------
 // BootCorePresentedNotifier (slice D §2c [R2-F1]) — chains the STAGE SCENE's
 // `onAfterRender` (three r185's common Renderer fires the scene-level
@@ -462,7 +478,16 @@ function BootCorePresentedNotifier() {
           getWorldBootEpoch() === installEpoch &&
           (cameraRef.current == null || renderCamera === cameraRef.current)
         ) {
+          // BGR D4 [R2-NF2]: the renderer that ACTUALLY executed this frame
+          // is args[0] — the single identity-latched generation authority.
+          // Observes every real replacement (watchdog recovery AND the
+          // StageRendererHealth bridge swap) with exactly one caller.
+          observeBootRenderer(args[0]);
           notifyBootCoreScenePresented();
+          // BGR D2: the buildings-presented milestone rides the same
+          // qualified frame chain (11 live current-generation ack tokens +
+          // two consecutive qualifying frames).
+          notifyBootBuildingsScenePresented();
         }
       }
     } as THREE.Scene['onAfterRender'];
@@ -1757,9 +1782,14 @@ function WorldWarmup({
        *  regression must show up in drift AND be hidden from the warm draw,
        *  not slip through because its ancestor happens to carry a name. */
       driftMeshes: Array<{ mesh: THREE.Mesh; label: string }>;
+      /** BGR D8: meshes under a KNOWN-DEFERRED chunk (streamed buildings) —
+       *  hidden across scans/compile/warm-draws like drift, but expected
+       *  content, never stamped probe-invalidating. */
+      deferredMeshes: THREE.Mesh[];
     } => {
       const chunks = new Map<string, THREE.Object3D[]>();
       const driftMeshes: Array<{ mesh: THREE.Mesh; label: string }> = [];
+      const deferredMeshes: THREE.Mesh[] = [];
       const walk = (
         node: THREE.Object3D,
         chunk: string | null,
@@ -1774,7 +1804,9 @@ function WorldWarmup({
           chunks.set(chunkName, list);
         }
         if (!nr && (node as THREE.Mesh).isMesh) {
-          if (effectiveChunk === null) {
+          if (effectiveChunk !== null && BOOT_DEFERRED_CHUNKS.has(effectiveChunk)) {
+            deferredMeshes.push(node as THREE.Mesh);
+          } else if (effectiveChunk === null) {
             const mesh = node as THREE.Mesh;
             driftMeshes.push({ mesh, label: mesh.name || mesh.parent?.name || mesh.uuid });
           } else if (!BOOT_CORE_CHUNKS.has(effectiveChunk)) {
@@ -1784,7 +1816,7 @@ function WorldWarmup({
         for (const child of node.children) walk(child, effectiveChunk, nr);
       };
       walk(worldRoot(), null, false);
-      return { chunks, driftMeshes };
+      return { chunks, driftMeshes, deferredMeshes };
     };
     const bootCoreGroups = (): THREE.Object3D[] => {
       const { chunks } = collectBootInventory();
@@ -1804,6 +1836,12 @@ function WorldWarmup({
     ): THREE.Texture[] => {
       const fresh: THREE.Texture[] = [];
       const visit = (obj: THREE.Object3D) => {
+        // BGR D8 [impl-B2] defense-in-depth: never scan into a KNOWN-
+        // DEFERRED subtree, whichever root it hangs under (the streamed
+        // buildings also mount under their own sibling root, but any future
+        // nesting must not silently re-enter the boot texture lane).
+        const chunk = obj.userData?.perfChunk as string | undefined;
+        if (chunk && BOOT_DEFERRED_CHUNKS.has(chunk)) return;
         if (obj instanceof THREE.Mesh) {
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
           for (const mat of mats) {
@@ -1830,6 +1868,36 @@ function WorldWarmup({
     const scanForUnseenTextures = (): THREE.Texture[] =>
       scanTargets(bootCoreGroups());
     const scanWholeScene = (): THREE.Texture[] => scanTargets([scene]);
+
+    // BGR D8 [impl-B3]: hide every KNOWN-DEFERRED root AT DRAW TIME (root-
+    // level visible=false — three skips invisible subtrees wholesale, so
+    // late-resolving Suspense descendants, lights, lines, and anything that
+    // mounted AFTER the inventory pass are all covered), render, restore
+    // synchronously. Root-level + synchronous means no cross-generation
+    // restore race and no stale per-mesh snapshot: a recovery/SPA warmup's
+    // warm draw can never upload/compile/draw delivered streamed buildings
+    // through the boot lane (their own FIFO-chained DWA rewarms own that).
+    const withDeferredRootsHidden = (task: () => void): void => {
+      const roots: THREE.Object3D[] = [];
+      const collect = (node: THREE.Object3D): void => {
+        const chunk = node.userData?.perfChunk as string | undefined;
+        if (chunk && BOOT_DEFERRED_CHUNKS.has(chunk)) {
+          roots.push(node);
+          return; // no need to descend — hiding the root hides the subtree
+        }
+        for (const child of node.children) collect(child);
+      };
+      collect(worldRoot());
+      const saved = roots.map((r) => r.visible);
+      for (const r of roots) r.visible = false;
+      try {
+        task();
+      } finally {
+        roots.forEach((r, i) => {
+          r.visible = saved[i]!;
+        });
+      }
+    };
 
     const finishActiveUpload = () => {
       const resolve = activeUploadResolve;
@@ -2185,6 +2253,16 @@ function WorldWarmup({
         const runCompilePhase = async (phase: 'main' | 'late'): Promise<void> => {
           if (compileTotals.aborted || !compileGenerationLive()) return;
           if (typeof (gl as any).compileAsync !== 'function') return;
+          // [impl-B1] a renderer whose earlier compile TIMED OUT still has
+          // the uncancellable orphan tail live — never start another compile
+          // on it (the warm draw covers, fail-open). Shared registry with
+          // the deferred/stage warm paths.
+          if (isRendererCompileTimedOut(gl)) {
+            console.warn(
+              `[World3D] boot-core compile ${phase} skipped: renderer poisoned by an earlier compile timeout`,
+            );
+            return;
+          }
           // The compileAsync front is only synchronous once the renderer is
           // initialized (spec §2c); the world renderer is initialized long
           // before warmup, this is a defensive guard.
@@ -2211,6 +2289,21 @@ function WorldWarmup({
           // Renderer-wide FIFO [R2-1]: a successor generation's phase waits
           // for any orphan in-flight compile before its first front.
           const result = await chainBootCompile(async () => {
+            // [fix-NF1] TOCTOU recheck: a deferred/stage compile queued
+            // ahead of this task may have timed out and poisoned THIS
+            // renderer after the pre-chain check — never dispatch onto it.
+            if (isRendererCompileTimedOut(gl)) {
+              console.warn(
+                `[World3D] boot-core compile ${phase} bypassed in-chain: renderer poisoned while queued`,
+              );
+              return {
+                requested: 0,
+                dispatched: 0,
+                settled: 0,
+                failed: 0,
+                aborted: false,
+              };
+            }
             const queueResult = await runBootCoreCompileQueue({
             groups,
             compile: (group) => {
@@ -2252,7 +2345,11 @@ function WorldWarmup({
               // above covers that.
               try {
                 withStageSlotFrustumCullingDisabledSync('world', () => {
-                  gl.render(scene, camera);
+                  // [impl-B3] deferred roots hidden for the healing render
+                  // too — same draw-time save/restore as the warm draw.
+                  withDeferredRootsHidden(() => {
+                    gl.render(scene, camera);
+                  });
                 });
               } catch (healErr) {
                 console.warn('[World3D] post-abort healing render failed:', healErr);
@@ -2337,6 +2434,15 @@ function WorldWarmup({
             hiddenDrift.push(mesh);
           }
         }
+        // BGR D8 [impl-B3]: deferred (streamed-building) content is NOT
+        // hidden here via a per-mesh snapshot — a Suspense descendant
+        // resolving after this pass would be missed, and overlapping warmup
+        // generations could race the restore. The exclusion is enforced at
+        // the ROOT level instead: bootCoreGroups/scanTargets never enter the
+        // deferred chunks, and every warm/healing render runs inside
+        // withDeferredRootsHidden (draw-time synchronous save/restore).
+        // `inventory.deferredMeshes` remains classification-only (never
+        // drift).
 
         try {
           const scansStartedAt = performance.now();
@@ -2409,7 +2515,11 @@ function WorldWarmup({
           gl.setClearColor(SKY_COLOR, 1);
           gl.setClearAlpha?.(1);
           withStageSlotFrustumCullingDisabledSync('world', () => {
-            gl.render(scene, camera);
+            // [impl-B3] deferred roots (streamed buildings) hidden at draw
+            // time — root-level, synchronous save/restore.
+            withDeferredRootsHidden(() => {
+              gl.render(scene, camera);
+            });
           });
           const warmRenderMs = performance.now() - warmRenderStartedAt;
           publishPhase('warmRenderMs', warmRenderMs);
@@ -2788,8 +2898,24 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           from tilemap data not meshes, so dropping ArenaBuildings does NOT
           let players walk through buildings (world-colliders.ts line 248). */}
       <group name="perf:buildings" userData={{ perfChunk: 'buildings' }}>
-        {USE_MESHLET_BUILDINGS ? <MeshletBuildingsR3F /> : <ArenaBuildings fullDetail={showBuildingDetail} />}
+        {/* BGR D6: the meshlet path never mounts ArenaBuildings, so it
+            declares buildings mode 'absent' itself — otherwise the overlay's
+            buildings leg would sit 'pending' until the fuses. */}
+        {USE_MESHLET_BUILDINGS
+          ? <><DeclareBuildingsMode mode="absent" /><MeshletBuildingsR3F /></>
+          : <ArenaBuildings fullDetail={showBuildingDetail} />}
       </group>
+      {/* BGR D8 [impl-B2]: the 11 streamed buildings live under their OWN
+          SIBLING root — never nested inside the boot-core `perf:buildings`
+          root (whose node the boot scans/compile select and traverse
+          recursively). This root is KNOWN DEFERRED: excluded from boot
+          inventory/scans/compile, never drift, and hidden across every boot
+          warm draw (the draw-time save/restore below). */}
+      {!USE_MESHLET_BUILDINGS && (
+        <group name="perf:buildings-streamed" userData={{ perfChunk: 'buildings-streamed' }}>
+          <ArenaBuildingsStreamed fullDetail={showBuildingDetail} />
+        </group>
+      )}
       {showNpcs && (
         <group name="perf:wandering-npcs" userData={{ perfChunk: 'wandering-npcs' }}>
           <ArenaNpcs />

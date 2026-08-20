@@ -27,10 +27,13 @@ type DeferredWarmAttachmentProps = {
    * once — pre-existing product behavior); `onWarmResult` reports which.
    */
   placeholder?: ReactNode;
-  /** Reports the warm outcome once: 'warmed' (upload+compile completed) or
-   * 'failopen' (any fail-open leg). Measurement runs reject 'failopen'
-   * [R2-F11]; product behavior is unchanged. */
-  onWarmResult?: (kind: DeferredWarmResultKind) => void;
+  /** Reports each warm completion: 'warmed' (upload+compile completed) or
+   * 'failopen' (any fail-open leg), plus the RENDERER the warm actually ran
+   * against (BGR impl-B4 — a `gl` replacement re-runs the warm effect and
+   * re-invokes this with the new renderer; identity-keyed consumers must
+   * never attribute a completion to whatever renderer is current at
+   * callback time). Measurement runs reject 'failopen' [R2-F11]. */
+  onWarmResult?: (kind: DeferredWarmResultKind, renderer: unknown) => void;
 };
 
 /**
@@ -73,7 +76,9 @@ export function DeferredWarmAttachment({
         if (state === 'ready') {
           setReady(true);
           try {
-            onWarmResultRef.current?.(resultKind);
+            // `gl` is the renderer THIS effect run warmed against (the
+            // effect re-runs per gl identity) — impl-B4 provenance.
+            onWarmResultRef.current?.(resultKind, gl);
           } catch (error) {
             console.warn(`[DeferredWarm] ${label}: onWarmResult threw:`, error);
           }
