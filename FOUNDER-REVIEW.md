@@ -49,7 +49,7 @@
 
 ## COVE
 
-### Nori button reachable on phones (staging)
+### Nori button reachable on phones (LIVE on prod via #271)
 - **What:** on phones the top-centre Connect/status banner used to cover almost half of the
   pink Nori button (top-right) — taps on its left side did nothing. Nori is now a compact
   heart-icon circle on phones (full label stays on desktop/tablet).
@@ -112,18 +112,21 @@
 
 ## PERF
 
-### Buildings-gated reveal — the new first boot (staging)
-- **What:** your ruling absorbed — the gray placeholder buildings are DELETED.
-  The loading screen now holds (with a moving "Building the town…" bar) until
-  all 11 real buildings are fully loaded, then the world reveals complete.
-  Nothing fake ever shows. Local check: ~5.6-6.6s reveal on a busy machine;
-  old prod boot is ~9-10s.
-- **Where:** staging → hard-refresh `/game` (cold first load; try logged in
-  and logged out). Watch the loading bar move through "Building the town…"
-  and confirm the town appears finished — no gray boxes, no half-built spots.
-- **Feedback wanted:** does the longer hold feel right vs the old instant-but-
+### Buildings-gated reveal — the new first boot (LIVE ON PROD via #271)
+- **What:** your ruling absorbed — the gray placeholder buildings are DELETED
+  (they had quietly reached prod as a #269 rider; #271 removes them). The
+  loading screen now holds (with a moving "Building the town…" bar) until all
+  11 real buildings are fully loaded, then the world reveals complete.
+  Nothing fake ever shows. Measured live: ~6.5s cold reveal on prod
+  (edge-warm; first-ever-visitor cold edge ~9.7s), busy-machine caveat.
+- **Where:** **prod** → hard-refresh `clawville.world/game` (cold first load;
+  try logged in and logged out). Watch the bar move through "Building the
+  town…" and confirm the town appears finished — no gray boxes, no
+  half-built spots, before OR after the reveal.
+- **Feedback wanted:** does the hold feel right vs the old instant-but-
   incomplete reveal? Is the loading bar honest (never frozen)?
-- Shipped by: cv-covefreeze perf session (prf), 2026-08-20.
+- Shipped by: cv-covefreeze perf session (prf), 2026-08-20; promoted #271
+  same day on founder order ("this needs to be locked in").
 
 ### Slice-C wanderer pop-in (staging — owed since 08-11)
 - **What:** wandering NPCs stream in a few seconds AFTER the world reveals.
