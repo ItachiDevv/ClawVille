@@ -6,10 +6,11 @@
  * `setInterval` that, each pass:
  *   1. Releases abandoned, busted non-seeded seats across all cash tables.
  *   2. Retires safe-to-close house tables whose stakes no longer match their tier.
- *   3. COUNTs the open `source='house'` public tables of each `tierKey`.
- *   4. Creates the deficit `(N - open)` via `cashTableManager.createTable(...)`
+ *   3. Closes idle, empty non-house tables whose escrow is zero.
+ *   4. COUNTs the open `source='house'` public tables of each `tierKey`.
+ *   5. Creates the deficit `(N - open)` via `cashTableManager.createTable(...)`
  *      with the HOUSE-BANK avatar as the creator subject.
- *   5. EAGER-SEATS the bots (`cashTableManager.seatHouseBots`) so the lobby shows
+ *   6. EAGER-SEATS the bots (`cashTableManager.seatHouseBots`) so the lobby shows
  *      ~`seededAgentSlots` seated bots per table WITHOUT dealing a hand (Option B,
  *      founder-approved 2026-06-22) — the "always populated" look with NO 24/7
  *      bot-vs-bot bankroll drain (no hand deals until a REAL player sits).
@@ -50,6 +51,7 @@ import {
   houseScalerEnabled,
   houseScalerIntervalMs,
   houseSeededSlotsPerTable,
+  idleEmptyTableWindowMs,
 } from './cash-house-config';
 
 let scalerInterval: ReturnType<typeof setInterval> | null = null;
@@ -151,6 +153,58 @@ async function retireMismatchedHouseTables(): Promise<void> {
 }
 
 /**
+ * Close open non-house tables that have remained empty for the configured idle
+ * window. Discovery is read-only; the manager independently re-checks every
+ * money and seat predicate under the per-table lock before closing a candidate.
+ */
+async function retireIdleEmptyTables(): Promise<void> {
+  // ONE cutoff for the whole pass: discovery selects against it and the manager
+  // re-evaluates the SAME instant under the table lock, so a table that stops
+  // being idle mid-pass is not closed on stale evidence.
+  const idleBefore = new Date(Date.now() - idleEmptyTableWindowMs());
+  let rows: Array<{ id: string }>;
+  try {
+    // Raw-sql params bypass Drizzle's column serializers, so send ISO text and
+    // cast it explicitly rather than binding a Date object.
+    const idleBeforeIso = idleBefore.toISOString();
+    rows = await realDb.execute<{ id: string }>(
+      // NOTE (Codex adversarial pass, 2026-08-20): deliberately NO escrow
+      // predicate here. Pre-filtering on `table_escrow_ct = '0'` made the
+      // manager's orphan-escrow refusal unreachable in production — an empty
+      // table holding stranded CT was silently never selected, so it stayed
+      // open forever, held a creator slot forever, and paged nobody. Discovery
+      // now surfaces it; the manager refuses to close it AND alerts ops.
+      sql`SELECT cash_table.id
+          FROM poker_cash_tables AS cash_table
+          LEFT JOIN poker_cash_seats AS seat ON seat.table_id = cash_table.id
+          WHERE cash_table.status = 'open'
+            AND cash_table.source <> 'house'
+            AND NOT EXISTS (
+              SELECT 1 FROM poker_cash_seats AS active_seat
+              WHERE active_seat.table_id = cash_table.id
+                AND active_seat.status <> 'left'
+            )
+          GROUP BY cash_table.id
+          HAVING GREATEST(
+            cash_table.updated_at,
+            COALESCE(MAX(seat.updated_at), cash_table.created_at)
+          ) < ${idleBeforeIso}::timestamptz`,
+    );
+  } catch (err) {
+    console.error('[cash-scaler] idle empty-table discovery failed:', err);
+    return;
+  }
+
+  for (const row of rows) {
+    try {
+      await cashTableManager.retireIdleEmptyTable(row.id, idleBefore);
+    } catch (err) {
+      console.error(`[cash-scaler] idle empty table ${row.id} retirement failed:`, err);
+    }
+  }
+}
+
+/**
  * One scaler pass: for each tier, create the deficit toward `N_per_tier` open house
  * tables. Re-entrancy guarded; per-tier errors are swallowed (logged). Exported for
  * tests / a manual single-pass run. Returns the total number of tables created.
@@ -159,6 +213,10 @@ export async function cashHouseScalerPass(): Promise<number> {
   if (sweepInFlight) return 0;
   sweepInFlight = true;
   try {
+    await releaseBustedSeats();
+    await retireMismatchedHouseTables();
+    await retireIdleEmptyTables();
+
     // The house-bank avatar as the table creator (`created_by` audit). Resolved
     // fresh each pass; if the seeder hasn't ensured yet, this throws and the whole
     // pass is caught below (no partial damage — nothing was created yet).
@@ -179,9 +237,6 @@ export async function cashHouseScalerPass(): Promise<number> {
 
     const seededSlots = houseSeededSlotsPerTable();
     let created = 0;
-
-    await releaseBustedSeats();
-    await retireMismatchedHouseTables();
 
     for (const tierKey of HOUSE_TIER_KEYS) {
       try {

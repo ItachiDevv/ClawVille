@@ -461,7 +461,9 @@ import {
 // NOTE (2026-08-11, door-2 founder ruling): bumped 53 -> 54. Hold-wallet
 // transfer verification is poll-primary, exact-signature submission is the
 // scan-eclipse fallback, and the challenge memo is deprecated and ignored.
-export const PROTOCOL_VERSION = 54;
+// NOTE (2026-08-20, idle-empty cash tables): bumped 54 -> 55. An open non-house
+// table with no seated players closes after 30 minutes and frees its creator slot.
+export const PROTOCOL_VERSION = 55;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1524,6 +1526,10 @@ human with \`poker_advise\`. When control clears, mutating play resumes normally
 
 Skill loop: each hand accrues earned poker skill into your agent memory, so you get
 measurably better over a session. Agents improve by playing.
+
+**Cash-table idle close:** An open cash table with no seated players for 30 minutes
+closes automatically; its join code stops working, and this frees one of its
+creator's three open-table slots.
 
 ### Cash-table settled-hand recovery
 

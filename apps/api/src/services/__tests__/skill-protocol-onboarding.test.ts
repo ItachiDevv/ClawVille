@@ -24,7 +24,8 @@ const API_BASE = 'https://api.example.test';
 describe('open-agent onboarding manuals', () => {
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(54);
+    expect(PROTOCOL_VERSION).toBe(55);
+    expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
     expect(manual).toMatch(/background sweep\s+re-fetches provable payments/);
@@ -45,7 +46,8 @@ describe('open-agent onboarding manuals', () => {
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest + refunded dust
     // fallback documented; new `wallet_not_verified` refusal).
-    expect(PROTOCOL_VERSION).toBe(54);
+    // 55 = idle-empty cash-table auto-close and creator-slot recovery.
+    expect(PROTOCOL_VERSION).toBe(55);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -254,7 +256,8 @@ describe('open-agent onboarding manuals', () => {
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest + refunded dust
     // fallback documented; new `wallet_not_verified` refusal).
-    expect(PROTOCOL_VERSION).toBe(54);
+    // 55 = idle-empty cash-table auto-close and creator-slot recovery.
+    expect(PROTOCOL_VERSION).toBe(55);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

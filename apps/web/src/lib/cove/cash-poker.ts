@@ -424,7 +424,7 @@ export function describeCashPokerError(err: unknown): string {
   }
   if (code === 'table_full' || code === 'room_full') return 'That table is full — try another.';
   if (code === 'too_many_open_tables') {
-    return 'You already have the max open tables — close one first.';
+    return 'You already have the max open tables. An empty table closes on its own after 30 minutes idle and frees a slot.';
   }
   if (code === 'buy_in_mismatch') return 'Buy-in must equal the table buy-in.';
   if (code === 'buy_in_below_bb') return 'Buy-in must cover at least one big blind.';

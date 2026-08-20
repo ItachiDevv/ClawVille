@@ -15,8 +15,16 @@
 
 import { redactBearerTokens } from './log-redact';
 
-const TOKEN = process.env.ITACHI_DEBUG_BOT_TOKEN;
-const CHAT_ID = process.env.ITACHI_DEBUG_CHAT_ID;
+// Read per call, not at module load (same discipline as the CLAWVILLE_ENV gate
+// below): env never changes on a deployed box, but in a shared-process test run
+// whichever suite imports this module first would bake "not configured" for the
+// whole process.
+function telegramCreds(): { token?: string; chatId?: string } {
+  return {
+    token: process.env.ITACHI_DEBUG_BOT_TOKEN,
+    chatId: process.env.ITACHI_DEBUG_CHAT_ID,
+  };
+}
 
 const WINDOW_MS = 60_000;
 const rateLimiter = new Map<string, { firstAt: number; suppressed: number }>();
@@ -43,7 +51,8 @@ export interface AlertErrorParams {
 
 /** Send raw plain text through the itachi-debug Telegram bot. Never throws. */
 export async function sendTelegramText(text: string): Promise<void> {
-  if (!TOKEN || !CHAT_ID) {
+  const { token, chatId } = telegramCreds();
+  if (!token || !chatId) {
     console.warn('[alert-error] Telegram credentials not configured, skipping send', {
       text,
     });
@@ -51,11 +60,11 @@ export async function sendTelegramText(text: string): Promise<void> {
   }
 
   try {
-    const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        chat_id: CHAT_ID,
+        chat_id: chatId,
         text,
       }),
     });
@@ -100,7 +109,8 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     return;
   }
 
-  if (!TOKEN || !CHAT_ID) {
+  const { token, chatId } = telegramCreds();
+  if (!token || !chatId) {
     console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
       source,
       message,

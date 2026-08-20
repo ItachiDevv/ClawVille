@@ -13,6 +13,7 @@ const GAME_LABEL: Record<GameType, string> = {
   blackjack: 'Blackjack',
   holdem: "Hold'em",
   baccarat: 'Baccarat',
+  poker: 'Poker',
 };
 
 const GAME_COLOR: Record<GameType, string> = {
@@ -20,6 +21,7 @@ const GAME_COLOR: Record<GameType, string> = {
   blackjack: '#ff8aa0',
   holdem: '#dde8f0',
   baccarat: '#9ab4ff',
+  poker: '#ffd27c',
 };
 
 function formatCT(atomic: string): string {

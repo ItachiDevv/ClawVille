@@ -1,11 +1,18 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 
-const refreshControlled = mock((_userId: string) => {});
-mock.module('../npc-simulation', () => ({
-  npcSimulation: {
-    refreshHumanControlledOpenClawForUser: refreshControlled,
-  },
-}));
+// Spy on the REAL npcSimulation singleton — never mock.module('../npc-simulation')
+// here. A partial module mock poisons the process-global registry for every suite
+// loaded after this file in the shared-process CI gate (they get a singleton with
+// no .stop → "npcSimulation.stop is not a function" across unrelated suites).
+const { npcSimulation } = await import('../npc-simulation');
+const refreshControlled = spyOn(
+  npcSimulation,
+  'refreshHumanControlledOpenClawForUser',
+).mockImplementation(() => {});
+
+afterAll(() => {
+  refreshControlled.mockRestore();
+});
 
 const {
   __resetWorldPositionThrottleForTest,

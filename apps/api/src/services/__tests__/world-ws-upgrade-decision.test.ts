@@ -1,11 +1,9 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 
-mock.module('../npc-simulation', () => ({
-  npcSimulation: {
-    refreshHumanControlledOpenClawForUser: () => {},
-  },
-}));
-
+// No npc-simulation mock: decideWorldWsUpgrade is a pure function, and a partial
+// mock.module('../npc-simulation') poisons every later suite in the shared-process
+// CI gate (see world-position-apply.test.ts). Loading the real module is safe —
+// the other gate suites already do.
 const { decideWorldWsUpgrade } = await import('../world-presence-ws-hub');
 
 const allowed = {

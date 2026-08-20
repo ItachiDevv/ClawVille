@@ -1,14 +1,21 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import {
   WORLD_PRESENCE_WS_CLOSE_CODES,
   type WorldPresenceServerFrame,
 } from '@clawville/shared';
 
-mock.module('../npc-simulation', () => ({
-  npcSimulation: {
-    refreshHumanControlledOpenClawForUser: () => {},
-  },
-}));
+// Spy on the REAL npcSimulation singleton — never mock.module('../npc-simulation')
+// here; a partial module mock poisons every later suite in the shared-process CI
+// gate (see world-position-apply.test.ts).
+const { npcSimulation } = await import('../npc-simulation');
+const refreshControlledSpy = spyOn(
+  npcSimulation,
+  'refreshHumanControlledOpenClawForUser',
+).mockImplementation(() => {});
+
+afterAll(() => {
+  refreshControlledSpy.mockRestore();
+});
 
 const {
   WorldPresenceWsHub,

@@ -158,6 +158,15 @@ export function houseScalerIntervalMs(): number {
 }
 
 /**
+ * How long an open non-house cash table with no active seats survives before the
+ * scaler closes it. Applies equally to public and private tables. Default
+ * 1_800_000 ms (30 minutes; floor 300_000 ms / 5 minutes).
+ */
+export function idleEmptyTableWindowMs(): number {
+  return readInt('CASH_IDLE_EMPTY_TABLE_WINDOW_MS', 1_800_000, 300_000);
+}
+
+/**
  * Autonomous self-drive TICK cadence in ms. Default 1_500. MUST be well under
  * `turnClock (25_000) + grace (5_000)` so a bot acts before the sim's auto-fold
  * timer fires — the reader clamps it to [250, 20_000] for safety.

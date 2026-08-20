@@ -1032,8 +1032,9 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
     const texts = executeCalls.map((q) => flattenSql(q).text);
     expect(texts[0]).toContain('pg_advisory_xact_lock');
     expect(texts[1]).toContain('FOR UPDATE');
-    // Escrow increment shape matches deposit-topup (in-DB addition).
-    expect(texts[2]).toContain('deposit_remaining_ct = deposit_remaining_ct +');
+    // Escrow increment shape matches deposit-topup (in-DB addition; COALESCE
+    // hardening landed with the P2 tenure change, cede5d2a).
+    expect(texts[2]).toContain('deposit_remaining_ct = COALESCE(deposit_remaining_ct, 0) +');
     // The NEW audit kind, usd_basis-stamped, NO debit_ledger_tx_id column.
     expect(texts[3]).toContain('land_deposit_prepay_usdc');
     expect(texts[3]).not.toContain('debit_ledger_tx_id');
@@ -1074,14 +1075,23 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
     expect(enqueueCalls.length).toBe(0);
   });
 
-  it('non-deposit tenure ⇒ refusal; NULL weekly rent ⇒ grace NOT cleared (decideDepositSweep read-only)', async () => {
+  it('non-deposit tenure ⇒ refusal; NULL weekly rent ⇒ invalid_escrow_state; under-week top-up ⇒ grace NOT cleared', async () => {
     executeQueue = [[], [parcelRow({ tenure: 'hold' })]];
     const fulfiller = checkout.getFulfiller('rent_payment')!;
     await expect(fulfiller(rentCtx())).rejects.toThrow(/not_deposit_tenure/);
 
+    // NULL weekly rent on a deposit parcel is corrupt escrow state since the
+    // P2 tenure hardening (cede5d2a) — refused under the lock, NO writes.
     executeCalls.length = 0;
-    executeQueue = [[], [parcelRow({ rent_ct_weekly: null })], [], []];
+    executeQueue = [[], [parcelRow({ rent_ct_weekly: null })]];
+    await expect(fulfiller(rentCtx())).rejects.toThrow(/invalid_escrow_state/);
+    expect(executeCalls.length).toBe(2); // advisory + select only
+
+    // 40 + 500 = 540 < weekly 1000 ⇒ decideDepositSweep says no full week ⇒
+    // grace NOT cleared (read-only decision; the remainder only grows).
+    executeCalls.length = 0;
+    executeQueue = [[], [parcelRow({ rent_ct_weekly: 1000 })], [], []];
     const out = await fulfiller(rentCtx());
-    expect(out.detail).toMatchObject({ graceCleared: false }); // no positive weekly ⇒ 'skip'
+    expect(out.detail).toMatchObject({ graceCleared: false });
   });
 });

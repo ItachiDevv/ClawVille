@@ -104,7 +104,7 @@ apps/web/public/models/.ktx2-backup/
 # An external Itachi sync (committed as "sync-hook drift from hoodie-prometh")
 # kept copying memory + scratch .md notes into the repo root and apps/web, and
 # even clobbered README.md with the slot-playground readme. ROOT is the canonical
-# home for docs; the 13 negated below are the ONLY tracked root *.md. Everything
+# home for docs; the 14 negated below are the ONLY tracked root *.md. Everything
 # else *.md at repo root — and ALL depth-1 *.md under apps/web — is drift and must
 # never be committed. Un-ignoring a tracked file via "!" is safe and does NOT
 # re-break the doc system (see the canonical-docs note above + CLAUDE.md).
@@ -122,6 +122,7 @@ apps/web/public/models/.ktx2-backup/
 !/VERIFICATION.md
 !/SKILL.md
 !/deploy-status.md
+!/FOUNDER-REVIEW.md
 apps/web/*.md
 # C6 meshopt+WebP pipeline originals — pre-C6 GLB/VRM backups (regeneratable).
 # Revert a single file: git checkout 13480db -- apps/web/public/models/guide.glb

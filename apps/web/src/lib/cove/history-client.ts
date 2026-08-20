@@ -35,7 +35,7 @@ async function coveHistoryHeaders(): Promise<Record<string, string>> {
 // Wire types (must stay in sync with impl-api response shape)
 // ---------------------------------------------------------------------------
 
-export type GameType = 'slots' | 'blackjack' | 'holdem' | 'baccarat';
+export type GameType = 'slots' | 'blackjack' | 'holdem' | 'baccarat' | 'poker';
 
 export interface CoveHistoryEventRow {
   id: string;
@@ -73,6 +73,13 @@ export type EventVerifyResponse =
   | {
       /** Spin replay matched stored outcome byte-for-byte */
       verified: true;
+      /**
+       * Poker (cash) rows return verified:true WITH a disclosure — the server
+       * verifies the seed commitment + authoritative-consistency only (full
+       * engine replay deferred; cove-history.ts poker arm). Absent on games
+       * whose verified:true means a full engine replay matched.
+       */
+      reason?: string;
       expected: Record<string, unknown>;
       stored: Record<string, unknown>;
       hashMatches: boolean;
