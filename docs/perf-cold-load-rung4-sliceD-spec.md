@@ -1,5 +1,14 @@
 # Rung-4 Slice D — Boot-core gate: FROZEN spec REV 5 (2026-08-17)
 
+> **⚠ PARTIALLY SUPERSEDED 2026-08-20** by
+> `docs/perf-cold-load-buildings-gated-reveal-spec.md` §0 (founder proxy
+> ruling — placeholder buildings are DEAD; the overlay now holds for the 11
+> real buildings). The superseded clauses are enumerated in that §0 map
+> (proxies-as-boot-core, post-reveal-only building streaming, the
+> core-presented-only dismissal, the guest reveal ≤5s acceptance). The
+> `--slice-d` gate evaluator remains the untouched frozen record of the
+> 2026-08-17 measurement.
+
 Status: **FROZEN — Codex xhigh round 5 VERDICT: SHIP** (rounds: 19 → 15 →
 8 → 2 → 0 findings; both round-4 actor-coverage blockers verified RESOLVED,
 no new flaw). Implementation binds to this revision; deviations require a

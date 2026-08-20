@@ -88,14 +88,24 @@
 
 ## PERF
 
-### Cold-load rung-4 slice D reveal (staging)
-- **What:** authenticated first-load reveal time cut ~58% (boot-core gate;
-  presented ~3.4s median on the 12-pair gate).
-- **Where:** staging → hard-refresh `/game` logged in; also the proxy-world +
-  slice-C pop-in checks the perf session asked for.
-- **Feedback wanted:** the two playtests that gate the slice (E4): does the
-  proxy-world feel acceptable, any visible pop-in.
-- Shipped by: cv-covefreeze perf session, 2026-08-19/20.
+### Buildings-gated reveal — the new first boot (staging)
+- **What:** your ruling absorbed — the gray placeholder buildings are DELETED.
+  The loading screen now holds (with a moving "Building the town…" bar) until
+  all 11 real buildings are fully loaded, then the world reveals complete.
+  Nothing fake ever shows. Local check: ~5.6-6.6s reveal on a busy machine;
+  old prod boot is ~9-10s.
+- **Where:** staging → hard-refresh `/game` (cold first load; try logged in
+  and logged out). Watch the loading bar move through "Building the town…"
+  and confirm the town appears finished — no gray boxes, no half-built spots.
+- **Feedback wanted:** does the longer hold feel right vs the old instant-but-
+  incomplete reveal? Is the loading bar honest (never frozen)?
+- Shipped by: cv-covefreeze perf session (prf), 2026-08-20.
+
+### Slice-C wanderer pop-in (staging — owed since 08-11)
+- **What:** wandering NPCs stream in a few seconds AFTER the world reveals.
+- **Where:** staging → `/game`, watch the town for ~10s after reveal.
+- **Feedback wanted:** is the pop-in acceptable?
+- Shipped by: cv-covefreeze perf session, 2026-08-11.
 
 ---
 

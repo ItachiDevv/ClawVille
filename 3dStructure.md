@@ -1,7 +1,61 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-20 (Cove hotspot click-yield now FAILS CLOSED pre-load).**
+**Last Audited: 2026-08-20 (BUILDINGS-GATED REVEAL — proxy placeholder
+buildings DELETED by founder ruling; the loading screen now holds until the
+11 REAL streamed buildings are downloaded, warmed, and visibly presented,
+then the world reveals complete. Spec: `docs/perf-cold-load-buildings-gated-
+reveal-spec.md` rev 3 FROZEN; Codex xhigh R1 8+1 / R2 8+1 folded + impl
+review.)** The slice-D "proxy-world first impression" is DEAD — founder:
+"we tried this once, it was a disaster." What changed: (1) `BuildingProxy` /
+`BuildingProxyLabel` and all proxy plumbing removed from
+`arena-buildings.tsx` — a building spot renders NOTHING until its real GLB
+commits (fuse fail-open on slow nets = empty spot then STREAMED pop-in — the
+fuses also force-open the building stream lane, so a boot whose core
+milestone never stamps still pops the buildings in raw, never strands them);
+(2) buildings stream through two new BOOT-CRITICAL lanes in
+`decorative-release.ts` — stage A byte-fetch-only (epoch + visible + mode
+'glb', kicks ~1.5s behind the overlay) and stage B mount/parse/warm (latched
+at the first BOOT_CORE_PRESENTED); world-boot, deferred-warm, and hosted
+stage compiles all JOIN the renderer-wide boot-compile FIFO
+(`chainBootCompile`) — same-renderer compileAsync overlap is prevented by
+the chain PLUS a poisoned-renderer registry (a timed-out compile poisons
+its renderer BEFORE the chain releases; every chained task RE-CHECKS the
+registry at dispatch time inside the chain, so a compile queued before the
+poison landed is bypassed, not dispatched; a rejected compile heals via the
+direct warm INSIDE the chained critical section, and a heal that itself
+fails poisons the renderer too); the cosmetic/activity compile paths remain
+OUTSIDE the chain (tracked R3-2 arbiter follow-up — the FIFO claim is
+scoped, not process-wide);
+(3) SeaLoadingScreen dismissal = composite predicate (core presented AND 11
+buildings presented via an ack protocol whose legs are PAIRED per
+building-mount instance — commit, warm, and failed state share one instance
+record, so an outgoing canvas's stale commit can never combine with an
+incoming canvas's warm — plus two qualifying frames, held for two
+consecutive ticks), single first-writer-wins `dismiss(reason)` with probe
+stamps, and a "Building the town…" progress band (bands
+0.30/0.70/0.80/0.97); (4) renderer replacements mid-boot are observed by an
+identity-latched generation authority in the scene onAfterRender chain — a
+swap resets both presented milestones; warm acks record the SET of renderer
+objects each instance's warms completed against (additive — a delayed
+stale-renderer completion can never overwrite a valid one), so stale
+completions never credit the replacement and early completions validate the
+moment their renderer is observed; (5) the streamed buildings
+mount under their OWN SIBLING root `perf:buildings-streamed` (never nested
+inside the boot-core `perf:buildings` root the scans recurse into) — boot
+inventory/scans/compile treat the chunk as KNOWN DEFERRED, and every boot
+warm/healing render hides the deferred ROOTS at draw time (synchronous
+save/restore — late-resolving descendants covered wholesale); (6)
+`isOccluder` is tagged only while a building is visible. Slice-D spec rev 5 is PARTIALLY SUPERSEDED (see
+its banner + the BGR spec §0). Ship evidence (functional singles, FOUNDER-
+ACTIVE box ~71% CPU, localhost — numbers are NOT quotable perf, re-measure
+quiet): guest reveal 5624ms / auth player-VRM 6625ms, both
+`bgrEvidence.valid` (composite dismissal, presented ≤ dismissed, single
+generation), cohort 16/16 warmed, drift 0, compile failures 0, cold
+/cove + /kelp zero building bytes; suite 933+24 green, tsc 0. Old prod boot
+was ~9-10s full-load; slice-D staging was ~3.4s WITH proxies (dead).
+
+**Prior Last Audited: 2026-08-20 (Cove hotspot click-yield now FAILS CLOSED pre-load).**
 `_shouldYieldClickToFartherHotspot` (`cove-interior.tsx`) returned TRUE when
 `_coveRoomRootRef.current` was null (room GLB not yet mounted) — a yield with zero
 occlusion evidence, handing pre-load clicks to the farther hotspot on guesswork.

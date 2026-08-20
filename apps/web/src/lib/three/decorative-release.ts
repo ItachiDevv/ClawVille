@@ -32,6 +32,8 @@
  * useGLTF/useVRMInstance); data/roster state is never gated.
  */
 
+import { BOOT_STREAM_COHORT_IDS } from './boot-stream-cohort';
+
 const ABSOLUTE_DEADLINE_MS = 45_000;
 
 type Listener = () => void;
@@ -352,6 +354,9 @@ export function ensureWorldBootEpoch(): WorldBootEpoch {
       console.warn('[boot-epoch] subscriber threw:', err);
     }
   }
+  // Buildings-gated reveal (BGR D1): epoch creation is one of stage A's two
+  // eligibility legs (hoisted declaration, defined in the BGR section below).
+  evaluateBgrStageA();
   return currentEpoch;
 }
 
@@ -404,10 +409,17 @@ export function notifyBootCoreScenePresented(): void {
     (window as any).__W3D_BOOT_CORE_PRESENTED = true;
     (window as any).__W3D_PHASES = (window as any).__W3D_PHASES ?? {};
     (window as any).__W3D_PHASES.bootCorePresentedAt = bootCorePresentedAtMs;
+    // BGR D4: generation provenance for the probe evidence validator.
+    (window as any).__W3D_PHASES.bootCorePresentedGen = bootRendererGeneration;
   } catch {
     /* telemetry never throws */
   }
   evaluateBootStreamEligibility();
+  // BGR D1 stage B: LATCHED on the first core presentation of the boot — a
+  // later renderer-generation reset re-clears the milestone but deliberately
+  // does NOT re-park stage B (compile safety is structural: every deferred
+  // warm compile is chained through the boot-compile FIFO).
+  markBgrStageBEligible();
 }
 
 export function isBootCorePresented(): boolean {
@@ -456,6 +468,9 @@ function installStreamVisibilityListener(): void {
     // Foregrounding re-arms a parked drain and lets the evaluator re-check.
     evaluateBootStreamEligibility();
     drainStreamQueue();
+    // BGR lanes park while hidden too — re-arm both on foregrounding.
+    evaluateBgrStageA();
+    drainBgrStageBQueue();
   });
 }
 
@@ -474,6 +489,11 @@ function markStreamEligible(reason: string): void {
   streamEligible = true;
   streamEligibleAtMs = Math.round(nowMs());
   streamEligibleReason = reason;
+  // [impl-B7] the post-reveal lane becoming eligible (milestone OR its own
+  // 10s fail-open) implies the buildings lane must be able to stream too —
+  // props/NPCs popping in over permanently-empty building spots would be
+  // absurd. Idempotent.
+  forceBootBuildingsStreamEligible(`post-reveal:${reason}`);
   if (streamEvalTimer !== null) {
     clearInterval(streamEvalTimer);
     streamEvalTimer = null;
@@ -644,6 +664,432 @@ export function onBootStreamEligible(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Buildings-gated reveal (BGR, 2026-08-20 founder ruling — proxies dead).
+// Spec: docs/perf-cold-load-buildings-gated-reveal-spec.md (rev 3 FROZEN).
+// The overlay holds until boot-core AND the 11 real streamed buildings are
+// presented. Buildings stream through two dedicated lanes that depend on
+// NEITHER the decorative release NOR the overlay (the old single lane
+// required overlay-gone at two levels — a structural deadlock once the
+// overlay waits for buildings):
+//   Stage A — byte-fetch only (network warm), eligible on epoch + visible +
+//             mode 'glb'. Zero React/renderer/GPU work [R2-NF1].
+//   Stage B — mount/parse/warm, latched eligible on the FIRST boot-core
+//             presentation. Compile safety is structural (deferred-warm
+//             compiles are chained through the boot-compile FIFO), so a
+//             renderer-generation bump does not re-park this lane.
+// ---------------------------------------------------------------------------
+
+/** The 11 required building cohort ids (derived from the cohort's frozen
+ * static set — single source of truth, no drift). */
+const BGR_BUILDING_IDS: readonly string[] = BOOT_STREAM_COHORT_IDS.filter(
+  (id) => id.startsWith('building:'),
+);
+
+function stampPhase(key: string, value: number | string): void {
+  try {
+    (window as any).__W3D_PHASES = (window as any).__W3D_PHASES ?? {};
+    (window as any).__W3D_PHASES[key] = value;
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
+// --- Renderer-generation authority (D4 [R2-NF2]) ---------------------------
+// Identity-latched single choke point. Called from the scene-onAfterRender
+// notifier chain with the renderer that ACTUALLY executed the frame — this
+// observes every real replacement (watchdog recovery, StageRendererHealth
+// bridge swap) with exactly one caller, so no double-bump is possible.
+
+let observedBootRenderer: object | null = null;
+let bootRendererGeneration = 1;
+const generationListeners = new Set<Listener>();
+
+export function observeBootRenderer(renderer: unknown): void {
+  if (!renderer || typeof renderer !== 'object') return;
+  if (observedBootRenderer === renderer) return;
+  const first = observedBootRenderer === null;
+  observedBootRenderer = renderer as object;
+  if (first) return; // first observation latches identity — no bump
+  bootRendererGeneration += 1;
+  // A replacement renderer has no built pipelines: BOTH presentation
+  // milestones are stale [R2-NF3][R2-NF4]. Reset them (+ frame counters);
+  // warm-leg acks need no clearing — they are IDENTITY-KEYED to the warmed
+  // renderer [impl-B4], so a stale leg simply stops matching the observed
+  // renderer. Sticky RESOURCE outcomes (cohort terminals, settled stamp) are
+  // measurement records and stay. Stamps are forward-only — the *At values
+  // keep their last value until a re-stamp overwrites them.
+  bootCorePresented = false;
+  bootCoreQualifyingFrames = 0;
+  bgrBuildingsPresented = false;
+  bgrBuildingsQualifyingFrames = 0;
+  stampPhase('bootRendererGeneration', bootRendererGeneration);
+  for (const cb of [...generationListeners]) {
+    try {
+      cb();
+    } catch (err) {
+      console.warn('[bgr] generation listener threw:', err);
+    }
+  }
+}
+
+export function getBootRendererGeneration(): number {
+  return bootRendererGeneration;
+}
+
+/** Subscription bridge (useSyncExternalStore in FailedBuildingAckProbe). */
+export function subscribeBootRendererGeneration(cb: Listener): () => void {
+  generationListeners.add(cb);
+  return () => generationListeners.delete(cb);
+}
+
+// --- Buildings mode (D6 [R2-NF5]) ------------------------------------------
+// Per-canvas, latest-wins, 'pending' on unmount. The overlay predicate
+// evaluates the CURRENT declaration live — an 'absent'-era trivial pass can
+// never leak into a later 'glb' declaration.
+
+export type BootBuildingsMode = 'pending' | 'glb' | 'absent';
+let bgrBuildingsMode: BootBuildingsMode = 'pending';
+let bgrBuildingsModeOwner: symbol | null = null;
+
+/** OWNER-KEYED [impl-B6]: the declaring canvas passes its own owner symbol;
+ * the latest declaration wins AND takes ownership. */
+export function declareBootBuildingsMode(
+  mode: 'glb' | 'absent',
+  owner: symbol,
+): void {
+  bgrBuildingsModeOwner = owner;
+  if (bgrBuildingsMode === mode) return;
+  bgrBuildingsMode = mode;
+  stampPhase('bootBuildingsMode', mode);
+  if (mode === 'glb') evaluateBgrStageA();
+}
+
+/** Canvas-unmount cleanup: back to 'pending' ONLY when the caller still OWNS
+ * the declaration [impl-B6] — during an SPA canvas overlap React runs the
+ * outgoing canvas's cleanup AFTER the incoming canvas's effect, and an
+ * unconditional reset would clobber the fresh declaration to 'pending'
+ * (stranding the leg until the fuses). A non-owner reset is a no-op. */
+export function resetBootBuildingsMode(owner: symbol): void {
+  if (bgrBuildingsModeOwner !== owner) return;
+  bgrBuildingsModeOwner = null;
+  bgrBuildingsMode = 'pending';
+}
+
+export function getBootBuildingsMode(): BootBuildingsMode {
+  return bgrBuildingsMode;
+}
+
+// --- Stage A: byte-fetch-only lane (D1) ------------------------------------
+
+const bgrStageAQueue: Listener[] = [];
+let bgrStageAFiredAt: number | null = null;
+
+export function onBootBuildingsFetch(listener: Listener): void {
+  bgrStageAQueue.push(listener);
+  evaluateBgrStageA();
+}
+
+function evaluateBgrStageA(): void {
+  if (bgrStageAQueue.length === 0) return;
+  if (bgrBuildingsMode !== 'glb') return;
+  if (!currentEpoch) return;
+  installStreamVisibilityListener();
+  if (typeof document !== 'undefined' && document.hidden) return;
+  if (bgrStageAFiredAt === null) {
+    bgrStageAFiredAt = Math.round(nowMs());
+    stampPhase('bootBuildingsFetchKickAt', bgrStageAFiredAt);
+  }
+  // One batch — pure fetch warms; parallel downloads ARE the point.
+  const listeners = bgrStageAQueue.splice(0, bgrStageAQueue.length);
+  for (const l of listeners) {
+    try {
+      l();
+    } catch (err) {
+      console.warn('[bgr] stage-A fetch listener threw:', err);
+    }
+  }
+}
+
+// --- Stage B: mount/parse/warm lane (D1) -----------------------------------
+// Own queue: staggered one per idle tick, NO quiet period (no reveal boundary
+// to protect — the overlay covers everything), parks hidden. Shares the
+// delivered-member remount contract with the post-reveal lane.
+
+let bgrStageBEligible = false;
+const bgrStageBQueue: StaggerEntry[] = [];
+let bgrStageBScheduled = false;
+let bgrStageBSequence = 0;
+
+function markBgrStageBEligible(): void {
+  if (bgrStageBEligible) return;
+  bgrStageBEligible = true;
+  stampPhase('bootBuildingsStreamEligibleAt', Math.round(nowMs()));
+  drainBgrStageBQueue();
+}
+
+/**
+ * Fail-open stage-B admission [impl-B7]: a boot where BOOT_CORE_PRESENTED
+ * never stamps (notifier/camera regression) dismisses the overlay via the
+ * 10s/45s fuses — the buildings must then STREAM IN RAW (pop-in), not stay
+ * `null` forever. Called from every fuse dismissal path and from the
+ * post-reveal lane's own eligibility (if legacy streaming is eligible, the
+ * buildings certainly must be).
+ */
+export function forceBootBuildingsStreamEligible(reason: string): void {
+  if (bgrStageBEligible) return;
+  stampPhase('bootBuildingsStreamForcedReason', reason);
+  markBgrStageBEligible();
+}
+
+function drainBgrStageBQueue(): void {
+  if (!bgrStageBEligible || bgrStageBScheduled || bgrStageBQueue.length === 0) {
+    return;
+  }
+  if (typeof document !== 'undefined' && document.hidden) return;
+
+  const takeNextBgr = (): StaggerEntry | undefined => {
+    if (bgrStageBQueue.length === 0) return undefined;
+    let best = 0;
+    for (let i = 1; i < bgrStageBQueue.length; i += 1) {
+      const candidate = bgrStageBQueue[i]!;
+      const current = bgrStageBQueue[best]!;
+      if (
+        candidate.priority < current.priority ||
+        (candidate.priority === current.priority &&
+          candidate.sequence < current.sequence)
+      ) {
+        best = i;
+      }
+    }
+    return bgrStageBQueue.splice(best, 1)[0];
+  };
+
+  const run = () => {
+    bgrStageBScheduled = false;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    let next = takeNextBgr();
+    while (next && !next.active) next = takeNextBgr();
+    if (!next) return;
+    try {
+      next.listener();
+    } catch (err) {
+      console.warn('[bgr] stage-B listener threw:', err);
+    }
+    drainBgrStageBQueue();
+  };
+
+  if (typeof window === 'undefined') {
+    run();
+    return;
+  }
+  bgrStageBScheduled = true;
+  const w = window as any;
+  if (typeof w.requestIdleCallback === 'function') {
+    w.requestIdleCallback(run, { timeout: 500 });
+  } else {
+    w.setTimeout(run, 120);
+  }
+}
+
+export function isBootBuildingsStreamEligible(): boolean {
+  return bgrStageBEligible;
+}
+
+/** Subscribe a building member to stage B. Same contract as
+ * onBootStreamEligible (priority order, one per idle tick, hidden parking,
+ * delivered-member record shared with the post-reveal lane). */
+export function onBootBuildingsStream(
+  listener: Listener,
+  priority = 0,
+  memberId?: string,
+): () => void {
+  installStreamVisibilityListener();
+  const entry: StaggerEntry = {
+    listener: memberId
+      ? () => {
+          deliveredStreamMembers.add(memberId);
+          listener();
+        }
+      : listener,
+    active: true,
+    priority,
+    sequence: bgrStageBSequence++,
+  };
+  bgrStageBQueue.push(entry);
+  drainBgrStageBQueue();
+  return () => {
+    entry.active = false;
+    const index = bgrStageBQueue.indexOf(entry);
+    if (index >= 0) bgrStageBQueue.splice(index, 1);
+  };
+}
+
+// --- Ack protocol + BOOT_BUILDINGS_PRESENTED milestone (D2 [R2-NF3],
+// impl-review B4/B5 + fix-round NF2/NF3) -------------------------------------
+// Ack state is keyed by (cohortId, INSTANCE OWNER) — one owner symbol per
+// mounted StreamedGLBBuilding, shared by ALL of its legs [fix-NF3]: an
+// outgoing canvas A's committed-but-stale legs can never be combined with an
+// incoming canvas B's warm to prove a building B hasn't committed yet, and
+// A's unmount revokes only A's OWN instance record [impl-B5]. Per instance:
+//   commit leg — its visible tree COMMITTED (effect on the DWA ready flip).
+//   warm legs — the SET of renderer identities this instance's warms
+//               completed against (a WeakSet — ADDITIVE [fix-NF2]: a
+//               delayed renderer-A completion can never overwrite a valid
+//               renderer-B ack; the token check asks "does the set CONTAIN
+//               the currently-observed renderer" [impl-B4], so an early
+//               completion validates the moment its renderer is observed).
+//   failed — DURABLE (a boundary never retries for the life of its tree, so
+//            the marker survives renderer swaps until the probe unmounts).
+// Token live = some instance has failed, OR has commit AND a warm for the
+// observed renderer.
+
+type BuildingInstanceAck = {
+  commit: boolean;
+  failed: boolean;
+  warmRenderers: WeakSet<object>;
+};
+
+const bgrInstanceAcks = new Map<string, Map<symbol, BuildingInstanceAck>>();
+
+function instanceAck(id: string, owner: symbol): BuildingInstanceAck {
+  let byOwner = bgrInstanceAcks.get(id);
+  if (!byOwner) {
+    byOwner = new Map<symbol, BuildingInstanceAck>();
+    bgrInstanceAcks.set(id, byOwner);
+  }
+  let entry = byOwner.get(owner);
+  if (!entry) {
+    entry = { commit: false, failed: false, warmRenderers: new WeakSet() };
+    byOwner.set(owner, entry);
+  }
+  return entry;
+}
+
+export function ackBuildingCommit(cohortId: string, owner: symbol): void {
+  instanceAck(cohortId, owner).commit = true;
+}
+
+export function revokeBuildingCommit(cohortId: string, owner: symbol): void {
+  const entry = bgrInstanceAcks.get(cohortId)?.get(owner);
+  if (entry) entry.commit = false;
+}
+
+/** Record a completed warm AGAINST THE RENDERER IT RAN ON, for THIS
+ * building instance [impl-B4][fix-NF2/NF3]. Additive — never overwrites. */
+export function ackBuildingWarm(
+  cohortId: string,
+  owner: symbol,
+  renderer: unknown,
+): void {
+  if (!renderer || typeof renderer !== 'object') return;
+  instanceAck(cohortId, owner).warmRenderers.add(renderer as object);
+}
+
+export function ackBuildingFailed(cohortId: string, owner: symbol): void {
+  instanceAck(cohortId, owner).failed = true;
+}
+
+/** Drop an instance's ENTIRE ack record (unmount cleanup — all legs at
+ * once; other instances' records are untouched). */
+export function revokeBuildingInstance(cohortId: string, owner: symbol): void {
+  const byOwner = bgrInstanceAcks.get(cohortId);
+  if (!byOwner) return;
+  byOwner.delete(owner);
+  if (byOwner.size === 0) bgrInstanceAcks.delete(cohortId);
+}
+
+function isBuildingTokenLive(id: string): boolean {
+  const byOwner = bgrInstanceAcks.get(id);
+  if (!byOwner) return false;
+  for (const entry of byOwner.values()) {
+    if (entry.failed) return true;
+    if (
+      entry.commit &&
+      observedBootRenderer !== null &&
+      entry.warmRenderers.has(observedBootRenderer)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Currently-observed-renderer reveal-token count (the loading bar's
+ * buildings band reads this — renderer-current, never sticky [R2-NF8]). */
+export function getBootBuildingsAckProgress(): { acked: number; total: number } {
+  let acked = 0;
+  for (const id of BGR_BUILDING_IDS) {
+    if (isBuildingTokenLive(id)) acked += 1;
+  }
+  return { acked, total: BGR_BUILDING_IDS.length };
+}
+
+let bgrBuildingsPresented = false;
+let bgrBuildingsPresentedAtMs: number | null = null;
+let bgrBuildingsQualifyingFrames = 0;
+
+/**
+ * Called from the SAME scene-onAfterRender chain as
+ * notifyBootCoreScenePresented (caller pre-qualifies slot/camera/epoch).
+ * Requires 11 LIVE current-generation tokens CONTINUOUSLY across two
+ * consecutive qualifying frames — a revoked token or generation bump resets
+ * the run [R2-NF3].
+ */
+export function notifyBootBuildingsScenePresented(): void {
+  if (bgrBuildingsPresented) return;
+  if (bgrBuildingsMode !== 'glb') return;
+  const { acked, total } = getBootBuildingsAckProgress();
+  if (acked < total || !revealConditionHolds(false)) {
+    bgrBuildingsQualifyingFrames = 0;
+    return;
+  }
+  bgrBuildingsQualifyingFrames += 1;
+  if (bgrBuildingsQualifyingFrames < 2) return;
+  bgrBuildingsPresented = true;
+  bgrBuildingsPresentedAtMs = Math.round(nowMs());
+  stampPhase('bootBuildingsPresentedAt', bgrBuildingsPresentedAtMs);
+  stampPhase('bootBuildingsPresentedGen', bootRendererGeneration);
+}
+
+export function isBootBuildingsPresented(): boolean {
+  return bgrBuildingsPresented;
+}
+
+/** The overlay's buildings leg: 'absent' satisfies trivially, 'glb' requires
+ * the presented milestone, 'pending' is unsatisfiable (fuses cap). */
+export function isBootBuildingsRevealLegSatisfied(): boolean {
+  if (bgrBuildingsMode === 'absent') return true;
+  return bgrBuildingsPresented;
+}
+
+// --- Loading-screen dismissal stamp (D3 [R2-NF6]) --------------------------
+// FIRST-WRITER-WINS at module level: a composite that becomes satisfiable
+// during a fuse's 420ms fade can never launder the recorded reason.
+
+export type LoadingDismissReason =
+  | 'composite'
+  | 'milestone-fallback'
+  | 'visibility-fuse'
+  | 'force-ready';
+
+let loadingDismissReason: LoadingDismissReason | null = null;
+
+/** Returns true when THIS call stamped (the caller may run its one-time
+ * dismissal side effects); false when a prior reason already won. */
+export function stampLoadingDismiss(reason: LoadingDismissReason): boolean {
+  if (loadingDismissReason !== null) return false;
+  loadingDismissReason = reason;
+  stampPhase('loadingDismissReason', reason);
+  stampPhase('loadingDismissedAt', Math.round(nowMs()));
+  stampPhase('loadingDismissGen', bootRendererGeneration);
+  return true;
+}
+
+export function getLoadingDismissReason(): LoadingDismissReason | null {
+  return loadingDismissReason;
+}
+
 /** TEST-ONLY: reset module state between unit tests. Never call from app code. */
 export function __resetDecorativeReleaseForTests(): void {
   released = false;
@@ -681,4 +1127,21 @@ export function __resetDecorativeReleaseForTests(): void {
     clearInterval(streamEvalTimer);
     streamEvalTimer = null;
   }
+  // BGR state
+  observedBootRenderer = null;
+  bootRendererGeneration = 1;
+  generationListeners.clear();
+  bgrBuildingsMode = 'pending';
+  bgrBuildingsModeOwner = null;
+  bgrStageAQueue.length = 0;
+  bgrStageAFiredAt = null;
+  bgrStageBEligible = false;
+  bgrStageBQueue.length = 0;
+  bgrStageBScheduled = false;
+  bgrStageBSequence = 0;
+  bgrInstanceAcks.clear();
+  bgrBuildingsPresented = false;
+  bgrBuildingsPresentedAtMs = null;
+  bgrBuildingsQualifyingFrames = 0;
+  loadingDismissReason = null;
 }

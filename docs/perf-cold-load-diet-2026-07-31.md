@@ -669,6 +669,62 @@ punch-listed SW-target CDP attachment is the structural fix):**
   regression + precache still functions + upgrade migrates". All three hold. Evidence:
   `docs/perf-data/cold-load-rung4-sliceB-2026-08-11/{before,after}/report-{1,2,3}.json`.
 
+## Buildings-gated reveal (2026-08-20, session prf — FOUNDER RULING: proxies DEAD; the overlay holds for the 11 real buildings)
+
+Spec: `docs/perf-cold-load-buildings-gated-reveal-spec.md` (rev 3 FROZEN;
+Codex xhigh spec rounds R1 BLOCK 8+1 / R2 BLOCK 8+1 both folded — blocker
+count plateaued so per the oscillation rule the spec froze and the SAME
+critic reviewed the emitted diff). Founder killed the slice-D proxy
+placeholder look outright ("we tried this once, it was a disaster") and
+chose: **no placeholders ever — SeaLoadingScreen holds until the 11 real
+streamed buildings are downloaded, warmed, and visibly presented.**
+
+**What shipped (incl. the impl-review B1-B9 fix round — Codex xhigh
+BLOCK 9+3 on the first emitted diff, all folded):** proxy system deleted
+from `arena-buildings.tsx`; two boot-critical stream lanes (stage A
+byte-fetch-only behind the overlay, stage B mount/warm latched at first
+core presentation, FORCE-OPENED by every fuse dismissal so a
+core-milestone regression pops buildings in raw instead of stranding them
+[B7]); world-boot + deferred + hosted-stage compiles CHAINED through the
+boot-compile FIFO with a shared poisoned-renderer registry (a timed-out
+compile poisons its renderer BEFORE the chain releases, and every chained
+task RE-CHECKS the registry at in-chain dispatch time [B1 + fix-NF1], so
+release never enables same-renderer overlap; cosmetic/activity compile
+paths remain outside — tracked R3-2 arbiter follow-up); rejected compiles
+heal via the direct warm INSIDE the chained critical section, exactly
+once, and a heal that itself fails poisons the renderer [fix-NF4];
+composite overlay dismissal (core presented AND buildings presented via an
+ack protocol PAIRED per building-mount instance — commit + additive
+renderer-identity warm set + durable failed marker in one instance record
+[B4/B5 + fix-NF2/NF3] — plus two qualifying frames, two consecutive ticks
+[B6]) through one first-writer-wins `dismiss(reason)`;
+identity-latched renderer-generation authority; the streamed buildings
+under their OWN SIBLING root (never nested in the scanned boot-core root
+[B2]) with draw-time ROOT-level hiding across every warm/healing render
+[B3]; occluder tags gated on visibility; owner-keyed mode declaration
+(SPA canvas overlap safe [B6]); a "Building the town…" progress band fed
+by the live token count; FAIL-CLOSED `bgrEvidence` validator (mode glb +
+composite reason + presented ≤ dismissed + all generation stamps PRESENT
+and equal — absence rejects [B8]). 10s/45s fuses stay fail-open
+(founder-accepted pop-in on slow networks).
+
+**Honest numbers (functional verification, NOT quotable perf — founder-
+active box at ~71% CPU, localhost:3010):** guest reveal **5624ms** / auth
+player-VRM **6625ms**, both `bgrEvidence.valid` (composite dismissal),
+cohort 16/16 warmed / 0 failopen / 0 failed, drift 0, compile failures 0,
+cold /cove + /kelp zero building bytes, suite 933+24 green, tsc 0. Timeline
+(guest): building byte-fetch kicks 1526ms (behind the overlay) → core
+presented 2661ms → buildings settled 5154ms → presented 5184ms → dismissed
+5200ms. Context: old prod full-load boot ≈ 9-10s; slice-D staging was
+~3.4s WITH proxies (dead by ruling). A quiet-box + real-network staging
+measurement is owed before any perf claim.
+
+**Supersession:** slice-D spec rev 5 partially superseded (banner + BGR
+spec §0 map). The frozen `--slice-d`/`--slice-e` gate evaluators are
+untouched historical records. E4 gate: FOUNDER STAGING PLAYTEST of the new
+boot (loading screen → complete town, no gray boxes ever) — entry filed in
+FOUNDER-REVIEW.md.
+
 ## Rung-4 slice E results (2026-08-19, session prf — compile-overlap EXPERIMENT measured out; the HARDENING ships; ROUND CLOSED)
 
 Spec: `docs/perf-cold-load-rung4-sliceE-spec.md` (rev 3 + §8 outcome; Codex xhigh
