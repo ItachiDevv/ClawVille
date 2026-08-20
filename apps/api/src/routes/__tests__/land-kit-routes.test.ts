@@ -25,6 +25,15 @@ const tenureSettlementSource = readFileSync(
   join(import.meta.dir, '..', '..', 'services', 'land-tenure-settlement.ts'),
   'utf8',
 );
+// P7c: the kit-placement transaction moved out of the route into the shared
+// settlement service (the hosted `place_kit_piece` executor settles through
+// the same implementation). Settlement-internal assertions read THIS source,
+// exactly like the tenure extraction above; the route span keeps only what
+// the route still owns — parsing, middleware, and HTTP error mapping.
+const kitSettlementSource = readFileSync(
+  join(import.meta.dir, '..', '..', 'services', 'land-kit-settlement.ts'),
+  'utf8',
+);
 const deedTransferSource = readFileSync(
   join(import.meta.dir, '..', '..', 'services', 'market-deed-transfer-executor.ts'),
   'utf8',
@@ -142,57 +151,61 @@ describe('land kit ownership and money discipline', () => {
   });
 
   it('places under one atomic exact debit+house credit and audits both ledger ids', () => {
+    // P7c: the transaction lives in the settlement service; the route delegates.
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
+    expect(create).toContain('settleKitPlacement({');
     // The fee is derived from the LOCKED structure row's type, never the body.
-    expect(create).toContain('const structureType = structure!.structure_type');
+    expect(kitSettlementSource).toContain('const structureType = structure!.structure_type');
     // P5b moved this out of a `const` and into the vCLAW branch of the rail
     // split, so the assertion follows it. The property being pinned is
     // unchanged: the fee comes from `kitPieceFeeCt(structureType, size)` and
     // from nothing else.
-    expect(create).toContain('feeCt = kitPieceFeeCt(structureType, size)');
-    expect(create).toContain('SELECT id, owner_avatar_id, status, level, structure_type');
-    expect(create).toContain("reason: 'land_kit_piece_fee'");
-    expect(create).toContain("reason: 'house_fee_land_kit_piece'");
-    expect(create.match(/amount: feeCt/g)).toHaveLength(2);
-    expect(create).toContain('house_treasury_unavailable');
-    expect(create).toContain('debit_ledger_tx_id, credit_ledger_tx_id');
-    expect(create).toContain('${debitLedgerId}, ${creditLedgerId}');
+    expect(kitSettlementSource).toContain('feeCt = kitPieceFeeCt(structureType, size)');
+    expect(kitSettlementSource).toContain('SELECT id, owner_avatar_id, status, level, structure_type');
+    expect(kitSettlementSource).toContain("reason: 'land_kit_piece_fee'");
+    expect(kitSettlementSource).toContain("reason: 'house_fee_land_kit_piece'");
+    expect(kitSettlementSource.match(/amount: feeCt/g)).toHaveLength(2);
+    expect(kitSettlementSource).toContain('house_treasury_unavailable');
+    expect(kitSettlementSource).toContain('debit_ledger_tx_id, credit_ledger_tx_id');
+    expect(kitSettlementSource).toContain('${debitLedgerId}, ${creditLedgerId}');
   });
 
   it('gates the MATERIAL rail on the locked structure type, and only debits', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
     // P5b. The rail check must read the LOCKED row, never the request body —
     // otherwise a client could buy a shop yard with a non-cashable currency.
-    expect(create).toContain('isKitPaymentRailAllowed(paymentRail, structureType)');
-    expect(create).toContain('payment_rail_not_allowed');
+    expect(kitSettlementSource).toContain('isKitPaymentRailAllowed(paymentRail, structureType)');
+    expect(kitSettlementSource).toContain('payment_rail_not_allowed');
     // It must be decided BEFORE any money moves.
-    expect(create.indexOf('isKitPaymentRailAllowed')).toBeLessThan(
-      create.indexOf('debitMaterials('),
+    expect(kitSettlementSource.indexOf('isKitPaymentRailAllowed(paymentRail')).toBeLessThan(
+      kitSettlementSource.indexOf('debitMaterials({'),
     );
-    expect(create.indexOf('isKitPaymentRailAllowed')).toBeLessThan(
-      create.indexOf('debitClawTokens('),
+    expect(kitSettlementSource.indexOf('isKitPaymentRailAllowed(paymentRail')).toBeLessThan(
+      kitSettlementSource.indexOf('debitClawTokens({'),
     );
     // Materials are a SINK: exactly one debit, and NO treasury credit leg,
     // because there is no counterparty on the other side of a material spend.
-    expect(create.match(/debitMaterials\(/g)).toHaveLength(1);
-    expect(create).toContain("source: 'build'");
+    expect(kitSettlementSource.match(/debitMaterials\(\{/g)).toHaveLength(1);
+    expect(kitSettlementSource).toContain("source: 'build'");
     // The rail and the material cost are recorded in the audit row, which is
     // what the replay path reads back.
-    expect(create).toContain('paymentRail,');
-    expect(create).toContain('costMaterials: feeMaterials,');
+    expect(kitSettlementSource).toContain('paymentRail,');
+    expect(kitSettlementSource).toContain('costMaterials: feeMaterials,');
     // A replay on a DIFFERENT rail is a conflict, not a stored-receipt answer.
-    expect(create).toContain('priorRail !== body.paymentRail');
+    expect(kitSettlementSource).toContain('priorRail !== input.paymentRail');
+    // The route still owns the HTTP mapping of the typed refusal.
     expect(create).toContain('insufficient_materials');
   });
 
   it('checks durable replay before debit and returns the stored original piece', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
-    expect(create).toContain("metadata->>'operation' = 'kit_piece_placement'");
-    expect(create).toContain("metadata->>'idempotencyKey'");
-    expect(create.indexOf("metadata->>'idempotencyKey'")).toBeLessThan(
-      create.indexOf('debitClawTokens'),
+    expect(kitSettlementSource).toContain("metadata->>'operation' = 'kit_piece_placement'");
+    expect(kitSettlementSource).toContain("metadata->>'idempotencyKey'");
+    expect(kitSettlementSource.indexOf("metadata->>'idempotencyKey'")).toBeLessThan(
+      kitSettlementSource.indexOf('debitClawTokens({'),
     );
-    expect(create).toContain('pieceFromPlacementAudit(prior.metadata)');
+    expect(kitSettlementSource).toContain('pieceFromPlacementAudit(prior.metadata)');
+    // The replay marker is response shape, which the route still owns.
     expect(create).toContain('idempotencyReplay: true');
   });
 
@@ -225,19 +238,19 @@ describe('land kit ownership and money discipline', () => {
     ]) {
       expect(matchesKitPlacementReplay(piece, { ...request, ...mismatch })).toBe(false);
     }
-    const create = routeSpan('post', '/parcels/:parcelId/pieces');
-    expect(create).toContain('matchesKitPlacementReplay(piece, { parcelId, ...body })');
-    expect(create).toContain("message: 'idempotency_key_conflict'");
+    expect(kitSettlementSource).toContain('matchesKitPlacementReplay(piece, input)');
+    expect(kitSettlementSource).toContain("message: 'idempotency_key_conflict'");
   });
 
   it('runs the SHARED placement predicate before the ledger and keeps the DB backstop', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
     // Geometry is decided before a single token moves.
-    expect(create.indexOf('evaluateKitWrite(tx, {')).toBeLessThan(
-      create.indexOf('debitClawTokens'),
+    expect(kitSettlementSource.indexOf('evaluateKitWrite(tx, {')).toBeLessThan(
+      kitSettlementSource.indexOf('debitClawTokens({'),
     );
-    expect(create).toContain('kitPlacementRefusalStatus(verdict.code)');
-    // The unique index remains the last-resort backstop on an exact collision.
+    expect(kitSettlementSource).toContain('kitPlacementRefusalStatus(verdict.code)');
+    // The unique index remains the last-resort backstop on an exact collision,
+    // and its HTTP mapping stays with the route.
     expect(create).toContain("constraint === 'land_structure_pieces_cell_stack_unique'");
     expect(create).toContain("constraint === 'land_tx_kit_piece_idem_unique'");
     // The move path re-validates through the same predicate, excluding itself.
@@ -258,7 +271,6 @@ describe('land kit ownership and money discipline', () => {
   });
 
   it('refuses an unsupported stack through the shared predicate, not a local rule', () => {
-    const create = routeSpan('post', '/parcels/:parcelId/pieces');
     // Stack support is now one of `evaluatePlacement`'s refusal codes, tested
     // exhaustively in packages/shared/src/constants/land-placement.test.ts.
     // What the ROUTE owes is that the refusal reaches the client as a 409.
@@ -272,7 +284,7 @@ describe('land kit ownership and money discipline', () => {
     expect(kitPlacementRefusalStatus('piece_unknown')).toBe(400);
     expect(kitPlacementRefusalStatus('cell_out_of_bounds')).toBe(400);
     expect(kitPlacementRefusalStatus('rotation_not_allowed')).toBe(400);
-    expect(create).toContain("message: verdict.code");
+    expect(kitSettlementSource).toContain('message: verdict.code');
   });
 
   it('keeps move and removal free with no refund path', () => {
@@ -298,8 +310,12 @@ describe('land kit middleware and public feed contract', () => {
       expect(span).toContain('requireAuthOrAgentSession');
       expect(span).toContain('requireLedgerCapableIdentity');
       expect(span).toContain('requireNonGuestIdentity');
-      expect(span).toContain('pg_advisory_xact_lock');
-      expect(span).toMatch(/land_parcels[\s\S]*FOR UPDATE|FOR UPDATE OF kp, p/);
+      // The POST body delegates to the settlement service (P7c); its lock and
+      // FOR UPDATE reads are asserted against that source. Move/remove still
+      // hold their transactions in-route.
+      const lockSource = method === 'post' ? kitSettlementSource : span;
+      expect(lockSource).toContain('pg_advisory_xact_lock');
+      expect(lockSource).toMatch(/land_parcels[\s\S]*FOR UPDATE|FOR UPDATE OF kp, p/);
     }
   });
 
@@ -410,7 +426,7 @@ describe('land kit middleware and public feed contract', () => {
   });
 
   it('documents structure_required as 404 and the DELETE response shape', () => {
-    expect(source).toContain("error === 'structure_required' ? 404 : 409");
+    expect(kitSettlementSource).toContain("error === 'structure_required' ? 404 : 409");
     expect(source).toContain('200: { deleted: true, piece: LandStructurePieceDTO }');
   });
 

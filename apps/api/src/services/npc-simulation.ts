@@ -14,6 +14,8 @@ import {
   isSalvageNodeId,
   type HatcherActionVerb,
   LAND_PARCELS,
+  KIT_CATALOG,
+  KIT_GRID_SIZE,
   COVE_SLOTS_BET_STEP,
   COVE_SLOTS_MIN_BET,
   COVE_SLOTS_MAX_BET,
@@ -216,7 +218,8 @@ const AUTONOMOUS_SALVAGE_INTERVAL_MS = 30_000;
 type AutonomousLandOperation =
   | { verb: 'claim_parcel'; parcelCode: string; door: 'hold' | 'rent'; weeks?: number }
   | { verb: 'prepay_rent'; parcelCode: string; weeks: number }
-  | { verb: 'release_parcel'; parcelCode: string };
+  | { verb: 'release_parcel'; parcelCode: string }
+  | { verb: 'place_kit_piece'; parcelCode: string; pieceKey: string; gridX: number; gridY: number };
 
 type AutonomousLandSettlementResult =
   | {
@@ -232,6 +235,13 @@ type AutonomousLandSettlementResult =
       fresh: boolean;
       parcel: { parcelCode: string; tier: 'starter' | 'c' | 'b' | 'a' | 'founder' };
       refundedCt: number;
+    }
+  | {
+      kind: 'kit_piece';
+      fresh: boolean;
+      parcelCode: string;
+      pieceKey: string;
+      costMaterials: number;
     };
 
 export function autonomousLandIdempotencyKey(
@@ -783,6 +793,35 @@ class NpcSimulation {
         amountCt: result.amountCt,
       };
     }
+    if (input.operation.verb === 'place_kit_piece') {
+      const parcelRows = await db.execute<{ id: string }>(
+        sql`SELECT id FROM land_parcels
+            WHERE parcel_code = ${input.operation.parcelCode}
+              AND owner_avatar_id = ${input.identity.avatarId}
+            LIMIT 1`,
+      );
+      const parcelId = parcelRows[0]?.id;
+      if (!parcelId) throw new Error('not_parcel_owner');
+      const { settleKitPlacement } = await import('./land-kit-settlement');
+      const result = await settleKitPlacement({
+        identity: input.identity,
+        parcelId,
+        pieceKey: input.operation.pieceKey,
+        gridX: input.operation.gridX,
+        gridY: input.operation.gridY,
+        rotationStep: 0,
+        stackLevel: 1,
+        paymentRail: 'materials',
+        idempotencyKey: input.idempotencyKey,
+      });
+      return {
+        kind: 'kit_piece',
+        fresh: result.kind === 'placed',
+        parcelCode: input.operation.parcelCode,
+        pieceKey: result.piece.pieceKey,
+        costMaterials: result.costMaterials,
+      };
+    }
     const result = await settleTenureRelease(common);
     return {
       kind: 'release',
@@ -796,6 +835,13 @@ class NpcSimulation {
     result: AutonomousLandSettlementResult;
     identity: { userId: string; avatarId: string; agentId: string };
   }) => Promise<void> = async ({ result, identity }) => {
+    if (result.kind === 'kit_piece') {
+      if (result.fresh) {
+        const { bustPublicPiecesCache } = await import('../routes/land');
+        bustPublicPiecesCache();
+      }
+      return;
+    }
     if (!result.fresh || result.kind === 'prepay') {
       if (result.fresh) {
         const { bustOwnedCache } = await import('../routes/land');
@@ -2674,7 +2720,9 @@ class NpcSimulation {
       const body = this.npcs.get(npcId);
       if (body) {
         this.setNpcActivity(npcId, 'trading', 'ðŸï¸');
-        body.intentDescription = `${operation.verb.replaceAll('_', ' ')} ${operation.parcelCode}`;
+        body.intentDescription = operation.verb === 'place_kit_piece'
+          ? `placing ${operation.pieceKey} in the home yard`
+          : `${operation.verb.replaceAll('_', ' ')} ${operation.parcelCode}`;
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -2952,6 +3000,52 @@ class NpcSimulation {
         void this.settleAutonomousLandAction(npcId, attribution, {
           verb: 'release_parcel',
           parcelCode: params.parcelCode,
+        });
+        return;
+      }
+      case 'place_kit_piece': {
+        // The hosted verb is MATERIALS-ONLY and takes no rail parameter. An
+        // explicit `paymentRail` is refused rather than ignored: silently
+        // spending a different currency than the agent asked for is the same
+        // surprise the settlement's replay-rail check exists to prevent.
+        const allowed = new Set(['parcelCode', 'pieceKey', 'gridX', 'gridY']);
+        if (Object.keys(params).some((key) => !allowed.has(key))) {
+          console.warn('[Hatcher] place_kit_piece dropped - unknown parameter');
+          return;
+        }
+        if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
+          console.warn('[Hatcher] place_kit_piece dropped - unknown parcelCode');
+          return;
+        }
+        if (!params.pieceKey || !Object.prototype.hasOwnProperty.call(KIT_CATALOG, params.pieceKey)) {
+          console.warn('[Hatcher] place_kit_piece dropped - unknown pieceKey');
+          return;
+        }
+        const gridX = Number(params.gridX);
+        const gridY = Number(params.gridY);
+        if (
+          !/^\d+$/.test(params.gridX ?? '')
+          || !/^\d+$/.test(params.gridY ?? '')
+          || !Number.isSafeInteger(gridX)
+          || !Number.isSafeInteger(gridY)
+          || gridX < 0
+          || gridY < 0
+          || gridX >= KIT_GRID_SIZE
+          || gridY >= KIT_GRID_SIZE
+        ) {
+          console.warn('[Hatcher] place_kit_piece dropped - invalid grid coordinates');
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] place_kit_piece dropped - no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousLandAction(npcId, attribution, {
+          verb: 'place_kit_piece',
+          parcelCode: params.parcelCode,
+          pieceKey: params.pieceKey,
+          gridX,
+          gridY,
         });
         return;
       }

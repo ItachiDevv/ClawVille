@@ -97,6 +97,11 @@ import {
   readAutonomousSalvageTargets,
   type AutonomousSalvageTargets,
 } from './autonomous-salvage-targets';
+import {
+  EMPTY_AUTONOMOUS_BUILD_TARGETS,
+  readAutonomousBuildTargets,
+  type AutonomousBuildTargets,
+} from './autonomous-build-targets';
 
 /**
  * The "nothing to offer" salvage projection. Used for HOUSE agents (which the
@@ -435,6 +440,8 @@ export function decisionThought(action: ParsedDriverAction): string {
         ? `Playing ${game} at the Cove — wagering ${wager} vCLAW`
         : 'Playing at the Cove';
     }
+    case 'place_kit_piece':
+      return `Placing ${action.params.pieceKey ?? 'a piece'} in the home yard (materials)`;
     case 'claim_tutorial_quest':
       return 'Claiming a quest reward';
     case 'salvage_node':
@@ -1199,7 +1206,7 @@ class AgentAutonomyDriver {
         );
       }
     }
-    const [lessons, knowledge, landTargets, questTargets, salvageTargets] = await Promise.all([
+    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
       readAutonomousLandTargets({
@@ -1238,6 +1245,13 @@ class AgentAutonomyDriver {
         );
         return EMPTY_SALVAGE_TARGETS;
       }),
+      readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} build targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return EMPTY_AUTONOMOUS_BUILD_TARGETS;
+      }),
     ]);
     const prompt = this.buildDecisionPrompt(
       perception,
@@ -1248,6 +1262,7 @@ class AgentAutonomyDriver {
       landTargets,
       questTargets,
       salvageTargets,
+      buildTargets,
     );
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
@@ -1512,6 +1527,7 @@ class AgentAutonomyDriver {
     landTargets: AutonomousLandTargets = { claimable: [], owned: [] },
     questTargets: AutonomousQuestTarget[] = [],
     salvageTargets: AutonomousSalvageTargets = EMPTY_SALVAGE_TARGETS,
+    buildTargets: AutonomousBuildTargets = EMPTY_AUTONOMOUS_BUILD_TARGETS,
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -1613,6 +1629,16 @@ class AgentAutonomyDriver {
         : ['- none in range']),
       'Materials build home yards. salvage_node walks you there if you are far, then claims when you arrive — call it again on arrival.',
     ].join('\n');
+    const buildBlock = [
+      `BUILD TARGETS (server-derived HOME-yard placements; copy one exact call). You hold ${buildTargets.materialBalance} materials; small pieces cost ${buildTargets.costs.small}, large pieces cost ${buildTargets.costs.large}:`,
+      ...buildTargets.parcels.flatMap((parcel) => [
+        `- ${parcel.parcelCode} (HOME level ${parcel.structureLevel}):`,
+        ...parcel.placements.map((placement) =>
+          `  - ${placement.call} costs ${placement.costMaterials} materials`,
+        ),
+      ]),
+      'If you lack materials for a piece, salvage_node gathers more.',
+    ].join('\n');
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -1636,6 +1662,7 @@ class AgentAutonomyDriver {
       ...hereNow,
       landBlock,
       ...(salvageTargets.nodes.length > 0 ? [salvageBlock] : []),
+      ...(buildTargets.parcels.length > 0 ? [buildBlock] : []),
       '',
       questBlock,
       '',

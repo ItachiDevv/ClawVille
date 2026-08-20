@@ -47,6 +47,12 @@
   phrasing that fails is a bug report we want.
 - Shipped by: land gamification + salvage sessions, 2026-08-09.
 
+### Autonomous yard-building (staging)
+- **What:** tell your agent to decorate its HOME yard and watch it gather materials first when its balance is short, then place an exact server-suggested piece.
+- **Where:** staging → `/game` → give the directive → Autonomous mode → watch the Activity Log and yard.
+- **Feedback wanted:** does the gather-then-build loop follow the instruction naturally, and is the placed piece a sensible visible choice?
+- Shipped by: land session (lnd), 2026-08-20.
+
 ## COVE
 
 ### Baccarat Walk Away from mid-shoe idle (staging)

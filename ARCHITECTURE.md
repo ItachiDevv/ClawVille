@@ -1,6 +1,8 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-20 (alert-error reads Telegram creds per call; no behavior change on
+**Last Audited: 2026-08-20 (Land kit settlement extraction and hosted build seam, protocol v56).** `land-kit-settlement.ts` now owns the complete locked kit-placement transaction: identity authority, durable replay, the shared geometry predicate, rail gate, material sink or vCLAW treasury transfer, piece insert, and audit row. `land.ts` delegates once and preserves its response/error/cache contract; `npc-simulation.ts` resolves an owned parcel code and invokes the same service with `paymentRail='materials'`, `rotationStep=0`, and the live engine's ground `stackLevel=1`. `autonomous-build-targets.ts` performs a bounded fail-soft projection with at most two HOME parcels, one occupancy read each, and three deterministic valid suggestions. The connection manual and hosted knowledge move together at PROTOCOL_VERSION 56.
+
+**Prior Last Audited: 2026-08-20 (alert-error reads Telegram creds per call; no behavior change on
 deployed boxes).** `alert-error.ts` now reads `ITACHI_DEBUG_BOT_TOKEN`/`ITACHI_DEBUG_CHAT_ID`
 per call instead of capturing them at module load (same discipline as its `CLAWVILLE_ENV`
 deployed-box gate). Env is static on the boxes so paging behavior is identical; the change
