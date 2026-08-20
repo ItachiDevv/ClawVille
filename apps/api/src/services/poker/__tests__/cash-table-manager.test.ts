@@ -297,6 +297,25 @@ class FakeDb {
       return matchById(this.store(pokerCashTables), 'id') as T[];
     }
     if (t.includes('poker_cash_seats')) {
+      // The idle-empty sweeper reads active-seat COUNT + seat recency in one
+      // aggregate (non-locking) row. Emulate that shape, including counting
+      // 'left' seats toward last_seat_at exactly as MAX(updated_at) does.
+      if (t.includes('active_count')) {
+        const forTable = this.store(pokerCashSeats).filter(
+          (row) => String(row.table_id) === String(id),
+        );
+        let lastSeatAt: number | null = null;
+        for (const row of forTable) {
+          const ts = new Date(row.updated_at as string | Date).getTime();
+          if (Number.isFinite(ts) && (lastSeatAt === null || ts > lastSeatAt)) lastSeatAt = ts;
+        }
+        return [
+          {
+            active_count: forTable.filter((row) => row.status !== 'left').length,
+            last_seat_at: lastSeatAt === null ? null : new Date(lastSeatAt),
+          },
+        ] as T[];
+      }
       if (t.includes('where table_id')) {
         return this.store(pokerCashSeats).filter(
           (row) => String(row.table_id) === String(id) && row.status !== 'left',
@@ -2262,11 +2281,16 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
     expect(ledger.credits).toHaveLength(0);
   });
 
+  // Fixtures create tables "now", so a cutoff in the FUTURE means "treat every
+  // table as idle" and isolates the seat/escrow/house guards. The idle-window
+  // re-check itself is proven by its own test below with a PAST cutoff.
+  const IDLE_CUTOFF_FUTURE = new Date(Date.now() + 3_600_000);
+
   it('retires an empty non-house table without moving money', async () => {
     const { db, ledger, mgr } = makeHouseManager();
     const table = await createPlayerTable(mgr);
 
-    expect(await mgr.retireIdleEmptyTable(table.id)).toBe(true);
+    expect(await mgr.retireIdleEmptyTable(table.id, IDLE_CUTOFF_FUTURE)).toBe(true);
     expect(
       (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
     ).toBe('closed');
@@ -2294,7 +2318,7 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
     };
     (db.stores.get(pokerCashSeats) as Row[]).push(seat);
 
-    expect(await mgr.retireIdleEmptyTable(table.id)).toBe(false);
+    expect(await mgr.retireIdleEmptyTable(table.id, IDLE_CUTOFF_FUTURE)).toBe(false);
     expect(
       (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
     ).toBe('open');
@@ -2306,11 +2330,56 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
     const { db, ledger, mgr } = makeHouseManager();
     const table = await createMidHouseTable(mgr);
 
-    expect(await mgr.retireIdleEmptyTable(table.id)).toBe(false);
+    expect(await mgr.retireIdleEmptyTable(table.id, IDLE_CUTOFF_FUTURE)).toBe(false);
     expect(
       (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
     ).toBe('open');
     expect(ledger.credits).toHaveLength(0);
+  });
+
+  it('re-checks the idle window under the lock and spares a table used since discovery', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const table = await createPlayerTable(mgr, 'raced-idle-owner');
+    // Discovery said "idle before T"; by the time the lock is held the table has
+    // been touched AFTER T (a player sat and cleanly left). Closing it now would
+    // break the advertised 30-minute survival window.
+    const cutoffInThePast = new Date(Date.now() - 3_600_000);
+
+    expect(await mgr.retireIdleEmptyTable(table.id, cutoffInThePast)).toBe(false);
+    expect(
+      (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
+    ).toBe('open');
+    expect(ledger.credits).toHaveLength(0);
+    expect(ledger.debits).toHaveLength(0);
+  });
+
+  it('counts a LEFT seat toward recency so a just-vacated table survives the window', async () => {
+    const { db, mgr } = makeHouseManager();
+    const table = await createPlayerTable(mgr, 'just-vacated-owner');
+    const storedTable = (db.stores.get(pokerCashTables) as Row[]).find(
+      (row) => row.id === table.id,
+    )!;
+    // Table row itself looks ancient; only the departed seat is recent.
+    storedTable.updated_at = new Date('2020-01-01T00:00:00Z');
+    storedTable.created_at = new Date('2020-01-01T00:00:00Z');
+    (db.stores.get(pokerCashSeats) as Row[]).push({
+      id: randomUUID(),
+      table_id: table.id,
+      avatar_id: 'departed-player',
+      agent_id: null,
+      subject_type: 'human',
+      is_seeded: 'false',
+      seat_index: 0,
+      current_stack_ct: '0',
+      total_bought_in_ct: '0',
+      total_cashed_out_ct: '0',
+      status: 'left',
+      seated_at: new Date('2020-01-01T00:00:00Z'),
+      updated_at: new Date(Date.now() + 60_000),
+    });
+
+    expect(await mgr.retireIdleEmptyTable(table.id, new Date())).toBe(false);
+    expect(storedTable.status).toBe('open');
   });
 
   it('logs loudly and leaves orphan escrow untouched on an empty non-house table', async () => {
@@ -2327,7 +2396,7 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
     };
 
     try {
-      expect(await mgr.retireIdleEmptyTable(table.id)).toBe(false);
+      expect(await mgr.retireIdleEmptyTable(table.id, IDLE_CUTOFF_FUTURE)).toBe(false);
     } finally {
       console.error = originalConsoleError;
     }
@@ -2358,7 +2427,7 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
       updated_at: new Date('2026-08-20T00:00:00Z'),
     });
 
-    expect(await mgr.retireIdleEmptyTable(table.id)).toBe(false);
+    expect(await mgr.retireIdleEmptyTable(table.id, IDLE_CUTOFF_FUTURE)).toBe(false);
     expect(
       (db.stores.get(pokerCashTables) as Row[]).find((row) => row.id === table.id)!.status,
     ).toBe('open');

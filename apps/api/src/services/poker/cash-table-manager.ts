@@ -58,6 +58,7 @@ import type {
   SettledPotResult,
 } from '@clawville/shared';
 import * as ledgerModule from '../claw-token-ledger';
+import { alertError } from '../alert-error';
 import { createServerSeed, sha256Hex } from '../provable-rng';
 import { shuffleDeck } from '../holdem-engine';
 import { PokerTableSim } from './poker-table-sim';
@@ -446,18 +447,24 @@ export class CashTableManager {
     const prior = this.tableLocks.get(tableId) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((res) => (release = res));
-    this.tableLocks.set(
-      tableId,
-      prior.then(() => gate).catch(() => gate),
-    );
+    // Keep a reference to the EXACT tail we install. The previous cleanup
+    // compared against a freshly constructed promise, which can never be
+    // reference-equal, so no entry was ever removed and `tableLocks` grew for
+    // the process lifetime. That was benign while table ids were long-lived;
+    // the idle-empty sweeper churns ids continuously, so it is now a real slow
+    // leak on a long-running API container.
+    const tail = prior.then(() => gate).catch(() => gate);
+    this.tableLocks.set(tableId, tail);
     await prior.catch(() => {});
     try {
       return await fn();
     } finally {
       release();
-      // Clean up if we're the tail of the chain.
-      if (this.tableLocks.get(tableId) === prior.then(() => gate).catch(() => gate)) {
-        // best-effort; harmless if not exact.
+      // Only the LAST holder clears the entry: if another caller queued behind
+      // us it has already replaced the tail, and dropping it would let a third
+      // caller start concurrently.
+      if (this.tableLocks.get(tableId) === tail) {
+        this.tableLocks.delete(tableId);
       }
     }
   }
@@ -622,11 +629,40 @@ export class CashTableManager {
   }
 
   /**
-   * Close one open non-house table only after it is completely empty and its
-   * escrow is zero. The scaler owns the idle-age filter; this method owns the
-   * lock-held safety checks and never moves money.
+   * Close one open non-house table only after it is completely empty, its escrow
+   * is zero, AND it is still idle past `idleBefore` at the moment of closing.
+   * Never moves money.
+   *
+   * Three review-hardened properties (Codex adversarial pass, 2026-08-20):
+   *
+   *  1. ESCROW IS RE-VERIFIED HERE, NOT FILTERED AWAY UPSTREAM. Discovery
+   *     deliberately does NOT pre-filter on escrow, so an empty table holding
+   *     orphan escrow REACHES this check and pages ops instead of being silently
+   *     skipped forever (a stuck table + stranded CT + a permanently consumed
+   *     creator slot, with nobody told). We still refuse to close it — the money
+   *     question is for a human, never for a sweeper.
+   *
+   *  2. THE SEAT READ IS DELIBERATELY NOT `FOR UPDATE`. The leave path locks
+   *     seat → table (:1354/:1377); locking seat rows here after taking the table
+   *     row would invert that order and let Postgres detect a deadlock cycle,
+   *     aborting one side. A plain read is sufficient because the TABLE ROW is
+   *     the shared serialization point: the sit path takes `poker_cash_tables …
+   *     FOR UPDATE` as its FIRST statement and re-checks `status='open'`, so
+   *     while we hold that lock no seat can be inserted, and any sit that lands
+   *     after us sees `closed` and refuses.
+   *
+   *  3. THE IDLE WINDOW IS RE-EVALUATED UNDER THE LOCK. Between discovery and
+   *     lock acquisition a player can sit and cleanly leave — escrow back to 0,
+   *     seat 'left', timestamps refreshed. Without this re-check the sweeper
+   *     would close a table that had just been used seconds earlier, breaking the
+   *     30-minute promise (harmless for money, wrong for players).
+   *
+   * Every failure mode fails CLOSED (leave the table open).
    */
-  async retireIdleEmptyTable(tableId: string): Promise<boolean> {
+  async retireIdleEmptyTable(tableId: string, idleBefore: Date): Promise<boolean> {
+    const cutoffMs = idleBefore.getTime();
+    if (!Number.isFinite(cutoffMs)) return false;
+
     return this.withTableLock(tableId, async () => {
       const table = await this.getTable(tableId);
       if (!table || table.source === 'house' || table.status !== 'open') return false;
@@ -642,8 +678,10 @@ export class CashTableManager {
           source: string;
           status: string;
           table_escrow_ct: string;
+          updated_at: string | Date;
+          created_at: string | Date;
         }>(
-          sql`SELECT source, status, table_escrow_ct
+          sql`SELECT source, status, table_escrow_ct, updated_at, created_at
               FROM poker_cash_tables WHERE id = ${tableId} FOR UPDATE`,
         );
         const lockedTable = rows[0];
@@ -651,20 +689,41 @@ export class CashTableManager {
           return false;
         }
 
-        const activeSeatRows = await tx.execute<{ id: string }>(
-          sql`SELECT id FROM poker_cash_seats
-              WHERE table_id = ${tableId} AND status <> 'left'
-              LIMIT 1 FOR UPDATE`,
+        // Active-seat count AND seat recency in one non-locking read (see (2)).
+        const seatRows = await tx.execute<{
+          active_count: string | number;
+          last_seat_at: string | Date | null;
+        }>(
+          sql`SELECT COUNT(*) FILTER (WHERE status <> 'left') AS active_count,
+                     MAX(updated_at) AS last_seat_at
+              FROM poker_cash_seats WHERE table_id = ${tableId}`,
         );
-        if (activeSeatRows.length > 0) return false;
+        const activeCount = Number(seatRows[0]?.active_count ?? 0);
+        if (!Number.isFinite(activeCount) || activeCount > 0) return false;
 
         const escrow = Number(lockedTable.table_escrow_ct);
         if (!Number.isFinite(escrow) || escrow !== 0) {
-          console.error(
-            `[cash-manager] refusing to close idle empty table ${tableId}: escrow ${escrow} CT remains`,
-          );
+          const message = `refusing to close idle empty table ${tableId}: escrow ${lockedTable.table_escrow_ct} CT remains on a table with no seated players`;
+          console.error(`[cash-manager] ${message}`);
+          // Fire-and-forget: alertError never throws, and awaiting a network
+          // call would hold this transaction (and the table row lock) open.
+          void alertError({
+            severity: 'critical',
+            source: 'cash-idle-empty-table',
+            message,
+            context: { tableId, tableEscrowCt: lockedTable.table_escrow_ct },
+          });
           return false;
         }
+
+        // (3) re-evaluate GREATEST(table.updated_at, COALESCE(MAX(seat.updated_at),
+        // table.created_at)) against the cutoff the scaler discovered us with.
+        const tableUpdatedMs = new Date(lockedTable.updated_at).getTime();
+        const seatFallbackMs = new Date(
+          seatRows[0]?.last_seat_at ?? lockedTable.created_at,
+        ).getTime();
+        if (!Number.isFinite(tableUpdatedMs) || !Number.isFinite(seatFallbackMs)) return false;
+        if (Math.max(tableUpdatedMs, seatFallbackMs) >= cutoffMs) return false;
 
         await tx
           .update(pokerCashTables)

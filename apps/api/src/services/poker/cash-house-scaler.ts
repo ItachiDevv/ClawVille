@@ -158,18 +158,27 @@ async function retireMismatchedHouseTables(): Promise<void> {
  * money and seat predicate under the per-table lock before closing a candidate.
  */
 async function retireIdleEmptyTables(): Promise<void> {
+  // ONE cutoff for the whole pass: discovery selects against it and the manager
+  // re-evaluates the SAME instant under the table lock, so a table that stops
+  // being idle mid-pass is not closed on stale evidence.
+  const idleBefore = new Date(Date.now() - idleEmptyTableWindowMs());
   let rows: Array<{ id: string }>;
   try {
     // Raw-sql params bypass Drizzle's column serializers, so send ISO text and
     // cast it explicitly rather than binding a Date object.
-    const idleBefore = new Date(Date.now() - idleEmptyTableWindowMs()).toISOString();
+    const idleBeforeIso = idleBefore.toISOString();
     rows = await realDb.execute<{ id: string }>(
+      // NOTE (Codex adversarial pass, 2026-08-20): deliberately NO escrow
+      // predicate here. Pre-filtering on `table_escrow_ct = '0'` made the
+      // manager's orphan-escrow refusal unreachable in production — an empty
+      // table holding stranded CT was silently never selected, so it stayed
+      // open forever, held a creator slot forever, and paged nobody. Discovery
+      // now surfaces it; the manager refuses to close it AND alerts ops.
       sql`SELECT cash_table.id
           FROM poker_cash_tables AS cash_table
           LEFT JOIN poker_cash_seats AS seat ON seat.table_id = cash_table.id
           WHERE cash_table.status = 'open'
             AND cash_table.source <> 'house'
-            AND cash_table.table_escrow_ct = '0'
             AND NOT EXISTS (
               SELECT 1 FROM poker_cash_seats AS active_seat
               WHERE active_seat.table_id = cash_table.id
@@ -179,7 +188,7 @@ async function retireIdleEmptyTables(): Promise<void> {
           HAVING GREATEST(
             cash_table.updated_at,
             COALESCE(MAX(seat.updated_at), cash_table.created_at)
-          ) < ${idleBefore}::timestamptz`,
+          ) < ${idleBeforeIso}::timestamptz`,
     );
   } catch (err) {
     console.error('[cash-scaler] idle empty-table discovery failed:', err);
@@ -188,7 +197,7 @@ async function retireIdleEmptyTables(): Promise<void> {
 
   for (const row of rows) {
     try {
-      await cashTableManager.retireIdleEmptyTable(row.id);
+      await cashTableManager.retireIdleEmptyTable(row.id, idleBefore);
     } catch (err) {
       console.error(`[cash-scaler] idle empty table ${row.id} retirement failed:`, err);
     }

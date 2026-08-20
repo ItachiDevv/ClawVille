@@ -75,6 +75,10 @@ const state = {
   seatHouseBotsCalls: [] as string[],
   retireHouseTableCalls: [] as string[],
   retireIdleEmptyTableCalls: [] as string[],
+  /** cutoff Date passed alongside each retireIdleEmptyTable call (idle re-check wiring). */
+  retireIdleEmptyCutoffs: [] as Date[],
+  /** raw SQL text of the last idle-empty discovery query (pins the real predicates). */
+  lastIdleDiscoverySql: null as string | null,
   releaseBustedSeatCalls: [] as Array<{ tableId: string; seatId: string }>,
   seats: [] as FakeSeatRow[],
   liveTableIds: new Set<string>(),
@@ -93,6 +97,8 @@ function resetState(): void {
   state.seatHouseBotsCalls = [];
   state.retireHouseTableCalls = [];
   state.retireIdleEmptyTableCalls = [];
+  state.retireIdleEmptyCutoffs = [];
+  state.lastIdleDiscoverySql = null;
   state.releaseBustedSeatCalls = [];
   state.seats = [];
   state.liveTableIds = new Set<string>();
@@ -168,8 +174,9 @@ mock.module('../cash-table-manager-singleton', () => ({
       table.status = 'closed';
       return true;
     },
-    async retireIdleEmptyTable(tableId: string) {
+    async retireIdleEmptyTable(tableId: string, idleBefore: Date) {
       state.retireIdleEmptyTableCalls.push(tableId);
+      state.retireIdleEmptyCutoffs.push(idleBefore);
       if (state.failIdleTableIds.has(tableId)) {
         throw new Error(`forced idle retirement failure for ${tableId}`);
       }
@@ -283,6 +290,7 @@ mock.module('@clawville/database', () => ({
     async execute(q: unknown) {
       const text = queryText(q);
       if (text.includes('left join poker_cash_seats')) {
+        state.lastIdleDiscoverySql = text;
         const rawWindow = process.env.CASH_IDLE_EMPTY_TABLE_WINDOW_MS;
         const parsedWindow = Number(rawWindow);
         const windowMs =
@@ -295,11 +303,10 @@ mock.module('@clawville/database', () => ({
         const cutoff = Date.now() - windowMs;
         return state.tables
           .filter((table) => {
-            if (
-              table.status !== 'open' ||
-              table.source === 'house' ||
-              table.tableEscrowCt !== 0
-            ) {
+            // NO escrow predicate — the real discovery SQL deliberately does not
+            // filter on escrow so orphan-escrow tables REACH the manager's
+            // refusal + ops alert instead of being silently skipped forever.
+            if (table.status !== 'open' || table.source === 'house') {
               return false;
             }
             const tableSeats = state.seats.filter((seat) => seat.tableId === table.id);
@@ -779,6 +786,55 @@ describe('cashHouseScaler — idle empty non-house retirement', () => {
     expect(await cashHouseScalerPass()).toBe(0);
     expect(state.retireIdleEmptyTableCalls).toEqual([table.id]);
     expect(table.status).toBe('closed');
+  });
+
+  // ── Regression guards for the Codex adversarial pass (2026-08-20) ──────────
+  // These assert the GENERATED SQL and the wiring directly, because the fakes
+  // re-implement the predicates in TypeScript and would otherwise stay green
+  // even if the real query were corrupted.
+
+  it('discovery SQL keeps its house/status/active-seat/recency predicates and does NOT filter escrow', async () => {
+    disableHouseCreation();
+    addPlayerTable();
+    await cashHouseScalerPass();
+
+    const sqlText = state.lastIdleDiscoverySql ?? '';
+    expect(sqlText).toContain("cash_table.status = 'open'");
+    expect(sqlText).toContain("cash_table.source <> 'house'");
+    expect(sqlText).toContain("active_seat.status <> 'left'");
+    expect(sqlText).toContain('greatest(');
+    expect(sqlText).toContain('::timestamptz');
+    // The defect this fix closes: an escrow predicate here made the manager's
+    // orphan-escrow refusal + ops alert unreachable in production.
+    expect(sqlText).not.toContain('table_escrow_ct');
+  });
+
+  it('hands an orphan-escrow empty idle table to the manager instead of skipping it silently', async () => {
+    disableHouseCreation();
+    const table = addPlayerTable();
+    table.tableEscrowCt = 7;
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    // Discovered (so the manager can refuse loudly + page ops) but NOT closed,
+    // and no escrow was touched.
+    expect(state.retireIdleEmptyTableCalls).toEqual([table.id]);
+    expect(table.status).toBe('open');
+    expect(table.tableEscrowCt).toBe(7);
+  });
+
+  it('passes the discovery cutoff to the manager so the window is re-checked under the lock', async () => {
+    disableHouseCreation();
+    addPlayerTable();
+    const before = Date.now();
+    await cashHouseScalerPass();
+    const after = Date.now();
+
+    expect(state.retireIdleEmptyCutoffs).toHaveLength(1);
+    const cutoff = state.retireIdleEmptyCutoffs[0]!;
+    expect(cutoff).toBeInstanceOf(Date);
+    // Default window is 30 minutes back from the pass start.
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - 1_800_000 - 5_000);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(after - 1_800_000 + 5_000);
   });
 
   it('keeps an empty table open until the latest seat activity passes the window', async () => {
