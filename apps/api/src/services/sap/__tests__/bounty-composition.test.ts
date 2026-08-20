@@ -20,9 +20,9 @@ import {
   bountyReclaimDustBaseUnits,
   bountyEscrowNonce,
   bountyDisputeWindowSlots,
-  usdcRewardBaseUnits,
   type ComposedBountyDeps,
 } from '../../bounty-escrow-link';
+import { usdcRewardBaseUnits } from '../../x402-payai';
 import {
   resumeComposedBounty,
   refundExpiredComposedBounty,

@@ -31,7 +31,6 @@ import {
   refundComposedBounty,
   runBountyUsdcSettle,
   settleComposedBounty,
-  usdcRewardBaseUnits,
   usdcRailGateOpen,
 } from '../services/bounty-escrow-link';
 import { alertError } from '../services/alert-error';
@@ -48,6 +47,7 @@ import {
   Tier1LifecycleConflictError,
 } from '../services/bounty-tier1';
 import { lockPosterUsdcSpend } from '../services/usdc-spend-admission';
+import { usdcRewardBaseUnits } from '../services/x402-payai';
 import { ensureSapIdentityQueued } from '../services/sap/sap-identity-registrar';
 // R-team-lead ruling: the →paid booking (completed flip + composition_state='paid' +
 // the once-only completion/reputation bump) is the ONE transition reached by BOTH this
@@ -2290,10 +2290,6 @@ bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, requireNonGuestIdenti
 
     return newAttempt;
   });
-
-  if (!agentNotLedgerCapable(c.get('identity'))) {
-    ensureSapIdentityQueued(avatar.id, 'bounty.claim');
-  }
 
   return c.json({
     success: true,

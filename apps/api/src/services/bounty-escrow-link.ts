@@ -100,25 +100,7 @@ import { sapConfigSnapshot, updateAgentPricingUsdc } from './sap/sap-client';
 import { resolveHouseAvatarId, HOUSE_PRICING_TIER_ID } from './sap/house-sap-provisioning';
 import { ensureWallet } from './wallet-service';
 import { withKeyedMutex } from './keyed-mutex';
-import { usdCentsToUsdcAtomic } from './x402-payai';
-
-/**
- * Convert a bounty reward denominated in vCLAW to USDC base units. One vCLAW is
- * $0.01, so an on-chain escrow moves `tokenReward × 10^4` base units. A
- * single-call escrow releases this exact amount.
- *
- * UNIT CONTRACT: `tokenReward` is an integer vCLAW amount (for example, `250`
- * means 250 vCLAW = $2.50). The on-chain escrow moves the corresponding integer
- * base-unit amount (2_500_000 in that example); no floating-point money crosses
- * this boundary.
- */
-/** vCLAW reward → u64 USDC base units (1 vCLAW = 10,000 base units). */
-export function usdcRewardBaseUnits(tokenReward: number): bigint {
-  if (!Number.isInteger(tokenReward) || tokenReward <= 0) {
-    throw new Error(`bounty tokenReward must be a positive integer, got ${tokenReward}`);
-  }
-  return BigInt(usdCentsToUsdcAtomic(tokenReward));
-}
+import { usdcRewardBaseUnits } from './x402-payai';
 
 /** Is the SAP USDC escrow rail live enough to run a real (or dry-run) leg? */
 export function usdcRailGateOpen(): boolean {

@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { usdcRewardBaseUnits } from '../../bounty-escrow-link';
+import { usdcRewardBaseUnits } from '../../x402-payai';
 
 describe('usdcRewardBaseUnits', () => {
   it('scales each vCLAW reward unit to 10,000 USDC base units', () => {
