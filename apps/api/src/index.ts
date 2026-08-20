@@ -665,6 +665,24 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+// Tier-2 must pass its role/schema/config posture before the HTTP listener is
+// created. With the flag OFF this block performs no import or DB work.
+if (process.env.SAP_USDC_ESCROW_ENABLED === 'true') {
+  try {
+    const { assertTier2BootReady } = await import('./services/bounty-tier2/tier2-config');
+    const { startTier2ClaimSweeper } = await import('./services/bounty-tier2/tier2-claim');
+    const { startTier2Driver } = await import('./services/bounty-tier2/tier2-driver');
+    await assertTier2BootReady();
+    startTier2ClaimSweeper();
+    startTier2Driver();
+    console.log('[API] Tier-2 escrow app-role seam ready');
+  } catch (err) {
+    console.error('[API] FATAL: Tier-2 escrow boot gate refused startup:', err);
+    process.exit(1);
+    throw err;
+  }
+}
+
 // Pre-migrate ElizaOS schema + seed system-owned building NPCs so every user
 // can chat with Patrick/Gary/etc. without any setup. Non-blocking — a failure
 // must not crash API startup, but every deploy gets a fresh attempt.
@@ -1663,6 +1681,14 @@ async function gracefulShutdown(signal: string) {
     }
     activityRoomManager.stopSweeper();
     stopWagerAbortRecoveryWorker();
+    try {
+      const { stopTier2ClaimSweeper } = await import('./services/bounty-tier2/tier2-claim');
+      const { stopTier2Driver } = await import('./services/bounty-tier2/tier2-driver');
+      stopTier2ClaimSweeper();
+      stopTier2Driver();
+    } catch {
+      // Tier-2 stayed dark or its modules never loaded.
+    }
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
     // Poker cash-house intervals (scaler + self-drive tick). Import inside the

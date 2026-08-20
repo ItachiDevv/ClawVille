@@ -49,6 +49,11 @@ import {
 } from '../services/bounty-tier1';
 import { lockPosterUsdcSpend } from '../services/usdc-spend-admission';
 import { ensureSapIdentityQueued } from '../services/sap/sap-identity-registrar';
+import { admitTier2Bounty, deriveTier2PosterUsdcAta, withTier2AdmissionActorKind } from '../services/bounty-tier2/tier2-admission';
+import { bindAndOpenReward, claimTier2Bounty, withTier2ApprovalContext, withTier2ClaimActorKind } from '../services/bounty-tier2/tier2-claim';
+import { consumeCancelIntent, withTier2AppRole, type Tx as Tier2Tx } from '../services/bounty-tier2/tier2-db';
+import { tier2ClusterGenesis, tier2Mint } from '../services/bounty-tier2/tier2-config';
+import { Tier2Error, tier2ErrorHttpStatus } from '../services/bounty-tier2/tier2-errors';
 // R-team-lead ruling: the →paid booking (completed flip + composition_state='paid' +
 // the once-only completion/reputation bump) is the ONE transition reached by BOTH this
 // route (instant approve→paid, prior 'vault_held') AND the finalize/payout crank
@@ -378,20 +383,6 @@ export const createBountySchema = z
             '(1 vCLAW = $0.01).',
         });
       }
-      const tier = selectUsdcBountyTier({
-        rewardUsdCents: data.tokenReward,
-        escrowGateOpen: usdcRailGateOpen(),
-      });
-      const tier1Max = resolveTier1BountyMaxUsdCents();
-      if (tier === 1 && data.tokenReward > tier1Max) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['tokenReward'],
-          message:
-            `A Tier-1 USDC bounty may not exceed ${tier1Max} vCLAW ` +
-            `($${(tier1Max / 100).toFixed(2)}). Tier 2 is currently unavailable.`,
-        });
-      }
     }
     // A USDC bounty MUST carry acceptance criteria (nothing to verify against ⇒
     // no meaningful verdict). Reject at the schema boundary, not deep in the
@@ -662,6 +653,10 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       })
     : 0;
   const isTier1 = settlementTier === 1;
+  const isTier2 = settlementTier === 2;
+  if (isUsdc && isTier1 && data.tokenReward > resolveTier1BountyMaxUsdCents()) {
+    return c.json({ code: 'tier1_capacity_reduced', message: 'Tier-2 escrow is disabled; reward exceeds Tier-1 capacity.' }, 409);
+  }
   // COMPOSED-rail decision, computed ONCE here and reused for BOTH the insert
   // sentinel (below) AND the post-insert vault open, so the row's composition_state
   // marker and the open decision can never disagree — a live-flag flip mid-request
@@ -669,7 +664,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   // bounty is a usdc bounty while the live settlement rail is the two-leg composed rail;
   // vCLAW + legacy-usdc bounties are NOT composed (their marker stays NULL). The `&&`
   // short-circuits, so a vCLAW bounty never calls bountySettlementRail() (unchanged).
-  const isComposedRail = isUsdc && !isTier1
+  const isComposedRail = isUsdc && !isTier1 && !isTier2
     && bountySettlementRail() === 'sap-payai-composed';
 
   if (isUsdc) {
@@ -713,7 +708,8 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   // INSERT fails, the vCLAW debit rolls back and the creator doesn't lose tokens.
   // For either USDC tier there is no vCLAW debit. Tier 1 inserts its hold in this
   // transaction; Tier 2 preserves its existing vault-open behavior below.
-  const bounty = await db.transaction(async (tx) => {
+  let tier2DepositorPubkey: string | null = null;
+  const createWork = async (tx: Tier2Tx) => {
     if (!isUsdc) {
       // Deduct tokenReward from creator (atomic + audited) — vCLAW rail only.
       await debitClawTokens({
@@ -744,6 +740,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         paymentRail: data.paymentRail,
         acceptanceCriteria: data.acceptanceCriteria ?? null,
         verdictRequired: isUsdc,
+        status: isTier2 ? 'draft' : 'open',
         // FAIL-CLOSED sentinel (cross-review): stamp the composed marker as
         // 'vault_pending' IN this insert, so the row is 'vault_pending' the instant it
         // exists — BEFORE the vault opens below. If a hard crash lands between this
@@ -754,7 +751,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         // (isComposed=false → the legacy branch opened a SECOND escrow → creator charged
         // twice). vCLAW + legacy-usdc stay NULL — unchanged (the column has no default, so
         // explicit null is identical to the prior omitted-default insert).
-        compositionState: isComposedRail ? 'vault_pending' : null,
+        ...(isComposedRail ? { compositionState: 'vault_pending' as const } : {}),
       })
       .returning();
 
@@ -764,6 +761,23 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         posterAvatarId: avatar.id,
         amountBaseUnits: usdcRewardBaseUnits(created.tokenReward),
       });
+    }
+
+    if (isTier2) {
+      const mint = tier2Mint();
+      const poster = await deriveTier2PosterUsdcAta(tx, avatar.id, mint);
+      const admitted = await admitTier2Bounty(tx, {
+        bountyId: created.id,
+        posterAvatarId: avatar.id,
+        posterUsdcAta: poster.ata.toBase58(),
+        mint: mint.toBase58(),
+        genesis: tier2ClusterGenesis(),
+        branch: 'A_plus_fee',
+        formulaVersion: 1,
+        payoutExpectedAtomic: usdcRewardBaseUnits(created.tokenReward),
+      });
+      if (!admitted.ok) throw new Tier2Error(admitted.code, admitted.message);
+      tier2DepositorPubkey = admitted.depositorPubkey;
     }
 
     // Create bonus reward records
@@ -799,7 +813,13 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
     );
 
     return created;
-  }).catch((error) => {
+  };
+  const bounty = await (isTier2
+    ? withTier2AdmissionActorKind(
+        c.get('identity').kind === 'agent' ? 'agent' : 'human',
+        () => withTier2AppRole(createWork),
+      )
+    : db.transaction(createWork)).catch((error) => {
     if (error instanceof Tier1HoldAdmissionError) {
       const status = error.code === 'balance_unavailable'
         ? 503
@@ -807,6 +827,9 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
           ? 404
           : 409;
       throw new HTTPException(status, { message: error.message });
+    }
+    if (error instanceof Tier2Error) {
+      throw new HTTPException(tier2ErrorHttpStatus(error.code), { message: error.message });
     }
     throw error;
   });
@@ -951,6 +974,11 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       tags: bounty.tags,
       paymentRail: bounty.paymentRail,
       settlementTier: isUsdc ? settlementTier : null,
+      ...(isTier2 ? {
+        compositionState: 'fee_pending',
+        depositorPubkey: tier2DepositorPubkey,
+        hunterBound: false,
+      } : {}),
       acceptanceCriteria: bounty.acceptanceCriteria,
       verdictRequired: bounty.verdictRequired,
       expiresAt: bounty.expiresAt?.toISOString() ?? null,
@@ -1058,11 +1086,12 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
   const isUsdc = bounty.paymentRail === 'usdc';
   const tier1Hold = isUsdc ? await findTier1BountyHold(bounty.id) : null;
   const isTier1 = tier1Hold !== null;
+  const isTier2 = bounty.settlementTier2 === true;
   // The IMMUTABLE composed-rail marker (set to 'vault_held' at create). Every
   // post-create transition keys off THIS, never the live `bountySettlementRail()`
   // flag, so a mid-lifecycle flag flip can't re-route an existing bounty. A
   // composed bounty is a USDC bounty whose LEG-1 vault opened at post.
-  const isComposed = bounty.compositionState != null;
+  const isComposed = !isTier2 && bounty.compositionState != null;
 
   // For a USDC bounty the reviewer (creator=depositor) drives an on-chain
   // custodial sign at settle — require ledger capability, exactly like create.
@@ -1115,6 +1144,29 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
   }
 
   if (decision === 'approved') {
+    if (isTier2) {
+      const opened = await withTier2ApprovalContext({
+        reviewerAvatarId: reviewerAvatar.id,
+        actorKind: c.get('identity').kind === 'agent' ? 'agent' : 'human',
+        reviewNote: reviewNote ?? null,
+      }, () => bindAndOpenReward({
+          bountyId: bounty.id,
+          attemptId: attempt.id,
+          hunterAvatarId: attempt.hunterId,
+          amount: usdcRewardBaseUnits(bounty.tokenReward),
+        }));
+      if (!opened.ok) {
+        throw new HTTPException(tier2ErrorHttpStatus(opened.code), {
+          message: `Tier-2 approval refused: ${opened.code}`,
+        });
+      }
+      return c.json({
+        success: true,
+        decision: 'approved',
+        paymentRail: bounty.paymentRail,
+        settlement: { rail: 'tier2-sap-usdc', state: 'reward_open', evidenceId: opened.evidenceId },
+      }, 202);
+    }
     // Entire approval flow in a single transaction to prevent partial
     // state (e.g. tokens credited but bounty not marked completed). NOTE: the
     // USDC on-chain escrow legs (open/approve/settle) run AFTER this txn commits
@@ -1901,6 +1953,12 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
     });
   }
 
+  if (bounty.settlementTier2 === true) {
+    throw new HTTPException(409, {
+      message: 'Tier-2 refunds must use the dedicated Tier-2 state machine; the legacy admin refund is not allowed.',
+    });
+  }
+
   // The IMMUTABLE composed-rail marker — a composed bounty refunds its LEG-1 SAP
   // V2 vault, a legacy usdc bounty refunds its V1 escrow. Branch off THIS, never
   // the live rail flag. Evaluated BEFORE the escrow-PDA guard so a composed bounty's
@@ -2225,6 +2283,23 @@ bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, requireNonGuestIdenti
     });
   }
 
+  if (bounty.settlementTier2) {
+    const actorKind = c.get('identity').kind === 'agent' ? 'agent' : 'human';
+    const claimed = await withTier2ClaimActorKind(actorKind, () => claimTier2Bounty({
+      bountyId: id,
+      hunterAvatarId: avatar.id,
+      now: new Date(),
+    }));
+    if (!claimed.ok) throw new HTTPException(400, { message: claimed.code });
+    return c.json({
+      attempt: {
+        id: claimed.attemptId,
+        status: 'claimed',
+        claimExpiresAt: claimed.claimExpiresAt.toISOString(),
+      },
+    });
+  }
+
   // Verify hunter doesn't already have an active attempt
   const existingAttempt = await db.query.bountyAttempts.findFirst({
     where: and(
@@ -2357,6 +2432,7 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdent
         prLink: parsed.data.prLink ?? null,
         submissionNote: parsed.data.submissionNote,
         submittedAt: now,
+        claimExpiresAt: null,
         updatedAt: now,
       })
       .where(
@@ -2587,6 +2663,19 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
     throw new HTTPException(403, {
       message: 'Only the bounty creator can cancel this bounty',
     });
+  }
+
+  // Tier-2 poster close is an intent consumer, not the legacy open-only cancel.
+  // The definer owns the legal pre-payout state set and locks the bounty row;
+  // claimTier2Bounty takes the same lock and refuses a stamped intent.
+  if (bounty.settlementTier2 === true) {
+    const cancelAt = await withTier2AppRole((tx) => consumeCancelIntent(tx, bounty.id, avatar.id));
+    return c.json({
+      success: true,
+      settlementTier: 2,
+      cancelIntentAt: cancelAt.toISOString(),
+      message: 'Cancel intent recorded; escrow remains custodied until the Tier-2 refund pipeline advances it.',
+    }, 202);
   }
 
   if (bounty.status !== 'open') {

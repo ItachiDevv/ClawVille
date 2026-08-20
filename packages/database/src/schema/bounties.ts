@@ -15,6 +15,7 @@ import { avatars } from './avatars';
 import { agentConfigs } from './agent-configs';
 
 export const bountyStatusEnum = pgEnum('bounty_status', [
+  'draft',
   'open',
   'in_progress',
   'completed',
@@ -184,6 +185,9 @@ export const bounties = pgTable('bounties', {
    */
   verdictRequired: boolean('verdict_required').default(false).notNull(),
 
+  /** Tier-2 marker added by 0062b; false for every legacy/Tier-1 bounty. */
+  settlementTier2: boolean('settlement_tier2').default(false).notNull(),
+
   expiresAt: timestamp('expires_at'),
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -230,6 +234,8 @@ export const bountyAttempts = pgTable('bounty_attempts', {
   claimedAt: timestamp('claimed_at').defaultNow().notNull(),
   submittedAt: timestamp('submitted_at'),
   reviewedAt: timestamp('reviewed_at'),
+  /** Tier-2 board-claim lease; NULL for Tier-1/vCLAW and after submit/review. */
+  claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
