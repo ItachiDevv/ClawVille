@@ -8,9 +8,7 @@ import {
   boolean,
   jsonb,
   pgEnum,
-  check,
 } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
 import { agentConfigs } from './agent-configs';
 
@@ -48,13 +46,9 @@ export const bountyRewardTypeEnum = pgEnum('bounty_reward_type', [
 
 /**
  * How a bounty pays out. `'vclaw'` = the in-game vCLAW escrow (creator's vCLAW is
- * debited at create, released to the hunter on approve). `'usdc'` = the SAP
- * Option-C on-chain USDC escrow rail (creator → depositor, hunter → worker; the
- * reward is prepaid into a SAP escrow vault, released on a PASS verdict, refunded
- * on a FAIL). The USDC rail is triple-gated OFF + dry-run by default — a
- * `payment_rail='usdc'` bounty simulates the escrow legs and NEVER moves real
- * money until a deliberate founder flip. Default `'vclaw'` for the live in-game
- * bounty board.
+ * debited at create, released to the hunter on approve). `'usdc'` = the Tier-1
+ * custodial-balance hold settled through PayAI agent-pay. Default `'vclaw'` for
+ * the live in-game bounty board.
  */
 export const bountyPaymentRailEnum = pgEnum('bounty_payment_rail', [
   'vclaw',
@@ -99,69 +93,25 @@ export const bounties = pgTable('bounties', {
   /** Which payout rail funds this bounty. Default 'vclaw' (the live in-game board). */
   paymentRail: bountyPaymentRailEnum('payment_rail').default('vclaw').notNull(),
 
-  // ── SAP escrow binding (only for payment_rail='usdc') ────────────────────────
+  // Legacy escrow identifiers retained for Covenant compatibility reads.
   /**
-   * The on-chain SAP escrow PDA (base58) this bounty's reward is escrowed into.
-   * Set at create time when the depositor (=creator) opens the USDC escrow.
-   * NULL for a vCLAW bounty or a USDC bounty whose escrow open failed/was skipped
-   * (dry-run open that never recorded a PDA). Combined with `escrow_job_id` it
-   * is the (escrow, job) key the SAP settlement ledger is idempotent on.
+   * Historical on-chain escrow PDA (base58). No current bounty path writes it.
+   * Combined with `escrow_job_id`, it keys retained settlement evidence.
    */
   escrowPda: varchar('escrow_pda', { length: 64 }),
   /**
-   * The off-chain job id half of the (escrow, job) SAP idempotency key. We bind
-   * it to the bounty id (`jobId === bounties.id`) so the SAP ledger's
-   * at-most-once-settle guard maps 1:1 to a bounty. Persisted here for a clean
-   * lookup without re-deriving.
+   * Historical off-chain job id half of the retained (escrow, job) lookup key.
    */
   escrowJobId: varchar('escrow_job_id', { length: 128 }),
 
-  // ── Composition rail (SLICE 2a) — SAP-V2 vault → PayAI-x402 two-leg settle ────
-  // Only a `payment_rail='usdc'` bounty on the COMPOSED rail
-  // (`bountySettlementRail() === 'sap-payai-composed'`) populates these. NULL for
-  // every vCLAW bounty, and for a USDC bounty on the legacy single-leg vault-less
-  // path. Additive + nullable — see migration 0024_bounty_composition.sql.
+  // Legacy composed-rail identifier retained for historical row compatibility.
   /**
-   * The V1 PayAI payout escrow PDA (base58) for LEG 2 (house→hunter). Leg 1's
-   * on-chain vault PDA is `escrowPda` above (depositor=creator, worker=house);
-   * THIS is the separate leg-2 escrow (depositor=house, worker=hunter) whose
-   * settle drives the single x402 exact USDC payment to the winning hunter. NULL
-   * until leg 2 opens (i.e. after leg 1 finalizes and the house holds the reward).
+   * Historical PayAI payout escrow PDA (base58). No current bounty path writes it.
    */
   payoutEscrowPda: varchar('payout_escrow_pda', { length: 64 }),
-  /**
-   * The composed-rail lifecycle marker, so the release path (slice 2b) can branch
-   * on where a two-leg settle got to WITHOUT re-deriving it from the SAP ledger.
-   * NULL for any non-composed bounty. Documented value set (no enum by design):
-   *   'vault_held'               — leg 1 opened; creator's USDC custodied in the
-   *                                V2 vault at post (worker=house), not yet settled.
-   *   'vault_settled'            — leg 1b settled (principal reserved in a V2
-   *                                PendingSettlement), leg 1c finalize pending.
-   *   'awaiting_finalize'        — leg 1b done; leg 1c finalize not yet confirmed
-   *                                (DisputeWindow not elapsed, or ops-reconcile);
-   *                                the hunter is UNPAID and no double-pay is possible.
-   *   'paid'                     — all legs done: house finalized the principal AND
-   *                                the leg-2 x402 paid the hunter exactly the reward.
-   *   'reconcile_payout_failed'  — leg 1 finalized (house HAS the funds) but leg 2
-   *                                (payout) failed; funds are safe in the house
-   *                                wallet, leg 2 replays idempotently. Ops re-runs.
-   */
-  compositionState: varchar('composition_state', { length: 32 }),
-  /** Confirmed or broadcast-unknown composed refund signature for reconciliation. */
-  compositionRefundSignature: varchar('composition_refund_signature', { length: 128 }),
-  /** Current expiry-refund owner token. Paired with the DB-time lease below. */
-  compositionRefundClaimId: uuid('composition_refund_claim_id'),
-  /** DB-owned lease timestamp; wall clocks never decide refund ownership. */
-  compositionRefundClaimedAt: timestamp('composition_refund_claimed_at', {
-    withTimezone: true,
-  }),
-
   // ── verdict provenance (v1 = requester/admin approval; Phase 3 = Covenant) ───
   /**
-   * The SAP settlement row's audit-root hex (the verification provider's 32-byte
-   * root, bound into the on-chain service_hash). Recorded on the bounty for a
-   * one-glance provenance trail. Phase 3 replaces the v1 requester-approval root
-   * with a Covenant `root_hash_hex` via the SAME VerificationProvider seam.
+   * Covenant audit-root hex retained for the partner verification read surface.
    */
   covenantAuditRootHex: varchar('covenant_audit_root_hex', { length: 64 }),
   /**
@@ -188,16 +138,7 @@ export const bounties = pgTable('bounties', {
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-}, (t) => ({
-  compositionRefundClaimLeasePair: check(
-    'bounties_composition_refund_claim_lease_pair',
-    sql`(${t.compositionRefundClaimId} IS NULL) = (${t.compositionRefundClaimedAt} IS NULL)`,
-  ),
-  compositionRefundReconcileHasSignature: check(
-    'bounties_composition_refund_reconcile_has_signature',
-    sql`${t.compositionState} <> 'reconcile_refund_unknown' OR ${t.compositionRefundSignature} IS NOT NULL`,
-  ),
-}));
+});
 
 export const bountyRewards = pgTable('bounty_rewards', {
   id: uuid('id').primaryKey().defaultRandom(),
