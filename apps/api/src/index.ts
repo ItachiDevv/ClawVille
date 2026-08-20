@@ -1070,9 +1070,19 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Wallet-withdraw resume worker failed to start:', err);
   }
 
-  // Shared bounty crank. Tier 1 always runs and releases expired DB holds with
-  // no chain call. Tier 2 work remains gated inside the pass by the SAP flags.
-  // Cadence SAP_BOUNTY_RESUME_POLL_MS (default 5 min, floor 1 min).
+  // Tier-1 expiry is a kept, DB-only lifecycle independent from SAP. Keep its
+  // crank separate so SAP retirement cannot strand poster USDC holds.
+  // Cadence BOUNTY_TIER1_SWEEP_MS (default 5 min, floor 1 min).
+  try {
+    const { startTier1BountySweeper } = await import(
+      './services/bounty-tier1-sweeper'
+    );
+    startTier1BountySweeper();
+  } catch (err) {
+    console.error('[API] Tier-1 bounty expiry sweeper failed to start:', err);
+  }
+
+  // SAP composition recovery keeps its existing cadence and gating for now.
   try {
     const { startComposedBountyResumeWorker } = await import(
       './services/bounty-composition-worker'
@@ -1788,6 +1798,14 @@ async function gracefulShutdown(signal: string) {
       stopComposedBountyResumeWorker();
     } catch {
       // If the module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopTier1BountySweeper } = await import(
+        './services/bounty-tier1-sweeper'
+      );
+      stopTier1BountySweeper();
+    } catch {
+      // If the Tier-1 sweeper module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopClvPriceOracle } = await import('./services/clv-price-oracle');

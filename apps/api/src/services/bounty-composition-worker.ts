@@ -1878,15 +1878,8 @@ function resolveResumePollMs(): number {
  * deferred.
  */
 export async function runComposedBountyResumePass(): Promise<void> {
-  // Tier discriminator: Tier 1 expiry is a pure DB hold release. It shares this
-  // bounty crank but never enters a SAP refund or gas-sponsor path.
-  try {
-    const { sweepExpiredTier1Bounties } = await import('./bounty-tier1');
-    await sweepExpiredTier1Bounties();
-  } catch (err) {
-    console.error('[bounty-tier1] expiry sweep failed (non-fatal):', err);
-  }
-  // Tier 2 remains founder-gated. Tier 1 above must continue while SAP is off.
+  // Composed settlement remains founder-gated. Tier-1 expiry is owned by the
+  // independent bounty-tier1-sweeper and never enters this SAP worker.
   if (bountySettlementRail() !== 'sap-payai-composed') return;
 
   // TIER 1 — money mid-flight; never starved by tier 2.
@@ -1974,10 +1967,9 @@ export function isComposedBountyResumeWorkerRunning(): boolean {
 }
 
 /**
- * Start the shared bounty crank (idempotent). Tier-1 DB expiry cleanup always
- * runs. The pass itself gates Tier-2 work on the composed SAP rail, so a paused
- * Tier-2 rail never reaches chain settlement code. Each pass
- * is idempotent crash-recovery.
+ * Start the composed-bounty crank (idempotent). The pass gates work on the
+ * composed SAP rail, so a paused rail never reaches chain settlement code.
+ * Each pass is idempotent crash-recovery.
  */
 export function startComposedBountyResumeWorker(): void {
   if (resumeWorkerInterval) return;
@@ -1988,8 +1980,8 @@ export function startComposedBountyResumeWorker(): void {
     });
   }, periodMs);
   console.log(
-    `[bounty] resume worker started, sweeping Tier-1 DB expiries and founder-gated ` +
-      `Tier-2 settlement every ${Math.round(periodMs / 60_000)}min`,
+    `[bounty-composition] resume worker started, sweeping founder-gated ` +
+      `composition settlement every ${Math.round(periodMs / 60_000)}min`,
   );
 }
 

@@ -487,7 +487,8 @@ describe('Tier-1 durable hold contracts', () => {
   );
   const service = readFileSync(resolve(__dirname, '../bounty-tier1.ts'), 'utf8');
   const route = readFileSync(resolve(__dirname, '../../routes/bounties.ts'), 'utf8');
-  const crank = readFileSync(resolve(__dirname, '../bounty-composition-worker.ts'), 'utf8');
+  const tier1Crank = readFileSync(resolve(__dirname, '../bounty-tier1-sweeper.ts'), 'utf8');
+  const compositionCrank = readFileSync(resolve(__dirname, '../bounty-composition-worker.ts'), 'utf8');
   const resume = readFileSync(resolve(__dirname, '../agent-pay-resume.ts'), 'utf8');
   const admission = readFileSync(resolve(__dirname, '../usdc-spend-admission.ts'), 'utf8');
   const agentPay = readFileSync(resolve(__dirname, '../agent-pay.ts'), 'utf8');
@@ -525,9 +526,11 @@ describe('Tier-1 durable hold contracts', () => {
     expect(route).toContain('await claimTier1BountyCancellation(tx');
   });
 
-  it('keeps Tier-1 expiry off-chain and settlement retries on the existing workers', () => {
-    expect(crank).toContain('sweepExpiredTier1Bounties');
-    expect(crank).toContain("if (bountySettlementRail() !== 'sap-payai-composed') return");
+  it('keeps Tier-1 expiry off-chain and independent from the SAP composition worker', () => {
+    expect(tier1Crank).toContain('sweepExpiredTier1Bounties');
+    expect(tier1Crank).toContain('BOUNTY_TIER1_SWEEP_MS');
+    expect(compositionCrank).not.toContain('sweepExpiredTier1Bounties');
+    expect(compositionCrank).toContain("if (bountySettlementRail() !== 'sap-payai-composed') return");
     expect(resume).toContain('resumeTier1BountySettlements');
     expect(service).not.toContain('refundComposedBounty');
   });
