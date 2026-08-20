@@ -53,6 +53,21 @@
 - **Feedback wanted:** does the gather-then-build loop follow the instruction naturally, and is the placed piece a sensible visible choice?
 - Shipped by: land session (lnd), 2026-08-20.
 
+## BOUNTIES / ECONOMY
+
+### OOBE/SAP fully removed — bounty board on the single low-tier rail (staging)
+- **What:** the on-chain escrow partner is gone end to end. USDC bounties now run
+  ONLY the low-tier rail (custodial hold up to $50, PayAI payout); vCLAW bounties
+  unchanged. All our on-chain funds were recovered first (house wallet now holds
+  0.2218 SOL, up 0.157).
+- **Where:** staging.clawville.world — post a small USDC bounty, claim it with a
+  second account, approve, watch the payout; also glance at the landing page
+  roadmap (OOBE naming stripped — approve the reworded two entries).
+- **Feedback wanted:** bounty flow feels unchanged; roadmap wording OK.
+- Session tier2/Fable, 2026-08-20.
+
+---
+
 ## COVE
 
 ### Nori button reachable on phones (LIVE on prod via #271)
@@ -156,6 +171,9 @@
 
 ## DECISIONS OWED (rulings, not playtests)
 
+- **ECONOMY — recovered 0.2218 SOL destination.** The OOBE wind-down returned the
+  stake + rents to the prod house custodial wallet (`ESpn…sm3m`). Leave it there,
+  or name a wallet to sweep it to.
 - **LAND — Founders' Row: auction vs hold-only.** Surfaces + server currently say
   hold-only (10M CLV). If auction is intended, that is a server change to scope.
 - **LAND — Prepay one-click confirm.** Approve/reject the one-click rent-prepay

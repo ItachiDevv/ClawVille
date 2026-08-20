@@ -13,7 +13,18 @@ the four Covenant verdict columns and legacy escrow identifiers it reads remain
 for the same reason. The unused composition lifecycle/refund fields and their two
 CHECKs are removed from the Drizzle model only; no SQL migration or live database
 mutation is part of this wave. Agent-facing knowledge was updated across the
-protocol manual, Nori, and orientation constants (`PROTOCOL_VERSION` 55 → 56).
+protocol manual, Nori, and orientation constants (`PROTOCOL_VERSION` 56 → 57;
+56 was taken by the land P7c hosted-build verb that landed on staging first).
+The Tier-1 expiry sweep now runs in its own worker (`bounty-tier1-sweeper.ts`,
+cadence `BOUNTY_TIER1_SWEEP_MS`, default 5 min, floor 1 min — it replaces the
+retired shared bounty crank and its `SAP_BOUNTY_RESUME_POLL_MS` cadence knob).
+Covenant partner read surface (spec note, replacing the deleted
+`docs/sap-covenant-payai-architecture.md`): `GET /api/partner/covenant/*` serves
+historical bounty verdict evidence — the four `bounties` Covenant verdict
+columns plus legacy `sap_escrow_settlements`/`sap_escrow_approvals` rows. New
+rows are never created; the surface is read-only and drains naturally. The
+`sapAgentPda` field was removed from the partner payload with the partner's
+protocol retired.
 
 
 **Last Audited: 2026-08-20 (Land kit settlement extraction and hosted build seam, protocol v56).** `land-kit-settlement.ts` now owns the complete locked kit-placement transaction: identity authority, durable replay, the shared geometry predicate, rail gate, material sink or vCLAW treasury transfer, piece insert, and audit row. `land.ts` delegates once and preserves its response/error/cache contract; `npc-simulation.ts` resolves an owned parcel code and invokes the same service with `paymentRail='materials'`, `rotationStep=0`, and the live engine's ground `stackLevel=1`. `autonomous-build-targets.ts` performs a bounded fail-soft projection with at most two HOME parcels, one occupancy read each, and three deterministic valid suggestions. The connection manual and hosted knowledge move together at PROTOCOL_VERSION 56.

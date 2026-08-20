@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   resolveTier1BountyMaxUsdCents,
-  selectUsdcBountyTier,
   settleTier1Bounty,
   assertTier1BountyApprovable,
   claimTier1BountyCancellation,
@@ -34,12 +33,6 @@ describe('Tier-1 bounty rail and cap', () => {
     expect(resolveTier1BountyMaxUsdCents('not-money')).toBe(5_000);
   });
 
-  it('uses Tier 1 while SAP is paused and reserves Tier 2 for over-cap enabled posts', () => {
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_000, escrowGateOpen: false })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_001, escrowGateOpen: false })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_000, escrowGateOpen: true })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_001, escrowGateOpen: true })).toBe(2);
-  });
 });
 
 describe('Tier-1 approval settlement', () => {

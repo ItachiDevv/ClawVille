@@ -1654,8 +1654,18 @@ bountyRoutes.patch('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, a
     updates.maxAttempts = data.maxAttempts;
   }
   if (data.tags !== undefined) updates.tags = data.tags;
-  if (data.expiresAt !== undefined)
+  if (data.expiresAt !== undefined) {
+    // A USDC bounty's expiry is the ONLY release mechanism for its custodial
+    // hold (the Tier-1 sweeper). Nulling it would park the poster's money
+    // forever, so a USDC bounty must always keep a deadline.
+    if (bounty.paymentRail === 'usdc' && !data.expiresAt) {
+      throw new HTTPException(400, {
+        message:
+          'A USDC bounty must keep an expiry (the custodial hold needs a release deadline).',
+      });
+    }
     updates.expiresAt = data.expiresAt ? new Date(data.expiresAt) : null;
+  }
 
   const [updated] = await db
     .update(bounties)

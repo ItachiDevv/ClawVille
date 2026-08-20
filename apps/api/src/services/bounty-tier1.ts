@@ -40,15 +40,6 @@ export function resolveTier1BountyMaxUsdCents(raw = process.env.TIER1_BOUNTY_MAX
   );
 }
 
-export function selectUsdcBountyTier(input: {
-  rewardUsdCents: number;
-  escrowGateOpen: boolean;
-  tier1MaxUsdCents?: number;
-}): 1 | 2 {
-  const max = input.tier1MaxUsdCents ?? resolveTier1BountyMaxUsdCents();
-  return !input.escrowGateOpen || input.rewardUsdCents <= max ? 1 : 2;
-}
-
 export class Tier1HoldAdmissionError extends Error {
   constructor(
     readonly code:
