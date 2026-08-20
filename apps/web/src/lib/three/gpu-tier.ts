@@ -33,7 +33,7 @@ const INTEL_PATTERNS = [
   /apple gpu/i,
 ];
 
-function looksIntel(s: string | null | undefined): boolean {
+export function looksIntel(s: string | null | undefined): boolean {
   if (!s) return false;
   return INTEL_PATTERNS.some((re) => re.test(s));
 }

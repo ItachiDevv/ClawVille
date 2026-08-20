@@ -21,7 +21,10 @@ import {
   type ThreeToJSXElements,
 } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
-import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
+import {
+  CURRENT_WORLD_DEVICE_PROFILE,
+  WORLD_DEVICE_CLASS,
+} from '@/lib/three/device-class';
 import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import { resetAllHeldInputs } from '@/lib/three/input-reset';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
@@ -57,14 +60,13 @@ declare module '@react-three/fiber' {
 
 extend(THREE as any);
 
-const LOW_END_GPU = detectLowEndGpuClass();
-// EXACT parity with the live World3DCanvas constants (LOW_END_DPR_RANGE /
-// STANDARD_DPR_RANGE at World3DCanvas.tsx:140-141). The P1a brief carried a
-// stale doc value ([0.5, 0.65]); live code wins — /game must not change
-// resolution on migration.
-const DPR_RANGE: [number, number] = LOW_END_GPU
-  ? [0.55, 0.7]
-  : [0.75, 1];
+// Exact parity with the legacy World3DCanvas WORLD_DPR_RANGE, sourced from the
+// same WORLD_DEVICE_PROFILE table. The P1a brief carried a stale doc value
+// ([0.5, 0.65]); live code wins — /game keeps its existing resolution ranges.
+const DPR_RANGE: [number, number] = [
+  CURRENT_WORLD_DEVICE_PROFILE.dprRange[0],
+  CURRENT_WORLD_DEVICE_PROFILE.dprRange[1],
+];
 const USE_MESHLET_BUILDINGS =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('meshlets') === '1';
@@ -131,7 +133,7 @@ const FORCE_WEBGL =
   IOS_SAFARI ||
   WEBGPU_ABSENT ||
   readWebGpuUnhealthyFlag() ||
-  (!FORCE_WEBGPU && LOW_END_GPU) ||
+  (!FORCE_WEBGPU && WORLD_DEVICE_CLASS === 'desktop-low') ||
   (typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('webgl') === '1');
 
@@ -600,6 +602,10 @@ export function requestStageRendererRecovery(reason: string): boolean {
 
 function StageRendererCounterSampler(): null {
   const gl = useThree((state) => state.gl);
+  // Diagnostics-only native subscriber: gameplay/frame-scheduled work lives in
+  // StageFrameScheduler and is FPS-gated with the render. This sampler merely
+  // reads counters after the admitted render's microtask boundary; it does not
+  // update scene state, animation, physics, interpolation, or presentation.
   useFrame(() => {
     if (currentStageBackend !== 'webgl') {
       previousStageRenderCalls = null;
