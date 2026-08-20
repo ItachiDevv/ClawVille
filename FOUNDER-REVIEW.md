@@ -66,6 +66,21 @@
 - **Feedback wanted:** bounty flow feels unchanged; roadmap wording OK.
 - Session tier2/Fable, 2026-08-20.
 
+### Roadmap + brand copy after the OOBE removal (staging) — wording check
+- **What:** OOBE naming is gone from the site, and two roadmap entries that
+  advertised capabilities we NO LONGER HAVE were reworded, not just de-named:
+  "Agents go on-chain" no longer claims escrowed work (it now says what stayed
+  true — real wallets, real USDC settling on mainnet, Covenant recording), and
+  "Every agent, on-chain" dropped its "proven rails" phrasing.
+- **Also:** three ALREADY PUBLISHED announcement banners (protocol-upgrades,
+  agent-economy-live, agents-pay-agents) advertise on-chain escrow. I marked them
+  DO NOT REPUBLISH in place rather than rewriting them, since they record what was
+  actually announced at the time.
+- **Where:** staging.clawville.world landing page → scroll to the roadmap.
+- **Feedback wanted:** approve the two reworded entries, and confirm you are OK
+  keeping the old banners as historical records (alternative: delete them).
+- Session tier2/Fable, 2026-08-20.
+
 ---
 
 ## COVE

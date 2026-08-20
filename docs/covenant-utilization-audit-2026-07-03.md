@@ -1,5 +1,13 @@
 # Covenant Utilization Audit — 2026-07-03
 
+> ⛔ **PARTLY SUPERSEDED (2026-08-20, founder order): OOBE/SAP was removed as a partner and its
+> entire on-chain escrow rail was deleted from the product.** Every finding here that depends on
+> SAP (the escrow co-sign primitive, `settle_calls_v2`, the "blocked on OOBE's redeploy" status)
+> is DEAD — there is nothing left to unblock. It also cites `docs/sap-covenant-payai-architecture.md`,
+> which no longer exists. **Covenant itself STAYS** as a partner (action recording + sealing, and a
+> read-only historical evidence surface), so the Covenant-primitive analysis below is still useful
+> reading — but treat any SAP-coupled recommendation as void. Kept as a historical record.
+
 > **Why this doc exists:** founder directive (2026-07-03 session "ints"): *"what Covenant can do for our agents against the entire ecosystem and how we can benefit… what they could do for us in terms of agent actions and helping govern agent actions."* Sources: aglive session (`ee7bbf78`) + payai/econ session logs, `docs/agent-metaverse-model.md`, `docs/sap-covenant-payai-architecture.md` (§7 has the verification surface we serve them), Covenant public docs (`docs.opencovenant.org`) + repo (`github.com/open-covenant/covenant`, Apache-2.0) as of 2026-07-03.
 >
 > **Headline:** we use ~2 of ~15 Covenant primitives (escrow co-sign + identity attestation, both blocked on OOBE's `settle_calls_v2` binary bug). Covenant is not a notary — it is an agent-native operating layer whose strongest BUILT primitive (per-action capability tokens + audit-rooted proof) is exactly the enforcement/provenance layer the agent-metaverse model designs on paper for Autonomous-mode `[ACTION:]` scoping.
