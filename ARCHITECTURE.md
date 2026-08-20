@@ -1,6 +1,17 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-19 (Autonomous status wallet + economy narration; no protocol
+**Last Audited: 2026-08-20 (alert-error reads Telegram creds per call; no behavior change on
+deployed boxes).** `alert-error.ts` now reads `ITACHI_DEBUG_BOT_TOKEN`/`ITACHI_DEBUG_CHAT_ID`
+per call instead of capturing them at module load (same discipline as its `CLAWVILLE_ENV`
+deployed-box gate). Env is static on the boxes so paging behavior is identical; the change
+un-bakes the "not configured" state in shared-process test runs (the CI gates suite), where
+whichever suite imported the module first froze the creds for the whole process. Rider in the
+same push: the three world-presence WS test files spy on the real `npcSimulation` singleton
+instead of a partial `mock.module('../npc-simulation')` (the process-global poisoning that held
+the gates suite red since ~08-10), and two stale rent-prepay test fixtures were updated to the
+P2 tenure hardening (`cede5d2a`). No route, schema, wire, protocol, or economy change.
+
+**Prior Last Audited: 2026-08-19 (Autonomous status wallet + economy narration; no protocol
 change).** The Lucia-owner `GET /api/world/autonomy/status` enrolled response now includes a
 fail-soft `wallet` block: current `avatars.claw_tokens`, plus positive earnings and absolute
 negative spending summed from `claw_token_transactions` since UTC midnight. A 30-second

@@ -76,8 +76,6 @@
   hold-only (10M CLV). If auction is intended, that is a server change to scope.
 - **LAND — Prepay one-click confirm.** Approve/reject the one-click rent-prepay
   confirm UX.
-- **COVE — idle-table sweeper window.** R2 needs the founder number for how long an
-  idle table lives before sweep (pokPlus session, 2026-08-20).
 
 ---
 
