@@ -1,5 +1,5 @@
 /**
- * verifyAndSettle VERIFY-ONLY mode (the SAP payai-rail dry-run posture).
+ * verifyAndSettle VERIFY-ONLY mode (the settlement dry-run posture).
  *
  * The money invariant under test: with `verifyOnly:true` the facilitator's
  * `/settle` endpoint is NEVER hit — no matter what `/verify` says — so a

@@ -3,12 +3,10 @@ import { createBountySchema } from '../bounties';
 
 const originalUsdcRewardMin = process.env.USDC_BOUNTY_REWARD_MIN;
 const originalTier1Max = process.env.TIER1_BOUNTY_MAX_USD_CENTS;
-const originalSapUsdcEscrow = process.env.SAP_USDC_ESCROW_ENABLED;
 
 beforeAll(() => {
   delete process.env.USDC_BOUNTY_REWARD_MIN;
   delete process.env.TIER1_BOUNTY_MAX_USD_CENTS;
-  process.env.SAP_USDC_ESCROW_ENABLED = 'false';
 });
 
 afterAll(() => {
@@ -19,8 +17,6 @@ afterAll(() => {
   }
   if (originalTier1Max === undefined) delete process.env.TIER1_BOUNTY_MAX_USD_CENTS;
   else process.env.TIER1_BOUNTY_MAX_USD_CENTS = originalTier1Max;
-  if (originalSapUsdcEscrow === undefined) delete process.env.SAP_USDC_ESCROW_ENABLED;
-  else process.env.SAP_USDC_ESCROW_ENABLED = originalSapUsdcEscrow;
 });
 
 const baseBounty = {
@@ -45,7 +41,7 @@ describe('bounty create reward floors', () => {
     expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 4 }).success).toBe(false);
   });
 
-  it('accepts the Tier-1 $50 cap and rejects one cent above while SAP is paused', () => {
+  it('accepts the Tier-1 $50 cap and rejects one cent above', () => {
     expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_000 }).success).toBe(true);
     expect(createBountySchema.safeParse({ ...usdcBounty, tokenReward: 5_001 }).success).toBe(false);
   });

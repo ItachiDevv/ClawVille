@@ -92,7 +92,7 @@ function configureCovenant() {
 // ABOVE never import `@clawville/database`, so the mock does not affect them.
 // ---------------------------------------------------------------------------
 
-// A valid 32-byte base58 pubkey so deriveSapAgentPda produces a real PDA.
+// Stable public keys for identity-response fixtures.
 const HUNTER_WALLET = bs58.encode(nacl.sign.keyPair().publicKey);
 const AGENT_WALLET = bs58.encode(nacl.sign.keyPair().publicKey);
 const TEST_UUID = '11111111-1111-4111-8111-111111111111';
@@ -580,12 +580,10 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
       'name',
       'avatarId',
       'walletPubkey',
-      'sapAgentPda',
       'eip8004RegistrationUrl',
     ]);
-    // Wallet flows through as the mirror pubkey; PDA derives to a real base58 addr.
+    // Wallet flows through as the mirror pubkey.
     expect(identities[0].walletPubkey).toBe(HUNTER_WALLET);
-    expect(typeof identities[0].sapAgentPda).toBe('string');
   });
 
   it('GET /agents/:avatarId returns EXACTLY {avatar, reputation, agentIdentity} + fixed nested keys', async () => {
@@ -624,7 +622,6 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
     expectExactKeys(j.agentIdentity as Record<string, unknown>, [
       'avatarId',
       'walletPubkey',
-      'sapAgentPda',
       'eip8004RegistrationUrl',
     ]);
     expect((j.agentIdentity as Record<string, unknown>).walletPubkey).toBe(AGENT_WALLET);
