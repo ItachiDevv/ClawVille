@@ -160,7 +160,14 @@
   position: fixed;
   left: 50%;
   bottom: max(12px, env(safe-area-inset-bottom));
-  z-index: 40;
+  /* HUD slot map (Slice 1, 2026-08-20 — D1): was 40, BELOW the cove touch
+     band (was z 50) — a seated phone player's taps on this panel were
+     swallowed by the full-width joystick zone. Now HUD_Z.seatedGameHud
+     (@/lib/hud/hud-layout.ts), strictly above HUD_Z.touchInput (45). CSS
+     Modules can't import the TS constant directly — keep this literal in
+     numeric sync by hand; apps/web/src/lib/hud/__tests__/hud-layout.test.tsx
+     guards the correspondence. */
+  z-index: 50;
   display: flex;
   width: min(940px, calc(100vw - 24px));
   flex-direction: column;

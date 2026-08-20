@@ -49,6 +49,20 @@
 
 ## COVE
 
+### Phone poker: action buttons no longer drag your avatar (staging)
+- **What:** on a phone, seated at the hold'em table, the movement joystick used to sit
+  invisibly ON TOP of the Fold/Check/Call/Raise panel — taps on the upper buttons moved
+  your character instead of playing the hand. The movement stick now disappears while
+  you are seated at a table or inside any cove game, and the action panel always wins
+  the tap. The camera stick stays.
+- **Where:** staging → on a PHONE (or narrow window) → cove → sit at the hold'em
+  table → play a hand. Also confirm walking still works fine before sitting and after
+  standing up.
+- **Feedback wanted:** do the buttons all respond on the first tap; does movement come
+  back cleanly when you leave the table; any spot where you miss having the left stick
+  while a game is open.
+- Shipped by: pokPlus, 2026-08-20.
+
 ### Baccarat Walk Away from mid-shoe idle (staging)
 - **What:** you can now cash out of baccarat between coups, not only right after a
   settle — the red Walk Away button shows whenever a shoe is open.

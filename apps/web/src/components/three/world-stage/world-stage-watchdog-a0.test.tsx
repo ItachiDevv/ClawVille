@@ -89,6 +89,18 @@ mock.module('@/lib/three/cove-interior', () => ({
     }, [onReady]);
     return null;
   },
+  // `mock.module` is PROCESS-GLOBAL in bun:test — it replaces the module for
+  // the rest of the `bun test` run, not just this file, so every named export
+  // any sibling test transitively imports must be listed here or that other
+  // test fails with a bare "Export named 'X' not found" SyntaxError with no
+  // connection back to this file (same class of issue documented in
+  // apps/api/src/routes/__tests__/cove-history.test.ts). CoveMobileControls
+  // (mounted by apps/web/src/lib/hud/__tests__/hud-layout.test.tsx) needs
+  // these three touch-input setters; they're no-ops here since nothing in
+  // this suite exercises cove touch input.
+  setCoveTouchVelocity: () => {},
+  setCoveTouchArrowKey: () => {},
+  setCoveTouchInteract: () => {},
 }));
 
 let dom: JSDOM;
