@@ -49,20 +49,44 @@
 
 ## COVE
 
-### Baccarat Walk Away from mid-shoe idle (staging)
+### Nori button reachable on phones (staging)
+- **What:** on phones the top-centre Connect/status banner used to cover almost half of the
+  pink Nori button (top-right) — taps on its left side did nothing. Nori is now a compact
+  heart-icon circle on phones (full label stays on desktop/tablet).
+- **Where:** staging → /game on a PHONE → tap the pink heart top-right; also check it still
+  pulses when you walk up to Nori in the world.
+- **Feedback wanted:** does the icon-only button read as "talk to Nori" without its label;
+  is the tap comfortable.
+- Shipped by: pokPlus, 2026-08-20.
+
+### Phone poker: action buttons no longer drag your avatar (LIVE on prod via #270)
+- **What:** on a phone, seated at the hold'em table, the movement joystick used to sit
+  invisibly ON TOP of the Fold/Check/Call/Raise panel — taps on the upper buttons moved
+  your character instead of playing the hand. The movement stick now disappears while
+  you are seated at a table or inside any cove game, and the action panel always wins
+  the tap. The camera stick stays.
+- **Where:** prod → on a PHONE (or narrow window) → cove → sit at the hold'em
+  table → play a hand. Also confirm walking still works fine before sitting and after
+  standing up.
+- **Feedback wanted:** do the buttons all respond on the first tap; does movement come
+  back cleanly when you leave the table; any spot where you miss having the left stick
+  while a game is open.
+- Shipped by: pokPlus, 2026-08-20.
+
+### Baccarat Walk Away from mid-shoe idle (LIVE on prod via #270)
 - **What:** you can now cash out of baccarat between coups, not only right after a
   settle — the red Walk Away button shows whenever a shoe is open.
-- **Where:** staging → cove → baccarat: deal one coup, press Next Coup (back to
+- **Where:** prod → cove → baccarat: deal one coup, press Next Coup (back to
   idle), then Walk Away. Seed reveals, table auto-closes ~1.4s later; Deal greys
   out during that window.
 - **Feedback wanted:** does the exit feel right; any state where you feel trapped.
 - Shipped by: pokPlus, 2026-08-20.
 
-### Poker verify page tells the truth now (staging)
+### Poker verify page tells the truth now (LIVE on prod via #270)
 - **What:** poker rows in `/cove/history` get a real label, filter chip, and a
   verify page that says exactly what the server proved (seed commitment + outcome
   consistency) instead of "undefined Verifier" and a replay claim that never ran.
-- **Where:** staging → play a hold'em cash hand → `/cove/history` → Verify on the
+- **Where:** prod → play a hold'em cash hand → `/cove/history` → Verify on the
   poker row.
 - **Feedback wanted:** copy check — does the fairness wording read clear and honest
   to a player (your muck ruling is baked into the copy).

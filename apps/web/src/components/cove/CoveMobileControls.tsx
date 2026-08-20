@@ -15,11 +15,19 @@
  *
  * Gated on `useIsMobile()` — which now correctly detects iPad-on-Mac-UA
  * via `navigator.maxTouchPoints > 1`.
+ *
+ * HUD slot map fix (Slice 1, 2026-08-20 — D1): the movement zone now honours
+ * the SAME capability mask `SeatedHoldemHud` reads (any cove game surface
+ * active), mirroring `/game`'s `movementFrozen` pattern. Without this a
+ * seated phone player's taps on the action panel were swallowed by the
+ * full-width joystick zone sitting above it. See `@/lib/hud/hud-layout`.
  */
 
 import { useEffect, useRef } from 'react';
 import type { JoystickManager } from 'nipplejs';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { useCoveStore } from '@/stores/cove';
+import { HUD_Z, TOUCH_BAND } from '@/lib/hud/hud-layout';
 import {
   setCoveTouchVelocity,
   setCoveTouchArrowKey,
@@ -33,9 +41,23 @@ export default function CoveMobileControls() {
   const leftJoystickRef = useRef<JoystickManager | null>(null);
   const rightJoystickRef = useRef<JoystickManager | null>(null);
 
+  // Any cove game surface active — a seated/playing player is not walking.
+  // Select each flag individually (not one object selector) so this
+  // component doesn't re-render on every unrelated cove-store write.
+  // `sitAtTable` already clears the four modal flags when seating, so these
+  // are mutually exclusive in practice; keep all five terms anyway — the
+  // mask is "any game surface", not just poker.
+  const slotScreenOpen = useCoveStore((s) => s.slotScreenOpen);
+  const holdemModalOpen = useCoveStore((s) => s.holdemModalOpen);
+  const blackjackOpen = useCoveStore((s) => s.blackjackOpen);
+  const baccaratOpen = useCoveStore((s) => s.baccaratOpen);
+  const seatedTable = useCoveStore((s) => s.seatedTable);
+  const movementSuppressed =
+    slotScreenOpen || holdemModalOpen || blackjackOpen || baccaratOpen || seatedTable !== null;
+
   // Left joystick — WASD movement
   useEffect(() => {
-    if (!isMobile || !leftRef.current) {
+    if (!isMobile || movementSuppressed || !leftRef.current) {
       if (leftJoystickRef.current) {
         leftJoystickRef.current.destroy();
         leftJoystickRef.current = null;
@@ -79,7 +101,7 @@ export default function CoveMobileControls() {
         setCoveTouchVelocity(0, 0);
       }
     };
-  }, [isMobile]);
+  }, [isMobile, movementSuppressed]);
 
   // Right joystick — arrow-key camera orbit (left/right = yaw, up/down = pitch)
   useEffect(() => {
@@ -153,45 +175,63 @@ export default function CoveMobileControls() {
         style={{
           position: 'fixed',
           left: 0,
-          bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)',
+          bottom: TOUCH_BAND.bottom,
           width: '100vw',
-          height: '220px',
-          zIndex: 50,
+          height: TOUCH_BAND.height,
+          // D1 fix: was 50 (above the seated poker HUD's z 40) — the
+          // full-width zones swallowed taps meant for the action panel.
+          // touchInput (45) now sits below seatedGameHud (50).
+          zIndex: HUD_Z.touchInput,
           pointerEvents: 'none',
         }}
       >
-        {/* Left zone — movement. The base ring marks the touch spot so the
-            stick is obviously visible on the busy casino floor. */}
-        <div
-          ref={leftRef}
-          style={{
-            position: 'absolute',
-            left: 0,
-            bottom: 0,
-            width: '50vw',
-            height: '220px',
-            pointerEvents: 'auto',
-            touchAction: 'none',
-          }}
-        >
+        {/* Left zone — movement. Suppressed entirely while a cove game
+            surface is active (D1 fix) — mirrors `/game`'s movementFrozen
+            gate. The base ring marks the touch spot so the stick is
+            obviously visible on the busy casino floor. */}
+        {!movementSuppressed && (
           <div
-            aria-hidden
+            ref={leftRef}
+            data-testid="cove-touch-zone-left"
             style={{
-              position: 'absolute', left: 20, bottom: 20, width: 120, height: 120,
-              borderRadius: '50%', border: '2px solid rgba(125,224,255,0.45)',
-              background: 'rgba(125,224,255,0.08)', pointerEvents: 'none',
+              position: 'absolute',
+              left: 0,
+              bottom: 0,
+              // D1 fix: was 50vw — now a 220px corner like `/game`. This
+              // frees the bottom-centre corridor on TABLET widths only; on
+              // a 390px phone the two 220px zones still cover the full
+              // width and overlap by ~50px at centre (the later-in-DOM
+              // right zone wins that strip, narrowing this zone's
+              // effective touch width 195px -> 170px). The PHONE fix is
+              // carried by the movementSuppressed gate above plus
+              // touchInput (45) < seatedGameHud (50) — not by this resize.
+              width: TOUCH_BAND.zoneSize,
+              height: TOUCH_BAND.height,
+              pointerEvents: 'auto',
+              touchAction: 'none',
             }}
-          />
-        </div>
-        {/* Right zone — camera */}
+          >
+            <div
+              aria-hidden
+              style={{
+                position: 'absolute', left: 20, bottom: 20, width: 120, height: 120,
+                borderRadius: '50%', border: '2px solid rgba(125,224,255,0.45)',
+                background: 'rgba(125,224,255,0.08)', pointerEvents: 'none',
+              }}
+            />
+          </div>
+        )}
+        {/* Right zone — camera. Stays live even while a game surface is
+            active; look-around while seated is harmless. */}
         <div
           ref={rightRef}
+          data-testid="cove-touch-zone-right"
           style={{
             position: 'absolute',
             right: 0,
             bottom: 0,
-            width: '50vw',
-            height: '220px',
+            width: TOUCH_BAND.zoneSize,
+            height: TOUCH_BAND.height,
             pointerEvents: 'auto',
             touchAction: 'none',
           }}
@@ -227,7 +267,7 @@ export default function CoveMobileControls() {
           fontWeight: 800,
           fontSize: 22,
           border: '2px solid rgba(255,255,255,0.6)',
-          zIndex: 51,
+          zIndex: HUD_Z.overlay,
           touchAction: 'none',
           userSelect: 'none',
           WebkitUserSelect: 'none',
