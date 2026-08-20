@@ -622,6 +622,60 @@ export class CashTableManager {
   }
 
   /**
+   * Close one open non-house table only after it is completely empty and its
+   * escrow is zero. The scaler owns the idle-age filter; this method owns the
+   * lock-held safety checks and never moves money.
+   */
+  async retireIdleEmptyTable(tableId: string): Promise<boolean> {
+    return this.withTableLock(tableId, async () => {
+      const table = await this.getTable(tableId);
+      if (!table || table.source === 'house' || table.status !== 'open') return false;
+
+      const sid = simTableId(tableId);
+      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      if (handLive) return false;
+
+      if ((await this.activeSeats(tableId)).length > 0) return false;
+
+      return this.db.transaction(async (tx) => {
+        const rows = await tx.execute<{
+          source: string;
+          status: string;
+          table_escrow_ct: string;
+        }>(
+          sql`SELECT source, status, table_escrow_ct
+              FROM poker_cash_tables WHERE id = ${tableId} FOR UPDATE`,
+        );
+        const lockedTable = rows[0];
+        if (!lockedTable || lockedTable.source === 'house' || lockedTable.status !== 'open') {
+          return false;
+        }
+
+        const activeSeatRows = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM poker_cash_seats
+              WHERE table_id = ${tableId} AND status <> 'left'
+              LIMIT 1 FOR UPDATE`,
+        );
+        if (activeSeatRows.length > 0) return false;
+
+        const escrow = Number(lockedTable.table_escrow_ct);
+        if (!Number.isFinite(escrow) || escrow !== 0) {
+          console.error(
+            `[cash-manager] refusing to close idle empty table ${tableId}: escrow ${escrow} CT remains`,
+          );
+          return false;
+        }
+
+        await tx
+          .update(pokerCashTables)
+          .set({ status: 'closed', updatedAt: new Date() })
+          .where(eq(pokerCashTables.id, tableId));
+        return true;
+      });
+    });
+  }
+
+  /**
    * Release one abandoned busted human/agent seat after the scaler discovers it.
    * The scaler owns the ten-minute age filter; this lock-held path re-checks the
    * money and hand-safety predicates immediately before the idempotent zero-credit

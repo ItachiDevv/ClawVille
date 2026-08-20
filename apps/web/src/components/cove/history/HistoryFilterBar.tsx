@@ -39,6 +39,12 @@ const GAME_CHIPS: { label: string; value: GameType; active: string; inactive: st
     active: 'rgba(60,120,220,0.22)',
     inactive: 'rgba(60,120,220,0.06)',
   },
+  {
+    value: 'poker',
+    label: 'Poker',
+    active: 'rgba(255,190,80,0.2)',
+    inactive: 'rgba(255,190,80,0.06)',
+  },
 ];
 
 const GAME_CHIP_BORDER: Record<GameType, string> = {
@@ -46,6 +52,7 @@ const GAME_CHIP_BORDER: Record<GameType, string> = {
   blackjack: 'rgba(220,56,56,0.6)',
   holdem: 'rgba(220,220,220,0.45)',
   baccarat: 'rgba(60,120,220,0.6)',
+  poker: 'rgba(255,190,80,0.6)',
 };
 
 const GAME_CHIP_TEXT: Record<GameType, string> = {
@@ -53,6 +60,7 @@ const GAME_CHIP_TEXT: Record<GameType, string> = {
   blackjack: '#ff8aa0',
   holdem: '#dde8f0',
   baccarat: '#9ab4ff',
+  poker: '#ffd27c',
 };
 
 export default function HistoryFilterBar({ filters, onChange }: HistoryFilterBarProps) {

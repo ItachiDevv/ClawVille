@@ -628,6 +628,14 @@ export default function BaccaratModal() {
     ? `pt-toast${toast.tone === 'warn' ? ' pt-toast-warn' : toast.tone === 'error' ? ' pt-toast-error' : ''}`
     : '';
 
+  // Walk Away must be reachable from EVERY state with an open shoe, not just
+  // post-settle — an idle player mid-shoe previously had NO cash-out path short
+  // of dealing another coup (slots is the model: the exit is always reachable).
+  // Hidden on fresh no-shoe idle (nothing to close) and once the seed is
+  // revealed (the 1400ms auto-close is already armed).
+  const shoeOpenUnrevealed = !!shoe && shoe.status === 'open' && !revealedSeed;
+  const canWalkAway = phase === 'settled' || (phase === 'idle' && shoeOpenUnrevealed);
+
   return (
     <div
       role="dialog"
@@ -832,12 +840,15 @@ export default function BaccaratModal() {
           )}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {/* idle: DEAL */}
+            {/* idle: DEAL — HARD-GATED on !revealedSeed: after Walk Away fires
+                from idle, phase stays 'idle' for the 1400ms auto-close window,
+                and an enabled Deal would silently open a FRESH shoe the armed
+                handleClose then skips (orphaned shoe — hold'em guards this). */}
             {phase === 'idle' && (
               <button
                 type="button"
                 onClick={() => { void handleDeal(); }}
-                disabled={inFlight}
+                disabled={inFlight || revealedSeed !== null}
                 className="pt-btn pt-btn-primary"
                 style={{ minWidth: 130, height: 40, fontSize: 13, fontWeight: 700 }}
               >
@@ -845,30 +856,32 @@ export default function BaccaratModal() {
               </button>
             )}
 
-            {/* settled: NEXT COUP + WALK AWAY */}
+            {/* settled: NEXT COUP */}
             {phase === 'settled' && (
-              <>
-                <button type="button" onClick={handleNextCoup}
-                  disabled={inFlight}
-                  className="pt-btn pt-btn-primary"
-                  style={{ minWidth: 110, height: 40, fontSize: 13 }}>
-                  Next Coup
-                </button>
-                {/* Crimson WALK AWAY — explicit bg+fg (No-Dark-Text-On-Dark-Panel). */}
-                <button type="button" onClick={() => { void handleWalkAway(); }}
-                  disabled={inFlight}
-                  style={{
-                    height: 40, fontSize: 12, fontWeight: 600, fontFamily: 'var(--pt-data)',
-                    letterSpacing: '0.06em', paddingLeft: 16, paddingRight: 16, borderRadius: 6,
-                    border: 'none', background: '#dc2626', color: '#ffffff',
-                    cursor: inFlight ? 'not-allowed' : 'pointer', transition: 'background 0.15s',
-                    opacity: inFlight ? 0.6 : 1,
-                  }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}>
-                  {isRealTier ? 'Walk Away' : 'Close'}
-                </button>
-              </>
+              <button type="button" onClick={handleNextCoup}
+                disabled={inFlight}
+                className="pt-btn pt-btn-primary"
+                style={{ minWidth: 110, height: 40, fontSize: 13 }}>
+                Next Coup
+              </button>
+            )}
+
+            {/* WALK AWAY — settled OR idle-with-open-shoe (see canWalkAway). */}
+            {canWalkAway && (
+              /* Crimson WALK AWAY — explicit bg+fg (No-Dark-Text-On-Dark-Panel). */
+              <button type="button" onClick={() => { void handleWalkAway(); }}
+                disabled={inFlight || revealedSeed !== null}
+                style={{
+                  height: 40, fontSize: 12, fontWeight: 600, fontFamily: 'var(--pt-data)',
+                  letterSpacing: '0.06em', paddingLeft: 16, paddingRight: 16, borderRadius: 6,
+                  border: 'none', background: '#dc2626', color: '#ffffff',
+                  cursor: inFlight || revealedSeed !== null ? 'not-allowed' : 'pointer', transition: 'background 0.15s',
+                  opacity: inFlight || revealedSeed !== null ? 0.6 : 1,
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}>
+                {isRealTier ? 'Walk Away' : 'Close'}
+              </button>
             )}
           </div>
 

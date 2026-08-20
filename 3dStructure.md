@@ -1,7 +1,16 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-19 (Cold-load rung-4 slice E — compile-overlap
+**Last Audited: 2026-08-20 (Cove hotspot click-yield now FAILS CLOSED pre-load).**
+`_shouldYieldClickToFartherHotspot` (`cove-interior.tsx`) returned TRUE when
+`_coveRoomRootRef.current` was null (room GLB not yet mounted) — a yield with zero
+occlusion evidence, handing pre-load clicks to the farther hotspot on guesswork.
+It now returns false until the room root exists; both the gameready and fallback
+GLBs set the ref on mount, so the null window is load-time only. Advisory from the
+08-19 click-yield ship, closed as part of the cove money round. No geometry,
+material, draw-call, or camera change.
+
+**Prior Last Audited: 2026-08-19 (Cold-load rung-4 slice E — compile-overlap
 EXPERIMENT measured out and reverted; the compile HARDENING ships; the rung-4
 round is CLOSED. Spec + outcome: `docs/perf-cold-load-rung4-sliceE-spec.md`
 rev 3 §8; Codex xhigh R1/R2/R3 all folded.)** Drift note: the boot-core

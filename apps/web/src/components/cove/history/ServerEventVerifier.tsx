@@ -1,23 +1,29 @@
 'use client';
 
 /**
- * Server-attested verifier for blackjack / hold'em / baccarat.
+ * Server-attested verifier for blackjack / hold'em / baccarat / poker.
  *
- * These three engines have no in-browser replay (only slots ships a client-side
+ * These engines have no in-browser replay (only slots ships a client-side
  * engine via `replaySpin`). Verification here is two-layer:
  *   1. TRUSTLESS commitment check, fully in-browser: sha256(revealedServerSeed)
  *      === serverSeedHash. This proves the server COMMITTED to the seed before
  *      the hand (the hash was shown up-front, the seed revealed only at shoe
  *      close) — the player verifies it locally with WebCrypto, trusting nobody.
- *   2. SERVER replay attestation via GET /api/cove/history/:id/verify: the API
- *      re-derives the hand from the revealed seed with the live engine and
- *      reports whether it matches the stored outcome. (Not yet a browser replay,
- *      so labelled as server-attested — honest about what is and isn't trustless.)
+ *   2. SERVER attestation via GET /api/cove/history/:id/verify. For blackjack /
+ *      hold'em / baccarat the API re-derives the hand from the revealed seed
+ *      with the live engine and reports whether it matches the stored outcome.
+ *      For POKER (cash) there is NO engine replay yet — the API verifies the
+ *      seed commitment + that this seat's stored outcome matches the persisted
+ *      authoritative hand record, and says so in `reason` even on the true arm.
+ *      The UI copy MUST track that difference (founder ruling 2026-08-20: the
+ *      old copy claimed a replay that never ran; also, no verification design
+ *      may ever expose folded/mucked hole cards — the full-replay path that
+ *      would reveal the deck is REJECTED, not deferred).
  *
  * Replaces the stale "ships in Phase 6.7.x" placeholder: the server-authoritative
  * commit-reveal engine + the /verify endpoint are live, so this surface is real.
  *
- * Used by `/cove/verify/[eventId]` when gameType is blackjack/holdem/baccarat.
+ * Used by `/cove/verify/[eventId]` when gameType is blackjack/holdem/baccarat/poker.
  */
 
 import { useEffect, useState } from 'react';
@@ -40,6 +46,7 @@ const GAME_LABEL: Record<GameType, string> = {
   blackjack: 'Blackjack',
   holdem: "Hold'em",
   baccarat: 'Baccarat',
+  poker: 'Poker',
 };
 
 type LoadState =
@@ -162,6 +169,7 @@ export default function ServerEventVerifier({ eventId, gameType }: Props) {
       {sealed && verify.status === 'done' && (
         <VerdictPanel
           label={label}
+          gameType={gameType}
           commitOk={verify.commitOk}
           verified={serverVerified ?? null}
           verdict={verify.verdict}
@@ -177,16 +185,18 @@ export default function ServerEventVerifier({ eventId, gameType }: Props) {
 
 function VerdictPanel({
   label,
+  gameType,
   commitOk,
   verified,
   verdict,
 }: {
   label: string;
+  gameType: GameType;
   commitOk: boolean;
   verified: boolean | null;
   verdict: EventVerifyResponse;
 }) {
-  // Overall fairness = commitment holds AND server replay matched.
+  // Overall fairness = commitment holds AND the server check passed.
   const pending = verified === null;
   const ok = commitOk && verified === true;
   const tone = pending ? 'pending' : ok ? 'ok' : 'fail';
@@ -195,7 +205,11 @@ function VerdictPanel({
   const bg =
     tone === 'ok' ? 'rgba(0,255,100,0.05)' : tone === 'fail' ? 'rgba(255,56,96,0.06)' : 'rgba(5,10,24,0.5)';
 
-  const reason = verdict.verified !== true ? (verdict as { reason?: string }).reason : undefined;
+  // Poker's server check is NOT an engine replay (seed commitment +
+  // authoritative-consistency only — the API discloses this in `reason` even on
+  // the verified:true arm). Every claim below must track that difference.
+  const isPoker = gameType === 'poker';
+  const reason = (verdict as { reason?: string }).reason;
   const expected = verdict.verified !== null ? (verdict.expected as Record<string, unknown> | null) : null;
   const stored = verdict.stored as Record<string, unknown> | undefined;
 
@@ -207,7 +221,9 @@ function VerdictPanel({
           pending
             ? 'Awaiting server-seed reveal'
             : ok
-              ? `Provably fair — ${label} hand verified`
+              ? isPoker
+                ? `Seed commitment verified: ${label} outcome consistent`
+                : `Provably fair — ${label} hand verified`
               : 'Mismatch — this hand did not verify'
         }
       />
@@ -219,13 +235,27 @@ function VerdictPanel({
           : '✗ Commitment check FAILED: sha256(serverSeed) ≠ serverSeedHash'}
       </Line>
 
-      {/* Layer 2 — server replay attestation */}
+      {/* Layer 2 — server attestation */}
       {pending ? (
         <Line tone="dim">
           Server replay pending — {reason === 'shoe-not-yet-closed'
             ? 'the session is still open.'
             : 'engine replay not available for this row version.'}
         </Line>
+      ) : isPoker ? (
+        <>
+          <Line tone={verdict.verified === true ? 'ok' : 'fail'}>
+            {verdict.verified === true
+              ? "✓ Server check: this seat's stored outcome (committed / won / net) matches the authoritative hand record."
+              : `✗ Server check failed${reason ? `: ${reason}` : ''}.`}
+          </Line>
+          <Line tone="dim">
+            Poker hands are not re-dealt by this verifier. The check above proves the
+            pre-hand seed commitment and outcome consistency. A full public re-deal is
+            deliberately not offered: it would expose folded and mucked hole cards,
+            which stay private forever.
+          </Line>
+        </>
       ) : (
         <Line tone={verdict.verified === true ? 'ok' : 'fail'}>
           {verdict.verified === true

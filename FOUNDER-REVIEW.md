@@ -47,6 +47,35 @@
   phrasing that fails is a bug report we want.
 - Shipped by: land gamification + salvage sessions, 2026-08-09.
 
+## COVE
+
+### Baccarat Walk Away from mid-shoe idle (staging)
+- **What:** you can now cash out of baccarat between coups, not only right after a
+  settle — the red Walk Away button shows whenever a shoe is open.
+- **Where:** staging → cove → baccarat: deal one coup, press Next Coup (back to
+  idle), then Walk Away. Seed reveals, table auto-closes ~1.4s later; Deal greys
+  out during that window.
+- **Feedback wanted:** does the exit feel right; any state where you feel trapped.
+- Shipped by: pokPlus, 2026-08-20.
+
+### Poker verify page tells the truth now (staging)
+- **What:** poker rows in `/cove/history` get a real label, filter chip, and a
+  verify page that says exactly what the server proved (seed commitment + outcome
+  consistency) instead of "undefined Verifier" and a replay claim that never ran.
+- **Where:** staging → play a hold'em cash hand → `/cove/history` → Verify on the
+  poker row.
+- **Feedback wanted:** copy check — does the fairness wording read clear and honest
+  to a player (your muck ruling is baked into the copy).
+- Shipped by: pokPlus, 2026-08-20.
+
+### Idle empty tables self-close after 30 min (staging)
+- **What:** an abandoned player-created cash table (nobody seated, no chips) now
+  closes on its own after 30 minutes and frees your 3-table limit.
+- **Where:** staging → create a cash table, leave it, come back 30+ min later —
+  gone from the lobby, cap slot free.
+- **Feedback wanted:** none required — listed so you know the behavior changed.
+- Shipped by: pokPlus, 2026-08-20.
+
 ## WORLD / 3D
 
 ### Kelp camera fix (staging `fd99d61d`)

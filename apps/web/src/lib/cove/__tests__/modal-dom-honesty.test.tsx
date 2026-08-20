@@ -448,4 +448,81 @@ describe('executed 2D modal DOM honesty', () => {
       timers.restore();
     }
   });
+
+  test('baccarat: Walk Away reachable from idle mid-shoe; Deal locks after the seed reveals', async () => {
+    let closeCalls = 0;
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/session/current')) {
+        return jsonResponse({ error: 'unauthorized' }, 401);
+      }
+      if (url.pathname.endsWith('/session/open')) {
+        return jsonResponse({ shoe: shoe('baccarat'), walletBalance: 100 });
+      }
+      if (url.pathname.endsWith('/coup') && init?.method === 'POST') {
+        return jsonResponse(BACCARAT_SETTLED);
+      }
+      if (url.pathname.endsWith('/session/close') && init?.method === 'POST') {
+        closeCalls += 1;
+        return jsonResponse({
+          shoeId: 'baccarat-shoe',
+          status: 'closed',
+          serverSeed: 'b'.repeat(64),
+          serverSeedHash: 'a'.repeat(64),
+          clientSeed: 'client-seed',
+          coupsPlayed: 1,
+          totalBet: '25',
+          totalPayout: '49',
+          closedAt: '2026-08-20T00:00:00.000Z',
+        });
+      }
+      throw new Error(`Unexpected baccarat fetch: ${init?.method ?? 'GET'} ${url.pathname}`);
+    }) as typeof fetch;
+    useCoveStore.setState({
+      baccaratOpen: true,
+      baccaratBet: 25,
+      baccaratDisplayBalance: 100,
+    });
+
+    const container = await mountModal(BaccaratModal);
+    // Real tier: the walk-away path branches on isRealTier (guest = plain
+    // close, no shoe close / seed reveal). The harness default seeds auth-me
+    // as null (guest), so promote to a logged-in user for this test.
+    queryClient!.setQueryData(['auth-me'], { user: { id: 'user-test', isGuest: false } });
+    await flushWork();
+    // 1400 = the post-walk-away auto-close timer — captured so it can neither
+    // fire for real between tests nor race the assertions below.
+    const timers = captureRevealTimers([120, 240, 1400]);
+    try {
+      // Fresh no-shoe idle: no Walk Away (nothing to close).
+      expect(
+        [...container.querySelectorAll('button')].some((b) => b.textContent?.includes('Walk Away')),
+      ).toBe(false);
+
+      await act(async () => buttonByText(container, 'Deal PLAYER (25 vCLAW)').click());
+      await flushWork();
+      for (let index = 0; index < 5; index += 1) await timers.run(240);
+      await timers.run(120); // settle
+
+      // Back to idle mid-shoe: Walk Away must now be reachable (the old gate
+      // rendered it only on phase==='settled', trapping idle players in the
+      // shoe with no cash-out path short of dealing another coup).
+      await act(async () => buttonByText(container, 'Next Coup').click());
+      await flushWork();
+      const walkAway = buttonByText(container, 'Walk Away');
+      expect(walkAway.disabled).toBe(false);
+
+      await act(async () => walkAway.click());
+      await flushWork();
+      expect(closeCalls).toBe(1);
+      // Auto-close armed: Deal must be locked (an enabled Deal here would open
+      // an orphaned shoe the pending close then skips) and Walk Away is gone.
+      expect(buttonByText(container, 'Deal PLAYER (25 vCLAW)').disabled).toBe(true);
+      expect(
+        [...container.querySelectorAll('button')].some((b) => b.textContent?.includes('Walk Away')),
+      ).toBe(false);
+    } finally {
+      timers.restore();
+    }
+  });
 });

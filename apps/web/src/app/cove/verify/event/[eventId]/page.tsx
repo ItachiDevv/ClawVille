@@ -31,6 +31,7 @@ const GAME_LABEL: Record<GameType, string> = {
   blackjack: 'Blackjack',
   holdem: "Hold'em",
   baccarat: 'Baccarat',
+  poker: 'Poker',
 };
 
 export default function CoveVerifyEventPage({ params }: PageProps) {

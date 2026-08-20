@@ -49,6 +49,8 @@ interface FakeTableRow {
   status: string;
   createdBy: string;
   tableEscrowCt: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 interface FakeSeatRow {
@@ -72,12 +74,14 @@ const state = {
   /** tableIds passed to the eager-seat path (Option B) — one per created table. */
   seatHouseBotsCalls: [] as string[],
   retireHouseTableCalls: [] as string[],
+  retireIdleEmptyTableCalls: [] as string[],
   releaseBustedSeatCalls: [] as Array<{ tableId: string; seatId: string }>,
   seats: [] as FakeSeatRow[],
   liveTableIds: new Set<string>(),
   houseBankBalance: 1_000_000,
   /** When set, createTable throws for this tierKey (per-tier failure isolation). */
   failTier: null as string | null,
+  failIdleTableIds: new Set<string>(),
   houseBankId: 'house-bank-scaler-1',
   /** When true, houseBankAvatarId() throws (seeder not ensured yet). */
   bankNotReady: false,
@@ -88,11 +92,13 @@ function resetState(): void {
   state.createCalls = [];
   state.seatHouseBotsCalls = [];
   state.retireHouseTableCalls = [];
+  state.retireIdleEmptyTableCalls = [];
   state.releaseBustedSeatCalls = [];
   state.seats = [];
   state.liveTableIds = new Set<string>();
   state.houseBankBalance = 1_000_000;
   state.failTier = null;
+  state.failIdleTableIds = new Set<string>();
   state.houseBankId = 'house-bank-scaler-1';
   state.bankNotReady = false;
 }
@@ -118,6 +124,8 @@ mock.module('../cash-table-manager-singleton', () => ({
         status: 'open',
         createdBy: creator.avatarId as string,
         tableEscrowCt: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       };
       state.tables.push(row);
       return row;
@@ -158,6 +166,21 @@ mock.module('../cash-table-manager-singleton', () => ({
       }
       if (table.tableEscrowCt > 0) return false;
       table.status = 'closed';
+      return true;
+    },
+    async retireIdleEmptyTable(tableId: string) {
+      state.retireIdleEmptyTableCalls.push(tableId);
+      if (state.failIdleTableIds.has(tableId)) {
+        throw new Error(`forced idle retirement failure for ${tableId}`);
+      }
+      const table = state.tables.find((candidate) => candidate.id === tableId);
+      if (!table || table.source === 'house' || table.status !== 'open') return false;
+      if (table.tableEscrowCt !== 0) return false;
+      if (state.seats.some((seat) => seat.tableId === tableId && seat.status !== 'left')) {
+        return false;
+      }
+      table.status = 'closed';
+      table.updatedAt = new Date();
       return true;
     },
     async releaseBustedSeat(tableId: string, seatId: string) {
@@ -258,7 +281,38 @@ mock.module('@clawville/database', () => ({
   ...realDatabase,
   db: {
     async execute(q: unknown) {
-      if (queryText(q).includes('from poker_cash_seats')) {
+      const text = queryText(q);
+      if (text.includes('left join poker_cash_seats')) {
+        const rawWindow = process.env.CASH_IDLE_EMPTY_TABLE_WINDOW_MS;
+        const parsedWindow = Number(rawWindow);
+        const windowMs =
+          rawWindow !== undefined &&
+          rawWindow !== '' &&
+          Number.isFinite(parsedWindow) &&
+          Number.isInteger(parsedWindow)
+            ? Math.max(300_000, parsedWindow)
+            : 1_800_000;
+        const cutoff = Date.now() - windowMs;
+        return state.tables
+          .filter((table) => {
+            if (
+              table.status !== 'open' ||
+              table.source === 'house' ||
+              table.tableEscrowCt !== 0
+            ) {
+              return false;
+            }
+            const tableSeats = state.seats.filter((seat) => seat.tableId === table.id);
+            if (tableSeats.some((seat) => seat.status !== 'left')) return false;
+            const lastSeatActivity = tableSeats.reduce(
+              (latest, seat) => Math.max(latest, seat.updatedAt.getTime()),
+              table.createdAt.getTime(),
+            );
+            return Math.max(table.updatedAt.getTime(), lastSeatActivity) < cutoff;
+          })
+          .map(({ id }) => ({ id }));
+      }
+      if (text.includes('from poker_cash_seats')) {
         const cutoff = Date.now() - 10 * 60 * 1_000;
         return state.seats
           .filter(
@@ -270,7 +324,7 @@ mock.module('@clawville/database', () => ({
           )
           .map((seat) => ({ seat_id: seat.id, table_id: seat.tableId }));
       }
-      if (queryText(q).includes('select id from poker_cash_tables')) {
+      if (text.includes('select id from poker_cash_tables')) {
         return state.tables.filter(isMismatchedHouseTable).map(({ id }) => ({ id }));
       }
       const tierKey = tierKeyFromCountQuery(q);
@@ -288,7 +342,7 @@ mock.module('@clawville/database', () => ({
 
 // Import the scaler + config AFTER the mocks are registered.
 const { cashHouseScalerPass } = await import('../cash-house-scaler');
-const { HOUSE_TIERS } = await import('../cash-house-config');
+const { HOUSE_TIERS, idleEmptyTableWindowMs } = await import('../cash-house-config');
 
 // ── Env helpers ───────────────────────────────────────────────────────────────
 const SAVED_ENV: Record<string, string | undefined> = {};
@@ -298,6 +352,7 @@ const ENV_KEYS = [
   'CASH_HOUSE_TABLES_MID',
   'CASH_HOUSE_TABLES_HIGH',
   'CASH_HOUSE_SEEDED_SLOTS_PER_TABLE',
+  'CASH_IDLE_EMPTY_TABLE_WINDOW_MS',
 ];
 
 beforeEach(() => {
@@ -461,6 +516,8 @@ describe('cashHouseScaler — mismatched retirement and busted-seat release', ()
       status: 'open',
       createdBy: state.houseBankId,
       tableEscrowCt: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
     state.tables.push(table);
     return table;
@@ -681,5 +738,146 @@ describe('cashHouseScaler — mismatched retirement and busted-seat release', ()
     expect(await cashHouseScalerPass()).toBe(0);
     expect(state.releaseBustedSeatCalls).toEqual([]);
     expect(seat.status).toBe('sitting_out');
+  });
+});
+
+describe('cashHouseScaler — idle empty non-house retirement', () => {
+  function disableHouseCreation(): void {
+    process.env.CASH_HOUSE_TABLES_LOW = '0';
+    process.env.CASH_HOUSE_TABLES_MID = '0';
+    process.env.CASH_HOUSE_TABLES_HIGH = '0';
+  }
+
+  function addPlayerTable(opts?: {
+    source?: 'player-public' | 'private' | 'house';
+    ageMs?: number;
+    escrowCt?: number;
+  }): FakeTableRow {
+    const timestamp = new Date(Date.now() - (opts?.ageMs ?? 31 * 60 * 1_000));
+    const table: FakeTableRow = {
+      id: randomUUID(),
+      source: opts?.source ?? 'player-public',
+      visibility: opts?.source === 'private' ? 'private' : 'public',
+      tierKey: opts?.source === 'house' ? 'low' : null,
+      ...APPROVED_STAKES.low,
+      maxSeats: 6,
+      seededAgentSlots: 0,
+      status: 'open',
+      createdBy: 'player-table-creator',
+      tableEscrowCt: opts?.escrowCt ?? 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    state.tables.push(table);
+    return table;
+  }
+
+  it('closes an empty non-house table idle past the window', async () => {
+    disableHouseCreation();
+    const table = addPlayerTable();
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireIdleEmptyTableCalls).toEqual([table.id]);
+    expect(table.status).toBe('closed');
+  });
+
+  it('keeps an empty table open until the latest seat activity passes the window', async () => {
+    disableHouseCreation();
+    const table = addPlayerTable({ ageMs: 2 * 60 * 60 * 1_000 });
+    state.seats.push({
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'left',
+      currentStackCt: 0,
+      updatedAt: new Date(Date.now() - 5 * 60 * 1_000),
+    });
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireIdleEmptyTableCalls).toEqual([]);
+    expect(table.status).toBe('open');
+  });
+
+  it('does not discover an idle table with an active seat', async () => {
+    disableHouseCreation();
+    const table = addPlayerTable({ ageMs: 2 * 60 * 60 * 1_000 });
+    const seat: FakeSeatRow = {
+      id: randomUUID(),
+      tableId: table.id,
+      isSeeded: 'false',
+      status: 'sitting_in',
+      currentStackCt: 1,
+      updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1_000),
+    };
+    state.seats.push(seat);
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireIdleEmptyTableCalls).toEqual([]);
+    expect(table.status).toBe('open');
+    expect(seat.status).toBe('sitting_in');
+  });
+
+  it('never discovers a house table through the idle-empty query', async () => {
+    disableHouseCreation();
+    const table = addPlayerTable({ source: 'house', ageMs: 2 * 60 * 60 * 1_000 });
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireIdleEmptyTableCalls).toEqual([]);
+    expect(state.retireHouseTableCalls).toEqual([]);
+    expect(table.status).toBe('open');
+  });
+
+  it('continues retiring later candidates after one idle-table retirement throws', async () => {
+    disableHouseCreation();
+    const failing = addPlayerTable();
+    const succeeding = addPlayerTable({ source: 'private' });
+    state.failIdleTableIds.add(failing.id);
+    const errors: unknown[][] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+
+    try {
+      expect(await cashHouseScalerPass()).toBe(0);
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    expect(state.retireIdleEmptyTableCalls).toEqual([failing.id, succeeding.id]);
+    expect(failing.status).toBe('open');
+    expect(succeeding.status).toBe('closed');
+    expect(errors.some(([message]) => String(message).includes(failing.id))).toBe(true);
+  });
+
+  it('runs idle retirement before returning when the house bank is not ready', async () => {
+    disableHouseCreation();
+    state.bankNotReady = true;
+    const table = addPlayerTable();
+
+    expect(await cashHouseScalerPass()).toBe(0);
+    expect(state.retireIdleEmptyTableCalls).toEqual([table.id]);
+    expect(table.status).toBe('closed');
+  });
+});
+
+describe('cash-house config — idle empty table window', () => {
+  it('uses the 30-minute default when unset', () => {
+    expect(idleEmptyTableWindowMs()).toBe(1_800_000);
+  });
+
+  it('accepts a valid custom window', () => {
+    process.env.CASH_IDLE_EMPTY_TABLE_WINDOW_MS = '900000';
+    expect(idleEmptyTableWindowMs()).toBe(900_000);
+  });
+
+  it('clamps a too-small window to the five-minute floor', () => {
+    process.env.CASH_IDLE_EMPTY_TABLE_WINDOW_MS = '1';
+    expect(idleEmptyTableWindowMs()).toBe(300_000);
+  });
+
+  it('falls back to the default for a non-numeric window', () => {
+    process.env.CASH_IDLE_EMPTY_TABLE_WINDOW_MS = 'not-a-number';
+    expect(idleEmptyTableWindowMs()).toBe(1_800_000);
   });
 });

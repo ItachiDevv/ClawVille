@@ -1228,9 +1228,14 @@ function _shouldYieldClickToFartherHotspot(
   );
   if (!farther) return false;
   const roomRoot = _coveRoomRootRef.current;
+  // FAIL CLOSED pre-load: with no room geometry mounted there is ZERO occlusion
+  // evidence — yielding would hand the click to the farther hotspot on pure
+  // guesswork. Keep the near hotspot until the room root exists (both the
+  // gameready and fallback GLBs set the ref on mount).
+  if (!roomRoot) return false;
   _hotspotYieldRaycaster.ray.copy(e.ray);
   _hotspotYieldRaycaster.far = Infinity;
-  const sceneHits = roomRoot ? _hotspotYieldRaycaster.intersectObject(roomRoot, true) : [];
+  const sceneHits = _hotspotYieldRaycaster.intersectObject(roomRoot, true);
   const dScene = sceneHits[0]?.distance ?? null;
   return dScene === null || dScene > farther.distance;
 }
