@@ -794,6 +794,12 @@ class NpcSimulation {
       };
     }
     if (input.operation.verb === 'place_kit_piece') {
+      // House posture (recorded decision, adversarial review finding 3): the
+      // cove resolver admits house actors, but a house avatar can never reach
+      // a placement — the under-lock session revalidation below refuses their
+      // deliberately non-ledger local sessions (same exclusion the faucets
+      // chose), and even without it both material faucets exclude the house,
+      // so its balance is structurally zero and the debit refuses.
       const parcelRows = await db.execute<{ id: string }>(
         sql`SELECT id FROM land_parcels
             WHERE parcel_code = ${input.operation.parcelCode}
@@ -803,6 +809,7 @@ class NpcSimulation {
       const parcelId = parcelRows[0]?.id;
       if (!parcelId) throw new Error('not_parcel_owner');
       const { settleKitPlacement } = await import('./land-kit-settlement');
+      const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
       const result = await settleKitPlacement({
         identity: input.identity,
         parcelId,
@@ -813,6 +820,10 @@ class NpcSimulation {
         stackLevel: 1,
         paymentRail: 'materials',
         idempotencyKey: input.idempotencyKey,
+        // Re-resolved UNDER the settlement locks, exactly like the salvage
+        // seam: a session that rotates between this dispatch and the
+        // transaction must not settle against the principal it used to be.
+        revalidateBinding: () => resolveAgentSession(input.identity.sessionId),
       });
       return {
         kind: 'kit_piece',
@@ -2692,6 +2703,11 @@ class NpcSimulation {
         }
       }
     }
+    // The reservation key is deliberately PARCEL-scoped for every land verb,
+    // including place_kit_piece: within one container this rate-limits an
+    // agent to one placement per parcel per window (an LLM burst-dedupe, not
+    // a money bound — the durable idempotency key and the cell-stack unique
+    // index are the real guards, and both carry the full piece identity).
     const reservationKey = `${resolved.avatarId}:${operation.verb}:${operation.parcelCode}`;
     const prior = this.autonomousLandActionLastAdmittedAt.get(reservationKey);
     if (prior !== undefined && admittedAt - prior < AUTONOMOUS_LAND_ACTION_INTERVAL_MS) {

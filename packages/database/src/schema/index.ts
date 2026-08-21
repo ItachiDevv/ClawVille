@@ -22,7 +22,6 @@ export * from './bounty-usdc-holds';
 // of every economic agent action; sealed by covenant-chain-sealer, served on the
 // partner-covenant read surface. See covenant-action-records.ts header.
 export * from './covenant-action-records';
-export * from './bounty-gas-sponsorships';
 export * from './building-skills';
 export * from './building-chat-reward-claims';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
@@ -134,17 +133,10 @@ export * from './land-materials';
 // verification columns live on `users` itself. Migration 0060 (idempotent, CI
 // migrate gate — NEVER db:push). See `land-hold-verify.ts` header.
 export * from './land-hold-verify';
-// SAP Option C — on-chain USDC escrow gate settlement ledger (2026-06-22).
-// sap_escrow_settlements / sap_escrow_approvals: the backend at-most-once-settle
-// + depositor-approval guard for the verify-before-release USDC rail. PURELY
-// ADDITIVE — two net-new tables + one enum, db:push is a clean CREATE (apply by
-// hand, NOT db:push). Gated OFF at route/service layer. See `sap-escrow.ts`.
+// Legacy SAP settlement evidence retained for the Covenant partner's read-only
+// verification response. No application writer remains; do not remove these
+// exports while partner-covenant still reads the historical rows.
 export * from './sap-escrow';
-// Automatic SAP identity registration + Metaplex AgentIdentity attachment
-// registry. Additive migration 0042; one durable state-machine row per avatar.
-export * from './sap-identity';
-// House-signed reputation writes for verified composed-bounty completions.
-export * from './sap-reputation';
 // Tokenomics C3 (2026-07-07) — CLV buy-queue seam (clv_buy_queue +
 // clv_buy_status). Records swap INTENT only; the executor is DRY-RUN gated
 // (CLV_SWAP_EXECUTE=true refuses to boot). Migration 0014 (idempotent, by hand).
@@ -480,7 +472,7 @@ export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
   }),
 }));
 
-// ── SAP Option C escrow gate (settlement ledger) ─────────────────────────────
+// ── Legacy SAP settlement evidence (Covenant read compatibility) ────────────
 
 export const sapEscrowSettlementsRelations = relations(sapEscrowSettlements, ({ one }) => ({
   depositor: one(avatars, {

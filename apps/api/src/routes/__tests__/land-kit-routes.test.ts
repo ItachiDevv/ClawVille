@@ -185,7 +185,10 @@ describe('land kit ownership and money discipline', () => {
     );
     // Materials are a SINK: exactly one debit, and NO treasury credit leg,
     // because there is no counterparty on the other side of a material spend.
-    expect(kitSettlementSource.match(/debitMaterials\(\{/g)).toHaveLength(1);
+    // `debitMaterials\(` (call-or-nothing) rather than `\(\{` so a second call
+    // written as `debitMaterials(opts, tx)` could never slip past the count;
+    // the import line has no paren and cannot match.
+    expect(kitSettlementSource.match(/debitMaterials\(/g)).toHaveLength(1);
     expect(kitSettlementSource).toContain("source: 'build'");
     // The rail and the material cost are recorded in the audit row, which is
     // what the replay path reads back.

@@ -835,3 +835,44 @@ describe('in-world executor covenant hooks', () => {
     ]);
   });
 });
+
+// P7c (adversarial review finding 10): the seam's money constants live in
+// npc-simulation.ts's `autonomousLandSettle` kit branch, which every covenant
+// test above deliberately STUBS. These source-text pins are what keeps the
+// hosted verb's forced-materials contract from being editable without a red
+// test — the exact protection the route's own constants already have in
+// land-kit-routes.test.ts.
+describe('place_kit_piece seam source contract (finding 10)', () => {
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const { join } = require('node:path') as typeof import('node:path');
+  const simSource = readFileSync(join(import.meta.dir, '..', 'npc-simulation.ts'), 'utf8');
+  const kitBranch = (() => {
+    const start = simSource.indexOf("if (input.operation.verb === 'place_kit_piece')");
+    expect(start).toBeGreaterThan(0);
+    const end = simSource.indexOf("kind: 'kit_piece'", start);
+    expect(end).toBeGreaterThan(start);
+    return simSource.slice(start, end);
+  })();
+
+  it('forces the MATERIALS rail and ground placement — never a caller-supplied rail', () => {
+    expect(kitBranch).toContain("paymentRail: 'materials'");
+    expect(kitBranch).toContain('rotationStep: 0');
+    expect(kitBranch).toContain('stackLevel: 1');
+    // The operation union must never grow a rail field the seam could thread
+    // through: the ONLY paymentRail in the whole settle seam is the literal.
+    expect(kitBranch).not.toContain('input.operation.paymentRail');
+  });
+
+  it('resolves the parcel OWNERSHIP-SCOPED and revalidates the live binding under the locks', () => {
+    expect(kitBranch).toContain('owner_avatar_id = ${input.identity.avatarId}');
+    expect(kitBranch).toContain('revalidateBinding: () => resolveAgentSession(input.identity.sessionId)');
+  });
+
+  it('parses only the four whitelisted params — an explicit rail param is refused', () => {
+    const parseStart = simSource.indexOf("case 'place_kit_piece': {");
+    expect(parseStart).toBeGreaterThan(0);
+    const parseCase = simSource.slice(parseStart, simSource.indexOf('case ', parseStart + 30));
+    expect(parseCase).toContain("new Set(['parcelCode', 'pieceKey', 'gridX', 'gridY'])");
+    expect(parseCase).not.toContain('params.paymentRail');
+  });
+});

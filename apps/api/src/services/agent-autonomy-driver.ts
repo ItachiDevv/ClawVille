@@ -1245,7 +1245,12 @@ class AgentAutonomyDriver {
         );
         return EMPTY_SALVAGE_TARGETS;
       }),
-      readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+      // House agents cannot earn materials (both faucets exclude them), so a
+      // build block would only ever offer calls they can never pay. Same skip
+      // as the salvage read above: save the queries per tick for the fleet.
+      entry.isHouse
+        ? Promise.resolve(EMPTY_AUTONOMOUS_BUILD_TARGETS)
+        : readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} build targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
@@ -1629,9 +1634,14 @@ class AgentAutonomyDriver {
         : ['- none in range']),
       'Materials build home yards. salvage_node walks you there if you are far, then claims when you arrive — call it again on arrival.',
     ].join('\n');
+    // Parcels with zero valid placements (full yard, drifted catalog row) are
+    // omitted entirely — a header with no calls under it is prompt noise.
+    const buildableParcels = buildTargets.parcels.filter(
+      (parcel) => parcel.placements.length > 0,
+    );
     const buildBlock = [
       `BUILD TARGETS (server-derived HOME-yard placements; copy one exact call). You hold ${buildTargets.materialBalance} materials; small pieces cost ${buildTargets.costs.small}, large pieces cost ${buildTargets.costs.large}:`,
-      ...buildTargets.parcels.flatMap((parcel) => [
+      ...buildableParcels.flatMap((parcel) => [
         `- ${parcel.parcelCode} (HOME level ${parcel.structureLevel}):`,
         ...parcel.placements.map((placement) =>
           `  - ${placement.call} costs ${placement.costMaterials} materials`,
@@ -1662,7 +1672,7 @@ class AgentAutonomyDriver {
       ...hereNow,
       landBlock,
       ...(salvageTargets.nodes.length > 0 ? [salvageBlock] : []),
-      ...(buildTargets.parcels.length > 0 ? [buildBlock] : []),
+      ...(buildableParcels.length > 0 ? [buildBlock] : []),
       '',
       questBlock,
       '',

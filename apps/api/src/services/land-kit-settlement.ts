@@ -45,6 +45,19 @@ export interface SettleKitPlacementInput {
   paymentRail: KitPaymentRail;
   idempotencyKey: string;
   tx?: LandKitTx;
+  /**
+   * Hosted-path guard, mirrored from the salvage settlement: re-resolve the
+   * live agent session UNDER the settlement locks so a session that rotates
+   * between dispatch and this transaction never settles against the principal
+   * it used to be. The human/connected route omits it (the middleware already
+   * resolved the identity on this very request).
+   */
+  revalidateBinding?: () => Promise<{
+    readonly userId: string | null;
+    readonly avatarId: string | null;
+    readonly agentId: string;
+    readonly ledgerCapable: boolean;
+  } | null>;
 }
 
 export interface KitPlacementSettlementResult {
@@ -267,6 +280,17 @@ async function settleInTransaction(
 ): Promise<KitPlacementSettlementResult> {
   const avatarId = input.identity.avatarId;
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+  if (input.revalidateBinding) {
+    const live = await input.revalidateBinding();
+    if (
+      !live
+      || !live.ledgerCapable
+      || live.avatarId !== avatarId
+      || (input.identity.kind === 'agent' && live.agentId !== input.identity.agentId)
+    ) {
+      throw new HTTPException(403, { message: 'binding_drift' });
+    }
+  }
   const parcelRows = await tx.execute<{
     id: string;
     owner_avatar_id: string | null;

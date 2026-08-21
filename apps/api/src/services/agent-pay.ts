@@ -20,7 +20,6 @@ import {
   users,
   type AgentPayment,
 } from '@clawville/database';
-import { ensureSapIdentityQueued } from './sap/sap-identity-registrar';
 import { decryptWalletRow } from './keypair-vault';
 import {
   readAssociatedTokenAccountExists,
@@ -1230,8 +1229,6 @@ async function payAgentLocked(
     if (admission.kind === 'existing') {
       return await dispatchExisting(admission.row, input, d, permit);
     }
-    ensureSapIdentityQueued(input.senderAvatarId, 'agent-pay.sender');
-    ensureSapIdentityQueued(recipient.avatarId, 'agent-pay.recipient');
     return await executePending(admission.row, d, permit);
   } finally {
     releasePayAiCircuitPermitWithoutObservation(permit, d.now().getTime());

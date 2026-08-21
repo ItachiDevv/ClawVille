@@ -8,13 +8,13 @@
  */
 
 import { PublicKey, type Connection } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { z } from 'zod';
 import {
   SOLANA_DEVNET_CAIP2,
   SOLANA_MAINNET_CAIP2,
   type X402Network,
 } from './x402-payai';
-import { getAssociatedTokenAddress } from './sap/sap-spl';
 
 const atomicSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 const signatureSchema = z.string().trim().min(1).max(128);
@@ -126,7 +126,7 @@ export function resolveReconcileNetwork(value: unknown): X402Network | null {
 export function deriveUsdcAta(owner: string, mint: string): string {
   const ownerKey = new PublicKey(addressSchema.parse(owner));
   const mintKey = new PublicKey(addressSchema.parse(mint));
-  return getAssociatedTokenAddress(mintKey, ownerKey, false).toBase58();
+  return getAssociatedTokenAddressSync(mintKey, ownerKey, false).toBase58();
 }
 
 export interface VerifiedUsdcTransfer {

@@ -102,7 +102,6 @@ import { partnerHatcherLaunchRoutes } from './routes/partner-hatcher-launch';
 import { partnerCovenantRoutes } from './routes/partner-covenant';
 import { partnerStorefrontRoutes } from './routes/partner-storefront';
 import { agentRegistrationRoutes } from './routes/agent-registration';
-import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
@@ -115,9 +114,6 @@ import { cosmeticsRoutes } from './routes/cosmetics';
 import { kelpRoutes } from './routes/kelp';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
-// SAP Option C — on-chain agent identity + USDC escrow rail (gated OFF + devnet +
-// dry-run by default; mainnet is a code gate, not an env). See routes/sap.ts.
-import { sapRoutes } from './routes/sap';
 // Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
 import { coveSlotsRouter } from './routes/cove-slots';
@@ -268,19 +264,6 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
 // `:fingerprint/...` path so the full mount path is the canonical URL.
 app.route('/.well-known/agents', agentRegistrationRoutes);
 
-// ---------------------------------------------------------------------------
-// EIP-8004 registration JSON for SAP/Metaplex-registered agents (identity rail)
-// ---------------------------------------------------------------------------
-// Public, per-SAP-agent EIP-8004 document served at
-//   GET /agents/:sapAgentPda/eip-8004.json
-// This exact URL is baked into each agent's MPL Core AgentIdentity plugin
-// (attached via the 1DREG / mpl-agent-014 registry), so the path is
-// immutable once an asset is minted. Covenant + the SAP SDK's
-// MetaplexBridge verifyLink/tripleCheckLink fetch it to validate the
-// asset ↔ SAP-agent link. Distinct from the fingerprint-keyed
-// /.well-known/agents route above (different key, different consumer).
-app.route('/agents', agentEip8004Routes);
-
 // API routes
 app.route('/api/auth', authRoutes);
 app.route('/api/avatars', avatarRoutes);
@@ -416,7 +399,7 @@ app.route('/api/partner/hatcher', partnerHatcherLaunchRoutes);
 // size cap is needed (unlike the partner-hatcher write surface's 64 KB bodyLimit).
 // Fronted by requireCovenantPartner: ed25519 partner signature (same GET wire
 // scheme as Hatcher) + IP allowlist, fail-closed 503 when unprovisioned.
-// See routes/partner-covenant.ts + docs/sap-covenant-payai-architecture.md.
+// See routes/partner-covenant.ts.
 app.route('/api/partner/covenant', partnerCovenantRoutes);
 // Phase D — ADDITIVE gated partner direct-USDC storefront (FEATURE_GATE
 // partner_storefront_tier). Buyer → partner USDC, WE NEVER CUSTODY, credits NO
@@ -428,14 +411,6 @@ app.route('/api/partner/storefront', partnerStorefrontRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
-// SAP — on-chain agent identity / reputation / tool / discovery + escrow USDC
-// money rail. Triple-gated DARK by default (SAP_ENABLED=false,
-// SAP_ESCROW_ENABLED=false, SAP_USDC_ESCROW_ENABLED=false, SAP_DRY_RUN=true) +
-// devnet-first; mainnet is a code gate (SAP_ALLOW_MAINNET in sap-config.ts), not
-// an env. The in-game economy stays ClawTokens. See routes/sap.ts FEATURE_GATE +
-// docs/sap-integration.md. Rule E5 parity: human cookie OR agent session both
-// bind to identity.avatarId's own custodial Phase-5.1 wallet.
-app.route('/api/sap', sapRoutes);
 // Phase 6.1 slice 3 — Cove slots (commit-reveal RNG + session escrow).
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
@@ -864,29 +839,6 @@ process.on('uncaughtException', (err) => {
     console.error('[API] x402 auto-reconcile worker failed to start:', err);
   }
 
-  // Automatic SAP identity registration/Metaplex attachment. The worker
-  // self-gates on SAP_ENABLED + SAP_IDENTITY_AUTOREG_ENABLED and resumes its
-  // durable DB state after restarts; starting it while dark is a safe no-op.
-  try {
-    const { startSapIdentityRegistrarWorker } = await import(
-      './services/sap/sap-identity-registrar'
-    );
-    startSapIdentityRegistrarWorker();
-  } catch (err) {
-    console.error('[API] SAP identity registrar worker failed to start:', err);
-  }
-
-  // Verified composed-bounty completion -> house-signed SAP reputation. The
-  // durable worker self-gates on SAP_ENABLED + SAP_REPUTATION_WRITES_ENABLED.
-  try {
-    const { startSapReputationWriter } = await import(
-      './services/sap/sap-reputation-writer'
-    );
-    startSapReputationWriter();
-  } catch (err) {
-    console.error('[API] SAP reputation writer failed to start:', err);
-  }
-
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
@@ -1070,16 +1022,15 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Wallet-withdraw resume worker failed to start:', err);
   }
 
-  // Shared bounty crank. Tier 1 always runs and releases expired DB holds with
-  // no chain call. Tier 2 work remains gated inside the pass by the SAP flags.
-  // Cadence SAP_BOUNTY_RESUME_POLL_MS (default 5 min, floor 1 min).
+  // Tier-1 expiry is a DB-only lifecycle that releases expired poster holds.
+  // Cadence BOUNTY_TIER1_SWEEP_MS (default 5 min, floor 1 min).
   try {
-    const { startComposedBountyResumeWorker } = await import(
-      './services/bounty-composition-worker'
+    const { startTier1BountySweeper } = await import(
+      './services/bounty-tier1-sweeper'
     );
-    startComposedBountyResumeWorker();
+    startTier1BountySweeper();
   } catch (err) {
-    console.error('[API] Composed-bounty resume worker failed to start:', err);
+    console.error('[API] Tier-1 bounty expiry sweeper failed to start:', err);
   }
 
   // Land hold-wallet ownership proof, DOOR 2 (exact-dust transfer + auto-refund).
@@ -1720,22 +1671,6 @@ async function gracefulShutdown(signal: string) {
       // If the worker module failed to load earlier, there's nothing to stop.
     }
     try {
-      const { stopSapIdentityRegistrarWorker } = await import(
-        './services/sap/sap-identity-registrar'
-      );
-      stopSapIdentityRegistrarWorker();
-    } catch {
-      // If the registrar module failed to load earlier, there's nothing to stop.
-    }
-    try {
-      const { stopSapReputationWriter } = await import(
-        './services/sap/sap-reputation-writer'
-      );
-      stopSapReputationWriter();
-    } catch {
-      // If the writer module failed to load earlier, there's nothing to stop.
-    }
-    try {
       const { stopWagerIntentReconciler } = await import(
         './services/wager-intent-reconciler'
       );
@@ -1780,14 +1715,12 @@ async function gracefulShutdown(signal: string) {
       // If the executor module failed to load earlier, there's nothing to stop.
     }
     try {
-      // Composed-bounty resume worker — idempotent no-op when the composed rail
-      // was dark and the worker never started.
-      const { stopComposedBountyResumeWorker } = await import(
-        './services/bounty-composition-worker'
+      const { stopTier1BountySweeper } = await import(
+        './services/bounty-tier1-sweeper'
       );
-      stopComposedBountyResumeWorker();
+      stopTier1BountySweeper();
     } catch {
-      // If the module failed to load earlier, there's nothing to stop.
+      // If the Tier-1 sweeper module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopClvPriceOracle } = await import('./services/clv-price-oracle');

@@ -79,20 +79,20 @@ const FIXTURES: Fixture[] = [
       note: 'general authed staging tests (land buy/claim, cove, quests)',
     };
   }),
-  // ── the persistent TEST HERMES AGENT (bounty → Metaplex identity milestone) ──
-  // The single ClawVille agent we drive through the bounty escrow flow end-to-end
-  // so the Covenant/OOBE dev can mint + 014-register its Metaplex Core identity,
-  // attest its verified bounty record, and gate it = FIRST ClawVille agent live in
-  // the Metaplex directory as verified (founder=@extratard, dev's ask 2026-07-01).
-  // It plays the WORKER in a SAP DisputeWindow escrow (agent-bound, verifiable
-  // settled record). Its custodial Solana wallet + SAP register_agent (devnet) are
-  // provisioned SEPARATELY when we run the bounty (not by this account seed).
+  // ── the persistent TEST HERMES AGENT (bounty end-to-end test worker) ────────
+  // The single ClawVille agent we drive through the bounty flow end-to-end.
+  // RETIRED SCOPE (2026-08-20): this account existed for the Metaplex
+  // verified-identity milestone, which rode the OOBE/SAP escrow rail — that
+  // partner and its rails were removed on founder order, so the identity-mint
+  // milestone is dead. The account is KEPT as the standing bounty test worker
+  // for the surviving rail (custodial hold → PayAI payout). Its custodial
+  // Solana wallet is provisioned separately, not by this account seed.
   {
     email: 'hermestest@staging.clawville.test',
     username: 'hermestest',
     name: 'Hermes Test Agent',
     avatarName: 'HermesTest',
-    note: 'PERSISTENT test Hermes agent — bounty-worker for the Metaplex verified-identity milestone. See docs/staging-test-accounts.md.',
+    note: 'PERSISTENT test Hermes agent — standing bounty-worker for end-to-end bounty tests. See docs/staging-test-accounts.md.',
   },
 ];
 
