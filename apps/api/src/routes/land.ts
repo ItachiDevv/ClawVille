@@ -3219,7 +3219,6 @@ landRoutes.post(
   requireNonGuestIdentity,
   async (c) => {
     const identity = c.get('identity');
-    const avatarId = identity.avatarId;
     const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
     if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
     const parcelId = idParsed.data;

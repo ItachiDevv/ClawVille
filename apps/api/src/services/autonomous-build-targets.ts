@@ -112,8 +112,15 @@ function projectParcel(
   const stored: StoredPlacement[] = [];
   let currentSmall = 0;
   let currentLarge = 0;
+  let catalogDrift = false;
   for (const row of rows) {
-    if (!isKitPieceKey(row.piece_key)) continue;
+    if (!isKitPieceKey(row.piece_key)) {
+      // The settlement refuses the WHOLE parcel on a drifted stored key
+      // (piece_catalog_drift), so offering placements here would suggest
+      // calls that can never settle. Mirror the settlement rule instead.
+      catalogDrift = true;
+      continue;
+    }
     if (KIT_CATALOG[row.piece_key].size === 'small') currentSmall += 1;
     else currentLarge += 1;
     stored.push({
@@ -127,6 +134,9 @@ function projectParcel(
   }
 
   const structureLevel = Number(home.level);
+  if (catalogDrift) {
+    return { parcelCode: home.parcel_code, structureLevel, placements: [] };
+  }
   const occupied = resolveParcelPlacements(stored, home.tier).map((row) => row.footprint);
   const placements: AutonomousBuildPlacement[] = [];
   const pieceKeys = Object.keys(KIT_CATALOG).sort() as KitPieceKey[];

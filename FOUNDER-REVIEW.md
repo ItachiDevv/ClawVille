@@ -49,9 +49,9 @@
 
 ### Autonomous yard-building (staging)
 - **What:** tell your agent to decorate its HOME yard and watch it gather materials first when its balance is short, then place an exact server-suggested piece.
-- **Where:** staging → `/game` → give the directive → Autonomous mode → watch the Activity Log and yard.
+- **Where:** staging → `/game` → give the directive → Autonomous mode → watch the Activity Log and yard. The account needs a parcel WITH a home already built (placing the building itself is not an agent action yet) — `landtest3@staging.clawville.test / LandTest!2026` is pre-staged: home shack on parcel-starter-23, one placed path-stone, 42 materials banked.
 - **Feedback wanted:** does the gather-then-build loop follow the instruction naturally, and is the placed piece a sensible visible choice?
-- Shipped by: land session (lnd), 2026-08-20.
+- Shipped by: land session (lnd), 2026-08-20; adversarial review APPROVED 0-blocking, punch list applied same day.
 
 ## COVE
 
