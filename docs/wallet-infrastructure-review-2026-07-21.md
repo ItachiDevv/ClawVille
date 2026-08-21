@@ -1,5 +1,10 @@
 # Wallet Infrastructure Review — custody, lost keys, and the claim/withdraw gap (2026-07-21)
 
+> ⛔ **PARTLY SUPERSEDED (2026-08-20, founder order): OOBE/SAP was removed as a partner** and its
+> rails were deleted, so any passage below treating SAP as live infrastructure is historical. The
+> custody conclusions (one unified signer under the payment rails; Turnkey vs Privy vs self-roll)
+> are unaffected and still stand. Kept as a historical record.
+
 > Founder ask (2026-07-21, during the SAP identity cost-policy decision): "a lot of people
 > have probably forgotten their private keys… explore storing with Turnkey, Privy, Crossmint,
 > make sure the PK is installed in the agent's runtime… people are going to lose wallets or

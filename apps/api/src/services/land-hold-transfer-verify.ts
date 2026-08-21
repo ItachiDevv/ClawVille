@@ -13,17 +13,16 @@
  * ── THIS IS A REAL MAINNET SOL MONEY PATH ────────────────────────────────────
  * Get it wrong in one direction and we hand out free verification; get it wrong
  * in the other and we bleed the verify wallet dry. Every rule below is load
- * bearing. The exactly-once discipline is lifted from the reviewed
- * `sap/sap-gas-sponsor.ts` slice (claim lease + capture-before-send + throttled
- * condition alerts) and from the market-payout / wallet-withdraw executors
- * (forward-only recovery, ambiguous ⇒ reconcile, NEVER re-sign or re-send).
+ * bearing. Its local exactly-once discipline is claim lease +
+ * capture-before-send + throttled condition alerts, with the same forward-only
+ * recovery invariant as the market-payout / wallet-withdraw executors:
+ * ambiguous ⇒ reconcile, NEVER re-sign or re-send.
  *
  *   T4  MAINNET RPC. CLV and these wallets live on MAINNET. This file builds its
  *       OWN mainnet connection from `HELIUS_API_KEY`, mirroring the seam in
- *       `linked-wallet-clv-balance.ts:51`. It MUST NOT read
- *       `loadSapConfig().rpcUrl` — SAP is cluster-gated to devnet and a
- *       devnet/mainnet mismatch means real user dust lands at an address we
- *       never watch. There is deliberately no `sap-config` import here.
+ *       `linked-wallet-clv-balance.ts:51`. It MUST remain independent of any
+ *       cluster-selected RPC: a devnet/mainnet mismatch means real user dust
+ *       lands at an address we never watch.
  *   T5  DRAIN GUARD. Every refund burns ~5000 lamports of OUR fee, so unbounded
  *       attempts bleed the wallet. Two caps: a per-user UTC-day challenge cap
  *       and a global rolling-24h refund+fee spend cap. Either cap hit pages ops
@@ -703,7 +702,7 @@ export interface LandHoldVerifyDeps {
 }
 
 // ---------------------------------------------------------------------------
-// T4 — MAINNET RPC. Mirrors linked-wallet-clv-balance.ts:51. Never sap-config.
+// T4 — MAINNET RPC. Dedicated seam mirroring linked-wallet-clv-balance.ts:51.
 // ---------------------------------------------------------------------------
 
 let connectionCache: Connection | null = null;

@@ -118,6 +118,10 @@ export interface ChunkDropInput {
    * camera merely moved", which must NOT re-derive membership.
    */
   readonly basisChanged: boolean;
+  /** Device-profile draw ceiling; omitted preserves the desktop contract. */
+  readonly drawBudget?: number;
+  /** Device-profile triangle ceiling; omitted preserves the desktop contract. */
+  readonly triangleBudget?: number;
 }
 
 /** Residual cost of a chunk once `dropped` is excluded. */
@@ -135,10 +139,14 @@ export function residualCost(
   return { triangles, distinctKeys: keys.size };
 }
 
-function overBudget(cost: { triangles: number; distinctKeys: number }): boolean {
+function overBudget(
+  cost: { triangles: number; distinctKeys: number },
+  drawBudget = KIT_VISIBLE_DRAW_BUDGET,
+  triangleBudget = KIT_SUBMITTED_TRIANGLE_BUDGET,
+): boolean {
   return (
-    cost.triangles > KIT_SUBMITTED_TRIANGLE_BUDGET
-    || cost.distinctKeys > KIT_VISIBLE_DRAW_BUDGET
+    cost.triangles > triangleBudget
+    || cost.distinctKeys > drawBudget
   );
 }
 
@@ -149,7 +157,14 @@ function overBudget(cost: { triangles: number; distinctKeys: number }): boolean 
  * caller's identity check is a cheap and reliable "no state write needed".
  */
 export function computeChunkDrop(input: ChunkDropInput): ReadonlySet<string> {
-  const { parcels, nearestParcelCode, previousDropped, basisChanged } = input;
+  const {
+    parcels,
+    nearestParcelCode,
+    previousDropped,
+    basisChanged,
+    drawBudget = KIT_VISIBLE_DRAW_BUDGET,
+    triangleBudget = KIT_SUBMITTED_TRIANGLE_BUDGET,
+  } = input;
   if (parcels.length === 0) return EMPTY_DROP_SET;
 
   const nearestIsDropped =
@@ -162,7 +177,9 @@ export function computeChunkDrop(input: ChunkDropInput): ReadonlySet<string> {
   // The full chunk, as if nothing were dropped. Deciding from this rather than
   // from the post-drop snapshot is what stops a drop erasing its own reason.
   const unfiltered = residualCost(parcels, EMPTY_DROP_SET);
-  if (!overBudget(unfiltered)) return EMPTY_DROP_SET;
+  if (!overBudget(unfiltered, drawBudget, triangleBudget)) {
+    return EMPTY_DROP_SET;
+  }
 
   // Farthest from the camera goes first; the nearest parcel is never a
   // candidate, whatever the budget says.
@@ -172,7 +189,11 @@ export function computeChunkDrop(input: ChunkDropInput): ReadonlySet<string> {
 
   const dropped = new Set<string>();
   for (const candidate of candidates) {
-    if (!overBudget(residualCost(parcels, dropped))) break;
+    if (!overBudget(
+      residualCost(parcels, dropped),
+      drawBudget,
+      triangleBudget,
+    )) break;
     dropped.add(candidate.parcelCode);
   }
 
@@ -214,10 +235,12 @@ export function admitsChunk(
   rank: number,
   candidate: ChunkAdmissionCandidate,
   admitted: AdmissionTotals,
+  drawBudget = KIT_VISIBLE_DRAW_BUDGET,
+  triangleBudget = KIT_SUBMITTED_TRIANGLE_BUDGET,
 ): boolean {
   if (rank === 0) return true;
   return (
-    admitted.draws + candidate.draws <= KIT_VISIBLE_DRAW_BUDGET
-    && admitted.triangles + candidate.triangles <= KIT_SUBMITTED_TRIANGLE_BUDGET
+    admitted.draws + candidate.draws <= drawBudget
+    && admitted.triangles + candidate.triangles <= triangleBudget
   );
 }

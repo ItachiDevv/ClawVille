@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   resolveTier1BountyMaxUsdCents,
-  selectUsdcBountyTier,
   settleTier1Bounty,
   assertTier1BountyApprovable,
   claimTier1BountyCancellation,
@@ -34,12 +33,6 @@ describe('Tier-1 bounty rail and cap', () => {
     expect(resolveTier1BountyMaxUsdCents('not-money')).toBe(5_000);
   });
 
-  it('uses Tier 1 while SAP is paused and reserves Tier 2 for over-cap enabled posts', () => {
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_000, escrowGateOpen: false })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_001, escrowGateOpen: false })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_000, escrowGateOpen: true })).toBe(1);
-    expect(selectUsdcBountyTier({ rewardUsdCents: 5_001, escrowGateOpen: true })).toBe(2);
-  });
 });
 
 describe('Tier-1 approval settlement', () => {
@@ -487,7 +480,7 @@ describe('Tier-1 durable hold contracts', () => {
   );
   const service = readFileSync(resolve(__dirname, '../bounty-tier1.ts'), 'utf8');
   const route = readFileSync(resolve(__dirname, '../../routes/bounties.ts'), 'utf8');
-  const crank = readFileSync(resolve(__dirname, '../bounty-composition-worker.ts'), 'utf8');
+  const tier1Crank = readFileSync(resolve(__dirname, '../bounty-tier1-sweeper.ts'), 'utf8');
   const resume = readFileSync(resolve(__dirname, '../agent-pay-resume.ts'), 'utf8');
   const admission = readFileSync(resolve(__dirname, '../usdc-spend-admission.ts'), 'utf8');
   const agentPay = readFileSync(resolve(__dirname, '../agent-pay.ts'), 'utf8');
@@ -525,9 +518,42 @@ describe('Tier-1 durable hold contracts', () => {
     expect(route).toContain('await claimTier1BountyCancellation(tx');
   });
 
-  it('keeps Tier-1 expiry off-chain and settlement retries on the existing workers', () => {
-    expect(crank).toContain('sweepExpiredTier1Bounties');
-    expect(crank).toContain("if (bountySettlementRail() !== 'sap-payai-composed') return");
+  it('fails closed on historical USDC rows before every work-lifecycle mutation', () => {
+    const reviewRoute = route.indexOf("bountyRoutes.post('/attempts/:attemptId/review'");
+    const reviewGuard = route.indexOf('if (isUsdc && !isTier1)', reviewRoute);
+    const reviewMutation = route.indexOf("if (decision === 'approved')", reviewRoute);
+    expect(reviewRoute).toBeGreaterThanOrEqual(0);
+    expect(reviewGuard).toBeGreaterThan(reviewRoute);
+    expect(reviewGuard).toBeLessThan(reviewMutation);
+
+    const claimRoute = route.indexOf("bountyRoutes.post('/:id/claim'");
+    const claimGuard = route.indexOf('if (isUsdc && !isTier1)', claimRoute);
+    const claimMutation = route.indexOf('const attempt = await db.transaction', claimRoute);
+    expect(claimRoute).toBeGreaterThanOrEqual(0);
+    expect(claimGuard).toBeGreaterThan(claimRoute);
+    expect(claimGuard).toBeLessThan(claimMutation);
+
+    const submitRoute = route.indexOf("bountyRoutes.post('/:id/submit'");
+    const submitGuard = route.indexOf('if (isUsdc && !isTier1)', submitRoute);
+    const submitMutation = route.indexOf('const updated = await db.transaction', submitRoute);
+    expect(submitRoute).toBeGreaterThanOrEqual(0);
+    expect(submitGuard).toBeGreaterThan(submitRoute);
+    expect(submitGuard).toBeLessThan(submitMutation);
+
+    const cancelRoute = route.indexOf("bountyRoutes.delete('/:id'");
+    const cancelGuard = route.indexOf('if (isUsdc && !isTier1)', cancelRoute);
+    const cancelMutation = route.indexOf('await claimTier1BountyCancellation(tx', cancelRoute);
+    expect(cancelRoute).toBeGreaterThanOrEqual(0);
+    expect(cancelGuard).toBeGreaterThan(cancelRoute);
+    expect(cancelGuard).toBeLessThan(cancelMutation);
+    expect(route.match(/if \(isUsdc && !isTier1\)/g)?.length).toBe(4);
+  });
+
+  it('keeps Tier-1 expiry in its own off-chain sweeper', () => {
+    expect(tier1Crank).toContain('sweepExpiredTier1Bounties');
+    expect(tier1Crank).toContain('BOUNTY_TIER1_SWEEP_MS');
+    expect(tier1Crank).not.toContain('services/sap');
+    expect(tier1Crank).not.toContain('bounty-composition-worker');
     expect(resume).toContain('resumeTier1BountySettlements');
     expect(service).not.toContain('refundComposedBounty');
   });

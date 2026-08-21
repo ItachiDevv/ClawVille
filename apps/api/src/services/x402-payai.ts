@@ -149,6 +149,23 @@ export function usdCentsToUsdcAtomic(usdCents: number): string {
   return String(usdCents * atomicPerCent);
 }
 
+/**
+ * Convert a bounty reward denominated in vCLAW to USDC base units. One vCLAW is
+ * $0.01, so an on-chain payment moves `tokenReward × 10^4` base units.
+ *
+ * UNIT CONTRACT: `tokenReward` is an integer vCLAW amount (for example, `250`
+ * means 250 vCLAW = $2.50). The payment moves the corresponding integer
+ * base-unit amount (2_500_000 in that example); no floating-point money crosses
+ * this boundary.
+ */
+/** vCLAW reward → u64 USDC base units (1 vCLAW = 10,000 base units). */
+export function usdcRewardBaseUnits(tokenReward: number): bigint {
+  if (!Number.isInteger(tokenReward) || tokenReward <= 0) {
+    throw new Error(`bounty tokenReward must be a positive integer, got ${tokenReward}`);
+  }
+  return BigInt(usdCentsToUsdcAtomic(tokenReward));
+}
+
 // ---------------------------------------------------------------------------
 // buildTopupQuote — produce the x402 v2 PaymentRequirements (the 402 body)
 // ---------------------------------------------------------------------------

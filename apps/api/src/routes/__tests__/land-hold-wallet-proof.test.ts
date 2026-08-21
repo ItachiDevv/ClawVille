@@ -1107,7 +1107,7 @@ describe('round 4 — refund copy never asserts a verification outcome', () => {
 
 describe('protocol manual parity', () => {
   it('retains the single current protocol version declaration', () => {
-    expect(protocol).toContain('export const PROTOCOL_VERSION = 56;');
+    expect(protocol).toContain('export const PROTOCOL_VERSION = 57;');
     expect(protocol.match(/export const PROTOCOL_VERSION = /g) ?? []).toHaveLength(1);
   });
 

@@ -207,10 +207,16 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 - **The domain is ALWAYS `clawville.world`** in every footer, link bar, and printed URL.
   We do not own clawville.com; the `.com` printed in the Spaces Recap exemplar is an error,
   never copy it. (Founder ruling 2026-07-26.)
-- Partner names (PayAI, Meridian, OOBE, Covenant): naming them in graphics and copy is fine
+- Partner names (PayAI, Meridian, Covenant): naming them in graphics and copy is fine
   with no sign-off needed; we implement their software and are partnered with them.
   (Founder ruling 2026-07-26.) When placing their actual LOGOS, follow each project's own
   published brand guidelines as normal practice.
+- **OOBE / SAP is NO LONGER A PARTNER (founder order 2026-08-20).** Never name OOBE, SAP,
+  or the Synapse Agent Protocol in any new graphic, banner, roadmap entry, or copy, and
+  never advertise on-chain bounty escrow or SAP-backed agent identity — those rails were
+  removed from the product. Existing published banners that carry them are historical
+  records; they are marked DO NOT REPUBLISH and must not be reissued or reused as
+  templates. USDC bounties run one rail now: a custodial hold paid out through PayAI.
 
 ## 9. Asset inventory
 

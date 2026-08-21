@@ -52,6 +52,10 @@ import {
   VRM_AVATAR_FALLBACK_SCALE,
 } from '@/lib/three/vrm-avatar-sizing';
 import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
+import {
+  CURRENT_WORLD_DEVICE_PROFILE,
+  WORLD_DEVICE_CLASS,
+} from '@/lib/three/device-class';
 // Camera-cull import REMOVED 2026-05-11 — all NPC/label culling deleted per user
 // directive ("remove all the culling completely it ruins the game"). The helper
 // still ships for BumperShellsPlayer but is not used in the open world scene.
@@ -154,6 +158,90 @@ function getNpcFrameShared(elapsed: number, camera: THREE.Camera) {
   return _npcFrameCache;
 }
 
+// Phone-only VRM mixer budget. Each VRMNpcMesh already computes camera
+// distance in its frame callback, so that pass incrementally builds the next
+// frame's nearest-eight set instead of sorting/allocating another collection.
+// Selection lags by one rendered frame; the first observed frame stays full
+// rate so animation never cold-starts frozen. All buffers are module-owned and
+// swapped in place at the frame epoch boundary.
+const PHONE_FULL_RATE_MIXER_LIMIT =
+  CURRENT_WORLD_DEVICE_PROFILE.activeFullRateNpcMixers ?? 0;
+const THROTTLED_NPC_MIXER_INTERVAL_SECONDS = 1 / 15;
+let _activeFullRateMixerIds = new Array<string | null>(
+  PHONE_FULL_RATE_MIXER_LIMIT,
+).fill(null);
+let _nextFullRateMixerIds = new Array<string | null>(
+  PHONE_FULL_RATE_MIXER_LIMIT,
+).fill(null);
+const _nextFullRateMixerDistances = new Float64Array(
+  PHONE_FULL_RATE_MIXER_LIMIT,
+);
+let _fullRateMixerEpoch = -1;
+let _activeFullRateMixerCount = 0;
+let _nextFullRateMixerCount = 0;
+
+function shouldTickNpcMixerAtFullRate(
+  elapsed: number,
+  npcId: string,
+  distanceSq: number,
+  isFarNpc: boolean,
+  isPossessedPlayerNpc: boolean,
+): boolean {
+  if (isPossessedPlayerNpc) return true;
+  if (
+    WORLD_DEVICE_CLASS !== 'phone'
+    || PHONE_FULL_RATE_MIXER_LIMIT === 0
+  ) {
+    return true;
+  }
+
+  if (_fullRateMixerEpoch !== elapsed) {
+    _fullRateMixerEpoch = elapsed;
+    const previousActiveIds = _activeFullRateMixerIds;
+    _activeFullRateMixerIds = _nextFullRateMixerIds;
+    _nextFullRateMixerIds = previousActiveIds;
+    _activeFullRateMixerCount = _nextFullRateMixerCount;
+    _nextFullRateMixerCount = 0;
+  }
+
+  if (!isFarNpc) {
+    let insertionIndex = _nextFullRateMixerCount;
+    for (let index = 0; index < _nextFullRateMixerCount; index++) {
+      const slotDistance = _nextFullRateMixerDistances[index]!;
+      const slotId = _nextFullRateMixerIds[index];
+      if (
+        distanceSq < slotDistance
+        || (distanceSq === slotDistance && (slotId === null || npcId < slotId))
+      ) {
+        insertionIndex = index;
+        break;
+      }
+    }
+
+    if (insertionIndex < PHONE_FULL_RATE_MIXER_LIMIT) {
+      const nextCount = Math.min(
+        PHONE_FULL_RATE_MIXER_LIMIT,
+        _nextFullRateMixerCount + 1,
+      );
+      for (let index = nextCount - 1; index > insertionIndex; index--) {
+        _nextFullRateMixerIds[index] = _nextFullRateMixerIds[index - 1]!;
+        _nextFullRateMixerDistances[index] =
+          _nextFullRateMixerDistances[index - 1]!;
+      }
+      _nextFullRateMixerIds[insertionIndex] = npcId;
+      _nextFullRateMixerDistances[insertionIndex] = distanceSq;
+      _nextFullRateMixerCount = nextCount;
+    }
+  }
+
+  if (isFarNpc) return false;
+  if (_activeFullRateMixerCount === 0) return true;
+  for (let index = 0; index < _activeFullRateMixerCount; index++) {
+    if (_activeFullRateMixerIds[index] === npcId) return true;
+  }
+  return false;
+}
+
 // Sanity clamp for per-species computed scale (mirrors arena-location-npcs logic).
 // MAX = TARGET_NPC_HEIGHT/0.5 = 90 — any computed scale > 90 implies native above-pivot
 // height < 0.5 units, which means only tiny props/accessories are non-skinned geometry.
@@ -162,7 +250,7 @@ function getNpcFrameShared(elapsed: number, camera: THREE.Camera) {
 const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.225
 const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 const NPC_LOD_NEAR_DIST_SQ = 2_500 * 2_500;
-const NPC_LOD_FAR_DIST_SQ = 5_000 * 5_000;
+const NPC_LOD_FAR_DIST_SQ = CURRENT_WORLD_DEVICE_PROFILE.npcLodFarDistSq;
 const NPC_LOD_VERY_FAR_DIST_SQ = 6_000 * 6_000;
 // Authored walk-cycle reference speed for matching leg cadence to rendered
 // translation: the rendered ground speed (wu/s) at which the walk clip plays
@@ -1101,6 +1189,9 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
   // idle NPCs) by summing frame deltas and flushing them in a single vrm.update() call.
   // The verlet integrator is time-step independent so passing 2× dt is physically correct.
   const springDeltaAccRef = useRef(0);
+  // Phone profile: VRMs outside the nearest-eight full-rate set accumulate
+  // mixer time and flush at ~15Hz. This is independent of spring cadence.
+  const mixerDeltaAccRef = useRef(0);
   /**
    * Most recently applied surfaceClip for the possessed-player NPC.
    * useFrame computes desiredClip every frame (idle / jump / swim /
@@ -1385,13 +1476,15 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
     group.rotation.y = currentRotY.current;
     group.rotation.x = currentPitchX.current;
 
-    // PERF: split mixer (60Hz unconditional) from spring-bone physics (15Hz).
+    // PERF: split the keyframe mixer from spring-bone physics.
     // Re-locked 2026-04-26 after PR #65 reverted to the early-return pattern that
     // killed the entire useFrame on odd mid-distance frames — including the
     // mixer.update() — causing keyframe animation to run at 30Hz with visible jank.
     //
-    // The mixer MUST run every frame at 60Hz (Nori parity). Spring-bone physics
-    // is uniform 15Hz for all VRM NPCs as of 2026-05-11 (was tiered 10/20Hz by
+    // Desktop/tablet mixers keep the every-frame Nori-parity path. On phones,
+    // only the nearest eight non-far VRMs stay full-rate; the remainder flush
+    // accumulated mixer delta at ~15Hz. Spring-bone physics
+    // is distance-tiered separately (was tiered 10/20Hz by
     // camera distance; flattened with the culling removal — see 3dStructure.md
     // §5d). Walking NPCs and idle NPCs use the same rate now; 15Hz is below the
     // perceptual hair/tail-lag threshold at typical viewing distance.
@@ -1501,6 +1594,34 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
       // resumes with the correct delta on re-entry.
       const isFarNpc = _springDistSq > NPC_LOD_FAR_DIST_SQ;
 
+      const mixerRunsFullRate =
+        WORLD_DEVICE_CLASS !== 'phone'
+        || shouldTickNpcMixerAtFullRate(
+          clock.elapsedTime,
+          d.id,
+          _springDistSq,
+          isFarNpc,
+          isPossessedPlayerNpc,
+        );
+
+      // The possessed phone NPC is exempt from the far freeze. Keep this
+      // separate so desktop/tablet preserve the historical call order below.
+      if (
+        WORLD_DEVICE_CLASS === 'phone'
+        && isFarNpc
+        && isPossessedPlayerNpc
+      ) {
+        mixerDeltaAccRef.current = 0;
+        animator.updateMixerOnly(
+          dt,
+          npcLockIdle ? false : animationMoving,
+          npcLockIdle ? false : (d.isRunning ?? false),
+          1,
+        );
+      } else if (WORLD_DEVICE_CLASS === 'phone' && isFarNpc) {
+        mixerDeltaAccRef.current = 0;
+      }
+
       if (!isFarNpc) {
         // Ambient one-shots accrue only during a continuous, visually idle
         // interval. Remote/possessed/autonomous bodies are player/agent
@@ -1553,12 +1674,30 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
         // restore) — wandering NPCs gate walk/idle on actual rendered speed and
         // scale the walk action to match; possessed NPC keeps input-driven
         // isMoving + timeScale 1.
-        animator.updateMixerOnly(
-          dt,
-          npcLockIdle ? false : animationMoving,
-          npcLockIdle ? false : (d.isRunning ?? false),
-          isPossessedPlayerNpc ? 1 : speedScale
-        );
+        if (mixerRunsFullRate) {
+          if (WORLD_DEVICE_CLASS === 'phone') mixerDeltaAccRef.current = 0;
+          animator.updateMixerOnly(
+            dt,
+            npcLockIdle ? false : animationMoving,
+            npcLockIdle ? false : (d.isRunning ?? false),
+            isPossessedPlayerNpc ? 1 : speedScale,
+          );
+        } else {
+          mixerDeltaAccRef.current += dt;
+          if (
+            mixerDeltaAccRef.current + 1e-6
+              >= THROTTLED_NPC_MIXER_INTERVAL_SECONDS
+          ) {
+            const mixerDelta = Math.min(mixerDeltaAccRef.current, 0.1);
+            mixerDeltaAccRef.current = 0;
+            animator.updateMixerOnly(
+              mixerDelta,
+              npcLockIdle ? false : animationMoving,
+              npcLockIdle ? false : (d.isRunning ?? false),
+              isPossessedPlayerNpc ? 1 : speedScale,
+            );
+          }
+        }
 
         // BUG 1 squat foot-grounding REMOVED 2026-06-18 — oscillated (stale
         // normalized-bone read fed a 1-frame-lag loop → violent flicker between
@@ -1569,10 +1708,12 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
         // Close NPCs (<2500wu) run at 30Hz — better perceived quality for
         // the character the user is staring at. Far NPCs (>6000wu) drop to
         // ~7.5Hz — imperceptible at range.
-        const springMod =
+        const baseSpringMod =
           _springDistSq < 6_250_000  ? 2 :   // < 2500wu → 30Hz
           _springDistSq < 36_000_000 ? 4 :   // < 6000wu → 15Hz
                                        8;    // ≥ 6000wu → ~7.5Hz
+        const springMod =
+          baseSpringMod << CURRENT_WORLD_DEVICE_PROFILE.springBoneLodOffset;
         if ((frame + seed) % springMod === 0) {
           const acc = Math.min(springDeltaAccRef.current, 0.1);
           animator.updateSpringOnly(acc);

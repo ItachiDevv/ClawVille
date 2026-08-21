@@ -53,6 +53,36 @@
 - **Feedback wanted:** does the gather-then-build loop follow the instruction naturally, and is the placed piece a sensible visible choice?
 - Shipped by: land session (lnd), 2026-08-20; adversarial review APPROVED 0-blocking, punch list applied same day.
 
+## BOUNTIES / ECONOMY
+
+### OOBE/SAP fully removed — bounty board on the single low-tier rail (staging)
+- **What:** the on-chain escrow partner is gone end to end. USDC bounties now run
+  ONLY the low-tier rail (custodial hold up to $50, PayAI payout); vCLAW bounties
+  unchanged. All our on-chain funds were recovered first (house wallet now holds
+  0.2218 SOL, up 0.157).
+- **Where:** staging.clawville.world — post a small USDC bounty, claim it with a
+  second account, approve, watch the payout; also glance at the landing page
+  roadmap (OOBE naming stripped — approve the reworded two entries).
+- **Feedback wanted:** bounty flow feels unchanged; roadmap wording OK.
+- Session tier2/Fable, 2026-08-20.
+
+### Roadmap + brand copy after the OOBE removal (staging) — wording check
+- **What:** OOBE naming is gone from the site, and two roadmap entries that
+  advertised capabilities we NO LONGER HAVE were reworded, not just de-named:
+  "Agents go on-chain" no longer claims escrowed work (it now says what stayed
+  true — real wallets, real USDC settling on mainnet, Covenant recording), and
+  "Every agent, on-chain" dropped its "proven rails" phrasing.
+- **Also:** three ALREADY PUBLISHED announcement banners (protocol-upgrades,
+  agent-economy-live, agents-pay-agents) advertise on-chain escrow. I marked them
+  DO NOT REPUBLISH in place rather than rewriting them, since they record what was
+  actually announced at the time.
+- **Where:** staging.clawville.world landing page → scroll to the roadmap.
+- **Feedback wanted:** approve the two reworded entries, and confirm you are OK
+  keeping the old banners as historical records (alternative: delete them).
+- Session tier2/Fable, 2026-08-20.
+
+---
+
 ## COVE
 
 ### Nori button reachable on phones (LIVE on prod via #271)
@@ -140,10 +170,25 @@
 - **Feedback wanted:** is the pop-in acceptable?
 - Shipped by: cv-covefreeze perf session, 2026-08-11.
 
+### Mobile perf wave 1 phone feel-pass (staging)
+- **What:** the phone render profile targets a steadier default 30 FPS, removes
+  world shadows, and shortens draw distance while keeping the complete world,
+  HUD, labels, and real buildings intact.
+- **Where:** staging → `/game` on a PHONE. Try the default URL first, then compare
+  `/game?fpscap=0` with the cap disabled; the default should load, feel steadier,
+  show softer/no shadows, and fade distant scenery sooner.
+- **Feedback wanted:** how the 30 FPS cap feels versus uncapped, whether the shorter
+  draw distance feels too aggressive, and anything visually broken from any camera
+  angle (especially a moving dark band/void at the horizon).
+- Shipped by: cv-covefreeze mobile perf wave 1 session, 2026-08-20.
+
 ---
 
 ## DECISIONS OWED (rulings, not playtests)
 
+- **ECONOMY — recovered 0.2218 SOL destination.** The OOBE wind-down returned the
+  stake + rents to the prod house custodial wallet (`ESpn…sm3m`). Leave it there,
+  or name a wallet to sweep it to.
 - **LAND — Founders' Row: auction vs hold-only.** Surfaces + server currently say
   hold-only (10M CLV). If auction is intended, that is a server change to scope.
 - **LAND — Prepay one-click confirm.** Approve/reject the one-click rent-prepay

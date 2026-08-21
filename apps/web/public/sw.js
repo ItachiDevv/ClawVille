@@ -71,10 +71,20 @@
 //   - Already-cached roster entries are skipped, so repeat signals are cheap.
 //   - Offline coverage is UNCHANGED in steady state: same roster, same
 //     runtime cache-first population via ASSET_PATH_PREFIXES.
+//
+// 2026-08-20 v12 (mobile perf wave 1 — incremental asset-cache ledger):
+//   - Asset byte sizes are recorded once at write time (Content-Length first,
+//     one body read only when the header is absent) in a synthetic JSON entry
+//     inside the asset cache. Budget enforcement now updates a running total
+//     and evicts the ledger's oldest entries without re-reading every body.
+//   - The v11 page-signaled deferred-precache/ack protocol is unchanged.
 
-const CACHE_VERSION = 'v11';
+const CACHE_VERSION = 'v12';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
+const ASSET_LEDGER_URL = new URL('/__clawville_asset_cache_ledger__', self.location.origin).href;
+const ASSET_LEDGER_REQUEST = new Request(ASSET_LEDGER_URL);
+const ASSET_LEDGER_SCHEMA_VERSION = 1;
 
 // Individual file size limit: skip caching files larger than this.
 const MAX_INDIVIDUAL_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -163,26 +173,184 @@ function isHtmlNavigation(request) {
   return request.mode === 'navigate';
 }
 
-// Returns the total byte size stored in a cache.
-async function cacheByteSize(cache) {
-  const responses = await cache.matchAll();
-  let total = 0;
-  for (const res of responses) {
-    const buf = await res.clone().arrayBuffer();
-    total += buf.byteLength;
-  }
-  return total;
+// Cache writes can arrive concurrently from the deferred roster and runtime
+// fetch path. Serialize asset+ledger mutations so running totals cannot lose an
+// update when two responses finish together.
+let assetLedgerMutation = Promise.resolve();
+
+function withAssetLedgerMutation(mutation) {
+  const run = assetLedgerMutation.then(mutation, mutation);
+  assetLedgerMutation = run.catch(() => {});
+  return run;
 }
 
-// Evict the oldest entries from a cache until it fits within maxBytes.
-// "Oldest" = entries appended earliest (cache.keys() returns insertion order).
-async function evictOldest(cache, maxBytes) {
-  const keys = await cache.keys();
-  for (const req of keys) {
-    const size = await cacheByteSize(cache);
-    if (size <= maxBytes) break;
-    await cache.delete(req);
+function assetRequestUrl(request) {
+  if (typeof request === 'string') {
+    return new URL(request, self.location.origin).href;
   }
+  return request.url;
+}
+
+async function responseByteSize(response) {
+  const headerSize = responseHeaderByteSize(response);
+  if (headerSize !== null) return headerSize;
+  return (await response.clone().arrayBuffer()).byteLength;
+}
+
+function responseHeaderByteSize(response) {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength !== null) {
+    const parsed = Number.parseInt(contentLength, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
+function emptyAssetLedger() {
+  return {
+    version: ASSET_LEDGER_SCHEMA_VERSION,
+    totalBytes: 0,
+    nextOrder: 0,
+    entries: [],
+  };
+}
+
+function parseAssetLedger(value) {
+  if (
+    !value ||
+    value.version !== ASSET_LEDGER_SCHEMA_VERSION ||
+    !Array.isArray(value.entries)
+  ) {
+    return null;
+  }
+
+  const ledger = emptyAssetLedger();
+  for (const entry of value.entries) {
+    if (
+      !entry ||
+      typeof entry.url !== 'string' ||
+      !Number.isFinite(entry.size) ||
+      entry.size < 0 ||
+      !Number.isFinite(entry.order) ||
+      entry.order < 0
+    ) {
+      return null;
+    }
+    ledger.entries.push({ url: entry.url, size: entry.size, order: entry.order });
+    ledger.totalBytes += entry.size;
+    ledger.nextOrder = Math.max(ledger.nextOrder, entry.order + 1);
+  }
+  ledger.entries.sort((a, b) => a.order - b.order);
+  return ledger;
+}
+
+async function writeAssetLedger(cache, ledger) {
+  const body = JSON.stringify(ledger);
+  await cache.put(
+    ASSET_LEDGER_REQUEST,
+    new Response(body, {
+      headers: {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+      },
+    })
+  );
+}
+
+// A missing/corrupt ledger can happen after an interrupted upgrade. Rebuild it
+// once from cache insertion order; body reads remain Content-Length fallbacks,
+// never the normal per-write path.
+async function rebuildAssetLedger(cache) {
+  const ledger = emptyAssetLedger();
+  for (const request of await cache.keys()) {
+    if (request.url === ASSET_LEDGER_URL) continue;
+    const response = await cache.match(request);
+    if (!response) continue;
+    const size = await responseByteSize(response);
+    ledger.entries.push({ url: request.url, size, order: ledger.nextOrder });
+    ledger.nextOrder += 1;
+    ledger.totalBytes += size;
+  }
+  await writeAssetLedger(cache, ledger);
+  return ledger;
+}
+
+async function readAssetLedger(cache) {
+  try {
+    const response = await cache.match(ASSET_LEDGER_REQUEST);
+    if (response) {
+      const ledger = parseAssetLedger(await response.json());
+      if (ledger) {
+        // Cache Storage has no cross-entry transaction. If the worker stopped
+        // after an asset put/delete but before the ledger write, reconcile URL
+        // metadata cheaply and rebuild sizes only when the sets differ.
+        const cachedUrls = (await cache.keys())
+          .map((request) => request.url)
+          .filter((url) => url !== ASSET_LEDGER_URL);
+        if (cachedUrls.length === ledger.entries.length) {
+          const ledgerUrls = new Set(ledger.entries.map((entry) => entry.url));
+          if (cachedUrls.every((url) => ledgerUrls.has(url))) return ledger;
+        }
+      }
+    }
+  } catch {
+    // Rebuild below.
+  }
+  return rebuildAssetLedger(cache);
+}
+
+async function evictLedgerOldest(cache, ledger, maxBytes) {
+  while (ledger.totalBytes > maxBytes && ledger.entries.length > 0) {
+    const oldest = ledger.entries.shift();
+    await cache.delete(oldest.url);
+    ledger.totalBytes = Math.max(0, ledger.totalBytes - oldest.size);
+  }
+}
+
+async function putAsset(cache, request, response, byteSize, maxBytes) {
+  return withAssetLedgerMutation(async () => {
+    const ledger = await readAssetLedger(cache);
+    const url = assetRequestUrl(request);
+    const existingIndex = ledger.entries.findIndex((entry) => entry.url === url);
+    if (existingIndex >= 0) {
+      ledger.totalBytes -= ledger.entries[existingIndex].size;
+      ledger.entries.splice(existingIndex, 1);
+    }
+
+    // The ledger entry is also the transaction marker. Remove it before the
+    // asset write so termination after an in-place URL replacement (same key,
+    // different size) cannot leave a valid-looking old total; the next worker
+    // rebuilds once from the cache if this mutation does not finish.
+    await cache.delete(ASSET_LEDGER_REQUEST);
+    await cache.put(request, response);
+    try {
+      ledger.entries.push({ url, size: byteSize, order: ledger.nextOrder });
+      ledger.nextOrder += 1;
+      ledger.totalBytes += byteSize;
+      await evictLedgerOldest(cache, ledger, maxBytes);
+      await writeAssetLedger(cache, ledger);
+    } catch (error) {
+      // Force a one-time rebuild on the next mutation rather than trusting a
+      // stale total after an interrupted asset+metadata write.
+      try { await cache.delete(ASSET_LEDGER_REQUEST); } catch {}
+      throw error;
+    }
+  });
+}
+
+// Evict the oldest asset entries using the running byte total. The synthetic
+// ledger entry itself is never counted or evicted as an asset.
+async function evictOldest(cache, maxBytes) {
+  return withAssetLedgerMutation(async () => {
+    const ledger = await readAssetLedger(cache);
+    try {
+      await evictLedgerOldest(cache, ledger, maxBytes);
+      await writeAssetLedger(cache, ledger);
+    } catch (error) {
+      try { await cache.delete(ASSET_LEDGER_REQUEST); } catch {}
+      throw error;
+    }
+  });
 }
 
 // ─── install ──────────────────────────────────────────────────────────────────
@@ -222,11 +390,11 @@ async function precacheRoster() {
         }
         const res = await fetch(path, versioned ? undefined : { cache: 'no-cache' });
         if (!res.ok) return; // keep whatever we already have
-        const contentLength = res.headers.get('content-length');
-        if (contentLength && parseInt(contentLength, 10) > MAX_INDIVIDUAL_BYTES) {
+        const byteSize = await responseByteSize(res);
+        if (byteSize > MAX_INDIVIDUAL_BYTES) {
           return; // oversized, skip
         }
-        await glbCache.put(path, res);
+        await putAsset(glbCache, path, res, byteSize, MAX_GLB_CACHE_BYTES);
       } catch {
         // Network unavailable — not fatal; existing entries stay; next
         // signal retries.
@@ -293,9 +461,13 @@ self.addEventListener('activate', (event) => {
             const oldCache = await caches.open(oldKey);
             for (const req of await oldCache.keys()) {
               try {
+                if (req.url === ASSET_LEDGER_URL) continue;
                 if (await newCache.match(req)) continue;
                 const res = await oldCache.match(req);
-                if (res) await newCache.put(req, res);
+                if (res) {
+                  const byteSize = await responseByteSize(res);
+                  await putAsset(newCache, req, res, byteSize, MAX_GLB_CACHE_BYTES);
+                }
                 else sourceClean = false;
               } catch {
                 sourceClean = false; // keep this source as fallback
@@ -380,8 +552,8 @@ async function cacheFirstGlb(request, url) {
     if (!networkRes.ok) return networkRes;
 
     // Respect individual file size limit.
-    const contentLength = networkRes.headers.get('content-length');
-    if (contentLength && parseInt(contentLength, 10) > MAX_INDIVIDUAL_BYTES) {
+    const headerByteSize = responseHeaderByteSize(networkRes);
+    if (headerByteSize !== null && headerByteSize > MAX_INDIVIDUAL_BYTES) {
       return networkRes;
     }
 
@@ -390,9 +562,12 @@ async function cacheFirstGlb(request, url) {
     // Store asynchronously; don't block the response.
     (async () => {
       try {
-        await cache.put(request, resForCache);
-        // Enforce total cache budget after every write.
-        await evictOldest(cache, MAX_GLB_CACHE_BYTES);
+        // A missing Content-Length must not buffer the GLB on the response
+        // critical path. Measure the cache clone here, once, then enforce both
+        // the individual and total budgets before committing it.
+        const byteSize = headerByteSize ?? await responseByteSize(resForCache);
+        if (byteSize > MAX_INDIVIDUAL_BYTES) return;
+        await putAsset(cache, request, resForCache, byteSize, MAX_GLB_CACHE_BYTES);
       } catch {
         // QuotaExceededError or similar — not fatal
       }

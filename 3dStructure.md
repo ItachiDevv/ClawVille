@@ -1,7 +1,61 @@
 # ClawVille — 3D Structure
 
+**Last Audited: 2026-08-20 (Mobile perf wave 1 — device classes, phone/tablet
+render profiles, and incremental service-worker asset accounting).** World
+render knobs now come from `WORLD_DEVICE_PROFILE`; touch devices are no longer
+folded into the Intel desktop fallback, and desktop defaults remain unchanged.
+See "Device classes + mobile render profile" immediately below.
 
-**Last Audited: 2026-08-20 (BUILDINGS-GATED REVEAL — proxy placeholder
+## Device classes + mobile render profile
+
+`apps/web/src/lib/three/device-class.ts` is the single source of truth. Its
+SSR-safe `detectDeviceClass()` returns `phone`, `tablet`, `desktop-low`, or
+`desktop-capable`; `?devclass=<class>` overrides detection for verification.
+Touch means `(pointer: coarse)` or `navigator.maxTouchPoints > 1`; phones have
+a shortest CSS screen side below 768 px, other touch devices are tablets, and
+non-touch Intel renderer strings use the same `looksIntel` probe as
+`gpu-tier.ts`. Untouched callers retain `detectLowEndGpuClass()` behavior.
+
+| `WORLD_DEVICE_PROFILE` knob | phone | tablet | desktop-low | desktop-capable |
+|---|---:|---:|---:|---:|
+| World shadows | off | off | on | on |
+| FPS cap | 30 | none | none | none |
+| Fog near / far; camera far | 2,600 / 6,000; 6,400 | 5,000 / 10,500; 11,500 | 5,000 / 10,500; 11,500 | 5,000 / 10,500; 11,500 |
+| NPC far LOD distance-squared | 2,600² | 3,600² | 5,000² | 5,000² |
+| Spring-bone LOD | one tier coarser | unchanged | unchanged | unchanged |
+| Full-rate NPC mixers | nearest 8 non-far, plus possessed/player always | all | all | all |
+| Land-kit visible chunks | 2 | 3 | 4 | 4 |
+| Land-kit draw / triangle budget | 30 / 120,000 | 60 / 250,000 | 60 / 250,000 | 60 / 250,000 |
+| Resident mount / unmount distance-squared | 3,200² / 3,800² | 4,600² / 5,200² | 4,600² / 5,200² | 4,600² / 5,200² |
+| DPR range | [0.55, 0.7] | [0.55, 0.7] | [0.55, 0.7] | [0.75, 1] |
+| Seaweed / kelp ambient | never mounted | never mounted | existing quality-governor behavior | existing behavior |
+
+File ownership: `world-stage/WorldStageCanvas.tsx` and the legacy
+`World3DCanvas.tsx` mirror backend/DPR/camera constants;
+`world-stage/WorldStageRoot.tsx` owns world appearance; and
+`world-stage/use-scene-frame.ts` owns the timestamp-based frame gate so both
+R3F rendering and stage-scheduled JS skip together. NPC LOD/mixer/spring work
+lives in `arena-npcs.tsx`, land-kit admission in `land-kit-pieces.tsx`, and
+resident radii in `arena-location-npcs.tsx`. `?fpscap=0` disables the phone cap
+and `?fpscap=60` selects 60 FPS for A/B checks.
+
+**Backend/ground-cover trap:** `FORCE_WEBGL` uses
+`deviceClass === 'desktop-low'`, not the old all-touch low-end flag. This lets
+capable phones/tablets use WebGPU while preserving the iOS-Safari,
+WebGPU-absent, unhealthy-session, explicit query-override, and silent-init-
+fallback paths. Ground cover is a separate device-class gate: phone/tablet
+must never mount `MergedSeaweed` or equivalent kelp ambient merely because
+WebGPU became available. The Chromium integrated-GPU swap-chain rationale
+still applies to `desktop-low`, which therefore keeps forced WebGL.
+
+The phone world has no enclosing skydome; it uses the renderer clear/background
+color over the finite terrain plane. Its 6,400 far plane remains beyond the
+6,000 fog far edge, avoiding a hard clip before full fog. Multi-angle staging
+visual verification is still required before the profile is called founder-
+ready, specifically watching for a camera-relative dark horizon band.
+
+
+**Prior Last Audited: 2026-08-20 (BUILDINGS-GATED REVEAL — proxy placeholder
 buildings DELETED by founder ruling; the loading screen now holds until the
 11 REAL streamed buildings are downloaded, warmed, and visibly presented,
 then the world reveals complete. Spec: `docs/perf-cold-load-buildings-gated-

@@ -24,7 +24,7 @@ const API_BASE = 'https://api.example.test';
 describe('open-agent onboarding manuals', () => {
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(56);
+    expect(PROTOCOL_VERSION).toBe(57);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -47,7 +47,8 @@ describe('open-agent onboarding manuals', () => {
     // hold door; REST signature door + custodial attest + refunded dust
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
-    expect(PROTOCOL_VERSION).toBe(56);
+    // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
+    expect(PROTOCOL_VERSION).toBe(57);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -158,9 +159,9 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('payments per UTC day (default 50');
     expect(protocolManual).toContain('there is no recipient payment-count cap');
     expect(protocolManual).toContain('Tier 1 uses **zero SOL**');
-    expect(protocolManual).toContain('Tier 2 is the founder-gated SAP on-chain escrow rail');
+    expect(protocolManual).toContain('There is no Tier-2 bounty');
     expect(protocolManual).toContain('no gas sponsor or on-chain refund');
-    expect(protocolManual).toContain('Tier-1 expiry never enters that machinery');
+    expect(protocolManual).toContain('USDC bounty rewards above the Tier-1 cap are rejected');
     expect(protocolManual).toContain('bounty:<bountyId>:tier1-settle');
     expect(protocolManual).toContain('`bounty_hold_active` before creating a withdrawal row');
     expect(protocolManual).toContain('never bypasses a Tier-1 USDC hold');
@@ -257,7 +258,8 @@ describe('open-agent onboarding manuals', () => {
     // hold door; REST signature door + custodial attest + refunded dust
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
-    expect(PROTOCOL_VERSION).toBe(56);
+    // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
+    expect(PROTOCOL_VERSION).toBe(57);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

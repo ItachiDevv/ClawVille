@@ -60,6 +60,7 @@ import {
   getStageRendererFailureServerSnapshot,
   subscribeStageRendererFailure,
 } from './stage-renderer-status';
+import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
 import {
   describeErrorForBeacon,
   reportKelpRenderFailure,
@@ -608,17 +609,17 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         camera: {
           fov: 50,
           near: 1,
-          far: 11_500,
+          far: CURRENT_WORLD_DEVICE_PROFILE.cameraFar,
           position: [0, 600, 1_300],
         },
         appearance: {
           background: 0x0a2a4a,
           fog: {
             color: 0x0e3458,
-            near: 5_000,
-            far: 10_500,
+            near: CURRENT_WORLD_DEVICE_PROFILE.fogNear,
+            far: CURRENT_WORLD_DEVICE_PROFILE.fogFar,
           },
-          shadows: true,
+          shadows: CURRENT_WORLD_DEVICE_PROFILE.shadows,
         },
         content: (
           <Suspense fallback={null}>
