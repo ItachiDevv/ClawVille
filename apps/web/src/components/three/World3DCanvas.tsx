@@ -67,6 +67,7 @@ import { KelpForestAmbient } from '@/lib/three/kelp-forest';
 import { KelpForestPortal } from '@/lib/three/kelp-forest-portal';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
+import { DeclareGuideRevealRequired } from '@/lib/three/boot-streamed-content';
 import BazaarStall from '@/lib/three/bazaar-stall';
 import MarketplaceStall from '@/lib/three/marketplace-stall';
 import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
@@ -440,6 +441,12 @@ export const BOOT_CORE_CHUNKS: ReadonlySet<string> = new Set([
 // DeferredWarmAttachment rewarms (FIFO-chained) own that work.
 export const BOOT_DEFERRED_CHUNKS: ReadonlySet<string> = new Set([
   'buildings-streamed',
+  // BGR amendment A1 [nori-NF1]: Nori now mounts PRE-reveal (stage B admits
+  // her after core presentation, before dismissal) — an SPA/watchdog rescan
+  // must treat her as expected deferred content, never drift, and the
+  // draw-time root hiding must cover her late Suspense descendants (her own
+  // FIFO-chained DWA warm owns her GPU work).
+  'town-guide',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -2999,6 +3006,12 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           <QuestNpc />
         </group>
       )}
+      {/* BGR guide amendment: Nori's reveal requirement is DECLARED beside
+          her mount gate — the overlay waits for her only on boots where she
+          actually renders (an NPC-less perf boot must not strand on a token
+          that can never come). Declaration mounts unconditionally so
+          required=false is an active declaration, not an absence. */}
+      <DeclareGuideRevealRequired required={showNpcs} />
       {showNpcs && (
         <group name="perf:town-guide" userData={{ perfChunk: 'town-guide' }}>
           <TownGuide />

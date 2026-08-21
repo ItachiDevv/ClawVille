@@ -13,12 +13,17 @@ import {
   ackBuildingFailed,
   ackBuildingWarm,
   armBootCorePresented,
+  BGR_GUIDE_COHORT_ID,
+  BOOT_STREAM_TIER_BUILDINGS,
+  BOOT_STREAM_TIER_GUIDE,
   declareBootBuildingsMode,
+  declareBootGuideRevealRequired,
   ensureWorldBootEpoch,
   forceBootBuildingsStreamEligible,
   getBootBuildingsAckProgress,
   getBootBuildingsMode,
   getBootRendererGeneration,
+  getBootRevealRequiredIds,
   getLoadingDismissReason,
   isBootBuildingsPresented,
   isBootBuildingsRevealLegSatisfied,
@@ -30,6 +35,7 @@ import {
   onBootBuildingsFetch,
   onBootBuildingsStream,
   resetBootBuildingsMode,
+  resetBootGuideRevealRequired,
   revokeBuildingCommit,
   revokeBuildingInstance,
   stampLoadingDismiss,
@@ -356,6 +362,90 @@ describe('ack protocol + BOOT_BUILDINGS_PRESENTED', () => {
     notifyBootBuildingsScenePresented();
     notifyBootBuildingsScenePresented();
     expect(isBootBuildingsPresented()).toBe(false);
+  });
+});
+
+describe('guide reveal requirement (founder amendment 2026-08-20)', () => {
+  test('undeclared → required set is the 11 buildings (legacy behavior)', () => {
+    expect(getBootRevealRequiredIds()).toHaveLength(11);
+    expect(getBootBuildingsAckProgress().total).toBe(11);
+  });
+
+  test('declared required → Nori joins the set and GATES the milestone', () => {
+    declareBootBuildingsMode('glb', Symbol('c'));
+    declareBootGuideRevealRequired(true, Symbol('canvas'));
+    expect(getBootRevealRequiredIds()).toHaveLength(12);
+    presentBootCore(RENDERER_A);
+    ackAllBuildings(RENDERER_A); // 11 buildings acked — Nori missing
+    notifyBootBuildingsScenePresented();
+    notifyBootBuildingsScenePresented();
+    expect(isBootBuildingsPresented()).toBe(false); // 11 of 12
+    const guideOwner = Symbol('nori');
+    ackBuildingCommit(BGR_GUIDE_COHORT_ID, guideOwner);
+    ackBuildingWarm(BGR_GUIDE_COHORT_ID, guideOwner, RENDERER_A);
+    expect(getBootBuildingsAckProgress().acked).toBe(12);
+    notifyBootBuildingsScenePresented();
+    notifyBootBuildingsScenePresented();
+    expect(isBootBuildingsPresented()).toBe(true);
+  });
+
+  test('[nori-NF2] a LATE requirement declaration RESETS an 11-token milestone', () => {
+    declareBootBuildingsMode('glb', Symbol('c'));
+    presentBootCore(RENDERER_A);
+    ackAllBuildings(RENDERER_A);
+    notifyBootBuildingsScenePresented();
+    notifyBootBuildingsScenePresented();
+    expect(isBootBuildingsPresented()).toBe(true); // stamped against 11
+    declareBootGuideRevealRequired(true, Symbol('canvas')); // set GROWS
+    expect(isBootBuildingsPresented()).toBe(false); // milestone reset
+    expect(isBootBuildingsRevealLegSatisfied()).toBe(false);
+    const guideOwner = Symbol('nori');
+    ackBuildingCommit(BGR_GUIDE_COHORT_ID, guideOwner);
+    ackBuildingWarm(BGR_GUIDE_COHORT_ID, guideOwner, RENDERER_A);
+    notifyBootBuildingsScenePresented();
+    notifyBootBuildingsScenePresented();
+    expect(isBootBuildingsPresented()).toBe(true); // re-proven with 12
+    const phases = (globalThis as any).window.__W3D_PHASES;
+    expect(phases.bootRevealPresentedRequired).toBe(12);
+    expect(phases.bootRevealPresentedFailed).toBe(0);
+  });
+
+  test('declared NOT required (NPC-less boot) → 11 tokens suffice', () => {
+    declareBootBuildingsMode('glb', Symbol('c'));
+    declareBootGuideRevealRequired(false, Symbol('canvas'));
+    presentBootCore(RENDERER_A);
+    ackAllBuildings(RENDERER_A);
+    notifyBootBuildingsScenePresented();
+    notifyBootBuildingsScenePresented();
+    expect(isBootBuildingsPresented()).toBe(true);
+  });
+
+  test('owner-keyed reset: a non-owner cannot clear the requirement', () => {
+    const canvasA = Symbol('a');
+    const canvasB = Symbol('b');
+    declareBootGuideRevealRequired(true, canvasA);
+    declareBootGuideRevealRequired(true, canvasB); // B takes ownership
+    resetBootGuideRevealRequired(canvasA); // A's late cleanup — no-op
+    expect(getBootRevealRequiredIds()).toHaveLength(12);
+    resetBootGuideRevealRequired(canvasB);
+    expect(getBootRevealRequiredIds()).toHaveLength(11);
+  });
+
+  test('guide tier delivers FIRST on stage B, ahead of every building', () => {
+    const order: string[] = [];
+    onBootBuildingsStream(
+      () => order.push('building'),
+      BOOT_STREAM_TIER_BUILDINGS, // nearest possible building
+      'building:x',
+    );
+    onBootBuildingsStream(
+      () => order.push('nori'),
+      BOOT_STREAM_TIER_GUIDE + 500 * 500, // guide tier + a real distance
+      BGR_GUIDE_COHORT_ID,
+    );
+    presentBootCore(RENDERER_A);
+    flushTimers();
+    expect(order).toEqual(['nori', 'building']);
   });
 });
 

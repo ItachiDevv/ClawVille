@@ -50,11 +50,26 @@ import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
 import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
+import {
+  BOOT_STREAM_TIER_GUIDE,
+  onBootBuildingsFetch,
+} from '@/lib/three/decorative-release';
+import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
 
 // Rung-4 slice D (§3 preload demotion [R2-F6]): the module-scope
 // `useGLTF.preload('/models/guide-rigged.glb')` is REMOVED — it started a
 // fetch AND parse on the boot critical path regardless of component gating.
-// Demand now begins at Nori's release-staggered mount below.
+// BGR guide amendment (founder 2026-08-20 — "Nori in the first loading
+// batch"): her BYTES warm on the stage-A byte-fetch lane behind the loading
+// overlay (network only — parse/warm still waits for her staggered
+// stage-B mount, FIRST in line via BOOT_STREAM_TIER_GUIDE).
+if (typeof window !== 'undefined') {
+  // Priority -1: Nori's bytes are admitted FIRST in the stage-A batch
+  // ("really the first thing that loads") — the buildings follow at 0.
+  onBootBuildingsFetch(() => {
+    void preloadKTX2Bytes('/models/guide-rigged.glb');
+  }, -1);
+}
 
 const GROUND_Y    = -2;
 // 2026-05-21 — moved Nori south by 160 wu (240→400) to give the bigger
@@ -328,10 +343,16 @@ export default function TownGuide() {
   // have made a DeferredWarmAttachment wrapper commit-and-warm an empty
   // fallback [F9]. BootStreamedContent owns boundary → Suspense → DWA;
   // TownGuideInner suspends directly beneath it. Cohort 'npc:town-guide'.
+  // BGR guide amendment (founder 2026-08-20): Nori is REVEAL-REQUIRED — she
+  // loads behind the SeaLoadingScreen on the boot-critical lane, FIRST in
+  // the stagger order (guide tier beats every building), and the overlay
+  // holds until she has presented (the canvas declares the requirement
+  // beside its showNpcs gate so an NPC-less boot never waits on her).
   return (
     <BootStreamedContent
       cohortId="npc:town-guide"
-      priority={bootStreamPriority(0, NORI_WORLD_X, NORI_WORLD_Z)}
+      revealRequired
+      priority={bootStreamPriority(BOOT_STREAM_TIER_GUIDE, NORI_WORLD_X, NORI_WORLD_Z)}
     >
       <TownGuideInner />
     </BootStreamedContent>

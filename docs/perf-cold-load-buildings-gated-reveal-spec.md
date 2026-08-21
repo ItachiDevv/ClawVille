@@ -1,5 +1,17 @@
 # Buildings-gated reveal — spec (rev 3 FROZEN, 2026-08-20; R1 8+1 and R2 8+1 folded)
 
+> **AMENDMENT A1 (founder, 2026-08-20, post-#271 sign-off):** "I need Nori to
+> also be in the first loading batch … really the first thing that loads, the
+> center town guide." `npc:town-guide` joins the reveal-required set WHEN
+> DECLARED (owner-keyed `declareBootGuideRevealRequired`, declared by
+> World3DCanvas as `required={showNpcs}` — her mount is flag-gated, so a
+> hard requirement would strand an NPC-less boot). She streams on the
+> boot-critical lanes: stage-A byte warm + stage-B delivery FIRST via
+> `BOOT_STREAM_TIER_GUIDE` (-2e14, ahead of every building), with the full
+> instance-paired ack protocol through the generalized `BootStreamedContent
+> revealRequired` path. The founder signed off the base reveal the same day
+> ("looks pretty good, I'm pretty happy").
+
 **Founder ruling (2026-08-20, session prf):** the slice-D proxy placeholder buildings are
 DEAD — "we tried this once, it was a disaster; not a solution we're willing to use."
 Chosen replacement (founder-selected): **no placeholders ever — the SeaLoadingScreen

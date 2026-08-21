@@ -118,21 +118,20 @@
 
 ## PERF
 
-### Buildings-gated reveal — the new first boot (LIVE ON PROD via #271)
-- **What:** your ruling absorbed — the gray placeholder buildings are DELETED
-  (they had quietly reached prod as a #269 rider; #271 removes them). The
-  loading screen now holds (with a moving "Building the town…" bar) until all
-  11 real buildings are fully loaded, then the world reveals complete.
-  Nothing fake ever shows. Measured live: ~6.5s cold reveal on prod
-  (edge-warm; first-ever-visitor cold edge ~9.7s), busy-machine caveat.
-- **Where:** **prod** → hard-refresh `clawville.world/game` (cold first load;
-  try logged in and logged out). Watch the bar move through "Building the
-  town…" and confirm the town appears finished — no gray boxes, no
-  half-built spots, before OR after the reveal.
-- **Feedback wanted:** does the hold feel right vs the old instant-but-
-  incomplete reveal? Is the loading bar honest (never frozen)?
-- Shipped by: cv-covefreeze perf session (prf), 2026-08-20; promoted #271
-  same day on founder order ("this needs to be locked in").
+### Nori in the first loading batch (staging — the one amendment from your reveal sign-off)
+- **What:** your verdict on the buildings-gated reveal ("looks pretty good,
+  I'm pretty happy") is absorbed ✅ — that entry is closed. The one ask from
+  it is built: Nori now loads BEHIND the loading screen too, FIRST in the
+  batch (ahead of every building), and the screen holds until she is
+  standing at town center — you reveal right in front of her, fully loaded.
+  Costs ~1s of reveal time (local ~6.6s vs ~5.6s without her).
+- **Where:** **staging** → hard-refresh `staging.clawville.world/game` —
+  Nori must be there the instant the world appears, never popping in after.
+  Reaches prod with the next clean promotion (staging currently carries the
+  unpromoted SAP removal — not riding that out unreviewed).
+- **Feedback wanted:** confirm she's always there at reveal; does the extra
+  ~1s feel fine?
+- Shipped by: cv-covefreeze perf session (prf), 2026-08-20 late.
 
 ### Slice-C wanderer pop-in (staging — owed since 08-11)
 - **What:** wandering NPCs stream in a few seconds AFTER the world reveals.
@@ -163,4 +162,4 @@
 
 ---
 
-*(Verdict log: none yet — delete entries as they are absorbed.)*
+*(Verdict log: 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment.)*

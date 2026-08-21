@@ -1,6 +1,26 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-20 (Mobile perf wave 1 — device classes, phone/tablet
+**Last Audited: 2026-08-20 late (BGR AMENDMENT A1 — NORI JOINS THE FIRST
+LOADING BATCH; founder sign-off on the base reveal absorbed).** Founder:
+"I need Nori to also be in the first loading batch … really the first thing
+that loads, the center town guide" (and on the base reveal: "looks pretty
+good, I'm pretty happy" — that E4 gate is CLOSED). `npc:town-guide` is now
+REVEAL-REQUIRED when declared: the SeaLoadingScreen holds until Nori (plus
+the 11 buildings) has downloaded, warmed, and visibly presented. Her bytes
+warm on the stage-A fetch lane behind the overlay (`onBootBuildingsFetch` →
+force-cache fetch of `/models/guide-rigged.glb`); her mount delivers FIRST
+on stage B via `BOOT_STREAM_TIER_GUIDE` (-2e14, ahead of every building);
+the requirement is owner-key DECLARED by World3DCanvas as
+`required={showNpcs}` beside her mount gate (an NPC-less perf boot never
+waits on a token that cannot come — undeclared = the legacy 11-building
+set). `BootStreamedContent` gained the generalized `revealRequired` path
+(split PostRevealGate/BootCriticalGate, one release hook each; full
+instance-paired ack protocol mirroring the buildings). Verified local:
+`bootGuideRevealRequired=1` + composite dismissal + `bgrEvidence.valid` ⇒
+Nori provably presented before the overlay dropped; reveal ~6.6s local
+busy-box (up ~1s — the accepted cost of the ask).
+
+**Prior Last Audited: 2026-08-20 (Mobile perf wave 1 — device classes, phone/tablet
 render profiles, and incremental service-worker asset accounting).** World
 render knobs now come from `WORLD_DEVICE_PROFILE`; touch devices are no longer
 folded into the Intel desktop fallback, and desktop defaults remain unchanged.
