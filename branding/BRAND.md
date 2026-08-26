@@ -124,6 +124,8 @@ profile): `assets/logos/clawville-logo-official.jpg` (200x200) = the daylight ma
 from the surf under the wood sign. Hi-res version of the same composition:
 `assets/mascot/mascot-square.jpg`. The pirate OG card is ALTERNATE promo art, not the logo.
 
+**TOKEN LOGO (hosted, 2026-08-26):** the new $CLAWVILLE token logo (the green-haired claw girl in the CLAWVILLE tee, surf splash) is served from the web app for listing sites (CoinGecko, Solscan, Jupiter, DexScreener). Canonical URL: `https://clawville.world/press/token/clawville-token-logo.png` (512x512 PNG). Sizes: `/press/token/clawville-token-logo-{200,256,512,1024}.png`. Source: `assets/logos/clawville-token-logo-source-1254.jpg` (1254x1254). Never mutate these paths in place; add a new filename (Cloudflare 7-day edge cache, no purge scope).
+
 **THE OFFICIAL BANNER**: `assets/world/clawville-banner-official.gif` (600x200 ANIMATED,
 144 frames, the DexScreener header; prefer the GIF wherever animation plays) + static
 fallback `assets/world/clawville-banner-official-static.jpg`. The town-square
@@ -238,6 +240,8 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/mascot/mascot-only-transparent.png` | mascot cutout, no sign (derived) | both |
 | `assets/mascot/mascot-pirate-cutout.png` | cinematic pirate hero, transparent (derived from og) | B |
 | `assets/logos/clawville-logo-og.jpg` | square OG/social card, pirate + sign (ALTERNATE promo art) | B |
+| `assets/logos/clawville-token-logo-source-1254.jpg` | token logo SOURCE (claw girl, 1254x1254) | both |
+| `apps/web/public/press/token/clawville-token-logo*.png` | HOSTED token logo for listing sites (200/256/512/1024 + default 512) | both |
 | `assets/logos/clawville-logo-official.jpg` | THE official logo (DexScreener token profile, 200x200) | both |
 | `assets/world/clawville-banner-official.gif` | THE official banner, animated (DexScreener header) | A |
 | `assets/world/clawville-banner-official-static.jpg` | official banner, static frame | A |
