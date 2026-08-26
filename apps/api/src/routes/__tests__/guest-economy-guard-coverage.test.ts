@@ -201,37 +201,6 @@ const MANIFEST: Entry[] = [
     routes: [p('post', '/:skuId/buy')],
   },
   {
-    // Latent hardening (2026-07-08): EVERY SAP write route does a custodial
-    // on-chain sign from the caller's wallet — register/publish/feedback and
-    // attestation write PDAs, escrow moves value — so a guest (fully-demo,
-    // wallet-less) must never reach ANY of them. Masked today by the
-    // SAP_ENABLED/SAP_ESCROW_ENABLED 503 gates, but guarded now so ungating
-    // can never silently re-open the hole. (Codex round-1 flagged that
-    // register/publish/feedback are custodial on-chain writes too, not mere
-    // reputation metadata — so they are guarded, not carved out.)
-    file: 'sap.ts',
-    guard: 'requireNonGuestIdentity',
-    routes: [
-      p('post', '/register'),
-      p('post', '/tools/publish'),
-      p('post', '/feedback'),
-      p('post', '/attestation'),
-      p('post', '/attestation/revoke'),
-      p('post', '/escrow/stake'),
-      p('post', '/escrow/deposit-stake'),
-      p('post', '/escrow/create'),
-      p('post', '/escrow/deposit'),
-      p('post', '/escrow/settle'),
-      p('post', '/escrow/withdraw'),
-      p('post', '/escrow/close'),
-      p('post', '/escrow/usdc/open'),
-      p('post', '/escrow/usdc/submit'),
-      p('post', '/escrow/usdc/approve'),
-      p('post', '/escrow/usdc/settle'),
-      p('post', '/escrow/usdc/refund'),
-    ],
-  },
-  {
     // Latent hardening (2026-07-08): a partner storefront purchase settles USDC
     // from the buyer's own custodial wallet — a guest (wallet-less, fully-demo)
     // must never reach the quote/settle path. Masked today by the always-503

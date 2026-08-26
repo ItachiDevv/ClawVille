@@ -1078,18 +1078,11 @@ describe('T4 mainnet RPC seam', () => {
     expect(landHoldVerifyRpcUrl()).toBe('https://api.mainnet-beta.solana.com');
   });
 
-  it('never couples to the devnet-gated SAP config', () => {
+  it('never couples to cluster-selected RPC config', () => {
     const source = readFileSync(SERVICE_PATH, 'utf8');
-    // Structural, not prose: the file may DISCUSS sap-config in its header, but
-    // it must never import or call it. A devnet/mainnet mismatch here means real
-    // user dust lands at an address we never watch.
+    // Structural, not prose: a devnet/mainnet mismatch here means real user
+    // dust lands at an address we never watch.
     const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    const importedModules = [...code.matchAll(/^\s*import[\s\S]*?from\s+['"]([^'"]+)['"]/gm)].map(
-      (m) => m[1]!,
-    );
-    expect(importedModules.some((m) => m.includes('sap-config'))).toBe(false);
-    expect(/\bloadSapConfig\s*\(/.test(code)).toBe(false);
-    expect(/\brequire\(\s*['"][^'"]*sap-config/.test(code)).toBe(false);
     expect(/\bdevnet\b/i.test(code)).toBe(false);
     expect(code.includes('mainnet.helius-rpc.com')).toBe(true);
   });

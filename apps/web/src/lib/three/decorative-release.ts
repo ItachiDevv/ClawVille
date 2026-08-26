@@ -321,6 +321,10 @@ export function onDecorativeReleaseStaggered(
  * passed to the queue = TIER + squared distance from the static boot camera,
  * so ALL buildings precede ALL props precede ALL land content, nearest-first
  * within each tier. NPC-tier consumers pass plain distSq. */
+/** BGR guide amendment (founder 2026-08-20): Nori delivers FIRST on the
+ * boot-critical stage-B lane — ahead of every building ("really the first
+ * thing that loads, the center town guide"). */
+export const BOOT_STREAM_TIER_GUIDE = -2e14;
 export const BOOT_STREAM_TIER_BUILDINGS = -1e14;
 export const BOOT_STREAM_TIER_PROPS = -1e13;
 export const BOOT_STREAM_TIER_LAND = -1e12;
@@ -686,6 +690,58 @@ const BGR_BUILDING_IDS: readonly string[] = BOOT_STREAM_COHORT_IDS.filter(
   (id) => id.startsWith('building:'),
 );
 
+/** Founder amendment 2026-08-20 ("I need Nori to also be in the first
+ * loading batch — the center town guide"): Nori joins the reveal-required
+ * set WHEN DECLARED (her mount is gated on the NPC perf flag, so a
+ * hard-coded requirement would strand an NPC-less dev boot on a token that
+ * can never come — the declaration comes from the canvas, which knows). */
+export const BGR_GUIDE_COHORT_ID = 'npc:town-guide';
+const BGR_IDS_WITH_GUIDE: readonly string[] = [
+  ...BGR_BUILDING_IDS,
+  BGR_GUIDE_COHORT_ID,
+];
+
+let bgrGuideRequired = false;
+let bgrGuideRequiredOwner: symbol | null = null;
+
+/** OWNER-KEYED like the mode declaration [impl-B6]: latest declaration wins;
+ * a non-owner reset is a no-op (SPA canvas-overlap safe).
+ *
+ * [nori-NF2] GROWING the required set RESETS the one-shot presented
+ * milestone: a milestone stamped against the 11-building set before this
+ * declaration flushed would otherwise let the overlay dismiss without Nori
+ * (the loader's two-tick guard only samples the sticky boolean). Shrinking
+ * (required → false) keeps a stamped milestone — a 12-token proof covers
+ * the 11-token requirement. NOTE: buildings mode 'absent' (meshlet / edit /
+ * buildingDetail=false — dev surfaces) bypasses the ENTIRE reveal leg by
+ * design, Nori included; the product boot path is always 'glb'. */
+export function declareBootGuideRevealRequired(
+  required: boolean,
+  owner: symbol,
+): void {
+  bgrGuideRequiredOwner = owner;
+  const grew = required && !bgrGuideRequired;
+  bgrGuideRequired = required;
+  stampPhase('bootGuideRevealRequired', required ? 1 : 0);
+  if (grew && bgrBuildingsPresented) {
+    bgrBuildingsPresented = false;
+    bgrBuildingsQualifyingFrames = 0;
+  } else if (grew) {
+    bgrBuildingsQualifyingFrames = 0;
+  }
+}
+
+export function resetBootGuideRevealRequired(owner: symbol): void {
+  if (bgrGuideRequiredOwner !== owner) return;
+  bgrGuideRequiredOwner = null;
+  bgrGuideRequired = false;
+}
+
+/** The CURRENT reveal-required cohort subset. */
+export function getBootRevealRequiredIds(): readonly string[] {
+  return bgrGuideRequired ? BGR_IDS_WITH_GUIDE : BGR_BUILDING_IDS;
+}
+
 function stampPhase(key: string, value: number | string): void {
   try {
     (window as any).__W3D_PHASES = (window as any).__W3D_PHASES ?? {};
@@ -782,11 +838,14 @@ export function getBootBuildingsMode(): BootBuildingsMode {
 
 // --- Stage A: byte-fetch-only lane (D1) ------------------------------------
 
-const bgrStageAQueue: Listener[] = [];
+const bgrStageAQueue: Array<{ listener: Listener; priority: number }> = [];
 let bgrStageAFiredAt: number | null = null;
 
-export function onBootBuildingsFetch(listener: Listener): void {
-  bgrStageAQueue.push(listener);
+/** [nori-A4] `priority` orders NETWORK ADMISSION within the one-shot batch
+ * (ascending — the guide registers below 0 so her bytes enqueue before any
+ * building's; everything still fires in the same tick, HTTP/2 multiplexed). */
+export function onBootBuildingsFetch(listener: Listener, priority = 0): void {
+  bgrStageAQueue.push({ listener, priority });
   evaluateBgrStageA();
 }
 
@@ -801,10 +860,11 @@ function evaluateBgrStageA(): void {
     stampPhase('bootBuildingsFetchKickAt', bgrStageAFiredAt);
   }
   // One batch — pure fetch warms; parallel downloads ARE the point.
-  const listeners = bgrStageAQueue.splice(0, bgrStageAQueue.length);
-  for (const l of listeners) {
+  const entries = bgrStageAQueue.splice(0, bgrStageAQueue.length);
+  entries.sort((a, b) => a.priority - b.priority);
+  for (const { listener } of entries) {
     try {
-      l();
+      listener();
     } catch (err) {
       console.warn('[bgr] stage-A fetch listener threw:', err);
     }
@@ -1015,14 +1075,36 @@ function isBuildingTokenLive(id: string): boolean {
   return false;
 }
 
-/** Currently-observed-renderer reveal-token count (the loading bar's
- * buildings band reads this — renderer-current, never sticky [R2-NF8]). */
+/** [nori-NF3] true when the id's ONLY live path is a durable FAILED marker
+ * (no instance has a visible commit + current-renderer warm) — ship
+ * evidence must show ZERO of these at presentation. */
+function isTokenFailedOnly(id: string): boolean {
+  const byOwner = bgrInstanceAcks.get(id);
+  if (!byOwner) return false;
+  let failed = false;
+  for (const entry of byOwner.values()) {
+    if (entry.failed) failed = true;
+    if (
+      entry.commit &&
+      observedBootRenderer !== null &&
+      entry.warmRenderers.has(observedBootRenderer)
+    ) {
+      return false;
+    }
+  }
+  return failed;
+}
+
+/** Currently-observed-renderer reveal-token count over the CURRENT required
+ * set (11 buildings + Nori when declared) — the loading bar's buildings band
+ * reads this; renderer-current, never sticky [R2-NF8]. */
 export function getBootBuildingsAckProgress(): { acked: number; total: number } {
+  const required = getBootRevealRequiredIds();
   let acked = 0;
-  for (const id of BGR_BUILDING_IDS) {
+  for (const id of required) {
     if (isBuildingTokenLive(id)) acked += 1;
   }
-  return { acked, total: BGR_BUILDING_IDS.length };
+  return { acked, total: required.length };
 }
 
 let bgrBuildingsPresented = false;
@@ -1050,6 +1132,17 @@ export function notifyBootBuildingsScenePresented(): void {
   bgrBuildingsPresentedAtMs = Math.round(nowMs());
   stampPhase('bootBuildingsPresentedAt', bgrBuildingsPresentedAtMs);
   stampPhase('bootBuildingsPresentedGen', bootRendererGeneration);
+  // [nori-NF3] presentation-shape provenance: the required-set SIZE this
+  // milestone stamped against, and how many required tokens were live only
+  // via a FAILED marker (a 404'd member doesn't hold the overlay, but it is
+  // NEVER valid ship evidence — the validator requires zero).
+  const requiredIds = getBootRevealRequiredIds();
+  let failedTokens = 0;
+  for (const id of requiredIds) {
+    if (isTokenFailedOnly(id)) failedTokens += 1;
+  }
+  stampPhase('bootRevealPresentedRequired', requiredIds.length);
+  stampPhase('bootRevealPresentedFailed', failedTokens);
 }
 
 export function isBootBuildingsPresented(): boolean {
@@ -1133,6 +1226,8 @@ export function __resetDecorativeReleaseForTests(): void {
   generationListeners.clear();
   bgrBuildingsMode = 'pending';
   bgrBuildingsModeOwner = null;
+  bgrGuideRequired = false;
+  bgrGuideRequiredOwner = null;
   bgrStageAQueue.length = 0;
   bgrStageAFiredAt = null;
   bgrStageBEligible = false;

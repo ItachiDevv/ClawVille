@@ -19,6 +19,7 @@ import {
   DEFAULT_PLAYER_CAPABILITIES,
   type PlayerCapabilityMask,
 } from '@/lib/three/player/player-capability-mask';
+import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
 import { useStageStore } from './stage-store';
 
 type CallbackRef = { current: RenderCallback };
@@ -61,6 +62,22 @@ function getSceneDispatchOrder(
 const frameInvocationsByScene = new Map<string, number>();
 let lastFrameSampleAt = 0;
 let clampNextFrameDelta = false;
+
+function readFpsCap(): number | null {
+  if (typeof window !== 'undefined') {
+    const override = new URLSearchParams(window.location.search).get('fpscap');
+    if (override === '0') return null;
+    if (override === '60') return 60;
+  }
+  return CURRENT_WORLD_DEVICE_PROFILE.fpsCap;
+}
+
+const STAGE_FPS_CAP = readFpsCap();
+const STAGE_FRAME_INTERVAL_MS =
+  STAGE_FPS_CAP === null ? 0 : 1_000 / STAGE_FPS_CAP;
+// Native 30/60 Hz presentation deltas commonly land just below their nominal
+// interval. This keeps a 33.0 ms phone cadence from alternating into 15 FPS.
+const STAGE_FRAME_TOLERANCE_MS = 1;
 
 export function requestStageDeltaClamp(): void {
   clampNextFrameDelta = true;
@@ -212,25 +229,67 @@ export function useSceneFrame(
 
 export function StageFrameScheduler(): null {
   const queuedAckRef = useRef<string | null>(null);
+  const accumulatedFrameMsRef = useRef(0);
 
   useFrame((state, delta, frame) => {
+    let scheduledDelta = delta;
+    if (STAGE_FPS_CAP !== null) {
+      if (clampNextFrameDelta) {
+        // Admit one recovery frame without carrying a background-tab backlog
+        // into the following simulation ticks.
+        accumulatedFrameMsRef.current = STAGE_FRAME_INTERVAL_MS;
+      } else {
+        accumulatedFrameMsRef.current = Math.min(
+          accumulatedFrameMsRef.current + delta * 1_000,
+          STAGE_FRAME_INTERVAL_MS * 2,
+        );
+      }
+      if (
+        accumulatedFrameMsRef.current + STAGE_FRAME_TOLERANCE_MS <
+        STAGE_FRAME_INTERVAL_MS
+      ) {
+        return;
+      }
+      scheduledDelta = accumulatedFrameMsRef.current / 1_000;
+      accumulatedFrameMsRef.current = Math.max(
+        0,
+        accumulatedFrameMsRef.current - STAGE_FRAME_INTERVAL_MS,
+      );
+    }
+
     const controlledDelta = clampNextFrameDelta
-      ? Math.min(delta, 1 / 60)
-      : delta;
+      ? Math.min(scheduledDelta, 1 / 60)
+      : scheduledDelta;
     clampNextFrameDelta = false;
     const snapshot = useStageStore.getState();
     const sceneId = snapshot.activeScene;
-    if (!sceneId) return;
+    if (!sceneId) {
+      // During a pending transition StageSceneSlot deliberately exposes the
+      // requested slot while activeScene is null. The old native R3F loop still
+      // presented that state, so the scheduler-owned loop must do the same.
+      state.gl.render(state.scene, state.camera);
+      return;
+    }
 
     const dispatchOrder = getSceneDispatchOrder(sceneId);
+    let scheduledRenderOwner = false;
     if (dispatchOrder) {
       for (const registration of dispatchOrder) {
+        if (registration.priority > 0) scheduledRenderOwner = true;
         registration.ref.current(state, controlledDelta, frame);
         frameInvocationsByScene.set(
           sceneId,
           (frameInvocationsByScene.get(sceneId) ?? 0) + 1,
         );
       }
+    }
+
+    // Positive priority makes this scheduler R3F's render owner. The same
+    // timestamp admission therefore gates both scene JS and presentation. A
+    // positive-priority scene registration (the opt-in meshlet renderer) owns
+    // its own draw, matching R3F's ordinary render-priority contract.
+    if (!scheduledRenderOwner) {
+      state.gl.render(state.scene, state.camera);
     }
 
     const now = performance.now();
@@ -280,7 +339,7 @@ export function StageFrameScheduler(): null {
         queuedAckRef.current = null;
       }
     });
-  });
+  }, 1);
 
   return null;
 }

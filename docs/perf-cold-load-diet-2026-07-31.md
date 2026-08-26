@@ -669,6 +669,25 @@ punch-listed SW-target CDP attachment is the structural fix):**
   regression + precache still functions + upgrade migrates". All three hold. Evidence:
   `docs/perf-data/cold-load-rung4-sliceB-2026-08-11/{before,after}/report-{1,2,3}.json`.
 
+## BGR amendment A1 (2026-08-20 late, session prf — NORI JOINS THE FIRST LOADING BATCH; base reveal founder-approved)
+
+Founder, after playtesting the promoted reveal ("looks pretty good, I'm
+pretty happy" — E4 CLOSED): "I need Nori to also be in the first loading
+batch … really the first thing that loads, the center town guide."
+Shipped: `npc:town-guide` is reveal-required WHEN DECLARED (owner-keyed
+`declareBootGuideRevealRequired`, declared by World3DCanvas as
+`required={showNpcs}` — undeclared/NPC-less boots keep the 11-building
+set); her bytes warm on stage A behind the overlay; she delivers FIRST on
+stage B (`BOOT_STREAM_TIER_GUIDE` −2e14, ahead of every building);
+`BootStreamedContent` generalized with the `revealRequired` path (split
+gates, full instance-paired ack protocol). Evidence: local guest boot
+`bootGuideRevealRequired=1` + composite dismissal + `bgrEvidence.valid`
+(⇒ Nori provably presented pre-dismissal), reveal ~6.6s busy local box
+(~+1s — the accepted cost); suite 972 pass / tsc 0; Codex xhigh amendment
+round folded. STAGING-ONLY at ship time: staging carries the unpromoted
+SAP removal — Nori reaches prod with the next clean promotion (the
+"check what rides" rule, learned this same day).
+
 ## Buildings-gated reveal (2026-08-20, session prf — FOUNDER RULING: proxies DEAD; the overlay holds for the 11 real buildings)
 
 Spec: `docs/perf-cold-load-buildings-gated-reveal-spec.md` (rev 3 FROZEN;

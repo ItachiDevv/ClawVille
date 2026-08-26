@@ -334,27 +334,8 @@ import {
   isPaletteAllowed,
   DEFAULT_SHELL_KEY,
   DEFAULT_PALETTE_KEY,
-  KIT_CATALOG,
-  KIT_GRID_SIZE,
-  KIT_LEVEL_RULES,
   KIT_PAYMENT_RAILS,
-  KIT_PIECE_FEE_CT_BY_STRUCTURE,
-  isKitPaymentRailAllowed,
-  kitPieceFeeCt,
-  kitPieceFeeMaterials,
-  type LandStructureType,
-  // Land gamification P3 — the SHARED footprint/rotation/stack legality
-  // predicate. It replaces anchor-cell-only validation (defect D-1): pieces
-  // span up to five cells once rotated, so the old check let a piece overhang
-  // the shell reservation and let two pieces occupy the same ground.
-  evaluatePlacement,
-  resolveParcelPlacements,
-  type PlacementRefusalCode,
-  type PlacedFootprint,
-  type StoredPlacement,
-  type KitPaymentRail,
   type KitPieceKey,
-  type KitPieceSize,
   type LandTier,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
@@ -373,10 +354,7 @@ import {
   creditClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
-import {
-  debitMaterials,
-  InsufficientMaterialsError,
-} from '../services/material-ledger';
+import { InsufficientMaterialsError } from '../services/material-ledger';
 import { type CovenantActorKind } from '../services/covenant-action-recorder';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import {
@@ -395,6 +373,37 @@ import {
   settleTenureClaim,
   settleTenureRelease,
 } from '../services/land-tenure-settlement';
+import {
+  evaluateKitWrite,
+  isKitPieceKey,
+  kitPlacementRefusalStatus,
+  settleKitPlacement,
+  throwKitAuthorityError,
+  toLandStructurePieceDTO,
+  validateKitAuthority,
+  type KitPlacementSettlementResult,
+  type LandStructurePieceDTO,
+} from '../services/land-kit-settlement';
+
+// The kit-placement money path and its helpers moved to the settlement service
+// (P7c) so the hosted `place_kit_piece` executor and this route settle through
+// ONE implementation. These re-exports keep the route's public import surface
+// stable for existing consumers.
+export {
+  evaluateKitWrite,
+  isKitPieceKey,
+  kitPlacementFeeForKey,
+  kitPlacementRefusalStatus,
+  matchesKitPlacementReplay,
+  materialsCostFromPlacementAudit,
+  railFromPlacementAudit,
+  validateKitAuthority,
+} from '../services/land-kit-settlement';
+export type {
+  KitAuthority,
+  KitAuthorityError,
+  LandStructurePieceDTO,
+} from '../services/land-kit-settlement';
 import {
   buildLandHoldWalletMessage,
   consumeLandHoldWalletChallenge,
@@ -538,17 +547,6 @@ export interface PublicLandStructureDTO {
   level: number;
   shellKey: string;
   paletteKey: string;
-}
-
-/** Private mutation shape. Public reads intentionally omit both UUIDs. */
-export interface LandStructurePieceDTO {
-  id: string;
-  parcelId: string;
-  pieceKey: KitPieceKey;
-  gridX: number;
-  gridY: number;
-  rotationStep: number;
-  stackLevel: number;
 }
 
 /** Frozen no-PII shape consumed by the stage-B renderer. */
@@ -734,35 +732,6 @@ export const moveKitPieceBodySchema = z
   })
   .strict();
 
-const kitPieceSnapshotSchema = z.object({
-  id: z.string().uuid(),
-  parcelId: z.string().uuid(),
-  pieceKey: z.string(),
-  gridX: z.number().int(),
-  gridY: z.number().int(),
-  rotationStep: z.number().int(),
-  stackLevel: z.number().int(),
-});
-
-export function isKitPieceKey(pieceKey: string): pieceKey is KitPieceKey {
-  return Object.prototype.hasOwnProperty.call(KIT_CATALOG, pieceKey);
-}
-
-/**
- * Refusal codes the placement predicate can return that are STATE CONFLICTS
- * (409) rather than malformed input (400). A conflict means "the request is
- * well-formed but the yard cannot accept it right now".
- */
-const KIT_PLACEMENT_CONFLICT_CODES: ReadonlySet<PlacementRefusalCode> = new Set([
-  'level_cap_exceeded',
-  'stack_exceeds_height',
-  'unsupported_stack',
-  'outside_parcel',
-  'intersects_shell',
-  'intersects_piece',
-]);
-
-/** HTTP status for a placement refusal. Conflicts 409, bad input 400. */
 /**
  * The slot-rent cursor a NEW listing starts on (land gamification P5a, B2 fix).
  *
@@ -798,147 +767,6 @@ export function slotPaidThroughOnCreateSql(structureId: string) {
                      END
                 FROM service_listings prior
                WHERE prior.structure_id = ${structureId})`;
-}
-
-export function kitPlacementRefusalStatus(code: PlacementRefusalCode): 400 | 409 {
-  return KIT_PLACEMENT_CONFLICT_CODES.has(code) ? 409 : 400;
-}
-
-/**
- * Evaluate ONE kit-piece write (a new placement or a move) against the parcel's
- * current contents, using the shared `evaluatePlacement` predicate.
- *
- * GRANDFATHERING (Q5) is why this reads through `resolveParcelPlacements`
- * rather than re-validating the stored rows: that resolver never refuses and
- * never drops a row, so an existing paid piece the stricter predicate would now
- * reject still occupies space and still blocks a new overlap. Validation
- * applies to what is being WRITTEN, never to what is already stored — a legacy
- * row is neither deleted nor hidden, and its owner may move it to a legal spot
- * for free.
- *
- * `excludePieceRef` is the row being MOVED. It must be excluded from both the
- * occupancy set (a piece cannot collide with itself) and the piece counts (a
- * move is cap-neutral: removing then re-adding the same piece must not trip
- * `level_cap_exceeded` on a full yard).
- */
-export async function evaluateKitWrite(
-  tx: LandTx,
-  args: {
-    parcelId: string;
-    parcelTier: LandTier;
-    structureLevel: number;
-    request: {
-      pieceKey: KitPieceKey;
-      gridX: number;
-      gridY: number;
-      rotationStep: number;
-      stackLevel: number;
-    };
-    excludePieceRef?: string;
-  },
-): Promise<
-  { ok: true; footprint: PlacedFootprint } | { ok: false; code: PlacementRefusalCode }
-> {
-  const rows = await tx.execute<{
-    id: string;
-    piece_key: string;
-    grid_x: number | string;
-    grid_y: number | string;
-    rotation_step: number | string;
-    stack_level: number | string;
-  }>(
-    sql`SELECT id, piece_key, grid_x, grid_y, rotation_step, stack_level
-        FROM land_structure_pieces WHERE parcel_id = ${args.parcelId}`,
-  );
-
-  const stored: StoredPlacement[] = [];
-  let currentSmall = 0;
-  let currentLarge = 0;
-  for (const row of Array.from(rows)) {
-    if (args.excludePieceRef && row.id === args.excludePieceRef) continue;
-    if (!isKitPieceKey(row.piece_key)) {
-      // A stored key the catalog no longer knows. The caller's own drift guard
-      // raises on it; skip here so one bad row cannot silently widen free space.
-      continue;
-    }
-    if (KIT_CATALOG[row.piece_key].size === 'small') currentSmall += 1;
-    else currentLarge += 1;
-    stored.push({
-      pieceRef: row.id,
-      pieceKey: row.piece_key,
-      gridX: Number(row.grid_x),
-      gridY: Number(row.grid_y),
-      rotationStep: Number(row.rotation_step),
-      stackLevel: Number(row.stack_level),
-    });
-  }
-
-  const occupied = resolveParcelPlacements(stored, args.parcelTier).map((r) => r.footprint);
-
-  return evaluatePlacement(args.request, {
-    parcelTier: args.parcelTier,
-    structureLevel: args.structureLevel,
-    currentSmall,
-    currentLarge,
-    occupied,
-  });
-}
-
-export type KitAuthorityError =
-  | 'not_parcel_owner'
-  | 'ownership_desync'
-  | 'structure_required'
-  | 'structure_not_active';
-
-export interface KitAuthority {
-  parcelOwnerAvatarId: string | null;
-  pieceOwnerAvatarId?: string;
-  structureOwnerAvatarId?: string | null;
-  structureStatus?: 'active' | 'archived' | null;
-}
-
-/** Authoritative parcel ownership is checked before either denormalized owner. */
-export function validateKitAuthority(
-  authority: KitAuthority,
-  avatarId: string,
-  requireActiveStructure: boolean,
-): KitAuthorityError | null {
-  if (authority.parcelOwnerAvatarId !== avatarId) return 'not_parcel_owner';
-  if (
-    authority.pieceOwnerAvatarId !== undefined
-    && authority.pieceOwnerAvatarId !== authority.parcelOwnerAvatarId
-  ) {
-    return 'ownership_desync';
-  }
-  if (requireActiveStructure) {
-    if (!authority.structureOwnerAvatarId || !authority.structureStatus) {
-      return 'structure_required';
-    }
-    if (authority.structureOwnerAvatarId !== authority.parcelOwnerAvatarId) {
-      return 'ownership_desync';
-    }
-    if (authority.structureStatus !== 'active') return 'structure_not_active';
-  }
-  return null;
-}
-
-/**
- * Placement fee for a piece on a given structure type (founder ruling Q3: homes
- * are a third of the shop price). `structureType` is read from the LOCKED
- * `land_structures` row, never from the request body.
- */
-export function kitPlacementFeeForKey(
-  pieceKey: string,
-  structureType: LandStructureType,
-): number | null {
-  return isKitPieceKey(pieceKey)
-    ? kitPieceFeeCt(structureType, KIT_CATALOG[pieceKey].size)
-    : null;
-}
-
-function throwKitAuthorityError(error: KitAuthorityError): never {
-  const status = error === 'not_parcel_owner' ? 403 : error === 'structure_required' ? 404 : 409;
-  throw new HTTPException(status, { message: error });
 }
 
 // upgrade: the only client input is a REQUIRED idempotency key (Codex BLOCK
@@ -1289,21 +1117,6 @@ export function toPublicLandStructureDTO(row: {
   };
 }
 
-function toLandStructurePieceDTO(row: {
-  id: string;
-  parcelId: string;
-  pieceKey: string;
-  gridX: number;
-  gridY: number;
-  rotationStep: number;
-  stackLevel: number;
-}): LandStructurePieceDTO {
-  if (!isKitPieceKey(row.pieceKey)) {
-    throw new Error(`[land] unknown persisted kit piece key: ${row.pieceKey}`);
-  }
-  return { ...row, pieceKey: row.pieceKey };
-}
-
 export function toPublicLandStructurePieceDTO(row: {
   parcelCode: string;
   pieceKey: string;
@@ -1316,53 +1129,6 @@ export function toPublicLandStructurePieceDTO(row: {
     throw new Error(`[land] unknown persisted public kit piece key: ${row.pieceKey}`);
   }
   return { ...row, pieceKey: row.pieceKey };
-}
-
-function pieceFromPlacementAudit(metadata: unknown): LandStructurePieceDTO | null {
-  if (!metadata || typeof metadata !== 'object') return null;
-  const piece = (metadata as { piece?: unknown }).piece;
-  const parsed = kitPieceSnapshotSchema.safeParse(piece);
-  if (!parsed.success || !isKitPieceKey(parsed.data.pieceKey)) return null;
-  return { ...parsed.data, pieceKey: parsed.data.pieceKey };
-}
-
-/**
- * The rail a stored placement was paid on.
- *
- * Audit rows written before P5b carry no `paymentRail`, and every one of them
- * was a vCLAW placement — that was the only rail that existed. Defaulting to
- * `vclaw` is therefore a statement of fact about those rows, not a guess.
- */
-export function railFromPlacementAudit(metadata: unknown): KitPaymentRail {
-  if (!metadata || typeof metadata !== 'object') return 'vclaw';
-  const rail = (metadata as { paymentRail?: unknown }).paymentRail;
-  return rail === 'materials' ? 'materials' : 'vclaw';
-}
-
-/** Materials charged by a stored placement. Zero for every vCLAW row. */
-export function materialsCostFromPlacementAudit(metadata: unknown): number {
-  if (!metadata || typeof metadata !== 'object') return 0;
-  const cost = (metadata as { costMaterials?: unknown }).costMaterials;
-  return typeof cost === 'number' && Number.isInteger(cost) && cost >= 0 ? cost : 0;
-}
-
-export function matchesKitPlacementReplay(
-  piece: LandStructurePieceDTO,
-  request: {
-    parcelId: string;
-    pieceKey: string;
-    gridX: number;
-    gridY: number;
-    rotationStep: number;
-    stackLevel: number;
-  },
-): boolean {
-  return piece.parcelId === request.parcelId
-    && piece.pieceKey === request.pieceKey
-    && piece.gridX === request.gridX
-    && piece.gridY === request.gridY
-    && piece.rotationStep === request.rotationStep
-    && piece.stackLevel === request.stackLevel;
 }
 
 /**
@@ -3453,7 +3219,6 @@ landRoutes.post(
   requireNonGuestIdentity,
   async (c) => {
     const identity = c.get('identity');
-    const avatarId = identity.avatarId;
     const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
     if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
     const parcelId = idParsed.data;
@@ -3470,263 +3235,18 @@ landRoutes.post(
     }
     const body = bodyParsed.data;
 
-    type PlacementResult = {
-      kind: 'placed' | 'replay';
-      piece: LandStructurePieceDTO;
-      /** vCLAW charged. Zero on the material rail. */
-      costCt: number;
-      /** Materials charged. Zero on the vCLAW rail. */
-      costMaterials: number;
-      paymentRail: KitPaymentRail;
-    };
-    let result: PlacementResult;
+    let result: KitPlacementSettlementResult;
 
     try {
-      result = await db.transaction(async (tx): Promise<PlacementResult> => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
-        // `tier` is selected because the shared placement predicate subtracts a
-        // TIER-scoped (level-independent) shell envelope. The row is already
-        // FOR UPDATE-locked, so this is a column widening with no new lock.
-        const parcelRows = await tx.execute<{
-          id: string;
-          owner_avatar_id: string | null;
-          tier: LandTier;
-        }>(
-          sql`SELECT id, owner_avatar_id, tier FROM land_parcels
-              WHERE id = ${parcelId} FOR UPDATE`,
-        );
-        const parcel = parcelRows[0];
-        if (!parcel) throw new HTTPException(404, { message: 'parcel_not_found' });
-
-        // `structure_type` is selected because the placement fee is type-keyed
-        // (founder ruling Q3). The row is already FOR UPDATE-locked, so this is
-        // a column widening with no new lock and no extra round trip.
-        const structureRows = await tx.execute<{
-          id: string;
-          owner_avatar_id: string;
-          status: 'active' | 'archived';
-          level: number | string;
-          structure_type: LandStructureType;
-        }>(
-          sql`SELECT id, owner_avatar_id, status, level, structure_type FROM land_structures
-              WHERE parcel_id = ${parcelId} FOR UPDATE`,
-        );
-        const structure = structureRows[0] ?? null;
-        const authorityError = validateKitAuthority(
-          {
-            parcelOwnerAvatarId: parcel.owner_avatar_id,
-            structureOwnerAvatarId: structure?.owner_avatar_id ?? null,
-            structureStatus: structure?.status ?? null,
-          },
-          avatarId,
-          true,
-        );
-        if (authorityError) throwKitAuthorityError(authorityError);
-
-        // Owner-first and idempotency-first, exactly like structure upgrades:
-        // a replay returns before validation, debit, credit, or insertion.
-        const priorRows = await tx.execute<{ metadata: unknown; amount_ct: number | string }>(
-          sql`SELECT metadata, amount_ct FROM land_transactions
-              WHERE kind = 'structure_placement'
-                AND avatar_id = ${avatarId}
-                AND metadata->>'operation' = 'kit_piece_placement'
-                AND metadata->>'idempotencyKey' = ${body.idempotencyKey}
-              ORDER BY created_at DESC LIMIT 1`,
-        );
-        const prior = priorRows[0];
-        if (prior) {
-          const piece = pieceFromPlacementAudit(prior.metadata);
-          if (!piece) throw new HTTPException(409, { message: 'idempotency_record_corrupt' });
-          const priorRail = railFromPlacementAudit(prior.metadata);
-          // The RAIL is part of the request identity. Replaying a key that
-          // bought a piece with materials while now asking to pay vCLAW is a
-          // different request, and answering it with the stored receipt would
-          // tell the client it spent a currency it did not.
-          if (
-            !matchesKitPlacementReplay(piece, { parcelId, ...body }) ||
-            priorRail !== body.paymentRail
-          ) {
-            throw new HTTPException(409, { message: 'idempotency_key_conflict' });
-          }
-          return {
-            kind: 'replay',
-            piece,
-            costCt: Number(prior.amount_ct),
-            costMaterials: materialsCostFromPlacementAudit(prior.metadata),
-            paymentRail: priorRail,
-          };
-        }
-
-        // Cheap non-geometric pre-checks ONLY (unknown key, impossible level).
-        // Every geometric rule — grid bounds, rotation, caps, stack height,
-        // support, parcel bounds, shell envelope, piece overlap — belongs to
-        // `evaluatePlacement` below, so there is exactly one geometry authority.
-        if (!isKitPieceKey(body.pieceKey)) {
-          throw new HTTPException(400, { message: 'unknown_piece_key' });
-        }
-        const placeLevel = Number(structure!.level);
-        if (!Number.isInteger(placeLevel) || placeLevel < 1 || placeLevel > 5) {
-          throw new HTTPException(400, { message: 'structure_level_invalid' });
-        }
-
-        // Catalog drift is still its own error: a stored key the catalog no
-        // longer knows must stop the write loudly rather than be skipped.
-        const driftRows = await tx.execute<{ piece_key: string }>(
-          sql`SELECT piece_key FROM land_structure_pieces WHERE parcel_id = ${parcelId}`,
-        );
-        for (const row of Array.from(driftRows)) {
-          if (!isKitPieceKey(row.piece_key)) {
-            throw new HTTPException(409, { message: 'piece_catalog_drift' });
-          }
-        }
-
-        // THE geometry gate (defect D-1). Full rotated-footprint, shell-envelope
-        // and cross-level 3D occupancy test — not the anchor cell alone.
-        const verdict = await evaluateKitWrite(tx, {
-          parcelId,
-          parcelTier: parcel.tier,
-          structureLevel: Number(structure!.level),
-          request: {
-            pieceKey: body.pieceKey as KitPieceKey,
-            gridX: body.gridX,
-            gridY: body.gridY,
-            rotationStep: body.rotationStep,
-            stackLevel: body.stackLevel,
-          },
-        });
-        if (!verdict.ok) {
-          throw new HTTPException(kitPlacementRefusalStatus(verdict.code), {
-            message: verdict.code,
-          });
-        }
-
-        const pieceKey = body.pieceKey as KitPieceKey;
-        const size: KitPieceSize = KIT_CATALOG[pieceKey].size;
-        const structureType = structure!.structure_type;
-        const paymentRail = body.paymentRail;
-
-        // THE RAIL GATE. `structureType` comes off the FOR UPDATE-locked row,
-        // never from the request, so a client cannot talk its way into paying
-        // for a shop yard with a non-cashable currency (see the reasoning on
-        // `KIT_PIECE_FEE_MATERIALS`).
-        if (!isKitPaymentRailAllowed(paymentRail, structureType)) {
-          throw new HTTPException(400, { message: 'payment_rail_not_allowed' });
-        }
-
-        let feeCt = 0;
-        let feeMaterials = 0;
-        let debitLedgerId: string | null = null;
-        let creditLedgerId: string | null = null;
-
-        if (paymentRail === 'materials') {
-          feeMaterials = kitPieceFeeMaterials(size);
-          // Materials are a SINK, not a transfer: there is no counterparty and
-          // no treasury leg, because there is nothing on the other side to pay.
-          // The debit is a conditional decrement, so a spend at balance − 1
-          // writes nothing and this transaction rolls the placement back whole.
-          await debitMaterials(
-            {
-              avatarId,
-              amount: feeMaterials,
-              reason: 'land_kit_piece_fee',
-              source: 'build',
-            },
-            tx,
-          );
-        } else {
-          feeCt = kitPieceFeeCt(structureType, size);
-          const treasuryId = await getHouseTreasuryAvatarId();
-          if (!treasuryId) {
-            // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
-            // burn fallback, this pre-settlement atomic route rolls back/fails closed.
-            throw new HTTPException(503, { message: 'house_treasury_unavailable' });
-          }
-          const debit = await debitClawTokens(
-            {
-              avatarId,
-              amount: feeCt,
-              reason: 'land_kit_piece_fee',
-              source: 'api',
-              metadata: {
-                parcelId,
-                pieceKey,
-                size,
-                structureType,
-                idempotencyKey: body.idempotencyKey,
-              },
-              actorKind: toActorKind(identity.kind),
-            },
-            tx,
-          );
-          const credit = await creditClawTokens(
-            {
-              avatarId: treasuryId,
-              amount: feeCt,
-              reason: 'house_fee_land_kit_piece',
-              source: 'system',
-              metadata: {
-                parcelId,
-                pieceKey,
-                size,
-                structureType,
-                ownerAvatarId: avatarId,
-                idempotencyKey: body.idempotencyKey,
-              },
-              actorKind: 'system',
-            },
-            tx,
-          );
-          debitLedgerId = debit.ledgerId;
-          creditLedgerId = credit.ledgerId;
-        }
-
-        const inserted = await tx
-          .insert(landStructurePieces)
-          .values({
-            parcelId,
-            ownerAvatarId: avatarId,
-            pieceKey,
-            gridX: body.gridX,
-            gridY: body.gridY,
-            rotationStep: body.rotationStep,
-            stackLevel: body.stackLevel,
-          })
-          .returning({
-            id: landStructurePieces.id,
-            parcelId: landStructurePieces.parcelId,
-            pieceKey: landStructurePieces.pieceKey,
-            gridX: landStructurePieces.gridX,
-            gridY: landStructurePieces.gridY,
-            rotationStep: landStructurePieces.rotationStep,
-            stackLevel: landStructurePieces.stackLevel,
-          });
-        const piece = toLandStructurePieceDTO(inserted[0]!);
-        const auditMetadata = JSON.stringify({
-          operation: 'kit_piece_placement',
-          idempotencyKey: body.idempotencyKey,
-          size,
-          piece,
-          // P5b. `amount_ct` stays the vCLAW column and is 0 on the material
-          // rail, so no CT report double-counts a material placement. The rail
-          // and the material cost live here, which is also what the replay path
-          // reads back.
-          paymentRail,
-          costMaterials: feeMaterials,
-        });
-        await tx.execute(
-          sql`INSERT INTO land_transactions
-                (kind, parcel_id, structure_id, avatar_id, amount_ct,
-                 debit_ledger_tx_id, credit_ledger_tx_id, metadata)
-              VALUES ('structure_placement', ${parcelId}, ${structure!.id}, ${avatarId}, ${feeCt},
-                      ${debitLedgerId}, ${creditLedgerId}, ${auditMetadata}::jsonb)`,
-        );
-        return {
-          kind: 'placed',
-          piece,
-          costCt: feeCt,
-          costMaterials: feeMaterials,
-          paymentRail,
-        };
+      // The transaction body — advisory lock, FOR UPDATE reads, authority,
+      // idempotent replay, geometry gate, rail gate, debit/credit, insert,
+      // audit row — lives in `settleKitPlacement` (land-kit-settlement.ts),
+      // shared with the hosted `place_kit_piece` executor. This route owns
+      // parsing and HTTP mapping only.
+      result = await settleKitPlacement({
+        identity,
+        parcelId,
+        ...body,
       });
     } catch (err) {
       const pgError = err as {

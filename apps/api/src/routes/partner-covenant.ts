@@ -2,10 +2,8 @@
  * Covenant partner — READ-ONLY verification read surface (2026-07-03).
  *
  * Covenant runs `covenantd`, a verification daemon that verifies bounty work and
- * (later) co-signs on-chain SAP escrow settles with an audit root as the
- * `service_hash` (see `docs/sap-covenant-payai-architecture.md`). To do that it
  * needs to READ the submitted evidence + verdict + escrow linkage for a bounty,
- * plus the on-chain identity of the hunter agent. The PUBLIC bounty reads
+ * plus the public identity of the hunter agent. The PUBLIC bounty reads
  * (`routes/bounties.ts`) only expose evidence to the hunter/creator — a verifier
  * can't see `bounty_attempts.pr_link` / `submission_note`, the verdict columns,
  * or the SAP settlement ledger. This router is that partner-gated read surface.
@@ -23,9 +21,9 @@
  * consumes that gate; it never re-implements verification.
  *
  * PUBKEYS ONLY — the identity bundle exposes ONLY public values: the custodial
- * Solana wallet PUBLIC key (the `avatars.walletAddress` mirror), the derived SAP
- * agent PDA (a pure address derivation), and the public ERC-8004 registration
- * URL. It NEVER surfaces a secret/DEK/encrypted key, a session/bearer, an email,
+ * Solana wallet PUBLIC key (the `avatars.walletAddress` mirror) and the public
+ * ERC-8004 registration URL. It NEVER surfaces a secret/DEK/encrypted key, a
+ * session/bearer, an email,
  * or any `users` row field beyond the public identity fingerprint.
  *
  * Rule E5 note: this is a MACHINE-PARTNER read surface, NOT a user-facing
@@ -41,7 +39,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, inArray, gt, isNotNull, like, sql, type SQL } from 'drizzle-orm';
-import { PublicKey } from '@solana/web3.js';
 import {
   db,
   avatars,
@@ -54,8 +51,6 @@ import {
   sapEscrowApprovals,
   users,
 } from '@clawville/database';
-import { loadSapConfig } from '../services/sap/sap-config';
-import { findAgentPda } from '../services/sap/sap-pdas';
 // resolveApiBase() is a pure exported helper — READ-ONLY import from the
 // protected skill-protocol surface (not modified). Same helper partner-hatcher
 // uses for its protocol pointer, so the emitted base matches everywhere.
@@ -69,42 +64,8 @@ export const partnerCovenantRoutes = new Hono();
 partnerCovenantRoutes.use('*', requireCovenantPartner);
 
 // ---------------------------------------------------------------------------
-// SAP agent PDA + ERC-8004 URL — pure, side-effect-free identity derivations
+// ERC-8004 URL — pure, side-effect-free identity derivation
 // ---------------------------------------------------------------------------
-
-/**
- * Memoized SAP program id (env is immutable per process). `loadSapConfig()`
- * falls back to `SAP_DEFAULT_PROGRAM_ID` when SAP env is unset and is enabled-
- * independent, so the agent PDA derives whether or not the on-chain SAP layer is
- * live — it is a deterministic address, NOT a live-account read. Any config
- * throw (e.g. a mainnet-guard misconfig) degrades to null (read surface: omit,
- * never 500).
- */
-let memoSapProgramId: PublicKey | null | undefined;
-function sapProgramId(): PublicKey | null {
-  if (memoSapProgramId === undefined) {
-    try {
-      memoSapProgramId = loadSapConfig().programId;
-    } catch {
-      memoSapProgramId = null;
-    }
-  }
-  return memoSapProgramId;
-}
-
-/** Derive the SAP agent PDA `["sap_agent", walletPubkey]` (base58) or null. */
-function deriveSapAgentPda(walletPubkey: string | null): string | null {
-  if (!walletPubkey) return null;
-  const programId = sapProgramId();
-  if (!programId) return null;
-  try {
-    const [agentPda] = findAgentPda(programId, new PublicKey(walletPubkey));
-    return agentPda.toBase58();
-  } catch {
-    // Malformed stored pubkey — omit rather than throw on a read surface.
-    return null;
-  }
-}
 
 /**
  * Absolute URL of the public ERC-8004 registration file for an agent, keyed on
@@ -124,8 +85,6 @@ interface AgentIdentityBundle {
   avatarId: string;
   /** Custodial Solana wallet PUBLIC key (`avatars.walletAddress` mirror). */
   walletPubkey: string | null;
-  /** Derived on-chain SAP agent PDA (base58), or null if unresolvable. */
-  sapAgentPda: string | null;
   /** Public ERC-8004 registration-file URL, or null if no identity fingerprint. */
   eip8004RegistrationUrl: string | null;
 }
@@ -139,7 +98,6 @@ function buildAgentIdentity(
   return {
     avatarId,
     walletPubkey: walletPubkey ?? null,
-    sapAgentPda: deriveSapAgentPda(walletPubkey),
     eip8004RegistrationUrl: eip8004RegistrationUrl(identityFingerprint),
   };
 }

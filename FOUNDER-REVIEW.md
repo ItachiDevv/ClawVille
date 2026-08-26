@@ -47,9 +47,45 @@
   phrasing that fails is a bug report we want.
 - Shipped by: land gamification + salvage sessions, 2026-08-09.
 
+### Autonomous yard-building (staging)
+- **What:** tell your agent to decorate its HOME yard and watch it gather materials first when its balance is short, then place an exact server-suggested piece.
+- **Where:** staging → `/game` → give the directive → Autonomous mode → watch the Activity Log and yard. The account needs a parcel WITH a home already built (placing the building itself is not an agent action yet) — `landtest3@staging.clawville.test / LandTest!2026` is pre-staged: home shack on parcel-starter-23, one placed path-stone, 42 materials banked.
+- **Feedback wanted:** does the gather-then-build loop follow the instruction naturally, and is the placed piece a sensible visible choice?
+- Shipped by: land session (lnd), 2026-08-20; adversarial review APPROVED 0-blocking, punch list applied same day.
+
+## BOUNTIES / ECONOMY
+
+### OOBE/SAP fully removed — bounty board on the single low-tier rail (staging)
+- **What:** the on-chain escrow partner is gone end to end. USDC bounties now run
+  ONLY the low-tier rail (custodial hold up to $50, PayAI payout); vCLAW bounties
+  unchanged. All our on-chain funds were recovered first (house wallet now holds
+  0.2218 SOL, up 0.157).
+- **Where:** staging.clawville.world — post a small USDC bounty, claim it with a
+  second account, approve, watch the payout; also glance at the landing page
+  roadmap (OOBE naming stripped — approve the reworded two entries).
+- **Feedback wanted:** bounty flow feels unchanged; roadmap wording OK.
+- Session tier2/Fable, 2026-08-20.
+
+### Roadmap + brand copy after the OOBE removal (staging) — wording check
+- **What:** OOBE naming is gone from the site, and two roadmap entries that
+  advertised capabilities we NO LONGER HAVE were reworded, not just de-named:
+  "Agents go on-chain" no longer claims escrowed work (it now says what stayed
+  true — real wallets, real USDC settling on mainnet, Covenant recording), and
+  "Every agent, on-chain" dropped its "proven rails" phrasing.
+- **Also:** three ALREADY PUBLISHED announcement banners (protocol-upgrades,
+  agent-economy-live, agents-pay-agents) advertise on-chain escrow. I marked them
+  DO NOT REPUBLISH in place rather than rewriting them, since they record what was
+  actually announced at the time.
+- **Where:** staging.clawville.world landing page → scroll to the roadmap.
+- **Feedback wanted:** approve the two reworded entries, and confirm you are OK
+  keeping the old banners as historical records (alternative: delete them).
+- Session tier2/Fable, 2026-08-20.
+
+---
+
 ## COVE
 
-### Nori button reachable on phones (staging)
+### Nori button reachable on phones (LIVE on prod via #271)
 - **What:** on phones the top-centre Connect/status banner used to cover almost half of the
   pink Nori button (top-right) — taps on its left side did nothing. Nori is now a compact
   heart-icon circle on phones (full label stays on desktop/tablet).
@@ -112,18 +148,20 @@
 
 ## PERF
 
-### Buildings-gated reveal — the new first boot (staging)
-- **What:** your ruling absorbed — the gray placeholder buildings are DELETED.
-  The loading screen now holds (with a moving "Building the town…" bar) until
-  all 11 real buildings are fully loaded, then the world reveals complete.
-  Nothing fake ever shows. Local check: ~5.6-6.6s reveal on a busy machine;
-  old prod boot is ~9-10s.
-- **Where:** staging → hard-refresh `/game` (cold first load; try logged in
-  and logged out). Watch the loading bar move through "Building the town…"
-  and confirm the town appears finished — no gray boxes, no half-built spots.
-- **Feedback wanted:** does the longer hold feel right vs the old instant-but-
-  incomplete reveal? Is the loading bar honest (never frozen)?
-- Shipped by: cv-covefreeze perf session (prf), 2026-08-20.
+### Nori in the first loading batch (staging — the one amendment from your reveal sign-off)
+- **What:** your verdict on the buildings-gated reveal ("looks pretty good,
+  I'm pretty happy") is absorbed ✅ — that entry is closed. The one ask from
+  it is built: Nori now loads BEHIND the loading screen too, FIRST in the
+  batch (ahead of every building), and the screen holds until she is
+  standing at town center — you reveal right in front of her, fully loaded.
+  Costs ~1s of reveal time (local ~6.6s vs ~5.6s without her).
+- **Where:** **staging** → hard-refresh `staging.clawville.world/game` —
+  Nori must be there the instant the world appears, never popping in after.
+  Reaches prod with the next clean promotion (staging currently carries the
+  unpromoted SAP removal — not riding that out unreviewed).
+- **Feedback wanted:** confirm she's always there at reveal; does the extra
+  ~1s feel fine?
+- Shipped by: cv-covefreeze perf session (prf), 2026-08-20 late.
 
 ### Slice-C wanderer pop-in (staging — owed since 08-11)
 - **What:** wandering NPCs stream in a few seconds AFTER the world reveals.
@@ -131,10 +169,25 @@
 - **Feedback wanted:** is the pop-in acceptable?
 - Shipped by: cv-covefreeze perf session, 2026-08-11.
 
+### Mobile perf wave 1 phone feel-pass (staging)
+- **What:** the phone render profile targets a steadier default 30 FPS, removes
+  world shadows, and shortens draw distance while keeping the complete world,
+  HUD, labels, and real buildings intact.
+- **Where:** staging → `/game` on a PHONE. Try the default URL first, then compare
+  `/game?fpscap=0` with the cap disabled; the default should load, feel steadier,
+  show softer/no shadows, and fade distant scenery sooner.
+- **Feedback wanted:** how the 30 FPS cap feels versus uncapped, whether the shorter
+  draw distance feels too aggressive, and anything visually broken from any camera
+  angle (especially a moving dark band/void at the horizon).
+- Shipped by: cv-covefreeze mobile perf wave 1 session, 2026-08-20.
+
 ---
 
 ## DECISIONS OWED (rulings, not playtests)
 
+- **ECONOMY — recovered 0.2218 SOL destination.** The OOBE wind-down returned the
+  stake + rents to the prod house custodial wallet (`ESpn…sm3m`). Leave it there,
+  or name a wallet to sweep it to.
 - **LAND — Founders' Row: auction vs hold-only.** Surfaces + server currently say
   hold-only (10M CLV). If auction is intended, that is a server change to scope.
 - **LAND — Prepay one-click confirm.** Approve/reject the one-click rent-prepay
@@ -142,4 +195,4 @@
 
 ---
 
-*(Verdict log: none yet — delete entries as they are absorbed.)*
+*(Verdict log: 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment.)*

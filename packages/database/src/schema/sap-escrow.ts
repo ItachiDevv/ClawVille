@@ -1,4 +1,15 @@
 /**
+ * RETIRED RAIL — HISTORICAL EVIDENCE ONLY (2026-08-20, founder order).
+ *
+ * The OOBE partner and its on-chain escrow rail were removed from ClawVille.
+ * NOTHING writes these tables any more and no new rows can ever be created.
+ * They are retained SOLELY because the kept Covenant partner read surface
+ * serves historical settlement evidence from them. Do not build on this, do
+ * not reopen the rail, and do not treat anything below as current behavior.
+ * The physical tables are dropped by a separate, deliberate migration.
+ * USDC bounties now run ONE rail: a custodial hold paid out through PayAI.
+ *
+ * ── ORIGINAL HEADER (historical, describes the retired design) ───────────────
  * SAP Option C — on-chain USDC escrow gate: backend settlement ledger.
  *
  * The single durable record that makes the verify-before-release gate SAFE.

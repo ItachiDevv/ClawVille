@@ -12,6 +12,10 @@ const VALID_PHASES = {
   bootCorePresentedGen: 1,
   bootBuildingsPresentedGen: 1,
   loadingDismissGen: 1,
+  // Guide amendment A1 shape [nori-NF3]:
+  bootGuideRevealRequired: 1,
+  bootRevealPresentedRequired: 12,
+  bootRevealPresentedFailed: 0,
 };
 
 describe('computeBgrEvidence', () => {
@@ -75,5 +79,41 @@ describe('computeBgrEvidence', () => {
     const v = computeBgrEvidence({ ...VALID_PHASES, bootBuildingsPresentedGen: 2 });
     expect(v.valid).toBe(false);
     expect(v.reasons.join(' ')).toContain('generations differ');
+  });
+
+  test('A1 [nori-NF3]: rejects the LEGACY pre-guide report shape', () => {
+    const { bootGuideRevealRequired, bootRevealPresentedRequired, bootRevealPresentedFailed, ...legacy } =
+      VALID_PHASES;
+    const v = computeBgrEvidence(legacy);
+    expect(v.valid).toBe(false);
+    expect(v.reasons.join(' ')).toContain('legacy');
+  });
+
+  test('A1: guide required ⇒ milestone must have stamped against 12 members', () => {
+    const v = computeBgrEvidence({ ...VALID_PHASES, bootRevealPresentedRequired: 11 });
+    expect(v.valid).toBe(false);
+  });
+
+  test('A1: guide explicitly NOT required ⇒ 11 members is the valid shape', () => {
+    expect(
+      computeBgrEvidence({
+        ...VALID_PHASES,
+        bootGuideRevealRequired: 0,
+        bootRevealPresentedRequired: 11,
+      }).valid,
+    ).toBe(true);
+    expect(
+      computeBgrEvidence({
+        ...VALID_PHASES,
+        bootGuideRevealRequired: 0,
+        bootRevealPresentedRequired: 12,
+      }).valid,
+    ).toBe(false);
+  });
+
+  test('A1: any failed-only token at presentation rejects', () => {
+    const v = computeBgrEvidence({ ...VALID_PHASES, bootRevealPresentedFailed: 1 });
+    expect(v.valid).toBe(false);
+    expect(v.reasons.join(' ')).toContain('failed-only');
   });
 });

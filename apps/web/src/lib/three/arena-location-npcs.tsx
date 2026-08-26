@@ -28,6 +28,7 @@ import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
+import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -59,11 +60,13 @@ const _locCamPos = new THREE.Vector3();
 // capsules/cylinders. Far residents simply do not mount their real GLB until
 // the camera is close enough for them to matter.
 //
-// Thresholds raised from 2600/3200 wu to 4600/5200 wu so the entire building ring
-// (~4160 wu radius) mounts from spawn at town center. The old values were smaller
-// than the ring radius, so zero resident teachers mounted on load.
-const RESIDENT_STREAM_IN_DIST_SQ = 4_600 * 4_600;
-const RESIDENT_STREAM_OUT_DIST_SQ = 5_200 * 5_200;
+// Desktop/tablet retain the 4600/5200 wu hysteresis that mounts the whole
+// building ring from town-center spawn. The phone profile narrows this to
+// 3200/3800 wu so resident GLBs stream only when the camera approaches.
+const RESIDENT_STREAM_IN_DIST_SQ =
+  CURRENT_WORLD_DEVICE_PROFILE.residentMountDistSq;
+const RESIDENT_STREAM_OUT_DIST_SQ =
+  CURRENT_WORLD_DEVICE_PROFILE.residentUnmountDistSq;
 const RESIDENT_STREAM_CHECK_FRAMES = 12;
 
 // Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes

@@ -73,6 +73,7 @@ import {
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { useLandStore, type PlacedPiece } from '@/stores/land';
+import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
 
 // ---------------------------------------------------------------------------
 // Fixed 12-chunk partition (3 populated rings × 4 origin-sign quadrants)
@@ -81,7 +82,12 @@ import { useLandStore, type PlacedPiece } from '@/stores/land';
 const KIT_CHUNK_VIEW_DISTANCE = 5_000;
 const KIT_CHUNK_VIEW_DISTANCE_SQ =
   KIT_CHUNK_VIEW_DISTANCE * KIT_CHUNK_VIEW_DISTANCE;
-const MAX_VISIBLE_CHUNKS = 4;
+const MAX_VISIBLE_CHUNKS =
+  CURRENT_WORLD_DEVICE_PROFILE.landKitMaxVisibleChunks;
+const DEVICE_VISIBLE_DRAW_BUDGET =
+  CURRENT_WORLD_DEVICE_PROFILE.landKitMaxDraws;
+const DEVICE_SUBMITTED_TRIANGLE_BUDGET =
+  CURRENT_WORLD_DEVICE_PROFILE.landKitMaxTriangles;
 
 // The §4.4 budgets and the whole drop decision live in `land-kit-admission.ts`,
 // which imports neither React nor three so the feedback loop can be unit-tested.
@@ -849,10 +855,9 @@ export default function LandKitPieces() {
    * Parcels the §4.4 farthest-first drop has removed. React state rather than a
    * frame-local decision because dropping a parcel changes the MERGED geometry,
    * and re-merging every frame would defeat the budget it is protecting. It is
-   * recomputed only when the drop SET actually changes, which with the shipping
-   * catalog is never: the authored budget is 223,600 triangles against a
-   * 250,000 ceiling, and a chunk's key count is capped at 30 against a 60 draw
-   * budget, so the valve exists for a future catalog rather than for today.
+   * recomputed only when the drop SET actually changes. Desktop/tablet retain
+   * the authored 250,000-triangle / 60-draw ceilings; the phone profile lowers
+   * those ceilings to 120,000 / 30 and may intentionally exercise the valve.
    */
   const [droppedParcels, setDroppedParcels] = useState<ReadonlySet<string>>(EMPTY_DROP_SET);
   /**
@@ -1007,6 +1012,8 @@ export default function LandKitPieces() {
               nearestParcelCode,
               previousDropped: droppedParcels,
               basisChanged,
+              drawBudget: DEVICE_VISIBLE_DRAW_BUDGET,
+              triangleBudget: DEVICE_SUBMITTED_TRIANGLE_BUDGET,
             });
       if (nextDrop !== droppedParcels && !sameMembers(nextDrop, droppedParcels)) {
         ADMISSION_STATE.droppedParcels = [...nextDrop];
@@ -1079,6 +1086,8 @@ export default function LandKitPieces() {
           rank,
           { draws, triangles: snapshot.triangles },
           { draws: admittedDraws, triangles: admittedTriangles },
+          DEVICE_VISIBLE_DRAW_BUDGET,
+          DEVICE_SUBMITTED_TRIANGLE_BUDGET,
         )
       ) {
         // Skipping rather than breaking: a nearer-but-heavy chunk must not hide

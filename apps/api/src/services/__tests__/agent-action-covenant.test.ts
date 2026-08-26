@@ -277,7 +277,7 @@ describe('in-world executor covenant hooks', () => {
     expect(npc.intentDescription).toContain('playing blackjack at the cove');
   });
 
-  it('settles all three Land verbs through one live binding and reserves duplicate semantics', async () => {
+  it('settles all four Land verbs through one live binding and reserves duplicate semantics', async () => {
     const npc = body('land-action-body');
     sim.npcs.set(npc.id, npc);
     sim.agentBotSessions.set('land-action-session', {
@@ -301,6 +301,9 @@ describe('in-world executor covenant hooks', () => {
       if (input.operation.verb === 'prepay_rent') {
         return { kind: 'prepay', fresh: true, parcelCode: input.operation.parcelCode, amountCt: 3_000 };
       }
+      if (input.operation.verb === 'place_kit_piece') {
+        return { kind: 'kit_piece', fresh: true, parcelCode: input.operation.parcelCode, pieceKey: input.operation.pieceKey, costMaterials: 8 };
+      }
       return { kind: 'release', fresh: true, parcel: { parcelCode: input.operation.parcelCode, tier: 'starter' }, refundedCt: 2_000 };
     };
     npcSimulation.autonomousLandEffects = async (input) => { effects.push(input); };
@@ -309,6 +312,10 @@ describe('in-world executor covenant hooks', () => {
       npc.id,
       'Land day. [ACTION: claim_parcel(parcelCode=parcel-starter-01, door=rent, weeks=2)] [ACTION: claim_parcel(parcelCode=parcel-starter-01, door=rent, weeks=2)] [ACTION: prepay_rent(parcelCode=parcel-starter-01, weeks=3)] [ACTION: release_parcel(parcelCode=parcel-starter-01)]',
     );
+    npcSimulation.dispatchHatcherActions(
+      npc.id,
+      '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0, paymentRail=vclaw)] [ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]',
+    );
     await flushAutonomousLandAction();
 
     expect(speech).toBe('Land day.');
@@ -316,13 +323,14 @@ describe('in-world executor covenant hooks', () => {
       { verb: 'claim_parcel', parcelCode: 'parcel-starter-01', door: 'rent', weeks: 2 },
       { verb: 'prepay_rent', parcelCode: 'parcel-starter-01', weeks: 3 },
       { verb: 'release_parcel', parcelCode: 'parcel-starter-01' },
+      { verb: 'place_kit_piece', parcelCode: 'parcel-starter-01', pieceKey: 'fence-picket', gridX: 0, gridY: 0 },
     ]);
     expect(calls.every((call) => call.identity.userId === 'executor-user')).toBe(true);
     expect(calls.every((call) => call.identity.avatarId === AVATAR)).toBe(true);
     expect(calls.every((call) => call.identity.agentId === npc.id)).toBe(true);
     expect(calls.every((call) => call.identity.sessionId === 'land-action-session')).toBe(true);
     expect(calls.every((call) => call.idempotencyKey.length >= 8 && call.idempotencyKey.length <= 64)).toBe(true);
-    expect(effects).toHaveLength(3);
+    expect(effects).toHaveLength(4);
   });
 
   it('drops malformed or non-ledger Land actions before settlement', async () => {
@@ -351,6 +359,50 @@ describe('in-world executor covenant hooks', () => {
     npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: prepay_rent(parcelCode=parcel-starter-01, weeks=27)]');
     npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: release_parcel(parcelCode=parcel-does-not-exist)]');
     npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: release_parcel(parcelCode=parcel-starter-01)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]');
+    await flushAutonomousLandAction();
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('drops unbound and live-binding-changed kit actions before settlement', async () => {
+    const calls: any[] = [];
+    npcSimulation.autonomousLandSettle = async (input) => {
+      calls.push(input);
+      return {
+        kind: 'kit_piece',
+        fresh: true,
+        parcelCode: 'parcel-starter-01',
+        pieceKey: 'fence-picket',
+        costMaterials: 8,
+      };
+    };
+
+    const unbound = body('kit-unbound-body');
+    sim.npcs.set(unbound.id, unbound);
+    npcSimulation.dispatchHatcherActions(
+      unbound.id,
+      '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]',
+    );
+    await flushAutonomousLandAction();
+
+    const changed = body('kit-binding-changed-body');
+    sim.npcs.set(changed.id, changed);
+    sim.agentBotSessions.set('kit-binding-changed-session', {
+      config: { agentId: changed.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(changed.id, 'kit-binding-changed-session');
+    npcSimulation.autonomousCoveAgentResolve = async () => ({
+      agentId: 'different-agent',
+      userId: 'executor-user',
+      avatarId: AVATAR,
+      ledgerCapable: true,
+    });
+    npcSimulation.dispatchHatcherActions(
+      changed.id,
+      '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]',
+    );
     await flushAutonomousLandAction();
 
     expect(calls).toHaveLength(0);
@@ -781,5 +833,46 @@ describe('in-world executor covenant hooks', () => {
         payload: expect.objectContaining({ target: 'api-integrations' }),
       }),
     ]);
+  });
+});
+
+// P7c (adversarial review finding 10): the seam's money constants live in
+// npc-simulation.ts's `autonomousLandSettle` kit branch, which every covenant
+// test above deliberately STUBS. These source-text pins are what keeps the
+// hosted verb's forced-materials contract from being editable without a red
+// test — the exact protection the route's own constants already have in
+// land-kit-routes.test.ts.
+describe('place_kit_piece seam source contract (finding 10)', () => {
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const { join } = require('node:path') as typeof import('node:path');
+  const simSource = readFileSync(join(import.meta.dir, '..', 'npc-simulation.ts'), 'utf8');
+  const kitBranch = (() => {
+    const start = simSource.indexOf("if (input.operation.verb === 'place_kit_piece')");
+    expect(start).toBeGreaterThan(0);
+    const end = simSource.indexOf("kind: 'kit_piece'", start);
+    expect(end).toBeGreaterThan(start);
+    return simSource.slice(start, end);
+  })();
+
+  it('forces the MATERIALS rail and ground placement — never a caller-supplied rail', () => {
+    expect(kitBranch).toContain("paymentRail: 'materials'");
+    expect(kitBranch).toContain('rotationStep: 0');
+    expect(kitBranch).toContain('stackLevel: 1');
+    // The operation union must never grow a rail field the seam could thread
+    // through: the ONLY paymentRail in the whole settle seam is the literal.
+    expect(kitBranch).not.toContain('input.operation.paymentRail');
+  });
+
+  it('resolves the parcel OWNERSHIP-SCOPED and revalidates the live binding under the locks', () => {
+    expect(kitBranch).toContain('owner_avatar_id = ${input.identity.avatarId}');
+    expect(kitBranch).toContain('revalidateBinding: () => resolveAgentSession(input.identity.sessionId)');
+  });
+
+  it('parses only the four whitelisted params — an explicit rail param is refused', () => {
+    const parseStart = simSource.indexOf("case 'place_kit_piece': {");
+    expect(parseStart).toBeGreaterThan(0);
+    const parseCase = simSource.slice(parseStart, simSource.indexOf('case ', parseStart + 30));
+    expect(parseCase).toContain("new Set(['parcelCode', 'pieceKey', 'gridX', 'gridY'])");
+    expect(parseCase).not.toContain('params.paymentRail');
   });
 });

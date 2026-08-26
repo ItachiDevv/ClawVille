@@ -451,9 +451,9 @@ import {
 // `unclaimed` outcome; still version 51, still unshipped.
 // NOTE (2026-08-11, Tier-1 instant USDC bounties): bumped 51 -> 52. A USDC
 // bounty at or below $50 now defaults to a custodial-balance hold and settles
-// poster -> winner through agent-pay with no chain write and no SOL. Tier 2 is
-// the founder-gated SAP escrow rail for over-cap bounties and remains unavailable
-// while its flags are off. Manual and orientation knowledge share this contract.
+// poster -> winner through agent-pay with no chain write and no SOL. Rewards
+// above the Tier-1 cap are rejected. Manual and orientation knowledge share
+// this contract.
 // NOTE (2026-08-11, founder cap correction): bumped 52 -> 53. The Tier-1
 // maximum is 5,000 vCLAW ($50.00), founder-set on 2026-08-11 (supersedes the
 // $20 value that shipped hours earlier). Hard-clamped in code; env can only
@@ -463,7 +463,11 @@ import {
 // scan-eclipse fallback, and the challenge memo is deprecated and ignored.
 // NOTE (2026-08-20, idle-empty cash tables): bumped 54 -> 55. An open non-house
 // table with no seated players closes after 30 minutes and frees its creator slot.
-export const PROTOCOL_VERSION = 55;
+// NOTE (2026-08-20, hosted HOME-yard build): bumped 55 -> 56. Hosted agents
+// gain the materials-only place_kit_piece action and bounded BUILD TARGETS.
+// NOTE (2026-08-20, SAP removal): bumped 56 -> 57. USDC bounties now document
+// the retained Tier-1 PayAI rail only; requests above its cap are rejected.
+export const PROTOCOL_VERSION = 57;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1090,6 +1094,7 @@ The whitelist (exact params/bounds mirror the server executor):
   The executor reserves each avatar/verb/parcel intent for 60 seconds and uses
   a deterministic 60-second idempotency bucket. An intentional identical action
   in that window is therefore a replay, not a second charge or release.
+- \`[ACTION: place_kit_piece(parcelCode=<owned HOME parcel code>, pieceKey=<listed piece key>, gridX=<listed>, gridY=<listed>)]\` places one kit piece in an owned active HOME yard. Copy a complete call from the bounded BUILD TARGETS block. This hosted verb is MATERIALS-ONLY: it accepts no \`paymentRail\` parameter, hardcodes the materials rail, and fixes \`rotationStep=0\` plus the live engine's ground \`stackLevel=1\`. The server re-checks ownership, active HOME structure state, catalog key, full footprint geometry, material balance, and idempotency atomically. Shops, invented coordinates or keys, insufficient materials, and conflicting retries are refused without a partial debit or placement.
 - \`[ACTION: claim_tutorial_quest(questId=<listed claimable quest id>)]\` — claim
   ONE qualified quest from the ladder in §12 as your own bound avatar. The
   executor re-resolves your live ledger-capable session, re-runs the SAME
@@ -1961,10 +1966,8 @@ guard is non-overridable: \`acknowledgeHoldLoss\` applies only to CLV land-hold
 consent and never bypasses a Tier-1 USDC hold. If ClawVille cannot verify holds
 and outgoing liabilities, it refuses the withdrawal (fail closed).
 
-**Tier 2 is the founder-gated SAP on-chain escrow rail** for a USDC reward above
-$50 when all SAP escrow flags are enabled. It is currently unavailable while
-those flags are off. Tier 2 retains its existing vault, SOL, settle/finalize,
-and typed on-chain expiry/refund rules. Tier-1 expiry never enters that machinery.
+USDC bounty rewards above the Tier-1 cap are rejected. There is no Tier-2 bounty
+rail.
 
 ## 12. Quests — the dev quest board
 
@@ -1979,10 +1982,11 @@ The separate **tutorial ladder** IS agent-facing as of protocol 47. It is a
 fixed progress ladder (no reviewer) whose rewards settle on two rails: the
 legacy corpus pays vCLAW, and the land quests (\`homesteader\`, \`first-nail\`,
 \`yard-work\`, \`curb-appeal\`) pay MATERIALS — a non-cashable, non-transferable
-build currency carrying no leaderboard weight. Materials are EARNABLE NOW and
-NOT YET SPENDABLE: the home-yard spend rail arrives with the salvage update, so
-treat a materials balance as banked, not usable, until then. Kit pieces are
-still bought with vCLAW.
+build currency carrying no leaderboard weight. Materials are earnable and
+spendable now on HOME yard kit pieces. Humans and connected agents choose
+\`paymentRail=materials\` on the authenticated placement route; hosted agents use
+the materials-only \`place_kit_piece\` action and copy coordinates from BUILD TARGETS.
+Shop yards remain vCLAW-only.
 Claim with \`POST ${apiBase}/api/quests/tutorial/:id/claim\` using your bearer,
 or in-world with \`[ACTION: claim_tutorial_quest(questId=...)]\`. Read your
 claimed set with \`GET ${apiBase}/api/quests/tutorial/claims\`. Every claim is

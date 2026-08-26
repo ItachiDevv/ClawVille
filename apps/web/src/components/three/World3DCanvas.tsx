@@ -67,6 +67,7 @@ import { KelpForestAmbient } from '@/lib/three/kelp-forest';
 import { KelpForestPortal } from '@/lib/three/kelp-forest-portal';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
+import { DeclareGuideRevealRequired } from '@/lib/three/boot-streamed-content';
 import BazaarStall from '@/lib/three/bazaar-stall';
 import MarketplaceStall from '@/lib/three/marketplace-stall';
 import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
@@ -98,6 +99,10 @@ import { useNpcStore } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { DEFAULT_WORLD_PERF_FLAGS, type WorldPerfFlags } from '@/lib/three/PerfAudit';
 import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
+import {
+  CURRENT_WORLD_DEVICE_PROFILE,
+  WORLD_DEVICE_CLASS,
+} from '@/lib/three/device-class';
 
 // ---------------------------------------------------------------------------
 // SeaLoadingScreen progress bridge — wire THREE.DefaultLoadingManager.onProgress
@@ -181,8 +186,10 @@ const USE_MESHLET_BUILDINGS: boolean =
 // selects with atomicMax, then writes that conventional value via depthNode.
 const USE_REVERSED_DEPTH_BUFFER = !USE_MESHLET_BUILDINGS;
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
-const LOW_END_DPR_RANGE: [number, number] = [0.55, 0.7];
-const STANDARD_DPR_RANGE: [number, number] = [0.75, 1];
+const WORLD_DPR_RANGE: [number, number] = [
+  CURRENT_WORLD_DEVICE_PROFILE.dprRange[0],
+  CURRENT_WORLD_DEVICE_PROFILE.dprRange[1],
+];
 const QUALITY_SAMPLE_MS = 2500;
 const QUALITY_WARMUP_MS = 5000;
 const QUALITY_FPS_DOWN = 58;
@@ -233,10 +240,8 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
 
   const initialTier = fastMode
     ? QUALITY_MAX_TIER
-    : LOW_END_GPU_DETECTED
-      ? 1
-      : 0;
-  const [qualityTier, setQualityTier] = useState(initialTier);
+    : CURRENT_WORLD_DEVICE_PROFILE.initialQualityTier;
+  const [qualityTier, setQualityTier] = useState<number>(initialTier);
 
   useEffect(() => {
     if (
@@ -436,6 +441,12 @@ export const BOOT_CORE_CHUNKS: ReadonlySet<string> = new Set([
 // DeferredWarmAttachment rewarms (FIFO-chained) own that work.
 export const BOOT_DEFERRED_CHUNKS: ReadonlySet<string> = new Set([
   'buildings-streamed',
+  // BGR amendment A1 [nori-NF1]: Nori now mounts PRE-reveal (stage B admits
+  // her after core presentation, before dismissal) — an SPA/watchdog rescan
+  // must treat her as expected deferred content, never drift, and the
+  // draw-time root hiding must cover her late Suspense descendants (her own
+  // FIFO-chained DWA warm owns her GPU work).
+  'town-guide',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -948,8 +959,8 @@ function measureCanvasHost(canvas: HTMLCanvasElement | undefined): { width: numb
  * 1. WebGPU backend: the swapchain is configured once in init() and never
  *    re-configured, so a transient/wrong canvas size at init presents only
  *    the clear color until a real dimension change (original fix, kept).
- * 2. WebGL2 backend (ALWAYS the path on Iris Xe — FORCE_WEBGL includes
- *    LOW_END_GPU_DETECTED): under slow loads, R3F's size→camera layout
+ * 2. WebGL2 backend (ALWAYS the path on Iris Xe desktop — FORCE_WEBGL includes
+ *    deviceClass === 'desktop-low'): under slow loads, R3F's size→camera layout
  *    effect can fail to run, leaving `camera.aspect = 0` → a NaN projection
  *    matrix → every frustum test fails → ~2 draw calls of background while
  *    the render loop runs "healthily". Reproduced deterministically with 6×
@@ -2803,7 +2814,14 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           buildings/terrain are hidden again; fog.far(10500) ≤ camera.far(11500)
           so geometry fully fades to fog BEFORE the far-plane cull (no pop). */}
       {showWaterFogParticles && !stageHosted && (
-        <fog attach="fog" args={[FOG_COLOR, 5000, 10500]} />
+        <fog
+          attach="fog"
+          args={[
+            FOG_COLOR,
+            CURRENT_WORLD_DEVICE_PROFILE.fogNear,
+            CURRENT_WORLD_DEVICE_PROFILE.fogFar,
+          ]}
+        />
       )}
 
       {/* Shared world geometry */}
@@ -2948,7 +2966,9 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           animation compile to GLSL loops on WebGL2 backend and spike frame time past
           the A-series GPU budget on first draw. Plain WebGL path has no equivalent
           GPU-side procedural animation so the cost isn't recoverable. */}
-      {showGroundCover && !FORCE_WEBGL && (
+      {showGroundCover &&
+        CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover &&
+        !FORCE_WEBGL && (
         <group name="perf:seaweed" userData={{ perfChunk: 'seaweed' }}>
           <MergedSeaweed />
         </group>
@@ -2957,7 +2977,9 @@ export const WorldSceneContents = memo(function WorldSceneContents({
       {/* Northeast Kelp Forest — three merged tall-blade variants with heavy TSL wind.
           Ambient blades keep the water-fog and ground-cover governor gates;
           their TSL/GLSL wind now runs on both renderer backends. */}
-      {showWaterFogParticles && showGroundCover && (
+      {showWaterFogParticles &&
+        showGroundCover &&
+        CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover && (
         <group name="perf:kelp-forest" userData={{ perfChunk: 'kelp-forest' }}>
           <KelpForestAmbient forceWebGL={FORCE_WEBGL} />
         </group>
@@ -2984,6 +3006,12 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           <QuestNpc />
         </group>
       )}
+      {/* BGR guide amendment: Nori's reveal requirement is DECLARED beside
+          her mount gate — the overlay waits for her only on boots where she
+          actually renders (an NPC-less perf boot must not strand on a token
+          that can never come). Declaration mounts unconditionally so
+          required=false is an active declaration, not an absence. */}
+      <DeclareGuideRevealRequired required={showNpcs} />
       {showNpcs && (
         <group name="perf:town-guide" userData={{ perfChunk: 'town-guide' }}>
           <TownGuide />
@@ -3081,8 +3109,8 @@ export const WORLD_STAGE_APPEARANCE = {
   background: SKY_COLOR,
   fog: {
     color: FOG_COLOR,
-    near: 5000,
-    far: 10500,
+    near: CURRENT_WORLD_DEVICE_PROFILE.fogNear,
+    far: CURRENT_WORLD_DEVICE_PROFILE.fogFar,
   },
 } as const;
 
@@ -3194,7 +3222,7 @@ const WEBGPU_ABSENT =
 // runs at 41 FPS full-res on this Iris Xe, suggesting the bug is gone).
 // The query is opt-in so the default-safe WebGL2 path stays in place for
 // all other users. Once we've validated the WebGPU path is stable across
-// sessions, the LOW_END_GPU_DETECTED branch can be removed from FORCE_WEBGL.
+// sessions, the desktop-low branch can be removed from FORCE_WEBGL.
 // ?meshlets=1 ALSO implies WebGPU override — the rasterizer's TSL compute
 // shaders emit WGSL pointer-atomic syntax (`atomicStore(&buf, 0u)`) which
 // CANNOT compile to GLSL. If the renderer falls back to WebGL2 on a
@@ -3215,7 +3243,7 @@ const FORCE_WEBGL_OVERRIDE =
 const FORCE_WEBGL = FORCE_WEBGL_OVERRIDE
   || (FORCE_WEBGPU_OVERRIDE
     ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
-    : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED));
+    : (IOS_SAFARI || WEBGPU_ABSENT || WORLD_DEVICE_CLASS === 'desktop-low'));
 
 if (typeof window !== 'undefined') {
   // Probe-readable backend stamp — the REQUESTED path; overwritten with the
@@ -3228,7 +3256,7 @@ if (typeof window !== 'undefined') {
     stampColdLoadBackend(FORCE_WEBGL ? 'webgl2-requested' : 'webgpu-requested');
   }
   console.log(
-    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE} webglOverride:${FORCE_WEBGL_OVERRIDE}`,
+    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} deviceClass:${WORLD_DEVICE_CLASS} webgpuOverride:${FORCE_WEBGPU_OVERRIDE} webglOverride:${FORCE_WEBGL_OVERRIDE}`,
   );
 }
 
@@ -3262,13 +3290,13 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // backbuffer to 828×577 (Iris cap × cssDims) — same mismatch, mirrored.
   //
   // The fix is to compute the IDENTICAL dpr R3F will resolve from the same
-  // LOW_END_GPU_DETECTED flag the Canvas prop reads. Stamp canvas dims at
+  // device profile the Canvas prop reads. Stamp canvas dims at
   // that ratio; setPixelRatio to match; init; setSize. R3F's later setSize
   // at the same (cssW, cssH) with the same pixelRatio is a true no-op.
   //
   // KEEP THIS IN SYNC with the <Canvas dpr={...}> prop below.
   // -------------------------------------------------------------------------
-  const dprRange = LOW_END_GPU_DETECTED ? LOW_END_DPR_RANGE : STANDARD_DPR_RANGE;
+  const dprRange = WORLD_DPR_RANGE;
   const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   const dpr = Math.max(dprRange[0], Math.min(rawDpr, dprRange[1]));
   canvas.width = Math.round(cssW * dpr);
@@ -3452,7 +3480,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         // After Wave 1 NPC cap + spring-bone LOD + pavilion VRAM relief landed,
         // the scene is much less fragment-bound, so dropping the cap to 0.5 floor
         // is now visually acceptable on the device classes that need it.
-        dpr={LOW_END_GPU_DETECTED ? LOW_END_DPR_RANGE : STANDARD_DPR_RANGE}
+        dpr={WORLD_DPR_RANGE}
         // MUST be "always" AT CREATION — R3F v9 with an async gl factory skips
         // calling the factory entirely when frameloop="never" is set, so the
         // Canvas never initializes. After onCreated, this React state-backed
@@ -3469,7 +3497,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           // 10500wu (fog.far ≤ camera.far invariant), so culling past 11500
           // reclaims fill/geometry cost with nothing visible lost. Building ring
           // (~4160wu radius, ≤8320wu across) stays well within view.
-          far: 11500,
+          far: CURRENT_WORLD_DEVICE_PROFILE.cameraFar,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],
@@ -3497,7 +3525,8 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           scene.background = SKY_COLOR;
           gl.setClearColor(SKY_COLOR, 1);
           gl.setClearAlpha?.(1);
-          gl.shadowMap.enabled = resolvedPerfFlags.shadows;
+          gl.shadowMap.enabled =
+            CURRENT_WORLD_DEVICE_PROFILE.shadows && resolvedPerfFlags.shadows;
           // PERF: do NOT call gl.setPixelRatio() here — it overrides the Canvas
           // dpr={[0.75, 1]} prop cap. R3F resolves the DPR from the prop before
           // onCreated fires; a manual setPixelRatio resets it and can raise DPR

@@ -64,5 +64,33 @@ export function computeBgrEvidence(phases) {
       `renderer generations differ: core=${coreGen} buildings=${buildingsGen} dismiss=${dismissGen}`,
     );
   }
+  // Guide amendment A1 [nori-NF3] — FAIL-CLOSED against the legacy shape:
+  // the report must carry the guide declaration, the required-set size the
+  // milestone stamped against (12 with Nori, 11 only when the guide was
+  // explicitly NOT required), and ZERO failed-marker tokens (a 404'd member
+  // doesn't hold the overlay, but it is never ship evidence).
+  const guideRequired = stampOf(p.bootGuideRevealRequired);
+  const presentedRequired = stampOf(p.bootRevealPresentedRequired);
+  const presentedFailed = stampOf(p.bootRevealPresentedFailed);
+  if (guideRequired === null) {
+    reasons.push('bootGuideRevealRequired missing (legacy/pre-A1 report)');
+  }
+  if (presentedRequired === null || presentedFailed === null) {
+    reasons.push('presentation-shape stamps missing (bootRevealPresentedRequired/Failed)');
+  } else {
+    if (guideRequired === 1 && presentedRequired !== 12) {
+      reasons.push(
+        `guide required but milestone stamped against ${presentedRequired} members (need 12)`,
+      );
+    }
+    if (guideRequired === 0 && presentedRequired !== 11) {
+      reasons.push(
+        `guide not required but milestone stamped against ${presentedRequired} members (need 11)`,
+      );
+    }
+    if (presentedFailed !== 0) {
+      reasons.push(`${presentedFailed} required token(s) were failed-only at presentation`);
+    }
+  }
   return { valid: reasons.length === 0, reasons };
 }

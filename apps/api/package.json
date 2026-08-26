@@ -21,7 +21,6 @@
     "@coral-xyz/anchor": "^0.31.1",
     "@elizaos/plugin-sql": "2.0.0-alpha.7",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
-    "@oobe-protocol-labs/synapse-sap-sdk": "1.0.0",
     "@solana/kit": "^6.8.0",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.95.0",

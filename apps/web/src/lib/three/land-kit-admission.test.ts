@@ -68,6 +68,28 @@ describe('chunk admission', () => {
     expect(admitsChunk(1, { draws: 1, triangles: 60_000 }, admitted)).toBe(false);
     expect(admitsChunk(1, { draws: 10, triangles: 50_000 }, admitted)).toBe(true);
   });
+
+  it('accepts the phone profile ceilings without changing desktop defaults', () => {
+    const admitted = { draws: 10, triangles: 20_000 };
+    expect(
+      admitsChunk(
+        1,
+        { draws: 20, triangles: 100_000 },
+        admitted,
+        30,
+        120_000,
+      ),
+    ).toBe(true);
+    expect(
+      admitsChunk(
+        1,
+        { draws: 21, triangles: 100_000 },
+        admitted,
+        30,
+        120_000,
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('residualCost', () => {
@@ -105,6 +127,20 @@ describe('farthest-first parcel drop', () => {
     expect(residualCost(parcels, dropped).triangles).toBeLessThanOrEqual(
       KIT_SUBMITTED_TRIANGLE_BUDGET,
     );
+  });
+
+  it('uses the supplied phone triangle ceiling for parcel drops', () => {
+    const parcels = chunk(4, 40_000);
+    const dropped = computeChunkDrop({
+      parcels,
+      nearestParcelCode: parcels[0]!.parcelCode,
+      previousDropped: EMPTY_DROP_SET,
+      basisChanged: true,
+      drawBudget: 30,
+      triangleBudget: 120_000,
+    });
+    expect([...dropped]).toEqual(['parcel-starter-03']);
+    expect(residualCost(parcels, dropped).triangles).toBe(120_000);
   });
 
   it('drops on the draw budget too, not only triangles', () => {

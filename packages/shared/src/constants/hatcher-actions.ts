@@ -16,6 +16,7 @@ export const HATCHER_ACTION_VERBS = [
   'claim_parcel',
   'prepay_rent',
   'release_parcel',
+  'place_kit_piece',
   'enter_poker_room',
   'enter_kelp_forest',
   'claim_tutorial_quest',
@@ -71,6 +72,13 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'release_parcel',
     syntax: 'release_parcel(parcelCode=<owned parcel code>)',
     whenToUse: 'return an owned hold or rent parcel; rent refunds only remaining escrow and hold refunds nothing',
+  },
+  {
+    verb: 'place_kit_piece',
+    syntax:
+      'place_kit_piece(parcelCode=<owned HOME parcel code>, pieceKey=<listed piece key>, gridX=<listed>, gridY=<listed>)',
+    whenToUse:
+      'place one decoration piece in your own HOME yard paying MATERIALS only; copy a listed valid placement from the Build targets block; salvage_node gathers materials when you are short',
   },
   {
     verb: 'enter_poker_room',
