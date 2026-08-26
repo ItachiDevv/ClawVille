@@ -1,7 +1,7 @@
 # ClawVille Brand Kit
 
 > Canonical brand reference for anyone (human or agent) producing ClawVille-branded material.
-> Built 2026-07-26 from the marketing team's Drive asset kit (two founder-provided folders) so
+> Last Audited 2026-08-26 (official logo replaced by the claw-girl token logo). Built 2026-07-26 from the marketing team's Drive asset kit (two founder-provided folders) so
 > repo sessions finally have exposure to the real marketing style. Companion copy doc:
 > `docs/brand-language.md` (locked keeper phrases + writing rules). Assets live in
 > `branding/assets/`. Update this file same-diff when assets or rules change.
@@ -119,12 +119,9 @@ color. Small connector words ("ON") drop to a smaller gold weight between lines.
 
 ## 5. Logo rules
 
-**THE OFFICIAL LOGO** (founder-confirmed 2026-07-26, pulled from the token's DexScreener
-profile): `assets/logos/clawville-logo-official.jpg` (200x200) = the daylight mascot bursting
-from the surf under the wood sign. Hi-res version of the same composition:
-`assets/mascot/mascot-square.jpg`. The pirate OG card is ALTERNATE promo art, not the logo.
+**THE OFFICIAL LOGO** (founder-confirmed 2026-08-26, supersedes the 2026-07-26 pick): `assets/logos/clawville-logo-official.png` (1024x1024) = the claw girl: green hair, pink bow + earmuffs, red antennae, big red lobster claws, white CLAWVILLE crossed-claws tee, bursting from a surf splash under a blue sky. This is the $CLAWVILLE token logo on every listing site (CoinGecko, Solscan, Jupiter, DexScreener). Source: `assets/logos/clawville-token-logo-source-1254.jpg` (1254x1254 JPEG). Hosted copies for listing forms: `https://clawville.world/press/token/clawville-token-logo.png` (512) and `/press/token/clawville-token-logo-{200,256,512,1024}.png`. Never mutate those paths in place; add a new filename (Cloudflare 7-day edge cache, no purge scope). Rules: always square, never crop the claws or the bow, never recolor, never add a border. On dark Register B scenes it sits as a round or rounded-square badge.
 
-**TOKEN LOGO (hosted, 2026-08-26):** the new $CLAWVILLE token logo (the green-haired claw girl in the CLAWVILLE tee, surf splash) is served from the web app for listing sites (CoinGecko, Solscan, Jupiter, DexScreener). Canonical URL: `https://clawville.world/press/token/clawville-token-logo.png` (512x512 PNG). Sizes: `/press/token/clawville-token-logo-{200,256,512,1024}.png`. Source: `assets/logos/clawville-token-logo-source-1254.jpg` (1254x1254). Never mutate these paths in place; add a new filename (Cloudflare 7-day edge cache, no purge scope).
+Previous official logo (mascot bursting from the surf under the wood sign, 2026-07-26 to 2026-08-26): `assets/logos/clawville-logo-official-2026-07-previous.jpg` (200x200). Hi-res of that composition: `assets/mascot/mascot-square.jpg`. Keep for older material only; do not use for new listings. The pirate OG card is ALTERNATE promo art, not the logo.
 
 **THE OFFICIAL BANNER**: `assets/world/clawville-banner-official.gif` (600x200 ANIMATED,
 144 frames, the DexScreener header; prefer the GIF wherever animation plays) + static
@@ -240,9 +237,10 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/mascot/mascot-only-transparent.png` | mascot cutout, no sign (derived) | both |
 | `assets/mascot/mascot-pirate-cutout.png` | cinematic pirate hero, transparent (derived from og) | B |
 | `assets/logos/clawville-logo-og.jpg` | square OG/social card, pirate + sign (ALTERNATE promo art) | B |
-| `assets/logos/clawville-token-logo-source-1254.jpg` | token logo SOURCE (claw girl, 1254x1254) | both |
+| `assets/logos/clawville-token-logo-source-1254.jpg` | official logo SOURCE (claw girl, 1254x1254 JPEG) | both |
 | `apps/web/public/press/token/clawville-token-logo*.png` | HOSTED token logo for listing sites (200/256/512/1024 + default 512) | both |
-| `assets/logos/clawville-logo-official.jpg` | THE official logo (DexScreener token profile, 200x200) | both |
+| `assets/logos/clawville-logo-official.png` | THE official logo / $CLAWVILLE token logo (claw girl, 1024x1024, 2026-08-26) | both |
+| `assets/logos/clawville-logo-official-2026-07-previous.jpg` | previous official logo (mascot-in-surf, 200x200), legacy only | both |
 | `assets/world/clawville-banner-official.gif` | THE official banner, animated (DexScreener header) | A |
 | `assets/world/clawville-banner-official-static.jpg` | official banner, static frame | A |
 | `assets/world/clawville-logo-banner.jpg` | article PROMO banner ("More Than A Game"), not official | A |
