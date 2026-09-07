@@ -102,6 +102,17 @@ const SLOW_READ_CLOSE_MS = 8_000;
 /** Reconnect grace after an unexpected disconnect (ms) */
 const RECONNECT_GRACE_MS = 10_000;
 
+/**
+ * Activities where a terminal exit (leave / grace timeout / integrity)
+ * WITHDRAWS the participant — releasing their queue binding at once and
+ * ending a bots-only round early. Poker/MTT is deliberately excluded: a
+ * tournament seat is a live commitment with its own lifecycle.
+ */
+const WITHDRAW_ACTIVITY_IDS: ReadonlySet<string> = new Set([
+  'bumper-shells',
+  'reef-race',
+]);
+
 // ─── Per-connection stashed state ──────────────────────────────────────────
 
 /**
@@ -217,6 +228,15 @@ class ActivityWsHub {
     const participant = room.participants.get(identity.avatarId);
     if (!participant) {
       this.safeClose(ws, ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, 'not a participant');
+      return false;
+    }
+    // A withdrawn participant never returns to this room (exit-lifecycle
+    // review, blocking issue 4): re-admitting one would re-anchor a Reef
+    // countdown and let the avatar occupy two active rooms at once. The
+    // flag is only ever set for the sim activities (bumper/reef), so poker
+    // reconnect flows are untouched.
+    if (participant.withdrawn) {
+      this.safeClose(ws, ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, 'participant withdrew');
       return false;
     }
 
@@ -522,6 +542,20 @@ class ActivityWsHub {
     const ws = this.rooms.get(roomId)?.get(avatarId);
     if (!ws) return;
     this.safeSend(ws, frame);
+  }
+
+  /**
+   * Close one avatar's socket with the INTEGRITY code (5-flag anti-cheat).
+   * The close routes through `unregisterConnection`, which forfeits AND
+   * withdraws with reason 'integrity'. Exit-lifecycle review, blocking
+   * issue 6: the old wiring only SENT the error frame and never closed the
+   * socket, so the exit never reached `notifyForfeit` and the cheater
+   * stayed queue-jailed until room end.
+   */
+  closeAvatarForIntegrity(roomId: string, avatarId: string): void {
+    const ws = this.rooms.get(roomId)?.get(avatarId);
+    if (!ws) return;
+    this.safeClose(ws, ACTIVITY_WS_CLOSE_CODES.INTEGRITY, 'anti-cheat forfeit');
   }
 
   /** Broadcast a frame to every connected avatar in the room */
@@ -953,6 +987,31 @@ class ActivityWsHub {
     } else if (room.activityId === 'reef-race' && room.state === 'live') {
       getReefSim().forfeit(room.id, avatarId, reason);
     }
+
+    // Terminal exit: release the leaver's queue binding immediately so
+    // they can start a new match while this room finishes without them.
+    // Pre-live rooms whose last non-bot just left are aborted inside
+    // withdrawParticipant; a LIVE round with only bots still racing is
+    // ended early here — a bots-only race serves nobody, and still-racing
+    // bots outrank the leaver in computeResults so no placement or reward
+    // can be farmed by leaving. SCOPED to the sim activities: poker/MTT
+    // seats have their own lifecycle (a tournament seat is a live
+    // commitment — blinds continue), so poker keeps the pre-change
+    // behavior until a seat policy is defined.
+    if (WITHDRAW_ACTIVITY_IDS.has(room.activityId)) {
+      const { allNonBotsWithdrawn } = activityRoomManager.withdrawParticipant(
+        room.id,
+        avatarId,
+      );
+      if (allNonBotsWithdrawn && room.state === 'live') {
+        if (room.activityId === 'bumper-shells') {
+          bumperShellsSim.endRoundEarly(room.id);
+        } else if (room.activityId === 'reef-race') {
+          getReefSim().endRoundEarly(room.id);
+        }
+      }
+    }
+
     this.broadcastEvent(room.id, {
       type: 'event.player_left',
       avatarId,

@@ -942,6 +942,21 @@ class ReefRaceSim {
   }
 
   /**
+   * End a live round early because every non-bot participant has left
+   * (WS hub calls this after the last human/agent withdraws). Bots-only
+   * racing serves nobody: bots earn nothing, and in a same-start race
+   * every unfinished body would place below every existing finisher
+   * anyway, so cutting the race cannot change a real player's placement.
+   * Idempotent — `endRound` no-ops on an already-ended state, and an
+   * unknown room is a silent return.
+   */
+  endRoundEarly(roomId: string): void {
+    const state = this.rooms.get(roomId);
+    if (!state) return;
+    this.endRound(state, 'all_forfeited');
+  }
+
+  /**
    * Result list for the room — placement-sorted. Called by the room
    * manager at LIVE→RESULTS to compute reward previews.
    *
@@ -963,6 +978,7 @@ class ReefRaceSim {
     placement: number;
     score: number;
     scoreMs: number | null;
+    forfeited: boolean;
     reefRace?: ReefRaceSimResultRowExt;
   }> {
     const state = this.rooms.get(roomId);
@@ -974,6 +990,14 @@ class ReefRaceSim {
     const dnfers = Array.from(state.bodies.values())
       .filter((b) => b.finishedAt === null || b.dnf)
       .sort((a, b) => {
+        // Still-racing bodies (alive, not DNF — e.g. bots cut short by an
+        // early-terminated round) place ABOVE forfeited/DNF bodies: the
+        // race would have continued and they would have finished. Without
+        // this, a leading player could farm placement by leaving (exit-
+        // lifecycle review, blocking issue 1).
+        const aRacing = a.alive && !a.dnf ? 1 : 0;
+        const bRacing = b.alive && !b.dnf ? 1 : 0;
+        if (bRacing !== aRacing) return bRacing - aRacing;
         // Higher lap = better placement among DNFers.
         if (b.lap !== a.lap) return b.lap - a.lap;
         // Tiebreak by avatarId for stability.
@@ -987,6 +1011,7 @@ class ReefRaceSim {
       placement: number;
       score: number;
       scoreMs: number | null;
+      forfeited: boolean;
       reefRace?: ReefRaceSimResultRowExt;
     }> = [];
     let placement = 1;
@@ -998,6 +1023,7 @@ class ReefRaceSim {
         // generic placement-by-score logic in the reward pipeline.
         score: -f.totalTimeMs,
         scoreMs: f.totalTimeMs,
+        forfeited: false,
         reefRace: isReefRace ? extractReefRaceBlock(f) : undefined,
       });
     }
@@ -1007,6 +1033,10 @@ class ReefRaceSim {
         placement: placement++,
         score: -REEF_HARD_TIMEOUT_MS - 1, // worse than any finish
         scoreMs: null,
+        // Forfeited rows earn nothing downstream (reward pipeline zeroes
+        // CT + leaderboard points; wager winner selection skips them) —
+        // leaving a race can never pay (exit-lifecycle review round 2).
+        forfeited: d.forfeited,
         // DNFers may still have set a fast lap before forfeiting/timing
         // out — surface it. The reward pipeline only writes a PB if the
         // avatar has no anti-cheat flags AND bestLapMs is set.

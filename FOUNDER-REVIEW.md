@@ -70,6 +70,22 @@
 
 ---
 
+## ACTIVITIES
+
+### Exit a race, start a new one at once (staging — needs your confirmation)
+- **What:** the exit bug you reported — built and test-verified server-side,
+  needs your eyes to confirm it. Leaving a Reef Race (or Bumper Shells)
+  should now release you immediately — no more "already in an active room"
+  error while the abandoned race's timer runs out. A solo match vs bots
+  should END the moment you leave; a multiplayer match keeps running for
+  everyone else. Leaving forfeits rewards (a leaver earns nothing — this
+  closes a placement-farming hole the adversarial review found).
+- **Where:** staging → `/game` → enter a Reef Race vs bots → leave mid-race →
+  immediately queue a new race. Repeat with a leave during the countdown.
+- **Feedback wanted:** does the re-queue work instantly for you, and does
+  anything feel off for other racers when someone leaves a multiplayer match?
+- Built by: session prf, 2026-09-07.
+
 ## COVE
 
 ### Nori button reachable on phones (LIVE on prod via #271)
@@ -135,17 +151,16 @@
 
 ## PERF
 
-### Nori in the first loading batch (staging — the one amendment from your reveal sign-off)
+### Nori in the first loading batch (NOW ON PROD — the one amendment from your reveal sign-off)
 - **What:** your verdict on the buildings-gated reveal ("looks pretty good,
   I'm pretty happy") is absorbed ✅ — that entry is closed. The one ask from
   it is built: Nori now loads BEHIND the loading screen too, FIRST in the
   batch (ahead of every building), and the screen holds until she is
   standing at town center — you reveal right in front of her, fully loaded.
   Costs ~1s of reveal time (local ~6.6s vs ~5.6s without her).
-- **Where:** **staging** → hard-refresh `staging.clawville.world/game` —
-  Nori must be there the instant the world appears, never popping in after.
-  Reaches prod with the next clean promotion (staging currently carries the
-  unpromoted SAP removal — not riding that out unreviewed).
+- **Where:** **prod** → hard-refresh `clawville.world/game` — Nori must be
+  there the instant the world appears, never popping in after. (Reached prod
+  with a later promotion; verified live 2026-09-07, prod `705dc33e`.)
 - **Feedback wanted:** confirm she's always there at reveal; does the extra
   ~1s feel fine?
 - Shipped by: cv-covefreeze perf session (prf), 2026-08-20 late.

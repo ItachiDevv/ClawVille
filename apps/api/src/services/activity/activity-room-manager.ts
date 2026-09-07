@@ -291,7 +291,7 @@ class ActivityRoomManager {
    */
   async createRoom(
     activityId: string,
-    participants: Array<Omit<RoomParticipant, 'connected' | 'disconnectedAt' | 'wsConnectionId' | 'joinedAt'>>,
+    participants: Array<Omit<RoomParticipant, 'connected' | 'disconnectedAt' | 'wsConnectionId' | 'joinedAt' | 'withdrawn'>>,
     activityConfig: Room['activityConfig'],
   ): Promise<Room> {
     if (this.rooms.size >= MAX_ROOMS_TOTAL) {
@@ -326,6 +326,7 @@ class ActivityRoomManager {
         connected: false,
         disconnectedAt: null,
         wsConnectionId: null,
+        withdrawn: false,
       });
       if (p.subjectType === 'bot') hasBots = true;
       if (p.subjectType === 'agent') hasAgents = true;
@@ -429,6 +430,61 @@ class ActivityRoomManager {
       return undefined;
     }
     return room;
+  }
+
+  /**
+   * Terminal exit for one participant (voluntary leave, grace timeout,
+   * or integrity kick). Marks the participant `withdrawn`, releases
+   * their `playerToRoom` binding immediately (so re-queueing works while
+   * the room is still live — the old behavior held them in queue jail
+   * until RESULTS), and aborts a pre-live room whose last non-bot just
+   * left (a bots-only countdown serves nobody).
+   *
+   * Returns whether every non-bot participant has now withdrawn — the
+   * WS hub uses that to end a LIVE bots-only round early via the sim.
+   * Bots never withdraw; a bot avatarId is a no-op that reports the
+   * current human/agent occupancy unchanged.
+   */
+  withdrawParticipant(
+    roomId: string,
+    avatarId: string,
+  ): { allNonBotsWithdrawn: boolean } {
+    const room = this.rooms.get(roomId);
+    if (!room) return { allNonBotsWithdrawn: false };
+
+    const participant = room.participants.get(avatarId);
+    if (participant && participant.subjectType !== 'bot') {
+      participant.withdrawn = true;
+      // Guard: never clobber a NEWER binding — the player may already be
+      // queued into a different room (same cross-delete trap as the
+      // room-end eviction below).
+      if (this.playerToRoom.get(avatarId) === roomId) {
+        this.playerToRoom.delete(avatarId);
+      }
+    }
+
+    const allNonBotsWithdrawn = !Array.from(room.participants.values()).some(
+      (p) => p.subjectType !== 'bot' && !p.withdrawn,
+    );
+
+    if (
+      allNonBotsWithdrawn &&
+      (room.state === 'pending' || room.state === 'countdown')
+    ) {
+      void this.transitionRoom(roomId, 'aborted').catch((err: unknown) => {
+        void alertError({
+          severity: 'warning',
+          source: 'activity-room-manager',
+          message: `withdraw-abort failed for room ${roomId}`,
+          context: {
+            roomId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      });
+    }
+
+    return { allNonBotsWithdrawn };
   }
 
   /**

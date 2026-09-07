@@ -1,6 +1,39 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-08-20 (SAP bounty rail removal, protocol v57).** USDC
+**Last Audited: 2026-09-07 (Activity exit lifecycle — leave releases the
+player at once; founder fix order).** Leaving an activity match (Reef Race,
+Bumper Shells; the voluntary `leave` frame, the 10s reconnect-grace timeout,
+or an integrity kick) now marks the participant `withdrawn` and releases the
+avatar→room queue binding IMMEDIATELY — the old behavior held the binding
+until RESULTS, so re-queueing after an exit threw "Avatar is already in an
+active room" for the whole remaining race timer (the founder hit this
+against bots). A pending/countdown room whose last non-bot leaves is
+aborted (escrow refund + bot-pool eviction run on the existing abort path);
+a LIVE round whose last non-bot leaves ends early via the sims' new
+idempotent `endRoundEarly` — bots-only play serves nobody, and no
+human/agent placement or reward can change (reef: unfinished bodies always
+place below finishers in a same-start race; bumper: `eliminationOrder` is
+already frozen). Multiplayer is untouched: while ANY human or agent remains
+racing, the match continues seamlessly and only the leaver is released.
+Adversarial-review hardening in the same diff: still-racing bots outrank
+forfeited bodies in reef results (a leader cannot farm placement/CT by
+leaving); the wager abort handler + durable sweep now cancel escrow for
+BOTH abort statuses (a funded countdown abandon refunds); a stuck settle
+(bot at placement 1, or no winner) pages ops via alertError; a withdrawn
+participant is refused at WS re-auth; the countdown→LIVE race window is
+swept (withdrawn bodies forfeit at sim start); 5-flag integrity kicks now
+actually close the socket so the exit releases the binding. SCOPE: the
+withdraw mechanics apply to `bumper-shells` + `reef-race` only — poker/MTT
+seats keep their own lifecycle (a tournament seat is a live commitment;
+seat policy for voluntary leave is future work). Reward rule (review round
+2): a forfeited body earns ZERO tokens + ZERO leaderboard points and never
+settles a wager — leaving can never pay, in any room shape. Wire shapes are
+unchanged (same `leave` frame), but the SEMANTICS changed, so all three
+knowledge surfaces carry it: protocol manual §"Leaving a match" +
+PROTOCOL_VERSION 57→58 + Nori knowledge[] line (hosted delivery follows the
+manual content-hash).
+
+**Prior Last Audited: 2026-08-20 (SAP bounty rail removal, protocol v57).** USDC
 bounties now have one supported path: Tier 1 records a custodial-balance hold up
 to the founder-frozen $50 maximum and pays the approved winner through PayAI
 agent-pay with zero SOL and no bounty-specific chain write. Over-cap requests are

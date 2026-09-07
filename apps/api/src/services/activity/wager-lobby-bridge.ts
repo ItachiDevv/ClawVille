@@ -46,6 +46,7 @@ import {
   type CancelLobbyResult,
   type WagerLobbyChainState,
 } from '../wager-program-client';
+import { alertError } from '../alert-error';
 
 export interface LobbyHandle {
   rowId: string;
@@ -215,7 +216,11 @@ export async function handleWagerRoomAborted(
   status: 'aborted' | 'aborted_crash',
   deps: WagerAbortRecoveryDeps = productionWagerAbortRecoveryDeps,
 ): Promise<void> {
-  if (status !== 'aborted_crash' || !WAGER_ABORT_ACTIVITY_IDS.has(activityId)) return;
+  // Exit-lifecycle review, blocking issue 3: plain 'aborted' rooms can carry
+  // a locked wager too — a funded countdown room whose last non-bot withdrew,
+  // or a reef no-show abort. Both abort statuses must cancel the escrow;
+  // cancelLobbyForAbortedRoom is terminal-guarded, so replays are no-ops.
+  if (!WAGER_ABORT_ACTIVITY_IDS.has(activityId)) return;
   await cancelLobbyForAbortedRoom(roomId, deps);
 }
 
@@ -239,7 +244,9 @@ export async function sweepAbortedCrashWagerLobbies(
         eq(lobbies.mode, 'multiplayer'),
         inArray(lobbies.activityId, Array.from(WAGER_ABORT_ACTIVITY_IDS)),
         inArray(lobbies.state, ['open', 'locked']),
-        eq(activityRooms.status, 'aborted_crash'),
+        // Both abort statuses (see handleWagerRoomAborted) — a plain
+        // 'aborted' room can also strand a locked lobby.
+        inArray(activityRooms.status, ['aborted', 'aborted_crash']),
       ),
     );
   let recovered = 0;
@@ -421,6 +428,14 @@ export async function settleLobbyForRoom(
         `[wager-bridge] room ${roomId} → RESULTS with no winnerAvatarId; cannot settle on-chain. ` +
           `Operator must call POST /api/wager/lobbies/${handle.rowId}/cancel to unlock refunds.`,
       );
+      // Same stuck-locked class as a failed settle — page ops, do not rely
+      // on someone reading stdout (fails-visible rule).
+      void alertError({
+        severity: 'critical',
+        source: 'wager-lobby-bridge',
+        message: `room ${roomId} reached RESULTS with no settleable winner — escrow stuck locked; operator cancel required`,
+        context: { roomId, lobbyRowId: handle.rowId },
+      });
       await db.insert(lobbyEvents).values({
         lobbyId: handle.rowId,
         kind: 'settled',
@@ -469,6 +484,22 @@ export async function settleLobbyForRoom(
       `[wager-bridge] settleLobbyForRoom(${roomId}, ${winnerAvatarId}) failed:`,
       err,
     );
+    // Exit-lifecycle review, blocking issue 2: a settle that fails with a
+    // non-depositor winner (a bot at placement 1 — e.g. every human left an
+    // early-terminated round) leaves the escrow LOCKED with no automatic
+    // path out. Page ops loudly (fails-visible rule): the operator cancel
+    // (POST /api/wager/lobbies/:id/cancel) unlocks the refunds.
+    void alertError({
+      severity: 'critical',
+      source: 'wager-lobby-bridge',
+      message: `settleLobbyForRoom failed for room ${roomId} — escrow may be stuck locked; operator cancel required`,
+      context: {
+        roomId,
+        lobbyRowId: handle?.rowId ?? null,
+        winnerAvatarId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
     if (handle) {
       try {
         await db.insert(lobbyEvents).values({

@@ -503,26 +503,48 @@ class BumperShellsSim {
   }
 
   /**
+   * End a live round early because every non-bot participant has left
+   * (WS hub calls this after the last human/agent withdraws). Bots-only
+   * bumping serves nobody: bots earn nothing, and every human/agent
+   * elimination placement is already frozen in `eliminationOrder`.
+   * Idempotent — `endRound` no-ops on an already-ended state, and an
+   * unknown room is a silent return.
+   */
+  endRoundEarly(roomId: string): void {
+    const state = this.rooms.get(roomId);
+    if (!state) return;
+    this.endRound(state, 'last_standing');
+  }
+
+  /**
    * Result list for the room — placement-sorted. Called by the room
    * manager at LIVE→RESULTS to compute reward previews.
    */
-  computeResults(roomId: string): Array<{ avatarId: string; placement: number; score: number; alive: boolean }> {
+  computeResults(roomId: string): Array<{ avatarId: string; placement: number; score: number; alive: boolean; forfeited: boolean }> {
     const state = this.rooms.get(roomId);
     if (!state) return [];
 
     // Survivors first (alive at round end), placement 1..k by tick of
     // entry (deterministic). Then eliminated in REVERSE elimination
     // order (last eliminated = lowest survivor placement + 1).
+    // Forfeited rows earn nothing downstream (exit-lifecycle round 2) —
+    // a survivor can never be forfeited (forfeit eliminates the body).
     const survivors = Array.from(state.bodies.values()).filter((b) => b.alive);
     survivors.sort((a, b) => a.avatarId.localeCompare(b.avatarId));
     const eliminatedReverse = [...state.eliminationOrder].reverse();
-    const out: Array<{ avatarId: string; placement: number; score: number; alive: boolean }> = [];
+    const out: Array<{ avatarId: string; placement: number; score: number; alive: boolean; forfeited: boolean }> = [];
     let placement = 1;
     for (const b of survivors) {
-      out.push({ avatarId: b.avatarId, placement: placement++, score: 0, alive: true });
+      out.push({ avatarId: b.avatarId, placement: placement++, score: 0, alive: true, forfeited: false });
     }
     for (const avatarId of eliminatedReverse) {
-      out.push({ avatarId, placement: placement++, score: 0, alive: false });
+      out.push({
+        avatarId,
+        placement: placement++,
+        score: 0,
+        alive: false,
+        forfeited: state.bodies.get(avatarId)?.forfeited === true,
+      });
     }
     return out;
   }

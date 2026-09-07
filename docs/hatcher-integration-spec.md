@@ -28,7 +28,19 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 46` (2026-08-08).** Version 46
+> **Current local protocol: `PROTOCOL_VERSION 58` (2026-09-07).** Version 58
+> changes activity-exit SEMANTICS only (no wire change): leaving a Bumper
+> Shells / Reef Race match releases the avatar immediately (re-queue works at
+> once), a withdrawn avatar cannot re-auth into the old room, a match whose
+> last human/agent leaves ends early, and a forfeited body earns zero tokens
+> / zero leaderboard points and never settles a wager. Hatcher's register /
+> PATCH / stats / 401 / DELETE surface and the frozen pointer are untouched.
+> (Versions 47–57 shipped between spec syncs — the authoritative per-version
+> history is the dated NOTE ledger above `PROTOCOL_VERSION` in
+> `apps/api/src/services/skill-protocol.ts`; consult it per version. At least
+> v56 DID extend the agent action contract — the hosted `place_kit_piece`
+> action — so this spec's per-verb sections lag the live manual; the manual
+> is authoritative.) Version 46
 > adds the three bounded Land tenure verbs documented in Â§5 and the additive
 > detailed Land status sibling documented below. Version 45 documented the
 > yard kit-piece REST surface; version 44 documented Land structure appearance.
