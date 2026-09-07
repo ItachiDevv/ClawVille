@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited:** 2026-08-08
+**Last Audited:** 2026-09-07 (docs-only: §11 partner change-control rule moved here from CLAUDE.md; wire contract unchanged)
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
 `hatcher-followup-answers`, `hatcher-launch-exchange-reply`) and **cross-validated against the live
@@ -749,3 +749,26 @@ harness passed against v41 on `bfbd7b16` (2026-07-30: identity-bound mock
 client ALL-PASS; contract probe 7/7; the test signer was then removed and the
 signer-free API redeployed). The v42/v43 harness re-run is pending on this
 promotion.*
+
+## 11. Change-control rule for the protected partner surface (BINDING — moved verbatim from CLAUDE.md 2026-09-07)
+
+Hatcher is our ONLY partner and runs **LIVE on our PROD** (Hatcher PROD → ClawVille PROD, repointed 2026-06-15; their dev is local; our staging is the pre-prod validation env). **A prod break now directly breaks the live partner integration** — treat prod deploys touching the partner surface with the highest care, dry-run on staging first. The integration is **security- and money-load-bearing** (ed25519 partner signing, custodial Solana wallets, real-CT Cove settlement, SSRF-guarded outbound cognition) and has proven **brittle** — independent reviews found holes across many rounds. A change to this surface — OR an unrelated change that touches something the partner depends on — that ships without contract + harness verification can silently break a live partner. This rule is mechanical, not judgment-based.
+
+**PROTECTED SURFACE (file-path trigger — editing ANY of these binds this rule):**
+- Routes: `apps/api/src/routes/{partner-hatcher,partner-hatcher-launch,portal}.ts` (incl. `mint-for-hatcher` / `accept-hatcher-link`), `routes/skills.ts` (manifest / protocol / per-building `skill.md` emitters).
+- Services: `partner-signature.ts`, `service-issuer.ts`, `skill-protocol.ts` (`PROTOCOL_VERSION` source), `agent-substrate-client.ts` (cognition `chatHatcherProxy`; renamed from `openclaw-client.ts` in P3 slice 5 — internal substrate rename, NO wire change), `agent-session-config.ts`, `hatcher-config.ts` (SSRF allowlist), `hatcher-session-webhook.ts`, `reserved-agent-namespaces.ts`, `agent-session-restore.ts` (renamed from `openclaw-session-restore.ts`, P3 slice 5).
+- Middleware: `require-auth-or-agent.ts` (`validateLiveAgentSession` — the bearer/TTL gate).
+- `npc-simulation.ts` — the Hatcher-touching parts: `dispatchHatcherActions`, `oc-`/override bodies, the controlled-launch suppression (`humanControlled*`).
+- Shared types: `packages/shared/src/types/agent-substrate.ts` (registration / response / error shapes; renamed from `types/openclaw.ts` in P3 slice 5 — a deprecated re-export shim is retained at the old path so the `types/openclaw` import path still resolves).
+- Harness + contract: `apps/api/scripts/hatcher/*` (`mock-hatcher-client.ts`, `mock-hatcher-proxy.ts`, `contract-probe.ts`, `run-mock-e2e.md`), `.hatcher-ref/CONTRACT.md`, `docs/hatcher-integration-spec.md` (the partner-facing single source of truth).
+
+**ALSO BINDS without a `partner-*` file in the diff** — the "unrelated change corrupts the partner" guard. If your change alters any of: the agent-session bearer/TTL model · the `hatcher:` namespace · the cognition request body shape · the `[ACTION:]` whitelist · the leaderboard event names/weights the stats endpoint reports · the shared agent-substrate types (`types/agent-substrate.ts`, né `openclaw`) — the partner surface IS in scope, treat it as such.
+
+**MANDATES (every in-scope change, same diff, before "done"):**
+1. **Validate against the partner's REAL code, not our assumptions.** Check our side against Hatcher's ACTUAL open-source contract staged in `.hatcher-ref/` (their host-frontend types/methods + `CONTRACT.md`). If `.hatcher-ref/` is stale, refresh it from their public repo FIRST. (This is the lesson from the contract-parity session — assumptions drifted from their real frontend.)
+2. **Run the harness gate.** Drive the live signed binary end-to-end with the mock-Hatcher harness on staging (`apps/api/scripts/hatcher/run-mock-e2e.md`: `mock-hatcher-client` register→stats→401→DELETE + `contract-probe`) and assert GREEN before claiming done. A green `tsc`/`bun test` is **NOT** a substitute — only the harness exercises the real signed wire.
+3. **Same-diff docs.** Update `docs/hatcher-integration-spec.md` (its "cross-validated against live code" promise is load-bearing — a drift there mis-tells the partner). When the WIRE contract changes (request/response/error shape, a verb, a bound, a default), bump `PROTOCOL_VERSION` and propagate per the whitelist-parity + three-surface rules above.
+4. **Adversarial review.** Any change to signing/verification, session/bearer resolution, the SSRF allowlist, money/CT settlement, or the custodial-wallet path gets a **Codex adversarial pass** before ship (these are the exact paths repeated reviews kept finding holes in). Backend full-team rules apply.
+5. **Security invariants — never regress:** partner writes ed25519-verified + ±5 min windowed; `ALLOW_TEST_PARTNER_PUBKEY` staging-ONLY (crash-loud on prod via `CLAWVILLE_ENV`); `hatcher:` namespace reserved on public registration paths; all outbound cognition/webhook/launch SSRF-guarded + signed; scoped token encrypted at rest, never logged/echoed; `wallet.secretKey` returned exactly once.
+
+**FEATURE_GATE — automated staging contract suite (backlogged until Hatcher is confirmed live):** until the automated suite lands, the manual harness (mandate 2) IS the regression gate. Once Hatcher is live and the suite exists, it runs in CI on every push touching the protected surface, and the manual harness becomes the fallback. Review on Hatcher go-live; do not delete this gate while the manual harness is the only protection.

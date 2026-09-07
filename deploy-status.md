@@ -174,6 +174,8 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+- **2026-09-07 (session claude-md-split/Fable, docs-only push to `staging` — `deploy-staging.yml` skipped via `paths-ignore`, NO build, NO deploy) — CURRENT: unchanged.** `CLAUDE.md` was 97.5k chars, over the 40k-char harness memory-file limit. Reference material moved VERBATIM into its existing destinations: env-var reference → `ARCHITECTURE.md` §4; deploy runbook → `docs/DEPLOY-HETZNER.md`; target-model modes + three-surface detail + leaderboard weights → `GameFeatures.md`; partner change-control rule → `docs/hatcher-integration-spec.md` §11; INSTALLED three-legs detail → `docs/agent-onboarding-audit-2026-07-16.md` §5; sideload retirement → `docs/milady-integration-plan.md` §8; team compositions/coordination → `CONTRIBUTING.md`. `ARCHITECTURE.md` §12 shared-DB sentence corrected to the 2026-06-16 split. What broke: nothing shipped; `CLAUDE.md` itself is untracked (dropped by the 2026-07-28 history purge) and is seeded into worktrees by a `post-checkout` git hook now. **PARITY:** n/a (docs). **SCHEMA:** `synced` — no migration.
+
 ### 2026-08-20 (session pokPlus/Fable) — cove sweeper: adversarial-audit fixes (0 blocking, 4 fixed)
 
 - **What changed:** see the CURRENT-STATE entry above. Headline: the escrow pre-filter in discovery made the manager's orphan-escrow refusal unreachable, so a table with stranded CT would have sat open forever with nobody alerted. Now discovered, refused under the lock, and paged via `alertError`. Plus an under-lock idle-window re-check, a lock-order deadlock removed, a lock-map leak closed, and SQL-pinning tests so the fakes can no longer drift from the real query.
