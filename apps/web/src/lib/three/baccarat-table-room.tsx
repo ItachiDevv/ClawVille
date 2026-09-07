@@ -17,6 +17,7 @@ import {
   type BaccaratHandLayout,
 } from '@/lib/three/baccarat-table-cards';
 import type { BaccaratRoomState } from '@/lib/cove/baccarat-room-controller';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
@@ -396,15 +397,25 @@ function BaccaratLookCamera() {
 function Precompile() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry.
+    let unmounted = false;
     const frame = requestAnimationFrame(() => {
       const renderer = gl as unknown as {
         compileAsync?: (nextScene: THREE.Scene, nextCamera: THREE.Camera) => Promise<void>;
       };
-      void renderer.compileAsync?.(scene, camera).catch((error: unknown) => {
-        console.warn('[BaccaratTableRoom] pipeline precompile failed:', error);
-      });
+      if (typeof renderer.compileAsync === 'function') {
+        void chainPostBootCompile({
+          gl,
+          compile: () => renderer.compileAsync!(scene, camera),
+          label: 'baccarat-table',
+          isCancelled: () => unmounted,
+        });
+      }
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      unmounted = true;
+      cancelAnimationFrame(frame);
+    };
   }, [camera, gl, scene]);
   return null;
 }

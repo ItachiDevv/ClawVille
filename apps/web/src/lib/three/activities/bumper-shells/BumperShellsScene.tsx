@@ -72,6 +72,7 @@ import type { BumperShellEntity, BumperPickup } from './bumper-shells-types';
 // The import is stubbed so the module compiles (the store returns empty defaults).
 // Expected type: see ActivityStateForScene in bumper-shells-types.ts.
 import { useActivityStore } from '@/stores/activity';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 // ─── Spectator camera mode type ───────────────────────────────────────────────
 
@@ -108,14 +109,22 @@ const CAMERA_LERP_ALPHA = 4.0;
 function PreCompilePipelines() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry.
+    let unmounted = false;
     const raf = requestAnimationFrame(() => {
       if (typeof (gl as any).compileAsync === 'function') {
-        (gl as any).compileAsync(scene, camera).catch((err: unknown) => {
-          console.warn('[BumperShells] compileAsync failed:', err);
+        void chainPostBootCompile({
+          gl,
+          compile: () => (gl as any).compileAsync(scene, camera),
+          label: 'bumper-shells',
+          isCancelled: () => unmounted,
         });
       }
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      unmounted = true;
+      cancelAnimationFrame(raf);
+    };
   }, [gl, scene, camera]);
   return null;
 }

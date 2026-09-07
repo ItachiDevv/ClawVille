@@ -83,6 +83,7 @@ import {
   isReefRaceTurboBubbleActive,
   sampleReefRaceSurge,
 } from './reef-race-speed-surge';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 // ─── v2 feature flag (mirror ReefRacePlayer) ──────────────────────────────────
 const USE_SPLINE_CAMERA = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -219,14 +220,22 @@ function lerpAngle(a: number, b: number, t: number): number {
 function PreCompilePipelines() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry.
+    let unmounted = false;
     const raf = requestAnimationFrame(() => {
       if (typeof (gl as any).compileAsync === 'function') {
-        (gl as any).compileAsync(scene, camera).catch((err: unknown) => {
-          console.warn('[ReefRace] compileAsync failed:', err);
+        void chainPostBootCompile({
+          gl,
+          compile: () => (gl as any).compileAsync(scene, camera),
+          label: 'reef-race',
+          isCancelled: () => unmounted,
         });
       }
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      unmounted = true;
+      cancelAnimationFrame(raf);
+    };
   }, [gl, scene, camera]);
   return null;
 }

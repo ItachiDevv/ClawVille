@@ -1,6 +1,23 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-20 late (BGR AMENDMENT A1 — NORI JOINS THE FIRST
+**Last Audited: 2026-09-07 (POST-BOOT COMPILE ARBITER — R3-2 follow-up
+CLOSED; founder fix order "these definitely need to be fixed").** The seven
+cosmetic/activity `compileAsync` call sites that lived OUTSIDE the boot
+compile FIFO now route through `chainPostBootCompile` in
+`boot-core-compile.ts`: cosmetic aura (`cosmetic-loader.tsx`), cove slot
+reels (`SlotReels3D.tsx`), the three cove table rooms
+(blackjack/baccarat/holdem `*-table-room.tsx`), and the two activity scenes
+(`BumperShellsScene.tsx`, `ReefRaceScene.tsx`). The helper joins the
+process-wide FIFO, honors the poisoned-renderer registry (pre-chain check +
+in-chain TOCTOU recheck), takes an `isCancelled` hook for unmount, and on
+timeout (20s) or rejection POISONS the renderer before the chain releases —
+no heal, deliberately: these compiles are pure warm-ups, so the degradation
+is a first-frame pipeline hitch, never a wedge. `boot-core-compile.ts`
+still imports nothing, so the "no `three/webgpu` imports in `activities/`"
+rule is untouched. Unit contract:
+`__tests__/post-boot-compile-arbiter.test.ts` (12 tests, incl. the boot-priority hold + the late-hold yield race).
+
+**Prior Last Audited: 2026-08-20 late (BGR AMENDMENT A1 — NORI JOINS THE FIRST
 LOADING BATCH; founder sign-off on the base reveal absorbed).** Founder:
 "I need Nori to also be in the first loading batch … really the first thing
 that loads, the center town guide" (and on the base reveal: "looks pretty
@@ -98,9 +115,11 @@ its renderer BEFORE the chain releases; every chained task RE-CHECKS the
 registry at dispatch time inside the chain, so a compile queued before the
 poison landed is bypassed, not dispatched; a rejected compile heals via the
 direct warm INSIDE the chained critical section, and a heal that itself
-fails poisons the renderer too); the cosmetic/activity compile paths remain
-OUTSIDE the chain (tracked R3-2 arbiter follow-up — the FIFO claim is
-scoped, not process-wide);
+fails poisons the renderer too); the cosmetic/activity compile paths were
+OUTSIDE the chain when this entry was written — CLOSED 2026-09-07 by the
+post-boot compile arbiter (see the current Last Audited entry at the top:
+`chainPostBootCompile` routes all seven, and the FIFO claim is now
+process-wide);
 (3) SeaLoadingScreen dismissal = composite predicate (core presented AND 11
 buildings presented via an ack protocol whose legs are PAIRED per
 building-mount instance — commit, warm, and failed state share one instance

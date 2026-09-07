@@ -37,6 +37,7 @@ import {
   getHoldemSeatBadgeElement,
   getHoldemTableRecenterEpoch,
 } from '@/lib/cove/holdem-table-view';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
@@ -830,13 +831,23 @@ function SeatedLookCamera() {
 function Precompile() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry.
+    let unmounted = false;
     const raf = requestAnimationFrame(() => {
       const renderer = gl as unknown as { compileAsync?: (s: THREE.Scene, c: THREE.Camera) => Promise<void> };
-      void renderer.compileAsync?.(scene, camera).catch((error: unknown) => {
-        console.warn('[HoldemTableRoom] pipeline precompile failed:', error);
-      });
+      if (typeof renderer.compileAsync === 'function') {
+        void chainPostBootCompile({
+          gl,
+          compile: () => renderer.compileAsync!(scene, camera),
+          label: 'holdem-table',
+          isCancelled: () => unmounted,
+        });
+      }
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      unmounted = true;
+      cancelAnimationFrame(raf);
+    };
   }, [camera, gl, scene]);
   return null;
 }

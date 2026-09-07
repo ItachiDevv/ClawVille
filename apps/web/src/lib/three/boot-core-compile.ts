@@ -91,6 +91,166 @@ export function __resetBootCompileChainForTests(): void {
   bootCompileChain = Promise.resolve();
   bootCompileBusy = 0;
   compileTimedOutRenderers = new WeakSet<object>();
+  postBootHold?.release();
+  postBootHold = null;
+}
+
+// ---------------------------------------------------------------------------
+// Post-boot compile arbiter (R3-2 follow-up; founder fix order 2026-09-07).
+// Seven cosmetic/activity call sites used to call renderer.compileAsync
+// directly (cosmetic aura, cove slot reels, three cove table rooms, the
+// bumper-shells + reef-race activity scenes). That bypassed BOTH protections
+// this module provides: the process-wide FIFO (same-renderer compile overlap
+// is the r185-proven race class) and the poisoned-renderer registry (a
+// compile on a renderer with a live orphan tail). Every post-boot compile
+// now routes through this helper instead.
+//
+// Failure policy differs from the boot lane on purpose: these compiles are
+// pure warm-ups — skipping one costs a first-frame pipeline hitch, nothing
+// else. So there is NO heal here. A timeout or rejection poisons the
+// renderer (timeout: the orphan tail may still be live; rejection: r185
+// leaves front state unrestored, R1-4) and every later post-boot compile on
+// that renderer is bypassed. The live render loop is the fail-open.
+// ---------------------------------------------------------------------------
+
+export const POST_BOOT_COMPILE_TIMEOUT_MS = 20_000;
+
+// ---------------------------------------------------------------------------
+// Boot-priority hold (arbiter review, blocking issue 1). During a cold world
+// boot a post-boot warm-up (e.g. the cosmetic aura mounting with the avatar)
+// can enter the FIFO BEFORE the boot compile queues and own it for up to
+// 20s — starving the boot lane past the loading-screen fuses. The world
+// warmup takes this hold for the span of its compile phases; post-boot
+// admissions WAIT on it (deferral, not bypass — the warm-ups still run once
+// boot compiles finish). The hold auto-expires as a leak backstop: a stuck
+// hold must never starve post-boot compiles forever. Boot-lane tasks never
+// consult the hold. Routes without a world boot never take it, so their
+// post-boot compiles admit immediately.
+// ---------------------------------------------------------------------------
+
+export const POST_BOOT_HOLD_MAX_MS = 60_000;
+
+let postBootHold: { promise: Promise<void>; release: () => void } | null = null;
+
+/** Take (or replace) the boot-priority hold. Returns an idempotent release. */
+export function holdPostBootCompiles(maxMs = POST_BOOT_HOLD_MAX_MS): () => void {
+  postBootHold?.release();
+  let released = false;
+  let resolveFn: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    resolveFn = resolve;
+  });
+  const entry = {
+    promise,
+    release: () => {
+      if (released) return;
+      released = true;
+      clearTimeout(timer);
+      if (postBootHold === entry) postBootHold = null;
+      resolveFn();
+    },
+  };
+  const timer = setTimeout(entry.release, maxMs);
+  postBootHold = entry;
+  return entry.release;
+}
+
+/** Resolves when no boot-priority hold is active (loops across re-holds). */
+async function awaitPostBootAdmission(): Promise<void> {
+  while (postBootHold) {
+    await postBootHold.promise;
+  }
+}
+
+export type PostBootCompileOutcome =
+  | 'compiled'
+  | 'bypassed'
+  | 'cancelled'
+  | 'failed'
+  | 'timed_out';
+
+export function chainPostBootCompile(input: {
+  gl: unknown;
+  /** The actual renderer.compileAsync(...) call, invoked inside the chain. */
+  compile: () => Promise<unknown>;
+  /** For log lines — e.g. 'cosmetic-aura', 'slot-reels'. */
+  label: string;
+  /** Checked in-chain before dispatch; an unmounted caller skips cleanly. */
+  isCancelled?: () => boolean;
+  timeoutMs?: number;
+}): Promise<PostBootCompileOutcome> {
+  const { gl, compile, label } = input;
+  const timeoutMs = input.timeoutMs ?? POST_BOOT_COMPILE_TIMEOUT_MS;
+  if (isRendererCompileTimedOut(gl)) return Promise.resolve('bypassed');
+  return runPostBootCompile();
+
+  async function runPostBootCompile(): Promise<PostBootCompileOutcome> {
+    // Boot priority: defer OUTSIDE the chain while a world boot holds the
+    // FIFO window — a held task must not occupy the chain slot. The loop
+    // closes the late-hold race (re-review round 2): a hold installed
+    // BETWEEN admission and dispatch makes the chained task yield with the
+    // internal 'held' sentinel (freeing the chain instantly, never
+    // deadlocking it), and we re-await admission here.
+    for (;;) {
+      await awaitPostBootAdmission();
+      if (isRendererCompileTimedOut(gl)) return 'bypassed';
+      if (input.isCancelled?.()) return 'cancelled';
+      const outcome = await chainPostBootTask();
+      if (outcome !== 'held') return outcome;
+    }
+  }
+
+  function chainPostBootTask(): Promise<PostBootCompileOutcome | 'held'> {
+    return chainBootCompile<PostBootCompileOutcome | 'held'>(async () => {
+    // In-chain rechecks (TOCTOU): the renderer may have been poisoned, the
+    // caller unmounted, or a boot window opened while this task waited in
+    // the FIFO. 'held' yields the slot back — the admission loop retries.
+    if (postBootHold) return 'held';
+    if (isRendererCompileTimedOut(gl)) return 'bypassed';
+    if (input.isCancelled?.()) return 'cancelled';
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      // Dispatch compile() SYNCHRONOUSLY after the sentinel checks — the
+      // check and the dispatch share one synchronous run, so no microtask
+      // can install a boot hold between them (re-review round 3). A sync
+      // throw converts to a rejection below. Note (accepted advisory):
+      // pathological repeated re-holds can starve post-boot warm-ups for
+      // their duration — warm-ups are optional, and boots are finite.
+      let compilePromise: Promise<unknown>;
+      try {
+        compilePromise = Promise.resolve(compile());
+      } catch (syncError) {
+        compilePromise = Promise.reject(syncError);
+      }
+      const outcome = await Promise.race([
+        compilePromise.then(() => 'compiled' as const),
+        new Promise<'timed_out'>((resolve) => {
+          timer = setTimeout(() => resolve('timed_out'), timeoutMs);
+        }),
+      ]);
+      if (outcome === 'timed_out') {
+        // Poison BEFORE the chain releases — the anti-wedge discipline the
+        // boot/stage lanes use: the FIFO must not wedge behind a hung
+        // compile, and the orphan tail forbids further same-renderer
+        // compiles.
+        markRendererCompileTimedOut(gl);
+        console.warn(
+          `[post-boot-compile] ${label}: compileAsync exceeded ${timeoutMs}ms — renderer poisoned, later post-boot compiles bypass`,
+        );
+      }
+      return outcome;
+    } catch (error) {
+      markRendererCompileTimedOut(gl);
+      console.warn(
+        `[post-boot-compile] ${label}: compileAsync rejected — renderer poisoned, later post-boot compiles bypass:`,
+        error,
+      );
+      return 'failed';
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    });
+  }
 }
 
 export type BootCoreCompileResult = {
