@@ -172,20 +172,6 @@
 
 ## DECISIONS OWED (rulings, not playtests)
 
-- **ECONOMY — recovered SOL destination + a SECOND leftover found 2026-09-07.**
-  Verified live on both boxes: prod and staging use DIFFERENT house wallets
-  (prod avatar `58caa3b1…` → `ESpn…sm3m`; staging avatar `0b93c5e2…` →
-  `EUCa…EUH2`). Prod holds the recovered **0.2218 SOL** on mainnet and its SAP
-  accounts are fully closed (agent/stake/stats/pricing all absent on chain).
-  **NEW:** the STAGING house wallet still owns OPEN SAP accounts ON MAINNET
-  worth **0.1569 SOL** (stake 0.1018 + agent 0.0389 + pricing 0.0146 + stats
-  0.0015), plus **0.0105 SOL** already liquid there — leftovers from the
-  2026-07-11 mainnet-on-staging rung that were never closed when the box flipped
-  back to devnet. Total recoverable ≈ **0.167 SOL**.
-  **Decisions owed:** (a) recover that 0.167 SOL (mainnet money action — needs
-  your GO; the close tooling lives on `feat/tier2-sap-escrow-shelved`), and
-  (b) where the total should end up — leave it in the house wallets or name a
-  destination to sweep to.
 - **LAND — Founders' Row: auction vs hold-only.** Surfaces + server currently say
   hold-only (10M CLV). If auction is intended, that is a server change to scope.
 - **LAND — Prepay one-click confirm.** Approve/reject the one-click rent-prepay
