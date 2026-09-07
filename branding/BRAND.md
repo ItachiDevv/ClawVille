@@ -216,6 +216,10 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
   removed from the product. Existing published banners that carry them are historical
   records; they are marked DO NOT REPUBLISH and must not be reissued or reused as
   templates. USDC bounties run one rail now: a custodial hold paid out through PayAI.
+  **FOUNDER RULING 2026-09-07:** the three affected banners (`banner-protocol-upgrades`,
+  `banner-agent-economy-live`, `banner-agents-pay-agents`) are KEPT AS RECORDS — do not
+  delete them, and do not republish or re-cut them. The reworded roadmap entries on the
+  live site were approved the same day.
 
 ## 9. Asset inventory
 
