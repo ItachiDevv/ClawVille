@@ -1109,3 +1109,158 @@ function makeDbMock() {
 
 // Reference these exports so unused-import lint doesn't trip
 void MAX_ROOMS_TOTAL;
+
+// ─── Participant withdraw (exit-lifecycle fix 2026-09-07) ─────────────────
+//
+// Regression for the founder-reported queue jail: leaving a live match
+// kept `playerToRoom` bound until RESULTS, so re-queueing threw "Avatar
+// is already in an active room" for the entire bot-race duration.
+
+describe('withdrawParticipant', () => {
+  function makeMixedParticipants(humans: number, bots: number) {
+    const out = [];
+    for (let i = 0; i < humans; i++) {
+      out.push({
+        avatarId: `00000000-0000-0000-0000-9999${String(i).padStart(8, '0')}`,
+        userId: `user-${i}`,
+        agentId: null,
+        subjectType: 'human' as const,
+        partyId: null,
+      });
+    }
+    for (let i = 0; i < bots; i++) {
+      out.push({
+        avatarId: `00000000-0000-0000-0000-8888${String(i).padStart(8, '0')}`,
+        userId: null,
+        agentId: null,
+        subjectType: 'bot' as const,
+        partyId: null,
+      });
+    }
+    return out;
+  }
+
+  it('releases the queue binding immediately while the room stays live', async () => {
+    const participants = makeMixedParticipants(1, 3);
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+
+    const human = participants[0].avatarId;
+    expect(activityRoomManager.getPlayerActiveRoom(human)?.id).toBe(room.id);
+
+    const { allNonBotsWithdrawn } = activityRoomManager.withdrawParticipant(
+      room.id,
+      human,
+    );
+
+    // The leaver can re-queue at once; the room itself keeps running.
+    expect(allNonBotsWithdrawn).toBe(true);
+    expect(activityRoomManager.getPlayerActiveRoom(human)).toBeUndefined();
+    expect(room.state).toBe('live');
+    expect(room.participants.get(human)?.withdrawn).toBe(true);
+  });
+
+  it('keeps other players bound and does not report all-withdrawn while a human remains', async () => {
+    const participants = makeMixedParticipants(2, 2);
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+
+    const [leaver, stayer] = [participants[0].avatarId, participants[1].avatarId];
+    const { allNonBotsWithdrawn } = activityRoomManager.withdrawParticipant(
+      room.id,
+      leaver,
+    );
+
+    expect(allNonBotsWithdrawn).toBe(false);
+    expect(activityRoomManager.getPlayerActiveRoom(leaver)).toBeUndefined();
+    expect(activityRoomManager.getPlayerActiveRoom(stayer)?.id).toBe(room.id);
+    expect(room.state).toBe('live');
+  });
+
+  it('aborts a countdown room when the last non-bot withdraws', async () => {
+    const participants = makeMixedParticipants(1, 3);
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    expect(room.state).toBe('countdown');
+
+    activityRoomManager.withdrawParticipant(room.id, participants[0].avatarId);
+    await flushMicrotasks();
+
+    expect(room.state).toBe('aborted');
+  });
+
+  it('does not abort a countdown room while another human remains', async () => {
+    const participants = makeMixedParticipants(2, 2);
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+
+    activityRoomManager.withdrawParticipant(room.id, participants[0].avatarId);
+    await flushMicrotasks();
+
+    expect(room.state).toBe('countdown');
+  });
+
+  it('never clobbers a newer binding for a player who already re-queued', async () => {
+    const participants = makeMixedParticipants(1, 3);
+    const roomA = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(roomA.id, 'live');
+    const human = participants[0].avatarId;
+
+    activityRoomManager.withdrawParticipant(roomA.id, human);
+    const roomB = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      [participants[0], ...makeMixedParticipants(0, 3)],
+      ACTIVITY_CONFIG,
+    );
+
+    // A duplicate withdraw for the OLD room (e.g. a straggling grace
+    // timer) must not delete the binding to the new room.
+    activityRoomManager.withdrawParticipant(roomA.id, human);
+    expect(activityRoomManager.getPlayerActiveRoom(human)?.id).toBe(roomB.id);
+  });
+
+  it('treats a bot avatarId as a no-op that still reports occupancy', async () => {
+    const participants = makeMixedParticipants(1, 3);
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    const bot = participants[1].avatarId;
+
+    const { allNonBotsWithdrawn } = activityRoomManager.withdrawParticipant(
+      room.id,
+      bot,
+    );
+
+    expect(allNonBotsWithdrawn).toBe(false);
+    expect(room.participants.get(bot)?.withdrawn).toBe(false);
+    expect(room.state).toBe('countdown');
+  });
+
+  it('returns not-withdrawn for an unknown room', () => {
+    const { allNonBotsWithdrawn } = activityRoomManager.withdrawParticipant(
+      'no-such-room',
+      'no-such-avatar',
+    );
+    expect(allNonBotsWithdrawn).toBe(false);
+  });
+});

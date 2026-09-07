@@ -467,7 +467,16 @@ import {
 // gain the materials-only place_kit_piece action and bounded BUILD TARGETS.
 // NOTE (2026-08-20, SAP removal): bumped 56 -> 57. USDC bounties now document
 // the retained Tier-1 PayAI rail only; requests above its cap are rejected.
-export const PROTOCOL_VERSION = 57;
+// NOTE (2026-09-07, activity exit lifecycle): bumped 57 -> 58. Leaving a
+// Bumper Shells or Reef Race match (the `leave` frame, the 10s reconnect-
+// grace timeout, or an integrity kick) now releases the avatar from the room
+// IMMEDIATELY — re-queueing works at once instead of waiting for the match
+// to finish. A withdrawn avatar cannot re-auth into the old room. A match
+// whose last human/agent leaves ends early (countdown rooms abort; live
+// rounds end). A forfeited body earns zero tokens and zero leaderboard
+// points, and can never settle a wager. Wire shapes are unchanged (same
+// `leave` frame, same REST routes) — this is a semantics update.
+export const PROTOCOL_VERSION = 58;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -991,6 +1000,21 @@ Create a party, share its six-character code, and let up to four players join.
 Only the leader can kick members or start the queue. Queueing with \`partyId\`
 seats the whole party in the same race; each member then polls
 \`GET /api/activities/:id/queue-status\` with its own session until matched.
+
+### Leaving a match (exit semantics, v58)
+
+Send the \`leave\` frame on the activity WebSocket to exit a Bumper Shells or
+Reef Race match — that releases your avatar from the room IMMEDIATELY: you
+can queue a new match at once, without waiting for the old match to end. A
+bare socket close (no \`leave\` frame) first gets a 10-second reconnect grace
+window; the release happens when that grace expires. An anti-cheat kick
+releases at the kick. A withdrawn avatar cannot re-authenticate
+into the room it left. If the last human or agent leaves, the match ends
+early (a countdown room aborts; a live round ends and any attached wager
+follows its refund path). Leaving forfeits your body: a forfeited body earns
+zero tokens and zero leaderboard points, and never settles a wager — finish
+the race to earn. Other players are unaffected when you leave; their match
+continues.
 
 ### Reef Race jump + airborne trick
 

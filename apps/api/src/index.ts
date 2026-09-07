@@ -1097,6 +1097,22 @@ process.on('uncaughtException', (err) => {
             'bumper-shells-sim',
             bumperState.endsAt,
           );
+          // Exit-lifecycle review, blocking issue 5: a leave that landed
+          // during the countdown→LIVE window marked the participant
+          // withdrawn but found no sim to forfeit. Forfeit those bodies
+          // now, and end the round at once if no non-bot remains.
+          {
+            let nonBotRemains = false;
+            for (const p of room.participants.values()) {
+              if (p.subjectType === 'bot') continue;
+              if (p.withdrawn) {
+                bumperShellsSim.forfeit(room.id, p.avatarId, 'voluntary');
+              } else {
+                nonBotRemains = true;
+              }
+            }
+            if (!nonBotRemains) bumperShellsSim.endRoundEarly(room.id);
+          }
           break;
         case 'reef-race': {
           // Phase 1 (audit C4 + S10) — pull pre-launch verdicts from the
@@ -1135,6 +1151,19 @@ process.on('uncaughtException', (err) => {
               : 'reef-race-ellipse-sim',
             reefState.hardEndsAt,
           );
+          // Exit-lifecycle review, blocking issue 5 — see the bumper case.
+          {
+            let nonBotRemains = false;
+            for (const p of room.participants.values()) {
+              if (p.subjectType === 'bot') continue;
+              if (p.withdrawn) {
+                reefRaceImpl.forfeit(room.id, p.avatarId, 'voluntary');
+              } else {
+                nonBotRemains = true;
+              }
+            }
+            if (!nonBotRemains) reefRaceImpl.endRoundEarly(room.id);
+          }
           break;
         }
         case 'texas-holdem': {
@@ -1241,6 +1270,7 @@ process.on('uncaughtException', (err) => {
               placement: r.placement,
               score: r.score,
               scoreMs: null,
+              forfeited: r.forfeited,
             }));
         case 'reef-race':
           return reefRaceImpl
@@ -1250,6 +1280,7 @@ process.on('uncaughtException', (err) => {
               placement: r.placement,
               score: r.score,
               scoreMs: r.scoreMs,
+              forfeited: r.forfeited,
               reefRace: r.reefRace,
             }));
         default:
@@ -1275,7 +1306,11 @@ process.on('uncaughtException', (err) => {
           // first-placed avatar from the sim's computeResults.
           try {
             const results = bumperShellsSim.computeResults(roomId);
-            const winner = results.find((r) => r.placement === 1) ?? null;
+            // A forfeited body can never win a wager — if the top row
+            // forfeited (e.g. every human left), winner stays null and the
+            // no-winner path pages ops for the refund cancel.
+            const winner =
+              results.find((r) => r.placement === 1 && !r.forfeited) ?? null;
             const { settleLobbyForRoom } = await import(
               './services/activity/wager-lobby-bridge'
             );
@@ -1295,9 +1330,10 @@ process.on('uncaughtException', (err) => {
         code: 'integrity',
         message: 'anti-cheat forfeit (5 flags)',
       });
-      // Unregister is triggered by the close; the hub's notifyForfeit
-      // path runs with reason='integrity' because we set internalCloseCode
-      // before safeClose.
+      // Exit-lifecycle review, blocking issue 6: actually CLOSE the socket
+      // — the close routes through unregisterConnection → notifyForfeit
+      // with reason 'integrity', which withdraws the participant.
+      activityWsHub.closeAvatarForIntegrity(roomId, avatarId);
     });
 
     // ─── Chunk #5 — Reef Race sim wiring (mirrors Bumper above) ─────────
@@ -1320,7 +1356,9 @@ process.on('uncaughtException', (err) => {
           // first-placed avatar (placement 1 = race winner).
           try {
             const results = reefRaceImpl.computeResults(roomId);
-            const winner = results.find((r) => r.placement === 1) ?? null;
+            // A forfeited body can never win a wager (see the bumper case).
+            const winner =
+              results.find((r) => r.placement === 1 && !r.forfeited) ?? null;
             const { settleLobbyForRoom } = await import(
               './services/activity/wager-lobby-bridge'
             );
@@ -1339,6 +1377,8 @@ process.on('uncaughtException', (err) => {
         code: 'integrity',
         message: 'anti-cheat forfeit (5 flags)',
       });
+      // Exit-lifecycle review, blocking issue 6 — see the bumper wiring.
+      activityWsHub.closeAvatarForIntegrity(roomId, avatarId);
     });
 
     // ─── Texas Hold'em (P1.2b) — poker table sim wiring ─────────────────────
