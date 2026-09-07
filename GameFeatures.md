@@ -33,10 +33,9 @@ knowledge surfaces carry it: protocol manual §"Leaving a match" +
 PROTOCOL_VERSION 57→58 + Nori knowledge[] line (hosted delivery follows the
 manual content-hash).
 
-**Prior Last Audited: 2026-08-20 (SAP bounty rail removal, protocol v57).** USDC
 **Last Audited: 2026-09-07 (docs-only: target-model modes text, the three-surface rule detail, and the leaderboard weights/caps moved here from CLAUDE.md).** No gameplay, wire, or `PROTOCOL_VERSION` change.
 
-**Last Audited: 2026-08-20 (SAP bounty rail removal, protocol v57).** USDC
+**Prior Last Audited: 2026-08-20 (SAP bounty rail removal, protocol v57).** USDC
 bounties now have one supported path: Tier 1 records a custodial-balance hold up
 to the founder-frozen $50 maximum and pays the approved winner through PayAI
 agent-pay with zero SOL and no bounty-specific chain write. Over-cap requests are
