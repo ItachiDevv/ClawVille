@@ -48,6 +48,7 @@ import {
   SCALP_HIDE_RADIUS_FACTOR,
   type CosmeticHeadFitResult,
 } from '@/lib/three/vrm-avatar-sizing';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 // Scratch objects for equip-time calculations — never allocated per frame.
 // Declared module-scope so they're never re-created per effect run.
@@ -686,9 +687,15 @@ function AuraRenderer({
     // compileAsync after attach — eliminates the first-frame pipeline hitch.
     // Guard: WebGPU renderer may not have compileAsync (it has compile instead);
     // WebGLRenderer r170+ has it. Use feature-detect.
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry —
+    // a direct call here could overlap a boot/stage compile on this renderer.
+    let auraDisposed = false;
     if (typeof (gl as any).compileAsync === 'function') {
-      ;(gl as any).compileAsync(mesh, camera, scene).catch((err: unknown) => {
-        console.warn('[CosmeticLoader] compileAsync failed for aura', err);
+      void chainPostBootCompile({
+        gl,
+        compile: () => (gl as any).compileAsync(mesh, camera, scene),
+        label: 'cosmetic-aura',
+        isCancelled: () => auraDisposed,
       });
     }
 
@@ -697,6 +704,7 @@ function AuraRenderer({
     mesh.userData.cosmeticUniforms = uniforms;
 
     onDispose(() => {
+      auraDisposed = true;
       parentObject.remove(mesh);
       mat.dispose();
       // Do NOT dispose geo — it's module-scope shared

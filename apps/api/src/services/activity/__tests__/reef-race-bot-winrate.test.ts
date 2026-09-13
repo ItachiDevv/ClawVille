@@ -211,6 +211,7 @@ function buildReefRoom(participantSpecs: Array<{
       connected: true,
       disconnectedAt: null,
       wsConnectionId: null,
+      withdrawn: false,
     });
   }
   return {

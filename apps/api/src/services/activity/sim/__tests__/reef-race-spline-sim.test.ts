@@ -772,6 +772,63 @@ describe('ReefRaceSplineSim', () => {
         ),
       ).toBe(true);
     });
+
+    it('endRoundEarly ends a live round and is idempotent', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      expect(state.ended).toBe(false);
+
+      reefRaceSplineSim.endRoundEarly(ROOM_ID);
+      expect(state.ended).toBe(true);
+
+      // Idempotent — a second call (e.g. hub race with the sim's own
+      // forfeit cascade) must not throw or double-end.
+      reefRaceSplineSim.endRoundEarly(ROOM_ID);
+      expect(state.ended).toBe(true);
+
+      // Unknown room is a silent no-op.
+      reefRaceSplineSim.endRoundEarly('no-such-room');
+    });
+
+    it('still-racing bodies outrank a forfeited leader after an early end (no placement farming)', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+
+      // A leads the race by a full lap, then leaves (the exploit shape:
+      // leader forfeits while a bot still races).
+      state.bodies.get(AVATAR_A)!.lap = 2;
+      reefRaceSplineSim.forfeit(ROOM_ID, AVATAR_A, 'voluntary');
+      reefRaceSplineSim.endRoundEarly(ROOM_ID);
+
+      const results = reefRaceSplineSim.computeResults(ROOM_ID);
+      const a = results.find((r) => r.avatarId === AVATAR_A)!;
+      const b = results.find((r) => r.avatarId === AVATAR_B)!;
+      // Still-racing B places ABOVE the forfeited leader A despite A's
+      // greater progress.
+      expect(b.placement).toBeLessThan(a.placement);
+      // And the forfeited flag rides the result row — the reward pipeline
+      // zeroes tokens/points for it, and wager winner selection skips it.
+      expect(a.forfeited).toBe(true);
+      expect(b.forfeited).toBe(false);
+    });
+
+    it('an all-forfeit room carries forfeited=true on every row (nobody earns)', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      state.bodies.get(AVATAR_A)!.lap = 2; // the "leader leaves last" shape
+
+      reefRaceSplineSim.forfeit(ROOM_ID, AVATAR_B, 'voluntary');
+      reefRaceSplineSim.forfeit(ROOM_ID, AVATAR_A, 'voluntary');
+      expect(state.ended).toBe(true); // all-forfeited cascade
+
+      const results = reefRaceSplineSim.computeResults(ROOM_ID);
+      // The leader still lands placement 1 by progress — but every row is
+      // marked forfeited, so the reward pipeline pays nobody.
+      expect(results.every((r) => r.forfeited)).toBe(true);
+    });
   });
 
   // ── stopRoom ──────────────────────────────────────────────────────────────

@@ -502,6 +502,7 @@ describe('issueRewardsForRoom', () => {
           connected: true,
           disconnectedAt: null,
           wsConnectionId: null,
+      withdrawn: false,
         },
       ],
       [
@@ -516,6 +517,7 @@ describe('issueRewardsForRoom', () => {
           connected: true,
           disconnectedAt: null,
           wsConnectionId: null,
+      withdrawn: false,
         },
       ],
     ]);
@@ -566,6 +568,28 @@ describe('issueRewardsForRoom', () => {
     expect(creditCalls[0].avatarId).toBe('avatar-human-1');
     expect(creditCalls[0].amount).toBe(60);
     expect(creditCalls[0].reason).toBe('activity_match_placed');
+  });
+
+  it('a forfeited row earns zero tokens + zero points even at placement 1 (leave farming)', async () => {
+    // Exit-lifecycle review round 2, blocking issue 1: in an all-humans-
+    // forfeit room the best-progress leaver still lands placement 1 —
+    // the forfeited flag must zero the credit regardless of placement.
+    const room = buildRoom();
+    const issued = await issueRewardsForRoom({
+      room,
+      simResults: [
+        { avatarId: 'avatar-human-1', placement: 1, score: 4, forfeited: true },
+        { avatarId: 'avatar-bot-1', placement: 2, score: 2 },
+      ],
+    });
+    expect(issued).toHaveLength(2);
+
+    const leaverRow = issued.find((r) => r.avatarId === 'avatar-human-1')!;
+    expect(leaverRow.tokensAwarded).toBe(0);
+    expect(leaverRow.leaderboardPoints).toBe(0);
+
+    // No CT ledger credit fired for anyone.
+    expect(creditCalls).toHaveLength(0);
   });
 
   it('runs all DB writes inside a single transaction call', async () => {

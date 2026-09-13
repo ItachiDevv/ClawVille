@@ -124,3 +124,38 @@ For 3D / visual bugs, a screenshot + the value of `navigator.gpu` and `navigator
 Open an issue, label it `question`. Discord and Telegram channels exist for current contributors but are not the primary support surface — issues are.
 
 Thanks for contributing.
+
+## Agent team operating rules (moved verbatim from CLAUDE.md 2026-09-07)
+
+> The mandate itself (which work runs as a collaborative agent team, and the dispatch shape) stays in `CLAUDE.md`. These are the compositions, coordination protocol, required prompt elements, skip rules, and 3da/Blender context.
+
+### Standard compositions (roles per concern; spawn members per the collaborative-concurrent rule above — only those with work to do now — shared `team_name` like `casino-routes-2026-05-19`)
+
+**3D / world-structure:** `3da` × { `3da-impl-1` lead, `3da-impl-2` reconciler, `3da-spec`, `3da-regress`, `3da-adversary` }. Add `blend007:mesh` as `blender-inspect` when GLB inspection needed; substitute `blend007:mesh` for impl roles on Blender-heavy work.
+
+**Backend / API / DB / money:** `general-purpose` × { `impl-1`, `impl-2`, `spec-auditor`, `regress-auditor`, `adversary` }. Add `solana-auditor` for `contracts/` or `apps/api/src/services/wager-program-client.ts`. Invoke `codex:codex-rescue` as `codex-rescue` LATER if impl-1 gets stuck — not at team launch.
+
+Reconciler (impl-2) doubles as the Fixer on BLOCKING ISSUES — no new dispatch, just `SendMessage` with the punch list; auditors re-run via task re-trigger after fix.
+
+### Coordination
+
+`TaskList` for status (one task per role, `addBlockedBy` deps). `SendMessage` for cross-agent ("diff ready" / APPROVED / BLOCKING ISSUES — no silent drops). Memory is auto-shared within a `team_name`. Orchestrator never writes code.
+
+### Required prompt elements
+
+(1) Literal **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in para 1 — Agent tool has no thinking-mode flag. (2) Addressable team name + role + other members. (3) Explicit blocking deps + downstream consumers. (4) Hard constraints from this CLAUDE.md (Iris Xe, same-diff doc updates) — don't assume they read it.
+
+### When to skip the full team
+
+- **Direct edit (no agent):** 5-line edits — typo, comment, env-var, SVG path, script regen.
+- **Light (2-agent, shared team_name):** ≤ 100 LOC or single-file with deterministic tests — 1 ultrathink Implementer + 1 combined-lens Auditor.
+- **Full team (DEFAULT, 5 collaborative-concurrent roles):** 3D, Blender, backend, money, > 100 LOC or > 3 files.
+- **High-stakes** (DB migrations, custodial keys, auth, billing, rewrites) → full team + `reconciler-manager` that re-implements independently. No exceptions.
+
+Test: would the cost of getting this wrong justify ~5× parallel invocations? When in doubt, full team. Independent concerns → separate teams in parallel; shared state → single team with task deps.
+
+### 3da + Blender context
+
+3da def: `.claude/agents/3da.md`; memory: `.claude/memory/threejs/` (committed, migrated 2026-04-16 — do NOT use user-level paths). Burns prevented: `InstancedMesh + ShaderMaterial` WebGPU crash, drei `<Text>`/`<Billboard>` Iris Xe crash, per-frame `new Vector3()` GC thrash, pipeline compile spikes, rotation sign errors.
+
+Local Blender is exclusive. Tell blender07 to launch a NEW instance, or fall back to direct GLB downloads (Polyhaven, Sketchfab CC0/CC-BY, Kenney, Quaternius). Don't loop on exclusivity.

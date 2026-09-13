@@ -709,7 +709,11 @@ boot-compile FIFO with a shared poisoned-renderer registry (a timed-out
 compile poisons its renderer BEFORE the chain releases, and every chained
 task RE-CHECKS the registry at in-chain dispatch time [B1 + fix-NF1], so
 release never enables same-renderer overlap; cosmetic/activity compile
-paths remain outside — tracked R3-2 arbiter follow-up); rejected compiles
+paths remain outside — tracked R3-2 arbiter follow-up, CLOSED 2026-09-07:
+all seven post-boot call sites — cosmetic aura, slot reels, three table
+rooms, bumper + reef activity scenes — now route through
+`chainPostBootCompile` with the same FIFO + poison discipline, no heal
+(warm-up-only compiles fail open to a first-frame hitch)); rejected compiles
 heal via the direct warm INSIDE the chained critical section, exactly
 once, and a heal that itself fails poisons the renderer [fix-NF4];
 composite overlay dismissal (core presented AND buildings presented via an
@@ -801,8 +805,9 @@ detached-launch recipe; memorialized.
 
 **ROUND CLOSE:** rung 4 ends here. A(§instrumentation)+B(SW)+§5b on prod;
 C+D+E on staging. Remaining follow-ups: upstream three batch-compile
-primitive (+ the renderer-keyed compile arbiter across boot/stage/cosmetic
-paths, R3-2) · WebGL2 lane distributions · the cold-start SW flake class ·
+primitive (the renderer-keyed compile arbiter across boot/stage/cosmetic
+paths, R3-2, CLOSED 2026-09-07 — `chainPostBootCompile` + boot-priority
+hold) · WebGL2 lane distributions · the cold-start SW flake class ·
 mobile-class probe lane + field telemetry (founder: "flag later"). E4 gates
 UNCHANGED: founder staging playtests — slice-D proxy-world first impression +
 slice-C wanderer pop-in.
