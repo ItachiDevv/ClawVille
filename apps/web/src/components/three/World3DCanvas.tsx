@@ -17,6 +17,7 @@ import {
   BOOT_CORE_COMPILE_SHIPPED_MODE,
   chainBootCompile,
   computeBootCompileStamps,
+  holdPostBootCompiles,
   isRendererCompileTimedOut,
   runBootCoreCompileQueue,
   selectRootsToCompile,
@@ -2205,6 +2206,11 @@ function WorldWarmup({
     // is guaranteed non-throwing.
     const publishPhase = stampColdLoadPhase;
 
+    // Boot-priority hold (arbiter A1): post-boot warm-up compiles (cosmetic
+    // aura, table rooms) DEFER while this boot's compile window is open, so
+    // a 20s post-boot task can never starve the boot lane past the loading
+    // fuses. Idempotent release; the hold also auto-expires at 60s.
+    const releasePostBootHold = holdPostBootCompiles();
     void (async () => {
       try {
         // Slice D (§2a, FROZEN rev 5): the global LoadingManager barrier is
@@ -2490,6 +2496,8 @@ function WorldWarmup({
           // A second sweep catches roots that mounted while the main phase
           // ran (signature-keyed, normally a no-op).
           await runCompilePhase('late');
+          // Boot compile window over — admit deferred post-boot warm-ups.
+          releasePostBootHold();
           if (compileGenerationLive()) {
             // [R3-1] tail boundary is max(scansEndAt, firstKickAt) so the
             // invariants tail ≤ wall and wall = hidden + tail hold EXACTLY
@@ -2552,6 +2560,7 @@ function WorldWarmup({
 
         resumeLiveWarmup('warmup-complete');
       } catch (err) {
+        releasePostBootHold();
         if (cancelled) return;
         console.warn('[World3D] WorldWarmup failed; resuming render loop:', err);
         armBootCorePresented('warmup-error');
@@ -2561,6 +2570,7 @@ function WorldWarmup({
 
     return () => {
       cancelled = true;
+      releasePostBootHold();
       unsubscribeResume();
       clearStageWatchdogs();
       if (postScanTimer !== undefined) window.clearTimeout(postScanTimer);

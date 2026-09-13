@@ -51,7 +51,7 @@ import {
   KitPieceSourceErrorBoundary,
   resolvePieceSource,
 } from "@/lib/three/land-kit-pieces";
-import { extendLoaderWithMeshopt } from "@/lib/three/meshopt-loader-setup";
+import { extendLoaderWithMeshoptAndTextureDeviceCap } from "@/lib/three/use-gltf-ktx2";
 import { avatarPositionRef, useGameStore } from "@/stores/game";
 import { useLandStore, type PlacedPiece } from "@/stores/land";
 
@@ -253,7 +253,7 @@ function GhostPiece({
     LAND_KIT_ASSET_PATHS[pieceKey],
     undefined,
     undefined,
-    extendLoaderWithMeshopt,
+    extendLoaderWithMeshoptAndTextureDeviceCap,
   );
   const source = useMemo(
     () => resolvePieceSource(scene, pieceKey),

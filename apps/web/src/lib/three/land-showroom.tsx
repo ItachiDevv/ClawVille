@@ -63,7 +63,7 @@ import {
   reportLandSlotResolved,
 } from '@/lib/three/land-boot-tracker';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
-import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
+import { extendLoaderWithMeshoptAndTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // Constants (mirrored from land-structures.tsx — keep in sync)
@@ -226,7 +226,12 @@ function GLBShowroomStructure({
   entry: ShowroomEntry;
   path: string;
 }) {
-  const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
+  const { scene } = useGLTF(
+    path,
+    undefined,
+    undefined,
+    extendLoaderWithMeshoptAndTextureDeviceCap,
+  );
   const groupRef  = useRef<THREE.Group>(null);
 
   // Slice D §4b: slot RESOLVED from a commit effect (render-abandon-safe).

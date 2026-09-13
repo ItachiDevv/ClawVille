@@ -1,6 +1,28 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-20 late (BGR AMENDMENT A1 — NORI JOINS THE FIRST
+**Last Audited: 2026-09-13 (Mobile perf wave 2 — phone texture cap and deferred
+VRM service-worker roster).** Uncompressed load-time textures now follow the
+device-profile cap documented in §9. The service worker now defers all 13
+ambient/wanderer VRMs through its unchanged page-signaled cache path.
+
+**Prior Last Audited: 2026-09-07 (POST-BOOT COMPILE ARBITER — R3-2 follow-up
+CLOSED; founder fix order "these definitely need to be fixed").** The seven
+cosmetic/activity `compileAsync` call sites that lived OUTSIDE the boot
+compile FIFO now route through `chainPostBootCompile` in
+`boot-core-compile.ts`: cosmetic aura (`cosmetic-loader.tsx`), cove slot
+reels (`SlotReels3D.tsx`), the three cove table rooms
+(blackjack/baccarat/holdem `*-table-room.tsx`), and the two activity scenes
+(`BumperShellsScene.tsx`, `ReefRaceScene.tsx`). The helper joins the
+process-wide FIFO, honors the poisoned-renderer registry (pre-chain check +
+in-chain TOCTOU recheck), takes an `isCancelled` hook for unmount, and on
+timeout (20s) or rejection POISONS the renderer before the chain releases —
+no heal, deliberately: these compiles are pure warm-ups, so the degradation
+is a first-frame pipeline hitch, never a wedge. `boot-core-compile.ts`
+still imports nothing, so the "no `three/webgpu` imports in `activities/`"
+rule is untouched. Unit contract:
+`__tests__/post-boot-compile-arbiter.test.ts` (12 tests, incl. the boot-priority hold + the late-hold yield race).
+
+**Prior Last Audited: 2026-08-20 late (BGR AMENDMENT A1 — NORI JOINS THE FIRST
 LOADING BATCH; founder sign-off on the base reveal absorbed).** Founder:
 "I need Nori to also be in the first loading batch … really the first thing
 that loads, the center town guide" (and on the base reveal: "looks pretty
@@ -40,6 +62,7 @@ non-touch Intel renderer strings use the same `looksIntel` probe as
 |---|---:|---:|---:|---:|
 | World shadows | off | off | on | on |
 | FPS cap | 30 | none | none | none |
+| Maximum uncompressed texture side | 512 | 1,024 | none | none |
 | Fog near / far; camera far | 2,600 / 6,000; 6,400 | 5,000 / 10,500; 11,500 | 5,000 / 10,500; 11,500 | 5,000 / 10,500; 11,500 |
 | NPC far LOD distance-squared | 2,600² | 3,600² | 5,000² | 5,000² |
 | Spring-bone LOD | one tier coarser | unchanged | unchanged | unchanged |
@@ -58,6 +81,8 @@ R3F rendering and stage-scheduled JS skip together. NPC LOD/mixer/spring work
 lives in `arena-npcs.tsx`, land-kit admission in `land-kit-pieces.tsx`, and
 resident radii in `arena-location-npcs.tsx`. `?fpscap=0` disables the phone cap
 and `?fpscap=60` selects 60 FPS for A/B checks.
+`?texcap=0` disables the texture cap and `?texcap=512` forces the phone cap on
+any device class. Invalid values keep the detected profile.
 
 **Backend/ground-cover trap:** `FORCE_WEBGL` uses
 `deviceClass === 'desktop-low'`, not the old all-touch low-end flag. This lets
@@ -98,9 +123,11 @@ its renderer BEFORE the chain releases; every chained task RE-CHECKS the
 registry at dispatch time inside the chain, so a compile queued before the
 poison landed is bypassed, not dispatched; a rejected compile heals via the
 direct warm INSIDE the chained critical section, and a heal that itself
-fails poisons the renderer too); the cosmetic/activity compile paths remain
-OUTSIDE the chain (tracked R3-2 arbiter follow-up — the FIFO claim is
-scoped, not process-wide);
+fails poisons the renderer too); the cosmetic/activity compile paths were
+OUTSIDE the chain when this entry was written — CLOSED 2026-09-07 by the
+post-boot compile arbiter (see the current Last Audited entry at the top:
+`chainPostBootCompile` routes all seven, and the FIFO claim is now
+process-wide);
 (3) SeaLoadingScreen dismissal = composite predicate (core presented AND 11
 buildings presented via an ack protocol whose legs are PAIRED per
 building-mount instance — commit, warm, and failed state share one instance
@@ -1922,6 +1949,28 @@ The corner maze and pearl landmark are no longer part of the open world. Their r
 ## 9. Asset compression + loading
 
 **P1b texture-VRAM pipeline (2026-07-14):** `scripts/compress-ktx2.ts` regenerates every listed world target and also emits KTX2 siblings for all 11 `/models/characters/` resident GLBs; base-color/emissive and scalar metallic-roughness/occlusion/specular-gloss slots use ETC1S at qlevel 192, while tangent-space normal slots use UASTC to preserve direction fidelity. The WebP→PNG preparation pass covers every compressed slot, and regenerated stable URLs are version-bumped at every code reference. Resident render and deferred-preload paths both attach Meshopt and KTX2 loader extensions. VRM files remain unchanged: `vrm-loader.ts` keeps one parse per `(path, instanceId)` for skeleton/manager isolation, but canonicalizes associated glTF textures by `(path, textureIndex)` after normalization; each resolved instance owns one ref per canonical key, shared-aware teardown disposes geometry/materials and only private textures immediately, and the canonical texture is disposed and evicted only when its refcount reaches zero.
+
+**Mobile texture cap + VRM cache roster (2026-09-07):**
+`downscale-texture-for-device.ts` reduces only decoded, uncompressed texture
+images whose longest side exceeds the current device cap. It mutates
+`Texture.image` only after a successful `createImageBitmap` or canvas resize,
+so material slots and the P1b association key retain the same Texture object.
+VRMs resize before canonical registration under a per-path load lock, while
+`use-gltf-ktx2.ts` exports one loader `afterRoot` hook for wrapped GLBs and live
+direct world loaders, including Nori and the land structure, showroom, kit, and
+yard-editor paths, plus the module-scope cosmetic loaders
+(`cosmetic-loader.tsx` `getLoader`, `character-attachments.ts`
+`getAttachmentLoader`) — a live staging census caught one NPC spine
+attachment holding 4 uncapped 1024² maps through those loaders. The
+procedural town-directory CanvasTexture and the three land-parcel sign-plank
+CanvasTextures (`land-parcels.tsx` `finishSignTexture`, 1024×424/426) use the
+shared helper's synchronous canvas branch before material creation. All three
+paths complete before first upload, skip compressed and render-target textures,
+and fail open with the source image. Phone uses 512, tablet uses 1,024, and both
+desktop profiles use no cap. Service worker v13 adds the 13 exact
+`WANDERING_VRM_PATHS` URLs to the unchanged page-signaled deferred roster. The
+10 MiB individual-file cap and byte-ledger eviction stay unchanged;
+`cove-interior-cleaned-v1-ktx.glb` remains excluded because it exceeds that cap.
 
 ### 9a. Loader stack
 

@@ -78,8 +78,12 @@
 //     inside the asset cache. Budget enforcement now updates a running total
 //     and evicts the ledger's oldest entries without re-reading every body.
 //   - The v11 page-signaled deferred-precache/ack protocol is unchanged.
+//
+// 2026-09-07 v13 (mobile perf wave 2 — deferred VRM roster):
+//   - Added the 13 ambient/wanderer VRMs to the existing page-signaled roster.
+//   - The v11 handshake, v12 byte ledger, and 10 MB per-file cap are unchanged.
 
-const CACHE_VERSION = 'v12';
+const CACHE_VERSION = 'v13';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 const ASSET_LEDGER_URL = new URL('/__clawville_asset_cache_ledger__', self.location.origin).href;
@@ -120,6 +124,21 @@ const PRECACHE_GLBS = [
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
   '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',
+  // Ambient/wanderer VRMs. Keep this list in exact URL parity with
+  // asset-preload-manifest.ts WANDERING_VRM_PATHS.
+  '/avatars/milady-official-1.vrm',
+  '/avatars/milady-official-2.vrm',
+  '/avatars/milady-official-3.vrm',
+  '/avatars/milady-official-4.vrm',
+  '/avatars/milady-official-5.vrm',
+  '/avatars/milady-official-6.vrm',
+  '/avatars/milady-official-7.vrm',
+  '/avatars/milady-official-8.vrm',
+  '/avatars/hermes-female.vrm?v=2',
+  '/avatars/hermes-male.vrm?v=2',
+  '/avatars/tekk-nonorm.vrm',
+  '/avatars/eliza-chibi-mo.vrm',
+  '/avatars/milady-chibi-mo.vrm',
   // The 3 locomotion clips every VRM avatar needs to render without a T-pose
   // flash. Loaded eagerly on /game mount by preloadLocomotionClips() —
   // pre-caching them here means the SECOND-visit network panel has 0 anim GLB

@@ -28,6 +28,8 @@
 
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
+import { downscaleTextureForDevice } from './downscale-texture-for-device';
 
 // ─── Sign world position ────────────────────────────────────────────────────
 const SIGN_X = 0;
@@ -164,6 +166,12 @@ function bakeDirectoryTexture(): THREE.CanvasTexture {
   tex.anisotropy = 8; // stay crisp at grazing angles / distance
   tex.generateMipmaps = true;
   tex.needsUpdate = true;
+  const maxSize = CURRENT_WORLD_DEVICE_PROFILE.maxUncompressedTextureSize;
+  if (maxSize !== null) {
+    // CanvasTexture takes the helper's synchronous canvas branch, so the image
+    // swap completes before this texture reaches its material or the renderer.
+    void downscaleTextureForDevice(tex, maxSize);
+  }
   return tex;
 }
 

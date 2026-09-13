@@ -287,6 +287,7 @@ function buildRoom(id: string): Room {
     connected: true,
     disconnectedAt: null,
     wsConnectionId: null,
+      withdrawn: false,
   };
   return {
     id,

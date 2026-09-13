@@ -75,6 +75,14 @@ export interface RoomParticipant {
   disconnectedAt: number | null;
   /** Hub-issued connection id (set when WS hub lights up — chunk #3) */
   wsConnectionId: string | null;
+  /**
+   * Terminal exit marker — set when the participant leaves for good
+   * (voluntary `leave` frame, reconnect-grace timeout, or integrity
+   * kick). A withdrawn participant never returns to this room; the room
+   * manager releases their `playerToRoom` binding at the same moment so
+   * they can re-queue immediately. Bots never withdraw.
+   */
+  withdrawn: boolean;
 }
 
 /**

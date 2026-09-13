@@ -251,8 +251,39 @@ Expected savings: **~$41/mo** vs your current Pro bill.
 
 ## Ongoing operations
 
-### Deploying a new version
-Just `git push` to master. Coolify auto-deploys on push (if you enabled the webhook during source setup). Or click "Redeploy" in the UI.
+### Deploying a new version — day-to-day runbook (moved verbatim from CLAUDE.md 2026-09-07)
+
+**Two Hetzner VPS hosts (since 2026-05-23 migration):**
+- **Production:** `$PROD_VPS_IP` (in gitignored `scripts/deploy/.env.deploy`), Hillsboro, Coolify 4.1, key `~/.ssh/clawville_hillsboro` (passphrase — `ssh-add` once into Windows ssh-agent). Serves `clawville.world` + `api.clawville.world`. Admin UI `https://coolify-new.clawville.world`.
+- **Staging:** `$STAGING_VPS_IP`, Ashburn, Coolify 4.0, key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Admin UI `https://coolify-staging.clawville.world`.
+
+Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Supabase Postgres per box (isolated 2026-06-16; staging `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`)** — staging writes no longer touch prod; schema converges to prod via the CI migration gate (`migrate`→`deploy`) on the `staging → master` promotion (see `deploy-status.md`). Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
+
+**Coolify app IDs:** prod api=2, prod web=3, staging api=3, staging web=4. UUIDs in `.env.deploy` as `API_APP_UUID`, `WEB_APP_UUID`, `STAGING_API_APP_UUID`, `STAGING_WEB_APP_UUID`.
+
+### Deploy paths
+
+- **Normal:** `git push origin staging` (or `master` per staging-first rule) — Coolify auto-builds.
+- **Force-redeploy / missed webhook:** SSH in → `bash scripts/deploy/clawville-deploy.sh` (wraps api+web tinker).
+- **Env-var add/update:** SSH in → tinker. **Encryption gotcha (2026-05-23):** NEVER write `environment_variables.value` via raw `DB::update()` + `\Crypt::encryptString()` — Coolify's model mutator re-encrypts on save; raw writes break `decrypt()` and crash builds with `unserialize()` exception. ALWAYS `$row->value = $plain; $row->save();`.
+- **Skip-ahead-to-latest:** Coolify queue is FIFO — when you push B while A still building for the same app, kill A's PID and mark its `ApplicationDeploymentQueue` row `cancelled-by-user`. Never cancel the latest. Recipe in `docs/DEPLOY-HETZNER.md`. This Coolify beta has NO auto-cancel-superseded-builds feature — don't assume it; superseded builds run to completion (wasted server cost) unless killed manually.
+- **Double-queued builds — ROOT-CAUSED + FIXED 2026-08-20 (supersedes the 2026-06-10 "internal Coolify poller" theory, which was WRONG).** The second trigger was never internal to Coolify: it was OUR OWN GitHub Actions deploy workflow. Staging had TWO deploy triggers — (1) a GitHub→Coolify webhook (`coolify.clawville.world`, a relic of the pre-migration single-box era; fired instantly, WEB app only, `is_webhook=t`, and BYPASSED the CI migration gate) and (2) `deploy-staging.yml` (runs `migrate`, then SSHes in ~90–120s later and tinker-queues BOTH apps, `is_api=t`). Every non-docs push therefore ran the webhook web build concurrently with the Actions api+web pair, which repeatedly starved the box mid-`next build` (three 2026-08-20 failures: 3657, 3661, 3665-adjacent). FIX: the GitHub webhook (id 621104046) was DELETED — `gh api repos/ItachiDevv/ClawVille/hooks` now returns ZERO hooks; Actions is the SINGLE deploy trigger for both envs (prod never had a webhook post-migration). CONSEQUENCES: docs-only pushes (`paths-ignore`) now deploy NOTHING, which is the declared intent; if Actions is ever broken (secrets/runner), staging deploys fall back to the manual tinker script. If duplicate same-commit rows ever reappear, re-check `gh api .../hooks` FIRST — do not resurrect the poller theory.
+- **"Finished" ≠ live (RULE):** verify deploys by reading the CONTAINER, not the queue: `docker exec <app-container> env | grep SOURCE_COMMIT` must equal the pushed sha (+ bundle grep for a new string literal when in doubt). Queue rows can read `finished` while the container flip silently failed (no container, site 503) — recover by re-triggering via tinker (`Application::find(<id>)` + `queue_application_deployment`). Watchers must tolerate the flip gap (old container gone, new not yet up) — probe after a settle delay, not the instant the queue drains.
+- **DB migrations:** `bun run db:push` from root before deploy if you touched `packages/database/src/schema/*.ts` — Coolify does NOT run migrations. Destructive needs `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true`.
+- **`@clawville/database` local rebuild:** `cd packages/database && bun run build` for scripts importing the package (Coolify builds from source on deploy).
+
+### Provisioning + emergency
+
+Scripts actually in `scripts/deploy/` (verified 2026-06-16): `clawville-deploy.sh` (prod redeploy wrapper — api+web tinker), `clawville-staging-deploy.sh` (staging redeploy wrapper), `apply-rename-migration.sh`. The day-to-day deploy path is `bash scripts/deploy/clawville-deploy.sh` (see "Deploy paths" above). **NOTE:** the one-time provisioning scripts (`provision-hetzner.sh`, `setup-cloudflare-dns.sh`, `bootstrap-server.sh`, `add-zone-to-cloudflare.sh`) and `.env.deploy` are NOT in the repo — both Hetzner boxes are already provisioned, so those bootstrap scripts are not needed for normal operation. The historical bootstrap walkthrough in `docs/DEPLOY-HETZNER.md` documents what they did.
+
+Emergency SSH: PROD `ssh root@$PROD_VPS_IP` (key in ssh-agent), STAGING `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP`. Container restart `docker restart <name>` · logs `docker logs --tail 200 <name>` · Coolify DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` (NOT the ClawVille app DB — that's Supabase) · full playbook `docs/DEPLOY-HETZNER.md`.
+
+**Rollback (prod → staging):** staging box still has the prod containers/DB. Flip Cloudflare A records back to `$STAGING_VPS_IP` (~30s), then add prod FQDNs to staging Coolify apps (`Application::find(3|4)->fqdn = '…,https://clawville.world'` + redeploy).
+
+### Local + Windows gotchas (moved verbatim from CLAUDE.md 2026-09-07)
+
+**Test locally FIRST:** `bun run build && bun run start` (prod bundle on :3000, Iris-Xe-safe) is the default test path for in-progress work — iterate on `localhost`, NOT staging (staging pushes clog the Coolify build cache; reserve them for sign-off-ready features). NEVER run `bun run dev` — Iris Xe crashes the WebGPU scene → PC restart (HMR only; the prod `start` bundle is fine).
+Curl on Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`.
 
 ### Reading logs
 - Coolify → application → Logs tab (live tail)

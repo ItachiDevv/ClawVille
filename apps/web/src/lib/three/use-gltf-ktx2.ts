@@ -25,10 +25,91 @@
  */
 
 import { useGLTF } from '@react-three/drei';
+import type { ObjectMap } from '@react-three/fiber';
+import * as THREE from 'three';
 import type { GLTF } from 'three-stdlib';
 import { extendLoaderWithKTX2 } from './ktx2-loader-setup';
+import { extendLoaderWithMeshopt } from './meshopt-loader-setup';
+import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
+import { downscaleTextureForDevice } from './downscale-texture-for-device';
 
-type GLTFResult = GLTF & Record<string, unknown>;
+type GLTFResult = GLTF & ObjectMap;
+const TEXTURE_CAP_LOADERS = new WeakSet<object>();
+
+function collectMaterialTextures(
+  material: THREE.Material,
+  textures: Set<THREE.Texture>,
+): void {
+  for (const value of Object.values(
+    material as unknown as Record<string, unknown>,
+  )) {
+    if (value instanceof THREE.Texture) textures.add(value);
+  }
+
+  const shaderMaterial = material as THREE.ShaderMaterial;
+  if (!shaderMaterial.isShaderMaterial) return;
+  for (const uniform of Object.values(shaderMaterial.uniforms)) {
+    const value = (uniform as { value?: unknown }).value;
+    if (value instanceof THREE.Texture) textures.add(value);
+  }
+}
+
+async function capUncompressedGltfTextures(gltf: GLTF): Promise<void> {
+  const maxSize = CURRENT_WORLD_DEVICE_PROFILE.maxUncompressedTextureSize;
+  if (maxSize === null) return;
+
+  try {
+    const textures = new Set<THREE.Texture>();
+    const materials = new Set<THREE.Material>();
+    const scenes = gltf.scenes.length > 0 ? gltf.scenes : [gltf.scene];
+    for (const scene of scenes) {
+      scene.traverse((object) => {
+        const material = (object as THREE.Mesh).material;
+        if (!material) return;
+        const materialList = Array.isArray(material) ? material : [material];
+        for (const entry of materialList) {
+          if (!entry || materials.has(entry)) continue;
+          materials.add(entry);
+          collectMaterialTextures(entry, textures);
+        }
+      });
+    }
+
+    await Promise.allSettled(
+      Array.from(textures, (texture) =>
+        downscaleTextureForDevice(texture, maxSize),
+      ),
+    );
+  } catch {
+    // Texture reduction must never reject the GLTFLoader render path.
+  }
+}
+
+export function extendLoaderWithTextureDeviceCap(
+  loader: Parameters<typeof extendLoaderWithKTX2>[0],
+): void {
+  if (CURRENT_WORLD_DEVICE_PROFILE.maxUncompressedTextureSize === null) return;
+  if (TEXTURE_CAP_LOADERS.has(loader)) return;
+  TEXTURE_CAP_LOADERS.add(loader);
+  loader.register(() => ({
+    name: 'ClawVilleTextureDeviceCap',
+    afterRoot: capUncompressedGltfTextures,
+  }));
+}
+
+export function extendLoaderWithMeshoptAndTextureDeviceCap(
+  loader: Parameters<typeof extendLoaderWithKTX2>[0],
+): void {
+  void extendLoaderWithMeshopt(loader);
+  extendLoaderWithTextureDeviceCap(loader);
+}
+
+function extendLoaderForWorldTextures(
+  loader: Parameters<typeof extendLoaderWithKTX2>[0],
+): void {
+  extendLoaderWithKTX2(loader);
+  extendLoaderWithTextureDeviceCap(loader);
+}
 
 /**
  * useGLTF with KTX2Loader attached.
@@ -37,7 +118,10 @@ type GLTFResult = GLTF & Record<string, unknown>;
 export function useGLTFWithKTX2(path: string): GLTFResult;
 export function useGLTFWithKTX2(path: string[]): GLTFResult[];
 export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResult[] {
-  return useGLTF(path as any, true, true, extendLoaderWithKTX2) as any;
+  if (typeof path === 'string') {
+    return useGLTF(path, true, true, extendLoaderForWorldTextures);
+  }
+  return useGLTF(path, true, true, extendLoaderForWorldTextures);
 }
 
 /**
@@ -45,7 +129,7 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
  * Call at module level (same as useGLTF.preload) before the Canvas mounts.
  */
 useGLTFWithKTX2.preload = (path: string | string[]) => {
-  useGLTF.preload(path as any, true, true, extendLoaderWithKTX2);
+  useGLTF.preload(path, true, true, extendLoaderForWorldTextures);
 };
 
 /**
@@ -66,5 +150,5 @@ export function preloadKTX2Bytes(path: string): Promise<void> {
  * Clear a GLB from the loader cache.
  */
 useGLTFWithKTX2.clear = (path: string | string[]) => {
-  useGLTF.clear(path as any);
+  useGLTF.clear(path);
 };

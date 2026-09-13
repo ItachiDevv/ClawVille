@@ -37,6 +37,7 @@ import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { extendLoaderWithTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 import { MeshoptDecoder } from 'meshoptimizer';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { useQuery } from '@tanstack/react-query';
@@ -48,6 +49,7 @@ import {
   SCALP_HIDE_RADIUS_FACTOR,
   type CosmeticHeadFitResult,
 } from '@/lib/three/vrm-avatar-sizing';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 // Scratch objects for equip-time calculations — never allocated per frame.
 // Declared module-scope so they're never re-created per effect run.
@@ -145,6 +147,9 @@ function getLoader(): GLTFLoader {
   if (!_loader) {
     _loader = new GLTFLoader();
     (_loader as any).setMeshoptDecoder(MeshoptDecoder);
+    // three/addons GLTFLoader vs the hook's three-stdlib type: same runtime
+    // register() surface, nominally different — same bridge as the line above.
+    extendLoaderWithTextureDeviceCap(_loader as any);
   }
   return _loader;
 }
@@ -686,9 +691,15 @@ function AuraRenderer({
     // compileAsync after attach — eliminates the first-frame pipeline hitch.
     // Guard: WebGPU renderer may not have compileAsync (it has compile instead);
     // WebGLRenderer r170+ has it. Use feature-detect.
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry —
+    // a direct call here could overlap a boot/stage compile on this renderer.
+    let auraDisposed = false;
     if (typeof (gl as any).compileAsync === 'function') {
-      ;(gl as any).compileAsync(mesh, camera, scene).catch((err: unknown) => {
-        console.warn('[CosmeticLoader] compileAsync failed for aura', err);
+      void chainPostBootCompile({
+        gl,
+        compile: () => (gl as any).compileAsync(mesh, camera, scene),
+        label: 'cosmetic-aura',
+        isCancelled: () => auraDisposed,
       });
     }
 
@@ -697,6 +708,7 @@ function AuraRenderer({
     mesh.userData.cosmeticUniforms = uniforms;
 
     onDispose(() => {
+      auraDisposed = true;
       parentObject.remove(mesh);
       mat.dispose();
       // Do NOT dispose geo — it's module-scope shared

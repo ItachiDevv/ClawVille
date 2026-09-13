@@ -66,6 +66,8 @@ import type { LandTier } from '@clawville/shared';
 import type { LandSignCategory } from '@clawville/shared';
 import { useLandStore, getParcelStatus } from '@/stores/land';
 import { useGameStore } from '@/stores/game';
+import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
+import { downscaleTextureForDevice } from '@/lib/three/downscale-texture-for-device';
 
 // ---------------------------------------------------------------------------
 // Constants — body frame (UNCHANGED)
@@ -239,6 +241,12 @@ function finishSignTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
   tex.anisotropy   = 8;        // crisp at grazing angles / distance
   tex.generateMipmaps = true;  // (default) smooth minification far away
   tex.needsUpdate  = true;
+  const maxSize = CURRENT_WORLD_DEVICE_PROFILE.maxUncompressedTextureSize;
+  if (maxSize !== null) {
+    // CanvasTexture takes the helper's synchronous canvas branch, so the image
+    // swap completes before this texture reaches its material or the renderer.
+    void downscaleTextureForDevice(tex, maxSize);
+  }
   return tex;
 }
 

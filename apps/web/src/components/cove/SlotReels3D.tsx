@@ -55,6 +55,7 @@ import {
   CLASSIC_SLOT_SYMBOL_ASSETS,
 } from '@clawville/shared';
 import type { SpinResult } from '@/lib/cove/types';
+import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 // ---------------------------------------------------------------------------
 // Constants — geometry
@@ -505,13 +506,24 @@ export default function SlotReels3D({
       // eslint-disable-next-line no-console
       console.log('[SlotReels3D] mount — paytableId:', paytableId, 'imagesReady:', imagesReady);
     }
+    // R3-2 arbiter: routed through the boot-compile FIFO + poison registry —
+    // a direct call here could overlap a boot/stage compile on this renderer.
+    let unmounted = false;
     const raf = requestAnimationFrame(() => {
       const gAny = gl as unknown as { compileAsync?: (s: THREE.Scene, c: THREE.Camera) => Promise<unknown> };
       if (typeof gAny.compileAsync === 'function') {
-        gAny.compileAsync(scene, camera).catch(() => { /* compile failure non-fatal */ });
+        void chainPostBootCompile({
+          gl,
+          compile: () => gAny.compileAsync!(scene, camera),
+          label: 'slot-reels',
+          isCancelled: () => unmounted,
+        });
       }
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      unmounted = true;
+      cancelAnimationFrame(raf);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imagesReady]);
 

@@ -119,6 +119,14 @@ export interface SimResultRow {
   score: number;
   scoreMs?: number | null;
   /**
+   * True when this body left the match (voluntary leave, disconnect
+   * timeout, or integrity kick). A forfeited row earns ZERO tokens and
+   * ZERO leaderboard points — without this, an all-humans-forfeit room
+   * would still pay its best-progress leaver first-place credit
+   * (exit-lifecycle review round 2, blocking issue 1).
+   */
+  forfeited?: boolean;
+  /**
    * Reef Race Phase 4 (C3 fix) — per-avatar best lap + ghost frames + best
    * streak embedded by `reefRaceSim.computeResults()` BEFORE sim
    * teardown. The reward pipeline reads from THIS object — never from a
@@ -458,14 +466,17 @@ export async function issueRewardsForRoom(
       // then naturally skips them (no ledger row → no mint), and
       // `activity_results.tokensAwarded` equals what was actually credited (0)
       // — no phantom tokens. Guests already had 0 leaderboardPoints.
-      const tokensAwardedRaw = (isBot || ctx.isGuest)
+      // Forfeited rows (leave / timeout / integrity) earn nothing —
+      // leaving a race must never pay (exit-lifecycle review round 2).
+      const isForfeited = sim.forfeited === true;
+      const tokensAwardedRaw = (isBot || ctx.isGuest || isForfeited)
         ? 0
         : breakdown.base +
           breakdown.firstPlayOfDayBonus +
           breakdown.personalBestBonus +
           breakdown.perfectStreakBonus +
           breakdown.focusBonus;
-      const leaderboardPointsRaw = isBot || ctx.isGuest
+      const leaderboardPointsRaw = isBot || ctx.isGuest || isForfeited
         ? 0
         : computeLeaderboardPoints(rewardConfig, sim.placement);
 

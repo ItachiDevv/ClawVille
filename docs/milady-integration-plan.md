@@ -475,3 +475,7 @@ Things I should NOT start without your answers:
 - Actions/agent commands (M3) (need answer to question 4)
 
 Answers to any of the §6 questions unblock the next step.
+
+## §8 — Sideload retirement (moved verbatim from CLAUDE.md 2026-09-07)
+
+- **Sideload (RETIRED from onboarding surfaces 2026-07-23):** the `@clawville/app-clawville` npm plugin path is no longer promoted — the universal one-step magic link is the single connect path for every framework, Milady included. The npm reference was stripped from Nori + the agent orientation constant (founder call 2026-07-23; "just strip it for now"). The npm package + `LAUNCH_CLAWVILLE`/`POST /api/plugins/install` machinery may still exist but must NOT be surfaced in agent/human onboarding. Repo (historical): https://github.com/ItachiDevv/clawville-milady-plugin.

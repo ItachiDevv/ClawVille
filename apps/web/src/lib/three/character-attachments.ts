@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
+import { extendLoaderWithTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 import type { VRM, VRMHumanBoneName } from '@pixiv/three-vrm';
 
 export type CharacterAttachmentState = 'idle' | 'moving';
@@ -73,6 +74,9 @@ function getAttachmentLoader(): GLTFLoader {
   if (_attachmentLoader) return _attachmentLoader;
   _attachmentLoader = new GLTFLoader();
   _attachmentLoader.setMeshoptDecoder(MeshoptDecoder);
+  // three/addons GLTFLoader vs the hook's three-stdlib type: same runtime
+  // register() surface, nominally different — cast like cosmetic-loader.tsx.
+  extendLoaderWithTextureDeviceCap(_attachmentLoader as any);
   return _attachmentLoader;
 }
 
