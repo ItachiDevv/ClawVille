@@ -47,6 +47,17 @@
   phrasing that fails is a bug report we want.
 - Shipped by: land gamification + salvage sessions, 2026-08-09.
 
+### Rent prepay confirm step (staging)
+- **What:** your ruling applied — "Prepay rent" no longer charges on one click.
+  It opens a confirm window that restates weeks, lot, and the exact vCLAW total,
+  with Cancel / Confirm prepay. The charge itself is unchanged.
+- **Where:** staging → `/game` → Land Office → My Land → a deposit-tenure lot →
+  Prepay rent. `landtest3@staging.clawville.test / LandTest!2026` owns
+  parcel-starter-23.
+- **Feedback wanted:** does the confirm read clearly; is two clicks acceptable
+  in the urgent (rent-running-out) state.
+- Shipped by: land session (lnd), 2026-09-13.
+
 ### Autonomous yard-building (staging)
 - **What:** tell your agent to decorate its HOME yard and watch it gather materials first when its balance is short, then place an exact server-suggested piece.
 - **Where:** staging → `/game` → give the directive → Autonomous mode → watch the Activity Log and yard. The account needs a parcel WITH a home already built (placing the building itself is not an agent action yet) — `landtest3@staging.clawville.test / LandTest!2026` is pre-staged: home shack on parcel-starter-23, one placed path-stone, 42 materials banked.
@@ -190,11 +201,8 @@
 
 ## DECISIONS OWED (rulings, not playtests)
 
-- **LAND — Founders' Row: auction vs hold-only.** Surfaces + server currently say
-  hold-only (10M CLV). If auction is intended, that is a server change to scope.
-- **LAND — Prepay one-click confirm.** Approve/reject the one-click rent-prepay
-  confirm UX.
+*(none open)*
 
 ---
 
-*(Verdict log: 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment.)*
+*(Verdict log: 2026-09-13 — LAND Founders' Row ✅ ruled HOLD-ONLY (auction rejected; live behavior already matches, no change). LAND prepay ✅ ruled CONFIRM STEP (one-click rejected; shipped same day, see the LAND entry above). ECONOMY recovered-SOL destination ✅ ruled: swept 0.397129 SOL from the prod house wallet to the founder wallet 2WhyS…ea5H, tx finalized (5PrkM…BnPbfc), house at zero. 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment.)*

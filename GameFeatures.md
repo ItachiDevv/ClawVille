@@ -1,6 +1,23 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-07 (Activity exit lifecycle — leave releases the
+**Last Audited: 2026-09-13 (Land rent prepay now confirms before it charges —
+founder ruling).** The founder rejected one-click charging for rent prepay
+(ruling 2026-09-13). The Land Office "Prepay rent" button no longer fires the
+charge directly: it opens a small confirm window (same shape as the existing
+release-parcel confirm) that restates the weeks, the lot, and the exact vCLAW
+total, with Cancel / Confirm prepay. Confirm runs the UNCHANGED settlement:
+same request, same price source, same per-weeks idempotency-key registry, same
+recovery states. The weeks selector stays live while the window is open and
+the shown total tracks it. Same ruling batch: **Founders' Row stays
+hold-only** (auction REJECTED; the live server + surfaces already say hold-only
+at 10M CLV, so no code change). **Drift note:** web UI only — no route, wire,
+schema, price or `PROTOCOL_VERSION` change; Nori/manual untouched (no mechanic
+changed, only the click count on a human surface). **PARITY:** human path =
+Land Office confirm window; agent paths (REST `prepay_rent`, hosted verb) are
+programmatic and keep their idempotency-key contract — a machine caller is its
+own confirm.
+
+**Prior Last Audited: 2026-09-07 (Activity exit lifecycle — leave releases the
 player at once; founder fix order).** Leaving an activity match (Reef Race,
 Bumper Shells; the voluntary `leave` frame, the 10s reconnect-grace timeout,
 or an integrity kick) now marks the participant `withdrawn` and releases the
