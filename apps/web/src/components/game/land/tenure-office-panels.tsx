@@ -1487,6 +1487,7 @@ export function OwnedTenureControls({
 }) {
   const addToast = useGameStore((state) => state.addToast);
   const [weeks, setWeeks] = useState(1);
+  const [confirmPrepay, setConfirmPrepay] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const subject = useActingAvatarId();
   const operationState = useLandOperationState(subject, parcel.parcelCode);
@@ -1533,6 +1534,7 @@ export function OwnedTenureControls({
       confirmed = true;
       settleLandOperation(subject, parcel.parcelCode, operation, 'confirmed');
       addToast('🪙', `Prepaid ${weeks} week${weeks === 1 ? '' : 's'} on ${parcelDisplayName(parcel.parcelCode, parcel.tier)}.`);
+      setConfirmPrepay(false);
     } catch (error) {
       addToast('⚠️', tenureError(error), 5000);
     } finally {
@@ -1612,19 +1614,42 @@ export function OwnedTenureControls({
             // Naming the unit and promoting the button INSIDE the warning
             // window makes the remedy read as the remedy. The request, the
             // price and `prepayKeys` are untouched.
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <WeeksSelect value={weeks} onChange={setWeeks} label="Weeks of rent" />
-              <span className="font-mono text-cyan-100">Total {(weekly * weeks).toLocaleString()} vCLAW</span>
-              <RpgButton
-                size="sm"
-                variant={rentIsUrgent ? 'primary' : 'secondary'}
-                className="min-h-[44px]"
-                onClick={prepay}
-                loading={doorIsWorking(operationState, 'prepay')}
-                disabled={locked}
-              >
-                {rentIsUrgent ? 'Prepay rent now' : 'Prepay rent'}
-              </RpgButton>
+            // One-click charging was rejected by the founder (ruling 2026-09-13):
+            // a spend that draws real vCLAW gets an explicit confirm window, same
+            // shape as the release confirm below. The request, the price and the
+            // idempotency-key flow are untouched; only the click that fires them
+            // moves behind the confirm.
+            <div className="mt-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <WeeksSelect value={weeks} onChange={setWeeks} label="Weeks of rent" />
+                <span className="font-mono text-cyan-100">Total {(weekly * weeks).toLocaleString()} vCLAW</span>
+                {!confirmPrepay && (
+                  <RpgButton
+                    size="sm"
+                    variant={rentIsUrgent ? 'primary' : 'secondary'}
+                    className="min-h-[44px]"
+                    onClick={() => setConfirmPrepay(true)}
+                    loading={doorIsWorking(operationState, 'prepay')}
+                    disabled={locked}
+                  >
+                    {rentIsUrgent ? 'Prepay rent now' : 'Prepay rent'}
+                  </RpgButton>
+                )}
+              </div>
+              {confirmPrepay && (
+                <div role="alertdialog" aria-label={`Prepay rent on ${parcelDisplayName(parcel.parcelCode, parcel.tier)}`} className="mt-2 rounded-lg border border-cyan-300/30 bg-cyan-400/[0.08] p-3">
+                  <p className="text-cyan-100">
+                    Prepay {weeks} week{weeks === 1 ? '' : 's'} of rent on {parcelDisplayName(parcel.parcelCode, parcel.tier)}?
+                    This charges {(weekly * weeks).toLocaleString()} vCLAW now.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <RpgButton size="sm" variant="ghost" className="min-h-[44px]" onClick={() => setConfirmPrepay(false)} disabled={operationState.blocked}>Cancel</RpgButton>
+                    <RpgButton size="sm" variant="primary" className="min-h-[44px]" onClick={prepay} loading={doorIsWorking(operationState, 'prepay')} disabled={locked}>
+                      Confirm prepay
+                    </RpgButton>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
