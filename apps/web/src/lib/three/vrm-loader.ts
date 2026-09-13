@@ -39,6 +39,8 @@ import type { VRM } from '@pixiv/three-vrm';
 import { primeVrmHipsHeightCache } from './mixamo-retarget';
 import { isDecorativeReleased } from './decorative-release';
 import { stampColdLoadPhase } from './cold-load-stamp';
+import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
+import { downscaleTextureForDevice } from './downscale-texture-for-device';
 
 // MToon plugin registration:
 //   Explicitly register MToonMaterialLoaderPlugin so VRMLoaderPlugin produces
@@ -136,6 +138,9 @@ const VRM_INSTANCES = new Map<string, InstanceEntry>();
  * `refs` counts resolved VRM instances, not material slots.
  */
 const VRM_CANONICAL_TEXTURES = new Map<string, CanonicalTextureEntry>();
+
+/** Serialize async texture preparation only for concurrent parses of one path. */
+const VRM_TEXTURE_REGISTRATION_LOCKS = new Map<string, Promise<void>>();
 
 /**
  * Deferred-dispose timers, keyed like VRM_INSTANCES (`${path}#${instanceId}`).
@@ -540,6 +545,67 @@ function forEachMaterialTextureSlot(
         return false;
       }
     });
+  }
+}
+
+async function withVRMTextureRegistrationLock<T>(
+  path: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = VRM_TEXTURE_REGISTRATION_LOCKS.get(path);
+  let release = (): void => {};
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  VRM_TEXTURE_REGISTRATION_LOCKS.set(path, current);
+  if (previous) await previous;
+
+  try {
+    return await task();
+  } finally {
+    release();
+    if (VRM_TEXTURE_REGISTRATION_LOCKS.get(path) === current) {
+      VRM_TEXTURE_REGISTRATION_LOCKS.delete(path);
+    }
+  }
+}
+
+async function downscaleNewVRMTextures(
+  root: THREE.Object3D,
+  path: string,
+  associations: ReadonlyMap<THREE.Object3D | THREE.Material | THREE.Texture, { textures?: number }>,
+  maxSize: number,
+): Promise<void> {
+  try {
+    const textures = new Set<THREE.Texture>();
+    const materials = new Set<THREE.Material>();
+
+    root.traverse((object) => {
+      const material = (object as THREE.Mesh).material;
+      if (!material) return;
+      const materialList = Array.isArray(material) ? material : [material];
+      for (const entry of materialList) {
+        if (!entry || materials.has(entry)) continue;
+        materials.add(entry);
+        forEachMaterialTextureSlot(entry, (texture) => {
+          if (textures.has(texture)) return;
+          const textureIndex = associations.get(texture)?.textures;
+          if (
+            textureIndex !== undefined
+            && Number.isInteger(textureIndex)
+            && textureIndex >= 0
+            && VRM_CANONICAL_TEXTURES.has(`${path}#tx${textureIndex}`)
+          ) return;
+          textures.add(texture);
+        });
+      }
+    });
+
+    await Promise.allSettled(
+      Array.from(textures, (texture) =>
+        downscaleTextureForDevice(texture, maxSize),
+      ),
+    );
+  } catch {
+    // Texture reduction must never reject the VRM render path.
   }
 }
 
@@ -995,19 +1061,22 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
   // still 'pending'. The identity-guarded catch in callers (useVRMInstance and
   // loadVRMInstance) ensures that the throw below does NOT clobber the new
   // pending entry — the catch only writes 'rejected' when cur.promise === promise.
-  if (VRM_LOAD_GEN.get(cacheKey) !== gen) {
-    try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
-    // Throw so the caller's catch fires. The identity-guarded catch skips the
-    // 'rejected' write because the entry was deleted or replaced; this is safe.
-    throw new Error(`[vrm-loader] parse completed after dispose (stale gen) for ${cacheKey}`);
-  }
+  const assertEntryStillPending = (): void => {
+    if (VRM_LOAD_GEN.get(cacheKey) !== gen) {
+      try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
+      // Throw so the caller's catch fires. The identity-guarded catch skips the
+      // 'rejected' write because the entry was deleted or replaced; this is safe.
+      throw new Error(`[vrm-loader] parse completed after dispose (stale gen) for ${cacheKey}`);
+    }
 
-  // Defensive: entry must still be pending (not already settled by another path).
-  const currentEntry = VRM_INSTANCES.get(cacheKey);
-  if (!currentEntry || currentEntry.status !== 'pending') {
-    try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
-    throw new Error(`[vrm-loader] entry gone or already settled for ${cacheKey}`);
-  }
+    // Defensive: entry must still be pending (not already settled by another path).
+    const currentEntry = VRM_INSTANCES.get(cacheKey);
+    if (!currentEntry || currentEntry.status !== 'pending') {
+      try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
+      throw new Error(`[vrm-loader] entry gone or already settled for ${cacheKey}`);
+    }
+  };
+  assertEntryStillPending();
 
   if (VRM_METRICS_ENABLED) {
     pushVRMLoadMetric({
@@ -1026,26 +1095,47 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
     });
   }
 
-  // No await may occur between registration and storing the resolved entry:
-  // the acquired key set must become reachable by disposal atomically.
-  let sharedTextureKeys: Set<string>;
-  try {
-    sharedTextureKeys = canonicaliseVRMTextures(
-      parsed.vrm.scene,
-      path,
-      parsed.associations,
-    );
-  } catch (error) {
-    // canonicaliseVRMTextures rolls back slot swaps and refs before throwing,
-    // so the parsed scene is private again and can use the empty shared set.
-    try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
-    throw error;
+  const registerResolvedInstance = (): void => {
+    // No await may occur between registration and storing the resolved entry:
+    // the acquired key set must become reachable by disposal atomically.
+    let sharedTextureKeys: Set<string>;
+    try {
+      sharedTextureKeys = canonicaliseVRMTextures(
+        parsed.vrm.scene,
+        path,
+        parsed.associations,
+      );
+    } catch (error) {
+      // canonicaliseVRMTextures rolls back slot swaps and refs before throwing,
+      // so the parsed scene is private again and can use the empty shared set.
+      try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
+      throw error;
+    }
+    VRM_INSTANCES.set(cacheKey, {
+      status: 'resolved',
+      vrm: parsed.vrm,
+      sharedTextureKeys,
+    });
+  };
+
+  const maxTextureSize =
+    CURRENT_WORLD_DEVICE_PROFILE.maxUncompressedTextureSize;
+  if (maxTextureSize === null) {
+    registerResolvedInstance();
+  } else {
+    await withVRMTextureRegistrationLock(path, async () => {
+      assertEntryStillPending();
+      await downscaleNewVRMTextures(
+        parsed.vrm.scene,
+        path,
+        parsed.associations,
+        maxTextureSize,
+      );
+      // Disposal can occur during createImageBitmap. Re-check before refs exist.
+      assertEntryStillPending();
+      registerResolvedInstance();
+    });
   }
-  VRM_INSTANCES.set(cacheKey, {
-    status: 'resolved',
-    vrm: parsed.vrm,
-    sharedTextureKeys,
-  });
   return parsed.vrm;
 }
 

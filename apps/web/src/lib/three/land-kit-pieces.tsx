@@ -70,7 +70,7 @@ import {
   triangleCostOf,
   type ParcelCost,
 } from '@/lib/three/land-kit-admission';
-import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
+import { extendLoaderWithMeshoptAndTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { useLandStore, type PlacedPiece } from '@/stores/land';
 import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
@@ -86,6 +86,7 @@ const MAX_VISIBLE_CHUNKS =
   CURRENT_WORLD_DEVICE_PROFILE.landKitMaxVisibleChunks;
 const DEVICE_VISIBLE_DRAW_BUDGET =
   CURRENT_WORLD_DEVICE_PROFILE.landKitMaxDraws;
+
 const DEVICE_SUBMITTED_TRIANGLE_BUDGET =
   CURRENT_WORLD_DEVICE_PROFILE.landKitMaxTriangles;
 
@@ -619,7 +620,7 @@ function KitPieceSource({
     LAND_KIT_ASSET_PATHS[pieceKey],
     undefined,
     undefined,
-    extendLoaderWithMeshopt,
+    extendLoaderWithMeshoptAndTextureDeviceCap,
   );
   // Slice D §4b: source RESOLVED from a commit effect (render-abandon-safe).
   useEffect(() => {

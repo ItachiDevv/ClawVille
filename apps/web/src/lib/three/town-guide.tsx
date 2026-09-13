@@ -54,7 +54,10 @@ import {
   BOOT_STREAM_TIER_GUIDE,
   onBootBuildingsFetch,
 } from '@/lib/three/decorative-release';
-import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
+import {
+  extendLoaderWithTextureDeviceCap,
+  preloadKTX2Bytes,
+} from '@/lib/three/use-gltf-ktx2';
 
 // Rung-4 slice D (§3 preload demotion [R2-F6]): the module-scope
 // `useGLTF.preload('/models/guide-rigged.glb')` is REMOVED — it started a
@@ -114,7 +117,12 @@ const BREATH_FREQ = 1.8;
 const BREATH_AMP  = 0.008;
 
 const TownGuideInner = memo(function TownGuideInner() {
-  const { scene: gltfScene, animations } = useGLTF('/models/guide-rigged.glb');
+  const { scene: gltfScene, animations } = useGLTF(
+    '/models/guide-rigged.glb',
+    undefined,
+    undefined,
+    extendLoaderWithTextureDeviceCap,
+  );
 
   // Clone per-mount so each instance gets its own bone tree.
   // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain clone(true) shares bones.

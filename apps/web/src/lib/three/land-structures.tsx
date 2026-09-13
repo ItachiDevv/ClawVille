@@ -69,7 +69,7 @@ import {
 import { useLandStore, type PlacedStructure } from '@/stores/land';
 import { LAND_STRUCTURES_REFRESH_EVENT } from '@/lib/land-query-keys';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
-import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
+import { extendLoaderWithMeshoptAndTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -244,7 +244,12 @@ function GLBStructure({
   structure: PlacedStructure;
   path: string;
 }) {
-  const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
+  const { scene } = useGLTF(
+    path,
+    undefined,
+    undefined,
+    extendLoaderWithMeshoptAndTextureDeviceCap,
+  );
   const groupRef = useRef<THREE.Group>(null);
 
   // Slice D §4b: slot RESOLVED from a commit effect (render-abandon-safe).

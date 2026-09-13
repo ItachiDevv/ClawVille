@@ -4,6 +4,7 @@ import { useRef, useMemo, memo, Suspense, useEffect, useState, type ReactElement
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
+import type { GLTFLoader } from 'three-stdlib';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as THREE from 'three';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
@@ -26,6 +27,7 @@ import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
+import { extendLoaderWithTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
@@ -216,9 +218,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   'agent-security': { name: 'Patrick', model: '/models/characters/patrick-ktx.glb', deferUntilDecorativeRelease: true },
 };
 
-const extendLoaderWithMeshoptAndKTX2 = (loader: unknown) => {
-  extendLoaderWithMeshopt(loader as any);
-  extendLoaderWithKTX2(loader as any);
+const extendLoaderWithMeshoptAndKTX2 = (loader: GLTFLoader): void => {
+  void extendLoaderWithMeshopt(loader);
+  extendLoaderWithKTX2(loader);
+  extendLoaderWithTextureDeviceCap(loader);
 };
 
 /** Compute NPC world position and facing angle for a given building zone.

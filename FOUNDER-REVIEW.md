@@ -156,17 +156,20 @@
 - **Feedback wanted:** is the pop-in acceptable?
 - Shipped by: cv-covefreeze perf session, 2026-08-11.
 
-### Mobile perf wave 1 phone feel-pass (staging)
+### Mobile perf wave 1 + wave 2 phone feel-pass (staging)
 - **What:** the phone render profile targets a steadier default 30 FPS, removes
   world shadows, and shortens draw distance while keeping the complete world,
-  HUD, labels, and real buildings intact.
+  HUD, labels, and real buildings intact. Wave 2 limits decoded uncompressed
+  texture sides to 512 px on phones.
 - **Where:** staging → `/game` on a PHONE. Try the default URL first, then compare
   `/game?fpscap=0` with the cap disabled; the default should load, feel steadier,
-  show softer/no shadows, and fade distant scenery sooner.
+  show softer/no shadows, and fade distant scenery sooner. Inspect nearby avatars
+  and props, then use `/game?texcap=0` to compare their source texture sharpness.
 - **Feedback wanted:** how the 30 FPS cap feels versus uncapped, whether the shorter
-  draw distance feels too aggressive, and anything visually broken from any camera
-  angle (especially a moving dark band/void at the horizon).
-- Shipped by: cv-covefreeze mobile perf wave 1 session, 2026-08-20.
+  draw distance feels too aggressive, whether 512 px phone textures stay sharp
+  enough up close, and anything visually broken from any camera angle.
+- Shipped by: cv-covefreeze mobile perf wave 1 + wave 2 sessions, 2026-08-20 and
+  2026-09-07.
 
 ---
 

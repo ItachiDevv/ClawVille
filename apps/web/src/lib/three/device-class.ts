@@ -75,6 +75,7 @@ export function detectDeviceClass(): DeviceClass {
 export interface WorldDeviceProfile {
   readonly shadows: boolean;
   readonly fpsCap: number | null;
+  readonly maxUncompressedTextureSize: number | null;
   readonly fogNear: number;
   readonly fogFar: number;
   readonly cameraFar: number;
@@ -94,6 +95,7 @@ export interface WorldDeviceProfile {
 const PHONE_PROFILE: WorldDeviceProfile = {
   shadows: false,
   fpsCap: 30,
+  maxUncompressedTextureSize: 512,
   fogNear: 2_600,
   fogFar: 6_000,
   // The world backdrop is scene.background (no enclosing dome). Its only
@@ -116,6 +118,7 @@ const PHONE_PROFILE: WorldDeviceProfile = {
 const TABLET_PROFILE: WorldDeviceProfile = {
   shadows: false,
   fpsCap: null,
+  maxUncompressedTextureSize: 1024,
   fogNear: 5_000,
   fogFar: 10_500,
   cameraFar: 11_500,
@@ -135,6 +138,7 @@ const TABLET_PROFILE: WorldDeviceProfile = {
 const DESKTOP_LOW_PROFILE: WorldDeviceProfile = {
   shadows: true,
   fpsCap: null,
+  maxUncompressedTextureSize: null,
   fogNear: 5_000,
   fogFar: 10_500,
   cameraFar: 11_500,
@@ -167,5 +171,24 @@ export const WORLD_DEVICE_PROFILE: Readonly<
 };
 
 export const WORLD_DEVICE_CLASS = detectDeviceClass();
+
+function readTextureCapOverride(): number | null | undefined {
+  try {
+    const override = new URLSearchParams(window.location.search).get('texcap');
+    if (override === '0') return null;
+    if (override === '512') return 512;
+  } catch {
+    // SSR and restricted browser contexts use the detected device profile.
+  }
+  return undefined;
+}
+
+const CURRENT_TEXTURE_CAP_OVERRIDE = readTextureCapOverride();
+const BASE_WORLD_DEVICE_PROFILE = WORLD_DEVICE_PROFILE[WORLD_DEVICE_CLASS];
 export const CURRENT_WORLD_DEVICE_PROFILE =
-  WORLD_DEVICE_PROFILE[WORLD_DEVICE_CLASS];
+  CURRENT_TEXTURE_CAP_OVERRIDE === undefined
+    ? BASE_WORLD_DEVICE_PROFILE
+    : {
+        ...BASE_WORLD_DEVICE_PROFILE,
+        maxUncompressedTextureSize: CURRENT_TEXTURE_CAP_OVERRIDE,
+      };
