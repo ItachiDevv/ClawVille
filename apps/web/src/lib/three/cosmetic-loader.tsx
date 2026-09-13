@@ -37,6 +37,7 @@ import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { extendLoaderWithTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
 import { MeshoptDecoder } from 'meshoptimizer';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { useQuery } from '@tanstack/react-query';
@@ -146,6 +147,9 @@ function getLoader(): GLTFLoader {
   if (!_loader) {
     _loader = new GLTFLoader();
     (_loader as any).setMeshoptDecoder(MeshoptDecoder);
+    // three/addons GLTFLoader vs the hook's three-stdlib type: same runtime
+    // register() surface, nominally different — same bridge as the line above.
+    extendLoaderWithTextureDeviceCap(_loader as any);
   }
   return _loader;
 }

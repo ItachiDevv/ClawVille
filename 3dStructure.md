@@ -1958,10 +1958,13 @@ so material slots and the P1b association key retain the same Texture object.
 VRMs resize before canonical registration under a per-path load lock, while
 `use-gltf-ktx2.ts` exports one loader `afterRoot` hook for wrapped GLBs and live
 direct world loaders, including Nori and the land structure, showroom, kit, and
-yard-editor paths. The procedural town-directory CanvasTexture and the three
-land-parcel sign-plank CanvasTextures (`land-parcels.tsx` `finishSignTexture`,
-1024×424/426) use the shared helper's synchronous canvas branch before material
-creation. All three
+yard-editor paths, plus the module-scope cosmetic loaders
+(`cosmetic-loader.tsx` `getLoader`, `character-attachments.ts`
+`getAttachmentLoader`) — a live staging census caught one NPC spine
+attachment holding 4 uncapped 1024² maps through those loaders. The
+procedural town-directory CanvasTexture and the three land-parcel sign-plank
+CanvasTextures (`land-parcels.tsx` `finishSignTexture`, 1024×424/426) use the
+shared helper's synchronous canvas branch before material creation. All three
 paths complete before first upload, skip compressed and render-target textures,
 and fail open with the source image. Phone uses 512, tablet uses 1,024, and both
 desktop profiles use no cap. Service worker v13 adds the 13 exact
