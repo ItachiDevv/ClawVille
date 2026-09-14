@@ -35,6 +35,10 @@ import { randomUUID } from 'crypto';
 // files), every later `import { events, ... }` would fail "Export not found".
 import * as realDatabase from '@clawville/database';
 
+// Same capture-before-mock pattern for the seeder: the mock below must delegate
+// to the REAL singleton (see its comment), so bind the real module first.
+import * as realCashHouseSeederModule from '../cash-house-seeder';
+
 // ── In-memory state shared by the stubbed manager + the stubbed db COUNT ──────
 interface FakeTableRow {
   id: string;
@@ -212,29 +216,30 @@ mock.module('../cash-table-manager-singleton', () => ({
 
 // ── Mock the seeder: houseBankAvatarId() returns the stub id (or throws) ───────
 // IMPORTANT: bun's `mock.module` is GLOBAL + persistent across the whole test
-// process (this file sorts before cash-table-manager.test.ts). The CashTableManager
-// imports `cashHouseSeeder` at module level and calls `release()` inside cashOutSeat,
-// so the stub MUST expose EVERY member the manager touches as a safe no-op — else a
-// co-running manager test would hit `cashHouseSeeder.release is not a function`.
+// process, and the FILE ORDER is not stable across bun releases (CI runs
+// `bun-version: latest`; a 2026-09 bun reordered the walk and this mock started
+// poisoning cash-house-reservation.test.ts, whose FIX-D tests exercise the REAL
+// seeder's claim/rehydrate state machine — they got the old all-no-op stub and
+// went red on CI while passing locally). So the stub may not blanket-replace the
+// module: it captures the REAL singleton first and DELEGATES every member to it,
+// overriding ONLY `houseBankAvatarId` (the one seam the scaler code reads).
+// Delegation is safe for every co-running file: the real `claim()` without
+// `ensure()` returns null (what the old stub hard-coded), `release()` is a pure
+// map op, and the reservation tests drive the real reset/rehydrate hooks.
 mock.module('../cash-house-seeder', () => ({
-  cashHouseSeeder: {
-    houseBankAvatarId() {
-      if (state.bankNotReady) throw new Error('seeder.ensure() pending');
-      return state.houseBankId;
+  ...realCashHouseSeederModule,
+  cashHouseSeeder: new Proxy(realCashHouseSeederModule.cashHouseSeeder, {
+    get(target, prop, receiver) {
+      if (prop === 'houseBankAvatarId') {
+        return () => {
+          if (state.bankNotReady) throw new Error('seeder.ensure() pending');
+          return state.houseBankId;
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
     },
-    // No-op seams the manager calls but the scaler test doesn't exercise. Kept so
-    // a co-running manager test (which uses the REAL injected db/ledger/sim but the
-    // MODULE-level seeder for bot-pool release) never crashes on a missing method.
-    claim: () => null,
-    release: () => {},
-    releaseTable: () => {},
-    isBotAvatar: () => false,
-    botAvatarIds: () => [] as string[],
-    reservedCount: () => 0,
-    async ensure() {},
-    __resetForTest() {},
-  },
-  CashBotPoolExhaustedError: class extends Error {},
+  }),
 }));
 
 // ── Mock @clawville/database: execute() interprets ONLY the scaler's COUNT ─────
