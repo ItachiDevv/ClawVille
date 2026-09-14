@@ -10,6 +10,7 @@ import {
   eq,
   isNull,
   lte,
+  or,
   sql,
   type BountyUsdcHold,
 } from '@clawville/database';
@@ -379,7 +380,7 @@ export type Tier1SettlementAttemptPlan =
   | { kind: 'frozen'; reason: 'ambiguous' | 'failure_not_proven_safe' | 'invariant_mismatch'; paymentId?: string }
   | { kind: 'exhausted'; attempt: number; paymentId: string };
 
-/** Pure classification seam: only a proven never-broadcast failed row rearms. */
+/** Pure classification seam: only a failed row with definitive no-money proof rearms. */
 export function planTier1SettlementAttempt(input: {
   bountyId: string;
   settlementAttempt: number;
@@ -400,7 +401,7 @@ export function planTier1SettlementAttempt(input: {
     return { kind: 'drive', attempt: input.settlementAttempt, idempotencyKey: expectedKey };
   }
   if (
-    payment.capExempt !== true
+    (payment.capExempt !== true && payment.failureReason !== 'reconcile_no_money')
     || payment.txSignature !== null
     || payment.reconcileTxSignature !== null
     || payment.settlePayer !== null
@@ -426,76 +427,99 @@ type PreparedTier1SettlementAttempt = Exclude<Tier1SettlementAttemptPlan, { kind
  * hold generation. The next payAgent call then performs its normal admission
  * (including dollar caps) and binds a fresh row to the hold.
  */
-export async function prepareTier1SettlementAttempt(input: {
+export interface Tier1SettlementAttemptInput {
   bountyId: string;
   posterAvatarId: string;
   hunterAvatarId: string;
   rewardUsdCents: number;
-}): Promise<PreparedTier1SettlementAttempt> {
-  return db.transaction(async (tx) => {
-    await lockPosterUsdcSpend(tx, input.posterAvatarId);
-    const states = await tx
-      .select({
-        bountyStatus: bounties.status,
-        bountyRewardUsdCents: bounties.tokenReward,
-        holdStatus: bountyUsdcHolds.status,
-        holdAmount: bountyUsdcHolds.amountBaseUnits,
-        settlementAttempt: bountyUsdcHolds.settlementAttempt,
-        approvedHunterId: bountyAttempts.hunterId,
-        paymentId: agentPayments.id,
-        paymentStatus: agentPayments.status,
-        paymentIdempotencyKey: agentPayments.idempotencyKey,
-        paymentCapExempt: agentPayments.capExempt,
-        paymentTxSignature: agentPayments.txSignature,
-        paymentReconcileTxSignature: agentPayments.reconcileTxSignature,
-        paymentSettlePayer: agentPayments.settlePayer,
-        paymentFailureReason: agentPayments.failureReason,
-      })
-      .from(bountyUsdcHolds)
-      .innerJoin(bounties, eq(bounties.id, bountyUsdcHolds.bountyId))
-      .innerJoin(bountyAttempts, and(
-        eq(bountyAttempts.bountyId, bounties.id),
-        eq(bountyAttempts.hunterId, input.hunterAvatarId),
-        eq(bountyAttempts.status, 'approved'),
-      ))
-      .leftJoin(agentPayments, eq(agentPayments.bountyHoldId, bountyUsdcHolds.bountyId))
-      .where(and(
-        eq(bountyUsdcHolds.bountyId, input.bountyId),
-        eq(bountyUsdcHolds.posterAvatarId, input.posterAvatarId),
-      ))
-      .limit(2);
-    const state = states[0];
-    const expectedAmount = BigInt(input.rewardUsdCents) * 10_000n;
-    if (
-      states.length !== 1
-      || !state
-      || state.bountyStatus !== 'open'
-      || state.holdStatus !== 'open'
-      || state.bountyRewardUsdCents !== input.rewardUsdCents
-      || BigInt(state.holdAmount) !== expectedAmount
-      || state.approvedHunterId !== input.hunterAvatarId
-    ) {
-      return { kind: 'frozen', reason: 'invariant_mismatch' };
-    }
+}
 
-    const payment: Tier1SettlementPaymentState | null = state.paymentId
-      ? {
-          id: state.paymentId,
-          status: state.paymentStatus!,
-          idempotencyKey: state.paymentIdempotencyKey!,
-          capExempt: state.paymentCapExempt,
-          txSignature: state.paymentTxSignature,
-          reconcileTxSignature: state.paymentReconcileTxSignature,
-          settlePayer: state.paymentSettlePayer,
-          failureReason: state.paymentFailureReason,
-        }
-      : null;
-    const plan = planTier1SettlementAttempt({
-      bountyId: input.bountyId,
-      settlementAttempt: state.settlementAttempt,
-      payment,
-    });
+/** The same read-only state query serves the locked retry path and ops view. */
+export async function readTier1SettlementAttemptStates(
+  input: Tier1SettlementAttemptInput,
+  reader: Pick<BountyTx, 'select'> = db,
+) {
+  return reader
+    .select({
+      bountyStatus: bounties.status,
+      bountyRewardUsdCents: bounties.tokenReward,
+      holdStatus: bountyUsdcHolds.status,
+      holdAmount: bountyUsdcHolds.amountBaseUnits,
+      settlementAttempt: bountyUsdcHolds.settlementAttempt,
+      approvedHunterId: bountyAttempts.hunterId,
+      paymentId: agentPayments.id,
+      paymentStatus: agentPayments.status,
+      paymentIdempotencyKey: agentPayments.idempotencyKey,
+      paymentCapExempt: agentPayments.capExempt,
+      paymentTxSignature: agentPayments.txSignature,
+      paymentReconcileTxSignature: agentPayments.reconcileTxSignature,
+      paymentSettlePayer: agentPayments.settlePayer,
+      paymentFailureReason: agentPayments.failureReason,
+    })
+    .from(bountyUsdcHolds)
+    .innerJoin(bounties, eq(bounties.id, bountyUsdcHolds.bountyId))
+    .innerJoin(bountyAttempts, and(
+      eq(bountyAttempts.bountyId, bounties.id),
+      eq(bountyAttempts.hunterId, input.hunterAvatarId),
+      eq(bountyAttempts.status, 'approved'),
+    ))
+    .leftJoin(agentPayments, eq(agentPayments.bountyHoldId, bountyUsdcHolds.bountyId))
+    .where(and(
+      eq(bountyUsdcHolds.bountyId, input.bountyId),
+      eq(bountyUsdcHolds.posterAvatarId, input.posterAvatarId),
+    ))
+    .limit(2);
+}
+
+type Tier1SettlementAttemptStates = Awaited<ReturnType<typeof readTier1SettlementAttemptStates>>;
+
+export function classifyTier1SettlementAttemptStates(
+  input: Tier1SettlementAttemptInput,
+  states: Tier1SettlementAttemptStates,
+): Tier1SettlementAttemptPlan {
+  const state = states[0];
+  const expectedAmount = BigInt(input.rewardUsdCents) * 10_000n;
+  if (
+    states.length !== 1
+    || !state
+    || state.bountyStatus !== 'open'
+    || state.holdStatus !== 'open'
+    || state.bountyRewardUsdCents !== input.rewardUsdCents
+    || BigInt(state.holdAmount) !== expectedAmount
+    || state.approvedHunterId !== input.hunterAvatarId
+  ) {
+    return { kind: 'frozen', reason: 'invariant_mismatch' };
+  }
+
+  const payment: Tier1SettlementPaymentState | null = state.paymentId
+    ? {
+        id: state.paymentId,
+        status: state.paymentStatus!,
+        idempotencyKey: state.paymentIdempotencyKey!,
+        capExempt: state.paymentCapExempt,
+        txSignature: state.paymentTxSignature,
+        reconcileTxSignature: state.paymentReconcileTxSignature,
+        settlePayer: state.paymentSettlePayer,
+        failureReason: state.paymentFailureReason,
+      }
+    : null;
+  return planTier1SettlementAttempt({
+    bountyId: input.bountyId,
+    settlementAttempt: state.settlementAttempt,
+    payment,
+  });
+}
+
+export async function prepareTier1SettlementAttempt(
+  input: Tier1SettlementAttemptInput,
+  injected: { transaction?: typeof db.transaction } = {},
+): Promise<PreparedTier1SettlementAttempt> {
+  return (injected.transaction ?? db.transaction.bind(db))(async (tx) => {
+    await lockPosterUsdcSpend(tx, input.posterAvatarId);
+    const states = await readTier1SettlementAttemptStates(input, tx);
+    const plan = classifyTier1SettlementAttemptStates(input, states);
     if (plan.kind !== 'rearm') return plan;
+    const state = states[0]!;
 
     const now = new Date();
     const archived = await tx
@@ -513,7 +537,7 @@ export async function prepareTier1SettlementAttempt(input: {
         eq(agentPayments.id, plan.paymentId),
         eq(agentPayments.bountyHoldId, input.bountyId),
         eq(agentPayments.status, 'failed'),
-        eq(agentPayments.capExempt, true),
+        or(eq(agentPayments.capExempt, true), eq(agentPayments.failureReason, 'reconcile_no_money')),
         eq(agentPayments.idempotencyKey, tier1SettlementIdempotencyKey(
           input.bountyId,
           state.settlementAttempt,
@@ -581,23 +605,43 @@ export async function settleTier1Bounty(input: {
   return { ok: true, replay: payment.replay || booked.replay, payment };
 }
 
-const tier1WedgeAlerts = new Map<string, number>();
-const TIER1_WEDGE_ALERT_MS = 60 * 60 * 1_000;
+export function resolveTier1WedgeRealertMs(raw = process.env.BOUNTY_TIER1_WEDGE_REALERT_MS): number {
+  const fallback = 24 * 60 * 60 * 1_000;
+  if (!raw || !/^\d+$/.test(raw.trim())) return fallback;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? Math.max(60 * 60 * 1_000, parsed) : fallback;
+}
 
-type Tier1ResumeCandidate = {
+async function stampTier1WedgeAlert(bountyId: string, deliveredAt: Date): Promise<void> {
+  await db.update(bountyUsdcHolds).set({
+    lastWedgeAlertAt: deliveredAt,
+    wedgeAlertCount: sql`${bountyUsdcHolds.wedgeAlertCount} + 1`,
+  }).where(eq(bountyUsdcHolds.bountyId, bountyId));
+}
+
+export type Tier1ResumeCandidate = {
   bountyId: string;
   posterAvatarId: string;
   hunterAvatarId: string;
   rewardUsdCents: number;
+  settlementAttempt: number;
+  lastWedgeAlertAt: Date | null;
+  wedgeAlertCount: number;
 };
 
-async function listTier1ResumeCandidates(limit: number): Promise<Tier1ResumeCandidate[]> {
-  return db
+async function listTier1ResumeCandidates(
+  limit?: number,
+  includeClosedBounties = false,
+): Promise<Tier1ResumeCandidate[]> {
+  const query = db
     .select({
       bountyId: bountyUsdcHolds.bountyId,
       posterAvatarId: bountyUsdcHolds.posterAvatarId,
       hunterAvatarId: bountyAttempts.hunterId,
       rewardUsdCents: bounties.tokenReward,
+      settlementAttempt: bountyUsdcHolds.settlementAttempt,
+      lastWedgeAlertAt: bountyUsdcHolds.lastWedgeAlertAt,
+      wedgeAlertCount: bountyUsdcHolds.wedgeAlertCount,
     })
     .from(bountyUsdcHolds)
     .innerJoin(bounties, eq(bounties.id, bountyUsdcHolds.bountyId))
@@ -607,10 +651,33 @@ async function listTier1ResumeCandidates(limit: number): Promise<Tier1ResumeCand
     ))
     .where(and(
       eq(bountyUsdcHolds.status, 'open'),
-      eq(bounties.status, 'open'),
+      includeClosedBounties ? undefined : eq(bounties.status, 'open'),
     ))
-    .orderBy(asc(bountyUsdcHolds.updatedAt))
-    .limit(Math.min(Math.max(1, limit), 100));
+    .orderBy(asc(bountyUsdcHolds.updatedAt));
+  return limit === undefined ? query : query.limit(Math.min(Math.max(1, limit), 100));
+}
+
+/** DB-only classification: never locks, archives, advances, or sends payment. */
+export async function readTier1FrozenSettlements(injected: {
+  listCandidates?: () => Promise<Tier1ResumeCandidate[]>;
+  readStates?: typeof readTier1SettlementAttemptStates;
+} = {}) {
+  const candidates = await (injected.listCandidates ?? (() => listTier1ResumeCandidates(undefined, true)))();
+  const frozen = [];
+  for (const candidate of candidates) {
+    const states = await (injected.readStates ?? readTier1SettlementAttemptStates)(candidate);
+    const plan = classifyTier1SettlementAttemptStates(candidate, states);
+    if (plan.kind === 'drive' || plan.kind === 'rearm') continue;
+    frozen.push({
+      bountyId: candidate.bountyId,
+      plan: { kind: plan.kind, reason: plan.kind === 'frozen' ? plan.reason : null },
+      paymentId: plan.paymentId ?? states[0]?.paymentId ?? null,
+      settlementAttempt: candidate.settlementAttempt,
+      lastWedgeAlertAt: candidate.lastWedgeAlertAt,
+      wedgeAlertCount: candidate.wedgeAlertCount,
+    });
+  }
+  return frozen;
 }
 
 export interface Tier1BountyResumeDeps {
@@ -618,10 +685,11 @@ export interface Tier1BountyResumeDeps {
   prepareAttempt?: typeof prepareTier1SettlementAttempt;
   settle?: typeof settleTier1Bounty;
   alert?: typeof alertError;
+  stampAlert?: typeof stampTier1WedgeAlert;
   now?: () => number;
 }
 
-/** Retry approved Tier-1 holds, advancing only proven no-broadcast failures. */
+/** Retry approved Tier-1 holds, advancing only failures with no-money proof. */
 export async function resumeTier1BountySettlements(
   limit = 50,
   injected: Tier1BountyResumeDeps = {},
@@ -631,6 +699,8 @@ export async function resumeTier1BountySettlements(
   const settle = injected.settle ?? settleTier1Bounty;
   const alert = injected.alert ?? alertError;
   const readNow = injected.now ?? Date.now;
+  const stampAlert = injected.stampAlert ?? stampTier1WedgeAlert;
+  const realertMs = resolveTier1WedgeRealertMs();
 
   let settled = 0;
   for (const row of rows) {
@@ -638,8 +708,8 @@ export async function resumeTier1BountySettlements(
       const prepared = await prepare(row);
       if (prepared.kind !== 'drive') {
         const now = readNow();
-        const last = tier1WedgeAlerts.get(row.bountyId) ?? 0;
-        if (now - last >= TIER1_WEDGE_ALERT_MS) {
+        const last = row.lastWedgeAlertAt?.getTime() ?? null;
+        if (last === null || now - last >= realertMs) {
           await alert({
             severity: 'warning',
             source: 'bounty-tier1-settlement',
@@ -653,19 +723,18 @@ export async function resumeTier1BountySettlements(
               ...(prepared.paymentId ? { paymentId: prepared.paymentId } : {}),
             },
           });
-          tier1WedgeAlerts.set(row.bountyId, now);
+          await stampAlert(row.bountyId, new Date(now));
         }
         continue;
       }
       const result = await settle({ ...row, settlementAttempt: prepared.attempt });
       if (result.ok) {
         settled += 1;
-        tier1WedgeAlerts.delete(row.bountyId);
         continue;
       }
       const now = readNow();
-      const last = tier1WedgeAlerts.get(row.bountyId) ?? 0;
-      if (now - last >= TIER1_WEDGE_ALERT_MS) {
+      const last = row.lastWedgeAlertAt?.getTime() ?? null;
+      if (last === null || now - last >= realertMs) {
         const ambiguous = result.payment.code === 'payment_reconcile';
         await alert({
           severity: 'warning',
@@ -679,7 +748,7 @@ export async function resumeTier1BountySettlements(
             code: result.payment.code,
           },
         });
-        tier1WedgeAlerts.set(row.bountyId, now);
+        await stampAlert(row.bountyId, new Date(now));
       }
     } catch (error) {
       console.error(`[bounty-tier1] settlement resume failed for ${row.bountyId}:`, error);

@@ -9,6 +9,7 @@
 
 import type { X402Network } from './x402-payai';
 import { loadX402Config } from './x402-config';
+import { isX402AutoReconcileEnabled } from './x402-auto-reconcile';
 import {
   aggregatePayerTransfers,
   deriveUsdcAta,
@@ -621,8 +622,8 @@ function assertBulkApplyConsent(apply: boolean, consent: 'operator' | 'auto'): v
     assertReconcileApplyConsent(true);
     return;
   }
-  if (process.env.X402_AUTO_RECONCILE !== 'true') {
-    throw new Error('Auto apply requested without X402_AUTO_RECONCILE=true');
+  if (!isX402AutoReconcileEnabled()) {
+    throw new Error('Auto apply disabled by X402_AUTO_RECONCILE=false');
   }
 }
 

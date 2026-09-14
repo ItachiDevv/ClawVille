@@ -29,6 +29,8 @@ export const bountyUsdcHolds = pgTable(
     amountBaseUnits: numeric('amount_base_units', { precision: 20, scale: 0 }).notNull(),
     /** Durable generation for bounded settlement attempts (1 is the original key). */
     settlementAttempt: integer('settlement_attempt').notNull().default(1),
+    lastWedgeAlertAt: timestamp('last_wedge_alert_at', { withTimezone: true }),
+    wedgeAlertCount: integer('wedge_alert_count').notNull().default(0),
     status: varchar('status', { length: 16 }).notNull().default('open'),
     releasedAt: timestamp('released_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
