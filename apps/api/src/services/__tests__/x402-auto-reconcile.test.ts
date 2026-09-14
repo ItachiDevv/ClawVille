@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
+  isX402AutoReconcileEnabled,
   resetX402AutoReconcileAlertDedupeForTests,
   resolveX402AutoReconcileConfig,
   runX402AutoReconcilePass,
@@ -63,13 +64,63 @@ afterEach(() => {
 });
 
 describe('x402 recurring auto-reconcile', () => {
-  it('is default-off and applies interval floor plus bounded row cap', () => {
+  it('does not touch the sweep or stores when explicitly disabled', async () => {
+    process.env.X402_AUTO_RECONCILE = 'false';
+    const unexpected = async (): Promise<never> => { throw new Error('disabled worker ran'); };
+    const pass = await runX402AutoReconcilePass({
+      runSweep: unexpected,
+      withAdvisoryLock: unexpected,
+      stampVerdict: unexpected,
+    });
+    expect(pass.enabled).toBe(false);
+    expect(pass.sweep).toBeNull();
+  });
+
+  it('annotates every swept verdict after auto apply and continues after a failed stamp', async () => {
+    delete process.env.X402_AUTO_RECONCILE;
+    const sweep = result([
+      { row: row('captured'), bucket: 'matched', detail: 'captured', action: 'applied_capture_fulfill' },
+      { row: row('failed-stamp'), bucket: 'indeterminate', detail: 'RPC incomplete' },
+      { row: row('still-reconcile'), bucket: 'manual', detail: 'no unique proof' },
+    ]);
+    const stamps: unknown[] = [];
+    const errors: string[] = [];
+    let swept = false;
+    const pass = await runX402AutoReconcilePass({
+      runSweep: async () => { swept = true; return sweep; },
+      withAdvisoryLock: async (run) => ({ acquired: true, sweep: await run() }),
+      now: () => new Date('2026-09-13T12:00:00.000Z'),
+      send: async () => {},
+      logError: (message) => { errors.push(message); },
+      stampVerdict: async (candidate, annotation) => {
+        expect(swept).toBe(true);
+        stamps.push({ id: candidate.id, ...annotation });
+        if (candidate.id === 'failed-stamp') throw new Error('storage unavailable');
+      },
+    });
+    expect(pass.sweep).toBe(sweep);
+    expect(stamps).toEqual([
+      { id: 'captured', bucket: 'matched', detail: 'captured', action: 'applied_capture_fulfill', at: '2026-09-13T12:00:00.000Z' },
+      { id: 'failed-stamp', bucket: 'indeterminate', detail: 'RPC incomplete', action: null, at: '2026-09-13T12:00:00.000Z' },
+      { id: 'still-reconcile', bucket: 'manual', detail: 'no unique proof', action: null, at: '2026-09-13T12:00:00.000Z' },
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('failed-stamp');
+  });
+
+  it('is default-on and applies interval floor plus bounded row cap', () => {
+    delete process.env.X402_AUTO_RECONCILE;
+    expect(isX402AutoReconcileEnabled()).toBe(true);
     expect(resolveX402AutoReconcileConfig()).toEqual({
-      enabled: false,
+      enabled: true,
       intervalMs: 15 * 60_000,
       maxRows: 50,
     });
+    process.env.X402_AUTO_RECONCILE = 'false';
+    expect(isX402AutoReconcileEnabled()).toBe(false);
+    expect(resolveX402AutoReconcileConfig().enabled).toBe(false);
     process.env.X402_AUTO_RECONCILE = 'true';
+    expect(isX402AutoReconcileEnabled()).toBe(true);
     process.env.X402_AUTO_RECONCILE_INTERVAL_MS = '1000';
     process.env.X402_AUTO_RECONCILE_MAX_ROWS = '75';
     expect(resolveX402AutoReconcileConfig()).toEqual({
@@ -101,6 +152,7 @@ describe('x402 recurring auto-reconcile', () => {
     ]);
     const messages: string[] = [];
     const pass = await runX402AutoReconcilePass({
+      stampVerdict: async () => {},
       runSweep: async (options) => {
         calls.push(options);
         return sweep;
@@ -124,6 +176,7 @@ describe('x402 recurring auto-reconcile', () => {
     const messages: string[] = [];
     let current = result([]);
     const deps = {
+      stampVerdict: async () => {},
       runSweep: async () => current,
       withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
         acquired: true,
@@ -154,6 +207,7 @@ describe('x402 recurring auto-reconcile', () => {
       detail: 'RPC window incomplete',
     }]);
     const deps = {
+      stampVerdict: async () => {},
       runSweep: async () => current,
       withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
         acquired: true,
@@ -178,6 +232,7 @@ describe('x402 recurring auto-reconcile', () => {
     process.env.X402_AUTO_RECONCILE = 'true';
     let swept = false;
     const pass = await runX402AutoReconcilePass({
+      stampVerdict: async () => {},
       runSweep: async () => {
         swept = true;
         return result([]);

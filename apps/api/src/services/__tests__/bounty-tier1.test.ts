@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -8,6 +10,11 @@ import {
   claimTier1BountyCancellation,
   claimTier1BountyExpiry,
   planTier1SettlementAttempt,
+  prepareTier1SettlementAttempt,
+  readTier1FrozenSettlements,
+  resolveTier1WedgeRealertMs,
+  type Tier1ResumeCandidate,
+  type Tier1SettlementPaymentState,
   resumeTier1BountySettlements,
   tier1SettlementIdempotencyKey,
   TIER1_SETTLEMENT_MAX_ATTEMPTS,
@@ -408,6 +415,9 @@ describe('Tier-1 bounded definitive settlement retry', () => {
         posterAvatarId: POSTER,
         hunterAvatarId: HUNTER,
         rewardUsdCents: 2_000,
+        settlementAttempt: 1,
+        lastWedgeAlertAt: null,
+        wedgeAlertCount: 0,
       }],
       prepareAttempt: async () => ({
         kind: 'drive',
@@ -448,12 +458,18 @@ describe('Tier-1 bounded definitive settlement retry', () => {
           posterAvatarId: POSTER,
           hunterAvatarId: HUNTER,
           rewardUsdCents: 2_000,
+          settlementAttempt: 1,
+          lastWedgeAlertAt: null,
+          wedgeAlertCount: 0,
         },
         {
           bountyId: '77777777-7777-4777-8777-777777777777',
           posterAvatarId: POSTER,
           hunterAvatarId: HUNTER,
           rewardUsdCents: 2_000,
+          settlementAttempt: 1,
+          lastWedgeAlertAt: null,
+          wedgeAlertCount: 0,
         },
       ],
       prepareAttempt: async (input) => input.bountyId.startsWith('6666')
@@ -464,6 +480,7 @@ describe('Tier-1 bounded definitive settlement retry', () => {
         throw new Error('ambiguous payment must never be driven');
       },
       alert: async (input) => { alerts.push({ message: input.message }); },
+      stampAlert: async () => {},
       now: () => 2 * 60 * 60 * 1_000,
     });
     expect(settleCalls).toBe(0);
@@ -556,5 +573,188 @@ describe('Tier-1 durable hold contracts', () => {
     expect(tier1Crank).not.toContain('bounty-composition-worker');
     expect(resume).toContain('resumeTier1BountySettlements');
     expect(service).not.toContain('refundComposedBounty');
+  });
+});
+
+
+describe('Tier-1 chain-proven no-money retry and read-only classification', () => {
+  const input = { bountyId: BOUNTY_ID, posterAvatarId: POSTER, hunterAvatarId: HUNTER, rewardUsdCents: 2_000 };
+  const payment: Tier1SettlementPaymentState = {
+    id: '44444444-4444-4444-8444-444444444444', status: 'failed',
+    idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID), capExempt: false,
+    txSignature: null, reconcileTxSignature: null, settlePayer: null, failureReason: 'reconcile_no_money',
+  };
+  function stateFor(value: Tier1SettlementPaymentState) {
+    return {
+      bountyStatus: 'open' as const, bountyRewardUsdCents: 2_000, holdStatus: 'open',
+      holdAmount: '20000000', settlementAttempt: 1, approvedHunterId: HUNTER,
+      paymentId: value.id, paymentStatus: value.status, paymentIdempotencyKey: value.idempotencyKey,
+      paymentCapExempt: value.capExempt, paymentTxSignature: value.txSignature,
+      paymentReconcileTxSignature: value.reconcileTxSignature, paymentSettlePayer: value.settlePayer,
+      paymentFailureReason: value.failureReason,
+    };
+  }
+  function prepareHarness(value: Tier1SettlementPaymentState, archiveRows = 1, advanceRows = 1) {
+    const writes: Array<{ values: Record<string, unknown>; predicate: SQL }> = [];
+    const calls: string[] = [];
+    const states = [stateFor(value)];
+    const query = {
+      from: () => query, innerJoin: () => query, leftJoin: () => query, where: () => query,
+      limit: async (limit: number) => { expect(limit).toBe(2); return states; },
+    };
+    const tx = {
+      execute: async () => { calls.push('lock'); return []; },
+      select: () => { calls.push('read'); return query; },
+      update: () => ({ set: (values: Record<string, unknown>) => ({ where: (predicate: SQL) => ({
+        returning: async () => {
+          writes.push({ values, predicate });
+          return Array.from({ length: writes.length === 1 ? archiveRows : advanceRows }, () => ({ id: payment.id }));
+        },
+      }) }) }),
+    };
+    return {
+      writes, calls,
+      deps: { transaction: (async (run: (tx: unknown) => Promise<unknown>) => run(tx)) as never },
+    };
+  }
+
+  it('rearms chain-proven no-money without changing cap exemptions and preserves archive guards', async () => {
+    expect(planTier1SettlementAttempt({ ...input, settlementAttempt: 1, payment })).toMatchObject({ kind: 'rearm', attempt: 2 });
+    const h = prepareHarness(payment);
+    expect(await prepareTier1SettlementAttempt(input, h.deps)).toEqual({
+      kind: 'drive', attempt: 2, idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID, 2),
+    });
+    expect(h.calls).toEqual(['lock', 'read']);
+    expect(h.writes).toHaveLength(2);
+    expect(h.writes[0]!.values).not.toHaveProperty('capExempt');
+    const guard = new PgDialect().sqlToQuery(h.writes[0]!.predicate);
+    expect(guard.sql).toContain('("agent_payments"."cap_exempt" = $4 or "agent_payments"."failure_reason" = $5)');
+    expect(guard.params).toEqual([payment.id, BOUNTY_ID, 'failed', true, 'reconcile_no_money', payment.idempotencyKey]);
+    for (const column of ['tx_signature', 'reconcile_tx_signature', 'settle_payer']) {
+      expect(guard.sql).toContain(`"agent_payments"."${column}" is null`);
+    }
+    expect(h.writes[1]!.values.settlementAttempt).toBe(2);
+  });
+
+  for (const column of ['txSignature', 'reconcileTxSignature', 'settlePayer'] as const) {
+    it(`freezes no-money proof with ${column} at plan and prepare levels`, async () => {
+      const observed = { ...payment, [column]: 'observed' };
+      expect(planTier1SettlementAttempt({ ...input, settlementAttempt: 1, payment: observed }))
+        .toMatchObject({ kind: 'frozen', reason: 'failure_not_proven_safe' });
+      const h = prepareHarness(observed);
+      expect(await prepareTier1SettlementAttempt(input, h.deps))
+        .toMatchObject({ kind: 'frozen', reason: 'failure_not_proven_safe' });
+      expect(h.writes).toHaveLength(0);
+    });
+  }
+
+  it('freezes plain failed rows without either proof at plan and prepare levels', async () => {
+    const unproven = { ...payment, failureReason: 'settle_failed' };
+    expect(planTier1SettlementAttempt({ ...input, settlementAttempt: 1, payment: unproven }))
+      .toMatchObject({ kind: 'frozen', reason: 'failure_not_proven_safe' });
+    const h = prepareHarness(unproven);
+    expect(await prepareTier1SettlementAttempt(input, h.deps))
+      .toMatchObject({ kind: 'frozen', reason: 'failure_not_proven_safe' });
+    expect(h.writes).toHaveLength(0);
+  });
+
+  it('does not advance after archive CAS loss and throws after generation CAS loss', async () => {
+    const archiveLost = prepareHarness(payment, 0);
+    expect(await prepareTier1SettlementAttempt(input, archiveLost.deps))
+      .toMatchObject({ kind: 'frozen', reason: 'invariant_mismatch' });
+    expect(archiveLost.writes).toHaveLength(1);
+    const generationLost = prepareHarness(payment, 1, 0);
+    await expect(prepareTier1SettlementAttempt(input, generationLost.deps))
+      .rejects.toThrow('Tier-1 settlement generation CAS lost');
+  });
+
+  it('ops classification reports frozen and exhausted holds and omits drivable rearm', async () => {
+    const candidate: Tier1ResumeCandidate = {
+      ...input, settlementAttempt: 1, lastWedgeAlertAt: new Date(0), wedgeAlertCount: 2,
+    };
+    const rows = await readTier1FrozenSettlements({
+      listCandidates: async () => [candidate, { ...candidate, bountyId: 'safe' }, { ...candidate, bountyId: 'exhausted', settlementAttempt: 5 }],
+      readStates: async (row) => [{ ...stateFor({ ...payment,
+        status: row.bountyId === BOUNTY_ID ? 'reconcile' : 'failed',
+        idempotencyKey: tier1SettlementIdempotencyKey(row.bountyId, row.bountyId === 'exhausted' ? 5 : 1),
+      }), settlementAttempt: row.bountyId === 'exhausted' ? 5 : 1 }],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({ bountyId: BOUNTY_ID, plan: { kind: 'frozen', reason: 'ambiguous' },
+      paymentId: payment.id, settlementAttempt: 1, lastWedgeAlertAt: new Date(0), wedgeAlertCount: 2 });
+    expect(rows[1]?.plan.kind).toBe('exhausted');
+  });
+});
+
+describe('Tier-1 durable wedge alert delivery', () => {
+  const hour = 60 * 60 * 1_000;
+  const candidate: Tier1ResumeCandidate = {
+    bountyId: BOUNTY_ID, posterAvatarId: POSTER, hunterAvatarId: HUNTER, rewardUsdCents: 2_000,
+    settlementAttempt: 1, lastWedgeAlertAt: null, wedgeAlertCount: 0,
+  };
+
+  it('defaults to 24 hours and floors overrides at one hour', () => {
+    expect(resolveTier1WedgeRealertMs('')).toBe(24 * hour);
+    expect(resolveTier1WedgeRealertMs('0')).toBe(hour);
+    expect(resolveTier1WedgeRealertMs(String(2 * hour))).toBe(2 * hour);
+    expect(resolveTier1WedgeRealertMs('-1')).toBe(24 * hour);
+    expect(resolveTier1WedgeRealertMs('invalid')).toBe(24 * hour);
+  });
+
+  for (const branch of ['frozen', 'exhausted', 'settle-failed'] as const) {
+    it(`${branch}: first delivery stamps; fresh pass uses durable stamp; elapsed window re-alerts`, async () => {
+      let durable = { ...candidate };
+      let clock = 0;
+      let alerts = 0;
+      let stamps = 0;
+      const run = () => resumeTier1BountySettlements(1, {
+        listCandidates: async () => [{ ...durable }],
+        prepareAttempt: async () => branch === 'frozen'
+          ? { kind: 'frozen', reason: 'ambiguous' }
+          : branch === 'exhausted' ? { kind: 'exhausted', attempt: 5, paymentId: 'p' }
+          : { kind: 'drive', attempt: 1, idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID) },
+        settle: async () => ({ ok: false, payment: { ok: false, code: 'payment_reconcile', paymentId: 'p', status: 'reconcile' } }),
+        alert: async () => { alerts += 1; },
+        stampAlert: async (id, at) => {
+          expect(id).toBe(BOUNTY_ID);
+          expect(alerts).toBe(stamps + 1);
+          stamps += 1;
+          durable = { ...durable, lastWedgeAlertAt: at, wedgeAlertCount: durable.wedgeAlertCount + 1 };
+        },
+        now: () => clock,
+      });
+      await run();
+      expect(alerts).toBe(1);
+      expect(durable.lastWedgeAlertAt).toEqual(new Date(0));
+      clock = hour;
+      await run();
+      expect(alerts).toBe(1);
+      clock = resolveTier1WedgeRealertMs();
+      await run();
+      expect(alerts).toBe(2);
+      expect(durable.wedgeAlertCount).toBe(2);
+    });
+  }
+
+  it('does not stamp before delivery resolves or when delivery throws', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const didEnter = new Promise<void>((resolve) => { entered = resolve; });
+    const delivered = new Promise<void>((resolve) => { release = resolve; });
+    let stamps = 0;
+    const deps = {
+      listCandidates: async () => [{ ...candidate }],
+      prepareAttempt: async () => ({ kind: 'frozen', reason: 'ambiguous' } as const),
+      stampAlert: async () => { stamps += 1; },
+      now: () => 0,
+    };
+    const run = resumeTier1BountySettlements(1, { ...deps, alert: async () => { entered(); await delivered; } });
+    await didEnter;
+    expect(stamps).toBe(0);
+    release();
+    await run;
+    expect(stamps).toBe(1);
+    await resumeTier1BountySettlements(1, { ...deps, alert: async () => { throw new Error('test delivery rejected'); } });
+    expect(stamps).toBe(1);
   });
 });

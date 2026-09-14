@@ -166,6 +166,24 @@ function harness(
 }
 
 describe('x402 bulk outage reconciliation', () => {
+  it('allows default-on auto consent while preserving operator double consent', async () => {
+    const autoWas = process.env.X402_AUTO_RECONCILE;
+    try {
+      delete process.env.X402_AUTO_RECONCILE;
+      delete process.env.RECONCILE_APPLY;
+      const h = harness([], []);
+      const result = await runBulkReconcileSweep({ apply: true, consent: 'auto', deps: h.deps });
+      expect(result.apply).toBe(true);
+      expect(result.summary.selected).toBe(0);
+      await expect(runBulkReconcileSweep({ apply: true, consent: 'operator', deps: h.deps })).rejects.toThrow();
+      process.env.X402_AUTO_RECONCILE = 'false';
+      await expect(runBulkReconcileSweep({ apply: true, consent: 'auto', deps: h.deps })).rejects.toThrow('X402_AUTO_RECONCILE=false');
+    } finally {
+      if (autoWas === undefined) delete process.env.X402_AUTO_RECONCILE;
+      else process.env.X402_AUTO_RECONCILE = autoWas;
+    }
+  });
+
   beforeEach(() => {
     process.env.RECONCILE_APPLY = 'true';
     process.env.RECONCILE_NO_MONEY_GRACE_MS = '3600000';

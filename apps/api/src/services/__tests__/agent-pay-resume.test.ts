@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { beforeEach, afterEach, describe, expect, it } from 'bun:test';
 import type { AgentPayment } from '@clawville/database';
 import type { AlertErrorParams } from '../alert-error';
 import type { AgentPayResult } from '../agent-pay';
@@ -220,6 +220,7 @@ afterEach(() => {
 });
 
 describe('agent-pay resume worker', () => {
+  beforeEach(() => { process.env.X402_AUTO_RECONCILE = 'false'; });
   it('fulfills a landed captured payment exactly once across two ticks', async () => {
     const row = payment({ txSignature: 'landed-success' });
     const h = harness([row]);

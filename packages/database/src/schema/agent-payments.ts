@@ -108,6 +108,9 @@ export const agentPayments = pgTable(
     txSignatureUnique: uniqueIndex('agent_payments_txsig_unique')
       .on(t.txSignature)
       .where(sql`tx_signature IS NOT NULL`),
+    reconcileTxSignatureIdx: index('agent_payments_reconcile_txsig_idx')
+      .on(t.reconcileTxSignature)
+      .where(sql`reconcile_tx_signature IS NOT NULL`),
     earnedLedgerUnique: uniqueIndex('agent_payments_earned_ledger_unique')
       .on(t.earnedLedgerId)
       .where(sql`earned_ledger_id IS NOT NULL`),

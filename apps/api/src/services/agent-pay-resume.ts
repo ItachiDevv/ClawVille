@@ -18,6 +18,7 @@ import {
   type AgentPayment,
 } from '@clawville/database';
 import { alertError, type AlertErrorParams } from './alert-error';
+import { isX402AutoReconcileEnabled } from './x402-auto-reconcile';
 import {
   fulfillReconciledAgentPayment,
   markAgentPaymentReconcile,
@@ -183,7 +184,7 @@ async function warnReconcile(
   row: AgentPayment,
   reason: string,
 ): Promise<void> {
-  if (process.env.X402_AUTO_RECONCILE === 'true') {
+  if (isX402AutoReconcileEnabled()) {
     const createdMs = new Date(row.createdAt).getTime();
     // The enabled sweep is the response to ordinary staleness. Do not page on
     // transition; only a row already surviving beyond 24h merits the legacy

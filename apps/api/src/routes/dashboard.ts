@@ -17,7 +17,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { gt, sql, sql as drizzleSql } from 'drizzle-orm';
+import { eq, gt, inArray, sql, sql as drizzleSql } from 'drizzle-orm';
 import {
   db,
   tutorialQuestClaims,
@@ -28,6 +28,8 @@ import {
   avatars,
   dashboardPhases,
   agentBots,
+  bounties,
+  bountyUsdcHolds,
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
@@ -45,6 +47,8 @@ import {
   resolveApiBase,
 } from '../services/skill-protocol';
 import type { AppContext } from '../types';
+import { classifyReconcile, readReconcileRows } from '../services/x402-reconcile';
+import { readTier1FrozenSettlements } from '../services/bounty-tier1';
 
 export const dashboardRoutes = new Hono<AppContext>();
 
@@ -138,6 +142,77 @@ const MEASUREMENT_START = process.env.METRICS_MEASUREMENT_START ?? '2026-04-21';
 dashboardRoutes.use('*', sessionMiddleware);
 
 dashboardRoutes.get('/__check', adminOnly, (c) => c.json({ ok: true }));
+
+async function readReconcileBountyHolds(holdIds: string[]) {
+  if (holdIds.length === 0) return [];
+  return db.select({
+    bountyId: bountyUsdcHolds.bountyId,
+    bountyStatus: bounties.status,
+    holdStatus: bountyUsdcHolds.status,
+    settlementAttempt: bountyUsdcHolds.settlementAttempt,
+    lastWedgeAlertAt: bountyUsdcHolds.lastWedgeAlertAt,
+    wedgeAlertCount: bountyUsdcHolds.wedgeAlertCount,
+  }).from(bountyUsdcHolds)
+    .innerJoin(bounties, eq(bounties.id, bountyUsdcHolds.bountyId))
+    .where(inArray(bountyUsdcHolds.bountyId, holdIds));
+}
+
+export interface ReconcileDashboardDeps {
+  readRows?: typeof readReconcileRows;
+  readFrozen?: typeof readTier1FrozenSettlements;
+  readHolds?: typeof readReconcileBountyHolds;
+}
+
+/** Read-only projection: no chain probes, settlement drivers, or metadata leaks. */
+export async function readReconcileDashboard(deps: ReconcileDashboardDeps = {}) {
+  const [rows, tier1Frozen] = await Promise.all([
+    (deps.readRows ?? readReconcileRows)(),
+    (deps.readFrozen ?? readTier1FrozenSettlements)(),
+  ]);
+  const holdIds = [...new Set(rows.flatMap((row) =>
+    row.table === 'agent_payments' && row.bountyHoldId ? [row.bountyHoldId] : [],
+  ))];
+  const holds = await (deps.readHolds ?? readReconcileBountyHolds)(holdIds);
+  const holdsById = new Map(holds.map((hold) => [hold.bountyId, hold]));
+  return {
+    reconcileRows: rows.map((row) => {
+      const annotation = row.metadata.autoReconcile;
+      const stamp = annotation && typeof annotation === 'object' && !Array.isArray(annotation)
+        ? annotation as Record<string, unknown> : null;
+      return {
+        table: row.table,
+        id: row.id,
+        usdCents: row.usdCents,
+        createdAt: row.createdAt,
+        anchor: row.settlingStartedAt ?? row.reconcileAnchorAt ?? null,
+        reconcileReason: typeof row.metadata.reconcileReason === 'string' ? row.metadata.reconcileReason : null,
+        recommendation: classifyReconcile(row).kind,
+        autoReconcile: stamp && typeof stamp.bucket === 'string' && typeof stamp.detail === 'string'
+          && typeof stamp.at === 'string' ? {
+            bucket: stamp.bucket,
+            detail: stamp.detail,
+            action: typeof stamp.action === 'string' ? stamp.action : null,
+            at: stamp.at,
+          } : null,
+        ...(row.table === 'agent_payments' && row.bountyHoldId
+          ? { bounty: holdsById.get(row.bountyHoldId) ?? null } : {}),
+      };
+    }),
+    tier1Frozen,
+  };
+}
+
+/** Keep the real middleware chain available to isolated read-only route tests. */
+export function registerReconcileDashboardRoute(
+  router: Hono<AppContext>,
+  deps: ReconcileDashboardDeps = {},
+) {
+  router.get('/reconcile', adminOnly, noStorePrivate, async (c) =>
+    c.json(await readReconcileDashboard(deps)),
+  );
+}
+
+registerReconcileDashboardRoute(dashboardRoutes);
 
 const autonomyArmSchema = z.object({
   minutes: z.number().finite().optional(),

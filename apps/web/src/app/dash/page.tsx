@@ -28,6 +28,7 @@ import TokenEconomyTab from './tabs/token-economy';
 import QuestsTab from './tabs/quests';
 import CosmeticsTab from './tabs/cosmetics';
 import PhasesTab from './tabs/phases';
+import ReconcileTab from './tabs/reconcile';
 import { AutonomyStatus } from './AutonomyStatus';
 import type { AutonomyDashboardState } from './AutonomyStatus';
 
@@ -116,6 +117,7 @@ const TABS = [
   { id: 'quests',    label: 'Quests',         hint: 'tutorial + admin' },
   { id: 'cosmetics', label: 'Cosmetics',      hint: 'catalog · thumbnails' },
   { id: 'phases',    label: 'Phases',         hint: 'Q3 roadmap status' },
+  { id: 'reconcile', label: 'Reconcile',      hint: 'frozen settlements' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -207,6 +209,7 @@ export default async function DashPage({
         {tab === 'quests'    ? <QuestsTab />       : null}
         {tab === 'cosmetics' ? <CosmeticsTab />    : null}
         {tab === 'phases'    ? <PhasesTab />       : null}
+        {tab === 'reconcile' ? <ReconcileTab />    : null}
       </main>
     </>
   );

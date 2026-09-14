@@ -1,4 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { agentPayments, db } from '@clawville/database';
+import type { SQL } from 'drizzle-orm';
 import type {
   ReconcileApplyStore,
   ReconcileRow,
@@ -7,6 +10,8 @@ import type {
 } from '../x402-reconcile';
 import {
   buildAgentReconcileAccountingPatch,
+  defaultIsSignatureBound,
+  stampAutoReconcileVerdict,
   normalizeAgentReconcileReason,
   resolveReconcileNoMoneyGraceMs,
   runReconcileScan,
@@ -20,6 +25,52 @@ const NOW = new Date('2026-07-13T12:00:00.000Z');
 const PAYER = 'payer-wallet';
 const MERCHANT = 'merchant-wallet';
 const SIGNATURE = 'verified-signature';
+
+describe('reconcile durable observation stores', () => {
+  it('excludes a signature observed only in another agent payment reconcile column', async () => {
+    const queries: string[] = [];
+    const database = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: (condition: SQL) => ({
+            limit: async () => {
+              const query = new PgDialect().sqlToQuery(condition);
+              queries.push(query.sql);
+              if (table !== agentPayments) return [];
+              expect(query.sql).toContain('"tx_signature"');
+              expect(query.sql).toContain(' or ');
+              expect(query.params).toEqual([SIGNATURE, SIGNATURE]);
+              return query.sql.includes('"reconcile_tx_signature"')
+                ? [{ id: 'other-payment' }] : [];
+            },
+          }),
+        }),
+      }),
+    } as unknown as Pick<typeof db, 'select'>;
+    expect(await defaultIsSignatureBound(SIGNATURE, database)).toBe(true);
+    expect(queries).toHaveLength(4);
+  });
+
+  it('merges verdict metadata under the reconcile status guard without changing anchors', async () => {
+    for (const table of ['agent_payments', 'ct_topups', 'x402_checkouts'] as const) {
+      const annotation = { bucket: 'manual', detail: 'ambiguous', action: null, at: NOW.toISOString() };
+      const database = {
+        execute: async (statement: SQL) => {
+          const query = new PgDialect().sqlToQuery(statement);
+          expect(query.sql).toContain(`UPDATE "${table}"`);
+          expect(query.sql).toContain('COALESCE(');
+          expect(query.sql).toContain('||');
+          expect(query.sql).toContain(`"${table}"."status" = 'reconcile'`);
+          expect(query.sql).toContain(`"${table}"."id" =`);
+          expect(query.sql).not.toContain('updated_at');
+          expect(query.sql).not.toContain('settling_started_at');
+          expect(query.params).toEqual([JSON.stringify({ autoReconcile: annotation }), 'row-1']);
+        },
+      } as unknown as Pick<typeof db, 'execute'>;
+      await stampAutoReconcileVerdict({ table, id: 'row-1' }, annotation, database);
+    }
+  });
+});
 
 function row(
   table: ReconcileRow['table'] = 'x402_checkouts',

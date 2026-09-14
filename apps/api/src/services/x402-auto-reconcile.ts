@@ -1,5 +1,5 @@
 /**
- * Default-off recurring x402 reconciliation.
+ * Default-on recurring x402 reconciliation.
  *
  * The worker runs the shared bulk matcher and applies only verified capture or
  * complete-window, grace-elapsed no-money verdicts. Manual/indeterminate rows
@@ -12,6 +12,7 @@ import {
   runBulkReconcileSweep,
   type BulkReconcileResult,
 } from './x402-bulk-reconcile';
+import { stampAutoReconcileVerdict } from './x402-reconcile';
 
 const DEFAULT_INTERVAL_MS = 15 * 60_000;
 const MIN_INTERVAL_MS = 5 * 60_000;
@@ -45,6 +46,7 @@ export interface X402AutoReconcileDeps {
   send?: typeof sendTelegramText;
   now?: () => Date;
   logError?: (message: string, error: unknown) => void;
+  stampVerdict?: typeof stampAutoReconcileVerdict;
 }
 
 function resolveInteger(
@@ -59,9 +61,13 @@ function resolveInteger(
     : fallback;
 }
 
+export function isX402AutoReconcileEnabled(): boolean {
+  return process.env.X402_AUTO_RECONCILE !== 'false';
+}
+
 export function resolveX402AutoReconcileConfig(): X402AutoReconcileConfig {
   return {
-    enabled: process.env.X402_AUTO_RECONCILE === 'true',
+    enabled: isX402AutoReconcileEnabled(),
     intervalMs: resolveInteger(
       process.env.X402_AUTO_RECONCILE_INTERVAL_MS,
       DEFAULT_INTERVAL_MS,
@@ -185,6 +191,20 @@ export async function runX402AutoReconcilePass(
         sweep: null,
         alerted: false,
       };
+    }
+    const stampVerdict = injected.stampVerdict ?? stampAutoReconcileVerdict;
+    const sweptAt = now();
+    for (const verdict of locked.sweep.verdicts) {
+      try {
+        await stampVerdict(verdict.row, {
+          bucket: verdict.bucket,
+          detail: verdict.detail,
+          action: verdict.action ?? null,
+          at: sweptAt.toISOString(),
+        });
+      } catch (error) {
+        logError(`[x402-auto-reconcile] verdict stamp failed for ${verdict.row.table}:${verdict.row.id} (non-fatal):`, error);
+      }
     }
     let alerted = false;
     try {

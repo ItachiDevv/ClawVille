@@ -38,6 +38,7 @@ import {
   and,
   eq,
   isNull,
+  or,
   sql,
 } from '@clawville/database';
 import { alertError } from './alert-error';
@@ -84,6 +85,7 @@ export interface ReconcileRow {
   settlingStartedAt: string | null;
   /** Fallback upper anchor when the state machine clears settling_started_at. */
   reconcileAnchorAt?: string;
+  bountyHoldId?: string | null;
   /** Agent payments settle directly to the recipient; other rows use merchant config. */
   destinationOwner?: string;
   /** Existing durable agent-payment accounting columns, when populated. */
@@ -330,6 +332,7 @@ export async function readReconcileRows(): Promise<ReconcileRow[]> {
       reconcileTxSignature: agentPayments.reconcileTxSignature,
       senderWallet: agentPayments.senderWallet,
       recipientWallet: agentPayments.recipientWallet,
+      bountyHoldId: agentPayments.bountyHoldId,
       network: agentPayments.network,
       updatedAt: agentPayments.updatedAt,
       metadata: agentPayments.metadata,
@@ -387,6 +390,7 @@ export async function readReconcileRows(): Promise<ReconcileRow[]> {
         },
       }),
       destinationOwner: r.recipientWallet,
+      bountyHoldId: r.bountyHoldId,
       reconcileAnchorAt:
         r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
       facilitator: r.facilitator,
@@ -429,31 +433,61 @@ function isUniqueViolation(err: unknown): boolean {
   return candidate?.code === '23505' || candidate?.cause?.code === '23505';
 }
 
-async function defaultIsSignatureBound(signature: string): Promise<boolean> {
-  const receipt = await db
+export async function defaultIsSignatureBound(
+  signature: string,
+  database: Pick<typeof db, 'select'> = db,
+): Promise<boolean> {
+  const receipt = await database
     .select({ signature: x402SettlementReceipts.txSignature })
     .from(x402SettlementReceipts)
     .where(eq(x402SettlementReceipts.txSignature, signature))
     .limit(1);
   if (receipt.length > 0) return true;
-  const checkout = await db
+  const checkout = await database
     .select({ id: x402Checkouts.id })
     .from(x402Checkouts)
     .where(eq(x402Checkouts.txSignature, signature))
     .limit(1);
   if (checkout.length > 0) return true;
-  const topup = await db
+  const topup = await database
     .select({ id: ctTopups.id })
     .from(ctTopups)
     .where(eq(ctTopups.txSignature, signature))
     .limit(1);
   if (topup.length > 0) return true;
-  const payment = await db
+  const payment = await database
     .select({ id: agentPayments.id })
     .from(agentPayments)
-    .where(eq(agentPayments.txSignature, signature))
+    .where(or(
+      eq(agentPayments.txSignature, signature),
+      eq(agentPayments.reconcileTxSignature, signature),
+    ))
     .limit(1);
   return payment.length > 0;
+}
+
+export interface AutoReconcileAnnotation {
+  bucket: string;
+  detail: string;
+  action: ReconcileRowVerdict['action'] | null;
+  at: string;
+}
+
+/** Observational only: preserve settlement timestamps and concurrent metadata. */
+export async function stampAutoReconcileVerdict(
+  row: Pick<ReconcileRow, 'table' | 'id'>,
+  annotation: AutoReconcileAnnotation,
+  database: Pick<typeof db, 'execute'> = db,
+): Promise<void> {
+  const table = row.table === 'x402_checkouts'
+    ? x402Checkouts
+    : row.table === 'ct_topups' ? ctTopups : agentPayments;
+  await database.execute(sql`
+    UPDATE ${table}
+    SET metadata = COALESCE(${table.metadata}, '{}'::jsonb)
+      || ${JSON.stringify({ autoReconcile: annotation })}::jsonb
+    WHERE ${table.id} = ${row.id} AND ${table.status} = 'reconcile'
+  `);
 }
 
 export const defaultReconcileApplyStore: ReconcileApplyStore = {
