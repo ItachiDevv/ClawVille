@@ -66,18 +66,16 @@
 
 ## BOUNTIES / ECONOMY
 
-### Self-healing frozen settlements + Reconcile ops view (staging)
-- **What:** frozen ("reconcile") payments now verify themselves against the chain
-  every 15 minutes and auto-resolve only proven outcomes; wedge alerts fire once
-  and then back off 24h (no more hourly Telegram spam after a restart); a new
-  read-only Reconcile tab shows every frozen row with its chain verdict.
-- **Where:** staging → `/dash?tab=reconcile` (admin login). Expect an empty table
+### Reconcile ops view (LIVE on prod)
+- **What:** a read-only Reconcile tab shows every frozen payment with its chain
+  verdict and Tier-1 bounty context. The self-healing verifier behind it is now
+  LIVE ON PROD (✅ founder GO 2026-09-14 — "take care of both open items go for
+  it" — absorbed; the promotion question is closed).
+- **Where:** prod → `/dash?tab=reconcile` (admin login). Expect an empty table
   while nothing is frozen — the empty state IS the healthy state.
-- **Feedback wanted:** (1) is the Reconcile table readable/useful as an ops view;
-  (2) confirm you are comfortable with auto-reconcile default-ON reaching prod at
-  the next promotion (it auto-applies only chain-proven capture or proven
-  no-money; everything ambiguous stays frozen and pages once).
-- Session selfheal/Fable, 2026-09-13.
+- **Feedback wanted:** is the Reconcile table readable/useful as an ops view, or
+  does it need different columns/grouping.
+- Session selfheal/Fable, 2026-09-13 (promoted 2026-09-14).
 
 ### OOBE/SAP fully removed — bounty board on the single low-tier rail (staging)
 - **What:** the on-chain escrow partner is gone end to end. USDC bounties now run

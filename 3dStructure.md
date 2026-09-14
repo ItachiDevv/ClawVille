@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-09-13 (Mobile perf wave 2 — phone texture cap and deferred
+**Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.
+
+**Prior Last Audited: 2026-09-13 (Mobile perf wave 2 — phone texture cap and deferred
 VRM service-worker roster).** Uncompressed load-time textures now follow the
 device-profile cap documented in §9. The service worker now defers all 13
 ambient/wanderer VRMs through its unchanged page-signaled cache path.
@@ -1464,7 +1466,7 @@ The stage owns the `/game` async renderer, root scene appearance, camera, and fr
 
 P1a's brief carried a stale low-end stage DPR. Live code wins: both the stage
 and legacy `World3DCanvas` use `[0.55,0.7]`; standard DPR remains `[0.75,1]`.
-`/arena` and `/perf` therefore keep their prior renderer density.
+`/perf` retains its prior renderer density. The legacy `/arena` route is retired.
 
 **P1b Cove cutover (2026-07-25, verification pending):** `/cove` page-only
 joins `app/(world)` while `/cove/history`, `/cove/verify`, and
@@ -1608,7 +1610,7 @@ Set during clone for every static object so `updateMatrixWorld` skips them:
 - All 12 buildings + their cloned children (`arena-buildings.tsx` — Phase 6.0.1: was 10)
 - 80 → 30 → 60 decoration groups + their merged children (`arena-terrain.tsx` — 2026-05-13 retune: 60 props in 1500–3800wu visible annulus, was 30 props in 2700–4500wu hidden behind ring buildings)
 - 3 underwater atmosphere meshes (when enabled) + 7 light ray cones
-- Bounty board (4 meshes), bazaar fish stall, marketplace stall, auction dome, auction podium
+- Quest/bounty pavilion, bazaar fish stall, marketplace stall
 
 ### 5f. Pipeline cache budget
 
