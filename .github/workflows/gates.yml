@@ -85,3 +85,19 @@ jobs:
         # DATABASE_URL intentionally UNSET → describeIfDb tests skip; the
         # in-memory conservation/idempotency/parity/no-leak suite IS the gate.
         run: cd apps/api && bun test src/services/poker/ src/services/__tests__/
+
+      - name: Run the protocol-pin route tests
+        # 2026-09-15 — closes the stale-pin blind spot: agent-paid-surface.test.ts
+        # sat pinned at PROTOCOL_VERSION 56 through the v57 AND v58 bumps because
+        # routes/__tests__ never ran in CI and pin sweeps grepped for the old
+        # number. These three files assert the live protocol version and the
+        # served-manual/ack contracts; any future bump that misses them goes RED
+        # here instead of rotting silently.
+        #
+        # SEPARATE bun process (not appended to the step above) on purpose: the
+        # in-memory sim singletons carry state across test files in a shared
+        # process (the documented pre-existing isolation bug), and these route
+        # files boot different fixtures. The full routes/__tests__ dir stays out
+        # of CI for now — it is NOT green without env/DB (FINGERPRINT_SECRET,
+        # DATABASE_URL) and remains Phase 0b.
+        run: cd apps/api && bun test src/routes/__tests__/agent-paid-surface.test.ts src/routes/__tests__/agent-session-ack.test.ts src/routes/__tests__/dashboard-skill-acks.test.ts

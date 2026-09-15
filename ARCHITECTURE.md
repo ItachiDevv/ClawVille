@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-09-15 (gates suite: protocol-pin route lane).** Drift note: `gates.yml` gains a second, separate-process step running the three protocol-pin route test files (`agent-paid-surface`, `agent-session-ack`, `dashboard-skill-acks`) so a `PROTOCOL_VERSION` bump that misses a pin goes RED in CI (the v56 pin sat stale through two bumps because `routes/__tests__` never ran there). The full routes dir stays out of CI (needs env/DB; Phase 0b unchanged).
+
 **Last Audited: 2026-09-14 (doc-accuracy items 2, 3, and 5).** Drift note: the export keeps character/skill-pack data and legacy response keys, replaces retired npm install instructions with magic-link connect guidance, and accepts the obsolete local URL input for compatibility. The protocol manual corrects Tier-1 retry keys and advances to version 59. The Hatcher inventory lists the 14 current executor verbs.
 
 **Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.
