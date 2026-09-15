@@ -1,3 +1,4 @@
+> STATUS 2026-09-14: historical — OOBE/SAP removed from prod 2026-08-26; Tier-1 custodial USDC is the only bounty rail.
 # FROZEN SPEC — Thread 3: bounty micro-denomination + kill "CT" from the bounty surface (2026-07-12)
 
 > Author: Fable (orchestrator). Implementer: GPT-5.6-sol via codex-first.

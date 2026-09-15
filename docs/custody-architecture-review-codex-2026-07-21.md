@@ -1,5 +1,7 @@
 # Codex Design Review: Two-Tier Custody Architecture
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the SAP identity, escrow, reserve, and signature recommendations in sections 2-8 and the decision gates with that in mind.
+
 **Review date:** 2026-07-21
 
 **Material reviewed:** `docs/custody-architecture-spec-2026-07-21.md`, `docs/wallet-infrastructure-review-2026-07-21.md`, and the referenced custody, x402, escrow, identity, withdrawal, redemption, wager, Hatcher, and database code.

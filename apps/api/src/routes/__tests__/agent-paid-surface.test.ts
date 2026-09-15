@@ -46,7 +46,12 @@ describe('agent paid surfaces', () => {
     // 51 = land hold-wallet ownership proof (verification REQUIRED before the
     // hold door; REST signature door + custodial attest documented).
     // 52 = Tier-1 instant USDC bounties (hold + agent-pay, no chain).
-    expect(PROTOCOL_VERSION).toBe(56);
+    // 59 = Tier-1 retry-key wording (attempt-suffixed keys, definitive
+    // no-money proof, five-attempt cap). NOTE: this pin sat stale at 56
+    // through v57/v58 because this file is outside the gates lane — the
+    // pin-sweep rule is "grep for PROTOCOL_VERSION assertions", never for
+    // the old number.
+    expect(PROTOCOL_VERSION).toBe(59);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');

@@ -165,7 +165,7 @@ export default async function DashPage({
           <ol className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
             <li className="rounded bg-black/20 p-2">
               <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">1 · Milady AI app store</div>
-              <div className="mt-1 text-[11px] text-slate-300">npm sideload (live) + curated app grid (PR #1839 merged)</div>
+              <div className="mt-1 text-[11px] text-slate-300">universal one-step magic link + curated app grid (PR #1839 merged)</div>
             </li>
             <li className="rounded bg-black/20 p-2">
               <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">2 · Open agent onboarding</div>

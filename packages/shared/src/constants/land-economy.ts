@@ -40,7 +40,7 @@ export {
  *
  *   - starter: 1st claim is FREE (the seed flags the abundant starter rung with
  *     priceCt=0 for the free-grant path); the rest seed around ~1500 units.
- *   - founder: USDC/auction sentinel — `min/max` are `null`. The seed leaves
+ *   - founder: hold-only sentinel; `min/max` are `null`. The seed leaves
  *     `land_parcels.price_ct` NULL and the v1 buy route returns 501
  *     (`founder_tier_not_in_v1`). Any consumer MUST handle `null`.
  *
@@ -61,7 +61,7 @@ export const LAND_TIER_LADDER: Record<LandTier, { minCt: number | null; maxCt: n
   c: { minCt: 2000, maxCt: 4000 },
   b: { minCt: 10000, maxCt: 24000 },
   a: { minCt: 40000, maxCt: 80000 },
-  // USDC / auction-only sentinel — out of the v1 CT settle path. NULL = no CT price.
+  // Hold-only sentinel; out of the v1 CT settle path. NULL = no CT price.
   founder: { minCt: null, maxCt: null },
 };
 
@@ -75,7 +75,7 @@ export const LAND_TIER_LADDER: Record<LandTier, { minCt: number | null; maxCt: n
  *
  * Buy is ~9-11 months of rent at these numbers, so buying is a premium over
  * renting, not a shortcut. starter (free+owned, never rents) + founder
- * (USDC/auction) are NULL = not rentable.
+ * (hold-only) are NULL = not rentable.
  *
  * A3 ¢-peg re-band (2026-07-07): these values are UNCHANGED — they are already
  * the founder's target band (c 50–100, b 250–550, a 1000–2400 units/week), so
@@ -91,10 +91,10 @@ export const LAND_RENT_LADDER: Record<LandTier, { minCt: number | null; maxCt: n
   founder: { minCt: null, maxCt: null },
 };
 
-/** Convenience flag: which tiers are buyable with CT in v1 (founder is USDC/auction-only). */
+/** Convenience flag: which tiers are buyable with CT in v1 (founder is hold-only). */
 export const CT_BUYABLE_TIERS: readonly LandTier[] = ['starter', 'c', 'b', 'a'] as const;
 
-/** P2 vCLAW rent door; founder is hold/auction-only and a/b are retired. */
+/** P2 vCLAW rent door; founder is hold-only and a/b are retired. */
 export const CT_RENTABLE_TIERS: readonly LandTier[] = ['starter', 'c'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────

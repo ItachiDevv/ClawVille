@@ -477,16 +477,8 @@ function LinkedScapeCard({ displayName }: { displayName: string }) {
 // Phase 4a — Take agent home to Milady
 // ---------------------------------------------------------------------------
 //
-// Emits a copy-pasteable curl one-liner the user runs on the machine where
-// their local runtime is reachable. We deliberately DO NOT attempt to POST
-// from the browser: local ports are unknowable, and guessing produces a
-// 404 UX that looks like a ClawVille bug rather than a user-side port
-// mismatch.
-//
-// Below the install command we render setup instructions branched by the
-// avatar's harness — Milady avatars see "run Milady AI locally", everyone else
-// sees the raw Eliza + Postgres setup (character JSON + DATABASE_URL + how
-// to keep the Eliza process alive after the browser closes).
+// Exports the character/skill pack and shows current magic-link connect guidance.
+// The signed portable manifest download remains the existing export artifact.
 function TakeAgentHomeSection({
   avatarId,
   harness,
@@ -497,7 +489,6 @@ function TakeAgentHomeSection({
   const isMilady = harness === 'milady';
   const addToast = useGameStore((s) => s.addToast);
 
-  const [miladyUrl, setMiladyUrl] = useState<string>('');
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [installCommand, setInstallCommand] = useState<string | null>(null);
@@ -546,11 +537,7 @@ function TakeAgentHomeSection({
     setCopied(false);
     setGenerating(true);
     try {
-      const trimmed = miladyUrl.trim();
-      const res = await api.exportCharacter({
-        avatarId,
-        ...(trimmed ? { miladyBaseUrl: trimmed } : {}),
-      });
+      const res = await api.exportCharacter({ avatarId });
       setInstallCommand(res.installCommand);
       setSummary({
         skillsCount: res.summary.skillsCount,
@@ -561,19 +548,19 @@ function TakeAgentHomeSection({
       const msg =
         err instanceof Error && err.message
           ? err.message
-          : 'Could not build install command';
+          : 'Could not build connect instruction';
       setError(msg);
     } finally {
       setGenerating(false);
     }
-  }, [miladyUrl, avatarId]);
+  }, [avatarId]);
 
   const handleCopy = useCallback(async () => {
     if (!installCommand) return;
     try {
       await navigator.clipboard.writeText(installCommand);
       setCopied(true);
-      addToast('📋', 'Install command copied', 2500);
+      addToast('📋', 'Connect instruction copied', 2500);
       setTimeout(() => setCopied(false), 1500);
     } catch {
       // Clipboard API blocked (iOS sandbox, etc.) — user can select-all
@@ -583,30 +570,12 @@ function TakeAgentHomeSection({
 
   return (
     <div className="space-y-2">
-      <h3 className="font-bold text-sm text-white">Take agent home to Milady</h3>
+      <h3 className="font-bold text-sm text-white">Export and connect your agent</h3>
       <div className="bg-pink-500/10 border border-pink-400/25 rounded-lg p-3 space-y-2">
         <p className="text-xs text-white/70">
-          Export this agent as a Milady-installable bundle. Paste the command
-          into any terminal that can reach your local Milady.
+          Export this agent&apos;s character and skill pack. Use the Connect Agent
+          magic link to connect your agent to ClawVille.
         </p>
-
-        <div className="space-y-1">
-          <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider">
-            Milady URL <span className="text-white/30">(optional)</span>
-          </label>
-          <input
-            type="text"
-            value={miladyUrl}
-            onChange={(e) => setMiladyUrl(e.target.value)}
-            placeholder="http://localhost:2138"
-            spellCheck={false}
-            className="w-full px-3 py-1.5 rounded-md bg-black/30 border border-white/10 text-sm text-white placeholder:text-white/25 font-mono focus:outline-none focus:border-pink-400/50"
-          />
-          <p className="text-[10px] text-white/40">
-            Leave blank if your Milady runs on its default port. Override if
-            you run Milady on a custom host or port.
-          </p>
-        </div>
 
         <button
           type="button"
@@ -617,8 +586,8 @@ function TakeAgentHomeSection({
           {generating
             ? 'Building bundle…'
             : installCommand
-              ? 'Regenerate install command'
-              : 'Generate install command'}
+              ? 'Regenerate connect instruction'
+              : 'Generate connect instruction'}
         </button>
 
         {error && (
@@ -639,7 +608,7 @@ function TakeAgentHomeSection({
               </div>
             )}
             <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider">
-              Install command
+              Connect instruction
             </label>
             <div className="bg-black/40 border border-pink-400/30 rounded-lg p-2 max-h-32 overflow-y-auto">
               <pre className="text-[11px] text-pink-100 font-mono whitespace-pre-wrap break-all select-all">
@@ -651,7 +620,7 @@ function TakeAgentHomeSection({
               onClick={handleCopy}
               className="w-full px-3 py-1.5 rounded-md bg-pink-500/20 hover:bg-pink-500/30 text-pink-100 text-xs font-bold transition-colors"
             >
-              {copied ? 'Copied!' : 'Copy install command'}
+              {copied ? 'Copied!' : 'Copy connect instruction'}
             </button>
           </div>
         )}
@@ -683,9 +652,7 @@ function TakeAgentHomeSection({
         )}
       </div>
 
-      {/* Harness-branched setup instructions — Milady avatars see the "install
-          Milady AI locally" doc (Milady bundles Eliza), everyone else sees
-          the raw postgres + Eliza bootstrap doc + how-to-keep-Eliza-running. */}
+      {/* Both harness paths document the portable manifest and magic-link connect. */}
       <SetupInstructions
         docKey={isMilady ? 'milady-export' : 'custom-export'}
         accent={isMilady ? 'pink' : 'cyan'}

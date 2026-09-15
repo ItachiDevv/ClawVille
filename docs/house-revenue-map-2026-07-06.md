@@ -1,5 +1,7 @@
 # ClawVille House-Revenue Audit — CORRECTED (v2, 2026-07-06)
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the SAP escrow and bazaar/auction rows in section 1 with that in mind.
+
 Synthesized from 6 vertical maps + direct verification of the ledger code. **Verification note up front:** the checked-out worktree (`docs/agent-metaverse-model`) `apps/api/src/services/claw-token-ledger.ts` is the **pre-wall 226-line ledger — NO provenance exists on this branch or on prod/master** (verified by full read: plain credit/debit/transfer, no `mintEarned`, no `allocateDebit`). The SOFT/BOUGHT/EARNED wall exists on **`origin/staging` + `feat/tokenomics-earn`** (verified: `claw-token-ledger.ts:317-333` allocateDebit, `:290` SOFT default, `:443` mintEarned, `:497-524` transferClawTokens). Every "under the wall" claim below is a staging/branch analysis; prod today has fully fungible CT.
 
 ---

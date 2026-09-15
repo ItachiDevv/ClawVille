@@ -1,5 +1,7 @@
 # vCLAW economy + bounty micro-denomination — decision doc (2026-07-12)
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the production SAP context and the SAP bounty, service-listing, and peer-commerce assumptions in Threads 2-6 with that in mind.
+
 > Written at the founder's request so we can compact and then go through it **one thread at a time**.
 > Each thread: the problem, my analysis/recommendation, and the **OPEN DECISION** that needs the founder.
 > Nothing here is built yet. Recommendations are marked `REC →`. Founder decisions are marked `⬥ DECIDE`.

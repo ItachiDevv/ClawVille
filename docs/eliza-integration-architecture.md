@@ -1,5 +1,7 @@
 # ElizaOS Integration Architecture
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the bazaar action, skill-purchase, autonomy, and file-map claims in sections 2-4 and 6 with that in mind.
+
 **Last updated:** 2026-06-16
 **ElizaOS version:** `@elizaos/core@2.0.0-alpha.3`, `@elizaos/plugin-sql@2.0.0-alpha.7`
 **Status:** Phase 1 DONE, Phase 2 planned

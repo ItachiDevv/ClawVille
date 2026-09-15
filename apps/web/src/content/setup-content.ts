@@ -270,79 +270,66 @@ elizaos start --character characters/my-avatar.character.json`,
 
   // ── Milady AI — Export Flow ─────────────────────────────────────────────
   'milady-export': {
-    title: 'Run your Milady AI agent locally',
+    title: 'Export your agent and connect Milady AI',
     subtitle:
-      'Install Milady AI on your machine, then install the ClawVille app ' +
-      'plugin so your avatar goes with you.',
+      'Download your portable manifest. Use the Connect Agent magic link to connect Milady AI.',
     preamble:
-      'Milady AI bundles ElizaOS — you don\'t need to set up Postgres or ' +
-      'Eliza separately. Just install Milady, run the install command from ' +
-      'the "Take it home" panel, and the plugin registers your avatar inside ' +
-      'the Milady app grid.',
+      'The manifest contains your character and learned skill pack. ' +
+      'The connect instruction above uses the current magic-link path.',
     sections: [
       {
-        heading: 'Install Milady AI',
+        heading: 'Download your portable manifest',
         body:
-          'Grab the latest Milady release for your OS. Milady bundles Eliza ' +
-          'runtime + Postgres + the UI — no extra dependencies.',
-        link: {
-          label: 'Milady AI →',
-          href: 'https://milady.ai',
-        },
+          'Select "Download portable manifest (.json)" above. ' +
+          'The file contains your character in `clawville.character` and ' +
+          'your learned skill pack in `clawville.skillPack`.',
       },
       {
-        heading: 'Run the install command',
+        heading: 'Connect Milady AI',
         body:
-          'The command above (in the pink "Install command" box) POSTs your ' +
-          'avatar\'s character + skill pack to Milady\'s local plugin endpoint. ' +
-          'Paste it into any terminal that can reach your Milady instance. ' +
-          'If your Milady runs on a non-default port, set the "Milady URL" ' +
-          'field before clicking Generate.',
-      },
-      {
-        heading: 'Keep Milady running',
-        body:
-          'Milady\'s app binary ships with a background service mode — on ' +
-          'launch, toggle "Start at login" in Milady\'s settings so your ' +
-          'agent keeps earning skills even when you close ClawVille\'s ' +
-          'browser tab.',
+          'Open Connect Agent in ClawVille. Generate your connect link. ' +
+          "Copy the one-line instruction into your agent's chat. " +
+          'Your agent follows it and calls POST /api/agent/connect on the API host named in the link. ' +
+          'Open the returned one-use /enter handoff.',
       },
     ],
   },
 
-  // ── Non-Milady Export Flow ──────────────────────────────────────────────
+  // Non-Milady export flow.
   'custom-export': {
-    title: 'Run your agent locally',
+    title: 'Export your character for a local runtime',
     subtitle:
-      'Your character JSON is in the install command above. Drop it into ' +
-      'a local Eliza runtime to keep your agent alive after you close ' +
-      'ClawVille.',
+      'Download the portable manifest above for your character and learned skill pack.',
     preamble:
-      'The install command is a shell one-liner that POSTs your character ' +
-      '+ learned skill pack to whatever local endpoint you want. For a ' +
-      'plain ElizaOS setup, that means dropping the character JSON into a ' +
-      'running Eliza project.',
+      'The connect instruction explains how your local agent enters ClawVille. ' +
+      'The portable manifest contains the export data.',
     sections: [
       POSTGRES_SECTION,
       ELIZA_ENV_SECTION,
       {
         heading: 'Extract your character JSON',
         body:
-          'The curl above embeds a JSON payload under `config.character`. ' +
-          'If you prefer to hand-place the file instead of POSTing it, ' +
-          'strip that field out and save it as ' +
-          '`characters/my-avatar.character.json` inside your Eliza project.',
+          'Download the portable manifest above. Save its `clawville.character` ' +
+          'object as `characters/my-avatar.character.json` inside your Eliza project. ' +
+          'The `clawville.skillPack` array contains your learned knowledge chunks.',
       },
       {
         heading: 'Start Eliza with your character',
         body:
-          'Point ElizaOS at the character file. The RAG store is populated ' +
-          'from the `config.skills` array in the same payload — those are ' +
-          'the knowledge chunks your avatar learned while playing ClawVille.',
+          'Point ElizaOS at the character file. Load `clawville.skillPack` through ' +
+          "your runtime's knowledge import process.",
         code: {
           language: 'bash',
           value: `elizaos start --character characters/my-avatar.character.json`,
         },
+      },
+      {
+        heading: 'Connect your local agent',
+        body:
+          'Open Connect Agent in ClawVille. Generate your connect link. ' +
+          "Copy the one-line instruction into your agent's chat. " +
+          'Your agent follows it and calls POST /api/agent/connect on the API host named in the link. ' +
+          'Open the returned one-use /enter handoff.',
       },
       KEEP_ELIZA_RUNNING_SECTION,
     ],
