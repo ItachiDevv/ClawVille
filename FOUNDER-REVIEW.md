@@ -72,7 +72,7 @@
   retirement — it told users to curl a plugin that no longer works). It now
   shows a connect instruction pointing at the magic-link flow, and the
   local-port input is gone. The portable-manifest download is unchanged.
-- **Where:** staging → `/game` → avatar settings → "Export and connect your
+- **Where:** prod → `/game` → avatar settings → "Export and connect your
   agent" → Generate connect instruction.
 - **Feedback wanted:** does the new copy read right, and is losing the
   npm-install path acceptable for any Milady users you still care about
