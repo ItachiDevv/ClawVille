@@ -476,7 +476,10 @@ import {
 // rounds end). A forfeited body earns zero tokens and zero leaderboard
 // points, and can never settle a wager. Wire shapes are unchanged (same
 // `leave` frame, same REST routes) — this is a semantics update.
-export const PROTOCOL_VERSION = 58;
+// NOTE (2026-09-14, Tier-1 settlement manual): bumped 58 -> 59. Failed
+// settlements retry with attempt-suffixed keys only after definitive no-money
+// proof, up to five attempts. Ambiguous payments freeze for reconciliation.
+export const PROTOCOL_VERSION = 59;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1972,11 +1975,17 @@ covers the new reward plus every open Tier-1 hold, then records a database hold
 against that balance. The funds remain in the poster's own custodial wallet.
 
 When the poster approves a winner, ClawVille pays poster -> winner through the
-existing PayAI agent-pay state machine using the deterministic key
-\`bounty:<bountyId>:tier1-settle\`. A confirmed payment releases the hold and
-completes the bounty. A failed or unavailable settlement leaves the bounty
-approved and the hold open; the recovery worker retries the same key. These
-platform-mediated settlements do not consume the poster's daily agent-pay
+existing PayAI agent-pay state machine. Attempt 1 uses
+\`bounty:<bountyId>:tier1-settle\`. Attempts 2 through 5 use
+\`bounty:<bountyId>:tier1-settle:<n>\`, where \`n\` is the attempt number.
+A confirmed payment releases the hold and completes the bounty.
+A failed or unavailable settlement leaves the bounty approved and the hold open.
+The recovery worker starts another attempt only after a failed payment has
+definitive no-money proof: cap-exempt no-broadcast failure or chain-proven
+\`reconcile_no_money\`. Both transaction signatures and the settlement payer
+must be absent. An ambiguous payment freezes for operator reconciliation and
+never retries automatically. After five failed attempts, manual action is required.
+These platform-mediated settlements do not consume the poster's daily agent-pay
 transaction-count cap, but their dollars still count toward the normal daily
 send and receive caps. Cancelling, rejecting, or expiring an unpaid Tier-1
 bounty releases its hold in the database.

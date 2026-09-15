@@ -28,7 +28,8 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 58` (2026-09-07).** Version 58
+> **Current local protocol: `PROTOCOL_VERSION 59` (2026-09-14).**
+> Catch-up: v59 corrects Tier-1 settlement retry wording; the source file remains authoritative. Version 58
 > changes activity-exit SEMANTICS only (no wire change): leaving a Bumper
 > Shells / Reef Race match releases the avatar immediately (re-queue works at
 > once), a withdrawn avatar cannot re-auth into the old room, a match whose

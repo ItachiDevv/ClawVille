@@ -64,6 +64,21 @@
 - **Feedback wanted:** does the gather-then-build loop follow the instruction naturally, and is the placed piece a sensible visible choice?
 - Shipped by: land session (lnd), 2026-08-20; adversarial review APPROVED 0-blocking, punch list applied same day.
 
+## AGENTS / ONBOARDING
+
+### Export panel now shows magic-link connect guidance (staging)
+- **What:** the avatar-settings "take my agent home" panel no longer emits the
+  retired npm-plugin install command (dead since the 2026-07-23 sideload
+  retirement — it told users to curl a plugin that no longer works). It now
+  shows a connect instruction pointing at the magic-link flow, and the
+  local-port input is gone. The portable-manifest download is unchanged.
+- **Where:** staging → `/game` → avatar settings → "Export and connect your
+  agent" → Generate connect instruction.
+- **Feedback wanted:** does the new copy read right, and is losing the
+  npm-install path acceptable for any Milady users you still care about
+  (server keeps the old response fields for old clients).
+- Session selfheal/Fable, 2026-09-14.
+
 ## BOUNTIES / ECONOMY
 
 ### Reconcile ops view (LIVE on prod)

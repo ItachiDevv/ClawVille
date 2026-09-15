@@ -2,6 +2,8 @@
 
 **Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.
 
+**Drift note 2026-09-14:** The FLAGGED copy pass corrects the Dash magic-link description, Nori's founder hold-only clause, and land comments. Existing mechanics stay unchanged.
+
 **Prior Last Audited: 2026-09-13 (Land rent prepay now confirms before it charges —
 founder ruling).** The founder rejected one-click charging for rent prepay
 (ruling 2026-09-13). The Land Office "Prepay rent" button no longer fires the

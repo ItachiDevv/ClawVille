@@ -1,5 +1,7 @@
 # uOS Mini App Integration — Research + Scoping Plan
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the SAP escrow comparisons and bridge proposals in sections 1-2 and section 5, Phase 3, with that in mind.
+
 > Session 2026-08-11 ("uos"). Research deep-dive per CLAUDE.md Planning rule; the Milady
 > analog is `docs/milady-integration-plan.md`. Phase 1 (embed enablement + manifest) ships
 > with this doc; publish is a founder action (wallet signature in uOS Dev Portal).

@@ -2,8 +2,8 @@
  * POST /api/agent/export-character — Phase 3 "take my agent home" endpoint.
  *
  * Emits a complete ElizaOS-compatible character bundle for any avatar owned by
- * the authenticated user, plus a Milady-install payload the Phase 4a UI can
- * POST verbatim against the user's local `/api/plugins/install`.
+ * the authenticated user, plus the current magic-link connect instruction.
+ * Legacy install field names remain for existing export clients.
  *
  * Spec: `.claude/plans/phase3-character-export-api.md`.
  *
@@ -57,15 +57,6 @@ const exportRateLimiter = createRateLimiter({
   windowMs: 60_000,
 });
 
-/**
- * Default base URL of the user's local Milady HTTP API. Milady's dev
- * server listens on port 2138 by default (see the CORS note in
- * `apps/api/src/index.ts`: "Milady port 2138"). ClawVille's own API
- * runs on port 4000 — emitting `curl http://localhost:4000/...` here
- * would always 404 on a fresh Milady install, which is Phase 3 audit C4.
- */
-const DEFAULT_MILADY_BASE_URL = 'http://localhost:2138';
-
 const exportSchema = z.object({
   /** Avatar UUID — must be owned by the session user. */
   avatarId: z.string().uuid(),
@@ -76,52 +67,11 @@ const exportSchema = z.object({
    * `avatars_harness_valid` (Phase 2).
    */
   targetHarness: z.enum(AGENT_HARNESSES).optional(),
-  /**
-   * Base URL of the user's local Milady HTTP API. Defaults to the
-   * standard Milady dev port (2138). Users running Milady on a non-
-   * default port can override here; the value flows through to the
-   * emitted `installCommand` curl one-liner.
-   */
+  /** @deprecated Accepted for older clients; magic-link connect needs no local URL. */
   miladyBaseUrl: z.string().url().optional(),
 });
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Build a shell-safe `curl` one-liner that posts the Milady install
- * payload to the user's local Milady API.
- *
- * Shell-escaping strategy: wrap the JSON body in single quotes and escape
- * any embedded single quotes with the standard POSIX sequence `'\''`
- * (close quote, literal quote, reopen). This is safe in bash, zsh, and
- * the MinGW bash that Milady users on Windows tend to have. Avatar names
- * themselves are alphanumeric-only by Zod constraint, but archetype
- * bio / lore / knowledge strings often contain apostrophes ("I'm",
- * "O'Malley" — etc.) so defensive escaping is required.
- *
- * `miladyBaseUrl` is configurable via the request body (Phase 3 audit
- * C4 — the previous hardcoded `http://localhost:4000` was ClawVille's
- * own API port, not Milady's default of 2138, so the emitted curl was
- * guaranteed to 404). The Zod schema validates that the override is a
- * well-formed URL before it reaches this function.
- */
-function buildInstallCommand(payload: unknown, miladyBaseUrl: string): string {
-  const json = JSON.stringify(payload);
-  // Replace every `'` with `'\''` so the single-quoted wrapper stays intact.
-  const escaped = json.replace(/'/g, `'\\''`);
-  // Trim trailing slash so concatenation stays well-formed regardless
-  // of what the caller passes (`http://localhost:2138` vs `.../`), then
-  // shell-single-quote-escape. `z.string().url()` accepts shell meta-
-  // chars like `$(cmd)` and backticks — since Phase 4a will display
-  // this command in a copy-to-clipboard UI, an attacker-controlled
-  // `miladyBaseUrl` could otherwise smuggle a command substitution
-  // into the user's terminal. Wrap in single quotes + escape embedded
-  // apostrophes the same way we do for the JSON payload.
-  const trimmed = miladyBaseUrl.replace(/\/+$/, '');
-  const fullUrl = `${trimmed}/api/plugins/install`;
-  const urlQuoted = `'${fullUrl.replace(/'/g, `'\\''`)}'`;
-  return `curl -X POST ${urlQuoted} -H 'Content-Type: application/json' -d '${escaped}'`;
-}
 
 // `buildSkillPack` moved to `services/skill-pack-builder.ts` (2026-06-19) so the
 // signed avatar-manifest export reuses the exact same derivation. Imported above.
@@ -212,9 +162,21 @@ agentExportRoutes.post(
 
   const exportedAt = new Date().toISOString();
 
-  // --- Compose Milady install payload + curl command ---
+  // Legacy response names remain compatible with the existing export client.
+  // The npm plugin path retired on 2026-07-23; connect uses the magic link.
+  const installCommand = [
+    'Open Connect Agent in ClawVille. Generate your connect link.',
+    "Copy the one-line instruction into your agent's chat.",
+    'Your agent follows it and calls POST /api/agent/connect on the API host named in the link.',
+    'Open the returned one-use /enter handoff to enter the world.',
+  ].join(' ');
   const miladyInstallPayload = {
-    plugin: '@clawville/app-clawville',
+    connect: {
+      method: 'POST',
+      url: '/api/agent/connect',
+      handoff: '/enter',
+      instruction: installCommand,
+    },
     config: {
       character,
       skills: skillPack,
@@ -225,9 +187,6 @@ agentExportRoutes.post(
       },
     },
   } as const;
-
-  const miladyBaseUrl = parsed.data.miladyBaseUrl ?? DEFAULT_MILADY_BASE_URL;
-  const installCommand = buildInstallCommand(miladyInstallPayload, miladyBaseUrl);
 
   // --- Summary — cheap client-side stats for the Phase 4a UI ---
   // Post Fix 1 the character's `knowledge` field is deliberately empty

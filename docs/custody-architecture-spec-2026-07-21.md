@@ -1,5 +1,7 @@
 # ClawVille Custody Architecture — Two-Tier Vault/Spending Model (SPEC FOR REVIEW)
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the SAP identity, escrow, stake, and custody assumptions in sections 1-2 and 5 with that in mind.
+
 > Status: DECISION SPEC, founder-approved direction 2026-07-21, submitted for independent
 > design review (Codex gpt-5.6-sol, high reasoning) BEFORE any implementation. The founder
 > rates this among the most important architecture decisions of the project. Reviewer: your

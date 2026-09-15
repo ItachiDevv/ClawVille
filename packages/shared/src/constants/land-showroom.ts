@@ -10,9 +10,7 @@
 //   - Showroom lots HIDE once a parcel is owned, so the buyer's real structure
 //     cleanly takes over with zero visual conflict.
 //
-// Selection: stride every 7th starter-tier parcel (108 starters → indices
-//   0, 7, 14, 21, …, 105 = 16 lots), evenly spread around the outer perimeter
-//   so the showroom reads as distributed, not clustered.
+// Selection: every starter-tier parcel, plus up to ten founder-tier parcels.
 //
 // Per selected lot, by selection index k (0-based):
 //   style = SHOWROOM_STYLES[k % 3]
@@ -126,7 +124,7 @@ function generateShowroom(): ShowroomEntry[] {
   return entries;
 }
 
-/** 16 showroom entries, deterministic, evenly spread around the outer perimeter.
+/** Deterministic showroom entries for every starter parcel and up to ten founders.
  *  Computed once at module load — safe to reference from React components and
  *  server code without memoisation cost. */
 export const LAND_SHOWROOM: readonly ShowroomEntry[] = generateShowroom();

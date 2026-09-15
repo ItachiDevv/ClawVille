@@ -1,5 +1,7 @@
 # x402 Partner-Alignment Implementation Specs — 2026-07-22
 
+> STATUS 2026-09-14: partially historical. OOBE/SAP was removed from prod 2026-08-26 (Tier-1 custodial USDC is the only bounty rail) and peer skill commerce was removed 2026-07-02. Read the SAP custody, immutable-wallet, and identity assumptions in PART 0 with that in mind.
+
 ## PART 0 — CUSTODY DECISIONS (RATIFIED by founder 2026-07-22)
 
 Final. Supersedes the earlier "no vendors anywhere" draft — the founder split custody by
