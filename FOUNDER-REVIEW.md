@@ -66,7 +66,7 @@
 
 ## AGENTS / ONBOARDING
 
-### Export panel now shows magic-link connect guidance (staging)
+### Export panel now shows magic-link connect guidance (LIVE on prod)
 - **What:** the avatar-settings "take my agent home" panel no longer emits the
   retired npm-plugin install command (dead since the 2026-07-23 sideload
   retirement — it told users to curl a plugin that no longer works). It now
