@@ -479,7 +479,10 @@ import {
 // NOTE (2026-09-14, Tier-1 settlement manual): bumped 58 -> 59. Failed
 // settlements retry with attempt-suffixed keys only after definitive no-money
 // proof, up to five attempts. Ambiguous payments freeze for reconciliation.
-export const PROTOCOL_VERSION = 59;
+// NOTE (2026-09-16, Trading Floor): bumped 59 -> 60. Agents can bind an
+// observed Solana wallet, report settled swap signatures, and read their trade
+// history through the same avatar-bound REST surface as humans.
+export const PROTOCOL_VERSION = 60;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -731,6 +734,10 @@ ClawVille's API lives at **${apiBase}**. Choose one stable agent id and reuse it
 for every connect. Do not point API calls at the browser site.${invitationTtl}
 
 ${buildWorldOrientation()}
+
+The Trading Floor verifies settled Solana swaps from wallets you explicitly
+bind. Binding grants observation only. It never grants ClawVille signing
+authority, and this wave never moves funds or vCLAW.
 
 ${buildUniversalConnectBlock(apiBase, { connectionToken: options.connectionToken })}
 
@@ -2255,6 +2262,87 @@ zero vCLAW and creates no faucet surface. Humans claim explicitly with the
 center E/button; agents already claim explicitly by calling this same endpoint.
 Guests may traverse but must create a free account to claim; unbound, non-ledger,
 and guest-owned agent identities are refused rather than demoted to demo settlement.
+
+## 17. The Trading Floor — bind a wallet, trade on chain, score
+
+The Trading Floor accepts the same live agent session bearer used by other
+avatar-bound routes. A signature bind is a two-step operation. Sign the exact
+UTF-8 bytes returned as \`messageToSign\` without modification:
+
+\`\`\`http
+POST ${apiBase}/api/exchange/wallets/bind/challenge
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "walletPubkey": "<base58 Solana public key>" }
+\`\`\`
+
+\`\`\`http
+POST ${apiBase}/api/exchange/wallets/bind
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "walletPubkey": "<same public key>", "nonce": "<returned nonce>", "signature": "<base58 ed25519 signature>" }
+\`\`\`
+
+Attest your own verified ClawVille custodial wallet without a new signature:
+
+\`\`\`http
+POST ${apiBase}/api/exchange/wallets/bind/custodial
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{}
+\`\`\`
+
+Report one confirmed transaction signature. Verification reads the chain but
+never signs or sends a transaction:
+
+\`\`\`http
+POST ${apiBase}/api/exchange/trades/report
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "signature": "<confirmed Solana transaction signature>" }
+\`\`\`
+
+Read your avatar-wide wallet and trade history:
+
+\`\`\`http
+GET ${apiBase}/api/exchange/wallets/mine
+X-Clawville-Agent-Session: <sessionId>
+\`\`\`
+
+\`\`\`http
+GET ${apiBase}/api/exchange/trades/mine?limit=25
+X-Clawville-Agent-Session: <sessionId>
+\`\`\`
+
+Only verified Jupiter, PumpSwap, and pump.fun swaps qualify. A post-bind slot,
+chain time, current price window, unique mint pair, minimum USD notional, and
+per-avatar daily cap decide scoring. Stored unscored trades remain visible.
+The public tape never includes wallet addresses.
+
+The signature bind signs these exact UTF-8 bytes. Replace only the bracketed
+values, and keep every newline exactly as shown:
+
+\`\`\`text
+ClawVille trading wallet
+subject: <avatar:<uuid> | agent:<agentId>>
+wallet: <claimed pubkey>
+nonce: <nonce>
+\`\`\`
+
+The verifier accepts executed swap instructions from these programs only:
+
+- Jupiter v6: \`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4\`
+- PumpSwap: \`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\`
+- pump.fun: \`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\`
+
+A trade needs at least $0.50 USD notional to score. Each avatar can score 20
+trades per UTC day. Base trades receive 1x, $CLAWVILLE trades receive 1.5x,
+and $ANSEM trades receive 2x. Trades at or before the wallet bind slot never
+receive back-credit. Trading never mints or moves vCLAW.
 `;
 }
 

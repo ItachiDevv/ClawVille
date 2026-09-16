@@ -36,7 +36,7 @@
  */
 
 import { Hono } from 'hono';
-import { eq, sql, and, gt, inArray } from 'drizzle-orm';
+import { eq, sql, and, gt, inArray, isNull } from 'drizzle-orm';
 import {
   db,
   avatars,
@@ -44,8 +44,9 @@ import {
   questRewards,
   bountyReputation,
   agentBots,
+  tradingWallets,
 } from '@clawville/database';
-import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS } from '@clawville/shared';
+import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS, TRADE_TIER_WEIGHTS, TRADE_DAILY_SCORED_CAP } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { noStorePrivate } from '../middleware/no-store';
@@ -289,6 +290,10 @@ interface AgentScoreBreakdown {
   land_structures_placed: number;
   land_structures_upgraded: number;
   land_services_sold: number;
+  trades_verified: number;
+  trades_ansem: number;
+  trades_clv: number;
+  trades_base: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -306,6 +311,7 @@ interface AgentLeaderboardEntry {
    * field; backward-compatible because old clients can ignore it.
    */
   subjectType: 'agent' | 'avatar';
+  operatedByClawville: boolean;
 }
 
 interface AgentLeaderboardSnapshot {
@@ -437,6 +443,9 @@ const LAND_C = {
   serviceSold: LAND_EVENT_DAILY_CAPS[LAND_EVENT_TYPES.SERVICE_SOLD],
 } as const;
 
+const TRADE_W = { base: TRADE_TIER_WEIGHTS.base, clv: TRADE_TIER_WEIGHTS.clv, ansem: TRADE_TIER_WEIGHTS.ansem } as const;
+const TRADE_C = { trade: TRADE_DAILY_SCORED_CAP } as const;
+
 const AGENT_CACHE_TTL_MS = 60_000;
 
 interface AgentCacheEntry {
@@ -564,9 +573,57 @@ export async function buildAgentSnapshot(
     land_structures_placed: number;
     land_structures_upgraded: number;
     land_services_sold: number;
+    trades_verified: number;
+    trades_ansem: number;
+    trades_clv: number;
+    trades_base: number;
     score: number;
   }>(sql`
     WITH
+    agent_trade_daily AS (
+      SELECT agent_id, (ts AT TIME ZONE 'UTC')::date AS day,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' = 'ansem')::int AS trade_ansem_c,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' = 'clv')::int AS trade_clv_c,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' = 'base')::int AS trade_base_c,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' IN ('base','clv','ansem'))::int AS trade_total_c
+      FROM events
+      WHERE event_type = 'trade.verified' AND agent_id IS NOT NULL
+        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+      GROUP BY agent_id, (ts AT TIME ZONE 'UTC')::date
+    ),
+    avatar_trade_daily AS (
+      SELECT avatar_id, (ts AT TIME ZONE 'UTC')::date AS day,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' = 'ansem')::int AS trade_ansem_c,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' = 'clv')::int AS trade_clv_c,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' = 'base')::int AS trade_base_c,
+        COUNT(*) FILTER (WHERE payload->>'multiplierTier' IN ('base','clv','ansem'))::int AS trade_total_c
+      FROM events
+      WHERE event_type = 'trade.verified' AND agent_id IS NULL AND avatar_id IS NOT NULL
+        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+      GROUP BY avatar_id, (ts AT TIME ZONE 'UTC')::date
+    ),
+    agent_trade_scores AS (
+      SELECT agent_id,
+        SUM(LEAST(trade_total_c, ${TRADE_C.trade}))::int AS trades_verified,
+        SUM(trade_ansem_c)::int AS trades_ansem,
+        SUM(trade_clv_c)::int AS trades_clv,
+        SUM(trade_base_c)::int AS trades_base,
+        ROUND(SUM(CASE WHEN trade_total_c = 0 THEN 0 ELSE
+          (trade_ansem_c * ${TRADE_W.ansem} + trade_clv_c * ${TRADE_W.clv} + trade_base_c * ${TRADE_W.base})
+          * LEAST(trade_total_c, ${TRADE_C.trade})::float / trade_total_c END))::int AS trade_score
+      FROM agent_trade_daily GROUP BY agent_id
+    ),
+    avatar_trade_scores AS (
+      SELECT avatar_id,
+        SUM(LEAST(trade_total_c, ${TRADE_C.trade}))::int AS trades_verified,
+        SUM(trade_ansem_c)::int AS trades_ansem,
+        SUM(trade_clv_c)::int AS trades_clv,
+        SUM(trade_base_c)::int AS trades_base,
+        ROUND(SUM(CASE WHEN trade_total_c = 0 THEN 0 ELSE
+          (trade_ansem_c * ${TRADE_W.ansem} + trade_clv_c * ${TRADE_W.clv} + trade_base_c * ${TRADE_W.base})
+          * LEAST(trade_total_c, ${TRADE_C.trade})::float / trade_total_c END))::int AS trade_score
+      FROM avatar_trade_daily GROUP BY avatar_id
+    ),
     -- Per-(agent, day) capped counts. LEAST applies the cap inside one row
     -- per (agent, day); SUM in the next CTE adds capped values across days.
     --
@@ -669,7 +726,7 @@ export async function buildAgentSnapshot(
         -- SQL join does not violate that.
         AND NOT EXISTS (
           SELECT 1 FROM openclaw_bots ob
-          WHERE ob.agent_id = events.agent_id AND ob.is_house
+          WHERE ob.agent_id = events.agent_id AND (ob.is_house OR NOT ob.leaderboard_eligible)
         )
         -- Guest carve-out (agent leg) — DEFENSE-IN-DEPTH mirror of the avatar-leg
         -- guard (2026-07-10, Codex-found). A guest is a pre-account DEMO tier and
@@ -785,7 +842,7 @@ export async function buildAgentSnapshot(
         -- avatar. (The payload.isHouse tag on emissions stays for forensics.)
         AND NOT EXISTS (
           SELECT 1 FROM avatars a2
-          JOIN openclaw_bots ob ON ob.user_id = a2.user_id AND ob.is_house
+          JOIN openclaw_bots ob ON ob.user_id = a2.user_id AND (ob.is_house OR NOT ob.leaderboard_eligible)
           WHERE a2.id = events.avatar_id
         )
         -- Guest carve-out (avatar leg) — DURABLE subject-level exclusion
@@ -847,6 +904,10 @@ export async function buildAgentSnapshot(
         SUM(ad.land_struct_placed_c)::int AS land_structures_placed,
         SUM(ad.land_struct_upgraded_c)::int AS land_structures_upgraded,
         SUM(ad.land_services_sold_c)::int AS land_services_sold,
+        COALESCE(MAX(ats.trades_verified), 0)::int AS trades_verified,
+        COALESCE(MAX(ats.trades_ansem), 0)::int AS trades_ansem,
+        COALESCE(MAX(ats.trades_clv), 0)::int AS trades_clv,
+        COALESCE(MAX(ats.trades_base), 0)::int AS trades_base,
         (
           SUM(ad.visits_c) * ${W.buildingVisit}
           + SUM(ad.chats_c) * ${W.teacherChat}
@@ -858,6 +919,7 @@ export async function buildAgentSnapshot(
           + SUM(ad.land_struct_placed_c) * ${LAND_W.structurePlaced}
           + SUM(ad.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
           + SUM(ad.land_services_sold_c) * ${LAND_W.serviceSold}
+          + COALESCE(MAX(ats.trade_score), 0)
           + ROUND(SUM(
               CASE WHEN ad.act_total = 0 THEN 0
                    ELSE (ad.act_wins * ${A[1]} + ad.act_silver * ${A[2]} + ad.act_bronze * ${A[3]} + ad.act_other * ${A.default})
@@ -866,6 +928,7 @@ export async function buildAgentSnapshot(
             ))::int
         )::int AS score
       FROM agent_daily ad
+      LEFT JOIN agent_trade_scores ats ON ats.agent_id = ad.agent_id
       GROUP BY ad.agent_id
     ),
     avatar_scores AS (
@@ -886,6 +949,10 @@ export async function buildAgentSnapshot(
         SUM(pd.land_struct_placed_c)::int AS land_structures_placed,
         SUM(pd.land_struct_upgraded_c)::int AS land_structures_upgraded,
         SUM(pd.land_services_sold_c)::int AS land_services_sold,
+        COALESCE(MAX(vts.trades_verified), 0)::int AS trades_verified,
+        COALESCE(MAX(vts.trades_ansem), 0)::int AS trades_ansem,
+        COALESCE(MAX(vts.trades_clv), 0)::int AS trades_clv,
+        COALESCE(MAX(vts.trades_base), 0)::int AS trades_base,
         (
           SUM(pd.visits_c) * ${W.buildingVisit}
           + SUM(pd.chats_c) * ${W.teacherChat}
@@ -897,6 +964,7 @@ export async function buildAgentSnapshot(
           + SUM(pd.land_struct_placed_c) * ${LAND_W.structurePlaced}
           + SUM(pd.land_struct_upgraded_c) * ${LAND_W.structureUpgraded}
           + SUM(pd.land_services_sold_c) * ${LAND_W.serviceSold}
+          + COALESCE(MAX(vts.trade_score), 0)
           + ROUND(SUM(
               CASE WHEN pd.act_total = 0 THEN 0
                    ELSE (pd.act_wins * ${A[1]} + pd.act_silver * ${A[2]} + pd.act_bronze * ${A[3]} + pd.act_other * ${A.default})
@@ -905,6 +973,7 @@ export async function buildAgentSnapshot(
             ))::int
         )::int AS score
       FROM avatar_daily pd
+      LEFT JOIN avatar_trade_scores vts ON vts.avatar_id = pd.avatar_id
       GROUP BY pd.avatar_id
     )
     SELECT * FROM (
@@ -999,6 +1068,22 @@ export async function buildAgentSnapshot(
     }
   }
 
+  const labelAvatarIds = [
+    ...avatarById.keys(),
+    ...Array.from(avatarByUserId.values(), (avatar) => avatar.id),
+  ];
+  const operatedAvatarIds = new Set<string>();
+  if (labelAvatarIds.length > 0) {
+    const operatedRows = await db.select({ avatarId: tradingWallets.avatarId })
+      .from(tradingWallets)
+      .where(and(
+        inArray(tradingWallets.avatarId, labelAvatarIds),
+        eq(tradingWallets.operatedByClawville, true),
+        isNull(tradingWallets.revokedAt),
+      ));
+    for (const row of operatedRows) operatedAvatarIds.add(row.avatarId);
+  }
+
   // Shape + rank (cap `limit` AFTER shaping so totalRanked reflects the full
   // qualifying set, not just the paginated slice).
   const totalRanked = aggRows.length;
@@ -1033,8 +1118,13 @@ export async function buildAgentSnapshot(
         land_structures_placed: Number(r.land_structures_placed) || 0,
         land_structures_upgraded: Number(r.land_structures_upgraded) || 0,
         land_services_sold: Number(r.land_services_sold) || 0,
+        trades_verified: Number(r.trades_verified) || 0,
+        trades_ansem: Number(r.trades_ansem) || 0,
+        trades_clv: Number(r.trades_clv) || 0,
+        trades_base: Number(r.trades_base) || 0,
       },
       subjectType: r.subject_type,
+      operatedByClawville: avatar ? operatedAvatarIds.has(avatar.id) : false,
     };
   });
 

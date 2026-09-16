@@ -1,0 +1,59 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  CLAWVILLE_GAME_TOOLS,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
+  DECISION_SCOPE,
+  TRADE_DAILY_SCORED_CAP,
+  TRADE_DEX_PROGRAMS,
+  TRADE_MINTS,
+  TRADE_TIER_MULTIPLIER,
+  TRADE_TIER_WEIGHTS,
+} from '@clawville/shared';
+import { buildProtocolManual, PROTOCOL_VERSION } from '../skill-protocol';
+
+describe('Trading Floor frozen constants', () => {
+  test('pins protocol version 60 and the multiplier contracts', () => {
+    expect(PROTOCOL_VERSION).toBe(60);
+    expect(TRADE_TIER_WEIGHTS).toEqual({ base: 20, clv: 30, ansem: 40 });
+    expect(TRADE_TIER_MULTIPLIER).toEqual({ base: 1, clv: 1.5, ansem: 2 });
+    expect(TRADE_DAILY_SCORED_CAP).toBe(20);
+  });
+
+  test('pins the approved mints and DEX programs', () => {
+    expect(TRADE_MINTS).toEqual({
+      ANSEM: '9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump',
+      CLAWVILLE: 'Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA',
+      USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      WSOL: 'So11111111111111111111111111111111111111112',
+    });
+    expect(TRADE_DEX_PROGRAMS).toEqual({
+      jupiter: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
+      pumpswap: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
+      pumpfun: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+    });
+  });
+
+  test('publishes the complete protocol and decision knowledge', () => {
+    const manual = buildProtocolManual('https://api.example.test');
+    expect(manual).toContain('## 17. The Trading Floor');
+    expect(manual).toContain('ClawVille trading wallet');
+    expect(manual).toContain('/api/exchange/trades/report');
+    expect(manual).toContain('$0.50');
+    expect(manual).toContain('20');
+    expect(manual).toContain('never\nreceive back-credit');
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((line) => line.includes('Trading Floor'))).toBe(true);
+    expect(DECISION_SCOPE.some((line) => line.toLowerCase().includes('trade'))).toBe(true);
+  });
+
+  test('keeps tools.json discovery aligned with the documented REST paths', () => {
+    const byName = new Map(CLAWVILLE_GAME_TOOLS.map((tool) => [tool.name, tool]));
+    const bind = byName.get('clawville_bind_trading_wallet');
+    expect(bind?.input_schema).toMatchObject({
+      properties: { action: { enum: ['challenge', 'submit', 'custodial'] } },
+      required: ['action'],
+    });
+    expect(bind?.description).toContain('POST /api/exchange/wallets/bind/challenge');
+    expect(byName.get('clawville_report_trade')?.description).toContain('POST /api/exchange/trades/report');
+    expect(byName.get('clawville_my_trades')?.description).toContain('GET /api/exchange/trades/mine');
+  });
+});

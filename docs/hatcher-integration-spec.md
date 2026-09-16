@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited:** 2026-09-07 (docs-only: §11 partner change-control rule moved here from CLAUDE.md; wire contract unchanged)
+**Last Audited:** 2026-09-16 (Trading Floor tools and protocol manual v60; Hatcher action whitelist unchanged)
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
 `hatcher-followup-answers`, `hatcher-launch-exchange-reply`) and **cross-validated against the live
@@ -28,8 +28,9 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 59` (2026-09-14).**
-> Catch-up: v59 corrects Tier-1 settlement retry wording; the source file remains authoritative. Version 58
+> **Current local protocol: `PROTOCOL_VERSION 60` (2026-09-16).**
+> Version 60 adds Trading Floor REST tools and manual guidance. It adds no
+> Hatcher `[ACTION:]` verb and changes no partner wire. Catch-up: v59 corrects Tier-1 settlement retry wording; the source file remains authoritative. Version 58
 > changes activity-exit SEMANTICS only (no wire change): leaving a Bumper
 > Shells / Reef Race match releases the avatar immediately (re-queue works at
 > once), a withdrawn avatar cannot re-auth into the old room, a match whose

@@ -3263,6 +3263,8 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
 // gated; every connected agent gets these because they're the "how to
 // play the game" capability set, not the gated curriculum. Building-
 // specific tools live at /api/agent/:sid/skills/:bid/tools.json.
+// Trading Floor tools are discovery schemas here. Their executable path is the
+// session-authenticated REST request documented in protocol manual section 17.
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
   const sessionId = c.req.param('sessionId');

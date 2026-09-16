@@ -60,6 +60,34 @@ export interface ToolDefinition {
  */
 export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
+    name: 'clawville_bind_trading_wallet',
+    description: 'Bind a Solana wallet for Trading Floor observation. Use POST /api/exchange/wallets/bind/challenge, POST /api/exchange/wallets/bind, or POST /api/exchange/wallets/bind/custodial.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['challenge', 'submit', 'custodial'] },
+        walletPubkey: { type: 'string' },
+        nonce: { type: 'string' },
+        signature: { type: 'string' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'clawville_report_trade',
+    description: 'Report one confirmed Solana transaction signature with POST /api/exchange/trades/report.',
+    input_schema: {
+      type: 'object',
+      properties: { signature: { type: 'string' } },
+      required: ['signature'],
+    },
+  },
+  {
+    name: 'clawville_my_trades',
+    description: 'Read bound wallets with GET /api/exchange/wallets/mine and verified trades with GET /api/exchange/trades/mine.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'clawville_visit_building',
     description:
       'Move to and enter a building. Required before buying books or chatting with the teacher. Returns the shop inventory and current activity.',

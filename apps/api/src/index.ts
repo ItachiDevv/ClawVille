@@ -1601,6 +1601,14 @@ process.on('uncaughtException', (err) => {
     } catch (err) {
       console.error('[API] CLV swap worker init failed (non-fatal):', err);
     }
+
+    try {
+      const { startTradeObserver } = await import('./services/trade-observer');
+      startTradeObserver();
+      console.log('[API] Trading Floor observer started');
+    } catch (err) {
+      console.error('[API] Trading Floor observer init failed (non-fatal):', err);
+    }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -1788,6 +1796,12 @@ async function gracefulShutdown(signal: string) {
       stopClvSwapWorker();
     } catch {
       // Nothing to stop.
+    }
+    try {
+      const { stopTradeObserver } = await import('./services/trade-observer');
+      stopTradeObserver();
+    } catch {
+      // If the observer module failed to load earlier, there is nothing to stop.
     }
     try {
       const { worldPresenceWsHub } = await import(

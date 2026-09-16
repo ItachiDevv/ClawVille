@@ -23,6 +23,7 @@ name: Gates — money/cove/poker invariant suite
 on:
   pull_request:
     paths:
+      - 'packages/database/migrations/**'
       - 'apps/api/src/**'
       - 'packages/database/src/schema/**'
       - 'packages/shared/src/constants/**'

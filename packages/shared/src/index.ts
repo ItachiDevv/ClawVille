@@ -133,6 +133,8 @@ export * from './constants/land-placement';
 // Land gamification P4b — seabed-salvage daily caps (the founder-ratified
 // per-avatar and per-owner claim bounds the material ledger settles against).
 export * from './constants/land-salvage';
+// Trading Floor wave 1 frozen contracts.
+export * from './constants/trading-floor';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';

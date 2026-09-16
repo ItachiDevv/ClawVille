@@ -17,18 +17,17 @@
  * (Kintara's pattern), the basis for the hold-tier / seller-license / land
  * hold-to-keep checks.
  *
- * PARITY (Rule E5): the human path is these three routes (Lucia session). The
- * AGENT path — a connected/hosted agent linking its OWNER's wallet — follows in
- * Phase C (agent-owner wallet linking), per the Phase A plan; the balance service
- * (`linked-wallet-clv-balance.ts`) is already agent-agnostic (keyed by userId), so
- * Phase C only adds the agent-session write path, not a second balance reader.
+ * PARITY (Rule E5): the human path is these three Lucia-session routes. A human
+ * can explicitly enrol the linked wallet for Trading Floor observation. An agent
+ * cannot enrol its owner's personal linked wallet. Agents use signature,
+ * custodial, or server-internal ClawPump trading-wallet binds instead.
  */
 
 import { Hono } from 'hono';
 import { z } from 'zod';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
-import { db, users, eq } from '@clawville/database';
+import { and, db, eq, isNull, sql, tradingWallets, users } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
@@ -42,6 +41,7 @@ import {
   invalidateClvBalanceCache,
 } from '../services/linked-wallet-clv-balance';
 import type { AppContext } from '../types';
+import { syncLinkedTradingWallet } from '../services/trading-wallets';
 
 export const walletLinkRoutes = new Hono<AppContext>();
 
@@ -65,7 +65,7 @@ const linkSchema = z.object({
   walletPubkey: z.string().min(32).max(44),
   nonce: z.string().min(32).max(64),
   signature: z.string().min(80).max(96),
-});
+}).strict();
 
 walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
@@ -121,10 +121,18 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
   //    UNIQUE index (users_linked_wallet_pubkey_unique) is the hard guard that
   //    one wallet backs at most one account; a collision surfaces as a clean 409.
   try {
-    await db
-      .update(users)
-      .set({ linkedWalletPubkey: walletPubkey, linkedWalletAt: new Date(), updatedAt: new Date() })
-      .where(eq(users.id, user.id));
+    await db.transaction(async (tx) => {
+      const activeLinked = await tx.select({ avatarId: tradingWallets.avatarId }).from(tradingWallets)
+        .where(and(eq(tradingWallets.userId, user.id), eq(tradingWallets.source, 'linked'), isNull(tradingWallets.revokedAt))).limit(1);
+      if (activeLinked[0]) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trading-bind:${activeLinked[0].avatarId}`}, 0))`);
+      }
+      await tx
+        .update(users)
+        .set({ linkedWalletPubkey: walletPubkey, linkedWalletAt: new Date(), updatedAt: new Date() })
+        .where(eq(users.id, user.id));
+      await syncLinkedTradingWallet({ userId: user.id, newPubkey: walletPubkey, tx });
+    });
   } catch (err) {
     const code = (err as { code?: string; cause?: { code?: string } })?.code
       ?? (err as { cause?: { code?: string } })?.cause?.code;
