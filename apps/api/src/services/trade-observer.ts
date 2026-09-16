@@ -17,7 +17,24 @@ import {
 import { decodeSwapFromParsedTransaction, scoreTrade, type TradeRejectReason } from './trade-verifier';
 import { resolveTradeNotionalUsd, type NotionalSource } from './trade-price';
 import { logVerifiedTradeEventTx, recordVerifiedTradeEventFailure } from './event-logger';
+import { alertError } from './alert-error';
 import { broadcastTradeEvent } from '../routes/world';
+
+/** Identifiers a verified trade can offer WITHOUT floor-core knowing anything
+ *  about fleet tables. `decisionId` is non-null only when a prime supplied it
+ *  (frozen spec §5.15); `signature` is always present and is the fleet's own
+ *  fallback key, since they persist it on their decision row under a unique
+ *  partial index. */
+export interface TradeVerifiedNotice {
+  signature: string;
+  decisionId: string | null;
+  avatarId: string;
+  tradingWalletId: string;
+}
+
+/** Fire-and-forget, invoked AFTER COMMIT. MUST be idempotent: floor-core does
+ *  not guarantee once-only delivery and a reconciler may re-invoke it. */
+export type TradeVerifiedCallback = (notice: TradeVerifiedNotice) => Promise<void>;
 
 export interface TradeObserverDeps {
   getSignaturesForAddress(address: string, options: { before?: string; until?: string; limit: number }): Promise<unknown>;
@@ -45,14 +62,66 @@ export interface TradeIngestOutcome {
 }
 
 export class TradeReportError extends Error {
-  constructor(readonly code: 'signature_not_found' | 'tx_failed' | 'not_a_swap' | 'signature_already_claimed' | 'wallet_not_bound' | 'upstream_unavailable',
+  constructor(readonly code: 'signature_not_found' | 'tx_failed' | 'not_a_swap' | 'signature_already_claimed' | 'wallet_not_bound' | 'upstream_unavailable' | 'settlement_write_failed',
     readonly status: 404 | 409 | 422 | 503, readonly detail?: TradeRejectReason) { super(code); }
 }
 
 const signatureRowsSchema = z.array(z.object({ signature: z.string(), slot: z.number().int(), blockTime: z.number().int().nullable() }).passthrough());
+const TRADE_VERIFIED_CALLBACK_TIMEOUT_MS = 5_000;
 let observerTimer: ReturnType<typeof setInterval> | null = null;
 let observerRunning = false;
 let lastTickAt: string | null = null;
+let tradeVerifiedCallback: TradeVerifiedCallback | null = null;
+
+/** Register the fleet-owned promotion callback. A second registration replaces
+ *  the first callback and warns because it indicates a boot wiring defect. */
+export function registerTradeVerifiedCallback(cb: TradeVerifiedCallback): () => void {
+  if (tradeVerifiedCallback !== null) {
+    console.warn('[trade-observer] replacing an already registered trade-verified callback');
+  }
+  tradeVerifiedCallback = cb;
+  return () => {
+    if (tradeVerifiedCallback === cb) tradeVerifiedCallback = null;
+  };
+}
+
+/** Test-only. */
+export function _clearTradeVerifiedCallbackForTest(): void {
+  tradeVerifiedCallback = null;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`trade-verified callback timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function onTradeVerified(notice: TradeVerifiedNotice): Promise<void> {
+  const cb = tradeVerifiedCallback;
+  if (cb === null) return;
+  try {
+    await withTimeout(cb(notice), TRADE_VERIFIED_CALLBACK_TIMEOUT_MS);
+  } catch {
+    try {
+      await alertError({
+        severity: 'warning',
+        source: 'trade-observer',
+        message: 'trade-verified callback failed; decision promotion may be pending',
+        context: { signature: notice.signature, decisionId: notice.decisionId },
+      });
+    } catch (alertFailure) {
+      console.warn('[trade-observer] callback failure alert failed', alertFailure);
+    }
+  }
+}
 
 function safeObserverError(error: unknown): string {
   const key = process.env.HELIUS_API_KEY;
@@ -207,10 +276,21 @@ export async function ingestTradeSignature(input: {
     });
   } catch (error) {
     const failedAttempt = attempted as VerifiedTrade | null;
-    if (failedAttempt?.scored) await recordVerifiedTradeEventFailure(failedAttempt, error);
+    if (failedAttempt?.scored) {
+      await recordVerifiedTradeEventFailure(failedAttempt, error);
+      if (input.source === 'report') throw new TradeReportError('settlement_write_failed', 503);
+    }
     throw error;
   }
   if (!committed) throw new Error('trade transaction returned no row');
+  if (inserted || enriched) {
+    await onTradeVerified({
+      signature: committed.signature,
+      decisionId: committed.decisionId,
+      avatarId: committed.avatarId ?? input.wallet.avatarId,
+      tradingWalletId: committed.tradingWalletId ?? input.wallet.id,
+    });
+  }
   const dto = await dtoForRow(committed);
   if (inserted || enriched) {
     const name = committed.avatarId ? await db.select({ name: avatars.name }).from(avatars).where(eq(avatars.id, committed.avatarId)).limit(1) : [];
@@ -333,6 +413,30 @@ export function startTradeObserver(): void {
 export function stopTradeObserver(): void {
   if (observerTimer) clearInterval(observerTimer);
   observerTimer = null;
+}
+
+/** Read-only. One lookup on the `verified_trades` primary key. This server-only
+ *  seam performs no fleet join, side effect, write, broadcast, or event. The
+ *  caller must compare `avatarId` before it promotes any fleet decision. */
+export async function lookupVerifiedTrade(signature: string): Promise<
+  | { verified: true; avatarId: string; tradingWalletId: string; decisionId: string | null; slot: number }
+  | { verified: false }
+> {
+  const rows = await db.select({
+    avatarId: verifiedTrades.avatarId,
+    tradingWalletId: verifiedTrades.tradingWalletId,
+    decisionId: verifiedTrades.decisionId,
+    slot: verifiedTrades.slot,
+  }).from(verifiedTrades).where(eq(verifiedTrades.signature, signature)).limit(1);
+  const row = rows[0];
+  if (!row || row.avatarId === null || row.tradingWalletId === null) return { verified: false };
+  return {
+    verified: true,
+    avatarId: row.avatarId,
+    tradingWalletId: row.tradingWalletId,
+    decisionId: row.decisionId,
+    slot: row.slot,
+  };
 }
 
 export async function listMyVerifiedTrades(avatarId: string, limit: number): Promise<VerifiedTradeDTO[]> {

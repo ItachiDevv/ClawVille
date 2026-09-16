@@ -1,19 +1,28 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import bs58 from 'bs58';
-import { decodeSwapFromParsedTransaction, scoreTrade } from '../trade-verifier';
+import { decodeSwapFromParsedTransaction, scoreTrade, TRADE_REJECT_REASONS } from '../trade-verifier';
 import { TRADE_DEX_PROGRAMS, TRADE_MINTS } from '@clawville/shared';
 
 const WALLET = '11111111111111111111111111111111';
 const TOKEN_A = TRADE_MINTS.ANSEM;
 const TOKEN_B = TRADE_MINTS.USDC;
+const TOKEN_ACCOUNT_A = bs58.encode(new Uint8Array(32).fill(2));
+const TOKEN_ACCOUNT_B = bs58.encode(new Uint8Array(32).fill(3));
+const TOKEN_ACCOUNT_C = bs58.encode(new Uint8Array(32).fill(4));
+const THIRD_PARTY = bs58.encode(new Uint8Array(32).fill(5));
 
 function pumpSwapRaw(): any {
   return {
     slot: 200,
     blockTime: 1_750_000_000,
     transaction: { message: {
-      accountKeys: [{ pubkey: WALLET, signer: true, writable: true }, TRADE_DEX_PROGRAMS.pumpswap],
-      instructions: [{ programId: TRADE_DEX_PROGRAMS.pumpswap, accounts: [WALLET], data: bs58.encode(Uint8Array.from([102, 6, 61, 18, 1, 218, 235, 234])) }],
+      accountKeys: [{ pubkey: WALLET, signer: true, writable: true }, TRADE_DEX_PROGRAMS.pumpswap,
+        TOKEN_ACCOUNT_A, TOKEN_ACCOUNT_B],
+      instructions: [{ programId: TRADE_DEX_PROGRAMS.pumpswap,
+        accounts: [WALLET, TOKEN_ACCOUNT_A, TOKEN_ACCOUNT_B],
+        data: bs58.encode(Uint8Array.from([102, 6, 61, 18, 1, 218, 235, 234])) }],
     } },
     meta: {
       err: null, fee: 5000, preBalances: [1_000_000_000, 0], postBalances: [999_995_000, 0],
@@ -62,7 +71,9 @@ describe('trade verifier', () => {
     const raw = pumpSwapRaw();
     raw.transaction.message.accountKeys.push(TRADE_DEX_PROGRAMS.jupiter);
     raw.transaction.message.instructions.push({
-      programId: TRADE_DEX_PROGRAMS.jupiter, accounts: [WALLET], data: jupiterRouteData(),
+      programId: TRADE_DEX_PROGRAMS.jupiter,
+      accounts: [WALLET, TOKEN_ACCOUNT_A, TOKEN_ACCOUNT_B],
+      data: jupiterRouteData(),
     });
     expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET })).toMatchObject({ kind: 'swap', dex: 'jupiter' });
   });
@@ -84,6 +95,8 @@ describe('trade verifier', () => {
 
   test('rejects cleanly when the approved swap has extra or missing wallet legs', () => {
     const multi = pumpSwapRaw();
+    multi.transaction.message.accountKeys.push(TOKEN_ACCOUNT_C);
+    multi.transaction.message.instructions[0].accounts.push(TOKEN_ACCOUNT_C);
     multi.meta.preTokenBalances.push({ accountIndex: 4, mint: TRADE_MINTS.WSOL, owner: WALLET,
       programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: { amount: '10000000', decimals: 9 } });
     multi.meta.postTokenBalances.push({ accountIndex: 4, mint: TRADE_MINTS.WSOL, owner: WALLET,
@@ -95,6 +108,21 @@ describe('trade verifier', () => {
     expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw: single, expectedWallet: WALLET })).toMatchObject({ kind: 'rejected', reason: 'single_sided' });
   });
 
+  test('rejects wallet legs that are unrelated to the qualifying DEX instruction', () => {
+    const raw = pumpSwapRaw();
+    raw.transaction.message.instructions[0].accounts = [WALLET];
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'rejected', reason: 'vault_flow_mismatch' });
+  });
+
+  test('diagnoses a qualifying swap that pays its output to a third party', () => {
+    const raw = pumpSwapRaw();
+    raw.meta.preTokenBalances[1].owner = THIRD_PARTY;
+    raw.meta.postTokenBalances[1].owner = THIRD_PARTY;
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'rejected', reason: 'token_account_not_owned' });
+  });
+
   test('rejects a same-mint transfer instead of netting it into no movement', () => {
     const raw = pumpSwapRaw();
     raw.meta.preTokenBalances[1].mint = TOKEN_A;
@@ -103,13 +131,29 @@ describe('trade verifier', () => {
     expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET })).toMatchObject({ kind: 'rejected', reason: 'same_mint' });
   });
 
-  test('scores ANSEM before CLAWVILLE and enforces pre-bind', () => {
+  test('scores ANSEM before CLAWVILLE and compares transaction slot with bound slot', () => {
     expect(scoreTrade({ notionalUsd: 1, minNotionalUsd: 0.5, slot: 11, blockTime: 1,
       boundSlot: 10, scoredTodayForAvatar: 0, dailyScoredCap: 20,
       inputMint: TRADE_MINTS.CLAWVILLE, outputMint: TRADE_MINTS.ANSEM, pairAlreadyScoredToday: false })).toEqual({ scored: true, tier: 'ansem' });
     expect(scoreTrade({ notionalUsd: 1, minNotionalUsd: 0.5, slot: 10, blockTime: 1,
       boundSlot: 10, scoredTodayForAvatar: 0, dailyScoredCap: 20,
       inputMint: TOKEN_A, outputMint: TOKEN_B, pairAlreadyScoredToday: false })).toEqual({ scored: false, reason: 'pre_bind' });
+  });
+
+  test('scores a same-second post-bind trade when its slot is strictly greater', () => {
+    const bindingSecond = 1_750_000_000;
+    expect(scoreTrade({ notionalUsd: 1, minNotionalUsd: 0.5, slot: 201, blockTime: bindingSecond,
+      boundSlot: 200, scoredTodayForAvatar: 0, dailyScoredCap: 20,
+      inputMint: TOKEN_A, outputMint: TOKEN_B, pairAlreadyScoredToday: false })).toEqual({ scored: true, tier: 'ansem' });
+  });
+
+  test('keeps the documented not_a_swap detail list identical to the runtime array', () => {
+    const architecture = readFileSync(resolve(import.meta.dir, '../../../../../ARCHITECTURE.md'), 'utf8');
+    const row = architecture.split(/\r?\n/).find((line) => line.startsWith('| `not_a_swap` |'));
+    expect(row).toBeDefined();
+    const documented = [...(row ?? '').matchAll(/`([^`]+)`/g)].map((match) => match[1]).slice(1);
+    expect(new Set(documented).size).toBe(documented.length);
+    expect(documented.sort()).toEqual([...TRADE_REJECT_REASONS].sort());
   });
 
   test('keeps multiplier tiers direction-independent', () => {

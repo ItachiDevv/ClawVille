@@ -6,8 +6,13 @@ import {
   TRADE_DAILY_SCORED_CAP,
   TRADE_DEX_PROGRAMS,
   TRADE_MINTS,
+  TRADE_REFUSAL_CODES,
+  TRADE_REFUSAL_COPY,
   TRADE_TIER_MULTIPLIER,
   TRADE_TIER_WEIGHTS,
+  TRADE_UNSCORED_REASONS,
+  isTradeRefusalCode,
+  isTradeUnscoredReason,
 } from '@clawville/shared';
 import { buildProtocolManual, PROTOCOL_VERSION } from '../skill-protocol';
 
@@ -31,6 +36,20 @@ describe('Trading Floor frozen constants', () => {
       pumpswap: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
       pumpfun: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
     });
+  });
+
+  test('derives both wire guards from their runtime arrays', () => {
+    expect(TRADE_REFUSAL_CODES).toHaveLength(39);
+    for (const code of TRADE_REFUSAL_CODES) expect(isTradeRefusalCode(code)).toBe(true);
+    for (const reason of TRADE_UNSCORED_REASONS) expect(isTradeUnscoredReason(reason)).toBe(true);
+    for (const value of [null, undefined, '', 7, 'daily_cap_reached']) {
+      expect(isTradeRefusalCode(value)).toBe(false);
+      expect(isTradeUnscoredReason(value)).toBe(false);
+    }
+  });
+
+  test('keeps refusal copy exhaustive over the authoritative vocabulary', () => {
+    expect(Object.keys(TRADE_REFUSAL_COPY).sort()).toEqual([...TRADE_REFUSAL_CODES].sort());
   });
 
   test('publishes the complete protocol and decision knowledge', () => {

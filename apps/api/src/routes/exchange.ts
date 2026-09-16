@@ -192,7 +192,11 @@ exchangeRoutes.post('/trades/report', requireAuthOrAgentSession, requireTradingL
   } catch (error) {
     if (error instanceof TradingRequestError) return walletErrorResponse(c, error);
     if (error instanceof TradeReportError) {
-      const message = error.code === 'not_a_swap' ? 'The transaction is not an eligible swap.' : 'The transaction could not be accepted.';
+      const message = error.code === 'not_a_swap'
+        ? 'The transaction is not an eligible swap.'
+        : error.code === 'wallet_not_bound'
+          ? "No bound wallet among the transaction's signers belongs to this avatar. The fee payer is not used for wallet resolution."
+          : 'The transaction could not be accepted.';
       return c.json({ error: message, code: error.code, ...(error.detail ? { detail: error.detail } : {}) }, error.status);
     }
     throw error;

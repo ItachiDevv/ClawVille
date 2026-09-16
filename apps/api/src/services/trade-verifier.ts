@@ -12,10 +12,18 @@ import {
 import { decodeJupiterV6RouteInstruction } from './clv-swap-live';
 
 export interface MintDelta { mint: string; delta: string; decimals: number }
-export type TradeRejectReason =
-  | 'dex_not_recognized' | 'dex_discriminator_unknown' | 'wallet_not_signer'
-  | 'token_account_not_owned' | 'vault_flow_mismatch' | 'no_net_movement'
-  | 'single_sided' | 'multi_leg' | 'same_mint';
+export const TRADE_REJECT_REASONS = [
+  'dex_not_recognized',
+  'dex_discriminator_unknown',
+  'wallet_not_signer',
+  'token_account_not_owned',
+  'vault_flow_mismatch',
+  'no_net_movement',
+  'single_sided',
+  'multi_leg',
+  'same_mint',
+] as const;
+export type TradeRejectReason = (typeof TRADE_REJECT_REASONS)[number];
 
 export type DecodedSwap =
   | { kind: 'not_found'; signature: string }
@@ -140,30 +148,36 @@ export function decodeSwapFromParsedTransaction(input: {
   }
   if (!dexSeen) return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'dex_not_recognized', dex: null };
   if (!dex || !matchedIx) return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'dex_discriminator_unknown', dex: dexSeen };
-  if (!instructionAccounts(matchedIx, keys).includes(wallet)) {
-    return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'vault_flow_mismatch', dex };
-  }
+  const matchedAccounts = new Set(instructionAccounts(matchedIx, keys));
 
   const pre = new Map<number, z.infer<typeof tokenBalanceSchema>>();
   const post = new Map<number, z.infer<typeof tokenBalanceSchema>>();
   for (const balance of parsed.meta.preTokenBalances) pre.set(balance.accountIndex, balance);
   for (const balance of parsed.meta.postTokenBalances) post.set(balance.accountIndex, balance);
   const aggregate = new Map<string, { delta: bigint; decimals: number }>();
-  const walletAccountDeltas: Array<{ mint: string; delta: bigint }> = [];
+  const walletAccountDeltas: Array<{ account: string | null; mint: string; delta: bigint }> = [];
+  const tokenAccountDeltas: Array<{
+    account: string | null;
+    owner: string | undefined;
+    delta: bigint;
+  }> = [];
   for (const accountIndex of new Set([...pre.keys(), ...post.keys()])) {
     const before = pre.get(accountIndex);
     const after = post.get(accountIndex);
     const sample = after ?? before;
     if (!sample) continue;
     const owner = after?.owner ?? before?.owner;
-    if (owner !== wallet) continue;
     const programId = after?.programId ?? before?.programId;
     if (programId && !TOKEN_PROGRAMS.has(programId)) continue;
     const beforeAmount = BigInt(before?.uiTokenAmount.amount ?? '0');
     const afterAmount = BigInt(after?.uiTokenAmount.amount ?? '0');
-    walletAccountDeltas.push({ mint: sample.mint, delta: afterAmount - beforeAmount });
+    const delta = afterAmount - beforeAmount;
+    const account = keys[accountIndex] ?? null;
+    tokenAccountDeltas.push({ account, owner, delta });
+    if (owner !== wallet) continue;
+    walletAccountDeltas.push({ account, mint: sample.mint, delta });
     const current = aggregate.get(sample.mint) ?? { delta: 0n, decimals: sample.uiTokenAmount.decimals };
-    current.delta += afterAmount - beforeAmount;
+    current.delta += delta;
     aggregate.set(sample.mint, current);
   }
 
@@ -202,6 +216,10 @@ export function decodeSwapFromParsedTransaction(input: {
   const deltas: MintDelta[] = [...aggregate.entries()]
     .filter(([, value]) => value.delta !== 0n)
     .map(([mint, value]) => ({ mint, delta: value.delta.toString(), decimals: value.decimals }));
+  const walletLegAccounts = walletAccountDeltas.filter((entry) => entry.delta !== 0n);
+  if (walletLegAccounts.some((entry) => entry.account === null || !matchedAccounts.has(entry.account))) {
+    return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'vault_flow_mismatch', dex };
+  }
   if (deltas.length === 0) {
     const nonzeroAccounts = walletAccountDeltas.filter((entry) => entry.delta !== 0n);
     if (nonzeroAccounts.some((negative) => negative.delta < 0n
@@ -212,7 +230,16 @@ export function decodeSwapFromParsedTransaction(input: {
   }
   const negatives = deltas.filter((value) => BigInt(value.delta) < 0n);
   const positives = deltas.filter((value) => BigInt(value.delta) > 0n);
-  if (negatives.length === 0 || positives.length === 0) return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'single_sided', dex };
+  if (negatives.length === 0 || positives.length === 0) {
+    const foreignCounterpart = tokenAccountDeltas.some((entry) => entry.account !== null
+      && matchedAccounts.has(entry.account)
+      && entry.owner !== undefined
+      && entry.owner !== wallet
+      && ((negatives.length > 0 && positives.length === 0 && entry.delta > 0n)
+        || (positives.length > 0 && negatives.length === 0 && entry.delta < 0n)));
+    return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime,
+      reason: foreignCounterpart ? 'token_account_not_owned' : 'single_sided', dex };
+  }
   if (negatives.length !== 1 || positives.length !== 1) return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'multi_leg', dex };
   if (negatives[0].mint === positives[0].mint) return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'same_mint', dex };
   return {

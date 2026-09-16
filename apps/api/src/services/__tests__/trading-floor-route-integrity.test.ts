@@ -63,4 +63,8 @@ describe('Trading Floor route integrity', () => {
     expect(JSON.stringify(decision)).not.toContain(secretWallet);
     expect(JSON.stringify(decision)).not.toMatch(/[1-9A-HJ-NP-Za-km-z]{64,}/);
   });
+
+  test('keeps verified-trade lookup server-internal', () => {
+    expect(exchange).not.toContain('lookupVerifiedTrade');
+  });
 });
