@@ -9,7 +9,9 @@ describe('land appearance picker options', () => {
   test('shows only the matching shell type and marks level locks', () => {
     const options = getShellAppearanceOptions('home', 1, 'b');
 
-    expect(options).toHaveLength(4);
+    // Re-pinned 2026-09-16: the home shell catalog grew from 4 to 11 entries in
+    // bfdd1f31 (scale up plots + shells). The lock assertions below are unchanged.
+    expect(options).toHaveLength(11);
     expect(options.every((option) => option.entry.structureType === 'home')).toBe(true);
     expect(options.find((option) => option.entry.key === 'coastal-cottage')?.locked).toBe(false);
     expect(options.find((option) => option.entry.key === 'driftwood-cabin')).toMatchObject({

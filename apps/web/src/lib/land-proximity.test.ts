@@ -9,8 +9,10 @@ import {
 
 describe('land parcel proximity', () => {
   test('pins the derived ring bounds to the current parcel supply', () => {
-    expect(LAND_PROXIMITY_INNER_WU).toBe(5472);
-    expect(LAND_PROXIMITY_OUTER_WU).toBe(10304);
+    // Re-pinned 2026-09-16 after bfdd1f31 (scale up plots + shells: founder/starter
+    // 52t, fraction 0.68, corner-inset layout) moved the derived ring.
+    expect(LAND_PROXIMITY_INNER_WU).toBe(5312);
+    expect(LAND_PROXIMITY_OUTER_WU).toBe(11136);
   });
 
   test('rejects the town center and positions far outside the world', () => {
