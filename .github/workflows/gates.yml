@@ -141,6 +141,20 @@ jobs:
         # Build agent-runtime and its dependencies, plus wager-program.
         run: bunx turbo run build --filter=@clawville/agent-runtime --filter=@clawville/wager-program
 
+      - name: Generate the full base schema from the Drizzle TS schema
+        # The hand-authored migrations are forward-only on top of a base schema
+        # that predates them — a fresh service DB needs this bootstrap first.
+        # drizzle-kit generate is pure TS→SQL (no DB introspection; the known
+        # introspection bug does not apply). Empty out dir ⇒ full schema.
+        run: cd packages/database && rm -rf .drizzle-ci-bootstrap && bunx drizzle-kit generate --config drizzle.ci-bootstrap.config.ts --name base_schema
+
+      - name: Apply the base schema to the empty service database
+        # Guarded: the script refuses to run against any DB that already has
+        # the app schema, so it can never touch staging/prod.
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: bun packages/database/scripts/ci-bootstrap-schema.ts
+
       - name: Apply DB migrations to the service database
         env:
           MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
