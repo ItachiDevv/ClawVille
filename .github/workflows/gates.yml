@@ -67,9 +67,11 @@ jobs:
         # the web program (tsconfig `types` is restricted to node/react). On a
         # fresh runner the dist does not exist, so every route importing the
         # database package AND every test importing bun:test fails TS2307 —
-        # exactly the 2026-09-16 PR #276 red lane. Mirror the api lane: build
-        # first; turbo pulls @clawville/shared in dependency order.
-        run: bunx turbo run build --filter=@clawville/database
+        # exactly the 2026-09-16 PR #276 red lane. apps/web also imports
+        # @clawville/agent-runtime (agent-orchestrator, stores/research). Mirror
+        # the api lane: build agent-runtime first; turbo pulls database, shared
+        # and agent-templates in dependency order.
+        run: bunx turbo run build --filter=@clawville/agent-runtime
 
       - name: Typecheck web
         run: cd apps/web && bun run typecheck
