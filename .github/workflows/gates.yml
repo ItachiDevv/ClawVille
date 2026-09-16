@@ -60,6 +60,17 @@ jobs:
       - name: Install workspace deps
         run: bun install --frozen-lockfile
 
+      - name: Build the packages the web typecheck resolves
+        # apps/web imports @clawville/database through its built dist types
+        # (packages/database/dist/index.d.ts) and, transitively, drizzle-orm's
+        # `/// <reference types="bun-types" />` is what brings `bun:test` into
+        # the web program (tsconfig `types` is restricted to node/react). On a
+        # fresh runner the dist does not exist, so every route importing the
+        # database package AND every test importing bun:test fails TS2307 —
+        # exactly the 2026-09-16 PR #276 red lane. Mirror the api lane: build
+        # first; turbo pulls @clawville/shared in dependency order.
+        run: bunx turbo run build --filter=@clawville/database
+
       - name: Typecheck web
         run: cd apps/web && bun run typecheck
 
