@@ -109,6 +109,17 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(guardrails).not.toContain("status: 'executed' | 'refused'");
   });
 
+  test('custody and vault failures before admission alert critical with a bounded cause', () => {
+    const execution = serviceText.get('trading-execution.ts')!;
+    // Both pre-admission catches route through one alert helper that reports
+    // the stage and a bounded error message, and the helper can never throw
+    // back into the money path.
+    expect(execution).toMatch(/const custodyAlert = \(stage: 'custody' \| 'vault', error: unknown\) => alertError\(\{[\s\S]{0,400}severity: 'critical'[\s\S]{0,600}\.catch\(\(\) => undefined\)/);
+    expect(execution).toMatch(/catch \(error\) \{ custody = null; await custodyAlert\('custody', error\); \}/);
+    expect(execution).toMatch(/catch \(error\) \{ keypair = null; await custodyAlert\('vault', error\); \}/);
+    expect(execution).toMatch(/error\.message\.slice\(0, 200\)/);
+  });
+
   test('refusal copy covers every refusal code exactly', () => {
     expect(Object.keys(TRADE_REFUSAL_COPY).sort()).toEqual([...TRADE_REFUSAL_CODES].sort());
     for (const copy of Object.values(TRADE_REFUSAL_COPY)) {

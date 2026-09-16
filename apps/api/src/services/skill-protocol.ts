@@ -482,6 +482,11 @@ import {
 // NOTE (2026-09-16, Trading Floor): bumped 59 -> 60. Agents can bind an
 // observed Solana wallet, report settled swap signatures, and read their trade
 // history through the same avatar-bound REST surface as humans.
+// NOTE (2026-09-16, Trading Floor fleet): bumped 60 -> 61. `trade_token` joined
+// the [ACTION:] whitelist and the served manual gained its block; hosted-runtime
+// manual memories are keyed on the version, so a served-manual change without a
+// bump would never reach already-provisioned hosted agents. Fleet links ship
+// unarmed; the verb refuses `armed_false` until an operator arms a link.
 export const PROTOCOL_VERSION = 61;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
