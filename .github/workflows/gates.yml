@@ -160,8 +160,33 @@ jobs:
           MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
         run: bun packages/database/scripts/migrate-ci.ts
 
-      - name: Run the full routes test directory
+      - name: Seed the canonical land parcel grid
+        # land DB-contract tests pick real parcels; idempotent 56-row seed,
+        # explicit-URL-only (SEED_DATABASE_URL, dummy CI value — not a secret).
+        env:
+          SEED_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: bun apps/api/scripts/seed-land-parcels.ts
+
+      - name: Run the routes test directory (minus process-isolated files)
+        # Three files are process-isolated below: bun mock.module + the module
+        # cache are process-global, and these files' route modules get poisoned
+        # when a sibling file imports them first with different env/mocks baked
+        # in at module load (the documented pre-existing isolation bug — same
+        # reason job 1 runs the protocol-pin files in their own process).
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        run: cd apps/api && bun test src/routes/__tests__/
+        run: |
+          cd apps/api
+          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(ct-topup-settle|kelp|agent-public-identity-schema)\.test\.ts$')
+          bun test $files
+
+      - name: Run the process-isolated route test files (one bun process each)
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          cd apps/api
+          bun test src/routes/__tests__/ct-topup-settle.test.ts
+          bun test src/routes/__tests__/kelp.test.ts
+          bun test src/routes/__tests__/agent-public-identity-schema.test.ts
