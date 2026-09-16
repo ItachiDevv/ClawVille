@@ -95,7 +95,10 @@ describe('Trading Floor provisioning structure', () => {
   test('operator scripts use REST nonces, production guards, and public-address output', () => {
     const provisionScript = readFileSync(resolve(apiSrc, '../scripts/trading/provision-fleet.ts'), 'utf8');
     const pairScript = readFileSync(resolve(apiSrc, '../scripts/trading/pair-genesis.ts'), 'utf8');
-    const loop = provisionScript.indexOf('for (const objective of TRADING_OBJECTIVES)');
+    // `selected` is TRADING_OBJECTIVES by default or the one slot named by --objective
+    // (2026-09-16: the founder proves the process with a single staging account first).
+    expect(provisionScript).toContain('const selected: readonly TradingObjective[] = process.argv.includes(\'--objective\')');
+    const loop = provisionScript.indexOf('for (const objective of selected)');
     const nonce = provisionScript.indexOf("request('/api/admin/trading/nonce')", loop);
     const provision = provisionScript.indexOf("request('/api/admin/trading/fleet/provision'", nonce);
     expect(loop).toBeGreaterThanOrEqual(0);

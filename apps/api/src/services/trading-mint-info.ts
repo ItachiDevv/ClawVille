@@ -8,6 +8,7 @@ import {
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { TRADE_MINTS } from '@clawville/shared';
+import { tradingConnection } from './trading-rpc';
 
 export interface MintInfo {
   mint: string;
@@ -23,11 +24,7 @@ let whitelistCache: Promise<ReadonlyMap<string, MintInfo>> | null = null;
 const VALUE_AFFECTING_EXTENSION = /TransferFee|TransferHook|PermanentDelegate|ConfidentialTransfer|DefaultAccountState/i;
 
 function defaultConnection(): Connection {
-  const endpoint = process.env.HELIUS_RPC_URL;
-  if (!endpoint) throw new Error('[trading-floor] Helius mainnet RPC is not configured');
-  const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || !url.hostname.toLowerCase().includes('mainnet')) throw new Error('[trading-floor] Helius RPC is not a mainnet endpoint');
-  return new Connection(endpoint, 'confirmed');
+  return tradingConnection();
 }
 
 export function getMintInfo(
