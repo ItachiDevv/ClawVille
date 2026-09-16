@@ -527,10 +527,11 @@ export function TradingFloorTab({
                 ? TRADING_FLOOR_RULES.mints.CLAWVILLE
                 : null;
             const hint = mint ? liquidityHint(mint) : null;
+            const tierLabel = tier === 'ansem' ? '$ANSEM pairs' : tier === 'clv' ? '$CLAWVILLE pairs' : 'Every other pair';
             return (
               <div key={tier} style={{ border: '1px solid rgba(125,211,252,0.14)', borderRadius: 8, padding: 10 }}>
-                <div style={{ color: FLOOR_TEXT.value, textTransform: 'capitalize' }}>
-                  {tier} pair · {multiplier}x
+                <div style={{ color: FLOOR_TEXT.value }}>
+                  {tierLabel} · {multiplier}x
                 </div>
                 {mint ? <div style={{ color: FLOOR_TEXT.muted, fontSize: 10 }}>{shortMint(mint)}</div> : null}
                 {hint ? <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>{hint}</div> : null}

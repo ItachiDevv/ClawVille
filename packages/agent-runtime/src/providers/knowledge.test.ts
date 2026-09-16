@@ -215,6 +215,69 @@ describe('knowledgeProvider protocol manual retrieval', () => {
     });
   });
 
+  it('pins the current-version front-matter and Connect sections ahead of relevance hits, deduped', async () => {
+    const searchMemories = mock(async (input: Record<string, unknown>) => {
+      if (input.roomId === PLATFORM_AGENT_ID) return [];
+      // Relevance returned the front-matter (dup of a pinned section) and 3a; Connect ranked 4th.
+      return [
+        { content: { text: 'v60 front-matter' }, metadata: { subtype: 'protocol-knowledge', version: 60, section: 0 } },
+        { content: { text: 'v60 proxy cognition' }, metadata: { subtype: 'protocol-knowledge', version: 60, section: 4 } },
+      ];
+    });
+    const getMemories = mock(async (input: Record<string, unknown>) => {
+      expect(input).toMatchObject({ roomId: protocolKnowledgeRoomId(PLATFORM_AGENT_ID), tableName: 'knowledge' });
+      return [
+        { content: { text: 'v59 front-matter' }, metadata: { subtype: 'protocol-knowledge', version: 59, section: 0 } },
+        { content: { text: 'v59 connect' }, metadata: { subtype: 'protocol-knowledge', version: 59, section: 1 } },
+        { content: { text: 'v60 front-matter' }, metadata: { subtype: 'protocol-knowledge', version: 60, section: 0 } },
+        { content: { text: 'v60 connect' }, metadata: { subtype: 'protocol-knowledge', version: 60, section: 1 } },
+        { content: { text: 'v60 act' }, metadata: { subtype: 'protocol-knowledge', version: 60, section: 3 } },
+        { content: { text: 'not protocol' }, metadata: { subtype: 'building-skill', version: 99, section: 0 } },
+      ];
+    });
+
+    const result = await knowledgeProvider.get(
+      { searchMemories, getMemories },
+      { content: { text: state.userMessage } },
+      { ...state, characterConfig: { knowledge: [] } },
+    );
+
+    expect(getMemories).toHaveBeenCalledTimes(1);
+    expect(result.data?.protocolKnowledgeEntries).toEqual([
+      'v60 front-matter',
+      'v60 connect',
+      'v60 proxy cognition',
+    ]);
+    expect(result.text).not.toContain('v59');
+    expect(result.text).not.toContain('v60 act');
+    expect(result.text).not.toContain('not protocol');
+  });
+
+  it('keeps pure relevance retrieval when the runtime cannot list memories or the listing throws', async () => {
+    const searchMemories = mock(async (input: Record<string, unknown>) => {
+      if (input.roomId === PLATFORM_AGENT_ID) return [];
+      return [
+        { content: { text: 'Relevant only' }, metadata: { subtype: 'protocol-knowledge', version: 60, section: 4 } },
+      ];
+    });
+
+    const withoutListing = await knowledgeProvider.get(
+      { searchMemories },
+      { content: { text: state.userMessage } },
+      { ...state, characterConfig: { knowledge: [] } },
+    );
+    expect(withoutListing.data?.protocolKnowledgeEntries).toEqual(['Relevant only']);
+
+    const getMemories = mock(async () => { throw new Error('listing unavailable'); });
+    const withThrowingListing = await knowledgeProvider.get(
+      { searchMemories, getMemories },
+      { content: { text: state.userMessage } },
+      { ...state, characterConfig: { knowledge: [] } },
+    );
+    expect(getMemories).toHaveBeenCalledTimes(1);
+    expect(withThrowingListing.data?.protocolKnowledgeEntries).toEqual(['Relevant only']);
+  });
+
   it('keeps JSONB fallback knowledge when the main search throws and protocol succeeds', async () => {
     const searchMemories = mock(async (input: Record<string, unknown>) => {
       if (input.roomId === PLATFORM_AGENT_ID) {
