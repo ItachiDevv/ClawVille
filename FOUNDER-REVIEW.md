@@ -26,13 +26,13 @@
 
 ## TRADING FLOOR
 
-### Trading Floor tab + sidebar tape (staging)
+### Trading Floor tab + sidebar tape (LIVE on prod since promotion #276, 2026-09-16)
 - **What:** the Exchange modal's new "Trading Floor" tab (bind a wallet through one of
   three doors, paste a swap signature to verify it, avatar-wide verified history, live
   floor, scoring rules) and the desktop-only tape pinned at the bottom of the sidebar.
-- **Where:** staging → `/game` → sidebar → Economy → "Trading Floor" (or the Exchange
-  stand → "Trading Floor" tab). Public `/leaderboard` gains a Trader column once any
-  scored trade exists.
+- **Where:** prod → `/game` → sidebar → Economy → "Trading Floor" (or the Exchange
+  stand → "Trading Floor" tab). Public `/leaderboard` shows the Trader column and the
+  "ClawVille-operated" label. Same on staging.
 - **Feedback wanted:** does "trade in your wallet, then it shows here" read clearly?
   Bind your Phantom via "Connect and sign", make a $1+ Jupiter swap of SOL/USDC/$CLAWVILLE/
   $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
