@@ -10,7 +10,7 @@
  */
 
 import postgres from 'postgres';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { resolve } from 'path';
 
 const LOG = '[ci-bootstrap]';
@@ -57,6 +57,29 @@ try {
   // multi-statement file as one implicit transaction.
   await client.unsafe(content);
   console.log(`${LOG} applied generated base schema.`);
+
+  // Migrations OWN these tables. migrate-ci.ts must create them from authored
+  // SQL so CHECK constraints, triggers, and exact defaults retain full fidelity.
+  // The bootstrap only provides pre-migration-era base tables migrations assume.
+  // CASCADE is safe here: the database has no data, and the unchanged CI-only
+  // guard above refuses an existing app schema BEFORE the bootstrap applies.
+  const migrationsDir = resolve(__dirname, '../migrations');
+  const migrationTables = new Set<string>();
+  const files = readdirSync(migrationsDir)
+    .filter((file) => file.toLowerCase().endsWith('.sql'))
+    .sort();
+  for (const file of files) {
+    const sql = readFileSync(resolve(migrationsDir, file), 'utf-8');
+    const createTable = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s*\(/gi;
+    for (const match of sql.matchAll(createTable)) {
+      migrationTables.add(match[1] ?? match[2]);
+    }
+  }
+  const dropped = [...migrationTables].sort();
+  for (const name of dropped) {
+    await client.unsafe(`DROP TABLE IF EXISTS "${name}" CASCADE;`);
+  }
+  console.log(`${LOG} dropped migration-owned tables: ${dropped.join(', ')}`);
 } catch (err) {
   if (err instanceof Error && err.message === REFUSAL) {
     console.error(`${LOG} ${REFUSAL}`);

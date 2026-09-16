@@ -168,17 +168,16 @@ jobs:
         run: bun apps/api/scripts/seed-land-parcels.ts
 
       - name: Run the routes test directory (minus process-isolated files)
-        # Three files are process-isolated below: bun mock.module + the module
-        # cache are process-global, and these files' route modules get poisoned
-        # when a sibling file imports them first with different env/mocks baked
-        # in at module load (the documented pre-existing isolation bug — same
-        # reason job 1 runs the protocol-pin files in their own process).
+        # Bun mock.module + the module cache are process-global. ANY file that
+        # calls mock.module can poison sibling files' route modules and can
+        # itself be poisoned. Every mocker runs in its own Bun process below;
+        # the main group contains no mock.module at all.
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: |
           cd apps/api
-          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(ct-topup-settle|kelp|agent-public-identity-schema)\.test\.ts$')
+          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(agent-frontdoor-connect|agent-public-identity-schema|cosmetic-guest-equip-handler|cove-history|ct-topup-settle|kelp|land-tenure-phaseb|moonpay|partner-covenant|partner-hatcher-p5-handler|world-ws-identity|x402-stats)\.test\.ts$')
           bun test $files
 
       - name: Run the process-isolated route test files (one bun process each)
@@ -187,6 +186,15 @@ jobs:
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: |
           cd apps/api
+          bun test src/routes/__tests__/agent-frontdoor-connect.test.ts
+          bun test src/routes/__tests__/agent-public-identity-schema.test.ts
+          bun test src/routes/__tests__/cosmetic-guest-equip-handler.test.ts
+          bun test src/routes/__tests__/cove-history.test.ts
           bun test src/routes/__tests__/ct-topup-settle.test.ts
           bun test src/routes/__tests__/kelp.test.ts
-          bun test src/routes/__tests__/agent-public-identity-schema.test.ts
+          bun test src/routes/__tests__/land-tenure-phaseb.test.ts
+          bun test src/routes/__tests__/moonpay.test.ts
+          bun test src/routes/__tests__/partner-covenant.test.ts
+          bun test src/routes/__tests__/partner-hatcher-p5-handler.test.ts
+          bun test src/routes/__tests__/world-ws-identity.test.ts
+          bun test src/routes/__tests__/x402-stats.test.ts
