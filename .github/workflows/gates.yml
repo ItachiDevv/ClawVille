@@ -13,9 +13,10 @@ name: Gates — money/cove/poker invariant suite
 # and the `describeIfDb`-gated tests SKIP. What runs is the IN-MEMORY suite — the
 # poker tournament + cash conservation/idempotency, the slot/blackjack/baccarat/
 # holdem engine logic, side-pot/rake conservation, the provably-fair replay — all
-# on FakeDb/FakeLedger. That is the guaranteed-green Phase-0 gate. Phase 0b adds a
-# Postgres(+pgvector) service + db:push so the DB-backed tests also run, once
-# verified green in CI (kept separate so this gate can be made REQUIRED today).
+# on FakeDb/FakeLedger. That is the guaranteed-green Phase-0 gate. Phase 0b is now
+# implemented as the separate api-route-tests-db job below, with a
+# Postgres(+pgvector) service + migrations via migrate-ci.ts, not db:push
+# (drizzle-kit introspection is broken in this repo).
 #
 # Local equivalent: `cd apps/api && bun test`  (with DATABASE_URL UNSET).
 
@@ -101,3 +102,52 @@ jobs:
         # of CI for now — it is NOT green without env/DB (FINGERPRINT_SECRET,
         # DATABASE_URL) and remains Phase 0b.
         run: cd apps/api && bun test src/routes/__tests__/agent-paid-surface.test.ts src/routes/__tests__/agent-session-ack.test.ts src/routes/__tests__/dashboard-skill-acks.test.ts
+
+  # Phase 0b uses a separate job and Bun process to avoid cross-file singleton
+  # pollution. The in-memory lane stays guaranteed-green and required; this lane
+  # stays non-required until it has a week of green CI runs.
+  # Use migrate-ci.ts, not db:push: drizzle-kit introspection is broken here.
+  # All database credentials and env values below are dummy fixtures, not secrets.
+  api-route-tests-db:
+    name: api route tests (Postgres-backed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: clawville_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: bun install --frozen-lockfile
+
+      - name: Build the packages the money tests need
+        # Build agent-runtime and its dependencies, plus wager-program.
+        run: bunx turbo run build --filter=@clawville/agent-runtime --filter=@clawville/wager-program
+
+      - name: Apply DB migrations to the service database
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: bun packages/database/scripts/migrate-ci.ts
+
+      - name: Run the full routes test directory
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: cd apps/api && bun test src/routes/__tests__/
