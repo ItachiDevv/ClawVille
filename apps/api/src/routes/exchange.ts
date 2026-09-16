@@ -18,10 +18,13 @@ import { z } from 'zod';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { createMiddleware } from 'hono/factory';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { type CovenantActorKind } from '../services/covenant-action-recorder';
 import { logEventFromContext } from '../services/event-logger';
@@ -32,6 +35,26 @@ import {
   exchangeOrders,
 } from '@clawville/database';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
+import {
+  issueTradingWalletChallenge,
+  tradingSubjectKey,
+  type TradingSubject,
+} from '../services/trading-wallet-challenge';
+import {
+  bindCustodialTradingWallet,
+  bindLinkedTradingWallet,
+  bindTradingWalletBySignature,
+  resolveBoundTradingWallets,
+  revokeTradingWallet,
+  TradingWalletError,
+} from '../services/trading-wallets';
+import {
+  listMyVerifiedTrades,
+  listPublicVerifiedTrades,
+  observerHealth,
+  reportTradeSignature,
+  TradeReportError,
+} from '../services/trade-observer';
 
 /** Map the auth identity kind onto the covenant actor vocabulary. */
 const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
@@ -55,6 +78,145 @@ const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
 //   no guest fallback (a guest never resolves here; an unbound/expired agent 403s).
 export const exchangeRoutes = new Hono<ActivityAuthContext>();
 exchangeRoutes.use('*', sessionMiddleware);
+
+const walletChallengeSchema = z.object({ walletPubkey: z.string().min(32).max(44) }).strict();
+const walletBindSchema = z.object({
+  walletPubkey: z.string().min(32).max(44), nonce: z.string().min(32).max(64), signature: z.string().min(80).max(96),
+}).strict();
+const emptyBodySchema = z.object({}).strict();
+const tradeReportSchema = z.object({ signature: z.string().trim().min(64).max(128) }).strict();
+const reportLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000 });
+const feedLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+const challengeBySubject = new Map<string, { count: number; resetAt: number }>();
+const feedCache = new Map<number, { expiresAt: number; body: unknown }>();
+
+class TradingRequestError extends Error {
+  constructor(readonly code: 'invalid_json' | 'invalid_request') {
+    super(code === 'invalid_json' ? 'The request body is not valid JSON.' : 'The request body is invalid.');
+  }
+}
+
+function tradingSubject(c: { get: (key: 'identity') => ActivityAuthContext['Variables']['identity'] }): TradingSubject {
+  const identity = c.get('identity');
+  return { kind: identity.kind === 'agent' ? 'agent' : 'avatar', userId: identity.userId,
+    avatarId: identity.avatarId, agentId: identity.agentId };
+}
+
+function tradingWalletDto(wallet: Awaited<ReturnType<typeof resolveBoundTradingWallets>>[number]) {
+  return { pubkey: wallet.pubkey, source: wallet.source, subjectKind: wallet.subjectKind,
+    boundAt: wallet.boundAt.toISOString(), lastPolledAt: wallet.lastPolledAt?.toISOString() ?? null,
+    operatedByClawville: wallet.operatedByClawville };
+}
+
+async function strictJson<T>(c: { req: { json(): Promise<unknown> } }, schema: z.ZodType<T>): Promise<T> {
+  let body: unknown;
+  try { body = await c.req.json(); } catch { throw new TradingRequestError('invalid_json'); }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw new TradingRequestError('invalid_request');
+  return parsed.data;
+}
+
+function walletErrorResponse(c: any, error: unknown) {
+  if (error instanceof TradingRequestError) return c.json({ error: error.message, code: error.code }, 400);
+  if (error instanceof TradingWalletError) return c.json({ error: error.message, code: error.code }, error.status);
+  throw error;
+}
+
+const requireTradingLedgerCapable = createMiddleware<ActivityAuthContext>(async (c, next) => {
+  const identity = c.get('identity');
+  if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
+    return c.json({ error: 'The agent session is not ledger authorized.', code: 'agent_session_not_ledger_authorized' }, 403);
+  }
+  return next();
+});
+
+exchangeRoutes.post('/wallets/bind/challenge', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, noStorePrivate, async (c) => {
+  try {
+    const subject = tradingSubject(c);
+    const key = tradingSubjectKey(subject);
+    const now = Date.now();
+    const bucket = challengeBySubject.get(key);
+    if (bucket && now <= bucket.resetAt && bucket.count >= 10) return c.json({ error: 'Too many wallet challenges.', code: 'rate_limited' }, 429);
+    challengeBySubject.set(key, !bucket || now > bucket.resetAt ? { count: 1, resetAt: now + 60_000 } : { ...bucket, count: bucket.count + 1 });
+    const body = await strictJson(c, walletChallengeSchema);
+    return c.json(issueTradingWalletChallenge(key, body.walletPubkey));
+  } catch (error) { return walletErrorResponse(c, error); }
+});
+
+exchangeRoutes.post('/wallets/bind', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, noStorePrivate, async (c) => {
+  try {
+    const body = await strictJson(c, walletBindSchema);
+    const wallet = await bindTradingWalletBySignature({ subject: tradingSubject(c), ...body });
+    return c.json({ ok: true, wallet: tradingWalletDto(wallet) });
+  } catch (error) { return walletErrorResponse(c, error); }
+});
+
+exchangeRoutes.post('/wallets/bind/linked', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, noStorePrivate, async (c) => {
+  try {
+    await strictJson(c, emptyBodySchema);
+    const wallet = await bindLinkedTradingWallet(tradingSubject(c));
+    return c.json({ ok: true, wallet: tradingWalletDto(wallet) });
+  } catch (error) { return walletErrorResponse(c, error); }
+});
+
+exchangeRoutes.post('/wallets/bind/custodial', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, noStorePrivate, async (c) => {
+  try {
+    await strictJson(c, emptyBodySchema);
+    const wallet = await bindCustodialTradingWallet({ subject: tradingSubject(c) });
+    return c.json({ ok: true, wallet: tradingWalletDto(wallet) });
+  } catch (error) { return walletErrorResponse(c, error); }
+});
+
+exchangeRoutes.post('/wallets/:pubkey/revoke', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, noStorePrivate, async (c) => {
+  try {
+    await revokeTradingWallet({ subject: tradingSubject(c), walletPubkey: c.req.param('pubkey') });
+    return c.json({ ok: true });
+  } catch (error) {
+    if (error instanceof TradingWalletError && error.code === 'wallet_not_found') return c.json({ error: 'This wallet does not belong to the caller.', code: 'not_your_wallet' }, 403);
+    return walletErrorResponse(c, error);
+  }
+});
+
+exchangeRoutes.get('/wallets/mine', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+  const wallets = await resolveBoundTradingWallets({ scope: 'subject', subject: tradingSubject(c) });
+  return c.json({ wallets: wallets.map(tradingWalletDto) });
+});
+
+exchangeRoutes.post('/trades/report', requireAuthOrAgentSession, requireTradingLedgerCapable, requireNonGuestIdentity, async (c) => {
+  if (!reportLimiter.check(getClientIp(c))) return c.json({ error: 'Too many trade reports.', code: 'rate_limited' }, 429);
+  try {
+    const body = await strictJson(c, tradeReportSchema);
+    const outcome = await reportTradeSignature({ subject: tradingSubject(c), signature: body.signature });
+    if (!outcome.trade) throw new Error('trade report returned no DTO');
+    return c.json({ ok: true, trade: outcome.trade, scored: outcome.scored, reason: outcome.reason, replayed: !outcome.inserted });
+  } catch (error) {
+    if (error instanceof TradingRequestError) return walletErrorResponse(c, error);
+    if (error instanceof TradeReportError) {
+      const message = error.code === 'not_a_swap'
+        ? 'The transaction is not an eligible swap.'
+        : error.code === 'wallet_not_bound'
+          ? "No bound wallet among the transaction's signers belongs to this avatar. The fee payer is not used for wallet resolution."
+          : 'The transaction could not be accepted.';
+      return c.json({ error: message, code: error.code, ...(error.detail ? { detail: error.detail } : {}) }, error.status);
+    }
+    throw error;
+  }
+});
+
+exchangeRoutes.get('/trades/mine', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') ?? 25) || 25));
+  return c.json({ trades: await listMyVerifiedTrades(tradingSubject(c).avatarId, limit) });
+});
+
+exchangeRoutes.get('/trades/feed', async (c) => {
+  if (!feedLimiter.check(getClientIp(c))) return c.json({ error: 'Too many feed requests.', code: 'rate_limited' }, 429);
+  const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') ?? 25) || 25));
+  const cached = feedCache.get(limit);
+  if (cached && cached.expiresAt > Date.now()) return c.json(cached.body as any);
+  const body = { trades: await listPublicVerifiedTrades(limit), generatedAt: new Date().toISOString(), observer: observerHealth() };
+  feedCache.set(limit, { expiresAt: Date.now() + 15_000, body });
+  return c.json(body);
+});
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

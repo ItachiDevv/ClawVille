@@ -36,6 +36,9 @@ import {
   WORLD_PX_HEIGHT,
   WORLD_PX_WIDTH,
   type AutonomyStatusResponse,
+  type TradeDex,
+  type TradeRefusalCode,
+  type TradeUnscoredReason,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
@@ -236,7 +239,11 @@ worldRoutes.use('*', sessionMiddleware);
 // the minimal additive seam — no world-stream internals (snapshot/presence/tick)
 // are changed.
 // ---------------------------------------------------------------------------
-const landStreamSubscribers = new Set<SSEStreamingApi>();
+const worldStreamSubscribers = new Set<SSEStreamingApi>();
+
+function dropWorldStreamSubscriber(stream: SSEStreamingApi): void {
+  Set.prototype.delete.call(worldStreamSubscribers, stream);
+}
 
 /**
  * Fan a `land` SSE event out to every connected world-stream subscriber across
@@ -258,20 +265,61 @@ export function broadcastLandEvent(payload: {
   // throw from writeSSE; the INNER try keeps one dead stream from aborting the
   // fan-out to the rest. (Deleting from a Set mid-`for…of` is spec-safe.)
   try {
-    if (landStreamSubscribers.size === 0) return;
+    if (worldStreamSubscribers.size === 0) return;
     const data = JSON.stringify(payload);
-    for (const stream of landStreamSubscribers) {
+    for (const stream of worldStreamSubscribers) {
       try {
         void stream.writeSSE({ data, event: 'land' }).catch(() => {
-          landStreamSubscribers.delete(stream);
+          dropWorldStreamSubscriber(stream);
         });
       } catch {
-        landStreamSubscribers.delete(stream);
+        dropWorldStreamSubscriber(stream);
       }
     }
   } catch {
     /* notification side-effect must never surface as a request error */
   }
+}
+
+export interface TradeTickerEvent {
+  type: 'trade.verified';
+  signature: string;
+  subject: { type: 'avatar' | 'agent'; id: string; avatarName: string | null };
+  inputMint: string; outputMint: string; notionalUsd: number | null; dex: TradeDex;
+  blockTime: number | null; multiplier: 1 | 1.5 | 2; scored: boolean;
+  operatedByClawville: boolean; decisionId: string | null;
+  unscoredReason: TradeUnscoredReason | null;
+}
+
+export interface TradeDecisionEvent {
+  type: 'trade.decision'; decisionId: string;
+  subject: { type: 'agent'; id: string; avatarName: string | null };
+  verdict: 'submitted' | 'executed' | 'refused'; reason: TradeRefusalCode | null;
+  inputMint: string; outputMint: string; requestedUsd: number | null;
+  operatedByClawville: boolean; at: string;
+}
+
+function broadcastTypedWorldEvent(event: 'trade' | 'trade_decision', payload: TradeTickerEvent | TradeDecisionEvent): void {
+  try {
+    const data = JSON.stringify(payload);
+    for (const stream of worldStreamSubscribers) {
+      try {
+        void stream.writeSSE({ data, event }).catch(() => dropWorldStreamSubscriber(stream));
+      } catch {
+        dropWorldStreamSubscriber(stream);
+      }
+    }
+  } catch {
+    // Notification failures never affect the committed trading write.
+  }
+}
+
+export function broadcastTradeEvent(payload: TradeTickerEvent): void {
+  broadcastTypedWorldEvent('trade', payload);
+}
+
+export function broadcastTradeDecisionEvent(payload: TradeDecisionEvent): void {
+  broadcastTypedWorldEvent('trade_decision', payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -809,10 +857,10 @@ worldRoutes.get('/:roomId/stream', async (c) => {
     // Live land-sync (2.1): register this stream for the GLOBAL `land` fan-out
     // (land is global, so every connected stream gets land events regardless of
     // room). Removed on abort + on a failed keepalive write below.
-    landStreamSubscribers.add(stream);
+    worldStreamSubscribers.add(stream);
     stream.onAbort(() => {
       npcSimulation.removeRoomListener(roomId, listener);
-      landStreamSubscribers.delete(stream);
+      worldStreamSubscribers.delete(stream);
     });
 
     // SSE keepalive — see npc-sse.ts for the Cloudflare HTTP/2 idle-reset
@@ -823,7 +871,7 @@ worldRoutes.get('/:roomId/stream', async (c) => {
         await stream.writeSSE({ data: '', event: 'keepalive' });
       } catch {
         npcSimulation.removeRoomListener(roomId, listener);
-        landStreamSubscribers.delete(stream);
+        worldStreamSubscribers.delete(stream);
         return;
       }
     }

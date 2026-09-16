@@ -13,16 +13,19 @@ name: Gates — money/cove/poker invariant suite
 # and the `describeIfDb`-gated tests SKIP. What runs is the IN-MEMORY suite — the
 # poker tournament + cash conservation/idempotency, the slot/blackjack/baccarat/
 # holdem engine logic, side-pot/rake conservation, the provably-fair replay — all
-# on FakeDb/FakeLedger. That is the guaranteed-green Phase-0 gate. Phase 0b adds a
-# Postgres(+pgvector) service + db:push so the DB-backed tests also run, once
-# verified green in CI (kept separate so this gate can be made REQUIRED today).
+# on FakeDb/FakeLedger. That is the guaranteed-green Phase-0 gate. Phase 0b is now
+# implemented as the separate api-route-tests-db job below, with a
+# Postgres(+pgvector) service + migrations via migrate-ci.ts, not db:push
+# (drizzle-kit introspection is broken in this repo).
 #
 # Local equivalent: `cd apps/api && bun test`  (with DATABASE_URL UNSET).
 
 on:
   pull_request:
     paths:
+      - 'packages/database/migrations/**'
       - 'apps/api/src/**'
+      - 'apps/web/src/**'
       - 'packages/database/src/schema/**'
       - 'packages/shared/src/constants/**'
       - '.github/workflows/gates.yml'
@@ -31,6 +34,7 @@ on:
       - master
     paths:
       - 'apps/api/src/**'
+      - 'apps/web/src/**'
       - 'packages/database/src/schema/**'
       - 'packages/shared/src/constants/**'
   workflow_dispatch: {}
@@ -40,6 +44,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  web-tests:
+    name: web Trading Floor tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: bun install --frozen-lockfile
+
+      - name: Build the packages the web typecheck resolves
+        # apps/web imports @clawville/database through its built dist types
+        # (packages/database/dist/index.d.ts) and, transitively, drizzle-orm's
+        # `/// <reference types="bun-types" />` is what brings `bun:test` into
+        # the web program (tsconfig `types` is restricted to node/react). On a
+        # fresh runner the dist does not exist, so every route importing the
+        # database package AND every test importing bun:test fails TS2307 —
+        # exactly the 2026-09-16 PR #276 red lane. apps/web also imports
+        # @clawville/agent-runtime (agent-orchestrator, stores/research). Mirror
+        # the api lane: build agent-runtime first; turbo pulls database, shared
+        # and agent-templates in dependency order.
+        run: bunx turbo run build --filter=@clawville/agent-runtime
+
+      - name: Typecheck web
+        run: cd apps/web && bun run typecheck
+
+      - name: Run Trading Floor suites
+        run: >-
+          cd apps/web && bun test
+          src/stores/__tests__/trade-ticker.test.ts
+          src/stores/__tests__/world-stream-state.test.ts
+          src/hooks/use-trading-floor-normalise.test.ts
+          src/hooks/use-trading-floor-hooks.test.tsx
+          src/components/game/trading-floor/format.test.ts
+          src/components/game/trading-floor/floor-tape-placement.test.ts
+          src/components/game/trading-floor/floor-components.test.tsx
+          src/components/game/trading-floor/trading-floor-structural.test.ts
+          src/app/leaderboard/leaderboard-trader-column.test.tsx
+          src/lib/__tests__/api-error-code.test.ts
+          src/lib/__tests__/solana-wallet.test.ts
+          src/lib/world-presence-controller.test.ts
+          src/hooks/world-downlink-policy.test.ts
+
   api-invariant-tests:
     name: api money/cove/poker invariant tests
     runs-on: ubuntu-latest
@@ -85,3 +138,122 @@ jobs:
         # DATABASE_URL intentionally UNSET → describeIfDb tests skip; the
         # in-memory conservation/idempotency/parity/no-leak suite IS the gate.
         run: cd apps/api && bun test src/services/poker/ src/services/__tests__/
+
+      - name: Run the protocol-pin route tests
+        # 2026-09-15 — closes the stale-pin blind spot: agent-paid-surface.test.ts
+        # sat pinned at PROTOCOL_VERSION 56 through the v57 AND v58 bumps because
+        # routes/__tests__ never ran in CI and pin sweeps grepped for the old
+        # number. These three files assert the live protocol version and the
+        # served-manual/ack contracts; any future bump that misses them goes RED
+        # here instead of rotting silently.
+        #
+        # SEPARATE bun process (not appended to the step above) on purpose: the
+        # in-memory sim singletons carry state across test files in a shared
+        # process (the documented pre-existing isolation bug), and these route
+        # files boot different fixtures. The full routes/__tests__ dir stays out
+        # of CI for now — it is NOT green without env/DB (FINGERPRINT_SECRET,
+        # DATABASE_URL) and remains Phase 0b.
+        run: cd apps/api && bun test src/routes/__tests__/agent-paid-surface.test.ts src/routes/__tests__/agent-session-ack.test.ts src/routes/__tests__/dashboard-skill-acks.test.ts
+
+  # Phase 0b uses a separate job and Bun process to avoid cross-file singleton
+  # pollution. The in-memory lane stays guaranteed-green and required; this lane
+  # stays non-required until it has a week of green CI runs.
+  # Use migrate-ci.ts, not db:push: drizzle-kit introspection is broken here.
+  # All database credentials and env values below are dummy fixtures, not secrets.
+  api-route-tests-db:
+    name: api route tests (Postgres-backed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: clawville_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: bun install --frozen-lockfile
+
+      - name: Build the packages the money tests need
+        # Build agent-runtime and its dependencies, plus wager-program.
+        run: bunx turbo run build --filter=@clawville/agent-runtime --filter=@clawville/wager-program
+
+      - name: Generate the full base schema from the Drizzle TS schema
+        # The hand-authored migrations are forward-only on top of a base schema
+        # that predates them — a fresh service DB needs this bootstrap first.
+        # drizzle-kit generate is pure TS→SQL (no DB introspection; the known
+        # introspection bug does not apply). Empty out dir ⇒ full schema.
+        run: cd packages/database && rm -rf .drizzle-ci-bootstrap && bunx drizzle-kit generate --config drizzle.ci-bootstrap.config.ts --name base_schema
+
+      - name: Apply the base schema to the empty service database
+        # Guarded: the script refuses to run against any DB that already has
+        # the app schema, so it can never touch staging/prod.
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: bun packages/database/scripts/ci-bootstrap-schema.ts
+
+      - name: Apply DB migrations to the service database
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: bun packages/database/scripts/migrate-ci.ts
+
+      - name: Run PostgreSQL-backed Trading Floor database contracts
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: cd apps/api && bun test src/services/__tests__/trading-migrations-db.test.ts src/services/__tests__/trade-observer.test.ts
+
+      - name: Seed the canonical land parcel grid
+        # land DB-contract tests pick real parcels; idempotent 56-row seed,
+        # explicit-URL-only (SEED_DATABASE_URL, dummy CI value — not a secret).
+        env:
+          SEED_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: bun apps/api/scripts/seed-land-parcels.ts
+
+      - name: Run the routes test directory (minus process-isolated files)
+        # Bun mock.module + the module cache are process-global. ANY file that
+        # calls mock.module can poison sibling files' route modules and can
+        # itself be poisoned. Every mocker runs in its own Bun process below;
+        # the main group contains no mock.module at all.
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          cd apps/api
+          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(admin-trading-provisioning|agent-frontdoor-connect|agent-public-identity-schema|cosmetic-guest-equip-handler|cove-history|ct-topup-settle|kelp|land-tenure-phaseb|moonpay|partner-covenant|partner-hatcher-p5-handler|world-ws-identity|x402-stats)\.test\.ts$')
+          bun test $files
+
+      - name: Run the process-isolated route test files (one bun process each)
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          cd apps/api
+          bun test src/routes/__tests__/admin-trading-provisioning.test.ts
+          bun test src/routes/__tests__/agent-frontdoor-connect.test.ts
+          bun test src/routes/__tests__/agent-public-identity-schema.test.ts
+          bun test src/routes/__tests__/cosmetic-guest-equip-handler.test.ts
+          bun test src/routes/__tests__/cove-history.test.ts
+          bun test src/routes/__tests__/ct-topup-settle.test.ts
+          bun test src/routes/__tests__/kelp.test.ts
+          bun test src/routes/__tests__/land-tenure-phaseb.test.ts
+          bun test src/routes/__tests__/moonpay.test.ts
+          bun test src/routes/__tests__/partner-covenant.test.ts
+          bun test src/routes/__tests__/partner-hatcher-p5-handler.test.ts
+          bun test src/routes/__tests__/world-ws-identity.test.ts
+          bun test src/routes/__tests__/x402-stats.test.ts

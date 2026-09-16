@@ -63,6 +63,8 @@ export * from './dashboard-phases';
 // 2026-05-18 — Exchange: peer items/services board (NEED/OFFER). Needs +
 // one_shot/repeatable offers. Subscriptions deferred.
 export * from './exchange';
+export * from './trading';
+export * from './trading-fleet';
 // Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
 // On-chain is authoritative for money; these tables back FE discovery / FE
 // polling / event timelines / leaderboard hooks. See `wager.ts` header.

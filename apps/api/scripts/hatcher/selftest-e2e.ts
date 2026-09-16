@@ -1073,6 +1073,7 @@ async function main() {
     // Probe the executor: capture console.warn to detect "not in whitelist".
     const origWarn = console.warn;
     function executorAccepts(verb: string, sampleTag: string): boolean {
+      if (typeof sampleTag !== 'string' || sampleTag.length === 0) return false;
       const warns: string[] = [];
       console.warn = (...a: unknown[]) => { warns.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); };
       try {
@@ -1092,12 +1093,18 @@ async function main() {
       claim_parcel: '[ACTION: claim_parcel(parcelCode=parcel-starter-01, door=rent, weeks=1)]',
       prepay_rent: '[ACTION: prepay_rent(parcelCode=parcel-starter-01, weeks=1)]',
       release_parcel: '[ACTION: release_parcel(parcelCode=parcel-starter-01)]',
+      place_kit_piece: '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]',
       enter_poker_room: '[ACTION: enter_poker_room()]',
       enter_kelp_forest: '[ACTION: enter_kelp_forest()]',
       claim_tutorial_quest: '[ACTION: claim_tutorial_quest(questId=say-hi-nori)]',
+      salvage_node: '[ACTION: salvage_node(nodeId=shallows-01)]',
+      trade_token: '[ACTION: trade_token(input_mint=USDC, output_mint=SOL, amount_usd=1, reason=parity probe)]',
       talk_to_npc: `[ACTION: talk_to_npc(npcId=${NPC_IDS[1]}, message=parity-probe)]`,
     };
+    const originalTradeResolve = npcSimulation.autonomousTradeAgentResolve;
+    npcSimulation.autonomousTradeAgentResolve = async () => null;
     const executorSet = EXPECTED_EXECUTOR_VERBS.filter((v) => executorAccepts(v, samples[v]));
+    npcSimulation.autonomousTradeAgentResolve = originalTradeResolve;
     // A verb that should NOT exist must be rejected (negative control).
     const bogusRejected = !executorAccepts('selfdestruct', '[ACTION: selfdestruct(x=1)]');
 
@@ -1108,9 +1115,13 @@ async function main() {
     const executorMatchesExpected =
       executorSet.length === EXPECTED_EXECUTOR_VERBS.length &&
       EXPECTED_EXECUTOR_VERBS.every((v) => executorSet.includes(v));
-    const ok = executorMatchesExpected && bogusRejected && undocumented.length === 0;
+    const beforePath = npcSimulation.getNpcById(overrideNpcId)?.path;
+    npcSimulation.dispatchHatcherActions(overrideNpcId, '[ACTION: move(x=5792, y=5792)]');
+    const afterPath = npcSimulation.getNpcById(overrideNpcId)?.path;
+    const positiveEffect = Boolean(afterPath && afterPath.length > 0 && afterPath !== beforePath);
+    const ok = executorMatchesExpected && bogusRejected && undocumented.length === 0 && positiveEffect;
     if (!ok) bugs.push(`whitelist-parity FAIL: executorSet=[${executorSet.join(',')}] expected=[${EXPECTED_EXECUTOR_VERBS.join(',')}] undocumented=[${undocumented.join(',')}]`);
-    check('G4 EXECUTOR verb-set === MANUAL verb-set (whitelist-parity, the same-diff MANDATORY rule)', ok, `executor accepts=[${executorSet.join(',')}] (expect all ${EXPECTED_EXECUTOR_VERBS.length}) bogusRejected=${bogusRejected} undocumented=[${undocumented.join(',')}]`);
+    check('G4 EXECUTOR verb-set === MANUAL verb-set (whitelist-parity, the same-diff MANDATORY rule)', ok, `executor accepts=[${executorSet.join(',')}] (expect all ${EXPECTED_EXECUTOR_VERBS.length}) bogusRejected=${bogusRejected} undocumented=[${undocumented.join(',')}] positiveEffect=${positiveEffect}`);
   });
 
   // ===================================================================

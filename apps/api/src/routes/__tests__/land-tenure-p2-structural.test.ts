@@ -6,11 +6,8 @@ import {
   HATCHER_ACTION_MENU,
   HATCHER_ACTION_VERBS,
   LAND_HOLD_THRESHOLDS_CLV,
-  LAND_RENT_LADDER,
-  LAND_TIER_LADDER,
   LAND_TENURE_RENT_CT_WEEKLY,
   TOTAL_PARCEL_SUPPLY,
-  generateParcelsForTier,
 } from '@clawville/shared';
 import { autonomousLandIdempotencyKey } from '../../services/npc-simulation';
 import {
@@ -160,30 +157,34 @@ describe('shared settlement architecture', () => {
 });
 
 describe('ghost absorption and freshness guards', () => {
-  it('carries the regenerated exact 18-row manifest and an all-or-nothing DELETE-only disposition', () => {
+  it('carries the frozen exact 18-row manifest and an all-or-nothing DELETE-only disposition', () => {
     const manifestRows = [
       ...migration.matchAll(/\('(parcel-[ab]-\d\d)','([ab])',(\d+),(\d+),(\d+),(\d+)\)/g),
     ].map((match) => match.slice(1).map((value, index) => (index < 2 ? value : Number(value))));
-    const interpolate = (
-      band: { minCt: number | null; maxCt: number | null },
-      index: number,
-      count: number,
-    ) => Math.round(band.maxCt! - (band.maxCt! - band.minCt!) * (index / (count - 1)));
-    const expectedRows = (
-      [
-        ['b', 12],
-        ['a', 6],
-      ] as const
-    ).flatMap(([tier, count]) =>
-      generateParcelsForTier(tier, count).map((parcel) => [
-        parcel.id,
-        tier,
-        Math.floor((parcel.cx + 11_264) / 32),
-        Math.floor((parcel.cz + 11_264) / 32),
-        interpolate(LAND_TIER_LADDER[tier], parcel.indexInTier, count),
-        interpolate(LAND_RENT_LADDER[tier], parcel.indexInTier, count),
-      ]),
-    );
+    // FROZEN HISTORY: migration 0059 (bfdd1f31, land scale-up grid rederive)
+    // changed generateParcelsForTier after 0052 shipped, so regeneration can
+    // never match again. Guard the immutable content contract (18 rows, a/b
+    // tiers, exact values), complementing migrate-ci's checksum tamper guard.
+    const expectedRows = [
+      ['parcel-b-00', 'b', 128, 128, 24000, 550],
+      ['parcel-b-01', 'b', 277, 128, 22727, 523],
+      ['parcel-b-02', 'b', 426, 128, 21455, 495],
+      ['parcel-b-03', 'b', 576, 128, 20182, 468],
+      ['parcel-b-04', 'b', 576, 277, 18909, 441],
+      ['parcel-b-05', 'b', 576, 426, 17636, 414],
+      ['parcel-b-06', 'b', 576, 576, 16364, 386],
+      ['parcel-b-07', 'b', 426, 576, 15091, 359],
+      ['parcel-b-08', 'b', 277, 576, 13818, 332],
+      ['parcel-b-09', 'b', 128, 576, 12545, 305],
+      ['parcel-b-10', 'b', 128, 426, 11273, 277],
+      ['parcel-b-11', 'b', 128, 277, 10000, 250],
+      ['parcel-a-00', 'a', 152, 152, 80000, 2400],
+      ['parcel-a-01', 'a', 418, 152, 72000, 2120],
+      ['parcel-a-02', 'a', 552, 285, 64000, 1840],
+      ['parcel-a-03', 'a', 552, 552, 56000, 1560],
+      ['parcel-a-04', 'a', 285, 552, 48000, 1280],
+      ['parcel-a-05', 'a', 152, 418, 40000, 1000],
+    ];
     expect(manifestRows).toEqual(expectedRows);
     expect(migration).toContain('SELECT pg_advisory_xact_lock(510020260801)');
     expect(migration).not.toContain('hashtextextended');

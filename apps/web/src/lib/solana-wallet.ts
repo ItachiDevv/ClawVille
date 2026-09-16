@@ -44,7 +44,8 @@ export class WalletSignError extends Error {
       | 'no_wallet'
       | 'user_rejected'
       | 'sign_failed'
-      | 'no_pubkey',
+      | 'no_pubkey'
+      | 'wallet_changed',
   ) {
     super(message);
     this.name = 'WalletSignError';
@@ -65,6 +66,88 @@ export function getSolanaProvider(): SolanaProvider | null {
 /** Whether a browser Solana wallet is available to sign. */
 export function hasSolanaWallet(): boolean {
   return getSolanaProvider() !== null;
+}
+
+export async function connectSolanaWallet(): Promise<string> {
+  const provider = getSolanaProvider();
+  if (!provider) {
+    throw new WalletSignError(
+      'No Solana wallet detected. Install Phantom, Solflare, or Backpack to link a wallet.',
+      'no_wallet',
+    );
+  }
+
+  try {
+    const result = await provider.connect();
+    const pubkey = result.publicKey.toString();
+    if (!pubkey) {
+      throw new WalletSignError('Wallet returned no public key.', 'no_pubkey');
+    }
+    return pubkey;
+  } catch (error) {
+    if (error instanceof WalletSignError) throw error;
+    if (isUserRejection(error)) {
+      throw new WalletSignError('Wallet connection was rejected.', 'user_rejected');
+    }
+    throw new WalletSignError('Could not connect to the wallet.', 'sign_failed');
+  }
+}
+
+export async function signMessageWithSolanaWallet(
+  messageToSign: string,
+  expectedPubkey: string,
+): Promise<SignedLinkProof> {
+  const provider = getSolanaProvider();
+  if (!provider) {
+    throw new WalletSignError(
+      'No Solana wallet detected. Install Phantom, Solflare, or Backpack to link a wallet.',
+      'no_wallet',
+    );
+  }
+
+  let walletPubkey: string;
+  try {
+    const result = await provider.connect();
+    walletPubkey = result.publicKey.toString();
+  } catch (error) {
+    if (isUserRejection(error)) {
+      throw new WalletSignError('Wallet connection was rejected.', 'user_rejected');
+    }
+    throw new WalletSignError('Could not connect to the wallet.', 'sign_failed');
+  }
+
+  if (!walletPubkey) {
+    throw new WalletSignError('Wallet returned no public key.', 'no_pubkey');
+  }
+  if (walletPubkey !== expectedPubkey) {
+    throw new WalletSignError('The active wallet changed. Try again.', 'wallet_changed');
+  }
+
+  let signatureBytes: Uint8Array;
+  try {
+    const signed = await provider.signMessage(
+      new TextEncoder().encode(messageToSign),
+      'utf8',
+    );
+    signatureBytes = signed instanceof Uint8Array
+      ? signed
+      : (signed as { signature: Uint8Array }).signature;
+  } catch (error) {
+    if (isUserRejection(error)) {
+      throw new WalletSignError('Signature request was rejected.', 'user_rejected');
+    }
+    throw new WalletSignError('Message signing failed.', 'sign_failed');
+  }
+
+  const activePubkey = provider.publicKey?.toString() ?? walletPubkey;
+  if (activePubkey !== expectedPubkey) {
+    throw new WalletSignError('The active wallet changed. Try again.', 'wallet_changed');
+  }
+  if (!(signatureBytes instanceof Uint8Array) || signatureBytes.length !== 64) {
+    throw new WalletSignError('Wallet returned a malformed signature.', 'sign_failed');
+  }
+
+  return { walletPubkey, signatureBase58: bs58.encode(signatureBytes) };
 }
 
 export interface SignedLinkProof {

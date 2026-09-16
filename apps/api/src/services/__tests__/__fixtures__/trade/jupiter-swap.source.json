@@ -1,0 +1,14 @@
+{
+  "signature": "rAggcYyw6gLgCriJriKzoptpqNkDg2jDWc9rbpH7ThDqbjKi7Jc5pdjbbrLeHzY9mMfUT7Q59sEvji3w8Xj8mxd",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-16T07:25:59.892Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "rAggcYyw6gLgCriJriKzoptpqNkDg2jDWc9rbpH7ThDqbjKi7Jc5pdjbbrLeHzY9mMfUT7Q59sEvji3w8Xj8mxd",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ]
+}

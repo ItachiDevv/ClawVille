@@ -33,10 +33,33 @@ const TOP_K = 5;
 const PROTOCOL_TOP_K = 2;
 const MATCH_THRESHOLD = 0.3;
 
-function protocolKnowledgeEntries(results: unknown): string[] {
-  if (!Array.isArray(results)) return [];
+/**
+ * Manual sections that are ALWAYS on the wire, regardless of similarity:
+ * section 0 (front-matter: title + `protocol_version` + the pointer the agent
+ * must re-pull on a bump) and section 1 ("Connect": identity, session and the
+ * wallet-address invariant). Everything else is retrieved by relevance.
+ *
+ * Why pinned (2026-09-16): the manual grew to 19 `## ` sections and the
+ * hosted-skill-runtime-probe showed that for a "which protocol version am I
+ * on" question, top-2 similarity returned sections 0 and 3a (proxy cognition)
+ * — the Connect section that carries the wallet invariant ranked 4th by a
+ * 0.008 margin. The CONSUMPTION MANDATE (CLAUDE.md) says the deciding model
+ * must always see the current world scope; version + identity fundamentals
+ * are that scope, so they do not compete with 17 other sections for two slots.
+ */
+const PINNED_PROTOCOL_SECTIONS = [0, 1] as const;
+const PINNED_FETCH_COUNT = 256;
 
-  const bySection = new Map<string, { text: string; version: number }>();
+interface ProtocolCandidate {
+  text: string;
+  version: number;
+  sectionKey: string;
+  pinnedOrder: number; // 0..n for pinned sections, Infinity for relevance hits
+}
+
+function protocolCandidates(results: unknown, keyPrefix: string): ProtocolCandidate[] {
+  if (!Array.isArray(results)) return [];
+  const out: ProtocolCandidate[] = [];
   for (let i = 0; i < results.length; i++) {
     const memory = results[i] as Record<string, any>;
     const metadata = (memory?.metadata ?? {}) as Record<string, unknown>;
@@ -49,18 +72,67 @@ function protocolKnowledgeEntries(results: unknown): string[] {
     const sectionKey =
       typeof section === 'number' || typeof section === 'string'
         ? String(section)
-        : `result:${i}`;
+        : `${keyPrefix}:${i}`;
     const version =
       typeof metadata.version === 'number' && Number.isFinite(metadata.version)
         ? metadata.version
         : Number.NEGATIVE_INFINITY;
-    const previous = bySection.get(sectionKey);
-    if (!previous || version > previous.version) {
-      bySection.set(sectionKey, { text, version });
+    out.push({ text, version, sectionKey, pinnedOrder: Number.POSITIVE_INFINITY });
+  }
+  return out;
+}
+
+/** Dedupe by section (highest version wins), pinned sections first, then hit order. */
+function protocolKnowledgeEntries(
+  results: unknown,
+  pinned: ProtocolCandidate[] = [],
+): string[] {
+  const bySection = new Map<string, ProtocolCandidate>();
+  for (const candidate of [...pinned, ...protocolCandidates(results, 'result')]) {
+    const previous = bySection.get(candidate.sectionKey);
+    if (!previous || candidate.version > previous.version) {
+      bySection.set(candidate.sectionKey, {
+        ...candidate,
+        pinnedOrder: Math.min(candidate.pinnedOrder, previous?.pinnedOrder ?? Number.POSITIVE_INFINITY),
+      });
+    } else if (candidate.pinnedOrder < previous.pinnedOrder) {
+      bySection.set(candidate.sectionKey, { ...previous, pinnedOrder: candidate.pinnedOrder });
     }
   }
+  const ordered = [...bySection.values()];
+  ordered.sort((a, b) => a.pinnedOrder - b.pinnedOrder); // stable: relevance hits keep their order
+  return ordered.map(({ text }) => text);
+}
 
-  return [...bySection.values()].map(({ text }) => text);
+/**
+ * The pinned fundamentals of the CURRENT manual version for this agent.
+ * Fail-soft: any error or a runtime without `getMemories` yields [] and the
+ * provider falls back to pure relevance retrieval (the pre-2026-09-16 shape).
+ */
+async function pinnedProtocolSections(runtime: any, agentId: string): Promise<ProtocolCandidate[]> {
+  if (typeof runtime?.getMemories !== 'function') return [];
+  try {
+    const memories = await runtime.getMemories({
+      roomId: protocolKnowledgeRoomId(agentId),
+      tableName: 'knowledge',
+      count: PINNED_FETCH_COUNT,
+    });
+    const candidates = protocolCandidates(memories, 'pinned');
+    if (candidates.length === 0) return [];
+    const latest = Math.max(...candidates.map((c) => c.version));
+    if (!Number.isFinite(latest)) return [];
+    const pinned: ProtocolCandidate[] = [];
+    PINNED_PROTOCOL_SECTIONS.forEach((section, order) => {
+      const hit = candidates.find((c) => c.version === latest && c.sectionKey === String(section));
+      if (hit) pinned.push({ ...hit, pinnedOrder: order });
+    });
+    return pinned;
+  } catch (err) {
+    console.warn(
+      `[KnowledgeProvider] Pinned protocol sections unavailable (non-fatal): ${(err as Error).message}`,
+    );
+    return [];
+  }
 }
 
 function jsonbFallbackResult(allKnowledge: string[]): ProviderResult {
@@ -144,18 +216,22 @@ export const knowledgeProvider: Provider = {
 
         // The game manual is isolated from ordinary learned knowledge. Reuse the
         // one query embedding and fail soft so this bounded secondary search can
-        // never suppress the primary result.
+        // never suppress the primary result. The pinned fundamentals (version +
+        // Connect) ride along regardless of the similarity ranking.
         try {
-          const protocolResults = await runtime.searchMemories({
-            embedding: queryEmbedding,
-            tableName: 'knowledge',
-            match_threshold: MATCH_THRESHOLD,
-            count: PROTOCOL_TOP_K,
-            roomId: protocolKnowledgeRoomId(agentId),
-            entityId: protocolKnowledgeEntityId(agentId),
-            unique: true,
-          });
-          protocolEntries = protocolKnowledgeEntries(protocolResults);
+          const [pinned, protocolResults] = await Promise.all([
+            pinnedProtocolSections(runtime, agentId),
+            runtime.searchMemories({
+              embedding: queryEmbedding,
+              tableName: 'knowledge',
+              match_threshold: MATCH_THRESHOLD,
+              count: PROTOCOL_TOP_K,
+              roomId: protocolKnowledgeRoomId(agentId),
+              entityId: protocolKnowledgeEntityId(agentId),
+              unique: true,
+            }),
+          ]);
+          protocolEntries = protocolKnowledgeEntries(protocolResults, pinned);
         } catch (err) {
           console.warn(
             `[KnowledgeProvider] Protocol retrieval failed (non-fatal): ${(err as Error).message}`,

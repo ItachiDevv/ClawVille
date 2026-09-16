@@ -105,7 +105,12 @@ export interface ProvisionAvatarAgentOptions {
    *  - 'skip' — caller owns wallet provisioning (the unauth auto-provision
    *    branch, where wallet failure is FATAL and ordered after identity mint).
    */
-  wallet?: 'include-nonfatal' | 'skip';
+  wallet?: 'include-nonfatal' | 'include-fatal' | 'skip';
+  /**
+   * Initial economy policy. `zero` is reserved for dedicated service accounts.
+   * It writes a zero genesis at INSERT time and creates no signup bonus.
+   */
+  initialEconomy?: 'default' | 'zero';
   /**
    * Idempotency by userId: when true and the user already has an avatar row
    * (any isActive state — mirrors the authed-branch guard), return it with
@@ -417,6 +422,7 @@ export async function provisionAvatarAgent(
 ): Promise<ProvisionAvatarAgentResult> {
   const onNameCollision = opts.onNameCollision ?? 'error';
   const walletMode = opts.wallet ?? 'include-nonfatal';
+  const initialEconomy = opts.initialEconomy ?? 'default';
   const maxNameAttempts =
     onNameCollision === 'suffix-retry' ? Math.max(1, opts.maxNameAttempts ?? 5) : 1;
 
@@ -496,20 +502,25 @@ export async function provisionAvatarAgent(
             agentCategory: params.agentCategory,
             harness: params.harness,
             learningFocus,
+            ...(initialEconomy === 'zero'
+              ? { clawTokens: 0, softBalance: 0, boughtBalance: 0, earnedBalance: 0 }
+              : {}),
           })
           .returning();
 
-        await recordCovenantAction(
-          {
-            action: 'economy.genesis',
-            subjectType: 'avatar',
-            subjectId: insertedAvatar.id,
-            actorKind: 'system',
-            dedupeKey: `avatar:${insertedAvatar.id}:genesis`,
-            payload: { amount: insertedAvatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
-          },
-          tx,
-        );
+        if (initialEconomy !== 'zero') {
+          await recordCovenantAction(
+            {
+              action: 'economy.genesis',
+              subjectType: 'avatar',
+              subjectId: insertedAvatar.id,
+              actorKind: 'system',
+              dedupeKey: `avatar:${insertedAvatar.id}:genesis`,
+              payload: { amount: insertedAvatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+            },
+            tx,
+          );
+        }
 
         // Username system (2026-05-19): initialize users.username from the
         // avatar's name when the user doesn't have one yet. Only set when
@@ -578,6 +589,16 @@ export async function provisionAvatarAgent(
     } catch (err) {
       console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
     }
+  } else if (walletMode === 'include-fatal') {
+    const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
+    avatar.walletAddress = w.publicKey;
+    if (w.firstTimeSecretKeyBase58) {
+      firstTimeWallet = {
+        address: w.publicKey,
+        secretKey: w.firstTimeSecretKeyBase58,
+        chain: 'solana',
+      };
+    }
   }
 
   // Tokenomics A2 — one-time cosmetics-scoped signup bonus, granted at account
@@ -589,10 +610,12 @@ export async function provisionAvatarAgent(
   // reach this path (they use the auth.ts guest branch). Agent-connect / Hatcher
   // avatar-insert paths do NOT flow through here — their signup-bonus parity is
   // deferred to Phase C (agent-owner economy), consistent with A1's parity note.
-  try {
-    await ensureCosmeticSignupBonus({ userId, avatarId: avatar.id });
-  } catch (err) {
-    console.error('[avatar-provisioning] cosmetic signup bonus grant failed (non-fatal):', err);
+  if (initialEconomy !== 'zero') {
+    try {
+      await ensureCosmeticSignupBonus({ userId, avatarId: avatar.id });
+    } catch (err) {
+      console.error('[avatar-provisioning] cosmetic signup bonus grant failed (non-fatal):', err);
+    }
   }
 
   return {

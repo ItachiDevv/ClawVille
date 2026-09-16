@@ -21,6 +21,7 @@ export const HATCHER_ACTION_VERBS = [
   'enter_kelp_forest',
   'claim_tutorial_quest',
   'salvage_node',
+  'trade_token',
   'talk_to_npc',
 ] as const;
 
@@ -103,10 +104,14 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
       'gather build materials from one seabed salvage node; walk there first, then call it again on arrival to claim',
   },
   {
+    verb: 'trade_token',
+    syntax: 'trade_token(input_mint=<SOL|USDC|CLAWVILLE|ANSEM>, output_mint=<same set>, amount_usd=<1..25>, reason=<short text, LAST parameter>)',
+    whenToUse: 'place one real Solana swap from the armed custodial trading wallet under the published guardrails',
+  },
+  {
     verb: 'talk_to_npc',
     syntax:
       'talk_to_npc(npcId=<public id>, message=<short text>) or talk_to_npc(buildingId=<teacher slug>, message=<short text>)',
     whenToUse: 'speak to a nearby NPC or teacher; message may contain commas but not a closing parenthesis',
   },
 ] as const;
-

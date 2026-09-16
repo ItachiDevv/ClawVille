@@ -24,6 +24,8 @@ import { db, events, eventWriteFailures, users, avatars, agentBots } from '@claw
 import { eq, sql } from 'drizzle-orm';
 import { alertError } from './alert-error';
 import { sessionDigest } from './session-digest';
+import { resolveTradeMultiplierTier, TRADE_TIER_MULTIPLIER } from '@clawville/shared';
+import type { VerifiedTrade } from '@clawville/database';
 
 // ─── Central raw-bearer redaction chokepoint (Codex auth-lens fix #4 — 2026-06-03) ──
 //
@@ -501,6 +503,22 @@ export function shouldEmitAgentConnected(subjectKey: string, nowMs: number): boo
   return true;
 }
 
+async function buildEventRow(input: EventInput) {
+  const subjectWasGuest = await resolveSubjectWasGuest(input);
+  return {
+    eventType: input.eventType,
+    userId: input.userId ?? null,
+    agentId: redactBearer(input.agentId ?? null) as string | null,
+    avatarId: input.avatarId ?? null,
+    buildingId: input.buildingId ?? null,
+    sessionId: redactBearer(input.sessionId ?? null) as string | null,
+    payload: redactBearersDeep(sanitize(input.payload)) as Record<string, unknown> | undefined,
+    subjectWasGuest,
+    fpHash: input.fpHash ?? null,
+    ipPrefixHash: input.ipPrefixHash ?? null,
+  };
+}
+
 /**
  * Insert core shared by `logEvent` (void) and `logEventReturningId` (id). Same
  * never-throws contract, same sanitization, same three-tier fallback. Returns
@@ -536,20 +554,7 @@ async function writeEvent(input: EventInput): Promise<bigint | null> {
   // events.agent_id, and a client could put a raw `ag-/oc-/hat-` bearer there.
   // Freeze the subject's guest-ness on the row (durable leaderboard exclusion —
   // see resolveSubjectWasGuest). Best-effort + never throws.
-  const subjectWasGuest = await resolveSubjectWasGuest(input);
-
-  const row = {
-    eventType: input.eventType,
-    userId: input.userId ?? null,
-    agentId: redactBearer(input.agentId ?? null) as string | null,
-    avatarId: input.avatarId ?? null,
-    buildingId: input.buildingId ?? null,
-    sessionId: redactBearer(input.sessionId ?? null) as string | null,
-    payload: redactBearersDeep(sanitize(input.payload)) as Record<string, unknown> | undefined,
-    subjectWasGuest,
-    fpHash: input.fpHash ?? null,
-    ipPrefixHash: input.ipPrefixHash ?? null,
-  };
+  const row = await buildEventRow(input);
 
   try {
     // RETURNING id so callers that need the durable cursor (P3 slice 1 — the
@@ -586,6 +591,67 @@ async function writeEvent(input: EventInput): Promise<bigint | null> {
       });
       return null;
     }
+  }
+}
+
+export type VerifiedTradeRow = VerifiedTrade;
+type EventDbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function buildVerifiedTradeEventRow(trade: VerifiedTradeRow) {
+  const multiplierTier = resolveTradeMultiplierTier(trade.inputMint, trade.outputMint);
+  if (trade.blockTime === null) throw new Error('scored trade event requires block time');
+  const row = await buildEventRow({
+    eventType: 'trade.verified',
+    userId: trade.userId,
+    agentId: trade.subjectKind === 'agent' ? trade.agentId : null,
+    avatarId: trade.avatarId,
+    sessionId: null,
+    payload: {
+      signature: trade.signature,
+      notionalUsd: trade.notionalUsd === null ? null : Number(trade.notionalUsd),
+      inputMint: trade.inputMint,
+      outputMint: trade.outputMint,
+      dex: trade.dex,
+      multiplier: TRADE_TIER_MULTIPLIER[multiplierTier],
+      multiplierTier,
+      via: trade.source,
+    },
+    fpHash: null,
+    ipPrefixHash: null,
+  });
+  return { ...row, ts: new Date(trade.blockTime * 1_000) };
+}
+
+/** Strict transaction-aware writer for the sealed trade scoring event. */
+export async function logVerifiedTradeEventTx(
+  tx: EventDbExecutor,
+  trade: VerifiedTradeRow,
+): Promise<bigint> {
+  const inserted = await tx.insert(events).values(await buildVerifiedTradeEventRow(trade)).returning({ id: events.id });
+  if (!inserted[0]) throw new Error('trade event insert returned no id');
+  return inserted[0].id;
+}
+
+/** Root-handle failure recorder. Call only after the strict transaction rolls back. */
+export async function recordVerifiedTradeEventFailure(
+  attempt: VerifiedTradeRow,
+  primaryError: unknown,
+): Promise<void> {
+  try {
+    await db.insert(eventWriteFailures).values({
+      attemptedEventType: 'trade.verified',
+      attemptedRow: await buildVerifiedTradeEventRow(attempt),
+      errorMessage: String(primaryError),
+      errorStack: (primaryError as Error)?.stack,
+    });
+  } catch (secondaryError) {
+    console.warn('[event-logger] STRICT TRADE DOUBLE FAILURE', primaryError, secondaryError);
+    await alertError({
+      severity: 'critical',
+      source: 'trade-observer',
+      message: 'The strict trade event and its failure record both failed.',
+      context: { primaryError: String(primaryError), secondaryError: String(secondaryError) },
+    });
   }
 }
 

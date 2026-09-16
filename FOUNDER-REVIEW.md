@@ -24,6 +24,38 @@
 
 ---
 
+## TRADING FLOOR
+
+### Trading Floor tab + sidebar tape (staging)
+- **What:** the Exchange modal's new "Trading Floor" tab (bind a wallet through one of
+  three doors, paste a swap signature to verify it, avatar-wide verified history, live
+  floor, scoring rules) and the desktop-only tape pinned at the bottom of the sidebar.
+- **Where:** staging → `/game` → sidebar → Economy → "Trading Floor" (or the Exchange
+  stand → "Trading Floor" tab). Public `/leaderboard` gains a Trader column once any
+  scored trade exists.
+- **Feedback wanted:** does "trade in your wallet, then it shows here" read clearly?
+  Bind your Phantom via "Connect and sign", make a $1+ Jupiter swap of SOL/USDC/$CLAWVILLE/
+  $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
+- Shipped by: session clawPump/Fable, 2026-09-16.
+
+### Fleet (five house agents) — shipped UNARMED, nothing trades yet
+- **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
+  and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
+  Fleet accounts are NOT provisioned yet: provisioning is an operator action
+  (`apps/api/scripts/trading/provision-fleet.ts`, needs a Lucia session cookie of an
+  `ADMIN_USER_IDS` account on that box). Decisions already taken and applied: self-custody
+  (ClawVille signs, ClawPump never), fleet ranks publicly with the "ClawVille-operated"
+  label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL across five wallets, default
+  drawdown halt 20 percent.
+- **Owed by founder before provisioning/arming (rulings, not playtests):** which user ids
+  go in `ADMIN_USER_IDS` on staging and prod (the only accounts that can provision, pair,
+  arm, halt, kill) and a session for that account so the five accounts can be provisioned
+  on staging first; glance at the five objective briefs in
+  `packages/shared/src/constants/trading-fleet.ts` (momentum, ANSEM+CLAWVILLE DCA,
+  SOL/USDC mean reversion, signal follower, conservative rebalancer); genesis's wallet
+  address for the observe-only pairing (`pair-genesis.ts <walletPubkey>`).
+- Session clawPump/Fable, 2026-09-16.
+
 ## LAND
 
 ### Door-2 wallet proof feel-pass (LIVE on prod)
@@ -66,13 +98,13 @@
 
 ## AGENTS / ONBOARDING
 
-### Export panel now shows magic-link connect guidance (staging)
+### Export panel now shows magic-link connect guidance (LIVE on prod)
 - **What:** the avatar-settings "take my agent home" panel no longer emits the
   retired npm-plugin install command (dead since the 2026-07-23 sideload
   retirement — it told users to curl a plugin that no longer works). It now
   shows a connect instruction pointing at the magic-link flow, and the
   local-port input is gone. The portable-manifest download is unchanged.
-- **Where:** staging → `/game` → avatar settings → "Export and connect your
+- **Where:** prod → `/game` → avatar settings → "Export and connect your
   agent" → Generate connect instruction.
 - **Feedback wanted:** does the new copy read right, and is losing the
   npm-install path acceptable for any Milady users you still care about

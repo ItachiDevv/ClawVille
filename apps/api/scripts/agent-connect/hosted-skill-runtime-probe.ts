@@ -24,6 +24,7 @@ const cliSchema = z.object({
   api: z.string().url(),
   keep: z.boolean(),
   withEcho: z.boolean(),
+  autonomousDecision: z.boolean(),
 }).strict();
 
 const claimResponseSchema = z.object({
@@ -58,6 +59,7 @@ interface CliOptions {
   api: string;
   keep: boolean;
   withEcho: boolean;
+  autonomousDecision: boolean;
 }
 
 interface Fixture {
@@ -93,7 +95,7 @@ function throwIfInterrupted(): void {
 }
 
 function parseCli(args: string[]): CliOptions {
-  const parsed: Record<string, unknown> = { keep: false, withEcho: false };
+  const parsed: Record<string, unknown> = { keep: false, withEcho: false, autonomousDecision: false };
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const item = args[i];
@@ -105,6 +107,10 @@ function parseCli(args: string[]): CliOptions {
       if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
       seen.add(item);
       parsed.withEcho = true;
+    } else if (item === '--autonomous-decision') {
+      if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
+      seen.add(item);
+      parsed.autonomousDecision = true;
     } else if (item === '--api') {
       if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
       seen.add(item);
@@ -121,7 +127,7 @@ function parseCli(args: string[]): CliOptions {
   const result = cliSchema.safeParse(parsed);
   if (!result.success) {
     throw new ProbeFailure(
-      'usage: bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <base> [--keep] [--with-echo]',
+      'usage: bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <base> [--keep] [--with-echo] [--autonomous-decision]',
     );
   }
   return result.data;
@@ -400,6 +406,86 @@ async function insertCanarySkill(
       ${content}, ${client.json([])}, 1, ${contentHash}
     )
   `;
+}
+
+async function insertAutonomousTradingProbeState(
+  client: postgres.Sql,
+  fixture: Fixture,
+): Promise<void> {
+  await client.begin(async (tx) => {
+    await tx`
+      INSERT INTO clawpump_agent_links (
+        avatar_id, user_id, clawville_agent_id, wallet_pubkey, objective,
+        armed, killed, float_start_lamports, float_start_usd_micros,
+        operated_by_clawville
+      ) VALUES (
+        ${fixture.avatarId}::uuid, ${fixture.userId}::uuid, ${fixture.platformAgentId},
+        '11111111111111111111111111111111', 'conservative-rebalancer',
+        false, true, 0, 100000000, true
+      )
+    `;
+    await tx`
+      INSERT INTO trading_halts (scope, scope_id, reason, engaged_by)
+      VALUES ('agent', ${fixture.avatarId}::uuid, 'autonomous probe halt', 'system:hosted-probe')
+    `;
+  });
+}
+
+async function setProbeHalt(
+  client: postgres.Sql,
+  fixture: Fixture,
+  active: boolean,
+): Promise<void> {
+  if (active) {
+    await client`
+      INSERT INTO trading_halts (scope, scope_id, reason, engaged_by)
+      VALUES ('agent', ${fixture.avatarId}::uuid, 'autonomous probe halt', 'system:hosted-probe')
+      ON CONFLICT DO NOTHING
+    `;
+    return;
+  }
+  await client`
+    UPDATE trading_halts
+    SET cleared_at = now(), cleared_by = 'system:hosted-probe'
+    WHERE scope = 'agent' AND scope_id = ${fixture.avatarId}::uuid AND cleared_at IS NULL
+  `;
+}
+
+async function postAutonomy(apiBase: string, fixture: Fixture, active: boolean): Promise<void> {
+  const response = await fetchWithTimeout(`${apiBase}/api/world/autonomy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: fixture.cookie },
+    body: JSON.stringify({ active }),
+  }, 30_000);
+  if (!response.ok) throw new ProbeFailure(`autonomy route returned HTTP ${response.status}`);
+  await response.arrayBuffer();
+}
+
+async function postProbeDirective(apiBase: string, fixture: Fixture, text: string): Promise<void> {
+  const response = await fetchWithTimeout(`${apiBase}/api/avatars/me/directive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: fixture.cookie },
+    body: JSON.stringify({ directive: text }),
+  }, 30_000);
+  if (!response.ok) throw new ProbeFailure(`directive route returned HTTP ${response.status}`);
+  await response.arrayBuffer();
+}
+
+async function waitForCapturedPrompt(
+  captured: CapturedGatewayRequest[],
+  startAt: number,
+  predicate: (prompt: string) => boolean,
+  timeoutMs = 90_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    throwIfInterrupted();
+    const prompts = captured.slice(startAt).flatMap((entry) => entry.prompts);
+    const prompt = prompts.find(predicate);
+    if (prompt) return prompt;
+    await Bun.sleep(250);
+  }
+  throw new ProbeFailure('timed out waiting for autonomous decision prompt capture');
 }
 
 async function claimSkill(
@@ -699,6 +785,8 @@ async function cleanupDatabase(
         await client.unsafe('DELETE FROM agents WHERE id = $1::uuid', [fixture.platformAgentId]);
       }
     });
+    await attempt('trading_halts', () => client`DELETE FROM trading_halts WHERE scope_id = ${fixture.avatarId}::uuid`);
+    await attempt('trading_link', () => client`DELETE FROM clawpump_agent_links WHERE avatar_id = ${fixture.avatarId}::uuid`);
     await attempt('sessions', () => client`DELETE FROM sessions WHERE user_id = ${fixture.userId}::uuid`);
     await attempt('user', () => client`DELETE FROM users WHERE id = ${fixture.userId}::uuid`);
   }
@@ -847,6 +935,7 @@ async function main(): Promise<void> {
   }
   // Import protected application source only after every target guard passes.
   const protocolSource = await import('../../src/services/skill-protocol');
+  const sharedSource = await import('@clawville/shared');
   ok(true, 'configuration is non-production and required database settings are present');
 
   const runId = randomUUID();
@@ -874,6 +963,9 @@ async function main(): Promise<void> {
       let cleanupFailed = false;
       if (!options.keep) {
         for (const fixture of fixtures) {
+          if (options.autonomousDecision) {
+            try { await postAutonomy(apiBase, fixture, false); } catch { stopFailed = true; }
+          }
           const stopped = await requestRuntimeStop(client, apiBase, fixture, runId);
           if (!stopped) stopFailed = true;
         }
@@ -915,6 +1007,9 @@ async function main(): Promise<void> {
       kind: 'declared-gateway',
     });
     fixtures.push(fixture);
+    if (options.autonomousDecision) {
+      await insertAutonomousTradingProbeState(client, fixture);
+    }
     ok(true, 'temporary canary skill and disposable declared-gateway agent were created');
 
     const metadataResponse = await fetchWithTimeout(
@@ -953,6 +1048,43 @@ async function main(): Promise<void> {
     ok(hermesPrompts.some((prompt) => prompt === composedPrompt), 'Lane B transported the exact Lane A composed prompt');
     ok(hermesPrompts.some((prompt) => promptHasEvidence(prompt, canary, protocolEvidence)), 'Lane B wire contains canary and source-derived protocol evidence');
     ok(hermesPrompts.some((prompt) => currentStateContext(prompt).includes('[Current state context]')), 'Lane B wire retains current-state provider context');
+
+    if (options.autonomousDecision) {
+      const haltedStart = declaredMock.captured.length;
+      await postAutonomy(apiBase, fixture, true);
+      const haltedPrompt = await waitForCapturedPrompt(
+        declaredMock.captured,
+        haltedStart,
+        (prompt) => prompt.includes('Available actions (choose exactly one')
+          && prompt.includes('Trading desk:')
+          && prompt.includes('TRADING IS HALTED:'),
+      );
+      ok(haltedPrompt.includes('Status: armed=false; killed=true'), 'autonomous wire carries fleet arm and kill state');
+      ok(haltedPrompt.includes('Objective: conservative-rebalancer'), 'autonomous wire carries the objective brief');
+      ok(haltedPrompt.includes('Equity:') && haltedPrompt.includes('Cooldown:'), 'autonomous wire carries equity and cooldown state');
+      ok(!haltedPrompt.includes('Allowed mints:'), 'halted autonomous wire suppresses the allowed mint list');
+      for (const verb of sharedSource.HATCHER_ACTION_VERBS) {
+        ok(haltedPrompt.includes(`${verb}(`), `autonomous wire contains action ${verb}`);
+      }
+      for (const code of sharedSource.TRADE_REFUSAL_CODES) {
+        ok(haltedPrompt.includes(code), `autonomous wire contains refusal ${code}`);
+      }
+
+      await setProbeHalt(client, fixture, false);
+      const allowedStart = declaredMock.captured.length;
+      await postProbeDirective(apiBase, fixture, 'Review the Trading desk and choose one allowed action.');
+      const allowedPrompt = await waitForCapturedPrompt(
+        declaredMock.captured,
+        allowedStart,
+        (prompt) => prompt.includes('Available actions (choose exactly one')
+          && prompt.includes('Trading desk:')
+          && prompt.includes('Allowed mints:'),
+      );
+      ok(!allowedPrompt.includes('TRADING IS HALTED:'), 'cleared autonomous wire removes halt state');
+      for (const mint of sharedSource.TRADING_OBJECTIVE_ALLOWED_OUTPUTS['conservative-rebalancer']) {
+        ok(allowedPrompt.includes(mint), `autonomous wire contains allowed mint ${mint}`);
+      }
+    }
 
     if (options.withEcho) {
       await runEchoLane(client, apiBase, buildingId, canary, protocolEvidence.version, runId, fixtures);

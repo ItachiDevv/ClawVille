@@ -66,6 +66,7 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api } from '@/lib/api';
 import { clearIdentityState } from '@/lib/clear-identity-state';
 import { useAuthMe } from '@/hooks/use-auth-me';
+import FloorTape from '@/components/game/trading-floor/floor-tape';
 
 // Responsive: uses the global `useIsMobile` which catches iPad-on-Mac-UA
 // via `navigator.maxTouchPoints > 1`. The previous local hook was a
@@ -683,6 +684,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const openQuestBoard = useGameStore((s: GameState) => s.openQuestBoard);
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
   const openLeaderboard = useGameStore((s: GameState) => s.openLeaderboard);
+  const openTradingFloor = useGameStore((s: GameState) => s.openTradingFloor);
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
   const addToast = useGameStore((s: GameState) => s.addToast);
   const queryClient = useQueryClient();
@@ -986,7 +988,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             a sold/published "skill" is a prompt-injection vector). What
             remains: land (parcel economy) and cosmetics (first-party CT
             carve-out, not peer commerce). */}
-        <CategoryHeader label="Economy" subtitle="Land · Cosmetics" />
+        <CategoryHeader label="Economy" subtitle="Land · Cosmetics · Trading" />
         <div className="rpg-sidebar-group">
           {/* Land Economy (Phase B tenure model) — browse for-sale parcels,
               choose a parcel through the CLV hold door or vCLAW rent door
@@ -1004,6 +1006,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             icon="✨"
             label="Cosmetics"
             onClick={runAction(() => setCosmeticDrawerOpen(true))}
+          />
+          <SidebarRow
+            icon="↗"
+            label="Trading Floor"
+            onClick={runAction(openTradingFloor)}
+            rarity="rare"
           />
         </div>
 
@@ -1104,6 +1112,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           ) : null}
         </div>
       </div>
+      <FloorTape />
     </div>
   );
 }

@@ -101,6 +101,8 @@ export const agentBots = pgTable('openclaw_bots', {
   proxyTokenTag: varchar('proxy_token_tag', { length: 64 }),
   totalSessions: integer('total_sessions').default(0).notNull(),
   totalMessages: integer('total_messages').default(0).notNull(),
+  /** Provisioning policy for public leaderboard scoring. */
+  leaderboardEligible: boolean('leaderboard_eligible').default(true).notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
   /**

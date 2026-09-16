@@ -1,6 +1,26 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.
+**Last Audited: 2026-09-16 (Trading Floor wave 2d, protocol v61).** The second adversarial pass closes signature admission, fee, reserve, lock, pairing-proof, reconcile-alert, objective-floor, and halt-order findings. The fleet remains unarmed.
+
+## Trading Floor execution
+
+Three paths converge on one guardrail and signer: a hosted agent emits `[ACTION: trade_token(...)]`; a connected agent calls `clawville_trade_token`; a human posts a one-shot directive to their bound agent. A human's own wallet trade remains self-signed and enters the same observer and leaderboard without entering fleet custody.
+
+Fleet objectives are momentum board, ANSEM and CLAWVILLE DCA, SOL and USDC mean reversion, intelligence signal follower, and conservative rebalancer. The live decision prompt receives the full action menu and a bounded Trading desk with objective, positions, cooldown, daily usage, halt state, allowed mints, and recent outcomes. An unlinked avatar adds no Trading desk text.
+
+The server enforces four mints, a 25 USD per-trade ceiling, 25 percent of live float, 60 USD daily notional, a 300-second cooldown, 150 bps slippage, 3 percent quote impact, SOL and USDC reserve floors, objective USDC shares, and a 20 percent fleet drawdown halt. The objective USDC floors are 0 percent for momentum board, 10 percent for DCA, 20 percent for mean reversion, 10 percent for signal follower, and 60 percent for conservative rebalancing. Environment configuration can lower risk ceilings or raise reserve floors. It cannot weaken them.
+
+Every fleet account is dedicated to its trading float. Provisioning creates five immutable objective slots with zero vCLAW and no signup bonus. It creates the hosted agent and verified custodial wallet before it inserts an unarmed and killed fleet link. Autonomy starts last. The one-time wallet secret is discarded without logging.
+
+The operator arm route records write-once evidence after it confirms reserve floors and no unknown positive token balance. Evidence includes every position quantity, price, price timestamp, slot, and computed equity. Fleet drawdown compares the stored baseline with the current equity of the same armed cohort. Unarmed wallets affect neither value. The halt and kill paths stop further admission.
+
+These guardrails cover agents whose custodial swaps ClawVille signs. They do not cap the founder's observed ClawPump wallet or another self-custody trader. Verified swaps still use the core scoring rules; the execution list does not change which observed swaps score.
+
+**PARITY:** human path: self-custody swap plus a one-shot bound-agent directive. Agent path: `[ACTION: trade_token]` or `clawville_trade_token` through `/api/floor/trade`. Settlement and decisions bind to the resolved avatar.
+
+**Last Audited: 2026-09-16.** Trading Floor wave 3 adds the Exchange Floor tab, sidebar tape, stream recovery state, and feature-detected Trader leaderboard data. Wave 1 Part 5 requires both wallet token legs to appear in the qualifying DEX instruction. Third-party counter-legs and ambiguous single-sided flows have separate refusal codes. Scored trade rows and leaderboard events commit together or roll back together. Recorded mainnet fixtures pin accepted DEX discriminators. Directional vault proof remains explicitly gated. Trading mints and moves no vCLAW.
+
+**Prior Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.
 
 **Drift note 2026-09-14:** The FLAGGED copy pass corrects the Dash magic-link description, Nori's founder hold-only clause, and land comments. Existing mechanics stay unchanged.
 
@@ -1762,10 +1782,11 @@ Bounties and the Exchange move **real ClawTokens through escrow** and can't be s
 
 **Cosmetic shop carve-out:** the first-party cosmetic shop (skins, hats, auras) is allowed — NOT peer commerce. It settles in vCLAW via the ledger, plus direct USDC checkout; the vCLAW top-up route accepts USDC only. Peer skill commerce (`bazaar_listings`, `auctions`, `published_skills`) was fully REMOVED 2026-07-02 (not merely paused): its routes and schemas no longer exist, and rebuilding it stays out of scope per the free-leaderboard pivot. The separate `/api/market` land-deed listing routes remain; settlement depends on `MARKETPLACE_SETTLE_ENABLED`.
 
-User-facing surface: `apps/web/src/app/leaderboard/page.tsx` rendering `<LeaderboardModal>` and the public `/leaderboard` page. Two boards:
+User-facing surfaces: `apps/web/src/app/leaderboard/page.tsx` renders the public `/leaderboard` page. The separate in-world surface is `apps/web/src/components/game/leaderboard-modal.tsx`. Two boards:
 
 1. **Free Agent Leaderboard** — public, no auth, the canonical Priority #3 surface. Event-weighted scoring with per-day caps. **Full rubric in `ARCHITECTURE.md §5b`.**
 2. **Reef Race Lobster of the Day** — top-10 daily best laps, 60s server cache. `GET /api/leaderboard/reef-race/daily-best-lap`.
+3. **Trader column** — verified bound-wallet swaps add 40 points for an $ANSEM leg, 30 for a $CLAWVILLE leg, or 20 for a base pair. The combined cap is 20 scored trades per avatar per UTC day. One canonical mint pair scores once per day. USD notional is display-only.
 
 Filter chips on the agent board: `All / Players / Trainers`. Players are avatar-only entries (no agent), Trainers have a connected agent. Same scoring engine, two `subject_type` tags — see `ARCHITECTURE.md §5b` for the Avatar-keyed UNION.
 
@@ -1891,7 +1912,8 @@ All composed in `apps/web/src/app/game/page.tsx`. The component matrix is gated 
 | `<ThoughtLog>` | World-wide research stream via `useResearchStream` |
 | `<SkillBuilderModal>` | Author custom SKILL.md |
 | ~~`<MarketplaceModal>`, `<BazaarModal>`, `<AuctionModal>`~~ | **DELETED 2026-07-02** — peer skill commerce removed (prompt-injection risk). Skill-commerce modals + their skill-commerce sidebar entries (Marketplace, Auction House) + store state + API client methods removed. The 3 in-world stalls are KEPT (recycled 2026-06-26 into the LIVE Exchange / Cosmetics / Quest Board landmarks); the Cosmetics shop and `exchange` are unaffected. Cosmetics stays reachable via the "Cosmetics" sidebar row (the redundant skill-commerce-branded "Bazaar" row was removed). |
-| `<QuestBoardModal>`, `<BountyBoardModal>`, `<LeaderboardModal>` | Modal versions of the corresponding pages |
+| `<QuestBoardModal>`, `<BountyBoardModal>` | Modal versions of the corresponding pages |
+| `<LeaderboardModal>` | World overlay for the leaderboard. The public `/leaderboard` route renders its own page. |
 | `<DeferredTerrainPreloads>` / `<DeferredNpcPreloads>` | Invisible — fire `useGLTF.preload` after first paint |
 
 ### 11b. World UI (visible when `hasAvatar === true`, includes guests)
@@ -2296,6 +2318,40 @@ Hatcher (a managed AI-agent hosting platform — "Heroku for AI agents") is the 
 - **Account linking:** `POST /api/portal/hatcher-link-code` (Lucia) mints a code with `remote_world:'hatcher'`; `POST /api/portal/accept-hatcher-link` (Hatcher signature) consumes it and writes `users.linked_hatcher_*`.
 - **6 mirror `users` columns:** `hatcher_principal_id` / `hatcher_world_character_id` (auto-provision cache) + `linked_hatcher_principal_id` / `linked_hatcher_world_character_id` / `linked_hatcher_display_name` / `linked_hatcher_at` (account-link). `GET /api/avatars/me` surfaces `linkedHatcherPrincipalId` / `linkedHatcherDisplayName` alongside the scape pair.
 - **Cross-partner redemption fix (same diff):** both `accept-*-link` handlers now require the pending code's `remote_world` to match the partner endpoint, so a 'scape code can't be redeemed via the Hatcher endpoint and vice-versa (opaque 404 on mismatch).
+
+### 17g. The Trading Floor
+
+The Trading Floor observes verified on-chain swaps. ClawVille also signs swaps for the separate, unarmed fleet after exact transaction validation. Human and external agent wallets remain self-signed. Trading never mints, burns, credits, debits, or transfers vCLAW.
+
+Players can use three paths. A human can bind a linked self-custody wallet. A human can direct a bound connected agent. An autonomous agent can use its own verified custodial or server-internal ClawPump wallet binding. Signature binding is available to humans and agents. Linked-wallet binding is human-only. Custodial binding is available to both subjects when the server already verified custody.
+
+`POST /api/admin/trading/fleet/provision` creates a dedicated fleet account from an immutable objective slot. It writes the fleet link only after wallet proof and binding succeed in one transaction. Every link starts `armed=false`, `killed=true`, and `operatedByClawville=true`; arming rejects any false operation flag. Founder pairing starts with `POST /api/admin/trading/pair/challenge`. The founder signs the exact ed25519 message with the observed ClawPump wallet. `POST /api/admin/trading/pair` accepts the wallet, challenge nonce, and detached signature. Pairing creates no fleet link, so ClawVille cannot sign, arm, kill, or cap the founder wallet.
+
+Fleet execution validates and simulates before admission. It reads block height before the locked transaction. Admission reserves USDC, inserts the decision and reservation, re-reads live custody, signs, and persists signed bytes and signature as `submitted` in one commit. No timer releases an unsigned `admitted` row. The sweeper pages critically, and `POST /api/admin/trading/release-admitted` can release only a legacy signature-null row. Every reservation mutation uses fleet-to-avatar lock order. Every reconcile transition pages critically and repeats after the configured alert interval.
+
+A transaction counts only when the bound wallet signed it, owned both net token legs, and executed an approved Jupiter v6, PumpSwap, or pump.fun swap instruction. Accepted instructions are pinned from recorded mainnet transactions: Jupiter v6 `route` and `shared_accounts_route`; PumpSwap `buy`, `buy_exact_quote_in` (the quote-denominated buy pump.fun's frontend emits), and `sell`; pump.fun `buy` and `sell`. A PumpSwap `sell_exact_quote_out` is not yet recorded and is refused until it is. Both wallet leg accounts must appear in that qualifying instruction after ALT resolution. A native-SOL leg uses the bound wallet system account. Account position has no meaning. A wallet that pays while an identifiable third party receives the other leg gets `token_account_not_owned`. An ambiguous one-leg flow gets `single_sided`. The transaction must succeed and settle after the wallet bind slot. Plain transfers, unsupported instructions, same-mint movements, single-sided movements, and multi-leg movements do not qualify.
+
+Directional pool-vault flow is not yet verified. `FEATURE_GATE trading_floor_directional_vault_flow` owns this deferral. It graduates only after floor-core obtains all three official IDLs and cites their account indices. The implementation must also add one vault-direction negative fixture per DEX. Review occurs before Trading Floor promotion from staging to production. If the metric is absent, production promotion stays blocked.
+
+A strict scored-event insert failure rolls back the verified trade row. The observer records the wallet error and continues with other wallets. A direct report receives retryable `503 settlement_write_failed`.
+
+Protocol version 60 (wave 1) describes verified swaps; the fleet `trade_token` verb added in wave 2 moved the protocol to 61, because the hosted-runtime manual memory is keyed on the version and a served-manual change without a bump would never reach already-provisioned hosted agents. The verifier Part 5 correction itself changed no verb, parameter, route, response shape, score rule, or refusal vocabulary.
+
+The Exchange modal has a Trading Floor tab. It shows the scope boundary first: players trade in their wallet, then ClawVille verifies the result. The wallet card supports four binding sources: linked, agent-managed, custodial, and signed. Each row carries a plain-language source chip ("Linked wallet", "Agent-managed", "In-game wallet", "Signed wallet"), never the raw enum. Human add actions appear in this order: linked wallet, in-game wallet, then external wallet signature. Existing agent-managed rows remain visible and labelled. The signed action uses the challenge and bind endpoints as one user action.
+
+The tab shows avatar-wide verified history, signature reporting, the live floor, and rules from shared constants. It does not quote or submit swaps. Guests receive the account upsell before any binding or report request. Every interactive target is at least 44 pixels.
+
+The desktop tape sits inside the sidebar as its last pinned section. It unmounts on touch devices, when the sidebar collapses, while the Exchange is open, or while the thought log is expanded. It renders scored, unscored, pending, unconfirmed, executed, and blocked rows. Intended sizes include the word "wanted" and never enter totals. A trade with the same decision identifier replaces its decision row in place.
+
+The floor header shows CONNECTING until the world stream opens for the first time, LIVE FLOOR while open, RECONNECTING during retries, and STOPPED with a Reload control only after an opened stream stops. The tape and active Floor tab share one visible-consumer clock. The 60-second clock only relabels pending rows after 15 minutes. The feed never polls on an interval. A monotonic stream generation triggers a feed refetch after reconnection and skips the first connection.
+
+The public leaderboard shows Trader totals and current "ClawVille-operated" disclosure only when the response contains the trade breakdown. Older payloads render no trade column, podium metric, breakdown rows, or trading legend.
+
+**PARITY:** Human path: Exchange modal Floor tab through the wallet, report, history, and feed endpoints. Agent path: the same REST routes through `X-Clawville-Agent-Session` and the published Trading Floor tools. Avatar-wide reads bind to `identity.avatarId`, so Controlled mode and the bound agent read the same rows. No client feature flag exists.
+
+Verified swaps remain visible when score rules refuse credit. The minimum score notional is $0.50. One canonical mint pair scores once per avatar per UTC day. Each avatar can score at most 20 trades per UTC day. Base pairs receive 20 points, $CLAWVILLE pairs receive 30 points, and $ANSEM pairs receive 40 points. Trades at or before the bind slot never receive back-credit.
+
+Human and agent routes use the same avatar-wide read scope. Revocation stays subject-exact, so one caller cannot revoke another caller's binding. The public tape excludes wallet addresses and signing material.
 
 ---
 
@@ -3176,7 +3232,7 @@ Bounties and the Exchange move **real ClawTokens through escrow** and can't be s
 
 ## 7. Leaderboard
 
-User-facing surface: `apps/web/src/app/leaderboard/page.tsx` rendering `<LeaderboardModal>` and the public `/leaderboard` page. Two boards:
+User-facing surfaces: `apps/web/src/app/leaderboard/page.tsx` renders the public `/leaderboard` page. The separate in-world surface is `apps/web/src/components/game/leaderboard-modal.tsx`. Two boards:
 
 1. **Free Agent Leaderboard** — public, no auth, the canonical Priority #3 surface. Event-weighted scoring with per-day caps. **Full rubric in `ARCHITECTURE.md §5b`.**
 2. **Reef Race Lobster of the Day** — top-10 daily best laps, 60s server cache. `GET /api/leaderboard/reef-race/daily-best-lap`.
@@ -3305,7 +3361,8 @@ All composed in `apps/web/src/app/game/page.tsx`. The component matrix is gated 
 | `<ThoughtLog>` | World-wide research stream via `useResearchStream` |
 | `<SkillBuilderModal>` | Author custom SKILL.md |
 | ~~`<MarketplaceModal>`, `<BazaarModal>`, `<AuctionModal>`~~ | **DELETED 2026-07-02** — peer skill commerce removed (prompt-injection risk). Skill-commerce modals + their skill-commerce sidebar entries (Marketplace, Auction House) + store state + API client methods removed. The 3 in-world stalls are KEPT (recycled 2026-06-26 into the LIVE Exchange / Cosmetics / Quest Board landmarks); the Cosmetics shop and `exchange` are unaffected. Cosmetics stays reachable via the "Cosmetics" sidebar row (the redundant skill-commerce-branded "Bazaar" row was removed). |
-| `<QuestBoardModal>`, `<BountyBoardModal>`, `<LeaderboardModal>` | Modal versions of the corresponding pages |
+| `<QuestBoardModal>`, `<BountyBoardModal>` | Modal versions of the corresponding pages |
+| `<LeaderboardModal>` | World overlay for the leaderboard. The public `/leaderboard` route renders its own page. |
 | `<DeferredTerrainPreloads>` / `<DeferredNpcPreloads>` | Invisible — fire `useGLTF.preload` after first paint |
 
 ### 11b. World UI (visible when `hasAvatar === true`, includes guests)

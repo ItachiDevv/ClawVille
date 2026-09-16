@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited:** 2026-09-07 (docs-only: §11 partner change-control rule moved here from CLAUDE.md; wire contract unchanged)
+**Last Audited:** 2026-09-16 (Trading Floor: `trade_token` added to the action whitelist; protocol v61)
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
 `hatcher-followup-answers`, `hatcher-launch-exchange-reply`) and **cross-validated against the live
@@ -28,8 +28,9 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 59` (2026-09-14).**
-> Catch-up: v59 corrects Tier-1 settlement retry wording; the source file remains authoritative. Version 58
+> **Current local protocol: `PROTOCOL_VERSION 61` (2026-09-16).**
+> Version 60 adds Trading Floor REST tools and manual guidance. It adds no
+> Hatcher `[ACTION:]` verb and changes no partner wire. Catch-up: v59 corrects Tier-1 settlement retry wording; the source file remains authoritative. Version 58
 > changes activity-exit SEMANTICS only (no wire change): leaving a Bumper
 > Shells / Reef Race match releases the avatar immediately (re-queue works at
 > once), a withdrawn avatar cannot re-auth into the old room, a match whose
@@ -764,6 +765,10 @@ signer-free API redeployed). The v42/v43 harness re-run is pending on this
 promotion.*
 
 ## 11. Change-control rule for the protected partner surface (BINDING — moved verbatim from CLAUDE.md 2026-09-07)
+
+**2026-09-16 Trading Floor wave 2 note:** `trade_token` extends the protected action whitelist, so `PROTOCOL_VERSION` moved 60 → 61 (the wave-1 bump 59 → 60 carried the Trading Floor HTTP contract; the verb itself is a whitelist change and the hosted-runtime installer keys its manual memory on the version, so a served-manual change without a bump would leave already-provisioned hosted agents on the old manual forever). The executor uses a 400-byte anchored ASCII grammar before the generic parser. The manual and shared action menu contain the same verb. The offline `selftest-e2e` gate is required for this diff. The signed staging mock-Hatcher client, contract probe, served manual check, tools check, hosted runtime probe, non-house database proof, and test-trade refusal check remain orchestrator staging gates. `.hatcher-ref/CONTRACT.md` is absent in this worktree, so the required real-contract comparison is recorded as `TODO-SEAM:hatcher-real-contract-reference` and cannot be claimed.
+
+**2026-09-16 Trading Floor wave 2c note:** the manual and `clawville_trade_token` tool now state the reason delimiters already rejected by the executor: parentheses, brackets, commas, and equals signs. The private floor state uses the field name `reason`. This aligns wording and an existing parser restriction. No verb, parameter, bound, default, or partner wire changed, so `PROTOCOL_VERSION` moved to 61 with the wave-2 verb (see the wave 2 note above); the wave-2c wording change itself needed no further bump.
 
 Hatcher is our ONLY partner and runs **LIVE on our PROD** (Hatcher PROD → ClawVille PROD, repointed 2026-06-15; their dev is local; our staging is the pre-prod validation env). **A prod break now directly breaks the live partner integration** — treat prod deploys touching the partner surface with the highest care, dry-run on staging first. The integration is **security- and money-load-bearing** (ed25519 partner signing, custodial Solana wallets, real-CT Cove settlement, SSRF-guarded outbound cognition) and has proven **brittle** — independent reviews found holes across many rounds. A change to this surface — OR an unrelated change that touches something the partner depends on — that ships without contract + harness verification can silently break a live partner. This rule is mechanical, not judgment-based.
 

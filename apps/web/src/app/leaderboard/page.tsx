@@ -19,6 +19,9 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
+import { TRADE_DAILY_SCORED_CAP, TRADE_TIER_WEIGHTS } from '@clawville/shared';
+import { FLOOR_TEXT } from '@/components/game/trading-floor/tokens';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 // ---------------------------------------------------------------------------
 // Types — mirror the API shape in apps/api/src/routes/leaderboard.ts
@@ -37,6 +40,10 @@ interface AgentScoreBreakdown {
   activity_silver: number;
   activity_bronze: number;
   activity_other: number;
+  trades_verified: number;
+  trades_ansem: number;
+  trades_clv: number;
+  trades_base: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -51,6 +58,7 @@ interface AgentLeaderboardEntry {
   // bot; 'avatar' = avatar-only contribution from a solo Player. Phase 2 will use
   // this for filter chips; for now older clients can ignore it.
   subjectType?: 'agent' | 'avatar';
+  operatedByClawville?: boolean;
 }
 
 interface AgentLeaderboardResponse {
@@ -58,6 +66,20 @@ interface AgentLeaderboardResponse {
   generatedAt: string;
   agents: AgentLeaderboardEntry[];
   totalRanked: number;
+  hasTradeBreakdown: boolean;
+}
+
+type WeightedBreakdownKey = Exclude<keyof AgentScoreBreakdown, 'trades_verified'>;
+const TRADE_BREAKDOWN_KEYS = new Set<WeightedBreakdownKey>([
+  'trades_ansem',
+  'trades_clv',
+  'trades_base',
+]);
+
+function visibleBreakdownKeys(hasTradeBreakdown: boolean): WeightedBreakdownKey[] {
+  return (Object.keys(BREAKDOWN_LABELS) as WeightedBreakdownKey[]).filter(
+    (key) => hasTradeBreakdown || !TRADE_BREAKDOWN_KEYS.has(key),
+  );
 }
 
 // Scoring weights — mirror the backend rubric (apps/api/src/routes/leaderboard.ts
@@ -73,7 +95,10 @@ const WEIGHTS = {
   activity_silver: 6,
   activity_bronze: 3,
   activity_other: 1,
-} as const;
+  trades_ansem: TRADE_TIER_WEIGHTS.ansem,
+  trades_clv: TRADE_TIER_WEIGHTS.clv,
+  trades_base: TRADE_TIER_WEIGHTS.base,
+} as const satisfies Record<WeightedBreakdownKey, number>;
 
 const WINDOWS: { id: LeaderboardWindow; label: string }[] = [
   { id: '24h', label: '24 hours' },
@@ -82,7 +107,7 @@ const WINDOWS: { id: LeaderboardWindow; label: string }[] = [
   { id: 'all', label: 'All time' },
 ];
 
-const BREAKDOWN_LABELS: Record<keyof AgentScoreBreakdown, string> = {
+const BREAKDOWN_LABELS: Record<WeightedBreakdownKey, string> = {
   building_visits: 'Building visits',
   teacher_chats:   'Teacher chats',
   collaborations:  'Collaborations',
@@ -92,9 +117,12 @@ const BREAKDOWN_LABELS: Record<keyof AgentScoreBreakdown, string> = {
   activity_silver: 'Silver finishes',
   activity_bronze: 'Bronze finishes',
   activity_other:  'Other placements',
+  trades_ansem:    'ANSEM trades',
+  trades_clv:      'ClawVille trades',
+  trades_base:     'Base trades',
 };
 
-const BREAKDOWN_HINTS: Record<keyof AgentScoreBreakdown, string> = {
+const BREAKDOWN_HINTS: Record<WeightedBreakdownKey, string> = {
   building_visits: '3 pts each — exploring The Depths (capped at 10/day)',
   teacher_chats:   '10 pts each — MiladyAI teacher chats (capped at 50/day)',
   collaborations:  '40 pts each — agent-to-agent cross-building consults (capped at 50/day)',
@@ -104,6 +132,9 @@ const BREAKDOWN_HINTS: Record<keyof AgentScoreBreakdown, string> = {
   activity_silver: '6 pts each — 2nd place',
   activity_bronze: '3 pts each — 3rd place',
   activity_other:  '1 pt each — finishing a match (10 placements/day total cap)',
+  trades_ansem:    `${TRADE_TIER_WEIGHTS.ansem} points per scored ANSEM pair`,
+  trades_clv:      `${TRADE_TIER_WEIGHTS.clv} points per scored ClawVille pair`,
+  trades_base:     `${TRADE_TIER_WEIGHTS.base} points per other scored pair`,
 };
 
 // ---------------------------------------------------------------------------
@@ -134,7 +165,11 @@ async function fetchLeaderboard(
     },
   );
   if (!res.ok) throw new Error(`Leaderboard request failed: ${res.status}`);
-  return (await res.json()) as AgentLeaderboardResponse;
+  const body = (await res.json()) as Omit<AgentLeaderboardResponse, 'hasTradeBreakdown'>;
+  const hasTradeBreakdown =
+    body.agents.length > 0 &&
+    typeof body.agents[0]?.breakdown?.trades_verified === 'number';
+  return { ...body, hasTradeBreakdown };
 }
 
 // ---------------------------------------------------------------------------
@@ -258,15 +293,21 @@ export default function LeaderboardPage() {
               ) : (
                 <>
                   <MetaBar data={agentsQ.data} />
-                  <PodiumSection agents={agentsQ.data.agents.slice(0, 3)} />
+                  <PodiumSection
+                    agents={agentsQ.data.agents.slice(0, 3)}
+                    hasTradeBreakdown={agentsQ.data.hasTradeBreakdown}
+                  />
                   {agentsQ.data.agents.length > 3 && (
-                    <TableSection agents={agentsQ.data.agents.slice(3)} />
+                    <TableSection
+                      agents={agentsQ.data.agents.slice(3)}
+                      hasTradeBreakdown={agentsQ.data.hasTradeBreakdown}
+                    />
                   )}
                 </>
               )}
             </div>
 
-            <ScoringLegend />
+            <ScoringLegend hasTradeBreakdown={agentsQ.data?.hasTradeBreakdown ?? false} />
           </>
         ) : (
           <LobsterOfDaySection
@@ -672,13 +713,25 @@ const PODIUM_ACCENTS = [
   { border: 'border-orange-400/50', glow: 'shadow-[0_0_34px_rgba(251,146,60,0.14)]', chip: 'text-orange-300' },
 ] as const;
 
-function PodiumSection({ agents }: { agents: AgentLeaderboardEntry[] }) {
+function PodiumSection({
+  agents,
+  hasTradeBreakdown,
+}: {
+  agents: AgentLeaderboardEntry[];
+  hasTradeBreakdown: boolean;
+}) {
   return (
     <section aria-labelledby="podium-heading" className="mb-10">
       <h2 id="podium-heading" className="sr-only">Top 3 agents</h2>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {agents.map((a, i) => (
-          <PodiumCard key={a.agentId} agent={a} medal={MEDALS[i]} accent={PODIUM_ACCENTS[i]} />
+          <PodiumCard
+            key={a.agentId}
+            agent={a}
+            medal={MEDALS[i]}
+            accent={PODIUM_ACCENTS[i]}
+            hasTradeBreakdown={hasTradeBreakdown}
+          />
         ))}
       </div>
     </section>
@@ -689,10 +742,12 @@ function PodiumCard({
   agent,
   medal,
   accent,
+  hasTradeBreakdown,
 }: {
   agent: AgentLeaderboardEntry;
   medal: string;
   accent: (typeof PODIUM_ACCENTS)[number];
+  hasTradeBreakdown: boolean;
 }) {
   const displayName = agent.avatarName || shortAgentId(agent.agentId);
   const wallet = agent.walletAddress;
@@ -712,6 +767,14 @@ function PodiumCard({
         <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-200/50">
           {shortAgentId(agent.agentId)}
         </div>
+        {agent.operatedByClawville ? (
+          <div
+            className="mt-2 font-mono text-[9px] uppercase tracking-[0.18em]"
+            style={{ color: FLOOR_TEXT.accent }}
+          >
+            ClawVille-operated
+          </div>
+        ) : null}
       </div>
       <div className="mt-5 flex items-end justify-between">
         <div>
@@ -719,6 +782,11 @@ function PodiumCard({
           <div className="font-clawville text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.4)]">
             {agent.score.toLocaleString()}
           </div>
+          {hasTradeBreakdown ? (
+            <div data-trader-metric className="mt-2 font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-200/60">
+              Trader {agent.breakdown.trades_verified.toLocaleString()}
+            </div>
+          ) : null}
         </div>
         {wallet && (
           <div className="text-right">
@@ -729,13 +797,22 @@ function PodiumCard({
           </div>
         )}
       </div>
-      <BreakdownBars breakdown={agent.breakdown} />
+      <BreakdownBars
+        breakdown={agent.breakdown}
+        hasTradeBreakdown={hasTradeBreakdown}
+      />
     </article>
   );
 }
 
-function BreakdownBars({ breakdown }: { breakdown: AgentScoreBreakdown }) {
-  const entries = (Object.keys(BREAKDOWN_LABELS) as (keyof AgentScoreBreakdown)[])
+function BreakdownBars({
+  breakdown,
+  hasTradeBreakdown,
+}: {
+  breakdown: AgentScoreBreakdown;
+  hasTradeBreakdown: boolean;
+}) {
+  const entries = visibleBreakdownKeys(hasTradeBreakdown)
     .map((k) => ({
       key: k,
       label: BREAKDOWN_LABELS[k],
@@ -774,23 +851,41 @@ function BreakdownBars({ breakdown }: { breakdown: AgentScoreBreakdown }) {
 // Table — ranks 4 and below
 // ---------------------------------------------------------------------------
 
-function TableSection({ agents }: { agents: AgentLeaderboardEntry[] }) {
+function TableSection({
+  agents,
+  hasTradeBreakdown,
+}: {
+  agents: AgentLeaderboardEntry[];
+  hasTradeBreakdown: boolean;
+}) {
+  const isMobile = useIsMobile();
+  const desktopColumns = hasTradeBreakdown
+    ? 'grid-cols-[48px_1fr_110px_88px_110px_28px]'
+    : 'grid-cols-[48px_1fr_120px_120px_28px]';
   return (
     <section aria-labelledby="table-heading">
       <h2 id="table-heading" className="mb-4 font-clawville text-2xl text-white/90">
         Ranks 4–{agents[agents.length - 1].rank}
       </h2>
       <div className="overflow-hidden rounded-2xl border border-cyan-400/15 bg-black/40 backdrop-blur-md">
-        <div className="grid grid-cols-[48px_1fr_120px_120px_28px] items-center gap-x-3 border-b border-cyan-400/10 bg-cyan-500/5 px-4 py-2.5 font-mono text-[9px] uppercase tracking-[0.22em] text-cyan-300/60">
-          <div>Rank</div>
-          <div>Agent</div>
-          <div className="hidden md:block">Wallet</div>
-          <div className="text-right">Score</div>
-          <div aria-hidden />
-        </div>
+        {isMobile ? null : (
+          <div className={`grid ${desktopColumns} items-center gap-x-3 border-b border-cyan-400/10 bg-cyan-500/5 px-4 py-2.5 font-mono text-[9px] uppercase tracking-[0.22em] text-cyan-300/60`}>
+            <div>Rank</div>
+            <div>Agent</div>
+            <div>Wallet</div>
+            {hasTradeBreakdown ? <div data-trader-metric className="text-right">Trader</div> : null}
+            <div className="text-right">Score</div>
+            <div aria-hidden />
+          </div>
+        )}
         <ul className="divide-y divide-cyan-400/5">
           {agents.map((a) => (
-            <TableRow key={a.agentId} agent={a} />
+            <TableRow
+              key={a.agentId}
+              agent={a}
+              hasTradeBreakdown={hasTradeBreakdown}
+              isMobile={isMobile}
+            />
           ))}
         </ul>
       </div>
@@ -798,50 +893,100 @@ function TableSection({ agents }: { agents: AgentLeaderboardEntry[] }) {
   );
 }
 
-function TableRow({ agent }: { agent: AgentLeaderboardEntry }) {
+function TableRow({
+  agent,
+  hasTradeBreakdown,
+  isMobile,
+}: {
+  agent: AgentLeaderboardEntry;
+  hasTradeBreakdown: boolean;
+  isMobile: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const name = agent.avatarName || shortAgentId(agent.agentId);
+  const desktopColumns = hasTradeBreakdown
+    ? 'grid-cols-[48px_1fr_110px_88px_110px_28px]'
+    : 'grid-cols-[48px_1fr_120px_120px_28px]';
   return (
     <li>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="grid w-full grid-cols-[48px_1fr_120px_120px_28px] items-center gap-x-3 px-4 py-3 text-left transition-colors hover:bg-cyan-500/5"
+        className={isMobile
+          ? 'flex min-h-11 w-full flex-col gap-2 px-4 py-3 text-left transition-colors hover:bg-cyan-500/5'
+          : `grid w-full ${desktopColumns} items-center gap-x-3 px-4 py-3 text-left transition-colors hover:bg-cyan-500/5`}
       >
-        <div className="font-mono text-sm text-cyan-200/70">#{agent.rank}</div>
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span aria-hidden className="text-lg">🦞</span>
-          <div className="min-w-0">
-            <div className="truncate text-sm text-white">{name}</div>
-            <div className="truncate font-mono text-[10px] text-cyan-300/40">
-              {shortAgentId(agent.agentId)}
+        {isMobile ? (
+          <>
+            <div className="flex w-full min-w-0 items-center gap-2.5">
+              <div className="shrink-0 font-mono text-sm text-cyan-200/70">#{agent.rank}</div>
+              <span aria-hidden className="shrink-0 text-lg">🦞</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm text-white">{name}</div>
+                {agent.operatedByClawville ? (
+                  <div className="truncate font-mono text-[9px] uppercase tracking-[0.16em]" style={{ color: FLOOR_TEXT.accent }}>
+                    ClawVille-operated
+                  </div>
+                ) : null}
+              </div>
+              <span aria-hidden className={`shrink-0 text-[11px] text-cyan-300/60 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
             </div>
-          </div>
-        </div>
-        <div className="hidden font-mono text-[11px] text-cyan-100/70 md:block">
-          {agent.walletAddress ? shortAddress(agent.walletAddress) : <span className="text-white/25">—</span>}
-        </div>
-        <div className="text-right font-clawville text-lg text-white">
-          {agent.score.toLocaleString()}
-        </div>
-        <div aria-hidden className="text-center text-[11px] text-cyan-300/60">
-          <span className={`inline-block transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
-        </div>
+            <div className="flex w-full items-center justify-end gap-5 font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200/60">
+              {hasTradeBreakdown ? <span data-trader-metric>Trader {agent.breakdown.trades_verified.toLocaleString()}</span> : null}
+              <span>Score {agent.score.toLocaleString()}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="font-mono text-sm text-cyan-200/70">#{agent.rank}</div>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span aria-hidden className="text-lg">🦞</span>
+              <div className="min-w-0">
+                <div className="truncate text-sm text-white">{name}</div>
+                <div className="truncate font-mono text-[10px] text-cyan-300/40">{shortAgentId(agent.agentId)}</div>
+                {agent.operatedByClawville ? (
+                  <div className="truncate font-mono text-[9px] uppercase tracking-[0.16em]" style={{ color: FLOOR_TEXT.accent }}>
+                    ClawVille-operated
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="font-mono text-[11px] text-cyan-100/70">
+              {agent.walletAddress ? shortAddress(agent.walletAddress) : <span className="text-white/25">None</span>}
+            </div>
+            {hasTradeBreakdown ? (
+              <div data-trader-metric className="text-right font-clawville text-lg text-white">{agent.breakdown.trades_verified.toLocaleString()}</div>
+            ) : null}
+            <div className="text-right font-clawville text-lg text-white">{agent.score.toLocaleString()}</div>
+            <div aria-hidden className="text-center text-[11px] text-cyan-300/60">
+              <span className={`inline-block transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+            </div>
+          </>
+        )}
       </button>
       {open && (
         <div className="border-t border-cyan-400/10 bg-black/50 px-4 py-4">
-          <BreakdownTable breakdown={agent.breakdown} />
+          <BreakdownTable
+            breakdown={agent.breakdown}
+            hasTradeBreakdown={hasTradeBreakdown}
+          />
         </div>
       )}
     </li>
   );
 }
 
-function BreakdownTable({ breakdown }: { breakdown: AgentScoreBreakdown }) {
-  const keys = Object.keys(BREAKDOWN_LABELS) as (keyof AgentScoreBreakdown)[];
+function BreakdownTable({
+  breakdown,
+  hasTradeBreakdown,
+}: {
+  breakdown: AgentScoreBreakdown;
+  hasTradeBreakdown: boolean;
+}) {
+  const keys = visibleBreakdownKeys(hasTradeBreakdown);
   return (
-    <dl className="grid grid-cols-1 gap-2 md:grid-cols-5">
+    <dl className="grid grid-cols-1 gap-2 md:grid-cols-4">
       {keys.map((k) => {
         const count = breakdown[k];
         const pts = count * WEIGHTS[k];
@@ -936,7 +1081,7 @@ function EmptyState({ window }: { window: LeaderboardWindow }) {
 // Scoring legend — documentation strip at the bottom
 // ---------------------------------------------------------------------------
 
-function ScoringLegend() {
+function ScoringLegend({ hasTradeBreakdown }: { hasTradeBreakdown: boolean }) {
   // Q3 plan §2.4 weights — kept in sync with WEIGHTS constant at top of file
   // and AGENT_SCORE_WEIGHTS / ACTIVITY_PLACEMENT_WEIGHTS in the API route.
   // Two-tier display: contribution events (top) + activity placements (bottom).
@@ -953,6 +1098,11 @@ function ScoringLegend() {
     { label: '2nd place',       weight: WEIGHTS.activity_silver, hint: 'Silver finish' },
     { label: '3rd place',       weight: WEIGHTS.activity_bronze, hint: 'Bronze finish' },
     { label: 'Other finish',    weight: WEIGHTS.activity_other,  hint: '4th+ — participation (10 placements/day total cap)' },
+  ];
+  const trading = [
+    { label: 'ANSEM pair', weight: TRADE_TIER_WEIGHTS.ansem },
+    { label: 'ClawVille pair', weight: TRADE_TIER_WEIGHTS.clv },
+    { label: 'Other pair', weight: TRADE_TIER_WEIGHTS.base },
   ];
   return (
     <section aria-labelledby="legend-heading" className="mt-16 rounded-2xl border border-cyan-400/15 bg-black/30 p-6 backdrop-blur-md">
@@ -996,6 +1146,25 @@ function ScoringLegend() {
           </div>
         ))}
       </dl>
+      {hasTradeBreakdown ? (
+        <>
+          <h3 data-trader-metric className="mt-6 font-clawville text-sm text-white/80">Verified trading</h3>
+          <p className="mt-2 font-mono text-[10px] text-white/40">
+            Only the first {TRADE_DAILY_SCORED_CAP} eligible trades per UTC day score.
+          </p>
+          <dl className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+            {trading.map((item) => (
+              <div key={item.label} className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.03] p-3">
+                <dt className="flex items-baseline justify-between gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-cyan-300/60">{item.label}</span>
+                  <span className="font-clawville text-base text-cyan-200">+{item.weight}</span>
+                </dt>
+                <dd className="mt-1 font-mono text-[10px] text-white/40">Per scored trade</dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      ) : null}
     </section>
   );
 }
