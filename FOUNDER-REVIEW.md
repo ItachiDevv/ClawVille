@@ -38,12 +38,18 @@
   $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
 - Shipped by: session clawPump/Fable, 2026-09-16.
 
-### Fleet (five house agents) — shipped UNARMED, nothing trades yet
+### Fleet (five house agents) — shipped UNARMED; ONE account provisioned on STAGING
 - **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
   and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
-  Fleet accounts are NOT provisioned yet: provisioning is an operator action
-  (`apps/api/scripts/trading/provision-fleet.ts`, needs a Lucia session cookie of an
-  `ADMIN_USER_IDS` account on that box). Decisions already taken and applied: self-custody
+  On 2026-09-16 the first account was provisioned on STAGING (objective
+  `conservative-rebalancer`, trader `SafeRebalancer`, operator = the seeded staging admin
+  `landtest1`): avatar wallet `vaLqeo9HSaA5JbbDiL5GbusBG9jsKgQ6KXW8AUDZ3ZX`, unarmed +
+  killed, leaderboard-eligible, ClawVille-operated. Prod has no fleet account yet.
+- **To prove the process (your call on amounts, small is fine):** send roughly 0.05 SOL
+  and $10–15 USDC to that staging wallet (reserves are 0.02 SOL + $2 USDC; the brief holds
+  60% USDC; min trade $1). Then the arm route reads the equity baseline and the first $1
+  test trade runs through `POST /api/admin/trading/test-trade`; the verified row should
+  appear on the staging Floor tab and leaderboard. Decisions already taken and applied: self-custody
   (ClawVille signs, ClawPump never), fleet ranks publicly with the "ClawVille-operated"
   label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL across five wallets, default
   drawdown halt 20 percent.
@@ -52,8 +58,14 @@
   arm, halt, kill) and a session for that account so the five accounts can be provisioned
   on staging first; glance at the five objective briefs in
   `packages/shared/src/constants/trading-fleet.ts` (momentum, ANSEM+CLAWVILLE DCA,
-  SOL/USDC mean reversion, signal follower, conservative rebalancer); genesis's wallet
-  address for the observe-only pairing (`pair-genesis.ts <walletPubkey>`).
+  SOL/USDC mean reversion, signal follower, conservative rebalancer).
+- **Genesis pairing (wallet `4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n`, received
+  2026-09-16):** blocked on proof of ownership. Pairing now requires the wallet to sign a
+  one-time ed25519 challenge, and that wallet is ClawPump-custodied, so it cannot sign
+  locally. Two ways forward: the full 47-char ClawPump enterprise key (then a
+  ClawPump-verified lookup door can be built), or a ClawPump message-signing call if their
+  agent API offers one. The wallet also has no on-chain history yet (0 SOL, 0 txs), so
+  there is nothing to observe until genesis trades.
 - Session clawPump/Fable, 2026-09-16.
 
 ## LAND
