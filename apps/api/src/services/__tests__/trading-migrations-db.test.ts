@@ -30,11 +30,15 @@ const expectedPartialIndexes = [
 describeIfDb('Trading Floor migrated database constraints', () => {
   test('0064 and 0065 checks and partial indexes exist', async () => {
     const { db, sql } = await import('@clawville/database');
+    // A JS array interpolated into `sql\`\`` becomes a Postgres record (tuple),
+    // which cannot be cast to text[] ("cannot cast type record to text[]" on
+    // the CI lane). Bind each name as its own parameter inside IN (...).
+    const inList = (names: readonly string[]) => sql.join(names.map((name) => sql`${name}`), sql`, `);
     const checks = await db.execute<{ conname: string }>(sql`
       SELECT conname
       FROM pg_constraint
       WHERE contype = 'c'
-        AND conname = ANY(${expectedChecks}::text[])
+        AND conname IN (${inList(expectedChecks)})
     `);
     const checkNames = new Set(Array.from(checks).map((row) => row.conname));
     expect([...expectedChecks].filter((name) => !checkNames.has(name))).toEqual([]);
@@ -43,7 +47,7 @@ describeIfDb('Trading Floor migrated database constraints', () => {
       SELECT indexname, indexdef
       FROM pg_indexes
       WHERE schemaname = current_schema()
-        AND indexname = ANY(${expectedPartialIndexes}::text[])
+        AND indexname IN (${inList(expectedPartialIndexes)})
     `);
     const partialNames = new Set(
       Array.from(indexes).filter((row) => /\bWHERE\b/i.test(row.indexdef)).map((row) => row.indexname),

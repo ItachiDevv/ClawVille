@@ -34,7 +34,10 @@ function readTypeScriptTree(dir: string): Array<readonly [string, string]> {
   });
 }
 
-const apiSourceTree = readTypeScriptTree(apiSrc);
+// readdirSync order is filesystem-dependent (sorted on Windows, inode order on
+// the Linux CI runner); every list derived from the tree is compared with
+// toEqual, so fix a byte-order sort here once.
+const apiSourceTree = readTypeScriptTree(apiSrc).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 const linkInsertPattern = /insert\(clawpumpAgentLinks\)|INSERT\s+INTO\s+"?clawpump_agent_links"?/i;
 const linkUpdatePattern = /update\(clawpumpAgentLinks\)|UPDATE\s+"?clawpump_agent_links"?/i;
 const linkDeletePattern = /delete\(clawpumpAgentLinks\)|DELETE\s+FROM\s+"?clawpump_agent_links"?/i;
