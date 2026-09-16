@@ -204,7 +204,7 @@ describe("world downlink integration contract", () => {
   test("every source handler carries the live downlink guard", () => {
     expect(
       streamSource.match(/if \(!downlinkEnabledRef\.current\) return;/g),
-    ).toHaveLength(4);
+    ).toHaveLength(6);
   });
 
   test("source ownership rejects callbacks from replaced sources", () => {
@@ -212,7 +212,7 @@ describe("world downlink integration contract", () => {
       streamSource.match(/if \(source !== es\) return;/g)?.length ?? 0;
     const dropGuard =
       streamSource.match(/if \(es !== source\) return;/g)?.length ?? 0;
-    expect(handlerGuards + dropGuard).toBe(5);
+    expect(handlerGuards + dropGuard).toBe(7);
   });
 
   test("ticketed rejoin rotates the stream epoch through invalidation", () => {

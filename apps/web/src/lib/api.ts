@@ -137,7 +137,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     status: number,
-    code?: string,
+    code?: unknown,
     extras?: {
       detail?: string;
       txSignature?: string;
@@ -150,7 +150,7 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
     this.status = status;
-    this.code = code;
+    this.code = typeof code === 'string' ? code : undefined;
     this.detail = extras?.detail;
     this.txSignature = extras?.txSignature;
     this.withdrawalId = extras?.withdrawalId;

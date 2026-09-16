@@ -25,6 +25,7 @@ on:
     paths:
       - 'packages/database/migrations/**'
       - 'apps/api/src/**'
+      - 'apps/web/src/**'
       - 'packages/database/src/schema/**'
       - 'packages/shared/src/constants/**'
       - '.github/workflows/gates.yml'
@@ -33,6 +34,7 @@ on:
       - master
     paths:
       - 'apps/api/src/**'
+      - 'apps/web/src/**'
       - 'packages/database/src/schema/**'
       - 'packages/shared/src/constants/**'
   workflow_dispatch: {}
@@ -42,6 +44,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  web-tests:
+    name: web Trading Floor tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck web
+        run: cd apps/web && bun run typecheck
+
+      - name: Run Trading Floor suites
+        run: >-
+          cd apps/web && bun test
+          src/stores/__tests__/trade-ticker.test.ts
+          src/stores/__tests__/world-stream-state.test.ts
+          src/hooks/use-trading-floor-normalise.test.ts
+          src/hooks/use-trading-floor-hooks.test.tsx
+          src/components/game/trading-floor/format.test.ts
+          src/components/game/trading-floor/floor-tape-placement.test.ts
+          src/components/game/trading-floor/floor-components.test.tsx
+          src/components/game/trading-floor/trading-floor-structural.test.ts
+          src/app/leaderboard/leaderboard-trader-column.test.tsx
+          src/lib/__tests__/api-error-code.test.ts
+          src/lib/__tests__/solana-wallet.test.ts
+          src/lib/world-presence-controller.test.ts
+          src/hooks/world-downlink-policy.test.ts
+
   api-invariant-tests:
     name: api money/cove/poker invariant tests
     runs-on: ubuntu-latest

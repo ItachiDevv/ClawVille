@@ -8,6 +8,9 @@ import { useNpcStore } from "@/stores/npc";
 import { usePlayerStore } from "@/stores/players";
 import { useResearchStore } from "@/stores/research";
 import { avatarPositionRef, useGameStore } from "@/stores/game";
+import { useWorldStreamStore } from "@/stores/world-stream-state";
+import { useTradeTickerStore, type FloorDecision, type FloorTrade } from "@/stores/trade-ticker";
+import { normaliseDecisionEvent, normaliseSseTrade } from "@/hooks/use-trading-floor";
 import { useWatchHeartbeat } from "@/hooks/use-watch-heartbeat";
 import type { WorldPresencePolicy } from "@/hooks/world-stream-machine";
 
@@ -32,6 +35,7 @@ export function useWorldStream(
     (state) => state.updateFromSnapshot,
   );
   const setNpcConnected = useNpcStore((state) => state.setConnected);
+  const setStreamState = useWorldStreamStore((state) => state.setStreamState);
   const updatePlayersFromSnapshot = usePlayerStore(
     (state) => state.updateFromSnapshot,
   );
@@ -52,6 +56,31 @@ export function useWorldStream(
             snapshot as Parameters<typeof updateNpcsFromSnapshot>[0],
           ),
         setNpcConnected,
+        setStreamState,
+        addTradeEvents: (rows) => {
+          try {
+            const store = useTradeTickerStore.getState();
+            if (store.consumers === 0) return;
+            const trades = rows
+              .map(normaliseSseTrade)
+              .filter((trade): trade is FloorTrade => trade !== null);
+            if (trades.length > 0) store.addTrades(trades);
+          } catch {
+            // Optional floor frames must never break world presence.
+          }
+        },
+        addTradeDecisions: (rows) => {
+          try {
+            const store = useTradeTickerStore.getState();
+            if (store.consumers === 0) return;
+            const decisions = rows
+              .map(normaliseDecisionEvent)
+              .filter((decision): decision is FloorDecision => decision !== null);
+            if (decisions.length > 0) store.addDecisions(decisions);
+          } catch {
+            // Optional floor frames must never break world presence.
+          }
+        },
         updatePlayersFromSnapshot,
         setLocalSessionId,
         setRoomId,
@@ -95,6 +124,7 @@ export function useWorldStream(
   }, [
     updateNpcsFromSnapshot,
     setNpcConnected,
+    setStreamState,
     updatePlayersFromSnapshot,
     setLocalSessionId,
     setRoomId,

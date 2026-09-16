@@ -477,10 +477,11 @@ export interface GameState {
   // 3D marketplace stand (lib/three/marketplace-stall.tsx). See
   // packages/database/src/schema/exchange.ts for the escrow flow doc.
   exchangeOpen: boolean;
-  exchangeTab: 'browse' | 'my-listings' | 'my-orders' | 'post';
+  exchangeTab: 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post';
   openExchange: () => void;
+  openTradingFloor: () => void;
   closeExchange: () => void;
-  setExchangeTab: (tab: 'browse' | 'my-listings' | 'my-orders' | 'post') => void;
+  setExchangeTab: (tab: 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post') => void;
 
   // Leaderboard — P4 single ClawVille-owned ranking board. 'skills-sold' /
   // 'skills-authored' sort modes were removed 2026-07-02 alongside peer skill
@@ -1367,8 +1368,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   exchangeOpen: false,
   exchangeTab: 'browse' as const,
   openExchange: () => set({ exchangeOpen: true, exchangeTab: 'browse' }),
+  openTradingFloor: () => set({ exchangeOpen: true, exchangeTab: 'floor' }),
   closeExchange: () => set({ exchangeOpen: false }),
-  setExchangeTab: (tab: 'browse' | 'my-listings' | 'my-orders' | 'post') => set({ exchangeTab: tab }),
+  setExchangeTab: (tab: 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post') => set({ exchangeTab: tab }),
 
   leaderboardOpen: false,
   leaderboardSort: 'composite' as const,

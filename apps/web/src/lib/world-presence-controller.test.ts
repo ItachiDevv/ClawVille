@@ -90,6 +90,7 @@ interface TestEnvironmentOptions {
   wsAdvertised?: boolean;
   holdJoins?: boolean;
   holdPositions?: boolean;
+  includeRoomTicket?: boolean;
 }
 
 interface ScheduledTimer {
@@ -147,7 +148,9 @@ function createTestEnvironment(options: TestEnvironmentOptions = {}) {
         call.resolve(200, {
           roomId: "AB2C",
           id: "session-1",
-          roomTicket: "ticket-1",
+          ...(options.includeRoomTicket === false
+            ? {}
+            : { roomTicket: "ticket-1" }),
           ...(options.wsAdvertised === false
             ? {}
             : { transports: { positionWs: true } }),
@@ -251,12 +254,18 @@ function createHarness(options: TestEnvironmentOptions = {}) {
   const toasts: Array<[string, string, number | undefined]> = [];
   const localSessionIds: Array<string | null> = [];
   const roomIds: Array<string | null> = [];
+  const tradeEvents: unknown[][] = [];
+  const tradeDecisions: unknown[][] = [];
+  const streamStates: Array<'live' | 'reconnecting' | 'stopped'> = [];
   let clearCount = 0;
   let landInvalidationCount = 0;
 
   const callbacks: WorldPresenceStoreCallbacks = {
     updateNpcsFromSnapshot: () => undefined,
     setNpcConnected: () => undefined,
+    setStreamState: (state) => streamStates.push(state),
+    addTradeEvents: (rows) => tradeEvents.push(rows),
+    addTradeDecisions: (rows) => tradeDecisions.push(rows),
     updatePlayersFromSnapshot: (_players: PlayerSnapshot[]) => undefined,
     setLocalSessionId: (id) => localSessionIds.push(id),
     setRoomId: (id) => roomIds.push(id),
@@ -288,6 +297,9 @@ function createHarness(options: TestEnvironmentOptions = {}) {
     toasts,
     localSessionIds,
     roomIds,
+    tradeEvents,
+    tradeDecisions,
+    streamStates,
     get clearCount() {
       return clearCount;
     },
@@ -723,6 +735,111 @@ describe("world presence controller", () => {
     harness.controller.stop();
   });
 
+  test("trade and trade_decision frames stay on separate guarded callbacks", async () => {
+    const harness = createHarness();
+    await startJoined(harness);
+    const source = harness.eventSources[0]!;
+
+    source.emit("trade", { signature: "single" });
+    source.emit("trade", [{ signature: "array" }]);
+    source.emit("trade_decision", { decisionId: "single" });
+    source.emit("trade_decision", [{ decisionId: "array" }]);
+
+    expect(harness.tradeEvents).toEqual([
+      [{ signature: "single" }],
+      [{ signature: "array" }],
+    ]);
+    expect(harness.tradeDecisions).toEqual([
+      [{ decisionId: "single" }],
+      [{ decisionId: "array" }],
+    ]);
+    harness.controller.stop();
+  });
+
+  test("malformed and disabled trade frames never reach callbacks", async () => {
+    const harness = createHarness();
+    await startJoined(harness);
+    const source = harness.eventSources[0]!;
+    const tradeListener = source.listeners.get("trade")?.[0];
+    const decisionListener = source.listeners.get("trade_decision")?.[0];
+
+    expect(() => tradeListener?.({ data: "{" })).not.toThrow();
+    expect(() => decisionListener?.({ data: "{" })).not.toThrow();
+    harness.setDownlinkEnabled(false);
+    source.emit("trade", { signature: "ignored" });
+    source.emit("trade_decision", { decisionId: "ignored" });
+    expect(harness.tradeEvents).toHaveLength(0);
+    expect(harness.tradeDecisions).toHaveLength(0);
+    harness.controller.stop();
+  });
+
+  test("stream state publishes live, reconnecting and stopped", async () => {
+    const harness = createHarness();
+    await startJoined(harness);
+    const source = harness.eventSources[0]!;
+    source.emit("open");
+    source.onerror?.();
+    harness.controller.stop();
+
+    expect(harness.streamStates).toContain("live");
+    expect(harness.streamStates).toContain("reconnecting");
+    expect(harness.streamStates.at(-1)).toBe("stopped");
+  });
+
+  test("stream state stops at the retry ceiling", async () => {
+    const harness = createHarness({ includeRoomTicket: false });
+    await startJoined(harness);
+
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      harness.eventSources.at(-1)?.onerror?.();
+      harness.advance(60_000);
+      if (harness.streamStates.at(-1) === "stopped") break;
+    }
+
+    expect(harness.streamStates.at(-1)).toBe("stopped");
+    expect(harness.eventSources.length).toBeLessThanOrEqual(20);
+    harness.controller.stop();
+  });
+
+  test("stream callbacks publish nothing after teardown", async () => {
+    const harness = createHarness();
+    await startJoined(harness);
+    const source = harness.eventSources[0]!;
+    harness.controller.stop();
+    const publicationsAfterStop = harness.streamStates.length;
+
+    source.emit("open");
+    source.emit("snapshot", { npcs: [], players: [] });
+    source.onerror?.();
+
+    expect(harness.streamStates).toHaveLength(publicationsAfterStop);
+  });
+
+  test("downlink close, page teardown and supersession publish stopped", async () => {
+    const downlink = createHarness();
+    await startJoined(downlink);
+    downlink.streamStates.length = 0;
+    downlink.setDownlinkEnabled(false);
+    downlink.advance(200);
+    expect(downlink.streamStates.at(-1)).toBe("stopped");
+    downlink.controller.stop();
+
+    const page = createHarness();
+    await startJoined(page);
+    page.streamStates.length = 0;
+    page.firePageLifecycle({ type: "pagehide", persisted: false });
+    expect(page.streamStates.at(-1)).toBe("stopped");
+    page.controller.stop();
+
+    const superseded = createHarness();
+    const socket = await startJoined(superseded);
+    ready(socket!);
+    superseded.streamStates.length = 0;
+    socket!.emitMessage({ type: "presence.error", code: "superseded" });
+    expect(superseded.streamStates.at(-1)).toBe("stopped");
+    superseded.controller.stop();
+  });
+
   test("cold activity keeps both downlink and uplink dark", async () => {
     const harness = createHarness();
     harness.setPolicy("remote");
@@ -798,6 +915,7 @@ describe("world presence controller", () => {
     expect(harness.eventSources).toHaveLength(2);
     expect(harness.landInvalidationCount).toBe(1);
 
+    const streamStatesBeforeStaleCallbacks = harness.streamStates.length;
     stale.emit("open");
     stale.emit("land");
     stale.emit("snapshot", { npcs: [], players: [] });
@@ -805,6 +923,7 @@ describe("world presence controller", () => {
     harness.advance(3_000);
     expect(harness.landInvalidationCount).toBe(1);
     expect(harness.eventSources).toHaveLength(2);
+    expect(harness.streamStates).toHaveLength(streamStatesBeforeStaleCallbacks);
     harness.controller.stop();
   });
 

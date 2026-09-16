@@ -58,6 +58,9 @@ interface FrozenPresencePose {
 export interface WorldPresenceStoreCallbacks {
   updateNpcsFromSnapshot: (snapshot: unknown) => void;
   setNpcConnected: (connected: boolean) => void;
+  setStreamState: (state: 'live' | 'reconnecting' | 'stopped') => void;
+  addTradeEvents: (trades: unknown[]) => void;
+  addTradeDecisions: (decisions: unknown[]) => void;
   updatePlayersFromSnapshot: (players: PlayerSnapshot[]) => void;
   setLocalSessionId: (sessionId: string | null) => void;
   setRoomId: (roomId: string | null) => void;
@@ -313,6 +316,7 @@ export class WorldPresenceController {
     this.#roomId = null;
     this.#roomTicket = null;
     this.#callbacks.setNpcConnected(false);
+    this.#callbacks.setStreamState('stopped');
     this.#callbacks.setLocalSessionId(null);
     this.#callbacks.setRoomId(null);
     this.#callbacks.clearPlayers();
@@ -618,6 +622,7 @@ export class WorldPresenceController {
     }
     this.#invalidateStream();
     this.#callbacks.setNpcConnected(false);
+    this.#callbacks.setStreamState('stopped');
     this.#callbacks.addToast(
       "↪️",
       "Your session is now active in another tab or device.",
@@ -631,6 +636,7 @@ export class WorldPresenceController {
       !this.#callbacks.readDownlinkEnabled() ||
       this.#streamRetries >= MAX_STREAM_RETRIES
     ) {
+      this.#callbacks.setStreamState('stopped');
       return;
     }
     this.#activeRetryToken = null;
@@ -648,6 +654,7 @@ export class WorldPresenceController {
       this.#streamRetries = 0;
       this.#lastStreamAttemptWasBareReopen = false;
       this.#callbacks.setNpcConnected(true);
+      this.#callbacks.setStreamState('live');
     });
     source.addEventListener("snapshot", (event) => {
       if (epoch !== this.#streamEpoch) return;
@@ -663,6 +670,7 @@ export class WorldPresenceController {
           collaborationEvents?: unknown;
         };
         this.#callbacks.setNpcConnected(true);
+        this.#callbacks.setStreamState('live');
         if (Array.isArray(snapshot.npcs)) {
           measureSpike("sse:npcUpdate", () =>
             this.#callbacks.updateNpcsFromSnapshot(snapshot),
@@ -700,15 +708,46 @@ export class WorldPresenceController {
       if (source !== this.#eventSource) return;
       this.#callbacks.invalidateLandQuery();
     });
+    source.addEventListener("trade", (event) => {
+      if (epoch !== this.#streamEpoch) return;
+      if (!this.#callbacks.readDownlinkEnabled()) return;
+      if (source !== this.#eventSource) return;
+      if (typeof event.data !== "string") return;
+      try {
+        const parsed = JSON.parse(event.data) as unknown;
+        this.#callbacks.addTradeEvents(Array.isArray(parsed) ? parsed : [parsed]);
+      } catch {
+        // A malformed optional frame must never break world presence.
+      }
+    });
+    source.addEventListener("trade_decision", (event) => {
+      if (epoch !== this.#streamEpoch) return;
+      if (!this.#callbacks.readDownlinkEnabled()) return;
+      if (source !== this.#eventSource) return;
+      if (typeof event.data !== "string") return;
+      try {
+        const parsed = JSON.parse(event.data) as unknown;
+        this.#callbacks.addTradeDecisions(Array.isArray(parsed) ? parsed : [parsed]);
+      } catch {
+        // A malformed optional frame must never break world presence.
+      }
+    });
     source.onerror = () => {
       if (epoch !== this.#streamEpoch) return;
       if (!this.#callbacks.readDownlinkEnabled()) return;
       if (source !== this.#eventSource) return;
       this.#callbacks.setNpcConnected(false);
       this.#dropFailedSource(source);
-      if (this.#recoveryInFlight) return;
+      if (this.#recoveryInFlight) {
+        this.#callbacks.setStreamState('reconnecting');
+        return;
+      }
       this.#streamRetries += 1;
-      if (this.#stopped || this.#streamRetries >= MAX_STREAM_RETRIES) return;
+      if (this.#stopped || this.#streamRetries >= MAX_STREAM_RETRIES) {
+        this.#callbacks.setStreamState('stopped');
+        return;
+      }
+      this.#callbacks.setStreamState('reconnecting');
       const delay = Math.min(
         STREAM_RETRY_BASE_MS *
           Math.pow(2, Math.max(0, this.#streamRetries - 1)),
@@ -804,6 +843,7 @@ export class WorldPresenceController {
     this.#streamRetries = 0;
     this.#lastStreamAttemptWasBareReopen = false;
     this.#callbacks.setNpcConnected(false);
+    this.#callbacks.setStreamState('stopped');
     this.#callbacks.clearPlayers();
   }
 
@@ -1165,6 +1205,7 @@ export class WorldPresenceController {
       this.#invalidateStream();
       this.#retireSocket();
       this.#callbacks.setNpcConnected(false);
+      this.#callbacks.setStreamState('stopped');
       return;
     }
     if (event.persisted && this.#pageHiddenPersisted) {

@@ -64,6 +64,7 @@ import {
 } from '@/components/rpg';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
+import { TradingFloorTab } from '@/components/game/trading-floor/trading-floor-tab';
 
 // Guests run an all-demo economy (founder ruling 2026-07-06). The Exchange is
 // P2P escrowed trade in REAL ClawTokens — it can't be safely simulated, so a
@@ -76,7 +77,7 @@ const EXCHANGE_UPSELL = {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-type ExchangeTab = 'browse' | 'my-listings' | 'my-orders' | 'post';
+type ExchangeTab = 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post';
 
 type SortMode = 'newest' | 'reward-high' | 'reward-low';
 
@@ -1487,10 +1488,14 @@ function TabStrip({
         gap: 4,
         padding: '10px 22px 0',
         borderBottom: '1px solid rgba(56, 189, 248, 0.15)',
+        overflowX: 'auto',
+        flexWrap: 'nowrap',
+        scrollbarWidth: 'none',
       }}
     >
       {(
         [
+          { key: 'floor', label: 'Trading Floor' },
           { key: 'browse', label: 'Browse' },
           { key: 'my-listings', label: 'My Listings' },
           { key: 'my-orders', label: 'My Orders' },
@@ -1516,6 +1521,8 @@ function TabStrip({
               color: isActive ? '#7dd3fc' : '#64748b',
               cursor: 'pointer',
               transition: 'color 180ms ease',
+              flexShrink: 0,
+              minHeight: 44,
             }}
           >
             {t.label}
@@ -1693,7 +1700,9 @@ export default function ExchangeModal() {
         open={open}
         onClose={close}
         title="Exchange"
-        subtitle="Peer marketplace · Needs · Offers · Escrowed Trade"
+        subtitle={tab === 'floor'
+          ? 'Verified on-chain swaps · Live floor · Rules'
+          : 'Peer marketplace · Needs · Offers · Escrowed Trade'}
         tier="rare"
         glow="subtle"
         headerIcon={<ExchangeSigil />}
@@ -1701,6 +1710,14 @@ export default function ExchangeModal() {
         tokenBadge={<CtPill tokens={tokens} />}
       >
         <TabStrip tab={tab} onChange={setTab} />
+
+        {tab === 'floor' && (
+          <TradingFloorTab
+            active={open && tab === 'floor'}
+            isGuest={isGuest}
+            onGuestBlocked={() => setGuestUpsellOpen(true)}
+          />
+        )}
 
         {/* ═══════════════════════════ BROWSE ═══════════════════════════ */}
         {tab === 'browse' && (
