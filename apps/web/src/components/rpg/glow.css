@@ -633,6 +633,10 @@
 .rpg-modal-shell__close {
   width: 44px;
   height: 44px;
+  /* Never let a crowded phone header (title + subtitle + vCLAW chip) squeeze
+     the close control below the 44px touch target (measured 40px at 390px). */
+  flex: 0 0 44px;
+  min-width: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
