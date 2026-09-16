@@ -21,6 +21,7 @@ import {
   ingestTradeSignature,
   lookupVerifiedTrade,
   registerTradeVerifiedCallback,
+  runTradeObserverTick,
 } from '../trade-observer';
 import type { BoundTradingWallet } from '../trading-wallets';
 
@@ -168,6 +169,48 @@ describe('trade-verified callback registration', () => {
   });
 });
 
+describe('trade observer wallet isolation', () => {
+  test('alerts a strict failure and continues with the next wallet', async () => {
+    const wallet = (id: string): BoundTradingWallet => ({
+      id, pubkey: `pubkey-${id}`, source: 'signed', subjectKind: 'avatar',
+      userId: `user-${id}`, avatarId: `avatar-${id}`, agentId: null,
+      boundAt: new Date(0), boundSlot: 0, cursorSignature: null,
+      cursorBlockTime: null, lastPolledAt: null, operatedByClawville: false,
+    });
+    const first = wallet('first');
+    const second = wallet('second');
+    const ingested: string[] = [];
+    const alerts: unknown[] = [];
+    const advanced: string[] = [];
+    const primary = new Error('strict event insert failed');
+    const result = await runTradeObserverTick({
+      getSignaturesForAddress: async (address) => [{
+        signature: address === first.pubkey ? 'sig-first' : 'sig-second', slot: 1, blockTime: 1,
+      }],
+      getParsedTransaction: async () => null,
+      now: () => 1_000,
+    }, {
+      resolveWallets: async () => [first, second],
+      withLease: (async (_walletId: string, task: () => Promise<unknown>) => task()) as any,
+      ingest: (async ({ wallet: current }: { wallet: BoundTradingWallet }) => {
+        ingested.push(current.id);
+        if (current.id === first.id) throw primary;
+        return { signature: 'sig-second', inserted: true, scored: false, reason: 'below_min_notional', trade: null };
+      }) as any,
+      advanceCursor: (async ({ walletId }: { walletId: string }) => { advanced.push(walletId); return true; }) as any,
+      alert: (async (payload: unknown) => { alerts.push(payload); }) as any,
+    });
+    expect(ingested).toEqual([first.id, second.id]);
+    expect(result).toEqual({ walletsPolled: 2, signaturesExamined: 2, inserted: 1, scored: 0, errors: 1 });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      severity: 'warning', source: 'trade-observer',
+      context: { walletId: first.id, signature: 'sig-first', error: primary.message },
+    });
+    expect(advanced).toEqual([second.id]);
+  });
+});
+
 describeIfDb('trade observer delta integration (requires DATABASE_URL)', () => {
   test('stores a trade at the binding slot as pre_bind without a leaderboard event', async () => {
     const fixture = await createWalletFixture({ boundSlot: 200 });
@@ -257,6 +300,22 @@ describeIfDb('trade observer delta integration (requires DATABASE_URL)', () => {
       code: 'settlement_write_failed',
       status: 503,
     });
+    expect(await db.select().from(verifiedTrades).where(eq(verifiedTrades.signature, fixture.signature))).toHaveLength(0);
+    expect(failureRecord).toHaveBeenCalledTimes(1);
+    expect(failureRecord.mock.calls[0]?.[1]).toBe(primary);
+    expect(broadcast).not.toHaveBeenCalled();
+    eventWrite.mockRestore();
+    failureRecord.mockRestore();
+    broadcast.mockRestore();
+  });
+
+  test('rolls back and rethrows the strict event failure to the observer caller', async () => {
+    const fixture = await createWalletFixture();
+    const primary = new Error('forced observer strict event failure');
+    const eventWrite = spyOn(eventLoggerModule, 'logVerifiedTradeEventTx').mockRejectedValue(primary);
+    const failureRecord = spyOn(eventLoggerModule, 'recordVerifiedTradeEventFailure').mockResolvedValue(undefined);
+    const broadcast = spyOn(worldModule, 'broadcastTradeEvent').mockImplementation(() => undefined);
+    await expect(ingestFixture(fixture, 'observer')).rejects.toBe(primary);
     expect(await db.select().from(verifiedTrades).where(eq(verifiedTrades.signature, fixture.signature))).toHaveLength(0);
     expect(failureRecord).toHaveBeenCalledTimes(1);
     expect(failureRecord.mock.calls[0]?.[1]).toBe(primary);

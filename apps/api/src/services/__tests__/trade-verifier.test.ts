@@ -12,6 +12,35 @@ const TOKEN_ACCOUNT_A = bs58.encode(new Uint8Array(32).fill(2));
 const TOKEN_ACCOUNT_B = bs58.encode(new Uint8Array(32).fill(3));
 const TOKEN_ACCOUNT_C = bs58.encode(new Uint8Array(32).fill(4));
 const THIRD_PARTY = bs58.encode(new Uint8Array(32).fill(5));
+const FIXTURE_DIR = resolve(import.meta.dir, '__fixtures__/trade');
+
+function recordedFixture(name: string): any {
+  return JSON.parse(readFileSync(resolve(FIXTURE_DIR, `${name}.json`), 'utf8'));
+}
+
+function recordedSignature(name: string): string {
+  return JSON.parse(readFileSync(resolve(FIXTURE_DIR, `${name}.source.json`), 'utf8')).signature;
+}
+
+function allInstructions(raw: any): any[] {
+  return [
+    ...(raw.transaction?.message?.instructions ?? []),
+    ...(raw.meta?.innerInstructions ?? []).flatMap((group: any) => group.instructions ?? []),
+  ];
+}
+
+function mutateRecordedDiscriminator(name: string, programId: string, discriminatorHex: string): any {
+  const raw = structuredClone(recordedFixture(name));
+  const instruction = allInstructions(raw).find((ix) => {
+    if (ix.programId !== programId || typeof ix.data !== 'string') return false;
+    return Buffer.from(bs58.decode(ix.data)).subarray(0, 8).toString('hex') === discriminatorHex;
+  });
+  expect(instruction).toBeDefined();
+  const bytes = bs58.decode(instruction.data);
+  bytes[0] ^= 0xff;
+  instruction.data = bs58.encode(bytes);
+  return raw;
+}
 
 function pumpSwapRaw(): any {
   return {
@@ -78,10 +107,18 @@ describe('trade verifier', () => {
     expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET })).toMatchObject({ kind: 'swap', dex: 'jupiter' });
   });
 
-  test('rejects a mutated PumpSwap discriminator', () => {
-    const raw = pumpSwapRaw();
-    raw.transaction.message.instructions[0].data = bs58.encode(Uint8Array.from([103, 6, 61, 18, 1, 218, 235, 234]));
-    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET })).toMatchObject({ kind: 'rejected', reason: 'dex_discriminator_unknown' });
+  test('rejects in-memory discriminator mutations built from recorded fixtures', () => {
+    const cases = [
+      ['jupiter-swap', TRADE_DEX_PROGRAMS.jupiter, 'e517cb977ae3ad2a'],
+      ['pumpswap-swap', TRADE_DEX_PROGRAMS.pumpswap, '66063d1201daebea'],
+      ['pumpswap-buy-exact-quote-in', TRADE_DEX_PROGRAMS.pumpswap, 'c62e1552b4d9e870'],
+      ['pumpfun-buy', TRADE_DEX_PROGRAMS.pumpfun, '66063d1201daebea'],
+    ] as const;
+    for (const [name, programId, discriminatorHex] of cases) {
+      const raw = mutateRecordedDiscriminator(name, programId, discriminatorHex);
+      expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw }))
+        .toMatchObject({ kind: 'rejected', reason: 'dex_discriminator_unknown' });
+    }
   });
 
   test('distinguishes failed and malformed transactions', () => {
@@ -115,12 +152,57 @@ describe('trade verifier', () => {
       .toMatchObject({ kind: 'rejected', reason: 'vault_flow_mismatch' });
   });
 
+  test('resolves inner instruction membership through ALT keys without using position', () => {
+    const raw = pumpSwapRaw();
+    raw.transaction.message.accountKeys = [raw.transaction.message.accountKeys[0], TOKEN_ACCOUNT_A, TOKEN_ACCOUNT_C];
+    raw.transaction.message.instructions = [];
+    raw.meta.loadedAddresses = { writable: [TOKEN_ACCOUNT_B, TRADE_DEX_PROGRAMS.pumpswap], readonly: [] };
+    for (const balance of raw.meta.preTokenBalances) balance.accountIndex = balance.mint === TOKEN_A ? 1 : 3;
+    for (const balance of raw.meta.postTokenBalances) balance.accountIndex = balance.mint === TOKEN_A ? 1 : 3;
+    raw.meta.innerInstructions = [{ index: 0, instructions: [{
+      programIdIndex: 4,
+      accounts: [3, 0, 1],
+      data: bs58.encode(Uint8Array.from([102, 6, 61, 18, 1, 218, 235, 234])),
+    }] }];
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'swap', dex: 'pumpswap' });
+
+    const missingLeg = structuredClone(raw);
+    missingLeg.meta.innerInstructions[0].instructions[0].accounts = [0, 1];
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw: missingLeg, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'rejected', reason: 'vault_flow_mismatch' });
+  });
+
+  test('requires the wallet system account when native SOL is a swap leg', () => {
+    const raw = pumpSwapRaw();
+    raw.meta.postTokenBalances[0].uiTokenAmount.amount = '1000';
+    raw.meta.postBalances[0] = 900_000_000;
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'swap', inputMint: TRADE_MINTS.WSOL, outputMint: TOKEN_B });
+    raw.transaction.message.instructions[0].accounts = [TOKEN_ACCOUNT_A, TOKEN_ACCOUNT_B];
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'rejected', reason: 'vault_flow_mismatch' });
+  });
+
   test('diagnoses a qualifying swap that pays its output to a third party', () => {
     const raw = pumpSwapRaw();
     raw.meta.preTokenBalances[1].owner = THIRD_PARTY;
     raw.meta.postTokenBalances[1].owner = THIRD_PARTY;
     expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
       .toMatchObject({ kind: 'rejected', reason: 'token_account_not_owned' });
+  });
+
+  test('keeps an ambiguous single-sided flow when only the same-mint pool vault moved', () => {
+    const raw = pumpSwapRaw();
+    raw.meta.postTokenBalances[1].uiTokenAmount.amount = '0';
+    raw.transaction.message.accountKeys.push(TOKEN_ACCOUNT_C);
+    raw.transaction.message.instructions[0].accounts.push(TOKEN_ACCOUNT_C);
+    raw.meta.preTokenBalances.push({ accountIndex: 4, mint: TOKEN_A, owner: THIRD_PARTY,
+      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: { amount: '0', decimals: 6 } });
+    raw.meta.postTokenBalances.push({ accountIndex: 4, mint: TOKEN_A, owner: THIRD_PARTY,
+      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: { amount: '500', decimals: 6 } });
+    expect(decodeSwapFromParsedTransaction({ signature: 'sig', raw, expectedWallet: WALLET }))
+      .toMatchObject({ kind: 'rejected', reason: 'single_sided' });
   });
 
   test('rejects a same-mint transfer instead of netting it into no movement', () => {
@@ -166,7 +248,81 @@ describe('trade verifier', () => {
     expect(verdict(TRADE_MINTS.USDC, TRADE_MINTS.WSOL)).toEqual({ scored: true, tier: 'base' });
   });
 
-  test.skip('TODO-FIXTURE: needs a supplied confirmed Jupiter v6 ExactIn mainnet signature and recorded getParsedTransaction JSON', () => {});
-  test.skip('TODO-FIXTURE: needs a supplied confirmed PumpSwap buy or sell mainnet signature and recorded getParsedTransaction JSON', () => {});
-  test.skip('TODO-FIXTURE: needs a supplied confirmed pump.fun bonding-curve buy or sell mainnet signature and recorded getParsedTransaction JSON', () => {});
+  test('decodes the recorded Jupiter v6 route fixture', () => {
+    expect(decodeSwapFromParsedTransaction({
+      signature: recordedSignature('jupiter-swap'), raw: recordedFixture('jupiter-swap'),
+    })).toMatchObject({ kind: 'swap', dex: 'jupiter' });
+  });
+
+  test('decodes the recorded PumpSwap buy and sell fixtures', () => {
+    for (const name of ['pumpswap-swap', 'pumpswap-sell']) {
+      expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: recordedFixture(name) }))
+        .toMatchObject({ kind: 'swap', dex: 'pumpswap' });
+    }
+  });
+
+  test('recognises the recorded PumpSwap buy_exact_quote_in instruction', () => {
+    // The recorded transaction is a dust-sized buy (the wallet gained 8.59 tokens for ~0.00017 SOL,
+    // below SOL_DUST_LAMPORTS), so only the token leg survives delta aggregation and the verifier
+    // reports `single_sided`. The assertion that matters here is the discriminator: before the
+    // `buy_exact_quote_in` pin this fixture was refused `dex_discriminator_unknown` with the same bytes.
+    const name = 'pumpswap-buy-exact-quote-in';
+    expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: recordedFixture(name) }))
+      .toMatchObject({ kind: 'rejected', reason: 'single_sided', dex: 'pumpswap' });
+    // The same bytes on the pump.fun bonding-curve program are NOT accepted (pumpswap-only pin).
+    const relabelled = recordedFixture(name) as {
+      transaction: { message: { instructions: Array<{ programId: string }> } };
+      meta: { innerInstructions: Array<{ instructions: Array<{ programId: string }> }> };
+    };
+    const everyInstruction = [
+      ...relabelled.transaction.message.instructions,
+      ...relabelled.meta.innerInstructions.flatMap((group) => group.instructions),
+    ];
+    for (const ix of everyInstruction) {
+      if (ix.programId === TRADE_DEX_PROGRAMS.pumpswap) ix.programId = TRADE_DEX_PROGRAMS.pumpfun;
+    }
+    expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: relabelled }))
+      .toMatchObject({ kind: 'rejected', reason: 'dex_discriminator_unknown', dex: 'pumpfun' });
+  });
+
+  test('decodes the recorded pump.fun buy and sell fixtures', () => {
+    for (const name of ['pumpfun-buy', 'pumpfun-sell']) {
+      expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: recordedFixture(name) }))
+        .toMatchObject({ kind: 'swap', dex: 'pumpfun' });
+    }
+  });
+
+  test('rejects the recorded failed Jupiter transaction before swap decoding', () => {
+    expect(decodeSwapFromParsedTransaction({
+      signature: recordedSignature('failed-tx'), raw: recordedFixture('failed-tx'),
+    })).toMatchObject({ kind: 'tx_failed' });
+  });
+
+  test('pins every recorded program discriminator, including the failed Jupiter fixture', () => {
+    const cases = [
+      ['jupiter-swap', TRADE_DEX_PROGRAMS.jupiter, 'e517cb977ae3ad2a'],
+      ['failed-tx', TRADE_DEX_PROGRAMS.jupiter, 'c1209b3341d69c81'],
+      ['pumpswap-swap', TRADE_DEX_PROGRAMS.pumpswap, '66063d1201daebea'],
+      ['pumpswap-buy-exact-quote-in', TRADE_DEX_PROGRAMS.pumpswap, 'c62e1552b4d9e870'],
+      ['pumpswap-sell', TRADE_DEX_PROGRAMS.pumpswap, '33e685a4017f83ad'],
+      ['pumpfun-buy', TRADE_DEX_PROGRAMS.pumpfun, '66063d1201daebea'],
+      ['pumpfun-sell', TRADE_DEX_PROGRAMS.pumpfun, '33e685a4017f83ad'],
+    ] as const;
+    for (const [name, programId, discriminatorHex] of cases) {
+      const observed = allInstructions(recordedFixture(name))
+        .filter((ix) => ix.programId === programId && typeof ix.data === 'string')
+        .map((ix) => Buffer.from(bs58.decode(ix.data)).subarray(0, 8).toString('hex'));
+      expect(observed).toContain(discriminatorHex);
+    }
+  });
+
+  test.skip('TODO-FIXTURE: no recorded spl-transfer-not-a-swap.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded unused-jupiter-key.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded memo-carrying-dex-address.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded pumpswap-liquidity-deposit.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded pumpswap-liquidity-withdraw.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded pumpfun-creator-fee-claim.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded dex-tx-with-unrelated-transfer.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded sponsored-swap.json was supplied', () => {});
+  test.skip('TODO-FIXTURE: no recorded alt-resolved-execution.json was supplied', () => {});
 });

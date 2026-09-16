@@ -78,9 +78,29 @@ const TOKEN_PROGRAMS = new Set([
 ]);
 
 // Official sources: pump-fun/pump-public-docs idl/pump_amm.json and idl/pump.json.
-// Both IDLs publish the same Anchor buy and sell discriminators.
+// Both IDLs publish the same Anchor buy and sell discriminators
+// (sha256("global:buy")[0..8] and sha256("global:sell")[0..8]).
 const PUMP_BUY = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
 const PUMP_SELL = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
+// PumpSwap (pump_amm) also exposes `buy_exact_quote_in` (sha256("global:buy_exact_quote_in")[0..8]
+// = c62e1552b4d9e870), the quote-denominated buy that pump.fun's own frontend emits. Pinned from
+// the recorded mainnet fixture pumpswap-buy-exact-quote-in.json (log: "Instruction: BuyExactQuoteIn").
+// pump.fun (bonding curve) does not publish this instruction, so it is accepted for pumpswap only.
+// `sell_exact_quote_out` (9892de9e6289f898) is NOT pinned: no recorded fixture yet; a wallet that
+// sells through it is refused `dex_discriminator_unknown` until one is recorded (tracked in
+// ARCHITECTURE.md beside the directional-vault gate).
+const PUMPSWAP_BUY_EXACT_QUOTE_IN = Buffer.from([198, 46, 21, 82, 180, 217, 232, 112]);
+
+// FEATURE_GATE: trading_floor_directional_vault_flow
+// Owner: floor-core.
+// Status: Condition (e1) checks membership only. It does not claim directional vault proof.
+// Metric to graduate: The D22 recorded fixtures exist, all three official IDLs are obtained,
+//   and (e2) cites each IDL account index with one vault-direction negative fixture per DEX.
+// Current reading: recorded buy/sell fixtures exist; zero of three official IDLs are pinned here.
+// Review deadline: Before Trading Floor promotion from staging to production.
+// On deadline: block production promotion until (e2) meets the metric. Do not weaken or
+//   silently extend the gate.
+// Reference: spec-floor-core-v6-delta.md Part 5 D19.
 
 function keyText(key: z.infer<typeof accountKeySchema>): string {
   return typeof key === 'string' ? key : key.pubkey;
@@ -99,7 +119,8 @@ function instructionAccounts(ix: z.infer<typeof compiledInstructionSchema>, keys
 function discriminatorMatches(dex: TradeDex, data: Uint8Array): boolean {
   if (dex === 'jupiter') return decodeJupiterV6RouteInstruction(data) !== null;
   const head = Buffer.from(data).subarray(0, 8);
-  return head.equals(PUMP_BUY) || head.equals(PUMP_SELL);
+  if (head.equals(PUMP_BUY) || head.equals(PUMP_SELL)) return true;
+  return dex === 'pumpswap' && head.equals(PUMPSWAP_BUY_EXACT_QUOTE_IN);
 }
 
 export function decodeSwapFromParsedTransaction(input: {
@@ -158,6 +179,7 @@ export function decodeSwapFromParsedTransaction(input: {
   const walletAccountDeltas: Array<{ account: string | null; mint: string; delta: bigint }> = [];
   const tokenAccountDeltas: Array<{
     account: string | null;
+    mint: string;
     owner: string | undefined;
     delta: bigint;
   }> = [];
@@ -173,7 +195,7 @@ export function decodeSwapFromParsedTransaction(input: {
     const afterAmount = BigInt(after?.uiTokenAmount.amount ?? '0');
     const delta = afterAmount - beforeAmount;
     const account = keys[accountIndex] ?? null;
-    tokenAccountDeltas.push({ account, owner, delta });
+    tokenAccountDeltas.push({ account, mint: sample.mint, owner, delta });
     if (owner !== wallet) continue;
     walletAccountDeltas.push({ account, mint: sample.mint, delta });
     const current = aggregate.get(sample.mint) ?? { delta: 0n, decimals: sample.uiTokenAmount.decimals };
@@ -181,6 +203,7 @@ export function decodeSwapFromParsedTransaction(input: {
     aggregate.set(sample.mint, current);
   }
 
+  let nativeWalletLeg = false;
   const nativeBefore = parsed.meta.preBalances[walletIndex];
   const nativeAfter = parsed.meta.postBalances[walletIndex];
   if (nativeBefore !== undefined && nativeAfter !== undefined) {
@@ -206,6 +229,7 @@ export function decodeSwapFromParsedTransaction(input: {
       }
     }
     if (delta > SOL_DUST_LAMPORTS || delta < -SOL_DUST_LAMPORTS) {
+      nativeWalletLeg = true;
       const wsol = 'So11111111111111111111111111111111111111112';
       const current = aggregate.get(wsol) ?? { delta: 0n, decimals: 9 };
       current.delta += delta;
@@ -217,7 +241,8 @@ export function decodeSwapFromParsedTransaction(input: {
     .filter(([, value]) => value.delta !== 0n)
     .map(([mint, value]) => ({ mint, delta: value.delta.toString(), decimals: value.decimals }));
   const walletLegAccounts = walletAccountDeltas.filter((entry) => entry.delta !== 0n);
-  if (walletLegAccounts.some((entry) => entry.account === null || !matchedAccounts.has(entry.account))) {
+  if ((nativeWalletLeg && !matchedAccounts.has(wallet))
+    || walletLegAccounts.some((entry) => entry.account === null || !matchedAccounts.has(entry.account))) {
     return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime, reason: 'vault_flow_mismatch', dex };
   }
   if (deltas.length === 0) {
@@ -231,10 +256,12 @@ export function decodeSwapFromParsedTransaction(input: {
   const negatives = deltas.filter((value) => BigInt(value.delta) < 0n);
   const positives = deltas.filter((value) => BigInt(value.delta) > 0n);
   if (negatives.length === 0 || positives.length === 0) {
+    const presentLegMints = new Set((negatives.length > 0 ? negatives : positives).map((entry) => entry.mint));
     const foreignCounterpart = tokenAccountDeltas.some((entry) => entry.account !== null
       && matchedAccounts.has(entry.account)
       && entry.owner !== undefined
       && entry.owner !== wallet
+      && !presentLegMints.has(entry.mint)
       && ((negatives.length > 0 && positives.length === 0 && entry.delta > 0n)
         || (positives.length > 0 && negatives.length === 0 && entry.delta < 0n)));
     return { kind: 'rejected', signature: input.signature, blockTime: parsed.blockTime,

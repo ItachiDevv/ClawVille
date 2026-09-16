@@ -42,6 +42,14 @@ export interface TradeObserverDeps {
   now(): number;
 }
 
+interface TradeObserverTickRuntime {
+  resolveWallets(): Promise<BoundTradingWallet[]>;
+  withLease: typeof withTradingWalletLease;
+  ingest: typeof ingestTradeSignature;
+  advanceCursor: typeof advanceTradingWalletCursor;
+  alert: typeof alertError;
+}
+
 export interface VerifiedTradeDTO {
   signature: string; dex: TradeDex; inputMint: string; outputMint: string;
   inputAmount: string; outputAmount: string; inputDecimals: number; outputDecimals: number;
@@ -278,6 +286,9 @@ export async function ingestTradeSignature(input: {
     const failedAttempt = attempted as VerifiedTrade | null;
     if (failedAttempt?.scored) {
       await recordVerifiedTradeEventFailure(failedAttempt, error);
+      // The observer keeps the primary error so its per-wallet loop records the
+      // fault and continues. The report surface converts the same rollback into
+      // its stable retryable wire code.
       if (input.source === 'report') throw new TradeReportError('settlement_write_failed', 503);
     }
     throw error;
@@ -343,19 +354,30 @@ export async function reportTradeSignature(input: {
   return ingestTradeSignature({ wallet, signature: input.signature, source: 'report', parsedTransaction: raw, deps });
 }
 
-export async function runTradeObserverTick(deps = createDefaultTradeObserverDeps()): Promise<{
+export async function runTradeObserverTick(
+  deps = createDefaultTradeObserverDeps(),
+  runtimeOverrides: Partial<TradeObserverTickRuntime> = {},
+): Promise<{
   walletsPolled: number; signaturesExamined: number; inserted: number; scored: number; errors: number;
 }> {
   if (observerRunning) return { walletsPolled: 0, signaturesExamined: 0, inserted: 0, scored: 0, errors: 0 };
   observerRunning = true;
   const result = { walletsPolled: 0, signaturesExamined: 0, inserted: 0, scored: 0, errors: 0 };
+  const runtime: TradeObserverTickRuntime = {
+    resolveWallets: () => resolveBoundTradingWallets({ scope: 'all' }),
+    withLease: withTradingWalletLease,
+    ingest: ingestTradeSignature,
+    advanceCursor: advanceTradingWalletCursor,
+    alert: alertError,
+    ...runtimeOverrides,
+  };
   try {
     const limit = boundedInteger(process.env.TRADE_OBSERVER_WALLETS_PER_TICK, 25, 1, 200);
-    const walletsToPoll = (await resolveBoundTradingWallets({ scope: 'all' }))
+    const walletsToPoll = (await runtime.resolveWallets())
       .sort((a, b) => (a.lastPolledAt?.getTime() ?? 0) - (b.lastPolledAt?.getTime() ?? 0)).slice(0, limit);
     for (const wallet of walletsToPoll) {
       try {
-        const leased = await withTradingWalletLease(wallet.id, async () => {
+        const leased = await runtime.withLease(wallet.id, async () => {
         result.walletsPolled++;
         let before: string | undefined;
         const newest: Array<{ signature: string; slot: number; blockTime: number | null }> = [];
@@ -370,18 +392,28 @@ export async function runTradeObserverTick(deps = createDefaultTradeObserverDeps
         for (const signature of newest.reverse()) {
           result.signaturesExamined++;
           try {
-            const outcome = await ingestTradeSignature({ wallet, signature: signature.signature, source: 'observer', deps });
+            const outcome = await runtime.ingest({ wallet, signature: signature.signature, source: 'observer', deps });
             if (outcome.inserted) result.inserted++;
             if (outcome.scored && outcome.inserted) result.scored++;
           } catch (error) {
             if (error instanceof TradeReportError) continue;
             result.errors++;
+            try {
+              await runtime.alert({
+                severity: 'warning',
+                source: 'trade-observer',
+                message: 'Trade ingestion failed for a bound wallet; continuing with the next wallet.',
+                context: { walletId: wallet.id, signature: signature.signature, error: safeObserverError(error) },
+              });
+            } catch (alertFailure) {
+              console.warn('[trade-observer] wallet failure alert failed', safeObserverError(alertFailure));
+            }
             terminal = false;
             break;
           }
         }
         const newestTerminal = newest.at(-1);
-        if (terminal && newestTerminal) await advanceTradingWalletCursor({ walletId: wallet.id, expectedCursorSignature: wallet.cursorSignature,
+        if (terminal && newestTerminal) await runtime.advanceCursor({ walletId: wallet.id, expectedCursorSignature: wallet.cursorSignature,
           signature: newestTerminal.signature, slot: newestTerminal.slot, blockTime: newestTerminal.blockTime });
         });
         if (leased === 'lease_unavailable') continue;

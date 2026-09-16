@@ -6,6 +6,7 @@ import type { TradeDecisionEvent, TradeTickerEvent } from '../../routes/world';
 const root = resolve(import.meta.dir, '../../../../..');
 const exchange = readFileSync(resolve(root, 'apps/api/src/routes/exchange.ts'), 'utf8');
 const world = readFileSync(resolve(root, 'apps/api/src/routes/world.ts'), 'utf8');
+const observer = readFileSync(resolve(root, 'apps/api/src/services/trade-observer.ts'), 'utf8');
 
 describe('Trading Floor route integrity', () => {
   test('registers every Trading Floor route before the dynamic exchange route', () => {
@@ -66,5 +67,13 @@ describe('Trading Floor route integrity', () => {
 
   test('keeps verified-trade lookup server-internal', () => {
     expect(exchange).not.toContain('lookupVerifiedTrade');
+  });
+
+  test('keeps strict settlement failure retryable on reports and contained in the observer', () => {
+    expect(observer).toContain("if (input.source === 'report') throw new TradeReportError('settlement_write_failed', 503)");
+    expect(observer).toContain("message: 'Trade ingestion failed for a bound wallet; continuing with the next wallet.'");
+    expect(exchange).toContain("if (error instanceof TradeReportError)");
+    expect(exchange).toContain("code: error.code");
+    expect(exchange).toContain("error.status");
   });
 });
