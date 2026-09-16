@@ -25,6 +25,7 @@ const WSOL = new PublicKey(TRADE_MINTS.WSOL);
 const ROUTE = Buffer.from([229, 23, 203, 151, 122, 227, 173, 42]);
 const SHARED_ROUTE = Buffer.from([193, 32, 155, 51, 65, 214, 156, 129]);
 const MAX_COMPUTE_UNITS = 1_400_000n;
+const BASE_FEE_PER_SIGNATURE_LAMPORTS = 5_000n;
 
 function deriveAta(owner: PublicKey, mint: PublicKey, program: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
@@ -196,14 +197,18 @@ export function inspectTradingSwapTransaction(input: {
   if (input.slippageBps !== undefined && route.slippageBps !== input.slippageBps) return { ok: false, detail: 'slippage_mismatch' };
   if (route.minOut !== input.minimumOutAmount) return { ok: false, detail: 'minimum_out_mismatch' };
   if (computeLimit !== null && computeLimit > MAX_COMPUTE_UNITS) return { ok: false, detail: 'compute_limit' };
-  const priority = computePrice && computeLimit ? (computePrice * computeLimit + 999_999n) / 1_000_000n : 0n;
-  if (priority > input.priorityFeeLamports) return { ok: false, detail: 'priority_fee' };
+  if (computePrice > 0n && computeLimit === null) return { ok: false, detail: 'priority_fee_unbounded' };
+  const priority = computePrice > 0n && computeLimit !== null
+    ? (computePrice * computeLimit + 999_999n) / 1_000_000n
+    : 0n;
+  const totalFee = BASE_FEE_PER_SIGNATURE_LAMPORTS * BigInt(message.header.numRequiredSignatures) + priority;
+  if (totalFee > input.priorityFeeLamports) return { ok: false, detail: 'priority_fee' };
   return {
     ok: true,
     minimumOutAmount: route.minOut,
     quotedOutAmount: route.quotedOut,
     slippageBps: route.slippageBps,
-    priorityFeeLamports: priority,
+    priorityFeeLamports: totalFee,
     derivedWsolAccounts,
   };
 }
@@ -246,7 +251,7 @@ export async function validateTradingSwapSimulation(input: {
   priorityFeeLamports: bigint;
   transactionDerivedWsolAccounts: readonly PublicKey[];
   addressLookupTableAccounts?: AddressLookupTableAccount[];
-}): Promise<{ ok: true } | { ok: false; detail: string }> {
+}): Promise<{ ok: true; postTransactionWalletLamports: bigint } | { ok: false; detail: string }> {
   const inconsistent = legError(input);
   if (inconsistent) return { ok: false, detail: inconsistent };
   const inspection = inspectTradingSwapTransaction(input);
@@ -298,6 +303,7 @@ export async function validateTradingSwapSimulation(input: {
     if (fee.value === null || !Number.isSafeInteger(fee.value) || fee.value < 0) return { ok: false, detail: 'simulation_fee_unavailable' };
     exactFee = BigInt(fee.value);
   } catch { return { ok: false, detail: 'simulation_fee_unavailable' }; }
+  if (exactFee !== inspection.priorityFeeLamports) return { ok: false, detail: 'simulation_fee_mismatch' };
   let sim;
   try {
     sim = await input.connection.simulateTransaction(input.transaction, { sigVerify: false, replaceRecentBlockhash: true, accounts: { encoding: 'base64', addresses } });
@@ -337,7 +343,7 @@ export async function validateTradingSwapSimulation(input: {
   if (input.shape === 'sol-token' && ownedDecrease > input.inputAmount + exactFee) return { ok: false, detail: 'simulation_wallet_lamport_delta' };
   if (input.shape !== 'sol-token' && ownedDecrease > exactFee) return { ok: false, detail: 'simulation_wallet_lamport_delta' };
   if (input.shape === 'token-sol' && ownedPost - ownedPre + exactFee < input.minimumOutAmount) return { ok: false, detail: 'simulation_native_min_out' };
-  return { ok: true };
+  return { ok: true, postTransactionWalletLamports: BigInt(postWallet.lamports) };
 }
 
 export function validateTradingLegs(input: { wallet: PublicKey; inputLeg: SwapLeg; outputLeg: SwapLeg; shape: SwapShape }): { ok: true } | { ok: false; detail: string } {

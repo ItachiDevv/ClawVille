@@ -1,11 +1,12 @@
 import { TRADING_OBJECTIVES, type TradingObjective } from '@clawville/shared';
 
 const productionApproved = process.argv.includes('--production');
-if (process.env.CLAWVILLE_ENV === 'production' && !productionApproved) {
+const apiUrl = (process.env.CLAWVILLE_API_URL ?? 'https://api-staging.clawville.world').replace(/\/+$/, '');
+const hostname = new URL(apiUrl).hostname.toLowerCase();
+if ((process.env.CLAWVILLE_ENV === 'production' || hostname === 'api.clawville.world') && !productionApproved) {
   throw new Error('Refusing production fleet provisioning without --production.');
 }
 
-const apiUrl = (process.env.CLAWVILLE_API_URL ?? 'https://api-staging.clawville.world').replace(/\/+$/, '');
 const origin = (process.env.CLAWVILLE_OPERATOR_ORIGIN ?? 'https://staging.clawville.world').replace(/\/+$/, '');
 const cookie = process.env.CLAWVILLE_OPERATOR_COOKIE?.trim();
 if (!cookie) throw new Error('CLAWVILLE_OPERATOR_COOKIE is required.');
@@ -49,7 +50,6 @@ for (const objective of TRADING_OBJECTIVES) {
       objective,
       traderName: names[objective],
       leaderboardEligible: true,
-      operatedByClawville: true,
     }),
   });
   if (provisioned.armed !== false || provisioned.killed !== true) {

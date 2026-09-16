@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { TRADE_MINTS } from '@clawville/shared';
-import { alertPriceDecimalsMismatch, findPriceDecimalsMismatch, readTradingUsdcBalanceRpc, TRADING_BALANCE_RPC_TIMEOUT_MS } from '../trading-guardrails';
+import { alertPriceDecimalsMismatch, findPriceDecimalsMismatch, objectiveUsdcShareBreached, readTradingUsdcBalanceRpc, TRADING_BALANCE_RPC_TIMEOUT_MS } from '../trading-guardrails';
 
 function price(mint: string, decimals: number) {
   return {
@@ -76,5 +76,20 @@ describe('Trading Floor guardrail pure checks', () => {
     });
     expect(receivedSignal === controller.signal).toBe(true);
     expect(amount).toBe(1_234_567n);
+  });
+
+  test('enforces objective USDC allocation floors with projected equity', () => {
+    expect(objectiveUsdcShareBreached({
+      objective: 'conservative-rebalancer', inputMint: TRADE_MINTS.USDC,
+      currentUsdcUsdMicros: 70_000_000n, equityUsdMicros: 100_000_000n, tradeUsdMicros: 10_000_000n,
+    })).toBe(false);
+    expect(objectiveUsdcShareBreached({
+      objective: 'conservative-rebalancer', inputMint: TRADE_MINTS.USDC,
+      currentUsdcUsdMicros: 70_000_000n, equityUsdMicros: 100_000_000n, tradeUsdMicros: 10_000_001n,
+    })).toBe(true);
+    expect(objectiveUsdcShareBreached({
+      objective: 'sol-usdc-mean-reversion', inputMint: TRADE_MINTS.WSOL,
+      currentUsdcUsdMicros: 1n, equityUsdMicros: 100_000_000n, tradeUsdMicros: 10_000_000n,
+    })).toBe(false);
   });
 });

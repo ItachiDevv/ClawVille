@@ -58,7 +58,11 @@ export async function armTradingLink(input: {
       armed: true,
       killed: false,
       updatedAt: new Date(),
-    }).where(and(eq(clawpumpAgentLinks.avatarId, input.avatarId), eq(clawpumpAgentLinks.armed, false))).returning();
+    }).where(and(
+      eq(clawpumpAgentLinks.avatarId, input.avatarId),
+      eq(clawpumpAgentLinks.armed, false),
+      eq(clawpumpAgentLinks.operatedByClawville, true),
+    )).returning();
     return rows[0] ?? null;
   })));
 }

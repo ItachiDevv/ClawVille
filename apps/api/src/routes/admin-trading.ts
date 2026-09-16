@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { sessionMiddleware } from '../middleware/auth';
 import { issueMoneyOperatorNonce, moneyOperatorOnly, type MoneyOperatorContext } from '../middleware/money-operator-only';
 import { armTradingLink, killTradingLink, readTradingLink } from '../services/trading-links';
-import { clearHalt, engageHalt, readActiveHalts } from '../services/trading-guardrails';
+import { clearHalt, engageHalt, readActiveHalts, releaseLegacyAdmittedDecision } from '../services/trading-guardrails';
 import { hasUnknownPositiveTradingBalance, readTradingWalletEquity, toTradingBaselineEvidence } from '../services/trading-fleet-equity';
 import { executeTrade } from '../services/trading-execution';
-import { pairFounderAgent, provisionFleetAccount, TradingProvisioningError } from '../services/trading-provisioning';
+import { issueFounderPairChallenge, pairFounderAgent, provisionFleetAccount, TradingProvisioningError } from '../services/trading-provisioning';
 import { readTradingLimits, TRADE_MINTS, TRADING_OBJECTIVES, TRADING_SYMBOL_TO_MINT } from '@clawville/shared';
 
 export const adminTradingRoutes = new Hono<MoneyOperatorContext>();
@@ -21,15 +21,17 @@ const provisionBody = z.object({
   objective: z.enum(TRADING_OBJECTIVES),
   traderName: z.string().trim().min(3).max(20).regex(/^[a-zA-Z0-9_]+$/),
   leaderboardEligible: z.boolean().optional().default(true),
-  operatedByClawville: z.boolean().optional().default(true),
 }).strict();
+const pairChallengeBody = z.object({ avatarId: z.string().uuid(), walletPubkey: z.string().trim().min(32).max(64) }).strict();
 const pairBody = z.object({
   avatarId: z.string().uuid(),
   clawpumpAgentId: z.string().trim().min(1).max(128),
-  walletPubkey: z.string().trim().max(64).optional(),
+  walletPubkey: z.string().trim().min(32).max(64),
   objective: z.enum(TRADING_OBJECTIVES),
-  operatedByClawville: z.boolean().optional().default(false),
+  nonce: z.string().trim().min(32).max(128),
+  signature: z.string().trim().min(64).max(128),
 }).strict();
+const releaseAdmittedBody = z.object({ decisionId: z.string().uuid() }).strict();
 
 async function body<T>(c: { req: { json(): Promise<unknown> } }, schema: z.ZodType<T>): Promise<T | null> {
   try { const parsed = schema.safeParse(await c.req.json()); return parsed.success ? parsed.data : null; } catch { return null; }
@@ -44,7 +46,7 @@ adminTradingRoutes.post('/fleet/provision', async (c) => {
     return c.json(await provisionFleetAccount({
       ...parsed,
       leaderboardEligible: parsed.leaderboardEligible ?? true,
-      operatedByClawville: parsed.operatedByClawville ?? true,
+      operatedByClawville: true,
     }));
   } catch (error) {
     if (error instanceof TradingProvisioningError) {
@@ -54,14 +56,22 @@ adminTradingRoutes.post('/fleet/provision', async (c) => {
   }
 });
 
+adminTradingRoutes.post('/pair/challenge', async (c) => {
+  const parsed = await body(c, pairChallengeBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  try {
+    return c.json(await issueFounderPairChallenge(parsed));
+  } catch (error) {
+    if (error instanceof TradingProvisioningError) return c.json({ error: error.message, code: error.code }, error.status);
+    throw error;
+  }
+});
+
 adminTradingRoutes.post('/pair', async (c) => {
   const parsed = await body(c, pairBody);
   if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
   try {
-    return c.json(await pairFounderAgent({
-      ...parsed,
-      operatedByClawville: parsed.operatedByClawville ?? false,
-    }));
+    return c.json(await pairFounderAgent(parsed));
   } catch (error) {
     if (error instanceof TradingProvisioningError) {
       return c.json({ error: error.message, code: error.code }, error.status);
@@ -75,6 +85,7 @@ adminTradingRoutes.post('/arm', async (c) => {
   if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
   const link = await readTradingLink(parsed.avatarId);
   if (!link) return c.json({ error: 'No fleet link.', code: 'no_link' }, 404);
+  if (!link.operatedByClawville) return c.json({ error: 'Only ClawVille-operated fleet links can arm.', code: 'not_fleet_operated' }, 409);
   if (link.armed) return c.json({ error: 'Already armed.', code: 'already_armed' }, 409);
   const equity = await readTradingWalletEquity({ walletPubkey: link.walletPubkey });
   if (!equity || equity.equityUsdMicros <= 0n) return c.json({ error: 'Equity is zero or unreadable.', code: 'zero_equity' }, 409);
@@ -115,6 +126,15 @@ adminTradingRoutes.post('/kill', async (c) => {
   if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
   const updated = await killTradingLink(parsed.avatarId);
   return updated ? c.json({ ok: true, killed: updated.killed, armed: updated.armed }) : c.json({ error: 'No fleet link.', code: 'no_link' }, 404);
+});
+
+adminTradingRoutes.post('/release-admitted', async (c) => {
+  const parsed = await body(c, releaseAdmittedBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  const result = await releaseLegacyAdmittedDecision(parsed.decisionId);
+  if (result === 'not_found') return c.json({ error: 'Decision not found.', code: 'decision_not_found' }, 404);
+  if (result === 'not_releasable') return c.json({ error: 'Decision has a signature or is not admitted.', code: 'decision_not_releasable' }, 409);
+  return c.json({ ok: true, releaseReason: 'operator_never_signed' });
 });
 
 adminTradingRoutes.get('/state', async (c) => c.json({ halts: await readActiveHalts() }));

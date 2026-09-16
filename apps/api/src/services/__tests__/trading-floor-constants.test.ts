@@ -11,6 +11,7 @@ import {
   TRADE_TIER_MULTIPLIER,
   TRADE_TIER_WEIGHTS,
   TRADE_UNSCORED_REASONS,
+  TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT,
   isTradeRefusalCode,
   isTradeUnscoredReason,
 } from '@clawville/shared';
@@ -35,6 +36,16 @@ describe('Trading Floor frozen constants', () => {
       jupiter: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
       pumpswap: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
       pumpfun: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+    });
+  });
+
+  test('pins every objective USDC share floor from the final specification', () => {
+    expect(TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT).toEqual({
+      'momentum-board': 0,
+      'ansem-clawville-dca': 10,
+      'sol-usdc-mean-reversion': 20,
+      'intel-signal-follower': 10,
+      'conservative-rebalancer': 60,
     });
   });
 

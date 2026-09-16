@@ -142,6 +142,10 @@ function provisionDeps(state: TestState, overrides: Partial<TradingProvisioningD
       };
     },
     bindClawPumpWallet: async () => { throw new Error('not used'); },
+    verifyWalletOwnership: () => {},
+    issueWalletChallenge: (_subjectKey: string, walletPubkey: string) => ({
+      nonce: 'proof-nonce', expiresAt: new Date().toISOString(), messageToSign: 'proof', walletPubkey,
+    }),
     activateAutonomy: async () => {
       state.order.push('activate');
       return { ok: true as const, reused: false, bodyId: 'body' };
@@ -183,7 +187,7 @@ describe('Trading Floor fleet provisioning service', () => {
       objective: 'momentum-board',
       traderName: 'MomentumTrader',
       leaderboardEligible: true,
-      operatedByClawville: true,
+      operatedByClawville: false,
     }, provisionDeps(s));
     expect(result).toEqual({
       ok: true, userId: USER_ID, avatarId: AVATAR_ID, clawvilleAgentId: AGENT_ID,
@@ -193,7 +197,7 @@ describe('Trading Floor fleet provisioning service', () => {
     expect(s.insertedLinks).toHaveLength(1);
     expect(s.insertedLinks[0]).toMatchObject({
       armed: false, killed: true, floatStartLamports: '0', floatStartUsdMicros: '0',
-      baselineSlot: null, baselineEvidence: null,
+      baselineSlot: null, baselineEvidence: null, operatedByClawville: true,
     });
     expect(s.order.at(-1)).toBe('activate');
     expect(s.order[0]).toContain('"wallet":"include-fatal"');
@@ -252,7 +256,8 @@ describe('Trading Floor founder pairing service', () => {
     clawpumpAgentId: 'genesis',
     walletPubkey: WALLET,
     objective: 'momentum-board' as const,
-    operatedByClawville: false,
+    nonce: 'wallet-proof-nonce-value-1234567890',
+    signature: '1'.repeat(88),
   };
 
   test('binds an agent-subject wallet, acquires label then avatar locks, and inserts no fleet link', async () => {
@@ -265,6 +270,7 @@ describe('Trading Floor founder pairing service', () => {
     expect(s.insertedLinks).toHaveLength(0);
     expect(s.locks).toHaveLength(2);
     expect(s.order).toContain('pair-bind:genesis');
+    expect(result.operatedByClawville).toBe(false);
   });
 
   test('a paired avatar remains observe-only and executeTrade refuses no_link', async () => {
@@ -325,6 +331,16 @@ describe('Trading Floor founder pairing service', () => {
     await expect(pairFounderAgent(input, deps))
       .rejects.toMatchObject({ code: 'already_linked', status: 409 });
     expect(bindCalls).toBe(0);
+    expect(s.order).not.toContain('slot');
+  });
+
+  test('requires a valid signed wallet ownership challenge before binding', async () => {
+    const s = state();
+    const deps = pairDeps(s, {
+      verifyWalletOwnership: () => { throw new Error('bad signature'); },
+    });
+    await expect(pairFounderAgent(input, deps))
+      .rejects.toMatchObject({ code: 'ownership_proof_invalid', status: 401 });
     expect(s.order).not.toContain('slot');
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemProgram,
@@ -45,7 +46,13 @@ function nativeLeg(direction: SwapLeg['direction']): SwapLeg {
   };
 }
 
-function routeTransaction(inputAmount: bigint, quotedOut: bigint, slippageBps: number, legs: readonly SwapLeg[] = []): VersionedTransaction {
+function routeTransaction(
+  inputAmount: bigint,
+  quotedOut: bigint,
+  slippageBps: number,
+  legs: readonly SwapLeg[] = [],
+  compute: { limit?: number; microLamports?: bigint } = {},
+): VersionedTransaction {
   const shared = legs.length === 2 && !legs[0]!.tokenProgram.equals(legs[1]!.tokenProgram);
   const data = Buffer.alloc(shared ? 32 : 31);
   (shared ? SHARED_ROUTE : ROUTE).copy(data);
@@ -80,11 +87,15 @@ function routeTransaction(inputAmount: bigint, quotedOut: bigint, slippageBps: n
   const message = new TransactionMessage({
     payerKey: wallet,
     recentBlockhash: '11111111111111111111111111111111',
-    instructions: [new TransactionInstruction({
+    instructions: [
+      ...(compute.limit === undefined ? [] : [ComputeBudgetProgram.setComputeUnitLimit({ units: compute.limit })]),
+      ...(compute.microLamports === undefined ? [] : [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: compute.microLamports })]),
+      new TransactionInstruction({
       programId: JUPITER,
       keys: routeKeys,
       data,
-    })],
+      }),
+    ],
   }).compileToV0Message();
   return new VersionedTransaction(message);
 }
@@ -176,6 +187,36 @@ describe('Trading Floor leg validator', () => {
     expect(result).toEqual({ ok: false, detail: 'minimum_out_non_positive' });
   });
 
+  test('refuses a compute-unit price without an explicit limit', () => {
+    const result = inspectTradingSwapTransaction({
+      transaction: routeTransaction(100n, 200n, 500, [], { microLamports: 1_000_000n }),
+      wallet,
+      inputAmount: 100n,
+      minimumOutAmount: 190n,
+      priorityFeeLamports: 1_000_000n,
+    });
+    expect(result).toEqual({ ok: false, detail: 'priority_fee_unbounded' });
+  });
+
+  test('caps the total base and priority fee', () => {
+    const atCap = inspectTradingSwapTransaction({
+      transaction: routeTransaction(100n, 200n, 500, [], { limit: 995_000, microLamports: 1_000_000n }),
+      wallet,
+      inputAmount: 100n,
+      minimumOutAmount: 190n,
+      priorityFeeLamports: 1_000_000n,
+    });
+    expect(atCap).toMatchObject({ ok: true, priorityFeeLamports: 1_000_000n });
+    const aboveCap = inspectTradingSwapTransaction({
+      transaction: routeTransaction(100n, 200n, 500, [], { limit: 995_001, microLamports: 1_000_000n }),
+      wallet,
+      inputAmount: 100n,
+      minimumOutAmount: 190n,
+      priorityFeeLamports: 1_000_000n,
+    });
+    expect(aboveCap).toEqual({ ok: false, detail: 'priority_fee' });
+  });
+
   test('checks token deltas and keeps ATA rent neutral in a token route', async () => {
     const inputLeg = tokenLeg(TRADE_MINTS.USDC, 'debit');
     const outputLeg = tokenLeg(TRADE_MINTS.ANSEM, 'credit');
@@ -192,7 +233,26 @@ describe('Trading Floor leg validator', () => {
       priorityFeeLamports: 1_000_000n,
       transactionDerivedWsolAccounts: [],
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, postTransactionWalletLamports: 995_000n });
+  });
+
+  test('refuses when the exact simulated fee differs from the validated total fee', async () => {
+    const inputLeg = tokenLeg(TRADE_MINTS.USDC, 'debit');
+    const outputLeg = tokenLeg(TRADE_MINTS.ANSEM, 'credit');
+    const tx = routeTransaction(100n, 200n, 500, [inputLeg, outputLeg]);
+    const result = await validateTradingSwapSimulation({
+      transaction: tx,
+      wallet,
+      connection: connectionFor({ specs: [inputLeg, outputLeg], preAmounts: [1_000n, 0n], postAmounts: [900n, 190n], preWallet: 1_000_000, postWallet: 994_999, fee: 5_001 }),
+      inputLeg,
+      outputLeg,
+      shape: 'token-token',
+      inputAmount: 100n,
+      minimumOutAmount: 190n,
+      priorityFeeLamports: 5_000n,
+      transactionDerivedWsolAccounts: [],
+    });
+    expect(result).toEqual({ ok: false, detail: 'simulation_fee_mismatch' });
   });
 
   test('bounds native input by the admitted amount plus the exact fee', async () => {

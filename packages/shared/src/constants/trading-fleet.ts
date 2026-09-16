@@ -25,6 +25,14 @@ export const TRADING_OBJECTIVE_ALLOWED_OUTPUTS: Record<TradingObjective, readonl
   'conservative-rebalancer': [TRADE_MINTS.WSOL, TRADE_MINTS.USDC, TRADE_MINTS.CLAWVILLE],
 };
 
+export const TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT: Record<TradingObjective, number> = {
+  'momentum-board': 0,
+  'ansem-clawville-dca': 10,
+  'sol-usdc-mean-reversion': 20,
+  'intel-signal-follower': 10,
+  'conservative-rebalancer': 60,
+};
+
 export const TRADING_SYMBOL_TO_MINT = {
   SOL: TRADE_MINTS.WSOL,
   USDC: TRADE_MINTS.USDC,

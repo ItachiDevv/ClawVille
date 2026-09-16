@@ -152,6 +152,13 @@ async function bindWithLock(input: Omit<Parameters<typeof bindWithExecutor>[0], 
 export async function bindTradingWalletBySignature(input: {
   subject: TradingSubject; walletPubkey: string; nonce: string; signature: string;
 }): Promise<BoundTradingWallet> {
+  verifyTradingWalletOwnership(input);
+  return bindWithLock({ subject: input.subject, walletPubkey: input.walletPubkey, source: 'signed' });
+}
+
+export function verifyTradingWalletOwnership(input: {
+  subject: TradingSubject; walletPubkey: string; nonce: string; signature: string;
+}): void {
   const publicKey = validatePubkey(input.walletPubkey);
   const subjectKey = tradingSubjectKey(input.subject);
   if (!consumeTradingWalletChallenge(input.nonce, subjectKey, input.walletPubkey)) {
@@ -163,7 +170,6 @@ export async function bindTradingWalletBySignature(input: {
   if (signature.length !== 64 || !nacl.sign.detached.verify(message, signature, publicKey)) {
     throw new TradingWalletError('The wallet signature is invalid.', 'signature_verification_failed', 401);
   }
-  return bindWithLock({ subject: input.subject, walletPubkey: input.walletPubkey, source: 'signed' });
 }
 
 export async function bindLinkedTradingWallet(subject: TradingSubject): Promise<BoundTradingWallet> {

@@ -18,6 +18,7 @@ import {
   readTradingLimits,
   TRADE_MINTS,
   TRADING_OBJECTIVE_ALLOWED_OUTPUTS,
+  TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT,
   type TradeRefusalCode,
 } from '@clawville/shared';
 import { withKeyedMutex } from './keyed-mutex';
@@ -60,6 +61,7 @@ export interface PreparedTrade {
   outputInfo: MintInfo;
   usdcInfo: MintInfo;
   equityUsdMicros: bigint;
+  usdcValueUsdMicros: bigint;
 }
 export type TradeVerdict = { kind: 'allow'; admission: TradeAdmission } | { kind: 'refuse'; code: TradeRefusalCode; detail: string; decisionId: string };
 
@@ -75,7 +77,17 @@ export interface TradingGuardrailDeps {
     code: TradeRefusalCode,
     detail: string,
   ) => Promise<Extract<TradeVerdict, { kind: 'refuse' }>>;
+  readHalts?: () => Promise<HaltState[]>;
 }
+
+export const TRADING_BASE_FEE_LAMPORTS = 5_000n;
+export const TRADING_WORST_CASE_OUTPUT_ATA_RENT_LAMPORTS = 2_039_280n;
+
+type TradingTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type AdmissionCaptureOutcome =
+  | { kind: 'submitted'; signature: string }
+  | { kind: 'refused_presign'; code: TradeRefusalCode; detail: string }
+  | { kind: 'reconcile'; signature: string | null; detail: string };
 
 export function findPriceDecimalsMismatch(
   prices: ReadonlyMap<string, JupiterPriceRow>,
@@ -174,7 +186,7 @@ export function recordTradeRefusal(
 
 export async function inspectTradePreconditions(
   intent: TradeIntent,
-  deps: Pick<TradingGuardrailDeps, 'connection' | 'findLink' | 'recordRefusal'> = {},
+  deps: Pick<TradingGuardrailDeps, 'connection' | 'findLink' | 'recordRefusal' | 'readHalts'> = {},
 ): Promise<
   { kind: 'continue'; link: TradingLink } | Extract<TradeVerdict, { kind: 'refuse' }>
 > {
@@ -186,6 +198,11 @@ export async function inspectTradePreconditions(
   if (!link) return refuse(intent, 'no_link', 'No fleet trading link exists.');
   if (!link.armed) return refuse(intent, 'armed_false', 'The fleet link is unarmed.');
   if (link.killed) return refuse(intent, 'agent_killed', 'The fleet link is killed.');
+  const halts = await (deps.readHalts ?? readActiveHalts)();
+  if (halts.some((halt) => halt.scope === 'fleet')) return refuse(intent, 'fleet_halted', 'The fleet halt is active.');
+  if (halts.some((halt) => halt.scope === 'agent' && halt.scopeId === intent.avatarId)) {
+    return refuse(intent, 'agent_halted', 'The agent halt is active.');
+  }
   if (!process.env.JUPITER_API_KEY) return refuse(intent, 'not_configured', 'Jupiter execution credentials are absent.');
   if (!deps.connection) {
     try { connection(); }
@@ -232,9 +249,12 @@ export async function prepareTrade(intent: TradeIntent, deps: TradingGuardrailDe
     return recordRefusal(intent, 'exceeds_float_pct', 'The requested amount exceeds the live float percentage.');
   }
   const nativeDebit = intent.inputMint === TRADE_MINTS.WSOL ? amountAtomic : 0n;
-  if (equity.nativeLamports < limits.minSolReserveLamports + limits.maxPriorityFeeLamports + nativeDebit) {
+  const outputAtaRent = intent.outputMint === TRADE_MINTS.WSOL ? 0n : TRADING_WORST_CASE_OUTPUT_ATA_RENT_LAMPORTS;
+  if (equity.nativeLamports < limits.minSolReserveLamports + limits.maxPriorityFeeLamports
+    + TRADING_BASE_FEE_LAMPORTS + outputAtaRent + nativeDebit) {
     return recordRefusal(intent, 'sol_reserve_breached', 'The trade would cross the SOL reserve floor.');
   }
+  const usdcValueUsdMicros = equity.positions.find((position) => position.mint === TRADE_MINTS.USDC)?.valueUsdMicros ?? 0n;
 
   return {
     link: pre.link,
@@ -245,13 +265,30 @@ export async function prepareTrade(intent: TradeIntent, deps: TradingGuardrailDe
     outputInfo,
     usdcInfo,
     equityUsdMicros: equity.equityUsdMicros,
+    usdcValueUsdMicros,
   };
+}
+
+export function objectiveUsdcShareBreached(input: {
+  objective: keyof typeof TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT;
+  inputMint: string;
+  currentUsdcUsdMicros: bigint;
+  equityUsdMicros: bigint;
+  tradeUsdMicros: bigint;
+}): boolean {
+  const floorPct = BigInt(TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT[input.objective]);
+  if (floorPct === 0n || input.inputMint !== TRADE_MINTS.USDC) return false;
+  const projectedUsdc = input.currentUsdcUsdMicros > input.tradeUsdMicros
+    ? input.currentUsdcUsdMicros - input.tradeUsdMicros
+    : 0n;
+  return projectedUsdc * 100n < input.equityUsdMicros * floorPct;
 }
 
 export async function admitTrade(
   intent: TradeIntent,
   deps: TradingGuardrailDeps,
   prepared: PreparedTrade,
+  captureSignature: (input: { tx: TradingTx; decisionId: string; link: TradingLink }) => Promise<AdmissionCaptureOutcome>,
 ): Promise<TradeVerdict> {
   const limits = readTradingLimits();
   const {
@@ -261,6 +298,7 @@ export async function admitTrade(
     outputInfo,
     usdcInfo,
     equityUsdMicros,
+    usdcValueUsdMicros,
     slippageBps,
   } = prepared;
 
@@ -314,6 +352,13 @@ export async function admitTrade(
     if (BigInt(state.total) + intent.amountUsdMicros > BigInt(Math.floor(limits.dailyNotionalUsdPerAgent * 1_000_000))) return refuseLocked('daily_notional_cap', 'The daily notional cap is reached.');
     if (state.last && now.getTime() - new Date(state.last).getTime() < limits.cooldownSeconds * 1_000) return refuseLocked('cooldown_active', 'The cooldown is active.');
     if (state.inFlight > 0) return refuseLocked('in_flight', 'Another decision is in flight.');
+    if (objectiveUsdcShareBreached({
+      objective: link.objective as keyof typeof TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT,
+      inputMint: intent.inputMint,
+      currentUsdcUsdMicros: usdcValueUsdMicros,
+      equityUsdMicros,
+      tradeUsdMicros: intent.amountUsdMicros,
+    })) return refuseLocked('usdc_reserve_breached', 'The objective USDC allocation floor would be crossed.');
     if (intent.directiveId) {
       const prior = await tx.select({ id: tradingDecisions.id }).from(tradingDecisions).where(and(eq(tradingDecisions.directiveId, intent.directiveId), eq(tradingDecisions.directiveOrdinal, intent.directiveOrdinal!))).limit(1);
       if (prior.length) return refuseLocked('directive_replayed', 'The directive was already claimed.');
@@ -349,7 +394,47 @@ export async function admitTrade(
       operatorId: intent.operatorId ?? null,
     });
     await tx.insert(tradingUsdcReservations).values({ decisionId, avatarId: intent.avatarId, amountBaseUnits: intent.amountUsdMicros.toString(), status: 'open' });
+    const captured = await captureSignature({ tx, decisionId, link });
+    if (captured.kind === 'refused_presign') {
+      await tx.update(tradingDecisions).set({
+        status: 'refused', verdict: captured.code, detail: captured.detail.slice(0, 400), settledAt: new Date(),
+      }).where(and(eq(tradingDecisions.id, decisionId), eq(tradingDecisions.status, 'admitted')));
+      await tx.update(tradingUsdcReservations).set({ status: 'failed', releaseReason: captured.code, releasedAt: new Date() })
+        .where(eq(tradingUsdcReservations.decisionId, decisionId));
+      return { kind: 'refuse', code: captured.code, detail: captured.detail, decisionId };
+    }
+    if (captured.kind === 'reconcile') {
+      await tx.update(tradingDecisions).set({
+        status: 'reconcile', verdict: 'chain_error', signature: captured.signature,
+        detail: captured.detail.slice(0, 400),
+      }).where(and(eq(tradingDecisions.id, decisionId), eq(tradingDecisions.status, 'admitted')));
+      await tx.update(tradingUsdcReservations).set({
+        status: 'reconcile', releaseReason: 'capture_failed', lastWedgeAlertAt: new Date(),
+      })
+        .where(eq(tradingUsdcReservations.decisionId, decisionId));
+    } else {
+      const submitted = await tx.select({
+        status: tradingDecisions.status,
+        signature: tradingDecisions.signature,
+        signedTxBytes: tradingDecisions.signedTxBytes,
+      }).from(tradingDecisions).where(eq(tradingDecisions.id, decisionId)).limit(1);
+      if (submitted[0]?.status !== 'submitted' || !submitted[0].signature || !submitted[0].signedTxBytes) {
+        throw new Error('signature_capture_not_persisted');
+      }
+    }
     return { kind: 'allow', admission: { decisionId, link, amountAtomic, notionalUsdMicros: intent.amountUsdMicros, slippageBps, inputInfo, outputInfo, equityUsdMicros } } as TradeVerdict;
+  })));
+}
+
+export async function withTradingReservationMutation<T>(
+  avatarId: string,
+  mutate: (tx: TradingTx) => Promise<T>,
+): Promise<T> {
+  return withKeyedMutex('trading:fleet', () => withKeyedMutex(`trading:${avatarId}`, () => db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('trading:fleet', 0))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trading:${avatarId}`}, 0))`);
+    await lockPosterUsdcSpend(tx, avatarId);
+    return mutate(tx);
   })));
 }
 
@@ -360,15 +445,11 @@ export async function recordTradeOutcome(input: {
   errorCode?: TradeRefusalCode | null;
   errorDetail?: string | null;
   expectedStatus: 'admitted' | 'submitted';
-  releaseReason?: 'never_signed';
 }): Promise<boolean> {
-  return db.transaction(async (tx) => {
-    const decision = await tx.select({ avatarId: tradingDecisions.avatarId })
-      .from(tradingDecisions)
-      .where(eq(tradingDecisions.id, input.decisionId))
-      .limit(1);
-    if (!decision[0]) return false;
-    await lockPosterUsdcSpend(tx, decision[0].avatarId);
+  const decision = await db.select({ avatarId: tradingDecisions.avatarId })
+    .from(tradingDecisions).where(eq(tradingDecisions.id, input.decisionId)).limit(1);
+  if (!decision[0]) return false;
+  return withTradingReservationMutation(decision[0].avatarId, async (tx) => {
     const settled = ['refused', 'failed', 'expired'].includes(input.status);
     const updated = await tx.update(tradingDecisions).set({
       status: input.status,
@@ -382,16 +463,38 @@ export async function recordTradeOutcome(input: {
     )).returning({ id: tradingDecisions.id });
     if (!updated[0]) return false;
     if (input.status === 'reconcile') {
-      await tx.update(tradingUsdcReservations).set({ status: 'reconcile', releaseReason: 'ambiguous_send' }).where(eq(tradingUsdcReservations.decisionId, input.decisionId));
+      await tx.update(tradingUsdcReservations).set({
+        status: 'reconcile', releaseReason: 'ambiguous_send', lastWedgeAlertAt: new Date(),
+      }).where(eq(tradingUsdcReservations.decisionId, input.decisionId));
     } else if (settled) {
       const reservationStatus = input.status === 'expired' ? 'expired' : 'failed';
       await tx.update(tradingUsdcReservations).set({
         status: reservationStatus,
-        releaseReason: input.releaseReason ?? input.status,
+        releaseReason: input.status,
         releasedAt: new Date(),
       }).where(eq(tradingUsdcReservations.decisionId, input.decisionId));
     }
     return true;
+  });
+}
+
+export async function releaseLegacyAdmittedDecision(decisionId: string): Promise<'released' | 'not_found' | 'not_releasable'> {
+  const row = await db.select({ avatarId: tradingDecisions.avatarId }).from(tradingDecisions)
+    .where(eq(tradingDecisions.id, decisionId)).limit(1);
+  if (!row[0]) return 'not_found';
+  return withTradingReservationMutation(row[0].avatarId, async (tx) => {
+    const released = await tx.update(tradingDecisions).set({
+      status: 'failed', verdict: 'chain_error', detail: 'Operator released a legacy decision with no captured signature.', settledAt: new Date(),
+    }).where(and(
+      eq(tradingDecisions.id, decisionId),
+      eq(tradingDecisions.status, 'admitted'),
+      isNull(tradingDecisions.signature),
+    )).returning({ id: tradingDecisions.id });
+    if (!released[0]) return 'not_releasable';
+    await tx.update(tradingUsdcReservations).set({
+      status: 'failed', releaseReason: 'operator_never_signed', releasedAt: new Date(),
+    }).where(eq(tradingUsdcReservations.decisionId, decisionId));
+    return 'released';
   });
 }
 

@@ -1,6 +1,6 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-16 (Trading Floor wave 2c, protocol v60).** The server now supports guarded fleet trades, operator fleet provisioning, and observe-only founder pairing. The fleet remains unarmed. ClawPump intelligence remains blocked by its missing endpoint contract.
+**Last Audited: 2026-09-16 (Trading Floor wave 2d, protocol v60).** The second adversarial pass closes signature admission, fee, reserve, lock, pairing-proof, reconcile-alert, objective-floor, and halt-order findings. The fleet remains unarmed.
 
 ## Trading Floor execution
 
@@ -8,7 +8,7 @@ Three paths converge on one guardrail and signer: a hosted agent emits `[ACTION:
 
 Fleet objectives are momentum board, ANSEM and CLAWVILLE DCA, SOL and USDC mean reversion, intelligence signal follower, and conservative rebalancer. The live decision prompt receives the full action menu and a bounded Trading desk with objective, positions, cooldown, daily usage, halt state, allowed mints, and recent outcomes. An unlinked avatar adds no Trading desk text.
 
-The server enforces four mints, a 25 USD per-trade ceiling, 25 percent of live float, 60 USD daily notional, a 300-second cooldown, 150 bps slippage, 3 percent quote impact, SOL and USDC reserve floors, and a 20 percent fleet drawdown halt. Environment configuration can lower risk ceilings or raise reserve floors. It cannot weaken them.
+The server enforces four mints, a 25 USD per-trade ceiling, 25 percent of live float, 60 USD daily notional, a 300-second cooldown, 150 bps slippage, 3 percent quote impact, SOL and USDC reserve floors, objective USDC shares, and a 20 percent fleet drawdown halt. The objective USDC floors are 0 percent for momentum board, 10 percent for DCA, 20 percent for mean reversion, 10 percent for signal follower, and 60 percent for conservative rebalancing. Environment configuration can lower risk ceilings or raise reserve floors. It cannot weaken them.
 
 Every fleet account is dedicated to its trading float. Provisioning creates five immutable objective slots with zero vCLAW and no signup bonus. It creates the hosted agent and verified custodial wallet before it inserts an unarmed and killed fleet link. Autonomy starts last. The one-time wallet secret is discarded without logging.
 
@@ -2325,7 +2325,9 @@ The Trading Floor observes verified on-chain swaps. ClawVille also signs swaps f
 
 Players can use three paths. A human can bind a linked self-custody wallet. A human can direct a bound connected agent. An autonomous agent can use its own verified custodial or server-internal ClawPump wallet binding. Signature binding is available to humans and agents. Linked-wallet binding is human-only. Custodial binding is available to both subjects when the server already verified custody.
 
-`POST /api/admin/trading/fleet/provision` creates a dedicated fleet account from an immutable objective slot. It writes the fleet link only after wallet proof and binding succeed in one transaction. The link starts `armed=false` and `killed=true`. `POST /api/admin/trading/pair` takes the founder wallet address as the version-one contract and binds it to an existing ClawVille agent. Pairing creates no fleet link, so ClawVille cannot sign, arm, kill, or cap the founder wallet.
+`POST /api/admin/trading/fleet/provision` creates a dedicated fleet account from an immutable objective slot. It writes the fleet link only after wallet proof and binding succeed in one transaction. Every link starts `armed=false`, `killed=true`, and `operatedByClawville=true`; arming rejects any false operation flag. Founder pairing starts with `POST /api/admin/trading/pair/challenge`. The founder signs the exact ed25519 message with the observed ClawPump wallet. `POST /api/admin/trading/pair` accepts the wallet, challenge nonce, and detached signature. Pairing creates no fleet link, so ClawVille cannot sign, arm, kill, or cap the founder wallet.
+
+Fleet execution validates and simulates before admission. It reads block height before the locked transaction. Admission reserves USDC, inserts the decision and reservation, re-reads live custody, signs, and persists signed bytes and signature as `submitted` in one commit. No timer releases an unsigned `admitted` row. The sweeper pages critically, and `POST /api/admin/trading/release-admitted` can release only a legacy signature-null row. Every reservation mutation uses fleet-to-avatar lock order. Every reconcile transition pages critically and repeats after the configured alert interval.
 
 A transaction counts only when the bound wallet signed it, owned both net token legs, and executed an approved Jupiter v6, PumpSwap, or pump.fun swap instruction. Accepted instructions are pinned from recorded mainnet transactions: Jupiter v6 `route` and `shared_accounts_route`; PumpSwap `buy`, `buy_exact_quote_in` (the quote-denominated buy pump.fun's frontend emits), and `sell`; pump.fun `buy` and `sell`. A PumpSwap `sell_exact_quote_out` is not yet recorded and is refused until it is. Both wallet leg accounts must appear in that qualifying instruction after ALT resolution. A native-SOL leg uses the bound wallet system account. Account position has no meaning. A wallet that pays while an identifiable third party receives the other leg gets `token_account_not_owned`. An ambiguous one-leg flow gets `single_sided`. The transaction must succeed and settle after the wallet bind slot. Plain transfers, unsupported instructions, same-mint movements, single-sided movements, and multi-leg movements do not qualify.
 

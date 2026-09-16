@@ -53,11 +53,24 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(importers).toEqual(['services/trading-execution.ts']);
   });
 
-  test('only the signer imports the key vault among every trading source file', () => {
+  test('only the signer imports the key vault across the API source tree', () => {
     const importers = apiSourceTree
-      .filter(([name, text]) => basename(name).startsWith('trading-') && /from ['"][^'"]*keypair-vault['"]/.test(text))
+      .filter(([, text]) => /from ['"][^'"]*keypair-vault['"]/.test(text))
       .map(([name]) => name);
-    expect(importers).toEqual(['services/trading-signer.ts']);
+    expect(importers).toEqual([
+      'routes/ct-topup.ts',
+      'routes/partner-hatcher.ts',
+      'services/agent-pay.ts',
+      'services/agent-session-restore.ts',
+      'services/clv-swap-custody.ts',
+      'services/earned-redemption.ts',
+      'services/identity-service.ts',
+      'services/land-hold-transfer-verify.ts',
+      'services/trading-signer.ts',
+      'services/wager-program-client.ts',
+      'services/wallet-service.ts',
+      'services/wallet-withdraw-executor.ts',
+    ]);
   });
 
   test('fleet files never access the verified_trades table directly', () => {
@@ -101,12 +114,20 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(shared).toContain('minUsdcReserveMicros <');
   });
 
-  test('no scoring or ingest module imports fleet tables', () => {
-    const scoringOrIngest = apiSourceTree.filter(([name]) => /(?:scor|ingest|leaderboard)/i.test(basename(name)));
-    expect(scoringOrIngest.length).toBeGreaterThan(0);
-    for (const [name, text] of scoringOrIngest) {
-      expect(text.includes('clawpumpAgentLinks'), name).toBe(false);
-      expect(text.includes('tradingDecisions'), name).toBe(false);
+  test('observer and scoring boundaries use explicit source-wide allowlists', () => {
+    const fleetTableImporters = apiSourceTree
+      .filter(([, text]) => /\b(?:clawpumpAgentLinks|tradingDecisions)\b/.test(text))
+      .map(([name]) => name);
+    expect(fleetTableImporters).toEqual([
+      'services/autonomous-trading-targets.ts',
+      'services/trading-execution.ts',
+      'services/trading-guardrails.ts',
+      'services/trading-links.ts',
+      'services/trading-provisioning.ts',
+    ]);
+    for (const boundary of ['services/trade-observer.ts', 'services/trade-verifier.ts', 'routes/leaderboard.ts']) {
+      const source = apiSourceTree.find(([name]) => name === boundary)?.[1] ?? '';
+      expect(source, boundary).not.toMatch(/\b(?:clawpumpAgentLinks|tradingDecisions)\b/);
     }
   });
 
@@ -257,21 +278,21 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect((body.match(/admitTrade\(/g) ?? []).length).toBe(1);
   });
 
-  test('stale admission release requires proof that no signature was captured', () => {
+  test('legacy admitted rows alert but never release on elapsed time', () => {
     const execution = serviceText.get('trading-execution.ts')!;
     const sweeper = execution.slice(execution.indexOf('async function sweepTradingDecisions()'));
-    expect(sweeper).toContain('TRADING_STALE_SENDING_MS');
     expect(sweeper).toContain("eq(tradingDecisions.status, 'admitted')");
     expect(sweeper).toContain('isNull(tradingDecisions.signature)');
-    expect(sweeper).toContain("releaseReason: 'never_signed'");
-    expect(sweeper).toContain("expectedStatus: 'admitted'");
+    expect(sweeper).toContain("source: 'trading-admitted-wedge'");
+    expect(sweeper).not.toContain("releaseReason: 'never_signed'");
+    expect(sweeper).not.toContain('TRADING_STALE_SENDING_MS');
   });
 
   test('pre-sign locks re-read custody and the live trading binding', () => {
     const execution = serviceText.get('trading-execution.ts')!;
     const presign = execution.slice(
-      execution.indexOf("withKeyedMutex('trading:fleet'"),
-      execution.indexOf("if (signed.kind === 'refused_presign')"),
+      execution.indexOf('const admission = await admitTrade'),
+      execution.indexOf('if (admission.kind ==='),
     );
     expect(presign).toContain("eq(wallets.subjectType, 'avatar')");
     expect(presign).toContain('eq(wallets.subjectId, intent.avatarId)');
@@ -283,20 +304,95 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(presign).toContain("code: 'keypair_mismatch'");
   });
 
-  test('every reservation terminal mutation takes the shared spend lock', () => {
+  test('every reservation mutation takes the full trading lock order', () => {
     const guardrails = serviceText.get('trading-guardrails.ts')!;
+    const helper = guardrails.slice(
+      guardrails.indexOf('export async function withTradingReservationMutation'),
+      guardrails.indexOf('\nexport async function recordTradeOutcome'),
+    );
+    for (const marker of [
+      "withKeyedMutex('trading:fleet'",
+      'withKeyedMutex(`trading:${avatarId}`',
+      "hashtextextended('trading:fleet', 0)",
+      'hashtextextended(${`trading:${avatarId}`}, 0)',
+      'lockPosterUsdcSpend(tx, avatarId)',
+    ]) expect(helper).toContain(marker);
     const record = guardrails.slice(
       guardrails.indexOf('export async function recordTradeOutcome'),
       guardrails.indexOf('\nexport async function evaluateFleetDrawdown'),
     );
-    expect(record).toContain('await lockPosterUsdcSpend(tx, decision[0].avatarId)');
+    expect(record).toContain('withTradingReservationMutation');
     expect(record).not.toContain("status: 'executed'");
     const execution = serviceText.get('trading-execution.ts')!;
     const promote = execution.slice(
       execution.indexOf('export async function promoteDecisionToExecuted'),
       execution.indexOf('\nasync function sweepTradingDecisions'),
     );
-    expect(promote).toContain('await lockPosterUsdcSpend(tx, input.avatarId)');
+    expect(promote).toContain('withTradingReservationMutation');
+  });
+
+  test('signature capture occurs inside admission before a submitted commit', () => {
+    const execution = serviceText.get('trading-execution.ts')!;
+    const execute = execution.slice(
+      execution.indexOf('export async function executeTrade('),
+      execution.indexOf('\nexport async function promoteDecisionToExecuted'),
+    );
+    expect(execute).toContain('getBlockHeight');
+    expect(execute).toContain('admitTrade(intent, deps, prepared, async');
+    expect(execute).toContain("status: 'submitted'");
+    expect(execute).not.toContain("expectedStatus: 'admitted'");
+  });
+
+  test('SOL admission and simulation preserve the liquid reserve after fees and ATA rent', () => {
+    const guardrails = serviceText.get('trading-guardrails.ts')!;
+    const prepare = guardrails.slice(
+      guardrails.indexOf('export async function prepareTrade'),
+      guardrails.indexOf('\nexport async function admitTrade'),
+    );
+    expect(guardrails).toContain('TRADING_BASE_FEE_LAMPORTS = 5_000n');
+    expect(guardrails).toContain('TRADING_WORST_CASE_OUTPUT_ATA_RENT_LAMPORTS = 2_039_280n');
+    expect(prepare).toContain('limits.minSolReserveLamports + limits.maxPriorityFeeLamports');
+    expect(prepare).toContain('TRADING_BASE_FEE_LAMPORTS + outputAtaRent + nativeDebit');
+    const execution = serviceText.get('trading-execution.ts')!;
+    expect(execution).toContain('simulation.postTransactionWalletLamports < readTradingLimits().minSolReserveLamports');
+    expect(execution).toContain("refuse(intent, 'sol_reserve_breached'");
+  });
+
+  test('every reconcile transition raises a bounded critical alert', () => {
+    const execution = serviceText.get('trading-execution.ts')!;
+    for (const code of ['capture_failed', 'missing_signed_bytes', 'signature_mismatch', 'ambiguous_send', 'reconcile_wedge']) {
+      expect(execution).toContain(`'${code}'`);
+    }
+    expect(execution).toContain("source: 'trading-reconcile'");
+    expect(execution).toContain("severity: 'critical'");
+    expect(execution).toContain("eq(tradingDecisions.status, 'reconcile')");
+  });
+
+  test('halt preconditions precede provider configuration checks', () => {
+    const guardrails = serviceText.get('trading-guardrails.ts')!;
+    const inspect = guardrails.slice(
+      guardrails.indexOf('export async function inspectTradePreconditions'),
+      guardrails.indexOf('\nexport async function prepareTrade'),
+    );
+    expect(inspect.indexOf('readActiveHalts')).toBeLessThan(inspect.indexOf('JUPITER_API_KEY'));
+  });
+
+  test('operator scripts detect the production API hostname', () => {
+    for (const script of ['provision-fleet.ts', 'pair-genesis.ts']) {
+      const source = readFileSync(resolve(repoRoot, 'apps/api/scripts/trading', script), 'utf8');
+      expect(source, script).toContain("hostname === 'api.clawville.world'");
+      expect(source, script).toContain('--production');
+    }
+  });
+
+  test('the PostgreSQL CI lane executes the trading database contract after migration', () => {
+    const gates = readFileSync(resolve(repoRoot, '.github/workflows/gates.yml'), 'utf8');
+    const migrateAt = gates.indexOf('bun packages/database/scripts/migrate-ci.ts');
+    const tradingDbAt = gates.indexOf('bun test src/services/__tests__/trading-migrations-db.test.ts');
+    expect(migrateAt).toBeGreaterThanOrEqual(0);
+    expect(tradingDbAt).toBeGreaterThan(migrateAt);
+    expect(gates.slice(migrateAt, tradingDbAt)).toContain('DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test');
+    expect(gates.slice(tradingDbAt, tradingDbAt + 180)).toContain('src/services/__tests__/trade-observer.test.ts');
   });
 
   test('prime ingest, sweeper, and feed catches alert with a decision id', () => {

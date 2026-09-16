@@ -49,7 +49,9 @@ describe('Trading Floor arm baseline evidence', () => {
     const armUpdate = links.slice(updateStart, updateEnd);
     expect(armUpdate).toContain('baselineEvidence: input.baselineEvidence');
     expect(links.slice(updateEnd, links.indexOf('.returning()', updateEnd))).toContain('eq(clawpumpAgentLinks.armed, false)');
+    expect(links.slice(updateEnd, links.indexOf('.returning()', updateEnd))).toContain('eq(clawpumpAgentLinks.operatedByClawville, true)');
     expect(route).toContain('baselineEvidence: toTradingBaselineEvidence(equity)');
+    expect(route).toContain('if (!link.operatedByClawville)');
   });
 
   test('drawdown uses only the armed cohort and its stored evidence', () => {

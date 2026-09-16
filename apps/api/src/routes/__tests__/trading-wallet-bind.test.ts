@@ -12,6 +12,7 @@ import {
 import {
   bindTradingWalletBySignature,
   TradingWalletError,
+  verifyTradingWalletOwnership,
 } from '../../services/trading-wallets';
 
 beforeEach(() => _resetTradingWalletNoncesForTest());
@@ -97,6 +98,17 @@ describe('trading wallet bind proof', () => {
     const signature = nacl.sign.detached(original, pair.secretKey);
     const other = new TextEncoder().encode(buildTradingWalletMessage('agent:other', pubkey, 'nonce'));
     expect(nacl.sign.detached.verify(other, signature, pair.publicKey)).toBe(false);
+  });
+
+  test('consumes a valid ownership challenge exactly once', () => {
+    const pair = nacl.sign.keyPair();
+    const pubkey = bs58.encode(pair.publicKey);
+    const subject = { kind: 'agent' as const, userId: 'user', avatarId: 'avatar', agentId: 'genesis' };
+    const challenge = issueTradingWalletChallenge(tradingSubjectKey(subject), pubkey);
+    const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), pair.secretKey));
+    expect(() => verifyTradingWalletOwnership({ subject, walletPubkey: pubkey, nonce: challenge.nonce, signature })).not.toThrow();
+    expect(() => verifyTradingWalletOwnership({ subject, walletPubkey: pubkey, nonce: challenge.nonce, signature }))
+      .toThrow(expect.objectContaining({ code: 'invalid_or_expired_challenge' }));
   });
 
   test('rejects 63-byte signatures and 31-byte public keys before binding', async () => {

@@ -26,7 +26,9 @@ import {
   bindClawPumpTradingWallet,
   bindCustodialTradingWallet,
   currentBindSlot,
+  verifyTradingWalletOwnership,
 } from './trading-wallets';
+import { issueTradingWalletChallenge, tradingSubjectKey, type TradingSubject } from './trading-wallet-challenge';
 
 const FLEET_IDENTITY_TYPE = 'clawville-fleet';
 
@@ -48,12 +50,13 @@ export type TradingProvisioningErrorCode =
   | 'avatar_not_found'
   | 'no_bound_clawville_agent'
   | 'agent_has_no_wallet'
+  | 'ownership_proof_invalid'
   | 'already_linked';
 
 export class TradingProvisioningError extends Error {
   constructor(
     readonly code: TradingProvisioningErrorCode,
-    readonly status: 400 | 404 | 409 | 500,
+    readonly status: 400 | 401 | 404 | 409 | 500,
     message: string,
   ) {
     super(message);
@@ -69,6 +72,8 @@ export interface TradingProvisioningDependencies {
   readBindSlot: typeof currentBindSlot;
   bindCustodialWallet: typeof bindCustodialTradingWallet;
   bindClawPumpWallet: typeof bindClawPumpTradingWallet;
+  verifyWalletOwnership: typeof verifyTradingWalletOwnership;
+  issueWalletChallenge: typeof issueTradingWalletChallenge;
   activateAutonomy: typeof activateAutonomyForOwner;
 }
 
@@ -80,6 +85,8 @@ export const tradingProvisioningDependencies: TradingProvisioningDependencies = 
   readBindSlot: currentBindSlot,
   bindCustodialWallet: bindCustodialTradingWallet,
   bindClawPumpWallet: bindClawPumpTradingWallet,
+  verifyWalletOwnership: verifyTradingWalletOwnership,
+  issueWalletChallenge: issueTradingWalletChallenge,
   activateAutonomy: activateAutonomyForOwner,
 };
 
@@ -223,7 +230,7 @@ export async function provisionFleetAccount(
     };
     const bound = await deps.bindCustodialWallet({
       subject,
-      operatedByClawville: input.operatedByClawville,
+      operatedByClawville: true,
       tx,
       boundSlot,
     });
@@ -247,7 +254,7 @@ export async function provisionFleetAccount(
       floatStartUsdMicros: '0',
       baselineSlot: null,
       baselineEvidence: null,
-      operatedByClawville: input.operatedByClawville,
+      operatedByClawville: true,
     });
   });
 
@@ -291,9 +298,10 @@ export async function provisionFleetAccount(
 export interface PairFounderInput {
   avatarId: string;
   clawpumpAgentId: string;
-  walletPubkey?: string;
+  walletPubkey: string;
   objective: TradingObjective;
-  operatedByClawville: boolean;
+  nonce: string;
+  signature: string;
 }
 
 export interface PairFounderResult {
@@ -307,11 +315,40 @@ export interface PairFounderResult {
   operatedByClawville: boolean;
 }
 
+async function resolveFounderTradingSubject(
+  avatarId: string,
+  deps: TradingProvisioningDependencies,
+): Promise<TradingSubject> {
+  const avatar = await deps.database.query.avatars.findFirst({
+    where: eq(avatars.id, avatarId),
+    columns: { id: true, userId: true, platformAgentId: true },
+  });
+  if (!avatar) throw new TradingProvisioningError('avatar_not_found', 404, 'The avatar does not exist.');
+  if (!avatar.platformAgentId) throw new TradingProvisioningError('no_bound_clawville_agent', 400, 'No ClawVille agent is bound.');
+  const bot = await deps.database.query.agentBots.findFirst({
+    where: and(eq(agentBots.agentId, avatar.platformAgentId), eq(agentBots.userId, avatar.userId)),
+    columns: { agentId: true },
+  });
+  if (!bot) throw new TradingProvisioningError('no_bound_clawville_agent', 400, 'No ClawVille agent is bound.');
+  return { kind: 'agent', userId: avatar.userId, avatarId: avatar.id, agentId: bot.agentId };
+}
+
+export async function issueFounderPairChallenge(
+  input: { avatarId: string; walletPubkey: string },
+  deps: TradingProvisioningDependencies = tradingProvisioningDependencies,
+) {
+  if (!validWalletPubkey(input.walletPubkey)) {
+    throw new TradingProvisioningError('agent_has_no_wallet', 400, 'The observed agent has no valid wallet.');
+  }
+  const subject = await resolveFounderTradingSubject(input.avatarId, deps);
+  return deps.issueWalletChallenge(tradingSubjectKey(subject), input.walletPubkey);
+}
+
 export async function pairFounderAgent(
   input: PairFounderInput,
   deps: TradingProvisioningDependencies = tradingProvisioningDependencies,
 ): Promise<PairFounderResult> {
-  const walletPubkey = input.walletPubkey?.trim();
+  const walletPubkey = input.walletPubkey.trim();
   if (!walletPubkey || !validWalletPubkey(walletPubkey)) {
     throw new TradingProvisioningError('agent_has_no_wallet', 400, 'The observed agent has no valid wallet.');
   }
@@ -335,6 +372,16 @@ export async function pairFounderAgent(
   });
   if (!preflightBot) {
     throw new TradingProvisioningError('no_bound_clawville_agent', 400, 'No ClawVille agent is bound.');
+  }
+  try {
+    deps.verifyWalletOwnership({
+      subject: { kind: 'agent', userId: preflightAvatar.userId, avatarId: preflightAvatar.id, agentId: preflightAvatar.platformAgentId },
+      walletPubkey,
+      nonce: input.nonce,
+      signature: input.signature,
+    });
+  } catch {
+    throw new TradingProvisioningError('ownership_proof_invalid', 401, 'The wallet ownership proof is invalid.');
   }
   const preflightExisting = await deps.database.query.tradingWallets.findFirst({
     where: and(
@@ -368,6 +415,9 @@ export async function pairFounderAgent(
     }
     if (!avatar.platformAgentId) {
       throw new TradingProvisioningError('no_bound_clawville_agent', 400, 'No ClawVille agent is bound.');
+    }
+    if (avatar.platformAgentId !== preflightAvatar.platformAgentId) {
+      throw new TradingProvisioningError('ownership_proof_invalid', 401, 'The wallet ownership subject changed.');
     }
 
     const [bot] = await tx
@@ -405,7 +455,7 @@ export async function pairFounderAgent(
       walletPubkey,
       clawpumpAgentId: input.clawpumpAgentId,
       objective: input.objective,
-      operatedByClawville: input.operatedByClawville,
+      operatedByClawville: false,
       boundSlot,
       tx,
     });

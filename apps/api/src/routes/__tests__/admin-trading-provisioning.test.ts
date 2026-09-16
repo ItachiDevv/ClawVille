@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { Hono } from 'hono';
 import * as realAuth from '../../middleware/auth';
+import * as realGuardrails from '../../services/trading-guardrails';
 
 process.env.FINGERPRINT_SECRET ??= '44'.repeat(32);
 process.env.ADMIN_USER_IDS = '11111111-1111-4111-8111-111111111111';
@@ -35,6 +36,8 @@ class MockTradingProvisioningError extends Error {
 
 let provisionCalls: unknown[] = [];
 let pairCalls: unknown[] = [];
+let pairChallengeCalls: unknown[] = [];
+let releaseCalls: string[] = [];
 let provisionError: Error | null = null;
 let pairError: Error | null = null;
 
@@ -54,6 +57,10 @@ mock.module('../../services/trading-provisioning', () => ({
       killed: true,
     };
   },
+  issueFounderPairChallenge: async (input: unknown) => {
+    pairChallengeCalls.push(input);
+    return { nonce: 'wallet-proof-nonce-value-1234567890', expiresAt: new Date(Date.now() + 60_000).toISOString(), messageToSign: 'sign-me', walletPubkey: WALLET };
+  },
   pairFounderAgent: async (input: unknown) => {
     pairCalls.push(input);
     if (pairError) throw pairError;
@@ -67,6 +74,14 @@ mock.module('../../services/trading-provisioning', () => ({
       objective: 'momentum-board',
       operatedByClawville: false,
     };
+  },
+}));
+
+mock.module('../../services/trading-guardrails', () => ({
+  ...realGuardrails,
+  releaseLegacyAdmittedDecision: async (decisionId: string) => {
+    releaseCalls.push(decisionId);
+    return 'released' as const;
   },
 }));
 
@@ -107,11 +122,15 @@ const pairBody = {
   clawpumpAgentId: 'genesis',
   walletPubkey: WALLET,
   objective: 'momentum-board',
+  nonce: 'wallet-proof-nonce-value-1234567890',
+  signature: '1'.repeat(88),
 };
 
 beforeEach(() => {
   provisionCalls = [];
   pairCalls = [];
+  pairChallengeCalls = [];
+  releaseCalls = [];
   provisionError = null;
   pairError = null;
 });
@@ -167,6 +186,18 @@ describe('admin Trading Floor fleet provisioning and pairing', () => {
     }]);
   });
 
+  test('rejects an operator-selected false fleet operation flag', async () => {
+    const response = await post('/fleet/provision', { ...provisionBody, operatedByClawville: false }, await nonce());
+    expect(response.status).toBe(400);
+    expect(provisionCalls).toHaveLength(0);
+  });
+
+  test('issues a wallet ownership challenge for the paired avatar', async () => {
+    const response = await post('/pair/challenge', { avatarId: AVATAR_ID, walletPubkey: WALLET }, await nonce());
+    expect(response.status).toBe(200);
+    expect(pairChallengeCalls).toEqual([{ avatarId: AVATAR_ID, walletPubkey: WALLET }]);
+  });
+
   test('pairs genesis as an observed agent with no ClawVille operation flag', async () => {
     const response = await post('/pair', pairBody, await nonce());
     expect(response.status).toBe(200);
@@ -176,14 +207,21 @@ describe('admin Trading Floor fleet provisioning and pairing', () => {
       clawpumpAgentId: 'genesis',
       operatedByClawville: false,
     });
-    expect(pairCalls).toEqual([{ ...pairBody, operatedByClawville: false }]);
+    expect(pairCalls).toEqual([pairBody]);
+  });
+
+  test('releases only through the explicit operator route', async () => {
+    const decisionId = '44444444-4444-4444-8444-444444444444';
+    const response = await post('/release-admitted', { decisionId }, await nonce());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, releaseReason: 'operator_never_signed' });
+    expect(releaseCalls).toEqual([decisionId]);
   });
 
   test.each([
     ['slot_occupied', 409, 'provision'] as const,
     ['leaderboard_eligible_non_fleet', 409, 'provision'] as const,
     ['no_bound_clawville_agent', 400, 'pair'] as const,
-    ['agent_has_no_wallet', 400, 'pair'] as const,
     ['already_linked', 409, 'pair'] as const,
   ])('returns stable %s failures', async (code, status, target) => {
     const error = new MockTradingProvisioningError(code, status, code);
@@ -191,9 +229,7 @@ describe('admin Trading Floor fleet provisioning and pairing', () => {
     else pairError = error;
     const response = target === 'provision'
       ? await post('/fleet/provision', provisionBody, await nonce())
-      : await post('/pair', target === 'pair' && code === 'agent_has_no_wallet'
-        ? { ...pairBody, walletPubkey: undefined }
-        : pairBody, await nonce());
+      : await post('/pair', pairBody, await nonce());
     expect(response.status).toBe(status);
     expect(await response.json()).toMatchObject({ code });
   });
@@ -209,11 +245,11 @@ describe('admin Trading Floor fleet provisioning and pairing', () => {
     expect(await response.json()).toMatchObject({ code: 'autonomy_activation_failed' });
   });
 
-  test('returns agent_has_no_wallet for malformed observed wallet input', async () => {
-    pairError = new MockTradingProvisioningError('agent_has_no_wallet', 400, 'agent_has_no_wallet');
+  test('rejects malformed observed wallet input before the service', async () => {
     const response = await post('/pair', { ...pairBody, walletPubkey: 'not-base58!' }, await nonce());
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ code: 'agent_has_no_wallet' });
+    expect(await response.json()).toMatchObject({ code: 'invalid_body' });
+    expect(pairCalls).toHaveLength(0);
   });
 
   test('does not translate a database 23505 from the provisioning transaction', async () => {

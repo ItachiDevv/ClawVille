@@ -23,12 +23,12 @@ import {
   wallets,
 } from '@clawville/database';
 import { readTradingLimits, TRADE_MINTS, type TradeRefusalCode } from '@clawville/shared';
-import { withKeyedMutex } from './keyed-mutex';
 import {
   admitTrade,
   prepareTrade,
   recordTradeOutcome,
   recordTradeRefusal,
+  withTradingReservationMutation,
   type TradeIntent,
   type TradingGuardrailDeps,
 } from './trading-guardrails';
@@ -51,7 +51,6 @@ import { resolveTradingCustody } from './trading-links';
 import { buildTradeDecisionFrame, publishTradeDecision } from './trading-decision-feed';
 import { ingestTradeSignature, lookupVerifiedTrade } from './trade-observer';
 import { alertError } from './alert-error';
-import { lockPosterUsdcSpend } from './usdc-spend-admission';
 
 export interface ExecuteTradeResult {
   kind: 'submitted' | 'executed' | 'refused' | 'failed' | 'reconcile';
@@ -67,6 +66,22 @@ export interface TradingExecutionDeps extends TradingGuardrailDeps, TradingSigne
 }
 
 let sweeper: ReturnType<typeof setInterval> | null = null;
+
+type ReconcileAlertCode =
+  | 'capture_failed'
+  | 'missing_signed_bytes'
+  | 'signature_mismatch'
+  | 'ambiguous_send'
+  | 'reconcile_wedge';
+
+function alertTradingReconcile(decisionId: string, code: ReconcileAlertCode): void {
+  void alertError({
+    severity: 'critical',
+    source: 'trading-reconcile',
+    message: 'A trading decision requires operator reconciliation.',
+    context: { decisionId, code },
+  });
+}
 
 function defaultConnection(): Connection {
   const endpoint = process.env.HELIUS_RPC_URL;
@@ -189,52 +204,33 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
     return refuse(intent, code, simulation.detail);
   }
 
-  const admission = await admitTrade(intent, deps, prepared);
-  if (admission.kind === 'refuse') {
-    await publish(admission.decisionId);
-    return { kind: 'refused', decisionId: admission.decisionId, code: admission.code, detail: admission.detail, signature: null };
+  if (simulation.postTransactionWalletLamports < readTradingLimits().minSolReserveLamports) {
+    return refuse(intent, 'sol_reserve_breached', 'The simulated liquid SOL balance crosses the reserve floor.');
   }
-  const { decisionId } = admission.admission;
 
-  let custody;
-  try {
-    custody = await resolveTradingCustody(link);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'Custodial wallet lookup failed.';
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'keypair_mismatch', errorDetail: detail, expectedStatus: 'admitted' });
-    await publish(decisionId);
-    return { kind: 'refused', decisionId, code: 'keypair_mismatch', detail, signature: null };
-  }
-  if (!custody) {
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'keypair_mismatch', errorDetail: 'Custodial wallet binding is invalid.', expectedStatus: 'admitted' });
-    await publish(decisionId);
-    return { kind: 'refused', decisionId, code: 'keypair_mismatch', detail: 'Custodial wallet binding is invalid.', signature: null };
-  }
-  let keypair;
-  try {
-    keypair = deps.keypair ?? await loadTradingKeypair(custody.wallet, link.walletPubkey);
-  } catch {
-    keypair = null;
-  }
-  if (!keypair) {
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'keypair_mismatch', errorDetail: 'Custodial key does not match.', expectedStatus: 'admitted' });
-    await publish(decisionId);
-    return { kind: 'refused', decisionId, code: 'keypair_mismatch', detail: 'Custodial key does not match.', signature: null };
-  }
   const currentHeight = await connection.getBlockHeight('confirmed');
   if (currentHeight >= built.lastValidBlockHeight) {
-    await recordTradeOutcome({ decisionId, status: 'expired', errorCode: 'blockhash_expired', errorDetail: 'Blockhash expired before signing.', expectedStatus: 'admitted' });
-    await publish(decisionId);
-    return { kind: 'refused', decisionId, code: 'blockhash_expired', detail: 'Blockhash expired before signing.', signature: null };
+    return refuse(intent, 'blockhash_expired', 'Blockhash expired before admission.');
   }
+  let custody;
+  try { custody = await resolveTradingCustody(link); }
+  catch { custody = null; }
+  if (!custody) return refuse(intent, 'keypair_mismatch', 'Custodial wallet binding is invalid.');
+  let keypair;
+  try { keypair = deps.keypair ?? await loadTradingKeypair(custody.wallet, link.walletPubkey); }
+  catch { keypair = null; }
+  if (!keypair) return refuse(intent, 'keypair_mismatch', 'Custodial key does not match.');
 
   let signedBytes: Uint8Array | null = null;
-  const signed: SignAndSendOutcome = await withKeyedMutex('trading:fleet', () => withKeyedMutex(`trading:${intent.avatarId}`, () => db.transaction(async (tx): Promise<SignAndSendOutcome> => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('trading:fleet', 0))`);
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trading:${intent.avatarId}`}, 0))`);
+  const signedOutcomeBox: { value: SignAndSendOutcome | null } = { value: null };
+  let capturedBinding: typeof tradingWallets.$inferSelect | null = null;
+  const admission = await admitTrade(intent, deps, prepared, async ({ tx, decisionId, link: lockedLink }) => {
     const current = await tx.select().from(clawpumpAgentLinks).where(eq(clawpumpAgentLinks.avatarId, intent.avatarId)).for('update').limit(1);
     if (!current[0]?.armed) return { kind: 'refused_presign', code: 'armed_false' as const, detail: 'Link became unarmed.' };
     if (current[0].killed) return { kind: 'refused_presign', code: 'agent_killed' as const, detail: 'Agent became killed.' };
+    if (current[0].walletPubkey !== lockedLink.walletPubkey) {
+      return { kind: 'refused_presign', code: 'tx_binding_failed' as const, detail: 'Trading wallet changed before signing.' };
+    }
     const activeHalt = await tx.select().from(tradingHalts).where(and(isNull(tradingHalts.clearedAt), sql`(${tradingHalts.scope}='fleet' OR ${tradingHalts.scopeId}=${intent.avatarId})`)).limit(1);
     if (activeHalt[0]) return { kind: 'refused_presign', code: (activeHalt[0].scope === 'fleet' ? 'fleet_halted' : 'agent_halted') as TradeRefusalCode, detail: 'A halt became active.' };
     const liveWalletRows = await tx.select().from(wallets).where(and(
@@ -255,10 +251,14 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
         isNull(tradingWallets.revokedAt),
       )).for('update').limit(1)
       : [];
-    if (!liveWallet || !liveBindingRows[0] || liveWallet.publicKey !== keypair.publicKey.toBase58()) {
+    if (!liveWallet || !liveBindingRows[0]) {
       return { kind: 'refused_presign', code: 'keypair_mismatch' as const, detail: 'Custody or trading binding was revoked.' };
     }
-    return signTradingSwap({
+    if (liveWallet.publicKey !== keypair.publicKey.toBase58()) {
+      return { kind: 'refused_presign', code: 'keypair_mismatch' as const, detail: 'Custodial key does not match.' };
+    }
+    capturedBinding = liveBindingRows[0];
+    signedOutcomeBox.value = await signTradingSwap({
       walletRow: liveWallet, boundPubkey: current[0].walletPubkey, transaction: built.transaction,
       recentBlockhash: built.recentBlockhash, lastValidBlockHeight: built.lastValidBlockHeight,
       admittedMinOut: minimumOut, inputLeg, outputLeg, shape, inputAmount: amountAtomic,
@@ -277,19 +277,23 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
         },
       },
     });
-  })));
-  if (signed.kind === 'refused_presign') {
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: signed.code, errorDetail: signed.detail, expectedStatus: 'admitted' });
-    await publish(decisionId);
-    return { kind: 'refused', decisionId, code: signed.code, detail: signed.detail, signature: null };
+    return signedOutcomeBox.value;
+  });
+  if (admission.kind === 'refuse') {
+    await publish(admission.decisionId);
+    return { kind: 'refused', decisionId: admission.decisionId, code: admission.code, detail: admission.detail, signature: null };
   }
+  const { decisionId } = admission.admission;
+  const signed = signedOutcomeBox.value;
+  if (!signed || signed.kind === 'refused_presign') throw new Error('admission_capture_outcome_invalid');
   if (signed.kind === 'reconcile') {
-    await recordTradeOutcome({ decisionId, status: 'reconcile', signature: signed.signature, errorCode: 'chain_error', errorDetail: signed.detail, expectedStatus: 'admitted' });
+    alertTradingReconcile(decisionId, 'capture_failed');
     return { kind: 'reconcile', decisionId, code: 'chain_error', detail: signed.detail, signature: signed.signature };
   }
   if (!signedBytes) {
     const detail = 'Signed transaction bytes were not captured.';
     await recordTradeOutcome({ decisionId, status: 'reconcile', signature: signed.signature, errorCode: 'chain_error', errorDetail: detail, expectedStatus: 'submitted' });
+    alertTradingReconcile(decisionId, 'missing_signed_bytes');
     return { kind: 'reconcile', decisionId, code: 'chain_error', detail, signature: signed.signature };
   }
   await publish(decisionId);
@@ -297,15 +301,16 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
   if (sent.kind === 'signature_mismatch') {
     const detail = 'RPC returned a different signature.';
     await recordTradeOutcome({ decisionId, status: 'reconcile', signature: signed.signature, errorCode: 'chain_error', errorDetail: detail, expectedStatus: 'submitted' });
+    alertTradingReconcile(decisionId, 'signature_mismatch');
     return { kind: 'reconcile', decisionId, code: 'chain_error', detail, signature: signed.signature };
   }
   if (sent.kind === 'ambiguous') {
-    // Capture preceded send. Keep `submitted` so the sweeper resends these same
-    // signed bytes while the blockhash remains valid.
-    return { kind: 'submitted', decisionId, code: null, detail: 'send_pending_retry', signature: signed.signature };
+    await recordTradeOutcome({ decisionId, status: 'reconcile', signature: signed.signature, errorCode: 'chain_error', errorDetail: sent.detail, expectedStatus: 'submitted' });
+    alertTradingReconcile(decisionId, 'ambiguous_send');
+    return { kind: 'reconcile', decisionId, code: 'chain_error', detail: sent.detail, signature: signed.signature };
   }
   void ingestTradeSignature({
-    wallet: custody.binding as never,
+    wallet: capturedBinding as never,
     signature: signed.signature,
     source: 'prime',
     decisionId,
@@ -327,8 +332,7 @@ export async function promoteDecisionToExecuted(input: { signature: string; deci
   const where = input.decisionId
     ? and(eq(tradingDecisions.id, input.decisionId), eq(tradingDecisions.avatarId, input.avatarId), eq(tradingDecisions.signature, input.signature), eq(tradingDecisions.status, 'submitted'))
     : and(eq(tradingDecisions.signature, input.signature), eq(tradingDecisions.avatarId, input.avatarId), eq(tradingDecisions.status, 'submitted'));
-  const rows = await db.transaction(async (tx) => {
-    await lockPosterUsdcSpend(tx, input.avatarId);
+  const rows = await withTradingReservationMutation(input.avatarId, async (tx) => {
     const promoted = await tx.update(tradingDecisions).set({ status: 'executed', verdict: 'executed', settledAt: new Date() }).where(where).returning({ id: tradingDecisions.id });
     if (promoted[0]) await tx.update(tradingUsdcReservations).set({ status: 'settled', releaseReason: 'observer_verified', releasedAt: new Date() }).where(eq(tradingUsdcReservations.decisionId, promoted[0].id));
     return promoted;
@@ -341,32 +345,34 @@ export async function promoteDecisionToExecuted(input: { signature: string; deci
 async function sweepTradingDecisions(): Promise<void> {
   const age = Number(process.env.TRADING_PROMOTION_SWEEP_AGE_S ?? 300) * 1_000;
   const alertAge = Number(process.env.TRADING_PROMOTION_ALERT_AGE_S ?? 3_600) * 1_000;
-  const staleSendingMs = Number(process.env.TRADING_STALE_SENDING_MS ?? 180_000);
   const max = Number(process.env.TRADING_PROMOTION_SWEEP_MAX ?? 50);
   const neverSigned = await db.select().from(tradingDecisions).where(and(
     eq(tradingDecisions.status, 'admitted'),
     isNull(tradingDecisions.signature),
-    lt(tradingDecisions.createdAt, new Date(Date.now() - staleSendingMs)),
   )).orderBy(desc(tradingDecisions.createdAt)).limit(max);
   for (const row of neverSigned) {
-    try {
-      await recordTradeOutcome({
-        decisionId: row.id,
-        status: 'failed',
-        errorCode: 'chain_error',
-        errorDetail: 'No signature was captured before the stale sending deadline.',
-        expectedStatus: 'admitted',
-        releaseReason: 'never_signed',
-      });
-      await publishDecisionId(row.id);
-    } catch (error) {
+    const alerted = await db.update(tradingUsdcReservations).set({ lastWedgeAlertAt: new Date() }).where(and(
+      eq(tradingUsdcReservations.decisionId, row.id),
+      sql`${tradingUsdcReservations.lastWedgeAlertAt} IS NULL OR ${tradingUsdcReservations.lastWedgeAlertAt} < ${new Date(Date.now() - alertAge)}`,
+    )).returning({ decisionId: tradingUsdcReservations.decisionId });
+    if (alerted[0]) {
       void alertError({
         severity: 'critical',
-        source: 'trading-sweeper',
-        message: 'A never-signed trading decision could not be released.',
-        context: { decisionId: row.id, error: error instanceof Error ? error.message : 'unknown' },
+        source: 'trading-admitted-wedge',
+        message: 'A legacy admitted decision has no captured signature and requires operator release.',
+        context: { decisionId: row.id, code: 'operator_never_signed' },
       });
     }
+  }
+
+  const reconcileRows = await db.select().from(tradingDecisions).where(eq(tradingDecisions.status, 'reconcile'))
+    .orderBy(desc(tradingDecisions.createdAt)).limit(max);
+  for (const row of reconcileRows) {
+    const alerted = await db.update(tradingUsdcReservations).set({ lastWedgeAlertAt: new Date() }).where(and(
+      eq(tradingUsdcReservations.decisionId, row.id),
+      sql`${tradingUsdcReservations.lastWedgeAlertAt} IS NULL OR ${tradingUsdcReservations.lastWedgeAlertAt} < ${new Date(Date.now() - alertAge)}`,
+    )).returning({ decisionId: tradingUsdcReservations.decisionId });
+    if (alerted[0]) alertTradingReconcile(row.id, 'reconcile_wedge');
   }
 
   const conn = defaultConnection();
@@ -415,7 +421,7 @@ async function sweepTradingDecisions(): Promise<void> {
             maxRetries: 0,
           });
           if (returned !== row.signature) {
-            await recordTradeOutcome({
+            const reconciled = await recordTradeOutcome({
               decisionId: row.id,
               status: 'reconcile',
               signature: row.signature,
@@ -423,9 +429,10 @@ async function sweepTradingDecisions(): Promise<void> {
               errorDetail: 'Durable resend returned a different signature.',
               expectedStatus: 'submitted',
             });
+            if (reconciled) alertTradingReconcile(row.id, 'signature_mismatch');
           }
         } else {
-          await recordTradeOutcome({
+          const reconciled = await recordTradeOutcome({
             decisionId: row.id,
             status: 'reconcile',
             signature: row.signature,
@@ -433,6 +440,7 @@ async function sweepTradingDecisions(): Promise<void> {
             errorDetail: 'Captured transaction bytes are missing.',
             expectedStatus: 'submitted',
           });
+          if (reconciled) alertTradingReconcile(row.id, 'missing_signed_bytes');
         }
       }
     } catch (error) {
@@ -447,7 +455,7 @@ async function sweepTradingDecisions(): Promise<void> {
   }
 }
 
-export function startTradingSweeper(pollMs = Number(process.env.TRADING_STALE_SENDING_MS ?? 180_000)): void {
+export function startTradingSweeper(pollMs = Number(process.env.TRADING_PROMOTION_SWEEP_AGE_S ?? 300) * 1_000): void {
   if (sweeper) return;
   sweeper = setInterval(() => {
     void sweepTradingDecisions().catch((error: unknown) => alertError({
