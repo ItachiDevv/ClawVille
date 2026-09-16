@@ -71,3 +71,19 @@ Some files contain more than one modal instance. Test each real header with its 
 - Live reconnect timing against a stopped API
 
 Devtools does not emulate `env(safe-area-inset-*)`. This feature adds no bottom-anchored touch element, so no new safe-area claim exists.
+
+## Results 2026-09-16 (session clawPump/Fable, staging eca927f6 + 3520952a, Playwright headless Chromium 149, guest session)
+
+Tooling note: `agent-browser` hangs on `/game` (the world SSE stream never reaches network-idle); the sweep ran with a Playwright script (`sweep.py`, session scratchpad) that dismisses the tutorial, opens the game menu, clicks the Trading Floor row, measures, closes the modal and hit-tests both joystick zones.
+
+| Viewport | Result |
+|---|---|
+| 1440 x 900 desktop | Sidebar row present under Economy; tape mounted (`floor-tape` in DOM); Floor tab renders every card; close control 44 x 44; no horizontal overflow; `/leaderboard` shows `TRADER 0` on the podium (feature-detected from `breakdown.trades_verified`). |
+| 390 x 844 phone (touch UA) | Tape absent; menu FAB 44 x 44; Floor tab renders, tab strip scrolls, no overflow; close control measured **40 x 44** (fixed in `03085a25`, re-measure owed); after close both joystick zones return the joystick element from `elementFromPoint`. |
+| 1024 x 1366 iPad Pro portrait | Tape absent; row present; Floor tab; close 44 x 44; no overflow; joysticks uncovered after close. |
+| 820 x 1180 iPad Air portrait | Same as iPad Pro, all pass. |
+| 1133 x 744 iPad mini landscape | Same, all pass. |
+
+Covered: V1 (phone), V3/V4 partially (mini landscape only), V5/V6 (Air portrait only), V7 (Pro portrait), V9 containment (tape inside the sidebar on desktop), V13 partial (no page overflow at 390), V14 (Trader surfaces present with data), V15 (guest upsell replaces binding actions), V20 for the Exchange modal.
+
+Still owed (need live trades, a stopped API, or a real device): V2/V4/V6/V8 landscape variants beyond mini, V10/V11/V12 sidebar collapse + 1280/1920, V16-V19 six row states / in-place replacement / reconnect / 15-minute relabel, V21 contrast measurement, V22 thought-log expansion, and every other modal in the V20 list. Real-iPad safe-area screenshot from the founder (FOUNDER-REVIEW.md entry).
