@@ -58,21 +58,54 @@ try {
   await client.unsafe(content);
   console.log(`${LOG} applied generated base schema.`);
 
-  // Migrations OWN these tables. migrate-ci.ts must create them from authored
-  // SQL so CHECK constraints, triggers, and exact defaults retain full fidelity.
-  // The bootstrap only provides pre-migration-era base tables migrations assume.
-  // CASCADE is safe here: the database has no data, and the unchanged CI-only
-  // guard above refuses an existing app schema BEFORE the bootstrap applies.
+  // Migrations OWN some tables: where a migration's authored CREATE TABLE
+  // carries CHECK constraints the Drizzle TS schema does not declare, the
+  // bootstrap's bare pre-creation makes the migration's CREATE TABLE IF NOT
+  // EXISTS no-op and the CHECKs never materialize (run 35058427761: door-2
+  // challenge invariants got undefined instead of 23514). Those tables are
+  // dropped here so migrate-ci.ts recreates them from the authored SQL with
+  // full fidelity.
+  //
+  // The drop set is deliberately NARROW — only CREATE-with-CHECK tables, and
+  // never one referenced by packages/database/migrations-manual/*.sql. The
+  // migrations dir alone is NOT a complete DDL history: early-era columns
+  // also arrived via migrations-manual + bespoke apply scripts (e.g.
+  // land_parcels.tenure via apps/api/scripts/migrate-land-tenure.ts), so
+  // rebuilding such a table from migrations/*.sql alone loses those columns
+  // (run 35059050630: 0013 failed on missing "tenure" after a blanket drop).
+  // Tables kept bootstrap-owned get the CURRENT TS-schema shape, which is
+  // complete on columns; they only lack authored CHECKs, acceptable outside
+  // the drop set. CASCADE is safe: the database has no data yet, and the
+  // CI-only guard above refused any DB that already had the app schema.
   const migrationsDir = resolve(__dirname, '../migrations');
+  const manualDir = resolve(__dirname, '../migrations-manual');
+  const readSqlFiles = (dir: string): string[] =>
+    existsSync(dir)
+      ? readdirSync(dir)
+          .filter((file) => file.toLowerCase().endsWith('.sql'))
+          .sort()
+          .map((file) => readFileSync(resolve(dir, file), 'utf-8'))
+      : [];
+  const manualSql = readSqlFiles(manualDir).join('\n');
   const migrationTables = new Set<string>();
-  const files = readdirSync(migrationsDir)
-    .filter((file) => file.toLowerCase().endsWith('.sql'))
-    .sort();
-  for (const file of files) {
-    const sql = readFileSync(resolve(migrationsDir, file), 'utf-8');
+  for (const sql of readSqlFiles(migrationsDir)) {
     const createTable = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s*\(/gi;
-    for (const match of sql.matchAll(createTable)) {
-      migrationTables.add(match[1] ?? match[2]);
+    let match: RegExpExecArray | null;
+    while ((match = createTable.exec(sql)) !== null) {
+      // Walk to the CREATE block's matching close-paren; only a block that
+      // itself declares CHECK constraints qualifies for the drop set.
+      let i = createTable.lastIndex;
+      let depth = 1;
+      while (i < sql.length && depth > 0) {
+        if (sql[i] === '(') depth += 1;
+        else if (sql[i] === ')') depth -= 1;
+        i += 1;
+      }
+      const block = sql.slice(createTable.lastIndex, i);
+      const name = match[1] ?? match[2];
+      if (/CHECK\s*\(/i.test(block) && !manualSql.includes(name)) {
+        migrationTables.add(name);
+      }
     }
   }
   const dropped = [...migrationTables].sort();
