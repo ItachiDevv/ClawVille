@@ -4,7 +4,7 @@ import type { Wallet } from '@clawville/database';
 import type { TradeRefusalCode } from '@clawville/shared';
 import { AddressLookupTableAccount, Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { decryptWalletRow } from './keypair-vault';
-import { inspectTradingSwapTransaction, type SwapLeg, type SwapShape } from './trading-swap-validator';
+import { inspectTradingSwapTransaction, validateTradingLegs, type SwapLeg, type SwapShape } from './trading-swap-validator';
 
 export type SignAndSendOutcome =
   | { kind: 'submitted'; signature: string }
@@ -57,16 +57,24 @@ export async function signTradingSwap(input: {
   if (input.transaction.message.recentBlockhash !== input.recentBlockhash) {
     return { kind: 'refused_presign', code: 'tx_binding_failed', detail: 'recent blockhash mismatch' };
   }
+  const wallet = new PublicKey(input.boundPubkey);
+  const legs = validateTradingLegs({ wallet, inputLeg: input.inputLeg, outputLeg: input.outputLeg, shape: input.shape });
+  if (!legs.ok) return { kind: 'refused_presign', code: 'tx_binding_failed', detail: legs.detail };
   const inspection = inspectTradingSwapTransaction({
     transaction: input.transaction,
-    wallet: new PublicKey(input.boundPubkey),
+    wallet,
     inputAmount: input.inputAmount,
     minimumOutAmount: input.admittedMinOut,
     priorityFeeLamports: input.deps?.priorityFeeLamports ?? 1_000_000n,
     addressLookupTableAccounts: input.deps?.addressLookupTableAccounts,
+    inputLeg: input.inputLeg,
+    outputLeg: input.outputLeg,
+    shape: input.shape,
+    quotedOutAmount: input.quotedOutAmount,
+    slippageBps: input.slippageBps,
   });
   if (!inspection.ok) {
-    const code: TradeRefusalCode = inspection.detail === 'minimum_out_mismatch'
+    const code: TradeRefusalCode = inspection.detail === 'minimum_out_mismatch' || inspection.detail === 'minimum_out_non_positive'
       ? 'min_out_below_admitted'
       : inspection.detail === 'priority_fee' ? 'sol_reserve_breached' : 'tx_binding_failed';
     return { kind: 'refused_presign', code, detail: inspection.detail };

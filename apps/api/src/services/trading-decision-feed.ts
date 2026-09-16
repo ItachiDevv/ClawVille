@@ -1,6 +1,18 @@
 import type { TradingDecisionRow } from '@clawville/database';
-import { isTradeRefusalCode, type TradeRefusalCode } from '@clawville/shared';
+import { isTradeRefusalCode, TRADE_MINTS, type TradeRefusalCode } from '@clawville/shared';
 import { broadcastTradeDecisionEvent } from '../routes/world';
+import { alertError } from './alert-error';
+
+const PUBLIC_MINT_SYMBOLS = new Map<string, string>([
+  [TRADE_MINTS.WSOL, 'SOL'],
+  [TRADE_MINTS.USDC, 'USDC'],
+  [TRADE_MINTS.CLAWVILLE, 'CLAWVILLE'],
+  [TRADE_MINTS.ANSEM, 'ANSEM'],
+]);
+
+function publicMintSymbol(mint: string): string {
+  return PUBLIC_MINT_SYMBOLS.get(mint) ?? 'unlisted';
+}
 
 export interface TradeDecisionFrame {
   type: 'trade.decision';
@@ -31,8 +43,8 @@ export function buildTradeDecisionFrame(input: {
     subject: { type: 'agent', id: input.agentId ?? input.row.avatarId, avatarName: input.avatarName },
     verdict,
     reason: verdict === 'refused' && isTradeRefusalCode(input.row.verdict) ? input.row.verdict : null,
-    inputMint: input.row.inputMint,
-    outputMint: input.row.outputMint,
+    inputMint: publicMintSymbol(input.row.inputMint),
+    outputMint: publicMintSymbol(input.row.outputMint),
     requestedUsd: Number.isFinite(Number(input.row.amountUsdMicros)) ? Number(input.row.amountUsdMicros) / 1_000_000 : null,
     operatedByClawville: input.operatedByClawville,
     at: (input.row.settledAt ?? input.row.createdAt).toISOString(),
@@ -40,5 +52,15 @@ export function buildTradeDecisionFrame(input: {
 }
 
 export function publishTradeDecision(frame: TradeDecisionFrame): void {
-  try { broadcastTradeDecisionEvent(frame); } catch { /* notification only */ }
+  try { broadcastTradeDecisionEvent(frame); } catch (error) {
+    void alertError({
+      severity: 'warning',
+      source: 'trading-decision-feed',
+      message: 'Trading decision feed publication failed.',
+      context: {
+        decisionId: frame.decisionId,
+        error: error instanceof Error ? error.message : 'unknown',
+      },
+    });
+  }
 }

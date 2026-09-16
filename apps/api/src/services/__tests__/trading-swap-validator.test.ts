@@ -9,10 +9,11 @@ import {
 } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { TRADE_MINTS } from '@clawville/shared';
-import { validateTradingLegs, validateTradingSwapSimulation, type SwapLeg, type SwapShape } from '../trading-swap-validator';
+import { inspectTradingSwapTransaction, validateTradingLegs, validateTradingSwapSimulation, type SwapLeg, type SwapShape } from '../trading-swap-validator';
 
 const JUPITER = new PublicKey('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');
 const ROUTE = Buffer.from([229, 23, 203, 151, 122, 227, 173, 42]);
+const SHARED_ROUTE = Buffer.from([193, 32, 155, 51, 65, 214, 156, 129]);
 
 const wallet = Keypair.generate().publicKey;
 const mintProgram = new Map<string, PublicKey>([
@@ -44,17 +45,46 @@ function nativeLeg(direction: SwapLeg['direction']): SwapLeg {
   };
 }
 
-function routeTransaction(inputAmount: bigint, quotedOut: bigint, slippageBps: number): VersionedTransaction {
-  const data = Buffer.alloc(31);
-  ROUTE.copy(data);
-  data.writeUInt32LE(1, 8);
-  data.writeBigUInt64LE(inputAmount, 12);
-  data.writeBigUInt64LE(quotedOut, 20);
-  data.writeUInt16LE(slippageBps, 28);
+function routeTransaction(inputAmount: bigint, quotedOut: bigint, slippageBps: number, legs: readonly SwapLeg[] = []): VersionedTransaction {
+  const shared = legs.length === 2 && !legs[0]!.tokenProgram.equals(legs[1]!.tokenProgram);
+  const data = Buffer.alloc(shared ? 32 : 31);
+  (shared ? SHARED_ROUTE : ROUTE).copy(data);
+  const header = shared ? 9 : 8;
+  if (shared) data[8] = 0;
+  data.writeUInt32LE(1, header);
+  const args = data.length - 19;
+  data.writeBigUInt64LE(inputAmount, args);
+  data.writeBigUInt64LE(quotedOut, args + 8);
+  data.writeUInt16LE(slippageBps, args + 16);
+  const routeKeys = legs.length !== 2 ? [] : shared ? [
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: false },
+    { pubkey: wallet, isSigner: true, isWritable: false },
+    { pubkey: legs[0]!.ata, isSigner: false, isWritable: true },
+    { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+    { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+    { pubkey: legs[1]!.ata, isSigner: false, isWritable: true },
+    { pubkey: legs[0]!.mint, isSigner: false, isWritable: false },
+    { pubkey: legs[1]!.mint, isSigner: false, isWritable: false },
+    { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+  ] : [
+    { pubkey: legs[0]!.tokenProgram, isSigner: false, isWritable: false },
+    { pubkey: wallet, isSigner: true, isWritable: false },
+    { pubkey: legs[0]!.ata, isSigner: false, isWritable: true },
+    { pubkey: legs[1]!.ata, isSigner: false, isWritable: true },
+    { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+    { pubkey: legs[1]!.mint, isSigner: false, isWritable: false },
+    { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+  ];
   const message = new TransactionMessage({
     payerKey: wallet,
     recentBlockhash: '11111111111111111111111111111111',
-    instructions: [new TransactionInstruction({ programId: JUPITER, keys: [], data })],
+    instructions: [new TransactionInstruction({
+      programId: JUPITER,
+      keys: routeKeys,
+      data,
+    })],
   }).compileToV0Message();
   return new VersionedTransaction(message);
 }
@@ -135,10 +165,21 @@ describe('Trading Floor leg validator', () => {
     for (const item of cases) expect(validateTradingLegs({ wallet, ...item }).ok).toBe(false);
   });
 
+  test('refuses zero decoded quote output and minimum output', () => {
+    const result = inspectTradingSwapTransaction({
+      transaction: routeTransaction(100n, 0n, 500),
+      wallet,
+      inputAmount: 100n,
+      minimumOutAmount: 0n,
+      priorityFeeLamports: 1_000_000n,
+    });
+    expect(result).toEqual({ ok: false, detail: 'minimum_out_non_positive' });
+  });
+
   test('checks token deltas and keeps ATA rent neutral in a token route', async () => {
     const inputLeg = tokenLeg(TRADE_MINTS.USDC, 'debit');
     const outputLeg = tokenLeg(TRADE_MINTS.ANSEM, 'credit');
-    const tx = routeTransaction(100n, 200n, 500);
+    const tx = routeTransaction(100n, 200n, 500, [inputLeg, outputLeg]);
     const result = await validateTradingSwapSimulation({
       transaction: tx,
       wallet,
@@ -157,7 +198,7 @@ describe('Trading Floor leg validator', () => {
   test('bounds native input by the admitted amount plus the exact fee', async () => {
     const inputLeg = nativeLeg('debit');
     const outputLeg = tokenLeg(TRADE_MINTS.ANSEM, 'credit');
-    const tx = routeTransaction(100n, 200n, 500);
+    const tx = routeTransaction(100n, 200n, 500, [inputLeg, outputLeg]);
     for (const [postWallet, ok] of [[994_900, true], [994_899, false]] as const) {
       const result = await validateTradingSwapSimulation({
         transaction: tx,
@@ -178,7 +219,7 @@ describe('Trading Floor leg validator', () => {
   test('credits native output with the exact transaction fee', async () => {
     const inputLeg = tokenLeg(TRADE_MINTS.USDC, 'debit');
     const outputLeg = nativeLeg('credit');
-    const tx = routeTransaction(100n, 200n, 500);
+    const tx = routeTransaction(100n, 200n, 500, [inputLeg, outputLeg]);
     for (const [postWallet, ok] of [[995_190, true], [995_189, false]] as const) {
       const result = await validateTradingSwapSimulation({
         transaction: tx,

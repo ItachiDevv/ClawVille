@@ -1,6 +1,5 @@
 import { and, clawpumpAgentLinks, db, eq, isNull, sql, tradingWallets, wallets } from '@clawville/database';
-import type { TradingLink } from '@clawville/database';
-import type { TradingObjective } from '@clawville/shared';
+import type { TradingBaselineEvidence, TradingLink } from '@clawville/database';
 import type { TradingSubject } from './trading-wallet-challenge';
 import { withKeyedMutex } from './keyed-mutex';
 
@@ -45,6 +44,7 @@ export async function armTradingLink(input: {
   equityUsdMicros: bigint;
   nativeLamports: bigint;
   baselineSlot: number;
+  baselineEvidence: TradingBaselineEvidence;
 }): Promise<TradingLink | null> {
   if (input.equityUsdMicros <= 0n) return null;
   return withKeyedMutex('trading:fleet', () => withKeyedMutex(`trading:${input.avatarId}`, () => db.transaction(async (tx) => {
@@ -54,6 +54,7 @@ export async function armTradingLink(input: {
       floatStartUsdMicros: input.equityUsdMicros.toString(),
       floatStartLamports: input.nativeLamports.toString(),
       baselineSlot: input.baselineSlot,
+      baselineEvidence: input.baselineEvidence,
       armed: true,
       killed: false,
       updatedAt: new Date(),
@@ -62,16 +63,12 @@ export async function armTradingLink(input: {
   })));
 }
 
-export async function setTradingLinkKilled(avatarId: string, killed: boolean): Promise<TradingLink | null> {
+export async function killTradingLink(avatarId: string): Promise<TradingLink | null> {
   return withKeyedMutex('trading:fleet', () => withKeyedMutex(`trading:${avatarId}`, () => db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('trading:fleet', 0))`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trading:${avatarId}`}, 0))`);
-    const rows = await tx.update(clawpumpAgentLinks).set({ killed, updatedAt: new Date() })
+    const rows = await tx.update(clawpumpAgentLinks).set({ killed: true, updatedAt: new Date() })
       .where(eq(clawpumpAgentLinks.avatarId, avatarId)).returning();
     return rows[0] ?? null;
   })));
-}
-
-export async function updateTradingObjective(avatarId: string, objective: TradingObjective): Promise<void> {
-  await db.update(clawpumpAgentLinks).set({ objective, updatedAt: new Date() }).where(eq(clawpumpAgentLinks.avatarId, avatarId));
 }

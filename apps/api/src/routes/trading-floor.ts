@@ -17,7 +17,7 @@ const bodySchema = z.object({
   inputMint: z.string().min(1).max(44),
   outputMint: z.string().min(1).max(44),
   amountUsd: z.number().min(1).max(25),
-  reason: z.string().trim().min(1).max(240).refine((value) => !/[,=]/.test(value)),
+  reason: z.string().trim().min(1).max(240).refine((value) => !/[,=()[\]]/.test(value)),
 }).strict();
 
 function mint(value: string): string | null {

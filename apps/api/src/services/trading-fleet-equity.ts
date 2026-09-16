@@ -1,6 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { TRADE_MINTS } from '@clawville/shared';
+import type { TradingBaselineEvidence } from '@clawville/database';
 import { fetchJupiterPrices } from './trade-price';
 import { deriveTradingAta, getMintInfo } from './trading-mint-info';
 
@@ -10,6 +11,8 @@ export interface TradingPosition {
   amountAtomic: bigint;
   decimals: number;
   valueUsdMicros: bigint;
+  priceUsdMicros: bigint;
+  priceTimestampMs: number;
 }
 
 export interface TradingWalletEquity {
@@ -27,10 +30,32 @@ function defaultConnection(): Connection {
   return new Connection(endpoint, 'confirmed');
 }
 
-function micros(amount: bigint, decimals: number, usd: number): bigint {
-  const scaled = Number(amount) / 10 ** decimals * usd * 1_000_000;
-  if (!Number.isFinite(scaled) || scaled < 0) throw new Error('equity_conversion_failed');
+function priceMicros(usd: number): bigint {
+  const scaled = usd * 1_000_000;
+  if (!Number.isFinite(scaled) || scaled < 0) throw new Error('equity_price_conversion_failed');
   return BigInt(Math.floor(scaled));
+}
+
+function positionValueMicros(amount: bigint, decimals: number, usdMicros: bigint): bigint {
+  if (amount < 0n || decimals < 0 || usdMicros < 0n) throw new Error('equity_conversion_failed');
+  return amount * usdMicros / (10n ** BigInt(decimals));
+}
+
+export function toTradingBaselineEvidence(equity: TradingWalletEquity): TradingBaselineEvidence {
+  return {
+    slot: equity.slot,
+    equityUsdMicros: equity.equityUsdMicros.toString(),
+    nativeLamports: equity.nativeLamports.toString(),
+    positions: equity.positions.map((position) => ({
+      symbol: position.symbol,
+      mint: position.mint,
+      amountAtomic: position.amountAtomic.toString(),
+      decimals: position.decimals,
+      valueUsdMicros: position.valueUsdMicros.toString(),
+      priceUsdMicros: position.priceUsdMicros.toString(),
+      priceTimestampMs: position.priceTimestampMs,
+    })),
+  };
 }
 
 export async function readTradingWalletEquity(input: {
@@ -46,20 +71,25 @@ export async function readTradingWalletEquity(input: {
     const mints = Object.entries(TRADE_MINTS);
     const infos = await Promise.all(mints.map(([, mint]) => getMintInfo(mint, { connection, minContextSlot: slot })));
     if (infos.some((info) => info === null)) return null;
+    const priceTimestampMs = Date.now();
     const prices = await fetchJupiterPrices(
       [TRADE_MINTS.WSOL, TRADE_MINTS.ANSEM, TRADE_MINTS.CLAWVILLE],
-      { fetchImpl: input.fetchImpl, maxAgeMs: Number(process.env.TRADING_PRICE_MAX_AGE_MS ?? 2_000) },
+      { fetchImpl: input.fetchImpl, nowMs: priceTimestampMs, maxAgeMs: Number(process.env.TRADING_PRICE_MAX_AGE_MS ?? 2_000) },
     );
     prices.set(TRADE_MINTS.USDC, {
       mint: TRADE_MINTS.USDC, usdPrice: 1, blockId: slot, decimals: 6,
-      liquidity: null, priceChange24h: null, createdAt: null, launchpad: null, fetchedAt: Date.now(),
+      liquidity: null, priceChange24h: null, createdAt: null, launchpad: null, fetchedAt: priceTimestampMs,
     });
-    if (!prices.has(TRADE_MINTS.WSOL)) return null;
+    if (mints.some(([, mint], index) => !prices.has(mint) || prices.get(mint)!.decimals !== infos[index]!.decimals)) return null;
 
     const positions: TradingPosition[] = [];
+    const solPrice = prices.get(TRADE_MINTS.WSOL)!;
+    const solPriceMicros = priceMicros(solPrice.usdPrice);
     positions.push({
       symbol: 'SOL', mint: TRADE_MINTS.WSOL, amountAtomic: nativeLamports, decimals: 9,
-      valueUsdMicros: micros(nativeLamports, 9, prices.get(TRADE_MINTS.WSOL)!.usdPrice),
+      valueUsdMicros: positionValueMicros(nativeLamports, 9, solPriceMicros),
+      priceUsdMicros: solPriceMicros,
+      priceTimestampMs: solPrice.fetchedAt,
     });
     for (let i = 0; i < mints.length; i++) {
       const [symbol, mint] = mints[i]!;
@@ -80,10 +110,18 @@ export async function readTradingWalletEquity(input: {
       } catch {
         return null;
       }
-      if (amount === 0n) continue;
       const price = prices.get(mint);
       if (!price) return null;
-      positions.push({ symbol, mint, amountAtomic: amount, decimals: info.decimals, valueUsdMicros: micros(amount, info.decimals, price.usdPrice) });
+      const usdMicros = priceMicros(price.usdPrice);
+      positions.push({
+        symbol,
+        mint,
+        amountAtomic: amount,
+        decimals: info.decimals,
+        valueUsdMicros: positionValueMicros(amount, info.decimals, usdMicros),
+        priceUsdMicros: usdMicros,
+        priceTimestampMs: price.fetchedAt,
+      });
     }
     return {
       slot,

@@ -21,10 +21,10 @@ import {
   type TradeRefusalCode,
 } from '@clawville/shared';
 import { withKeyedMutex } from './keyed-mutex';
-import { admitPosterUsdcSpend, PosterUsdcSpendAdmissionError } from './usdc-spend-admission';
-import { deriveTradingAta, getMintInfo, loadTradingMintWhitelist, type MintInfo } from './trading-mint-info';
+import { admitPosterUsdcSpend, lockPosterUsdcSpend, PosterUsdcSpendAdmissionError } from './usdc-spend-admission';
+import { deriveTradingAta, loadTradingMintWhitelist, type MintInfo } from './trading-mint-info';
 import { readTradingWalletEquity } from './trading-fleet-equity';
-import { fetchJupiterPrices } from './trade-price';
+import { fetchJupiterPrices, type JupiterPriceRow } from './trade-price';
 import { alertError, type AlertErrorParams } from './alert-error';
 
 export interface TradeIntent {
@@ -51,6 +51,16 @@ export interface TradeAdmission {
   outputInfo: MintInfo;
   equityUsdMicros: bigint;
 }
+export interface PreparedTrade {
+  link: TradingLink;
+  connection: Connection;
+  amountAtomic: bigint;
+  slippageBps: number;
+  inputInfo: MintInfo;
+  outputInfo: MintInfo;
+  usdcInfo: MintInfo;
+  equityUsdMicros: bigint;
+}
 export type TradeVerdict = { kind: 'allow'; admission: TradeAdmission } | { kind: 'refuse'; code: TradeRefusalCode; detail: string; decisionId: string };
 
 export interface TradingGuardrailDeps {
@@ -59,10 +69,69 @@ export interface TradingGuardrailDeps {
   readUsdcBalance?: (pubkey: string, signal: AbortSignal) => Promise<bigint>;
   readEquity?: typeof readTradingWalletEquity;
   alert?: (input: AlertErrorParams) => Promise<void>;
+  findLink?: (avatarId: string) => Promise<TradingLink | null | undefined>;
+  recordRefusal?: (
+    intent: TradeIntent,
+    code: TradeRefusalCode,
+    detail: string,
+  ) => Promise<Extract<TradeVerdict, { kind: 'refuse' }>>;
+}
+
+export function findPriceDecimalsMismatch(
+  prices: ReadonlyMap<string, JupiterPriceRow>,
+  mintInfo: readonly MintInfo[],
+): { mint: string; onChain: number; jupiter: number } | null {
+  for (const info of mintInfo) {
+    const price = prices.get(info.mint);
+    if (price && price.decimals !== info.decimals) {
+      return { mint: info.mint, onChain: info.decimals, jupiter: price.decimals };
+    }
+  }
+  return null;
+}
+
+export async function alertPriceDecimalsMismatch(
+  prices: ReadonlyMap<string, JupiterPriceRow>,
+  mintInfo: readonly MintInfo[],
+  alert: (input: AlertErrorParams) => Promise<void>,
+): Promise<{ mint: string; onChain: number; jupiter: number } | null> {
+  const mismatch = findPriceDecimalsMismatch(prices, mintInfo);
+  if (!mismatch) return null;
+  await alert({
+    severity: 'critical',
+    source: 'trading-guardrails',
+    message: 'Jupiter price decimals differ from on-chain mint decimals.',
+    context: {
+      mint: mismatch.mint,
+      onChainDecimals: String(mismatch.onChain),
+      jupiterDecimals: String(mismatch.jupiter),
+    },
+  });
+  return mismatch;
+}
+
+export async function readTradingUsdcBalanceRpc(input: {
+  rpcEndpoint: string;
+  ata: string;
+  signal: AbortSignal;
+  fetchImpl?: typeof fetch;
+}): Promise<bigint> {
+  const response = await (input.fetchImpl ?? fetch)(input.rpcEndpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'trading-usdc-balance', method: 'getTokenAccountBalance', params: [input.ata, { commitment: 'confirmed' }] }),
+    signal: input.signal,
+  });
+  if (!response.ok) throw new Error(`balance_http_${response.status}`);
+  const body = await response.json() as { result?: { value?: { amount?: unknown } }; error?: unknown };
+  const amount = body.result?.value?.amount;
+  if (typeof amount !== 'string' || !/^\d+$/.test(amount) || body.error) throw new Error('balance_schema_invalid');
+  return BigInt(amount);
 }
 
 let fleetEquityUnreadableSinceMs: number | null = null;
 let drawdownPoller: ReturnType<typeof setInterval> | null = null;
+export const TRADING_BALANCE_RPC_TIMEOUT_MS = 4_000;
 
 function connection(): Connection {
   const endpoint = process.env.HELIUS_RPC_URL;
@@ -103,22 +172,29 @@ export function recordTradeRefusal(
   return recordRefusal(intent, code, detail);
 }
 
-export async function inspectTradePreconditions(intent: TradeIntent, deps: Pick<TradingGuardrailDeps, 'connection'> = {}): Promise<
+export async function inspectTradePreconditions(
+  intent: TradeIntent,
+  deps: Pick<TradingGuardrailDeps, 'connection' | 'findLink' | 'recordRefusal'> = {},
+): Promise<
   { kind: 'continue'; link: TradingLink } | Extract<TradeVerdict, { kind: 'refuse' }>
 > {
-  const link = await db.query.clawpumpAgentLinks.findFirst({ where: eq(clawpumpAgentLinks.avatarId, intent.avatarId) });
-  if (!link) return recordRefusal(intent, 'no_link', 'No fleet trading link exists.');
-  if (!link.armed) return recordRefusal(intent, 'armed_false', 'The fleet link is unarmed.');
-  if (link.killed) return recordRefusal(intent, 'agent_killed', 'The fleet link is killed.');
-  if (!process.env.JUPITER_API_KEY) return recordRefusal(intent, 'not_configured', 'Jupiter execution credentials are absent.');
+  const findLink = deps.findLink ?? ((avatarId: string) => db.query.clawpumpAgentLinks.findFirst({
+    where: eq(clawpumpAgentLinks.avatarId, avatarId),
+  }));
+  const refuse = deps.recordRefusal ?? recordRefusal;
+  const link = await findLink(intent.avatarId);
+  if (!link) return refuse(intent, 'no_link', 'No fleet trading link exists.');
+  if (!link.armed) return refuse(intent, 'armed_false', 'The fleet link is unarmed.');
+  if (link.killed) return refuse(intent, 'agent_killed', 'The fleet link is killed.');
+  if (!process.env.JUPITER_API_KEY) return refuse(intent, 'not_configured', 'Jupiter execution credentials are absent.');
   if (!deps.connection) {
     try { connection(); }
-    catch { return recordRefusal(intent, 'not_configured', 'Helius mainnet execution is not configured.'); }
+    catch { return refuse(intent, 'not_configured', 'Helius mainnet execution is not configured.'); }
   }
   return { kind: 'continue', link };
 }
 
-export async function admitTrade(intent: TradeIntent, deps: TradingGuardrailDeps = {}): Promise<TradeVerdict> {
+export async function prepareTrade(intent: TradeIntent, deps: TradingGuardrailDeps = {}): Promise<PreparedTrade | Extract<TradeVerdict, { kind: 'refuse' }>> {
   const pre = await inspectTradePreconditions(intent, deps);
   if (pre.kind !== 'continue') return pre;
   const limits = readTradingLimits();
@@ -137,8 +213,13 @@ export async function admitTrade(intent: TradeIntent, deps: TradingGuardrailDeps
   ]);
   const inputInfo = whitelist.get(intent.inputMint) ?? null;
   const outputInfo = whitelist.get(intent.outputMint) ?? null;
-  if (!inputInfo || !outputInfo) return recordRefusal(intent, 'decimals_unresolved', 'Mint metadata could not be read.');
+  const usdcInfo = whitelist.get(TRADE_MINTS.USDC) ?? null;
+  if (!inputInfo || !outputInfo || !usdcInfo) return recordRefusal(intent, 'decimals_unresolved', 'Mint metadata could not be read.');
   if (!equity) return recordRefusal(intent, 'equity_unreadable', 'Wallet equity could not be read.');
+  const decimalsMismatch = await alertPriceDecimalsMismatch(prices, [inputInfo, outputInfo], deps.alert ?? alertError);
+  if (decimalsMismatch) {
+    return recordRefusal(intent, 'decimals_mismatch', 'Jupiter price decimals differ from on-chain mint decimals.');
+  }
   const inputPrice = intent.inputMint === TRADE_MINTS.USDC ? 1 : prices.get(intent.inputMint)?.usdPrice;
   if (!inputPrice) return recordRefusal(intent, 'price_unavailable', 'Input price is unavailable.');
   const amountAtomic = BigInt(Math.floor(Number(intent.amountUsdMicros) / 1_000_000 / inputPrice * 10 ** inputInfo.decimals));
@@ -154,6 +235,34 @@ export async function admitTrade(intent: TradeIntent, deps: TradingGuardrailDeps
   if (equity.nativeLamports < limits.minSolReserveLamports + limits.maxPriorityFeeLamports + nativeDebit) {
     return recordRefusal(intent, 'sol_reserve_breached', 'The trade would cross the SOL reserve floor.');
   }
+
+  return {
+    link: pre.link,
+    connection: conn,
+    amountAtomic,
+    slippageBps: Math.floor(limits.maxSlippageBps),
+    inputInfo,
+    outputInfo,
+    usdcInfo,
+    equityUsdMicros: equity.equityUsdMicros,
+  };
+}
+
+export async function admitTrade(
+  intent: TradeIntent,
+  deps: TradingGuardrailDeps,
+  prepared: PreparedTrade,
+): Promise<TradeVerdict> {
+  const limits = readTradingLimits();
+  const {
+    connection: conn,
+    amountAtomic,
+    inputInfo,
+    outputInfo,
+    usdcInfo,
+    equityUsdMicros,
+    slippageBps,
+  } = prepared;
 
   return withKeyedMutex('trading:fleet', () => withKeyedMutex(`trading:${intent.avatarId}`, () => db.transaction(async (tx) => {
     const refuseLocked = async (code: TradeRefusalCode, detail: string): Promise<Extract<TradeVerdict, { kind: 'refuse' }>> => {
@@ -183,6 +292,9 @@ export async function admitTrade(intent: TradeIntent, deps: TradingGuardrailDeps
     if (!link) return refuseLocked('no_link', 'The link disappeared before admission.');
     if (!link.armed) return refuseLocked('armed_false', 'The fleet link is unarmed.');
     if (link.killed) return refuseLocked('agent_killed', 'The fleet link is killed.');
+    if (link.walletPubkey !== prepared.link.walletPubkey || link.objective !== prepared.link.objective) {
+      return refuseLocked('tx_binding_failed', 'The link changed after transaction validation.');
+    }
     const halts = await tx.select().from(tradingHalts).where(isNull(tradingHalts.clearedAt));
     if (halts.some((halt) => halt.scope === 'fleet')) return refuseLocked('fleet_halted', 'The fleet halt is active.');
     if (halts.some((halt) => halt.scope === 'agent' && halt.scopeId === intent.avatarId)) return refuseLocked('agent_halted', 'The agent halt is active.');
@@ -207,14 +319,10 @@ export async function admitTrade(intent: TradeIntent, deps: TradingGuardrailDeps
       if (prior.length) return refuseLocked('directive_replayed', 'The directive was already claimed.');
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4_000);
+    const timer = setTimeout(() => controller.abort(), TRADING_BALANCE_RPC_TIMEOUT_MS);
     const readUsdcBalance = deps.readUsdcBalance ?? (async (pubkey: string, signal: AbortSignal) => {
-      if (signal.aborted) throw new Error('aborted');
-      const usdc = await getMintInfo(TRADE_MINTS.USDC, { connection: conn });
-      if (!usdc) throw new Error('usdc metadata unavailable');
-      const balance = await conn.getTokenAccountBalance(deriveTradingAta(new PublicKey(pubkey), usdc), 'confirmed');
-      if (signal.aborted) throw new Error('aborted');
-      return BigInt(balance.value.amount);
+      const ata = deriveTradingAta(new PublicKey(pubkey), usdcInfo).toBase58();
+      return readTradingUsdcBalanceRpc({ rpcEndpoint: conn.rpcEndpoint, ata, signal });
     });
     try {
       await admitPosterUsdcSpend(tx, {
@@ -236,25 +344,32 @@ export async function admitTrade(intent: TradeIntent, deps: TradingGuardrailDeps
       id: decisionId, avatarId: intent.avatarId, origin: intent.origin,
       inputMint: intent.inputMint, outputMint: intent.outputMint,
       amountUsdMicros: intent.amountUsdMicros.toString(), amountAtomic: amountAtomic.toString(),
-      slippageBps: Math.floor(limits.maxSlippageBps), verdict: 'admitted', status: 'admitted',
+      slippageBps, verdict: 'admitted', status: 'admitted',
       reason: intent.reason, detail: '', directiveId: intent.directiveId, directiveOrdinal: intent.directiveOrdinal,
       operatorId: intent.operatorId ?? null,
     });
     await tx.insert(tradingUsdcReservations).values({ decisionId, avatarId: intent.avatarId, amountBaseUnits: intent.amountUsdMicros.toString(), status: 'open' });
-    return { kind: 'allow', admission: { decisionId, link, amountAtomic, notionalUsdMicros: intent.amountUsdMicros, slippageBps: Math.floor(limits.maxSlippageBps), inputInfo, outputInfo, equityUsdMicros: equity.equityUsdMicros } } as TradeVerdict;
+    return { kind: 'allow', admission: { decisionId, link, amountAtomic, notionalUsdMicros: intent.amountUsdMicros, slippageBps, inputInfo, outputInfo, equityUsdMicros } } as TradeVerdict;
   })));
 }
 
 export async function recordTradeOutcome(input: {
   decisionId: string;
-  status: 'executed' | 'refused' | 'failed' | 'reconcile' | 'expired';
+  status: 'refused' | 'failed' | 'reconcile' | 'expired';
   signature?: string | null;
   errorCode?: TradeRefusalCode | null;
   errorDetail?: string | null;
   expectedStatus: 'admitted' | 'submitted';
+  releaseReason?: 'never_signed';
 }): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const settled = ['executed', 'refused', 'failed', 'expired'].includes(input.status);
+    const decision = await tx.select({ avatarId: tradingDecisions.avatarId })
+      .from(tradingDecisions)
+      .where(eq(tradingDecisions.id, input.decisionId))
+      .limit(1);
+    if (!decision[0]) return false;
+    await lockPosterUsdcSpend(tx, decision[0].avatarId);
+    const settled = ['refused', 'failed', 'expired'].includes(input.status);
     const updated = await tx.update(tradingDecisions).set({
       status: input.status,
       verdict: input.errorCode ?? input.status,
@@ -269,12 +384,10 @@ export async function recordTradeOutcome(input: {
     if (input.status === 'reconcile') {
       await tx.update(tradingUsdcReservations).set({ status: 'reconcile', releaseReason: 'ambiguous_send' }).where(eq(tradingUsdcReservations.decisionId, input.decisionId));
     } else if (settled) {
-      const reservationStatus = input.status === 'executed'
-        ? 'settled'
-        : input.status === 'expired' ? 'expired' : 'failed';
+      const reservationStatus = input.status === 'expired' ? 'expired' : 'failed';
       await tx.update(tradingUsdcReservations).set({
         status: reservationStatus,
-        releaseReason: input.status,
+        releaseReason: input.releaseReason ?? input.status,
         releasedAt: new Date(),
       }).where(eq(tradingUsdcReservations.decisionId, input.decisionId));
     }
@@ -313,12 +426,32 @@ export async function clearHalt(i: { scope: 'fleet' | 'agent'; scopeId: string |
   })));
 }
 export async function evaluateFleetDrawdown(deps: TradingGuardrailDeps = {}): Promise<{ equityUsdMicros: bigint | null; startUsdMicros: bigint; halted: boolean }> {
-  const links = await db.select().from(clawpumpAgentLinks).where(eq(clawpumpAgentLinks.operatedByClawville, true));
-  const startUsdMicros = links.reduce((sum, link) => sum + BigInt(link.floatStartUsdMicros), 0n);
+  const links = await db.select().from(clawpumpAgentLinks).where(and(
+    eq(clawpumpAgentLinks.operatedByClawville, true),
+    eq(clawpumpAgentLinks.armed, true),
+  ));
+  let startUsdMicros = 0n;
   let equityUsdMicros = 0n;
   const nowMs = (deps.now ?? new Date()).getTime();
   const alert = deps.alert ?? alertError;
   for (const link of links) {
+    const baseline = (link as typeof link & { baselineEvidence?: { equityUsdMicros?: unknown } | null }).baselineEvidence;
+    let baselineEquity: bigint;
+    try {
+      if (!baseline || typeof baseline.equityUsdMicros !== 'string' || !/^\d+$/.test(baseline.equityUsdMicros)) throw new Error('baseline evidence missing');
+      baselineEquity = BigInt(baseline.equityUsdMicros);
+      if (baselineEquity <= 0n) throw new Error('baseline equity is not positive');
+    } catch (error) {
+      await engageHalt({ scope: 'fleet', scopeId: null, reason: 'Fleet baseline evidence is invalid.', by: 'system:baseline-evidence' });
+      void alert({
+        severity: 'critical',
+        source: 'trading-drawdown',
+        message: 'An armed fleet link has invalid baseline evidence.',
+        context: { avatarId: link.avatarId, error: error instanceof Error ? error.message : 'unknown' },
+      });
+      return { equityUsdMicros: null, startUsdMicros, halted: true };
+    }
+    startUsdMicros += baselineEquity;
     const equity = await (deps.readEquity ?? readTradingWalletEquity)({ walletPubkey: link.walletPubkey, connection: deps.connection });
     if (!equity) {
       if (fleetEquityUnreadableSinceMs === null) {

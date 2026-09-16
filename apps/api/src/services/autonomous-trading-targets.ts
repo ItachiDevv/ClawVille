@@ -25,7 +25,7 @@ export interface AutonomousTradingDesk {
   haltReason: string | null;
   allowedMints: { symbol: string; mint: string }[];
   lastIntel: string | null;
-  lastTrades: { at: string; verdict: string; detail: string }[];
+  lastTrades: { at: string; verdict: string; reason: string }[];
 }
 
 export const EMPTY_TRADING_DESK: AutonomousTradingDesk = {
@@ -83,7 +83,7 @@ export async function readAutonomousTradingTargets(input: { avatarId: string }):
     haltReason: halt?.reason ?? null,
     allowedMints: halt ? [] : TRADING_OBJECTIVE_ALLOWED_OUTPUTS[objective].slice(0, 12).map((mint) => ({ symbol: SYMBOL.get(mint) ?? mint, mint })),
     lastIntel: null,
-    lastTrades: recent.map((row) => ({ at: row.createdAt.toISOString(), verdict: row.status, detail: row.detail.slice(0, 120) })),
+    lastTrades: recent.map((row) => ({ at: row.createdAt.toISOString(), verdict: row.status, reason: row.reason.slice(0, 120) })),
   };
 }
 

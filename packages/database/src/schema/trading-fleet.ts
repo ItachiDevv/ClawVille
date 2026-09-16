@@ -6,6 +6,7 @@ import {
   customType,
   index,
   integer,
+  jsonb,
   numeric,
   pgTable,
   timestamp,
@@ -20,6 +21,21 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => 'bytea',
 });
 
+export interface TradingBaselineEvidence {
+  slot: number;
+  equityUsdMicros: string;
+  nativeLamports: string;
+  positions: Array<{
+    symbol: string;
+    mint: string;
+    amountAtomic: string;
+    decimals: number;
+    valueUsdMicros: string;
+    priceUsdMicros: string;
+    priceTimestampMs: number;
+  }>;
+}
+
 export const clawpumpAgentLinks = pgTable('clawpump_agent_links', {
   avatarId: uuid('avatar_id').primaryKey().references(() => avatars.id, { onDelete: 'restrict' }),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
@@ -32,6 +48,7 @@ export const clawpumpAgentLinks = pgTable('clawpump_agent_links', {
   floatStartLamports: numeric('float_start_lamports', { precision: 20, scale: 0 }).default('0').notNull(),
   floatStartUsdMicros: numeric('float_start_usd_micros', { precision: 20, scale: 0 }).default('0').notNull(),
   baselineSlot: bigint('baseline_slot', { mode: 'number' }),
+  baselineEvidence: jsonb('baseline_evidence').$type<TradingBaselineEvidence>(),
   operatedByClawville: boolean('operated_by_clawville').default(true).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -39,6 +56,7 @@ export const clawpumpAgentLinks = pgTable('clawpump_agent_links', {
   objectiveValid: check('clawpump_agent_links_objective_valid', sql`${t.objective} IN ('momentum-board','ansem-clawville-dca','sol-usdc-mean-reversion','intel-signal-follower','conservative-rebalancer')`),
   floatNonneg: check('clawpump_agent_links_float_nonneg', sql`${t.floatStartLamports} >= 0 AND ${t.floatStartUsdMicros} >= 0`),
   armedNeedsBaseline: check('clawpump_agent_links_armed_needs_baseline', sql`${t.armed} = false OR ${t.floatStartUsdMicros} > 0`),
+  armedNeedsEvidence: check('clawpump_agent_links_armed_needs_evidence', sql`${t.armed} = false OR ${t.baselineEvidence} IS NOT NULL`),
 }));
 
 export const tradingDecisions = pgTable('trading_decisions', {

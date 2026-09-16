@@ -35,6 +35,12 @@ function deriveAta(owner: PublicKey, mint: PublicKey, program: PublicKey): Publi
 
 function legError(input: { wallet: PublicKey; inputLeg: SwapLeg; outputLeg: SwapLeg; shape: SwapShape }): string | null {
   const { wallet, inputLeg, outputLeg, shape } = input;
+  const staticPrograms = new Map<string, PublicKey>([
+    [TRADE_MINTS.WSOL, TOKEN_PROGRAM_ID],
+    [TRADE_MINTS.USDC, TOKEN_PROGRAM_ID],
+    [TRADE_MINTS.ANSEM, TOKEN_2022_PROGRAM_ID],
+    [TRADE_MINTS.CLAWVILLE, TOKEN_2022_PROGRAM_ID],
+  ]);
   if (inputLeg.direction !== 'debit' || outputLeg.direction !== 'credit') return 'leg_direction';
   if (inputLeg.mint.equals(outputLeg.mint)) return 'duplicate_mint';
   const expectedShape: SwapShape | null = inputLeg.mode === 'native-sol'
@@ -42,6 +48,9 @@ function legError(input: { wallet: PublicKey; inputLeg: SwapLeg; outputLeg: Swap
     : (outputLeg.mode === 'native-sol' ? 'token-sol' : 'token-token');
   if (!expectedShape || expectedShape !== shape) return expectedShape ? 'shape_mismatch' : 'sol_sol';
   for (const leg of [inputLeg, outputLeg]) {
+    const expectedProgram = staticPrograms.get(leg.mint.toBase58());
+    if (!expectedProgram) return 'mint_not_static';
+    if (!leg.tokenProgram.equals(expectedProgram)) return 'token_program';
     if (leg.mode === 'native-sol') {
       if (!leg.mint.equals(WSOL) || !leg.tokenProgram.equals(TOKEN_PROGRAM_ID)) return 'native_leg_mismatch';
     } else {
@@ -52,10 +61,11 @@ function legError(input: { wallet: PublicKey; inputLeg: SwapLeg; outputLeg: Swap
   return null;
 }
 
-function decodeRoute(data: Buffer): { inAmount: bigint; quotedOut: bigint; slippageBps: number; minOut: bigint } | null {
+function decodeRoute(data: Buffer): { kind: 'route' | 'shared_accounts_route'; inAmount: bigint; quotedOut: bigint; slippageBps: number; minOut: bigint } | null {
   let header = 0;
-  if (data.subarray(0, 8).equals(ROUTE)) header = 8;
-  else if (data.subarray(0, 8).equals(SHARED_ROUTE)) header = 9;
+  let kind: 'route' | 'shared_accounts_route';
+  if (data.subarray(0, 8).equals(ROUTE)) { header = 8; kind = 'route'; }
+  else if (data.subarray(0, 8).equals(SHARED_ROUTE)) { header = 9; kind = 'shared_accounts_route'; }
   else return null;
   if (data.length < header + 23) return null;
   const steps = data.readUInt32LE(header);
@@ -66,11 +76,11 @@ function decodeRoute(data: Buffer): { inAmount: bigint; quotedOut: bigint; slipp
   const slippageBps = data.readUInt16LE(offset + 16);
   if (data[offset + 18] !== 0 || slippageBps > 10_000) return null;
   const minOut = (quotedOut * BigInt(10_000 - slippageBps) + 9_999n) / 10_000n;
-  return { inAmount, quotedOut, slippageBps, minOut };
+  return { kind, inAmount, quotedOut, slippageBps, minOut };
 }
 
 export type TradingSwapInspection =
-  | { ok: true; minimumOutAmount: bigint; priorityFeeLamports: bigint; derivedWsolAccounts: PublicKey[] }
+  | { ok: true; minimumOutAmount: bigint; quotedOutAmount: bigint; slippageBps: number; priorityFeeLamports: bigint; derivedWsolAccounts: PublicKey[] }
   | { ok: false; detail: string };
 
 export function inspectTradingSwapTransaction(input: {
@@ -79,6 +89,11 @@ export function inspectTradingSwapTransaction(input: {
   inputAmount: bigint;
   minimumOutAmount: bigint;
   priorityFeeLamports: bigint;
+  inputLeg?: SwapLeg;
+  outputLeg?: SwapLeg;
+  shape?: SwapShape;
+  quotedOutAmount?: bigint;
+  slippageBps?: number;
   addressLookupTableAccounts?: AddressLookupTableAccount[];
 }): TradingSwapInspection {
   const tx = input.transaction;
@@ -125,13 +140,72 @@ export function inspectTradingSwapTransaction(input: {
     if (!program.equals(JUPITER) || route) return { ok: false, detail: 'outer_program' };
     route = decodeRoute(data);
     if (!route) return { ok: false, detail: 'jupiter_instruction_decode' };
+    if (input.inputLeg && input.outputLeg && input.shape) {
+      const legs = validateTradingLegs({
+        wallet: input.wallet,
+        inputLeg: input.inputLeg,
+        outputLeg: input.outputLeg,
+        shape: input.shape,
+      });
+      if (!legs.ok) return legs;
+      const layout = route.kind === 'route'
+        ? { minimumAccounts: 7, authority: 1, source: 2, destination: 3, sourceMint: null, destinationMint: 5 }
+        : { minimumAccounts: 9, authority: 2, source: 3, destination: 6, sourceMint: 7, destinationMint: 8 };
+      if (accounts.length < layout.minimumAccounts) return { ok: false, detail: 'route_account_layout' };
+      const accountAt = (position: number): PublicKey | null => keyAt(accounts[position]!);
+      if (!accountAt(layout.authority)?.equals(input.wallet)) return { ok: false, detail: 'route_authority_mismatch' };
+      const source = accountAt(layout.source);
+      const destination = accountAt(layout.destination);
+      const legAccountMatches = (leg: SwapLeg, actual: PublicKey | null): boolean => {
+        if (!actual) return false;
+        if (leg.mode === 'token') return actual.equals(leg.ata);
+        return actual.equals(leg.ata) || derivedWsolAccounts.some((account) => account.equals(actual));
+      };
+      if (!legAccountMatches(input.inputLeg, source) || !legAccountMatches(input.outputLeg, destination)) {
+        return { ok: false, detail: 'route_leg_account_mismatch' };
+      }
+      if (!message.isAccountWritable(accounts[layout.source]!) || !message.isAccountWritable(accounts[layout.destination]!)) {
+        return { ok: false, detail: 'route_leg_account_readonly' };
+      }
+      if (layout.sourceMint !== null && !accountAt(layout.sourceMint)?.equals(input.inputLeg.mint)) {
+        return { ok: false, detail: 'route_input_mint_mismatch' };
+      }
+      if (!accountAt(layout.destinationMint)?.equals(input.outputLeg.mint)) {
+        return { ok: false, detail: 'route_output_mint_mismatch' };
+      }
+      if (route.kind === 'route') {
+        const tokenProgram = accountAt(0);
+        if (!tokenProgram?.equals(input.inputLeg.tokenProgram) || !tokenProgram.equals(input.outputLeg.tokenProgram)) {
+          return { ok: false, detail: 'route_token_program_mismatch' };
+        }
+      } else {
+        const legacyProgram = accountAt(0);
+        const token2022Program = accounts.length > 10 ? accountAt(10) : null;
+        const hasProgram = (program: PublicKey) => program.equals(TOKEN_PROGRAM_ID)
+          ? legacyProgram?.equals(program) === true
+          : token2022Program?.equals(program) === true;
+        if (!hasProgram(input.inputLeg.tokenProgram) || !hasProgram(input.outputLeg.tokenProgram)) {
+          return { ok: false, detail: 'route_token_program_mismatch' };
+        }
+      }
+    }
   }
   if (!route || route.inAmount !== input.inputAmount) return { ok: false, detail: 'jupiter_amount_binding' };
+  if (route.quotedOut <= 0n || route.minOut <= 0n) return { ok: false, detail: 'minimum_out_non_positive' };
+  if (input.quotedOutAmount !== undefined && route.quotedOut !== input.quotedOutAmount) return { ok: false, detail: 'quoted_out_mismatch' };
+  if (input.slippageBps !== undefined && route.slippageBps !== input.slippageBps) return { ok: false, detail: 'slippage_mismatch' };
   if (route.minOut !== input.minimumOutAmount) return { ok: false, detail: 'minimum_out_mismatch' };
   if (computeLimit !== null && computeLimit > MAX_COMPUTE_UNITS) return { ok: false, detail: 'compute_limit' };
   const priority = computePrice && computeLimit ? (computePrice * computeLimit + 999_999n) / 1_000_000n : 0n;
   if (priority > input.priorityFeeLamports) return { ok: false, detail: 'priority_fee' };
-  return { ok: true, minimumOutAmount: route.minOut, priorityFeeLamports: priority, derivedWsolAccounts };
+  return {
+    ok: true,
+    minimumOutAmount: route.minOut,
+    quotedOutAmount: route.quotedOut,
+    slippageBps: route.slippageBps,
+    priorityFeeLamports: priority,
+    derivedWsolAccounts,
+  };
 }
 
 interface Snap { amount: bigint; lamports: bigint; exists: boolean }

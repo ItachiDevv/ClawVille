@@ -2,6 +2,7 @@ import { VersionedTransaction } from '@solana/web3.js';
 import { z } from 'zod';
 
 const atomicString = z.string().regex(/^\d+$/);
+const positiveAtomicString = z.string().regex(/^[1-9]\d*$/);
 const decimalString = z.string().regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/);
 
 const reliableReportSchema = z.object({
@@ -14,7 +15,7 @@ const swapInfoSchema = z.object({
   inputMint: z.string(),
   outputMint: z.string(),
   inAmount: atomicString,
-  outAmount: atomicString,
+  outAmount: positiveAtomicString,
   updateContextSlot: atomicString,
   feeAmount: atomicString.optional(),
   feeMint: z.string().optional(),
@@ -30,8 +31,8 @@ export const parsedJupiterQuoteSchema = z.object({
   inputMint: z.string(),
   inAmount: atomicString,
   outputMint: z.string(),
-  outAmount: atomicString,
-  otherAmountThreshold: atomicString,
+  outAmount: positiveAtomicString,
+  otherAmountThreshold: positiveAtomicString,
   swapMode: z.literal('ExactIn'),
   slippageBps: z.number().int().min(1).max(10_000),
   platformFee: z.null(),

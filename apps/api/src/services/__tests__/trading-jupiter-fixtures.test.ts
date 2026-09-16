@@ -35,6 +35,12 @@ describe('Trading Jupiter fixture contract', () => {
     expect(parsedJupiterQuoteSchema.safeParse({ ...raw, instructionVersion: null }).success).toBe(true);
   });
 
+  test('rejects zero top-level output and threshold amounts', () => {
+    const raw = JSON.parse(readFileSync(resolve(fixtureDir, 'quote-usdc-ansem.json'), 'utf8'));
+    expect(parsedJupiterQuoteSchema.safeParse({ ...raw, outAmount: '0' }).success).toBe(false);
+    expect(parsedJupiterQuoteSchema.safeParse({ ...raw, otherAmountThreshold: '0' }).success).toBe(false);
+  });
+
   test('refuses ExactOut, a non-null platform fee, and discontinuous routes', async () => {
     const raw = JSON.parse(readFileSync(resolve(fixtureDir, 'quote-usdc-ansem.json'), 'utf8'));
     for (const mutate of [

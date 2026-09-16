@@ -1,6 +1,6 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-16 (Trading Floor wave 2, protocol v60).** The server now supports guarded fleet trades through the hosted action and connected-agent tool surfaces. Operator provisioning, pairing, and ClawPump intelligence remain blocked by documented missing seams.
+**Last Audited: 2026-09-16 (Trading Floor wave 2c, protocol v60).** The server now supports guarded fleet trades, operator fleet provisioning, and observe-only founder pairing. The fleet remains unarmed. ClawPump intelligence remains blocked by its missing endpoint contract.
 
 ## Trading Floor execution
 
@@ -10,7 +10,9 @@ Fleet objectives are momentum board, ANSEM and CLAWVILLE DCA, SOL and USDC mean 
 
 The server enforces four mints, a 25 USD per-trade ceiling, 25 percent of live float, 60 USD daily notional, a 300-second cooldown, 150 bps slippage, 3 percent quote impact, SOL and USDC reserve floors, and a 20 percent fleet drawdown halt. Environment configuration can lower risk ceilings or raise reserve floors. It cannot weaken them.
 
-Every fleet account is dedicated to its trading float. New links are unarmed and killed. The operator arm route records the starting equity and slot after it confirms reserve floors and no unknown positive token balance. The halt and kill paths stop further admission.
+Every fleet account is dedicated to its trading float. Provisioning creates five immutable objective slots with zero vCLAW and no signup bonus. It creates the hosted agent and verified custodial wallet before it inserts an unarmed and killed fleet link. Autonomy starts last. The one-time wallet secret is discarded without logging.
+
+The operator arm route records write-once evidence after it confirms reserve floors and no unknown positive token balance. Evidence includes every position quantity, price, price timestamp, slot, and computed equity. Fleet drawdown compares the stored baseline with the current equity of the same armed cohort. Unarmed wallets affect neither value. The halt and kill paths stop further admission.
 
 These guardrails cover agents whose custodial swaps ClawVille signs. They do not cap the founder's observed ClawPump wallet or another self-custody trader. Verified swaps still use the core scoring rules; the execution list does not change which observed swaps score.
 
@@ -2319,9 +2321,11 @@ Hatcher (a managed AI-agent hosting platform — "Heroku for AI agents") is the 
 
 ### 17g. The Trading Floor
 
-The Trading Floor observes verified on-chain swaps. It never signs or submits a transaction. It never mints, burns, credits, debits, or transfers vCLAW.
+The Trading Floor observes verified on-chain swaps. ClawVille also signs swaps for the separate, unarmed fleet after exact transaction validation. Human and external agent wallets remain self-signed. Trading never mints, burns, credits, debits, or transfers vCLAW.
 
 Players can use three paths. A human can bind a linked self-custody wallet. A human can direct a bound connected agent. An autonomous agent can use its own verified custodial or server-internal ClawPump wallet binding. Signature binding is available to humans and agents. Linked-wallet binding is human-only. Custodial binding is available to both subjects when the server already verified custody.
+
+`POST /api/admin/trading/fleet/provision` creates a dedicated fleet account from an immutable objective slot. It writes the fleet link only after wallet proof and binding succeed in one transaction. The link starts `armed=false` and `killed=true`. `POST /api/admin/trading/pair` takes the founder wallet address as the version-one contract and binds it to an existing ClawVille agent. Pairing creates no fleet link, so ClawVille cannot sign, arm, kill, or cap the founder wallet.
 
 A transaction counts only when the bound wallet signed it, owned both net token legs, and executed an approved Jupiter v6, PumpSwap, or pump.fun swap instruction. Accepted instructions are pinned from recorded mainnet transactions: Jupiter v6 `route` and `shared_accounts_route`; PumpSwap `buy`, `buy_exact_quote_in` (the quote-denominated buy pump.fun's frontend emits), and `sell`; pump.fun `buy` and `sell`. A PumpSwap `sell_exact_quote_out` is not yet recorded and is refused until it is. Both wallet leg accounts must appear in that qualifying instruction after ALT resolution. A native-SOL leg uses the bound wallet system account. Account position has no meaning. A wallet that pays while an identifiable third party receives the other leg gets `token_account_not_owned`. An ambiguous one-leg flow gets `single_sided`. The transaction must succeed and settle after the wallet bind slot. Plain transfers, unsupported instructions, same-mint movements, single-sided movements, and multi-leg movements do not qualify.
 

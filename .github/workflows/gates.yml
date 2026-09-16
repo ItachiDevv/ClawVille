@@ -216,7 +216,7 @@ jobs:
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: |
           cd apps/api
-          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(agent-frontdoor-connect|agent-public-identity-schema|cosmetic-guest-equip-handler|cove-history|ct-topup-settle|kelp|land-tenure-phaseb|moonpay|partner-covenant|partner-hatcher-p5-handler|world-ws-identity|x402-stats)\.test\.ts$')
+          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(admin-trading-provisioning|agent-frontdoor-connect|agent-public-identity-schema|cosmetic-guest-equip-handler|cove-history|ct-topup-settle|kelp|land-tenure-phaseb|moonpay|partner-covenant|partner-hatcher-p5-handler|world-ws-identity|x402-stats)\.test\.ts$')
           bun test $files
 
       - name: Run the process-isolated route test files (one bun process each)
@@ -225,6 +225,7 @@ jobs:
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: |
           cd apps/api
+          bun test src/routes/__tests__/admin-trading-provisioning.test.ts
           bun test src/routes/__tests__/agent-frontdoor-connect.test.ts
           bun test src/routes/__tests__/agent-public-identity-schema.test.ts
           bun test src/routes/__tests__/cosmetic-guest-equip-handler.test.ts

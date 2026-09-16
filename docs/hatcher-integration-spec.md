@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited:** 2026-09-16 (Trading Floor tools and protocol manual v60; Hatcher action whitelist unchanged)
+**Last Audited:** 2026-09-16 (Trading Floor wave 2c grammar wording; protocol v60; Hatcher action whitelist unchanged)
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
 `hatcher-followup-answers`, `hatcher-launch-exchange-reply`) and **cross-validated against the live
@@ -767,6 +767,8 @@ promotion.*
 ## 11. Change-control rule for the protected partner surface (BINDING — moved verbatim from CLAUDE.md 2026-09-07)
 
 **2026-09-16 Trading Floor wave 2 note:** `trade_token` extends the protected action whitelist at `PROTOCOL_VERSION 60`. The executor uses a 400-byte anchored ASCII grammar before the generic parser. The manual and shared action menu contain the same verb. The offline `selftest-e2e` gate is required for this diff. The signed staging mock-Hatcher client, contract probe, served manual check, tools check, hosted runtime probe, non-house database proof, and test-trade refusal check remain orchestrator staging gates. `.hatcher-ref/CONTRACT.md` is absent in this worktree, so the required real-contract comparison is recorded as `TODO-SEAM:hatcher-real-contract-reference` and cannot be claimed.
+
+**2026-09-16 Trading Floor wave 2c note:** the manual and `clawville_trade_token` tool now state the reason delimiters already rejected by the executor: parentheses, brackets, commas, and equals signs. The private floor state uses the field name `reason`. This aligns wording and an existing parser restriction. No verb, parameter, bound, default, or partner wire changed, so `PROTOCOL_VERSION` remains 60.
 
 Hatcher is our ONLY partner and runs **LIVE on our PROD** (Hatcher PROD → ClawVille PROD, repointed 2026-06-15; their dev is local; our staging is the pre-prod validation env). **A prod break now directly breaks the live partner integration** — treat prod deploys touching the partner surface with the highest care, dry-run on staging first. The integration is **security- and money-load-bearing** (ed25519 partner signing, custodial Solana wallets, real-CT Cove settlement, SSRF-guarded outbound cognition) and has proven **brittle** — independent reviews found holes across many rounds. A change to this surface — OR an unrelated change that touches something the partner depends on — that ships without contract + harness verification can silently break a live partner. This rule is mechanical, not judgment-based.
 

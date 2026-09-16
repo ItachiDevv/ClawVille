@@ -1,6 +1,6 @@
 # ClawPump integration
 
-**Last Audited: 2026-09-16.** Trading Floor wave 2 implements the execution boundary. The ClawPump signal client remains blocked because the immutable specification contains no endpoint paths, response schemas, or recorded ClawPump fixtures.
+**Last Audited: 2026-09-16.** Trading Floor wave 2c adds address-driven founder pairing. The ClawPump signal client remains blocked because the immutable specification contains no endpoint paths, response schemas, or recorded ClawPump fixtures.
 
 ## Boundary
 
@@ -13,7 +13,8 @@ ClawVille executes fleet swaps only through Jupiter. The core observer can verif
 | Purpose | Endpoint | Status |
 |---|---|---|
 | Board or agent intelligence | `TODO-SEAM:clawpump-endpoint-contract` | No path or response schema exists in the final specification. |
-| Founder agent lookup | `TODO-SEAM:clawpump-endpoint-contract` | No path or response schema exists in the final specification. |
+| Founder agent pairing | `POST /api/admin/trading/pair` | Version one takes `avatarId`, opaque `clawpumpAgentId`, validated `walletPubkey`, objective, and `operatedByClawville=false`. It performs no ClawPump API call. |
+| Founder agent lookup | `TODO-SEAM:clawpump-endpoint-contract` | A later API-driven lookup needs a documented path, response schema, and recorded fixture. |
 | Trade execution | None | Forbidden for ClawVille custody. |
 
 ## Fixture inventory

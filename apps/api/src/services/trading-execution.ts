@@ -19,12 +19,14 @@ import {
   tradingDecisions,
   tradingHalts,
   tradingUsdcReservations,
+  tradingWallets,
+  wallets,
 } from '@clawville/database';
 import { readTradingLimits, TRADE_MINTS, type TradeRefusalCode } from '@clawville/shared';
 import { withKeyedMutex } from './keyed-mutex';
 import {
   admitTrade,
-  inspectTradePreconditions,
+  prepareTrade,
   recordTradeOutcome,
   recordTradeRefusal,
   type TradeIntent,
@@ -49,6 +51,7 @@ import { resolveTradingCustody } from './trading-links';
 import { buildTradeDecisionFrame, publishTradeDecision } from './trading-decision-feed';
 import { ingestTradeSignature, lookupVerifiedTrade } from './trade-observer';
 import { alertError } from './alert-error';
+import { lockPosterUsdcSpend } from './usdc-spend-admission';
 
 export interface ExecuteTradeResult {
   kind: 'submitted' | 'executed' | 'refused' | 'failed' | 'reconcile';
@@ -60,6 +63,7 @@ export interface ExecuteTradeResult {
 
 export interface TradingExecutionDeps extends TradingGuardrailDeps, TradingSignerDeps {
   fetchImpl?: typeof fetch;
+  publishDecision?: (decisionId: string) => Promise<void>;
 }
 
 let sweeper: ReturnType<typeof setInterval> | null = null;
@@ -111,19 +115,14 @@ async function refuse(intent: TradeIntent, code: TradeRefusalCode, detail: strin
 }
 
 export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDeps = {}): Promise<ExecuteTradeResult> {
-  const pre = await inspectTradePreconditions(intent, deps);
-  if (pre.kind !== 'continue') {
-    await publishDecisionId(pre.decisionId);
-    return { kind: 'refused', decisionId: pre.decisionId, code: pre.code, detail: pre.detail, signature: null };
+  const publish = deps.publishDecision ?? publishDecisionId;
+  const prepared = await prepareTrade(intent, deps);
+  if ('kind' in prepared) {
+    await publish(prepared.decisionId);
+    return { kind: 'refused', decisionId: prepared.decisionId, code: prepared.code, detail: prepared.detail, signature: null };
   }
-
-  const admission = await admitTrade(intent, deps);
-  if (admission.kind === 'refuse') {
-    await publishDecisionId(admission.decisionId);
-    return { kind: 'refused', decisionId: admission.decisionId, code: admission.code, detail: admission.detail, signature: null };
-  }
-  const { decisionId, link, amountAtomic, inputInfo, outputInfo, slippageBps } = admission.admission;
-  const connection = deps.connection ?? defaultConnection();
+  const { link, amountAtomic, inputInfo, outputInfo, slippageBps } = prepared;
+  const connection = prepared.connection;
   let quote;
   try {
     quote = await fetchTradingQuote({ inputMint: intent.inputMint, outputMint: intent.outputMint, amountAtomic, slippageBps, fetchImpl: deps.fetchImpl });
@@ -132,14 +131,10 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
     const code: TradeRefusalCode = error instanceof ZodError
       ? 'quote_schema_invalid'
       : detail.includes('route') ? 'route_discontinuous' : 'quote_failed';
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: code, errorDetail: detail, expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
-    return { kind: 'refused', decisionId, code, detail, signature: null };
+    return refuse(intent, code, detail);
   }
   if (quote.priceImpactPct > readTradingLimits().maxQuoteImpactPct) {
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'quote_impact_above_cap', errorDetail: 'Quoted price impact exceeds the cap.', expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
-    return { kind: 'refused', decisionId, code: 'quote_impact_above_cap', detail: 'Quoted price impact exceeds the cap.', signature: null };
+    return refuse(intent, 'quote_impact_above_cap', 'Quoted price impact exceeds the cap.');
   }
 
   let built;
@@ -149,9 +144,7 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
     lookupTables = deps.addressLookupTableAccounts ?? await resolveLookups(built.transaction, connection);
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'build failed';
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'tx_binding_failed', errorDetail: detail, expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
-    return { kind: 'refused', decisionId, code: 'tx_binding_failed', detail, signature: null };
+    return refuse(intent, 'tx_binding_failed', detail);
   }
   const minimumOut = (quote.outAmount * BigInt(10_000 - slippageBps) + 9_999n) / 10_000n;
   const wallet = new PublicKey(link.walletPubkey);
@@ -160,12 +153,24 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
   const shape: SwapShape = inputMode === 'native-sol' ? 'sol-token' : outputMode === 'native-sol' ? 'token-sol' : 'token-token';
   const inputLeg: SwapLeg = { mint: new PublicKey(intent.inputMint), tokenProgram: inputInfo.programId, ata: deriveTradingAta(wallet, inputInfo), mode: inputMode, direction: 'debit' };
   const outputLeg: SwapLeg = { mint: new PublicKey(intent.outputMint), tokenProgram: outputInfo.programId, ata: deriveTradingAta(wallet, outputInfo), mode: outputMode, direction: 'credit' };
-  const inspection = inspectTradingSwapTransaction({ transaction: built.transaction, wallet, inputAmount: amountAtomic, minimumOutAmount: minimumOut, priorityFeeLamports: readTradingLimits().maxPriorityFeeLamports, addressLookupTableAccounts: lookupTables });
+  const inspection = inspectTradingSwapTransaction({
+    transaction: built.transaction,
+    wallet,
+    inputAmount: amountAtomic,
+    minimumOutAmount: minimumOut,
+    priorityFeeLamports: readTradingLimits().maxPriorityFeeLamports,
+    addressLookupTableAccounts: lookupTables,
+    inputLeg,
+    outputLeg,
+    shape,
+    quotedOutAmount: quote.outAmount,
+    slippageBps,
+  });
   if (!inspection.ok) {
-    const code: TradeRefusalCode = inspection.detail === 'minimum_out_mismatch' ? 'min_out_below_admitted' : 'tx_binding_failed';
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: code, errorDetail: inspection.detail, expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
-    return { kind: 'refused', decisionId, code, detail: inspection.detail, signature: null };
+    const code: TradeRefusalCode = inspection.detail === 'minimum_out_mismatch' || inspection.detail === 'minimum_out_non_positive'
+      ? 'min_out_below_admitted'
+      : 'tx_binding_failed';
+    return refuse(intent, code, inspection.detail);
   }
   const simulation = await validateTradingSwapSimulation({
     transaction: built.transaction, wallet, connection, inputLeg, outputLeg, shape, inputAmount: amountAtomic,
@@ -181,10 +186,15 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
         : simulation.detail.includes('writable') || simulation.detail.includes('unexpected_wallet')
           ? 'writable_account_failed'
           : 'simulation_failed';
-    await recordTradeOutcome({ decisionId, status: 'refused', errorCode: code, errorDetail: simulation.detail, expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
-    return { kind: 'refused', decisionId, code, detail: simulation.detail, signature: null };
+    return refuse(intent, code, simulation.detail);
   }
+
+  const admission = await admitTrade(intent, deps, prepared);
+  if (admission.kind === 'refuse') {
+    await publish(admission.decisionId);
+    return { kind: 'refused', decisionId: admission.decisionId, code: admission.code, detail: admission.detail, signature: null };
+  }
+  const { decisionId } = admission.admission;
 
   let custody;
   try {
@@ -192,12 +202,12 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Custodial wallet lookup failed.';
     await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'keypair_mismatch', errorDetail: detail, expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
+    await publish(decisionId);
     return { kind: 'refused', decisionId, code: 'keypair_mismatch', detail, signature: null };
   }
   if (!custody) {
     await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'keypair_mismatch', errorDetail: 'Custodial wallet binding is invalid.', expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
+    await publish(decisionId);
     return { kind: 'refused', decisionId, code: 'keypair_mismatch', detail: 'Custodial wallet binding is invalid.', signature: null };
   }
   let keypair;
@@ -208,13 +218,13 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
   }
   if (!keypair) {
     await recordTradeOutcome({ decisionId, status: 'refused', errorCode: 'keypair_mismatch', errorDetail: 'Custodial key does not match.', expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
+    await publish(decisionId);
     return { kind: 'refused', decisionId, code: 'keypair_mismatch', detail: 'Custodial key does not match.', signature: null };
   }
   const currentHeight = await connection.getBlockHeight('confirmed');
   if (currentHeight >= built.lastValidBlockHeight) {
     await recordTradeOutcome({ decisionId, status: 'expired', errorCode: 'blockhash_expired', errorDetail: 'Blockhash expired before signing.', expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
+    await publish(decisionId);
     return { kind: 'refused', decisionId, code: 'blockhash_expired', detail: 'Blockhash expired before signing.', signature: null };
   }
 
@@ -227,8 +237,29 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
     if (current[0].killed) return { kind: 'refused_presign', code: 'agent_killed' as const, detail: 'Agent became killed.' };
     const activeHalt = await tx.select().from(tradingHalts).where(and(isNull(tradingHalts.clearedAt), sql`(${tradingHalts.scope}='fleet' OR ${tradingHalts.scopeId}=${intent.avatarId})`)).limit(1);
     if (activeHalt[0]) return { kind: 'refused_presign', code: (activeHalt[0].scope === 'fleet' ? 'fleet_halted' : 'agent_halted') as TradeRefusalCode, detail: 'A halt became active.' };
+    const liveWalletRows = await tx.select().from(wallets).where(and(
+      eq(wallets.subjectType, 'avatar'),
+      eq(wallets.subjectId, intent.avatarId),
+      eq(wallets.publicKey, current[0].walletPubkey),
+      eq(wallets.custodyVerified, true),
+    )).for('update').limit(1);
+    const liveWallet = liveWalletRows[0];
+    const liveBindingRows = current[0].clawvilleAgentId
+      ? await tx.select().from(tradingWallets).where(and(
+        eq(tradingWallets.avatarId, intent.avatarId),
+        eq(tradingWallets.userId, current[0].userId),
+        eq(tradingWallets.subjectKind, 'agent'),
+        eq(tradingWallets.agentId, current[0].clawvilleAgentId),
+        eq(tradingWallets.pubkey, current[0].walletPubkey),
+        eq(tradingWallets.source, 'custodial'),
+        isNull(tradingWallets.revokedAt),
+      )).for('update').limit(1)
+      : [];
+    if (!liveWallet || !liveBindingRows[0] || liveWallet.publicKey !== keypair.publicKey.toBase58()) {
+      return { kind: 'refused_presign', code: 'keypair_mismatch' as const, detail: 'Custody or trading binding was revoked.' };
+    }
     return signTradingSwap({
-      walletRow: custody.wallet, boundPubkey: link.walletPubkey, transaction: built.transaction,
+      walletRow: liveWallet, boundPubkey: current[0].walletPubkey, transaction: built.transaction,
       recentBlockhash: built.recentBlockhash, lastValidBlockHeight: built.lastValidBlockHeight,
       admittedMinOut: minimumOut, inputLeg, outputLeg, shape, inputAmount: amountAtomic,
       quotedOutAmount: quote.outAmount, slippageBps,
@@ -249,7 +280,7 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
   })));
   if (signed.kind === 'refused_presign') {
     await recordTradeOutcome({ decisionId, status: 'refused', errorCode: signed.code, errorDetail: signed.detail, expectedStatus: 'admitted' });
-    await publishDecisionId(decisionId);
+    await publish(decisionId);
     return { kind: 'refused', decisionId, code: signed.code, detail: signed.detail, signature: null };
   }
   if (signed.kind === 'reconcile') {
@@ -261,7 +292,7 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
     await recordTradeOutcome({ decisionId, status: 'reconcile', signature: signed.signature, errorCode: 'chain_error', errorDetail: detail, expectedStatus: 'submitted' });
     return { kind: 'reconcile', decisionId, code: 'chain_error', detail, signature: signed.signature };
   }
-  await publishDecisionId(decisionId);
+  await publish(decisionId);
   const sent = await sendSignedTradingSwap({ signedBytes, expectedSignature: signed.signature, deps: { ...deps, connection } });
   if (sent.kind === 'signature_mismatch') {
     const detail = 'RPC returned a different signature.';
@@ -278,7 +309,12 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
     signature: signed.signature,
     source: 'prime',
     decisionId,
-  }).catch(() => undefined);
+  }).catch((error: unknown) => alertError({
+    severity: 'critical',
+    source: 'trading-prime-ingest',
+    message: 'Prime trading signature ingestion failed.',
+    context: { decisionId, error: error instanceof Error ? error.message : 'unknown' },
+  }));
   return { kind: 'submitted', decisionId, code: null, detail: null, signature: signed.signature };
 }
 
@@ -292,6 +328,7 @@ export async function promoteDecisionToExecuted(input: { signature: string; deci
     ? and(eq(tradingDecisions.id, input.decisionId), eq(tradingDecisions.avatarId, input.avatarId), eq(tradingDecisions.signature, input.signature), eq(tradingDecisions.status, 'submitted'))
     : and(eq(tradingDecisions.signature, input.signature), eq(tradingDecisions.avatarId, input.avatarId), eq(tradingDecisions.status, 'submitted'));
   const rows = await db.transaction(async (tx) => {
+    await lockPosterUsdcSpend(tx, input.avatarId);
     const promoted = await tx.update(tradingDecisions).set({ status: 'executed', verdict: 'executed', settledAt: new Date() }).where(where).returning({ id: tradingDecisions.id });
     if (promoted[0]) await tx.update(tradingUsdcReservations).set({ status: 'settled', releaseReason: 'observer_verified', releasedAt: new Date() }).where(eq(tradingUsdcReservations.decisionId, promoted[0].id));
     return promoted;
@@ -302,33 +339,60 @@ export async function promoteDecisionToExecuted(input: { signature: string; deci
 }
 
 async function sweepTradingDecisions(): Promise<void> {
-  const conn = defaultConnection();
   const age = Number(process.env.TRADING_PROMOTION_SWEEP_AGE_S ?? 300) * 1_000;
   const alertAge = Number(process.env.TRADING_PROMOTION_ALERT_AGE_S ?? 3_600) * 1_000;
+  const staleSendingMs = Number(process.env.TRADING_STALE_SENDING_MS ?? 180_000);
   const max = Number(process.env.TRADING_PROMOTION_SWEEP_MAX ?? 50);
+  const neverSigned = await db.select().from(tradingDecisions).where(and(
+    eq(tradingDecisions.status, 'admitted'),
+    isNull(tradingDecisions.signature),
+    lt(tradingDecisions.createdAt, new Date(Date.now() - staleSendingMs)),
+  )).orderBy(desc(tradingDecisions.createdAt)).limit(max);
+  for (const row of neverSigned) {
+    try {
+      await recordTradeOutcome({
+        decisionId: row.id,
+        status: 'failed',
+        errorCode: 'chain_error',
+        errorDetail: 'No signature was captured before the stale sending deadline.',
+        expectedStatus: 'admitted',
+        releaseReason: 'never_signed',
+      });
+      await publishDecisionId(row.id);
+    } catch (error) {
+      void alertError({
+        severity: 'critical',
+        source: 'trading-sweeper',
+        message: 'A never-signed trading decision could not be released.',
+        context: { decisionId: row.id, error: error instanceof Error ? error.message : 'unknown' },
+      });
+    }
+  }
+
+  const conn = defaultConnection();
   const rows = await db.select().from(tradingDecisions).where(and(eq(tradingDecisions.status, 'submitted'), lt(tradingDecisions.createdAt, new Date(Date.now() - age)))).orderBy(desc(tradingDecisions.createdAt)).limit(max);
   for (const row of rows) {
-    if (!row.signature) continue;
-    const verified = await lookupVerifiedTrade(row.signature);
-    if (verified.verified) {
-      await promoteDecisionToExecuted({ signature: row.signature, decisionId: row.id, avatarId: row.avatarId });
-      continue;
-    }
-    if (Date.now() - row.createdAt.getTime() >= alertAge) {
-      const alerted = await db.update(tradingUsdcReservations).set({ lastWedgeAlertAt: new Date() }).where(and(
-        eq(tradingUsdcReservations.decisionId, row.id),
-        isNull(tradingUsdcReservations.lastWedgeAlertAt),
-      )).returning({ decisionId: tradingUsdcReservations.decisionId });
-      if (alerted[0]) {
-        void alertError({
-          severity: 'warning',
-          source: 'trading-promotion',
-          message: 'A submitted trading decision has no verified observer match.',
-          context: { decisionId: row.id },
-        });
-      }
-    }
     try {
+      if (!row.signature) throw new Error('submitted decision has no signature');
+      const verified = await lookupVerifiedTrade(row.signature);
+      if (verified.verified) {
+        await promoteDecisionToExecuted({ signature: row.signature, decisionId: row.id, avatarId: row.avatarId });
+        continue;
+      }
+      if (Date.now() - row.createdAt.getTime() >= alertAge) {
+        const alerted = await db.update(tradingUsdcReservations).set({ lastWedgeAlertAt: new Date() }).where(and(
+          eq(tradingUsdcReservations.decisionId, row.id),
+          isNull(tradingUsdcReservations.lastWedgeAlertAt),
+        )).returning({ decisionId: tradingUsdcReservations.decisionId });
+        if (alerted[0]) {
+          void alertError({
+            severity: 'warning',
+            source: 'trading-promotion',
+            message: 'A submitted trading decision has no verified observer match.',
+            context: { decisionId: row.id },
+          });
+        }
+      }
       const statuses = await conn.getSignatureStatuses([row.signature], { searchTransactionHistory: true });
       const status = statuses.value[0];
       if (status?.err) {
@@ -371,15 +435,28 @@ async function sweepTradingDecisions(): Promise<void> {
           });
         }
       }
-    } catch {
-      // Ambiguous network state holds both budget and reservation.
+    } catch (error) {
+      // Ambiguous network state holds both budget and reservation, but it is never silent.
+      void alertError({
+        severity: 'warning',
+        source: 'trading-sweeper',
+        message: 'Trading decision reconciliation failed.',
+        context: { decisionId: row.id, error: error instanceof Error ? error.message : 'unknown' },
+      });
     }
   }
 }
 
 export function startTradingSweeper(pollMs = Number(process.env.TRADING_STALE_SENDING_MS ?? 180_000)): void {
   if (sweeper) return;
-  sweeper = setInterval(() => { void sweepTradingDecisions(); }, Math.max(5_000, pollMs));
+  sweeper = setInterval(() => {
+    void sweepTradingDecisions().catch((error: unknown) => alertError({
+      severity: 'critical',
+      source: 'trading-sweeper',
+      message: 'Trading sweeper pass failed.',
+      context: { decisionId: 'sweep-query', error: error instanceof Error ? error.message : 'unknown' },
+    }));
+  }, Math.max(5_000, pollMs));
   sweeper.unref?.();
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { buildTradeDecisionFrame } from '../trading-decision-feed';
+import { TRADE_MINTS } from '@clawville/shared';
 
 describe('Trading Floor decision feed redaction', () => {
   test('publishes only the agent subject, bounded trade facts, and refusal code', () => {
@@ -39,6 +40,8 @@ describe('Trading Floor decision feed redaction', () => {
 
     expect(frame.subject.id).toBe('agent-subject-id');
     expect(frame.reason).toBe('armed_false');
+    expect(frame.inputMint).toBe('unlisted');
+    expect(frame.outputMint).toBe('unlisted');
     const wire = JSON.stringify(frame);
     for (const forbidden of [
       sentinel,
@@ -55,6 +58,30 @@ describe('Trading Floor decision feed redaction', () => {
       'equity',
       'float',
     ]) expect(wire).not.toContain(forbidden);
+  });
+
+  test('publishes canonical symbols for the four static mints', () => {
+    const base = {
+      id: '11111111-1111-4111-8111-111111111111', avatarId: '22222222-2222-4222-8222-222222222222',
+      amountUsdMicros: '1000000', verdict: 'submitted', status: 'submitted',
+      createdAt: new Date('2026-09-16T00:00:00.000Z'), settledAt: null,
+    };
+    const expected = new Map([
+      [TRADE_MINTS.WSOL, 'SOL'],
+      [TRADE_MINTS.USDC, 'USDC'],
+      [TRADE_MINTS.CLAWVILLE, 'CLAWVILLE'],
+      [TRADE_MINTS.ANSEM, 'ANSEM'],
+    ]);
+    for (const [mint, symbol] of expected) {
+      const frame = buildTradeDecisionFrame({
+        row: { ...base, inputMint: mint, outputMint: mint } as never,
+        agentId: null,
+        avatarName: null,
+        operatedByClawville: false,
+      });
+      expect(frame.inputMint).toBe(symbol);
+      expect(frame.outputMint).toBe(symbol);
+    }
   });
 
   test('never exposes unknown verdict text as a refusal reason', () => {

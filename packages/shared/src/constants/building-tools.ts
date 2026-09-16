@@ -68,7 +68,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
         inputMint: { type: 'string', description: 'base58 mint, or SOL, USDC, CLAWVILLE, ANSEM' },
         outputMint: { type: 'string' },
         amountUsd: { type: 'number', description: 'USD notional. Minimum 1; ceiling is the lesser of 25 and 25 percent of your live float.' },
-        reason: { type: 'string', description: 'Why. Recorded on your decision row and visible to you on /api/floor/state. NOT broadcast publicly; the live feed carries only the enumerated verdict code. Max 240 characters, no commas or equals signs.' },
+        reason: { type: 'string', description: 'Why. Recorded on your decision row and visible to you on /api/floor/state. NOT broadcast publicly; the live feed carries only the enumerated verdict code. Max 240 characters, with no parentheses, brackets, commas, or equals signs.' },
       },
       required: ['inputMint', 'outputMint', 'amountUsd', 'reason'],
     },

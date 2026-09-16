@@ -1,6 +1,6 @@
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
-import { Connection } from '@solana/web3.js';
+import { Connection, type FetchFn } from '@solana/web3.js';
 import {
   agentBots,
   and,
@@ -65,11 +65,20 @@ function validatePubkey(pubkey: string): Uint8Array {
 
 export async function currentBindSlot(): Promise<number> {
   const { tradeObserverRpcUrl } = await import('./trade-observer');
-  const connection = new Connection(tradeObserverRpcUrl(), 'confirmed');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4_000);
+  const boundedFetch = ((url: Parameters<FetchFn>[0], options: Parameters<FetchFn>[1]) =>
+    fetch(url as string | URL | Request, { ...options, signal: controller.signal })) as unknown as FetchFn;
+  const connection = new Connection(tradeObserverRpcUrl(), {
+    commitment: 'confirmed',
+    fetch: boundedFetch,
+  });
   try {
     return await connection.getSlot('confirmed');
   } catch {
     throw new Error('Trading wallet bind slot is unavailable.');
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -165,7 +174,7 @@ export async function bindLinkedTradingWallet(subject: TradingSubject): Promise<
 }
 
 export async function bindCustodialTradingWallet(input: {
-  subject: TradingSubject; operatedByClawville?: boolean; tx?: DbExecutor;
+  subject: TradingSubject; operatedByClawville?: boolean; tx?: DbExecutor; boundSlot?: number;
 }): Promise<BoundTradingWallet> {
   const executor = input.tx ?? db;
   let rows = await executor.select({ publicKey: wallets.publicKey }).from(wallets)
@@ -177,15 +186,17 @@ export async function bindCustodialTradingWallet(input: {
   }
   if (!rows[0]) throw new TradingWalletError('No verified custodial wallet is available.', 'no_custodial_wallet', 409);
   return bindWithExecutor({ subject: input.subject, walletPubkey: rows[0].publicKey, source: 'custodial',
-    operatedByClawville: input.operatedByClawville, tx: input.tx ?? db });
+    operatedByClawville: input.operatedByClawville, tx: input.tx ?? db, boundSlot: input.boundSlot });
 }
 
 export async function bindClawPumpTradingWallet(input: {
   subject: TradingSubject; walletPubkey: string; clawpumpAgentId: string;
-  operatedByClawville?: boolean; tx?: DbExecutor;
+  operatedByClawville?: boolean; objective?: string; tx?: DbExecutor; boundSlot?: number;
 }): Promise<BoundTradingWallet> {
   return bindWithExecutor({ subject: input.subject, walletPubkey: input.walletPubkey, source: 'clawpump',
-    operatedByClawville: input.operatedByClawville ?? true, metadata: { clawpumpAgentId: input.clawpumpAgentId }, tx: input.tx ?? db });
+    operatedByClawville: input.operatedByClawville ?? true,
+    metadata: { clawpumpAgentId: input.clawpumpAgentId, ...(input.objective ? { objective: input.objective } : {}) },
+    tx: input.tx ?? db, boundSlot: input.boundSlot });
 }
 
 export async function revokeTradingWallet(input: { subject: TradingSubject; walletPubkey: string }): Promise<void> {
