@@ -4,6 +4,7 @@ import { TRADE_MINTS } from '@clawville/shared';
 import type { TradingBaselineEvidence } from '@clawville/database';
 import { fetchJupiterPrices } from './trade-price';
 import { deriveTradingAta, getMintInfo } from './trading-mint-info';
+import { tradingConnection } from './trading-rpc';
 
 export interface TradingPosition {
   symbol: string;
@@ -23,11 +24,7 @@ export interface TradingWalletEquity {
 }
 
 function defaultConnection(): Connection {
-  const endpoint = process.env.HELIUS_RPC_URL;
-  if (!endpoint) throw new Error('[trading-floor] Helius mainnet RPC is not configured');
-  const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || !url.hostname.toLowerCase().includes('mainnet')) throw new Error('[trading-floor] Helius RPC is not a mainnet endpoint');
-  return new Connection(endpoint, 'confirmed');
+  return tradingConnection();
 }
 
 function priceMicros(usd: number): bigint {

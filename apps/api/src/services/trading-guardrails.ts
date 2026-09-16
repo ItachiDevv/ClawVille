@@ -27,6 +27,7 @@ import { deriveTradingAta, loadTradingMintWhitelist, type MintInfo } from './tra
 import { readTradingWalletEquity } from './trading-fleet-equity';
 import { fetchJupiterPrices, type JupiterPriceRow } from './trade-price';
 import { alertError, type AlertErrorParams } from './alert-error';
+import { shouldAlertTradingLoop, tradingConnection } from './trading-rpc';
 
 export interface TradeIntent {
   avatarId: string;
@@ -146,11 +147,7 @@ let drawdownPoller: ReturnType<typeof setInterval> | null = null;
 export const TRADING_BALANCE_RPC_TIMEOUT_MS = 4_000;
 
 function connection(): Connection {
-  const endpoint = process.env.HELIUS_RPC_URL;
-  if (!endpoint) throw new Error('Helius mainnet RPC not configured');
-  const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || !url.hostname.toLowerCase().includes('mainnet')) throw new Error('Helius RPC is not a mainnet endpoint');
-  return new Connection(endpoint, 'confirmed');
+  return tradingConnection();
 }
 
 async function recordRefusal(
@@ -585,12 +582,16 @@ export function startTradingDrawdownPoller(
 ): void {
   if (drawdownPoller) return;
   const run = () => {
-    void evaluateFleetDrawdown().catch((error: unknown) => alertError({
-      severity: 'warning',
-      source: 'trading-drawdown',
-      message: 'The fleet drawdown check failed.',
-      context: { error: error instanceof Error ? error.message : 'unknown' },
-    }));
+    void evaluateFleetDrawdown().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'unknown';
+      if (!shouldAlertTradingLoop(`drawdown:${message}`)) return;
+      return alertError({
+        severity: 'warning',
+        source: 'trading-drawdown',
+        message: 'The fleet drawdown check failed.',
+        context: { error: message },
+      });
+    });
   };
   run();
   drawdownPoller = setInterval(run, Math.max(5_000, pollMs));

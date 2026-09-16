@@ -51,6 +51,7 @@ import { resolveTradingCustody } from './trading-links';
 import { buildTradeDecisionFrame, publishTradeDecision } from './trading-decision-feed';
 import { ingestTradeSignature, lookupVerifiedTrade } from './trade-observer';
 import { alertError } from './alert-error';
+import { shouldAlertTradingLoop, tradingConnection, tradingRpcConfigured } from './trading-rpc';
 
 export interface ExecuteTradeResult {
   kind: 'submitted' | 'executed' | 'refused' | 'failed' | 'reconcile';
@@ -84,11 +85,7 @@ function alertTradingReconcile(decisionId: string, code: ReconcileAlertCode): vo
 }
 
 function defaultConnection(): Connection {
-  const endpoint = process.env.HELIUS_RPC_URL;
-  if (!endpoint) throw new Error('[trading-floor] RPC is not configured');
-  const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || !url.hostname.toLowerCase().includes('mainnet')) throw new Error('[trading-floor] Helius RPC is not a mainnet endpoint');
-  return new Connection(endpoint, 'confirmed');
+  return tradingConnection();
 }
 
 async function resolveLookups(transaction: VersionedTransaction, connection: Connection): Promise<AddressLookupTableAccount[]> {
@@ -383,8 +380,17 @@ async function sweepTradingDecisions(): Promise<void> {
     if (alerted[0]) alertTradingReconcile(row.id, 'reconcile_wedge');
   }
 
-  const conn = defaultConnection();
   const rows = await db.select().from(tradingDecisions).where(and(eq(tradingDecisions.status, 'submitted'), lt(tradingDecisions.createdAt, new Date(Date.now() - age)))).orderBy(desc(tradingDecisions.createdAt)).limit(max);
+  if (rows.length === 0) return;
+  // Only a row that needs chain reconciliation justifies an RPC connection; an
+  // unconfigured RPC with nothing to reconcile is idle, not an incident.
+  if (!tradingRpcConfigured()) {
+    if (shouldAlertTradingLoop('sweeper:rpc-unconfigured')) {
+      void alertError({ severity: 'critical', source: 'trading-sweeper', message: 'Submitted trading decisions await reconciliation but no mainnet RPC is configured.', context: { decisionId: rows[0]!.id, pending: rows.length } });
+    }
+    return;
+  }
+  const conn = defaultConnection();
   for (const row of rows) {
     try {
       if (!row.signature) throw new Error('submitted decision has no signature');
@@ -466,12 +472,17 @@ async function sweepTradingDecisions(): Promise<void> {
 export function startTradingSweeper(pollMs = Number(process.env.TRADING_PROMOTION_SWEEP_AGE_S ?? 300) * 1_000): void {
   if (sweeper) return;
   sweeper = setInterval(() => {
-    void sweepTradingDecisions().catch((error: unknown) => alertError({
-      severity: 'critical',
-      source: 'trading-sweeper',
-      message: 'Trading sweeper pass failed.',
-      context: { decisionId: 'sweep-query', error: error instanceof Error ? error.message : 'unknown' },
-    }));
+    void sweepTradingDecisions().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'unknown';
+      // Same failure cause pages once, then at most hourly (see trading-rpc.ts).
+      if (!shouldAlertTradingLoop(`sweeper:${message}`)) return;
+      return alertError({
+        severity: 'critical',
+        source: 'trading-sweeper',
+        message: 'Trading sweeper pass failed.',
+        context: { decisionId: 'sweep-query', error: message },
+      });
+    });
   }, Math.max(5_000, pollMs));
   sweeper.unref?.();
 }

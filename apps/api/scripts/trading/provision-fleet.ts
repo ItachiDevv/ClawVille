@@ -35,7 +35,22 @@ async function request(path: string, init: RequestInit = {}): Promise<Record<str
   return payload;
 }
 
-for (const objective of TRADING_OBJECTIVES) {
+// `--objective <name>` provisions ONE slot (the founder's "prove the process with one
+// account first" path); `--name <traderName>` overrides that slot's display name.
+// Without `--objective` all five slots are provisioned in TRADING_OBJECTIVES order.
+const objectiveArg = process.argv[process.argv.indexOf('--objective') + 1];
+const selected: readonly TradingObjective[] = process.argv.includes('--objective')
+  ? [objectiveArg as TradingObjective]
+  : TRADING_OBJECTIVES;
+if (process.argv.includes('--objective') && !TRADING_OBJECTIVES.includes(objectiveArg as TradingObjective)) {
+  throw new Error(`Unknown objective '${objectiveArg}'. Valid: ${TRADING_OBJECTIVES.join(', ')}`);
+}
+const nameOverride = process.argv.includes('--name') ? process.argv[process.argv.indexOf('--name') + 1] : undefined;
+if (nameOverride !== undefined && !/^[a-zA-Z0-9_]{3,20}$/.test(nameOverride)) {
+  throw new Error('--name must be 3..20 characters of [a-zA-Z0-9_].');
+}
+
+for (const objective of selected) {
   const nonceResponse = await request('/api/admin/trading/nonce');
   const nonce = nonceResponse.nonce;
   if (typeof nonce !== 'string' || nonce.length < 32) throw new Error('Operator nonce response is invalid.');
@@ -48,7 +63,7 @@ for (const objective of TRADING_OBJECTIVES) {
     },
     body: JSON.stringify({
       objective,
-      traderName: names[objective],
+      traderName: nameOverride ?? names[objective],
       leaderboardEligible: true,
     }),
   });
