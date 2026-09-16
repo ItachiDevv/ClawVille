@@ -1294,6 +1294,7 @@ The switch gates the driver's 30-second steady-state tick body and reconcile pas
 
 Configuration variables; optional values use their code defaults:
 
+- `TRADING_*` (20 knobs), `CLAWPUMP_API_KEY` / `CLAWPUMP_API_BASE_URL` / `CLAWPUMP_BOARD_URL` / `CLAWPUMP_HTTP_TIMEOUT_MS` / `CLAWPUMP_FIXTURE_DIR` — Trading Floor FLEET execution (wave 2). Every default, direction rule (risk ceilings may only be LOWERED by env, reserve floors only RAISED; boot throws otherwise) and rationale is in the table under "Trading Floor wave 2 service and data surface" at the top of this file. None is required for the floor itself; `JUPITER_API_KEY` + `HELIUS_RPC_URL` (mainnet) are required before an ARMED link can execute, and `ADMIN_USER_IDS` gates the operator routes. `CLAWPUMP_FIXTURE_DIR` is test-only and refuses boot on staging/production.
 - `TRADE_OBSERVER_ENABLED` — Trading Floor on-chain swap observer. **Default ON in every environment** (`'false'`/`'0'`/`'off'` disables). This is an emergency brake, not a dark flag.
 - `TRADE_OBSERVER_POLL_MS` — observer tick cadence (default `45000`, floor `15000`; invalid values use the default). Each tick polls up to `TRADE_OBSERVER_WALLETS_PER_TICK` bound wallets, stalest first.
 - `TRADE_OBSERVER_WALLETS_PER_TICK` — bound wallets polled per tick (default `25`, floor `1`, ceiling `200`). This is the Helius-budget lever.

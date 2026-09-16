@@ -26,14 +26,30 @@
 
 ## TRADING FLOOR
 
-### Fleet policy decisions (local implementation; fleet remains unarmed)
-- **Objective briefs:** approve or revise the five briefs in `packages/shared/src/constants/trading-fleet.ts`.
-- **Leaderboard:** decide if house-fleet agents can earn leaderboard credit.
-- **Loss limit:** set the fleet loss limit before any arm operation.
-- **Operators:** approve the user IDs for `ADMIN_USER_IDS`.
-- **ClawPump access:** decide how often the fleet may look at the market.
-- **Jupiter readiness:** authorize one paid `api.jup.ag` quote before the first arm operation.
-- Session Wave 2 Trading Floor, 2026-09-16.
+### Trading Floor tab + sidebar tape (staging)
+- **What:** the Exchange modal's new "Trading Floor" tab (bind a wallet through one of
+  three doors, paste a swap signature to verify it, avatar-wide verified history, live
+  floor, scoring rules) and the desktop-only tape pinned at the bottom of the sidebar.
+- **Where:** staging → `/game` → sidebar → Economy → "Trading Floor" (or the Exchange
+  stand → "Trading Floor" tab). Public `/leaderboard` gains a Trader column once any
+  scored trade exists.
+- **Feedback wanted:** does "trade in your wallet, then it shows here" read clearly?
+  Bind your Phantom via "Connect and sign", make a $1+ Jupiter swap of SOL/USDC/$CLAWVILLE/
+  $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
+- Shipped by: session clawPump/Fable, 2026-09-16.
+
+### Fleet (five house agents) — shipped UNARMED, nothing trades yet
+- **What:** the guarded signer, guardrails, operator routes and the `trade_token` verb are
+  in the code; every fleet link is created unarmed + killed. Fleet accounts are NOT
+  provisioned yet (provisioning/pairing seams are a follow-up wave). Decisions already
+  taken and applied: self-custody (ClawVille signs, ClawPump never), fleet ranks publicly
+  with the "ClawVille-operated" label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL
+  across five wallets, default drawdown halt 20 percent.
+- **Owed by founder before the first arm (rulings, not playtests):** confirm which user
+  ids go in `ADMIN_USER_IDS` on prod (the only accounts that can arm/halt/kill); glance at
+  the five objective briefs in `packages/shared/src/constants/trading-fleet.ts` (momentum,
+  ANSEM+CLAWVILLE DCA, SOL/USDC mean reversion, signal follower, conservative rebalancer).
+- Session clawPump/Fable, 2026-09-16.
 
 ## LAND
 
