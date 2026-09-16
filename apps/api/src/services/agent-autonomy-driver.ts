@@ -102,6 +102,12 @@ import {
   readAutonomousBuildTargets,
   type AutonomousBuildTargets,
 } from './autonomous-build-targets';
+import {
+  EMPTY_TRADING_DESK,
+  formatAutonomousTradingDesk,
+  readAutonomousTradingTargets,
+  type AutonomousTradingDesk,
+} from './autonomous-trading-targets';
 
 /**
  * The "nothing to offer" salvage projection. Used for HOUSE agents (which the
@@ -1206,7 +1212,7 @@ class AgentAutonomyDriver {
         );
       }
     }
-    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets] = await Promise.all([
+    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
       readAutonomousLandTargets({
@@ -1257,6 +1263,13 @@ class AgentAutonomyDriver {
         );
         return EMPTY_AUTONOMOUS_BUILD_TARGETS;
       }),
+      readAutonomousTradingTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} trading desk unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return EMPTY_TRADING_DESK;
+      }),
     ]);
     const prompt = this.buildDecisionPrompt(
       perception,
@@ -1268,14 +1281,12 @@ class AgentAutonomyDriver {
       questTargets,
       salvageTargets,
       buildTargets,
+      tradingDesk,
     );
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
     // candidate (a). If this has content but no [ACTION: enter_building(...)] the
     // executor recognizes, the parse — not the model call — is the stall.
-    console.log(
-      `[AutonomyDriver][debug] decide ${sessionDigest(entry.agentId)} replyLen=${reply.length} reply=${JSON.stringify(reply.slice(0, 240))}`,
-    );
     // R4: empty-decide health signal (see HouseAgentEntry.consecutiveEmptyDecides).
     // withTimeout maps a timeout/error to '' — a persistent empty (OpenAI 429 /
     // quota / bad key) would spin here silently. Count consecutive empties and WARN
@@ -1293,6 +1304,7 @@ class AgentAutonomyDriver {
       entry.consecutiveEmptyDecides = 0;
     }
     const parsedAction = parseDriverAction(reply);
+    let moneyDirective: { id: string; ordinal: number } | null = null;
     if (parsedAction) {
       this.pushThought(entry, 'decision', decisionThought(parsedAction), now);
       if (
@@ -1306,6 +1318,7 @@ class AgentAutonomyDriver {
         // on a later tick rather than falsely claiming durable dedupe.
         const claim = await this.claimActedDirectiveShaBounded(entry, directiveSha, directive);
         if (claim === 'claimed') {
+          if (parsedAction.verb === 'trade_token') moneyDirective = { id: directiveSha, ordinal: 0 };
           entry.lastActedDirectiveSha = directiveSha;
           if (directiveWasNew) {
             await this.recordDriverAction(entry, 'agent.directive.received', {
@@ -1323,11 +1336,13 @@ class AgentAutonomyDriver {
           // Never dispatch an action biased by the stale directive.
           return;
         } else if (claim === 'already_recorded') {
+          if (parsedAction.verb === 'trade_token') return;
           // Durable SHA dedupes EVENTS, not standing-directive behavior. Stamp
           // the process cache and continue the baseline action dispatch.
           entry.lastDirectiveSha = directiveSha;
           entry.lastActedDirectiveSha = directiveSha;
         } else {
+          if (parsedAction.verb === 'trade_token') return;
           // Marker durability is UNKNOWN. Preserve the driver's established
           // fail-soft action behavior, but emit/mark nothing. A previously
           // recorded received event stays stamped; a first observation remains
@@ -1351,7 +1366,7 @@ class AgentAutonomyDriver {
     // re-stamps the field via setNpcPath; a re-pick of the same building still
     // works (it is simply re-set).
     npcSimulation.clearDestinationBuilding(entry.bodyId);
-    npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
+    npcSimulation.dispatchHatcherActions(entry.bodyId, reply, moneyDirective);
     // Learn the CHOSEN destination from the body itself. enter_building stamps a
     // teacher id; gateway verbs stamp their shared place destination. move/emote/talk do
     // not stamp a destination and deliberately leave the phase at `deciding`
@@ -1361,9 +1376,6 @@ class AgentAutonomyDriver {
     // TEMP DEBUG (see tick()): did dispatch stamp a destination? destSet=false with
     // a non-empty reply above ⇒ candidate (a) (no parseable enter_building) OR (c)
     // (a valid tag that dispatchHatcherActions no-op'd for the ocb- body).
-    console.log(
-      `[AutonomyDriver][debug] postDispatch ${sessionDigest(entry.agentId)} destinationBuildingId=${chosen ?? 'null'}`,
-    );
     if (chosen) {
       entry.phase = 'walking';
       entry.phaseSince = now;
@@ -1533,6 +1545,7 @@ class AgentAutonomyDriver {
     questTargets: AutonomousQuestTarget[] = [],
     salvageTargets: AutonomousSalvageTargets = EMPTY_SALVAGE_TARGETS,
     buildTargets: AutonomousBuildTargets = EMPTY_AUTONOMOUS_BUILD_TARGETS,
+    tradingDesk: AutonomousTradingDesk = EMPTY_TRADING_DESK,
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -1653,6 +1666,7 @@ class AgentAutonomyDriver {
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
     const directiveBlock = formatDirectiveContext(directiveText); // '' when null/blank
+    const tradingDeskBlock = formatAutonomousTradingDesk(tradingDesk);
     return [
       ...(directiveBlock ? [directiveBlock, ''] : []),
       ...DECISION_SCOPE,
@@ -1663,6 +1677,7 @@ class AgentAutonomyDriver {
       '',
       'Available actions (choose exactly one and copy its call syntax):',
       actionMenu,
+      ...(tradingDeskBlock ? ['', tradingDeskBlock] : []),
       '',
       'Teachers (buildingId: name — focus):',
       options,

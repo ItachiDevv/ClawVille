@@ -117,6 +117,12 @@ export async function admitPosterUsdcSpend(
             AND w.asset = 'USDC'
             AND w.status IN ('pending', 'sending', 'reconcile')
         ), 0)
+        + COALESCE((
+          SELECT SUM(r.amount_base_units)
+          FROM trading_usdc_reservations r
+          WHERE r.avatar_id = ${input.posterAvatarId}
+            AND r.status IN ('open', 'reconcile')
+        ), 0)
       )::text AS outgoing_liabilities,
       ${input.consumeBountyHoldId
         ? sql`(

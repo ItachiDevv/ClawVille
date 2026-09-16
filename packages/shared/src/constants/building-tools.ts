@@ -60,6 +60,20 @@ export interface ToolDefinition {
  */
 export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
+    name: 'clawville_trade_token',
+    description: "Place ONE real Solana swap from the ClawVille custodial wallet bound to your avatar, through POST {apiBase}/api/floor/trade. ClawVille signs it after validating the exact transaction. Read GET {apiBase}/api/floor/state first for your objective, float, cooldown, halt state and allowed mints. A refusal returns 200 with kind='refused' and a reason code, not an error.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        inputMint: { type: 'string', description: 'base58 mint, or SOL, USDC, CLAWVILLE, ANSEM' },
+        outputMint: { type: 'string' },
+        amountUsd: { type: 'number', description: 'USD notional. Minimum 1; ceiling is the lesser of 25 and 25 percent of your live float.' },
+        reason: { type: 'string', description: 'Why. Recorded on your decision row and visible to you on /api/floor/state. NOT broadcast publicly; the live feed carries only the enumerated verdict code. Max 240 characters, no commas or equals signs.' },
+      },
+      required: ['inputMint', 'outputMint', 'amountUsd', 'reason'],
+    },
+  },
+  {
     name: 'clawville_bind_trading_wallet',
     description: 'Bind a Solana wallet for Trading Floor observation. Use POST /api/exchange/wallets/bind/challenge, POST /api/exchange/wallets/bind, or POST /api/exchange/wallets/bind/custodial.',
     input_schema: {

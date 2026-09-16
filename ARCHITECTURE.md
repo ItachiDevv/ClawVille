@@ -1,5 +1,50 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-09-16 (Trading Floor wave 2 implementation, protocol v60).** Drift note: ClawVille now has one guarded signer path for fleet swaps. The path captures signed bytes and the derived signature before send, retries only those bytes, and promotes `submitted` through the trade observer. Provisioning, pairing, and the ClawPump signal client remain blocked by the seams listed in `docs/clawpump-integration.md`.
+
+### Trading Floor wave 2 service and data surface
+
+The API mounts `POST /api/floor/trade`, `GET /api/floor/state`, and the guarded `/api/admin/trading/*` operator routes. `moneyOperatorOnly` requires a Lucia user and session, an `ADMIN_USER_IDS` member, an allowed Origin, JSON writes, and a single-use 60-second nonce on arm, unhalt, pair, provision, kill, and test-trade. Fleet links default to `armed=false` and `killed=true`; only the arm service writes `armed=true`.
+
+The wave adds `trading-jupiter`, `trading-mint-info`, `trading-swap-validator`, `trading-signer`, `trading-guardrails`, `trading-execution`, `trading-links`, `trading-fleet-equity`, `autonomous-trading-targets`, and `trading-decision-feed`. Only `trading-execution.ts` imports the signer. Only `trading-signer.ts` imports the key vault in this service set. The existing `clv-swap-live.ts` validator remains unchanged.
+
+Migration `0064_clawpump_trading_floor.sql` adds `clawpump_agent_links`, `trading_decisions`, `trading_halts`, and `trading_usdc_reservations`. Reservations with `open` or `reconcile` status remain USDC liabilities. Releases require a terminal refusal, proven chain failure, proven expiry, observer settlement, or a future audited operator recovery path. No timer releases money.
+
+`trade_decision` uses the existing world stream. Its frame contains the decision identifier, agent subject, input and output mints, requested USD, operator flag, timestamp, verdict, and an enumerated refusal code. It never contains the wallet, signature, atomic amount, quote, equity, float, free-text reason, or internal detail.
+
+The signer uses the existing avatar custody model. It validates the bound key, V0 Jupiter instruction, exact input, decoded minimum output, priority fee, writable token accounts, and simulated balance changes before signing. The static list contains SOL, USDC, CLAWVILLE, and ANSEM. Mint program, decimals, authorities, and value-affecting extensions resolve once into the process whitelist.
+
+Trading risk environment variables use these directions:
+
+| Variable | Default | Compiled rule |
+|---|---:|---|
+| `TRADING_DAILY_NOTIONAL_USD_PER_AGENT` | 60 | Risk ceiling 100; environment can only lower it. |
+| `TRADING_MAX_TRADE_USD` | 25 | Risk ceiling 25; environment can only lower it. |
+| `TRADING_MAX_TRADE_PCT_OF_FLOAT` | 25 | Risk ceiling 25 percent; environment can only lower it. |
+| `TRADING_MAX_SLIPPAGE_BPS` | 150 | Risk ceiling 300; environment can only lower it. |
+| `TRADING_MAX_QUOTE_IMPACT_PCT` | 3 | Risk ceiling 3 percent; environment can only lower it. |
+| `TRADING_FLEET_DRAWDOWN_HALT_PCT` | 20 | Risk ceiling 25 percent; environment can only lower it. |
+| `TRADING_MIN_TRADE_USD` | 1 | Must stay at or above the scoring minimum. |
+| `TRADING_MIN_SOL_RESERVE_LAMPORTS` | 20,000,000 | Reserve floor; environment can only raise it. |
+| `TRADING_MIN_USDC_RESERVE_MICROS` | 2,000,000 | Reserve floor; environment can only raise it. |
+| `TRADING_COOLDOWN_S` | 300 | Runtime cadence. |
+| `TRADING_PRICE_MAX_AGE_MS` | 2,000 | Price freshness limit. |
+| `TRADING_INTEL_MAX_CALLS_PER_DAY` | 100 | Daily ClawPump signal-read cap. Reserved until the blocked client contract arrives. |
+| `TRADING_DRAWDOWN_POLL_MS` | 300,000 | Fleet equity check cadence. |
+| `TRADING_EQUITY_UNREADABLE_GRACE_S` | 300 | Unreadable equity grace before the persisted fleet halt. |
+| `TRADING_ARM_GRACE_S` | unset | Reserved for the blocked provisioning and arming seam. |
+| `TRADING_MAX_PRIORITY_FEE_LAMPORTS` | 1,000,000 | Transaction fee cap. |
+| `TRADING_STALE_SENDING_MS` | 180,000 | Same-byte resend sweep cadence. |
+| `TRADING_PROMOTION_SWEEP_AGE_S` | 300 | Promotion sweep age. |
+| `TRADING_PROMOTION_SWEEP_MAX` | 50 | Promotion sweep batch limit. |
+| `TRADING_PROMOTION_ALERT_AGE_S` | 3,600 | One-time warning age for an unpromoted submitted decision. |
+| `CLAWPUMP_API_KEY` | unset | Signal access only. It never gates Jupiter execution. |
+| `CLAWPUMP_API_BASE_URL` | unset | Reserved host-allowlisted signal endpoint. The client is blocked pending the endpoint contract. |
+| `CLAWPUMP_BOARD_URL` | unset | Read-only Trading Floor board URL. |
+| `CLAWPUMP_HTTP_TIMEOUT_MS` | 15,000 | Reserved signal request timeout. |
+| `CLAWPUMP_FIXTURE_DIR` | unset | Test only; staging and production refuse boot when set. |
+| `JUPITER_API_KEY` | unset | Required before an armed link can execute. Never logged. |
+
 **Last Audited: 2026-09-16 (Trading Floor wave 1 Part 5, protocol v60).** Drift note: qualifying swaps now require both wallet leg accounts to appear in the matched DEX instruction after ALT resolution. A native-SOL leg uses the bound wallet system account. A third-party counter-leg produces `token_account_not_owned`; ambiguous one-leg flows remain `single_sided`. Strict scored-event failures roll back and rethrow. Reports receive retryable `settlement_write_failed`; the observer records the wallet error and continues. Recorded mainnet fixtures now pin the accepted discriminator bytes without hand edits. Directional vault proof remains a tracked gate. No Trading Floor path signs a transaction or writes vCLAW.
 
 **Last Audited: 2026-09-16 (gates suite Phase 0b: full routes lane, Postgres-backed).** Drift note: `gates.yml` gains a second, NON-required job `api-route-tests-db` that runs the ENTIRE `apps/api/src/routes/__tests__/` dir (701 tests / 56 files) against a `pgvector/pg16` service DB. Schema setup: `packages/database/scripts/ci-bootstrap-schema.ts` generates the full base schema from the Drizzle TS schema (`drizzle.ci-bootstrap.config.ts`, pure TS→SQL — never db:push), applies it (CI-only guard: refuses any DB that already has `public.avatars`), then drops the 34 migration-owned CHECK-carrying tables so `migrate-ci.ts` recreates them from authored SQL with full fidelity; `seed-land-parcels.ts` seeds the 56-parcel grid. The 12 `mock.module` test files run process-isolated (bun mock.module + module cache are process-global — poisoners, not just victims, are isolated). Two rotted tests fixed on the way in: the `PROTOCOL_VERSION = 57` pin in `land-hold-wallet-proof.test.ts` (59 is live) and the 0052 ghost-manifest regeneration in `land-tenure-p2-structural.test.ts` (frozen literal — migration 0059 legitimately changed the generator). The required `api-invariant-tests` job is byte-identical; keep the new job non-required until it has a week of green.

@@ -294,7 +294,7 @@ export interface TradeTickerEvent {
 export interface TradeDecisionEvent {
   type: 'trade.decision'; decisionId: string;
   subject: { type: 'agent'; id: string; avatarName: string | null };
-  verdict: 'executed' | 'refused'; reason: TradeRefusalCode | null;
+  verdict: 'submitted' | 'executed' | 'refused'; reason: TradeRefusalCode | null;
   inputMint: string; outputMint: string; requestedUsd: number | null;
   operatedByClawville: boolean; at: string;
 }

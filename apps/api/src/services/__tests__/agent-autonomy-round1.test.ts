@@ -4,6 +4,7 @@ import {
   DECISION_SCOPE,
   HATCHER_ACTION_VERBS,
   MAP_LOCATIONS,
+  TRADE_REFUSAL_CODES,
 } from '@clawville/shared';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { agentOrchestrator } from '../agent-orchestrator';
@@ -167,6 +168,57 @@ describe('round 1 perception + decision prompt', () => {
     expect(prompt).toContain('enter_cove()');
     expect(prompt).toContain('satisfy it before learning');
     for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(verb);
+  });
+
+  it('shows trading state only for a linked agent and keeps trade_token in the full menu', () => {
+    const id = 'trading-prompt-agent';
+    const entry = registerHouse(id);
+    const perception = npcSimulation.buildPerception(id)!;
+    const unlinked = agentAutonomyDriver.buildDecisionPrompt(perception, entry as never);
+    expect(unlinked).toContain('trade_token(');
+    expect(unlinked).not.toContain('Trading desk:');
+
+    const desk = {
+      linked: true as const,
+      armed: false,
+      killed: true,
+      objective: 'conservative-rebalancer' as const,
+      objectiveBrief: 'Keep the funded wallet near its target allocation.',
+      equityUsd: '100.00',
+      floatStartUsd: '100.00',
+      positions: [],
+      cooldownSecondsRemaining: 0,
+      dailyNotionalUsedUsd: '0.00',
+      dailyNotionalCapUsd: '25.00',
+      halted: false,
+      haltReason: null,
+      allowedMints: [{ symbol: 'SOL', mint: 'So11111111111111111111111111111111111111112' }],
+      lastIntel: null,
+      lastTrades: [],
+    };
+    const linked = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      entry as never,
+      [],
+      null,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      desk,
+    );
+    expect(linked).toContain('Trading desk:');
+    expect(linked).toContain('Status: armed=false; killed=true');
+    expect(linked).toContain('Allowed mints: SOL=So11111111111111111111111111111111111111112');
+    for (const code of TRADE_REFUSAL_CODES) expect(linked).toContain(code);
+
+    const haltedPrompt = agentAutonomyDriver.buildDecisionPrompt(
+      perception, entry as never, [], null, [], undefined, undefined, undefined, undefined,
+      { ...desk, halted: true, haltReason: 'operator stop' },
+    );
+    expect(haltedPrompt).toContain('TRADING IS HALTED: operator stop');
+    expect(haltedPrompt).not.toContain('Allowed mints:');
   });
 
   it('renders closed, copyable owned and claimable land targets', () => {

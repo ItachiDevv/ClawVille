@@ -168,7 +168,32 @@ import { walletLinkRoutes } from './routes/wallet-link';
 // WALLET_WITHDRAW_ENABLED; the route itself refuses with a typed 503 while
 // the flag is unset, so this static import is dark-safe.
 import { walletWithdrawRoutes } from './routes/wallet-withdraw';
+import { tradingFloorRoutes } from './routes/trading-floor';
+import { adminTradingRoutes } from './routes/admin-trading';
+import { assertTradingLimitsWithinCode } from '@clawville/shared';
+import { registerTradeVerifiedCallback } from './services/trade-observer';
+import {
+  promoteDecisionToExecuted,
+  startTradingSweeper,
+  stopTradingSweeper,
+} from './services/trading-execution';
+import { startTradingDrawdownPoller, stopTradingDrawdownPoller } from './services/trading-guardrails';
 import type { AppContext } from './types';
+
+if (
+  process.env.CLAWPUMP_FIXTURE_DIR &&
+  (process.env.CLAWVILLE_ENV === 'staging' || process.env.CLAWVILLE_ENV === 'production')
+) {
+  throw new Error('[trading-floor] CLAWPUMP_FIXTURE_DIR is TEST-ONLY');
+}
+assertTradingLimitsWithinCode();
+registerTradeVerifiedCallback(async (notice) => {
+  await promoteDecisionToExecuted({
+    signature: notice.signature,
+    decisionId: notice.decisionId,
+    avatarId: notice.avatarId,
+  });
+});
 
 const app = new Hono<AppContext>();
 
@@ -473,6 +498,8 @@ app.route('/api/wallet', walletWithdrawRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
+app.route('/api/admin/trading', adminTradingRoutes);
+app.route('/api/floor', tradingFloorRoutes);
 
 // Tokenomics F2 — TEST-ONLY mock x402 facilitator. Lets the USDC→vCLAW on-ramp
 // be exercised end-to-end without real funds. It RUBBER-STAMPS every settlement,
@@ -1604,6 +1631,8 @@ process.on('uncaughtException', (err) => {
 
     try {
       const { startTradeObserver } = await import('./services/trade-observer');
+      startTradingSweeper();
+      startTradingDrawdownPoller();
       startTradeObserver();
       console.log('[API] Trading Floor observer started');
     } catch (err) {
@@ -1800,6 +1829,8 @@ async function gracefulShutdown(signal: string) {
     try {
       const { stopTradeObserver } = await import('./services/trade-observer');
       stopTradeObserver();
+      stopTradingSweeper();
+      stopTradingDrawdownPoller();
     } catch {
       // If the observer module failed to load earlier, there is nothing to stop.
     }

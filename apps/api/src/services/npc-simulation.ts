@@ -7,6 +7,7 @@ import {
   AUTONOMY_ENTERABLE_PLACES,
   type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
+  TRADING_SYMBOL_TO_MINT,
   isLiveTutorialQuest,
   SALVAGE_APPROACH_RANGE_WU,
   SALVAGE_NODES,
@@ -178,6 +179,62 @@ async function ownsEquippedEmote(avatarId: string, animationKey: string): Promis
 // Parse pattern shared with eliza-runtime.ts (parseActionInvocations) so the
 // hatcher-proxy reply and the Eliza action path stay consistent.
 const HATCHER_ACTION_REGEX = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
+
+export interface ParsedTradeTokenAction {
+  inputMint: string;
+  outputMint: string;
+  amountUsdMicros: bigint;
+  reason: string;
+}
+
+const TRADE_TOKEN_ACTION_REGEX = /^\[ACTION:\s*trade_token\(input_mint=([A-Za-z0-9]{1,44}),\s*output_mint=([A-Za-z0-9]{1,44}),\s*amount_usd=(\d{1,4}(?:\.\d{1,2})?),\s*reason=([\x20-\x7e]{1,240})\)\]$/;
+const TRADE_TOKEN_FORBIDDEN_REASON = /[,=()[\]]/;
+
+function resolveTradeTokenMint(value: string): string | null {
+  const key = value.replace(/^\$/, '').toUpperCase();
+  if (Object.hasOwn(TRADING_SYMBOL_TO_MINT, key)) {
+    return TRADING_SYMBOL_TO_MINT[key as keyof typeof TRADING_SYMBOL_TO_MINT];
+  }
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) ? value : null;
+}
+
+/** Parse one exactly extracted tag. Amount conversion never uses floating point. */
+export function parseTradeTokenActionTag(tag: string): ParsedTradeTokenAction | null {
+  if (Buffer.byteLength(tag, 'utf8') > 400) return null;
+  const match = TRADE_TOKEN_ACTION_REGEX.exec(tag);
+  if (!match || TRADE_TOKEN_FORBIDDEN_REASON.test(match[4]!)) return null;
+  const inputMint = resolveTradeTokenMint(match[1]!);
+  const outputMint = resolveTradeTokenMint(match[2]!);
+  if (!inputMint || !outputMint) return null;
+  const [whole, fraction = ''] = match[3]!.split('.');
+  const amountUsdMicros = BigInt(whole!) * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
+  return { inputMint, outputMint, amountUsdMicros, reason: match[4]! };
+}
+
+/** Extract balanced trade tags before the generic first-`)` parser sees them. */
+function extractTradeTokenTags(text: string): Array<{ raw: string; parsed: ParsedTradeTokenAction | null }> {
+  const tags: Array<{ raw: string; parsed: ParsedTradeTokenAction | null }> = [];
+  const prefix = /\[ACTION:\s*trade_token\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = prefix.exec(text)) !== null) {
+    const start = match.index;
+    let depth = 1;
+    let end = -1;
+    for (let i = prefix.lastIndex; i < text.length && i - start <= 400; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') depth--;
+      if (depth === 0) {
+        if (text[i + 1] === ']') end = i + 2;
+        break;
+      }
+    }
+    if (end < 0) continue;
+    const raw = text.slice(start, end);
+    tags.push({ raw, parsed: parseTradeTokenActionTag(raw) });
+    prefix.lastIndex = end;
+  }
+  return tags;
+}
 const HATCHER_TALK_MESSAGE_MAX = 500;
 
 const HATCHER_ACTION_VERB_SET: ReadonlySet<string> = new Set(HATCHER_ACTION_VERBS);
@@ -206,11 +263,14 @@ interface AgentActionAttribution {
   agentId: string;
   sessionId: string;
   actorKind: 'agent';
+  directiveId?: string | null;
+  directiveOrdinal?: number | null;
 }
 
 const AUTONOMOUS_COVE_PLAY_INTERVAL_MS = 30_000;
 const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
 const AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS = 60_000;
+const AUTONOMOUS_TRADE_RESERVATION_MS = 30_000;
 // Salvage's real spacing is the 6-hour per-node cooldown; this only damps a
 // burst of identical tags inside one reply, so it is deliberately short.
 const AUTONOMOUS_SALVAGE_INTERVAL_MS = 30_000;
@@ -887,6 +947,44 @@ class NpcSimulation {
       });
     }
   };
+  /** Test seam; production uses the same guarded executor as REST and tools. */
+  autonomousTradeSettle: (input: {
+    actor: { kind: 'agent'; userId: string; avatarId: string; agentId: string; sessionId: string };
+    inputMint: string;
+    outputMint: string;
+    amountUsdMicros: bigint;
+    reason: string;
+    directiveId: string | null;
+    directiveOrdinal: number | null;
+  }) => Promise<{ kind: string; code?: string | null; signature?: string | null }> = async (input) => {
+    const { executeTrade } = await import('./trading-execution');
+    return executeTrade({
+      avatarId: input.actor.avatarId,
+      inputMint: input.inputMint,
+      outputMint: input.outputMint,
+      amountUsdMicros: input.amountUsdMicros,
+      reason: input.reason,
+      origin: 'autonomous',
+      sessionId: input.actor.sessionId,
+      agentId: input.actor.agentId,
+      directiveId: input.directiveId,
+      directiveOrdinal: input.directiveOrdinal,
+    });
+  };
+  /** Test seam; production re-resolves the live connected-agent binding. */
+  autonomousTradeAgentResolve: (
+    sessionId: string,
+    expectedAgentId: string,
+  ) => Promise<{
+    userId: string | null;
+    avatarId: string | null;
+    agentId: string;
+    ledgerCapable: boolean;
+  } | null> = async (sessionId, expectedAgentId) => {
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    const resolved = await resolveAgentSession(sessionId);
+    return resolved?.agentId === expectedAgentId ? resolved : null;
+  };
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -899,6 +997,7 @@ class NpcSimulation {
   private autonomousLandActionLastAdmittedAt = new Map<string, number>();
   private autonomousQuestClaimLastAdmittedAt = new Map<string, number>();
   private autonomousSalvageLastAdmittedAt = new Map<string, number>();
+  private autonomousTradeLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
   // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
@@ -2214,7 +2313,11 @@ class NpcSimulation {
    * session and delegates to its shared atomic settlement path before tagging
    * the visible body.
    */
-  dispatchHatcherActions(npcId: string, replyText: string): string {
+  dispatchHatcherActions(
+    npcId: string,
+    replyText: string,
+    directive: { id: string; ordinal: number } | null = null,
+  ): string {
     if (!replyText) return replyText;
     // Owner is driving this proxy — a cognition reply must not move or act in the
     // world. Strip the action tags from speech (mirrors the post-loop cleanup
@@ -2237,6 +2340,8 @@ class NpcSimulation {
           agentId: actionConfig.agentId,
           sessionId,
           actorKind: 'agent',
+          directiveId: directive?.id ?? null,
+          directiveOrdinal: directive?.ordinal ?? null,
         }
       : null;
     if (!attribution && !this.missingActionAttributionWarned.has(npcId)) {
@@ -2250,10 +2355,27 @@ class NpcSimulation {
       );
     }
 
-    let match: RegExpExecArray | null;
     let executed = 0; // bound A*/broadcast cost per reply (DoS guard)
+    const tradeTags = extractTradeTokenTags(replyText);
+    for (const tag of tradeTags) {
+      if (executed >= MAX_HATCHER_ACTIONS_PER_REPLY) break;
+      if (!tag.parsed) {
+        console.warn('[Hatcher] trade_token dropped — invalid strict grammar');
+        continue;
+      }
+      if (!npc || !attribution) {
+        console.warn('[Hatcher] trade_token dropped — body or agent attribution unavailable');
+        continue;
+      }
+      executed++;
+      void this.settleAutonomousTrade(npcId, attribution, tag.parsed);
+    }
+
+    let match: RegExpExecArray | null;
     HATCHER_ACTION_REGEX.lastIndex = 0; // regex has /g state — reset per call
     while ((match = HATCHER_ACTION_REGEX.exec(replyText)) !== null) {
+      // The strict balanced parser above owns every trade_token prefix.
+      if (match[1] === 'trade_token') continue;
       // Stop EXECUTING once the per-reply cap is hit — remaining tags are still
       // stripped from speech by the .replace() below. This caps the number of
       // synchronous A* searches / pending-event broadcasts to a small constant
@@ -2310,7 +2432,71 @@ class NpcSimulation {
 
     // Strip ALL [ACTION:...] tags (including any dropped/unknown ones) so the
     // remainder is clean agent speech. Collapse whitespace left behind.
-    return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
+    let cleaned = replyText;
+    for (const tag of tradeTags) cleaned = cleaned.replace(tag.raw, '');
+    return cleaned.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  private async settleAutonomousTrade(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    intent: ParsedTradeTokenAction,
+  ): Promise<void> {
+    const resolved = await this.autonomousTradeAgentResolve(
+      attribution.sessionId,
+      attribution.agentId,
+    );
+    if (
+      !resolved?.ledgerCapable ||
+      !resolved.userId ||
+      !resolved.avatarId ||
+      resolved.avatarId !== attribution.avatarId ||
+      resolved.agentId !== attribution.agentId
+    ) {
+      console.warn('[Hatcher] trade_token dropped — live agent binding is not ledger-capable');
+      return;
+    }
+
+    const now = Date.now();
+    if (this.autonomousTradeLastAdmittedAt.size > 5_000) {
+      for (const [avatarId, lastAt] of this.autonomousTradeLastAdmittedAt) {
+        if (now - lastAt >= AUTONOMOUS_TRADE_RESERVATION_MS) {
+          this.autonomousTradeLastAdmittedAt.delete(avatarId);
+        }
+      }
+    }
+    const prior = this.autonomousTradeLastAdmittedAt.get(resolved.avatarId);
+    if (prior !== undefined && now - prior < AUTONOMOUS_TRADE_RESERVATION_MS) {
+      console.warn('[Hatcher] trade_token dropped — an autonomous trade is already reserved');
+      return;
+    }
+    this.autonomousTradeLastAdmittedAt.set(resolved.avatarId, now);
+    try {
+      const result = await this.autonomousTradeSettle({
+        actor: {
+          kind: 'agent',
+          userId: resolved.userId,
+          avatarId: resolved.avatarId,
+          agentId: resolved.agentId,
+          sessionId: attribution.sessionId,
+        },
+        ...intent,
+        directiveId: attribution.directiveId ?? null,
+        directiveOrdinal: attribution.directiveOrdinal ?? null,
+      });
+      if (result.kind === 'submitted' || result.kind === 'executed') {
+        const body = this.npcs.get(npcId);
+        if (body) {
+          this.setNpcActivity(npcId, 'trading', '📈');
+          body.intentDescription = 'placing one guarded market trade';
+        }
+      }
+    } catch (error) {
+      console.warn(
+        '[Hatcher] trade_token failed —',
+        error instanceof Error ? error.message : 'unknown error',
+      );
+    }
   }
 
   private async settleAutonomousCoveGame(
@@ -3238,6 +3424,11 @@ class NpcSimulation {
           msgSha256: createHash('sha256').update(message, 'utf8').digest('hex'),
           len: message.length,
         });
+        return;
+      }
+      case 'trade_token': {
+        // Money actions use the anchored balanced parser in dispatchHatcherActions.
+        console.warn('[Hatcher] trade_token dropped — generic parser path refused');
         return;
       }
     }

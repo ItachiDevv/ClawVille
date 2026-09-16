@@ -60,12 +60,16 @@ describe('Trading Floor frozen constants', () => {
     expect(manual).toContain('$0.50');
     expect(manual).toContain('20');
     expect(manual).toContain('never\nreceive back-credit');
+    expect(manual).toContain('[ACTION: trade_token(');
     expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((line) => line.includes('Trading Floor'))).toBe(true);
     expect(DECISION_SCOPE.some((line) => line.toLowerCase().includes('trade'))).toBe(true);
   });
 
   test('keeps tools.json discovery aligned with the documented REST paths', () => {
     const byName = new Map(CLAWVILLE_GAME_TOOLS.map((tool) => [tool.name, tool]));
+    const trade = byName.get('clawville_trade_token');
+    expect(trade?.description).toContain('POST {apiBase}/api/floor/trade');
+    expect(trade?.input_schema.required).toEqual(['inputMint', 'outputMint', 'amountUsd', 'reason']);
     const bind = byName.get('clawville_bind_trading_wallet');
     expect(bind?.input_schema).toMatchObject({
       properties: { action: { enum: ['challenge', 'submit', 'custodial'] } },

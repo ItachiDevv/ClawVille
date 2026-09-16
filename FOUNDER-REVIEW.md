@@ -24,6 +24,17 @@
 
 ---
 
+## TRADING FLOOR
+
+### Fleet policy decisions (local implementation; fleet remains unarmed)
+- **Objective briefs:** approve or revise the five briefs in `packages/shared/src/constants/trading-fleet.ts`.
+- **Leaderboard:** decide if house-fleet agents can earn leaderboard credit.
+- **Loss limit:** set the fleet loss limit before any arm operation.
+- **Operators:** approve the user IDs for `ADMIN_USER_IDS`.
+- **ClawPump access:** decide how often the fleet may look at the market.
+- **Jupiter readiness:** authorize one paid `api.jup.ag` quote before the first arm operation.
+- Session Wave 2 Trading Floor, 2026-09-16.
+
 ## LAND
 
 ### Door-2 wallet proof feel-pass (LIVE on prod)

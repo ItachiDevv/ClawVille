@@ -1,0 +1,82 @@
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { sessionMiddleware } from '../middleware/auth';
+import { issueMoneyOperatorNonce, moneyOperatorOnly, type MoneyOperatorContext } from '../middleware/money-operator-only';
+import { armTradingLink, readTradingLink, setTradingLinkKilled } from '../services/trading-links';
+import { clearHalt, engageHalt, readActiveHalts } from '../services/trading-guardrails';
+import { hasUnknownPositiveTradingBalance, readTradingWalletEquity } from '../services/trading-fleet-equity';
+import { executeTrade } from '../services/trading-execution';
+import { readTradingLimits, TRADE_MINTS, TRADING_SYMBOL_TO_MINT } from '@clawville/shared';
+
+export const adminTradingRoutes = new Hono<MoneyOperatorContext>();
+adminTradingRoutes.use('*', sessionMiddleware);
+adminTradingRoutes.use('*', moneyOperatorOnly);
+
+const avatarBody = z.object({ avatarId: z.string().uuid() }).strict();
+const haltBody = z.object({ scope: z.enum(['fleet', 'agent']), avatarId: z.string().uuid().nullable().optional(), reason: z.string().trim().min(1).max(240) }).strict();
+const killBody = z.object({ avatarId: z.string().uuid(), killed: z.literal(true) }).strict();
+const testBody = z.object({ avatarId: z.string().uuid(), inputMint: z.string(), outputMint: z.string(), amountUsd: z.number().min(1).max(25), reason: z.string().max(240) }).strict();
+
+async function body<T>(c: { req: { json(): Promise<unknown> } }, schema: z.ZodType<T>): Promise<T | null> {
+  try { const parsed = schema.safeParse(await c.req.json()); return parsed.success ? parsed.data : null; } catch { return null; }
+}
+
+adminTradingRoutes.get('/nonce', (c) => c.json(issueMoneyOperatorNonce(c.get('moneyOperatorId'))));
+
+adminTradingRoutes.post('/arm', async (c) => {
+  const parsed = await body(c, avatarBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  const link = await readTradingLink(parsed.avatarId);
+  if (!link) return c.json({ error: 'No fleet link.', code: 'no_link' }, 404);
+  if (link.armed) return c.json({ error: 'Already armed.', code: 'already_armed' }, 409);
+  const equity = await readTradingWalletEquity({ walletPubkey: link.walletPubkey });
+  if (!equity || equity.equityUsdMicros <= 0n) return c.json({ error: 'Equity is zero or unreadable.', code: 'zero_equity' }, 409);
+  const unknownBalance = await hasUnknownPositiveTradingBalance({ walletPubkey: link.walletPubkey, minContextSlot: equity.slot });
+  if (unknownBalance !== false) return c.json({ error: 'An unknown token balance is present or unreadable.', code: 'unknown_token_balance' }, 409);
+  const limits = readTradingLimits();
+  const usdc = equity.positions.find((position) => position.mint === TRADE_MINTS.USDC)?.amountAtomic ?? 0n;
+  if (equity.nativeLamports < limits.minSolReserveLamports || usdc < limits.minUsdcReserveMicros) {
+    return c.json({ error: 'The wallet is below a trading reserve floor.', code: 'reserve_floor' }, 409);
+  }
+  const armed = await armTradingLink({ avatarId: parsed.avatarId, equityUsdMicros: equity.equityUsdMicros, nativeLamports: equity.nativeLamports, baselineSlot: equity.slot });
+  if (!armed) return c.json({ error: 'Arm state changed.', code: 'already_armed' }, 409);
+  return c.json({ ok: true, floatStartUsdMicros: armed.floatStartUsdMicros, baselineSlot: armed.baselineSlot, armed: true });
+});
+
+adminTradingRoutes.post('/halt', async (c) => {
+  const parsed = await body(c, haltBody);
+  if (!parsed || (parsed.scope === 'agent') !== Boolean(parsed.avatarId)) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  await engageHalt({ scope: parsed.scope, scopeId: parsed.avatarId ?? null, reason: parsed.reason, by: `admin:${c.get('moneyOperatorId')}` });
+  return c.json({ ok: true });
+});
+
+adminTradingRoutes.post('/unhalt', async (c) => {
+  const parsed = await body(c, haltBody);
+  if (!parsed || (parsed.scope === 'agent') !== Boolean(parsed.avatarId)) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  await clearHalt({ scope: parsed.scope, scopeId: parsed.avatarId ?? null, by: `admin:${c.get('moneyOperatorId')}` });
+  return c.json({ ok: true });
+});
+
+adminTradingRoutes.post('/kill', async (c) => {
+  const parsed = await body(c, killBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  const updated = await setTradingLinkKilled(parsed.avatarId, parsed.killed);
+  return updated ? c.json({ ok: true, killed: updated.killed, armed: updated.armed }) : c.json({ error: 'No fleet link.', code: 'no_link' }, 404);
+});
+
+adminTradingRoutes.get('/state', async (c) => c.json({ halts: await readActiveHalts() }));
+
+adminTradingRoutes.post('/test-trade', async (c) => {
+  const parsed = await body(c, testBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  const resolve = (value: string) => {
+    const key = value.replace(/^\$/, '').toUpperCase();
+    return Object.hasOwn(TRADING_SYMBOL_TO_MINT, key) ? TRADING_SYMBOL_TO_MINT[key as keyof typeof TRADING_SYMBOL_TO_MINT] : value;
+  };
+  return c.json(await executeTrade({
+    avatarId: parsed.avatarId, inputMint: resolve(parsed.inputMint), outputMint: resolve(parsed.outputMint),
+    amountUsdMicros: BigInt(Math.round(parsed.amountUsd * 1_000_000)), reason: parsed.reason,
+    origin: 'admin-test', sessionId: null, agentId: null, directiveId: null, directiveOrdinal: null,
+    operatorId: c.get('moneyOperatorId'),
+  }));
+});

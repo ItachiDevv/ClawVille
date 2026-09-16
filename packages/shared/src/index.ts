@@ -135,6 +135,7 @@ export * from './constants/land-placement';
 export * from './constants/land-salvage';
 // Trading Floor wave 1 frozen contracts.
 export * from './constants/trading-floor';
+export * from './constants/trading-fleet';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';
