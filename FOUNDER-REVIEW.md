@@ -39,16 +39,21 @@
 - Shipped by: session clawPump/Fable, 2026-09-16.
 
 ### Fleet (five house agents) — shipped UNARMED, nothing trades yet
-- **What:** the guarded signer, guardrails, operator routes and the `trade_token` verb are
-  in the code; every fleet link is created unarmed + killed. Fleet accounts are NOT
-  provisioned yet (provisioning/pairing seams are a follow-up wave). Decisions already
-  taken and applied: self-custody (ClawVille signs, ClawPump never), fleet ranks publicly
-  with the "ClawVille-operated" label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL
-  across five wallets, default drawdown halt 20 percent.
-- **Owed by founder before the first arm (rulings, not playtests):** confirm which user
-  ids go in `ADMIN_USER_IDS` on prod (the only accounts that can arm/halt/kill); glance at
-  the five objective briefs in `packages/shared/src/constants/trading-fleet.ts` (momentum,
-  ANSEM+CLAWVILLE DCA, SOL/USDC mean reversion, signal follower, conservative rebalancer).
+- **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
+  and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
+  Fleet accounts are NOT provisioned yet: provisioning is an operator action
+  (`apps/api/scripts/trading/provision-fleet.ts`, needs a Lucia session cookie of an
+  `ADMIN_USER_IDS` account on that box). Decisions already taken and applied: self-custody
+  (ClawVille signs, ClawPump never), fleet ranks publicly with the "ClawVille-operated"
+  label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL across five wallets, default
+  drawdown halt 20 percent.
+- **Owed by founder before provisioning/arming (rulings, not playtests):** which user ids
+  go in `ADMIN_USER_IDS` on staging and prod (the only accounts that can provision, pair,
+  arm, halt, kill) and a session for that account so the five accounts can be provisioned
+  on staging first; glance at the five objective briefs in
+  `packages/shared/src/constants/trading-fleet.ts` (momentum, ANSEM+CLAWVILLE DCA,
+  SOL/USDC mean reversion, signal follower, conservative rebalancer); genesis's wallet
+  address for the observe-only pairing (`pair-genesis.ts <walletPubkey>`).
 - Session clawPump/Fable, 2026-09-16.
 
 ## LAND
