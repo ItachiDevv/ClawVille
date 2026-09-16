@@ -6,6 +6,8 @@ const names = [
   'TRADING_MIN_SOL_RESERVE_LAMPORTS',
   'TRADING_MIN_USDC_RESERVE_MICROS',
   'TRADING_MIN_TRADE_USD',
+  'TRADING_COOLDOWN_S',
+  'TRADING_MAX_PRIORITY_FEE_LAMPORTS',
 ] as const;
 const original = new Map(names.map((name) => [name, process.env[name]]));
 
@@ -31,6 +33,18 @@ describe.serial('Trading Floor environment directions', () => {
     expect(assertTradingLimitsWithinCode().minSolReserveLamports).toBe(20_000_001n);
     process.env.TRADING_MIN_SOL_RESERVE_LAMPORTS = '19999999';
     expect(() => assertTradingLimitsWithinCode()).toThrow('below the compiled reserve floor');
+  });
+
+  test('the cooldown has a compiled floor and the priority-fee cap a compiled ceiling', () => {
+    process.env.TRADING_COOLDOWN_S = '61';
+    expect(assertTradingLimitsWithinCode().cooldownSeconds).toBe(61);
+    process.env.TRADING_COOLDOWN_S = '0';
+    expect(() => assertTradingLimitsWithinCode()).toThrow('below the compiled cooldown floor');
+    delete process.env.TRADING_COOLDOWN_S;
+    process.env.TRADING_MAX_PRIORITY_FEE_LAMPORTS = '999999';
+    expect(assertTradingLimitsWithinCode().maxPriorityFeeLamports).toBe(999_999n);
+    process.env.TRADING_MAX_PRIORITY_FEE_LAMPORTS = '1000001';
+    expect(() => assertTradingLimitsWithinCode()).toThrow('exceeds compiled ceiling');
   });
 
   test('the trade minimum cannot undercut the core scoring minimum', () => {

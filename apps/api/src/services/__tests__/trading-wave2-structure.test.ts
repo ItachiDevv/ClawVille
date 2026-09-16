@@ -37,7 +37,13 @@ function readTypeScriptTree(dir: string): Array<readonly [string, string]> {
 // readdirSync order is filesystem-dependent (sorted on Windows, inode order on
 // the Linux CI runner); every list derived from the tree is compared with
 // toEqual, so fix a byte-order sort here once.
-const apiSourceTree = readTypeScriptTree(apiSrc).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+// Scripts are part of the operator surface (they can insert fleet links or import the
+// vault), so the tree covers apps/api/scripts as well, keyed `scripts/...`.
+const apiScripts = resolve(apiSrc, '../scripts');
+const apiSourceTree = [
+  ...readTypeScriptTree(apiSrc),
+  ...readTypeScriptTree(apiScripts).map(([name, text]) => [`scripts/${relative(apiScripts, resolve(apiSrc, name)).replaceAll('\\', '/')}`, text] as const),
+].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 const linkInsertPattern = /insert\(clawpumpAgentLinks\)|INSERT\s+INTO\s+"?clawpump_agent_links"?/i;
 const linkUpdatePattern = /update\(clawpumpAgentLinks\)|UPDATE\s+"?clawpump_agent_links"?/i;
 const linkDeletePattern = /delete\(clawpumpAgentLinks\)|DELETE\s+FROM\s+"?clawpump_agent_links"?/i;
@@ -63,6 +69,8 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(importers).toEqual([
       'routes/ct-topup.ts',
       'routes/partner-hatcher.ts',
+      // Operator script (land hold-verify wallet provisioning); not a trading path.
+      'scripts/land/provision-hold-verify-wallet.ts',
       'services/agent-pay.ts',
       'services/agent-session-restore.ts',
       'services/clv-swap-custody.ts',
@@ -160,7 +168,13 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     const linkInsertWriters = apiSourceTree
       .filter(([, text]) => linkInsertPattern.test(text))
       .map(([name]) => name);
-    expect(linkInsertWriters).toEqual(['services/trading-provisioning.ts']);
+    expect(linkInsertWriters).toEqual([
+      // The hosted-runtime release-gate probe inserts a disposable fixture link
+      // (armed=false, killed=true, plus an active agent halt) and deletes it on
+      // cleanup; it is a test harness, never a runtime path.
+      'scripts/agent-connect/hosted-skill-runtime-probe.ts',
+      'services/trading-provisioning.ts',
+    ]);
 
     const linkUpdateWriters = apiSourceTree
       .filter(([, text]) => linkUpdatePattern.test(text))
@@ -178,7 +192,8 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     const linkDeleteWriters = apiSourceTree
       .filter(([, text]) => linkDeletePattern.test(text))
       .map(([name]) => name);
-    expect(linkDeleteWriters).toEqual([]);
+    // Only the probe's fixture cleanup deletes a link; no runtime path does.
+    expect(linkDeleteWriters).toEqual(['scripts/agent-connect/hosted-skill-runtime-probe.ts']);
   });
 
   test('provisioning is the only leaderboard eligibility writer', () => {

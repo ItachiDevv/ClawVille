@@ -49,6 +49,10 @@ export const TRADING_CODE_LIMITS = {
   fleetDrawdownHaltPct: 25,
   minSolReserveLamports: 20_000_000,
   minUsdcReserveMicros: 2_000_000,
+  /** Floor: env may only RAISE the cooldown (a zero cooldown would let one agent fire back-to-back). */
+  minCooldownSeconds: 60,
+  /** Ceiling: env may only LOWER the priority-fee cap (fee spend is real SOL). */
+  maxPriorityFeeLamports: 1_000_000,
 } as const;
 
 function readFinite(name: string, fallback: number): number {
@@ -98,6 +102,7 @@ export function assertTradingLimitsWithinCode(): EffectiveTradingLimits {
     ['TRADING_MAX_SLIPPAGE_BPS', v.maxSlippageBps, TRADING_CODE_LIMITS.maxSlippageBps],
     ['TRADING_MAX_QUOTE_IMPACT_PCT', v.maxQuoteImpactPct, TRADING_CODE_LIMITS.maxQuoteImpactPct],
     ['TRADING_FLEET_DRAWDOWN_HALT_PCT', v.fleetDrawdownHaltPct, TRADING_CODE_LIMITS.fleetDrawdownHaltPct],
+    ['TRADING_MAX_PRIORITY_FEE_LAMPORTS', Number(v.maxPriorityFeeLamports), TRADING_CODE_LIMITS.maxPriorityFeeLamports],
   ];
   for (const [name, value, ceiling] of ceilings) {
     if (value > ceiling) throw new Error(`[trading-floor] ${name} exceeds compiled ceiling ${ceiling}`);
@@ -110,6 +115,9 @@ export function assertTradingLimitsWithinCode(): EffectiveTradingLimits {
   }
   if (v.minUsdcReserveMicros < BigInt(TRADING_CODE_LIMITS.minUsdcReserveMicros)) {
     throw new Error('[trading-floor] TRADING_MIN_USDC_RESERVE_MICROS is below the compiled reserve floor');
+  }
+  if (v.cooldownSeconds < TRADING_CODE_LIMITS.minCooldownSeconds) {
+    throw new Error('[trading-floor] TRADING_COOLDOWN_S is below the compiled cooldown floor');
   }
   return v;
 }

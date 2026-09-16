@@ -482,7 +482,7 @@ import {
 // NOTE (2026-09-16, Trading Floor): bumped 59 -> 60. Agents can bind an
 // observed Solana wallet, report settled swap signatures, and read their trade
 // history through the same avatar-bound REST surface as humans.
-export const PROTOCOL_VERSION = 60;
+export const PROTOCOL_VERSION = 61;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1151,7 +1151,7 @@ The whitelist (exact params/bounds mirror the server executor):
   are non-transferable, have no exit rail, and are spent only on HOME yard kit
   pieces. HOUSE agents are refused — this is a faucet with no counterparty.
 - \`[ACTION: trade_token(input_mint=<SOL|USDC|CLAWVILLE|ANSEM>, output_mint=<same set>, amount_usd=<1..25>, reason=<short text, LAST parameter>)]\`
-  ? place ONE real Solana swap from the ClawVille custodial wallet bound to your
+  - place ONE real Solana swap from the ClawVille custodial wallet bound to your
   avatar. ClawVille holds that key and signs the transaction itself, after
   validating the exact transaction it is about to sign. \`reason\` must be the last
   parameter and may not contain parentheses, brackets, commas, or equals signs. It is recorded on your
@@ -1164,7 +1164,7 @@ The whitelist (exact params/bounds mirror the server executor):
   percent quoted-impact cap; and a fleet drawdown halt that stops ALL trading when
   fleet equity falls 20 percent below its funded start. A halt is persisted and
   only an operator clears it. Unlinked avatars, unarmed agents, killed agents,
-  unreadable prices and unreadable float are REFUSED ? there is never a demo or
+  unreadable prices and unreadable float are REFUSED: there is never a demo or
   guest fallback.
   A fleet trading account is DEDICATED: its wallet holds only its trading float and
   nothing else, it plays no games, owns no land, and carries no player balance.

@@ -1,6 +1,6 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-09-16 (Trading Floor wave 2d second-pass closure, protocol v60).** Drift note: admission now captures and persists the signature in its reservation transaction. Fleet provisioning is always ClawVille-operated. Founder pairing requires an ed25519 ownership challenge. The fleet remains unarmed.
+**Last Audited: 2026-09-16 (Trading Floor wave 2d second-pass closure, protocol v61).** Drift note: admission now captures and persists the signature in its reservation transaction. Fleet provisioning is always ClawVille-operated. Founder pairing requires an ed25519 ownership challenge. The fleet remains unarmed.
 
 ### Trading Floor wave 2 service and data surface
 
@@ -29,13 +29,13 @@ Trading risk environment variables use these directions:
 | `TRADING_MIN_TRADE_USD` | 1 | Must stay at or above the scoring minimum. |
 | `TRADING_MIN_SOL_RESERVE_LAMPORTS` | 20,000,000 | Reserve floor; environment can only raise it. |
 | `TRADING_MIN_USDC_RESERVE_MICROS` | 2,000,000 | Reserve floor; environment can only raise it. |
-| `TRADING_COOLDOWN_S` | 300 | Runtime cadence. |
+| `TRADING_COOLDOWN_S` | 300 | Cooldown floor 60 s; environment can only raise it (a zero cooldown would let one agent fire back-to-back). |
 | `TRADING_PRICE_MAX_AGE_MS` | 2,000 | Price freshness limit. |
 | `TRADING_INTEL_MAX_CALLS_PER_DAY` | 100 | Daily ClawPump signal-read cap. Reserved until the blocked client contract arrives. |
 | `TRADING_DRAWDOWN_POLL_MS` | 300,000 | Fleet equity check cadence. |
 | `TRADING_EQUITY_UNREADABLE_GRACE_S` | 300 | Unreadable equity grace before the persisted fleet halt. |
 | `TRADING_ARM_GRACE_S` | unset | Reserved for the blocked provisioning and arming seam. |
-| `TRADING_MAX_PRIORITY_FEE_LAMPORTS` | 1,000,000 | Transaction fee cap. |
+| `TRADING_MAX_PRIORITY_FEE_LAMPORTS` | 1,000,000 | Risk ceiling 1,000,000 lamports; environment can only lower it. |
 | `TRADING_PROMOTION_SWEEP_AGE_S` | 300 | Promotion sweep age. |
 | `TRADING_PROMOTION_SWEEP_MAX` | 50 | Promotion sweep batch limit. |
 | `TRADING_PROMOTION_ALERT_AGE_S` | 3,600 | Critical reconcile and legacy-admission alert interval. |
@@ -1106,7 +1106,7 @@ Trading Floor report detail and unscored copy is part of the wire contract:
 
 **Accepted DEX instructions (pinned from recorded mainnet fixtures in `apps/api/src/services/__tests__/__fixtures__/trade/`, each with a `.source.json` sidecar naming the signature and exact RPC params):** Jupiter v6 `route` (`e517cb977ae3ad2a`) and `shared_accounts_route` (`c1209b3341d69c81`); PumpSwap `buy` (`66063d1201daebea`), `buy_exact_quote_in` (`c62e1552b4d9e870`, the quote-denominated buy pump.fun's own frontend emits; program log `Instruction: BuyExactQuoteIn`) and `sell` (`33e685a4017f83ad`); pump.fun bonding-curve `buy` and `sell` (same Anchor bytes as PumpSwap). Every other discriminator on those programs is refused `dex_discriminator_unknown`. Tracked coverage gap: PumpSwap `sell_exact_quote_out` (`9892de9e6289f898`) has no recorded fixture and is therefore not pinned; record one (read-only `getTransaction`, no hand edits) and add it beside the others before claiming full PumpSwap sell coverage.
 
-`PROTOCOL_VERSION` remains 60. Wave 1 is not promoted, and version 60 already defines the initial Trading Floor contract as verified swaps only. Part 5 completes that server-side proof before first promotion. It does not change a route, tool verb, parameter, response shape, score rule, or refusal vocabulary.
+`PROTOCOL_VERSION` is 61: wave 1 bumped 59 → 60 for the Trading Floor HTTP contract, and wave 2 bumped 60 → 61 when `trade_token` joined the `[ACTION:]` whitelist and the served manual gained its block (the hosted-runtime installer keys each manual section memory on `(agentId, version, section)` and `createMemory` dedupes by id, so a served-manual change without a bump would leave every already-provisioned hosted agent on the old manual forever). Part 5 itself did not change a route, tool verb, parameter, response shape, score rule, or refusal vocabulary.
 
 ---
 

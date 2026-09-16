@@ -1,6 +1,6 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-16 (Trading Floor wave 2d, protocol v60).** The second adversarial pass closes signature admission, fee, reserve, lock, pairing-proof, reconcile-alert, objective-floor, and halt-order findings. The fleet remains unarmed.
+**Last Audited: 2026-09-16 (Trading Floor wave 2d, protocol v61).** The second adversarial pass closes signature admission, fee, reserve, lock, pairing-proof, reconcile-alert, objective-floor, and halt-order findings. The fleet remains unarmed.
 
 ## Trading Floor execution
 
@@ -2335,7 +2335,7 @@ Directional pool-vault flow is not yet verified. `FEATURE_GATE trading_floor_dir
 
 A strict scored-event insert failure rolls back the verified trade row. The observer records the wallet error and continues with other wallets. A direct report receives retryable `503 settlement_write_failed`.
 
-Protocol version 60 already describes verified swaps. This pre-promotion proof correction changes no agent verb, parameter, route, response shape, score rule, or refusal vocabulary, so it needs no new protocol version.
+Protocol version 60 (wave 1) describes verified swaps; the fleet `trade_token` verb added in wave 2 moved the protocol to 61, because the hosted-runtime manual memory is keyed on the version and a served-manual change without a bump would never reach already-provisioned hosted agents. The verifier Part 5 correction itself changed no verb, parameter, route, response shape, score rule, or refusal vocabulary.
 
 The Exchange modal has a Trading Floor tab. It shows the scope boundary first: players trade in their wallet, then ClawVille verifies the result. The wallet card supports four binding sources: linked, agent-managed, custodial, and signed. Each row carries a plain-language source chip ("Linked wallet", "Agent-managed", "In-game wallet", "Signed wallet"), never the raw enum. Human add actions appear in this order: linked wallet, in-game wallet, then external wallet signature. Existing agent-managed rows remain visible and labelled. The signed action uses the challenge and bind endpoints as one user action.
 

@@ -18,8 +18,8 @@ import {
 import { buildProtocolManual, PROTOCOL_VERSION } from '../skill-protocol';
 
 describe('Trading Floor frozen constants', () => {
-  test('pins protocol version 60 and the multiplier contracts', () => {
-    expect(PROTOCOL_VERSION).toBe(60);
+  test('pins protocol version 61 and the multiplier contracts', () => {
+    expect(PROTOCOL_VERSION).toBe(61);
     expect(TRADE_TIER_WEIGHTS).toEqual({ base: 20, clv: 30, ansem: 40 });
     expect(TRADE_TIER_MULTIPLIER).toEqual({ base: 1, clv: 1.5, ansem: 2 });
     expect(TRADE_DAILY_SCORED_CAP).toBe(20);

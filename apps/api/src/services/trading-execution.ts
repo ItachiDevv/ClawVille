@@ -212,13 +212,21 @@ export async function executeTrade(intent: TradeIntent, deps: TradingExecutionDe
   if (currentHeight >= built.lastValidBlockHeight) {
     return refuse(intent, 'blockhash_expired', 'Blockhash expired before admission.');
   }
+  // Custody and vault failures are money-path failures: they refuse AND alert with
+  // the bounded cause, never a silent `keypair_mismatch`.
+  const custodyAlert = (stage: 'custody' | 'vault', error: unknown) => alertError({
+    severity: 'critical',
+    source: 'trading-execution',
+    message: stage === 'custody' ? 'Fleet custody resolution failed before admission.' : 'Fleet key decryption failed before admission.',
+    context: { avatarId: intent.avatarId, origin: intent.origin, error: error instanceof Error ? error.message.slice(0, 200) : 'unknown' },
+  }).catch(() => undefined);
   let custody;
   try { custody = await resolveTradingCustody(link); }
-  catch { custody = null; }
+  catch (error) { custody = null; await custodyAlert('custody', error); }
   if (!custody) return refuse(intent, 'keypair_mismatch', 'Custodial wallet binding is invalid.');
   let keypair;
   try { keypair = deps.keypair ?? await loadTradingKeypair(custody.wallet, link.walletPubkey); }
-  catch { keypair = null; }
+  catch (error) { keypair = null; await custodyAlert('vault', error); }
   if (!keypair) return refuse(intent, 'keypair_mismatch', 'Custodial key does not match.');
 
   let signedBytes: Uint8Array | null = null;
