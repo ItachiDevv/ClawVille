@@ -38,7 +38,15 @@
   $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
 - Shipped by: session clawPump/Fable, 2026-09-16.
 
-### Fleet (five house agents) — ONE account FUNDED + ARMED on STAGING; $1 rung in progress
+### Fleet (five house agents) — FIRST FLEET TRADE EXECUTED ON MAINNET from STAGING (2026-09-17)
+- **The trade:** SafeRebalancer, $1 SOL→USDC via Jupiter, signature
+  `5mytFoup16GrVojktQYHaG9bc5fP1w6jQ135zTYgJVe7Bjc1Jtu8Tzcu6gAtpfVVr4DZgeX3gZFBHaBDGpK4Jow2`
+  (finalized, slot 447873097, fee 67,433 lamports, wallet −0.009997 SOL / +0.999229 USDC).
+  Look at it on any explorer. Three bugs surfaced on the way, each would have refused or
+  hidden every fleet trade on prod, all fixed same day (`deploy-status.md` 2026-09-17).
+- **Feedback wanted:** none on the trade itself. After the observer fix deploys, the row
+  should appear on the staging Floor tab and the public `/leaderboard` Trader column with
+  the "ClawVille-operated" label; that is the sign-off screenshot for this rung.
 - **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
   and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
   On 2026-09-16 the first account was provisioned on STAGING (objective
