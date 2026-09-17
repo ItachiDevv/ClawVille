@@ -46,6 +46,11 @@ export interface ClawvilleServices {
     params: CovenantActionRecordParams,
     tx?: any,
   ) => Promise<{ id: string | null; deduped: boolean }>;
+  /**
+   * Founder-only capability injected after API identity checks. Absent on every
+   * other surface. Unknown keeps agent-runtime independent of apps/api.
+   */
+  doordash?: unknown;
 }
 
 export interface ClawvilleActionState {
@@ -65,6 +70,8 @@ export interface ActionResult {
   success: boolean;
   text?: string;
   data?: Record<string, any>;
+  /** False excludes this result's text/data from persisted chat memory. */
+  persist?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +90,14 @@ export interface Action {
   description: string;
   similes?: string[];
   examples?: Array<Array<{ user: string; content: { text: string; action?: string } }>>;
+  /**
+   * Controls prompt advertisement and execution. A throw means UNAVAILABLE
+   * (fail closed), unlike validate(), which currently fails OPEN on throw.
+   * Omitted means always available, preserving existing action behavior.
+   */
+  available?: (state: Record<string, any>) => boolean;
+  /** At most one money action may execute in a single reply. */
+  writesMoney?: boolean;
   validate: (runtime: any, message: any, state?: any) => Promise<boolean>;
   handler: (
     runtime: any,

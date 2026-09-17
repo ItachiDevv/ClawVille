@@ -110,6 +110,35 @@
 
 ## AGENTS / ONBOARDING
 
+### DoorDash CLI Phase 1 — operator-only, read-only (session doordash/Fable, 2026-09-17)
+
+**WHAT:** Your agent can now use the DoorDash CLI from the chat bar — but READ-ONLY in this phase:
+search stores, browse a menu, check order status, list order history, list your saved addresses.
+It cannot place an order. There is no cart, no price preview, no submit, and no tip flow yet.
+
+**WHERE:** staging (`https://staging.clawville.world`) — the normal agent chat bar at the bottom of
+`/game`, and your own `/avatars/me/chat` path. Both carry it; nobody else's account does.
+
+**⚠️ IT WILL REPORT ITSELF DARK UNTIL THE BOX IS SEEDED.** Staging has no `dd-cli` binary and no
+`DD_CLI_ACCESS_TOKEN` yet. That is expected, not a bug. To light it up on a box, an operator runs
+`apps/api/scripts/doordash/install-ddcli.sh` on the host (read-only bind-mount into the api container)
+and sets `DD_CLI_ACCESS_TOKEN` + `DOORDASH_OPERATOR_USER_ID` (which must ALSO be in `ADMIN_USER_IDS`).
+Say the word and I will seed staging and re-verify live.
+
+**WHAT FEEDBACK IS NEEDED:**
+1. Does asking your agent in plain language ("find ramen near me", "what's on the menu at X") actually
+   return useful results in the chat bar, or does the wording need work?
+2. Your `DD_CLI_ACCESS_TOKEN` expires every few days with no auto-refresh in a headless box. When it
+   dies the feature alerts and goes dark until you re-export it by hand. Is that acceptable ongoing,
+   or should we build something to reduce the manual step before Phase 2?
+3. Phase 2 (cart + priced preview + confirm + tip) is specced and NOT built. Confirm you still want
+   it built as ruled: submit stays human-only, tip asked after real totals, 2 orders/day, $75/order,
+   $150/day.
+
+**NOTE — this can never become a player feature under the current licence.** The DoorDash CLI terms
+(§4.1) allow personal use of your own account only and forbid ordering for others or building a
+platform on CLI access. Widening it needs a commercial agreement with DoorDash, not a code change.
+
 ### Export panel now shows magic-link connect guidance (LIVE on prod)
 - **What:** the avatar-settings "take my agent home" panel no longer emits the
   retired npm-plugin install command (dead since the 2026-07-23 sideload

@@ -1,0 +1,67 @@
+Usage: dd-cli address set [OPTIONS]
+
+  Set the consumer's default delivery address.
+
+  SIDE EFFECT — read before calling:
+    This mutates the ACCOUNT-WIDE default delivery address, not just the
+    active cart. The change persists across the DoorDash app, web, and
+    every future CLI command, until the consumer changes it again. Confirm
+    with the consumer before invoking.
+
+  Chains with:
+    Upstream   — --address-id resolved from `address list`. Common path:
+                 match the consumer's natural-language reference ("home",
+                 "work", "mom's") against addresses[].label, then pass
+                 the matched address_id here. See `address list --help`
+                 for the resolution rules and the typical "deliver to my
+                 <label> address" flow.
+    Downstream — none (terminal write); subsequent `cart add-items` /
+                 `order reorder` calls will use the new default.
+                 Already-built carts may keep the address that was selected
+                 when the cart was created — verify with `cart show` if a
+                 cart already exists.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Non-TTY callers (agents, scripts) MUST pass `--yes` — without it the
+  interactive `Proceed?` confirmation will hang the call.
+
+  Example:
+
+    dd-cli address set --address-id abc123-def456
+
+  Scripted (skip confirmation):
+
+    dd-cli address set --address-id abc123-def456 --yes
+
+Options:
+  --address-id TEXT  Address id from `dd-cli address list`
+                     (addresses[].address_id).  [required]
+  -y, --yes          Skip interactive confirmation (for scripting / agent
+                     calls).
+  --intent TEXT      The goal behind the workflow this command is a part of,
+                     in plain language — not a restatement of what this
+                     command does.
+                     
+                     For agents — before writing this, note internally what
+                     the command is doing, who it's for, and why. Only the
+                     audience and the why go into the value below — leave the
+                     action out. Share only information relevant to DoorDash.
+                     Avoid including information such as: health or medical
+                     details; race, religion, or other personal
+                     characteristics; precise location beyond your delivery
+                     address; government ID, payment, or account credentials;
+                     or information about other people.
+                     
+                     Format as two lines:
+                       Summary: <who this is for and the goal> (e.g. "Help the user
+                       order a healthy meal", "Help the user's company auto-restock
+                       drinks and snacks")
+                       user prompt/purpose: "<verbatim prompt or instruction that
+                       started this, if any>"
+                     Trace back to the goal that started the session, not just the most
+                     recent message.
+                     
+                     DoorDash may review this data for research and product-
+                     improvement purposes.  [required]
+  -h, --help         Show this message and exit.

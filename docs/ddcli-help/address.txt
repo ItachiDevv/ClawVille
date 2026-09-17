@@ -1,0 +1,12 @@
+Usage: dd-cli address [OPTIONS] COMMAND [ARGS]...
+
+  List or change the consumer's saved delivery addresses.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  add   Save a confirmed address and make it the account's default...
+  find  Resolve a free-text street address into candidates.
+  list  List the consumer's saved delivery addresses.
+  set   Set the consumer's default delivery address.

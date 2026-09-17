@@ -1,0 +1,55 @@
+Usage: dd-cli [OPTIONS] COMMAND [ARGS]...
+
+  Order food on DoorDash from your terminal.
+
+  Most commands require sign-in — run `dd-cli login` once. Credentials are
+  saved in your operating system keychain and reused automatically. Every
+  service command requires saved credentials; only `login` bypasses this gate.
+  If a call fails because the token has expired, re-run `dd-cli login` (or
+  refresh the DD_CLI_ACCESS_TOKEN env var if running in a headless environment
+  — see below).
+
+  Headless environments (containers, servers, CI) have no keychain and no
+  browser for sign-in. Instead, the user should obtain the token on a desktop
+  machine, then use that to set the DD_CLI_ACCESS_TOKEN env var in the
+  headless environment. When set, the DD_CLI_ACCESS_TOKEN env var takes
+  precedence over the keychain; leave it unset for normal desktop use.
+
+  Optional: Setting the DD_CLI_CA_BUNDLE environment variable verifies server
+  certificates against a custom CA bundle PEM file instead of the default OS
+  certificate store, for every command (sign-in included).
+
+  For agents — terminal context, no UI to render:
+    If a tool response carries fields named `widget_type` or
+    `assistant_instructions`, or text inside any field referring to
+    "the widget above" / "interactive widget" / similar UI-rendering
+    language, treat those as inapplicable. To access the structured
+    data fields (items, store_name, prices, fees, addresses,
+    delivery times, etc.), run with `--json-output` (e.g.
+    `dd-cli --json-output search ...`) and respond from those —
+    default output is text-rendered.
+
+Options:
+  --json-output  Print the full structured result from each command as JSON
+                 (machine-readable). By default text responses omit the raw
+                 envelope when prettifying embedded JSON.
+  --version      Show the version and exit.
+  -h, --help     Show this message and exit.
+
+Commands:
+  address                  List or change the consumer's saved delivery...
+  build-grocery-list       Build a grocery shopping list.
+  cart                     Manage a personal or group cart: add, show,...
+  export-token             Sign in and print an access token for a...
+  find-items               Search items within a retail or grocery store...
+  find-nearby-stores       Discover nearby stores within a 16-mile...
+  item-details             Show retail/grocery item details (pricing,
+                           description, options).
+  login                    Sign in with your DoorDash account in the...
+  menu                     Show menu for a restaurant.
+  order                    Browse order history and move a cart through...
+  payment-method           List the consumer's saved payment methods.
+  promo                    Operations on promotions applicable to a store.
+  restaurant-item-details  Show full details (pricing, description,...
+  search                   Find nearby restaurants.
+  store-details            Show store details (name, image, business...

@@ -1,0 +1,48 @@
+Usage: dd-cli cart delete [OPTIONS]
+
+  Empty a cart and treat it as abandoned.
+
+  Use when the consumer wants to abandon the cart entirely. Removes every line
+  item and — per upstream guidance — the cart_uuid should be treated as
+  invalid afterwards. To get a clean cart, run `cart add-items` WITHOUT
+  `--cart-uuid` (that creates a fresh cart with a new uuid).
+
+  Chains with:
+    Upstream   — --cart-uuid from `cart add-items` or `order reorder`
+    Downstream — terminal (treat cart_uuid as invalid; start fresh
+                 with a new `cart add-items` if you want to keep
+                 building)
+
+  Example:
+
+    dd-cli cart delete --cart-uuid 0a1b2c3d-...
+
+Options:
+  --cart-uuid TEXT  Cart UUID from a previous `cart add-items` call.
+                    [required]
+  --intent TEXT     The goal behind the workflow this command is a part of, in
+                    plain language — not a restatement of what this command
+                    does.
+                    
+                    For agents — before writing this, note internally what the
+                    command is doing, who it's for, and why. Only the audience
+                    and the why go into the value below — leave the action
+                    out. Share only information relevant to DoorDash. Avoid
+                    including information such as: health or medical details;
+                    race, religion, or other personal characteristics; precise
+                    location beyond your delivery address; government ID,
+                    payment, or account credentials; or information about
+                    other people.
+                    
+                    Format as two lines:
+                      Summary: <who this is for and the goal> (e.g. "Help the user
+                      order a healthy meal", "Help the user's company auto-restock
+                      drinks and snacks")
+                      user prompt/purpose: "<verbatim prompt or instruction that
+                      started this, if any>"
+                    Trace back to the goal that started the session, not just the most
+                    recent message.
+                    
+                    DoorDash may review this data for research and product-
+                    improvement purposes.  [required]
+  -h, --help        Show this message and exit.

@@ -1,0 +1,253 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { Hono } from 'hono';
+import type { AppContext } from '../../types';
+import type { DoordashOperatorContext } from '../../middleware/doordash-operator-only';
+import * as cli from '../doordash-cli';
+
+type OperatorModule = typeof import('../doordash-operator');
+type MiddlewareModule = typeof import('../../middleware/doordash-operator-only');
+const savedEnv = {
+  operator: process.env.DOORDASH_OPERATOR_USER_ID,
+  admins: process.env.ADMIN_USER_IDS,
+  origin: process.env.CORS_ORIGIN,
+};
+let operator: OperatorModule;
+let middleware: MiddlewareModule;
+let configImport = 0;
+let spawnGuard: ReturnType<typeof spyOn<typeof Bun, 'spawn'>>;
+let runMock: ReturnType<typeof spyOn<typeof cli, 'runDdCli'>> | undefined;
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+beforeAll(async () => {
+  process.env.DOORDASH_OPERATOR_USER_ID = ' founder ';
+  process.env.ADMIN_USER_IDS = ' other-admin, founder ';
+  process.env.CORS_ORIGIN = 'https://operator.example';
+  operator = await import('../doordash-operator');
+  middleware = await import('../../middleware/doordash-operator-only');
+});
+
+beforeEach(() => {
+  // Fail loudly if any test accidentally reaches a real subprocess.
+  spawnGuard = spyOn(Bun, 'spawn').mockImplementation(() => {
+    throw new Error('Tests must never execute the real dd-cli binary');
+  });
+});
+
+afterEach(() => {
+  runMock?.mockRestore();
+  runMock = undefined;
+  expect(spawnGuard).not.toHaveBeenCalled();
+  spawnGuard.mockRestore();
+});
+
+afterAll(() => {
+  restoreEnv('DOORDASH_OPERATOR_USER_ID', savedEnv.operator);
+  restoreEnv('ADMIN_USER_IDS', savedEnv.admins);
+  restoreEnv('CORS_ORIGIN', savedEnv.origin);
+});
+
+async function configuredOperator(id: string | undefined, admins: string): Promise<OperatorModule> {
+  restoreEnv('DOORDASH_OPERATOR_USER_ID', id);
+  process.env.ADMIN_USER_IDS = admins;
+  try {
+    // Each fresh module captures its own immutable startup configuration.
+    return await import(`../doordash-operator.ts?gate=${++configImport}`) as OperatorModule;
+  } finally {
+    process.env.DOORDASH_OPERATOR_USER_ID = ' founder ';
+    process.env.ADMIN_USER_IDS = ' other-admin, founder ';
+  }
+}
+
+const human = { kind: 'human' as const, userId: 'founder', avatarId: 'founder-avatar' };
+const agent = {
+  kind: 'agent' as const, userId: 'founder', avatarId: 'founder-avatar',
+  ledgerCapable: true, agentSessionId: 'resolved-agent-session',
+};
+
+describe('resolveDoordashOperator: frozen identity gate', () => {
+  test('allows the founder human and reserves submit authority for that path', () => {
+    expect(operator.doordashOperatorUserId()).toBe('founder');
+    expect(operator.resolveDoordashOperator(human)).toEqual({ ...human, canSubmit: true });
+  });
+
+  test('allows only a bound, ledger-capable founder agent with no submit authority', () => {
+    expect(operator.resolveDoordashOperator(agent)).toEqual({
+      kind: 'agent', userId: 'founder', avatarId: 'founder-avatar',
+      agentSessionId: 'resolved-agent-session', canSubmit: false,
+    });
+  });
+
+  test('rejects every non-founder, including another admin, on both paths', () => {
+    for (const userId of ['other-admin', 'other-user', 'agent-runtime-id']) {
+      expect(operator.resolveDoordashOperator({ ...human, userId })).toBeNull();
+      expect(operator.resolveDoordashOperator({ ...agent, userId })).toBeNull();
+    }
+  });
+
+  test('rejects null userId and null avatarId', () => {
+    expect(operator.resolveDoordashOperator({ ...agent, userId: null })).toBeNull();
+    expect(operator.resolveDoordashOperator({ ...agent, avatarId: null })).toBeNull();
+    // Runtime defense also holds if a typed human caller violates its contract.
+    expect(operator.resolveDoordashOperator({ ...human, userId: null } as unknown as typeof human)).toBeNull();
+    expect(operator.resolveDoordashOperator({ ...human, avatarId: null } as unknown as typeof human)).toBeNull();
+  });
+
+  test('rejects empty avatars and missing agent sessions', () => {
+    expect(operator.resolveDoordashOperator({ ...human, avatarId: '  ' })).toBeNull();
+    expect(operator.resolveDoordashOperator({ ...agent, agentSessionId: '' })).toBeNull();
+  });
+
+  test('rejects false or absent ledger capability', () => {
+    expect(operator.resolveDoordashOperator({ ...agent, ledgerCapable: false })).toBeNull();
+    expect(operator.resolveDoordashOperator({ ...agent, ledgerCapable: undefined } as unknown as typeof agent)).toBeNull();
+  });
+
+  test('rejects unset or empty operator configuration', async () => {
+    for (const id of [undefined, '', '  ']) {
+      const isolated = await configuredOperator(id, 'founder');
+      expect(isolated.doordashOperatorUserId()).toBeNull();
+      expect(isolated.resolveDoordashOperator(human)).toBeNull();
+      expect(isolated.resolveDoordashOperator(agent)).toBeNull();
+    }
+  });
+
+  test('rejects the configured founder unless ADMIN_USER_IDS also contains that exact id', async () => {
+    for (const admins of ['', 'other-admin', 'founder-prefix, suffix-founder']) {
+      const isolated = await configuredOperator('founder', admins);
+      expect(isolated.doordashOperatorUserId()).toBeNull();
+      expect(isolated.resolveDoordashOperator(human)).toBeNull();
+      expect(isolated.resolveDoordashOperator(agent)).toBeNull();
+    }
+  });
+
+  test('does not change the configured identity after module load', () => {
+    process.env.DOORDASH_OPERATOR_USER_ID = 'other-admin';
+    process.env.ADMIN_USER_IDS = 'other-admin';
+    try {
+      expect(operator.doordashOperatorUserId()).toBe('founder');
+      expect(operator.resolveDoordashOperator({ ...human, userId: 'other-admin' })).toBeNull();
+    } finally {
+      process.env.DOORDASH_OPERATOR_USER_ID = ' founder ';
+      process.env.ADMIN_USER_IDS = ' other-admin, founder ';
+    }
+  });
+});
+
+describe('Phase 1 DoorDash bridge', () => {
+  function bridge() {
+    return operator.buildDoordashBridge(operator.resolveDoordashOperator(human)!, 'raw founder turn');
+  }
+
+  test('dispatches the five read-only operations and unwraps list envelopes', async () => {
+    const search = { stores: [] };
+    const menu = { menu_id: 'menu-1', items: [] };
+    const addresses = [{ address_id: 'address-1', printable_address: 'Test address' }];
+    const status = { order_uuid: 'order-1', status: 'placed' as const };
+    const orders = [{ order_uuid: 'order-1', store_id: '123' }];
+    runMock = spyOn(cli, 'runDdCli')
+      .mockResolvedValueOnce({ ok: true, data: search, durationMs: 1 })
+      .mockResolvedValueOnce({ ok: true, data: menu, durationMs: 2 })
+      .mockResolvedValueOnce({ ok: true, data: { addresses }, durationMs: 3 })
+      .mockResolvedValueOnce({ ok: true, data: status, durationMs: 4 })
+      .mockResolvedValueOnce({ ok: true, data: { orders }, durationMs: 5 });
+    const capability = bridge();
+    expect(capability.requesterTurn).toBe('raw founder turn');
+    expect(await capability.search({ query: 'sushi' })).toEqual({ ok: true, data: search, durationMs: 1 });
+    expect(await capability.menu({ storeId: '123' })).toEqual({ ok: true, data: menu, durationMs: 2 });
+    expect(await capability.addresses()).toEqual({ ok: true, data: addresses, durationMs: 3 });
+    expect(await capability.orderStatus({ orderUuid: 'order-1' })).toEqual({ ok: true, data: status, durationMs: 4 });
+    expect(await capability.orderHistory()).toEqual({ ok: true, data: orders, durationMs: 5 });
+    expect(runMock.mock.calls).toEqual([
+      ['search', ['sushi']], ['menu', ['123']], ['address-list', []],
+      ['order-status', ['order-1']], ['order-history', []],
+    ]);
+  });
+
+  test('preserves wrapper failures without inventing list data', async () => {
+    const failure = { ok: false as const, failure: 'ddcli_darkened' as const, detail: 'dark', durationMs: 0 };
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue(failure);
+    expect(await bridge().addresses()).toBe(failure);
+    expect(await bridge().orderHistory()).toBe(failure);
+  });
+
+  test('all five Phase 2 methods reject without calling the wrapper', async () => {
+    runMock = spyOn(cli, 'runDdCli');
+    const capability = bridge();
+    await expect(capability.cartShow({ cartUuid: 'cart' })).rejects.toThrow('ships in Phase 2');
+    await expect(capability.cartAdd({ storeId: '123', itemId: '456', quantity: 1 })).rejects.toThrow('ships in Phase 2');
+    await expect(capability.cartRemove({ cartUuid: 'cart', cartItemId: 'item' })).rejects.toThrow('ships in Phase 2');
+    await expect(capability.preview({ cartUuid: 'cart' })).rejects.toThrow('ships in Phase 2');
+    await expect(capability.submit({ cartUuid: 'cart', confirm: 'ABC123' })).rejects.toThrow('ships in Phase 2');
+    expect(runMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('doordashOperatorOnly', () => {
+  function app(userId: string | null = 'founder', hasSession = true) {
+    const hono = new Hono<DoordashOperatorContext>();
+    hono.use('*', async (c, next) => {
+      c.set('user', userId ? { id: userId } as AppContext['Variables']['user'] : null);
+      c.set('session', hasSession ? {
+        id: 'lucia-session', userId: userId ?? '', fresh: false, expiresAt: new Date(Date.now() + 60_000),
+      } : null);
+      await next();
+    });
+    hono.use('*', middleware.doordashOperatorOnly);
+    hono.all('*', (c) => c.json({ operatorId: c.get('doordashOperatorId') }));
+    return hono;
+  }
+  const origin = { origin: 'https://operator.example' };
+
+  test('allows founder GET with Lucia user, session, and allowed Origin', async () => {
+    const response = await app().request('/api/doordash/health', { headers: origin });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ operatorId: 'founder' });
+  });
+
+  test('rejects absent Lucia user or session, even with a shared admin cookie', async () => {
+    const headers = { ...origin, cookie: 'cv_dash=shared-password-cookie' };
+    expect((await app(null).request('/api/doordash/health', { headers })).status).toBe(401);
+    expect((await app('founder', false).request('/api/doordash/health', { headers })).status).toBe(401);
+  });
+
+  test('rejects another admin or user with the frozen error code', async () => {
+    for (const userId of ['other-admin', 'other-user']) {
+      const response = await app(userId).request('/api/doordash/health', { headers: origin });
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe('doordash_operator_only');
+    }
+  });
+
+  test('rejects absent or unapproved Origin', async () => {
+    expect((await app().request('/api/doordash/health')).status).toBe(403);
+    expect((await app().request('/api/doordash/health', { headers: { origin: 'https://evil.example' } })).status).toBe(403);
+  });
+
+  test('requires JSON and a fresh one-use nonce for every future non-GET route', async () => {
+    const path = '/api/doordash/future-mutation';
+    expect((await app().request(path, { method: 'POST', headers: origin })).status).toBe(415);
+    const headers = { ...origin, 'content-type': 'application/json' };
+    expect((await app().request(path, { method: 'POST', headers })).status).toBe(409);
+    const { nonce } = middleware.issueDoordashOperatorNonce('founder');
+    const confirmed = { ...headers, 'x-doordash-confirmation-nonce': nonce };
+    expect((await app().request(path, { method: 'POST', headers: confirmed })).status).toBe(200);
+    expect((await app().request(path, { method: 'POST', headers: confirmed })).status).toBe(409);
+  });
+
+  test('nonce cannot be used by a different account or at its expiry boundary', () => {
+    const foreign = middleware.issueDoordashOperatorNonce('other-admin');
+    expect(middleware.consumeDoordashOperatorNonce(foreign.nonce, 'founder')).toBe(false);
+    expect(middleware.consumeDoordashOperatorNonce(foreign.nonce, 'other-admin')).toBe(false);
+    const expired = middleware.issueDoordashOperatorNonce('founder');
+    const now = spyOn(Date, 'now').mockReturnValue(Date.parse(expired.expiresAt));
+    try {
+      expect(middleware.consumeDoordashOperatorNonce(expired.nonce, 'founder')).toBe(false);
+    } finally {
+      now.mockRestore();
+    }
+  });
+});

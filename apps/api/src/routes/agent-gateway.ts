@@ -66,6 +66,7 @@ import {
   creditBuildingRewardOncePerDay,
 } from '../services/building-reward';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
+import { resolveDoordashOperator, buildDoordashBridge } from '../services/doordash-operator';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import {
   resolveOrCreateUserByIdentity,
@@ -2565,10 +2566,36 @@ agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
+        // Deferred to here (past the 404/control-conflict/body-validation/no-runtime
+        // exits above): resolveAgentSession is a DB-backed liveness re-check, and this
+        // capability is founder-only, so it must never cost every other agent's chat
+        // message a round trip that only matters once we know we are actually going
+        // to build runtime services. See CLAUDE.md Priority #1 (web performance).
+        // KNOWN, ACCEPTED duplicate: resolveAgentSession() re-runs validateLiveAgentSession
+        // internally, which resolveSession() above already ran for this same sessionId — so
+        // a live agent chat pays one extra `agentBots.findFirst` lookup. Not deduped on
+        // purpose: doing so means either reimplementing the ledgerCapable rebind/theft
+        // re-validation inline (never reimplement a security primitive you don't own) or
+        // adding a pass-the-validated-session variant to require-auth-or-agent.ts, which is
+        // on the docs/hatcher-integration-spec.md §11 PROTECTED SURFACE and would bind the
+        // mock-Hatcher harness gate + a Codex adversarial pass for one indexed single-row
+        // lookup on a path already dominated by an LLM inference call by 2-3 orders of
+        // magnitude. Wrong trade — left as is, not missed.
+        const dd = await resolveAgentSession(sessionId);
+        const ddSubject = resolveDoordashOperator({
+          kind: 'agent',
+          userId: dd?.userId ?? null,
+          avatarId: dd?.avatarId ?? null,
+          ledgerCapable: dd?.ledgerCapable === true,
+          agentSessionId: sessionId,
+        });
         // Phase 4: inject services + bot data so Actions + Providers work
         // Adapter translates runtime's `avatarId` → ledger's `avatarId`.
         // See `services/runtime-services-adapter.ts`.
-        const services = buildRuntimeServices(db, { actorKind: 'agent' });
+        const services = buildRuntimeServices(db, {
+          actorKind: 'agent',
+          doordash: ddSubject ? buildDoordashBridge(ddSubject, parsed.data.message) : undefined,
+        });
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
         const botConfig = npcSimulation.getAgentBotConfig(sessionId);

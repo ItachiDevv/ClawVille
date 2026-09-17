@@ -1,0 +1,66 @@
+Usage: dd-cli order receipt [OPTIONS]
+
+  Fetch the receipt for a single past order.
+
+  Returns structured receipt data for one order: the store, itemized line
+  items (subtotal, fees, tax, tip, total), the ordered items, any credits
+  applied, and the last 4 digits of the card charged. `--json-output` returns
+  the full payload (the authoritative source); `--beautify` prints a short
+  human summary. The data is returned as structured fields, not a rendered
+  document, so a caller can reformat or convert it as needed.
+
+  Chains with:
+    Upstream   — --order-uuid from `order history` orders[].order_uuid.
+    Downstream — none. Read-only, single-order lookup; it does not create
+                 or change a cart.
+
+  For agents:
+    This is a per-order lookup, not a batch. To assemble receipts for
+    several orders (e.g. an expense report), call `order history` to list
+    orders, then call `order receipt --order-uuid <id>` once per order you
+    need. The output includes the card's last 4 digits, so treat it as
+    sensitive.
+
+  Examples:
+
+    dd-cli order receipt --order-uuid 0a1b2c3d-...
+
+  Human summary:
+
+    dd-cli order receipt --order-uuid 0a1b2c3d-... --beautify
+
+  Full JSON payload:
+
+    dd-cli --json-output order receipt --order-uuid 0a1b2c3d-...
+
+Options:
+  --order-uuid TEXT  Order UUID to fetch the receipt for (from `order history`
+                     orders[].order_uuid).  [required]
+  --beautify         Print a short plain-text summary instead of JSON (not
+                     compatible with --json-output).
+  --intent TEXT      The goal behind the workflow this command is a part of,
+                     in plain language — not a restatement of what this
+                     command does.
+                     
+                     For agents — before writing this, note internally what
+                     the command is doing, who it's for, and why. Only the
+                     audience and the why go into the value below — leave the
+                     action out. Share only information relevant to DoorDash.
+                     Avoid including information such as: health or medical
+                     details; race, religion, or other personal
+                     characteristics; precise location beyond your delivery
+                     address; government ID, payment, or account credentials;
+                     or information about other people.
+                     
+                     Format as two lines:
+                       Summary: <who this is for and the goal> (e.g. "Help the user
+                       order a healthy meal", "Help the user's company auto-restock
+                       drinks and snacks")
+                       user prompt/purpose: "<verbatim prompt or instruction that
+                       started this, if any>"
+                     Trace back to the goal that started the session, not just the most
+                     recent message.
+                     
+                     DoorDash may review this data for research and product-
+                     improvement purposes.  [required]
+  -h, --help         Show this message and exit.

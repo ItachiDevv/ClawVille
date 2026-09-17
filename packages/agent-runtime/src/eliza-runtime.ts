@@ -1290,7 +1290,10 @@ export class ElizaRuntime {
    * so the LLM knows what it can invoke.
    */
   private buildActionDescriptions(state: Record<string, any>): string {
-    const actions = clawvillePlugin.actions as Action[];
+    const actions = (clawvillePlugin.actions as Action[]).filter((action) => {
+      if (!action.available) return true;
+      try { return action.available(state); } catch { return false; }
+    });
     if (actions.length === 0) return '';
 
     const lines = actions.map((a) => {
@@ -1356,12 +1359,18 @@ export class ElizaRuntime {
     actionName: string,
     params: Record<string, string>,
     state: Record<string, any>,
+    budget: { total: number; money: number },
   ): Promise<ActionResult | null> {
     const actions = clawvillePlugin.actions as Action[];
     const action = actions.find((a) => a.name === actionName);
     if (!action) {
       console.warn(`[ElizaRuntime] Unknown action: ${actionName}`);
       return null;
+    }
+
+    // Availability is an authorization boundary; validate() remains fail-open.
+    if (action.available) {
+      try { if (!action.available(state)) return null; } catch { return null; }
     }
 
     try {
@@ -1378,6 +1387,14 @@ export class ElizaRuntime {
       } catch {
         // validate() failure is non-blocking — proceed with handler
       }
+
+      // Consume slots before the handler: failure or a throw can follow a write.
+      if (budget.total >= 6 || (action.writesMoney === true && budget.money >= 1)) {
+        console.warn(`[ElizaRuntime] Action ${actionName} exceeds the per-reply cap — skipping`);
+        return null;
+      }
+      budget.total++;
+      if (action.writesMoney === true) budget.money++;
 
       const options = { parameters: params };
       const result = await action.handler(this.runtime, message, state, options);
@@ -1516,18 +1533,21 @@ export class ElizaRuntime {
       });
 
       let responseText = result.text;
+      let persistedResponseText = responseText;
       const actionsExecuted: Array<{ name: string; result: ActionResult }> = [];
 
       // --- Action dispatch ---
       // Parse ALL [ACTION: ...] tags from the LLM response and execute sequentially
       if (providerState.services) {
         const invocations = this.parseActionInvocations(responseText);
+        const budget = { total: 0, money: 0 };
 
         for (const invocation of invocations) {
           const actionResult = await this.executeAction(
             invocation.actionName,
             invocation.params,
             providerState,
+            budget,
           );
 
           if (actionResult) {
@@ -1535,10 +1555,13 @@ export class ElizaRuntime {
           }
         }
 
-        if (actionsExecuted.length > 0) {
-          // Strip ALL action tags from the response text
+        if (invocations.length > 0) {
+          // Drop refused tags too; internal action syntax is never display text.
           responseText = responseText.replace(/\[ACTION:\s*\w+\([^)]*\)\]/g, '').trim();
+          persistedResponseText = responseText;
+        }
 
+        if (actionsExecuted.length > 0) {
           // Append all action results
           const actionTexts = actionsExecuted
             .map((a) => a.result.text)
@@ -1547,6 +1570,17 @@ export class ElizaRuntime {
             responseText = responseText
               ? `${responseText}\n\n${actionTexts.join('\n\n')}`
               : actionTexts.join('\n\n');
+          }
+
+          // DoorDash CLI ToS Addendum §§6.2/6.4: immediate display only.
+          // Build persistence separately; never copy ephemeral text or data to memory.
+          const persistentActionTexts = actionsExecuted
+            .map((a) => a.result.persist === false ? '[Action output omitted]' : a.result.text)
+            .filter(Boolean);
+          if (persistentActionTexts.length > 0) {
+            persistedResponseText = persistedResponseText
+              ? `${persistedResponseText}\n\n${persistentActionTexts.join('\n\n')}`
+              : persistentActionTexts.join('\n\n');
           }
         }
       }
@@ -1563,7 +1597,7 @@ export class ElizaRuntime {
           agentId,
           entityId: agentId,
           roomId,
-          content: { text: responseText, source: 'agent' } as Content,
+          content: { text: persistedResponseText, source: 'agent' } as Content,
           createdAt: Date.now(),
           metadata: {
             type: 'message',

@@ -40,11 +40,12 @@ import {
 // through unchanged.
 export function buildRuntimeServices(
   db: any,
-  opts?: { actorKind?: CovenantActorKind | null },
+  opts?: { actorKind?: CovenantActorKind | null; doordash?: unknown },
 ): ClawvilleServices {
   const actorKind = opts?.actorKind ?? null;
   return {
     db,
+    doordash: opts?.doordash,
     creditClawTokens: async (params) => {
       // The runtime spec has `metadata: Record<string, any>` (always present
       // and required); the ledger has `metadata?: Record<string, unknown>`

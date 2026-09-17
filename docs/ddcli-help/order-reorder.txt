@@ -1,0 +1,139 @@
+Usage: dd-cli order reorder [OPTIONS]
+
+  Reorder a previous order (creates a new cart from past-order items).
+
+  Chains with:
+    Upstream   — --order-uuid from `order history` orders[].order_uuid
+    Downstream — response cart_uuid →
+                   `order preview` (pricing breakdown; line items
+                    confirm what landed in the cart)
+  
+                   Then: ask the consumer whether to submit, and on
+                   explicit yes run `order submit` (places the order
+                   from the CLI on their default payment method on
+                   file). Submit is the canonical finalizer — keep
+                   the order in dd-cli's surface unless the consumer
+                   needs a browser-only edit.
+  
+                   Browser fallback: `order checkout-url` ONLY when
+                   the consumer needs an in-browser edit the CLI
+                   can't express (e.g. a payment method swap). Do not
+                   surface the URL by default.
+  
+                   Optional: `cart show` before preview if the
+                   consumer wants explicit item-level confirmation —
+                   out-of-stock and substituted items can drop
+                   silently from reorder. To detect drops, diff
+                   `order history` orders[N].items[] against the
+                   new cart's items; entries present in history
+                   but missing from the cart fell off.
+
+  For agents — pre-flight: open cart at same store:
+    A consumer can only have ONE open cart per store, and
+    reorder always creates a fresh cart. Before reordering,
+    look up the original order's store id (from
+    `dd-cli --json-output order history` — find
+    orders[N].store_id in the JSON response) and call
+    `dd-cli cart list --store-id <id>`. If a cart already
+    exists at that store, surface it and ask: keep it (skip
+    reorder) or replace it (`cart delete` the existing one
+    first, then reorder)? Don't silently overwrite.
+
+  For agents:
+    After a successful reorder (response success: true), AUTO-CHAIN
+    these read-only calls without pausing for consumer confirmation
+    — both are no-charge and the intent ("see what I just reordered
+    + the pricing + which payment method, if visible") is implied
+    by reorder:
+  
+      1. dd-cli order preview --cart-uuid <cart_uuid> --beautify
+         (read-only; surfaces pricing and the cart's current items.
+         To call out silent drops, diff the original
+         `order history` orders[N].items[] against these items —
+         preview does not surface drops directly. Do NOT pass
+         `--fulfillment` on this auto-chain step — that changes
+         the cart's fulfillment mode, which is a state mutation the
+         consumer hasn't asked for.)
+      2. dd-cli payment-method list
+         (surface the default card brand + last4 to the consumer so
+         they know what will be charged. Match
+         default_payment_method_id to cards[].payment_method_id.)
+  
+    Surface BOTH outputs to the consumer in a single response, then
+    ASK whether to submit — e.g. "Want me to place this order on
+    your <brand> ending in <last4>?". `order submit` runs ONLY on
+    an explicit yes from the consumer (any clear approval — "submit",
+    "place the order", "go ahead", "do it" — not silence). Submit
+    charges the card immediately and is not idempotent.
+  
+    Do NOT auto-call `order checkout-url`. The browser URL is a
+    fallback path, not a default — surface it ONLY when the
+    consumer asks for an in-browser edit the CLI can't express
+    (e.g. a payment method swap). Otherwise stay on
+    the submit-from-CLI path.
+  
+    If `payment-method list` is unavailable — the call fails, the
+    default doesn't resolve in `cards[]`, or `cards[]` is empty —
+    the account default might be a wallet (Apple Pay, Google Pay,
+    PayPal, etc.) the CLI can't see. Lead with `order checkout-url`
+    so the consumer confirms the default in the browser. If the
+    consumer insists on submitting anyway, run submit on their
+    explicit yes — follow the degraded-path rules in `order submit
+    --help` and don't claim a specific card will be charged.
+  
+    Halt the chain (do NOT continue to preview, do NOT ask about
+    submit, do NOT surface `order checkout-url`) when:
+      * reorder returns success: false → show fail_reason, suggest
+        picking a different past order. Do not preview.
+      * preview's items differ from the original `order history`
+        orders[N].items[] (silent drops) → call out the dropped
+        items to the consumer FIRST and re-confirm before asking
+        whether to submit.
+
+  Not every past order can be reordered (virtual fulfillment, shop-anywhere,
+  ticketing, and certain group orders are ineligible). Check the response for
+  `success: false + fail_reason` and pick a different order if it fails.
+
+  Fulfillment inheritance:
+    The reordered cart inherits the original order's fulfillment mode
+    (pickup vs delivery) — the consumer mental model defaults to
+    "delivery", so a reordered pickup order silently lands as a pickup
+    cart. To verify the inherited mode after reorder, run
+    `dd-cli order preview --cart-uuid <uuid> --beautify` and read the
+    `Fulfillment:` line. To switch the cart to delivery before paying,
+    pass `--fulfillment delivery` on the next `order preview` (and the
+    same on `order submit`).
+
+  Example:
+
+    dd-cli order reorder --order-uuid abc123-def456
+
+Options:
+  --order-uuid TEXT  Order UUID to reorder (from `order history`
+                     orders[].order_uuid).  [required]
+  --intent TEXT      The goal behind the workflow this command is a part of,
+                     in plain language — not a restatement of what this
+                     command does.
+                     
+                     For agents — before writing this, note internally what
+                     the command is doing, who it's for, and why. Only the
+                     audience and the why go into the value below — leave the
+                     action out. Share only information relevant to DoorDash.
+                     Avoid including information such as: health or medical
+                     details; race, religion, or other personal
+                     characteristics; precise location beyond your delivery
+                     address; government ID, payment, or account credentials;
+                     or information about other people.
+                     
+                     Format as two lines:
+                       Summary: <who this is for and the goal> (e.g. "Help the user
+                       order a healthy meal", "Help the user's company auto-restock
+                       drinks and snacks")
+                       user prompt/purpose: "<verbatim prompt or instruction that
+                       started this, if any>"
+                     Trace back to the goal that started the session, not just the most
+                     recent message.
+                     
+                     DoorDash may review this data for research and product-
+                     improvement purposes.  [required]
+  -h, --help         Show this message and exit.

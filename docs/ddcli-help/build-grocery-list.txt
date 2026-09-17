@@ -1,0 +1,171 @@
+Usage: dd-cli build-grocery-list [OPTIONS]
+
+  Create or replace a grocery shopping list (raw ingredients, pantry items).
+
+  SCOPE — GROCERY ONLY:
+    This resolves raw ingredients and pantry / household goods
+    (milk, eggs, bread, produce, cleaning supplies). It does NOT
+    order prepared food from restaurants — for that, use `search`
+    + `menu` + `cart add-items` → `order submit`. Don't route
+    "I want pizza" / "get me a burrito" / "order tacos" here.
+
+  STATELESS — every call REPLACES the existing list:
+    Every call replaces the existing list — there is no append
+    semantic. Callers MUST send the COMPLETE updated list on every invocation.
+    To add or remove an item, re-run with the full list updated in your
+    conversation context. There is no `grocery add` / `grocery remove`
+    because dd-cli does not track state.
+
+  Quantity rules:
+    * Count-based items: integer quantity (e.g. `{"name":"milk","quantity":2}`).
+    * Weight-based items (meat, deli, produce by lb): decimal
+      quantities allowed (e.g. `{"name":"ground beef","quantity":0.5}`
+      = 0.5 lb). The decimal only resolves as weight when the
+      response's `purchase_type` is `PURCHASE_TYPE_MEASUREMENT`;
+      otherwise it's read as a unit count. Check the response per
+      item to confirm.
+    * Eggs are sold by the dozen: `quantity: 1` = 1 dozen, NOT 12 eggs.
+    * Quantity defaults to 1 when omitted.
+
+  Chains with:
+    Upstream   — --items-json items[] from the consumer's stated list;
+                 --store-id from `cart list` carts[].store_id or any
+                 known grocery store id; --desired-mx-name from the
+                 consumer's stated store preference.
+    Downstream — Chain into `cart add-items` to build a real cart. For
+                 each result item, build a cart entry as
+                 `{"item_id": <items[].id>, "item_name": <items[].name>,
+                 "quantity": <items[].quantity>}` and pass via
+                 `--items-json` with `--store-id <items[].store_id>`.
+                 Pass `--menu-id` from this response's top-level
+                 `menu_id` field when present; if it's null, call
+                 `item-details --store-id <items[0].store_id> --item-id
+                 <items[0].id>` and read `menu_id` from THAT response.
+                 available_stores[].store_id → re-run this command with
+                 a different --store-id to switch stores.
+
+  Fields surfaced per item:
+    * id                — item id for `cart add-items`
+    * name              — resolved product name
+    * price             — current price (USD)
+    * original_price    — pre-discount price (when on sale)
+    * discount /
+      discount_text     — when applicable
+    * quantity          — count or weight (decimal for measurement items)
+    * purchase_type     — `PURCHASE_TYPE_MEASUREMENT` for weight-based
+    * measurement_unit  — lb / oz / kg for weight-based items
+    * increment         — minimum step for weight items
+    * substitutions[]   — backend-suggested alternates if out of stock
+
+  Top-level response also includes `store_name`, `menu_id` (for the selected
+  store), `delivery_time`, `delivery_address`, `available_stores[]` (nearby
+  stores — includes the selected store; switch by re-running with a different
+  `--store-id`), `message` (carries partial-match notes like "couldn't find:
+  bananas" on success too), and `session_id` / `trace_id` for correlation. The
+  selected store's `store_id` is NOT on the wire as a top-level field — read
+  it off any `items[].store_id` or look the `store_name` up in
+  `available_stores[]`.
+
+  --beautify renders: header (`store_name` + derived selected
+  `store_id` + `menu_id`, `delivery_time`, `delivery_address`,
+  plus a `Note:` line for the upstream `message` when present),
+  each item's `name` + `quantity` (with `measurement_unit` for
+  weight items) + `price` + `id` + `increment` (when set), and
+  "Nearby stores" with `name` + `store_id` + `delivery_time` per
+  store (includes the selected store). Other wire fields
+  (`original_price`, `discount`, `purchase_type`,
+  `substitutions[]`, `session_id`, `trace_id`) are available via
+  --json-output.
+
+  For agents — vague-request bound:
+    For prompts like "stock my fridge" / "get me groceries" with no
+    explicit list, infer a reasonable list but CAP AT 20 items. Surface
+    what you picked back to the consumer before assuming agreement.
+
+  For agents — verify resolved names before chaining:
+    Read `items[].name` from the RESPONSE back to the consumer (NOT
+    the input string you sent) and confirm before chaining into
+    `cart add-items`. Don't assume a 1:1 match.
+
+  For agents — no widget in a terminal:
+    dd-cli strips `widget_type` and `assistant_instructions` from
+    the response before printing — the structured response you see
+    does not include them. Run with `--json-output` for the full
+    envelope.
+
+  Caveats:
+    * Stateless — every call replaces; always pass the complete list.
+    * `available_stores[]` is the "you could switch to this" hint;
+      re-run with `--store-id <other>` to actually switch.
+    * `servings` is display-only; it does NOT change which items get
+      resolved.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Examples:
+
+    dd-cli build-grocery-list --items-json '[{"name":"milk"},{"name":"eggs"}]'
+
+  With store filter:
+
+    dd-cli build-grocery-list --items-json '[{"name":"milk"}]' --desired-mx-
+    name "Whole Foods"
+
+  Weight-based item:
+
+    dd-cli build-grocery-list --items-json '[{"name":"ground
+    beef","quantity":0.5}]'
+
+  Human summary:
+
+    dd-cli build-grocery-list --items-json '[{"name":"milk"}]' --beautify
+
+  Full structured response:
+
+    dd-cli --json-output build-grocery-list --items-json '[{"name":"milk"}]'
+
+Options:
+  --items-json TEXT       JSON array of items, e.g.
+                          '[{"name":"milk"},{"name":"ground
+                          beef","quantity":0.5}]'. Each entry needs `name`
+                          (required) and optional `quantity` (default 1;
+                          decimals allowed for weight-based items like meat or
+                          produce sold by lb).  [required]
+  --store-id TEXT         Optional: pin to a specific store ID (e.g. '12345').
+                          Takes precedence over --desired-mx-name.
+  --desired-mx-name TEXT  Optional: filter to a merchant name (e.g. 'Whole
+                          Foods', 'Safeway', 'Target'). Forwarded verbatim to
+                          the upstream tool's `desired_mx_name` arg.
+  --servings INTEGER      Optional: recipe servings count. Pass only when the
+                          consumer says "4 servings" / "for X people" /
+                          "recipe". Display-only — does NOT change which items
+                          get resolved.
+  --beautify              Print a short plain-text summary instead of JSON
+                          (not compatible with --json-output).
+  --intent TEXT           The goal behind the workflow this command is a part
+                          of, in plain language — not a restatement of what
+                          this command does.
+                          
+                          For agents — before writing this, note internally
+                          what the command is doing, who it's for, and why.
+                          Only the audience and the why go into the value
+                          below — leave the action out. Share only information
+                          relevant to DoorDash. Avoid including information
+                          such as: health or medical details; race, religion,
+                          or other personal characteristics; precise location
+                          beyond your delivery address; government ID,
+                          payment, or account credentials; or information
+                          about other people.
+                          
+                          Format as two lines:
+                            Summary: <who this is for and the goal> (e.g. "Help the user
+                            order a healthy meal", "Help the user's company auto-restock
+                            drinks and snacks")
+                            user prompt/purpose: "<verbatim prompt or instruction that
+                            started this, if any>"
+                          Trace back to the goal that started the session, not just the most
+                          recent message.
+                          
+                          DoorDash may review this data for research and
+                          product-improvement purposes.  [required]
+  -h, --help              Show this message and exit.

@@ -1,0 +1,53 @@
+Usage: dd-cli cart remove-item [OPTIONS]
+
+  Remove a single line item from a cart by cart_item_id.
+
+  Removes one line but keeps the cart available for future additions
+  (cart_uuid stays valid). The response's `cart` carries `group_cart_url` for
+  group carts (same as `cart show`); `null` for personal carts.
+
+  To CHANGE A QUANTITY (rather than drop the item entirely), the cleaner path
+  is `cart add-items` — see its docstring for delta-add semantics.
+
+  Chains with:
+    Upstream   — --cart-uuid from `cart add-items` / `order reorder`;
+                 --cart-item-id from `cart show` items[].id (NOT menu item_id)
+    Downstream — cart_uuid stays valid; verify with `cart show`, then proceed
+                 to `order preview` / `order submit` / `order checkout-url`
+
+  Example:
+
+    dd-cli cart remove-item --cart-uuid 0a1b2c3d-... --cart-item-id line_42
+
+Options:
+  --cart-uuid TEXT     Cart UUID from a previous `cart add-items` call.
+                       [required]
+  --cart-item-id TEXT  Cart-line id from `cart show` items[].id field (NOT the
+                       menu item_id; call `cart show` first to get this).
+                       [required]
+  --intent TEXT        The goal behind the workflow this command is a part of,
+                       in plain language — not a restatement of what this
+                       command does.
+                       
+                       For agents — before writing this, note internally what
+                       the command is doing, who it's for, and why. Only the
+                       audience and the why go into the value below — leave
+                       the action out. Share only information relevant to
+                       DoorDash. Avoid including information such as: health
+                       or medical details; race, religion, or other personal
+                       characteristics; precise location beyond your delivery
+                       address; government ID, payment, or account
+                       credentials; or information about other people.
+                       
+                       Format as two lines:
+                         Summary: <who this is for and the goal> (e.g. "Help the user
+                         order a healthy meal", "Help the user's company auto-restock
+                         drinks and snacks")
+                         user prompt/purpose: "<verbatim prompt or instruction that
+                         started this, if any>"
+                       Trace back to the goal that started the session, not just the most
+                       recent message.
+                       
+                       DoorDash may review this data for research and product-
+                       improvement purposes.  [required]
+  -h, --help           Show this message and exit.

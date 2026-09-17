@@ -1,0 +1,111 @@
+Usage: dd-cli order history [OPTIONS]
+
+  Show recent order history.
+
+  Defaults: --max 50 --days 90.
+
+  Chains with:
+    Upstream   — none
+    Downstream — orders[].order_uuid → `order reorder --order-uuid`
+                 orders[].store_id   → `store-details --store-id` only when
+                                       the caller wants business metadata
+                                       beyond name (vertical, image URL,
+                                       menu_id). `order history` already
+                                       returns `store_name` directly.
+                                       For a delivery ETA at the store,
+                                       run `order preview` on a cart
+                                       there instead — its
+                                       `delivery_availability` block is
+                                       the authoritative real-time path.
+
+  To attempt a reorder, call `order reorder` and handle any failure in the
+  response. `is_reorderable` is reliable — orders flagged false really cannot
+  be reordered, so it's fine to skip them. Edge-case failures (closed stores,
+  out-of-stock items) still only surface at reorder-attempt time, so handle
+  the response.
+
+  For fulfillment-shape-specific prompts ("reorder my last pickup", "reorder
+  my last grocery"), filter on `orders[].fulfillment_type`
+  (`FULFILLMENT_TYPE_DX_DELIVERY`, `FULFILLMENT_TYPE_PICKUP`, etc.) or
+  `orders[].order_target` (`ORDER_TARGET_RESTAURANT`, `ORDER_TARGET_GROCERY`)
+  before invoking `order reorder`.
+
+  When the user is asking about a specific past order (e.g. "find my order
+  from <store> last month"), scan the full returned list — don't just
+  summarize the top few. The response includes a `page_full` boolean:
+
+    * `page_full=True` → the page hit --max within the window. Re-run with
+      a higher --max (up to 100) before concluding the order doesn't exist.
+    * Still missing at --max=100 → the named order is older than --days.
+      Widen --days (max 365) and re-run. Orders older than 365 days
+      aren't returned by this endpoint.
+
+  Caveats:
+    * Test orders are filtered out upstream and won't appear in results.
+    * Group orders appear only when --include-group-order is passed.
+    * Default --max is 50. If `page_full` is True in the response, older
+      orders in the time window may have been dropped from the page.
+
+  Examples:
+
+    dd-cli order history
+
+  Last 5 orders from the past week:
+
+    dd-cli order history --max 5 --days 7
+
+  Broadest practical window:
+
+    dd-cli order history --days 365 --max 100
+
+  Include group orders:
+
+    dd-cli order history --include-group-order
+
+  Human summary:
+
+    dd-cli order history --beautify
+
+  Full JSON envelope:
+
+    dd-cli --json-output order history
+
+Options:
+  --max INTEGER RANGE    Max orders to return (1-100).  [default: 50;
+                         1<=x<=100]
+  --days INTEGER RANGE   Time window in days. Default 90; client-capped at 365
+                         (beyond which no additional orders are returned).
+                         Passing 0 triggers the gateway's own 30-day fallback,
+                         not unrestricted history. The endpoint caps at --max
+                         orders within the window.  [default: 90; 0<=x<=365]
+  --include-group-order  Include regular orders and group orders where you
+                         were the host or a participant.
+  --beautify             Print a short plain-text summary instead of JSON (not
+                         compatible with --json-output).
+  --intent TEXT          The goal behind the workflow this command is a part
+                         of, in plain language — not a restatement of what
+                         this command does.
+                         
+                         For agents — before writing this, note internally
+                         what the command is doing, who it's for, and why.
+                         Only the audience and the why go into the value below
+                         — leave the action out. Share only information
+                         relevant to DoorDash. Avoid including information
+                         such as: health or medical details; race, religion,
+                         or other personal characteristics; precise location
+                         beyond your delivery address; government ID, payment,
+                         or account credentials; or information about other
+                         people.
+                         
+                         Format as two lines:
+                           Summary: <who this is for and the goal> (e.g. "Help the user
+                           order a healthy meal", "Help the user's company auto-restock
+                           drinks and snacks")
+                           user prompt/purpose: "<verbatim prompt or instruction that
+                           started this, if any>"
+                         Trace back to the goal that started the session, not just the most
+                         recent message.
+                         
+                         DoorDash may review this data for research and
+                         product-improvement purposes.  [required]
+  -h, --help             Show this message and exit.

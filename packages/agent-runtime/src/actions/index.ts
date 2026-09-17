@@ -19,6 +19,10 @@ export { listBuildingsAction } from './list-buildings';
 export { acceptQuestAction } from './accept-quest';
 export { submitQuestAction } from './submit-quest';
 export { claimBountyAction } from './claim-bounty';
+export {
+  doordashAddressesAction, doordashSearchAction, doordashMenuAction,
+  doordashOrderHistoryAction, doordashOrderStatusAction,
+} from './doordash';
 
 import { visitBuildingAction } from './visit-building';
 import { buyItemAction } from './buy-item';
@@ -28,9 +32,13 @@ import { listBuildingsAction } from './list-buildings';
 import { acceptQuestAction } from './accept-quest';
 import { submitQuestAction } from './submit-quest';
 import { claimBountyAction } from './claim-bounty';
+import {
+  doordashAddressesAction, doordashSearchAction, doordashMenuAction,
+  doordashOrderHistoryAction, doordashOrderStatusAction,
+} from './doordash';
 import type { Action } from './types';
 
-/** All 8 ClawVille actions, ready to register with the ElizaOS runtime. */
+/** All ClawVille actions; optional capabilities control per-runtime visibility. */
 export const allActions: Action[] = [
   visitBuildingAction,
   buyItemAction,
@@ -40,4 +48,9 @@ export const allActions: Action[] = [
   acceptQuestAction,
   submitQuestAction,
   claimBountyAction,
+  doordashAddressesAction,
+  doordashSearchAction,
+  doordashMenuAction,
+  doordashOrderHistoryAction,
+  doordashOrderStatusAction,
 ];

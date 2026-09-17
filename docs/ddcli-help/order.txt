@@ -1,0 +1,46 @@
+Usage: dd-cli order [OPTIONS] COMMAND [ARGS]...
+
+  Browse order history and move a cart through preview/submit.
+
+  Includes `order reorder` to create a new cart from a past order; feed the
+  returned cart UUID into `order preview`, `order submit`, or `order checkout-
+  url`.
+
+  For agents — work-benefits detection (Company Payment):
+    Pass `--include-work-benefits` on `order preview` whenever there is any
+    signal the consumer might have a work / company / employee budget.
+    Better to over-trigger than miss — over-asking is cheap; missing
+    means the consumer pays out of pocket when they had a budget
+    available.
+
+      Signals that should trigger --include-work-benefits:
+        * Address signal: saved-address label is "Work" / "Office" /
+          "HQ", or the address text contains office tokens ("Suite",
+          "Floor", "Bldg", "HQ").
+        * Consumer-utterance signals — ANY of these phrases:
+            "work credit" / "work benefits" / "work lunch" /
+            "work account" / "work budget" / "work meal" /
+            "employee benefits" / "employee lunch" /
+            "employee budget" / "employee credit" / "employee perks" /
+            "company card" / "company lunch" / "company benefits" /
+            "company budget" / "company account" /
+            "team budget" / "team lunch" / "team meal" /
+            "office delivery" / "office lunch" / "office order" /
+            "expense this" / "expense it" / "bill to work" /
+            "charge to work" / "use my work account" /
+            "DashPass for work" / "corporate" / "corp lunch"
+
+    After the preview returns, see `order preview --help` for the   full flow
+    on filtering eligible budgets and asking the consumer   before applying.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  checkout-url  Get a browser checkout URL for a cart (browser fallback;...
+  history       Show recent order history.
+  preview       Preview order pricing for a cart (no charge; read-only...
+  receipt       Fetch the receipt for a single past order.
+  reorder       Reorder a previous order (creates a new cart from...
+  status        Check the status of a submitted order, from processing...
+  submit        Submit an order.

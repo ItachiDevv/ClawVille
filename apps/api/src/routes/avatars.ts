@@ -36,6 +36,7 @@ import { agentAutonomyDriver } from '../services/agent-autonomy-driver';
 // its only use in this file — was retired. Re-add if a new CT credit path lands here.
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
+import { resolveDoordashOperator, buildDoordashBridge } from '../services/doordash-operator';
 import { ensureWalletWithFirstTimeSecret, getWalletAddress } from '../services/wallet-service';
 import {
   provisionAvatarAgent,
@@ -1199,7 +1200,11 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
   // Build state for Providers + Actions.
   // Adapter translates runtime's `avatarId` field → ledger's `avatarId` field.
   // See `services/runtime-services-adapter.ts` for rationale.
-  const services = buildRuntimeServices(db, { actorKind: 'human' });
+  const ddSubject = resolveDoordashOperator({ kind: 'human', userId: user.id, avatarId: avatar.id });
+  const services = buildRuntimeServices(db, {
+    actorKind: 'human',
+    doordash: ddSubject ? buildDoordashBridge(ddSubject, result.data.content) : undefined,
+  });
 
   let worldSnapshot: any = null;
   try {

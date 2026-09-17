@@ -1,0 +1,271 @@
+Usage: dd-cli cart add-items [OPTIONS]
+
+  Add items to a cart. Without `--cart-uuid`, items APPEND to the existing
+  open cart at this store if one exists; a new cart is created ONLY when none
+  does.
+
+  For agents — run `cart list --store-id <id>` BEFORE calling without
+  `--cart-uuid` to surface any existing cart to the consumer. See the
+  deeper "pre-flight" section below. Skipping this check is the most
+  common way to silently add items to a cart the consumer forgot about.
+
+  The tool is STATEFUL — pass the returned `cart_uuid` on every subsequent
+  call to keep building the same cart.
+
+  For agents — pre-flight: existing cart at this store:
+    A consumer can only have ONE open cart per store. Before
+    creating a NEW cart (no `--cart-uuid` passed), call
+    `dd-cli cart list --store-id <store_id>`. If a cart already
+    exists at this store, surface it and ask: extend it (pass
+    its cart_uuid here) or replace it (`cart delete` the old
+    one first, then re-run without `--cart-uuid`)? Don't
+    silently add items to a cart they may have forgotten about.
+
+  For agents — group carts:
+    Pass `--group-cart` to make this a shareable group cart instead
+    of a personal one. Unlike `--fulfillment`, it matters whether or
+    not `--cart-uuid` is set:
+      * No `--cart-uuid` — creates a new group cart rather than a
+        personal cart.
+      * `--cart-uuid` pointing at another consumer's group cart —
+        attaches the caller as a participant before items are added.
+    Pass `--group-cart-url` instead to join by short URL on the first
+    add. It implies group-cart mode, so `--group-cart` is ignored. Use
+    the returned `cart_uuid` afterward. URL mode cannot be used with
+    `--cart-uuid` (another cart target) or `--spend-limit-cents`
+    (new carts only).
+    When the resulting cart is a group cart, the response's `cart`
+    carries `group_cart_url` — share that link with the other
+    participants. It's `null` for personal carts.
+
+  For agents - adding items for a guest:
+    Only the authenticated group-cart host can use `--guest-json` to add
+    these items for a guest participant. Use exactly one JSON shape:
+      * New guest: `{"first_name":"Alice","last_name":"Chen"}` with
+        `--cart-uuid` or `--group-cart-url` for an existing group cart.
+      * Same guest again: `{"guest_token":"<token>"}` with the same
+        group's canonical `cart_uuid` returned by the initial add.
+    Do not mix names with a token or resend names when reusing a guest. Do
+    not use `--group-cart` / `--spend-limit-cents` to create a cart in this
+    flow.
+    Retain the first response's `cart_uuid` and the `guest_token` from the
+    acted-for subcart for later adds. `cart show` never returns the token.
+    Keep both values for command chaining, but never show the token to the
+    consumer. Always inspect `item_errors[]` before retrying because adds
+    are additive and a retry can duplicate items that already succeeded.
+
+  Items MUST belong to the specified store_id. Two paths by vertical:
+    * Restaurants: call `dd-cli menu --store-id <id>` first; pass
+      items[].item_id + --menu-id from that response.
+    * Grocery / retail: items come from `build-grocery-list` items[].id
+      or `find-items` results[].item_id. Get --menu-id from
+      `build-grocery-list` response.menu_id when available; if null,
+      call `dd-cli item-details --store-id <id> --item-id <items[0].id>`
+      and read `menu_id` from that response.
+
+  Semantics: APPEND (additive on quantity, merged by item_id).
+    * New item_id → new cart line
+    * Existing item_id (and same modifiers) → backend SUMS quantities into
+      the existing line. e.g. cart has Corn Soup ×1, then call with
+      Corn Soup ×3 → cart has Corn Soup ×4 (one line, qty 4).
+
+  To SET QUANTITY to a target N on an existing cart:
+    The backend doesn't have target-quantity. Pick one:
+    * Delta add: `cart show` → see current qty → call add-items with
+      (target − current). e.g. cart has ×1, want ×3 → add ×2.
+    * Remove + add: `cart remove-item --cart-item-id <line_id>` then
+      `cart add-items` at the new target qty.
+
+  To REMOVE an item entirely: `cart remove-item --cart-uuid <cart_uuid>
+  --cart-item-id <items[].id from `cart show`>`. cart_uuid is preserved;
+  cart_item_id is the cart-line `id`, NOT item_id.
+
+  To EMPTY the cart: `cart delete --cart-uuid <cart_uuid>` (treat the cart as
+  abandoned afterward — start fresh with a new add-items).
+
+  After ANY cart mutation, re-run `order preview` to refresh pricing.
+
+  Customizations (nested_options):
+    Items support nested_options[] for modifiers (size, sauce, no
+    pickles, etc.). Each option entry needs `id`, `name`, `quantity`,
+    and can recursively include `options[]` for combo meals where a
+    choice itself has required selections (e.g. a combo meal that includes choice of tacos
+    or a burrito, and the burrito has its own protein/rice/beans choices). Get option IDs from `menu` or
+    `restaurant-item-details` (restaurants) / `item-details` (retail/grocery).
+
+  Response shape:
+    * On full success: `success: true`, `cart_uuid`, `cart` (store name +
+      items[] with names/quantities/prices, plus `group_cart_url` for
+      group carts — share it with participants; `null` for personal
+      carts). Use the cart object for user-facing summaries; never echo
+      raw IDs.
+    * On partial failure: `item_errors[]` where each entry mirrors the
+      requested item plus an `error_message`. Items not in `item_errors`
+      succeeded and ARE in the cart.
+    * When adding for a guest, the acted-for subcart carries `guest_token`
+      only in this response. Retain it with `cart_uuid` for later adds.
+
+  Required-options failures:
+    If an item needs a required customization the consumer hasn't picked,
+    the response returns `success: false` with `item_errors[]` where each
+    entry has `required_options[]` listing the choices. Each required
+    option has `name`, `min_num_options`, `max_num_options`, and
+    `options[]` with available choices (`id` + `name`). The agent should
+    ask the consumer which options they want, then re-call `cart add-items`
+    with `nested_options[]` filled in.
+
+  Chains with:
+    Upstream   — Restaurants: --store-id + --menu-id from `menu`;
+                 --items-json items[].item_id (and nested_options[].id)
+                 from `menu` or `restaurant-item-details`.
+                 Grocery / retail: --store-id from `build-grocery-list`
+                 items[].store_id or `find-items` results; --menu-id
+                 from `build-grocery-list` response.menu_id (fall back
+                 to `item-details` response.menu_id when null);
+                 --items-json item_ids from `build-grocery-list`
+                 items[].id or `find-items` results[].item_id.
+                 optional --cart-uuid from a prior `cart add-items` to
+                 keep adding to the same cart
+    Downstream — response cart_uuid → `cart show` (verify), then
+                 `order preview` (pricing), then `order submit` /
+                 `order checkout-url`. Surface the cart_uuid back to the
+                 consumer so the next step is one paste away.
+
+  Examples:
+
+    # Join by short URL on the first add:
+    dd-cli cart add-items --store-id <store_id> --menu-id <menu_id>
+      --items-json '<items_json>' --group-cart-url "https://drd.sh/cart/test-code/"
+
+    # Add more items using the returned cart_uuid:
+    dd-cli cart add-items --store-id <store_id> --menu-id <menu_id>
+      --items-json '<items_json>' --cart-uuid <returned_cart_uuid>
+
+    # Restaurant — no modifiers:
+    dd-cli cart add-items --store-id 928163 --menu-id 1657275
+      --items-json '[{"item_id":"23266866023","item_name":"Salad","quantity":1}]'
+
+    # Grocery / retail — menu_id from build-grocery-list (or item-details fallback):
+    dd-cli cart add-items --store-id 1741590 --menu-id 2194141
+      --items-json '[{"item_id":"21136555352","item_name":"Honey Maid Graham Crackers","quantity":1}]'
+
+    # 1-level customizations — flat nested_options list.
+    dd-cli cart add-items --store-id 718681 --menu-id 43666146
+      --items-json '[{"item_id":"44307317894","item_name":"Boba Tea","quantity":1,
+        "nested_options":[
+          {"id":"51295486523","name":"Regular Ice","quantity":1},
+          {"id":"51295486519","name":"80% Sugar","quantity":1},
+          {"id":"51295486524","name":"Boba","quantity":1}
+        ]}]'
+
+    # 2-level customizations — sub-choice requires its own selection
+    dd-cli cart add-items --store-id <store_id> --menu-id <menu_id>
+      --items-json '[{"item_id":"<item_id>","item_name":"Combo","quantity":1,
+        "nested_options":[
+          {"id":"<protein_id>","name":"Chicken","quantity":1,
+           "options":[{"id":"<sauce_id>","name":"Teriyaki","quantity":1}]}
+        ]}]'
+
+Options:
+  --store-id TEXT                 Store ID. Get from `dd-cli search` or `dd-
+                                  cli order history` (e.g. '928163').
+                                  [required]
+  --menu-id TEXT                  Menu ID for THIS store. For restaurants —
+                                  from `dd-cli menu --store-id <id>`
+                                  response.menu_id (e.g. '1657275'). For
+                                  grocery / retail — from `build-grocery-list`
+                                  response.menu_id when available; if null,
+                                  from `dd-cli item-details --store-id <id>
+                                  --item-id <id>` response.menu_id. Must match
+                                  the store_id.  [required]
+  --items-json TEXT               JSON array of items, e.g. '[{"item_id":"abc"
+                                  ,"item_name":"X","quantity":2}]'. Each entry
+                                  needs item_id + item_name + quantity; may
+                                  include nested_options[] for customizations
+                                  (each entry needs id + name + quantity,
+                                  recursively via options[] for combo meals).
+                                  For restaurants, items[].item_id values come
+                                  from `menu` or `restaurant-item-details`.
+                                  For grocery / retail, they come from `build-
+                                  grocery-list` items[].id or `find-items`
+                                  results[].item_id.  [required]
+  --cart-uuid TEXT                Cart UUID from a previous `cart add-items`
+                                  call. Without this flag, items APPEND to the
+                                  existing open cart at this store if one
+                                  exists; a new cart is created only when none
+                                  does. Run `cart list --store-id <id>` first
+                                  to confirm there's no surprise existing
+                                  cart.
+  --group-cart-url URL            Join an existing group cart on the first add
+                                  using its DoorDash short URL. Use the
+                                  returned cart_uuid afterward. Cannot be used
+                                  with --cart-uuid (another cart target) or
+                                  --spend-limit-cents (new carts only). When
+                                  set, --group-cart is ignored.
+  --fulfillment [delivery|pickup]
+                                  Fulfillment mode at cart creation. New carts
+                                  default to delivery; pass `--fulfillment
+                                  pickup` for a pickup cart. Has no effect
+                                  when `--cart-uuid` or `--group-cart-url` is
+                                  set (existing carts already have a mode) —
+                                  to flip an existing cart's mode, use `order
+                                  preview --fulfillment <X>` instead.
+                                  [default: delivery]
+  --group-cart                    Make this a shareable group cart instead of
+                                  a personal one. Unlike --fulfillment, this
+                                  matters whether or not --cart-uuid is set:
+                                  without --cart-uuid it creates a new group
+                                  cart; with --cart-uuid pointing at another
+                                  consumer's group cart, it attaches the
+                                  caller as a participant before items are
+                                  added. When --group-cart-url is set, this
+                                  flag is ignored because the URL already
+                                  implies group-cart mode.
+  --spend-limit-cents INTEGER RANGE
+                                  Per-participant spending limit in cents for
+                                  a new host-pays-all group cart (2500 =
+                                  $25.00). Omit this option for unlimited
+                                  participant spending. Requires --group-cart
+                                  and cannot be used with --cart-uuid or
+                                  --group-cart-url because both identify an
+                                  existing cart.  [1<=x<=2147483647]
+  --guest-json JSON               Guest participant that the authenticated
+                                  group-cart host is adding these items for.
+                                  Pass JSON with exactly first_name and
+                                  last_name to create a guest for an existing
+                                  cart identified by --cart-uuid or --group-
+                                  cart-url. To add more items for that guest,
+                                  pass only guest_token and use --cart-uuid
+                                  with the canonical cart UUID from the
+                                  initial add. Cannot be used with group-cart
+                                  creation options.
+  --intent TEXT                   The goal behind the workflow this command is
+                                  a part of, in plain language — not a
+                                  restatement of what this command does.
+                                  
+                                  For agents — before writing this, note
+                                  internally what the command is doing, who
+                                  it's for, and why. Only the audience and the
+                                  why go into the value below — leave the
+                                  action out. Share only information relevant
+                                  to DoorDash. Avoid including information
+                                  such as: health or medical details; race,
+                                  religion, or other personal characteristics;
+                                  precise location beyond your delivery
+                                  address; government ID, payment, or account
+                                  credentials; or information about other
+                                  people.
+                                  
+                                  Format as two lines:
+                                    Summary: <who this is for and the goal> (e.g. "Help the user
+                                    order a healthy meal", "Help the user's company auto-restock
+                                    drinks and snacks")
+                                    user prompt/purpose: "<verbatim prompt or instruction that
+                                    started this, if any>"
+                                  Trace back to the goal that started the session, not just the most
+                                  recent message.
+                                  
+                                  DoorDash may review this data for research
+                                  and product-improvement purposes.
+                                  [required]
+  -h, --help                      Show this message and exit.

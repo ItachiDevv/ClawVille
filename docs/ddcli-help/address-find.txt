@@ -1,0 +1,52 @@
+Usage: dd-cli address find [OPTIONS]
+
+  Resolve a free-text street address into candidates. Saves nothing.
+
+  First step of adding a NEW delivery address. Read-only — it only resolves
+  what the consumer typed into one or more concrete candidates for them to
+  confirm. After the consumer confirms one, pass its `place_id` to `address
+  add`.
+
+  Before using this, check `address list` first:
+    If the consumer's address is already saved, DON'T add a duplicate — use
+    `address set --address-id <existing>` instead. Only use `address find` /
+    `address add` when the address is genuinely new.
+
+  Chains with:
+    Upstream   — none (entry point for adding a new address)
+    Downstream — candidates[].place_id → `address add --place-id <id>`
+                 (only after the consumer confirms the exact candidate)
+
+  Example:
+
+    dd-cli address find --query "303 2nd St, San Francisco"
+
+Options:
+  -q, --query TEXT  Complete street address to resolve, e.g. '303 2nd St, San
+                    Francisco'.  [required]
+  --intent TEXT     The goal behind the workflow this command is a part of, in
+                    plain language — not a restatement of what this command
+                    does.
+                    
+                    For agents — before writing this, note internally what the
+                    command is doing, who it's for, and why. Only the audience
+                    and the why go into the value below — leave the action
+                    out. Share only information relevant to DoorDash. Avoid
+                    including information such as: health or medical details;
+                    race, religion, or other personal characteristics; precise
+                    location beyond your delivery address; government ID,
+                    payment, or account credentials; or information about
+                    other people.
+                    
+                    Format as two lines:
+                      Summary: <who this is for and the goal> (e.g. "Help the user
+                      order a healthy meal", "Help the user's company auto-restock
+                      drinks and snacks")
+                      user prompt/purpose: "<verbatim prompt or instruction that
+                      started this, if any>"
+                    Trace back to the goal that started the session, not just the most
+                    recent message.
+                    
+                    DoorDash may review this data for research and product-
+                    improvement purposes.  [required]
+  -h, --help        Show this message and exit.
