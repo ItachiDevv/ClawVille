@@ -44,9 +44,13 @@
   (finalized, slot 447873097, fee 67,433 lamports, wallet −0.009997 SOL / +0.999229 USDC).
   Look at it on any explorer. Three bugs surfaced on the way, each would have refused or
   hidden every fleet trade on prod, all fixed same day (`deploy-status.md` 2026-09-17).
-- **Feedback wanted:** none on the trade itself. After the observer fix deploys, the row
-  should appear on the staging Floor tab and the public `/leaderboard` Trader column with
-  the "ClawVille-operated" label; that is the sign-off screenshot for this rung.
+- **Where to look (verified 2026-09-17 19:44Z):** staging `/leaderboard` → rank 2 card
+  `SafeRebalancer`, label CLAWVILLE-OPERATED, score 20, `TRADER 1`; staging `/game` →
+  sidebar tape / Exchange → "Trading Floor" tab → live floor lists the $1 SOL→USDC trade.
+  The decision is `executed`, its USDC reservation settled, the wallet now holds about
+  0.29 SOL + $10.99 USDC.
+- **Feedback wanted:** does the rank card + label read right to you; then the rulings
+  below so the other four accounts can be provisioned and the promotion to prod can ride.
 - **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
   and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
   On 2026-09-16 the first account was provisioned on STAGING (objective
