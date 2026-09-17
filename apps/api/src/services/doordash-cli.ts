@@ -59,9 +59,28 @@ const addressSchema = z.object({
   address_id: id, printable_address: z.string(), label: z.string().nullable().optional(),
   is_default: z.boolean().optional(),
 });
-const searchSchema = z.object({ stores: z.array(z.object({ store_id: id, store_name: z.string().optional() })) });
+// The vendor returns the display name as `name`, NOT `store_name` (confirmed on
+// staging 2026-09-17 — a live search for "mcdonalds" returns
+// {"store_id":"837211","name":"McDonald's",...}). Zod strips unknown keys, so
+// reading only `store_name` silently dropped every name and the chat bar
+// rendered five results as "Restaurant (store 837211)". Accept BOTH spellings
+// and normalize to `store_name` so callers stay unchanged.
+const storeSchema = z.object({
+  store_id: id,
+  store_name: z.string().optional(),
+  name: z.string().optional(),
+}).transform(({ store_id, store_name, name }) => ({ store_id, store_name: store_name ?? name }));
+const searchSchema = z.object({ stores: z.array(storeSchema) });
 const menuSchema = z.object({ menu_id: id, items: z.array(itemSchema) });
-const orderSummarySchema = z.object({ order_uuid: z.string().min(1), store_id: id, store_name: z.string().optional() });
+// Same `name` vs `store_name` tolerance as storeSchema. Order history was empty
+// on the staging account, so the live spelling here is UNCONFIRMED — accepting
+// both is the safe reading rather than guessing one.
+const orderSummarySchema = z.object({
+  order_uuid: z.string().min(1),
+  store_id: id,
+  store_name: z.string().optional(),
+  name: z.string().optional(),
+}).transform(({ order_uuid, store_id, store_name, name }) => ({ order_uuid, store_id, store_name: store_name ?? name }));
 const statusSchema = z.object({
   order_uuid: z.string().min(1).optional(),
   status: z.enum(['pending', 'action_required', 'order_declined', 'placed', 'scheduled',

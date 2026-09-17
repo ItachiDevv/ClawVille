@@ -148,7 +148,9 @@ describe('Phase 1 DoorDash bridge', () => {
     const menu = { menu_id: 'menu-1', items: [] };
     const addresses = [{ address_id: 'address-1', printable_address: 'Test address', is_default: true }];
     const status = { order_uuid: 'order-1', status: 'placed' as const };
-    const orders = [{ order_uuid: 'order-1', store_id: '123' }];
+    // store_name is normalized from the vendor's `name` field, so it is always
+    // present on the parsed shape even when the vendor omits it.
+    const orders = [{ order_uuid: 'order-1', store_id: '123', store_name: undefined }];
     runMock = spyOn(cli, 'runDdCli')
       // search resolves the default delivery address FIRST — see the Cupertino note.
       .mockResolvedValueOnce({ ok: true, data: { addresses }, durationMs: 0 })

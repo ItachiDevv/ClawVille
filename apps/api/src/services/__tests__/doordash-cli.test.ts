@@ -144,6 +144,24 @@ describe('DoorDash subprocess boundary', () => {
     expect(await wrapper.runDdCli('search', ['ramen'])).toMatchObject({ failure: 'ddcli_bad_json' });
   });
 
+  // REGRESSION (staging 2026-09-17): the vendor returns the display name as
+  // `name`, not `store_name`. Zod strips unknown keys, so every store name was
+  // silently dropped and the chat bar rendered five live McDonald's results as
+  // "Restaurant (store 837211)". Both spellings must normalize to store_name.
+  it('normalizes the vendor store name field so results are not anonymous', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never)
+      .mockImplementationOnce((() => child(envelope({ stores: [{ store_id: '837211', name: "McDonald's" }] }))) as never);
+    const wrapper = await fresh();
+    expect(await wrapper.runDdCli('search', ['mcdonalds'])).toMatchObject({
+      ok: true, data: { stores: [{ store_id: '837211', store_name: "McDonald's" }] },
+    });
+    // The documented spelling still wins when the vendor sends it.
+    spawn.mockImplementation((() => child(envelope({ stores: [{ store_id: '1', store_name: 'Explicit' }] }))) as never);
+    expect(await wrapper.runDdCli('search', ['x'])).toMatchObject({
+      ok: true, data: { stores: [{ store_name: 'Explicit' }] },
+    });
+  });
+
   it('classifies unrecognized nonzero exits conservatively and scrubs both token classes', async () => {
     const stderr = `401 token expired ${process.env.DD_CLI_ACCESS_TOKEN} ag-${'b'.repeat(32)}`;
     spyOn(Bun, 'spawn').mockImplementation((() => child('', stderr, 1)) as never);
