@@ -18,6 +18,7 @@ import { decodeSwapFromParsedTransaction, scoreTrade, type TradeRejectReason } f
 import { resolveTradeNotionalUsd, type NotionalSource } from './trade-price';
 import { logVerifiedTradeEventTx, recordVerifiedTradeEventFailure } from './event-logger';
 import { alertError } from './alert-error';
+import { shouldAlertTradingLoop } from './trading-rpc';
 import { broadcastTradeEvent } from '../routes/world';
 
 /** Identifiers a verified trade can offer WITHOUT floor-core knowing anything
@@ -131,10 +132,16 @@ async function onTradeVerified(notice: TradeVerifiedNotice): Promise<void> {
   }
 }
 
+const OBSERVER_ERROR_MAX_CHARS = 600;
+
 function safeObserverError(error: unknown): string {
   const key = process.env.HELIUS_API_KEY;
   const message = error instanceof Error ? error.message : String(error);
-  return key ? message.replaceAll(key, '[REDACTED]') : message;
+  // The RPC URL embeds the key URL-encoded; redact both spellings, then any api-key query value.
+  const redacted = (key ? message.replaceAll(key, '[REDACTED]').replaceAll(encodeURIComponent(key), '[REDACTED]') : message)
+    .replace(/api-key=[^&\s"']+/gi, 'api-key=[REDACTED]');
+  // A multi-KB zod issue list made Telegram reject the alert ("message is too long").
+  return redacted.length > OBSERVER_ERROR_MAX_CHARS ? `${redacted.slice(0, OBSERVER_ERROR_MAX_CHARS)}…[truncated]` : redacted;
 }
 
 function observerEnabled(): boolean {
@@ -152,11 +159,45 @@ export function tradeObserverRpcUrl(): string {
   return key ? `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(key)}` : 'https://api.mainnet-beta.solana.com';
 }
 
+const RPC_TRANSACTION_TIMEOUT_MS = 15_000;
+
+/**
+ * Fetch a transaction as the raw JSON-RPC `jsonParsed` document. The verifier
+ * schema and every recorded fixture are written for THAT shape (string account
+ * keys, string program ids, string loaded addresses). web3.js
+ * `getParsedTransaction` returns `PublicKey` OBJECTS for those fields, which the
+ * schema refused (`Expected string, received object`) on the first live fleet
+ * wallet on 2026-09-17, stopping the observer cursor at the wallet's first
+ * signature and paging every tick. Returns null when the signature is unknown.
+ */
+export async function fetchParsedTransactionJson(input: {
+  rpcUrl: string; signature: string; fetchImpl?: typeof fetch;
+}): Promise<unknown | null> {
+  const response = await (input.fetchImpl ?? fetch)(input.rpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'getTransaction',
+      params: [input.signature, { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 }],
+    }),
+    redirect: 'error',
+    signal: AbortSignal.timeout(RPC_TRANSACTION_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`rpc_http_${response.status}`);
+  const envelope = z.object({
+    result: z.unknown().nullable().optional(),
+    error: z.object({ code: z.number(), message: z.string() }).passthrough().nullable().optional(),
+  }).passthrough().parse(await response.json());
+  if (envelope.error) throw new Error(`rpc_error_${envelope.error.code}`);
+  return envelope.result ?? null;
+}
+
 export function createDefaultTradeObserverDeps(): TradeObserverDeps {
-  const connection = new Connection(tradeObserverRpcUrl(), 'confirmed');
+  const rpcUrl = tradeObserverRpcUrl();
+  const connection = new Connection(rpcUrl, 'confirmed');
   return {
     getSignaturesForAddress: (address, options) => connection.getSignaturesForAddress(new PublicKey(address), options, 'confirmed'),
-    getParsedTransaction: (signature) => connection.getParsedTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }),
+    getParsedTransaction: (signature) => fetchParsedTransactionJson({ rpcUrl, signature }),
     now: () => Date.now(),
   };
 }
@@ -417,8 +458,23 @@ export async function runTradeObserverTick(
           signature: newestTerminal.signature, slot: newestTerminal.slot, blockTime: newestTerminal.blockTime });
         });
         if (leased === 'lease_unavailable') continue;
-      } catch {
+      } catch (error) {
         result.errors++;
+        // A failing signature listing (RPC down, key rotated) polls nothing; page once
+        // per cause, then hourly, instead of moving only a counter.
+        const detail = safeObserverError(error);
+        if (shouldAlertTradingLoop(`observer:wallet-poll:${detail}`)) {
+          try {
+            await runtime.alert({
+              severity: 'warning',
+              source: 'trade-observer',
+              message: 'Polling a bound wallet failed before ingestion; the wallet keeps its cursor and is retried next tick.',
+              context: { walletId: wallet.id, error: detail },
+            });
+          } catch (alertFailure) {
+            console.warn('[trade-observer] wallet poll alert failed', safeObserverError(alertFailure));
+          }
+        }
       }
     }
     return result;

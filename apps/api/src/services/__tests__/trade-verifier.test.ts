@@ -254,6 +254,21 @@ describe('trade verifier', () => {
     })).toMatchObject({ kind: 'swap', dex: 'jupiter' });
   });
 
+  test('decodes the first real fleet trade (staging SafeRebalancer, $1 SOL→USDC via Jupiter, v0 + lookup table)', () => {
+    // Recorded 2026-09-17 from the staging $1 mainnet rung: the raw JSON-RPC `jsonParsed`
+    // document (string keys), which is the shape the observer must feed this decoder.
+    const name = 'jupiter-fleet-sol-usdc';
+    const wallet = 'vaLqeo9HSaA5JbbDiL5GbusBG9jsKgQ6KXW8AUDZ3ZX';
+    const decoded = decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: recordedFixture(name), expectedWallet: wallet });
+    expect(decoded).toMatchObject({
+      kind: 'swap', dex: 'jupiter', inputMint: TRADE_MINTS.WSOL, outputMint: TRADE_MINTS.USDC,
+      inputDecimals: 9, outputDecimals: 6, inputAmount: '9929616', outputAmount: '999229', blockTime: 1_789_672_796, slot: 447_873_097, wallet,
+    });
+    // The same document with the wallet passed as a non-signer third party is refused.
+    expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: recordedFixture(name), expectedWallet: THIRD_PARTY }))
+      .toMatchObject({ kind: 'rejected', reason: 'wallet_not_signer' });
+  });
+
   test('decodes the recorded PumpSwap buy and sell fixtures', () => {
     for (const name of ['pumpswap-swap', 'pumpswap-sell']) {
       expect(decodeSwapFromParsedTransaction({ signature: recordedSignature(name), raw: recordedFixture(name) }))
@@ -301,6 +316,7 @@ describe('trade verifier', () => {
   test('pins every recorded program discriminator, including the failed Jupiter fixture', () => {
     const cases = [
       ['jupiter-swap', TRADE_DEX_PROGRAMS.jupiter, 'e517cb977ae3ad2a'],
+      ['jupiter-fleet-sol-usdc', TRADE_DEX_PROGRAMS.jupiter, 'e517cb977ae3ad2a'],
       ['failed-tx', TRADE_DEX_PROGRAMS.jupiter, 'c1209b3341d69c81'],
       ['pumpswap-swap', TRADE_DEX_PROGRAMS.pumpswap, '66063d1201daebea'],
       ['pumpswap-buy-exact-quote-in', TRADE_DEX_PROGRAMS.pumpswap, 'c62e1552b4d9e870'],

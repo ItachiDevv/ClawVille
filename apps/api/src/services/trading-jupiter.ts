@@ -5,9 +5,13 @@ const atomicString = z.string().regex(/^\d+$/);
 const positiveAtomicString = z.string().regex(/^[1-9]\d*$/);
 const decimalString = z.string().regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/);
 
+// Quote schemas are tolerant of additive keys (`.passthrough()` keeps them in the
+// parsed output, so the quote echoed back into the swap request stays byte for
+// byte what Jupiter returned). Every field we act on is still typed and bounded;
+// a NEW upstream key must never refuse every fleet trade (2026-09-17 rung).
 const reliableReportSchema = z.object({
   info: z.record(z.string(), atomicString),
-}).strict();
+}).passthrough();
 
 const swapInfoSchema = z.object({
   ammKey: z.string(),
@@ -19,13 +23,13 @@ const swapInfoSchema = z.object({
   updateContextSlot: atomicString,
   feeAmount: atomicString.optional(),
   feeMint: z.string().optional(),
-}).strict();
+}).passthrough();
 
 const routeStepSchema = z.object({
   swapInfo: swapInfoSchema,
   percent: z.number().int().min(0).max(100),
   bps: z.number().int().min(0).max(10_000).nullable(),
-}).strict();
+}).passthrough();
 
 export const parsedJupiterQuoteSchema = z.object({
   inputMint: z.string(),
@@ -50,7 +54,7 @@ export const parsedJupiterQuoteSchema = z.object({
   loadedLongtailToken: z.boolean(),
   additionalIntermediateTokens: z.array(z.string()).optional(),
   instructionVersion: z.literal('V1').nullable().optional(),
-}).strict();
+}).passthrough();
 
 export type ParsedJupiterQuote = z.infer<typeof parsedJupiterQuoteSchema>;
 
@@ -65,6 +69,18 @@ export interface JupiterQuote {
   parsed: ParsedJupiterQuote;
 }
 
+/**
+ * The swap-build response is NOT strict. The contract we enforce is the
+ * transaction bytes: they are decoded, inspected instruction by instruction, and
+ * simulated before admission (`trading-swap-validator.ts`), so an extra metadata
+ * key from Jupiter carries no risk, while refusing on one blocks every fleet
+ * trade (2026-09-17 staging $1 rung: `simulationSlot`,
+ * `addressesByLookupTableAddress`, `timeTaken`, `createAtaTimeTaken` appeared
+ * and the strict schema refused with `tx_binding_failed`). A non-null
+ * `simulationError` still fails the parse, so Jupiter's own failed simulation
+ * refuses the trade before ours runs; when Jupiter reports a `simulationSlot`
+ * it simulated, so `simulationError` must then be present and null.
+ */
 const swapResponseSchema = z.object({
   swapTransaction: z.string().min(1),
   lastValidBlockHeight: z.number().int().positive(),
@@ -73,7 +89,16 @@ const swapResponseSchema = z.object({
   prioritizationType: z.unknown().optional(),
   dynamicSlippageReport: z.unknown().optional(),
   simulationError: z.null().optional(),
-}).strict();
+  simulationSlot: z.number().int().nonnegative().nullable().optional(),
+  // Unused: lookup tables are resolved from our own RPC by the keys inside the
+  // transaction (`resolveLookups`), never from Jupiter's expansion.
+  addressesByLookupTableAddress: z.unknown().optional(),
+  timeTaken: z.number().nonnegative().optional(),
+  createAtaTimeTaken: z.number().nonnegative().optional(),
+}).passthrough().refine(
+  (value) => value.simulationSlot === undefined || value.simulationSlot === null || value.simulationError === null,
+  { message: 'simulationError must be present and null when Jupiter reports a simulationSlot' },
+);
 
 const ALLOWED_HOSTS = new Set(['lite-api.jup.ag', 'api.jup.ag']);
 

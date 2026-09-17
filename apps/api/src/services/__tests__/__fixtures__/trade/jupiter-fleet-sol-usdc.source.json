@@ -1,0 +1,15 @@
+{
+  "signature": "5mytFoup16GrVojktQYHaG9bc5fP1w6jQ135zTYgJVe7Bjc1Jtu8Tzcu6gAtpfVVr4DZgeX3gZFBHaBDGpK4Jow2",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-17T19:21:00.000Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "5mytFoup16GrVojktQYHaG9bc5fP1w6jQ135zTYgJVe7Bjc1Jtu8Tzcu6gAtpfVVr4DZgeX3gZFBHaBDGpK4Jow2",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "First fleet trade: staging SafeRebalancer (ClawVille-operated custodial wallet vaLqeo9...) $1 SOL->USDC via Jupiter v6, admin-test origin, decision 1374fb60-a1f7-4d61-9c36-f5e763f5ddc4, staging $1 mainnet rung 2026-09-17."
+}

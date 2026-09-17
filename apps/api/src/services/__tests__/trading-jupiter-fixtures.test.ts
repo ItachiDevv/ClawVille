@@ -26,13 +26,21 @@ describe('Trading Jupiter fixture contract', () => {
     expect(readdirSync(fixtureDir).sort()).toEqual(Object.keys(expectedHashes).sort());
   });
 
-  test('rejects additive fields and accepts nullable instructionVersion', () => {
+  test('tolerates additive fields at every level, keeps them for the swap echo, and accepts nullable instructionVersion', () => {
     const raw = JSON.parse(readFileSync(resolve(fixtureDir, 'quote-usdc-ansem.json'), 'utf8'));
-    expect(parsedJupiterQuoteSchema.safeParse({ ...raw, unexpected: true }).success).toBe(false);
+    const top = parsedJupiterQuoteSchema.safeParse({ ...raw, unexpected: true });
+    expect(top.success).toBe(true);
+    expect((top.data as Record<string, unknown>).unexpected).toBe(true);
     const nested = structuredClone(raw);
-    nested.routePlan[0].swapInfo.unexpected = true;
-    expect(parsedJupiterQuoteSchema.safeParse(nested).success).toBe(false);
+    nested.routePlan[0].swapInfo.unexpected = 'x';
+    nested.mostReliableAmmsQuoteReport.extra = 1;
+    const parsedNested = parsedJupiterQuoteSchema.safeParse(nested);
+    expect(parsedNested.success).toBe(true);
+    expect(parsedNested.data).toEqual(nested); // same content; key order is zod schema order
     expect(parsedJupiterQuoteSchema.safeParse({ ...raw, instructionVersion: null }).success).toBe(true);
+    // Typed fields stay bounded even though unknown keys pass.
+    expect(parsedJupiterQuoteSchema.safeParse({ ...raw, slippageBps: 0 }).success).toBe(false);
+    expect(parsedJupiterQuoteSchema.safeParse({ ...raw, swapMode: 'ExactOut' }).success).toBe(false);
   });
 
   test('rejects zero top-level output and threshold amounts', () => {
@@ -104,5 +112,64 @@ describe('Trading Jupiter fixture contract', () => {
       'userPublicKey',
       'wrapAndUnwrapSol',
     ]);
+  });
+
+  // Schema-tolerance test only: the transaction carries zero instructions, so the
+  // instruction binding is NOT exercised here (see trading-swap-validator tests).
+  test('swap-build response tolerates Jupiter metadata keys but refuses a failed upstream simulation', async () => {
+    const raw = JSON.parse(readFileSync(resolve(fixtureDir, 'quote-usdc-ansem.json'), 'utf8'));
+    const quote = await fetchTradingQuote({
+      inputMint: raw.inputMint,
+      outputMint: raw.outputMint,
+      amountAtomic: BigInt(raw.inAmount),
+      slippageBps: raw.slippageBps,
+      fetchImpl: (async () => Response.json(raw)) as unknown as typeof fetch,
+    });
+    const payer = Keypair.generate().publicKey;
+    const tx = new VersionedTransaction(new TransactionMessage({
+      payerKey: payer,
+      recentBlockhash: '11111111111111111111111111111111',
+      instructions: [],
+    }).compileToV0Message());
+    const swapTransaction = Buffer.from(tx.serialize()).toString('base64');
+    // The four keys the live /swap/v1/swap response carried on 2026-09-17, plus one unknown.
+    const live = {
+      swapTransaction,
+      lastValidBlockHeight: 447_870_000,
+      prioritizationFeeLamports: 5_000,
+      computeUnitLimit: 200_000,
+      prioritizationType: { computeBudget: { microLamports: 25, estimatedMicroLamports: 25 } },
+      dynamicSlippageReport: null,
+      simulationError: null,
+      simulationSlot: 447_869_990,
+      addressesByLookupTableAddress: { '3k1a7dh2zGJDmFYRPGJn5ZvqG2X8uaVdqnUdUeECjujW': [payer.toBase58()] },
+      timeTaken: 0.31,
+      createAtaTimeTaken: 0.02,
+      someKeyJupiterAddsNextMonth: true,
+    };
+    const built = await buildTradingSwapTransaction({
+      quote,
+      userPublicKey: payer.toBase58(),
+      maxPriorityFeeLamports: 1_000n,
+      fetchImpl: (async () => Response.json(live)) as unknown as typeof fetch,
+    });
+    expect(built.lastValidBlockHeight).toBe(447_870_000);
+    expect(built.recentBlockhash).toBe('11111111111111111111111111111111');
+
+    await expect(buildTradingSwapTransaction({
+      quote,
+      userPublicKey: payer.toBase58(),
+      maxPriorityFeeLamports: 1_000n,
+      fetchImpl: (async () => Response.json({ ...live, simulationError: { error: 'InstructionError', errorCode: 6001 } })) as unknown as typeof fetch,
+    })).rejects.toThrow();
+
+    // A reported simulationSlot with the simulationError key missing (renamed upstream) refuses.
+    const { simulationError: _dropped, ...withoutError } = live;
+    await expect(buildTradingSwapTransaction({
+      quote,
+      userPublicKey: payer.toBase58(),
+      maxPriorityFeeLamports: 1_000n,
+      fetchImpl: (async () => Response.json(withoutError)) as unknown as typeof fetch,
+    })).rejects.toThrow();
   });
 });
