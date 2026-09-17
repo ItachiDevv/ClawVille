@@ -1298,7 +1298,14 @@ export class ElizaRuntime {
 
     const lines = actions.map((a) => {
       const params = a.parameters?.map((p) => `${p.name}: ${p.description}`).join(', ') ?? 'none';
-      return `- ${a.name}: ${a.description} (params: ${params})`;
+      // `similes` existed on the Action interface but was never surfaced to the
+      // model. Trigger phrasings move reliability far more than prose does:
+      // instruction-only wording still narrated 2 of 3 casual requests on
+      // staging 2026-09-17 ("find me pizza on doordash" produced no tag).
+      const triggers = a.similes?.length
+        ? `\n  Use it when the user says things like: ${a.similes.map((s) => `"${s}"`).join(', ')}.`
+        : '';
+      return `- ${a.name}: ${a.description} (params: ${params})${triggers}`;
     });
 
     return [
@@ -1312,6 +1319,13 @@ export class ElizaRuntime {
       // This does NOT loosen the gate above — it only says that once you have
       // decided to act, the tag must be in the SAME reply.
       'Announcing an action does not perform it. If you tell the user you are searching, checking, or fetching something, the matching [ACTION: ...] tag MUST appear in that same reply — otherwise nothing happens and the user is misled.',
+      'Stay in character AND emit the tag in the same reply; the tag is stripped before the user sees it, so it never breaks your voice.',
+      // The worked example MUST use an always-available action. An earlier
+      // draft hardcoded a DoorDash action name here and leaked the existence
+      // of an operator-only capability into every agent's prompt, including
+      // partner agents — caught by the capability-gate tests. Never name a
+      // gated action in this static header.
+      'Example — user: "how much vCLAW do I have?" -> you: "Let me check the ledger! [ACTION: CHECK_BALANCE()]"',
       ...lines,
     ].join('\n');
   }

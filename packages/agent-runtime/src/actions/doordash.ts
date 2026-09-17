@@ -82,6 +82,16 @@ export const doordashSearchAction: Action = {
   // the account's default address, and it read as a caveat that discouraged
   // use. Restaurant names AND cuisine terms both work (verified live).
   description: 'Search DoorDash for restaurants, by name or by cuisine. Use this whenever the user asks to find, search for, or look up food or a restaurant. Searches from the account default delivery address.',
+  // Surfaced into the prompt by buildActionDescriptions. Casual phrasings are
+  // the ones that failed live — an explicit "use the doordash search action"
+  // always fired, while "find me pizza on doordash" narrated instead.
+  similes: [
+    'find me pizza on doordash',
+    "i'm hungry, find me some tacos",
+    'what restaurants are near me',
+    'order food',
+    'look up a place to eat',
+  ],
   parameters: [{ name: 'query', description: 'Food or restaurant search terms', required: true, schema: { type: 'string' } }],
   available: (state) => Boolean((state as any)?.services?.doordash),
   validate: async () => true,
