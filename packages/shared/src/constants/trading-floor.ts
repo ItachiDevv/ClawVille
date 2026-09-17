@@ -6,6 +6,18 @@ export const TRADE_MINTS = {
   WSOL: 'So11111111111111111111111111111111111111112',
 } as const;
 
+/**
+ * Mainnet USDC is the one whitelisted mint with live authorities: Circle keeps
+ * a mint authority and a freeze authority. Pinned from chain 2026-09-17 after
+ * the staging $1 rung refused every trade with `decimals_unresolved` because the
+ * whitelist demanded a null mint authority for all four mints. The other three
+ * mints must carry NO authority of either kind.
+ */
+export const TRADE_USDC_AUTHORITIES = {
+  mint: 'BJE5MMbqXjVwjAF7oxwPYXnTXDyspzZyt4vwenNw5ruG',
+  freeze: '7dGbd2QZcCKcTndnHcTL8q7SMVXAkp688NTQYwrRCrar',
+} as const;
+
 export const TRADE_DEX_PROGRAMS = {
   jupiter: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
   pumpswap: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
