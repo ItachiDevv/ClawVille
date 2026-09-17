@@ -64,7 +64,9 @@ const parsedTransactionSchema = z.object({
     preTokenBalances: z.array(tokenBalanceSchema).optional().default([]),
     postTokenBalances: z.array(tokenBalanceSchema).optional().default([]),
     innerInstructions: z.array(z.object({ index: z.number().int(), instructions: z.array(compiledInstructionSchema) }).passthrough()).optional().default([]),
-    loadedAddresses: z.object({ writable: z.array(z.string()), readonly: z.array(z.string()) }).optional(),
+    // Absent on the public RPC and Helius today; `.nullish()` so a provider that emits an
+    // explicit null cannot refuse every version-0 transaction (2026-09-17 observer lesson).
+    loadedAddresses: z.object({ writable: z.array(z.string()), readonly: z.array(z.string()) }).nullish(),
     logMessages: z.array(z.string()).nullable().optional(),
   }).passthrough().nullable(),
   transaction: z.object({
