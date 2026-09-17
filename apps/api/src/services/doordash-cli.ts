@@ -131,6 +131,35 @@ function argvFor(op: DdCliOperation, args: readonly string[]): string[] | null {
   return ['--json-output', ...command, '--intent', DD_CLI_INTENTS[op]];
 }
 
+/**
+ * `--json-output` does NOT return the operation payload directly. Every service
+ * command wraps it in an MCP-style envelope whose single text part carries the
+ * real payload as an ENCODED JSON STRING:
+ *   {"content":[{"type":"text","text":"{\"addresses\":[...]}"}]}
+ * Verified against the live CLI on staging 2026-09-17 for address-list, search,
+ * and order-history; before this, every non-version operation failed
+ * `ddcli_bad_json` because the schema saw the envelope instead of the payload.
+ * The unit tests missed it because they mocked the subprocess with the assumed
+ * unwrapped shape. Anything that is NOT this envelope is passed through, so a
+ * future vendor change back to a bare payload keeps working.
+ */
+function unwrapEnvelope(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || !('content' in value)) return value;
+  const { content } = value as { content: unknown };
+  if (!Array.isArray(content)) return value;
+  const part = content.find(
+    (entry): entry is { type?: unknown; text: string } =>
+      entry !== null && typeof entry === 'object' && typeof (entry as { text?: unknown }).text === 'string',
+  );
+  if (!part) return value;
+  try {
+    return JSON.parse(part.text) as unknown;
+  } catch {
+    // A non-JSON text part is a genuine shape change; let the schema reject it.
+    return value;
+  }
+}
+
 function scrub(input: string, token: string): string {
   // Scrub the whole input BEFORE truncation to avoid leaking a token prefix.
   return redactBearerTokens(token ? input.split(token).join('<redacted>') : input);
@@ -218,7 +247,7 @@ async function invoke(op: DdCliOperation, argv: string[]): Promise<DdCliResult<u
       if (op === 'version') {
         const match = /^(?:dd-cli,?\s+(?:version\s+)?)?(\d+\.\d+\.\d+)\s*$/i.exec(stdout.trim());
         raw = match ? { version: match[1] } : JSON.parse(stdout);
-      } else raw = JSON.parse(stdout);
+      } else raw = unwrapEnvelope(JSON.parse(stdout));
     } catch { return failure('ddcli_bad_json', scrub(stdout, token), start, token); }
     if (raw !== null && typeof raw === 'object' &&
       (('success' in raw && raw.success === false) || ('ok' in raw && raw.ok === false))) {
