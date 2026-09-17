@@ -143,12 +143,15 @@ describe('Phase 1 DoorDash bridge', () => {
   }
 
   test('dispatches the five read-only operations and unwraps list envelopes', async () => {
+    operator.resetDoordashAddressCache();
     const search = { stores: [] };
     const menu = { menu_id: 'menu-1', items: [] };
-    const addresses = [{ address_id: 'address-1', printable_address: 'Test address' }];
+    const addresses = [{ address_id: 'address-1', printable_address: 'Test address', is_default: true }];
     const status = { order_uuid: 'order-1', status: 'placed' as const };
     const orders = [{ order_uuid: 'order-1', store_id: '123' }];
     runMock = spyOn(cli, 'runDdCli')
+      // search resolves the default delivery address FIRST — see the Cupertino note.
+      .mockResolvedValueOnce({ ok: true, data: { addresses }, durationMs: 0 })
       .mockResolvedValueOnce({ ok: true, data: search, durationMs: 1 })
       .mockResolvedValueOnce({ ok: true, data: menu, durationMs: 2 })
       .mockResolvedValueOnce({ ok: true, data: { addresses }, durationMs: 3 })
@@ -162,9 +165,44 @@ describe('Phase 1 DoorDash bridge', () => {
     expect(await capability.orderStatus({ orderUuid: 'order-1' })).toEqual({ ok: true, data: status, durationMs: 4 });
     expect(await capability.orderHistory()).toEqual({ ok: true, data: orders, durationMs: 5 });
     expect(runMock.mock.calls).toEqual([
-      ['search', ['sushi']], ['menu', ['123']], ['address-list', []],
+      ['address-list', []], ['search', ['sushi', 'address-1']], ['menu', ['123']], ['address-list', []],
       ['order-status', ['order-1']], ['order-history', []],
     ]);
+  });
+
+  // REGRESSION (staging 2026-09-17): `dd-cli search` with no location flag does
+  // NOT error — it silently searches lat 37.3346 / lng -122.009 (Cupertino, CA)
+  // and returns an empty store list. A New York operator saw "nothing found"
+  // instead of "wrong city", which is why this needs an explicit test.
+  test('anchors search to the default saved address, caches it, and degrades safely', async () => {
+    operator.resetDoordashAddressCache();
+    const addresses = [
+      { address_id: '111', printable_address: 'Not default', is_default: false },
+      { address_id: '14437790', printable_address: 'Default NYC', is_default: true },
+    ];
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) =>
+      Promise.resolve(op === 'address-list'
+        ? { ok: true, data: { addresses }, durationMs: 1 }
+        : { ok: true, data: { stores: [] }, durationMs: 2 })) as never);
+    const capability = bridge();
+    await capability.search({ query: 'ramen' });
+    // The DEFAULT address wins over merely being first in the list.
+    expect(runMock.mock.calls.at(-1)).toEqual(['search', ['ramen', '14437790']]);
+    // A second search reuses the cache: exactly one more call, no address lookup.
+    const before = runMock.mock.calls.length;
+    await capability.search({ query: 'udon' });
+    expect(runMock.mock.calls.length).toBe(before + 1);
+    expect(runMock.mock.calls.at(-1)).toEqual(['search', ['udon', '14437790']]);
+
+    // If the address lookup fails with no cached value, still search rather than
+    // denying the operator a result — the vendor answers, just unanchored.
+    operator.resetDoordashAddressCache();
+    runMock.mockImplementation(((op: string) =>
+      Promise.resolve(op === 'address-list'
+        ? { ok: false, failure: 'ddcli_nonzero', detail: 'x', durationMs: 1 }
+        : { ok: true, data: { stores: [] }, durationMs: 2 })) as never);
+    await capability.search({ query: 'soba' });
+    expect(runMock.mock.calls.at(-1)).toEqual(['search', ['soba']]);
   });
 
   test('preserves wrapper failures without inventing list data', async () => {

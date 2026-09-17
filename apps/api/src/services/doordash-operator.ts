@@ -78,6 +78,40 @@ function phaseTwo(operation: string): never {
   throw new Error(`DoorDash ${operation} ships in Phase 2.`);
 }
 
+/**
+ * The operator's DEFAULT saved delivery address id, cached in-process.
+ *
+ * `dd-cli search` with no location flag searches Cupertino, CA — it does not
+ * error, it just returns an empty store list, so a New York operator sees
+ * "nothing found" instead of "wrong city". Anchoring every search to the saved
+ * default is what makes results correct. Cached for 10 minutes so a search
+ * costs one subprocess call, not two; the vendor warns `address list` is not
+ * deduped and `address set` is account-wide, so a stale pick self-corrects
+ * within the TTL. `is_default` is documented as best-effort and can be false
+ * for every row, so fall back to the first address rather than giving up.
+ */
+const ADDRESS_CACHE_MS = 10 * 60 * 1000;
+let addressCache: { id: string | null; at: number } | null = null;
+
+async function defaultAddressId(): Promise<string | null> {
+  if (addressCache && Date.now() - addressCache.at < ADDRESS_CACHE_MS) return addressCache.id;
+  const result = await runDdCli<{ addresses: DdAddress[] }>('address-list', []);
+  if (!result.ok) return addressCache?.id ?? null; // Keep a stale id over none.
+  const rows = result.data.addresses ?? [];
+  const chosen = rows.find((row) => row.is_default) ?? rows[0];
+  // The schema permits a numeric address_id; the CLI flag takes a string.
+  const id = chosen?.address_id === undefined || chosen.address_id === null
+    ? null
+    : String(chosen.address_id);
+  addressCache = { id, at: Date.now() };
+  return id;
+}
+
+/** Test seam: drop the cached address so a suite never leaks state across cases. */
+export function resetDoordashAddressCache(): void {
+  addressCache = null;
+}
+
 export function buildDoordashBridge(
   subject: DoordashSubject,
   requesterTurn: string,
@@ -86,7 +120,14 @@ export function buildDoordashBridge(
     subject,
     requesterTurn,
     // Values only; the wrapper owns flags and validation (docs/ddcli-help/search.txt).
-    search: ({ query }) => runDdCli<DdSearchResult>('search', [query]),
+    // The default saved address is resolved first: without it the vendor searches
+    // Cupertino, CA and returns an empty list (confirmed on staging 2026-09-17).
+    // A resolution failure is NOT fatal — we fall back to an unanchored search
+    // rather than denying the operator a result, since the vendor still answers.
+    async search({ query }) {
+      const addressId = await defaultAddressId();
+      return runDdCli<DdSearchResult>('search', addressId ? [query, addressId] : [query]);
+    },
     // docs/ddcli-help/menu.txt: --store-id.
     menu: ({ storeId }) => runDdCli<DdMenu>('menu', [storeId]),
     // docs/ddcli-help/address-list.txt: native response has addresses[].

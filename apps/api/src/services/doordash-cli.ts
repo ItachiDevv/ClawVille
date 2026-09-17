@@ -95,7 +95,8 @@ const value = z.string().min(1).max(1000).refine((s) => !/[\u0000-\u001f]/.test(
 const identifier = z.string().min(1).max(1000).regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*$/);
 const numericId = z.string().min(1).max(1000).regex(/^\d+$/);
 const argumentSchemas = {
-  version: z.tuple([]), 'address-list': z.tuple([]), search: z.tuple([value]),
+  // search takes an OPTIONAL saved address id as the second value — see argvFor.
+  version: z.tuple([]), 'address-list': z.tuple([]), search: z.union([z.tuple([value]), z.tuple([value, numericId])]),
   menu: z.tuple([identifier]), 'find-items': z.tuple([numericId, value]),
   'item-details': z.tuple([numericId, identifier]),
   'order-status': z.tuple([identifier]), 'order-history': z.tuple([]),
@@ -111,10 +112,17 @@ function argvFor(op: DdCliOperation, args: readonly string[]): string[] | null {
     case 'version': return ['--json-output', '--version'];
     // docs/ddcli-help/address-list.txt
     case 'address-list': command = ['address', 'list']; break;
-    // docs/ddcli-help/search.txt. Frozen bridge only supplies query: without
-    // location flags the vendor falls back to Cupertino. Later integration
-    // must resolve an explicit saved address before promising nearby results.
-    case 'search': command = ['search', '--query', args[0]]; break;
+    // docs/ddcli-help/search.txt. CONFIRMED on staging 2026-09-17: with no
+    // location flag the vendor silently searches lat 37.3346 / lng -122.009
+    // (Cupertino, CA) and returns an empty list for a New York operator — the
+    // results looked "empty", not "wrong city", which is the dangerous failure
+    // mode. `--address-id` is mutually exclusive with --lat/--lng, so the
+    // caller resolves the DEFAULT saved address and passes it as args[1].
+    case 'search':
+      command = args[1]
+        ? ['search', '--query', args[0], '--address-id', args[1]]
+        : ['search', '--query', args[0]];
+      break;
     // docs/ddcli-help/menu.txt
     case 'menu': command = ['menu', '--store-id', args[0]]; break;
     // docs/ddcli-help/find-items.txt
