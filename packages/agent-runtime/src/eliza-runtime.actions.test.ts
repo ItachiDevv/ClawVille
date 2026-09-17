@@ -68,8 +68,9 @@ afterEach(() => {
 });
 
 describe('action capability gates', () => {
-  it('hides all five DoorDash actions without a bridge and advertises them with a bridge', async () => {
-    expect(doorDashActions).toHaveLength(5);
+  it('hides every DoorDash action without a bridge and advertises them with a bridge', async () => {
+    // Five read-only actions plus cart, preview and submit.
+    expect(doorDashActions).toHaveLength(8);
     const h = harness('Hello.');
     await h.runtime.processMessage('Hello', { state: { services: {} } });
     const absentPrompt = h.generateText.mock.calls[0]![0];

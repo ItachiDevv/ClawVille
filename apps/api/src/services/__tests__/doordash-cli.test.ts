@@ -70,6 +70,106 @@ describe('DoorDash subprocess boundary', () => {
       '--query', 'sushi; $(id)', '--intent', DD_CLI_INTENTS.search]);
   });
 
+  it('builds the cart argv itself, so no caller can inject a flag or a field', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    const cart = {
+      cart_uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      cart: { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', store_id: '473827', items: [], items_count: 0 },
+    };
+    spawn.mockImplementation((() => child(envelope(cart))) as never);
+    expect((await wrapper.runDdCli('cart-add', ['473827', '598614', 'i_57160719', '2'])).ok).toBe(true);
+    const options = spawn.mock.calls[1][0] as unknown as { cmd: string[] };
+    // The items payload is CONSTRUCTED here from validated values. A caller
+    // never hands the wrapper raw JSON, so a spend limit, a group-cart url or a
+    // guest cannot be smuggled into the vendor request through chat text.
+    expect(options.cmd).toEqual([realpathSync(process.execPath), '--json-output',
+      'cart', 'add-items', '--store-id', '473827', '--menu-id', '598614',
+      '--items-json', '[{"item_id":"i_57160719","item_name":"item","quantity":2}]',
+      '--intent', DD_CLI_INTENTS['cart-add']]);
+  });
+
+  it('never passes --fulfillment to preview, which would mutate the cart', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    const quote = {
+      cart_uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      quote: { total_before_tip: { unit_amount: 1069, display_string: '$10.69' } },
+    };
+    spawn.mockImplementation((() => child(envelope(quote))) as never);
+    expect((await wrapper.runDdCli('order-preview', ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'])).ok).toBe(true);
+    const options = spawn.mock.calls[1][0] as unknown as { cmd: string[] };
+    expect(options.cmd).not.toContain('--fulfillment');
+    expect(options.cmd).toEqual([realpathSync(process.execPath), '--json-output',
+      'order', 'preview', '--cart-uuid', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      '--intent', DD_CLI_INTENTS['order-preview']]);
+  });
+
+  it('sends the tip in cents and skips the interactive prompt on submit', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    spawn.mockImplementation((() => child(envelope({ order_uuid: 'order-9' }))) as never);
+    expect((await wrapper.runDdCli('order-submit', ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', '400'])).ok).toBe(true);
+    const options = spawn.mock.calls[1][0] as unknown as { cmd: string[] };
+    // Without --yes the CLI blocks on a y/N prompt and, with no TTY, aborts
+    // without submitting (DoorDash issue #79). Our confirmation is the human
+    // code checked in doordash-operator.ts, not this flag.
+    expect(options.cmd).toEqual([realpathSync(process.execPath), '--json-output',
+      'order', 'submit', '--cart-uuid', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      '--tip-cents', '400', '--yes', '--intent', DD_CLI_INTENTS['order-submit']]);
+  });
+
+  it('refuses malformed money arguments before spawning anything', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    expect((await wrapper.runDdCli('version', [])).ok).toBe(true);
+    const bad: Array<[string, string[]]> = [
+      // A fractional quantity crashes the vendor CLI (issue #92).
+      ['cart-add', ['473827', '598614', 'i_1', '1.5']],
+      ['cart-add', ['473827', '598614', 'i_1', '0']],
+      ['cart-add', ['473827', '598614', 'i_1', '21']],
+      // Cart identifiers must be real uuids, never arbitrary text.
+      ['cart-show', ['not-a-uuid']],
+      ['order-preview', ['../../etc/passwd']],
+      ['order-submit', ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', '-400']],
+      ['order-submit', ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', '4.00']],
+    ];
+    for (const [op, args] of bad) {
+      const result = await wrapper.runDdCli(op as never, args);
+      expect(result.ok).toBe(false);
+    }
+    // Only the version probe ever spawned.
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an envelope flagged isError, even when the payload looks fine', async () => {
+    // The envelope carries its own error flag OUTSIDE the payload, and
+    // unwrapping discards it. On `order submit` that gap is the difference
+    // between "order placed" and a charge that never happened.
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    const flagged = JSON.stringify({
+      content: [{ type: 'text', text: JSON.stringify({ order_uuid: 'abc', processing_status: 'DECLINED' }) }],
+      isError: true,
+    });
+    spawn.mockImplementation((() => child(flagged)) as never);
+    const result = await wrapper.runDdCli('order-submit', ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', '0']);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.failure).toBe('ddcli_bad_json');
+  });
+
+  it('accepts an unfamiliar order status instead of breaking the recovery call', async () => {
+    // `order status` is what the founder runs after an ambiguous submit to find
+    // out whether he was charged. A strict enum would fail that exact call the
+    // first time DoorDash adds a state.
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    spawn.mockImplementation((() => child(envelope({ order_uuid: 'o1', status: 'brand_new_state' }))) as never);
+    const result = await wrapper.runDdCli('order-status', ['o1']);
+    expect(result.ok).toBe(true);
+    expect(result.ok && (result.data as { status: string }).status).toBe('brand_new_state');
+  });
+
   it('probes the pinned version before the first service call', async () => {
     const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never)
       .mockImplementationOnce((() => child(envelope({ addresses: [] }))) as never);

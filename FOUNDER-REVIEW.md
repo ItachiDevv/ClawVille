@@ -120,6 +120,49 @@
 
 ## AGENTS / ONBOARDING
 
+### DoorDash Phase 2 — you can now actually order (session dd/Fable, 2026-09-17)
+
+**WHAT:** The ordering path is built. You can tell your agent to add things to a cart, ask what the
+total is, and place the order — all from the chat bar. It is still your account only.
+
+**HOW IT FEELS IN THE CHAT BAR:**
+1. "find pizza near me" → a list of real Jacksonville restaurants.
+2. "show me the menu at Rojas Pizza" → real items with prices. (You can say the NAME. You no longer
+   have to repeat ID numbers back — the server remembers what you were looking at for 30 minutes.)
+3. "add two garlic knots" → the cart, with what is in it.
+4. "what's the total?" → the real quote: subtotal, tax, delivery fee, service fee, the delivery
+   estimate, **a question asking how much you want to tip**, and a six-character code good for 10 min.
+5. "ACDEFG tip 3" → the order is placed, and you get a Telegram message with the total.
+
+**THE PART WORTH KNOWING:** your agent cannot place an order on its own. The confirmation code is
+checked against YOUR typed message, captured before the model even runs — so an agent that makes up a
+code, or repeats the one it just showed you, gets refused. The tip works the same way: if you did not
+say an amount, it will not invent one. And your connected agent can never submit at all; it can build
+the cart and price it, then it hands back to you. That was your ruling and it is enforced in code.
+
+**LIMITS (yours, from 2026-09-16):** 2 orders per day, $75 per order, $150 per day including tip.
+These are read from the database, so restarting the server does not reset them. The environment can
+only make them tighter — a setting that would raise one stops the server booting instead.
+
+**WHERE:** staging (`https://staging.clawville.world`), the chat bar at the bottom of `/game`.
+Same staging login as the Phase 1 entry below.
+
+**⚠️ NOTHING HAS BEEN ORDERED AND NOTHING WILL BE UNTIL YOU SAY SO.** Every test stopped at the price
+quote. The carts I made were deleted; your open-cart list is empty. **The first real order happens on
+production, with you watching, when you ask for it** — never in a test, never unattended. That is the
+one thing this entry is asking for.
+
+**WHAT FEEDBACK IS NEEDED:**
+1. Drive it to the price quote on staging and stop there. Does the conversation flow naturally, or
+   does it lose track of the cart between messages?
+2. Is the tip question asked at the right moment, and are DoorDash's suggested amounts useful?
+3. When you are ready, tell me and we do ONE real order on production together.
+
+**Vendor bugs I re-checked before building (all were open, none reproduce on v0.2.4):** the one that
+would have blocked everything was #84, where adding to a cart failed at every restaurant. It works.
+Also fixed upstream since those reports: the ordering command used to hang forever without a terminal,
+and the price quote never returned suggested tips — both work now. Nothing needs raising with DoorDash.
+
 ### DoorDash CLI Phase 1 — operator-only, read-only (session doordash/Fable, 2026-09-17)
 
 **WHAT:** Your agent can now use the DoorDash CLI from the chat bar — but READ-ONLY in this phase:

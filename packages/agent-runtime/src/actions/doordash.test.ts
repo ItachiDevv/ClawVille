@@ -3,6 +3,7 @@ import { allActions } from './index';
 import {
   doordashAddressesAction, doordashSearchAction, doordashMenuAction,
   doordashOrderHistoryAction, doordashOrderStatusAction,
+  doordashCartAction, doordashPreviewAction, doordashSubmitAction,
 } from './doordash';
 
 const cases = [
@@ -14,7 +15,9 @@ const cases = [
     text: 'DoorDash search results: Pizza Shop (store 42).' },
   { action: doordashMenuAction, method: 'menu', params: { storeId: '42' }, args: [{ storeId: '42' }],
     data: { menu_id: 43, items: [{ item_id: 44, name: 'Cheese Pizza' }] },
-    text: 'Menu items: Cheese Pizza (item 44).' },
+    text: 'Menu items: Cheese Pizza (item 44). Menu 43.' },
+  // When the store name IS known, the menu names it — a wrong resolution then
+  // surfaces a turn earlier than the priced confirmation would catch it.
   { action: doordashOrderHistoryAction, method: 'orderHistory', params: {}, args: [],
     data: [{ order_uuid: 'order-123', store_id: 42, store_name: 'Pizza Shop' }],
     text: 'Recent DoorDash orders: Pizza Shop (order order-123).' },
@@ -28,10 +31,22 @@ const failureCodes = [
 ];
 
 describe('read-only DoorDash actions', () => {
-  test('registers exactly the five read-only actions without money flags', () => {
+  test('registers the five read-only actions plus the three ordering ones', () => {
     const registered = allActions.filter((action) => action.name.startsWith('DOORDASH_'));
-    expect(registered).toEqual(cases.map(({ action }) => action));
-    expect(registered.every((action) => action.writesMoney === undefined)).toBe(true);
+    expect(registered).toEqual([
+      ...cases.map(({ action }) => action),
+      doordashCartAction, doordashPreviewAction, doordashSubmitAction,
+    ]);
+  });
+
+  test('DOORDASH_SUBMIT is the only action flagged as spending money', () => {
+    // The runtime allows at most one money action per reply, and that budget
+    // only applies to actions that declare themselves. Cart edits and priced
+    // previews move no money, so flagging them would spend the budget for
+    // nothing; submit is the single command that reaches a real card.
+    const registered = allActions.filter((action) => action.name.startsWith('DOORDASH_'));
+    const money = registered.filter((action) => action.writesMoney === true);
+    expect(money).toEqual([doordashSubmitAction]);
   });
 
   for (const c of cases) {

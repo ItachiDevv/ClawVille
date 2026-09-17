@@ -22,6 +22,7 @@ export { claimBountyAction } from './claim-bounty';
 export {
   doordashAddressesAction, doordashSearchAction, doordashMenuAction,
   doordashOrderHistoryAction, doordashOrderStatusAction,
+  doordashCartAction, doordashPreviewAction, doordashSubmitAction,
 } from './doordash';
 
 import { visitBuildingAction } from './visit-building';
@@ -35,6 +36,7 @@ import { claimBountyAction } from './claim-bounty';
 import {
   doordashAddressesAction, doordashSearchAction, doordashMenuAction,
   doordashOrderHistoryAction, doordashOrderStatusAction,
+  doordashCartAction, doordashPreviewAction, doordashSubmitAction,
 } from './doordash';
 import type { Action } from './types';
 
@@ -53,4 +55,7 @@ export const allActions: Action[] = [
   doordashMenuAction,
   doordashOrderHistoryAction,
   doordashOrderStatusAction,
+  doordashCartAction,
+  doordashPreviewAction,
+  doordashSubmitAction,
 ];

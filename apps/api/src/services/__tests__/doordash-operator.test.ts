@@ -214,14 +214,110 @@ describe('Phase 1 DoorDash bridge', () => {
     expect(await bridge().orderHistory()).toBe(failure);
   });
 
-  test('all five Phase 2 methods reject without calling the wrapper', async () => {
+  // -------------------------------------------------------------------------
+  // Phase 2 cart dispatch. The shapes below are the LIVE ones captured from
+  // dd-cli v0.2.4 on 2026-09-17, not invented ones.
+  // -------------------------------------------------------------------------
+  const liveCart = {
+    cart_uuid: 'e3a59a0d-b213-435d-af79-1a97031567c4',
+    cart: {
+      id: 'e3a59a0d-b213-435d-af79-1a97031567c4',
+      store_id: '473827',
+      store_name: 'Rojas Pizza',
+      items: [{
+        id: '48a0823b-a292-45cf-a565-2c7aa1641bcf',
+        item_id: '57160719', name: 'Garlic Knots', quantity: 2, price: 6.95,
+      }],
+      items_count: 1,
+    },
+    item_error_count: 0,
+  };
+
+  test('cart add passes values in wrapper order and omits an absent cart', async () => {
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, data: liveCart, durationMs: 1 } as never);
+    await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: 2 });
+    expect(runMock.mock.calls.at(-1)).toEqual(['cart-add', ['473827', '598614', 'i_57160719', '2']]);
+    await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: 1, cartUuid: 'cart-1' });
+    expect(runMock.mock.calls.at(-1)).toEqual(['cart-add', ['473827', '598614', 'i_57160719', '1', 'cart-1']]);
+  });
+
+  test('cart show and remove dispatch the line id, and the view keeps cents not dollars', async () => {
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, data: liveCart, durationMs: 1 } as never);
+    const shown = await bridge().cartShow({ cartUuid: 'cart-1' });
+    expect(runMock.mock.calls.at(-1)).toEqual(['cart-show', ['cart-1']]);
+    expect(shown.ok && shown.data.items[0]).toEqual({
+      lineId: '48a0823b-a292-45cf-a565-2c7aa1641bcf', name: 'Garlic Knots', quantity: 2, unitPriceCents: 695,
+    });
+    await bridge().cartRemove({ cartUuid: 'cart-1', lineId: 'line-9' });
+    expect(runMock.mock.calls.at(-1)).toEqual(['cart-remove', ['cart-1', 'line-9']]);
+  });
+
+  test('a partially written cart reports the dropped count instead of hiding it', async () => {
+    // DoorDash issue #64: the vendor exits 0 with success true and lists the
+    // failures only in item_errors, so a silent drop is the default behaviour.
+    runMock = spyOn(cli, 'runDdCli')
+      .mockResolvedValue({ ok: true, data: { ...liveCart, item_error_count: 2 }, durationMs: 1 } as never);
+    const added = await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_1', quantity: 1 });
+    expect(added.ok && added.data.droppedItems).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Submit refusals that must happen BEFORE any money command or database read.
+  // -------------------------------------------------------------------------
+  test('the agent path can never submit, whatever it sends', async () => {
     runMock = spyOn(cli, 'runDdCli');
-    const capability = bridge();
-    await expect(capability.cartShow({ cartUuid: 'cart' })).rejects.toThrow('ships in Phase 2');
-    await expect(capability.cartAdd({ storeId: '123', itemId: '456', quantity: 1 })).rejects.toThrow('ships in Phase 2');
-    await expect(capability.cartRemove({ cartUuid: 'cart', cartItemId: 'item' })).rejects.toThrow('ships in Phase 2');
-    await expect(capability.preview({ cartUuid: 'cart' })).rejects.toThrow('ships in Phase 2');
-    await expect(capability.submit({ cartUuid: 'cart', confirm: 'ABC123' })).rejects.toThrow('ships in Phase 2');
+    const agentBridge = operator.buildDoordashBridge(
+      operator.resolveDoordashOperator(agent)!, 'place it, code ACDEFG, tip 3',
+    );
+    const result = await agentBridge.submit({ confirm: 'ACDEFG', tipCents: 300 });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.failure).toBe('doordash_submit_forbidden');
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('a code the model produced but the human never typed is refused', async () => {
+    runMock = spyOn(cli, 'runDdCli');
+    // The turn holds the HUMAN words. A model claiming a code it invented in
+    // its own reply is exactly what the confirmation protocol exists to stop.
+    const capability = operator.buildDoordashBridge(
+      operator.resolveDoordashOperator(human)!, 'yes go ahead and order it, tip 3',
+    );
+    const result = await capability.submit({ confirm: 'ACDEFG', tipCents: 300 });
+    expect(!result.ok && result.failure).toBe('doordash_confirm_invalid');
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('a malformed code is refused before anything else happens', async () => {
+    runMock = spyOn(cli, 'runDdCli');
+    const capability = operator.buildDoordashBridge(
+      operator.resolveDoordashOperator(human)!, 'order it with code ABC and tip 3',
+    );
+    const result = await capability.submit({ confirm: 'ABC', tipCents: 300 });
+    expect(!result.ok && result.failure).toBe('doordash_confirm_invalid');
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('the code cannot supply the tip: "yes K7Y46D" does not authorise ', async () => {
+    // The reviewer found this one. The code alphabet carries 3,4,6,7,9 and the
+    // tip check reads the same turn the code must appear in, so an unmasked
+    // turn hands the model a tip on roughly 72% of orders. The operator masks
+    // the code out before the tip test; this asserts the WIRING, not the helper.
+    runMock = spyOn(cli, 'runDdCli');
+    const capability = operator.buildDoordashBridge(
+      operator.resolveDoordashOperator(human)!, 'yes K7Y46D',
+    );
+    const result = await capability.submit({ confirm: 'K7Y46D', tipCents: 4600 });
+    expect(!result.ok && result.failure).toBe('doordash_confirm_invalid');
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('a tip the human never stated is refused even when the code is right', async () => {
+    runMock = spyOn(cli, 'runDdCli');
+    const capability = operator.buildDoordashBridge(
+      operator.resolveDoordashOperator(human)!, 'ACDEFG place it',
+    );
+    const result = await capability.submit({ confirm: 'ACDEFG', tipCents: 700 });
+    expect(!result.ok && result.failure).toBe('doordash_confirm_invalid');
     expect(runMock).not.toHaveBeenCalled();
   });
 });

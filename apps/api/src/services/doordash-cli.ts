@@ -2,6 +2,11 @@ import { accessSync, constants, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 // The package barrel is outside this chunk. Consume its normal build output.
+// NOTE: this reaches into `packages/shared/dist/`, a GITIGNORED build artifact.
+// A stale build silently changes DD_CLI_PINNED_VERSION, which would make the
+// version probe mismatch. That fails CLOSED through the dark latch rather than
+// running the wrong binary, so the risk is contained — but if the pinned
+// version ever looks wrong, rebuild packages/shared before debugging anything.
 import {
   DD_CLI_INTENTS, DD_CLI_OPERATIONS, DD_CLI_PINNED_VERSION,
   type DdCliOperation,
@@ -89,12 +94,119 @@ const orderSummarySchema = z.object({
   store_name: z.string().optional(),
   name: z.string().optional(),
 }).transform(({ order_uuid, store_id, store_name, name }) => ({ order_uuid, store_id, store_name: store_name ?? name }));
+// `status` is deliberately NOT an enum. A strict list fails the whole parse the
+// moment DoorDash adds a state, and the call that breaks is `order status` —
+// precisely the call the founder makes after an ambiguous submit to find out
+// whether he was charged. Breaking the recovery path to reject an unfamiliar
+// string is the wrong trade. The action already renders an unknown status
+// safely, and that fallback was unreachable while this enum stood.
 const statusSchema = z.object({
   order_uuid: z.string().min(1).optional(),
-  status: z.enum(['pending', 'action_required', 'order_declined', 'placed', 'scheduled',
-    'store_confirmed', 'ready_for_pickup', 'dasher_assigned', 'dasher_at_store',
-    'picked_up', 'dasher_nearby', 'completed', 'cancelled']),
+  status: z.string().min(1).max(64),
 });
+// ---------------------------------------------------------------------------
+// Phase 2 shapes. Every one below was CAPTURED FROM THE LIVE CLI on 2026-09-17
+// (v0.2.4, founder account, Jacksonville default address) except the submit
+// response, which is called out where it is defined. The Phase 1 post-mortem
+// is the reason for that rule: three defects shipped because a mocked shape
+// stood in for an observed one, and all three passed 99 green tests.
+const moneySchema = z.object({
+  unit_amount: z.number().int(),
+  display_string: z.string().optional(),
+});
+// LIVE: quantity comes back as a float (`2.0`) even for whole counts.
+const cartItemSchema = z.object({
+  // Cart LINE id — what `cart remove-item` takes. Accepts a number as well as a
+  // string for the same reason every other id here does: a numeric id would
+  // otherwise take out cart show, add AND remove wholesale.
+  id,
+  item_id: id,
+  name: z.string().optional(),
+  quantity: z.number().nonnegative().optional(),
+  price: z.number().nonnegative().optional(), // UNIT price in dollars, not the line total.
+}).transform((item) => ({ ...item, id: String(item.id) }));
+// `cart add-items`, `cart show` and `cart remove-item` all return this shape.
+// item_errors is REDUCED TO A COUNT on purpose: DoorDash issue #64 reports that
+// a partial write still exits 0 with success:true and reports the failures only
+// in item_errors, so the caller must be able to see that something was dropped.
+// The error text itself is vendor-controlled prose and never crosses this
+// boundary — see the prompt-injection note on searchSchema.
+const cartSchema = z.object({
+  cart_uuid: z.string().min(1),
+  // Require ONLY what is read. `cart.id` duplicates `cart_uuid` and
+  // `items_count` duplicates `items.length`; requiring either would let a
+  // harmless vendor omission break every cart operation for no benefit.
+  cart: z.object({
+    store_id: id,
+    store_name: z.string().optional(),
+    items: z.array(cartItemSchema),
+  }),
+  item_errors: z.array(z.unknown()).optional(),
+}).transform(({ cart_uuid, cart, item_errors }) => ({
+  cart_uuid, cart, item_error_count: item_errors?.length ?? 0,
+}));
+// `order preview` without --fulfillment is READ-ONLY (docs/ddcli-help/order-preview.txt).
+// `tip` is a TOP-LEVEL field in v0.2.4. The older `quote.tip_suggestion_details`
+// is still present but always empty (DoorDash issue #80 describes that older
+// location); read the new one. min_age_requirement and contains_alcohol_item
+// are what the terms of service section 8(f) age gate is enforced from.
+const previewSchema = z.object({
+  cart_uuid: z.string().min(1),
+  quote: z.object({
+    line_items: z.array(z.object({
+      charge_id: z.string().optional(),
+      label: z.string().optional(),
+      final_money: moneySchema.optional(),
+    })).optional(),
+    total_before_tip: moneySchema,
+    // The basket, so a confirmation reply can list what is actually in it.
+    // LIVE-CONFIRMED 2026-09-17 that names arrive here, so no second CLI call
+    // is needed. Kept to name and quantity only: the prompt-injection boundary
+    // stays tight, and descriptions are vendor prose with no business here.
+    store_order_cart: z.object({
+      // LIVE-CONFIRMED 2026-09-17: the priced quote names its own store, so the
+      // confirmation line can say WHERE the order goes without a second call.
+      store: z.object({ name: z.string().optional() }).optional(),
+      orders: z.array(z.object({
+        order_items: z.array(z.object({
+          quantity: z.number().nonnegative().optional(),
+          item: z.object({ name: z.string().optional() }).optional(),
+        })).optional(),
+      })).optional(),
+    }).optional(),
+    min_age_requirement: z.number().int().nonnegative().optional(),
+    contains_alcohol_item: z.boolean().optional(),
+    delivery_availability: z.object({
+      asap_available: z.boolean().optional(),
+      is_within_delivery_region: z.boolean().optional(),
+      asap_minutes_range_string: z.string().optional(),
+    }).optional(),
+  }),
+  tip: z.object({
+    suggested: z.object({
+      amount_cents: z.number().int().nonnegative().optional(),
+      display: z.string().optional(),
+    }).optional(),
+    options: z.array(z.object({
+      amount_cents: z.number().int().nonnegative(),
+      display: z.string().optional(),
+      is_default: z.boolean().optional(),
+    })).optional(),
+  }).optional(),
+});
+// THE ONE SHAPE HERE THAT IS NOT LIVE-CAPTURED, and deliberately so: capturing
+// it costs a real order on the founder's real card. It is transcribed from the
+// vendor's own documented success response (DoorDash issue #56 quotes it
+// verbatim from a real submit). Kept maximally tolerant — only order_uuid is
+// required, because that uuid is the ONLY recovery handle if anything after
+// this point is ambiguous. Treat any deviation as ambiguous, never as failure.
+const submitSchema = z.object({
+  order_uuid: z.string().min(1),
+  processing_status: z.string().optional(),
+});
+export type DdCart = z.infer<typeof cartSchema>;
+export type DdPreview = z.infer<typeof previewSchema>;
+export type DdSubmit = z.infer<typeof submitSchema>;
 export type DdSearchResult = z.infer<typeof searchSchema>;
 export type DdMenu = z.infer<typeof menuSchema>;
 export type DdAddress = z.infer<typeof addressSchema>;
@@ -111,9 +223,11 @@ const schemas: Record<DdCliOperation, z.ZodTypeAny> = {
   menu: menuSchema, // menu.txt
   'find-items': z.object({ results: z.record(z.array(itemSchema)) }), // find-items.txt
   'item-details': z.object({ item_id: id, menu_id: id }), // item-details.txt
-  // Phase 2 is deliberately unavailable. There is no argv or permissive schema.
-  'cart-show': z.never(), 'cart-add': z.never(), 'cart-remove': z.never(),
-  'order-preview': z.never(), 'order-submit': z.never(),
+  'cart-show': cartSchema, // cart-show.txt
+  'cart-add': cartSchema, // cart-add-items.txt
+  'cart-remove': cartSchema, // cart-remove-item.txt
+  'order-preview': previewSchema, // order-preview.txt
+  'order-submit': submitSchema, // order-submit.txt
   'order-status': statusSchema, // order-status.txt
   'order-history': z.object({ orders: z.array(orderSummarySchema), page_full: z.boolean().optional() }), // order-history.txt
 };
@@ -121,15 +235,38 @@ const schemas: Record<DdCliOperation, z.ZodTypeAny> = {
 const value = z.string().min(1).max(1000).refine((s) => !/[\u0000-\u001f]/.test(s) && !s.startsWith('-'));
 const identifier = z.string().min(1).max(1000).regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*$/);
 const numericId = z.string().min(1).max(1000).regex(/^\d+$/);
+const uuidValue = z.string().uuid();
+// Whole counts only. DoorDash issue #92: a fractional quantity crashes the CLI
+// ("'float' object cannot be interpreted as an integer"), so by-weight items
+// are not orderable through this path at all. 1..20 keeps a typo from turning
+// into a real charge for twenty thousand garlic knots.
+const quantityValue = z.string().regex(/^(?:[1-9]|1\d|20)$/);
+const tipValue = z.string().regex(/^\d{1,5}$/);
 const argumentSchemas = {
   // search takes an OPTIONAL saved address id as the second value — see argvFor.
   version: z.tuple([]), 'address-list': z.tuple([]), search: z.union([z.tuple([value]), z.tuple([value, numericId])]),
   menu: z.tuple([identifier]), 'find-items': z.tuple([numericId, value]),
   'item-details': z.tuple([numericId, identifier]),
   'order-status': z.tuple([identifier]), 'order-history': z.tuple([]),
+  // [storeId, menuId, itemId, quantity] opens a NEW cart; a 5th value adds to
+  // an existing one. The items-json payload is BUILT HERE from these validated
+  // values — a caller never hands this wrapper raw JSON, so no caller can slip
+  // an extra field (a spend limit, a group-cart url, a guest) into the cart.
+  'cart-add': z.union([
+    z.tuple([identifier, identifier, identifier, quantityValue]),
+    z.tuple([identifier, identifier, identifier, quantityValue, uuidValue]),
+  ]),
+  'cart-show': z.tuple([uuidValue]),
+  'cart-remove': z.tuple([uuidValue, uuidValue]),
+  'order-preview': z.tuple([uuidValue]),
+  'order-submit': z.tuple([uuidValue, tipValue]),
 } as const;
 
-/** Values only: [query], [storeId], [storeId, query/itemId], [orderUuid], or []. */
+/**
+ * Values only. The caller never supplies flags, JSON, or a command name — this
+ * function owns every one of those, so the argv that reaches the vendor binary
+ * is fixed by the operation and cannot be steered by chat text.
+ */
 function argvFor(op: DdCliOperation, args: readonly string[]): string[] | null {
   if (!(op in argumentSchemas)) return null;
   if (!argumentSchemas[op as keyof typeof argumentSchemas].safeParse(args).success) return null;
@@ -160,6 +297,35 @@ function argvFor(op: DdCliOperation, args: readonly string[]): string[] | null {
     case 'order-status': command = ['order', 'status', '--order-uuid', args[0]]; break;
     // docs/ddcli-help/order-history.txt
     case 'order-history': command = ['order', 'history']; break;
+    // docs/ddcli-help/cart-add-items.txt. item_name is required by the vendor
+    // alongside item_id; the id is what resolves, so a server-owned placeholder
+    // is passed rather than echoing caller text into the vendor payload.
+    case 'cart-add': {
+      const items = JSON.stringify([
+        { item_id: args[2], item_name: 'item', quantity: Number(args[3]) },
+      ]);
+      command = ['cart', 'add-items', '--store-id', args[0], '--menu-id', args[1], '--items-json', items];
+      if (args[4]) command.push('--cart-uuid', args[4]);
+      break;
+    }
+    // docs/ddcli-help/cart-show.txt
+    case 'cart-show': command = ['cart', 'show', '--cart-uuid', args[0]]; break;
+    // docs/ddcli-help/cart-remove-item.txt: --cart-item-id is the cart LINE id
+    // from `cart show` items[].id, NOT the menu item_id.
+    case 'cart-remove':
+      command = ['cart', 'remove-item', '--cart-uuid', args[0], '--cart-item-id', args[1]];
+      break;
+    // docs/ddcli-help/order-preview.txt. --fulfillment is NEVER passed: without
+    // it preview is read-only, and with it preview MUTATES the cart's
+    // fulfillment mode (DoorDash issue #59).
+    case 'order-preview': command = ['order', 'preview', '--cart-uuid', args[0]]; break;
+    // docs/ddcli-help/order-submit.txt. THE ONLY COMMAND HERE THAT SPENDS MONEY.
+    // --yes skips the interactive confirmation, which a subprocess with no TTY
+    // would otherwise abort on (DoorDash issue #79, fixed in v0.2.4). Our own
+    // confirmation is the human's code in doordash-operator.ts, not this flag.
+    case 'order-submit':
+      command = ['order', 'submit', '--cart-uuid', args[0], '--tip-cents', args[1], '--yes'];
+      break;
     default: return null;
   }
   // Global option position: docs/ddcli-help/root.txt; leaf intent: files above.
@@ -193,6 +359,19 @@ function unwrapEnvelope(value: unknown): unknown {
     // A non-JSON text part is a genuine shape change; let the schema reject it.
     return value;
   }
+}
+
+/**
+ * Validate a CAPTURED vendor payload against an operation schema.
+ *
+ * Exists so a real response can be checked against the schema that will parse
+ * it, without spawning the binary. Phase 1 shipped three defects because mocked
+ * shapes stood in for observed ones; this is the seam that lets a live capture
+ * be the thing under test. The payload is never retained by this function.
+ */
+export function parseDdCliPayload(op: DdCliOperation, raw: unknown): { ok: boolean; error?: string } {
+  const parsed = schemas[op].safeParse(unwrapEnvelope(raw));
+  return parsed.success ? { ok: true } : { ok: false, error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") };
 }
 
 function scrub(input: string, token: string): string {
@@ -282,7 +461,22 @@ async function invoke(op: DdCliOperation, argv: string[]): Promise<DdCliResult<u
       if (op === 'version') {
         const match = /^(?:dd-cli,?\s+(?:version\s+)?)?(\d+\.\d+\.\d+)\s*$/i.exec(stdout.trim());
         raw = match ? { version: match[1] } : JSON.parse(stdout);
-      } else raw = unwrapEnvelope(JSON.parse(stdout));
+      } else {
+        const envelope = JSON.parse(stdout) as unknown;
+        // The MCP envelope carries its OWN error flag, OUTSIDE the payload, and
+        // unwrapping throws it away. The `success === false` guard below runs on
+        // the unwrapped object and never sees it. That matters most on the one
+        // command that spends money: `order submit` exiting 0 with
+        // `isError: true` around a payload holding an order_uuid would otherwise
+        // parse as a clean success and report a placed order that never charged.
+        // Vendor behaviour here is UNVERIFIED — we have never made a real
+        // submit — so this fails closed on the flag rather than trusting it.
+        if (envelope !== null && typeof envelope === 'object'
+          && (envelope as { isError?: unknown }).isError === true) {
+          return failure('ddcli_bad_json', 'The DoorDash response is flagged as an error.', start, token);
+        }
+        raw = unwrapEnvelope(envelope);
+      }
     } catch { return failure('ddcli_bad_json', scrub(stdout, token), start, token); }
     if (raw !== null && typeof raw === 'object' &&
       (('success' in raw && raw.success === false) || ('ok' in raw && raw.ok === false))) {
@@ -314,7 +508,7 @@ export function runDdCli<T = unknown>(op: DdCliOperation, args: readonly string[
     if (activeChild) return failure('ddcli_unavailable', 'The previous DoorDash CLI process has not exited.', start, token);
     if (!DD_CLI_OPERATIONS.includes(op)) return failure('ddcli_unavailable', 'Unsupported DoorDash operation.', start, token);
     const argv = argvFor(op, args);
-    if (!argv) return failure('ddcli_unavailable', op in argumentSchemas ? 'Invalid DoorDash arguments.' : 'This DoorDash operation ships in Phase 2.', start, token);
+    if (!argv) return failure('ddcli_unavailable', 'Invalid DoorDash arguments.', start, token);
     if (op !== 'version' && !versionVerified) {
       const probe = await invoke('version', argvFor('version', [])!);
       if (!probe.ok) return probe;
