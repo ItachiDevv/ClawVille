@@ -119,7 +119,9 @@ It cannot place an order. There is no cart, no price preview, no submit, and no 
 **WHERE:** staging (`https://staging.clawville.world`) — the normal agent chat bar at the bottom of
 `/game`, and your own `/avatars/me/chat` path. Both carry it; nobody else's account does.
 
-**⚠️ IT WILL REPORT ITSELF DARK UNTIL THE BOX IS SEEDED.** Staging has no `dd-cli` binary and no
+**✅ UPDATE 2026-09-17: staging IS seeded and live-verified.** The binary is installed and immutable, your token authenticates from that box, and all four read-only operations were proven working through the app's own wrapper inside the API container against real DoorDash (`address-list` 429ms, `search` 3.6s, `order-history` 405ms). The gate was proven too: your account gets the capability, every other human/agent/guest gets nothing. A real ship-blocker was caught and fixed doing this (`09b2ed6d`) — the CLI wraps its JSON in an envelope, so every operation was failing before. **What is still unproven is the chat-bar round trip, because that needs YOUR login.** That is the one thing this entry is asking you to do.
+
+**(historical)** **⚠️ IT WILL REPORT ITSELF DARK UNTIL THE BOX IS SEEDED.** Staging has no `dd-cli` binary and no
 `DD_CLI_ACCESS_TOKEN` yet. That is expected, not a bug. To light it up on a box, an operator runs
 `apps/api/scripts/doordash/install-ddcli.sh` on the host (read-only bind-mount into the api container)
 and sets `DD_CLI_ACCESS_TOKEN` + `DOORDASH_OPERATOR_USER_ID` (which must ALSO be in `ADMIN_USER_IDS`).
