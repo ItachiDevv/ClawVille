@@ -38,18 +38,20 @@
   $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
 - Shipped by: session clawPump/Fable, 2026-09-16.
 
-### Fleet (five house agents) — shipped UNARMED; ONE account provisioned on STAGING
+### Fleet (five house agents) — ONE account FUNDED + ARMED on STAGING; $1 rung in progress
 - **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
   and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
   On 2026-09-16 the first account was provisioned on STAGING (objective
   `conservative-rebalancer`, trader `SafeRebalancer`, operator = the seeded staging admin
-  `landtest1`): avatar wallet `vaLqeo9HSaA5JbbDiL5GbusBG9jsKgQ6KXW8AUDZ3ZX`, unarmed +
-  killed, leaderboard-eligible, ClawVille-operated. Prod has no fleet account yet.
-- **To prove the process (your call on amounts, small is fine):** send roughly 0.05 SOL
-  and $10–15 USDC to that staging wallet (reserves are 0.02 SOL + $2 USDC; the brief holds
-  60% USDC; min trade $1). Then the arm route reads the equity baseline and the first $1
-  test trade runs through `POST /api/admin/trading/test-trade`; the verified row should
-  appear on the staging Floor tab and leaderboard. Decisions already taken and applied: self-custody
+  `landtest1`): avatar wallet `vaLqeo9HSaA5JbbDiL5GbusBG9jsKgQ6KXW8AUDZ3ZX`,
+  leaderboard-eligible, ClawVille-operated. Prod has no fleet account yet.
+- **2026-09-17 rung status:** the founder funded the staging wallet (0.3 SOL + $10 USDC).
+  The arm route accepted it: float start $40.25, baseline slot 447865610. The first $1
+  SOL→USDC test trade was REFUSED with `decimals_unresolved`: the mint whitelist demanded
+  a null mint authority on every mint, and mainnet USDC has Circle's. Fixed the same hour
+  (pinned USDC authorities, see `ARCHITECTURE.md` 2026-09-17 drift note); the re-run
+  result lands in `deploy-status.md`. The rung found a bug that would have refused every
+  fleet trade on prod, which is what it exists for. Decisions already taken and applied: self-custody
   (ClawVille signs, ClawPump never), fleet ranks publicly with the "ClawVille-operated"
   label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL across five wallets, default
   drawdown halt 20 percent.

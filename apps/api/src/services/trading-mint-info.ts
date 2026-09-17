@@ -7,8 +7,9 @@ import {
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { TRADE_MINTS } from '@clawville/shared';
-import { tradingConnection } from './trading-rpc';
+import { TRADE_MINTS, TRADE_USDC_AUTHORITIES } from '@clawville/shared';
+import { alertError, type AlertErrorParams } from './alert-error';
+import { shouldAlertTradingLoop, tradingConnection } from './trading-rpc';
 
 export interface MintInfo {
   mint: string;
@@ -59,41 +60,119 @@ export function getMintInfo(
       return null;
     }
   })();
-  if (!deps.connection) cache.set(mint, read);
+  if (!deps.connection) {
+    cache.set(mint, read);
+    // Defensive: production callers pass a connection and bypass this cache. For
+    // the no-connection path, a null is a failed or missing read (RPC timeout,
+    // wrong commitment slot), not a fact about the mint; never pin it.
+    const evict = () => {
+      if (cache.get(mint) === read) cache.delete(mint);
+    };
+    void read.then((info) => {
+      if (info === null) evict();
+    }, evict);
+  }
   return read;
 }
 
-/** Resolve and freeze the four-mint execution list for this process. */
+interface MintShape {
+  decimals: number;
+  programId: PublicKey;
+  /** Lower-cased, sorted, comma-joined Token-2022 extension names; '' for legacy SPL. */
+  extensions: string;
+  mintAuthority: string | null;
+  freezeAuthority: string | null;
+}
+
+/**
+ * The frozen on-chain shape of each whitelisted mint (read from mainnet
+ * 2026-09-17). USDC is the only mint whose authorities are live (Circle mints
+ * and can freeze), so it must match the pinned keys exactly; every other mint
+ * must carry no authority of either kind. A mint absent from this table is
+ * never admissible, whatever its shape.
+ */
+const MINT_SHAPES: Readonly<Record<string, MintShape>> = {
+  [TRADE_MINTS.USDC]: {
+    decimals: 6,
+    programId: TOKEN_PROGRAM_ID,
+    extensions: '',
+    mintAuthority: TRADE_USDC_AUTHORITIES.mint,
+    freezeAuthority: TRADE_USDC_AUTHORITIES.freeze,
+  },
+  [TRADE_MINTS.WSOL]: { decimals: 9, programId: TOKEN_PROGRAM_ID, extensions: '', mintAuthority: null, freezeAuthority: null },
+  [TRADE_MINTS.ANSEM]: {
+    decimals: 6,
+    programId: TOKEN_2022_PROGRAM_ID,
+    extensions: 'metadatapointer,tokenmetadata',
+    mintAuthority: null,
+    freezeAuthority: null,
+  },
+  [TRADE_MINTS.CLAWVILLE]: {
+    decimals: 6,
+    programId: TOKEN_2022_PROGRAM_ID,
+    extensions: 'metadatapointer,tokenmetadata',
+    mintAuthority: null,
+    freezeAuthority: null,
+  },
+};
+
+export function tradingMintAdmissible(mint: string, info: MintInfo): boolean {
+  const shape = Object.hasOwn(MINT_SHAPES, mint) ? MINT_SHAPES[mint]! : null;
+  if (!shape || info.mint !== mint) return false;
+  if (info.extensions.some((extension) => VALUE_AFFECTING_EXTENSION.test(extension))) return false;
+  if (info.decimals !== shape.decimals) return false;
+  if (!info.programId.equals(shape.programId)) return false;
+  const extensions = info.extensions.map((extension) => extension.toLowerCase()).sort().join(',');
+  if (extensions !== shape.extensions) return false;
+  return info.mintAuthority === shape.mintAuthority && info.freezeAuthority === shape.freezeAuthority;
+}
+
+const WHITELIST_SIZE = Object.keys(TRADE_MINTS).length;
+
+/**
+ * Resolve the four-mint execution list. A complete list is frozen for the
+ * process; an incomplete one (any read failed or any mint changed shape) is
+ * returned once, alerted once per missing set (then hourly), and retried on the
+ * next call, so one RPC hiccup at boot cannot refuse every trade until a
+ * restart, and a real shape change (an authority rotation) pages instead of
+ * hiding behind `decimals_unresolved` refusal rows.
+ */
 export function loadTradingMintWhitelist(
-  deps: { connection?: Connection; minContextSlot?: number } = {},
+  deps: { connection?: Connection; minContextSlot?: number; alert?: (params: AlertErrorParams) => Promise<void> } = {},
 ): Promise<ReadonlyMap<string, MintInfo>> {
   if (whitelistCache) return whitelistCache;
-  whitelistCache = (async () => {
+  const load = (async () => {
     const entries = await Promise.all(Object.values(TRADE_MINTS).map(async (mint) => {
       const info = await getMintInfo(mint, deps);
-      if (!info || info.mintAuthority !== null) return null;
-      if (info.extensions.some((extension) => VALUE_AFFECTING_EXTENSION.test(extension))) return null;
-      const expectedDecimals = mint === TRADE_MINTS.WSOL ? 9 : 6;
-      if (info.decimals !== expectedDecimals) return null;
-      const token2022 = mint === TRADE_MINTS.ANSEM || mint === TRADE_MINTS.CLAWVILLE;
-      const expectedProgram = token2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-      if (!info.programId.equals(expectedProgram)) return null;
-      if (token2022) {
-        const extensions = info.extensions.map((extension) => extension.toLowerCase()).sort();
-        if (extensions.join(',') !== 'metadatapointer,tokenmetadata') return null;
-      } else if (info.extensions.length !== 0) return null;
-      if (mint === TRADE_MINTS.USDC) {
-        if (info.freezeAuthority === null) return null;
-      } else if (info.freezeAuthority !== null) return null;
-      return [mint, info] as const;
+      if (!info) return { mint, info: null, cause: 'unreadable' as const };
+      if (!tradingMintAdmissible(mint, info)) return { mint, info: null, cause: 'shape_changed' as const };
+      return { mint, info, cause: null };
     }));
     const resolved = new Map<string, MintInfo>();
     for (const entry of entries) {
-      if (entry) resolved.set(entry[0], entry[1]);
+      if (entry.info) resolved.set(entry.mint, entry.info);
+    }
+    if (resolved.size !== WHITELIST_SIZE) {
+      const missing = entries.filter((entry) => entry.cause).map((entry) => `${entry.mint}:${entry.cause}`).sort();
+      if (shouldAlertTradingLoop(`mint-whitelist:${missing.join(',')}`)) {
+        void (deps.alert ?? alertError)({
+          severity: 'critical',
+          source: 'trading-mint-whitelist',
+          message: 'A whitelisted trading mint could not be admitted; every fleet trade refuses until it resolves.',
+          context: { missing },
+        });
+      }
     }
     return resolved;
   })();
-  return whitelistCache;
+  whitelistCache = load;
+  const release = () => {
+    if (whitelistCache === load) whitelistCache = null;
+  };
+  void load.then((resolved) => {
+    if (resolved.size !== WHITELIST_SIZE) release();
+  }, release);
+  return load;
 }
 
 export function deriveTradingAta(owner: PublicKey, info: MintInfo): PublicKey {
