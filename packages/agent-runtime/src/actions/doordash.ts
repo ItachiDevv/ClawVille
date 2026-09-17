@@ -77,7 +77,11 @@ export const doordashAddressesAction: Action = {
 
 export const doordashSearchAction: Action = {
   name: 'DOORDASH_SEARCH',
-  description: 'Search DoorDash restaurants. Results do not establish proximity to the saved address.',
+  // The former wording ("Results do not establish proximity to the saved
+  // address") became false once the bridge started anchoring every search to
+  // the account's default address, and it read as a caveat that discouraged
+  // use. Restaurant names AND cuisine terms both work (verified live).
+  description: 'Search DoorDash for restaurants, by name or by cuisine. Use this whenever the user asks to find, search for, or look up food or a restaurant. Searches from the account default delivery address.',
   parameters: [{ name: 'query', description: 'Food or restaurant search terms', required: true, schema: { type: 'string' } }],
   available: (state) => Boolean((state as any)?.services?.doordash),
   validate: async () => true,

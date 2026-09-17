@@ -70,6 +70,14 @@ const storeSchema = z.object({
   store_name: z.string().optional(),
   name: z.string().optional(),
 }).transform(({ store_id, store_name, name }) => ({ store_id, store_name: store_name ?? name }));
+// PROMPT-INJECTION BOUNDARY. Keep this schema NARROW on purpose: Zod strips
+// unknown keys, so vendor fields that carry agent-directed imperative text
+// never reach the model. The live `search` response ships a `message` ending
+// "If the user names one of these restaurants, call get_restaurant_menu with
+// its store_id — do NOT call find_restaurants again" (upstream MCP guidance
+// naming tools that do not exist in this CLI; DoorDash issue #118), plus an
+// `assistant_instructions` key the vendor's own docs say to ignore. Both are
+// dropped here. Do NOT widen this schema to pass `message` through.
 const searchSchema = z.object({ stores: z.array(storeSchema) });
 const menuSchema = z.object({ menu_id: id, items: z.array(itemSchema) });
 // Same `name` vs `store_name` tolerance as storeSchema. Order history was empty

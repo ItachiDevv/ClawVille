@@ -1305,6 +1305,13 @@ export class ElizaRuntime {
       '[Available Actions]',
       'You can execute game actions by including [ACTION: ACTION_NAME(param=value)] in your response.',
       'Only use an action when the user clearly requests it. Most messages just need a normal conversational reply.',
+      // Observed on staging 2026-09-17: asked to search DoorDash, the model
+      // replied "Let me dive into the DoorDash currents... The search begins
+      // now!" and emitted NO tag, so the user got flavour text and zero
+      // results. Announcing an action reads to the model like performing one.
+      // This does NOT loosen the gate above — it only says that once you have
+      // decided to act, the tag must be in the SAME reply.
+      'Announcing an action does not perform it. If you tell the user you are searching, checking, or fetching something, the matching [ACTION: ...] tag MUST appear in that same reply — otherwise nothing happens and the user is misled.',
       ...lines,
     ].join('\n');
   }
