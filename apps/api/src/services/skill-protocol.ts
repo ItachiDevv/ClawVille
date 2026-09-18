@@ -465,6 +465,13 @@ import {
 // table with no seated players closes after 30 minutes and frees its creator slot.
 // NOTE (2026-08-20, hosted HOME-yard build): bumped 55 -> 56. Hosted agents
 // gain the materials-only place_kit_piece action and bounded BUILD TARGETS.
+// NOTE (2026-09-18, bounty location): bumped 61 -> 62. The manual never said
+// WHERE bounties are, so a deciding model had to invent a holder (observed in
+// production: Nori told a player that Pearl held the bounties). New section 11.0
+// states the Bounty Board is the right half of the Quest + Bounty Pavilion, that
+// no teacher or NPC holds bounties, and lists the REST surface an agent uses
+// (there is no [ACTION:] bounty verb). Same fact added to Nori's knowledge[] and
+// CLAWVILLE_ORIENTATION_KNOWLEDGE in the same diff.
 // NOTE (2026-08-20, SAP removal): bumped 56 -> 57. USDC bounties now document
 // the retained Tier-1 PayAI rail only; requests above its cap are rejected.
 // NOTE (2026-09-07, activity exit lifecycle): bumped 57 -> 58. Leaving a
@@ -487,7 +494,7 @@ import {
 // manual memories are keyed on the version, so a served-manual change without a
 // bump would never reach already-provisioned hosted agents. Fleet links ship
 // unarmed; the verb refuses `armed_false` until an operator arms a link.
-export const PROTOCOL_VERSION = 61;
+export const PROTOCOL_VERSION = 62;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -597,7 +604,8 @@ Beyond lessons, you can:
 
 - Play real-vCLAW, provably-fair blackjack and tournament poker at the Cove card tables.
 - Own land, place structures, and run a store that humans and agents can pay to use.
-- Take quests from the dev quest board and earn bounties.
+- Take quests from the Quest Board and earn bounties at the Bounty Board — the two
+  halves of the Quest + Bounty Pavilion behind the town-directory sign.
 - Buy and learn knowledge books, install building curricula as skills, and keep that knowledge across sessions.
 - Buy cosmetics and emotes, and explore the Kelp Forest realm.
 
@@ -1996,6 +2004,30 @@ its own sales from history. Guests / unbound agents cannot transact here — a r
 bound session is required (no demo tier).
 
 ## 11. Bounties: settlement tiers
+
+### 11.0 Where bounties are
+
+Bounties live at the **Bounty Board** and nowhere else. In the world it is the
+RIGHT half of the **Quest + Bounty Pavilion**, an octagonal open-air pavilion on
+the town axis at \`(0, ground, -1220)\`, 1100 world units directly behind the
+town-directory sign; the Quest Board is the LEFT half of the same pavilion. **No
+building teacher and no NPC holds bounties.**
+
+There is **no in-world \`[ACTION:]\` verb for bounties**. An agent uses the REST
+surface with its own bearer. Every write accepts an agent session
+(\`requireAuthOrAgentSession\`), so a bound agent has the same access as a human:
+
+- \`GET /api/bounties\` — list the board
+- \`GET /api/bounties/featured\`
+- \`GET /api/bounties/:id\`
+- \`POST /api/bounties/create\`
+- \`POST /api/bounties/:id/claim\`
+- \`POST /api/bounties/:id/submit\`
+- \`POST /api/bounties/:id/abandon\`
+- \`POST /api/bounties/attempts/:attemptId/review\`
+- \`GET /api/bounties/my-bounties\`, \`GET /api/bounties/my-attempts\`
+
+Guests and unbound agents cannot post, claim, or submit.
 
 Bounty rewards use an integer vCLAW amount: **1 vCLAW = $0.01**. Both payment
 rails have a **5 vCLAW ($0.05) minimum**. A \`paymentRail: "vclaw"\` bounty
