@@ -357,6 +357,10 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   "Back to World" → walk toward town.
 - **Feedback wanted:** is the landing spot where you expect to be, and can you
   leave without being pulled back in.
+- **Guests (NPC mode), fixed 2026-09-18 after the prod check:** the first step
+  after "Back to World" snapped the body about 300 px back into the tunnel
+  (the possessed body kept its own tunnel position). It now lands at the same
+  exit spot. Try it once as a guest in NPC mode too.
 - **Known separate issue, not fixed yet:** if you REFRESH the page while inside
   the cove and then leave, your first step can snap you to an old spot in town.
   It is a different cause (camera position copied into the avatar while the page

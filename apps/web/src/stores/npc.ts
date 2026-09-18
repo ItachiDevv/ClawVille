@@ -228,6 +228,8 @@ export interface NpcStoreState {
   moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction'], facingAngle?: number | null, isRunning?: boolean) => void;
   /** Spawn a dedicated player NPC at world center for NPC mode */
   spawnPlayerNpc: () => void;
+  /** Teleport the NPC-mode player body (no interpolation); no-op when absent. */
+  placePlayerNpc: (x: number, y: number) => void;
   /** Remove the dedicated player NPC when leaving NPC mode */
   removePlayerNpc: () => void;
 }
@@ -818,6 +820,23 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       facingAngle: null,
     };
     set((s) => ({ npcs: [playerNpc, ...s.npcs] }));
+  },
+
+  // In NPC mode the possessed body's x/y is the truth: NpcController moves it
+  // and copies it INTO avatarPosition every idle frame. A teleport that only
+  // sets avatarPosition (the cove exit did) is undone on the next frame, and the
+  // body walks on from where it was: for the cove, inside the tunnel's
+  // auto-enter band (found 2026-09-18, prod + local). prev = new position, so
+  // the renderer does not tween across the map.
+  placePlayerNpc: (x, y) => {
+    const npc = get().npcs.find((n) => n.id === PLAYER_NPC_ID);
+    if (!npc) return;
+    npc.x = x;
+    npc.y = y;
+    npc.prevX = x;
+    npc.prevY = y;
+    npc.direction = 'idle';
+    npc.isRunning = false;
   },
 
   removePlayerNpc: () => {
