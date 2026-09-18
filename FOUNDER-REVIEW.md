@@ -283,6 +283,29 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ---
 
+## HUD
+
+### Quest card no longer covers the minimap (staging)
+- **What:** the Town Tour card used to sit on the bottom of the minimap, worst next to a
+  building with a long name. It now always sits 8 px below the minimap. The minimap's
+  bottom line is now two rows (place name, then the visited count), so long names like
+  "Predictive Gaming Cove" show in full instead of wrapping.
+- **Also:** on a phone held sideways the minimap used to cover the movement joystick. It
+  now shrinks to its top row there, and keeps the Map button so fast travel still works.
+- **Where:** staging.clawville.world → /game on desktop, walk next to the cove; then on a
+  phone held sideways.
+- **Feedback wanted:** does the spacing look right; is the smaller sideways-phone minimap OK.
+- Session bountyFix2/Opus, 2026-09-18.
+
+### DECISION: three phone control overlaps (not changed yet)
+- On a phone held upright, the two 220 px joystick pads overlap each other in the middle
+  (about 50 px).
+- On phones, the settings and controller buttons partly cover the Jump button.
+- At building prompts on an upright phone, the bottom prompt pill covers part of Jump
+  (found by session dd).
+- **Decision wanted:** fix all three by moving/shrinking controls? That changes how the
+  controls feel on phones, so it waits for your yes.
+
 ## ACTIVITIES
 
 ### Exit a race, start a new one at once (staging — needs your confirmation)
