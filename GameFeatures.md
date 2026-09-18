@@ -1,5 +1,10 @@
 # ClawVille — Game Features
 
+**Last Audited: 2026-09-18 (no copy of your own avatar after a race; a second race queue never lands in the last room).** Drift note: since 2026-07-30 the activity routes pause the world downlink, and that pause called the players store's full `clear()`, which also erased the "former selves" ids from the 2026-06-19 fix. The world session lived on, so back in town your own body came back in snapshots as a remote player and trailed you by the interpolation delay (founder R5). A downlink pause now uses `clearRemote()` (drops other bodies, keeps who you are), and the reopen re-asserts your session id. Separately, queue-status handed a new Reef Race queue the PREVIOUS room ("MATCH EXPIRED"): it now returns a room only while you are still bound to it and it is still playing, a new queue entry clears the old match, and the 1 Hz sweep drops matches whose room was evicted. §11z and §18 carry the detail.
+
+**Last Audited: 2026-09-18 (Genesis observe-only ClawPump pairing).** Drift note: §17g adds operator ownership proof, ClawPump disclosure, and Jupiter V2 verification with token-account rent netting. Rent moves the native delta only toward zero and can never create or flip a SOL leg. Scoring weights and caps remain unchanged.
+
+
 **Last Audited: 2026-09-18 (Phone prompt pill no longer covers Hold Jump).** Drift note: on an upright phone the bottom prompt pill (building, Nori, parcel, salvage) sat 240 px up and at least 280 px wide, centred, so it covered about 27 px of the Hold-Jump button (measured on prod at 390x844: a 1,404 px2 overlap). Below 600 px of viewport width (every upright phone at least ~540 px tall; on a shorter screen the top reserve still wins, as before) the pill now lifts to 8 px above the Jump button; at 600 px and wider (iPads, landscape phones) and on desktop it stays where it was. One source for the button geometry: `JUMP_BUTTON_*` and `PROMPT_JUMP_CLASH_MAX_VW_PX` in `lib/hud-anchors.ts`, read by `mobile-controls.tsx` and `bottomPromptOffset` (`hooks/use-bottom-prompt-slot.ts`). Pure CSS, so rotation needs no JS. Locked by `hooks/bottom-prompt-offset.test.ts` (evaluates the real CSS at 10 device sizes; CI web lane). Verified live at 390x844, 375x667, 844x390, iPad mini/Air/Pro portrait and landscape: zero overlap.
 
 **Last Audited: 2026-09-18 (Land showroom covers the outer c ring).** Drift note: the founder asked on 2026-06-18 for every plot to carry a model building; the outer c ring (20 plots) arrived on 2026-06-24 and was never added, so every c lot showed bare sand with a FOR SALE sign (founder prod report 2026-09-18, "empty lots"). `LAND_SHOWROOM` now covers all 56 plots: 26 starter (level 1-2), 20 c (level 2-3, one step up, inside the c ceiling of 4), 10 founder (level 5). `land-showroom.test.ts` pins the invariant (every rendered parcel has one entry, every level inside its tier ceiling) and now runs in CI. Decorative only; no economy, route, or agent-surface change. Also corrected in §18b.e: every lot keeps its FOR SALE sign (the FOR RENT/PREMIUM signs and the sign suppression were removed by the 2026-06-18 sign rework).
@@ -2112,6 +2117,10 @@ up to the 30 s GC. Three layers fix it:
   PRIOR body of the same browser (different `publicId`) is filtered out of the
   remote-render loop and never shows as a trailing ghost, even before the server
   GC removes it.
+  The set survives a downlink PAUSE (activity routes, 2026-07-30): the pause
+  calls `clearRemote()`, never the full `clear()`, and the reopen re-asserts
+  the session id (founder R5, 2026-09-18). Only a real session end (`stop()`,
+  bfcache restore) resets it.
 
 PARITY: connected/hosted agents are unaffected (never evicted). The browser
 client is the only `/api/world/*` consumer, so no protocol-manual / SKILL.md
@@ -2428,7 +2437,7 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | `/activity/[activityId]/[roomId]` | Match render — Bumper Shells or Reef Race scene |
 | `POST /api/activities/:id/queue` | Join queue |
 | `POST /api/activities/:id/leave-queue` | Cancel |
-| `GET /api/activities/:id/queue-status` | Poll status while queued |
+| `GET /api/activities/:id/queue-status` | Poll status while queued. `matchedRoomId` is returned only while the avatar is still bound to that room and it is still playing; a new queue entry clears the previous match (2026-09-18: a second Reef Race queue used to land in the last, finished room) |
 | `GET /api/activities/:id/leaderboard?window=daily\|weekly\|all\|season&limit=N` | Per-activity leaderboard |
 | `GET /api/leaderboard/reef-race/daily-best-lap?limit=10` | Lobster of the Day public board (public, no auth, 60/min/IP, 60s cache) |
 | Activity WS hub | Inputs in + delta/keyframe/event frames out |
@@ -3609,6 +3618,10 @@ up to the 30 s GC. Three layers fix it:
   PRIOR body of the same browser (different `publicId`) is filtered out of the
   remote-render loop and never shows as a trailing ghost, even before the server
   GC removes it.
+  The set survives a downlink PAUSE (activity routes, 2026-07-30): the pause
+  calls `clearRemote()`, never the full `clear()`, and the reopen re-asserts
+  the session id (founder R5, 2026-09-18). Only a real session end (`stop()`,
+  bfcache restore) resets it.
 
 PARITY: connected/hosted agents are unaffected (never evicted). The browser
 client is the only `/api/world/*` consumer, so no protocol-manual / SKILL.md
@@ -3861,7 +3874,7 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | `/activity/[activityId]/[roomId]` | Match render — Bumper Shells or Reef Race scene |
 | `POST /api/activities/:id/queue` | Join queue |
 | `POST /api/activities/:id/leave-queue` | Cancel |
-| `GET /api/activities/:id/queue-status` | Poll status while queued |
+| `GET /api/activities/:id/queue-status` | Poll status while queued. `matchedRoomId` is returned only while the avatar is still bound to that room and it is still playing; a new queue entry clears the previous match (2026-09-18: a second Reef Race queue used to land in the last, finished room) |
 | `GET /api/activities/:id/leaderboard?window=daily\|weekly\|all\|season&limit=N` | Per-activity leaderboard |
 | `GET /api/leaderboard/reef-race/daily-best-lap?limit=10` | Lobster of the Day public board (public, no auth, 60/min/IP, 60s cache) |
 | Activity WS hub | Inputs in + delta/keyframe/event frames out |

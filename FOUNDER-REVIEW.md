@@ -317,6 +317,14 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## ACTIVITIES
 
+### Leaving a race no longer leaves a copy of you behind (staging, then prod)
+
+- **WHERE:** staging.clawville.world/game (prod after promotion). Queue a Reef Race, leave it, walk around town.
+- **LOOK AT:** no second avatar follows you. Also queue a second race right after: it should start a new race, not show "MATCH EXPIRED".
+- **FEEDBACK WANTED:** any trailing copy at all, or any expired-room screen on a fresh queue.
+- **Session dd, 2026-09-18.**
+
+
 ### Exit a race, start a new one at once (staging — needs your confirmation)
 - **What:** the exit bug you reported — built and test-verified server-side,
   needs your eyes to confirm it. Leaving a Reef Race (or Bumper Shells)
