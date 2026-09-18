@@ -35,6 +35,7 @@ import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import SupportLauncher from '@/components/support/SupportLauncher';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
+import { useNpcStore } from '@/stores/npc';
 import { useCoveStore } from '@/stores/cove';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
@@ -146,6 +147,9 @@ export default function CovePage() {
       avatarPositionRef.x = COVE_EXIT_PX.x;
       avatarPositionRef.y = COVE_EXIT_PX.y;
       useGameStore.getState().setAvatarPosition(COVE_EXIT_PX.x, COVE_EXIT_PX.y);
+      // NPC mode (guests): the possessed body owns the position and would
+      // pull the avatar back into the tunnel band on the next frame.
+      useNpcStore.getState().placePlayerNpc(COVE_EXIT_PX.x, COVE_EXIT_PX.y);
     };
     const requested = requestWorldStageNavigation({
       to: '/game',
