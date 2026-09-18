@@ -320,12 +320,23 @@ class ActivityQueueService {
   }
 
   /**
-   * Short-lived (5-minute) map of avatarId → roomId, populated by the
-   * matcher so a client polling `/queue-status` can pick up their room
-   * assignment without a pre-match WS. Keys are dropped once the room
-   * is no longer active (`getMatchedRoomId` auto-cleans).
+   * Map of avatarId → roomId, populated by the matcher so a client polling
+   * `/queue-status` can pick up their room assignment without a pre-match
+   * WS. An entry is dropped when the avatar's poll finds the match over
+   * (`getMatchedRoomId`), when the avatar queues again (`addToMemory`), or
+   * by the matchmaker sweep once the room has left the manager
+   * (`pruneMatchedRooms`) — so an avatar that never polls again cannot pin
+   * an entry forever. (The old comment promised a 5-minute lifetime that no
+   * timer enforced; Codex, 2026-09-18.)
    */
   private matchedRooms = new Map<string, string>();
+
+  /** Drop matches whose room the manager has already evicted (GC). */
+  pruneMatchedRooms(): void {
+    for (const [avatarId, roomId] of this.matchedRooms) {
+      if (!activityRoomManager.getRoom(roomId)) this.matchedRooms.delete(avatarId);
+    }
+  }
 
   /**
    * Length only — for the public `/api/activities` summary cards.
@@ -500,6 +511,7 @@ class ActivityQueueService {
    * doesn't kill the cron.
    */
   async runMatchmakerSweep(): Promise<void> {
+    this.pruneMatchedRooms();
     for (const [queueKey, queue] of this.queues.entries()) {
       try {
         // Decode the queue key — `${activityId}::agent-only` or bare
