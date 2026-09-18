@@ -102,6 +102,8 @@
 
 ### DoorDash Phase 2 — you can now actually order (session dd/Fable, 2026-09-17)
 
+- **2026-09-18 demo patch (session dd): Wawa + custom hoagie.** WHERE: prod `clawville.world`, chat bar, account `itachi`. LOOK AT: say "I'm hungry, is DoorDash available?" (should list open places incl. Wawa); "menu for Wawa, hoagies"; "add a custom Italian hoagie" (should list bread / toasting / cheese choices); answer in plain words; "what is the total". FEEDBACK WANTED: is the choices question readable in the chat panel, and did the picks shown after adding match what you said?
+
 **WHAT:** The ordering path is built. You can tell your agent to add things to a cart, ask what the
 total is, and place the order — all from the chat bar. It is still your account only.
 

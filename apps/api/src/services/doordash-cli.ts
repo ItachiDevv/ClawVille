@@ -59,7 +59,12 @@ export function doordashDarkState(): { dark: boolean; since: string | null; reas
 const AUTH_EXPIRY_PATTERNS: readonly { exitCode: number; stderr: RegExp }[] = [];
 
 const id = z.union([z.string().min(1), z.number().int().nonnegative()]);
-const itemSchema = z.object({ item_id: id, name: z.string().optional() });
+// The two modifier flags are LIVE-CAPTURED on a Wawa menu 2026-09-18. They let
+// the cart step know, before adding, that an item needs choices.
+const itemSchema = z.object({
+  item_id: id, name: z.string().optional(),
+  has_modifiers: z.boolean().optional(), has_required_modifiers: z.boolean().optional(),
+});
 const addressSchema = z.object({
   address_id: id, printable_address: z.string(), label: z.string().nullable().optional(),
   is_default: z.boolean().optional(),
@@ -85,6 +90,40 @@ const storeSchema = z.object({
 // dropped here. Do NOT widen this schema to pass `message` through.
 const searchSchema = z.object({ stores: z.array(storeSchema) });
 const menuSchema = z.object({ menu_id: id, items: z.array(itemSchema) });
+// `find-nearby-stores` (docs/ddcli-help/find-nearby-stores.txt): the NON-restaurant
+// discovery surface. Convenience stores such as Wawa never appear in `search`.
+// Same narrow boundary as searchSchema; delivery_time reads "Scheduled" when the
+// store cannot deliver now (LIVE 2026-09-18, Jacksonville, 4 AM).
+const nearbySchema = z.object({
+  stores: z.array(z.object({
+    store_id: id,
+    name: z.string().optional(),
+    distance_meters: z.number().nonnegative().optional(),
+    delivery_time: z.string().max(40).optional(),
+  })),
+});
+// `restaurant-item-details` item.extras[] — option groups with their limits.
+// LIVE-CAPTURED 2026-09-18 (Wawa 897466, Custom Italian Hoagie). Recursive,
+// because an option can carry its own required sub-choice (Oil -> Little Bit).
+type OptionGroupShape = {
+  extra_id: string | number; title: string; min_num_options: number; max_num_options: number;
+  options: Array<{ option_id: string | number; name: string; is_default?: boolean; extras?: OptionGroupShape[] }>;
+};
+const optionGroupSchema: z.ZodType<OptionGroupShape> = z.lazy(() => z.object({
+  extra_id: id,
+  title: z.string().max(200),
+  min_num_options: z.number().int().nonnegative(),
+  max_num_options: z.number().int().nonnegative(),
+  options: z.array(z.object({
+    option_id: id,
+    name: z.string().max(200),
+    is_default: z.boolean().optional(),
+    extras: z.array(optionGroupSchema).optional(),
+  })),
+}));
+const itemOptionsSchema = z.object({
+  item: z.object({ item_id: id, name: z.string().optional(), extras: z.array(optionGroupSchema).default([]) }),
+});
 // Same `name` vs `store_name` tolerance as storeSchema. Order history was empty
 // on the staging account, so the live spelling here is UNCONFIRMED — accepting
 // both is the safe reading rather than guessing one.
@@ -209,6 +248,8 @@ export type DdPreview = z.infer<typeof previewSchema>;
 export type DdSubmit = z.infer<typeof submitSchema>;
 export type DdSearchResult = z.infer<typeof searchSchema>;
 export type DdMenu = z.infer<typeof menuSchema>;
+export type DdNearby = z.infer<typeof nearbySchema>;
+export type DdItemOptions = z.infer<typeof itemOptionsSchema>;
 export type DdAddress = z.infer<typeof addressSchema>;
 export type DdOrderSummary = z.infer<typeof orderSummarySchema>;
 export type DdOrderStatus = z.infer<typeof statusSchema>;
@@ -230,6 +271,9 @@ const schemas: Record<DdCliOperation, z.ZodTypeAny> = {
   'order-submit': submitSchema, // order-submit.txt
   'order-status': statusSchema, // order-status.txt
   'order-history': z.object({ orders: z.array(orderSummarySchema), page_full: z.boolean().optional() }), // order-history.txt
+  'nearby-stores': nearbySchema, // find-nearby-stores.txt
+  'item-options': itemOptionsSchema, // restaurant-item-details (live capture 2026-09-18)
+  'cart-add-options': cartSchema, // cart-add-items.txt, nested_options
 };
 
 const value = z.string().min(1).max(1000).refine((s) => !/[\u0000-\u001f]/.test(s) && !s.startsWith('-'));
@@ -241,6 +285,16 @@ const uuidValue = z.string().uuid();
 // are not orderable through this path at all. 1..20 keeps a typo from turning
 // into a real charge for twenty thousand garlic knots.
 const quantityValue = z.string().regex(/^(?:[1-9]|1\d|20)$/);
+// nested_options for cart add-items. Strict: unknown keys are REJECTED, not
+// stripped, because this goes TO the vendor and must carry nothing else.
+const optionName = z.string().min(1).max(120).refine((s) => !/[\u0000-\u001f]/.test(s));
+const optionId = z.string().regex(/^[A-Za-z0-9_]{1,64}$/);
+const leafOption = z.object({ id: optionId, name: optionName, quantity: z.number().int().min(1).max(10) }).strict();
+const nestedOptionsSchema = z.array(leafOption.extend({ options: z.array(leafOption).max(10).optional() }).strict())
+  .min(1).max(40);
+const nestedOptionsValue = z.string().max(16000).refine((s) => {
+  try { return nestedOptionsSchema.safeParse(JSON.parse(s)).success; } catch { return false; }
+});
 const tipValue = z.string().regex(/^\d{1,5}$/);
 const argumentSchemas = {
   // search takes an OPTIONAL saved address id as the second value — see argvFor.
@@ -255,6 +309,17 @@ const argumentSchemas = {
   'cart-add': z.union([
     z.tuple([identifier, identifier, identifier, quantityValue]),
     z.tuple([identifier, identifier, identifier, quantityValue, uuidValue]),
+  ]),
+  // [addressId] — the saved default, resolved by the caller exactly as search does.
+  'nearby-stores': z.tuple([numericId]),
+  // [storeId, menuId, itemId]
+  'item-options': z.tuple([numericId, identifier, identifier]),
+  // Same as cart-add plus the option choices, as JSON the OPERATOR built from
+  // ids DoorDash returned for this item (doordash-options.ts). Re-validated here
+  // against a strict shape so nothing but ids, names and quantities can ride in.
+  'cart-add-options': z.union([
+    z.tuple([identifier, identifier, identifier, quantityValue, nestedOptionsValue]),
+    z.tuple([identifier, identifier, identifier, quantityValue, nestedOptionsValue, uuidValue]),
   ]),
   'cart-show': z.tuple([uuidValue]),
   'cart-remove': z.tuple([uuidValue, uuidValue]),
@@ -306,6 +371,27 @@ function argvFor(op: DdCliOperation, args: readonly string[]): string[] | null {
       ]);
       command = ['cart', 'add-items', '--store-id', args[0], '--menu-id', args[1], '--items-json', items];
       if (args[4]) command.push('--cart-uuid', args[4]);
+      break;
+    }
+    // docs/ddcli-help/find-nearby-stores.txt. `nv` = every merchant type EXCEPT
+    // restaurants, so this complements `search` without overlapping it.
+    case 'nearby-stores':
+      command = ['find-nearby-stores', '--vertical', 'nv', '--max', '25', '--address-id', args[0]];
+      break;
+    // restaurant-item-details needs --menu-id (LIVE 2026-09-18: "Missing option
+    // '--menu-id'"), and it serves convenience stores such as Wawa too.
+    case 'item-options':
+      command = ['restaurant-item-details', '--store-id', args[0], '--menu-id', args[1], '--item-id', args[2]];
+      break;
+    case 'cart-add-options': {
+      // Parsed THROUGH the strict schema and re-serialized, so the vendor gets
+      // exactly the validated structure and never the caller's raw string.
+      const nested = nestedOptionsSchema.parse(JSON.parse(args[4]));
+      const items = JSON.stringify([
+        { item_id: args[2], item_name: 'item', quantity: Number(args[3]), nested_options: nested },
+      ]);
+      command = ['cart', 'add-items', '--store-id', args[0], '--menu-id', args[1], '--items-json', items];
+      if (args[5]) command.push('--cart-uuid', args[5]);
       break;
     }
     // docs/ddcli-help/cart-show.txt
@@ -369,6 +455,11 @@ function unwrapEnvelope(value: unknown): unknown {
  * shapes stood in for observed ones; this is the seam that lets a live capture
  * be the thing under test. The payload is never retained by this function.
  */
+/** Test seam: the exact argv a validated call would spawn, or null when refused. */
+export function ddCliArgvForTest(op: DdCliOperation, args: readonly string[]): string[] | null {
+  try { return argvFor(op, args); } catch { return null; }
+}
+
 export function parseDdCliPayload(op: DdCliOperation, raw: unknown): { ok: boolean; error?: string } {
   const parsed = schemas[op].safeParse(unwrapEnvelope(raw));
   return parsed.success ? { ok: true } : { ok: false, error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") };

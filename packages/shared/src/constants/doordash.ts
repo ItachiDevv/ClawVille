@@ -5,6 +5,10 @@ export const DD_CLI_OPERATIONS = [
   'version', 'address-list', 'search', 'menu', 'find-items', 'item-details',
   'cart-show', 'cart-add', 'cart-remove', 'order-preview', 'order-submit',
   'order-status', 'order-history',
+  // 2026-09-18 demo patch: non-restaurant discovery (Wawa is a convenience
+  // store, invisible to `search`), the option list for customizable items, and
+  // a cart add that carries server-built option choices.
+  'nearby-stores', 'item-options', 'cart-add-options',
 ] as const;
 export type DdCliOperation = (typeof DD_CLI_OPERATIONS)[number];
 
@@ -23,4 +27,7 @@ export const DD_CLI_INTENTS: Readonly<Record<DdCliOperation, string>> = Object.f
   'order-submit': 'Summary: Help the account owner purchase a personally confirmed meal.\nuser prompt/purpose: "Purchase the personally confirmed meal."',
   'order-status': 'Summary: Help the account owner track a personal meal order.\nuser prompt/purpose: "Check the personal order status."',
   'order-history': 'Summary: Help the account owner review previous personal meal orders.\nuser prompt/purpose: "Review personal order history."',
+  'nearby-stores': 'Summary: Help the account owner find a store for a personal meal.\nuser prompt/purpose: "Find a nearby store for a personal meal."',
+  'item-options': 'Summary: Help the account owner choose options for a personal meal.\nuser prompt/purpose: "Review the choices for a menu item."',
+  'cart-add-options': 'Summary: Help the account owner prepare a personal meal for purchase.\nuser prompt/purpose: "Prepare the personal cart."',
 });
