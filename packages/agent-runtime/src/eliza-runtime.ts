@@ -394,6 +394,12 @@ export class ElizaRuntime {
         system += `\n\nCommunication tone: ${customization.tone}`;
       }
     }
+    // The owner's OWN agent gets the same length rule as teachers and Nori.
+    // Without it a "Curious Scholar" archetype answered "what's going on, twin"
+    // with a Proof-of-History essay on every turn (founder, 2026-09-18). No token
+    // cap here, unlike the conversational routes: this chat emits action tags,
+    // and a cap could cut one off mid-tag.
+    system += CONCISE_CHAT_DIRECTIVE;
 
     // Convert messageExamples from {user, content}[] to ElizaOS format
     const messageExamples = customization?.messageExamples?.map((conversation: any) =>
