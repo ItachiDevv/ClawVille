@@ -16,6 +16,7 @@ import {
   subscribeHudElement,
 } from '@/lib/hud-anchors';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 
 const MM_W = 180;
 const MM_H = MM_W * (MAP_HEIGHT / MAP_WIDTH); // preserve aspect
@@ -57,6 +58,11 @@ export default function Minimap() {
   // The card is shown by width (`hidden md:block`), so a landscape phone wider
   // than 768 px gets it. Touch is decided by `useIsMobile()`, never by width.
   const isMobile = useIsMobile();
+  // On a short touch screen (a phone held sideways) the utility buttons sit
+  // under this card's header (useShortTouchRow), and the full 254 px card does
+  // not fit the height anyway: stay collapsed there, even while a chat hides
+  // the joystick pad (Codex review 2026-09-18).
+  const shortTouch = useShortTouchRow() !== null;
 
   // The joystick pad's MEASURED top edge (null when there is none: desktop,
   // or controls hidden while chatting). Measured, not computed from the
@@ -124,7 +130,7 @@ export default function Minimap() {
   const cardElRef = useRef<HTMLDivElement | null>(null);
   const [fullCardBottomPx, setFullCardBottomPx] = useState<number>(FULL_CARD_BOTTOM_PX);
   const compact =
-    isMobile && padTopPx !== null && padTopPx < fullCardBottomPx + PAD_GAP_PX;
+    isMobile && (shortTouch || (padTopPx !== null && padTopPx < fullCardBottomPx + PAD_GAP_PX));
   // Records the card's full height from its OWN size changes, so every way
   // the full card appears is caught: first mount, expanding out of compact,
   // and going from hidden (below `md`, reads 0, ignored) to visible on a

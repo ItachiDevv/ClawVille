@@ -305,15 +305,34 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Feedback wanted:** does the spacing look right; is the smaller sideways-phone minimap OK.
 - Session bountyFix2/Opus, 2026-09-18.
 
-### DECISION: three phone control overlaps (not changed yet)
-- On a phone held upright, the two 220 px joystick pads overlap each other in the middle
-  (about 50 px).
-- On phones, the settings and controller buttons partly cover the Jump button.
+### Phone controls no longer overlap (staging, needs your eyes)
+- ~~On a phone held upright, the two 220 px joystick pads overlap each other in the middle~~
+  FIXED 2026-09-18 (bountyFix2, staging): each pad's touch area is now at most half the
+  screen width. The joysticks did not move; only the invisible touch areas stopped
+  overlapping (the right one used to take touches in a 50 px strip on the left side).
+- ~~On phones, the settings and controller buttons partly cover the Jump button~~ FIXED
+  2026-09-18 (bountyFix2, staging). It happened on phones held sideways: the gear,
+  Controls and Language buttons stood in a column down the right edge and covered Jump
+  and the camera joystick. On a phone held sideways they now sit in one row at the left
+  (top line on small phones, under the map header on bigger ones). Upright phones and
+  iPads keep the column. Jump also stays below Nori on short screens, and on phones
+  narrower than 390 px it moved up a few pixels so it no longer touches the joystick.
 - ~~At building prompts on an upright phone, the bottom prompt pill covers part of Jump~~
   FIXED 2026-09-18 by session dd (staging): the pill now sits 8 px above Jump on upright
   phones; iPads and landscape phones are unchanged. This moved the prompt, not a control.
-- **Decision wanted:** fix all three by moving/shrinking controls? That changes how the
-  controls feel on phones, so it waits for your yes.
+- **Where:** staging.clawville.world/game on your phone, upright and sideways, in NPC or
+  Controlled mode (Jump shows there).
+- **Feedback wanted:** does the top row feel right on a sideways phone? If you prefer the
+  old column, it is one hook to turn off (`useShortTouchRow` in the three buttons).
+- Also on a sideways phone: the map stays small while a chat is open, and the Autonomous
+  panel sits on the right under Nori (it used to run off the top of the screen).
+- Known limit: on 320 px phones (first iPhone SE) the upright right column still touches
+  the centred quest card; that width is below the 390 px minimum we test.
+- **Finding, your call:** on phones narrower than 768 px (every upright phone and small
+  sideways phones) the minimap is hidden, and with it the only "Map" button, so fast
+  travel through the World Map is not reachable there. This is older than today's work.
+  A "World Map" entry in the gear menu would fix it; say yes and it gets built.
+- Session bountyFix2/Opus, 2026-09-18.
 
 ## ACTIVITIES
 
@@ -373,10 +392,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   after "Back to World" snapped the body about 300 px back into the tunnel
   (the possessed body kept its own tunnel position). It now lands at the same
   exit spot. Try it once as a guest in NPC mode too.
-- **Known separate issue, not fixed yet:** if you REFRESH the page while inside
-  the cove and then leave, your first step can snap you to an old spot in town.
-  It is a different cause (camera position copied into the avatar while the page
-  is still loading) and is next on the list.
+- **After a refresh inside the cove (checked 2026-09-18):** as a guest in the
+  free-camera Explore mode there is no body, so the map dot follows the camera;
+  that is how Explore works. If you are logged in and your spawn is set to your
+  HOME parcel, leaving the cove after a refresh used to send you home; it now
+  leaves you at the cove door.
 - Session bountyFix2/Opus, 2026-09-18.
 
 ### Nori button reachable on phones (LIVE on prod via #271)

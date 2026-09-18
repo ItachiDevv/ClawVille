@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { AutonomyStatusThought } from '@clawville/shared';
 import { api } from '@/lib/api';
 import { useGameStore, type GameState } from '@/stores/game';
+import { useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 import {
   countAutonomyArrivals,
   formatAutonomyPhase,
@@ -30,6 +31,8 @@ const EMPTY_THOUGHTS: AutonomyStatusThought[] = [];
 
 export default function AutonomyHUD() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
+  const shortTouch = useShortTouchRow() !== null;
+  const chatOpen = useGameStore((s: GameState) => s.chatOpen || s.guideChatOpen);
   const statusQuery = useQuery({
     queryKey: ['autonomy-status'],
     queryFn: api.getAutonomyStatus,
@@ -91,6 +94,9 @@ export default function AutonomyHUD() {
 
   // Polling and rendering both stop outside Autonomous mode.
   if (controlMode !== 'autonomous') return null;
+  // On a short touch screen the panel sits where an open chat panel draws;
+  // the chat wins while it is open (Codex review 2026-09-18).
+  if (shortTouch && chatOpen) return null;
 
   const elapsed = sessionStartedAt ? Math.max(0, Math.floor((now - sessionStartedAt) / 1_000)) : 0;
   const mins = Math.floor(elapsed / 60);
@@ -99,7 +105,26 @@ export default function AutonomyHUD() {
   const arrivals = countAutonomyArrivals(thoughts);
 
   return (
-    <div className="fixed bottom-[17rem] left-4 z-50 pointer-events-auto w-80 max-w-[calc(100vw-2rem)]">
+    // On a short touch screen (a phone held sideways) `bottom-[17rem]` put the
+    // panel's bottom at y ~118 of 390, so it ran off the top of the screen over
+    // the minimap and the top-centre stack, and it would cover the utility row
+    // at the left. There it sits at the RIGHT under Nori (Hold Jump is hidden in
+    // Autonomous mode), narrow enough to clear the centred mode toggle and quest
+    // card (up to ~220 px) and short enough to end 8 px above the camera joystick (top
+    // vh - 220), scrolling inside (2026-09-18).
+    <div
+      className={shortTouch
+        ? 'fixed z-50 pointer-events-auto overflow-y-auto rounded-lg'
+        : 'fixed bottom-[17rem] left-4 z-50 pointer-events-auto w-80 max-w-[calc(100vw-2rem)]'}
+      style={shortTouch
+        ? {
+            top: 70,
+            right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
+            width: 'min(320px, calc(50vw - 134px - env(safe-area-inset-right, 0px)))',
+            maxHeight: 'calc(100dvh - 298px)',
+          }
+        : undefined}
+    >
       <div className="rounded-lg bg-[rgba(10,22,40,0.92)] backdrop-blur-md border border-cyan-500/20 shadow-[0_0_20px_rgba(0,229,255,0.08)] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-cyan-500/10">
@@ -129,15 +154,17 @@ export default function AutonomyHUD() {
         </div>
 
         {wallet && (
-          <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-cyan-500/10 text-[10px] font-mono">
+          // flex-wrap: on a short touch screen the panel is ~150-200 px wide and
+          // the two no-wrap fields go on two lines instead of being clipped.
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 px-3 py-1.5 border-b border-cyan-500/10 text-[10px] font-mono">
             <span className="text-white/80 whitespace-nowrap">
               Balance: {wallet.balance.toLocaleString()} vCLAW
             </span>
-            <span className="whitespace-nowrap">
-              <span className="text-green-400">Today: +{wallet.earnedToday}</span>
+            <span>
+              <span className="text-green-400 whitespace-nowrap">Today: +{wallet.earnedToday}</span>
               <span className="text-white/40"> / </span>
-              <span className="text-red-300">−{wallet.spentToday}</span>
-              <span className="text-white/40"> vCLAW</span>
+              <span className="text-red-300 whitespace-nowrap">−{wallet.spentToday}</span>
+              <span className="text-white/40 whitespace-nowrap"> vCLAW</span>
             </span>
           </div>
         )}
