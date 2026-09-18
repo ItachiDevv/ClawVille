@@ -37,6 +37,19 @@ describe('cart add with option choices', () => {
       ['restaurant-item-details', '--store-id', '897466', '--menu-id', '15975751', '--item-id', 'i_19616733360']));
   });
 
+  // LIVE-CAPTURED 2026-09-18 from the founder's first real order. The status
+  // is under `result`; the old top-level-only schema failed every check.
+  test('parses the live order status shape', () => {
+    expect(parseDdCliPayload('order-status', { result: {
+      status: 'store_confirmed', status_message: 'Wawa is preparing your order.', status_updated_at: '2026-09-18T10:03:00Z',
+      action_required: false, merchant_name: 'Wawa', is_pickup: false, quoted_delivery_time: '2026-09-18T10:26:34.758500Z',
+      actual_delivery_time: null, delivery_window_start: '2026-09-18T10:18:30Z', delivery_window_end: '2026-09-18T10:37:30Z',
+      estimated_pickup_time: null, actual_pickup_time: null, eta_trend: null, late_reason: null, cancellation_reason: null,
+    }, success: true, message: '' }).ok).toBe(true);
+    expect(parseDdCliPayload('order-status', { status: 'placed' }).ok).toBe(true);
+    expect(parseDdCliPayload('order-status', { result: {} }).ok).toBe(false);
+  });
+
   test('parses the live nearby-stores and item-details shapes', () => {
     expect(parseDdCliPayload('nearby-stores', { stores: [
       { store_id: '897466', name: 'Wawa', distance_meters: 8367, delivery_time: '69 min', image_url: '' },
