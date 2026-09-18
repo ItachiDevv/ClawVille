@@ -124,6 +124,22 @@ export default function SalvageGatherPill() {
     if (!isSalvageNodeClaimable(useSalvageStore.getState().nodeCooldowns, nodeId)) return;
 
     const myGestureId = ++gestureIdRef.current;
+    // The account this claim belongs to; a sign-out or account switch while
+    // it is in flight bumps the store generation and the response is dropped.
+    const myGeneration = useSalvageStore.getState().generation;
+    // Checked after EVERY await: the player walked away / started another
+    // gesture, or the account changed (then any further request would run
+    // under the NEW account's cookie and could spend its claim).
+    // Known limit (Codex r3, accepted): a reset can still land inside the
+    // shared request helper's own fingerprint await, after this check and
+    // before fetch(). That one request then carries the new cookie, but it
+    // carries the OLD account's approach token or none, so the server (tokens
+    // are bound to the account that approached) cannot settle a claim with it.
+    // This race predates the guard; closing it needs a dispatch-time check in
+    // the shared helper for every route.
+    const stillMine = () =>
+      gestureIdRef.current === myGestureId &&
+      useSalvageStore.getState().generation === myGeneration;
     const idempotencyKey = freshSalvageIdempotencyKey();
     requestInFlightRef.current = true;
     setPhase('gathering');
@@ -131,7 +147,7 @@ export default function SalvageGatherPill() {
     try {
       let approachToken: string | null = null;
       for (let attempt = 0; attempt < APPROACH_MAX_ATTEMPTS; attempt++) {
-        if (gestureIdRef.current !== myGestureId) return; // walked away / superseded
+        if (!stillMine()) return; // walked away / superseded / account changed
         try {
           const response = await api.approachSalvageNode(nodeId, {
             x: salvageApproachPositionRef.x,
@@ -140,6 +156,7 @@ export default function SalvageGatherPill() {
           approachToken = response.approachToken;
           break;
         } catch (error) {
+          if (!stillMine()) return;
           if (isApproachInProgress(error)) {
             await sleep(APPROACH_POLL_INTERVAL_MS);
             continue;
@@ -150,7 +167,7 @@ export default function SalvageGatherPill() {
           return;
         }
       }
-      if (gestureIdRef.current !== myGestureId) return;
+      if (!stillMine()) return;
       if (!approachToken) {
         addToast('⚠️', "Couldn't get close enough — try again.", 3600);
         return;
@@ -162,6 +179,7 @@ export default function SalvageGatherPill() {
       try {
         claimResponse = await attemptClaim(approachToken);
       } catch (error) {
+        if (!stillMine()) return;
         if (isSalvageIdempotencyConflict(error)) {
           addToast('⚠️', 'Try again.', 3200);
           return;
@@ -174,8 +192,10 @@ export default function SalvageGatherPill() {
               x: salvageApproachPositionRef.x,
               z: salvageApproachPositionRef.z,
             });
+            if (!stillMine()) return;
             claimResponse = await attemptClaim(reapproach.approachToken);
           } catch (retryError) {
+            if (!stillMine()) return;
             addToast('⚠️', salvageClaimErrorMessage(retryError), 3600);
             return;
           }
@@ -185,7 +205,7 @@ export default function SalvageGatherPill() {
         }
       }
 
-      applyClaimResult(claimResponse);
+      if (!stillMine() || !applyClaimResult(claimResponse, myGeneration)) return;
       // The old toast said only "+N materials salvaged", which never told a
       // player what materials are FOR. Naming the sink is the only thing that
       // connects the gather loop to the yard editor in the UI.
@@ -196,6 +216,7 @@ export default function SalvageGatherPill() {
       );
       window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
     } catch (error) {
+      if (!stillMine()) return;
       if (error instanceof ApiError && error.status === 401) {
         addToast('🐚', 'Sign in to keep what you salvage.', 3600);
       } else {

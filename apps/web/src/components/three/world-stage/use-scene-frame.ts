@@ -21,6 +21,7 @@ import {
 } from '@/lib/three/player/player-capability-mask';
 import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
 import { useStageStore } from './stage-store';
+import { createFrameCapState, stepFrameCap, type FrameCapState } from './stage-frame-cap';
 
 type CallbackRef = { current: RenderCallback };
 type SceneRegistration = { ref: CallbackRef; priority: number };
@@ -72,7 +73,8 @@ function readFpsCap(): number | null {
   return CURRENT_WORLD_DEVICE_PROFILE.fpsCap;
 }
 
-const STAGE_FPS_CAP = readFpsCap();
+/** The stage frame cap in effect (phone profile 30, `?fpscap=` override), or null. */
+export const STAGE_FPS_CAP = readFpsCap();
 const STAGE_FRAME_INTERVAL_MS =
   STAGE_FPS_CAP === null ? 0 : 1_000 / STAGE_FPS_CAP;
 // Native 30/60 Hz presentation deltas commonly land just below their nominal
@@ -229,32 +231,24 @@ export function useSceneFrame(
 
 export function StageFrameScheduler(): null {
   const queuedAckRef = useRef<string | null>(null);
-  const accumulatedFrameMsRef = useRef(0);
+  const frameCapRef = useRef<FrameCapState | null>(null);
 
   useFrame((state, delta, frame) => {
     let scheduledDelta = delta;
     if (STAGE_FPS_CAP !== null) {
-      if (clampNextFrameDelta) {
-        // Admit one recovery frame without carrying a background-tab backlog
-        // into the following simulation ticks.
-        accumulatedFrameMsRef.current = STAGE_FRAME_INTERVAL_MS;
-      } else {
-        accumulatedFrameMsRef.current = Math.min(
-          accumulatedFrameMsRef.current + delta * 1_000,
-          STAGE_FRAME_INTERVAL_MS * 2,
-        );
-      }
-      if (
-        accumulatedFrameMsRef.current + STAGE_FRAME_TOLERANCE_MS <
-        STAGE_FRAME_INTERVAL_MS
-      ) {
-        return;
-      }
-      scheduledDelta = accumulatedFrameMsRef.current / 1_000;
-      accumulatedFrameMsRef.current = Math.max(
-        0,
-        accumulatedFrameMsRef.current - STAGE_FRAME_INTERVAL_MS,
+      // Admission (and the one recovery frame that drops a background-tab
+      // backlog) is in stage-frame-cap.ts; the admitted delta is the real
+      // time since the last admitted frame, never the carried remainder twice.
+      if (frameCapRef.current === null) frameCapRef.current = createFrameCapState();
+      const admitted = stepFrameCap(
+        frameCapRef.current,
+        delta * 1_000,
+        STAGE_FRAME_INTERVAL_MS,
+        STAGE_FRAME_TOLERANCE_MS,
+        clampNextFrameDelta,
       );
+      if (admitted < 0) return;
+      scheduledDelta = admitted;
     }
 
     const controlledDelta = clampNextFrameDelta

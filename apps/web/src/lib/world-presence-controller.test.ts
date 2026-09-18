@@ -258,6 +258,7 @@ function createHarness(options: TestEnvironmentOptions = {}) {
   const tradeDecisions: unknown[][] = [];
   const streamStates: Array<'live' | 'reconnecting' | 'stopped'> = [];
   let clearCount = 0;
+  let clearRemoteCount = 0;
   let landInvalidationCount = 0;
 
   const callbacks: WorldPresenceStoreCallbacks = {
@@ -271,6 +272,9 @@ function createHarness(options: TestEnvironmentOptions = {}) {
     setRoomId: (id) => roomIds.push(id),
     clearPlayers: () => {
       clearCount += 1;
+    },
+    clearRemotePlayers: () => {
+      clearRemoteCount += 1;
     },
     addCollaborationEntries: () => undefined,
     invalidateLandQuery: () => {
@@ -302,6 +306,9 @@ function createHarness(options: TestEnvironmentOptions = {}) {
     streamStates,
     get clearCount() {
       return clearCount;
+    },
+    get clearRemoteCount() {
+      return clearRemoteCount;
     },
     get landInvalidationCount() {
       return landInvalidationCount;
@@ -813,6 +820,34 @@ describe("world presence controller", () => {
     source.onerror?.();
 
     expect(harness.streamStates).toHaveLength(publicationsAfterStop);
+  });
+
+  // Founder R5 (2026-09-18): after leaving a Reef Race a copy of your own
+  // avatar trailed you. The activity route pauses the downlink; the close
+  // wiped the local session id while the session lived on, so on reopen your
+  // own body arrived as a remote player.
+  test("a downlink pause keeps the local identity and re-asserts it on reopen", async () => {
+    const h = createHarness();
+    await startJoined(h);
+    const joinedId = h.localSessionIds.at(-1);
+    expect(typeof joinedId).toBe("string");
+    const opened = h.eventSources.length;
+
+    h.setDownlinkEnabled(false);
+    h.advance(200);
+    expect(h.clearRemoteCount).toBe(1);
+    expect(h.clearCount).toBe(0);
+    expect(h.localSessionIds.at(-1)).toBe(joinedId);
+
+    const assignmentsBeforeReopen = h.localSessionIds.length;
+    h.setDownlinkEnabled(true);
+    h.advance(200);
+    expect(h.eventSources.length).toBeGreaterThan(opened);
+    // The reopen itself re-asserts the id (a new assignment, not a leftover).
+    expect(h.localSessionIds.length).toBe(assignmentsBeforeReopen + 1);
+    expect(h.localSessionIds.at(-1)).toBe(joinedId);
+    expect(h.localSessionIds).not.toContain(null);
+    h.controller.stop();
   });
 
   test("downlink close, page teardown and supersession publish stopped", async () => {

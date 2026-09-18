@@ -317,6 +317,14 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## ACTIVITIES
 
+### Leaving a race no longer leaves a copy of you behind (staging, then prod)
+
+- **WHERE:** staging.clawville.world/game (prod after promotion). Queue a Reef Race, leave it, walk around town.
+- **LOOK AT:** no second avatar follows you. Also queue a second race right after: it should start a new race, not show "MATCH EXPIRED".
+- **FEEDBACK WANTED:** any trailing copy at all, or any expired-room screen on a fresh queue.
+- **Session dd, 2026-09-18.**
+
+
 ### Exit a race, start a new one at once (staging — needs your confirmation)
 - **What:** the exit bug you reported — built and test-verified server-side,
   needs your eyes to confirm it. Leaving a Reef Race (or Bumper Shells)
@@ -333,6 +341,24 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## COVE
 
+### Cove: dark fallback room, hidden BACCARAT sign, BLACKJACK sign opening baccarat (staging)
+- **What:** the dark room with black table slabs you saw is the old cartoon
+  "fallback" room. The cove switches to it when it decides your device is too
+  slow. It measured the first 5 seconds, which include the walk-in loading
+  stalls, and it also switched EVERY phone (phones run at 30 FPS on purpose and
+  the bar was 40). It now waits 2 seconds on every visit, ignores the slowest
+  frames, and uses a lower bar on phones. Also: the BACCARAT sign now sits
+  higher and a little toward the aisle so BLACKJACK does not hide it, and each
+  table sign now opens its own table (on prod today a click on the BLACKJACK
+  sign from the door opens BACCARAT). Tested on a desktop build only; a real
+  Iris Xe laptop and a real phone are not tested yet.
+- **Where:** staging.clawville.world → walk into the cove through the tunnel
+  several times (also right after the page loads, and on your phone) → look at
+  the signs from the door → click each sign.
+- **Feedback wanted:** do you still ever get the dark room (desktop or phone);
+  is the BACCARAT sign position OK; does each sign open the table it names.
+- Session bountyFix2/Opus, 2026-09-18.
+
 ### Leaving the cove no longer drops you back in (staging)
 - **What:** "Back to World" put you inside the cove building, and any step pulled
   you back into the cove. The exit point had been hand-set in June, before the
@@ -343,6 +369,10 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   "Back to World" → walk toward town.
 - **Feedback wanted:** is the landing spot where you expect to be, and can you
   leave without being pulled back in.
+- **Guests (NPC mode), fixed 2026-09-18 after the prod check:** the first step
+  after "Back to World" snapped the body about 300 px back into the tunnel
+  (the possessed body kept its own tunnel position). It now lands at the same
+  exit spot. Try it once as a guest in NPC mode too.
 - **Known separate issue, not fixed yet:** if you REFRESH the page while inside
   the cove and then leave, your first step can snap you to an old spot in town.
   It is a different cause (camera position copied into the avatar while the page

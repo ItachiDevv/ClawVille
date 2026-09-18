@@ -297,23 +297,46 @@ class ActivityQueueService {
     const roomId = this.matchedRooms.get(avatarId);
     if (!roomId) return null;
     // Auto-expire entries so an avatar can re-queue later without carrying
-    // a stale matchedRoomId forward. Manager knows if the room is still
-    // active.
-    const room = activityRoomManager.getRoom(roomId);
-    if (!room) {
+    // a stale matchedRoomId forward. The room must still be the avatar's
+    // ACTIVE room: a room in results/gc/aborted, or one the avatar already
+    // left, still exists in the manager for a while, and routing a fresh
+    // queue into it showed "MATCH EXPIRED" (2026-09-18, staging repro).
+    // Read-only checks: this runs on every status poll and must never mutate
+    // the room manager's bindings.
+    //   • Room gone, or the avatar left / was rebound → the match is over for
+    //     good: forget it.
+    //   • Room not playing (results / gc / aborted, or a transition whose DB
+    //     write may still roll back) → answer null but KEEP the entry, so a
+    //     rolled-back transition is found again on the next poll (Codex r2).
+    if (
+      !activityRoomManager.getRoom(roomId) ||
+      !activityRoomManager.isAvatarBoundToRoom(avatarId, roomId)
+    ) {
       this.matchedRooms.delete(avatarId);
       return null;
     }
+    if (!activityRoomManager.isAvatarInLiveRoom(avatarId, roomId)) return null;
     return roomId;
   }
 
   /**
-   * Short-lived (5-minute) map of avatarId → roomId, populated by the
-   * matcher so a client polling `/queue-status` can pick up their room
-   * assignment without a pre-match WS. Keys are dropped once the room
-   * is no longer active (`getMatchedRoomId` auto-cleans).
+   * Map of avatarId → roomId, populated by the matcher so a client polling
+   * `/queue-status` can pick up their room assignment without a pre-match
+   * WS. An entry is dropped when the avatar's poll finds the match over
+   * (`getMatchedRoomId`), when the avatar queues again (`addToMemory`), or
+   * by the matchmaker sweep once the room has left the manager
+   * (`pruneMatchedRooms`) — so an avatar that never polls again cannot pin
+   * an entry forever. (The old comment promised a 5-minute lifetime that no
+   * timer enforced; Codex, 2026-09-18.)
    */
   private matchedRooms = new Map<string, string>();
+
+  /** Drop matches whose room the manager has already evicted (GC). */
+  pruneMatchedRooms(): void {
+    for (const [avatarId, roomId] of this.matchedRooms) {
+      if (!activityRoomManager.getRoom(roomId)) this.matchedRooms.delete(avatarId);
+    }
+  }
 
   /**
    * Length only — for the public `/api/activities` summary cards.
@@ -488,6 +511,7 @@ class ActivityQueueService {
    * doesn't kill the cron.
    */
   async runMatchmakerSweep(): Promise<void> {
+    this.pruneMatchedRooms();
     for (const [queueKey, queue] of this.queues.entries()) {
       try {
         // Decode the queue key — `${activityId}::agent-only` or bare
@@ -798,6 +822,10 @@ class ActivityQueueService {
     }
     queue.push(entry);
     this.avatarToEntry.set(entry.avatarId, entry.id);
+    // A new queue entry means any earlier match is over; never hand the
+    // queue-status poll the previous room (2026-09-18: a second Reef Race
+    // queue routed straight into the last, finished room → "MATCH EXPIRED").
+    this.matchedRooms.delete(entry.avatarId);
   }
 
   private removeFromMemory(avatarId: string, entryId: string): void {
