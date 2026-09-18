@@ -1,8 +1,9 @@
 // Land Showroom — deterministic selection of showcase lots for the "kinda set
-// up" display (2026-06-18, 2-ring big-plot layout): ALL 36 plots filled (founder
-// asked to fill every plot) — 26 outer REGULAR (starter) cottages + 10 inner
-// PREMIUM (founder) skyscraper/mall lots. Signs drawn by land-parcels.tsx
-// (3-category FOR SALE).
+// up" display: ALL 56 plots filled (founder asked to fill every plot,
+// 2026-06-18) — 26 REGULAR (starter) cottages + 20 OUTER WARD (tier c)
+// cottages + 10 inner PREMIUM (founder) skyscraper/mall lots. The c ring joined
+// on 2026-09-18; before that its 20 lots were bare. Signs drawn by
+// land-parcels.tsx (3-category FOR SALE).
 //
 // Invariants (load-bearing — same as land-parcels.ts header):
 //   - Pure math only. NO Math.random(), NO Date.now().
@@ -10,12 +11,15 @@
 //   - Showroom lots HIDE once a parcel is owned, so the buyer's real structure
 //     cleanly takes over with zero visual conflict.
 //
-// Selection: every starter-tier parcel, plus up to ten founder-tier parcels.
+// Selection: every starter-tier parcel, every c-tier parcel, plus up to ten
+// founder-tier parcels. Invariant: every rendered parcel has an entry
+// (land-showroom.test.ts).
 //
 // Per selected lot, by selection index k (0-based):
 //   style = SHOWROOM_STYLES[k % 3]
 //   structureType = k % 2 === 0 ? 'home' : 'shop'
 //   level = 1 + (k % 2)   → 1 (home) or 2 (shop) — starter-appropriate low levels
+//   (c tier: 2 + (k % 2) → 2 or 3, one step above starter, under its cap of 4)
 
 import { LAND_PARCELS } from './land-parcels';
 
@@ -90,6 +94,25 @@ function generateShowroom(): ShowroomEntry[] {
     k++;
   }
 
+  // ── Outer Ward showcase (tier c, outermost ring) ──
+  // The c ring was added on 2026-06-24, six days after the founder asked for
+  // every plot to be filled, and it was never added here. Its 20 lots rendered
+  // as bare sand with a FOR SALE sign (founder report 2026-09-18, "empty lots
+  // again"). Same cottage cycle, continuing k so neighbours differ, one level
+  // above starter (2-3, inside the c-tier ceiling of 4) so the outer ring reads
+  // a step up from Starter Cove.
+  const outer = LAND_PARCELS.filter((p) => p.tier === 'c');
+  for (const parcel of outer) {
+    entries.push({
+      parcelId: parcel.id,
+      style: SHOWROOM_STYLES[k % 3],
+      structureType: k % 2 === 0 ? 'home' : 'shop',
+      level: 2 + (k % 2),
+      signLabel: 'rent',
+    });
+    k++;
+  }
+
   // ── Premium showcase (Founders' Row inner ring, PREMIUM) ──
   // Placed for REVIEW: Option A (tower-cand-1, Kenney windowed) vs Option C
   // (tower-cand-3, NYC stepped) skyscrapers, alternating, with the approved mall
@@ -124,7 +147,7 @@ function generateShowroom(): ShowroomEntry[] {
   return entries;
 }
 
-/** Deterministic showroom entries for every starter parcel and up to ten founders.
+/** Deterministic showroom entries for every starter and c parcel and up to ten founders.
  *  Computed once at module load — safe to reference from React components and
  *  server code without memoisation cost. */
 export const LAND_SHOWROOM: readonly ShowroomEntry[] = generateShowroom();
