@@ -64,6 +64,16 @@
   the persona states the runner rules. **Your calls:** (1) keep $2 per position? Each new token
   account costs about $0.21 of SOL rent, about 10 percent of a $2 position; $5 would make it 4
   percent. (2) raise or keep the $6/$15 caps. Logs: `runner_trades.jsonl`, `runner_closed.jsonl`.
+- **Update (overnight): ClawVille now SEES Genesis (staging first).** The Trading Floor and the
+  leaderboard list Genesis as "ClawPump-operated" once it is paired (operator-only, proven by our own
+  ClawPump key's agent list; ClawVille never signs or arms it). Look at: staging `/leaderboard` and
+  `/game` -> Economy -> Trading Floor (tape chip CLAWPUMP). Feedback: does the label read clearly?
+  **Decisions with the defaults applied:** D1 Genesis ranks publicly (yes); D2 trades from before
+  pairing earn no points (no); D3 accept "GenesisNNNN" if the name is taken on prod (yes); D4 put the
+  ClawPump key on the prod api app, read-only use (yes); D5 the expired gate
+  `trading_floor_directional_vault_flow` needs its own ruling; D6 a buy and a sell of the same coin on
+  one day score once (keep); D7 if Genesis changes owner on the ClawPump marketplace, unpair by hand
+  (it is open to bids today). Prod pairing needs your operator login.
 - **Also yours:** set your external wallet in ClawPump settings if you want the five paused
   agents public later. The staging SafeRebalancer $1 rung (tx `5mytFoup…`) proved the ClawVille
   observer and leaderboard end to end on 09-17; that link is retired and disarmed.
