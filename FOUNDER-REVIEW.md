@@ -287,8 +287,9 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - On a phone held upright, the two 220 px joystick pads overlap each other in the middle
   (about 50 px).
 - On phones, the settings and controller buttons partly cover the Jump button.
-- At building prompts on an upright phone, the bottom prompt pill covers part of Jump
-  (found by session dd).
+- ~~At building prompts on an upright phone, the bottom prompt pill covers part of Jump~~
+  FIXED 2026-09-18 by session dd (staging): the pill now sits 8 px above Jump on upright
+  phones; iPads and landscape phones are unchanged. This moved the prompt, not a control.
 - **Decision wanted:** fix all three by moving/shrinking controls? That changes how the
   controls feel on phones, so it waits for your yes.
 

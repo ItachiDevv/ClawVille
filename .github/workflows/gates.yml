@@ -93,6 +93,7 @@ jobs:
           src/lib/world-presence-controller.test.ts
           src/hooks/world-downlink-policy.test.ts
           src/lib/three/town-guide-prompt.test.ts
+          src/hooks/bottom-prompt-offset.test.ts
 
       # Founder-reported regressions (2026-09-18) come back when nothing runs the
       # test that pinned them. The shared constants suite pins world data that
