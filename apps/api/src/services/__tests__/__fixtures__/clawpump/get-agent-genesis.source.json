@@ -1,0 +1,6 @@
+{
+  "source": "ClawPump remote MCP tool get_agent(agent_id=0f600d73-05a0-4c2e-8215-ab2a770ba192), read-only",
+  "recordedAtUtc": "2026-09-18T12:05:00Z",
+  "trimmed": ["config", "dashboard_urls"],
+  "note": "Recorded through the MCP connector, not the REST route. The REST GET /agents/:id shape is asserted by docs/clawpump-integration.md (verified live 2026-09-17/18) but no REST body was recorded field-by-field. The client schema therefore types only id, user_id, name, status, wallet_address and passes the rest through, and accepts both a bare object and an {agent: ...} wrapper. The `config` object (persona and system prompt text) was removed: it is not read by ClawVille."
+}

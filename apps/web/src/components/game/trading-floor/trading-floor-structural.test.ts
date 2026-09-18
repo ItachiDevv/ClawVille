@@ -121,7 +121,9 @@ describe('Trader column structure', () => {
     const source = read('src/app/leaderboard/page.tsx');
     expect(source).toMatch(/typeof body\.agents\[0\]\?\.breakdown\?\.trades_verified === 'number'/);
     expect(source.match(/hasTradeBreakdown/g)?.length ?? 0).toBeGreaterThan(10);
-    expect(source).toContain('ClawVille-operated');
+    expect(source).toContain("import { operatorLabel } from '@/components/game/trading-floor/format'");
+    expect(source.match(/const label = operatorLabel\(/g)).toHaveLength(2);
+    expect(source.match(/\{label \? \(/g)).toHaveLength(3);
   });
 
   test('mobile table is two rows and desktop has six tracks', () => {

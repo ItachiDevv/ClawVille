@@ -69,6 +69,15 @@ describe('Trading Floor normalisers', () => {
     expect(normaliseSseTrade(older)?.operatedByClawville).toBe(false);
   });
 
+  test('normalises the operator with ClawVille operation taking precedence', () => {
+    for (const normalise of [normaliseSseTrade, normalisePublicTrade, normaliseMyTrade]) {
+      expect(normalise({ ...trade, operatedByClawville: false, operator: 'clawpump' })?.operator).toBe('clawpump');
+      expect(normalise(trade)?.operator).toBe('clawville');
+      expect(normalise({ ...trade, operator: 'clawpump' })?.operator).toBe('clawville');
+      expect(normalise({ ...trade, operatedByClawville: false, operator: 'x' })?.operator).toBeNull();
+    }
+  });
+
   test.each(['submitted', 'refused', 'executed'] as const)(
     'keeps the %s verdict',
     (verdict) => {

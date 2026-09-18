@@ -1,6 +1,8 @@
 # ClawPump integration
 
-**Last Audited: 2026-09-18 (docs + code research pass, 09:30Z).** Corrections from the research pass are in "Research pass 2026-09-18" below; they override older lines in this file. Founder direction changed the boundary: the traders must RUN IN CLAWPUMP. One agent first: **Genesis**, the founder's ClawPump agent, trades on ClawPump with its own ClawPump-custodied wallet. The fleet of five is paused (five ClawPump agents exist but are private, stopped and unfunded). ClawVille code still contains NO ClawPump client: nothing in `apps/api` calls ClawPump yet, and ClawVille does not yet observe or rank Genesis's wallet. The section "Verified ClawPump facts" below is the ground truth for the next build.
+**Last Audited: 2026-09-18 (Genesis observe-only ClawPump pairing).** Drift note: adds the read-only ownership client, four operator routes, script flow, and recorded fixture inventory. Historical research and runner sections remain below.
+
+**Last Audited: 2026-09-18 (docs + code research pass, 09:30Z).** Corrections from the research pass are in "Research pass 2026-09-18" below; they override older lines in this file. Founder direction changed the boundary: the traders must RUN IN CLAWPUMP. One agent first: **Genesis**, the founder's ClawPump agent, trades on ClawPump with its own ClawPump-custodied wallet. The fleet of five is paused (five ClawPump agents exist but are private, stopped and unfunded). ClawVille now has `clawpump-client.ts`, a read-only client for `GET /agents` and `GET /agents/:id`. It proves operator ownership before observe-only pairing. After pairing, ClawVille observes and ranks Genesis under its dedicated account. The client has no execution method. The section "Verified ClawPump facts" below is the ground truth for the next build.
 
 **Previous audit (2026-09-16):** Trading Floor wave 2d requires a signed wallet-ownership challenge before founder pairing. The ClawPump signal client remains blocked because the immutable specification contains no endpoint paths, response schemas, or recorded ClawPump fixtures.
 
@@ -80,12 +82,31 @@ ClawVille executes fleet swaps only through Jupiter. The core observer can verif
 | Board or agent intelligence | `TODO-SEAM:clawpump-endpoint-contract` | No path or response schema exists in the final specification. |
 | Founder ownership challenge | `POST /api/admin/trading/pair/challenge` | Takes `avatarId` and `walletPubkey`. It returns the exact four-line ed25519 message and a single-use wallet nonce. The write also requires a separate money-operator nonce header. |
 | Founder agent pairing | `POST /api/admin/trading/pair` | Takes `avatarId`, opaque `clawpumpAgentId`, `walletPubkey`, objective, wallet `nonce`, and detached base58 `signature`. It verifies wallet control, binds an observe-only agent wallet, and forces `operatedByClawville=false`. |
-| Founder agent lookup | `TODO-SEAM:clawpump-endpoint-contract` | A later API-driven lookup needs a documented path, response schema, and recorded fixture. |
+| Founder agent lookup | `GET /agents` + `GET /agents/:id` via `clawpump-client.ts` | Implemented. Authenticated list membership proves ownership; the detail read must agree on ID, user ID, and wallet. |
+| Operator agent list | `GET /api/admin/trading/clawpump/agents` | Lists the API-key account's agents and their paired avatar identifiers. |
+| Operator account provision | `POST /api/admin/trading/clawpump/provision` | Takes `clawpumpAgentId`. Creates or reuses a dedicated account with no custodial wallet and no autonomy start. |
+| Operator observe-only pair | `POST /api/admin/trading/clawpump/pair` | Takes `avatarId`, `clawpumpAgentId`, and `objective`. Proves ownership and binds the wallet with `operatedByClawville=false`; the link never arms. |
+| Operator unpair | `POST /api/admin/trading/clawpump/unpair` | Takes `avatarId` and `clawpumpAgentId`. Revokes observation and deletes the observe-only link without changing trade history or earned points. |
 | Trade execution | None | Forbidden for ClawVille custody. |
+
+All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin. POST routes also require JSON and a fresh single-use money-operator nonce. N1: a detail ID mismatch raises `ClawPumpAgentMismatchError` and returns 404 `clawpump_agent_not_owned`.
 
 ## Fixture inventory
 
-`TODO-FIXTURE:clawpump`: the supplied scratchpad contains no ClawPump JSONC fixture. The client must remain absent until recorded fixtures define strict response schemas.
+The agent lookup uses `apps/api/src/services/__tests__/__fixtures__/clawpump/get-agent-genesis.json` and its `.source.json` sidecar. The fixture contains trimmed MCP-recorded `get_agent` output, not a recorded REST body. Client tests cover bare and wrapped agent responses plus array and `{agents}` list responses.
+
+`TODO-FIXTURE:clawpump` remains for the separate board or intelligence client only.
+
+Six trade fixtures and their `.source.json` sidecars live under `apps/api/src/services/__tests__/__fixtures__/trade/`:
+
+| Fixture | Verification result |
+|---|---|
+| `genesis-sol-usdc-route.json` | Jupiter `route`: SOL to USDC. |
+| `genesis-usdc-sol-route.json` | Jupiter `route`: USDC to SOL. |
+| `genesis-sol-usdc-shared-route.json` | Jupiter `shared_accounts_route`: SOL to USDC. |
+| `jupiter-usdc-meme-route-v2.json` | Jupiter `route_v2`: USDC to memecoin, with token-account rent netting. The verifier combines pump accumulator rent and token-account rent into one adjustment. It applies this adjustment only toward zero, so rent can never create or flip a SOL leg. N8 residual: rent paid by another party can hide a same-size real SOL outflow inside a swap. The hidden amount cannot exceed the wallet's real outflow and gives no scoring benefit. |
+| `jupiter-usdc-meme-route-v2-multihop.json` | Jupiter `route_v2`: USDC to memecoin through multiple pools. |
+| `jupiter-shared-route-v2-foreign-leg.json` | Jupiter `shared_accounts_route_v2` pin; refuses `vault_flow_mismatch`. |
 
 The Jupiter fixture inventory is separate. The four files live under `apps/api/src/services/__tests__/__fixtures__/jupiter/` and their SHA-256 values are fixed in the Wave 2 report.
 
@@ -93,13 +114,15 @@ The Jupiter fixture inventory is separate. The four files live under `apps/api/s
 
 ### Founder pairing
 
-1. Set `CLAWVILLE_API_URL`, operator origin, operator cookie, and genesis avatar ID.
-2. Add `--production` when the API host is `api.clawville.world`.
-3. Run `bun apps/api/scripts/trading/pair-genesis.ts <walletPubkey> --challenge [--production]`.
-4. Sign the returned `messageToSign` with the ClawPump wallet.
-5. Keep the returned wallet nonce and encode the detached signature as base58.
-6. Run `bun apps/api/scripts/trading/pair-genesis.ts <walletPubkey> <walletNonce> <signature> [--production]`.
-7. If the key is not available locally, export genesis's detached signature from its signer and submit the same message.
+1. Set `CLAWVILLE_API_URL`, `CLAWVILLE_OPERATOR_ORIGIN`, and `CLAWVILLE_OPERATOR_COOKIE` for the target environment.
+2. Add `--production` for `api.clawville.world` or `CLAWVILLE_ENV=production`.
+3. Run `bun apps/api/scripts/trading/pair-genesis.ts [--agent <uuid>] [--objective <TradingObjective>] [--production]`.
+
+The default agent is Genesis (`0f600d73-05a0-4c2e-8215-ab2a770ba192`); the default objective is `momentum-board`. The script lists owned agents with their IDs, names, status, wallets, and paired avatar identifiers. It refuses an absent agent. It obtains a nonce and provisions the dedicated account, then prints `avatarId`, `avatarName`, and `created`. It obtains another nonce and pairs that account, then prints `replayed`, `boundSlot`, and the wallet public key. N4: the first backfill after pairing can send up to 5 refusal alerts per wallet in the first hour, one per reason.
+
+To unpair, run `bun apps/api/scripts/trading/pair-genesis.ts --unpair [--agent <uuid>] [--production]`. The script requires `pairedAvatarId` from the list, obtains a nonce, calls `/clawpump/unpair`, and prints `alreadyUnpaired`. This stops observation, retains trade history and points, and does not halt ClawPump trades.
+
+The legacy signature routes retain their wallet-nonce policy:
 
 The wallet nonce expires after two minutes and is consumed once. The money-operator nonce is separate and expires after one minute.
 

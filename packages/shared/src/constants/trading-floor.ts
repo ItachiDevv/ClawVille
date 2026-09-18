@@ -25,6 +25,16 @@ export const TRADE_DEX_PROGRAMS = {
 } as const;
 export type TradeDex = keyof typeof TRADE_DEX_PROGRAMS;
 
+/** Who places a bound wallet's trades. Display-only; never affects scoring. */
+export type TradeOperator = 'clawville' | 'clawpump';
+
+export function resolveTradeOperator(input: {
+  operatedByClawville: boolean; source: string | null | undefined;
+}): TradeOperator | null {
+  if (input.operatedByClawville) return 'clawville';
+  return input.source === 'clawpump' ? 'clawpump' : null;
+}
+
 export const TRADE_EVENT_TYPE = 'trade.verified' as const;
 export const TRADE_TIER_WEIGHTS = { base: 20, clv: 30, ansem: 40 } as const;
 export type TradeMultiplierTier = keyof typeof TRADE_TIER_WEIGHTS;

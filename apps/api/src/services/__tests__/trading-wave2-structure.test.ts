@@ -203,8 +203,12 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     const linkDeleteWriters = apiSourceTree
       .filter(([, text]) => linkDeletePattern.test(text))
       .map(([name]) => name);
-    // Only the probe's fixture cleanup deletes a link; no runtime path does.
-    expect(linkDeleteWriters).toEqual(['scripts/agent-connect/hosted-skill-runtime-probe.ts']);
+    expect(linkDeleteWriters).toEqual([
+      'scripts/agent-connect/hosted-skill-runtime-probe.ts',
+      'services/trading-provisioning.ts',
+    ]);
+    expect(provisioning).toMatch(/delete\(clawpumpAgentLinks\)[\s\S]{0,400}eq\(clawpumpAgentLinks.operatedByClawville, false\)/);
+    expect(provisioning).toMatch(/delete\(clawpumpAgentLinks\)[\s\S]{0,400}eq\(clawpumpAgentLinks.armed, false\)/);
   });
 
   test('provisioning is the only leaderboard eligibility writer', () => {

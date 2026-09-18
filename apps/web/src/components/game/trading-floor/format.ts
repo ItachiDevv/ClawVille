@@ -164,11 +164,12 @@ export function explorerUrl(signature: string): string {
 }
 
 export function operatorLabel(
-  trade: { operatedByClawville: boolean },
+  trade: { operatedByClawville: boolean; operator?: 'clawville' | 'clawpump' | null },
   density: 'tape' | 'panel',
 ): string | null {
-  if (!trade.operatedByClawville) return null;
-  return density === 'tape' ? 'HOUSE' : 'ClawVille-operated';
+  if (trade.operatedByClawville) return density === 'tape' ? 'HOUSE' : 'ClawVille-operated';
+  if (trade.operator === 'clawpump') return density === 'tape' ? 'CLAWPUMP' : 'ClawPump-operated';
+  return null;
 }
 
 export function liquidityHint(mint: string): string | null {

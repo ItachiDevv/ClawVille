@@ -21,6 +21,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { TRADE_DAILY_SCORED_CAP, TRADE_TIER_WEIGHTS } from '@clawville/shared';
 import { FLOOR_TEXT } from '@/components/game/trading-floor/tokens';
+import { operatorLabel } from '@/components/game/trading-floor/format';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,7 @@ interface AgentLeaderboardEntry {
   // this for filter chips; for now older clients can ignore it.
   subjectType?: 'agent' | 'avatar';
   operatedByClawville?: boolean;
+  operator?: 'clawville' | 'clawpump' | null;
 }
 
 interface AgentLeaderboardResponse {
@@ -751,6 +753,7 @@ function PodiumCard({
 }) {
   const displayName = agent.avatarName || shortAgentId(agent.agentId);
   const wallet = agent.walletAddress;
+  const label = operatorLabel({ operatedByClawville: agent.operatedByClawville === true, operator: agent.operator ?? null }, 'panel');
   return (
     <article
       className={`relative rounded-2xl border ${accent.border} bg-gradient-to-b from-black/70 to-[#081e2c]/70 p-5 backdrop-blur-md ${accent.glow}`}
@@ -767,12 +770,12 @@ function PodiumCard({
         <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-200/50">
           {shortAgentId(agent.agentId)}
         </div>
-        {agent.operatedByClawville ? (
+        {label ? (
           <div
             className="mt-2 font-mono text-[9px] uppercase tracking-[0.18em]"
             style={{ color: FLOOR_TEXT.accent }}
           >
-            ClawVille-operated
+            {label}
           </div>
         ) : null}
       </div>
@@ -904,6 +907,7 @@ function TableRow({
 }) {
   const [open, setOpen] = useState(false);
   const name = agent.avatarName || shortAgentId(agent.agentId);
+  const label = operatorLabel({ operatedByClawville: agent.operatedByClawville === true, operator: agent.operator ?? null }, 'panel');
   const desktopColumns = hasTradeBreakdown
     ? 'grid-cols-[48px_1fr_110px_88px_110px_28px]'
     : 'grid-cols-[48px_1fr_120px_120px_28px]';
@@ -924,9 +928,9 @@ function TableRow({
               <span aria-hidden className="shrink-0 text-lg">🦞</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm text-white">{name}</div>
-                {agent.operatedByClawville ? (
+                {label ? (
                   <div className="truncate font-mono text-[9px] uppercase tracking-[0.16em]" style={{ color: FLOOR_TEXT.accent }}>
-                    ClawVille-operated
+                    {label}
                   </div>
                 ) : null}
               </div>
@@ -945,9 +949,9 @@ function TableRow({
               <div className="min-w-0">
                 <div className="truncate text-sm text-white">{name}</div>
                 <div className="truncate font-mono text-[10px] text-cyan-300/40">{shortAgentId(agent.agentId)}</div>
-                {agent.operatedByClawville ? (
+                {label ? (
                   <div className="truncate font-mono text-[9px] uppercase tracking-[0.16em]" style={{ color: FLOOR_TEXT.accent }}>
-                    ClawVille-operated
+                    {label}
                   </div>
                 ) : null}
               </div>

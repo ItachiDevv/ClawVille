@@ -2,6 +2,10 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { Hono } from 'hono';
 import * as realAuth from '../../middleware/auth';
 import * as realGuardrails from '../../services/trading-guardrails';
+import * as realProvisioning from '../../services/trading-provisioning';
+
+const originalGuardrails = { ...realGuardrails };
+const originalProvisioning = { ...realProvisioning };
 
 process.env.FINGERPRINT_SECRET ??= '44'.repeat(32);
 process.env.ADMIN_USER_IDS = '11111111-1111-4111-8111-111111111111';
@@ -12,6 +16,7 @@ const ADMIN_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ID = '22222222-2222-4222-8222-222222222222';
 const AVATAR_ID = '33333333-3333-4333-8333-333333333333';
 const WALLET = '11111111111111111111111111111111';
+const CLAWPUMP_AGENT_ID = '0f600d73-05a0-4c2e-8215-ab2a770ba192';
 
 type Middleware = (c: any, next: () => Promise<void>) => unknown;
 let intercept = true;
@@ -29,7 +34,7 @@ mock.module('../../middleware/auth', () => ({
 }));
 
 class MockTradingProvisioningError extends Error {
-  constructor(readonly code: string, readonly status: 400 | 404 | 409 | 500, message: string) {
+  constructor(readonly code: string, readonly status: 400 | 404 | 409 | 500 | 503, message: string) {
     super(message);
   }
 }
@@ -40,9 +45,31 @@ let pairChallengeCalls: unknown[] = [];
 let releaseCalls: string[] = [];
 let provisionError: Error | null = null;
 let pairError: Error | null = null;
+let observedCalls: Record<string, unknown[]> = {};
+let observedError: Error | null = null;
 
 mock.module('../../services/trading-provisioning', () => ({
   TradingProvisioningError: MockTradingProvisioningError,
+  listObservedClawPumpAgents: async () => {
+    observedCalls.list!.push(null);
+    if (observedError) throw observedError;
+    return { agents: [{ clawpumpAgentId: CLAWPUMP_AGENT_ID, name: 'Genesis', status: 'active', walletPubkey: WALLET, pairedAvatarId: AVATAR_ID }] };
+  },
+  provisionObservedClawPumpAccount: async (input: unknown) => {
+    observedCalls.provision!.push(input);
+    if (observedError) throw observedError;
+    return { ok: true, created: true, userId: ADMIN_ID, avatarId: AVATAR_ID, avatarName: 'Genesis', clawvilleAgentId: 'platform-agent', clawpumpAgentId: CLAWPUMP_AGENT_ID, walletPubkey: WALLET };
+  },
+  pairObservedClawPumpAgent: async (input: unknown) => {
+    observedCalls.pair!.push(input);
+    if (observedError) throw observedError;
+    return { ok: true, replayed: false, subjectKind: 'agent', avatarId: AVATAR_ID, clawvilleAgentId: 'platform-agent', clawpumpAgentId: CLAWPUMP_AGENT_ID, walletPubkey: WALLET, objective: 'momentum-board', operatedByClawville: false, boundSlot: 123 };
+  },
+  unpairObservedClawPumpAgent: async (input: unknown) => {
+    observedCalls.unpair!.push(input);
+    if (observedError) throw observedError;
+    return { ok: true, alreadyUnpaired: false, avatarId: AVATAR_ID, clawpumpAgentId: CLAWPUMP_AGENT_ID, walletPubkey: WALLET };
+  },
   provisionFleetAccount: async (input: unknown) => {
     provisionCalls.push(input);
     if (provisionError) throw provisionError;
@@ -117,6 +144,9 @@ async function post(path: string, body: unknown, confirmationNonce?: string, use
 }
 
 const provisionBody = { objective: 'momentum-board', traderName: 'MomentumTrader' };
+const observedProvisionBody = { clawpumpAgentId: CLAWPUMP_AGENT_ID };
+const observedUnpairBody = { avatarId: AVATAR_ID, clawpumpAgentId: CLAWPUMP_AGENT_ID };
+const observedPairBody = { ...observedUnpairBody, objective: 'momentum-board' };
 const pairBody = {
   avatarId: AVATAR_ID,
   clawpumpAgentId: 'genesis',
@@ -133,16 +163,23 @@ beforeEach(() => {
   releaseCalls = [];
   provisionError = null;
   pairError = null;
+  observedCalls = { list: [], provision: [], pair: [], unpair: [] };
+  observedError = null;
 });
 
 afterAll(() => {
   intercept = false;
+  mock.module('../../services/trading-provisioning', () => originalProvisioning);
+  mock.module('../../services/trading-guardrails', () => originalGuardrails);
 });
 
 describe('admin Trading Floor fleet provisioning and pairing', () => {
   test.each([
     ['/fleet/provision', provisionBody] as const,
     ['/pair', pairBody] as const,
+    ['/clawpump/provision', observedProvisionBody] as const,
+    ['/clawpump/pair', observedPairBody] as const,
+    ['/clawpump/unpair', observedUnpairBody] as const,
   ])('%s rejects no session, non-admin, bad origin, and missing nonce', async (path, body) => {
     const noSession = await post(path, body, undefined, '');
     expect(noSession.status).toBe(401);
@@ -157,16 +194,60 @@ describe('admin Trading Floor fleet provisioning and pairing', () => {
     expect(missingNonce.status).toBe(409);
     expect(provisionCalls).toHaveLength(0);
     expect(pairCalls).toHaveLength(0);
+    expect(Object.values(observedCalls).flat()).toHaveLength(0);
   });
 
   test.each([
     ['/fleet/provision', provisionBody, 'provision'] as const,
     ['/pair', pairBody, 'pair'] as const,
+    ['/clawpump/provision', observedProvisionBody, 'provision'] as const,
+    ['/clawpump/pair', observedPairBody, 'pair'] as const,
+    ['/clawpump/unpair', observedUnpairBody, 'unpair'] as const,
   ])('%s consumes a confirmation nonce once', async (path, body, target) => {
     const confirmationNonce = await nonce();
     expect((await post(path, body, confirmationNonce)).status).toBe(200);
     expect((await post(path, body, confirmationNonce)).status).toBe(409);
-    expect(target === 'provision' ? provisionCalls : pairCalls).toHaveLength(1);
+    const calls = path.startsWith('/clawpump/') ? observedCalls[target] : target === 'provision' ? provisionCalls : pairCalls;
+    expect(calls).toEqual([path === '/fleet/provision'
+      ? { ...provisionBody, leaderboardEligible: true, operatedByClawville: true }
+      : body]);
+  });
+
+  test('lists owned ClawPump agents without a nonce and refuses non-admin access', async () => {
+    const response = await app.request('/api/admin/trading/clawpump/agents', { headers: headers() });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ agents: [{ clawpumpAgentId: CLAWPUMP_AGENT_ID, pairedAvatarId: AVATAR_ID }] });
+    const denied = await app.request('/api/admin/trading/clawpump/agents', { headers: headers(OTHER_ID) });
+    expect(denied.status).toBe(403);
+    expect(observedCalls.list).toHaveLength(1);
+  });
+
+  test.each([
+    { ...observedPairBody, walletPubkey: WALLET },
+    { ...observedPairBody, clawpumpAgentId: 'genesis' },
+  ])('rejects operator wallet input and non-UUID ClawPump identifiers', async (body) => {
+    const response = await post('/clawpump/pair', body, await nonce());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_body' });
+    expect(observedCalls.pair).toHaveLength(0);
+  });
+
+  test.each([
+    ['/clawpump/provision', observedProvisionBody] as const,
+    ['/clawpump/pair', observedPairBody] as const,
+    ['/clawpump/unpair', observedUnpairBody] as const,
+  ])('%s preserves service errors and status', async (path, body) => {
+    observedError = new MockTradingProvisioningError('clawpump_not_configured', 503, 'ClawPump is not configured.');
+    const response = await post(path, body, await nonce());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'ClawPump is not configured.', code: 'clawpump_not_configured' });
+  });
+
+  test('the ClawPump list preserves service errors and status', async () => {
+    observedError = new MockTradingProvisioningError('clawpump_not_configured', 503, 'ClawPump is not configured.');
+    const response = await app.request('/api/admin/trading/clawpump/agents', { headers: headers() });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'ClawPump is not configured.', code: 'clawpump_not_configured' });
   });
 
   test('provisions an unarmed and killed fleet link with safe defaults', async () => {

@@ -150,6 +150,7 @@ function normaliseTrade(
     scored: row.scored,
     unscoredReason,
     operatedByClawville: row.operatedByClawville === true,
+    operator: row.operatedByClawville === true ? 'clawville' : row.operator === 'clawpump' ? 'clawpump' : null,
   };
 }
 

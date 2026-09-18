@@ -9,7 +9,7 @@ export interface MoneyOperatorContext extends AppContext {
 
 const nonces = new Map<string, { userId: string; expiresAt: number }>();
 const NONCE_TTL_MS = 60_000;
-const NONCE_REQUIRED = new Set(['/fleet/provision', '/pair', '/arm', '/unhalt', '/kill', '/test-trade']);
+const NONCE_REQUIRED = new Set(['/fleet/provision', '/pair', '/arm', '/unhalt', '/kill', '/test-trade', '/clawpump/provision', '/clawpump/pair', '/clawpump/unpair']);
 
 function adminIds(): Set<string> {
   return new Set((process.env.ADMIN_USER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean));

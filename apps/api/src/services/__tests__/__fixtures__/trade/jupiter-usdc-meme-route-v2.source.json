@@ -1,0 +1,15 @@
+{
+  "signature": "2zh8G5eYGi81tuQQ8BiaLpXCL11U6morSdMzFAyL6DM44QhWpXvhAkFQv9GaXAx7fRuRpz8pyrabWbiWP6YAtWfv",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-18T12:33:42.851Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "2zh8G5eYGi81tuQQ8BiaLpXCL11U6morSdMzFAyL6DM44QhWpXvhAkFQv9GaXAx7fRuRpz8pyrabWbiWP6YAtWfv",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "Third-party mainnet wallet FamoiQ3t...: 4.999032 USDC -> Token-2022 memecoin 3M1kURavgnF4WnDNjiyCWUh7nu2S5rkoQk9WY2kS4uaz via Jupiter v6 RouteV2 (bb64facc31c4af14). The output ATA and an intermediate token account are created in the transaction (rent paid by the wallet)."
+}

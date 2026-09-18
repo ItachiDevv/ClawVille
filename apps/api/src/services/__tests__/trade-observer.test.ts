@@ -22,7 +22,9 @@ import {
   lookupVerifiedTrade,
   registerTradeVerifiedCallback,
   runTradeObserverTick,
+  TradeReportError,
 } from '../trade-observer';
+import { resetTradingLoopAlertsForTest } from '../trading-rpc';
 import type { BoundTradingWallet } from '../trading-wallets';
 
 const describeIfDb = process.env.DATABASE_URL ? describe : describe.skip;
@@ -66,7 +68,7 @@ function recordedPumpSwap(wallet: string): unknown {
   };
 }
 
-async function createWalletFixture(input: { boundSlot?: number } = {}): Promise<{
+async function createWalletFixture(input: { boundSlot?: number; source?: BoundTradingWallet['source'] } = {}): Promise<{
   wallet: BoundTradingWallet;
   signature: string;
   raw: unknown;
@@ -94,7 +96,7 @@ async function createWalletFixture(input: { boundSlot?: number } = {}): Promise<
     avatarId: avatar.id,
     agentId: null,
     pubkey,
-    source: 'signed',
+    source: input.source ?? 'signed',
     boundAt: new Date(1_750_000_000_000),
     boundSlot: input.boundSlot ?? 199,
     operatedByClawville: false,
@@ -107,7 +109,7 @@ async function createWalletFixture(input: { boundSlot?: number } = {}): Promise<
     wallet: {
       id: row.id,
       pubkey: row.pubkey,
-      source: 'signed',
+      source: input.source ?? 'signed',
       subjectKind: 'avatar',
       userId: row.userId,
       avatarId: row.avatarId,
@@ -143,6 +145,7 @@ async function ingestFixture(
 
 afterEach(() => {
   _clearTradeVerifiedCallbackForTest();
+  resetTradingLoopAlertsForTest();
 });
 
 afterAll(async () => {
@@ -170,6 +173,86 @@ describe('trade-verified callback registration', () => {
 });
 
 describe('trade observer wallet isolation', () => {
+  test.each(['clawpump', 'signed'] as const)('rate-limits verifier refusal alerts for %s wallets', async (source) => {
+    resetTradingLoopAlertsForTest();
+    const wallet: BoundTradingWallet = {
+      id: 'rejected-wallet', pubkey: 'rejected-pubkey', source, subjectKind: 'avatar',
+      userId: 'rejected-user', avatarId: 'rejected-avatar', agentId: null,
+      boundAt: new Date(0), boundSlot: 0, cursorSignature: null,
+      cursorBlockTime: null, lastPolledAt: null, operatedByClawville: false,
+    };
+    const alerts: unknown[] = [];
+    const advanced: string[] = [];
+    const tick = () => runTradeObserverTick({
+      getSignaturesForAddress: async () => [{ signature: 'rejected-signature', slot: 1, blockTime: 1 }],
+      getParsedTransaction: async () => null,
+      now: () => 1_000,
+    }, {
+      resolveWallets: async () => [wallet],
+      withLease: async (_walletId, task) => task(),
+      ingest: async () => { throw new TradeReportError('not_a_swap', 422, 'multi_leg'); },
+      advanceCursor: async ({ walletId }) => { advanced.push(walletId); return true; },
+      alert: async (payload) => { alerts.push(payload); },
+    });
+    const expected = { walletsPolled: 1, signaturesExamined: 1, inserted: 0, scored: 0, errors: 0 };
+    expect(await tick()).toEqual(expected);
+    expect(alerts).toHaveLength(source === 'clawpump' ? 1 : 0);
+    expect(await tick()).toEqual(expected);
+    expect(alerts).toHaveLength(source === 'clawpump' ? 1 : 0);
+    if (source === 'clawpump') {
+      expect(alerts[0]).toMatchObject({
+        severity: 'warning', source: 'trade-observer',
+        context: { walletId: wallet.id, signature: 'rejected-signature', reason: 'multi_leg' },
+      });
+    }
+    expect(advanced).toEqual([wallet.id, wallet.id]);
+  });
+
+  test.each([
+    { name: 'does not alert for dex_not_recognized', details: ['dex_not_recognized'], expectedReasons: [] },
+    { name: 'does not alert without a refusal detail', details: [undefined], expectedReasons: [] },
+    {
+      name: 'alerts once per listed reason on the same wallet',
+      details: ['dex_discriminator_unknown', 'multi_leg', 'vault_flow_mismatch', 'token_account_not_owned', 'single_sided'],
+      expectedReasons: ['dex_discriminator_unknown', 'multi_leg', 'vault_flow_mismatch', 'token_account_not_owned', 'single_sided'],
+    },
+  ] as const)('$name', async ({ details, expectedReasons }) => {
+    const wallet: BoundTradingWallet = {
+      id: 'refusal-wallet', pubkey: 'refusal-pubkey', source: 'clawpump', subjectKind: 'avatar',
+      userId: 'refusal-user', avatarId: 'refusal-avatar', agentId: null,
+      boundAt: new Date(0), boundSlot: 0, cursorSignature: null,
+      cursorBlockTime: null, lastPolledAt: null, operatedByClawville: false,
+    };
+    const alerts: unknown[] = [];
+    const advanced: string[] = [];
+    for (const detail of details) {
+      const tick = () => runTradeObserverTick({
+        getSignaturesForAddress: async () => [{ signature: 'refusal-signature', slot: 1, blockTime: 1 }],
+        getParsedTransaction: async () => null,
+        now: () => 1_000,
+      }, {
+        resolveWallets: async () => [wallet],
+        withLease: async (_walletId, task) => task(),
+        ingest: async () => { throw new TradeReportError('not_a_swap', 422, detail); },
+        advanceCursor: async ({ walletId }) => { advanced.push(walletId); return true; },
+        alert: async (payload) => { alerts.push(payload); },
+      });
+      const expected = { walletsPolled: 1, signaturesExamined: 1, inserted: 0, scored: 0, errors: 0 };
+      expect(await tick()).toEqual(expected);
+      const alertCount = alerts.length;
+      expect(await tick()).toEqual(expected);
+      expect(alerts).toHaveLength(alertCount);
+    }
+    expect(alerts).toHaveLength(expectedReasons.length);
+    expectedReasons.forEach((reason, index) => {
+      expect(alerts[index]).toMatchObject({
+        severity: 'warning', source: 'trade-observer',
+        context: { walletId: wallet.id, signature: 'refusal-signature', reason },
+      });
+    });
+    expect(advanced).toEqual(Array(details.length * 2).fill(wallet.id));
+  });
+
   test('alerts a strict failure and continues with the next wallet', async () => {
     const wallet = (id: string): BoundTradingWallet => ({
       id, pubkey: `pubkey-${id}`, source: 'signed', subjectKind: 'avatar',
@@ -212,6 +295,18 @@ describe('trade observer wallet isolation', () => {
 });
 
 describeIfDb('trade observer delta integration (requires DATABASE_URL)', () => {
+  test('labels an observed ClawPump wallet in the DTO and verified frame', async () => {
+    const fixture = await createWalletFixture({ source: 'clawpump' });
+    const broadcast = spyOn(worldModule, 'broadcastTradeEvent').mockImplementation(() => undefined);
+    try {
+      const outcome = await ingestFixture(fixture);
+      expect(outcome.trade).toMatchObject({ operator: 'clawpump', operatedByClawville: false });
+      expect(broadcast.mock.calls[0]?.[0]).toMatchObject({ operator: 'clawpump', operatedByClawville: false });
+    } finally {
+      broadcast.mockRestore();
+    }
+  });
+
   test('stores a trade at the binding slot as pre_bind without a leaderboard event', async () => {
     const fixture = await createWalletFixture({ boundSlot: 200 });
     const outcome = await ingestFixture(fixture);

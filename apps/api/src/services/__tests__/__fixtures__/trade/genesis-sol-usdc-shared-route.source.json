@@ -1,0 +1,15 @@
+{
+  "signature": "52T89GfDyYak95r92xcacfrcwDETXPS6wULyVkMxCY3EHJcrSY4LChm9WhG5hDuNRij1dp29gasckjhnJrN9bS8z",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-18T12:33:42.098Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "52T89GfDyYak95r92xcacfrcwDETXPS6wULyVkMxCY3EHJcrSY4LChm9WhG5hDuNRij1dp29gasckjhnJrN9bS8z",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "Genesis: 0.009453139 SOL -> 1.000265 USDC via ClawPump swap_execute, Jupiter v6 SharedAccountsRoute (c1209b3341d69c81), same UTC day and same pair as genesis-usdc-sol-route."
+}

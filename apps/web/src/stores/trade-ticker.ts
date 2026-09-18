@@ -30,6 +30,7 @@ export interface FloorTrade extends TapeEntryBase {
   scored: boolean;
   unscoredReason: TradeUnscoredReason | null;
   operatedByClawville: boolean;
+  operator?: 'clawville' | 'clawpump' | null;
 }
 
 export interface FloorDecision extends TapeEntryBase {

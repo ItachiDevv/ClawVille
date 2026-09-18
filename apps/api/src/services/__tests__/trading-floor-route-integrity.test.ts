@@ -50,7 +50,7 @@ describe('Trading Floor route integrity', () => {
       subject: { type: 'agent', id: 'agent-1', avatarName: 'Trader' },
       inputMint: 'mint-a', outputMint: 'mint-b', notionalUsd: 1, dex: 'jupiter',
       blockTime: 1, multiplier: 1, scored: true, operatedByClawville: false,
-      decisionId: null, unscoredReason: null,
+      operator: null, decisionId: null, unscoredReason: null,
     };
     expect(JSON.stringify(trade)).not.toContain(secretWallet);
 

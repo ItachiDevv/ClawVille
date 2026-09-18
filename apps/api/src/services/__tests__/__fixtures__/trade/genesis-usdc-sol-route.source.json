@@ -1,0 +1,15 @@
+{
+  "signature": "2yVEpsLXqSU1BVJjkNzHauKreF7jzYKAyeqQkx1Dsr4N6CJfgiekEC7it61NPZRUpNQrR7WyXcCQyc3ZHcYzWACN",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-18T12:33:41.336Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "2yVEpsLXqSU1BVJjkNzHauKreF7jzYKAyeqQkx1Dsr4N6CJfgiekEC7it61NPZRUpNQrR7WyXcCQyc3ZHcYzWACN",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "Genesis: 1 USDC -> 0.009453139 SOL via ClawPump swap_execute, Jupiter v6 Route (e517cb977ae3ad2a)."
+}
