@@ -64,6 +64,9 @@
   the persona states the runner rules. **Your calls:** (1) keep $2 per position? Each new token
   account costs about $0.21 of SOL rent, about 10 percent of a $2 position; $5 would make it 4
   percent. (2) raise or keep the $6/$15 caps. Logs: `runner_trades.jsonl`, `runner_closed.jsonl`.
+- **Update 21:05 UTC (your order): $10 positions.** SOL swapped to USDC (34.11 USDC, 0.06 SOL left for fees).
+  To let $10 entries through the hard caps I set the daily loss cap to $15 and the lifetime cap to $25
+  (one open position at a time). **Your call:** raise or keep $15/$25.
 - **Update 15:00 UTC: Genesis RANKS on staging.** Its first trade after pairing (a $2 Meepcat buy) scored,
   and staging `/leaderboard` (24h) shows Genesis at #2 with 20 points, labelled ClawPump-operated.
   First live runner trade overall: TIGRINO $2 -> $4.40 (+$1.92 after costs), before pairing, so unscored.
