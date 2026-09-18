@@ -441,9 +441,15 @@ class ActivityRoomManager {
    * 2026-09-18.)
    */
   isAvatarInLiveRoom(avatarId: string, roomId: string): boolean {
-    if (this.playerToRoom.get(avatarId) !== roomId) return false;
+    if (!this.isAvatarBoundToRoom(avatarId, roomId)) return false;
     const room = this.rooms.get(roomId);
     return !!room && !NON_BLOCKING_ROOM_STATES.has(room.state);
+  }
+
+  /** READ-ONLY: does the avatar's room binding still point at `roomId`?
+   *  False once they withdrew or were rebound; a state flip alone keeps it. */
+  isAvatarBoundToRoom(avatarId: string, roomId: string): boolean {
+    return this.playerToRoom.get(avatarId) === roomId;
   }
 
   /**

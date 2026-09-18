@@ -301,12 +301,21 @@ class ActivityQueueService {
     // ACTIVE room: a room in results/gc/aborted, or one the avatar already
     // left, still exists in the manager for a while, and routing a fresh
     // queue into it showed "MATCH EXPIRED" (2026-09-18, staging repro).
-    // Read-only check: this runs on every status poll and must never mutate
+    // Read-only checks: this runs on every status poll and must never mutate
     // the room manager's bindings.
-    if (!activityRoomManager.isAvatarInLiveRoom(avatarId, roomId)) {
+    //   • Room gone, or the avatar left / was rebound → the match is over for
+    //     good: forget it.
+    //   • Room not playing (results / gc / aborted, or a transition whose DB
+    //     write may still roll back) → answer null but KEEP the entry, so a
+    //     rolled-back transition is found again on the next poll (Codex r2).
+    if (
+      !activityRoomManager.getRoom(roomId) ||
+      !activityRoomManager.isAvatarBoundToRoom(avatarId, roomId)
+    ) {
       this.matchedRooms.delete(avatarId);
       return null;
     }
+    if (!activityRoomManager.isAvatarInLiveRoom(avatarId, roomId)) return null;
     return roomId;
   }
 
