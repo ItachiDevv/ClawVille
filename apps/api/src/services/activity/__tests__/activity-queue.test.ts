@@ -301,9 +301,11 @@ describe('Matchmaker fill', () => {
     room!.state = 'results';
     expect(activityQueueService.getMatchedRoomId(pid(1))).toBeNull();
     expect(bindings.get(pid(1))).toBe(room!.id);
-    // Rollback restores the state; the binding is still there to use.
+    // Rollback restores the state; the binding AND the match are still there,
+    // so the lobby's next poll routes the player back into the room.
     room!.state = prev;
     expect(activityRoomManager.isAvatarInLiveRoom(pid(1), room!.id)).toBe(true);
+    expect(activityQueueService.getMatchedRoomId(pid(1))).toBe(room!.id);
   });
 
   it('keeps earlyBotFill scoped away from bumper-shells', async () => {
