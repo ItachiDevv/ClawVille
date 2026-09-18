@@ -373,10 +373,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   after "Back to World" snapped the body about 300 px back into the tunnel
   (the possessed body kept its own tunnel position). It now lands at the same
   exit spot. Try it once as a guest in NPC mode too.
-- **Known separate issue, not fixed yet:** if you REFRESH the page while inside
-  the cove and then leave, your first step can snap you to an old spot in town.
-  It is a different cause (camera position copied into the avatar while the page
-  is still loading) and is next on the list.
+- **After a refresh inside the cove (checked 2026-09-18):** as a guest in the
+  free-camera Explore mode there is no body, so the map dot follows the camera;
+  that is how Explore works. If you are logged in and your spawn is set to your
+  HOME parcel, leaving the cove after a refresh used to send you home; it now
+  leaves you at the cove door.
 - Session bountyFix2/Opus, 2026-09-18.
 
 ### Nori button reachable on phones (LIVE on prod via #271)

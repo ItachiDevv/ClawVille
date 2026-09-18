@@ -100,6 +100,7 @@ jobs:
           src/components/three/world-stage/stage-frame-cap.test.ts
           src/lib/three/__tests__/cove-click-routing.test.ts
           src/stores/__tests__/npc-place-player.test.ts
+          src/components/game/__tests__/spawn-on-load-route-exit.test.ts
 
       # Founder-reported regressions (2026-09-18) come back when nothing runs the
       # test that pinned them. The shared constants suite pins world data that
