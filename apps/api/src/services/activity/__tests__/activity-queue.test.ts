@@ -253,6 +253,37 @@ describe('Matchmaker fill', () => {
     expect(room?.hasBots).toBe(true);
   });
 
+  // 2026-09-18 staging repro: a second Reef Race queue routed straight into
+  // the previous, finished room ("MATCH EXPIRED — THIS ROOM IS NO LONGER
+  // AVAILABLE"), because the avatar→room map only expired when the room object
+  // was gone from the manager.
+  it('queue-status stops returning a room the avatar has left', async () => {
+    seedBotPool(8);
+    await enqueueReefHuman(pid(1));
+    backdateOldestFor(REEF_ACTIVITY_ID, 4_000);
+    await activityQueueService.runMatchmakerSweep();
+    const [room] = activityRoomManager.listActiveRooms(REEF_ACTIVITY_ID);
+    expect(room).toBeDefined();
+    expect(activityQueueService.getMatchedRoomId(pid(1))).toBe(room!.id);
+
+    activityRoomManager.withdrawParticipant(room!.id, pid(1));
+    // The room object is still in the manager; the avatar is no longer in it.
+    expect(activityRoomManager.getRoom(room!.id)).toBeDefined();
+    expect(activityQueueService.getMatchedRoomId(pid(1))).toBeNull();
+  });
+
+  it('a new queue entry never inherits the previous match', async () => {
+    seedBotPool(8);
+    await enqueueReefHuman(pid(1));
+    backdateOldestFor(REEF_ACTIVITY_ID, 4_000);
+    await activityQueueService.runMatchmakerSweep();
+    const [room] = activityRoomManager.listActiveRooms(REEF_ACTIVITY_ID);
+    activityRoomManager.withdrawParticipant(room!.id, pid(1));
+
+    await enqueueReefHuman(pid(1));
+    expect(activityQueueService.getMatchedRoomId(pid(1))).toBeNull();
+  });
+
   it('keeps earlyBotFill scoped away from bumper-shells', async () => {
     seedBotPool(8);
     await enqueueHuman(pid(1));

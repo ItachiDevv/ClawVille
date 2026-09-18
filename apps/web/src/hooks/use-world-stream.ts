@@ -42,6 +42,7 @@ export function useWorldStream(
   const setLocalSessionId = usePlayerStore((state) => state.setLocalSessionId);
   const setRoomId = usePlayerStore((state) => state.setRoomId);
   const clearPlayers = usePlayerStore((state) => state.clear);
+  const clearRemotePlayers = usePlayerStore((state) => state.clearRemote);
   const addCollaborationEntries = useResearchStore(
     (state) => state.addCollaborationEntries,
   );
@@ -85,6 +86,7 @@ export function useWorldStream(
         setLocalSessionId,
         setRoomId,
         clearPlayers,
+        clearRemotePlayers,
         addCollaborationEntries: (entries) =>
           addCollaborationEntries(
             entries as Parameters<typeof addCollaborationEntries>[0],
@@ -129,6 +131,7 @@ export function useWorldStream(
     setLocalSessionId,
     setRoomId,
     clearPlayers,
+    clearRemotePlayers,
     addCollaborationEntries,
     queryClient,
   ]);

@@ -72,6 +72,14 @@ interface PlayerStoreState {
   /** Ingest a snapshot's `players[]` slice. Preserves prev fields for interp. */
   updateFromSnapshot: (incoming: PlayerSnapshot[]) => void;
   clear: () => void;
+  /**
+   * Drop the remote bodies but KEEP who we are (localSessionId, the former-
+   * selves set, roomId). For a downlink pause while the world session lives
+   * on (activity routes, 2026-07-30). Using clear() there erased our own ids,
+   * so on return our own body arrived as a remote player and trailed us by the
+   * interpolation delay (founder R5, 2026-09-18).
+   */
+  clearRemote: () => void;
 }
 
 function fieldsEqual(a: RemotePlayerState, b: PlayerSnapshot): boolean {
@@ -208,4 +216,9 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
 
   clear: () =>
     set({ players: [], roomId: null, localSessionId: null, localSessionIds: new Set<string>() }),
+
+  clearRemote: () => {
+    if (get().players.length === 0) return;
+    set({ players: [] });
+  },
 }));
