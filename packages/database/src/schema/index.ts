@@ -60,6 +60,9 @@ export * from './cosmetics';
 export * from './cosmetic-bonus';
 // Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
+// DoorDash Phase 2 order ledger (operator-only). Backs the spend caps and the
+// confirm protocol; see doordash.ts and migrations/0066_doordash_orders.sql.
+export * from './doordash';
 // 2026-05-18 — Exchange: peer items/services board (NEED/OFFER). Needs +
 // one_shot/repeatable offers. Subscriptions deferred.
 export * from './exchange';

@@ -1,0 +1,469 @@
+Usage: dd-cli order preview [OPTIONS]
+
+  Preview order pricing for a cart (no charge; read-only unless
+  `--fulfillment` is passed).
+
+  For callers surfacing the result to a consumer (agents, scripts that print
+  to a human), prefer `--beautify`: the formatter renders items, quote
+  breakdown, total, DashPass status, delivery availability, and credits
+  applied per the verified MCP response shape — no JSON parsing or field-path
+  guessing needed. Treat the `--beautify` output as the canonical consumer-
+  facing summary — include it verbatim in your response. Do not re-summarize,
+  condense, or reformat it; the formatter already did the layout work and
+  replacing it loses information. Omit the flag only when chaining
+  programmatically (for example, extracting a value from the JSON response to
+  feed into the next call).
+
+  Chains with:
+    Upstream   — --cart-uuid from `cart add-items` or `order reorder`
+    Downstream — read-only; after surfacing the preview, ASK the
+                 consumer whether to submit. `order submit` is the
+                 canonical finalizer (places the order from the CLI
+                 and charges the default payment method (card or
+                 wallet) on file immediately, on an explicit
+                 consumer yes). `order checkout-url` is the
+                 browser fallback — surface it ONLY when the
+                 consumer needs an in-browser edit the CLI can't
+                 express (e.g. swapping the payment method).
+                 Do NOT default to offering the URL. See "For agents
+                 — after a successful preview" below for the
+                 recommended
+                 phrasing. When the result needs to be shown to a
+                 consumer, call this command with `--beautify`
+                 rather than parsing the JSON response — `--beautify`
+                 is the canonical consumer-surfacing path. Tip is
+                 passed at submit time, not here. If
+                 `--scheduled-time` or `--fulfillment` is used, pass
+                 the SAME value to `submit` — preview pricing only
+                 applies to the slot/mode it was computed for.
+
+  For agents — PIN-code dropoff (check before submit):
+    1. Inspect `quote.dropoff_options[].proof_of_delivery_type`. If any
+       is "PIN_CODE", a PIN handoff is mandatory — there is no
+       contactless drop-off for this order.
+    2. Surface it up front: "This order needs a PIN at handoff; after
+       checkout, find the PIN on the order tracking page (DoorDash app
+       or website) and give it to the Dasher."
+    3. Only `order submit` if the consumer explicitly accepts the PIN
+       handoff. If they'd rather not, fall back to `order checkout-url`
+       so they complete it themselves and you don't place the order on
+       their behalf through calling `order submit`.
+
+  Credits (opt-out):
+    Credits apply by default. Do not prompt about them. Only pass
+    --no-apply-credits when the consumer explicitly asks not to use
+    their DoorDash credits (all-or-nothing; there is no partial
+    amount). The quote reflects the choice: with --beautify it shows
+    "Credits applied: $X" when applied, or "Credits: not applied"
+    when opted out. Pass `--no-apply-credits` to `order submit` too.
+
+  Priority (express) delivery:
+    Pass --priority for a faster, paid delivery upgrade. It is delivery
+    only and can't combine with --scheduled-time (Priority is ASAP). Not
+    every cart offers it: after previewing, confirm
+    quote.delivery_availability.delivery_options[] has an entry with
+    delivery_option_type == "PRIORITY" before promising it. Pass
+    --priority to `order submit` too so the charge matches the quoted
+    amount.
+
+  Work-benefits (Company Payment) options:
+    * --include-work-benefits populates work-benefits eligibility
+      under `quote.expense_order_options` on the preview response.
+      Pass it whenever there's any signal the consumer might have a
+      work / company / employee budget — see the `order` group
+      docstring (`dd-cli order --help`) for the full trigger list
+      (address labels, "work credit", "employee benefits", "company
+      lunch", "team budget", "expense this", etc.). Better to
+      over-trigger than miss.
+    * --selected-budget-id applies a specific budget. After an
+      --include-work-benefits preview returns budgets at
+      `quote.expense_order_options.all_eligible_expense_order_budgets[]`,
+      pass the chosen entry's `id` back to re-preview with that
+      budget applied. The re-previewed quote is what the consumer
+      should see. Passing a budget id implicitly applies
+      work-benefits on submit — no separate flag needed.
+
+  For agents — work-benefits flow:
+    1. Detect the work-benefits signal (see `order` group docstring
+       for the full trigger list). When any signal is present, run
+       `order preview --include-work-benefits`. When in doubt, set
+       the flag — the cost of a missed budget exceeds the cost of
+       over-asking.
+    2. Filter
+       `quote.expense_order_options.all_eligible_expense_order_budgets[]`
+       to entries where `remaining_amount.unit_amount > 0`. Then:
+         - At least one eligible budget → ALWAYS ask the consumer
+           if they want to apply one (offer it explicitly with
+           `name` + `remaining_amount.display_string`). Do not
+           apply silently, even when there's only one budget.
+         - Multiple eligible budgets → list them by `name` +
+           remaining amount and ask which to use.
+         - Zero eligible → don't mention work benefits at all;
+           the consumer pays on their default card silently.
+    3. Re-preview with --selected-budget-id <id> after the consumer
+       picks, so pricing reflects the applied budget. The
+       re-previewed quote is what you show the user.
+    4. Before `order submit`: if the picked budget has
+       `expense_code_mode != "NONE"`, collect an expense code from
+       the user. If `is_expense_note_required` is true, collect a
+       note. Collect both in one turn if both are required.
+
+  For agents — presenting work benefits to the consumer (JSON-parsing
+  callers; --beautify renders the equivalent automatically):
+    * Surface budgets to the consumer ONLY when the filtered eligible
+      list (`remaining_amount.unit_amount > 0`) is non-empty. Empty
+      list → don't mention work benefits at all; the consumer pays on
+      their default card silently.
+    * One budget → ALWAYS offer it, never apply silently:
+        "You have $<remaining> available in your <budget.name> budget.
+         Would you like to apply it to this order?"
+    * Multiple budgets, similar `remaining_amount` — list them by
+      `name` + remaining and ask:
+        "You have $25 in 'Engineering Lunch' and $20 in 'Q4 Team
+         Dinner'. Which would you like to use?"
+      Re-preview with --selected-budget-id after the consumer picks.
+    * Multiple budgets with one clearly larger `remaining_amount` —
+      recommend the largest by name, but still let the consumer
+      confirm before applying.
+    * Do NOT list depleted (zero-remaining) budgets to the consumer
+      — they aren't actionable.
+    * Do NOT surface `team_id` in consumer-facing text — it's an
+      internal identifier the consumer doesn't recognize. team_id is
+      required on `order submit --team-id` but stays invisible to
+      the user.
+
+  Schema reference for work-benefits (only present when --include-work-benefits=true):
+    * `quote.expense_order_options.all_eligible_expense_order_budgets[]` —
+      each entry has:
+        - `id` — pass to --selected-budget-id and to
+          `order submit --budget-id`
+        - `name` — human-readable budget label
+        - `remaining_amount.display_string` /
+          `remaining_amount.unit_amount`
+        - `expense_code_mode` — "NONE" | "OPTIONAL" | "REQUIRED"
+        - `is_expense_note_required` — bool
+        - `team_account_id` — optional; pass to
+          `order submit --team-account-id`
+    * `quote.company_payment_info.team_order_info.team_id` — TOP-LEVEL on
+      the quote (sibling of `expense_order_options`, NOT inside a budget
+      entry). Pass to `order submit --team-id`.
+
+  Schema reference (for JSON-parsing callers; `--beautify` already
+  handles all of the below):
+    * Items — quote.store_order_cart.orders[*].order_items[]: each
+      entry has item.name (nested), quantity (top-level on the
+      entry), and unit_price_monetary_fields.display_string (also
+      top-level on the entry — sibling of `item`, NOT nested under
+      it). Do NOT compute a per-item line total = unit_price ×
+      quantity — promotions and discounts can make that figure
+      differ from the cart's actual subtotal.
+    * Quote breakdown — quote.line_items[]: each entry has label and
+      final_money.display_string. CREDITS / DELIVERY_FEE /
+      TAXES_AND_FEES / TIP / DISCOUNT / SERVICE_FEE labels vary per
+      cart. final_money.unit_amount is UNSIGNED — CREDITS comes
+      through positive even though display_string shows a leading
+      "-", so do not sum unit_amount values to compute a total.
+    * Order total — quote.net_total_before_tip.display_string is the
+      authoritative, currency-formatted total. Do not recompute from
+      the breakdown.
+    * Drops — there is no top-level dropped_items[] field. To detect
+      drops after `order reorder`, diff the original `order history`
+      orders[N].items[] against the new cart's items — items present
+      in history but missing from the cart fell off (out-of-stock
+      or substituted).
+    * DashPass — quote.is_dashpass_applied (bool). Rendered as a
+      bare "DashPass: applied / not applied" status line in
+      --beautify, independent of any active promo discount.
+    * Savings — when quote.line_items[] contains a non-zero
+      PROMOTION_DISCOUNT entry, the active discount also appears
+      as a labeled Discount row in the breakdown, and each entry
+      in quote.discount_banner_details[] surfaces its
+      discount_details_message in a Savings section. JSON callers
+      can read line_items[charge_id=PROMOTION_DISCOUNT].final_money
+      for the exact amount.
+    * Applied promo(s) — `quote.discount_banner_details[].promotion_id`
+      carries the campaign id of each promo applied to the cart, and
+      `quote.promotions[]` carries the matching `title` / `description`
+      (join on `campaign_id == promotion_id`). --beautify resolves and
+      renders the title on an "Applied promo:" / "Applied promos:" line
+      below Savings, falling back to the id when no title is present.
+      JSON callers can read the same `quote.promotions[]` entry directly
+      for the title and description, with no separate `promo list` call
+      ("I applied your 20% off on CA$10+, up to CA$5 off" beats "I
+      applied a promo").
+    * Credits — quote.credit_details.total_credits_applied (money
+      object with display_string and unit_amount). Credits apply by
+      default; a positive unit_amount means they were applied to this
+      quote. Only pass `--no-apply-credits` (here and on `order submit`)
+      when the consumer explicitly opts out.
+    * Delivery — quote.delivery_availability covers asap_available,
+      asap_pickup_available, ETAs in *_minutes_range_string,
+      is_within_delivery_region, and scheduled_delivery_available.
+      When scheduled_delivery_available is true and asap_available is
+      false, parse quote.delivery_availability.available_days[] for the
+      scheduled slots. Each entry has:
+        - day_timestamp: {year, month, day}
+        - time_windows[]: each window has display_string (e.g.
+          "9:20 PM-9:40 PM"), range_min and range_max (ISO 8601 UTC
+          timestamps), and midpoint_timestamp (also ISO 8601 UTC).
+      To submit/preview a specific slot, pass any of those timestamps
+      (UTC suffix) to --scheduled-time. midpoint_timestamp is the safe
+      default; range_min / range_max bound the actual slot.
+    * Currency — multi-currency carts come through with the right
+      symbol in display_string. Use display_string verbatim; do not
+      reformat from unit_amount.
+    * Fulfillment — the cart's current mode lives on
+      `quote.store_order_cart.fulfillment_type` (string "DELIVERY" or
+      "PICKUP"), with `quote.store_order_cart.is_consumer_pickup`
+      (bool) as a sibling. `--beautify` renders a `Fulfillment:` line
+      from these. Pass `--fulfillment delivery|pickup` to flip the
+      cart's mode before previewing.
+
+  For agents — on EVERY preview:
+    * Scan the consumer's original request for any work-benefits
+      signal — "work", "office", "company", "team", "employer",
+      "employee", "team lunch", "expense this", a saved-address
+      label of "Work" / "Office" / "HQ", or address text with
+      office tokens (Suite, Floor, Bldg). If ANY signal is
+      present, MUST pass `--include-work-benefits` on this call
+      (and on every re-preview for the same cart). The flag is
+      read-only and adds one field; over-setting has no downside,
+      missing means the consumer pays out of pocket when they
+      had a budget. Treat it as a per-call reflex, not an opt-in.
+      See "For agents — work-benefits flow" below for what to do
+      with the eligibility data once returned.
+    * Display the delivery address from the CURRENT response
+      (`quote.delivery_address.printable_address`). It can differ
+      across carts; don't cache, don't assume the consumer remembers.
+    * Also call `payment-method list` and surface the default card's
+      brand + last4 alongside the preview. The default is the
+      `cards[]` entry whose `payment_method_id` matches the top-level
+      `default_payment_method_id`. Consumers want to see which card
+      will be charged BEFORE confirming with `order submit`. If
+      `default_payment_method_id` doesn't match any card in `cards[]`
+      (rare; legacy accounts can hit this), say "default card on
+      file" generically and point them to `order checkout-url` to
+      inspect or change. Note: `cards[]` is cards-only — wallets,
+      gift cards, etc. are not in it (see `payment-method list
+      --help`), so don't conclude "no payment method" from an empty
+      list.
+    * If ASAP delivery isn't available but scheduled delivery is,
+      surface 2-3 representative slots from
+      `quote.delivery_availability.available_days[]` and ask which
+      one to use. Once picked, pass the window's `midpoint_timestamp`
+      to `--scheduled-time` on the next call. If pickup-ASAP is ALSO
+      available, present both as parallel options instead of forcing
+      scheduled-only.
+
+    `--beautify` already renders the `Deliver to:` header and inlines   the
+    SOONEST scheduled slot (one slot, mirrors the ASAP shape) —   not a multi-
+    day browse. JSON-parsing callers must read from the   current response
+    each time and present multiple options to the   consumer themselves.
+
+  For agents — tip handling (required before `order submit`):
+    * On delivery carts, always confirm the Dasher tip with the consumer
+      before submit, even when they have not raised the topic. (Pickup
+      carts have no Dasher — see the pickup bullet below; skip the tip
+      ask entirely.) Surface the suggested amount and ask them to
+      confirm: the suggestion, a different amount, or zero. Pass their
+      explicit answer to `order submit --tip-cents N`. Tip disclosure
+      is required by regulation in many US markets.
+    * `quote.is_pre_tippable` (bool) — whether the cart accepts a
+      pre-submit tip.
+    * `quote.tips_suggestion_details[]` — suggestion groups. If empty,
+      OR if the first group has no usable `default_index` (missing /
+      out of range / malformed), there is no backend-suggested amount.
+      Still confirm with the consumer ("would you like to add a Dasher
+      tip?") but do not suggest a number — let them name an amount or
+      decline. (Skip the ask entirely on pickup, per the pickup bullet
+      below.)
+    * Otherwise read the first group at
+      `quote.tips_suggestion_details[0]`. Inside that group:
+        - `default_index` (int) — which entry inside the group is the
+          default.
+        - `percentage_to_amount_monetary_values[default_index].unit_amount`
+          — the suggested amount, in CENTS.
+        - `percentage_values[default_index]` — matching percent label
+          (10 means 10%).
+        - `tip_recipient` — recipient (typically "DASHER").
+    * Pickup orders: `--tip-cents` is the Dasher tip only — and pickup
+      carts have no Dasher. `--beautify` omits the tip block on pickup.
+      Skip the consumer tip confirmation; submit with `--tip-cents 0`.
+      If the consumer wants to tip the merchant, point them to the
+      DoorDash app — merchant tipping is not exposed via dd-cli today.
+
+  For agents — after a successful preview:
+    Submit-from-CLI is the canonical finalizer. ASK the consumer
+    whether to submit; do NOT default to handing them a browser URL.
+    Steps:
+  
+    1. Surface the `--beautify` preview (items, total, delivery /
+       pickup ETA, the default card from `payment-method list`).
+  
+    2. Ask the consumer to confirm — on the happy path the question
+       MUST surface the default card's brand + last4 (from
+       `payment-method list`) so the consumer sees what will be
+       charged. Required shape:
+         "Want me to place this on your <brand> ending in <last4>?"
+       Generic "ready to checkout?" / "shall I submit?" without the
+       card identity is NOT acceptable on the happy path — the
+       consumer cannot give informed consent without seeing the
+       card. When `payment-method list` is unavailable (call failed,
+       default didn't resolve, or `cards[]` empty), the account
+       default might be a wallet (Apple Pay, Google Pay, PayPal,
+       etc.) that the CLI can't see — lead with `order checkout-url`
+       so the consumer confirms the default in the browser. If the
+       consumer insists on submitting from the CLI anyway, that's
+       fine; follow the degraded-path rules in `order submit --help`
+       (never claim a specific card will be charged). Keep the ask
+       short — one sentence, conversational, present tense. If the
+       consumer needs to change something in the browser first
+       (e.g. a payment method swap) they will say so;
+       `order checkout-url` covers that case — see fallback below.
+  
+    3. Wait for the consumer's explicit choice. On any clear yes
+       ("submit", "place the order", "go ahead", "do it" — not
+       strictly the word "submit") run `order submit`. Submit
+       charges the card immediately and is not idempotent.
+  
+    Browser fallback — `order checkout-url`:
+      Surface the URL ONLY when the consumer asks for an in-browser
+      edit the CLI can't express (payment-method swap, change
+      delivery address mid-checkout, leave a tip from the browser,
+      or "just let me finish in the browser").
+      Don't pre-emptively run it after every preview.
+  
+    Halt (do NOT ask about submit yet, do NOT surface the URL) when:
+      * preview returns success: false → show the message and stop
+      * the previewed items differ from the upstream order's items
+        (silent drops from reorder) → call out the dropped items
+        to the consumer FIRST and re-confirm before asking whether
+        to submit
+
+  Caveats:
+    * Naive ISO `--scheduled-time` strings default to America/Los_Angeles —
+      use a UTC suffix (e.g. `...18:00:00Z`) to avoid ambiguity.
+    * The cart must already have a delivery address and a payment method
+      attached. The default consumer address is used; there is no CLI option
+      to override it today.
+    * The card brand / last-4 is NOT in the preview response itself —
+      call `payment-method list` to retrieve them and match
+      `default_payment_method_id` to a `cards[]` entry. Use
+      `order checkout-url` to actually CHANGE the payment method
+      (e.g. swap to a different card, wallet, or gift card).
+    * `--fulfillment` mutates cart state — when passed, the cart's
+      fulfillment mode is changed before the quote is computed. Without
+      `--fulfillment` this command is read-only and idempotent. Auto-chain
+      callers (e.g. agents previewing right after `order reorder`) should
+      OMIT `--fulfillment` so the auto-chain stays read-only; only pass
+      it after the consumer has explicitly asked to switch the cart's
+      mode.
+
+  Example:
+
+    dd-cli order preview --cart-uuid 0a1b2c3d-...
+
+  Consumer mentioned work / office / team — pass --include-work-benefits from
+  the FIRST preview:
+
+    dd-cli order preview --cart-uuid 0a1b2c3d-... --include-work-benefits
+
+  Scheduled delivery:
+
+    dd-cli order preview --cart-uuid 0a1b2c3d-... --scheduled-time
+    2026-04-21T18:00:00Z
+
+  Human summary:
+
+    dd-cli order preview --cart-uuid 0a1b2c3d-... --beautify
+
+Options:
+  --cart-uuid TEXT                Cart UUID from `order reorder` or a prior
+                                  `cart add-items` call.  [required]
+  --scheduled-time TEXT           ISO 8601 scheduled delivery time. Use a UTC
+                                  suffix (e.g. '2026-04-21T18:00:00Z'). Omit
+                                  for ASAP.
+  --fulfillment [delivery|pickup]
+                                  Set the cart's fulfillment mode before
+                                  previewing. When provided, the cart is
+                                  switched to the chosen mode and re-priced in
+                                  one shot. On `order submit`, omitting
+                                  --fulfillment uses the cart's stored mode
+                                  (set here, or by `cart add-items
+                                  --fulfillment` at creation); only pass it to
+                                  submit if you want to enforce the SAME
+                                  explicit value.
+  --priority                      Request Priority (express) delivery: a
+                                  faster, paid delivery upgrade. Delivery
+                                  only; not valid with --fulfillment pickup or
+                                  --scheduled-time. Not offered for every
+                                  cart, so before relying on it confirm quote.
+                                  delivery_availability.delivery_options[] has
+                                  an entry with delivery_option_type ==
+                                  'PRIORITY'. Pass it to `order submit` too so
+                                  the charged total matches the quoted amount.
+  --include-work-benefits         REQUIRED when any work-benefits signal is
+                                  present in the consumer's request. Adds
+                                  Company Payment eligibility under
+                                  `quote.expense_order_options` on the preview
+                                  response. Trigger keywords / context: "work"
+                                  / "office" / "company" / "team" / "employer"
+                                  / "employee" / "team lunch" / "company
+                                  lunch" / "expense this" / "team budget" /
+                                  "employee benefits" / "work credit" — or a
+                                  saved-address label of "Work" / "Office" /
+                                  "HQ", or an address with office tokens
+                                  (Suite, Floor, Bldg). Setting the flag is
+                                  read-only and adds one field to the response
+                                  — no downside to over-setting; the cost of
+                                  missing means the consumer pays out of
+                                  pocket. When in doubt, set it. Implicitly
+                                  enabled when --selected-budget-id is passed.
+                                  See the `order` group docstring for the full
+                                  trigger list.
+  --selected-budget-id TEXT       Apply a specific work-benefits budget id.
+                                  Read from `quote.expense_order_options.all_e
+                                  ligible_expense_order_budgets[].id` in a
+                                  prior --include-work-benefits preview.
+                                  Passing this implicitly enables work-
+                                  benefits — no need to also pass --include-
+                                  work-benefits.
+  --no-apply-credits              Opt out of applying the consumer's DoorDash
+                                  credits to the quote. Credits apply by
+                                  default; pass this ONLY when the consumer
+                                  explicitly asks not to use their credits.
+                                  All-or-nothing (no partial amounts). Pass it
+                                  to `order submit` too so the charged total
+                                  matches the quoted amount.
+  --beautify                      Print a short plain-text summary instead of
+                                  JSON (not compatible with --json-output).
+  --intent TEXT                   The goal behind the workflow this command is
+                                  a part of, in plain language — not a
+                                  restatement of what this command does.
+                                  
+                                  For agents — before writing this, note
+                                  internally what the command is doing, who
+                                  it's for, and why. Only the audience and the
+                                  why go into the value below — leave the
+                                  action out. Share only information relevant
+                                  to DoorDash. Avoid including information
+                                  such as: health or medical details; race,
+                                  religion, or other personal characteristics;
+                                  precise location beyond your delivery
+                                  address; government ID, payment, or account
+                                  credentials; or information about other
+                                  people.
+                                  
+                                  Format as two lines:
+                                    Summary: <who this is for and the goal> (e.g. "Help the user
+                                    order a healthy meal", "Help the user's company auto-restock
+                                    drinks and snacks")
+                                    user prompt/purpose: "<verbatim prompt or instruction that
+                                    started this, if any>"
+                                  Trace back to the goal that started the session, not just the most
+                                  recent message.
+                                  
+                                  DoorDash may review this data for research
+                                  and product-improvement purposes.
+                                  [required]
+  -h, --help                      Show this message and exit.

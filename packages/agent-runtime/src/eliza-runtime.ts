@@ -1290,18 +1290,42 @@ export class ElizaRuntime {
    * so the LLM knows what it can invoke.
    */
   private buildActionDescriptions(state: Record<string, any>): string {
-    const actions = clawvillePlugin.actions as Action[];
+    const actions = (clawvillePlugin.actions as Action[]).filter((action) => {
+      if (!action.available) return true;
+      try { return action.available(state); } catch { return false; }
+    });
     if (actions.length === 0) return '';
 
     const lines = actions.map((a) => {
       const params = a.parameters?.map((p) => `${p.name}: ${p.description}`).join(', ') ?? 'none';
-      return `- ${a.name}: ${a.description} (params: ${params})`;
+      // `similes` existed on the Action interface but was never surfaced to the
+      // model. Trigger phrasings move reliability far more than prose does:
+      // instruction-only wording still narrated 2 of 3 casual requests on
+      // staging 2026-09-17 ("find me pizza on doordash" produced no tag).
+      const triggers = a.similes?.length
+        ? `\n  Use it when the user says things like: ${a.similes.map((s) => `"${s}"`).join(', ')}.`
+        : '';
+      return `- ${a.name}: ${a.description} (params: ${params})${triggers}`;
     });
 
     return [
       '[Available Actions]',
       'You can execute game actions by including [ACTION: ACTION_NAME(param=value)] in your response.',
       'Only use an action when the user clearly requests it. Most messages just need a normal conversational reply.',
+      // Observed on staging 2026-09-17: asked to search DoorDash, the model
+      // replied "Let me dive into the DoorDash currents... The search begins
+      // now!" and emitted NO tag, so the user got flavour text and zero
+      // results. Announcing an action reads to the model like performing one.
+      // This does NOT loosen the gate above — it only says that once you have
+      // decided to act, the tag must be in the SAME reply.
+      'Announcing an action does not perform it. If you tell the user you are searching, checking, or fetching something, the matching [ACTION: ...] tag MUST appear in that same reply — otherwise nothing happens and the user is misled.',
+      'Stay in character AND emit the tag in the same reply; the tag is stripped before the user sees it, so it never breaks your voice.',
+      // The worked example MUST use an always-available action. An earlier
+      // draft hardcoded a DoorDash action name here and leaked the existence
+      // of an operator-only capability into every agent's prompt, including
+      // partner agents — caught by the capability-gate tests. Never name a
+      // gated action in this static header.
+      'Example — user: "how much vCLAW do I have?" -> you: "Let me check the ledger! [ACTION: CHECK_BALANCE()]"',
       ...lines,
     ].join('\n');
   }
@@ -1356,12 +1380,18 @@ export class ElizaRuntime {
     actionName: string,
     params: Record<string, string>,
     state: Record<string, any>,
+    budget: { total: number; money: number },
   ): Promise<ActionResult | null> {
     const actions = clawvillePlugin.actions as Action[];
     const action = actions.find((a) => a.name === actionName);
     if (!action) {
       console.warn(`[ElizaRuntime] Unknown action: ${actionName}`);
       return null;
+    }
+
+    // Availability is an authorization boundary; validate() remains fail-open.
+    if (action.available) {
+      try { if (!action.available(state)) return null; } catch { return null; }
     }
 
     try {
@@ -1378,6 +1408,14 @@ export class ElizaRuntime {
       } catch {
         // validate() failure is non-blocking — proceed with handler
       }
+
+      // Consume slots before the handler: failure or a throw can follow a write.
+      if (budget.total >= 6 || (action.writesMoney === true && budget.money >= 1)) {
+        console.warn(`[ElizaRuntime] Action ${actionName} exceeds the per-reply cap — skipping`);
+        return null;
+      }
+      budget.total++;
+      if (action.writesMoney === true) budget.money++;
 
       const options = { parameters: params };
       const result = await action.handler(this.runtime, message, state, options);
@@ -1516,18 +1554,21 @@ export class ElizaRuntime {
       });
 
       let responseText = result.text;
+      let persistedResponseText = responseText;
       const actionsExecuted: Array<{ name: string; result: ActionResult }> = [];
 
       // --- Action dispatch ---
       // Parse ALL [ACTION: ...] tags from the LLM response and execute sequentially
       if (providerState.services) {
         const invocations = this.parseActionInvocations(responseText);
+        const budget = { total: 0, money: 0 };
 
         for (const invocation of invocations) {
           const actionResult = await this.executeAction(
             invocation.actionName,
             invocation.params,
             providerState,
+            budget,
           );
 
           if (actionResult) {
@@ -1535,10 +1576,13 @@ export class ElizaRuntime {
           }
         }
 
-        if (actionsExecuted.length > 0) {
-          // Strip ALL action tags from the response text
+        if (invocations.length > 0) {
+          // Drop refused tags too; internal action syntax is never display text.
           responseText = responseText.replace(/\[ACTION:\s*\w+\([^)]*\)\]/g, '').trim();
+          persistedResponseText = responseText;
+        }
 
+        if (actionsExecuted.length > 0) {
           // Append all action results
           const actionTexts = actionsExecuted
             .map((a) => a.result.text)
@@ -1547,6 +1591,17 @@ export class ElizaRuntime {
             responseText = responseText
               ? `${responseText}\n\n${actionTexts.join('\n\n')}`
               : actionTexts.join('\n\n');
+          }
+
+          // DoorDash CLI ToS Addendum §§6.2/6.4: immediate display only.
+          // Build persistence separately; never copy ephemeral text or data to memory.
+          const persistentActionTexts = actionsExecuted
+            .map((a) => a.result.persist === false ? '[Action output omitted]' : a.result.text)
+            .filter(Boolean);
+          if (persistentActionTexts.length > 0) {
+            persistedResponseText = persistedResponseText
+              ? `${persistedResponseText}\n\n${persistentActionTexts.join('\n\n')}`
+              : persistentActionTexts.join('\n\n');
           }
         }
       }
@@ -1563,7 +1618,7 @@ export class ElizaRuntime {
           agentId,
           entityId: agentId,
           roomId,
-          content: { text: responseText, source: 'agent' } as Content,
+          content: { text: persistedResponseText, source: 'agent' } as Content,
           createdAt: Date.now(),
           metadata: {
             type: 'message',

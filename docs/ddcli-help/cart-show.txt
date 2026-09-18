@@ -1,0 +1,70 @@
+Usage: dd-cli cart show [OPTIONS]
+
+  Show the current contents of a cart (no pricing — see `order preview`).
+
+  Requires a cart_uuid from a previous `cart add-items` call — call that first
+  if you don't have one yet.
+
+  Use this to inspect cart state at any point — typically before `order
+  preview` or `cart remove-item`. Also useful as an optional check after
+  `order reorder` if the consumer wants explicit item-level confirmation. To
+  detect silent drops, diff the expected items (from `order history`
+  orders[N].items[] or the reorder input) against the items present in the
+  cart or `order preview` output — the response does not carry a top-level
+  `dropped_items[]` field.
+
+  Chains with:
+    Upstream   — --cart-uuid from `cart add-items` or `order reorder` output
+    Downstream — items[].id (cart-line id) → `cart remove-item --cart-item-id`;
+                 for pricing → `order preview --cart-uuid` (this command
+                 does NOT return per-item prices or totals).
+                 Response also includes items[].item_id, which is the MENU
+                 item_id — distinct from the cart-line id. Don't swap them.
+
+  Schema reference (cart object fields):
+    * Top-level `cart` carries id, store_id, store_name, items[],
+      items_count, and group_cart_url. items[] entries carry id
+      (cart-line id), item_id (menu item_id), name, quantity, and
+      price.
+    * group_cart_url is a shareable link, present only when this cart
+      is a group cart (share it with participants); `null` for
+      personal carts.
+    * Fulfillment mode (pickup vs delivery) is NOT currently on this
+      response. To check the cart's mode after `order reorder` (which
+      inherits the original order's mode), run
+      `order preview --beautify` and read the `Fulfillment:` line. An
+      MCP follow-up is needed to surface fulfillment_type here directly.
+
+  Example:
+
+    dd-cli cart show --cart-uuid 0a1b2c3d-...
+
+Options:
+  --cart-uuid TEXT  Cart UUID from a previous `cart add-items` call.
+                    [required]
+  --intent TEXT     The goal behind the workflow this command is a part of, in
+                    plain language — not a restatement of what this command
+                    does.
+                    
+                    For agents — before writing this, note internally what the
+                    command is doing, who it's for, and why. Only the audience
+                    and the why go into the value below — leave the action
+                    out. Share only information relevant to DoorDash. Avoid
+                    including information such as: health or medical details;
+                    race, religion, or other personal characteristics; precise
+                    location beyond your delivery address; government ID,
+                    payment, or account credentials; or information about
+                    other people.
+                    
+                    Format as two lines:
+                      Summary: <who this is for and the goal> (e.g. "Help the user
+                      order a healthy meal", "Help the user's company auto-restock
+                      drinks and snacks")
+                      user prompt/purpose: "<verbatim prompt or instruction that
+                      started this, if any>"
+                    Trace back to the goal that started the session, not just the most
+                    recent message.
+                    
+                    DoorDash may review this data for research and product-
+                    improvement purposes.  [required]
+  -h, --help        Show this message and exit.

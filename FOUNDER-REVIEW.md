@@ -124,6 +124,92 @@
 
 ## AGENTS / ONBOARDING
 
+### DoorDash Phase 2 — you can now actually order (session dd/Fable, 2026-09-17)
+
+**WHAT:** The ordering path is built. You can tell your agent to add things to a cart, ask what the
+total is, and place the order — all from the chat bar. It is still your account only.
+
+**HOW IT FEELS IN THE CHAT BAR:**
+1. "find pizza near me" → a list of real Jacksonville restaurants.
+2. "show me the menu at Rojas Pizza" → real items with prices. (You can say the NAME. You no longer
+   have to repeat ID numbers back — the server remembers what you were looking at for 30 minutes.)
+3. "add two garlic knots" → the cart, with what is in it.
+4. "what's the total?" → the real quote: subtotal, tax, delivery fee, service fee, the delivery
+   estimate, **a question asking how much you want to tip**, and a six-character code good for 10 min.
+5. "ACDEFG tip 3" → the order is placed, and you get a Telegram message with the total.
+
+**THE PART WORTH KNOWING:** your agent cannot place an order on its own. The confirmation code is
+checked against YOUR typed message, captured before the model even runs — so an agent that makes up a
+code, or repeats the one it just showed you, gets refused. The tip works the same way: if you did not
+say an amount, it will not invent one. And your connected agent can never submit at all; it can build
+the cart and price it, then it hands back to you. That was your ruling and it is enforced in code.
+
+**LIMITS (yours, from 2026-09-16):** 2 orders per day, $75 per order, $150 per day including tip.
+These are read from the database, so restarting the server does not reset them. The environment can
+only make them tighter — a setting that would raise one stops the server booting instead.
+
+**WHERE:** staging (`https://staging.clawville.world`), the chat bar at the bottom of `/game`.
+Same staging login as the Phase 1 entry below.
+
+**⚠️ NOTHING HAS BEEN ORDERED AND NOTHING WILL BE UNTIL YOU SAY SO.** Every test stopped at the price
+quote. The carts I made were deleted; your open-cart list is empty. **The first real order happens on
+production, with you watching, when you ask for it** — never in a test, never unattended. That is the
+one thing this entry is asking for.
+
+**WHAT FEEDBACK IS NEEDED:**
+1. Drive it to the price quote on staging and stop there. Does the conversation flow naturally, or
+   does it lose track of the cart between messages?
+2. Is the tip question asked at the right moment, and are DoorDash's suggested amounts useful?
+3. When you are ready, tell me and we do ONE real order on production together.
+
+**Vendor bugs I re-checked before building (all were open, none reproduce on v0.2.4):** the one that
+would have blocked everything was #84, where adding to a cart failed at every restaurant. It works.
+Also fixed upstream since those reports: the ordering command used to hang forever without a terminal,
+and the price quote never returned suggested tips — both work now. Nothing needs raising with DoorDash.
+
+### DoorDash CLI Phase 1 — operator-only, read-only (session doordash/Fable, 2026-09-17)
+
+**WHAT:** Your agent can now use the DoorDash CLI from the chat bar — but READ-ONLY in this phase:
+search stores, browse a menu, check order status, list order history, list your saved addresses.
+It cannot place an order. There is no cart, no price preview, no submit, and no tip flow yet.
+
+**WHERE:** staging (`https://staging.clawville.world`) — the normal agent chat bar at the bottom of
+`/game`, and your own `/avatars/me/chat` path. Both carry it; nobody else's account does.
+
+**✅✅ UPDATE 2026-09-17 (later): PROVEN IN THE REAL CHAT BAR — nothing is owed on the technical side.** I set a staging password for your account and drove it myself. Asking the agent to "search doordash for starbucks" returns `Starbucks Coffee Company (store 35742098); Gregorys Coffee (store 534765); Blue Bottle Coffee (store 2188520)...` — real NYC shops near YOUR saved address. Asking for a menu returns real items (`Iced Caffè Latte`, `Iced NOLA`, `Caffè Latte`, `Iced Matcha`, "49 more results are not shown"). Three defects were found and fixed doing this, each of which had passed the unit tests.
+
+**Staging login if you want to try it:** 444hoodie@gmail.com / `DdTest-1789639631-Stg` (I set this; change it whenever).
+
+**❌ RETRACTED 2026-09-17 — I WAS WRONG ABOUT THE CUISINE LIMITATION BELOW.** Cuisine search works fine. Once the founder's real default address (200 Riverside Ave Unit 813, Jacksonville FL, id 1742541215) was set, `pizza` returns Rojas Pizza / Rodrigo's Craft Pizza / Biggies Pizza / Al's Pizza / Papa Johns, and `sushi` returns Sake House / New Kazu Sushi Burrito. The empty NYC results were an artifact of searching from an address the account did not really deliver to, NOT a name-only search index. **Do not raise the "names only" claim with DoorDash — it is false.** (`ramen` is still empty in Jacksonville, which is plausibly just local coverage.)
+
+**✅ FIXED 2026-09-17 (`d46fafc5`) — reliability went from 1/3 to 6/6.** The action now fires on every casual phrasing I tested, including the two that previously failed ("find me pizza on doordash", "im hungry can you find me some tacos on doordash"). Cause: the action framework already supported trigger phrasings (`similes`) and the prompt builder never showed them to the model — so NO action in the game had example phrasings. Fixed for every action, not just DoorDash.
+
+**(fixed, kept for the record)** **REAL open item instead — prompt reliability, our side.** The action does not always fire: "search doordash for pizza" sometimes produces a reply that *narrates* searching ("Let me dive into the DoorDash currents... The search begins now!") without ever emitting the action, so the user gets flavour text and no results. Explicit phrasing ("use the doordash search action now for query pizza") fired correctly 2/2. This is prompt/decision tuning, and it should be fixed before Phase 2, where a missed action during checkout is worse than a missed search.
+
+**(RETRACTED — kept for the record)** **THE ONE THING WORTH YOUR JUDGEMENT — a vendor limitation, not our code.** The beta's search matches restaurant NAMES, not cuisines. "mcdonalds" and "starbucks" work. "ramen", "pizza", "sushi", even DoorDash's own documented example "sushi near me", and the real NYC chain "Ippudo" ALL return zero results at a Manhattan address. So the most natural way to ask — by food type — comes back empty. **Worth raising with Aliza before Phase 2**, because an ordering flow that cannot find food by cuisine is a poor experience. It may be a beta index limitation or a parameter we have not found.
+
+**(earlier)** **✅ UPDATE 2026-09-17: staging IS seeded and live-verified.** The binary is installed and immutable, your token authenticates from that box, and all four read-only operations were proven working through the app's own wrapper inside the API container against real DoorDash (`address-list` 429ms, `search` 3.6s, `order-history` 405ms). The gate was proven too: your account gets the capability, every other human/agent/guest gets nothing. A real ship-blocker was caught and fixed doing this (`09b2ed6d`) — the CLI wraps its JSON in an envelope, so every operation was failing before. **What is still unproven is the chat-bar round trip, because that needs YOUR login.** That is the one thing this entry is asking you to do.
+
+**(historical)** **⚠️ IT WILL REPORT ITSELF DARK UNTIL THE BOX IS SEEDED.** Staging has no `dd-cli` binary and no
+`DD_CLI_ACCESS_TOKEN` yet. That is expected, not a bug. To light it up on a box, an operator runs
+`apps/api/scripts/doordash/install-ddcli.sh` on the host (read-only bind-mount into the api container)
+and sets `DD_CLI_ACCESS_TOKEN` + `DOORDASH_OPERATOR_USER_ID` (which must ALSO be in `ADMIN_USER_IDS`).
+Say the word and I will seed staging and re-verify live.
+
+**WHAT FEEDBACK IS NEEDED:**
+1. Does asking your agent in plain language ("find ramen near me", "what's on the menu at X") actually
+   return useful results in the chat bar, or does the wording need work?
+2. Your `DD_CLI_ACCESS_TOKEN` expires every few days with no auto-refresh in a headless box. When it
+   dies the feature alerts and goes dark until you re-export it by hand. Is that acceptable ongoing,
+   or should we build something to reduce the manual step before Phase 2?
+3. Phase 2 (cart + priced preview + confirm + tip) is specced and NOT built. Confirm you still want
+   it built as ruled: submit stays human-only, tip asked after real totals, 2 orders/day, $75/order,
+   $150/day.
+
+**NOTE — this can never become a player feature under the current licence.** The DoorDash CLI terms
+(§4.1) allow personal use of your own account only and forbid ordering for others or building a
+platform on CLI access. Widening it needs a commercial agreement with DoorDash, not a code change.
+
 ### Export panel now shows magic-link connect guidance (LIVE on prod)
 - **What:** the avatar-settings "take my agent home" panel no longer emits the
   retired npm-plugin install command (dead since the 2026-07-23 sideload

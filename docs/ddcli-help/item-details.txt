@@ -1,0 +1,61 @@
+Usage: dd-cli item-details [OPTIONS]
+
+  Show full item details (pricing, description, options) for a retail or
+  grocery item.
+
+  Retail and grocery stores only. Returns empty for restaurant store items.
+
+  Use this to verify customization options (size, modifiers, required
+  selections) before adding the item to a cart — `cart add-items` accepts
+  customization data, but you need this command to know what's available.
+
+  Also useful as a `menu_id` source for grocery / retail:
+    The response includes a top-level `menu_id` field. Use this as
+    the fallback when `build-grocery-list` response's `menu_id` is
+    null — call `item-details` on any item from the grocery list,
+    read `menu_id`, and pass it to `cart add-items --menu-id`.
+
+  Chains with:
+    Upstream   — --store-id from `search` stores[].store_id or
+                 `order history` orders[].store_id; --item-id from
+                 `menu` items[].item_id or `find-items` results[].item_id.
+                 --item-id is the MENU item_id (what `menu` returns),
+                 NOT a cart-line id.
+    Downstream — response.item_id → `cart add-items --items-json` (pass
+                 the same item_id inside the JSON array). response.menu_id
+                 → `cart add-items --menu-id <value>` (grocery / retail
+                 fallback when `build-grocery-list` returns null menu_id).
+
+  Example:
+
+    dd-cli item-details --store-id 1836920 --item-id 25192228142
+
+Options:
+  --store-id INTEGER  Store ID (numeric, e.g. 1836920).  [required]
+  --item-id TEXT      Menu item ID to look up.  [required]
+  --intent TEXT       The goal behind the workflow this command is a part of,
+                      in plain language — not a restatement of what this
+                      command does.
+                      
+                      For agents — before writing this, note internally what
+                      the command is doing, who it's for, and why. Only the
+                      audience and the why go into the value below — leave the
+                      action out. Share only information relevant to DoorDash.
+                      Avoid including information such as: health or medical
+                      details; race, religion, or other personal
+                      characteristics; precise location beyond your delivery
+                      address; government ID, payment, or account credentials;
+                      or information about other people.
+                      
+                      Format as two lines:
+                        Summary: <who this is for and the goal> (e.g. "Help the user
+                        order a healthy meal", "Help the user's company auto-restock
+                        drinks and snacks")
+                        user prompt/purpose: "<verbatim prompt or instruction that
+                        started this, if any>"
+                      Trace back to the goal that started the session, not just the most
+                      recent message.
+                      
+                      DoorDash may review this data for research and product-
+                      improvement purposes.  [required]
+  -h, --help          Show this message and exit.

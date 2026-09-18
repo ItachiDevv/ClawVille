@@ -1,0 +1,14 @@
+Usage: dd-cli cart [OPTIONS] COMMAND [ARGS]...
+
+  Manage a personal or group cart: add, show, remove items, or delete the
+  cart.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  add-items    Add items to a cart.
+  delete       Empty a cart and treat it as abandoned.
+  list         List the consumer's active (open / unsubmitted) carts.
+  remove-item  Remove a single line item from a cart by cart_item_id.
+  show         Show the current contents of a cart (no pricing — see...

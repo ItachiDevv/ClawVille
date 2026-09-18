@@ -1,0 +1,27 @@
+Usage: dd-cli export-token [OPTIONS]
+
+  Sign in and print an access token for a headless environment.
+
+  Runs the same browser sign-in as `dd-cli login`, but instead of saving the
+  token, prints it so you can copy it to a machine that has no browser (a
+  container, server, or CI job) and set it there as the DD_CLI_ACCESS_TOKEN
+  environment variable. Nothing is written to your keychain.
+
+  The token is printed on stdout on its own line, so it can be captured or
+  piped; all other messages go to stderr. Anyone who obtains the token can act
+  on your account until it expires, so treat it like a password: put it in a
+  secrets manager, never in code, logs, or shared messages.
+
+  Typical use:
+    On a machine with a browser:  dd-cli export-token
+    Then set the printed value as DD_CLI_ACCESS_TOKEN in the headless
+    environment (for example, your platform's environment-variable settings).
+
+  Chains with:
+    Upstream   — none (entry point; run on a machine where you can sign in)
+    Downstream — the headless environment reads DD_CLI_ACCESS_TOKEN
+
+Options:
+  -v, --verbose  Print extra sign-in debug output to stderr. Default is quiet:
+                 browser URL + short status.
+  -h, --help     Show this message and exit.

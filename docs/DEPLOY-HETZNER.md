@@ -130,6 +130,23 @@ This creates:
 - Your SSH key in Hetzner
 - A `clawville-prod` CCX13 server in Ashburn
 
+> **⚠️ NAME THE SERVER FOR THE ENV YOU ARE ACTUALLY BUILDING (added 2026-09-17 after a real incident).**
+> This walkthrough hardcodes the name `clawville-prod`, and **Ashburn is where STAGING lives** (prod is
+> Hillsboro). The staging box was provisioned this way on 2026-04-10 and therefore carried the hostname
+> `clawville-prod` for 160 days: Hetzner's metadata service serves the console name, and cloud-init shipped
+> with `preserve_hostname: false`, so every boot re-stamped it. Anyone who SSH'd in and trusted `hostname`
+> would have believed they were on production.
+>
+> It was cosmetic — the two boxes always had separate Supabase projects and correct `CLAWVILLE_ENV` values —
+> but it was a catastrophic-class trap sitting on a box with custodial wallets one IP away. When provisioning,
+> pass the real name (`clawville-staging` for Ashburn), and on first boot set `preserve_hostname: true` in
+> `/etc/cloud/cloud.cfg` before `hostnamectl set-hostname <name>`, or cloud-init reverts it.
+>
+> **`hostname` is NEVER the environment discriminator.** Use, in order: `CLAWVILLE_ENV` inside the container ·
+> the Supabase project ref in `DATABASE_URL` (staging `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`) ·
+> the container prefixes (staging web `ju0n…` api `yvtwz…`). Both boxes now print a `/etc/update-motd.d/00-clawville-env`
+> banner on login stating which env they are.
+
 The script prints the server's IPv4 when it's done. Write it down — you'll use it in the next two steps. (You can also fetch it later with `hcloud server ip clawville-prod`.)
 
 ## Step 3 — Create Cloudflare DNS records

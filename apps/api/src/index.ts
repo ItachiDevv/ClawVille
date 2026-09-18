@@ -103,6 +103,7 @@ import { partnerCovenantRoutes } from './routes/partner-covenant';
 import { partnerStorefrontRoutes } from './routes/partner-storefront';
 import { agentRegistrationRoutes } from './routes/agent-registration';
 import { adminIdentityRoutes } from './routes/admin-identity';
+import { doordashRoutes } from './routes/doordash';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
 import { isTransientDbConnectionError } from './services/transient-db-error';
@@ -500,6 +501,7 @@ app.route('/api/wallet', walletWithdrawRoutes);
 app.route('/api/admin', adminIdentityRoutes);
 app.route('/api/admin/trading', adminTradingRoutes);
 app.route('/api/floor', tradingFloorRoutes);
+app.route('/api/doordash', doordashRoutes);
 
 // Tokenomics F2 — TEST-ONLY mock x402 facilitator. Lets the USDC→vCLAW on-ramp
 // be exercised end-to-end without real funds. It RUBBER-STAMPS every settlement,

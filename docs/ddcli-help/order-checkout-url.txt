@@ -1,0 +1,58 @@
+Usage: dd-cli order checkout-url [OPTIONS]
+
+  Get a browser checkout URL for a cart (browser fallback; not the default
+  finalizer).
+
+  For most orders, `order submit` is the canonical finalizer — it
+  places the order from the CLI on the consumer's default payment
+  method on file.
+  Reach for `order checkout-url` ONLY when the consumer wants an
+  in-browser edit the CLI cannot express today:
+    * change payment method (card brand / last-4)
+    * change delivery address
+    * tweak item quantities without rebuilding the cart
+    * leave a tip in the browser flow
+    * any other checkout edit not covered by `cart` / `order` commands
+
+  Do NOT default to surfacing this URL after `order preview` — ask the
+  consumer whether to submit first, and only fall back here when the consumer
+  asks for a change the CLI can't make.
+
+  Chains with:
+    Upstream   — --cart-uuid from `cart add-items` or `order reorder`
+    Downstream — response checkout_url → open in browser. Cart stays
+                 editable there until the consumer completes checkout.
+
+  Example:
+
+    dd-cli order checkout-url --cart-uuid 0a1b2c3d-...
+
+Options:
+  --cart-uuid TEXT  Cart UUID from `order reorder` or a prior `cart add-items`
+                    call.  [required]
+  --intent TEXT     The goal behind the workflow this command is a part of, in
+                    plain language — not a restatement of what this command
+                    does.
+                    
+                    For agents — before writing this, note internally what the
+                    command is doing, who it's for, and why. Only the audience
+                    and the why go into the value below — leave the action
+                    out. Share only information relevant to DoorDash. Avoid
+                    including information such as: health or medical details;
+                    race, religion, or other personal characteristics; precise
+                    location beyond your delivery address; government ID,
+                    payment, or account credentials; or information about
+                    other people.
+                    
+                    Format as two lines:
+                      Summary: <who this is for and the goal> (e.g. "Help the user
+                      order a healthy meal", "Help the user's company auto-restock
+                      drinks and snacks")
+                      user prompt/purpose: "<verbatim prompt or instruction that
+                      started this, if any>"
+                    Trace back to the goal that started the session, not just the most
+                    recent message.
+                    
+                    DoorDash may review this data for research and product-
+                    improvement purposes.  [required]
+  -h, --help        Show this message and exit.

@@ -1,0 +1,170 @@
+Usage: dd-cli find-nearby-stores [OPTIONS]
+
+  Discover nearby stores within a 16-mile radius, filtered by merchant type.
+
+  Merchant types (`--vertical`):
+    * grocery (default) — grocery + DashMart. Results may extend
+      beyond traditional grocers.
+    * alcohol            — alcohol merchants only.
+    * convenience        — convenience stores.
+    * pets               — pet stores.
+    * retail             — general retail (home goods, beauty, baby,
+                           electronics, office, sporting, home improvement,
+                           books, jewelry, auto). EXCLUDES convenience,
+                           cannabis (regulated), adult (regulated), and
+                           prepared food.
+    * nv                 — Every merchant type EXCEPT restaurants.
+                           New non-restaurant merchant types added
+                           upstream auto-show up here; don't hard-code
+                           today's set in caller logic.
+
+  For restaurants, use `dd-cli search` — this command is the non-restaurant
+  discovery surface.
+
+  Location resolution:
+    If --address-id, --lat, and --lng are all omitted, the call falls
+    back to the consumer's default delivery address (see `dd-cli
+    address list`). Pass both --lat and --lng together to override
+    with explicit coordinates (e.g. searching "near a hotel" before
+    traveling), or pass --address-id to search from a specific saved
+    address instead. --address-id and --lat/--lng are mutually
+    exclusive. Decimal degrees; the 16-mile (25,750 m) radius is
+    fixed — no client override exists.
+
+  Chains with:
+    Upstream   — none (entry point — uses the signed-in consumer's
+                 saved default address unless overridden with
+                 --lat / --lng or --address-id).
+    Downstream — stores[].store_id → `build-grocery-list --store-id
+                 <id>` to build a grocery list at this store;
+                 `menu --store-id <id>` to browse the catalog;
+                 `cart add-items --store-id <id> --menu-id <id>` to
+                 start a cart (get the menu_id from `menu` for
+                 restaurants, or `build-grocery-list` / `item-details`
+                 for grocery / retail); `store-details --store-id
+                 <id>` for business metadata.
+
+  Fields surfaced per store:
+    * store_id              — passes to every downstream store command
+    * name                  — human-readable store name
+    * image_url             — best-effort, may be missing
+    * business_id           — DoorDash internal id (best-effort)
+    * business_vertical_id  — numeric merchant-type ID.
+    * distance_meters       — raw meters (NOT miles). Convert with
+                              meters / 1609 ≈ miles when surfacing to
+                              a consumer.
+    * delivery_time         — best-effort ETA string ("25-35 min")
+
+  --beautify renders only `name`, `store_id`, `distance_meters`,
+  and `delivery_time`. All wire fields above are still available
+  via --json-output.
+
+  Top-level response: `stores[]`, `success`, optional `message`.
+
+  For agents — distance unit:
+    Distance is in METERS. When surfacing to a consumer ("0.6 miles
+    away"), divide by 1609. The `distance_meters` field on the
+    response is the raw value; dd-cli does NOT convert client-side.
+
+  Caveats:
+    * Search radius is fixed at 16 miles. To narrow further, run
+      with --json-output and filter the returned `distance_meters`
+      field client-side.
+    * --max defaults to 10. dd-cli forwards the value you pass
+      verbatim — the actual response may include fewer stores
+      than requested.
+    * `grocery` includes Dollar General — flag to the consumer if
+      that's surprising.
+    * `nv` returns all non-restaurant merchant types — the set
+      will grow as new types come online upstream.
+    * Empty `stores[]` just means no qualifying stores within 16
+      miles for that merchant type.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Examples:
+
+    dd-cli find-nearby-stores
+
+  Filter to alcohol:
+
+    dd-cli find-nearby-stores --vertical alcohol --max 20
+
+  Any non-restaurant store:
+
+    dd-cli find-nearby-stores --vertical nv --max 25
+
+  Override the location (hotel before a trip):
+
+    dd-cli find-nearby-stores --lat 40.7589 --lng -73.9851
+
+  Search from a specific saved address:
+
+    dd-cli find-nearby-stores --address-id abc123-def456
+
+  Human summary:
+
+    dd-cli find-nearby-stores --beautify
+
+  Full structured response:
+
+    dd-cli --json-output find-nearby-stores
+
+Options:
+  --vertical [grocery|alcohol|convenience|pets|retail|nv]
+                                  Merchant-type filter. 'grocery' (default)
+                                  covers grocery + DashMart and may extend
+                                  beyond traditional grocers. 'nv' covers
+                                  every non-restaurant merchant type. Other
+                                  scopes (alcohol, convenience, pets, retail)
+                                  narrow to one merchant type. For
+                                  restaurants, use `dd-cli search`.  [default:
+                                  grocery]
+  --max INTEGER                   Maximum number of stores to return. dd-cli
+                                  forwards verbatim — the response may include
+                                  fewer than requested.  [default: 10]
+  --lat FLOAT                     Optional latitude override (matches the flag
+                                  name on `dd-cli search`). Omit to use the
+                                  consumer's default delivery address. Decimal
+                                  degrees.
+  --lng FLOAT                     Optional longitude override (matches the
+                                  flag name on `dd-cli search`). Omit to use
+                                  the consumer's default delivery address.
+                                  Decimal degrees.
+  --address-id TEXT               Optional saved address id from `dd-cli
+                                  address list` (addresses[].address_id).
+                                  Search from this delivery address instead of
+                                  --lat/--lng or the consumer's default.
+                                  Mutually exclusive with --lat/--lng.
+  --beautify                      Print a short plain-text summary instead of
+                                  JSON (not compatible with --json-output).
+  --intent TEXT                   The goal behind the workflow this command is
+                                  a part of, in plain language — not a
+                                  restatement of what this command does.
+                                  
+                                  For agents — before writing this, note
+                                  internally what the command is doing, who
+                                  it's for, and why. Only the audience and the
+                                  why go into the value below — leave the
+                                  action out. Share only information relevant
+                                  to DoorDash. Avoid including information
+                                  such as: health or medical details; race,
+                                  religion, or other personal characteristics;
+                                  precise location beyond your delivery
+                                  address; government ID, payment, or account
+                                  credentials; or information about other
+                                  people.
+                                  
+                                  Format as two lines:
+                                    Summary: <who this is for and the goal> (e.g. "Help the user
+                                    order a healthy meal", "Help the user's company auto-restock
+                                    drinks and snacks")
+                                    user prompt/purpose: "<verbatim prompt or instruction that
+                                    started this, if any>"
+                                  Trace back to the goal that started the session, not just the most
+                                  recent message.
+                                  
+                                  DoorDash may review this data for research
+                                  and product-improvement purposes.
+                                  [required]
+  -h, --help                      Show this message and exit.

@@ -1,0 +1,243 @@
+Usage: dd-cli order submit [OPTIONS]
+
+  Submit an order. DESTRUCTIVE — charges the consumer's default payment
+  method.
+
+  Canonical finalizer — places the order from the CLI directly and charges the
+  consumer's default payment method on file immediately (card or wallet).
+  After `order preview`, ASK the consumer whether to submit and run this on
+  their explicit yes. `order checkout-url` is the browser fallback for in-
+  browser edits the CLI can't express (e.g. a payment method swap) — do not
+  default to handing the consumer a URL.
+
+  Only call this AFTER `order preview` AND after the consumer has explicitly
+  approved (1) the pricing, (2) the payment method that will be charged (named
+  — brand + last4 — see payment method handling below), and (3) the place-
+  from-CLI path (any clear yes — "submit", "place the order", "go ahead", "do
+  it"). Treat the cart as spent the moment this returns — re-submitting the
+  same cart_uuid creates a duplicate order (no idempotency).
+
+  Tip confirmation with the consumer is required before this command runs —
+  see the tip handling block below for the exact flow.
+
+  Payment method confirmation with the consumer is required before this
+  command runs — see the payment method handling block below for the exact
+  flow.
+
+  Tip handling — when the cart is delivery, always confirm the Dasher tip with
+  the consumer before submit, including when they have not raised the topic.
+  If `order preview` returned a suggested amount, use it as the starting point
+  ("the suggested Dasher tip is $X — want to go with that, a different amount,
+  or skip?"). If it returned no suggestion (empty `tips_suggestion_details`),
+  ask without a number ("would you like to add a tip for the Dasher?") and let
+  the consumer name an amount or decline. Pass their explicit confirmed value
+  as `--tip-cents` (CENTS, not dollars — 500 = $5.00). `--tip-cents 0` is
+  valid only on an explicit decline; not on silence. Tip disclosure is
+  required by regulation in many US markets.
+
+  `--tip-cents` is the Dasher tip in CENTS — it does not route to the
+  merchant. Pickup carts have no Dasher; submit with `--tip-cents 0` and point
+  the consumer to the DoorDash app if they want to leave a merchant tip.
+
+  Payment method handling — always confirm with the consumer which payment
+  method will be charged before submit. When the default resolves to a card,
+  surface its brand + last4 from `payment-method list` (the default is the
+  `cards[]` entry whose `payment_method_id` matches the top-level
+  `default_payment_method_id`) and get an explicit yes that NAMES the card —
+  e.g. "I'll place this on your Visa ending 3626 — sound good?". Submit
+  charges the consumer's default payment method silently if you skip this
+  check; the consumer cannot see from the command output which method was
+  used. If the consumer wants a different card, route them to `order checkout-
+  url` to swap in the browser — the CLI cannot change the default payment
+  method today.
+
+  Degraded paths — when you can't name the default's brand + last4,
+  suggest `order checkout-url` FIRST; never block submit if the
+  consumer insists:
+  
+    * `default_payment_method_id` doesn't resolve to any entry in
+      `cards[]` (rare; legacy accounts), or `cards[]` is empty —
+      wallets (Apple Pay, Google Pay, PayPal) and gift cards aren't
+      surfaced in `cards[]`, so the actual account default might be
+      a wallet you can't see. Lead with `order checkout-url` so the
+      consumer confirms the default in the browser. If the consumer
+      insists on submitting anyway, run submit on their explicit
+      yes — but do NOT promise "your card on file will be charged";
+      say "DoorDash will charge whatever default you have on file
+      (card or wallet)" if you must phrase a generic confirmation.
+      Submit may fail or behave differently on a wallet default.
+      Do NOT conclude "no payment method" from an empty `cards[]`.
+  
+    * `payment-method list` itself errors out (any call failure, not
+      just a missing default) → same shape: lead with `order
+      checkout-url` so the consumer sees the actual default in the
+      browser. If the consumer insists on submitting from the CLI,
+      run submit on their explicit yes with the same generic
+      wallet-aware phrasing above; never claim a specific card will
+      be charged. Don't loop on payment-method list in silence —
+      surface the choice on the first failure.
+
+  The work-benefits path (`--team-id` + `--budget-id`) charges the corporate
+  budget instead of the default payment method; when those flags are present,
+  the confirmation question should name the budget by `name` +
+  `remaining_amount.display_string` instead of a card.
+
+  Credits (opt-out):
+    Credits apply by default. Pass --no-apply-credits ONLY when the
+    consumer explicitly opted out, and it MUST match what you passed
+    to `order preview` so the charged total matches the quoted amount.
+    Dropping the flag here after a --no-apply-credits preview silently
+    re-applies credits and charges a different total.
+
+  Work-benefits (Company Payment) submit flags:
+    --team-id and --budget-id are required together to apply work benefits.
+    Read --team-id from the final preview's
+    `quote.company_payment_info.team_order_info.team_id` (top-level on
+    quote). Read --budget-id from the picked entry's `id` in
+    `quote.expense_order_options.all_eligible_expense_order_budgets[]`.
+
+    Optional: --team-account-id (from the budget entry's `team_account_id`
+    when present), --expense-code (when the picked budget's
+    `expense_code_mode != "NONE"`), --expense-notes (when
+    `is_expense_note_required` is true).
+
+    Omit ALL of these for the default consumer flow — the order goes on   the
+    consumer's default payment method. The picking decision (which   budget)
+    lives with the caller; `order preview --include-work-benefits`   returns
+    the eligible budgets, but neither preview nor submit picks   one for you.
+
+  Chains with:
+    Upstream   — --cart-uuid from `cart add-items` or `order reorder`.
+                 Run `order preview` first to show pricing; if the consumer
+                 wants to change payment or dispatch, or do any
+                 in-browser tweaks, route them to `order checkout-url`
+                 instead of submitting from the CLI.
+    Downstream — response order_uuid → visible in `order history` once it
+                 refreshes. After submit, surface `order checkout-url` for
+                 the same cart only if the consumer needs to view the
+                 completed order in the browser; do NOT re-submit.
+
+  Gotchas:
+    * --tip-cents is CENTS, not dollars (500 = $5.00; 5 = $0.05).
+      Defaults to 0, but consumer tip confirmation is required before
+      this command runs — see tip handling above.
+    * 30-second timeout, no auto-retry — verify in `order history` before
+      attempting again.
+    * --scheduled-time has the same UTC-suffix caveat as `order preview`.
+      Pass the SAME value here that you passed to `preview` — preview
+      pricing only holds for the slot it was computed for.
+    * --fulfillment is optional. Omit it to use the cart's mode (set by
+      `cart add-items` or flipped by `order preview`); only pass it
+      explicitly when you need it to match the value you passed to
+      preview. Submitting with a DIFFERENT mode than preview re-prices
+      server-side and may fail (preview pricing only holds for the
+      mode it was computed for).
+    * Non-TTY callers (agents, scripts) MUST pass `--yes` — without it the
+      interactive `Proceed?` confirmation will hang the call.
+
+  For agents — confirm the order actually went through:
+    A successful return here means the order was accepted into processing,
+    not that it is created successfully and paid — payment, persistence,
+    and (once placed) delivery/pickup progress are all still ahead. Poll
+    `order status --order-uuid <order_uuid>` (using the returned
+    order_uuid) to track all of this: first whether payment succeeded and
+    the order was persisted in DoorDash's systems, then, once placed, its
+    delivery or pickup progress. Poll every 15 seconds until the order is
+    placed; once placed, further polls can slow to every 15 minutes.
+    Don't report the order as confirmed while still polling for placement.
+
+  For agents — restricted-item fallback:
+    If `order submit` returns `error_reason=AGENTIC_RESTRICTED_ITEM_NOT_ALLOWED`
+    (or a message such as "This order contains age-restricted items and must
+    be completed in app or through the website"), tell the consumer their
+    cart contains restricted items and agentic end-to-end checkout isn't
+    currently available, then fall back to `order checkout-url` with the same
+    cart_uuid to finish in the browser or the DoorDash app.
+
+  Example:
+
+    dd-cli order submit --cart-uuid 0a1b2c3d-...
+
+  Scripted (skip confirmation):
+
+    dd-cli order submit --cart-uuid 0a1b2c3d-... --yes
+
+Options:
+  --cart-uuid TEXT                Cart UUID from `order reorder` or a prior
+                                  `cart add-items` call.  [required]
+  --tip-cents INTEGER             Dasher tip in CENTS (not dollars). Default 0
+                                  (no tip). Pass an explicit value when the
+                                  consumer has specified one. --tip-cents 5 is
+                                  $0.05, not $5.  [default: 0]
+  --scheduled-time TEXT           ISO 8601 scheduled delivery time. Use a UTC
+                                  suffix (e.g. '2026-04-21T18:00:00Z'). Omit
+                                  for ASAP.
+  --fulfillment [delivery|pickup]
+                                  Fulfillment mode for the order. Optional —
+                                  omit to use the cart's mode (set by `cart
+                                  add-items` or flipped by `order preview`).
+                                  If passed, MUST match the value passed to
+                                  preview; preview pricing only applies to the
+                                  mode it was computed for.
+  --priority                      Request Priority (express) delivery: a
+                                  faster, paid delivery upgrade. Delivery
+                                  only; not valid with --fulfillment pickup or
+                                  --scheduled-time. MUST match what was passed
+                                  to `order preview` so the charged total
+                                  matches the quoted amount.
+  --team-id TEXT                  Work-benefits team ID. Required together
+                                  with --budget-id to apply work benefits.
+                                  Read from the final preview's `quote.company
+                                  _payment_info.team_order_info.team_id`.
+  --budget-id TEXT                Work-benefits budget ID. Required together
+                                  with --team-id. Read from the picked entry's
+                                  `id` in `quote.expense_order_options.all_eli
+                                  gible_expense_order_budgets[]`.
+  --team-account-id TEXT          Work-benefits team account ID. Optional.
+                                  Read from the picked budget entry's
+                                  `team_account_id` when present.
+  --expense-code TEXT             Expense code for work-benefits orders.
+                                  Required when the picked budget's
+                                  `expense_code_mode != "NONE"`.
+  --expense-notes TEXT            Expense notes for work-benefits orders.
+                                  Required when the picked budget's
+                                  `is_expense_note_required` is true.
+  --no-apply-credits              Opt out of applying the consumer's DoorDash
+                                  credits to the order. Credits apply by
+                                  default; pass this ONLY when the consumer
+                                  explicitly asks not to use their credits.
+                                  MUST match what was passed to `order
+                                  preview` so the charged total matches the
+                                  quoted amount.
+  -y, --yes                       Skip interactive confirmation (for
+                                  scripting).
+  --intent TEXT                   The goal behind the workflow this command is
+                                  a part of, in plain language — not a
+                                  restatement of what this command does.
+                                  
+                                  For agents — before writing this, note
+                                  internally what the command is doing, who
+                                  it's for, and why. Only the audience and the
+                                  why go into the value below — leave the
+                                  action out. Share only information relevant
+                                  to DoorDash. Avoid including information
+                                  such as: health or medical details; race,
+                                  religion, or other personal characteristics;
+                                  precise location beyond your delivery
+                                  address; government ID, payment, or account
+                                  credentials; or information about other
+                                  people.
+                                  
+                                  Format as two lines:
+                                    Summary: <who this is for and the goal> (e.g. "Help the user
+                                    order a healthy meal", "Help the user's company auto-restock
+                                    drinks and snacks")
+                                    user prompt/purpose: "<verbatim prompt or instruction that
+                                    started this, if any>"
+                                  Trace back to the goal that started the session, not just the most
+                                  recent message.
+                                  
+                                  DoorDash may review this data for research
+                                  and product-improvement purposes.
+                                  [required]
+  -h, --help                      Show this message and exit.

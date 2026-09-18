@@ -1,0 +1,76 @@
+Usage: dd-cli address add [OPTIONS]
+
+  Save a confirmed address and make it the account's default delivery address.
+
+  SIDE EFFECT — read before calling:
+    This creates a NEW saved address AND sets it as the ACCOUNT-WIDE default
+    delivery address (like `address set`), not just for the active cart. It
+    persists across the DoorDash app, web, and every future CLI command.
+    Confirm the exact address with the consumer before invoking.
+
+  Before adding, check `address list`:
+    If the address is already saved, use `address set --address-id <existing>`
+    instead — `address add` does not dedupe and would create a duplicate.
+
+  Chains with:
+    Upstream   — --place-id from a `address find` candidate the consumer
+                 explicitly confirmed.
+    Downstream — none (terminal write); the new address becomes the default.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Non-TTY callers (agents, scripts) MUST pass `--yes` — and only after the
+  consumer explicitly confirms the exact address — otherwise the interactive
+  `Proceed?` confirmation will hang the call.
+
+  Example:
+
+    dd-cli address add --place-id mapbox:abc123
+
+  Scripted (skip confirmation, only after the consumer confirmed):
+
+    dd-cli address add --place-id mapbox:abc123 --yes
+
+Options:
+  --place-id TEXT               place_id of the confirmed candidate from `dd-
+                                cli address find`.  [required]
+  --description TEXT            Optional: the candidate's human-readable
+                                address text from `dd-cli address find`. Shown
+                                in the confirmation prompt so the exact
+                                address is visible before saving.
+  --address-type TEXT           Optional: house, apartment, hotel, office, or
+                                other.
+  --subpremise TEXT             Optional: apartment, suite, unit, or floor
+                                number.
+  --delivery-instructions TEXT  Optional: Dasher-facing delivery instructions
+                                to save with the address.
+  -y, --yes                     Skip interactive confirmation (for scripting /
+                                agent calls).
+  --intent TEXT                 The goal behind the workflow this command is a
+                                part of, in plain language — not a restatement
+                                of what this command does.
+                                
+                                For agents — before writing this, note
+                                internally what the command is doing, who it's
+                                for, and why. Only the audience and the why go
+                                into the value below — leave the action out.
+                                Share only information relevant to DoorDash.
+                                Avoid including information such as: health or
+                                medical details; race, religion, or other
+                                personal characteristics; precise location
+                                beyond your delivery address; government ID,
+                                payment, or account credentials; or
+                                information about other people.
+                                
+                                Format as two lines:
+                                  Summary: <who this is for and the goal> (e.g. "Help the user
+                                  order a healthy meal", "Help the user's company auto-restock
+                                  drinks and snacks")
+                                  user prompt/purpose: "<verbatim prompt or instruction that
+                                  started this, if any>"
+                                Trace back to the goal that started the session, not just the most
+                                recent message.
+                                
+                                DoorDash may review this data for research and
+                                product-improvement purposes.  [required]
+  -h, --help                    Show this message and exit.

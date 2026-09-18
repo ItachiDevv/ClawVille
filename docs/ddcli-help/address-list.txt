@@ -1,0 +1,97 @@
+Usage: dd-cli address list [OPTIONS]
+
+  List the consumer's saved delivery addresses.
+
+  Chains with:
+    Upstream   — none (entry point — uses the signed-in consumer)
+    Downstream — addresses[].address_id → `address set --address-id <id>`
+
+  Fields surfaced per address:
+    * address_id           — pass to `address set` to make this the default
+    * printable_address    — human-readable street + city + state
+    * label                — consumer-set label (Home, Work, Mom's, ...);
+                             see "For agents" below
+    * is_default           — best-effort flag; see caveat below
+
+  For agents — when the consumer references an address by name:
+    Resolve via `addresses[].label` (case-insensitive, partial match
+    OK). Examples:
+      * "deliver to my work address"   → label≈"Work"
+      * "send it home"                 → label≈"Home"
+      * "ship to mom's"                → label≈"Mom's"
+    Use the matched entry's `address_id` for `address set` (or pass
+    the matched address downstream). If no label matches, fall back
+    to `printable_address` (street/city) for the match. If still
+    ambiguous or nothing fits, list the consumer's labeled addresses
+    and ask which one. Don't guess.
+
+  For agents — sparsity of labels:
+    Most addresses have label=null. Only a small consumer-named
+    subset (typically "Home", "Work", a hotel, ...) carries one.
+    When the consumer asks "where do I have saved?" / "where do
+    I usually deliver?", surface the LABELED set as the answer —
+    not the full historical list.
+
+  For agents — cross-command chain:
+    `address list` → match label → `address set --address-id <id>`
+    is the canonical path when the consumer wants future orders
+    delivered there. `address set` is account-wide and persists
+    across CLI/app/web until changed (see `address set --help`);
+    confirm with the consumer before flipping. Downstream commands
+    (`search`, `cart add-items`, `order preview`, `order submit`)
+    all consume the account-wide default — there is no per-cart
+    address override today.
+
+  For agents — display tip:
+    `--beautify` renders three sections (Default, Labeled, Other).
+    Mirror that grouping when summarizing to the consumer — lead
+    with the labeled set.
+
+  Caveats:
+    * `is_default` is a best-effort signal sourced from the consumer
+      profile service. It usually reports the right address as default,
+      but the upstream resolution can occasionally return `false` for
+      every entry even when a default exists. If `--beautify` shows no
+      default block, the underlying data didn't carry one.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Examples:
+
+    dd-cli address list
+
+  Human summary:
+
+    dd-cli address list --beautify
+
+  Full structured response:
+
+    dd-cli --json-output address list
+
+Options:
+  --beautify     Print a short plain-text summary instead of JSON (not
+                 compatible with --json-output).
+  --intent TEXT  The goal behind the workflow this command is a part of, in
+                 plain language — not a restatement of what this command does.
+                 
+                 For agents — before writing this, note internally what the
+                 command is doing, who it's for, and why. Only the audience
+                 and the why go into the value below — leave the action out.
+                 Share only information relevant to DoorDash. Avoid including
+                 information such as: health or medical details; race,
+                 religion, or other personal characteristics; precise location
+                 beyond your delivery address; government ID, payment, or
+                 account credentials; or information about other people.
+                 
+                 Format as two lines:
+                   Summary: <who this is for and the goal> (e.g. "Help the user
+                   order a healthy meal", "Help the user's company auto-restock
+                   drinks and snacks")
+                   user prompt/purpose: "<verbatim prompt or instruction that
+                   started this, if any>"
+                 Trace back to the goal that started the session, not just the most
+                 recent message.
+                 
+                 DoorDash may review this data for research and product-
+                 improvement purposes.  [required]
+  -h, --help     Show this message and exit.

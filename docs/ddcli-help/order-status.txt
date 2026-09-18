@@ -1,0 +1,102 @@
+Usage: dd-cli order status [OPTIONS]
+
+  Check the status of a submitted order, from processing through delivery or
+  pickup.
+
+  `order submit` accepts an order into processing and returns an order UUID,
+  but that acceptance is not the same as the order being created successfully
+  — payment and verification can still be in progress. Poll this with that
+  UUID to track the order end-to-end: first whether it clears processing and
+  is placed, then its delivery or pickup progress, until a terminal status is
+  reached.
+
+  Status values:
+    * pending — still processing. Check again after a short wait, a bounded
+      number of times; do not poll indefinitely.
+    * action_required — the order needs a verification step the consumer
+      completes in the DoorDash app or on the website. Stop checking and
+      point them to the order's tracking page (or `order checkout-url` for
+      the same cart). Terminal.
+    * order_declined — the order did not go through. Direct the consumer to
+      review or complete it in the app. Terminal.
+    * placed — the order cleared processing and is created successfully.
+    * scheduled, store_confirmed, ready_for_pickup, dasher_assigned,
+      dasher_at_store, picked_up, dasher_nearby — delivery or pickup is in
+      progress. Keep checking for the next update.
+    * completed — the order has been delivered or picked up. Terminal.
+    * cancelled — the order was cancelled after being placed. Terminal.
+    * No status shown (order not found) — no order is available with the
+      provided UUID. Terminal.
+
+  `--json-output` returns the full response (the authoritative source);
+  `--beautify` prints a short human summary. Read-only.
+
+  Chains with:
+    Upstream   — --order-uuid from the `order submit` response, or from
+                 `order history` orders[].order_uuid.
+    Downstream — none. Read-only status check; it does not create or change
+                 a cart. On `action_required` or `order_declined`, hand the
+                 consumer `order checkout-url` for the same cart (or point
+                 them to the DoorDash app) rather than re-submitting.
+
+  For agents — confirm before telling the consumer an order is created successfully:
+    After `order submit`, do not report the order as confirmed on the submit
+    response alone. Poll `order status --order-uuid <uuid>` until the status
+    is no longer `pending`. Report the order as created successfully once
+    the status reaches `placed` or any later delivery/pickup stage. On
+    `action_required`, tell the consumer they need to finish a verification
+    step in the app or on the website. On `order_declined`, tell them it did
+    not go through and offer `order checkout-url`. Treat `action_required`,
+    `order_declined`, `completed`, `cancelled`, and order-not-found as
+    terminal; keep polling on `pending` or any in-progress delivery/pickup
+    stage.
+
+  Gotchas:
+    * One call is one status check — this does not block or loop. While the
+      status is `pending` or an in-progress delivery/pickup stage, the
+      caller owns the retry loop, the wait between checks, and the attempt
+      cap.
+
+  Examples:
+
+    dd-cli order status --order-uuid 0a1b2c3d-...
+
+  Human summary:
+
+    dd-cli order status --order-uuid 0a1b2c3d-... --beautify
+
+  Full JSON payload:
+
+    dd-cli --json-output order status --order-uuid 0a1b2c3d-...
+
+Options:
+  --order-uuid TEXT  Order UUID to check — from the `order submit` response or
+                     `order history` orders[].order_uuid.  [required]
+  --beautify         Print a short plain-text summary instead of JSON (not
+                     compatible with --json-output).
+  --intent TEXT      The goal behind the workflow this command is a part of,
+                     in plain language — not a restatement of what this
+                     command does.
+                     
+                     For agents — before writing this, note internally what
+                     the command is doing, who it's for, and why. Only the
+                     audience and the why go into the value below — leave the
+                     action out. Share only information relevant to DoorDash.
+                     Avoid including information such as: health or medical
+                     details; race, religion, or other personal
+                     characteristics; precise location beyond your delivery
+                     address; government ID, payment, or account credentials;
+                     or information about other people.
+                     
+                     Format as two lines:
+                       Summary: <who this is for and the goal> (e.g. "Help the user
+                       order a healthy meal", "Help the user's company auto-restock
+                       drinks and snacks")
+                       user prompt/purpose: "<verbatim prompt or instruction that
+                       started this, if any>"
+                     Trace back to the goal that started the session, not just the most
+                     recent message.
+                     
+                     DoorDash may review this data for research and product-
+                     improvement purposes.  [required]
+  -h, --help         Show this message and exit.

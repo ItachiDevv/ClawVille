@@ -1,0 +1,84 @@
+Usage: dd-cli menu [OPTIONS]
+
+  Show menu for a restaurant.
+
+  Useful for surfacing alternate items to the consumer after `order reorder`
+  drops something — pull the menu and offer comparable swaps before they
+  decide whether to proceed.
+
+  Chains with:
+    Upstream   — --store-id from `search` stores[].store_id, or
+                 `order history` orders[].store_id; --address-id from
+                 `address list` addresses[].address_id
+    Downstream — response.menu_id + items[].item_id →
+                 `restaurant-item-details --menu-id --item-id` (restaurants);
+                 items[].item_id → `item-details --item-id` (retail/grocery)
+                 to verify customizations; `cart add-items --menu-id
+                 --items-json` (pass response.menu_id plus the same
+                 item_id inside the JSON array)
+
+  Fields surfaced:
+    * promotions[]                    — this store's active, cart-independent
+                                        deals (title, description, code)
+    * items[].applicable_promotion_ids — codes (matching promotions[].code)
+                                        of deals this specific item qualifies
+                                        for; empty does not mean "no
+                                        discount" — a subtotal-wide deal in
+                                        promotions[] can still apply
+
+  For agents — `is_popular` / `popularity_rank`:
+    Please do not use `is_popular` or `popularity_rank` to make
+    any decision right now. If the consumer asks about popularity
+    or best-sellers, tell them you don't have that data for this
+    store right now.
+
+  For agents — no widget in a terminal:
+    Run with `--json-output` to access the structured response
+    fields.
+    Ignore `widget_type` / `assistant_instructions` and any
+    "the widget above" / "interactive widget" text. Respond from
+    the structured data only.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Example:
+
+    dd-cli menu --store-id 928163
+
+  With a specific delivery address for promo eligibility:
+
+    dd-cli menu --store-id 928163 --address-id abc123-def456
+
+Options:
+  --store-id TEXT    Store ID (numeric, e.g. 928163).  [required]
+  --address-id TEXT  Optional saved address id from `dd-cli address list`
+                     (addresses[].address_id). Names which delivery address to
+                     use when checking promotion eligibility for this store,
+                     since eligibility can depend on delivery location. Omit
+                     to use the signed-in consumer's default saved address.
+  --intent TEXT      The goal behind the workflow this command is a part of,
+                     in plain language — not a restatement of what this
+                     command does.
+                     
+                     For agents — before writing this, note internally what
+                     the command is doing, who it's for, and why. Only the
+                     audience and the why go into the value below — leave the
+                     action out. Share only information relevant to DoorDash.
+                     Avoid including information such as: health or medical
+                     details; race, religion, or other personal
+                     characteristics; precise location beyond your delivery
+                     address; government ID, payment, or account credentials;
+                     or information about other people.
+                     
+                     Format as two lines:
+                       Summary: <who this is for and the goal> (e.g. "Help the user
+                       order a healthy meal", "Help the user's company auto-restock
+                       drinks and snacks")
+                       user prompt/purpose: "<verbatim prompt or instruction that
+                       started this, if any>"
+                     Trace back to the goal that started the session, not just the most
+                     recent message.
+                     
+                     DoorDash may review this data for research and product-
+                     improvement purposes.  [required]
+  -h, --help         Show this message and exit.

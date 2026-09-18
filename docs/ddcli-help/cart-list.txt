@@ -1,0 +1,107 @@
+Usage: dd-cli cart list [OPTIONS]
+
+  List the consumer's active (open / unsubmitted) carts.
+
+  Chains with:
+    Upstream   — none (entry point — uses the signed-in consumer)
+    Downstream — carts[].cart_uuid feeds:
+                  * `cart show --cart-uuid <id>` to inspect items
+                  * `order preview --cart-uuid <id>` to see fees
+                  * `order submit --cart-uuid <id> --yes` to place
+                  * `order checkout-url --cart-uuid <id>` for the browser fallback
+
+  Fields surfaced per cart:
+    * cart_uuid       — id used by every downstream cart/order command
+    * store_id        — numeric store id (also accepted by `--store-id`)
+    * store_name      — human-readable store
+    * items           — line items with name, quantity, price (USD)
+    * items_count     — total line count
+    * created_at      — epoch-ms int (may be None for older carts)
+    * updated_at      — epoch-ms int (may be None for older carts)
+
+  For agents — recovery / enumeration role:
+    This is the recovery primitive. Call it when the consumer asks
+    "what's in my cart?" / "what's pending?" / "do I have anything
+    saved?", or when prior cart_uuid context has been lost. For
+    submitted past orders, see `order history` instead.
+
+  For agents — collision check before search / reorder / add-items:
+    A consumer can only have ONE open cart per store. Before
+    running `search`, `order reorder`, or `cart add-items`, call
+    `dd-cli cart list` (or `--store-id <id>` for the target
+    store) and check for an existing cart there. If there is
+    one, surface it and ask: extend it (`cart add-items
+    --cart-uuid <existing>`) or replace it (`cart delete` the
+    old one, then start fresh)? Don't silently add items to a
+    cart they may have forgotten about.
+
+  For agents — using timestamps for staleness:
+    `created_at` and `updated_at` are int64 epoch milliseconds
+    (13-digit integers like 1762963200000) — NOT seconds, NOT
+    ISO strings. Convert from epoch-ms before surfacing a cart's
+    age to the consumer ("cart from 2 hours ago", "started
+    yesterday"). When both are present, prefer `updated_at` as
+    the freshness signal (last item add/change); `created_at`
+    is when the cart originated. Either may be `None` for carts
+    predating the timestamp rollout — treat `None` as "age
+    unknown" rather than defaulting to 1970 or "very old."
+
+  Caveats:
+    * Returns ACTIVE carts only — submitted/closed orders don't
+      appear here. If a recent order is missing, it likely already
+      submitted.
+    * `image_url` may appear absent in items — do not rely on it
+      for display.
+    * If the consumer has built up many open carts, only the most
+      recent ones come back here.
+    * Does not include `group_cart_url` — call `cart show --cart-uuid
+      <id>` on a specific cart for that.
+
+  Auth: needs sign-in. Run `dd-cli login` first.
+
+  Examples:
+
+    dd-cli cart list
+
+  Human summary:
+
+    dd-cli cart list --beautify
+
+  Filter by store:
+
+    dd-cli cart list --store-id 928163
+
+  Full structured response:
+
+    dd-cli --json-output cart list
+
+Options:
+  --store-id TEXT  Optional: filter to carts at one store (numeric store id).
+  --beautify       Print a short plain-text summary instead of JSON (not
+                   compatible with --json-output).
+  --intent TEXT    The goal behind the workflow this command is a part of, in
+                   plain language — not a restatement of what this command
+                   does.
+                   
+                   For agents — before writing this, note internally what the
+                   command is doing, who it's for, and why. Only the audience
+                   and the why go into the value below — leave the action out.
+                   Share only information relevant to DoorDash. Avoid
+                   including information such as: health or medical details;
+                   race, religion, or other personal characteristics; precise
+                   location beyond your delivery address; government ID,
+                   payment, or account credentials; or information about other
+                   people.
+                   
+                   Format as two lines:
+                     Summary: <who this is for and the goal> (e.g. "Help the user
+                     order a healthy meal", "Help the user's company auto-restock
+                     drinks and snacks")
+                     user prompt/purpose: "<verbatim prompt or instruction that
+                     started this, if any>"
+                   Trace back to the goal that started the session, not just the most
+                   recent message.
+                   
+                   DoorDash may review this data for research and product-
+                   improvement purposes.  [required]
+  -h, --help       Show this message and exit.
