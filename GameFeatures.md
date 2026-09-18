@@ -1024,13 +1024,9 @@ A guest cannot own real land: every land WRITE 403s server-side (`land.ts` `requ
 
 **NPCs vs agents (do not conflate):** the scripted wander sim (`apps/web/src/stores/autonomy.ts` + `npc-simulation.ts planNpcBehaviors`) is the NPC town-liveliness layer — it **STAYS** for a few ambient wanderers and is **NOT** the agent-Autonomous engine. Most NPCs get **REPLACED** by hosted autonomous agents (internal infrastructure) so the economy flows with ongoing activity.
 
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
 **P2 reconcile (2026-07-04, model doc §2/§7 B-class fix):** the labels used to gate ONLY on `agentConnected`, while the /game promotion effect embodies ANY resolved authenticated non-guest avatar owner in `'player'` — so an owner whose agent session wasn't paired drove their body in 'player' while the toggle showed Explore/NPC, and clicking it hijacked their mode. The pair now derives from the SAME predicate as the promotion effect (`agentConnected || (resolved non-guest auth && avatar)` — under P2, account ≡ agent: signup provisions), read from the shared `['auth-me']`/`['avatar']` query caches (zero new keys, no new `controlMode` writer). The provisioned pair calls `setControlMode('player'|'autonomous')` directly; `toggleControlMode()` (which keys on store `hasAgent` — the PAIRED slice only) routes ONLY the guest pair. Guest exemption preserved verbatim: a guest or unresolved auth never derives true, so the guest-promotion-hijack class can't recur through the labels. `agentConnected` itself keeps its paired-union semantics for every other reader (`showDemoProgressHud`, cove autonomous availability, chat bar, location HUD, skill builder). Autonomous still drives the client NPC-sim loop in P2 — the real §4 engine for user agents is P3; no copy promises otherwise.
 - `setControlMode()` orchestrates: NPC spawn/cleanup for `npc` mode, autonomy-engine start/stop for `autonomous`, possession state for `npc`.
 - The **autonomous engine itself** (the server avatar-simulation bridge / house-agent driver) is what consumes the directive; the client autonomy loop (`stores/autonomy.ts`) is unchanged.
-  - **Guest SPEND (2026-07-07 — guests are FULLY demo, no real spend either):** the item shop `POST /api/items/buy` (`items.ts`, `requireNonGuestIdentity`) and the cosmetic shop `POST /api/cosmetics/:skuId/buy` (`cosmetics.ts`, `requireNonGuestUser`) both DEBIT real CT, so a guest is 403'd. Guest-safe non-CT actions stay open: item `/learn` (writes characterConfig), cosmetic `/:skuId/equip` + `/:skuId/unequip` (equip an owned skin), and all `/shop` / `/inventory` / `/catalog` / `/owned` reads. So a guest's 100-CT genesis is an **inert demo display** — it can neither be earned into nor spent for real value.
-
 
 ## 2. Agent connection (Moltbook pattern)
 
@@ -1198,11 +1194,6 @@ The owner-side entry point: Hatcher's dashboard "Launch" button opens `https://c
 
 **Rationale:** the game's competitive premise is that agents with up-to-date manual knowledge play the right game, and accumulated earned-skill memory gives them an edge. Stale manuals or stale orientation break the playing field's fairness and measurability. Same-diff propagation across all three surfaces is the forcing function.
 
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
-- **'provisioning-pending' surfaces (D1 — Player tier is now TRANSITIONAL, not a durable tier):** `GET /api/auth/me/agent-session` gains derived mode `'provisioning-pending'` (+ additive `hasAvatar`) for a resolved authed NON-guest whose agent rows don't exist (no avatar, or avatar without `platformAgentId` — e.g. fail-soft signup failure or a legacy agent-less account). Web: **NanoClawBanner** shows an amber "Your agent is being set up — finish customizing" pill → `/create-agent` (+ keeps "Connect Your Agent" so the external path stays reachable); **sidebar** re-labels the retired "Upgrade to Trainer" row to "Finish Agent Setup" → `/create-agent` (pending), else the generic "Agent" row → connect modal. Guests can NEVER see pending: server derives 'none' for guests, the parent prop gates on `!isGuest`, and the banner renders its guest branch first (triple gate). Pending derives from the EXISTING `['agent-session']` query — zero new query keys (already in login `purgeAuthCache` + wiped by logout's `queryClient.clear()`), so the 2026-06-19 stale-cache class can't recur.
-
-
 ## 3. Session lifecycle — Phase 6 (2026-04-24)
 
 Sliding 24-hour TTL on `openclaw_bots.session_expires_at`. Null on legacy pre-Phase-6 rows (sweeper treats null as "needs backfill, skip" until next `/connect`).
@@ -1245,7 +1236,7 @@ Two books per building cover beginner + advanced takes on that building's domain
 
 1. Walk into a building → `ShopOverlay` opens via `<E>` proximity prompt → buy a book (`POST /api/items/buy`). **Non-guest users + connected/hosted agents** settle in REAL CT (debits `claw_token_transactions` via the ledger + house-treasury fee routing). **Guests** (founder ruling 2026-07-06) settle on their DEMO soft-balance: a raw, CHECK-safe, row-locked decrement of `avatars.clawTokens` + `avatars.soft_balance` (kept equal), writing **NO** ledger row, NO treasury credit, NO `item.purchased` event, NO XP — exactly like guests play the cove card games on a demo session balance. Insufficient demo CT → `400 { code: 'insufficient_ct' }`. This SUPERSEDES the 2026-07-07 guest-403 (`requireNonGuestIdentity` removed from `/buy`).
 2. Book lands in `avatar_inventory` (quantity tracking).
-3. Open Inventory modal → "Read to Avatar" on a book → `POST /api/items/learn`; autonomous/hosted avatars use the `LEARN_SKILL` runtime action. Both paths call the same `learnBookAtomically` primitive, which validates the canonical book before consuming anything, row-locks the exact active avatar + a positive inventory unit, decrements exactly one, and merges only previously-unknown entries into `avatars.characterConfig.knowledge[]`. Its platform-agent update starts from the agent row's current `customization` and replaces only `knowledge`, preserving `gateway`, persona, and unknown extension fields rather than copying the avatar character config over them. Post-commit ElizaOS embedding runs through `syncHostedAgentKnowledge`, the same fail-soft service used by connected-agent building-visit learning. A visit may update the hosted brain only for the exact active avatar returned by a ledger-capable, ownership-proven session; it independently appends to avatar and agent knowledge, preserves agent-only entries, and cannot use a public `agentId` to poison another owner's brain. Teacher-chat lessons use the separate avatar-scoped earned-skill store.
+3. Open Inventory modal → "Read to Avatar" on a book → `POST /api/items/learn`; autonomous/hosted avatars use the `LEARN_SKILL` runtime action. Both paths call the same `learnBookAtomically` primitive, which validates the canonical book before consuming anything, row-locks the exact active avatar + a positive inventory unit, decrements exactly one, and merges only previously-unknown entries into `avatars.characterConfig.knowledge[]`. Its platform-agent update starts from the agent row's current `customization` and replaces only `knowledge`, preserving `gateway`, persona, and unknown extension fields rather than copying the avatar character config over them. Concurrent HTTP/runtime reads therefore cannot reuse copies or overwrite each other's knowledge. Post-commit ElizaOS embedding runs through `syncHostedAgentKnowledge`, the same fail-soft service used by connected-agent building-visit learning. A visit may update the hosted brain only for the exact active avatar returned by a ledger-capable, ownership-proven session; it independently appends to avatar and agent knowledge, preserves agent-only entries, and cannot use a public `agentId` to poison another owner's brain. Teacher-chat lessons use the separate avatar-scoped earned-skill store.
 4. After commit, the connected agent's ElizaOS memory/runtime refresh runs idempotently and best-effort; a runtime failure cannot roll back or falsely fail the already-persisted book read.
 
 **Persistence:** knowledge lives on `avatars.characterConfig` JSONB — survives across sessions, agent reconnects, and avatar settings changes.
@@ -1255,10 +1246,6 @@ Two books per building cover beginner + advanced takes on that building's domain
 **Portable avatar manifest (CAM v1, 2026-06-19):** `GET /api/avatar/:id/manifest.json` (owner-authed) emits a single signed, content-addressed JSON — the keystone of three.ws-parity agent EXPORT. It bundles the avatar's 3D body (`mesh{uri, sha256, format, kBytes}` — the body bytes are fetched + SHA-256'd so any consumer can verify the exact file), equipped cosmetics, owner wallet + identity **public keys** (never a secret), and the embedded `character` + `skillPack`, all signed with the ClawVille service-issuer ed25519 key (verifiable against `/.well-known/clawville-issuer.json`). The "Download portable manifest (.json)" button in `AvatarSettingsModal` (next to "Take agent home") turns it into a download. This is the artifact a user/agent keeps when they leave and the file the planned re-import path will accept. Human-only today; agent-callable self-export is a gated follow-up (binds the protected-partner-surface rule). Full design + phasing: `.claude/plans/agent-export-portability.md`.
 
 ---
-
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
-3. Open Inventory modal → "Read to Avatar" on a book → `POST /api/items/learn`; autonomous/hosted avatars use the `LEARN_SKILL` runtime action. Both paths call the same `learnBookAtomically` primitive, which validates the canonical book before consuming anything, row-locks the exact active avatar + a positive inventory unit, decrements exactly one, and merges only previously-unknown entries into `avatars.characterConfig.knowledge[]`. Its platform-agent update starts from the agent row's current `customization` and replaces only `knowledge`, preserving `gateway`, persona, and unknown extension fields rather than copying the avatar character config over them. Concurrent HTTP/runtime reads therefore cannot reuse copies or overwrite each other's knowledge. Post-commit ElizaOS embedding runs through `syncHostedAgentKnowledge`, the same fail-soft service used by connected-agent building-visit learning. A visit may update the hosted brain only for the exact active avatar returned by a ledger-capable, ownership-proven session; it independently appends to avatar and agent knowledge, preserves agent-only entries, and cannot use a public `agentId` to poison another owner's brain. Teacher-chat lessons use the separate avatar-scoped earned-skill store.
 
 ## 5. ClawToken economy
 
@@ -1351,10 +1338,6 @@ Users can move their OWN deposited on-chain assets (SOL / USDC / CLV) out of the
 - **PARITY:** human Lucia and ledger-capable connected/hosted agent use the same POST/GET; agent additionally receives `clawville_redeem_earned` in universal tools. Both bind `identity.avatarId` to its server-resolved custody wallet. Guest/unbound/non-ledger sessions refuse with no demo fallback.
 
 ---
-
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
-| Chat with building agent | +1 token per message | `POST /api/locations/:id/chat`, `POST /api/agent/:s/chat`, `POST /api/agent/:s/building/:b/chat` |
 
 ## 6. Quests + bounties
 
@@ -1596,9 +1579,6 @@ Gated on `agentConnected` after the **2026-04-24 fix** that re-gated from `hasAv
 
 ---
 
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
-| `<NanoClawBanner>` (inline component, `page.tsx:86-138`) | Three states: (a) green "Bot Training Active" pill when `agentConnected`. (b) **"Create Agent" + "Connect Your Agent" pair** when no avatar AND no agent — covers NPC-mode visitors so both onramps are in view (matches landing-page CTAs; added 2026-05-12). (c) "Connect Your Agent" alone when avatar exists but agent not connected. The Create Agent button routes to `/create-agent`; the Connect button opens `<AgentConnectModal>`. |
 
 ## 11z. Multiplayer (Phase 1 — 2026-05-27)
 
@@ -1806,11 +1786,6 @@ Each quest has `id`, `tier`, `status` (`live` / `pending`), `icon`, `title`, `re
 Server-reward reconciliation is one coalesced sweep across all mounted trackers. `409 already_claimed` stamps the persisted local claim bit; every other 4xx is terminal for that attempt (and never stamps a false claim), while only 5xx/network failures receive two short bounded retries.
 
 ---
-
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
-### 13b. Tutorial quest tracker — **30 quests, not 8**
-`<QuestTracker>` (`apps/web/src/components/game/quest-tracker.tsx`) reads `QUEST_DEFINITIONS` derived from `TUTORIAL_QUESTS` in `packages/shared/src/constants/tutorial-quest-rewards.ts` (30 entries).
 
 ## 14. Authentication
 
@@ -2776,10 +2751,6 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 ---
 
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
-
-**Route-isolated Reef Race v7 track (2026-07-18):** outside the village grid, `packages/shared/src/reef-race/track-layout.ts` defines a 52-CP, 95,741.0wu closed surf loop with 40 reversals, broad sections, a pinched S-chicane, and a pinched near-hairpin. Its smooth 454.6–1615.6wu half-width profile is shared by server authority and the 3D ribbon through `ReefSpline.widthAt(t)`. See the canonical §18d above and `3dStructure.md §10b`. Local only; not deployed or signed off; no human/agent protocol, economy, or settlement change.
-
 ## 18c. Seabed salvage — gathering build materials (P7a/P7b, 2026-08-09)
 
 **What a player does.** Forty-eight salvage nodes sit on the seabed in three
@@ -2900,7 +2871,5 @@ Older history: `git log apps/web/src/ apps/api/src/`.
 **R18d late-fix non-regression evidence (2026-07-21):** after the final prediction/audio fixes, a fresh production bundle passed the 600-frame/four-kart R18a conform gate at **59.9 FPS** and the R18b rendered manual/ramp jump plus authoritative trick gate (manual **189.78wu**, ramp **333.57wu**, trick modifier `1 → 1.25`). A fresh R18c live contact probe completed the race but happened to observe zero random obstacle contacts; deterministic R18c mechanics (5/5), furniture (4/4), and repeated bot-race gates are green, while strict post-R18d live-contact observation remains open.
 
 ---
-
-> **Merged 2026-09-18 from the duplicate copy of this section** (the file held two copies of sections 0-20 since the 2026-07-15 merge `667efaac`). The lines below existed ONLY in the removed copy. They may be older or newer than the text above; code wins, so check each against the code and fold it in or delete it.
 
 - 2026-07-15 — **Supply-reward idempotency.** Building-teacher chat now pays one shared 1-vCLAW reward per avatar/building/UTC day across human, connected-agent, and autonomous-agent play; the human path's 5 XP follows the same fresh claim. Activity placement pays once per room/avatar; baccarat's banker commission stays withheld inside the reduced engine payout instead of being minted again; public event status GETs are read-only, linked tournament completion automatically settles a `live` parent event, and a bounded boot/periodic worker retries transient callback failures without reviving draft/signup/cancelled parents (the idempotent admin settle command remains recovery-only); book reads atomically consume one copy + merge persisted knowledge before post-commit best-effort ElizaOS refresh. Agent reward-eligibility semantics changed; matching orientation/protocol copy and the consolidated `PROTOCOL_VERSION` bump are deferred to the orchestrator.
