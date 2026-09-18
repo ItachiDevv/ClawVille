@@ -199,6 +199,16 @@ const CONCISE_CHAT_DIRECTIVE =
   'question, no lists or headers, and keep any in-character flavor to a few words at most. If you ' +
   'find yourself writing a 4th sentence of filler, stop.';
 
+// The owner's agent acts as well as talks. Its length rule must never cost an
+// action: the limit is on prose, and a request an action covers always carries
+// the tag in the same reply (staging, 2026-09-18: the bare rule dropped the tag).
+const AVATAR_ACTION_CARVE_OUT =
+  '\n\nACTIONS ARE EXEMPT FROM THE LENGTH RULE: the limit applies to your prose only. When the user ' +
+  'asks you to do something one of your actions covers (search, show a menu, add to a cart, give a ' +
+  'total, check a balance), you MUST include the matching [ACTION: ...] tag in that same reply, even ' +
+  'if the item still needs choices; the action itself asks for them. Never ask the user a question ' +
+  'the action would answer, and never say you did something without the tag.';
+
 // Conversational ceiling for live human↔NPC chat (teacher / Nori), applied when the
 // caller passes `conversational: true`. ~200 tokens ≈ comfortably fits 1-3 sentences
 // with headroom; a firmer backstop than the first 320 cut (a live probe showed 320 +
@@ -398,8 +408,10 @@ export class ElizaRuntime {
     // Without it a "Curious Scholar" archetype answered "what's going on, twin"
     // with a Proof-of-History essay on every turn (founder, 2026-09-18). No token
     // cap here, unlike the conversational routes: this chat emits action tags,
-    // and a cap could cut one off mid-tag.
-    system += CONCISE_CHAT_DIRECTIVE;
+    // and a cap could cut one off mid-tag. The carve-out is REQUIRED: live on
+    // staging the bare rule ("answer directly in plain prose") made the model
+    // stop writing the cart tag and narrate "I'll add that" with nothing added.
+    system += CONCISE_CHAT_DIRECTIVE + AVATAR_ACTION_CARVE_OUT;
 
     // Convert messageExamples from {user, content}[] to ElizaOS format
     const messageExamples = customization?.messageExamples?.map((conversation: any) =>

@@ -160,6 +160,9 @@ describe('location/system-agent system prompt carries the global brevity rule (F
     expect(system.startsWith('You are itachi')).toBe(true);
     expect(system).toContain('RESPONSE LENGTH');
     expect(system.indexOf('RESPONSE LENGTH')).toBeGreaterThan(system.indexOf('pedantic'));
+    // Without this the length rule made the model skip the cart tag (staging, 2026-09-18).
+    expect(system).toContain('ACTIONS ARE EXEMPT FROM THE LENGTH RULE');
+    expect(system.indexOf('ACTIONS ARE EXEMPT')).toBeGreaterThan(system.indexOf('RESPONSE LENGTH'));
   });
 
   it('appends the brevity directive even when the system is synthesized from the template', () => {
