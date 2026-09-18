@@ -182,6 +182,24 @@ const COVE_TUNNEL_PROMPT_Z_HALF = 150;
 export const COVE_AUTO_ENTER_MAX_X = -3450;
 const COVE_AUTO_ENTER_Z_HALF = 120;
 
+/** Where the avatar lands when it LEAVES the cove ("Back to World").
+ *
+ *  INVARIANT: this point must be EAST of the tunnel prompt band, and so east
+ *  of the auto-enter band too. Walking to town means walking east, so a spawn
+ *  WEST of the auto-enter band forces every exit through it.
+ *
+ *  That is exactly the founder-reported trap (2026-09-18): the exit used to
+ *  be a hand-set -3760, set on 2026-06-15 BEFORE the tunnel, collision wall
+ *  and auto-enter band existed. It sat 40 wu west of the band. cove-entrance
+ *  re-arms `_coveAutoArmed` the moment the avatar is outside the band, so
+ *  the first step east re-entered the cove, every time.
+ *
+ *  Derived from the prompt band so a future tunnel move carries the exit with
+ *  it; pinned by cove-exit-spawn.test.ts. At -3150 the avatar stands just
+ *  outside the tunnel mouth (-3275), with no prompt and no auto-enter. */
+export const COVE_EXIT_WORLD_X = COVE_TUNNEL_PROMPT_MAX_X + 30; // -3150
+export const COVE_EXIT_WORLD_Z = COVE_WORLD_Z;                  // 0
+
 // Kelp Forest realm portal — world-side human prompt only. The connected-agent
 // action and reward path land in the next commit (PV26), not in Run A.
 const KELP_PORTAL_PROMPT_RADIUS_SQ =
