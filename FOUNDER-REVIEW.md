@@ -253,7 +253,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **FEEDBACK WANTED:** does it appear where you expect when you approach her? On a phone in portrait the prompt slightly covers the Hold Jump button (true of every building prompt too; being fixed in the HUD pass).
 - **Session dd, 2026-09-18.**
 
-### Nori now knows WHERE the bounty board is (staging)
+### Nori now knows WHERE the bounty board is (LIVE on prod via #283)
 - **What:** Nori told you on prod that Pearl held the bounties. Bounties never moved;
   the bug was that no knowledge Nori or any agent reads ever said where they are, so
   the model made one up. Nori, the hosted-agent orientation and the connected-agent
@@ -264,7 +264,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Feedback wanted:** does she send you to the pavilion and never to a building.
 - Session bountyFix2/Opus, 2026-09-18.
 
-### OOBE/SAP fully removed — bounty board on the single low-tier rail (staging)
+### OOBE/SAP fully removed — bounty board on the single low-tier rail (code on prod; the table-drop migration 0067 is staging-only and waits for your go)
 - **What:** the on-chain escrow partner is gone end to end. USDC bounties now run
   ONLY the low-tier rail (custodial hold up to $50, PayAI payout); vCLAW bounties
   unchanged. All our on-chain funds were recovered first; the recovered SOL was
@@ -284,7 +284,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## HUD
 
-### Quest card no longer covers the minimap (staging)
+### Quest card no longer covers the minimap (LIVE on prod via #284)
 - **What:** the Town Tour card used to sit on the bottom of the minimap, worst next to a
   building with a long name. It now always sits 8 px below the minimap. The minimap's
   bottom line is now two rows (place name, then the visited count), so long names like
@@ -296,7 +296,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Feedback wanted:** does the spacing look right; is the smaller sideways-phone minimap OK.
 - Session bountyFix2/Opus, 2026-09-18.
 
-### Phone controls no longer overlap (staging, needs your eyes)
+### Phone controls no longer overlap (LIVE on prod via #286, needs your eyes)
 - ~~On a phone held upright, the two 220 px joystick pads overlap each other in the middle~~
   FIXED 2026-09-18 (bountyFix2, staging): each pad's touch area is now at most half the
   screen width. The joysticks did not move; only the invisible touch areas stopped
@@ -311,7 +311,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - ~~At building prompts on an upright phone, the bottom prompt pill covers part of Jump~~
   FIXED 2026-09-18 by session dd (staging): the pill now sits 8 px above Jump on upright
   phones; iPads and landscape phones are unchanged. This moved the prompt, not a control.
-- **Where:** staging.clawville.world/game on your phone, upright and sideways, in NPC or
+- **Where:** clawville.world/game on your phone, upright and sideways, in NPC or
   Controlled mode (Jump shows there).
 - **Feedback wanted:** does the top row feel right on a sideways phone? If you prefer the
   old column, it is one hook to turn off (`useShortTouchRow` in the three buttons).
@@ -351,7 +351,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## COVE
 
-### Cove: dark fallback room, hidden BACCARAT sign, BLACKJACK sign opening baccarat (staging)
+### Cove: dark fallback room, hidden BACCARAT sign, BLACKJACK sign opening baccarat (LIVE on prod via #285)
 - **What:** the dark room with black table slabs you saw is the old cartoon
   "fallback" room. The cove switches to it when it decides your device is too
   slow. It measured the first 5 seconds, which include the walk-in loading
@@ -362,20 +362,20 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   table sign now opens its own table (on prod today a click on the BLACKJACK
   sign from the door opens BACCARAT). Tested on a desktop build only; a real
   Iris Xe laptop and a real phone are not tested yet.
-- **Where:** staging.clawville.world → walk into the cove through the tunnel
+- **Where:** clawville.world → walk into the cove through the tunnel
   several times (also right after the page loads, and on your phone) → look at
   the signs from the door → click each sign.
 - **Feedback wanted:** do you still ever get the dark room (desktop or phone);
   is the BACCARAT sign position OK; does each sign open the table it names.
 - Session bountyFix2/Opus, 2026-09-18.
 
-### Leaving the cove no longer drops you back in (staging)
+### Leaving the cove no longer drops you back in (LIVE on prod via #284-#286)
 - **What:** "Back to World" put you inside the cove building, and any step pulled
   you back into the cove. The exit point had been hand-set in June, before the
   tunnel existed, and ended up inside the cove's walls, next to the automatic
   walk-in zone. You now land just outside the tunnel mouth, facing town, with no
   entry prompt. Walking back into the tunnel still takes you in, on purpose.
-- **Where:** staging.clawville.world → walk into the cove through the tunnel →
+- **Where:** clawville.world → walk into the cove through the tunnel →
   "Back to World" → walk toward town.
 - **Feedback wanted:** is the landing spot where you expect to be, and can you
   leave without being pulled back in.
