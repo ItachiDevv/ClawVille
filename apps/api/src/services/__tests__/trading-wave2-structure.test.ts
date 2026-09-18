@@ -172,7 +172,7 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(apiSourceTree.some(([, text]) => text.includes('setTradingLinkKilled'))).toBe(false);
     const links = serviceText.get('trading-links.ts')!;
     expect(links).toContain('export async function killTradingLink(avatarId: string)');
-    expect(links).toContain('.set({ killed: true, updatedAt: new Date() })');
+    expect(links).toContain('.set({ killed: true, armed: false, updatedAt: new Date() })');
   });
 
   test('only provisioning inserts links and only provisioning, arm, or kill update them', () => {
