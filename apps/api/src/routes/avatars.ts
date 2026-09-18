@@ -1134,17 +1134,23 @@ avatarRoutes.get('/check-name/:name', sessionMiddleware, async (c) => {
     return c.json({ available: false, reason: 'Name must be 3-20 alphanumeric characters or underscore' });
   }
 
+  // A name held by the CALLER's own account is not "taken": PATCH /me already
+  // excludes the caller (`users.id <> user.id`), but this probe did not, so the
+  // UI refused to let an owner name their agent after their own username
+  // (founder, 2026-09-18: username "itachi", agent stuck as "444hood").
+  const callerId = c.get('user')?.id ?? null;
+
   const existingAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.name, name),
   });
-  if (existingAvatar) {
+  if (existingAvatar && existingAvatar.userId !== callerId) {
     return c.json({ available: false, reason: 'That name is already taken' });
   }
 
   const existingUsername = await db.query.users.findFirst({
     where: sql`lower(${users.username}) = lower(${name})`,
   });
-  if (existingUsername) {
+  if (existingUsername && existingUsername.id !== callerId) {
     return c.json({ available: false, reason: 'That name is already taken' });
   }
 
@@ -1585,8 +1591,48 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
       });
   }
 
+  warmOwnerAgent(user.id);
+
   return c.json({ ok: true });
 });
+
+/**
+ * Start the owner's own agent in the background while they are in the world,
+ * so their first chat does not pay a 60-80 s cold start (founder, 2026-09-18:
+ * "aren't we supposed to automatically warm stuff" — only Nori was warmed, at
+ * boot). Rides the existing in-world heartbeat, so it needs no client change.
+ *
+ * Cheap on the hot path: at most one avatar lookup per owner per WARM_EVERY_MS,
+ * nothing when the runtime is already up, never for guests, and the start is
+ * fire-and-forget through the orchestrator's own single-flight guard. A running
+ * runtime is NOT touched, so the orchestrator's 30-minute idle stop still
+ * applies to an owner who is present but not chatting; the next heartbeat after
+ * such a stop warms it again.
+ */
+const WARM_EVERY_MS = 5 * 60 * 1000;
+const lastWarmAt = new Map<string, number>();
+
+function warmOwnerAgent(userId: string): void {
+  const now = Date.now();
+  if (now - (lastWarmAt.get(userId) ?? 0) < WARM_EVERY_MS) return;
+  lastWarmAt.set(userId, now);
+  if (lastWarmAt.size > 5000) {
+    for (const [id, at] of lastWarmAt) if (now - at > WARM_EVERY_MS) lastWarmAt.delete(id);
+  }
+  db.query.avatars
+    .findFirst({
+      where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+      columns: { platformAgentId: true, isGuest: true },
+    })
+    .then((avatar) => {
+      if (!avatar?.platformAgentId || avatar.isGuest) return;
+      if (agentOrchestrator.getRunningAgentRuntime(avatar.platformAgentId)) return;
+      return agentOrchestrator.ensureAgentRuntime(avatar.platformAgentId, userId).then(() => undefined);
+    })
+    .catch((err) => {
+      console.error('[heartbeat] owner agent warm failed (non-fatal):', err);
+    });
+}
 
 // Daily login streak
 avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {

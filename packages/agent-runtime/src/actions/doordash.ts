@@ -39,7 +39,9 @@ export interface DoordashReadOnlyBridge {
   orderHistory(): Promise<DdCliResult<Array<{
     order_uuid: string; store_id: DdId; store_name?: string;
   }>>>;
-  orderStatus(q: { orderUuid: string }): Promise<DdCliResult<{ order_uuid?: string; status: string }>>;
+  orderStatus(q: { orderUuid?: string }): Promise<DdCliResult<{
+    order_uuid?: string; status: string; merchant_name?: string; quoted_delivery_time?: string;
+  }>>;
 }
 /** Phase 2 adds the cart, the priced preview, and the one method that spends money. */
 export interface DoordashOrderingBridge extends DoordashReadOnlyBridge {
@@ -80,6 +82,7 @@ const failures: Record<string, string> = {
   doordash_no_cart: 'You do not have a cart going right now.',
   doordash_item_unresolved: 'I could not find that item on the menu.',
   doordash_needs_choices: 'That item needs your choices before I can add it.',
+  doordash_no_order: 'You have not placed a DoorDash order here yet.',
 };
 
 // Addendum sections 6.2/6.4: display only; never retain CLI data in chat memory.
@@ -257,17 +260,25 @@ const statuses: Record<string, string> = {
 
 export const doordashOrderStatusAction: Action = {
   name: 'DOORDASH_ORDER_STATUS',
-  description: 'Check the status of a DoorDash order.',
-  parameters: [{ name: 'orderUuid', description: 'Order ID from DoorDash order history', required: true, schema: { type: 'string' } }],
+  description: 'Check where the user\'s DoorDash order is. With no order ID it checks their most recent order, so use it right away when they ask where their food is.',
+  similes: ['where is my order', 'where is my food', 'is my doordash on the way'],
+  parameters: [{ name: 'orderUuid', description: 'Order ID only if you have one; otherwise leave it out', required: false, schema: { type: 'string' } }],
   available: (state) => Boolean((state as any)?.services?.doordash),
   validate: async () => true,
   handler: async (_runtime, message, state) => {
     const bridge = bridgeOf(state);
     if (!bridge) return { success: false, text: 'That is not available here.', persist: false };
-    const orderUuid = getParam(message, 'orderUuid');
-    if (typeof orderUuid !== 'string' || !orderUuid.trim()) return ephemeral(false, 'Please provide a DoorDash order ID.');
-    return lookup(() => bridge.orderStatus({ orderUuid }), (data) =>
-      `Your DoorDash order ${statuses[data.status] ?? 'has an unrecognized status'}.`);
+    const orderUuid = text(message, 'orderUuid');
+    return lookup(() => bridge.orderStatus({ orderUuid: orderUuid || undefined }), (data) => {
+      const from = data.merchant_name ? ` from ${field(data.merchant_name, 'the store')}` : '';
+      // Minutes from now, not a clock time: the server does not know the
+      // operator's time zone, and "in about 20 minutes" needs none.
+      const at = data.quoted_delivery_time ? Date.parse(data.quoted_delivery_time) : NaN;
+      const minutes = Number.isFinite(at) ? Math.round((at - Date.now()) / 60_000) : NaN;
+      const eta = Number.isFinite(minutes) && minutes > 0 && minutes < 600
+        ? ` It should arrive in about ${minutes} minutes.` : '';
+      return `Your DoorDash order${from} ${statuses[data.status] ?? 'has an unrecognized status'}.${eta}`;
+    });
   },
 };
 

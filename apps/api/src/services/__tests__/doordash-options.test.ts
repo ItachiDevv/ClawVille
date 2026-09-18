@@ -81,6 +81,18 @@ describe('matching plain-words choices to option ids', () => {
     expect(vinegar?.options).toEqual([{ id: 'o_42983071029', name: 'Red Wine Vinegar', quantity: 1 }]);
   });
 
+  test('joined and plural spellings match (founder typed "pepperjack" on the first real order)', () => {
+    const result = resolveChoices(hoagie, 'classic rolls, not toasted, pepperjack, ranch');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.picked).toEqual(['Classic Roll', 'Not Toasted', 'Pepper Jack', 'Ranch']);
+  });
+
+  test('"toasted" alone is ambiguous across three toasting options, so it is asked, not guessed', () => {
+    const result = resolveChoices(hoagie, 'classic roll, toasted, provolone');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.missing.map((g) => g.title)).toEqual(['Select your toasting option']);
+  });
+
   test('whole words only: "rolled" is not "roll", "ranchero" is not "ranch"', () => {
     const result = resolveChoices(hoagie, 'rolled up, ranchero');
     expect(result.ok).toBe(false);

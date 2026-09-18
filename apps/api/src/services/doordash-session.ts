@@ -85,8 +85,14 @@ export function rememberDoordashContext(
   entries.set(userId, next);
 }
 
+// Plurals ("hoagies" for "Hoagie") and joined words ("pepperjack") are what a
+// person actually types; the first real order failed on "custom wawa
+// cheesesteak hoagies" (founder, 2026-09-18). Same rule as doordash-options.ts.
 function words(value: string): string {
-  return ` ${value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const list = value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()
+    .split(' ').filter(Boolean)
+    .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w));
+  return ` ${list.join(' ')} `;
 }
 
 /**
@@ -110,7 +116,20 @@ export function resolveItemByName(
   const loose = items.filter((i) => tokens.every((t) => words(i.name).includes(` ${t} `)));
   if (loose.length === 1) return { item: loose[0]! };
   if (loose.length > 1) return { choices: loose.slice(0, 8).map((i) => i.name) };
-  return null;
+  // Split vs joined spelling ("cheese steak" for "Cheesesteak"): every spoken
+  // word appears inside the name once spaces are removed.
+  const compact = (value: string) => words(value).replace(/ /g, '');
+  const squeezed = items.filter((i) => tokens.every((t) => t.length > 2 && compact(i.name).includes(t)));
+  if (squeezed.length === 1) return { item: squeezed[0]! };
+  if (squeezed.length > 1) return { choices: squeezed.slice(0, 8).map((i) => i.name) };
+  // Nothing matched outright: offer the closest names instead of a bare "not
+  // found", ranked by how many spoken words each shares.
+  const scored = items
+    .map((i) => ({ i, score: tokens.filter((t) => t.length > 2 && words(i.name).includes(` ${t} `)).length }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6);
+  return scored.length ? { choices: scored.map((s) => s.i.name) } : null;
 }
 
 /**

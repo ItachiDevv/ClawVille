@@ -139,10 +139,28 @@ const orderSummarySchema = z.object({
 // whether he was charged. Breaking the recovery path to reject an unfamiliar
 // string is the wrong trade. The action already renders an unknown status
 // safely, and that fallback was unreachable while this enum stood.
-const statusSchema = z.object({
-  order_uuid: z.string().min(1).optional(),
-  status: z.string().min(1).max(64),
-});
+// LIVE-CAPTURED 2026-09-18 from the founder's first real order: the status sits
+// under `result`, not at the top level, so the old top-level-only shape failed
+// EVERY status check with ddcli_bad_json. The live shape is read first; the old
+// one stays accepted. Only the status, the store name and the quoted time cross
+// this boundary: `status_message` is vendor prose and stays out.
+const statusSchema = z.union([
+  z.object({
+    result: z.object({
+      status: z.string().min(1).max(64),
+      merchant_name: z.string().max(200).optional(),
+      quoted_delivery_time: z.string().max(64).nullable().optional(),
+    }),
+  }).transform(({ result }) => ({
+    status: result.status,
+    merchant_name: result.merchant_name,
+    quoted_delivery_time: result.quoted_delivery_time ?? undefined,
+  })),
+  z.object({
+    order_uuid: z.string().min(1).optional(),
+    status: z.string().min(1).max(64),
+  }),
+]);
 // ---------------------------------------------------------------------------
 // Phase 2 shapes. Every one below was CAPTURED FROM THE LIVE CLI on 2026-09-17
 // (v0.2.4, founder account, Jacksonville default address) except the submit
