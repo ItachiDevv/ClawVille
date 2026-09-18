@@ -124,6 +124,14 @@
 
 ## AGENTS / ONBOARDING
 
+### Nori now says where the bounties are (prod)
+
+- **WHERE:** clawville.world/game, ask Nori "where do I get bounties?" (or ask your own agent).
+- **LOOK AT:** she should send you to the Bounty Board, the right half of the Quest + Bounty Pavilion straight behind the town-directory sign, and never to Pearl or another teacher.
+- **FEEDBACK WANTED:** is the answer right and short? Hosted agents pick up the new manual on their next start or connect.
+- **Session dd (fix authored by bountyFix2), 2026-09-18.**
+
+
 ### Nori now has the "Press E - Talk to Nori" prompt (prod)
 
 - **WHERE:** clawville.world/game, walk up to Nori in the town centre.
