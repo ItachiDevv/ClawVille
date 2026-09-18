@@ -817,9 +817,12 @@ describe('abort recovery for a create that never reached the chain', () => {
 
 // Founder 2026-09-18: close the never-created lobbies ("mark them closed").
 // The DB close is only safe because this watcher keeps checking the chain:
-// the program accepts a direct create with a caller-chosen id.
+// the program accepts a direct create with a caller-chosen id. The watch ends
+// only on a FINALIZED terminal state (a 'confirmed' cancel can be dropped).
 describe('watch for lobbies closed as never-created', () => {
-  function watchHarness(chain: { absent: boolean; state: 'open' | 'locked' | 'settled' | 'cancelled'; cancelThrows?: boolean }) {
+  type ChainState = 'open' | 'locked' | 'settled' | 'cancelled';
+  function watchHarness(init: { absent: boolean; confirmed: ChainState; finalized: ChainState | null }) {
+    const chain = { ...init };
     const calls: string[] = [];
     const recorded: Array<{ chainState: string; txSig: string | null }> = [];
     const alerts: string[] = [];
@@ -830,18 +833,19 @@ describe('watch for lobbies closed as never-created', () => {
         calls.push('absent?');
         return chain.absent;
       },
+      readFinalizedChainState: async () => {
+        calls.push('finalized?');
+        if (chain.finalized === null) throw new Error('wager_lobby_account_missing_or_wrong_owner');
+        return chain.finalized;
+      },
       readChainState: async () => {
-        calls.push('read');
-        return chain.state;
+        calls.push('confirmed?');
+        return chain.confirmed;
       },
       cancelLobby: async (input) => {
         calls.push('cancel');
         expect(input).toEqual({ lobbyIdBigint: 184n, signerKind: 'settlement-authority' });
-        if (chain.cancelThrows) {
-          chain.state = 'cancelled'; // it landed, but the response was lost
-          throw new Error('RPC response lost after send');
-        }
-        chain.state = 'cancelled';
+        chain.confirmed = 'cancelled';
         return { txSig: 'late-cancel-sig', signerPubkey: 'settlement-authority' };
       },
       recordLateChainAccount: async (_rowId, input) => {
@@ -850,44 +854,60 @@ describe('watch for lobbies closed as never-created', () => {
       },
       alert: (message) => alerts.push(message),
     };
-    return { deps, calls, recorded, alerts };
+    return { deps, chain, calls, recorded, alerts };
   }
 
   it('does nothing while the account is absent', async () => {
-    const h = watchHarness({ absent: true, state: 'open' });
+    const h = watchHarness({ absent: true, confirmed: 'open', finalized: null });
     await expect(watchClosedNeverCreatedLobbies(h.deps)).resolves.toEqual({ checked: 1, lateAccounts: 0 });
     expect(h.calls).toEqual(['absent?']);
     expect(h.recorded).toEqual([]);
     expect(h.alerts).toEqual([]);
   });
 
-  it('cancels a late open account on chain once, records it, and pages', async () => {
-    const h = watchHarness({ absent: false, state: 'open' });
+  it('cancels a late open lobby, and ends the watch only once the cancel is finalized', async () => {
+    const h = watchHarness({ absent: false, confirmed: 'open', finalized: null });
     await watchClosedNeverCreatedLobbies(h.deps);
-    expect(h.calls).toEqual(['absent?', 'read', 'cancel']);
-    expect(h.recorded).toEqual([{ chainState: 'open', txSig: 'late-cancel-sig' }]);
+    expect(h.calls).toEqual(['absent?', 'finalized?', 'confirmed?', 'cancel']);
+    expect(h.recorded).toEqual([]); // confirmed only: keep watching
     expect(h.alerts).toHaveLength(1);
-    // Resolved: the next tick has nothing to do.
+    // Next tick, still not finalized: no second send, no record.
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls.filter((c) => c === 'cancel')).toHaveLength(1);
+    expect(h.recorded).toEqual([]);
+    // Finalized: record once, page, and the watch is over.
+    h.chain.finalized = 'cancelled';
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.recorded).toEqual([{ chainState: 'cancelled', txSig: null }]);
     await expect(watchClosedNeverCreatedLobbies(h.deps)).resolves.toEqual({ checked: 0, lateAccounts: 0 });
   });
 
-  it('records an account already cancelled or settled on chain without sending', async () => {
+  it('a cancel dropped with its fork is sent again', async () => {
+    const h = watchHarness({ absent: false, confirmed: 'open', finalized: 'open' });
+    await watchClosedNeverCreatedLobbies(h.deps);
+    h.chain.confirmed = 'open'; // the confirmed cancel rolled back
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls.filter((c) => c === 'cancel')).toHaveLength(2);
+    expect(h.recorded).toEqual([]);
+  });
+
+  it('records a lobby already final as cancelled or settled without sending', async () => {
     for (const state of ['cancelled', 'settled'] as const) {
-      const h = watchHarness({ absent: false, state });
+      const h = watchHarness({ absent: false, confirmed: state, finalized: state });
       await watchClosedNeverCreatedLobbies(h.deps);
       expect(h.calls).not.toContain('cancel');
       expect(h.recorded).toEqual([{ chainState: state, txSig: null }]);
     }
   });
 
-  it('a lost cancel response pages, and the next tick records without a second send', async () => {
-    const h = watchHarness({ absent: false, state: 'locked', cancelThrows: true });
-    await watchClosedNeverCreatedLobbies(h.deps);
-    expect(h.recorded).toEqual([]);
-    expect(h.alerts).toHaveLength(1);
-    await watchClosedNeverCreatedLobbies(h.deps);
-    expect(h.calls.filter((c) => c === 'cancel')).toHaveLength(1);
-    expect(h.recorded).toEqual([{ chainState: 'cancelled', txSig: null }]);
+  it('two overlapping ticks cannot both run', async () => {
+    const h = watchHarness({ absent: false, confirmed: 'cancelled', finalized: 'cancelled' });
+    const [first, second] = await Promise.all([
+      watchClosedNeverCreatedLobbies(h.deps),
+      watchClosedNeverCreatedLobbies(h.deps),
+    ]);
+    expect([first.checked, second.checked].sort()).toEqual([0, 1]);
+    expect(h.recorded).toHaveLength(1);
   });
 });
 

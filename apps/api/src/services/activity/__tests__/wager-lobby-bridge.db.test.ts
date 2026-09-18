@@ -78,8 +78,27 @@ describeIfDb('wager-abort recovery sweep — real PostgreSQL', () => {
       .from(dbMod.activities)
       .where(dbMod.inArray(dbMod.activities.id, ['reef-race', 'bumper-shells']))
       .limit(1);
-    if (activityRows.length === 0) throw new Error('no wager-abort activity seeded in this DB');
-    activityId = activityRows[0].id;
+    if (activityRows.length === 0) {
+      // A fresh CI database has no world activities; seed the one the sweep
+      // filters to (idempotent, left in place for later suites).
+      await dbMod.db
+        .insert(dbMod.activities)
+        .values({
+          id: 'bumper-shells',
+          buildingId: 'test-building',
+          slug: 'bumper-shells',
+          displayName: 'Bumper Shells',
+          description: 'test fixture',
+          minPlayers: 2,
+          maxPlayers: 8,
+          preferredPlayers: 4,
+          rewardConfig: {} as any,
+        })
+        .onConflictDoNothing();
+      activityId = 'bumper-shells';
+    } else {
+      activityId = activityRows[0].id;
+    }
 
     const [user] = await dbMod.db
       .insert(dbMod.users)
