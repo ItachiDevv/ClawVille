@@ -4,6 +4,14 @@
 > environment. Created 2026-08-20 on founder order, because "just push it and I'll
 > test it later" is now the standing answer — this file is the "later".
 
+
+### Your agent is labelled "itachi agent" (staging, then prod)
+
+- **WHERE:** clawville.world/game (after promotion), the agent chat bar at the bottom.
+- **LOOK AT:** it reads "Chat with itachi agent", and the header and placeholder say "itachi agent" too.
+- **FEEDBACK WANTED:** is lower-case "agent" right, and should any other place use this label?
+- **Session dd, 2026-09-18.**
+
 ## How this file works (rules for every session)
 
 - **Every session that ships something needing founder feedback MUST append an entry
