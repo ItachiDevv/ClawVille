@@ -31,7 +31,7 @@ describe('cart add with option choices', () => {
 
   test('store discovery and item options use fixed flags only', () => {
     expect(ddCliArgvForTest('nearby-stores', ['1742541215'])).toEqual(expect.arrayContaining(
-      ['find-nearby-stores', '--vertical', 'nv', '--max', '25', '--address-id', '1742541215']));
+      ['find-nearby-stores', '--vertical', 'nv', '--max', '100', '--address-id', '1742541215']));
     expect(ddCliArgvForTest('nearby-stores', ['--vertical'])).toBeNull();
     expect(ddCliArgvForTest('item-options', ['897466', '15975751', 'i_19616733360'])).toEqual(expect.arrayContaining(
       ['restaurant-item-details', '--store-id', '897466', '--menu-id', '15975751', '--item-id', 'i_19616733360']));
