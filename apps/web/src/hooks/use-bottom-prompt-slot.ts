@@ -50,6 +50,12 @@
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore, type ControlMode, type GameState } from '@/stores/game';
 import { useLandStore } from '@/stores/land';
+import {
+  JOYSTICK_ZONE_BOTTOM_CSS,
+  JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
+  JUMP_BUTTON_SIZE_PX,
+  PROMPT_JUMP_CLASH_MAX_VW_PX,
+} from '@/lib/hud-anchors';
 
 export type BottomPromptOwner = 'building' | 'guide' | 'parcel' | 'salvage' | null;
 
@@ -170,6 +176,25 @@ const MOBILE_PROMPT_DESIRED_LIFT =
   'max(calc(env(safe-area-inset-bottom, 0px) + 220px), 240px)';
 
 /**
+ * The lift that clears the Hold-Jump button: the joystick wrapper's bottom,
+ * plus the button's offset inside it, plus its height, plus an 8 px gap.
+ * Founder report 2026-09-18: on a 390 px phone the pill (240 px up, 280 px
+ * wide, centred) covered ~27 px of the button, at every building prompt.
+ */
+const MOBILE_PROMPT_JUMP_CLEAR =
+  `calc(${JOYSTICK_ZONE_BOTTOM_CSS} + ${JUMP_BUTTON_BOTTOM_IN_ZONE_CSS} + ${JUMP_BUTTON_SIZE_PX + 8}px)`;
+
+/**
+ * The jump clearance applies only where the pill can reach the button's
+ * column (viewport narrower than PROMPT_JUMP_CLASH_MAX_VW_PX: every portrait
+ * phone). At or above that width the subtracted term is huge, so the outer
+ * max() falls back to the desired lift and iPads and landscape phones keep
+ * their current position. Pure CSS, so rotation and resizing need no JS.
+ */
+const MOBILE_PROMPT_NARROW_JUMP_CLEAR =
+  `calc(${MOBILE_PROMPT_JUMP_CLEAR} - max(0px, (100vw - ${PROMPT_JUMP_CLASH_MAX_VW_PX}px) * 1000))`;
+
+/**
  * The shared vertical offset for the slot.
  *
  * This formula used to be copy-pasted into all three prompts under a comment
@@ -208,6 +233,6 @@ export function bottomPromptOffset(
   const hasBottomChatBar =
     controlMode === 'player' || controlMode === 'autonomous';
   return isMobile
-    ? `max(${MOBILE_PROMPT_FLOOR}, min(${MOBILE_PROMPT_DESIRED_LIFT}, calc(100dvh - ${MOBILE_PROMPT_TOP_RESERVE_PX}px)))`
+    ? `max(${MOBILE_PROMPT_FLOOR}, min(max(${MOBILE_PROMPT_DESIRED_LIFT}, ${MOBILE_PROMPT_NARROW_JUMP_CLEAR}), calc(100dvh - ${MOBILE_PROMPT_TOP_RESERVE_PX}px)))`
     : `calc(env(safe-area-inset-bottom, 0px) + ${hasBottomChatBar ? 84 : 36}px)`;
 }

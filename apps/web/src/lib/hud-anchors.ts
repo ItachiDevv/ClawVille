@@ -80,6 +80,24 @@ export const JOYSTICK_ZONE_HUD_PROPS: Record<string, string> = {
 export const JOYSTICK_ZONE_BOTTOM_CSS = 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)';
 export const JOYSTICK_ZONE_HEIGHT_PX = 220;
 
+/**
+ * The mobile Hold-Jump button, positioned inside the joystick wrapper. ONE
+ * source for the button (mobile-controls) and for the bottom prompt slot
+ * (hooks/use-bottom-prompt-slot), which must clear it: on a 390 px phone the
+ * centred 280 px prompt pill used to cover ~27 px of the button (2026-09-18).
+ */
+export const JUMP_BUTTON_BOTTOM_IN_ZONE_CSS = 'clamp(7rem, 38vw, 10.5rem)';
+export const JUMP_BUTTON_RIGHT_CSS = 'max(calc(env(safe-area-inset-right, 0px) + 18px), 18px)';
+export const JUMP_BUTTON_SIZE_PX = 64;
+
+/**
+ * Below this viewport width a centred bottom pill can reach the Jump button's
+ * column: the pill is at most 420 px wide (half 210), the button reaches 82 px
+ * in from the right edge (18 + 64), plus an 8 px gap: 2 x (210 + 8 + 82) = 600.
+ * Every portrait phone is narrower; every landscape phone and iPad is wider.
+ */
+export const PROMPT_JUMP_CLASH_MAX_VW_PX = 600;
+
 // ---------------------------------------------------------------------------
 // Explicit registration.
 //
