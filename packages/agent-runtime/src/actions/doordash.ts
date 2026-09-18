@@ -83,8 +83,10 @@ const failures: Record<string, string> = {
 };
 
 // Addendum sections 6.2/6.4: display only; never retain CLI data in chat memory.
+// replacesReply: the order flow is read at a glance. A persona paragraph in
+// front of "Total before tip $12.40 ... code M63C7A" buried it (founder, 2026-09-18).
 function ephemeral(success: boolean, text: string): ActionResult {
-  return { success, text, persist: false };
+  return { success, text, persist: false, replacesReply: true };
 }
 
 function field(value: string | number | null | undefined, fallback: string): string {
