@@ -289,6 +289,13 @@ describe('Matchmaker fill', () => {
     expect(activityQueueService.getMatchedRoomId(pid(1))).toBeNull();
   });
 
+  it('the sweep forgets matches whose room was evicted, even with no poll', async () => {
+    const stored = (activityQueueService as unknown as { matchedRooms: Map<string, string> }).matchedRooms;
+    stored.set(pid(7), 'room-that-was-gc-evicted');
+    await activityQueueService.runMatchmakerSweep();
+    expect(stored.has(pid(7))).toBe(false);
+  });
+
   it('the queue-status poll never deletes a room binding', async () => {
     seedBotPool(8);
     await enqueueReefHuman(pid(1));
