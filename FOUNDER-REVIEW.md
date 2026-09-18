@@ -71,6 +71,14 @@
 
 ## LAND
 
+### Outer land ring lots are no longer empty (staging, then prod)
+
+- **WHERE:** staging.clawville.world/game (prod after promotion). Walk or click-to-move on the map to the outermost ring of plots, for example the far west edge where your screenshot was.
+- **LOOK AT:** each outer lot now has a model cottage or market stall, like the inner rings. The 20 outer lots were added after your "fill every plot" request in June and were never filled.
+- **FEEDBACK WANTED:** do the outer lots read as "set up" now? They sit one size above the starter ring. Is that the step up you want?
+- **Session dd, 2026-09-18.**
+
+
 ### Door-2 wallet proof feel-pass (LIVE on prod)
 - **What:** the "send a small amount, we send it back" wallet-ownership check.
 - **Where:** prod → `/game` → Land Office → declare a wallet → VERIFY MY WALLET →
