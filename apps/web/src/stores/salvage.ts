@@ -3,12 +3,13 @@
  * material balance.
  *
  * Hydrated by `SalvageStateHydrator` (land-salvage-render.tsx) from
- * `GET /api/land/salvage/state`. Keyed like `useLandStore.pieces` — public
- * world state, not owner-private, so it survives auth transitions the same
- * way `parcels` does. NOTE: unlike `parcels`, the salvage read model is
- * NOT guest-accessible (`requireNonGuestIdentity`), so a guest session never
- * populates this — `SalvageGatherPill` gates on `useIsGuest()` before even
- * attempting a hydrate.
+ * `GET /api/land/salvage/state`. The read model is NOT guest-accessible
+ * (`requireNonGuestIdentity`), and part of it is PRIVATE to the account
+ * (materialBalance, the claim counters, lastClaim). So the hydrator polls only
+ * for a signed-in non-guest account, and `reset()` runs on every identity
+ * change (clear-identity-state.ts and the hydrator itself) so one account's
+ * materials never show under the next one (2026-09-18: guests polled it every
+ * 45 s and drew a 401 each time, ~80 lines/hour in the prod log).
  */
 import { create } from 'zustand';
 import type { LandSalvageClaimPayload, LandSalvageRules } from '@/components/game/land/types';
@@ -51,16 +52,25 @@ interface SalvageStore {
 
   /** Optimistic post-claim patch — one node + the two counters + balance. */
   applyClaimResult: (payload: LandSalvageClaimPayload) => void;
+
+  /** Back to the empty, never-hydrated state (identity change / sign-out). */
+  reset: () => void;
 }
 
-export const useSalvageStore = create<SalvageStore>()((set) => ({
-  nodeCooldowns: new Map(),
+const emptySalvageState = () => ({
+  nodeCooldowns: new Map<string, number>(),
   materialBalance: 0,
   avatarClaims: { used: 0, remaining: 0 },
   ownerClaims: { used: 0, remaining: 0 },
   lastClaim: null,
   rules: EMPTY_RULES,
   hydratedAt: 0,
+});
+
+export const useSalvageStore = create<SalvageStore>()((set) => ({
+  ...emptySalvageState(),
+
+  reset: () => set(emptySalvageState()),
 
   setState: ({
     nodes,
