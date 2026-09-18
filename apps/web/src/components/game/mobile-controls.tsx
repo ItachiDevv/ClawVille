@@ -222,7 +222,11 @@ export default function MobileControls() {
           style={{
             left: 0,
             bottom: 0,
-            width: '220px',
+            // Half the width at most: two 220 px zones overlapped by 50 px on
+            // 390 px phones, and the right zone took touches in that strip
+            // (measured 2026-09-18). Both joysticks sit 80 px from their own
+            // edge, so the narrower zone moves neither.
+            width: 'min(220px, 50vw)',
             height: '220px',
             touchAction: 'none',
           }}
@@ -236,7 +240,7 @@ export default function MobileControls() {
         style={{
           right: 0,
           bottom: 0,
-          width: '220px',
+          width: 'min(220px, 50vw)',
           height: '220px',
           touchAction: 'none',
         }}

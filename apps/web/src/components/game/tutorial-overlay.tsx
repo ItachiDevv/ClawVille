@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, ArrowRight, Gamepad2, X } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { shortTouchRowStyle, useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 
 const STORAGE_KEY = 'clawville-tutorial-seen';
 const CONTROLS_STEP_INDEX = 2;
@@ -136,6 +137,7 @@ export default function TutorialOverlay() {
   const [step, setStep] = useState(0);
   const [animating, setAnimating] = useState(false);
   const isMobile = useIsMobile();
+  const shortRow = shortTouchRowStyle(useShortTouchRow(), 'controls');
 
   // Show on first visit
   useEffect(() => {
@@ -198,7 +200,9 @@ export default function TutorialOverlay() {
         type="button"
         onClick={openControls}
         className="fixed z-50 flex h-11 min-w-11 items-center justify-center gap-2 rounded-full border border-cyan-300/50 bg-[#05283a]/90 px-3 text-cyan-50 shadow-[0_0_24px_rgba(34,211,238,0.28)] backdrop-blur-md transition-all hover:border-cyan-200/80 hover:bg-[#07364e] active:translate-y-0.5"
-        style={isMobile
+        style={shortRow
+          ? shortRow // short touch viewport: one top row (hud-anchors)
+          : isMobile
           ? {
               top: 'calc(env(safe-area-inset-top, 0px) + 128px)',
               right: 'calc(env(safe-area-inset-right, 0px) + 12px)',
