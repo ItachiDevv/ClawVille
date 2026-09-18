@@ -341,6 +341,24 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## COVE
 
+### Cove: dark fallback room, hidden BACCARAT sign, BLACKJACK sign opening baccarat (staging)
+- **What:** the dark room with black table slabs you saw is the old cartoon
+  "fallback" room. The cove switches to it when it decides your device is too
+  slow. It measured the first 5 seconds, which include the walk-in loading
+  stalls, and it also switched EVERY phone (phones run at 30 FPS on purpose and
+  the bar was 40). It now waits 2 seconds on every visit, ignores the slowest
+  frames, and uses a lower bar on phones. Also: the BACCARAT sign now sits
+  higher and a little toward the aisle so BLACKJACK does not hide it, and each
+  table sign now opens its own table (on prod today a click on the BLACKJACK
+  sign from the door opens BACCARAT). Tested on a desktop build only; a real
+  Iris Xe laptop and a real phone are not tested yet.
+- **Where:** staging.clawville.world → walk into the cove through the tunnel
+  several times (also right after the page loads, and on your phone) → look at
+  the signs from the door → click each sign.
+- **Feedback wanted:** do you still ever get the dark room (desktop or phone);
+  is the BACCARAT sign position OK; does each sign open the table it names.
+- Session bountyFix2/Opus, 2026-09-18.
+
 ### Leaving the cove no longer drops you back in (staging)
 - **What:** "Back to World" put you inside the cove building, and any step pulled
   you back into the cove. The exit point had been hand-set in June, before the
