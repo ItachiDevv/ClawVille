@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { getAllColliders } from './collision/world-colliders';
+import { getServerColliders } from '@clawville/shared';
 import { NORI_TALK_RADIUS_SQ, NORI_WORLD_X, NORI_WORLD_Z } from './town-guide-position';
 import { resolveBottomPromptOwner, type BottomPromptSlotInput } from '@/hooks/use-bottom-prompt-slot';
 import { locationPromptText } from '@/components/game/location-prompt-text';
@@ -35,6 +36,15 @@ describe('Nori stands where the collision table says she stands', () => {
     expect(nori!.centerX).toBe(NORI_WORLD_X);
     expect(nori!.centerZ).toBe(NORI_WORLD_Z);
     expect(NORI_WORLD_Z).toBe(400);
+  });
+
+  // The SERVER table (NPC sim + agent pathing) carried its own stale copy too;
+  // the staging bundle scan found both 400 and 240 rows (2026-09-18).
+  test('the server collider table puts her in the same place', () => {
+    const server = getServerColliders().find((c) => c.id === 'town-guide');
+    expect(server).toBeDefined();
+    expect(server!.centerX).toBe(NORI_WORLD_X);
+    expect(server!.centerZ).toBe(NORI_WORLD_Z);
   });
 
   test('her collider sits well inside her talk radius, so walking up to her always arms the prompt', () => {
