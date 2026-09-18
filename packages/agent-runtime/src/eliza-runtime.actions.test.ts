@@ -209,9 +209,12 @@ describe('ephemeral action persistence', () => {
     expect(response.content).toContain('17 Private Street');
     expect(response.content).toContain('READ output');
     expect(h.onMessage.mock.calls[0]![0].content).toBe(response.content);
+    // A DoorDash result replaces the model's prose (founder, 2026-09-18): the
+    // persona paragraph buried the one line that mattered.
+    expect(response.content).not.toContain('Here are the results.');
     expect(h.memories).toHaveLength(2);
     expect(h.memories[0].content.text).toBe('Read my addresses and game state');
-    expect(h.memories[1].content.text).toBe('Here are the results.\n\n[Action output omitted]\n\nREAD output');
+    expect(h.memories[1].content.text).toBe('[Action output omitted]\n\nREAD output');
     expect(JSON.stringify(h.memories)).not.toContain('17 Private Street');
   });
 
@@ -226,6 +229,32 @@ describe('ephemeral action persistence', () => {
     for (const text of ['17 Private Street', 'Private Restaurant', 'Private Soup', 'private-order']) {
       expect(persisted).not.toContain(text);
     }
+  });
+
+  // Live on staging 2026-09-18: "choices=Shorti Roll, Not Toasted, Provolone"
+  // arrived as choices="Shorti Roll" plus three stray flags, and a Wawa item
+  // named "Coke (20 oz)" stopped the whole tag from matching.
+  it('keeps commas, parentheses and quotes inside a parameter value', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const capture = action('CAPTURE', {
+      handler: mock(async (_r: unknown, message: any) => {
+        seen.push({ ...message.parameters });
+        return { success: true, text: 'captured' };
+      }),
+    });
+    const h = harness(
+      'Sure. [ACTION: CAPTURE(op=add, choices=Shorti Roll, Not Toasted, Provolone, Ranch)] ' +
+      '[ACTION: CAPTURE(op=add, itemName=Coke (20 oz), quantity=2)] ' +
+      '[ACTION: CAPTURE(choices="classic roll, provolone")]',
+      [capture],
+    );
+    const response = await h.runtime.processMessage('order', { state: { services: {} } });
+    expect(seen).toEqual([
+      { op: 'add', choices: 'Shorti Roll, Not Toasted, Provolone, Ranch' },
+      { op: 'add', itemName: 'Coke (20 oz)', quantity: '2' },
+      { choices: 'classic roll, provolone' },
+    ]);
+    expect(response.content).not.toContain('[ACTION:');
   });
 
   it('preserves ordinary action and no-action persistence exactly', async () => {

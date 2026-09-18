@@ -147,6 +147,24 @@ describe('location/system-agent system prompt carries the global brevity rule (F
     expect(ch.system?.toLowerCase()).toContain('sentence');
   });
 
+  // 2026-09-18: the owner's OWN agent never got the rule, and a "Curious Scholar"
+  // archetype answered every casual line with an essay (founder screenshot).
+  it('appends the brevity directive to an owner avatar agent, after its archetype prompt', () => {
+    const rt = new ElizaRuntime({
+      agentId: '00000000-0000-0000-0000-000000000002',
+      agentType: 'avatar-agent',
+      agentConfig: {},
+      customization: { name: 'itachi', system: 'You are itachi, a Milady Official 4. Tone: erudite, pedantic.' } as never,
+    });
+    const system = rt.getCharacter().system ?? '';
+    expect(system.startsWith('You are itachi')).toBe(true);
+    expect(system).toContain('RESPONSE LENGTH');
+    expect(system.indexOf('RESPONSE LENGTH')).toBeGreaterThan(system.indexOf('pedantic'));
+    // Without this the length rule made the model skip the cart tag (staging, 2026-09-18).
+    expect(system).toContain('ACTIONS ARE EXEMPT FROM THE LENGTH RULE');
+    expect(system.indexOf('ACTIONS ARE EXEMPT')).toBeGreaterThan(system.indexOf('RESPONSE LENGTH'));
+  });
+
   it('appends the brevity directive even when the system is synthesized from the template', () => {
     // no customization.system → system is built from name/description, then the
     // directive is appended. Proves it cannot be dropped by a template that omits it.

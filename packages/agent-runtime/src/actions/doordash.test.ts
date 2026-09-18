@@ -12,10 +12,10 @@ const cases = [
     text: 'Saved addresses: Home 1: 123 Test Street (default).' },
   { action: doordashSearchAction, method: 'search', params: { query: 'pizza' }, args: [{ query: 'pizza' }],
     data: { stores: [{ store_id: 42, store_name: 'Pizza Shop' }] },
-    text: 'DoorDash search results: Pizza Shop (store 42).' },
+    text: 'On DoorDash: Pizza Shop.' },
   { action: doordashMenuAction, method: 'menu', params: { storeId: '42' }, args: [{ storeId: '42' }],
     data: { menu_id: 43, items: [{ item_id: 44, name: 'Cheese Pizza' }] },
-    text: 'Menu items: Cheese Pizza (item 44). Menu 43.' },
+    text: 'Menu items: Cheese Pizza.' },
   // When the store name IS known, the menu names it — a wrong resolution then
   // surfaces a turn earlier than the priced confirmation would catch it.
   { action: doordashOrderHistoryAction, method: 'orderHistory', params: {}, args: [],
@@ -72,7 +72,7 @@ describe('read-only DoorDash actions', () => {
       Object.defineProperty(state, 'userId', { get() { throw new Error('agent identity is not a human identity'); } });
       const result = await c.action.handler(null, { parameters: c.params }, state);
       expect(call.mock.calls).toEqual([c.args]);
-      expect(result).toEqual({ success: true, text: c.text, persist: false });
+      expect(result).toEqual({ success: true, text: c.text, persist: false, replacesReply: true });
       expect(result.data).toBeUndefined();
       expect(result.text).not.toContain(JSON.stringify(c.data));
     });
@@ -101,6 +101,7 @@ describe('read-only DoorDash actions', () => {
       } } } };
       expect(await c.action.handler(null, { parameters: c.params }, state)).toEqual({
         success: false, text: 'DoorDash could not complete that request. Please try again later.', persist: false,
+        replacesReply: true,
       });
     });
   }
@@ -128,7 +129,7 @@ describe('read-only DoorDash actions', () => {
       });
       expect(result.success).toBe(true);
       expect(result.persist).toBe(false);
-      expect(result.text).toStartWith('No ');
+      expect(result.text).toMatch(/^(No |Nothing )/);
     }
   });
 
@@ -139,8 +140,9 @@ describe('read-only DoorDash actions', () => {
         stdout: 'PRIVATE RAW JSON',
       } }) } },
     });
-    expect(result.text!.length).toBeLessThan(1000);
-    expect(result.text).toContain('15 more results are not shown.');
+    // Eight rows since 2026-09-18 (restaurants and stores share one list).
+    expect(result.text!.length).toBeLessThan(1600);
+    expect(result.text).toContain('12 more results are not shown.');
     expect(result.text).not.toContain('store 5');
     expect(result.text).not.toContain('PRIVATE');
     expect(result.text).not.toContain('nearby');

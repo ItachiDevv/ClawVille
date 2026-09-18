@@ -199,6 +199,16 @@ const CONCISE_CHAT_DIRECTIVE =
   'question, no lists or headers, and keep any in-character flavor to a few words at most. If you ' +
   'find yourself writing a 4th sentence of filler, stop.';
 
+// The owner's agent acts as well as talks. Its length rule must never cost an
+// action: the limit is on prose, and a request an action covers always carries
+// the tag in the same reply (staging, 2026-09-18: the bare rule dropped the tag).
+const AVATAR_ACTION_CARVE_OUT =
+  '\n\nACTIONS ARE EXEMPT FROM THE LENGTH RULE: the limit applies to your prose only. When the user ' +
+  'asks you to do something one of your actions covers (search, show a menu, add to a cart, give a ' +
+  'total, check a balance), you MUST include the matching [ACTION: ...] tag in that same reply, even ' +
+  'if the item still needs choices; the action itself asks for them. Never ask the user a question ' +
+  'the action would answer, and never say you did something without the tag.';
+
 // Conversational ceiling for live human↔NPC chat (teacher / Nori), applied when the
 // caller passes `conversational: true`. ~200 tokens ≈ comfortably fits 1-3 sentences
 // with headroom; a firmer backstop than the first 320 cut (a live probe showed 320 +
@@ -394,6 +404,14 @@ export class ElizaRuntime {
         system += `\n\nCommunication tone: ${customization.tone}`;
       }
     }
+    // The owner's OWN agent gets the same length rule as teachers and Nori.
+    // Without it a "Curious Scholar" archetype answered "what's going on, twin"
+    // with a Proof-of-History essay on every turn (founder, 2026-09-18). No token
+    // cap here, unlike the conversational routes: this chat emits action tags,
+    // and a cap could cut one off mid-tag. The carve-out is REQUIRED: live on
+    // staging the bare rule ("answer directly in plain prose") made the model
+    // stop writing the cart tag and narrate "I'll add that" with nothing added.
+    system += CONCISE_CHAT_DIRECTIVE + AVATAR_ACTION_CARVE_OUT;
 
     // Convert messageExamples from {user, content}[] to ElizaOS format
     const messageExamples = customization?.messageExamples?.map((conversation: any) =>
@@ -1339,7 +1357,10 @@ export class ElizaRuntime {
    */
   private parseActionInvocations(text: string): Array<{ actionName: string; params: Record<string, string> }> {
     const results: Array<{ actionName: string; params: Record<string, string> }> = [];
-    const regex = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
+    // The tag ends at ")]", not at the first ")": real values contain
+    // parentheses ("Coke (20 oz)" on a Wawa menu), and `[^)]*` silently failed
+    // to match the WHOLE tag, so the action never ran (founder, 2026-09-18).
+    const regex = /\[ACTION:\s*(\w+)\((.*?)\)\]/g;
     let match: RegExpExecArray | null;
 
     while ((match = regex.exec(text)) !== null) {
@@ -1348,14 +1369,18 @@ export class ElizaRuntime {
       const params: Record<string, string> = {};
 
       if (paramStr.length > 0) {
+        // A comma inside a value ("choices=shorti roll, not toasted, provolone")
+        // used to become a pile of stray flags and the value kept only its
+        // first piece. A piece with no `key=` now CONTINUES the previous value.
+        let lastKey: string | null = null;
         for (const part of paramStr.split(',')) {
           const eqIndex = part.indexOf('=');
-          if (eqIndex > 0) {
-            const key = part.slice(0, eqIndex).trim();
-            const value = part.slice(eqIndex + 1).trim();
-            if (key.length > 0) {
-              params[key] = value;
-            }
+          const keyText = eqIndex > 0 ? part.slice(0, eqIndex).trim() : '';
+          if (eqIndex > 0 && /^\w+$/.test(keyText)) {
+            params[keyText] = part.slice(eqIndex + 1).trim();
+            lastKey = keyText;
+          } else if (lastKey !== null) {
+            params[lastKey] = `${params[lastKey]}, ${part.trim()}`;
           } else {
             // Malformed param (no `=`): treat the whole part as a flag
             const flag = part.trim();
@@ -1364,6 +1389,11 @@ export class ElizaRuntime {
               params[flag] = 'true';
             }
           }
+        }
+        // Models often quote a value: choices="a, b". Drop one matching pair.
+        for (const key of Object.keys(params)) {
+          const quoted = /^(["'])([\s\S]*)\1$/.exec(params[key]!);
+          if (quoted) params[key] = quoted[2]!.trim();
         }
       }
 
@@ -1578,7 +1608,7 @@ export class ElizaRuntime {
 
         if (invocations.length > 0) {
           // Drop refused tags too; internal action syntax is never display text.
-          responseText = responseText.replace(/\[ACTION:\s*\w+\([^)]*\)\]/g, '').trim();
+          responseText = responseText.replace(/\[ACTION:\s*\w+\(.*?\)\]/g, '').trim();
           persistedResponseText = responseText;
         }
 
@@ -1587,6 +1617,13 @@ export class ElizaRuntime {
           const actionTexts = actionsExecuted
             .map((a) => a.result.text)
             .filter(Boolean);
+          // An action that replaces the reply drops the model's own prose, in
+          // the display AND in memory, so the two never disagree.
+          const replaces = actionsExecuted.some((a) => a.result.replacesReply === true);
+          if (replaces) {
+            responseText = '';
+            persistedResponseText = '';
+          }
           if (actionTexts.length > 0) {
             responseText = responseText
               ? `${responseText}\n\n${actionTexts.join('\n\n')}`

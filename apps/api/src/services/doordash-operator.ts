@@ -7,7 +7,9 @@ import {
   type DdAddress,
   type DdCart,
   type DdCliFailure,
+  type DdItemOptions,
   type DdMenu,
+  type DdNearby,
   type DdOrderStatus,
   type DdOrderSummary,
   type DdPreview,
@@ -26,8 +28,35 @@ import {
   clearDoordashCart,
   recallDoordashContext,
   rememberDoordashContext,
+  resolveItemByName,
   resolveStoreByName,
+  type DoordashMenuItemRef,
 } from './doordash-session';
+import { cleanVendorText, describeGaps, resolveChoices } from './doordash-options';
+
+/**
+ * Queries that mean "what is there", not a name or a cuisine. "I'm hungry, is
+ * DoorDash available?" arrives as one of these, and answering it with a
+ * restaurant-name search returns nothing at 4 AM even when Wawa is open.
+ */
+const GENERIC_QUERY = /^(?:food|anything|something|hungry|eat|eats|meal|snacks?|delivery|doordash|open|open now|what'?s open|near me|nearby|restaurants?|stores?|places?|options?|available)$/i;
+
+function isGenericQuery(query: string): boolean {
+  const q = query.trim().replace(/[?.!]+$/, '');
+  return q.length === 0 || GENERIC_QUERY.test(q) || /\b(?:hungry|what'?s open|available|anything)\b/i.test(q);
+}
+
+function storeNameMatches(name: string, query: string): boolean {
+  const n = name.toLowerCase();
+  const q = query.trim().toLowerCase();
+  // Same length floor as resolveStoreByName, for the same reason.
+  return q.length > 0 && (n.includes(q) || (n.length >= 4 && q.includes(n)));
+}
+
+/** "Scheduled" is the vendor's word for "cannot deliver right now". */
+function deliversNow(etaText: string | undefined): boolean {
+  return !!etaText && !/scheduled/i.test(etaText);
+}
 import { withKeyedMutex } from './keyed-mutex';
 
 const OPERATOR_ID = (process.env.DOORDASH_OPERATOR_USER_ID ?? '').trim();
@@ -97,7 +126,9 @@ export type DoordashFailure =
   | 'doordash_submit_ambiguous'
   | 'doordash_store_unresolved'
   | 'doordash_no_menu'
-  | 'doordash_no_cart';
+  | 'doordash_no_cart'
+  | 'doordash_item_unresolved'
+  | 'doordash_needs_choices';
 
 export type DoordashResult<T> =
   | { ok: true; data: T; durationMs: number }
@@ -122,6 +153,16 @@ export interface DoordashCartView {
   items: Array<{ lineId: string; name?: string; quantity: number; unitPriceCents?: number }>;
   /** Non-zero means DoorDash silently dropped part of the write (vendor issue #64). */
   droppedItems: number;
+  /** The option choices just added, echoed so the operator sees them before pricing. */
+  addedChoices?: string[];
+}
+/** One search hit, restaurant or store. Our shape, built from two vendor calls. */
+export interface DoordashPlaceView {
+  store_id: string;
+  store_name?: string;
+  kind: 'restaurant' | 'store';
+  etaText?: string;
+  miles?: number;
 }
 export interface DoordashPreviewView {
   /** What is actually in the basket, so a confirmation is an informed one. */
@@ -145,15 +186,16 @@ export interface DoordashBridge {
   subject: DoordashSubject;
   /** Raw requester turn. The confirmation protocol reads THIS, never a model reply. */
   requesterTurn: string;
-  search(q: { query: string }): Promise<DoordashResult<DdSearchResult>>;
-  menu(q: { storeId?: string; storeName?: string }): Promise<DoordashResult<DdMenu & { storeName?: string }>>;
+  search(q: { query: string }): Promise<DoordashResult<{ stores: DoordashPlaceView[] }>>;
+  menu(q: { storeId?: string; storeName?: string; query?: string }): Promise<DoordashResult<DdMenu & { storeName?: string }>>;
   addresses(): Promise<DoordashResult<DdAddress[]>>;
   // The cart and store ids are OPTIONAL because the model cannot see them
   // across turns: DoorDash output is stripped from chat memory by design. When
   // omitted they come from the operator's in-flight context (doordash-session).
   cartShow(q: { cartUuid?: string }): Promise<DoordashResult<DoordashCartView>>;
   cartAdd(q: {
-    storeId?: string; menuId?: string; itemId: string; quantity: number; cartUuid?: string;
+    storeId?: string; menuId?: string; itemId?: string; itemName?: string; choices?: string;
+    quantity: number; cartUuid?: string;
   }): Promise<DoordashResult<DoordashCartView>>;
   cartRemove(q: { cartUuid?: string; lineId: string }): Promise<DoordashResult<DoordashCartView>>;
   preview(q: { cartUuid?: string }): Promise<DoordashResult<DoordashPreviewView>>;
@@ -273,7 +315,7 @@ export function buildDoordashBridge(
   subject: DoordashSubject,
   requesterTurn: string,
 ): DoordashBridge {
-  return {
+  const bridge: DoordashBridge = {
     subject,
     requesterTurn,
     // Values only; the wrapper owns flags and validation (docs/ddcli-help/search.txt).
@@ -281,19 +323,58 @@ export function buildDoordashBridge(
     // Cupertino, CA and returns an empty list (confirmed on staging 2026-09-17).
     // A resolution failure is NOT fatal: we fall back to an unanchored search
     // rather than denying the operator a result, since the vendor still answers.
+    /**
+     * Restaurants AND stores. DoorDash splits discovery in two: `search` finds
+     * restaurants only, and convenience, grocery and pharmacy stores (Wawa,
+     * 7-Eleven, CVS) exist only in `find-nearby-stores`. Asking one of them
+     * made "I'm hungry" return nothing while Wawa was open (founder, 2026-09-18).
+     * A generic query lists stores that deliver NOW; a named query keeps the
+     * stores whose name matches it.
+     */
     async search({ query }) {
+      const startedAt = Date.now();
+      const generic = isGenericQuery(query);
       const addressId = await defaultAddressId();
-      const result = await runDdCli<DdSearchResult>('search', addressId ? [query, addressId] : [query]);
-      if (result.ok) {
-        // Ids and display names only, held for the in-flight order. This is what
-        // lets a later turn say the restaurant by name instead of by number.
-        rememberDoordashContext(subject.userId, {
-          lastStores: result.data.stores
-            .filter((store) => store.store_name)
-            .map((store) => ({ storeId: String(store.store_id), storeName: store.store_name! })),
-        });
+      const restaurants = await runDdCli<DdSearchResult>('search',
+        addressId ? [generic ? 'food' : query, addressId] : [generic ? 'food' : query]);
+      const stores = addressId ? await runDdCli<DdNearby>('nearby-stores', [addressId]) : null;
+      if (!restaurants.ok && !(stores && stores.ok)) return restaurants;
+
+      const places: DoordashPlaceView[] = [];
+      const seen = new Set<string>();
+      const add = (place: DoordashPlaceView) => {
+        if (seen.has(place.store_id)) return;
+        seen.add(place.store_id);
+        places.push(place);
+      };
+      const storeRows = stores && stores.ok ? stores.data.stores : [];
+      const toStore = (row: DdNearby['stores'][number]): DoordashPlaceView => ({
+        store_id: String(row.store_id),
+        store_name: row.name,
+        kind: 'store',
+        etaText: row.delivery_time,
+        miles: row.distance_meters === undefined ? undefined : Math.round((row.distance_meters / 1609) * 10) / 10,
+      });
+      // Named stores first: "wawa" should put Wawa at the top, not below five restaurants.
+      if (!generic) {
+        for (const row of storeRows) if (row.name && storeNameMatches(row.name, query)) add(toStore(row));
       }
-      return result;
+      if (restaurants.ok) {
+        for (const row of restaurants.data.stores) {
+          add({ store_id: String(row.store_id), store_name: row.store_name, kind: 'restaurant' });
+        }
+      }
+      if (generic) {
+        for (const row of storeRows) if (row.name && deliversNow(row.delivery_time)) add(toStore(row));
+      }
+      // Ids and display names only, held for the in-flight order. This is what
+      // lets a later turn say the place by name instead of by number.
+      rememberDoordashContext(subject.userId, {
+        lastStores: places
+          .filter((place) => place.store_name)
+          .map((place) => ({ storeId: place.store_id, storeName: place.store_name! })),
+      });
+      return { ok: true as const, data: { stores: places }, durationMs: Date.now() - startedAt };
     },
     /**
      * docs/ddcli-help/menu.txt: --store-id. A spoken name is accepted too,
@@ -302,16 +383,25 @@ export function buildDoordashBridge(
      * The resolved store and its menu id are remembered so the cart step does
      * not have to ask for them again.
      */
-    async menu({ storeId, storeName }) {
+    async menu({ storeId, storeName, query }) {
       const startedAt = Date.now();
-      const context = recallDoordashContext(subject.userId);
+      let context = recallDoordashContext(subject.userId);
       let resolvedId = storeId?.trim();
       let resolvedName = storeName?.trim();
       if (!resolvedId && resolvedName) {
-        const match = resolveStoreByName(context, resolvedName);
+        let match = resolveStoreByName(context, resolvedName);
+        if (!match) {
+          // "Menu for Wawa" with no search first is how people actually talk.
+          // Run the search on their behalf rather than sending them back for it.
+          const found = await bridge.search({ query: resolvedName });
+          if (found.ok) {
+            context = recallDoordashContext(subject.userId);
+            match = resolveStoreByName(context, resolvedName);
+          }
+        }
         if (!match) {
           return refuse('doordash_store_unresolved',
-            'I am not sure which restaurant you mean. Ask me to search for it and I will pull the menu.',
+            'I am not sure which place you mean. Ask me to search for it and I will pull the menu.',
             startedAt);
         }
         resolvedId = match.storeId;
@@ -319,24 +409,45 @@ export function buildDoordashBridge(
       }
       if (!resolvedId) {
         return refuse('doordash_store_unresolved',
-          'Tell me which restaurant and I will pull the menu.', startedAt);
+          'Tell me which restaurant or store and I will pull the menu.', startedAt);
       }
       // When the caller gave an id rather than a name, recover the name from the
-      // last search so the reply can say WHICH restaurant this menu belongs to.
+      // last search so the reply can say WHICH place this menu belongs to.
       if (!resolvedName) {
         resolvedName = context.lastStores.find((store) => store.storeId === resolvedId)?.storeName;
       }
       const result = await runDdCli<DdMenu>('menu', [resolvedId]);
       if (!result.ok) return result;
+      const sameStore = resolvedId === context.storeId;
+      const lastItems: DoordashMenuItemRef[] = result.data.items
+        .filter((item) => item.name)
+        .map((item) => ({
+          itemId: String(item.item_id),
+          name: item.name!,
+          hasModifiers: item.has_modifiers === true,
+          hasRequired: item.has_required_modifiers === true,
+        }));
       rememberDoordashContext(subject.userId, {
         storeId: resolvedId,
         menuId: String(result.data.menu_id),
-        storeName: resolvedName ?? context.storeName,
+        storeName: resolvedName ?? (sameStore ? context.storeName : undefined),
+        lastItems,
+        pendingItem: undefined,
+        // A DoorDash cart belongs to ONE store. Carrying the old cart uuid into a
+        // new store would aim the next add at the wrong cart.
+        ...(sameStore ? {} : { cartUuid: undefined }),
       });
+      // A filter word ("hoagie", "soda") narrows a 150-item convenience-store
+      // menu to what the operator asked about; the action shows at most 12.
+      const needle = query?.trim().toLowerCase();
+      const items = needle
+        ? result.data.items.filter((item) => item.name?.toLowerCase().includes(needle)
+          || needle.split(/\s+/).filter((w) => w.length > 2).some((w) => item.name?.toLowerCase().includes(w.replace(/s$/, ''))))
+        : result.data.items;
       // Naming the store HERE catches a wrong resolution one turn earlier than
       // the priced confirmation does, which is worth a turn of the founder's
       // time when the alternative is ordering from the wrong restaurant.
-      return { ...result, data: { ...result.data, storeName: resolvedName } };
+      return { ...result, data: { ...result.data, items, storeName: resolvedName } };
     },
     // docs/ddcli-help/address-list.txt: native response has addresses[].
     async addresses() {
@@ -357,7 +468,18 @@ export function buildDoordashBridge(
      * issue #64 documents that a batch can drop items while still exiting 0
      * with success true, so `droppedItems` is what the reply must report.
      */
-    async cartAdd({ storeId, menuId, itemId, quantity, cartUuid }) {
+    /**
+     * Add by item NAME or id, with option choices in plain words.
+     *
+     * The model cannot see menu ids on a later turn (DoorDash output never
+     * enters chat memory), so a name is resolved against the last menu here.
+     * An item with required choices (a Wawa custom hoagie: bread, toasting,
+     * cheese) is NOT added until every required group is answered: the reply
+     * lists the groups, the item waits in `pendingItem`, and the next turn's
+     * "classic roll, not toasted, provolone" is matched to option ids by
+     * doordash-options.ts. The model never supplies an option id.
+     */
+    async cartAdd({ storeId, menuId, itemId, itemName, choices, quantity, cartUuid }) {
       const startedAt = Date.now();
       const context = recallDoordashContext(subject.userId);
       const store = storeId?.trim() || context.storeId;
@@ -366,11 +488,66 @@ export function buildDoordashBridge(
         return refuse('doordash_no_menu',
           'Let me pull the menu up first, then I can add that.', startedAt);
       }
+
+      // Resolve WHICH item. An explicit id wins, then a spoken name, then the
+      // item still waiting for its choices.
+      let item: { itemId: string; name: string; hasModifiers: boolean; hasRequired: boolean } | undefined;
+      const idGiven = itemId?.trim();
+      if (idGiven) {
+        const known = context.lastItems?.find((i) => i.itemId === idGiven);
+        item = known ?? { itemId: idGiven, name: 'that item', hasModifiers: false, hasRequired: false };
+      } else if (itemName?.trim()) {
+        const match = resolveItemByName(context, itemName);
+        if (!match) {
+          return refuse('doordash_item_unresolved',
+            `I could not find ${cleanVendorText(itemName)} on the ${context.storeName ? cleanVendorText(context.storeName) : 'current'} menu. Ask me for the menu and I will list it.`,
+            startedAt);
+        }
+        if ('choices' in match) {
+          return refuse('doordash_item_unresolved',
+            `Which one: ${match.choices.map((n) => cleanVendorText(n)).join('; ')}?`, startedAt);
+        }
+        item = match.item;
+      } else if (context.pendingItem) {
+        const pending = context.pendingItem;
+        item = context.lastItems?.find((i) => i.itemId === pending.itemId)
+          ?? { itemId: pending.itemId, name: pending.name, hasModifiers: true, hasRequired: true };
+      }
+      if (!item) {
+        return refuse('doordash_item_unresolved', 'Tell me which item and I will add it.', startedAt);
+      }
+      const qty = context.pendingItem && !idGiven && !itemName?.trim() ? context.pendingItem.quantity : quantity;
       const cart = cartUuid?.trim() || context.cartUuid;
-      const args = [store, menuIdent, itemId, String(quantity)];
+
+      // Items with choices go through the option list for THIS item.
+      const choiceText = choices?.trim() ?? '';
+      if (item.hasModifiers || item.hasRequired || choiceText) {
+        const details = await runDdCli<DdItemOptions>('item-options', [store, menuIdent, item.itemId]);
+        if (!details.ok) return details;
+        const groups = details.data.item.extras;
+        const resolved = groups.length > 0 ? resolveChoices(groups, choiceText) : null;
+        if (resolved && !resolved.ok) {
+          rememberDoordashContext(subject.userId, {
+            pendingItem: { itemId: item.itemId, name: item.name, quantity: qty },
+          });
+          return refuse('doordash_needs_choices', describeGaps(item.name, resolved), startedAt);
+        }
+        // Optional-only choices with nothing picked falls through to a PLAIN
+        // add: an empty nested_options list is refused by the strict validator.
+        if (resolved && resolved.ok && resolved.nested.length > 0) {
+          const args = [store, menuIdent, item.itemId, String(qty), JSON.stringify(resolved.nested)];
+          if (cart) args.push(cart);
+          const result = await runDdCli<DdCart>('cart-add-options', args);
+          if (!result.ok) return result;
+          rememberDoordashContext(subject.userId, { cartUuid: result.data.cart_uuid, pendingItem: undefined });
+          return { ...result, data: { ...toCartView(result.data), addedChoices: resolved.picked } };
+        }
+      }
+
+      const args = [store, menuIdent, item.itemId, String(qty)];
       if (cart) args.push(cart);
       const result = await runDdCli<DdCart>('cart-add', args);
-      if (result.ok) rememberDoordashContext(subject.userId, { cartUuid: result.data.cart_uuid });
+      if (result.ok) rememberDoordashContext(subject.userId, { cartUuid: result.data.cart_uuid, pendingItem: undefined });
       return result.ok ? { ...result, data: toCartView(result.data) } : result;
     },
 
@@ -820,4 +997,5 @@ export function buildDoordashBridge(
       return result.ok ? { ...result, data: result.data.orders } : result;
     },
   };
+  return bridge;
 }
