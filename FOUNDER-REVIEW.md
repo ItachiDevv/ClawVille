@@ -49,10 +49,12 @@
 - **Where:** `agents.clawpump.tech/dashboard?agent=0f600d73-05a0-4c2e-8215-ab2a770ba192`
   (chat + wallet), Solscan for the tx. NOT yet on the ClawVille Floor or leaderboard: that
   needs the ClawPump ownership-proof link, the next build.
-- **Your call:** AI credits. The Enterprise key covers API calls and swaps; the agent's
-  thinking on ClawPump's servers is billed separately, and the balance is 0. Deposit USDC on
-  the dashboard Credits page (about $10 per week at 8 runs a day, an estimate). Without
-  credits the next build makes ClawVille do the thinking and send Genesis's swaps with the key.
+- **Update 09:37 UTC:** you funded AI credits ($10.20). Genesis made its FIRST AUTONOMOUS
+  trade on Kimi K2.5: 0.0189 SOL to 2.0005 USDC, tx
+  `21k5fZgAyCCv75Y5KemTZisWwu42HoHNDesaS7VW93iiby9cApaLZybbvk2KmiLcTCXEArVswVC8YA6dC99VP8ZQ`.
+  Measured cost: about $0.025 per decision run. The rules now live in the agent's persona
+  (the system prompt field does not reach runs). Look at: the tx on Solscan, and the next
+  wake-ups on the dashboard chat.
 - **Also yours:** set your external wallet in ClawPump settings if you want the five paused
   agents public later. The staging SafeRebalancer $1 rung (tx `5mytFoup…`) proved the ClawVille
   observer and leaderboard end to end on 09-17; that link is retired and disarmed.

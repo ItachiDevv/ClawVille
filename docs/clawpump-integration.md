@@ -32,6 +32,15 @@ The alternative that needs no ClawPump credits: ClawVille decides with its own m
 - **No sign-message tool:** a ClawPump wallet cannot answer ClawVille's ed25519 pairing challenge. Ownership proof for a ClawPump wallet must use the authenticated `GET /agents` read (it lists each agent's wallet for the key's account) or a nonce micro-transfer.
 - **Rotation drops a partner-granted tier.** The Enterprise grant was lost on a key rotation on 2026-09-17 and re-granted by ClawPump on 2026-09-18. Never rotate a partner-granted key; ask the partner to re-issue.
 
+## First autonomous trade and measured cost (2026-09-18 09:37Z)
+
+- **Credits unblock runs.** The founder deposited about $10 to the credit wallet; `sync_billing` credited $10.195374 and the agent status changed from `stopped` to `running`. Runs that failed at once before now complete. So the instant failure was the 0-credit balance.
+- **`config.system_prompt` does NOT reach autonomous runs.** On a run, Genesis reported no objective and no hard rules; it saw only its SOUL.md (name and skills). After `update_agent persona=<the rules>`, it repeated every rule word for word. Put agent rules in `persona`, not only in `system_prompt`.
+- **Words that switch mode.** An objective that contained "SOUL.md" put the run into a "read-only web analysis mode": the runtime fetched `https://SOUL.md` and replaced the agent prompt. Do not put file names or domain-like words in objectives.
+- **Unit error, fixed by a persona rule.** The first live decision computed usdc_share 28.9 percent and the $2 rule correctly, then requested 2 SOL instead of $2 of SOL; the swap tool refused it (insufficient balance), nothing moved. A "SWAP AMOUNT RULE" in the persona (amount in input-token units, $X of SOL = X / price, lamports example) fixed it.
+- **First autonomous trade.** Run `07542bce-1ecf-4954-b879-73406e4f8677`, one step with `portfolio_balance`, `swap_quote`, `swap_execute`: 0.018901739 SOL to 2.000506 USDC, 0 percent impact, Jupiter v6, tx `21k5fZgAyCCv75Y5KemTZisWwu42HoHNDesaS7VW93iiby9cApaLZybbvk2KmiLcTCXEArVswVC8YA6dC99VP8ZQ` (slot 448045004, verified by `getTransaction`: USDC 12.016708 to 14.017214).
+- **Measured cost (Kimi K2.5).** A step is 17k to 37k input tokens and 300 to 800 output tokens. Read-only run: $0.011. Decision run with a trade: $0.024 (one step). Day total for 7 steps: $0.0795, equal to the sum of run costs, so no hidden self-learning charge so far. At one decision run every 3 hours this is about $0.20 per day.
+
 ## Research pass 2026-09-18 (docs + public code + read-only live calls)
 
 Sources: https://clawpump.tech/docs and its subpages, https://clawpump.tech/developers, https://clawpump.tech/guide, https://clawpump.tech/ansemhack, the public runtime github.com/Clawpump/claw-agent (a Hermes fork; the hosted platform server is private), and the MCP tool contracts. Nothing was spent or changed.
