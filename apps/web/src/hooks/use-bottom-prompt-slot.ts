@@ -189,10 +189,16 @@ const MOBILE_PROMPT_JUMP_CLEAR =
  * column (viewport narrower than PROMPT_JUMP_CLASH_MAX_VW_PX: every portrait
  * phone). At or above that width the subtracted term is huge, so the outer
  * max() falls back to the desired lift and iPads and landscape phones keep
- * their current position. Pure CSS, so rotation and resizing need no JS.
+ * their current position (the gate subtracts from 599 px, so exactly 600 px
+ * is already wide). Pure CSS, so rotation and resizing need no JS.
+ *
+ * Limit: the top-reserve cap in bottomPromptOffset still wins on an upright
+ * screen shorter than about 540 px (for example 320x480), where the pill
+ * cannot rise above the button without covering the mode toggle. No current
+ * phone is that short, and the old formula overlapped there too.
  */
 const MOBILE_PROMPT_NARROW_JUMP_CLEAR =
-  `calc(${MOBILE_PROMPT_JUMP_CLEAR} - max(0px, (100vw - ${PROMPT_JUMP_CLASH_MAX_VW_PX}px) * 1000))`;
+  `calc(${MOBILE_PROMPT_JUMP_CLEAR} - max(0px, (100vw - ${PROMPT_JUMP_CLASH_MAX_VW_PX - 1}px) * 1000))`;
 
 /**
  * The shared vertical offset for the slot.
