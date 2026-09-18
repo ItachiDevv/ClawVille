@@ -55,6 +55,24 @@ const TOWN_BASE_Y = MAP_HEIGHT / 2 + 540;
 // exceeds this; a hair of tolerance covers float noise only.
 const STATIONARY_EPS = 4;
 
+// The per-session spawn scatter clamp (mirrors _safeScatterX/Y in stores/game.ts).
+const SPAWN_SCATTER_MAX_X = 200;
+const SPAWN_SCATTER_MAX_Y = 180;
+
+/**
+ * True when (x, y) is the scattered town spawn the store seeds on a real page
+ * load. /game can also mount FIRST on a route exit: after a refresh inside the
+ * cove or the kelp forest, their "Back to World" places the avatar at the exit
+ * and then /game mounts. That avatar is not ours to move (found 2026-09-18: a
+ * home-spawn player leaving the cove was sent home instead of to the door).
+ */
+export function isAtTownSpawn(x: number, y: number): boolean {
+  return (
+    Math.abs(x - TOWN_BASE_X) <= SPAWN_SCATTER_MAX_X &&
+    Math.abs(y - TOWN_BASE_Y) <= SPAWN_SCATTER_MAX_Y
+  );
+}
+
 export default function SpawnOnLoad() {
   const { data: avatar } = useAvatar();
   const setAvatarPosition = useGameStore((s) => s.setAvatarPosition);
@@ -78,6 +96,12 @@ export default function SpawnOnLoad() {
       initialSpawnRef.current = { x: avatarPositionRef.x, y: avatarPositionRef.y };
     }
     if (placedRef.current) return;
+    // Not a page-load spawn (a route exit placed the avatar): leave it.
+    const first = initialSpawnRef.current;
+    if (!isAtTownSpawn(first.x, first.y)) {
+      placedRef.current = true;
+      return;
+    }
     if (!avatar) return; // wait for the authed avatar to resolve
 
     const pref = (avatar as { spawnPreference?: 'home' | 'town' }).spawnPreference;
