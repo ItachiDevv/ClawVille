@@ -301,8 +301,9 @@ class ActivityQueueService {
     // ACTIVE room: a room in results/gc/aborted, or one the avatar already
     // left, still exists in the manager for a while, and routing a fresh
     // queue into it showed "MATCH EXPIRED" (2026-09-18, staging repro).
-    const active = activityRoomManager.getPlayerActiveRoom(avatarId);
-    if (!active || active.id !== roomId) {
+    // Read-only check: this runs on every status poll and must never mutate
+    // the room manager's bindings.
+    if (!activityRoomManager.isAvatarInLiveRoom(avatarId, roomId)) {
       this.matchedRooms.delete(avatarId);
       return null;
     }

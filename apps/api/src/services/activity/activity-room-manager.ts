@@ -433,6 +433,20 @@ class ActivityRoomManager {
   }
 
   /**
+   * READ-ONLY: is `roomId` the avatar's current, still-playing room? Same
+   * rule as getPlayerActiveRoom but with no cleanup side effect, so a
+   * queue-status poll can never delete a binding. (A poll can land while a
+   * state transition is set in memory but its DB write later rolls back;
+   * getPlayerActiveRoom would have dropped the binding for good. Codex,
+   * 2026-09-18.)
+   */
+  isAvatarInLiveRoom(avatarId: string, roomId: string): boolean {
+    if (this.playerToRoom.get(avatarId) !== roomId) return false;
+    const room = this.rooms.get(roomId);
+    return !!room && !NON_BLOCKING_ROOM_STATES.has(room.state);
+  }
+
+  /**
    * Terminal exit for one participant (voluntary leave, grace timeout,
    * or integrity kick). Marks the participant `withdrawn`, releases
    * their `playerToRoom` binding immediately (so re-queueing works while
