@@ -55,6 +55,15 @@
   Measured cost: about $0.025 per decision run. The rules now live in the agent's persona
   (the system prompt field does not reach runs). Look at: the tx on Solscan, and the next
   wake-ups on the dashboard chat.
+- **Update 12:45 UTC (while you slept): Genesis RUNNER is LIVE.** Your option B. A loop on the
+  staging box (`/root/runner-data/runner.py`, every 15 s) finds memecoins between $300k and $5M
+  market cap with momentum, checks them on chain, and buys $2 from Genesis's wallet through
+  ClawPump; exits: -30 percent stop, take profit at 1.5x / 2x / 3x, trailing stop, 6 h limit.
+  HARD caps: $6 loss per day, $15 lifetime, so at most 2 open positions. Three adversarial
+  reviews first (v1-v3 blocked, v4 approved). The old 3-hour rebalance timers are deleted and
+  the persona states the runner rules. **Your calls:** (1) keep $2 per position? Each new token
+  account costs about $0.21 of SOL rent, about 10 percent of a $2 position; $5 would make it 4
+  percent. (2) raise or keep the $6/$15 caps. Logs: `runner_trades.jsonl`, `runner_closed.jsonl`.
 - **Also yours:** set your external wallet in ClawPump settings if you want the five paused
   agents public later. The staging SafeRebalancer $1 rung (tx `5mytFoup…`) proved the ClawVille
   observer and leaderboard end to end on 09-17; that link is retired and disarmed.
