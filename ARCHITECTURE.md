@@ -45,8 +45,8 @@ Trading risk environment variables use these directions:
 | `TRADING_PROMOTION_SWEEP_AGE_S` | 300 | Promotion sweep age. |
 | `TRADING_PROMOTION_SWEEP_MAX` | 50 | Promotion sweep batch limit. |
 | `TRADING_PROMOTION_ALERT_AGE_S` | 3,600 | Critical reconcile and legacy-admission alert interval. |
-| `CLAWPUMP_API_KEY` | unset | Signal access only. It never gates Jupiter execution. |
-| `CLAWPUMP_API_BASE_URL` | unset | Reserved host-allowlisted signal endpoint. The client is blocked pending the endpoint contract. |
+| `CLAWPUMP_API_KEY` | unset (SET on staging api 2026-09-18) | The founder's ENTERPRISE `cpk_` partner key. No code reads it yet; the next build uses it server-side to drive Genesis on ClawPump (`docs/clawpump-integration.md`). It never gates Jupiter execution. |
+| `CLAWPUMP_API_BASE_URL` | unset (SET on staging api 2026-09-18 to `https://ai-agents-production-6ca0.up.railway.app`) | ClawPump REST root (no `/api` prefix). No code reads it yet. |
 | `CLAWPUMP_BOARD_URL` | unset | Read-only Trading Floor board URL. |
 | `CLAWPUMP_HTTP_TIMEOUT_MS` | 15,000 | Reserved signal request timeout. |
 | `CLAWPUMP_FIXTURE_DIR` | unset | Test only; staging and production refuse boot when set. |

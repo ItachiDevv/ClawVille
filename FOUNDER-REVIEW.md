@@ -38,49 +38,25 @@
   $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
 - Shipped by: session clawPump/Fable, 2026-09-16.
 
-### Fleet (five house agents) — FIRST FLEET TRADE EXECUTED ON MAINNET from STAGING (2026-09-17)
-- **The trade:** SafeRebalancer, $1 SOL→USDC via Jupiter, signature
-  `5mytFoup16GrVojktQYHaG9bc5fP1w6jQ135zTYgJVe7Bjc1Jtu8Tzcu6gAtpfVVr4DZgeX3gZFBHaBDGpK4Jow2`
-  (finalized, slot 447873097, fee 67,433 lamports, wallet −0.009997 SOL / +0.999229 USDC).
-  Look at it on any explorer. Three bugs surfaced on the way, each would have refused or
-  hidden every fleet trade on prod, all fixed same day (`deploy-status.md` 2026-09-17).
-- **Where to look (verified 2026-09-17 19:44Z):** staging `/leaderboard` → rank 2 card
-  `SafeRebalancer`, label CLAWVILLE-OPERATED, score 20, `TRADER 1`; staging `/game` →
-  sidebar tape / Exchange → "Trading Floor" tab → live floor lists the $1 SOL→USDC trade.
-  The decision is `executed`, its USDC reservation settled, the wallet now holds about
-  0.29 SOL + $10.99 USDC.
-- **Feedback wanted:** does the rank card + label read right to you; then the rulings
-  below so the other four accounts can be provisioned and the promotion to prod can ride.
-- **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
-  and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
-  On 2026-09-16 the first account was provisioned on STAGING (objective
-  `conservative-rebalancer`, trader `SafeRebalancer`, operator = the seeded staging admin
-  `landtest1`): avatar wallet `vaLqeo9HSaA5JbbDiL5GbusBG9jsKgQ6KXW8AUDZ3ZX`,
-  leaderboard-eligible, ClawVille-operated. Prod has no fleet account yet.
-- **2026-09-17 rung status:** the founder funded the staging wallet (0.3 SOL + $10 USDC).
-  The arm route accepted it: float start $40.25, baseline slot 447865610. The first $1
-  SOL→USDC test trade was REFUSED with `decimals_unresolved`: the mint whitelist demanded
-  a null mint authority on every mint, and mainnet USDC has Circle's. Fixed the same hour
-  (pinned USDC authorities, see `ARCHITECTURE.md` 2026-09-17 drift note); the re-run
-  result lands in `deploy-status.md`. The rung found a bug that would have refused every
-  fleet trade on prod, which is what it exists for. Decisions already taken and applied: self-custody
-  (ClawVille signs, ClawPump never), fleet ranks publicly with the "ClawVille-operated"
-  label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL across five wallets, default
-  drawdown halt 20 percent.
-- **Owed by founder before provisioning/arming (rulings, not playtests):** which user ids
-  go in `ADMIN_USER_IDS` on staging and prod (the only accounts that can provision, pair,
-  arm, halt, kill) and a session for that account so the five accounts can be provisioned
-  on staging first; glance at the five objective briefs in
-  `packages/shared/src/constants/trading-fleet.ts` (momentum, ANSEM+CLAWVILLE DCA,
-  SOL/USDC mean reversion, signal follower, conservative rebalancer).
-- **Genesis pairing (wallet `4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n`, received
-  2026-09-16):** blocked on proof of ownership. Pairing now requires the wallet to sign a
-  one-time ed25519 challenge, and that wallet is ClawPump-custodied, so it cannot sign
-  locally. Two ways forward: the full 47-char ClawPump enterprise key (then a
-  ClawPump-verified lookup door can be built), or a ClawPump message-signing call if their
-  agent API offers one. The wallet also has no on-chain history yet (0 SOL, 0 txs), so
-  there is nothing to observe until genesis trades.
-- Session clawPump/Fable, 2026-09-16.
+### ONE AGENT FIRST: Genesis trades on ClawPump (2026-09-18)
+- **What:** your direction applied. Genesis (your ClawPump agent) is the single trader; the
+  five-agent fleet is paused. Genesis holds the float moved from the staging test wallet
+  (about 0.28 SOL + 12.02 USDC), carries hard rules in its system prompt ($2 per trade under
+  a $50 float, one trade per hour, quote first, 60 percent USDC target, never transfers out,
+  perps disabled) and made its first ClawPump swap: tx
+  `5MpMtdFafzC4hoNs4m7Ho99bQMPddk7L83EKBFuaujLU69gSHFjvs66pzdccfEy9RWphRj3Fg94d4m7HiZvK4QRa`.
+  Eight scheduled wake-ups (every 3 hours from 06:07 UTC 09-18) run on the free tier.
+- **Where:** `agents.clawpump.tech/dashboard?agent=0f600d73-05a0-4c2e-8215-ab2a770ba192`
+  (chat + wallet), Solscan for the tx. NOT yet on the ClawVille Floor or leaderboard: that
+  needs the ClawPump ownership-proof link, the next build.
+- **Your call:** AI credits. The Enterprise key covers API calls and swaps; the agent's
+  thinking on ClawPump's servers is billed separately, and the balance is 0. Deposit USDC on
+  the dashboard Credits page (about $10 per week at 8 runs a day, an estimate). Without
+  credits the next build makes ClawVille do the thinking and send Genesis's swaps with the key.
+- **Also yours:** set your external wallet in ClawPump settings if you want the five paused
+  agents public later. The staging SafeRebalancer $1 rung (tx `5mytFoup…`) proved the ClawVille
+  observer and leaderboard end to end on 09-17; that link is retired and disarmed.
+- Session clawPump, 2026-09-18.
 
 ## LAND
 
