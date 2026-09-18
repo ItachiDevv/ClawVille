@@ -120,6 +120,13 @@ export type WagerAbortRecoveryResult =
   | 'cancelled_never_created';
 
 const WAGER_ABORT_ACTIVITY_IDS = new Set(['bumper-shells', 'reef-race']);
+
+/** lobby_events reason for a lobby closed in the DB because its create never
+ *  reached the chain (founder 2026-09-18: "mark them with closed"). */
+export const CLOSED_NEVER_CREATED_REASON = 'closed_never_created_on_chain';
+/** lobby_events reason when the watcher later finds an on-chain account for
+ *  such a lobby and cancels it on chain (depositors then self-refund). */
+export const LATE_CHAIN_ACCOUNT_REASON = 'late_chain_account_cancelled';
 const WAGER_ABORT_RECOVERY_INTERVAL_MS = 60_000;
 let wagerAbortRecoveryHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -199,7 +206,7 @@ export const productionWagerAbortRecoveryDeps: WagerAbortRecoveryDeps = {
             txSig: null,
             rawEventJson: {
               triggeredBy: 'aborted_crash_recovery',
-              reason: 'never_created_on_chain',
+              reason: CLOSED_NEVER_CREATED_REASON,
             },
           });
         },
@@ -301,9 +308,9 @@ export async function handleWagerRoomAborted(
  * from 07-28/07-29 that threw wager_create_reconciliation_required every
  * minute, 650 lines in 5 h) must stay VISIBLE without flooding the log: one
  * line per room per cause per hour, carrying how many repeats were held back.
- * The quarantine itself is unchanged; closing such a row in the DB alone is
- * unsafe because the program accepts a direct create for a caller-chosen
- * lobby id, so a DB cancel cannot rule out a later on-chain deposit.
+ * (Never-created lobbies now close through cancelLobbyForAbortedRoom, and
+ * watchClosedNeverCreatedLobbies covers a later on-chain account; any other
+ * quarantined row keeps logging here.)
  */
 const SWEEP_FAILURE_LOG_INTERVAL_MS = 60 * 60_000;
 const sweepFailureLog = new Map<string, { message: string; loggedAt: number; held: number }>();
@@ -360,7 +367,7 @@ export async function sweepAbortedCrashWagerLobbies(
     seen.add(row.roomId);
     try {
       const result = await cancelLobbyForAbortedRoom(row.roomId, deps);
-      if (result === 'cancelled' || result === 'reconciled_cancelled') recovered++;
+      if (result === 'cancelled' || result === 'reconciled_cancelled' || result === 'cancelled_never_created') recovered++;
       sweepFailureLog.delete(row.roomId);
     } catch (err) {
       failed++;
@@ -383,11 +390,112 @@ export async function sweepAbortedCrashWagerLobbies(
   return { attempted: rows.length, recovered, failed };
 }
 
+/**
+ * Watcher for lobbies closed in the DB as never-created (see
+ * cancelLobbyForAbortedRoom). The program accepts a direct create with a
+ * caller-chosen lobby id, and a create can be invisible at `confirmed` for a
+ * moment, so a DB close alone cannot rule out a later on-chain lobby with that
+ * id (Codex, 2026-09-18). Every sweep tick re-checks each such lobby: while
+ * its account is absent nothing happens; if an account appears, the
+ * settlement authority cancels it on chain (open/locked), which lets every
+ * depositor claim a refund with their own signature (claim_refund_sol), and
+ * the DB records it once. A lost cancel response is safe: the next tick reads
+ * the chain state first and records 'cancelled' without a second send.
+ */
+export interface NeverCreatedWatchDeps {
+  listClosedNeverCreated(): Promise<Array<{ rowId: string; lobbyId: bigint }>>;
+  lobbyAccountAbsent(lobbyId: bigint): Promise<boolean>;
+  readChainState(lobbyId: bigint): Promise<WagerLobbyChainState>;
+  cancelLobby(input: CancelLobbyInput): Promise<CancelLobbyResult>;
+  recordLateChainAccount(
+    rowId: string,
+    input: { chainState: WagerLobbyChainState; txSig: string | null },
+  ): Promise<void>;
+  alert(message: string, context: Record<string, unknown>): void;
+}
+
+export const productionNeverCreatedWatchDeps: NeverCreatedWatchDeps = {
+  listClosedNeverCreated: async () => {
+    const rows = await db
+      .select({ rowId: lobbies.id, lobbyId: lobbies.lobbyId })
+      .from(lobbies)
+      .where(
+        and(
+          eq(lobbies.state, 'cancelled'),
+          eq(lobbies.onChainCreateStatus, 'failed'),
+          sql`exists (select 1 from ${lobbyEvents} e where e.lobby_id = ${lobbies.id}
+                and e.raw_event_json->>'reason' = ${CLOSED_NEVER_CREATED_REASON})`,
+          sql`not exists (select 1 from ${lobbyEvents} e where e.lobby_id = ${lobbies.id}
+                and e.raw_event_json->>'reason' = ${LATE_CHAIN_ACCOUNT_REASON})`,
+        ),
+      );
+    return rows;
+  },
+  lobbyAccountAbsent: isWagerLobbyAccountAbsent,
+  readChainState: readWagerLobbyChainState,
+  cancelLobby,
+  recordLateChainAccount: async (rowId, { chainState, txSig }) => {
+    await db.transaction(async (tx) => {
+      if (txSig) {
+        await tx.update(lobbies).set({ onChainCancelSig: txSig }).where(eq(lobbies.id, rowId));
+      }
+      await tx.insert(lobbyEvents).values({
+        lobbyId: rowId,
+        kind: 'cancelled',
+        txSig,
+        rawEventJson: { triggeredBy: 'never_created_watch', reason: LATE_CHAIN_ACCOUNT_REASON, chainState },
+      });
+    });
+  },
+  alert: (message, context) => {
+    void alertError({ severity: 'critical', source: 'wager-lobby-bridge', message, context }).catch(() => {});
+  },
+};
+
+export async function watchClosedNeverCreatedLobbies(
+  deps: NeverCreatedWatchDeps = productionNeverCreatedWatchDeps,
+): Promise<{ checked: number; lateAccounts: number }> {
+  const rows = await deps.listClosedNeverCreated();
+  let lateAccounts = 0;
+  for (const row of rows) {
+    try {
+      if (await deps.lobbyAccountAbsent(row.lobbyId)) continue;
+      lateAccounts++;
+      const chainState = await deps.readChainState(row.lobbyId);
+      let txSig: string | null = null;
+      if (chainState === 'open' || chainState === 'locked') {
+        const result = await deps.cancelLobby({
+          lobbyIdBigint: row.lobbyId,
+          signerKind: 'settlement-authority',
+        });
+        txSig = result.txSig;
+      }
+      await deps.recordLateChainAccount(row.rowId, { chainState, txSig });
+      deps.alert('[wager-bridge] an on-chain account appeared for a lobby closed as never-created', {
+        lobbyRowId: row.rowId,
+        lobbyId: row.lobbyId.toString(),
+        chainState,
+        cancelTx: txSig,
+      });
+    } catch (err) {
+      deps.alert('[wager-bridge] never-created watch failed for a lobby', {
+        lobbyRowId: row.rowId,
+        lobbyId: row.lobbyId.toString(),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { checked: rows.length, lateAccounts };
+}
+
 export function startWagerAbortRecoveryWorker(): void {
   if (wagerAbortRecoveryHandle) return;
   const run = () => {
     void sweepAbortedCrashWagerLobbies().catch((err) => {
       console.error('[wager-bridge] abort recovery sweep failed:', err);
+    });
+    void watchClosedNeverCreatedLobbies().catch((err) => {
+      console.error('[wager-bridge] never-created watch failed:', err);
     });
   };
   run();
