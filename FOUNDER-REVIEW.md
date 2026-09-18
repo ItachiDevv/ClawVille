@@ -84,6 +84,14 @@
 
 ## LAND
 
+### Outer land ring lots are no longer empty (staging, then prod)
+
+- **WHERE:** staging.clawville.world/game (prod after promotion). Walk or click-to-move on the map to the outermost ring of plots, for example the far west edge where your screenshot was.
+- **LOOK AT:** each outer lot now has a model cottage or market stall, like the inner rings. The 20 outer lots were added after your "fill every plot" request in June and were never filled.
+- **FEEDBACK WANTED:** do the outer lots read as "set up" now? They sit one size above the starter ring. Is that the step up you want?
+- **Session dd, 2026-09-18.**
+
+
 ### Door-2 wallet proof feel-pass (LIVE on prod)
 - **What:** the "send a small amount, we send it back" wallet-ownership check.
 - **Where:** prod → `/game` → Land Office → declare a wallet → VERIFY MY WALLET →
@@ -254,11 +262,25 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   does it need different columns/grouping.
 - Session selfheal/Fable, 2026-09-13 (promoted 2026-09-14).
 
+### Nori now knows WHERE the bounty board is (staging)
+- **What:** Nori told you on prod that Pearl held the bounties. Bounties never moved;
+  the bug was that no knowledge Nori or any agent reads ever said where they are, so
+  the model made one up. Nori, the hosted-agent orientation and the connected-agent
+  manual now all say the Bounty Board is the RIGHT half of the Quest + Bounty
+  Pavilion behind the town-directory sign, and that no teacher or NPC holds bounties.
+- **Where:** staging.clawville.world → ask Nori "where do I find bounties?" and
+  "does Pearl have the bounties?"
+- **Feedback wanted:** does she send you to the pavilion and never to a building.
+- Session bountyFix2/Opus, 2026-09-18.
+
 ### OOBE/SAP fully removed — bounty board on the single low-tier rail (staging)
 - **What:** the on-chain escrow partner is gone end to end. USDC bounties now run
   ONLY the low-tier rail (custodial hold up to $50, PayAI payout); vCLAW bounties
-  unchanged. All our on-chain funds were recovered first (house wallet now holds
-  0.2218 SOL, up 0.157).
+  unchanged. All our on-chain funds were recovered first; the recovered SOL was
+  swept to your wallet on 2026-09-13, and BOTH house wallets read 0 SOL on
+  mainnet (re-checked 2026-09-18). The last SAP leftovers, the dead tables and
+  bounty columns, are dropped by migration `0067_sap_table_drop.sql`, which is
+  ON STAGING ONLY and needs your go before it runs on the prod database.
 - **Where:** clawville.world — post a small USDC bounty, claim it with a second
   account, approve, watch the payout. (Now LIVE ON PROD, promoted since this
   entry was written.)
@@ -268,6 +290,30 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - Session tier2/Fable, 2026-08-20.
 
 ---
+
+## HUD
+
+### Quest card no longer covers the minimap (staging)
+- **What:** the Town Tour card used to sit on the bottom of the minimap, worst next to a
+  building with a long name. It now always sits 8 px below the minimap. The minimap's
+  bottom line is now two rows (place name, then the visited count), so long names like
+  "Predictive Gaming Cove" show in full instead of wrapping.
+- **Also:** on a phone held sideways the minimap used to cover the movement joystick. It
+  now shrinks to its top row there, and keeps the Map button so fast travel still works.
+- **Where:** staging.clawville.world → /game on desktop, walk next to the cove; then on a
+  phone held sideways.
+- **Feedback wanted:** does the spacing look right; is the smaller sideways-phone minimap OK.
+- Session bountyFix2/Opus, 2026-09-18.
+
+### DECISION: three phone control overlaps (not changed yet)
+- On a phone held upright, the two 220 px joystick pads overlap each other in the middle
+  (about 50 px).
+- On phones, the settings and controller buttons partly cover the Jump button.
+- ~~At building prompts on an upright phone, the bottom prompt pill covers part of Jump~~
+  FIXED 2026-09-18 by session dd (staging): the pill now sits 8 px above Jump on upright
+  phones; iPads and landscape phones are unchanged. This moved the prompt, not a control.
+- **Decision wanted:** fix all three by moving/shrinking controls? That changes how the
+  controls feel on phones, so it waits for your yes.
 
 ## ACTIVITIES
 
@@ -286,6 +332,22 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - Built by: session prf, 2026-09-07.
 
 ## COVE
+
+### Leaving the cove no longer drops you back in (staging)
+- **What:** "Back to World" put you inside the cove building, and any step pulled
+  you back into the cove. The exit point had been hand-set in June, before the
+  tunnel existed, and ended up inside the cove's walls, next to the automatic
+  walk-in zone. You now land just outside the tunnel mouth, facing town, with no
+  entry prompt. Walking back into the tunnel still takes you in, on purpose.
+- **Where:** staging.clawville.world → walk into the cove through the tunnel →
+  "Back to World" → walk toward town.
+- **Feedback wanted:** is the landing spot where you expect to be, and can you
+  leave without being pulled back in.
+- **Known separate issue, not fixed yet:** if you REFRESH the page while inside
+  the cove and then leave, your first step can snap you to an old spot in town.
+  It is a different cause (camera position copied into the avatar while the page
+  is still loading) and is next on the list.
+- Session bountyFix2/Opus, 2026-09-18.
 
 ### Nori button reachable on phones (LIVE on prod via #271)
 - **What:** on phones the top-centre Connect/status banner used to cover almost half of the

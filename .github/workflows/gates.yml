@@ -92,6 +92,15 @@ jobs:
           src/lib/__tests__/solana-wallet.test.ts
           src/lib/world-presence-controller.test.ts
           src/hooks/world-downlink-policy.test.ts
+          src/lib/three/town-guide-prompt.test.ts
+          src/hooks/bottom-prompt-offset.test.ts
+
+      # Founder-reported regressions (2026-09-18) come back when nothing runs the
+      # test that pinned them. The shared constants suite pins world data that
+      # the web and the server both read (land showroom coverage of every plot,
+      # parcel layout, salvage bands, kelp portal). ~1 s, no DB, no build needed.
+      - name: Run the shared constants suite
+        run: cd packages/shared && bun test
 
   api-invariant-tests:
     name: api money/cove/poker invariant tests

@@ -1,6 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect } from 'react';
+
+// Layout effect in the browser, so the touch decision is made BEFORE the first
+// paint and no touch-only layout paints once in its desktop form (the minimap
+// did, Codex review 2026-09-18). Plain effect on the server, where layout
+// effects do not run.
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 /**
  * Detects mobile/touch devices using pointer media query, viewport width,
@@ -15,7 +21,7 @@ import { useState, useEffect } from 'react';
 export function useIsMobile(): boolean {
   const [isMobile, setIsMobile] = useState(false);
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const checkMobile = () => {
       const hasCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
       const isNarrow = window.innerWidth < 768;

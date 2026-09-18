@@ -34,10 +34,11 @@ import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import SupportLauncher from '@/components/support/SupportLauncher';
 import { useAvatar } from '@/hooks/use-avatar';
-import { useGameStore } from '@/stores/game';
+import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useCoveStore } from '@/stores/cove';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { COVE_EXIT_WORLD_X, COVE_EXIT_WORLD_Z } from '@/lib/three/character-positions';
 import { requestWorldStageNavigation } from '@/components/three/world-stage/stage-navigation';
 
 /**
@@ -46,16 +47,19 @@ import { requestWorldStageNavigation } from '@/components/three/world-stage/stag
  * Follows the legacy route-owned Canvas pattern (originally from the retired /arena page).
  */
 // ---------------------------------------------------------------------------
-// Cove door position in game-px — avatar spawns here on exit so it feels
-// like stepping back out through the same door they entered.
+// Where the avatar lands on exit, in game-px. The WORLD point is owned by
+// character-positions.ts (COVE_EXIT_WORLD_X/Z) next to the tunnel prompt and
+// auto-enter bands it must stay clear of — see the invariant there.
+// game-px = MAP_center + world units (1:1).
 //
-// The cove exit sits at WORLD (−3760, 0) — invariant across world grows.
-// Derived from the map center so a future grow re-centers automatically:
-//   game-px x = MAP_WIDTH/2 − 3760,  game-px y = MAP_HEIGHT/2 (center row).
-// Phase 0 land (2026-06-15): center 5760→9216 ⇒ exit (2000,5760)→(5456,9216).
-//   Cove zone (slot 9 W) world center = −4160 wu; exit = 400 wu east → −3760 wu.
+// Was a hand-set `MAP_WIDTH / 2 - 3760` (world -3760), 40 wu WEST of the
+// auto-enter band, so every step toward town re-entered the cove
+// (founder-reported 2026-09-18).
 // ---------------------------------------------------------------------------
-const COVE_EXIT_PX = { x: MAP_WIDTH / 2 - 3760, y: MAP_HEIGHT / 2 };
+const COVE_EXIT_PX = {
+  x: MAP_WIDTH / 2 + COVE_EXIT_WORLD_X,
+  y: MAP_HEIGHT / 2 + COVE_EXIT_WORLD_Z,
+};
 
 // ---------------------------------------------------------------------------
 // Page component
@@ -131,39 +135,35 @@ export default function CovePage() {
   const handleBack = useCallback(() => {
     // Reset cursor in case the player was hovering a slot hotspot
     if (typeof document !== 'undefined') document.body.style.cursor = 'default';
-    // Fade-out → restore avatar at cove door → push /game → fade-in handled
-    // by the /game page. Avatar position is set at midway so the world scene
-    // mounts with the avatar already at the door, not at the default spawn.
+    // Place the avatar just outside the tunnel mouth (COVE_EXIT_PX). Runs on
+    // EVERY exit path, mirroring the kelp page: at the fade midpoint, when the
+    // stage navigation expires, and when it is refused. Before 2026-09-18 only
+    // the midpoint placed the avatar, so an expired or refused navigation
+    // returned the player to /game at whatever position it last held.
+    // avatarPositionRef is written directly (zero React overhead) and the
+    // zustand slice via setAvatarPosition so the minimap sees it at once.
+    const placeAtExit = () => {
+      avatarPositionRef.x = COVE_EXIT_PX.x;
+      avatarPositionRef.y = COVE_EXIT_PX.y;
+      useGameStore.getState().setAvatarPosition(COVE_EXIT_PX.x, COVE_EXIT_PX.y);
+    };
     const requested = requestWorldStageNavigation({
       to: '/game',
-      onMidway: () => {
-        // Reposition avatar to outside the cove door in game-px space.
-        // avatarPositionRef is updated directly (zero React overhead) and the
-        // zustand reactive slice is updated via setAvatarPosition so the 2D
-        // minimap and any other subscribers see the new position immediately.
-        if (typeof window !== 'undefined') {
-          try {
-            // Dynamic import to avoid SSR issues
-            const { avatarPositionRef } = require('@/stores/game') as typeof import('@/stores/game');
-            const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
-            avatarPositionRef.x = COVE_EXIT_PX.x;
-            avatarPositionRef.y = COVE_EXIT_PX.y;
-            useGameStore.getState().setAvatarPosition(COVE_EXIT_PX.x, COVE_EXIT_PX.y);
-          } catch {
-            // Silently degrade — avatar will be at default spawn position
-          }
-        }
-      },
+      onMidway: placeAtExit,
       onExpired: () => {
         if (
           typeof window !== 'undefined' &&
           window.location.pathname === '/cove'
         ) {
+          placeAtExit();
           router.push('/game');
         }
       },
     });
-    if (!requested) router.push('/game');
+    if (!requested) {
+      placeAtExit();
+      router.push('/game');
+    }
   }, [router]);
 
   return (

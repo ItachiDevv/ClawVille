@@ -1,10 +1,21 @@
 'use client';
 
-import { useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useGameStore } from '@/stores/game';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { MAP_LOCATIONS } from '@clawville/shared';
 import { findPath } from '@/lib/pixi/client-pathfinding';
+import {
+  JOYSTICK_ZONE_BOTTOM_CSS,
+  JOYSTICK_ZONE_HEIGHT_PX,
+  JOYSTICK_ZONE_HUD_ATTR,
+  MINIMAP_HUD_ATTR,
+  MINIMAP_HUD_PROPS,
+  getHudElement,
+  registerHudElement,
+  subscribeHudElement,
+} from '@/lib/hud-anchors';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 const MM_W = 180;
 const MM_H = MM_W * (MAP_HEIGHT / MAP_WIDTH); // preserve aspect
@@ -33,7 +44,124 @@ const BUILDING_ACCENT: Record<string, string> = {
   'claw-arcade': '#f472b6',      // arcade city neon pink
 };
 
+/**
+ * The FULL card's bottom edge on desktop: top 16 px + a constant 254 px (two-row
+ * footer, measured). On touch the header is taller (44 px Map tap target), so
+ * the component measures its real full height and uses this only until then.
+ */
+const FULL_CARD_BOTTOM_PX = 16 + 254;
+/** Minimum clearance kept between the card and the movement joystick pad. */
+const PAD_GAP_PX = 8;
+
 export default function Minimap() {
+  // The card is shown by width (`hidden md:block`), so a landscape phone wider
+  // than 768 px gets it. Touch is decided by `useIsMobile()`, never by width.
+  const isMobile = useIsMobile();
+
+  // The joystick pad's MEASURED top edge (null when there is none: desktop,
+  // or controls hidden while chatting). Measured, not computed from the
+  // viewport height, because the pad is lifted by the phone's safe area.
+  //
+  // What can move the pad: its top changes only when the viewport height or
+  // the safe-area inset changes, and both change only on a viewport resize
+  // (rotation, iOS toolbar show/hide), which `resize` and
+  // `visualViewport.resize` report. Its own size is a fixed 220 px, so the
+  // ResizeObserver only covers a remount; the registration subscription
+  // covers mount and unmount (controls hidden while chatting).
+  //
+  // Before the pad exists: mobile-controls is a lazy chunk, so the pad mounts
+  // about 300 ms after this card. Measured 2026-09-18 at 844x390: the full
+  // card PAINTED over the pad area for 13 frames, then collapsed. So while the
+  // pad is not registered but WILL be (touch, no chat open: exactly the
+  // conditions under which mobile-controls renders it), the card measures a
+  // hidden stand-in box built from the same geometry constants. It resolves
+  // the real safe area, so the prediction equals the pad's real top.
+  const chatOpen = useGameStore((s) => s.chatOpen);
+  const guideChatOpen = useGameStore((s) => s.guideChatOpen);
+  const padExpected = isMobile && !chatOpen && !guideChatOpen;
+  const padStandInRef = useRef<HTMLDivElement | null>(null);
+  const [padTopPx, setPadTopPx] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!isMobile) {
+      setPadTopPx(null);
+      return;
+    }
+    let observer: ResizeObserver | null = null;
+    let observed: HTMLElement | null = null;
+    const read = () => {
+      const pad = getHudElement(JOYSTICK_ZONE_HUD_ATTR);
+      if (pad !== observed && observer) {
+        if (observed) observer.unobserve(observed);
+        observed = pad;
+        if (pad) observer.observe(pad);
+      }
+      // The real pad wins; the stand-in covers only the gap before it mounts.
+      const target = pad ?? (padExpected ? padStandInRef.current : null);
+      const r = target?.getBoundingClientRect();
+      setPadTopPx(r && r.height > 0 ? Math.round(r.top) : null);
+    };
+    observer = new ResizeObserver(read);
+    read();
+    const unsubscribe = subscribeHudElement(JOYSTICK_ZONE_HUD_ATTR, read);
+    const vv = window.visualViewport;
+    window.addEventListener('resize', read);
+    vv?.addEventListener('resize', read);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('resize', read);
+      vv?.removeEventListener('resize', read);
+      observer?.disconnect();
+      observer = null;
+    };
+  }, [isMobile, padExpected]);
+
+  // When the full card would reach down onto the movement pad (every phone
+  // held landscape; measured at 844x390: card y 16-270 over a pad at y 90-310),
+  // collapse to the header row. The header keeps the "Map" button, the ONLY
+  // way to open the World Map, so hiding the whole card would have removed
+  // fast travel on landscape phones.
+  // The full card's MEASURED bottom edge (recorded whenever it renders full).
+  const cardElRef = useRef<HTMLDivElement | null>(null);
+  const [fullCardBottomPx, setFullCardBottomPx] = useState<number>(FULL_CARD_BOTTOM_PX);
+  const compact =
+    isMobile && padTopPx !== null && padTopPx < fullCardBottomPx + PAD_GAP_PX;
+  // Records the card's full height from its OWN size changes, so every way
+  // the full card appears is caught: first mount, expanding out of compact,
+  // and going from hidden (below `md`, reads 0, ignored) to visible on a
+  // rotation. Keyed only on isMobile, so it would miss the hidden->visible
+  // case if it measured on render instead (Codex review, 2026-09-18).
+  // `compactRef` is updated first, so the observer never records the
+  // collapsed height as the full one.
+  const compactRef = useRef(compact);
+  useLayoutEffect(() => {
+    compactRef.current = compact;
+  });
+  useLayoutEffect(() => {
+    const card = cardElRef.current;
+    if (!isMobile || !card) return;
+    const record = () => {
+      if (compactRef.current) return;
+      const bottom = Math.round(card.getBoundingClientRect().bottom);
+      if (bottom > 0) setFullCardBottomPx(bottom);
+    };
+    const observer = new ResizeObserver(record);
+    observer.observe(card);
+    record();
+    return () => observer.disconnect();
+  }, [isMobile]);
+
+  // Registers the card so the quest tracker can measure it even if it mounts
+  // late or remounts. Stable, so React calls it on mount only; the returned
+  // cleanup (React 19) unregisters exactly this element on unmount.
+  const cardRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return undefined;
+    cardElRef.current = el;
+    const unregister = registerHudElement(MINIMAP_HUD_ATTR, el);
+    return () => {
+      if (cardElRef.current === el) cardElRef.current = null;
+      unregister();
+    };
+  }, []);
   const avatarPosition = useGameStore((s) => s.avatarPosition);
   const nearLocation = useGameStore((s) => s.nearLocation);
   const visitedBuildings = useGameStore((s) => s.visitedBuildings);
@@ -84,14 +212,32 @@ export default function Minimap() {
   };
 
   return (
+    <>
+    {padExpected && (
+      // Invisible stand-in for the joystick pad (see padExpected above).
+      <div
+        ref={padStandInRef}
+        aria-hidden
+        className="fixed left-0 w-0 invisible pointer-events-none"
+        style={{ bottom: JOYSTICK_ZONE_BOTTOM_CSS, height: `${JOYSTICK_ZONE_HEIGHT_PX}px` }}
+      />
+    )}
     <div
       className="fixed top-4 left-4 z-40 hidden md:block"
       style={{ width: MM_W }}
     >
-      {/* Outer frame + glow */}
-      <div className="relative rounded-xl overflow-hidden border border-cyan-400/30 shadow-[0_0_30px_rgba(0,229,255,0.22)] bg-[#04111e]/95 backdrop-blur-md">
+      {/* Outer frame + glow. Marked so the quest tracker below can measure
+          this card's real bottom edge instead of assuming its height. */}
+      <div
+        ref={cardRef}
+        {...MINIMAP_HUD_PROPS}
+        className="relative rounded-xl overflow-hidden border border-cyan-400/30 shadow-[0_0_30px_rgba(0,229,255,0.22)] bg-[#04111e]/95 backdrop-blur-md"
+      >
         {/* Header strip */}
-        <div className="flex items-center justify-between px-3 pt-2 pb-1.5 border-b border-cyan-500/15">
+        {/* On touch the row is 44 px tall so the Map button can be a real 44 px
+            tap target (an invisible hit-area extension was clipped by the card's
+            overflow-hidden, measured). */}
+        <div className={`flex items-center justify-between px-3 border-b border-cyan-500/15 ${isMobile ? 'min-h-[44px]' : 'pt-2 pb-1.5'}`}>
           <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-cyan-300/70">Sonar</span>
           <div className="flex items-center gap-2">
             <span className="font-mono text-[8px] text-white/30">{Math.round(avatarPosition.x)},{Math.round(avatarPosition.y)}</span>
@@ -101,7 +247,8 @@ export default function Minimap() {
               onClick={openWorldMap}
               title="Open World Map (fast travel)"
               aria-label="Open World Map"
-              className="flex items-center gap-1 rounded-md border border-cyan-400/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20"
+              // Touch: at least 44 x 44 px (mobile tap-target rule).
+              className={`${isMobile ? 'min-h-[44px] min-w-[44px] justify-center ' : ''}flex items-center gap-1 rounded-md border border-cyan-400/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.18em] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20`}
             >
               <span aria-hidden>⤢</span>
               <span>Map</span>
@@ -109,6 +256,7 @@ export default function Minimap() {
           </div>
         </div>
 
+        {!compact && (<>
         <svg
           ref={svgRef}
           width={MM_W}
@@ -214,16 +362,26 @@ export default function Minimap() {
           </g>
         </svg>
 
-        {/* Click hint */}
-        <div className="px-3 py-1.5 border-t border-cyan-500/15 flex items-center justify-between">
-          <span className="font-mono text-[8px] uppercase tracking-[0.25em] text-cyan-400/50">
+        {/* Click hint. TWO FIXED ROWS on purpose, so the card is one constant
+            height. It used to be one row that WRAPPED when a long location name
+            appeared, growing the card 12 px under the quest tracker as you
+            walked (founder-reported 2026-09-18). A single truncated row would
+            cut 7 of the 12 names at this spacing; its own full-width row fits
+            all of them (measured). `truncate` stays as a safety net. */}
+        <div className="px-3 py-1.5 border-t border-cyan-500/15 flex flex-col gap-0.5">
+          <span
+            className="min-w-0 truncate font-mono text-[8px] uppercase tracking-[0.25em] text-cyan-400/50"
+            title={nearLocation ? MAP_LOCATIONS.find((l) => l.id === nearLocation)?.name ?? nearLocation : undefined}
+          >
             {nearLocation ? MAP_LOCATIONS.find((l) => l.id === nearLocation)?.name ?? nearLocation : 'Click to move'}
           </span>
-          <span className="font-mono text-[8px] text-white/30">
+          <span className="self-end whitespace-nowrap font-mono text-[8px] text-white/30">
             {visitedBuildings.size}/{buildingZones.length} visited
           </span>
         </div>
+        </>)}
       </div>
     </div>
+    </>
   );
 }

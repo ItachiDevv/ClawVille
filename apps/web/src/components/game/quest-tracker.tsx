@@ -7,7 +7,12 @@ import {
   retryServerClaimsRestore,
 } from '@/stores/quest';
 import { QUEST_DEFINITIONS, type QuestId, type QuestDefinition } from '@/lib/quests';
-import { STATUS_BAR_HUD_ATTR } from '@/lib/hud-anchors';
+import {
+  MINIMAP_HUD_ATTR,
+  STATUS_BAR_HUD_ATTR,
+  getHudElement,
+  subscribeHudElement,
+} from '@/lib/hud-anchors';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
@@ -61,6 +66,59 @@ const QUEST_BODY_MAX_PX = 420;
  */
 const QUEST_BODY_MIN_PX = 120;
 
+/** Gap between the minimap card's bottom edge and the tracker. */
+const MINIMAP_STACK_GAP_PX = 8;
+
+/**
+ * The live bottom edge of the minimap card, in px from the viewport top, or
+ * `null` when it is not rendered (hidden below `md`, or not yet mounted).
+ *
+ * The desktop tracker used to sit at a fixed `16 + 232 + 8` px. The card was
+ * really 240 px, so the 8 px gap was gone, and a wrapped location name made it
+ * 252 px, so the tracker covered its footer (founder-reported 2026-09-18,
+ * measured: card bottom 268 vs tracker top 256). Measuring the card removes
+ * the guess: whatever its height, the tracker starts 8 px below it.
+ *
+ * Returns `null` on the server and on the first client paint, so both render
+ * the class fallback and agree (no hydration mismatch).
+ */
+function useMinimapBottomPx(active: boolean): number | null {
+  const [bottom, setBottom] = useState<number | null>(null);
+  useEffect(() => {
+    if (!active) {
+      setBottom(null);
+      return;
+    }
+    let observer: ResizeObserver | null = null;
+    let observed: Element | null = null;
+    const read = () => {
+      // Registered by the minimap itself, so a late mount or a remount still
+      // reaches this reader (see subscribe below); a one-shot querySelector
+      // would miss both (Codex review, 2026-09-18).
+      const card = getHudElement(MINIMAP_HUD_ATTR);
+      if (card !== observed && observer) {
+        if (observed) observer.unobserve(observed);
+        observed = card;
+        if (card) observer.observe(card);
+      }
+      const r = card?.getBoundingClientRect();
+      // Zero height = the card is display:none (below `md`): nothing to clear.
+      setBottom(r && r.height > 0 ? Math.round(r.bottom) : null);
+    };
+    observer = new ResizeObserver(read);
+    read();
+    const unsubscribe = subscribeHudElement(MINIMAP_HUD_ATTR, read);
+    window.addEventListener('resize', read);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('resize', read);
+      observer?.disconnect();
+      observer = null;
+    };
+  }, [active]);
+  return bottom;
+}
+
 /**
  * The height the desktop tracker's expanded list may actually use.
  *
@@ -85,6 +143,9 @@ function useDesktopQuestBandPx(
   panelRef: React.RefObject<HTMLDivElement | null>,
   active: boolean,
   avatarSettled: boolean,
+  // The panel's top follows the measured minimap, so the band must be
+  // re-read whenever that moves.
+  panelTopPx: number | null,
 ): number | null {
   const [band, setBand] = useState<number | null>(null);
   useEffect(() => {
@@ -97,9 +158,10 @@ function useDesktopQuestBandPx(
     const read = () => {
       const panelTop =
         panelRef.current?.getBoundingClientRect().top
-        // Matches the wrapper's own `top-[calc(theme(spacing.4)+232px+8px)]`
-        // for the frame before the ref is attached.
-        ?? 16 + 232 + 8;
+        // Matches the wrapper's own `top-[calc(theme(spacing.4)+254px+8px)]`
+        // for the frame before the ref is attached. 254 = the minimap card's
+        // real, constant height since its footer became two fixed rows.
+        ?? 16 + 254 + 8;
       const bar = document.querySelector<HTMLElement>(`[${STATUS_BAR_HUD_ATTR}]`);
       // Everything from the top of the bar to the bottom of the window: its own
       // height plus its `bottom-4` offset, without assuming either.
@@ -127,7 +189,7 @@ function useDesktopQuestBandPx(
       observer?.disconnect();
       observer = null;
     };
-  }, [panelRef, active, avatarSettled]);
+  }, [panelRef, active, avatarSettled, panelTopPx]);
   return band;
 }
 
@@ -143,10 +205,16 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   // so the two components always agree about which device they are on.
   const isMobile = useIsMobile();
   const { isLoading: avatarLoading } = useAvatar();
+  // Desktop top = the minimap card's MEASURED bottom + gap; null until measured
+  // (the class fallback below renders on the server and the first paint).
+  const minimapBottomPx = useMinimapBottomPx(visible && !isMobile);
+  const desktopTopPx =
+    minimapBottomPx === null ? null : minimapBottomPx + MINIMAP_STACK_GAP_PX;
   const desktopBandPx = useDesktopQuestBandPx(
     desktopPanelRef,
     visible && !isMobile,
     !avatarLoading,
+    desktopTopPx,
   );
 
   // Q3 plan §2.6 + audit-fix 2026-04-29 — settle any locally-completed
@@ -261,7 +329,11 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
     // "child wider than parent" overflow seen in the HUD audit.
     <div
       ref={desktopPanelRef}
-      className={`fixed top-[calc(theme(spacing.4)+232px+8px)] left-4 ${desktopZ} w-60`}
+      // The class `top` is only the pre-measurement fallback (254 = the minimap
+      // card's real height, measured); once the card is measured, the inline `top` wins
+      // and keeps an 8 px gap under it whatever its height.
+      className={`fixed top-[calc(theme(spacing.4)+254px+8px)] left-4 ${desktopZ} w-60`}
+      style={desktopTopPx === null ? undefined : { top: desktopTopPx }}
     >
       <QuestPanel
         expanded={expanded}

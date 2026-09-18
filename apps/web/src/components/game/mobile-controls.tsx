@@ -6,6 +6,16 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
 import { setJumpPressed } from '@/lib/three/jump-state';
 import { registerInputReset } from '@/lib/three/input-reset';
+import {
+  JOYSTICK_ZONE_HUD_ATTR,
+  JOYSTICK_ZONE_HUD_PROPS,
+  JOYSTICK_ZONE_BOTTOM_CSS,
+  JOYSTICK_ZONE_HEIGHT_PX,
+  JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
+  JUMP_BUTTON_RIGHT_CSS,
+  JUMP_BUTTON_SIZE_PX,
+  registerHudElement,
+} from '@/lib/hud-anchors';
 
 export default function MobileControls() {
   const isMobile = useIsMobile();
@@ -167,6 +177,15 @@ export default function MobileControls() {
     };
   }, [isMobile, hideControls]);
 
+  // Registers the wrapper so the minimap can measure where the movement pad
+  // really starts (safe area included). Stable, so React calls it only on
+  // mount; the returned cleanup (React 19) unregisters exactly this element on
+  // unmount. Declared above the early returns (Rules of Hooks).
+  const joystickZoneRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return undefined;
+    return registerHudElement(JOYSTICK_ZONE_HUD_ATTR, el);
+  }, []);
+
   if (!isMobile) return null;
   // Chat open → suppress the whole control layer (joysticks would float over
   // the chat input at the bottom of the screen).
@@ -181,15 +200,18 @@ export default function MobileControls() {
 
   return (
     <div
+      ref={joystickZoneRef}
+      {...JOYSTICK_ZONE_HUD_PROPS}
       className="fixed left-0 z-40 pointer-events-none"
       style={{
         // Lift above iOS Safari bottom toolbar + home-indicator safe area.
         // Without this the nipples render INSIDE the viewport but UNDER
         // Safari's chrome on a real iPad — invisible/untappable.
         // Min 32px so it stays clear even without safe-area (devtools/etc).
-        bottom: 'max(calc(env(safe-area-inset-bottom, 0px) + 60px), 80px)',
+        // The minimap predicts this box from the same constants (hud-anchors).
+        bottom: JOYSTICK_ZONE_BOTTOM_CSS,
         width: '100vw',
-        height: '220px',
+        height: `${JOYSTICK_ZONE_HEIGHT_PX}px`,
       }}
     >
       {/* Left joystick zone — movement / explore-mode camera pan */}
@@ -231,10 +253,14 @@ export default function MobileControls() {
           onPointerCancel={handleJumpRelease}
           onLostPointerCapture={() => setJumpPressed(false)}
           onContextMenu={(event) => event.preventDefault()}
-          className="pointer-events-auto absolute right-5 z-10 flex h-16 w-16 select-none flex-col items-center justify-center rounded-full border border-cyan-200/60 bg-cyan-500/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.45)] backdrop-blur-md active:translate-y-0.5 active:bg-cyan-400"
+          className="pointer-events-auto absolute right-5 z-10 flex select-none flex-col items-center justify-center rounded-full border border-cyan-200/60 bg-cyan-500/90 text-white shadow-[0_0_24px_rgba(34,211,238,0.45)] backdrop-blur-md active:translate-y-0.5 active:bg-cyan-400"
           style={{
-            bottom: 'clamp(7rem, 38vw, 10.5rem)',
-            right: 'max(calc(env(safe-area-inset-right, 0px) + 18px), 18px)',
+            // Shared with the bottom prompt slot, which lifts above this button
+            // on narrow screens (hud-anchors).
+            bottom: JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
+            right: JUMP_BUTTON_RIGHT_CSS,
+            width: JUMP_BUTTON_SIZE_PX,
+            height: JUMP_BUTTON_SIZE_PX,
             touchAction: 'none',
             WebkitUserSelect: 'none',
           }}
