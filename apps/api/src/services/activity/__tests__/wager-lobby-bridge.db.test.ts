@@ -155,6 +155,8 @@ describeIfDb('wager-abort recovery sweep — real PostgreSQL', () => {
       const result = await sweepAbortedCrashWagerLobbies({
         ...productionWagerAbortRecoveryDeps,
         readChainState: async () => 'open',
+        // Chain-free: a seeded prepared row must never reach a real RPC.
+        lobbyAccountAbsent: async () => false,
         cancelLobby: async (input: any) => {
           chainCancels.push(input.lobbyIdBigint);
           return { txSig: `test-sweep-sig-${suffix}` } as any;
