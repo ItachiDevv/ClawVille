@@ -86,7 +86,16 @@ export const JOYSTICK_ZONE_HEIGHT_PX = 220;
  * (hooks/use-bottom-prompt-slot), which must clear it: on a 390 px phone the
  * centred 280 px prompt pill used to cover ~27 px of the button (2026-09-18).
  */
-export const JUMP_BUTTON_BOTTOM_IN_ZONE_CSS = 'clamp(7rem, 38vw, 10.5rem)';
+// On a short screen (a phone held landscape) the button is also capped so
+// its top stays 70 px from the viewport top, below the Nori button (top 16,
+// ~46 tall, + 8 gap): vh - 80 (pad lift) - bottom - 64 >= 70 -> bottom <=
+// vh - 214. At 740x360 it covered Nori (measured 2026-09-18). It still clears
+// the camera joystick (top vh - 220) down to vh ~360. Portrait is unchanged.
+// The floor is 148 px, not 7rem: the camera joystick top is 140 px above the
+// pad bottom (static, bottom 80, size 120), so a lower button overlapped it on
+// phones narrower than 390 px (3 px at 360x780, measured 2026-09-18). At 390+
+// 38vw is already >= 148, so those phones are unchanged.
+export const JUMP_BUTTON_BOTTOM_IN_ZONE_CSS = 'min(clamp(148px, 38vw, 10.5rem), calc(100dvh - 214px))';
 export const JUMP_BUTTON_RIGHT_CSS = 'max(calc(env(safe-area-inset-right, 0px) + 18px), 18px)';
 export const JUMP_BUTTON_SIZE_PX = 64;
 
@@ -151,3 +160,35 @@ export function subscribeHudElement(attr: string, listener: () => void): () => v
     set!.delete(listener);
   };
 }
+
+// ---------------------------------------------------------------------------
+// Short touch viewports (phones held landscape).
+//
+// The touch right column stacks Nori (top 16), the gear (72), Controls (128)
+// and Language (184): 44 px buttons down to y 228. The Jump button top is
+// vh - 80 (pad lift) - up to 168 (JUMP_BUTTON_BOTTOM_IN_ZONE_CSS) - 64, and
+// the camera joystick top is vh - 220, so the stack clears Jump only from
+// vh ~548 and the joystick from vh ~456. Measured 2026-09-18: at 844x390
+// Jump covered the gear and Controls, and Controls + Language covered the
+// camera joystick; at 932x430 Jump covered Controls. Below this height the
+// three utility buttons form one row at the top. iPads (vh 744+) keep the
+// column.
+//
+// Where the row goes: always at the LEFT, clear of the centred top stack (the
+// guest login banner or the agent pill at y 12-52, the mode toggle at y
+// 80-116, up to ~200 px wide; the phone quest card from y 124). Below `md`
+// (768 px) the minimap is hidden, so the row takes the top line (x 16-168,
+// clear of the banner from x 181 at 667 px). From 768 px it sits under the
+// minimap header, which is always collapsed (bottom 63) on a short screen. A
+// right-side row was rejected in review: a notched iPhone's 44-47 px landscape
+// inset pushed it into the login banner or the logged-in mode toggle.
+// ---------------------------------------------------------------------------
+export const SHORT_TOUCH_MAX_VH = 560;
+/** Below this width (the minimap's `md` breakpoint) the row takes the top line. */
+export const SHORT_TOUCH_LEFT_ROW_MAX_VW = 768;
+/** Row top below 768 px: the top line (same as Nori, top-4). */
+export const SHORT_TOUCH_ROW_TOP_PX = 16;
+/** Row top from 768 px: under the collapsed minimap header (bottom 63, + 8). */
+export const SHORT_TOUCH_UNDER_MAP_TOP_PX = 71;
+/** Row left offsets (px, added to the left safe-area inset); 44-46 px buttons, 8 px gaps. */
+export const SHORT_TOUCH_ROW_LEFT_PX = { gear: 16, controls: 68, language: 122 } as const;

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Languages, Loader2, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { shortTouchRowStyle, useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 
 const STORAGE_KEY = 'clawville-game-language';
 const SKIP_SELECTOR =
@@ -135,6 +136,8 @@ function displayNameForLocale(locale: string): string {
 
 export default function GameLanguageControl() {
   const isMobile = useIsMobile();
+  const shortTouchRow = useShortTouchRow();
+  const shortRow = shortTouchRowStyle(shortTouchRow, 'language');
   const [browserLocale, setBrowserLocale] = useState('en-US');
   const [selection, setSelection] = useState('auto');
   const [panelOpen, setPanelOpen] = useState(false);
@@ -552,7 +555,12 @@ export default function GameLanguageControl() {
       data-game-language-control
       data-no-translate
       className="fixed z-50"
-      style={isMobile
+      style={shortRow
+        ? // Short touch viewport (landscape phone): the column reached y 228
+          // and covered Hold Jump and the camera joystick, so the utility
+          // buttons form one top row (hud-anchors).
+          shortRow
+        : isMobile
         ? {
             // Touch: RIGHT column, below Nori (y16) → gear FAB (y72) →
             // Controls (y128) → this (y184). Was top:128 LEFT:12, which on
@@ -590,7 +598,10 @@ export default function GameLanguageControl() {
 
       {panelOpen && (
         <div
-          className={`absolute right-0 w-72 overflow-hidden rounded-lg border border-emerald-200/24 bg-[#071c23]/96 p-3 text-emerald-50 shadow-[0_18px_70px_rgba(0,0,0,0.42)] backdrop-blur-md`}
+          // In the short-screen row the button is near the left edge, so the
+          // panel opens to the right (a right-anchored 288 px panel started
+          // off-screen, Codex review 2026-09-18); never wider than the viewport.
+          className={`absolute ${shortTouchRow !== null ? 'left-0' : 'right-0'} w-72 max-w-[calc(100vw-24px)] overflow-hidden rounded-lg border border-emerald-200/24 bg-[#071c23]/96 p-3 text-emerald-50 shadow-[0_18px_70px_rgba(0,0,0,0.42)] backdrop-blur-md`}
           style={isMobile ? { top: 52 } : { bottom: 52 }}
         >
           <div className="mb-3 flex items-start gap-3">

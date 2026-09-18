@@ -63,6 +63,7 @@ import { usePlayerStore } from '@/stores/players';
 import { useLocationAgent } from '@/hooks/use-locations';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { shortTouchRowStyle, useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 import { api } from '@/lib/api';
 import { clearIdentityState } from '@/lib/clear-identity-state';
 import { useAuthMe } from '@/hooks/use-auth-me';
@@ -1125,6 +1126,7 @@ const SIDEBAR_COLLAPSED_KEY = 'clawville-sidebar-collapsed';
 
 export default function SidebarMenu() {
   const isMobile = useIsMobile();
+  const shortRow = shortTouchRowStyle(useShortTouchRow(), 'gear');
   const menuOpen = useGameStore((s: GameState) => s.menuOpen);
   const setMenuOpen = useGameStore((s: GameState) => s.setMenuOpen);
 
@@ -1187,12 +1189,20 @@ export default function SidebarMenu() {
             top:16 right:16). Nori is ~44px tall, so top:72 keeps a 12px
             gap. Without this offset the gear sat on top of Nori on iPad. */}
         <div
-          style={{
-            position: 'fixed',
-            top: 72,
-            right: 12,
-            zIndex: 45,
-          }}
+          style={shortRow
+            ? {
+                // Short touch viewport (landscape phone): one top row, clear
+                // of Hold Jump and the camera joystick (hud-anchors).
+                position: 'fixed',
+                ...shortRow,
+                zIndex: 45,
+              }
+            : {
+                position: 'fixed',
+                top: 72,
+                right: 12,
+                zIndex: 45,
+              }}
         >
           <RpgTooltip content="Open menu" side="bottom">
             <button
