@@ -1137,11 +1137,12 @@ const WAGER_LOBBY_CHAIN_STATES: readonly WagerLobbyChainState[] = [
  */
 export async function readWagerLobbyChainState(
   lobbyIdBigint: bigint,
+  commitment: typeof COMMITMENT | 'finalized' = COMMITMENT,
 ): Promise<WagerLobbyChainState> {
   await assertWagerBroadcastCluster(connection, 'readWagerLobbyChainState');
   const [lobbyPda] = findLobbyPda(lobbyIdBigint);
   const account = await withChainErrors('readWagerLobbyChainState:getAccountInfo', () =>
-    connection.getAccountInfo(lobbyPda, COMMITMENT),
+    connection.getAccountInfo(lobbyPda, commitment),
   );
   if (!account || !account.owner.equals(PROGRAM_ID)) {
     throw new WagerClientError('wager_lobby_account_missing_or_wrong_owner', 'pubkey_mismatch');

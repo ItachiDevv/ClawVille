@@ -406,6 +406,9 @@ export interface NeverCreatedWatchDeps {
   listClosedNeverCreated(): Promise<Array<{ rowId: string; lobbyId: bigint }>>;
   lobbyAccountAbsent(lobbyId: bigint): Promise<boolean>;
   readChainState(lobbyId: bigint): Promise<WagerLobbyChainState>;
+  /** Chain state at 'finalized' commitment; throws while the account is not
+   *  finalized yet. Only a FINALIZED terminal state ends the watch. */
+  readFinalizedChainState(lobbyId: bigint): Promise<WagerLobbyChainState>;
   cancelLobby(input: CancelLobbyInput): Promise<CancelLobbyResult>;
   recordLateChainAccount(
     rowId: string,
@@ -433,6 +436,7 @@ export const productionNeverCreatedWatchDeps: NeverCreatedWatchDeps = {
   },
   lobbyAccountAbsent: isWagerLobbyAccountAbsent,
   readChainState: readWagerLobbyChainState,
+  readFinalizedChainState: (lobbyId) => readWagerLobbyChainState(lobbyId, 'finalized'),
   cancelLobby,
   recordLateChainAccount: async (rowId, { chainState, txSig }) => {
     await db.transaction(async (tx) => {
@@ -452,40 +456,65 @@ export const productionNeverCreatedWatchDeps: NeverCreatedWatchDeps = {
   },
 };
 
+let neverCreatedWatchRunning = false;
+
 export async function watchClosedNeverCreatedLobbies(
   deps: NeverCreatedWatchDeps = productionNeverCreatedWatchDeps,
 ): Promise<{ checked: number; lateAccounts: number }> {
-  const rows = await deps.listClosedNeverCreated();
-  let lateAccounts = 0;
-  for (const row of rows) {
-    try {
-      if (await deps.lobbyAccountAbsent(row.lobbyId)) continue;
-      lateAccounts++;
-      const chainState = await deps.readChainState(row.lobbyId);
-      let txSig: string | null = null;
-      if (chainState === 'open' || chainState === 'locked') {
-        const result = await deps.cancelLobby({
-          lobbyIdBigint: row.lobbyId,
-          signerKind: 'settlement-authority',
+  // The 60 s tick does not await; a slow RPC must not let two runs overlap
+  // and record or page twice.
+  if (neverCreatedWatchRunning) return { checked: 0, lateAccounts: 0 };
+  neverCreatedWatchRunning = true;
+  try {
+    const rows = await deps.listClosedNeverCreated();
+    let lateAccounts = 0;
+    for (const row of rows) {
+      try {
+        if (await deps.lobbyAccountAbsent(row.lobbyId)) continue;
+        lateAccounts++;
+        // End the watch only on a FINALIZED terminal state: a 'confirmed'
+        // cancel can still be dropped with its fork (Codex r3).
+        let finalized: WagerLobbyChainState | null = null;
+        try {
+          finalized = await deps.readFinalizedChainState(row.lobbyId);
+        } catch {
+          finalized = null; // not finalized yet: keep watching
+        }
+        if (finalized === 'cancelled' || finalized === 'settled') {
+          await deps.recordLateChainAccount(row.rowId, { chainState: finalized, txSig: null });
+          deps.alert('[wager-bridge] a late on-chain lobby for a closed never-created lobby is now final', {
+            lobbyRowId: row.rowId,
+            lobbyId: row.lobbyId.toString(),
+            chainState: finalized,
+          });
+          continue;
+        }
+        const current = await deps.readChainState(row.lobbyId);
+        if (current === 'open' || current === 'locked') {
+          const result = await deps.cancelLobby({
+            lobbyIdBigint: row.lobbyId,
+            signerKind: 'settlement-authority',
+          });
+          deps.alert('[wager-bridge] cancelled a late on-chain lobby for a lobby closed as never-created', {
+            lobbyRowId: row.rowId,
+            lobbyId: row.lobbyId.toString(),
+            chainState: current,
+            cancelTx: result.txSig,
+          });
+        }
+        // 'cancelled'/'settled' at confirmed only: wait for finality next tick.
+      } catch (err) {
+        deps.alert('[wager-bridge] never-created watch failed for a lobby', {
+          lobbyRowId: row.rowId,
+          lobbyId: row.lobbyId.toString(),
+          error: err instanceof Error ? err.message : String(err),
         });
-        txSig = result.txSig;
       }
-      await deps.recordLateChainAccount(row.rowId, { chainState, txSig });
-      deps.alert('[wager-bridge] an on-chain account appeared for a lobby closed as never-created', {
-        lobbyRowId: row.rowId,
-        lobbyId: row.lobbyId.toString(),
-        chainState,
-        cancelTx: txSig,
-      });
-    } catch (err) {
-      deps.alert('[wager-bridge] never-created watch failed for a lobby', {
-        lobbyRowId: row.rowId,
-        lobbyId: row.lobbyId.toString(),
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
+    return { checked: rows.length, lateAccounts };
+  } finally {
+    neverCreatedWatchRunning = false;
   }
-  return { checked: rows.length, lateAccounts };
 }
 
 export function startWagerAbortRecoveryWorker(): void {
