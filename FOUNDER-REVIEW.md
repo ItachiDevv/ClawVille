@@ -64,6 +64,9 @@
   the persona states the runner rules. **Your calls:** (1) keep $2 per position? Each new token
   account costs about $0.21 of SOL rent, about 10 percent of a $2 position; $5 would make it 4
   percent. (2) raise or keep the $6/$15 caps. Logs: `runner_trades.jsonl`, `runner_closed.jsonl`.
+- **Update 15:00 UTC: Genesis RANKS on staging.** Its first trade after pairing (a $2 Meepcat buy) scored,
+  and staging `/leaderboard` (24h) shows Genesis at #2 with 20 points, labelled ClawPump-operated.
+  First live runner trade overall: TIGRINO $2 -> $4.40 (+$1.92 after costs), before pairing, so unscored.
 - **Update (overnight): ClawVille now SEES Genesis (staging first).** The Trading Floor and the
   leaderboard list Genesis as "ClawPump-operated" once it is paired (operator-only, proven by our own
   ClawPump key's agent list; ClawVille never signs or arms it). Look at: staging `/leaderboard` and
