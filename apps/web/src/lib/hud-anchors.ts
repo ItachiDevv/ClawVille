@@ -192,3 +192,14 @@ export const SHORT_TOUCH_ROW_TOP_PX = 16;
 export const SHORT_TOUCH_UNDER_MAP_TOP_PX = 71;
 /** Row left offsets (px, added to the left safe-area inset); 44-46 px buttons, 8 px gaps. */
 export const SHORT_TOUCH_ROW_LEFT_PX = { gear: 16, controls: 68, language: 122 } as const;
+
+/**
+ * Below `md` (768 px) the minimap card is hidden, and with it the only way to
+ * the World Map. On touch there the minimap collapses to its Map button at
+ * the left, top 72: under the centred login banner / agent pill (y 12-52) and
+ * left of the centred mode toggle (y 80-116) and quest card (from y 124) on
+ * upright phones; under the utility row (y 16-60) and above the left joystick
+ * (top vh - 220) on small sideways phones (founder: "shouldn't we just be
+ * able to adjust it", 2026-09-18).
+ */
+export const PHONE_MAP_BUTTON_TOP_PX = 72;

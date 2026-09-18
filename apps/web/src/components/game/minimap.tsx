@@ -9,6 +9,7 @@ import {
   JOYSTICK_ZONE_BOTTOM_CSS,
   JOYSTICK_ZONE_HEIGHT_PX,
   JOYSTICK_ZONE_HUD_ATTR,
+  PHONE_MAP_BUTTON_TOP_PX,
   MINIMAP_HUD_ATTR,
   MINIMAP_HUD_PROPS,
   getHudElement,
@@ -227,6 +228,21 @@ export default function Minimap() {
         className="fixed left-0 w-0 invisible pointer-events-none"
         style={{ bottom: JOYSTICK_ZONE_BOTTOM_CSS, height: `${JOYSTICK_ZONE_HEIGHT_PX}px` }}
       />
+    )}
+    {isMobile && (
+      // Below `md` the card is hidden; on touch the minimap collapses to its
+      // Map button so phones still reach the World Map (PHONE_MAP_BUTTON_TOP_PX).
+      <button
+        type="button"
+        onClick={openWorldMap}
+        title="Open World Map (fast travel)"
+        aria-label="Open World Map"
+        className="fixed z-40 flex min-h-[44px] min-w-[44px] flex-col items-center justify-center gap-0.5 rounded-xl border border-cyan-400/30 bg-[#04111e]/95 font-mono text-[8px] uppercase tracking-[0.18em] text-cyan-200 shadow-[0_0_20px_rgba(0,229,255,0.2)] backdrop-blur-md md:hidden"
+        style={{ top: PHONE_MAP_BUTTON_TOP_PX, left: 'calc(env(safe-area-inset-left, 0px) + 16px)' }}
+      >
+        <span aria-hidden className="text-sm leading-none">⤢</span>
+        <span>Map</span>
+      </button>
     )}
     <div
       className="fixed top-4 left-4 z-40 hidden md:block"

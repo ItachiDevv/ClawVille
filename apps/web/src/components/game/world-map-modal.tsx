@@ -321,8 +321,10 @@ export default function WorldMapModal() {
     >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="text-[12px] leading-relaxed text-slate-200">
-          Tap a building to <span className="font-semibold text-cyan-200">warp</span> there, or click
-          open water to travel to any spot. The minimap (top-left) still walks you there step by step.
+          Tap a building to <span className="font-semibold text-cyan-200">warp</span> there, or{' '}
+          {isMobile ? 'tap' : 'click'} open water to travel to any spot.
+          {/* Touch below `md` has no walkable minimap, only its Map button. */}
+          {!isMobile && ' The minimap (top-left) still walks you there step by step.'}
         </p>
         {!canWarp && (
           <span className="rounded-full border border-amber-400/40 bg-amber-500/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-amber-200">
@@ -351,10 +353,11 @@ export default function WorldMapModal() {
             <div className="flex h-full min-h-[180px] flex-col items-center justify-center gap-2 text-center">
               <span className="text-3xl opacity-50">🗺️</span>
               <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-200/70">
-                Hover a beacon
+                {isMobile ? 'Tap a beacon to travel' : 'Hover a beacon'}
               </p>
               <p className="text-[11px] leading-relaxed text-slate-300">
-                Preview a destination and Quick&nbsp;Travel there. Gold = you. Green diamonds = your land.
+                {/* On touch a tap travels at once (no hover preview). */}
+                {isMobile ? 'A tap travels there at once.' : 'Preview a destination and Quick Travel there.'} Gold = you. Green diamonds = your land.
               </p>
             </div>
           )}
