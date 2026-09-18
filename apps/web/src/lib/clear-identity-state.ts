@@ -84,6 +84,12 @@ export function clearIdentityState(
   } catch { /* store not loaded on this route */ }
 
   try {
+    // Salvage holds the account's PRIVATE material balance + claim counters.
+    const { useSalvageStore } = require('@/stores/salvage') as typeof import('@/stores/salvage');
+    useSalvageStore.getState().reset();
+  } catch { /* store not loaded on this route */ }
+
+  try {
     // Guest land sandbox persists demoCt (demo vCLAW) to localStorage — it
     // should never be displayed in an authed session.
     const { useGuestLandSandbox } =

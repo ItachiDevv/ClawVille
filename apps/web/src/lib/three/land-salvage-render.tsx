@@ -30,6 +30,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SALVAGE_NODES, type SalvageNode } from '@clawville/shared';
 import { api } from '@/lib/api';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { LAND_SALVAGE_REFRESH_EVENT } from '@/lib/land-query-keys';
 import { KIT_FLOOR_Y } from '@/lib/three/land-kit-assets';
 import { salvageNodeLook, type SalvageNodeLook } from '@/lib/three/land-salvage-nodes';
@@ -46,8 +47,10 @@ function salvageNodeYaw(nodeId: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// SalvageStateHydrator — headless, public-feed poll + explicit refresh event.
-// Mirrors KitPieceHydrator's pattern (land-kit-pieces.tsx).
+// SalvageStateHydrator — headless poll + explicit refresh event, for a
+// signed-in NON-guest account only (the route refuses guests; polling anyway
+// drew a 401 every 45 s per guest tab). Mirrors KitPieceHydrator's pattern
+// (land-kit-pieces.tsx).
 // ---------------------------------------------------------------------------
 
 // Cooldowns are 6h-granular (§2.2), so a slow poll is correct — this exists
@@ -57,8 +60,23 @@ const SALVAGE_POLL_MS = 45_000;
 
 export function SalvageStateHydrator() {
   const setState = useSalvageStore((state) => state.setState);
+  const { data: authData } = useAuthMe();
+  // Keyed on the account id so a sign-in, sign-out or account switch
+  // restarts the poll (and drops the previous account's private numbers).
+  const accountId =
+    authData?.user && !authData.user.isGuest ? authData.user.id : null;
+  const lastAccountRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
+    // No account: nothing private may show. Account changed: drop the old
+    // one's numbers before the first poll lands. (A plain remount with the
+    // same account keeps them, so the HUD does not blink to 0.)
+    const prev = lastAccountRef.current;
+    lastAccountRef.current = accountId;
+    if (!accountId || (prev !== undefined && prev !== accountId)) {
+      useSalvageStore.getState().reset();
+    }
+    if (!accountId) return undefined;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -95,7 +113,7 @@ export function SalvageStateHydrator() {
       window.removeEventListener(LAND_SALVAGE_REFRESH_EVENT, refreshNow);
       if (pollTimer !== null) clearTimeout(pollTimer);
     };
-  }, [setState]);
+  }, [setState, accountId]);
 
   return null;
 }
