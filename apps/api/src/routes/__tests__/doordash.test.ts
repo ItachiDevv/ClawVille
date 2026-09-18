@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, te
 import { Hono } from 'hono';
 import { lucia } from '../../lib/auth';
 import * as cli from '../../services/doordash-cli';
+import * as operator from '../../services/doordash-operator';
 
 const previousEnv = {
   DOORDASH_OPERATOR_USER_ID: process.env.DOORDASH_OPERATOR_USER_ID,
@@ -38,6 +39,13 @@ beforeEach(async () => {
       id: 'test-session', userId, fresh: false, expiresAt: new Date(Date.now() + 60_000),
     } : null,
   } as Awaited<ReturnType<typeof lucia.validateSession>>));
+  // The operator id is fixed when doordash-operator first loads. In CI every
+  // route file shares one Bun process, so an earlier file can load it with no
+  // env and freeze it empty. Stub the lookup rather than trusting load order.
+  const operatorMock = spyOn(operator, 'doordashOperatorUserId').mockImplementation(
+    () => (process.env.ADMIN_USER_IDS ?? '').split(',').includes(process.env.DOORDASH_OPERATOR_USER_ID ?? '')
+      ? process.env.DOORDASH_OPERATOR_USER_ID ?? null : null);
+  restoreMocks.push(() => operatorMock.mockRestore());
   runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, data: { version: '0.2.4' }, durationMs: 1 });
   const availabilityMock = spyOn(cli, 'isDoordashAvailable').mockImplementation(() => available);
   const darkMock = spyOn(cli, 'doordashDarkState').mockImplementation(() => ({ ...dark }));
