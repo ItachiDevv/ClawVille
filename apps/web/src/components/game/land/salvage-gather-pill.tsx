@@ -130,6 +130,13 @@ export default function SalvageGatherPill() {
     // Checked after EVERY await: the player walked away / started another
     // gesture, or the account changed (then any further request would run
     // under the NEW account's cookie and could spend its claim).
+    // Known limit (Codex r3, accepted): a reset can still land inside the
+    // shared request helper's own fingerprint await, after this check and
+    // before fetch(). That one request then carries the new cookie, but it
+    // carries the OLD account's approach token or none, so the server (tokens
+    // are bound to the account that approached) cannot settle a claim with it.
+    // This race predates the guard; closing it needs a dispatch-time check in
+    // the shared helper for every route.
     const stillMine = () =>
       gestureIdRef.current === myGestureId &&
       useSalvageStore.getState().generation === myGeneration;

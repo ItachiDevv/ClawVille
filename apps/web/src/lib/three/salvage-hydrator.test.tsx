@@ -1,37 +1,22 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { act, createElement } from 'react';
 import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 
-// 2026-09-18 (Codex r2): a salvage-state poll that was in flight when the
-// identity reset landed wrote the previous account's private numbers back.
-// Guests must not poll at all (the route refuses them; prod logged a 401 per
-// guest tab every 45 s).
-
-let auth: { user: { id: string; isGuest: boolean } } | null = null;
-let calls = 0;
-let resolvePoll: ((value: unknown) => void) | null = null;
-
-mock.module('@/hooks/use-auth-me', () => ({
-  useAuthMe: () => ({ data: auth }),
-}));
-mock.module('@/lib/api', () => ({
-  api: {
-    getLandSalvageState: () => {
-      calls += 1;
-      return new Promise((resolve) => {
-        resolvePoll = resolve;
-      });
-    },
-  },
-}));
+// 2026-09-18 (Codex r2): a salvage-state poll in flight when the identity
+// reset landed wrote the previous account's private numbers back. With no
+// account (guest / signed out) there must be no poll at all: the route
+// refuses guests, and prod logged a 401 per guest tab every 45 s.
+//
+// The poller's inputs are injected, so this test needs NO process-wide module
+// mocks (a mock of '@/lib/api' leaked into other suites in round 3).
 
 const testWindow = new Window({ url: 'http://localhost/game' });
 const saved = new Map<PropertyKey, PropertyDescriptor | undefined>();
 const names = ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'] as const;
 
 let createRoot: typeof import('react-dom/client').createRoot;
-let SalvageStateHydrator: typeof import('./land-salvage-render').SalvageStateHydrator;
+let SalvageStatePoller: typeof import('./land-salvage-render').SalvageStatePoller;
 let useSalvageStore: typeof import('@/stores/salvage').useSalvageStore;
 
 beforeAll(async () => {
@@ -41,7 +26,7 @@ beforeAll(async () => {
   Object.defineProperty(globalThis, 'navigator', { configurable: true, writable: true, value: testWindow.navigator });
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, writable: true, value: true });
   ({ createRoot } = await import('react-dom/client'));
-  ({ SalvageStateHydrator } = await import('./land-salvage-render'));
+  ({ SalvageStatePoller } = await import('./land-salvage-render'));
   ({ useSalvageStore } = await import('@/stores/salvage'));
 });
 
@@ -58,32 +43,42 @@ const body = {
   rules: { approachRangeWu: 260, cooldownMs: 1, avatarDailyClaimCap: 20, ownerDailyClaimCap: 120, layoutVersion: 1 },
 };
 
-function mount(): { root: Root; el: HTMLElement } {
+function deferredFetch() {
+  const state = { calls: 0, resolve: null as ((v: unknown) => void) | null };
+  const fetchState = () => {
+    state.calls += 1;
+    return new Promise((resolve) => {
+      state.resolve = resolve;
+    }) as never;
+  };
+  return { state, fetchState };
+}
+
+function mount(accountId: string | null, fetchState: () => Promise<never>): Root {
   const el = testWindow.document.createElement('div') as unknown as HTMLElement;
   testWindow.document.body.appendChild(el as never);
   const root = createRoot(el);
-  act(() => root.render(createElement(SalvageStateHydrator)));
-  return { root, el };
+  act(() => root.render(createElement(SalvageStatePoller, { accountId, fetchState })));
+  return root;
 }
 
-describe('salvage state hydrator', () => {
-  test('a guest never polls', () => {
-    calls = 0;
-    auth = { user: { id: 'guest-1', isGuest: true } };
-    const { root } = mount();
-    expect(calls).toBe(0);
+describe('salvage state poller', () => {
+  test('no account (guest / signed out): no poll, and private numbers are cleared', () => {
+    useSalvageStore.getState().reset();
+    const { state, fetchState } = deferredFetch();
+    const root = mount(null, fetchState);
+    expect(state.calls).toBe(0);
+    expect(useSalvageStore.getState().materialBalance).toBe(0);
     act(() => root.unmount());
   });
 
-  test('a poll in flight during an identity reset cannot write the old account back', async () => {
-    calls = 0;
-    auth = { user: { id: 'u1', isGuest: false } };
-    const { root } = mount();
-    expect(calls).toBe(1);
-    // Sign-out / account switch lands while the request is in flight.
-    useSalvageStore.getState().reset();
+  test('a poll in flight during an identity reset writes nothing', async () => {
+    const { state, fetchState } = deferredFetch();
+    const root = mount('u1', fetchState);
+    expect(state.calls).toBe(1);
+    useSalvageStore.getState().reset(); // sign-out / switch lands mid-request
     await act(async () => {
-      resolvePoll?.(body);
+      state.resolve?.(body);
       await Promise.resolve();
     });
     expect(useSalvageStore.getState().materialBalance).toBe(0);
@@ -91,11 +86,10 @@ describe('salvage state hydrator', () => {
   });
 
   test('a poll for the current account still lands', async () => {
-    calls = 0;
-    auth = { user: { id: 'u2', isGuest: false } };
-    const { root } = mount();
+    const { state, fetchState } = deferredFetch();
+    const root = mount('u2', fetchState);
     await act(async () => {
-      resolvePoll?.(body);
+      state.resolve?.(body);
       await Promise.resolve();
     });
     expect(useSalvageStore.getState().materialBalance).toBe(42);
