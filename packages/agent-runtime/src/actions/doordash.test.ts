@@ -106,8 +106,21 @@ describe('read-only DoorDash actions', () => {
     });
   }
 
+  test('order status with no id checks the latest order and names the store and the wait', async () => {
+    const call = mock(async () => ({ ok: true, durationMs: 1, data: {
+      status: 'store_confirmed', merchant_name: 'Wawa',
+      quoted_delivery_time: new Date(Date.now() + 24 * 60_000).toISOString(),
+    } }));
+    const result = await doordashOrderStatusAction.handler(null, { parameters: {} }, { services: { doordash: { orderStatus: call } } });
+    expect(call.mock.calls).toEqual([[{ orderUuid: undefined }]]);
+    expect(result.text).toMatch(/^Your DoorDash order from Wawa was confirmed by the restaurant\. It should arrive in about 2[34] minutes\.$/);
+  });
+
   test('missing or non-string required parameters never reach the bridge', async () => {
-    for (const c of cases.filter((entry) => Object.keys(entry.params).length > 0)) {
+    // Only REQUIRED parameters: the order id became optional on 2026-09-18,
+    // because the model can never see an order id across turns.
+    for (const c of cases.filter((entry) => Object.keys(entry.params).length > 0
+      && entry.action.parameters?.find((p) => p.name === Object.keys(entry.params)[0])?.required)) {
       const call = mock(async () => { throw new Error('must not run'); });
       const state = { services: { doordash: { [c.method]: call } } };
       const name = Object.keys(c.params)[0];

@@ -52,14 +52,28 @@ export function cleanVendorText(value: string, max = 60): string {
   return value.replace(/[\u0000-\u001f\u007f\[\]<>{}]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-function normalize(value: string): string {
-  return ` ${value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()} `;
+/** Plural-insensitive word: "hoagies" = "hoagie", "pickles" = "pickle", but "swiss" stays. */
+export function singularWord(word: string): string {
+  return word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
 }
 
-/** Whole-phrase match: "roll" must not match inside "rolled", "ham" not inside "hamburger". */
+export function normalize(value: string): string {
+  const words = value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()
+    .split(' ').filter(Boolean).map(singularWord);
+  return ` ${words.join(' ')} `;
+}
+
+/**
+ * Whole-phrase match: "roll" must not match inside "rolled", "ham" not inside
+ * "hamburger". Also matches the name typed as ONE word ("pepperjack" for
+ * "Pepper Jack"), which the founder did on the first real order (2026-09-18).
+ */
 function mentions(haystack: string, name: string): boolean {
   const needle = normalize(name).trim();
-  return needle.length > 0 && haystack.includes(` ${needle} `);
+  if (needle.length === 0) return false;
+  if (haystack.includes(` ${needle} `)) return true;
+  const joined = needle.replace(/ /g, '');
+  return needle.includes(' ') && haystack.includes(` ${joined} `);
 }
 
 /**

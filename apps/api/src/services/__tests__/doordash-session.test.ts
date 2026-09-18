@@ -4,6 +4,7 @@ import {
   recallDoordashContext,
   rememberDoordashContext,
   resetDoordashContexts,
+  resolveItemByName,
   resolveStoreByName,
 } from '../doordash-session';
 
@@ -102,5 +103,47 @@ describe('resolving a restaurant the operator named', () => {
       ],
     };
     expect(resolveStoreByName(tricky, 'Pizza')?.storeId).toBe('1');
+  });
+});
+
+// The founder's first real order (prod, 2026-09-18) typed "custom wawa
+// cheesesteak hoagies" for "Wawa Custom Cheesesteak Hoagie" and got "could not
+// find". Live Wawa names below.
+describe('matching a spoken item name to the menu', () => {
+  const wawa = {
+    lastStores: [],
+    lastItems: [
+      { itemId: 'i_1', name: 'Wawa Custom Cheesesteak Hoagie', hasModifiers: true, hasRequired: true },
+      { itemId: 'i_2', name: 'Custom Italian Hoagie', hasModifiers: true, hasRequired: true },
+      { itemId: 'i_3', name: 'Wawa Custom Oven Roasted Turkey Hoagie', hasModifiers: true, hasRequired: true },
+      { itemId: 'i_4', name: 'Coke (20 oz)', hasModifiers: false, hasRequired: false },
+    ],
+  };
+  const item = (spoken: string) => {
+    const r = resolveItemByName(wawa, spoken);
+    return r && 'item' in r ? r.item.itemId : r;
+  };
+
+  test('plural and reordered words still find the item', () => {
+    expect(item('custom wawa cheesesteak hoagies')).toBe('i_1');
+    expect(item('italian hoagies')).toBe('i_2');
+  });
+
+  test('a split spelling finds the joined name', () => {
+    expect(item('cheese steak hoagie')).toBe('i_1');
+  });
+
+  test('parentheses and sizes in the name do not get in the way', () => {
+    expect(item('coke 20 oz')).toBe('i_4');
+    expect(item('Coke (20 oz)')).toBe('i_4');
+  });
+
+  test('several matches come back as a choice, never a guess', () => {
+    expect(item('custom hoagie')).toEqual({ choices: expect.arrayContaining(['Custom Italian Hoagie', 'Wawa Custom Cheesesteak Hoagie']) });
+  });
+
+  test('no outright match offers the closest names instead of nothing', () => {
+    expect(item('turkey club')).toEqual({ choices: ['Wawa Custom Oven Roasted Turkey Hoagie'] });
+    expect(item('lobster roll')).toBeNull();
   });
 });

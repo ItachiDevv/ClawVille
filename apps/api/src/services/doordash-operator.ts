@@ -128,7 +128,8 @@ export type DoordashFailure =
   | 'doordash_no_menu'
   | 'doordash_no_cart'
   | 'doordash_item_unresolved'
-  | 'doordash_needs_choices';
+  | 'doordash_needs_choices'
+  | 'doordash_no_order';
 
 export type DoordashResult<T> =
   | { ok: true; data: T; durationMs: number }
@@ -200,7 +201,7 @@ export interface DoordashBridge {
   cartRemove(q: { cartUuid?: string; lineId: string }): Promise<DoordashResult<DoordashCartView>>;
   preview(q: { cartUuid?: string }): Promise<DoordashResult<DoordashPreviewView>>;
   submit(q: { confirm: string; tipCents: number }): Promise<DoordashResult<DoordashSubmitView>>;
-  orderStatus(q: { orderUuid: string }): Promise<DoordashResult<DdOrderStatus>>;
+  orderStatus(q: { orderUuid?: string }): Promise<DoordashResult<DdOrderStatus>>;
   orderHistory(): Promise<DoordashResult<DdOrderSummary[]>>;
 }
 
@@ -990,7 +991,24 @@ export function buildDoordashBridge(
     },
 
     // docs/ddcli-help/order-status.txt: --order-uuid.
-    orderStatus: ({ orderUuid }) => runDdCli<DdOrderStatus>('order-status', [orderUuid]),
+    // With no id, the operator's most recent PLACED order. The model can never
+    // quote an order id: DoorDash output is kept out of chat memory, so "where
+    // is my order?" arrives with nothing to pass (founder, 2026-09-18).
+    async orderStatus({ orderUuid }) {
+      const startedAt = Date.now();
+      let target = orderUuid?.trim();
+      if (!target) {
+        const rows = await db
+          .select({ orderUuid: doordashOrders.orderUuid })
+          .from(doordashOrders)
+          .where(and(eq(doordashOrders.userId, subject.userId), sql`${doordashOrders.orderUuid} IS NOT NULL`))
+          .orderBy(sql`${doordashOrders.submittedAt} DESC NULLS LAST`)
+          .limit(1);
+        target = rows[0]?.orderUuid ?? undefined;
+      }
+      if (!target) return refuse('doordash_no_order', 'You have not placed a DoorDash order here yet.', startedAt);
+      return runDdCli<DdOrderStatus>('order-status', [target]);
+    },
     // docs/ddcli-help/order-history.txt: native response has orders[].
     async orderHistory() {
       const result = await runDdCli<{ orders: DdOrderSummary[] }>('order-history', []);
