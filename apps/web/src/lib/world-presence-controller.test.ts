@@ -839,9 +839,12 @@ describe("world presence controller", () => {
     expect(h.clearCount).toBe(0);
     expect(h.localSessionIds.at(-1)).toBe(joinedId);
 
+    const assignmentsBeforeReopen = h.localSessionIds.length;
     h.setDownlinkEnabled(true);
     h.advance(200);
     expect(h.eventSources.length).toBeGreaterThan(opened);
+    // The reopen itself re-asserts the id (a new assignment, not a leftover).
+    expect(h.localSessionIds.length).toBe(assignmentsBeforeReopen + 1);
     expect(h.localSessionIds.at(-1)).toBe(joinedId);
     expect(h.localSessionIds).not.toContain(null);
     h.controller.stop();

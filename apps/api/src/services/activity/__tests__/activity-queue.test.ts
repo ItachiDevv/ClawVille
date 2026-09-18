@@ -279,9 +279,31 @@ describe('Matchmaker fill', () => {
     await activityQueueService.runMatchmakerSweep();
     const [room] = activityRoomManager.listActiveRooms(REEF_ACTIVITY_ID);
     activityRoomManager.withdrawParticipant(room!.id, pid(1));
+    const stored = (activityQueueService as unknown as { matchedRooms: Map<string, string> }).matchedRooms;
+    // No poll has run since the match, so the stale entry is still stored.
+    expect(stored.get(pid(1))).toBe(room!.id);
 
+    // Entering the queue again clears it by itself (no poll needed).
     await enqueueReefHuman(pid(1));
+    expect(stored.has(pid(1))).toBe(false);
     expect(activityQueueService.getMatchedRoomId(pid(1))).toBeNull();
+  });
+
+  it('the queue-status poll never deletes a room binding', async () => {
+    seedBotPool(8);
+    await enqueueReefHuman(pid(1));
+    backdateOldestFor(REEF_ACTIVITY_ID, 4_000);
+    await activityQueueService.runMatchmakerSweep();
+    const [room] = activityRoomManager.listActiveRooms(REEF_ACTIVITY_ID);
+    const bindings = (activityRoomManager as unknown as { playerToRoom: Map<string, string> }).playerToRoom;
+    // Simulate a transition set in memory whose DB write has not landed yet.
+    const prev = room!.state;
+    room!.state = 'results';
+    expect(activityQueueService.getMatchedRoomId(pid(1))).toBeNull();
+    expect(bindings.get(pid(1))).toBe(room!.id);
+    // Rollback restores the state; the binding is still there to use.
+    room!.state = prev;
+    expect(activityRoomManager.isAvatarInLiveRoom(pid(1), room!.id)).toBe(true);
   });
 
   it('keeps earlyBotFill scoped away from bumper-shells', async () => {

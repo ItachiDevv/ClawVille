@@ -13,7 +13,9 @@ describe('players store keeps the local identity across a downlink pause', () =>
 
   test('clearRemote drops bodies but keeps localSessionId and former selves', () => {
     const s = usePlayerStore.getState();
+    s.setLocalSessionId('me-0'); // a former self (earlier reconnect)
     s.setLocalSessionId('me-1');
+    s.setRoomId('AB2C');
     s.updateFromSnapshot([body('me-1', 0) as never, body('other', 5) as never]);
     expect(usePlayerStore.getState().players.find((p) => p.id === 'me-1')?.isLocal).toBe(true);
 
@@ -21,11 +23,16 @@ describe('players store keeps the local identity across a downlink pause', () =>
     const after = usePlayerStore.getState();
     expect(after.players).toEqual([]);
     expect(after.localSessionId).toBe('me-1');
-    expect(after.localSessionIds.has('me-1')).toBe(true);
+    expect([...after.localSessionIds].sort()).toEqual(['me-0', 'me-1']);
+    expect(after.roomId).toBe('AB2C');
 
-    // The reopened stream's first snapshot: our own body must stay local.
-    after.updateFromSnapshot([body('me-1', 3) as never]);
-    expect(usePlayerStore.getState().players[0]?.isLocal).toBe(true);
+    // The reopened stream's first snapshot: neither of our bodies renders as
+    // remote; another player's body does.
+    after.updateFromSnapshot([body('me-1', 3) as never, body('me-0', 3) as never, body('other', 9) as never]);
+    const byId = new Map(usePlayerStore.getState().players.map((p) => [p.id, p.isLocal]));
+    expect(byId.get('me-1')).toBe(true);
+    expect(byId.get('me-0')).toBe(true);
+    expect(byId.get('other')).toBe(false);
   });
 
   test('clear() is still the full reset used when the session ends', () => {
