@@ -14,6 +14,8 @@
 
 ## CURRENT STAGING / PROD STATE
 
+- **2026-09-18 (session dd/Fable, STAGING - wager: never-created lobbies close, chain watcher).** Founder go. DB close after three proofs + a per-tick watcher that cancels any later on-chain account (depositors self-refund). Tests: +4 close, +4 watcher, +1 real-Postgres (sweep close + watch SQL), now run in the CI Postgres lane. **SCHEMA:** `synced`.
+
 - **2026-09-18 (session dd/Fable, STAGING - agent chat bar says "<username> agent").** Founder ruling. Web only: `lib/agent-display-name.ts` + test, `avatar-chat-bar.tsx` labels. **SCHEMA:** `synced`.
 
 - **2026-09-18 (session dd/Fable, STAGING - GameFeatures.md de-duplicated).** Since `667efaac` (07-15) the file held two copies of sections 0-20. Kept the more complete copy per section; 28 lines unique to the removed copy carried under a marked review note; verified 0 lines lost (3,186 -> 2,083 non-empty). Docs only. **SCHEMA:** `synced`.

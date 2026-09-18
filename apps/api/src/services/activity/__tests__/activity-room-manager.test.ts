@@ -139,11 +139,13 @@ const {
   handleWagerRoomAborted,
   sweepFailureLogDecision,
   __resetSweepFailureLogForTest,
+  watchClosedNeverCreatedLobbies,
 } = await import(
   '../wager-lobby-bridge'
 );
 import type {
   LobbyHandle,
+  NeverCreatedWatchDeps,
   WagerAbortRecoveryDeps,
 } from '../wager-lobby-bridge';
 
@@ -810,6 +812,82 @@ describe('abort recovery for a create that never reached the chain', () => {
       );
       expect(h.calls).toEqual([]);
     }
+  });
+});
+
+// Founder 2026-09-18: close the never-created lobbies ("mark them closed").
+// The DB close is only safe because this watcher keeps checking the chain:
+// the program accepts a direct create with a caller-chosen id.
+describe('watch for lobbies closed as never-created', () => {
+  function watchHarness(chain: { absent: boolean; state: 'open' | 'locked' | 'settled' | 'cancelled'; cancelThrows?: boolean }) {
+    const calls: string[] = [];
+    const recorded: Array<{ chainState: string; txSig: string | null }> = [];
+    const alerts: string[] = [];
+    let resolved = false;
+    const deps: NeverCreatedWatchDeps = {
+      listClosedNeverCreated: async () => (resolved ? [] : [{ rowId: 'row-184', lobbyId: 184n }]),
+      lobbyAccountAbsent: async () => {
+        calls.push('absent?');
+        return chain.absent;
+      },
+      readChainState: async () => {
+        calls.push('read');
+        return chain.state;
+      },
+      cancelLobby: async (input) => {
+        calls.push('cancel');
+        expect(input).toEqual({ lobbyIdBigint: 184n, signerKind: 'settlement-authority' });
+        if (chain.cancelThrows) {
+          chain.state = 'cancelled'; // it landed, but the response was lost
+          throw new Error('RPC response lost after send');
+        }
+        chain.state = 'cancelled';
+        return { txSig: 'late-cancel-sig', signerPubkey: 'settlement-authority' };
+      },
+      recordLateChainAccount: async (_rowId, input) => {
+        recorded.push(input);
+        resolved = true;
+      },
+      alert: (message) => alerts.push(message),
+    };
+    return { deps, calls, recorded, alerts };
+  }
+
+  it('does nothing while the account is absent', async () => {
+    const h = watchHarness({ absent: true, state: 'open' });
+    await expect(watchClosedNeverCreatedLobbies(h.deps)).resolves.toEqual({ checked: 1, lateAccounts: 0 });
+    expect(h.calls).toEqual(['absent?']);
+    expect(h.recorded).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it('cancels a late open account on chain once, records it, and pages', async () => {
+    const h = watchHarness({ absent: false, state: 'open' });
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls).toEqual(['absent?', 'read', 'cancel']);
+    expect(h.recorded).toEqual([{ chainState: 'open', txSig: 'late-cancel-sig' }]);
+    expect(h.alerts).toHaveLength(1);
+    // Resolved: the next tick has nothing to do.
+    await expect(watchClosedNeverCreatedLobbies(h.deps)).resolves.toEqual({ checked: 0, lateAccounts: 0 });
+  });
+
+  it('records an account already cancelled or settled on chain without sending', async () => {
+    for (const state of ['cancelled', 'settled'] as const) {
+      const h = watchHarness({ absent: false, state });
+      await watchClosedNeverCreatedLobbies(h.deps);
+      expect(h.calls).not.toContain('cancel');
+      expect(h.recorded).toEqual([{ chainState: state, txSig: null }]);
+    }
+  });
+
+  it('a lost cancel response pages, and the next tick records without a second send', async () => {
+    const h = watchHarness({ absent: false, state: 'locked', cancelThrows: true });
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.recorded).toEqual([]);
+    expect(h.alerts).toHaveLength(1);
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls.filter((c) => c === 'cancel')).toHaveLength(1);
+    expect(h.recorded).toEqual([{ chainState: 'cancelled', txSig: null }]);
   });
 });
 
