@@ -7,6 +7,7 @@ import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { api, ApiError } from '@/lib/api';
 import { AUTH_ME_QUERY_KEY, fetchAuthMe } from '@/hooks/use-auth-me';
+import { agentDisplayName } from '@/lib/agent-display-name';
 import { KNOWLEDGE_BOOKS, type AgentCategory } from '@clawville/shared';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 
@@ -69,6 +70,9 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
     staleTime: 30_000,
     retry: false,
   });
+  // The player's agent reads as "<username> agent" everywhere in this bar
+  // (founder, 2026-09-18), so it follows a username change.
+  const agentLabel = agentDisplayName(authData?.user?.username, avatar?.name);
   // F2 (2026-06-21): read the SAME ['agent-session'] cache game/page.tsx populates
   // (enabled:false → pure cache subscription, no extra fetch). `mode === 'hosted'`
   // means the avatar IS a server-hosted Eliza runtime (Milady/Hermes) — there is no
@@ -214,14 +218,14 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
         const okMsg: AvatarMessage = {
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: `Directive set — ${avatar.name} will act on it autonomously.`,
+          content: `Directive set — ${agentLabel} will act on it autonomously.`,
         };
         setMessages((prev) => [...prev, okMsg]);
       } catch (err: any) {
         const code = err instanceof ApiError ? err.code : undefined;
         const msg =
           code === 'agent_provisioning_pending'
-            ? `${avatar.name} is still being provisioned — try again shortly.`
+            ? `${agentLabel} is still being provisioned — try again shortly.`
             : code === 'guest_not_allowed'
               ? 'Sign up to direct your own agent.'
               : code === 'rate_limited'
@@ -348,7 +352,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
         {
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: `Directive cleared — ${avatar.name} resumes free exploration.`,
+          content: `Directive cleared — ${agentLabel} resumes free exploration.`,
         },
       ]);
     } catch (err: any) {
@@ -405,7 +409,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
           {/* Chat header */}
           <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
             <AgentIcon size={22} />
-            <span className="text-white font-bold text-sm">{avatar.name}</span>
+            <span className="text-white font-bold text-sm">{agentLabel}</span>
             {isDirectiveMode && (
               <span className="flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider bg-violet-500/25 text-violet-100 border border-violet-300/40">
                 Directing
@@ -475,7 +479,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
             <div className="flex items-center gap-2 px-3 py-2 bg-cyan-500/10 border-b border-cyan-400/20">
               <span className="text-cyan-200 text-sm leading-none">💬</span>
               <span className="text-cyan-100/90 text-xs font-medium flex-1">
-                Chatting with {avatar.name}. Reconnect your agent to chat as it.
+                Chatting with {agentLabel}. Reconnect your agent to chat as it.
               </span>
               <button
                 type="button"
@@ -491,7 +495,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
           <div className={(tableSurface ? 'min-h-0 flex-1' : 'max-h-64') + ' overflow-y-auto px-3 py-2 space-y-2'}>
             {messages.length === 0 && (
               <p className="text-cyan-300/40 text-xs text-center py-4 font-mono uppercase tracking-[0.2em]">
-                {isDirectiveMode ? `Direct ${avatar.name}…` : `Say something to ${avatar.name}…`}
+                {isDirectiveMode ? `Direct ${agentLabel}…` : `Say something to ${agentLabel}…`}
               </p>
             )}
             {messages.map((msg) =>
@@ -545,7 +549,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isDirectiveMode ? 'Direct your agent…' : `Talk to ${avatar.name}…`}
+                placeholder={isDirectiveMode ? 'Direct your agent…' : `Talk to ${agentLabel}…`}
                 className="min-h-11 flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
                 disabled={loading}
               />
@@ -576,7 +580,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
           </span>
         )}
         <span className="text-white font-bold text-sm">
-          {expanded ? 'Close' : `Chat with ${avatar.name}`}
+          {expanded ? 'Close' : `Chat with ${agentLabel}`}
         </span>
         {hasUnread && !expanded && (
           <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />

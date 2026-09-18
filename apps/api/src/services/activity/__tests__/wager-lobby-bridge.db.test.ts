@@ -78,8 +78,27 @@ describeIfDb('wager-abort recovery sweep — real PostgreSQL', () => {
       .from(dbMod.activities)
       .where(dbMod.inArray(dbMod.activities.id, ['reef-race', 'bumper-shells']))
       .limit(1);
-    if (activityRows.length === 0) throw new Error('no wager-abort activity seeded in this DB');
-    activityId = activityRows[0].id;
+    if (activityRows.length === 0) {
+      // A fresh CI database has no world activities; seed the one the sweep
+      // filters to (idempotent, left in place for later suites).
+      await dbMod.db
+        .insert(dbMod.activities)
+        .values({
+          id: 'bumper-shells',
+          buildingId: 'test-building',
+          slug: 'bumper-shells',
+          displayName: 'Bumper Shells',
+          description: 'test fixture',
+          minPlayers: 2,
+          maxPlayers: 8,
+          preferredPlayers: 4,
+          rewardConfig: {} as any,
+        })
+        .onConflictDoNothing();
+      activityId = 'bumper-shells';
+    } else {
+      activityId = activityRows[0].id;
+    }
 
     const [user] = await dbMod.db
       .insert(dbMod.users)
@@ -155,6 +174,8 @@ describeIfDb('wager-abort recovery sweep — real PostgreSQL', () => {
       const result = await sweepAbortedCrashWagerLobbies({
         ...productionWagerAbortRecoveryDeps,
         readChainState: async () => 'open',
+        // Chain-free: a seeded prepared row must never reach a real RPC.
+        lobbyAccountAbsent: async () => false,
         cancelLobby: async (input: any) => {
           chainCancels.push(input.lobbyIdBigint);
           return { txSig: `test-sweep-sig-${suffix}` } as any;
@@ -188,6 +209,59 @@ describeIfDb('wager-abort recovery sweep — real PostgreSQL', () => {
         if (row.id === eligibleLobbyId) continue;
         expect(row.state).not.toBe('cancelled');
       }
+    },
+    DB_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'closes a never-created lobby in the DB and the watcher lists it until a late account is recorded',
+    async () => {
+      const crashedRoomId = await seedRoom('aborted_crash');
+      const neverCreatedId = await seedLobby({ roomId: crashedRoomId, onChainCreateStatus: 'prepared' });
+
+      const {
+        sweepAbortedCrashWagerLobbies,
+        productionWagerAbortRecoveryDeps,
+        productionNeverCreatedWatchDeps,
+        CLOSED_NEVER_CREATED_REASON,
+      } = await import('../wager-lobby-bridge');
+      const chainCancels: bigint[] = [];
+      const result = await sweepAbortedCrashWagerLobbies({
+        ...productionWagerAbortRecoveryDeps,
+        readChainState: async () => 'open',
+        lobbyAccountAbsent: async () => true, // chain-free: the PDA does not exist
+        cancelLobby: async (input: any) => {
+          chainCancels.push(input.lobbyIdBigint);
+          return { txSig: 'never' } as any;
+        },
+      });
+      expect(result.failed).toBe(0);
+      expect(chainCancels.length).toBe(0); // no chain write for a never-created lobby
+
+      const [row] = await dbMod.db
+        .select({ state: dbMod.lobbies.state, createStatus: dbMod.lobbies.onChainCreateStatus })
+        .from(dbMod.lobbies)
+        .where(dbMod.eq(dbMod.lobbies.id, neverCreatedId));
+      expect(row.state).toBe('cancelled');
+      expect(row.createStatus).toBe('failed');
+      const events = await dbMod.db
+        .select({ raw: dbMod.lobbyEvents.rawEventJson })
+        .from(dbMod.lobbyEvents)
+        .where(dbMod.eq(dbMod.lobbyEvents.lobbyId, neverCreatedId));
+      expect(events.map((e: any) => e.raw?.reason)).toContain(CLOSED_NEVER_CREATED_REASON);
+
+      // The watcher's real SQL lists it ...
+      const listed = await productionNeverCreatedWatchDeps.listClosedNeverCreated();
+      expect(listed.map((l) => l.rowId)).toContain(neverCreatedId);
+      // ... until a late chain account is recorded, then never again.
+      await productionNeverCreatedWatchDeps.recordLateChainAccount(neverCreatedId, {
+        chainState: 'cancelled',
+        txSig: null,
+      });
+      const after = await productionNeverCreatedWatchDeps.listClosedNeverCreated();
+      expect(after.map((l) => l.rowId)).not.toContain(neverCreatedId);
+
+      await dbMod.db.delete(dbMod.lobbyEvents).where(dbMod.eq(dbMod.lobbyEvents.lobbyId, neverCreatedId));
     },
     DB_TEST_TIMEOUT_MS,
   );

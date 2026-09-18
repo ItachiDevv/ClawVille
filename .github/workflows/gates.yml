@@ -235,6 +235,12 @@ jobs:
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: cd apps/api && bun test src/services/__tests__/trading-migrations-db.test.ts src/services/__tests__/trade-observer.test.ts
 
+      - name: Run the wager abort-recovery DB tests (real sweep, close and watch SQL)
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: cd apps/api && bun test src/services/activity/__tests__/wager-lobby-bridge.db.test.ts
+
       - name: Seed the canonical land parcel grid
         # land DB-contract tests pick real parcels; idempotent 56-row seed,
         # explicit-URL-only (SEED_DATABASE_URL, dummy CI value — not a secret).

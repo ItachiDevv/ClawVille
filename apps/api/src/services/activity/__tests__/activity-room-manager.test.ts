@@ -24,7 +24,9 @@ mock.module('@clawville/database', () => ({
   and: (...args: unknown[]) => args,
   eq: (...args: unknown[]) => args,
   inArray: (...args: unknown[]) => args,
+  isNotNull: (...args: unknown[]) => args,
   sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ strings, vals }),
+  wagerChainIntents: { id: 'id', lobbyId: 'lobby_id', txSignature: 'tx_signature' },
   activityRooms: {
     id: 'id',
     activityId: 'activity_id',
@@ -104,6 +106,8 @@ mock.module('../activity-replay-log', () => ({
 
 mock.module('../../wager-program-client', () => ({
   cancelLobby: () => Promise.reject(new Error('unexpected production cancel in unit test')),
+  isWagerLobbyAccountAbsent: () =>
+    Promise.reject(new Error('unexpected production chain read in unit test')),
   lockLobby: () => Promise.reject(new Error('unexpected production lock in unit test')),
   readWagerLobbyChainState: () =>
     Promise.reject(new Error('unexpected production chain read in unit test')),
@@ -135,11 +139,13 @@ const {
   handleWagerRoomAborted,
   sweepFailureLogDecision,
   __resetSweepFailureLogForTest,
+  watchClosedNeverCreatedLobbies,
 } = await import(
   '../wager-lobby-bridge'
 );
 import type {
   LobbyHandle,
+  NeverCreatedWatchDeps,
   WagerAbortRecoveryDeps,
 } from '../wager-lobby-bridge';
 
@@ -539,11 +545,20 @@ describe('Room sweeper', () => {
             cancelSig = txSig;
             refundable = true;
           },
+          noIntentEverSigned: async () => {
+            throw new Error('confirmed lobby must not reach the never-created check');
+          },
+          markCancelledNeverCreated: async () => {
+            throw new Error('confirmed lobby must not be DB-cancelled');
+          },
         });
       },
       readChainState: async (lobbyId) => {
         chainReads.push(lobbyId);
         return chainState;
+      },
+      lobbyAccountAbsent: async () => {
+        throw new Error('confirmed lobby must not probe for an absent account');
       },
       cancelLobby: async (input) => {
         cancelInputs.push(input);
@@ -647,8 +662,17 @@ describe('Room sweeper', () => {
             lobby = { ...lobby, state: 'cancelled' };
             reconciledFromChain = input.reconciledFromChain;
           },
+          noIntentEverSigned: async () => {
+            throw new Error('confirmed lobby must not reach the never-created check');
+          },
+          markCancelledNeverCreated: async () => {
+            throw new Error('confirmed lobby must not be DB-cancelled');
+          },
         }),
       readChainState: async () => chainState,
+      lobbyAccountAbsent: async () => {
+        throw new Error('confirmed lobby must not probe for an absent account');
+      },
       cancelLobby: async (input) => {
         expect(input).toEqual({
           lobbyIdBigint: 77n,
@@ -694,6 +718,196 @@ describe('wager abort sweep log throttle', () => {
     expect(sweepFailureLogDecision('room-a', 'x', 0)).toBe(0);
     expect(sweepFailureLogDecision('room-b', 'x', 1)).toBe(0);
     expect(sweepFailureLogDecision('room-a', 'y', 2)).toBe(0);
+  });
+});
+
+// Prod 2026-09-18: two free lobbies (07-28, 07-29) whose create never reached
+// the chain threw wager_create_reconciliation_required every 60 s forever.
+describe('abort recovery for a create that never reached the chain', () => {
+  function neverCreatedHarness(opts: {
+    createStatus: string;
+    signed: boolean;
+    absent: boolean;
+  }) {
+    const calls: string[] = [];
+    let lobby: LobbyHandle = {
+      rowId: '00000000-0000-0000-0000-000000000184',
+      lobbyId: 184n,
+      state: 'open',
+      mode: 'multiplayer',
+      onChainCreateStatus: opts.createStatus,
+    };
+    const deps: WagerAbortRecoveryDeps = {
+      findLobbyForRoom: async () => ({ ...lobby }),
+      withResolvedFence: async (_rowId, run) =>
+        run({
+          getCurrent: async () => ({ ...lobby }),
+          markCancelled: async () => {
+            calls.push('markCancelled');
+          },
+          noIntentEverSigned: async () => {
+            calls.push('noIntentEverSigned');
+            return !opts.signed;
+          },
+          markCancelledNeverCreated: async () => {
+            calls.push('markCancelledNeverCreated');
+            lobby = { ...lobby, state: 'cancelled', onChainCreateStatus: 'failed' };
+          },
+        }),
+      readChainState: async () => {
+        calls.push('readChainState');
+        return 'open';
+      },
+      lobbyAccountAbsent: async () => {
+        calls.push('lobbyAccountAbsent');
+        return opts.absent;
+      },
+      cancelLobby: async () => {
+        calls.push('cancelLobby');
+        return { txSig: 'never', signerPubkey: 'settlement-authority' };
+      },
+    };
+    return { deps, calls, get lobby() { return lobby; } };
+  }
+
+  it('cancels in the DB only when never signed AND the PDA is absent', async () => {
+    for (const createStatus of ['prepared', 'failed']) {
+      const h = neverCreatedHarness({ createStatus, signed: false, absent: true });
+      await expect(cancelLobbyForAbortedRoom('room-184', h.deps)).resolves.toBe(
+        'cancelled_never_created',
+      );
+      expect(h.calls).toEqual(['noIntentEverSigned', 'lobbyAccountAbsent', 'markCancelledNeverCreated']);
+      expect(h.lobby.state).toBe('cancelled');
+      // No chain read of state, no chain cancel.
+      expect(h.calls).not.toContain('cancelLobby');
+      expect(h.calls).not.toContain('readChainState');
+      // A replay is a no-op.
+      await expect(cancelLobbyForAbortedRoom('room-184', h.deps)).resolves.toBe('already_terminal');
+    }
+  });
+
+  it('keeps the quarantine when any intent was ever signed', async () => {
+    const h = neverCreatedHarness({ createStatus: 'prepared', signed: true, absent: true });
+    await expect(cancelLobbyForAbortedRoom('room-184', h.deps)).rejects.toThrow(
+      'wager_create_reconciliation_required',
+    );
+    expect(h.calls).toEqual(['noIntentEverSigned']);
+    expect(h.lobby.state).toBe('open');
+  });
+
+  it('keeps the quarantine when the lobby account exists on chain', async () => {
+    const h = neverCreatedHarness({ createStatus: 'prepared', signed: false, absent: false });
+    await expect(cancelLobbyForAbortedRoom('room-184', h.deps)).rejects.toThrow(
+      'wager_create_reconciliation_required',
+    );
+    expect(h.lobby.state).toBe('open');
+    expect(h.calls).not.toContain('markCancelledNeverCreated');
+  });
+
+  it('never applies to a create that is sending or under reconciliation', async () => {
+    for (const createStatus of ['sending', 'reconcile']) {
+      const h = neverCreatedHarness({ createStatus, signed: false, absent: true });
+      await expect(cancelLobbyForAbortedRoom('room-184', h.deps)).rejects.toThrow(
+        'wager_create_reconciliation_required',
+      );
+      expect(h.calls).toEqual([]);
+    }
+  });
+});
+
+// Founder 2026-09-18: close the never-created lobbies ("mark them closed").
+// The DB close is only safe because this watcher keeps checking the chain:
+// the program accepts a direct create with a caller-chosen id. The watch ends
+// only on a FINALIZED terminal state (a 'confirmed' cancel can be dropped).
+describe('watch for lobbies closed as never-created', () => {
+  type ChainState = 'open' | 'locked' | 'settled' | 'cancelled';
+  function watchHarness(init: { absent: boolean; confirmed: ChainState; finalized: ChainState | null }) {
+    const chain = { ...init };
+    const calls: string[] = [];
+    const recorded: Array<{ chainState: string; txSig: string | null }> = [];
+    const alerts: string[] = [];
+    let resolved = false;
+    const deps: NeverCreatedWatchDeps = {
+      listClosedNeverCreated: async () => (resolved ? [] : [{ rowId: 'row-184', lobbyId: 184n }]),
+      lobbyAccountAbsent: async () => {
+        calls.push('absent?');
+        return chain.absent;
+      },
+      readFinalizedChainState: async () => {
+        calls.push('finalized?');
+        if (chain.finalized === null) throw new Error('wager_lobby_account_missing_or_wrong_owner');
+        return chain.finalized;
+      },
+      readChainState: async () => {
+        calls.push('confirmed?');
+        return chain.confirmed;
+      },
+      cancelLobby: async (input) => {
+        calls.push('cancel');
+        expect(input).toEqual({ lobbyIdBigint: 184n, signerKind: 'settlement-authority' });
+        chain.confirmed = 'cancelled';
+        return { txSig: 'late-cancel-sig', signerPubkey: 'settlement-authority' };
+      },
+      recordLateChainAccount: async (_rowId, input) => {
+        recorded.push(input);
+        resolved = true;
+      },
+      alert: (message) => alerts.push(message),
+    };
+    return { deps, chain, calls, recorded, alerts };
+  }
+
+  it('does nothing while the account is absent', async () => {
+    const h = watchHarness({ absent: true, confirmed: 'open', finalized: null });
+    await expect(watchClosedNeverCreatedLobbies(h.deps)).resolves.toEqual({ checked: 1, lateAccounts: 0 });
+    expect(h.calls).toEqual(['absent?']);
+    expect(h.recorded).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it('cancels a late open lobby, and ends the watch only once the cancel is finalized', async () => {
+    const h = watchHarness({ absent: false, confirmed: 'open', finalized: null });
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls).toEqual(['absent?', 'finalized?', 'confirmed?', 'cancel']);
+    expect(h.recorded).toEqual([]); // confirmed only: keep watching
+    expect(h.alerts).toHaveLength(1);
+    // Next tick, still not finalized: no second send, no record.
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls.filter((c) => c === 'cancel')).toHaveLength(1);
+    expect(h.recorded).toEqual([]);
+    // Finalized: record once, page, and the watch is over.
+    h.chain.finalized = 'cancelled';
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.recorded).toEqual([{ chainState: 'cancelled', txSig: null }]);
+    await expect(watchClosedNeverCreatedLobbies(h.deps)).resolves.toEqual({ checked: 0, lateAccounts: 0 });
+  });
+
+  it('a cancel dropped with its fork is sent again', async () => {
+    const h = watchHarness({ absent: false, confirmed: 'open', finalized: 'open' });
+    await watchClosedNeverCreatedLobbies(h.deps);
+    h.chain.confirmed = 'open'; // the confirmed cancel rolled back
+    await watchClosedNeverCreatedLobbies(h.deps);
+    expect(h.calls.filter((c) => c === 'cancel')).toHaveLength(2);
+    expect(h.recorded).toEqual([]);
+  });
+
+  it('records a lobby already final as cancelled or settled without sending', async () => {
+    for (const state of ['cancelled', 'settled'] as const) {
+      const h = watchHarness({ absent: false, confirmed: state, finalized: state });
+      await watchClosedNeverCreatedLobbies(h.deps);
+      expect(h.calls).not.toContain('cancel');
+      expect(h.recorded).toEqual([{ chainState: state, txSig: null }]);
+    }
+  });
+
+  it('two overlapping ticks cannot both run', async () => {
+    const h = watchHarness({ absent: false, confirmed: 'cancelled', finalized: 'cancelled' });
+    const [first, second] = await Promise.all([
+      watchClosedNeverCreatedLobbies(h.deps),
+      watchClosedNeverCreatedLobbies(h.deps),
+    ]);
+    expect([first.checked, second.checked].sort()).toEqual([0, 1]);
+    expect(h.recorded).toHaveLength(1);
   });
 });
 
