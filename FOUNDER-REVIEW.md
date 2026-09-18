@@ -336,10 +336,10 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   panel sits on the right under Nori (it used to run off the top of the screen).
 - Known limit: on 320 px phones (first iPhone SE) the upright right column still touches
   the centred quest card; that width is below the 390 px minimum we test.
-- **Finding, your call:** on phones narrower than 768 px (every upright phone and small
-  sideways phones) the minimap is hidden, and with it the only "Map" button, so fast
-  travel through the World Map is not reachable there. This is older than today's work.
-  A "World Map" entry in the gear menu would fix it; say yes and it gets built.
+- **World Map on phones (your "shouldn't we just be able to adjust it"):** on phones
+  narrower than 768 px the minimap was hidden, and with it the only Map button. The minimap
+  now shrinks to its "MAP" button at the top left there; tap it for the World Map.
+  Staging first, then prod.
 - Session bountyFix2/Opus, 2026-09-18.
 
 ## ACTIVITIES

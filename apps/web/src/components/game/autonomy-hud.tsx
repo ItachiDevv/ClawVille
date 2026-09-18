@@ -6,6 +6,7 @@ import type { AutonomyStatusThought } from '@clawville/shared';
 import { api } from '@/lib/api';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useShortTouchRow } from '@/hooks/use-short-touch-viewport';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import {
   countAutonomyArrivals,
   formatAutonomyPhase,
@@ -32,6 +33,7 @@ const EMPTY_THOUGHTS: AutonomyStatusThought[] = [];
 export default function AutonomyHUD() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const shortTouch = useShortTouchRow() !== null;
+  const isMobile = useIsMobile();
   const chatOpen = useGameStore((s: GameState) => s.chatOpen || s.guideChatOpen);
   const statusQuery = useQuery({
     queryKey: ['autonomy-status'],
@@ -115,6 +117,14 @@ export default function AutonomyHUD() {
     <div
       className={shortTouch
         ? 'fixed z-50 pointer-events-auto overflow-y-auto rounded-lg'
+        : isMobile
+        // Other touch screens: the panel grows UP from bottom 17rem, and a full
+        // wallet + thought feed reached y ~95 at 375x667 (over the phone Map
+        // button, the mode toggle and the quest card, to y ~170) and covered
+        // the full minimap card on iPads (to y 282). Cap it to end 8 px below
+        // those (below `md`: y 180; from `md`, where the card shows: y 290)
+        // and scroll inside (Codex review 2026-09-18).
+        ? 'fixed bottom-[17rem] left-4 z-50 pointer-events-auto w-80 max-w-[calc(100vw-2rem)] overflow-y-auto max-h-[calc(100dvh-452px)] md:max-h-[calc(100dvh-562px)]'
         : 'fixed bottom-[17rem] left-4 z-50 pointer-events-auto w-80 max-w-[calc(100vw-2rem)]'}
       style={shortTouch
         ? {

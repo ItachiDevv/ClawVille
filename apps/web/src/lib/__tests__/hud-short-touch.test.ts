@@ -8,6 +8,7 @@ import {
   SHORT_TOUCH_MAX_VH,
   SHORT_TOUCH_ROW_LEFT_PX,
   SHORT_TOUCH_UNDER_MAP_TOP_PX,
+  PHONE_MAP_BUTTON_TOP_PX,
 } from '@/lib/hud-anchors';
 
 // 2026-09-18 phone overlaps (measured in touch emulation): at 844x390 Hold
@@ -104,6 +105,16 @@ describe('short touch screens (phones held landscape)', () => {
         expect(70).toBeGreaterThanOrEqual(NORI_BOTTOM + 8);
         expect(70 + (vh - 298)).toBeLessThanOrEqual(cameraStickTop(vw, vh) - 8);
       }
+    }
+  });
+
+  test('phone Map button (below 768 px): under the top stack and the short-screen row, left of the centred toggle, above the left joystick', () => {
+    const top = PHONE_MAP_BUTTON_TOP_PX, bottom = top + 44, right = 16 + 44;
+    expect(top).toBeGreaterThanOrEqual(52 + 8); // login banner / agent pill bottom
+    expect(top).toBeGreaterThanOrEqual(ROW.bottom + 8); // short-screen top-left row
+    for (const [vw, vh] of [[360, 780], [375, 667], [390, 844], [430, 932], [667, 375], [740, 360], [744, 1133]]) {
+      expect(right).toBeLessThan(vw / 2 - 100 - 8); // mode toggle, up to ~200 px, centred
+      expect(bottom).toBeLessThan(cameraStickTop(vw, vh) - 8); // left joystick top (same height as the right)
     }
   });
 });
