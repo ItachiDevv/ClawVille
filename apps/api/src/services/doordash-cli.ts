@@ -376,7 +376,7 @@ function argvFor(op: DdCliOperation, args: readonly string[]): string[] | null {
     // docs/ddcli-help/find-nearby-stores.txt. `nv` = every merchant type EXCEPT
     // restaurants, so this complements `search` without overlapping it.
     case 'nearby-stores':
-      command = ['find-nearby-stores', '--vertical', 'nv', '--max', '25', '--address-id', args[0]];
+      command = ['find-nearby-stores', '--vertical', 'nv', '--max', '100', '--address-id', args[0]];
       break;
     // restaurant-item-details needs --menu-id (LIVE 2026-09-18: "Missing option
     // '--menu-id'"), and it serves convenience stores such as Wawa too.
