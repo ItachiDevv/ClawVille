@@ -72,6 +72,13 @@ export interface ActionResult {
   data?: Record<string, any>;
   /** False excludes this result's text/data from persisted chat memory. */
   persist?: boolean;
+  /**
+   * True shows ONLY the action's text, dropping the model's prose around it.
+   * For task results that must be read at a glance (a DoorDash total, a list
+   * of choices): a persona paragraph before them buries the one line that
+   * matters (founder, 2026-09-18).
+   */
+  replacesReply?: boolean;
 }
 
 // ---------------------------------------------------------------------------

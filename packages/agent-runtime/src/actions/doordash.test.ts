@@ -72,7 +72,7 @@ describe('read-only DoorDash actions', () => {
       Object.defineProperty(state, 'userId', { get() { throw new Error('agent identity is not a human identity'); } });
       const result = await c.action.handler(null, { parameters: c.params }, state);
       expect(call.mock.calls).toEqual([c.args]);
-      expect(result).toEqual({ success: true, text: c.text, persist: false });
+      expect(result).toEqual({ success: true, text: c.text, persist: false, replacesReply: true });
       expect(result.data).toBeUndefined();
       expect(result.text).not.toContain(JSON.stringify(c.data));
     });
@@ -101,6 +101,7 @@ describe('read-only DoorDash actions', () => {
       } } } };
       expect(await c.action.handler(null, { parameters: c.params }, state)).toEqual({
         success: false, text: 'DoorDash could not complete that request. Please try again later.', persist: false,
+        replacesReply: true,
       });
     });
   }
