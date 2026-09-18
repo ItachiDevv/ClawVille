@@ -25,9 +25,11 @@
  * --------------------------------------
  *   1. A parcel the viewer OWNS. Standing on your own lot, "Manage / Decorate"
  *      is what you came for; the generic "Press E" building prompt is not.
- *   2. A building / character in range.
- *   3. Any other parcel in range (available, or held by someone else).
- *   4. A salvage node in range — the slot's fallback claimant.
+ *   2. Nori, the Town Guide (added 2026-09-18). Placed above buildings to
+ *      match the E key, which already opens her first when both are in range.
+ *   3. A building / character in range.
+ *   4. Any other parcel in range (available, or held by someone else).
+ *   5. A salvage node in range — the slot's fallback claimant.
  *
  * Only rule 1 is new. Every other proximity combination resolves exactly the
  * way the three separate rules already did.
@@ -49,7 +51,7 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore, type ControlMode, type GameState } from '@/stores/game';
 import { useLandStore } from '@/stores/land';
 
-export type BottomPromptOwner = 'building' | 'parcel' | 'salvage' | null;
+export type BottomPromptOwner = 'building' | 'guide' | 'parcel' | 'salvage' | null;
 
 export interface BottomPromptSlotInput {
   readonly controlMode: ControlMode;
@@ -61,6 +63,8 @@ export interface BottomPromptSlotInput {
   /** True while the yard editor holds the screen. */
   readonly buildModeOpen: boolean;
   readonly nearLocation: string | null;
+  /** Within Nori's talk radius (player-avatar / npc-controller proximity pass). */
+  readonly nearGuide?: boolean;
   readonly nearParcelCode: string | null;
   /** `nearParcelCode` is owned by the avatar looking at the screen. */
   readonly nearParcelOwnedByViewer: boolean;
@@ -78,6 +82,13 @@ export function resolveBottomPromptOwner(
   if (input.landOfficeOpen || input.buildModeOpen) return null;
 
   if (input.nearParcelCode && input.nearParcelOwnedByViewer) return 'parcel';
+  // Nori (2026-09-18): same prompt a building resident gets. BEFORE buildings,
+  // because the E key already gives her priority on purpose ("she's the
+  // discoverable greeter", player-avatar / npc-controller onInteract) and the
+  // prompt must advertise what E will actually do (Codex review caught the
+  // mismatch). Before plain parcels too: nobody walks up to the Town Guide to
+  // buy the lot she stands on.
+  if (input.nearGuide) return 'guide';
   if (input.nearLocation) return 'building';
   if (input.nearParcelCode) return 'parcel';
   if (input.nearSalvageNodeId) return 'salvage';
@@ -99,6 +110,7 @@ export function useBottomPromptOwner(): BottomPromptOwner {
   const guideChatOpen = useGameStore((s: GameState) => s.guideChatOpen);
   const landOfficeOpen = useGameStore((s: GameState) => s.landOfficeOpen);
   const nearLocation = useGameStore((s: GameState) => s.nearLocation);
+  const nearGuide = useGameStore((s: GameState) => s.nearGuide);
   const nearParcelCode = useGameStore((s: GameState) => s.nearParcelCode);
   const nearSalvageNodeId = useGameStore((s: GameState) => s.nearSalvageNodeId);
   const buildModeOpen = useLandStore((s) => s.buildMode !== null);
@@ -118,6 +130,7 @@ export function useBottomPromptOwner(): BottomPromptOwner {
     landOfficeOpen,
     buildModeOpen,
     nearLocation,
+    nearGuide,
     nearParcelCode,
     nearParcelOwnedByViewer,
     nearSalvageNodeId,
