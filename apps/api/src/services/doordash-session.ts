@@ -24,8 +24,16 @@
 // It would be wrong at ten, where abandoned entries would sit until touched —
 // so a second operator means a sweeper, not just a bigger map.
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
-/** One operator exists today; the cap is here so a future one cannot grow this unbounded. */
-const MAX_STORES = 10;
+/** One operator exists today; the caps are here so a future one cannot grow this unbounded. */
+const MAX_STORES = 30;
+const MAX_ITEMS = 400;
+
+export interface DoordashMenuItemRef {
+  itemId: string;
+  name: string;
+  hasModifiers: boolean;
+  hasRequired: boolean;
+}
 
 export interface DoordashWorkingContext {
   /** Stores from the most recent search, so a later turn can name one. */
@@ -34,6 +42,13 @@ export interface DoordashWorkingContext {
   menuId?: string;
   storeName?: string;
   cartUuid?: string;
+  /**
+   * Item ids and names from the last menu, so "add a custom italian hoagie"
+   * resolves on a later turn. Names and ids only: no prices, no descriptions.
+   */
+  lastItems?: DoordashMenuItemRef[];
+  /** An item waiting for the operator's option choices, so "classic roll, provolone" needs no item name. */
+  pendingItem?: { itemId: string; name: string; quantity: number };
 }
 
 interface Entry extends DoordashWorkingContext { at: number }
@@ -55,7 +70,9 @@ export function recallDoordashContext(userId: string): DoordashWorkingContext {
   // Copy the array too. A shallow spread hands back the STORED array by
   // reference; nothing mutates it today, and that is exactly the kind of trap
   // that stays harmless until the day something does.
-  return entry ? { ...entry, lastStores: [...entry.lastStores] } : { lastStores: [] };
+  return entry
+    ? { ...entry, lastStores: [...entry.lastStores], lastItems: entry.lastItems ? [...entry.lastItems] : undefined }
+    : { lastStores: [] };
 }
 
 export function rememberDoordashContext(
@@ -64,7 +81,36 @@ export function rememberDoordashContext(
   const current = live(userId) ?? { lastStores: [], at: Date.now() };
   const next: Entry = { ...current, ...patch, at: Date.now() };
   if (next.lastStores.length > MAX_STORES) next.lastStores = next.lastStores.slice(0, MAX_STORES);
+  if (next.lastItems && next.lastItems.length > MAX_ITEMS) next.lastItems = next.lastItems.slice(0, MAX_ITEMS);
   entries.set(userId, next);
+}
+
+function words(value: string): string {
+  return ` ${value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()} `;
+}
+
+/**
+ * Match a spoken item name to the last menu. Same stance as the store match:
+ * an exact name wins, then a single containment match; several matches come
+ * back as a list for the operator to choose from, never as a guess.
+ */
+export function resolveItemByName(
+  context: DoordashWorkingContext, spoken: string,
+): { item: DoordashMenuItemRef } | { choices: string[] } | null {
+  const needle = words(spoken).trim();
+  const items = context.lastItems ?? [];
+  if (!needle || items.length === 0) return null;
+  const exact = items.filter((i) => words(i.name).trim() === needle);
+  if (exact.length === 1) return { item: exact[0]! };
+  const partial = items.filter((i) => words(i.name).includes(` ${needle} `));
+  if (partial.length === 1) return { item: partial[0]! };
+  if (partial.length > 1) return { choices: partial.slice(0, 8).map((i) => i.name) };
+  // Every spoken word present, in any order ("italian custom hoagie").
+  const tokens = needle.split(' ').filter((t) => t.length > 1);
+  const loose = items.filter((i) => tokens.every((t) => words(i.name).includes(` ${t} `)));
+  if (loose.length === 1) return { item: loose[0]! };
+  if (loose.length > 1) return { choices: loose.slice(0, 8).map((i) => i.name) };
+  return null;
 }
 
 /**

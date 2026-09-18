@@ -155,19 +155,22 @@ describe('Phase 1 DoorDash bridge', () => {
       // search resolves the default delivery address FIRST — see the Cupertino note.
       .mockResolvedValueOnce({ ok: true, data: { addresses }, durationMs: 0 })
       .mockResolvedValueOnce({ ok: true, data: search, durationMs: 1 })
+      // Stores are searched too: Wawa is a convenience store, invisible to `search`.
+      .mockResolvedValueOnce({ ok: true, data: { stores: [] }, durationMs: 1 })
       .mockResolvedValueOnce({ ok: true, data: menu, durationMs: 2 })
       .mockResolvedValueOnce({ ok: true, data: { addresses }, durationMs: 3 })
       .mockResolvedValueOnce({ ok: true, data: status, durationMs: 4 })
       .mockResolvedValueOnce({ ok: true, data: { orders }, durationMs: 5 });
     const capability = bridge();
     expect(capability.requesterTurn).toBe('raw founder turn');
-    expect(await capability.search({ query: 'sushi' })).toEqual({ ok: true, data: search, durationMs: 1 });
+    expect(await capability.search({ query: 'sushi' })).toMatchObject({ ok: true, data: { stores: [] } });
     expect(await capability.menu({ storeId: '123' })).toEqual({ ok: true, data: menu, durationMs: 2 });
     expect(await capability.addresses()).toEqual({ ok: true, data: addresses, durationMs: 3 });
     expect(await capability.orderStatus({ orderUuid: 'order-1' })).toEqual({ ok: true, data: status, durationMs: 4 });
     expect(await capability.orderHistory()).toEqual({ ok: true, data: orders, durationMs: 5 });
     expect(runMock.mock.calls).toEqual([
-      ['address-list', []], ['search', ['sushi', 'address-1']], ['menu', ['123']], ['address-list', []],
+      ['address-list', []], ['search', ['sushi', 'address-1']], ['nearby-stores', ['address-1']],
+      ['menu', ['123']], ['address-list', []],
       ['order-status', ['order-1']], ['order-history', []],
     ]);
   });
@@ -189,12 +192,13 @@ describe('Phase 1 DoorDash bridge', () => {
     const capability = bridge();
     await capability.search({ query: 'ramen' });
     // The DEFAULT address wins over merely being first in the list.
-    expect(runMock.mock.calls.at(-1)).toEqual(['search', ['ramen', '14437790']]);
-    // A second search reuses the cache: exactly one more call, no address lookup.
+    expect(runMock.mock.calls.at(-2)).toEqual(['search', ['ramen', '14437790']]);
+    expect(runMock.mock.calls.at(-1)).toEqual(['nearby-stores', ['14437790']]);
+    // A second search reuses the cache: restaurants + stores, no address lookup.
     const before = runMock.mock.calls.length;
     await capability.search({ query: 'udon' });
-    expect(runMock.mock.calls.length).toBe(before + 1);
-    expect(runMock.mock.calls.at(-1)).toEqual(['search', ['udon', '14437790']]);
+    expect(runMock.mock.calls.length).toBe(before + 2);
+    expect(runMock.mock.calls.at(-2)).toEqual(['search', ['udon', '14437790']]);
 
     // If the address lookup fails with no cached value, still search rather than
     // denying the operator a result — the vendor answers, just unanchored.
@@ -259,6 +263,94 @@ describe('Phase 1 DoorDash bridge', () => {
       .mockResolvedValue({ ok: true, data: { ...liveCart, item_error_count: 2 }, durationMs: 1 } as never);
     const added = await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_1', quantity: 1 });
     expect(added.ok && added.data.droppedItems).toBe(2);
+  });
+
+  // 2026-09-18 demo patch. Live ids from Wawa 897466 / "Custom Italian Hoagie".
+  test('a custom item asks for its required choices first, then adds with server-built option ids', async () => {
+    const session = await import('../doordash-session');
+    session.resetDoordashContexts();
+    session.rememberDoordashContext('founder', {
+      storeId: '897466', menuId: '15975751', storeName: 'Wawa',
+      lastItems: [
+        { itemId: 'i_19616733360', name: 'Custom Italian Hoagie', hasModifiers: true, hasRequired: true },
+        { itemId: 'i_2', name: 'Coke (20 oz)', hasModifiers: false, hasRequired: false },
+      ],
+    });
+    const details = { item: { item_id: 'i_19616733360', name: 'Custom Italian Hoagie', extras: [
+      { extra_id: 'e_8843410895', title: 'Select your bread', min_num_options: 1, max_num_options: 1, options: [
+        { option_id: 'o_40123778629', name: 'Classic Roll' }, { option_id: 'o_40123778631', name: 'Shorti Roll' }] },
+      { extra_id: 'e_8843410897', title: 'Select your cheese', min_num_options: 1, max_num_options: 1, options: [
+        { option_id: 'o_40123823246', name: 'Provolone' }, { option_id: 'o_40123823245', name: 'No Cheese' }] },
+    ] } };
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve(op === 'item-options'
+      ? { ok: true, data: details, durationMs: 1 }
+      : { ok: true, data: liveCart, durationMs: 1 })) as never);
+
+    // Turn 1: the name resolves server side; nothing is added until choices exist.
+    const first = await bridge().cartAdd({ itemName: 'custom italian hoagie', quantity: 1 });
+    expect(first.ok).toBe(false);
+    expect(!first.ok && first.failure).toBe('doordash_needs_choices');
+    expect(!first.ok && first.reason).toContain('Select your bread (pick 1): Classic Roll, Shorti Roll');
+    expect(runMock.mock.calls.map((c) => c[0])).toEqual(['item-options']);
+
+    // Turn 2: only the picks. The waiting item is used; the ids come from DoorDash, not the model.
+    const second = await bridge().cartAdd({ choices: 'shorti roll, provolone', quantity: 1 });
+    expect(second.ok && second.data.addedChoices).toEqual(['Shorti Roll', 'Provolone']);
+    const call = runMock.mock.calls.at(-1)!;
+    expect(call[0]).toBe('cart-add-options');
+    expect((call[1] as string[]).slice(0, 4)).toEqual(['897466', '15975751', 'i_19616733360', '1']);
+    expect(JSON.parse((call[1] as string[])[4]!)).toEqual([
+      { id: 'o_40123778631', name: 'Shorti Roll', quantity: 1 },
+      { id: 'o_40123823246', name: 'Provolone', quantity: 1 },
+    ]);
+    expect(session.recallDoordashContext('founder').pendingItem).toBeUndefined();
+
+    // A plain item by name takes the plain path, with no option lookup.
+    await bridge().cartAdd({ itemName: 'coke', quantity: 2 });
+    expect(runMock.mock.calls.at(-1)![0]).toBe('cart-add');
+
+    // Optional-only choices with nothing picked is a plain add, never an empty
+    // nested_options payload (the strict validator would refuse that).
+    session.rememberDoordashContext('founder', {
+      lastItems: [{ itemId: 'i_3', name: 'Iced Coffee', hasModifiers: true, hasRequired: false }],
+    });
+    runMock.mockImplementation(((op: string) => Promise.resolve(op === 'item-options'
+      ? { ok: true, data: { item: { item_id: 'i_3', extras: [{ extra_id: 'e_1', title: 'Add a shot', min_num_options: 0,
+        max_num_options: 2, options: [{ option_id: 'o_1', name: 'Espresso Shot' }] }] } }, durationMs: 1 }
+      : { ok: true, data: liveCart, durationMs: 1 })) as never);
+    const optional = await bridge().cartAdd({ itemName: 'iced coffee', quantity: 1 });
+    expect(optional.ok).toBe(true);
+    expect(runMock.mock.calls.at(-1)![0]).toBe('cart-add');
+
+    // An unknown name never reaches the vendor.
+    const calls = runMock.mock.calls.length;
+    const missing = await bridge().cartAdd({ itemName: 'lobster roll', quantity: 1 });
+    expect(!missing.ok && missing.failure).toBe('doordash_item_unresolved');
+    expect(runMock.mock.calls.length).toBe(calls);
+    session.resetDoordashContexts();
+  });
+
+  test('a named search puts the matching STORE first and remembers it for the menu step', async () => {
+    const session = await import('../doordash-session');
+    session.resetDoordashContexts();
+    operator.resetDoordashAddressCache();
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve(
+      op === 'address-list' ? { ok: true, data: { addresses: [{ address_id: '1742541215', printable_address: 'x', is_default: true }] }, durationMs: 1 }
+        : op === 'search' ? { ok: true, data: { stores: [] }, durationMs: 1 }
+          : { ok: true, data: { stores: [
+            { store_id: '862689', name: '7-Eleven', distance_meters: 1126, delivery_time: 'Scheduled' },
+            { store_id: '897466', name: 'Wawa', distance_meters: 8367, delivery_time: '69 min' },
+          ] }, durationMs: 1 })) as never);
+    const named = await bridge().search({ query: 'wawa' });
+    expect(named.ok && named.data.stores).toEqual([
+      { store_id: '897466', store_name: 'Wawa', kind: 'store', etaText: '69 min', miles: 5.2 },
+    ]);
+    expect(session.recallDoordashContext('founder').lastStores).toEqual([{ storeId: '897466', storeName: 'Wawa' }]);
+    // "I'm hungry" lists what delivers NOW, so the scheduled-only 7-Eleven is left out.
+    const generic = await bridge().search({ query: "i'm hungry, is doordash available?" });
+    expect(generic.ok && generic.data.stores.map((s) => s.store_name)).toEqual(['Wawa']);
+    expect(runMock.mock.calls.filter((c) => c[0] === 'search').at(-1)).toEqual(['search', ['food', '1742541215']]);
+    session.resetDoordashContexts();
   });
 
   // -------------------------------------------------------------------------

@@ -41,7 +41,8 @@ describe('the in-flight ordering context', () => {
     rememberDoordashContext('founder', {
       lastStores: Array.from({ length: 40 }, (_, i) => ({ storeId: String(i), storeName: `Store ${i}` })),
     });
-    expect(recallDoordashContext('founder').lastStores).toHaveLength(10);
+    // 30 since 2026-09-18: a search now merges restaurants AND stores.
+    expect(recallDoordashContext('founder').lastStores).toHaveLength(30);
   });
 
   test('clearing the cart keeps the store the operator was browsing', () => {

@@ -12,6 +12,7 @@ interface DdCartView {
   storeName?: string;
   items: Array<{ lineId: string; name?: string; quantity: number; unitPriceCents?: number }>;
   droppedItems: number;
+  addedChoices?: string[];
 }
 interface DdPreviewView {
   items: Array<{ name: string; quantity: number }>;
@@ -30,10 +31,10 @@ export interface DoordashReadOnlyBridge {
     address_id: DdId; printable_address: string; label?: string | null; is_default?: boolean;
   }>>>;
   search(q: { query: string }): Promise<DdCliResult<{
-    stores: Array<{ store_id: DdId; store_name?: string }>;
+    stores: Array<{ store_id: DdId; store_name?: string; kind?: 'restaurant' | 'store'; etaText?: string; miles?: number }>;
   }>>;
-  menu(q: { storeId?: string; storeName?: string }): Promise<DdCliResult<{
-    menu_id: DdId; items: Array<{ item_id: DdId; name?: string }>; storeName?: string;
+  menu(q: { storeId?: string; storeName?: string; query?: string }): Promise<DdCliResult<{
+    menu_id: DdId; items: Array<{ item_id: DdId; name?: string; has_required_modifiers?: boolean }>; storeName?: string;
   }>>;
   orderHistory(): Promise<DdCliResult<Array<{
     order_uuid: string; store_id: DdId; store_name?: string;
@@ -46,7 +47,8 @@ export interface DoordashOrderingBridge extends DoordashReadOnlyBridge {
   // DoorDash output never enters chat memory and so cannot be recalled later.
   cartShow(q: { cartUuid?: string }): Promise<DdCliResult<DdCartView>>;
   cartAdd(q: {
-    storeId?: string; menuId?: string; itemId: string; quantity: number; cartUuid?: string;
+    storeId?: string; menuId?: string; itemId?: string; itemName?: string; choices?: string;
+    quantity: number; cartUuid?: string;
   }): Promise<DdCliResult<DdCartView>>;
   cartRemove(q: { cartUuid?: string; lineId: string }): Promise<DdCliResult<DdCartView>>;
   preview(q: { cartUuid?: string }): Promise<DdCliResult<DdPreviewView>>;
@@ -76,6 +78,8 @@ const failures: Record<string, string> = {
   doordash_store_unresolved: 'I am not sure which restaurant you mean.',
   doordash_no_menu: 'Let me pull the menu up first, then I can add that.',
   doordash_no_cart: 'You do not have a cart going right now.',
+  doordash_item_unresolved: 'I could not find that item on the menu.',
+  doordash_needs_choices: 'That item needs your choices before I can add it.',
 };
 
 // Addendum sections 6.2/6.4: display only; never retain CLI data in chat memory.
@@ -92,10 +96,10 @@ function usd(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-function list<T>(title: string, rows: T[], empty: string, render: (row: T) => string): string {
+function list<T>(title: string, rows: T[], empty: string, render: (row: T) => string, max = 5): string {
   if (rows.length === 0) return empty;
-  const shown = rows.slice(0, 5).map(render).join('; ');
-  const remainder = rows.length > 5 ? ` ${rows.length - 5} more results are not shown.` : '';
+  const shown = rows.slice(0, max).map(render).join('; ');
+  const remainder = rows.length > max ? ` ${rows.length - max} more results are not shown.` : '';
   return `${title}: ${shown}.${remainder}`;
 }
 
@@ -148,18 +152,24 @@ export const doordashSearchAction: Action = {
   // address") became false once the bridge started anchoring every search to
   // the account's default address, and it read as a caveat that discouraged
   // use. Restaurant names AND cuisine terms both work (verified live).
-  description: 'Search DoorDash for restaurants, by name or by cuisine. Use this whenever the user asks to find, search for, or look up food or a restaurant. Searches from the account default delivery address.',
+  // Restaurants AND stores: convenience stores (Wawa, 7-Eleven), grocery and
+  // pharmacy only exist in DoorDash's store search, and the bridge runs both.
+  // "I'm hungry, is DoorDash available?" must be answered with this action,
+  // not with a clarifying question (founder, 2026-09-18).
+  description: 'Search DoorDash for restaurants AND stores (convenience stores like Wawa or 7-Eleven, grocery, pharmacy) by name or by food. Use this whenever the user is hungry, asks what is open or available on DoorDash, or names a place or a food. If they did not name anything, use the query "food" and it lists what delivers now. Searches from the account default delivery address. Call it right away instead of asking what they want first.',
   // Surfaced into the prompt by buildActionDescriptions. Casual phrasings are
   // the ones that failed live — an explicit "use the doordash search action"
   // always fired, while "find me pizza on doordash" narrated instead.
   similes: [
     'find me pizza on doordash',
     "i'm hungry, find me some tacos",
+    "i'm hungry, is doordash available",
+    'what is open on doordash right now',
+    'order from wawa',
     'what restaurants are near me',
     'order food',
-    'look up a place to eat',
   ],
-  parameters: [{ name: 'query', description: 'Food or restaurant search terms', required: true, schema: { type: 'string' } }],
+  parameters: [{ name: 'query', description: 'A place name or food, or "food" if the user did not name one', required: true, schema: { type: 'string' } }],
   available: (state) => Boolean((state as any)?.services?.doordash),
   validate: async () => true,
   handler: async (_runtime, message, state) => {
@@ -167,23 +177,31 @@ export const doordashSearchAction: Action = {
     if (!bridge) return { success: false, text: 'That is not available here.', persist: false };
     const query = getParam(message, 'query');
     if (typeof query !== 'string' || !query.trim()) return ephemeral(false, 'Please provide food or restaurant search terms.');
-    return lookup(() => bridge.search({ query }), (data) => list('DoorDash search results', data.stores,
-      'No DoorDash restaurants matched that search.', (s) =>
-        `${field(s.store_name, 'Restaurant')} (store ${field(s.store_id, 'unknown')})`));
+    return lookup(() => bridge.search({ query }), (data) => list('On DoorDash', data.stores,
+      'Nothing on DoorDash matched that, and nothing nearby is delivering right now.', (s) => {
+        const detail = [
+          s.kind === 'store' ? 'store' : undefined,
+          s.miles !== undefined ? `${s.miles} mi` : undefined,
+          s.etaText ? field(s.etaText, '') : undefined,
+        ].filter(Boolean).join(', ');
+        return `${field(s.store_name, 'Place')}${detail ? ` (${detail})` : ''}`;
+      }, 8));
   },
 };
 
 export const doordashMenuAction: Action = {
   name: 'DOORDASH_MENU',
-  description: 'Show items on a DoorDash restaurant menu, with the menu ID needed to add anything to a cart.',
+  description: 'Show items on a DoorDash restaurant or store menu. Pass the place name the user said. Pass query to narrow a big menu to what they asked about, like hoagie or soda.',
   similes: [
     'what do they have',
     'show me the menu',
+    'what hoagies does wawa have',
     'what can i get from there',
   ],
   parameters: [
-    { name: 'storeId', description: 'Store ID from a DoorDash search result, if you have it', required: false, schema: { type: 'string' } },
-    { name: 'storeName', description: 'The restaurant name the user said, if you do not have its ID', required: false, schema: { type: 'string' } },
+    { name: 'storeName', description: 'The restaurant or store name the user said', required: false, schema: { type: 'string' } },
+    { name: 'query', description: 'Optional word to narrow the menu, like hoagie, pizza or soda', required: false, schema: { type: 'string' } },
+    { name: 'storeId', description: 'Store ID only if you have one; otherwise leave it out', required: false, schema: { type: 'string' } },
   ],
   available: (state) => Boolean((state as any)?.services?.doordash),
   validate: async () => true,
@@ -195,18 +213,20 @@ export const doordashMenuAction: Action = {
     // in this model's memory: DoorDash output is never persisted there.
     const storeId = text(message, 'storeId');
     const storeName = text(message, 'storeName');
-    if (!storeId && !storeName) return ephemeral(false, 'Tell me which restaurant and I will pull the menu.');
-    return lookup(() => bridge.menu({ storeId: storeId || undefined, storeName: storeName || undefined }), (data) => {
+    const query = text(message, 'query').slice(0, 60);
+    if (!storeId && !storeName) return ephemeral(false, 'Tell me which restaurant or store and I will pull the menu.');
+    return lookup(() => bridge.menu({
+      storeId: storeId || undefined, storeName: storeName || undefined, query: query || undefined,
+    }), (data) => {
       // Name the store. A name resolved from a spoken phrase can land on the
       // wrong restaurant, and saying which one HERE lets the founder catch it
       // now rather than at the confirmation, or worse, after the food arrives.
-      const heading = data.storeName ? `Menu for ${field(data.storeName, 'that restaurant')}` : 'Menu items';
-      const items = list(heading, data.items,
-        'No menu items were returned for that restaurant.', (i) =>
-          `${field(i.name, 'Item')} (item ${field(i.item_id, 'unknown')})`);
-      // The menu id is required by cart add, and it is per store, so it has to
-      // travel with the items or the next step has to re-fetch the whole menu.
-      return `${items} Menu ${field(data.menu_id, 'unknown')}.`;
+      const heading = data.storeName ? `Menu for ${field(data.storeName, 'that place')}` : 'Menu items';
+      // Names only: the cart step resolves names server side, and the menu id
+      // lives in the server's in-flight context, so ids are noise here.
+      return list(heading, data.items,
+        query ? `Nothing on that menu matched ${field(query, 'that')}.` : 'No menu items were returned for that place.',
+        (i) => `${field(i.name, 'Item')}${i.has_required_modifiers ? ' (you pick options)' : ''}`, 12);
     });
   },
 };
@@ -270,17 +290,20 @@ function renderCart(view: DdCartView, verb: string): string {
 
 export const doordashCartAction: Action = {
   name: 'DOORDASH_CART',
-  description: 'Add an item to the DoorDash cart, remove one, or show what is in it. Adding needs the store ID and menu ID from DOORDASH_MENU plus the item ID. Pass the cart ID on every call after the first so items land in the same cart. This does not order anything and does not spend money.',
+  description: 'Add an item to the DoorDash cart, remove one, or show what is in it. To add, pass the item name the user said. If the item needs choices (bread, cheese, size), pass the user\'s picks in choices as plain words; if they have not picked yet, add anyway and the reply lists the choices. When the user answers with only their picks, call add again with just choices. This does not order anything and does not spend money.',
   similes: [
     'add that to my cart',
     'add two garlic knots',
+    'add a custom italian hoagie',
+    'classic roll, not toasted, provolone',
     'what is in my cart',
     'take the fries off',
-    'remove that item',
   ],
   parameters: [
     { name: 'op', description: 'add, remove, or show', required: true, schema: { type: 'string', enum: ['add', 'remove', 'show'] } },
-    { name: 'itemId', description: 'Item ID from the menu, required for add', required: false, schema: { type: 'string' } },
+    { name: 'itemName', description: 'The item name the user said, for add', required: false, schema: { type: 'string' } },
+    { name: 'choices', description: 'The user\'s option picks in their own words, like "classic roll, not toasted, provolone, mayo"', required: false, schema: { type: 'string' } },
+    { name: 'itemId', description: 'Item ID only if you have one; otherwise leave it out', required: false, schema: { type: 'string' } },
     { name: 'quantity', description: 'Whole number of that item, 1 to 20. Defaults to 1', required: false, schema: { type: 'string' } },
     { name: 'lineId', description: 'Line ID from the cart, required for remove', required: false, schema: { type: 'string' } },
     { name: 'storeId', description: 'Only if you still have it; otherwise leave it out', required: false, schema: { type: 'string' } },
@@ -313,7 +336,10 @@ export const doordashCartAction: Action = {
     const storeId = text(message, 'storeId');
     const menuId = text(message, 'menuId');
     const itemId = text(message, 'itemId');
-    if (!itemId) {
+    const itemName = text(message, 'itemName').slice(0, 120);
+    const choices = text(message, 'choices').slice(0, 600);
+    // With only `choices`, the server uses the item that is waiting for them.
+    if (!itemId && !itemName && !choices) {
       return ephemeral(false, 'Tell me which item and I will add it.');
     }
     // Whole numbers only. A fractional quantity crashes the vendor CLI
@@ -332,9 +358,17 @@ export const doordashCartAction: Action = {
     return lookup(
       () => bridge.cartAdd({
         storeId: storeId || undefined, menuId: menuId || undefined,
-        itemId, quantity, cartUuid: cartUuid || undefined,
+        itemId: itemId || undefined, itemName: itemName || undefined, choices: choices || undefined,
+        quantity, cartUuid: cartUuid || undefined,
       }),
-      (view) => renderCart(view, 'Added. Now in your cart from'),
+      (view) => {
+        // Echo the picks: the priced confirmation lists items, not options, so
+        // this is where the operator sees WHICH bread and cheese went in.
+        const picks = view.addedChoices?.length
+          ? ` With: ${view.addedChoices.map((c) => field(c, '')).filter(Boolean).join(', ')}.`
+          : '';
+        return `${renderCart(view, 'Added. Now in your cart from')}${picks}`;
+      },
     );
   },
 };
