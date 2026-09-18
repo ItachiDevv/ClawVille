@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited: 2026-09-18 (cove: fallback room, table signs).** Drift note: the cove's switch to the dark cartoon fallback room now warms up for 2 s on every visit, measures wall-clock frame times, drops the slowest 5 % of frames, and uses `min(40, 0.8 x frame cap)` FPS as its bar (phones were always switched before); the stage frame-cap scheduler no longer double-counts carried time (scene time ran fast on capped devices with uneven frame times); the BACCARAT sign moved up and toward the aisle so BLACKJACK no longer hides it from the door; each table sign is now its own click target (a click on the BLACKJACK sign from the door opened baccarat on prod). Details: `3dStructure.md` top entry. PARITY: human-only room visuals and click routing; agent table entry is the API, unchanged.
+
 **Last Audited: 2026-09-18 (no copy of your own avatar after a race; a second race queue never lands in the last room).** Drift note: since 2026-07-30 the activity routes pause the world downlink, and that pause called the players store's full `clear()`, which also erased the "former selves" ids from the 2026-06-19 fix. The world session lived on, so back in town your own body came back in snapshots as a remote player and trailed you by the interpolation delay (founder R5). A downlink pause now uses `clearRemote()` (drops other bodies, keeps who you are), and the reopen re-asserts your session id. Separately, queue-status handed a new Reef Race queue the PREVIOUS room ("MATCH EXPIRED"): it now returns a room only while you are still bound to it and it is still playing, a new queue entry clears the old match, and the 1 Hz sweep drops matches whose room was evicted. §11z and §18 carry the detail.
 
 **Last Audited: 2026-09-18 (Genesis observe-only ClawPump pairing).** Drift note: §17g adds operator ownership proof, ClawPump disclosure, and Jupiter V2 verification with token-account rent netting. Rent moves the native delta only toward zero and can never create or flip a SOL leg. Scoring weights and caps remain unchanged.
@@ -2597,7 +2599,7 @@ Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) wit
 | `casino-interior.glb` | Gameready, Draco-compressed, 4.2MB, ~211k tris |
 | `casino-interior-fallback.glb` | Cartoon, no Draco, 58KB, 449 tris — Object_8+Object_9 = slot cluster |
 
-**FPS auto-fallback:** if avg FPS < 40 over the first 5 seconds, the scene silently reloads the fallback GLB. Force fallback: `?fallback=1`. Back to World button top-left → `triggerTransition({ to: '/game', onMidway: reposition })` (see walk-out flow above).
+**FPS auto-fallback:** every visit starts with a 2-second warm-up that is not measured; then, over at least 5 seconds and 30 frames, if the wall-clock frame rate (mean after dropping the slowest 5 % of frames) is below `min(40, 0.8 x device frame cap)` FPS (no cap: 40; phones: 24 of 30), the scene silently reloads the fallback GLB. Stalls after the warm-up still count unless they are among the slowest 5 %. Changed 2026-09-18 (founder-reported dark room): the old 5-second plain mean tripped on walk-in stalls and on every phone. `lib/three/cove-fps-sampler.ts`. Force fallback: `?fallback=1`. Back to World button top-left → `triggerTransition({ to: '/game', onMidway: reposition })` (see walk-out flow above).
 
 ### 18a.b. Walk-in / walk-out animation (Concern 6.0.3 — SHIPPED)
 
@@ -4013,7 +4015,7 @@ Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) wit
 | `casino-interior.glb` | Gameready, Draco-compressed, 4.2MB, ~211k tris |
 | `casino-interior-fallback.glb` | Cartoon, no Draco, 58KB, 449 tris — Object_8+Object_9 = slot cluster |
 
-**FPS auto-fallback:** if avg FPS < 40 over the first 5 seconds, the scene silently reloads the fallback GLB. Force fallback: `?fallback=1`. Back to World button top-left → `triggerTransition({ to: '/game', onMidway: reposition })` (see walk-out flow above).
+**FPS auto-fallback:** every visit starts with a 2-second warm-up that is not measured; then, over at least 5 seconds and 30 frames, if the wall-clock frame rate (mean after dropping the slowest 5 % of frames) is below `min(40, 0.8 x device frame cap)` FPS (no cap: 40; phones: 24 of 30), the scene silently reloads the fallback GLB. Stalls after the warm-up still count unless they are among the slowest 5 %. Changed 2026-09-18 (founder-reported dark room): the old 5-second plain mean tripped on walk-in stalls and on every phone. `lib/three/cove-fps-sampler.ts`. Force fallback: `?fallback=1`. Back to World button top-left → `triggerTransition({ to: '/game', onMidway: reposition })` (see walk-out flow above).
 
 ### 18a.b. Walk-in / walk-out animation (Concern 6.0.3 — SHIPPED)
 

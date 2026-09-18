@@ -94,6 +94,11 @@ jobs:
           src/hooks/world-downlink-policy.test.ts
           src/lib/three/town-guide-prompt.test.ts
           src/hooks/bottom-prompt-offset.test.ts
+          src/lib/__tests__/hud-anchors-registry.test.ts
+          src/lib/three/__tests__/cove-fps-sampler.test.ts
+          src/lib/three/cove-exit-spawn.test.ts
+          src/components/three/world-stage/stage-frame-cap.test.ts
+          src/lib/three/__tests__/cove-click-routing.test.ts
 
       # Founder-reported regressions (2026-09-18) come back when nothing runs the
       # test that pinned them. The shared constants suite pins world data that

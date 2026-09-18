@@ -35,7 +35,7 @@
  */
 
 import { Suspense, useRef, useEffect, useMemo, useState, type RefObject, type MutableRefObject } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useThree, type ThreeEvent } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -59,8 +59,14 @@ import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import type { MachineSlug } from '@/lib/cove/types';
-import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
+import {
+  STAGE_FPS_CAP,
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
 import { addStageEventListener } from '@/components/three/world-stage/stage-store';
+import { CoveFpsSampler } from '@/lib/three/cove-fps-sampler';
+import { filterCoveSignHits, shouldYieldToFartherHotspot } from '@/lib/three/cove-click-routing';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -91,8 +97,8 @@ const COVE_SIT_TRANSITION_TIME_SCALE = 1.5;
 // hitch. The asset path is new, so no cache-bust suffix is required.
 if (USE_COVE_SIT_CLIPS) preloadClips(COVE_SIT_CLIP_NAMES);
 
-/** FPS threshold below which we auto-switch to fallback GLB */
-const FPS_FALLBACK_THRESHOLD = 40;
+// FPS auto-fallback: threshold, warm-up, sample window and the trimmed mean
+// decision live in cove-fps-sampler.ts (pure + unit-tested).
 
 /**
  * Target world-unit height for auto-fit scale normalisation.
@@ -1164,7 +1170,38 @@ const _BANK_BANNER_GEO = (() => {
   return new THREE.PlaneGeometry(240, 60);
 })();
 
-function BankBanner({ label, color, position }: { label: string; color: string; position: [number, number, number] }) {
+/** Plane raycast limited to the drawn sign capsule (see cove-click-routing.ts). */
+function _coveSignRaycast(
+  this: THREE.Mesh,
+  raycaster: THREE.Raycaster,
+  intersects: THREE.Intersection[],
+): void {
+  const start = intersects.length;
+  THREE.Mesh.prototype.raycast.call(this, raycaster, intersects);
+  filterCoveSignHits(intersects, start);
+}
+
+/**
+ * `onActivate` makes the sign ITSELF a click hotspot for its table (2026-09-18).
+ * Before, a sign was clickable only because its table's invisible box also
+ * enclosed it, so a click on a visible sign could pass on to a FARTHER box
+ * (the click-yield rule sees no room geometry in front of it): from the
+ * entrance, a click on the BLACKJACK sign opened BACCARAT (reproduced on
+ * prod). A sign plane is flagged `coveHotspot`, so a nearer box that the ray
+ * crosses first yields to it; the sign never yields, since its pixels are
+ * what the player clicked.
+ */
+function BankBanner({
+  label,
+  color,
+  position,
+  onActivate,
+}: {
+  label: string;
+  color: string;
+  position: [number, number, number];
+  onActivate?: () => void;
+}) {
   // Two back-to-back planes so the label reads correctly from BOTH sides
   // (a single PlaneGeometry is single-sided; viewing from behind shows mirrored text).
   // The two meshes share the same canvas texture; the second is rotated 180° around Y.
@@ -1175,21 +1212,40 @@ function BankBanner({ label, color, position }: { label: string; color: string; 
     if (typeof window === 'undefined') return null;
     return _getBankBanner(label, color);
   }, [label, color]);
+  const clickable = onActivate !== undefined;
   useEffect(() => {
-    if (frontRef.current) {
-      frontRef.current.matrixAutoUpdate = false;
-      frontRef.current.updateMatrix();
+    for (const m of [frontRef.current, backRef.current]) {
+      if (!m) continue;
+      m.matrixAutoUpdate = false;
+      m.updateMatrix();
+      if (clickable) {
+        m.userData.coveHotspot = true;
+        // Only the drawn capsule is clickable, never the transparent corners.
+        m.raycast = _coveSignRaycast;
+      }
     }
-    if (backRef.current) {
-      backRef.current.matrixAutoUpdate = false;
-      backRef.current.updateMatrix();
-    }
-  }, []);
+  }, [clickable]);
   if (!cached) return null;
+  const handlers = onActivate
+    ? {
+        onPointerOver: (e: ThreeEvent<PointerEvent>) => {
+          e.stopPropagation();
+          if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
+        },
+        onPointerOut: (e: ThreeEvent<PointerEvent>) => {
+          e.stopPropagation();
+          if (typeof document !== 'undefined') document.body.style.cursor = 'default';
+        },
+        onClick: (e: ThreeEvent<MouseEvent>) => {
+          e.stopPropagation();
+          onActivate();
+        },
+      }
+    : undefined;
   return (
     <group position={position}>
-      <mesh ref={frontRef} geometry={_BANK_BANNER_GEO} material={cached.mat} />
-      <mesh ref={backRef} geometry={_BANK_BANNER_GEO} material={cached.mat} rotation={[0, Math.PI, 0]} />
+      <mesh ref={frontRef} geometry={_BANK_BANNER_GEO} material={cached.mat} {...handlers} />
+      <mesh ref={backRef} geometry={_BANK_BANNER_GEO} material={cached.mat} rotation={[0, Math.PI, 0]} {...handlers} />
     </group>
   );
 }
@@ -1237,7 +1293,11 @@ function _shouldYieldClickToFartherHotspot(
   _hotspotYieldRaycaster.far = Infinity;
   const sceneHits = _hotspotYieldRaycaster.intersectObject(roomRoot, true);
   const dScene = sceneHits[0]?.distance ?? null;
-  return dScene === null || dScene > farther.distance;
+  return shouldYieldToFartherHotspot(e.intersections, selfMesh, e.distance, dScene, _isCoveHotspot);
+}
+
+function _isCoveHotspot(object: unknown): boolean {
+  return (object as THREE.Object3D).userData?.coveHotspot === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1404,26 @@ const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 340, 150];
 // for the physical spot) and BLACKJACK at the mirror table T2
 // (_HOLDEM_HOTSPOT_POS). The dealer-station COLLISION AABB above is
 // physical geometry and deliberately unmoved.
+// Table entry actions, shared by each table's invisible box and its sign.
+function _enterBlackjackFromCove(): void {
+  // Slice 1 (2026-07-10, founder correction): while seated at ANY table
+  // (currently only T1), the felt-click 2D-modal path must be a no-op —
+  // the whole session is meant to render in-world on the felt, never an
+  // overlay. Founder explicitly rejected the modal-still-opens-while-
+  // seated behavior as "the exact failure we're replacing." Walk-around
+  // click enters blackjack's dedicated room. The explicit
+  // `/cove?table=blackjack` deep link remains the 2D-modal fallback.
+  if (useCoveStore.getState().seatedTable !== null) return;
+  useCoveStore.getState().requestEnterBlackjackRoom();
+}
+function _enterHoldemFromCove(): void {
+  useCoveStore.getState().requestEnterTableRoom();
+}
+function _enterBaccaratFromCove(): void {
+  if (useCoveStore.getState().seatedTable !== null) return;
+  useCoveStore.getState().requestEnterBaccaratRoom();
+}
+
 function BlackjackTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
 
@@ -1355,17 +1435,7 @@ function BlackjackTableHotspot() {
     mesh.updateMatrix();
   }, []);
 
-  const handleClick = () => {
-    // Slice 1 (2026-07-10, founder correction): while seated at ANY table
-    // (currently only T1), the felt-click 2D-modal path must be a no-op —
-    // the whole session is meant to render in-world on the felt, never an
-    // overlay. Founder explicitly rejected the modal-still-opens-while-
-    // seated behavior as "the exact failure we're replacing." Walk-around
-    // click enters blackjack's dedicated room. The explicit
-    // `/cove?table=blackjack` deep link remains the 2D-modal fallback.
-    if (useCoveStore.getState().seatedTable !== null) return;
-    useCoveStore.getState().requestEnterBlackjackRoom();
-  };
+  const handleClick = _enterBlackjackFromCove;
 
   return (
     <mesh
@@ -1410,9 +1480,7 @@ function HoldemTableHotspot() {
     mesh.updateMatrix();
   }, []);
 
-  const handleClick = () => {
-    useCoveStore.getState().requestEnterTableRoom();
-  };
+  const handleClick = _enterHoldemFromCove;
 
   return (
     <mesh
@@ -1455,6 +1523,21 @@ const _BACCARAT_GLB_X = worldToGlbX(285);
 const _BACCARAT_GLB_Y = worldToGlbY(584);
 const _BACCARAT_CENTER_X = glbToWorldX(_BACCARAT_GLB_X);
 const _BACCARAT_CENTER_Z = glbToWorldZ(_BACCARAT_GLB_Y);
+// The BACCARAT banner is placed apart from the other table banners (y 280 over
+// the table centre). The baccarat table stands straight behind the blackjack
+// table on the right lane (X ~400 for both, Z 818 vs 469), so from the
+// entrance the near BLACKJACK banner covered the far BACCARAT one
+// (founder-reported on prod 2026-09-18). Measured from the spawn camera
+// (-17, 190, -1025), 1600x900: raised to 420 it clears BLACKJACK by 23 px but
+// the right-lane chandelier (body down to screen y ~200, stem at x ~605)
+// covered its first letter; at 460 and 100 wu toward the aisle it spans
+// screen x 620-718, y 134-160, clear of both. Walking up the aisle only widens
+// the gap to BLACKJACK (more parallax).
+const _BACCARAT_BANNER_Y = 460;
+const _BACCARAT_BANNER_X_OFFSET = -100;
+// The click box keeps its table-sized footprint: the moved sign is its own
+// click target (BankBanner `onActivate`). A box grown to enclose the sign
+// stole BLACKJACK clicks from the rear aisle (Codex review 2026-09-18).
 const _BACCARAT_HOTSPOT_POS: [number, number, number] = [
   _BACCARAT_CENTER_X,
   170,
@@ -1473,12 +1556,8 @@ function BaccaratTableHotspot() {
     mesh.updateMatrix();
   }, []);
 
-  const handleClick = () => {
-    // See BlackjackTableHotspot's identical guard above — same founder
-    // correction, same rationale (2026-07-10).
-    if (useCoveStore.getState().seatedTable !== null) return;
-    useCoveStore.getState().requestEnterBaccaratRoom();
-  };
+  // Same seated guard as blackjack (founder correction 2026-07-10).
+  const handleClick = _enterBaccaratFromCove;
 
   return (
     <mesh
@@ -2787,10 +2866,26 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty, onReady }
 
   const groupRef = useRef<THREE.Group>(null);
 
-  const fpsFrames  = useRef(0);
+  // Total scene time since mount (drives the scene-empty fail-safe) and the
+  // FPS auto-fallback sampler (warm-up per visit, trimmed mean, threshold
+  // that follows the stage frame cap; see cove-fps-sampler.ts).
   const fpsAccum   = useRef(0);
-  const fpsChecked = useRef(false);
+  const fpsSampler = useRef<CoveFpsSampler | null>(null);
+  if (fpsSampler.current === null) fpsSampler.current = new CoveFpsSampler(STAGE_FPS_CAP);
   const emptyFired = useRef(false);
+  // A retained stage slot keeps this component mounted between visits, so
+  // every activation starts a fresh warm-up; an unfinished sample from the
+  // last visit is dropped rather than resumed into this visit's entry stalls.
+  const sceneActive = useSceneActive();
+  // Wall-clock time of this scene's last frame. The sampler measures real
+  // time between frames, not the stage's scheduled delta (which a frame cap
+  // shapes). Null = the next frame starts a new measurement.
+  const lastFrameWallMs = useRef<number | null>(null);
+  useEffect(() => {
+    if (!sceneActive) return;
+    fpsSampler.current?.startVisit();
+    lastFrameWallMs.current = null;
+  }, [sceneActive]);
   // Set when the tab goes hidden; the FIRST frame after visibility returns
   // carries a delta spanning the whole hidden gap (RAF pauses) and must not
   // pollute the FPS sample. Event-based — `document.hidden` is already false
@@ -3057,38 +3152,46 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty, onReady }
 
   // FPS auto-fallback + scene-empty fail-safe
   useSceneFrame((_, delta) => {
-    if (useFallback && fpsChecked.current && emptyFired.current) return;
+    const sampler = fpsSampler.current;
+    const nowMs = performance.now();
+    const wallDelta = lastFrameWallMs.current === null ? -1 : (nowMs - lastFrameWallMs.current) / 1000;
+    lastFrameWallMs.current = nowMs;
+    if (useFallback && emptyFired.current) return;
 
     // Hidden-tab guard (2026-07-16, corrected per Codex review): RAF pauses
     // while the tab is hidden, so the resume frame carries a delta spanning
     // the whole hidden gap — one alt-tab (e.g. the founder grabbing a
     // screenshot) during the sample window cratered avgFps and swapped the
     // room to the cartoon fallback mid-session. Skip exactly that resume
-    // frame (event-tracked above) plus multi-second stalls (breakpoints, OS
-    // freezes). The first cut of this guard skipped any `delta > 0.25`,
-    // which starved the sampler on machines genuinely rendering < 4 FPS —
-    // the exact users the fallback exists for; a 1s threshold keeps every
-    // real slow frame in the sample (even 1 FPS sustained still trips the
-    // check) while excluding pause artifacts.
+    // frame (event-tracked above). Other long frames (breakpoints, OS
+    // freezes, and every frame of a machine under 1 FPS) now stay in: the
+    // sampler trims the longest frames and needs a minimum frame count, so
+    // a pause cannot decide alone, and a machine that slow still gets a
+    // decision (the old `delta > 1.0` skip starved it, 2026-09-18 review).
     if (hiddenResume.current) { hiddenResume.current = false; return; }
-    if (delta > 1.0) return;
 
     fpsAccum.current += delta;
-    fpsFrames.current += 1;
 
     if (!emptyFired.current && fpsAccum.current >= 3.0 && meshCount === 0) {
       emptyFired.current = true;
       onSceneEmpty();
     }
 
-    if (!fpsChecked.current && !useFallback && fpsAccum.current >= 5.0) {
-      fpsChecked.current = true;
-      const avgFps = fpsFrames.current / fpsAccum.current;
-      if (avgFps < FPS_FALLBACK_THRESHOLD) {
-        console.warn(`[cove-interior] avg FPS ${avgFps.toFixed(1)} < ${FPS_FALLBACK_THRESHOLD} — switching to fallback GLB`);
-        onFallbackRequest();
-      } else {
-        console.log(`[cove-interior] FPS OK (avg ${avgFps.toFixed(1)})`);
+    // Warm-up frames of every visit (entry transition, pipeline compiles,
+    // texture uploads) are never sampled, and the slowest 5 % of the window's
+    // frames are trimmed, so a few entry stalls no longer swap a capable
+    // machine to the fallback room (founder-reported on prod 2026-09-18);
+    // enough stalls after the warm-up still count.
+    if (!useFallback && sampler && !sampler.isDecided && wallDelta >= 0) {
+      const decision = sampler.push(wallDelta);
+      if (decision) {
+        const summary = `${decision.fps.toFixed(1)} FPS trimmed / ${decision.rawFps.toFixed(1)} raw over ${decision.frames} frames, threshold ${decision.threshold}`;
+        if (decision.fallback) {
+          console.warn(`[cove-interior] ${summary} — switching to fallback GLB`);
+          onFallbackRequest();
+        } else {
+          console.log(`[cove-interior] FPS OK (${summary})`);
+        }
       }
     }
   });
@@ -3372,6 +3475,7 @@ export default function CoveInteriorScene({
         label="BLACKJACK"
         color="#ef4444"
         position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
+        onActivate={_enterBlackjackFromCove}
       />
 
       {/* Texas Hold'em 2D hotspot now at T1 — the seated-experience table —
@@ -3381,6 +3485,7 @@ export default function CoveInteriorScene({
         label="TEXAS HOLD'EM"
         color="#ffffff"
         position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
+        onActivate={_enterHoldemFromCove}
       />
 
       {/* Baccarat table click hotspot at the open-floor position
@@ -3391,7 +3496,8 @@ export default function CoveInteriorScene({
       <BankBanner
         label="BACCARAT"
         color="#3b82f6"
-        position={[_BACCARAT_HOTSPOT_POS[0], 280, _BACCARAT_HOTSPOT_POS[2]]}
+        position={[_BACCARAT_CENTER_X + _BACCARAT_BANNER_X_OFFSET, _BACCARAT_BANNER_Y, _BACCARAT_CENTER_Z]}
+        onActivate={_enterBaccaratFromCove}
       />
 
       {/* Phase-0 runtime probe — only mounted with NEXT_PUBLIC_COVE_DEBUG=1
