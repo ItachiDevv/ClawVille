@@ -362,8 +362,6 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
           status: 'open',
           paymentRail: 'vclaw',
           verdictRequired: false,
-          escrowPda: null,
-          escrowJobId: null,
           tokenReward: 50,
           currentAttempts: 0,
           expiresAt: null,
@@ -410,8 +408,6 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
       covenantAuditRootHex: 'ab',
       covenantVerificationPassed: true,
       covenantVerdictId: 'v1',
-      escrowPda: 'EPDA',
-      escrowJobId: TEST_UUID,
       maxAttempts: 1,
       currentAttempts: 1,
       expiresAt: new Date(),
@@ -438,44 +434,6 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
           submittedAt: new Date(),
           reviewedAt: new Date(),
           updatedAt: new Date(),
-        },
-      ],
-      // settlements
-      [
-        {
-          id: 's-1',
-          status: 'settled',
-          dryRun: true,
-          settleSignature: 'sig',
-          fundingSignature: 'fsig',
-          tokenMint: 'mint',
-          pricePerCall: '100',
-          maxCalls: '1',
-          fundedAmount: '100',
-          callsSettled: '1',
-          releasedAmount: '100',
-          refundedAmount: null,
-          verificationProvider: 'covenant',
-          verificationPassed: true,
-          auditRootHex: 'ab',
-          verificationDetail: 'ok',
-          depositorAvatarId: 'creator-avatar-id',
-          workerAvatarId: 'hunter-avatar-id',
-          depositorWalletPubkey: 'DPUB',
-          workerWalletPubkey: 'WPUB',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          settledAt: new Date(),
-        },
-      ],
-      // approvals
-      [
-        {
-          id: 'ap-1',
-          approverAvatarId: 'creator-avatar-id',
-          workerAvatarId: 'hunter-avatar-id',
-          approvedCalls: '1',
-          approvedAt: new Date(),
         },
       ],
       // users (fingerprint lookup)
@@ -538,42 +496,13 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
       'updatedAt',
     ]);
     expectExactKeys(attempts[0].hunter as Record<string, unknown>, ['avatarId', 'name']);
-    const settlements = j.escrowSettlements as Array<Record<string, unknown>>;
-    expect(settlements).toHaveLength(1);
-    expectExactKeys(settlements[0], [
-      'id',
-      'status',
-      'dryRun',
-      'settleSignature',
-      'fundingSignature',
-      'tokenMint',
-      'pricePerCall',
-      'maxCalls',
-      'fundedAmount',
-      'callsSettled',
-      'releasedAmount',
-      'refundedAmount',
-      'verificationProvider',
-      'verificationPassed',
-      'auditRootHex',
-      'verificationDetail',
-      'depositorAvatarId',
-      'workerAvatarId',
-      'depositorWalletPubkey',
-      'workerWalletPubkey',
-      'createdAt',
-      'updatedAt',
-      'settledAt',
-    ]);
-    const approvals = j.escrowApprovals as Array<Record<string, unknown>>;
-    expect(approvals).toHaveLength(1);
-    expectExactKeys(approvals[0], [
-      'id',
-      'approverAvatarId',
-      'workerAvatarId',
-      'approvedCalls',
-      'approvedAt',
-    ]);
+    // RETIRED (SAP removal 2026-08-20; tables dropped by migration 0067).
+    // Both arrays stay on the wire and are now permanently empty.
+    expect(j.escrowSettlements as unknown[]).toHaveLength(0);
+    expect(j.escrowApprovals as unknown[]).toHaveLength(0);
+    // The two scalar escrow fields are permanent nulls, not lookup misses.
+    expect((j.bounty as Record<string, unknown>).escrowPda).toBeNull();
+    expect((j.bounty as Record<string, unknown>).escrowJobId).toBeNull();
     const identities = j.hunterAgentIdentity as Array<Record<string, unknown>>;
     expect(identities).toHaveLength(1);
     expectExactKeys(identities[0], [

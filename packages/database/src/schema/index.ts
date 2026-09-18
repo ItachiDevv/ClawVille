@@ -138,10 +138,6 @@ export * from './land-materials';
 // verification columns live on `users` itself. Migration 0060 (idempotent, CI
 // migrate gate — NEVER db:push). See `land-hold-verify.ts` header.
 export * from './land-hold-verify';
-// Legacy SAP settlement evidence retained for the Covenant partner's read-only
-// verification response. No application writer remains; do not remove these
-// exports while partner-covenant still reads the historical rows.
-export * from './sap-escrow';
 // Tokenomics C3 (2026-07-07) — CLV buy-queue seam (clv_buy_queue +
 // clv_buy_status). Records swap INTENT only; the executor is DRY-RUN gated
 // (CLV_SWAP_EXECUTE=true refuses to boot). Migration 0014 (idempotent, by hand).
@@ -198,7 +194,6 @@ import {
   partnerStorefronts,
   ctTopups,
 } from './land';
-import { sapEscrowSettlements, sapEscrowApprovals } from './sap-escrow';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -477,30 +472,3 @@ export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
   }),
 }));
 
-// ── Legacy SAP settlement evidence (Covenant read compatibility) ────────────
-
-export const sapEscrowSettlementsRelations = relations(sapEscrowSettlements, ({ one }) => ({
-  depositor: one(avatars, {
-    fields: [sapEscrowSettlements.depositorAvatarId],
-    references: [avatars.id],
-    relationName: 'sapEscrowDepositor',
-  }),
-  worker: one(avatars, {
-    fields: [sapEscrowSettlements.workerAvatarId],
-    references: [avatars.id],
-    relationName: 'sapEscrowWorker',
-  }),
-}));
-
-export const sapEscrowApprovalsRelations = relations(sapEscrowApprovals, ({ one }) => ({
-  approver: one(avatars, {
-    fields: [sapEscrowApprovals.approverAvatarId],
-    references: [avatars.id],
-    relationName: 'sapEscrowApprovalApprover',
-  }),
-  worker: one(avatars, {
-    fields: [sapEscrowApprovals.workerAvatarId],
-    references: [avatars.id],
-    relationName: 'sapEscrowApprovalWorker',
-  }),
-}));

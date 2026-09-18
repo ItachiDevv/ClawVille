@@ -30,6 +30,13 @@
  *       Drizzle schema. That has wiped Eliza tables twice historically.
  *     * This runner only executes SQL WE author. Our migrations never reference
  *       the Eliza tables, so those tables are never touched. NEVER author a DROP.
+ *       ONE SANCTIONED EXCEPTION EXISTS: `0067_sap_table_drop.sql` (2026-09-18)
+ *       removes the dead OOBE/SAP tables and the legacy `bounties` columns after
+ *       the founder-ordered partner removal of 2026-08-20. It was reserved as a
+ *       deliberate, separately-reviewed step by that removal, its rows were
+ *       archived first, and it touches NO Eliza table. A new DROP still needs the
+ *       same bar: founder order, archived rows, zero readers proven, and an
+ *       explicit note here.
  *
  * IMMUTABLE MIGRATIONS
  * --------------------
