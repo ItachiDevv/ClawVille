@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last Audited: 2026-09-18 (Nori collider).** Drift note: BOTH collider tables put Nori at (0, 240) for four months after her mesh moved to (0, 400) on 2026-05-21, so players and server-driven agents walked through her and hit an invisible 80x80 box 160 wu short of her. Her position now has ONE source, `NORI_WORLD_X = 0` / `NORI_WORLD_Z = 400` in `@clawville/shared` (world-colliders-data.ts, centred world units), read by the mesh (`town-guide.tsx` via the pure `lib/three/town-guide-position.ts`), the client table (`world-colliders.ts`) and the server table. Spawn (world Z 540) stays 100 wu clear of her collider (Z 360..440). Locked by `lib/three/town-guide-prompt.test.ts`.
+
 **Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.
 
 **Prior Last Audited: 2026-09-13 (Mobile perf wave 2 — phone texture cap and deferred
@@ -1385,7 +1387,7 @@ Fallback `BUILDING_HALF ≈ 206 wu` (0.92 × 224) retained in code for any unkno
 | **marketplace-stall** | **(1178, −240)** | **420 × 410 wu** | **solid** | **shisha-oasis full footprint; ROUND 1 walkable zone reverted — see below** |
 | quest-bounty-pavilion | (0, −1220) | 280 × 280 wu | solid | |
 | quest-npc | (−110, −60) | 40 × 40 wu | solid | |
-| town-guide | (0, 240) | 40 × 40 wu | solid | |
+| town-guide | (0, 400) | 40 × 40 wu | solid | `NORI_WORLD_X/Z` from `@clawville/shared` (was a stale (0, 240) until 2026-09-18) |
 | kelp-forest-portal | (-547, -120) | 170 x 42 wu | server solid / client passable | Gameplay entrance; shared server collider derives from the founder pin; client AABB intentionally removed for walk-through |
 
 **Shisha-oasis GLB bbox math (2026-05-22, verified via Node.js binary parse):**
