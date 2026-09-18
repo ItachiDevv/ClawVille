@@ -81,9 +81,13 @@ export function SalvageStateHydrator() {
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
     const hydrate = async (): Promise<void> => {
+      // A reset (sign-out / account switch via clearIdentityState) can land
+      // while this request is in flight and BEFORE this effect's cleanup runs;
+      // the generation check drops that stale response (Codex r2).
+      const generation = useSalvageStore.getState().generation;
       const response = await api.getLandSalvageState().catch(() => null);
       if (cancelled) return;
-      if (response) {
+      if (response && useSalvageStore.getState().generation === generation) {
         setState({
           nodes: response.nodes,
           materialBalance: response.materialBalance,
