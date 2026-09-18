@@ -25,7 +25,7 @@
  * store-driven effect, never inside a useFrame/useSceneFrame callback).
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { createElement, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SALVAGE_NODES, type SalvageNode } from '@clawville/shared';
@@ -36,6 +36,7 @@ import { KIT_FLOOR_Y } from '@/lib/three/land-kit-assets';
 import { salvageNodeLook, type SalvageNodeLook } from '@/lib/three/land-salvage-nodes';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { isSalvageNodeClaimable, useSalvageStore } from '@/stores/salvage';
+import type { LandSalvageStateResponse } from '@/components/game/land/types';
 
 const SALVAGE_NODE_LOOKS: readonly SalvageNodeLook[] = ['shells', 'driftwood', 'coral'];
 
@@ -59,12 +60,30 @@ function salvageNodeYaw(nodeId: string): number {
 const SALVAGE_POLL_MS = 45_000;
 
 export function SalvageStateHydrator() {
-  const setState = useSalvageStore((state) => state.setState);
   const { data: authData } = useAuthMe();
   // Keyed on the account id so a sign-in, sign-out or account switch
   // restarts the poll (and drops the previous account's private numbers).
   const accountId =
     authData?.user && !authData.user.isGuest ? authData.user.id : null;
+  return createElement(SalvageStatePoller, { accountId, fetchState: api.getLandSalvageState });
+}
+
+/**
+ * The poll itself, with its two inputs injected so a test can drive it
+ * without process-wide module mocks. Known limit (Codex r3, accepted): a reset
+ * can still land inside the shared request helper's own await, after the
+ * checks here and before fetch() dispatches; that request then carries the new
+ * cookie. For this GET it only reads, and the response is dropped by the
+ * generation check below.
+ */
+export function SalvageStatePoller({
+  accountId,
+  fetchState,
+}: {
+  accountId: string | null;
+  fetchState: () => Promise<LandSalvageStateResponse>;
+}) {
+  const setState = useSalvageStore((state) => state.setState);
   const lastAccountRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
@@ -85,7 +104,7 @@ export function SalvageStateHydrator() {
       // while this request is in flight and BEFORE this effect's cleanup runs;
       // the generation check drops that stale response (Codex r2).
       const generation = useSalvageStore.getState().generation;
-      const response = await api.getLandSalvageState().catch(() => null);
+      const response = await fetchState().catch(() => null);
       if (cancelled) return;
       if (response && useSalvageStore.getState().generation === generation) {
         setState({
@@ -117,7 +136,7 @@ export function SalvageStateHydrator() {
       window.removeEventListener(LAND_SALVAGE_REFRESH_EVENT, refreshNow);
       if (pollTimer !== null) clearTimeout(pollTimer);
     };
-  }, [setState, accountId]);
+  }, [setState, accountId, fetchState]);
 
   return null;
 }
