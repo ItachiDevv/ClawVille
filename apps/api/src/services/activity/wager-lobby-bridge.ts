@@ -30,13 +30,16 @@ import {
   db,
   eq,
   inArray,
+  isNotNull,
   lobbies,
   lobbyPlayers,
   lobbyEvents,
   sql,
+  wagerChainIntents,
 } from '@clawville/database';
 import {
   cancelLobby,
+  isWagerLobbyAccountAbsent,
   lockLobby,
   readWagerLobbyChainState,
   settleSolLobby,
@@ -83,6 +86,17 @@ interface WagerAbortFenceContext {
     txSig: string | null;
     reconciledFromChain: boolean;
   }): Promise<void>;
+  /**
+   * True only when NO wager chain intent for this lobby (create, join, or any
+   * other operation) ever carried a transaction signature. Read inside the
+   * fence, after it expired stale prepared rows and refused on unresolved ones.
+   */
+  noIntentEverSigned(): Promise<boolean>;
+  /**
+   * DB-only terminal for a lobby whose create never reached the chain:
+   * state 'cancelled', on_chain_create_status 'failed', one lobby_events row.
+   */
+  markCancelledNeverCreated(): Promise<void>;
 }
 
 export interface WagerAbortRecoveryDeps {
@@ -92,6 +106,8 @@ export interface WagerAbortRecoveryDeps {
     run: (context: WagerAbortFenceContext) => Promise<T>,
   ): Promise<T>;
   readChainState(lobbyId: bigint): Promise<WagerLobbyChainState>;
+  /** True only when the lobby PDA is absent on the configured wager cluster. */
+  lobbyAccountAbsent(lobbyId: bigint): Promise<boolean>;
   cancelLobby(input: CancelLobbyInput): Promise<CancelLobbyResult>;
 }
 
@@ -100,7 +116,8 @@ export type WagerAbortRecoveryResult =
   | 'not_multiplayer'
   | 'already_terminal'
   | 'cancelled'
-  | 'reconciled_cancelled';
+  | 'reconciled_cancelled'
+  | 'cancelled_never_created';
 
 const WAGER_ABORT_ACTIVITY_IDS = new Set(['bumper-shells', 'reef-race']);
 const WAGER_ABORT_RECOVERY_INTERVAL_MS = 60_000;
@@ -152,9 +169,44 @@ export const productionWagerAbortRecoveryDeps: WagerAbortRecoveryDeps = {
             });
           }
         },
+        noIntentEverSigned: async () => {
+          // wager_chain_intents.lobby_id is the lobbies ROW id (same key the
+          // fence expires and checks by).
+          const signed = await tx
+            .select({ id: wagerChainIntents.id })
+            .from(wagerChainIntents)
+            .where(
+              and(
+                eq(wagerChainIntents.lobbyId, lobbyRowId),
+                isNotNull(wagerChainIntents.txSignature),
+              ),
+            )
+            .limit(1);
+          return signed.length === 0;
+        },
+        markCancelledNeverCreated: async () => {
+          await tx
+            .update(lobbies)
+            .set({
+              state: 'cancelled',
+              cancelledAt: new Date(),
+              onChainCreateStatus: 'failed',
+            })
+            .where(eq(lobbies.id, lobbyRowId));
+          await tx.insert(lobbyEvents).values({
+            lobbyId: lobbyRowId,
+            kind: 'cancelled',
+            txSig: null,
+            rawEventJson: {
+              triggeredBy: 'aborted_crash_recovery',
+              reason: 'never_created_on_chain',
+            },
+          });
+        },
       }),
     ),
   readChainState: readWagerLobbyChainState,
+  lobbyAccountAbsent: isWagerLobbyAccountAbsent,
   cancelLobby,
 };
 
@@ -185,6 +237,25 @@ export async function cancelLobbyForAbortedRoom(
       throw new Error(`lobby_state_${current.state}`);
     }
     if (current.onChainCreateStatus !== 'confirmed') {
+      // A create that NEVER reached the chain has nothing to refund and no
+      // escrow to cancel. Without this branch such a row can never leave the
+      // sweep (prod 2026-09-18: two free lobbies from 07-28/07-29 threw every
+      // 60 s since). All three proofs are required; any doubt keeps the old
+      // quarantine:
+      //   1. the DB says the create is 'prepared' or 'failed' (never confirmed);
+      //   2. no intent for this lobby EVER carried a tx signature (checked
+      //      inside the fence, which already expired stale prepared rows and
+      //      refused on any prepared/sending/reconcile one);
+      //   3. the lobby PDA is ABSENT on the wager cluster (no account at all),
+      //      so no join could have deposited into it.
+      const createNeverSent =
+        (current.onChainCreateStatus === 'prepared' || current.onChainCreateStatus === 'failed') &&
+        (await context.noIntentEverSigned()) &&
+        (await deps.lobbyAccountAbsent(current.lobbyId));
+      if (createNeverSent) {
+        await context.markCancelledNeverCreated();
+        return 'cancelled_never_created';
+      }
       throw new Error('wager_create_reconciliation_required');
     }
 

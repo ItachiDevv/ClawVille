@@ -1157,6 +1157,21 @@ export async function readWagerLobbyChainState(
   return state;
 }
 
+/**
+ * Read-only: is the lobby PDA ABSENT on the configured wager cluster? True
+ * only for "no account at all". An account that exists (any owner, any data)
+ * is NOT absent, so a caller can never treat a real escrow as never-created.
+ * Used by the abort-recovery path for a create that never reached the chain.
+ */
+export async function isWagerLobbyAccountAbsent(lobbyIdBigint: bigint): Promise<boolean> {
+  await assertWagerBroadcastCluster(connection, 'isWagerLobbyAccountAbsent');
+  const [lobbyPda] = findLobbyPda(lobbyIdBigint);
+  const account = await withChainErrors('isWagerLobbyAccountAbsent:getAccountInfo', () =>
+    connection.getAccountInfo(lobbyPda, COMMITMENT),
+  );
+  return account === null;
+}
+
 export async function cancelLobby(
   input: CancelLobbyInput,
 ): Promise<CancelLobbyResult> {
