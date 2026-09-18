@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-09-18 (Nori collider).** Drift note: Nori's prop collider in `world-colliders.ts` sat at (0, 240) for four months after her mesh moved to (0, 400) on 2026-05-21, so players walked through her and hit an invisible 80x80 box 160 wu short of her (found by session bountyFix2's collider-vs-render audit). Her position now lives in the pure module `lib/three/town-guide-position.ts` (NORI_WORLD_X/Z, NORI_TALK_RADIUS_SQ), imported by BOTH `town-guide.tsx` (mesh placement, re-exported for existing importers) and the collider table, so the two cannot drift again. Locked by `lib/three/town-guide-prompt.test.ts`.
+**Last Audited: 2026-09-18 (Nori collider).** Drift note: Nori's prop collider in `world-colliders.ts` sat at (0, 240) for four months after her mesh moved to (0, 400) on 2026-05-21, so players walked through her and hit an invisible 80x80 box 160 wu short of her (found by session bountyFix2's collider-vs-render audit). The SERVER table `packages/shared/src/constants/world-colliders-data.ts` (NPC sim + agent pathing) carried the SAME stale (0, 240) row, found by a staging bundle scan that showed both 400 and 240. Her position now has ONE source: `NORI_WORLD_X = 0` / `NORI_WORLD_Z = 400` in `@clawville/shared` (world-colliders-data.ts, centred world units like every other row in that table; server pathing adds MAP_HALF itself). The web re-exports them through the pure `lib/three/town-guide-position.ts` (which also holds `NORI_TALK_RADIUS_SQ`), and the mesh (`town-guide.tsx`), the client collider table and the server collider table all read them. Player spawn (world Z 540) stays 100 wu clear of her collider (Z 360..440). Locked by `lib/three/town-guide-prompt.test.ts` (client AND server rows).
 
 **Last Audited: 2026-09-18 (cove exit spawn).** Drift note: "Back to World" from the cove now lands at world (-3150, 0), east of the tunnel prompt and auto-enter bands, via the new `COVE_EXIT_WORLD_X/Z` in `character-positions.ts`. The old hand-set exit (world -3760) sat just west of the auto-enter band, so leaving the cove looped straight back in. Also corrects the stale `COVE_REARM_X = -3250` description: the guard re-arms immediately outside the band. No asset, geometry, collider, or shader change.
 
@@ -1389,7 +1389,7 @@ Fallback `BUILDING_HALF ≈ 206 wu` (0.92 × 224) retained in code for any unkno
 | **marketplace-stall** | **(1178, −240)** | **420 × 410 wu** | **solid** | **shisha-oasis full footprint; ROUND 1 walkable zone reverted — see below** |
 | quest-bounty-pavilion | (0, −1220) | 280 × 280 wu | solid | |
 | quest-npc | (−110, −60) | 40 × 40 wu | solid | |
-| town-guide | (0, 240) | 40 × 40 wu | solid | |
+| town-guide | (0, 400) | 40 × 40 wu | solid | `NORI_WORLD_X/Z` from `@clawville/shared` (was a stale (0, 240) until 2026-09-18) |
 | kelp-forest-portal | (-547, -120) | 170 x 42 wu | server solid / client passable | Gameplay entrance; shared server collider derives from the founder pin; client AABB intentionally removed for walk-through |
 
 **Shisha-oasis GLB bbox math (2026-05-22, verified via Node.js binary parse):**
