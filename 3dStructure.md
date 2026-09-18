@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last Audited: 2026-09-18 (Nori collider).** Drift note: Nori's prop collider in `world-colliders.ts` sat at (0, 240) for four months after her mesh moved to (0, 400) on 2026-05-21, so players walked through her and hit an invisible 80x80 box 160 wu short of her (found by session bountyFix2's collider-vs-render audit). Her position now lives in the pure module `lib/three/town-guide-position.ts` (NORI_WORLD_X/Z, NORI_TALK_RADIUS_SQ), imported by BOTH `town-guide.tsx` (mesh placement, re-exported for existing importers) and the collider table, so the two cannot drift again. Locked by `lib/three/town-guide-prompt.test.ts`.
+
 **Last Audited: 2026-09-18 (cove exit spawn).** Drift note: "Back to World" from the cove now lands at world (-3150, 0), east of the tunnel prompt and auto-enter bands, via the new `COVE_EXIT_WORLD_X/Z` in `character-positions.ts`. The old hand-set exit (world -3760) sat just west of the auto-enter band, so leaving the cove looped straight back in. Also corrects the stale `COVE_REARM_X = -3250` description: the guard re-arms immediately outside the band. No asset, geometry, collider, or shader change.
 
 **Prior Last Audited: 2026-09-14.** 2026-09-14 documentation accuracy pass: post-OOBE/SAP-removal cleanup.

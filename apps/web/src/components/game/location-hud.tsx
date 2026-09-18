@@ -9,6 +9,7 @@ import {
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
 import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
+import { locationPromptText } from '@/components/game/location-prompt-text';
 
 /**
  * Building-entry prompt — replaces the prior tiny top-center hint
@@ -41,51 +42,47 @@ export default function LocationHUD() {
   // pill when the player is standing on a lot they own, which is the priority
   // change this pass is about.
   const promptOwner = useBottomPromptOwner();
+  const openGuideChat = useGameStore((s: GameState) => s.openGuideChat);
 
-  if (promptOwner !== 'building') return null;
+  // Nori gets the same bottom prompt as a building resident (founder,
+  // 2026-09-18: "not showing up for proximity to click E to talk to her").
+  // Since April she only had the small top-right pill; buildings later gained
+  // this prompt and she was never added. E already opened her chat
+  // (player-avatar onInteractEdge); this is the missing visual + tap surface.
+  const isGuide = promptOwner === 'guide';
+  if (promptOwner !== 'building' && !isGuide) return null;
   // Narrowing only — `promptOwner === 'building'` already implies this.
-  if (!nearLocation) return null;
+  if (!isGuide && !nearLocation) return null;
 
-  const isKelpForest = nearLocation === 'kelp-forest-portal';
-  const location = MAP_LOCATIONS.find((l) => l.id === nearLocation);
-  if (!location && !isKelpForest) return null;
+  const location = isGuide ? undefined : MAP_LOCATIONS.find((l) => l.id === nearLocation);
+  if (!isGuide && !location && nearLocation !== 'kelp-forest-portal') return null;
 
-  const theme = BUILDING_OPENCLAW_THEMES[nearLocation];
-  const characterName = nearCharacter;
-  // 2026-06-20 — knowledge buildings are CHAT-ONLY (no interior to "enter").
-  // The single proximity prompt is "Talk to {resident}" in ALL modes; tapping
-  // opens the ElizaOS resident chat MODAL (chat-panel — full chat + skill-claim).
-  // The old NPC-mode TalkToCharacterBar bottom bar was REMOVED (it duplicated
-  // this prompt — founder report: "entrance + chatbox when only chat exists").
-  // Only the Cove (a real walk-in interior with a SceneTransition) keeps "Enter".
-  const isCove = nearLocation === 'cove';
-  const showTalk = !isCove && !isKelpForest && !!characterName;
-  // Cove gets a distinct CTA — it's an entertainment venue, not a teacher building.
-  const subjectLabel = isKelpForest
-    ? 'Kelp Forest'
-    : isCove
-      ? 'The Cove'
-    : showTalk
-      ? characterName!
-      : (theme?.label ?? location!.name);
-  const ctaLine = isKelpForest
-    ? 'Walk through to enter the Kelp Forest'
-    : isCove
-      ? 'Enter the Cove'
-    : showTalk
-      ? `Talk to ${characterName}`
-      : theme?.label
-        ? `Enter ${theme.label}`
-        : `Enter ${location!.name}`;
+  const theme = isGuide || !nearLocation ? undefined : BUILDING_OPENCLAW_THEMES[nearLocation];
+  const characterName = isGuide ? 'Nori' : nearCharacter;
+  // The words and icon come from ONE pure function (location-prompt-text.ts) so
+  // the Nori branch can never pick up a venue's text: with Nori and the Cove
+  // both in range, the old inline `isCove` said "Enter the Cove" while E and a
+  // tap opened Nori (Codex review, 2026-09-18). Knowledge buildings stay
+  // chat-only ("Talk to {resident}"); only the Cove keeps "Enter".
+  const { subjectLabel, ctaLine, icon, isCove, isKelpForest } = locationPromptText({
+    isGuide,
+    nearLocation,
+    characterName,
+    themeLabel: theme?.label,
+    locationName: location?.name,
+    locationIcon: location?.icon,
+  });
 
   // The cove has its own walk-in flow (avatar pathfinds to the door then a
   // SceneTransition fires) — not the standard teacher-chat enterBuilding modal.
   const handleTap = () => {
-    if (isKelpForest) {
+    if (isGuide) {
+      openGuideChat();
+    } else if (isKelpForest) {
       triggerKelpForestWalkIn();
-    } else if (nearLocation === 'cove') {
+    } else if (isCove) {
       triggerCoveWalkIn();
-    } else {
+    } else if (nearLocation) {
       enterBuilding(nearLocation, characterName ?? undefined);
     }
   };
@@ -167,7 +164,7 @@ export default function LocationHUD() {
         }}
       >
         <span aria-hidden style={{ fontSize: 22 }}>
-          {isKelpForest ? '🪸' : isCove ? '🎰' : showTalk ? '💬' : location!.icon}
+          {icon}
         </span>
         {ctaLine}
       </span>

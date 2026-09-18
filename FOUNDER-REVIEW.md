@@ -216,6 +216,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
   does it need different columns/grouping.
 - Session selfheal/Fable, 2026-09-13 (promoted 2026-09-14).
 
+### Nori now has the "Press E - Talk to Nori" prompt (staging)
+
+- **WHERE:** staging.clawville.world/game, walk up to Nori in the town centre (Controlled or NPC mode).
+- **LOOK AT:** the bottom prompt "Press E - Nori / Talk to Nori" ("Tap" on phone/iPad); pressing E or tapping opens her chat. You can no longer walk through her, and the invisible wall next to her is gone.
+- **FEEDBACK WANTED:** does it appear where you expect when you approach her? On a phone in portrait the prompt slightly covers the Hold Jump button (true of every building prompt too; being fixed in the HUD pass).
+- **Session dd, 2026-09-18.**
+
 ### Nori now knows WHERE the bounty board is (staging)
 - **What:** Nori told you on prod that Pearl held the bounties. Bounties never moved;
   the bug was that no knowledge Nori or any agent reads ever said where they are, so
