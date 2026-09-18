@@ -65,6 +65,8 @@ export interface WorldPresenceStoreCallbacks {
   setLocalSessionId: (sessionId: string | null) => void;
   setRoomId: (roomId: string | null) => void;
   clearPlayers: () => void;
+  /** Drop remote bodies only; the local identity survives (downlink pause). */
+  clearRemotePlayers: () => void;
   addCollaborationEntries: (entries: unknown[]) => void;
   invalidateLandQuery: () => void;
   addToast: (icon: string, message: string, durationMs?: number) => void;
@@ -352,6 +354,9 @@ export class WorldPresenceController {
       if (downlinkAction === "CLOSE") {
         this.#closeStream();
       } else if (downlinkAction === "OPEN") {
+        // Re-assert who we are before the first snapshot lands, so no path
+        // that dropped the local id can render our own body as remote.
+        this.#callbacks.setLocalSessionId(this.#sessionId);
         this.#openStream(this.#roomId!);
         this.#callbacks.invalidateLandQuery();
       }
@@ -844,7 +849,11 @@ export class WorldPresenceController {
     this.#lastStreamAttemptWasBareReopen = false;
     this.#callbacks.setNpcConnected(false);
     this.#callbacks.setStreamState('stopped');
-    this.#callbacks.clearPlayers();
+    // The SESSION outlives a downlink close (activity routes pause the
+    // downlink, 2026-07-30), so only the remote bodies go. clearPlayers() here
+    // also erased our own session ids; the reopen then drew our own body as a
+    // remote player trailing us (founder R5, 2026-09-18).
+    this.#callbacks.clearRemotePlayers();
   }
 
   #openSocket(generation: number): void {

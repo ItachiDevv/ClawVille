@@ -297,10 +297,12 @@ class ActivityQueueService {
     const roomId = this.matchedRooms.get(avatarId);
     if (!roomId) return null;
     // Auto-expire entries so an avatar can re-queue later without carrying
-    // a stale matchedRoomId forward. Manager knows if the room is still
-    // active.
-    const room = activityRoomManager.getRoom(roomId);
-    if (!room) {
+    // a stale matchedRoomId forward. The room must still be the avatar's
+    // ACTIVE room: a room in results/gc/aborted, or one the avatar already
+    // left, still exists in the manager for a while, and routing a fresh
+    // queue into it showed "MATCH EXPIRED" (2026-09-18, staging repro).
+    const active = activityRoomManager.getPlayerActiveRoom(avatarId);
+    if (!active || active.id !== roomId) {
       this.matchedRooms.delete(avatarId);
       return null;
     }
@@ -798,6 +800,10 @@ class ActivityQueueService {
     }
     queue.push(entry);
     this.avatarToEntry.set(entry.avatarId, entry.id);
+    // A new queue entry means any earlier match is over; never hand the
+    // queue-status poll the previous room (2026-09-18: a second Reef Race
+    // queue routed straight into the last, finished room → "MATCH EXPIRED").
+    this.matchedRooms.delete(entry.avatarId);
   }
 
   private removeFromMemory(avatarId: string, entryId: string): void {
