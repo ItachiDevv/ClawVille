@@ -39,7 +39,7 @@ describe('the mobile bottom prompt clears the Hold-Jump button', () => {
     });
   }
 
-  for (const [vw, vh] of [[744, 1133], [820, 1180], [1024, 1366], [844, 390], [1133, 744]]) {
+  for (const [vw, vh] of [[600, 960], [744, 1133], [820, 1180], [1024, 1366], [844, 390], [1133, 744]]) {
     test(`${vw}x${vh}: wide enough that the pill keeps its old lift`, () => {
       const old = Math.max(80, Math.min(240, vh - 260));
       expect(pillBottom(vw, vh)).toBe(old);
