@@ -5,8 +5,14 @@
  * needs to READ the submitted evidence + verdict + escrow linkage for a bounty,
  * plus the public identity of the hunter agent. The PUBLIC bounty reads
  * (`routes/bounties.ts`) only expose evidence to the hunter/creator — a verifier
- * can't see `bounty_attempts.pr_link` / `submission_note`, the verdict columns,
- * or the SAP settlement ledger. This router is that partner-gated read surface.
+ * can't see `bounty_attempts.pr_link` / `submission_note` or the verdict columns.
+ * This router is that partner-gated read surface.
+ *
+ * SAP LEDGER RETIRED (2026-08-20 partner removal; tables dropped by migration
+ * 0067 on 2026-09-18). The `escrowSettlements` / `escrowApprovals` arrays and
+ * the `escrowPda` / `escrowJobId` scalars remain on the wire as permanently
+ * empty / null so an existing partner client still parses. Nothing repopulates
+ * them.
  *
  * GET-ONLY, NO MUTATIONS ANYWHERE — no DB write, no ledger call, no on-chain call.
  *
@@ -47,8 +53,6 @@ import {
   bountyReputation,
   covenantActionRecords,
   covenantSealBatches,
-  sapEscrowSettlements,
-  sapEscrowApprovals,
   users,
 } from '@clawville/database';
 // resolveApiBase() is a pure exported helper — READ-ONLY import from the
@@ -162,8 +166,6 @@ partnerCovenantRoutes.get('/bounties', async (c) => {
       status: bounties.status,
       paymentRail: bounties.paymentRail,
       verdictRequired: bounties.verdictRequired,
-      escrowPda: bounties.escrowPda,
-      escrowJobId: bounties.escrowJobId,
       tokenReward: bounties.tokenReward,
       currentAttempts: bounties.currentAttempts,
       expiresAt: bounties.expiresAt,
@@ -182,8 +184,11 @@ partnerCovenantRoutes.get('/bounties', async (c) => {
       status: r.status,
       paymentRail: r.paymentRail,
       verdictRequired: r.verdictRequired,
-      escrowPda: r.escrowPda,
-      escrowJobId: r.escrowJobId,
+      // RETIRED (SAP removal 2026-08-20, columns dropped by migration 0067).
+      // Kept on the wire as a permanent null so a partner client that reads the
+      // field still parses; there is no on-chain bounty escrow to report.
+      escrowPda: null,
+      escrowJobId: null,
       tokenReward: r.tokenReward,
       currentAttempts: r.currentAttempts,
       expiresAt: r.expiresAt?.toISOString() ?? null,
@@ -246,65 +251,12 @@ partnerCovenantRoutes.get('/bounties/:id/verification', async (c) => {
     .orderBy(desc(bountyAttempts.updatedAt))
     .limit(MAX_ATTEMPTS_RETURNED);
 
-  // SAP settlement ledger + depositor approvals for this bounty's escrow. Only
-  // when the bounty carries an escrow binding; the (escrow_pda, job_id) key is
-  // the bounty's escrowPda + escrowJobId (jobId === bounty.id by construction).
-  let escrowSettlements: Array<Record<string, unknown>> = [];
-  let escrowApprovals: Array<Record<string, unknown>> = [];
-  if (bounty.escrowPda) {
-    const jobId = bounty.escrowJobId ?? bounty.id;
-    const settlementRows = await db
-      .select()
-      .from(sapEscrowSettlements)
-      .where(
-        and(
-          eq(sapEscrowSettlements.escrowPda, bounty.escrowPda),
-          eq(sapEscrowSettlements.jobId, jobId),
-        ),
-      );
-    escrowSettlements = settlementRows.map((s) => ({
-      id: s.id,
-      status: s.status,
-      dryRun: s.dryRun,
-      settleSignature: s.settleSignature,
-      fundingSignature: s.fundingSignature,
-      tokenMint: s.tokenMint,
-      pricePerCall: s.pricePerCall,
-      maxCalls: s.maxCalls,
-      fundedAmount: s.fundedAmount,
-      callsSettled: s.callsSettled,
-      releasedAmount: s.releasedAmount,
-      refundedAmount: s.refundedAmount,
-      verificationProvider: s.verificationProvider,
-      verificationPassed: s.verificationPassed,
-      auditRootHex: s.auditRootHex,
-      verificationDetail: s.verificationDetail,
-      depositorAvatarId: s.depositorAvatarId,
-      workerAvatarId: s.workerAvatarId,
-      depositorWalletPubkey: s.depositorWalletPubkey,
-      workerWalletPubkey: s.workerWalletPubkey,
-      createdAt: s.createdAt.toISOString(),
-      updatedAt: s.updatedAt.toISOString(),
-      settledAt: s.settledAt?.toISOString() ?? null,
-    }));
-
-    const approvalRows = await db
-      .select()
-      .from(sapEscrowApprovals)
-      .where(
-        and(
-          eq(sapEscrowApprovals.escrowPda, bounty.escrowPda),
-          eq(sapEscrowApprovals.jobId, jobId),
-        ),
-      );
-    escrowApprovals = approvalRows.map((a) => ({
-      id: a.id,
-      approverAvatarId: a.approverAvatarId,
-      workerAvatarId: a.workerAvatarId,
-      approvedCalls: a.approvedCalls,
-      approvedAt: a.approvedAt.toISOString(),
-    }));
-  }
+  // RETIRED (SAP removal 2026-08-20; tables dropped by migration 0067).
+  // The on-chain SAP escrow ledger no longer exists, so there is nothing to
+  // join. Both arrays stay on the wire as permanently empty so a partner
+  // client that iterates them still parses.
+  const escrowSettlements: Array<Record<string, unknown>> = [];
+  const escrowApprovals: Array<Record<string, unknown>> = [];
 
   // Distinct hunters → resolve identity fingerprint (batched) → pubkey-only bundle.
   const distinctHunters = new Map<
@@ -359,8 +311,9 @@ partnerCovenantRoutes.get('/bounties/:id/verification', async (c) => {
       covenantAuditRootHex: bounty.covenantAuditRootHex,
       covenantVerificationPassed: bounty.covenantVerificationPassed,
       covenantVerdictId: bounty.covenantVerdictId,
-      escrowPda: bounty.escrowPda,
-      escrowJobId: bounty.escrowJobId,
+      // RETIRED — see migration 0067. Permanent nulls, not a lookup miss.
+      escrowPda: null,
+      escrowJobId: null,
       maxAttempts: bounty.maxAttempts,
       currentAttempts: bounty.currentAttempts,
       expiresAt: bounty.expiresAt?.toISOString() ?? null,
