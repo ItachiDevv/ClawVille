@@ -124,6 +124,9 @@ export default function SalvageGatherPill() {
     if (!isSalvageNodeClaimable(useSalvageStore.getState().nodeCooldowns, nodeId)) return;
 
     const myGestureId = ++gestureIdRef.current;
+    // The account this claim belongs to; a sign-out or account switch while
+    // it is in flight bumps the store generation and the response is dropped.
+    const myGeneration = useSalvageStore.getState().generation;
     const idempotencyKey = freshSalvageIdempotencyKey();
     requestInFlightRef.current = true;
     setPhase('gathering');
@@ -185,7 +188,7 @@ export default function SalvageGatherPill() {
         }
       }
 
-      applyClaimResult(claimResponse);
+      if (!applyClaimResult(claimResponse, myGeneration)) return;
       // The old toast said only "+N materials salvaged", which never told a
       // player what materials are FOR. Naming the sink is the only thing that
       // connects the gather loop to the yard editor in the UI.

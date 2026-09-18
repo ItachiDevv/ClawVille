@@ -38,6 +38,13 @@ interface SalvageStore {
   rules: LandSalvageRules;
   /** Last successful full hydration, ms epoch — lets the HUD show staleness if the poll dies. */
   hydratedAt: number;
+  /**
+   * Identity generation: +1 on every reset(). A claim captures it when it
+   * starts; its response only lands if the generation still matches, so a
+   * claim that returns after sign-out or an account switch cannot write the
+   * previous account's numbers back (Codex, 2026-09-18).
+   */
+  generation: number;
 
   setState: (input: {
     nodes: readonly { nodeId: string; nextClaimAt: string | null }[];
@@ -50,8 +57,10 @@ interface SalvageStore {
     rules: LandSalvageRules;
   }) => void;
 
-  /** Optimistic post-claim patch — one node + the two counters + balance. */
-  applyClaimResult: (payload: LandSalvageClaimPayload) => void;
+  /** Optimistic post-claim patch — one node + the two counters + balance.
+   *  Ignored when `generation` no longer matches (identity changed mid-claim).
+   *  Returns whether it applied. */
+  applyClaimResult: (payload: LandSalvageClaimPayload, generation: number) => boolean;
 
   /** Back to the empty, never-hydrated state (identity change / sign-out). */
   reset: () => void;
@@ -67,10 +76,11 @@ const emptySalvageState = () => ({
   hydratedAt: 0,
 });
 
-export const useSalvageStore = create<SalvageStore>()((set) => ({
+export const useSalvageStore = create<SalvageStore>()((set, get) => ({
   ...emptySalvageState(),
+  generation: 0,
 
-  reset: () => set(emptySalvageState()),
+  reset: () => set((state) => ({ ...emptySalvageState(), generation: state.generation + 1 })),
 
   setState: ({
     nodes,
@@ -98,7 +108,8 @@ export const useSalvageStore = create<SalvageStore>()((set) => ({
       };
     }),
 
-  applyClaimResult: (payload) =>
+  applyClaimResult: (payload, generation) => {
+    if (get().generation !== generation) return false;
     set((state) => {
       const next = new Map(state.nodeCooldowns);
       next.set(payload.nodeId, Date.parse(payload.nextClaimAt) || 0);
@@ -115,7 +126,9 @@ export const useSalvageStore = create<SalvageStore>()((set) => ({
         },
         lastClaim: payload,
       };
-    }),
+    });
+    return true;
+  },
 }));
 
 /** True when the node has no recorded cooldown, or its cooldown has elapsed. */

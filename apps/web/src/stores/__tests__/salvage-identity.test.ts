@@ -31,6 +31,22 @@ describe('salvage store never carries one account into the next', () => {
     expect(s.hydratedAt).toBe(0);
   });
 
+  test('a claim that returns after sign-out cannot write the old account back', () => {
+    useSalvageStore.getState().reset();
+    const started = useSalvageStore.getState().generation; // claim starts
+    clearIdentityState(new QueryClient()); // user signs out mid-claim
+    const late = {
+      nodeId: 'n1', nextClaimAt: new Date(Date.now() + 60_000).toISOString(), balanceAfter: 42,
+      claimsRemainingToday: 17, ownerClaimsRemainingToday: 119, materialsGranted: 2,
+    } as never;
+    expect(useSalvageStore.getState().applyClaimResult(late, started)).toBe(false);
+    expect(useSalvageStore.getState().materialBalance).toBe(0);
+    // A claim from the current account still applies.
+    const current = useSalvageStore.getState().generation;
+    expect(useSalvageStore.getState().applyClaimResult(late, current)).toBe(true);
+    expect(useSalvageStore.getState().materialBalance).toBe(42);
+  });
+
   test('sign-out / account switch (clearIdentityState) clears it', () => {
     hydrate();
     clearIdentityState(new QueryClient());
