@@ -130,7 +130,12 @@ const {
 );
 const { REEF_RACE_COUNTDOWN_DURATION_MS } = await import('@clawville/shared');
 const { bumperShellsSim } = await import('../sim/bumper-shells-sim');
-const { cancelLobbyForAbortedRoom, handleWagerRoomAborted } = await import(
+const {
+  cancelLobbyForAbortedRoom,
+  handleWagerRoomAborted,
+  sweepFailureLogDecision,
+  __resetSweepFailureLogForTest,
+} = await import(
   '../wager-lobby-bridge'
 );
 import type {
@@ -666,6 +671,29 @@ describe('Room sweeper', () => {
     expect(lobby.state).toBe('cancelled');
     expect(reconciledFromChain).toBe(true);
     expect(cancelCalls).toBe(1);
+  });
+});
+
+// Prod 2026-09-18: two quarantined free lobbies logged the same failure every
+// 60 s (650 lines in 5 h). The quarantine stays; the log becomes one line per
+// room per cause per hour, with the held-back count.
+describe('wager abort sweep log throttle', () => {
+  it('logs once per room per cause per hour and reports the held repeats', () => {
+    __resetSweepFailureLogForTest();
+    const t0 = 1_000_000;
+    expect(sweepFailureLogDecision('room-a', 'wager_create_reconciliation_required', t0)).toBe(0);
+    for (let m = 1; m < 60; m++) {
+      expect(sweepFailureLogDecision('room-a', 'wager_create_reconciliation_required', t0 + m * 60_000)).toBeNull();
+    }
+    // After an hour the next line carries the 59 held repeats.
+    expect(sweepFailureLogDecision('room-a', 'wager_create_reconciliation_required', t0 + 60 * 60_000)).toBe(59);
+  });
+
+  it('a different room or a new cause logs at once', () => {
+    __resetSweepFailureLogForTest();
+    expect(sweepFailureLogDecision('room-a', 'x', 0)).toBe(0);
+    expect(sweepFailureLogDecision('room-b', 'x', 1)).toBe(0);
+    expect(sweepFailureLogDecision('room-a', 'y', 2)).toBe(0);
   });
 });
 

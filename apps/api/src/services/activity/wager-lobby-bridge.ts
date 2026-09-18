@@ -224,6 +224,39 @@ export async function handleWagerRoomAborted(
   await cancelLobbyForAbortedRoom(roomId, deps);
 }
 
+/**
+ * Log throttle for the 60 s abort sweep. A row that stays quarantined (for
+ * example a create that never reached the chain: prod had two free lobbies
+ * from 07-28/07-29 that threw wager_create_reconciliation_required every
+ * minute, 650 lines in 5 h) must stay VISIBLE without flooding the log: one
+ * line per room per cause per hour, carrying how many repeats were held back.
+ * The quarantine itself is unchanged; closing such a row in the DB alone is
+ * unsafe because the program accepts a direct create for a caller-chosen
+ * lobby id, so a DB cancel cannot rule out a later on-chain deposit.
+ */
+const SWEEP_FAILURE_LOG_INTERVAL_MS = 60 * 60_000;
+const sweepFailureLog = new Map<string, { message: string; loggedAt: number; held: number }>();
+
+/** Returns the number of repeats held back since the last line, or null to stay quiet. */
+export function sweepFailureLogDecision(
+  roomId: string,
+  message: string,
+  now: number = Date.now(),
+): number | null {
+  const prev = sweepFailureLog.get(roomId);
+  if (prev && prev.message === message && now - prev.loggedAt < SWEEP_FAILURE_LOG_INTERVAL_MS) {
+    prev.held += 1;
+    return null;
+  }
+  const held = prev && prev.message === message ? prev.held : 0;
+  sweepFailureLog.set(roomId, { message, loggedAt: now, held: 0 });
+  return held;
+}
+
+export function __resetSweepFailureLogForTest(): void {
+  sweepFailureLog.clear();
+}
+
 /** Retry durable aborted_crash escrow rows, including across process restarts. */
 export async function sweepAbortedCrashWagerLobbies(
   deps: WagerAbortRecoveryDeps = productionWagerAbortRecoveryDeps,
@@ -251,14 +284,30 @@ export async function sweepAbortedCrashWagerLobbies(
     );
   let recovered = 0;
   let failed = 0;
+  const seen = new Set<string>();
   for (const row of rows) {
+    seen.add(row.roomId);
     try {
       const result = await cancelLobbyForAbortedRoom(row.roomId, deps);
       if (result === 'cancelled' || result === 'reconciled_cancelled') recovered++;
+      sweepFailureLog.delete(row.roomId);
     } catch (err) {
       failed++;
-      console.error(`[wager-bridge] abort recovery retry failed for ${row.roomId}:`, err);
+      const message = err instanceof Error ? err.message : String(err);
+      const held = sweepFailureLogDecision(row.roomId, message);
+      if (held !== null) {
+        console.error(
+          `[wager-bridge] abort recovery retry failed for ${row.roomId}` +
+            (held > 0 ? ` (same failure ${held} more times since the last line):` : ':'),
+          err,
+        );
+      }
     }
+  }
+  // Rows that left the sweep (recovered elsewhere, or closed by an operator)
+  // stop holding a throttle entry.
+  for (const roomId of sweepFailureLog.keys()) {
+    if (!seen.has(roomId)) sweepFailureLog.delete(roomId);
   }
   return { attempted: rows.length, recovered, failed };
 }
