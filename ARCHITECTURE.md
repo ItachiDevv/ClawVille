@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-09-18 (SAP residual table DROP — migration 0067).** Drift note: drops the six `sap_*` tables, both `bounty_gas_*` tables, the `sap_escrow_settlement_status` enum, seven legacy `bounties` columns and their two composition CHECKs; deletes `schema/sap-escrow.ts`, its relations, and `scripts/apply-sap-escrow.ts`. The Covenant partner read surface keeps its wire shape (permanently empty arrays, permanent nulls) and is unprovisioned on prod (503, verified live). All rows archived to JSON first. No `PROTOCOL_VERSION` bump, no protocol-manual change, no Nori change — the agent-facing bounty rules already said Tier-1-only with no Tier-2 rail, so no agent-facing surface moved.
+
 **Last Audited: 2026-09-18 (DoorDash demo patch — stores, menu filter, custom items).** Drift note: adds `doordash-options.ts` (plain-words choices to DoorDash option ids, server side) and three wrapper operations (`nearby-stores`, `item-options`, `cart-add-options`); `doordash-session.ts` now also holds the last menu's item ids and names plus one pending custom item. No route, table, env var, or protocol change.
 
 **Last Audited: 2026-09-17 (DoorDash CLI Phase 2 — cart, priced preview, human confirmation, submit).** Drift note: adds the `doordash_orders` table row, the four Phase 2 cap env vars, and the Phase 2 service note. The money-path shape is confirmation provenance — the code must appear in the requester's raw turn, so a model cannot authorise its own spend — plus database-read caps inside the claiming transaction, exact re-pricing before submit, and a terminal never-retried row for any ambiguous outcome. Submit stays human-only; the agent path prepares and stops. Six vendor issues that would have blocked the flow (#84, #85, #92, #100, #103, #105) were re-checked against the live CLI on v0.2.4 and none reproduce; #79 (interactive prompt with no non-interactive flag) is fixed upstream by `-y/--yes`. No `PROTOCOL_VERSION` bump, no protocol-manual change, no Nori change, no Hatcher executor change — the capability stays agent-unreachable for every non-operator subject, so no agent-facing surface moved.
@@ -92,7 +94,42 @@ rows are never created; the surface is read-only and drains naturally. The
 `sapAgentPda` field was removed from the partner payload with the partner's
 protocol retired.
 
-[Superseded 2026-09-14: The Drizzle schema retains the four legacy composition/refund fields and both CHECK constraints until the separate drop migration.]
+[Superseded 2026-09-18 by migration `0067_sap_table_drop.sql` — the drop has now happened; the paragraphs above describe the 2026-08-20 interim state and are kept as the historical record.]
+
+**SAP residual DROP — 2026-09-18 (`0067_sap_table_drop.sql`).** The last physical
+trace of the removed OOBE/SAP partner is gone. Dropped: the six `sap_*` tables
+(`sap_escrow_settlements`, `sap_escrow_approvals`, `sap_escrow_withdrawals`,
+`sap_deposit_requests`, `sap_agent_identities`, `sap_reputation_jobs`), both
+gas-sponsorship tables (`bounty_gas_sponsorships`, `bounty_gas_cap_policies`, both
+empty), the `sap_escrow_settlement_status` enum, seven legacy `bounties` columns
+(`escrow_pda`, `escrow_job_id`, `payout_escrow_pda`, `composition_state`,
+`composition_refund_signature`, `composition_refund_claim_id`,
+`composition_refund_claimed_at`), and their two composition CHECK constraints.
+The Drizzle declarations (`schema/sap-escrow.ts`, the relations block, the legacy
+`bounties` columns) and `scripts/apply-sap-escrow.ts` are deleted in the same
+diff. **Still LIVE and untouched:** `bounties.verdict_required` and
+`bounties.covenant_verification_passed` (both written by `services/bounty-tier1.ts`)
+plus `covenant_audit_root_hex` / `covenant_verdict_id`.
+
+The Covenant partner read surface survives with its wire shape intact:
+`escrowSettlements` and `escrowApprovals` are now permanently empty arrays and
+`escrowPda` / `escrowJobId` are permanent nulls, so an existing partner client
+still parses. The surface is UNPROVISIONED on prod (`COVENANT_ALLOWED_IPS` unset
+⇒ fail-closed) — verified live 2026-09-18, `GET /api/partner/covenant/bounties`
+returns 503 — so no live consumer is affected.
+
+Pre-drop row counts were read from the PROD database and every row was archived to
+JSON first: 11 `sap_agent_identities`, 35 `sap_escrow_approvals`, 36
+`sap_escrow_settlements`, 20 `sap_escrow_withdrawals`, 14 `sap_reputation_jobs`,
+0 `sap_deposit_requests`, 0 in both gas tables, and 21 of 14,182 `bounties` rows
+carrying legacy SAP evidence. Nothing on-chain survives them: all 20 mainnet
+escrows and the house agent account were closed 2026-08-20, the staging-box
+mainnet leftovers 2026-09-07, and the recovered SOL was swept 2026-09-13. Both
+house wallets read 0 SOL on mainnet (re-verified 2026-09-18).
+
+This is the ONE sanctioned exception to the "NEVER author a DROP" rule in
+`packages/database/scripts/migrate-ci.ts`; that header now records the exception
+and the bar any future DROP must clear.
 
 
 **Last Audited: 2026-08-20 (Land kit settlement extraction and hosted build seam, protocol v56).** `land-kit-settlement.ts` now owns the complete locked kit-placement transaction: identity authority, durable replay, the shared geometry predicate, rail gate, material sink or vCLAW treasury transfer, piece insert, and audit row. `land.ts` delegates once and preserves its response/error/cache contract; `npc-simulation.ts` resolves an owned parcel code and invokes the same service with `paymentRail='materials'`, `rotationStep=0`, and the live engine's ground `stackLevel=1`. `autonomous-build-targets.ts` performs a bounded fail-soft projection with at most two HOME parcels, one occupancy read each, and three deterministic valid suggestions. The connection manual and hosted knowledge move together at PROTOCOL_VERSION 56.

@@ -8,9 +8,7 @@ import {
   boolean,
   jsonb,
   pgEnum,
-  check,
 } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
 import { agentConfigs } from './agent-configs';
 
@@ -95,33 +93,6 @@ export const bounties = pgTable('bounties', {
   /** Which payout rail funds this bounty. Default 'vclaw' (the live in-game board). */
   paymentRail: bountyPaymentRailEnum('payment_rail').default('vclaw').notNull(),
 
-  // Legacy escrow identifiers retained for Covenant compatibility reads.
-  /**
-   * Historical on-chain escrow PDA (base58). No current bounty path writes it.
-   * Combined with `escrow_job_id`, it keys retained settlement evidence.
-   */
-  escrowPda: varchar('escrow_pda', { length: 64 }),
-  /**
-   * Historical off-chain job id half of the retained (escrow, job) lookup key.
-   */
-  escrowJobId: varchar('escrow_job_id', { length: 128 }),
-
-  // Legacy composed-rail identifier retained for historical row compatibility.
-  /**
-   * Historical PayAI payout escrow PDA (base58). No current bounty path writes it.
-   */
-  payoutEscrowPda: varchar('payout_escrow_pda', { length: 64 }),
-
-  // ── LEGACY composed-rail evidence (SAP removal 2026-08-20) ───────────────────
-  // No runtime reader or writer. Kept DECLARED so `db:push` can never silently
-  // drop the historical reconciliation evidence before the deliberate, separate
-  // drop migration removes the physical columns and this block together.
-  compositionState: varchar('composition_state', { length: 32 }),
-  compositionRefundSignature: varchar('composition_refund_signature', { length: 128 }),
-  compositionRefundClaimId: uuid('composition_refund_claim_id'),
-  compositionRefundClaimedAt: timestamp('composition_refund_claimed_at', {
-    withTimezone: true,
-  }),
   // ── verdict provenance (v1 = requester/admin approval; Phase 3 = Covenant) ───
   /**
    * Covenant audit-root hex retained for the partner verification read surface.
@@ -151,18 +122,7 @@ export const bounties = pgTable('bounties', {
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-}, (t) => ({
-  // LEGACY (SAP removal 2026-08-20): both CHECKs still exist physically; kept
-  // declared beside the legacy columns above until the deliberate drop migration.
-  compositionRefundClaimLeasePair: check(
-    'bounties_composition_refund_claim_lease_pair',
-    sql`(${t.compositionRefundClaimId} IS NULL) = (${t.compositionRefundClaimedAt} IS NULL)`,
-  ),
-  compositionRefundReconcileHasSignature: check(
-    'bounties_composition_refund_reconcile_has_signature',
-    sql`${t.compositionState} <> 'reconcile_refund_unknown' OR ${t.compositionRefundSignature} IS NOT NULL`,
-  ),
-}));
+});
 
 export const bountyRewards = pgTable('bounty_rewards', {
   id: uuid('id').primaryKey().defaultRandom(),
