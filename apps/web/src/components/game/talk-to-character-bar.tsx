@@ -21,6 +21,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
+import { useBottomPromptOwner } from '@/hooks/use-bottom-prompt-slot';
 
 interface TalkMessage {
   id: string;
@@ -35,6 +36,9 @@ export default function TalkToCharacterBar() {
   const nearParcelCode = useGameStore((s) => s.nearParcelCode);
   const nearSalvageNodeId = useGameStore((s) => s.nearSalvageNodeId);
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat (full panel) open
+  const guideChatOpen = useGameStore((s) => s.guideChatOpen); // Nori chat open
+  // Single authority over the bottom-centre slot (hooks/use-bottom-prompt-slot).
+  const promptOwner = useBottomPromptOwner();
 
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<TalkMessage[]>([]);
@@ -59,7 +63,13 @@ export default function TalkToCharacterBar() {
   // chat + skill-claim, 2026-06-20); the parcel pill and the salvage gather
   // pill each own the same bottom slot on land. This bar exists only for any
   // non-building, non-parcel, non-salvage wandering-NPC chat.
-  if (controlMode !== 'npc' || chatOpen || nearLocation || nearParcelCode || nearSalvageNodeId) return null;
+  //
+  // 2026-09-18: it ALSO yields whenever the shared bottom slot has any owner.
+  // Nori's new "Press E - Talk to Nori" prompt shares that slot, and this bar
+  // kept rendering "Walk closer to a character to talk" underneath it (seen in
+  // a live NPC-mode run), because Nori is not a `nearCharacter`.
+  if (controlMode !== 'npc' || chatOpen || guideChatOpen || promptOwner !== null
+    || nearLocation || nearParcelCode || nearSalvageNodeId) return null;
 
   const characterName = nearCharacter;
   const enabled = !!characterName;

@@ -50,6 +50,7 @@ import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
 import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
+import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide-position';
 import {
   BOOT_STREAM_TIER_GUIDE,
   onBootBuildingsFetch,
@@ -76,19 +77,15 @@ if (typeof window !== 'undefined') {
 
 const GROUND_Y    = -2;
 // 2026-05-21 — moved Nori south by 160 wu (240→400) to give the bigger
-// town-directory sign more breathing room from her.
-const GUIDE_Z     = 400;
+// town-directory sign more breathing room from her. The position now lives in
+// the pure `town-guide-position.ts` so the collider table reads the SAME value
+// (it had kept the old 240 for four months).
+const GUIDE_Z     = NORI_WORLD_Z;
 const GUIDE_SCALE = 200;
 
-// Exported so player-avatar / npc-controller can run the same proximity
-// check building characters get against the CHARACTER_POSITIONS map.
-// X is 0 (town center on X-axis); Z matches the placement above.
-export const NORI_WORLD_X = 0;
-export const NORI_WORLD_Z = GUIDE_Z;
-// Squared talk-radius — 320 wu gives Nori a slightly larger pull-in
-// circle than the 260 wu building characters use, since she stands in
-// the open town center where proximity is the only chat affordance.
-export const NORI_TALK_RADIUS_SQ = 320 * 320;
+// Re-exported so player-avatar / npc-controller keep their import path for the
+// same proximity check building characters get against CHARACTER_POSITIONS.
+export { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ };
 
 const CLIP_WAVE = 'wave';
 

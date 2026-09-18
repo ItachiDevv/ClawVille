@@ -24,6 +24,16 @@
 import { BUILDING_TILE_ZONES } from './npc-definitions';
 import { SPAWN_PX, WORLD_CENTER_PX } from './world-dimensions';
 
+/**
+ * Nori (the Town Guide) — world position in centred world units. The ONE
+ * source for where she stands: the web mesh (town-guide.tsx via
+ * town-guide-position.ts), the client collider table (world-colliders.ts) and
+ * the server collider table below all read these. 2026-05-21: moved south
+ * 240 -> 400 to clear the town-directory sign.
+ */
+export const NORI_WORLD_X = 0;
+export const NORI_WORLD_Z = 400;
+
 // ---------------------------------------------------------------------------
 // Constants — must match tilemap-data.ts values
 // ---------------------------------------------------------------------------
@@ -275,7 +285,10 @@ function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
     { id: 'marketplace-stall',     centerX: SHISHA_SERVER_CENTER_X, centerZ: SHISHA_SERVER_CENTER_Z, halfX: 420, halfZ: 410 },
     { id: 'quest-bounty-pavilion', centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280 },
     { id: 'quest-npc',             centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40 },
-    { id: 'town-guide',            centerX:     0, centerZ:   240, halfX:  40, halfZ:  40 },
+    // Nori: read from the ONE shared position (below). This row said (0, 240)
+    // for four months after her mesh moved to (0, 400), so the server NPC sim
+    // routed agents around an invisible box and through her (fixed 2026-09-18).
+    { id: 'town-guide',            centerX: NORI_WORLD_X, centerZ: NORI_WORLD_Z, halfX:  40, halfZ:  40 },
   ];
   list.push(...PROP_COLLIDERS);
 

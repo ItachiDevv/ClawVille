@@ -34,6 +34,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { NORI_WORLD_X, NORI_WORLD_Z } from '@/lib/three/town-guide-position';
 
 const HALF_W = MAP_WIDTH / 2;  // 11264 (704 × 32 / 2)
 const HALF_H = MAP_HEIGHT / 2; // 11264 (704 × 32 / 2)
@@ -282,7 +283,7 @@ function buildColliders(): Collider2D[] {
   //      MarketplaceStall:    (1273, -120)  — marketplace-stall.tsx STALL_X/Z
   //      QuestBountyPavilion: (0, -1220)   — quest-bounty-pavilion.tsx PAV_X/Z
   //      QuestNpc:            (-110, -60) — quest-npc.tsx QUEST_NPC_X/Z
-  //      TownGuide (Nori):    (0, 240)    — town-guide.tsx NORI_WORLD_X/Z
+  //      TownGuide (Nori):    (0, 400)    — town-guide-position.ts NORI_WORLD_X/Z (imported, not copied)
   //
   //    Shisha-oasis (MarketplaceStall) gets THREE collider zones (2026-05-22):
   //      a. Outer walkable approach zone — large, lifts player Y to stair step.
@@ -327,7 +328,10 @@ function buildColliders(): Collider2D[] {
     },
     { id: 'quest-bounty-pavilion',centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280, kind: 'prop' },
     { id: 'quest-npc',            centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40, kind: 'prop' },
-    { id: 'town-guide',           centerX:     0, centerZ:   240, halfX:  40, halfZ:  40, kind: 'prop' },
+    // Read from the same module the mesh uses: this row said (0, 240) for four
+    // months after Nori moved to (0, 400), so the player walked through her and
+    // hit an invisible box 160 wu short of her (fixed 2026-09-18).
+    { id: 'town-guide',           centerX: NORI_WORLD_X, centerZ: NORI_WORLD_Z, halfX:  40, halfZ:  40, kind: 'prop' },
     // Kelp Forest portal arch plane — position/extents come from the shared
     // constants, which remain authoritative for rendering and clearance against
     // OTHER colliders. No client collider exists by design; the arch is passable.
