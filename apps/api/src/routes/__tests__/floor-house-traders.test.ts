@@ -215,6 +215,25 @@ describe('GET /api/floor/house-traders', () => {
     expect(source).not.toContain('sql<Date');
   });
 
+  it('types every raw sql value in both services as the driver really returns it', () => {
+    // `sql<T>` is a compile-time claim only. A raw expression has no column
+    // mapper, so the driver returns TEXT for bigint, numeric and timestamptz.
+    // Rule: a raw `sql<...>` is typed `string` (or `string | null`), or it
+    // carries `.mapWith(` before the statement ends.
+    for (const file of ['house-traders.ts', 'trade-observer.ts']) {
+      const source = readFileSync(resolve(import.meta.dir, '../../services', file), 'utf8');
+      expect(source).not.toContain('sql<Date');
+      const pattern = /sql<([^>]+)>`[^`]*`([^,;\n]*)/g;
+      for (const match of source.matchAll(pattern)) {
+        const typed = match[1].replace(/\s+/g, '');
+        const honest = typed === 'string' || typed === 'string|null' || match[2].includes('.mapWith(');
+        expect({ file, expression: match[0].slice(0, 60), honest }).toEqual({
+          file, expression: match[0].slice(0, 60), honest: true,
+        });
+      }
+    }
+  });
+
   // with every other file in the routes lane process, so exhausting it earlier
   // would starve the sibling cases above.
   it('rate limits one address after 60 calls in the window', async () => {
