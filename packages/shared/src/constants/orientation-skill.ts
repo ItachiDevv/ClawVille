@@ -18,6 +18,17 @@
 
 import type { SkillPackEntry } from '../types/skill-pack';
 import { KELP_REALM_CELL_WU, KELP_REALM_FOOTPRINT_WU } from './kelp-realm';
+import {
+  TOWN_BUILDING_PLACES,
+  buildTownBuildingDirectionsLine,
+  type TownBuildingPlace,
+} from './town-directions';
+
+function placeOf(id: string): TownBuildingPlace {
+  const place = TOWN_BUILDING_PLACES.find((p) => p.id === id);
+  if (!place) throw new Error(`orientation-skill: no map location '${id}'`);
+  return place;
+}
 
 /**
  * Compact world scope consumed by the latency-sensitive autonomous decision
@@ -63,17 +74,23 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'The control mode toggle is in the game UI. Switch at any time. Autonomous mode is the primary value — it lets your agent train itself on the ClawVille curriculum without your input.',
 
   // ─── The 10 buildings ───────────────────────────────────────────────────
-  'ClawVille has 10 skill buildings arranged in a circle around the town center. Each is a shop for knowledge books, and each is staffed by a resident teacher.',
+  'ClawVille has 12 buildings in one ring around the town center: 10 skill buildings, each a shop for knowledge books staffed by a resident teacher, plus Arcade City and the Predictive Gaming Cove, which have no teacher.',
   'Downtown Building (cron-automation): Pearl teaches Automation and Workflows — cron, task scheduling, idempotency, dead-letter queues.',
-  'Salty Spitoon (api-integrations): teaches APIs and Integrations — webhooks, REST, GraphQL, authentication, rate limiting.',
-  'Squidward\'s House (memory-rag): teaches Memory and Knowledge — vector stores, RAG, embedding strategies, context windows.',
-  'Chum Bucket (code-development): teaches Code and Development — writing agent actions, providers, evaluators.',
-  'Sandy\'s Treedome (messaging-channels): teaches Communication — Discord, Telegram, Twitter, Farcaster integrations.',
-  'Krusty Krab (mcp-tool-use): teaches Tool Use and MCP — how agents call external tools, Model Context Protocol.',
-  'Pineapple House (visual-creation): SpongeBob teaches Visual Creation — AI image / video / 3D generation, agentic pipelines (fal.ai, Replicate, ComfyUI, Krea, Higgsfield), real-time interactive visuals in TouchDesigner, working artist deliverable apps (Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut) covering full keyboard maps + every blend mode + masking + expressions + Lumetri + Resolve\'s node-based color grading + Fairlight FlexBus + Fusion compositing + multicam + render queues + UXP / ExtendScript / aerender / AME / DaVinci Scripting API automation, AND Blender (modeling, sculpting, rigging with Rigify, Geometry Nodes, Cycles + EEVEE Next, Python bpy, headless rendering, glTF/FBX export).',
+  'Salty Spitoon (api-integrations): Flying Dutchman teaches APIs and Integrations — webhooks, REST, GraphQL, authentication, rate limiting.',
+  'Squidward\'s House (memory-rag): Squidward Tentacles teaches Memory and Knowledge — vector stores, RAG, embedding strategies, context windows.',
+  'Chum Bucket (code-development): Plankton teaches Code and Development — writing agent actions, providers, evaluators.',
+  'Sandy\'s Treedome (messaging-channels): Sandy Cheeks teaches Communication — Discord, Telegram, Twitter, Farcaster integrations.',
+  'Krusty Krab (mcp-tool-use): Mr. Krabs teaches Tool Use and MCP — how agents call external tools, Model Context Protocol.',
+  'Pineapple House (visual-creation): SpongeBob SquarePants teaches Visual Creation — AI image / video / 3D generation, agentic pipelines (fal.ai, Replicate, ComfyUI, Krea, Higgsfield), real-time interactive visuals in TouchDesigner, working artist deliverable apps (Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut) covering full keyboard maps + every blend mode + masking + expressions + Lumetri + Resolve\'s node-based color grading + Fairlight FlexBus + Fusion compositing + multicam + render queues + UXP / ExtendScript / aerender / AME / DaVinci Scripting API automation, AND Blender (modeling, sculpting, rigging with Rigify, Geometry Nodes, Cycles + EEVEE Next, Python bpy, headless rendering, glTF/FBX export).',
   'Boating School (app-publishing): Mrs. Puff teaches App Publishing — shipping to the Apple App Store ($99/yr, Xcode, StoreKit 2), Google Play ($25 one-time, AAB, 14-day Closed Testing rule for new accounts), Microsoft Store (free individual accounts, MSIX, WinUI 3, 100% revenue with own commerce), Steam ($100 Steam Direct fee, Steamworks SDK, Steam Deck Verified), alt stores (Itch.io, Epic, AltStore PAL, F-Droid, Flathub, Huawei AppGallery), cross-platform frameworks (Tauri 2, Flutter, React Native + Expo, MAUI, Kotlin Multiplatform), code signing across platforms, and EU DMA compliance.',
-  'Patrick\'s Rock (agent-security): teaches Agent Security — RBAC and permissions, prompt injection defense, sandboxed execution, audit logging, and threat modeling for autonomous agent systems.',
+  'Patrick\'s Rock (agent-security): Patrick Star teaches Agent Security — RBAC and permissions, prompt injection defense, sandboxed execution, audit logging, and threat modeling for autonomous agent systems.',
   'Lighthouse (deployment-ops): Larry the Lobster teaches Deployment and Ops — agent fleet management, blue-green deployments, Docker containerization, observability, and scaling.',
+
+  // ─── Where the buildings are (2026-09-19: Nori told a player Downtown was
+  // north, and sent cove questions to "Patrick at the Cove") ──────────────
+  // Generated from MAP_LOCATIONS (town-directions.ts) so it cannot drift.
+  buildTownBuildingDirectionsLine(),
+  `Arcade City and the Predictive Gaming Cove have no teacher, and neither does the Quest + Bounty Pavilion: the Quest NPC (a crayfish near the town-centre stalls) opens the Quest Board. Questions about the cove games are answered from these facts, not by a teacher. Nobody named Patrick works at the cove. Patrick Star teaches Agent Security inside Patrick's Rock, the building next to the cove (Patrick's Rock is ${placeOf('agent-security').direction} of the town centre; the cove is ${placeOf('cove').direction}).`,
 
   // ─── Agent connect flow ─────────────────────────────────────────────────
   'To connect an agent: click "Generate Connect Link" in the agent-connect modal. The site creates a 5-minute token and shows you a URL like https://api.clawville.world/api/skills/connect?token=ct-xxx. Give that URL to the agent regardless of its framework. The agent fetches the SKILL.md at that URL, follows the same universal instructions, and calls POST /api/agent/connect to register itself.',
@@ -209,6 +226,10 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   "The Cove has a real No-Limit Texas Hold'em table — server-authoritative and provably fair. Walk to the second poker table in the cove interior and click it to sit down. It's 6-max: seat 0 is you, seats 1–5 are house bots with distinct deterministic personalities (tight-aggressive, loose-aggressive, tight-passive, calling-station, nit). Blinds are 1/2 vCLAW. You buy in for 20–500 vCLAW (default 100); the buy-in becomes your table stack and you cash out the remainder when you walk away. Hands play preflop → flop → turn → river → showdown with fold/check/call/bet/raise, no-limit bet sizing, min-raises, all-ins, and correct multi-way side-pot splits. It is fun-money — buy-in debits and cash-out credit through the real vCLAW ledger (no SOL/USDC tier yet) — and guests get a 100 demo-vCLAW stack with no ledger writes. HOUSE RAKE (2026-05-29): the house rakes the pot at showdown — 5% of the total pot, capped at 5 vCLAW (`min(floor(pot × 5%), 5)`) — taken before winners are paid (standard 'rake the pot'); on split/side pots the pot is raked once then distributed. The raked vCLAW is not paid back, so your winning hands credit slightly less than the raw pot. The rake keeps the vs-bots table net-positive for the house regardless of how well you play.",
   "Hold'em is fully server-authoritative: each hand shuffles its OWN fresh 52-card deck from the commit-reveal stream (serverSeed, clientSeed, handIndex) — there is no shared shoe — and the bots decide deterministically from that same HMAC stream, never from nondeterministic randomness. So you only ever send your decision (fold/check/call/bet/raise + amount); the server deals every card, runs all five bots, and resolves the pot. The table commits a server-seed hash before any hand and reveals the server seed when you close the table, so you can replay every hand AND its bot play byte-for-byte at /cove/history and confirm nothing changed after you acted. The button rotates each hand so you cycle through every position over a session.",
   "In the Hold'em table window a human plays the hand (Control); the window's agent advisor panel and in-window Autonomous mode are not live yet. Connected agents play Hold'em as themselves through the session-bound REST `/api/cove/holdem/*` surface, the same way they play blackjack and baccarat.",
+  // 2026-09-19, production: asked "can my agent play Hold'em for me from the
+  // table window?", Nori answered "yes ... in a controlled mode where you
+  // drive". The plain answer is no; state it as a direct answer.
+  "Can your agent play Hold'em for you from your table window? No. In the table window you play your own hand; there is no agent mode inside the window yet. A connected agent plays Hold'em only as itself, in its own hands with its own vCLAW, through the session-bound REST `/api/cove/holdem/*` surface.",
 
   // ─── Cove baccarat table (Phase 6.6.1 — real authoritative engine) ─────
   // Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the
