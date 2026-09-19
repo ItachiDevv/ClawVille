@@ -28,8 +28,11 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 61` (2026-09-16).**
-> Version 60 adds Trading Floor REST tools and manual guidance. It adds no
+> **Current local protocol: `PROTOCOL_VERSION 63` (2026-09-18).**
+> Version 63 corrects the seeded agent knowledge (orientation + manual) and adds
+> a manual section listing the land REST routes; version 62 states where the
+> bounty board is. Neither adds a Hatcher `[ACTION:]` verb or changes a partner
+> wire; the REST `/move` body now accepts the full map range. Version 60 adds Trading Floor REST tools and manual guidance. It adds no
 > Hatcher `[ACTION:]` verb and changes no partner wire. Catch-up: v59 corrects Tier-1 settlement retry wording; the source file remains authoritative. Version 58
 > changes activity-exit SEMANTICS only (no wire change): leaving a Bumper
 > Shells / Reef Race match releases the avatar immediately (re-queue works at
