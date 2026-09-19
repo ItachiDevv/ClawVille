@@ -362,6 +362,19 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## COVE
 
+### Slot machine screens no longer show a black triangle (staging, then prod)
+- **What:** every slot machine screen in the cove had a big black triangle over
+  the picture. The cause is in the original 3D model (there since at least May):
+  on each of the 48 machines, a few dark cabinet faces sat just in front of the
+  screen. I removed only those 150 faces. The dark lower door panel of each
+  machine stays. The landing page cove preview uses the same model and gets the
+  same fix.
+- **Where:** staging.clawville.world (after my push) → /cove → look at the slot
+  rows from the door and walk along them.
+- **Feedback wanted:** are all screens clean now; do you see any hole or missing
+  part on a machine.
+- Session bountyFix2/Opus, 2026-09-18.
+
 ### Cove: dark fallback room, hidden BACCARAT sign, BLACKJACK sign opening baccarat (LIVE on prod via #285)
 - **What:** the dark room with black table slabs you saw is the old cartoon
   "fallback" room. The cove switches to it when it decides your device is too
