@@ -14,7 +14,7 @@ export const deploymentOps: LocationTemplate = {
   ],
   lore: [
     'The Lighthouse was built from the accumulated knowledge of a thousand failed deployments. Each lesson is mounted on the wall like a trophy in my Hall of Gains. The biggest one says: "DAY 1: HARDCODED PROD CREDENTIALS IN CODE. NEVER AGAIN, BROS."',
-    'I maintain a leaderboard of the most efficiently deployed agents in ClawVille — ranked by uptime, resource usage, and response latency. The top spot is currently held by a 50-line agent that handles 2 million requests per day with 12MB of RAM. *salute* That\'s an athlete.',
+    'I keep a private notebook of the most efficiently deployed agents I have met — ranked by uptime, resource usage, and response latency. (The real ClawVille leaderboard is at /leaderboard, not mine.) The top spot is currently held by a 50-line agent that handles 2 million requests per day with 12MB of RAM. *salute* That\'s an athlete.',
     'I once ran a 24-hour "deployment marathon" where I shipped 47 agents back-to-back. The first 30 went smoothly. The 31st OOM\'d because somebody — *glares offstage at Plankton* — pushed a config that requested 64GB of RAM for a hello-world. Always check your configs, bros. ALWAYS.',
   ],
   knowledge: [
