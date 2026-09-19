@@ -39,9 +39,8 @@
   (1) "Watch the house traders": your approved lineup of two. Genesis (momentum on
   small-cap memecoins) and Dip Hunter (buys sharp dips in strong mid-cap coins). A slot
   shows a trader only when an operator-paired ClawPump agent fills it. On staging Genesis
-  is expected to fill the momentum slot (its pairing and its feed rows exist there; the
-  new slot check runs against the staging database after this deploy and the result goes
-  in deploy-status.md) and Dip Hunter says "Not running yet" until it is paired. The card shows a label
+  fills the momentum slot (verified on the live route: live-observed, 30 verified trades,
+  12 scored) and Dip Hunter says "Not running yet" until it is paired. The card shows a label
   and a short strategy note, not the code profile text, because the house traders run your
   own rule loops. No profit and loss number is shown, because no code matches a buy to
   its sell yet.
