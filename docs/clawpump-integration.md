@@ -127,13 +127,17 @@ All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin
 
 ## House traders (founder lineup, 2026-09-19)
 
-ClawVille runs ONE house trader (Dip Hunter was tested and dropped on 2026-09-19), held in
+ClawVille runs TWO house traders (Dip Hunter was tested and dropped on 2026-09-19), held in
 `packages/shared/src/constants/house-trader-lineup.ts`:
 
 | Slot (`objective`) | Label | Strategy |
 |---|---|---|
-| `momentum-board` | Genesis | Momentum on small-cap memecoins, any venue. LIVE on staging. |
+| `momentum-board` | Genesis | Momentum on small-cap memecoins, any venue. Quick take-profits. LIVE on staging. |
+| `intel-signal-follower` | ClawVille Runner | The SAME entries as Genesis, with the opposite exit method: no take-profits, a 15 percent trail armed at +10 percent. Funded 2026-09-19 22:00Z with 32.90 USDC and 0.05 SOL; switched from paper to live at 21:58Z. ClawPump agent `1a0a153e`, wallet `AgTanzAa2cidQzJ8KEsm5mkhS18uaqBrAaas7XKHk4XE`. |
 | `sol-usdc-mean-reversion` | Dip Hunter | DROPPED 2026-09-19 after the candle backfill (-5.1 percent per trade over 20.8 days, every variant negative). The paper process is stopped; ClawPump agent `a7d7c928` stays stopped, unfunded and private. |
+
+The two live traders share one entry rule on purpose. They differ only in how
+they exit, so the trade record measures the exit method and nothing else.
 
 The other three profiles were DROPPED as house traders too; they remain only as
 copyable templates. These two are **not** the templates below and no copy may
@@ -144,6 +148,110 @@ and Genesis proves it by holding `momentum-board` while trading small-cap
 memecoins on any venue. `objective` survives only as the join key into
 `clawpump_agent_links`. A `strategyNote` carries no numbers, because the rule
 loops change without a deploy.
+
+## Data sources: what each one is for (2026-09-19 22:10Z)
+
+The founder asked whether the runner leans on Jupiter and ClawPump enough. The
+answer came from measurement, not opinion, and it changed the runner.
+
+**The defect.** DexScreener rejected **1,837 of the last 2,000** batch calls with
+HTTP 429, on both agents at once. The runner therefore priced a median of 69
+tokens a minute against a 900-token watchlist. Jupiter supplied 83 percent of
+all evaluated candidates but only 3 of 15 buys, because most Jupiter-discovered
+mints never got priced. The cause was our own load: two agents times 30 batch
+calls every 15 seconds, plus the recorder, against one free API on one IP.
+
+**The fix.** Jupiter now decides which mints are worth pricing, and DexScreener
+still decides whether to buy. `/tokens/v2/search` returns 100 full token objects
+per call in 0.12 seconds on our paid key. `jup_screen()` applies a deliberately
+LOOSE version of the live filters; only the survivors go to DexScreener, whose
+numbers the thresholds are tuned on, so no threshold changes meaning.
+
+Each pre-screen bound is a live filter widened by the measured ratio between the
+two sources (112 tokens, same instant): market cap median 1.00 (p10 0.94, p90
+2.01), liquidity median 0.55 (p10 0.47), volume median 1.19, transactions median
+1.51, age median 1.01, and 1-hour change a median 0.31 points apart. The spread
+is explained: DexScreener reports ONE pair, Jupiter reports the token across all
+its pools, and Jupiter counts liquidity one-sided.
+
+**Proof it loses nothing.** On 165 live tokens the live filters accepted 8 and
+the pre-screen kept 8 of 8, while DexScreener batches per loop fell from 9 to 1.
+Re-run `screen_check.py` after any change to `FILTERS`.
+
+**Measured result.** Before: 1,837 of 2,000 error entries were DexScreener 429s.
+After: **zero errors in 240 seconds across both agents**, 16 ticks each exactly
+on the 15-second schedule, every screened candidate priced. `WATCH_MAX` rose
+from 900 to 2,500, because the watchlist is now bounded by Jupiter (25 calls, 0.6
+requests a second against a 10 per second plan) instead of by DexScreener.
+
+**Three things we did NOT do, and why.** Each was a plausible idea that the data
+refused:
+
+1. *Use ClawPump `/intelligence/market` to find a verifiable pool when the
+   DexScreener pair cannot be checked.* The fail code `lp_unverifiable_dex` did
+   not fire once in 24 hours, because `key_of()` already prefers a checkable
+   pool. Building this would have fixed a problem we do not have.
+2. *Gate on Jupiter's `audit.mintAuthorityDisabled` and `freezeAuthorityDisabled`.*
+   `chain_checks()` already reads both authorities on chain. The gate would have
+   been a second copy of a check we pass today.
+3. *Add eight more Jupiter discovery lists.* They returned 115 mints we did not
+   already have, and **0** of them passed the pre-screen. The longer windows
+   surface established tokens with no fresh move, and the 12-hour watchlist
+   already keeps anything the 5-minute and 1-hour lists saw.
+
+### Why we still buy pump.fun pools (2026-09-19 22:35Z)
+
+The founder asked twice why the runner keeps landing on pump.fun coins. The
+funnel says the cause is not discovery and not the market filters:
+
+| Stage | pumpswap | raydium | meteora | orca |
+|---|---|---|---|---|
+| evaluated (24 h) | 63,322 | 73,821 | 18,055 | 9,311 |
+| passed the market filters | 589 | 479 | 33 | 12 |
+| passed every chain check | **127** | **11** | 0 | 0 |
+
+Discovery is not pump.fun biased. Raydium is in fact the larger half. The
+narrowing happens in the chain checks, and two of them do it.
+
+**Blocker one: the Token-2022 transfer fee.** It refused 45 Raydium tokens in 24
+hours, several up more than 400 percent in the hour. Measured on chain: 17 carry
+a 1 percent fee, 23 carry 3 percent, none higher. The fee authority is live on
+all 45 and the maximum fee is uncapped, but Token-2022 stamps a raised fee with
+`current_epoch + 2`, about two days, while our longest hold is six hours, and we
+already read the pending fee as well as the live one. So a creator cannot raise
+the fee on a position we hold.
+
+A 100 bps limit was written and tested against all 45 tokens. It admitted every
+1 percent token and still refused every 3 percent one, with both regression
+checks clean. **It was then reverted**, because all 24 tested fee tokens ALSO
+fail the top-10 holder check. It would have added about 2 points of round-trip
+cost and admitted nothing. The test script is `test_fee.py`.
+
+**Blocker two: top-10 holder concentration above 20 percent.** This is the
+largest single chain refusal, and it refuses every venue about equally (422
+pumpswap, 396 raydium, 33 meteora, 9 orca in 24 h). The check removes the pool's
+own vault before counting, but only ONE vault, matched to one DexScreener pair,
+so a multi-pool token counts its own liquidity as insider supply.
+
+That defect is real and it is small. Resolving the owner of every large account
+against the AMM programs, across 12 tokens refused for concentration alone,
+showed real wallets holding 28 to 43 percent of supply. **Eleven of the twelve
+still fail once the pools are excluded correctly.** So the check is measuring
+genuine concentration and the threshold stays at 20 percent. The script is
+`test_top10.py`.
+
+Our own 15 trades carry top-10 at entry, which is the only at-entry
+concentration data we own. Under 12 percent averaged +0.24 USD over 5 trades;
+12 to 20 percent averaged -0.34 USD over 10. That gap is one trade: the
+FEELSGOOD rug at -10.20 USD. Without it the second group averages +0.75 USD. The
+sample does not support moving the threshold in either direction, and it is
+recorded here so it is not read as though it did.
+
+**Recorded, not used.** `jup_extras()` logs Jupiter's organic score, holder
+count, net buyers, buy-volume share and launchpad on every evaluation and every
+buy. Nothing gates on them, because we hold no history to set a threshold
+against. They are stored so the trade record can answer that question later.
+Setting a threshold on them today would be a guess.
 
 ## Trader templates (2026-09-19)
 
