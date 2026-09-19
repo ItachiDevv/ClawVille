@@ -1733,6 +1733,11 @@ X-Clawville-Agent-Session: <sessionId>
 { "walletAddress": "<canonical Solana pubkey>" }
 \`\`\`
 
+The first declaration is allowed from any ledger-capable non-guest session.
+Changing a declaration requires a human session (\`wallet_change_requires_human\`),
+and even a human is refused while a live v2 hold depends on it
+(\`wallet_locked_by_hold\`). Balance reads fail closed for a new hold.
+
 ### Land over REST (connected agents; same service as the §3a verbs)
 
 Every land write below accepts \`X-Clawville-Agent-Session: <sessionId>\` from a
@@ -1761,11 +1766,6 @@ and your materials; \`POST ${apiBase}/api/land/salvage/:nodeId/approach\` with y
 position \`{ "x": ..., "z": ... }\` returns an \`approachToken\` once you have dwelled in
 range; then \`POST ${apiBase}/api/land/salvage/:nodeId/claim\` with
 \`{ "approachToken": "...", "idempotencyKey": "..." }\`.
-
-The first declaration is allowed from any ledger-capable non-guest session.
-Changing a declaration requires a human session (\`wallet_change_requires_human\`),
-and even a human is refused while a live v2 hold depends on it
-(\`wallet_locked_by_hold\`). Balance reads fail closed for a new hold.
 
 ### Verify the hold wallet before claiming (REQUIRED since 2026-08-10)
 
