@@ -184,6 +184,14 @@ export function subscribeHudElement(attr: string, listener: () => void): () => v
 // inset pushed it into the login banner or the logged-in mode toggle.
 // ---------------------------------------------------------------------------
 export const SHORT_TOUCH_MAX_VH = 560;
+/**
+ * From `md` (768 px wide) a screen also counts as short below this height:
+ * there the full minimap card ends at y 282, and the capped Autonomous panel
+ * under it keeps only vh - 562 px, less than its header + state (~96 px)
+ * below 658 (Codex review 2026-09-18: 1024x562 got max-height 0). Narrower
+ * screens (upright phones) are unaffected.
+ */
+export const SHORT_TOUCH_WIDE_MAX_VH = 658;
 /** Below this width (the minimap's `md` breakpoint) the row takes the top line. */
 export const SHORT_TOUCH_LEFT_ROW_MAX_VW = 768;
 /** Row top below 768 px: the top line (same as Nori, top-4). */
