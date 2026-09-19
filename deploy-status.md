@@ -304,6 +304,8 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+- **2026-09-19 (session clawPump/Fable, push - DOCS ONLY: Genesis runner LP lock rule, cap reset, new exits, all launchpads) - DEPLOY LOG only (no build; docs are path-ignored); does not change CURRENT STATE.** What broke: FEELSGOOD (-$10.20) was a creator-held PumpSwap LP that was pulled 44 min after our buy; the runner had no LP check although the founder rule says LP must be burned or locked. Fix: an on-chain LP lock check per pool type (PumpSwap, Raydium CPMM/AMM v4/CLMM, Meteora DAMM v1/v2, launch curves; DLMM and Orca refused), >= 95 percent burned or permanently locked, tested on real pools both ways; a rugged-pool handler. Also: founder cap reset; trail armed at +15 percent with a 15 percent trail (replay +3.1 vs -1.0 percent per trade, both halves); StonkFun and other launchpads discovered (any quote token, LaunchLab pool list); SIGTERM clean stop. Net to 03:05Z: 9 closed trades, -$3.97 after all costs. The runner runs outside Coolify on the staging box; no ClawVille app change. Recorded in `docs/clawpump-integration.md`. SCHEMA: synced.
+
 ### 2026-09-17 (session clawPump/Fable) — promotion #278: hotfix, three Trading Floor fixes from the staging $1 mainnet rung
 
 - **What changed:** mint whitelist admits mainnet USDC (Circle authorities pinned, incomplete whitelist pages + retries); Jupiter quote + swap-build schemas tolerate additive keys; observer + manual report door fetch the raw JSON-RPC `jsonParsed` transaction the verifier expects (first real fleet trade recorded as a fixture). Merge `ad04f5b7` from branch `hotfix/trading-rung-fixes` (cherry-picks of staging `0b30fb7e`, `cc52279c`, `0579a586`).
