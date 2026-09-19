@@ -275,6 +275,20 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Feedback wanted:** does she send you to the pavilion and never to a building.
 - Session bountyFix2/Opus, 2026-09-18.
 
+### Nori knows where every building is, and who works where (staging, then prod)
+- **What:** your go-ahead live test of Nori on prod (2026-09-19) got 4 of 7 answers
+  right. She put the Downtown Building north (it is south), sent cove questions to
+  "Patrick at the Cove" (the cove has no teacher), and said your agent can play
+  Hold'em for you in your table window (it cannot; it plays for your account over
+  the API, same table and balance). She now knows the direction of all 12 buildings
+  (computed from the map), every teacher's name, and which places have no teacher.
+- **Where:** staging.clawville.world (then clawville.world) → ask Nori "where is the
+  Downtown Building?", "who can tell me about the poker tournament?", and "can my
+  agent play Hold'em for me from the table window?"
+- **Feedback wanted:** does she give the right direction, answer cove questions
+  herself instead of naming a teacher, and say "no" to the window question.
+- Session dd/Fable, 2026-09-19.
+
 ### OOBE/SAP fully removed — bounty board on the single low-tier rail (code on prod; the table-drop migration 0067 is staging-only and waits for your go)
 - **What:** the on-chain escrow partner is gone end to end. USDC bounties now run
   ONLY the low-tier rail (custodial hold up to $50, PayAI payout); vCLAW bounties
