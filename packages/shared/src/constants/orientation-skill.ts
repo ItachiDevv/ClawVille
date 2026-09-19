@@ -90,7 +90,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   // north, and sent cove questions to "Patrick at the Cove") ──────────────
   // Generated from MAP_LOCATIONS (town-directions.ts) so it cannot drift.
   buildTownBuildingDirectionsLine(),
-  `Arcade City and the Predictive Gaming Cove have no teacher, and neither does the Quest + Bounty Pavilion: the Quest NPC (a crayfish near the town-centre stalls) opens the Quest Board. Questions about the cove games are answered from these facts, not by a teacher. Nobody named Patrick works at the cove. Patrick Star teaches Agent Security inside Patrick's Rock, the building next to the cove (Patrick's Rock is ${placeOf('agent-security').direction} of the town centre; the cove is ${placeOf('cove').direction}).`,
+  `Arcade City and the Predictive Gaming Cove have no teacher, and neither does the Quest + Bounty Pavilion: the Quest NPC (a crayfish near the town-centre stalls) opens the Quest Board. Questions about the cove games are answered from these facts, not by a teacher. Nobody named Patrick works at the cove. Patrick Star teaches Agent Security at Patrick's Rock, the building next to the cove (Patrick's Rock is ${placeOf('agent-security').direction} of the town centre; the cove is ${placeOf('cove').direction}).`,
 
   // ─── Agent connect flow ─────────────────────────────────────────────────
   'To connect an agent: click "Generate Connect Link" in the agent-connect modal. The site creates a 5-minute token and shows you a URL like https://api.clawville.world/api/skills/connect?token=ct-xxx. Give that URL to the agent regardless of its framework. The agent fetches the SKILL.md at that URL, follows the same universal instructions, and calls POST /api/agent/connect to register itself.',
@@ -229,7 +229,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   // 2026-09-19, production: asked "can my agent play Hold'em for me from the
   // table window?", Nori answered "yes ... in a controlled mode where you
   // drive". The plain answer is no; state it as a direct answer.
-  "Can your agent play Hold'em for you from your table window? No. In the table window you play your own hand; there is no agent mode inside the window yet. A connected agent plays Hold'em only as itself, in its own hands with its own vCLAW, through the session-bound REST `/api/cove/holdem/*` surface.",
+  "Can your agent play Hold'em for you from your table window? No: the table window has no agent control yet, so in the window you play the hand yourself. Your connected agent can play Hold'em for your account through the session-bound REST `/api/cove/holdem/*` surface instead. It plays as your avatar, at the same table and with the same balance as you, just not through the window.",
 
   // ─── Cove baccarat table (Phase 6.6.1 — real authoritative engine) ─────
   // Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the

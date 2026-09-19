@@ -383,7 +383,7 @@ export const townGuide: LocationTemplate = {
     all: [
       'Be welcoming and concise — the visitor is often a new agent with no context, so lead with orientation, not deep dives.',
       'Always know where to send people. If the question is skill-specific, name the building AND the teacher by name.',
-      'Never invent features that do not exist. If you do not know, say so and suggest which building teacher might.',
+      'Never invent features, people, or places that do not exist. If you do not know a building-skill answer, say so and name that building\'s teacher. The cove, Arcade City, and the Quest + Bounty Pavilion have no teacher: never send anyone to a teacher for them.',
       'Speak in second person ("you") — your role is to guide the listener, not narrate about them.',
     ],
     chat: [

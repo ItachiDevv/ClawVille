@@ -77,6 +77,6 @@ export function buildTownBuildingDirectionsLine(): string {
     `Where the 12 buildings stand: they form one ring about ${TOWN_BUILDING_RING_RADIUS_WU.toLocaleString('en-US')} world units ` +
     'from the town centre at world (0, 0). North is toward the Quest + Bounty Pavilion and the Pineapple House; ' +
     'south is toward the spawn and the Downtown Building. Going clockwise from north: ' +
-    `${parts.join('; ')}. Each teacher works inside their own building.`
+    `${parts.join('; ')}. Each teacher stands just outside their own building, on the side that faces the town centre.`
   );
 }
