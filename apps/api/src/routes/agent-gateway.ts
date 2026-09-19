@@ -13,6 +13,8 @@ import {
   DEFAULT_AGENT_CATEGORY,
   DEFAULT_AGENT_HARNESS,
   parcelDisplayName,
+  WORLD_PX_WIDTH,
+  WORLD_PX_HEIGHT,
   type NpcActivity,
   type AgentStats,
   type AgentSubstrateRegistration,
@@ -2485,14 +2487,21 @@ agentGatewayRoutes.get('/:sessionId/perception', async (c) => {
 // ---------------------------------------------------------------------------
 // POST /api/agent/:sessionId/move
 // ---------------------------------------------------------------------------
+// Bounds are the world's game-pixel size. They were a stale 16..5104 from an
+// older, smaller map, so a coordinate move to almost any town point (about
+// 6,880..15,200 today) was refused with 400 (knowledge audit, 2026-09-18).
+const MOVE_MARGIN_PX = 16;
 const moveSchema = z.object({
-  targetX: z.number().min(16).max(5104).optional(),
-  targetY: z.number().min(16).max(5104).optional(),
+  targetX: z.number().min(MOVE_MARGIN_PX).max(WORLD_PX_WIDTH - MOVE_MARGIN_PX).optional(),
+  targetY: z.number().min(MOVE_MARGIN_PX).max(WORLD_PX_HEIGHT - MOVE_MARGIN_PX).optional(),
   buildingId: z.string().optional(),
 }).refine(
   (d) => (d.targetX !== undefined && d.targetY !== undefined) || d.buildingId !== undefined,
   { message: 'Provide either targetX+targetY or buildingId' }
 );
+
+/** Test seam for the REST move body (bounds regression, 2026-09-18). */
+export const agentMoveSchemaForTest = moveSchema;
 
 agentGatewayRoutes.post(AGENT_MOVE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
