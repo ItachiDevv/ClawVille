@@ -113,22 +113,22 @@ ClawVille executes fleet swaps only through Jupiter. The core observer can verif
 | Operator unpair | `POST /api/admin/trading/clawpump/unpair` | Takes `avatarId` and `clawpumpAgentId`. Revokes observation and deletes the observe-only link without changing trade history or earned points. |
 | Trade execution | None | Forbidden for ClawVille custody. |
 | Public trader templates | `GET /api/floor/templates` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=300`. Returns `version`, `model`, `skills`, `dashboardUrl`, and five `templates`. It calls no ClawPump API: the body is ClawVille's own text, read from `packages/shared/src/constants/trading-agent-templates.ts`. |
-| Public house-trader watch | `GET /api/floor/house-traders` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=15` plus a 15 second in-process cache. Always the TWO `HOUSE_TRADER_LINEUP` slots (Genesis, Dip Hunter), never the five templates. Calls no ClawPump API: it reads `clawpump_agent_links`, `trading_wallets`, `users` and `verified_trades`. No wallet address, user id or identity fingerprint in the response. |
+| Public house-trader watch | `GET /api/floor/house-traders` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=15` plus a 15 second in-process cache. Always the `HOUSE_TRADER_LINEUP` slots (Genesis only since 2026-09-19), never the five templates. Calls no ClawPump API: it reads `clawpump_agent_links`, `trading_wallets`, `users` and `verified_trades`. No wallet address, user id or identity fingerprint in the response. |
 | Agent creation | None | ClawVille never calls ClawPump `create_agent`. The call takes no owner parameter, so the agent would hold the user's funds inside ClawVille's ClawPump account. The user creates it. |
 
 All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin. POST routes also require JSON and a fresh single-use money-operator nonce. N1: a detail ID mismatch raises `ClawPumpAgentMismatchError` and returns 404 `clawpump_agent_not_owned`.
 
 ## House traders (founder lineup, 2026-09-19)
 
-ClawVille runs TWO house traders, held in
+ClawVille runs ONE house trader (Dip Hunter was tested and dropped on 2026-09-19), held in
 `packages/shared/src/constants/house-trader-lineup.ts`:
 
 | Slot (`objective`) | Label | Strategy |
 |---|---|---|
 | `momentum-board` | Genesis | Momentum on small-cap memecoins, any venue. LIVE on staging. |
-| `sol-usdc-mean-reversion` | Dip Hunter | Buys sharp dips in strong mid-cap coins. Paper, not paired. |
+| `sol-usdc-mean-reversion` | Dip Hunter | DROPPED 2026-09-19 after the candle backfill (-5.1 percent per trade over 20.8 days, every variant negative). The paper process is stopped; ClawPump agent `a7d7c928` stays stopped, unfunded and private. |
 
-The other three profiles were DROPPED as house traders; they remain only as
+The other three profiles were DROPPED as house traders too; they remain only as
 copyable templates. These two are **not** the templates below and no copy may
 say they match: a template is a user starting point, while a house trader runs
 the operator's own rule loop on ClawPump, outside this repo. So the profile
