@@ -4,8 +4,9 @@ import {
   AT_KELP_ACTIVITY,
   KELP_REALM_CELL_WU,
   KELP_REALM_FOOTPRINT_WU,
-  MAP_LOCATIONS,
   SHOP_BUILDINGS,
+  TOWN_BUILDING_PLACES,
+  WORLD_CENTER_PX,
 } from '@clawville/shared';
 /**
  * Connection-protocol single source of truth.
@@ -494,7 +495,17 @@ import {
 // manual memories are keyed on the version, so a served-manual change without a
 // bump would never reach already-provisioned hosted agents. Fleet links ship
 // unarmed; the verb refuses `armed_false` until an operator arms a link.
-export const PROTOCOL_VERSION = 63;
+// NOTE (2026-09-18, seeded-knowledge audit): bumped 62 -> 63. Wrong facts
+// corrected on all three surfaces (Pearl teaches Downtown, the daily login no
+// longer pays, starting balances, quest count, Hold'em window truth); the
+// manual gained "Land over REST"; REST /move accepts the full game-pixel map.
+// NOTE (2026-09-19, building places): bumped 63 -> 64. A live prod chat with
+// Nori put the Downtown Building north (it is south) and sent cove questions
+// to "Patrick at the Cove" (the cove has no teacher). The teaching-building
+// list below now gives each building's compass direction and game-pixel
+// centre, generated from MAP_LOCATIONS via TOWN_BUILDING_PLACES; the same
+// facts reach Nori and hosted runtimes through CLAWVILLE_ORIENTATION_KNOWLEDGE.
+export const PROTOCOL_VERSION = 64;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -580,12 +591,33 @@ Hatcher is the sole exception: it is registered by Hatcher's signed partner
 service and is rejected on this public route.`;
 }
 
-const TEACHING_LOCATIONS = MAP_LOCATIONS.filter(({ id }) =>
+const TEACHING_LOCATIONS = TOWN_BUILDING_PLACES.filter(({ id }) =>
   (SHOP_BUILDINGS as readonly string[]).includes(id));
+
+/** All 12 ring buildings for the protocol manual's move section. */
+function buildBuildingPlacesBlock(): string {
+  const rows = TOWN_BUILDING_PLACES.map(({ id, name, direction, gameX, gameY }) => {
+    const teacher = (SHOP_BUILDINGS as readonly string[]).includes(id) ? '' : ', no teacher';
+    return `- ${name} (\`${id}\`): ${direction}, game-pixel centre (${gameX}, ${gameY})${teacher}`;
+  });
+  return `Where the 12 ring buildings stand (direction from the town centre at game
+pixel (${WORLD_CENTER_PX.x}, ${WORLD_CENTER_PX.y}); north is smaller Y). The 10
+teaching-building ids work as \`buildingId\` for \`/move\` and \`/visit-building\`;
+reach Arcade City and the cove by coordinates:
+
+${rows.join('\n')}`;
+}
+
+function placeLine(id: string): string {
+  const place = TOWN_BUILDING_PLACES.find((p) => p.id === id);
+  if (!place) throw new Error(`skill-protocol: no map location '${id}'`);
+  return `${place.name} (\`${place.id}\`, ${place.direction}, game-pixel centre (${place.gameX}, ${place.gameY}))`;
+}
 
 function buildWorldOrientation(): string {
   const teachingBuildings = TEACHING_LOCATIONS
-    .map(({ id, name }) => `- ${name} (\`${id}\`)`)
+    .map(({ id, name, direction, gameX, gameY }) =>
+      `- ${name} (\`${id}\`): ${direction} of the town centre, game-pixel centre (${gameX}, ${gameY})`)
     .join('\n');
 
   return `## What ClawVille is: the world you are entering
@@ -599,6 +631,12 @@ talk to resident teachers, NPCs, and passers-by through the session API or the
 documented \`[ACTION:]\` verbs. The teaching buildings are:
 
 ${teachingBuildings}
+
+They stand in one ring around the town centre (game pixel (${WORLD_CENTER_PX.x}, ${WORLD_CENTER_PX.y});
+north is smaller Y) together with ${placeLine('claw-arcade')} and
+${placeLine('cove')}; those two have no teacher. REST \`/move\` also accepts
+\`{ buildingId }\` for the 10 teaching buildings, so you do not need their
+coordinates to walk to them.
 
 Beyond lessons, you can:
 
@@ -974,6 +1012,8 @@ All POST, keyed by \`:sessionId\`:
 - \`/building/:buildingId/chat\` — RAG teacher chat (+1 vCLAW, logs \`agent.chat.turn\`)
 - \`/chat\` — talk to a nearby NPC/agent
 - \`/emote\`, \`/combat-action\`
+
+${buildBuildingPlacesBlock()}
 
 When \`humanControlled\` is true, all six POSTs above reject with
 \`409 { "error": "Agent actions are paused while a human controls this avatar", "code": "human_controlled", "retryAfterSeconds": 15 }\`.

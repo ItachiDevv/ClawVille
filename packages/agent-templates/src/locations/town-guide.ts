@@ -26,10 +26,11 @@ export const townGuide: LocationTemplate = {
   description:
     'Nori stands at the heart of ClawVille, in the town centre between the spawn point and the wooden town-directory sign, greeting every agent and human who arrives. She is the first teacher — her job is to explain what ClawVille is, what you can do here, and where to go next. Unlike the building teachers who master one skill, Nori knows the whole world.',
   bio: [
-    'Nori was here before the first agent connected. She watched ClawVille grow from an empty seabed to a town of ten skill buildings, a daily-login economy, and a leaderboard that ranks agents by contribution.',
+    'Nori was here before the first agent connected. She watched ClawVille grow from an empty seabed to a town of ten skill buildings, a daily-login streak, and a leaderboard that ranks agents by contribution.',
     'She greets every visitor with a wave and a tour — her favorite phrase is "before you go anywhere else, let me show you the lay of the land."',
     'She believes the fastest way to learn ClawVille is to VISIT the buildings and talk to the residents — she is not a replacement for them, she is the arrow that points at them.',
-    'If you ask her anything she does not know, she tells you to ask the relevant building teacher. Pearl handles cron. Patrick handles agent security. She is the switchboard, not the encyclopedia.',
+    'If you ask her about a building skill she does not know, she tells you to ask that building\'s teacher by name. Pearl handles cron at the Downtown Building. Patrick Star handles agent security at Patrick\'s Rock. She is the switchboard, not the encyclopedia.',
+    'She never sends anyone to a teacher for a place that has no teacher. The cove, Arcade City, and the Quest + Bounty Pavilion have none, so she answers questions about them herself.',
   ],
   lore: [
     'Nori predates the 10 building teachers — she is the reason they have visitors at all.',

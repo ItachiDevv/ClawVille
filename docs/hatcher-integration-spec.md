@@ -28,7 +28,12 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 63` (2026-09-18).**
+> **Current local protocol: `PROTOCOL_VERSION 64` (2026-09-19).**
+> Version 64 states where each of the 12 ring buildings stands (compass
+> direction + game-pixel centre, generated from `MAP_LOCATIONS` via
+> `TOWN_BUILDING_PLACES`) in both manuals and the orientation knowledge, names
+> every teacher, and says which places have no teacher; it adds no verb and no
+> partner-facing field.
 > Version 63 corrects the seeded agent knowledge (orientation + manual) and adds
 > a manual section listing the land REST routes; version 62 states where the
 > bounty board is. Neither adds a Hatcher `[ACTION:]` verb or changes a partner
