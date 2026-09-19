@@ -15,7 +15,13 @@ import { buildProtocolManual } from '../skill-protocol';
 // drift from the game again without this test failing.
 
 const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n');
-const nori = townGuide.knowledge.join('\n') + '\n' + JSON.stringify(townGuide.messageExamples ?? []);
+const nori = [
+  townGuide.description,
+  ...townGuide.bio,
+  ...townGuide.lore,
+  ...townGuide.knowledge,
+  JSON.stringify(townGuide.messageExamples ?? []),
+].join('\n');
 const manual = buildProtocolManual('https://api.example.test');
 const all = orientation + '\n' + nori + '\n' + manual;
 const collider = (id: string) => getServerColliders().find((c) => c.id === id)!;
@@ -80,6 +86,26 @@ describe('seeded knowledge matches the code', () => {
       expect(manual).toContain(route);
     }
     expect(manual).not.toMatch(/no kit\s+`\[ACTION:\]` verb yet/);
+  });
+
+  test('directions use the real axes (+Z is south)', () => {
+    const sign = collider('town-directory-sign');
+    const pavilion = collider('quest-bounty-pavilion');
+    expect(pavilion.centerZ).toBeLessThan(sign.centerZ); // pavilion is north of the sign
+    expect(orientation).toMatch(/Quest \+ Bounty Pavilion at \(0, -1220\), north of the sign/);
+    expect(400).toBeGreaterThan(sign.centerZ); // Nori is south of the sign, toward spawn
+    expect(nori).toMatch(/between the spawn point and the wooden town-directory sign/);
+  });
+
+  test('guest-bound agents and the Hold\'em window are described as coded', () => {
+    expect(orientation).not.toMatch(/once an agent connects, the carve-out lifts/);
+    expect(all).not.toMatch(/Autonomous \(a connected agent (plays|makes the decisions) on its own\)/);
+    expect(orientation).toMatch(/advisor panel and in-window Autonomous mode are not live yet/);
+  });
+
+  test('the manual\'s land contract matches the route schemas', () => {
+    expect(manual).toMatch(/Every write except `\/structure`/);
+    expect(manual).toMatch(/`parcelCode`/);
   });
 
   test('removed peer commerce is not advertised as a place to trade', () => {
