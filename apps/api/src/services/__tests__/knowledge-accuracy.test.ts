@@ -5,9 +5,13 @@ import {
   TUTORIAL_QUESTS,
   getServerColliders,
   MAP_LOCATIONS,
+  TOWN_BUILDING_PLACES,
+  NPC_BUILDING_CENTERS,
+  compassFromWorldOffset,
+  type CompassPoint,
 } from '@clawville/shared';
-import { townGuide } from '@clawville/agent-templates';
-import { buildProtocolManual } from '../skill-protocol';
+import { LOCATION_TEMPLATES, townGuide } from '@clawville/agent-templates';
+import { buildPlayManual, buildProtocolManual } from '../skill-protocol';
 
 // 2026-09-18 knowledge audit (founder: "check on all the seeded knowledge for
 // the agents"). Every fact below was wrong or missing in what ClawVille seeds
@@ -110,5 +114,123 @@ describe('seeded knowledge matches the code', () => {
 
   test('removed peer commerce is not advertised as a place to trade', () => {
     expect(nori + orientation).not.toMatch(/Chum Bucket auctions|Forge auction house|bazaar of skills/);
+  });
+});
+
+// 2026-09-19 live prod chat with Nori: she put the Downtown Building "directly
+// north at (0, -1220)" (the pavilion's point), sent cove questions to "Patrick
+// at the Cove", and answered "yes" to an agent playing Hold'em in the human's
+// table window. No surface said where the buildings are or which places have
+// no teacher.
+describe('seeded knowledge states where every building is', () => {
+  // Independent of town-directions.ts: zone centre, +X east, +Z south.
+  const expected = MAP_LOCATIONS.map((l) => {
+    const x = Math.round(l.positionX + l.width / 2) - 11264;
+    const z = Math.round(l.positionY + l.height / 2) - 11264;
+    return { id: l.id, name: l.name, x, z };
+  });
+  // The render ring's own slot labels (apps/web/src/lib/pixi/tilemap-data.ts
+  // buildingZones: slot k sits at bearing k x 30 degrees, clockwise from north).
+  const slotDirection: Record<string, CompassPoint> = {
+    'visual-creation': 'north',
+    'code-development': 'north-northeast',
+    'mcp-tool-use': 'east-northeast',
+    'messaging-channels': 'east',
+    'api-integrations': 'east-southeast',
+    'app-publishing': 'south-southeast',
+    'cron-automation': 'south',
+    'deployment-ops': 'south-southwest',
+    'claw-arcade': 'west-southwest',
+    cove: 'west',
+    'agent-security': 'west-northwest',
+    'memory-rag': 'north-northwest',
+  };
+  const COMPASS: CompassPoint[] = [
+    'north', 'north-northeast', 'northeast', 'east-northeast',
+    'east', 'east-southeast', 'southeast', 'south-southeast',
+    'south', 'south-southwest', 'southwest', 'west-southwest',
+    'west', 'west-northwest', 'northwest', 'north-northwest',
+  ];
+  // Orientation, all of Nori (incl. style), and both served manuals.
+  const everySurface = [
+    all,
+    JSON.stringify(townGuide.style ?? {}),
+    buildPlayManual('https://api.example.test'),
+  ].join('\n');
+  const atBearing = (deg: number) => {
+    const r = (deg * Math.PI) / 180;
+    return compassFromWorldOffset(Math.sin(r) * 1000, -Math.cos(r) * 1000); // north = -Z
+  };
+
+  test('the compass words point the right way, on both sides of every boundary', () => {
+    expect(Object.keys(slotDirection).sort()).toEqual(MAP_LOCATIONS.map((l) => l.id).sort());
+    for (const [id, word] of Object.entries(slotDirection)) {
+      expect(TOWN_BUILDING_PLACES.find((p) => p.id === id)!.direction).toBe(word);
+    }
+    for (let k = 0; k < 16; k++) {
+      const edge = 11.25 + 22.5 * k;
+      expect(atBearing(edge - 0.5)).toBe(COMPASS[k]);
+      expect(atBearing(edge + 0.5)).toBe(COMPASS[(k + 1) % 16]);
+      expect(atBearing(22.5 * k)).toBe(COMPASS[k]);
+    }
+  });
+
+  test('every building is placed at its real zone centre on the orientation surface (and so Nori)', () => {
+    for (const e of expected) {
+      const dir = slotDirection[e.id];
+      const phrase = `${e.name} is ${dir} at world (${e.x}, ${e.z})`;
+      expect(orientation).toContain(phrase);
+      expect(nori).toContain(phrase);
+    }
+  });
+
+  test('both manuals give every building its direction and game-pixel centre', () => {
+    const play = buildPlayManual('https://api.example.test');
+    for (const p of TOWN_BUILDING_PLACES) {
+      const teaching = p.id in LOCATION_TEMPLATES;
+      expect(manual).toContain(
+        `- ${p.name} (\`${p.id}\`): ${p.direction}, game-pixel centre (${p.gameX}, ${p.gameY})${teaching ? '' : ', no teacher'}`,
+      );
+      if (teaching) {
+        expect(play).toContain(`- ${p.name} (\`${p.id}\`): ${p.direction} of the town centre, game-pixel centre (${p.gameX}, ${p.gameY})`);
+      }
+    }
+    expect(play).toMatch(/Arcade City \(`claw-arcade`, west-southwest/);
+    expect(play).toMatch(/Predictive Gaming Cove \(`cove`, west,/);
+    // Only the 10 teaching ids resolve for /move and /visit-building.
+    expect(Object.keys(NPC_BUILDING_CENTERS).sort()).toEqual(Object.keys(LOCATION_TEMPLATES).sort());
+    expect(manual).toMatch(/reach Arcade City and the cove by coordinates/);
+  });
+
+  test('each building line names the real teacher', () => {
+    for (const [id, template] of Object.entries(LOCATION_TEMPLATES)) {
+      expect(orientation).toMatch(new RegExp(`\\(${id}\\): ${template.name.replace(/[.]/g, '\\.')} teaches`));
+    }
+  });
+
+  test('places without a teacher are named, and nobody is sent to Patrick at the cove', () => {
+    const noriAll = nori + '\n' + JSON.stringify(townGuide.style ?? {});
+    expect(orientation).toMatch(/Arcade City and the Predictive Gaming Cove have no teacher/);
+    expect(orientation).toMatch(/Nobody named Patrick works at the cove/);
+    expect(noriAll).toMatch(/never sends anyone to a teacher for a place that has no teacher/);
+    expect(noriAll).toMatch(/never send anyone to a teacher for them/);
+    expect(noriAll).not.toMatch(/suggest which building teacher might/);
+    expect(noriAll).not.toMatch(/daily-login economy/);
+  });
+
+  test('teachers are described where they stand: outside, on the town-centre side', () => {
+    // apps/web/src/lib/three/character-positions.ts NPC_INSET_WORLD: each
+    // teacher stands 1300 wu from the building centre toward the town centre.
+    expect(orientation).toMatch(/Each teacher stands just outside their own building, on the side that faces the town centre/);
+    expect(everySurface).not.toMatch(/teach\w* [A-Za-z ]* inside (their|his|her|Patrick)/);
+  });
+
+  test("the Hold'em window question has a direct answer that matches table ownership", () => {
+    // routes/cove-holdem.ts ownerMatch: the table is keyed on userId, so the
+    // human and the bound agent share one table and one balance.
+    expect(orientation).toContain("Can your agent play Hold'em for you from your table window? No:");
+    expect(orientation).toMatch(/at the same table and with the same balance as you, just not through the window/);
+    expect(everySurface).not.toMatch(/Hold'em[^"]*in its own hands with its own vCLAW/);
+    expect(everySurface).not.toMatch(/agent can play Hold'em for you[^.]*(window|controlled mode)/i);
   });
 });
