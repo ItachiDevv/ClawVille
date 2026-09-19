@@ -18,8 +18,11 @@ import {
 import { buildProtocolManual, PROTOCOL_VERSION } from '../skill-protocol';
 
 describe('Trading Floor frozen constants', () => {
-  test('pins protocol version 61 and the multiplier contracts', () => {
-    expect(PROTOCOL_VERSION).toBe(64);
+  // Sweep this pin by ASSERTION, never by grepping the old number: the title
+  // sat stale at 61 through the v62, v63 and v64 bumps because only the
+  // assertion below was updated.
+  test('pins the current protocol version and the multiplier contracts', () => {
+    expect(PROTOCOL_VERSION).toBe(65);
     expect(TRADE_TIER_WEIGHTS).toEqual({ base: 20, clv: 30, ansem: 40 });
     expect(TRADE_TIER_MULTIPLIER).toEqual({ base: 1, clv: 1.5, ansem: 2 });
     expect(TRADE_DAILY_SCORED_CAP).toBe(20);
@@ -74,6 +77,95 @@ describe('Trading Floor frozen constants', () => {
     expect(manual).toContain('[ACTION: trade_token(');
     expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((line) => line.includes('Trading Floor'))).toBe(true);
     expect(DECISION_SCOPE.some((line) => line.toLowerCase().includes('trade'))).toBe(true);
+  });
+
+  test('publishes the ClawPump template surface on every agent-facing knowledge path', () => {
+    const manual = buildProtocolManual('https://api.example.test');
+    expect(manual).toContain('## 17a.');
+    expect(manual).toContain('/api/floor/templates');
+    // The honest limit: an unbound ClawPump wallet cannot be scored by pasting
+    // a signature, because `reportTradeSignature` refuses it 409.
+    expect(manual).toContain('wallet_not_bound');
+    expect(CLAWVILLE_GAME_TOOLS.map((tool) => tool.name)).toContain('clawville_trading_templates');
+    expect(
+      CLAWVILLE_GAME_TOOLS.find((tool) => tool.name === 'clawville_trading_templates')?.description,
+    ).toContain('GET {apiBase}/api/floor/templates');
+    expect(
+      CLAWVILLE_ORIENTATION_KNOWLEDGE.some((line) => line.includes('/api/floor/templates')),
+    ).toBe(true);
+  });
+
+  test('documents the house-trader response the server actually emits', () => {
+    // The previous manual assertions only checked for `## 17a.` and the two
+    // paths, so nothing compared the DOCUMENTED field names against the
+    // EMITTED ones. A shape change could rename a field and ship a manual that
+    // describes a response the server does not send, which is the CONSUMPTION
+    // MANDATE defect in its purest form. These names are the live DTO.
+    const manual = buildProtocolManual('https://api.example.test');
+    const section = manual.slice(manual.indexOf('### 17b.'));
+    for (const field of ['objective', 'slotName', 'strategyNote', 'subject', 'counts', 'recentTrades']) {
+      expect(section).toContain(field);
+    }
+    for (const status of ['live-observed', 'stopped', 'not-yet-running']) {
+      expect(section).toContain(status);
+    }
+    // The renamed and removed fields must not come back in the prose.
+    expect(section).not.toContain('`brief`');
+    expect(section).not.toContain('`trader`');
+    // Two house traders, never five.
+    expect(section).toContain('TWO house traders');
+    expect(section).not.toMatch(/holds five entries|same five profiles/);
+    for (const surface of [CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n'), section]) {
+      expect(surface).toContain('Genesis');
+      expect(surface).toContain('Dip Hunter');
+    }
+    // The three dropped profiles must not be described as house traders.
+    const houseSentence = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((line) =>
+      line.includes('/api/floor/house-traders'),
+    );
+    expect(houseSentence).toBeDefined();
+    for (const dropped of ['AnsemDCA', 'MeanRevert', 'SignalFollower', 'SafeRebalancer']) {
+      expect(houseSentence).not.toContain(dropped);
+      expect(section).not.toContain(dropped);
+    }
+  });
+
+  test('keeps both read surfaces OUT of the per-decision scope', () => {
+    // DECISION_SCOPE is spread verbatim into EVERY perceive -> decide cycle
+    // (agent-autonomy-driver.ts). Neither surface added an `[ACTION:]` verb, so
+    // the executor menu is unchanged and the deciding model cannot act on
+    // either; carrying them here would pay tokens on every tick for nothing.
+    // The CONSUMPTION MANDATE is satisfied by the manual, the orientation
+    // knowledge and Nori, which is where an agent that CAN act on them reads.
+    for (const path of ['/api/floor/templates', '/api/floor/house-traders']) {
+      expect(DECISION_SCOPE.some((line) => line.includes(path))).toBe(false);
+      expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((line) => line.includes(path))).toBe(true);
+      expect(buildProtocolManual('https://api.example.test')).toContain(path);
+    }
+  });
+
+  test('keeps the whole served protocol manual free of the banned outward words', () => {
+    // skill-protocol-onboarding.test.ts:211,237 applies this gate to
+    // buildPlayManual only, so buildProtocolManual had NO copy gate at all and
+    // sections 17a/17b would have shipped ungated.
+    //
+    // The CT token is case-SENSITIVE here, unlike the buildPlayManual version.
+    // The protocol manual legitimately documents a response field literally
+    // named `ct` (`stats: { ct, level, xp, ... }`), which is a wire name, not
+    // outward copy; a case-insensitive token would fail on it and force the
+    // gate to be narrowed. Measured on the built manual: zero `\bCT\b`
+    // case-sensitive, zero ClawTokens, zero casino, zero pet.
+    const manual = buildProtocolManual('https://api.example.test');
+    expect(manual).not.toMatch(/\bCT\b/);
+    expect(manual).not.toMatch(/\b(?:ClawTokens?|casino|pet)\b/i);
+    // Em dashes are NOT gated: the manual carries about 120 in prose that
+    // predates this change. Removing them is a separate, deliberate copy pass.
+    // The two sections this diff adds carry none, which is asserted here.
+    for (const heading of ['### 17a.', '### 17b.']) {
+      const section = manual.slice(manual.indexOf(heading));
+      expect(manual.includes(heading)).toBe(true);
+      expect(section.slice(0, section.indexOf('\n## ') + 1 || undefined)).not.toContain('—');
+    }
   });
 
   test('keeps tools.json discovery aligned with the documented REST paths', () => {

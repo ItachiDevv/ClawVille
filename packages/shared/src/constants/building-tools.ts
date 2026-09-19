@@ -102,6 +102,16 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'clawville_trading_templates',
+    description: "Read the five ClawPump trader templates with GET {apiBase}/api/floor/templates. Public, no session header, identical bytes for every caller. Each template carries persona text, suggested skills and a suggested model for an agent you create in your OWN ClawPump account. ClawVille cannot create that agent, cannot enforce the rules on a ClawPump wallet, and cannot verify, show, or rank its trades until an ownership proof for a ClawPump wallet exists.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'clawville_house_traders',
+    description: "Watch the TWO ClawVille house traders with GET {apiBase}/api/floor/house-traders: Genesis, momentum on small-cap memecoins on any venue, and Dip Hunter, which buys sharp dips in strong mid-cap coins. Public, no session header. Returns both lineup slots always, each with the slot name, a plain-words strategy note, a status of live-observed, stopped or not-yet-running, verified and scored trade counts, the last trade time, and recent public trades. These are NOT the five copyable templates: a house trader runs ClawVille's own rule loop on ClawPump, outside the published profile rules, so never read a template objective or mint list as a description of one. Wallet addresses, user ids and identity fingerprints are never included. Read only: watching costs nothing and changes nothing.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'clawville_visit_building',
     description:
       'Move to and enter a building. Required before buying books or chatting with the teacher. Returns the shop inventory and current activity.',

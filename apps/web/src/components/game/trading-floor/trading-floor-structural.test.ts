@@ -65,6 +65,8 @@ describe('Trading Floor placement and mobile structure', () => {
 describe('Trading Floor outward copy and dark card tokens', () => {
   test('new UI source contains no forbidden outward copy', () => {
     const files = [
+      'src/components/game/trading-floor/clawpump-templates.tsx',
+      'src/components/game/trading-floor/house-traders.tsx',
       'src/components/game/trading-floor/floor-tape.tsx',
       'src/components/game/trading-floor/trade-row.tsx',
       'src/components/game/trading-floor/trading-floor-tab.tsx',
@@ -107,11 +109,15 @@ describe('Trading Floor outward copy and dark card tokens', () => {
 
   test('hex colors live only in the token module', () => {
     const files = [
+      'src/components/game/trading-floor/clawpump-templates.tsx',
+      'src/components/game/trading-floor/house-traders.tsx',
       'src/components/game/trading-floor/floor-tape.tsx',
       'src/components/game/trading-floor/trade-row.tsx',
       'src/components/game/trading-floor/trading-floor-tab.tsx',
       'src/components/game/trading-floor/format.ts',
     ];
+    // In-page anchors like href="#clawpump-templates" are not hex colours, so
+    // the pattern must keep requiring 3 to 8 HEX digits and a word boundary.
     for (const file of files) expect(read(file)).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });

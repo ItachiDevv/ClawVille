@@ -1,9 +1,12 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
 import {
-  and, avatars, db, desc, eq, inArray, isNull, sql, tradingWallets, verifiedTrades,
+  and, avatars, db, desc, eq, inArray, isNull, lte, sql, tradingWallets, verifiedTrades,
   type VerifiedTrade,
 } from '@clawville/database';
+// Not re-exported by the curated `@clawville/database` barrel; used only to
+// spread the verified_trades columns into the windowed subquery below.
+import { getTableColumns } from 'drizzle-orm';
 import {
   TRADE_DAILY_SCORED_CAP, TRADE_MIN_NOTIONAL_USD_DEFAULT, TRADE_MIN_NOTIONAL_USD_FLOOR,
   TRADE_TIER_MULTIPLIER, resolveTradeMultiplierTier, resolveTradeOperator,
@@ -551,6 +554,44 @@ export async function lookupVerifiedTrade(signature: string): Promise<
 export async function listMyVerifiedTrades(avatarId: string, limit: number): Promise<VerifiedTradeDTO[]> {
   const rows = await db.select().from(verifiedTrades).where(eq(verifiedTrades.avatarId, avatarId)).orderBy(desc(verifiedTrades.verifiedAt)).limit(limit);
   return Promise.all(rows.map(dtoForRow));
+}
+
+/**
+ * The public tape, narrowed to a set of avatars, at most `perAvatar` rows each.
+ * Used by the house-trader watch surface. Strips `wallet` exactly like
+ * `listPublicVerifiedTrades` below: the served manual publishes "The public
+ * tape never includes wallet addresses" and this surface must not break it.
+ */
+export async function listPublicVerifiedTradesForAvatars(
+  avatarIds: readonly string[], perAvatar: number,
+): Promise<Map<string, PublicTradeDTO[]>> {
+  const result = new Map<string, PublicTradeDTO[]>();
+  if (avatarIds.length === 0 || perAvatar <= 0) return result;
+  // ONE query, not one per avatar, and NOT a global `limit(n * perAvatar)`:
+  // a single busy avatar would swallow the whole budget and starve the others.
+  // `row_number()` partitioned per avatar gives each one its own newest rows.
+  // Covered by `verified_trades_avatar_time_idx` on (avatar_id, verified_at desc).
+  const ranked = db.select({
+    ...getTableColumns(verifiedTrades),
+    rowNumber: sql<number>`row_number() over (
+      partition by ${verifiedTrades.avatarId} order by ${verifiedTrades.verifiedAt} desc
+    )`.as('row_number'),
+  }).from(verifiedTrades).where(inArray(verifiedTrades.avatarId, [...avatarIds])).as('ranked');
+  const rows = await db.select().from(ranked).where(lte(ranked.rowNumber, perAvatar));
+  const names = await db.select({ id: avatars.id, name: avatars.name })
+    .from(avatars).where(inArray(avatars.id, [...avatarIds]));
+  const nameMap = new Map(names.map((row) => [row.id, row.name]));
+  // Newest first within each avatar, matching the public tape's ordering.
+  const ordered = [...rows].sort((a, b) => a.rowNumber - b.rowNumber);
+  for (const row of ordered) {
+    if (!row.avatarId) continue;
+    const bucket = result.get(row.avatarId) ?? [];
+    const { wallet: _wallet, ...dto } = await dtoForRow(row);
+    bucket.push({ ...dto, subject: { type: row.subjectKind as 'avatar' | 'agent',
+      id: row.agentId ?? row.avatarId, avatarName: nameMap.get(row.avatarId) ?? null } });
+    result.set(row.avatarId, bucket);
+  }
+  return result;
 }
 
 export async function listPublicVerifiedTrades(limit: number): Promise<PublicTradeDTO[]> {

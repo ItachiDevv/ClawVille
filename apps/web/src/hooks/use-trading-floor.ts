@@ -503,6 +503,78 @@ function subscribeVisibleConsumer(callback: () => void): () => void {
   };
 }
 
+/** One slot of the public house-trader watch surface. Always five, whatever
+ *  the data says, so the panel never has to guess a shape. */
+export interface HouseTraderSlotView {
+  objective: string;
+  slotName: string;
+  strategyNote: string;
+  status: 'live-observed' | 'stopped' | 'not-yet-running';
+  /** The same shape and the same id the public tape publishes, so one
+   *  identifier policy governs both surfaces. Never the avatar UUID. */
+  subject: { type: 'avatar' | 'agent'; id: string; avatarName: string | null } | null;
+  counts: { verified: number; scored: number; lastTradeAt: string | null };
+  recentTrades: FloorTrade[];
+}
+
+function normaliseHouseSlot(value: unknown): HouseTraderSlotView | null {
+  const row = record(value);
+  if (!row) return null;
+  if (typeof row.objective !== 'string' || typeof row.slotName !== 'string') return null;
+  const subject = record(row.subject);
+  const counts = record(row.counts);
+  return {
+    objective: row.objective,
+    slotName: row.slotName,
+    strategyNote: typeof row.strategyNote === 'string' ? row.strategyNote : '',
+    // Anything the client does not recognise reads as not running. An unknown
+    // status must never imply activity.
+    status: row.status === 'live-observed'
+      ? 'live-observed'
+      : row.status === 'stopped'
+        ? 'stopped'
+        : 'not-yet-running',
+    subject: subject && typeof subject.id === 'string'
+      ? {
+          type: subject.type === 'avatar' ? 'avatar' : 'agent',
+          id: subject.id,
+          avatarName: typeof subject.avatarName === 'string' ? subject.avatarName : null,
+        }
+      : null,
+    counts: {
+      verified: typeof counts?.verified === 'number' ? counts.verified : 0,
+      scored: typeof counts?.scored === 'number' ? counts.scored : 0,
+      lastTradeAt: typeof counts?.lastTradeAt === 'string' ? counts.lastTradeAt : null,
+    },
+    recentTrades: Array.isArray(row.recentTrades)
+      ? row.recentTrades
+          .map(normalisePublicTrade)
+          .filter((trade): trade is FloorTrade => trade !== null)
+      : [],
+  };
+}
+
+async function fetchHouseTraders(): Promise<HouseTraderSlotView[]> {
+  const body = await getJson('/api/floor/house-traders');
+  return Array.isArray(body.slots)
+    ? body.slots
+        .map(normaliseHouseSlot)
+        .filter((slot): slot is HouseTraderSlotView => slot !== null)
+    : [];
+}
+
+/** Matches the route's own 15s cache, so the panel never polls harder than the
+ *  server refreshes. Live rows arrive through the existing ticker store, so
+ *  this adds no second poller. */
+export function useHouseTraders(enabled: boolean) {
+  return useQuery({
+    queryKey: ['trading-floor', 'house-traders'],
+    queryFn: fetchHouseTraders,
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
 const subscribeHidden = () => () => undefined;
 const getClockSnapshot = () => nowMs;
 

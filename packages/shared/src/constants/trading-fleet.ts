@@ -40,6 +40,14 @@ export const TRADING_SYMBOL_TO_MINT = {
   ANSEM: TRADE_MINTS.ANSEM,
 } as const;
 
+/**
+ * Default seconds between two trades by one agent. Exported so the ClawPump
+ * trader templates can DERIVE their cooldown line from the same number
+ * `readTradingLimits` falls back to, instead of restating it. Env may only
+ * RAISE it (`assertTradingLimitsWithinCode` enforces the floor below).
+ */
+export const TRADING_DEFAULT_COOLDOWN_SECONDS = 300;
+
 export const TRADING_CODE_LIMITS = {
   dailyNotionalUsdPerAgent: 100,
   maxTradeUsd: 25,
@@ -88,7 +96,7 @@ export function readTradingLimits(): EffectiveTradingLimits {
     minTradeUsd: readFinite('TRADING_MIN_TRADE_USD', 1),
     minSolReserveLamports: BigInt(Math.trunc(readFinite('TRADING_MIN_SOL_RESERVE_LAMPORTS', 20_000_000))),
     minUsdcReserveMicros: BigInt(Math.trunc(readFinite('TRADING_MIN_USDC_RESERVE_MICROS', 2_000_000))),
-    cooldownSeconds: readFinite('TRADING_COOLDOWN_S', 300),
+    cooldownSeconds: readFinite('TRADING_COOLDOWN_S', TRADING_DEFAULT_COOLDOWN_SECONDS),
     maxPriorityFeeLamports: BigInt(Math.trunc(readFinite('TRADING_MAX_PRIORITY_FEE_LAMPORTS', 1_000_000))),
   };
 }

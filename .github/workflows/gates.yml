@@ -86,6 +86,8 @@ jobs:
           src/components/game/trading-floor/format.test.ts
           src/components/game/trading-floor/floor-tape-placement.test.ts
           src/components/game/trading-floor/floor-components.test.tsx
+          src/components/game/trading-floor/clawpump-templates.test.tsx
+          src/components/game/trading-floor/house-traders.test.tsx
           src/components/game/trading-floor/trading-floor-structural.test.ts
           src/app/leaderboard/leaderboard-trader-column.test.tsx
           src/lib/__tests__/api-error-code.test.ts

@@ -142,11 +142,23 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
       .map(([name]) => name);
     expect(fleetTableImporters).toEqual([
       'services/autonomous-trading-targets.ts',
+      // READ ONLY (wave A2, 2026-09-19): the public house-trader watch surface
+      // selects from `clawpump_agent_links` to decide which of the lineup slots
+      // is occupied. It never inserts, updates or deletes a link, never arms
+      // and never kills; `trading-provisioning-structure.test.ts` still pins
+      // the single INSERT writer, and the arm/kill writer pins below are
+      // unchanged.
+      'services/house-traders.ts',
       'services/trading-execution.ts',
       'services/trading-guardrails.ts',
       'services/trading-links.ts',
       'services/trading-provisioning.ts',
     ]);
+    // The new reader must stay read-only on the fleet table.
+    const houseTraders = apiSourceTree.find(([name]) => name === 'services/house-traders.ts')?.[1] ?? '';
+    expect(houseTraders).not.toMatch(/\.(?:insert|update|delete)\(\s*clawpumpAgentLinks/);
+    expect(houseTraders).not.toMatch(/armed:\s*(?:true|false)/);
+    expect(houseTraders).not.toMatch(/killed:\s*(?:true|false)/);
     for (const boundary of ['services/trade-observer.ts', 'services/trade-verifier.ts', 'routes/leaderboard.ts']) {
       const source = apiSourceTree.find(([name]) => name === boundary)?.[1] ?? '';
       expect(source, boundary).not.toMatch(/\b(?:clawpumpAgentLinks|tradingDecisions)\b/);

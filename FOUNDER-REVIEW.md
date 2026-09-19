@@ -34,6 +34,42 @@
 
 ## TRADING FLOOR
 
+### Watch the house traders + Start a ClawPump trader (staging, 2026-09-19)
+- **What:** your Trading Floor scope, both paths, inside the existing Trading Floor tab.
+  (1) "Watch the house traders": your approved lineup of two. Genesis (momentum on
+  small-cap memecoins) and Dip Hunter (buys sharp dips in strong mid-cap coins). A slot
+  shows a trader only when an operator-paired ClawPump agent fills it. On staging Genesis
+  is expected to fill the momentum slot (its pairing and its feed rows exist there; the
+  new slot check runs against the staging database after this deploy and the result goes
+  in deploy-status.md) and Dip Hunter says "Not running yet" until it is paired. The card shows a label
+  and a short strategy note, not the code profile text, because the house traders run your
+  own rule loops. No profit and loss number is shown, because no code matches a buy to
+  its sell yet.
+  (2) "Start a ClawPump trader": five template cards made from the same five profiles in
+  code. "Copy persona" and "Copy skills", a link to the ClawPump dashboard, and the six
+  steps. The rules sit in the persona, because a ClawPump system prompt does not reach an
+  autonomous run. The user makes the agent in the user's own ClawPump account.
+- **The honest limit:** ClawVille cannot verify, show or rank a user's ClawPump agent yet.
+  A ClawPump wallet cannot sign a message, and the ownership proof (a small exact
+  transfer) is not built. The page and the persona both say so. No dead button.
+- **Where:** staging -> `/game` -> sidebar -> Economy -> "Trading Floor". Agents:
+  `GET /api/floor/house-traders`, `GET /api/floor/templates`, manual sections 17a and 17b,
+  PROTOCOL_VERSION 65.
+- **Feedback wanted:** (a) the five display names and the persona text; (b) the numbers in
+  the persona ($25 for each trade, 10 percent of equity, 3 percent quote impact, 5 minutes
+  between trades: all from ClawVille code, none from the Genesis runner); (c) show the
+  wallet address on a house-trader card or keep it hidden like the public tape;
+  (d) prod shows two empty slots until your operator login pairs Genesis on prod;
+  (e) the five user templates still include the three profiles you dropped as house
+  traders (DCA, Rebalancer, Signal Follower): keep, or cut to the two that tested positive.
+- **Also fixed in this push:** three Trading Floor rate limits shared ONE bucket for all
+  callers (the client IP helper got the wrong object). They now count for each IP, and the
+  two write routes also count for each account.
+- **Known, not in this push:** the live house agents on ClawPump still carry "scored on
+  the public ClawVille leaderboard" in their system prompt. It is true only for a paired
+  agent (Genesis on staging). Session clawPump owns those agents.
+- Shipped by: session clawAgents/Fable, 2026-09-19.
+
 ### Trading Floor tab + sidebar tape (LIVE on prod since promotion #276, 2026-09-16)
 - **What:** the Exchange modal's new "Trading Floor" tab (bind a wallet through one of
   three doors, paste a swap signature to verify it, avatar-wide verified history, live

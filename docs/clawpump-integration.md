@@ -105,8 +105,106 @@ ClawVille executes fleet swaps only through Jupiter. The core observer can verif
 | Operator observe-only pair | `POST /api/admin/trading/clawpump/pair` | Takes `avatarId`, `clawpumpAgentId`, and `objective`. Proves ownership and binds the wallet with `operatedByClawville=false`; the link never arms. |
 | Operator unpair | `POST /api/admin/trading/clawpump/unpair` | Takes `avatarId` and `clawpumpAgentId`. Revokes observation and deletes the observe-only link without changing trade history or earned points. |
 | Trade execution | None | Forbidden for ClawVille custody. |
+| Public trader templates | `GET /api/floor/templates` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=300`. Returns `version`, `model`, `skills`, `dashboardUrl`, and five `templates`. It calls no ClawPump API: the body is ClawVille's own text, read from `packages/shared/src/constants/trading-agent-templates.ts`. |
+| Public house-trader watch | `GET /api/floor/house-traders` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=15` plus a 15 second in-process cache. Always the TWO `HOUSE_TRADER_LINEUP` slots (Genesis, Dip Hunter), never the five templates. Calls no ClawPump API: it reads `clawpump_agent_links`, `trading_wallets`, `users` and `verified_trades`. No wallet address, user id or identity fingerprint in the response. |
+| Agent creation | None | ClawVille never calls ClawPump `create_agent`. The call takes no owner parameter, so the agent would hold the user's funds inside ClawVille's ClawPump account. The user creates it. |
 
 All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin. POST routes also require JSON and a fresh single-use money-operator nonce. N1: a detail ID mismatch raises `ClawPumpAgentMismatchError` and returns 404 `clawpump_agent_not_owned`.
+
+## House traders (founder lineup, 2026-09-19)
+
+ClawVille runs TWO house traders, held in
+`packages/shared/src/constants/house-trader-lineup.ts`:
+
+| Slot (`objective`) | Label | Strategy |
+|---|---|---|
+| `momentum-board` | Genesis | Momentum on small-cap memecoins, any venue. LIVE on staging. |
+| `sol-usdc-mean-reversion` | Dip Hunter | Buys sharp dips in strong mid-cap coins. Paper, not paired. |
+
+The other three profiles were DROPPED as house traders; they remain only as
+copyable templates. These two are **not** the templates below and no copy may
+say they match: a template is a user starting point, while a house trader runs
+the operator's own rule loop on ClawPump, outside this repo. So the profile
+brief and allowed outputs in `trading-fleet.ts` do NOT describe a house trader,
+and Genesis proves it by holding `momentum-board` while trading small-cap
+memecoins on any venue. `objective` survives only as the join key into
+`clawpump_agent_links`. A `strategyNote` carries no numbers, because the rule
+loops change without a deploy.
+
+## Trader templates (2026-09-19)
+
+ClawVille publishes five copyable ClawPump trader templates, one per fleet
+objective. `GET /api/floor/templates` serves them and the Trading Floor tab
+renders them from the same constant, so the two cannot disagree.
+
+- **Source:** `packages/shared/src/constants/trading-agent-templates.ts`. Every
+  persona line is DERIVED from `TRADING_OBJECTIVE_BRIEFS`,
+  `TRADING_OBJECTIVE_ALLOWED_OUTPUTS`, `TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT`,
+  `TRADING_CODE_LIMITS` and `TRADING_DEFAULT_COOLDOWN_SECONDS`, so the published
+  text cannot drift from the fleet rules. Only the DISPLAY NAMES match the five
+  live agents (Momentum, AnsemDCA, MeanRevert, SignalFollower, SafeRebalancer);
+  the rule set is ClawVille code, not any live agent's hand-written prompt.
+- **The numbers, and where each comes from.** Mint list from
+  `TRADING_OBJECTIVE_ALLOWED_OUTPUTS`, rendered through an inverse map that
+  prints WSOL as `SOL` (same idiom as `autonomous-trading-targets.ts:38`).
+  USDC floor from `TRADING_OBJECTIVE_MIN_USDC_SHARE_PCT`, carrying the exact
+  rule `objectiveUsdcShareBreached` (`trading-guardrails.ts:269-282`) applies:
+  it fires only when the trade SPENDS USDC. `$25` from
+  `TRADING_CODE_LIMITS.maxTradeUsd`; 10 percent of equity is a template value,
+  not the executor's 25 percent float cap. 3 percent quote impact from
+  `maxQuoteImpactPct`. 5 minutes of pacing from the exported
+  `TRADING_DEFAULT_COOLDOWN_SECONDS` (300 s), which `readTradingLimits` now uses
+  as its own fallback so there is one source. 0.02 SOL from
+  `minSolReserveLamports`. The shared constant deliberately does NOT call
+  `readTradingLimits()`: that reads `process.env`, which would make the persona
+  environment-dependent and let the API and the web bundle disagree.
+  Genesis's runner rules ($2, one hour, 1 percent) are NOT used: those are
+  operator settings for one memecoin runner, not user defaults.
+- **Enforced versus suggested.** The same rules run server side in
+  `trading-guardrails.ts` for the profiles ClawVille signs for and refuse the
+  trade. On a ClawPump wallet the identical text is only an instruction to the
+  model, because ClawVille holds no key there. `guardrailNotes` line one states
+  exactly that distinction.
+- **Rules live in `persona`.** `config.system_prompt` does not reach an
+  autonomous run (see "Verified ClawPump facts"), so the manual, the UI and
+  Nori all say to paste the text into the PERSONA field. Note that the five
+  live agents still carry their rules in `system_prompt`; the templates
+  deliberately do not copy that mistake.
+- **Verified live 2026-09-19, by read-only call:** the four skill slugs
+  `defi-trading`, `portfolio`, `market-intel`, `wallet-ops` all exist in
+  `list_available_skills`; `moonshotai/kimi-k2.5` exists in the model catalog;
+  the dashboard is `https://agents.clawpump.tech/dashboard` and the credits
+  page is `/dashboard/credits`. ClawPump re-adds forced skills of its own
+  (`action-plans`, `private-transfers`, `bitget-intel`, `self-learning`,
+  `skill-management`) on every update, so the four are what the user enables,
+  not what the agent ends up with.
+- **The model is a SUGGESTION and the copy says so.** Line 18 of this file
+  records that the five agents "run on the free tier, which answers on
+  `openai/gpt-5.4-mini`, not the configured Kimi K2.5". So
+  `TRADING_TEMPLATE_MODEL` always travels with `TRADING_TEMPLATE_MODEL_NOTE`,
+  which states that ClawPump answers on its own free-tier model until the
+  account buys AI credits. Naming the model without that note would be a false
+  claim in outward copy.
+- **Two deliberate deviations from the live prompts.** The templates follow the
+  CODE, not the hand-written live prompts. `intel-signal-follower` omits
+  `$CLAWVILLE` and `momentum-board` omits `$ANSEM` and `$CLAWVILLE`, because
+  `TRADING_OBJECTIVE_ALLOWED_OUTPUTS` does not list them, even though the live
+  prompts name them (checked against live `get_agent` on ClawVille Momentum,
+  2026-09-19). The templates ask for 10 percent of equity per trade, not the
+  executor's 25 percent float cap, because that cap governs swaps ClawVille
+  signs and never reaches a ClawPump wallet.
+- **The live five keep their rules in `system_prompt`.** Verified by
+  `get_agent` on ClawVille Momentum, 2026-09-19. That is the exact mistake the
+  "Verified ClawPump facts" section documents, so the templates are more
+  correct than the live agents. Worth a founder pass on the live five.
+- **Unverified:** the ClawPump persona field length limit. The 1200-character
+  cap in the test is a safety margin, not a measured limit.
+- **No scoring yet, and the copy says so.** A ClawPump wallet cannot sign the
+  bind message, and `reportTradeSignature` (`services/trade-observer.ts`)
+  refuses a reported signature whose signers hold no already-bound wallet
+  (`wallet_not_bound`, 409). So a user cannot register a ClawPump wallet by
+  pasting a signature. The exact-dust ownership proof that would fix this is
+  wave B and is not built.
 
 ## Fixture inventory
 
