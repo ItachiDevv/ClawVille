@@ -573,9 +573,11 @@ export async function listPublicVerifiedTradesForAvatars(
   // Covered by `verified_trades_avatar_time_idx` on (avatar_id, verified_at desc).
   const ranked = db.select({
     ...getTableColumns(verifiedTrades),
+    // `row_number()` is a bigint, which the driver returns as TEXT: map it, or
+    // the sort below compares strings.
     rowNumber: sql<number>`row_number() over (
       partition by ${verifiedTrades.avatarId} order by ${verifiedTrades.verifiedAt} desc
-    )`.as('row_number'),
+    )`.mapWith(Number).as('row_number'),
   }).from(verifiedTrades).where(inArray(verifiedTrades.avatarId, [...avatarIds])).as('ranked');
   const rows = await db.select().from(ranked).where(lte(ranked.rowNumber, perAvatar));
   const names = await db.select({ id: avatars.id, name: avatars.name })

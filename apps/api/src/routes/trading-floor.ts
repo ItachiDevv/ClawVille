@@ -82,14 +82,17 @@ export function createHouseTradersHandler(
     if (!houseTradersLimiter.check(getClientIp(c.req.raw.headers))) {
       return c.json({ error: 'Too many house trader requests.', code: 'rate_limited' }, 429);
     }
+    if (!cached || cached.expiresAt <= Date.now()) {
+      const body = {
+        generatedAt: new Date().toISOString(),
+        slots: await readHouseTraderSlots(deps),
+      };
+      cached = { expiresAt: Date.now() + cacheMs, body };
+    }
+    // Set ONLY after a successful read: a thrown read must reach the error
+    // handler with no `public` cache header, or an edge could cache the 500.
     c.header('Cache-Control', 'public, max-age=15');
-    if (cached && cached.expiresAt > Date.now()) return c.json(cached.body as any);
-    const body = {
-      generatedAt: new Date().toISOString(),
-      slots: await readHouseTraderSlots(deps),
-    };
-    cached = { expiresAt: Date.now() + cacheMs, body };
-    return c.json(body);
+    return c.json(cached.body as any);
   };
 }
 

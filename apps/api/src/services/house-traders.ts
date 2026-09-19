@@ -260,10 +260,12 @@ async function loadCountsFromDb(
       avatarId: verifiedTrades.avatarId,
       verified: sql<string>`count(*)`,
       scored: sql<string>`count(*) filter (where ${verifiedTrades.scored})`,
-      // Typed as Date, not string: postgres-js maps timestamptz to a Date, and
-      // parsing the Postgres string form (a space, not a T) is engine
-      // dependent rather than spec guaranteed.
-      lastTradeAt: sql<Date | null>`max(${verifiedTrades.verifiedAt})`,
+      // Formatted to ISO 8601 UTC IN SQL. A raw `sql` aggregate bypasses the
+      // column mapper, so the driver hands back the Postgres TEXT form, not a
+      // Date: `.toISOString()` on it threw on staging (500 on the first live
+      // read, 2026-09-19; the dependency-seam tests never touch the driver).
+      // Parsing that text form in JS is engine dependent, so Postgres does it.
+      lastTradeAt: sql<string | null>`to_char(max(${verifiedTrades.verifiedAt}) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
     })
     .from(verifiedTrades)
     .where(inArray(verifiedTrades.avatarId, [...avatarIds]))
@@ -273,7 +275,7 @@ async function loadCountsFromDb(
     counts.set(row.avatarId, {
       verified: Number(row.verified) || 0,
       scored: Number(row.scored) || 0,
-      lastTradeAt: row.lastTradeAt ? row.lastTradeAt.toISOString() : null,
+      lastTradeAt: row.lastTradeAt ?? null,
     });
   }
   return counts;

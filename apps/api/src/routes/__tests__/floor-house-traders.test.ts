@@ -190,6 +190,31 @@ describe('GET /api/floor/house-traders', () => {
   });
 
   // LAST in the file on purpose: the limiter bucket is module level and shared
+  it('sets no public cache header when the read throws', async () => {
+    // Staging 2026-09-19: the first live read threw, and the 500 still carried
+    // `Cache-Control: public, max-age=15`, so an edge could have cached it.
+    const app = new Hono();
+    app.onError((_error, c) => c.json({ error: 'Internal server error', code: 500 }, 500));
+    app.get('/house-traders', createHouseTradersHandler(deps({
+      loadCandidates: async () => { throw new Error('read failed'); },
+    })) as never);
+    const response = await app.request('/house-traders', {
+      headers: { 'cf-connecting-ip': '203.0.113.77' },
+    });
+    expect(response.status).toBe(500);
+    expect(response.headers.get('cache-control')).toBeNull();
+  });
+
+  it('formats the newest trade time in SQL, never with a JS Date method', () => {
+    // A raw `sql` aggregate bypasses the column mapper: the driver returns the
+    // Postgres TEXT form, so `.toISOString()` on it threw on staging. The seam
+    // tests above never touch the driver, so pin the source.
+    const source = readFileSync(resolve(import.meta.dir, '../../services/house-traders.ts'), 'utf8');
+    expect(source).toContain(`to_char(max(`);
+    expect(source).not.toContain('lastTradeAt.toISOString');
+    expect(source).not.toContain('sql<Date');
+  });
+
   // with every other file in the routes lane process, so exhausting it earlier
   // would starve the sibling cases above.
   it('rate limits one address after 60 calls in the window', async () => {
