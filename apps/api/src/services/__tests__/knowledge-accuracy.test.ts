@@ -151,6 +151,12 @@ describe('seeded knowledge states where every building is', () => {
     'south', 'south-southwest', 'southwest', 'west-southwest',
     'west', 'west-northwest', 'northwest', 'north-northwest',
   ];
+  // Orientation, all of Nori (incl. style), and both served manuals.
+  const everySurface = [
+    all,
+    JSON.stringify(townGuide.style ?? {}),
+    buildPlayManual('https://api.example.test'),
+  ].join('\n');
   const atBearing = (deg: number) => {
     const r = (deg * Math.PI) / 180;
     return compassFromWorldOffset(Math.sin(r) * 1000, -Math.cos(r) * 1000); // north = -Z
@@ -216,7 +222,7 @@ describe('seeded knowledge states where every building is', () => {
     // apps/web/src/lib/three/character-positions.ts NPC_INSET_WORLD: each
     // teacher stands 1300 wu from the building centre toward the town centre.
     expect(orientation).toMatch(/Each teacher stands just outside their own building, on the side that faces the town centre/);
-    expect(orientation).not.toMatch(/teach\w* [A-Za-z ]* inside (their|his|her|Patrick)/);
+    expect(everySurface).not.toMatch(/teach\w* [A-Za-z ]* inside (their|his|her|Patrick)/);
   });
 
   test("the Hold'em window question has a direct answer that matches table ownership", () => {
@@ -224,6 +230,7 @@ describe('seeded knowledge states where every building is', () => {
     // human and the bound agent share one table and one balance.
     expect(orientation).toContain("Can your agent play Hold'em for you from your table window? No:");
     expect(orientation).toMatch(/at the same table and with the same balance as you, just not through the window/);
-    expect(orientation).not.toMatch(/Hold'em[^"]*in its own hands with its own vCLAW/);
+    expect(everySurface).not.toMatch(/Hold'em[^"]*in its own hands with its own vCLAW/);
+    expect(everySurface).not.toMatch(/agent can play Hold'em for you[^.]*(window|controlled mode)/i);
   });
 });
