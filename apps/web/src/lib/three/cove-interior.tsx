@@ -75,9 +75,11 @@ import { filterCoveSignHits, shouldYieldToFartherHotspot } from '@/lib/three/cov
 /** Gameready GLB path — temporarily pointed at cleaned-v1 to evaluate the
  *  Blender artifact removal pass (pillar fragments + Material4 ghost mesh
  *  removed; stump cleanup possibly over-broad — visual verification pending).
- *  ?v=2 (2026-09-18): 150 black slot-screen cover faces removed by
- *  scripts/patch-cove-slot-screen-covers.mjs. Bump ?v on every file mutation. */
-const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-mo-ktx.glb?v=2';
+ *  2026-09-18: 150 black slot-screen cover faces removed by
+ *  scripts/patch-cove-slot-screen-covers.mjs. ?v=3, NOT ?v=2: a prod curl of
+ *  ?v=2 before the web flip made Cloudflare cache the OLD bytes under it.
+ *  Never reuse a ?v value; never fetch a new ?v on prod before the flip. */
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-mo-ktx.glb?v=3';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
 const NOOP = (): void => {};

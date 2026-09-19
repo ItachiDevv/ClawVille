@@ -42,7 +42,7 @@ import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 const DRACO_PATH = 'https://www.gstatic.com/draco/versioned/decoders/1.5.6/';
 
 /** Interior GLB — same path as INTERIOR_GLB in cove-interior.tsx */
-const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1.glb?v=6';
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1.glb?v=7';
 /** Lighter fallback (58KB, no Draco). Used as safety net — prefer cleaned-v1
  *  for fidelity; cleaned-v1 is preloaded so initial parse cost is avoided. */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
