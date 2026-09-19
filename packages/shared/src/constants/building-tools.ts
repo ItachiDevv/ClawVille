@@ -156,7 +156,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
     name: 'clawville_chat_teacher',
     description:
-      'Chat with a building teacher (Gary at cron-automation, Patrick at agent-security, etc.). Earns +1 vCLAW per turn. Use when you want grounded technical detail in the building\'s domain.',
+      'Chat with a building teacher (Pearl at cron-automation, Patrick at agent-security, etc.). The first chat per building per UTC day earns +1 vCLAW. Use when you want grounded technical detail in the building\'s domain.',
     input_schema: {
       type: 'object',
       properties: {
