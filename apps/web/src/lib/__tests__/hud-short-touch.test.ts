@@ -8,6 +8,8 @@ import {
   SHORT_TOUCH_MAX_VH,
   SHORT_TOUCH_ROW_LEFT_PX,
   SHORT_TOUCH_UNDER_MAP_TOP_PX,
+  PHONE_MAP_BUTTON_TOP_PX,
+  SHORT_TOUCH_WIDE_MAX_VH,
 } from '@/lib/hud-anchors';
 
 // 2026-09-18 phone overlaps (measured in touch emulation): at 844x390 Hold
@@ -105,5 +107,22 @@ describe('short touch screens (phones held landscape)', () => {
         expect(70 + (vh - 298)).toBeLessThanOrEqual(cameraStickTop(vw, vh) - 8);
       }
     }
+  });
+
+  test('phone Map button (below 768 px): under the top stack and the short-screen row, left of the centred toggle, above the left joystick', () => {
+    const top = PHONE_MAP_BUTTON_TOP_PX, bottom = top + 44, right = 16 + 44;
+    expect(top).toBeGreaterThanOrEqual(52 + 8); // login banner / agent pill bottom
+    expect(top).toBeGreaterThanOrEqual(ROW.bottom + 8); // short-screen top-left row
+    for (const [vw, vh] of [[360, 780], [375, 667], [390, 844], [430, 932], [667, 375], [740, 360], [744, 1133]]) {
+      expect(right).toBeLessThan(vw / 2 - 100 - 8); // mode toggle, up to ~200 px, centred
+      expect(bottom).toBeLessThan(cameraStickTop(vw, vh) - 8); // left joystick top (same height as the right)
+    }
+  });
+
+  test('wide touch screens below 658 px high use the short layout, so the capped left Autonomous panel never gets under ~96 px', () => {
+    // Left panel cap from md: vh - 272 (bottom) - 290 (below the full minimap card).
+    for (const vh of [SHORT_TOUCH_WIDE_MAX_VH, 700, 744, 820]) expect(vh - 272 - 290).toBeGreaterThanOrEqual(96);
+    // Short-layout right panel (top 70, to 8 px above the camera joystick) inside the band.
+    for (const vh of [560, 600, SHORT_TOUCH_WIDE_MAX_VH - 1]) expect(vh - 298).toBeGreaterThanOrEqual(96);
   });
 });

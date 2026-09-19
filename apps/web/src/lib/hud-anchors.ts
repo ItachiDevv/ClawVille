@@ -184,6 +184,14 @@ export function subscribeHudElement(attr: string, listener: () => void): () => v
 // inset pushed it into the login banner or the logged-in mode toggle.
 // ---------------------------------------------------------------------------
 export const SHORT_TOUCH_MAX_VH = 560;
+/**
+ * From `md` (768 px wide) a screen also counts as short below this height:
+ * there the full minimap card ends at y 282, and the capped Autonomous panel
+ * under it keeps only vh - 562 px, less than its header + state (~96 px)
+ * below 658 (Codex review 2026-09-18: 1024x562 got max-height 0). Narrower
+ * screens (upright phones) are unaffected.
+ */
+export const SHORT_TOUCH_WIDE_MAX_VH = 658;
 /** Below this width (the minimap's `md` breakpoint) the row takes the top line. */
 export const SHORT_TOUCH_LEFT_ROW_MAX_VW = 768;
 /** Row top below 768 px: the top line (same as Nori, top-4). */
@@ -192,3 +200,14 @@ export const SHORT_TOUCH_ROW_TOP_PX = 16;
 export const SHORT_TOUCH_UNDER_MAP_TOP_PX = 71;
 /** Row left offsets (px, added to the left safe-area inset); 44-46 px buttons, 8 px gaps. */
 export const SHORT_TOUCH_ROW_LEFT_PX = { gear: 16, controls: 68, language: 122 } as const;
+
+/**
+ * Below `md` (768 px) the minimap card is hidden, and with it the only way to
+ * the World Map. On touch there the minimap collapses to its Map button at
+ * the left, top 72: under the centred login banner / agent pill (y 12-52) and
+ * left of the centred mode toggle (y 80-116) and quest card (from y 124) on
+ * upright phones; under the utility row (y 16-60) and above the left joystick
+ * (top vh - 220) on small sideways phones (founder: "shouldn't we just be
+ * able to adjust it", 2026-09-18).
+ */
+export const PHONE_MAP_BUTTON_TOP_PX = 72;

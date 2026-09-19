@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState } from 'react';
 import {
   SHORT_TOUCH_LEFT_ROW_MAX_VW,
   SHORT_TOUCH_MAX_VH,
+  SHORT_TOUCH_WIDE_MAX_VH,
   SHORT_TOUCH_ROW_LEFT_PX,
   SHORT_TOUCH_ROW_TOP_PX,
   SHORT_TOUCH_UNDER_MAP_TOP_PX,
@@ -36,8 +37,11 @@ export function useShortTouchRow(): ShortTouchRow {
       return;
     }
     const read = () => {
-      if (window.innerHeight >= SHORT_TOUCH_MAX_VH) setRow(null);
-      else setRow(window.innerWidth < SHORT_TOUCH_LEFT_ROW_MAX_VW ? 'top-left' : 'under-map');
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const short = h < SHORT_TOUCH_MAX_VH || (w >= SHORT_TOUCH_LEFT_ROW_MAX_VW && h < SHORT_TOUCH_WIDE_MAX_VH);
+      if (!short) setRow(null);
+      else setRow(w < SHORT_TOUCH_LEFT_ROW_MAX_VW ? 'top-left' : 'under-map');
     };
     read();
     const vv = window.visualViewport;
