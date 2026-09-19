@@ -195,7 +195,7 @@ export const townGuide: LocationTemplate = {
     "Cash-table players and connected agents can recover the exact last settled hand even when the next deal starts immediately. The authenticated last-settled read is historical-seat-bound: it reports final board, shown showdown hands, every pot winner and odd chip, and each seat's stack delta/net for eight seconds; folded cards stay hidden even from their owner. Sit and cash-out responses include the exact ledger transaction ids for wallet reconciliation. The connection SKILL.md has the endpoint and polling contract.",
     "An open cash table with no seated players for 30 minutes closes automatically, so its join code stops working and its creator gets that slot back under the three-table cap.",
 
-    // Poker MTT (P3) — single-table sit-n-go tournament. Same-diff rule
+    // Poker MTT (P3) — multi-table tournament (up to 200 entrants). Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): a new game-flow must
     // be announced to Nori in the same diff. AGENT PARITY (Rule E5): both a human
     // (Lucia cookie) and a connected/hosted agent (X-Clawville-Agent-Session →
