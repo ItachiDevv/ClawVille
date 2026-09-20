@@ -182,17 +182,11 @@ export function classifyRiskState(
  * `\p{Zs}` IS DELIBERATELY ABSENT, and this is the paragraph that should stop
  * you adding it. Joining across ordinary spaces makes plain English look like
  * an address, because base58 excludes only `l`, `0`, `O` and `I`, so any
- * sentence that happens to avoid those four letters becomes one long run.
- * Measured, not guessed:
- *
- *   "day trade entry refused by cap reset after ten minutes"  -> 45, WIPED
- *   "at max positions nothing to rotate yet"                  -> 32, WIPED
- *
- * The second is the damning one. It is not contrived: it is an ordinary status
- * note for a state in this file's own `reason` enum, and it lands EXACTLY on
- * the threshold. Add a comma after "positions" and it survives, which tells you
- * how thin the "that would never happen" argument is. Every leak found so far
- * is `Cc`, `Zl` or `Zp`, all covered without `Zs`.
+ * sentence avoiding those four letters becomes one long run. Measured, not
+ * guessed: "day trade entry refused by cap reset after ten minutes" is 45
+ * base58 characters once the spaces go, and a perfectly good operator note
+ * would be silently wiped. Every leak found so far is `Cc`, `Zl` or `Zp`, all
+ * covered without `Zs`.
  *
  * RESIDUAL RISK, accepted deliberately: an address typed with an ordinary space
  * inside it is NOT detected. That is much smaller than the false-positive cost
@@ -234,6 +228,24 @@ const INVISIBLE_FOR_RENDER = /[\p{M}\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
  */
 const HEX_ADDRESS_ANYWHERE = /0x[0-9a-f]{6,}/i;
 const BASE58_RUN_ANYWHERE = /[1-9A-HJ-NP-Za-km-z]{32,}/;
+
+/**
+ * UNPREFIXED hex, the shape both of the detectors above miss.
+ *
+ * Found by tfs-web. `0x742d35Cc...` is caught by `HEX_ADDRESS_ANYWHERE`, but
+ * strip the prefix and nothing fires: base58 EXCLUDES `0`, so the zero inside
+ * almost any real address chops the base58 run into pieces under 32. Measured
+ * on `742d35Cc6634C0532925a3b844Bc454e4438f44e`: base58-32+ false, `0x` hex
+ * false, longest base58 sub-run 26. It rendered verbatim onto the board.
+ *
+ * 20 rather than 32 because this class is denser: 20 hex characters is already
+ * beyond anything an operator note says by accident. Measured against nine
+ * realistic notes, seven survive, including "slot 301884412 confirmed". The two
+ * that do not are 20-plus straight digits (a real lamport figure runs to about
+ * 13) and a 24-character word built only from `a` to `f`. Neither is a note
+ * anyone writes.
+ */
+const BARE_HEX_RUN_ANYWHERE = /[0-9a-f]{20,}/i;
 /**
  * A base58 run long enough to be a Solana address.
  *
@@ -295,7 +307,9 @@ const HEX_ADDRESS = /0x[0-9a-f]{6,}/gi;
  */
 export function detailCarriesAddress(raw: string): boolean {
   const forDetection = raw.normalize('NFKD').replace(SPLITTERS, '');
-  return HEX_ADDRESS_ANYWHERE.test(forDetection) || BASE58_RUN_ANYWHERE.test(forDetection);
+  return HEX_ADDRESS_ANYWHERE.test(forDetection)
+    || BASE58_RUN_ANYWHERE.test(forDetection)
+    || BARE_HEX_RUN_ANYWHERE.test(forDetection);
 }
 
 /**

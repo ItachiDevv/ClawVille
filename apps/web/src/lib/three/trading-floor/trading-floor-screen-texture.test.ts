@@ -553,6 +553,24 @@ describe('Trading Floor board — untrusted text hygiene', () => {
     }
   });
 
+  // ONE PASS MUST NOT CUT ANOTHER PASS'S TOKEN. `G`x12 + `a`x20 + `H`x12 is a
+  // 44-character base58 run whose middle 20 characters are also a hex run. With
+  // sequential replaces the bare-hex pass blanked the middle FIRST, leaving two
+  // 12-character pieces that were each under the base58 minimum and printed:
+  // "NOTE GGGGGGGGGGGG HHHHHHHHHHHH". Self-inflicted, by the bare-hex pass
+  // added to close a different hole. The strip now matches every pattern on the
+  // INTACT text and deletes the union, so there is no ordering question left to
+  // get wrong. (Codex round 3.)
+  test('a hex run inside a base58 run cannot split it into printable halves', () => {
+    const spliced = `note ${'G'.repeat(12)}${'a'.repeat(20)}${'H'.repeat(12)}`;
+    expect(sanitiseScreenText(spliced, 200)).toBe('NOTE');
+    const drawn = draw({ phase: 'ready', slots: [slot({ label: spliced })] });
+    assertDrawable(drawn.strings);
+    for (const value of drawn.strings) {
+      expect(value).not.toMatch(/G{8,}|H{8,}/);
+    }
+  });
+
   // THE UPPER BOUND WAS A TAIL. `{32,64}` with `/g` consumed the first 64
   // characters of an 88-character run and left the remaining 24 under the
   // minimum, so they were not matched and they printed:

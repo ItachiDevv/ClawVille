@@ -346,26 +346,39 @@ export function isRiskExpired(
  */
 export function formatRiskArithmetic(risk: HouseTraderRiskView): string | null {
   if (risk.reason !== 'daily_loss_floor') return null;
-  // TEST THE NUMBERS THE READER WILL SEE, not the ones behind them. The
-  // sentence prints cents, so the comparison has to be made in cents too:
-  // 10.004 + 10.004 > 20 is true at full precision and reads as
-  // "10.00 + 10.00 is over the cap 20.00", which is arithmetic the reader can
-  // check and find FALSE. Rounding first keeps the claim and the figures in
-  // agreement, and it is the honest direction: it under-claims by at most a
-  // cent rather than printing a sum that does not add up. (Codex round 2.)
-  const day = roundToCents(risk.dayLossUsd);
-  const room = roundToCents(risk.roomNeededUsd);
-  const cap = roundToCents(risk.dayLossCapUsd);
-  if (day + room <= cap) return null;
+  // TEST THE NUMBERS THE READER WILL SEE, in INTEGER CENTS, and format the
+  // sentence from those same integers so the tested quantity and the printed
+  // one cannot be two different things.
+  //
+  // This took two passes and the second is the instructive one.
+  //   Round 2: the gate compared raw USD, so 10.004 + 10.004 beat a 20.00 cap
+  //     and printed "10.00 + 10.00 is over the cap 20.00". Fixed by rounding
+  //     the operands to cents.
+  //   Round 3: rounding to a cents-valued FLOAT was not enough. 0.10 and 0.20
+  //     both round cleanly and their float sum is 0.30000000000000004, which
+  //     is greater than a 0.30 cap, so the same false sentence came straight
+  //     back one layer down.
+  //
+  // The lesson worth keeping: "round before comparing" fixes the OPERANDS and
+  // says nothing about the ADDITION. Only integers close both.
+  const dayCents = toCents(risk.dayLossUsd);
+  const roomCents = toCents(risk.roomNeededUsd);
+  const capCents = toCents(risk.dayLossCapUsd);
+  if (dayCents + roomCents <= capCents) return null;
   return (
-    `Day loss ${day.toFixed(2)}` +
-    ` + next position ${room.toFixed(2)}` +
-    ` is over the cap ${cap.toFixed(2)}`
+    `Day loss ${formatCents(dayCents)}` +
+    ` + next position ${formatCents(roomCents)}` +
+    ` is over the cap ${formatCents(capCents)}`
   );
 }
 
-/** The value `toFixed(2)` will print, as a number, so the gate above compares
- *  what is drawn rather than what arrived. */
-function roundToCents(value: number): number {
-  return Math.round(value * 100) / 100;
+/** USD to whole cents. The guard above has already proved the input finite. */
+function toCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+/** Whole cents back to the two-decimal string. Derived from the SAME integer
+ *  the gate compared, so the figures on screen are the ones that were tested. */
+function formatCents(cents: number): string {
+  return (cents / 100).toFixed(2);
 }

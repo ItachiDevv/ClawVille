@@ -672,6 +672,34 @@ describe('House traders section', () => {
     expect(text).not.toContain('10.00 + next position 10.00');
   });
 
+  // FLOAT ADDITION, one layer below the rounding fix. 0.10 and 0.20 both round
+  // cleanly to cents, and their float SUM is 0.30000000000000004, which is
+  // greater than a 0.30 cap. Rounding the operands was not enough; the gate has
+  // to add INTEGER cents, and the sentence has to be formatted from those same
+  // integers so the tested quantity and the printed one cannot diverge.
+  // (Codex round 3.)
+  test('a float sum just over the cap does not earn the claim', async () => {
+    const host = await renderWithSlots([
+      liveSlot({
+        risk: riskFixture({ dayLossUsd: 0.1, roomNeededUsd: 0.2, dayLossCapUsd: 0.3 }),
+      }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Paused by risk limit');
+    expect(text).not.toContain('is over the cap');
+  });
+
+  test('one cent over the cap DOES earn the claim', async () => {
+    const host = await renderWithSlots([
+      liveSlot({
+        risk: riskFixture({ dayLossUsd: 0.1, roomNeededUsd: 0.21, dayLossCapUsd: 0.3 }),
+      }),
+    ]);
+    expect(host.textContent ?? '').toContain(
+      'Day loss 0.10 + next position 0.21 is over the cap 0.30',
+    );
+  });
+
   test('a real overrun in cents still prints', async () => {
     const host = await renderWithSlots([
       liveSlot({

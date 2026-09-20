@@ -350,7 +350,7 @@ const WHITESPACE = /\s+/g;
  * it by constructing `FloorScreenData` by hand.
  */
 export function sanitiseScreenText(raw: string, maxLength = 26): string {
-  const text = String(raw ?? '')
+  const folded = String(raw ?? '')
     // NFK**D**, and the D is the whole point. Both forms fold fullwidth and
     // mathematical look-alikes onto plain ASCII, which is what this call is
     // for; the difference is what they do to a combining mark, and NFKC
@@ -374,20 +374,63 @@ export function sanitiseScreenText(raw: string, maxLength = 26): string {
     // tfs-api's ingest sanitiser chose NFKD for the same reason; the two ends
     // agree deliberately.
     .normalize('NFKD')
-    .replace(INVISIBLE, '')
-    // Addresses go BEFORE any case change: base58 excludes `0 O I l`, so
-    // upper-casing first would split a real address into sub-32-character
-    // pieces and let it through.
-    // PREFIXED hex first, so the `0x` goes with its digits; then unprefixed
-    // hex; then base58.
-    .replace(HEX_ADDRESS, ' ')
-    .replace(BARE_HEX_RUN, ' ')
-    .replace(BASE58_RUN, ' ')
+    .replace(INVISIBLE, '');
+  // Addresses go BEFORE any case change: base58 excludes `0 O I l`, so
+  // upper-casing first would split a real address into sub-32-character pieces
+  // and let it through.
+  const text = stripAddressRuns(folded)
     .replace(DISALLOWED, ' ')
     .replace(WHITESPACE, ' ')
     .trim()
     .toUpperCase();
   return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}.` : text;
+}
+
+/**
+ * Remove every address run, MATCHING THEM ALL ON THE INTACT TEXT and deleting
+ * the union.
+ *
+ * Sequential `.replace()` calls were the bug: each pass rewrites the string the
+ * next one sees, so one pass can CUT A TOKEN the next would have caught. The
+ * bare-hex pass did exactly that — `G`x12 + `a`x20 + `H`x12 is a 44-character
+ * base58 run, the 20 `a`s in the middle are also a hex run, and replacing them
+ * first left two 12-character pieces that were each under the base58 minimum
+ * and printed: `GGGGGGGGGGGG HHHHHHHHHHHH`. I introduced that when I added the
+ * bare-hex pass to close a different hole, which is the honest shape of it.
+ * (Codex round 3.)
+ *
+ * Matching on the intact text removes the ordering question entirely rather
+ * than answering it: there is no "right" order when two patterns overlap, only
+ * an order whose failure nobody has found yet. Overlapping matches merge into
+ * one span so a run covered by two patterns still yields a single space.
+ */
+function stripAddressRuns(text: string): string {
+  const spans: Array<[number, number]> = [];
+  for (const pattern of [HEX_ADDRESS, BARE_HEX_RUN, BASE58_RUN]) {
+    // `matchAll` clones the regex, so these module-level `/g` patterns carry no
+    // `lastIndex` between calls.
+    for (const match of text.matchAll(pattern)) {
+      if (match.index === undefined) continue;
+      spans.push([match.index, match.index + match[0].length]);
+    }
+  }
+  if (spans.length === 0) return text;
+
+  spans.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of merged) {
+    out += `${text.slice(cursor, start)} `;
+    cursor = end;
+  }
+  return out + text.slice(cursor);
 }
 
 // ── numbers: formatted from TYPED fields, never from server text ────────────

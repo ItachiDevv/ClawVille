@@ -167,6 +167,26 @@ describe('sanitiseStatusDetail refuses any note carrying an address', () => {
     expect(sanitiseStatusDetail(`note ${'z'.repeat(200)} end`)).toBeNull();
   });
 
+  test('tfs-web probe: UNPREFIXED hex, which both other detectors miss', () => {
+    // Strip the `0x` and neither detector fires: base58 EXCLUDES `0`, so the
+    // zero inside almost any real address chops the run into pieces under 32.
+    // On the first of these the longest base58 sub-run is 26. All three
+    // rendered verbatim onto the board before `BARE_HEX_RUN_ANYWHERE`.
+    expect(sanitiseStatusDetail('sent to 742d35Cc6634C0532925a3b844Bc454e4438f44e ok')).toBeNull();
+    expect(sanitiseStatusDetail('burn 000000000000000000000000000000000000dead now')).toBeNull();
+    expect(sanitiseStatusDetail(
+      'sig a3f1c0de9b8074e2f5a6b7c8d9e0f1a2b3c4d5e6f70819a2b3c4d5e6f7081920 pending',
+    )).toBeNull();
+  });
+
+  test('the bare-hex rule does not start eating ordinary numbers', () => {
+    // 20 is a low threshold, so this is the guard that it stays a hex rule and
+    // not a digit rule. A Solana slot is nine digits and a lamport figure runs
+    // to about thirteen; neither comes close.
+    expect(sanitiseStatusDetail('slot 301884412 confirmed')).toBe('slot 301884412 confirmed');
+    expect(sanitiseStatusDetail('reserved 1250000000 lamports')).toBe('reserved 1250000000 lamports');
+  });
+
   test('Codex probe: an uppercase 0X hex prefix', () => {
     // `/0x[0-9a-fA-F]{6,}/g` case-folded the DIGITS but not the literal `0x`,
     // so a checksummed address written with a capital X walked straight past.
@@ -220,15 +240,27 @@ describe('sanitiseStatusDetail refuses any note carrying an address', () => {
   });
 
   test('leaves ordinary notes alone, including prose with no l, 0, O or I', () => {
-    // The false positive that kept `\p{Zs}` OUT of the detection strip. Joining
-    // across ordinary spaces would make this a 45-character base58 run and wipe
-    // a perfectly good operator note.
+    // THE FALSE POSITIVES THAT KEEP `\p{Zs}` OUT OF THE DETECTION STRIP. Both
+    // measured. Joining across ordinary spaces turns each of these into one
+    // base58 run, because base58 excludes only `l`, `0`, `O` and `I`.
+    //   45 characters joined:
     expect(sanitiseStatusDetail('day trade entry refused by cap reset after ten minutes'))
       .toBe('day trade entry refused by cap reset after ten minutes');
+    //   32 joined, EXACTLY on the threshold, and an ordinary status note for a
+    //   state in this module's own reason enum. This is the one that should
+    //   stop anyone adding `Zs` later. A comma after "positions" saves it,
+    //   which is how thin the "that would never happen" argument is.
+    expect(sanitiseStatusDetail('at max positions nothing to rotate yet'))
+      .toBe('at max positions nothing to rotate yet');
+    expect(sanitiseStatusDetail('at max positions, nothing to rotate yet'))
+      .toBe('at max positions, nothing to rotate yet');
     expect(sanitiseStatusDetail('day loss 14.95 of 25.00, need 10.25 more'))
       .toBe('day loss 14.95 of 25.00, need 10.25 more');
     // 31 base58 characters is under the threshold and is not an address.
-    expect(sanitiseStatusDetail(`tag ${'a'.repeat(31)}`)).toBe(`tag ${'a'.repeat(31)}`);
+    // `z` and not `a` on purpose: `a` is a HEX digit, so 31 of them are caught
+    // by the bare-hex rule and rightly so, which would make this assert the
+    // opposite of what it was written to test.
+    expect(sanitiseStatusDetail(`tag ${'z'.repeat(31)}`)).toBe(`tag ${'z'.repeat(31)}`);
   });
 
   test('a multi-line traceback with no address still renders, flattened', () => {

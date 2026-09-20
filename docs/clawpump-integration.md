@@ -230,6 +230,13 @@ protect, and any valid report takes over. That is a deadlock breaker: together w
 a runner that banked a fast-clock timestamp and then corrected itself is locked out for at most 60 seconds, never for
 the ten minutes the old symmetric window allowed.
 
+**ACCEPTED RISK: an address typed with an ordinary SPACE inside it is not detected in `detail`.** The detector joins
+across invisible characters but deliberately not across spaces, because joining across spaces makes plain English look
+like an address: "at max positions nothing to rotate yet" is exactly 32 base58 characters once the spaces go, and would
+be wiped. A pasted address arrives whole and is caught, and a traceback puts it on its own line where the control
+character is caught, so the space case needs someone to type it deliberately. Judged smaller than silently wiping
+ordinary operator notes.
+
 **ACCEPTED RISK: two reports carrying the SAME millisecond are not ordered.** Whichever arrives second wins. This is
 safe because the runner posts from ONE sequential loop, so it cannot produce two different states inside a single
 millisecond; if it ever could, ordering them would need a sequence number rather than a clock. Do not parallelise the
@@ -245,7 +252,9 @@ hole, because the plus or minus 10 minute window already bounds a replayed body 
 minutes old, and your next heartbeat corrects it within 60 seconds.
 
 Answers: `200 {ok:true, wallet, receivedAt}`, plus `detailRedacted: true` when a note was sent and dropped for
-carrying an address · `200 {ok:true, ignored:'older_report'}` (see ORDERING above; accepted,
+carrying an address. **What to do when you see `detailRedacted`:** your own text was discarded, so fix the SOURCE by
+keeping wallet addresses out of `detail` altogether. Do not reformat around the detector, and do not retry: the state,
+the reason and the three figures all stored normally, and only the note is gone. · `200 {ok:true, ignored:'older_report'}` (see ORDERING above; accepted,
 not stored) · `400 {error:'invalid_body'}` (any zod failure, including the contradiction
 above and an `at` that is not a timestamp at all) · `400 {error:'stale_timestamp'}` (a well-formed time outside the 10
 minute window, in either direction; kept separate from `invalid_body` because "fix your serialiser" and "fix your clock,

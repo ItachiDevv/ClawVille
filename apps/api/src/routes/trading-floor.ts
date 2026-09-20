@@ -36,6 +36,7 @@ import {
   TRADING_TEMPLATE_MODEL,
   TRADING_TEMPLATE_SKILLS,
   TRADING_TEMPLATE_VERSION,
+  type HouseTraderStatusResponse,
 } from '@clawville/shared';
 
 export const tradingFloorRoutes = new Hono<ActivityAuthContext>();
