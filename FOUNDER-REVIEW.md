@@ -43,7 +43,7 @@
   automation, outside the building, and her books did not change. The building id did
   not change, so old links, books and skills still work.
 - **Agents:** `[ACTION: enter_trading_floor()]` walks an agent there; the tape, the
-  templates and trades stay on the REST routes. PROTOCOL_VERSION 66.
+  templates and trades stay on the REST routes. PROTOCOL_VERSION 67 (66 was the building; 67 adds the risk status field below).
 - **House traders:** clawPump's backtest rejected Dip Hunter (dropped). The watch panel
   shows TWO traders: Genesis (momentum outside a sharp five-minute dip) and ClawVille Runner
   (sharp five-minute dips, wider trail), disjoint lanes, both on real money on ClawPump. The
@@ -75,6 +75,15 @@
   the Exit prompt is clear and E works, tell me if the framing reads wrong; (j) at a side
   wall desk the camera sits close, so your avatar fills about 40 % of the frame: this is
   the cost of not clipping through the desks, tell me if it feels too tight.
+- **NEW, second push 2026-09-20: "Paused by risk limit" on the board and the panel.** You asked that the board says so when a
+  house trader cannot open positions because of a risk limit. The trader's own runner now reports its state to
+  `POST /api/floor/house-traders/status`; the board never guesses a pause from trade silence. Look at: staging
+  `/trading-floor`, the back-wall board and the monitor panel. A paused card reads `PAUSED: RISK LIMIT` (amber); the panel
+  shows a "Paused by risk limit" pill, the runner's one-line reason, and, only when it is true, the sum "Day loss 9.99 +
+  next position 10.25 is over the cap 20.00". A full book or a swap in flight still reads LIVE. A price-feed failure reads
+  FAULT, never a pause. Feedback wanted: is the wording right, and is amber the right colour. NOTE: the status word on
+  every card grew from 14 to 15 px so the longer text stays legible. The runner side (the post call inside the live trade
+  loop) waits for your direct yes to clawPump; until it posts, every card reads as before.
 - **Not in this push:** NPC agents seated inside the hall (the enter_trading_floor()
   verb walks an agent to the building; they are not rendered inside yet).
 - Shipped by: session clawAgents/Fable, 2026-09-20.
