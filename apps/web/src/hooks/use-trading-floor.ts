@@ -35,10 +35,18 @@ const FEED_LIMIT = 25;
 
 /**
  * How often the house-trader surfaces re-read the route, and how long a result
- * is considered fresh. ONE constant for both, because a `staleTime` above the
- * interval would silently cancel it: react-query serves the cached value and
- * the poll becomes a no-op. Exported so a test can pin the wiring rather than
- * re-type the number. See `useHouseTraders` for why the interval exists at all.
+ * is considered fresh.
+ *
+ * ONE constant for both because they describe the same cadence, NOT because a
+ * larger `staleTime` would break the poll. An earlier version of this comment
+ * claimed that, and it is wrong: `refetchInterval` fires on its own schedule
+ * regardless of `staleTime`, which only governs whether OTHER triggers (mount,
+ * focus, reconnect) refetch or serve the cache. Corrected rather than deleted,
+ * because the false version is the kind a future reader would act on. (Codex
+ * round 2.)
+ *
+ * Exported so a test can pin the wiring rather than re-type the number. See
+ * `useHouseTraders` for why the interval exists at all.
  */
 export const HOUSE_TRADERS_POLL_MS = 15_000;
 

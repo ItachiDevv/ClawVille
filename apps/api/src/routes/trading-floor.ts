@@ -257,16 +257,24 @@ export function createHouseTraderStatusHandler(
     // `decideStatusWrite` carries the full reasoning, including why equal is
     // not a replay hole. An ignored report answers 200: the runner did nothing
     // wrong and must not retry.
-    const decision = decideStatusWrite(at.atMs, readHouseTraderStatus(body.wallet));
-    if (decision !== 'store') return c.json({ ok: true, ignored: decision });
+    const decision = decideStatusWrite(at.atMs, readHouseTraderStatus(body.wallet), now());
+    if (decision !== 'store') {
+      const ignored: HouseTraderStatusResponse = { ok: true, ignored: decision };
+      return c.json(ignored);
+    }
     const receivedAtMs = now();
+    // Sanitised on the way IN, so nothing unprintable is ever stored and the
+    // read path cannot forget to clean it. A note carrying an address is
+    // dropped WHOLE, and the 200 says so: a note that vanishes with no signal
+    // is fails-safe but not fails-visible, and the runner author needs to know
+    // their own text is being discarded.
+    const detail = sanitiseStatusDetail(body.detail);
+    const detailRedacted = body.detail !== undefined && detail === null;
     recordHouseTraderStatus({
       wallet: body.wallet,
       canEnter: body.canEnter,
       reason: body.reason,
-      // Sanitised on the way IN, so nothing unprintable is ever stored and the
-      // read path cannot forget to clean it.
-      detail: sanitiseStatusDetail(body.detail),
+      detail,
       dayLossUsd: body.dayLossUsd,
       dayLossCapUsd: body.dayLossCapUsd,
       roomNeededUsd: body.roomNeededUsd,
@@ -274,11 +282,15 @@ export function createHouseTraderStatusHandler(
       atMs: at.atMs,
       receivedAtMs,
     });
-    return c.json({
+    const stored: HouseTraderStatusResponse = {
       ok: true,
       wallet: body.wallet,
       receivedAt: new Date(receivedAtMs).toISOString(),
-    });
+      // Present only when a note was sent and nothing survived, so an ordinary
+      // post keeps its existing shape.
+      ...(detailRedacted ? { detailRedacted: true as const } : {}),
+    };
+    return c.json(stored);
   };
 }
 

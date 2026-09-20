@@ -717,9 +717,32 @@ describe('POST /api/floor/house-traders/status', () => {
 
   it('sanitises a detail to printable ASCII before it reaches the board', async () => {
     const { app, clock } = feed();
-    await post(app, '198.51.100.12', body(clock, { detail: 'floor\u0000hit\nby  14.95 \u{1F600}' }));
+    const sent = await post(app, '198.51.100.12', body(clock, { detail: 'floor\u0000hit\nby  14.95 \u{1F600}' }));
+    // Nothing address-like, so the note survives and no redaction is reported.
+    expect(await sent.json()).not.toHaveProperty('detailRedacted');
     const risk = await riskFor(app, '198.51.100.12');
     expect(risk?.detail).toBe('floor hit by 14.95');
+  });
+
+  it('drops a note carrying an address and SAYS SO on the 200', async () => {
+    // Fails safe AND fails visible. A note that vanishes with no signal leaves
+    // the runner author believing their text is on the board. The status itself
+    // still lands, because the pause is the load-bearing part and must never be
+    // refused over an operator's formatting.
+    const { app, clock } = feed();
+    const sent = await post(app, '198.51.100.23', body(clock, {
+      // A newline between the halves: not an attack, just a traceback.
+      detail: 'blocked at\n7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
+    }));
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toMatchObject({ ok: true, wallet: WALLET, detailRedacted: true });
+    const risk = await riskFor(app, '198.51.100.23');
+    // The state is published; only the note is gone.
+    expect(risk).toMatchObject({ state: 'paused', reason: 'daily_loss_floor', detail: null });
+    const raw = await (await app.request('/house-traders', {
+      headers: { 'cf-connecting-ip': '198.51.100.23' },
+    })).text();
+    expect(raw).not.toContain('7xKXtg2CW87d97TXJSDp');
   });
 
   // LAST for this address: the limiter bucket is module level and shared with

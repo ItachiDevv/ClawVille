@@ -22,6 +22,7 @@
 
 import {
   HOUSE_TRADER_STATUS_DETAIL_MAX,
+  HOUSE_TRADER_STATUS_MAX_AGE_MS,
   HOUSE_TRADER_STATUS_REASONS,
   type HouseTraderRisk,
   type HouseTraderRiskState,
@@ -250,10 +251,57 @@ export function normaliseHouseTraderRisk(value: unknown): HouseTraderRiskView | 
 export function resolveHouseTraderRiskDisplay(
   pairing: HouseTraderPairingStatus,
   risk: HouseTraderRiskView | null | undefined,
+  freshness: RiskFreshness,
 ): 'paused' | 'fault' | null {
   if (pairing !== 'live-observed') return null;
   if (!risk || risk.state === 'live') return null;
+  if (isRiskExpired(risk, freshness)) return null;
   return risk.state;
+}
+
+/**
+ * When the last response was read, and what time it is now. BOTH are injected:
+ * the function stays pure and a test can put the clock wherever it likes.
+ */
+export interface RiskFreshness {
+  /** `Date.now()` at the moment the surface decides what to show. */
+  readonly nowMs: number;
+  /** react-query's `dataUpdatedAt`: when the data in hand was FETCHED, not when
+   *  it was last rendered. */
+  readonly dataUpdatedAt: number;
+}
+
+/**
+ * HAS THIS VERDICT GONE STALE IN OUR HANDS?
+ *
+ * The server drops a report past `HOUSE_TRADER_STATUS_MAX_AGE_MS` and sends
+ * `risk: null` instead. That is correct and it is NOT ENOUGH, because
+ * react-query keeps the last good data when a refetch fails or hangs. If the
+ * route dies while a desk is paused, every later poll errors, `query.data`
+ * stays exactly as it was, and the board shows PAUSED for as long as the player
+ * stands there, a wall asserting a live fact from a dead feed. (Codex round 2.)
+ *
+ * So the age the CLIENT must reason about has two parts: how old the report
+ * already was when the server described it (`ageSeconds`), plus how long we
+ * have been holding that response (`nowMs - dataUpdatedAt`). The same 150 s
+ * budget applies to the sum, so an open board expires a verdict on exactly the
+ * schedule the server would have used.
+ *
+ * An expired verdict reads as ABSENT, never as a fault: we have not been told
+ * that the risk read failed, we have simply stopped being told anything.
+ */
+export function isRiskExpired(
+  risk: HouseTraderRiskView,
+  { nowMs, dataUpdatedAt }: RiskFreshness,
+): boolean {
+  // A clock we cannot reason about must not expire a live pause NOR preserve a
+  // dead one on its own authority. Holding is the lesser error: the server is
+  // still the primary decider and this is only the backstop.
+  if (!Number.isFinite(nowMs) || !Number.isFinite(dataUpdatedAt)) return false;
+  // Negative means the response is dated in the future, which is clock skew
+  // rather than freshness, so clamp instead of crediting it with extra life.
+  const heldSeconds = Math.max(0, (nowMs - dataUpdatedAt) / 1000);
+  return risk.ageSeconds + heldSeconds > HOUSE_TRADER_STATUS_MAX_AGE_MS / 1000;
 }
 
 /**
@@ -298,10 +346,26 @@ export function resolveHouseTraderRiskDisplay(
  */
 export function formatRiskArithmetic(risk: HouseTraderRiskView): string | null {
   if (risk.reason !== 'daily_loss_floor') return null;
-  if (risk.dayLossUsd + risk.roomNeededUsd <= risk.dayLossCapUsd) return null;
+  // TEST THE NUMBERS THE READER WILL SEE, not the ones behind them. The
+  // sentence prints cents, so the comparison has to be made in cents too:
+  // 10.004 + 10.004 > 20 is true at full precision and reads as
+  // "10.00 + 10.00 is over the cap 20.00", which is arithmetic the reader can
+  // check and find FALSE. Rounding first keeps the claim and the figures in
+  // agreement, and it is the honest direction: it under-claims by at most a
+  // cent rather than printing a sum that does not add up. (Codex round 2.)
+  const day = roundToCents(risk.dayLossUsd);
+  const room = roundToCents(risk.roomNeededUsd);
+  const cap = roundToCents(risk.dayLossCapUsd);
+  if (day + room <= cap) return null;
   return (
-    `Day loss ${risk.dayLossUsd.toFixed(2)}` +
-    ` + next position ${risk.roomNeededUsd.toFixed(2)}` +
-    ` is over the cap ${risk.dayLossCapUsd.toFixed(2)}`
+    `Day loss ${day.toFixed(2)}` +
+    ` + next position ${room.toFixed(2)}` +
+    ` is over the cap ${cap.toFixed(2)}`
   );
+}
+
+/** The value `toFixed(2)` will print, as a number, so the gate above compares
+ *  what is drawn rather than what arrived. */
+function roundToCents(value: number): number {
+  return Math.round(value * 100) / 100;
 }

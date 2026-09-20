@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
   HOUSE_TRADER_STATUS_DETAIL_MAX,
   HOUSE_TRADER_STATUS_MAX_AGE_MS,
-  HOUSE_TRADER_STATUS_MAX_SKEW_MS,
+  HOUSE_TRADER_STATUS_MAX_FUTURE_MS,
+  HOUSE_TRADER_STATUS_MAX_PAST_MS,
   HOUSE_TRADER_STATUS_REASONS,
 } from '@clawville/shared';
 
@@ -144,81 +145,98 @@ describe('sanitiseStatusDetail', () => {
 
 /**
  * An operator note has no business carrying a wallet, and this text reaches a
- * public board AND a wall in the game world. Every case here asserts the
- * STORED value, so the pin holds wherever the strip lives.
+ * public board AND a wall in the game world.
+ *
+ * EXACT-OUTPUT ASSERTIONS throughout, deliberately, because that is the one
+ * pattern that has held. Four separate explanations of this bug were each true
+ * of the samples we had looked at and false of the set: a six-shape probe
+ * missed the uppercase `0X`, a sixteen-character window missed dense marks, and
+ * two successive character classes each missed a whole category. `toBe(...)`
+ * has no sample to fall outside of.
+ *
+ * A note carrying an address is dropped WHOLE, so those cases are all `null`.
  */
-describe('sanitiseStatusDetail strips addresses', () => {
+describe('sanitiseStatusDetail refuses any note carrying an address', () => {
   const PUBKEY = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
-  /** No run of 32 or more base58 characters may survive, in any case. */
-  const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]{32,}/;
 
-  test('removes a plain Solana pubkey', () => {
-    expect(sanitiseStatusDetail(`floor reached ${PUBKEY}`)).toBe('floor reached');
-    expect(sanitiseStatusDetail(`spend ${PUBKEY} now`)).toBe('spend now');
+  test('a plain pubkey, an EVM address, or a long run', () => {
+    expect(sanitiseStatusDetail(`floor reached ${PUBKEY}`)).toBeNull();
+    expect(sanitiseStatusDetail(`spend ${PUBKEY} now`)).toBeNull();
+    expect(sanitiseStatusDetail(PUBKEY)).toBeNull();
+    expect(sanitiseStatusDetail('sent to 0xAb35De09f1cC2b7E4419b7B1bE1eD3fF9c6d20a1 ok')).toBeNull();
+    expect(sanitiseStatusDetail(`note ${'z'.repeat(200)} end`)).toBeNull();
   });
 
-  test('removes an EVM address, which base58 cannot match', () => {
-    // Base58 excludes 0, I, O and l, so hex needs its own pass.
-    expect(sanitiseStatusDetail('sent to 0xAb35De09f1cC2b7E4419b7B1bE1eD3fF9c6d20a1 ok'))
-      .toBe('sent to ok');
+  test('Codex probe: an uppercase 0X hex prefix', () => {
+    // `/0x[0-9a-fA-F]{6,}/g` case-folded the DIGITS but not the literal `0x`,
+    // so a checksummed address written with a capital X walked straight past.
+    expect(sanitiseStatusDetail('burn 0X000000000000000000000000000000000000dEaD now')).toBeNull();
   });
 
-  test('a zero-width character inside an address does NOT smuggle it through', () => {
-    // THE ORDERING TRAP. A single U+200B at offset 20 splits the run into a
-    // 20-char and a 24-char half, both under the 32 threshold. If the invisible
-    // pass replaced it with a SPACE, or ran after the address pass, both halves
-    // would survive and the full address would print with one space in it.
-    const split = `floor reached ${PUBKEY.slice(0, 20)}​${PUBKEY.slice(20)}`;
-    const cleaned = sanitiseStatusDetail(split)!;
-    expect(cleaned).toBe('floor reached');
-    expect(cleaned).not.toMatch(BASE58_RUN);
-    expect(cleaned.replace(/\s+/g, '')).not.toContain(PUBKEY.slice(20));
+  /**
+   * EVERY SPLITTER FOUND SO FAR, in one table. Each of these, dropped into the
+   * middle of a pubkey, broke the run into two sub-32 halves that the detector
+   * missed; the render pass then turned the splitter into a SPACE and printed
+   * both halves, which is a fully readable address.
+   *
+   * The last five are tfs-audit's, and the newline is the one that matters
+   * most: it needs no attacker, only a Python traceback, which is the single
+   * most likely thing to arrive in this field from this runner.
+   */
+  const SPLITTERS: Array<[string, string]> = [
+    ['U+0301 combining acute (Mn)', '́'],
+    ['U+1AB0 combining extended (Mn)', '᪰'],
+    ['U+FE0F variation selector', '️'],
+    ['U+200B zero width (Cf)', '​'],
+    ['U+00AD soft hyphen (Cf)', '­'],
+    ['U+202E bidi override (Cf)', '‮'],
+    ['U+0001 C0 control (Cc)', '\u0001'],
+    ['U+000A newline (Cc)', '\n'],
+    ['U+0085 NEL (Cc)', '\u0085'],
+    ['U+2028 line separator (Zl)', ' '],
+    ['U+2029 paragraph separator (Zp)', ' '],
+  ];
+
+  test('no splitter smuggles a real pubkey through', () => {
+    for (const [name, char] of SPLITTERS) {
+      const split = `floor ${PUBKEY.slice(0, 20)}${char}${PUBKEY.slice(20)}`;
+      expect({ name, out: sanitiseStatusDetail(split) }).toEqual({ name, out: null });
+    }
   });
 
-  test('a combining mark inside an address does not smuggle it through either', () => {
-    // This is why the fold is NFKD and not NFKC. NFKC recomposes `p` + U+0301
-    // into a single `p`-with-acute, which the invisible pass cannot delete, so
-    // the run splits around it and both halves fall under the threshold.
-    // NFKD keeps the mark separate, the invisible pass deletes it, and the run
-    // rejoins before the address pass ever looks.
-    const marked = `floor reached ${PUBKEY.slice(0, 20)}́${PUBKEY.slice(20)}`;
-    const cleaned = sanitiseStatusDetail(marked)!;
-    expect(cleaned).toBe('floor reached');
-    expect(cleaned).not.toMatch(BASE58_RUN);
+  test('no splitter smuggles a SHORT pair that joins into a run', () => {
+    // Codex's shape rather than a real pubkey: two sixteen-character halves,
+    // each harmless alone, which only become an address once the splitter goes.
+    for (const [name, char] of SPLITTERS) {
+      const split = `tag ${'1'.repeat(16)}${char}${'1'.repeat(16)} end`;
+      expect({ name, out: sanitiseStatusDetail(split) }).toEqual({ name, out: null });
+    }
   });
 
-  test('a fullwidth look-alike address folds onto ASCII and is then stripped', () => {
-    // Otherwise an address in another alphabet reaches the board untouched,
-    // because neither the base58 class nor the printable pass would match it
-    // as an address.
+  test('a fullwidth look-alike address folds onto ASCII and is caught', () => {
     const fullwidth = PUBKEY.replace(/[0-9A-Za-z]/g, (char) =>
       String.fromCharCode(char.charCodeAt(0) + 0xfee0));
-    const cleaned = sanitiseStatusDetail(`at ${fullwidth} now`)!;
-    expect(cleaned).toBe('at now');
-    expect(cleaned).not.toMatch(BASE58_RUN);
+    expect(sanitiseStatusDetail(`at ${fullwidth} now`)).toBeNull();
   });
 
-  test('leaves ordinary operator notes and short tokens alone', () => {
-    // The strip must not eat the text it exists to preserve. 31 base58
-    // characters is under the threshold and stays, which is correct: it is not
-    // an address.
+  test('leaves ordinary notes alone, including prose with no l, 0, O or I', () => {
+    // The false positive that kept `\p{Zs}` OUT of the detection strip. Joining
+    // across ordinary spaces would make this a 45-character base58 run and wipe
+    // a perfectly good operator note.
+    expect(sanitiseStatusDetail('day trade entry refused by cap reset after ten minutes'))
+      .toBe('day trade entry refused by cap reset after ten minutes');
     expect(sanitiseStatusDetail('day loss 14.95 of 25.00, need 10.25 more'))
       .toBe('day loss 14.95 of 25.00, need 10.25 more');
-    const short = 'a'.repeat(31);
-    expect(sanitiseStatusDetail(`tag ${short}`)).toBe(`tag ${short}`);
+    // 31 base58 characters is under the threshold and is not an address.
+    expect(sanitiseStatusDetail(`tag ${'a'.repeat(31)}`)).toBe(`tag ${'a'.repeat(31)}`);
   });
 
-  test('a detail that was nothing but an address stores as null', () => {
-    expect(sanitiseStatusDetail(PUBKEY)).toBeNull();
-  });
-
-  test('a run longer than one address is removed WHOLE, leaving no tail', () => {
-    // The class is unbounded above on purpose. A `{32,64}` sweep chunks a long
-    // run and leaves any remainder under 32 characters sitting on the board.
-    // That remainder cannot be a complete address, but there is no reason to
-    // leave it, and "the strip left something" is a bad invariant to carry.
-    const run = 'z'.repeat(200);
-    expect(sanitiseStatusDetail(`note ${run} end`)).toBe('note end');
+  test('a multi-line traceback with no address still renders, flattened', () => {
+    // A newline only DROPS the note when it is hiding an address. An ordinary
+    // traceback keeps its text, which is why the render pass still turns a
+    // control character into a space rather than deleting it.
+    expect(sanitiseStatusDetail('RuntimeError: cap reset\n  at loop.py line 41'))
+      .toBe('RuntimeError: cap reset at loop.py line 41');
   });
 });
 
@@ -275,19 +293,36 @@ describe('decideStatusWrite', () => {
   const held = stored({ atMs: NOW - 30_000, at: '2026-09-20T11:59:30.000Z' });
 
   test('stores the first report for a wallet', () => {
-    expect(decideStatusWrite(NOW, null)).toBe('store');
+    expect(decideStatusWrite(NOW, null, NOW)).toBe('store');
   });
 
   test('stores a strictly newer report', () => {
-    expect(decideStatusWrite(held.atMs + 1, held)).toBe('store');
-    expect(decideStatusWrite(NOW, held)).toBe('store');
+    expect(decideStatusWrite(held.atMs + 1, held, NOW)).toBe('store');
+    expect(decideStatusWrite(NOW, held, NOW)).toBe('store');
   });
 
   test('drops a reordered older report', () => {
     // The case that matters: a delayed `canEnter: false` arriving behind the
     // newer `canEnter: true` would pin a pause on a trader that has recovered.
-    expect(decideStatusWrite(held.atMs - 1, held)).toBe('older_report');
-    expect(decideStatusWrite(held.atMs - 60_000, held)).toBe('older_report');
+    expect(decideStatusWrite(held.atMs - 1, held, NOW)).toBe('older_report');
+    expect(decideStatusWrite(held.atMs - 60_000, held, NOW)).toBe('older_report');
+  });
+
+  test('stops enforcing order once the held report has gone STALE', () => {
+    // THE CLOCK-CORRECTION DEADLOCK. A runner whose clock ran fast banks a
+    // future `at`; when it corrects itself, every later report is older than
+    // what we hold and would be refused until the wall clock caught up. A stale
+    // held report is already publishing `risk: null`, so there is nothing left
+    // to protect and refusing on its behalf only prolongs the blackout.
+    const stale = stored({
+      atMs: NOW + 600_000,
+      receivedAtMs: NOW - HOUSE_TRADER_STATUS_MAX_AGE_MS - 1,
+    });
+    // Far older than the banked timestamp, and it still takes over.
+    expect(decideStatusWrite(NOW, stale, NOW)).toBe('store');
+    // While it is still FRESH, the ordering rule does apply.
+    const fresh = stored({ atMs: NOW + 30_000, receivedAtMs: NOW - 1_000 });
+    expect(decideStatusWrite(NOW, fresh, NOW)).toBe('older_report');
   });
 
   test('STORES an equal timestamp, because dropping it aged a live pause away', () => {
@@ -298,17 +333,17 @@ describe('decideStatusWrite', () => {
     // correctly. Equal must store. It is not a replay hole: the plus or minus
     // ten minute window bounds a replayed body to a state at most ten minutes
     // old, and the next heartbeat corrects it within 60 s.
-    expect(decideStatusWrite(held.atMs, held)).toBe('store');
+    expect(decideStatusWrite(held.atMs, held, NOW)).toBe('store');
   });
 
   test('has exactly two outcomes, so no name survives for a removed behaviour', () => {
     // `duplicate_report` was removed rather than inverted. A name kept around
     // for a behaviour that no longer exists is how it gets reintroduced.
     const outcomes = new Set([
-      decideStatusWrite(held.atMs + 1, held),
-      decideStatusWrite(held.atMs, held),
-      decideStatusWrite(held.atMs - 1, held),
-      decideStatusWrite(held.atMs, null),
+      decideStatusWrite(held.atMs + 1, held, NOW),
+      decideStatusWrite(held.atMs, held, NOW),
+      decideStatusWrite(held.atMs - 1, held, NOW),
+      decideStatusWrite(held.atMs, null, NOW),
     ]);
     expect([...outcomes].sort()).toEqual(['older_report', 'store']);
   });
@@ -368,18 +403,36 @@ describe('normaliseStatusTimestamp', () => {
     // message to whoever has to fix it.
     expect(normaliseStatusTimestamp('not a date', NOW)).toEqual({ ok: false, code: 'unparseable' });
     expect(normaliseStatusTimestamp('', NOW)).toEqual({ ok: false, code: 'unparseable' });
-    expect(normaliseStatusTimestamp(new Date(NOW - HOUSE_TRADER_STATUS_MAX_SKEW_MS - 1_000).toISOString(), NOW))
+    expect(normaliseStatusTimestamp(new Date(NOW - HOUSE_TRADER_STATUS_MAX_PAST_MS - 1_000).toISOString(), NOW))
       .toEqual({ ok: false, code: 'out_of_window' });
     // A FUTURE timestamp is refused too: it is the shape a replay takes, and it
     // would drive a negative age everywhere downstream.
-    expect(normaliseStatusTimestamp(new Date(NOW + HOUSE_TRADER_STATUS_MAX_SKEW_MS + 1_000).toISOString(), NOW))
+    expect(normaliseStatusTimestamp(new Date(NOW + HOUSE_TRADER_STATUS_MAX_FUTURE_MS + 1_000).toISOString(), NOW))
+      .toEqual({ ok: false, code: 'out_of_window' });
+  });
+
+  test('the FUTURE bound is much tighter than the past bound', () => {
+    // Asymmetric on purpose. A future `at` gets STORED and then rejects every
+    // later report as older until the wall clock catches up, so a runner whose
+    // clock ran fast and then corrected itself blacks out the board for as long
+    // as this bound allows. 60 s of that is survivable; the old symmetric 10
+    // minutes is the lockout Codex found.
+    expect(HOUSE_TRADER_STATUS_MAX_FUTURE_MS).toBe(60_000);
+    expect(HOUSE_TRADER_STATUS_MAX_PAST_MS).toBe(600_000);
+    expect(normaliseStatusTimestamp(new Date(NOW + 60_000).toISOString(), NOW).ok).toBe(true);
+    expect(normaliseStatusTimestamp(new Date(NOW + 60_001).toISOString(), NOW))
+      .toEqual({ ok: false, code: 'out_of_window' });
+    // The past side is unchanged and still generous: a slow clock or a slow
+    // network is ordinary, and a replayed body is bounded by it anyway.
+    expect(normaliseStatusTimestamp(new Date(NOW - 599_000).toISOString(), NOW).ok).toBe(true);
+    expect(normaliseStatusTimestamp(new Date(NOW - 600_001).toISOString(), NOW))
       .toEqual({ ok: false, code: 'out_of_window' });
   });
 
   test('the accept window is strictly wider than the freshness window', () => {
     // Otherwise a runner whose clock is legitimately behind, but inside the
     // accept window, would land already stale and never show at all.
-    expect(HOUSE_TRADER_STATUS_MAX_SKEW_MS).toBeGreaterThan(HOUSE_TRADER_STATUS_MAX_AGE_MS);
+    expect(HOUSE_TRADER_STATUS_MAX_PAST_MS).toBeGreaterThan(HOUSE_TRADER_STATUS_MAX_AGE_MS);
   });
 });
 

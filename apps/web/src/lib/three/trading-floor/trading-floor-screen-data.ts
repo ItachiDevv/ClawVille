@@ -26,7 +26,10 @@
 
 import { TRADE_MINTS } from '@clawville/shared';
 
-import { resolveHouseTraderRiskDisplay } from '@/components/game/trading-floor/house-trader-risk';
+import {
+  resolveHouseTraderRiskDisplay,
+  type RiskFreshness,
+} from '@/components/game/trading-floor/house-trader-risk';
 import type { FloorTrade } from '@/stores/trade-ticker';
 import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
 import { formatSignedUsd } from './trading-floor-screen-texture';
@@ -364,7 +367,9 @@ export function buildFloorScreenData(
   slots: readonly HouseTraderSlotView[] | undefined,
   state: { isLoading: boolean; isError: boolean },
   nowMs: number,
+  dataUpdatedAt: number,
 ): FloorScreenData {
+  const freshness: RiskFreshness = { nowMs, dataUpdatedAt };
   const clockLabel = floorClockLabel(nowMs);
   if (state.isError) {
     return { phase: 'error', slots: [], clockLabel, tape: [] };
@@ -384,7 +389,7 @@ export function buildFloorScreenData(
     // status row shows. With no readable block the board is pixel-for-pixel the
     // one that shipped before the field existed.
     status:
-      readRiskForBoard(slot).display ??
+      readRiskForBoard(slot, freshness).display ??
       (slot.status === 'live-observed'
         ? 'live'
         : slot.status === 'stopped'
@@ -426,15 +431,18 @@ export function buildFloorScreenData(
  * moving from one blocking cause to another is a real event on a public
  * surface, and unlike `ageSeconds` it only moves on a genuine transition.
  */
-function readRiskForBoard(slot: HouseTraderSlotView): {
-  display: 'paused' | 'fault' | null;
-  reason: string | null;
-} {
+function readRiskForBoard(
+  slot: HouseTraderSlotView,
+  freshness: RiskFreshness,
+): { display: 'paused' | 'fault' | null; reason: string | null } {
   const risk = slot.risk ?? null;
-  return {
-    display: resolveHouseTraderRiskDisplay(slot.status, risk),
-    reason: risk ? risk.reason : null,
-  };
+  const display = resolveHouseTraderRiskDisplay(slot.status, risk, freshness);
+  // `reason` is nulled alongside an unshown verdict, so an EXPIRED block flips
+  // this projection exactly ONCE and then holds. Carrying the reason while the
+  // display is gone would leave a field in the signature describing something
+  // the board is no longer saying. The EXPIRY BIT reaches the trigger this way
+  // and the ticking age never does.
+  return { display, reason: display === null ? null : (risk?.reason ?? null) };
 }
 
 /**
@@ -448,6 +456,7 @@ function readRiskForBoard(slot: HouseTraderSlotView): {
 export function floorScreenSignature(
   slots: readonly HouseTraderSlotView[] | undefined,
   state: { isLoading: boolean; isError: boolean },
+  freshness: RiskFreshness,
 ): string {
   if (state.isError) return 'error';
   if (state.isLoading || slots === undefined) return 'connecting';
@@ -477,7 +486,7 @@ export function floorScreenSignature(
         // here, so the trigger cannot omit something the draw shows; read that
         // function for what it deliberately leaves out and why (`ageSeconds`
         // ticks, and stringifying it would repaint the board every poll).
-        `${JSON.stringify(readRiskForBoard(slot))}|` +
+        `${JSON.stringify(readRiskForBoard(slot, freshness))}|` +
         // Per trade: the sparkline bar height, the trade's identity, and the
         // WHOLE tape projection from `tapeInputs` — derived, not enumerated,
         // for the same reason as the realised block above. The 14-wide slice

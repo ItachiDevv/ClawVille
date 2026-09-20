@@ -152,7 +152,12 @@ function tickerTrade(): FloorTrade {
 /** Drives the presentational half directly. No module stubbing: a module
  *  namespace object cannot be patched, and `mock.module` is process global and
  *  would poison every sibling file in the lane. */
-async function renderWithSlots(slots: HouseTraderSlotView[]): Promise<HTMLElement> {
+const NOW = Date.parse('2026-09-20T12:00:00.000Z');
+
+async function renderWithSlots(
+  slots: HouseTraderSlotView[],
+  freshness?: { nowMs: number; dataUpdatedAt: number },
+): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -164,6 +169,10 @@ async function renderWithSlots(slots: HouseTraderSlotView[]): Promise<HTMLElemen
         isError: false,
         nowMs: Date.now(),
         compact: false,
+        // Fetched "just now", so only the block's own `ageSeconds` counts and
+        // every fixture here is well inside the 150 s budget. The expiry tests
+        // pass their own clock.
+        freshness: freshness ?? { nowMs: NOW, dataUpdatedAt: NOW },
       }),
     );
   });
@@ -644,6 +653,62 @@ describe('House traders section', () => {
         text: state === 'fault' ? 'Status fault' : 'Paused by risk limit',
       });
     }
+  });
+
+  // ROUNDING. The sentence prints cents, so the comparison is made in cents:
+  // 10.004 + 10.004 > 20 is true at full precision and would read as
+  // "10.00 + 10.00 is over the cap 20.00", arithmetic the reader can check and
+  // find FALSE. (Codex round 2.)
+  test('the claim is tested on the ROUNDED figures the reader sees', async () => {
+    const host = await renderWithSlots([
+      liveSlot({
+        risk: riskFixture({ dayLossUsd: 10.004, roomNeededUsd: 10.004, dayLossCapUsd: 20 }),
+      }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Paused by risk limit');
+    expect(text).not.toContain('is over the cap');
+    // A genuine overrun at the same scale still prints.
+    expect(text).not.toContain('10.00 + next position 10.00');
+  });
+
+  test('a real overrun in cents still prints', async () => {
+    const host = await renderWithSlots([
+      liveSlot({
+        risk: riskFixture({ dayLossUsd: 10.006, roomNeededUsd: 10.006, dayLossCapUsd: 20 }),
+      }),
+    ]);
+    // 10.01 + 10.01 = 20.02 > 20.00, and the printed figures say so.
+    expect(host.textContent ?? '').toContain(
+      'Day loss 10.01 + next position 10.01 is over the cap 20.00',
+    );
+  });
+
+  // CLIENT-SIDE EXPIRY on the panel, same budget and same resolver as the
+  // board. react-query keeps the last good data through a failed refetch, so a
+  // dead route would otherwise leave the pill up indefinitely.
+  test('a verdict we have held past the budget leaves the card', async () => {
+    const FETCHED = Date.parse('2026-09-20T12:00:00.000Z');
+    const host = await renderWithSlots(
+      [liveSlot({ risk: riskFixture({ ageSeconds: 40 }) })],
+      { nowMs: FETCHED + 200_000, dataUpdatedAt: FETCHED },
+    );
+    const text = host.textContent ?? '';
+    expect(text).not.toContain('Paused by risk limit');
+    expect(text).not.toContain('is over the cap');
+    expect(host.querySelectorAll('[data-testid="house-risk"]')).toHaveLength(0);
+    // The desk is still LIVE and its P&L is untouched: we stopped being told
+    // about the risk, which says nothing about the pairing or the figures.
+    expect(text).toContain('Live as Genesis');
+  });
+
+  test('a verdict still inside the budget stays on the card', async () => {
+    const FETCHED = Date.parse('2026-09-20T12:00:00.000Z');
+    const host = await renderWithSlots(
+      [liveSlot({ risk: riskFixture({ ageSeconds: 40 }) })],
+      { nowMs: FETCHED + 100_000, dataUpdatedAt: FETCHED },
+    );
+    expect(host.textContent ?? '').toContain('Paused by risk limit');
   });
 
   test('a fault is never dressed up as a risk pause', async () => {

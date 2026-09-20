@@ -32,7 +32,8 @@ import { z } from 'zod';
 import {
   HOUSE_TRADER_STATUS_DETAIL_MAX,
   HOUSE_TRADER_STATUS_MAX_AGE_MS,
-  HOUSE_TRADER_STATUS_MAX_SKEW_MS,
+  HOUSE_TRADER_STATUS_MAX_FUTURE_MS,
+  HOUSE_TRADER_STATUS_MAX_PAST_MS,
   HOUSE_TRADER_STATUS_REASONS,
   type HouseTraderRisk,
   type HouseTraderRiskState,
@@ -163,13 +164,76 @@ export function classifyRiskState(
 }
 
 /**
- * Invisible characters: soft hyphen, zero-width and bidi controls, joiners and
- * combining marks. Same set and same purpose as `INVISIBLE` in
- * `apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts`, which
- * paints this same text onto a wall in the game world. Kept as its own copy
- * because `apps/api` cannot import from `apps/web`; the two must stay in step.
+ * Everything that can SPLIT a token without being seen: marks, format
+ * characters, C0 and C1 controls, the line and paragraph separators, and the
+ * default-ignorable set.
+ *
+ * THREE ROUNDS OF THIS BUG, and the class is not the lesson. Round one listed
+ * U+0300-036F plus a handful of zero-width codepoints; Codex walked U+1AB0 and
+ * U+FE0F through it. Round two moved to `\p{M}` and `\p{Cf}`; tfs-audit walked
+ * `\p{Cc}`, `\p{Zl}` and `\p{Zp}` through THAT, and the winning input was a
+ * bare newline, which is not an attack at all, it is a Python traceback. Each
+ * class held for the members we had looked at and failed on the set.
+ *
+ * So the fix is the SPLIT below, not this list. `\p{Default_Ignorable_Code_Point}`
+ * is taken from the board's copy (tfs-web got there first) and subsumes the
+ * variation selectors and whatever Unicode adds next.
+ *
+ * `\p{Zs}` IS DELIBERATELY ABSENT, and this is the paragraph that should stop
+ * you adding it. Joining across ordinary spaces makes plain English look like
+ * an address, because base58 excludes only `l`, `0`, `O` and `I`, so any
+ * sentence that happens to avoid those four letters becomes one long run.
+ * Measured, not guessed:
+ *
+ *   "day trade entry refused by cap reset after ten minutes"  -> 45, WIPED
+ *   "at max positions nothing to rotate yet"                  -> 32, WIPED
+ *
+ * The second is the damning one. It is not contrived: it is an ordinary status
+ * note for a state in this file's own `reason` enum, and it lands EXACTLY on
+ * the threshold. Add a comma after "positions" and it survives, which tells you
+ * how thin the "that would never happen" argument is. Every leak found so far
+ * is `Cc`, `Zl` or `Zp`, all covered without `Zs`.
+ *
+ * RESIDUAL RISK, accepted deliberately: an address typed with an ordinary space
+ * inside it is NOT detected. That is much smaller than the false-positive cost
+ * above. A pasted address arrives whole and is caught; a traceback puts it on
+ * its own line and `\p{Cc}` catches that; the space case needs someone to type
+ * it on purpose. Recorded beside the other accepted risks in
+ * `docs/clawpump-integration.md`.
  */
-const INVISIBLE = /[­᠎​-‏‪-‮⁠-⁯﻿̀-ͯ]/g;
+const SPLITTERS = /[\p{M}\p{Cf}\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * The RENDER-path subset: characters that are genuinely INVISIBLE, so deleting
+ * them changes nothing a reader would see.
+ *
+ * Narrower than `SPLITTERS` on purpose, and the difference is the whole point
+ * of the two-copy design. Controls, line and paragraph separators are NOT here:
+ * they occupy space in the reader's mind, so deleting a NUL or a newline
+ * between two words would store one invented word out of two. They fall
+ * through to the printable pass below and become a SPACE. That is safe only
+ * because detection has already run on a copy where they were deleted.
+ */
+const INVISIBLE_FOR_RENDER = /[\p{M}\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * DETECTION regexes. NON-GLOBAL, and this is not style.
+ *
+ * `.replace()` resets `lastIndex`, so the `/g` copies below are safe where they
+ * are. The bug appears exactly at the transition this file just made, the first
+ * time one of those patterns is handed to `.test()`: a `/g` regex under
+ * `.test()` advances `lastIndex` and returns true, false, true across
+ * successive calls on the SAME pattern object. Measured in this runtime, on a
+ * 40-character run: `true false true`.
+ *
+ * Applied here that means the first post gets redacted and the SECOND post
+ * leaks the identical payload. It passes every single-call test and fails on
+ * the second heartbeat in production, which is the worst failure shape there
+ * is. Separate non-global copies remove the state entirely; `lastIndex = 0`
+ * before each test, or `.search() !== -1`, would also work.
+ */
+const HEX_ADDRESS_ANYWHERE = /0x[0-9a-f]{6,}/i;
+const BASE58_RUN_ANYWHERE = /[1-9A-HJ-NP-Za-km-z]{32,}/;
 /**
  * A base58 run long enough to be a Solana address.
  *
@@ -180,8 +244,11 @@ const INVISIBLE = /[­᠎​-‏‪-‮⁠-⁯﻿̀-ͯ]/g;
  * and there is no reason for a server-side strip to leave anything behind.
  */
 const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]{32,}/g;
-/** An EVM address. Base58 excludes 0, I, O and l, so hex needs its own pass. */
-const HEX_ADDRESS = /0x[0-9a-fA-F]{6,}/g;
+/** An EVM address. Base58 excludes 0, I, O and l, so hex needs its own pass.
+ *  CASE-INSENSITIVE on the whole match, not just the digits: `0X` with a
+ *  capital X is a valid prefix a checksummed address can arrive with, and the
+ *  first version only lower-cased the `0x`, so `0X...dEaD` walked through. */
+const HEX_ADDRESS = /0x[0-9a-f]{6,}/gi;
 
 /**
  * `detail` reaches a PUBLIC board and a wall in the game world, so it is
@@ -217,13 +284,46 @@ const HEX_ADDRESS = /0x[0-9a-fA-F]{6,}/g;
  * An empty result is `null`, not `''`: "no detail" and "a detail that was
  * entirely unprintable" are the same fact to a reader.
  */
+/**
+ * Does this note contain an address, once everything that could hide one is
+ * removed? Answered on a copy that exists only to be searched.
+ *
+ * This is the SECURITY half of the split. It is allowed to be maximally
+ * destructive because nobody ever reads its output: it folds to NFKD and
+ * deletes every splitting character before looking, so no character class can
+ * be "the one we forgot" in the way three of them already have been.
+ */
+export function detailCarriesAddress(raw: string): boolean {
+  const forDetection = raw.normalize('NFKD').replace(SPLITTERS, '');
+  return HEX_ADDRESS_ANYWHERE.test(forDetection) || BASE58_RUN_ANYWHERE.test(forDetection);
+}
+
+/**
+ * The READABILITY half. Runs only once detection has cleared the note, so it
+ * never has to be the thing that catches an address, which is what let a
+ * newline leak one: the render pass turns a control character into a SPACE, and
+ * a space between two halves of a pubkey is a fully readable pubkey.
+ *
+ * A note that DOES carry an address is dropped WHOLE rather than patched. A
+ * partial strip means reasoning about whether the render path caught the same
+ * thing the detector did, and that reasoning is exactly what has been wrong
+ * three times. Losing an operator's sentence is a small cost; printing a wallet
+ * on a wall in the game world is not.
+ */
 export function sanitiseStatusDetail(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
+  if (detailCarriesAddress(raw)) return null;
   const cleaned = raw
     .normalize('NFKD')
-    .replace(INVISIBLE, '')
+    .replace(INVISIBLE_FOR_RENDER, '')
+    // Belt and braces. Detection has already cleared the note, so these two can
+    // only ever be no-ops; they stay because a future edit that weakens the
+    // detector should not silently become a leak.
     .replace(HEX_ADDRESS, ' ')
     .replace(BASE58_RUN, ' ')
+    // Anything still outside printable ASCII becomes a SPACE, not a deletion:
+    // deleting a stray character between two words invents one word out of two.
+    // Safe here precisely because the splitting classes are already gone above.
     .replace(/[^\x20-\x7E]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -300,11 +400,16 @@ export type StatusTimestampResult =
 export function normaliseStatusTimestamp(
   raw: string,
   nowMs: number,
-  maxSkewMs: number = HOUSE_TRADER_STATUS_MAX_SKEW_MS,
+  maxPastMs: number = HOUSE_TRADER_STATUS_MAX_PAST_MS,
+  maxFutureMs: number = HOUSE_TRADER_STATUS_MAX_FUTURE_MS,
 ): StatusTimestampResult {
   const parsed = Date.parse(raw);
   if (!Number.isFinite(parsed)) return { ok: false, code: 'unparseable' };
-  if (Math.abs(nowMs - parsed) > maxSkewMs) return { ok: false, code: 'out_of_window' };
+  // ASYMMETRIC. A future `at` is far more dangerous than a past one, because it
+  // gets STORED and then rejects every later report as older until the wall
+  // clock catches up. See `HOUSE_TRADER_STATUS_MAX_FUTURE_MS`.
+  if (parsed - nowMs > maxFutureMs) return { ok: false, code: 'out_of_window' };
+  if (nowMs - parsed > maxPastMs) return { ok: false, code: 'out_of_window' };
   // `atMs` travels with the string so the ordering check below never re-parses
   // a value we have already parsed, and so the two can never disagree.
   return { ok: true, at: new Date(parsed).toISOString(), atMs: parsed };
@@ -340,6 +445,19 @@ export function normaliseStatusTimestamp(
  * state at most ten minutes old, and the next heartbeat corrects it within 60
  * seconds.
  *
+ * ORDERING ONLY APPLIES WHILE THE HELD REPORT IS STILL FRESH, and that gate is
+ * a deadlock breaker, not an optimisation. The rule compares against a stored
+ * `at`, so a runner that banked a FUTURE timestamp (a fast clock) and then
+ * corrected itself would have every later report refused as older until the
+ * wall clock caught up. Once the held report is past the 150 s ageout it is
+ * publishing nothing anyway, so there is nothing left to protect and any valid
+ * report takes over. Worst case is now bounded twice over: by the 60 s future
+ * skew limit and by this 150 s gate, whichever is shorter.
+ *
+ * NOT ORDERED: two reports carrying the SAME millisecond. Accepted risk. The
+ * runner posts from one sequential loop, so it cannot produce two states in one
+ * millisecond, and if it ever did the second would simply win.
+ *
  * An ignored report answers 200, because the runner did nothing wrong and must
  * not retry.
  */
@@ -348,8 +466,12 @@ export type StatusWriteDecision = 'store' | 'older_report';
 export function decideStatusWrite(
   incomingAtMs: number,
   stored: StoredHouseTraderStatus | null,
+  nowMs: number,
 ): StatusWriteDecision {
   if (!stored) return 'store';
+  // A stale held report protects nothing: it is already `risk: null` on the
+  // wire, so refusing a newer body on its behalf only prolongs a blackout.
+  if (!isStatusFresh(stored.receivedAtMs, nowMs)) return 'store';
   return incomingAtMs < stored.atMs ? 'older_report' : 'store';
 }
 

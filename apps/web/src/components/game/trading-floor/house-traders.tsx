@@ -15,6 +15,7 @@ import {
   formatRiskArithmetic,
   resolveHouseTraderRiskDisplay,
   type HouseTraderRiskView,
+  type RiskFreshness,
 } from './house-trader-risk';
 import { TapeRow } from './trade-row';
 import { FLOOR_TEXT } from './tokens';
@@ -208,10 +209,12 @@ function SlotCard({
   slot,
   rowLimit,
   nowMs,
+  freshness,
 }: {
   slot: HouseTraderSlotView;
   rowLimit: number;
   nowMs: number;
+  freshness: RiskFreshness;
 }) {
   const tickerEntries = useTradeTickerStore((state) => state.entries);
   // The SAME identifier the tape publishes, so the filter matches on the id the
@@ -230,7 +233,7 @@ function SlotCard({
   }, [subjectId, tickerEntries, slot.recentTrades, rowLimit]);
 
   const occupied = slot.status !== 'not-yet-running';
-  const riskDisplay = resolveHouseTraderRiskDisplay(slot.status, slot.risk);
+  const riskDisplay = resolveHouseTraderRiskDisplay(slot.status, slot.risk, freshness);
 
   return (
     <div style={innerCardStyle}>
@@ -317,12 +320,17 @@ export function HouseTradersView({
   isError,
   nowMs,
   compact,
+  freshness,
 }: {
   slots: HouseTraderSlotView[];
   isLoading: boolean;
   isError: boolean;
   nowMs: number;
   compact: boolean;
+  /** When the data in hand was FETCHED, against the current clock. A verdict
+   *  the route has stopped refreshing expires here rather than sitting on the
+   *  card forever: react-query keeps the last good data through a failed poll. */
+  freshness: RiskFreshness;
 }) {
   const query = { isLoading, isError };
   return (
@@ -371,6 +379,7 @@ export function HouseTradersView({
               slot={slot}
               rowLimit={compact ? 1 : 3}
               nowMs={nowMs}
+              freshness={freshness}
             />
           ))}
         </div>
@@ -394,6 +403,9 @@ export function HouseTradersSection({ active }: { active: boolean }) {
       isError={query.isError}
       nowMs={nowMs}
       compact={mobileResolved && isMobile}
+      // `nowMs` advances on the shared 60 s floor clock, so an expired verdict
+      // leaves the panel within a minute of its 150 s budget running out.
+      freshness={{ nowMs, dataUpdatedAt: query.dataUpdatedAt }}
     />
   );
 }

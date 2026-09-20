@@ -113,10 +113,18 @@ export function TradingFloorScreen({ active }: { active: boolean }) {
     return next;
   }, [surface]);
 
-  const signature = floorScreenSignature(query.data, {
-    isLoading: query.isLoading,
-    isError: query.isError,
-  });
+  // `dataUpdatedAt` is when the data IN HAND was fetched, which is the half of
+  // the staleness sum react-query can tell us; the other half is `ageSeconds`
+  // inside the block. Read on every render, so the 30 s age tick below
+  // re-evaluates expiry as well as the "LAST …" labels, and a verdict that
+  // outlives its 150 s budget leaves the board within one tick even if every
+  // poll since has failed.
+  const freshness = { nowMs: Date.now(), dataUpdatedAt: query.dataUpdatedAt };
+  const signature = floorScreenSignature(
+    query.data,
+    { isLoading: query.isLoading, isError: query.isError },
+    freshness,
+  );
 
   // The ONLY redraw site. Runs on a data change and on the 30 s age tick.
   useEffect(() => {
@@ -127,6 +135,7 @@ export function TradingFloorScreen({ active }: { active: boolean }) {
         query.data,
         { isLoading: query.isLoading, isError: query.isError },
         Date.now(),
+        query.dataUpdatedAt,
       ),
     );
     surface.texture.needsUpdate = true;

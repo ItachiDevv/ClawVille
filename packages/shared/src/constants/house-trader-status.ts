@@ -89,13 +89,64 @@ export const HOUSE_TRADER_STATUS_MAX_AGE_MS = 150_000;
  *  every state change. Published so the ageout above is readable next to it. */
 export const HOUSE_TRADER_STATUS_HEARTBEAT_MS = 60_000;
 
-/** How far the runner's own `at` may sit from server time before the post is
- *  refused. Generous enough for ordinary clock drift, tight enough that a
- *  replayed old body cannot install a state that has since changed. */
-export const HOUSE_TRADER_STATUS_MAX_SKEW_MS = 600_000;
+/**
+ * How far BEHIND server time the runner's own `at` may sit. Generous, because a
+ * slow clock or a slow network is ordinary, and a replayed old body is already
+ * bounded to re-asserting a state at most this old.
+ */
+export const HOUSE_TRADER_STATUS_MAX_PAST_MS = 600_000;
+
+/**
+ * How far AHEAD of server time `at` may sit. Deliberately much tighter than the
+ * past bound, and the asymmetry is a bug fix rather than fussiness.
+ *
+ * A future `at` gets STORED, and the ordering rule then rejects everything
+ * older than it. So a runner whose clock ran fast, and which then corrected
+ * itself, would have every subsequent report refused as `older_report` until
+ * the wall clock caught up with the timestamp it had already banked. At the old
+ * symmetric 10 minutes that was a ten minute blackout on a live public board,
+ * caused by a runner doing the right thing. At 60 seconds the same mistake
+ * costs at most a minute, and the freshness gate on the ordering check bounds
+ * it independently at 150 seconds.
+ */
+export const HOUSE_TRADER_STATUS_MAX_FUTURE_MS = 60_000;
 
 /** Hard cap on the free-text `detail`, before and after sanitising. */
 export const HOUSE_TRADER_STATUS_DETAIL_MAX = 120;
+
+/**
+ * What `POST /api/floor/house-traders/status` answers on success. Typed here
+ * rather than inline in the route because it is a MACHINE contract: the runner
+ * branches on it, and a field that exists only as an object literal in a
+ * handler is a field nobody outside this repo can discover.
+ *
+ * Both shapes are 200 and neither should be retried.
+ */
+export interface HouseTraderStatusStored {
+  ok: true;
+  wallet: string;
+  /** Server receipt time, ISO 8601 UTC. The 150 second ageout runs from here. */
+  receivedAt: string;
+  /**
+   * Present, and only ever `true`, when a `detail` was sent and the whole note
+   * was discarded for carrying something address-shaped. The rest of the report
+   * stored normally: the state is the load-bearing part and is never refused
+   * over an operator's formatting.
+   *
+   * It exists so the drop is VISIBLE. A note that vanishes silently leaves the
+   * author believing their text is on the board.
+   */
+  detailRedacted?: true;
+}
+
+/** The report was accepted but NOT stored, because a newer one is already held.
+ *  See the ordering rule; this is a 200 and must not be retried. */
+export interface HouseTraderStatusIgnored {
+  ok: true;
+  ignored: 'older_report';
+}
+
+export type HouseTraderStatusResponse = HouseTraderStatusStored | HouseTraderStatusIgnored;
 
 /**
  * The `risk` block on each slot of `GET /api/floor/house-traders`.

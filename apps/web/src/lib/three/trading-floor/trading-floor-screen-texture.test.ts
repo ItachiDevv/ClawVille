@@ -18,10 +18,46 @@ import {
   type FloorScreenSlot,
 } from './trading-floor-screen-texture';
 import {
-  buildFloorScreenData,
+  buildFloorScreenData as rawBuildFloorScreenData,
   floorClockLabel,
-  floorScreenSignature,
+  floorScreenSignature as rawFloorScreenSignature,
 } from './trading-floor-screen-data';
+import type { RiskFreshness } from '@/components/game/trading-floor/house-trader-risk';
+
+/**
+ * DEFAULT FRESHNESS for the tests that are not about expiry: the response was
+ * fetched at the instant it is being read, so `heldSeconds` is 0 and only the
+ * block's own `ageSeconds` counts. Every fixture sits well inside the 150 s
+ * budget, so these calls behave exactly as they did before expiry existed.
+ * The expiry tests pass their own clock explicitly.
+ *
+ * Wrapping rather than editing twenty call sites keeps the PRODUCTION
+ * signatures strict: `freshness` is a required parameter there precisely so a
+ * new caller cannot forget it, which is the same reason `frozen` is required
+ * on `resolveTradingFloorInteraction`.
+ */
+const FRESH: RiskFreshness = { nowMs: 0, dataUpdatedAt: 0 };
+
+function buildFloorScreenData(
+  slots: Parameters<typeof rawBuildFloorScreenData>[0],
+  state: Parameters<typeof rawBuildFloorScreenData>[1],
+  nowMs: number,
+  dataUpdatedAt: number = nowMs,
+) {
+  // DEFAULTS TO `nowMs`, not to zero. Fetched at the instant it is read, so
+  // `heldSeconds` is 0 and only the block's own `ageSeconds` counts. Defaulting
+  // to 0 against a real wall-clock `nowMs` made every fixture look 56 years
+  // stale and expired the lot.
+  return rawBuildFloorScreenData(slots, state, nowMs, dataUpdatedAt);
+}
+
+function floorScreenSignature(
+  slots: Parameters<typeof rawFloorScreenSignature>[0],
+  state: Parameters<typeof rawFloorScreenSignature>[1],
+  freshness: RiskFreshness = FRESH,
+) {
+  return rawFloorScreenSignature(slots, state, freshness);
+}
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
 import { HOUSE_TRADER_LINEUP, TRADE_MINTS } from '@clawville/shared';
 import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
@@ -307,6 +343,15 @@ const INVISIBLE = /[\u0000-\u001f­​-‏‪-‮﻿]/;
  * removed so a leak split by a SPACE is still caught. A window that long cannot
  * occur in real copy by accident, and a leak that drops or splits a character
  * still leaves whole windows either side of the damage.
+ *
+ * KNOWN LIMIT, stated so nobody over-trusts it: 16 is sound for ONE splitter,
+ * because a 44-character address cut once always leaves a run of at least 22 on
+ * the long side. Marks spaced CLOSER than 16 would defeat it — a mark every 8
+ * characters leaves no 16-character run intact. Any fixed window can be beaten
+ * that way, so the dense shapes are covered by the exact-output assertion in
+ * the callers (`expect(out).toBe('NOTE')`), which has no blind spot at all.
+ * This helper is the backstop on the DRAW path, where an exact expectation is
+ * not available.
  */
 function assertAddressAbsent(strings: string[], address: string): void {
   const upper = address.toUpperCase();
@@ -408,6 +453,16 @@ describe('Trading Floor board — untrusted text hygiene', () => {
     ['a zero-width space', 0x200b],
     ['a soft hyphen', 0x00ad],
     ['a word joiner', 0x2060],
+    // WIDENED 2026-09-20 from a hand-listed range set to the Unicode
+    // PROPERTIES `\p{M}`, `\p{Cf}`, `\p{Cc}`, `\p{Zl}`, `\p{Zp}` and
+    // `\p{Default_Ignorable_Code_Point}`. The old list was an enumeration of
+    // the shapes we happened to have thought of, and these two were outside
+    // it: U+1AB0 is a combining mark beyond the U+0300-U+036F block the list
+    // named, and U+FE0F is a variation selector, which is also a mark. Both
+    // split a base58 run exactly like a combining acute. Properties are the
+    // derived form of the same idea and cannot be short by omission.
+    ['a high combining mark U+1AB0', 0x1ab0],
+    ['a variation selector U+FE0F', 0xfe0f],
   ])('an address split by %s still never reaches the board', (_name, codePoint) => {
     const address = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
     const head = address.slice(0, 20);
@@ -436,6 +491,78 @@ describe('Trading Floor board — untrusted text hygiene', () => {
       expect(value).not.toContain(head.toUpperCase());
       expect(value).not.toContain(tail.toUpperCase());
     }
+  });
+
+  // THE DENSE SHAPE, which no fixed-width window detector can catch. A mark
+  // every 8 characters leaves no 16-character run intact, so `assertAddressAbsent`
+  // would report clean whatever happened. The assertion here is therefore the
+  // EXACT output, which has no blind spot: if a single fragment survived, the
+  // string would not be "NOTE".
+  //
+  // It also exercises something the single-splitter cases do not: that the
+  // strip handles REPEATED marks rather than only the first. NFKD decomposes
+  // each one independently and `INVISIBLE` is a global replace, so the run
+  // rejoins completely and `BASE58_RUN` sees the whole address.
+  test('an address peppered with combining marks is still removed entirely', () => {
+    const address = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const acute = String.fromCharCode(0x0301);
+    const peppered = address.replace(/(.{8})/g, `$1${acute}`);
+    expect(peppered.length).toBeGreaterThan(address.length + 3);
+
+    const out = sanitiseScreenText(`note ${peppered}`, 200);
+    expect(out).toBe('NOTE');
+
+    const drawn = draw({ phase: 'ready', slots: [slot({ label: `note ${peppered}` })] });
+    assertDrawable(drawn.strings);
+    // Every 8-character piece is gone too, not merely the long runs.
+    for (let i = 0; i + 8 <= address.length; i += 8) {
+      const piece = address.slice(i, i + 8).toUpperCase();
+      for (const value of drawn.strings) {
+        expect({ piece, present: value.replace(/[^A-Za-z0-9]/g, '').includes(piece) }).toEqual({
+          piece,
+          present: false,
+        });
+      }
+    }
+  });
+
+  // THREE SHAPES THAT REACHED THE WALL, each pinned by EXACT OUTPUT rather
+  // than by a detector. tfs-audit proved the first two against this file and
+  // Codex found the same at ingest; the third came out of probing for the set
+  // instead of the reported members.
+  //
+  // Exact output is the assertion that has no sample to be outside of. Every
+  // detector in this file has now been fooled once: `includes` by a dropped
+  // character, a base58 regex by upper-casing, a long-run check by legitimate
+  // copy, and a 16-character window by dense marks. `toBe('NOTE')` cannot be.
+  test.each([
+    // The digits were case-insensitive; the `0x` PREFIX was a literal lowercase
+    // pair, and the strip runs BEFORE `toUpperCase()`. So `0x…` was caught and
+    // `0X…` printed in full: "NOTE 0XDEADBEEF1234567890ABCDEF".
+    ['an UPPERCASE 0X prefix', 'note 0XdeadBEEF1234567890abcdef'],
+    ['a lowercase 0x prefix', 'note 0xdeadBEEF1234567890abcdef'],
+    // Neither hex pass saw this one: no `0x` for `HEX_ADDRESS`, and the run
+    // contains `0`, which base58 excludes.
+    ['hex with no prefix at all', 'note deadBEEF1234567890abcdef1234'],
+  ])('%s never reaches the board', (_name, input) => {
+    expect(sanitiseScreenText(input, 200)).toBe('NOTE');
+    const drawn = draw({ phase: 'ready', slots: [slot({ label: input })] });
+    assertDrawable(drawn.strings);
+    for (const value of drawn.strings) {
+      expect(value).not.toMatch(/[0-9A-F]{20,}/);
+    }
+  });
+
+  // THE UPPER BOUND WAS A TAIL. `{32,64}` with `/g` consumed the first 64
+  // characters of an 88-character run and left the remaining 24 under the
+  // minimum, so they were not matched and they printed:
+  // "NOTE BD5JBKHETQA83TZRUJOSGASU". A run being LONGER than an address is not
+  // a reason to publish part of it.
+  test('a base58 run longer than an address leaves no tail', () => {
+    const address = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const doubled = `note ${address}${address}`;
+    expect(sanitiseScreenText(doubled, 200)).toBe('NOTE');
+    assertAddressAbsent([sanitiseScreenText(doubled, 200)], address);
   });
 
   // The fold NFKD is still there to do, unchanged by the switch: a label may
@@ -1384,6 +1511,12 @@ describe('Trading Floor board — what it actually shows', () => {
   //   enough that two strings fit 278.67px. Do NOT loosen `textBox` to make it
   //   pass — the estimator is pessimistic on purpose and has caught two real
   //   bugs, and it is not what is failing here.
+  // Evidence it fits today and ONLY today: `drawCard`'s own comment records
+  //   that the shortened wording (`n NON-USDC EXCLUDED` / `n NO-EXIT
+  //   WRITE-OFF`, 171px each) was measured against **394px of usable card**,
+  //   which is the TWO-slot width. A three-slot card has 278.67px, so the same
+  //   two strings need 342px and overrun by 63.3px. The wording was never sized
+  //   for three.
   // Reference: 3dStructure.md §9h; .claude/memory/threejs/gotchas/
   //   canvas-paint-pin-estimator-false-positive.md
   const STRICT_SWEEP_MAX_SLOTS = HOUSE_TRADER_LINEUP.length > 2 ? 3 : 2;
@@ -2291,10 +2424,20 @@ describe('Trading Floor board — redraw signature', () => {
       expect(sign(next)).not.toBe(sign(riskView()));
     });
 
-    test('appearing and clearing both change the signature', () => {
+    test('a verdict appearing or clearing changes the signature', () => {
       const none = sign(null);
       expect(sign(riskView())).not.toBe(none);
-      expect(sign(riskView({ state: 'live', reason: 'ok' }))).not.toBe(none);
+      expect(sign(riskView({ state: 'fault' }))).not.toBe(none);
+    });
+
+    // A LIVE verdict and NO verdict draw the same card, so they sign the same
+    // and the board does not repaint between them. That changed when `reason`
+    // started being nulled alongside an unshown display: before, a live block
+    // leaked its `ok` into the trigger and bought a repaint for identical
+    // pixels. Asserted rather than left implicit, because it looks like a
+    // missing case until you notice the two boards are the same board.
+    test('a live verdict and no verdict are one board, so one signature', () => {
+      expect(sign(riskView({ state: 'live', reason: 'ok' }))).toBe(sign(null));
     });
 
     // THE STAGING CASE. An absent field and an explicit null are the same
@@ -2318,7 +2461,11 @@ describe('Trading Floor board — redraw signature', () => {
     // The board draws neither.
     test('a field that only moves with the clock does not repaint the board', () => {
       const base = sign(riskView());
-      expect(sign(riskView({ ageSeconds: 9_999 }))).toBe(base);
+      // BOTH SIDES OF THE EXPIRY BUDGET, deliberately. 42 s and 100 s are the
+      // same board, so the ticking age must not repaint it. Crossing 150 s is
+      // a different board and has its own test below; using 9_999 here (as an
+      // earlier version did) was asserting that expiry does NOT work.
+      expect(sign(riskView({ ageSeconds: 100 }))).toBe(base);
       expect(sign(riskView({ at: '2026-09-20T23:59:00.000Z' }))).toBe(base);
       // Nor do the panel's figures and prose, which the BOARD does not draw.
       expect(sign(riskView({ detail: 'something else entirely' }))).toBe(base);
@@ -2332,10 +2479,10 @@ describe('Trading Floor board — redraw signature', () => {
         join(import.meta.dir, 'trading-floor-screen-data.ts'),
         'utf8',
       );
-      expect(source).toContain('JSON.stringify(readRiskForBoard(slot))');
+      expect(source).toContain('JSON.stringify(readRiskForBoard(slot, freshness))');
       // `readRiskForBoard` feeds the DRAW too, which is what makes the
       // derivation worth anything.
-      expect(source).toContain('readRiskForBoard(slot).display');
+      expect(source).toContain('readRiskForBoard(slot, freshness).display');
     });
 
     // And the DRAW is identical too, not just the trigger.
@@ -2348,6 +2495,89 @@ describe('Trading Floor board — redraw signature', () => {
         return rec.painted;
       };
       expect(paint([withoutRisk as HouseTraderSlotView])).toEqual(paint([view({ risk: null })]));
+    });
+  });
+
+  // CLIENT-SIDE EXPIRY. react-query KEEPS the last good data when a refetch
+  // fails or hangs, so without this a route outage during a pause leaves
+  // PAUSED on the wall for as long as the player stands there, fed by a dead
+  // feed. The client budget is the server's own 150 s applied to the SUM of
+  // the report's age and how long we have held the response. (Codex round 2.)
+  describe('a verdict expires in the client when the feed stops', () => {
+    const state = { isLoading: false, isError: false };
+    const FETCHED = Date.parse('2026-09-20T12:00:00.000Z');
+    const at = (heldSeconds: number) => ({
+      nowMs: FETCHED + heldSeconds * 1000,
+      dataUpdatedAt: FETCHED,
+    });
+    const statusAt = (heldSeconds: number, ageSeconds = 40) =>
+      buildFloorScreenData(
+        [view({ risk: riskView({ ageSeconds }) })],
+        state,
+        FETCHED + heldSeconds * 1000,
+        FETCHED,
+      ).slots[0]!.status;
+
+    test('holds the pause while the sum is inside the budget', () => {
+      expect(statusAt(0)).toBe('paused');
+      expect(statusAt(100)).toBe('paused');
+      // 40 + 110 = 150 exactly. The budget is "> 150", so the edge still holds.
+      expect(statusAt(110)).toBe('paused');
+    });
+
+    test('drops the pause once the sum passes the budget', () => {
+      // 40 + 111 = 151. The desk reverts to its pairing word, LIVE, which is
+      // the honest reading: we have stopped being told anything, which is not
+      // the same as being told the risk read failed.
+      expect(statusAt(111)).toBe('live');
+      expect(statusAt(10_000)).toBe('live');
+    });
+
+    test('an expired FAULT also reverts, and never becomes a pause', () => {
+      const expired = buildFloorScreenData(
+        [view({ risk: riskView({ state: 'fault', ageSeconds: 40 }) })],
+        state,
+        FETCHED + 200_000,
+        FETCHED,
+      ).slots[0]!.status;
+      expect(expired).toBe('live');
+    });
+
+    // ONE BIT reaches the trigger, never the ticking age: the signature moves
+    // exactly once, when the verdict crosses the budget, and is stable either
+    // side of it. That is what keeps a 15 s poll from repainting the board.
+    test('expiry flips the signature exactly once', () => {
+      const slots = [view({ risk: riskView({ ageSeconds: 40 }) })];
+      const live = floorScreenSignature(slots, state, at(0));
+      expect(floorScreenSignature(slots, state, at(100))).toBe(live);
+      const expired = floorScreenSignature(slots, state, at(111));
+      expect(expired).not.toBe(live);
+      expect(floorScreenSignature(slots, state, at(9_999))).toBe(expired);
+    });
+
+    // A clock we cannot reason about must not expire a live pause on its own
+    // authority; the server is still the primary decider.
+    test('an unusable clock holds the verdict rather than dropping it', () => {
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+        const held = buildFloorScreenData(
+          [view({ risk: riskView({ ageSeconds: 40 }) })],
+          state,
+          bad,
+          FETCHED,
+        ).slots[0]!.status;
+        expect({ bad, held }).toEqual({ bad, held: 'paused' });
+      }
+    });
+
+    // A response dated in the FUTURE is clock skew, not extra freshness.
+    test('a future fetch time is clamped rather than credited', () => {
+      const skewed = buildFloorScreenData(
+        [view({ risk: riskView({ ageSeconds: 40 }) })],
+        state,
+        FETCHED,
+        FETCHED + 600_000,
+      ).slots[0]!.status;
+      expect(skewed).toBe('paused');
     });
   });
 

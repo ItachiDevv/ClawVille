@@ -282,12 +282,53 @@ export const COLOR = {
  * invisibles before anything looks for a token and the split cannot happen.
  * Combining marks go too, so `ṕnl` cannot hide either.
  */
-const INVISIBLE = /[­᠎​-‏‪-‮⁠-⁯﻿̀-ͯ]/g;
+const INVISIBLE =
+  /[\p{M}\p{Cf}\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
-/** A base58 run long enough to be a Solana address. */
-const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]{32,64}/g;
-/** An EVM address. Base58 excludes 0/I/O/l, so hex needs its own pass. */
-const HEX_ADDRESS = /0x[0-9a-fA-F]{6,}/g;
+// ONE DELIBERATE DIFFERENCE FROM THE INGEST SANITISER: `\p{Cc}` is DELETED
+// here, not replaced with a space, so `"floor\u0000reached"` becomes the single
+// word `FLOORREACHED` rather than two. The ingest side spaces controls on
+// purpose, because it is preserving an operator's sentence for a reader. This
+// side is protecting a WALL, where a character that splits a base58 run into
+// two sub-32 pieces is the whole attack, so deleting is the safer of the two
+// and the cosmetic merge is the price. The two files differ on purpose.
+
+/**
+ * A base58 run long enough to be a Solana address.
+ *
+ * NO UPPER BOUND, and the `{32,64}` it replaced was a proven leak: with `/g`
+ * the engine consumed the first 64 characters of an 88-character run and the
+ * remaining 24 fell under the minimum, so they were not matched and they
+ * PRINTED — `NOTE BD5JBKHETQA83TZRUJOSGASU` on the wall. An address strip has
+ * no reason to leave a tail; a run being longer than an address is not a
+ * reason to publish part of it.
+ */
+const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]{32,}/g;
+
+/**
+ * An EVM address. Base58 excludes 0/I/O/l, so hex needs its own pass.
+ *
+ * THE `i` IS LOAD-BEARING and its absence was a proven leak. The digits were
+ * already case-insensitive via `[0-9a-fA-F]`, but the `0x` PREFIX was a literal
+ * lowercase pair, and this strip runs BEFORE `toUpperCase()` — so `0xdead…` was
+ * caught and `0Xdead…` walked through and printed in full. Found by tfs-audit
+ * against this file after Codex found it at ingest; both ends now carry the
+ * flag.
+ */
+const HEX_ADDRESS = /0x[0-9a-f]{6,}/gi;
+
+/**
+ * Hex with NO prefix at all, which neither pass above sees: `BASE58_RUN` cannot
+ * match a run containing `0`, and `HEX_ADDRESS` needs its `0x`. An unprefixed
+ * 40-character EVM address or a 64-character tx hash is still an identifier on
+ * a wall.
+ *
+ * 20 is safe rather than aggressive: the class is only `[0-9a-f]`, so a
+ * twenty-character run of nothing but hex digits does not occur in the board's
+ * own copy. The longest real word here is "CLAWVILLE", and the basis band's
+ * longest run is "EXCLUDES", neither of which is hex.
+ */
+const BARE_HEX_RUN = /[0-9a-f]{20,}/gi;
 
 /**
  * Printable set for untrusted text. Money punctuation is INCLUDED now, because
@@ -337,7 +378,10 @@ export function sanitiseScreenText(raw: string, maxLength = 26): string {
     // Addresses go BEFORE any case change: base58 excludes `0 O I l`, so
     // upper-casing first would split a real address into sub-32-character
     // pieces and let it through.
+    // PREFIXED hex first, so the `0x` goes with its digits; then unprefixed
+    // hex; then base58.
     .replace(HEX_ADDRESS, ' ')
+    .replace(BARE_HEX_RUN, ' ')
     .replace(BASE58_RUN, ' ')
     .replace(DISALLOWED, ' ')
     .replace(WHITESPACE, ' ')

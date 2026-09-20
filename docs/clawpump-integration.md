@@ -203,11 +203,11 @@ Body, all fields required except `detail`, and strictly validated (an unknown fi
 | `wallet` | string | base58, 32 to 44 chars. MUST be the bound trading wallet of a current lineup slot. |
 | `canEnter` | boolean | Can the runner open a position right now. The runner is the authority; the reason only explains. |
 | `reason` | enum | `ok`, `daily_loss_floor`, `halted`, `insufficient_usdc`, `gas_reserve`, `at_max_positions`, `settling`, `price_feed_down`, `other`. |
-| `detail` | string, optional | Max 120 chars. Sanitised server-side: NFKD fold, invisible characters deleted, hex and base58 ADDRESS RUNS removed, remaining non-printables to a space, whitespace collapsed, capped. An empty result stores as `null`. Do not put a wallet in it; it will be removed, and a zero-width character or a combining mark inside one does not get it through. |
+| `detail` | string, optional | Max 120 chars. **A note containing anything that looks like a wallet is DROPPED WHOLE, not patched**, and the 200 comes back with `detailRedacted: true`. Detection runs on a copy folded to NFKD with every mark, format character, control, line and paragraph separator and default-ignorable codepoint deleted, then searched for `0x` hex and for a run of 32 or more base58 characters, so splitting an address with a zero-width space, a combining mark, a variation selector or a NEWLINE does not get it through. Note the newline: a Python traceback that happens to print a pubkey will cost you the whole note. Send figures and reasons, not addresses. What survives detection is then rendered: invisible characters deleted, remaining non-printables to a space, whitespace collapsed, capped. An empty result stores as `null`. |
 | `dayLossUsd` | number | Finite, at or above 0. |
 | `dayLossCapUsd` | number | Finite, above 0. A zero cap would render as "14.95 of 0.00". |
 | `roomNeededUsd` | number | Finite, at or above 0. Headroom needed before the runner can enter again. |
-| `at` | string | **The time you SEND this post.** Not the time the state began, and not a value you cache alongside the state: stamping it fresh on EVERY post, including a heartbeat that reports no change, is what we expect you to build. An IDENTICAL `at` is nevertheless TOLERATED and still refreshes, so a naive resend-last-payload heartbeat keeps working; see ORDERING below for why we accept it rather than treat it as a replay. ISO 8601, and send ISO 8601: parsing is `Date.parse`, which is lenient and will also accept forms this contract does not promise, and the server stores the normalised ISO 8601 UTC form whatever you send. Must parse AND sit within 10 minutes of server time, in either direction. |
+| `at` | string | **The time you SEND this post.** Not the time the state began, and not a value you cache alongside the state: stamping it fresh on EVERY post, including a heartbeat that reports no change, is what we expect you to build. An IDENTICAL `at` is nevertheless TOLERATED and still refreshes, so a naive resend-last-payload heartbeat keeps working; see ORDERING below for why we accept it rather than treat it as a replay. ISO 8601, and send ISO 8601: parsing is `Date.parse`, which is lenient and will also accept forms this contract does not promise, and the server stores the normalised ISO 8601 UTC form whatever you send. Must parse AND sit inside an ASYMMETRIC window: at most **60 seconds AHEAD** of server time, and at most 10 minutes behind. Else `stale_timestamp`. The future side is the tight one because a future `at` is stored and then outranks every later report until the wall clock catches up, so a fast clock you later correct would black out the board for as long as that bound allows. |
 
 Two body rules that are easy to trip and are refusals, not warnings. `{canEnter:false, reason:'ok'}` is REFUSED: it says
 "I cannot open a position and nothing is wrong", which the classifier would otherwise read as `live`, so the board would
@@ -224,6 +224,17 @@ unchanged pause on the board across heartbeats. Sending a fresh `at` on every po
 an identical one is deliberately TOLERATED rather than rejected: a naive heartbeat that resends its last payload
 verbatim must never be the reason a live pause disappears from a public board.
 
+**The ordering rule switches OFF once the held report goes stale.** It only applies while what we hold is still inside
+its 150 second life. A stale report is already publishing `risk: null`, so there is nothing left for the rule to
+protect, and any valid report takes over. That is a deadlock breaker: together with the 60 second future bound it means
+a runner that banked a fast-clock timestamp and then corrected itself is locked out for at most 60 seconds, never for
+the ten minutes the old symmetric window allowed.
+
+**ACCEPTED RISK: two reports carrying the SAME millisecond are not ordered.** Whichever arrives second wins. This is
+safe because the runner posts from ONE sequential loop, so it cannot produce two different states inside a single
+millisecond; if it ever could, ordering them would need a sequence number rather than a clock. Do not parallelise the
+post loop without telling us.
+
 An earlier draft of this contract dropped an equal `at` as a duplicate. That was wrong and is recorded here so it does
 not come back: a desk paused for ten minutes heartbeats every 60 seconds, and if `at` describes the STATE rather than
 the POST then every one of those heartbeats carries the same value, none of them refresh the receipt time, and the
@@ -233,7 +244,8 @@ together and both are part of the contract: `at` is the SEND time of the post, a
 hole, because the plus or minus 10 minute window already bounds a replayed body to re-asserting a state at most ten
 minutes old, and your next heartbeat corrects it within 60 seconds.
 
-Answers: `200 {ok:true, wallet, receivedAt}` · `200 {ok:true, ignored:'older_report'}` (see ORDERING above; accepted,
+Answers: `200 {ok:true, wallet, receivedAt}`, plus `detailRedacted: true` when a note was sent and dropped for
+carrying an address · `200 {ok:true, ignored:'older_report'}` (see ORDERING above; accepted,
 not stored) · `400 {error:'invalid_body'}` (any zod failure, including the contradiction
 above and an `at` that is not a timestamp at all) · `400 {error:'stale_timestamp'}` (a well-formed time outside the 10
 minute window, in either direction; kept separate from `invalid_body` because "fix your serialiser" and "fix your clock,
@@ -268,8 +280,10 @@ edge is at most 155 seconds old rather than 150.
 
 **Operational notes.** The state lives in an in-process Map, one entry per wallet, last write wins, hard-capped at 16
 entries with insertion-order eviction, no table and no migration: it ages out in 150 seconds, carries no money and has
-no history obligation. It is per API process and it dies on every deploy, so post to ONE host and expect every slot to
-read `risk: null` right after a flip until the next heartbeat lands. The token is never logged and never echoed in an
+no history obligation. **It is per API PROCESS**, which is one api container today, and it dies on every deploy: post to
+ONE host, and expect every slot to read `risk: null` right after a flip until the next heartbeat lands. If the api is
+ever scaled to more than one container, this feed needs shared storage before that happens, because each container
+would otherwise answer from its own partial view. The token is never logged and never echoed in an
 error body. The wallet is a join key only and never reaches the public response.
 
 **NOTHING PAGES ON A PAUSE, and that is a deliberate choice, not an oversight.** This feed drives the BOARD only. A
