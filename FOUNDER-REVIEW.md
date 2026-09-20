@@ -34,6 +34,51 @@
 
 ## TRADING FLOOR
 
+### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
+- **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,
+  green TRADING FLOOR sign, solid claw on the dome) and a room you walk into like the cove.
+  Inside: six trading desks, a hologram dais and a monitor at the far wall. Walk to the
+  monitor and press E (USE on touch): the Trading Floor panel opens, the same one the
+  sidebar opens. Escape closes it. E at the door takes you out. Pearl still teaches
+  automation, outside the building, and her books did not change. The building id did
+  not change, so old links, books and skills still work.
+- **Agents:** `[ACTION: enter_trading_floor()]` walks an agent there; the tape, the
+  templates and trades stay on the REST routes. PROTOCOL_VERSION 66.
+- **House traders:** clawPump's backtest rejected Dip Hunter (dropped). The watch panel
+  shows TWO traders: Genesis (momentum outside a sharp five-minute dip) and ClawVille Runner
+  (sharp five-minute dips, wider trail), disjoint lanes, both on real money on ClawPump. The
+  panel and the back-wall board show each trader's LIVE realised P&L (gross on the USDC leg,
+  excludes network fees), wins and losses alike, computed from the full verified history.
+- **Where:** staging -> `/game` -> walk to the south building (or click it) -> press E at
+  the door -> walk to the monitor -> press E. Direct route: `/trading-floor`.
+- **Feedback wanted:** (a) does the exterior read as the Trading Floor from the ring, and
+  is 1950 the right size against its neighbours; (b) the claw colour on the dome
+  (emerald under world light); (c) the room lighting and the empty walls (no NPCs inside
+  yet; do you want Pearl or a screen texture inside); (d) a real-iPad screenshot of the
+  bottom joystick band and the USE button in landscape, which devtools cannot verify;
+  (e) FPS on your Iris Xe machine in the room (budget: about 10 draw calls).
+- **Interior v2 (same push):** textured walls, ceiling light runs and a raised-panel
+  floor deck; a big board on the back wall (1700 x 520) that draws the house traders'
+  status, verified and scored counts, last-trade age, a sparkline and a trade tape from
+  the same route as the panel, with no profit or loss figures; six desks along the side
+  walls with chairs; press E (USE on touch, or tap the chair) to sit, E or Escape to
+  stand; the monitor kiosk shrunk to avatar height beside the board.
+- **Feedback wanted on v2:** (f) the sit pose: the hips ease onto the chair pan over the
+  clip; tell me if the avatar floats above or sinks into the seat; (g) board legibility
+  from the door and from the dais ring, and on your display scaling (Windows 150 %);
+  (h) do the walls, floor deck and pillars read as a room now; (k) the board's per-card
+  sparkline was REMOVED so every disclosure line (partial, wins/losses, exclusions, method)
+  fits at a 15 px canvas floor that stays legible on a 1366x768 laptop from the door; the
+  tape and the counts still show activity; say if you want the sparkline back on a taller
+  card; (l) the 12 px best/worst/closed row reads at about 6 screen px on a 768 laptop; (i) at the door the camera
+  sits on the door side, so you see your avatar's face with the room behind, not the door:
+  the Exit prompt is clear and E works, tell me if the framing reads wrong; (j) at a side
+  wall desk the camera sits close, so your avatar fills about 40 % of the frame: this is
+  the cost of not clipping through the desks, tell me if it feels too tight.
+- **Not in this push:** NPC agents seated inside the hall (the enter_trading_floor()
+  verb walks an agent to the building; they are not rendered inside yet).
+- Shipped by: session clawAgents/Fable, 2026-09-20.
+
 ### Watch the house traders + Start a ClawPump trader (staging, 2026-09-19)
 - **What:** your Trading Floor scope, both paths, inside the existing Trading Floor tab.
   (1) "Watch the house traders": your approved lineup of two. Genesis (momentum on
