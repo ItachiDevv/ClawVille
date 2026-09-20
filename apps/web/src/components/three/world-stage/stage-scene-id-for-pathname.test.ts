@@ -38,6 +38,7 @@ describe('stage pathname identity', () => {
     ['/game', 'world'],
     ['/cove', 'cove'],
     ['/kelp', 'kelp'],
+    ['/trading-floor', 'trading-floor'],
   ] as const)('%s maps to %s', (pathname, sceneId) => {
     expect(sceneIdForPathname(pathname)).toBe(sceneId);
   });
@@ -62,6 +63,7 @@ describe('stage pathname identity', () => {
     '/cove/history',
     '/cove/verify',
     '/game/x',
+    '/trading-floor/x',
   ])('%s remains outside the stage', (pathname) => {
     expect(sceneIdForPathname(pathname)).toBeNull();
   });
@@ -87,6 +89,7 @@ describe('stage pathname identity', () => {
   test.each([
     '/game/',
     '/activity/reef-race/abc/',
+    '/trading-floor/',
   ])('%s rejects a trailing slash', (pathname) => {
     expect(sceneIdForPathname(pathname)).toBeNull();
   });
@@ -95,6 +98,7 @@ describe('stage pathname identity', () => {
     ['/game', 'world'],
     ['/cove', 'cove'],
     ['/kelp', 'kelp'],
+    ['/trading-floor', 'trading-floor'],
   ] as const)('%s has no destination sub-identity', (pathname, key) => {
     expect(stageDestinationKey(pathname)).toBe(key);
     expect(stageDestinationKey(pathname)).toBe(sceneIdForPathname(pathname));

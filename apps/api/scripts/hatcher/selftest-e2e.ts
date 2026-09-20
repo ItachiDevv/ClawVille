@@ -556,7 +556,7 @@ async function main() {
   const simMod = await import('../../src/services/npc-simulation.ts');
   const { npcSimulation, startSimulation, stopSimulation } = simMod;
   const shared = await import('@clawville/shared');
-  const { NPC_IDS, NPC_BUILDING_CENTERS, MAP_LOCATIONS, HATCHER_ACTION_VERBS } = shared;
+  const { NPC_IDS, NPC_BUILDING_CENTERS, MAP_LOCATIONS, HATCHER_ACTION_VERBS, TRADING_FLOOR_BUILDING_ID } = shared;
 
   startSimulation(false);
 
@@ -762,6 +762,40 @@ async function main() {
       !cleaned.includes('[ACTION:');
     if (!ok) bugs.push('enter_cove() did NOT execute the shipping behavior (walk to cove + dest=cove + walking/🎰 + no activity clock) — Rule-E5 Cove gateway broken');
     check("D11 enter_cove() HAPPY PATH — walks to the Cove, tags dest=cove, stays 'walking' with the 🎰 wire emoji and no activity clock", ok, `path.len=${after.path.length} (expect >0) destinationBuildingId=${after.destinationBuildingId} (expect 'cove') activity=${after.activity} (expect 'walking') emoji=${after.activityEmoji} (expect 🎰) activityEndsAt=${after.activityEndsAt} (expect 0) cleaned=${JSON.stringify(cleaned)}`);
+  });
+
+  // D12 — the 2026-09-19 Trading Floor gateway verb, modelled on D11. The
+  // Trading Floor is the RE-THEMED `cron-automation` TEACHING building, so
+  // unlike enter_cove it tags a destination that is also an
+  // NPC_BUILDING_CENTERS key, and it is deliberately NOT in
+  // GATEWAY_PARK_DESTINATIONS (adding it would silently change the arrival
+  // behaviour of enter_building + REST /move?buildingId, which share that id).
+  // Same OQ-1 contract as every other gateway verb: leave activity 'walking' so
+  // the body moves on the next 200 ms tick, stamp the wire emoji only, and
+  // leave activityEndsAt at 0.
+  // Executor: npc-simulation.ts `executeHatcherAction` case 'enter_trading_floor'.
+  await safe("D12 enter_trading_floor() HAPPY PATH — walks to the Trading Floor, tags dest=cron-automation, stays 'walking' with the 📈 wire emoji and no activity clock", () => {
+    const floorCenter = NPC_BUILDING_CENTERS[TRADING_FLOOR_BUILDING_ID];
+    if (!floorCenter) throw new Error(`NPC_BUILDING_CENTERS has no '${TRADING_FLOOR_BUILDING_ID}' — enter_trading_floor cannot resolve a center (would no-op)`);
+    const floorLoc = MAP_LOCATIONS.find((l: { id: string }) => l.id === TRADING_FLOOR_BUILDING_ID);
+    if (!floorLoc) throw new Error(`MAP_LOCATIONS has no '${TRADING_FLOOR_BUILDING_ID}' rect`);
+    // The re-theme must not have renamed the id out from under the executor.
+    const nameOk = floorLoc.name === 'Trading Floor';
+    npcSimulation.setNpcActivity(overrideNpcId, 'idle', '');
+    const npc0 = npcSimulation.getNpcById(overrideNpcId)!; npc0.path = []; npc0.pathIndex = 0; npc0.destinationBuildingId = null;
+    const cleaned = npcSimulation.dispatchHatcherActions(overrideNpcId, 'Going to watch the tape [ACTION: enter_trading_floor()]');
+    const after = npcSimulation.getNpcById(overrideNpcId)!;
+    const ok =
+      nameOk &&
+      after.path.length > 0 &&
+      after.destinationBuildingId === TRADING_FLOOR_BUILDING_ID &&
+      after.activity === 'walking' &&
+      after.activityEmoji === '\u{1F4C8}' && // 📈
+      after.activityEndsAt === 0 &&
+      cleaned === 'Going to watch the tape' &&
+      !cleaned.includes('[ACTION:');
+    if (!ok) bugs.push('enter_trading_floor() did NOT execute the shipping behavior (walk to cron-automation + dest=cron-automation + walking/📈 + no activity clock) — Rule-E5 Trading Floor gateway broken');
+    check("D12 enter_trading_floor() HAPPY PATH — walks to the Trading Floor, tags dest=cron-automation, stays 'walking' with the 📈 wire emoji and no activity clock", ok, `name=${floorLoc.name} (expect 'Trading Floor') path.len=${after.path.length} (expect >0) destinationBuildingId=${after.destinationBuildingId} (expect '${TRADING_FLOOR_BUILDING_ID}') activity=${after.activity} (expect 'walking') emoji=${after.activityEmoji} (expect 📈) activityEndsAt=${after.activityEndsAt} (expect 0) cleaned=${JSON.stringify(cleaned)}`);
   });
 
   // ===================================================================
@@ -1096,6 +1130,7 @@ async function main() {
       place_kit_piece: '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]',
       enter_poker_room: '[ACTION: enter_poker_room()]',
       enter_kelp_forest: '[ACTION: enter_kelp_forest()]',
+      enter_trading_floor: '[ACTION: enter_trading_floor()]',
       claim_tutorial_quest: '[ACTION: claim_tutorial_quest(questId=say-hi-nori)]',
       salvage_node: '[ACTION: salvage_node(nodeId=shallows-01)]',
       trade_token: '[ACTION: trade_token(input_mint=USDC, output_mint=SOL, amount_usd=1, reason=parity probe)]',

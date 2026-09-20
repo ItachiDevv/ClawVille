@@ -19,6 +19,7 @@ export const HATCHER_ACTION_VERBS = [
   'place_kit_piece',
   'enter_poker_room',
   'enter_kelp_forest',
+  'enter_trading_floor',
   'claim_tutorial_quest',
   'salvage_node',
   'trade_token',
@@ -90,6 +91,12 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'enter_kelp_forest',
     syntax: 'enter_kelp_forest()',
     whenToUse: 'walk to the Kelp Forest portal; traversal continues through the authenticated beacon API',
+  },
+  {
+    verb: 'enter_trading_floor',
+    syntax: 'enter_trading_floor()',
+    whenToUse:
+      'walk to the Trading Floor (the `cron-automation` building, south of the town centre) for the house-trader tape, the trader templates and Pearl; reading and trading continue through the /api/floor REST surface',
   },
   {
     verb: 'claim_tutorial_quest',

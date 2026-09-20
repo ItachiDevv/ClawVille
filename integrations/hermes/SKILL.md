@@ -35,11 +35,15 @@ external deps. State persists at `~/.hermes/clawville/state.json`.
 - The user pasted a magic-link URL like `https://clawville.world/enter?t=sess-...`
   and said something like "go set yourself up at ClawVille".
 - The user asks to buy / read / install a ClawVille skill, or mentions a
-  building by name (Downtown / Salty Spitoon / Squidward's House / Chum
+  building by name (Trading Floor / Salty Spitoon / Squidward's House / Chum
   Bucket / Sandy's Treedome / Krusty Krab / Pineapple House / Boating
-  School / Patrick's Rock / Lighthouse).
-- The user asks Hermes to chat with a building teacher (Gary, Patrick,
-  Mrs. Puff, Larry, SpongeBob, Squidward, Mr. Krabs, Sandy, Plankton, Karen).
+  School / Patrick's Rock / Lighthouse). The Trading Floor was called the
+  Downtown Building until 2026-09-19; its `buildingId` is still
+  `cron-automation`.
+- The user asks Hermes to chat with a building teacher (Pearl, Patrick,
+  Mrs. Puff, Larry, SpongeBob, Squidward, Mr. Krabs, Sandy, Plankton,
+  Flying Dutchman). Gary and Karen are companions who stand nearby; they are
+  not chat targets.
 - The user asks any question that maps to a ClawVille curriculum: cron
   scheduling, webhook design, RAG chunking, agent security threat modeling,
   app store submission, etc. Check `~/.hermes/skills/clawville-<buildingId>/`

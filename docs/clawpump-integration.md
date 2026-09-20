@@ -120,7 +120,7 @@ ClawVille executes fleet swaps only through Jupiter. The core observer can verif
 | Operator unpair | `POST /api/admin/trading/clawpump/unpair` | Takes `avatarId` and `clawpumpAgentId`. Revokes observation and deletes the observe-only link without changing trade history or earned points. |
 | Trade execution | None | Forbidden for ClawVille custody. |
 | Public trader templates | `GET /api/floor/templates` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=300`. Returns `version`, `model`, `skills`, `dashboardUrl`, and five `templates`. It calls no ClawPump API: the body is ClawVille's own text, read from `packages/shared/src/constants/trading-agent-templates.ts`. |
-| Public house-trader watch | `GET /api/floor/house-traders` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=15` plus a 15 second in-process cache. Always the `HOUSE_TRADER_LINEUP` slots (Genesis only since 2026-09-19), never the five templates. Calls no ClawPump API: it reads `clawpump_agent_links`, `trading_wallets`, `users` and `verified_trades`. No wallet address, user id or identity fingerprint in the response. |
+| Public house-trader watch | `GET /api/floor/house-traders` | Implemented. No authentication, 60 requests per minute per IP, `Cache-Control: public, max-age=15` plus a 15 second in-process cache. Always every `HOUSE_TRADER_LINEUP` slot (2026-09-19: Genesis, then ClawVille Runner), never the five templates. Read the count from the lineup, not from this sentence. Calls no ClawPump API: it reads `clawpump_agent_links`, `trading_wallets`, `users` and `verified_trades`. No wallet address, user id or identity fingerprint in the response. |
 | Agent creation | None | ClawVille never calls ClawPump `create_agent`. The call takes no owner parameter, so the agent would hold the user's funds inside ClawVille's ClawPump account. The user creates it. |
 
 All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin. POST routes also require JSON and a fresh single-use money-operator nonce. N1: a detail ID mismatch raises `ClawPumpAgentMismatchError` and returns 404 `clawpump_agent_not_owned`.
@@ -132,14 +132,44 @@ ClawVille runs TWO house traders (Dip Hunter was tested and dropped on 2026-09-1
 
 | Slot (`objective`) | Label | Strategy |
 |---|---|---|
-| `momentum-board` | Genesis | Momentum on small-cap memecoins, any venue. Quick take-profits. LIVE on staging. |
-| `intel-signal-follower` | ClawVille Runner | The SAME entries as Genesis, with the opposite exit method: no take-profits, a 15 percent trail armed at +10 percent. Funded 2026-09-19 22:00Z with 32.90 USDC and 0.05 SOL; switched from paper to live at 21:58Z. ClawPump agent `1a0a153e`, wallet `AgTanzAa2cidQzJ8KEsm5mkhS18uaqBrAaas7XKHk4XE`. |
-| `sol-usdc-mean-reversion` | Dip Hunter | DROPPED 2026-09-19 after the candle backfill (-5.1 percent per trade over 20.8 days, every variant negative). The paper process is stopped; ClawPump agent `a7d7c928` stays stopped, unfunded and private. |
+| `momentum-board` | Genesis | Momentum on small-cap memecoins that are not in a sharp five-minute dip, with on-chain safety checks before every buy and a trailing stop from the peak. Rules only, no AI decisions. |
+| `intel-signal-follower` | ClawVille Runner | Sharp five-minute dips on small-cap memecoins, the same safety checks, and a wider trailing stop from the peak. Rules only, no AI decisions. |
 
-The two live traders share one entry rule on purpose. They differ only in how
-they exit, so the trade record measures the exit method and nothing else.
+**They are DISJOINT lanes** (clawPump, 2026-09-20 03:45Z), split on one
+condition: the sharp five-minute dip. Genesis takes coins that are NOT in one,
+the Runner takes ONLY coins that ARE, so the two can never buy the same coin at
+the same moment. Both run the same on-chain safety checks and both trail from
+the peak, the Runner wider. The earlier "same entries, different exits" wording
+is RETIRED and wrong: it described the 2026-09-19 lineup and would present the
+pair as an exit-rule A/B test on one coin stream. Neither note carries a
+threshold, on purpose: the
+rule loops run outside this repo and change without a deploy, so a number
+published here would go stale silently. **Live P&L is PUBLIC** (founder order, 2026-09-20; the earlier no-P&L rule is
+revoked). Each slot carries a `realised` block computed server side from that
+avatar's FULL verified history: `closedPositions`, `wins`, `losses`,
+`realisedUsd` (signed USD), `bestUsd`, `worstUsd`, `openPositions`,
+`preBindIncluded`, `unpricedLegs`, `unclassifiedLegs`, `computedAt`. Basis is `gross_usdc_leg`, cost basis `round_trip_fifo`: legs are read row by row in chain-time order with NO
+limit (a 50-row window read Genesis as +8.87 against a true -5.20), lots are matched FIFO by TOKEN UNITS, a partial sell
+realises only the matched quantity, a lot with no exit after 24 hours counts as a total loss of its unmatched cost (a rug
+has no sell leg), and a mint with a non-USDC quote leg, an unpriced, undated or non-positive leg is excluded whole and
+counted (`excludedNonUsdc`, `unpricedLegs`, `undatedLegs`, `invalidLegs`, `unmatchedSells`). `computedOverTrades` is
+compared with `counts.verified`; a mismatch or any exclusion sets the server-side `partial` flag. Gross of network fees and rent. Reconciliation targets (clawPump closed-trip files, live only, 2026-09-20 08:30Z): Genesis 20 trips, gross -0.64, net -5.20;
+Runner 7 trips, gross +5.77, net +4.05. The route reports GROSS. Never hand-type or
+paste a figure into copy; read it from the route. No boast wording. Read each
+slot's live `status` from the route rather than writing one here: a slot nobody
+has paired reports `not-yet-running`, which is its real state.
 
-The other three profiles were DROPPED as house traders too; they remain only as
+ClawPump identities (clawPump, 2026-09-19): Runner = agent `1a0a153e`, wallet `AgTanzAa2cidQzJ8KEsm5mkhS18uaqBrAaas7XKHk4XE`,
+funded 22:00Z, live since 21:58Z; Dip Hunter = agent `a7d7c928`, stopped, unfunded, private.
+
+**Dropped 2026-09-19: `sol-usdc-mean-reversion` / "Dip Hunter".** It was
+backtested, REJECTED and stopped the same day and will never be paired, so its
+entry was REMOVED rather than left as a `not-yet-running` slot, which would have
+advertised a trader that is not coming. The objective stays valid as a copyable
+TEMPLATE only, and `readHouseTraderSlots` filters candidates to the lineup
+BEFORE selection, so a stray link on it can never resurrect a public slot.
+
+The remaining profiles were DROPPED as house traders; they remain only as
 copyable templates. These two are **not** the templates below and no copy may
 say they match: a template is a user starting point, while a house trader runs
 the operator's own rule loop on ClawPump, outside this repo. So the profile

@@ -421,6 +421,8 @@ export function decisionThought(action: ParsedDriverAction): string {
       return 'Heading to the Cove';
     case 'enter_kelp_forest':
       return 'Heading to the Kelp Forest';
+    case 'enter_trading_floor':
+      return 'Heading to the Trading Floor';
     case 'enter_building':
       return `Heading to ${destinationLabel(action.params.buildingId) ?? 'a building'}`;
     case 'move': {

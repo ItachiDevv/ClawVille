@@ -514,7 +514,170 @@ export interface HouseTraderSlotView {
    *  identifier policy governs both surfaces. Never the avatar UUID. */
   subject: { type: 'avatar' | 'agent'; id: string; avatarName: string | null } | null;
   counts: { verified: number; scored: number; lastTradeAt: string | null };
+  /**
+   * PUBLIC live realised P&L, server-computed over the FULL history. Every
+   * figure comes from the route; the panel never derives one.
+   *
+   * `null` means WE COULD NOT READ IT: the block was missing, or a money field
+   * failed the runtime guard. That is a statement about our read, and it is a
+   * DIFFERENT fact from a valid block with `closedPositions === 0`, which is a
+   * statement about the trader. Collapsing the two would make the panel say "no
+   * closed trades yet" about a live desk whose figures we simply failed to
+   * parse, which is a false claim about a real trader. Raised by tf3d-screen,
+   * who ships the same three-way split on the 3D board.
+   */
+  realised: HouseTraderRealisedView | null;
   recentTrades: FloorTrade[];
+}
+
+/** Mirrors `HouseTraderRealised` on the API. See `house-traders.ts` for the
+ *  basis: gross on the USDC leg, excluding network fees and rent. */
+export interface HouseTraderRealisedView {
+  closedPositions: number;
+  wins: number;
+  losses: number;
+  /** SIGNED USD. Negative is a real, normal value. */
+  realisedUsd: number;
+  /** `null` when nothing has closed, which is NOT the same as 0. */
+  bestUsd: number | null;
+  worstUsd: number | null;
+  openPositions: number;
+  /** Cost basis tied up in open lots, USD. Not a result. */
+  openCostUsd: number;
+  basis: string;
+  costBasis: string;
+  noExitHours: number;
+  /** Lots written off as a total loss by the no-exit rule. */
+  noExitClosures: number;
+  unmatchedSells: number;
+  /** Positions skipped for a non-USDC quote leg. Disclosed, not hidden. */
+  excludedNonUsdc: number;
+  /** Rows the figure was computed over. Compare with `counts.verified` to
+   *  detect a truncated read downstream. */
+  computedOverTrades: number;
+  /** Legs excluded for want of a usable timestamp. Never dated to epoch 0. */
+  undatedLegs: number;
+  /** Legs excluded for a negative or zero notional: impossible, not unknown. */
+  invalidLegs: number;
+  /** SERVER-set: the headline does not cover everything. Includes causes the
+   *  client cannot see, such as a truncated read. */
+  partial: boolean;
+  note: string;
+  preBindIncluded: boolean;
+  /** Above 0 means the headline figure is partial. */
+  unpricedLegs: number;
+  unclassifiedLegs: number;
+  /** Non-empty: an unparseable payload yields `null` for the whole block
+   *  rather than a block with a missing timestamp. */
+  computedAt: string;
+}
+
+const EMPTY_REALISED_VIEW: HouseTraderRealisedView = {
+  closedPositions: 0, wins: 0, losses: 0, realisedUsd: 0,
+  bestUsd: null, worstUsd: null, openPositions: 0, openCostUsd: 0,
+  basis: 'gross_usdc_leg', costBasis: 'round_trip_fifo',
+  noExitHours: 24, noExitClosures: 0, unmatchedSells: 0, excludedNonUsdc: 0,
+  computedOverTrades: 0, undatedLegs: 0, invalidLegs: 0, partial: false,
+  note: 'Gross realised on the USDC leg, excludes network fees.',
+  preBindIncluded: false, unpricedLegs: 0, unclassifiedLegs: 0, computedAt: '',
+};
+
+/** A number ONLY when the wire really sent a finite one. A missing or NaN
+ *  field must never render as 0, because 0 is a meaningful P&L value. */
+function wireNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function wireNullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * `null` when the block is unreadable, NEVER a zero-filled stand-in.
+ *
+ * The five money-bearing fields must each be a finite number on the wire. A
+ * missing or NaN one means we do not know this trader's result, and the only
+ * honest render for that is "unavailable". Descriptive fields still fall back,
+ * because a missing `note` does not make the figures wrong.
+ */
+/** Test seam: the guard is the whole point of the three-way split, so it is
+ *  exercised directly rather than only through a rendered slot. */
+export function normaliseHouseSlotRealisedForTest(value: unknown): HouseTraderRealisedView | null {
+  return normaliseRealised(value);
+}
+
+function normaliseRealised(value: unknown): HouseTraderRealisedView | null {
+  const row = record(value);
+  if (!row) return null;
+
+  // EVERY field is validated, not just the headline five. A silent per-field
+  // fallback is worse than no figure: `bestUsd: "12.34"` would become null and
+  // read as "no best trade", `openCostUsd: NaN` would become 0 and hide money
+  // at risk, and `noExitHours: "48"` would become 24 and make the panel STATE A
+  // METHOD THE SERVER DID NOT USE. A payload we cannot fully parse is a payload
+  // we do not understand, so the only honest render is "P&L unavailable".
+  // MONEY: signed and fractional by nature. A loss is negative and cents are
+  // real, so these are only required to be finite.
+  for (const key of ['realisedUsd', 'openCostUsd'] as const) {
+    if (typeof row[key] !== 'number' || !Number.isFinite(row[key])) return null;
+  }
+  // COUNTS: a tally of things. `-1 wins` and `1.5 closed positions` are not
+  // small errors, they are impossible, and letting them through would render a
+  // confident headline beside a nonsense breakdown. `noExitHours` belongs here
+  // too: it is a whole-hour window, and a fractional or negative one would
+  // describe a method that cannot exist.
+  const counts = [
+    'closedPositions', 'wins', 'losses', 'openPositions', 'noExitClosures',
+    'excludedNonUsdc', 'unpricedLegs', 'unclassifiedLegs', 'undatedLegs',
+    'invalidLegs', 'unmatchedSells', 'computedOverTrades', 'noExitHours',
+  ] as const;
+  for (const key of counts) {
+    const v = row[key];
+    // `isSafeInteger`, NOT `isInteger`: beyond 2^53-1 a JSON integer has
+    // already lost precision by the time it reaches us, so 9007199254740993
+    // arrives as 9007199254740992 and passes as a "valid" count that is not
+    // the number the server sent. 1e21 passes `isInteger` too. A count we
+    // cannot represent exactly is a count we should not publish.
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return null;
+  }
+  // The ONLY legitimately nullable numbers: "nothing has closed" is a real
+  // state. Anything other than a finite number or null is still a reject.
+  for (const key of ['bestUsd', 'worstUsd'] as const) {
+    const v = row[key];
+    if (v !== null && (typeof v !== 'number' || !Number.isFinite(v))) return null;
+  }
+  for (const key of ['basis', 'costBasis', 'note', 'computedAt'] as const) {
+    if (typeof row[key] !== 'string' || row[key] === '') return null;
+  }
+  for (const key of ['preBindIncluded', 'partial'] as const) {
+    if (typeof row[key] !== 'boolean') return null;
+  }
+
+  return {
+    closedPositions: row.closedPositions as number,
+    wins: row.wins as number,
+    losses: row.losses as number,
+    realisedUsd: row.realisedUsd as number,
+    bestUsd: row.bestUsd as number | null,
+    worstUsd: row.worstUsd as number | null,
+    openPositions: row.openPositions as number,
+    openCostUsd: row.openCostUsd as number,
+    basis: row.basis as string,
+    costBasis: row.costBasis as string,
+    noExitHours: row.noExitHours as number,
+    noExitClosures: row.noExitClosures as number,
+    unmatchedSells: row.unmatchedSells as number,
+    excludedNonUsdc: row.excludedNonUsdc as number,
+    computedOverTrades: row.computedOverTrades as number,
+    undatedLegs: row.undatedLegs as number,
+    invalidLegs: row.invalidLegs as number,
+    partial: row.partial as boolean,
+    note: row.note as string,
+    preBindIncluded: row.preBindIncluded as boolean,
+    unpricedLegs: row.unpricedLegs as number,
+    unclassifiedLegs: row.unclassifiedLegs as number,
+    computedAt: row.computedAt as string,
+  };
 }
 
 function normaliseHouseSlot(value: unknown): HouseTraderSlotView | null {
@@ -546,6 +709,7 @@ function normaliseHouseSlot(value: unknown): HouseTraderSlotView | null {
       scored: typeof counts?.scored === 'number' ? counts.scored : 0,
       lastTradeAt: typeof counts?.lastTradeAt === 'string' ? counts.lastTradeAt : null,
     },
+    realised: normaliseRealised(row.realised),
     recentTrades: Array.isArray(row.recentTrades)
       ? row.recentTrades
           .map(normalisePublicTrade)

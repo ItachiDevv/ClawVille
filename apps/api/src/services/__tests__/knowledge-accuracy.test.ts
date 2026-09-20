@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  AUTONOMY_ENTERABLE_PLACES,
+  BUILDING_OPENCLAW_THEMES,
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
+  HATCHER_ACTION_MENU,
+  HATCHER_ACTION_VERBS,
   LAND_PARCELS,
+  TRADING_FLOOR_BUILDING_ID,
   TUTORIAL_QUESTS,
   getServerColliders,
   MAP_LOCATIONS,
@@ -31,9 +36,13 @@ const all = orientation + '\n' + nori + '\n' + manual;
 const collider = (id: string) => getServerColliders().find((c) => c.id === id)!;
 
 describe('seeded knowledge matches the code', () => {
-  test('the Downtown teacher is Pearl, not Gary', () => {
+  test('the Trading Floor teacher is Pearl, not Gary', () => {
     expect(orientation).not.toMatch(/Gary/);
-    expect(orientation).toMatch(/Downtown Building \(cron-automation\): Pearl/);
+    // 2026-09-19: the building was renamed Downtown Building -> Trading Floor.
+    // Read the name from MAP_LOCATIONS so this pin follows the next rename too.
+    const name = MAP_LOCATIONS.find((l: { id: string }) => l.id === 'cron-automation')!.name;
+    expect(name).toBe('Trading Floor');
+    expect(orientation).toContain(`${name} (cron-automation): Pearl`);
   });
 
   test('no surface promises the retired daily-login payout or per-message chat pay', () => {
@@ -59,12 +68,75 @@ describe('seeded knowledge matches the code', () => {
     expect(orientation).not.toMatch(/10 onboarding quests/);
   });
 
-  test('Downtown is south of the town centre', () => {
-    const downtown = MAP_LOCATIONS.find((l: { id: string }) => l.id === "cron-automation")! as unknown as { positionY: number };
+  test('the Trading Floor is south of the town centre', () => {
+    const floor = MAP_LOCATIONS.find((l: { id: string }) => l.id === "cron-automation")! as unknown as { positionY: number };
     const centre = { x: 11264, y: 11264 };
-    expect(downtown.positionY).toBeGreaterThan(centre.y); // +y is south on the map
+    expect(floor.positionY).toBeGreaterThan(centre.y); // +y is south on the map
+    expect(nori).not.toMatch(/Trading Floor[^.]*north of the town cent/i);
     expect(nori).not.toMatch(/Downtown[^.]*north of the town cent/i);
     expect(nori).toMatch(/due south of the town center/);
+  });
+
+  // 2026-09-19 founder re-theme: the Downtown Building BECAME the Trading Floor.
+  // The id must NOT follow the name, and every agent-facing surface must carry
+  // the new name, the place, and the honest limit of what walking in does.
+  test('the Trading Floor re-theme kept the id and reached every surface', () => {
+    const floor = MAP_LOCATIONS.find((l: { id: string }) => l.id === 'cron-automation');
+    expect(floor).toBeDefined();
+    expect(floor!.name).toBe('Trading Floor');
+    // The id is load-bearing: owned book ids, the skill-tools dispatcher key,
+    // stored building.visited events, earned-skill memories, installed agent
+    // skill folders. A rename here breaks all five.
+    expect(TRADING_FLOOR_BUILDING_ID).toBe('cron-automation');
+    expect(BUILDING_OPENCLAW_THEMES[TRADING_FLOOR_BUILDING_ID]!.label).toBe('Trading Floor');
+
+    // No surface an agent or a human reads may PRESENT the old name as the
+    // current one. A past-tense mention ("it was called the Downtown Building
+    // until 2026-09-19") is deliberate and must survive, so an agent that
+    // learned the old name before the rename still finds the building. Every
+    // other occurrence is stale text.
+    // The failure message prints the offending run-up, which names the surface.
+    const PAST_TENSE_BEFORE = /(?:was|were|called|call|formerly)(?: it| them)? (?:the )?$/;
+    for (const surface of [orientation, nori, manual, buildPlayManual('https://api.example.test')]) {
+      for (const match of surface.matchAll(/Downtown Building/g)) {
+        const runUp = surface.slice(Math.max(0, match.index - 40), match.index).replace(/\s+/g, ' ');
+        expect(runUp).toMatch(PAST_TENSE_BEFORE);
+      }
+    }
+
+    // The place, on the surfaces that must state it (memory rule: knowledge
+    // must state the PLACE, not only the rules).
+    expect(orientation).toMatch(/Trading Floor IS the `?cron-automation`? building, south of the town centre/);
+    expect(nori).toMatch(/Trading Floor is a BUILDING now, on the SOUTH side of the ring/);
+    expect(manual).toContain('[ACTION: enter_trading_floor()]');
+
+    // Pearl stays, widens, and never runs the monitor.
+    const pearl = [
+      LOCATION_TEMPLATES['cron-automation']!.description,
+      ...LOCATION_TEMPLATES['cron-automation']!.knowledge,
+      ...LOCATION_TEMPLATES['cron-automation']!.lore,
+    ].join('\n');
+    expect(LOCATION_TEMPLATES['cron-automation']!.name).toBe('Pearl');
+    expect(pearl).toContain('/api/floor/house-traders');
+    expect(pearl).toContain('/api/floor/templates');
+    expect(pearl).toMatch(/never place a trade|places no trade/);
+  });
+
+  test('the new gateway verb is in the executor whitelist, the menu and the decide prompt', () => {
+    // Executor gate, prompt menu and enterable-place list are three separate
+    // lists. A verb in only some of them is the Rule E5 defect: either the
+    // model never learns it, or it learns a verb the executor drops.
+    expect(HATCHER_ACTION_VERBS).toContain('enter_trading_floor');
+    const item = HATCHER_ACTION_MENU.find((a) => a.verb === 'enter_trading_floor');
+    expect(item?.syntax).toBe('enter_trading_floor()');
+    const place = AUTONOMY_ENTERABLE_PLACES.find((p) => p.placeId === 'trading-floor');
+    expect(place).toBeDefined();
+    expect(place!.actionVerb).toBe('enter_trading_floor');
+    expect(place!.destinationId).toBe(TRADING_FLOOR_BUILDING_ID);
+    // The place label must equal the building label, because destinationLabel()
+    // now resolves cron-automation through this row for enter_building and
+    // talk_to_npc thoughts too (agent-autonomy-driver.ts).
+    expect(place!.label).toBe(BUILDING_OPENCLAW_THEMES[TRADING_FLOOR_BUILDING_ID]!.label);
   });
 
   test('the town-centre stalls are named with their real positions', () => {

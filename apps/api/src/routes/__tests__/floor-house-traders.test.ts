@@ -39,6 +39,7 @@ function deps(overrides: Partial<HouseTraderDeps> = {}): HouseTraderDeps {
     loadCandidates: async () => [],
     loadCounts: async () => new Map(),
     loadRecent: async () => new Map(),
+    loadRealised: async () => new Map(),
     onDuplicate: () => {},
     ...overrides,
   };
@@ -55,14 +56,16 @@ async function callWith(
 }
 
 describe('GET /api/floor/house-traders', () => {
-  it('returns exactly the two lineup slots on an empty database', async () => {
+  it('returns exactly the lineup slots on an empty database', async () => {
     const response = await callWith(deps());
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       generatedAt: string;
       slots: Array<{ objective: string; status: string; subject: unknown; counts: unknown }>;
     };
-    expect(body.slots).toHaveLength(2);
+    // Derived from the lineup, never a literal: the count went 2 -> 1 on
+    // 2026-09-19 when Dip Hunter was dropped.
+    expect(body.slots).toHaveLength(HOUSE_TRADER_OBJECTIVES.length);
     expect(body.slots.map((slot) => slot.objective)).toEqual([...HOUSE_TRADER_OBJECTIVES]);
     expect(typeof body.generatedAt).toBe('string');
     for (const slot of body.slots) {
@@ -88,7 +91,12 @@ describe('GET /api/floor/house-traders', () => {
     expect(momentum.subject?.avatarName).toBe('Genesis');
     // The public tape's identifier, never the avatar UUID.
     expect(momentum.subject?.id).toBe(CLAWVILLE_AGENT_ID);
-    expect(body.slots.filter((slot) => slot.status === 'not-yet-running')).toHaveLength(1);
+    // Every OTHER lineup slot stays unpaired. Since 2026-09-19 the lineup is
+    // Genesis alone, so that set is empty; derived from the lineup so the next
+    // lineup change moves this with it instead of silently passing.
+    expect(body.slots.filter((slot) => slot.status === 'not-yet-running')).toHaveLength(
+      HOUSE_TRADER_OBJECTIVES.length - 1,
+    );
   });
 
   it('exposes no wallet, user id or identity fingerprint in the response', async () => {
@@ -132,25 +140,45 @@ describe('GET /api/floor/house-traders', () => {
     // The starving shape must not come back.
     expect(fn).not.toMatch(/\.limit\(/);
 
-    // And the slot builder keeps each avatar's rows on its own slot.
+    // And the slot builder keeps each avatar's rows and counts on its OWN slot.
+    // Proved across the TWO live lineup slots (Genesis on `momentum-board`,
+    // ClawVille Runner on `intel-signal-follower`), plus the invariant the Dip
+    // Hunter removal introduced: a candidate on a non-lineup objective is
+    // filtered out BEFORE selection (`readHouseTraderSlots`), so it must never
+    // resurrect a slot, reach the readers, or leak its counts into a live one.
     const busy = genesis();
-    const quiet = { ...genesis(), avatarId: 'quiet-avatar', objective: 'sol-usdc-mean-reversion' };
+    const quiet = { ...genesis(), avatarId: 'runner-avatar', objective: 'intel-signal-follower' };
+    const dropped = { ...genesis(), avatarId: 'dropped-avatar', objective: 'sol-usdc-mean-reversion' };
     const response = await callWith(
       deps({
-        loadCandidates: async () => [busy, quiet],
+        loadCandidates: async () => [busy, quiet, dropped],
         loadCounts: async () =>
-          new Map([[quiet.avatarId, { verified: 12, scored: 8, lastTradeAt: '2026-09-19T10:00:00.000Z' }]]),
+          new Map([
+            [busy.avatarId, { verified: 12, scored: 8, lastTradeAt: '2026-09-19T10:00:00.000Z' }],
+            [quiet.avatarId, { verified: 3, scored: 1, lastTradeAt: '2026-09-19T11:00:00.000Z' }],
+            [dropped.avatarId, { verified: 99, scored: 99, lastTradeAt: '2026-09-19T12:00:00.000Z' }],
+          ]),
         loadRecent: async (ids, perAvatar) => {
           // A per-avatar reader hands back a bucket per avatar; a global top-N
-          // would hand back only the busy one.
+          // would hand back only the busiest one.
           expect(perAvatar).toBeGreaterThan(0);
+          expect(ids).toContain(busy.avatarId);
+          expect(ids).toContain(quiet.avatarId);
+          // The dropped objective never reaches the readers at all.
+          expect(ids).not.toContain(dropped.avatarId);
           return new Map(ids.map((id) => [id, []]));
         },
       }),
     );
     const body = (await response.json()) as { slots: Array<{ objective: string; counts: { verified: number } }> };
-    const quietSlot = body.slots.find((slot) => slot.objective === 'sol-usdc-mean-reversion')!;
-    expect(quietSlot.counts.verified).toBe(12);
+    expect(body.slots.map((slot) => slot.objective)).toEqual([...HOUSE_TRADER_OBJECTIVES]);
+    expect(body.slots.some((slot) => slot.objective === 'sol-usdc-mean-reversion')).toBe(false);
+    // Each slot carries its OWN avatar's count: not the other slot's, not the
+    // dropped candidate's 99, and not a sum of any of them.
+    const busySlot = body.slots.find((slot) => slot.objective === 'momentum-board')!;
+    const quietSlot = body.slots.find((slot) => slot.objective === 'intel-signal-follower')!;
+    expect(busySlot.counts.verified).toBe(12);
+    expect(quietSlot.counts.verified).toBe(3);
   });
 
   it('registers the public GET before the session middleware', () => {
@@ -221,7 +249,13 @@ describe('GET /api/floor/house-traders', () => {
     // Rule: a raw `sql<...>` is typed `string` (or `string | null`), or it
     // carries `.mapWith(` before the statement ends.
     for (const file of ['house-traders.ts', 'trade-observer.ts']) {
-      const source = readFileSync(resolve(import.meta.dir, '../../services', file), 'utf8');
+      const raw = readFileSync(resolve(import.meta.dir, '../../services', file), 'utf8');
+      // Scan CODE, not prose. The doc comments in these files quote the bad
+      // form (a raw aggregate typed as a number) to explain the staging 500
+      // that caused this rule, and a comment cannot execute a query. Stripping
+      // block and line comments first cannot weaken the guard: commented-out
+      // code does not run either. Without this, documenting the rule trips it.
+      const source = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
       expect(source).not.toContain('sql<Date');
       const pattern = /sql<([^>]+)>`[^`]*`([^,;\n]*)/g;
       for (const match of source.matchAll(pattern)) {

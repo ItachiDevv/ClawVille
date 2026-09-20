@@ -77,7 +77,7 @@ const SKILL_CATEGORIES = [
   { icon: '⛓️', name: 'Crypto & Web3', building: "Patrick's Rock" },
   { icon: '📊', name: 'Data & Analytics', building: 'Pineapple House' },
   { icon: '🚀', name: 'APIs', building: 'Salty Spitoon' },
-  { icon: '⏰', name: 'Automation', building: 'Downtown Building' },
+  { icon: '⏰', name: 'Automation', building: 'Trading Floor' },
   { icon: '📋', name: 'Business', building: 'Lighthouse' },
 ];
 

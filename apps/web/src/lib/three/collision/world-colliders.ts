@@ -115,7 +115,8 @@ export interface Collider2D {
  *     the geometry to (0,0,0) after load. Center = tile-zone center, no offset.
  *   - messaging-channels (sandy-treedome-v3) and api-integrations (salty-spitoon):
  *     targetMaxDim=2500 exceeds MAX_FOOTPRINT=2000wu, so worldX=worldZ=2000.
- *   - cron-automation (patty-building): X exceeds footprint cap, Z does not.
+ *   - cron-automation (trading-floor exterior): maxDim is the Y axis (the
+ *     rooftop claw sign), not an XZ axis, so neither footprint axis caps.
  *
  * Fallback BUILDING_HALF (≈206wu) is retained for any zone ID not in this
  * table (defensive — all 12 buildings are covered below).
@@ -145,11 +146,12 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   // Approximately square footprint → worldX=1000, worldZ=995 → ×0.85
   'app-publishing':     { halfX: 425, halfZ: 423 },
 
-  // GLB: patty-building.glb, targetMaxDim=2200
-  // Root node has quaternion (-0.5,-0.5,-0.5,0.5) [90° rotation] — TRS applied.
-  // Native size: 255.782×150.001 (longest axis post-transform), scale=8.60
-  // worldX=2000 (footprint cap), worldZ=1173 → ×0.85
-  'cron-automation':    { halfX: 850, halfZ: 498 },
+  // GLB: trading-floor/trading-floor-exterior-opt1-mo-ktx.glb, targetMaxDim=1950
+  // (2026-09-19 Trading Floor swap; was patty-building.glb at 850×498).
+  // Scene bbox 1.290 × 1.29943 × 1.129, maxDim = Y (the rooftop claw).
+  // scale = 1950/1.29943 = 1500.7 → worldX = 1936, worldZ = 1694 (no footprint
+  // cap: 1936 < MAX_FOOTPRINT 2000) → ×0.85
+  'cron-automation':    { halfX: 823, halfZ: 720 },
 
   // GLB: building-lighthouse.glb, targetMaxDim=1400
   // Tall, narrow footprint → worldX=714, worldZ=776 → ×0.85

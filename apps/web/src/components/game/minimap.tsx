@@ -34,7 +34,7 @@ const BUILDING_ACCENT: Record<string, string> = {
   'visual-creation': '#fde68a',      // pineapple yellow
   'memory-rag': '#a5b4fc',       // squidward indigo
   'api-integrations': '#fca5a5',    // salty spitoon red
-  'cron-automation': '#93c5fd',           // downtown blue
+  'cron-automation': '#93c5fd',           // Trading Floor blue
   'app-publishing': '#d9f99d',        // boating school green
   'deployment-ops': '#fed7aa',     // lighthouse orange
   'mcp-tool-use': '#f9a8d4',      // krusty krab pink

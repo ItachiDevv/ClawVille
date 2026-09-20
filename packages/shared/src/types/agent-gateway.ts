@@ -1,4 +1,5 @@
 import type { NpcActivity } from '../constants/npc-activities';
+import type { AutonomyEnterablePlace } from '../constants/map-locations';
 
 // --- Perception ---
 
@@ -56,10 +57,19 @@ export interface AgentPerceptionPlace {
   placeId: string;
   label: string;
   description: string;
-  /** Exact no-tool-call action verb accepted by the executor. */
-  actionVerb: 'enter_cove' | 'enter_poker_room' | 'enter_kelp_forest' | 'move';
-  /** Exact action call shown to the deciding model. */
-  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | 'enter_kelp_forest()' | `move(x=${number}, y=${number})`;
+  /**
+   * Exact no-tool-call action verb accepted by the executor, and the exact call
+   * shown to the deciding model.
+   *
+   * 2026-09-19: DERIVED from `AutonomyEnterablePlace` rather than re-declared.
+   * These two unions were hand-copied and silently drifted the moment
+   * `enter_trading_floor` was added to the enterable places, which made the
+   * perception builder (`npc-simulation.ts` buildAgentPerception) fail to
+   * typecheck. Deriving them means a new enterable place can never again be
+   * listed in one union and missing from the other.
+   */
+  actionVerb: AutonomyEnterablePlace['actionVerb'];
+  actionSyntax: AutonomyEnterablePlace['actionSyntax'];
   /** Logical destination used by the autonomous planner. */
   destinationId: string;
   centerX: number;

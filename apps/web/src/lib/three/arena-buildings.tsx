@@ -61,6 +61,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useTransitionStore } from '@/components/transitions/SceneTransition';
+import { TRADING_FLOOR_DOOR_PX } from '@/lib/three/trading-floor/trading-floor-location';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -101,101 +102,223 @@ const BUILDING_TARGET_HEIGHT = 1000;
 // MAP_WIDTH/2 - 3400 = world X -3400 = local X+110, well inside the 470wu corridor.
 /** Cove door position in game-px — targets mid-tunnel interior so avatar walks through. */
 const COVE_DOOR_PX = { x: MAP_WIDTH / 2 - 3400, y: MAP_HEIGHT / 2 };
+// Trading Floor door target — derived from the `cron-automation` ring zone in
+// trading-floor-location.ts, so a ring move or a world grow carries it.
 /** Avatar must be within this distance (game-px) to trigger the fade. */
 const DOOR_ARRIVE_DIST = 200;
 /** Hard timeout before triggering fade even if avatar hasn't arrived. */
 const MAX_WALK_WAIT_MS = 1500;
-/** Idempotency guard: true while a cove walk-in is in flight (clickPath + poll
- *  running, before the SceneTransition fires). A second trigger — double-click,
- *  the click/auto-enter race, or a minimap fast-travel arrival — is a no-op
- *  until the transition starts. Cleared right before the transition fires. */
-let _coveWalkInPending = false;
+/** Idempotency guard: true while a venue walk-in is in flight (clickPath + poll
+ *  running, before the SceneTransition fires). A second trigger for the SAME
+ *  venue — double-click, the click/E race, or a fast-travel arrival landing
+ *  here — is a no-op so the walk is not restarted from the current position.
+ *  One box per venue; cross-venue supersede is the token below. */
+const _coveWalkInPending = { value: false };
+const _tradingFloorWalkInPending = { value: false };
 
-function navigateToCove(): void {
+/**
+ * Cross-venue supersede token (Codex adversarial finding, 2026-09-19).
+ *
+ * Per-venue guards alone let TWO polls run at once: click the Cove, then the
+ * Trading Floor inside the 1500 ms window, and the cove poll still owns the
+ * click path it no longer set. Whichever poll fires first clears the path and
+ * navigates, so the player's LATER choice silently loses.
+ *
+ * Every start bumps this counter and captures its value. A poll whose captured
+ * value no longer matches is stale: it returns without clearing the path and
+ * without navigating, leaving the newest walk-in untouched. Monotonic, so a
+ * stale poll can never alias a live one.
+ */
+let _walkInToken = 0;
+/** The guard box of the walk-in currently in flight, if any. */
+let _activeWalkInPending: { value: boolean } | null = null;
+
+/** Invalidate the in-flight walk-in (if any) and return the new token. */
+function supersedeActiveWalkIn(): number {
+  _walkInToken += 1;
+  if (_activeWalkInPending) {
+    _activeWalkInPending.value = false;
+    _activeWalkInPending = null;
+  }
+  return _walkInToken;
+}
+
+/**
+ * True when the world no longer owns the walk: the body was dropped for the
+ * free-flying explore camera, or the route already left /game by some other
+ * path. An environment with no real `location` (tests, SSR) must NOT count as
+ * "left /game", or the poll would cancel itself immediately.
+ */
+function walkInAbandoned(controlMode: string): boolean {
+  if (controlMode === 'explore') return true;
+  if (typeof window === 'undefined') return false;
+  const pathname = window.location?.pathname;
+  return typeof pathname === 'string' && pathname.length > 0 && pathname !== '/game';
+}
+
+/** Stage venues reachable by a walk-in from /game. */
+type WalkInVenuePath = '/cove' | '/trading-floor';
+
+function navigateToStageVenue(to: WalkInVenuePath): void {
   if (
     requestWorldStageNavigation({
-      to: '/cove',
+      to,
       onExpired: () => {
         if (
           typeof window !== 'undefined' &&
           window.location.pathname === '/game'
         ) {
-          useTransitionStore.getState().triggerTransition({ to: '/cove' });
+          useTransitionStore.getState().triggerTransition({ to });
         }
       },
     })
   ) {
     return;
   }
-  useTransitionStore.getState().triggerTransition({ to: '/cove' });
+  useTransitionStore.getState().triggerTransition({ to });
+}
+
+interface WalkInSpec {
+  /** Door target in game-px. */
+  readonly doorPx: { readonly x: number; readonly y: number };
+  readonly to: WalkInVenuePath;
+  /** DOM event the camera controller listens for, or null for no camera push. */
+  readonly cameraEvent: string | null;
 }
 
 /**
- * triggerCoveWalkIn() — called when the user clicks on the cove building.
- *
- * Sets a click-path to the cove door, then starts a polling loop that
- * watches avatarPositionRef until arrival (or timeout), then triggers the
- * SceneTransition to /cove.
+ * Shared walk-in: set a two-waypoint click-path to the venue door, poll
+ * `avatarPositionRef` until arrival (or timeout), then hand the crossing to the
+ * persistent stage.
  *
  * Deliberately avoids React state so it can be called from the module-scope
  * BUILDING_MODELS onClick without needing a hook context.
  */
-export function triggerCoveWalkIn(): void {
+function startVenueWalkIn(
+  spec: WalkInSpec,
+  pending: { value: boolean },
+): void {
   const store = useGameStore.getState();
 
   // Only walk in player/npc mode — in explore mode there is no avatar to walk.
   if (store.controlMode === 'explore') {
-    // Fallback for explore mode: direct transition, no walk.
-    navigateToCove();
+    // Fallback for explore mode: direct transition, no walk. Still supersedes,
+    // so a poll started before the mode flip cannot navigate afterwards.
+    supersedeActiveWalkIn();
+    navigateToStageVenue(spec.to);
     return;
   }
 
-  // Idempotent: ignore re-entry while a walk-in is already in flight (double
-  // click, the click/auto-enter race, or a fast-travel arrival landing on cove).
-  if (_coveWalkInPending) return;
-  _coveWalkInPending = true;
+  // Idempotent for the SAME venue: a second click must not restart the walk
+  // from wherever the avatar has got to.
+  if (pending.value) return;
 
-  // Build a minimal two-waypoint path: current position → door target.
+  // A DIFFERENT venue was in flight: the newest choice wins outright.
+  const token = supersedeActiveWalkIn();
+  pending.value = true;
+  _activeWalkInPending = pending;
+
+  /** Release this walk-in's ownership. Safe to call from a stale poll. */
+  function release(): void {
+    pending.value = false;
+    if (_activeWalkInPending === pending) _activeWalkInPending = null;
+  }
+
+  // Two waypoints: current position → door target.
   // player-avatar.tsx (the clickPath consumer) drives the avatar along it.
-  const path = [
-    { x: avatarPositionRef.x, y: avatarPositionRef.y },
-    { x: COVE_DOOR_PX.x,    y: COVE_DOOR_PX.y },
-  ];
-  store.setClickPath(path, null);
+  store.setClickPath(
+    [
+      { x: avatarPositionRef.x, y: avatarPositionRef.y },
+      { x: spec.doorPx.x, y: spec.doorPx.y },
+    ],
+    null,
+  );
 
-  // Signal the camera controller to push toward the cove (task 2 entrance anim).
-  // The handler in World3DCanvas.tsx reads this event and initiates a smooth
-  // camera drift toward the cove for the duration of the walk-in (~1.2s).
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('cove-walkin-start'));
+  // Signal the camera controller to push toward the venue. The handler in
+  // World3DCanvas.tsx reads this event and drifts the camera for ~1.2s.
+  if (spec.cameraEvent !== null && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(spec.cameraEvent));
   }
 
   const startMs = Date.now();
-  let rafId = 0;
 
   function poll() {
-    const dx = avatarPositionRef.x - COVE_DOOR_PX.x;
-    const dy = avatarPositionRef.y - COVE_DOOR_PX.y;
+    // Superseded by a later walk-in: do NOTHING. Clearing the click path or
+    // navigating here is exactly the bug this token exists to stop.
+    if (_walkInToken !== token) return;
+
+    const current = useGameStore.getState();
+    if (walkInAbandoned(current.controlMode)) {
+      release();
+      current.clearClickPath();
+      return;
+    }
+
+    const dx = avatarPositionRef.x - spec.doorPx.x;
+    const dy = avatarPositionRef.y - spec.doorPx.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     const elapsed = Date.now() - startMs;
 
     if (dist <= DOOR_ARRIVE_DIST || elapsed >= MAX_WALK_WAIT_MS) {
       // Avatar has arrived (or timed out) — clear the path and fade.
-      _coveWalkInPending = false;
-      store.clearClickPath();
-      navigateToCove();
+      release();
+      current.clearClickPath();
+      navigateToStageVenue(spec.to);
       return;
     }
 
-    rafId = requestAnimationFrame(poll);
+    requestAnimationFrame(poll);
   }
 
-  rafId = requestAnimationFrame(poll);
+  requestAnimationFrame(poll);
+}
 
-  // Safety: if this function is somehow called twice, a prior loop's rafId
-  // will be orphaned. Acceptable since the transition store ignores re-triggers
-  // while active (the guard `if (get().active) return` in triggerTransition).
-  void rafId; // suppress unused-variable warning
+const COVE_WALK_IN: WalkInSpec = {
+  doorPx: COVE_DOOR_PX,
+  to: '/cove',
+  cameraEvent: 'cove-walkin-start',
+};
+
+const TRADING_FLOOR_WALK_IN: WalkInSpec = {
+  doorPx: TRADING_FLOOR_DOOR_PX,
+  to: '/trading-floor',
+  // No bespoke camera push yet — the stage fade covers the crossing. Adding
+  // one means a second listener in World3DCanvas, which is not worth a slot
+  // whose door already faces the default camera heading.
+  cameraEvent: null,
+};
+
+/** triggerCoveWalkIn() — called when the user clicks/presses E on the cove. */
+export function triggerCoveWalkIn(): void {
+  startVenueWalkIn(COVE_WALK_IN, _coveWalkInPending);
+}
+
+/**
+ * triggerTradingFloorWalkIn() — the Trading Floor's cove-shaped entry
+ * (founder order 2026-09-19). Walks the avatar to the building's north face,
+ * then crosses to the `/trading-floor` stage slot.
+ */
+export function triggerTradingFloorWalkIn(): void {
+  startVenueWalkIn(TRADING_FLOOR_WALK_IN, _tradingFloorWalkInPending);
+}
+
+/** Test seam — both walk-in guards, so a test can assert idempotency. */
+export function readVenueWalkInPendingForTests(): {
+  cove: boolean;
+  tradingFloor: boolean;
+} {
+  return {
+    cove: _coveWalkInPending.value,
+    tradingFloor: _tradingFloorWalkInPending.value,
+  };
+}
+
+/** Test seam — clears both guards and the supersede token between cases. */
+export function resetVenueWalkInPendingForTests(): void {
+  _coveWalkInPending.value = false;
+  _tradingFloorWalkInPending.value = false;
+  _activeWalkInPending = null;
+  _walkInToken += 1;
 }
 
 // Map each building ID to a GLB model + display config.
@@ -317,12 +440,30 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
   'app-publishing':      { model: '/models/boating-school-opt1-ktx.glb?v=3',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
   // Slot 6 — S (cx=180, cy=310): dx=0, dz=-130 → atan2(0,-130)=π≈3.142
-  // Phase 6.2.2: targetMaxDim 1300→2200. patty-building.glb bbox ≈255.78×193.50×150.
-  // Max dim = 255.78 (X width). At targetMaxDim=2200: scale = 2200/255.78 = 8.6.
-  // Height = 193.50×8.6 = 1664wu. XZ = 255.78×8.6 = 2200 — hits MAX_FOOTPRINT=2000.
-  // Adjusted: scale×(2000/2200) = 7.82. Height = 193.50×7.82 = 1513wu (≈8.4× avatar). ✓
-  // The civic anchor building visually dominates the south slot as intended.
-  'cron-automation':     { model: '/models/patty-building-opt1-mo-ktx.glb?v=3',      yOffset: 0, rotY:  3.142, targetMaxDim: 2200 },
+  // TRADING FLOOR (founder order 2026-09-19). Replaces patty-building.glb; the
+  // building id stays `cron-automation` because owned book ids, leaderboard
+  // events and agent memories key off it — only the theme, the asset and the
+  // interior are new.
+  //
+  // trading-floor-exterior-opt1-mo-ktx.glb: scene bbox 1.290 × 1.29943 × 1.129,
+  // grounded at Y=0, centred in XZ, ENTRANCE FACES +Z at rotY 0 — the ring
+  // convention — so slot 6 keeps rotY 3.142 with NO rotYOffset.
+  //
+  // targetMaxDim 1950, NOT the inherited 2200. maxDim here is the total height
+  // INCLUDING the rooftop claw (1.299) while the roofline is only 0.996, so the
+  // sign absorbs part of the budget. 1950 → scale 1500.7 → roofline 1495 wu
+  // (within 2% of the outgoing patty roofline 1513 wu) and XZ 1936 × 1694,
+  // leaving 64 wu under MAX_FOOTPRINT. 2200 lands on a similar roofline only by
+  // TRIPPING the footprint cap, which makes any future asset tweak non-linear.
+  // Full derivation + the Meshy build pipeline: 3dStructure.md §9g.
+  //
+  // ?v=2: the exterior bytes were already replaced once (flat claw plaque → the
+  // solid claw prop). Never reuse a ?v — Cloudflare's edge cache is the reason.
+  //
+  // onClick: the cove-shaped walk-in — the avatar walks to the building's north
+  // face, then the stage crosses to the `/trading-floor` slot.
+  'cron-automation':     { model: '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2', yOffset: 0, rotY:  3.142, targetMaxDim: 1950,
+                           onClick: () => { triggerTradingFloorWalkIn(); } },
   // Slot 7 — SSW (cx=115, cy=293): dx=65, dz=-113 → atan2(65,-113)≈2.620 (5π/6)
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
   'deployment-ops':      { model: '/models/building-lighthouse-opt1-ktx.glb?v=3', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },

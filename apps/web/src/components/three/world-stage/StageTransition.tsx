@@ -19,6 +19,7 @@ const STAGE_SCENE_KIND_BY_ID = {
   world: 'world',
   cove: 'cove',
   kelp: 'kelp',
+  'trading-floor': 'trading-floor',
   activity: 'activity',
 } as const;
 

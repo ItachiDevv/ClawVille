@@ -20,7 +20,9 @@ import {
   findNearestCharacter,
   isCoveProximate,
   isKelpForestPortalProximate,
+  isTradingFloorProximate,
 } from '@/lib/three/character-positions';
+import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-location';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
@@ -35,7 +37,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState } from '@/lib/three/jump-state';
-import { triggerCoveWalkIn } from './arena-buildings';
+import { triggerCoveWalkIn, triggerTradingFloorWalkIn } from './arena-buildings';
 import {
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
@@ -293,7 +295,9 @@ function useWorldPlayerController({
       }
       if (store.nearLocation) {
         if (store.nearLocation === 'cove') triggerCoveWalkIn();
-        else if (store.nearLocation === 'kelp-forest-portal') {
+        else if (store.nearLocation === TRADING_FLOOR_NEAR_ID) {
+          triggerTradingFloorWalkIn();
+        } else if (store.nearLocation === 'kelp-forest-portal') {
           triggerKelpForestWalkIn();
         } else {
           store.enterBuilding(store.nearLocation);
@@ -319,6 +323,10 @@ function useWorldPlayerController({
             store.clearClickPath();
             if (target === 'cove') {
               triggerCoveWalkIn();
+              return { consumeFrame: true };
+            }
+            if (target === TRADING_FLOOR_NEAR_ID) {
+              triggerTradingFloorWalkIn();
               return { consumeFrame: true };
             }
             if (target === 'kelp-forest-portal') {
@@ -372,13 +380,17 @@ function useWorldPlayerController({
       }
 
       const nearest = findNearestCharacter(frame.x, frame.z);
+      // Resident chat wins the overlap sliver in front of a venue door, so
+      // walking up reads "Talk to <resident>" then "Enter <venue>".
       const nearId: string | null = nearest
         ? nearest.buildingId
         : isCoveProximate(frame.x, frame.z)
           ? 'cove'
-          : isKelpForestPortalProximate(frame.x, frame.z)
-            ? 'kelp-forest-portal'
-            : null;
+          : isTradingFloorProximate(frame.x, frame.z)
+            ? TRADING_FLOOR_NEAR_ID
+            : isKelpForestPortalProximate(frame.x, frame.z)
+              ? 'kelp-forest-portal'
+              : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);

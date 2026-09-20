@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  HOUSE_TRADER_LINEUP,
   HOUSE_TRADER_OBJECTIVES,
   TRADING_OBJECTIVE_BRIEFS,
   TRADING_OBJECTIVES,
@@ -183,11 +184,17 @@ describe('house-trader slots', () => {
       counts: new Map(),
       recentByAvatar: new Map(),
     });
-    expect(slots).toHaveLength(2);
+    // Length comes from the lineup, not a hard-coded number. On 2026-09-19 the
+    // count went 2 -> 1 (Dip Hunter dropped) and then 1 -> 2 (ClawVille Runner
+    // added) in one day, and five call sites had hard-coded "2". The LABELS are
+    // pinned literally on purpose: the order is the contract, and a silent
+    // reorder or rename is what this catches.
+    expect(slots).toHaveLength(HOUSE_TRADER_OBJECTIVES.length);
     expect(slots.map((slot) => slot.objective)).toEqual([...HOUSE_TRADER_OBJECTIVES]);
-    expect(slots.map((slot) => slot.slotName)).toEqual(['Genesis', 'Dip Hunter']);
-    // The other three objectives are trader TEMPLATES a player copies, not
-    // house traders; publishing them would claim the house runs them.
+    expect(slots.map((slot) => slot.slotName)).toEqual(['Genesis', 'ClawVille Runner']);
+    // The remaining objectives are trader TEMPLATES a player copies, not house
+    // traders; publishing them would claim the house runs them.
+    // `sol-usdc-mean-reversion` joined that group when Dip Hunter was dropped.
     const shown = new Set(slots.map((slot) => slot.objective));
     for (const objective of TRADING_OBJECTIVES) {
       if (HOUSE_TRADER_OBJECTIVES.includes(objective)) expect(shown.has(objective)).toBe(true);
@@ -211,18 +218,29 @@ describe('house-trader slots', () => {
       chosen: new Map(), counts: new Map(), recentByAvatar: new Map(),
     });
     const serialised = JSON.stringify(slots);
-    expect(slots[0]!.strategyNote).toBe('Momentum on small-cap memecoins, any venue.');
-    expect(slots[1]!.strategyNote).toBe('Buys sharp dips in strong mid-cap coins.');
+    // Every note comes from the lineup verbatim, indexed by lineup order rather
+    // than by a hard-coded slot position: the second entry (Dip Hunter) was
+    // dropped on 2026-09-19 and `slots[1]` no longer exists.
+    expect(slots.map((slot) => slot.strategyNote)).toEqual(
+      HOUSE_TRADER_LINEUP.map((entry) => entry.strategyNote),
+    );
+    expect(slots[0]!.strategyNote).toBe(HOUSE_TRADER_LINEUP[0]!.strategyNote);
     for (const objective of TRADING_OBJECTIVES) {
       expect(serialised).not.toContain(TRADING_OBJECTIVE_BRIEFS[objective]);
     }
     expect(serialised).not.toContain('brief');
-    // No thresholds in a note: the rule loops live outside the repo and change
-    // without a deploy, so a number written here would drift into a lie.
-    for (const slot of slots) expect(slot.strategyNote).not.toMatch(/\d/);
+    // Thresholds are allowed ONLY in the owner-supplied Genesis note
+    // (2026-09-19); every other note stays number-free, because those rule
+    // loops live outside the repo and a number here would drift into a lie.
+    // The lineup constant owns that rule; this asserts the builder copies the
+    // note through verbatim rather than reformatting it.
+    for (const slot of slots) {
+      const entry = HOUSE_TRADER_LINEUP.find((row) => row.objective === slot.objective)!;
+      expect(slot.strategyNote).toBe(entry.strategyNote);
+    }
   });
 
-  test('marks an occupied slot live and leaves the other one empty', () => {
+  test('marks an occupied slot live and leaves every other lineup slot empty', () => {
     const candidate = observed();
     const slots = buildHouseTraderSlots({
       chosen: new Map([['momentum-board', candidate]]),
@@ -234,7 +252,11 @@ describe('house-trader slots', () => {
     const momentum = slots.find((slot) => slot.objective === 'momentum-board')!;
     expect(momentum.status).toBe('live-observed');
     expect(momentum.counts).toEqual({ verified: 7, scored: 4, lastTradeAt: '2026-09-19T10:00:00.000Z' });
-    expect(slots.filter((slot) => slot.status === 'not-yet-running')).toHaveLength(1);
+    // Derived from the lineup, not a literal: with Genesis alone this set is
+    // empty, and it grows again by itself if a trader is ever added back.
+    expect(slots.filter((slot) => slot.status === 'not-yet-running')).toHaveLength(
+      HOUSE_TRADER_LINEUP.length - 1,
+    );
   });
 
   test('publishes the SAME subject shape and id the public tape uses', () => {

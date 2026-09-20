@@ -3,15 +3,23 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useIsMobile } from '@/hooks/use-is-mobile';
-import { useFloorConsumer, useHouseTraders, type HouseTraderSlotView } from '@/hooks/use-trading-floor';
+import {
+  useFloorConsumer,
+  useHouseTraders,
+  type HouseTraderRealisedView,
+  type HouseTraderSlotView,
+} from '@/hooks/use-trading-floor';
 import { useTradeTickerStore } from '@/stores/trade-ticker';
 import { tradeAgeLabel } from './format';
 import { TapeRow } from './trade-row';
 import { FLOOR_TEXT } from './tokens';
 
-// Watch surface for the TWO house traders in `HOUSE_TRADER_LINEUP` (Genesis,
-// Dip Hunter). NOT the five copyable templates: a house trader runs the
-// operator's own rule loop on ClawPump, outside the published profile rules, so
+// Watch surface for the house traders in `HOUSE_TRADER_LINEUP` (2026-09-19:
+// Genesis, then ClawVille Runner; Dip Hunter was backtested, rejected and
+// dropped the same day). The panel renders whatever the route returns and pins
+// no count or label, so a lineup change needs no edit here. NOT the five
+// copyable templates: a house trader
+// runs the operator's own rule loop on ClawPump, outside the published profile rules, so
 // this panel renders the lineup's label and strategy note and never a profile
 // brief or mint list. Read only: it pairs nothing, arms nothing and moves no
 // funds. Live rows come from the EXISTING ticker store the world stream already
@@ -34,6 +42,92 @@ const innerCardStyle = {
   flexDirection: 'column',
   gap: 6,
 } as const;
+
+/** Signed USD, always with its sign so a loss can never read as a gain. */
+function signedUsd(value: number): string {
+  const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+/**
+ * PUBLIC live realised P&L (founder order, 2026-09-20).
+ *
+ * Every number here is rendered STRAIGHT from the route. This component does no
+ * arithmetic beyond formatting and carries no literal figure, which is what
+ * `house-traders.test.tsx` asserts: a hand-typed number on a public money board
+ * is the failure mode worth a test of its own.
+ */
+function RealisedBlock({ realised }: { realised: HouseTraderRealisedView | null }) {
+  // THREE distinct absences, never collapsed into one and never into "$0.00".
+  // This one is a statement about OUR READ, not about the trader: saying "no
+  // closed trades yet" here would assert something about a live desk that we
+  // do not actually know.
+  if (realised === null) {
+    return (
+      <div style={{ color: FLOOR_TEXT.warning, fontSize: 11 }}>
+        P&amp;L unavailable. The figures could not be read just now; nothing is lost.
+      </div>
+    );
+  }
+  const { realisedUsd, closedPositions, wins, losses, bestUsd, worstUsd } = realised;
+  // Neutral at exactly 0: green would imply a gain that is not there.
+  const colour = realisedUsd > 0
+    ? FLOOR_TEXT.positive
+    : realisedUsd < 0 ? FLOOR_TEXT.danger : FLOOR_TEXT.muted;
+  // The SERVER decides partial. It knows causes the client cannot see, notably
+  // `computedOverTrades` disagreeing with the slot's verified count, so
+  // re-deriving this from the visible counters would miss a truncated read.
+  // The counters are kept as a fallback for an older payload without the flag.
+  const partial = realised.partial
+    || realised.unpricedLegs > 0
+    || realised.unclassifiedLegs > 0
+    || realised.undatedLegs > 0
+    || realised.excludedNonUsdc > 0;
+
+  // NOTHING CLOSED is not a flat result. Rendering "$0.00" here would claim the
+  // desk traded and came out level, which is a different and false statement.
+  if (closedPositions === 0) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <div style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
+          No closed trades yet.
+          {realised.openPositions > 0
+            ? ` ${realised.openPositions} open, ${signedUsd(realised.openCostUsd)} at cost.`
+            : ''}
+        </div>
+        <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>{realised.note}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ color: FLOOR_TEXT.faint, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+          {partial ? 'Realised (partial)' : 'Realised'}
+        </span>
+        <span style={{ color: colour, fontSize: 16, fontWeight: 700 }} data-testid="house-realised-usd">
+          {signedUsd(realisedUsd)}
+        </span>
+        <span style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
+          {closedPositions} closed · {wins}W / {losses}L
+          {realised.openPositions > 0 ? ` · ${realised.openPositions} open` : ''}
+        </span>
+      </div>
+      <div style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
+        best {bestUsd === null ? 'none' : signedUsd(bestUsd)} · worst{' '}
+        {worstUsd === null ? 'none' : signedUsd(worstUsd)}
+        {/* Wording matched to the 3D board so the two surfaces read alike. */}
+        {realised.noExitClosures > 0 ? ` · ${realised.noExitClosures} closed with no exit` : ''}
+      </div>
+      <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>
+        {realised.note}
+        {realised.preBindIncluded ? ' Includes trades from before this wallet was bound.' : ''}
+        {partial ? ' Some positions could not be valued, so this figure is partial.' : ''}
+      </div>
+    </div>
+  );
+}
 
 function SlotCard({
   slot,
@@ -102,6 +196,7 @@ function SlotCard({
       <p style={{ margin: 0, color: FLOOR_TEXT.muted, fontSize: 11 }}>{slot.strategyNote}</p>
       {occupied ? (
         <>
+          <RealisedBlock realised={slot.realised} />
           <div style={{ color: FLOOR_TEXT.primary, fontSize: 11 }}>
             {slot.counts.verified} verified · {slot.counts.scored} scored ·{' '}
             {slot.counts.lastTradeAt

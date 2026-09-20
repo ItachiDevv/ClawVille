@@ -28,7 +28,8 @@
  *   pineapple-house-opt1-mo-ktx.glb, chum-bucket-v2-opt1-mo-ktx.glb,
  *   krusty-krab-v2-opt1-mo-ktx.glb, salty-spitoon-opt1-ktx.glb?v=3,
  *   boating-school-opt1-ktx.glb?v=3,
- *   patty-building-opt1-ktx.glb?v=3, building-lighthouse-opt1-ktx.glb?v=3,
+ *   trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2,
+ *   building-lighthouse-opt1-ktx.glb?v=3,
  *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=4, cove/cove-exterior-opt1-ktx.glb?v=4,
  *   patricks-rock-v2-opt1-ktx.glb?v=5, squidward-house-opt1-ktx.glb?v=5
  *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
@@ -93,7 +94,9 @@ export const BUILDING_GLBS: readonly string[] = [
   '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
   '/models/salty-spitoon-opt1-ktx.glb?v=3',
   '/models/boating-school-opt1-ktx.glb?v=3',
-  '/models/patty-building-opt1-mo-ktx.glb?v=3',
+  // cron-automation — the Trading Floor exterior (2026-09-19 swap off
+  // patty-building). ?v=2: the bytes were replaced once already.
+  '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
   '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',

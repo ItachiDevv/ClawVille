@@ -63,7 +63,7 @@ const nori = {
   bio: ['The friendly switchboard of ClawVille.'],
   // Nori's knowledge legitimately mentions Pearl ("Pearl handles cron") — that is
   // correct redirect knowledge, NOT an identity. Her identity must stay Nori.
-  knowledge: ['ClawVille has 10 buildings. Pearl handles cron at the Downtown Building.'],
+  knowledge: ['ClawVille has 10 buildings. Pearl handles cron at the Trading Floor.'],
   topics: ['orientation', 'buildings'],
   adjectives: ['welcoming', 'helpful'],
   messageExamples: [
