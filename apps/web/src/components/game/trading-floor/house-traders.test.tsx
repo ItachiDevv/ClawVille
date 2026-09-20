@@ -88,11 +88,44 @@ function slot(overrides: Partial<HouseTraderSlotView> = {}): HouseTraderSlotView
     strategyNote: HOUSE_TRADER_LINEUP[0]!.strategyNote,
     status: 'not-yet-running',
     realised: emptyRealisedFixture(),
+    // NULL BY DEFAULT, which is what the route serves today: the field is
+    // additive and every existing assertion below must keep passing without it.
+    risk: null,
     subject: null,
     counts: { verified: 0, scored: 0, lastTradeAt: null },
     recentTrades: [],
     ...overrides,
   };
+}
+
+/** A paused verdict, with Genesis's real staging shape: blocked because the
+ *  NEXT position does not fit under the cap, not because the day loss alone
+ *  exceeded it. */
+function riskFixture(
+  overrides: Partial<NonNullable<HouseTraderSlotView['risk']>> = {},
+): NonNullable<HouseTraderSlotView['risk']> {
+  return {
+    state: 'paused',
+    reason: 'daily_loss_floor',
+    detail: 'Daily loss floor reached; the desk resumes after the UTC reset.',
+    dayLossUsd: 9.99,
+    dayLossCapUsd: 20,
+    roomNeededUsd: 10.25,
+    at: '2026-09-20T10:40:00.000Z',
+    ageSeconds: 42,
+    ...overrides,
+  };
+}
+
+/** A LIVE desk, so the risk assertions are about the verdict rather than about
+ *  the pairing line that would otherwise explain the idleness. */
+function liveSlot(overrides: Partial<HouseTraderSlotView> = {}): HouseTraderSlotView {
+  return slot({
+    status: 'live-observed',
+    subject: { type: 'agent', id: 'clawville-agent-genesis', avatarName: 'Genesis' },
+    counts: { verified: 20, scored: 12, lastTradeAt: '2026-09-20T04:30:00.000Z' },
+    ...overrides,
+  });
 }
 
 function tickerTrade(): FloorTrade {
@@ -515,6 +548,183 @@ describe('House traders section', () => {
     const text = host.textContent ?? '';
     expect(text).toContain('This panel shows the traders paired right now.');
     expect(text).toContain('including trades from a trader that is no longer paired');
+  });
+
+  // ── RISK PAUSE (founder order, 2026-09-20) ────────────────────────────────
+  // The desk that cannot trade must SAY so. Genesis sat cap-blocked for seven
+  // hours with `halted` reading false and nothing on any surface reporting it;
+  // an empty tape looks identical to a desk with no setup, so the panel reads
+  // the route's verdict and never infers one.
+
+  test('a paused desk shows the pill, the detail and the full arithmetic', async () => {
+    const host = await renderWithSlots([liveSlot({ risk: riskFixture() })]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Paused by risk limit');
+    expect(text).toContain('Daily loss floor reached');
+    // ALL THREE FIGURES IN ONE SENTENCE. The day loss beside the cap alone
+    // reads as a desk with room to spare (9.99 is well under 20.00); what
+    // blocks it is the next position not fitting. Rendering only the two loss
+    // numbers would be true and misleading at once.
+    expect(text).toContain('Day loss 9.99 + next position 10.25 is over the cap 20.00');
+    // A pause is not a fault, and the pairing line still stands.
+    expect(text).not.toContain('Status fault');
+    expect(text).toContain('Live as Genesis');
+  });
+
+  // TWO GATES, AND THEY CATCH DIFFERENT THINGS. `paused` covers four reasons
+  // and only `daily_loss_floor` is about the cap, so the sentence needs the
+  // right REASON as well as figures that add up. Each case below renders the
+  // pill and the detail, which stay true; only the claim goes.
+  test.each([
+    // THE CASE AN INEQUALITY-ONLY GATE LETS THROUGH, and the reason this test
+    // exists: the arithmetic is TRUE (30 > 25) and the sentence is still a lie,
+    // because an operator halted this desk and its loss floor had nothing to do
+    // with it. A reader would take the cap as the cause.
+    ['halted, figures that DO add up', 'halted', 20, 10, 25],
+    ['halted, slack figures', 'halted', 0, 10.25, 25],
+    ['insufficient_usdc', 'insufficient_usdc', 2, 1, 20],
+    ['gas_reserve', 'gas_reserve', 1, 1, 20],
+    // Right reason, figures that do not support the claim.
+    ['daily_loss_floor with slack', 'daily_loss_floor', 2, 1, 20],
+    // Exactly at the cap is NOT over it.
+    ['daily_loss_floor exactly at the cap', 'daily_loss_floor', 10, 10, 20],
+  ] as const)(
+    'no cap sentence for %s',
+    async (_name, reason, dayLossUsd, roomNeededUsd, dayLossCapUsd) => {
+      const host = await renderWithSlots([
+        liveSlot({
+          risk: riskFixture({
+            reason,
+            detail: 'The desk is not opening positions.',
+            dayLossUsd,
+            roomNeededUsd,
+            dayLossCapUsd,
+          }),
+        }),
+      ]);
+      const text = host.textContent ?? '';
+      expect(text).toContain('Paused by risk limit');
+      expect(text).toContain('The desk is not opening positions.');
+      expect(text).not.toContain('is over the cap');
+      expect(host.querySelectorAll('[data-testid="house-risk-math"]')).toHaveLength(0);
+    },
+  );
+
+  // THE COPY CARRIES NO FIGURE OF ITS OWN. A hand-typed number in the wording
+  // around a money claim is the same defect as a hand-typed headline, and it is
+  // harder to see because it reads as prose. The only digits this component
+  // writes are the three the route sent.
+  test('the pause copy contains no digits beyond the three route figures', async () => {
+    const host = await renderWithSlots([
+      liveSlot({
+        // No digits in the detail, so anything numeric in the block came from
+        // the component. The route's own prose is exempt: it is not our copy.
+        risk: riskFixture({ detail: 'The desk resumes after the reset.' }),
+      }),
+    ]);
+    const block = host.querySelector('[data-testid="house-risk"]');
+    expect(block).not.toBeNull();
+    expect((block?.textContent ?? '').match(/\d+(?:\.\d+)?/g)).toEqual([
+      '9.99',
+      '10.25',
+      '20.00',
+    ]);
+    // And the pill itself is words only, in both states.
+    for (const state of ['paused', 'fault'] as const) {
+      const pill = (await (async () => {
+        if (root) await act(async () => root?.unmount());
+        container?.remove();
+        root = null;
+        container = null;
+        const next = await renderWithSlots([liveSlot({ risk: riskFixture({ state }) })]);
+        return next.querySelector('[data-testid="house-risk-pill"]');
+      })());
+      expect({ state, text: pill?.textContent ?? '' }).toEqual({
+        state,
+        text: state === 'fault' ? 'Status fault' : 'Paused by risk limit',
+      });
+    }
+  });
+
+  test('a fault is never dressed up as a risk pause', async () => {
+    const host = await renderWithSlots([
+      liveSlot({
+        risk: riskFixture({ state: 'fault', reason: 'price_feed_down', detail: 'Price feed down.' }),
+      }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Status fault');
+    expect(text).toContain('Price feed down.');
+    // "Paused by risk limit" asserts a limit was evaluated AND hit. A fault
+    // says the evaluation did not complete, so neither the pause wording nor
+    // its arithmetic may appear.
+    expect(text).not.toContain('Paused by risk limit');
+    expect(text).not.toContain('is over the cap');
+  });
+
+  test('a live verdict and a missing block both render exactly today\'s card', async () => {
+    const host = await renderWithSlots([
+      liveSlot({ risk: riskFixture({ state: 'live', reason: 'ok', detail: null }) }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Live as Genesis');
+    expect(text).not.toContain('Paused by risk limit');
+    expect(text).not.toContain('Status fault');
+    expect(text).not.toContain('is over the cap');
+    expect(host.querySelectorAll('[data-testid="house-risk"]')).toHaveLength(0);
+  });
+
+  test('a null block renders no risk element at all', async () => {
+    // The STAGING case: the route has not shipped the field. Nothing about the
+    // card may change, including the absence of an empty wrapper element.
+    const host = await renderWithSlots([liveSlot({ risk: null })]);
+    expect(host.querySelectorAll('[data-testid="house-risk"]')).toHaveLength(0);
+    expect(host.textContent ?? '').toContain('Live as Genesis');
+  });
+
+  test('a pause never overrides the reason a desk is already idle', async () => {
+    // PAIRING FIRST. A stopped or unpaired desk states why it is idle in its
+    // own words; replacing that with "paused by risk limit" would swap a true
+    // statement for a narrower one that is not the reason it is not trading.
+    for (const status of ['stopped', 'not-yet-running'] as const) {
+      const host = await renderWithSlots([
+        slot({
+          status,
+          subject: { type: 'agent', id: 'clawville-agent-genesis', avatarName: 'Genesis' },
+          risk: riskFixture(),
+        }),
+      ]);
+      const text = host.textContent ?? '';
+      expect({ status, paused: text.includes('Paused by risk limit') }).toEqual({
+        status,
+        paused: false,
+      });
+      // One root per test is the harness rule, so this loop tears down between
+      // iterations rather than rendering twice into the same container.
+      if (root) await act(async () => root?.unmount());
+      container?.remove();
+      root = null;
+      container = null;
+    }
+  });
+
+  test('the pause keeps the P&L figures on the card, it does not replace them', async () => {
+    // The figures are REAL. A paused desk has simply stopped adding to them,
+    // and blanking them would lose a fact the reader came for.
+    const host = await renderWithSlots([
+      liveSlot({
+        risk: riskFixture(),
+        realised: {
+          ...emptyRealisedFixture(),
+          closedPositions: 20, wins: 8, losses: 12, realisedUsd: -5.2,
+          bestUsd: 3.15, worstUsd: -2.4, computedOverTrades: 41,
+        },
+      }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('-$5.20');
+    expect(text).toContain('20 closed');
+    expect(text).toContain('Paused by risk limit');
   });
 
   test('links to the templates section rather than duplicating it', async () => {

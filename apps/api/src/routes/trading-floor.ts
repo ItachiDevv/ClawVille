@@ -10,9 +10,25 @@ import { readAutonomousTradingTargets } from '../services/autonomous-trading-tar
 import { tradingSubjectKey } from '../services/trading-wallet-challenge';
 import {
   createHouseTraderDeps,
-  readHouseTraderSlots,
+  readHouseTraderSlotBindings,
+  readHouseTraderWallets,
+  slotPublishesRisk,
   type HouseTraderDeps,
+  type HouseTraderSlotBinding,
+  type PublicHouseTraderSlot,
 } from '../services/house-traders';
+import {
+  bearerToken,
+  decideStatusWrite,
+  houseTraderStatusBodySchema,
+  normaliseStatusTimestamp,
+  readConfiguredStatusToken,
+  readHouseTraderStatus,
+  recordHouseTraderStatus,
+  sanitiseStatusDetail,
+  statusTokenMatches,
+  toHouseTraderRisk,
+} from '../services/house-trader-status';
 import {
   CLAWPUMP_DASHBOARD_URL,
   TRADING_AGENT_TEMPLATES,
@@ -30,6 +46,10 @@ const limiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000 });
 const tradeSubjectLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000 });
 const templatesLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
 const houseTradersLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+/** The runner posts on every state change plus a 60 s heartbeat, so two
+ *  traders need about 2 per minute. 30 leaves room for a burst of changes and
+ *  still bounds what a leaked token could do. */
+const statusLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
 
 // ─── Public ClawPump trader templates ───────────────────────────────────────
 //
@@ -75,28 +95,198 @@ tradingFloorRoutes.get('/templates', async (c) => {
 export function createHouseTradersHandler(
   deps: HouseTraderDeps = createHouseTraderDeps(),
   cacheMs = 15_000,
+  options: { now?: () => number } = {},
 ) {
-  // 15s in-process cache mirroring the public feed at exchange.ts:91.
-  let cached: { expiresAt: number; body: unknown } | null = null;
+  const now = options.now ?? (() => Date.now());
+  // 15s in-process cache mirroring the public feed at exchange.ts:91. It holds
+  // the BINDINGS, not the finished body, because the risk merge below must run
+  // on every request.
+  //
+  // THIS 15 AND THE `max-age=5` BELOW ARE DELIBERATELY DIFFERENT. Do not "fix"
+  // one to match the other. This one bounds how stale the SLOT data may be
+  // (counts, tape, realised, all slow-moving). The header bounds how long a
+  // shared cache may replay a whole response, `risk` included. Because the risk
+  // merge runs per request outside this cache, a five second edge window serves
+  // FRESH risk over fifteen-second-old slot data, which is exactly the intent.
+  let cached: { expiresAt: number; generatedAt: string; bindings: HouseTraderSlotBinding[] } | null = null;
   return async (c: Context<ActivityAuthContext>) => {
     if (!houseTradersLimiter.check(getClientIp(c.req.raw.headers))) {
       return c.json({ error: 'Too many house trader requests.', code: 'rate_limited' }, 429);
     }
-    if (!cached || cached.expiresAt <= Date.now()) {
-      const body = {
-        generatedAt: new Date().toISOString(),
-        slots: await readHouseTraderSlots(deps),
-      };
-      cached = { expiresAt: Date.now() + cacheMs, body };
+    if (!cached || cached.expiresAt <= now()) {
+      const bindings = await readHouseTraderSlotBindings(deps);
+      cached = { expiresAt: now() + cacheMs, generatedAt: new Date(now()).toISOString(), bindings };
     }
+    // The RISK MERGE, deliberately OUTSIDE the cache.
+    //
+    // A reported pause is the one thing on this response that a reader needs
+    // promptly, and it arrives out of band from a POST rather than from the
+    // database read above. Folding it into the cached body would hold a pause
+    // back for up to 15 s after the runner told us, and it would hold a
+    // RECOVERY back just as long, which is the worse direction: a board still
+    // reading "Paused by risk limit" after the trader resumed is a false
+    // statement about a live trader. Merging per request costs one Map lookup
+    // per slot.
+    //
+    // The wallet is used as the join key ONLY. It never reaches the body: two
+    // tests assert no wallet string and no `wallet` key appears here.
+    //
+    // `slotPublishesRisk` is the pairing-wins rule: a `stopped` desk keeps its
+    // link pubkey and its runner may still be heartbeating, but both human
+    // surfaces show STOPPED and suppress the pause, so the wire must too.
+    const merged: PublicHouseTraderSlot[] = cached.bindings.map(({ slot, walletPubkey }) => ({
+      ...slot,
+      risk: walletPubkey && slotPublishesRisk(slot.status)
+        ? toHouseTraderRisk(readHouseTraderStatus(walletPubkey), now())
+        : null,
+    }));
     // Set ONLY after a successful read: a thrown read must reach the error
     // handler with no `public` cache header, or an edge could cache the 500.
-    c.header('Cache-Control', 'public, max-age=15');
-    return c.json(cached.body as any);
+    //
+    // FIVE seconds, deliberately SHORTER than the 15 s in-process cache above,
+    // and the two bound different things. The in-process cache bounds how stale
+    // the SLOT data can be (counts, tape, realised), and 15 s of that is fine
+    // because those move slowly. This header bounds how long a SHARED cache may
+    // replay a whole response, `risk` included, and 15 s of that is not fine:
+    // it would let an edge serve "Paused by risk limit" for 15 s after the
+    // trader recovered, undoing the reason the merge sits outside the cache at
+    // all, and it would let a report be served up to 15 s past its 150 s life.
+    // Worst case now: a pause, or a recovery, is visible within one client poll
+    // plus 5 s, and a served report is at most 155 s old.
+    c.header('Cache-Control', 'public, max-age=5');
+    return c.json({ generatedAt: cached.generatedAt, slots: merged });
   };
 }
 
 tradingFloorRoutes.get('/house-traders', createHouseTradersHandler());
+
+// ─── House-trader risk status feed (machine, 2026-09-20) ────────────────────
+//
+// Our OWN runner posts why it cannot open a position. The board then says
+// "Paused by risk limit" instead of showing a quiet trader with no explanation.
+// Founder decision 2026-09-20, after Genesis sat cap-blocked from 03:25Z with
+// `halted` reading false and no surface saying anything.
+//
+// This is NOT a player action and NOT an economy write: it stores one ephemeral
+// record per house wallet, settles nothing, and touches no ledger. It therefore
+// has no `[ACTION:]` verb, and no agent and no partner can call it. The READ
+// side is where parity lives: `GET /api/floor/house-traders` is public and
+// unauthenticated, so a human, a guest and a connected agent all see the same
+// `risk` block in the same bytes. PROTOCOL_VERSION still went 66 -> 67, because
+// manual section 17b documents that field and hosted runtimes key their manual
+// memory on the version.
+//
+// Mounted before `sessionMiddleware` for the same reason the two public GETs
+// are: the runner presents a bearer token and no cookie, so there is no session
+// to refresh and no `Set-Cookie` to emit.
+export function createHouseTraderStatusHandler(
+  deps: HouseTraderDeps = createHouseTraderDeps(),
+  options: { now?: () => number; walletCacheMs?: number; missRefreshMs?: number } = {},
+) {
+  const now = options.now ?? (() => Date.now());
+  const walletCacheMs = options.walletCacheMs ?? 60_000;
+  const missRefreshMs = options.missRefreshMs ?? 5_000;
+  let wallets: { loadedAtMs: number; set: Set<string> } | null = null;
+
+  async function isHouseWallet(wallet: string): Promise<boolean> {
+    const at = now();
+    if (!wallets || at - wallets.loadedAtMs >= walletCacheMs) {
+      wallets = { loadedAtMs: at, set: await readHouseTraderWallets(deps) };
+    }
+    if (wallets.set.has(wallet)) return true;
+    // A MISS may only mean the cache is stale: pairing and unpairing happen in
+    // the database with no deploy, so a freshly paired runner would otherwise
+    // 404 for a whole window. Reload once, no more often than `missRefreshMs`,
+    // which recovers in seconds while keeping a flood of unknown wallets from
+    // turning into a flood of database reads.
+    if (at - wallets.loadedAtMs < missRefreshMs) return false;
+    wallets = { loadedAtMs: at, set: await readHouseTraderWallets(deps) };
+    return wallets.set.has(wallet);
+  }
+
+  return async (c: Context<ActivityAuthContext>) => {
+    if (!statusLimiter.check(getClientIp(c.req.raw.headers))) {
+      return c.json({ error: 'rate_limited' }, 429);
+    }
+    // Read at request time, so setting the secret does not need a restart and
+    // an unconfigured deployment refuses rather than accepting anything.
+    const expected = readConfiguredStatusToken();
+    if (!expected) return c.json({ error: 'not_configured' }, 503);
+    const presented = bearerToken(c.req.header('Authorization'));
+    // Compared with a constant-time digest compare. The token is never logged,
+    // never echoed, and never named in an error body.
+    if (!presented || !statusTokenMatches(presented, expected)) {
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+    // Same 415 convention the two operator middlewares use on a write. Matched
+    // on the MEDIA TYPE only, so `application/json; charset=utf-8` (which is
+    // what several HTTP clients send by default) still passes. Checked after
+    // the bearer, so an unauthenticated caller learns nothing from it.
+    const mediaType = (c.req.header('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+    if (mediaType !== 'application/json') {
+      return c.json({ error: 'unsupported_media_type' }, 415);
+    }
+    // The global `jsonBodyGuard` (index.ts) already answers malformed JSON with
+    // `400 {error:'invalid_json'}` before this handler runs, for any body whose
+    // content-type is JSON. This catch is the belt for a bare-mounted handler
+    // in a test and for any future path that skips the global guard; in
+    // production the caller sees `invalid_json`, which the contract documents.
+    let json: unknown;
+    try { json = await c.req.json(); } catch { return c.json({ error: 'invalid_body' }, 400); }
+    const parsed = houseTraderStatusBodySchema.safeParse(json);
+    if (!parsed.success) return c.json({ error: 'invalid_body' }, 400);
+    const body = parsed.data;
+    // TWO different answers on purpose. A string that is not a timestamp is a
+    // malformed field like any other and reads as "fix your serialiser";
+    // `stale_timestamp` is reserved for a well-formed time outside the window,
+    // which reads as "fix your clock, or stop replaying".
+    const at = normaliseStatusTimestamp(body.at, now());
+    if (!at.ok) {
+      return c.json({ error: at.code === 'unparseable' ? 'invalid_body' : 'stale_timestamp' }, 400);
+    }
+    // Only a CURRENT lineup slot's bound wallet may write. Without this, anyone
+    // holding the token could post a state for an arbitrary pubkey and grow the
+    // store without bound; with it, the store cannot exceed the lineup size.
+    if (!(await isHouseWallet(body.wallet))) return c.json({ error: 'unknown_wallet' }, 404);
+    // ORDERING, decided on the RUNNER'S clock and not on arrival. HTTP does not
+    // promise order, so a delayed `canEnter: false` could otherwise overwrite
+    // the newer `canEnter: true` behind it and pin a pause on a trader that has
+    // already recovered. ONLY a strictly older report is dropped; an equal `at`
+    // STORES and refreshes the receipt time, because `at` is the SEND time of
+    // this post and a heartbeat is the runner telling us the state still holds.
+    // `decideStatusWrite` carries the full reasoning, including why equal is
+    // not a replay hole. An ignored report answers 200: the runner did nothing
+    // wrong and must not retry.
+    const decision = decideStatusWrite(at.atMs, readHouseTraderStatus(body.wallet));
+    if (decision !== 'store') return c.json({ ok: true, ignored: decision });
+    const receivedAtMs = now();
+    recordHouseTraderStatus({
+      wallet: body.wallet,
+      canEnter: body.canEnter,
+      reason: body.reason,
+      // Sanitised on the way IN, so nothing unprintable is ever stored and the
+      // read path cannot forget to clean it.
+      detail: sanitiseStatusDetail(body.detail),
+      dayLossUsd: body.dayLossUsd,
+      dayLossCapUsd: body.dayLossCapUsd,
+      roomNeededUsd: body.roomNeededUsd,
+      at: at.at,
+      atMs: at.atMs,
+      receivedAtMs,
+    });
+    return c.json({
+      ok: true,
+      wallet: body.wallet,
+      receivedAt: new Date(receivedAtMs).toISOString(),
+    });
+  };
+}
+
+// `noStorePrivate` rather than a hand-set header: it is the repo's cache
+// invariant middleware and it sets the headers AFTER the handler, so no future
+// edit inside the handler can leave a `public` header on a 401 or a 404 that an
+// edge would then remember.
+tradingFloorRoutes.post('/house-traders/status', noStorePrivate, createHouseTraderStatusHandler());
 
 tradingFloorRoutes.use('*', sessionMiddleware);
 

@@ -542,7 +542,23 @@ import {
 // has not shipped to any environment yet, so both changes reach every agent on
 // the first pull of 66. Two bumps in one unshipped diff would force two refresh
 // cycles and two harness runs for one release.
-export const PROTOCOL_VERSION = 66;
+// NOTE (2026-09-20, house-trader risk status): bumped 66 -> 67. Section 17b now
+// documents the `risk` field on every house-trader slot: `null`, or a block
+// carrying `state` (`paused`, `live` or `fault`), `reason`, `detail`,
+// `dayLossUsd`, `dayLossCapUsd`, `roomNeededUsd`, `at` and `ageSeconds`. The
+// board can now say a trader is "paused by a risk limit" instead of showing a
+// quiet desk with no explanation (founder decision, after Genesis sat
+// cap-blocked from 03:25Z with `halted` reading false and nothing saying so).
+// A SECOND bump on the same day and NOT folded into 66, unlike the Dip Hunter
+// change above: 66 shipped to STAGING with the Trading Floor building, so
+// reusing it for different manual bytes would leave every runtime that already
+// pulled 66 on the old manual forever. That is the exact rule the v65 note
+// states. No `[ACTION:]` verb: the state arrives on a machine feed
+// (`POST /api/floor/house-traders/status`) from ClawVille's own runner, not
+// from an agent, and it settles nothing. No bearer/TTL, cognition body,
+// namespace or leaderboard weight changed. Sweep every version pin BY
+// ASSERTION, never by grepping the old number.
+export const PROTOCOL_VERSION = 67;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -2632,6 +2648,9 @@ winning, crushing it, or beating the market.
 Read each slot's \`status\` rather than assuming one. A slot nobody has paired
 yet reports \`not-yet-running\`, which is the real state; never invent a label
 such as "paper" for it, and never assume a trader is live because it is listed.
+Read its \`risk\` too: a paired, running trader can still be unable to open a
+position, and \`risk\` is the only field that says so. See the \`risk\` block
+below.
 
 A further candidate, Dip Hunter, was tested and dropped on 2026-09-19 because
 it lost money in the backtest, so it has no slot and never appears in the
@@ -2655,7 +2674,8 @@ without a wire change. Each
 slot carries \`objective\` (a join key, NOT a description), \`slotName\`,
 \`strategyNote\`, a \`status\` of \`live-observed\`, \`stopped\` or
 \`not-yet-running\`, \`subject\` (\`null\`, or the same \`{ type, id, avatarName }\`
-the public tape publishes), \`counts\` (\`verified\`, \`scored\`, \`lastTradeAt\`) and
+the public tape publishes), \`counts\` (\`verified\`, \`scored\`, \`lastTradeAt\`),
+\`risk\` (see below) and
 up to five \`recentTrades\` in the public tape shape.
 
 \`not-yet-running\` means no trader is paired to that slot: the real state, not
@@ -2665,6 +2685,44 @@ a trader that used a slot before can still appear on the tape after the slot
 empties. Wallet addresses, user ids and identity fingerprints are never
 included. Watching is read only: it pairs nothing, arms nothing and moves no
 funds.
+
+\`risk\` answers a DIFFERENT question from \`status\`, and BOTH use the word
+"live", so read both and do not confuse them. \`status\` is PAIRING: is a trader
+attached to this slot. \`risk.state\` is CAPABILITY: can that trader open a
+position right now. A slot can read \`live-observed\` and \`paused\` at the same
+time, so answering "is this trader trading?" from \`status\` alone will
+contradict a board that shows PAUSED.
+
+PAIRING WINS. Only a \`live-observed\` slot ever carries a \`risk\` block. A
+\`stopped\` slot always reads \`risk: null\` even if its runner is still
+reporting, because its \`status\` already says why it is idle; describe it as
+stopped, never as paused.
+
+\`risk\` is \`null\`, or
+\`{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd, at, ageSeconds }\`.
+\`state\` is one of three:
+
+- \`paused\`: a RISK LIMIT is holding the trader back. Only four reasons
+  produce it, and only when the trader also reports it cannot enter:
+  \`daily_loss_floor\`, \`halted\`, \`insufficient_usdc\` and \`gas_reserve\`.
+- \`fault\`: the trader is not deciding at all. Reasons \`price_feed_down\` and
+  \`other\`. A broken price feed is a fault, never a risk decision.
+- \`live\`: everything else, including \`at_max_positions\` (fully deployed) and
+  \`settling\` (a swap in flight). Those are working states, not pauses.
+
+Say "paused by a risk limit" for \`paused\`. Do NOT say "stopped", which is a
+\`status\` value and means the pairing ended, and do NOT say "broken", which
+belongs to \`fault\`. \`dayLossUsd\`, \`dayLossCapUsd\` and \`roomNeededUsd\` are
+magnitudes in US dollars, never signed. \`ageSeconds\` is how long ago ClawVille
+received the report.
+
+Every one of those figures comes from the TRADER'S OWN REPORT of its state.
+ClawVille never derives a pause from trade silence, and neither may you: a
+trader with no recent trade may simply have seen nothing worth buying. \`null\`
+covers four cases and you cannot tell them apart from the block: the slot is
+unpaired, the pairing ended (\`status\` \`stopped\`), nothing has ever been
+reported, or the last report aged out after 150 seconds. \`null\` means "not
+reported", so say that; it is never a pause and never a fault.
 `;
 }
 

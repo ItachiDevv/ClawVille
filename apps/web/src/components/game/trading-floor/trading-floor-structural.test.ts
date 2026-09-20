@@ -67,6 +67,10 @@ describe('Trading Floor outward copy and dark card tokens', () => {
     const files = [
       'src/components/game/trading-floor/clawpump-templates.tsx',
       'src/components/game/trading-floor/house-traders.tsx',
+      // The risk verdict's copy and its arithmetic sentence are BUILT here,
+      // so the outward-copy and token rules have to reach the module that
+      // writes them, not only the component that mounts the result.
+      'src/components/game/trading-floor/house-trader-risk.ts',
       'src/components/game/trading-floor/floor-tape.tsx',
       'src/components/game/trading-floor/trade-row.tsx',
       'src/components/game/trading-floor/trading-floor-tab.tsx',
@@ -111,6 +115,10 @@ describe('Trading Floor outward copy and dark card tokens', () => {
     const files = [
       'src/components/game/trading-floor/clawpump-templates.tsx',
       'src/components/game/trading-floor/house-traders.tsx',
+      // The risk verdict's copy and its arithmetic sentence are BUILT here,
+      // so the outward-copy and token rules have to reach the module that
+      // writes them, not only the component that mounts the result.
+      'src/components/game/trading-floor/house-trader-risk.ts',
       'src/components/game/trading-floor/floor-tape.tsx',
       'src/components/game/trading-floor/trade-row.tsx',
       'src/components/game/trading-floor/trading-floor-tab.tsx',

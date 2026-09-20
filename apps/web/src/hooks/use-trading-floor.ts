@@ -24,9 +24,23 @@ import {
 } from '@/stores/trade-ticker';
 import { useWorldStreamStore } from '@/stores/world-stream-state';
 import { tierFromMultiplier } from '@/components/game/trading-floor/format';
+import {
+  normaliseHouseTraderRisk,
+  type HouseTraderPairingStatus,
+  type HouseTraderRiskView,
+} from '@/components/game/trading-floor/house-trader-risk';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const FEED_LIMIT = 25;
+
+/**
+ * How often the house-trader surfaces re-read the route, and how long a result
+ * is considered fresh. ONE constant for both, because a `staleTime` above the
+ * interval would silently cancel it: react-query serves the cached value and
+ * the poll becomes a no-op. Exported so a test can pin the wiring rather than
+ * re-type the number. See `useHouseTraders` for why the interval exists at all.
+ */
+export const HOUSE_TRADERS_POLL_MS = 15_000;
 
 export interface TradingWallet {
   pubkey: string;
@@ -509,11 +523,20 @@ export interface HouseTraderSlotView {
   objective: string;
   slotName: string;
   strategyNote: string;
-  status: 'live-observed' | 'stopped' | 'not-yet-running';
+  status: HouseTraderPairingStatus;
   /** The same shape and the same id the public tape publishes, so one
    *  identifier policy governs both surfaces. Never the avatar UUID. */
   subject: { type: 'avatar' | 'agent'; id: string; avatarName: string | null } | null;
   counts: { verified: number; scored: number; lastTradeAt: string | null };
+  /**
+   * WHY THE DESK IS OR IS NOT OPENING POSITIONS, from the route (founder,
+   * 2026-09-20). `null` means the route did not send a block we could read,
+   * which includes the route that has not shipped the field yet, and both
+   * public surfaces then render exactly as they did before it existed.
+   *
+   * A pause is never inferred from trade silence. See `house-trader-risk.ts`.
+   */
+  risk: HouseTraderRiskView | null;
   /**
    * PUBLIC live realised P&L, server-computed over the FULL history. Every
    * figure comes from the route; the panel never derives one.
@@ -604,6 +627,25 @@ function wireNullableNumber(value: unknown): number | null {
  *  exercised directly rather than only through a rendered slot. */
 export function normaliseHouseSlotRealisedForTest(value: unknown): HouseTraderRealisedView | null {
   return normaliseRealised(value);
+}
+
+/**
+ * Test seam for the WHOLE slot, not a field.
+ *
+ * The risk block's contract has two halves and only one of them is about the
+ * block: an unreadable `risk` must become `null` AND must leave every other
+ * field of the slot standing. A per-field seam can only prove the first half,
+ * and the half that would actually hurt, a bad `risk` collapsing the slot and
+ * taking the P&L down with it, is the second.
+ */
+export function normaliseHouseSlotForTest(value: unknown): HouseTraderSlotView | null {
+  return normaliseHouseSlot(value);
+}
+
+/** Per-field seam, alongside the whole-slot one above. The guard is exercised
+ *  directly as well as through a slot, matching how `realised` is tested. */
+export function normaliseHouseSlotRiskForTest(value: unknown): HouseTraderRiskView | null {
+  return normaliseHouseTraderRisk(value);
 }
 
 function normaliseRealised(value: unknown): HouseTraderRealisedView | null {
@@ -710,6 +752,11 @@ function normaliseHouseSlot(value: unknown): HouseTraderSlotView | null {
       lastTradeAt: typeof counts?.lastTradeAt === 'string' ? counts.lastTradeAt : null,
     },
     realised: normaliseRealised(row.realised),
+    // ADDITIVE and independent: an unreadable risk block yields `null` and the
+    // slot keeps every other field, including its P&L. Collapsing the slot
+    // here would turn a metadata problem into "P&L unavailable" on a desk whose
+    // figures we read perfectly well.
+    risk: normaliseHouseTraderRisk(row.risk),
     recentTrades: Array.isArray(row.recentTrades)
       ? row.recentTrades
           .map(normalisePublicTrade)
@@ -727,15 +774,46 @@ async function fetchHouseTraders(): Promise<HouseTraderSlotView[]> {
     : [];
 }
 
-/** Matches the route's own 15s cache, so the panel never polls harder than the
- *  server refreshes. Live rows arrive through the existing ticker store, so
- *  this adds no second poller. */
+/**
+ * THE ONLY POLLER FOR BOTH PUBLIC SURFACES. The Exchange panel and the 3D board
+ * share this one react-query key, so a single interval feeds both and neither
+ * adds a second fetch. Live TRADE rows still arrive through the ticker store;
+ * the risk verdict and the counts come from here.
+ *
+ * `refetchInterval` IS THE FEATURE, not a tuning knob. Without it this query
+ * fetched once when the scene activated and then never again: react-query
+ * refetches on mount, on window focus and on reconnect, and a player who simply
+ * STANDS IN THE ROOM AND WATCHES THE BOARD triggers none of the three. `active`
+ * comes from `useSceneActive()`, which is stable for as long as the player is
+ * in the Trading Floor, so nothing was remounting either. The server could have
+ * merged a pause and the edge cache could have dropped to one second, and the
+ * board would still have shown the snapshot it fetched on arrival, forever.
+ * That was the end-to-end gap under the whole feature (tfs-audit).
+ *
+ * 15 s, not 5 s (lead, 2026-09-20): web performance is priority one and one
+ * small JSON fetch per 15 s is the budget. Worst case for a pause or a recovery
+ * reaching an open board is therefore about 20 s, the poll plus the route's 5 s
+ * edge cache.
+ *
+ * A POLL IS NOT A REPAINT, and that is what makes this affordable. The board
+ * redraws only when `floorScreenSignature` changes, and that signature is
+ * derived from `readRiskForBoard`, which deliberately excludes `ageSeconds` and
+ * `at`. So a refetch that changes nothing the board draws produces an identical
+ * signature, no canvas redraw and no texture upload. Had the ticking fields
+ * gone into the signature, this interval would have meant a 1.28 MB upload
+ * (5.13 MB at 2x) every 15 s forever.
+ *
+ * `refetchIntervalInBackground: false` is the default and is stated anyway: a
+ * hidden tab stops polling, and the scene is paused there regardless.
+ */
 export function useHouseTraders(enabled: boolean) {
   return useQuery({
     queryKey: ['trading-floor', 'house-traders'],
     queryFn: fetchHouseTraders,
     enabled,
-    staleTime: 15_000,
+    staleTime: HOUSE_TRADERS_POLL_MS,
+    refetchInterval: HOUSE_TRADERS_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 }
 

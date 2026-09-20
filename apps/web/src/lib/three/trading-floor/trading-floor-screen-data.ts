@@ -6,10 +6,11 @@
  *
  * Kept apart from `trading-floor-screen-texture.ts` so the drawing code stays
  * free of app types, and apart from the React component so both halves are
- * unit-testable. The ONLY value import is the `TRADE_MINTS` constant table; the
- * app-shaped imports are all `import type`, so nothing from the hooks module
- * (react-query, the Solana wallet adapter) reaches the runtime bundle through
- * this file.
+ * unit-testable. The only value imports are the `TRADE_MINTS` constant table
+ * and the dependency-free `house-trader-risk` helpers; every app-shaped import
+ * is an `import type`, so nothing from the hooks module (react-query, the
+ * Solana wallet adapter) reaches the runtime bundle through this file. Keep it
+ * that way: this module is pulled into the 3D scene chunk.
  *
  * WHAT IS DELIBERATELY NOT CARRIED ACROSS:
  *   - `strategyNote`. It is free server text on a public wall in the game
@@ -25,6 +26,7 @@
 
 import { TRADE_MINTS } from '@clawville/shared';
 
+import { resolveHouseTraderRiskDisplay } from '@/components/game/trading-floor/house-trader-risk';
 import type { FloorTrade } from '@/stores/trade-ticker';
 import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
 import { formatSignedUsd } from './trading-floor-screen-texture';
@@ -373,12 +375,21 @@ export function buildFloorScreenData(
 
   const drawn: FloorScreenSlot[] = slots.map((slot) => ({
     label: slot.slotName,
+    // The RISK VERDICT wins over `live`, and over nothing else. A stopped or
+    // unpaired desk already states why it is idle, so the shared resolver
+    // returns null for it and the pairing word stands. The resolver is the SAME
+    // function the Exchange panel calls, so the wall and the panel cannot
+    // disagree about one desk, and it never re-derives `state` — the server is
+    // the only classifier; this only chooses which of two true facts the one
+    // status row shows. With no readable block the board is pixel-for-pixel the
+    // one that shipped before the field existed.
     status:
-      slot.status === 'live-observed'
+      readRiskForBoard(slot).display ??
+      (slot.status === 'live-observed'
         ? 'live'
         : slot.status === 'stopped'
           ? 'stopped'
-          : 'waiting',
+          : 'waiting'),
     verified: slot.counts.verified,
     scored: slot.counts.scored,
     lastTradeLabel: ageLabel(slot.counts.lastTradeAt, nowMs),
@@ -387,6 +398,43 @@ export function buildFloorScreenData(
   }));
 
   return { phase: 'ready', slots: drawn, clockLabel, tape: buildTape(slots, nowMs) };
+}
+
+/**
+ * EVERYTHING the board takes from the risk block. ONE projection, consumed by
+ * the draw and by the redraw trigger.
+ *
+ * DERIVED, NOT ENUMERATED, for the same reason `readRealised` is: two places
+ * listing "the risk fields we draw" is exactly how the realised block came to
+ * repaint late in Codex round 4 and the tape in round 5. The signature below
+ * stringifies this, so a field the board starts drawing cannot be one the
+ * trigger forgot.
+ *
+ * WHAT IS DELIBERATELY NOT IN IT, and this is the load-bearing part:
+ *
+ *   `ageSeconds` — it counts UP on every poll. Stringifying the whole wire
+ *     block would therefore change the signature every 15 s forever, and each
+ *     change is a full canvas redraw plus a 1.28 MB texture upload (5.13 MB on
+ *     the 2x backing store). That is a per-poll cost on the Iris Xe floor in
+ *     exchange for pixels that are identical. `nowMs` is left out of the
+ *     signature for precisely this reason and the clock tick handles ageing.
+ *   `at`, `detail`, and the three USD figures — the BOARD does not draw them.
+ *     The Exchange panel does, and the panel re-renders from react-query
+ *     without a texture upload, so it needs no trigger.
+ *
+ * `reason` IS in it although nothing draws it: the brief asks for it, a desk
+ * moving from one blocking cause to another is a real event on a public
+ * surface, and unlike `ageSeconds` it only moves on a genuine transition.
+ */
+function readRiskForBoard(slot: HouseTraderSlotView): {
+  display: 'paused' | 'fault' | null;
+  reason: string | null;
+} {
+  const risk = slot.risk ?? null;
+  return {
+    display: resolveHouseTraderRiskDisplay(slot.status, risk),
+    reason: risk ? risk.reason : null,
+  };
 }
 
 /**
@@ -424,6 +472,12 @@ export function floorScreenSignature(
         // added later, and `JSON.stringify` over a literal with fixed key order
         // is stable for this purpose.
         `${JSON.stringify(readRealised(slot))}|` +
+        // The risk verdict, which changes the STATUS WORD and so must repaint
+        // within one poll. Taken from `readRiskForBoard` rather than hand-listed
+        // here, so the trigger cannot omit something the draw shows; read that
+        // function for what it deliberately leaves out and why (`ageSeconds`
+        // ticks, and stringifying it would repaint the board every poll).
+        `${JSON.stringify(readRiskForBoard(slot))}|` +
         // Per trade: the sparkline bar height, the trade's identity, and the
         // WHOLE tape projection from `tapeInputs` — derived, not enumerated,
         // for the same reason as the realised block above. The 14-wide slice

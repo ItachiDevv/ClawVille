@@ -15,6 +15,14 @@
  * house agents that are going to be trading should have a public p&l board ...
  * put a screen in to show our house bots trading live." Wins and losses alike.
  *
+ * ── AND WHY A DESK MIGHT NOT BE TRADING ─────────────────────────────────────
+ * Founder, 2026-09-20: a desk blocked by a risk limit must SAY so. The status
+ * word carries it — `PAUSED: RISK LIMIT`, or `FAULT` when the limit could not
+ * be evaluated at all — and the P&L figures stay painted exactly as they are,
+ * because they are real; they have simply stopped moving. The verdict comes
+ * from the route's `risk` block and is never inferred from an empty tape: a
+ * desk with no setup is silent exactly like a desk that is cap-blocked.
+ *
  * THIS FILE PREVIOUSLY ENFORCED THE OPPOSITE, and the correction is worth
  * keeping written down. A peer session relayed a "no surface may claim a house
  * trader is profitable, no P&L" rule; it was adopted without asking the
@@ -128,7 +136,18 @@ export type FloorScreenRealisedState =
 export interface FloorScreenSlot {
   /** Lineup label, e.g. "Genesis". Sanitised again at draw time. */
   readonly label: string;
-  readonly status: 'live' | 'stopped' | 'waiting';
+  /**
+   * ONE status word per card, and the risk verdict is part of that vocabulary
+   * rather than a second badge beside it (founder, 2026-09-20).
+   *
+   * `paused` and `fault` replace `live` only — a stopped or unpaired desk
+   * already says why it is idle, and the precedence lives in
+   * `resolveHouseTraderRiskDisplay`, not here. They are separate words on
+   * purpose: a fault means the limit could not be evaluated, which is not the
+   * same fact as a limit being hit, and merging them would put an unearned
+   * claim on a wall in the game world.
+   */
+  readonly status: 'live' | 'paused' | 'fault' | 'stopped' | 'waiting';
   readonly verified: number;
   readonly scored: number;
   /** Pre-formatted age, e.g. "4m ago". Never a timestamp, never a price. */
@@ -236,6 +255,14 @@ export const COLOR = {
   muted: '#6d92ab',
   live: '#3ddc97',
   stopped: '#ffc457',
+  /** Risk pause. The SAME amber as STOPPED, deliberately: both mean "this desk
+   *  is not opening positions right now", and giving the newer state its own
+   *  hue would suggest a distinction the reader then has to invent. The WORDS
+   *  carry the difference. */
+  paused: '#ffc457',
+  /** Risk read faulted. Red, like a loss: something is wrong, not merely
+   *  stopped, and it is the one status that asks for attention. */
+  fault: '#ff6b6b',
   waiting: '#54728a',
   tickerBar: '#081420',
   /** P&L up. Same green as the LIVE pill — a live desk and a desk in profit
@@ -283,9 +310,29 @@ const WHITESPACE = /\s+/g;
  */
 export function sanitiseScreenText(raw: string, maxLength = 26): string {
   const text = String(raw ?? '')
-    // NFKC folds fullwidth and mathematical look-alikes onto plain ASCII, so a
-    // label cannot carry an address past the pass below in another alphabet.
-    .normalize('NFKC')
+    // NFK**D**, and the D is the whole point. Both forms fold fullwidth and
+    // mathematical look-alikes onto plain ASCII, which is what this call is
+    // for; the difference is what they do to a combining mark, and NFKC
+    // COMPOSES it into the letter before it. That defeats the strip on the very
+    // next line, because the composed character is not in `INVISIBLE`, and the
+    // consequence is a leak this function exists to prevent:
+    //
+    //   NFKC:  "…JSDp" + U+0301 + "bD5…"  ->  "…JSD BD5…"
+    //
+    // `p`+acute became one character, survived the strip, split the run into a
+    // 19 and a 24 so `BASE58_RUN` matched neither, and `DISALLOWED` finally
+    // turned it into a SPACE — painting a whole wallet address, with a gap in
+    // the middle, on a wall in the game world. NFKD leaves the mark separate,
+    // `INVISIBLE` deletes it (U+0300-U+036F is already in the class), the run
+    // rejoins and the address is caught.
+    //
+    // This is the header's `pro<ZWSP>fit` defect reached with a combining mark,
+    // and the header's own fix — strip invisibles before anything tokenises —
+    // was being undone by the normalisation that ran ahead of it. NFKD also
+    // reads better in ordinary text: "Café" becomes "CAFE", not "CAF E".
+    // tfs-api's ingest sanitiser chose NFKD for the same reason; the two ends
+    // agree deliberately.
+    .normalize('NFKD')
     .replace(INVISIBLE, '')
     // Addresses go BEFORE any case change: base58 excludes `0 O I l`, so
     // upper-casing first would split a real address into sub-32-character
@@ -434,12 +481,18 @@ export function pnlColor(value: number): string {
 
 const STATUS_LABEL: Record<FloorScreenSlot['status'], string> = {
   live: 'LIVE',
+  // 18 characters, inside the 20-character truncation budget on this row, and
+  // the longest word the card can carry at the disclosure size.
+  paused: 'PAUSED: RISK LIMIT',
+  fault: 'FAULT',
   stopped: 'STOPPED',
   waiting: 'NOT RUNNING YET',
 };
 
 const STATUS_COLOR: Record<FloorScreenSlot['status'], string> = {
   live: COLOR.live,
+  paused: COLOR.paused,
+  fault: COLOR.fault,
   stopped: COLOR.stopped,
   waiting: COLOR.waiting,
 };
@@ -663,8 +716,14 @@ function drawCard(
     color: COLOR.label,
     max: 16,
   });
+  // 15px, not 14. The status word joined the disclosure class the day it could
+  // say "PAUSED: RISK LIMIT": a reader who cannot make out that word reads a
+  // live P&L card for a desk that is not trading, which is the same unqualified
+  // money figure the `(PARTIAL)` caption was raised for. Sweeping the class,
+  // not the instance — all five status words move together, because one row
+  // rendered at two sizes depending on the state reads as a rendering bug.
   text(ctx, STATUS_LABEL[slot.status], x + pad, y + ROW_STATUS_Y, {
-    font: 'bold 14px "Courier New", monospace',
+    font: `bold ${DISCLOSURE_MIN_PX}px "Courier New", monospace`,
     color: STATUS_COLOR[slot.status],
     max: 20,
   });

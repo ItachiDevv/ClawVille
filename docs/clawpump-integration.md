@@ -1,6 +1,6 @@
 # ClawPump integration
 
-**Last Audited: 2026-09-19 (Genesis runner: LP lock rule for all pool types, cap reset, +15 percent trail, all launchpads).** Drift note: runner section records the FEELSGOOD rug, the on-chain LP lock check per pool type, the replayed exit change and StonkFun support. Earlier: the read-only ownership client, four operator routes, script flow, and recorded fixture inventory.
+**Last Audited: 2026-09-20 (Genesis runner: LP lock rule for all pool types, cap reset, +15 percent trail, all launchpads; plus the RUNNER STATUS FEED).** Drift note: new "Runner status feed" subsection under House traders records `POST /api/floor/house-traders/status`, the `HOUSE_TRADER_STATUS_TOKEN` bearer, the body contract, the post-on-change plus 60 second heartbeat cadence, the 150 second ageout, and the rule that a pause is REPORTED and never inferred from trade silence. Runner section records the FEELSGOOD rug, the on-chain LP lock check per pool type, the replayed exit change and StonkFun support. Earlier: the read-only ownership client, four operator routes, script flow, and recorded fixture inventory.
 
 **Last Audited: 2026-09-18 (docs + code research pass, 09:30Z).** Corrections from the research pass are in "Research pass 2026-09-18" below; they override older lines in this file. Founder direction changed the boundary: the traders must RUN IN CLAWPUMP. One agent first: **Genesis**, the founder's ClawPump agent, trades on ClawPump with its own ClawPump-custodied wallet. The fleet of five is paused (five ClawPump agents exist but are private, stopped and unfunded). ClawVille now has `clawpump-client.ts`, a read-only client for `GET /agents` and `GET /agents/:id`. It proves operator ownership before observe-only pairing. After pairing, ClawVille observes and ranks Genesis under its dedicated account. The client has no execution method. The section "Verified ClawPump facts" below is the ground truth for the next build.
 
@@ -153,14 +153,130 @@ limit (a 50-row window read Genesis as +8.87 against a true -5.20), lots are mat
 realises only the matched quantity, a lot with no exit after 24 hours counts as a total loss of its unmatched cost (a rug
 has no sell leg), and a mint with a non-USDC quote leg, an unpriced, undated or non-positive leg is excluded whole and
 counted (`excludedNonUsdc`, `unpricedLegs`, `undatedLegs`, `invalidLegs`, `unmatchedSells`). `computedOverTrades` is
-compared with `counts.verified`; a mismatch or any exclusion sets the server-side `partial` flag. Gross of network fees and rent. Reconciliation targets (clawPump closed-trip files, live only, 2026-09-20 08:30Z): Genesis 20 trips, gross -0.64, net -5.20;
-Runner 7 trips, gross +5.77, net +4.05. The route reports GROSS. Never hand-type or
+compared with `counts.verified`; a mismatch or any exclusion sets the server-side `partial` flag. Gross of network fees and rent. Reconciliation (2026-09-20): the figure that holds across BOTH systems is NET, a single banked number with no basis
+choice in it: Genesis 20 trips, net -5.20 USD; Runner 7 trips, net +4.05 USD (clawPump closed-trip files, live rows only).
+The route reports GROSS on its own basis (`gross_usdc_leg`, FIFO by token units, whole-mint exclusions), so its figure is
+NOT expected to equal clawPump's per-position gross. First read on the real staging DB, 10:12Z: Genesis closed 20, 10 wins,
+10 losses, -0.05 gross, one no-exit write-off of 10.00 (the FEELSGOOD rug), `partial` from 5 unclassified legs that are
+pre-runner hand swaps (53 verified rows - 5 = the runner's 48 legs); Runner closed 7, 4 wins, 3 losses, +6.14 gross.
+Trip counts, win/loss splits and the negative Genesis sign match. OPEN: both route grosses read high against clawPump's
+per-position gross (by 0.59 and 0.37); settle it per signature against `runner-data/sigs_GENESIS.txt` / `sigs_RUNNER.txt`. Never hand-type or
 paste a figure into copy; read it from the route. No boast wording. Read each
 slot's live `status` from the route rather than writing one here: a slot nobody
 has paired reports `not-yet-running`, which is its real state.
 
 ClawPump identities (clawPump, 2026-09-19): Runner = agent `1a0a153e`, wallet `AgTanzAa2cidQzJ8KEsm5mkhS18uaqBrAaas7XKHk4XE`,
 funded 22:00Z, live since 21:58Z; Dip Hunter = agent `a7d7c928`, stopped, unfunded, private.
+
+### Runner status feed (founder decision, 2026-09-20)
+
+**Why it exists.** Genesis went cap-blocked at 03:25Z on 2026-09-20 (lifetime loss 14.95 against the 25.00 floor, so
+14.95 + a 10.25 worst case would breach it), placed no trade for hours, and `halted` stayed `false` the whole time.
+Nothing on any surface said so, and a reader saw a quiet trader rather than a blocked one.
+
+**THE RULE: a pause is REPORTED, never INFERRED.** The rule loop runs outside this repo, so it is the only thing that
+knows why it did not buy. ClawVille must never derive a pause from trade silence: silence is equally consistent with
+"no candidate passed the filter", and guessing would publish an invented reason on a public board. A slot with no
+fresh report carries `risk: null`, which means "we were not told" and is an honest answer.
+
+**Who posts.** The runner, a Python process on the staging box owned by session clawPump. It is a MACHINE feed for our
+own trader, not a player action: it settles nothing, writes no ledger row and has no `[ACTION:]` verb, so no agent and no
+partner can call it. `PROTOCOL_VERSION` still went 66 to 67, because the READ side changed: manual section 17b now
+documents the `risk` field, and hosted runtimes key their manual memory on the version.
+
+**Cadence.** Post on every state change, plus a heartbeat every 60 seconds even when nothing changed. A report ages out
+after 150 seconds, which is two and a half missed heartbeats: one lost post does not blank the badge, and a dead feed
+clears it within three minutes instead of leaving a stale claim on a public board.
+
+**Endpoint.**
+
+```http
+POST {apiBase}/api/floor/house-traders/status
+Authorization: Bearer <HOUSE_TRADER_STATUS_TOKEN>
+Content-Type: application/json
+```
+
+Body, all fields required except `detail`, and strictly validated (an unknown field is a refusal, not a silent drop):
+
+| Field | Type | Rule |
+|---|---|---|
+| `wallet` | string | base58, 32 to 44 chars. MUST be the bound trading wallet of a current lineup slot. |
+| `canEnter` | boolean | Can the runner open a position right now. The runner is the authority; the reason only explains. |
+| `reason` | enum | `ok`, `daily_loss_floor`, `halted`, `insufficient_usdc`, `gas_reserve`, `at_max_positions`, `settling`, `price_feed_down`, `other`. |
+| `detail` | string, optional | Max 120 chars. Sanitised server-side: NFKD fold, invisible characters deleted, hex and base58 ADDRESS RUNS removed, remaining non-printables to a space, whitespace collapsed, capped. An empty result stores as `null`. Do not put a wallet in it; it will be removed, and a zero-width character or a combining mark inside one does not get it through. |
+| `dayLossUsd` | number | Finite, at or above 0. |
+| `dayLossCapUsd` | number | Finite, above 0. A zero cap would render as "14.95 of 0.00". |
+| `roomNeededUsd` | number | Finite, at or above 0. Headroom needed before the runner can enter again. |
+| `at` | string | **The time you SEND this post.** Not the time the state began, and not a value you cache alongside the state: stamping it fresh on EVERY post, including a heartbeat that reports no change, is what we expect you to build. An IDENTICAL `at` is nevertheless TOLERATED and still refreshes, so a naive resend-last-payload heartbeat keeps working; see ORDERING below for why we accept it rather than treat it as a replay. ISO 8601, and send ISO 8601: parsing is `Date.parse`, which is lenient and will also accept forms this contract does not promise, and the server stores the normalised ISO 8601 UTC form whatever you send. Must parse AND sit within 10 minutes of server time, in either direction. |
+
+Two body rules that are easy to trip and are refusals, not warnings. `{canEnter:false, reason:'ok'}` is REFUSED: it says
+"I cannot open a position and nothing is wrong", which the classifier would otherwise read as `live`, so the board would
+print a working trader over a report saying the opposite. The mirror, `{canEnter:true, reason:'daily_loss_floor'}`, IS
+accepted and reads `live`; that is the tick a runner recovers on, and it is also how a `price_feed_down` fault arrives
+from a runner that still believes it could enter.
+
+**ORDERING: only a report that is STRICTLY OLDER than the one we hold is dropped.** HTTP does not promise delivery
+order, so the store compares the incoming `at` with the `at` it already holds for that wallet. Strictly older answers
+`200 {ok:true, ignored:'older_report'}` and the store is not touched: a delayed `canEnter:false` landing behind the
+newer `canEnter:true` would otherwise pin a pause on a trader that has already recovered. It is a 200, so do NOT retry
+it. EQUAL OR NEWER is stored and refreshes the receipt time the 150 second ageout measures from, which is what keeps an
+unchanged pause on the board across heartbeats. Sending a fresh `at` on every post is what we expect you to build, but
+an identical one is deliberately TOLERATED rather than rejected: a naive heartbeat that resends its last payload
+verbatim must never be the reason a live pause disappears from a public board.
+
+An earlier draft of this contract dropped an equal `at` as a duplicate. That was wrong and is recorded here so it does
+not come back: a desk paused for ten minutes heartbeats every 60 seconds, and if `at` describes the STATE rather than
+the POST then every one of those heartbeats carries the same value, none of them refresh the receipt time, and the
+board drops the PAUSED badge after 150 seconds while the runner is still reporting the pause correctly. That is the
+Genesis failure this feature exists to prevent, reproduced in three minutes with a healthy feed. Two things fix it
+together and both are part of the contract: `at` is the SEND time of the post, and equal stores. Equal is not a replay
+hole, because the plus or minus 10 minute window already bounds a replayed body to re-asserting a state at most ten
+minutes old, and your next heartbeat corrects it within 60 seconds.
+
+Answers: `200 {ok:true, wallet, receivedAt}` · `200 {ok:true, ignored:'older_report'}` (see ORDERING above; accepted,
+not stored) · `400 {error:'invalid_body'}` (any zod failure, including the contradiction
+above and an `at` that is not a timestamp at all) · `400 {error:'stale_timestamp'}` (a well-formed time outside the 10
+minute window, in either direction; kept separate from `invalid_body` because "fix your serialiser" and "fix your clock,
+or stop replaying" are two different fixes) · `400 {error:'invalid_json'}` (malformed JSON, answered by the API's global
+body guard before this route runs) · `401 {error:'unauthorized'}` · `404 {error:'unknown_wallet'}` ·
+`415 {error:'unsupported_media_type'}` (content type is not `application/json`; a `charset` parameter is fine) ·
+`429 {error:'rate_limited'}` (30 per minute per IP) · `503 {error:'not_configured'}` when `HOUSE_TRADER_STATUS_TOKEN` is
+unset, so an un-provisioned box is OFF rather than open.
+
+The `Authorization` scheme is matched case-insensitively (RFC 7235), so `bearer` and `Bearer` both work.
+
+**A stopped slot is accepted but never published.** If an operator revokes the trading wallet while the runner keeps
+heartbeating, the POST still returns 200 and the state is stored, so a re-pairing has current state immediately. The
+GET publishes `risk` only for a `live-observed` slot; a `stopped` slot always reads `risk: null`, because both human
+surfaces show STOPPED and already say why that desk is idle. Do not read a 200 as "the board is now showing this".
+
+**What the board does with it.** `GET /api/floor/house-traders` gains a `risk` block per slot:
+`{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd, at, ageSeconds }`, or `null` when the slot is
+unpaired, is stopped, has never reported, or has aged out. `state` is `paused` only when `canEnter` is false AND the reason is
+`daily_loss_floor`, `halted`, `insufficient_usdc` or `gas_reserve`; `fault` for `price_feed_down` or `other` whatever
+`canEnter` says, so a dead price feed is never dressed up as a deliberate risk decision; `live` for everything else,
+including `at_max_positions` and `settling`, which are working states. The merge runs on every request, outside the
+route's 15 second in-process cache, so a pause and a recovery both show on the next poll.
+
+**Two caches, two different bounds.** The route keeps a 15 second in-process cache of the SLOT data (counts, tape,
+realised), which is fine because those move slowly, and it serves `Cache-Control: public, max-age=5` so a shared cache
+may replay a whole response, `risk` included, for at most 5 seconds. The header is the shorter of the two deliberately:
+at 15 seconds an edge could serve "Paused by risk limit" for 15 seconds after the trader recovered, which undoes the
+reason the merge sits outside the cache at all, and it could serve a report 15 seconds past its 150 second life. WORST
+CASE as built: a pause, or a recovery, is visible within one client poll plus 5 seconds, and a report served from an
+edge is at most 155 seconds old rather than 150.
+
+**Operational notes.** The state lives in an in-process Map, one entry per wallet, last write wins, hard-capped at 16
+entries with insertion-order eviction, no table and no migration: it ages out in 150 seconds, carries no money and has
+no history obligation. It is per API process and it dies on every deploy, so post to ONE host and expect every slot to
+read `risk: null` right after a flip until the next heartbeat lands. The token is never logged and never echoed in an
+error body. The wallet is a join key only and never reaches the public response.
+
+**NOTHING PAGES ON A PAUSE, and that is a deliberate choice, not an oversight.** This feed drives the BOARD only. A
+report of `state: 'paused'` raises no alert, sends no Telegram message and writes no `alertError`. Record it here
+because the founder's 2026-09-20 complaint was precisely that nothing reported the cap block: a board that shows
+PAUSED beside a pager that stays silent is an improvement, not a fix. Alerting is a separate decision with its own
+thresholds and its own noise budget, and it should be taken deliberately rather than discovered missing later.
 
 **Dropped 2026-09-19: `sol-usdc-mean-reversion` / "Dip Hunter".** It was
 backtested, REJECTED and stopped the same day and will never be paired, so its

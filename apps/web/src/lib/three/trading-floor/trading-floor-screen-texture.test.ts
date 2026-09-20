@@ -23,7 +23,7 @@ import {
   floorScreenSignature,
 } from './trading-floor-screen-data';
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
-import { TRADE_MINTS } from '@clawville/shared';
+import { HOUSE_TRADER_LINEUP, TRADE_MINTS } from '@clawville/shared';
 import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
 import type { FloorTrade } from '@/stores/trade-ticker';
 
@@ -84,6 +84,67 @@ function boxHitsRect(
     box.top < rect.y + rect.h &&
     box.bottom > rect.y
   );
+}
+
+/**
+ * THE TWO GEOMETRY PINS, as functions so a new board state can be swept by both
+ * without copying their loops.
+ *
+ * They were inline in one test each when the card had one live layout. The
+ * status word can now say "PAUSED: RISK LIMIT" — 18 characters where "LIVE" was
+ * four — so every state has to be swept, and a copied loop is how one of them
+ * would quietly stop being.
+ */
+function assertNoFillOverText(painted: Painted[]): void {
+  for (let i = 0; i < painted.length; i += 1) {
+    const drawn = painted[i]!;
+    if (drawn.kind !== 'text') continue;
+    const box = textBox(drawn);
+    for (let j = i + 1; j < painted.length; j += 1) {
+      const later = painted[j]!;
+      if (later.kind !== 'rect') continue;
+      const covered = boxHitsRect(box, later);
+      expect({ text: drawn.value, covered }).toEqual({ text: drawn.value, covered: false });
+    }
+  }
+}
+
+/**
+ * `focus` narrows the sweep to pairs involving a named string. It exists for
+ * the NARROWEST card the layout produces — a three-slot board at 314 px — where
+ * the estimator reports a 0.6 px collision between the `(PARTIAL)` caption and
+ * the 30 px headline that the real metrics do not have: Courier New's cap
+ * height is 0.572 em against the estimator's 0.72, so the headline's true top
+ * is 70.5 and the caption's true bottom is 68.4, two pixels clear. Rather than
+ * loosen the estimator, which exists to be pessimistic, a new string is swept
+ * against every other string at every width and the full pairwise sweep runs at
+ * the one and two-slot widths the lineup actually produces.
+ */
+function assertNoTextOverlap(
+  painted: Painted[],
+  focus?: (value: string) => boolean,
+): void {
+  const texts = painted.filter(
+    (p): p is Extract<Painted, { kind: 'text' }> => p.kind === 'text',
+  );
+  for (let i = 0; i < texts.length; i += 1) {
+    for (let j = i + 1; j < texts.length; j += 1) {
+      if (focus && !focus(texts[i]!.value) && !focus(texts[j]!.value)) continue;
+      const a = textBox(texts[i]!);
+      const b = textBox(texts[j]!);
+      const overlap =
+        a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      expect({
+        a: texts[i]!.value.slice(0, 24),
+        b: texts[j]!.value.slice(0, 24),
+        overlap,
+      }).toEqual({
+        a: texts[i]!.value.slice(0, 24),
+        b: texts[j]!.value.slice(0, 24),
+        overlap: false,
+      });
+    }
+  }
 }
 
 function recorder() {
@@ -229,6 +290,35 @@ const INVISIBLE = /[\u0000-\u001f­​-‏‪-‮﻿]/;
  * Renamed from `assertClean`, which meant "no money" — the opposite of the
  * product — so the name could not be left pointing at the old belief.
  */
+/**
+ * "Did this address survive, in any readable form?" — the detector the obvious
+ * checks get wrong.
+ *
+ * `not.toContain(address)` FAILS TO FIRE on the real leak: the output is
+ * uppercased and the composed character is dropped entirely, so what paints is
+ * the address MINUS ONE LETTER and an `includes` on the whole string reports
+ * clean. A base58 regex over the output fails too, because base58 excludes `O`
+ * and an uppercased address breaks into short runs at every `O`. A
+ * strip-the-spaces-then-look-for-a-long-run check fires on legitimate copy,
+ * since the basis band is 46 characters once its spaces are gone.
+ *
+ * So: slide a 16-character window over the address and assert none of them
+ * survives anywhere, comparing against the drawn text with its non-alphanumerics
+ * removed so a leak split by a SPACE is still caught. A window that long cannot
+ * occur in real copy by accident, and a leak that drops or splits a character
+ * still leaves whole windows either side of the damage.
+ */
+function assertAddressAbsent(strings: string[], address: string): void {
+  const upper = address.toUpperCase();
+  const haystack = strings
+    .map((value) => value.replace(/[^A-Za-z0-9]/g, '').toUpperCase())
+    .join(' ');
+  for (let i = 0; i + 16 <= upper.length; i += 1) {
+    const window = upper.slice(i, i + 16);
+    expect({ window, present: haystack.includes(window) }).toEqual({ window, present: false });
+  }
+}
+
 function assertDrawable(strings: string[]) {
   expect(strings.length).toBeGreaterThan(0);
   for (const value of strings) {
@@ -289,6 +379,72 @@ describe('Trading Floor board — untrusted text hygiene', () => {
     });
     assertDrawable(drawn.strings);
     expect(drawn.strings.join(' ')).not.toContain(solana.slice(0, 16));
+  });
+
+  // AN ADDRESS SPLIT BY AN INVISIBLE CHARACTER. The header's `pro<ZWSP>fit`
+  // note says the fix is "strip invisibles before anything tokenises" — and for
+  // a COMBINING MARK that was being undone by the `.normalize()` running ahead
+  // of the strip. NFKC COMPOSES `p` + U+0301 into one character the strip does
+  // not know, so `BASE58_RUN` saw a 19 and a 24 and matched neither, and
+  // `DISALLOWED` turned the composed character into a SPACE. The shipped
+  // function returned, verbatim:
+  //
+  //   "NOTE 7XKXTG2CW87D97TXJSD BD5JBKHETQA83TZRUJOSGASU"
+  //
+  // A whole wallet address, readable, on a wall in the game world, out of the
+  // one function whose job is to keep it off. NFKD keeps the mark separate and
+  // `INVISIBLE` already covers U+0300-U+036F. (tfs-audit + tfs-api, both ends
+  // chose NFKD so the two sanitisers agree.)
+  //
+  // THE DETECTOR IS THE OTHER HALF OF THIS TEST. Do NOT assert
+  // `not.toContain(address)`: the output is UPPERCASED and the composed
+  // character is dropped entirely, so the leaked string is the address minus
+  // one letter and a naive `includes` reports clean on text that plainly shows
+  // it. My first probe did exactly that and called this bug fixed. Assert on
+  // what survives instead: with the address stripped there is nothing left but
+  // the prefix.
+  test.each([
+    ['a combining acute', 0x0301],
+    ['a zero-width space', 0x200b],
+    ['a soft hyphen', 0x00ad],
+    ['a word joiner', 0x2060],
+  ])('an address split by %s still never reaches the board', (_name, codePoint) => {
+    const address = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const head = address.slice(0, 20);
+    const tail = address.slice(20);
+    const split = `note ${head}${String.fromCharCode(codePoint)}${tail}`;
+
+    const out = sanitiseScreenText(split, 200);
+    // The address is GONE, not merely unmatched: only the prefix survives.
+    expect(out).toBe('NOTE');
+    // The two HALVES the split creates, named explicitly: these are the exact
+    // strings the leak painted either side of its space.
+    expect(out).not.toContain(head.toUpperCase());
+    expect(out).not.toContain(tail.toUpperCase());
+    // No long alphanumeric run survives once the splitting space is removed.
+    expect(out.replace(/[^A-Za-z0-9]/g, '')).not.toMatch(/[A-Za-z0-9]{32,}/);
+    assertAddressAbsent([out], address);
+
+    // And through the real draw path, not just the function. The 32-run check
+    // is deliberately NOT repeated over the whole board here: the basis band is
+    // 46 characters once its spaces are gone, so that assertion fires on
+    // legitimate copy. `assertAddressAbsent` is the board-safe form.
+    const drawn = draw({ phase: 'ready', slots: [slot({ label: split })] });
+    assertDrawable(drawn.strings);
+    assertAddressAbsent(drawn.strings, address);
+    for (const value of drawn.strings) {
+      expect(value).not.toContain(head.toUpperCase());
+      expect(value).not.toContain(tail.toUpperCase());
+    }
+  });
+
+  // The fold NFKD is still there to do, unchanged by the switch: a label may
+  // not smuggle an address through in another alphabet.
+  test('fullwidth look-alikes are still folded onto ASCII', () => {
+    expect(sanitiseScreenText('ＧＥＮＥＳＩＳ', 40)).toBe('GENESIS');
+    // And an accent now reads as its letter rather than losing its place to a
+    // space, which is what NFKC did here.
+    expect(sanitiseScreenText('Café desk', 40)).toBe('CAFE DESK');
   });
 
   test('invisible characters and unrenderable glyphs are stripped', () => {
@@ -689,6 +845,19 @@ describe('Trading Floor board — money comes from typed fields only', () => {
           ],
         }),
       ],
+      // THE RISK STATES. "PAUSED: RISK LIMIT" is the most load-bearing word on
+      // the card when it is present: a reader who cannot make it out reads a
+      // live P&L card for a desk that is not trading, which is the same
+      // unqualified money figure the `(PARTIAL)` caption was raised for. The
+      // status word joined the disclosure class the day it could say this.
+      [
+        'paused',
+        board({ phase: 'ready', slots: [slot({ status: 'paused', realised: realised() })] }),
+      ],
+      [
+        'fault',
+        board({ phase: 'ready', slots: [slot({ status: 'fault', realised: realised() })] }),
+      ],
     ];
 
     // Baseline for the "emitted by the realised builders" half of the
@@ -914,12 +1083,24 @@ describe('Trading Floor board — what it actually shows', () => {
     expect(joined).toContain('4M AGO');
   });
 
-  test('each of the three statuses gets its own words', () => {
+  test('each of the five statuses gets its own words', () => {
     const read = (status: FloorScreenSlot['status']) =>
       draw({ phase: 'ready', slots: [slot({ status })] }).strings.join(' | ');
     expect(read('live')).toContain('LIVE');
     expect(read('stopped')).toContain('STOPPED');
     expect(read('waiting')).toContain('NOT RUNNING YET');
+    // A risk pause and a failed risk READ are two different facts, so they get
+    // two different words. Merging them would put an unearned claim on a wall.
+    expect(read('paused')).toContain('PAUSED: RISK LIMIT');
+    expect(read('fault')).toContain('FAULT');
+    // And a paused card never also says LIVE: the status word is one word.
+    expect(read('paused')).not.toContain('| LIVE |');
+    // The hygiene gate, on a card with no basis band: that band wraps at 105
+    // characters by design and would trip the 64-character runaway guard, which
+    // is a rule about labels rather than about the method sentence.
+    for (const status of ['paused', 'fault'] as const) {
+      assertDrawable(draw({ phase: 'ready', slots: [slot({ status })] }).strings);
+    }
   });
 
   test('a board with no data says it is connecting, never shows an empty card', () => {
@@ -1070,20 +1251,7 @@ describe('Trading Floor board — what it actually shows', () => {
         tape: ['ANSEM PUMPSWAP 4M'],
       }),
     );
-    for (let i = 0; i < rec.painted.length; i += 1) {
-      const drawn = rec.painted[i]!;
-      if (drawn.kind !== 'text') continue;
-      const box = textBox(drawn);
-      for (let j = i + 1; j < rec.painted.length; j += 1) {
-        const later = rec.painted[j]!;
-        if (later.kind !== 'rect') continue;
-        const covered = boxHitsRect(box, later);
-        expect({ text: drawn.value, covered }).toEqual({
-          text: drawn.value,
-          covered: false,
-        });
-      }
-    }
+    assertNoFillOverText(rec.painted);
   });
 
   // The pin above is only worth its line if the CHECKER catches the shapes we
@@ -1176,36 +1344,158 @@ describe('Trading Floor board — what it actually shows', () => {
       board({
         phase: 'ready',
         slots: [
+          // PAUSED on the worst card: the widest status word this row can hold
+          // (18 characters where LIVE is 4) beside the widest counts, the
+          // longest last-trade label and both per-slot disclosures.
           slot({
+            status: 'paused',
             verified: 1234,
             scored: 1234,
             lastTradeLabel: 'time unavailable',
             realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
           }),
-          slot({ label: 'ClawVille Runner', realised: { kind: 'none' } }),
+          slot({ label: 'ClawVille Runner', status: 'fault', realised: { kind: 'none' } }),
         ],
+      }),
+    );
+    assertNoTextOverlap(rec.painted);
+  });
+
+  // FEATURE_GATE: trading_floor_board_three_slot_full_sweep
+  // Status: the FULL pairwise overlap sweep runs at the card widths the live
+  //   lineup produces. At three slots (cardW 314.67px, usable 278.67px) only
+  //   the new status word is swept, because TWO pairs collide there and neither
+  //   is reachable with a two-trader lineup. One is an estimator artifact
+  //   (caption vs headline, 0.6px); the other is REAL (the two disclosure
+  //   strings need 342px and have 278.67px, a 63.3px overrun) and needs a
+  //   second disclosure row or shorter wording, not a tolerance change. Both
+  //   are pinned to an exact set by the test below, so this gate cannot go
+  //   vacuous and a third collision cannot hide behind them.
+  // Metric to graduate: HOUSE_TRADER_LINEUP.length > 2 — i.e. a third house
+  //   trader is paired and the 314px card becomes a width players actually see.
+  // Current reading: HOUSE_TRADER_LINEUP.length === 2 (Genesis, ClawVille
+  //   Runner) as of 2026-09-20.
+  // Review deadline: fires on its own. `STRICT_SWEEP_MAX_SLOTS` below reads the
+  //   lineup constant, so adding a third entry switches the full sweep on at
+  //   three slots in the same run, with no human step and no date to miss.
+  // On deadline: that sweep WILL go red on the disclosure pair, because that
+  //   overlap is arithmetic rather than estimator slack. The card is then
+  //   re-derived for the 314px width: a second disclosure row, or wording short
+  //   enough that two strings fit 278.67px. Do NOT loosen `textBox` to make it
+  //   pass — the estimator is pessimistic on purpose and has caught two real
+  //   bugs, and it is not what is failing here.
+  // Reference: 3dStructure.md §9h; .claude/memory/threejs/gotchas/
+  //   canvas-paint-pin-estimator-false-positive.md
+  const STRICT_SWEEP_MAX_SLOTS = HOUSE_TRADER_LINEUP.length > 2 ? 3 : 2;
+
+  // THE NEW STATUS WORDS, through BOTH geometry pins and at every card width.
+  // "PAUSED: RISK LIMIT" is 18 characters where "LIVE" was four, so it is the
+  // widest string that row has ever carried; the three-slot board is the
+  // narrowest card the layout produces (314 px against 430 px).
+  test.each([1, 2, 3])(
+    'the paused and fault cards clear the layout on a %i-slot board',
+    (count) => {
+      for (const status of ['paused', 'fault'] as const) {
+        const rec = recorder();
+        drawFloorScreen(
+          rec.context,
+          board({
+            phase: 'ready',
+            slots: Array.from({ length: count }, (_unused, index) =>
+              slot({
+                label: index === 0 ? 'Genesis' : 'ClawVille Runner',
+                // The FIRST card carries the verdict and the rest stay live, so
+                // one board exercises the widest word beside the ordinary one.
+                status: index === 0 ? status : 'live',
+                realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
+              }),
+            ),
+            tape: ['ANSEM PUMPSWAP 4M'],
+          }),
+        );
+        const word = status === 'paused' ? 'PAUSED: RISK LIMIT' : 'FAULT';
+        expect(rec.strings.join(' | ')).toContain(word);
+        assertNoFillOverText(rec.painted);
+        // The FULL pairwise sweep at the widths the lineup produces, and only
+        // the new word beyond them. The boundary is DERIVED from the lineup
+        // constant, so a third house trader turns the strict sweep on here by
+        // itself — see the FEATURE_GATE above for why three slots is currently
+        // outside it.
+        if (count <= STRICT_SWEEP_MAX_SLOTS) assertNoTextOverlap(rec.painted);
+        else assertNoTextOverlap(rec.painted, (value) => value === word);
+        // And the whole board still fits the declared canvas.
+        for (const [x, y, w, h] of rec.rects) {
+          expect(x).toBeGreaterThanOrEqual(0);
+          expect(y).toBeGreaterThanOrEqual(0);
+          expect(x + w).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.width + 0.001);
+          expect(y + h).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.height + 0.001);
+        }
+      }
+    },
+  );
+
+  // THE DEFERRAL, PINNED TO AN EXACT SET rather than left as a prose note.
+  //
+  // Two pairs collide at the three-slot width and they are NOT the same kind of
+  // problem. Writing the set down is what stops the gate above going vacuous:
+  // if a re-derive clears them this test goes red and says "lift the gate", and
+  // if a THIRD pair starts colliding it goes red too, which a focused sweep
+  // would never have noticed.
+  //
+  //   1. `REALISED P&L (PARTIAL)` vs the 30px headline. 0.6px by the estimator,
+  //      and an ARTIFACT: Courier's cap height is 0.572em against the 0.72em
+  //      this file models, so the real gap is about 2px of clearance.
+  //   2. `n NON-USDC EXCLUDED` vs `n NO-EXIT WRITE-OFF`. **63.3px, and REAL.**
+  //      Two 19-character strings at 9px per character need 342px; a three-slot
+  //      card has 278.67px between its padding. No cap-height slack touches a
+  //      number that size. The shortened wording in `drawCard` was measured
+  //      against the TWO-slot card's 394px, which is why it fits today and only
+  //      today. This one needs a second disclosure row or shorter words, not a
+  //      tolerance change, and the FEATURE_GATE above is what will force it.
+  test('the three-slot width has exactly the two known collisions, no more', () => {
+    const rec = recorder();
+    drawFloorScreen(
+      rec.context,
+      board({
+        phase: 'ready',
+        slots: Array.from({ length: 3 }, (_unused, index) =>
+          slot({
+            label: index === 0 ? 'Genesis' : 'ClawVille Runner',
+            status: index === 0 ? 'paused' : 'live',
+            realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
+          }),
+        ),
+        tape: ['ANSEM PUMPSWAP 4M'],
       }),
     );
     const texts = rec.painted.filter(
       (p): p is Extract<Painted, { kind: 'text' }> => p.kind === 'text',
     );
+    const collisions = new Set<string>();
     for (let i = 0; i < texts.length; i += 1) {
       for (let j = i + 1; j < texts.length; j += 1) {
         const a = textBox(texts[i]!);
         const b = textBox(texts[j]!);
-        const overlap =
-          a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-        expect({
-          a: texts[i]!.value.slice(0, 24),
-          b: texts[j]!.value.slice(0, 24),
-          overlap,
-        }).toEqual({
-          a: texts[i]!.value.slice(0, 24),
-          b: texts[j]!.value.slice(0, 24),
-          overlap: false,
-        });
+        if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
+          collisions.add([texts[i]!.value, texts[j]!.value].sort().join(' || '));
+        }
       }
     }
+    expect([...collisions].sort()).toEqual([
+      '-$5.20 || REALISED P&L (PARTIAL)',
+      '1 NO-EXIT WRITE-OFF || 2 NON-USDC EXCLUDED',
+    ]);
+  });
+
+  // THE FIGURES STAY. A paused desk's P&L is real; it has simply stopped
+  // moving. Blanking it would lose the fact the reader came for, and the founder
+  // asked for a pause NOTICE, not a pause screen.
+  test('a paused card still paints its P&L, unchanged from the live card', () => {
+    const figures = (status: FloorScreenSlot['status']) =>
+      draw({ phase: 'ready', slots: [slot({ status, realised: realised() })] })
+        .strings.filter((value) => value.includes('$') || value.startsWith('W '));
+    expect(figures('paused')).toEqual(figures('live'));
+    expect(figures('paused').join(' ')).toContain('-$5.20');
   });
 
   test('the whole board fits the declared canvas', () => {
@@ -1279,7 +1569,27 @@ function view(overrides: Partial<HouseTraderSlotView> = {}): HouseTraderSlotView
       openPositions: 0,
       computedAt: null,
     } as unknown as HouseTraderSlotView['realised'],
+    // NULL by default, which is what the route serves today. Every assertion
+    // written before the field existed keeps meaning what it meant.
+    risk: null,
     recentTrades: [],
+    ...overrides,
+  };
+}
+
+/** A paused verdict as the hook hands it over, already validated. */
+function riskView(
+  overrides: Partial<NonNullable<HouseTraderSlotView['risk']>> = {},
+): NonNullable<HouseTraderSlotView['risk']> {
+  return {
+    state: 'paused',
+    reason: 'daily_loss_floor',
+    detail: 'Daily loss floor reached.',
+    dayLossUsd: 9.99,
+    dayLossCapUsd: 20,
+    roomNeededUsd: 10.25,
+    at: '2026-09-20T10:40:00.000Z',
+    ageSeconds: 42,
     ...overrides,
   };
 }
@@ -1349,6 +1659,75 @@ describe('Trading Floor board — data mapping', () => {
     expect(serialised).not.toContain('So11111111111111111111111111111111111111112');
     // And the strategy note stays on the Exchange panel, which is where it fits.
     expect(serialised).not.toContain('Momentum');
+  });
+
+  // ── THE RISK VERDICT ON THE WALL (founder, 2026-09-20) ────────────────────
+
+  test('a paused verdict replaces the LIVE word and nothing else', () => {
+    const data = buildFloorScreenData(
+      [view({ risk: riskView() })],
+      { isLoading: false, isError: false },
+      now,
+    );
+    expect(data.slots[0]!.status).toBe('paused');
+    // The rest of the card is untouched — same counts, same age, same block.
+    const plain = buildFloorScreenData([view()], { isLoading: false, isError: false }, now);
+    expect({ ...data.slots[0]!, status: 'live' }).toEqual(plain.slots[0]!);
+  });
+
+  test('a fault maps to FAULT and is never folded into the pause', () => {
+    const data = buildFloorScreenData(
+      [view({ risk: riskView({ state: 'fault', reason: 'price_feed_down' }) })],
+      { isLoading: false, isError: false },
+      now,
+    );
+    expect(data.slots[0]!.status).toBe('fault');
+  });
+
+  test('a live verdict, a null block and an absent field are the same board', () => {
+    const state = { isLoading: false, isError: false };
+    const { risk: _absent, ...withoutRisk } = view();
+    const statuses = [
+      buildFloorScreenData([view({ risk: riskView({ state: 'live', reason: 'ok' }) })], state, now),
+      buildFloorScreenData([view({ risk: null })], state, now),
+      buildFloorScreenData([withoutRisk as HouseTraderSlotView], state, now),
+    ].map((data) => data.slots[0]!.status);
+    expect(statuses).toEqual(['live', 'live', 'live']);
+  });
+
+  // PAIRING FIRST. A stopped or unpaired desk already says why it is idle; a
+  // risk word over the top of that would replace a true statement with a
+  // narrower one that is not the reason the desk is not trading. The panel
+  // applies the same precedence through the same resolver.
+  test('a verdict never overrides a stopped or unpaired desk', () => {
+    const state = { isLoading: false, isError: false };
+    const read = (status: HouseTraderSlotView['status']) =>
+      buildFloorScreenData([view({ status, risk: riskView() })], state, now).slots[0]!.status;
+    expect(read('stopped')).toBe('stopped');
+    expect(read('not-yet-running')).toBe('waiting');
+    expect(read('live-observed')).toBe('paused');
+  });
+
+  test('the verdict carries no prose, no timestamp and no figures onto the wall', () => {
+    const data = buildFloorScreenData(
+      [
+        view({
+          risk: riskView({
+            detail: 'Daily loss floor reached; resumes after the UTC reset.',
+          }),
+        }),
+      ],
+      { isLoading: false, isError: false },
+      now,
+    );
+    const serialised = JSON.stringify(data);
+    // The board says the WORD. The detail, the cap arithmetic and the verdict
+    // time are the panel's to render: the board has one row for this and a
+    // wall is read from across a hall.
+    expect(serialised).not.toContain('resumes after');
+    expect(serialised).not.toContain('10.25');
+    expect(serialised).not.toContain('2026-09-20T10:40');
+    expect(serialised).not.toContain('daily_loss_floor');
   });
 });
 
@@ -1889,6 +2268,86 @@ describe('Trading Floor board — redraw signature', () => {
       const without = sign({});
       const with_ = sign({ realisedUsd: -1.25 } as Partial<FloorTrade>);
       expect(with_).not.toBe(without);
+    });
+  });
+
+  // THE RISK VERDICT REACHES THE TRIGGER. The status word changes with it, so a
+  // desk that goes paused between two polls must repaint within one poll rather
+  // than waiting up to 30 s for the clock tick — the board would be showing
+  // LIVE for a desk that cannot trade, which is the failure this feature ends.
+  describe('the risk block reaches the redraw trigger', () => {
+    const state = { isLoading: false, isError: false };
+    const sign = (risk: HouseTraderSlotView['risk']) =>
+      floorScreenSignature([view({ risk })], state);
+
+    test('identical verdicts produce an identical signature', () => {
+      expect(sign(riskView())).toBe(sign(riskView()));
+    });
+
+    test.each([
+      ['state', riskView({ state: 'fault' })],
+      ['reason', riskView({ reason: 'at_max_positions' })],
+    ])('a change in %s changes the signature', (_name, next) => {
+      expect(sign(next)).not.toBe(sign(riskView()));
+    });
+
+    test('appearing and clearing both change the signature', () => {
+      const none = sign(null);
+      expect(sign(riskView())).not.toBe(none);
+      expect(sign(riskView({ state: 'live', reason: 'ok' }))).not.toBe(none);
+    });
+
+    // THE STAGING CASE. An absent field and an explicit null are the same
+    // board, so they must be the same trigger. (The signature STRING format
+    // changed when the projection landed, which costs nothing: the signature is
+    // recomputed from live data on every render and is never compared against
+    // one from a previous deploy. What has to hold is the DRAWN PIXELS, pinned
+    // by the test below.)
+    test('an absent field and an explicit null produce one signature', () => {
+      const { risk: _absent, ...withoutRisk } = view();
+      expect(floorScreenSignature([withoutRisk as HouseTraderSlotView], state)).toBe(
+        sign(null),
+      );
+    });
+
+    // THE REPAINT-STORM PIN, and the reason the signature does NOT stringify
+    // the whole wire block. `ageSeconds` counts up on every poll, so a derived
+    // signature that included it would change every 15 s forever, and every
+    // change is a full canvas redraw plus a 1.28 MB texture upload (5.13 MB on
+    // the 2x backing store) for pixels that are identical. `at` moves with it.
+    // The board draws neither.
+    test('a field that only moves with the clock does not repaint the board', () => {
+      const base = sign(riskView());
+      expect(sign(riskView({ ageSeconds: 9_999 }))).toBe(base);
+      expect(sign(riskView({ at: '2026-09-20T23:59:00.000Z' }))).toBe(base);
+      // Nor do the panel's figures and prose, which the BOARD does not draw.
+      expect(sign(riskView({ detail: 'something else entirely' }))).toBe(base);
+      expect(sign(riskView({ dayLossUsd: 88.5, roomNeededUsd: 4, dayLossCapUsd: 90 }))).toBe(base);
+    });
+
+    // And the trigger is DERIVED from the same projection the draw reads, so a
+    // risk field the board starts drawing cannot be one the trigger forgot.
+    test('the signature is derived from the drawn projection, not hand-listed', () => {
+      const source = readFileSync(
+        join(import.meta.dir, 'trading-floor-screen-data.ts'),
+        'utf8',
+      );
+      expect(source).toContain('JSON.stringify(readRiskForBoard(slot))');
+      // `readRiskForBoard` feeds the DRAW too, which is what makes the
+      // derivation worth anything.
+      expect(source).toContain('readRiskForBoard(slot).display');
+    });
+
+    // And the DRAW is identical too, not just the trigger.
+    test('a payload without the field draws exactly what a null verdict draws', () => {
+      const now = Date.parse('2026-09-20T12:00:00.000Z');
+      const { risk: _absent, ...withoutRisk } = view();
+      const paint = (slots: HouseTraderSlotView[]) => {
+        const rec = recorder();
+        drawFloorScreen(rec.context, buildFloorScreenData(slots, state, now));
+        return rec.painted;
+      };
+      expect(paint([withoutRisk as HouseTraderSlotView])).toEqual(paint([view({ risk: null })]));
     });
   });
 

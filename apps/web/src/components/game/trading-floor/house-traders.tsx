@@ -11,6 +11,11 @@ import {
 } from '@/hooks/use-trading-floor';
 import { useTradeTickerStore } from '@/stores/trade-ticker';
 import { tradeAgeLabel } from './format';
+import {
+  formatRiskArithmetic,
+  resolveHouseTraderRiskDisplay,
+  type HouseTraderRiskView,
+} from './house-trader-risk';
 import { TapeRow } from './trade-row';
 import { FLOOR_TEXT } from './tokens';
 
@@ -47,6 +52,76 @@ const innerCardStyle = {
 function signedUsd(value: number): string {
   const sign = value > 0 ? '+' : value < 0 ? '-' : '';
   return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+const pillStyle = (colour: string) =>
+  ({
+    alignSelf: 'flex-start',
+    border: `1px solid ${colour}`,
+    borderRadius: 999,
+    padding: '2px 8px',
+    color: colour,
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: 0.3,
+  }) as const;
+
+/**
+ * WHY THIS DESK IS NOT OPENING POSITIONS (founder order, 2026-09-20).
+ *
+ * Read straight from the route's `risk` block and never inferred: a desk with
+ * no setup is silent exactly like a desk that is cap-blocked, so trade silence
+ * cannot tell the two apart and this panel must not guess. Genesis sat blocked
+ * for seven hours with nothing on any surface saying so, which is the whole
+ * reason the block exists.
+ *
+ * Renders NOTHING for a live desk, for a slot the route sent no readable block
+ * for, and for a desk whose pairing already explains its idleness: see
+ * `resolveHouseTraderRiskDisplay` for that precedence. The 3D board consumes
+ * the same resolver, so the two public surfaces cannot disagree about one desk.
+ */
+function RiskBlock({
+  display,
+  risk,
+}: {
+  display: 'paused' | 'fault';
+  risk: HouseTraderRiskView;
+}) {
+  // A FAULT IS NOT A PAUSE. "Paused by risk limit" asserts that a limit was
+  // evaluated and hit; a fault says the evaluation itself did not complete.
+  // Rendering one as the other is the same unearned claim as reporting an
+  // unreadable P&L as a flat result.
+  const fault = display === 'fault';
+  const colour = fault ? FLOOR_TEXT.danger : FLOOR_TEXT.warning;
+  // `null` when the three figures do not add up to the claim the sentence makes,
+  // which is a real state: a desk halted by hand or short of USDC is paused
+  // without being over its loss cap. The pill and the detail still show.
+  const arithmetic = fault ? null : formatRiskArithmetic(risk);
+  return (
+    <div
+      data-testid="house-risk"
+      style={{ display: 'flex', flexDirection: 'column', gap: 3 }}
+    >
+      <span data-testid="house-risk-pill" style={pillStyle(colour)}>
+        {fault ? 'Status fault' : 'Paused by risk limit'}
+      </span>
+      {/* Route prose. Already bounded and stripped at the wire boundary, so
+          this renders it whole rather than re-truncating it here. */}
+      {risk.detail ? (
+        <div style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>{risk.detail}</div>
+      ) : null}
+      {/* ALL THREE FIGURES, in one sentence, and only when they support it.
+          The day loss beside the cap alone reads as a desk with room to spare;
+          what actually blocks it is the next position not fitting under that
+          cap. A fault never gets the line, because a failed evaluation has no
+          arithmetic behind it. */}
+      {arithmetic ? (
+        <div data-testid="house-risk-math" style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
+          {arithmetic}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -155,6 +230,7 @@ function SlotCard({
   }, [subjectId, tickerEntries, slot.recentTrades, rowLimit]);
 
   const occupied = slot.status !== 'not-yet-running';
+  const riskDisplay = resolveHouseTraderRiskDisplay(slot.status, slot.risk);
 
   return (
     <div style={innerCardStyle}>
@@ -190,6 +266,13 @@ function SlotCard({
           </div>
         </>
       )}
+      {/* Directly under the pairing line: "Live as Genesis" followed by "Paused
+          by risk limit" is the whole story of the desk in two lines, and the
+          risk block is the half a reader would otherwise have to infer from an
+          empty tape. `risk` is non-null whenever `riskDisplay` is. */}
+      {riskDisplay && slot.risk ? (
+        <RiskBlock display={riskDisplay} risk={slot.risk} />
+      ) : null}
       {/* The lineup's plain-words note, NEVER the profile brief or its mint
           list: a house trader runs the operator's own rule loop on ClawPump,
           so the profile does not describe it. */}

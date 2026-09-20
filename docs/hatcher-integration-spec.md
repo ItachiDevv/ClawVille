@@ -28,7 +28,18 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 66` (2026-09-19).**
+> **Current local protocol: `PROTOCOL_VERSION 67` (2026-09-20).**
+> Version 67 adds NO verb and changes no parameter. It documents one additive
+> read field, `risk`, on each slot of the public `GET /api/floor/house-traders`:
+> `null`, or `{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd,
+> at, ageSeconds }` with `state` one of `paused`, `live` or `fault`. The state
+> arrives on a machine feed, `POST /api/floor/house-traders/status`, which only
+> ClawVille's own house-trader runner may call (bearer secret
+> `HOUSE_TRADER_STATUS_TOKEN`); no partner and no agent posts to it, and it
+> settles nothing. Bearer model, TTL, the `hatcher:` namespace, the cognition
+> request body, the `[ACTION:]` whitelist and every leaderboard event name and
+> weight are UNCHANGED. The bump exists only because hosted runtimes key their
+> manual memory on the version, and 66 already shipped to staging.
 > Version 66 adds ONE `[ACTION:]` verb, `enter_trading_floor()`, and renames the
 > `cron-automation` building from "Downtown Building" to "Trading Floor". The
 > `buildingId` is UNCHANGED, so no partner call that names a building breaks.

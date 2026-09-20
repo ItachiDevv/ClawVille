@@ -30,7 +30,10 @@ import { CLAWPUMP_OBSERVED_IDENTITY_TYPE } from './trading-provisioning';
 import { listPublicVerifiedTradesForAvatars, type PublicTradeDTO } from './trade-observer';
 import { alertError } from './alert-error';
 import { shouldAlertTradingLoop } from './trading-rpc';
-import { HOUSE_TRADER_LINEUP, TRADE_MINTS, type TradingObjective } from '@clawville/shared';
+import {
+  HOUSE_TRADER_LINEUP, TRADE_MINTS,
+  type HouseTraderRisk, type TradingObjective,
+} from '@clawville/shared';
 
 /** One `clawpump_agent_links` row joined to its wallet and its owner. */
 export interface HouseTraderCandidate {
@@ -471,6 +474,50 @@ export interface HouseTraderSlot {
   recentTrades: PublicTradeDTO[];
 }
 
+/**
+ * A slot plus the trading wallet bound to it. INTERNAL ONLY.
+ *
+ * `walletPubkey` must NEVER be serialised onto a response: two tests assert
+ * that no wallet string and no `wallet` key appears in the public body, and the
+ * served manual publishes "the public tape never includes wallet addresses".
+ * It exists so the status route can answer "is this one of ours?" and so the
+ * risk merge can find a slot's reported state, both of which key on the wallet
+ * the runner knows itself by.
+ */
+export interface HouseTraderSlotBinding {
+  slot: HouseTraderSlot;
+  /** The pubkey recorded on the LINK, which is what the runner posts. `null`
+   *  for an unpaired slot. Present for a `stopped` slot too: the link survives
+   *  an unpaired wallet, and a stopped runner may still be reporting. */
+  walletPubkey: string | null;
+}
+
+/** A slot as the PUBLIC route emits it: the slot plus the merged risk block.
+ *  `risk` is merged per request, outside the 15 s slot cache, so a reported
+ *  pause shows on the very next poll. */
+export type PublicHouseTraderSlot = HouseTraderSlot & { risk: HouseTraderRisk | null };
+
+/**
+ * PAIRING WINS OVER RISK. Only a `live-observed` slot publishes a `risk` block.
+ *
+ * A `stopped` slot keeps its link pubkey, so its runner can and does keep
+ * heartbeating: an operator revokes the trading wallet, the Python process does
+ * not know it was unpaired, and it carries on posting `canEnter: false`. The
+ * POST still ACCEPTS those reports, deliberately, so a re-pairing has current
+ * state the instant it lands. What must not happen is PUBLISHING one. The board
+ * and the panel both show STOPPED for that desk and suppress the pause, because
+ * the card already says why it is idle, so emitting `risk.state: 'paused'` on
+ * the wire would have an agent say "paused by a risk limit" while both human
+ * surfaces say "stopped". Two public surfaces disagreeing about one desk is the
+ * failure this file guards against everywhere else.
+ *
+ * Enforced HERE, on the wire, rather than only in the client, so every consumer
+ * agrees by construction and the client resolver is defence in depth.
+ */
+export function slotPublishesRisk(status: HouseTraderStatus): boolean {
+  return status === 'live-observed';
+}
+
 const EMPTY_COUNTS: HouseTraderCounts = { verified: 0, scored: 0, lastTradeAt: null };
 
 /**
@@ -560,6 +607,20 @@ export function buildHouseTraderSlots(input: {
    *  yields the zero block, never a fabricated figure. */
   realisedByAvatar?: Map<string, HouseTraderRealised>;
 }): HouseTraderSlot[] {
+  return buildHouseTraderSlotBindings(input).map((binding) => binding.slot);
+}
+
+/**
+ * The same build, keeping each slot's bound wallet beside it for the callers
+ * that need to match a runner's report to a slot. See `HouseTraderSlotBinding`
+ * for why the wallet may not cross the wire.
+ */
+export function buildHouseTraderSlotBindings(input: {
+  chosen: Map<string, HouseTraderCandidate>;
+  counts: Map<string, HouseTraderCounts>;
+  recentByAvatar: Map<string, PublicTradeDTO[]>;
+  realisedByAvatar?: Map<string, HouseTraderRealised>;
+}): HouseTraderSlotBinding[] {
   return HOUSE_TRADER_LINEUP.map((entry) => {
     const objective = entry.objective;
     const candidate = input.chosen.get(objective);
@@ -570,10 +631,13 @@ export function buildHouseTraderSlots(input: {
     };
     const state = candidate ? houseTraderState(candidate) : null;
     if (!candidate || state === null) {
-      return { ...base, status: 'not-yet-running' as const, subject: null,
-        counts: { ...EMPTY_COUNTS }, realised: emptyRealised(), recentTrades: [] };
+      return {
+        slot: { ...base, status: 'not-yet-running' as const, subject: null,
+          counts: { ...EMPTY_COUNTS }, realised: emptyRealised(), recentTrades: [] },
+        walletPubkey: null,
+      };
     }
-    return {
+    const slot: HouseTraderSlot = {
       ...base,
       status: state,
       // NEVER the wallet pubkey, the user id or the identity fingerprint. The
@@ -598,6 +662,10 @@ export function buildHouseTraderSlots(input: {
       ),
       recentTrades: input.recentByAvatar.get(candidate.avatarId) ?? [],
     };
+    // The LINK pubkey, not `wallet.pubkey`: the two agree for a live pairing
+    // (condition 3 requires it) and only the link survives a revoked wallet, so
+    // a stopped runner can still report against the slot it used.
+    return { slot, walletPubkey: candidate.linkWalletPubkey };
   });
 }
 
@@ -807,16 +875,47 @@ export async function readHouseTraderSlots(
   deps: HouseTraderDeps = createHouseTraderDeps(),
   recentPerSlot = 5,
 ): Promise<HouseTraderSlot[]> {
-  const lineup = new Set<string>(HOUSE_TRADER_LINEUP.map((entry) => entry.objective));
-  // Narrowed to the lineup BEFORE selection, so a duplicate on an objective the
-  // surface does not publish cannot page anyone about a slot nobody can see.
-  const candidates = (await deps.loadCandidates()).filter((row) => lineup.has(row.objective));
-  const chosen = selectHouseTraders(candidates, deps.onDuplicate);
+  return (await readHouseTraderSlotBindings(deps, recentPerSlot)).map((binding) => binding.slot);
+}
+
+/** The same read, keeping each slot's bound wallet for the risk merge. */
+export async function readHouseTraderSlotBindings(
+  deps: HouseTraderDeps = createHouseTraderDeps(),
+  recentPerSlot = 5,
+): Promise<HouseTraderSlotBinding[]> {
+  const chosen = await chooseLineupCandidates(deps);
   const avatarIds = [...chosen.values()].map((candidate) => candidate.avatarId);
   const [counts, recentByAvatar, realisedByAvatar] = await Promise.all([
     deps.loadCounts(avatarIds),
     deps.loadRecent(avatarIds, recentPerSlot),
     deps.loadRealised(avatarIds),
   ]);
-  return buildHouseTraderSlots({ chosen, counts, recentByAvatar, realisedByAvatar });
+  return buildHouseTraderSlotBindings({ chosen, counts, recentByAvatar, realisedByAvatar });
+}
+
+/**
+ * The bound wallets of the CURRENT lineup slots, and nothing else.
+ *
+ * Used by the status feed to decide whether a report belongs to a trader we
+ * publish. It runs the discriminator and the lineup filter, so a wallet from a
+ * dropped objective, a custodial fleet link or a user-owned ClawPump wallet is
+ * not in the set, and only `loadCandidates` is read: counts, recent trades and
+ * the realised aggregation are full-history reads that an identity check has no
+ * use for.
+ */
+export async function readHouseTraderWallets(
+  deps: HouseTraderDeps = createHouseTraderDeps(),
+): Promise<Set<string>> {
+  const chosen = await chooseLineupCandidates(deps);
+  return new Set([...chosen.values()].map((candidate) => candidate.linkWalletPubkey));
+}
+
+async function chooseLineupCandidates(
+  deps: HouseTraderDeps,
+): Promise<Map<string, HouseTraderCandidate>> {
+  const lineup = new Set<string>(HOUSE_TRADER_LINEUP.map((entry) => entry.objective));
+  // Narrowed to the lineup BEFORE selection, so a duplicate on an objective the
+  // surface does not publish cannot page anyone about a slot nobody can see.
+  const candidates = (await deps.loadCandidates()).filter((row) => lineup.has(row.objective));
+  return selectHouseTraders(candidates, deps.onDuplicate);
 }
