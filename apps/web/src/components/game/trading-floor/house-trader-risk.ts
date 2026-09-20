@@ -364,6 +364,17 @@ export function formatRiskArithmetic(risk: HouseTraderRiskView): string | null {
   const dayCents = toCents(risk.dayLossUsd);
   const roomCents = toCents(risk.roomNeededUsd);
   const capCents = toCents(risk.dayLossCapUsd);
+  // NO RESERVATION, NO MIDDLE TERM (clawPump, 2026-09-20 21:43Z). Their risk
+  // gate was rebuilt that evening: it no longer reserves the next position's
+  // cost, so `roomNeededUsd` is honestly 0.00 and the test is simply
+  // `dayLoss >= cap`. Printing "+ next position 0.00" would invite the reader
+  // to look for a term that no longer exists, so a zero reservation gets the
+  // two-number form instead. The field stays in the contract: a future gate
+  // that reserves again gets the three-term sentence back with no schema move.
+  if (roomCents === 0) {
+    if (dayCents < capCents) return null;
+    return `Day loss ${formatCents(dayCents)} of the ${formatCents(capCents)} cap`;
+  }
   if (dayCents + roomCents <= capCents) return null;
   return (
     `Day loss ${formatCents(dayCents)}` +

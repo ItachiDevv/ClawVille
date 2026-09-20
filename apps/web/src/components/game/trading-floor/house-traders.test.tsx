@@ -689,6 +689,39 @@ describe('House traders section', () => {
     expect(text).not.toContain('is over the cap');
   });
 
+  // NO RESERVATION (clawPump rebuilt their gate 2026-09-20 21:43Z): roomNeeded
+  // is honestly 0.00 and the test is `dayLoss >= cap`, so the reader gets two
+  // numbers instead of a sum with a zero term in the middle.
+  // ONE RENDER PER TEST. Two `renderWithSlots` calls in one test body leave the
+  // first root mounted past the harness teardown, and react-dom then schedules
+  // a callback into a torn-down `window`: 0 fail, 1 unhandled error, which is
+  // the quiet flake shape this suite already paid for once.
+  test('a zero reservation at the cap prints the two-number form', async () => {
+    const host = await renderWithSlots([
+      liveSlot({ risk: riskFixture({ dayLossUsd: 20, roomNeededUsd: 0, dayLossCapUsd: 20 }) }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Day loss 20.00 of the 20.00 cap');
+    expect(text).not.toContain('next position');
+  });
+
+  test('a zero reservation over the cap prints the two-number form', async () => {
+    const host = await renderWithSlots([
+      liveSlot({ risk: riskFixture({ dayLossUsd: 21.5, roomNeededUsd: 0, dayLossCapUsd: 20 }) }),
+    ]);
+    expect(host.textContent ?? '').toContain('Day loss 21.50 of the 20.00 cap');
+  });
+
+  test('a zero reservation under the cap still claims nothing', async () => {
+    const host = await renderWithSlots([
+      liveSlot({ risk: riskFixture({ dayLossUsd: 8.44, roomNeededUsd: 0, dayLossCapUsd: 20 }) }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Paused by risk limit');
+    expect(text).not.toContain('of the 20.00 cap');
+    expect(text).not.toContain('is over the cap');
+  });
+
   test('one cent over the cap DOES earn the claim', async () => {
     const host = await renderWithSlots([
       liveSlot({

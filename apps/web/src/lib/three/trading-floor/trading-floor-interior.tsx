@@ -25,6 +25,9 @@
  *     `trading-floor-room.ts`.
  *   - The BIG BOARD (`TradingFloorScreen`), one plane on the -Z wall carrying
  *     live house-trader statuses and counts.
+ *   - The TRADE TAPE (`TradingFloorTradeTape`), the same trades as physical
+ *     objects: one emissive slab per recent trade, drifting from the board wall
+ *     toward the door in two lanes, one lane per desk. ONE mesh, one draw call.
  *   - Walk-up hotspots: the MONITOR, which opens the EXISTING Exchange modal on
  *     its Trading Floor tab (`useGameStore.openTradingFloor`) — no second
  *     modal, no duplicated panel — the DOOR, and six SEATS.
@@ -51,9 +54,9 @@
  *     MeshStandardMaterial.
  *   - NO per-frame allocation — module-scope scratch only.
  *   - Draw calls: 6 static from the room GLB (floor, walls, ceiling, trim,
- *     dais, kiosk) + 1 instanced desk row + 1 instanced chair row + 1 board,
- *     = 9, plus the avatar. Every hotspot is `visible: false`, so they cost
- *     none.
+ *     dais, kiosk) + 1 instanced desk row + 1 instanced chair row + 1 board
+ *     + 1 trade tape, = 10, plus the avatar. Every hotspot is `visible: false`,
+ *     so they cost none.
  *   - 3 lights total (ambient + hemisphere + one non-shadow directional).
  */
 
@@ -98,6 +101,7 @@ import {
 import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
 import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
+import { TradingFloorTradeTape } from './trading-floor-trade-tape-mesh';
 import {
   clampTradingFloorMovementSeated,
   computeTradingFloorArming,
@@ -1489,6 +1493,7 @@ export default function TradingFloorInteriorScene({
       <WorldLabelsOverlayMount />
       <RoomShell onReady={handleReady} />
       <TradingFloorScreen active={active} />
+      <TradingFloorTradeTape active={active} />
       <TradingFloorHotspots />
       <TradingFloorLabels />
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
