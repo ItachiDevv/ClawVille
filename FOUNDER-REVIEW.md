@@ -84,6 +84,14 @@
   FAULT, never a pause. Feedback wanted: is the wording right, and is amber the right colour. NOTE: the status word on
   every card grew from 14 to 15 px so the longer text stays legible. The runner side (the post call inside the live trade
   loop) waits for your direct yes to clawPump; until it posts, every card reads as before.
+- **NEW, 2026-09-20 late: the trades are objects in the room.** You said the job was displaying the trades in 3D to
+  showcase performance. Look at: staging `/trading-floor`, stand on the spawn and look down either side. Twelve slabs
+  fly the hall, two lanes, one per bot, from the board wall toward the door. A slab reads its bot on top (GENESIS or
+  RUNNER) and the side with the money below (SELL -3.08, BUY 10.00). Red is a trade that lost money, green is one that
+  made money, cyan is a buy. It costs ONE draw call however many chips fly, and it uses the data the board already
+  fetches, so it adds no request. Feedback wanted: chip size, drift speed, colour, and whether you want them nearer the
+  centre of the room or kept to the sides. On PROD you currently have the first version of this (chips labelled with the
+  venue, no colour); the version described here is on staging and is one promotion away.
 - **Not in this push:** NPC agents seated inside the hall (the enter_trading_floor()
   verb walks an agent to the building; they are not rendered inside yet).
 - Shipped by: session clawAgents/Fable, 2026-09-20.
