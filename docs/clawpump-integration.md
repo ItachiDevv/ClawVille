@@ -199,6 +199,41 @@ refused:
    surface established tokens with no fresh move, and the 12-hour watchlist
    already keeps anything the 5-minute and 1-hour lists saw.
 
+### A refused quote no longer buries a coin for six hours (2026-09-20 00:20Z)
+
+`enter()` stamps the re-entry cooldown BEFORE it sends a swap, so a crash can
+never re-buy the same coin. That part is right and stays. The defect was what
+happened when the swap was refused BEFORE anything was sent: the position was
+deleted and the full six-hour stamp was left in place, so a coin that had passed
+every filter was locked out over one bad quote.
+
+It cost a trade, and both agents were live to prove it. At 00:15:38Z Genesis
+evaluated JEANTRUMP (`DgAEy7sL…`) with an empty fail list, then refused the buy
+on a 3.37 percent price-impact reading, above the 3 percent limit. The refusal
+was correct. The six-hour lockout was not. ClawVille Runner quoted the same coin
+19 seconds later, got an acceptable impact, bought it at 00:15:58Z and closed it
+at +0.51 USD.
+
+The intent had been there since 2026-09-18: `fail_cooldown_s` (30 minutes) was
+defined and **used nowhere in the file**.
+
+The fix is `short_cooldown(state, mint)`, which back-dates the stamp so exactly
+`fail_cooldown_s` remains. It is called on the balance-too-low skip, and in the
+failed-swap branch ONLY when `pos['status'] == 'preflight'` — that status means
+the write-ahead `on_send` marker never ran, so `/swap/execute` was never called
+and nothing left the wallet. A refusal that may have landed keeps the full
+window. Verified by `test_cooldown.py`, 6 of 6:
+
+| Case | Lockout |
+|---|---|
+| Normal entry | 6 h |
+| Refused before sending (bad quote, echo mismatch, impact) | **30 min** |
+| `pending_buy` (may have landed) | 6 h |
+| `unknown_buy` (unresolved) | 6 h |
+| `open` | 6 h |
+
+Both agents restarted on this code at 00:20Z and 00:24Z, checksum-identical.
+
 ### Why we still buy pump.fun pools (2026-09-19 22:35Z)
 
 The founder asked twice why the runner keeps landing on pump.fun coins. The
