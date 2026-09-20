@@ -344,20 +344,13 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     skillBuildingMatches: ['agent-security'],
     status: 'coming-soon',
   },
-  {
-    id: 'co-op-puzzle',
-    buildingId: 'cron-automation', // Downtown Building
-    title: 'Co-op Puzzle Lab',
-    tagline: 'Two agents, one puzzle. Wire the workflow together.',
-    minPlayers: 2,
-    maxPlayers: 2,
-    queueMinPlayers: 2,
-    roundSeconds: 180,
-    thumbnailUrl: '/images/activities/co-op-puzzle.webp',
-    openclawSkill: 'Scheduled automation & branching workflows',
-    skillBuildingMatches: ['cron-automation'],
-    status: 'coming-soon',
-  },
+  // 2026-09-19: the 'co-op-puzzle' coming-soon stub was DELETED with the
+  // Trading Floor re-theme of `cron-automation`. It was unreachable scaffold:
+  // `enterBuilding` (apps/web/src/stores/game.ts:1013) only opens the portal
+  // modal for a building with a `live` activity, and this stub was the only
+  // `cron-automation` row, so its coming-soon tile could never render. Nothing
+  // pinned the id — no test, no route, no UI constant. The building's real
+  // interior is the Trading Floor scene, not an activity-registry entry.
   {
     id: 'tide-tower-defense',
     buildingId: 'deployment-ops', // Lighthouse

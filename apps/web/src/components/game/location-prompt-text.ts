@@ -8,6 +8,8 @@
  * The guide case is resolved FIRST here so no venue branch can claim her prompt.
  */
 
+import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-location';
+
 export interface LocationPromptInput {
   /** The slot owner is Nori (use-bottom-prompt-slot 'guide'). */
   readonly isGuide: boolean;
@@ -26,6 +28,7 @@ export interface LocationPromptText {
   readonly icon: string;
   readonly isCove: boolean;
   readonly isKelpForest: boolean;
+  readonly isTradingFloor: boolean;
   readonly showTalk: boolean;
 }
 
@@ -33,29 +36,55 @@ export function locationPromptText(input: LocationPromptInput): LocationPromptTe
   if (input.isGuide) {
     return {
       subjectLabel: 'Nori', ctaLine: 'Talk to Nori', icon: '💬',
-      isCove: false, isKelpForest: false, showTalk: true,
+      isCove: false, isKelpForest: false, isTradingFloor: false, showTalk: true,
     };
   }
   const isKelpForest = input.nearLocation === 'kelp-forest-portal';
   const isCove = input.nearLocation === 'cove';
+  // The Trading Floor door band publishes its OWN nearLocation id, not the
+  // building id — the building id still means "the resident's chat is in
+  // range", and the two prompts must stay distinguishable (founder order
+  // 2026-09-19: enter the building like you enter the cove).
+  const isTradingFloor = input.nearLocation === TRADING_FLOOR_NEAR_ID;
   // 2026-06-20 — knowledge buildings are CHAT-ONLY: "Talk to {resident}" in
-  // every mode. Only the Cove (a real walk-in interior) keeps "Enter".
-  const showTalk = !isCove && !isKelpForest && !!input.characterName;
+  // every mode. Only real walk-in interiors keep "Enter".
+  const isVenue = isCove || isKelpForest || isTradingFloor;
+  const showTalk = !isVenue && !!input.characterName;
   const buildingName = input.themeLabel ?? input.locationName ?? 'this place';
   const subjectLabel = isKelpForest
     ? 'Kelp Forest'
     : isCove
       ? 'The Cove'
-      : showTalk
-        ? input.characterName!
-        : buildingName;
+      : isTradingFloor
+        ? 'Trading Floor'
+        : showTalk
+          ? input.characterName!
+          : buildingName;
   const ctaLine = isKelpForest
     ? 'Walk through to enter the Kelp Forest'
     : isCove
       ? 'Enter the Cove'
-      : showTalk
-        ? `Talk to ${input.characterName}`
-        : `Enter ${buildingName}`;
-  const icon = isKelpForest ? '🪸' : isCove ? '🎰' : showTalk ? '💬' : (input.locationIcon ?? '📍');
-  return { subjectLabel, ctaLine, icon, isCove, isKelpForest, showTalk };
+      : isTradingFloor
+        ? 'Enter the Trading Floor'
+        : showTalk
+          ? `Talk to ${input.characterName}`
+          : `Enter ${buildingName}`;
+  const icon = isKelpForest
+    ? '🪸'
+    : isCove
+      ? '🎰'
+      : isTradingFloor
+        ? '↗'
+        : showTalk
+          ? '💬'
+          : (input.locationIcon ?? '📍');
+  return {
+    subjectLabel,
+    ctaLine,
+    icon,
+    isCove,
+    isKelpForest,
+    isTradingFloor,
+    showTalk,
+  };
 }

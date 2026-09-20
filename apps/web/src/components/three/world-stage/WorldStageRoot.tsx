@@ -66,10 +66,19 @@ import {
   reportKelpRenderFailure,
 } from '@/lib/three/kelp-render-failure-beacon';
 import {
+  TRADING_FLOOR_BACKGROUND,
+  TRADING_FLOOR_CAMERA,
+  TRADING_FLOOR_CAMERA_FAR,
+  TRADING_FLOOR_FOG,
+  TRADING_FLOOR_PLAYER_SPAWN,
+  TRADING_FLOOR_ROOM,
+} from '@/lib/three/trading-floor/trading-floor-room';
+import {
   ACTIVITY_SCENE_ID,
   COVE_SCENE_ID,
   KELP_SCENE_ID,
   NAV_NONCE_PARAM,
+  TRADING_FLOOR_SCENE_ID,
   WORLD_SCENE_ID,
   canonicalStageUrl,
   parseNavNonce,
@@ -116,6 +125,9 @@ const LazyStageHostedKelpScene = lazy(() =>
       .catch(() => undefined);
     throw error;
   }),
+);
+const LazyStageHostedTradingFloorScene = lazy(
+  () => import('./StageHostedTradingFloorScene'),
 );
 const LazyStageHostedActivityScene = lazy(
   () => import('./StageHostedActivityScene'),
@@ -690,6 +702,48 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
             >
               <LazyStageHostedKelpScene />
             </StageSlotErrorBoundary>
+          </Suspense>
+        ),
+      },
+      {
+        // Trading Floor interior — the founder's walk-in venue for the panel
+        // that used to be sidebar-only (order 2026-09-19). Camera far comes
+        // straight from the room's diagonal so the far wall is never sliced.
+        sceneId: TRADING_FLOOR_SCENE_ID,
+        camera: {
+          fov: TRADING_FLOOR_CAMERA.fov,
+          near: TRADING_FLOOR_CAMERA.near,
+          far: TRADING_FLOOR_CAMERA_FAR,
+          position: [
+            TRADING_FLOOR_PLAYER_SPAWN.x,
+            TRADING_FLOOR_CAMERA.above,
+            TRADING_FLOOR_PLAYER_SPAWN.z + TRADING_FLOOR_CAMERA.behind,
+          ],
+          lookAt: [0, TRADING_FLOOR_CAMERA.lookY, -TRADING_FLOOR_ROOM.halfZ],
+        },
+        appearance: {
+          background: TRADING_FLOOR_BACKGROUND,
+          fog: {
+            color: TRADING_FLOOR_FOG.color,
+            near: TRADING_FLOOR_FOG.near,
+            far: TRADING_FLOOR_FOG.far,
+          },
+          shadows: false,
+        },
+        capabilities: {
+          // An interior room: no jumping, no vertical swim, no click-to-path.
+          // E must stay enabled — it is how the monitor and the door work.
+          jump: false,
+          verticalSwim: false,
+          sprint: true,
+          emotes: false,
+          interact: true,
+          clickPath: false,
+          cameraOrbitKeys: true,
+        },
+        content: (
+          <Suspense fallback={null}>
+            <LazyStageHostedTradingFloorScene />
           </Suspense>
         ),
       },

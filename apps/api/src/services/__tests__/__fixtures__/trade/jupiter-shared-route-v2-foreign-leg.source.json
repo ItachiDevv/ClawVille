@@ -1,0 +1,15 @@
+{
+  "signature": "2g87Mx2WtkbGW5LhbxQ4HXTr3NoEmFH21CMF9aFD3rR5ZwZL4Qqi6fuKcA3Ee6cwwfXwJvHintLX4VX7oNhSbepM",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-18T12:33:44.351Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "2g87Mx2WtkbGW5LhbxQ4HXTr3NoEmFH21CMF9aFD3rR5ZwZL4Qqi6fuKcA3Ee6cwwfXwJvHintLX4VX7oNhSbepM",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "Third-party mainnet router wallet FHpcNSe6...: Jupiter v6 SharedAccountsRouteV2 (d19853937cfed8e9) whose wallet USDC account is not in the matched instruction; pins the discriminator and decodes to rejected vault_flow_mismatch."
+}

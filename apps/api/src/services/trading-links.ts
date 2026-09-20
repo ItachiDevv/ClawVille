@@ -71,7 +71,9 @@ export async function killTradingLink(avatarId: string): Promise<TradingLink | n
   return withKeyedMutex('trading:fleet', () => withKeyedMutex(`trading:${avatarId}`, () => db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('trading:fleet', 0))`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trading:${avatarId}`}, 0))`);
-    const rows = await tx.update(clawpumpAgentLinks).set({ killed: true, updatedAt: new Date() })
+    // Kill retires the link: it also disarms, so no guard (drawdown, sweeper) keeps
+    // treating it as live fleet float. Re-arming requires the arm route again.
+    const rows = await tx.update(clawpumpAgentLinks).set({ killed: true, armed: false, updatedAt: new Date() })
       .where(eq(clawpumpAgentLinks.avatarId, avatarId)).returning();
     return rows[0] ?? null;
   })));

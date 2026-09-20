@@ -137,6 +137,16 @@ export * from './constants/land-salvage';
 // Trading Floor wave 1 frozen contracts.
 export * from './constants/trading-floor';
 export * from './constants/trading-fleet';
+// ClawPump trader templates — copyable persona text derived from the two
+// constants above, so the served copy cannot drift from the fleet rules.
+export * from './constants/trading-agent-templates';
+// The house traders ClawVille actually runs. Unrelated to the templates above:
+// these run the operator's own rule loops on ClawPump, so the profile briefs in
+// trading-fleet.ts do NOT describe them.
+export * from './constants/house-trader-lineup';
+// House-trader RISK STATUS wire contract (2026-09-20). The runner REPORTS why
+// it cannot enter; nothing is ever inferred from trade silence.
+export * from './constants/house-trader-status';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';

@@ -1,3 +1,6 @@
+import { TRADING_OBJECTIVES } from '@clawville/shared';
+import { z } from 'zod';
+
 const productionApproved = process.argv.includes('--production');
 const apiUrl = (process.env.CLAWVILLE_API_URL ?? 'https://api-staging.clawville.world').replace(/\/+$/, '');
 const hostname = new URL(apiUrl).hostname.toLowerCase();
@@ -6,13 +9,18 @@ if ((process.env.CLAWVILLE_ENV === 'production' || hostname === 'api.clawville.w
 }
 
 const args = process.argv.slice(2).filter((value) => value !== '--production');
-const challengeOnly = args.includes('--challenge');
-const values = args.filter((value) => value !== '--challenge');
-const [walletPubkey, challengeNonce, signature] = values;
-if (!walletPubkey) throw new Error('Usage: bun scripts/trading/pair-genesis.ts <walletPubkey> --challenge [--production], then <walletPubkey> <challengeNonce> <signature> [--production]');
-
-const avatarId = process.env.CLAWVILLE_GENESIS_AVATAR_ID?.trim();
-if (!avatarId) throw new Error('CLAWVILLE_GENESIS_AVATAR_ID is required.');
+let clawpumpAgentId = '0f600d73-05a0-4c2e-8215-ab2a770ba192';
+let objective = 'momentum-board';
+let unpair = false;
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === '--unpair') unpair = true;
+  else if (arg === '--agent' && args[index + 1]) clawpumpAgentId = args[++index]!;
+  else if (arg === '--objective' && args[index + 1]) objective = args[++index]!;
+  else throw new Error('Usage: bun scripts/trading/pair-genesis.ts [--agent <uuid>] [--objective <TradingObjective>] [--unpair] [--production]');
+}
+if (!z.string().uuid().safeParse(clawpumpAgentId).success) throw new Error('Agent must be a UUID.');
+if (!z.enum(TRADING_OBJECTIVES).safeParse(objective).success) throw new Error('Trading objective is invalid.');
 
 const origin = (process.env.CLAWVILLE_OPERATOR_ORIGIN ?? 'https://staging.clawville.world').replace(/\/+$/, '');
 const cookie = process.env.CLAWVILLE_OPERATOR_COOKIE?.trim();
@@ -27,11 +35,17 @@ async function request(path: string, init: RequestInit = {}): Promise<Record<str
       ...(init.headers ?? {}),
     },
   });
-  const payload = await response.json() as Record<string, unknown>;
   if (!response.ok) {
-    throw new Error(`${path} failed (${response.status}): ${String(payload.code ?? payload.error ?? 'unknown')}`);
+    const payload: unknown = await response.json().catch(() => null);
+    const code = typeof payload === 'object' && payload !== null && 'code' in payload
+      && typeof payload.code === 'string' && /^[a-z_]{1,64}$/.test(payload.code) ? payload.code : null;
+    throw new Error(`${path} failed (${response.status})${code ? `: ${code}` : ''}.`);
   }
-  return payload;
+  try {
+    return await response.json() as Record<string, unknown>;
+  } catch {
+    throw new Error(`${path} returned invalid JSON.`);
+  }
 }
 
 async function operatorNonce(): Promise<string> {
@@ -41,34 +55,51 @@ async function operatorNonce(): Promise<string> {
   return nonce;
 }
 
-if (challengeOnly) {
-  const challenge = await request('/api/admin/trading/pair/challenge', {
+const agentList = await request('/api/admin/trading/clawpump/agents');
+const agents = z.array(z.object({
+  clawpumpAgentId: z.string().uuid(),
+  name: z.string().nullable(),
+  status: z.string().nullable(),
+  walletPubkey: z.string().nullable(),
+  pairedAvatarId: z.string().uuid().nullable(),
+})).safeParse(agentList.agents);
+if (!agents.success) throw new Error('Agent list response is invalid.');
+for (const agent of agents.data) {
+  console.log(agent.clawpumpAgentId, agent.name, agent.status, agent.walletPubkey, agent.pairedAvatarId);
+}
+const agent = agents.data.find((entry) => entry.clawpumpAgentId === clawpumpAgentId);
+if (!agent) throw new Error('Agent is not owned by the configured ClawPump account.');
+
+if (unpair) {
+  if (!agent.pairedAvatarId) throw new Error('Agent has no paired avatar.');
+  const unpaired = await request('/api/admin/trading/clawpump/unpair', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Money-Confirmation-Nonce': await operatorNonce() },
-    body: JSON.stringify({ avatarId, walletPubkey }),
+    body: JSON.stringify({ avatarId: agent.pairedAvatarId, clawpumpAgentId }),
   });
-  console.log(JSON.stringify(challenge, null, 2));
+  console.log('alreadyUnpaired', unpaired.alreadyUnpaired);
   process.exit(0);
 }
 
-if (!challengeNonce || !signature) {
-  throw new Error('Pair submission requires the challenge nonce and the detached base58 signature.');
-}
+const provisioned = await request('/api/admin/trading/clawpump/provision', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Money-Confirmation-Nonce': await operatorNonce() },
+  body: JSON.stringify({ clawpumpAgentId }),
+});
+console.log(provisioned.avatarId, provisioned.avatarName, provisioned.created);
 
-const paired = await request('/api/admin/trading/pair', {
+const paired = await request('/api/admin/trading/clawpump/pair', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
     'X-Money-Confirmation-Nonce': await operatorNonce(),
   },
   body: JSON.stringify({
-    avatarId,
-    clawpumpAgentId: 'genesis',
-    walletPubkey,
-    objective: 'momentum-board',
-    nonce: challengeNonce,
-    signature,
+    avatarId: provisioned.avatarId,
+    clawpumpAgentId,
+    objective,
   }),
 });
 
+console.log('replayed', paired.replayed, 'boundSlot', paired.boundSlot);
 console.log(String(paired.walletPubkey));

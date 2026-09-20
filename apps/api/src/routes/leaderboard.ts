@@ -36,7 +36,7 @@
  */
 
 import { Hono } from 'hono';
-import { eq, sql, and, gt, inArray, isNull } from 'drizzle-orm';
+import { eq, sql, and, gt, inArray, isNull, or } from 'drizzle-orm';
 import {
   db,
   avatars,
@@ -46,7 +46,7 @@ import {
   agentBots,
   tradingWallets,
 } from '@clawville/database';
-import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS, TRADE_TIER_WEIGHTS, TRADE_DAILY_SCORED_CAP } from '@clawville/shared';
+import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS, TRADE_TIER_WEIGHTS, TRADE_DAILY_SCORED_CAP, resolveTradeOperator, type TradeOperator } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { noStorePrivate } from '../middleware/no-store';
@@ -312,6 +312,7 @@ interface AgentLeaderboardEntry {
    */
   subjectType: 'agent' | 'avatar';
   operatedByClawville: boolean;
+  operator: TradeOperator | null;
 }
 
 interface AgentLeaderboardSnapshot {
@@ -1072,16 +1073,21 @@ export async function buildAgentSnapshot(
     ...avatarById.keys(),
     ...Array.from(avatarByUserId.values(), (avatar) => avatar.id),
   ];
-  const operatedAvatarIds = new Set<string>();
+  const operatorByAvatar = new Map<string, TradeOperator>();
   if (labelAvatarIds.length > 0) {
-    const operatedRows = await db.select({ avatarId: tradingWallets.avatarId })
-      .from(tradingWallets)
-      .where(and(
-        inArray(tradingWallets.avatarId, labelAvatarIds),
-        eq(tradingWallets.operatedByClawville, true),
-        isNull(tradingWallets.revokedAt),
-      ));
-    for (const row of operatedRows) operatedAvatarIds.add(row.avatarId);
+    const labelRows = await db.select({
+      avatarId: tradingWallets.avatarId, operated: tradingWallets.operatedByClawville, source: tradingWallets.source,
+    }).from(tradingWallets).where(and(
+      inArray(tradingWallets.avatarId, labelAvatarIds),
+      isNull(tradingWallets.revokedAt),
+      or(eq(tradingWallets.operatedByClawville, true), eq(tradingWallets.source, 'clawpump')),
+    ));
+    for (const row of labelRows) {
+      const operator = resolveTradeOperator({ operatedByClawville: row.operated, source: row.source });
+      if (operator === 'clawville' || (operator === 'clawpump' && !operatorByAvatar.has(row.avatarId))) {
+        operatorByAvatar.set(row.avatarId, operator);
+      }
+    }
   }
 
   // Shape + rank (cap `limit` AFTER shaping so totalRanked reflects the full
@@ -1124,7 +1130,8 @@ export async function buildAgentSnapshot(
         trades_base: Number(r.trades_base) || 0,
       },
       subjectType: r.subject_type,
-      operatedByClawville: avatar ? operatedAvatarIds.has(avatar.id) : false,
+      operatedByClawville: avatar ? operatorByAvatar.get(avatar.id) === 'clawville' : false,
+      operator: avatar ? operatorByAvatar.get(avatar.id) ?? null : null,
     };
   });
 

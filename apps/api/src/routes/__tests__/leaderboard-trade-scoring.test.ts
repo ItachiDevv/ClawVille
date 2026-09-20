@@ -142,6 +142,7 @@ describeIfDb('Trading Floor leaderboard scoring (requires DATABASE_URL)', () => 
 
   async function addWallet(subject: Subject, input: {
     operatedByClawville: boolean;
+    source?: 'signed' | 'clawpump';
     revoked?: boolean;
   }): Promise<void> {
     await db.insert(tradingWallets).values({
@@ -150,7 +151,7 @@ describeIfDb('Trading Floor leaderboard scoring (requires DATABASE_URL)', () => 
       avatarId: subject.avatarId,
       agentId: subject.kind === 'agent' ? subject.agentId : null,
       pubkey: bs58.encode(nacl.sign.keyPair().publicKey),
-      source: 'signed',
+      source: input.source ?? 'signed',
       boundSlot: 1,
       operatedByClawville: input.operatedByClawville,
       revokedAt: input.revoked ? new Date() : null,
@@ -244,6 +245,7 @@ describeIfDb('Trading Floor leaderboard scoring (requires DATABASE_URL)', () => 
     await addWallet(revoked, { operatedByClawville: true, revoked: true });
     for (const subject of [active, ordinary, revoked, orphan]) await emitTrades(subject, ['base']);
     expect((await rowFor(active))?.operatedByClawville).toBe(true);
+    expect((await rowFor(active))?.operator).toBe('clawville');
     expect((await rowFor(ordinary))?.operatedByClawville).toBe(false);
     expect((await rowFor(revoked))?.operatedByClawville).toBe(false);
     const orphanRow = await rowFor(orphan);
@@ -260,7 +262,23 @@ describeIfDb('Trading Floor leaderboard scoring (requires DATABASE_URL)', () => 
     const labelledRow = await rowFor(labelled);
     const ordinaryRow = await rowFor(ordinary);
     expect(labelledRow?.operatedByClawville).toBe(true);
+    expect(labelledRow?.operator).toBe('clawville');
     expect(ordinaryRow?.operatedByClawville).toBe(false);
+    expect(labelledRow?.score).toBe(ordinaryRow?.score);
+    expect(labelledRow?.breakdown).toEqual(ordinaryRow?.breakdown);
+  });
+
+  test('labels ClawPump-operated agents without changing their score', async () => {
+    const labelled = await createSubject({ kind: 'agent' });
+    const ordinary = await createSubject({ kind: 'agent' });
+    await addWallet(labelled, { operatedByClawville: false, source: 'clawpump' });
+    await emitTrades(labelled, ['ansem', 'base']);
+    await emitTrades(ordinary, ['ansem', 'base']);
+    const labelledRow = await rowFor(labelled);
+    const ordinaryRow = await rowFor(ordinary);
+    expect(labelledRow?.operator).toBe('clawpump');
+    expect(labelledRow?.operatedByClawville).toBe(false);
+    expect(ordinaryRow?.operator).toBeNull();
     expect(labelledRow?.score).toBe(ordinaryRow?.score);
     expect(labelledRow?.breakdown).toEqual(ordinaryRow?.breakdown);
   });

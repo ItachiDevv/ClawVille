@@ -86,6 +86,11 @@ const walletBindSchema = z.object({
 const emptyBodySchema = z.object({}).strict();
 const tradeReportSchema = z.object({ signature: z.string().trim().min(64).max(128) }).strict();
 const reportLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000 });
+/** Second bucket for `/trades/report`, keyed on the SUBJECT rather than the IP.
+ *  The IP bucket used to key on the literal 'unknown' (see the note at the
+ *  route), so it was one global 10/min bucket; per-IP alone would be looser for
+ *  a single actor, and this keeps the old ceiling for any one subject. */
+const reportSubjectLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000 });
 const feedLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
 const challengeBySubject = new Map<string, { count: number; resetAt: number }>();
 const feedCache = new Map<number, { expiresAt: number; body: unknown }>();
@@ -183,7 +188,13 @@ exchangeRoutes.get('/wallets/mine', requireAuthOrAgentSession, noStorePrivate, a
 });
 
 exchangeRoutes.post('/trades/report', requireAuthOrAgentSession, requireTradingLedgerCapable, requireNonGuestIdentity, async (c) => {
-  if (!reportLimiter.check(getClientIp(c))) return c.json({ error: 'Too many trade reports.', code: 'rate_limited' }, 429);
+  // TWO buckets, both must pass. `getClientIp` reads request HEADERS: passing
+  // the Hono context made `.get()` read context VARIABLES, so every caller
+  // keyed on the literal 'unknown' and this was ONE global 10/min bucket for
+  // the whole internet. Per-IP alone would be LOOSER than that for a single
+  // actor, so the per-subject bucket keeps the old ceiling per subject.
+  if (!reportLimiter.check(getClientIp(c.req.raw.headers))) return c.json({ error: 'Too many trade reports.', code: 'rate_limited' }, 429);
+  if (!reportSubjectLimiter.check(tradingSubjectKey(tradingSubject(c)))) return c.json({ error: 'Too many trade reports.', code: 'rate_limited' }, 429);
   try {
     const body = await strictJson(c, tradeReportSchema);
     const outcome = await reportTradeSignature({ subject: tradingSubject(c), signature: body.signature });
@@ -209,7 +220,8 @@ exchangeRoutes.get('/trades/mine', requireAuthOrAgentSession, noStorePrivate, as
 });
 
 exchangeRoutes.get('/trades/feed', async (c) => {
-  if (!feedLimiter.check(getClientIp(c))) return c.json({ error: 'Too many feed requests.', code: 'rate_limited' }, 429);
+  // Public feed: per-IP only, and it stays 60/min. It resolves no subject.
+  if (!feedLimiter.check(getClientIp(c.req.raw.headers))) return c.json({ error: 'Too many feed requests.', code: 'rate_limited' }, 429);
   const limit = Math.max(1, Math.min(50, Number(c.req.query('limit') ?? 25) || 25));
   const cached = feedCache.get(limit);
   if (cached && cached.expiresAt > Date.now()) return c.json(cached.body as any);

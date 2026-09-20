@@ -185,7 +185,7 @@ function drawCronHub(c: Container, w: number, h: number) {
   windowRect(g, w - 22, h * 0.68, 12, 10);
   door(g, w / 2, h, 14, 22, 0x4e342e);
   c.addChild(g);
-  sign(c, 'Downtown Building', w / 2, h + 14, 0x795548);
+  sign(c, 'Trading Floor', w / 2, h + 14, 0x795548);
 }
 
 function drawWebhookGateway(c: Container, w: number, h: number) {

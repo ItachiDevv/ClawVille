@@ -6,7 +6,7 @@ import { armTradingLink, killTradingLink, readTradingLink } from '../services/tr
 import { clearHalt, engageHalt, readActiveHalts, releaseLegacyAdmittedDecision } from '../services/trading-guardrails';
 import { hasUnknownPositiveTradingBalance, readTradingWalletEquity, toTradingBaselineEvidence } from '../services/trading-fleet-equity';
 import { executeTrade } from '../services/trading-execution';
-import { issueFounderPairChallenge, pairFounderAgent, provisionFleetAccount, TradingProvisioningError } from '../services/trading-provisioning';
+import { issueFounderPairChallenge, listObservedClawPumpAgents, pairFounderAgent, pairObservedClawPumpAgent, provisionFleetAccount, provisionObservedClawPumpAccount, TradingProvisioningError, unpairObservedClawPumpAgent } from '../services/trading-provisioning';
 import { readTradingLimits, TRADE_MINTS, TRADING_OBJECTIVES, TRADING_SYMBOL_TO_MINT } from '@clawville/shared';
 
 export const adminTradingRoutes = new Hono<MoneyOperatorContext>();
@@ -32,12 +32,60 @@ const pairBody = z.object({
   signature: z.string().trim().min(64).max(128),
 }).strict();
 const releaseAdmittedBody = z.object({ decisionId: z.string().uuid() }).strict();
+const clawpumpAgentIdSchema = z.string().trim().uuid();
+const clawpumpProvisionBody = z.object({ clawpumpAgentId: clawpumpAgentIdSchema }).strict();
+const clawpumpPairBody = z.object({
+  avatarId: z.string().uuid(), clawpumpAgentId: clawpumpAgentIdSchema, objective: z.enum(TRADING_OBJECTIVES),
+}).strict();
+const clawpumpUnpairBody = z.object({ avatarId: z.string().uuid(), clawpumpAgentId: clawpumpAgentIdSchema }).strict();
 
 async function body<T>(c: { req: { json(): Promise<unknown> } }, schema: z.ZodType<T>): Promise<T | null> {
   try { const parsed = schema.safeParse(await c.req.json()); return parsed.success ? parsed.data : null; } catch { return null; }
 }
 
 adminTradingRoutes.get('/nonce', (c) => c.json(issueMoneyOperatorNonce(c.get('moneyOperatorId'))));
+
+adminTradingRoutes.get('/clawpump/agents', async (c) => {
+  try {
+    return c.json(await listObservedClawPumpAgents());
+  } catch (error) {
+    if (error instanceof TradingProvisioningError) return c.json({ error: error.message, code: error.code }, error.status);
+    throw error;
+  }
+});
+
+adminTradingRoutes.post('/clawpump/provision', async (c) => {
+  const parsed = await body(c, clawpumpProvisionBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  try {
+    return c.json(await provisionObservedClawPumpAccount(parsed));
+  } catch (error) {
+    if (error instanceof TradingProvisioningError) return c.json({ error: error.message, code: error.code }, error.status);
+    throw error;
+  }
+});
+
+adminTradingRoutes.post('/clawpump/pair', async (c) => {
+  const parsed = await body(c, clawpumpPairBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  try {
+    return c.json(await pairObservedClawPumpAgent(parsed));
+  } catch (error) {
+    if (error instanceof TradingProvisioningError) return c.json({ error: error.message, code: error.code }, error.status);
+    throw error;
+  }
+});
+
+adminTradingRoutes.post('/clawpump/unpair', async (c) => {
+  const parsed = await body(c, clawpumpUnpairBody);
+  if (!parsed) return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400);
+  try {
+    return c.json(await unpairObservedClawPumpAgent(parsed));
+  } catch (error) {
+    if (error instanceof TradingProvisioningError) return c.json({ error: error.message, code: error.code }, error.status);
+    throw error;
+  }
+});
 
 adminTradingRoutes.post('/fleet/provision', async (c) => {
   const parsed = await body(c, provisionBody);

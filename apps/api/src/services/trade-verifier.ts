@@ -93,6 +93,21 @@ const PUMP_SELL = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
 // ARCHITECTURE.md beside the directional-vault gate).
 const PUMPSWAP_BUY_EXACT_QUOTE_IN = Buffer.from([198, 46, 21, 82, 180, 217, 232, 112]);
 
+// Jupiter v6 V2 swap instructions, accepted for OBSERVATION only (the execution
+// validator in clv-swap-live.ts is unchanged and still forbids V2). Each pin comes
+// from a recorded mainnet fixture:
+//   route_v2                 sha256("global:route_v2")[0..8]                 = bb64facc31c4af14
+//                            (jupiter-usdc-meme-route-v2.json, -multihop.json; log "Instruction: RouteV2")
+//   shared_accounts_route_v2 sha256("global:shared_accounts_route_v2")[0..8] = d19853937cfed8e9
+//                            (jupiter-shared-route-v2-foreign-leg.json; decodes vault_flow_mismatch)
+// Exact-out and token-ledger variants stay unpinned: no recorded fixture.
+const JUPITER_OBSERVED_V2_SWAPS = [
+  Buffer.from('bb64facc31c4af14', 'hex'),
+  Buffer.from('d19853937cfed8e9', 'hex'),
+] as const;
+/** Upper bound for one token account's rent (a 300-byte account needs 2,978,880 lamports). */
+export const MAX_TOKEN_ACCOUNT_RENT_LAMPORTS = 3_000_000n;
+
 // FEATURE_GATE: trading_floor_directional_vault_flow
 // Owner: floor-core.
 // Status: Condition (e1) checks membership only. It does not claim directional vault proof.
@@ -119,10 +134,50 @@ function instructionAccounts(ix: z.infer<typeof compiledInstructionSchema>, keys
 }
 
 function discriminatorMatches(dex: TradeDex, data: Uint8Array): boolean {
-  if (dex === 'jupiter') return decodeJupiterV6RouteInstruction(data) !== null;
   const head = Buffer.from(data).subarray(0, 8);
+  if (dex === 'jupiter') {
+    return decodeJupiterV6RouteInstruction(data) !== null
+      || JUPITER_OBSERVED_V2_SWAPS.some((discriminator) => head.equals(discriminator));
+  }
   if (head.equals(PUMP_BUY) || head.equals(PUMP_SELL)) return true;
   return dex === 'pumpswap' && head.equals(PUMPSWAP_BUY_EXACT_QUOTE_IN);
+}
+
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+type TokenBalanceRow = z.infer<typeof tokenBalanceSchema>;
+
+/**
+ * Candidate rent added to (positive) or removed from (negative) wallet-owned SPL /
+ * Token-2022 accounts that this transaction created or closed. The payer or refund
+ * recipient can differ from the wallet. The caller clamps net rent toward zero,
+ * so account bookkeeping cannot create or flip a native SOL trade
+ * leg: a first USDC -> memecoin buy creates the output account, and without this the
+ * rent (1.49M to 2.04M lamports, above SOL_DUST_LAMPORTS) is a third leg and the swap
+ * is refused multi_leg. Wrapped-SOL amounts are excluded, so a wrap or unwrap still
+ * nets exactly as before. Each account is bounded; an out-of-bound value is not netted
+ * (fail closed: it stays a SOL leg).
+ */
+function walletTokenAccountRentLamports(meta: {
+  preBalances: number[]; postBalances: number[];
+  preTokenBalances: TokenBalanceRow[]; postTokenBalances: TokenBalanceRow[];
+}, wallet: string): bigint {
+  const pre = new Map(meta.preTokenBalances.map((row) => [row.accountIndex, row]));
+  const post = new Map(meta.postTokenBalances.map((row) => [row.accountIndex, row]));
+  const rentOf = (lamports: number | undefined, row: TokenBalanceRow): bigint =>
+    BigInt(lamports ?? 0) - (row.mint === WSOL_MINT ? BigInt(row.uiTokenAmount.amount) : 0n);
+  const eligible = (row: TokenBalanceRow) => row.owner === wallet && (!row.programId || TOKEN_PROGRAMS.has(row.programId));
+  let adjustment = 0n;
+  for (const [index, after] of post) {
+    if (pre.has(index) || !eligible(after) || meta.preBalances[index] !== 0) continue;
+    const rent = rentOf(meta.postBalances[index], after);
+    if (rent > 0n && rent <= MAX_TOKEN_ACCOUNT_RENT_LAMPORTS) adjustment += rent;
+  }
+  for (const [index, before] of pre) {
+    if (post.has(index) || !eligible(before) || meta.postBalances[index] !== 0) continue;
+    const rent = rentOf(meta.preBalances[index], before);
+    if (rent > 0n && rent <= MAX_TOKEN_ACCOUNT_RENT_LAMPORTS) adjustment -= rent;
+  }
+  return adjustment;
 }
 
 export function decodeSwapFromParsedTransaction(input: {
@@ -211,11 +266,12 @@ export function decodeSwapFromParsedTransaction(input: {
   if (nativeBefore !== undefined && nativeAfter !== undefined) {
     let delta = BigInt(nativeAfter) - BigInt(nativeBefore);
     if (walletIndex === 0) delta += BigInt(parsed.meta.fee);
-    if (dex === 'pumpswap') {
+    let rentAdjustment = walletTokenAccountRentLamports(parsed.meta, wallet);
+    for (const program of [TRADE_DEX_PROGRAMS.pumpswap, TRADE_DEX_PROGRAMS.pumpfun]) {
       try {
         const [accumulator] = PublicKey.findProgramAddressSync(
           [Buffer.from('user_volume_accumulator'), new PublicKey(wallet).toBuffer()],
-          new PublicKey(TRADE_DEX_PROGRAMS.pumpswap),
+          new PublicKey(program),
         );
         const accumulatorIndex = keys.indexOf(accumulator.toBase58());
         if (accumulatorIndex >= 0) {
@@ -223,13 +279,16 @@ export function decodeSwapFromParsedTransaction(input: {
           const afterRent = BigInt(parsed.meta.postBalances[accumulatorIndex] ?? 0);
           const createdRent = afterRent - beforeRent;
           if (beforeRent === 0n && createdRent > 0n && createdRent <= MAX_PUMP_USER_VOLUME_ACCUMULATOR_RENT_LAMPORTS) {
-            delta += createdRent;
+            rentAdjustment += createdRent;
           }
         }
       } catch {
         // A malformed wallet was already rejected at the signer boundary.
       }
     }
+    // Aggregate rent first, then move only toward zero: rent cannot create or flip a SOL leg.
+    if (rentAdjustment > 0n && delta < 0n) delta = delta + rentAdjustment > 0n ? 0n : delta + rentAdjustment;
+    else if (rentAdjustment < 0n && delta > 0n) delta = delta + rentAdjustment < 0n ? 0n : delta + rentAdjustment;
     if (delta > SOL_DUST_LAMPORTS || delta < -SOL_DUST_LAMPORTS) {
       nativeWalletLeg = true;
       const wsol = 'So11111111111111111111111111111111111111112';

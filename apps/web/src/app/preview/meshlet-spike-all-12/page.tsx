@@ -104,8 +104,8 @@ const BUILDINGS: BuildingSpec[] = [
   { id: 'api-integrations',   model: '/models/salty-spitoon-opt1-ktx.glb?v=3',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
   // Slot 5 — SSE — app-publishing (boating-school)
   { id: 'app-publishing',     model: '/models/boating-school-opt1-ktx.glb?v=3',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
-  // Slot 6 — S — cron-automation (patty-building)
-  { id: 'cron-automation',    model: '/models/patty-building-opt1-mo-ktx.glb?v=3',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1]  },
+  // Slot 6 — S — cron-automation (Trading Floor exterior)
+  { id: 'cron-automation',    model: '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2', posX: ringPos(6)[0],  posZ: ringPos(6)[1]  },
   // Slot 7 — SSW — deployment-ops (lighthouse)
   { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1-ktx.glb?v=3',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
   // Slot 8 — WSW — claw-arcade

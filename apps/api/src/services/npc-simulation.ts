@@ -6,6 +6,7 @@ import {
   MAP_LOCATIONS,
   AUTONOMY_ENTERABLE_PLACES,
   type AutonomyEnterablePlace,
+  TRADING_FLOOR_BUILDING_ID,
   HATCHER_ACTION_VERBS,
   TRADING_SYMBOL_TO_MINT,
   isLiveTutorialQuest,
@@ -347,6 +348,22 @@ const KELP_FOREST_CENTER: { x: number; y: number } | null = (() => {
 })();
 
 /**
+ * The Trading Floor is the `cron-automation` TEACHING building re-themed
+ * (2026-09-19), so unlike the cove it has an NPC_BUILDING_CENTERS entry. Prefer
+ * that entry — it is the same center the `/move?buildingId` and `enter_building`
+ * paths use, and the building-edge arrival gate is measured against it — and
+ * fall back to the MAP_LOCATIONS-derived place center only if the teaching map
+ * ever loses the id. Resolved once at module load; drop loudly if both are gone.
+ */
+const TRADING_FLOOR_CENTER: { x: number; y: number } | null = (() => {
+  if (Object.hasOwn(NPC_BUILDING_CENTERS, TRADING_FLOOR_BUILDING_ID)) {
+    return NPC_BUILDING_CENTERS[TRADING_FLOOR_BUILDING_ID]!;
+  }
+  const place = AUTONOMY_PLACE_CENTERS.find((candidate) => candidate.placeId === 'trading-floor');
+  return place ? { x: place.centerX, y: place.centerY } : null;
+})();
+
+/**
  * Destinations whose COMPLETED directed route stays agent-owned after arrival
  * (OQ-1, 2026-07-27). These are exactly the ids the gateway `enter_*` verbs
  * stamp: `enter_cove` and `enter_poker_room` both stamp 'cove' (:2128/:2219),
@@ -366,6 +383,17 @@ const KELP_FOREST_CENTER: { x: number; y: number } | null = (() => {
  *
  * Deliberately a literal set, NOT derived from AUTONOMY_PLACE_CENTERS: adding a
  * new enterable place must not silently change parking behavior.
+ *
+ * 2026-09-19 — `enter_trading_floor` is deliberately NOT a member, and this is
+ * the reason, not an oversight. This set is keyed on `destinationBuildingId`
+ * alone, and the Trading Floor's destination is `cron-automation`, the id that
+ * `enter_building` and REST `/move?buildingId` ALREADY stamp. Adding it would
+ * silently change the arrival behavior of those two existing paths as well —
+ * exactly what the paragraph above says this set must never do — and a teaching
+ * building's arrival branch has always released ownership (its only release
+ * valve, `clearDestinationBuilding`, is driver-only). The Trading Floor's reads
+ * and trades run over authenticated REST, not from a parked body inside an
+ * interaction radius, so it needs no cove-style parking.
  */
 const GATEWAY_PARK_DESTINATIONS: ReadonlySet<string> = new Set(['cove', 'kelp-forest-portal']);
 
@@ -2301,6 +2329,7 @@ class NpcSimulation {
    *   release_parcel(parcelCode)                          -> shared tenure release
    *   enter_poker_room()                                  -> walk to the Cove poker tables
    *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
+   *   enter_trading_floor()                               -> walk to the Trading Floor (cron-automation)
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
    *
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
@@ -3342,6 +3371,41 @@ class NpcSimulation {
         this.recordAgentWorldAction(attribution, 'agent.move', {
           destination: 'kelp-forest-portal',
           venue: 'kelp-forest',
+        });
+        return;
+      }
+      case 'enter_trading_floor': {
+        // enter_trading_floor() — the Rule-E5 gateway verb for the Trading
+        // Floor, which IS the re-themed `cron-automation` building (founder
+        // order 2026-09-19). Walks the agent body to the building and tags the
+        // destination so the sim shows the approach. This is the VISIBLE
+        // in-world effect of "I am going to the Trading Floor"; reading the tape
+        // and placing a trade stay on the authenticated REST surface
+        // (GET /api/floor/house-traders, GET /api/floor/templates,
+        // POST /api/floor/trade). NO money moves through this action parser.
+        //
+        // UNLIKE enter_cove: the destination is a TEACHING building, so it tags
+        // the same `destinationBuildingId` that `enter_building(cron-automation)`
+        // and `/move?buildingId` already use, and it is deliberately NOT added to
+        // GATEWAY_PARK_DESTINATIONS — see that set's comment. No params.
+        if (!TRADING_FLOOR_CENTER) {
+          console.warn('[Hatcher] enter_trading_floor dropped — trading-floor building center missing');
+          return;
+        }
+        const destX = TRADING_FLOOR_CENTER.x + (Math.random() - 0.5) * 40;
+        const destY = TRADING_FLOOR_CENTER.y + 20 + Math.random() * 20;
+        const path = findPath(npc.x, npc.y, destX, destY);
+        if (path.length === 0) {
+          console.warn('[Hatcher] enter_trading_floor dropped — no path to the Trading Floor');
+          return;
+        }
+        this.setNpcPath(npcId, path, TRADING_FLOOR_BUILDING_ID);
+        // APPROACH wire emoji only. Never override `activity` here — see
+        // enter_cove above (OQ-1: an override freezes the body for 8-20 s).
+        this.setNpcActivityEmoji(npcId, '📈');
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          destination: TRADING_FLOOR_BUILDING_ID,
+          venue: 'trading-floor',
         });
         return;
       }

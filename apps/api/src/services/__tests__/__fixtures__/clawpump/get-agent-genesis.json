@@ -1,0 +1,30 @@
+{
+  "id": "0f600d73-05a0-4c2e-8215-ab2a770ba192",
+  "user_id": "b40f15d4-fb15-458b-94ee-690607725e6c",
+  "name": "Genesis",
+  "status": "running",
+  "container_id": "agent-0f600d73-05a0-4c2e-8215-ab2a770ba192",
+  "wallet_address": "4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n",
+  "rh_wallet_address": "0x9381E612AA894975733bD09F1158EdC03B056c3C",
+  "enabled_skills": [
+    "defi-trading",
+    "portfolio",
+    "market-intel",
+    "wallet-ops",
+    "news",
+    "bitget-intel",
+    "action-plans",
+    "private-transfers",
+    "self-learning",
+    "skill-management"
+  ],
+  "skill_config": {},
+  "avatar_url": "b40f15d4-fb15-458b-94ee-690607725e6c/0f600d73-05a0-4c2e-8215-ab2a770ba192.jpg",
+  "token_mint": null,
+  "is_public": true,
+  "accepting_bids": true,
+  "public_description": null,
+  "created_at": "2026-09-16T04:45:13.453768+00:00",
+  "updated_at": "2026-09-18T11:58:59.773775+00:00",
+  "runtime_tier": "standard"
+}

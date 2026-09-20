@@ -37,6 +37,7 @@ import {
   WORLD_PX_WIDTH,
   type AutonomyStatusResponse,
   type TradeDex,
+  type TradeOperator,
   type TradeRefusalCode,
   type TradeUnscoredReason,
 } from '@clawville/shared';
@@ -287,7 +288,7 @@ export interface TradeTickerEvent {
   subject: { type: 'avatar' | 'agent'; id: string; avatarName: string | null };
   inputMint: string; outputMint: string; notionalUsd: number | null; dex: TradeDex;
   blockTime: number | null; multiplier: 1 | 1.5 | 2; scored: boolean;
-  operatedByClawville: boolean; decisionId: string | null;
+  operatedByClawville: boolean; operator: TradeOperator | null; decisionId: string | null;
   unscoredReason: TradeUnscoredReason | null;
 }
 

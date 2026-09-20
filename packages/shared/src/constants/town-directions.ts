@@ -2,7 +2,8 @@
  * Where each ring building stands, seen from the town centre, computed from
  * `MAP_LOCATIONS` so the knowledge text cannot drift from the map.
  *
- * 2026-09-19, production: Nori told a guest the Downtown Building was
+ * 2026-09-19, production: Nori told a guest the Downtown Building (re-themed
+ * the same day to the Trading Floor; the id stays `cron-automation`) was
  * "directly north at (0, -1220)" (that is the Quest + Bounty Pavilion). No
  * knowledge surface said where the buildings are, so the model borrowed the
  * only coordinates it had. See feedback "knowledge must state PLACE".
@@ -76,7 +77,7 @@ export function buildTownBuildingDirectionsLine(): string {
   return (
     `Where the 12 buildings stand: they form one ring about ${TOWN_BUILDING_RING_RADIUS_WU.toLocaleString('en-US')} world units ` +
     'from the town centre at world (0, 0). North is toward the Quest + Bounty Pavilion and the Pineapple House; ' +
-    'south is toward the spawn and the Downtown Building. Going clockwise from north: ' +
+    'south is toward the spawn and the Trading Floor. Going clockwise from north: ' +
     `${parts.join('; ')}. Each teacher stands just outside their own building, on the side that faces the town centre.`
   );
 }

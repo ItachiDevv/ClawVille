@@ -37,6 +37,8 @@ import {
   tradeAgeLabel,
   unscoredReasonCopy,
 } from './format';
+import { ClawPumpTemplatesSection } from './clawpump-templates';
+import { HouseTradersSection } from './house-traders';
 import { floorStatusCopy } from './floor-tape';
 import { TapeRow } from './trade-row';
 import { FLOOR_TEXT } from './tokens';
@@ -541,6 +543,10 @@ export function TradingFloorTab({
         </div>
         <p style={{ color: FLOOR_TEXT.muted }}>Every other pair scores 1x.</p>
       </section>
+
+      <HouseTradersSection active={active} />
+
+      <ClawPumpTemplatesSection />
 
       {TRADING_FLOOR_GUARDRAIL_LINES.length > 0 || TRADING_FLOOR_RULES.executionWhitelist !== null ? (
         <section style={cardStyle}>

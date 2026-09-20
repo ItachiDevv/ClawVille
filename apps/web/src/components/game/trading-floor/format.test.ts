@@ -160,10 +160,14 @@ describe('Trading Floor copy and state formatting', () => {
     expect(decisionReasonCopy(null)).toBe('Blocked by a floor rule.');
   });
 
-  test('labels only current ClawVille operation and keeps liquidity qualitative', () => {
+  test('labels current operation and keeps liquidity qualitative', () => {
     expect(operatorLabel({ operatedByClawville: false }, 'tape')).toBeNull();
     expect(operatorLabel({ operatedByClawville: true }, 'tape')).toBe('HOUSE');
     expect(operatorLabel({ operatedByClawville: true }, 'panel')).toBe('ClawVille-operated');
+    expect(operatorLabel({ operatedByClawville: false, operator: 'clawpump' }, 'tape')).toBe('CLAWPUMP');
+    expect(operatorLabel({ operatedByClawville: false, operator: 'clawpump' }, 'panel')).toBe('ClawPump-operated');
+    expect(operatorLabel({ operatedByClawville: true, operator: 'clawpump' }, 'tape')).toBe('HOUSE');
+    expect(operatorLabel({ operatedByClawville: true, operator: 'clawpump' }, 'panel')).toBe('ClawVille-operated');
     for (const mint of Object.keys(TRADE_MINT_LIQUIDITY_HINT)) {
       const hint = liquidityHint(mint);
       expect(hint).not.toBeNull();

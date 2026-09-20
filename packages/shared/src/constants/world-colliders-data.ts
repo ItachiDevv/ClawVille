@@ -67,7 +67,8 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   'messaging-channels': { halfX: 850, halfZ: 850 },
   'api-integrations':   { halfX: 850, halfZ: 850 },
   'app-publishing':     { halfX: 425, halfZ: 423 },
-  'cron-automation':    { halfX: 850, halfZ: 498 },
+  // Trading Floor exterior (2026-09-19 swap; was patty-building at 850×498).
+  'cron-automation':    { halfX: 823, halfZ: 720 },
   'deployment-ops':     { halfX: 303, halfZ: 330 },
   'claw-arcade':        { halfX: 468, halfZ: 450 },
   'cove':               { halfX: 546, halfZ: 553 },

@@ -34,6 +34,95 @@
 
 ## TRADING FLOOR
 
+### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
+- **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,
+  green TRADING FLOOR sign, solid claw on the dome) and a room you walk into like the cove.
+  Inside: six trading desks, a hologram dais and a monitor at the far wall. Walk to the
+  monitor and press E (USE on touch): the Trading Floor panel opens, the same one the
+  sidebar opens. Escape closes it. E at the door takes you out. Pearl still teaches
+  automation, outside the building, and her books did not change. The building id did
+  not change, so old links, books and skills still work.
+- **Agents:** `[ACTION: enter_trading_floor()]` walks an agent there; the tape, the
+  templates and trades stay on the REST routes. PROTOCOL_VERSION 67 (66 was the building; 67 adds the risk status field below).
+- **House traders:** clawPump's backtest rejected Dip Hunter (dropped). The watch panel
+  shows TWO traders: Genesis (momentum outside a sharp five-minute dip) and ClawVille Runner
+  (sharp five-minute dips, wider trail), disjoint lanes, both on real money on ClawPump. The
+  panel and the back-wall board show each trader's LIVE realised P&L (gross on the USDC leg,
+  excludes network fees), wins and losses alike, computed from the full verified history.
+- **Where:** staging -> `/game` -> walk to the south building (or click it) -> press E at
+  the door -> walk to the monitor -> press E. Direct route: `/trading-floor`.
+- **Feedback wanted:** (a) does the exterior read as the Trading Floor from the ring, and
+  is 1950 the right size against its neighbours; (b) the claw colour on the dome
+  (emerald under world light); (c) the room lighting and the empty walls (no NPCs inside
+  yet; do you want Pearl or a screen texture inside); (d) a real-iPad screenshot of the
+  bottom joystick band and the USE button in landscape, which devtools cannot verify;
+  (e) FPS on your Iris Xe machine in the room (budget: about 10 draw calls).
+- **Interior v2 (same push):** textured walls, ceiling light runs and a raised-panel
+  floor deck; a big board on the back wall (1700 x 520) that draws the house traders'
+  status, verified and scored counts, last-trade age, a sparkline and a trade tape from
+  the same route as the panel, with no profit or loss figures; six desks along the side
+  walls with chairs; press E (USE on touch, or tap the chair) to sit, E or Escape to
+  stand; the monitor kiosk shrunk to avatar height beside the board.
+- **Feedback wanted on v2:** (f) the sit pose: the hips ease onto the chair pan over the
+  clip; tell me if the avatar floats above or sinks into the seat; (g) board legibility
+  from the door and from the dais ring, and on your display scaling (Windows 150 %);
+  (h) do the walls, floor deck and pillars read as a room now; (k) the board's per-card
+  sparkline was REMOVED so every disclosure line (partial, wins/losses, exclusions, method)
+  fits at a 15 px canvas floor that stays legible on a 1366x768 laptop from the door; the
+  tape and the counts still show activity; say if you want the sparkline back on a taller
+  card; (l) the 12 px best/worst/closed row reads at about 6 screen px on a 768 laptop; (i) at the door the camera
+  sits on the door side, so you see your avatar's face with the room behind, not the door:
+  the Exit prompt is clear and E works, tell me if the framing reads wrong; (j) at a side
+  wall desk the camera sits close, so your avatar fills about 40 % of the frame: this is
+  the cost of not clipping through the desks, tell me if it feels too tight.
+- **NEW, second push 2026-09-20: "Paused by risk limit" on the board and the panel.** You asked that the board says so when a
+  house trader cannot open positions because of a risk limit. The trader's own runner now reports its state to
+  `POST /api/floor/house-traders/status`; the board never guesses a pause from trade silence. Look at: staging
+  `/trading-floor`, the back-wall board and the monitor panel. A paused card reads `PAUSED: RISK LIMIT` (amber); the panel
+  shows a "Paused by risk limit" pill, the runner's one-line reason, and, only when it is true, the sum "Day loss 9.99 +
+  next position 10.25 is over the cap 20.00". A full book or a swap in flight still reads LIVE. A price-feed failure reads
+  FAULT, never a pause. Feedback wanted: is the wording right, and is amber the right colour. NOTE: the status word on
+  every card grew from 14 to 15 px so the longer text stays legible. The runner side (the post call inside the live trade
+  loop) waits for your direct yes to clawPump; until it posts, every card reads as before.
+- **Not in this push:** NPC agents seated inside the hall (the enter_trading_floor()
+  verb walks an agent to the building; they are not rendered inside yet).
+- Shipped by: session clawAgents/Fable, 2026-09-20.
+
+### Watch the house traders + Start a ClawPump trader (staging, 2026-09-19)
+- **What:** your Trading Floor scope, both paths, inside the existing Trading Floor tab.
+  (1) "Watch the house traders": your approved lineup of two. Genesis (momentum on
+  small-cap memecoins) and Dip Hunter (buys sharp dips in strong mid-cap coins). A slot
+  shows a trader only when an operator-paired ClawPump agent fills it. On staging Genesis
+  fills the momentum slot (verified on the live route: live-observed, 30 verified trades,
+  12 scored) and Dip Hunter says "Not running yet" until it is paired. The card shows a label
+  and a short strategy note, not the code profile text, because the house traders run your
+  own rule loops. No profit and loss number is shown, because no code matches a buy to
+  its sell yet.
+  (2) "Start a ClawPump trader": five template cards made from the same five profiles in
+  code. "Copy persona" and "Copy skills", a link to the ClawPump dashboard, and the six
+  steps. The rules sit in the persona, because a ClawPump system prompt does not reach an
+  autonomous run. The user makes the agent in the user's own ClawPump account.
+- **The honest limit:** ClawVille cannot verify, show or rank a user's ClawPump agent yet.
+  A ClawPump wallet cannot sign a message, and the ownership proof (a small exact
+  transfer) is not built. The page and the persona both say so. No dead button.
+- **Where:** staging -> `/game` -> sidebar -> Economy -> "Trading Floor". Agents:
+  `GET /api/floor/house-traders`, `GET /api/floor/templates`, manual sections 17a and 17b,
+  PROTOCOL_VERSION 65.
+- **Feedback wanted:** (a) the five display names and the persona text; (b) the numbers in
+  the persona ($25 for each trade, 10 percent of equity, 3 percent quote impact, 5 minutes
+  between trades: all from ClawVille code, none from the Genesis runner); (c) show the
+  wallet address on a house-trader card or keep it hidden like the public tape;
+  (d) prod shows two empty slots until your operator login pairs Genesis on prod;
+  (e) the five user templates still include the three profiles you dropped as house
+  traders (DCA, Rebalancer, Signal Follower): keep, or cut to the two that tested positive.
+- **Also fixed in this push:** three Trading Floor rate limits shared ONE bucket for all
+  callers (the client IP helper got the wrong object). They now count for each IP, and the
+  two write routes also count for each account.
+- **Known, not in this push:** the live house agents on ClawPump still carry "scored on
+  the public ClawVille leaderboard" in their system prompt. It is true only for a paired
+  agent (Genesis on staging). Session clawPump owns those agents.
+- Shipped by: session clawAgents/Fable, 2026-09-19.
+
 ### Trading Floor tab + sidebar tape (LIVE on prod since promotion #276, 2026-09-16)
 - **What:** the Exchange modal's new "Trading Floor" tab (bind a wallet through one of
   three doors, paste a swap signature to verify it, avatar-wide verified history, live
@@ -46,49 +135,52 @@
   $ANSEM, paste the signature: the row should say COUNTED (or a plain-language reason).
 - Shipped by: session clawPump/Fable, 2026-09-16.
 
-### Fleet (five house agents) — FIRST FLEET TRADE EXECUTED ON MAINNET from STAGING (2026-09-17)
-- **The trade:** SafeRebalancer, $1 SOL→USDC via Jupiter, signature
-  `5mytFoup16GrVojktQYHaG9bc5fP1w6jQ135zTYgJVe7Bjc1Jtu8Tzcu6gAtpfVVr4DZgeX3gZFBHaBDGpK4Jow2`
-  (finalized, slot 447873097, fee 67,433 lamports, wallet −0.009997 SOL / +0.999229 USDC).
-  Look at it on any explorer. Three bugs surfaced on the way, each would have refused or
-  hidden every fleet trade on prod, all fixed same day (`deploy-status.md` 2026-09-17).
-- **Where to look (verified 2026-09-17 19:44Z):** staging `/leaderboard` → rank 2 card
-  `SafeRebalancer`, label CLAWVILLE-OPERATED, score 20, `TRADER 1`; staging `/game` →
-  sidebar tape / Exchange → "Trading Floor" tab → live floor lists the $1 SOL→USDC trade.
-  The decision is `executed`, its USDC reservation settled, the wallet now holds about
-  0.29 SOL + $10.99 USDC.
-- **Feedback wanted:** does the rank card + label read right to you; then the rulings
-  below so the other four accounts can be provisioned and the promotion to prod can ride.
-- **What:** the guarded signer, guardrails, operator routes, provisioning + pairing routes
-  and the `trade_token` verb are in the code; every fleet link is created unarmed + killed.
-  On 2026-09-16 the first account was provisioned on STAGING (objective
-  `conservative-rebalancer`, trader `SafeRebalancer`, operator = the seeded staging admin
-  `landtest1`): avatar wallet `vaLqeo9HSaA5JbbDiL5GbusBG9jsKgQ6KXW8AUDZ3ZX`,
-  leaderboard-eligible, ClawVille-operated. Prod has no fleet account yet.
-- **2026-09-17 rung status:** the founder funded the staging wallet (0.3 SOL + $10 USDC).
-  The arm route accepted it: float start $40.25, baseline slot 447865610. The first $1
-  SOL→USDC test trade was REFUSED with `decimals_unresolved`: the mint whitelist demanded
-  a null mint authority on every mint, and mainnet USDC has Circle's. Fixed the same hour
-  (pinned USDC authorities, see `ARCHITECTURE.md` 2026-09-17 drift note); the re-run
-  result lands in `deploy-status.md`. The rung found a bug that would have refused every
-  fleet trade on prod, which is what it exists for. Decisions already taken and applied: self-custody
-  (ClawVille signs, ClawPump never), fleet ranks publicly with the "ClawVille-operated"
-  label, whitelist SOL/USDC/$CLAWVILLE/$ANSEM, $200 SOL across five wallets, default
-  drawdown halt 20 percent.
-- **Owed by founder before provisioning/arming (rulings, not playtests):** which user ids
-  go in `ADMIN_USER_IDS` on staging and prod (the only accounts that can provision, pair,
-  arm, halt, kill) and a session for that account so the five accounts can be provisioned
-  on staging first; glance at the five objective briefs in
-  `packages/shared/src/constants/trading-fleet.ts` (momentum, ANSEM+CLAWVILLE DCA,
-  SOL/USDC mean reversion, signal follower, conservative rebalancer).
-- **Genesis pairing (wallet `4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n`, received
-  2026-09-16):** blocked on proof of ownership. Pairing now requires the wallet to sign a
-  one-time ed25519 challenge, and that wallet is ClawPump-custodied, so it cannot sign
-  locally. Two ways forward: the full 47-char ClawPump enterprise key (then a
-  ClawPump-verified lookup door can be built), or a ClawPump message-signing call if their
-  agent API offers one. The wallet also has no on-chain history yet (0 SOL, 0 txs), so
-  there is nothing to observe until genesis trades.
-- Session clawPump/Fable, 2026-09-16.
+### ONE AGENT FIRST: Genesis trades on ClawPump (2026-09-18)
+- **What:** your direction applied. Genesis (your ClawPump agent) is the single trader; the
+  five-agent fleet is paused. Genesis holds the float moved from the staging test wallet
+  (about 0.28 SOL + 12.02 USDC), carries hard rules in its system prompt ($2 per trade under
+  a $50 float, one trade per hour, quote first, 60 percent USDC target, never transfers out,
+  perps disabled) and made its first ClawPump swap: tx
+  `5MpMtdFafzC4hoNs4m7Ho99bQMPddk7L83EKBFuaujLU69gSHFjvs66pzdccfEy9RWphRj3Fg94d4m7HiZvK4QRa`.
+  Eight scheduled wake-ups (every 3 hours from 06:07 UTC 09-18) run on the free tier.
+- **Where:** `agents.clawpump.tech/dashboard?agent=0f600d73-05a0-4c2e-8215-ab2a770ba192`
+  (chat + wallet), Solscan for the tx. NOT yet on the ClawVille Floor or leaderboard: that
+  needs the ClawPump ownership-proof link, the next build.
+- **Update 09:37 UTC:** you funded AI credits ($10.20). Genesis made its FIRST AUTONOMOUS
+  trade on Kimi K2.5: 0.0189 SOL to 2.0005 USDC, tx
+  `21k5fZgAyCCv75Y5KemTZisWwu42HoHNDesaS7VW93iiby9cApaLZybbvk2KmiLcTCXEArVswVC8YA6dC99VP8ZQ`.
+  Measured cost: about $0.025 per decision run. The rules now live in the agent's persona
+  (the system prompt field does not reach runs). Look at: the tx on Solscan, and the next
+  wake-ups on the dashboard chat.
+- **Update 12:45 UTC (while you slept): Genesis RUNNER is LIVE.** Your option B. A loop on the
+  staging box (`/root/runner-data/runner.py`, every 15 s) finds memecoins between $300k and $5M
+  market cap with momentum, checks them on chain, and buys $2 from Genesis's wallet through
+  ClawPump; exits: -30 percent stop, take profit at 1.5x / 2x / 3x, trailing stop, 6 h limit.
+  HARD caps: $6 loss per day, $15 lifetime, so at most 2 open positions. Three adversarial
+  reviews first (v1-v3 blocked, v4 approved). The old 3-hour rebalance timers are deleted and
+  the persona states the runner rules. **Your calls:** (1) keep $2 per position? Each new token
+  account costs about $0.21 of SOL rent, about 10 percent of a $2 position; $5 would make it 4
+  percent. (2) raise or keep the $6/$15 caps. Logs: `runner_trades.jsonl`, `runner_closed.jsonl`.
+- **Update 21:05 UTC (your order): $10 positions.** SOL swapped to USDC (34.11 USDC, 0.06 SOL left for fees).
+  To let $10 entries through the hard caps I set the daily loss cap to $15 and the lifetime cap to $25
+  (one open position at a time). **Your call:** raise or keep $15/$25.
+- **Update 15:00 UTC: Genesis RANKS on staging.** Its first trade after pairing (a $2 Meepcat buy) scored,
+  and staging `/leaderboard` (24h) shows Genesis at #2 with 20 points, labelled ClawPump-operated.
+  First live runner trade overall: TIGRINO $2 -> $4.40 (+$1.92 after costs), before pairing, so unscored.
+- **Update (overnight): ClawVille now SEES Genesis (staging first).** The Trading Floor and the
+  leaderboard list Genesis as "ClawPump-operated" once it is paired (operator-only, proven by our own
+  ClawPump key's agent list; ClawVille never signs or arms it). Look at: staging `/leaderboard` and
+  `/game` -> Economy -> Trading Floor (tape chip CLAWPUMP). Feedback: does the label read clearly?
+  **Decisions with the defaults applied:** D1 Genesis ranks publicly (yes); D2 trades from before
+  pairing earn no points (no); D3 accept "GenesisNNNN" if the name is taken on prod (yes); D4 put the
+  ClawPump key on the prod api app, read-only use (yes); D5 the expired gate
+  `trading_floor_directional_vault_flow` needs its own ruling; D6 a buy and a sell of the same coin on
+  one day score once (keep); D7 if Genesis changes owner on the ClawPump marketplace, unpair by hand
+  (it is open to bids today). Prod pairing needs your operator login.
+- **Also yours:** set your external wallet in ClawPump settings if you want the five paused
+  agents public later. The staging SafeRebalancer $1 rung (tx `5mytFoup…`) proved the ClawVille
+  observer and leaderboard end to end on 09-17; that link is retired and disarmed.
+- Session clawPump, 2026-09-18.
 
 ## LAND
 
@@ -269,6 +361,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Feedback wanted:** is the Reconcile table readable/useful as an ops view, or
   does it need different columns/grouping.
 - Session selfheal/Fable, 2026-09-13 (promoted 2026-09-14).
+
+### Nori now has the "Press E - Talk to Nori" prompt (staging)
+
+- **WHERE:** staging.clawville.world/game, walk up to Nori in the town centre (Controlled or NPC mode).
+- **LOOK AT:** the bottom prompt "Press E - Nori / Talk to Nori" ("Tap" on phone/iPad); pressing E or tapping opens her chat. You can no longer walk through her, and the invisible wall next to her is gone.
+- **FEEDBACK WANTED:** does it appear where you expect when you approach her? On a phone in portrait the prompt slightly covers the Hold Jump button (true of every building prompt too; being fixed in the HUD pass).
+- **Session dd, 2026-09-18.**
 
 ### Nori now knows WHERE the bounty board is (LIVE on prod via #283)
 - **What:** Nori told you on prod that Pearl held the bounties. Bounties never moved;

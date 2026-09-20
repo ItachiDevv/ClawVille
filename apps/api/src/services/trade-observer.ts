@@ -1,13 +1,16 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
 import {
-  and, avatars, db, desc, eq, inArray, isNull, sql, tradingWallets, verifiedTrades,
+  and, avatars, db, desc, eq, inArray, isNull, lte, sql, tradingWallets, verifiedTrades,
   type VerifiedTrade,
 } from '@clawville/database';
+// Not re-exported by the curated `@clawville/database` barrel; used only to
+// spread the verified_trades columns into the windowed subquery below.
+import { getTableColumns } from 'drizzle-orm';
 import {
   TRADE_DAILY_SCORED_CAP, TRADE_MIN_NOTIONAL_USD_DEFAULT, TRADE_MIN_NOTIONAL_USD_FLOOR,
-  TRADE_TIER_MULTIPLIER, resolveTradeMultiplierTier,
-  type TradeDex, type TradeMultiplierTier, type TradeUnscoredReason,
+  TRADE_TIER_MULTIPLIER, resolveTradeMultiplierTier, resolveTradeOperator,
+  type TradeDex, type TradeMultiplierTier, type TradeOperator, type TradeUnscoredReason,
 } from '@clawville/shared';
 import type { TradingSubject } from './trading-wallet-challenge';
 import {
@@ -58,7 +61,7 @@ export interface VerifiedTradeDTO {
   multiplierTier: TradeMultiplierTier; multiplier: 1 | 1.5 | 2;
   scored: boolean; unscoredReason: TradeUnscoredReason | null;
   blockTime: number | null; verifiedAt: string; wallet: string;
-  operatedByClawville: boolean; decisionId: string | null;
+  operatedByClawville: boolean; operator: TradeOperator | null; decisionId: string | null;
 }
 
 export type PublicTradeDTO = Omit<VerifiedTradeDTO, 'wallet'> & {
@@ -77,6 +80,10 @@ export class TradeReportError extends Error {
 
 const signatureRowsSchema = z.array(z.object({ signature: z.string(), slot: z.number().int(), blockTime: z.number().int().nullable() }).passthrough());
 const TRADE_VERIFIED_CALLBACK_TIMEOUT_MS = 5_000;
+/** Refusals that on a ClawPump-operated wallet most likely mean a new route shape, not a non-swap. */
+const OBSERVED_REJECT_ALERT_REASONS: ReadonlySet<TradeRejectReason> = new Set([
+  'dex_discriminator_unknown', 'multi_leg', 'vault_flow_mismatch', 'token_account_not_owned', 'single_sided',
+]);
 let observerTimer: ReturnType<typeof setInterval> | null = null;
 let observerRunning = false;
 let lastTickAt: string | null = null;
@@ -202,7 +209,7 @@ export function createDefaultTradeObserverDeps(): TradeObserverDeps {
   };
 }
 
-function toDto(row: VerifiedTrade, operatedByClawville: boolean): VerifiedTradeDTO {
+function toDto(row: VerifiedTrade, operatedByClawville: boolean, source: string | null): VerifiedTradeDTO {
   const tier = row.multiplierTier as TradeMultiplierTier;
   return {
     signature: row.signature, dex: row.dex as TradeDex, inputMint: row.inputMint, outputMint: row.outputMint,
@@ -212,14 +219,15 @@ function toDto(row: VerifiedTrade, operatedByClawville: boolean): VerifiedTradeD
     multiplier: TRADE_TIER_MULTIPLIER[tier] as 1 | 1.5 | 2, scored: row.scored,
     unscoredReason: row.unscoredReason as TradeUnscoredReason | null, blockTime: row.blockTime,
     verifiedAt: row.verifiedAt.toISOString(), wallet: row.wallet, operatedByClawville, decisionId: row.decisionId,
+    operator: resolveTradeOperator({ operatedByClawville, source }),
   };
 }
 
 async function dtoForRow(row: VerifiedTrade): Promise<VerifiedTradeDTO> {
   const wallet = row.tradingWalletId
-    ? await db.select({ operated: tradingWallets.operatedByClawville }).from(tradingWallets).where(eq(tradingWallets.id, row.tradingWalletId)).limit(1)
+    ? await db.select({ operated: tradingWallets.operatedByClawville, source: tradingWallets.source }).from(tradingWallets).where(eq(tradingWallets.id, row.tradingWalletId)).limit(1)
     : [];
-  return toDto(row, wallet[0]?.operated ?? false);
+  return toDto(row, wallet[0]?.operated ?? false, wallet[0]?.source ?? null);
 }
 
 function minNotionalUsd(): number {
@@ -352,7 +360,7 @@ export async function ingestTradeSignature(input: {
       inputMint: committed.inputMint, outputMint: committed.outputMint,
       notionalUsd: committed.notionalUsd === null ? null : Number(committed.notionalUsd), dex: committed.dex as TradeDex,
       blockTime: committed.blockTime, multiplier: dto.multiplier, scored: committed.scored,
-      operatedByClawville: dto.operatedByClawville, decisionId: committed.decisionId,
+      operatedByClawville: dto.operatedByClawville, operator: dto.operator, decisionId: committed.decisionId,
       unscoredReason: committed.unscoredReason as TradeUnscoredReason | null,
     });
   }
@@ -437,7 +445,23 @@ export async function runTradeObserverTick(
             if (outcome.inserted) result.inserted++;
             if (outcome.scored && outcome.inserted) result.scored++;
           } catch (error) {
-            if (error instanceof TradeReportError) continue;
+            if (error instanceof TradeReportError) {
+              if (wallet.source === 'clawpump' && error.code === 'not_a_swap' && error.detail
+                && OBSERVED_REJECT_ALERT_REASONS.has(error.detail)
+                && shouldAlertTradingLoop(`observer:rejected:${wallet.id}:${error.detail}`)) {
+                try {
+                  await runtime.alert({
+                    severity: 'warning',
+                    source: 'trade-observer',
+                    message: 'A ClawPump-operated wallet produced a transaction the verifier refused; it will not appear on the floor.',
+                    context: { walletId: wallet.id, signature: signature.signature, reason: error.detail },
+                  });
+                } catch (alertFailure) {
+                  console.warn('[trade-observer] rejection alert failed', safeObserverError(alertFailure));
+                }
+              }
+              continue;
+            }
             result.errors++;
             try {
               await runtime.alert({
@@ -530,6 +554,46 @@ export async function lookupVerifiedTrade(signature: string): Promise<
 export async function listMyVerifiedTrades(avatarId: string, limit: number): Promise<VerifiedTradeDTO[]> {
   const rows = await db.select().from(verifiedTrades).where(eq(verifiedTrades.avatarId, avatarId)).orderBy(desc(verifiedTrades.verifiedAt)).limit(limit);
   return Promise.all(rows.map(dtoForRow));
+}
+
+/**
+ * The public tape, narrowed to a set of avatars, at most `perAvatar` rows each.
+ * Used by the house-trader watch surface. Strips `wallet` exactly like
+ * `listPublicVerifiedTrades` below: the served manual publishes "The public
+ * tape never includes wallet addresses" and this surface must not break it.
+ */
+export async function listPublicVerifiedTradesForAvatars(
+  avatarIds: readonly string[], perAvatar: number,
+): Promise<Map<string, PublicTradeDTO[]>> {
+  const result = new Map<string, PublicTradeDTO[]>();
+  if (avatarIds.length === 0 || perAvatar <= 0) return result;
+  // ONE query, not one per avatar, and NOT a global `limit(n * perAvatar)`:
+  // a single busy avatar would swallow the whole budget and starve the others.
+  // `row_number()` partitioned per avatar gives each one its own newest rows.
+  // Covered by `verified_trades_avatar_time_idx` on (avatar_id, verified_at desc).
+  const ranked = db.select({
+    ...getTableColumns(verifiedTrades),
+    // `row_number()` is a bigint, which the driver returns as TEXT: map it, or
+    // the sort below compares strings.
+    rowNumber: sql<number>`row_number() over (
+      partition by ${verifiedTrades.avatarId} order by ${verifiedTrades.verifiedAt} desc
+    )`.mapWith(Number).as('row_number'),
+  }).from(verifiedTrades).where(inArray(verifiedTrades.avatarId, [...avatarIds])).as('ranked');
+  const rows = await db.select().from(ranked).where(lte(ranked.rowNumber, perAvatar));
+  const names = await db.select({ id: avatars.id, name: avatars.name })
+    .from(avatars).where(inArray(avatars.id, [...avatarIds]));
+  const nameMap = new Map(names.map((row) => [row.id, row.name]));
+  // Newest first within each avatar, matching the public tape's ordering.
+  const ordered = [...rows].sort((a, b) => a.rowNumber - b.rowNumber);
+  for (const row of ordered) {
+    if (!row.avatarId) continue;
+    const bucket = result.get(row.avatarId) ?? [];
+    const { wallet: _wallet, ...dto } = await dtoForRow(row);
+    bucket.push({ ...dto, subject: { type: row.subjectKind as 'avatar' | 'agent',
+      id: row.agentId ?? row.avatarId, avatarName: nameMap.get(row.avatarId) ?? null } });
+    result.set(row.avatarId, bucket);
+  }
+  return result;
 }
 
 export async function listPublicVerifiedTrades(limit: number): Promise<PublicTradeDTO[]> {

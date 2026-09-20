@@ -29,8 +29,13 @@ import {
   findNearestCharacter,
   isCoveProximate,
   isKelpForestPortalProximate,
+  isTradingFloorProximate,
 } from '@/lib/three/character-positions';
-import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
+import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-location';
+import {
+  triggerCoveWalkIn,
+  triggerTradingFloorWalkIn,
+} from '@/lib/three/arena-buildings';
 import {
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
@@ -188,9 +193,10 @@ export default function NpcController() {
         return;
       }
       if (store.nearLocation) {
-        // Cove and the Kelp Forest portal are walk-in venues (SceneTransition),
-        // not teacher chats.
+        // The Cove, the Trading Floor and the Kelp Forest portal are walk-in
+        // venues (stage crossing), not teacher chats.
         if (store.nearLocation === 'cove') triggerCoveWalkIn();
+        else if (store.nearLocation === TRADING_FLOOR_NEAR_ID) triggerTradingFloorWalkIn();
         else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
         else store.enterBuilding(store.nearLocation);
         _lastEState = eNow;
@@ -229,9 +235,11 @@ export default function NpcController() {
         ? nearest.buildingId
         : isCoveProximate(wx, wz)
           ? 'cove'
-          : isKelpForestPortalProximate(wx, wz)
-            ? 'kelp-forest-portal'
-            : null;
+          : isTradingFloorProximate(wx, wz)
+            ? TRADING_FLOOR_NEAR_ID
+            : isKelpForestPortalProximate(wx, wz)
+              ? 'kelp-forest-portal'
+              : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);

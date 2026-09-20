@@ -26,6 +26,7 @@ let LeaderboardPage: typeof import('./page').default;
 let root: Root | null = null;
 let container: HTMLElement | null = null;
 let includeTrades = false;
+let clawpumpOperated = false;
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
 function rememberDom(): void {
@@ -99,7 +100,8 @@ function responseBody() {
       walletAddress: null,
       score: 100 - index,
       breakdown: breakdown(),
-      operatedByClawville: includeTrades && index === 0,
+      operatedByClawville: includeTrades && !clawpumpOperated && index === 0,
+      operator: clawpumpOperated ? 'clawpump' : null,
     })),
   };
 }
@@ -139,6 +141,7 @@ afterEach(async () => {
   container?.remove();
   root = null;
   container = null;
+  clawpumpOperated = false;
 });
 
 afterAll(() => {
@@ -154,6 +157,16 @@ describe('leaderboard Trader capability', () => {
     expect(view.textContent).not.toContain('Verified trading');
     expect(view.textContent).not.toContain('ClawVille-operated');
     expect(view.querySelectorAll('[data-trader-metric]')).toHaveLength(0);
+  });
+
+  test('shows ClawPump operation on podium and table rows', async () => {
+    includeTrades = true;
+    clawpumpOperated = true;
+    const view = await renderPage();
+    expect(view.textContent).toContain('ClawPump-operated');
+    expect(view.textContent).not.toContain('ClawVille-operated');
+    expect(view.querySelector('article')?.textContent).toContain('ClawPump-operated');
+    expect(view.querySelector('li')?.textContent).toContain('ClawPump-operated');
   });
 
   test('shows Trader metrics and current operator disclosure when present', async () => {

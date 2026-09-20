@@ -1,0 +1,15 @@
+{
+  "signature": "21k5fZgAyCCv75Y5KemTZisWwu42HoHNDesaS7VW93iiby9cApaLZybbvk2KmiLcTCXEArVswVC8YA6dC99VP8ZQ",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-18T12:33:40.319Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "21k5fZgAyCCv75Y5KemTZisWwu42HoHNDesaS7VW93iiby9cApaLZybbvk2KmiLcTCXEArVswVC8YA6dC99VP8ZQ",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "Genesis (ClawPump agent 0f600d73-05a0-4c2e-8215-ab2a770ba192, ClawPump-custodied wallet 4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n) first autonomous trade: 0.01889 SOL -> 2.000506 USDC via ClawPump swap_execute, Jupiter v6 Route (e517cb977ae3ad2a)."
+}

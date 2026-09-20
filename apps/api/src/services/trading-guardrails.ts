@@ -526,9 +526,13 @@ export async function clearHalt(i: { scope: 'fleet' | 'agent'; scopeId: string |
   })));
 }
 export async function evaluateFleetDrawdown(deps: TradingGuardrailDeps = {}): Promise<{ equityUsdMicros: bigint | null; startUsdMicros: bigint; halted: boolean }> {
+  // A killed link is retired: its float may have been withdrawn, so it must not count
+  // against the fleet baseline (2026-09-18: a retired staging link with an emptied
+  // wallet paged "Fleet drawdown limit reached" every pass).
   const links = await db.select().from(clawpumpAgentLinks).where(and(
     eq(clawpumpAgentLinks.operatedByClawville, true),
     eq(clawpumpAgentLinks.armed, true),
+    eq(clawpumpAgentLinks.killed, false),
   ));
   let startUsdMicros = 0n;
   let equityUsdMicros = 0n;
@@ -572,7 +576,10 @@ export async function evaluateFleetDrawdown(deps: TradingGuardrailDeps = {}): Pr
   const breached = startUsdMicros > 0n && equityUsdMicros * 100n < startUsdMicros * (100n - pct);
   if (breached) {
     await engageHalt({ scope: 'fleet', scopeId: null, reason: 'Fleet drawdown limit reached.', by: 'system:drawdown' });
-    void alert({ severity: 'critical', source: 'trading-drawdown', message: 'Fleet drawdown limit reached.' });
+    // The halt is durable; the page is once, then hourly while the breach persists.
+    if (shouldAlertTradingLoop('drawdown:breached')) {
+      void alert({ severity: 'critical', source: 'trading-drawdown', message: 'Fleet drawdown limit reached.', context: { equityUsdMicros: equityUsdMicros.toString(), startUsdMicros: startUsdMicros.toString() } });
+    }
   }
   return { equityUsdMicros, startUsdMicros, halted: breached || (await readActiveHalts()).some((halt) => halt.scope === 'fleet') };
 }

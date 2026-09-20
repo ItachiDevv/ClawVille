@@ -1,0 +1,15 @@
+{
+  "signature": "gAjXqETKsrpL5yZ3uwXzc7ffDUH2rrtNs8VTxCexjUinc1ZAaSXnkYrEbA8oHZZ1dG7dmwE5n1fsG4DH6pVQVKG",
+  "cluster": "mainnet-beta",
+  "recordedAtUtc": "2026-09-18T12:33:43.651Z",
+  "rpcMethod": "getTransaction",
+  "params": [
+    "gAjXqETKsrpL5yZ3uwXzc7ffDUH2rrtNs8VTxCexjUinc1ZAaSXnkYrEbA8oHZZ1dG7dmwE5n1fsG4DH6pVQVKG",
+    {
+      "encoding": "jsonParsed",
+      "commitment": "confirmed",
+      "maxSupportedTransactionVersion": 0
+    }
+  ],
+  "note": "Third-party mainnet wallet 8PriTQ9u...: 66 USDC -> memecoin 7P48QkgheGNX4X5yZM8JCi4bzEyxQf8xE6juCdDau9rw via Jupiter v6 RouteV2 (bb64facc31c4af14), multi-hop through BONK; output ATA and intermediate account created in the transaction."
+}

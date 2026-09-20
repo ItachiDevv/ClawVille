@@ -105,11 +105,18 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 6 — S (cx=352, cy=482) → zone(345,475) → posX=345*32=11040, posY=475*32=15200
+  // 2026-09-19 re-theme: the Downtown Building BECAME the Trading Floor (founder
+  // order). The `id` stays `cron-automation` FOREVER — renaming it would break the
+  // owned book ids `cron-automation-basics`/`-advanced` already in player
+  // inventories, the `skill-tools-dispatcher.ts` dispatcher key, every historical
+  // `building.visited` event, earned-skill Eliza memories keyed on buildingId, and
+  // the `~/.hermes/skills/clawville-cron-automation/` folders already on user
+  // machines. Name/description/icon are the ONLY re-themed fields.
   {
     id: 'cron-automation',
-    name: 'Downtown Building',
-    description: 'Learn automation, cron jobs, task queues, and workflow orchestration.',
-    icon: '🐚',
+    name: 'Trading Floor',
+    description: 'Watch the house traders on the live tape, copy a ClawPump trader template, and learn the scheduled automation every trading bot runs on.',
+    icon: '📈',
     positionX: 11040,
     positionY: 15200,
     width: 448,
@@ -178,6 +185,18 @@ export const MAP_LOCATIONS: MapLocation[] = [
 export const LOCATION_IDS = MAP_LOCATIONS.map((l) => l.id);
 
 /**
+ * The Trading Floor's building id. It is deliberately the historical
+ * `cron-automation` slug and MUST NOT change: the 2026-09-19 founder re-theme
+ * renamed the Downtown Building only. Changing this id would break owned book
+ * ids (`cron-automation-basics`/`-advanced`), the `skill-tools-dispatcher.ts`
+ * key, every stored `building.visited` event, earned-skill memories keyed on
+ * buildingId, and installed `~/.hermes/skills/clawville-cron-automation/`
+ * folders. Use this constant instead of writing the slug inline so the coupling
+ * is greppable.
+ */
+export const TRADING_FLOOR_BUILDING_ID = 'cron-automation';
+
+/**
  * Non-teaching destinations the autonomous decision path can enter through the
  * strict in-world action executor. Built venues resolve through MAP_LOCATIONS;
  * world destinations without a map row carry a shared-constant-derived center.
@@ -186,8 +205,13 @@ export type AutonomyEnterablePlace = Readonly<{
   placeId: string;
   label: string;
   description: string;
-  actionVerb: 'enter_cove' | 'enter_poker_room' | 'enter_kelp_forest' | 'move';
-  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | 'enter_kelp_forest()' | `move(x=${number}, y=${number})`;
+  actionVerb: 'enter_cove' | 'enter_poker_room' | 'enter_kelp_forest' | 'enter_trading_floor' | 'move';
+  actionSyntax:
+    | 'enter_cove()'
+    | 'enter_poker_room()'
+    | 'enter_kelp_forest()'
+    | 'enter_trading_floor()'
+    | `move(x=${number}, y=${number})`;
   destinationId: string;
 } & (
   | { mapLocationId: string; center?: never }
@@ -221,5 +245,29 @@ export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
     actionVerb: 'enter_kelp_forest',
     actionSyntax: 'enter_kelp_forest()',
     destinationId: KELP_FOREST_PORTAL_ID,
+  },
+  // 2026-09-19: the Trading Floor is BOTH a teaching building (Pearl, id
+  // `cron-automation`) AND an enterable venue, so it is the first row here whose
+  // destinationId is also an NPC_BUILDING_CENTERS key. That is deliberate and
+  // safe: both `repathToDestination` (npc-simulation.ts) and `hasArrived`
+  // (agent-autonomy-driver.ts) check the teaching-building map FIRST, so the
+  // building's collider EDGE distance still governs arrival — this row only adds
+  // the place to the decide prompt so the deciding model can see it at all
+  // (without it the executor would accept a verb the prompt never names, which is
+  // exactly the Rule E5 / CONSUMPTION-MANDATE defect).
+  {
+    placeId: 'trading-floor',
+    mapLocationId: 'cron-automation',
+    // Label deliberately WITHOUT a leading article, unlike 'The Cove'. This row
+    // is the first whose destinationId is also a teaching-building id, so
+    // `destinationLabel` (agent-autonomy-driver.ts:399) now resolves
+    // `cron-automation` through this row for `enter_building` and `talk_to_npc`
+    // thoughts too. Matching BUILDING_OPENCLAW_THEMES['cron-automation'].label
+    // exactly keeps one display name for the building on every path.
+    label: 'Trading Floor',
+    description: 'The house traders\' live tape, the ClawPump trader templates, and Pearl teaching the scheduled automation behind them.',
+    actionVerb: 'enter_trading_floor',
+    actionSyntax: 'enter_trading_floor()',
+    destinationId: 'cron-automation',
   },
 ] as const;

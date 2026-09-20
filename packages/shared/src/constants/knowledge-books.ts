@@ -14,7 +14,8 @@ export interface KnowledgeBook {
 // (migration 0011), so purchasing power is identical (was 8–22 CT at $0.10/CT).
 // Read at purchase time via getBookById().price (items.ts) — no DB copy.
 export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
-  // === Cron Automation (Downtown Building) ===
+  // === Cron Automation (the Trading Floor; named Downtown Building before
+  // 2026-09-19 — the book ids below are OWNED by players and never change) ===
   {
     id: 'cron-automation-basics',
     name: 'Cron Scheduling 101',

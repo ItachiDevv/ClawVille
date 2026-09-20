@@ -50,6 +50,37 @@ export const WORLD_GLB_POLICY = Object.freeze({
   input: WORLD_VRM_POLICY.input,
 });
 
+/**
+ * Interior rooms entered from the world stage (Trading Floor).
+ *
+ * Same shape as KELP_POLICY — both are self-contained slots with their own
+ * touch joysticks and no store joystick — but kept as its own constant so a
+ * room-feel tweak cannot silently retune the kelp maze.
+ */
+export const TRADING_FLOOR_POLICY = Object.freeze({
+  motion: Object.freeze({
+    maxDeltaSeconds: 0.1,
+    facing: Object.freeze({ kind: 'exponentialRate' as const, rate: 12 }),
+    // Facing -Z: the player walks IN through the +Z door, so the room opens
+    // in front of them on arrival.
+    initialFacing: Math.PI,
+    resetFacingOnActivation: true,
+    chargeDiscrimination: false,
+  }),
+  input: Object.freeze({
+    composition: 'additive' as const,
+    readsStoreJoystick: false,
+    readsSharedTouch: true,
+    keyIdentity: 'code' as const,
+    // 'isEditable', NOT kelp's 'none': this room mounts the Exchange modal,
+    // which has real text inputs. With 'none', typing a bid amount would walk
+    // the avatar and fire E behind the panel.
+    keyTargetGuard: 'isEditable' as const,
+    preventArrowDefault: true,
+    movementEpsilon: 0.001,
+  }),
+});
+
 export const KELP_POLICY = Object.freeze({
   motion: Object.freeze({
     maxDeltaSeconds: 0.1,

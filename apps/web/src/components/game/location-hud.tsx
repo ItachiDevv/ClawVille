@@ -7,8 +7,12 @@ import {
   useBottomPromptOwner,
 } from '@/hooks/use-bottom-prompt-slot';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
-import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
+import {
+  triggerCoveWalkIn,
+  triggerTradingFloorWalkIn,
+} from '@/lib/three/arena-buildings';
 import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
+import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-location';
 import { locationPromptText } from '@/components/game/location-prompt-text';
 
 /**
@@ -55,7 +59,11 @@ export default function LocationHUD() {
   if (!isGuide && !nearLocation) return null;
 
   const location = isGuide ? undefined : MAP_LOCATIONS.find((l) => l.id === nearLocation);
-  if (!isGuide && !location && nearLocation !== 'kelp-forest-portal') return null;
+  // Venue door bands publish their own nearLocation ids, which are deliberately
+  // NOT MAP_LOCATIONS entries — let them through the unknown-building bail.
+  const isVenueDoorId =
+    nearLocation === 'kelp-forest-portal' || nearLocation === TRADING_FLOOR_NEAR_ID;
+  if (!isGuide && !location && !isVenueDoorId) return null;
 
   const theme = isGuide || !nearLocation ? undefined : BUILDING_OPENCLAW_THEMES[nearLocation];
   const characterName = isGuide ? 'Nori' : nearCharacter;
@@ -64,7 +72,7 @@ export default function LocationHUD() {
   // both in range, the old inline `isCove` said "Enter the Cove" while E and a
   // tap opened Nori (Codex review, 2026-09-18). Knowledge buildings stay
   // chat-only ("Talk to {resident}"); only the Cove keeps "Enter".
-  const { subjectLabel, ctaLine, icon, isCove, isKelpForest } = locationPromptText({
+  const { subjectLabel, ctaLine, icon, isCove, isKelpForest, isTradingFloor } = locationPromptText({
     isGuide,
     nearLocation,
     characterName,
@@ -82,6 +90,8 @@ export default function LocationHUD() {
       triggerKelpForestWalkIn();
     } else if (isCove) {
       triggerCoveWalkIn();
+    } else if (isTradingFloor) {
+      triggerTradingFloorWalkIn();
     } else if (nearLocation) {
       enterBuilding(nearLocation, characterName ?? undefined);
     }
@@ -168,7 +178,7 @@ export default function LocationHUD() {
         </span>
         {ctaLine}
       </span>
-      {theme && !isCove && !isKelpForest && (
+      {theme && !isCove && !isKelpForest && !isTradingFloor && (
         <span
           style={{
             fontSize: 11,

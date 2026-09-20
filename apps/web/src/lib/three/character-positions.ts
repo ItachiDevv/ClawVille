@@ -20,6 +20,11 @@ import {
   KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
   KELP_FOREST_PORTAL_WORLD_CENTER,
 } from './kelp-forest-location';
+import {
+  TRADING_FLOOR_BUILDING_ID,
+  TRADING_FLOOR_DOOR_WORLD,
+  TRADING_FLOOR_PROMPT_RADIUS_WU,
+} from './trading-floor/trading-floor-location';
 import { KELP_FOREST_PORTAL_HALF_X_WU } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
@@ -199,6 +204,46 @@ const COVE_AUTO_ENTER_Z_HALF = 120;
  *  outside the tunnel mouth (-3275), with no prompt and no auto-enter. */
 export const COVE_EXIT_WORLD_X = COVE_TUNNEL_PROMPT_MAX_X + 30; // -3150
 export const COVE_EXIT_WORLD_Z = COVE_WORLD_Z;                  // 0
+
+// ---------------------------------------------------------------------------
+// TRADING FLOOR entry (founder order 2026-09-19 — "they would enter it like
+// they enter the cove").
+//
+// Same shape as the cove block above, minus the auto-enter band: crossing an
+// auto-enter band on the way OUT is exactly what produced the cove's exit
+// re-entry loop, so this venue is click / tap / E only.
+// ---------------------------------------------------------------------------
+const TRADING_FLOOR_PROMPT_SQ =
+  TRADING_FLOOR_PROMPT_RADIUS_WU * TRADING_FLOOR_PROMPT_RADIUS_WU;
+
+/**
+ * Where the avatar lands when it LEAVES the Trading Floor.
+ *
+ * INVARIANT (pinned by trading-floor-exit-spawn.test.ts): outside BOTH the
+ * door prompt band AND the resident's talk radius, on the town side of the
+ * building. Derived from Pearl's computed stand position so a ring move or a
+ * world grow carries the exit with it — the cove's hand-set exit is the bug
+ * this derivation exists to avoid.
+ */
+const TRADING_FLOOR_RESIDENT_Z =
+  CHARACTER_POSITIONS[TRADING_FLOOR_BUILDING_ID]?.worldZ ??
+  TRADING_FLOOR_DOOR_WORLD.z - 600;
+export const TRADING_FLOOR_EXIT_WORLD_X = TRADING_FLOOR_DOOR_WORLD.x;
+export const TRADING_FLOOR_EXIT_WORLD_Z =
+  TRADING_FLOOR_RESIDENT_Z - TALK_RADIUS_WORLD - 100;
+
+/**
+ * isTradingFloorProximate — true inside the door's entry-prompt band.
+ * Zero-alloc, pure-primitive, safe in useFrame.
+ */
+export function isTradingFloorProximate(
+  playerWorldX: number,
+  playerWorldZ: number,
+): boolean {
+  const dx = playerWorldX - TRADING_FLOOR_DOOR_WORLD.x;
+  const dz = playerWorldZ - TRADING_FLOOR_DOOR_WORLD.z;
+  return dx * dx + dz * dz <= TRADING_FLOOR_PROMPT_SQ;
+}
 
 // Kelp Forest realm portal — world-side human prompt only. The connected-agent
 // action and reward path land in the next commit (PV26), not in Run A.

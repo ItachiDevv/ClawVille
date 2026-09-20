@@ -154,7 +154,9 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // GLB is decorative at spawn distance and now loads after world reveal.
   'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-nonorm-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
 
-  // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
+  // Slot 6 — cron-automation — the Trading Floor (re-themed from "Downtown
+  // Building" 2026-09-19; the zone id never changes). Pearl stays as its
+  // resident teacher and stands OUTSIDE — the house-trader monitor is inside.
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
   // scaleOverride=184 (2026-05-18 pass 3): user requested 20-25% size increase from 150.
@@ -174,7 +176,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
   'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-nonorm-ktx.glb', color: 0xff2020, scaleOverride: 96, deferUntilDecorativeRelease: true },
 
-  // Slot 6 — mcp-tool-use — patty-building (Krusty Krab — Mr. Krabs's restaurant)
+  // Slot 2 — mcp-tool-use — krusty-krab-v2 (Mr. Krabs's restaurant). The old
+  // "Slot 6 / patty-building" label here was doubly wrong: slot 6 is
+  // cron-automation, and patty-building was retired in the 2026-09-19 Trading
+  // Floor swap.
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
   // The non-skinned path now falls back to bind-pose bbox when computed > CLAMP_MAX, which
   // gives a reliable body height. scaleOverride removed (was 148, rendered at ~11487 wu
@@ -475,8 +480,9 @@ const NpcMesh = memo(function NpcMesh({
     // unlike scene.clone(true) which leaves cloned SkinnedMeshes pointing at the
     // ORIGINAL bones. Without this, AnimationMixer drives the original skeleton
     // (not visible in our scene) and the cloned mesh deforms into nothing —
-    // Pearl Krabs invisible in the Downtown building was the symptom that
-    // surfaced this. Safe for non-skinned scenes (falls back to standard clone).
+    // Pearl Krabs invisible at cron-automation (then "Downtown", now the
+    // Trading Floor) was the symptom that surfaced this. Safe for non-skinned
+    // scenes (falls back to standard clone).
     const c = SkeletonUtils.clone(scene);
     makeObject3DWebGPUSafe(c);
     // Fatten SkinnedMesh bounding spheres + re-enable frustumCulled (Win G fix,

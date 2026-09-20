@@ -65,6 +65,12 @@ describe('Trading Floor placement and mobile structure', () => {
 describe('Trading Floor outward copy and dark card tokens', () => {
   test('new UI source contains no forbidden outward copy', () => {
     const files = [
+      'src/components/game/trading-floor/clawpump-templates.tsx',
+      'src/components/game/trading-floor/house-traders.tsx',
+      // The risk verdict's copy and its arithmetic sentence are BUILT here,
+      // so the outward-copy and token rules have to reach the module that
+      // writes them, not only the component that mounts the result.
+      'src/components/game/trading-floor/house-trader-risk.ts',
       'src/components/game/trading-floor/floor-tape.tsx',
       'src/components/game/trading-floor/trade-row.tsx',
       'src/components/game/trading-floor/trading-floor-tab.tsx',
@@ -107,11 +113,19 @@ describe('Trading Floor outward copy and dark card tokens', () => {
 
   test('hex colors live only in the token module', () => {
     const files = [
+      'src/components/game/trading-floor/clawpump-templates.tsx',
+      'src/components/game/trading-floor/house-traders.tsx',
+      // The risk verdict's copy and its arithmetic sentence are BUILT here,
+      // so the outward-copy and token rules have to reach the module that
+      // writes them, not only the component that mounts the result.
+      'src/components/game/trading-floor/house-trader-risk.ts',
       'src/components/game/trading-floor/floor-tape.tsx',
       'src/components/game/trading-floor/trade-row.tsx',
       'src/components/game/trading-floor/trading-floor-tab.tsx',
       'src/components/game/trading-floor/format.ts',
     ];
+    // In-page anchors like href="#clawpump-templates" are not hex colours, so
+    // the pattern must keep requiring 3 to 8 HEX digits and a word boundary.
     for (const file of files) expect(read(file)).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
@@ -121,7 +135,9 @@ describe('Trader column structure', () => {
     const source = read('src/app/leaderboard/page.tsx');
     expect(source).toMatch(/typeof body\.agents\[0\]\?\.breakdown\?\.trades_verified === 'number'/);
     expect(source.match(/hasTradeBreakdown/g)?.length ?? 0).toBeGreaterThan(10);
-    expect(source).toContain('ClawVille-operated');
+    expect(source).toContain("import { operatorLabel } from '@/components/game/trading-floor/format'");
+    expect(source.match(/const label = operatorLabel\(/g)).toHaveLength(2);
+    expect(source.match(/\{label \? \(/g)).toHaveLength(3);
   });
 
   test('mobile table is two rows and desktop has six tracks', () => {

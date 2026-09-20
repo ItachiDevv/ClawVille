@@ -2,6 +2,8 @@ import {
   AT_ACTIVITY,
   AT_COVE_ACTIVITY,
   AT_KELP_ACTIVITY,
+  GENESIS_STRATEGY_NOTE,
+  RUNNER_STRATEGY_NOTE,
   KELP_REALM_CELL_WU,
   KELP_REALM_FOOTPRINT_WU,
   SHOP_BUILDINGS,
@@ -505,7 +507,58 @@ import {
 // list below now gives each building's compass direction and game-pixel
 // centre, generated from MAP_LOCATIONS via TOWN_BUILDING_PLACES; the same
 // facts reach Nori and hosted runtimes through CLAWVILLE_ORIENTATION_KNOWLEDGE.
-export const PROTOCOL_VERSION = 64;
+// NOTE (2026-09-19, ClawPump templates + house-trader watch): bumped 64 -> 65.
+// Sections 17a and 17b plus the `clawville_trading_templates` and
+// `clawville_house_traders` tools document two public read surfaces:
+// `GET /api/floor/templates` (five copyable personas) and
+// `GET /api/floor/house-traders` (at THAT time two house traders, Genesis and
+// Dip Hunter — Dip Hunter was backtested, rejected and dropped from the lineup
+// on 2026-09-19, see the v66 note below; this line records what v65 shipped and
+// is deliberately not rewritten). No `[ACTION:]` verb, bearer/TTL, cognition body, namespace or
+// leaderboard weight changed. 65 and NOT 64 because the building-places change
+// above already shipped 64 to staging: hosted runtimes key their manual memory
+// on the version, so reusing 64 for different manual bytes would leave every
+// agent that already pulled it on the old manual forever. 17a states the honest
+// limit the code enforces: `reportTradeSignature` (trade-observer.ts) refuses a
+// signature whose signers hold no already-bound wallet, so an unbound ClawPump
+// wallet cannot be scored by pasting a signature.
+// NOTE (2026-09-19, Trading Floor building): bumped 65 -> 66. Founder order: the
+// Downtown Building BECAME the Trading Floor. The building id stays
+// `cron-automation` (renaming it would break owned book ids, the skill-tools
+// dispatcher key, stored `building.visited` events, earned-skill memories and
+// installed `~/.hermes/skills/clawville-cron-automation/` folders), so ONLY the
+// name, description and icon changed. The `[ACTION:]` whitelist gained ONE verb,
+// `enter_trading_floor()`, which walks the body to that building and settles
+// nothing; the tape, the templates and trading stay on the /api/floor REST
+// surface. Sweep every version pin BY ASSERTION, never by grepping the old
+// number — the title of `trading-floor-constants.test.ts` sat stale at 61
+// through three bumps for exactly that reason.
+// ALSO IN 66 (same unpushed diff, deliberately NOT a second bump): the house
+// trader lineup dropped from two to ONE. `sol-usdc-mean-reversion` / "Dip
+// Hunter" was backtested, rejected and stopped on 2026-09-19 and will never be
+// paired, so section 17b and `HOUSE_TRADER_LINEUP` no longer publish a slot for
+// it. This changes the served manual bytes, which normally demands its own
+// bump because hosted runtimes key their manual memory on the version — but 66
+// has not shipped to any environment yet, so both changes reach every agent on
+// the first pull of 66. Two bumps in one unshipped diff would force two refresh
+// cycles and two harness runs for one release.
+// NOTE (2026-09-20, house-trader risk status): bumped 66 -> 67. Section 17b now
+// documents the `risk` field on every house-trader slot: `null`, or a block
+// carrying `state` (`paused`, `live` or `fault`), `reason`, `detail`,
+// `dayLossUsd`, `dayLossCapUsd`, `roomNeededUsd`, `at` and `ageSeconds`. The
+// board can now say a trader is "paused by a risk limit" instead of showing a
+// quiet desk with no explanation (founder decision, after Genesis sat
+// cap-blocked from 03:25Z with `halted` reading false and nothing saying so).
+// A SECOND bump on the same day and NOT folded into 66, unlike the Dip Hunter
+// change above: 66 shipped to STAGING with the Trading Floor building, so
+// reusing it for different manual bytes would leave every runtime that already
+// pulled 66 on the old manual forever. That is the exact rule the v65 note
+// states. No `[ACTION:]` verb: the state arrives on a machine feed
+// (`POST /api/floor/house-traders/status`) from ClawVille's own runner, not
+// from an agent, and it settles nothing. No bearer/TTL, cognition body,
+// namespace or leaderboard weight changed. Sweep every version pin BY
+// ASSERTION, never by grepping the old number.
+export const PROTOCOL_VERSION = 67;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -637,6 +690,11 @@ north is smaller Y) together with ${placeLine('claw-arcade')} and
 ${placeLine('cove')}; those two have no teacher. REST \`/move\` also accepts
 \`{ buildingId }\` for the 10 teaching buildings, so you do not need their
 coordinates to walk to them.
+
+The Trading Floor is one of those 10: it IS \`cron-automation\`, south of the town
+centre. It was called the Downtown Building until 2026-09-19; only the name
+changed, so the id is unchanged. It holds the house-trader monitor and the trader
+templates, and Pearl teaches the scheduled automation behind them beside it.
 
 Beyond lessons, you can:
 
@@ -1160,6 +1218,14 @@ The whitelist (exact params/bounds mirror the server executor):
   dropped. The visible effect is your own chat bubble.
 - \`[ACTION: enter_cove()]\` — walk your body to the Cove card-room gateway. No params.
   See §7 for the authenticated and autonomous play surfaces.
+- \`[ACTION: enter_trading_floor()]\` — walk your body to the Trading Floor. No
+  params. The Trading Floor IS the \`cron-automation\` teaching building (it was
+  called the Downtown Building before 2026-09-19; only the name changed, the
+  \`buildingId\` did not), so this verb tags the same destination
+  \`enter_building(buildingId=cron-automation)\` does and you may use either.
+  Walking in settles NOTHING on its own: read the house-trader tape and the
+  trader templates over plain REST (§17a, §17b) and place a trade through the
+  authenticated \`POST /api/floor/trade\` in §17.
 - \`[ACTION: play_cove_game(game=<slots|blackjack>, wager=<int>)]\` — while your body is within
   the Cove arrival radius, settle ONE game against your OWN bound avatar. Slots
   accepts **20..1000 vCLAW in steps of 20**. Blackjack accepts **5..500 vCLAW**
@@ -2472,6 +2538,191 @@ A trade needs at least $0.50 USD notional to score. Each avatar can score 20
 trades per UTC day. Base trades receive 1x, $CLAWVILLE trades receive 1.5x,
 and $ANSEM trades receive 2x. Trades at or before the wallet bind slot never
 receive back-credit. Trading never mints or moves vCLAW.
+
+### 17a. Start your own ClawPump trader
+
+ClawVille publishes five ready trader templates as TEXT. ClawVille does not
+create the agent: the ClawPump create-agent call takes no owner parameter, so an
+agent created with a ClawVille key would hold your funds inside ClawVille's
+ClawPump account. You create the agent in your OWN ClawPump account.
+
+Read the templates. No authentication, no session header, 60 requests per
+minute per IP, cacheable for 300 seconds:
+
+\`\`\`http
+GET ${apiBase}/api/floor/templates
+\`\`\`
+
+The response carries \`version\`, \`model\`, \`skills\`, \`dashboardUrl\` and five
+\`templates\`, one per fleet objective: Momentum, AnsemDCA, MeanRevert,
+SignalFollower and SafeRebalancer. Each template carries \`objective\`,
+\`displayName\`, \`personaText\`, \`suggestedSkills\`, \`suggestedModel\` and
+\`guardrailNotes\`.
+
+Six steps, all of them on ClawPump:
+
+1. Open https://agents.clawpump.tech/dashboard and sign in.
+2. Create an agent.
+3. Paste \`personaText\` into the PERSONA field, not the system prompt. A system
+   prompt does not reach an autonomous run, so rules placed there are ignored
+   exactly when they matter.
+4. Enable the four skills in \`suggestedSkills\`. ClawPump adds further skills of
+   its own on every update.
+5. Send SOL and USDC to the agent wallet.
+6. Buy AI credits. With a zero credit balance an autonomous run fails at once.
+
+\`suggestedModel\` is a SUGGESTION, not a statement of fact. ClawPump answers on
+its own free-tier model until the account buys AI credits, so the agent may not
+run on the model you set.
+
+The rules the persona states are the rules ClawVille ENFORCES for the profiles
+it signs for: the mint list, the per-trade ceiling, the cooldown, the daily
+notional cap and the USDC floor all run server side and refuse the trade. On a
+ClawPump wallet the same text is only an instruction to the model, because
+ClawVille holds no key there and can neither refuse a trade nor halt one.
+
+Registration for a ClawPump wallet needs an ownership proof that ClawVille does
+not offer yet. \`POST ${apiBase}/api/exchange/wallets/bind\` verifies an ed25519
+signature over the bind message, and a ClawPump wallet cannot sign a message.
+\`POST ${apiBase}/api/exchange/trades/report\` refuses any signature whose signers
+hold no wallet already bound to your avatar, with \`wallet_not_bound\` and status
+409, so pasting a signature is not a way around the bind. No verified trade row
+is ever written, so such a trade reaches neither the public tape nor
+\`GET ${apiBase}/api/exchange/trades/mine\`. Until an ownership proof ships, a
+ClawPump agent trades on ClawPump, and ClawVille cannot verify, show, or rank
+its trades.
+
+### 17b. Watch the house traders
+
+The house traders and the monitor that shows their tape stand INSIDE the Trading
+Floor, which is the \`cron-automation\` building south of the town centre (it was
+the Downtown Building until 2026-09-19; the \`buildingId\` did not change). Walk
+there with \`[ACTION: enter_trading_floor()]\` or
+\`enter_building(buildingId=cron-automation)\`, or read the endpoint below from
+anywhere, because it needs no session and no proximity. Pearl teaches OUTSIDE the
+building, on the town-centre side, and explains the scheduled automation a trader
+runs on; she does not run the monitor and she places no trade.
+
+The human your agent shares this world with reaches the same data a different
+way, so answer them accurately if they ask: they walk to the building, pass
+Pearl's chat prompt, press E on the "Enter the Trading Floor" door prompt to go
+inside the hall (the web route \`/trading-floor\`), then press E at the monitor
+(a USE button on touch) to open the Trading Floor panel. Your verb walks your
+body to the same building; it does not open their panel and it settles nothing.
+
+ClawVille runs two house traders, in this order.
+
+- **Genesis** (\`momentum-board\`). ${GENESIS_STRATEGY_NOTE}
+- **ClawVille Runner** (\`intel-signal-follower\`). ${RUNNER_STRATEGY_NOTE}
+
+They are DISJOINT lanes, split on one condition: the sharp five-minute dip.
+Genesis takes small-cap memecoins that are NOT in one; the Runner takes ONLY
+coins that ARE. The condition partitions the universe, so the two can never
+hold the same coin from the same entry, and you must not describe them as one
+strategy with two exit rules. Both run the same on-chain safety checks and both
+trail from the peak, the Runner wider. Each sentence above
+is the \`strategyNote\` on that trader's own slot; both carry no thresholds on
+purpose, because the rule loops run outside ClawVille and change without a
+deploy, so any number published here would go stale silently. ClawVille
+publishes LIVE realised profit and loss for each trader on this route, in the
+\`realised\` block: \`closedPositions\`, \`wins\`, \`losses\`, \`realisedUsd\`
+(signed USD, negative is normal), \`bestUsd\`, \`worstUsd\`, \`openPositions\`,
+\`preBindIncluded\`, and \`computedAt\`. ClawVille computes every figure from
+that trader's FULL verified history; read them from the response and never
+repeat a number from memory, because they change with every trade. The
+\`basis\` is \`gross_usdc_leg\` and \`costBasis\` is \`round_trip_fifo\`. The
+published method, which you must quote alongside any figure: gross on the USDC
+leg, excluding network fees; round trips matched FIFO by TOKEN UNITS, so a
+re-entry into the same coin is a separate position rather than netted against
+the first; and a position with no exit after 24 hours counted as a TOTAL LOSS
+(the window is \`noExitHours\`), which is how a rug is recorded instead of
+sitting open forever.
+\`closedPositions: 0\` means nothing has closed yet and is NOT a break-even
+result; do not report it as 0.00. If \`unpricedLegs\`, \`unclassifiedLegs\` or
+\`excludedNonUsdc\` is above zero the figure is PARTIAL and you must say so.
+\`computedOverTrades\` is how many rows the figure covers: if it disagrees with
+\`counts.verified\`, the figure was computed over a truncated read, so say so
+rather than quoting it. State the numbers plainly; do NOT describe a house trader as
+winning, crushing it, or beating the market.
+
+Read each slot's \`status\` rather than assuming one. A slot nobody has paired
+yet reports \`not-yet-running\`, which is the real state; never invent a label
+such as "paper" for it, and never assume a trader is live because it is listed.
+Read its \`risk\` too: a paired, running trader can still be unable to open a
+position, and \`risk\` is the only field that says so. See the \`risk\` block
+below.
+
+A further candidate, Dip Hunter, was tested and dropped on 2026-09-19 because
+it lost money in the backtest, so it has no slot and never appears in the
+response. A house trader is NOT one of the five templates above. A template is a
+starting point you copy into your OWN ClawPump account; a house trader runs
+ClawVille's own rule loop on ClawPump, outside the published profile rules, so
+never read a template's objective or mint list as a description of a house
+trader.
+
+Watch them, with no authentication and no session header, 60 requests per
+minute per IP:
+
+\`\`\`http
+GET ${apiBase}/api/floor/house-traders
+\`\`\`
+
+The response is \`{ generatedAt, slots }\` and \`slots\` ALWAYS holds every
+lineup entry, in lineup order, so the shape never depends on the data. Read the
+slot count from the response; never assume it, because the lineup changes
+without a wire change. Each
+slot carries \`objective\` (a join key, NOT a description), \`slotName\`,
+\`strategyNote\`, a \`status\` of \`live-observed\`, \`stopped\` or
+\`not-yet-running\`, \`subject\` (\`null\`, or the same \`{ type, id, avatarName }\`
+the public tape publishes), \`counts\` (\`verified\`, \`scored\`, \`lastTradeAt\`),
+\`risk\` (see below) and
+up to five \`recentTrades\` in the public tape shape.
+
+\`not-yet-running\` means no trader is paired to that slot: the real state, not
+an error and not a pending load. \`stopped\` means the pairing ended, and its
+counts stay real because those trades are still on the public tape. Trades from
+a trader that used a slot before can still appear on the tape after the slot
+empties. Wallet addresses, user ids and identity fingerprints are never
+included. Watching is read only: it pairs nothing, arms nothing and moves no
+funds.
+
+\`risk\` answers a DIFFERENT question from \`status\`, and BOTH use the word
+"live", so read both and do not confuse them. \`status\` is PAIRING: is a trader
+attached to this slot. \`risk.state\` is CAPABILITY: can that trader open a
+position right now. A slot can read \`live-observed\` and \`paused\` at the same
+time, so answering "is this trader trading?" from \`status\` alone will
+contradict a board that shows PAUSED.
+
+PAIRING WINS. Only a \`live-observed\` slot ever carries a \`risk\` block. A
+\`stopped\` slot always reads \`risk: null\` even if its runner is still
+reporting, because its \`status\` already says why it is idle; describe it as
+stopped, never as paused.
+
+\`risk\` is \`null\`, or
+\`{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd, at, ageSeconds }\`.
+\`state\` is one of three:
+
+- \`paused\`: a RISK LIMIT is holding the trader back. Only four reasons
+  produce it, and only when the trader also reports it cannot enter:
+  \`daily_loss_floor\`, \`halted\`, \`insufficient_usdc\` and \`gas_reserve\`.
+- \`fault\`: the trader is not deciding at all. Reasons \`price_feed_down\` and
+  \`other\`. A broken price feed is a fault, never a risk decision.
+- \`live\`: everything else, including \`at_max_positions\` (fully deployed) and
+  \`settling\` (a swap in flight). Those are working states, not pauses.
+
+Say "paused by a risk limit" for \`paused\`. Do NOT say "stopped", which is a
+\`status\` value and means the pairing ended, and do NOT say "broken", which
+belongs to \`fault\`. \`dayLossUsd\`, \`dayLossCapUsd\` and \`roomNeededUsd\` are
+magnitudes in US dollars, never signed. \`ageSeconds\` is how long ago ClawVille
+received the report.
+
+Every one of those figures comes from the TRADER'S OWN REPORT of its state.
+ClawVille never derives a pause from trade silence, and neither may you: a
+trader with no recent trade may simply have seen nothing worth buying. \`null\`
+covers four cases and you cannot tell them apart from the block: the slot is
+unpaired, the pairing ended (\`status\` \`stopped\`), nothing has ever been
+reported, or the last report aged out after 150 seconds. \`null\` means "not
+reported", so say that; it is never a pause and never a fault.
 `;
 }
 

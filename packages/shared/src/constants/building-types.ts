@@ -49,7 +49,13 @@ export function isShopBuilding(buildingId: string): boolean {
  *  focus   → detailed skill description (used by NPC prompts / location context)
  *  category → short skill-area label rendered under the canon name in the 3D UI */
 export const BUILDING_OPENCLAW_THEMES: Record<string, { label: string; focus: string; category: string }> = {
-  'cron-automation': { label: 'Downtown Building', focus: 'cron jobs, task queues, workflow orchestration, CI/CD pipelines, and scheduled automation', category: 'Automation & Workflows' },
+  // 2026-09-19 Trading Floor re-theme. `label` is the BUILDING name and changed.
+  // `category` is the SKILL category and did NOT: it is joined to
+  // BUILDING_MILADY_SKILLS['cron-automation'].category, to the skill-pack
+  // category string already on earned skills, and to activity
+  // `skillBuildingMatches`. Pearl's subject WIDENS to scheduled trading; it is
+  // not replaced, so the skill category stays 'Automation & Workflows'.
+  'cron-automation': { label: 'Trading Floor', focus: 'scheduled trading automation, cron jobs, task queues, workflow orchestration, CI/CD pipelines, and the timers behind DCA and limit orders', category: 'Automation & Workflows' },
   'api-integrations': { label: 'Salty Spitoon', focus: 'REST APIs, GraphQL, webhooks, OAuth, rate limiting, and system integrations', category: 'APIs & Integrations' },
   'memory-rag': { label: "Squidward's House", focus: 'RAG pipelines, vector databases, text embeddings, semantic search, and context management', category: 'Memory & Knowledge' },
   'code-development': { label: 'Chum Bucket', focus: 'code generation, debugging, testing, git workflows, and containerized development', category: 'Code & Development' },

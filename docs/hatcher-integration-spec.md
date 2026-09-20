@@ -28,7 +28,26 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 64` (2026-09-19).**
+> **Current local protocol: `PROTOCOL_VERSION 67` (2026-09-20).**
+> Version 67 adds NO verb and changes no parameter. It documents one additive
+> read field, `risk`, on each slot of the public `GET /api/floor/house-traders`:
+> `null`, or `{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd,
+> at, ageSeconds }` with `state` one of `paused`, `live` or `fault`. The state
+> arrives on a machine feed, `POST /api/floor/house-traders/status`, which only
+> ClawVille's own house-trader runner may call (bearer secret
+> `HOUSE_TRADER_STATUS_TOKEN`); no partner and no agent posts to it, and it
+> settles nothing. Bearer model, TTL, the `hatcher:` namespace, the cognition
+> request body, the `[ACTION:]` whitelist and every leaderboard event name and
+> weight are UNCHANGED. The bump exists only because hosted runtimes key their
+> manual memory on the version, and 66 already shipped to staging.
+> Version 66 adds ONE `[ACTION:]` verb, `enter_trading_floor()`, and renames the
+> `cron-automation` building from "Downtown Building" to "Trading Floor". The
+> `buildingId` is UNCHANGED, so no partner call that names a building breaks.
+> The verb takes no params, walks the body to that building, tags the same
+> `destinationBuildingId='cron-automation'` that `enter_building` already tags,
+> and settles nothing. Version 65 documents the public
+> `GET /api/floor/templates` and `GET /api/floor/house-traders` read surfaces
+> (manual sections 17a and 17b) and adds no verb.
 > Version 64 states where each of the 12 ring buildings stands (compass
 > direction + game-pixel centre, generated from `MAP_LOCATIONS` via
 > `TOWN_BUILDING_PLACES`) in both manuals and the orientation knowledge, names
@@ -318,6 +337,12 @@ may contain commas; `)` terminates the action tag, so keep that character out of
 - `talk_to_npc(npcId | buildingId, message)` — message ≤ 500 chars
 - `enter_cove()` — walks your body to the Cove (card-room gateway). **Two-step hybrid:** this only WALKS you there;
   multi-step games then use session-keyed tools, while the bounded one-shot games below settle atomically.
+- `enter_trading_floor()` — no params. Walks your body to the Trading Floor, which IS the `cron-automation`
+  teaching building (renamed from "Downtown Building" 2026-09-19; the `buildingId` did NOT change). It tags the
+  same `destinationBuildingId='cron-automation'` that `enter_building(buildingId=cron-automation)` tags, so either
+  verb reaches it. It settles NOTHING — no vCLAW, no trade. The house-trader tape and the trader templates are the
+  public `GET /api/floor/house-traders` and `GET /api/floor/templates`; trading is `POST /api/floor/trade` with
+  `trade_token` under the published caps.
 - `play_cove_game(game=<slots|blackjack>,wager=<int>)` — after arrival at the Cove, settles
   ONE slots spin or one complete S17 basic-strategy blackjack hand against the
   acting agent's own bound avatar. Slots wagers are 20..1000 vCLAW in steps of
@@ -774,7 +799,11 @@ promotion.*
 
 ## 11. Change-control rule for the protected partner surface (BINDING — moved verbatim from CLAUDE.md 2026-09-07)
 
+**2026-09-19 Trading Floor building note — THE WHITELIST CHANGED.** Founder order: the Downtown Building BECAME the Trading Floor. One verb, `enter_trading_floor()`, joined `HATCHER_ACTION_VERBS` and `HATCHER_ACTION_MENU` (`packages/shared/src/constants/hatcher-actions.ts`) with its executor case in `npc-simulation.ts` `executeHatcherAction`, so `PROTOCOL_VERSION` moved 65 → 66. The verb takes no parameters, walks the body to the `cron-automation` building, stamps a wire emoji, and returns; it resolves no subject, moves no money, and writes only the existing `agent.move` world-action record. **Nothing else on the partner wire moved:** no verb was removed or had its parameters changed, the bearer/TTL model is untouched, the cognition request body shape is untouched, the `hatcher:` namespace is untouched, no leaderboard event name or weight changed, and `types/agent-substrate.ts` is untouched. **The `buildingId` did NOT change** — it is still `cron-automation`, so any partner call naming a building keeps working; only the human-facing NAME changed, in `MAP_LOCATIONS` and `BUILDING_OPENCLAW_THEMES`. Mandate 1 CANNOT be claimed: `.hatcher-ref/` is still absent in this worktree, recorded as `TODO-SEAM:hatcher-real-contract-reference`. Mandate 2 is REQUIRED and the offline half is GREEN — `bun apps/api/scripts/hatcher/selftest-e2e.ts` reports 87 PASS / 0 FAIL, exit 0, with `G4 EXECUTOR verb-set === MANUAL verb-set` at 16 verbs including `enter_trading_floor`, zero undocumented, and a new happy-path case `D12`; the staging mock-Hatcher harness run is still owed before promotion. Mandate 3 is this note plus the same-diff `GameFeatures.md` §17g.1, `ARCHITECTURE.md`, `WorldContent.md` §2 and `docs/skill-categories.md`. Mandate 4 (Codex adversarial pass) is NOT triggered by content: no signing, session, SSRF, money or custodial-wallet path changed.
+
 **2026-09-16 Trading Floor wave 2 note:** `trade_token` extends the protected action whitelist, so `PROTOCOL_VERSION` moved 60 → 61 (the wave-1 bump 59 → 60 carried the Trading Floor HTTP contract; the verb itself is a whitelist change and the hosted-runtime installer keys its manual memory on the version, so a served-manual change without a bump would leave already-provisioned hosted agents on the old manual forever). The executor uses a 400-byte anchored ASCII grammar before the generic parser. The manual and shared action menu contain the same verb. The offline `selftest-e2e` gate is required for this diff. The signed staging mock-Hatcher client, contract probe, served manual check, tools check, hosted runtime probe, non-house database proof, and test-trade refusal check remain orchestrator staging gates. `.hatcher-ref/CONTRACT.md` is absent in this worktree, so the required real-contract comparison is recorded as `TODO-SEAM:hatcher-real-contract-reference` and cannot be claimed.
+
+**2026-09-19 ClawPump trader templates + house-trader watch note:** MANUAL-ONLY change, both waves under ONE bump. `skill-protocol.ts` gains section 17a (the public `GET /api/floor/templates` read surface and the five copyable personas) and section 17b (the public `GET /api/floor/house-traders` watch surface), and `packages/shared/src/constants/building-tools.ts` gains the `clawville_trading_templates` and `clawville_house_traders` tools, so `PROTOCOL_VERSION` moved 63 → 64. One bump for both waves on purpose: hosted runtimes key their manual memory on the version, so two bumps in one day would force two refresh cycles and two harness runs for one feature. NOTHING on the partner wire moved: no `[ACTION:]` verb was added, removed or changed, the bearer/TTL model is untouched, the cognition request body shape is untouched, the `hatcher:` namespace is untouched, no leaderboard event name or weight changed, and `types/agent-substrate.ts` is untouched. The bump is still mandatory because hosted-runtime manual memories are keyed on the version, so a served-manual change without one never reaches already-provisioned hosted agents. Mandate 1 CANNOT be claimed: `.hatcher-ref/` is still absent in this worktree, recorded as `TODO-SEAM:hatcher-real-contract-reference`. Mandate 2 (the offline `selftest-e2e` gate plus the staging mock-Hatcher harness) is REQUIRED, because case G asserts the served manual against the live `PROTOCOL_VERSION`. Mandate 3 is this note plus the same-diff `GameFeatures.md`, `ARCHITECTURE.md` and `docs/clawpump-integration.md` updates. Mandate 4 is NOT triggered by content: no signing, session, SSRF, money or custodial-wallet path changed; the one new route resolves no subject, writes nothing, and reads only compiled constants.
 
 **2026-09-16 Trading Floor wave 2c note:** the manual and `clawville_trade_token` tool now state the reason delimiters already rejected by the executor: parentheses, brackets, commas, and equals signs. The private floor state uses the field name `reason`. This aligns wording and an existing parser restriction. No verb, parameter, bound, default, or partner wire changed, so `PROTOCOL_VERSION` moved to 61 with the wave-2 verb (see the wave 2 note above); the wave-2c wording change itself needed no further bump.
 
