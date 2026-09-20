@@ -78,10 +78,8 @@ function createSurface(): TapeSurface | null {
   const canvas = document.createElement('canvas');
   canvas.width = TAPE_ATLAS_WIDTH;
   canvas.height = TAPE_ATLAS_HEIGHT;
-  // `alpha: false` — the chips are additive, so the cell background is BLACK
-  // and black contributes nothing. An alpha channel here would buy nothing and
-  // cost a quarter of the upload.
-  const context = canvas.getContext('2d', { alpha: false });
+  // Transparent cell padding; the slab itself is opaque under normal blending.
+  const context = canvas.getContext('2d', { alpha: true });
   if (!context) return null;
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -154,12 +152,9 @@ export function TradingFloorTradeTape({ active }: { active: boolean }) {
       map: surface?.texture ?? null,
       vertexColors: true,
       transparent: true,
-      // Additive is what makes these read as EMISSIVE slabs in a dark hall with
-      // no extra light, no bloom pass and no second material — and it is also
-      // the fade: a chip whose colour goes to black is gone. `depthWrite` off so
-      // two chips overlapping in a lane do not punch holes in one another;
-      // `depthTest` stays ON, so a desk or a wall still occludes them properly.
-      blending: THREE.AdditiveBlending,
+      // Dark text needs normal blending: additive cannot darken the background.
+      // Per-vertex alpha fades each chip; depth testing still respects props.
+      blending: THREE.NormalBlending,
       depthWrite: false,
       toneMapped: false,
       fog: false,
