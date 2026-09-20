@@ -114,6 +114,16 @@ function normaliseTrade(
     return null;
   }
   const notionalUsd = nullableNumber(row.notionalUsd);
+  // OPTIONAL AND ADDITIVE. The route attaches `realisedUsd` only to a sell leg
+  // its FIFO matcher could attribute, so an absent field means "we do not know"
+  // and must stay absent: 0 is a real figure here and would paint a flat chip
+  // where a gain or a loss belongs. A present but unreadable value also stays
+  // absent rather than nulling the whole row, because the trade still happened.
+  const realisedRaw = row.realisedUsd;
+  const realisedUsd =
+    typeof realisedRaw === 'number' && Number.isFinite(realisedRaw)
+      ? realisedRaw
+      : undefined;
   const blockTime = nullableNumber(row.blockTime);
   const decisionId = row.decisionId === undefined
     ? null
@@ -164,6 +174,7 @@ function normaliseTrade(
     inputMint: row.inputMint,
     outputMint: row.outputMint,
     notionalUsd,
+    ...(realisedUsd === undefined ? {} : { realisedUsd }),
     dex: row.dex as FloorTrade['dex'],
     blockTime,
     multiplier,
