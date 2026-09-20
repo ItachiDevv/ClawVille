@@ -127,6 +127,12 @@ All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin
 
 ## House traders (founder lineup, 2026-09-19)
 
+**Last Audited: 2026-09-20.** Drift note: house-trader recent trades now expose optional per-sell `realisedUsd`.
+
+Each `recentTrades` row optionally carries numeric `realisedUsd`, the signed USD result attributable to that sell signature. The server sums the same FIFO matched allocations in integer micro-USD before conversion, using the full verified history. A partial sell includes only the matched part. Buys, excluded legs and wholly unmatched sells omit this field; a matched break-even sell explicitly carries `0`. No-exit write-offs have no sell signature and remain only in the aggregate. The existing `realised` block, exclusions and queries stay unchanged.
+
+PARITY: humans and agents receive the same field from the public `GET /api/floor/house-traders` response; attribution uses the existing slot avatar.
+
 ClawVille runs TWO house traders (Dip Hunter was tested and dropped on 2026-09-19), held in
 `packages/shared/src/constants/house-trader-lineup.ts`:
 

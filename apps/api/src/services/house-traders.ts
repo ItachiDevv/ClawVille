@@ -177,6 +177,12 @@ export interface RealisedTradeLeg {
 
 export const REALISED_NO_EXIT_HOURS = 24;
 
+/** Internal computation data, removed before the realised block crosses the wire.
+ *  Optional for callers that supply only the existing aggregate. */
+export interface HouseTraderRealisedSummary extends HouseTraderRealised {
+  sellRealisedMicros?: ReadonlyMap<string, bigint>;
+}
+
 const REALISED_NOTE =
   'Gross realised on the USDC leg, excludes network fees. Round trips are matched FIFO by token units; '
   + `a position with no exit after ${REALISED_NO_EXIT_HOURS} hours counts as a total loss.`;
@@ -283,15 +289,16 @@ export function summariseRealised(input: {
   quoteMints?: readonly string[];
   nowSec?: number;
   computedAt?: string;
-}): HouseTraderRealised {
+}): HouseTraderRealisedSummary & { sellRealisedMicros: ReadonlyMap<string, bigint> } {
   const out = emptyRealised(input.computedAt ?? new Date().toISOString());
+  const sellRealisedMicros = new Map<string, bigint>();
   const usdc = input.usdcMint;
   const quotes = new Set(input.quoteMints ?? [usdc]);
   const nowSec = input.nowSec ?? Math.floor(Date.now() / 1000);
   const noExitSec = REALISED_NO_EXIT_HOURS * 3600;
   out.computedOverTrades = input.legs.length;
 
-  type Side = { mint: string; units: bigint; micros: bigint | null; buy: boolean };
+  type Side = { signature: string; mint: string; units: bigint; micros: bigint | null; buy: boolean };
   const byMint = new Map<string, Side[]>();
   const badQuote = new Set<string>();
   const unpricedMints = new Set<string>();
@@ -332,7 +339,7 @@ export function summariseRealised(input: {
     const units = buy ? toBigInt(leg.outputAmount) : toBigInt(leg.inputAmount);
     if (units <= 0n) { out.unclassifiedLegs += 1; continue; }
     const bucket = byMint.get(mint) ?? [];
-    bucket.push({ mint, units, micros, buy });
+    bucket.push({ signature: leg.signature, mint, units, micros, buy });
     byMint.set(mint, bucket);
     const times = openedAt.get(mint) ?? [];
     times.push(leg.atSec);
@@ -387,6 +394,9 @@ export function summariseRealised(input: {
         const proceedsPortion = target - allocated;
         allocated = target;
         const net = proceedsPortion - costPortion;
+        // Only matched sell allocations belong to a signature. Preserve true
+        // zero results; unmatched sells and no-exit write-offs have no entry.
+        sellRealisedMicros.set(side.signature, (sellRealisedMicros.get(side.signature) ?? 0n) + net);
         lot.realisedMicros += net;
         lot.costLeft -= costPortion;
         lot.unitsLeft -= matched;
@@ -422,7 +432,7 @@ export function summariseRealised(input: {
     || out.undatedLegs > 0
     || out.invalidLegs > 0
     || out.excludedNonUsdc > 0;
-  return out;
+  return { ...out, sellRealisedMicros };
 }
 
 /**
@@ -471,7 +481,7 @@ export interface HouseTraderSlot {
   /** PUBLIC live realised P&L, server-computed. Always present, so the board
    *  never has to branch on a missing field; an unpaired slot carries zeros. */
   realised: HouseTraderRealised;
-  recentTrades: PublicTradeDTO[];
+  recentTrades: Array<PublicTradeDTO & { realisedUsd?: number }>;
 }
 
 /**
@@ -605,7 +615,7 @@ export function buildHouseTraderSlots(input: {
   recentByAvatar: Map<string, PublicTradeDTO[]>;
   /** Optional so existing callers and fixtures keep compiling; a missing entry
    *  yields the zero block, never a fabricated figure. */
-  realisedByAvatar?: Map<string, HouseTraderRealised>;
+  realisedByAvatar?: Map<string, HouseTraderRealisedSummary>;
 }): HouseTraderSlot[] {
   return buildHouseTraderSlotBindings(input).map((binding) => binding.slot);
 }
@@ -619,7 +629,7 @@ export function buildHouseTraderSlotBindings(input: {
   chosen: Map<string, HouseTraderCandidate>;
   counts: Map<string, HouseTraderCounts>;
   recentByAvatar: Map<string, PublicTradeDTO[]>;
-  realisedByAvatar?: Map<string, HouseTraderRealised>;
+  realisedByAvatar?: Map<string, HouseTraderRealisedSummary>;
 }): HouseTraderSlotBinding[] {
   return HOUSE_TRADER_LINEUP.map((entry) => {
     const objective = entry.objective;
@@ -637,6 +647,9 @@ export function buildHouseTraderSlotBindings(input: {
         walletPubkey: null,
       };
     }
+    const summary: HouseTraderRealisedSummary =
+      input.realisedByAvatar?.get(candidate.avatarId) ?? emptyRealised();
+    const { sellRealisedMicros, ...realised } = summary;
     const slot: HouseTraderSlot = {
       ...base,
       status: state,
@@ -656,11 +669,14 @@ export function buildHouseTraderSlotBindings(input: {
       // The figure and the verified count must agree on how many rows exist.
       // Compared HERE, where both are in hand, so the alarm is code-read.
       realised: applyTruncationCheck(
-        input.realisedByAvatar?.get(candidate.avatarId) ?? emptyRealised(),
+        realised,
         (input.counts.get(candidate.avatarId) ?? EMPTY_COUNTS).verified,
         entry.label,
       ),
-      recentTrades: input.recentByAvatar.get(candidate.avatarId) ?? [],
+      recentTrades: (input.recentByAvatar.get(candidate.avatarId) ?? []).map((trade) => {
+        const micros = sellRealisedMicros?.get(trade.signature);
+        return micros === undefined ? trade : { ...trade, realisedUsd: microsToUsd(micros) };
+      }),
     };
     // The LINK pubkey, not `wallet.pubkey`: the two agree for a live pairing
     // (condition 3 requires it) and only the link survives a revoked wallet, so
@@ -676,7 +692,7 @@ export interface HouseTraderDeps {
   loadRecent(avatarIds: readonly string[], perAvatar: number): Promise<Map<string, PublicTradeDTO[]>>;
   /** FULL-history realised P&L. Aggregated in SQL with no LIMIT: see
    *  `HouseTraderRealised` for why a recent window is not acceptable here. */
-  loadRealised(avatarIds: readonly string[]): Promise<Map<string, HouseTraderRealised>>;
+  loadRealised(avatarIds: readonly string[]): Promise<Map<string, HouseTraderRealisedSummary>>;
   onDuplicate(objective: string, count: number): void;
 }
 
@@ -777,8 +793,8 @@ async function loadCountsFromDb(
  */
 async function loadRealisedFromDb(
   avatarIds: readonly string[],
-): Promise<Map<string, HouseTraderRealised>> {
-  const out = new Map<string, HouseTraderRealised>();
+): Promise<Map<string, HouseTraderRealisedSummary>> {
+  const out = new Map<string, HouseTraderRealisedSummary>();
   if (avatarIds.length === 0) return out;
   const ids = [...avatarIds];
   // ROW LEVEL, not aggregated: FIFO lot matching needs each leg in time order,

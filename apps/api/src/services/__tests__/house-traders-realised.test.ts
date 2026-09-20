@@ -221,6 +221,79 @@ describe('realised P&L, published method', () => {
   });
 });
 
+describe('per-sell realised micro-USD', () => {
+  test('F1 attributes the closed lot result only to its sell signature', () => {
+    const entry = buy(1000, 10, 50);
+    const exit = sell(1000, 14, 40);
+    const out = run([entry, exit]);
+    expect(out.sellRealisedMicros.get(exit.signature)).toBe(4_000_000n);
+    expect(out.sellRealisedMicros.has(entry.signature)).toBe(false);
+    expect(out.sellRealisedMicros.size).toBe(1);
+  });
+
+  test('a partial exit realises only its share of the lot cost', () => {
+    const exit = sell(400, 6, 4);
+    const out = run([buy(1000, 10, 5), exit]);
+    expect(out.sellRealisedMicros.get(exit.signature)).toBe(2_000_000n);
+    expect(out.realisedUsd).toBe(2);
+    expect(out.openCostUsd).toBe(6);
+    expect(out.closedPositions).toBe(0);
+  });
+
+  test('an oversell attributes only matched proceeds and omits an orphan sell', () => {
+    const exit = sell(1500, 18, 4);
+    const orphan = sell(1000, 80, 3);
+    const out = run([buy(1000, 10, 5), exit, orphan]);
+    expect(out.sellRealisedMicros.get(exit.signature)).toBe(2_000_000n);
+    expect(out.sellRealisedMicros.has(orphan.signature)).toBe(false);
+    expect(out.realisedUsd).toBe(2);
+    expect(out.unmatchedSells).toBe(2);
+  });
+
+  test('multi-lot allocations retain the final micro-dollar remainder', () => {
+    const exit = sell(1000001, 0.000003, 40);
+    const out = run([buy(500000, 0.000001, 50), buy(500001, 0.000001, 50), exit]);
+    expect(out.sellRealisedMicros.get(exit.signature)).toBe(1n);
+    expect(out.realisedUsd).toBe(0.000001);
+  });
+
+  test('per-sell totals equal the headline less signed no-exit write-offs', () => {
+    const first = sell(400, 6, 40);
+    const second = sell(200, 1, 35);
+    const out = run([buy(1000, 10, 50), first, second]);
+    expect(out.sellRealisedMicros.get(first.signature)).toBe(2_000_000n);
+    expect(out.sellRealisedMicros.get(second.signature)).toBe(-1_000_000n);
+    const sum = [...out.sellRealisedMicros.values()].reduce((total, micros) => total + micros, 0n);
+    const signedWriteOffMicros = -4_000_000n;
+    expect(sum).toBe(BigInt(Math.round(out.realisedUsd * 1e6)) - signedWriteOffMicros);
+    expect(out.realisedUsd).toBe(-3);
+    expect(out.noExitClosures).toBe(1);
+    expect(out.sellRealisedMicros.size).toBe(2);
+    expect(run([buy(1000, 10.2, 50)]).sellRealisedMicros.size).toBe(0);
+  });
+
+  test('a genuine break-even sell has an explicit zero entry', () => {
+    const exit = sell(1000, 10, 4);
+    const out = run([buy(1000, 10, 5), exit]);
+    expect(out.sellRealisedMicros.has(exit.signature)).toBe(true);
+    expect(out.sellRealisedMicros.get(exit.signature)).toBe(0n);
+  });
+
+  test('excluded mints have no sell entries, including otherwise valid exits', () => {
+    for (const entry of [
+      buy(1000, 10, 50, COIN, WSOL),
+      { ...buy(1000, 10, 50), notionalUsd: null },
+      { ...buy(1000, 10, 50), notionalUsd: '-10.000000' },
+      { ...buy(1000, 10, 50), atSec: Number.NaN },
+    ]) {
+      const exit = sell(1000, 14, 40);
+      const out = run([entry, exit]);
+      expect(out.sellRealisedMicros.has(exit.signature)).toBe(false);
+      expect(out.sellRealisedMicros.size).toBe(0);
+    }
+  });
+});
+
 describe('failure direction: an unknown date must never become a loss', () => {
   // The bug this pins: `Number(row.atSec) || 0` dated an unparseable timestamp
   // to epoch 1970, which is older than the no-exit window, so a perfectly live
