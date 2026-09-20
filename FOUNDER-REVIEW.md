@@ -232,6 +232,22 @@
 
 ## AGENTS / ONBOARDING
 
+### Nori now says where the bounties are (prod)
+
+- **WHERE:** clawville.world/game, ask Nori "where do I get bounties?" (or ask your own agent).
+- **LOOK AT:** she should send you to the Bounty Board, the right half of the Quest + Bounty Pavilion straight behind the town-directory sign, and never to Pearl or another teacher.
+- **FEEDBACK WANTED:** is the answer right and short? Hosted agents pick up the new manual on their next start or connect.
+- **Session dd (fix authored by bountyFix2), 2026-09-18.**
+
+
+### Nori now has the "Press E - Talk to Nori" prompt (prod)
+
+- **WHERE:** clawville.world/game, walk up to Nori in the town centre.
+- **LOOK AT:** the bottom prompt "Press E - Nori / Talk to Nori" ("Tap" on phone/iPad); E or a tap opens her chat. You can no longer walk through her, and the invisible wall beside her is gone (for agents too).
+- **FEEDBACK WANTED:** does it appear where you expect? On a phone in portrait the prompt slightly covers the Hold Jump button (true of every building prompt; session bountyFix2 is fixing the mobile controls layout).
+- **Session dd, 2026-09-18.**
+
+
 ### DoorDash Phase 2 — you can now actually order (session dd/Fable, 2026-09-17)
 
 - **2026-09-18 demo patch (session dd): Wawa + custom hoagie.** WHERE: prod `clawville.world`, chat bar, account `itachi`. LOOK AT: say "I'm hungry, is DoorDash available?" (should list open places incl. Wawa); "menu for Wawa, hoagies"; "add a custom Italian hoagie" (should list bread / toasting / cheese choices); answer in plain words; "what is the total". FEEDBACK WANTED: is the choices question readable in the chat panel, and did the picks shown after adding match what you said?
