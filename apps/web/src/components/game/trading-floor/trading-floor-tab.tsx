@@ -41,7 +41,12 @@ import { ClawPumpTemplatesSection } from './clawpump-templates';
 import { HouseTradersSection } from './house-traders';
 import { floorStatusCopy } from './floor-tape';
 import { TapeRow } from './trade-row';
-import { FLOOR_TEXT } from './tokens';
+import {
+  FLOOR_TEXT,
+  TRADING_SELF_SERVE_COMING_SOON,
+  TRADING_SELF_SERVE_ENABLED,
+  TRADING_SELF_SERVE_WALLET_EXPLANATION,
+} from './tokens';
 
 export interface TradingFloorTabProps {
   active: boolean;
@@ -198,16 +203,22 @@ function BindButton({
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
+      onClick={TRADING_SELF_SERVE_ENABLED ? onClick : undefined}
+      disabled={!TRADING_SELF_SERVE_ENABLED || disabled}
+      aria-disabled={!TRADING_SELF_SERVE_ENABLED || disabled}
+      title={!TRADING_SELF_SERVE_ENABLED ? TRADING_SELF_SERVE_WALLET_EXPLANATION : undefined}
       style={{
         ...buttonStyle,
         width: '100%',
-        color: disabled ? FLOOR_TEXT.disabled : FLOOR_TEXT.primary,
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        color: !TRADING_SELF_SERVE_ENABLED ? FLOOR_TEXT.muted : disabled ? FLOOR_TEXT.disabled : FLOOR_TEXT.primary,
+        opacity: !TRADING_SELF_SERVE_ENABLED ? 0.55 : 1,
+        cursor: !TRADING_SELF_SERVE_ENABLED || disabled ? 'not-allowed' : 'pointer',
       }}
     >
       {children}
+      {!TRADING_SELF_SERVE_ENABLED ? (
+        <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+      ) : null}
     </button>
   );
 }
@@ -315,16 +326,29 @@ export function TradingFloorTab({
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 10 }}>
           <div>
             <h2 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 16 }}>
-              Trade in your wallet, then it shows here.
+              {TRADING_SELF_SERVE_ENABLED ? 'Trade in your wallet, then it shows here.' : 'Watch the house traders.'}
             </h2>
-            <a
-              href="https://jup.ag/swap"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ display: 'inline-flex', minHeight: 44, alignItems: 'center', color: FLOOR_TEXT.link }}
-            >
-              Open Jupiter
-            </a>
+            {TRADING_SELF_SERVE_ENABLED ? (
+              <a
+                href="https://jup.ag/swap"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ display: 'inline-flex', minHeight: 44, alignItems: 'center', color: FLOOR_TEXT.link }}
+              >
+                Open Jupiter
+              </a>
+            ) : (
+              <button
+                type="button"
+                disabled={!TRADING_SELF_SERVE_ENABLED}
+                aria-disabled={!TRADING_SELF_SERVE_ENABLED}
+                title={TRADING_SELF_SERVE_WALLET_EXPLANATION}
+                style={{ ...buttonStyle, color: FLOOR_TEXT.muted, opacity: 0.55, cursor: 'not-allowed', marginTop: 8 }}
+              >
+                Open Jupiter
+                <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+              </button>
+            )}
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ color: status.warning ? FLOOR_TEXT.warning : FLOOR_TEXT.accent, fontWeight: 800 }}>
@@ -417,16 +441,27 @@ export function TradingFloorTab({
               ) : null}
             </>
           )}
+          {!TRADING_SELF_SERVE_ENABLED ? (
+            <p style={{ margin: '10px 0 0', color: FLOOR_TEXT.muted, fontSize: 11 }}>
+              {TRADING_SELF_SERVE_WALLET_EXPLANATION}
+            </p>
+          ) : null}
         </section>
 
         <section style={cardStyle}>
           <CardTitle>Report a signature</CardTitle>
           <label style={{ display: 'block', color: FLOOR_TEXT.muted, fontSize: 11 }}>
             Solana transaction signature
+            {!TRADING_SELF_SERVE_ENABLED ? (
+              <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+            ) : null}
             <input
               value={signature}
               maxLength={128}
-              onChange={(event) => setSignature(event.target.value)}
+              onChange={TRADING_SELF_SERVE_ENABLED ? (event) => setSignature(event.target.value) : undefined}
+              disabled={!TRADING_SELF_SERVE_ENABLED}
+              aria-disabled={!TRADING_SELF_SERVE_ENABLED}
+              title={!TRADING_SELF_SERVE_ENABLED ? TRADING_SELF_SERVE_WALLET_EXPLANATION : undefined}
               placeholder="Paste a confirmed swap signature"
               style={{
                 display: 'block',
@@ -436,19 +471,37 @@ export function TradingFloorTab({
                 borderRadius: 8,
                 border: '1px solid rgba(125,211,252,0.24)',
                 background: 'rgba(2,8,23,0.90)',
-                color: FLOOR_TEXT.value,
+                color: TRADING_SELF_SERVE_ENABLED ? FLOOR_TEXT.value : FLOOR_TEXT.muted,
+                opacity: TRADING_SELF_SERVE_ENABLED ? 1 : 0.55,
                 padding: '8px 10px',
               }}
             />
           </label>
           <button
             type="button"
-            onClick={submitReport}
-            disabled={report.isPending || (!isGuest && !canReport)}
-            style={{ ...buttonStyle, width: '100%', marginTop: 10 }}
+            onClick={TRADING_SELF_SERVE_ENABLED ? submitReport : undefined}
+            disabled={!TRADING_SELF_SERVE_ENABLED || report.isPending || (!isGuest && !canReport)}
+            aria-disabled={!TRADING_SELF_SERVE_ENABLED || report.isPending || (!isGuest && !canReport)}
+            title={!TRADING_SELF_SERVE_ENABLED ? TRADING_SELF_SERVE_WALLET_EXPLANATION : undefined}
+            style={{
+              ...buttonStyle,
+              width: '100%',
+              marginTop: 10,
+              color: TRADING_SELF_SERVE_ENABLED ? FLOOR_TEXT.primary : FLOOR_TEXT.muted,
+              opacity: TRADING_SELF_SERVE_ENABLED ? 1 : 0.55,
+              cursor: TRADING_SELF_SERVE_ENABLED ? 'pointer' : 'not-allowed',
+            }}
           >
             {report.isPending ? 'Checking...' : 'Verify trade'}
+            {!TRADING_SELF_SERVE_ENABLED ? (
+              <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+            ) : null}
           </button>
+          {!TRADING_SELF_SERVE_ENABLED ? (
+            <p style={{ margin: '10px 0 0', color: FLOOR_TEXT.muted, fontSize: 11 }}>
+              {TRADING_SELF_SERVE_WALLET_EXPLANATION}
+            </p>
+          ) : null}
           {message ? (
             <p
               role="status"

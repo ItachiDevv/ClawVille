@@ -34,6 +34,15 @@
 
 ## TRADING FLOOR
 
+### Player trading controls show Coming soon (local working tree, 2026-09-20)
+
+- **Last Audited: 2026-09-20.** Drift note: founder order pauses player trading and player trader launches in the client.
+- **Greyed out:** Use my linked wallet, Use my in-game wallet, Connect and sign, and the guest Create a free account button. The signature input and Verify trade button are disabled. Each template's Copy persona and Copy skills buttons, Open the ClawPump dashboard, and Open Jupiter are disabled too. Each control retains its label, explanation title, and Coming soon tag.
+- **Monitoring:** Genesis and ClawVille Runner retain their live realised profit and loss, risk state, house-trader board, panel, public trade tape, and flying trade chips. Their read-only route remains unchanged.
+- **Re-enable:** set `TRADING_SELF_SERVE_ENABLED` to `true` in `apps/web/src/components/game/trading-floor/tokens.ts`. This one boolean restores the original controls and eligibility checks.
+- **Where:** local build, Exchange modal, Trading Floor tab. This change has no commit, push, or deployment. Visual founder review remains pending.
+- **Local gates:** 628 tests pass, 0 fail, 136505 assertions across 20 files; `tsc.exe --noEmit -p .` exits 0; production build exits 0 with 38/38 static pages. Browser and viewport checks remain unverified because the managed preview launcher refused ownership or input validation.
+
 ### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
 - **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,
   green TRADING FLOOR sign, solid claw on the dome) and a room you walk into like the cove.

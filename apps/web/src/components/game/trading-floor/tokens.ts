@@ -12,3 +12,11 @@ export const FLOOR_TEXT = {
   link: '#7dd3fc',
   disabled: 'rgba(255,255,255,0.35)',
 } as const;
+
+// Founder order, 2026-09-20: "users in game right now to allow them to trade or launch a trading agent is coming soon. they still get to monitor our house agents which is genesis and runner".
+export const TRADING_SELF_SERVE_ENABLED = false;
+export const TRADING_SELF_SERVE_COMING_SOON = 'Coming soon';
+export const TRADING_SELF_SERVE_WALLET_EXPLANATION =
+  'Trading from your own wallet opens soon. The house traders below are live now.';
+export const TRADING_SELF_SERVE_AGENT_EXPLANATION =
+  'Launching your own trader opens soon. You can watch Genesis and ClawVille Runner below.';

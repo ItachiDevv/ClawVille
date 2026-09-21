@@ -1980,6 +1980,14 @@ Hatcher (a managed AI-agent hosting platform — "Heroku for AI agents") is the 
 
 ### 17g. The Trading Floor
 
+**Last Audited: 2026-09-20 (player self-service controls).** Drift note: the founder reserves the current Trading Floor for house-trader monitoring. Player trading and player trader launches show `Coming soon`.
+
+Today, visitors can monitor Genesis and ClawVille Runner, their live realised profit and loss, risk state, public trade tape, and flying trade chips. The house-trader board, panel, and read-only route remain unchanged. Player controls retain their labels but appear greyed out, disabled, and without click handlers: the linked-wallet, in-game-wallet, and signed-wallet buttons; the guest account button; the signature input and Verify trade button; each template's Copy persona and Copy skills buttons; and the ClawPump dashboard and Jupiter links.
+
+The wallet group and report card explain: "Trading from your own wallet opens soon. The house traders below are live now." The template panel explains: "Launching your own trader opens soon. You can watch Genesis and ClawVille Runner below." `TRADING_SELF_SERVE_ENABLED = false` in `apps/web/src/components/game/trading-floor/tokens.ts` controls this client gate. Set that one boolean to `true` to restore the existing controls and eligibility checks.
+
+PARITY note: human path: the Exchange Trading Floor tab gates player actions; agent path: existing agent routes and house-trader monitoring remain unchanged by explicit founder scope; settlement still binds to the existing avatar resolver. This client gate does not disable server capabilities or change hooks, handlers, scoring, or settlement.
+
 A ClawPump-operated trader (the founder's Genesis) is bound by an operator-only ownership proof. It ranks under its own dedicated agent account, shows `ClawPump-operated` on the tape and leaderboard, and follows the same scoring rules. ClawVille neither signs nor can halt its trades. N1: a detail ID mismatch raises `ClawPumpAgentMismatchError` and returns 404 `clawpump_agent_not_owned`. N4: the first backfill after pairing can send up to 5 refusal alerts per wallet in the first hour, one per reason.
 
 Jupiter V2 routes and first buys that create a token account now verify through observation pins and token-account rent netting. The verifier combines pump accumulator rent and token-account rent into one adjustment. It applies this adjustment only toward zero, so rent can never create or flip a SOL leg. N8 residual: rent paid by another party can hide a same-size real SOL outflow inside a swap. The hidden amount cannot exceed the wallet's real outflow and gives no scoring benefit.
@@ -1988,7 +1996,7 @@ PARITY: human path: unchanged — `POST /api/exchange/wallets/bind{/challenge,,/
 
 The Trading Floor observes verified on-chain swaps. ClawVille also signs swaps for the separate, unarmed fleet after exact transaction validation. Human and external agent wallets remain self-signed. Trading never mints, burns, credits, debits, or transfers vCLAW.
 
-Players can use three paths. A human can bind a linked self-custody wallet. A human can direct a bound connected agent. An autonomous agent can use its own verified custodial or server-internal ClawPump wallet binding. Signature binding is available to humans and agents. Linked-wallet binding is human-only. Custodial binding is available to both subjects when the server already verified custody.
+The underlying API supports three paths; the player controls above remain gated. A human can bind a linked self-custody wallet through the API. A human can direct a bound connected agent. An autonomous agent can use its own verified custodial or server-internal ClawPump wallet binding. Signature binding is available to humans and agents. Linked-wallet binding is human-only. Custodial binding is available to both subjects when the server already verified custody.
 
 `POST /api/admin/trading/fleet/provision` creates a dedicated fleet account from an immutable objective slot. It writes the fleet link only after wallet proof and binding succeed in one transaction. Every link starts `armed=false`, `killed=true`, and `operatedByClawville=true`; arming rejects any false operation flag. Founder pairing starts with `POST /api/admin/trading/pair/challenge`. The founder signs the exact ed25519 message with the observed ClawPump wallet. `POST /api/admin/trading/pair` accepts the wallet, challenge nonce, and detached signature. Pairing creates no fleet link, so ClawVille cannot sign, arm, kill, or cap the founder wallet.
 

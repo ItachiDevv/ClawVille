@@ -4,15 +4,34 @@ import {
   beforeAll,
   describe,
   expect,
+  mock,
   test,
 } from 'bun:test';
 import { act, createElement } from 'react';
 import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { PENDING_UNCONFIRMED_AFTER_MS } from './format';
 import { floorStatusCopy } from './floor-tape';
 import type { FloorDecision, FloorTrade, TapeEntry } from '@/stores/trade-ticker';
+import type { TradingWallet } from '@/hooks/use-trading-floor';
+import * as tokens from './tokens';
+
+const originalTokens = { ...tokens };
+
+function enableSelfServe(): void {
+  mock.module('./tokens', () => ({ ...originalTokens, TRADING_SELF_SERVE_ENABLED: true }));
+}
+
+function reactProps(element: HTMLElement): {
+  onClick?: () => void;
+  onChange?: (event: { target: { value: string } }) => void;
+} {
+  const key = Object.keys(element).find((name) => name.startsWith('__reactProps$'));
+  expect(key).toBeDefined();
+  return (element as unknown as Record<string, ReturnType<typeof reactProps>>)[key!]!;
+}
 
 const testWindow = new Window({ url: 'http://localhost/game' });
 const globalNames = [
@@ -34,6 +53,8 @@ const installedNames = [
 
 let createRoot: typeof import('react-dom/client').createRoot;
 let TapeRow: typeof import('./trade-row').TapeRow;
+let TradingFloorTab: typeof import('./trading-floor-tab').TradingFloorTab;
+let queryClient: QueryClient | null = null;
 let root: Root | null = null;
 let container: HTMLElement | null = null;
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
@@ -112,11 +133,67 @@ async function renderRow(entry: TapeEntry, nowMs: number): Promise<HTMLElement> 
   return container;
 }
 
+async function renderTab({
+  isGuest = false,
+  wallets = [],
+  onGuestBlocked = () => {},
+}: {
+  isGuest?: boolean;
+  wallets?: TradingWallet[];
+  onGuestBlocked?: () => void;
+} = {}): Promise<HTMLElement> {
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnMount: false },
+      mutations: { retry: false },
+    },
+  });
+  queryClient.setQueryData(['avatar'], { avatar: { walletAddress: 'custodial-wallet' } });
+  queryClient.setQueryData(['wallet-link'], { linked: true, walletPubkey: 'linked-wallet' });
+  queryClient.setQueryData(['trading-floor', 'wallets'], { wallets });
+  queryClient.setQueryData(['trading-floor', 'mine'], { trades: [] });
+  queryClient.setQueryData(['trading-floor', 'feed', 25], {
+    trades: [], generatedAt: new Date().toISOString(),
+    observer: { enabled: true, stale: false, lastTickAt: null },
+  });
+  queryClient.setQueryData(['trading-floor', 'house-traders'], []);
+  Object.defineProperty(testWindow, 'solana', {
+    configurable: true,
+    value: { connect: mock(() => Promise.resolve({ publicKey: { toString: () => 'signed-wallet' } })) },
+  });
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(createElement(QueryClientProvider, { client: queryClient! },
+      createElement(TradingFloorTab, { active: true, isGuest, onGuestBlocked })));
+  });
+  return container;
+}
+
+function buttonWithLabel(host: HTMLElement, label: string): HTMLButtonElement {
+  const button = [...host.querySelectorAll('button')].find((node) => node.textContent?.startsWith(label));
+  expect(button).toBeDefined();
+  return button!;
+}
+
+function expectGated(control: HTMLButtonElement | HTMLInputElement): void {
+  expect(control.disabled).toBe(true);
+  expect(control.getAttribute('aria-disabled')).toBe('true');
+  expect(control.title).toBe(tokens.TRADING_SELF_SERVE_WALLET_EXPLANATION);
+  const expectedStyle = document.createElement('button').style;
+  expectedStyle.color = tokens.FLOOR_TEXT.muted;
+  expect(control.style.color).toBe(expectedStyle.color);
+  expect(Number(control.style.opacity)).toBeLessThan(1);
+  expect(reactProps(control).onClick).toBeUndefined();
+}
+
 beforeAll(async () => {
   rememberDom();
   installDom();
   ({ createRoot } = await import('react-dom/client'));
   ({ TapeRow } = await import('./trade-row'));
+  ({ TradingFloorTab } = await import('./trading-floor-tab'));
 });
 
 afterEach(async () => {
@@ -124,11 +201,104 @@ afterEach(async () => {
   container?.remove();
   root = null;
   container = null;
+  queryClient?.clear();
+  queryClient = null;
+  Reflect.deleteProperty(testWindow, 'solana');
+  mock.module('./tokens', () => originalTokens);
 });
 
 afterAll(() => {
+  mock.module('./tokens', () => originalTokens);
   restoreDom();
   testWindow.close();
+});
+
+describe('Trading Floor player self-service gate', () => {
+  const bindingLabels = ['Use my linked wallet', 'Use my in-game wallet', 'Connect and sign'];
+
+  test('disables all four trading actions and the signature input without reaching mutations', async () => {
+    expect(tokens.TRADING_SELF_SERVE_ENABLED).toBe(false);
+    const host = await renderTab();
+    for (const label of [...bindingLabels, 'Verify trade']) {
+      const control = buttonWithLabel(host, label);
+      expectGated(control);
+      expect(control.querySelector('small')?.textContent).toBe(tokens.TRADING_SELF_SERVE_COMING_SOON);
+      await act(async () => { control.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    }
+    const input = host.querySelector('input')!;
+    expectGated(input);
+    expect(reactProps(input).onChange).toBeUndefined();
+    expect(input.closest('label')?.textContent).toContain(tokens.TRADING_SELF_SERVE_COMING_SOON);
+    expect(queryClient!.getMutationCache().getAll()).toHaveLength(0);
+    expect([...host.querySelectorAll('p')].filter(
+      (paragraph) => paragraph.textContent === tokens.TRADING_SELF_SERVE_WALLET_EXPLANATION,
+    )).toHaveLength(2);
+  });
+
+  test('disables the guest wallet variant and report action without the guest handler', async () => {
+    const onGuestBlocked = mock(() => {});
+    const host = await renderTab({ isGuest: true, onGuestBlocked });
+    for (const label of ['Create a free account', 'Verify trade']) {
+      const control = buttonWithLabel(host, label);
+      expectGated(control);
+      expect(control.textContent).toContain(tokens.TRADING_SELF_SERVE_COMING_SOON);
+      await act(async () => { control.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    }
+    expect(onGuestBlocked).not.toHaveBeenCalled();
+    expect(queryClient!.getMutationCache().getAll()).toHaveLength(0);
+  });
+
+  test('removes the Jupiter destination while player trading is gated', async () => {
+    const host = await renderTab();
+    const control = buttonWithLabel(host, 'Open Jupiter');
+    expectGated(control);
+    expect(control.textContent).toContain(tokens.TRADING_SELF_SERVE_COMING_SOON);
+    expect(control.getAttribute('href')).toBeNull();
+    expect(host.querySelector('a[href="https://jup.ag/swap"]')).toBeNull();
+  });
+
+  test('one flag restores binds, signature entry, valid reports, and Jupiter', async () => {
+    enableSelfServe();
+    expect(tokens.TRADING_SELF_SERVE_ENABLED).toBe(true);
+    const host = await renderTab();
+    for (const label of bindingLabels) {
+      const control = buttonWithLabel(host, label);
+      expect(control.disabled).toBe(false);
+      expect(control.getAttribute('aria-disabled')).toBe('false');
+      expect(typeof reactProps(control).onClick).toBe('function');
+      expect(control.style.opacity).toBe('1');
+    }
+    const input = host.querySelector('input')!;
+    expect(input.disabled).toBe(false);
+    expect(buttonWithLabel(host, 'Verify trade').disabled).toBe(true);
+    await act(async () => { reactProps(input).onChange!({ target: { value: 's'.repeat(64) } }); });
+    expect(buttonWithLabel(host, 'Verify trade').disabled).toBe(false);
+    expect(typeof reactProps(buttonWithLabel(host, 'Verify trade')).onClick).toBe('function');
+    expect(host.querySelector('a[href="https://jup.ag/swap"]')).not.toBeNull();
+    expect(host.textContent).not.toContain(tokens.TRADING_SELF_SERVE_COMING_SOON);
+  });
+
+  test('the enabled flag preserves the five-wallet eligibility limit', async () => {
+    enableSelfServe();
+    const wallets: TradingWallet[] = Array.from({ length: 5 }, (_, index) => ({
+      pubkey: `wallet-${index}`, source: 'signed', subjectKind: 'avatar',
+      boundAt: '2026-09-20T00:00:00Z', lastPolledAt: null, operatedByClawville: false,
+    }));
+    const host = await renderTab({ wallets });
+    for (const label of bindingLabels) expect(buttonWithLabel(host, label).disabled).toBe(true);
+    expect(host.textContent).toContain('Five wallets are already bound.');
+  });
+
+  test('the enabled flag restores the original guest callback', async () => {
+    enableSelfServe();
+    const onGuestBlocked = mock(() => {});
+    const host = await renderTab({ isGuest: true, onGuestBlocked });
+    const control = buttonWithLabel(host, 'Create a free account');
+    expect(control.disabled).toBe(false);
+    await act(async () => { control.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(onGuestBlocked).toHaveBeenCalledTimes(1);
+    expect(queryClient!.getMutationCache().getAll()).toHaveLength(0);
+  });
 });
 
 describe('Trading Floor rows', () => {
