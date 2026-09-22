@@ -10,12 +10,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import postgres from 'postgres';
 import { z } from 'zod';
+import { characterRoomId } from '../../../../packages/agent-runtime/src/room-scoping';
 
 const PROD_API_HOSTS = new Set(['api.clawville.world', 'api-new.clawville.world', 'clawville.world']);
 const PROD_DATABASE_REF = 'wheuidgiyyccqyoppxoa';
 const STAGING_DATABASE_REF = 'mtpixvtclsjqjguouxes';
 const HERMES_PROXY_PORT = 8642;
-const MAX_CAPTURED_REQUESTS = 12;
+const MAX_CAPTURED_REQUESTS = 24;
 const MAX_GATEWAY_BODY_BYTES = 2_000_000;
 const MOCK_HERMES_MARKER = 'HERMES_MOCK_REPLY_V1';
 const DECLARED_GATEWAY_MARKER = 'CV_PROBE_DECLARED_GATEWAY_REPLY';
@@ -451,6 +452,42 @@ async function setProbeHalt(
   `;
 }
 
+/** Read-only: a deployment's fleet halt remains authoritative for this fixture. */
+async function probeHasActiveHalt(client: postgres.Sql, fixture: Fixture): Promise<boolean> {
+  const rows = await client<Array<{ halted: boolean }>>`
+    SELECT EXISTS (SELECT 1 FROM trading_halts WHERE cleared_at IS NULL
+      AND (scope = 'fleet' OR (scope = 'agent' AND scope_id = ${fixture.avatarId}::uuid))) AS halted
+  `;
+  return rows[0]?.halted === true;
+}
+
+export function matchesTradingHaltState(prompt: string, halted: boolean, allowedMints: readonly string[]): boolean {
+  if (!prompt.includes('Status: armed=false; killed=true')) return false;
+  if (halted) return prompt.includes('TRADING IS HALTED:') && !prompt.includes('Allowed mints:');
+  return !prompt.includes('TRADING IS HALTED:') && prompt.includes('Allowed mints:')
+    && allowedMints.every((mint) => prompt.includes(mint));
+}
+
+async function waitForNoriLesson(client: postgres.Sql, fixture: Fixture): Promise<string> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    throwIfInterrupted();
+    const rows = await client<Array<{ lesson: string }>>`
+      SELECT content->>'text' AS lesson FROM memories
+      WHERE agent_id = ${fixture.platformAgentId}::uuid AND metadata->>'subtype' = 'earned-skill'
+        AND metadata->>'avatarId' = ${fixture.avatarId} AND metadata->>'buildingId' = 'town-guide'
+      UNION ALL
+      SELECT content AS lesson FROM npc_memories
+      WHERE entity_id = ${fixture.avatarId} AND metadata->>'subtype' = 'earned-skill'
+        AND metadata->>'buildingId' = 'town-guide'
+      LIMIT 1
+    `;
+    if (rows[0]?.lesson) return rows[0].lesson;
+    await Bun.sleep(250);
+  }
+  throw new ProbeFailure('Nori action produced no fixture-owned lesson; check inference and session fences');
+}
+
 async function postAutonomy(apiBase: string, fixture: Fixture, active: boolean): Promise<void> {
   const response = await fetchWithTimeout(`${apiBase}/api/world/autonomy`, {
     method: 'POST',
@@ -550,11 +587,13 @@ async function waitForKnowledge(
   throw new ProbeFailure('timed out waiting for current skill and protocol memories');
 }
 
-async function startDeclaredGatewayMock(): Promise<{
+export async function startDeclaredGatewayMock(): Promise<{
   server: ReturnType<typeof Bun.serve>;
   captured: CapturedGatewayRequest[];
+  queueNoriQuestion: (directiveMarker: string) => void;
 }> {
   const captured: CapturedGatewayRequest[] = [];
+  let noriDirective: string | null = null;
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -585,18 +624,25 @@ async function startDeclaredGatewayMock(): Promise<{
       if (captured.length < MAX_CAPTURED_REQUESTS) {
         captured.push({ prompts: parsed.data.messages.map((message) => message.content) });
       }
+      let reply = DECLARED_GATEWAY_MARKER;
+      if (noriDirective && parsed.data.messages.some((message) =>
+        message.content.includes(noriDirective!) && message.content.includes('Available actions (choose exactly one'))) {
+        // One orientation question only. The mock never emits a money action.
+        noriDirective = null;
+        reply = '[ACTION: chat_nori(message=Where is the Bounty Board and who runs it?)]';
+      }
       return Response.json({
         id: `probe-${captured.length}`,
         object: 'chat.completion',
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: DECLARED_GATEWAY_MARKER },
+          message: { role: 'assistant', content: reply },
           finish_reason: 'stop',
         }],
       });
     },
   });
-  return { server, captured };
+  return { server, captured, queueNoriQuestion: (marker) => { noriDirective = marker; } };
 }
 
 async function assertPortAvailable(port: number): Promise<void> {
@@ -776,7 +822,9 @@ async function cleanupDatabase(
       WHERE agent_id = ${fixture.platformAgentId}::uuid
          OR room_id = ${fixture.platformAgentId}::uuid
          OR entity_id = ${fixture.platformAgentId}::uuid
+         OR room_id = ${characterRoomId('town-guide', fixture.userId)}::uuid
     `);
+    await attempt('npc_memories', () => client`DELETE FROM npc_memories WHERE entity_id = ${fixture.avatarId}`);
     await attempt('plugin_agent', async () => {
       const pluginAgents = await client<Array<{ relation: string | null }>>`
         SELECT to_regclass('public.agents')::text AS relation
@@ -793,6 +841,7 @@ async function cleanupDatabase(
   const platformIds = fixtures.map((fixture) => fixture.platformAgentId);
   const userIds = fixtures.map((fixture) => fixture.userId);
   const avatarIds = fixtures.map((fixture) => fixture.avatarId);
+  const noriRoomIds = fixtures.map((fixture) => characterRoomId('town-guide', fixture.userId));
   await attempt('building_skill', () => client`DELETE FROM building_skills WHERE building_id = ${buildingId}`);
 
   // Require a bounded quiet window after subject deletion. Each pass re-deletes
@@ -859,7 +908,10 @@ async function cleanupDatabase(
       (SELECT count(*)::int FROM sessions WHERE user_id = ANY(${userIds}::uuid[])) AS sessions_count,
       (SELECT count(*)::int FROM platform_agents WHERE id = ANY(${platformIds}::uuid[])) AS platform_agents_count,
       (SELECT count(*)::int FROM building_skills WHERE building_id = ${buildingId}) AS skills_count,
-      (SELECT count(*)::int FROM memories WHERE agent_id = ANY(${platformIds}::uuid[])) AS memories_count,
+      (SELECT count(*)::int FROM memories WHERE agent_id = ANY(${platformIds}::uuid[])
+        OR room_id = ANY(${noriRoomIds}::uuid[])) AS memories_count,
+      (SELECT count(*)::int FROM npc_memories WHERE entity_id = ANY(${avatarIds}::text[])) AS npc_memories_count,
+      (SELECT count(*)::int FROM claw_token_transactions WHERE avatar_id = ANY(${avatarIds}::uuid[])) AS ledger_count,
       (SELECT count(*)::int FROM events
         WHERE building_id = ${buildingId}
            OR user_id = ANY(${userIds}::uuid[])
@@ -1071,6 +1123,8 @@ async function main(): Promise<void> {
       }
 
       await setProbeHalt(client, fixture, false);
+      const stillHalted = await probeHasActiveHalt(client, fixture);
+      const allowedMints = sharedSource.TRADING_OBJECTIVE_ALLOWED_OUTPUTS['conservative-rebalancer'];
       const allowedStart = declaredMock.captured.length;
       await postProbeDirective(apiBase, fixture, 'Review the Trading desk and choose one allowed action.');
       const allowedPrompt = await waitForCapturedPrompt(
@@ -1078,12 +1132,36 @@ async function main(): Promise<void> {
         allowedStart,
         (prompt) => prompt.includes('Available actions (choose exactly one')
           && prompt.includes('Trading desk:')
-          && prompt.includes('Allowed mints:'),
+          && matchesTradingHaltState(prompt, stillHalted, allowedMints),
       );
-      ok(!allowedPrompt.includes('TRADING IS HALTED:'), 'cleared autonomous wire removes halt state');
-      for (const mint of sharedSource.TRADING_OBJECTIVE_ALLOWED_OUTPUTS['conservative-rebalancer']) {
-        ok(allowedPrompt.includes(mint), `autonomous wire contains allowed mint ${mint}`);
+      ok(matchesTradingHaltState(allowedPrompt, stillHalted, allowedMints),
+        stillHalted ? 'fleet halt remains active and suppresses allowed mints after fixture halt clears'
+          : 'cleared fixture halt exposes objective mints while fixture stays disarmed and killed');
+
+      const noriMarker = `nori-probe-${runId}`;
+      declaredMock.queueNoriQuestion(noriMarker);
+      const noriStart = declaredMock.captured.length;
+      await postProbeDirective(apiBase, fixture, `${noriMarker}: Ask Nori about the Bounty Board.`);
+      const noriLesson = await waitForNoriLesson(client, fixture);
+      ok(noriLesson.startsWith('Nori told me: ') && !/\[ACTION:/i.test(noriLesson),
+        'actual Nori action persists a sanitized lesson under the fixture avatar');
+      const replySnippet = noriLesson.slice('Nori told me: '.length).replace(/\s+/g, ' ').slice(0, 100);
+      ok(replySnippet.length > 0, 'Nori supplies nonempty orientation content');
+      await postProbeDirective(apiBase, fixture, 'Use the latest Nori answer to choose your next world activity.');
+      const noriPrompt = await waitForCapturedPrompt(declaredMock.captured, noriStart,
+        (prompt) => prompt.includes(`- (latest) Nori: ${replySnippet}`)
+          && prompt.includes('Available actions (choose exactly one'));
+      ok(noriPrompt.includes('Status: armed=false; killed=true'), 'Nori decision fixture remains disarmed and killed');
+      for (const verb of sharedSource.HATCHER_ACTION_VERBS) {
+        ok(noriPrompt.includes(`${verb}(`), `Nori follow-up wire retains action ${verb}`);
       }
+      const rewardRows = await client<Array<{ rewards: number; trades: number }>>`
+        SELECT (SELECT count(*)::int FROM claw_token_transactions
+          WHERE avatar_id = ${fixture.avatarId}::uuid AND reason = 'system_agent_chat' AND amount = 1) AS rewards,
+          (SELECT count(*)::int FROM trading_decisions WHERE avatar_id = ${fixture.avatarId}::uuid) AS trades
+      `;
+      ok(rewardRows[0]?.rewards === 1, 'Nori action credits one fixture-owned chat reward');
+      ok(rewardRows[0]?.trades === 0, 'Nori probe executes no trade');
     }
 
     if (options.withEcho) {
@@ -1100,7 +1178,7 @@ async function main(): Promise<void> {
   console.log(`ALL PASS (${assertionNumber} checks)`);
 }
 
-main().catch((error: unknown) => {
+if (import.meta.main) main().catch((error: unknown) => {
   if (error instanceof ProbeFailure) console.error(error.message);
   else console.error('FAIL unexpected probe error (details suppressed)');
   process.exitCode = 1;

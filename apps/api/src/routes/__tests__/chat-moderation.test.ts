@@ -89,7 +89,6 @@ describe('chat moderation — structural regression lock', () => {
   const read = (f: string) => readFileSync(join(ROUTES, f), 'utf8');
 
   const INPUT_SURFACES: Array<{ file: string; surface: string }> = [
-    { file: 'chat.ts', surface: 'system-chat' },
     { file: 'chat.ts', surface: 'location-chat' },
     { file: 'chat-transient.ts', surface: 'transient-chat' },
     { file: 'avatars.ts', surface: 'avatar-chat' },
@@ -105,9 +104,16 @@ describe('chat moderation — structural regression lock', () => {
     });
   }
 
-  it('chat.ts moderates OUTPUT for both public personas (system + location)', () => {
-    const src = read('chat.ts');
+  it('the shared system-chat service moderates both directions and the route preserves blocked responses', () => {
+    const src = read('../services/system-agent-chat.ts');
+    expect(src).toContain("surface: 'system-chat', direction: 'input'");
     expect(src).toContain("surface: 'system-chat', direction: 'output'");
+    expect(src).toContain('CONTENT_BLOCKED_MESSAGE');
+    expect(src).toContain('OUTPUT_REFUSAL_MESSAGE');
+    expect(read('chat.ts')).toContain('code: CONTENT_BLOCKED_CODE');
+  });
+  it('chat.ts moderates location OUTPUT', () => {
+    const src = read('chat.ts');
     expect(src).toContain("surface: 'location-chat', direction: 'output'");
     expect(src).toContain('OUTPUT_REFUSAL_MESSAGE');
   });

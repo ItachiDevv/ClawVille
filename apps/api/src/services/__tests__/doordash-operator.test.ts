@@ -1,8 +1,16 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { Hono } from 'hono';
 import type { AppContext } from '../../types';
 import type { DoordashOperatorContext } from '../../middleware/doordash-operator-only';
 import * as cli from '../doordash-cli';
+
+// This suite exercises routing, not the durable state machine. The separate
+// confirmation-flow suite models row predicates and preview revocation.
+mock.module('@clawville/database', () => ({
+  db: { update: () => ({ set: () => ({ where: async () => {} }) }) },
+  doordashOrders: { userId: 'userId', status: 'status' },
+  and: () => ({}), eq: () => ({}), sql: () => ({}),
+}));
 
 type OperatorModule = typeof import('../doordash-operator');
 type MiddlewareModule = typeof import('../../middleware/doordash-operator-only');
@@ -200,15 +208,17 @@ describe('Phase 1 DoorDash bridge', () => {
     expect(runMock.mock.calls.length).toBe(before + 2);
     expect(runMock.mock.calls.at(-2)).toEqual(['search', ['udon', '14437790']]);
 
-    // If the address lookup fails with no cached value, still search rather than
-    // denying the operator a result — the vendor answers, just unanchored.
+    // An unanchored search silently uses another city. Refuse on a failed
+    // address lookup instead of claiming that no nearby stores exist.
     operator.resetDoordashAddressCache();
     runMock.mockImplementation(((op: string) =>
       Promise.resolve(op === 'address-list'
         ? { ok: false, failure: 'ddcli_nonzero', detail: 'x', durationMs: 1 }
         : { ok: true, data: { stores: [] }, durationMs: 2 })) as never);
-    await capability.search({ query: 'soba' });
-    expect(runMock.mock.calls.at(-1)).toEqual(['search', ['soba']]);
+    const callCount = runMock.mock.calls.length;
+    const refused = await capability.search({ query: 'soba' });
+    expect(refused.ok).toBe(false);
+    expect(runMock.mock.calls.slice(callCount)).toEqual([['address-list', []]]);
   });
 
   test('preserves wrapper failures without inventing list data', async () => {

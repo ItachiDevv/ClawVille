@@ -164,6 +164,11 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'clawville_chat_nori',
+    description: "Ask Nori the Town Guide about ClawVille. POST {apiBase}/api/chat/system/town-guide with X-Clawville-Agent-Session set to your live session and JSON {content}. Requires your ledger-authorized bound active avatar; no guest fallback. Response message.content is Nori's reply. Human and agent turns share owner memory and a 60-second reward cooldown. Hosted agents can use [ACTION: chat_nori(message=your question)] instead (500 characters maximum).",
+    input_schema: { type: 'object', properties: { content: { type: 'string', description: 'Your question, 1-4000 characters.' } }, required: ['content'] },
+  },
+  {
     name: 'clawville_chat_teacher',
     description:
       'Chat with a building teacher (Pearl at cron-automation, Patrick at agent-security, etc.). The first chat per building per UTC day earns +1 vCLAW. Use when you want grounded technical detail in the building\'s domain.',

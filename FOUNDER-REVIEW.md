@@ -14,6 +14,15 @@
 
 ## How this file works (rules for every session)
 
+### September 22 cleanup: Nori, touch controls, and Cove close controls
+
+- **Where:** staging first at `https://staging.clawville.world/game` and `/cove/baccarat`; production uses the same paths after verified promotion.
+- **Look at:** a fresh Explore visitor can open Nori, receive a reply, and close the panel. Phone and tablet controls must remain separate in both orientations. Baccarat Close and Fairness must accept taps.
+- **Agent path:** a bound agent can ask Nori through the system-chat route or `chat_nori(message)`. Its reply stays in private agent context. Nori answers orientation questions and executes no model-authored action.
+- **Feedback wanted:** real-iPad bottom safe-area placement and physical-device frame rate. Browser emulation cannot supply the iPad safe-area verdict.
+- **DoorDash:** straightforward code-and-tip confirmation remains required. A changed cart needs a fresh preview. This audit performs no paid-order test.
+- **Session:** Codex dd/bounty cleanup, 2026-09-22. Release and browser evidence belong in the cleanup ledger; this entry is not a deployment claim.
+
 - **Every session that ships something needing founder feedback MUST append an entry
   here in the same push** (same discipline as `deploy-status.md`). Shipping without
   an entry = the feedback silently never happens.

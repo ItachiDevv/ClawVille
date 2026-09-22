@@ -5,7 +5,7 @@ import { createHash, randomInt } from 'node:crypto';
  *
  * THE INVARIANT THIS FILE EXISTS FOR: the code must originate in the
  * REQUESTER'S input, never in the RESPONDER'S output. A language model that
- * writes `[ACTION: DOORDASH_SUBMIT(confirm=A1B2C3)]` can simply echo a code it
+ * writes `[ACTION: DOORDASH_SUBMIT(confirm=ACDEFG)]` can simply echo a code it
  * just produced a moment earlier, so the check never reads the model's reply.
  * It reads the raw request body the route captured before any model ran.
  */
@@ -35,7 +35,7 @@ export function isWellFormedConfirmCode(code: string): boolean {
  * Did the code appear in the human's own words?
  *
  * Case-insensitive substring is the right test: the founder may type "yes,
- * A1B2C3, tip 4" or paste the whole sentence back. What matters is only that
+ * ACDEFG, tip 4" or paste the whole sentence back. What matters is only that
  * the characters came from the request body rather than the model's reply.
  */
 export function codeStatedByRequester(requesterTurn: string, code: string): boolean {
@@ -75,31 +75,45 @@ export function maskConfirmCode(turn: string, code: string): string {
  *
  * The founder ruled that the tip is never defaulted and never model-chosen, so
  * the amount has to be traceable to the requester's turn the same way the code
- * is. Accepts the natural ways a person writes it: `4`, `$4`, `4.00`, `4.50`,
- * or the raw cents value, plus "no tip" for zero.
+ * is. Require an explicit tip phrase. Bare amounts mean dollars; cents need
+ * an explicit cents unit. Unrelated item quantities never authorize money.
  *
- * CALL THIS WITH THE CODE ALREADY MASKED OUT (see maskConfirmCode). Passing the
- * raw turn lets the code's own digits authorise a tip.
+ * CALL THIS WITH THE CODE ALREADY MASKED OUT (see maskConfirmCode). The code
+ * must not be parsed as part of the tip amount or confirmation grammar.
  *
- * KNOWN LIMITATION, stated rather than hidden: this asks whether the NUMBER
- * appears, not whether it appears as the tip. A turn like "add 4 garlic knots"
- * would satisfy a claimed tip of $4. That one is an incidental coincidence in
- * the human's own words, it is bounded by the per-order and per-day caps and by
- * the Telegram notification on every submit, and the check's real job — stopping
- * a model inventing an amount out of nothing — still holds.
+ * Conflicting amounts, negated amounts, and percentages require clarification.
+ * This is deliberately narrower than a model's interpretation of the message.
  */
 export function tipStatedByRequester(requesterTurn: string, tipCents: number): boolean {
   if (!Number.isSafeInteger(tipCents) || tipCents < 0) return false;
-  if (tipCents === 0 && /\b(?:no|zero|without\s+a|skip\s+the)\s+tip\b/i.test(requesterTurn)) return true;
-  const dollars = tipCents / 100;
-  const candidates = new Set<string>([String(tipCents), dollars.toFixed(2), String(dollars)]);
-  for (const candidate of candidates) {
-    const escaped = candidate.replace(/\./g, '\\.');
-    // The match has to be the WHOLE number, never a piece of a longer one.
-    // "45" must not satisfy a claimed $4 tip, and neither must "4.50" — that
-    // second case is why the lookahead also rejects a following ".<digit>",
-    // while still allowing a sentence that simply ends "tip 4".
-    if (new RegExp(`(?<![\\d.])${escaped}(?!\\d|\\.\\d)`).test(requesterTurn)) return true;
+  if (/\b(?:not|never|don['’]?t|do\s+not|or|maybe|about|around|approximately|if)\b|[?%]|\bpercent\b/i.test(requesterTurn)) return false;
+  // Multiple numeric values can be a range, a correction, a decimal comma,
+  // or a thousands separator. Require a new unambiguous confirmation turn.
+  const numbers = requesterTurn.match(/\d+(?:\.\d+)?/g) ?? [];
+  if (numbers.length > 1) return false;
+  const amounts: number[] = [];
+  // Parse the whole masked turn. An arbitrary prefix can cancel or question
+  // an otherwise valid amount ("cancel the order, tip 4"). Refuse rather than
+  // trying to classify every possible negation in natural language.
+  const beginning = String.raw`^[\s.,;!:]*(?:(?:yes|yeah|ok|okay|confirm|confirmed|code|please|place\s+it|place\s+the\s+order|order\s+it|go\s+ahead|and|with|a|i\s+choose\s+to|i\s+want\s+to|i\s+would\s+like\s+to)[\s.,;!:]+)*`;
+  const ending = String.raw`(?:[\s.,;!]*(?:please|thanks|thank\s+you|confirm|place\s+it|order\s+it|go\s+ahead|now))*[\s.,;!]*$`;
+  if (new RegExp(String.raw`${beginning}(?:no|zero|without\s+a|skip\s+the)\s+tip${ending}`, 'i').test(requesterTurn)) {
+    if (numbers.length > 0) return false;
+    amounts.push(0);
   }
-  return false;
+  const amount = String.raw`(\$?)(\d+(?:\.\d{1,2})?)(?:\s*(cents?|dollars?|usd))?`;
+  const before = new RegExp(String.raw`${beginning}tip\s*(?:of\s+|is\s+|:\s*)?${amount}${ending}`, 'gi');
+  const after = new RegExp(String.raw`${beginning}${amount}\s+(?:for\s+(?:the\s+)?)?tip\b${ending}`, 'gi');
+  for (const pattern of [before, after]) {
+    for (const match of requesterTurn.matchAll(pattern)) {
+      const [, dollarSign, value, unit] = match;
+      const cents = unit?.toLowerCase().startsWith('cent') === true;
+      if (cents && (dollarSign || value.includes('.'))) return false;
+      const [whole, decimal = ''] = value.split('.');
+      const parsed = cents ? Number(whole) : Number(whole) * 100 + Number(decimal.padEnd(2, '0'));
+      if (!Number.isSafeInteger(parsed)) return false;
+      amounts.push(parsed);
+    }
+  }
+  return amounts.length > 0 && amounts.every((amount) => amount === tipCents);
 }

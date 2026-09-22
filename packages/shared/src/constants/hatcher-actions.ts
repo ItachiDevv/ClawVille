@@ -24,6 +24,7 @@ export const HATCHER_ACTION_VERBS = [
   'salvage_node',
   'trade_token',
   'talk_to_npc',
+  'chat_nori',
 ] as const;
 
 export type HatcherActionVerb = (typeof HATCHER_ACTION_VERBS)[number];
@@ -35,6 +36,11 @@ export interface HatcherActionMenuItem {
 }
 
 export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
+  {
+    verb: 'chat_nori',
+    syntax: 'chat_nori(message=<1..500 characters; no closing parenthesis>)',
+    whenToUse: 'ask Nori the Town Guide about the world from anywhere; her reply enters your own memory and next decision; requires your bound ledger-authorized avatar',
+  },
   {
     verb: 'move',
     syntax: 'move(x=<32..22496>, y=<32..22496>)',

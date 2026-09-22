@@ -1014,6 +1014,24 @@ class NpcSimulation {
     return resolved?.agentId === expectedAgentId ? resolved : null;
   };
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
+  /** Shared real Nori turn; a narrow seam permits no-network action tests. */
+  autonomousNoriChat: (input: {
+    actor: { kind: 'agent'; sessionId: string; expectedAgentId: string; expectedAvatarId: string };
+    slug: string; content: string; isCurrent: () => boolean;
+  }) => Promise<{ message: { content: string } }> = async (input) => {
+    const { conductSystemAgentChat } = await import('./system-agent-chat');
+    return conductSystemAgentChat(input);
+  };
+  autonomousNoriReply: (agentId: string, avatarId: string, reply: string) => Promise<void> = async (agentId, avatarId, reply) => {
+    const { agentAutonomyDriver } = await import('./agent-autonomy-driver');
+    agentAutonomyDriver.rememberSystemChatReply(agentId, avatarId, reply);
+  };
+  autonomousNoriAgentResolve: typeof this.autonomousTradeAgentResolve = async (sessionId, expectedAgentId) => {
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    const resolved = await resolveAgentSession(sessionId);
+    return resolved?.agentId === expectedAgentId ? resolved : null;
+  };
+  private noriChatsInFlight = new Set<string>();
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
@@ -2961,6 +2979,31 @@ class NpcSimulation {
     }
   }
 
+  private async chatWithNori(npcId: string, npc: NpcRuntimeState, attribution: AgentActionAttribution, message: string): Promise<void> {
+    const isCurrent = () => this.npcs.get(npcId) === npc &&
+      this.npcOverrides.get(npcId) === attribution.sessionId &&
+      this.agentBotSessions.get(attribution.sessionId)?.config.avatarId === attribution.avatarId &&
+      this.agentBotSessions.get(attribution.sessionId)?.config.agentId === attribution.agentId;
+    if (!isCurrent() || this.noriChatsInFlight.has(attribution.avatarId)) return;
+    this.noriChatsInFlight.add(attribution.avatarId);
+    try {
+      const result = await this.autonomousNoriChat({
+        actor: { kind: 'agent', sessionId: attribution.sessionId, expectedAgentId: attribution.agentId, expectedAvatarId: attribution.avatarId },
+        slug: 'town-guide', content: message, isCurrent,
+      });
+      const current = await this.autonomousNoriAgentResolve(attribution.sessionId, attribution.agentId);
+      if (!isCurrent() || !current?.ledgerCapable || !current.userId ||
+          current.avatarId !== attribution.avatarId || current.agentId !== attribution.agentId) return;
+      this.agentBotSessions.get(attribution.sessionId)?.client?.rememberNoriReply(result.message.content);
+      // This is data from Nori, never another action-dispatch input.
+      await this.autonomousNoriReply(attribution.agentId, attribution.avatarId, result.message.content);
+      // The owner-shared Nori room can contain private chat/inventory context.
+      // Never publish its reply through the public world chat event stream.
+    } catch {
+      console.warn('[Autonomy] Nori chat refused or unavailable');
+    } finally { this.noriChatsInFlight.delete(attribution.avatarId); }
+  }
+
   /** Validate + execute ONE whitelisted Hatcher action. Invalid params drop. */
   private executeHatcherAction(
     npcId: string,
@@ -2976,6 +3019,12 @@ class NpcSimulation {
       return;
     }
     switch (name) {
+      case 'chat_nori': {
+        const message = (params.message ?? '').trim();
+        if (!attribution || !message || message.length > HATCHER_TALK_MESSAGE_MAX) return;
+        void this.chatWithNori(npcId, npc, attribution, message);
+        return;
+      }
       case 'move': {
         const x = Number(params.x);
         const y = Number(params.y);

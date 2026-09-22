@@ -1,0 +1,128 @@
+[
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "market_deed_locks",
+    "artifact_name": "market_deed_locks_listing_id_fkey",
+    "artifact_type": "f",
+    "definition": "FOREIGN KEY (listing_id) REFERENCES market_listings(id) ON DELETE CASCADE",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_ledger_events",
+    "artifact_name": "poker_cash_ledger_kind_check",
+    "artifact_type": "c",
+    "definition": "CHECK (kind = ANY (ARRAY['buy_in'::text, 'rebuy'::text, 'cash_out'::text, 'rake'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_seats",
+    "artifact_name": "poker_cash_seats_status_check",
+    "artifact_type": "c",
+    "definition": "CHECK (status = ANY (ARRAY['sitting_in'::text, 'sitting_out'::text, 'left'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_seats",
+    "artifact_name": "poker_cash_seats_subject_type_check",
+    "artifact_type": "c",
+    "definition": "CHECK (subject_type = ANY (ARRAY['human'::text, 'agent'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_tables",
+    "artifact_name": "poker_cash_tables_rake_bps_check",
+    "artifact_type": "c",
+    "definition": "CHECK (rake_bps >= 0 AND rake_bps <= 10000)",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_tables",
+    "artifact_name": "poker_cash_tables_seat_bounds_check",
+    "artifact_type": "c",
+    "definition": "CHECK (max_seats >= 2 AND max_seats <= 8 AND seeded_agent_slots >= 0 AND seeded_agent_slots <= max_seats)",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_tables",
+    "artifact_name": "poker_cash_tables_source_check",
+    "artifact_type": "c",
+    "definition": "CHECK (source = ANY (ARRAY['house'::text, 'player-public'::text, 'private'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_tables",
+    "artifact_name": "poker_cash_tables_status_check",
+    "artifact_type": "c",
+    "definition": "CHECK (status = ANY (ARRAY['open'::text, 'closed'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_cash_tables",
+    "artifact_name": "poker_cash_tables_visibility_check",
+    "artifact_type": "c",
+    "definition": "CHECK (visibility = ANY (ARRAY['public'::text, 'private'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_tournaments",
+    "artifact_name": "poker_tournaments_entrant_bounds_check",
+    "artifact_type": "c",
+    "definition": "CHECK (min_entrants >= 2 AND max_entrants >= min_entrants AND seats_per_table >= 2 AND seats_per_table <= 9)",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_tournaments",
+    "artifact_name": "poker_tournaments_rake_bps_check",
+    "artifact_type": "c",
+    "definition": "CHECK (rake_bps >= 0 AND rake_bps <= 10000)",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_tournaments",
+    "artifact_name": "poker_tournaments_starting_stack_check",
+    "artifact_type": "c",
+    "definition": "CHECK (starting_stack > 0)",
+    "validated": true
+  },
+  {
+    "kind": "constraint",
+    "schema_name": "public",
+    "table_name": "poker_tournaments",
+    "artifact_name": "poker_tournaments_status_check",
+    "artifact_type": "c",
+    "definition": "CHECK (status = ANY (ARRAY['registering'::text, 'seating'::text, 'running'::text, 'completed'::text, 'cancelled'::text]))",
+    "validated": true
+  },
+  {
+    "kind": "index",
+    "schema_name": "public",
+    "table_name": "bounty_attempts",
+    "artifact_name": "bounty_attempts_one_approved_per_bounty",
+    "artifact_type": "unique_index",
+    "definition": "CREATE UNIQUE INDEX bounty_attempts_one_approved_per_bounty ON public.bounty_attempts USING btree (bounty_id) WHERE (status = 'approved'::bounty_attempt_status)",
+    "validated": true
+  }
+]

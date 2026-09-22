@@ -741,6 +741,13 @@ class AgentAutonomyDriver {
     }
   }
 
+  /** A shared Nori turn must affect the next choice even when RAG ranks it lower. */
+  rememberSystemChatReply(agentId: string, avatarId: string, reply: string): void {
+    const entry = this.userAgents.get(agentId);
+    if (!entry || entry.avatarId !== avatarId) return;
+    entry.lastLesson = `Nori: ${reply.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`;
+  }
+
   /** O(1): does this owner currently have a driver-enrolled autonomous agent?
    *  Consulted on the heartbeat hot path (bridge double-drive exclusion, C1). */
   isOwnerEnrolled(userId: string): boolean {

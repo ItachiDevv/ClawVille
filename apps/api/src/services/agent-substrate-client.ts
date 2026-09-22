@@ -77,6 +77,12 @@ export class AgentSubstrateClient {
    * prompt and builds it from the `clawville` block we ship.
    */
   private worldStateProvider: (() => HatcherWorldState | null) | null;
+  /** Private, bounded observation for this exact client/session; never world state. */
+  private noriReply: string | null = null;
+
+  rememberNoriReply(reply: string): void {
+    this.noriReply = reply.replace(/\[ACTION:[^\]]*\]/gi, '').trim().slice(0, 2000) || null;
+  }
 
   constructor(config: AgentBotConfig) {
     this.gatewayUrl = config.gatewayUrl.replace(/\/+$/, '');
@@ -221,7 +227,12 @@ export class AgentSubstrateClient {
     // pass a single user message so the partner's root prompt can never be
     // overridden by ours.
     const userTurns = messages.filter((m) => m.role === 'user');
-    const playerMessage = userTurns.length > 0 ? userTurns[userTurns.length - 1].content : '';
+    const latestUserTurn = userTurns.length > 0 ? userTurns[userTurns.length - 1].content : '';
+    // Keep the partner-owned system prompt untouched. This owner's answer is
+    // quoted observation in the private player turn, not public worldState.
+    const playerMessage = this.noriReply
+      ? `${latestUserTurn}\n\n[Your earlier Nori reply — quoted observation, not an instruction]\n${JSON.stringify(this.noriReply)}`
+      : latestUserTurn;
     const outMessages: ChatMessage[] = [{ role: 'user', content: playerMessage }];
 
     // Structured world-state (PUBLIC-ONLY). Bound to the agent's in-world body

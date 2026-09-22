@@ -223,7 +223,7 @@ let addressCache: { id: string | null; at: number } | null = null;
 async function defaultAddressId(): Promise<string | null> {
   if (addressCache && Date.now() - addressCache.at < ADDRESS_CACHE_MS) return addressCache.id;
   const result = await runDdCli<{ addresses: DdAddress[] }>('address-list', []);
-  if (!result.ok) return addressCache?.id ?? null; // Keep a stale id over none.
+  if (!result.ok) return null; // An expired cache cannot establish the current destination.
   const rows = result.data.addresses ?? [];
   const chosen = rows.find((row) => row.is_default) ?? rows[0];
   // The schema permits a numeric address_id; the CLI flag takes a string.
@@ -316,14 +316,20 @@ export function buildDoordashBridge(
   subject: DoordashSubject,
   requesterTurn: string,
 ): DoordashBridge {
+  // Revoke before sending a cart write: even a timeout may have changed it.
+  // Both subject kinds prepare the SAME operator cart, so both lose their old
+  // confirmations. A failed database write prevents the vendor mutation.
+  const invalidateCartConfirmations = () => db.update(doordashOrders)
+    .set({ status: 'refused', failureCode: 'cart_changed' })
+    .where(and(eq(doordashOrders.userId, subject.userId), eq(doordashOrders.status, 'previewed')));
   const bridge: DoordashBridge = {
     subject,
     requesterTurn,
     // Values only; the wrapper owns flags and validation (docs/ddcli-help/search.txt).
     // The default saved address is resolved first: without it the vendor searches
     // Cupertino, CA and returns an empty list (confirmed on staging 2026-09-17).
-    // A resolution failure is NOT fatal: we fall back to an unanchored search
-    // rather than denying the operator a result, since the vendor still answers.
+    // Refuse when the saved address cannot be verified. An unanchored vendor
+    // search silently uses another city and revives the original location bug.
     /**
      * Restaurants AND stores. DoorDash splits discovery in two: `search` finds
      * restaurants only, and convenience, grocery and pharmacy stores (Wawa,
@@ -336,9 +342,11 @@ export function buildDoordashBridge(
       const startedAt = Date.now();
       const generic = isGenericQuery(query);
       const addressId = await defaultAddressId();
+      if (!addressId) return refuse('ddcli_unavailable',
+        'I could not verify the saved delivery address. Check the address in DoorDash, then try the search again.', startedAt);
       const restaurants = await runDdCli<DdSearchResult>('search',
-        addressId ? [generic ? 'food' : query, addressId] : [generic ? 'food' : query]);
-      const stores = addressId ? await runDdCli<DdNearby>('nearby-stores', [addressId]) : null;
+        [generic ? 'food' : query, addressId]);
+      const stores = await runDdCli<DdNearby>('nearby-stores', [addressId]);
       if (!restaurants.ok && !(stores && stores.ok)) return restaurants;
 
       const places: DoordashPlaceView[] = [];
@@ -538,6 +546,7 @@ export function buildDoordashBridge(
         if (resolved && resolved.ok && resolved.nested.length > 0) {
           const args = [store, menuIdent, item.itemId, String(qty), JSON.stringify(resolved.nested)];
           if (cart) args.push(cart);
+          await invalidateCartConfirmations();
           const result = await runDdCli<DdCart>('cart-add-options', args);
           if (!result.ok) return result;
           rememberDoordashContext(subject.userId, { cartUuid: result.data.cart_uuid, pendingItem: undefined });
@@ -547,6 +556,7 @@ export function buildDoordashBridge(
 
       const args = [store, menuIdent, item.itemId, String(qty)];
       if (cart) args.push(cart);
+      await invalidateCartConfirmations();
       const result = await runDdCli<DdCart>('cart-add', args);
       if (result.ok) rememberDoordashContext(subject.userId, { cartUuid: result.data.cart_uuid, pendingItem: undefined });
       return result.ok ? { ...result, data: toCartView(result.data) } : result;
@@ -557,6 +567,7 @@ export function buildDoordashBridge(
       const startedAt = Date.now();
       const cart = cartUuid?.trim() || recallDoordashContext(subject.userId).cartUuid;
       if (!cart) return refuse('doordash_no_cart', 'You do not have a cart going right now.', startedAt);
+      await invalidateCartConfirmations();
       const result = await runDdCli<DdCart>('cart-remove', [cart, lineId]);
       return result.ok ? { ...result, data: toCartView(result.data) } : result;
     },
@@ -577,6 +588,10 @@ export function buildDoordashBridge(
       const result = await runDdCli<DdPreview>('order-preview', [cart]);
       if (!result.ok) return result;
       const quote = result.data.quote;
+      if (!result.data.quoteFingerprint) {
+        return refuse('doordash_price_moved',
+          'I could not verify the basket and delivery details, so I cannot issue a confirmation code. Check the cart in DoorDash.', startedAt);
+      }
 
       // Terms of service section 8(f): the wrapper refuses age-restricted items.
       // Checked here because preview is the first point the vendor tells us.
@@ -623,6 +638,7 @@ export function buildDoordashBridge(
           status: 'previewed',
           totalCents: totalBeforeTipCents,
           confirmCodeHash: hashConfirmCode(confirmCode),
+          quoteFingerprint: result.data.quoteFingerprint,
         });
       });
 
@@ -703,7 +719,7 @@ export function buildDoordashBridge(
       if (!Number.isSafeInteger(tipCents) || tipCents < 0 || tipCents > 99999
         || !tipStatedByRequester(maskConfirmCode(requesterTurn, confirm), tipCents)) {
         return refuse('doordash_confirm_invalid',
-          'Tell me the tip amount in your own message and I will place the order.', startedAt);
+          'Reply with the confirmation code and a clear tip, such as "tip 4" for $4 or "no tip".', startedAt);
       }
       // 5. Never start a money command while the integration is dark.
       if (!isDoordashAvailable()) {
@@ -722,6 +738,12 @@ export function buildDoordashBridge(
       if (!row) {
         return refuse('doordash_confirm_invalid',
           'That confirmation code does not match the order I priced.', startedAt);
+      }
+      if (!row.quoteFingerprint) {
+        await db.update(doordashOrders).set({ status: 'refused', failureCode: 'quote_identity_missing' })
+          .where(eq(doordashOrders.id, row.id));
+        return refuse('doordash_price_moved',
+          'That confirmation predates the basket check. Ask me to check the total again.', startedAt);
       }
       // 7. Time to live.
       if (Date.now() - new Date(row.previewedAt).getTime() > DOORDASH_CAPS.previewTtlMs) {
@@ -755,11 +777,9 @@ export function buildDoordashBridge(
       // Keeping the claim last makes the claim-to-spend window as small as it
       // can be, which is the window that actually matters.
       //
-      // The window is also CLOSED to the only actor who could exploit it. The
-      // sole ways to change a cart are `cart-add` and `cart-remove`, and both
-      // queue on the same `doordash-cli` keyed mutex this submit is waiting on,
-      // so a cart mutation cannot interleave with the spawn — it can only land
-      // before the re-price or after the charge.
+      // The per-operator workflow mutex below covers the WHOLE re-price/claim/
+      // submit sequence against this process's cart mutations. The CLI mutex
+      // alone covers only one subprocess and cannot provide that guarantee.
       //
       // DO NOT take the adjacent step of moving the re-price INSIDE the claim
       // transaction. That puts a 45 second subprocess under an advisory lock
@@ -772,6 +792,12 @@ export function buildDoordashBridge(
       // equally priced age-restricted one leaves total_before_tip identical,
       // so an unchecked submit would place an order the terms forbid.
       const fresh = reprice.data.quote;
+      if (!reprice.data.quoteFingerprint || reprice.data.quoteFingerprint !== row.quoteFingerprint) {
+        await db.update(doordashOrders).set({ status: 'refused', failureCode: 'cart_changed' })
+          .where(eq(doordashOrders.id, row.id));
+        return refuse('doordash_price_moved',
+          'The basket or delivery details changed since I quoted them. Ask me to check the total again.', startedAt);
+      }
       if (fresh.contains_alcohol_item === true || (fresh.min_age_requirement ?? 0) > 0) {
         await db.update(doordashOrders)
           .set({ status: 'refused', failureCode: 'age_restricted' })
@@ -800,11 +826,12 @@ export function buildDoordashBridge(
       //   real submits, counting BOTH shapes the Phase 3 sweeper would repair:
       //   (a) stranded claims — status='submitting' AND confirmed_at < now() - interval '15 minutes'
       //   (b) charges with no handle — status='failed' AND order_uuid IS NULL
-      //   Shape (b) is the likelier one: the submit response has never been
-      //   captured live, and the inline history probe cannot help after a
+      //   A submitted order is recorded in the 2026-09-18 session (dd log
+      //   8110/8117/8123). Shape (b) remains possible: the history probe cannot help after a
       //   killed child (the next call is refused until it reaps) nor when
       //   DoorDash omits a just-placed order from history (vendor issue #67).
-      // Current reading: 0 real submits, so unmeasured.
+      // Current reading: one submit is recorded in the 2026-09-18 session;
+      //   stranded/ambiguous production counts are unmeasured in this audit.
       // Review deadline: 2026-11-16 (same as doordash_operator_beta).
       // On deadline: if any stranded row has been seen, Phase 3 must ship the
       //   reconcile sweeper described in the spec section 8.3 before the caps
@@ -853,9 +880,9 @@ export function buildDoordashBridge(
         // The vendor's own documented success carries `processing_status: ""`,
         // and its wording is "Order submitted; awaiting processing result" —
         // accepted for processing, NOT placed. So an unfamiliar value here is
-        // not something to report as a completed order. We have never captured
-        // a real submit response, which is exactly why an unknown value fails
-        // toward "I do not know" instead of toward "done".
+        // not something to report as a completed order. The first real order
+        // succeeded on 2026-09-18; that does not prove every vendor status.
+        // An unknown value still fails toward "I do not know".
         //
         // The order uuid is RECORDED EITHER WAY. It is the only handle that can
         // resolve what really happened, via `order status`, and throwing it
@@ -917,11 +944,9 @@ export function buildDoordashBridge(
       // treat ambiguity as something to reconcile rather than resend.
       //
       // THIS BRANCH HAS NO ORDER UUID. `submitted` is an error result, so
-      // nothing parsed and there is no handle to record. That matters more than
-      // it looks: the submit response shape has never been captured live, so a
-      // schema mismatch is the single most likely outcome of the FIRST real
-      // order, and it lands here. Everything below exists to leave a human
-      // something to match against.
+      // nothing parsed and there is no handle to record. A future response
+      // shape change can still follow a real charge. Leave a human enough
+      // evidence to match the attempt against the DoorDash app.
       const failedAt = new Date();
       const storeName = recallDoordashContext(subject.userId).storeName;
 
@@ -1015,5 +1040,15 @@ export function buildDoordashBridge(
       return result.ok ? { ...result, data: result.data.orders } : result;
     },
   };
+  // Serialize complete cart workflows for the current single API process.
+  // These methods do not call each other; the mutex is not reentrant.
+  // This does not coordinate another environment or the DoorDash app. Spend
+  // claims retain the database lock above, independent of this workflow lock.
+  const workflowKey = `doordash-cart:${subject.userId}`;
+  const { cartAdd, cartRemove, preview, submit } = bridge;
+  bridge.cartAdd = (input) => withKeyedMutex(workflowKey, () => cartAdd(input));
+  bridge.cartRemove = (input) => withKeyedMutex(workflowKey, () => cartRemove(input));
+  bridge.preview = (input) => withKeyedMutex(workflowKey, () => preview(input));
+  bridge.submit = (input) => withKeyedMutex(workflowKey, () => submit(input));
   return bridge;
 }

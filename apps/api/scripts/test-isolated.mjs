@@ -28,14 +28,13 @@ const DB_TIER = new Set([
 
 // KNOWN PRE-EXISTING GENUINE FAILURES — fail STANDALONE (not isolation). Flagged to
 // their owning domain agent to fix; quarantined here so the isolated run stays green.
+// 2026-09-22: remaining suites passed one fresh run, but retain unseeded/statistical
+// or timing-dependent coverage. Owner: activities-arena; review: 2026-09-29.
+// Evidence and graduation conditions: docs/audits/2026-09-22-adjacent-sessions-audit.md.
 const KNOWN_FAILING = new Map([
-  ['src/routes/__tests__/partner-hatcher-p5-handler.test.ts', 'row.createdAt undefined -> 500 standalone (owner: agent-protocol-partner; PROTECTED surface)'],
-  ['src/services/activity/__tests__/activity-room-manager.test.ts', 'fails standalone (owner: activities-arena)'],
   ['src/services/activity/bots/__tests__/bumper-shells-bot.test.ts', 'FLAKY: unseeded-RNG statistical assertion (avgX>0.5) (owner: activities-arena — seed the RNG)'],
   ['src/services/activity/bots/__tests__/reef-race-bot.test.ts', 'FLAKY: unseeded-RNG statistical assertion (owner: activities-arena — seed the RNG)'],
-  ['src/services/activity/__tests__/reef-race-bot-winrate.test.ts', 'statistical winrate fails standalone 3/3 (owner: activities-arena — seed the RNG)'],
   ['src/services/activity/sim/__tests__/reef-race-spline-sim-integration.test.ts', 'FLAKY: physics-timing non-determinism (owner: activities-arena)'],
-  ['src/services/activity/sim/__tests__/reef-race-spline.test.ts', 'physics-timing fails standalone 3/3 (owner: activities-arena)'],
 ]);
 
 const norm = (p) => p.replace(/\\/g, '/');

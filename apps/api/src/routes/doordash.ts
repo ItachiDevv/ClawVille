@@ -7,7 +7,8 @@
 // Metric to graduate: >= 10 successful submits by the operator across >= 3
 //   distinct UTC days, with zero unintended orders
 //   (count doordash_orders WHERE status='submitted').
-// Current reading: 0 (not yet shipped).
+// Current reading: historical evidence records one submitted order on 2026-09-18;
+//   the current production count is not measured by the 2026-09-22 source audit.
 // Review deadline: 2026-11-16.
 // On deadline: if the metric is not met, DELETE the routes, the actions, the
 //   wrapper, the bind-mount and the env vars. Do not extend without a new

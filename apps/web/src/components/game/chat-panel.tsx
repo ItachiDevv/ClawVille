@@ -83,7 +83,7 @@ function RecoveryCloseButton() {
 function GuideChatBody() {
   const closeGuideChat = useGameStore((s) => s.closeGuideChat);
   const guideChatOpen = useGameStore((s) => s.guideChatOpen);
-  const { messages, sendMessage, clearMessages, isLoading } = useGuideChat();
+  const { messages, sendMessage, clearMessages, isLoading, error } = useGuideChat();
 
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -122,7 +122,7 @@ function GuideChatBody() {
         </div>
         <button
           onClick={closeGuideChat}
-          className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/40 text-white font-bold transition-colors shrink-0"
+          className="w-11 h-11 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/40 text-white font-bold transition-colors shrink-0"
           aria-label="Close"
         >
           X
@@ -169,6 +169,11 @@ function GuideChatBody() {
 
       {/* Input */}
       <div className="px-4 py-3 border-t border-cyan-500/15">
+        {error && (
+          <p role="alert" className="mb-2 text-sm text-red-200">
+            Nori could not reply. Please send your message again.
+          </p>
+        )}
         <div className="flex gap-2">
           <input
             type="text"
@@ -182,7 +187,7 @@ function GuideChatBody() {
           <button
             onClick={handleSend}
             disabled={isLoading || !input.trim()}
-            className="bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-2 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
+            className="min-h-11 min-w-11 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-2 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
           >
             Send
           </button>

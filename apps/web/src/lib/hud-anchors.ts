@@ -86,18 +86,37 @@ export const JOYSTICK_ZONE_HEIGHT_PX = 220;
  * (hooks/use-bottom-prompt-slot), which must clear it: on a 390 px phone the
  * centred 280 px prompt pill used to cover ~27 px of the button (2026-09-18).
  */
-// On a short screen (a phone held landscape) the button is also capped so
-// its top stays 70 px from the viewport top, below the Nori button (top 16,
-// ~46 tall, + 8 gap): vh - 80 (pad lift) - bottom - 64 >= 70 -> bottom <=
-// vh - 214. At 740x360 it covered Nori (measured 2026-09-18). It still clears
-// the camera joystick (top vh - 220) down to vh ~360. Portrait is unchanged.
 // The floor is 148 px, not 7rem: the camera joystick top is 140 px above the
 // pad bottom (static, bottom 80, size 120), so a lower button overlapped it on
 // phones narrower than 390 px (3 px at 360x780, measured 2026-09-18). At 390+
 // 38vw is already >= 148, so those phones are unchanged.
-export const JUMP_BUTTON_BOTTOM_IN_ZONE_CSS = 'min(clamp(148px, 38vw, 10.5rem), calc(100dvh - 214px))';
 export const JUMP_BUTTON_RIGHT_CSS = 'max(calc(env(safe-area-inset-right, 0px) + 18px), 18px)';
 export const JUMP_BUTTON_SIZE_PX = 64;
+/** Tallest prompt plus the mode toggle and their clearance. Shared with its cap. */
+export const MOBILE_PROMPT_TOP_RESERVE_PX = 260;
+/** Below 600 px a centred prompt can reach Jump's column (see below). */
+export const PROMPT_JUMP_CLASH_MAX_VW_PX = 600;
+const JUMP_BUTTON_DESIRED_BOTTOM_CSS = 'clamp(148px, 38vw, 10.5rem)';
+// A narrow portrait screen must also fit the prompt above Jump. Above the
+// width boundary the positive term removes this constraint. On 320x568 with
+// inset 44 the available target is 48 px; all zero-inset targets stay 64 px.
+const JUMP_BUTTON_PROMPT_SIZE_CAP_CSS =
+  `max(44px, calc(100dvh - ${JOYSTICK_ZONE_BOTTOM_CSS} - ${JUMP_BUTTON_DESIRED_BOTTOM_CSS} - ${MOBILE_PROMPT_TOP_RESERVE_PX + 8}px + max(0px, (100vw - ${PROMPT_JUMP_CLASH_MAX_VW_PX - 1}px) * 1000)))`;
+/**
+ * Keep Jump below Nori (top >= 70) and above the camera joystick (140 px
+ * above the zone bottom). A nonzero bottom inset lifts that joystick too.
+ * Short screens can have less than 64 px between them: shrink toward 44 px,
+ * reserving a 4 px gap when it fits. The 44 px floor takes priority if the
+ * viewport cannot fit all controls; the supported 360 px height fits inset 44.
+ */
+export const JUMP_BUTTON_SIZE_CSS =
+  `min(${JUMP_BUTTON_SIZE_PX}px, max(44px, calc(100dvh - ${JOYSTICK_ZONE_BOTTOM_CSS} - 214px)), ${JUMP_BUTTON_PROMPT_SIZE_CAP_CSS})`;
+export const JUMP_BUTTON_BOTTOM_IN_ZONE_CSS =
+  `min(${JUMP_BUTTON_DESIRED_BOTTOM_CSS}, calc(100dvh - ${JOYSTICK_ZONE_BOTTOM_CSS} - ${JUMP_BUTTON_SIZE_CSS} - 70px))`;
+
+/** Short-screen Autonomous panel ends 8 px above the same camera joystick. */
+export const SHORT_TOUCH_AUTONOMY_MAX_HEIGHT_CSS =
+  `max(0px, calc(100dvh - ${JOYSTICK_ZONE_BOTTOM_CSS} - 218px))`;
 
 /**
  * Below this viewport width a centred bottom pill can reach the Jump button's
@@ -105,7 +124,7 @@ export const JUMP_BUTTON_SIZE_PX = 64;
  * in from the right edge (18 + 64), plus an 8 px gap: 2 x (210 + 8 + 82) = 600.
  * Every portrait phone is narrower; every landscape phone and iPad is wider.
  */
-export const PROMPT_JUMP_CLASH_MAX_VW_PX = 600;
+// PROMPT_JUMP_CLASH_MAX_VW_PX above is shared by the target size and prompt.
 
 // ---------------------------------------------------------------------------
 // Explicit registration.

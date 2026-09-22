@@ -433,12 +433,14 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
 
     expect(routeStart).toBeGreaterThan(-1);
     expect(routeEnd).toBeGreaterThan(routeStart);
-    const guestCheckAt = routeSource.indexOf('await isGuestUser(user.id)');
-    const limiterAt = routeSource.indexOf('systemAgentRewardLimiter.tryConsume(user.id, slug)');
+    expect(routeSource).toContain('await conductSystemAgentChat(');
+    const serviceSource = readFileSync(join(import.meta.dir, '..', 'system-agent-chat.ts'), 'utf8');
+    const guestCheckAt = serviceSource.indexOf('const rewardGuest = await isGuestUser(subject.userId)');
+    const limiterAt = serviceSource.indexOf('systemAgentRewardLimiter.tryConsume(subject.userId, input.slug)');
     expect(guestCheckAt).toBeGreaterThan(-1);
     expect(limiterAt).toBeGreaterThan(guestCheckAt);
-    expect(routeSource).toContain('avatar && !canonicalGuest &&');
-    expect(routeSource).not.toContain('!avatar.isGuest');
+    expect(serviceSource).toContain('rewardAvatar && !rewardGuest &&');
+    expect(serviceSource).not.toContain('!avatar.isGuest');
   });
 
   it('0037 commits guards before split backfill/index migrations', () => {

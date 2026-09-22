@@ -48,6 +48,16 @@ let mockedLevelRows: Array<{ id: string; level: number }> = [];
 const dbMock = {
   transaction(fn: (tx: unknown) => Promise<unknown>) {
     const tx = {
+      // Settlement now re-reads immutable PB claims inside the transaction.
+      // These telemetry fixtures have no lap/PB claim; model that empty read
+      // explicitly instead of bypassing the settlement branch.
+      select(cols: Record<string, unknown>) {
+        expect(Object.keys(cols).sort()).toEqual(['bestLapMs', 'dailyRank', 'previousBestLapMs']);
+        return { from: () => ({ where: () => ({ limit: async (limit: number) => {
+          expect(limit).toBe(1);
+          return [];
+        } }) }) };
+      },
       insert(_table: unknown) {
         const thenable: any = {
           then(resolve: (v: unknown) => unknown) {
@@ -140,7 +150,13 @@ mock.module('@clawville/database', () => ({
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
   },
-  reefRacePersonalBestClaims: {},
+  reefRacePersonalBestClaims: {
+    bestLapMs: 'best_lap_ms',
+    previousBestLapMs: 'previous_best_lap_ms',
+    dailyRank: 'daily_rank',
+    sourceRoomId: 'source_room_id',
+    avatarId: 'avatar_id',
+  },
   // 2026-06-23: `activity-replay-log.ts` (transitively imported via the reward
   // pipeline) references `activityReplays`; the schema gained this table after
   // this mock was first written, so the named export was missing → Bun threw

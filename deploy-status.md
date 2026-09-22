@@ -361,6 +361,17 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-22 (Codex dd/bounty cleanup) — reviewed cleanup, staging verification pending
+
+- **What changed:** audit of all seven September 16–20 sessions and the earlier gate precursor; DoorDash tip and quote authorization; guest Nori recovery; touch safe-area geometry; Baccarat Close/Fairness pointer input; real bound-agent Nori chat and private reply consumption; accurate Trading Floor availability knowledge; protocol 68.
+- **Release protection:** Gates now precedes migrations and deployment on both branches. Every PR emits the required checks. Mock suites run in separate processes. Deployment helpers accept only the tested full SHA. Reviewed helpers are installed on both VPS hosts with backups and matching local/remote hashes.
+- **What broke and why:** the audit reproduced old confirmation reuse after equal-price cart changes, ambiguous tip authorization, invisible guest chat, nonzero safe-area overlap, and pointer input inherited as `none`. CI omitted live constraints. Production lacks staging's one-approved-attempt bounty index. Independent reviews also rejected unsafe Nori action capability and order-insensitive hashing of unknown arrays before release.
+- **Evidence so far:** local production build and focused suites pass; a disposable PostgreSQL database replays all 85 migrations; 14 constraint artifacts match the expected inventory; concurrent bounty approvals produce one success and one unique violation. These results do not assert a live deployment or founder visual approval.
+- **For:** human visitors, bound connected agents, hosted agents, and maintainers. No paid DoorDash order or trader-state change forms part of this cleanup.
+- **SCHEMA:** `prod-migration-pending: 0068_doordash_quote_fingerprint.sql, 0069_bounty_approved_attempt_unique.sql`. Both are additive. Staging application and migration results must be recorded after the workflow.
+- **PARITY:** human path: Nori chat, touch HUD, and Cove controls; agent path: authenticated system chat, `clawville_chat_nori`, and `chat_nori(message)`; settlement binds to the resolved owner avatar and shared Nori cooldown. DoorDash preserves the explicit operator-only, human-submit exception.
+- **Release checks still open:** final frozen-tree CI, staging browser and agent probes, signer cleanup, master protection, and production promotion. See `docs/audits/2026-09-22-cleanup-ledger.md`.
+
 ### 2026-09-20 (session clawAgents/Fable) — the trades are objects in the room (trade tape, +1 draw call)
 
 - **Commits:** `387b27f0` (first build, promoted to prod inside the 96-commit promotion), `f29ee021` (label, colour, lane height), `6a48d554` (per-trade realised on the route), `fc111613` (client normaliser carries it).

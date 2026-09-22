@@ -706,6 +706,9 @@ export default function GamePage() {
           model first. Hides itself when a chat is already open or
           inside an activity room. */}
       <NoriButton />
+      {/* Nori is available before a visitor has an avatar. Her panel must
+          mount with the shortcut, including its touch close and ESC recovery. */}
+      <ChatPanel />
       {/* Listens for `clawville:ensure-guest-avatar` window events from the
           game store and bootstraps a guest avatar for un-authenticated
           visitors. No UI of its own. */}
@@ -724,12 +727,8 @@ export default function GamePage() {
       {/* World UI that's useful for ALL avatar-bearing visitors — including
           guests minted by the auto-create flow. Shows building labels, the
           ? help button, the land proximity pill, the global activity feed,
-          AND the chat panel so
-          NPC-mode guests can talk to building teachers (brand priority #2:
-          open agent onboarding — no human account required). ChatPanel
-          gates internally on chatOpen / guideChatOpen so it stays hidden
-          until the guest actually taps a character. Backend /chat accepts
-          guest avatars (isGuest carve-out in chat.ts). */}
+          NPC-mode guests can talk to building teachers through the separately
+          mounted ChatPanel. Backend /chat accepts guest avatars. */}
       {hasAvatar && (
         <>
           <LocationHUD />
@@ -741,7 +740,6 @@ export default function GamePage() {
               again after the player dismisses it. */}
           <YardEditorPrimer />
           <ActivityFeed />
-          <ChatPanel />
           {/* AvatarChatBar lives only under the agent-connected branch below.
               KNOWLEDGE-BUILDING chat (all modes, incl. NPC) is now the single
               proximity prompt → enterBuilding → ChatPanel (full ElizaOS resident
@@ -773,7 +771,7 @@ export default function GamePage() {
           agentConnected=true implies controlMode='player'|'autonomous'
           (setAgentConnection enforces it), but if any code path leaves
           controlMode='npc' while an agent is connected, we still hide the
-          agent-only UI. (Chat moved up into the hasAvatar block.) */}
+          agent-only UI. ChatPanel mounts outside the avatar gate. */}
       {/* AvatarChatBar — mounts for any EMBODIED avatar-owner in player/
           autonomous mode, NOT only while an agent is connected (2026-06-12,
           regression D2). When a chat send hits a dead agent session the store

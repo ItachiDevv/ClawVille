@@ -31,6 +31,8 @@ export const doordashOrders = pgTable(
     tipCents: integer('tip_cents').notNull().default(0),
     /** sha256 hex of the uppercased confirm code. Never the code itself. */
     confirmCodeHash: text('confirm_code_hash').notNull(),
+    /** Hash of quoted cart/item/options/destination identity; legacy rows are null. */
+    quoteFingerprint: text('quote_fingerprint'),
     previewedAt: timestamp('previewed_at', { withTimezone: true }).defaultNow().notNull(),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),

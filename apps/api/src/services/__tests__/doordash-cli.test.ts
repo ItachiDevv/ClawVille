@@ -48,6 +48,30 @@ afterEach(() => {
 });
 
 describe('DoorDash subprocess boundary', () => {
+  it('computes quote identity before stripping options and refuses a vendor-supplied digest', async () => {
+    const spawn = spyOn(Bun, 'spawn').mockImplementationOnce((() => child()) as never);
+    const wrapper = await fresh();
+    const quote = {
+      cart_uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', quoteFingerprint: 'vendor-forged',
+      quote: { total_before_tip: { unit_amount: 1500 },
+        delivery_address: { printable_address: 'Test address' },
+        store_order_cart: { is_consumer_pickup: false, store: { id: 'store', name: 'Test store' },
+          orders: [{ order_items: [{ id: 'line', item: { id: 'item', name: 'Test food' }, quantity: 1,
+            nested_options: [{ id: 'option-a' }] }] }] } },
+    };
+    spawn.mockImplementation((() => child(envelope(quote))) as never);
+    const first = await wrapper.runDdCli<import('../doordash-cli').DdPreview>('order-preview', [quote.cart_uuid]);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.data.quoteFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(first.data)).not.toContain('Test address');
+    expect(JSON.stringify(first.data)).not.toContain('nested_options');
+    quote.quote.store_order_cart.orders[0].order_items[0].nested_options[0].id = 'option-b';
+    const second = await wrapper.runDdCli<import('../doordash-cli').DdPreview>('order-preview', [quote.cart_uuid]);
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.data.quoteFingerprint).not.toBe(first.data.quoteFingerprint);
+  });
+
   it('passes exactly five allowlisted keys and static argv, with no inherited secret', async () => {
     process.env.DATABASE_URL = 'database-secret';
     process.env.VANITY_ENCRYPTION_KEY = 'wallet-secret';
