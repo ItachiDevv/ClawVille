@@ -361,6 +361,14 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-22 06:35 UTC (Codex cleanup release resumes)
+
+- **Authorization:** founder renewed GitHub access. The CLI now reports the required `workflow` scope. Remote staging and master still match the audited baseline.
+- **Change:** release the reviewed DoorDash, Nori, touch-control, bounty-index, and CI coupling cleanup from `cbb647ad` and `3d006578` through staging first.
+- **Verification:** local evidence appears below. Same-SHA GitHub checks, staged migrations, container verification, partner/runtime probes, and browser checks remain pending. This entry does not claim deployment success.
+- **SCHEMA:** `prod-migration-pending: 0068_doordash_quote_fingerprint.sql, 0069_bounty_approved_attempt_unique.sql`.
+- **PARITY:** human Nori UI and bound-agent system chat/action share avatar settlement and reward limits. The release preserves trader pauses and the human-only DoorDash submit boundary.
+
 ### 2026-09-22 (Codex dd/bounty cleanup) — local cleanup; GitHub workflow permission blocks release
 
 - **What changed:** audit of all seven September 16–20 sessions and the earlier gate precursor; DoorDash tip and quote authorization; guest Nori recovery; touch safe-area geometry; Baccarat Close/Fairness pointer input; real bound-agent Nori chat and private reply consumption; accurate Trading Floor availability knowledge; protocol 68.
