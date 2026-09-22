@@ -23,14 +23,45 @@ on:
   # Required branch-protection checks must be emitted on documentation-only PRs too.
   pull_request: {}
   # Deploy callers always invoke this same-SHA suite.
-  workflow_call: {}
-  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      coupling-base-sha:
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      coupling-base-sha:
+        description: Full base commit SHA for this complete change (no parent fallback)
+        type: string
+        required: true
 
 concurrency:
   group: gates-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  coupling-gates:
+    name: coupling documentation contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout evaluated head and full history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Test coupling enforcement
+        run: bun test scripts/ci/run-coupling-gates.test.ts scripts/ci/run-coupling-gates.independent.test.ts
+      - name: Enforce changed-file coupling contracts
+        env:
+          COUPLING_BASE_SHA: ${{ inputs.coupling-base-sha }}
+        run: bun scripts/ci/run-coupling-gates.ts --github
+
   web-tests:
     name: web Trading Floor tests
     runs-on: ubuntu-latest

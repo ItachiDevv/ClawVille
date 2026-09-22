@@ -291,3 +291,45 @@ TaskC names the coupling runner and `.claude/gates/` registry. The session does 
 Thus Phase0c's constraint/protection acceptance is distinct from the unimplemented Phase1 follow-on.
 Owner: **agent-protocol-partner / CI owner**. Review deadline: **2026-09-29**.
 Required disposition: inventory the Phase1 registry and runner against the plan before claiming that broader gates program is implemented.
+
+### Subsequent Phase1 implementation: independent registry review
+
+The coordinator authorized this separate follow-on after local cleanup commit `cbb647ad`.
+It implements the first14 coupling entries in the original plan. It does not implement every later gate in that plan.
+The original request remains fixBounty:1045; the exact runner/registry commitment appears in its final taskC at:1188.
+
+This review reads all14 registry files and the current protected-path and ownership documents.
+Independent in-memory probes call the actual runner for each rule:14 missing-target cases fail;14 changed-target cases pass.
+The action case also exercises the required protocol68→69 increase. No production source version changes during these probes.
+
+| Rule | Current representative trigger | Required change |
+|---|---|---|
+| gameplay-change-updates-nori-knowledge | Cove route; game UI; casino engine | Nori template or shared orientation |
+| gameplay-updates-connection-skillmd | Game UI; gameplay service; shared action menu | Protocol manual |
+| action-whitelist-bumps-protocol-version | Executor methods; `hatcher-actions.ts` | Manual and increased literal protocol version |
+| protocol-version-propagates-three-surfaces | Changed protocol version | Partner specification |
+| protected-partner-surface-updates-spec-and-harness | Current substrate client, session restore, shared types and harness | Partner specification; live harness remains separate |
+| partner-dependency-binds-surface | Resolver, substrate types/client, simulation, leaderboard, shared actions | Partner specification |
+| new-route-table-service-env-updates-architecture | New route/service; schema; CI/deploy | Architecture |
+| env-var-updates-architecture | New literal dot/bracket env key; `.env.example` | Architecture |
+| gameplay-economy-ui-updates-gamefeatures | Game UI, economy constants, ledger, current avatar daily-login route | GameFeatures |
+| three-d-updates-3dstructure | Three.js code, world components, models | 3dStructure |
+| map-locations-updates-worldcontent | Current map and building constants | WorldContent |
+| phase51-wallet-identity-doc-coupling | Current identity/custody services and portal | Architecture; owner is agent-protocol-partner |
+| wager-program-change-updates-architecture | Wager route, client and contract | Architecture |
+| agent-connect-updates-docs | Agent routes, game modal and root connection instructions | Architecture and GameFeatures |
+
+The review found stale or missing current paths before acceptance.
+The implementer added root-level connection instructions, four casino engines, the legacy type compatibility shim, and the current daily-login route.
+The wallet rule now names the domain that owns its custody services.
+Seven additional current-path rejection probes pass, including the exact Trading Floor UI class from baseline `10575a98`.
+A shared-orientation change satisfies the Nori alternative, matching the actual `townGuide.knowledge` spread.
+The generated index matches the registry after those changes.
+
+The rule bodies disclose their limits. Changed documentation does not prove correct content or runtime delivery.
+The protected-surface rule does not claim that a signed staging harness ran.
+Dynamic computed environment keys require human review. Asset-version, animation, static-ban and CODEOWNERS phases remain separate.
+The adversarial reviewer separately approved parser, Git range, rename/deletion and workflow checks after21 tests passed with104 assertions.
+The implementer also verified the actual `10575a98`→`cbb647ad` range:14 rules loaded,9 triggered, and no failures.
+Those results supplement this registry review; they do not establish remote CI or branch protection.
+Current acceptance is **local implementation and registry verification only**. The GitHub credential blocker still prevents release and remote required-check proof.

@@ -93,16 +93,54 @@ Local runtime: Bun 1.3.14. Existing CI pins Bun 1.3.11. Live production containe
 
 ## Remaining work
 
+### Consolidated complaint acceptance
+
+| Complaint | Independent result | Acceptance limit |
+|---|---|---|
+| Earlier land lots became empty | The earlier generator stayed intact. A later parcel expansion omitted showroom coverage. Current generation and shared tests cover all 56 parcels. | Physical world inspection remains separate from data coverage. |
+| A shadow avatar follows the player after Reef Race | Activity suspension erased local identity while retaining the world session. Current lifecycle and identity tests pin the repaired behavior. | No fresh human race was played in this audit. |
+| Nori body and collider disagree | A mesh move changed one of several duplicated coordinates. Current paths share `NORI_WORLD_Z`. | Current source and regression tests establish coordinate agreement. |
+| Cove falls into the dark fallback | The old 40 FPS threshold conflicted with a 30 FPS phone limit and startup stalls. Current sampler tests cover the policy. | Browser automation did not establish the FPS floor. Physical-device acceptance remains open. |
+| Cove exit traps the player | The old exit constant lay in an unsafe band. Current tests cover the derived exit; the production return control reaches the world without reopening Cove. | Observed guest path only. |
+| Nori gives wrong bounty directions | All three knowledge surfaces now name the Bounty Board. The earlier transcript's broad success claim exceeded its recorded answer checks. | New generation and consumption require the staged runtime probe. |
+| SAP removal appears reversed | No restoration commit was found. The earlier removal intentionally retained tables. Production now has none of the removed tables or columns. | The applied migration caused an old-code/new-schema outage. Its immutable SQL remains unchanged; this report corrects its misleading comments. |
+| Old wager lobbies remain open | Production rows 184 and 187 are cancelled with failed creation status. Recovery tests pass. | This is not a fresh on-chain settlement experiment. |
+| DoorDash accepts unsafe confirmation or a changed cart | Independent parser, identity, and workflow tests pass after the local repair. Address lookup now fails closed. | Commit is not deployed. No paid order was placed. |
+| Phone controls overlap; guest Nori cannot close | Production reproduction confirms the guest defect. Local safe-area and guest-panel tests pass after repair. | Commit is not deployed; real iPad evidence remains open. |
+| Baccarat Close and Fairness reject clicks | Production DOM hit testing confirms the canvas receives the click. The local CSS repair restores pointer events. | Requires a staged browser click after deployment. |
+| Regression gates and promised follow-up were absent | Schema inventory, isolated tests, exact-SHA helpers, and deploy dependencies now have local evidence. | GitHub credentials block push, branch protection, red-PR proof, and release gates. The fourteen coupling rules are a separate local follow-up. |
+| Trading research and accounting claims lack proof | The later audit invalidates profitability claims and records unresolved execution accounting. Approved indefinite pauses supersede older restart instructions. | Owner: external runner maintainer. Review deadline: 2026-09-29. Reconcile failed-entry fees, unknown-buy expiry, and ambiguous HTTP outcomes before any separately approved resume. This cleanup does not restart traders. |
+
 ### Final local review checkpoint
 
 - A fresh second auditor found no additional blocking source defect. Its focused run passed 71 tests, skipped two database-only tests, and failed none.
-- The full isolated API run passed 283 files and failed one stale source-location assertion in `building-reward.test.ts`. After that test followed the extracted service, all 23 cases passed. One database-only file and three existing nondeterministic suites remain excluded from this local runner. The adjacent-session report records their owners and review deadline.
+- The first full isolated API run passed 283 files and failed one stale source-location assertion in `building-reward.test.ts`. After that test followed the extracted service, all 23 cases passed. The final full rerun passed all 284 executed files, with zero failures. One database-only file and three existing nondeterministic suites remain excluded from this local runner. The adjacent-session report records their owners and review deadline.
 - Final production build: nine tasks passed, zero cached. API typecheck, actionlint, and whitespace checks passed.
-- Both VPS deployment helpers now match the reviewed local files and require a full commit SHA. Each host retains a pre-audit backup. No deployment had started at this checkpoint.
-- The staging test signer is configured for the signed harness. It is not configured on production. Release verification must remove this staging setting and its local test key after the harness, then confirm the replacement API container has no test signer.
+- Both VPS deployment helpers passed installation and hash checks. The push then failed for missing GitHub workflow permission. The coordinator restored both pre-audit helpers and verified byte equality, because the unchanged remote workflows still call them without SHA arguments. Install the reviewed helpers again immediately before the authorized staging push. No deployment started.
+- The staging test signer was configured for the signed harness, then removed when GitHub credentials blocked the push. The Coolify model readback reports zero signer settings. No container deployment occurred, and production never received this setting. The live harness remains pending.
 
 Both independent source reviews found no remaining blocker in this patch. Same-SHA GitHub gates, staging harness, runtime probe, branch-protection proof, deployed-container verification, and browser acceptance remain open. No production repair claim follows from local checks.
 
-The earlier Phase 1 coupling registry is an unimplemented follow-on, not a reverted implementation. The prior session explicitly described it as the next task after Phase 0c. This audit does not claim that the entire multi-phase CI plan is implemented. Owner: CI/domain maintainers. Review deadline: 2026-09-29. Condition: reconcile the fourteen proposed coupling rules with current protected paths, then implement and mutation-test the registry as a separate change.
+The earlier Phase 1 coupling registry was an unimplemented follow-on, not a reverted implementation. The coordinator authorized its separate implementation after local cleanup commit `cbb647ad`. All fourteen rule files now exist locally with current paths and ownership. Independent registry probes verify fourteen missing-target failures, fourteen changed-target passes, seven current-path failures, the shared-orientation alternative, and the generated index. The adjacent-session report records each rule and scope. The separate adversarial parser/Git/workflow review approves the local change after21 tests pass with104 assertions. Release and remote required-check proof remain blocked by GitHub credentials. This does not claim that the entire multi-phase CI plan is implemented. Later asset/static/CODEOWNERS phases remain owned by CI/domain maintainers, with review deadline 2026-09-29.
 
 The production Cove return control navigated to `/game` during this audit. The visible sonar reported `11264, 12564`, and no Cove prompt reopened. This verifies the observed guest return path only; it does not establish the target FPS or real-device Safari behavior.
+
+### GitHub credential blocker, 05:58 UTC
+
+Commit `cbb647ad1a5a7c9b9e1a301c9f1b2ea2ec43fde6` is local. The HTTPS push rejects workflow updates because the GitHub CLI token has only `gist, read:org, repo` scopes. The configured SSH key authenticates as the read-only `ItachiDevv/itachi-memory` deploy key. A separate SSH identity does not authenticate. Git Credential Manager has no stored GitHub credential. The peer laptop's GitHub CLI token is invalid. The coordinator requested `gh auth refresh -h github.com -s workflow` on itachi222.
+
+At 05:58 UTC, production health remains `ok` at `6f115fc2`; staging remains `ok` at `10575a98`. No application, migration, trader, or branch-protection change occurred. The temporary test signer is removed, the old deployment helpers are restored, and both disposable audit database containers are removed. The reviewed patches remain available locally for release after credential renewal.
+
+### Release continuation after credential renewal
+
+1. Fetch both remote branches. Preserve other work and resolve any new staging changes before release.
+2. Reinstall the reviewed full-SHA deployment helpers on both hosts. Verify their hashes. The current host copies intentionally remain the old versions while remote workflows remain old.
+3. Create a new temporary signer for the staging Hatcher harness. Set it through the staging Coolify model only. Never set it on production.
+4. Push the reviewed commit to staging. Require all reusable Gates jobs before migration and deployment. Confirm both container SHAs and `/health`; verify migrations 0068 and 0069 and the approval index.
+5. Run public onboarding, the signed identity-bound Hatcher client, and the hosted runtime probe with autonomous-decision evidence. Preserve the fleet halt. The probe must show a private Nori reply on the next decision and no trade from its fixture.
+6. Verify guest Nori, Baccarat controls, and touch layouts in both orientations on staging. Record console errors and observed performance honestly. Real Safari remains a founder device check.
+7. Remove the staging signer and test identity. Remove the local test key. Redeploy the same API SHA and verify no test signer remains in that container.
+8. Configure and read back the four master checks: `coupling documentation contracts`, `web Trading Floor tests`, `api money/cove/poker invariant tests`, and `api route tests (Postgres-backed)`. Preserve the planned admin exception explicitly. Prove a deliberately incorrect protocol pin fails a disposable draft PR before removing that test branch.
+9. Promote staging through a PR to master. Verify production container SHAs, health, schema, served manual, and browser behavior. Update deployment evidence and founder review notes in the same release sequence.
+
+No step authorizes a paid DoorDash order, a swap, a trader restart, removal of a fleet halt, or changes to retained SAP settings.

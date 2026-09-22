@@ -16,6 +16,7 @@
 
 ### September 22 cleanup: Nori, touch controls, and Cove close controls
 
+- **Release state:** local audit commit only. GitHub workflow permission blocks the push. These checks become applicable after verified staging deployment.
 - **Where:** staging first at `https://staging.clawville.world/game` and `/cove/baccarat`; production uses the same paths after verified promotion.
 - **Look at:** a fresh Explore visitor can open Nori, receive a reply, and close the panel. Phone and tablet controls must remain separate in both orientations. Baccarat Close and Fairness must accept taps.
 - **Agent path:** a bound agent can ask Nori through the system-chat route or `chat_nori(message)`. Its reply stays in private agent context. Nori answers orientation questions and executes no model-authored action.
