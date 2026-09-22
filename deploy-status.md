@@ -14,6 +14,8 @@
 
 ## CURRENT STAGING / PROD STATE
 
+- **2026-09-22 06:39 UTC (Codex cleanup): staging Git tip `732c7342`; deployed staging remains `10575a98`.** Run `35695565960` passed API invariants, PostgreSQL route tests, and coupling contracts. The web test process failed on delayed React/TanStack DOM access after fixture teardown. The dependency chain skipped both migration and deployment. Production remains `6f115fc2`. An implementer and an independent reviewer now address the test lifecycle defect. **SCHEMA:** `prod-migration-pending: 0068_doordash_quote_fingerprint.sql, 0069_bounty_approved_attempt_unique.sql`; neither live database received these migrations in this run.
+
 - **2026-09-20 22:39Z (session ClawVille/Opus) - PROMOTION CONFIRMED ON PROD: `6f115fc2` (PR #295).** Prod had been frozen on `a6d17e05` since **09-18**. **VERIFIED BY THE CONTAINER, not the queue row:** `https://api.clawville.world/health` returns `{"commit":"6f115fc2c0eecb6765b981879cda16659310c185"}`; both master workflows (Auto-deploy PROD, Gates) completed success. All six gates were green before the merge: RTP 100k Monte Carlo, api money/cove/poker invariants, api route tests (Postgres-backed), web Trading Floor tests, migrate, deploy. **0 migrations**, so there was no prod DB step.
 
   **WHAT IS NOT FIXED, and must not be read as handled:**
@@ -360,6 +362,13 @@
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-09-22 (Codex cleanup) — repair CI DOM lifecycle before retry
+
+- **Failure:** staging run `35695565960` failed when a delayed React/TanStack callback accessed a DOM fixture after teardown. The same commit passed its separate PR run, confirming a timing-dependent test failure. Migration and deployment stayed blocked.
+- **Correction:** the hook fixture cancels and clears every QueryClient and drains notifications before removing the DOM. The workflow runs the same 29 suites in separate processes. No suite or assertion was removed.
+- **Evidence:** independent Bun 1.3.11 execution passes all 29 suites (443 tests), plus 74 tests in the formerly affected shared-process combination. Actionlint and diff checks pass. Same-SHA GitHub execution remains the release gate.
+- **For:** maintainers and both human/agent regression coverage. **SCHEMA:** `prod-migration-pending: 0068_doordash_quote_fingerprint.sql, 0069_bounty_approved_attempt_unique.sql`. This correction changes tests and CI only.
 
 ### 2026-09-22 06:35 UTC (Codex cleanup release resumes)
 

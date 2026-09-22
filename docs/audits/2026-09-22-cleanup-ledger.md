@@ -133,6 +133,8 @@ At 05:58 UTC, production health remains `ok` at `6f115fc2`; staging remains `ok`
 
 ### Release continuation after credential renewal
 
+Credential renewal verified at 06:35 UTC. Staging received `732c7342`; draft promotion PR is #296. Run `35695565960` passed coupling contracts, API invariants, and PostgreSQL route checks. The web lane failed on delayed DOM access after test teardown. Both migration and deployment were skipped by the dependency chain. This proves the new failure gate blocks live changes. The author and a separate reviewer now repair the fixture/process lifecycle; no check is bypassed.
+
 1. Fetch both remote branches. Preserve other work and resolve any new staging changes before release.
 2. Reinstall the reviewed full-SHA deployment helpers on both hosts. Verify their hashes. The current host copies intentionally remain the old versions while remote workflows remain old.
 3. Create a new temporary signer for the staging Hatcher harness. Set it through the staging Coolify model only. Never set it on production.

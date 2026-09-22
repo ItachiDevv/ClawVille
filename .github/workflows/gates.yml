@@ -94,9 +94,15 @@ jobs:
       - name: Typecheck web
         run: cd apps/web && bun run typecheck
 
-      - name: Run Trading Floor suites
-        run: >-
-          cd apps/web && bun test
+      - name: Run Trading Floor suites in separate processes
+        # DOM globals, React queues, query managers, and mock.module are process-global.
+        # Preserve every suite and fail immediately on any error.
+        shell: bash
+        run: |
+          cd apps/web
+          while IFS= read -r file; do
+            bun test "$file"
+          done <<'SUITES'
           src/stores/__tests__/trade-ticker.test.ts
           src/stores/__tests__/world-stream-state.test.ts
           src/hooks/use-trading-floor-normalise.test.ts
@@ -126,6 +132,7 @@ jobs:
           src/stores/__tests__/npc-place-player.test.ts
           src/components/game/__tests__/spawn-on-load-route-exit.test.ts
           src/lib/__tests__/hud-short-touch.test.ts
+          SUITES
 
       - name: Run guest Nori chat regression suite in its own process
         # This suite installs a DOM and API spies. Keep global test state local.
