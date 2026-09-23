@@ -12,7 +12,12 @@ import {
 } from '@clawville/shared';
 
 import { useIsMobile } from '@/hooks/use-is-mobile';
-import { FLOOR_TEXT } from './tokens';
+import {
+  FLOOR_TEXT,
+  TRADING_SELF_SERVE_AGENT_EXPLANATION,
+  TRADING_SELF_SERVE_COMING_SOON,
+  TRADING_SELF_SERVE_ENABLED,
+} from './tokens';
 
 // The section reads the SAME constants `GET /api/floor/templates` serves, so
 // the copy a human reads here and the copy an agent fetches cannot disagree.
@@ -44,6 +49,13 @@ const buttonStyle = {
   padding: '8px 12px',
   cursor: 'pointer',
 } as const;
+
+const gatedButtonStyle = () => ({
+  ...buttonStyle,
+  color: TRADING_SELF_SERVE_ENABLED ? FLOOR_TEXT.primary : FLOOR_TEXT.muted,
+  opacity: TRADING_SELF_SERVE_ENABLED ? 1 : 0.55,
+  cursor: TRADING_SELF_SERVE_ENABLED ? 'pointer' : 'not-allowed',
+} as const);
 
 const STEPS = [
   'Open the ClawPump dashboard and sign in.',
@@ -140,17 +152,29 @@ function TemplateCard({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <button
           type="button"
-          style={buttonStyle}
-          onClick={() => void copy('persona', template.personaText)}
+          style={gatedButtonStyle()}
+          disabled={!TRADING_SELF_SERVE_ENABLED}
+          aria-disabled={!TRADING_SELF_SERVE_ENABLED}
+          title={!TRADING_SELF_SERVE_ENABLED ? TRADING_SELF_SERVE_AGENT_EXPLANATION : undefined}
+          onClick={TRADING_SELF_SERVE_ENABLED ? () => void copy('persona', template.personaText) : undefined}
         >
           {copied === 'persona' ? 'Persona copied' : 'Copy persona'}
+          {!TRADING_SELF_SERVE_ENABLED ? (
+            <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+          ) : null}
         </button>
         <button
           type="button"
-          style={buttonStyle}
-          onClick={() => void copy('skills', skillsText)}
+          style={gatedButtonStyle()}
+          disabled={!TRADING_SELF_SERVE_ENABLED}
+          aria-disabled={!TRADING_SELF_SERVE_ENABLED}
+          title={!TRADING_SELF_SERVE_ENABLED ? TRADING_SELF_SERVE_AGENT_EXPLANATION : undefined}
+          onClick={TRADING_SELF_SERVE_ENABLED ? () => void copy('skills', skillsText) : undefined}
         >
           {copied === 'skills' ? 'Skills copied' : 'Copy skills'}
+          {!TRADING_SELF_SERVE_ENABLED ? (
+            <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+          ) : null}
         </button>
       </div>
       {reveal && reveal.key.startsWith(`${template.objective}:`) ? (
@@ -248,21 +272,39 @@ export function ClawPumpTemplatesSection() {
         {TRADING_TEMPLATE_MODEL}. {TRADING_TEMPLATE_MODEL_NOTE}
       </p>
 
-      <a
-        href={CLAWPUMP_DASHBOARD_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          ...buttonStyle,
-          display: 'inline-flex',
-          alignItems: 'center',
-          marginTop: 10,
-          color: FLOOR_TEXT.link,
-          textDecoration: 'none',
-        }}
-      >
-        Open the ClawPump dashboard
-      </a>
+      {TRADING_SELF_SERVE_ENABLED ? (
+        <a
+          href={CLAWPUMP_DASHBOARD_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            ...buttonStyle,
+            display: 'inline-flex',
+            alignItems: 'center',
+            marginTop: 10,
+            color: FLOOR_TEXT.link,
+            textDecoration: 'none',
+          }}
+        >
+          Open the ClawPump dashboard
+        </a>
+      ) : (
+        <button
+          type="button"
+          disabled={!TRADING_SELF_SERVE_ENABLED}
+          aria-disabled={!TRADING_SELF_SERVE_ENABLED}
+          title={TRADING_SELF_SERVE_AGENT_EXPLANATION}
+          style={{ ...gatedButtonStyle(), marginTop: 10 }}
+        >
+          Open the ClawPump dashboard
+          <small style={{ display: 'block', fontSize: 10 }}>{TRADING_SELF_SERVE_COMING_SOON}</small>
+        </button>
+      )}
+      {!TRADING_SELF_SERVE_ENABLED ? (
+        <p style={{ margin: '10px 0 0', color: FLOOR_TEXT.muted, fontSize: 11 }}>
+          {TRADING_SELF_SERVE_AGENT_EXPLANATION}
+        </p>
+      ) : null}
 
       <div style={{ marginTop: 12 }}>
         <h4 style={{ margin: '0 0 6px', color: FLOOR_TEXT.value, fontSize: 12 }}>

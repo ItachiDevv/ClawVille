@@ -10,15 +10,15 @@ import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { miladyGateway } from '../services/milady-gateway';
-import { creditClawTokens } from '../services/claw-token-ledger';
 import {
   creditBuildingChatRewardOncePerDay,
   humanBuildingChatRewardAvatarId,
 } from '../services/building-reward';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
-import { getSystemNpcAgent, getSystemAgent } from '../services/system-npc-seeder';
-import { systemAgentRewardLimiter } from '../services/system-agent-reward-limiter';
+import { getSystemNpcAgent } from '../services/system-npc-seeder';
+import { conductSystemAgentChat } from '../services/system-agent-chat';
+import { AGENT_SESSION_HEADER } from '../middleware/require-auth-or-agent';
 import {
   moderateText,
   CONTENT_BLOCKED_CODE,
@@ -49,138 +49,32 @@ const chatSchema = z.object({
 // This route MUST be registered BEFORE `POST /:id/chat` so Hono matches the
 // literal 'system' segment ahead of the `:id` wildcard.
 //
-// Auth: `requireAuth` — the guide is auth-gated because she rewards tokens
-// and we need `user.id` for Phase 6 memory isolation (room derived from
-// `characterRoomId(slug, user.id)`). Unauthenticated humans get 401.
+// Auth: Lucia cookie or live, ledger-authorized agent session. Both bind
+// memory and the shared reward cooldown to the same canonical owner userId.
 // ───────────────────────────────────────────────────────────────────────────
-chatRoutes.post('/system/:slug', requireAuth, async (c) => {
+chatRoutes.post('/system/:slug', async (c) => {
+  // sessionMiddleware preserves cookie precedence and humans without avatars.
   const user = c.get('user');
-  const slug = c.req.param('slug');
+  const sessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (!user && !sessionId) {
+    throw new HTTPException(401, { message: 'Authentication required — Lucia cookie or X-Clawville-Agent-Session header' });
+  }
   const body = await c.req.json();
   const result = chatSchema.safeParse(body);
-
-  if (!result.success) {
-    throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
+  if (!result.success) throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
+  try {
+    return c.json(await conductSystemAgentChat({
+      actor: user ? { kind: 'human', userId: user.id } : { kind: 'agent', sessionId: sessionId! },
+      slug: c.req.param('slug'), content: result.data.content,
+      fpHash: c.get('fpHash'), ipPrefixHash: c.get('ipPrefixHash'),
+    }));
+  } catch (error) {
+    if (error instanceof HTTPException && error.status === 503) c.header('Retry-After', '3');
+    if (error instanceof HTTPException && error.message === CONTENT_BLOCKED_MESSAGE) {
+      return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
+    }
+    throw error;
   }
-
-  // Content guardrail (input) — runs BEFORE the runtime/LLM so blocked text
-  // never reaches cognition (saves tokens) and fail-open never breaks chat.
-  const inMod = await moderateText(result.data.content, { surface: 'system-chat', direction: 'input' });
-  if (!inMod.allowed) {
-    return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
-  }
-
-  const agent = await getSystemAgent(slug);
-  if (!agent) {
-    // Set Retry-After so clients back off during the boot-race window
-    // between container start and `ensureSystemAgents()` completing.
-    c.header('Retry-After', '3');
-    throw new HTTPException(503, {
-      message: `System agent '${slug}' not seeded yet — try again in a moment`,
-    });
-  }
-
-  const runtime = await agentOrchestrator.ensureAgentRuntime(
-    agent.platformAgent.id,
-    agent.systemUserId,
-  );
-  if (!runtime) {
-    throw new HTTPException(500, { message: 'Failed to start system agent runtime' });
-  }
-
-  // Fetch visitor's avatar (optional — enables personalized tutorials + XP/token
-  // rewards; the system agent still responds when avatar is absent).
-  const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-  });
-
-  const services = avatar
-    ? buildRuntimeServices(db, { actorKind: 'human' })
-    : undefined;
-  const state: Record<string, any> = {
-    avatarId: avatar?.id,
-    platformAgentId: agent.platformAgent.id,
-    userId: user.id,
-    services,
-    avatarData: avatar ?? null,
-    // NOTE: keep the bare slug here (no 'system:' prefix). Audit H3 — memory
-    // continuity for existing Nori chats requires preserving the existing
-    // room derivation: `characterRoomId('town-guide', userId)`.
-    nearLocation: slug,
-    characterConfig: (avatar?.characterConfig as any) ?? {},
-  };
-
-  if (avatar) {
-    try {
-      state.inventory = await db.query.avatarInventory.findMany({
-        where: eq(avatarInventory.avatarId, avatar.id),
-      });
-    } catch { /* non-blocking */ }
-  }
-
-  const response = await runtime.processMessage(result.data.content, {
-    userId: user.id,
-    // Per-user memory isolation — each visitor has their own private room
-    // with this system agent, scoped to the slug. Do NOT change this
-    // derivation — it would orphan existing conversation memory.
-    roomId: characterRoomId(slug, user.id),
-    platform: 'clawville',
-    state,
-    // F3: live human↔Nori chat — keep replies short (tight token ceiling).
-    conversational: true,
-  });
-
-  // Reward a token + XP for chatting, same economy as a building teacher —
-  // but only once per (userId, slug) every 60s to stop spam mints.
-  // Guest users run an ALL-DEMO economy: they NEVER touch the real CT
-  // ledger (and `&&` short-circuits so they also don't consume the limiter),
-  // so both `creditClawTokens` AND the `awardXp` level-up leak are skipped.
-  let tokenAwarded: 0 | 1 = 0;
-  const canonicalGuest = avatar ? await isGuestUser(user.id) : false;
-  if (avatar && !canonicalGuest && systemAgentRewardLimiter.tryConsume(user.id, slug)) {
-    tokenAwarded = 1;
-    await creditClawTokens({
-      avatarId: avatar.id,
-      amount: 1,
-      reason: 'system_agent_chat',
-      source: 'api',
-      metadata: { slug },
-      actorKind: 'human',
-    }).catch((err) => console.error('[chat/system] creditClawTokens failed:', err));
-
-    awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
-  }
-
-  void logEventFromContext(c, {
-    eventType: 'agent.chat.turn',
-    userId: user.id,
-    avatarId: avatar?.id ?? null,
-    // system-agent chats are not building visits — buildingId stays null
-    // so the /dash buildings-by-visits chart doesn't attribute them to a
-    // fake building id.
-    buildingId: null,
-    payload: {
-      // Deliberately 'system-agent', NOT 'location'. Audit H1 — system
-      // agents are not MiladyAI teachers; including them in the
-      // teacher-chat metric would inflate that dashboard card.
-      chatType: 'system-agent',
-      agentSlug: slug,
-      messageLength: result.data.content.length,
-      tokenAwarded,
-    },
-  });
-
-  // Content guardrail (output) — the persona reply is agent→human, so moderate
-  // it before returning. A block substitutes a safe refusal; fail-open passes.
-  const outMod = await moderateText(response.content, { surface: 'system-chat', direction: 'output' });
-
-  return c.json({
-    message: {
-      role: 'assistant' as const,
-      content: outMod.allowed ? response.content : OUTPUT_REFUSAL_MESSAGE,
-      timestamp: response.timestamp.toISOString(),
-    },
-  });
 });
 
 chatRoutes.post('/:id/chat', requireAuth, async (c) => {

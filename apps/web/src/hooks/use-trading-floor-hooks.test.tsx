@@ -43,6 +43,7 @@ let createRoot: typeof import('react-dom/client').createRoot;
 let root: Root | null = null;
 let container: HTMLElement | null = null;
 let fetchCount = 0;
+const queryClients = new Set<QueryClient>();
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
 function rememberDom(): void {
@@ -107,6 +108,7 @@ function feedTree(enabled = true) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
+  queryClients.add(client);
   return createElement(
     QueryClientProvider,
     { client },
@@ -139,12 +141,22 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await act(async () => {
+    for (const client of queryClients) {
+      await client.cancelQueries();
+      client.clear();
+    }
+    queryClients.clear();
+  });
   if (root) await act(async () => root?.unmount());
   container?.remove();
   root = null;
   container = null;
   resetFloorClockForTest();
   jest.useRealTimers();
+  // Query notifications use a timer, not only a promise microtask. Drain that
+  // queue while window still exists, including callbacks queued before unmount.
+  await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
 });
 
 afterAll(() => {
@@ -241,6 +253,7 @@ describe('House trader polling', () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
     });
+    queryClients.add(client);
     pollClient = client;
     return {
       client,

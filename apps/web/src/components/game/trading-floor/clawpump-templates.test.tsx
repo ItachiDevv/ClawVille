@@ -1,9 +1,22 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from 'bun:test';
 import { act, createElement } from 'react';
 import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 
 import { CLAWPUMP_DASHBOARD_URL, TRADING_AGENT_TEMPLATES } from '@clawville/shared';
+import * as tokens from './tokens';
+
+const originalTokens = { ...tokens };
+
+function enableSelfServe(): void {
+  mock.module('./tokens', () => ({ ...originalTokens, TRADING_SELF_SERVE_ENABLED: true }));
+}
+
+function clickHandler(element: HTMLElement): unknown {
+  const key = Object.keys(element).find((name) => name.startsWith('__reactProps$'));
+  expect(key).toBeDefined();
+  return (element as unknown as Record<string, { onClick?: unknown }>)[key!]?.onClick;
+}
 
 // Same DOM harness as floor-components.test.tsx: bun has no global DOM, so the
 // happy-dom window is installed and torn down around the render.
@@ -80,9 +93,12 @@ afterEach(async () => {
   container?.remove();
   root = null;
   container = null;
+  mock.module('./tokens', () => originalTokens);
+  Reflect.deleteProperty(globalThis.navigator, 'clipboard');
 });
 
 afterAll(() => {
+  mock.module('./tokens', () => originalTokens);
   restoreDom();
   testWindow.close();
 });
@@ -94,8 +110,39 @@ describe('ClawPump templates section', () => {
       expect(host.textContent).toContain(template.displayName);
     }
     const buttons = [...host.querySelectorAll('button')].map((node) => node.textContent);
-    expect(buttons.filter((label) => label === 'Copy persona')).toHaveLength(5);
-    expect(buttons.filter((label) => label === 'Copy skills')).toHaveLength(5);
+    expect(buttons.filter((label) => label?.startsWith('Copy persona'))).toHaveLength(5);
+    expect(buttons.filter((label) => label?.startsWith('Copy skills'))).toHaveLength(5);
+  });
+
+  test('disables every launch control without copying or revealing template material', async () => {
+    expect(tokens.TRADING_SELF_SERVE_ENABLED).toBe(false);
+    const writeText = mock(() => Promise.reject(new Error('clipboard blocked')));
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const host = await renderSection();
+    const controls = [...host.querySelectorAll('button')];
+    expect(controls).toHaveLength(TRADING_AGENT_TEMPLATES.length * 2 + 1);
+    const expectedStyle = document.createElement('button').style;
+    expectedStyle.color = tokens.FLOOR_TEXT.muted;
+    for (const control of controls) {
+      expect(control.disabled).toBe(true);
+      expect(control.getAttribute('aria-disabled')).toBe('true');
+      expect(control.title).toBe(tokens.TRADING_SELF_SERVE_AGENT_EXPLANATION);
+      expect(control.querySelector('small')?.textContent).toBe(tokens.TRADING_SELF_SERVE_COMING_SOON);
+      expect(control.style.color).toBe(expectedStyle.color);
+      expect(Number(control.style.opacity)).toBeLessThan(1);
+      expect(control.getAttribute('href')).toBeNull();
+      expect(clickHandler(control)).toBeUndefined();
+      await act(async () => { control.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    }
+    expect(writeText).not.toHaveBeenCalled();
+    expect(host.querySelectorAll('textarea')).toHaveLength(0);
+    expect(host.querySelector(`a[href="${CLAWPUMP_DASHBOARD_URL}"]`)).toBeNull();
+    expect([...host.querySelectorAll('p')].filter(
+      (paragraph) => paragraph.textContent === tokens.TRADING_SELF_SERVE_AGENT_EXPLANATION,
+    )).toHaveLength(1);
   });
 
   test('gives every tap target at least 44 pixels', async () => {
@@ -108,6 +155,7 @@ describe('ClawPump templates section', () => {
   });
 
   test('opens the ClawPump dashboard safely in a new tab', async () => {
+    enableSelfServe();
     const host = await renderSection();
     const link = [...host.querySelectorAll('a')].find(
       (node) => node.getAttribute('href') === CLAWPUMP_DASHBOARD_URL,
@@ -115,6 +163,12 @@ describe('ClawPump templates section', () => {
     expect(link).toBeDefined();
     expect(link?.getAttribute('target')).toBe('_blank');
     expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(host.textContent).not.toContain(tokens.TRADING_SELF_SERVE_COMING_SOON);
+    for (const button of host.querySelectorAll('button')) {
+      expect(button.disabled).toBe(false);
+      expect(typeof clickHandler(button)).toBe('function');
+      expect(button.style.opacity).toBe('1');
+    }
   });
 
   test('tells the truth about registering a ClawPump wallet and offers no dead button', async () => {
@@ -153,6 +207,7 @@ describe('ClawPump templates section', () => {
   });
 
   test('reveals the text when the clipboard is unavailable', async () => {
+    enableSelfServe();
     // A denied permission, an insecure origin and an in-app webview all reject
     // here. The text still has to reach the user, so the card must fall back to
     // selectable text rather than silently doing nothing.

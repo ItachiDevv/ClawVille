@@ -331,3 +331,28 @@ describe('House trader risk block', () => {
     expect(normaliseHouseSlotRiskForTest({ state: 'paused' })).toBeNull();
   });
 });
+
+// PER-TRADE REALISED (2026-09-20). The route attaches this only to a sell leg
+// its FIFO matcher could attribute. It is what colours a flying chip in the
+// Trading Floor room green or red, so an absent field must stay absent rather
+// than become 0, and a junk value must not null the whole trade row.
+describe('per-trade realised figure', () => {
+  test('a finite figure survives the normaliser, including a true zero', () => {
+    expect(normalisePublicTrade({ ...trade, realisedUsd: -3.08 })?.realisedUsd).toBe(-3.08);
+    expect(normalisePublicTrade({ ...trade, realisedUsd: 0 })?.realisedUsd).toBe(0);
+  });
+
+  test('an absent figure stays absent and never becomes a number', () => {
+    const row = normalisePublicTrade(trade);
+    expect(row).not.toBeNull();
+    expect('realisedUsd' in (row as object)).toBe(false);
+  });
+
+  test('a junk figure is dropped and the trade still normalises', () => {
+    for (const bad of ['3.08', Number.NaN, Number.POSITIVE_INFINITY, null, {}]) {
+      const row = normalisePublicTrade({ ...trade, realisedUsd: bad });
+      expect(row).not.toBeNull();
+      expect('realisedUsd' in (row as object)).toBe(false);
+    }
+  });
+});

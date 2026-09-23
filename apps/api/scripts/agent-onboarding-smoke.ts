@@ -8,6 +8,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PROTOCOL_VERSION } from '../src/services/skill-protocol';
+import bs58 from 'bs58';
+import { disconnectProbeBody } from './agent-connect/hosted-skill-runtime-probe';
 
 const protocolPointerSchema = z.object({
   version: z.number().int().positive(),
@@ -169,6 +171,23 @@ async function waitForVisit(base: string, sessionId: string, buildingId: string)
   throw new SmokeFailure('agent did not reach the building within 60s');
 }
 
+export async function checkBoundAppearance(base: string, sessionId: string, avatarId: string, userId: string): Promise<void> {
+  const toolsResponse = await fetchWithTimeout(`${base}/api/agent/${encodeURIComponent(sessionId)}/tools.json`);
+  if (!toolsResponse.ok) throw new SmokeFailure(`appearance tools discovery HTTP ${toolsResponse.status}`);
+  const tools = await expectJson(toolsResponse,
+    z.array(z.object({ name: z.string(), description: z.string() }).passthrough()));
+  if (!tools.some((tool) => tool.name === 'clawville_update_appearance' && tool.description.includes('/api/avatars/me/appearance'))) {
+    throw new SmokeFailure('appearance tool discovery missing');
+  }
+  const patchResponse = await fetchWithTimeout(`${base}/api/avatars/me/appearance`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Clawville-Agent-Session': sessionId },
+    body: JSON.stringify({ color: 'red' }),
+  });
+  if (!patchResponse.ok) throw new SmokeFailure(`appearance PATCH HTTP ${patchResponse.status}`);
+  const result = await expectJson(patchResponse, z.object({ avatar: z.object({ id: z.string(), userId: z.string(), color: z.literal('red') }).passthrough() }));
+  if (result.avatar.id !== avatarId || result.avatar.userId !== userId) throw new SmokeFailure('appearance changed the wrong bound avatar');
+}
+
 async function main(): Promise<void> {
   const base = apiBaseFromArgs(process.argv.slice(2));
   const nonce = randomUUID();
@@ -202,6 +221,7 @@ async function main(): Promise<void> {
   });
 
   let firstConnect!: z.infer<typeof connectResponseSchema>;
+  try {
   await check('first identity-key connect', async () => {
     firstConnect = await expectJson(
       await postJson(base, '/api/agent/connect', connectBody),
@@ -213,8 +233,9 @@ async function main(): Promise<void> {
     }
   });
 
+  let joined!: z.infer<typeof joinResponseSchema>;
   await check('identity join provisions an active avatar', async () => {
-    await expectJson(
+    joined = await expectJson(
       await postJson(base, '/api/agent/join', {
         identityType: connectBody.identityType,
         identityKey,
@@ -242,6 +263,10 @@ async function main(): Promise<void> {
       ),
       ownedSkillsResponseSchema,
     );
+  });
+
+  await check('bound appearance tools discovery and agent-header PATCH', async () => {
+    await checkBoundAppearance(base, ownershipConnect.sessionId, joined.avatarId, firstConnect.identity.userId);
   });
 
   await check('agent-session building skill claim', async () => {
@@ -344,9 +369,20 @@ async function main(): Promise<void> {
       throw new SmokeFailure('persisted knowledge was missing after reconnect');
     }
   });
+  } finally {
+    if (firstConnect) {
+      await check('signed fixture disconnect and live body absence', async () => {
+        await disconnectProbeBody(base, {
+          userId: firstConnect.identity.userId,
+          platformAgentId: agentId,
+          identitySecretKey: bs58.decode(firstConnect.identity.secretKey),
+        });
+      });
+    }
+  }
 }
 
-main().catch((error: unknown) => {
+if (import.meta.main) main().catch((error: unknown) => {
   if (!failureReported) {
     const message = error instanceof SmokeFailure ? error.message : 'unexpected failure';
     console.error(`FAIL setup: ${message}`);

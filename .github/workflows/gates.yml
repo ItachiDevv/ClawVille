@@ -5,9 +5,8 @@ name: Gates — money/cove/poker invariant suite
 # The money/cove/poker invariant test suite already EXISTS and is well-written,
 # but it NEVER ran in CI — a single config gap left the entire money-regression
 # backstop un-armed (a flipped payout constant or a broken conservation leg would
-# ship to prod uncaught). This gate runs that suite on every PR touching the
-# money/economy code, so a regression goes RED and BLOCKS the merge — keys, not
-# prompts.
+# ship to prod uncaught). This gate runs on every PR so required check names
+# exist even for documentation-only changes. Deploy callers also run this suite.
 #
 # DB-tier note: CI has no `.env.local` (gitignored), so `DATABASE_URL` is unset
 # and the `describeIfDb`-gated tests SKIP. What runs is the IN-MEMORY suite — the
@@ -21,29 +20,48 @@ name: Gates — money/cove/poker invariant suite
 # Local equivalent: `cd apps/api && bun test`  (with DATABASE_URL UNSET).
 
 on:
-  pull_request:
-    paths:
-      - 'packages/database/migrations/**'
-      - 'apps/api/src/**'
-      - 'apps/web/src/**'
-      - 'packages/database/src/schema/**'
-      - 'packages/shared/src/constants/**'
-      - '.github/workflows/gates.yml'
-  push:
-    branches:
-      - master
-    paths:
-      - 'apps/api/src/**'
-      - 'apps/web/src/**'
-      - 'packages/database/src/schema/**'
-      - 'packages/shared/src/constants/**'
-  workflow_dispatch: {}
+  # Required branch-protection checks must be emitted on documentation-only PRs too.
+  pull_request: {}
+  # Deploy callers always invoke this same-SHA suite.
+  workflow_call:
+    inputs:
+      coupling-base-sha:
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      coupling-base-sha:
+        description: Full base commit SHA for this complete change (no parent fallback)
+        type: string
+        required: true
 
 concurrency:
-  group: gates-${{ github.ref }}
+  group: gates-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  coupling-gates:
+    name: coupling documentation contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout evaluated head and full history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Test coupling enforcement
+        run: bun test scripts/ci/run-coupling-gates.test.ts scripts/ci/run-coupling-gates.independent.test.ts
+      - name: Enforce changed-file coupling contracts
+        env:
+          COUPLING_BASE_SHA: ${{ inputs.coupling-base-sha }}
+        run: bun scripts/ci/run-coupling-gates.ts --github
+
   web-tests:
     name: web Trading Floor tests
     runs-on: ubuntu-latest
@@ -76,9 +94,15 @@ jobs:
       - name: Typecheck web
         run: cd apps/web && bun run typecheck
 
-      - name: Run Trading Floor suites
-        run: >-
-          cd apps/web && bun test
+      - name: Run Trading Floor suites in separate processes
+        # DOM globals, React queues, query managers, and mock.module are process-global.
+        # Preserve every suite and fail immediately on any error.
+        shell: bash
+        run: |
+          cd apps/web
+          while IFS= read -r file; do
+            bun test "$file"
+          done <<'SUITES'
           src/stores/__tests__/trade-ticker.test.ts
           src/stores/__tests__/world-stream-state.test.ts
           src/hooks/use-trading-floor-normalise.test.ts
@@ -93,6 +117,10 @@ jobs:
           src/lib/__tests__/api-error-code.test.ts
           src/lib/__tests__/solana-wallet.test.ts
           src/lib/world-presence-controller.test.ts
+          src/stores/__tests__/players-local-identity.test.ts
+          src/stores/__tests__/salvage-identity.test.ts
+          src/lib/three/salvage-hydrator.test.tsx
+          src/lib/agent-display-name.test.ts
           src/hooks/world-downlink-policy.test.ts
           src/lib/three/town-guide-prompt.test.ts
           src/hooks/bottom-prompt-offset.test.ts
@@ -104,6 +132,11 @@ jobs:
           src/stores/__tests__/npc-place-player.test.ts
           src/components/game/__tests__/spawn-on-load-route-exit.test.ts
           src/lib/__tests__/hud-short-touch.test.ts
+          SUITES
+
+      - name: Run guest Nori chat regression suite in its own process
+        # This suite installs a DOM and API spies. Keep global test state local.
+        run: cd apps/web && bun test src/components/game/__tests__/chat-panel-guest.test.tsx
 
       # Founder-reported regressions (2026-09-18) come back when nothing runs the
       # test that pinned them. The shared constants suite pins world data that
@@ -140,6 +173,10 @@ jobs:
         # CI build of agent-runtime errors TS2307, masked locally by turbo cache.
         run: bunx turbo run build --filter=@clawville/agent-runtime --filter=@clawville/wager-program
 
+      - name: Typecheck API source
+        # Bun bundling does not check TypeScript types or imported type contracts.
+        run: cd apps/api && bunx tsc --noEmit
+
       - name: Run the money/cove/poker invariant suite
         # SCOPED to the service test dirs (poker tournament/cash/sims + the
         # slot/blackjack/baccarat/holdem engines + provable-rng + cove-verify-
@@ -156,7 +193,47 @@ jobs:
         #
         # DATABASE_URL intentionally UNSET → describeIfDb tests skip; the
         # in-memory conservation/idempotency/parity/no-leak suite IS the gate.
-        run: cd apps/api && bun test src/services/poker/ src/services/__tests__/
+        shell: bash
+        run: |
+          cd apps/api
+          mapfile -d '' files < <(find src/services/poker src/services/__tests__ -name '*.test.ts' -print0 | sort -z)
+          test "${#files[@]}" -gt 0
+          shared=()
+          isolated=()
+          for file in "${files[@]}"; do
+            if grep -qE 'mock[.]module' "$file"; then
+              isolated+=("$file")
+            else
+              shared+=("$file")
+            fi
+          done
+          echo "Service suites: ${#shared[@]} shared, ${#isolated[@]} isolated"
+          if ((${#shared[@]})); then
+            bun test "${shared[@]}"
+          fi
+          for file in "${isolated[@]}"; do
+            bun test "$file"
+          done
+
+      - name: Run activity lifecycle regression suites in separate processes
+        run: |
+          cd apps/api
+          bun test src/services/activity/__tests__/activity-queue.test.ts
+          bun test src/services/activity/__tests__/activity-room-manager.test.ts
+
+      - name: Run runtime suites in separate processes
+        # mock.module and module caches are process-global. Isolate every runtime
+        # file, including DoorDash action parsing and the owner reply contracts.
+        shell: bash
+        run: |
+          mapfile -d '' files < <(find packages/agent-runtime/src -name '*.test.ts' -print0 | sort -z)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            bun test "./$file"
+          done
+
+      - name: Run hosted runtime probe safety tests
+        run: bun test apps/api/scripts/agent-connect/hosted-skill-runtime-probe.test.ts
 
       - name: Run the protocol-pin route tests
         # 2026-09-15 — closes the stale-pin blind spot: agent-paid-surface.test.ts
@@ -176,7 +253,7 @@ jobs:
 
   # Phase 0b uses a separate job and Bun process to avoid cross-file singleton
   # pollution. The in-memory lane stays guaranteed-green and required; this lane
-  # stays non-required until it has a week of green CI runs.
+  # is required by both deploy callers before any live migration starts.
   # Use migrate-ci.ts, not db:push: drizzle-kit introspection is broken here.
   # All database credentials and env values below are dummy fixtures, not secrets.
   api-route-tests-db:
@@ -231,6 +308,15 @@ jobs:
           MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
         run: bun packages/database/scripts/migrate-ci.ts
 
+      - name: Restore declared CI constraints and assert staging invariant inventory
+        # drizzle-kit 0.24 omits CHECKs; bootstrap CASCADE can remove retained FKs.
+        # This refuses non-local databases and never participates in live migrations.
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+        run: |
+          bun packages/database/scripts/ci-restore-schema-invariants.ts
+          bun test packages/database/scripts/ci-schema-invariants.test.ts
+
       - name: Run PostgreSQL-backed Trading Floor database contracts
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
@@ -250,35 +336,31 @@ jobs:
           SEED_DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
         run: bun apps/api/scripts/seed-land-parcels.ts
 
-      - name: Run the routes test directory (minus process-isolated files)
-        # Bun mock.module + the module cache are process-global. ANY file that
-        # calls mock.module can poison sibling files' route modules and can
-        # itself be poisoned. Every mocker runs in its own Bun process below;
-        # the main group contains no mock.module at all.
+      - name: Run route tests with automatic mock isolation
+        # Every new mock.module file joins the isolated set without a filename
+        # list update. Comments can only cause extra isolation, never shared mocks.
+        shell: bash
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: |
           cd apps/api
-          files=$(ls src/routes/__tests__/*.test.ts | grep -vE '/(admin-trading-provisioning|agent-frontdoor-connect|agent-public-identity-schema|cosmetic-guest-equip-handler|cove-history|ct-topup-settle|kelp|land-tenure-phaseb|moonpay|partner-covenant|partner-hatcher-p5-handler|world-ws-identity|x402-stats)\.test\.ts$')
-          bun test $files
-
-      - name: Run the process-isolated route test files (one bun process each)
-        env:
-          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
-          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        run: |
-          cd apps/api
-          bun test src/routes/__tests__/admin-trading-provisioning.test.ts
-          bun test src/routes/__tests__/agent-frontdoor-connect.test.ts
-          bun test src/routes/__tests__/agent-public-identity-schema.test.ts
-          bun test src/routes/__tests__/cosmetic-guest-equip-handler.test.ts
-          bun test src/routes/__tests__/cove-history.test.ts
-          bun test src/routes/__tests__/ct-topup-settle.test.ts
-          bun test src/routes/__tests__/kelp.test.ts
-          bun test src/routes/__tests__/land-tenure-phaseb.test.ts
-          bun test src/routes/__tests__/moonpay.test.ts
-          bun test src/routes/__tests__/partner-covenant.test.ts
-          bun test src/routes/__tests__/partner-hatcher-p5-handler.test.ts
-          bun test src/routes/__tests__/world-ws-identity.test.ts
-          bun test src/routes/__tests__/x402-stats.test.ts
+          shopt -s nullglob
+          files=(src/routes/__tests__/*.test.ts)
+          test "${#files[@]}" -gt 0
+          shared=()
+          isolated=()
+          for file in "${files[@]}"; do
+            if grep -qE 'mock[.]module' "$file"; then
+              isolated+=("$file")
+            else
+              shared+=("$file")
+            fi
+          done
+          echo "Route suites: ${#shared[@]} shared, ${#isolated[@]} isolated"
+          if ((${#shared[@]})); then
+            bun test "${shared[@]}"
+          fi
+          for file in "${isolated[@]}"; do
+            bun test "$file"
+          done

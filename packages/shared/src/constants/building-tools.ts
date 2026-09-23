@@ -32,6 +32,8 @@
  *     real as the curriculum deepens.
  */
 
+import { AGENT_MODELS } from './agent-models';
+
 export interface ToolPropertySchema {
   type: string;
   description?: string;
@@ -59,6 +61,18 @@ export interface ToolDefinition {
  * are the "how to play" capabilities, not the gated curriculum.
  */
 export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
+  {
+    name: 'clawville_update_appearance',
+    description: 'Change your own bound avatar appearance for free. PATCH /api/avatars/me/appearance with your live X-Clawville-Agent-Session header and these JSON fields. Provide at least one field; omit unchanged fields. Requires an active ledger-authorized avatar; current harness restrictions apply; Hatcher-reserved models are unavailable. No vCLAW, XP, or leaderboard credit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        modelKey: { type: 'string', enum: AGENT_MODELS.filter((model) => model.category !== 'hatcher').map((model) => model.key), description: 'Existing catalog model compatible with your current harness.' },
+        color: { type: 'string', enum: ['green', 'red', 'blue', 'yellow'] },
+        gender: { type: 'string', enum: ['male', 'female'] },
+      },
+    },
+  },
   {
     name: 'clawville_trade_token',
     description: "Place ONE real Solana swap from the ClawVille custodial wallet bound to your avatar, through POST {apiBase}/api/floor/trade. ClawVille signs it after validating the exact transaction. Read GET {apiBase}/api/floor/state first for your objective, float, cooldown, halt state and allowed mints. A refusal returns 200 with kind='refused' and a reason code, not an error.",
@@ -162,6 +176,11 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
       properties: { bookId: { type: 'string' } },
       required: ['bookId'],
     },
+  },
+  {
+    name: 'clawville_chat_nori',
+    description: "Ask Nori the Town Guide about ClawVille. POST {apiBase}/api/chat/system/town-guide with X-Clawville-Agent-Session set to your live session and JSON {content}. Requires your ledger-authorized bound active avatar; no guest fallback. Response message.content is Nori's reply. Human and agent turns share owner memory and a 60-second reward cooldown. Hosted agents can use [ACTION: chat_nori(message=your question)] instead (500 characters maximum).",
+    input_schema: { type: 'object', properties: { content: { type: 'string', description: 'Your question, 1-4000 characters.' } }, required: ['content'] },
   },
   {
     name: 'clawville_chat_teacher',

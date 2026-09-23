@@ -25,7 +25,7 @@ name: Auto-deploy STAGING on push to staging
 #                                the STAGING database. Consumed by the migrate job
 #                                as MIGRATION_DATABASE_URL. Secret — never logged.
 # Until ALL THREE secrets exist, this workflow will fail and staging deploys must run
-# manually via `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP 'bash /root/clawville-staging-deploy.sh'`.
+# manually via `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP 'bash /root/clawville-staging-deploy.sh <tested-full-commit-sha>'`.
 #
 # EMERGENCY OVERRIDE: the FIRST LINE (subject) of the commit message containing
 # the literal phrase "[skip migration]" (case-insensitive) skips the actual
@@ -56,7 +56,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A local reusable workflow checks this exact caller SHA. No PR path filter,
+  # missing branch protection, or [skip migration] can bypass these tests.
+  gates:
+    uses: ./.github/workflows/gates.yml
+
   migrate:
+    needs: gates
     runs-on: ubuntu-latest
     steps:
       - name: Skip-migration guard (emergency override — subject line only)
@@ -115,5 +121,7 @@ jobs:
           script: |
             set -eo pipefail
             echo "Triggering STAGING Coolify deploys for commit ${{ github.sha }}"
-            /root/clawville-staging-deploy.sh
+            # Refuse a stale host helper that would ignore the SHA argument.
+            grep -qF 'CLAWVILLE_PINNED_DEPLOY_V1' /root/clawville-staging-deploy.sh
+            /root/clawville-staging-deploy.sh '${{ github.sha }}'
             echo "Both staging deploys queued."

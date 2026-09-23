@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 import { useIsMobile } from '@/hooks/use-is-mobile';
+import { SHORT_TOUCH_AUTONOMY_MAX_HEIGHT_CSS } from '@/lib/hud-anchors';
 import {
   countAutonomyArrivals,
   formatAutonomyPhase,
@@ -131,7 +132,7 @@ export default function AutonomyHUD() {
             top: 70,
             right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
             width: 'min(320px, calc(50vw - 134px - env(safe-area-inset-right, 0px)))',
-            maxHeight: 'calc(100dvh - 298px)',
+            maxHeight: SHORT_TOUCH_AUTONOMY_MAX_HEIGHT_CSS,
           }
         : undefined}
     >

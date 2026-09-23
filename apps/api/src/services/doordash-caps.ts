@@ -13,7 +13,7 @@
 
 /** Built-in ceilings. The environment may lower these and may never raise them. */
 const DEFAULTS = {
-  /** $75 per order, before tip is added at confirm time. */
+  /** $75 per order, including the tip authorized at confirmation. */
   maxOrderCents: 7500,
   /** Founder lowered this from the proposed 3 on 2026-09-16. */
   dailyOrderCount: 2,

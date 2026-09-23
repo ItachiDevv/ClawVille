@@ -1,4 +1,4 @@
-import { and, clawpumpAgentLinks, db, desc, eq, gte, inArray, tradingDecisions, tradingHalts, isNull } from '@clawville/database';
+import { and, or, clawpumpAgentLinks, db, desc, eq, gte, inArray, tradingDecisions, tradingHalts, isNull } from '@clawville/database';
 import {
   readTradingLimits,
   TRADE_REFUSAL_CODES,
@@ -52,7 +52,13 @@ export async function readAutonomousTradingTargets(input: { avatarId: string }):
       eq(tradingDecisions.avatarId, input.avatarId),
       inArray(tradingDecisions.status, countedStatuses),
     )).orderBy(desc(tradingDecisions.createdAt)).limit(1),
-    db.select().from(tradingHalts).where(and(isNull(tradingHalts.clearedAt))),
+    // Bind the same fleet/avatar scope used below. A zero-parameter SELECT uses
+    // postgres.js simple protocol and can stall adjacent extended queries on
+    // the transaction pooler; keep this concurrent batch parameterized.
+    db.select().from(tradingHalts).where(and(
+      isNull(tradingHalts.clearedAt),
+      or(eq(tradingHalts.scope, 'fleet'), eq(tradingHalts.scopeId, input.avatarId)),
+    )),
     db.select({ amount: tradingDecisions.amountUsdMicros }).from(tradingDecisions).where(and(
       eq(tradingDecisions.avatarId, input.avatarId),
       gte(tradingDecisions.createdAt, start),

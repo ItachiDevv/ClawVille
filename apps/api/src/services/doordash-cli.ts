@@ -14,6 +14,7 @@ import {
 import { alertError } from './alert-error';
 import { withKeyedMutex } from './keyed-mutex';
 import { redactBearerTokens } from './log-redact';
+import { fingerprintDoordashQuote } from './doordash-quote';
 
 export type DdCliFailure =
   | 'ddcli_unavailable' | 'ddcli_version_mismatch' | 'ddcli_auth_expired'
@@ -262,7 +263,7 @@ const submitSchema = z.object({
   processing_status: z.string().optional(),
 });
 export type DdCart = z.infer<typeof cartSchema>;
-export type DdPreview = z.infer<typeof previewSchema>;
+export type DdPreview = z.infer<typeof previewSchema> & { quoteFingerprint: string | null };
 export type DdSubmit = z.infer<typeof submitSchema>;
 export type DdSearchResult = z.infer<typeof searchSchema>;
 export type DdMenu = z.infer<typeof menuSchema>;
@@ -578,8 +579,8 @@ async function invoke(op: DdCliOperation, argv: string[]): Promise<DdCliResult<u
         // command that spends money: `order submit` exiting 0 with
         // `isError: true` around a payload holding an order_uuid would otherwise
         // parse as a clean success and report a placed order that never charged.
-        // Vendor behaviour here is UNVERIFIED — we have never made a real
-        // submit — so this fails closed on the flag rather than trusting it.
+        // The first real order succeeded on 2026-09-18, but this error-envelope
+        // branch remains unobserved live. Fail closed rather than trusting it.
         if (envelope !== null && typeof envelope === 'object'
           && (envelope as { isError?: unknown }).isError === true) {
           return failure('ddcli_bad_json', 'The DoorDash response is flagged as an error.', start, token);
@@ -599,7 +600,12 @@ async function invoke(op: DdCliOperation, argv: string[]): Promise<DdCliResult<u
       dark = { dark: false, since: null, reason: null };
     }
     consecutiveTimeouts = 0;
-    return { ok: true, data: parsed.data as unknown, durationMs: Date.now() - start };
+    // Never accept a vendor-supplied digest. Compute it from the raw identity,
+    // then return only our narrow view plus this non-reversible digest.
+    const data: unknown = op === 'order-preview'
+      ? { ...parsed.data, quoteFingerprint: fingerprintDoordashQuote(raw) }
+      : parsed.data;
+    return { ok: true, data, durationMs: Date.now() - start };
   } catch (error) {
     await stop();
     return failure(error instanceof OutputLimit ? 'ddcli_output_too_large' : 'ddcli_nonzero',

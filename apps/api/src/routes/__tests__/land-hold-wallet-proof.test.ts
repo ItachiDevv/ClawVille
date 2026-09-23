@@ -18,6 +18,7 @@ import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import { PROTOCOL_VERSION } from '../../services/skill-protocol';
 import {
   _expireLandHoldWalletNonceForTest,
   _resetLandHoldWalletNoncesForTest,
@@ -1107,7 +1108,10 @@ describe('round 4 — refund copy never asserts a verification outcome', () => {
 
 describe('protocol manual parity', () => {
   it('retains the single current protocol version declaration', () => {
-    expect(protocol).toContain('export const PROTOCOL_VERSION = 67;');
+    // Land proof arrived in v51; later unrelated protocol additions must not
+    // require copying the current version into this land-specific suite.
+    expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(51);
+    expect(protocol).toContain(`export const PROTOCOL_VERSION = ${PROTOCOL_VERSION};`);
     expect(protocol.match(/export const PROTOCOL_VERSION = /g) ?? []).toHaveLength(1);
   });
 

@@ -55,6 +55,8 @@ import {
   clearAgentDirective,
 } from '../services/agent-autonomy-state';
 import { lucia } from '../lib/auth';
+import { updateAvatarAppearance } from '../services/avatar-appearance';
+import { AGENT_SESSION_HEADER } from '../middleware/require-auth-or-agent';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -920,205 +922,18 @@ avatarRoutes.patch('/me', requireAuth, async (c) => {
 // route is a hot path and conflating it with appearance edits would make
 // it easier to accidentally overwrite fields on a partial body.
 // ---------------------------------------------------------------------------
-const appearanceSchema = z.object({
-  modelKey: z.string()
-    .refine((k): k is AgentModelKey => (AGENT_MODEL_KEYS as readonly string[]).includes(k), {
-      message: `modelKey must be one of: ${AGENT_MODEL_KEYS.join(', ')}`,
-    })
-    .optional(),
-  color: z.enum(['green', 'red', 'blue', 'yellow']).optional(),
-  gender: z.enum(['male', 'female']).optional(),
-});
-
-avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
+avatarRoutes.patch('/me/appearance', async (c) => {
   const user = c.get('user');
-
-  // Audit follow-up — gate against authed abuse (30/min/IP). Runs
-  // AFTER requireAuth since the attacker needs a session cookie anyway;
-  // the IP limiter just caps how fast a single box can churn DB writes
-  // + fire the three-tier event logger.
-  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  const sessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (!user && !sessionId) throw new HTTPException(401, { message: 'Authentication required' });
+  const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
   if (!appearanceEditRateLimiter.check(ip)) {
-    throw new HTTPException(429, {
-      message: 'Too many appearance edits. Slow down.',
-    });
+    throw new HTTPException(429, { message: 'Too many appearance edits. Slow down.' });
   }
-
-  const body = await c.req.json();
-  const parsed = appearanceSchema.safeParse(body);
-
-  if (!parsed.success) {
-    throw new HTTPException(400, {
-      message: parsed.error.issues[0]?.message ?? 'Invalid appearance payload',
-    });
-  }
-
-  const hasEdit = parsed.data.modelKey || parsed.data.color || parsed.data.gender;
-  if (!hasEdit) {
-    throw new HTTPException(400, { message: 'No fields to update' });
-  }
-
-  // Find current avatar — need its harness to validate the modelKey swap.
-  const current = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-  });
-  if (!current) {
-    throw new HTTPException(404, { message: 'Avatar not found' });
-  }
-
-  // Harness-pool guard — a Milady-harness avatar can only swap between
-  // Milady VRM avatars; a non-Milady avatar can only pick non-Milady
-  // avatars. Prevents a user from bypassing the Milady-only hosting
-  // contract by swapping avatars mid-game.
-  if (parsed.data.modelKey) {
-    const newModel = getAgentModel(parsed.data.modelKey);
-    if (!newModel) {
-      throw new HTTPException(400, { message: `Unknown modelKey: ${parsed.data.modelKey}` });
-    }
-    // Hatcher avatars are reserved (server-assigned only) — a human cannot swap
-    // their appearance TO a Hatcher model, mirroring the create-route guard.
-    if (newModel.category === 'hatcher') {
-      throw new HTTPException(400, {
-        message: 'Hatcher avatars are reserved and cannot be selected',
-      });
-    }
-    const currentlyMilady = current.harness === 'milady';
-    const newIsMilady = newModel.category === 'milady';
-    if (currentlyMilady !== newIsMilady) {
-      throw new HTTPException(400, {
-        message: currentlyMilady
-          ? 'Milady-hosted agents can only swap between Milady avatars'
-          : 'Self-hosted agents cannot pick a Milady avatar — their framework runs externally',
-      });
-    }
-  }
-
-  // Build the update set — only include fields the client asked to change.
-  const patch: Record<string, unknown> = { updatedAt: new Date() };
-  let newModelLabel: string | null = null;
-  if (parsed.data.modelKey) {
-    patch.modelKey = parsed.data.modelKey;
-    // Derive agentCategory from the new model so (modelKey, category) stay
-    // self-consistent. Harness is NOT touched.
-    const newModel = getAgentModel(parsed.data.modelKey)!;
-    patch.agentCategory = newModel.category;
-    newModelLabel = newModel.label;
-    // Legacy `species` enum is deliberately NOT synced here — it only
-    // feeds the PixiJS 2D fallback and diverging from the modelKey is
-    // harmless. The 3D world reads modelKey directly.
-  }
-  if (parsed.data.color) patch.color = parsed.data.color;
-  if (parsed.data.gender) patch.gender = parsed.data.gender;
-
-  // Audit follow-up — when modelKey changes, regenerate the system
-  // prompt so it references the NEW creature rather than keeping the
-  // creation-time "You are X, a Reef Lobster..." string forever.
-  // Preserves every other characterConfig field (bio, lore, knowledge,
-  // topics, style, etc.) so hand-tuned or learned content survives.
-  // Eliza runtimes lazy-start on first chat + idle-stop at 30min, so
-  // the new prompt is picked up naturally on the next runtime boot
-  // without an explicit restart.
-  if (newModelLabel && current.characterConfig && typeof current.characterConfig === 'object') {
-    const archetype = AVATAR_ARCHETYPES.find((a) => a.id === current.archetype);
-    if (archetype) {
-      const newSystem = [
-        `You are ${current.name}, a ${newModelLabel} in the sea-themed world of ClawVille — a virtual avatar adventure where agents learn OpenClaw skills.`,
-        `Your archetype is "${archetype.label}". Stay in character at all times.`,
-        `For canonical questions about ClawVille modes, buildings, the vCLAW economy, or how things work, refer the user to Nori the Town Guide. You yourself carry an eclectic mix of useful trivia: marine biology, retro internet culture, vintage gaming, and offbeat factoids — sprinkle them into conversation when relevant.`,
-        `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
-        `Tone: ${archetype.tone}. Speak consistently with your character's voice and personality.`,
-      ].join('\n');
-      patch.characterConfig = {
-        ...(current.characterConfig as unknown as Record<string, unknown>),
-        system: newSystem,
-      };
-    }
-  }
-
-  // Transactional update — keep avatars + agents.config in lockstep so
-  // the agent-row mirror doesn't drift from the avatars row. Before this
-  // a modelKey edit left agents.config.modelKey pointing at the old
-  // value; harmless today (no downstream reader) but defense in depth
-  // for Phase 4e exports + any future orchestrator path that reads
-  // the agents table as a source of truth.
-  const updated = await db.transaction(async (tx) => {
-    const [updatedAvatar] = await tx
-      .update(avatars)
-      .set(patch)
-      .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
-      .returning();
-
-    // Audit fix — a concurrent deactivation between the SELECT above
-    // and this UPDATE would produce zero returned rows. Without this
-    // guard the handler returned { avatar: undefined }.
-    if (!updatedAvatar) {
-      throw new HTTPException(404, { message: 'Avatar not found or inactive' });
-    }
-
-    // Mirror modelKey / agentCategory / customization onto the linked
-    // agents row if the avatar has one. Harness / archetype are NOT
-    // touched here — they're Layer 2+ concerns.
-    const needsAgentMirror =
-      !!current.platformAgentId && (patch.modelKey || patch.characterConfig);
-    if (needsAgentMirror) {
-      const [agentRow] = await tx
-        .select()
-        .from(agents)
-        .where(eq(agents.id, current.platformAgentId!))
-        .limit(1);
-      if (agentRow) {
-        const nextAgentConfig = {
-          ...((agentRow.config ?? {}) as Record<string, unknown>),
-          ...(patch.modelKey ? { modelKey: patch.modelKey } : {}),
-          ...(patch.agentCategory ? { agentCategory: patch.agentCategory } : {}),
-        };
-        const agentPatch: Record<string, unknown> = {
-          config: nextAgentConfig,
-          updatedAt: new Date(),
-        };
-        if (patch.characterConfig) {
-          agentPatch.customization = patch.characterConfig;
-        }
-        await tx
-          .update(agents)
-          .set(agentPatch)
-          .where(eq(agents.id, agentRow.id));
-      }
-    }
-
-    return updatedAvatar;
-  });
-
-  // Audit fix — emit `avatar.appearance.changed` so /dash can aggregate
-  // edit volume alongside the existing identity.issued / skill_md.fetched
-  // counters. Payload carries only the fields that actually changed, so
-  // downstream analyses can count avatar swaps vs. color tweaks vs.
-  // gender flips independently.
-  const changed: Record<string, unknown> = {};
-  if (patch.modelKey && patch.modelKey !== current.modelKey) {
-    changed.modelKey = { from: current.modelKey, to: patch.modelKey };
-  }
-  if (patch.color && patch.color !== current.color) {
-    changed.color = { from: current.color, to: patch.color };
-  }
-  if (patch.gender && patch.gender !== current.gender) {
-    changed.gender = { from: current.gender, to: patch.gender };
-  }
-  if (Object.keys(changed).length > 0) {
-    logEvent({
-      eventType: 'avatar.appearance.changed',
-      userId: user.id,
-      avatarId: updated.id,
-      payload: { changed, harness: current.harness },
-    }).catch((err) => {
-      // Event logging is best-effort — a logger outage should never
-      // turn a successful edit into a 500. The event-logger has its
-      // own three-tier fallback (see apps/api/src/services/event-logger.ts).
-      console.error('[avatars] appearance event log failed:', err);
-    });
-  }
-
-  return c.json({ avatar: updated });
+  return c.json(await updateAvatarAppearance({
+    actor: user ? { kind: 'human', userId: user.id } : { kind: 'agent', sessionId: sessionId! },
+    patch: await c.req.json(),
+  }));
 });
 
 // Check name availability — checks BOTH `avatars.name` AND `users.username`

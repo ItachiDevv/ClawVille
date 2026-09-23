@@ -10,12 +10,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import postgres from 'postgres';
 import { z } from 'zod';
+import bs58 from 'bs58';
+import nacl from 'tweetnacl';
+import { characterRoomId } from '../../../../packages/agent-runtime/src/room-scoping';
 
 const PROD_API_HOSTS = new Set(['api.clawville.world', 'api-new.clawville.world', 'clawville.world']);
 const PROD_DATABASE_REF = 'wheuidgiyyccqyoppxoa';
 const STAGING_DATABASE_REF = 'mtpixvtclsjqjguouxes';
 const HERMES_PROXY_PORT = 8642;
-const MAX_CAPTURED_REQUESTS = 12;
+const MAX_CAPTURED_REQUESTS = 24;
 const MAX_GATEWAY_BODY_BYTES = 2_000_000;
 const MOCK_HERMES_MARKER = 'HERMES_MOCK_REPLY_V1';
 const DECLARED_GATEWAY_MARKER = 'CV_PROBE_DECLARED_GATEWAY_REPLY';
@@ -69,10 +72,24 @@ interface Fixture {
   sessionId: string;
   cookie: string;
   name: string;
+  /** Ephemeral probe identity only; never logged or persisted. */
+  identitySecretKey: Uint8Array;
 }
 
 interface CapturedGatewayRequest {
+  sequence: number;
   prompts: string[];
+}
+
+/** Sequence cursors survive bounded-buffer eviction; array lengths do not. */
+export function captureCursor(captured: CapturedGatewayRequest[]): number {
+  return captured.at(-1)?.sequence ?? 0;
+}
+
+function captureRequest(captured: CapturedGatewayRequest[], prompts: string[]): void {
+  const sequence = captureCursor(captured) + 1;
+  captured.push({ sequence, prompts });
+  if (captured.length > MAX_CAPTURED_REQUESTS) captured.shift();
 }
 
 interface ProtocolEvidence {
@@ -84,6 +101,8 @@ interface ProtocolEvidence {
 
 let assertionNumber = 0;
 const probeAbortController = new AbortController();
+
+export function abortProbe(): void { probeAbortController.abort(); }
 function ok(condition: unknown, message: string): asserts condition {
   assertionNumber += 1;
   if (!condition) throw new ProbeFailure(`${assertionNumber}. FAIL ${message}`);
@@ -316,11 +335,12 @@ async function insertFixture(
   const avatarId = randomUUID();
   const platformAgentId = randomUUID();
   const sessionId = randomUUID();
+  const identity = nacl.sign.keyPair();
   const cookie = lucia.createSessionCookie(sessionId).serialize();
   const short = input.runId.slice(0, 8);
   const name = `Probe${input.kind === 'echo' ? 'E' : 'G'}${short}`.slice(0, 20);
   const fingerprint = sha256Hex(`hosted-skill-runtime-probe:${input.runId}:${input.kind}`);
-  const customization: Record<string, unknown> = {
+  const customization = {
     bio: ['Temporary hosted runtime prompt-composition probe.'],
     knowledge: [],
     ...(input.gatewayUrl
@@ -347,14 +367,14 @@ async function insertFixture(
 
   await client.begin(async (tx) => {
     await tx`
-      INSERT INTO users (id, name, identity_fingerprint, is_guest)
-      VALUES (${userId}, ${name}, ${fingerprint}, false)
+      INSERT INTO users (id, name, identity_fingerprint, identity_pubkey, is_guest)
+      VALUES (${userId}, ${name}, ${fingerprint}, ${bs58.encode(identity.publicKey)}, false)
     `;
     await tx`
       INSERT INTO platform_agents (id, user_id, name, type, status, customization, config)
       VALUES (
         ${platformAgentId}, ${userId}, ${name}, ${agentType}, 'pending',
-        ${JSON.stringify(customization)}::jsonb, ${JSON.stringify(config)}::jsonb
+        ${tx.json(customization)}::jsonb, ${tx.json(config)}::jsonb
       )
     `;
     await tx`
@@ -379,6 +399,17 @@ async function insertFixture(
       INSERT INTO sessions (id, user_id, expires_at)
       VALUES (${sessionId}, ${userId}, ${new Date(Date.now() + 60 * 60 * 1000)})
     `;
+    // PostgreSQL parameter inference can JSON-encode a pre-stringified value
+    // again. A scalar config then becomes an array on the directive's || merge.
+    // Check stored types before commit rather than trusting the TypeScript cast.
+    const shapes = await tx`
+      SELECT jsonb_typeof(config) AS config_type,
+        jsonb_typeof(customization) AS customization_type
+      FROM platform_agents WHERE id = ${platformAgentId}::uuid
+    `;
+    if (shapes[0]?.config_type !== 'object' || shapes[0]?.customization_type !== 'object') {
+      throw new ProbeFailure('fixture config and customization must persist as JSON objects');
+    }
   });
 
   return {
@@ -388,6 +419,7 @@ async function insertFixture(
     sessionId,
     cookie,
     name,
+    identitySecretKey: identity.secretKey,
   };
 }
 
@@ -451,12 +483,96 @@ async function setProbeHalt(
   `;
 }
 
+/** Read-only: a deployment's fleet halt remains authoritative for this fixture. */
+async function probeHasActiveHalt(client: postgres.Sql, fixture: Fixture): Promise<boolean> {
+  const rows = await client<Array<{ halted: boolean }>>`
+    SELECT EXISTS (SELECT 1 FROM trading_halts WHERE cleared_at IS NULL
+      AND (scope = 'fleet' OR (scope = 'agent' AND scope_id = ${fixture.avatarId}::uuid))) AS halted
+  `;
+  return rows[0]?.halted === true;
+}
+
+export function matchesTradingHaltState(prompt: string, halted: boolean, allowedMints: readonly string[]): boolean {
+  if (!prompt.includes('Status: armed=false; killed=true')) return false;
+  if (halted) return prompt.includes('TRADING IS HALTED:') && !prompt.includes('Allowed mints:');
+  return !prompt.includes('TRADING IS HALTED:') && prompt.includes('Allowed mints:')
+    && allowedMints.every((mint) => prompt.includes(mint));
+}
+
+/** Failure diagnostics expose only allowlisted state, never owner thought text or identities. */
+export async function readProbeAutonomyDiagnostic(apiBase: string, cookie: string, marker: string) {
+  try {
+    const response = await fetchWithTimeout(`${apiBase}/api/world/autonomy/status`, {
+      headers: { Cookie: cookie }, cache: 'no-store',
+    }, 5_000);
+    if (!response.ok) return { available: false, httpStatus: response.status };
+    const parsed = z.discriminatedUnion('enrolled', [
+      z.object({ enrolled: z.literal(false) }),
+      z.object({
+        enrolled: z.literal(true),
+        phase: z.enum(['deciding', 'walking', 'arrived', 'talking']),
+        phaseSince: z.number().finite(),
+        thoughts: z.array(z.object({
+          at: z.number().finite(),
+          type: z.enum(['decision', 'arrival', 'observation', 'directive']),
+          text: z.string(),
+        })).max(20),
+      }),
+    ]).safeParse(await response.json());
+    if (!parsed.success) return { available: false };
+    const status = parsed.data;
+    if (!status.enrolled) return { available: true, enrolled: false };
+    return {
+      available: true, enrolled: true, phase: status.phase, phaseSince: status.phaseSince,
+      directiveMarkerSeen: marker.length > 0 && status.thoughts.some(
+        (thought) => thought.type === 'directive' && thought.text.includes(marker),
+      ),
+      thoughts: status.thoughts.map(({ at, type }) => ({ at, type })),
+    };
+  } catch {
+    return { available: false };
+  }
+}
+
+async function waitForNoriLesson(client: postgres.Sql, fixture: Fixture, gatewayCounts: () => Record<string, number>, directive: string, apiBase: string, marker: string): Promise<string> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    throwIfInterrupted();
+    const rows = await client<Array<{ lesson: string }>>`
+      SELECT content->>'text' AS lesson FROM memories
+      WHERE agent_id = ${fixture.platformAgentId}::uuid AND metadata->>'subtype' = 'earned-skill'
+        AND metadata->>'avatarId' = ${fixture.avatarId} AND metadata->>'buildingId' = 'town-guide'
+      UNION ALL
+      SELECT content AS lesson FROM npc_memories
+      WHERE entity_id = ${fixture.avatarId} AND metadata->>'subtype' = 'earned-skill'
+        AND metadata->>'buildingId' = 'town-guide'
+      LIMIT 1
+    `;
+    if (rows[0]?.lesson) return rows[0].lesson;
+    await Bun.sleep(250);
+  }
+  const rows = await client`
+    SELECT
+      (SELECT count(*)::int FROM openclaw_bots WHERE agent_id = ${fixture.platformAgentId}
+        AND user_id = ${fixture.userId}::uuid AND session_expires_at > NOW()) AS live_bound_sessions,
+      (SELECT count(*)::int FROM avatars WHERE id = ${fixture.avatarId}::uuid
+        AND user_id = ${fixture.userId}::uuid AND is_active = true) AS active_bound_avatars,
+      (SELECT count(*)::int FROM claw_token_transactions WHERE avatar_id = ${fixture.avatarId}::uuid
+        AND reason = 'system_agent_chat') AS nori_rewards,
+      (SELECT count(*)::int FROM memories WHERE room_id = ${characterRoomId('town-guide', fixture.userId)}::uuid) AS nori_room_memories,
+      EXISTS(SELECT 1 FROM platform_agents WHERE id = ${fixture.platformAgentId}::uuid
+        AND config->'currentDirective'->>'text' = ${directive}) AS directive_matches
+  `;
+  const autonomy = await readProbeAutonomyDiagnostic(apiBase, fixture.cookie, marker);
+  throw new ProbeFailure(`Nori action produced no fixture-owned lesson; ${JSON.stringify({ ...gatewayCounts(), ...rows[0], autonomy })}`);
+}
+
 async function postAutonomy(apiBase: string, fixture: Fixture, active: boolean): Promise<void> {
   const response = await fetchWithTimeout(`${apiBase}/api/world/autonomy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: fixture.cookie },
     body: JSON.stringify({ active }),
-  }, 30_000);
+  }, 30_000, active);
   if (!response.ok) throw new ProbeFailure(`autonomy route returned HTTP ${response.status}`);
   await response.arrayBuffer();
 }
@@ -468,24 +584,63 @@ async function postProbeDirective(apiBase: string, fixture: Fixture, text: strin
     body: JSON.stringify({ directive: text }),
   }, 30_000);
   if (!response.ok) throw new ProbeFailure(`directive route returned HTTP ${response.status}`);
-  await response.arrayBuffer();
+  const result = await parseJson(response, z.object({ ok: z.literal(true), directive: z.object({ text: z.string() }) }));
+  if (result.directive.text !== text) throw new ProbeFailure('directive response did not preserve exact fixture text');
 }
 
-async function waitForCapturedPrompt(
+/** Existing signed disconnect removes live bodies before their durable rows. */
+export async function disconnectProbeBody(apiBase: string, fixture: Pick<Fixture, 'userId' | 'platformAgentId' | 'identitySecretKey'>): Promise<void> {
+  const challenge = await parseJson(await fetchWithTimeout(`${apiBase}/api/agent/challenge`, {}, 15_000, false),
+    z.object({ nonce: z.string().min(32).max(64) }));
+  const signature = bs58.encode(nacl.sign.detached(bs58.decode(challenge.nonce), fixture.identitySecretKey));
+  await parseJson(await fetchWithTimeout(`${apiBase}/api/agent/disconnect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: fixture.userId, agentId: fixture.platformAgentId, nonce: challenge.nonce, signature }),
+  }, 30_000, false), z.object({ disconnected: z.literal(true) }));
+  await assertProbeBodyAbsent(apiBase, fixture.platformAgentId);
+}
+
+export async function assertProbeBodyAbsent(apiBase: string, platformAgentId: string): Promise<void> {
+  const bodyId = `ocb-${Buffer.from(platformAgentId).toString('base64url')}`;
+  const [active, state] = await Promise.all([
+    fetchWithTimeout(`${apiBase}/api/openclaw/active`, { cache: 'no-store' }, 15_000, false)
+      .then((response) => parseJson(response, z.object({ bots: z.array(z.object({ agentId: z.string() })) }))),
+    fetchWithTimeout(`${apiBase}/api/npc/state`, { cache: 'no-store' }, 15_000, false)
+      .then((response) => parseJson(response, z.object({ npcs: z.array(z.object({ id: z.string() })) }))),
+  ]);
+  if (active.bots.some((bot) => bot.agentId === platformAgentId) || state.npcs.some((npc) => npc.id === bodyId)) {
+    throw new ProbeFailure('cleanup found surviving fixture session or world body');
+  }
+}
+
+export async function waitForCapturedPrompt(
   captured: CapturedGatewayRequest[],
   startAt: number,
   predicate: (prompt: string) => boolean,
   timeoutMs = 90_000,
+  phase: 'initial-halt' | 'fixture-halt-cleared' | 'nori-consumption' | 'appearance-consumption' = 'initial-halt',
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     throwIfInterrupted();
-    const prompts = captured.slice(startAt).flatMap((entry) => entry.prompts);
+    const prompts = captured.filter((entry) => entry.sequence > startAt).flatMap((entry) => entry.prompts);
     const prompt = prompts.find(predicate);
     if (prompt) return prompt;
     await Bun.sleep(250);
   }
-  throw new ProbeFailure('timed out waiting for autonomous decision prompt capture');
+  const prompts = captured.filter((entry) => entry.sequence > startAt).flatMap((entry) => entry.prompts);
+  const decisions = prompts.filter((prompt) => prompt.includes('Available actions (choose exactly one'));
+  // Counts only: never include prompts, replies, fixture ids, or mint addresses.
+  const counts = {
+    retainedRequests: captured.length,
+    requestsSinceCursor: captureCursor(captured) - startAt,
+    decisionPrompts: decisions.length,
+    disarmedKilled: decisions.filter((prompt) => prompt.includes('Status: armed=false; killed=true')).length,
+    halted: decisions.filter((prompt) => prompt.includes('TRADING IS HALTED:')).length,
+    allowedMints: decisions.filter((prompt) => prompt.includes('Allowed mints:')).length,
+    predicateMatches: decisions.filter(predicate).length,
+  };
+  throw new ProbeFailure(`timed out waiting for autonomous decision prompt capture (${phase}; ${JSON.stringify(counts)})`);
 }
 
 async function claimSkill(
@@ -550,11 +705,23 @@ async function waitForKnowledge(
   throw new ProbeFailure('timed out waiting for current skill and protocol memories');
 }
 
-async function startDeclaredGatewayMock(): Promise<{
+export async function startDeclaredGatewayMock(): Promise<{
   server: ReturnType<typeof Bun.serve>;
   captured: CapturedGatewayRequest[];
+  queueNoriQuestion: (directiveMarker: string) => void;
+  queueAppearanceChange: (directiveMarker: string) => void;
+  noriCounts: () => Record<string, number>;
 }> {
   const captured: CapturedGatewayRequest[] = [];
+  let noriDirective: string | null = null;
+  let appearanceDirective: string | null = null;
+  let noriQueued = 0;
+  let noriEmitted = 0;
+  let decisionRequests = 0;
+  let noriMarkerRequests = 0;
+  let noriDecisionRequests = 0;
+  let noriDirectiveBlocks = 0;
+  let noriBothSameMessage = 0;
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -582,21 +749,44 @@ async function startDeclaredGatewayMock(): Promise<{
       }
       const parsed = gatewayRequestSchema.safeParse(raw);
       if (!parsed.success) return Response.json({ error: 'invalid_body' }, { status: 400 });
-      if (captured.length < MAX_CAPTURED_REQUESTS) {
-        captured.push({ prompts: parsed.data.messages.map((message) => message.content) });
+      captureRequest(captured, parsed.data.messages.map((message) => message.content));
+      if (parsed.data.messages.some((message) => message.content.includes('Available actions (choose exactly one'))) decisionRequests++;
+      if (noriDirective) {
+        if (parsed.data.messages.some((message) => message.content.includes(noriDirective!))) noriMarkerRequests++;
+        if (parsed.data.messages.some((message) => message.content.includes('Available actions (choose exactly one'))) noriDecisionRequests++;
+        if (parsed.data.messages.some((message) => message.content.includes("YOUR HUMAN'S CURRENT DIRECTIVE"))) noriDirectiveBlocks++;
+        if (parsed.data.messages.some((message) => message.content.includes(noriDirective!) && message.content.includes('Available actions (choose exactly one'))) noriBothSameMessage++;
+      }
+      let reply = DECLARED_GATEWAY_MARKER;
+      if (noriDirective && parsed.data.messages.some((message) =>
+        message.content.includes(noriDirective!) && message.content.includes('Available actions (choose exactly one'))) {
+        // One orientation question only. The mock never emits a money action.
+        noriDirective = null;
+        noriEmitted++;
+        reply = '[ACTION: chat_nori(message=Where is the Bounty Board and who runs it?)]';
+      }
+      if (appearanceDirective && parsed.data.messages.some((message) =>
+        message.content.includes(appearanceDirective!) && message.content.includes('Available actions (choose exactly one'))) {
+        appearanceDirective = null;
+        reply = '[ACTION: update_appearance(color=red)]';
       }
       return Response.json({
-        id: `probe-${captured.length}`,
+        id: `probe-${captureCursor(captured)}`,
         object: 'chat.completion',
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: DECLARED_GATEWAY_MARKER },
+          message: { role: 'assistant', content: reply },
           finish_reason: 'stop',
         }],
       });
     },
   });
-  return { server, captured };
+  return {
+    server, captured,
+    queueNoriQuestion: (marker) => { noriDirective = marker; noriQueued++; },
+    queueAppearanceChange: (marker) => { appearanceDirective = marker; },
+    noriCounts: () => ({ noriQueued, noriEmitted, decisionRequests, noriMarkerRequests, noriDecisionRequests, noriDirectiveBlocks, noriBothSameMessage }),
+  };
 }
 
 async function assertPortAvailable(port: number): Promise<void> {
@@ -665,9 +855,7 @@ async function runHermesLane(composedPrompt: string): Promise<CapturedGatewayReq
           }
           const parsed = gatewayRequestSchema.safeParse(JSON.parse(bodyText) as unknown);
           if (!parsed.success) return Response.json({ error: 'invalid_body' }, { status: 400 });
-          if (captured.length < MAX_CAPTURED_REQUESTS) {
-            captured.push({ prompts: parsed.data.messages.map((message) => message.content) });
-          }
+          captureRequest(captured, parsed.data.messages.map((message) => message.content));
         } catch {
           return Response.json({ error: 'invalid_json' }, { status: 400 });
         }
@@ -776,7 +964,9 @@ async function cleanupDatabase(
       WHERE agent_id = ${fixture.platformAgentId}::uuid
          OR room_id = ${fixture.platformAgentId}::uuid
          OR entity_id = ${fixture.platformAgentId}::uuid
+         OR room_id = ${characterRoomId('town-guide', fixture.userId)}::uuid
     `);
+    await attempt('npc_memories', () => client`DELETE FROM npc_memories WHERE entity_id = ${fixture.avatarId}`);
     await attempt('plugin_agent', async () => {
       const pluginAgents = await client<Array<{ relation: string | null }>>`
         SELECT to_regclass('public.agents')::text AS relation
@@ -787,12 +977,14 @@ async function cleanupDatabase(
     });
     await attempt('trading_halts', () => client`DELETE FROM trading_halts WHERE scope_id = ${fixture.avatarId}::uuid`);
     await attempt('trading_link', () => client`DELETE FROM clawpump_agent_links WHERE avatar_id = ${fixture.avatarId}::uuid`);
+    await attempt('agent_bot', () => client`DELETE FROM openclaw_bots WHERE agent_id = ${fixture.platformAgentId} AND user_id = ${fixture.userId}::uuid`);
     await attempt('sessions', () => client`DELETE FROM sessions WHERE user_id = ${fixture.userId}::uuid`);
     await attempt('user', () => client`DELETE FROM users WHERE id = ${fixture.userId}::uuid`);
   }
   const platformIds = fixtures.map((fixture) => fixture.platformAgentId);
   const userIds = fixtures.map((fixture) => fixture.userId);
   const avatarIds = fixtures.map((fixture) => fixture.avatarId);
+  const noriRoomIds = fixtures.map((fixture) => characterRoomId('town-guide', fixture.userId));
   await attempt('building_skill', () => client`DELETE FROM building_skills WHERE building_id = ${buildingId}`);
 
   // Require a bounded quiet window after subject deletion. Each pass re-deletes
@@ -858,8 +1050,12 @@ async function cleanupDatabase(
       (SELECT count(*)::int FROM avatars WHERE id = ANY(${avatarIds}::uuid[])) AS avatars_count,
       (SELECT count(*)::int FROM sessions WHERE user_id = ANY(${userIds}::uuid[])) AS sessions_count,
       (SELECT count(*)::int FROM platform_agents WHERE id = ANY(${platformIds}::uuid[])) AS platform_agents_count,
+      (SELECT count(*)::int FROM openclaw_bots WHERE agent_id = ANY(${platformIds}::text[])) AS agent_bots_count,
       (SELECT count(*)::int FROM building_skills WHERE building_id = ${buildingId}) AS skills_count,
-      (SELECT count(*)::int FROM memories WHERE agent_id = ANY(${platformIds}::uuid[])) AS memories_count,
+      (SELECT count(*)::int FROM memories WHERE agent_id = ANY(${platformIds}::uuid[])
+        OR room_id = ANY(${noriRoomIds}::uuid[])) AS memories_count,
+      (SELECT count(*)::int FROM npc_memories WHERE entity_id = ANY(${avatarIds}::text[])) AS npc_memories_count,
+      (SELECT count(*)::int FROM claw_token_transactions WHERE avatar_id = ANY(${avatarIds}::uuid[])) AS ledger_count,
       (SELECT count(*)::int FROM events
         WHERE building_id = ${buildingId}
            OR user_id = ANY(${userIds}::uuid[])
@@ -960,6 +1156,7 @@ async function main(): Promise<void> {
     cleanupPromise = (async () => {
       declaredMock?.server.stop(true);
       let stopFailed = false;
+      let disconnectFailed = false;
       let cleanupFailed = false;
       if (!options.keep) {
         for (const fixture of fixtures) {
@@ -968,10 +1165,15 @@ async function main(): Promise<void> {
           }
           const stopped = await requestRuntimeStop(client, apiBase, fixture, runId);
           if (!stopped) stopFailed = true;
+          try {
+            const botRows = await client`SELECT agent_id FROM openclaw_bots WHERE agent_id = ${fixture.platformAgentId} AND user_id = ${fixture.userId}::uuid`;
+            if (botRows.length > 0) await disconnectProbeBody(apiBase, fixture);
+            else await assertProbeBodyAbsent(apiBase, fixture.platformAgentId);
+          } catch { disconnectFailed = true; }
         }
       }
       try {
-        if (databaseCreated && !options.keep) {
+        if (databaseCreated && !options.keep && !stopFailed && !disconnectFailed) {
           await cleanupDatabase(client, fixtures, buildingId);
         }
       } catch {
@@ -982,15 +1184,15 @@ async function main(): Promise<void> {
       } catch {
         cleanupFailed = true;
       }
-      cleanupVerified = !cleanupFailed && (options.keep || (!stopFailed && databaseCreated));
-      if (stopFailed || cleanupFailed) {
+      cleanupVerified = !cleanupFailed && (options.keep || (!stopFailed && !disconnectFailed && databaseCreated));
+      if (stopFailed || disconnectFailed || cleanupFailed) {
         throw new ProbeFailure('cleanup could not verify complete disposal of probe resources');
       }
     })();
     return cleanupPromise;
   };
 
-  const onSignal = () => probeAbortController.abort();
+  const onSignal = abortProbe;
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
 
@@ -1050,7 +1252,7 @@ async function main(): Promise<void> {
     ok(hermesPrompts.some((prompt) => currentStateContext(prompt).includes('[Current state context]')), 'Lane B wire retains current-state provider context');
 
     if (options.autonomousDecision) {
-      const haltedStart = declaredMock.captured.length;
+      const haltedStart = captureCursor(declaredMock.captured);
       await postAutonomy(apiBase, fixture, true);
       const haltedPrompt = await waitForCapturedPrompt(
         declaredMock.captured,
@@ -1071,19 +1273,86 @@ async function main(): Promise<void> {
       }
 
       await setProbeHalt(client, fixture, false);
-      const allowedStart = declaredMock.captured.length;
+      const stillHalted = await probeHasActiveHalt(client, fixture);
+      const allowedMints = sharedSource.TRADING_OBJECTIVE_ALLOWED_OUTPUTS['conservative-rebalancer'];
+      const allowedStart = captureCursor(declaredMock.captured);
       await postProbeDirective(apiBase, fixture, 'Review the Trading desk and choose one allowed action.');
       const allowedPrompt = await waitForCapturedPrompt(
         declaredMock.captured,
         allowedStart,
         (prompt) => prompt.includes('Available actions (choose exactly one')
           && prompt.includes('Trading desk:')
-          && prompt.includes('Allowed mints:'),
+          && matchesTradingHaltState(prompt, stillHalted, allowedMints),
+        90_000, 'fixture-halt-cleared',
       );
-      ok(!allowedPrompt.includes('TRADING IS HALTED:'), 'cleared autonomous wire removes halt state');
-      for (const mint of sharedSource.TRADING_OBJECTIVE_ALLOWED_OUTPUTS['conservative-rebalancer']) {
-        ok(allowedPrompt.includes(mint), `autonomous wire contains allowed mint ${mint}`);
+      ok(matchesTradingHaltState(allowedPrompt, stillHalted, allowedMints),
+        stillHalted ? 'fleet halt remains active and suppresses allowed mints after fixture halt clears'
+          : 'cleared fixture halt exposes objective mints while fixture stays disarmed and killed');
+
+      const noriMarker = `nori-probe-${runId}`;
+      declaredMock.queueNoriQuestion(noriMarker);
+      const noriStart = captureCursor(declaredMock.captured);
+      const noriDirective = `${noriMarker}: Ask Nori about the Bounty Board.`;
+      await postProbeDirective(apiBase, fixture, noriDirective);
+      const noriLesson = await waitForNoriLesson(client, fixture, declaredMock.noriCounts, noriDirective, apiBase, noriMarker);
+      ok(noriLesson.startsWith('Nori told me: ') && !/\[ACTION:/i.test(noriLesson),
+        'actual Nori action persists a sanitized lesson under the fixture avatar');
+      const replySnippet = noriLesson.slice('Nori told me: '.length).replace(/\s+/g, ' ').slice(0, 100);
+      ok(replySnippet.length > 0, 'Nori supplies nonempty orientation content');
+      await postProbeDirective(apiBase, fixture, 'Use the latest Nori answer to choose your next world activity.');
+      const noriPrompt = await waitForCapturedPrompt(declaredMock.captured, noriStart,
+        (prompt) => prompt.includes(`- (latest) Nori: ${replySnippet}`)
+          && prompt.includes('Available actions (choose exactly one'), 90_000, 'nori-consumption');
+      ok(noriPrompt.includes('Status: armed=false; killed=true'), 'Nori decision fixture remains disarmed and killed');
+      for (const verb of sharedSource.HATCHER_ACTION_VERBS) {
+        ok(noriPrompt.includes(`${verb}(`), `Nori follow-up wire retains action ${verb}`);
       }
+      const rewardRows = await client<Array<{ rewards: number; trades: number }>>`
+        SELECT (SELECT count(*)::int FROM claw_token_transactions
+          WHERE avatar_id = ${fixture.avatarId}::uuid AND reason = 'system_agent_chat' AND amount = 1) AS rewards,
+          (SELECT count(*)::int FROM trading_decisions WHERE avatar_id = ${fixture.avatarId}::uuid) AS trades
+      `;
+      ok(rewardRows[0]?.rewards === 1, 'Nori action credits one fixture-owned chat reward');
+      ok(rewardRows[0]?.trades === 0, 'Nori probe executes no trade');
+
+      const beforeAppearance = await client<Array<{ color: string; rewards: number }>>`
+        SELECT color, (SELECT count(*)::int FROM claw_token_transactions WHERE avatar_id = ${fixture.avatarId}::uuid) AS rewards
+        FROM avatars WHERE id = ${fixture.avatarId}::uuid AND user_id = ${fixture.userId}::uuid
+      `;
+      ok(beforeAppearance[0]?.color !== 'red', 'appearance fixture starts with a different color');
+      const appearanceMarker = `appearance-probe-${runId}`;
+      declaredMock.queueAppearanceChange(appearanceMarker);
+      await postProbeDirective(apiBase, fixture, `${appearanceMarker}: Change your own avatar color to red.`);
+      let appearanceChanged = false;
+      const appearanceDeadline = Date.now() + 90_000;
+      while (Date.now() < appearanceDeadline && !probeAbortController.signal.aborted) {
+        const rows = await client<Array<{ color: string }>>`
+          SELECT color FROM avatars WHERE id = ${fixture.avatarId}::uuid AND user_id = ${fixture.userId}::uuid
+        `;
+        if (rows[0]?.color === 'red') { appearanceChanged = true; break; }
+        await Bun.sleep(250);
+      }
+      ok(appearanceChanged, 'actual hosted appearance action updates only the fixture-owned avatar');
+      const appearanceStart = captureCursor(declaredMock.captured);
+      await postProbeDirective(apiBase, fixture, 'Review your appearance and choose your next world activity.');
+      const appearancePrompt = await waitForCapturedPrompt(declaredMock.captured, appearanceStart,
+        (prompt) => prompt.includes('Available actions (choose exactly one') && prompt.includes('update_appearance('),
+        90_000, 'appearance-consumption');
+      ok(appearancePrompt.includes('Status: armed=false; killed=true'), 'appearance fixture remains disarmed and killed');
+      for (const verb of sharedSource.HATCHER_ACTION_VERBS) {
+        ok(appearancePrompt.includes(`${verb}(`), `appearance follow-up wire retains action ${verb}`);
+      }
+      const afterAppearance = await client<Array<{ rewards: number; trades: number; durable_color: number | null }>>`
+        SELECT (SELECT count(*)::int FROM claw_token_transactions WHERE avatar_id = ${fixture.avatarId}::uuid) AS rewards,
+          (SELECT count(*)::int FROM trading_decisions WHERE avatar_id = ${fixture.avatarId}::uuid) AS trades,
+          (SELECT color FROM openclaw_bots WHERE agent_id = ${fixture.platformAgentId} AND user_id = ${fixture.userId}::uuid LIMIT 1) AS durable_color
+      `;
+      const red = Number.parseInt(sharedSource.AVATAR_COLORS.find((color) => color.id === 'red')!.hex.slice(1), 16);
+      ok(afterAppearance[0]?.durable_color === red, 'appearance persists the exact fixture bot color for restart');
+      const snapshot = await parseJson(await fetchWithTimeout(`${apiBase}/api/npc/state`, { cache: 'no-store' }, 15_000), z.object({ npcs: z.array(z.object({ id: z.string(), color: z.number() }).passthrough()) }));
+      const bodyId = `ocb-${Buffer.from(fixture.platformAgentId).toString('base64url')}`;
+      ok(snapshot.npcs.find((body) => body.id === bodyId)?.color === red, 'appearance projects to the exact live fixture body');
+      ok(afterAppearance[0]?.rewards === beforeAppearance[0]?.rewards && afterAppearance[0]?.trades === 0, 'appearance grants no extra reward and executes no trade');
     }
 
     if (options.withEcho) {
@@ -1100,7 +1369,7 @@ async function main(): Promise<void> {
   console.log(`ALL PASS (${assertionNumber} checks)`);
 }
 
-main().catch((error: unknown) => {
+if (import.meta.main) main().catch((error: unknown) => {
   if (error instanceof ProbeFailure) console.error(error.message);
   else console.error('FAIL unexpected probe error (details suppressed)');
   process.exitCode = 1;

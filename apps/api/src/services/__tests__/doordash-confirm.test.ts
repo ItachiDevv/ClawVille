@@ -62,30 +62,44 @@ describe('the code must come from the requester, not the responder', () => {
 
 describe('the tip must come from the requester too', () => {
   test('accepts the natural ways a person writes an amount', () => {
-    expect(tipStatedByRequester('ACDEFG tip 4', 400)).toBe(true);
-    expect(tipStatedByRequester('ACDEFG tip $4', 400)).toBe(true);
-    expect(tipStatedByRequester('ACDEFG tip 4.00', 400)).toBe(true);
-    expect(tipStatedByRequester('ACDEFG tip 4.50', 450)).toBe(true);
-    expect(tipStatedByRequester('ACDEFG tip 3.25 please', 325)).toBe(true);
+    expect(tipStatedByRequester('tip 4', 400)).toBe(true);
+    expect(tipStatedByRequester('tip $4', 400)).toBe(true);
+    expect(tipStatedByRequester('tip 4.00', 400)).toBe(true);
+    expect(tipStatedByRequester('tip 4.50', 450)).toBe(true);
+    expect(tipStatedByRequester('tip 3.25 please', 325)).toBe(true);
+    expect(tipStatedByRequester('tip 4.', 400)).toBe(true);
+    expect(tipStatedByRequester('$4 tip', 400)).toBe(true);
+    expect(tipStatedByRequester('400 cents for the tip', 400)).toBe(true);
+    expect(tipStatedByRequester('tip 400 cents', 400)).toBe(true);
+  });
+
+  test.each([
+    ['add 4 garlic knots', 400], ['tip 4', 4], ['tip 400 cents', 40000],
+    ['tip $4 cents', 400], ['tip 4.00 cents', 400], ['tip -4', 400],
+    ['tip 4 or 5', 400], ['tip 4, tip 5', 400], ['no tip, tip 4', 0],
+    ["don't tip 4", 400], ['tip 4%', 400], ['tip 4 percent', 400],
+    ['tip 4.000', 400], ['tip 4?', 400], ['tip 4 maybe', 400],
+  ] as const)('refuses ambiguous or unrelated amount: %s', (turn, cents) => {
+    expect(tipStatedByRequester(turn, cents)).toBe(false);
   });
 
   test('accepts an explicit refusal to tip', () => {
-    expect(tipStatedByRequester('ACDEFG no tip', 0)).toBe(true);
-    expect(tipStatedByRequester('ACDEFG skip the tip', 0)).toBe(true);
-    expect(tipStatedByRequester('ACDEFG tip 0', 0)).toBe(true);
+    expect(tipStatedByRequester('no tip', 0)).toBe(true);
+    expect(tipStatedByRequester('skip the tip', 0)).toBe(true);
+    expect(tipStatedByRequester('tip 0', 0)).toBe(true);
   });
 
   test('refuses an amount the human never wrote', () => {
-    expect(tipStatedByRequester('ACDEFG place the order', 400)).toBe(false);
-    expect(tipStatedByRequester('ACDEFG tip 4', 500)).toBe(false);
+    expect(tipStatedByRequester('place the order', 400)).toBe(false);
+    expect(tipStatedByRequester('tip 4', 500)).toBe(false);
     expect(tipStatedByRequester('', 400)).toBe(false);
   });
 
   test('does not read a tip out of the middle of a longer number', () => {
     // "$45" must not satisfy a claimed $4 tip, and an order id full of digits
     // must not accidentally authorise an amount.
-    expect(tipStatedByRequester('ACDEFG tip 45', 400)).toBe(false);
-    expect(tipStatedByRequester('ACDEFG tip 4.50', 400)).toBe(false);
+    expect(tipStatedByRequester('tip 45', 400)).toBe(false);
+    expect(tipStatedByRequester('tip 4.50', 400)).toBe(false);
   });
 
   test('refuses negative and non-integer cent amounts outright', () => {
@@ -106,14 +120,14 @@ describe('the confirmation code must not become the tip', () => {
   // are the point of these cases.
   test('a tip hiding inside the code is refused', () => {
     const turn = 'yes K7Y46D';
-    expect(tipStatedByRequester(turn, 4600)).toBe(true); // unmasked: the hole
+    expect(tipStatedByRequester(turn, 4600)).toBe(false); // digits alone are not a tip phrase
     expect(tipStatedByRequester(maskConfirmCode(turn, 'K7Y46D'), 4600)).toBe(false);
   });
 
   test('single digits in the code cannot authorise a small tip either', () => {
     for (const [code, cents] of [['A4C7DE', 400], ['A4C7DE', 700], ['K9YMND', 900]] as const) {
       const turn = `place it ${code}`;
-      expect(tipStatedByRequester(turn, cents)).toBe(true);
+      expect(tipStatedByRequester(turn, cents)).toBe(false);
       expect(tipStatedByRequester(maskConfirmCode(turn, code), cents)).toBe(false);
     }
   });

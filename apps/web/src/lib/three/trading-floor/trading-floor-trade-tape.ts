@@ -32,16 +32,16 @@
  *     camera at the spawn sits on the room's centre line at the back of its own
  *     Z clamp, so the ray through a chip's inner edge, continued to the board
  *     plane, must land outside the board's own x span. That is a projection,
- *     not a clearance: a chip 810 wu off-centre at the back of the lane throws
- *     a shadow 890 wu off-centre on a board that is only 850 wu wide.
- * Those two windows are 175 wu apart and the lane sits between them. Move the
- * desks or the board and the test says so.
+ *     not a clearance: the innermost full-size corner projects by 1.088x.
+ * The tests derive the lane window with 10 wu desk and 15 wu board margins.
+ * Height does not change this horizontal projection.
  */
 
 import { TRADE_MINTS } from '@clawville/shared';
 
 import type { FloorTrade } from '@/stores/trade-ticker';
 import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
+import { sanitiseScreenText } from './trading-floor-screen-texture';
 
 // ---------------------------------------------------------------------------
 // Geometry + timing constants
@@ -54,16 +54,17 @@ export const TAPE_PER_LANE = 6;
 export const TAPE_MAX_CHIPS = TAPE_LANES * TAPE_PER_LANE;
 
 /** Lane centre, |x|. Bounded on both sides — see the header. */
-export const TAPE_LANE_X = 890;
+export const TAPE_LANE_X = 874;
 /** Chip face, world units. 16:9 so one atlas cell maps 1:1 with no stretch. */
 export const TAPE_CHIP_WIDTH = 160;
 export const TAPE_CHIP_HEIGHT = 90;
 /**
- * Flight height. Above the avatar (270), the desks (166), the dais (206) and
+ * Flight height, lowered 100 wu. The conservative lowest corner is 352.75.
+ * Above the avatar (270), the desks (166), the dais (206) and
  * the kiosk (300), so a chip can never intersect a prop or a walking player no
  * matter where either is — the tape needs no XZ keep-out at all.
  */
-export const TAPE_Y = 520;
+export const TAPE_Y = 420;
 /** Where a chip enters (board end) and leaves (door end). */
 export const TAPE_Z_START = -900;
 export const TAPE_Z_END = 720;
@@ -100,14 +101,14 @@ export const TAPE_ATLAS_HEIGHT = TAPE_ATLAS_ROWS * TAPE_CELL_HEIGHT;
  * Longest string each row may carry, in characters.
  *
  * These are a SUBSTITUTE for a clip path, not a style rule. Courier advances
- * ~0.6em, so the symbol row at 26px is ~15.6 px/char against 160 px of usable
- * cell (192 less 16 px of padding each side) and the amount row at 24px is
- * ~14.4. A longer string would not wrap or clip — it would run into the next
+ * ~0.6em, so the trader row at 26px is ~15.6 px/char against 160 px of usable
+ * cell (192 less 16 px of padding each side) and the amount row at 20px is
+ * ~12.0. A longer string would not wrap or clip — it would run into the next
  * cell of the atlas and paint itself on a neighbouring chip. The truncation is
  * in the BUILDER so the test can see it, never at the draw site.
  */
-export const TAPE_SYMBOL_MAX_CHARS = 10;
-export const TAPE_AMOUNT_MAX_CHARS = 11;
+export const TAPE_TRADER_MAX_CHARS = 10;
+export const TAPE_AMOUNT_MAX_CHARS = 13;
 
 // ---------------------------------------------------------------------------
 // Trade classification
@@ -122,14 +123,14 @@ export const TAPE_AMOUNT_MAX_CHARS = 11;
  */
 export type TapeChipKind = 'buy' | 'gain' | 'loss' | 'flat';
 
-/** Linear RGB per kind. Additive blending in a dark hall, so these read as
- *  emissive without a light, a bloom pass or an unlit second material. */
+/** Saturated linear RGB per kind. The opaque white atlas body takes this tint;
+ *  dark atlas text stays dark. Normal blending preserves contrast over props. */
 export const TAPE_CHIP_COLOR: Readonly<
   Record<TapeChipKind, readonly [number, number, number]>
 > = Object.freeze({
-  buy: Object.freeze([0.22, 0.85, 0.95] as const),
-  gain: Object.freeze([0.24, 0.94, 0.54] as const),
-  loss: Object.freeze([1.0, 0.36, 0.42] as const),
+  buy: Object.freeze([0.015, 0.72, 1.0] as const),
+  gain: Object.freeze([0.01, 0.85, 0.025] as const),
+  loss: Object.freeze([1.0, 0.02, 0.035] as const),
   flat: Object.freeze([0.62, 0.72, 0.82] as const),
 });
 
@@ -139,29 +140,14 @@ const QUOTE_MINTS: ReadonlySet<string> = new Set<string>([
   TRADE_MINTS.WSOL,
 ]);
 
-/**
- * The ONLY mints a chip may NAME, and deliberately the same policy the board's
- * `TAPE_SYMBOLS` applies: a listed token gets its name, everything else gets
- * its venue. Never `symbolForMint` from the panel's `format.ts`, which falls
- * back to a truncated base58 mint — an 11-character mint fragment is short
- * enough to survive an address filter and would put a raw chain identifier on a
- * floating object in the game world. USDC and SOL are omitted on purpose: they
- * are the currency, not the trade.
- *
- * `trading-floor-trade-tape.test.ts` reads the board's own map out of
- * `trading-floor-screen-data.ts` and asserts the two name the same mints, so
- * the second copy cannot drift into naming something the board will not.
+/** Short name from the source slot, never from an identity or lane number.
+ * Sanitize before truncation so an address cannot become a printable prefix.
  */
-const TAPE_SYMBOLS: Readonly<Record<string, string>> = Object.freeze({
-  [TRADE_MINTS.ANSEM]: 'ANSEM',
-  [TRADE_MINTS.CLAWVILLE]: 'CLAWVILLE',
-});
-
-const VENUE_LABEL: Readonly<Record<FloorTrade['dex'], string>> = Object.freeze({
-  jupiter: 'JUPITER',
-  pumpswap: 'PUMPSWAP',
-  pumpfun: 'PUMP.FUN',
-});
+export function tapeTraderName(slotName: string): string {
+  const safe = sanitiseScreenText(slotName, Number.MAX_SAFE_INTEGER)
+    .replace(/^CLAWVILLE\s+/, '');
+  return truncate(safe || 'TRADER', TAPE_TRADER_MAX_CHARS);
+}
 
 /** A finite number, or null. A missing or NaN money field must never render as
  *  0, because 0 is a meaningful figure on a chip that shows P&L. */
@@ -189,8 +175,8 @@ function truncate(text: string, max: number): string {
 
 export interface TapeTradeFace {
   kind: TapeChipKind;
-  /** Token name where we may name it, else the venue. Never a mint. */
-  symbol: string;
+  /** Sanitized short name of the source slot. Never an identity or mint. */
+  trader: string;
   /** The signed figure, or the side, or both. Never a figure we do not have. */
   amount: string;
 }
@@ -202,15 +188,11 @@ export interface TapeTradeFace {
  * the board's tape reads it: the field is additive on the wire and absent from
  * the `FloorTrade` type, so it is read through a cast and normalised to null.
  */
-export function classifyTapeTrade(trade: FloorTrade): TapeTradeFace {
+export function classifyTapeTrade(trade: FloorTrade): Omit<TapeTradeFace, 'trader'> {
   const inputIsQuote = QUOTE_MINTS.has(trade.inputMint);
   const outputIsQuote = QUOTE_MINTS.has(trade.outputMint);
   const isBuy = inputIsQuote && !outputIsQuote;
   const isSell = outputIsQuote && !inputIsQuote;
-
-  const traded = isSell ? trade.inputMint : trade.outputMint;
-  const symbol =
-    TAPE_SYMBOLS[traded] ?? VENUE_LABEL[trade.dex] ?? 'ON CHAIN';
 
   const notional = finite(trade.notionalUsd);
   const realised = finite((trade as { realisedUsd?: unknown }).realisedUsd);
@@ -222,13 +204,13 @@ export function classifyTapeTrade(trade: FloorTrade): TapeTradeFace {
     amount = notional !== null && notional > 0 ? `BUY ${formatTapeUsd(notional)}` : 'BUY';
   } else if (isSell && realised !== null && realised > 0) {
     kind = 'gain';
-    amount = formatTapeSignedUsd(realised);
+    amount = `SELL ${formatTapeSignedUsd(realised)}`;
   } else if (isSell && realised !== null && realised < 0) {
     kind = 'loss';
-    amount = formatTapeSignedUsd(realised);
+    amount = `SELL ${formatTapeSignedUsd(realised)}`;
   } else if (isSell && realised !== null) {
     kind = 'flat';
-    amount = formatTapeSignedUsd(realised);
+    amount = `SELL ${formatTapeSignedUsd(realised)}`;
   } else if (isSell) {
     kind = 'flat';
     amount = notional !== null && notional > 0 ? `SELL ${formatTapeUsd(notional)}` : 'SELL';
@@ -240,7 +222,6 @@ export function classifyTapeTrade(trade: FloorTrade): TapeTradeFace {
 
   return {
     kind,
-    symbol: truncate(symbol, TAPE_SYMBOL_MAX_CHARS),
     amount: truncate(amount, TAPE_AMOUNT_MAX_CHARS),
   };
 }
@@ -296,6 +277,7 @@ export function buildTapeSources(
   for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
     const slot = slots[slotIndex]!;
     const lane = slotIndex % TAPE_LANES;
+    const trader = tapeTraderName(slot.slotName);
     const trades = [...slot.recentTrades]
       // Newest first. An undated trade sorts last rather than being dropped:
       // it happened, we just cannot time it.
@@ -311,6 +293,7 @@ export function buildTapeSources(
         key: trade.signature,
         lane,
         seed: seedFromKey(trade.signature),
+        trader,
         ...classifyTapeTrade(trade),
       });
     }
@@ -323,7 +306,7 @@ function sameSource(a: TapeChipSource, b: TapeChipSource): boolean {
     a.key === b.key &&
     a.lane === b.lane &&
     a.kind === b.kind &&
-    a.symbol === b.symbol &&
+    a.trader === b.trader &&
     a.amount === b.amount
   );
 }
@@ -444,9 +427,8 @@ const LANE_RIGHT_Z = [-Math.sin(TAPE_LANE_YAW), Math.sin(TAPE_LANE_YAW)] as cons
 
 const TAU = Math.PI * 2;
 
-/** Cubic ease-out. No overshoot ON PURPOSE: the lane's outboard clearance to
- *  the desk face is 15 wu at scale 1, so a back-eased pop would put the chip's
- *  corner through a desk for three frames. */
+/** Cubic ease-out without overshoot. Both clearance bounds assume scale <= 1;
+ *  overshoot would invalidate those bounds during the entry animation. */
 function easeOutCubic(t: number): number {
   const inverse = 1 - t;
   return 1 - inverse * inverse * inverse;
@@ -472,12 +454,15 @@ export function writeTapeChipTransform(
   nowMs: number,
   out: TapeChipTransform,
 ): void {
-  const { cycle, phase } = tapeChipPhase(chip, nowMs);
-  if (cycle < 0) {
+  // Keep the hot path scalar: tapeChipPhase returns a new record for callers.
+  const raw = (nowMs - chip.releasedAtMs) / TAPE_LIFETIME_MS;
+  if (!Number.isFinite(raw) || raw < 0) {
     out.visible = false;
     out.alpha = 0;
     return;
   }
+  const cycle = Math.floor(raw);
+  const phase = raw - cycle;
 
   const lane = chip.lane >= 0 && chip.lane < TAPE_LANES ? chip.lane : 0;
   const popping = cycle === 0 && phase < TAPE_POP;
@@ -501,11 +486,10 @@ export function writeTapeChipTransform(
   out.halfHeight = (TAPE_CHIP_HEIGHT / 2) * scale;
   out.rightX = LANE_RIGHT_X;
   out.rightZ = LANE_RIGHT_Z[lane]!;
-  // Fade the colour AS WELL as the alpha. Additive blending takes both, and a
-  // chip that only loses alpha still lifts the wall behind it at the edges.
-  out.red = colour[0] * fade;
-  out.green = colour[1] * fade;
-  out.blue = colour[2] * fade;
+  // Fade opacity only. The fill retains its saturation through the fade.
+  out.red = colour[0];
+  out.green = colour[1];
+  out.blue = colour[2];
   out.alpha = fade;
 }
 
@@ -550,25 +534,23 @@ export function tapeCellUv(index: number): {
 }
 
 const CELL_PADDING = 16;
-const SYMBOL_FONT = 'bold 26px "Courier New", monospace';
-const AMOUNT_FONT = 'bold 24px "Courier New", monospace';
+const TRADER_FONT = 'bold 26px "Courier New", monospace';
+const AMOUNT_FONT = 'bold 20px "Courier New", monospace';
 
 /**
  * Paint every cell. Called ONLY when the chip list changes — never per frame,
  * and never from `useFrame`: a full atlas upload is ~1.0 MB, which is the class
  * of per-frame cost the Iris Xe floor cannot absorb.
  *
- * Everything is drawn in WHITE and tinted by the per-chip vertex colour, so one
- * atlas serves all four kinds and a colour change costs no repaint at all.
- * Unused cells are cleared to black, which under additive blending is
- * invisible — the quad is degenerate as well, so it never reaches a fragment.
+ * White bodies take the saturated vertex tint; dark text retains contrast.
+ * Transparent padding avoids black rectangles under normal blending. Unused
+ * cells are cleared and their quads are degenerate.
  */
 export function drawTapeAtlas(
   ctx: CanvasRenderingContext2D,
   chips: readonly TapeChip[],
 ): void {
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, TAPE_ATLAS_WIDTH, TAPE_ATLAS_HEIGHT);
+  ctx.clearRect(0, 0, TAPE_ATLAS_WIDTH, TAPE_ATLAS_HEIGHT);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
 
@@ -577,20 +559,19 @@ export function drawTapeAtlas(
     const chip = chips[index]!;
     const rect = tapeCellRect(index);
 
-    // Slab body. Faint on purpose: additive, so this is the chip's own glow and
-    // a heavier fill would wash the glyphs out rather than back them.
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+    // Opaque white takes the saturated vertex tint across the whole slab.
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(rect.x + 5, rect.y + 5, rect.width - 10, rect.height - 10);
     ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.78)';
+    ctx.strokeStyle = '#071018';
     ctx.strokeRect(rect.x + 5, rect.y + 5, rect.width - 10, rect.height - 10);
 
-    ctx.font = SYMBOL_FONT;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(chip.symbol, rect.x + CELL_PADDING, rect.y + 46);
+    ctx.font = TRADER_FONT;
+    ctx.fillStyle = '#071018';
+    ctx.fillText(chip.trader, rect.x + CELL_PADDING, rect.y + 46);
 
     ctx.font = AMOUNT_FONT;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+    ctx.fillStyle = '#071018';
     ctx.fillText(chip.amount, rect.x + CELL_PADDING, rect.y + 84);
   }
 }

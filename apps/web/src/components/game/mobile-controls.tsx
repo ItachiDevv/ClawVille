@@ -13,7 +13,7 @@ import {
   JOYSTICK_ZONE_HEIGHT_PX,
   JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
   JUMP_BUTTON_RIGHT_CSS,
-  JUMP_BUTTON_SIZE_PX,
+  JUMP_BUTTON_SIZE_CSS,
   registerHudElement,
 } from '@/lib/hud-anchors';
 
@@ -263,8 +263,8 @@ export default function MobileControls() {
             // on narrow screens (hud-anchors).
             bottom: JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
             right: JUMP_BUTTON_RIGHT_CSS,
-            width: JUMP_BUTTON_SIZE_PX,
-            height: JUMP_BUTTON_SIZE_PX,
+            width: JUMP_BUTTON_SIZE_CSS,
+            height: JUMP_BUTTON_SIZE_CSS,
             touchAction: 'none',
             WebkitUserSelect: 'none',
           }}

@@ -775,8 +775,10 @@ export class ElizaRuntime {
       await this.ensureRoom(roomId, key, worldId);
       await this.ensureEntity(entityId, agentId);
 
+      // plugin-sql deduplicates globally. Include this runtime's agentId;
+      // old IDs remain readable, with at most one new row per repeated lesson.
       const memoryId = uuidv5(
-        `earned-skill:${input.avatarId}:${input.buildingId}:${lesson}`,
+        `earned-skill:${agentId}:${input.avatarId}:${input.buildingId}:${lesson}`,
         ROOM_NAMESPACE,
       ) as UUID;
       await this.runtime.createMemory(

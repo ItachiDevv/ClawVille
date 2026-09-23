@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { HOUSE_TRADER_OBJECTIVES, HOUSE_TRADER_STATUS_MAX_AGE_MS } from '@clawville/shared';
+import { HOUSE_TRADER_OBJECTIVES, HOUSE_TRADER_STATUS_MAX_AGE_MS, TRADE_MINTS } from '@clawville/shared';
 
 import { identityFingerprint } from '../../services/identity-service';
 import { CLAWPUMP_OBSERVED_IDENTITY_TYPE } from '../../services/trading-provisioning';
-import type { HouseTraderCandidate, HouseTraderDeps } from '../../services/house-traders';
+import {
+  summariseRealised,
+  type HouseTraderCandidate, type HouseTraderDeps, type PublicHouseTraderSlot, type RealisedTradeLeg,
+} from '../../services/house-traders';
+import type { PublicTradeDTO } from '../../services/trade-observer';
 import { clearHouseTraderStatuses } from '../../services/house-trader-status';
 import { createHouseTraderStatusHandler, createHouseTradersHandler } from '../trading-floor';
 
@@ -57,6 +61,66 @@ async function callWith(
 }
 
 describe('GET /api/floor/house-traders', () => {
+  it('publishes matched sell USD and omits unknown figures from recent rows', async () => {
+    const nowSec = 1_800_000_000;
+    const entry: RealisedTradeLeg = {
+      signature: 'entry', inputMint: TRADE_MINTS.USDC, outputMint: 'coin',
+      inputAmount: '10000000', outputAmount: '1000', notionalUsd: '10.000000',
+      atSec: nowSec - 5 * 3600, preBind: false,
+    };
+    const flat: RealisedTradeLeg = {
+      signature: 'flat', inputMint: 'coin', outputMint: TRADE_MINTS.USDC,
+      inputAmount: '400', outputAmount: '4000000', notionalUsd: '4.000000',
+      atSec: nowSec - 4 * 3600, preBind: false,
+    };
+    const legs: RealisedTradeLeg[] = [
+      entry,
+      flat,
+      { ...flat, signature: 'profit', inputAmount: '200', outputAmount: '3000000', notionalUsd: '3.000000' },
+      { ...flat, signature: 'loss', outputAmount: '2000000', notionalUsd: '2.000000' },
+      { ...flat, signature: 'orphan' },
+      { ...entry, signature: 'unpriced-buy', outputMint: 'excluded', notionalUsd: null },
+      { ...flat, signature: 'excluded-sell', inputMint: 'excluded' },
+    ];
+    const summary = summariseRealised({
+      legs, usdcMint: TRADE_MINTS.USDC, nowSec, computedAt: '2026-09-20T05:00:00.000Z',
+    });
+    const recent: PublicTradeDTO[] = legs.map((leg) => ({
+      signature: leg.signature, inputMint: leg.inputMint, outputMint: leg.outputMint,
+      inputAmount: leg.inputAmount, outputAmount: leg.outputAmount,
+      inputDecimals: 6, outputDecimals: 6,
+      notionalUsd: leg.notionalUsd === null ? null : Number(leg.notionalUsd), notionalSource: null,
+      dex: 'jupiter', multiplierTier: 'base', multiplier: 1,
+      scored: false, unscoredReason: null, blockTime: leg.atSec,
+      verifiedAt: '2026-09-20T05:00:00.000Z',
+      operatedByClawville: false, operator: 'clawpump', decisionId: null,
+      subject: { type: 'agent', id: CLAWVILLE_AGENT_ID, avatarName: 'Genesis' },
+    }));
+    const response = await callWith(deps({
+      loadCandidates: async () => [genesis()],
+      loadCounts: async () => new Map([[AVATAR_ID, { verified: legs.length, scored: 0, lastTradeAt: null }]]),
+      loadRealised: async () => new Map([[AVATAR_ID, summary]]),
+      loadRecent: async () => new Map([[AVATAR_ID, recent]]),
+    }));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { slots: PublicHouseTraderSlot[] };
+    const slot = body.slots.find((row) => row.objective === 'momentum-board')!;
+    const bySignature = new Map(slot.recentTrades.map((row) => [row.signature, row]));
+    expect(bySignature.get('flat')).toHaveProperty('realisedUsd', 0);
+    expect(bySignature.get('profit')).toHaveProperty('realisedUsd', 1);
+    expect(bySignature.get('loss')).toHaveProperty('realisedUsd', -2);
+    for (const signature of ['entry', 'orphan', 'unpriced-buy', 'excluded-sell']) {
+      expect(bySignature.get(signature)).not.toHaveProperty('realisedUsd');
+    }
+    // All previous wire fields are unchanged, and the internal map stays private.
+    const { sellRealisedMicros, ...expectedRealised } = summary;
+    expect(sellRealisedMicros.size).toBe(3);
+    expect(slot.realised).toEqual(expectedRealised);
+    expect(slot.realised).not.toHaveProperty('sellRealisedMicros');
+    expect(slot.recentTrades.map(({ realisedUsd, ...row }) => row)).toEqual(recent);
+    expect(recent.every((row) => !Object.hasOwn(row, 'realisedUsd'))).toBe(true);
+  });
+
   it('returns exactly the lineup slots on an empty database', async () => {
     const response = await callWith(deps());
     expect(response.status).toBe(200);

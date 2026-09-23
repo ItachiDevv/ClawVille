@@ -1,5 +1,7 @@
 # ClawPump integration
 
+**Last Audited: 2026-09-22 (Trading Floor availability knowledge; protocol 68).** Drift note: the game already labels player trading and trader launch controls "Coming soon", but Nori and the protocol still described immediate template copying. Nori, shared orientation, and the served manual now distinguish disabled game controls from retained authenticated wallet-binding and trade-report APIs. Public house-trader and template reads remain available. Swap execution still requires an operator-provisioned, armed trading account. The version bump refreshes hosted protocol knowledge through the existing install/consume path. No route, action, identity, custody, settlement, or runner state changes. PARITY: human path: game controls and Nori; agent path: protocol and shared orientation; settlement binds to the existing avatar resolution.
+
 **Last Audited: 2026-09-20 (Genesis runner: LP lock rule for all pool types, cap reset, +15 percent trail, all launchpads; plus the RUNNER STATUS FEED).** Drift note: new "Runner status feed" subsection under House traders records `POST /api/floor/house-traders/status`, the `HOUSE_TRADER_STATUS_TOKEN` bearer, the body contract, the post-on-change plus 60 second heartbeat cadence, the 150 second ageout, and the rule that a pause is REPORTED and never inferred from trade silence. Runner section records the FEELSGOOD rug, the on-chain LP lock check per pool type, the replayed exit change and StonkFun support. Earlier: the read-only ownership client, four operator routes, script flow, and recorded fixture inventory.
 
 **Last Audited: 2026-09-18 (docs + code research pass, 09:30Z).** Corrections from the research pass are in "Research pass 2026-09-18" below; they override older lines in this file. Founder direction changed the boundary: the traders must RUN IN CLAWPUMP. One agent first: **Genesis**, the founder's ClawPump agent, trades on ClawPump with its own ClawPump-custodied wallet. The fleet of five is paused (five ClawPump agents exist but are private, stopped and unfunded). ClawVille now has `clawpump-client.ts`, a read-only client for `GET /agents` and `GET /agents/:id`. It proves operator ownership before observe-only pairing. After pairing, ClawVille observes and ranks Genesis under its dedicated account. The client has no execution method. The section "Verified ClawPump facts" below is the ground truth for the next build.
@@ -126,6 +128,12 @@ ClawVille executes fleet swaps only through Jupiter. The core observer can verif
 All four operator routes require Lucia, `ADMIN_USER_IDS`, and the allowed Origin. POST routes also require JSON and a fresh single-use money-operator nonce. N1: a detail ID mismatch raises `ClawPumpAgentMismatchError` and returns 404 `clawpump_agent_not_owned`.
 
 ## House traders (founder lineup, 2026-09-19)
+
+**Last Audited: 2026-09-20.** Drift note: house-trader recent trades now expose optional per-sell `realisedUsd`.
+
+Each `recentTrades` row optionally carries numeric `realisedUsd`, the signed USD result attributable to that sell signature. The server sums the same FIFO matched allocations in integer micro-USD before conversion, using the full verified history. A partial sell includes only the matched part. Buys, excluded legs and wholly unmatched sells omit this field; a matched break-even sell explicitly carries `0`. No-exit write-offs have no sell signature and remain only in the aggregate. The existing `realised` block, exclusions and queries stay unchanged.
+
+PARITY: humans and agents receive the same field from the public `GET /api/floor/house-traders` response; attribution uses the existing slot avatar.
 
 ClawVille runs TWO house traders (Dip Hunter was tested and dropped on 2026-09-19), held in
 `packages/shared/src/constants/house-trader-lineup.ts`:

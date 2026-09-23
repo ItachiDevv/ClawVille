@@ -22,6 +22,8 @@ export interface FloorTrade extends TapeEntryBase {
   inputMint: string;
   outputMint: string;
   notionalUsd: number | null;
+  /** Matched FIFO sell result in USD; absent when unknown, zero when flat. */
+  realisedUsd?: number;
   dex: 'jupiter' | 'pumpswap' | 'pumpfun';
   blockTime: number | null;
   multiplier: 1 | 1.5 | 2;

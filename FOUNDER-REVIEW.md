@@ -14,6 +14,17 @@
 
 ## How this file works (rules for every session)
 
+### September 22 cleanup: Nori, touch controls, and Cove close controls
+
+- **Release state:** staging serves cleanup commit `dfebf028`. Public onboarding passes 14 checks, the signed partner harness passes 14, and hosted Nori/appearance acceptance passes 125 twice, including after test-signer removal. Guest Nori and Baccarat browser checks pass. The serial web retry recovers an unexplained build-helper exit 255. Production remains `6f115fc2` until promotion evidence records otherwise.
+- **Where:** staging first at `https://staging.clawville.world/game` and `/cove/baccarat`; production uses the same paths after verified promotion.
+- **Look at:** a fresh Explore visitor can open Nori, receive a reply, and close the panel. Phone and tablet controls must remain separate in both orientations. Baccarat Close and Fairness must accept taps.
+- **Agent path:** a bound agent can ask Nori through the system-chat route or `chat_nori(message)`. Its reply stays in private agent context. Nori answers orientation questions and executes no model-authored action.
+- **Appearance:** protocol 69 adds `update_appearance` and the universal appearance tool. The live hosted test proves the requested color in the owned avatar, durable bot record, and exact live body. Public connected avatars with no hosted platform row also pass. Confirm the visual result in normal play and after reconnect.
+- **Feedback wanted:** real-iPad bottom safe-area placement and physical-device frame rate. Browser emulation cannot supply the iPad safe-area verdict. Chrome on itachi222 shows 30–60 FPS across the observed desktop states; this does not establish a sustained 60 FPS floor. Owner: 3da with independent Claude/Codex review. Review deadline: 2026-09-29; capture device, renderer, viewport, and sustained timing before any performance acceptance claim.
+- **DoorDash:** straightforward code-and-tip confirmation remains required. A changed cart needs a fresh preview. This audit performs no paid-order test.
+- **Session:** Codex dd/bounty cleanup, 2026-09-22. Release and browser evidence belong in the cleanup ledger; this entry is not a deployment claim.
+
 - **Every session that ships something needing founder feedback MUST append an entry
   here in the same push** (same discipline as `deploy-status.md`). Shipping without
   an entry = the feedback silently never happens.
@@ -33,6 +44,15 @@
 ---
 
 ## TRADING FLOOR
+
+### Player trading controls show Coming soon (local working tree, 2026-09-20)
+
+- **Last Audited: 2026-09-20.** Drift note: founder order pauses player trading and player trader launches in the client.
+- **Greyed out:** Use my linked wallet, Use my in-game wallet, Connect and sign, and the guest Create a free account button. The signature input and Verify trade button are disabled. Each template's Copy persona and Copy skills buttons, Open the ClawPump dashboard, and Open Jupiter are disabled too. Each control retains its label, explanation title, and Coming soon tag.
+- **Monitoring:** Genesis and ClawVille Runner retain their live realised profit and loss, risk state, house-trader board, panel, public trade tape, and flying trade chips. Their read-only route remains unchanged.
+- **Re-enable:** set `TRADING_SELF_SERVE_ENABLED` to `true` in `apps/web/src/components/game/trading-floor/tokens.ts`. This one boolean restores the original controls and eligibility checks.
+- **Where:** local build, Exchange modal, Trading Floor tab. This change has no commit, push, or deployment. Visual founder review remains pending.
+- **Local gates:** 628 tests pass, 0 fail, 136505 assertions across 20 files; `tsc.exe --noEmit -p .` exits 0; production build exits 0 with 38/38 static pages. Browser and viewport checks remain unverified because the managed preview launcher refused ownership or input validation.
 
 ### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
 - **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,
@@ -84,6 +104,14 @@
   FAULT, never a pause. Feedback wanted: is the wording right, and is amber the right colour. NOTE: the status word on
   every card grew from 14 to 15 px so the longer text stays legible. The runner side (the post call inside the live trade
   loop) waits for your direct yes to clawPump; until it posts, every card reads as before.
+- **NEW, 2026-09-20 late: the trades are objects in the room.** You said the job was displaying the trades in 3D to
+  showcase performance. Look at: staging `/trading-floor`, stand on the spawn and look down either side. Twelve slabs
+  fly the hall, two lanes, one per bot, from the board wall toward the door. A slab reads its bot on top (GENESIS or
+  RUNNER) and the side with the money below (SELL -3.08, BUY 10.00). Red is a trade that lost money, green is one that
+  made money, cyan is a buy. It costs ONE draw call however many chips fly, and it uses the data the board already
+  fetches, so it adds no request. Feedback wanted: chip size, drift speed, colour, and whether you want them nearer the
+  centre of the room or kept to the sides. On PROD you currently have the first version of this (chips labelled with the
+  venue, no colour); the version described here is on staging and is one promotion away.
 - **Not in this push:** NPC agents seated inside the hall (the enter_trading_floor()
   verb walks an agent to the building; they are not rendered inside yet).
 - Shipped by: session clawAgents/Fable, 2026-09-20.

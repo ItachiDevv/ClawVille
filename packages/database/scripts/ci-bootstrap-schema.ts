@@ -74,9 +74,12 @@ try {
   // rebuilding such a table from migrations/*.sql alone loses those columns
   // (run 35059050630: 0013 failed on missing "tenure" after a blanket drop).
   // Tables kept bootstrap-owned get the CURRENT TS-schema shape, which is
-  // complete on columns; they only lack authored CHECKs, acceptable outside
-  // the drop set. CASCADE is safe: the database has no data yet, and the
-  // CI-only guard above refused any DB that already had the app schema.
+  // complete on columns. drizzle-kit 0.24 also omits declared CHECKs, and
+  // CASCADE removes incoming FKs from retained tables. After migrate-ci.ts,
+  // ci-restore-schema-invariants.ts MUST restore the verified live CHECKs
+  // and FKs; its catalog test pins the empirical staging gaps. CASCADE cannot lose
+  // application data here: the database is empty and the guard above refused
+  // any DB that already had the app schema. It does not preserve constraints.
   const migrationsDir = resolve(__dirname, '../migrations');
   const manualDir = resolve(__dirname, '../migrations-manual');
   const readSqlFiles = (dir: string): string[] =>

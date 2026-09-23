@@ -60,6 +60,7 @@
 .topActions {
   display: flex;
   gap: 8px;
+  pointer-events: auto;
 }
 
 .button,

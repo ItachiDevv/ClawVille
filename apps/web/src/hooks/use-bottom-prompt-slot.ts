@@ -53,7 +53,8 @@ import { useLandStore } from '@/stores/land';
 import {
   JOYSTICK_ZONE_BOTTOM_CSS,
   JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
-  JUMP_BUTTON_SIZE_PX,
+  JUMP_BUTTON_SIZE_CSS,
+  MOBILE_PROMPT_TOP_RESERVE_PX,
   PROMPT_JUMP_CLASH_MAX_VW_PX,
 } from '@/lib/hud-anchors';
 
@@ -157,7 +158,7 @@ export function useBottomPromptOwner(): BottomPromptOwner {
  *
  * 110 + 123 + 27 = 260.
  */
-const MOBILE_PROMPT_TOP_RESERVE_PX = 260;
+// MOBILE_PROMPT_TOP_RESERVE_PX lives in hud-anchors, shared with Jump's size.
 
 /**
  * The mobile FLOOR — character-identical to the joystick host's own anchor in
@@ -182,7 +183,7 @@ const MOBILE_PROMPT_DESIRED_LIFT =
  * wide, centred) covered ~27 px of the button, at every building prompt.
  */
 const MOBILE_PROMPT_JUMP_CLEAR =
-  `calc(${JOYSTICK_ZONE_BOTTOM_CSS} + ${JUMP_BUTTON_BOTTOM_IN_ZONE_CSS} + ${JUMP_BUTTON_SIZE_PX + 8}px)`;
+  `calc(${JOYSTICK_ZONE_BOTTOM_CSS} + ${JUMP_BUTTON_BOTTOM_IN_ZONE_CSS} + ${JUMP_BUTTON_SIZE_CSS} + 8px)`;
 
 /**
  * The jump clearance applies only where the pill can reach the button's
@@ -193,9 +194,11 @@ const MOBILE_PROMPT_JUMP_CLEAR =
  * is already wide). Pure CSS, so rotation and resizing need no JS.
  *
  * Limit: the top-reserve cap in bottomPromptOffset still wins on an upright
- * screen shorter than about 540 px (for example 320x480), where the pill
- * cannot rise above the button without covering the mode toggle. No current
- * phone is that short, and the old formula overlapped there too.
+ * short portrait screen, where the pill cannot rise above the button without
+ * covering the mode toggle. The threshold depends on the bottom safe area:
+ * Jump shrinks toward 44 px to preserve this clearance on small portraits.
+ * At 320px wide with inset 44, the minimum height for both is 564px:
+ * 104px joystick lift + 148px Jump offset + 44px target + 8px gap + 260px reserve.
  */
 const MOBILE_PROMPT_NARROW_JUMP_CLEAR =
   `calc(${MOBILE_PROMPT_JUMP_CLEAR} - max(0px, (100vw - ${PROMPT_JUMP_CLASH_MAX_VW_PX - 1}px) * 1000))`;

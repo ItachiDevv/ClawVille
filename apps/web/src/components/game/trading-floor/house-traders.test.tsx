@@ -4,6 +4,7 @@ import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 
 import { HOUSE_TRADER_LINEUP } from '@clawville/shared';
+import { TRADING_SELF_SERVE_ENABLED } from './tokens';
 
 import { normaliseHouseSlotRealisedForTest } from '@/hooks/use-trading-floor';
 import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
@@ -309,6 +310,37 @@ describe('House traders section', () => {
     for (const boast of [/profitable/i, /outperform/i, /beats? the market/i, /crushing/i]) {
       expect(text).not.toMatch(boast);
     }
+  });
+
+  test('keeps both house traders, realised figures and risk states visible while self-service is off', async () => {
+    expect(TRADING_SELF_SERVE_ENABLED).toBe(false);
+    const host = await renderWithSlots([
+      liveSlot({
+        slotName: 'Genesis',
+        realised: {
+          ...emptyRealisedFixture(),
+          closedPositions: 2, wins: 0, losses: 2, realisedUsd: -5.2,
+        },
+        risk: riskFixture(),
+      }),
+      liveSlot({
+        objective: HOUSE_TRADER_LINEUP[1]!.objective,
+        slotName: 'ClawVille Runner',
+        subject: { type: 'agent', id: 'clawville-agent-runner', avatarName: 'ClawVille Runner' },
+        realised: {
+          ...emptyRealisedFixture(),
+          closedPositions: 2, wins: 2, losses: 0, realisedUsd: 4.05,
+        },
+        risk: riskFixture({ state: 'fault', reason: 'price_feed_down', detail: 'Price feed down.' }),
+      }),
+    ]);
+    expect(host.textContent).toContain('Genesis');
+    expect(host.textContent).toContain('ClawVille Runner');
+    expect(host.textContent).toContain('-$5.20');
+    expect(host.textContent).toContain('+$4.05');
+    expect(host.textContent).toContain('Paused by risk limit');
+    expect(host.textContent).toContain('Status fault');
+    expect(host.textContent).toContain('Price feed down.');
   });
 
   // One render per test on purpose: the harness tracks a single root in

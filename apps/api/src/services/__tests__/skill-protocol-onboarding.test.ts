@@ -4,8 +4,10 @@ import {
   MAP_LOCATIONS,
   SHOP_BUILDINGS,
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
+  DECISION_SCOPE,
 } from '@clawville/shared';
 import { describe, expect, test } from 'bun:test';
+import { townGuide } from '@clawville/agent-templates';
 import {
   PROTOCOL_VERSION,
   agentProtocolPointer,
@@ -22,9 +24,68 @@ import { KELP_REALM_BEACON_GRAPH } from '@clawville/shared';
 const API_BASE = 'https://api.example.test';
 
 describe('open-agent onboarding manuals', () => {
+  test('appearance reaches protocol, pointer, Nori and deciding scope with version 69', () => {
+    const manual = buildProtocolManual(API_BASE);
+    expect(PROTOCOL_VERSION).toBe(69);
+    expect(agentProtocolPointer(API_BASE).version).toBe(69);
+    expect(manual).toContain('PATCH /api/avatars/me/appearance');
+    expect(manual).toContain('clawville_update_appearance');
+    expect(manual).toContain('[ACTION: update_appearance(color=blue)]');
+    expect(manual).toContain('Hatcher-reserved models cannot be selected');
+    expect(manual).toContain('grant no vCLAW, XP, or leaderboard credit');
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.includes('clawville_update_appearance'))!;
+    expect(orientation).toBeTruthy();
+    expect(townGuide.knowledge).toContain(orientation);
+    expect(DECISION_SCOPE.join(' ')).toContain('[ACTION: update_appearance(color=blue)]');
+  });
+  test('publishes Nori REST and executable hosted discovery in the refreshed manual', () => {
+    const manual = buildProtocolManual(API_BASE);
+    expect(PROTOCOL_VERSION).toBe(69);
+    expect(manual).toContain(`POST ${API_BASE}/api/chat/system/town-guide`);
+    expect(manual).toContain('clawville_chat_nori');
+    expect(manual).toContain('[ACTION: chat_nori(message=<text>)]');
+    expect(manual).toContain('1–4000 characters');
+    expect(manual).toContain('1–500 characters');
+    expect(manual).toContain('bound active avatar, and ledger-capable identity');
+    expect(manual).toContain('Agents never fall back to a demo identity');
+    expect(manual).toContain('60-second reward');
+    expect(manual).toContain('never a second source of executable actions');
+    expect(DECISION_SCOPE.join('\n')).toContain('[ACTION: chat_nori(message=<question>)]');
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n')).toContain('POST /api/chat/system/town-guide');
+    expect(townGuide.knowledge.join('\n')).toContain('clawville_chat_nori');
+    // The same current version/hash reaches connected pointers and hosted
+    // protocol-knowledge refresh, rather than a separate unversioned hint.
+    expect(protocolPointer(API_BASE)).toMatchObject({
+      version: 69,
+      contentHash: contentHashOf(manual),
+    });
+  });
+
+  test('distinguishes Coming soon game controls from retained trading APIs', () => {
+    const manual = buildProtocolManual(API_BASE);
+    const availability = manual.split('## 17. The Trading Floor')[1]?.split('### 17a.')[0] ?? '';
+    expect(availability).toContain('"Coming soon"');
+    expect(availability).toContain('watch Genesis and ClawVille Runner');
+    expect(availability).toMatch(/Existing authenticated\s+wallet binding and trade reporting APIs remain available/);
+    expect(availability).toContain('eligible human and\nagent identities');
+    expect(availability).toContain('operator-provisioned, armed trading account');
+    expect(availability).toContain('does not provision or arm one');
+    expect(manual).toContain(`POST ${API_BASE}/api/exchange/wallets/bind`);
+    expect(manual).toContain(`POST ${API_BASE}/api/exchange/trades/report`);
+    expect(manual).toContain(`GET ${API_BASE}/api/floor/house-traders`);
+    expect(manual).toContain('do not describe an available in-game launch flow');
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n');
+    expect(orientation).toContain('Player trading and trader launch controls in the game read "Coming soon"');
+    expect(orientation).toContain('game disables template copy and launch buttons');
+    expect(orientation).toContain('Existing authenticated wallet binding and trade reporting APIs remain available');
+    const guideKnowledge = townGuide.knowledge.join('\n');
+    expect(guideKnowledge).toContain('Player trading and trader launch controls in the game read "Coming soon"');
+    expect(guideKnowledge).not.toContain('hands out five ClawPump trader templates you can copy');
+  });
+
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(67);
+    expect(PROTOCOL_VERSION).toBe(69);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -48,7 +109,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(67);
+    expect(PROTOCOL_VERSION).toBe(69);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -259,7 +320,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(67);
+    expect(PROTOCOL_VERSION).toBe(69);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

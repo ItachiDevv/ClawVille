@@ -8,7 +8,9 @@ import {
   boolean,
   jsonb,
   pgEnum,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
 import { agentConfigs } from './agent-configs';
 
@@ -157,7 +159,12 @@ export const bountyAttempts = pgTable('bounty_attempts', {
   reviewedAt: timestamp('reviewed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  // Already present on staging through the manual escrow-linkage migration.
+  // Fresh CI schemas need the same one-approved-attempt invariant.
+  oneApprovedPerBounty: uniqueIndex('bounty_attempts_one_approved_per_bounty')
+    .on(table.bountyId).where(sql`${table.status} = 'approved'`),
+}));
 
 export const bountyReputation = pgTable('bounty_reputation', {
   id: uuid('id').primaryKey().defaultRandom(),

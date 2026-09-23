@@ -8,6 +8,7 @@ import {
   type AutonomyEnterablePlace,
   TRADING_FLOOR_BUILDING_ID,
   HATCHER_ACTION_VERBS,
+  AVATAR_COLORS,
   TRADING_SYMBOL_TO_MINT,
   isLiveTutorialQuest,
   SALVAGE_APPROACH_RANGE_WU,
@@ -1014,6 +1015,33 @@ class NpcSimulation {
     return resolved?.agentId === expectedAgentId ? resolved : null;
   };
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
+  /** Shared real Nori turn; a narrow seam permits no-network action tests. */
+  autonomousNoriChat: (input: {
+    actor: { kind: 'agent'; sessionId: string; expectedAgentId: string; expectedAvatarId: string };
+    slug: string; content: string; isCurrent: () => boolean;
+  }) => Promise<{ message: { content: string } }> = async (input) => {
+    const { conductSystemAgentChat } = await import('./system-agent-chat');
+    return conductSystemAgentChat(input);
+  };
+  autonomousNoriReply: (agentId: string, avatarId: string, reply: string) => Promise<void> = async (agentId, avatarId, reply) => {
+    const { agentAutonomyDriver } = await import('./agent-autonomy-driver');
+    agentAutonomyDriver.rememberSystemChatReply(agentId, avatarId, reply);
+  };
+  autonomousNoriAgentResolve: typeof this.autonomousTradeAgentResolve = async (sessionId, expectedAgentId) => {
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    const resolved = await resolveAgentSession(sessionId);
+    return resolved?.agentId === expectedAgentId ? resolved : null;
+  };
+  private noriChatsInFlight = new Set<string>();
+  /** Same canonical write path as the authenticated appearance route. */
+  autonomousAppearanceUpdate: (input: {
+    actor: { kind: 'agent'; sessionId: string; expectedAgentId: string; expectedAvatarId: string };
+    patch: Record<string, string>; isCurrent: () => boolean;
+  }) => Promise<unknown> = async (input) => {
+    const { updateAvatarAppearance } = await import('./avatar-appearance');
+    return updateAvatarAppearance(input);
+  };
+  private appearanceUpdatesInFlight = new Set<string>();
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
@@ -1545,6 +1573,34 @@ class NpcSimulation {
   }
 
   // --- OpenClaw Methods ---
+
+  /** Capture exact live bindings before a canonical appearance transaction. */
+  captureBoundAppearanceProjection(avatarId: string, userId: string) {
+    const captured = [...this.agentBotSessions.entries()].flatMap(([sessionId, session]) => {
+      const config = session.config;
+      if (config.mode !== 'avatar' || !config.ledgerCapable || config.avatarId !== avatarId || config.boundUserId !== userId) return [];
+      const bodyId = this.getNpcIdForSession(sessionId);
+      const body = bodyId ? this.npcs.get(bodyId) : undefined;
+      if (!bodyId || !body || this.npcOverrides.get(bodyId) !== sessionId) return [];
+      return [{ sessionId, session, config, bodyId, body }];
+    });
+    return {
+      agentIds: captured.map(({ config }) => config.agentId),
+      targets: captured.map(({ sessionId, config }) => ({ sessionId, agentId: config.agentId })),
+      project: (appearance: { modelKey: string; color: string }, authorizedAgentIds: readonly string[]) => {
+        const color = AVATAR_COLORS.find((entry) => entry.id === appearance.color);
+        if (!color) return;
+        for (const item of captured) {
+          const { sessionId, session, config, bodyId, body } = item;
+          if (!authorizedAgentIds.includes(config.agentId) || this.agentBotSessions.get(sessionId) !== session ||
+              session.config !== config || this.npcs.get(bodyId) !== body || this.npcOverrides.get(bodyId) !== sessionId ||
+              config.avatarId !== avatarId || config.boundUserId !== userId || !config.ledgerCapable) continue;
+          config.species = body.species = appearance.modelKey;
+          config.color = body.color = Number.parseInt(color.hex.slice(1), 16);
+        }
+      },
+    };
+  }
 
   registerAgentBot(config: AgentSubstrateRegistration, client: AgentSubstrateClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
     if (config.mode === 'override') {
@@ -2418,6 +2474,18 @@ class NpcSimulation {
       const name = match[1];
       const paramStr = match[2].trim();
       const params: Record<string, string> = {};
+      // Cosmetic edits have a strict grammar. Never silently discard authority
+      // fields, malformed pairs, or duplicate keys before shared validation.
+      if (name === 'update_appearance') {
+        const seen = new Set<string>();
+        const valid = paramStr.length > 0 && paramStr.split(',').every((part) => {
+          const pair = /^\s*(modelKey|color|gender)\s*=\s*([a-zA-Z0-9_-]+)\s*$/.exec(part);
+          if (!pair || seen.has(pair[1]!)) return false;
+          seen.add(pair[1]!);
+          return true;
+        });
+        if (!valid) continue;
+      }
       if (paramStr.length > 0) {
         for (const part of paramStr.split(',')) {
           const eq = part.indexOf('=');
@@ -2961,6 +3029,51 @@ class NpcSimulation {
     }
   }
 
+  private async chatWithNori(npcId: string, npc: NpcRuntimeState, attribution: AgentActionAttribution, message: string): Promise<void> {
+    const isCurrent = () => this.npcs.get(npcId) === npc &&
+      this.npcOverrides.get(npcId) === attribution.sessionId &&
+      this.agentBotSessions.get(attribution.sessionId)?.config.avatarId === attribution.avatarId &&
+      this.agentBotSessions.get(attribution.sessionId)?.config.agentId === attribution.agentId;
+    if (!isCurrent() || this.noriChatsInFlight.has(attribution.avatarId)) return;
+    this.noriChatsInFlight.add(attribution.avatarId);
+    try {
+      const result = await this.autonomousNoriChat({
+        actor: { kind: 'agent', sessionId: attribution.sessionId, expectedAgentId: attribution.agentId, expectedAvatarId: attribution.avatarId },
+        slug: 'town-guide', content: message, isCurrent,
+      });
+      const current = await this.autonomousNoriAgentResolve(attribution.sessionId, attribution.agentId);
+      if (!isCurrent() || !current?.ledgerCapable || !current.userId ||
+          current.avatarId !== attribution.avatarId || current.agentId !== attribution.agentId) return;
+      this.agentBotSessions.get(attribution.sessionId)?.client?.rememberNoriReply(result.message.content);
+      // This is data from Nori, never another action-dispatch input.
+      await this.autonomousNoriReply(attribution.agentId, attribution.avatarId, result.message.content);
+      // The owner-shared Nori room can contain private chat/inventory context.
+      // Never publish its reply through the public world chat event stream.
+    } catch {
+      console.warn('[Autonomy] Nori chat refused or unavailable');
+    } finally { this.noriChatsInFlight.delete(attribution.avatarId); }
+  }
+
+  private async updateOwnAppearance(npcId: string, npc: NpcRuntimeState, attribution: AgentActionAttribution, patch: Record<string, string>): Promise<void> {
+    const session = this.agentBotSessions.get(attribution.sessionId);
+    const config = session?.config;
+    const isCurrent = () => this.npcs.get(npcId) === npc &&
+      !!session && !!config && this.agentBotSessions.get(attribution.sessionId) === session && session.config === config &&
+      this.npcOverrides.get(npcId) === attribution.sessionId &&
+      this.agentBotSessions.get(attribution.sessionId)?.config.avatarId === attribution.avatarId &&
+      this.agentBotSessions.get(attribution.sessionId)?.config.agentId === attribution.agentId;
+    if (!isCurrent() || this.appearanceUpdatesInFlight.has(attribution.avatarId)) return;
+    this.appearanceUpdatesInFlight.add(attribution.avatarId);
+    try {
+      await this.autonomousAppearanceUpdate({
+        actor: { kind: 'agent', sessionId: attribution.sessionId, expectedAgentId: attribution.agentId, expectedAvatarId: attribution.avatarId },
+        patch, isCurrent,
+      });
+    } catch {
+      console.warn('[Autonomy] Appearance update refused or unavailable');
+    } finally { this.appearanceUpdatesInFlight.delete(attribution.avatarId); }
+  }
+
   /** Validate + execute ONE whitelisted Hatcher action. Invalid params drop. */
   private executeHatcherAction(
     npcId: string,
@@ -2976,6 +3089,20 @@ class NpcSimulation {
       return;
     }
     switch (name) {
+      case 'update_appearance': {
+        const keys = Object.keys(params);
+        if (!attribution || keys.length === 0 || keys.some((key) => !['modelKey', 'color', 'gender'].includes(key))) return;
+        if (params.color !== undefined && !['green', 'red', 'blue', 'yellow'].includes(params.color)) return;
+        if (params.gender !== undefined && !['male', 'female'].includes(params.gender)) return;
+        void this.updateOwnAppearance(npcId, npc, attribution, params);
+        return;
+      }
+      case 'chat_nori': {
+        const message = (params.message ?? '').trim();
+        if (!attribution || !message || message.length > HATCHER_TALK_MESSAGE_MAX) return;
+        void this.chatWithNori(npcId, npc, attribution, message);
+        return;
+      }
       case 'move': {
         const x = Number(params.x);
         const y = Number(params.y);

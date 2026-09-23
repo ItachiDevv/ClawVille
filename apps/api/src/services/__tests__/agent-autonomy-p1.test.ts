@@ -13,7 +13,7 @@
  * `executeHatcherAction`, not worth exposing publicly just for the test.
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import { NPC_BUILDING_CENTERS, BUILDING_INTERACTION_RADIUS } from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
@@ -193,6 +193,16 @@ describe('P1 proximity gate — executeHatcherAction talk_to_npc', () => {
 });
 
 describe('P1 autonomy driver — decide → enter_building', () => {
+  const originalDirectiveStateRead = agentAutonomyDriver.directiveStateRead;
+  beforeEach(() => {
+    // This DB-less fixture has no human instruction. Supply a successful empty
+    // read: an unavailable store must defer decisions, not imply no directive.
+    agentAutonomyDriver.directiveStateRead = async () => ({
+      directive: null, lastActedDirectiveSha: null,
+    });
+  });
+  afterEach(() => { agentAutonomyDriver.directiveStateRead = originalDirectiveStateRead; });
+
   it('picks a teacher (prompt lists teachers) and emits an enter_building action', async () => {
     const bodyId = 'ocb-house-test';
     const sessionId = 'oc-house-test';
@@ -278,11 +288,16 @@ describe('P1 autonomy driver — decide → enter_building', () => {
     });
     sim.pendingEvents = [];
     try {
+      let decisions = 0;
       // A full decide turn (LLM stub → enter_building; no ledger, no event) …
       await agentAutonomyDriver.driveOnce(
         bodyId,
-        async () => `Learning. [ACTION: enter_building(buildingId=${target})]`,
+        async () => {
+          decisions++;
+          return `Learning. [ACTION: enter_building(buildingId=${target})]`;
+        },
       );
+      expect(decisions).toBe(1);
       // … then a near talk through the REAL executor (emits its speech bubble).
       sim.executeHatcherAction(bodyId, sim.getNpcById(bodyId), 'talk_to_npc', {
         buildingId: target,

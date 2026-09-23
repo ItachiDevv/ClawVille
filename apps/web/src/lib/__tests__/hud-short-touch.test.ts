@@ -4,6 +4,8 @@ import {
   JOYSTICK_ZONE_HEIGHT_PX,
   JUMP_BUTTON_BOTTOM_IN_ZONE_CSS,
   JUMP_BUTTON_SIZE_PX,
+  JUMP_BUTTON_SIZE_CSS,
+  SHORT_TOUCH_AUTONOMY_MAX_HEIGHT_CSS,
   SHORT_TOUCH_LEFT_ROW_MAX_VW,
   SHORT_TOUCH_MAX_VH,
   SHORT_TOUCH_ROW_LEFT_PX,
@@ -15,11 +17,12 @@ import {
 // 2026-09-18 phone overlaps (measured in touch emulation): at 844x390 Hold
 // Jump covered the gear and Controls and Controls + Language covered the
 // camera joystick; at 740x360 Jump covered Nori; at 667x375 a row beside
-// Nori met the guest login banner. Evaluate the real CSS numerically (no safe
-// area, 16 px rem), the same way bottom-prompt-offset.test.ts does.
+// Nori met the guest login banner. Evaluate the actual CSS at a 16 px rem.
+// Include bottom insets: the old zero-only evaluator hid real-device collisions.
 
-function evalCss(css: string, vw: number, vh: number): number {
+function evalCss(css: string, vw: number, vh: number, bottomInset = 0): number {
   const js = css
+    .replace(/env\(safe-area-inset-bottom, 0px\)/g, String(bottomInset))
     .replace(/env\(safe-area-inset-[a-z]+, 0px\)/g, '0')
     .replace(/100dvh/g, String(vh))
     .replace(/100vw/g, String(vw))
@@ -36,14 +39,52 @@ function evalCss(css: string, vw: number, vh: number): number {
 
 const NORI_BOTTOM = 62; // top-4 + measured height
 const ROW = { top: 16, bottom: 60 }; // the top-line row (below 768 px) and Nori's line
-const jumpTop = (vw: number, vh: number) =>
-  vh - evalCss(JOYSTICK_ZONE_BOTTOM_CSS, vw, vh) - evalCss(JUMP_BUTTON_BOTTOM_IN_ZONE_CSS, vw, vh) - JUMP_BUTTON_SIZE_PX;
-const cameraStickTop = (vw: number, vh: number) =>
-  vh - evalCss(JOYSTICK_ZONE_BOTTOM_CSS, vw, vh) - JOYSTICK_ZONE_HEIGHT_PX + 80; // nipple top: 140 above zone bottom
+const jumpTop = (vw: number, vh: number, inset = 0) =>
+  vh - evalCss(JOYSTICK_ZONE_BOTTOM_CSS, vw, vh, inset) - evalCss(JUMP_BUTTON_BOTTOM_IN_ZONE_CSS, vw, vh, inset) - evalCss(JUMP_BUTTON_SIZE_CSS, vw, vh, inset);
+const cameraStickTop = (vw: number, vh: number, inset = 0) =>
+  vh - evalCss(JOYSTICK_ZONE_BOTTOM_CSS, vw, vh, inset) - JOYSTICK_ZONE_HEIGHT_PX + 80; // nipple top: 140 above zone bottom
 
 const SHORT = [[667, 375], [740, 360], [812, 375], [844, 390], [932, 430]] as const;
 
 describe('short touch screens (phones held landscape)', () => {
+  const DEVICE_SIZES = [
+    [390, 844], [844, 390], [744, 1133], [1133, 744],
+    [820, 1180], [1180, 820], [1024, 1366], [1366, 1024],
+    [740, 360], [667, 375], [812, 375], [320, 568],
+  ] as const;
+
+  for (const [vw, vh] of DEVICE_SIZES) {
+    for (const inset of [0, 20, 34, 44]) {
+      test(`${vw}x${vh}, bottom inset ${inset}: Jump stays between Nori and the joystick with a 44px target`, () => {
+        const size = evalCss(JUMP_BUTTON_SIZE_CSS, vw, vh, inset);
+        const top = jumpTop(vw, vh, inset);
+        expect(size).toBeGreaterThanOrEqual(44);
+        expect(size).toBeLessThanOrEqual(JUMP_BUTTON_SIZE_PX);
+        expect(top).toBeGreaterThanOrEqual(NORI_BOTTOM + 8);
+        expect(top + size).toBeLessThanOrEqual(cameraStickTop(vw, vh, inset));
+        if (inset <= 20) {
+          expect(size).toBe(JUMP_BUTTON_SIZE_PX);
+          const previousBottom = Math.min(Math.min(Math.max(148, 0.38 * vw), 168), vh - 214);
+          expect(top).toBeCloseTo(vh - 80 - previousBottom - 64, 8);
+        }
+      });
+
+      if (vh < (vw < 768 ? SHORT_TOUCH_MAX_VH : SHORT_TOUCH_WIDE_MAX_VH)) {
+        test(`${vw}x${vh}, bottom inset ${inset}: Autonomous panel ends above camera joystick`, () => {
+          const height = evalCss(SHORT_TOUCH_AUTONOMY_MAX_HEIGHT_CSS, vw, vh, inset);
+          expect(height).toBeGreaterThan(0);
+          expect(70 + height).toBeLessThanOrEqual(cameraStickTop(vw, vh, inset) - 8);
+        });
+      }
+    }
+  }
+
+  test('the old zero-inset cap reproduces the reported collision with a home-indicator inset', () => {
+    const vh = 360, padBottom = 94, oldBottom = 146;
+    expect(vh - padBottom - oldBottom - 64).toBeLessThan(NORI_BOTTOM);
+    expect(jumpTop(740, vh, 34)).toBeGreaterThanOrEqual(NORI_BOTTOM + 8);
+  });
+
   for (const [vw, vh] of SHORT) {
     test(`${vw}x${vh}: short, Jump below Nori and the top row, above the camera joystick`, () => {
       expect(vh).toBeLessThan(SHORT_TOUCH_MAX_VH);

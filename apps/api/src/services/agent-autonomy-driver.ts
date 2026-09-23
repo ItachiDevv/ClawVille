@@ -225,10 +225,14 @@ interface HouseAgentEntry {
   directiveShaHydrated: boolean;
   /** A new human directive landed and has not yet been consumed by a decide. */
   directivePending: boolean;
+  /** Monotonic owner-kick revision; async work cannot consume a newer kick. */
+  directiveRevision: number;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
 type DecideFn = (prompt: string) => Promise<string>;
+type TargetReaderName = 'land' | 'quests' | 'salvage' | 'build' | 'trading';
+const TARGET_READ_TIMEOUT_MS = 10_000;
 
 // Cadence + safety constants.
 const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
@@ -509,6 +513,9 @@ class AgentAutonomyDriver {
   // exactly ONE active avatar, so at most one autonomous agent).
   private enrolledOwners = new Map<string, string>();
   private inFlight = new Set<string>(); // agentIds mid-decision (overlap guard)
+  // A timed-out read still owns this guard until its underlying promise settles.
+  // Keep it across unregister/re-seat so retries cannot accumulate stuck queries.
+  private pendingTargetReads = new Map<string, Set<TargetReaderName>>();
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
@@ -582,6 +589,7 @@ class AgentAutonomyDriver {
       lastActedDirectiveSha: null,
       directiveShaHydrated: false,
       directivePending: false,
+      directiveRevision: 0,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -717,6 +725,7 @@ class AgentAutonomyDriver {
       // clear currentDirective: a fresh instruction survives a quick handback.
       directiveShaHydrated: false,
       directivePending: false,
+      directiveRevision: 0,
     });
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
@@ -739,6 +748,13 @@ class AgentAutonomyDriver {
     for (const [ownerUserId, enrolledAgentId] of this.enrolledOwners) {
       if (enrolledAgentId === agentId) this.enrolledOwners.delete(ownerUserId);
     }
+  }
+
+  /** A shared Nori turn must affect the next choice even when RAG ranks it lower. */
+  rememberSystemChatReply(agentId: string, avatarId: string, reply: string): void {
+    const entry = this.userAgents.get(agentId);
+    if (!entry || entry.avatarId !== avatarId) return;
+    entry.lastLesson = `Nori: ${reply.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`;
   }
 
   /** O(1): does this owner currently have a driver-enrolled autonomous agent?
@@ -914,6 +930,7 @@ class AgentAutonomyDriver {
     const agentId = this.enrolledOwners.get(ownerUserId);
     const entry = agentId ? this.userAgents.get(agentId) : null;
     if (!agentId || !entry || entry.platformAgentId !== expectedPlatformAgentId) return false;
+    entry.directiveRevision++;
     entry.directivePending = true;
     return this.kickAgentNow(agentId);
   }
@@ -1150,7 +1167,10 @@ class AgentAutonomyDriver {
         (b) => b.buildingId === buildingId,
       );
       const prompt = this.buildTalkPrompt(buildingId, building?.label, building?.cryptoFocus);
+      const talkDirectiveRevision = entry.directiveRevision;
       const reply = await decide(prompt);
+      if (entry.directiveRevision !== talkDirectiveRevision
+        || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
       // TEMP DEBUG (see above): the RAW talk reply — reveals whether gpt-4o-mini
       // emits a parseable [ACTION: talk_to_npc(...)] tag.
       console.log(
@@ -1191,13 +1211,17 @@ class AgentAutonomyDriver {
     // P3 slice 2: on the first deciding drive after (re)start, seed "since I last
     // acted" context from the durable event cursor. Slice 4 memory read-back:
     // fold the most recent lessons in too. Slice 2 directive: read the human's
-    // current directive as a top-priority bias. All three are soft-timeout +
-    // fail-soft — a slow/absent DB must never stall the tick.
+    // current directive as a top-priority bias. Reads are bounded; an unknown
+    // directive defers this decision instead of assuming no instruction exists.
     await this.seedFromCursorOnce(entry);
     // P3 slice 3: read the directive FIRST so it can bias the semantic-RAG lesson
     // retrieval (lessons relevant to what the human asked surface first); both
-    // reads are bounded + fail-soft so a slow store never stalls the tick.
+    // reads are bounded so a slow store never stalls the tick.
+    const directiveRevision = entry.directiveRevision;
     const directive = await this.readDirectiveBounded(entry.platformAgentId, entry);
+    // Keep a newer kick pending. The caller permits only one immediate follow-up;
+    // further failures wait for the steady tick rather than spinning here.
+    if (directive === undefined || entry.directiveRevision !== directiveRevision) return;
     entry.directivePending = false;
     let directiveSha: string | null = null;
     let directiveWasNew = false;
@@ -1217,7 +1241,7 @@ class AgentAutonomyDriver {
     const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
-      readAutonomousLandTargets({
+      this.readTargetBounded(agentId, 'land', () => readAutonomousLandTargets({
         avatarId: entry.avatarId,
         x: perception.self.x,
         y: perception.self.y,
@@ -1227,20 +1251,20 @@ class AgentAutonomyDriver {
           err instanceof Error ? err.message : err,
         );
         return { claimable: [], owned: [] } satisfies AutonomousLandTargets;
-      }),
-      readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+      })),
+      this.readTargetBounded(agentId, 'quests', () => readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} quest targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
         );
         return [] as AutonomousQuestTarget[];
-      }),
+      })),
       // House agents never salvage (pure faucet, server-owned actor), so skip
       // four queries per tick for the whole fleet rather than discarding the
       // result later.
       entry.isHouse
         ? Promise.resolve(EMPTY_SALVAGE_TARGETS)
-        : readAutonomousSalvageTargets({
+        : this.readTargetBounded(agentId, 'salvage', () => readAutonomousSalvageTargets({
         avatarId: entry.avatarId,
         userId: entry.houseUserId,
         x: perception.self.x,
@@ -1252,27 +1276,38 @@ class AgentAutonomyDriver {
           err instanceof Error ? err.message : err,
         );
         return EMPTY_SALVAGE_TARGETS;
-      }),
+      })),
       // House agents cannot earn materials (both faucets exclude them), so a
       // build block would only ever offer calls they can never pay. Same skip
       // as the salvage read above: save the queries per tick for the fleet.
       entry.isHouse
         ? Promise.resolve(EMPTY_AUTONOMOUS_BUILD_TARGETS)
-        : readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        : this.readTargetBounded(agentId, 'build', () => readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} build targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
         );
         return EMPTY_AUTONOMOUS_BUILD_TARGETS;
-      }),
-      readAutonomousTradingTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+      })),
+      this.readTargetBounded(agentId, 'trading', () => readAutonomousTradingTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} trading desk unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
         );
         return EMPTY_TRADING_DESK;
-      }),
+      })),
     ]);
+    // Target reads can also outlive the owner instruction or enrollment.
+    if (entry.directiveRevision !== directiveRevision
+      || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
+    if (landTargets === undefined || questTargets === undefined || salvageTargets === undefined
+      || buildTargets === undefined || tradingDesk === undefined) {
+      // Unknown target state cannot become an invented empty world or desk.
+      // One immediate follow-up is already bounded by driveAgentNow; unresolved
+      // readers stay guarded, then the steady tick retries after they settle.
+      entry.directivePending = true;
+      return;
+    }
     const prompt = this.buildDecisionPrompt(
       perception,
       entry,
@@ -1286,6 +1321,9 @@ class AgentAutonomyDriver {
       tradingDesk,
     );
     const reply = await decide(prompt);
+    // This also fences decisions based on known-null state, which have no
+    // directive SHA claim to detect a new instruction received during inference.
+    if (entry.directiveRevision !== directiveRevision) return;
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
     // candidate (a). If this has content but no [ACTION: enter_building(...)] the
     // executor recognizes, the parse — not the model call — is the stall.
@@ -1360,6 +1398,10 @@ class AgentAutonomyDriver {
       });
       entry.lastDirectiveSha = directiveSha;
     }
+    // Claim/event persistence above also awaits. A newer owner instruction or
+    // replacement enrollment invalidates this reply at the final dispatch edge.
+    if (entry.directiveRevision !== directiveRevision
+      || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
     // N3: clear any STALE destination from a PRIOR turn BEFORE dispatching, so
     // post-dispatch destinationBuildingId is non-null ONLY if THIS turn's
     // enter_building actually succeeded. Without this, a dropped enter_building
@@ -1392,6 +1434,49 @@ class AgentAutonomyDriver {
       entry.walkEpisodeDeadline = now + MAX_WALK_EPISODE_MS;
       entry.lastRemainingWu = null; // first walking tick records the baseline
     }
+  }
+
+  /** Bound only read waits, never the action lifecycle. Late data is discarded. */
+  private readTargetBounded<T>(
+    agentId: string,
+    name: TargetReaderName,
+    read: () => Promise<T>,
+  ): Promise<T | undefined> {
+    let readers = this.pendingTargetReads.get(agentId);
+    if (readers?.has(name)) return Promise.resolve(undefined);
+    if (!readers) {
+      // Failed transports plus enrollment churn must not grow this map forever.
+      if (this.pendingTargetReads.size >= MAX_HOUSE_AGENTS + MAX_AUTONOMOUS_USER_AGENTS) {
+        return Promise.resolve(undefined);
+      }
+      readers = new Set();
+      this.pendingTargetReads.set(agentId, readers);
+    }
+    readers.add(name);
+    const pending = readers;
+    return new Promise<T | undefined>((resolve) => {
+      let settled = false;
+      const finish = (value: T | undefined) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        console.warn(`[AutonomyDriver] target read timed out reader=${name} agent=${sessionDigest(agentId)}`);
+        finish(undefined);
+      }, TARGET_READ_TIMEOUT_MS);
+      const release = () => {
+        pending.delete(name);
+        if (pending.size === 0 && this.pendingTargetReads.get(agentId) === pending) {
+          this.pendingTargetReads.delete(agentId);
+        }
+      };
+      void Promise.resolve().then(read).then(
+        (value) => { release(); finish(value); },
+        () => { release(); finish(undefined); },
+      );
+    });
   }
 
   /** True once the body is within the interaction radius of its target building. */
@@ -1802,22 +1887,22 @@ class AgentAutonomyDriver {
 
   /**
    * P3 slice 2 — read the agent's current directive (config.currentDirective),
-   * raced against DIRECTIVE_FETCH_TIMEOUT_MS. Null on timeout/error so a slow or
-   * absent DB never stalls or breaks a decide tick.
+   * raced against DIRECTIVE_FETCH_TIMEOUT_MS. Undefined means unavailable;
+   * null means a successful read found no current directive.
    */
   private readDirectiveBounded(
     platformAgentId: string,
     entry?: HouseAgentEntry,
-  ): Promise<CurrentDirective | null> {
-    return new Promise<CurrentDirective | null>((resolve) => {
+  ): Promise<CurrentDirective | null | undefined> {
+    return new Promise<CurrentDirective | null | undefined>((resolve) => {
       let settled = false;
-      const finish = (directive: CurrentDirective | null) => {
+      const finish = (directive: CurrentDirective | null | undefined) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         resolve(directive);
       };
-      const timer = setTimeout(() => finish(null), DIRECTIVE_FETCH_TIMEOUT_MS);
+      const timer = setTimeout(() => finish(undefined), DIRECTIVE_FETCH_TIMEOUT_MS);
       this.directiveStateRead(platformAgentId)
         .then((state: AgentDirectiveState) => {
           if (settled) return;
@@ -1856,7 +1941,7 @@ class AgentAutonomyDriver {
           finish(directive);
         })
         .catch(() => {
-          finish(null);
+          finish(undefined);
         });
     });
   }
