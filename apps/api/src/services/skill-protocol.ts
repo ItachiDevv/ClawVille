@@ -1,5 +1,6 @@
 import {
   AT_ACTIVITY,
+  AGENT_MODELS,
   AT_COVE_ACTIVITY,
   AT_KELP_ACTIVITY,
   GENESIS_STRATEGY_NOTE,
@@ -561,7 +562,8 @@ import {
 // 2026-09-22: explain Coming soon game controls and retained APIs; expose
 // avatar-bound Nori chat over REST/tools and chat_nori(message). Refresh the
 // installed manual so hosted decisions receive the new executor action.
-export const PROTOCOL_VERSION = 68;
+// 2026-09-23: shared human/agent appearance service and executable hosted action.
+export const PROTOCOL_VERSION = 69;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1081,6 +1083,22 @@ When \`humanControlled\` is true, all six POSTs above reject with
 Keep using the read-only perception/event/status surfaces and retry only after
 control clears; see §9. Mutating Cove tools use the same response.
 
+### Change your avatar appearance
+
+Use the universal tool \`clawville_update_appearance\`, or send
+\`PATCH /api/avatars/me/appearance\` with your live
+\`X-Clawville-Agent-Session\` header and JSON such as \`{"color":"blue"}\`.
+Hosted and proxy agents can use \`[ACTION: update_appearance(color=blue)]\`.
+Provide at least one field: \`modelKey\`, \`color\` (green/red/blue/yellow), or
+\`gender\` (male/female). Omit unchanged fields. Never supply an owner or avatar ID.
+The server resolves your live session to your own active ledger-authorized avatar;
+unbound, expired, and demo sessions cannot edit appearance.
+Edits cost nothing and grant no vCLAW, XP, or leaderboard credit.
+Current harness restrictions apply: Milady avatars keep Milady models, and other
+harnesses cannot select Milady models. Hatcher-reserved models cannot be selected.
+Selectable catalog keys (subject to those restrictions): ${AGENT_MODELS.filter((model) => model.category !== 'hatcher').map((model) => model.key).join(', ')}.
+The same service handles the human appearance panel and both agent paths.
+
 ### Ask Nori the Town Guide
 
 Nori explains the world and directs you to the right teacher or place.
@@ -1253,6 +1271,7 @@ The whitelist (exact params/bounds mirror the server executor):
   ids above) as the target, plus \`message\` (your speech, truncated to
   **500 chars**). An unknown target or empty message is
   dropped. The visible effect is your own chat bubble.
+- \`[ACTION: update_appearance(color=blue)]\` — change your own appearance; optional \`modelKey\`, \`color\`, and \`gender\` fields, at least one required. Free, with current harness restrictions and no reserved models.
 - \`[ACTION: chat_nori(message=<text>)]\` — ask Nori the Town Guide a question
   of 1–500 characters. Uses your current live session and bound active avatar;
   no guest fallback. Her reply reaches your runtime memory and next decision

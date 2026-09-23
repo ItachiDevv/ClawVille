@@ -332,4 +332,100 @@ Dynamic computed environment keys require human review. Asset-version, animation
 The adversarial reviewer separately approved parser, Git range, rename/deletion and workflow checks after21 tests passed with104 assertions.
 The implementer also verified the actual `10575a98`→`cbb647ad` range:14 rules loaded,9 triggered, and no failures.
 Those results supplement this registry review; they do not establish remote CI or branch protection.
-Current acceptance is **local implementation and registry verification only**. The GitHub credential blocker still prevents release and remote required-check proof.
+Current acceptance at this checkpoint is **local implementation and registry verification only**. Later release and required-check evidence is in the cleanup ledger.
+
+## Hosted probe timeout investigation
+
+The staged API at `59dba1cf` passed 75 hosted-probe assertions, then timed out after the fixture halt cleared.
+That run never reached the Nori action phase. Its original timeout survived `finally`, so cleanup reported no failure.
+The probe had a separate, locally reproduced capture defect: it discarded all requests after capture 24.
+Sequence cursors and a bounded recent-request buffer now preserve fresh requests after saturation.
+Six focused tests pass with 36 assertions, including fresh capture, stale-match rejection, diagnostic privacy, and signed fixture disconnect.
+Timeouts now report phase and request/decision/state counts without private prompt text or identifiers.
+The instrumented staging rerun passed assertion 76, then failed because no fixture-owned Nori lesson appeared.
+The first timeout cause remains unconfirmed; passing the later assertion does not prove capture saturation caused the original failure.
+Global fleet halts, trader arm/kill state, execution assertions, and product routes remain unchanged.
+
+The browser exposed two prior probe bodies after database cleanup.
+Source review confirms that autonomy deactivation preserves hosted sessions and bodies by design.
+The old cleanup omitted the `openclaw_bots` row and both public world registries from its postconditions.
+Thus its earlier zero-row evidence covered only the listed database tables.
+New fixture identities permit authenticated signed disconnect before row deletion; private keys remain ephemeral and never enter logs.
+Cleanup verifies exact agent and body absence, then removes the exact bot row and checks zero surviving rows.
+It retains durable fixture rows if disconnect fails, so the coordinator can recover them.
+Existing failed-run fixtures require separate exact cleanup by the coordinator; no broad cleanup is authorized.
+The Nori timeout now reports queued/emitted action counts and fixture binding, reward, and room-memory counts without private content.
+The coordinator later removed the two exact prior bot rows under ownership guards and verified zero survivors.
+The independent reviewer also verified both exact agent IDs and body IDs absent from public registries at `2026-09-23T03:18:55Z`.
+Their eventual disappearance does not establish which lifecycle path removed them.
+
+### Nori probe cause: malformed fixture JSON
+
+The next diagnostic run saw four decision requests after the Nori question queued, but none contained a directive block or marker.
+The route returned the exact requested text, while the stored directive-property comparison failed.
+The coordinator then tested synthetic constants with the same postgres.js client in a read-only PostgreSQL query.
+Pre-stringified JSON persisted as a string; `tx.json` persisted as an object.
+Concatenating the directive object onto the string produced an array with no accessible `currentDirective` property.
+The probe now inserts config and customization with `tx.json` and asserts both database JSON types within the insertion transaction.
+This identifies a probe fixture defect; it does not justify changes to product directive authorization or dispatch.
+The exact marker/menu action assertion remains unchanged. The corrected live probe passed all 99 checks against staged API `59dba1cf` before the revised probe commit.
+
+The live result proves actual `chat_nori` execution and sanitized private reply consumption by the next deciding prompt.
+It also verifies all 17 verbs, exactly one fixture reward, zero trades, preserved fleet halt suppression, and signed cleanup postconditions.
+Coordinator evidence: `C:\Users\itachi\AppData\Local\Temp\cv-dd-hosted-runtime-object-fixture.log`.
+The prior capture defect and omitted body cleanup remain independently proven probe defects.
+The JSON shape defect caused the missing Nori directive; it does not establish the cause of the earlier 75-check capture timeout.
+Separate product directive read/pending races have their own review and acceptance evidence; they did not cause this malformed fixture.
+
+## Independent appearance merge review
+
+The appearance route previously replaced agent config from an earlier application snapshot.
+The replacement could erase a directive or autonomy cursor committed by another request after that snapshot.
+The new helper merges only `modelKey` and `agentCategory` against current JSONB state during the UPDATE.
+Customization-only edits no longer assign config. The existing identity, active-avatar, model, and harness guards remain unchanged.
+Independent source review found no blocker in this bounded correction.
+The coordinator tested two real PostgreSQL 15 connections in a disposable schema with Bun 1.4.2.
+The legacy mutation failed with the expected missing directive/cursor; the corrected helper passed two tests with five assertions.
+Evidence: temporary `cv-dd-appearance-race-red.log` and `cv-dd-appearance-race-green.log` files.
+Verdict: approved for the appearance config race; this does not replace release validation of the later combined diff.
+
+## Independent directive race review
+
+The driver now distinguishes an unavailable directive read from a successful read with no directive.
+Unavailable reads defer the decision and preserve the pending instruction; known-null reads retain normal autonomous behavior.
+A revision counter prevents an older read or model result from consuming a newer owner instruction.
+Independent review found two additional asynchronous gaps after the model returned: claim/event awaits and replacement enrollment.
+The author added a final revision and exact registry-entry check immediately before destination clearing and action dispatch.
+New red tests reproduced both gaps before that guard; their corrected cases prevent the old action from execution.
+Independent final execution passed 22 tests with 119 assertions on Bun 1.3.14 and an empty `DATABASE_URL`.
+The unavailable-read test proves zero model calls and actions, preserved pending state, and no late SHA hydration.
+The retry test proves exactly one immediate follow-up, then the existing tick cadence; it does not create an immediate retry loop.
+Verdict: approved for the bounded directive and enrollment races. Combined CI and staging verification remain release requirements.
+
+
+## Appearance parity follow-up (protocol 69; local evidence)
+
+The atomic-config correction exposed a pre-existing human-only appearance route.
+The coordinator authorized the complete parity correction instead of describing REST discovery as hosted execution.
+The shared service owns route and action identity checks, input validation, model/harness restrictions, and persistence.
+The new `update_appearance` action accepts at least one of `modelKey`, `color`, or `gender`.
+Its parser rejects unknown authority keys, malformed pairs, duplicate keys, empty edits, and invalid color/gender values.
+It captures the exact body, session, and config before awaiting the service, with one update in flight per avatar.
+The universal `clawville_update_appearance` tool describes the same PATCH endpoint.
+Protocol 69, shared orientation, Nori's shared knowledge, and the complete eighteen-action decision menu describe this path.
+Hosted protocol installation still uses the same generated manual, version/content hash, per-agent memory IDs, and existing startup refresh.
+The projection helper captures only avatar-mode sessions with exact avatar/owner binding and ledger authorization.
+The service mirrors matching owned active bot rows in its transaction, revalidates live sessions after commit, then projects to unchanged body/config objects.
+The action changes no currency, XP, leaderboard credit, trading parameters, or fleet halt.
+
+Local evidence: shared and agent-template builds passed; API typecheck passed; five focused files passed 41 tests with 634 assertions.
+The onboarding fixture test passed one test with nine assertions.
+The offline Hatcher selftest passed 87 checks, with zero failures or skips.
+The independent auth/service review records its own additional tests; these counts are not combined across overlapping runs.
+`git diff --check` passed after restoring original LF bytes without reverting any concurrent content.
+
+The hosted probe now emits one fixture-owned appearance action and checks owned avatar color, durable bot color, live body color, the next outbound eighteen-action menu, unchanged reward count, and zero trades.
+The onboarding smoke now checks served tools discovery and performs the real PATCH with its canonical bound-session bearer and no human cookie.
+It verifies the returned avatar/owner and signs the existing disconnect contract in `finally`, then checks both live registries.
+The smoke retains its durable identity/avatar test records; it does not perform broad database deletion.
+These version 69 staging checks remain required after deployment. The prior 99-check protocol 68 run is historical evidence only.

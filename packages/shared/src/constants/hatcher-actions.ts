@@ -25,6 +25,7 @@ export const HATCHER_ACTION_VERBS = [
   'trade_token',
   'talk_to_npc',
   'chat_nori',
+  'update_appearance',
 ] as const;
 
 export type HatcherActionVerb = (typeof HATCHER_ACTION_VERBS)[number];
@@ -36,6 +37,11 @@ export interface HatcherActionMenuItem {
 }
 
 export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
+  {
+    verb: 'update_appearance',
+    syntax: 'update_appearance(modelKey=<allowed model key>, color=<green|red|blue|yellow>, gender=<male|female>)',
+    whenToUse: 'change your own avatar appearance for free; provide at least one field, omit unchanged fields; current harness restrictions apply and Hatcher-reserved models cannot be selected',
+  },
   {
     verb: 'chat_nori',
     syntax: 'chat_nori(message=<1..500 characters; no closing parenthesis>)',

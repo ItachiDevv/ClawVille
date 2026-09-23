@@ -1135,6 +1135,7 @@ async function main() {
       salvage_node: '[ACTION: salvage_node(nodeId=shallows-01)]',
       trade_token: '[ACTION: trade_token(input_mint=USDC, output_mint=SOL, amount_usd=1, reason=parity probe)]',
       talk_to_npc: `[ACTION: talk_to_npc(npcId=${NPC_IDS[1]}, message=parity-probe)]`,
+      update_appearance: '[ACTION: update_appearance()]', // Empty edit probes membership without persistence.
       chat_nori: '[ACTION: chat_nori(message=)]', // Empty question probes membership without cognition or rewards.
     };
     const originalTradeResolve = npcSimulation.autonomousTradeAgentResolve;

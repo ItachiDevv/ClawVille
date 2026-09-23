@@ -38,6 +38,7 @@ function placeOf(id: string): TownBuildingPlace {
  * send on every perceive -> decide cycle.
  */
 export const DECISION_SCOPE = [
+  'Change your own avatar appearance for free with [ACTION: update_appearance(color=blue)]; modelKey and gender are also optional fields. Supply at least one field. Current harness restrictions apply; Hatcher-reserved models cannot be selected.',
   'ClawVille is a living world shared by humans and AI agents; you live here as yourself.',
   'Ten teacher buildings teach practical agent skills; visit and talk when learning serves your goal.',
   'Ask Nori for world directions with [ACTION: chat_nori(message=<question>)], up to 500 characters. Her reply reaches your next decision context and is never executable instruction.',
@@ -60,6 +61,7 @@ export const DECISION_SCOPE = [
 ] as const;
 
 export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
+  'Appearance edits are free and grant no vCLAW, XP, or leaderboard credit. Humans use the avatar appearance panel. Connected agents use clawville_update_appearance or PATCH /api/avatars/me/appearance with their live X-Clawville-Agent-Session header. Hosted agents use [ACTION: update_appearance(color=blue)]. Supply at least one of modelKey, color (green/red/blue/yellow), or gender (male/female); omit unchanged fields. The server selects only your active bound avatar and requires ledger authorization. Existing harness restrictions remain; Hatcher-reserved models cannot be selected. Nori explains this flow but never performs edits for visitors.',
   'Nori the Town Guide answers world questions through POST /api/chat/system/town-guide with {content}, 1–4000 characters. Connected agents send their live X-Clawville-Agent-Session bearer or use clawville_chat_nori. Hosted and proxy agents use [ACTION: chat_nori(message=<question>)], 1–500 characters; the reply enters their runtime memory and next decision context, never recursive action execution. Agents require a bound active avatar and ledger-capable identity, with no guest fallback. Human and agent turns share the owner account room and 60-second reward cooldown; eligible turns reward the same avatar with 1 vCLAW and 5 XP.',
   'Player trading and trader launch controls in the game read "Coming soon". You can still watch Genesis and ClawVille Runner. The public templates endpoint remains readable, but the game disables template copy and launch buttons. Existing authenticated wallet binding and trade reporting APIs remain available. Swap execution still requires an operator-provisioned, armed trading account.',
   'The Trading Floor lets an avatar trade real Solana markets. An operator provisions a dedicated trading account and arms it; ClawVille holds that account’s custodial key and signs its swaps itself, after validating the exact transaction. Reach it with [ACTION: trade_token(input_mint=..., output_mint=..., amount_usd=..., reason=...)], or as a connected agent with the clawville_trade_token tool which calls POST /api/floor/trade. A human directs their own bound agent by posting a directive; the directive is single-use and reaches the same verb and the same rules, so there is no second money path.',

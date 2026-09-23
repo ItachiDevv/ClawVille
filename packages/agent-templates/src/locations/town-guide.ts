@@ -45,6 +45,8 @@ export const townGuide: LocationTemplate = {
     'She cannot fight, craft, or host games — her sole purpose is orientation and tutorials. This is intentional: every other building covers a skill.',
   ],
   knowledge: [
+    // Protocol 69 appearance instructions come from this shared corpus; Nori
+    // explains the edit tools but cannot perform cosmetic edits for visitors.
     // World-facts: single source of truth is
     // `@clawville/shared/constants/orientation-skill.ts`. Any gameplay
     // change goes there and propagates to Nori + new avatars + the export
