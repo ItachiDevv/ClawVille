@@ -16,8 +16,8 @@
 
 ### September 23: DoorDash chat-to-menu language
 
-- **Session:** Codex `dd-natural-chat`, 2026-09-23. Protocol 71 staging checks pass, including eight viewport sizes for both chat layouts.
-- **Where:** owner avatar chat at `/game`, on staging first, then production after promotion.
+- **Session:** Codex `dd-natural-chat`, 2026-09-23. Production API and web report `0b88e5c2` at 09:05 UTC. Protocol 71 staging checks pass, including eight viewport sizes for both chat layouts. Production browser checks at 09:05-09:09 UTC confirm the world, guest Nori reply, and Close behavior. The eight viewport checks remain staging evidence; signed-in production DoorDash chat and a new paid order are not tested.
+- **Where:** production owner avatar chat at `https://clawville.world/game`.
 - **Look at:** ask for pizza, select "the second one," then ask "what drinks do they have?" Restaurant results use numbers; menu items use separate lines. Try an explicit item choice such as "no mayo."
 - **Feedback wanted:** identify replies that sound unnatural or require repeated restaurant names. Required item choices still need a complete set in one reply.
 - **Payment evidence:** the founder confirms the earlier paid order succeeded. This change places no new order and preserves human confirmation and tip requirements.
