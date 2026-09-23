@@ -50,7 +50,7 @@ export interface DoordashOrderingBridge extends DoordashReadOnlyBridge {
   cartShow(q: { cartUuid?: string }): Promise<DdCliResult<DdCartView>>;
   cartAdd(q: {
     storeId?: string; menuId?: string; itemId?: string; itemName?: string; choices?: string;
-    quantity: number; cartUuid?: string;
+    quantity?: number; cartUuid?: string;
   }): Promise<DdCliResult<DdCartView>>;
   cartRemove(q: { cartUuid?: string; lineId: string }): Promise<DdCliResult<DdCartView>>;
   preview(q: { cartUuid?: string }): Promise<DdCliResult<DdPreviewView>>;
@@ -322,11 +322,20 @@ function renderCart(view: DdCartView, verb: string): string {
 
 export const doordashCartAction: Action = {
   name: 'DOORDASH_CART',
-  description: 'Add an item to the DoorDash cart, remove one, or show what is in it. To add, pass the item name the user said. If the item needs choices (bread, cheese, size), pass the user\'s picks in choices as plain words; if they have not picked yet, add anyway and the reply lists the choices. When the user answers with only their picks, call add again with just choices. This does not order anything and does not spend money.',
+  description: 'Add an item to the DoorDash cart, remove one, or show what is in it. For an item request such as "I\'ll have the Italian", use add with the item name the user said. If choices are needed, the server asks for a missing choice. For a choice reply such as "white bread", "actually wheat", "no mayo", or "make it large", use add with only choices from the CURRENT user message; omit itemName and IDs. Keep correction and exclusion words exactly as stated. The server retains accepted choices for the pending item: do not reconstruct or repeat earlier choices from chat history. When the server asks whether to add the prepared item, pass the user\'s literal answer such as "add it" or "that\'s all" in choices only; the server decides whether the draft can be added. For "skip that item", pass those words in choices only to discard the pending customization without clearing the cart. Supply quantity only when the user states an item count; size is a choice, not a quantity. The server asks again if there is no valid pending item. This does not order anything and does not spend money.',
   similes: [
     'add that to my cart',
     'add two garlic knots',
     'add a custom italian hoagie',
+    "I'll have the Italian",
+    'white bread',
+    'actually wheat',
+    'no mayo',
+    'make it large',
+    'add it',
+    "that's all",
+    'skip that item',
+    'keep these choices',
     'classic roll, not toasted, provolone',
     'what is in my cart',
     'take the fries off',
@@ -334,9 +343,9 @@ export const doordashCartAction: Action = {
   parameters: [
     { name: 'op', description: 'add, remove, or show', required: true, schema: { type: 'string', enum: ['add', 'remove', 'show'] } },
     { name: 'itemName', description: 'The item name the user said, for add', required: false, schema: { type: 'string' } },
-    { name: 'choices', description: 'The user\'s option picks in their own words, like "classic roll, not toasted, provolone, mayo"', required: false, schema: { type: 'string' } },
+    { name: 'choices', description: 'Only the CURRENT user message\'s option picks or correction, in their own words. Preserve words such as "actually", "instead", "no", and "without". Do not repeat earlier choices. Forward "keep these choices" literally when the user says it; the server can clear an unmatched request and show the draft again, without adding it.', required: false, schema: { type: 'string' } },
     { name: 'itemId', description: 'Item ID only if you have one; otherwise leave it out', required: false, schema: { type: 'string' } },
-    { name: 'quantity', description: 'Whole number of that item, 1 to 20. Defaults to 1', required: false, schema: { type: 'string' } },
+    { name: 'quantity', description: 'Whole item count from 1 to 20, only if the user states it. Omit for choice replies; the server keeps the pending count or starts a new item at 1. Size is not quantity.', required: false, schema: { type: 'string' } },
     { name: 'lineId', description: 'Line ID from the cart, required for remove', required: false, schema: { type: 'string' } },
     { name: 'storeId', description: 'Only if you still have it; otherwise leave it out', required: false, schema: { type: 'string' } },
     { name: 'menuId', description: 'Only if you still have it; otherwise leave it out', required: false, schema: { type: 'string' } },
@@ -379,12 +388,12 @@ export const doordashCartAction: Action = {
     // Matched as a STRING first, for the same reason as the tip below: Number()
     // happily reads '1e1' as 10 and '' as 0, so digits are checked before any
     // conversion rather than after it.
-    const rawQuantity = text(message, 'quantity') || '1';
-    if (!/^\d{1,2}$/.test(rawQuantity)) {
+    const rawQuantity = text(message, 'quantity');
+    if (rawQuantity && !/^\d{1,2}$/.test(rawQuantity)) {
       return ephemeral(false, 'I can add between 1 and 20 of a whole item at a time.');
     }
-    const quantity = Number(rawQuantity);
-    if (quantity < 1 || quantity > 20) {
+    const quantity = rawQuantity ? Number(rawQuantity) : undefined;
+    if (quantity !== undefined && (quantity < 1 || quantity > 20)) {
       return ephemeral(false, 'I can add between 1 and 20 of a whole item at a time.');
     }
     return lookup(

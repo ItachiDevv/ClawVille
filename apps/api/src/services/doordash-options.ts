@@ -15,6 +15,8 @@
  * Wawa store 897466, item "Custom Italian Hoagie" (see the test fixture).
  */
 
+import { createHash } from 'node:crypto';
+
 export interface DdOption {
   option_id: string | number;
   name: string;
@@ -35,18 +37,36 @@ export interface NestedOption {
   options?: NestedOption[];
 }
 export interface ChoiceGap {
+  groupId?: string;
   title: string;
   min: number;
   max: number;
   options: string[];
   reason?: string;
 }
+/** IDs and a shape digest only. Never retain the vendor catalog or raw replies. */
+export interface ChoiceDraft {
+  groups: Array<{ groupId: string; optionIds: string[]; signature: string }>;
+  blockedGroupIds: string[];
+  blockedOptionIds?: Array<{ groupId: string; optionIds: string[] }>;
+  nextGroupId?: string;
+  unresolvedRequest?: boolean;
+}
 export type ChoiceResult =
-  | { ok: true; nested: NestedOption[]; picked: string[] }
-  | { ok: false; missing: ChoiceGap[]; tooMany: ChoiceGap[]; optionalTitles: string[] };
+  | { ok: true; nested: NestedOption[]; picked: string[]; draft: ChoiceDraft }
+  | { ok: false; missing: ChoiceGap[]; tooMany: ChoiceGap[]; optionalTitles: string[]; picked: string[]; draft: ChoiceDraft };
 
 /** Most options one item may carry. Bounds the argv and the vendor payload. */
 export const MAX_NESTED_OPTIONS = 40;
+
+/** Cart preparation only; meaningful solely while a complete draft is shown. */
+export function isChoiceReviewConfirmation(text: string): boolean {
+  return /^(?:yes(?: please)?|add (?:it|that|this)(?: to (?:my |the )?cart)?(?: please)?|that['’]?s all|that is all|looks good)[.!?]*$/i.test(text.trim());
+}
+
+export function isChoiceRequestWithdrawal(text: string): boolean {
+  return /^keep these choices[.!?]*$/i.test(text.trim());
+}
 
 /** Vendor text is data. Strip anything that could read as markup or an action tag. */
 export function cleanVendorText(value: string, max = 60): string {
@@ -68,6 +88,7 @@ export function normalize(value: string): string {
 function choiceMentions(groups: DdOptionGroup[], text: string): {
   mentions: Map<DdOption, Set<'yes' | 'no' | 'unclear'>>;
   unsupportedRemoval: boolean;
+  unknownWords: boolean;
 } {
   // Keep clause punctuation. normalize() alone destroys exclusion boundaries.
   const tokenize = (value: string) => value.toLowerCase().replace(/[’']/g, "'").replace(/\bdon'?t\b/g, 'do not')
@@ -86,6 +107,8 @@ function choiceMentions(groups: DdOptionGroup[], text: string): {
   let uncertain = false;
   let alternative = false;
   let unsupportedRemoval = false;
+  let unknownWords = false;
+  const phrasing = new Set('i id d would like want please thanks thank you the a an and or for me it my to make change actually use have put on with add include plus but instead do all any anything everything off out only free removed excluded'.split(' '));
   const clausePicks: DdOption[] = [];
   const record = (option: DdOption, state: 'yes' | 'no' | 'unclear') => {
     const states = result.get(option) ?? new Set<'yes' | 'no' | 'unclear'>();
@@ -160,9 +183,11 @@ function choiceMentions(groups: DdOptionGroup[], text: string): {
       || ['free', 'removed', 'excluded'].includes(tokens[index + 1] ?? '')) {
       // An unrecognized ingredient cannot be removed by omitting vendor IDs.
       unsupportedRemoval = true;
+    } else if (!phrasing.has(token)) {
+      unknownWords = true;
     }
   }
-  return { mentions: result, unsupportedRemoval: unsupportedRemoval || exclusionPending };
+  return { mentions: result, unsupportedRemoval: unsupportedRemoval || exclusionPending, unknownWords };
 }
 
 /**
@@ -201,49 +226,141 @@ function subSelections(option: DdOption): { nested: NestedOption[]; gap: ChoiceG
   return { nested, gap: null };
 }
 
-export function resolveChoices(groups: DdOptionGroup[], choicesText: string): ChoiceResult {
+export function resolveChoices(groups: DdOptionGroup[], choicesText: string, previous?: ChoiceDraft): ChoiceResult {
+  const draft: ChoiceDraft = { groups: [], blockedGroupIds: [] };
   // These constructions relate two ingredients. The literal matcher cannot
   // determine that relation, so it must not turn either phrase into additions.
   // Ask for separate positive/exclusion clauses instead of guessing a swap.
-  if (/\b(?:neither|nor|cannot)\b|\b(?:instead\s+of|rather\s+than)\b|\b(?:can|won|wouldn|shouldn|couldn|isn|aren|wasn|weren|mustn|haven|hasn|hadn|needn)['’]t\b/i.test(choicesText)) {
-    return { ok: false, missing: [{
-      title: 'Your choices', min: 0, max: 0, options: [],
-      reason: 'Please state each choice separately, such as "add ranch; no mayo". I have not added the item',
-    }], tooMany: [], optionalTitles: [] };
+  const unsupportedRelation = /\b(?:neither|nor|cannot)\b|\b(?:instead\s+of|rather\s+than)\b|\b(?:can|won|wouldn|shouldn|couldn|isn|aren|wasn|weren|mustn|haven|hasn|hadn|needn)['’]t\b/i.test(choicesText);
+  const { mentions, unsupportedRemoval, unknownWords } = choiceMentions(groups, choicesText);
+  // A shared name answers only the group we actually asked about. Without that
+  // scope it is ambiguous, never an instruction to select both occurrences.
+  const byName = new Map<string, DdOption[]>();
+  for (const group of groups) for (const option of group.options) {
+    if (!mentions.has(option)) continue;
+    const key = normalize(option.name);
+    byName.set(key, [...(byName.get(key) ?? []), option]);
   }
-  const { mentions, unsupportedRemoval } = choiceMentions(groups, choicesText);
+  for (const options of byName.values()) if (options.length > 1) {
+    const asked = groups.find((group) => String(group.extra_id) === previous?.nextGroupId);
+    const scoped = options.filter((option) => asked?.options.includes(option));
+    for (const option of options) {
+      if (scoped.length === 1) {
+        if (option !== scoped[0]) mentions.delete(option);
+      } else mentions.get(option)!.add('unclear');
+    }
+  }
   const nested: NestedOption[] = [];
   const picked: string[] = [];
   const missing: ChoiceGap[] = [];
   const tooMany: ChoiceGap[] = [];
   const optionalTitles: string[] = [];
+  const mentionedGroups = groups.filter((group) => group.options.some((option) => mentions.has(option)));
+  // Unrecognized requests have no reliable group to correct. Keep that fact
+  // until the draft is cancelled; a later unrelated reply cannot erase it.
+  draft.unresolvedRequest = previous?.unresolvedRequest || (unsupportedRemoval || (!mentionedGroups.length && unsupportedRelation)
+    || (unknownWords && !unsupportedRelation && !unsupportedRemoval));
   if (unsupportedRemoval) missing.push({
     title: 'Ingredient removal', min: 0, max: 0, options: [],
     reason: 'I cannot confirm that ingredient removal from this item’s options. Please choose a listed removal option or another item',
   });
+  if (previous?.groups.some((saved) => !groups.some((group) => String(group.extra_id) === saved.groupId))) {
+    missing.push({ title: 'Menu choices', min: 0, max: 0, options: [],
+      reason: 'The available choices changed. Please check your choices again before I add the item' });
+  }
 
   for (const group of groups) {
+    const groupId = String(group.extra_id);
+    const signature = createHash('sha256').update(JSON.stringify(group)).digest('hex');
+    const saved = previous?.groups.find((selection) => selection.groupId === groupId);
+    const changed = !!saved && saved.signature !== signature;
+    const prior = changed ? [] : group.options.filter((option) => saved?.optionIds.includes(String(option.option_id)));
+    const touched = group.options.some((option) => mentions.has(option));
     const gap: ChoiceGap = {
+      groupId,
       title: cleanVendorText(group.title),
       min: group.min_num_options,
       max: group.max_num_options,
       options: group.options.map((o) => cleanVendorText(o.name)),
     };
-    let matches = group.options.filter((o) => mentions.get(o)?.has('yes'));
-    if (group.max_num_options === 1 && matches.length > 1) matches = mostSpecific(matches);
-    if (matches.length > group.max_num_options) {
-      tooMany.push(gap);
+    let positive = group.options.filter((o) => mentions.get(o)?.has('yes'));
+    if (group.max_num_options === 1 && positive.length > 1) positive = mostSpecific(positive);
+    const oppositeLiteral = (a: DdOption, b: DdOption) => {
+      const first = normalize(a.name).trim();
+      const second = normalize(b.name).trim();
+      return /^(?:no|without) /.test(first) && first.replace(/^(?:no|without) /, '') === second;
+    };
+    const retained = prior.filter((option) => !positive.some((pick) => oppositeLiteral(pick, option) || oppositeLiteral(option, pick)));
+    const matches = group.max_num_options === 1 && positive.length > 0 ? positive
+      : [...new Set([...retained, ...positive])].filter((option) => !mentions.get(option)?.has('no'));
+    const keep = (selected: DdOption[]) => {
+      // An explicit empty selection also matters: a later vendor-default
+      // change must not silently reintroduce an ingredient the user excluded.
+      if (selected.length || touched || saved) draft.groups.push({ groupId, optionIds: selected.map((option) => String(option.option_id)), signature });
+    };
+    const priorBlocked = previous?.blockedOptionIds?.find((entry) => entry.groupId === groupId)?.optionIds ?? [];
+    const unresolvedOptions = priorBlocked.filter((id) => {
+      const option = group.options.find((candidate) => String(candidate.option_id) === id);
+      if (!option) return true;
+      const states = mentions.get(option);
+      if (positive.some((pick) => oppositeLiteral(pick, option) || oppositeLiteral(option, pick))) return false;
+      return !states || states.has('unclear') || (states.has('yes') && states.has('no'))
+        || (states.has('no') && option.is_default === true);
+    });
+    const blockOptions = (ids: string[]) => {
+      if (!ids.length) return;
+      (draft.blockedOptionIds ??= []).push({ groupId, optionIds: [...new Set(ids)] });
+    };
+    if (unsupportedRelation && touched) {
+      keep(prior);
+      blockOptions([...priorBlocked, ...group.options.filter((option) => mentions.has(option)).map((option) => String(option.option_id))]);
+      draft.blockedGroupIds.push(groupId);
+      missing.push({ ...gap, reason: 'Please state each choice separately, such as "add ranch; no mayo". I have not added the item' });
       continue;
     }
-    if (group.options.some((option) => {
+    const invalidMentions = group.options.some((option) => {
       const states = mentions.get(option);
       return states?.has('unclear') || (states?.has('yes') && states.has('no'))
         // Omitting an option does not prove removal of a vendor default.
         || (option.is_default && states?.has('no'));
-    })) {
+    });
+    if (unresolvedOptions.length) {
+      // Persist the corrected selection and its cleared block together. If a
+      // partial correction cannot apply, its original block must also remain.
+      const applyPartial = unresolvedOptions.length < priorBlocked.length
+        && !invalidMentions && matches.length <= group.max_num_options;
+      keep(applyPartial ? matches : prior);
+      blockOptions(applyPartial ? unresolvedOptions : [...priorBlocked,
+        ...(invalidMentions || matches.length > group.max_num_options
+          ? group.options.filter((option) => mentions.has(option)).map((option) => String(option.option_id)) : []),
+      ]);
+      draft.blockedGroupIds.push(groupId);
+      missing.push({ ...gap, reason: `${gap.title} still has an unresolved choice. Please correct that choice using a listed option, or say "skip that item"` });
+      continue;
+    }
+    if (matches.length > group.max_num_options) {
+      keep(prior);
+      if (group.max_num_options > 1) blockOptions(group.options.filter((option) => mentions.has(option)).map((option) => String(option.option_id)));
+      draft.blockedGroupIds.push(groupId);
+      tooMany.push(gap);
+      continue;
+    }
+    if (invalidMentions) {
+      keep(prior);
+      blockOptions(group.options.filter((option) => (option.is_default && mentions.get(option)?.has('no'))
+        || (group.max_num_options > 1 && mentions.has(option)))
+        .map((option) => String(option.option_id)));
+      draft.blockedGroupIds.push(groupId);
       missing.push(gap);
       continue;
     }
+    if ((changed || previous?.blockedGroupIds.includes(groupId)) && !touched) {
+      keep(prior);
+      draft.blockedGroupIds.push(groupId);
+      missing.push({ ...gap, ...(changed ? { reason: `${gap.title} changed on the menu. Please choose again: ${gap.options.slice(0, 12).join(', ')}` } : {}) });
+      continue;
+    }
+    keep(matches);
     if (matches.length < group.min_num_options) {
       missing.push(gap);
       continue;
@@ -265,23 +382,33 @@ export function resolveChoices(groups: DdOptionGroup[], choicesText: string): Ch
     }
   }
 
-  if (missing.length || tooMany.length) return { ok: false, missing, tooMany, optionalTitles };
+  // Do not drop an optional customization merely because all required groups
+  // are complete. A limited literal matcher must say when it cannot match.
+  if (draft.unresolvedRequest) {
+    const reason = unsupportedRelation
+      ? 'Please state each choice separately. Say "keep these choices" to withdraw that request, or "skip that item"; I have not added it'
+      : unsupportedRemoval ? 'I cannot confirm that ingredient removal. Say "keep these choices" to withdraw that request, or "skip that item"'
+      : 'I could not match all those choices. Say "keep these choices" to withdraw that request, or "skip that item"; I have not added it';
+    if (missing.length) missing[0] = { ...missing[0]!, reason };
+    else missing.unshift({ title: 'Your choices', min: 0, max: 0, options: [], reason });
+  }
+  if (missing.length || tooMany.length) {
+    draft.nextGroupId = (tooMany[0] ?? missing[0])?.groupId;
+    return { ok: false, missing, tooMany, optionalTitles, picked, draft };
+  }
   const count = nested.reduce((n, o) => n + 1 + (o.options?.length ?? 0), 0);
   if (count > MAX_NESTED_OPTIONS) {
-    return { ok: false, missing: [], tooMany: [{ title: 'Total choices', min: 0, max: MAX_NESTED_OPTIONS, options: [] }], optionalTitles };
+    return { ok: false, missing: [], tooMany: [{ title: 'Total choices', min: 0, max: MAX_NESTED_OPTIONS, options: [] }], optionalTitles, picked, draft };
   }
-  return { ok: true, nested, picked };
+  return { ok: true, nested, picked, draft };
 }
 
 /** One plain sentence per unresolved group, for the operator to answer. */
 export function describeGaps(itemName: string, result: Extract<ChoiceResult, { ok: false }>): string {
-  const range = (g: ChoiceGap) => (g.min === g.max ? `pick ${g.min}` : `pick ${g.min} to ${g.max}`);
-  const lines = [
-    ...result.missing.map((g) => g.reason ?? `${g.title} (${range(g)}): ${g.options.slice(0, 12).join(', ')}`),
-    ...result.tooMany.map((g) => `${g.title}: too many picked, ${range(g)}`),
-  ];
-  const optional = result.optionalTitles.length
-    ? ` Optional: ${result.optionalTitles.slice(0, 8).join(', ')}.`
-    : '';
-  return `${cleanVendorText(itemName)} needs your choices. ${lines.join('. ')}.${optional} Tell me your picks in one message.`;
+  const gap = result.tooMany[0] ?? result.missing[0];
+  const kept = result.picked.length ? ` So far: ${result.picked.join(', ')}.` : '';
+  if (!gap) return `${cleanVendorText(itemName)} needs a choice. What would you like?`;
+  const count = gap.min === gap.max ? `Choose ${gap.min}` : `Choose ${Math.max(1, gap.min)} to ${gap.max}`;
+  const question = gap.reason ?? `${gap.title}: ${count.toLowerCase()} from ${gap.options.slice(0, 12).join(', ')}.`;
+  return `${cleanVendorText(itemName)}.${kept}\n${question}\nWhat would you like?`;
 }

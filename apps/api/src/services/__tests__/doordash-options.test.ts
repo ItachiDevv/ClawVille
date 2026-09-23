@@ -35,6 +35,140 @@ const hoagie: DdOptionGroup[] = [
   ] },
 ];
 
+describe('choice drafts across replies', () => {
+  test('retains bread, replaces a correction, then asks only the next group', () => {
+    const first = resolveChoices(hoagie, 'classic roll');
+    expect(first.ok).toBe(false);
+    const corrected = resolveChoices(hoagie, 'actually white bread', first.draft);
+    expect(corrected.ok).toBe(false);
+    const toasted = resolveChoices(hoagie, 'not toasted', corrected.draft);
+    expect(toasted.ok).toBe(false);
+    if (!toasted.ok) {
+      const reply = describeGaps('Hoagie', toasted);
+      expect(reply).toContain('White Bread');
+      expect(reply).toContain('cheese');
+      expect(reply).not.toContain('Tell me your picks in one message');
+    }
+    const final = resolveChoices(hoagie, 'provolone', toasted.draft);
+    expect(final.ok).toBe(true);
+    if (final.ok) expect(final.picked).toEqual(['White Bread', 'Not Toasted', 'Provolone']);
+  });
+
+  test('does not silently discard an unknown optional customization', () => {
+    const result = resolveChoices([hoagie[3]!], 'truffle butter');
+    expect(result.ok).toBe(false);
+    expect(resolveChoices([hoagie[3]!], 'ranch', result.draft).ok).toBe(false);
+  });
+
+  test('an invalid correction stays unresolved until that group receives a valid answer', () => {
+    const first = resolveChoices(hoagie, 'classic roll');
+    const invalid = resolveChoices(hoagie, 'white bread or shorti roll', first.draft);
+    const unrelated = resolveChoices(hoagie, 'not toasted, provolone', invalid.draft);
+    expect(unrelated.ok).toBe(false);
+    const corrected = resolveChoices(hoagie, 'white bread', unrelated.draft);
+    expect(corrected.ok).toBe(true);
+    if (corrected.ok) expect(corrected.picked).toEqual(['White Bread', 'Not Toasted', 'Provolone']);
+  });
+
+  test('revalidates saved choices when vendor options or group limits change', () => {
+    const first = resolveChoices(hoagie, 'classic roll');
+    const changed = structuredClone(hoagie);
+    changed[0]!.options.shift();
+    const second = resolveChoices(changed, 'not toasted, provolone', first.draft);
+    expect(second.ok).toBe(false);
+    expect(second.draft.groups.flatMap((group) => group.optionIds)).not.toContain('o_40123778629');
+    if (!second.ok) expect(describeGaps('Hoagie', second)).toContain('changed on the menu');
+  });
+
+  test('explicit negative vendor option replaces its previously selected counterpart', () => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'spreads', title: 'Spreads', min_num_options: 0, max_num_options: 2,
+      options: [{ option_id: 'mayo', name: 'Mayo' }, { option_id: 'no-mayo', name: 'No Mayo' }] }];
+    const initial = resolveChoices(groups, 'mayo');
+    const revised = resolveChoices(groups, 'no mayo', initial.draft);
+    expect(revised.ok && revised.picked).toEqual(['No Mayo']);
+  });
+
+  test('an empty exclusion selection is rechecked if the vendor makes that ingredient a default', () => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'spreads', title: 'Spreads', min_num_options: 0, max_num_options: 2,
+      options: [{ option_id: 'mayo', name: 'Mayo' }] }];
+    const initial = resolveChoices(groups, 'no mayo');
+    expect(initial.ok).toBe(true);
+    groups[0]!.options[0]!.is_default = true;
+    expect(resolveChoices(groups, '', initial.draft).ok).toBe(false);
+  });
+
+  test('an unrelated option in the same group cannot erase a rejected default exclusion', () => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'sauce', title: 'Sauce', min_num_options: 0, max_num_options: 2,
+      options: [{ option_id: 'mayo', name: 'Mayo', is_default: true }, { option_id: 'ranch', name: 'Ranch' }] }];
+    const initial = resolveChoices(groups, 'mayo');
+    const excluded = resolveChoices(groups, 'no mayo', initial.draft);
+    expect(excluded.ok).toBe(false);
+    const unrelated = resolveChoices(groups, 'ranch', excluded.draft);
+    expect(unrelated.ok).toBe(false);
+    expect(resolveChoices(groups, '', unrelated.draft).ok).toBe(false);
+    const corrected = resolveChoices(groups, 'mayo', unrelated.draft);
+    expect(corrected.ok).toBe(true);
+    if (corrected.ok) expect(corrected.picked).toEqual(['Mayo']);
+  });
+
+  test.each([
+    [3, 'no mayo and ranch'],
+    [2, 'no mayo; add ranch; add mustard'],
+  ] as const)('an unrelated option cannot clear an unresolved negative vendor choice: limit %s, %s', (max, text) => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'sauce', title: 'Sauce', min_num_options: 0, max_num_options: max,
+      options: [{ option_id: 'mayo', name: 'Mayo' }, { option_id: 'no-mayo', name: 'No Mayo' },
+        { option_id: 'ranch', name: 'Ranch' }, { option_id: 'mustard', name: 'Mustard' }] }];
+    const initial = resolveChoices(groups, 'mayo');
+    const excluded = resolveChoices(groups, text, initial.draft);
+    expect(excluded.ok).toBe(false);
+    const unrelated = resolveChoices(groups, 'mustard', excluded.draft);
+    expect(unrelated.ok).toBe(false);
+    expect(resolveChoices(groups, '', unrelated.draft).ok).toBe(false);
+    const corrected = resolveChoices(groups, 'no mayo; add ranch; no mustard', unrelated.draft);
+    expect(corrected.ok && corrected.picked).toEqual(['No Mayo', 'Ranch']);
+    const withdrawn = resolveChoices(groups, 'mayo; no ranch; no mustard', unrelated.draft);
+    expect(withdrawn.ok && withdrawn.picked).toEqual(['Mayo']);
+  });
+
+  test('split corrections persist a resolved removal before clearing its block', () => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'sauce', title: 'Sauce', min_num_options: 0, max_num_options: 3,
+      options: [{ option_id: 'mayo', name: 'Mayo' }, { option_id: 'no-mayo', name: 'No Mayo' },
+        { option_id: 'ranch', name: 'Ranch' }] }];
+    const initial = resolveChoices(groups, 'mayo');
+    const ambiguous = resolveChoices(groups, 'no mayo and ranch', initial.draft);
+    const removal = resolveChoices(groups, 'no mayo', ambiguous.draft);
+    expect(removal.ok).toBe(false);
+    expect(removal.draft.groups[0]!.optionIds).toEqual(['no-mayo']);
+    const finished = resolveChoices(groups, 'ranch', removal.draft);
+    expect(finished.ok && finished.picked).toEqual(['No Mayo', 'Ranch']);
+  });
+
+  test('an over-limit partial correction preserves its original block with its original choices', () => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'sauce', title: 'Sauce', min_num_options: 0, max_num_options: 2,
+      options: [{ option_id: 'mayo', name: 'Mayo' }, { option_id: 'no-mayo', name: 'No Mayo' },
+        { option_id: 'ranch', name: 'Ranch' }, { option_id: 'mustard', name: 'Mustard' }, { option_id: 'ketchup', name: 'Ketchup' }] }];
+    const initial = resolveChoices(groups, 'mayo');
+    const ambiguous = resolveChoices(groups, 'no mayo and ranch', initial.draft);
+    const oversized = resolveChoices(groups, 'no mayo; add mustard; add ketchup', ambiguous.draft);
+    expect(oversized.ok).toBe(false);
+    expect(oversized.draft.groups[0]!.optionIds).toEqual(['mayo']);
+    expect(oversized.draft.blockedOptionIds?.[0]?.optionIds).toEqual(['no-mayo', 'ranch', 'mustard', 'ketchup']);
+    expect(resolveChoices(groups, 'ranch', oversized.draft).ok).toBe(false);
+  });
+
+  test('a new rejected removal remains blocked while earlier ambiguous choices are corrected', () => {
+    const groups: DdOptionGroup[] = [{ extra_id: 'sauce', title: 'Sauce', min_num_options: 0, max_num_options: 3,
+      options: [{ option_id: 'mayo', name: 'Mayo', is_default: true },
+        { option_id: 'ranch', name: 'Ranch' }, { option_id: 'mustard', name: 'Mustard' }] }];
+    const initial = resolveChoices(groups, 'mayo');
+    const ambiguous = resolveChoices(groups, 'ranch or mustard', initial.draft);
+    const removal = resolveChoices(groups, 'no mayo', ambiguous.draft);
+    expect(removal.ok).toBe(false);
+    expect(removal.draft.blockedOptionIds?.[0]?.optionIds).toContain('mayo');
+    expect(resolveChoices(groups, 'ranch; no mustard', removal.draft).ok).toBe(false);
+  });
+});
+
 describe('matching plain-words choices to option ids', () => {
   const spreads: DdOptionGroup[] = [{ extra_id: 'spreads', title: 'Spreads', min_num_options: 0, max_num_options: 3, options: [
     { option_id: 'mayo', name: 'Mayo' }, { option_id: 'ranch', name: 'Ranch' }, { option_id: 'mustard', name: 'Mustard' },
@@ -128,15 +262,16 @@ describe('matching plain-words choices to option ids', () => {
     if (result.ok) expect(result.nested[0]!.id).toBe('o_40123778630');
   });
 
-  test('nothing picked yet lists the REQUIRED groups and names the optional ones', () => {
+  test('nothing picked yet asks only the first required group', () => {
     const result = resolveChoices(hoagie, '');
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.missing.map((g) => g.title)).toEqual(['Select your bread', 'Select your toasting option', 'Select your cheese']);
     expect(result.optionalTitles).toEqual(['Select your spreads']);
     const text = describeGaps('Custom Italian Hoagie', result);
-    expect(text).toContain('Select your bread (pick 1): Classic Roll, Classic Wheat Roll');
-    expect(text).toContain('Optional: Select your spreads.');
+    expect(text).toContain('Select your bread: choose 1 from Classic Roll, Classic Wheat Roll');
+    expect(text).not.toContain('Select your toasting option');
+    expect(text).not.toContain('Optional:');
   });
 
   test('a partial answer asks only for what is still missing', () => {

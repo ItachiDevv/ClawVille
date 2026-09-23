@@ -23,6 +23,8 @@
 // sweeper. Correct at one operator, where the only entry is re-read constantly.
 // It would be wrong at ten, where abandoned entries would sit until touched —
 // so a second operator means a sweeper, not just a bigger map.
+import type { ChoiceDraft } from './doordash-options';
+
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
 /** One operator exists today; the caps are here so a future one cannot grow this unbounded. */
 // Must match the eight numbered discovery rows in doordashSearchAction.
@@ -54,7 +56,10 @@ export interface DoordashWorkingContext {
    */
   lastItems?: DoordashMenuItemRef[];
   /** An item waiting for the operator's option choices, so "classic roll, provolone" needs no item name. */
-  pendingItem?: { itemId: string; name: string; quantity: number };
+  pendingItem?: {
+    storeId: string; menuId: string; itemId: string; name: string; quantity: number;
+    choices: ChoiceDraft; stage: 'choices' | 'review';
+  };
 }
 
 interface Entry extends DoordashWorkingContext { at: number }
@@ -78,7 +83,8 @@ export function recallDoordashContext(userId: string): DoordashWorkingContext {
   // that stays harmless until the day something does.
   return entry
     ? { ...entry, lastStores: [...entry.lastStores], namedStores: entry.namedStores ? [...entry.namedStores] : undefined,
-      lastItems: entry.lastItems ? [...entry.lastItems] : undefined }
+      lastItems: entry.lastItems ? [...entry.lastItems] : undefined,
+      pendingItem: entry.pendingItem ? structuredClone(entry.pendingItem) : undefined }
     : { lastStores: [] };
 }
 
@@ -90,6 +96,15 @@ export function rememberDoordashContext(
   if (next.lastStores.length > MAX_STORES) next.lastStores = next.lastStores.slice(0, MAX_STORES);
   if (next.namedStores && next.namedStores.length > MAX_NAMED_STORES) next.namedStores = next.namedStores.slice(0, MAX_NAMED_STORES);
   if (next.lastItems && next.lastItems.length > MAX_ITEMS) next.lastItems = next.lastItems.slice(0, MAX_ITEMS);
+  if (next.pendingItem) {
+    const draft = next.pendingItem.choices;
+    // Reject the whole draft rather than silently truncating accepted choices.
+    if (draft.groups.length > 40 || draft.blockedGroupIds.length > 40 || (draft.blockedOptionIds?.length ?? 0) > 40
+      || draft.groups.reduce((count, group) => count + group.optionIds.length, 0) > 40
+      || (draft.blockedOptionIds?.reduce((count, group) => count + group.optionIds.length, 0) ?? 0) > 40) {
+      delete next.pendingItem;
+    } else next.pendingItem = structuredClone(next.pendingItem);
+  }
   entries.set(userId, next);
 }
 
@@ -151,6 +166,7 @@ export function clearDoordashCart(userId: string): void {
   const entry = live(userId);
   if (!entry) return;
   delete entry.cartUuid;
+  delete entry.pendingItem;
   entry.at = Date.now();
 }
 

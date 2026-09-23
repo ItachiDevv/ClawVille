@@ -33,7 +33,7 @@ import {
   resolveStoreReference,
   type DoordashMenuItemRef,
 } from './doordash-session';
-import { cleanVendorText, describeGaps, resolveChoices } from './doordash-options';
+import { cleanVendorText, describeGaps, isChoiceRequestWithdrawal, isChoiceReviewConfirmation, resolveChoices } from './doordash-options';
 
 /**
  * Queries that mean "what is there", not a name or a cuisine. "I'm hungry, is
@@ -203,7 +203,7 @@ export interface DoordashBridge {
   cartShow(q: { cartUuid?: string }): Promise<DoordashResult<DoordashCartView>>;
   cartAdd(q: {
     storeId?: string; menuId?: string; itemId?: string; itemName?: string; choices?: string;
-    quantity: number; cartUuid?: string;
+    quantity?: number; cartUuid?: string;
   }): Promise<DoordashResult<DoordashCartView>>;
   cartRemove(q: { cartUuid?: string; lineId: string }): Promise<DoordashResult<DoordashCartView>>;
   preview(q: { cartUuid?: string }): Promise<DoordashResult<DoordashPreviewView>>;
@@ -349,7 +349,7 @@ export function buildDoordashBridge(
       const startedAt = Date.now();
       // Even a failed new search must not leave "their menu" pointing at an
       // older restaurant. Keep the actual cart and its menu intact.
-      rememberDoordashContext(subject.userId, { lastStores: [], namedStores: [], menuSelection: undefined });
+      rememberDoordashContext(subject.userId, { lastStores: [], namedStores: [], menuSelection: undefined, pendingItem: undefined });
       const generic = isGenericQuery(query);
       const addressId = await defaultAddressId();
       if (!addressId) return refuse('ddcli_unavailable',
@@ -406,6 +406,7 @@ export function buildDoordashBridge(
      */
     async menu({ storeId, storeName, query }) {
       const startedAt = Date.now();
+      rememberDoordashContext(subject.userId, { pendingItem: undefined });
       let context = recallDoordashContext(subject.userId);
       let resolvedId = storeId?.trim();
       let resolvedName = storeName?.trim();
@@ -433,7 +434,7 @@ export function buildDoordashBridge(
             // Direct named-menu discovery is not a displayed restaurant list.
             // Restore the prior browse state unless we explicitly show choices.
             const previous = context;
-            const found = await bridge.search({ query: resolvedName! });
+            const found = await searchUnlocked({ query: resolvedName! });
             const discovered = recallDoordashContext(subject.userId);
             matches = found.ok ? matchingStoresByName(discovered, resolvedName!) : [];
             if (matches.length > 1) return askForStore(matches);
@@ -535,11 +536,26 @@ export function buildDoordashBridge(
     async cartAdd({ storeId, menuId, itemId, itemName, choices, quantity, cartUuid }) {
       const startedAt = Date.now();
       const context = recallDoordashContext(subject.userId);
+      const choiceText = choices?.trim() ?? '';
+      const cancel = (text: string) => /^(?:skip|cancel|forget) (?:that|this|the) item[.!?]*$/i.test(text.trim());
+      if (context.pendingItem && cancel(choiceText) && cancel(requesterTurn)) {
+        rememberDoordashContext(subject.userId, { pendingItem: undefined });
+        return refuse('doordash_needs_choices', 'I skipped that item. Your cart has not changed. What would you like next?', startedAt);
+      }
       const store = storeId?.trim() || context.storeId;
       const menuIdent = menuId?.trim() || context.menuId;
       if (!store || !menuIdent) {
         return refuse('doordash_no_menu',
           'Let me pull the menu up first, then I can add that.', startedAt);
+      }
+      if ((context.storeId && context.storeId !== store) || (context.menuId && context.menuId !== menuIdent)
+        || (context.menuSelection && context.menuSelection.storeId !== store)
+        || (cartUuid?.trim() && context.cartUuid && cartUuid.trim() !== context.cartUuid)) {
+        rememberDoordashContext(subject.userId, { pendingItem: undefined });
+        return refuse('doordash_no_menu', 'The restaurant or cart changed. Please open its menu before choosing an item.', startedAt);
+      }
+      if (quantity !== undefined && (!Number.isInteger(quantity) || quantity < 1 || quantity > 20)) {
+        return refuse('doordash_needs_choices', 'How many would you like? Choose a whole number from 1 to 20.', startedAt);
       }
 
       // Resolve WHICH item. An explicit id wins, then a spoken name, then the
@@ -552,48 +568,81 @@ export function buildDoordashBridge(
       } else if (itemName?.trim()) {
         const match = resolveItemByName(context, itemName);
         if (!match) {
+          rememberDoordashContext(subject.userId, { pendingItem: undefined });
           return refuse('doordash_item_unresolved',
             `I could not find ${cleanVendorText(itemName)} on the ${context.storeName ? cleanVendorText(context.storeName) : 'current'} menu. Ask me for the menu and I will list it.`,
             startedAt);
         }
         if ('choices' in match) {
+          rememberDoordashContext(subject.userId, { pendingItem: undefined });
           return refuse('doordash_item_unresolved',
             `Which one: ${match.choices.map((n) => cleanVendorText(n)).join('; ')}?`, startedAt);
         }
         item = match.item;
       } else if (context.pendingItem) {
         const pending = context.pendingItem;
+        if (pending.storeId !== store || pending.menuId !== menuIdent) {
+          rememberDoordashContext(subject.userId, { pendingItem: undefined });
+          return refuse('doordash_item_unresolved', 'The menu changed. Which item would you like?', startedAt);
+        }
         item = context.lastItems?.find((i) => i.itemId === pending.itemId)
           ?? { itemId: pending.itemId, name: pending.name, hasModifiers: true, hasRequired: true };
       }
       if (!item) {
         return refuse('doordash_item_unresolved', 'Tell me which item and I will add it.', startedAt);
       }
-      const qty = context.pendingItem && !idGiven && !itemName?.trim() ? context.pendingItem.quantity : quantity;
+      const pending = context.pendingItem?.itemId === item.itemId && context.pendingItem.storeId === store
+        && context.pendingItem.menuId === menuIdent ? context.pendingItem : undefined;
+      if (context.pendingItem && !pending) rememberDoordashContext(subject.userId, { pendingItem: undefined });
+      const qty = quantity ?? pending?.quantity ?? 1;
       const cart = cartUuid?.trim() || context.cartUuid;
 
       // Items with choices go through the option list for THIS item.
-      const choiceText = choices?.trim() ?? '';
-      if (item.hasModifiers || item.hasRequired || choiceText) {
+      if (item.hasModifiers || item.hasRequired || choiceText || pending) {
         const details = await runDdCli<DdItemOptions>('item-options', [store, menuIdent, item.itemId]);
         if (!details.ok) return details;
+        // Expiry during the vendor read cannot resurrect an old draft or cart.
+        const current = recallDoordashContext(subject.userId);
+        if (context.storeId && (current.storeId !== context.storeId || current.menuId !== context.menuId)) {
+          return refuse('doordash_no_menu', 'That menu expired. Please open it again before adding an item.', startedAt);
+        }
         const groups = details.data.item.extras;
-        if (groups.length === 0 && choiceText) {
+        const reviewAnswer = pending?.stage === 'review' && isChoiceReviewConfirmation(choiceText)
+          && isChoiceReviewConfirmation(requesterTurn);
+        // The displayed review authorizes only its displayed quantity. A count
+        // change gets another review even when the same turn says "add it".
+        const completing = reviewAnswer && qty === pending.quantity;
+        if (groups.length === 0 && (choiceText || pending)) {
           return refuse('doordash_needs_choices',
             'DoorDash does not offer those choices for this item. I have not added it. Would you like it as listed, or another item?', startedAt);
         }
-        const resolved = groups.length > 0 ? resolveChoices(groups, choiceText) : null;
+        const withdrawing = !!pending?.choices.unresolvedRequest && isChoiceRequestWithdrawal(choiceText)
+          && isChoiceRequestWithdrawal(requesterTurn);
+        const priorChoices = withdrawing ? { ...pending!.choices, unresolvedRequest: false } : pending?.choices;
+        const resolved = groups.length > 0 ? resolveChoices(groups, reviewAnswer || withdrawing ? '' : choiceText, priorChoices) : null;
         if (resolved && !resolved.ok) {
           rememberDoordashContext(subject.userId, {
-            pendingItem: { itemId: item.itemId, name: item.name, quantity: qty },
+            pendingItem: { storeId: store, menuId: menuIdent, itemId: item.itemId, name: item.name, quantity: qty,
+              choices: resolved.draft, stage: 'choices' },
           });
           return refuse('doordash_needs_choices', describeGaps(item.name, resolved), startedAt);
+        }
+        if (pending && resolved?.ok && !completing) {
+          rememberDoordashContext(subject.userId, {
+            pendingItem: { storeId: store, menuId: menuIdent, itemId: item.itemId, name: item.name, quantity: qty,
+              choices: resolved.draft, stage: 'review' },
+          });
+          return refuse('doordash_needs_choices',
+            `${qty} × ${cleanVendorText(item.name)}${resolved.picked.length ? `: ${resolved.picked.join(', ')}` : ' as listed'}.\nAdd this to your cart? You can still tell me a change.`, startedAt);
         }
         // Optional-only choices with nothing picked falls through to a PLAIN
         // add: an empty nested_options list is refused by the strict validator.
         if (resolved && resolved.ok && resolved.nested.length > 0) {
           const args = [store, menuIdent, item.itemId, String(qty), JSON.stringify(resolved.nested)];
           if (cart) args.push(cart);
+          // A failed or ambiguous vendor mutation must not leave a replayable
+          // choice-only draft. The operator can inspect the cart afterwards.
+          rememberDoordashContext(subject.userId, { pendingItem: undefined });
           await invalidateCartConfirmations();
           const result = await runDdCli<DdCart>('cart-add-options', args);
           if (!result.ok) return result;
@@ -604,6 +653,7 @@ export function buildDoordashBridge(
 
       const args = [store, menuIdent, item.itemId, String(qty)];
       if (cart) args.push(cart);
+      rememberDoordashContext(subject.userId, { pendingItem: undefined });
       await invalidateCartConfirmations();
       const result = await runDdCli<DdCart>('cart-add', args);
       if (result.ok) rememberDoordashContext(subject.userId, { cartUuid: result.data.cart_uuid, pendingItem: undefined });
@@ -631,6 +681,11 @@ export function buildDoordashBridge(
      */
     async preview({ cartUuid }) {
       const startedAt = Date.now();
+      const pending = recallDoordashContext(subject.userId).pendingItem;
+      if (pending) return refuse('doordash_needs_choices',
+        `${cleanVendorText(pending.name)} is not in your cart yet. ${pending.stage === 'review'
+          ? 'Add this item, change its choices, or say "skip that item".'
+          : 'Finish its choices, or say "skip that item".'}`, startedAt);
       const cart = cartUuid?.trim() || recallDoordashContext(subject.userId).cartUuid;
       if (!cart) return refuse('doordash_no_cart', 'You do not have a cart going right now.', startedAt);
       const result = await runDdCli<DdPreview>('order-preview', [cart]);
@@ -1093,7 +1148,9 @@ export function buildDoordashBridge(
   // This does not coordinate another environment or the DoorDash app. Spend
   // claims retain the database lock above, independent of this workflow lock.
   const workflowKey = `doordash-cart:${subject.userId}`;
-  const { cartAdd, cartRemove, preview, submit } = bridge;
+  const { search: searchUnlocked, menu, cartAdd, cartRemove, preview, submit } = bridge;
+  bridge.search = (input) => withKeyedMutex(workflowKey, () => searchUnlocked(input));
+  bridge.menu = (input) => withKeyedMutex(workflowKey, () => menu(input));
   bridge.cartAdd = (input) => withKeyedMutex(workflowKey, () => cartAdd(input));
   bridge.cartRemove = (input) => withKeyedMutex(workflowKey, () => cartRemove(input));
   bridge.preview = (input) => withKeyedMutex(workflowKey, () => preview(input));

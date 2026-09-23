@@ -17,7 +17,7 @@ describe('DOORDASH_CART', () => {
   test('add refuses a fractional or out of range quantity without calling the bridge', async () => {
     const cartAdd = mock(async () => ({ ok: true, data: cartData, durationMs: 1 }));
     const state = bridgeWith({ cartAdd });
-    // An ABSENT quantity is not in this list: omitting it means one, by design.
+    // An absent quantity lets the bridge retain a pending item's quantity.
     for (const quantity of ['0', '21', '1.5', 'two', '-1', '1e1', '0x10']) {
       const result = await doordashCartAction.handler(null, {
         parameters: { op: 'add', storeId: '1', menuId: '2', itemId: '3', quantity },
@@ -28,13 +28,13 @@ describe('DOORDASH_CART', () => {
     expect(cartAdd).not.toHaveBeenCalled();
   });
 
-  test('add defaults to one and passes the ids through', async () => {
+  test('add leaves an omitted quantity for the bridge and passes the ids through', async () => {
     const cartAdd = mock(async () => ({ ok: true, data: cartData, durationMs: 1 }));
     await doordashCartAction.handler(null, {
       parameters: { op: 'add', storeId: '473827', menuId: '598614', itemId: 'i_57160719' },
     }, bridgeWith({ cartAdd }));
     expect(cartAdd).toHaveBeenCalledWith({
-      storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: 1, cartUuid: undefined,
+      storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: undefined, cartUuid: undefined,
     });
   });
 
@@ -47,8 +47,21 @@ describe('DOORDASH_CART', () => {
     }, bridgeWith({ cartAdd }));
     expect(result.success).toBe(true);
     expect(cartAdd).toHaveBeenCalledWith({
-      storeId: undefined, menuId: undefined, itemId: 'i_1', quantity: 1, cartUuid: undefined,
+      storeId: undefined, menuId: undefined, itemId: 'i_1', quantity: undefined, cartUuid: undefined,
     });
+  });
+
+  test('choice corrections preserve the current words and distinguish omitted quantity from explicit one', async () => {
+    const cartAdd = mock(async (_params: Record<string, unknown>) => ({ ok: false, failure: 'doordash_needs_choices', detail: 'Choose a size.', durationMs: 1 }));
+    for (const quantity of [undefined, '1', '2']) {
+      await doordashCartAction.handler(null, {
+        parameters: { op: 'add', choices: 'actually wheat, no mayo', ...(quantity ? { quantity } : {}) },
+      }, bridgeWith({ cartAdd }));
+    }
+    expect(cartAdd.mock.calls.map(([params]) => params)).toEqual([undefined, 1, 2].map(quantity => ({
+      storeId: undefined, menuId: undefined, itemId: undefined, itemName: undefined,
+      choices: 'actually wheat, no mayo', quantity, cartUuid: undefined,
+    })));
   });
 
   test('add still needs to know WHICH item', async () => {
