@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   clearDoordashCart,
   recallDoordashContext,
@@ -6,6 +6,7 @@ import {
   resetDoordashContexts,
   resolveItemByName,
   resolveStoreByName,
+  resolveStoreReference,
 } from '../doordash-session';
 
 // Reset on BOTH sides: the context is a module-level map shared by every suite
@@ -41,9 +42,10 @@ describe('the in-flight ordering context', () => {
   test('caps the remembered store list', () => {
     rememberDoordashContext('founder', {
       lastStores: Array.from({ length: 40 }, (_, i) => ({ storeId: String(i), storeName: `Store ${i}` })),
+      namedStores: Array.from({ length: 40 }, (_, i) => ({ storeId: String(i), storeName: `Store ${i}` })),
     });
-    // 30 since 2026-09-18: a search now merges restaurants AND stores.
-    expect(recallDoordashContext('founder').lastStores).toHaveLength(30);
+    expect(recallDoordashContext('founder').lastStores).toHaveLength(8);
+    expect(recallDoordashContext('founder').namedStores).toHaveLength(30);
   });
 
   test('clearing the cart keeps the store the operator was browsing', () => {
@@ -54,6 +56,38 @@ describe('the in-flight ordering context', () => {
     expect(context.cartUuid).toBeUndefined();
     expect(context.storeId).toBe('473827');
     expect(context.menuId).toBe('598614');
+  });
+});
+
+describe('restaurant references use only current displayed context', () => {
+  const lastStores = Array.from({ length: 8 }, (_, i) => ({ storeId: String(i + 1), storeName: `Place ${i + 1}` }));
+  test('first, second, and number eight map to displayed positions', () => {
+    for (const [spoken, storeId] of [['the first one', '1'], ['second', '2'], ['number 8', '8'], ['#8', '8'], ['8th', '8']]) {
+      expect(resolveStoreReference({ lastStores }, spoken!)).toMatchObject({ kind: 'store', storeId });
+    }
+  });
+  test('invalid and ambiguous references never become restaurant searches', () => {
+    for (const spoken of ['0', 'number -1', '1.5', 'ninth', 'number 9', 'first or second', 'number 1 or 2']) {
+      expect(resolveStoreReference({ lastStores }, spoken)).toEqual({ kind: 'unresolved' });
+    }
+    expect(resolveStoreReference({ lastStores }, 'First Watch')).toEqual({ kind: 'name' });
+  });
+  test('deictic requests use the selected menu, or exactly one displayed result', () => {
+    expect(resolveStoreReference({ lastStores }, 'their menu')).toEqual({ kind: 'unresolved' });
+    expect(resolveStoreReference({ lastStores: [lastStores[0]!] }, '')).toMatchObject({ kind: 'store', storeId: '1' });
+    expect(resolveStoreReference({ lastStores, menuSelection: lastStores[1] }, 'they')).toMatchObject({ kind: 'store', storeId: '2' });
+    expect(resolveStoreReference({ lastStores, storeId: 'old-cart' }, 'their menu')).toEqual({ kind: 'unresolved' });
+  });
+  test('expired and other-user context cannot satisfy a reference', () => {
+    const now = Date.now();
+    const clock = spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      rememberDoordashContext('founder', { lastStores, menuSelection: lastStores[0] });
+      expect(resolveStoreReference(recallDoordashContext('other'), 'first')).toEqual({ kind: 'unresolved' });
+      clock.mockReturnValue(now + 30 * 60_000 + 1);
+      expect(resolveStoreReference(recallDoordashContext('founder'), 'their menu')).toEqual({ kind: 'unresolved' });
+      expect(resolveStoreReference(recallDoordashContext('founder'), 'first')).toEqual({ kind: 'unresolved' });
+    } finally { clock.mockRestore(); }
   });
 });
 

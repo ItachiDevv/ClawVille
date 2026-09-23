@@ -14,6 +14,17 @@
 
 ## How this file works (rules for every session)
 
+### September 23: DoorDash chat-to-menu language
+
+- **Session:** Codex `dd-natural-chat`, 2026-09-23. Protocol 71 staging checks pass, including eight viewport sizes for both chat layouts.
+- **Where:** owner avatar chat at `/game`, on staging first, then production after promotion.
+- **Look at:** ask for pizza, select "the second one," then ask "what drinks do they have?" Restaurant results use numbers; menu items use separate lines. Try an explicit item choice such as "no mayo."
+- **Feedback wanted:** identify replies that sound unnatural or require repeated restaurant names. Required item choices still need a complete set in one reply.
+- **Payment evidence:** the founder confirms the earlier paid order succeeded. This change places no new order and preserves human confirmation and tip requirements.
+- **Device limit:** browser emulation cannot establish physical iPad safe areas. A physical-device review remains open.
+- **Landscape check:** a staged 844x390 check exposed a clipped header. The follow-up limits message height and keeps input and Close accessible in world and table chat. Review a long menu on a phone in landscape.
+
+
 ### September 22 cleanup: Nori, touch controls, and Cove close controls
 
 - **Release state:** production API and web serve `7473e809`, verified at 2026-09-23 05:08 UTC after normal PR #296 promotion. All four production gates, migration, and deployment jobs pass. Staging retains tested `dfebf028`: onboarding 14/14, signed partner 14/14, and hosted Nori/appearance 125/125 twice, including after signer removal. Production Nori reply/Close, Baccarat Fairness/Close, and Cove return pass browser checks at 05:09-05:12 UTC. One initial navigation required a reload during rollout; its cause remains unproven. The final documentation-only commit does not change deployed application source.

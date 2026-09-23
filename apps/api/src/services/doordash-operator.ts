@@ -28,8 +28,9 @@ import {
   clearDoordashCart,
   recallDoordashContext,
   rememberDoordashContext,
+  matchingStoresByName,
   resolveItemByName,
-  resolveStoreByName,
+  resolveStoreReference,
   type DoordashMenuItemRef,
 } from './doordash-session';
 import { cleanVendorText, describeGaps, resolveChoices } from './doordash-options';
@@ -57,6 +58,12 @@ function storeNameMatches(name: string, query: string): boolean {
 function deliversNow(etaText: string | undefined): boolean {
   return !!etaText && !/scheduled/i.test(etaText);
 }
+
+// A small name-only convenience for "what drinks do they have?". The vendor
+// menu shape has no category field. This is not a complete category inventory.
+const BEVERAGE_QUERY = /^(?:drinks?|beverages?)$/;
+const BEVERAGE_NAME = /\b(?:drinks?|beverages?|sodas?|coke|coca[ -]cola|pepsi|sprite|fanta|dr\.? pepper|mountain dew|water|teas?|coffee|espresso|latte|cappuccino|lemonades?|juices?|smoothies?|milkshakes?)\b/i;
+const BEVERAGE_FOOD_NAME = /\b(?:cakes?|cookies?|bread|muffins?|chicken|sauces?|sandwich(?:es)?|bowls?)\b/i;
 import { withKeyedMutex } from './keyed-mutex';
 
 const OPERATOR_ID = (process.env.DOORDASH_OPERATOR_USER_ID ?? '').trim();
@@ -340,6 +347,9 @@ export function buildDoordashBridge(
      */
     async search({ query }) {
       const startedAt = Date.now();
+      // Even a failed new search must not leave "their menu" pointing at an
+      // older restaurant. Keep the actual cart and its menu intact.
+      rememberDoordashContext(subject.userId, { lastStores: [], namedStores: [], menuSelection: undefined });
       const generic = isGenericQuery(query);
       const addressId = await defaultAddressId();
       if (!addressId) return refuse('ddcli_unavailable',
@@ -379,9 +389,11 @@ export function buildDoordashBridge(
       // Ids and display names only, held for the in-flight order. This is what
       // lets a later turn say the place by name instead of by number.
       rememberDoordashContext(subject.userId, {
-        lastStores: places
-          .filter((place) => place.store_name)
-          .map((place) => ({ storeId: place.store_id, storeName: place.store_name! })),
+        // Preserve unnamed rows too: numbering must match the visible list.
+        // rememberDoordashContext bounds this to the eight displayed rows.
+        lastStores: places.map((place) => ({ storeId: place.store_id, storeName: place.store_name?.trim() || 'Place' })),
+        namedStores: places.filter((place) => place.store_name?.trim())
+          .map((place) => ({ storeId: place.store_id, storeName: place.store_name!.trim() })),
       });
       return { ok: true as const, data: { stores: places }, durationMs: Date.now() - startedAt };
     },
@@ -397,24 +409,51 @@ export function buildDoordashBridge(
       let context = recallDoordashContext(subject.userId);
       let resolvedId = storeId?.trim();
       let resolvedName = storeName?.trim();
-      if (!resolvedId && resolvedName) {
-        let match = resolveStoreByName(context, resolvedName);
-        if (!match) {
-          // "Menu for Wawa" with no search first is how people actually talk.
-          // Run the search on their behalf rather than sending them back for it.
-          const found = await bridge.search({ query: resolvedName });
-          if (found.ok) {
-            context = recallDoordashContext(subject.userId);
-            match = resolveStoreByName(context, resolvedName);
-          }
-        }
-        if (!match) {
+      const askForStore = (matches: Array<{ storeId: string; storeName: string }>) => {
+        const shown = matches.slice(0, 8);
+        rememberDoordashContext(subject.userId, { lastStores: shown, menuSelection: undefined });
+        const choices = shown.map((store, index) => `${index + 1}. ${cleanVendorText(store.storeName)}`).join('\n');
+        return refuse('doordash_store_unresolved',
+          `I found more than one matching place:\n${choices}\n\nWhich menu would you like? Say the place name or its number.`, startedAt);
+      };
+      if (!resolvedId) {
+        const reference = resolveStoreReference(context, resolvedName ?? '');
+        if (reference.kind === 'unresolved') {
           return refuse('doordash_store_unresolved',
-            'I am not sure which place you mean. Ask me to search for it and I will pull the menu.',
-            startedAt);
+            context.lastStores.length > 1
+              ? 'Which place would you like? Say its name or the number from the latest list.'
+              : 'Which restaurant do you mean? Tell me its name, or ask me to find some places first.', startedAt);
         }
-        resolvedId = match.storeId;
-        resolvedName = match.storeName;
+        if (reference.kind === 'store') {
+          resolvedId = reference.storeId;
+          resolvedName = reference.storeName;
+        } else {
+          let matches = matchingStoresByName(context, resolvedName!);
+          if (matches.length === 0) {
+            // Direct named-menu discovery is not a displayed restaurant list.
+            // Restore the prior browse state unless we explicitly show choices.
+            const previous = context;
+            const found = await bridge.search({ query: resolvedName! });
+            const discovered = recallDoordashContext(subject.userId);
+            matches = found.ok ? matchingStoresByName(discovered, resolvedName!) : [];
+            if (matches.length > 1) return askForStore(matches);
+            // An unresolved explicit restaurant switch invalidates deictic
+            // fallback, including a single prior discovery hit. Its cart stays.
+            rememberDoordashContext(subject.userId, matches.length === 1 ? {
+              lastStores: previous.lastStores, namedStores: previous.namedStores, menuSelection: previous.menuSelection,
+            } : { lastStores: [], menuSelection: undefined });
+            context = previous;
+            if (!found.ok) return found;
+          }
+          if (matches.length !== 1) {
+            if (matches.length > 1) return askForStore(matches);
+            return refuse('doordash_store_unresolved',
+              'I could not find that place. What restaurant or kind of food would you like?', startedAt);
+          }
+          const match = matches[0]!;
+          resolvedId = match.storeId;
+          resolvedName = match.storeName;
+        }
       }
       if (!resolvedId) {
         return refuse('doordash_store_unresolved',
@@ -422,9 +461,11 @@ export function buildDoordashBridge(
       }
       // When the caller gave an id rather than a name, recover the name from the
       // last search so the reply can say WHICH place this menu belongs to.
-      if (!resolvedName) {
-        resolvedName = context.lastStores.find((store) => store.storeId === resolvedId)?.storeName;
-      }
+      resolvedName = (context.namedStores ?? context.lastStores).find((store) => store.storeId === resolvedId)?.storeName
+        ?? (context.storeId === resolvedId ? context.storeName : undefined) ?? resolvedName;
+      // The conversational target changes even if this fetch fails. A follow-up
+      // retries the requested place; the existing cart stays at its old store.
+      rememberDoordashContext(subject.userId, { menuSelection: { storeId: resolvedId, storeName: resolvedName } });
       const result = await runDdCli<DdMenu>('menu', [resolvedId]);
       if (!result.ok) return result;
       const sameStore = resolvedId === context.storeId;
@@ -437,6 +478,7 @@ export function buildDoordashBridge(
           hasRequired: item.has_required_modifiers === true,
         }));
       rememberDoordashContext(subject.userId, {
+        menuSelection: { storeId: resolvedId, storeName: resolvedName },
         storeId: resolvedId,
         menuId: String(result.data.menu_id),
         storeName: resolvedName ?? (sameStore ? context.storeName : undefined),
@@ -450,8 +492,10 @@ export function buildDoordashBridge(
       // menu to what the operator asked about; the action shows at most 12.
       const needle = query?.trim().toLowerCase();
       const items = needle
-        ? result.data.items.filter((item) => item.name?.toLowerCase().includes(needle)
-          || needle.split(/\s+/).filter((w) => w.length > 2).some((w) => item.name?.toLowerCase().includes(w.replace(/s$/, ''))))
+        ? result.data.items.filter((item) => BEVERAGE_QUERY.test(needle)
+          ? !!item.name && BEVERAGE_NAME.test(item.name) && !BEVERAGE_FOOD_NAME.test(item.name)
+          : item.name?.toLowerCase().includes(needle)
+            || needle.split(/\s+/).filter((w) => w.length > 2).some((w) => item.name?.toLowerCase().includes(w.replace(/s$/, ''))))
         : result.data.items;
       // Naming the store HERE catches a wrong resolution one turn earlier than
       // the priced confirmation does, which is worth a turn of the founder's
@@ -534,6 +578,10 @@ export function buildDoordashBridge(
         const details = await runDdCli<DdItemOptions>('item-options', [store, menuIdent, item.itemId]);
         if (!details.ok) return details;
         const groups = details.data.item.extras;
+        if (groups.length === 0 && choiceText) {
+          return refuse('doordash_needs_choices',
+            'DoorDash does not offer those choices for this item. I have not added it. Would you like it as listed, or another item?', startedAt);
+        }
         const resolved = groups.length > 0 ? resolveChoices(groups, choiceText) : null;
         if (resolved && !resolved.ok) {
           rememberDoordashContext(subject.userId, {

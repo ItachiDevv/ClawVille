@@ -36,6 +36,84 @@ const hoagie: DdOptionGroup[] = [
 ];
 
 describe('matching plain-words choices to option ids', () => {
+  const spreads: DdOptionGroup[] = [{ extra_id: 'spreads', title: 'Spreads', min_num_options: 0, max_num_options: 3, options: [
+    { option_id: 'mayo', name: 'Mayo' }, { option_id: 'ranch', name: 'Ranch' }, { option_id: 'mustard', name: 'Mustard' },
+  ] }];
+
+  test.each(['no mayo', 'without ranch', 'hold the mayo', 'skip ranch', "don't add mayo", 'don’t include ranch', 'leave off the mayo', 'no mayo or ranch', 'without mayo and ranch', 'minus mayo', 'anything but ranch', 'mayo-free'])('%s never selects the excluded ingredient', (text) => {
+    const result = resolveChoices(spreads, text);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.nested).toEqual([]);
+  });
+
+  test.each(['no mayo, but add ranch', 'no mayo, add ranch', 'without mayo; ranch'])('a positive clause after an exclusion selects only the requested ingredient: %s', (text) => {
+    const result = resolveChoices(spreads, text);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.picked).toEqual(['Ranch']);
+  });
+
+  test('an exact negative vendor choice wins over its contained positive ingredient', () => {
+    const result = resolveChoices([{ ...spreads[0]!, options: [...spreads[0]!.options, { option_id: 'no-mayo', name: 'No Mayo' }] }], 'no mayo, with ranch');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.picked).toEqual(['Ranch', 'No Mayo']);
+  });
+
+  test.each(['no mayo and ranch', 'no mayo, ranch'])('a literal negative vendor choice does not turn a following exclusion into an addition: %s', (text) => {
+    const result = resolveChoices([{ ...spreads[0]!, options: [...spreads[0]!.options, { option_id: 'no-mayo', name: 'No Mayo' }] }], text);
+    expect(result.ok).toBe(false);
+  });
+
+  test('excluding a vendor default requires a supported removal choice', () => {
+    const result = resolveChoices([{ ...spreads[0]!, options: [{ option_id: 'mayo', name: 'Mayo', is_default: true }] }], 'no mayo');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.missing.map((gap) => gap.title)).toEqual(['Spreads']);
+  });
+
+  test.each(['without peanuts', 'no peanuts and mayo', 'without peanuts, add ranch', 'peanut-free'])('an unavailable ingredient removal requires clarification: %s', (text) => {
+    const result = resolveChoices(spreads, text);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(describeGaps('Sandwich', result)).toContain('cannot confirm that ingredient removal');
+  });
+
+  test('an explicit vendor removal choice remains supported', () => {
+    const result = resolveChoices([{ ...spreads[0]!, options: [{ option_id: 'mayo', name: 'Mayo', is_default: true }, { option_id: 'no-mayo', name: 'No Mayo' }] }], 'No Mayo');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.nested.map((option) => option.id)).toEqual(['no-mayo']);
+  });
+
+  test.each(['Dr. Pepper', 'Dr Pepper', 'drpepper'])('vendor punctuation and natural abbreviated spelling resolve safely: %s', (name) => {
+    const groups = [{ extra_id: 'drink', title: 'Drink', min_num_options: 0, max_num_options: 1,
+      options: [{ option_id: 'dr-pepper', name: 'Dr. Pepper' }] }];
+    const positive = resolveChoices(groups, name);
+    expect(positive.ok && positive.picked).toEqual(['Dr. Pepper']);
+    const negative = resolveChoices(groups, `no ${name}`);
+    expect(negative.ok && negative.picked).toEqual([]);
+  });
+
+  test.each(['neither mayo nor ranch', 'ranch instead of mayo', 'ranch rather than mayo', "I can't have mayo", "I won't eat mayo", "I wouldn't like mayo", 'I can’t have mayo', 'I cannot have mayo'])('unsupported exclusion relationships ask instead of selecting ingredients: %s', (text) => {
+    const result = resolveChoices(spreads, text);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(describeGaps('Sandwich', result)).toContain('state each choice separately');
+  });
+
+  test.each(['mayo, no mayo', 'not only mayo', 'mayo or ranch', 'no mayo, ranch'])('ambiguous choices ask for clarification: %s', (text) => {
+    const result = resolveChoices(spreads, text);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.missing.map((gap) => gap.title)).toContain('Spreads');
+  });
+
+  test('negating a required ingredient leaves the group unanswered', () => {
+    const result = resolveChoices([{ ...spreads[0]!, min_num_options: 1 }], 'no mayo');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.missing.map((gap) => gap.title)).toEqual(['Spreads']);
+  });
+
+  test('an excluded negative vendor choice is not treated as a request for its positive counterpart', () => {
+    const options = [{ option_id: 'toasted', name: 'Toasted' }, { option_id: 'not-toasted', name: 'Not Toasted' }];
+    const result = resolveChoices([{ ...spreads[0]!, min_num_options: 1, max_num_options: 1, options }], 'do not use not toasted');
+    expect(result.ok).toBe(false);
+  });
+
   test('a full answer resolves every required group to the vendor ids', () => {
     const result = resolveChoices(hoagie, 'Classic roll, not toasted, provolone, ranch');
     expect(result.ok).toBe(true);

@@ -161,7 +161,7 @@ export const doordashSearchAction: Action = {
   // pharmacy only exist in DoorDash's store search, and the bridge runs both.
   // "I'm hungry, is DoorDash available?" must be answered with this action,
   // not with a clarifying question (founder, 2026-09-18).
-  description: 'Search DoorDash for restaurants AND stores (convenience stores like Wawa or 7-Eleven, grocery, pharmacy) by name or by food. Use this whenever the user is hungry, asks what is open or available on DoorDash, or names a place or a food. If they did not name anything, use the query "food" and it lists what delivers now. Searches from the account default delivery address. Call it right away instead of asking what they want first.',
+  description: 'Find DoorDash restaurants and stores near the saved delivery address. Use for a new food or place search: "I feel like pizza" means query="pizza"; "can we get tacos?" means query="tacos". Extract only the food, cuisine, category, or place name, never the whole request. If none is named, use query="food" to discover places now. Call immediately instead of asking what they want first. For a menu, a restaurant number, or a follow-up about what they have, use DOORDASH_MENU instead.',
   // Surfaced into the prompt by buildActionDescriptions. Casual phrasings are
   // the ones that failed live — an explicit "use the doordash search action"
   // always fired, while "find me pizza on doordash" narrated instead.
@@ -173,8 +173,10 @@ export const doordashSearchAction: Action = {
     'order from wawa',
     'what restaurants are near me',
     'order food',
+    'i feel like pizza',
+    'can we get tacos',
   ],
-  parameters: [{ name: 'query', description: 'A place name or food, or "food" if the user did not name one', required: true, schema: { type: 'string' } }],
+  parameters: [{ name: 'query', description: 'Only the named food, cuisine, category, or place: "find me pizza" becomes "pizza". Use "food" when none is named.', required: true, schema: { type: 'string' } }],
   available: (state) => Boolean((state as any)?.services?.doordash),
   validate: async () => true,
   handler: async (_runtime, message, state) => {
@@ -182,30 +184,39 @@ export const doordashSearchAction: Action = {
     if (!bridge) return { success: false, text: 'That is not available here.', persist: false };
     const query = getParam(message, 'query');
     if (typeof query !== 'string' || !query.trim()) return ephemeral(false, 'Please provide food or restaurant search terms.');
-    return lookup(() => bridge.search({ query }), (data) => list('On DoorDash', data.stores,
-      'Nothing on DoorDash matched that, and nothing nearby is delivering right now.', (s) => {
+    return lookup(() => bridge.search({ query }), (data) => {
+      if (!data.stores.length) return 'Nothing matched that search. What other food or place would you like to try?';
+      const rows = data.stores.slice(0, 8).map((s, index) => {
         const detail = [
           s.kind === 'store' ? 'store' : undefined,
           s.miles !== undefined ? `${s.miles} mi` : undefined,
           s.etaText ? field(s.etaText, '') : undefined,
         ].filter(Boolean).join(', ');
-        return `${field(s.store_name, 'Place')}${detail ? ` (${detail})` : ''}`;
-      }, 8));
+        return `${index + 1}. ${field(s.store_name, 'Place')}${detail ? ` (${detail})` : ''}`;
+      });
+      const remainder = data.stores.length > 8 ? `\n${data.stores.length - 8} more results are not shown.` : '';
+      return `Here are some places on DoorDash:\n${rows.join('\n')}${remainder}\n\nWhich menu would you like? Say the place name or its number.`;
+    });
   },
 };
 
 export const doordashMenuAction: Action = {
   name: 'DOORDASH_MENU',
-  description: 'Show items on a DoorDash restaurant or store menu. Pass the place name the user said. Pass query to narrow a big menu to what they asked about, like hoagie or soda.',
+  description: 'Show a DoorDash menu or narrow it to a food or category. For "their menu", "what do they have?", or "what drinks do they have?", omit storeName and storeId: the server remembers the selected place. If the user chooses a restaurant by number, pass their reference as storeName, such as "the second one" or "number 8"; never invent an ID or restaurant name. For an explicit restaurant name, pass that name. Extract only the food or category into query: "what drinks do they have?" means query="drinks". For the full, entire, or whole menu, omit query; "full menu" is not a food filter. Do not search for pronouns or restaurant numbers. The server asks when the place is unclear.',
   similes: [
     'what do they have',
     'show me the menu',
     'what hoagies does wawa have',
     'what can i get from there',
+    'their menu',
+    'what drinks do they have',
+    'show me their full menu',
+    'the second one',
+    'number 8',
   ],
   parameters: [
-    { name: 'storeName', description: 'The restaurant or store name the user said', required: false, schema: { type: 'string' } },
-    { name: 'query', description: 'Optional word to narrow the menu, like hoagie, pizza or soda', required: false, schema: { type: 'string' } },
+    { name: 'storeName', description: 'Explicit place name or restaurant reference such as "the second one". Omit for "their menu" or a follow-up about the selected place.', required: false, schema: { type: 'string' } },
+    { name: 'query', description: 'Only the optional food or category, such as "drinks", "hoagie", or "pizza"; never the whole request. Omit for the full, entire, or whole menu.', required: false, schema: { type: 'string' } },
     { name: 'storeId', description: 'Store ID only if you have one; otherwise leave it out', required: false, schema: { type: 'string' } },
   ],
   available: (state) => Boolean((state as any)?.services?.doordash),
@@ -218,8 +229,12 @@ export const doordashMenuAction: Action = {
     // in this model's memory: DoorDash output is never persisted there.
     const storeId = text(message, 'storeId');
     const storeName = text(message, 'storeName');
-    const query = text(message, 'query').slice(0, 60);
-    if (!storeId && !storeName) return ephemeral(false, 'Tell me which restaurant or store and I will pull the menu.');
+    const rawQuery = text(message, 'query');
+    // Models sometimes emit "full menu" as the filter despite the description.
+    // Clear only these explicit general-menu phrases, before truncation, so
+    // named foods such as "whole wheat" and "full breakfast" stay unchanged.
+    const query = /^(?:(?:the|their)\s+)?(?:(?:full|entire|whole)\s+)?menu$/i.test(rawQuery)
+      ? '' : rawQuery.slice(0, 60);
     return lookup(() => bridge.menu({
       storeId: storeId || undefined, storeName: storeName || undefined, query: query || undefined,
     }), (data) => {
@@ -229,9 +244,13 @@ export const doordashMenuAction: Action = {
       const heading = data.storeName ? `Menu for ${field(data.storeName, 'that place')}` : 'Menu items';
       // Names only: the cart step resolves names server side, and the menu id
       // lives in the server's in-flight context, so ids are noise here.
-      return list(heading, data.items,
-        query ? `Nothing on that menu matched ${field(query, 'that')}.` : 'No menu items were returned for that place.',
-        (i) => `${field(i.name, 'Item')}${i.has_required_modifiers ? ' (you pick options)' : ''}`, 12);
+      if (!data.items.length) return query
+        ? `Nothing on that menu matched ${field(query, 'that')}. Want to see the full menu or try another food?`
+        : 'No menu items were returned for that place. Want to try another restaurant?';
+      const rows = data.items.slice(0, 12).map((i) =>
+        `- ${field(i.name, 'Item')}${i.has_required_modifiers ? ' (you pick options)' : ''}`);
+      const remainder = data.items.length > 12 ? `\n${data.items.length - 12} more items are not shown. You can ask for a food or category.` : '';
+      return `${heading}:\n${rows.join('\n')}${remainder}\n\nWhat would you like? Tell me the item name, or ask about another part of the menu.`;
     });
   },
 };

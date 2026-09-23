@@ -19,7 +19,7 @@
  *      surface, human-only by design).
  */
 
-import { describe, it, expect } from 'bun:test';
+import { afterAll, beforeAll, describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
 import { questRoutes, requireLedgerCapableIdentity } from '../quests';
 import {
@@ -219,15 +219,56 @@ describeIfDbTutorial('tutorial ladder — agent-session resolution (DB tier)', (
 });
 
 // ─── DB-gated race coverage (Codex HIGH #2) ─────────────────────────────────
-// Runs only with DATABASE_URL (staging DB) — exercises the REAL database
+// Runs only with DATABASE_URL (disposable test DB) — exercises the REAL database
 // semantics the fixes rely on: the partial unique index kills concurrent
 // duplicate accepts, and the conditional completion-slot consume refuses the
 // over-cap approval.
 const describeIfDb2 = process.env.DATABASE_URL ? describe : describe.skip;
 describeIfDb2('quest race guards (DB)', () => {
+  // The suite must pass first against an empty database. Borrowing LIMIT 1
+  // depended on another suite leaving an avatar behind and touched its owner.
+  const fixtureUserId = crypto.randomUUID();
+  const fixtureAvatarId = crypto.randomUUID();
+  const fixtureEmail = `quest-race-${fixtureUserId}@example.invalid`;
+  let fixtureCreated = false;
+
+  beforeAll(async () => {
+    const { db, users, avatars } = await import('@clawville/database');
+    await db.transaction(async (tx) => {
+      await tx.insert(users).values({
+        id: fixtureUserId,
+        email: fixtureEmail,
+        passwordHash: 'unused-test-fixture',
+        name: 'Quest race fixture',
+        isGuest: false,
+      });
+      await tx.insert(avatars).values({
+        id: fixtureAvatarId,
+        userId: fixtureUserId,
+        name: `Quest race ${fixtureAvatarId}`,
+        species: 'cat', color: 'blue', gender: 'male', archetype: 'brave-adventurer',
+        personality: { habitat: 'town', hobby: 'quests', greeting: 'Test fixture' },
+        stats: { strength: 1, defence: 1, movement: 1 },
+        clawTokens: 0, softBalance: 0, boughtBalance: 0, earnedBalance: 0,
+        isGuest: false,
+      });
+    });
+    fixtureCreated = true;
+  });
+
+  afterAll(async () => {
+    if (!fixtureCreated) return;
+    const { db, users, avatars } = await import('@clawville/database');
+    const { and, eq } = await import('drizzle-orm');
+    await db.transaction(async (tx) => {
+      await tx.delete(avatars).where(and(eq(avatars.id, fixtureAvatarId), eq(avatars.userId, fixtureUserId)));
+      await tx.delete(users).where(and(eq(users.id, fixtureUserId), eq(users.email, fixtureEmail)));
+    });
+  });
+
   it('concurrent duplicate active-submission inserts: exactly one wins (unique index)', async () => {
-    const { db, quests, questSubmissions, avatars } = await import('@clawville/database');
-    const { eq, sql } = await import('drizzle-orm');
+    const { db, quests, questSubmissions } = await import('@clawville/database');
+    const { eq } = await import('drizzle-orm');
     const [quest] = await db
       .insert(quests)
       .values({
@@ -239,19 +280,22 @@ describeIfDb2('quest race guards (DB)', () => {
         maxCompletions: 1,
       })
       .returning();
-    const [anyAvatar] = await db.select({ id: avatars.id }).from(avatars).limit(1);
-    expect(anyAvatar).toBeTruthy();
     try {
       const insertOnce = () =>
         db
           .insert(questSubmissions)
-          .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'accepted' })
+          .values({ questId: quest.id, avatarId: fixtureAvatarId, status: 'accepted' })
           .returning()
           .then(() => 'ok' as const)
           .catch((e: { code?: string; cause?: { code?: string } }) =>
             e?.code === '23505' || e?.cause?.code === '23505' ? ('dup' as const) : Promise.reject(e),
           );
-      const results = await Promise.all([insertOnce(), insertOnce(), insertOnce()]);
+      // Wait for every writer before cleanup, including unexpected failures.
+      const settled = await Promise.allSettled([insertOnce(), insertOnce(), insertOnce()]);
+      const results = settled.map((result) => {
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      });
       expect(results.filter((r) => r === 'ok').length).toBe(1);
       expect(results.filter((r) => r === 'dup').length).toBe(2);
     } finally {
@@ -261,7 +305,7 @@ describeIfDb2('quest race guards (DB)', () => {
   });
 
   it('CAS submit predicate cannot reopen an approved submission (round-2 HIGH #1)', async () => {
-    const { db, quests, questSubmissions, questRewards, avatars } = await import('@clawville/database');
+    const { db, quests, questSubmissions, questRewards } = await import('@clawville/database');
     const { eq, and, sql } = await import('drizzle-orm');
     const [quest] = await db
       .insert(quests)
@@ -274,11 +318,10 @@ describeIfDb2('quest race guards (DB)', () => {
         maxCompletions: 1,
       })
       .returning();
-    const [anyAvatar] = await db.select({ id: avatars.id }).from(avatars).limit(1);
     try {
       const [sub] = await db
         .insert(questSubmissions)
-        .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'approved' })
+        .values({ questId: quest.id, avatarId: fixtureAvatarId, status: 'approved' })
         .returning();
       // The EXACT predicate the submit handler uses — an approved row must not match.
       const reopened = await db
@@ -287,7 +330,7 @@ describeIfDb2('quest race guards (DB)', () => {
         .where(
           and(
             eq(questSubmissions.questId, quest.id),
-            eq(questSubmissions.avatarId, anyAvatar.id),
+            eq(questSubmissions.avatarId, fixtureAvatarId),
             sql`${questSubmissions.status} IN ('accepted', 'in_progress')`,
           ),
         )
@@ -296,11 +339,11 @@ describeIfDb2('quest race guards (DB)', () => {
 
       // Defense-in-depth: a second reward row for the same submission is refused.
       await db.insert(questRewards).values({
-        submissionId: sub.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1,
+        submissionId: sub.id, avatarId: fixtureAvatarId, questId: quest.id, tokensAwarded: 1,
       });
       const dup = await db
         .insert(questRewards)
-        .values({ submissionId: sub.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1 })
+        .values({ submissionId: sub.id, avatarId: fixtureAvatarId, questId: quest.id, tokensAwarded: 1 })
         .then(() => 'ok')
         .catch((e: { code?: string; cause?: { code?: string } }) =>
           e?.code === '23505' || e?.cause?.code === '23505' ? 'dup' : Promise.reject(e),
@@ -314,7 +357,7 @@ describeIfDb2('quest race guards (DB)', () => {
   });
 
   it('round 3: one payout per (quest, avatar) — duplicate reward 23505; approved row blocks the accept predicate', async () => {
-    const { db, quests, questSubmissions, questRewards, avatars } = await import('@clawville/database');
+    const { db, quests, questSubmissions, questRewards } = await import('@clawville/database');
     const { eq, and, sql } = await import('drizzle-orm');
     const [quest] = await db
       .insert(quests)
@@ -327,11 +370,10 @@ describeIfDb2('quest race guards (DB)', () => {
         maxCompletions: 5,
       })
       .returning();
-    const [anyAvatar] = await db.select({ id: avatars.id }).from(avatars).limit(1);
     try {
       const [subA] = await db
         .insert(questSubmissions)
-        .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'approved' })
+        .values({ questId: quest.id, avatarId: fixtureAvatarId, status: 'approved' })
         .returning();
       // The accept route/action predicate: any non-rejected row blocks.
       const blocking = await db
@@ -340,7 +382,7 @@ describeIfDb2('quest race guards (DB)', () => {
         .where(
           and(
             eq(questSubmissions.questId, quest.id),
-            eq(questSubmissions.avatarId, anyAvatar.id),
+            eq(questSubmissions.avatarId, fixtureAvatarId),
             sql`${questSubmissions.status} <> 'rejected'`,
           ),
         );
@@ -350,14 +392,14 @@ describeIfDb2('quest race guards (DB)', () => {
       // DIFFERENT submission — is refused by quest_rewards_avatar_quest_unique.
       const [subB] = await db
         .insert(questSubmissions)
-        .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'rejected' })
+        .values({ questId: quest.id, avatarId: fixtureAvatarId, status: 'rejected' })
         .returning();
       await db.insert(questRewards).values({
-        submissionId: subA.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1,
+        submissionId: subA.id, avatarId: fixtureAvatarId, questId: quest.id, tokensAwarded: 1,
       });
       const dup = await db
         .insert(questRewards)
-        .values({ submissionId: subB.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1 })
+        .values({ submissionId: subB.id, avatarId: fixtureAvatarId, questId: quest.id, tokensAwarded: 1 })
         .then(() => 'ok')
         .catch((e: { code?: string; cause?: { code?: string } }) =>
           e?.code === '23505' || e?.cause?.code === '23505' ? 'dup' : Promise.reject(e),

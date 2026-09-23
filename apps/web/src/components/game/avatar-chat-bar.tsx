@@ -404,14 +404,24 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
     >
       {/* Expanded chat area */}
       {expanded && (
-        <div className={'w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200'
-          + (tableSurface ? ' flex max-h-[min(44vh,300px)] min-h-0 flex-col' : '')}>
+        <div
+          className="w-full mb-2 claw-panel !p-0 flex min-h-0 flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200"
+          style={{
+            // World: reserve the 44px toggle, 8px gap, 12px bottom padding,
+            // and 16px top clearance. Only the message region shrinks.
+            // Table: preserve its 300px ceiling, but reserve actual viewport
+            // space rather than 44vh, which cannot fit all controls in landscape.
+            maxHeight: tableSurface
+              ? 'min(300px, calc(100dvh - max(70px, calc(env(safe-area-inset-top) + 58px)) - max(12px, env(safe-area-inset-bottom)) - 8px))'
+              : 'calc(100dvh - 80px - env(safe-area-inset-top))',
+          }}
+        >
           {/* Chat header */}
-          <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
+          <div className="flex shrink-0 items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
             <AgentIcon size={22} />
-            <span className="text-white font-bold text-sm">{agentLabel}</span>
+            <span className="min-w-0 truncate text-white font-bold text-sm">{agentLabel}</span>
             {isDirectiveMode && (
-              <span className="flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider bg-violet-500/25 text-violet-100 border border-violet-300/40">
+              <span className="flex shrink-0 items-center gap-1 pl-1.5 pr-1 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider bg-violet-500/25 text-violet-100 border border-violet-300/40">
                 Directing
                 <button
                   type="button"
@@ -419,7 +429,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                   disabled={loading}
                   aria-label="Clear directive — resume free exploration"
                   title="Clear directive"
-                  className="inline-flex items-center justify-center w-5 h-5 rounded-full text-violet-100/90 hover:bg-violet-400/30 hover:text-white disabled:opacity-40 transition-colors"
+                  className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-violet-100/90 hover:bg-violet-400/30 hover:text-white disabled:opacity-40 transition-colors"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
                     <path d="M18 6 6 18M6 6l12 12" />
@@ -427,7 +437,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                 </button>
               </span>
             )}
-            <span className="text-white/45 text-xs ml-auto font-mono">
+            <span className="min-w-0 truncate text-white/45 text-xs ml-auto font-mono">
               {isDirectiveMode
                 ? 'autonomous'
                 : knowledgeTopics.length > 0
@@ -451,7 +461,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
               local avatar (api.sendAvatarChat path) since agentConnected is
               now false. The button opens the existing connect modal. */}
           {sessionEnded && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/15 border-b border-amber-400/30">
+            <div className="flex shrink-0 items-center gap-2 px-3 py-2 bg-amber-500/15 border-b border-amber-400/30">
               <span className="text-amber-300 text-sm leading-none">⚠️</span>
               <span className="text-amber-100/90 text-xs font-medium flex-1">
                 Agent session ended — reconnect your agent.
@@ -462,7 +472,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                   setSessionEnded(false);
                   setAgentConnectModalOpen(true, 'connect');
                 }}
-                className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-amber-500/25 hover:bg-amber-500/40 text-amber-50 border border-amber-300/40 transition-colors shrink-0"
+                className="min-h-11 min-w-11 px-2.5 py-1 rounded-full text-[11px] font-mono bg-amber-500/25 hover:bg-amber-500/40 text-amber-50 border border-amber-300/40 transition-colors shrink-0"
               >
                 Reconnect
               </button>
@@ -476,7 +486,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
               session-ended banner is already showing the same reconnect CTA.
               Light tokens only on the dark .claw-panel. */}
           {pairedNoBearer && !sessionEnded && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-cyan-500/10 border-b border-cyan-400/20">
+            <div className="flex shrink-0 items-center gap-2 px-3 py-2 bg-cyan-500/10 border-b border-cyan-400/20">
               <span className="text-cyan-200 text-sm leading-none">💬</span>
               <span className="text-cyan-100/90 text-xs font-medium flex-1">
                 Chatting with {agentLabel}. Reconnect your agent to chat as it.
@@ -484,7 +494,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
               <button
                 type="button"
                 onClick={() => setAgentConnectModalOpen(true, 'connect')}
-                className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-50 border border-cyan-300/30 transition-colors shrink-0"
+                className="min-h-11 min-w-11 px-2.5 py-1 rounded-full text-[11px] font-mono bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-50 border border-cyan-300/30 transition-colors shrink-0"
               >
                 Reconnect
               </button>
@@ -492,7 +502,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
           )}
 
           {/* Messages */}
-          <div className={(tableSurface ? 'min-h-0 flex-1' : 'max-h-64') + ' overflow-y-auto px-3 py-2 space-y-2'}>
+          <div className={'min-h-0 flex-1 overflow-y-auto px-3 py-2 space-y-2' + (tableSurface ? '' : ' max-h-64')}>
             {messages.length === 0 && (
               <p className="text-cyan-300/40 text-xs text-center py-4 font-mono uppercase tracking-[0.2em]">
                 {isDirectiveMode ? `Direct ${agentLabel}…` : `Say something to ${agentLabel}…`}
@@ -517,7 +527,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
-                    className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm ${
+                    className={`max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-1.5 text-sm ${
                       msg.role === 'user'
                         ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
                         : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
@@ -541,7 +551,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
           </div>
 
           {/* Input */}
-          <div className="px-3 py-2 border-t border-cyan-500/15">
+          <div className="shrink-0 px-3 py-2 border-t border-cyan-500/15">
             <div className="flex gap-2">
               <input
                 ref={inputRef}
@@ -550,7 +560,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={isDirectiveMode ? 'Direct your agent…' : `Talk to ${agentLabel}…`}
-                className="min-h-11 flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
+                className="min-h-11 min-w-0 flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
                 disabled={loading}
               />
               <button
@@ -568,7 +578,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
       {/* Toggle pill */}
       <button
         onClick={toggleExpand}
-        className={'group flex min-h-11 items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5'
+        className={'group flex min-h-11 shrink-0 items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5'
           + (tableSurface && expanded ? ' hidden' : '')}
       >
         <AgentIcon size={26} />
