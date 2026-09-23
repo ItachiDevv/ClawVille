@@ -201,6 +201,49 @@ describe('per-reply action budgets', () => {
 });
 
 describe('ephemeral action persistence', () => {
+  it('forwards each pending-item reply without reconstructing prior choices or retaining vendor questions', async () => {
+    // A scripted model proves prompt wiring and parameter preservation only.
+    // Actual option accumulation belongs to the operator tests and model probe.
+    const privateReply = 'PrivateVendorItem-771: PrivateBread-991, PrivateSauce-661. Add this to your cart?';
+    const cartAdd = mock(async (_params: Record<string, unknown>) => ({
+      ok: false, failure: 'doordash_needs_choices', reason: privateReply,
+      detail: privateReply, durationMs: 0,
+    }));
+    const cartAction = doorDashActions.find(a => a.name === 'DOORDASH_CART')!;
+    const h = harness('', [cartAction], true);
+    const turns = [
+      ["I'll have the Italian", '[ACTION: DOORDASH_CART(op=add, itemName=Italian)]'],
+      ['white bread', '[ACTION: DOORDASH_CART(op=add, choices=white bread)]'],
+      ['actually wheat', '[ACTION: DOORDASH_CART(op=add, choices=actually wheat)]'],
+      ['make it large', '[ACTION: DOORDASH_CART(op=add, choices=make it large)]'],
+      ['no mayo', '[ACTION: DOORDASH_CART(op=add, choices=no mayo)]'],
+      ['add it', '[ACTION: DOORDASH_CART(op=add, choices=add it)]'],
+      ['skip that item', '[ACTION: DOORDASH_CART(op=add, choices=skip that item)]'],
+      ['keep these choices', '[ACTION: DOORDASH_CART(op=add, choices=keep these choices)]'],
+    ];
+    for (const [phrase, reply] of turns) {
+      h.generateText.mockImplementation(async () => ({ text: reply! }));
+      const response = await h.runtime.processMessage(phrase!, { state: { services: { doordash: { cartAdd } } } });
+      expect(response.content).toContain('PrivateVendorItem-771');
+    }
+    expect(cartAdd.mock.calls.map(([params]) => params)).toEqual(turns.map(([phrase], index) => ({
+      storeId: undefined, menuId: undefined, itemId: undefined, cartUuid: undefined, quantity: undefined,
+      itemName: index === 0 ? 'Italian' : undefined, choices: index === 0 ? undefined : phrase,
+    })));
+    for (const [prompt] of h.generateText.mock.calls) {
+      expect(prompt).toContain(cartAction.description);
+      for (const phrase of cartAction.similes ?? []) expect(prompt).toContain(phrase);
+      expect(prompt).not.toContain('DOORDASH_SUBMIT');
+      expect(prompt).not.toContain('PrivateVendorItem-771');
+      expect(prompt).not.toContain('PrivateBread-991');
+      expect(prompt).not.toContain('PrivateSauce-661');
+    }
+    expect(h.memories.filter(memory => memory.entityId === AGENT_ID).map(memory => memory.content.text))
+      .toEqual(turns.map(() => '[Action output omitted]'));
+    expect(JSON.stringify(h.memories)).not.toContain('PrivateVendorItem-771');
+    expect(h.generateText.mock.calls.at(-1)![0]).toContain('actually wheat');
+  });
+
   it('dispatches conversational menu follow-ups without putting vendor results into the next prompt', async () => {
     // Scripted model responses prove prompt wiring, dispatch, and retention.
     // They do not prove that a real model understands these user phrases.

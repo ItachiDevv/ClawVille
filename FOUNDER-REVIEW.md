@@ -14,12 +14,20 @@
 
 ## How this file works (rules for every session)
 
+### September 23: DoorDash item choices across replies
+
+- **Session:** Codex `dd-item-choices`, 2026-09-23. Local acceptance precedes staging and normal production promotion; exact deployment evidence belongs in `deploy-status.md`.
+- **Where:** owner avatar chat at `https://staging.clawville.world/game`, then `https://clawville.world/game` after promotion.
+- **Look at:** select an item, answer each choice separately, correct the bread, then request an optional change such as "no mayo." Review the choices before "add it." "Skip that item" cancels only the unfinished item.
+- **Feedback wanted:** identify unnecessary repeated questions, unsupported wording, or an incorrect choice summary.
+- **Evidence boundary:** the model test uses synthetic options and no vendor mutation. Human-only payment confirmation remains unchanged. No new paid order occurs.
+
 ### September 23: DoorDash chat-to-menu language
 
 - **Session:** Codex `dd-natural-chat`, 2026-09-23. Production API and web report `0b88e5c2` at 09:05 UTC. Protocol 71 staging checks pass, including eight viewport sizes for both chat layouts. Production browser checks at 09:05-09:09 UTC confirm the world, guest Nori reply, and Close behavior. The eight viewport checks remain staging evidence; signed-in production DoorDash chat and a new paid order are not tested.
 - **Where:** production owner avatar chat at `https://clawville.world/game`.
 - **Look at:** ask for pizza, select "the second one," then ask "what drinks do they have?" Restaurant results use numbers; menu items use separate lines. Try an explicit item choice such as "no mayo."
-- **Feedback wanted:** identify replies that sound unnatural or require repeated restaurant names. Required item choices still need a complete set in one reply.
+- **Feedback wanted:** identify replies that sound unnatural or require repeated restaurant names. The separate item-choice follow-up above addresses choices across replies.
 - **Payment evidence:** the founder confirms the earlier paid order succeeded. This change places no new order and preserves human confirmation and tip requirements.
 - **Device limit:** browser emulation cannot establish physical iPad safe areas. A physical-device review remains open.
 - **Landscape check:** a staged 844x390 check exposed a clipped header. The follow-up limits message height and keeps input and Close accessible in world and table chat. Review a long menu on a phone in landscape.

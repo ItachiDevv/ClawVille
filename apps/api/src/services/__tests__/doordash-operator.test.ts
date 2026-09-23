@@ -148,8 +148,8 @@ describe('resolveDoordashOperator: frozen identity gate', () => {
 });
 
 describe('Phase 1 DoorDash bridge', () => {
-  function bridge() {
-    return operator.buildDoordashBridge(operator.resolveDoordashOperator(human)!, 'raw founder turn');
+  function bridge(requesterTurn = 'raw founder turn') {
+    return operator.buildDoordashBridge(operator.resolveDoordashOperator(human)!, requesterTurn);
   }
 
   test('dispatches the five read-only operations and unwraps list envelopes', async () => {
@@ -253,8 +253,40 @@ describe('Phase 1 DoorDash bridge', () => {
     runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, data: liveCart, durationMs: 1 } as never);
     await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: 2 });
     expect(runMock.mock.calls.at(-1)).toEqual(['cart-add', ['473827', '598614', 'i_57160719', '2']]);
-    await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: 1, cartUuid: 'cart-1' });
-    expect(runMock.mock.calls.at(-1)).toEqual(['cart-add', ['473827', '598614', 'i_57160719', '1', 'cart-1']]);
+    await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_57160719', quantity: 1, cartUuid: liveCart.cart_uuid });
+    expect(runMock.mock.calls.at(-1)).toEqual(['cart-add', ['473827', '598614', 'i_57160719', '1', liveCart.cart_uuid]]);
+    const calls = runMock.mock.calls.length;
+    expect(await bridge().cartAdd({ storeId: '473827', menuId: '598614', itemId: 'i_57160719', cartUuid: 'another-cart' })).toMatchObject({ ok: false });
+    expect(runMock.mock.calls).toHaveLength(calls);
+  });
+
+  test('a different quantity on review confirmation requires another review before cart mutation', async () => {
+    rememberDoordashContext('founder', {
+      storeId: 'store-A', menuId: 'menu-A',
+      lastItems: [{ itemId: 'sandwich', name: 'Custom Sandwich', hasModifiers: true, hasRequired: true }],
+    });
+    const details = { item: { item_id: 'sandwich', extras: [
+      { extra_id: 'bread', title: 'Bread', min_num_options: 1, max_num_options: 1,
+        options: [{ option_id: 'classic', name: 'Classic Roll' }] },
+      { extra_id: 'cheese', title: 'Cheese', min_num_options: 1, max_num_options: 1,
+        options: [{ option_id: 'provolone', name: 'Provolone' }] },
+    ] } };
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve(op === 'item-options'
+      ? { ok: true, data: details, durationMs: 1 }
+      : { ok: true, data: liveCart, durationMs: 1 })) as never);
+    await bridge().cartAdd({ itemName: 'Custom Sandwich', quantity: 1 });
+    await bridge().cartAdd({ choices: 'Classic Roll' });
+    await bridge().cartAdd({ choices: 'Provolone' });
+    const changed = await bridge('add it').cartAdd({ choices: 'add it', quantity: 20 });
+    expect(changed.ok).toBe(false);
+    expect(!changed.ok && changed.reason).toContain('20 × Custom Sandwich');
+    expect(runMock.mock.calls.filter(([op]) => op === 'cart-add-options' || op === 'cart-add')).toHaveLength(0);
+    expect(recallDoordashContext('founder').pendingItem?.quantity).toBe(20);
+    expect(recallDoordashContext('founder').pendingItem?.stage).toBe('review');
+    expect((await bridge('add it').cartAdd({ choices: 'add it' })).ok).toBe(true);
+    const writes = runMock.mock.calls.filter(([op]) => op === 'cart-add-options');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]![1][3]).toBe('20');
   });
 
   test('cart show and remove dispatch the line id, and the view keeps cents not dollars', async () => {
@@ -302,12 +334,15 @@ describe('Phase 1 DoorDash bridge', () => {
     const first = await bridge().cartAdd({ itemName: 'custom italian hoagie', quantity: 1 });
     expect(first.ok).toBe(false);
     expect(!first.ok && first.failure).toBe('doordash_needs_choices');
-    expect(!first.ok && first.reason).toContain('Select your bread (pick 1): Classic Roll, Shorti Roll');
+    expect(!first.ok && first.reason).toContain('Select your bread: choose 1 from Classic Roll, Shorti Roll');
     expect(runMock.mock.calls.map((c) => c[0])).toEqual(['item-options']);
 
     // Turn 2: only the picks. The waiting item is used; the ids come from DoorDash, not the model.
     const second = await bridge().cartAdd({ choices: 'shorti roll, provolone', quantity: 1 });
-    expect(second.ok && second.data.addedChoices).toEqual(['Shorti Roll', 'Provolone']);
+    expect(!second.ok && second.reason).toContain('Add this to your cart?');
+    expect(runMock.mock.calls.map((c) => c[0])).toEqual(['item-options', 'item-options']);
+    const third = await bridge('add it').cartAdd({ choices: 'add it' });
+    expect(third.ok && third.data.addedChoices).toEqual(['Shorti Roll', 'Provolone']);
     const call = runMock.mock.calls.at(-1)!;
     expect(call[0]).toBe('cart-add-options');
     expect((call[1] as string[]).slice(0, 4)).toEqual(['897466', '15975751', 'i_19616733360', '1']);

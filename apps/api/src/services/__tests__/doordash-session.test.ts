@@ -48,6 +48,32 @@ describe('the in-flight ordering context', () => {
     expect(recallDoordashContext('founder').namedStores).toHaveLength(30);
   });
 
+  test('copies draft choices on write and read, and expires them with the context', () => {
+    const pending = {
+      storeId: 'store', menuId: 'menu', itemId: 'item', name: 'Sandwich', quantity: 2,
+      stage: 'choices' as const,
+      choices: { groups: [{ groupId: 'bread', optionIds: ['wheat'], signature: 'digest' }], blockedGroupIds: ['cheese'] },
+    };
+    rememberDoordashContext('founder', { pendingItem: pending });
+    pending.choices.groups[0]!.optionIds.push('white');
+    const recalled = recallDoordashContext('founder').pendingItem!;
+    expect(recalled.choices.groups[0]!.optionIds).toEqual(['wheat']);
+    recalled.choices.blockedGroupIds.length = 0;
+    expect(recallDoordashContext('founder').pendingItem!.choices.blockedGroupIds).toEqual(['cheese']);
+    expect(recallDoordashContext('other').pendingItem).toBeUndefined();
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.now() + 31 * 60_000);
+    try { expect(recallDoordashContext('founder').pendingItem).toBeUndefined(); }
+    finally { clock.mockRestore(); }
+  });
+
+  test('rejects an oversized draft without truncating accepted choices', () => {
+    rememberDoordashContext('founder', { pendingItem: {
+      storeId: 'store', menuId: 'menu', itemId: 'item', name: 'Sandwich', quantity: 1, stage: 'choices',
+      choices: { groups: [{ groupId: 'extras', optionIds: Array.from({ length: 41 }, (_, i) => String(i)), signature: 'digest' }], blockedGroupIds: [] },
+    } });
+    expect(recallDoordashContext('founder').pendingItem).toBeUndefined();
+  });
+
   test('clearing the cart keeps the store the operator was browsing', () => {
     rememberDoordashContext('founder', { storeId: '473827', menuId: '598614', cartUuid: 'cart-1' });
     clearDoordashCart('founder');
