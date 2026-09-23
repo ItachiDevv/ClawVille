@@ -1,6 +1,6 @@
 # DoorDash conversational menu follow-ups
 
-Last Audited: 2026-09-23. Status: implementation and acceptance in progress.
+Last Audited: 2026-09-23. Status: final staging checks pass at `19fbd1e7`; production promotion and physical iPad acceptance remain pending.
 
 ## Founder request
 
@@ -46,7 +46,19 @@ Both CI runs for `4ff18b31` pass all four gates, including the PostgreSQL quest 
 
 A disposable public agent enters staging through the normal browser invitation flow. Its join-created avatar initially has no hosted runtime; the supported customization route provisions that runtime. A fresh live chat reply contains two lines, and the rendered bubble uses `white-space: pre-wrap` and `overflow-wrap: break-word`. No DOM content or application state is injected.
 
-The first eight-viewport browser pass finds a real landscape defect: at 844x390 the chat panel begins at y=-81 with the reconnect notice visible. Other required dimensions fit, and input/Send/Close measure 44px high. The final correction limits the panel to the available viewport, lets only the message area shrink, and retains accessible controls. Browser recheck remains required. Physical iPad safe-area acceptance remains open.
+The first eight-viewport browser pass finds a real landscape defect: at 844x390 the chat panel begins at y=-81 with the reconnect notice visible. Other required dimensions fit, and input/Send/Close measure 44px high. The final correction limits the panel to the available viewport and lets only the message area shrink.
+
+Final staging API `yvtwz7snaghxifkjhyxknffu-084227651637` and web `ju0n3sddhll3cuhbrspt4muy-083035815484` report `SOURCE_COMMIT=19fbd1e741b2bf8f6db2def0291c3369dfbb4e2c`. The earlier API container is absent. Stable-container onboarding passes 14/14, and the signed Hatcher harness passes 14/14. The temporary signer is absent from both deployment configuration and runtime configuration; the temporary key is deleted. The final hosted probe passes 16/16. The final hosted consumption probe passes 125/125, including canary consumption and fixture disposal. Evidence: `onboarding-final.log`, `hatcher-final.log`, `hosted-final.log`, and `hosted-consumption-final.log` in the local evidence directory.
+
+The first final onboarding attempt occurs during overlap between API containers `19fbd1e7` and `4ff18b31`. It passes five checks, then returns 403 on appearance PATCH; signed cleanup also fails. Source review identifies two possible overlap mechanisms: public lazy restore removes ledger authority, and challenge nonces remain process-local. The logs do not prove individual request routing. The retry after old-container removal passes the appearance check and all fourteen checks. This is an operational acceptance failure, not evidence for changing either authorization gate.
+
+Read-only inspection identifies one exact orphan from that failed attempt. An authorized compare-and-set expires only bot `d4938ba8-3f1a-4672-9e1b-e98c9d53fd37`, clears its bearer hash, and disables autonomy. No rows are deleted. After the signer-free API replacement, readback proves the same fixture remains expired with no bearer hash or autonomy enrollment. Its public active entry and world body are absent; session status returns HTTP 410. Evidence: `orphan-inspection-result.log`, `orphan-cas-result.log`, and `orphan-post-restart-verification.log`.
+
+The final world-chat browser pass uses an actual eight-line reply and the actual reconnect notice at all eight required phone/tablet orientations. The panel fits, and input/Send/Close remain 44px high. At 844x390, the corrected panel spans y=16 to y=326. Table chat also passes all eight orientations with an actual eight-line reply and reconnect notice. Its landscape panel spans y=70 to y=370. Collapse, Reconnect, input, and Send measure 44px high. At 844x390, the message area has a 111px client height and 338px content height; its bottom scroll position is 227px. These browser checks do not establish physical iPad safe-area behavior or sustained device FPS.
+
+The table message area scrolls from 227px back to 0px through normal wheel input. Collapse dismisses the table panel, and Close dismisses the world panel. Browser viewport overrides are cleared. The disposable browser account logs out through the normal UI; signed disconnect returns `disconnected:true` and public session/body absence. Its local credential file is deleted. Durable fixture account history remains; no account, avatar, or wallet rows are deleted.
+
+Production remains `7473e809833b2c399985c9042ec7f69f7a827fb1`; this natural-chat change is not yet promoted. Schema remains synced. The remaining release acceptance work is production promotion with production verification. Physical iPad safe-area acceptance remains separate and pending.
 
 This change does not establish a new paid order, alter vendor checkout timing, or provide general natural-language understanding for arbitrary instructions. Required item choices still request a complete set in one message; independent partial-choice accumulation needs explicit correction and conflict semantics.
 

@@ -14,6 +14,22 @@
 
 ## CURRENT STAGING / PROD STATE
 
+Last Audited: 2026-09-23. Staging API and web serve `19fbd1e741b2bf8f6db2def0291c3369dfbb4e2c`. Production remains `7473e809833b2c399985c9042ec7f69f7a827fb1` from the prior verified release. **SCHEMA:** `synced`. The natural-chat change has not reached production.
+
+Final staging containers are API `yvtwz7snaghxifkjhyxknffu-084227651637` and web `ju0n3sddhll3cuhbrspt4muy-083035815484`; both report the exact `19fbd1e7` source. The old API container is absent. Stable onboarding passes 14/14, signed Hatcher passes 14/14, the hosted default probe passes 16/16, and the hosted consumption probe passes 125/125 including the canary. The temporary signer is absent from deployment and runtime configuration, and its temporary key is deleted.
+
+World avatar chat passes all eight required phone/tablet orientations with an actual eight-line reply and reconnect notice. Input, Send, and Close measure 44px high. The 844x390 panel now spans y=16 to y=326; the prior panel began at y=-81. Table chat also passes all eight orientations with the actual eight-line reply and reconnect notice. Its landscape panel spans y=70 to y=370; Collapse, Reconnect, input, and Send measure 44px high. At 844x390, message client/content heights are 111/338px and the bottom scroll position is 227px. Physical iPad safe areas and sustained device FPS remain outside these emulation results.
+
+One final onboarding attempt fails during old/new API overlap: appearance PATCH returns 403 and signed fixture cleanup fails. After old-container removal, all fourteen onboarding checks pass. Source supports cross-container public-session demotion and process-local challenge nonces as possible mechanisms; the log does not prove request routing. An authorized exact-row compare-and-set expires the identified orphan and clears its bearer hash. Post-restart readback proves terminal state, no public session/body, and HTTP 410. No fixture rows are deleted.
+
+Seven synthetic language cases pass through actual `processMessage`, action handlers, and the hosted inference route. This proves bounded language dispatch, not live vendor inventory or arbitrary language comprehension. Earlier model turns take about 61 seconds before route failover; no provider setting changes or faster-response claim applies. No new paid order occurs. Final evidence and the partial-choice follow-up remain in `docs/audits/2026-09-23-doordash-natural-chat.md`.
+
+**PARITY:** human world/table chat preserves the shared reply layout; owner-bound connected/hosted preparation uses the same action bridge. Protocol 71 supplies generic scroll guidance. Human-only payment authorization remains unchanged. Remaining release work: production promotion and production verification. Physical iPad safe-area acceptance remains separate and pending.
+
+### Historical production acceptance, 2026-09-23 05:08 UTC
+
+The following checkpoint predates the `19fbd1e7` natural-chat staging acceptance above. Its staging SHAs and pending work describe that earlier checkpoint.
+
 DoorDash natural-chat follow-up, 2026-09-23: the next staging push adds contextual restaurant references, clearer menu lists, conservative ingredient exclusions, and protocol 70 formatting guidance. Local implementation and acceptance remain in progress. The application SHAs below remain the last verified live state until the new containers pass acceptance. No new paid order occurs. **SCHEMA:** `synced`.
 
 Production API and web serve `7473e809833b2c399985c9042ec7f69f7a827fb1`, verified at 2026-09-23 05:08 UTC. PR #296 merged normally at 04:59:45 UTC after all four required checks passed on `ecea0354` (run `35820414880`). Production workflow [35820576674](https://github.com/ItachiDevv/ClawVille/actions/runs/35820576674) passed all four gates, migration, and deployment. Both actual container `SOURCE_COMMIT` values match, old containers are absent, and API health reports the same SHA with status `ok`.
@@ -31,6 +47,8 @@ The final documentation-only commit follows the verified production merge. Deplo
 **PARITY:** human Nori/appearance UI and connected/hosted actions use the same bound-avatar services. Staging verifies real Nori settlement and no extra appearance settlement.
 
 ### Historical deployment checkpoints
+
+- **2026-09-23 (Codex final natural-chat staging acceptance, application `19fbd1e7`):** contextual menus, exact visible restaurant references, conservative exclusions, and protocol 71 reply formatting pass local and staging checks. Stable onboarding and signed Hatcher each pass 14/14; hosted probes pass 16/16 and 125/125 with canary consumption. World chat passes eight viewports with an actual eight-line reply and reconnect notice; 844x390 panel bounds are y=16..326 and controls remain 44px. Table chat also passes all eight orientations with the reply and notice; landscape bounds are y=70..370 with 44px controls. The initial overlapping-container gate fails appearance authorization and cleanup; the stable retry passes. Exact orphan expiration and post-restart absence/410 checks pass. Temporary signer configuration and key are removed. Production stays `7473e809`; no new paid order. **SCHEMA:** `synced`. **PARITY:** shared human/agent preparation and reply presentation; human-only submit remains unchanged.
 
 - **2026-09-23 (Codex chat viewport follow-up):** the live multiline reply renders correctly, but the 844x390 chat panel starts 81px above the viewport with a reconnect notice. The bounded flex layout now reserves room for the header, input, and Close while the message list scrolls. Protocol 71 documents this generic behavior without exposing DoorDash. Independent source review and 30 protocol tests pass; final viewport and staging harness acceptance remain required. Both CI runs for `4ff18b31` pass, including the repaired PostgreSQL quest tests. **SCHEMA:** `synced`. **PARITY:** world and table human/agent chat use the same component and control sizes.
 

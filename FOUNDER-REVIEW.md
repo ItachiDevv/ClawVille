@@ -16,7 +16,7 @@
 
 ### September 23: DoorDash chat-to-menu language
 
-- **Session:** Codex `dd-natural-chat`, 2026-09-23. Staging acceptance precedes production promotion.
+- **Session:** Codex `dd-natural-chat`, 2026-09-23. Protocol 71 staging checks pass, including eight viewport sizes for both chat layouts.
 - **Where:** owner avatar chat at `/game`, on staging first, then production after promotion.
 - **Look at:** ask for pizza, select "the second one," then ask "what drinks do they have?" Restaurant results use numbers; menu items use separate lines. Try an explicit item choice such as "no mayo."
 - **Feedback wanted:** identify replies that sound unnatural or require repeated restaurant names. Required item choices still need a complete set in one reply.
