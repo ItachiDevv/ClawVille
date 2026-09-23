@@ -202,7 +202,7 @@ export const doordashSearchAction: Action = {
 
 export const doordashMenuAction: Action = {
   name: 'DOORDASH_MENU',
-  description: 'Show a DoorDash menu or narrow it to a food or category. For "their menu", "what do they have?", or "what drinks do they have?", omit storeName and storeId: the server remembers the selected place. If the user chooses a restaurant by number, pass their reference as storeName, such as "the second one" or "number 8"; never invent an ID or restaurant name. For an explicit restaurant name, pass that name. Extract only the food or category into query: "what drinks do they have?" means query="drinks". Do not search for pronouns or restaurant numbers. The server asks when the place is unclear.',
+  description: 'Show a DoorDash menu or narrow it to a food or category. For "their menu", "what do they have?", or "what drinks do they have?", omit storeName and storeId: the server remembers the selected place. If the user chooses a restaurant by number, pass their reference as storeName, such as "the second one" or "number 8"; never invent an ID or restaurant name. For an explicit restaurant name, pass that name. Extract only the food or category into query: "what drinks do they have?" means query="drinks". For the full, entire, or whole menu, omit query; "full menu" is not a food filter. Do not search for pronouns or restaurant numbers. The server asks when the place is unclear.',
   similes: [
     'what do they have',
     'show me the menu',
@@ -210,12 +210,13 @@ export const doordashMenuAction: Action = {
     'what can i get from there',
     'their menu',
     'what drinks do they have',
+    'show me their full menu',
     'the second one',
     'number 8',
   ],
   parameters: [
     { name: 'storeName', description: 'Explicit place name or restaurant reference such as "the second one". Omit for "their menu" or a follow-up about the selected place.', required: false, schema: { type: 'string' } },
-    { name: 'query', description: 'Only the optional food or category, such as "drinks", "hoagie", or "pizza"; never the whole request.', required: false, schema: { type: 'string' } },
+    { name: 'query', description: 'Only the optional food or category, such as "drinks", "hoagie", or "pizza"; never the whole request. Omit for the full, entire, or whole menu.', required: false, schema: { type: 'string' } },
     { name: 'storeId', description: 'Store ID only if you have one; otherwise leave it out', required: false, schema: { type: 'string' } },
   ],
   available: (state) => Boolean((state as any)?.services?.doordash),
@@ -228,7 +229,12 @@ export const doordashMenuAction: Action = {
     // in this model's memory: DoorDash output is never persisted there.
     const storeId = text(message, 'storeId');
     const storeName = text(message, 'storeName');
-    const query = text(message, 'query').slice(0, 60);
+    const rawQuery = text(message, 'query');
+    // Models sometimes emit "full menu" as the filter despite the description.
+    // Clear only these explicit general-menu phrases, before truncation, so
+    // named foods such as "whole wheat" and "full breakfast" stay unchanged.
+    const query = /^(?:(?:the|their)\s+)?(?:(?:full|entire|whole)\s+)?menu$/i.test(rawQuery)
+      ? '' : rawQuery.slice(0, 60);
     return lookup(() => bridge.menu({
       storeId: storeId || undefined, storeName: storeName || undefined, query: query || undefined,
     }), (data) => {

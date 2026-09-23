@@ -139,6 +139,27 @@ describe('read-only DoorDash actions', () => {
     expect(result.text).not.toContain('[ACTION:');
   });
 
+  test.each(['menu', 'full menu', 'entire menu', 'whole menu', 'the menu', 'their menu', 'the full menu', 'their whole menu', '  THE   ENTIRE MENU  '])('an explicit general menu request clears the food filter: %s', async (query) => {
+    const menu = mock(async (request: { query?: string }) => ({ ok: true, durationMs: 0, data: {
+      menu_id: 'private-menu-id', storeName: 'Actual Place',
+      items: request.query ? [] : [{ item_id: 'private-item-id', name: 'Cheese Pizza' }, { item_id: 'tea', name: 'Iced Tea' }],
+      privateExtra: 'private-vendor-field',
+    } }));
+    const result = await doordashMenuAction.handler(null, { parameters: { storeName: 'the second one', query } }, { services: { doordash: { menu } } });
+    expect(menu.mock.calls).toEqual([[{ storeId: undefined, storeName: 'the second one', query: undefined }]]);
+    expect(result).toMatchObject({ success: true, persist: false, replacesReply: true });
+    expect(result.text).toContain('- Cheese Pizza\n- Iced Tea');
+    expect(result.text).not.toContain('private-');
+    expect(result.data).toBeUndefined();
+  });
+
+  test.each(['drinks', 'pizza', 'whole wheat', 'full breakfast', 'entire chicken', 'kids menu', 'menu special'])('a specific food filter remains unchanged: %s', async (query) => {
+    const menu = mock(async () => ({ ok: true, durationMs: 0, data: { menu_id: 'm', items: [] } }));
+    const result = await doordashMenuAction.handler(null, { parameters: { query } }, { services: { doordash: { menu } } });
+    expect(menu.mock.calls).toEqual([[{ storeId: undefined, storeName: undefined, query }]]);
+    expect(result).toMatchObject({ persist: false, replacesReply: true });
+  });
+
   test('missing or non-string required parameters never reach the bridge', async () => {
     // Only REQUIRED parameters: the order id became optional on 2026-09-18,
     // because the model can never see an order id across turns.

@@ -50,8 +50,10 @@ try {
   const { ElizaRuntime } = await import('../../../../packages/agent-runtime/src/eliza-runtime');
   const { clawvillePlugin } = await import('../../../../packages/agent-runtime/src/plugins/clawville-plugin');
   const { createOpenAITextPlugin } = await import('../../../../packages/agent-runtime/src/plugins/openai-text-provider');
-  const { buildEndpointsFromEnv, buildRouteTableFromEnv } = await import('../../../../packages/agent-runtime/src/inference/inference-config');
+  const { buildEndpointsFromEnv, buildRouteTableFromEnv, getInferenceRouter } = await import('../../../../packages/agent-runtime/src/inference/inference-config');
   const { doordashSearchAction, doordashMenuAction } = await import('../../../../packages/agent-runtime/src/actions/doordash');
+  const { resolveStoreReference } = await import('../../src/services/doordash-session');
+  type FixtureContext = Parameters<typeof resolveStoreReference>[0];
   const oldActions = clawvillePlugin.actions;
   const oldProviders = clawvillePlugin.providers;
   restorePlugin = () => {
@@ -75,19 +77,53 @@ try {
     perCallDeadlineMs: PER_CALL_DEADLINE_MS, overallDeadlineMs: OVERALL_DEADLINE_MS });
   phase = 'runtime-preparation';
 
-  type Captured = { action: 'SEARCH' | 'MENU'; params: Record<string, unknown> };
+  type Captured = { action: 'SEARCH' | 'MENU'; params: Record<string, unknown>;
+    resolution?: { kind: string; targetsSecondFixture: boolean } };
   const captured: Captured[] = [];
+  let fixtureContext: FixtureContext = { lastStores: [] };
+  const normalize = (value: unknown) => typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, ' ') : '';
+  const safeParameterValue = (key: string, value: unknown) => {
+    const normalized = normalize(value);
+    if (!normalized) return 'omitted';
+    const known = key === 'query'
+      ? ['pizza', 'taco', 'tacos', 'drink', 'drinks', 'beverage', 'beverages', 'hoagie', 'hoagies', 'food', 'full menu', 'menu', 'all', 'everything']
+      : key === 'storeName'
+        ? ['the second one', 'second one', 'second', '2', '2nd', 'number 2', 'they', 'them', 'their', 'their menu', 'there', 'it', 'that', 'that one', 'that place', 'the selected restaurant', 'wawa']
+        : ['fixture-a', 'fixture-b'];
+    return known.includes(normalized) ? normalized : 'other-value-redacted';
+  };
+  const classify = (entry: Captured) => ({
+    action: entry.action,
+    suppliedKeys: ['storeName', 'storeId', 'query'].filter((key) => Boolean(entry.params[key])),
+    storeName: safeParameterValue('storeName', entry.params.storeName),
+    storeId: safeParameterValue('storeId', entry.params.storeId),
+    query: safeParameterValue('query', entry.params.query),
+    ...(entry.resolution ? { referenceResolution: entry.resolution } : {}),
+  });
   const memories: Array<{ roomId: string; entityId: string; content: { text: string }; createdAt?: number }> = [];
   const bridge = {
     search: async (params: { query: string }) => {
       captured.push({ action: 'SEARCH', params });
+      fixtureContext = { lastStores: [
+        { storeId: 'fixture-a', storeName: 'Synthetic Orchard Cafe' },
+        { storeId: 'fixture-b', storeName: 'Synthetic Harbor Pizza' },
+      ] };
       return { ok: true, durationMs: 0, data: { stores: [
         { store_id: 'fixture-a', store_name: 'Synthetic Orchard Cafe' },
         { store_id: 'fixture-b', store_name: 'Synthetic Harbor Pizza' },
       ] } };
     },
     menu: async (params: { storeName?: string; storeId?: string; query?: string }) => {
-      captured.push({ action: 'MENU', params });
+      // Use the production reference resolver on synthetic context. Acceptance
+      // checks the captured target before any fixture selection changes.
+      const reference = resolveStoreReference(fixtureContext, params.storeName ?? '');
+      captured.push({ action: 'MENU', params, resolution: {
+        kind: params.storeId ? 'explicit-id' : reference.kind,
+        targetsSecondFixture: !params.storeId && reference.kind === 'store' && reference.storeId === 'fixture-b',
+      } });
+      if (!params.storeId && reference.kind === 'store') {
+        fixtureContext.menuSelection = { storeId: reference.storeId, storeName: reference.storeName };
+      }
       return { ok: true, durationMs: 0, data: {
         menu_id: 'fixture-menu', storeName: 'Synthetic Harbor Pizza', items: [
           { item_id: 'fixture-item', name: 'Synthetic Orchard Drink' },
@@ -120,27 +156,37 @@ try {
         phase = 'provider-generation';
         providerStartedAt = Date.now();
         report({ phrase: currentPhrase, status: 'provider-start', ...timing() });
+        const router = getInferenceRouter();
+        const usageBefore = new Map(router.usageSnapshot().rows.map((row) => [`${row.route}|${row.endpointId}|${row.model}`, row.calls]));
         const text = await generate({} as never, { ...params, prompt, maxTokens: 350 } as never);
         phase = 'action-dispatch';
-        report({ phrase: currentPhrase, status: 'provider-returned', ...timing() });
+        const servedModels = router.usageSnapshot().rows
+          .filter((row) => row.calls > (usageBefore.get(`${row.route}|${row.endpointId}|${row.model}`) ?? 0))
+          .map((row) => safeModel(row.model));
+        report({ phrase: currentPhrase, status: 'provider-returned', servedModels, ...timing() });
         return { text: String(text) };
       },
     },
   });
-  type Case = { phrase: string; expected: Captured['action'] | null; reset?: boolean; accepts: (params: Record<string, unknown>) => boolean };
+  type Case = { phrase: string; expected: Captured['action'] | null; reset?: boolean; accepts: (entry: Captured) => boolean };
+  // Live diagnostics showed that retaining "the second one" is supported by
+  // the production resolver. Judge the selected restaurant, not one preferred
+  // spelling of the same request. Unknown references and invented IDs fail.
+  const targetsSelectedFixture = (entry: Captured) => !entry.params.storeId
+    && entry.resolution?.kind === 'store' && entry.resolution.targetsSecondFixture;
   const cases: Case[] = [
     { phrase: 'I feel like pizza. Can you find somewhere?', expected: 'SEARCH', reset: true,
-      accepts: (p) => String(p.query).trim().toLowerCase() === 'pizza' },
+      accepts: ({ params: p }) => String(p.query).trim().toLowerCase() === 'pizza' },
     { phrase: 'The second one, please.', expected: 'MENU',
-      accepts: (p) => /^(?:the )?(?:second|2|2nd)(?: one)?$/i.test(String(p.storeName)) && !p.storeId },
+      accepts: targetsSelectedFixture },
     { phrase: 'What drinks do they have?', expected: 'MENU',
-      accepts: (p) => !p.storeName && !p.storeId && /^(drinks?|beverages?)$/i.test(String(p.query)) },
+      accepts: (entry) => targetsSelectedFixture(entry) && /^(drinks?|beverages?)$/i.test(String(entry.params.query)) },
     { phrase: 'Show me their full menu.', expected: 'MENU',
-      accepts: (p) => !p.storeName && !p.storeId && !p.query },
+      accepts: (entry) => targetsSelectedFixture(entry) && !entry.params.query },
     { phrase: 'What hoagies does Wawa have?', expected: 'MENU', reset: true,
-      accepts: (p) => /^wawa$/i.test(String(p.storeName)) && /^hoagies?$/i.test(String(p.query)) && !p.storeId },
+      accepts: ({ params: p }) => /^wawa$/i.test(String(p.storeName)) && /^hoagies?$/i.test(String(p.query)) && !p.storeId },
     { phrase: 'Can we get tacos?', expected: 'SEARCH', reset: true,
-      accepts: (p) => /^tacos?$/i.test(String(p.query)) },
+      accepts: ({ params: p }) => /^tacos?$/i.test(String(p.query)) },
     { phrase: 'Hello, how are you today?', expected: null, reset: true, accepts: () => true },
   ];
   let failures = 0;
@@ -149,15 +195,18 @@ try {
     turnStartedAt = Date.now();
     providerStartedAt = 0;
     phase = 'process-message';
-    if (item.reset) memories.length = 0;
+    if (item.reset) {
+      memories.length = 0;
+      fixtureContext = { lastStores: [] };
+    }
     captured.length = 0;
     callDeadline = setTimeout(() => stop('per-call deadline'), PER_CALL_DEADLINE_MS);
     try {
       await runtime.processMessage(item.phrase, { userId: 'synthetic-probe-user', state: { services: { doordash: bridge } } });
       const pass = item.expected === null ? captured.length === 0
-        : captured.length === 1 && captured[0]!.action === item.expected && item.accepts(captured[0]!.params);
+        : captured.length === 1 && captured[0]!.action === item.expected && item.accepts(captured[0]!);
       if (!pass) failures += 1;
-      report({ phrase: item.phrase, action: captured.map((entry) => entry.action), pass, ...timing() });
+      report({ phrase: item.phrase, action: captured.map((entry) => entry.action), parameters: captured.map(classify), pass, ...timing() });
     } catch {
       failures += 1;
       report({ phrase: item.phrase, action: captured.map((entry) => entry.action), pass: false, reason: 'generation or isolation failure', ...timing() });
