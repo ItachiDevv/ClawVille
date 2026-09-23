@@ -16,8 +16,8 @@
 
 ### September 22 cleanup: Nori, touch controls, and Cove close controls
 
-- **Release state:** staging serves cleanup commit `dfebf028`. Public onboarding passes 14 checks, the signed partner harness passes 14, and hosted Nori/appearance acceptance passes 125 twice, including after test-signer removal. Guest Nori and Baccarat browser checks pass. The serial web retry recovers an unexplained build-helper exit 255. Production remains `6f115fc2` until promotion evidence records otherwise.
-- **Where:** staging first at `https://staging.clawville.world/game` and `/cove/baccarat`; production uses the same paths after verified promotion.
+- **Release state:** production API and web serve `7473e809`, verified at 2026-09-23 05:08 UTC after normal PR #296 promotion. All four production gates, migration, and deployment jobs pass. Staging retains tested `dfebf028`: onboarding 14/14, signed partner 14/14, and hosted Nori/appearance 125/125 twice, including after signer removal. Production Nori reply/Close, Baccarat Fairness/Close, and Cove return pass browser checks at 05:09-05:12 UTC. One initial navigation required a reload during rollout; its cause remains unproven. The final documentation-only commit does not change deployed application source.
+- **Where:** production `https://clawville.world/game` and `https://clawville.world/cove/baccarat`; staging retains the same paths for comparison.
 - **Look at:** a fresh Explore visitor can open Nori, receive a reply, and close the panel. Phone and tablet controls must remain separate in both orientations. Baccarat Close and Fairness must accept taps.
 - **Agent path:** a bound agent can ask Nori through the system-chat route or `chat_nori(message)`. Its reply stays in private agent context. Nori answers orientation questions and executes no model-authored action.
 - **Appearance:** protocol 69 adds `update_appearance` and the universal appearance tool. The live hosted test proves the requested color in the owned avatar, durable bot record, and exact live body. Public connected avatars with no hosted platform row also pass. Confirm the visual result in normal play and after reconnect.
@@ -45,14 +45,14 @@
 
 ## TRADING FLOOR
 
-### Player trading controls show Coming soon (local working tree, 2026-09-20)
+### Player trading controls show Coming soon (production `7473e809`; founder review remains open)
 
-- **Last Audited: 2026-09-20.** Drift note: founder order pauses player trading and player trader launches in the client.
+- **Last Audited: 2026-09-23.** Drift note: production browser evidence now confirms the guest controls; founder order keeps player trading and player trader launches paused in the client.
 - **Greyed out:** Use my linked wallet, Use my in-game wallet, Connect and sign, and the guest Create a free account button. The signature input and Verify trade button are disabled. Each template's Copy persona and Copy skills buttons, Open the ClawPump dashboard, and Open Jupiter are disabled too. Each control retains its label, explanation title, and Coming soon tag.
 - **Monitoring:** Genesis and ClawVille Runner retain their live realised profit and loss, risk state, house-trader board, panel, public trade tape, and flying trade chips. Their read-only route remains unchanged.
 - **Re-enable:** set `TRADING_SELF_SERVE_ENABLED` to `true` in `apps/web/src/components/game/trading-floor/tokens.ts`. This one boolean restores the original controls and eligibility checks.
-- **Where:** local build, Exchange modal, Trading Floor tab. This change has no commit, push, or deployment. Visual founder review remains pending.
-- **Local gates:** 628 tests pass, 0 fail, 136505 assertions across 20 files; `tsc.exe --noEmit -p .` exits 0; production build exits 0 with 38/38 static pages. Browser and viewport checks remain unverified because the managed preview launcher refused ownership or input validation.
+- **Where:** production, Exchange modal, Trading Floor tab. The production browser check confirms the sidebar opens Exchange and guest-visible controls remain disabled with Coming soon labels. Authenticated wallet controls have source/test coverage, not a signed-in browser check. No trade or launch action occurs. Founder visual review remains pending.
+- **Historical September 20 local gates:** 628 tests pass, 0 fail, 136505 assertions across 20 files; `tsc.exe --noEmit -p .` exits 0; production build exits 0 with 38/38 static pages. Browser and viewport checks remain unverified because the managed preview launcher refused ownership or input validation.
 
 ### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
 - **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,

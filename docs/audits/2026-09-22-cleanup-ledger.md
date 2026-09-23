@@ -1,10 +1,26 @@
 # ClawVille regression cleanup audit
 
-Last Audited: 2026-09-23. Status: IN PROGRESS. Coordinator: Codex.
+Last Audited: 2026-09-23. Status: production release verified; stated acceptance limits remain. Coordinator: Codex.
 
 ## Scope and evidence rules
 
-### September 23 release-gate continuation
+### Current production evidence - September 23, 05:12 UTC
+
+Production API and web serve `7473e809833b2c399985c9042ec7f69f7a827fb1`, verified at 2026-09-23 05:08 UTC. PR #296 merged normally at 04:59:45 UTC after all four required checks passed on `ecea0354` (run `35820414880`). Production workflow [35820576674](https://github.com/ItachiDevv/ClawVille/actions/runs/35820576674) passed all four gates, migration, and deployment. Both actual container `SOURCE_COMMIT` values match, old containers are absent, and API health reports the same SHA with status `ok`.
+
+Read-only production checks verify 85 migration records, the expected unchanged checksums for 0068/0069, the nullable text quote fingerprint, and the valid partial bounty approval index. Production reports `testSignerConfigured:false`. The public play manual returns HTTP 200, version 69, and `sha256:69d548e73b03bc8ee8a0faf1f8ffbc8d00a5418a2ff67d17d310c480764b8b9c`. **SCHEMA:** `synced`.
+
+Staging retains application source `dfebf028`: public onboarding 14/14, signed partner 14/14, and hosted checks 125/125 twice, including after signer removal. These prove real Nori execution, private next-decision consumption, all eighteen verbs, owned appearance persistence and live projection, one chat reward, no extra appearance reward, zero trades, and fixture disposal. Production promotion preserves this tested code.
+
+Production browser checks at 05:09-05:12 UTC verify world rendering, camera response, and guest Nori's actual Bounty Board reply with the pavilion location. Nori Close removes the panel; the guest quest advances after the successful reply. Baccarat Fairness opens, its inner Close dismisses it, and table Close reaches `/cove`, without a wager. Cove Back to World reaches `/game` at sonar `11264,12564` without reopening the Cove prompt. The guest Trading Floor sidebar opens Exchange; guest-visible account, Jupiter, signature/verification, persona/skills copy, and ClawPump dashboard controls remain disabled with Coming soon labels. Authenticated wallet controls have source/test coverage only; this browser check does not establish their signed-in behavior. The console shows only the pre-existing Phantom extension ethereum redefinition, with no observed application exception. No trade or launch action occurs.
+
+Observed desktop performance varies from 30 to 60 FPS. One initial navigation during rollout showed a blank body; one reload loaded the world, and the cause remains unproven. This release does not establish real-iPad safe areas, sustained physical-device FPS, a fresh human Reef Race, all-parcel visual coverage, a paid DoorDash order, or reconciled/profitable external trading. Existing indefinite trader pauses remain intact.
+
+The final documentation-only commit follows the verified production merge. Deployment workflows ignore these documentation paths, so application source remains production `7473e809` and staging `dfebf028`.
+
+The earlier failed attempts below remain historical evidence, not current release blockers.
+
+### Historical September 23 release-gate continuation
 
 Final staging checkpoint: both containers serve `dfebf028`. The signer-free API redeploy reports `testSignerConfigured:false`; the old signer-bearing container is absent. The full hosted probe passes all 125 checks again on the new container, including fixture disposal, with the optional reply-canary advisory also passing. Public onboarding and signed partner acceptance remain 14/14 each. The reviewed production exact-SHA helper is installed. PR #296 can proceed through the normal protected promotion after its documentation-only checkpoint checks; production still serves `6f115fc2` at this checkpoint.
 
@@ -49,7 +65,7 @@ Discovery inspected all 16 top-level ClawVille transcripts on itachi222 (366.3 M
 |---|---|---|
 | dd | `b4fbbf4a-9a8c-47ea-a87d-a5dcc906e610` | Full parsed transcript, eight subagent logs, complaint matrix, code and exploit checks. See dd report. |
 | bountyFix2 | `9a694cbe-d6d8-4642-a1ff-18cf75b621a1` | Full parsed transcript and embedded Codex reviews. No Agent/Task subagent logs. See bounty report. |
-| fixBounty | `924028d1-dfd1-42a1-b11b-51656fc07b14` | Gate-work precursor: all user requests and implementation/failure/final reports inspected. Phase 0c handoff remains partly unfinished. |
+| fixBounty | `924028d1-dfd1-42a1-b11b-51656fc07b14` | Gate-work precursor: all user requests and implementation/failure/final reports inspected. This cleanup delivered the missing constraint inventory and fourteen coupling rules; later CI phases retain their stated limits. |
 | Gate and settlement precursor | `201f3253-9acd-4620-81f2-6e280d7bb5f1` | September 14–15 reports inspected: self-heal, protocol pins, retired export flow, canonical-doc drift. Current bounty retry tests pass. |
 | mobile | `1803b128-c813-43ed-86be-998f3603d4b6` | Full period review appears in the adjacent-session report. The prior wave-two promotion reached production through later promotions. Real Safari evidence remains separate. |
 | clawPump | `e7625636-22c9-413c-8ef9-ca3827d30203` | Full period review appears in the adjacent-session report. Later containment pauses both runners indefinitely. This audit preserves that state. |
@@ -70,7 +86,7 @@ A SELECT-only transaction ran inside the production API container, using its exi
 
 Production retains `SAP_ENABLED=true`. The prior user explicitly chose to retain SAP settings. Removed code and tables, rather than this unused setting, establish removal. No setting changed during this audit.
 
-## Findings and work assignments
+## Initial findings and work assignments (historical)
 
 | ID | Finding | Owner / verification status |
 |---|---|---|
@@ -115,7 +131,7 @@ Local runtime: Bun 1.3.14. Existing CI pins Bun 1.3.11. Live production containe
 - Production Chrome guest phone check: World Map opens and has a close control. Nori shortcut reproduces UI-02. No captured console errors accompany that failure.
 - Latest bounded cleanup checks: API typecheck and agent-runtime build pass; DoorDash fingerprint plus independent ambiguity checks pass 35/35; Nori moderation passes 8/8; runtime-agent memory-ID collision check passes 1/1. The updated offline Hatcher harness passes 87/87 with the seventeenth action in the manual and executor. This offline result does not replace the signed staging harness.
 
-## Remaining work
+## Current complaint acceptance and remaining limits
 
 ### Consolidated complaint acceptance
 
@@ -126,16 +142,16 @@ Local runtime: Bun 1.3.14. Existing CI pins Bun 1.3.11. Live production containe
 | Nori body and collider disagree | A mesh move changed one of several duplicated coordinates. Current paths share `NORI_WORLD_Z`. | Current source and regression tests establish coordinate agreement. |
 | Cove falls into the dark fallback | The old 40 FPS threshold conflicted with a 30 FPS phone limit and startup stalls. Current sampler tests cover the policy. | Browser automation did not establish the FPS floor. Physical-device acceptance remains open. |
 | Cove exit traps the player | The old exit constant lay in an unsafe band. Current tests cover the derived exit; the production return control reaches the world without reopening Cove. | Observed guest path only. |
-| Nori gives wrong bounty directions | All three knowledge surfaces name the Bounty Board. Live guest chat gives its pavilion location. The 99-check hosted probe proves real Nori execution and private next-decision consumption. | Production promotion remains pending. |
+| Nori gives wrong bounty directions | All three knowledge surfaces name the Bounty Board. Production guest Nori gives the pavilion location and closes correctly. The 125-check staged hosted probe proves real execution and private next-decision consumption. | The hosted execution proof is staged; production serves the same tested code at `7473e809`. |
 | SAP removal appears reversed | No restoration commit was found. The earlier removal intentionally retained tables. Production now has none of the removed tables or columns. | The applied migration caused an old-code/new-schema outage. Its immutable SQL remains unchanged; this report corrects its misleading comments. |
 | Old wager lobbies remain open | Production rows 184 and 187 are cancelled with failed creation status. Recovery tests pass. | This is not a fresh on-chain settlement experiment. |
-| DoorDash accepts unsafe confirmation or a changed cart | Independent parser, identity, and workflow tests pass; staging serves the patch. Address lookup fails closed. | Production promotion remains pending. No paid order was placed. |
-| Phone controls overlap; guest Nori cannot close | Staging guest Nori answers and closes. Jump hit tests and joystick bounds pass at all eight required dimensions. | Real iPad safe-area and device FPS evidence remain open. |
-| Baccarat Close and Fairness reject clicks | Staging Fairness opens and closes. Table Close returns to Cove without a wager. | Production promotion remains pending. |
-| Regression gates and promised follow-up were absent | Four required checks, fourteen coupling rules, schema restoration, exact-SHA helpers, and deploy dependencies have evidence. A deliberately wrong test fails the required API checks in a disposable PR. | The latest follow-up patch requires its own green checks and staged container verification before promotion. Later CI phases retain their named owner and deadline. |
+| DoorDash accepts unsafe confirmation or a changed cart | Independent parser, identity, and workflow tests pass; production `7473e809` serves the patch. Address lookup fails closed. | No paid order was placed. The documented vendor check-to-charge gap remains. |
+| Phone controls overlap; guest Nori cannot close | Production guest Nori answers and closes. Staged Jump hit tests and joystick bounds pass at all eight required dimensions. | Real iPad safe-area and device FPS evidence remain open. |
+| Baccarat Close and Fairness reject clicks | Production Fairness opens and closes. Table Close returns to Cove without a wager. | Guest control-path evidence only; no wager occurred. |
+| Regression gates and promised follow-up were absent | Four required checks, fourteen coupling rules, schema restoration, exact-SHA helpers, and deploy dependencies have evidence. A deliberately wrong test fails the required API checks in a disposable PR. Final staging and production workflows pass, and actual containers match. | Later CI phases retain their named owner and deadline; the planned admin exception remains explicit. |
 | Trading research and accounting claims lack proof | The later audit invalidates profitability claims and records unresolved execution accounting. Approved indefinite pauses supersede older restart instructions. | Owner: external runner maintainer. Review deadline: 2026-09-29. Reconcile failed-entry fees, unknown-buy expiry, and ambiguous HTTP outcomes before any separately approved resume. This cleanup does not restart traders. |
 
-### Final local review checkpoint
+### Historical final local review checkpoint
 
 - A fresh second auditor found no additional blocking source defect. Its focused run passed 71 tests, skipped two database-only tests, and failed none.
 - The first full isolated API run passed 283 files and failed one stale source-location assertion in `building-reward.test.ts`. After that test followed the extracted service, all 23 cases passed. The final full rerun passed all 284 executed files, with zero failures. One database-only file and three existing nondeterministic suites remain excluded from this local runner. The adjacent-session report records their owners and review deadline.
@@ -149,17 +165,17 @@ The earlier Phase 1 coupling registry was an unimplemented follow-on, not a reve
 
 The production Cove return control navigated to `/game` during this audit. The visible sonar reported `11264, 12564`, and no Cove prompt reopened. This verifies the observed guest return path only; it does not establish the target FPS or real-device Safari behavior.
 
-### GitHub credential blocker, 05:58 UTC
+### Historical GitHub credential blocker, 05:58 UTC
 
 Commit `cbb647ad1a5a7c9b9e1a301c9f1b2ea2ec43fde6` is local. The HTTPS push rejects workflow updates because the GitHub CLI token has only `gist, read:org, repo` scopes. The configured SSH key authenticates as the read-only `ItachiDevv/itachi-memory` deploy key. A separate SSH identity does not authenticate. Git Credential Manager has no stored GitHub credential. The peer laptop's GitHub CLI token is invalid. The coordinator requested `gh auth refresh -h github.com -s workflow` on itachi222.
 
 At 05:58 UTC, production health remains `ok` at `6f115fc2`; staging remains `ok` at `10575a98`. No application, migration, trader, or branch-protection change occurred. The temporary test signer is removed, the old deployment helpers are restored, and both disposable audit database containers are removed. The reviewed patches remain available locally for release after credential renewal.
 
-### Release continuation after credential renewal
+### Historical release continuation after credential renewal
 
 Final source checkpoint for protocol 69: appearance now uses one shared human/agent service, strict bound-agent identity, an UPDATE-time config merge, and a same-avatar mutex through live projection. Both the universal tool and eighteenth hosted action expose it. The public onboarding smoke adds an actual agent-session HTTP PATCH and signed presence teardown; the hosted probe checks the real action and durable/live body color. A fresh reviewer passes 48 tests with 520 assertions, skips one PostgreSQL-only case, and reports no source blocker. Separate PostgreSQL legacy-red/helper-green evidence remains recorded. Final driver evidence is 61 passing tests with 369 assertions. The final production build passes all nine tasks; API typecheck and offline Hatcher selftest (87 checks) pass. Exact protocol-69 staging acceptance remains pending before promotion.
 
-Latest hosted acceptance, 2026-09-23: all 99 live checks pass after the probe fixture uses `tx.json` for JSON objects. A read-only synthetic query proves raw postgres.js double-encoded the previous stringified configuration, while the production Drizzle adapter preserves JSON objects correctly. The passing run proves actual Nori action execution, a sanitized avatar-owned lesson, private next-decision consumption, all 17 verbs, exactly one chat reward, zero trades, and clean fixture/server teardown. The earlier failures remain recorded below as unsuccessful attempts. Separate source review identified an appearance config overwrite race and directive read/pending races; their narrow regressions and repairs precede the final staged release.
+Historical protocol-68 hosted acceptance, 2026-09-23: all 99 live checks pass after the probe fixture uses `tx.json` for JSON objects. A read-only synthetic query proves raw postgres.js double-encoded the previous stringified configuration, while the production Drizzle adapter preserves JSON objects correctly. The passing run proves actual Nori action execution, a sanitized avatar-owned lesson, private next-decision consumption, all 17 verbs, exactly one chat reward, zero trades, and clean fixture/server teardown. The earlier failures remain recorded below as unsuccessful attempts. Separate source review identified an appearance config overwrite race and directive read/pending races; their narrow regressions and repairs precede the final staged release.
 
 Continuation at 2026-09-23 03:18 UTC: production and staging health still report their prior commits. The latest diagnostic run passes the halt transition, but records one queued Nori question and zero emitted Nori actions. Its fixture has a valid bound session and active avatar; no Nori reward or room memory exists. This narrows that run to action delivery rather than establishing a service rejection. The signed-disconnect teardown passes independent review (six tests, 36 assertions) and checks both public session and body absence before durable deletion. Two older orphan bot rows pass exact ownership guards and are removed in one transaction; the subsequent count is zero. Independent public checks find both old exact agent/body IDs absent. The staging signer configuration and local disposable key are removed; the existing API container still requires its next rollout to lose the old environment setting.
 
@@ -174,6 +190,10 @@ The corrected commit `59dba1cf` passes all four jobs in PR run `35696068784` and
 Master protection now requires all four named checks from GitHub Actions app 15368, with strict branch freshness. Force pushes and branch deletion are disabled. The planned administrator exception remains enabled (`enforce_admins=false`); this does not claim a universal direct-push ban. A deliberately wrong test pin (69 instead of 68) in draft PR #297 fails both required API checks in run `35695998122`. Web and coupling checks pass. The PR closes without merge, and the remote scratch branch is absent. The PR also reports `BEHIND`, so the test failure is not claimed as its sole merge restriction.
 
 An earlier PR #296 check exposed a missing back-merge: production merge `6f115fc2` was not an ancestor of staging. Back-merge `daa14c9b` restored ancestry without changing the application tree. Later exact-head Gates passed before each deployment. Serial recovery queues used the already tested full SHA and did not overlap active builds.
+
+#### Historical release checklist
+
+This retained sequence preceded the current production verification. It is not an instruction to repeat live operations.
 
 1. Fetch both remote branches. Preserve other work and resolve any new staging changes before release.
 2. Install the reviewed full-SHA deployment helpers on both hosts and verify their hashes. Both reviewed host copies are now installed; their dated backups remain.

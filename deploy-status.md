@@ -14,6 +14,24 @@
 
 ## CURRENT STAGING / PROD STATE
 
+Production API and web serve `7473e809833b2c399985c9042ec7f69f7a827fb1`, verified at 2026-09-23 05:08 UTC. PR #296 merged normally at 04:59:45 UTC after all four required checks passed on `ecea0354` (run `35820414880`). Production workflow [35820576674](https://github.com/ItachiDevv/ClawVille/actions/runs/35820576674) passed all four gates, migration, and deployment. Both actual container `SOURCE_COMMIT` values match, old containers are absent, and API health reports the same SHA with status `ok`.
+
+Read-only production checks verify 85 migration records, the expected unchanged checksums for 0068/0069, the nullable text quote fingerprint, and the valid partial bounty approval index. Production reports `testSignerConfigured:false`. The public play manual returns HTTP 200, version 69, and `sha256:69d548e73b03bc8ee8a0faf1f8ffbc8d00a5418a2ff67d17d310c480764b8b9c`. **SCHEMA:** `synced`.
+
+Staging retains application source `dfebf028`: public onboarding 14/14, signed partner 14/14, and hosted checks 125/125 twice, including after signer removal. These prove real Nori execution, private next-decision consumption, all eighteen verbs, owned appearance persistence and live projection, one chat reward, no extra appearance reward, zero trades, and fixture disposal. Production promotion preserves this tested code.
+
+Production browser checks at 05:09-05:12 UTC verify world rendering, camera response, and guest Nori's actual Bounty Board reply with the pavilion location. Nori Close removes the panel; the guest quest advances after the successful reply. Baccarat Fairness opens, its inner Close dismisses it, and table Close reaches `/cove`, without a wager. Cove Back to World reaches `/game` at sonar `11264,12564` without reopening the Cove prompt. The guest Trading Floor sidebar opens Exchange; guest-visible account, Jupiter, signature/verification, persona/skills copy, and ClawPump dashboard controls remain disabled with Coming soon labels. Authenticated wallet controls have source/test coverage only; this browser check does not establish their signed-in behavior. The console shows only the pre-existing Phantom extension ethereum redefinition, with no observed application exception. No trade or launch action occurs.
+
+Observed desktop performance varies from 30 to 60 FPS. One initial navigation during rollout showed a blank body; one reload loaded the world, and the cause remains unproven. This release does not establish real-iPad safe areas, sustained physical-device FPS, a fresh human Reef Race, all-parcel visual coverage, a paid DoorDash order, or reconciled/profitable external trading. Existing indefinite trader pauses remain intact.
+
+The final documentation-only commit follows the verified production merge. Deployment workflows ignore these documentation paths, so application source remains production `7473e809` and staging `dfebf028`.
+
+**PARITY:** human Nori/appearance UI and connected/hosted actions use the same bound-avatar services. Staging verifies real Nori settlement and no extra appearance settlement.
+
+### Historical deployment checkpoints
+
+The entries below describe their recorded checkpoints. Earlier pending-release, signer, and schema statements do not replace the current state above.
+
 - **2026-09-23 (Codex promotion checkpoint): staging API and web both serve `dfebf028`; production still serves `6f115fc2`.** All four required checks pass in runs `35819063299` and `35819060583`. Public onboarding passes 14/14, signed partner checks pass 14/14, and the hosted probe passes 125/125 both before and after signer removal. The second run also passes the optional reply-canary check. Exact runtime inspection confirms no staging test signer; the local private key is absent. The failed web helper exit 255 has no proven compiler/OOM cause; a serial same-SHA web retry succeeds, followed by the signer-free API redeploy. Browser checks confirm world rendering, Nori bounty directions, and Baccarat Fairness/Close. Desktop observations vary between 30 and 60 FPS; sustained physical-device acceptance remains open. This documentation-only checkpoint does not change application code or deployed source SHA. **SCHEMA:** `prod-migration-pending: 0068_doordash_quote_fingerprint.sql, 0069_bounty_approved_attempt_unique.sql`. **PARITY:** real bound public/hosted appearance and private Nori consumption have staged evidence; promotion preserves the same code and halt rules.
 
 - **2026-09-23 (Codex live acceptance): staging API and web serve `13d02c5a`; production remains `6f115fc2`.** Both GitHub workflows pass every gate; staging migration and deploy jobs pass. Container SHAs, health, 85 migration records, fingerprint column, and bounty index agree. Signed partner checks pass 14/14. Public onboarding exposes an invalid appearance requirement for a platform row; hosted acceptance exposes a mixed-protocol PostgreSQL client stall. A fresh-client, read-only reproduction fails mixed static/parameterized queries and passes 200 all-parameterized queries. Reviewed repairs preserve nullable public-avatar linkage, parameterize the equivalent halt filter, and bound unavailable target reads without late actions. The next commit requires fresh CI and live acceptance before promotion. The staging signer remains temporary and configured; removal requires a same-SHA redeploy. **SCHEMA:** `prod-migration-pending: 0068_doordash_quote_fingerprint.sql, 0069_bounty_approved_attempt_unique.sql`. **PARITY:** appearance retains exact owner/avatar/session checks for public connected avatars; target-query changes apply to the hosted agent path and preserve fleet/agent halts.
@@ -372,6 +390,14 @@
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-09-23 05:12 UTC - audited cleanup promoted through PR #296
+
+- **What changed:** DoorDash confirmation, Nori/touch/Cove controls, appearance parity, directive handling, PostgreSQL target reads, and regression/deployment gates now reach production `7473e809`.
+- **What failed and recovered:** stale CI fixtures blocked `daa14c9b`; isolated repairs restored the gates. Live probes exposed public-avatar appearance rejection and a mixed static/parameterized PostgreSQL client stall. Reviewed repairs passed new staging acceptance. The first web helper exited 255 without a proven compiler/OOM cause; a serial same-SHA retry succeeded. The first production navigation required one reload during rollout; its cause remains unproven.
+- **Who benefits:** human visitors and bound public/hosted agents receive the same documented Nori and appearance services. Required gates and exact-SHA deployment now guard promotion. No trader restart or new trade authority occurs.
+- **Evidence:** required-check run `35820414880`, production run `35820576674`, actual API/web source and healthy API at 05:08 UTC, verified 85 migrations and 0068/0069 schema, and browser checks at 05:09-05:12 UTC. **SCHEMA:** `synced`. Founder device and money-path limits remain explicit above.
+- **Documentation checkpoint:** this final documentation-only update does not queue another application deployment.
 
 ### 2026-09-22 (Codex cleanup) — repair CI DOM lifecycle before retry
 
