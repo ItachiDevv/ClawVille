@@ -14,7 +14,19 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Item-choice follow-up, 2026-09-23: the next source push retains customization choices across replies, requires item review, preserves unresolved exclusions, and isolates draft cancellation from the cart. Local acceptance and independent review precede deployment. The verified application SHAs below remain current until container readback. Protocol stays 71 under the documented private-operator exception. **SCHEMA:** `synced`; no schema, environment, or payment authorization change.
+Last Audited: 2026-09-23 20:17 UTC. Staging API and web serve `c5aaa0e48b4214631b97bd52d42cf472b461df47`. Production API and web serve `7377a949e9b00f51e9f4925c6e30c30c6e77c547`, verified by container `SOURCE_COMMIT` and API health at 20:16-20:17 UTC. Production promotion PR #301 merges normally at 20:06:35 UTC. **SCHEMA:** `synced`; no schema, environment, or payment authorization change. Protocol stays 71 under the documented private-operator exception.
+
+Production workflow `35913751460` passes all four gates, migration, and deployment. API container `ebnatuxblgp4q0antoca9swk-201108963022` and web container `ds7hoho685ire522lz3hie2j-201108988706` report the exact source; both former `0b88e5c2` containers are absent. API health returns `ok`, and runtime environment is production. Public play manual returns HTTP 200, version 71, unchanged hash `sha256:016cc3c59a9918b85241cabf129673df93f483c28e535642c87e64a05c73d7f3`.
+
+Production Chrome verification at 20:16-20:17 UTC displays the world, town sign, and avatars. Nori opens and closes. The console shows only the pre-existing Phantom extension ethereum redefinition; no application exception appears. This is a general browser check, not signed-in vendor or payment evidence. The final documentation checkpoint changes no application source. Founder review of the item conversation remains open in `FOUNDER-REVIEW.md`.
+
+Staging containers are API `yvtwz7snaghxifkjhyxknffu-195601788627` and web `ju0n3sddhll3cuhbrspt4muy-195601837619`; both old `19fbd1e7` containers are absent. All four staging gates, migration, and deployment pass in workflow `35912071799`. All four PR checks pass in `35912107725` after a checkout-stalled job is cancelled and retried. No test assertion fails in that attempt; checkout does not reach tests. The successful retry takes 1m55s.
+
+The item-choice change retains choices across replies, asks one missing question, and presents item review before adding. Review repairs quantity changes, stale context races, and unresolved exclusions lost across later replies. Local checks pass 405 tests/2,700 assertions, API/runtime/probe typechecks, and all nine build tasks. A bounded nine-turn actual-model probe passes with exact synthetic selections and one synthetic add. It calls no live vendor or payment action.
+
+Chrome on itachi222 renders the staging world, avatars, and town sign; Nori opens and closes. The console reports only the known Phantom extension `Cannot redefine property: ethereum` error. This check establishes no signed-in vendor action, sustained FPS, quantified camera zoom, or physical-device behavior. Public play manual returns HTTP 200, version 71, hash `sha256:5746d7e70d8a458a1457384133689d0cbbb318dabe2ad691af7a8fe36c0f95ea`. **PARITY:** owner human chat and owner-bound preparation share the same transient item draft; final payment remains human-only.
+
+### Previous natural-menu release acceptance
 
 Last Audited: 2026-09-23. Staging API and web serve `19fbd1e741b2bf8f6db2def0291c3369dfbb4e2c`. Production API and web serve `0b88e5c25335e7472a8b8eba5bb14b1c6e8b4e05`, verified at 09:05 UTC. **SCHEMA:** `synced`; this task adds no schema changes.
 
@@ -55,6 +67,10 @@ The final documentation-only commit follows the verified production merge. Deplo
 **PARITY:** human Nori/appearance UI and connected/hosted actions use the same bound-avatar services. Staging verifies real Nori settlement and no extra appearance settlement.
 
 ### Historical deployment checkpoints
+
+- **2026-09-23 20:17 UTC (Codex item-choice production acceptance):** API/web containers and API health identify `7377a949`; former `0b88e5c2` containers are absent. Workflow `35913751460` passes every gate, migration, and deployment. Chrome displays the world and avatars; Nori open/close passes. The known Phantom extension error remains the only console error. Public manual version/hash remain unchanged. Synthetic item-choice evidence proves the bounded conversation; no new paid order or live vendor mutation occurs. Final documentation-only sync does not redeploy applications. **SCHEMA:** `synced`. **PARITY:** owner human chat and owner-bound preparation use the same draft; final payment remains human-only.
+
+- **2026-09-23 20:06 UTC (Codex item-choice promotion):** staging API/web and health identify `c5aaa0e4`; old containers are absent. Four staging gates, migration, deployment, and all four PR checks pass. One PR job stalls in repository checkout for over ten minutes; its cancelled attempt reaches no tests, and its retry passes. Browser checks confirm world rendering and Nori open/close; only the pre-existing extension error appears. PR #301 merges normally to `7377a949`. Production workflow `35913751460` starts; production container verification remains pending. No paid order or vendor mutation occurs. **SCHEMA:** `synced`. **PARITY:** both owner-bound preparation paths share item drafts; payment remains human-only.
 
 - **2026-09-23 (Codex `dd-item-choices`, source push prepared):** founder identifies choosing items and customizations as the awkward flow. The patch retains exact-item choices across replies and supports review-stage optional changes. Independent review reproduces lost choices, stale item context, a discovery/detail race, quantity changes at confirmation, and unresolved exclusions cleared by unrelated selections. Regressions cover the repairs; final acceptance belongs in `docs/audits/2026-09-23-doordash-item-choices.md`. Synthetic model tests place no real vendor order. The recorded application SHAs remain the last verified deployment until readback. **SCHEMA:** `synced`. **PARITY:** owner human chat and owner-bound preparation share the same draft; human-only payment remains unchanged.
 
