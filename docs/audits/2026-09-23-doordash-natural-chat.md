@@ -22,7 +22,7 @@ Keep the single-operator capability gate, human-only submit, raw requester confi
 
 Keep vendor data outside persistent conversation history. Context remains bounded, user-scoped, in memory, and expires after 30 minutes. Restaurant references must match what the user saw. A failed menu retrieval must preserve the existing cart.
 
-This utility uses the existing ElizaOS actions. It does not add a Hatcher action, widen access, or advertise DoorDash through public agent manuals. The avatar chat layout change requires the existing connection-manual and Nori documentation gates. Protocol 70 adds generic guidance to preserve multiline replies and lists. That protected manual change requires fresh staging onboarding, signed partner, and hosted-runtime verification. No coupling rule is weakened.
+This utility uses the existing ElizaOS actions. It does not add a Hatcher action, widen access, or advertise DoorDash through public agent manuals. The avatar chat layout change requires the existing connection-manual and Nori documentation gates. Protocol 70 adds generic guidance to preserve multiline replies and lists. Protocol 71 adds scroll guidance for the final viewport correction. These protected manual changes require fresh staging onboarding, signed partner, and hosted-runtime verification. No coupling rule is weakened.
 
 PARITY: human path: owner avatar chat; agent path: the same owner-bound agent preparation bridge; cart preparation resolves to the configured operator. Human-only final payment authorization remains unchanged.
 
@@ -41,6 +41,12 @@ PARITY: human path: owner avatar chat; agent path: the same owner-bound agent pr
 - Staging CI `35835630875` rejects `62a80e83` before migration or deployment: three older quest race tests borrow an arbitrary avatar and fail when no other suite leaves one. The same-SHA PR run passes. A test-only correction creates an owned user/avatar transactionally, preserves all race assertions, waits for all writers, and cleans up only exact fixture records. Independent review and the no-database run pass; PostgreSQL CI remains the acceptance requirement.
 
 ## Acceptance limits
+
+Both CI runs for `4ff18b31` pass all four gates, including the PostgreSQL quest race cases. Staging run `35836361202` also passes migration and the deployment trigger.
+
+A disposable public agent enters staging through the normal browser invitation flow. Its join-created avatar initially has no hosted runtime; the supported customization route provisions that runtime. A fresh live chat reply contains two lines, and the rendered bubble uses `white-space: pre-wrap` and `overflow-wrap: break-word`. No DOM content or application state is injected.
+
+The first eight-viewport browser pass finds a real landscape defect: at 844x390 the chat panel begins at y=-81 with the reconnect notice visible. Other required dimensions fit, and input/Send/Close measure 44px high. The final correction limits the panel to the available viewport, lets only the message area shrink, and retains accessible controls. Browser recheck remains required. Physical iPad safe-area acceptance remains open.
 
 This change does not establish a new paid order, alter vendor checkout timing, or provide general natural-language understanding for arbitrary instructions. Required item choices still request a complete set in one message; independent partial-choice accumulation needs explicit correction and conflict semantics.
 

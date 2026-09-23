@@ -2,7 +2,9 @@
 
 **Last Audited: 2026-09-23 (public connected appearance regression).** Drift note: public onboarding supports a real bound avatar with no platform-agent row. Appearance accepts exactly null linkage; present links still require an existing same-owner row. The UPDATE pins that null/link snapshot. Owner, guest, active-avatar, harness, session, mutex, and projection guards remain. Protocol 69 already advertises this access, so the repair adds no verb, parameter, or world-scope knowledge and needs no version bump. PARITY: human behavior remains; public connected and hosted agents use the same exact-avatar service. New-SHA staging acceptance remains required.
 
-**Last Audited:** 2026-09-23 (protocol v70; chat reply formatting guidance; the same 18 actions; staging acceptance recorded separately)
+**Last Audited:** 2026-09-23 (protocol v71; short-screen chat presentation guidance; the same 18 actions; staging acceptance recorded separately)
+
+**Protocol 70 -> 71: long conversation layout.** At the 844-by-390 landscape viewport, staging acceptance found the long conversation panel above the visible viewport. The UI now bounds its height and gives the message area its own scroll area. Nori and the generated manual explain the separate message scroll area; the input and close control sit outside it. Hosted runtimes refresh the same versioned manual. This is presentation guidance only: no action, parameter, route, partner wire shape, identity, signing, custody, or settlement change. Public knowledge contains no operator-only capability. PARITY: human path: avatar chat panel; agent path: generated protocol and hosted manual; existing avatar identity and settlement stay unchanged. New-SHA staging browser, signed partner, onboarding, and hosted-runtime checks remain release gates; prior protocol 70 results do not prove this release.
 
 **Protocol 69 -> 70: chat reply presentation.** Human avatar chat preserves line breaks in lists and action results. Nori and the generated connection manual now describe that behavior and ask integrations to preserve reply line breaks. Hosted runtimes receive the revision through the existing version/content-hash refresh. No action, parameter, route, request/response shape, signing rule, session rule, custody path, or settlement behavior changes. No operator-only capability enters public knowledge. PARITY: human path: avatar chat display; agent path: generated protocol and hosted manual; identity and settlement retain their existing avatar binding. The local partner reference at `18d20987efeffbfa8c25ac7a41e9c127719a5abe` retains the optional numeric protocol version and content hash. This comparison does not claim a fresh upstream fetch. The signed staging harness, onboarding smoke, and hosted runtime probe remain release gates for the new SHA.
 
@@ -32,7 +34,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Historical protocol 67 note (2026-09-20; current protocol is 70).**
+> **Historical protocol 67 note (2026-09-20; current protocol is 71).**
 > Version 67 adds NO verb and changes no parameter. It documents one additive
 > read field, `risk`, on each slot of the public `GET /api/floor/house-traders`:
 > `null`, or `{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd,

@@ -22,6 +22,7 @@
 - **Feedback wanted:** identify replies that sound unnatural or require repeated restaurant names. Required item choices still need a complete set in one reply.
 - **Payment evidence:** the founder confirms the earlier paid order succeeded. This change places no new order and preserves human confirmation and tip requirements.
 - **Device limit:** browser emulation cannot establish physical iPad safe areas. A physical-device review remains open.
+- **Landscape check:** a staged 844x390 check exposed a clipped header. The follow-up limits message height and keeps input and Close accessible in world and table chat. Review a long menu on a phone in landscape.
 
 
 ### September 22 cleanup: Nori, touch controls, and Cove close controls
