@@ -1,6 +1,6 @@
 # DoorDash item selection and customization conversation
 
-Last Audited: 2026-09-23. Status: local acceptance passes; deployment verification pending.
+Last Audited: 2026-09-23 20:17 UTC. Status: local, staging, and production deployment checks pass; founder conversation review remains open.
 
 ## Founder clarification
 
@@ -40,3 +40,19 @@ Acceptance requires independent tests for separate replies, explicit replacement
 - Final fresh review reports APPROVED after independent isolated runs: 149 tests and 566 assertions across options, operator, session, and adversarial dialogue; 16 probe-evaluator tests also pass. The complete targeted record comprises 405 passes, zero failures, and 2,700 assertions across 19 files. These counts include the earlier isolated unchanged suites; overlapping reviewer runs are not added again. API and runtime typechecks, strict probe typecheck, and the nine-task production build pass. Eight build tasks use valid cached results; the changed API bundle rebuilds.
 - The final frozen-source real-model probe passes all nine turns with nine generations in 18.24 seconds. `qwen3.6:27b` serves every turn. The exact final selection is wheat, large, provolone, and No Mayo, quantity one, with one synthetic add. The repeated request causes safe clarification and no mutation. Bundle SHA256 is `158b6d4a66af2178bec6474c224f3a739bdec6887e3537103ee4e8d163cc85d0`. This loaded bundle runs on staging application `19fbd1e7`; the new application deployment remains separately unverified at this checkpoint. Temporary probe files are removed from the host and container afterward.
 - Local evidence stays in ignored `.local-evidence/dd-item-choices-20260923/` and `.local-evidence/dd-item-choices/` inside the registered worktree on itachi222. Release evidence follows below.
+
+## Staging acceptance and promotion
+
+Staging workflow `35912071799` passes all four gates, migration, and deployment. At 20:02-20:04 UTC, API container `yvtwz7snaghxifkjhyxknffu-195601788627`, web container `ju0n3sddhll3cuhbrspt4muy-195601837619`, and API health identify `c5aaa0e48b4214631b97bd52d42cf472b461df47`. Both former containers are absent. Runtime environment is staging. Public play manual returns HTTP 200 and protocol 71.
+
+Chrome on itachi222 displays the world, avatars, and town sign. Nori opens and closes. Console errors contain only the existing Phantom extension ethereum redefinition. No signed-in DoorDash or vendor action occurs. Camera input is attempted, but no quantified zoom or sustained FPS result applies. No UI layout or 3D source changes in this follow-up; previous device limitations remain unchanged.
+
+The PR money job stalls in checkout for more than ten minutes. Cancelling and retrying the affected job resolves the stall; the attempt reaches no tests, and the retry passes in 1m55s. All four PR checks pass in workflow `35912107725`. PR #301 merges normally at 20:06:35 UTC to `7377a949e9b00f51e9f4925c6e30c30c6e77c547`. Production workflow `35913751460` starts. Production container acceptance remains pending at this checkpoint.
+
+## Production acceptance
+
+At 20:16-20:17 UTC, production API container `ebnatuxblgp4q0antoca9swk-201108963022` and web container `ds7hoho685ire522lz3hie2j-201108988706` report `7377a949e9b00f51e9f4925c6e30c30c6e77c547`. Both former containers are absent. API health returns `ok` and that source. Runtime environment is production. Workflow `35913751460` passes all gates, migration, and deployment. Public play manual returns HTTP 200, version 71, unchanged hash `sha256:016cc3c59a9918b85241cabf129673df93f483c28e535642c87e64a05c73d7f3`.
+
+Production Chrome on itachi222 displays the world, avatars, and town sign. Nori opens and closes. The only console error is the existing Phantom extension ethereum redefinition; no application exception appears. This check does not establish signed-in DoorDash behavior, arbitrary vendor choices, quantified camera zoom, sustained FPS, or physical-device behavior. No paid order occurs. Founder review of the conversation remains in `FOUNDER-REVIEW.md`.
+
+The final documentation-only checkpoint preserves application sources: staging `c5aaa0e4`, production `7377a949`. Schema remains synced. Payment controls and the single-operator capability boundary remain unchanged.

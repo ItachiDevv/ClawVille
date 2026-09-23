@@ -16,8 +16,8 @@
 
 ### September 23: DoorDash item choices across replies
 
-- **Session:** Codex `dd-item-choices`, 2026-09-23. Local acceptance precedes staging and normal production promotion; exact deployment evidence belongs in `deploy-status.md`.
-- **Where:** owner avatar chat at `https://staging.clawville.world/game`, then `https://clawville.world/game` after promotion.
+- **Session:** Codex `dd-item-choices`, 2026-09-23. Production API/web and API health report `7377a949` at 20:16-20:17 UTC after PR #301. Staging retains tested `c5aaa0e4`. Local 405-test suite, independent review, nine-turn synthetic model probe, CI, and general browser checks pass.
+- **Where:** production owner avatar chat at `https://clawville.world/game`; staging comparison at `https://staging.clawville.world/game`.
 - **Look at:** select an item, answer each choice separately, correct the bread, then request an optional change such as "no mayo." Review the choices before "add it." "Skip that item" cancels only the unfinished item.
 - **Feedback wanted:** identify unnecessary repeated questions, unsupported wording, or an incorrect choice summary.
 - **Evidence boundary:** the model test uses synthetic options and no vendor mutation. Human-only payment confirmation remains unchanged. No new paid order occurs.
