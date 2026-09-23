@@ -1,6 +1,6 @@
 # DoorDash conversational menu follow-ups
 
-Last Audited: 2026-09-23. Status: final staging checks pass at `19fbd1e7`; production promotion and physical iPad acceptance remain pending.
+Last Audited: 2026-09-23. Status: production deployment and the observed browser checks pass at `0b88e5c2`; physical iPad and sustained device-performance acceptance remain open.
 
 ## Founder request
 
@@ -58,7 +58,11 @@ The final world-chat browser pass uses an actual eight-line reply and the actual
 
 The table message area scrolls from 227px back to 0px through normal wheel input. Collapse dismisses the table panel, and Close dismisses the world panel. Browser viewport overrides are cleared. The disposable browser account logs out through the normal UI; signed disconnect returns `disconnected:true` and public session/body absence. Its local credential file is deleted. Durable fixture account history remains; no account, avatar, or wallet rows are deleted.
 
-Production remains `7473e809833b2c399985c9042ec7f69f7a827fb1`; this natural-chat change is not yet promoted. Schema remains synced. The remaining release acceptance work is production promotion with production verification. Physical iPad safe-area acceptance remains separate and pending.
+PR #299 merges normally at 2026-09-23 08:55:22 UTC after all four required checks pass in run `35839655714`. Production workflow `35839892211` passes all gates, migration, and deployment. At 09:05 UTC, production API `ebnatuxblgp4q0antoca9swk-085818690437` and web `ds7hoho685ire522lz3hie2j-085818713889` both report `SOURCE_COMMIT=0b88e5c25335e7472a8b8eba5bb14b1c6e8b4e05`. Both former `7473e809` containers are absent. API health reports `ok` and the exact source; runtime environment is production and test signer configuration is false.
+
+The production public clawville-play manual returns HTTP 200, version 71, and `sha256:016cc3c59a9918b85241cabf129673df93f483c28e535642c87e64a05c73d7f3`. This task adds no schema changes; schema remains synced. Staging application source remains `19fbd1e7`. The final documentation-only checkpoint does not change either application's source SHA.
+
+Production browser checks at 09:05-09:09 UTC confirm that `/game` renders buildings, avatars, and the town sign. Guest Nori opens and gives an actual reply locating the Bounty Board on the right side of the Quest + Bounty Pavilion behind the town sign. Close removes the panel. The console reports only the pre-existing Phantom extension error, `Cannot redefine property: ethereum`; no application exception is observed. Camera input is attempted, but this check establishes no quantified zoom or FPS result. No signed-in production DoorDash, cart, or payment request occurs. The eight-viewport chat checks above remain staging evidence only. Physical iPad safe-area and sustained device-performance acceptance remain separate and pending.
 
 This change does not establish a new paid order, alter vendor checkout timing, or provide general natural-language understanding for arbitrary instructions. Required item choices still request a complete set in one message; independent partial-choice accumulation needs explicit correction and conflict semantics.
 
