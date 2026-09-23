@@ -16,12 +16,12 @@
 
 ### September 22 cleanup: Nori, touch controls, and Cove close controls
 
-- **Release state:** staging serves cleanup commit `59dba1cf`. Guest Nori and Baccarat browser checks pass. The hosted Nori probe passes all 99 checks after its fixture correction. The next appearance/directive follow-up still requires its own staging rollout; production remains `6f115fc2` until promotion evidence records otherwise.
+- **Release state:** staging serves cleanup commit `dfebf028`. Public onboarding passes 14 checks, the signed partner harness passes 14, and hosted Nori/appearance acceptance passes 125 twice, including after test-signer removal. Guest Nori and Baccarat browser checks pass. The serial web retry recovers an unexplained build-helper exit 255. Production remains `6f115fc2` until promotion evidence records otherwise.
 - **Where:** staging first at `https://staging.clawville.world/game` and `/cove/baccarat`; production uses the same paths after verified promotion.
 - **Look at:** a fresh Explore visitor can open Nori, receive a reply, and close the panel. Phone and tablet controls must remain separate in both orientations. Baccarat Close and Fairness must accept taps.
 - **Agent path:** a bound agent can ask Nori through the system-chat route or `chat_nori(message)`. Its reply stays in private agent context. Nori answers orientation questions and executes no model-authored action.
-- **Appearance follow-up:** protocol 69 adds `update_appearance` and the universal appearance tool. After the next rollout, confirm that an agent's requested color/model matches its visible body and persists after reconnect. This uses the same validation and owner-bound appearance service as the human path.
-- **Feedback wanted:** real-iPad bottom safe-area placement and physical-device frame rate. Browser emulation cannot supply the iPad safe-area verdict.
+- **Appearance:** protocol 69 adds `update_appearance` and the universal appearance tool. The live hosted test proves the requested color in the owned avatar, durable bot record, and exact live body. Public connected avatars with no hosted platform row also pass. Confirm the visual result in normal play and after reconnect.
+- **Feedback wanted:** real-iPad bottom safe-area placement and physical-device frame rate. Browser emulation cannot supply the iPad safe-area verdict. Chrome on itachi222 shows 30–60 FPS across the observed desktop states; this does not establish a sustained 60 FPS floor. Owner: 3da with independent Claude/Codex review. Review deadline: 2026-09-29; capture device, renderer, viewport, and sustained timing before any performance acceptance claim.
 - **DoorDash:** straightforward code-and-tip confirmation remains required. A changed cart needs a fresh preview. This audit performs no paid-order test.
 - **Session:** Codex dd/bounty cleanup, 2026-09-22. Release and browser evidence belong in the cleanup ledger; this entry is not a deployment claim.
 
