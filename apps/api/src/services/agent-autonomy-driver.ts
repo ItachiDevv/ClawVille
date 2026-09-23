@@ -231,6 +231,8 @@ interface HouseAgentEntry {
 
 /** A single decision generator — real LLM in prod, canned in tests. */
 type DecideFn = (prompt: string) => Promise<string>;
+type TargetReaderName = 'land' | 'quests' | 'salvage' | 'build' | 'trading';
+const TARGET_READ_TIMEOUT_MS = 10_000;
 
 // Cadence + safety constants.
 const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
@@ -511,6 +513,9 @@ class AgentAutonomyDriver {
   // exactly ONE active avatar, so at most one autonomous agent).
   private enrolledOwners = new Map<string, string>();
   private inFlight = new Set<string>(); // agentIds mid-decision (overlap guard)
+  // A timed-out read still owns this guard until its underlying promise settles.
+  // Keep it across unregister/re-seat so retries cannot accumulate stuck queries.
+  private pendingTargetReads = new Map<string, Set<TargetReaderName>>();
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
@@ -1236,7 +1241,7 @@ class AgentAutonomyDriver {
     const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
-      readAutonomousLandTargets({
+      this.readTargetBounded(agentId, 'land', () => readAutonomousLandTargets({
         avatarId: entry.avatarId,
         x: perception.self.x,
         y: perception.self.y,
@@ -1246,20 +1251,20 @@ class AgentAutonomyDriver {
           err instanceof Error ? err.message : err,
         );
         return { claimable: [], owned: [] } satisfies AutonomousLandTargets;
-      }),
-      readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+      })),
+      this.readTargetBounded(agentId, 'quests', () => readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} quest targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
         );
         return [] as AutonomousQuestTarget[];
-      }),
+      })),
       // House agents never salvage (pure faucet, server-owned actor), so skip
       // four queries per tick for the whole fleet rather than discarding the
       // result later.
       entry.isHouse
         ? Promise.resolve(EMPTY_SALVAGE_TARGETS)
-        : readAutonomousSalvageTargets({
+        : this.readTargetBounded(agentId, 'salvage', () => readAutonomousSalvageTargets({
         avatarId: entry.avatarId,
         userId: entry.houseUserId,
         x: perception.self.x,
@@ -1271,30 +1276,38 @@ class AgentAutonomyDriver {
           err instanceof Error ? err.message : err,
         );
         return EMPTY_SALVAGE_TARGETS;
-      }),
+      })),
       // House agents cannot earn materials (both faucets exclude them), so a
       // build block would only ever offer calls they can never pay. Same skip
       // as the salvage read above: save the queries per tick for the fleet.
       entry.isHouse
         ? Promise.resolve(EMPTY_AUTONOMOUS_BUILD_TARGETS)
-        : readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        : this.readTargetBounded(agentId, 'build', () => readAutonomousBuildTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} build targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
         );
         return EMPTY_AUTONOMOUS_BUILD_TARGETS;
-      }),
-      readAutonomousTradingTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+      })),
+      this.readTargetBounded(agentId, 'trading', () => readAutonomousTradingTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} trading desk unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
         );
         return EMPTY_TRADING_DESK;
-      }),
+      })),
     ]);
     // Target reads can also outlive the owner instruction or enrollment.
     if (entry.directiveRevision !== directiveRevision
       || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
+    if (landTargets === undefined || questTargets === undefined || salvageTargets === undefined
+      || buildTargets === undefined || tradingDesk === undefined) {
+      // Unknown target state cannot become an invented empty world or desk.
+      // One immediate follow-up is already bounded by driveAgentNow; unresolved
+      // readers stay guarded, then the steady tick retries after they settle.
+      entry.directivePending = true;
+      return;
+    }
     const prompt = this.buildDecisionPrompt(
       perception,
       entry,
@@ -1421,6 +1434,49 @@ class AgentAutonomyDriver {
       entry.walkEpisodeDeadline = now + MAX_WALK_EPISODE_MS;
       entry.lastRemainingWu = null; // first walking tick records the baseline
     }
+  }
+
+  /** Bound only read waits, never the action lifecycle. Late data is discarded. */
+  private readTargetBounded<T>(
+    agentId: string,
+    name: TargetReaderName,
+    read: () => Promise<T>,
+  ): Promise<T | undefined> {
+    let readers = this.pendingTargetReads.get(agentId);
+    if (readers?.has(name)) return Promise.resolve(undefined);
+    if (!readers) {
+      // Failed transports plus enrollment churn must not grow this map forever.
+      if (this.pendingTargetReads.size >= MAX_HOUSE_AGENTS + MAX_AUTONOMOUS_USER_AGENTS) {
+        return Promise.resolve(undefined);
+      }
+      readers = new Set();
+      this.pendingTargetReads.set(agentId, readers);
+    }
+    readers.add(name);
+    const pending = readers;
+    return new Promise<T | undefined>((resolve) => {
+      let settled = false;
+      const finish = (value: T | undefined) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        console.warn(`[AutonomyDriver] target read timed out reader=${name} agent=${sessionDigest(agentId)}`);
+        finish(undefined);
+      }, TARGET_READ_TIMEOUT_MS);
+      const release = () => {
+        pending.delete(name);
+        if (pending.size === 0 && this.pendingTargetReads.get(agentId) === pending) {
+          this.pendingTargetReads.delete(agentId);
+        }
+      };
+      void Promise.resolve().then(read).then(
+        (value) => { release(); finish(value); },
+        () => { release(); finish(undefined); },
+      );
+    });
   }
 
   /** True once the body is within the interaction radius of its target building. */

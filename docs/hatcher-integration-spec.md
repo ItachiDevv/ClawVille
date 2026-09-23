@@ -1,5 +1,7 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
+**Last Audited: 2026-09-23 (public connected appearance regression).** Drift note: public onboarding supports a real bound avatar with no platform-agent row. Appearance accepts exactly null linkage; present links still require an existing same-owner row. The UPDATE pins that null/link snapshot. Owner, guest, active-avatar, harness, session, mutex, and projection guards remain. Protocol 69 already advertises this access, so the repair adds no verb, parameter, or world-scope knowledge and needs no version bump. PARITY: human behavior remains; public connected and hosted agents use the same exact-avatar service. New-SHA staging acceptance remains required.
+
 **Last Audited:** 2026-09-23 (protocol v69; 18 actions including bound-avatar appearance; staging acceptance recorded separately)
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
@@ -28,7 +30,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 67` (2026-09-20).**
+> **Historical protocol 67 note (2026-09-20; current protocol is 69).**
 > Version 67 adds NO verb and changes no parameter. It documents one additive
 > read field, `risk`, on each slot of the public `GET /api/floor/house-traders`:
 > `null`, or `{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd,

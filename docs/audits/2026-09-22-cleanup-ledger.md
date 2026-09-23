@@ -1,10 +1,20 @@
 # ClawVille regression cleanup audit
 
-Last Audited: 2026-09-22. Status: IN PROGRESS. Coordinator: Codex.
+Last Audited: 2026-09-23. Status: IN PROGRESS. Coordinator: Codex.
 
 ## Scope and evidence rules
 
 ### September 23 release-gate continuation
+
+Commit `13d02c5a` passes all four checks in PR run `35816950136` and staging run `35816946152`. Migration and deployment jobs pass. Both staging containers and API health report that exact commit; a read-only query verifies 85 migrations, the nullable quote fingerprint, and the valid bounty approval index. The signed partner harness passes 14 checks with protocol 69 and removes its test registration.
+
+Final live acceptance exposes two additional failures before promotion. Public onboarding reaches its appearance PATCH with a real active avatar but no platform-agent row and receives HTTP 403. A SELECT-only query confirms exactly one matching fixture, non-guest user/avatar, and null platform linkage. Public onboarding legitimately permits that state; appearance must preserve strict ownership without requiring a hosted record. A separate hosted probe passes 77 checks, then times out before its saved Nori directive reaches the model. Logs show the directive drive starts and remains in flight. The specific pending reader is not yet established. Probe teardown leaves zero recent hosted probe avatars. Neither failure changes production, which still serves `6f115fc2`.
+
+The subsequent read-only investigation identifies the pending daily `trading_decisions` query. PostgreSQL reports `active / ClientRead`, with query, state, and transaction ages above 185 seconds and no lock wait. A second hosted run stalls before the cleared-halt prompt. The target reader concurrently submits a parameterless halt SELECT and parameterized SELECTs through postgres.js. [Upstream issue 1033](https://github.com/porsager/postgres/issues/1033) reports this protocol mix on the Supabase transaction pooler; the report alone does not establish our cause.
+
+A separate staging-only process then reproduces the trigger with SELECT constants, a fresh one-connection client, and no application-table reads or writes. Actual versions: Bun 1.4.2, postgres.js 3.4.9, transaction port 6543, `prepare:false`. Default pipeline 100 plus mixed static/parameterized queries times out at nine seconds after one query. All-parameterized queries pass 200 queries in 100 rounds in 1,457 ms. Mixed queries with pipeline 1 also time out, after three queries. Mixed queries with pipeline 0 pass 200 queries in 1,484 ms. Each process closes only its own client. This red/green evidence supports a narrow parameterized halt-query repair; the shared database configuration remains unchanged. A separate bounded-reader guard prevents an unavailable target read from holding a decision indefinitely without fabricating context or dispatching late results.
+
+The final independent source pass approves the repair with 65 passing tests and 320 assertions across five isolated suites on Bun 1.3.11. Separate driver verification passes 81 tests and 461 assertions. API typecheck passes. The production build passes all nine tasks, with eight unchanged tasks cached and the API rebuilt. These local results do not replace the new-commit staging onboarding, signed harness, hosted outbound, and cleanup checks.
 
 The `daa14c9b` staging and PR workflows both stopped before migration or deployment. The land suite copied protocol 68 after the shared manual advanced to 69. Its repair compares the canonical version and retains the version-51 land-feature floor and single-declaration check. The autonomy P1 fixture lacked a successful directive-state read. The fail-closed driver therefore deferred the decision correctly. The fixture now supplies a known empty directive and restores its seam after each test. Its no-money case also requires an actual model decision. Pinned Bun 1.3.11 records land 84/84 and driver 79/79 after their respective repairs. These changes alter tests only. Exact-commit CI and protocol-69 live acceptance remain pending.
 

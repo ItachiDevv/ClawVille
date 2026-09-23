@@ -172,15 +172,19 @@ async function waitForVisit(base: string, sessionId: string, buildingId: string)
 }
 
 export async function checkBoundAppearance(base: string, sessionId: string, avatarId: string, userId: string): Promise<void> {
-  const tools = await expectJson(await fetchWithTimeout(`${base}/api/agent/${encodeURIComponent(sessionId)}/tools.json`),
+  const toolsResponse = await fetchWithTimeout(`${base}/api/agent/${encodeURIComponent(sessionId)}/tools.json`);
+  if (!toolsResponse.ok) throw new SmokeFailure(`appearance tools discovery HTTP ${toolsResponse.status}`);
+  const tools = await expectJson(toolsResponse,
     z.array(z.object({ name: z.string(), description: z.string() }).passthrough()));
   if (!tools.some((tool) => tool.name === 'clawville_update_appearance' && tool.description.includes('/api/avatars/me/appearance'))) {
     throw new SmokeFailure('appearance tool discovery missing');
   }
-  const result = await expectJson(await fetchWithTimeout(`${base}/api/avatars/me/appearance`, {
+  const patchResponse = await fetchWithTimeout(`${base}/api/avatars/me/appearance`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Clawville-Agent-Session': sessionId },
     body: JSON.stringify({ color: 'red' }),
-  }), z.object({ avatar: z.object({ id: z.string(), userId: z.string(), color: z.literal('red') }).passthrough() }));
+  });
+  if (!patchResponse.ok) throw new SmokeFailure(`appearance PATCH HTTP ${patchResponse.status}`);
+  const result = await expectJson(patchResponse, z.object({ avatar: z.object({ id: z.string(), userId: z.string(), color: z.literal('red') }).passthrough() }));
   if (result.avatar.id !== avatarId || result.avatar.userId !== userId) throw new SmokeFailure('appearance changed the wrong bound avatar');
 }
 

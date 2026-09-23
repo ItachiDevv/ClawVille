@@ -89,8 +89,8 @@ export async function updateAvatarAppearance(input: {
     assertCurrent();
     if (!owner || owner.id !== userId || owner.isGuest || current.isGuest || !current.isActive
       || current.id !== identity.avatarId || current.userId !== userId
-      || !platform || platform.id !== current.platformAgentId || platform.userId !== userId) {
-      throw new HTTPException(403, { message: 'Appearance requires an active non-guest avatar and its owned platform agent' });
+      || (current.platformAgentId !== null && (!platform || platform.id !== current.platformAgentId || platform.userId !== userId))) {
+      throw new HTTPException(403, { message: 'Appearance requires an active non-guest avatar and ownership of any linked platform agent' });
     }
   }
 
@@ -194,7 +194,9 @@ export async function updateAvatarAppearance(input: {
         ...(identity.kind === 'agent' ? [
           eq(avatars.isGuest, false),
           sql`EXISTS (SELECT 1 FROM ${users} WHERE ${users.id} = ${userId} AND ${users.isGuest} = false)`,
-          sql`EXISTS (SELECT 1 FROM ${agents} WHERE ${agents.id} = ${current.platformAgentId} AND ${agents.userId} = ${userId})`,
+          // Public onboarding can bind a real avatar without a hosted platform
+          // row. A present link must still exist and belong to this owner.
+          ...(current.platformAgentId !== null ? [sql`EXISTS (SELECT 1 FROM ${agents} WHERE ${agents.id} = ${current.platformAgentId} AND ${agents.userId} = ${userId})`] : []),
         ] : []),
       ))
       .returning();

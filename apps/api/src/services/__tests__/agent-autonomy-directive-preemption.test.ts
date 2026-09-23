@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as tradingTargets from "../autonomous-trading-targets";
 import type { AutonomyStatusThought } from "@clawville/shared";
 import {
   agentAutonomyDriver,
@@ -498,6 +499,104 @@ describe("human directive preemption", () => {
       agentAutonomyDriver.driveAgentNow = originalDriveNow;
     }
   });
+});
+
+describe("bounded decision target reads", () => {
+  it("keeps a healthy agent independent and observes a blocked reader's late rejection", async () => {
+    const entry = enroll();
+    entry.directivePending = true;
+    let rejectRead!: (error: Error) => void;
+    const held = new Promise<typeof tradingTargets.EMPTY_TRADING_DESK>((_resolve, reject) => { rejectRead = reject; });
+    const read = spyOn(tradingTargets, "readAutonomousTradingTargets").mockImplementation(({ avatarId }) =>
+      avatarId === "directive-preemption-avatar" ? held : Promise.resolve(tradingTargets.EMPTY_TRADING_DESK));
+    const healthyAgent = `${AGENT}-healthy`;
+    const healthyBody = `${BODY}-healthy`;
+    sim.npcs.set(healthyBody, makeBody(healthyBody));
+    expect(agentAutonomyDriver.registerUserAgent({
+      agentId: healthyAgent, bodyId: healthyBody, platformAgentId: `${PLATFORM}-healthy`,
+      systemUserId: `${OWNER}-healthy`, houseUserId: `${OWNER}-healthy`, avatarId: "healthy-avatar",
+    })).toEqual({ ok: true, reused: false });
+    driver.userAgents.get(healthyAgent)!.cursorSeeded = true;
+    let decisions = 0;
+    agentOrchestrator.getRunningAgentRuntime = () => ({ decide: async () => {
+      decisions++;
+      return "";
+    } }) as unknown as RuntimeState;
+    const drive = agentAutonomyDriver.driveAgentNow(AGENT, false);
+    try {
+      await agentAutonomyDriver.driveAgentNow(healthyAgent, false);
+      expect(decisions).toBe(1);
+      await drive;
+      expect(entry.directivePending).toBe(true);
+      expect(decisions).toBe(1);
+      rejectRead(new Error("held transport failure"));
+      await Bun.sleep(1);
+      expect(decisions).toBe(1);
+      read.mockResolvedValue(tradingTargets.EMPTY_TRADING_DESK);
+      await agentAutonomyDriver.driveAgentNow(AGENT, false);
+      expect(decisions).toBe(2);
+      expect(entry.directivePending).toBe(false);
+    } finally {
+      rejectRead(new Error("test cleanup"));
+      await drive;
+      read.mockRestore();
+    }
+  }, 15_000);
+
+  it("defers a stalled target, bounds outstanding reads across reseat, and discards late data", async () => {
+    let entry = enroll();
+    entry.directivePending = true;
+    let release!: () => void;
+    const held = new Promise<typeof tradingTargets.EMPTY_TRADING_DESK>((resolve) => {
+      release = () => resolve(tradingTargets.EMPTY_TRADING_DESK);
+    });
+    const read = spyOn(tradingTargets, "readAutonomousTradingTargets").mockImplementation(() => held);
+    let decisions = 0;
+    let dispatches = 0;
+    agentOrchestrator.getRunningAgentRuntime = () => ({ decide: async () => {
+      decisions++;
+      return "[ACTION: emote(name=wave)]";
+    } }) as unknown as RuntimeState;
+    const originalDispatch = npcSimulation.dispatchHatcherActions;
+    npcSimulation.dispatchHatcherActions = () => { dispatches++; return ""; };
+    const drive = agentAutonomyDriver.driveAgentNow(AGENT);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        drive.then(() => "completed"),
+        new Promise<string>((resolve) => { watchdog = setTimeout(() => resolve("stalled"), 10_500); }),
+      ]);
+      expect(result).toBe("completed");
+      for (let i = 0; i < 10; i++) await Bun.sleep(1);
+      expect(entry.directivePending).toBe(true);
+      expect(decisions).toBe(0);
+      expect(dispatches).toBe(0);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(await agentAutonomyDriver.driveAgentNow(AGENT, false)).toBe(true);
+      expect(read).toHaveBeenCalledTimes(1);
+      agentAutonomyDriver.unregisterUserAgent(AGENT);
+      entry = enroll();
+      entry.directivePending = true;
+      expect(await agentAutonomyDriver.driveAgentNow(AGENT, false)).toBe(true);
+      expect(read).toHaveBeenCalledTimes(1);
+      release();
+      await Bun.sleep(1);
+      expect(decisions).toBe(0);
+      expect(dispatches).toBe(0);
+      read.mockResolvedValue(tradingTargets.EMPTY_TRADING_DESK);
+      await agentAutonomyDriver.driveAgentNow(AGENT, false);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(decisions).toBe(1);
+      expect(dispatches).toBe(1);
+      expect(entry.directivePending).toBe(false);
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      release();
+      await drive;
+      read.mockRestore();
+      npcSimulation.dispatchHatcherActions = originalDispatch;
+    }
+  }, 15_000);
 });
 
 describe("directive expiry and durable acted issuance", () => {

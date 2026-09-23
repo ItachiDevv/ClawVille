@@ -499,7 +499,42 @@ export function matchesTradingHaltState(prompt: string, halted: boolean, allowed
     && allowedMints.every((mint) => prompt.includes(mint));
 }
 
-async function waitForNoriLesson(client: postgres.Sql, fixture: Fixture, gatewayCounts: () => Record<string, number>, directive: string): Promise<string> {
+/** Failure diagnostics expose only allowlisted state, never owner thought text or identities. */
+export async function readProbeAutonomyDiagnostic(apiBase: string, cookie: string, marker: string) {
+  try {
+    const response = await fetchWithTimeout(`${apiBase}/api/world/autonomy/status`, {
+      headers: { Cookie: cookie }, cache: 'no-store',
+    }, 5_000);
+    if (!response.ok) return { available: false, httpStatus: response.status };
+    const parsed = z.discriminatedUnion('enrolled', [
+      z.object({ enrolled: z.literal(false) }),
+      z.object({
+        enrolled: z.literal(true),
+        phase: z.enum(['deciding', 'walking', 'arrived', 'talking']),
+        phaseSince: z.number().finite(),
+        thoughts: z.array(z.object({
+          at: z.number().finite(),
+          type: z.enum(['decision', 'arrival', 'observation', 'directive']),
+          text: z.string(),
+        })).max(20),
+      }),
+    ]).safeParse(await response.json());
+    if (!parsed.success) return { available: false };
+    const status = parsed.data;
+    if (!status.enrolled) return { available: true, enrolled: false };
+    return {
+      available: true, enrolled: true, phase: status.phase, phaseSince: status.phaseSince,
+      directiveMarkerSeen: marker.length > 0 && status.thoughts.some(
+        (thought) => thought.type === 'directive' && thought.text.includes(marker),
+      ),
+      thoughts: status.thoughts.map(({ at, type }) => ({ at, type })),
+    };
+  } catch {
+    return { available: false };
+  }
+}
+
+async function waitForNoriLesson(client: postgres.Sql, fixture: Fixture, gatewayCounts: () => Record<string, number>, directive: string, apiBase: string, marker: string): Promise<string> {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     throwIfInterrupted();
@@ -528,7 +563,8 @@ async function waitForNoriLesson(client: postgres.Sql, fixture: Fixture, gateway
       EXISTS(SELECT 1 FROM platform_agents WHERE id = ${fixture.platformAgentId}::uuid
         AND config->'currentDirective'->>'text' = ${directive}) AS directive_matches
   `;
-  throw new ProbeFailure(`Nori action produced no fixture-owned lesson; ${JSON.stringify({ ...gatewayCounts(), ...rows[0] })}`);
+  const autonomy = await readProbeAutonomyDiagnostic(apiBase, fixture.cookie, marker);
+  throw new ProbeFailure(`Nori action produced no fixture-owned lesson; ${JSON.stringify({ ...gatewayCounts(), ...rows[0], autonomy })}`);
 }
 
 async function postAutonomy(apiBase: string, fixture: Fixture, active: boolean): Promise<void> {
@@ -1258,7 +1294,7 @@ async function main(): Promise<void> {
       const noriStart = captureCursor(declaredMock.captured);
       const noriDirective = `${noriMarker}: Ask Nori about the Bounty Board.`;
       await postProbeDirective(apiBase, fixture, noriDirective);
-      const noriLesson = await waitForNoriLesson(client, fixture, declaredMock.noriCounts, noriDirective);
+      const noriLesson = await waitForNoriLesson(client, fixture, declaredMock.noriCounts, noriDirective, apiBase, noriMarker);
       ok(noriLesson.startsWith('Nori told me: ') && !/\[ACTION:/i.test(noriLesson),
         'actual Nori action persists a sanitized lesson under the fixture avatar');
       const replySnippet = noriLesson.slice('Nori told me: '.length).replace(/\s+/g, ' ').slice(0, 100);

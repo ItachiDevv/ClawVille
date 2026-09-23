@@ -1,7 +1,34 @@
 import { expect, test } from 'bun:test';
-import { assertProbeBodyAbsent, captureCursor, disconnectProbeBody, matchesTradingHaltState, startDeclaredGatewayMock, waitForCapturedPrompt } from './hosted-skill-runtime-probe';
+import { assertProbeBodyAbsent, captureCursor, disconnectProbeBody, matchesTradingHaltState, readProbeAutonomyDiagnostic, startDeclaredGatewayMock, waitForCapturedPrompt } from './hosted-skill-runtime-probe';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+
+test('autonomy failure diagnostics retain phase evidence without thought text or identities', async () => {
+  let body: unknown = {
+    enrolled: true, phase: 'deciding', phaseSince: 100,
+    bodyId: 'private-body', wallet: { balance: 100 },
+    thoughts: [{ at: 101, type: 'directive', text: 'private-prefix nori-marker private-suffix' }],
+  };
+  let httpStatus = 200;
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
+    expect(new URL(request.url).pathname).toBe('/api/world/autonomy/status');
+    expect(request.headers.get('cookie')).toBe('fixture-cookie');
+    return Response.json(body, { status: httpStatus });
+  } });
+  try {
+    const read = () => readProbeAutonomyDiagnostic(`http://127.0.0.1:${server.port}`, 'fixture-cookie', 'nori-marker');
+    expect(await read()).toEqual({
+      available: true, enrolled: true, phase: 'deciding', phaseSince: 100,
+      directiveMarkerSeen: true, thoughts: [{ at: 101, type: 'directive' }],
+    });
+    body = { enrolled: false, unexpected: 'private-data' };
+    expect(await read()).toEqual({ available: true, enrolled: false });
+    body = { enrolled: true, phase: 'private-data' };
+    expect(await read()).toEqual({ available: false });
+    httpStatus = 403;
+    expect(await read()).toEqual({ available: false, httpStatus: 403 });
+  } finally { server.stop(true); }
+});
 
 test('signal cancellation still permits all bounded fixture teardown requests', async () => {
   const source = new URL('./hosted-skill-runtime-probe.ts', import.meta.url).href;

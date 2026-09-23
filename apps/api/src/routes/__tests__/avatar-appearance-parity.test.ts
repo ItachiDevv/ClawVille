@@ -17,7 +17,7 @@ let projected: any[];
 let resolveHook: (() => Promise<void>) | null;
 let denyUpdate: boolean;
 let resolutions: string[];
-let updates: Array<{ table: unknown; patch: any; params: unknown[] }>;
+let updates: Array<{ table: unknown; patch: any; params: unknown[]; sql: string }>;
 let events: any[];
 const dialect = new PgDialect();
 const fakeDb: any = {
@@ -36,7 +36,9 @@ const fakeDb: any = {
   update: (table: unknown) => ({ set: (patch: any) => ({ where: (where: any) => {
     const perform = async () => {
       if (denyUpdate) return [];
-      updates.push({ table, patch, params: dialect.sqlToQuery(where).params });
+      const query = dialect.sqlToQuery(where);
+      if (table === database.avatars && query.sql.includes('"avatars"."platform_agent_id" is null') && avatar.platformAgentId !== null) return [];
+      updates.push({ table, patch, params: query.params, sql: query.sql });
       if (table === database.avatars) { avatar = { ...avatar, ...patch }; afterWrite?.(); return [avatar]; }
       if (table === database.agentBots) return projectionTargets.map(({ agentId }) => ({ agentId }));
       return [];
@@ -92,6 +94,24 @@ describe('appearance shared human and bound-agent authorization', () => {
     expect(updates[0].params).not.toContain('victim');
     expect(events[0]).toMatchObject({ userId: 'owner', avatarId: 'avatar', agentId: 'connected-agent' });
     expect(resolutions).toHaveLength(4);
+  });
+  test('a public bound avatar without a platform row supports appearance and live projection', async () => {
+    avatar.platformAgentId = null; platform = null;
+    projectionTargets = [{ agentId: 'connected-agent', sessionId: 'appearance-session' }];
+    const res = await request({ modelKey: 'lobster', color: 'blue', gender: 'female' });
+    expect(res.status).toBe(200);
+    expect(avatar).toMatchObject({ id: 'avatar', userId: 'owner', platformAgentId: null, color: 'blue', gender: 'female' });
+    expect(updates[0].sql).toContain('"avatars"."platform_agent_id" is null');
+    expect(updates[0].sql).toContain('"users"."is_guest" = false');
+    expect(updates.some((update) => update.table === database.agents)).toBe(false);
+    expect(projected).toHaveLength(1);
+    expect(events[0]).toMatchObject({ userId: 'owner', avatarId: 'avatar', agentId: 'connected-agent' });
+  });
+  test('a null platform link that changes before UPDATE rejects the stale appearance', async () => {
+    avatar.platformAgentId = null; platform = null;
+    beforeTransaction = () => { avatar.platformAgentId = 'new-platform'; };
+    expect((await request()).status).toBe(403);
+    expect(avatar.color).toBe('red'); expect(updates).toHaveLength(0); expect(events).toHaveLength(0);
   });
   for (const failure of ['expired', 'unbound', 'non-ledger', 'missing-owner', 'guest-owner', 'guest-avatar', 'missing-avatar', 'wrong-avatar', 'inactive-avatar', 'missing-platform', 'foreign-platform']) {
     test(`${failure} agent fails before any write`, async () => {
