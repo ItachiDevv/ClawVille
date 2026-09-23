@@ -25,7 +25,9 @@
 // so a second operator means a sweeper, not just a bigger map.
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
 /** One operator exists today; the caps are here so a future one cannot grow this unbounded. */
-const MAX_STORES = 30;
+// Must match the eight numbered discovery rows in doordashSearchAction.
+const MAX_STORES = 8;
+const MAX_NAMED_STORES = 30;
 const MAX_ITEMS = 400;
 
 export interface DoordashMenuItemRef {
@@ -38,6 +40,10 @@ export interface DoordashMenuItemRef {
 export interface DoordashWorkingContext {
   /** Stores from the most recent search, so a later turn can name one. */
   lastStores: Array<{ storeId: string; storeName: string }>;
+  /** Bounded name lookup includes undisplayed search hits, never ordinal targets. */
+  namedStores?: Array<{ storeId: string; storeName: string }>;
+  /** Browse reference, separate from the cart store; a new search clears it. */
+  menuSelection?: { storeId: string; storeName?: string };
   storeId?: string;
   menuId?: string;
   storeName?: string;
@@ -71,7 +77,8 @@ export function recallDoordashContext(userId: string): DoordashWorkingContext {
   // reference; nothing mutates it today, and that is exactly the kind of trap
   // that stays harmless until the day something does.
   return entry
-    ? { ...entry, lastStores: [...entry.lastStores], lastItems: entry.lastItems ? [...entry.lastItems] : undefined }
+    ? { ...entry, lastStores: [...entry.lastStores], namedStores: entry.namedStores ? [...entry.namedStores] : undefined,
+      lastItems: entry.lastItems ? [...entry.lastItems] : undefined }
     : { lastStores: [] };
 }
 
@@ -81,6 +88,7 @@ export function rememberDoordashContext(
   const current = live(userId) ?? { lastStores: [], at: Date.now() };
   const next: Entry = { ...current, ...patch, at: Date.now() };
   if (next.lastStores.length > MAX_STORES) next.lastStores = next.lastStores.slice(0, MAX_STORES);
+  if (next.namedStores && next.namedStores.length > MAX_NAMED_STORES) next.namedStores = next.namedStores.slice(0, MAX_NAMED_STORES);
   if (next.lastItems && next.lastItems.length > MAX_ITEMS) next.lastItems = next.lastItems.slice(0, MAX_ITEMS);
   entries.set(userId, next);
 }
@@ -159,14 +167,15 @@ export function resetDoordashContexts(): void {
  * match returns null and the caller asks rather than guessing, because ordering
  * from the wrong restaurant is not a recoverable mistake.
  */
-export function resolveStoreByName(
+export function matchingStoresByName(
   context: DoordashWorkingContext, spoken: string,
-): { storeId: string; storeName: string } | null {
+): Array<{ storeId: string; storeName: string }> {
   const needle = spoken.trim().toLowerCase();
-  if (!needle) return null;
-  const exact = context.lastStores.filter((s) => s.storeName.toLowerCase() === needle);
-  if (exact.length === 1) return exact[0]!;
-  const partial = context.lastStores.filter((s) => {
+  if (!needle) return [];
+  const stores = context.namedStores ?? context.lastStores;
+  const exact = stores.filter((s) => s.storeName.toLowerCase() === needle);
+  if (exact.length > 0) return exact;
+  const partial = stores.filter((s) => {
     const name = s.storeName.toLowerCase();
     // `name.includes(needle)` is the safe direction: "Rojas" finds "Rojas Pizza".
     // The REVERSE direction is hazardous, because a very short store name is a
@@ -175,5 +184,37 @@ export function resolveStoreByName(
     // entirely. Require a name long enough for the coincidence to be unlikely.
     return name.includes(needle) || (name.length >= 4 && needle.includes(name));
   });
-  return partial.length === 1 ? partial[0]! : null;
+  return partial;
+}
+
+export function resolveStoreByName(
+  context: DoordashWorkingContext, spoken: string,
+): { storeId: string; storeName: string } | null {
+  const matches = matchingStoresByName(context, spoken);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+/** Only explicit references are parsed here. Restaurant names remain names. */
+export function resolveStoreReference(context: DoordashWorkingContext, spoken: string):
+  | { kind: 'name' }
+  | { kind: 'unresolved' }
+  | { kind: 'store'; storeId: string; storeName?: string } {
+  const reference = spoken.trim().toLowerCase().replace(/[?!]+$/, '');
+  if (/^(?:|they|them|their|their menu|there|here|it|its menu|that|this|that one|this one|that place|this place|that restaurant|this restaurant|the selected restaurant|the menu)$/.test(reference)) {
+    const selected = context.menuSelection ?? (context.lastStores.length === 1 ? context.lastStores[0] : undefined);
+    return selected ? { kind: 'store', ...selected } : { kind: 'unresolved' };
+  }
+  const ordinals = ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
+  const selection = /^(?:the\s+)?(?:(?:number|option|restaurant|place)\s+|#\s*)?([+-]?\d+(?:\.\d+)?(?:st|nd|rd|th)?|zeroth|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+(?:one|place|restaurant|option))?$/.exec(reference);
+  if (selection) {
+    const token = selection[1]!;
+    const position = ordinals.includes(token) ? ordinals.indexOf(token) : Number(token.replace(/(?:st|nd|rd|th)$/, ''));
+    const selected = Number.isInteger(position) && position > 0 ? context.lastStores[position - 1] : undefined;
+    return selected ? { kind: 'store', ...selected } : { kind: 'unresolved' };
+  }
+  // A choice between references is not a restaurant name to send to discovery.
+  if (/^(?:(?:the|number|option|restaurant|place|one|or|and)\s+|#\s*|(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|[+-]?\d+(?:\.\d+)?(?:st|nd|rd|th)?)\s*)+$/.test(reference)) {
+    return { kind: 'unresolved' };
+  }
+  return { kind: 'name' };
 }

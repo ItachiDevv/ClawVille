@@ -14,6 +14,8 @@
 
 ## CURRENT STAGING / PROD STATE
 
+DoorDash natural-chat follow-up, 2026-09-23: the next staging push adds contextual restaurant references, clearer menu lists, conservative ingredient exclusions, and protocol 70 formatting guidance. Local implementation and acceptance remain in progress. The application SHAs below remain the last verified live state until the new containers pass acceptance. No new paid order occurs. **SCHEMA:** `synced`.
+
 Production API and web serve `7473e809833b2c399985c9042ec7f69f7a827fb1`, verified at 2026-09-23 05:08 UTC. PR #296 merged normally at 04:59:45 UTC after all four required checks passed on `ecea0354` (run `35820414880`). Production workflow [35820576674](https://github.com/ItachiDevv/ClawVille/actions/runs/35820576674) passed all four gates, migration, and deployment. Both actual container `SOURCE_COMMIT` values match, old containers are absent, and API health reports the same SHA with status `ok`.
 
 Read-only production checks verify 85 migration records, the expected unchanged checksums for 0068/0069, the nullable text quote fingerprint, and the valid partial bounty approval index. Production reports `testSignerConfigured:false`. The public play manual returns HTTP 200, version 69, and `sha256:69d548e73b03bc8ee8a0faf1f8ffbc8d00a5418a2ff67d17d310c480764b8b9c`. **SCHEMA:** `synced`.
@@ -29,6 +31,8 @@ The final documentation-only commit follows the verified production merge. Deplo
 **PARITY:** human Nori/appearance UI and connected/hosted actions use the same bound-avatar services. Staging verifies real Nori settlement and no extra appearance settlement.
 
 ### Historical deployment checkpoints
+
+- **2026-09-23 (Codex DoorDash natural-chat):** founder confirms the earlier paid order succeeded and requests more natural menu conversation. Source review finds omitted restaurant context, mismatched visible list ordinals, dense output, and excluded ingredients treated as positive choices. The patch addresses these paths and preserves checkout authorization. A real-model synthetic probe reaches its initial 25-second deadline; that result does not establish a language failure. Protocol 70 adds generic multiline guidance, so fresh onboarding, signed partner, and hosted-runtime staging probes remain release gates. **SCHEMA:** `synced`. **PARITY:** owner human chat and the same owner-bound agent preparation bridge share the menu behavior; final payment remains human-authorized.
 
 The entries below describe their recorded checkpoints. Earlier pending-release, signer, and schema statements do not replace the current state above.
 

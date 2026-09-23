@@ -24,10 +24,20 @@ import { KELP_REALM_BEACON_GRAPH } from '@clawville/shared';
 const API_BASE = 'https://api.example.test';
 
 describe('open-agent onboarding manuals', () => {
-  test('appearance reaches protocol, pointer, Nori and deciding scope with version 69', () => {
+  test('protocol 70 and Nori explain multiline replies without exposing operator capabilities', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(69);
-    expect(agentProtocolPointer(API_BASE).version).toBe(69);
+    expect(PROTOCOL_VERSION).toBe(70);
+    expect(manual).toContain('Human avatar chat preserves line breaks in replies');
+    expect(manual).toContain('Integrations should preserve line breaks');
+    expect(townGuide.knowledge.some((entry) => entry.includes('your avatar chat keeps line breaks'))).toBe(true);
+    expect(manual).not.toContain('DOORDASH_');
+    expect(townGuide.knowledge.join('\n')).not.toContain('DOORDASH_');
+  });
+
+  test('appearance reaches protocol, pointer, Nori and deciding scope with version 70', () => {
+    const manual = buildProtocolManual(API_BASE);
+    expect(PROTOCOL_VERSION).toBe(70);
+    expect(agentProtocolPointer(API_BASE).version).toBe(70);
     expect(manual).toContain('PATCH /api/avatars/me/appearance');
     expect(manual).toContain('clawville_update_appearance');
     expect(manual).toContain('[ACTION: update_appearance(color=blue)]');
@@ -40,7 +50,7 @@ describe('open-agent onboarding manuals', () => {
   });
   test('publishes Nori REST and executable hosted discovery in the refreshed manual', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(69);
+    expect(PROTOCOL_VERSION).toBe(70);
     expect(manual).toContain(`POST ${API_BASE}/api/chat/system/town-guide`);
     expect(manual).toContain('clawville_chat_nori');
     expect(manual).toContain('[ACTION: chat_nori(message=<text>)]');
@@ -56,7 +66,7 @@ describe('open-agent onboarding manuals', () => {
     // The same current version/hash reaches connected pointers and hosted
     // protocol-knowledge refresh, rather than a separate unversioned hint.
     expect(protocolPointer(API_BASE)).toMatchObject({
-      version: 69,
+      version: 70,
       contentHash: contentHashOf(manual),
     });
   });
@@ -85,7 +95,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(69);
+    expect(PROTOCOL_VERSION).toBe(70);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -109,7 +119,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(69);
+    expect(PROTOCOL_VERSION).toBe(70);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -320,7 +330,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(69);
+    expect(PROTOCOL_VERSION).toBe(70);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

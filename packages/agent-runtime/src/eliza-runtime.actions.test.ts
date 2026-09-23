@@ -18,7 +18,7 @@ function action(name: string, overrides: Partial<Action> = {}): Action {
   };
 }
 
-function harness(reply: string, actions: Action[] = registeredActions) {
+function harness(reply: string, actions: Action[] = registeredActions, rememberHistory = false) {
   clawvillePlugin.actions = actions;
   const memories: any[] = [];
   const onMessage = mock((_message: ElizaMessage) => {});
@@ -35,7 +35,7 @@ function harness(reply: string, actions: Action[] = registeredActions) {
       ensureWorldExists: async () => {},
       getRoom: async () => ({}),
       getEntityById: async () => ({}),
-      getMemories: async () => [],
+      getMemories: async () => rememberHistory ? structuredClone(memories.slice(-20)) : [],
       createMemory: async (memory: any) => { memories.push(structuredClone(memory)); },
       generateText,
     },
@@ -201,6 +201,61 @@ describe('per-reply action budgets', () => {
 });
 
 describe('ephemeral action persistence', () => {
+  it('dispatches conversational menu follow-ups without putting vendor results into the next prompt', async () => {
+    // Scripted model responses prove prompt wiring, dispatch, and retention.
+    // They do not prove that a real model understands these user phrases.
+    const bridge = {
+      search: mock(async () => ({ ok: true, durationMs: 1, data: { stores: [
+        { store_id: 'private-first', store_name: 'Private Cafe Alpha' },
+        { store_id: 'private-second', store_name: 'Private Cafe Beta' },
+      ] } })),
+      menu: mock(async () => ({ ok: true, durationMs: 1, data: {
+        menu_id: 'private-menu', storeName: 'Private Cafe Beta',
+        items: [{ item_id: 'private-item', name: 'Private Orchard Drink' }],
+      } })),
+      submit: mock(async () => { throw new Error('No payment belongs in this test'); }),
+    };
+    const h = harness('', registeredActions, true);
+    const replies = [
+      '[ACTION: DOORDASH_SEARCH(query=food)]',
+      '[ACTION: DOORDASH_MENU(storeName=the second one)]',
+      '[ACTION: DOORDASH_MENU(query=drinks)]',
+    ];
+    h.generateText.mockImplementation(async () => ({ text: replies.shift()! }));
+    const state = { services: { doordash: bridge } };
+    const discovery = await h.runtime.processMessage('I am hungry. What is nearby?', { state });
+    const selection = await h.runtime.processMessage('The second one, please.', { state });
+    const followup = await h.runtime.processMessage('What drinks do they have?', { state });
+
+    expect(discovery.content).toContain('Private Cafe Alpha');
+    expect(selection.content).toContain('Private Orchard Drink');
+    expect(followup.content).toContain('Private Orchard Drink');
+    expect(bridge.search).toHaveBeenCalledWith({ query: 'food' });
+    expect(bridge.menu.mock.calls).toEqual([
+      [{ storeId: undefined, storeName: 'the second one', query: undefined }],
+      [{ storeId: undefined, storeName: undefined, query: 'drinks' }],
+    ]);
+    expect(bridge.submit).not.toHaveBeenCalled();
+
+    const menu = doorDashActions.find((a) => a.name === 'DOORDASH_MENU')!;
+    for (const [prompt] of h.generateText.mock.calls) {
+      expect(prompt).toContain(menu.description);
+      for (const phrase of menu.similes ?? []) expect(prompt).toContain(phrase);
+      for (const parameter of menu.parameters ?? []) expect(prompt).toContain(parameter.description);
+      for (const vendorText of ['Private Cafe Alpha', 'Private Cafe Beta', 'Private Orchard Drink', 'private-menu', 'private-item']) {
+        expect(prompt).not.toContain(vendorText);
+      }
+    }
+    const lastPrompt = h.generateText.mock.calls[2]![0];
+    expect(lastPrompt).toContain('Previous conversation:');
+    expect(lastPrompt).toContain('The second one, please.');
+    expect(lastPrompt).toContain('[Action output omitted]');
+    expect(h.memories.filter((memory) => memory.entityId === AGENT_ID).map((memory) => memory.content.text))
+      .toEqual(Array(3).fill('[Action output omitted]'));
+    expect(JSON.stringify(h.memories)).not.toContain('Private Cafe');
+    expect(JSON.stringify(h.memories)).not.toContain('Private Orchard');
+  });
+
   it('displays DoorDash results but persists only a marker and ordinary action text', async () => {
     const read = action('READ');
     const bridge = fakeBridge();

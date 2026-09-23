@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { AppContext } from '../../types';
 import type { DoordashOperatorContext } from '../../middleware/doordash-operator-only';
 import * as cli from '../doordash-cli';
+import { recallDoordashContext, rememberDoordashContext, resetDoordashContexts } from '../doordash-session';
 
 // This suite exercises routing, not the durable state machine. The separate
 // confirmation-flow suite models row predicates and preview revocation.
@@ -39,6 +40,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  resetDoordashContexts();
   // Fail loudly if any test accidentally reaches a real subprocess.
   spawnGuard = spyOn(Bun, 'spawn').mockImplementation(() => {
     throw new Error('Tests must never execute the real dd-cli binary');
@@ -361,6 +363,176 @@ describe('Phase 1 DoorDash bridge', () => {
     expect(generic.ok && generic.data.stores.map((s) => s.store_name)).toEqual(['Wawa']);
     expect(runMock.mock.calls.filter((c) => c[0] === 'search').at(-1)).toEqual(['search', ['food', '1742541215']]);
     session.resetDoordashContexts();
+  });
+
+  test('displayed restaurant numbers include unnamed rows and never include the ninth result', async () => {
+    operator.resetDoordashAddressCache();
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve({ ok: true, durationMs: 0,
+      data: op === 'address-list' ? { addresses: [{ address_id: 'a' }] }
+        : op === 'search' ? { stores: Array.from({ length: 12 }, (_, i) => ({ store_id: String(i + 1), store_name: i === 0 ? undefined : `Cafe ${i + 1}` })) }
+          : op === 'nearby-stores' ? { stores: [] }
+            : { menu_id: 'm', items: [{ item_id: 'i', name: 'Tea' }] },
+    })) as never);
+    await bridge().search({ query: 'cafe' });
+    expect(recallDoordashContext('founder').lastStores).toHaveLength(8);
+    for (const [reference, id] of [['the first one', '1'], ['second', '2'], ['number 8', '8']]) {
+      expect(await bridge().menu({ storeName: reference })).toMatchObject({ ok: true, data: { storeName: id === '1' ? 'Place' : `Cafe ${id}` } });
+      expect(runMock.mock.calls.at(-1)).toEqual(['menu', [id]]);
+    }
+    runMock.mockClear();
+    for (const reference of ['0', '-1', '1.5', 'ninth', 'number 9', 'first or second']) {
+      expect(await bridge().menu({ storeName: reference })).toMatchObject({ ok: false, failure: 'doordash_store_unresolved' });
+    }
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('menu follow-ups use canonical selected place and preserve its cart', async () => {
+    rememberDoordashContext('founder', { lastStores: [{ storeId: '1', storeName: 'Cafe One' }, { storeId: '2', storeName: 'Cafe Two' }] });
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, durationMs: 0, data: {
+      menu_id: 'm', items: [{ item_id: '1', name: 'Iced Drinks' }, { item_id: '2', name: 'Pizza' }],
+    } } as never);
+    await bridge().menu({ storeName: 'the second one' });
+    rememberDoordashContext('founder', { cartUuid: 'cart' });
+    for (const storeName of [undefined, 'their menu', 'there']) {
+      const result = await bridge().menu({ storeName, query: 'drinks' });
+      expect(result).toMatchObject({ ok: true, data: { storeName: 'Cafe Two', items: [{ item_id: '1', name: 'Iced Drinks' }] } });
+      expect(runMock.mock.calls.at(-1)).toEqual(['menu', ['2']]);
+      expect(recallDoordashContext('founder').cartUuid).toBe('cart');
+    }
+  });
+
+  test('single discovery supports their menu; multiple or expired discovery asks without vendor calls', async () => {
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, durationMs: 0, data: { menu_id: 'm', items: [] } } as never);
+    rememberDoordashContext('founder', { lastStores: [{ storeId: '1', storeName: 'Cafe One' }] });
+    expect(await bridge().menu({})).toMatchObject({ ok: true, data: { storeName: 'Cafe One' } });
+    expect(runMock.mock.calls).toEqual([['menu', ['1']]]);
+    rememberDoordashContext('founder', { menuSelection: undefined, lastStores: [{ storeId: '1', storeName: 'Cafe' }, { storeId: '2', storeName: 'Cafe' }] });
+    runMock.mockClear();
+    expect(await bridge().menu({})).toMatchObject({ ok: false });
+    expect(await bridge().menu({ storeName: 'Cafe' })).toMatchObject({ ok: false });
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.now() + 30 * 60_000 + 1);
+    try {
+      expect(await bridge().menu({ storeName: 'their menu' })).toMatchObject({ ok: false });
+      expect(await bridge().menu({ storeName: 'first' })).toMatchObject({ ok: false });
+    } finally { clock.mockRestore(); }
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
+  test('drinks follow-up finds common beverage names without broad substring or food matches', async () => {
+    rememberDoordashContext('founder', { menuSelection: { storeId: '1', storeName: 'Cafe' } });
+    const names = ['Coke (20 oz)', 'Pepsi', 'Iced Tea', 'Bottled Water', 'Lemonade', 'Coffee Cake', 'Tea Cookies', 'Watermelon Bowl', 'Pizza', 'Steak', 'Mountain Dew'];
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, durationMs: 0, data: {
+      menu_id: 'm', items: names.map((name, i) => ({ item_id: String(i), name })),
+    } } as never);
+    for (const query of ['drinks', 'beverages']) {
+      const result = await bridge().menu({ query });
+      expect(result.ok && result.data.items.map((item) => item.name)).toEqual([
+        'Coke (20 oz)', 'Pepsi', 'Iced Tea', 'Bottled Water', 'Lemonade', 'Mountain Dew',
+      ]);
+      expect(runMock.mock.calls.at(-1)).toEqual(['menu', ['1']]);
+    }
+    const specific = await bridge().menu({ query: 'cake' });
+    expect(specific.ok && specific.data.items.map((item) => item.name)).toEqual(['Coffee Cake']);
+  });
+
+  test('a new failed search invalidates stale deictic selection but preserves the cart', async () => {
+    operator.resetDoordashAddressCache();
+    rememberDoordashContext('founder', { storeId: 'old', cartUuid: 'cart', menuSelection: { storeId: 'old' }, lastStores: [{ storeId: 'old', storeName: 'Old Cafe' }] });
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: false, failure: 'ddcli_timeout', detail: 'timeout', durationMs: 0 });
+    expect(await bridge().search({ query: 'pizza' })).toMatchObject({ ok: false });
+    runMock.mockClear();
+    expect(await bridge().menu({ storeName: 'their menu' })).toMatchObject({ ok: false });
+    expect(runMock).not.toHaveBeenCalled();
+    expect(recallDoordashContext('founder').cartUuid).toBe('cart');
+  });
+
+  test('new discovery replaces previous menu selection, and a failed menu preserves the cart but pins the requested place', async () => {
+    operator.resetDoordashAddressCache();
+    const old = { storeId: 'old', storeName: 'Old Cafe' };
+    rememberDoordashContext('founder', { ...old, menuId: 'old-menu', cartUuid: 'cart', menuSelection: old,
+      lastStores: [old, { storeId: 'other', storeName: 'Other Cafe' }] });
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve(op === 'menu'
+      ? { ok: false, failure: 'ddcli_timeout', detail: 'timeout', durationMs: 0 }
+      : { ok: true, durationMs: 0, data: op === 'address-list' ? { addresses: [{ address_id: 'a' }] }
+        : op === 'search' ? { stores: [{ store_id: 'new', store_name: 'New Cafe' }] } : { stores: [] } })) as never);
+    expect(await bridge().menu({ storeName: 'Other Cafe' })).toMatchObject({ ok: false });
+    expect(recallDoordashContext('founder')).toMatchObject({ cartUuid: 'cart', storeId: 'old', menuId: 'old-menu', menuSelection: { storeId: 'other' } });
+    await bridge().menu({});
+    expect(runMock.mock.calls.at(-1)).toEqual(['menu', ['other']]);
+    await bridge().search({ query: 'new' });
+    await bridge().menu({ storeName: 'their menu' });
+    expect(runMock.mock.calls.at(-1)).toEqual(['menu', ['new']]);
+    expect(recallDoordashContext('founder')).toMatchObject({ cartUuid: 'cart', storeId: 'old' });
+    expect(recallDoordashContext('founder').menuSelection?.storeId).toBe('new');
+  });
+
+  test('unknown explicit restaurant names discover naturally without exposing an undisplayed ordinal list', async () => {
+    operator.resetDoordashAddressCache();
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve({ ok: true, durationMs: 0,
+      data: op === 'address-list' ? { addresses: [{ address_id: 'a' }] }
+        : op === 'search' ? { stores: [{ store_id: '1', store_name: 'New Cafe' }] }
+          : op === 'nearby-stores' ? { stores: [] } : { menu_id: 'm', items: [] },
+    })) as never);
+    expect(await bridge().menu({ storeName: 'New Cafe' })).toMatchObject({ ok: true, data: { storeName: 'New Cafe' } });
+    expect(runMock.mock.calls.map((call) => call[0])).toEqual(['address-list', 'search', 'nearby-stores', 'menu']);
+    expect(recallDoordashContext('founder').lastStores).toEqual([]);
+    runMock.mockClear();
+    expect(await bridge().menu({ storeName: 'first' })).toMatchObject({ ok: false });
+    expect(runMock).not.toHaveBeenCalled();
+    expect(await bridge().menu({})).toMatchObject({ ok: true, data: { storeName: 'New Cafe' } });
+  });
+
+  test('an unresolved explicit restaurant switch cannot fall back to the previous menu', async () => {
+    operator.resetDoordashAddressCache();
+    const old = { storeId: 'old', storeName: 'Old Cafe' };
+    rememberDoordashContext('founder', { ...old, cartUuid: 'cart', menuSelection: old, lastStores: [old] });
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve({ ok: true, durationMs: 0,
+      data: op === 'address-list' ? { addresses: [{ address_id: 'a' }] } : { stores: [] },
+    })) as never);
+    expect(await bridge().menu({ storeName: 'Missing Deli' })).toMatchObject({ ok: false });
+    runMock.mockClear();
+    expect(await bridge().menu({ query: 'drinks' })).toMatchObject({ ok: false });
+    expect(runMock).not.toHaveBeenCalled();
+    expect(recallDoordashContext('founder').cartUuid).toBe('cart');
+  });
+
+  test('ambiguous direct named discovery displays the exact list before accepting its numbers', async () => {
+    operator.resetDoordashAddressCache();
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve({ ok: true, durationMs: 0,
+      data: op === 'address-list' ? { addresses: [{ address_id: 'a' }] }
+        : op === 'search' ? { stores: [{ store_id: '1', store_name: 'Cafe' }, { store_id: '2', store_name: 'Cafe' }] }
+          : op === 'nearby-stores' ? { stores: [] } : { menu_id: 'm', items: [] },
+    })) as never);
+    const result = await bridge().menu({ storeName: 'Cafe' });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('1. Cafe\n2. Cafe') });
+    expect(runMock.mock.calls.some((call) => call[0] === 'menu')).toBe(false);
+    expect(await bridge().menu({ storeName: 'second' })).toMatchObject({ ok: true });
+    expect(runMock.mock.calls.at(-1)).toEqual(['menu', ['2']]);
+  });
+
+  test('a ninth named hit remains available by name, but never by an undisplayed number', async () => {
+    operator.resetDoordashAddressCache();
+    runMock = spyOn(cli, 'runDdCli').mockImplementation(((op: string) => Promise.resolve({ ok: true, durationMs: 0,
+      data: op === 'address-list' ? { addresses: [{ address_id: 'a' }] }
+        : op === 'search' ? { stores: Array.from({ length: 9 }, (_, i) => ({ store_id: String(i + 1), store_name: i === 8 ? 'Target Deli' : `Cafe ${i + 1}` })) }
+          : op === 'nearby-stores' ? { stores: [] } : { menu_id: 'm', items: [] },
+    })) as never);
+    // Direct named lookup can find an undisplayed hit without numbering it.
+    expect(await bridge().menu({ storeName: 'Target Deli' })).toMatchObject({ ok: true, data: { storeName: 'Target Deli' } });
+    expect(runMock.mock.calls.at(-1)).toEqual(['menu', ['9']]);
+    await bridge().search({ query: 'deli' });
+    runMock.mockClear();
+    expect(await bridge().menu({ storeName: 'number 9' })).toMatchObject({ ok: false });
+    expect(runMock).not.toHaveBeenCalled();
+    expect(await bridge().menu({ storeName: 'Target Deli' })).toMatchObject({ ok: true, data: { storeName: 'Target Deli' } });
+    expect(runMock.mock.calls).toEqual([['menu', ['9']]]);
+  });
+
+  test('unsupported customization never silently adds a plain item', async () => {
+    rememberDoordashContext('founder', { storeId: 's', menuId: 'm', lastItems: [{ itemId: 'i', name: 'Burger', hasModifiers: false, hasRequired: false }] });
+    runMock = spyOn(cli, 'runDdCli').mockResolvedValue({ ok: true, durationMs: 0, data: { item: { item_id: 'i', extras: [] } } } as never);
+    expect(await bridge().cartAdd({ itemName: 'Burger', choices: 'no onions', quantity: 1 })).toMatchObject({ ok: false, failure: 'doordash_needs_choices' });
+    expect(runMock.mock.calls).toEqual([['item-options', ['s', 'm', 'i']]]);
   });
 
   // -------------------------------------------------------------------------

@@ -517,7 +517,7 @@ export default function AvatarChatBar({ surface = 'world' }: { surface?: 'world'
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
-                    className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm ${
+                    className={`max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-1.5 text-sm ${
                       msg.role === 'user'
                         ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
                         : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
