@@ -429,3 +429,11 @@ The onboarding smoke now checks served tools discovery and performs the real PAT
 It verifies the returned avatar/owner and signs the existing disconnect contract in `finally`, then checks both live registries.
 The smoke retains its durable identity/avatar test records; it does not perform broad database deletion.
 These version 69 staging checks remain required after deployment. The prior 99-check protocol 68 run is historical evidence only.
+
+### CI land assertion repair (2026-09-23)
+
+Exact staging SHA `daa14c9b` failed the route gate because the land proof suite copied protocol version 68.
+The test now imports the canonical version, retains the single-declaration check, and requires version 51 or newer.
+The version floor preserves the land proof introduction; the adjacent endpoint, required-proof, and exact signature-message checks remain unchanged.
+Pinned Bun 1.3.11 reproduced 83 passes and one failure before the edit, then passed all 84 tests with 412 assertions.
+The edit changes no protocol text, land route, identity, settlement, or production state. `git diff --check` passed.

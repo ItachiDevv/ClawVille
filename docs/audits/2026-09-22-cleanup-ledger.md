@@ -4,6 +4,14 @@ Last Audited: 2026-09-22. Status: IN PROGRESS. Coordinator: Codex.
 
 ## Scope and evidence rules
 
+### September 23 release-gate continuation
+
+The `daa14c9b` staging and PR workflows both stopped before migration or deployment. The land suite copied protocol 68 after the shared manual advanced to 69. Its repair compares the canonical version and retains the version-51 land-feature floor and single-declaration check. The autonomy P1 fixture lacked a successful directive-state read. The fail-closed driver therefore deferred the decision correctly. The fixture now supplies a known empty directive and restores its seam after each test. Its no-money case also requires an actual model decision. Pinned Bun 1.3.11 records land 84/84 and driver 79/79 after their respective repairs. These changes alter tests only. Exact-commit CI and protocol-69 live acceptance remain pending.
+
+The reviewed production deployment helper now resides on the production VPS. Its SHA-256 is `5737a4cec7e923e8ff88cefd3c7bf5b61013b86fe8c26c965f645e2158936e40`; syntax and remote hash checks pass. The previous helper remains in the dated backup. No production deployment occurred during installation. A fresh temporary signer is configured only on staging for the final signed harness and requires removal after verification.
+
+Independent repair review passes 124 tests and 597 assertions. The full core tier passes 189 isolated files with no failures or exclusions under Bun 1.3.11, `CI=true`, and an empty database URL. The fixture changes do not alter runtime behavior. On itachi222, the existing staging scene initially shows 30 FPS, then returns to 60 FPS after a tab switch without a settings or code change. Camera input briefly lowers the reading before it settles at 60 FPS and 16.7 ms average. This is a desktop observation, not physical iPad or Iris Xe acceptance.
+
 The founder requested a full audit of the Claude sessions `dd` and `bountyFix2`, related sessions in their period, and cleanup of unresolved complaints. Transcript assertions do not count as independent verification. Each result distinguishes historical evidence, current source, executed tests, live state, and visual checks.
 
 The principal period is September 16–20, 2026. The gate-work predecessor starts September 14. Logs reside on **itachi222**, under `C:\Users\itachi\.claude\projects\C--Users-itachi-Documents-Crypto-ClawVille`.
