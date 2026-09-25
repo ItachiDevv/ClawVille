@@ -883,7 +883,10 @@ function CreatorBountyCard({
                 setExpanded((v) => !v);
               }}
             >
-              {expanded ? 'Hide' : 'View'} Submissions ({attempts.length})
+              {expanded ? 'Hide' : 'View'} Submissions ({attempts.length}
+              {(bounty.attemptCount ?? attempts.length) > attempts.length
+                ? ` of ${bounty.attemptCount}`
+                : ''})
             </RpgButton>
             {status === 'open' && !hasActiveAttempts && (
               <RpgButton

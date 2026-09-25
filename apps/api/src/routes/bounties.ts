@@ -46,7 +46,7 @@ import {
   bountyAttempts,
   bountyReputation,
 } from '@clawville/database';
-import { eq, and, or, desc, asc, sql, ne, inArray } from 'drizzle-orm';
+import { eq, and, or, desc, asc, sql, ne, inArray, lt } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 
 // ── Rule E5 agent parity (Phase 1). Every WRITE binds to `identity.avatarId`
@@ -412,12 +412,29 @@ export function parseMyListQuery<S extends string>(
   return { statuses, limit };
 }
 
+/** Optional `before` cursor (ISO timestamp): page history older than a row's createdAt. */
+export function parseBeforeCursor(raw: string | undefined): Date | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const d = new Date(raw.trim());
+  if (Number.isNaN(d.getTime())) {
+    throw new HTTPException(400, { message: 'before must be an ISO timestamp' });
+  }
+  return d;
+}
+
 type BountyStatus = (typeof bounties.status.enumValues)[number];
 type AttemptStatus = (typeof bountyAttempts.status.enumValues)[number];
 
 /** Rows for GET /my-bounties. No filter: every live bounty + the newest `limit`. */
-export function myBountiesQuery(creatorId: string, statuses: BountyStatus[] | null, limit: number) {
-  const mine = eq(bounties.creatorId, creatorId);
+export function myBountiesQuery(
+  creatorId: string,
+  statuses: BountyStatus[] | null,
+  limit: number,
+  before: Date | null = null,
+) {
+  const mine = before
+    ? and(eq(bounties.creatorId, creatorId), lt(bounties.createdAt, before))!
+    : eq(bounties.creatorId, creatorId);
   if (statuses) {
     return db
       .select()
@@ -469,8 +486,15 @@ export function myBountyAttemptsQuery(bountyIds: string[]) {
 }
 
 /** Rows for GET /my-attempts. No filter: every live attempt + the newest `limit`. */
-export function myAttemptsQuery(hunterId: string, statuses: AttemptStatus[] | null, limit: number) {
-  const mine = eq(bountyAttempts.hunterId, hunterId);
+export function myAttemptsQuery(
+  hunterId: string,
+  statuses: AttemptStatus[] | null,
+  limit: number,
+  before: Date | null = null,
+) {
+  const mine = before
+    ? and(eq(bountyAttempts.hunterId, hunterId), lt(bountyAttempts.createdAt, before))!
+    : eq(bountyAttempts.hunterId, hunterId);
   const base = db
     .select({
       attempt: bountyAttempts,
@@ -523,9 +547,10 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
     c.req.query('limit'),
     bounties.status.enumValues,
   );
+  const before = parseBeforeCursor(c.req.query('before'));
   const avatar = await getActingAvatar(c);
 
-  const rows = await myBountiesQuery(avatar.id, statuses, limit);
+  const rows = await myBountiesQuery(avatar.id, statuses, limit, before);
 
   // Fetch attempts for these bounties (with hunter names): the newest
   // MY_BOUNTY_ATTEMPTS_PER_BOUNTY per bounty plus every live attempt.
@@ -598,10 +623,11 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, asyn
     c.req.query('limit'),
     bountyAttempts.status.enumValues,
   );
+  const before = parseBeforeCursor(c.req.query('before'));
   const avatar = await getActingAvatar(c);
 
   const [rows, totals] = await Promise.all([
-    myAttemptsQuery(avatar.id, statuses, limit),
+    myAttemptsQuery(avatar.id, statuses, limit, before),
     statusCounts(bountyAttempts.status, eq(bountyAttempts.hunterId, avatar.id), bountyAttempts),
   ]);
 

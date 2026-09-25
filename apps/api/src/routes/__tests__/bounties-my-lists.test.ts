@@ -5,6 +5,7 @@ import {
   MY_BOUNTY_ATTEMPTS_PER_BOUNTY,
   MY_LIST_DEFAULT_LIMIT,
   MY_LIST_MAX_LIMIT,
+  parseBeforeCursor,
   parseMyListQuery,
 } from '../bounties';
 
@@ -83,6 +84,13 @@ describe('my-bounties / my-attempts query bounds', () => {
     expect(parseMyListQuery(undefined, '-' + '9'.repeat(400), BOUNTY_STATUSES).limit).toBe(1);
     expect(parseMyListQuery(undefined, ' 50 ', BOUNTY_STATUSES).limit).toBe(50);
     expect(parseMyListQuery(undefined, '-0', BOUNTY_STATUSES).limit).toBe(1);
+  });
+
+  it('parses the optional before cursor and rejects garbage with 400', () => {
+    expect(parseBeforeCursor(undefined)).toBeNull();
+    expect(parseBeforeCursor('  ')).toBeNull();
+    expect(parseBeforeCursor('2026-09-25T21:41:06.760Z')?.toISOString()).toBe('2026-09-25T21:41:06.760Z');
+    expect(statusOf(() => parseBeforeCursor('yesterday'))).toBe(400);
   });
 
   it('keeps the default and max inside a sane egress budget', () => {
