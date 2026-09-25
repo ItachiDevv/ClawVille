@@ -14,6 +14,12 @@
 
 ## CURRENT STAGING / PROD STATE
 
+Last Audited: 2026-09-25 22:58 UTC. Staging API and web serve `d027a0119dba6f6c5d47c98527405a0f913e0ada` (bounded bounty "my" lists, protocol 72), verified by container `SOURCE_COMMIT` (API `yvtwz7snaghxifkjhyxknffu-224912570660`, web `ju0n3sddhll3cuhbrspt4muy-224912596525`; both `c5aaa0e4` containers absent) and `/health`. Staging workflow `36198268842` succeeded. Production is unchanged at `7377a949e9b00f51e9f4925c6e30c30c6e77c547`; promotion waits for the founder. **SCHEMA:** `synced`.
+
+Staging acceptance (2026-09-25 22:55-22:58 UTC): human path with seeded `landtest1` — both routes 200 with `statusCounts`/`nextBefore`/`attemptCount`; `status=open,in_progress&limit=50` returns live rows only; `limit=1` honored; `status=bogus`, `limit=0x10`, `before=yesterday`, attempt `status=completed` → 400; `limit=1000000000` → 200 (clamped); a `limit=1` `nextBefore` walk reproduces the full ordered history; anonymous → 401. Agent path with a fresh connect/join/reconnect session — both routes 200 with the new fields, bad status → 400. Onboarding smoke 14/14 PASS. Served protocol pointer = 72 and the bearer-served manual carries the new text. NOT run: the mock-Hatcher signed harness (`ALLOW_TEST_PARTNER_PUBKEY` is not set on staging; this change moves no partner wire, signing, or session path) and a browser check of the bounty board modal (only the count source changed).
+
+### Previous: item-choice release (2026-09-23 20:17 UTC)
+
 Last Audited: 2026-09-23 20:17 UTC. Staging API and web serve `c5aaa0e48b4214631b97bd52d42cf472b461df47`. Production API and web serve `7377a949e9b00f51e9f4925c6e30c30c6e77c547`, verified by container `SOURCE_COMMIT` and API health at 20:16-20:17 UTC. Production promotion PR #301 merges normally at 20:06:35 UTC. **SCHEMA:** `synced`; no schema, environment, or payment authorization change. Protocol stays 71 under the documented private-operator exception.
 
 Production workflow `35913751460` passes all four gates, migration, and deployment. API container `ebnatuxblgp4q0antoca9swk-201108963022` and web container `ds7hoho685ire522lz3hie2j-201108988706` report the exact source; both former `0b88e5c2` containers are absent. API health returns `ok`, and runtime environment is production. Public play manual returns HTTP 200, version 71, unchanged hash `sha256:016cc3c59a9918b85241cabf129673df93f483c28e535642c87e64a05c73d7f3`.
@@ -454,7 +460,7 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 - **Who it's for:** founder (Supabase bill); every agent that polls its own lists.
 - **SCHEMA:** `synced` — no migration.
 - **PARITY:** human path: bounty-board-modal "My Bounties" / "My Attempts" tabs (same routes; unchanged for accounts under 200 rows); agent path: the same REST routes with the agent session header; both resolve the acting avatar through `getActingAvatar`.
-- **Status:** AWAITING staging deploy verify; prod promotion waits for the founder's go.
+- **Status:** on staging `d027a011` since 2026-09-25 22:55 UTC; staging acceptance in CURRENT STATE above. Review: Codex rounds 1-4 each returned REJECT and every finding was fixed or tracked (commits `3843c548`, `8a627926`, `676b10be`, `34ab48e1`, `d027a011`); round 5 on the final range could not run — Codex CLI returns `401 Unauthorized` on every request since 22:39 UTC (ChatGPT login status OK). Prod promotion waits for the founder's go.
 
 ### 2026-09-23 05:12 UTC - audited cleanup promoted through PR #296
 
