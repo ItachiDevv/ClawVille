@@ -838,7 +838,7 @@ function CreatorBountyCard({
       label: 'Attempts',
       value: `${bounty.currentAttempts ?? 0} / ${bounty.maxAttempts ?? 1}`,
     },
-    { label: 'Submissions', value: attempts.length },
+    { label: 'Submissions', value: bounty.attemptCount ?? attempts.length },
   ];
 
   return (
@@ -1925,9 +1925,10 @@ export default function BountyBoardModal() {
   const activeCreatorCount = myBounties.filter(
     (b: any) => b.status === 'open' || b.status === 'in_progress'
   ).length;
-  const completedCreatorCount = myBounties.filter(
-    (b: any) => b.status === 'completed'
-  ).length;
+  // The server trims long histories; prefer its exact per-status totals.
+  const completedCreatorCount =
+    myBountiesData?.statusCounts?.completed ??
+    myBounties.filter((b: any) => b.status === 'completed').length;
 
   const hunterInProgress = myAttempts.filter((a: any) =>
     ['claimed', 'in_progress'].includes(a.status)
@@ -1935,9 +1936,9 @@ export default function BountyBoardModal() {
   const hunterAwaiting = myAttempts.filter(
     (a: any) => a.status === 'submitted'
   ).length;
-  const hunterApproved = myAttempts.filter(
-    (a: any) => a.status === 'approved'
-  ).length;
+  const hunterApproved =
+    myAttemptsData?.statusCounts?.approved ??
+    myAttempts.filter((a: any) => a.status === 'approved').length;
 
   // -------------------------------------------------------------------------
   // Render

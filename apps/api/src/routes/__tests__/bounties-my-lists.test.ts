@@ -78,7 +78,9 @@ describe('my-bounties / my-attempts query bounds', () => {
     expect(statusOf(() => parseMyListQuery(undefined, '0x10', BOUNTY_STATUSES))).toBe(400);
     expect(statusOf(() => parseMyListQuery(undefined, '1e3', BOUNTY_STATUSES))).toBe(400);
     expect(statusOf(() => parseMyListQuery(undefined, 'Infinity', BOUNTY_STATUSES))).toBe(400);
-    expect(statusOf(() => parseMyListQuery(undefined, '99999999999999999999', BOUNTY_STATUSES))).toBe(400);
+    expect(parseMyListQuery(undefined, '1000000000', BOUNTY_STATUSES).limit).toBe(MY_LIST_MAX_LIMIT);
+    expect(parseMyListQuery(undefined, '9'.repeat(400), BOUNTY_STATUSES).limit).toBe(MY_LIST_MAX_LIMIT);
+    expect(parseMyListQuery(undefined, '-' + '9'.repeat(400), BOUNTY_STATUSES).limit).toBe(1);
     expect(parseMyListQuery(undefined, ' 50 ', BOUNTY_STATUSES).limit).toBe(50);
     expect(parseMyListQuery(undefined, '-0', BOUNTY_STATUSES).limit).toBe(1);
   });

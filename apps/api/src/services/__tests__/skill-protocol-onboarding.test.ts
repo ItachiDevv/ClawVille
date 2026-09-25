@@ -32,6 +32,8 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('GET /api/bounties/my-bounties?status=open,in_progress&limit=50');
     expect(manual).toMatch(/live rows \(open\/in_progress bounties; claimed\/in_progress\/\s+submitted attempts\) are always included/);
     expect(manual).toMatch(/newest 20 attempts per bounty plus every live\s+attempt/);
+    expect(manual).toMatch(/each bounty carries `attemptCount` \(exact total\)/);
+    expect(manual).toMatch(/responses carry `statusCounts` \(exact per-status totals/);
     expect(
       CLAWVILLE_ORIENTATION_KNOWLEDGE.some(
         (entry) => entry.includes('status=open,in_progress') && entry.includes('always plus every live bounty or attempt'),

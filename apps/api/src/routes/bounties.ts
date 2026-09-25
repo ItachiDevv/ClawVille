@@ -368,10 +368,13 @@ bountyRoutes.get('/featured', async (c) => {
 // filter (comma-separated enum values) and a clamped `limit`, newest first.
 // Without a filter, LIVE rows (the ones with review/cancel/submit controls)
 // are always included on top of the newest `limit`, so an old open bounty or
-// an old active attempt can never fall off the list.
+// an old active attempt can never fall off the list. Live rows are not capped:
+// each open bounty escrows its reward and live attempts per bounty are bounded
+// by max_attempts (<= 100); history is what the limit bounds.
 // Attempts per bounty on /my-bounties: newest 20 plus every live attempt.
-// Prod 2026-09-25: p50 3, p99 5, max 741 attempts on one bounty; max_attempts
-// caps live attempts per bounty at 5.
+// Prod 2026-09-25: p50 3, p99 5, max 741 attempts on one bounty.
+// Totals the UI shows (per-bounty attemptCount, statusCounts) come from COUNT
+// queries, so they stay exact when rows are trimmed.
 // ---------------------------------------------------------------------------
 export const MY_LIST_DEFAULT_LIMIT = 200;
 export const MY_LIST_MAX_LIMIT = 500;
@@ -399,7 +402,9 @@ export function parseMyListQuery<S extends string>(
   if (rawLimit !== undefined && rawLimit.trim() !== '') {
     const trimmed = rawLimit.trim();
     // Plain decimal only: Number() would also accept 0x10, 1e3, Infinity.
-    if (!/^-?\d{1,9}$/.test(trimmed)) {
+    // Any length is fine: huge values clamp (Number() of a long digit run is a
+    // large finite number or Infinity, both clamp to the bounds).
+    if (!/^-?\d+$/.test(trimmed)) {
       throw new HTTPException(400, { message: 'limit must be an integer' });
     }
     limit = Math.min(MY_LIST_MAX_LIMIT, Math.max(1, Number(trimmed)));
@@ -431,8 +436,7 @@ export function myBountiesQuery(creatorId: string, statuses: BountyStatus[] | nu
     .select()
     .from(bounties)
     .where(and(mine, or(inArray(bounties.status, [...LIVE_BOUNTY_STATUSES]), inArray(bounties.id, newest))))
-    .orderBy(desc(bounties.createdAt))
-    .limit(limit + MY_LIST_MAX_LIMIT);
+    .orderBy(desc(bounties.createdAt));
 }
 
 /** Attempts shown under GET /my-bounties: newest N per bounty + every live attempt. */
@@ -467,13 +471,7 @@ export function myBountyAttemptsQuery(bountyIds: string[]) {
 /** Rows for GET /my-attempts. No filter: every live attempt + the newest `limit`. */
 export function myAttemptsQuery(hunterId: string, statuses: AttemptStatus[] | null, limit: number) {
   const mine = eq(bountyAttempts.hunterId, hunterId);
-  const newest = db
-    .select({ id: bountyAttempts.id })
-    .from(bountyAttempts)
-    .where(mine)
-    .orderBy(desc(bountyAttempts.createdAt))
-    .limit(limit);
-  return db
+  const base = db
     .select({
       attempt: bountyAttempts,
       bountyTitle: bounties.title,
@@ -484,14 +482,36 @@ export function myAttemptsQuery(hunterId: string, statuses: AttemptStatus[] | nu
       bountyStatus: bounties.status,
     })
     .from(bountyAttempts)
-    .innerJoin(bounties, eq(bountyAttempts.bountyId, bounties.id))
-    .where(
-      statuses
-        ? and(mine, inArray(bountyAttempts.status, statuses))
-        : and(mine, or(inArray(bountyAttempts.status, [...LIVE_ATTEMPT_STATUSES]), inArray(bountyAttempts.id, newest))),
-    )
+    .innerJoin(bounties, eq(bountyAttempts.bountyId, bounties.id));
+  if (statuses) {
+    return base
+      .where(and(mine, inArray(bountyAttempts.status, statuses)))
+      .orderBy(desc(bountyAttempts.createdAt))
+      .limit(limit);
+  }
+  const newest = db
+    .select({ id: bountyAttempts.id })
+    .from(bountyAttempts)
+    .where(mine)
     .orderBy(desc(bountyAttempts.createdAt))
-    .limit(statuses ? limit : limit + MY_LIST_MAX_LIMIT);
+    .limit(limit);
+  return base
+    .where(and(mine, or(inArray(bountyAttempts.status, [...LIVE_ATTEMPT_STATUSES]), inArray(bountyAttempts.id, newest))))
+    .orderBy(desc(bountyAttempts.createdAt));
+}
+
+/** Exact per-status totals for a "my" list header (one row per status). */
+async function statusCounts(
+  column: typeof bounties.status | typeof bountyAttempts.status,
+  owner: ReturnType<typeof eq>,
+  table: typeof bounties | typeof bountyAttempts,
+): Promise<Record<string, number>> {
+  const rows = await db
+    .select({ status: column, n: count() })
+    .from(table)
+    .where(owner)
+    .groupBy(column);
+  return Object.fromEntries(rows.map((r) => [r.status, Number(r.n)]));
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +530,18 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
   // Fetch attempts for these bounties (with hunter names): the newest
   // MY_BOUNTY_ATTEMPTS_PER_BOUNTY per bounty plus every live attempt.
   const bountyIds = rows.map((r) => r.id);
-  const attemptRows = bountyIds.length > 0 ? await myBountyAttemptsQuery(bountyIds) : [];
+  const [attemptRows, attemptTotals, totals] = await Promise.all([
+    bountyIds.length > 0 ? myBountyAttemptsQuery(bountyIds) : Promise.resolve([]),
+    bountyIds.length > 0
+      ? db
+          .select({ bountyId: bountyAttempts.bountyId, n: count() })
+          .from(bountyAttempts)
+          .where(inArray(bountyAttempts.bountyId, bountyIds))
+          .groupBy(bountyAttempts.bountyId)
+      : Promise.resolve([]),
+    statusCounts(bounties.status, eq(bounties.creatorId, avatar.id), bounties),
+  ]);
+  const attemptCountByBounty = new Map(attemptTotals.map((t) => [t.bountyId, Number(t.n)]));
 
   // Group attempts by bounty ID
   const attemptsByBounty = new Map<string, typeof attemptRows>();
@@ -538,6 +569,9 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
+    // Exact total; `attempts` below holds at most the newest
+    // MY_BOUNTY_ATTEMPTS_PER_BOUNTY plus every live attempt.
+    attemptCount: attemptCountByBounty.get(r.id) ?? 0,
     attempts: (attemptsByBounty.get(r.id) ?? []).map((a) => ({
       id: a.attempt.id,
       hunterId: a.attempt.hunterId,
@@ -551,7 +585,8 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
     })),
   }));
 
-  return c.json({ bounties: bountyList });
+  // statusCounts: exact per-status totals across the whole history.
+  return c.json({ bounties: bountyList, statusCounts: totals });
 });
 
 // ---------------------------------------------------------------------------
@@ -565,7 +600,10 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, asyn
   );
   const avatar = await getActingAvatar(c);
 
-  const rows = await myAttemptsQuery(avatar.id, statuses, limit);
+  const [rows, totals] = await Promise.all([
+    myAttemptsQuery(avatar.id, statuses, limit),
+    statusCounts(bountyAttempts.status, eq(bountyAttempts.hunterId, avatar.id), bountyAttempts),
+  ]);
 
   const attempts = rows.map((r) => ({
     id: r.attempt.id,
@@ -588,7 +626,8 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, asyn
     },
   }));
 
-  return c.json({ attempts });
+  // statusCounts: exact per-status totals across the whole history.
+  return c.json({ attempts, statusCounts: totals });
 });
 
 // ---------------------------------------------------------------------------
