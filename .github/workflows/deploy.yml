@@ -108,6 +108,27 @@ jobs:
         # the prod gate — the gate must block on migration failures only).
         run: bun install
 
+      # The prod DB moves to the prod box (container clawville-db, loopback-only).
+      # The runner reaches it through an SSH tunnel: runner 127.0.0.1:15432 ->
+      # box 127.0.0.1:5432. Until the prod cutover, PROD_DATABASE_URL still holds
+      # the Supabase URL and this tunnel is simply unused.
+      - name: Open SSH tunnel to the prod DB
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          SSH_KEY: ${{ secrets.COOLIFY_SSH_KEY }}
+          VPS_IP: ${{ secrets.PROD_VPS_IP }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/db_tunnel
+          chmod 600 ~/.ssh/db_tunnel
+          ssh -i ~/.ssh/db_tunnel -f -N -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=15 -L 127.0.0.1:15432:127.0.0.1:5432 "root@$VPS_IP"
+          for i in $(seq 1 20); do
+            if (exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null; then echo "tunnel up"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::SSH tunnel to the prod DB did not open"; exit 1
+
       - name: Apply pending DB migrations (BLOCKING — gates the PROD deploy)
         if: steps.guard.outputs.skip != 'true'
         env:

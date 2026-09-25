@@ -21,9 +21,10 @@ name: Auto-deploy STAGING on push to staging
 #   STAGING_VPS_IP             — real IP of the staging box (from scripts/deploy/.env.deploy)
 #   STAGING_COOLIFY_SSH_KEY    — contents of ~/.ssh/clawville_deploy (no passphrase
 #                                for CI use; key already has password-less variant)
-#   STAGING_DATABASE_URL       — Supabase SESSION-pooler URL (:5432, DDL-safe) for
-#                                the STAGING database. Consumed by the migrate job
-#                                as MIGRATION_DATABASE_URL. Secret — never logged.
+#   STAGING_DATABASE_URL       — tunnel URL for the SELF-HOSTED staging database
+#                                (postgresql://clawville:<pw>@127.0.0.1:15432/clawville;
+#                                Supabase retired for staging 2026-09-25). Consumed by
+#                                the migrate job as MIGRATION_DATABASE_URL. Secret — never logged.
 # Until ALL THREE secrets exist, this workflow will fail and staging deploys must run
 # manually via `ssh -i ~/.ssh/clawville_deploy root@$STAGING_VPS_IP 'bash /root/clawville-staging-deploy.sh <tested-full-commit-sha>'`.
 #
@@ -99,9 +100,30 @@ jobs:
         # the gate — the gate must block on migration failures only).
         run: bun install
 
+      # The staging DB is self-hosted on the staging box (container clawville-db,
+      # bound to the box's loopback only — never public). The runner reaches it
+      # through an SSH tunnel: runner 127.0.0.1:15432 -> box 127.0.0.1:5432.
+      - name: Open SSH tunnel to the staging DB
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          SSH_KEY: ${{ secrets.STAGING_COOLIFY_SSH_KEY }}
+          VPS_IP: ${{ secrets.STAGING_VPS_IP }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/db_tunnel
+          chmod 600 ~/.ssh/db_tunnel
+          ssh -i ~/.ssh/db_tunnel -f -N -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=15 -L 127.0.0.1:15432:127.0.0.1:5432 "root@$VPS_IP"
+          for i in $(seq 1 20); do
+            if (exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null; then echo "tunnel up"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::SSH tunnel to the staging DB did not open"; exit 1
+
       - name: Apply pending DB migrations (BLOCKING — gates the deploy)
         if: steps.guard.outputs.skip != 'true'
         env:
+          # postgresql://clawville:<pw>@127.0.0.1:15432/clawville (through the tunnel above)
           MIGRATION_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: bun packages/database/scripts/migrate-ci.ts
 
