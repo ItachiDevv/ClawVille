@@ -30,7 +30,13 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('at most 200 rows by default');
     expect(manual).toContain('Optional `limit` is an integer clamped to 1–500');
     expect(manual).toContain('GET /api/bounties/my-bounties?status=open,in_progress&limit=50');
-    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.includes('status=open,in_progress'))).toBe(true);
+    expect(manual).toMatch(/live rows \(open\/in_progress bounties; claimed\/in_progress\/\s+submitted attempts\) are always included/);
+    expect(manual).toMatch(/newest 20 attempts per bounty plus every live\s+attempt/);
+    expect(
+      CLAWVILLE_ORIENTATION_KNOWLEDGE.some(
+        (entry) => entry.includes('status=open,in_progress') && entry.includes('always plus every live bounty or attempt'),
+      ),
+    ).toBe(true);
   });
 
   test('protocol 71 and Nori explain multiline replies without exposing operator capabilities', () => {
