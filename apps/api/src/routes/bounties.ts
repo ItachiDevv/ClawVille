@@ -46,7 +46,7 @@ import {
   bountyAttempts,
   bountyReputation,
 } from '@clawville/database';
-import { eq, and, desc, asc, sql, ne } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, ne, inArray } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 
 // ── Rule E5 agent parity (Phase 1). Every WRITE binds to `identity.avatarId`
@@ -362,16 +362,62 @@ bountyRoutes.get('/featured', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// "My" list bounds (egress guard, 2026-09-25). /my-bounties used to return a
+// poster's whole history plus every attempt on it; six polling posters drove
+// ~2 TB/month of prod DB egress. Both "my" lists take an optional `status`
+// filter (comma-separated enum values) and a clamped `limit`, newest first.
+// ---------------------------------------------------------------------------
+export const MY_LIST_DEFAULT_LIMIT = 200;
+export const MY_LIST_MAX_LIMIT = 500;
+
+export function parseMyListQuery<S extends string>(
+  rawStatus: string | undefined,
+  rawLimit: string | undefined,
+  allowed: readonly S[],
+): { statuses: S[] | null; limit: number } {
+  let statuses: S[] | null = null;
+  if (rawStatus !== undefined && rawStatus.trim() !== '') {
+    const parts = [...new Set(rawStatus.split(',').map((s) => s.trim()).filter(Boolean))];
+    if (parts.some((s) => !(allowed as readonly string[]).includes(s))) {
+      throw new HTTPException(400, {
+        message: `Invalid status filter. Allowed: ${allowed.join(', ')}`,
+      });
+    }
+    statuses = parts.length > 0 ? (parts as S[]) : null;
+  }
+
+  let limit = MY_LIST_DEFAULT_LIMIT;
+  if (rawLimit !== undefined && rawLimit.trim() !== '') {
+    const n = Number(rawLimit);
+    if (!Number.isInteger(n)) {
+      throw new HTTPException(400, { message: 'limit must be an integer' });
+    }
+    limit = Math.min(MY_LIST_MAX_LIMIT, Math.max(1, n));
+  }
+  return { statuses, limit };
+}
+
+// ---------------------------------------------------------------------------
 // 7. GET /my-bounties — Get bounties I created (auth)
 // ---------------------------------------------------------------------------
 bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+  const { statuses, limit } = parseMyListQuery(
+    c.req.query('status'),
+    c.req.query('limit'),
+    bounties.status.enumValues,
+  );
   const avatar = await getActingAvatar(c);
 
   const rows = await db
     .select()
     .from(bounties)
-    .where(eq(bounties.creatorId, avatar.id))
-    .orderBy(desc(bounties.createdAt));
+    .where(
+      statuses
+        ? and(eq(bounties.creatorId, avatar.id), inArray(bounties.status, statuses))
+        : eq(bounties.creatorId, avatar.id),
+    )
+    .orderBy(desc(bounties.createdAt))
+    .limit(limit);
 
   // Fetch attempts for all these bounties (with hunter names)
   const bountyIds = rows.map((r) => r.id);
@@ -433,6 +479,11 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
 // 11. GET /my-attempts — Get my bounty attempts (auth)
 // ---------------------------------------------------------------------------
 bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+  const { statuses, limit } = parseMyListQuery(
+    c.req.query('status'),
+    c.req.query('limit'),
+    bountyAttempts.status.enumValues,
+  );
   const avatar = await getActingAvatar(c);
 
   const rows = await db
@@ -447,8 +498,13 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, asyn
     })
     .from(bountyAttempts)
     .innerJoin(bounties, eq(bountyAttempts.bountyId, bounties.id))
-    .where(eq(bountyAttempts.hunterId, avatar.id))
-    .orderBy(desc(bountyAttempts.createdAt));
+    .where(
+      statuses
+        ? and(eq(bountyAttempts.hunterId, avatar.id), inArray(bountyAttempts.status, statuses))
+        : eq(bountyAttempts.hunterId, avatar.id),
+    )
+    .orderBy(desc(bountyAttempts.createdAt))
+    .limit(limit);
 
   const attempts = rows.map((r) => ({
     id: r.attempt.id,

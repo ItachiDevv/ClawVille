@@ -25,7 +25,7 @@ describe('Trading Floor frozen constants', () => {
   // sat stale at 61 through the v62, v63 and v64 bumps because only the
   // assertion below was updated.
   test('pins the current protocol version and the multiplier contracts', () => {
-    expect(PROTOCOL_VERSION).toBe(71);
+    expect(PROTOCOL_VERSION).toBe(72);
     expect(TRADE_TIER_WEIGHTS).toEqual({ base: 20, clv: 30, ansem: 40 });
     expect(TRADE_TIER_MULTIPLIER).toEqual({ base: 1, clv: 1.5, ansem: 2 });
     expect(TRADE_DAILY_SCORED_CAP).toBe(20);

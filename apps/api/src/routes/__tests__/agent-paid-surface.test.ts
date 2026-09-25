@@ -51,7 +51,7 @@ describe('agent paid surfaces', () => {
     // through v57/v58 because this file is outside the gates lane — the
     // pin-sweep rule is "grep for PROTOCOL_VERSION assertions", never for
     // the old number.
-    expect(PROTOCOL_VERSION).toBe(71);
+    expect(PROTOCOL_VERSION).toBe(72);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');

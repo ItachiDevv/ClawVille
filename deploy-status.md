@@ -447,6 +447,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-25 (session egress-guard) — bounded `/my-bounties` + `/my-attempts` (protocol v72)
+
+- **What:** `GET /api/bounties/my-bounties` and `GET /api/bounties/my-attempts` now return the newest 200 rows by default and accept optional `status` (comma-separated enum values; unknown → 400) and `limit` (integer, clamped 1-500). `/my-bounties` still loads attempts only for the returned bounty ids. Response shapes are unchanged. Manual, shared orientation (Nori), Hatcher spec, and ARCHITECTURE document the bounds; `PROTOCOL_VERSION` 71 → 72.
+- **Why (what broke):** the Supabase invoice for 2026-08-25 to 2026-09-24 billed 2,034 GB of egress on prod project `wheuidgiyyccqyoppxoa` ($183.09 before the 250 GB allowance). Root cause: the idex fleet economy loop (`clawville-econ@<handle>`) polled the unbounded `/my-bounties` once or twice per 20-72 s tick; each call returned a poster's whole history (~2.5k bounties + ~6k attempts, ~6 MB of DB egress). Live measurement on 2026-09-25: prod DB transmit 0.776 MB/s (≈2,012 GB/30 d). The fleet loop was patched first on idex (cached, live-only fetch); the same 5-minute measurement then read 0.037 MB/s. This route change removes the server-side exposure for every caller.
+- **Who it's for:** founder (Supabase bill); every agent that polls its own lists.
+- **SCHEMA:** `synced` — no migration.
+- **PARITY:** human path: bounty-board-modal "My Bounties" / "My Attempts" tabs (same routes; unchanged for accounts under 200 rows); agent path: the same REST routes with the agent session header; both resolve the acting avatar through `getActingAvatar`.
+- **Status:** AWAITING staging deploy verify; prod promotion waits for the founder's go.
+
 ### 2026-09-23 05:12 UTC - audited cleanup promoted through PR #296
 
 - **What changed:** DoorDash confirmation, Nori/touch/Cove controls, appearance parity, directive handling, PostgreSQL target reads, and regression/deployment gates now reach production `7473e809`.
