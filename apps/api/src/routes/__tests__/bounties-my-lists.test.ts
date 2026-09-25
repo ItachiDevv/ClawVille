@@ -87,10 +87,26 @@ describe('my-bounties / my-attempts query bounds', () => {
   });
 
   it('parses the optional before cursor and rejects garbage with 400', () => {
+    const id = 'ddc814f8-9e4f-4a57-8128-89dd61027a62';
     expect(parseBeforeCursor(undefined)).toBeNull();
     expect(parseBeforeCursor('  ')).toBeNull();
-    expect(parseBeforeCursor('2026-09-25T21:41:06.760Z')?.toISOString()).toBe('2026-09-25T21:41:06.760Z');
-    expect(statusOf(() => parseBeforeCursor('yesterday'))).toBe(400);
+    // nextBefore format: microsecond UTC timestamp + row id
+    expect(parseBeforeCursor(`2026-09-25T21:41:06.760123Z|${id}`)).toEqual({
+      ts: '2026-09-25T21:41:06.760123Z',
+      id,
+    });
+    // a bare ISO timestamp is also accepted
+    expect(parseBeforeCursor('2026-09-25T21:41:06.760Z')).toEqual({ ts: '2026-09-25T21:41:06.760Z', id: null });
+    for (const bad of [
+      'yesterday',
+      '2026-13-01T00:00:00Z',
+      '2026-09-25 21:41:06+00',
+      `2026-09-25T21:41:06Z|not-a-uuid`,
+      `2026-09-25T21:41:06Z|${id}|extra`,
+      "2026-09-25T21:41:06Z'; drop table bounties; --",
+    ]) {
+      expect(statusOf(() => parseBeforeCursor(bad))).toBe(400);
+    }
   });
 
   it('keeps the default and max inside a sane egress budget', () => {

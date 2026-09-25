@@ -46,7 +46,7 @@ import {
   bountyAttempts,
   bountyReputation,
 } from '@clawville/database';
-import { eq, and, or, desc, asc, sql, ne, inArray, lt } from 'drizzle-orm';
+import { eq, and, or, desc, asc, sql, ne, inArray, type SQL } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 
 // ── Rule E5 agent parity (Phase 1). Every WRITE binds to `identity.avatarId`
@@ -412,48 +412,102 @@ export function parseMyListQuery<S extends string>(
   return { statuses, limit };
 }
 
-/** Optional `before` cursor (ISO timestamp): page history older than a row's createdAt. */
-export function parseBeforeCursor(raw: string | undefined): Date | null {
+/**
+ * History cursor for the "my" lists. `before` is the `nextBefore` value from the
+ * previous page, passed back verbatim: `<UTC timestamp with microseconds>|<row id>`.
+ * A bare ISO timestamp is also accepted. Compared in SQL on (created_at, id) so
+ * microseconds and equal timestamps never skip a row.
+ */
+export interface HistoryCursor {
+  ts: string;
+  id: string | null;
+}
+const CURSOR_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
+const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function parseBeforeCursor(raw: string | undefined): HistoryCursor | null {
   if (raw === undefined || raw.trim() === '') return null;
-  const d = new Date(raw.trim());
-  if (Number.isNaN(d.getTime())) {
-    throw new HTTPException(400, { message: 'before must be an ISO timestamp' });
+  const [ts, id, extra] = raw.trim().split('|');
+  const msTs = ts.replace(/(\.\d{3})\d{1,3}/, '$1');
+  if (
+    extra !== undefined ||
+    !CURSOR_TS.test(ts) ||
+    Number.isNaN(Date.parse(msTs)) ||
+    (id !== undefined && !CURSOR_ID.test(id))
+  ) {
+    throw new HTTPException(400, {
+      message: 'before must be the nextBefore value from the previous page (or an ISO timestamp)',
+    });
   }
-  return d;
+  return { ts, id: id ?? null };
 }
 
 type BountyStatus = (typeof bounties.status.enumValues)[number];
 type AttemptStatus = (typeof bountyAttempts.status.enumValues)[number];
+type HistoryTable = typeof bounties | typeof bountyAttempts;
 
-/** Rows for GET /my-bounties. No filter: every live bounty + the newest `limit`. */
+function olderThan(table: HistoryTable, cur: HistoryCursor) {
+  return cur.id
+    ? sql`(${table.createdAt}, ${table.id}) < (${cur.ts}::timestamptz, ${cur.id}::uuid)`
+    : sql`${table.createdAt} < ${cur.ts}::timestamptz`;
+}
+
+/** The history window a page walks: owner [+ status filter] [+ older than cursor]. */
+function historyWindow(owner: SQL, table: HistoryTable, statuses: string[] | null, before: HistoryCursor | null) {
+  return and(
+    owner,
+    statuses ? inArray(table.status, statuses as never[]) : undefined,
+    before ? olderThan(table, before) : undefined,
+  )!;
+}
+
+/** `nextBefore` for a page: the limit-th row of the window, when more rows follow it. */
+export function nextHistoryCursorQuery(table: HistoryTable, window: SQL, limit: number) {
+  return db
+    .select({
+      ts: sql<string>`to_char(${table.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      id: sql<string>`${table.id}::text`,
+    })
+    .from(table)
+    .where(window)
+    .orderBy(desc(table.createdAt), desc(table.id))
+    .offset(limit - 1)
+    .limit(2);
+}
+
+export async function nextHistoryCursor(table: HistoryTable, window: SQL, limit: number): Promise<string | null> {
+  const edge = await nextHistoryCursorQuery(table, window, limit);
+  return edge.length === 2 ? `${edge[0].ts}|${edge[0].id}` : null;
+}
+
+/**
+ * Rows for GET /my-bounties. The page is the newest `limit` rows of the history
+ * window. The FIRST unfiltered page (no status, no cursor) also carries every
+ * live bounty, so review/cancel controls never lose an old live row; cursor
+ * pages are pure history, so paging never skips or repeats.
+ */
 export function myBountiesQuery(
   creatorId: string,
   statuses: BountyStatus[] | null,
   limit: number,
-  before: Date | null = null,
+  before: HistoryCursor | null = null,
 ) {
-  const mine = before
-    ? and(eq(bounties.creatorId, creatorId), lt(bounties.createdAt, before))!
-    : eq(bounties.creatorId, creatorId);
-  if (statuses) {
-    return db
-      .select()
-      .from(bounties)
-      .where(and(mine, inArray(bounties.status, statuses)))
-      .orderBy(desc(bounties.createdAt))
-      .limit(limit);
+  const window = historyWindow(eq(bounties.creatorId, creatorId), bounties, statuses, before);
+  const order = [desc(bounties.createdAt), desc(bounties.id)] as const;
+  if (statuses || before) {
+    return db.select().from(bounties).where(window).orderBy(...order).limit(limit);
   }
-  const newest = db
-    .select({ id: bounties.id })
-    .from(bounties)
-    .where(mine)
-    .orderBy(desc(bounties.createdAt))
-    .limit(limit);
+  const newest = db.select({ id: bounties.id }).from(bounties).where(window).orderBy(...order).limit(limit);
   return db
     .select()
     .from(bounties)
-    .where(and(mine, or(inArray(bounties.status, [...LIVE_BOUNTY_STATUSES]), inArray(bounties.id, newest))))
-    .orderBy(desc(bounties.createdAt));
+    .where(
+      and(
+        eq(bounties.creatorId, creatorId),
+        or(inArray(bounties.status, [...LIVE_BOUNTY_STATUSES]), inArray(bounties.id, newest)),
+      ),
+    )
+    .orderBy(...order);
 }
 
 /** Attempts shown under GET /my-bounties: newest N per bounty + every live attempt. */
@@ -473,7 +527,7 @@ export function myBountyAttemptsQuery(bountyIds: string[]) {
           sql`${bountyAttempts.id} IN (
             SELECT ranked.id FROM (
               SELECT ba.id,
-                     row_number() OVER (PARTITION BY ba.bounty_id ORDER BY ba.created_at DESC) AS rn
+                     row_number() OVER (PARTITION BY ba.bounty_id ORDER BY ba.created_at DESC, ba.id DESC) AS rn
               FROM bounty_attempts ba
               WHERE ba.bounty_id IN ${bountyIds}
             ) ranked
@@ -482,19 +536,18 @@ export function myBountyAttemptsQuery(bountyIds: string[]) {
         ),
       ),
     )
-    .orderBy(desc(bountyAttempts.createdAt));
+    .orderBy(desc(bountyAttempts.createdAt), desc(bountyAttempts.id));
 }
 
-/** Rows for GET /my-attempts. No filter: every live attempt + the newest `limit`. */
+/** Rows for GET /my-attempts. Same paging rules as myBountiesQuery. */
 export function myAttemptsQuery(
   hunterId: string,
   statuses: AttemptStatus[] | null,
   limit: number,
-  before: Date | null = null,
+  before: HistoryCursor | null = null,
 ) {
-  const mine = before
-    ? and(eq(bountyAttempts.hunterId, hunterId), lt(bountyAttempts.createdAt, before))!
-    : eq(bountyAttempts.hunterId, hunterId);
+  const window = historyWindow(eq(bountyAttempts.hunterId, hunterId), bountyAttempts, statuses, before);
+  const order = [desc(bountyAttempts.createdAt), desc(bountyAttempts.id)] as const;
   const base = db
     .select({
       attempt: bountyAttempts,
@@ -507,21 +560,31 @@ export function myAttemptsQuery(
     })
     .from(bountyAttempts)
     .innerJoin(bounties, eq(bountyAttempts.bountyId, bounties.id));
-  if (statuses) {
-    return base
-      .where(and(mine, inArray(bountyAttempts.status, statuses)))
-      .orderBy(desc(bountyAttempts.createdAt))
-      .limit(limit);
+  if (statuses || before) {
+    return base.where(window).orderBy(...order).limit(limit);
   }
   const newest = db
     .select({ id: bountyAttempts.id })
     .from(bountyAttempts)
-    .where(mine)
-    .orderBy(desc(bountyAttempts.createdAt))
+    .where(window)
+    .orderBy(...order)
     .limit(limit);
   return base
-    .where(and(mine, or(inArray(bountyAttempts.status, [...LIVE_ATTEMPT_STATUSES]), inArray(bountyAttempts.id, newest))))
-    .orderBy(desc(bountyAttempts.createdAt));
+    .where(
+      and(
+        eq(bountyAttempts.hunterId, hunterId),
+        or(inArray(bountyAttempts.status, [...LIVE_ATTEMPT_STATUSES]), inArray(bountyAttempts.id, newest)),
+      ),
+    )
+    .orderBy(...order);
+}
+
+/** History window for the nextBefore cursor of each route (exported for tests). */
+export function myBountiesWindow(creatorId: string, statuses: BountyStatus[] | null, before: HistoryCursor | null) {
+  return historyWindow(eq(bounties.creatorId, creatorId), bounties, statuses, before);
+}
+export function myAttemptsWindow(hunterId: string, statuses: AttemptStatus[] | null, before: HistoryCursor | null) {
+  return historyWindow(eq(bountyAttempts.hunterId, hunterId), bountyAttempts, statuses, before);
 }
 
 /** Exact per-status totals for a "my" list header (one row per status). */
@@ -555,7 +618,7 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
   // Fetch attempts for these bounties (with hunter names): the newest
   // MY_BOUNTY_ATTEMPTS_PER_BOUNTY per bounty plus every live attempt.
   const bountyIds = rows.map((r) => r.id);
-  const [attemptRows, attemptTotals, totals] = await Promise.all([
+  const [attemptRows, attemptTotals, totals, nextBefore] = await Promise.all([
     bountyIds.length > 0 ? myBountyAttemptsQuery(bountyIds) : Promise.resolve([]),
     bountyIds.length > 0
       ? db
@@ -565,6 +628,7 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
           .groupBy(bountyAttempts.bountyId)
       : Promise.resolve([]),
     statusCounts(bounties.status, eq(bounties.creatorId, avatar.id), bounties),
+    nextHistoryCursor(bounties, myBountiesWindow(avatar.id, statuses, before), limit),
   ]);
   const attemptCountByBounty = new Map(attemptTotals.map((t) => [t.bountyId, Number(t.n)]));
 
@@ -611,7 +675,8 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
   }));
 
   // statusCounts: exact per-status totals across the whole history.
-  return c.json({ bounties: bountyList, statusCounts: totals });
+  // nextBefore: pass back as `before` for the next (older) history page; null = no more.
+  return c.json({ bounties: bountyList, statusCounts: totals, nextBefore });
 });
 
 // ---------------------------------------------------------------------------
@@ -626,9 +691,10 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, asyn
   const before = parseBeforeCursor(c.req.query('before'));
   const avatar = await getActingAvatar(c);
 
-  const [rows, totals] = await Promise.all([
+  const [rows, totals, nextBefore] = await Promise.all([
     myAttemptsQuery(avatar.id, statuses, limit, before),
     statusCounts(bountyAttempts.status, eq(bountyAttempts.hunterId, avatar.id), bountyAttempts),
+    nextHistoryCursor(bountyAttempts, myAttemptsWindow(avatar.id, statuses, before), limit),
   ]);
 
   const attempts = rows.map((r) => ({
@@ -653,7 +719,8 @@ bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, asyn
   }));
 
   // statusCounts: exact per-status totals across the whole history.
-  return c.json({ attempts, statusCounts: totals });
+  // nextBefore: pass back as `before` for the next (older) history page; null = no more.
+  return c.json({ attempts, statusCounts: totals, nextBefore });
 });
 
 // ---------------------------------------------------------------------------
