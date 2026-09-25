@@ -1,5 +1,7 @@
 # ClawVille → Hetzner Deploy Playbook
 
+**Last Audited: 2026-09-25 (self-hosted database).** Drift note: the app database moves off Supabase onto each box (`clawville-db`, Postgres 17 + pgvector, loopback + Coolify network only). Staging cut over 2026-09-25 with identical row counts on all 163 tables; prod still runs on Supabase until its cutover window. CI reaches the database through an SSH tunnel. Runbook: "Self-hosted database" below. Reason: Supabase billed 2,034 GB of prod egress ($183) for 2026-08-25 to 2026-09-24.
+
 **Last Audited: 2026-09-22 (coupling gate).** The fourth stable required job is `coupling documentation contracts`, alongside the existing web and two API jobs. Deploy callers evaluate the complete push event.before/event.after range before migration. PRs evaluate their immutable event base/head merge-base. Manual dispatch now requires an explicit full base SHA: `gh workflow run gates.yml --ref staging -f coupling-base-sha=<full-base-sha>`. Select the start of the complete change, not merely its final commit. Zero/missing bases and unavailable history fail closed. The registry and narrow Nori-only escape are documented in `.claude/gates/schema.md`. Activate the four required contexts only after remote check evidence; this local diff does not change GitHub protection.
 
 **Last Audited: 2026-09-22.** Drift note: both deploy workflows invoke the local reusable Gates workflow at the caller commit. The order is `gates -> migrate -> deploy`. Failed or cancelled tests stop live migrations and deployment. The emergency `[skip migration]` subject only skips the migration step; it cannot skip Gates. PR and manual Gates runs remain available. The reusable workflow uses a separate concurrency group per caller workflow, so a PR or manual run cannot cancel a deploy's Gates run.
@@ -19,8 +21,9 @@ The API invariant job also runs `tsc --noEmit` after dependency builds. Bun bund
 > Ashburn box (now `<STAGING_VPS_IP>`, Coolify 4.0) to a new Hillsboro box
 > (`<PROD_VPS_IP>`, Coolify 4.1) on 2026-05-23. The old box now serves `staging.clawville.world`
 > + `api-staging.clawville.world` as a hot rollback target (DNS swap = 30s
-> rollback). **Each box has its OWN Supabase DB since 2026-06-16** (staging
-> `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`) — staging writes no longer
+> rollback). **Each box has its OWN database since 2026-06-16** (Supabase staging
+> `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`; **2026-09-25: staging moved to the
+> self-hosted `clawville-db` on its box, prod follows — see "Self-hosted database"**) — staging writes no longer
 > touch prod; schema converges to prod via the CI migration gate
 > (`migrate`→`deploy`) on `staging → master`. Authoritative IPs/keys/app-IDs live in `scripts/deploy/.env.deploy`
 > (gitignored). See `CLAUDE.md` / `AGENTS.md` "Deployment — Hetzner + Coolify"
@@ -60,9 +63,9 @@ running Coolify, with Cloudflare in front. Actual cost: **~$19.99/mo gross**
 | Orchestrator | **Coolify** (self-hosted PaaS) | Railway-style deploys on your own box — auto TLS, logs, env vars, git push deploys |
 | Proxy | **Traefik** (bundled with Coolify) | Let's Encrypt certs, zero-config |
 | CDN / DNS | **Cloudflare** (already using student plan) | Free edge caching of GLB assets + DDoS protection |
-| DB | **Supabase** (unchanged) | Already working, no migration risk |
+| DB | **Postgres 17 + pgvector on each box** (`clawville-db`; staging since 2026-09-25, prod pending its cutover) | Supabase billed egress per GB; the app DB now sits next to the app (no egress bill, no cross-country round trip) |
 
-**Not included:** Postgres on the box. Keeping it on Supabase frees ~1 GB of RAM and eliminates the biggest migration risk.
+**History:** the 2026-05 move kept Postgres on Supabase to save ~1 GB of RAM and avoid migration risk. That changed on 2026-09-25 after a $183 Supabase egress line item — see "Self-hosted database".
 
 ## Prerequisites (one-time)
 
@@ -289,7 +292,7 @@ Expected savings: **~$41/mo** vs your current Pro bill.
 - **Production:** `$PROD_VPS_IP` (in gitignored `scripts/deploy/.env.deploy`), Hillsboro, Coolify 4.1, key `~/.ssh/clawville_hillsboro` (passphrase — `ssh-add` once into Windows ssh-agent). Serves `clawville.world` + `api.clawville.world`. Admin UI `https://coolify-new.clawville.world`.
 - **Staging:** `$STAGING_VPS_IP`, Ashburn, Coolify 4.0, key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Admin UI `https://coolify-staging.clawville.world`.
 
-Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Supabase Postgres per box (isolated 2026-06-16; staging `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`)** — staging writes no longer touch prod; schema converges to prod via the CI migration gate (`migrate`→`deploy`) on the `staging → master` promotion (see `deploy-status.md`). Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
+Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Postgres per box (isolated 2026-06-16; staging self-hosted `clawville-db` since 2026-09-25, prod Supabase `wheuidgiyyccqyoppxoa` until its cutover — see "Self-hosted database")** — staging writes no longer touch prod; schema converges to prod via the CI migration gate (`migrate`→`deploy`) on the `staging → master` promotion (see `deploy-status.md`). Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
 
 **Coolify app IDs:** prod api=2, prod web=3, staging api=3, staging web=4. UUIDs in `.env.deploy` as `API_APP_UUID`, `WEB_APP_UUID`, `STAGING_API_APP_UUID`, `STAGING_WEB_APP_UUID`.
 
@@ -331,8 +334,34 @@ hcloud server poweron clawville-prod
 ```
 Takes ~2 minutes, no data loss. CCX23 = 4 dedicated cores, 16 GB, ~$28/mo.
 
+### Self-hosted database (2026-09-25)
+
+**Status:** staging = self-hosted (cut over 2026-09-25 23:17 UTC). Prod = still Supabase `wheuidgiyyccqyoppxoa` until its cutover window (the founder picks the time; Hatcher is live on prod).
+
+**Layout (same on both boxes):**
+- `/opt/clawville-db/` (mode 700): `docker-compose.yml`, `.env` (mode 600: `POSTGRES_PASSWORD` superuser, `APP_PASSWORD` for role `clawville`), `bin/` (scripts from `scripts/deploy/db/`), `backups/`.
+- Container `clawville-db`, image `pgvector/pgvector:pg17`, named volume `clawville-db_pgdata`. Published ONLY on `127.0.0.1:5432`; on the `coolify` Docker network as `clawville-db`. Never public.
+- Database `clawville` (owner `clawville`), UTF8, ICU `en-US` (matches Supabase, so text sort + text indexes behave the same). Extensions: `vector`, `fuzzystrmatch` in `public`; `pgcrypto`, `uuid-ossp`, `pg_stat_statements` in `extensions`; `search_path = "$user", public, extensions`.
+- Environment marker: `ALTER DATABASE clawville SET clawville.env = 'staging' | 'production'`. `db-migrate.sh` refuses to drop a marked (live) database, and `hosted-skill-runtime-probe.ts` refuses `production`.
+- App env (Coolify, api + web): `DATABASE_URL=postgresql://clawville:<APP_PASSWORD>@clawville-db:5432/clawville`. `ELIZA_DATABASE_URL` stays unset: the Eliza adapter only rewrites Supabase pooler URLs, so it uses this URL as is.
+
+**CI migrations:** `deploy-staging.yml` / `deploy.yml` open an SSH tunnel (runner `127.0.0.1:15432` → box `127.0.0.1:5432`) with the existing deploy key, then run `migrate-ci.ts`. Secret format: `STAGING_DATABASE_URL` / `PROD_DATABASE_URL` = `postgresql://clawville:<APP_PASSWORD>@127.0.0.1:15432/clawville`. Set it from the box without printing it:
+`ssh <box> "grep '^APP_PASSWORD=' /opt/clawville-db/.env | cut -d= -f2-" | tr -d '\r\n' | sed 's#.*#postgresql://clawville:&@127.0.0.1:15432/clawville#' | gh secret set <NAME> -R ItachiDevv/ClawVille`
+
+**Operator access (scripts, psql):** `ssh -N -L 15432:127.0.0.1:5432 <box>`, then use `127.0.0.1:15432`. On the box: `docker exec -it clawville-db psql -U postgres -d clawville`.
+
+**Backups:** `/etc/cron.d/clawville-db-backup` runs `bin/db-backup.sh` daily at 04:17 UTC: `pg_dump -Fc` to `backups/`, archive read-back check, 7-day retention, optional offsite copy (`OFFSITE=`, `OFFSITE_KEY=`). Log: `backups/backup.log`. Restore: `docker run --rm --network host -v /opt/clawville-db/backups:/b pgvector/pgvector:pg17 pg_restore -d "postgresql://postgres:<POSTGRES_PASSWORD>@127.0.0.1:5432/clawville" --no-owner --role=clawville /b/<file>` into an empty database.
+
+**Cutover procedure (what staging ran; prod uses the same scripts):**
+1. `SHARED_BUFFERS=… CACHE=… MAXCONN=… bin/db-setup.sh` (staging: 256MB / 1GB / 100).
+2. Trial copy while the apps run: `APP=<api container> bin/db-migrate.sh` (staging: dump 47 s, restore 25 s, 167 MB).
+3. `ENV_NAME=… APP_IDS="<api id> <web id>" API_C=… WEB_C=… DEPLOY_SCRIPT=/root/clawville-…-deploy.sh SHA=<running sha> bin/db-cutover.sh`: saves the old URL to `.old_database_url`, stops the app containers (write freeze), copies, aborts and restarts the old containers unless every table's row count and every sequence match, sets the marker, rewrites `DATABASE_URL` through the Eloquent model, redeploys.
+4. Set the CI secret (above). Verify: `/health`, both containers' `DATABASE_URL` host = `clawville-db`, new rows land in `clawville-db`, onboarding smoke passes.
+
+**Rollback:** put the saved `.old_database_url` value back into `DATABASE_URL` for both apps (Eloquent model, as in `db-cutover.sh`) and redeploy. Writes made after the cutover exist only in `clawville-db`, so copy them back before a rollback, or accept their loss. The Supabase projects stay in place until the founder retires them.
+
 ### Backups
-Hetzner auto-backups: Console → server → Backups → Enable (20% surcharge, ~$3/mo for CCX13). Keeps 7 daily snapshots. Worth it.
+Hetzner auto-backups: Console → server → Backups → Enable (20% surcharge, ~$3/mo for CCX13). Keeps 7 daily snapshots. Worth it. The database has its own nightly dumps — see "Self-hosted database".
 
 ### Cloudflare optimizations (after cutover)
 - Speed → Optimization → Brotli: on
@@ -363,7 +392,7 @@ Railway services stay up and running until Step 8, so a rollback doesn't require
 | Hetzner CCX13 | $14 |
 | Hetzner backups (optional) | $3 |
 | Cloudflare (student plan, existing) | $0 |
-| Supabase (unchanged) | — |
+| Supabase (being retired: staging moved 2026-09-25, prod pending) | was $55–60 + egress overage |
 | **Total added cost** | **$14–17** |
 | Railway Pro (eliminated) | −$55 |
 | **Net monthly savings** | **~$38–41** |

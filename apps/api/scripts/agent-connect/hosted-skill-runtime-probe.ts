@@ -1145,6 +1145,14 @@ async function main(): Promise<void> {
     connect_timeout: 15,
     idle_timeout: 10,
   });
+  // Self-hosted databases (2026-09-25) are reached through an SSH tunnel on loopback,
+  // so the hostname no longer separates staging from prod. The database carries the
+  // marker itself (`ALTER DATABASE clawville SET clawville.env`, scripts/deploy/db).
+  const [marker] = await client<{ env: string | null }[]>`select current_setting('clawville.env', true) as env`;
+  if (marker?.env === 'production') {
+    await client.end({ timeout: 1 });
+    throw new ProbeFailure('DATABASE_URL points at the production database (clawville.env=production)');
+  }
   const fixtures: Fixture[] = [];
   let declaredMock: Awaited<ReturnType<typeof startDeclaredGatewayMock>> | null = null;
   let cleanupPromise: Promise<void> | null = null;
