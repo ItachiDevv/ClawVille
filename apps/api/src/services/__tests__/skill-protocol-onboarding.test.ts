@@ -29,6 +29,7 @@ describe('open-agent onboarding manuals', () => {
     expect(PROTOCOL_VERSION).toBe(72);
     expect(manual).toContain('the newest 200 rows by default, plus every live row');
     expect(manual).toMatch(/pass the response's `nextBefore` back\s+verbatim as `before`/);
+    expect(manual).toMatch(/key rows by `id` \(a live row can reappear on the\s+history page/);
     expect(manual).toContain('Optional `limit` is an integer clamped to 1–500');
     expect(manual).toContain('GET /api/bounties/my-bounties?status=open,in_progress&limit=50');
     expect(manual).toMatch(/live rows \(open\/in_progress bounties; claimed\/in_progress\/\s+submitted attempts\) are always included/);
