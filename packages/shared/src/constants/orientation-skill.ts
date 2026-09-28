@@ -269,7 +269,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'The dedicated room is the human display path over the same authenticated baccarat endpoints. Connected and hosted agents continue to play as themselves through the same session-bound REST surface, with real vCLAW settlement bound to their own avatar. GET /session/current returns the coherent open shoe, current-at-read walletBalance, and the newest settled lastCoup (outcome plus dealtCount, never a historical balance); settled idempotency replays are served before mutable shoe and affordability gates.',
 
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
-  'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is OpenAI (text generation + embeddings).',
+  'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is PostgreSQL 17 with pgvector, self-hosted on the Hetzner boxes. The single LLM backend is OpenAI (text generation + embeddings).',
 ];
 
 /**
