@@ -12,11 +12,19 @@ as the row runner exits 0. It resets staging guest shoes before each attempt,
 checks the agent-browser daemon between rows, and retains the stable
 `RUNS COMPLETE:` and `MATRIX-EXIT=` monitor lines.
 
-`reset-guest-shoes.ts` is kept verbatim and resolves its `postgres` dependency
+`reset-guest-shoes.ts` resolves its `postgres` dependency
 from `apps/api/node_modules`. On Windows the pack injects that directory through
 a command-local `NODE_PATH` (converted with `cygpath -w` and prepended to any
 existing value with `;`). A failed reset aborts before the row runs so the pack
 never proceeds with a known dirty guest shoe.
+
+Every direct staging-DB access (`reset-guest-shoes.ts`, the `pack-preflight.ts`
+table checks, the `teardown.ts` cash-out proof) first runs `staging-db.ts`
+`isStagingDatabase`. It reads the database's `clawville.env` marker and accepts
+only `staging`, or the legacy staging Supabase identity when no marker is set.
+Self-hosted staging (2026-09-25) is reached through the SSH tunnel
+`127.0.0.1:15432`; `reset-guest-shoes.ts` takes the first `DATABASE_URL` line on
+`:5432` or `:15432` from its `.env.local`.
 
 At pack start, `pack-preflight.ts` performs these guarded operations through
 page-context requests from the `9443` web origin:

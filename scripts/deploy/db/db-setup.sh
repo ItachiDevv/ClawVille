@@ -3,11 +3,13 @@
 # Usage: SHARED_BUFFERS=256MB CACHE=1GB MAXCONN=100 bash db-setup.sh
 # Idempotent. Never prints secrets.
 set -euo pipefail
+umask 077
 SHARED_BUFFERS="${SHARED_BUFFERS:-256MB}"
 CACHE="${CACHE:-1GB}"
 MAXCONN="${MAXCONN:-100}"
 
 mkdir -p /opt/clawville-db/backups /opt/clawville-db/bin
+chmod 700 /opt/clawville-db/backups
 cd /opt/clawville-db
 if [ ! -f .env ]; then
   umask 077
@@ -61,7 +63,7 @@ networks:
 YML
 
 docker compose up -d
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   s=$(docker inspect -f '{{.State.Health.Status}}' clawville-db 2>/dev/null || true)
   [ "$s" = healthy ] && break
   sleep 2
@@ -69,9 +71,11 @@ done
 echo "health=$(docker inspect -f '{{.State.Health.Status}}' clawville-db)"
 
 set -a; . ./.env; set +a
-exists=$(docker exec clawville-db psql -U postgres -tAc "select 1 from pg_roles where rolname='clawville'")
+exists=$(docker exec clawville-db psql -U postgres -v ON_ERROR_STOP=1 -tAc "select 1 from pg_roles where rolname='clawville'")
 if [ "$exists" != 1 ]; then
-  docker exec -i clawville-db psql -U postgres -v ON_ERROR_STOP=1 -v app_pw="$APP_PASSWORD" <<'SQL'
+  # The password reaches psql by variable NAME (-e APP_PASSWORD, \getenv), never on a command line.
+  docker exec -i -e APP_PASSWORD clawville-db psql -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+\getenv app_pw APP_PASSWORD
 CREATE ROLE clawville LOGIN PASSWORD :'app_pw';
 CREATE DATABASE clawville OWNER clawville;
 SQL
@@ -86,5 +90,5 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA extensions;
 ALTER SCHEMA public OWNER TO clawville;
 ALTER DATABASE clawville SET search_path TO "$user", public, extensions;
 SQL
-docker exec clawville-db psql -U postgres -d clawville -tAc "select string_agg(extname||'@'||extversion, ' ') from pg_extension"
-docker exec clawville-db psql -U postgres -tAc "select version()"
+docker exec clawville-db psql -U postgres -d clawville -v ON_ERROR_STOP=1 -tAc "select string_agg(extname||'@'||extversion, ' ') from pg_extension"
+docker exec clawville-db psql -U postgres -v ON_ERROR_STOP=1 -tAc "select version()"

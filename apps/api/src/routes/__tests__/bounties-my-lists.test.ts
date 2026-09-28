@@ -109,6 +109,37 @@ describe('my-bounties / my-attempts query bounds', () => {
     }
   });
 
+  it('rejects an impossible calendar timestamp in the cursor with 400, not a database 500', () => {
+    const id = 'ddc814f8-9e4f-4a57-8128-89dd61027a62';
+    // Each passed the old Date.parse check (Feb 30 rolls over to Mar 2) and
+    // ::timestamptz rejects it, so each was a 500.
+    for (const bad of [
+      '2026-02-30T00:00:00Z',
+      `2026-02-30T21:41:06.760123Z|${id}`,
+      '2026-02-29T00:00:00Z', // 2026 is not a leap year
+      '1900-02-29T00:00:00Z', // century, not a leap year
+      '2026-04-31T00:00:00Z',
+      '0000-01-01T00:00:00Z', // PostgreSQL has no year 0
+      '2026-09-25T00:00:00+16:00', // PostgreSQL offsets stop at 15:59
+    ]) {
+      expect(statusOf(() => parseBeforeCursor(bad))).toBe(400);
+    }
+    // Not a clock time or offset; nextBefore never emits these.
+    for (const bad of ['2026-09-25T24:00:00Z', '2026-09-25T00:00:00-15:60']) {
+      expect(statusOf(() => parseBeforeCursor(bad))).toBe(400);
+    }
+    for (const good of [
+      '2024-02-29T00:00:00Z',
+      '2000-02-29T23:59:59.999999Z',
+      '2026-12-31T23:59:59+14:00',
+      '2026-09-25T21:41:06-15:59',
+      '0001-01-01T00:00:00Z',
+    ]) {
+      expect(parseBeforeCursor(good)).toEqual({ ts: good, id: null });
+    }
+    expect(parseBeforeCursor(`2024-02-29T00:00:00.000001Z|${id}`)).toEqual({ ts: '2024-02-29T00:00:00.000001Z', id });
+  });
+
   it('keeps the default and max inside a sane egress budget', () => {
     expect(MY_LIST_DEFAULT_LIMIT).toBe(200);
     expect(MY_LIST_MAX_LIMIT).toBe(500);

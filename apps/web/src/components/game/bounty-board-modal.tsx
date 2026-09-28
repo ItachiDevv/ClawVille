@@ -41,7 +41,9 @@ import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api, ApiError } from '@/lib/api';
 import { useIsGuest } from '@/hooks/use-is-guest';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
+import styles from './bounty-board-modal.module.css';
 
 // Guests run an all-demo economy (founder ruling 2026-07-06). Bounties escrow
 // REAL ClawTokens and can't be safely simulated, so a guest hitting any
@@ -1673,6 +1675,8 @@ export default function BountyBoardModal() {
   const { data: avatar } = useAvatar();
   const queryClient = useQueryClient();
   const isGuest = useIsGuest();
+  // Touch devices get 44 px tap targets on every button, select and input in the body.
+  const isMobile = useIsMobile();
 
   // Guest sign-up upsell (shown instead of any real-CT bounty action / any
   // guest_not_allowed 403). One instance for the whole board.
@@ -1957,6 +1961,7 @@ export default function BountyBoardModal() {
       glow="subtle"
       headerIcon={<span>📌</span>}
       maxWidth={1040}
+      bodyClassName={isMobile ? styles.touchTargets : undefined}
       tokenBadge={
         <RpgTooltip content="Your vCLAW balance — escrowed on post, released on approval.">
           <span

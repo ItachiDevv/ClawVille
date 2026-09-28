@@ -422,17 +422,38 @@ export interface HistoryCursor {
   ts: string;
   id: string | null;
 }
-const CURSOR_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
+const CURSOR_TS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Strict: every field must survive a UTC round trip, the year must be >= 1 and
+ * the offset at most 15:59. Date.parse rolls Feb 30 over to Mar 2 and accepts
+ * year 0 and offsets up to 23:59; `::timestamptz` rejects those (a 500, not a 400).
+ */
+function isCursorTimestamp(ts: string): boolean {
+  const m = CURSOR_TS.exec(ts);
+  if (!m) return false;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  if (year < 1 || (m[7] !== undefined && (Number(m[7]) > 15 || Number(m[8]) > 59))) return false;
+  const d = new Date(0);
+  d.setUTCFullYear(year, month - 1, day);
+  d.setUTCHours(hour, minute, second);
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day &&
+    d.getUTCHours() === hour &&
+    d.getUTCMinutes() === minute &&
+    d.getUTCSeconds() === second
+  );
+}
 
 export function parseBeforeCursor(raw: string | undefined): HistoryCursor | null {
   if (raw === undefined || raw.trim() === '') return null;
   const [ts, id, extra] = raw.trim().split('|');
-  const msTs = ts.replace(/(\.\d{3})\d{1,3}/, '$1');
   if (
     extra !== undefined ||
-    !CURSOR_TS.test(ts) ||
-    Number.isNaN(Date.parse(msTs)) ||
+    !isCursorTimestamp(ts) ||
     (id !== undefined && !CURSOR_ID.test(id))
   ) {
     throw new HTTPException(400, {

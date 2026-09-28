@@ -11,6 +11,7 @@ import {
   readPersistedCashTableState,
   writePersistedCashTableState,
 } from './pack-cash-table-state';
+import { isStagingDatabase } from './staging-db';
 
 const DEFAULT_WEB_BASE = 'https://itachi222.tail06a01b.ts.net:9443';
 const DEFAULT_API_BASE = 'https://itachi222.tail06a01b.ts.net:9444';
@@ -124,7 +125,7 @@ async function inspectOwnedPrivateTable(
   const databaseUrl = process.env.DATABASE_URL;
   if (
     !databaseUrl
-    || !databaseUrl.includes('mtpixvtclsjqjguouxes')
+    || !(await isStagingDatabase(databaseUrl))
   ) {
     return null;
   }
@@ -187,7 +188,7 @@ async function retireOwnedEmptyLegacyTable(
   const databaseUrl = process.env.DATABASE_URL;
   if (
     !databaseUrl
-    || !databaseUrl.includes('mtpixvtclsjqjguouxes')
+    || !(await isStagingDatabase(databaseUrl))
   ) {
     return false;
   }
@@ -270,7 +271,7 @@ async function fixtureCompatibleHouseTableIds(
   const databaseUrl = process.env.DATABASE_URL;
   if (
     !databaseUrl
-    || !databaseUrl.includes('mtpixvtclsjqjguouxes')
+    || !(await isStagingDatabase(databaseUrl))
   ) {
     throw new Error(
       'PREFLIGHT REFUSED: fixture-compatible house-table selection requires the staging DATABASE_URL',

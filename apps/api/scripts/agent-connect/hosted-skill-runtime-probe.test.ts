@@ -1,7 +1,120 @@
 import { expect, test } from 'bun:test';
-import { assertProbeBodyAbsent, captureCursor, disconnectProbeBody, matchesTradingHaltState, readProbeAutonomyDiagnostic, startDeclaredGatewayMock, waitForCapturedPrompt } from './hosted-skill-runtime-probe';
+import { assertDatabaseMarker, assertProbeBodyAbsent, captureCursor, disconnectProbeBody, matchesTradingHaltState, parseCli, readProbeAutonomyDiagnostic, startDeclaredGatewayMock, validateDatabaseUrl, waitForCapturedPrompt } from './hosted-skill-runtime-probe';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import {
+  DATABASE_ENV_MARKER_SQL,
+  DatabaseEnvMarkerError,
+  assertWriteTargetMarker,
+  namesSupabaseProject,
+  resolveDatabaseEnvMarker,
+} from '../db-env-marker';
+
+test('the write transaction re-reads the marker and refuses any change from the pre-check', async () => {
+  const reader = (database: string[] | null, session: string | null) => {
+    const queries: string[] = [];
+    const read = async (query: string) => { queries.push(query); return [{ database_markers: database, session_marker: session }]; };
+    return { read, queries };
+  };
+  const same = reader(['clawville.env=staging'], 'staging');
+  await assertWriteTargetMarker(same.read, 'staging');
+  expect(same.queries).toEqual([DATABASE_ENV_MARKER_SQL]);
+  await assertWriteTargetMarker(reader(null, null).read, null);
+  for (const [changed, preCheck] of [
+    [reader(['clawville.env=production'], 'production'), 'staging'],
+    [reader(null, null), 'staging'],
+    [reader(['clawville.env=staging'], 'staging'), null],
+    [reader(['clawville.env=staging'], 'production'), 'staging'], // session spoof on the write connection
+  ] as const) {
+    await expect(assertWriteTargetMarker(changed.read, preCheck)).rejects.toThrow(DatabaseEnvMarkerError);
+  }
+  await expect(assertWriteTargetMarker(async () => [], 'staging')).rejects.toThrow(DatabaseEnvMarkerError);
+});
+
+test('the legacy Supabase fallback matches the exact pooler user or direct host only', () => {
+  const ref = 'mtpixvtclsjqjguouxes';
+  const prod = 'wheuidgiyyccqyoppxoa';
+  expect(namesSupabaseProject(`postgresql://postgres.${ref}:pw@aws-0-us-east-1.pooler.supabase.com:5432/postgres`, ref)).toBe(true);
+  expect(namesSupabaseProject(`postgresql://postgres.${ref}:pw@AWS-0-US-EAST-1.Pooler.Supabase.COM:6543/postgres`, ref)).toBe(true);
+  expect(namesSupabaseProject(`postgres://postgres:pw@db.${ref}.supabase.co:5432/postgres`, ref)).toBe(true);
+  expect(namesSupabaseProject(`postgres://postgres:pw@DB.${ref.toUpperCase()}.SUPABASE.CO:5432/postgres`, ref)).toBe(true);
+  for (const url of [
+    // the right pooler user on a host that is not a Supabase pooler
+    `postgresql://postgres.${ref}:pw@127.0.0.1:15432/clawville`,
+    `postgresql://postgres.${ref}:pw@database.internal.example:5432/postgres`,
+    `postgresql://postgres.${ref}:pw@aws-0-us-east-1.pooler.supabase.com.evil.example:5432/postgres`,
+    `postgresql://postgres.${ref}:pw@aws-0-us-east-1.pooler.supabase.com.:5432/postgres`, // trailing dot
+    `postgresql://postgres.${ref}:pw@.pooler.supabase.com:5432/postgres`, // empty label
+    `postgresql://postgres.${ref}:pw@evilpooler.supabase.com:5432/postgres`,
+    `postgres://postgres:pw@db.${ref}.supabase.co.:5432/postgres`, // trailing dot on the direct host
+    `postgresql://postgres.${prod}:${ref}@aws-0-us-west-1.pooler.supabase.com:5432/postgres`, // ref in the password
+    `postgresql://clawville:pw@127.0.0.1:15432/clawville?application_name=${ref}`, // ref in the query
+    `postgresql://clawville:pw@127.0.0.1:15432/${ref}`, // ref in the path
+    `postgresql://postgres:pw@db.${ref}.supabase.co.evil.example:5432/postgres`, // lookalike host
+    `https://db.${ref}.supabase.co/postgres`,
+    'not-a-url',
+  ]) {
+    expect(namesSupabaseProject(url, ref)).toBe(false);
+  }
+});
+
+test('the database-level marker decides; a differing session value is a refused spoof', () => {
+  const row = (database: string[] | null, session: string | null) => ({ database_markers: database, session_marker: session });
+  expect(resolveDatabaseEnvMarker(row(['clawville.env=staging'], 'staging'))).toBe('staging');
+  expect(resolveDatabaseEnvMarker(row(['clawville.env=production'], 'production'))).toBe('production');
+  expect(resolveDatabaseEnvMarker(row(null, null))).toBeNull();
+  expect(resolveDatabaseEnvMarker(row(['clawville.env='], ''))).toBeNull();
+  expect(resolveDatabaseEnvMarker(row(null, ''))).toBeNull();
+  for (const refused of [
+    row(null, 'staging'), // URL option / PGOPTIONS / role setting on an unmarked database
+    row(['clawville.env=production'], 'staging'), // spoofed over a production marker
+    row(['clawville.env=staging'], 'production'),
+    row(['clawville.env=staging'], null),
+    row(['clawville.env=staging', 'clawville.env=production'], 'staging'),
+  ]) {
+    expect(() => resolveDatabaseEnvMarker(refused)).toThrow(DatabaseEnvMarkerError);
+  }
+  expect(() => resolveDatabaseEnvMarker(undefined)).toThrow(DatabaseEnvMarkerError);
+});
+
+test('--allow-unmarked-db is an explicit, single-use opt-in', () => {
+  expect(parseCli(['--api', 'http://localhost:4000']).allowUnmarkedDb).toBe(false);
+  expect(parseCli(['--api', 'http://localhost:4000', '--allow-unmarked-db']).allowUnmarkedDb).toBe(true);
+  expect(() => parseCli(['--api', 'http://localhost:4000', '--allow-unmarked-db', '--allow-unmarked-db'])).toThrow('duplicate');
+  expect(() => parseCli(['--api', 'http://localhost:4000', '--allow-unmarked-db=true'])).toThrow('unknown argument');
+});
+
+test('only a staging marker, or an unmarked local database named by the operator, admits fixtures', () => {
+  const loopback = validateDatabaseUrl('DATABASE_URL', 'postgresql://clawville:pw@127.0.0.1:15432/clawville')!;
+  const composeLocal = validateDatabaseUrl('DATABASE_URL', 'postgresql://postgres:pw@postgres:5432/clawville')!;
+  const onBox = validateDatabaseUrl('DATABASE_URL', 'postgresql://clawville:pw@clawville-db:5432/clawville')!;
+  const legacyStaging = validateDatabaseUrl('DATABASE_URL', 'postgresql://postgres:pw@db.mtpixvtclsjqjguouxes.supabase.co:5432/postgres')!;
+  expect([loopback.isLocal, composeLocal.isLocal, onBox.isLocal, legacyStaging.isLocal]).toEqual([true, true, false, false]);
+  expect(() => validateDatabaseUrl('DATABASE_URL', 'postgresql://postgres:pw@db.wheuidgiyyccqyoppxoa.supabase.co:5432/postgres')).toThrow('production');
+  expect(() => validateDatabaseUrl('DATABASE_URL', 'postgresql://clawville:pw@10.0.0.5:5432/clawville')).toThrow('must target');
+
+  for (const target of [loopback, onBox, legacyStaging]) {
+    expect(assertDatabaseMarker('staging', target, false)).toBe('staging');
+    expect(assertDatabaseMarker('staging', target, true)).toBe('staging');
+  }
+  for (const target of [loopback, composeLocal, onBox, legacyStaging]) {
+    for (const allow of [false, true]) {
+      expect(() => assertDatabaseMarker('production', target, allow)).toThrow('clawville.env=production');
+      for (const other of ['Staging', ' staging', 'prod', 'dev']) {
+        expect(() => assertDatabaseMarker(other, target, allow)).toThrow('unrecognized');
+      }
+    }
+    for (const unmarked of [null, '']) {
+      expect(() => assertDatabaseMarker(unmarked, target, false)).toThrow('no clawville.env marker');
+    }
+  }
+  for (const unmarked of [null, '']) {
+    expect(assertDatabaseMarker(unmarked, loopback, true)).toBe('unmarked-local');
+    expect(assertDatabaseMarker(unmarked, composeLocal, true)).toBe('unmarked-local');
+    expect(() => assertDatabaseMarker(unmarked, onBox, true)).toThrow('admits only a loopback or local');
+    expect(() => assertDatabaseMarker(unmarked, legacyStaging, true)).toThrow('admits only a loopback or local');
+  }
+});
 
 test('autonomy failure diagnostics retain phase evidence without thought text or identities', async () => {
   let body: unknown = {

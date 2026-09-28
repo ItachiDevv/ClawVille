@@ -1,12 +1,12 @@
 # Staging Test Accounts
 
-**STAGING-ONLY.** Persistent, clearly-labeled test accounts for self-serve authed testing on `staging.clawville.world` / `api-staging.clawville.world`. Seeded by `apps/api/scripts/seed-test-accounts.ts` against the **staging** Supabase DB (ref `mtpixvtclsjqjguouxes`) — the script hard-refuses any other DB. Never run against prod.
+**STAGING-ONLY.** Persistent, clearly-labeled test accounts for self-serve authed testing on `staging.clawville.world` / `api-staging.clawville.world`. Seeded by `apps/api/scripts/seed-test-accounts.ts` against the **staging** database. Since 2026-09-25 staging is the self-hosted `clawville-db`, reached through an SSH tunnel (`ssh -N -L 15432:127.0.0.1:5432 <staging box>`, see `docs/DEPLOY-HETZNER.md` → "Self-hosted database"). Before any write the script reads the database's `clawville.env` marker and hard-refuses anything but `staging` (or, with no marker, the legacy staging Supabase ref `mtpixvtclsjqjguouxes`). Never run against prod.
 
 ## Seed / refresh
 
 ```bash
-# staging session-pooler URL (secret — never commit / echo)
-SEED_DATABASE_URL="<staging session-pooler url>" \
+# staging URL through the tunnel (secret — never commit / echo)
+SEED_DATABASE_URL="postgresql://clawville:<APP_PASSWORD>@127.0.0.1:15432/clawville" \
   bun run apps/api/scripts/seed-test-accounts.ts
 ```
 
