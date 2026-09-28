@@ -463,6 +463,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-28 (session cvBrand) — branding upgrade on staging (kit split, logo sign in the app, icon set)
+
+**What changed:** branch `feat/branding-upgrade` (5 commits on `773943a0`). (A) the public brand kit keeps rules only; internal history, the font repair pipeline, the source PSD and the raw intake moved to the private brain. (1) vector wordmark candidates A/B in `branding/logo-work/` (founder pick owed), usage rules + `branding/logo-usage.html`, a real-alpha hi-res sign. (4) the landing hero and the /game loading screen show `/brand/clawville-sign-v1-{480,960}.webp` instead of typed Orbitron text; `brand.*` / `--brand-*` tokens; landing copy loses em/en dashes; dead `public/fonts/*.ttf` deleted. (3) claw-girl favicon/icon/apple/PWA set, OG + Twitter 1200x630, `manifest.ts` (display browser), metadata base from `NEXT_PUBLIC_API_URL` (`site-url.ts`, test added to gates.yml).
+**What broke + root cause + fix:** nothing on staging yet. Local: a Temp-folder Chrome profile broke Cache Storage, so the service worker failed every fetch and the probe page crashed; rerun with a `$HOME` profile passed (known rig trap). Two Opus reviews found doc drift and a broken brand-board image (official logo `.jpg` after the 08-26 swap); all fixed before push.
+**Verified locally:** typecheck, 6/6 site-url tests, prod build, browser matrix 390x844 / 744x1133 / 820x1180 / 1024x1366 portrait + landscape and 1440x900: sign loaded, no horizontal scroll, no page errors. Staging verification: see the follow-up entry.
+**Who it is for:** founder brand review (FOUNDER-REVIEW.md BRAND entry + two DECISIONS OWED).
+**SCHEMA:** `synced` (no schema change). PARITY: presentation only.
+
 ### 2026-09-28 08:30–09:05 UTC (session sql2) — promotion #303 + prod database cutover off Supabase (founder: "Go now")
 
 **What changed:** PR #303 merged (`b19d872c`: bounded "my" bounty lists v72, hardened cutover/backup scripts, catalog-marker ops guards, pinned-key CI). Then the prod DB moved from Supabase `wheuidgiyyccqyoppxoa` to `clawville-db` on the prod box (see CURRENT STATE for the gate results and timings). `PROD_DATABASE_URL` switched to the tunnel form; `deploy.yml` was disabled for the window and re-enabled after; prod motd updated; prod backup cron + offsite (rrsync-restricted key to the staging box) installed.
