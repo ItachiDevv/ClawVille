@@ -465,6 +465,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-28 10:05–11:00 UTC (session sql2) — staging box: second tenant RevealAI; sol-mafia anon revoked (docs-only push, no ClawVille deploy)
+
+**What changed:** no ClawVille code. The staging box now also runs the RevealAI backend that replaced its Supabase project (`/opt/revealai`: `revealai-db`, `revealai-rest`, `revealai-storage`, ~500 MB RAM, Traefik host `data.revealai.fun` only, own cron 04:47 UTC with a nightly restore test). RevealAI's Vercel project switched to it at 10:38:30 UTC. sol-mafia Supabase: anon/authenticated grants revoked 10:08:24 UTC (founder: archive only). Docs: audit §4.4, `docs/DEPLOY-HETZNER.md` "Other tenant on the staging box".
+**What broke + root cause + fix:** nothing on ClawVille. Found before the RevealAI switch: the new PostgREST answered without a key (anon role configured) → removed the anon role, now 401 without a signed key. Pre-existing RevealAI app defects (also on Supabase) are listed in the audit §4.4; the gudtek code was not changed.
+**Who it's for:** the founder (Supabase account shutdown).
+**SCHEMA:** `synced` (no ClawVille schema change). PARITY: not applicable (no user-facing ClawVille change).
+
 ### 2026-09-28 (session cvBrand) — branding upgrade on staging (kit split, logo sign in the app, icon set)
 
 **What changed:** branch `feat/branding-upgrade` (7 commits on `773943a0`, head `b1b803a1`). (A) the public brand kit keeps rules only; internal history, the font repair pipeline, the source PSD and the raw intake moved to the private brain. (1) vector wordmark candidates A/B in `branding/logo-work/` (founder pick owed), usage rules + `branding/logo-usage.html`, a real-alpha hi-res sign. (4) the landing hero and the /game loading screen show `/brand/clawville-sign-v1-{480,960}.webp` instead of typed Orbitron text; `brand.*` / `--brand-*` tokens; landing copy loses em/en dashes; dead `public/fonts/*.ttf` deleted. (3) claw-girl favicon/icon/apple/PWA set, OG + Twitter 1200x630, `manifest.ts` (display browser), metadata base from `NEXT_PUBLIC_API_URL` (`site-url.ts`, test added to gates.yml).
