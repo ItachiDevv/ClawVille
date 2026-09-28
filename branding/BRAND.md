@@ -1,5 +1,11 @@
 # ClawVille Brand Kit
 
+Last Audited: September 24, 2026.
+Drift note (09-24): removed the stale SAP reference (SAP was removed from the product), set the Daylight display row to the locked Clawville Display font, and added the font, renderer, and brand board to the §9 inventory.
+Location drift note: the original brand intake moved from the external `clawville-brand` folder to `branding/source-intake`.
+All 32 original file hashes match. Curated assets remain under `branding/assets`.
+See [the source intake record](source-intake/README.md).
+
 > Canonical brand reference for anyone (human or agent) producing ClawVille-branded material.
 > Last Audited 2026-08-26 (official logo replaced by the claw-girl token logo). Built 2026-07-26 from the marketing team's Drive asset kit (two founder-provided folders) so
 > repo sessions finally have exposure to the real marketing style. Companion copy doc:
@@ -35,7 +41,7 @@ registers are official. Pick the register by audience and message, never mix the
   (pirate gear, tropical shirt with the CLAW chain). Always center-right, always the hero.
 - Type is huge, uppercase, condensed, with TEXTURED FILLS (see Typography).
 - Use for: X banners, partnership announcements, spaces recaps, episode cards, protocol and
-  economy news. This is the register for the SAP / x402 / settlement content.
+  economy news. This is the register for x402 / settlement / protocol content.
 - Reference assets: `assets/reference/Agent Network EP7.jpg`,
   `assets/reference/Clawville Space Recap.jpg`, `assets/reference/PAY AI Builder Banter.jpg`.
 
@@ -111,7 +117,7 @@ The kit also bundles the broadcast stand-ins as woff2 in `assets/fonts/` (Anton 
 | Broadcast headline | ultra-bold condensed caps, tight tracking, textured fill | Anton, or Archivo Black |
 | Broadcast sub/kicker | spaced-out medium caps ("BUILDING THE AGENT INTERNET") | Barlow SemiBold, +0.2em tracking |
 | Chips / HUD labels | clean geometric sans caps | Inter / Barlow |
-| Daylight display | rounded friendly bold | Baloo 2 / Titan One |
+| Daylight display | rounded friendly bold | none needed: use the locked Clawville Display (above) |
 
 Headline pattern from the exemplars: 2-3 stacked lines, alternating fill treatments per line
 (e.g. white "CLAWVILLE" / lime "JOINS" / white "AGENT NETWORK"), one keyword may get its own
@@ -251,9 +257,14 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
 | `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 | `graphics/banner-uos-launch.html` | uOS App Store launch banner — partner-palette variant of Register B: uOS magenta `#FF00C5` replaces lime as the accent (their brand color, deliberate), Electric Blue stays; `.keep{text-transform:none}` span preserves the lowercase "u" in "uOS" against Anton's uppercase | B |
+| `assets/fonts/ClawvilleDisplay.otf` / `.woff2` | THE brand display font (locked, one weight) | A |
+| `assets/fonts/render-embossed-text.py` | emboss renderer: text in, transparent headline PNG out | A |
+| `assets/fonts/build-clawville-display.py`, `generate-glyphsheets.py`, `glyphsheets/` | font repair pipeline (no new weights without founder direction) | n/a |
+| `brand-board.html` | visual one-page board of colors, logos, mascot, stickers | both |
+| `source-intake/intake/` | original marketing Drive intake (32 files, untracked); curated copies above | n/a |
 
-Not in the repo on purpose: `early-ideas.jpg` (Drive only). It contains recognizable
-third-party game characters; internal mood reference ONLY, never publish or commit.
+Local-only reference: `source-intake/intake/drive1/art/early-ideas.jpg` is inside the checkout but Git ignores it.
+It contains recognizable third-party game characters; internal mood reference ONLY, never publish or commit.
 
 ## 10. Open flags (founder / marketing to resolve)
 

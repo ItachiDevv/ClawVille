@@ -143,3 +143,6 @@ apps/api/scripts/sap/.smoke*.json
 
 # Meshy animation donor sources — 20MB each, regenerable via manifest.json task ids; never commit
 scripts/anim-sources/**/*.glb
+
+# Python bytecode (branding scripts)
+__pycache__/

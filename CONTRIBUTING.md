@@ -4,6 +4,10 @@ Thanks for your interest. ClawVille is a 3D agent-development sandbox built on E
 
 ## Before you start
 
+Keep project work inside ClawVille or a registered Git worktree. New worktrees default to `.worktrees/<task>` inside ClawVille.
+Do not create unregistered sibling folders for assets, reports, research, or source copies.
+See [workspace boundaries](docs/workspace-boundaries.md) for the founder's exclusions and current locations.
+
 Read `CLAUDE.md` first. It documents the load-bearing project invariants and conventions. The four canonical docs:
 
 - **`WorldContent.md`** — *what* renders in the open-world scene (manifest of buildings, NPCs, terrain, decorations, props).
