@@ -132,6 +132,7 @@ jobs:
           src/stores/__tests__/npc-place-player.test.ts
           src/components/game/__tests__/spawn-on-load-route-exit.test.ts
           src/lib/__tests__/hud-short-touch.test.ts
+          src/lib/site-url.test.ts
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process
