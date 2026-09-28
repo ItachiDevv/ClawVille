@@ -1,5 +1,7 @@
 # ClawVille → Hetzner Deploy Playbook
 
+**Last Audited: 2026-09-28 (RevealAI on the staging box).** Drift note: the staging box also hosts the self-hosted RevealAI backend (`/opt/revealai`, own nightly backup); see "Other tenant on the staging box" below.
+
 **Last Audited: 2026-09-28 (prod database cutover).** Drift note: prod moved to the self-hosted `clawville-db` on the prod box on 2026-09-28 (outage 08:41–08:52 UTC; every copy gate IDENTICAL/YES); prod nightly backups are restore-verified and copied offsite to the staging box, then to the laptop drive. Supabase prod is frozen behind a network restriction.
 
 **Last Audited: 2026-09-27 (self-hosted database hardening).** Drift note: `scripts/deploy/db/*.sh` fix the 10 defects in `docs/audits/2026-09-27-supabase-exit-audit.md` §0.4: the rollback file is never overwritten, the copy gate adds `OBJECTS: IDENTICAL`, the Coolify switch is verified per app with automatic revert, `PREFLIGHT_ONLY=1` runs the pre-flight alone, the copy gate also needs a count+hash match per table and `QUIESCENT: YES` (source fingerprint of DML counter, relfilenodes, sequences and catalog unchanged during the copy), the real run requires `SOURCE_BARRIER=network-restricted` (Supabase restricted to the prod box in the window) and re-checks the source after the switch, one `flock` serializes the three scripts, a failed revert keeps the apps stopped, nightly dumps carry and verify the `clawville.env` marker (`--create`, `pg_restore -C`, `.meta` sidecar), nightly dumps are restore-verified in a throwaway container, offsite copies use rsync to an rrsync-restricted key, and no password goes on a command line. The cutover window now disables the deploy workflow. The ops scripts read the `clawville.env` marker instead of trusting a Supabase ref. Runbook: "Self-hosted database" below.
@@ -402,6 +404,9 @@ Restore (the marker must be in place before any app points at the database):
 
 ### Backups
 Hetzner auto-backups: Console → server → Backups → Enable (20% surcharge, ~$3/mo for CCX13). Keeps 7 daily snapshots. Worth it. The database has its own nightly dumps — see "Self-hosted database".
+
+### Other tenant on the staging box: RevealAI (2026-09-28)
+The staging box (87.99.142.34) also runs the RevealAI backend that replaced its Supabase project: Docker Compose project `revealai` in `/opt/revealai` (containers `revealai-db`, `revealai-rest`, `revealai-storage`; volumes `revealai_pgdata`, `revealai_storage`; about 500 MB RAM). Traefik routes only `data.revealai.fun` to it. It is not a Coolify app, and it is not part of any ClawVille deploy. Its nightly backup (`/etc/cron.d/revealai-backup`, 04:47 UTC) restore-tests each dump; the laptop pull copies `/opt/revealai/backups` to `D:\revealai-backups`. Runbook: `/opt/revealai/README.md` on the box; record: `docs/audits/2026-09-27-supabase-exit-audit.md` §4.4. Do not prune its volumes. When you rebuild or replace the staging box, move this stack too.
 
 ### Cloudflare optimizations (after cutover)
 - Speed → Optimization → Brotli: on
