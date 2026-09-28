@@ -1,0 +1,29 @@
+{
+  "A": {
+    "file_bytes": 64211,
+    "path_count": 339,
+    "letter_mask_iou": 0.947,
+    "silhouette_iou": 0.9892,
+    "mean_abs_rgb_error": 18.3
+  },
+  "B": {
+    "file_bytes": 278629,
+    "path_count": 519,
+    "letter_mask_iou": 0.7803,
+    "silhouette_iou": 0.9441,
+    "mean_abs_rgb_error": 21.95
+  },
+  "construction": {
+    "wordmark_fit_iou": 0.95,
+    "wordmark_svg_transform": [
+      4.3704,
+      4.33979,
+      63.89846,
+      67.43341,
+      0.00658,
+      -0.00263
+    ],
+    "plank_outline_nodes": 99,
+    "keyed_edge_method": "Largest saturation component; filled interior; 3x3 Gaussian antialias on alpha only; original RGB preserved."
+  }
+}
