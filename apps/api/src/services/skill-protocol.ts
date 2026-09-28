@@ -579,6 +579,8 @@ import {
 // documented "an invalid cursor returns 400" for calendar-impossible `before`
 // dates too (Feb 30, year 0, offsets past 15:59 used to reach Postgres and 500).
 // The bounty modal's touch-target sizing is presentation only.
+// 2026-09-28 (branding): manual reviewed, no version change. The /game loading
+// screen shows the brand sign image instead of typed text; presentation only.
 export const PROTOCOL_VERSION = 72;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
