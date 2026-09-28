@@ -9,6 +9,24 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        brand: {
+          yellow: '#F8D038',
+          wood: '#8A4A20',
+          'wood-light': '#A9622F',
+          red: '#C8503C',
+          belly: '#D8A860',
+          sky: '#D8E8E0',
+          lagoon: '#80C0B8',
+          sand: '#F8E0A8',
+          abyss: '#000010',
+          navy: '#001858',
+          lime: '#B8F800',
+          blue: '#2890F8',
+          gold: '#E0C070',
+          parchment: '#F8F0D8',
+          white: '#F8F8F8',
+          alert: '#E02020',
+        },
         // Ocean theme palette
         claw: {
           primary: '#1B4D89',

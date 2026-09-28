@@ -681,9 +681,20 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ---
 
+## BRAND
+
+### September 28: brand kit upgrade (split kit, logo sign in the app, icon set)
+
+- **Session:** Claude `cvBrand`, 2026-09-28, branch `feat/branding-upgrade`. Local prod build, typecheck, 6 unit tests, and a 390x844 / 744x1133 / 820x1180 / 1024x1366 portrait and landscape browser matrix pass. Staging evidence is in `deploy-status.md`.
+- **Where:** staging `https://staging.clawville.world/` (landing hero), `https://staging.clawville.world/game` (loading screen), the browser tab icon, and a phone "Add to Home Screen" icon. Kit pages to open locally: `branding/logo-usage.html`, `branding/logo-work/compare.html`, `branding/logo-work/icons-compare.html`.
+- **Look at:** the wood-sign image replaces the typed Orbitron "ClawVille" on the landing hero and on the /game loading screen. The landing hero is about 58 px taller on desktop. The tab title and landing copy have no em or en dashes now.
+- **Feedback wanted:** the sign size on the hero; the claw-girl favicon at tab size; the maskable home-screen icon padding (sky/ocean extension, not a frame); the OG card (the yellow robot is cut at the right edge); the proposed logo rules (minimum 120 px, clear space 0.25 x height).
+- **Not covered:** a real-iPad safe-area check (none of the changed elements are bottom-anchored), and a real link-unfurl test on X or Discord (only possible after production).
+
 ## DECISIONS OWED (rulings, not playtests)
 
-*(none open)*
+- **BRAND: full-color vector logo A or B.** Open `branding/logo-work/compare.html`. A (built from the marketing letter paths, 64 KB, letter IoU 0.947, silhouette IoU 0.989) or B (color trace, 279 KB, blotchy). Recommendation: A. The winner becomes `branding/assets/logos/clawville-logo-color.svg`; the other is deleted. Asked by `cvBrand`, 2026-09-28.
+- **BRAND: small favicon set.** Open `branding/logo-work/icons-compare.html`. Claw girl full square at 16/32/48 px (shipped now) or the claw mark on a navy tile (`branding/assets/icons/alt/`). Asked by `cvBrand`, 2026-09-28.
 
 ---
 

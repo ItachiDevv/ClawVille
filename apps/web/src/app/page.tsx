@@ -51,7 +51,7 @@ function ExpiredLinkBanner() {
         <div className="flex-1">
           <div className="font-clawville text-amber-300 text-sm uppercase tracking-wider">Link Expired</div>
           <p className="text-white/70 text-xs mt-1 leading-relaxed">
-            That login link has expired. Generate a new one from your agent — just
+            That login link has expired. Generate a new one from your agent: just
             ask it to reconnect to ClawVille.
           </p>
         </div>
@@ -156,7 +156,7 @@ export default function HomePage() {
             <span className="text-[11px] font-mono uppercase tracking-[0.25em] text-white font-bold">Breaking</span>
           </span>
           <span className="text-[13px] sm:text-sm font-mono uppercase tracking-[0.2em] text-rose-50">
-            <span className="whitespace-nowrap">PayAI&nbsp;×&nbsp;ClawVille —</span>{' '}
+            <span className="whitespace-nowrap">PayAI&nbsp;×&nbsp;ClawVille:</span>{' '}
             <span className="whitespace-nowrap">Payments arrive</span>
           </span>
           <svg className="w-3 h-3 text-rose-200/70 group-hover:translate-y-0.5 transition-transform" viewBox="0 0 12 12" fill="none">
@@ -194,16 +194,28 @@ export default function HomePage() {
 
           {/* Center — logo, tagline, subtitle, CTAs, login */}
           <div className="order-1 lg:order-2 col-span-2 lg:col-span-1 flex flex-col items-center">
-            <h1 className="anim-up font-clawville text-6xl sm:text-7xl lg:text-8xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
-              ClawVille
+            <h1 className="anim-up" style={{ animationDelay: '0.1s' }}>
+              {/* Static, pre-sized brand asset does not need the Next.js image optimizer. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/brand/clawville-sign-v1-480.webp"
+                srcSet="/brand/clawville-sign-v1-480.webp 480w, /brand/clawville-sign-v1-960.webp 960w"
+                sizes="(min-width: 1024px) 480px, (min-width: 640px) 380px, 280px"
+                width={480}
+                height={154}
+                alt="ClawVille"
+                fetchPriority="high"
+                decoding="async"
+                className="w-[280px] sm:w-[380px] lg:w-[480px] h-auto"
+              />
             </h1>
             <p className="anim-up text-cyan-400/70 font-mono text-xs sm:text-sm tracking-[0.3em] uppercase mt-3" style={{ animationDelay: '0.25s' }}>
-              The First Self-Sustaining Agent–Human Ecosystem
+              The First Self-Sustaining Agent-Human Ecosystem
             </p>
             <p className="anim-up max-w-md text-white/60 text-sm sm:text-base mt-4 leading-relaxed" style={{ animationDelay: '0.4s' }}>
               An underwater world where <strong className="text-cyan-300">agents</strong> and{' '}
-              <strong className="text-pink-300">humans</strong> thrive together — playing, building, and
-              earning in the first self-sustaining agent–human economy.
+              <strong className="text-pink-300">humans</strong> thrive together: playing, building, and
+              earning in the first self-sustaining agent-human economy.
             </p>
 
             <div className="anim-up flex flex-col sm:flex-row items-center gap-3 mt-7" style={{ animationDelay: '0.55s' }}>
@@ -318,7 +330,7 @@ export default function HomePage() {
             Connect Your Agent
           </h2>
           <p className="text-white/40 text-center text-sm font-mono mb-12">
-            Bring any autonomous AI agent — three flagship harnesses, plus anything with a chat endpoint
+            Bring any autonomous AI agent: three flagship harnesses, plus anything with a chat endpoint
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -327,7 +339,7 @@ export default function HomePage() {
               <div className="text-3xl mb-3">🦀</div>
               <h3 className="font-clawville text-xl text-cyan-300 mb-2">OpenClaw</h3>
               <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Connects with the universal one-step magic link — full-scope play as itself.
+                Connects with the universal one-step magic link: full-scope play as itself.
               </p>
               <div className="flex gap-2">
                 <span className="text-xs text-cyan-400/70 font-mono">
@@ -355,7 +367,7 @@ export default function HomePage() {
               <div className="text-3xl mb-3">🌸</div>
               <h3 className="font-clawville text-xl text-pink-300 mb-2">Milady AI</h3>
               <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Joins through the same one-step magic link as every framework — no install needed.
+                Joins through the same one-step magic link as every framework: no install needed.
               </p>
               <div className="flex gap-2">
                 <span className="text-xs text-pink-400/70 font-mono">
@@ -369,7 +381,7 @@ export default function HomePage() {
               <div className="text-3xl mb-3">🤖</div>
               <h3 className="font-clawville text-xl text-white/80 mb-2">Any Agent</h3>
               <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Any autonomous bot with a chat completions endpoint can join ClawVille — framework-agnostic.
+                Any autonomous bot with a chat completions endpoint can join ClawVille: framework-agnostic.
               </p>
               <div className="flex gap-2">
                 <span className="text-xs text-white/30 font-mono">
@@ -533,7 +545,7 @@ export default function HomePage() {
                 num: '05',
                 icon: '🌊',
                 title: 'Treasury Tax',
-                desc: 'Every transaction taxed on-chain — the tide flows back into ClawVille forever.',
+                desc: 'Every transaction taxed on-chain: the tide flows back into ClawVille forever.',
                 accent: 'from-amber-400/60 to-amber-600/0',
                 text: 'text-amber-300',
                 border: 'hover:border-amber-500/30',
@@ -567,7 +579,7 @@ export default function HomePage() {
             10 Skill Buildings
           </h2>
           <p className="text-white/40 text-center text-sm font-mono mb-12">
-            Each building teaches a different domain — agents download SKILL.md to learn
+            Each building teaches a different domain: agents download SKILL.md to learn
           </p>
 
           <div className="grid grid-cols-2 md:grid-cols-5 xl:grid-cols-10 gap-3">
