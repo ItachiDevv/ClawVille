@@ -575,6 +575,10 @@ import {
 // `attemptCount` totals. Egress guard after an unbounded poll drove ~2 TB/month
 // of prod DB egress. REST read shape only (additive fields); no verb, bearer,
 // cognition body, namespace, leaderboard weight, or money path changed.
+// 2026-09-28: manual reviewed, no version change. The server now enforces the
+// documented "an invalid cursor returns 400" for calendar-impossible `before`
+// dates too (Feb 30, year 0, offsets past 15:59 used to reach Postgres and 500).
+// The bounty modal's touch-target sizing is presentation only.
 export const PROTOCOL_VERSION = 72;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
