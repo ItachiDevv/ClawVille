@@ -12,15 +12,21 @@
  *
  * STAGING-ONLY — HARD GUARDED (the prod-write incident, 2026-06-16)
  * ----------------------------------------------------------------
- * The DB URL is read ONLY from `SEED_DATABASE_URL` and is asserted to be the
- * staging Supabase ref before ANY connection. There is NO fallback to
+ * The DB URL is read ONLY from `SEED_DATABASE_URL`. There is NO fallback to
  * DATABASE_URL / .env.local. The script creates its OWN `postgres()` client from
- * that asserted URL and never touches the auto-connecting `@clawville/database`
+ * that URL and never touches the auto-connecting `@clawville/database`
  * `db` proxy (only the pure table DEFINITIONS are imported, which do not connect).
+ * Before ANY write it reads the database's own marker: it proceeds only when
+ * `clawville.env` is 'staging' (self-hosted staging, reached through the
+ * `127.0.0.1:15432` SSH tunnel since 2026-09-25), or when there is no marker and
+ * the URL names the legacy staging Supabase project exactly (pooler user
+ * `postgres.<ref>` on a Supabase pooler host, or host `db.<ref>.supabase.co`).
+ * Each fixture is written in one transaction whose first statement re-reads the
+ * marker; a mismatch with that pre-check rolls the fixture back and stops.
  * The URL is a secret: never logged, echoed, or printed.
  *
  * RUN (staging only):
- *   SEED_DATABASE_URL="<staging session-pooler url>" \
+ *   SEED_DATABASE_URL="<staging url: tunnel or legacy session-pooler>" \
  *     bun run apps/api/scripts/seed-test-accounts.ts
  *
  * Idempotent: re-running reuses the same users/avatars (matched by email/name) and
@@ -30,24 +36,25 @@
 
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 // Pure table DEFINITIONS only — importing these does NOT open a DB connection
 // (the `db` proxy connects on first USE, which we never trigger; we use our own
 // explicit client below).
 import { users, avatars, sessions } from '@clawville/database';
+import {
+  DATABASE_ENV_MARKER_SQL,
+  DatabaseEnvMarkerError,
+  assertWriteTargetMarker,
+  namesSupabaseProject,
+  resolveDatabaseEnvMarker,
+  type DatabaseEnvMarkerRow,
+} from './db-env-marker';
 
 // ── 0. HARD staging guard ────────────────────────────────────────────────────
-const STAGING_REF = 'mtpixvtclsjqjguouxes'; // staging Supabase project ref
+const STAGING_REF = 'mtpixvtclsjqjguouxes'; // legacy staging Supabase project ref
 const SEED_URL = process.env.SEED_DATABASE_URL;
 if (!SEED_URL) {
   console.error('❌ SEED_DATABASE_URL is required (this script is STAGING-ONLY).');
-  process.exit(1);
-}
-if (!SEED_URL.includes(STAGING_REF)) {
-  console.error(
-    `❌ REFUSING: SEED_DATABASE_URL is not the staging DB (must contain "${STAGING_REF}"). ` +
-      'This script must NEVER run against prod.',
-  );
   process.exit(1);
 }
 
@@ -98,66 +105,96 @@ const FIXTURES: Fixture[] = [
 
 async function main() {
   const client = postgres(SEED_URL!, { max: 1 });
+  // The self-hosted staging URL names no project, so the database's own marker decides. It is
+  // read from the catalog, so a URL option or role setting cannot fake it (db-env-marker.ts).
+  let env: string | null;
+  try {
+    const [row] = await client.unsafe<DatabaseEnvMarkerRow[]>(DATABASE_ENV_MARKER_SQL);
+    env = resolveDatabaseEnvMarker(row);
+  } catch (error) {
+    await client.end();
+    if (!(error instanceof DatabaseEnvMarkerError)) throw error;
+    console.error(`❌ REFUSING: ${error.message}. This script must NEVER run against prod.`);
+    process.exit(1);
+  }
+  // Legacy fallback: the exact staging Supabase identity (pooler user or direct host), not the
+  // ref anywhere in the URL text (a password or query parameter would match that).
+  if (env !== 'staging' && !(env === null && namesSupabaseProject(SEED_URL!, STAGING_REF))) {
+    await client.end();
+    console.error(
+      `❌ REFUSING: SEED_DATABASE_URL is not the staging DB (needs clawville.env=staging, or no marker and "${STAGING_REF}"). ` +
+        'This script must NEVER run against prod.',
+    );
+    process.exit(1);
+  }
   const db = drizzle(client);
   const passwordHash = await Bun.password.hash(PASSWORD, { algorithm: 'bcrypt', cost: 10 });
   const out: Array<Record<string, string>> = [];
 
+  const preCheck = env;
   try {
     for (const fx of FIXTURES) {
-      // 1. upsert user (match by email)
-      const existingUser = await db.select().from(users).where(eq(users.email, fx.email)).limit(1);
-      let userId: string;
-      if (existingUser[0]) {
-        userId = existingUser[0].id;
-        await db.update(users)
-          .set({ passwordHash, emailVerified: true, name: fx.name, username: fx.username })
-          .where(eq(users.id, userId));
-      } else {
-        const inserted = await db.insert(users).values({
-          email: fx.email,
-          passwordHash,
-          emailVerified: true,
-          name: fx.name,
-          username: fx.username,
-        }).returning({ id: users.id });
-        userId = inserted[0].id;
-      }
+      // One transaction per fixture. Its FIRST statement re-reads the marker on the connection
+      // that writes; a mismatch with the pre-check throws and rolls the fixture back.
+      const { userId, avatarId, sessionId } = await db.transaction(async (tx) => {
+        await assertWriteTargetMarker(async (query) => await tx.execute(sql.raw(query)), preCheck);
 
-      // 2. upsert avatar (one per user — match by userId). Generous CT for buy-tests.
-      const existingAvatar = await db.select().from(avatars).where(eq(avatars.userId, userId)).limit(1);
-      let avatarId: string;
-      if (existingAvatar[0]) {
-        avatarId = existingAvatar[0].id;
-        // F1: mirror clawTokens into softBalance so avatars_vclaw_balance_sum holds
-        // (100_000 = 100_000+0+0). This UPDATE would otherwise leave the tags stale
-        // and violate the CHECK. Test CT is SOFT (non-cashable).
-        await db
-          .update(avatars)
-          .set({ clawTokens: 100_000, softBalance: 100_000, boughtBalance: 0, earnedBalance: 0 })
-          .where(eq(avatars.id, avatarId));
-      } else {
-        const insertedAv = await db.insert(avatars).values({
-          userId,
-          name: fx.avatarName,
-          species: 'fox',
-          color: 'blue',
-          gender: 'male',
-          archetype: 'explorer',
-          personality: { habitat: 'staging', hobby: 'testing', greeting: 'gm' },
-          stats: { strength: 5, defence: 5, movement: 5 },
-          clawTokens: 100_000,
-          // F1: mirror into softBalance so avatars_vclaw_balance_sum holds. SOFT.
-          softBalance: 100_000,
-        }).returning({ id: avatars.id });
-        avatarId = insertedAv[0].id;
-      }
+        // 1. upsert user (match by email)
+        const existingUser = await tx.select().from(users).where(eq(users.email, fx.email)).limit(1);
+        let userId: string;
+        if (existingUser[0]) {
+          userId = existingUser[0].id;
+          await tx.update(users)
+            .set({ passwordHash, emailVerified: true, name: fx.name, username: fx.username })
+            .where(eq(users.id, userId));
+        } else {
+          const inserted = await tx.insert(users).values({
+            email: fx.email,
+            passwordHash,
+            emailVerified: true,
+            name: fx.name,
+            username: fx.username,
+          }).returning({ id: users.id });
+          userId = inserted[0].id;
+        }
 
-      // 3. fresh long-lived session (delete any prior test sessions for this user first)
-      await db.delete(sessions).where(eq(sessions.userId, userId));
-      const sessionId =
-        crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
-      const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
-      await db.insert(sessions).values({ id: sessionId, userId, expiresAt });
+        // 2. upsert avatar (one per user — match by userId). Generous CT for buy-tests.
+        const existingAvatar = await tx.select().from(avatars).where(eq(avatars.userId, userId)).limit(1);
+        let avatarId: string;
+        if (existingAvatar[0]) {
+          avatarId = existingAvatar[0].id;
+          // F1: mirror clawTokens into softBalance so avatars_vclaw_balance_sum holds
+          // (100_000 = 100_000+0+0). This UPDATE would otherwise leave the tags stale
+          // and violate the CHECK. Test CT is SOFT (non-cashable).
+          await tx
+            .update(avatars)
+            .set({ clawTokens: 100_000, softBalance: 100_000, boughtBalance: 0, earnedBalance: 0 })
+            .where(eq(avatars.id, avatarId));
+        } else {
+          const insertedAv = await tx.insert(avatars).values({
+            userId,
+            name: fx.avatarName,
+            species: 'fox',
+            color: 'blue',
+            gender: 'male',
+            archetype: 'explorer',
+            personality: { habitat: 'staging', hobby: 'testing', greeting: 'gm' },
+            stats: { strength: 5, defence: 5, movement: 5 },
+            clawTokens: 100_000,
+            // F1: mirror into softBalance so avatars_vclaw_balance_sum holds. SOFT.
+            softBalance: 100_000,
+          }).returning({ id: avatars.id });
+          avatarId = insertedAv[0].id;
+        }
+
+        // 3. fresh long-lived session (delete any prior test sessions for this user first)
+        await tx.delete(sessions).where(eq(sessions.userId, userId));
+        const sessionId =
+          crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+        const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
+        await tx.insert(sessions).values({ id: sessionId, userId, expiresAt });
+        return { userId, avatarId, sessionId };
+      });
 
       out.push({
         email: fx.email,
@@ -190,6 +227,10 @@ async function main() {
 }
 
 main().catch((err) => {
+  if (err instanceof DatabaseEnvMarkerError) {
+    console.error(`❌ REFUSING: ${err.message}. Fixtures written before the change stay; the current one rolled back.`);
+    process.exit(1);
+  }
   console.error('seed-test-accounts failed:', err);
   process.exit(1);
 });

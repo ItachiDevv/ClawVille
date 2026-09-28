@@ -1,5 +1,6 @@
 import type { Driver } from './driver';
 import postgres from '../../apps/api/node_modules/postgres/src/index.js';
+import { isStagingDatabase } from './staging-db';
 import type { Surface } from './types';
 
 export interface FixtureRunHandle {
@@ -171,7 +172,7 @@ async function readLatestCashOutLedger(
   avatarId: string,
 ): Promise<CashOutLedgerProof | null> {
   const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl || !databaseUrl.includes('mtpixvtclsjqjguouxes')) {
+  if (!databaseUrl || !(await isStagingDatabase(databaseUrl))) {
     throw new Error(
       'cash holdem queued-leave proof requires the guarded staging DATABASE_URL',
     );

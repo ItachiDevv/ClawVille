@@ -38,19 +38,27 @@
  * ------
  * - DB URL from BACKFILL_DATABASE_URL ONLY (no DATABASE_URL/.env.local
  *   fallback — the 2026-06-16 prod-write lesson). Never logged.
- * - The URL's Supabase project ref MUST equal --ref <ref> or the script exits
- *   before connecting.
+ * - Exactly one explicit target assertion:
+ *   --ref <ref>  (Supabase): the URL MUST name the project exactly (pooler user
+ *                `postgres.<ref>` or host `db.<ref>.supabase.co`) or the script exits
+ *                before connecting, and the database must carry no marker.
+ *   --env <staging|production>  (self-hosted, reached through the 127.0.0.1:15432
+ *                SSH tunnel since 2026-09-25): the database's own `clawville.env`
+ *                marker (scripts/deploy/db) MUST equal it.
+ *   The marker is read before any selection or write, and again as the first
+ *   statement of every write transaction (a mismatch rolls back and stops the run).
  * - DRY-RUN by default: prints the plan. Writes ONLY with --apply.
  * - Idempotent: re-checks platform_agent_id IS NULL inside each tx.
  *
  * RUN (staging):
- *   BACKFILL_DATABASE_URL="<staging session-pooler url>" \
- *     bun run apps/api/scripts/backfill-avatar-agents.ts --ref mtpixvtclsjqjguouxes [--harness milady] [--apply]
+ *   BACKFILL_DATABASE_URL="postgresql://clawville:<pw>@127.0.0.1:15432/clawville" \
+ *     bun run apps/api/scripts/backfill-avatar-agents.ts --env staging [--harness milady] [--apply]
+ *   Legacy Supabase: --ref mtpixvtclsjqjguouxes with the session-pooler URL.
  */
 
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { and, eq, isNull, inArray } from 'drizzle-orm';
+import { and, eq, isNull, inArray, sql as drizzleSql } from 'drizzle-orm';
 // Pure table DEFINITIONS only — no connection is opened by these imports.
 import { users, avatars, agents, agentBots } from '@clawville/database';
 import {
@@ -63,6 +71,14 @@ import {
 } from '@clawville/shared';
 import type { AvatarArchetypeId } from '@clawville/shared';
 import { buildCharacterConfig } from '../src/services/avatar-agent-provisioning';
+import {
+  DATABASE_ENV_MARKER_SQL,
+  DatabaseEnvMarkerError,
+  assertWriteTargetMarker,
+  namesSupabaseProject,
+  resolveDatabaseEnvMarker,
+  type DatabaseEnvMarkerRow,
+} from './db-env-marker';
 
 // ── 0. args + hard ref guard ────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -73,8 +89,15 @@ const getArg = (name: string): string | undefined => {
 const APPLY = args.includes('--apply');
 const HARNESS = getArg('harness') ?? 'milady';
 const EXPECTED_REF = getArg('ref');
-if (!EXPECTED_REF) {
-  console.error('FATAL: --ref <supabase-project-ref> is required (explicit target assertion).');
+const EXPECTED_ENV = getArg('env');
+if (!EXPECTED_REF === !EXPECTED_ENV) {
+  console.error(
+    'FATAL: pass exactly one explicit target assertion: --ref <supabase-project-ref> or --env <staging|production>.',
+  );
+  process.exit(1);
+}
+if (EXPECTED_ENV && EXPECTED_ENV !== 'staging' && EXPECTED_ENV !== 'production') {
+  console.error('FATAL: --env must be exactly staging or production.');
   process.exit(1);
 }
 const dbUrl = process.env.BACKFILL_DATABASE_URL;
@@ -82,14 +105,36 @@ if (!dbUrl) {
   console.error('FATAL: BACKFILL_DATABASE_URL is required (no DATABASE_URL fallback by design).');
   process.exit(1);
 }
-const refMatch = /postgres(?:ql)?:\/\/[^.@]*\.?([a-z]{20})[.:@]/.exec(dbUrl) ?? /([a-z]{20})/.exec(dbUrl);
-if (!refMatch || !dbUrl.includes(EXPECTED_REF)) {
-  console.error('FATAL: BACKFILL_DATABASE_URL does not contain the asserted project ref. Refusing to connect.');
+// The exact Supabase identity (pooler user `postgres.<ref>` or host `db.<ref>.supabase.co`),
+// not the ref anywhere in the URL text (a password or query parameter would match that).
+if (EXPECTED_REF && !namesSupabaseProject(dbUrl, EXPECTED_REF)) {
+  console.error('FATAL: BACKFILL_DATABASE_URL does not name the asserted project (pooler user or direct host). Refusing to connect.');
   process.exit(1);
 }
 
 const sql = postgres(dbUrl, { max: 1, prepare: false });
 const db = drizzle(sql);
+
+// The self-hosted URL names no project, so the database's own marker decides: --env must equal
+// it, and --ref is valid only for an unmarked (Supabase) database. The marker is read from the
+// catalog, so a URL option or role setting cannot fake it (db-env-marker.ts).
+let marker: string | null;
+try {
+  const [markerRow] = await sql.unsafe<DatabaseEnvMarkerRow[]>(DATABASE_ENV_MARKER_SQL);
+  marker = resolveDatabaseEnvMarker(markerRow);
+} catch (error) {
+  await sql.end();
+  if (!(error instanceof DatabaseEnvMarkerError)) throw error;
+  console.error(`FATAL: ${error.message}.`);
+  process.exit(1);
+}
+if (marker !== (EXPECTED_ENV ?? null)) {
+  console.error(
+    `FATAL: database marker clawville.env=${marker ?? '(none)'} does not match ${EXPECTED_ENV ? `--env ${EXPECTED_ENV}` : '--ref (expects no marker)'}. Refusing.`,
+  );
+  await sql.end();
+  process.exit(1);
+}
 
 // ── 1. selection ────────────────────────────────────────────────────────────
 const candidates = await db
@@ -174,41 +219,51 @@ for (const c of plan) {
     continue;
   }
 
-  await db.transaction(async (tx) => {
-    // Idempotency re-check inside the tx.
-    const [still] = await tx
-      .select({ platformAgentId: avatars.platformAgentId })
-      .from(avatars)
-      .where(eq(avatars.id, c.avatarId));
-    if (!still || still.platformAgentId) {
-      console.log(`  SKIP ${c.avatarId} — platform_agent_id no longer NULL`);
-      return;
-    }
-    const [agent] = await tx
-      .insert(agents)
-      .values({
-        userId: c.userId,
-        name: c.name,
-        type: 'avatar-agent',
-        status: 'pending',
-        config: {
-          species: c.species,
-          color: c.color,
-          archetypeId: c.archetype,
-          modelKey,
-          agentCategory: c.agentCategory ?? modelMeta?.category ?? DEFAULT_AGENT_CATEGORY,
-          harness: c.harness ?? DEFAULT_AGENT_HARNESS,
-        },
-        customization,
-      })
-      .returning();
-    await tx
-      .update(avatars)
-      .set({ platformAgentId: agent.id })
-      .where(eq(avatars.id, c.avatarId));
-    minted++;
-    console.log(`  MINT ${c.avatarId} name="${c.name}" -> agent ${agent.id}`);
-  });
+  try {
+    await db.transaction(async (tx) => {
+      // First statement: the database this transaction writes to must still carry the marker
+      // the pre-check accepted; a mismatch throws and rolls the avatar back.
+      await assertWriteTargetMarker(async (query) => await tx.execute(drizzleSql.raw(query)), marker);
+      // Idempotency re-check inside the tx.
+      const [still] = await tx
+        .select({ platformAgentId: avatars.platformAgentId })
+        .from(avatars)
+        .where(eq(avatars.id, c.avatarId));
+      if (!still || still.platformAgentId) {
+        console.log(`  SKIP ${c.avatarId} — platform_agent_id no longer NULL`);
+        return;
+      }
+      const [agent] = await tx
+        .insert(agents)
+        .values({
+          userId: c.userId,
+          name: c.name,
+          type: 'avatar-agent',
+          status: 'pending',
+          config: {
+            species: c.species,
+            color: c.color,
+            archetypeId: c.archetype,
+            modelKey,
+            agentCategory: c.agentCategory ?? modelMeta?.category ?? DEFAULT_AGENT_CATEGORY,
+            harness: c.harness ?? DEFAULT_AGENT_HARNESS,
+          },
+          customization,
+        })
+        .returning();
+      await tx
+        .update(avatars)
+        .set({ platformAgentId: agent.id })
+        .where(eq(avatars.id, c.avatarId));
+      minted++;
+      console.log(`  MINT ${c.avatarId} name="${c.name}" -> agent ${agent.id}`);
+    });
+  } catch (error) {
+    if (!(error instanceof DatabaseEnvMarkerError)) throw error;
+    console.error(`FATAL: ${error.message}; stopping after ${minted} minted.`);
+    await sql.end();
+    process.exit(1);
+  }
 }
 
 console.log(

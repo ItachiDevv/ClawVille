@@ -6,6 +6,7 @@
  */
 import postgres from '../../apps/api/node_modules/postgres/src/index.js';
 import { readFileSync } from 'node:fs';
+import { isStagingDatabase } from './staging-db';
 
 const ENV_PATH = 'C:/Users/itachi/Documents/Crypto/cv-cove-3d/apps/api/.env.local';
 
@@ -17,11 +18,12 @@ export async function resetGuestShoes(): Promise<{
   const line = envText
     .split(/\r?\n/)
     .find((candidate) => (
-      candidate.startsWith('DATABASE_URL') && candidate.includes(':5432')
+      // :5432 = legacy Supabase session pooler; :15432 = SSH tunnel to self-hosted staging.
+      candidate.startsWith('DATABASE_URL') && /:1?5432\//.test(candidate)
     ));
-  if (!line) throw new Error('No :5432 DATABASE_URL');
+  if (!line) throw new Error('No :5432 or :15432 DATABASE_URL');
   const url = line.slice(line.indexOf('=') + 1).trim().replace(/^"|"$/g, '');
-  if (!/postgres\.mtpixvtclsjqjguouxes:/.test(url)) {
+  if (!(await isStagingDatabase(url))) {
     throw new Error('Refusing: not the staging DB');
   }
 

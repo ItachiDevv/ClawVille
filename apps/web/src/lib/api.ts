@@ -1293,7 +1293,7 @@ export const api = {
   cancelBounty: (id: string) =>
     honoRequest<{ success: boolean }>(`/api/bounties/${id}`, { method: 'DELETE' }),
   getMyBounties: () =>
-    honoRequest<{ bounties: any[] }>('/api/bounties/my-bounties'),
+    honoRequest<{ bounties: any[]; statusCounts?: Record<string, number> }>('/api/bounties/my-bounties'),
   claimBounty: (id: string) =>
     honoRequest<{ attempt: any }>(`/api/bounties/${id}/claim`, { method: 'POST' }),
   submitBountyAttempt: (id: string, data: { prLink?: string; submissionNote: string }) =>
@@ -1301,7 +1301,7 @@ export const api = {
   abandonBounty: (id: string) =>
     honoRequest<{ success: boolean }>(`/api/bounties/${id}/abandon`, { method: 'POST' }),
   getMyBountyAttempts: () =>
-    honoRequest<{ attempts: any[] }>('/api/bounties/my-attempts'),
+    honoRequest<{ attempts: any[]; statusCounts?: Record<string, number> }>('/api/bounties/my-attempts'),
   reviewBountyAttempt: (attemptId: string, data: { decision: string; reviewNote?: string }) =>
     honoRequest<{ success: boolean }>(`/api/bounties/attempts/${attemptId}/review`, { method: 'POST', body: JSON.stringify(data) }),
   getBountyReputation: (avatarId: string) =>

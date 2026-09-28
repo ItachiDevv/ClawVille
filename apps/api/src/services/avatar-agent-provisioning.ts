@@ -672,13 +672,26 @@ export async function provisionAvatarAgentForSignup(
  * Returns the linked platform agent id, or null when the avatar is missing,
  * already linked (returns the existing link instead where possible), or not
  * hosted-harness.
+ *
+ * `beforeWrite` (operator scripts only) runs as the FIRST statement of the
+ * write transaction, e.g. a database-marker re-check, so the database it
+ * verifies is the one the writes land in. If it throws, the transaction rolls
+ * back and BackfillTargetRefusedError propagates (never fail-soft).
  */
 export async function backfillPlatformAgentForAvatar(
   userId: string,
   avatarId: string,
+  beforeWrite?: (tx: BackfillTx) => Promise<void>,
 ): Promise<string | null> {
   try {
     return await db.transaction(async (tx) => {
+      if (beforeWrite) {
+        try {
+          await beforeWrite(tx);
+        } catch (error) {
+          throw new BackfillTargetRefusedError(error);
+        }
+      }
       // SELECT ... FOR UPDATE (Codex BLOCKING, 2026-07-15): serialize ALL
       // missing-link writers on the avatar row. Without the lock, this GET
       // backfill and the PATCH /api/avatars/me mint-on-customize path could
@@ -753,6 +766,7 @@ export async function backfillPlatformAgentForAvatar(
       return insertedAgent.id;
     });
   } catch (err) {
+    if (err instanceof BackfillTargetRefusedError) throw err;
     if (err instanceof BackfillLostRaceError) {
       const winner = await db.query.avatars.findFirst({
         where: eq(avatars.id, avatarId),
@@ -768,5 +782,14 @@ export async function backfillPlatformAgentForAvatar(
 class BackfillLostRaceError extends Error {
   constructor() {
     super('backfill lost platform_agent_id CAS race');
+  }
+}
+
+export type BackfillTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** The caller's `beforeWrite` check refused; the transaction rolled back. `cause` holds its error. */
+export class BackfillTargetRefusedError extends Error {
+  constructor(cause: unknown) {
+    super('backfill write target check refused', { cause });
   }
 }

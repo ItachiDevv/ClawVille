@@ -35,10 +35,32 @@ loopback mock is accepted. Lane B uses the server-owned Hermes-local target on
 The probe refuses the production API hostname and the known production database
 host. Never point `--api`, `DATABASE_URL`, or `ELIZA_DATABASE_URL` at production.
 
+Hostnames no longer separate staging from prod: a self-hosted database is reached
+through a loopback SSH tunnel or, inside an api container, as `clawville-db` on
+BOTH boxes. Before it writes any fixture, the probe therefore reads the database's
+own marker (`ALTER DATABASE clawville SET clawville.env`, set by `scripts/deploy/db`)
+from the catalog (`pg_db_role_setting`, `apps/api/scripts/db-env-marker.ts`). A
+session value that differs from it (a URL `options=-c clawville.env=...`,
+PGOPTIONS, or `ALTER ROLE ... SET`) is refused as a spoof:
+
+- `staging`: accepted.
+- `production` or any other value: always refused.
+- No marker (a local development database, or a restored copy that lost its
+  marker): refused, unless the operator passes `--allow-unmarked-db` AND
+  `DATABASE_URL` is a local database (loopback, `postgres`, or `*.local`). The
+  flag never admits `clawville-db` or a Supabase URL.
+
+Scope: the marker prevents ACCIDENTAL targeting (a wrong URL or tunnel port, a
+stale env file, a session or role override). It is NOT a security boundary: any
+role that owns the database, including the app role `clawville`, can run
+`ALTER DATABASE clawville SET clawville.env = ...` itself.
+
 ## Prerequisites
 
 - Bun dependencies are installed for the worktree.
 - `DATABASE_URL` points to the same local or staging-only database used by the API.
+  That database carries `clawville.env=staging`, or it is an unmarked local
+  development database and the run passes `--allow-unmarked-db`.
 - If set, `ELIZA_DATABASE_URL` points to that same non-production database.
 - The API process has `OPENAI_API_KEY` present because both skill installation and
   semantic retrieval require embeddings. The probe does not inspect the API
@@ -59,11 +81,16 @@ The default local API base is `http://localhost:4000`.
 From the repository root, in a second terminal:
 
 ```sh
-bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api http://localhost:4000
+bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api http://localhost:4000 --allow-unmarked-db
 ```
 
+Omit `--allow-unmarked-db` when the local API uses a database marked
+`clawville.env=staging`.
+
 For an on-box staging run, from a checkout inside the staging API's network
-namespace and with the staging-only database environment loaded:
+namespace and with the staging-only database environment loaded (inside the api
+container, `DATABASE_URL` names `clawville-db`; the probe requires its
+`clawville.env=staging` marker; `--allow-unmarked-db` has no effect there):
 
 ```sh
 bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api https://api-staging.clawville.world
@@ -92,6 +119,14 @@ a successful gate ends with `ALL PASS`.
 - `--with-echo` adds an advisory Milady/OpenAI turn that asks for the canary. It
   consumes real model credits and is nondeterministic, so its result is reported
   but never changes the gate exit status.
+- `--autonomous-decision` enrolls the disposable agent in autonomy and asserts
+  the autonomous decision prompt on the wire: the trading desk state (halted,
+  then with the fixture halt cleared), every executor action verb and trade
+  refusal code, a real Nori action and its follow-up, and an appearance change.
+- `--allow-unmarked-db` admits a database with no `clawville.env` marker, only
+  when `DATABASE_URL` is a local database (see the marker rules above). Use it
+  for a local development database only. It never overrides `production` or
+  any other marker value.
 - `--keep` retains the disposable database fixtures and their prompt memories for
   investigation. No credential, session value, key, token, secret, prompt, or
   model reply is printed. Without this flag, cleanup runs on success and ordinary

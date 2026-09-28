@@ -64,6 +64,18 @@ concurrency:
   group: coolify-deploy-prod
   cancel-in-progress: false
 
+# SSH HOST KEY PIN: every ssh below trusts only this key (StrictHostKeyChecking=yes,
+# HostKeyAlgorithms=ssh-ed25519, BatchMode=yes), so a fresh runner never accepts whatever
+# key answers first. Public value, not a secret.
+# Prod box ed25519 key, SHA256:WNbm93y6PCz48Z80Z1LmVqBkUJfEgTQOLQAKiV8Rgj4.
+# Refresh after a host-key rotation: on the box, over an already-trusted session, run
+# `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`; compare that fingerprint with an
+# independent `ssh-keyscan -t ed25519 <ip> | ssh-keygen -lf -`; then replace the key line
+# with the contents of /etc/ssh/ssh_host_ed25519_key.pub (type + key, no comment) and the
+# fingerprint above.
+env:
+  PROD_SSH_HOST_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA1d/EXpMHQxXfcjVkvZrZVs7awp7J+2j5uPSNwekwjt
+
 jobs:
   # A local reusable workflow checks this exact caller SHA. No PR path filter,
   # missing branch protection, or [skip migration] can bypass these tests.
@@ -108,6 +120,30 @@ jobs:
         # the prod gate — the gate must block on migration failures only).
         run: bun install
 
+      # The prod DB moves to the prod box (container clawville-db, loopback-only).
+      # The runner reaches it through an SSH tunnel: runner 127.0.0.1:15432 ->
+      # box 127.0.0.1:5432. Until the prod cutover, PROD_DATABASE_URL still holds
+      # the Supabase URL and this tunnel is simply unused.
+      - name: Open SSH tunnel to the prod DB
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          SSH_KEY: ${{ secrets.COOLIFY_SSH_KEY }}
+          VPS_IP: ${{ secrets.PROD_VPS_IP }}
+        run: |
+          umask 077
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/db_tunnel
+          chmod 600 ~/.ssh/db_tunnel
+          printf '%s %s\n' "$VPS_IP" "$PROD_SSH_HOST_KEY" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/db_tunnel -f -N -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts -o HostKeyAlgorithms=ssh-ed25519 -o BatchMode=yes \
+            -o ServerAliveInterval=15 -L 127.0.0.1:15432:127.0.0.1:5432 "root@$VPS_IP"
+          for _ in $(seq 1 20); do
+            if (exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null; then echo "tunnel up"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::SSH tunnel to the prod DB did not open"; exit 1
+
       - name: Apply pending DB migrations (BLOCKING — gates the PROD deploy)
         if: steps.guard.outputs.skip != 'true'
         env:
@@ -126,19 +162,30 @@ jobs:
             echo "::warning::This commit explicitly bypassed staging (commit message contains 'direct to master')."
           fi
 
+      # Plain OpenSSH with the pinned host key above. appleboy/ssh-action@v1.2.0 cannot pin
+      # it: its Go client (x/crypto v0.29.0) negotiates ECDSA/RSA before ed25519, and it ran
+      # a drone-ssh binary downloaded at run time without a checksum.
       - name: Trigger Coolify deploys via SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.PROD_VPS_IP }}
-          username: root
-          key: ${{ secrets.COOLIFY_SSH_KEY }}
-          port: 22
-          script_stop: true
-          command_timeout: 5m
-          script: |
-            set -eo pipefail
-            echo "Triggering PROD Coolify deploys for commit ${{ github.sha }}"
-            # Refuse a stale host helper that would ignore the SHA argument.
-            grep -qF 'CLAWVILLE_PINNED_DEPLOY_V1' /root/clawville-deploy.sh
-            /root/clawville-deploy.sh '${{ github.sha }}'
-            echo "Both prod deploys queued."
+        env:
+          SSH_KEY: ${{ secrets.COOLIFY_SSH_KEY }}
+          VPS_IP: ${{ secrets.PROD_VPS_IP }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          umask 077
+          # The remote script takes exactly one argument: the full 40-hex commit SHA.
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::DEPLOY_SHA is not a 40-hex commit SHA"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s %s\n' "$VPS_IP" "$PROD_SSH_HOST_KEY" > ~/.ssh/known_hosts
+          timeout 5m ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts -o HostKeyAlgorithms=ssh-ed25519 \
+            -o BatchMode=yes -o ConnectTimeout=30 \
+            "root@$VPS_IP" bash -s -- "$DEPLOY_SHA" <<'REMOTE'
+          set -eo pipefail
+          echo "Triggering PROD Coolify deploys for commit $1"
+          # Refuse a stale host helper that would ignore the SHA argument.
+          grep -qF 'CLAWVILLE_PINNED_DEPLOY_V1' /root/clawville-deploy.sh
+          /root/clawville-deploy.sh "$1"
+          echo "Both prod deploys queued."
+          REMOTE

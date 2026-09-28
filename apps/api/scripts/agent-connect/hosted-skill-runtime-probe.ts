@@ -13,10 +13,18 @@ import { z } from 'zod';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import { characterRoomId } from '../../../../packages/agent-runtime/src/room-scoping';
+import {
+  DATABASE_ENV_MARKER_SQL,
+  DatabaseEnvMarkerError,
+  resolveDatabaseEnvMarker,
+  type DatabaseEnvMarkerRow,
+} from '../db-env-marker';
 
 const PROD_API_HOSTS = new Set(['api.clawville.world', 'api-new.clawville.world', 'clawville.world']);
 const PROD_DATABASE_REF = 'wheuidgiyyccqyoppxoa';
 const STAGING_DATABASE_REF = 'mtpixvtclsjqjguouxes';
+/** Coolify network alias of the self-hosted database on BOTH boxes; only its marker tells them apart. */
+const SELF_HOSTED_DATABASE_HOST = 'clawville-db';
 const HERMES_PROXY_PORT = 8642;
 const MAX_CAPTURED_REQUESTS = 24;
 const MAX_GATEWAY_BODY_BYTES = 2_000_000;
@@ -28,6 +36,7 @@ const cliSchema = z.object({
   keep: z.boolean(),
   withEcho: z.boolean(),
   autonomousDecision: z.boolean(),
+  allowUnmarkedDb: z.boolean(),
 }).strict();
 
 const claimResponseSchema = z.object({
@@ -63,6 +72,7 @@ interface CliOptions {
   keep: boolean;
   withEcho: boolean;
   autonomousDecision: boolean;
+  allowUnmarkedDb: boolean;
 }
 
 interface Fixture {
@@ -113,8 +123,8 @@ function throwIfInterrupted(): void {
   if (probeAbortController.signal.aborted) throw new ProbeFailure('probe interrupted');
 }
 
-function parseCli(args: string[]): CliOptions {
-  const parsed: Record<string, unknown> = { keep: false, withEcho: false, autonomousDecision: false };
+export function parseCli(args: string[]): CliOptions {
+  const parsed: Record<string, unknown> = { keep: false, withEcho: false, autonomousDecision: false, allowUnmarkedDb: false };
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const item = args[i];
@@ -130,6 +140,10 @@ function parseCli(args: string[]): CliOptions {
       if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
       seen.add(item);
       parsed.autonomousDecision = true;
+    } else if (item === '--allow-unmarked-db') {
+      if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
+      seen.add(item);
+      parsed.allowUnmarkedDb = true;
     } else if (item === '--api') {
       if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
       seen.add(item);
@@ -146,7 +160,7 @@ function parseCli(args: string[]): CliOptions {
   const result = cliSchema.safeParse(parsed);
   if (!result.success) {
     throw new ProbeFailure(
-      'usage: bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <base> [--keep] [--with-echo] [--autonomous-decision]',
+      'usage: bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <base> [--keep] [--with-echo] [--autonomous-decision] [--allow-unmarked-db]',
     );
   }
   return result.data;
@@ -182,9 +196,11 @@ function normalizeAndValidateApiBase(raw: string): string {
 
 interface ValidatedDatabaseTarget {
   logicalIdentity: string;
+  /** Loopback or local development host: the only class that may run unmarked (--allow-unmarked-db). */
+  isLocal: boolean;
 }
 
-function validateDatabaseUrl(
+export function validateDatabaseUrl(
   name: 'DATABASE_URL' | 'ELIZA_DATABASE_URL',
   raw: string | undefined,
 ): ValidatedDatabaseTarget | null {
@@ -219,13 +235,48 @@ function validateDatabaseUrl(
     hostname.endsWith('.pooler.supabase.com')
     && username === `postgres.${STAGING_DATABASE_REF}`;
   const isStagingDatabase = isDirectStagingDatabase || isStagingPooler;
-  if (!isLocalDatabase && !isStagingDatabase) {
-    throw new ProbeFailure(`${name} must target a local database or the isolated staging database`);
+  // The on-box staging run executes inside the api container, which reaches the database as
+  // `clawville-db`. The prod box uses the same alias, so this class must carry the staging marker.
+  const isSelfHostedDatabase = hostname === SELF_HOSTED_DATABASE_HOST;
+  if (!isLocalDatabase && !isStagingDatabase && !isSelfHostedDatabase) {
+    throw new ProbeFailure(`${name} must target a local database, the self-hosted ${SELF_HOSTED_DATABASE_HOST}, or the isolated staging database`);
   }
   const logicalIdentity = isStagingDatabase
     ? `staging:${STAGING_DATABASE_REF}:${url.pathname}`
-    : `local:${isLoopbackHost(hostname) ? 'loopback' : hostname}:${username}:${url.pathname}`;
-  return { logicalIdentity };
+    : isSelfHostedDatabase
+      ? `self-hosted:${hostname}:${username}:${url.pathname}`
+      : `local:${isLoopbackHost(hostname) ? 'loopback' : hostname}:${username}:${url.pathname}`;
+  return { logicalIdentity, isLocal: isLocalDatabase };
+}
+
+/**
+ * Hostnames no longer separate staging from prod (loopback tunnels, `clawville-db` on both
+ * boxes), so the database's own marker decides (`ALTER DATABASE clawville SET clawville.env`,
+ * scripts/deploy/db). Only `staging` is accepted. A database without the marker, such as a
+ * restored prod copy, is accepted only as a local development database the operator names
+ * with --allow-unmarked-db. `production` and every other value always refuse.
+ */
+export function assertDatabaseMarker(
+  marker: string | null,
+  target: ValidatedDatabaseTarget,
+  allowUnmarkedDb: boolean,
+): 'staging' | 'unmarked-local' {
+  if (marker === 'staging') return 'staging';
+  if (marker === 'production') {
+    throw new ProbeFailure('DATABASE_URL points at the production database (clawville.env=production)');
+  }
+  if (marker !== null && marker !== '') {
+    throw new ProbeFailure('DATABASE_URL database has an unrecognized clawville.env marker; only staging is accepted');
+  }
+  if (!allowUnmarkedDb) {
+    throw new ProbeFailure(
+      'DATABASE_URL database has no clawville.env marker; only staging is accepted (--allow-unmarked-db admits an unmarked local development database)',
+    );
+  }
+  if (!target.isLocal) {
+    throw new ProbeFailure('--allow-unmarked-db admits only a loopback or local development database; DATABASE_URL has no clawville.env marker');
+  }
+  return 'unmarked-local';
 }
 
 async function fetchWithTimeout(
@@ -1145,6 +1196,26 @@ async function main(): Promise<void> {
     connect_timeout: 15,
     idle_timeout: 10,
   });
+  // Read the marker before any write. `max: 1` means this check and every fixture write share
+  // one connection (a reconnect after idle_timeout uses the same URL). The marker comes from the
+  // catalog, so a URL option or role setting cannot fake it (db-env-marker.ts).
+  try {
+    let marker: string | null;
+    try {
+      const [row] = await client.unsafe<DatabaseEnvMarkerRow[]>(DATABASE_ENV_MARKER_SQL);
+      marker = resolveDatabaseEnvMarker(row);
+    } catch (error) {
+      if (error instanceof DatabaseEnvMarkerError) throw new ProbeFailure(`DATABASE_URL: ${error.message}`);
+      throw error;
+    }
+    const accepted = assertDatabaseMarker(marker, applicationDatabase, options.allowUnmarkedDb);
+    console.log(accepted === 'staging'
+      ? 'database marker is clawville.env=staging'
+      : 'NOTICE unmarked local database accepted (--allow-unmarked-db)');
+  } catch (error) {
+    await client.end({ timeout: 1 }).catch(() => {});
+    throw error;
+  }
   const fixtures: Fixture[] = [];
   let declaredMock: Awaited<ReturnType<typeof startDeclaredGatewayMock>> | null = null;
   let cleanupPromise: Promise<void> | null = null;
