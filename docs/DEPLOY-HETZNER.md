@@ -1,5 +1,7 @@
 # ClawVille → Hetzner Deploy Playbook
 
+**Last Audited: 2026-09-28 (prod database cutover).** Drift note: prod moved to the self-hosted `clawville-db` on the prod box on 2026-09-28 (outage 08:41–08:52 UTC; every copy gate IDENTICAL/YES); prod nightly backups are restore-verified and copied offsite to the staging box, then to the laptop drive. Supabase prod is frozen behind a network restriction.
+
 **Last Audited: 2026-09-27 (self-hosted database hardening).** Drift note: `scripts/deploy/db/*.sh` fix the 10 defects in `docs/audits/2026-09-27-supabase-exit-audit.md` §0.4: the rollback file is never overwritten, the copy gate adds `OBJECTS: IDENTICAL`, the Coolify switch is verified per app with automatic revert, `PREFLIGHT_ONLY=1` runs the pre-flight alone, the copy gate also needs a count+hash match per table and `QUIESCENT: YES` (source fingerprint of DML counter, relfilenodes, sequences and catalog unchanged during the copy), the real run requires `SOURCE_BARRIER=network-restricted` (Supabase restricted to the prod box in the window) and re-checks the source after the switch, one `flock` serializes the three scripts, a failed revert keeps the apps stopped, nightly dumps carry and verify the `clawville.env` marker (`--create`, `pg_restore -C`, `.meta` sidecar), nightly dumps are restore-verified in a throwaway container, offsite copies use rsync to an rrsync-restricted key, and no password goes on a command line. The cutover window now disables the deploy workflow. The ops scripts read the `clawville.env` marker instead of trusting a Supabase ref. Runbook: "Self-hosted database" below.
 
 **Last Audited: 2026-09-25 (self-hosted database).** Drift note: the app database moves off Supabase onto each box (`clawville-db`, Postgres 17 + pgvector, loopback + Coolify network only). Staging cut over 2026-09-25 with identical row counts on all 163 tables; prod still runs on Supabase until its cutover window. CI reaches the database through an SSH tunnel. Runbook: "Self-hosted database" below. Reason: Supabase billed 2,034 GB of prod egress ($183) for 2026-08-25 to 2026-09-24.
@@ -25,7 +27,7 @@ The API invariant job also runs `tsc --noEmit` after dependency builds. Bun bund
 > + `api-staging.clawville.world` as a hot rollback target (DNS swap = 30s
 > rollback). **Each box has its OWN database since 2026-06-16** (Supabase staging
 > `mtpixvtclsjqjguouxes`, prod `wheuidgiyyccqyoppxoa`; **2026-09-25: staging moved to the
-> self-hosted `clawville-db` on its box, prod follows — see "Self-hosted database"**) — staging writes no longer
+> self-hosted `clawville-db` on its box; prod since 2026-09-28 — see "Self-hosted database"**) — staging writes no longer
 > touch prod; schema converges to prod via the CI migration gate
 > (`migrate`→`deploy`) on `staging → master`. Authoritative IPs/keys/app-IDs live in `scripts/deploy/.env.deploy`
 > (gitignored). See `CLAUDE.md` / `AGENTS.md` "Deployment — Hetzner + Coolify"
@@ -294,7 +296,7 @@ Expected savings: **~$41/mo** vs your current Pro bill.
 - **Production:** `$PROD_VPS_IP` (in gitignored `scripts/deploy/.env.deploy`), Hillsboro, Coolify 4.1, key `~/.ssh/clawville_hillsboro` (passphrase — `ssh-add` once into Windows ssh-agent). Serves `clawville.world` + `api.clawville.world`. Admin UI `https://coolify-new.clawville.world`.
 - **Staging:** `$STAGING_VPS_IP`, Ashburn, Coolify 4.0, key `~/.ssh/clawville_deploy`. Serves `staging.clawville.world` + `api-staging.clawville.world`. Admin UI `https://coolify-staging.clawville.world`.
 
-Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Postgres per box (isolated 2026-06-16; staging self-hosted `clawville-db` since 2026-09-25, prod Supabase `wheuidgiyyccqyoppxoa` until its cutover — see "Self-hosted database")** — staging writes no longer touch prod; schema converges to prod via the CI migration gate (`migrate`→`deploy`) on the `staging → master` promotion (see `deploy-status.md`). Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
+Both Traefik + Let's Encrypt, Cloudflare-proxied DNS, **separate Postgres per box (isolated 2026-06-16; self-hosted `clawville-db` on each box: staging since 2026-09-25, prod since 2026-09-28 — see "Self-hosted database")** — staging writes no longer touch prod; schema converges to prod via the CI migration gate (`migrate`→`deploy`) on the `staging → master` promotion (see `deploy-status.md`). Both pull from `github.com/ItachiDevv/ClawVille` via the same shared deploy key, auto-deploy on push. Web ~3–5 min, api ~2–3 min.
 
 **Coolify app IDs:** prod api=2, prod web=3, staging api=3, staging web=4. UUIDs in `.env.deploy` as `API_APP_UUID`, `WEB_APP_UUID`, `STAGING_API_APP_UUID`, `STAGING_WEB_APP_UUID`.
 
@@ -338,7 +340,7 @@ Takes ~2 minutes, no data loss. CCX23 = 4 dedicated cores, 16 GB, ~$28/mo.
 
 ### Self-hosted database (2026-09-25)
 
-**Status:** staging = self-hosted (cut over 2026-09-25 23:17 UTC). Prod = still Supabase `wheuidgiyyccqyoppxoa` until its cutover window (the founder picks the time; Hatcher is live on prod).
+**Status:** staging = self-hosted (cut over 2026-09-25 23:17 UTC). Prod = self-hosted (cut over 2026-09-28: apps stopped 08:41:08, copy verified 08:46:53, `DATABASE_URL` switched 08:46:54, both apps healthy on `b19d872c` at 08:52:01, `SOURCE AFTER SWITCH: UNCHANGED`). The prod Supabase project `wheuidgiyyccqyoppxoa` stays frozen behind a network restriction to the prod box (`5.78.129.176/32`, `2a01:4ff:1f0:3d61::1/128`); it is the rollback source and is not deleted without the founder's order. Prod nightly backup: `/etc/cron.d/clawville-db-backup` 04:17 UTC with `OFFSITE=root@87.99.142.34:.` and `OFFSITE_KEY=/opt/clawville-db/offsite_ed25519` (staging `authorized_keys`: `command="/usr/bin/rrsync -wo /opt/clawville-db/offsite/prod",restrict,from="5.78.129.176,2a01:4ff:1f0:3d61::1"`); the laptop task "ClawVille DB backup pull" copies both environments' dumps to `D:\clawville-db-backups\`.
 
 **Layout (same on both boxes):**
 - `/opt/clawville-db/` (mode 700): `docker-compose.yml`, `.env` (mode 600: `POSTGRES_PASSWORD` superuser, `APP_PASSWORD` for role `clawville`), `bin/` (all `scripts/deploy/db/*.sh`, including the sourced `db-marker.sh`; the scripts load it from their own directory), `backups/`.

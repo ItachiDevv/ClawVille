@@ -31,8 +31,9 @@ name: Auto-deploy PROD on push to master
 #   COOLIFY_SSH_KEY    — contents of ~/.ssh/clawville_hillsboro (private key,
 #                        the passphrase-free build; if your local key has a
 #                        passphrase, export a copy without one for CI use)
-#   PROD_DATABASE_URL  — Supabase SESSION-pooler URL (:5432, DDL-safe) for the
-#                        PROD database. Consumed by the migrate job as
+#   PROD_DATABASE_URL  — tunnel URL of the self-hosted PROD database since the
+#                        2026-09-28 cutover: postgresql://clawville:<APP_PASSWORD>@127.0.0.1:15432/clawville
+#                        (the migrate job opens the SSH tunnel first). Consumed as
 #                        MIGRATION_DATABASE_URL. Secret — never logged.
 # Until ALL THREE secrets exist, this workflow will fail and prod deploys must run
 # manually via `ssh root@$PROD_VPS_IP 'bash /root/clawville-deploy.sh <tested-full-commit-sha>'`.

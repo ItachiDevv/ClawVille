@@ -309,6 +309,20 @@ Local verification by the implementers: impl-1 harnesses migrate 30/30 (bash 5.3
 
 Verified on the boxes and in CI (2026-09-28 05:40–06:15 UTC; evidence in `deploy-status.md` CURRENT STATE): workflow `36383016329` ran the pinned-key tunnel and deploy (4 gates, migrate, deploy passed); staging runs `243da4a5`; onboarding smoke 14/14; probe on-box ALL PASS (16) with marker `staging`; mock-Hatcher harness 14/14 (test key removed afterwards); cursor 400s; tap targets ≥ 44 px at 8 touch sizes, desktop unchanged. Scripts on real docker/Coolify: staging migrate guard refuses (exit 1); staging `PREFLIGHT_ONLY` FAIL (4) for the expected reasons; staging real backup restore-verified (163 tables, marker kept); prod `PREFLIGHT_ONLY` PASS; prod trial copy (apps running) 272 s, OBJECTS IDENTICAL, 156/164 tables identical by count + hash, hot tables differ and QUIESCENT: NO as expected. `flock`, `rsync`, `rrsync` exist on both boxes. Still unverified until the window: a real cutover on prod (by design), the Supabase network-restriction call, the offsite rsync key.
 
+### 3.5 The window, executed 2026-09-28 (founder answered "Go now")
+
+| Step | Time (UTC) | Result |
+|---|---|---|
+| W1 merge PR #303 | ~08:30 | merge `b19d872c` (parents `2a6c4031`, `3c618b00`); workflow `36397666558` all gates, migrate through the pinned-key tunnel (85/85, none pending), deploy; both prod containers on `b19d872c`, healthy; browser check OK |
+| W2 barrier + pre-flight | 08:39–08:41 | `deploy.yml` disabled; network restriction applied (before: `0.0.0.0/0`, `::/0`, saved); staging box refused `EADDRNOTALLOWED`; prod API kept working (a few queries failed while Supabase closed the pooled connections); Postgres not restarted; `PREFLIGHT: PASS` |
+| W3 cutover | 08:41:07–08:52:17 | stop 08:41:08; dump + restore; ROWCOUNTS IDENTICAL (count + hash) 164/164; OBJECTS IDENTICAL; SEQUENCES IDENTICAL (7); QUIESCENT YES (173); marker `production` read back; Coolify app 2 (1 row), app 3 (2 rows) switched and verified; redeploy finished 08:52:01; SOURCE AFTER SWITCH UNCHANGED; exit 0 |
+| W4 CI secret | 08:52:35 | `PROD_DATABASE_URL` = tunnel form; the same URL logs in as `clawville`, marker `production` |
+| W5 verify | 08:53–09:00 | containers on `clawville-db`; events +32 / logs +14 in `clawville-db` within a minute while Supabase stays at events 445,707; Supabase has only 1 idle pooler connection; fleet ticks; 0 DB errors; browser check OK |
+| W6 backups | 08:54–08:59 | prod cron 04:17 UTC; first run 158 s, restore-verified 164 tables, marker `production`, offsite to staging (SHA-256 equal), laptop pull OK; rrsync key: push works, pull and shell refused |
+| W7 | 09:00– | `deploy.yml` re-enabled; motd updated; docs in this commit; orientation text updated on staging (reaches prod with the next promotion) |
+
+Outage: API ≈ 9 min (08:41–08:50), web ≈ 11 min (08:41–08:52). Rollback file: `/opt/clawville-db/.old_database_url` (not used).
+
 ---
 
 ## Phase 4 — what else stops when the Supabase account stops
