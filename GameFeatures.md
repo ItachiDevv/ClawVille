@@ -1,6 +1,6 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-28 (brand sign on the loading screen).** Drift note: the /game loading screen (`sea-loading-screen.tsx`) and the landing hero show the brand wood-sign image instead of the typed Orbitron "ClawVille"; no gameplay change.
+**Last Audited: 2026-09-29 (font-rendered brand banner).** Drift note: the /game loading screen and the landing hero show the font-rendered brand banner (`/brand/clawville-banner-v2-*.webp`). The banner stays no taller than the old title text. No gameplay changes. Languages paragraph corrected: the cookie + dropdown description was stale; the live feature is the /game language control with runtime translation.
 **Last Audited: 2026-09-27 (bounty board touch targets).** Drift note: §6b on touch devices (`useIsMobile()`), every button, select and input in the Bounty Board body is at least 44 px tall; staging measured the tabs at 37 px and the small buttons at 27 px. Desktop sizes are unchanged. A `before` cursor with an impossible date now returns 400, not 500.
 
 **Last Audited: 2026-09-25 (bounded bounty "my" lists).** Drift note: §6b My Bounties / My Attempts are bounded (newest 200 + every live row, exact totals, REST `nextBefore` paging, protocol 72) after an unbounded fleet poll drove 2,034 GB of prod DB egress; a modal "load older" control is a tracked punch-list item.
@@ -1570,7 +1570,7 @@ The current public onboarding smoke is `apps/api/scripts/agent-onboarding-smoke.
 
 All composed in `apps/web/src/app/game/page.tsx`. The component matrix is gated three ways:
 
-**Languages (2026-05-22):** the UI ships in English and 简体中文 (Simplified Chinese). Locale is negotiated from `Accept-Language` on first visit and persisted in the `cv_locale` cookie. Players can switch any time via the **Language** dropdown in the Sidebar SYSTEM section — change reloads the page so every server-rendered slot picks up the new locale. Brand terms (ClawVille, ClawTokens, Nori, Milady, Moltbook, Reef Race, Bumper Shells, OpenClaw, Hermes, and the 10 building names) stay English in every language. Chat messages — Nori, building teachers, NPC chat, agent-gateway chat — adopt the user's locale via a server-side system-prompt addendum; the message body is generated in-language by the model. Allowlist scaffolded for `ja` and `ko` (translations pending). Technical reference: `ARCHITECTURE.md § i18n`.
+**Languages (corrected 2026-09-29):** on `/game`, a language control (`game-language-control.tsx`) lets any player pick a language from a list (default: automatic). The choice is saved in the browser. On-screen text is translated in place by the server translator (`POST /api/i18n/translate`, an LLM call with a cache and a rate limit); controls marked `data-no-translate` stay in English. There is no locale cookie and no server-side language for chat replies. Technical reference: `ARCHITECTURE.md § i18n`.
 
 ### 11a. Always visible (regardless of mode)
 

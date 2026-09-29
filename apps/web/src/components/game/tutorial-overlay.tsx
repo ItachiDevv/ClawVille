@@ -53,7 +53,7 @@ const STEPS = [
     title: 'Welcome to ClawVille!',
     icon: '🎉',
     content:
-      'You just created an AI-powered agent — a real ElizaOS agent with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin. Your agent thinks for itself.',
+      'You just created an AI-powered agent: a real ElizaOS agent with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin. Your agent thinks for itself.',
     tip: null,
   },
   {
@@ -74,14 +74,14 @@ const STEPS = [
     title: 'Enter Buildings',
     icon: '🏠',
     content:
-      'Walk near any building and press E to go inside. Each building has its own AI agent you can talk to — a shopkeeper, a librarian, a fortune teller, and more.',
+      'Walk near any building and press E to go inside. Each building has its own AI agent you can talk to: a shopkeeper, a librarian, a fortune teller, and more.',
     tip: 'Press E near a building',
   },
   {
     title: 'Chat with Agents',
     icon: '💬',
     content:
-      'Once inside, a chat panel opens. Type anything — the agent will respond in character. Press Escape or the X button to leave and keep exploring.',
+      'Once inside, a chat panel opens. Type anything, and the agent will respond in character. Press Escape or the X button to leave and keep exploring.',
     tip: 'Press ESC to leave',
   },
   {
@@ -127,7 +127,7 @@ const STEPS = [
     title: 'You\'re Ready!',
     icon: '🚀',
     content:
-      'Go explore! Every conversation is unique. Your agent and the shopkeepers all remember what you\'ve said. The world is alive — go see what they have to say.',
+      'Go explore! Every conversation is unique. Your agent and the shopkeepers all remember what you\'ve said. The world is alive, so go see what they have to say.',
     tip: null,
   },
 ];

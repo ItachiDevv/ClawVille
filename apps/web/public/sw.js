@@ -2,6 +2,11 @@
 // Cache-first for static 3D assets (GLB + VRM + basis WASM); SWR for Next.js
 // JS chunks. Bump CACHE_VERSION whenever the asset matcher or layout changes.
 //
+// 2026-09-29 (v13, no version bump: handler-only change):
+//   - Both fetch strategies now fall back to a plain network fetch when they
+//     reject (for example caches.open throws on a broken Cache Storage
+//     backend). Before, the page got a failed fetch and could crash.
+//
 // 2026-05-17 v3:
 //   - isGlbRequest used to match ONLY /models/*.glb, which silently bypassed
 //     the entire /avatars/animations/** tree (22 Mixamo GLBs) and the
@@ -536,13 +541,15 @@ self.addEventListener('fetch', (event) => {
 
   if (isAssetRequest(url) || isBasisRequest(url)) {
     // Cache-first: serve from cache, fall back to network and populate cache.
-    event.respondWith(cacheFirstGlb(event.request, url));
+    // A broken Cache Storage backend (caches.open throws) must degrade to the
+    // network, never to a failed fetch.
+    event.respondWith(cacheFirstGlb(event.request, url).catch(() => fetch(event.request)));
     return;
   }
 
   if (isNextChunk(url)) {
     // Stale-while-revalidate: return cached immediately, refresh in background.
-    event.respondWith(staleWhileRevalidate(event.request, STATIC_CACHE));
+    event.respondWith(staleWhileRevalidate(event.request, STATIC_CACHE).catch(() => fetch(event.request)));
     return;
   }
 
