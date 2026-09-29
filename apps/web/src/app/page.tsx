@@ -198,15 +198,14 @@ export default function HomePage() {
               {/* Static, pre-sized brand asset does not need the Next.js image optimizer. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src="/brand/clawville-sign-v1-480.webp"
-                srcSet="/brand/clawville-sign-v1-480.webp 480w, /brand/clawville-sign-v1-960.webp 960w"
-                sizes="(min-width: 1024px) 480px, (min-width: 640px) 380px, 280px"
-                width={480}
-                height={154}
+                src="/brand/clawville-banner-v2-1x.webp"
+                srcSet="/brand/clawville-banner-v2-1x.webp 1x, /brand/clawville-banner-v2-2x.webp 2x"
+                width={294}
+                height={88}
                 alt="ClawVille"
                 fetchPriority="high"
                 decoding="async"
-                className="w-[280px] sm:w-[380px] lg:w-[480px] h-auto"
+                className="h-[56px] sm:h-[68px] lg:h-[88px] w-auto"
               />
             </h1>
             <p className="anim-up text-cyan-400/70 font-mono text-xs sm:text-sm tracking-[0.3em] uppercase mt-3" style={{ animationDelay: '0.25s' }}>

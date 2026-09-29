@@ -683,19 +683,18 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## BRAND
 
-### September 28: brand kit upgrade (split kit, logo sign in the app, icon set)
+### September 29: brand kit v1 (font-rendered banner, vector logo, claw-girl icons)
 
-- **Session:** Claude `cvBrand`, 2026-09-28, branch `feat/branding-upgrade`. Local prod build, typecheck, 6 unit tests, and a 390x844 / 744x1133 / 820x1180 / 1024x1366 portrait and landscape browser matrix pass. Staging evidence is in `deploy-status.md`.
-- **Where:** staging `https://staging.clawville.world/` (landing hero), `https://staging.clawville.world/game` (loading screen), the browser tab icon, and a phone "Add to Home Screen" icon. Kit pages to open locally: `branding/logo-usage.html`, `branding/logo-work/compare.html`, `branding/logo-work/icons-compare.html`.
-- **Look at:** the wood-sign image replaces the typed Orbitron "ClawVille" on the landing hero and on the /game loading screen. The landing hero is about 58 px taller on desktop. The tab title and landing copy have no em or en dashes now.
-- **Feedback wanted:** the sign size on the hero; the claw-girl favicon at tab size; the maskable home-screen icon padding (sky/ocean extension, not a frame); the OG card (the yellow robot is cut at the right edge); the proposed logo rules (minimum 120 px, clear space 0.25 x height).
-- **Not covered:** a real-iPad safe-area check (none of the changed elements are bottom-anchored), and a real link-unfurl test on X or Discord (only possible after production).
+- **Session:** Claude `cvBrand`, 2026-09-29, branch `feat/branding-upgrade`. Founder decisions from the decisions page are absorbed (logo A with vector wood, claw v in the font, font-rendered banner, claw-girl icons, usage rules variation 1). Verification for this push is in `deploy-status.md`.
+- **Where:** staging `https://staging.clawville.world/` (landing) and `https://staging.clawville.world/game` (loading screen); a phone "Add to Home Screen" icon; `branding/logo-usage.html` and `branding/brand-board.html` opened locally.
+- **Look at:** the font-rendered banner on both screens (no taller than the old title text), the new vector wood on the official logo and the banner, and the maskable home-screen icon padding (sky and ocean extension, not a frame).
+- **Feedback wanted:** banner size and look; the wood; the home-screen icon. The share card saturation idea is parked for the v2 variations pass.
+- **Not covered:** a real-iPad safe-area check (none of the changed elements are bottom-anchored) and a real X or Discord link preview (possible only after production).
 
 ## DECISIONS OWED (rulings, not playtests)
 
-- **BRAND: full-color vector logo A or B.** Open `branding/logo-work/compare.html`. A (built from the marketing letter paths, 64 KB, letter IoU 0.947, silhouette IoU 0.989) or B (color trace, 279 KB, blotchy). Recommendation: A. The winner becomes `branding/assets/logos/clawville-logo-color.svg`; the other is deleted. Asked by `cvBrand`, 2026-09-28.
-- **BRAND: small favicon set.** Open `branding/logo-work/icons-compare.html`. Claw girl full square at 16/32/48 px (shipped now) or the claw mark on a navy tile (`branding/assets/icons/alt/`). Asked by `cvBrand`, 2026-09-28.
+*(none open)*
 
 ---
 
-*(Verdict log: 2026-09-13 — LAND Founders' Row ✅ ruled HOLD-ONLY (auction rejected; live behavior already matches, no change). LAND prepay ✅ ruled CONFIRM STEP (one-click rejected; shipped same day, see the LAND entry above). ECONOMY recovered-SOL destination ✅ ruled: swept 0.397129 SOL from the prod house wallet to the founder wallet 2WhyS…ea5H, tx finalized (5PrkM…BnPbfc), house at zero. 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment.)*
+*(Verdict log: 2026-09-13 — LAND Founders' Row ✅ ruled HOLD-ONLY (auction rejected; live behavior already matches, no change). LAND prepay ✅ ruled CONFIRM STEP (one-click rejected; shipped same day, see the LAND entry above). ECONOMY recovered-SOL destination ✅ ruled: swept 0.397129 SOL from the prod house wallet to the founder wallet 2WhyS…ea5H, tx finalized (5PrkM…BnPbfc), house at zero. 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment. 2026-09-29: BRAND decisions absorbed (logo A with vector wood, claw-girl icons, font-rendered banner, usage rules variation 1).)*

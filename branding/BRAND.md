@@ -2,8 +2,8 @@
 
 Public rules and press assets for ClawVille-branded material.
 
-Last Audited: 2026-09-28.
-Drift note (09-28): split into a public kit and private team notes; added logo usage rules and sheet, the icon set, the social card, web brand tokens, and the in-app sign; added a transparent hi-res wordmark (the old hi-res file has a baked checkerboard).
+Last Audited: 2026-09-29.
+Drift note: the official vector logo, claw v glyph, font-rendered signs and banner, and variation 1 rules allow palette-fit recolor and glow; small icons use the claw girl only.
 
 Companion copy rules: `docs/brand-language.md`. Public assets live in `branding/assets/`.
 Update this guide in the same change as any brand asset or rule change.
@@ -79,23 +79,24 @@ brushed metal gradient on Gold. Flat color is acceptable for small text and chip
 **Brand lettering never appears alone.** Use the complete sign: wood plank, Clawville Display
 lettering, and emboss layers. The lettering has a darker inner rim, soft bevel, top highlight,
 and chocolate offset shadow. Do not place plain Clawville Display text on a flat background.
-Use `assets/fonts/render-embossed-text.py` for headline art. It takes text and size and makes
-a transparent PNG with a gradient face, darker inner rim, top highlight, and offset shadow.
-Place the result on a wood plank. Use a wood plank backing supplied by the marketing team.
+Use `python branding/scripts/render_sign_svg.py "TEXT" out.svg` to make sign art for any text.
+The renderer combines the Clawville Display font, vector plank, and emboss layers.
 
 **Use one locked font and one weight:** `assets/fonts/ClawvilleDisplay.otf` and `.woff2`.
 Do not make another weight or an alternate cut without explicit approval from the ClawVille founder.
 Use it for Register A display text and headlines as part of the sign treatment.
 Pair Logo Yellow with a Plank Wood offset shadow. Use it for display text only.
-The font has 63 glyphs: space, A-Z, a-z, and 0-9. It has no punctuation or kerning table.
-The logo files remain canonical; never re-typeset the logo.
+The font has 64 glyphs: space, A-Z, a-z, 0-9, and `v.claw` at U+E000.
+GSUB `calt` uses the claw v after w/W in "Clawville" and "CLAWVILLE".
+GSUB `ss01` maps every v/V to the claw v. `scripts/add_claw_v.py` adds this glyph.
+The font has no punctuation or kerning table. Never retype the official logo file.
 
 The kit also bundles the broadcast stand-ins as woff2 in `assets/fonts/` (Anton 400, Barlow
 600/700; both SIL Open Font License) so banner templates render identically everywhere.
 
 | Role | Observed style | Stand-in (Google Fonts) |
 |---|---|---|
-| Logo wordmark | custom chunky rounded slab, playful | never re-set; use the logo files |
+| Logo wordmark | custom chunky rounded slab, playful | use the official vector logo file |
 | Broadcast headline | ultra-bold condensed caps, tight tracking, textured fill | Anton, or Archivo Black |
 | Broadcast sub/kicker | spaced-out medium caps ("BUILDING THE AGENT INTERNET") | Barlow SemiBold, +0.2em tracking |
 | Chips / HUD labels | clean geometric sans caps | Inter / Barlow |
@@ -107,7 +108,7 @@ color. Small connector words ("ON") drop to a smaller gold weight between lines.
 
 ## 5. Logo rules
 
-**The official logo** is `assets/logos/clawville-logo-official.png` (1024x1024).
+**The official claw-girl token logo** is `assets/logos/clawville-logo-official.png` (1024x1024).
 The claw girl has green hair, a pink bow and earmuffs, red antennae, big red lobster claws,
 and a white CLAWVILLE crossed-claws tee. She rises from a surf splash under a blue sky.
 Use this $CLAWVILLE token logo on listing sites such as CoinGecko, Solscan, Jupiter, and DexScreener.
@@ -132,27 +133,32 @@ not the official banner.
 **Token identity:** $CLAWVILLE Solana mint
 `Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA`.
 
+**The official vector sign logo** is `assets/logos/clawville-logo-color.svg`.
 Files in `assets/logos/`:
-- `clawville-logo-transparent.png`: full-color wood sign, transparent bg. DEFAULT wordmark.
+- `clawville-logo-color.svg`: official vector sign logo, built with `scripts/build_logo_svg.py`; `scripts/wood.py` supplies its wood.
+- `clawville-sign-font.svg`: vector display-font sign; the same wood function supplies its plank.
+- `clawville-logo-transparent.png`: raster wood sign with a transparent background.
 - `clawville-logo-wood-large.png`: 1792x576, OPAQUE: the checkerboard is baked into the pixels; do not use it on a background, use the transparent file.
-- `clawville-logo-wood-large-transparent.png`: 1792x576, real alpha; the hi-res default.
+- `clawville-logo-wood-large-transparent.png`: 1792x576, real alpha raster option.
 - `clawville-wordmark-mono.svg`: one-color vector wordmark (`#231F20`). For stamps, engraving,
   single-color contexts. Recolor the fill as needed.
 - `clawville-logo-sky.jpg`: logo on sky, social-header crop.
 
-Rules: the yellow-on-wood colorway is canonical. Don't recolor the plank version. Don't
-re-typeset the wordmark. The claw-silhouette "v" is part of the mark; never swap it for a
-plain letter. On Register B dark scenes the logo appears as a small badge (top corner), not
+Rules: yellow on wood is the variation 1 colorway. Other colorways are allowed when they fit
+the brand palette. Never retype the official logo file. Make sign art for any text with the
+font through `scripts/render_sign_svg.py`. The claw-silhouette "v" is part of the mark;
+never swap it for a plain letter. On Register B dark scenes the logo appears as a small badge (top corner), not
 as the headline; the headline is set in the display type instead.
 
 ## 5a. Logo usage rules
 
+These rules define brand kit variation 1.
 Use the wood-sign wordmark with clear space of at least 0.25 times its height on every side.
 Use it at 120 px wide or larger on screen, or 25 mm wide or larger in print. From 80 px to below
 120 px, use `clawville-wordmark-mono.svg`. Below 80 px, use the official logo or app icon.
 Use the sign on the dark web app background `#061520`, light `#FFFFFF`, sky `#D8E8E0`, or a calm area of a photo.
-Never stretch, squash, rotate, recolor, outline, or add a glow ring to the sign. Do not place it
-on a busy area, crop the plank, or retype the word in another font.
+Never stretch, squash, or rotate the sign. Do not place it on a busy area, crop the plank, or
+retype the word in another font. Recolor and outline or glow variations may use brand palette colors.
 
 Keep the official claw-girl logo square. Never crop its claws or bow, recolor it, or add a border.
 On dark scenes, use a round or rounded-square badge. See `logo-usage.html` for visual examples.
@@ -162,13 +168,15 @@ On dark scenes, use a round or rounded-square badge. See `logo-usage.html` for v
 `assets/icons/` contains the full-square claw-girl icon set: favicon `.ico` with 16, 32, and
 48 px frames; 16, 32, 48, and 96 px PNGs; apple-touch 180 px; PWA 192 and 512 px; maskable
 PWA 512 px; and social avatar 400 px. Each icon uses the full square image, downscaled without
-cropping. `assets/icons/alt/` holds a claw-mark small-size alternate for comparison only. The
-web app does not use that alternate. `assets/social/og-1200x630.{png,jpg}` shows the beach scene
-with the wood sign. Rebuild these files with `python branding/scripts/build_icons.py`.
+cropping. The claw girl is the only small icon set. `assets/social/og-1200x630.{png,jpg}` shows the approved share card
+with the beach scene and wood sign. Rebuild these files with `python branding/scripts/build_icons.py`.
 
 ## 5c. In the web app
 
-The landing hero and the /game loading screen show `/brand/clawville-sign-v1-{480,960}.webp`.
+The landing hero and the /game loading screen show `/brand/clawville-banner-v2-{1x,2x}.webp`.
+These WebP files export `assets/logos/clawville-sign-font.svg`, the font-rendered "Clawville" sign.
+The hero height stays at or below the old title text: 56, 68, and 88 px by viewport.
+The loading height stays at or below `clamp(32px, 6vw, 56px)`.
 Use that sign image instead of typing the wordmark in a font. Next.js `app/` provides
 `favicon.ico`, `icon.png`, `apple-icon.png`, `opengraph-image.jpg`, `twitter-image.jpg`, and
 `manifest.ts` with display `browser`. Brand colors use Tailwind `brand.*` and CSS `--brand-*`;
@@ -245,9 +253,12 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 
 | Path | What | Register |
 |---|---|---|
-| `assets/logos/clawville-logo-transparent.png` | default logo, transparent | both |
+| `assets/logos/clawville-logo-transparent.png` | raster wordmark, transparent | both |
+| `assets/logos/clawville-logo-color.svg` | official vector sign logo | both |
+| `assets/logos/clawville-sign-font.svg` | font-rendered Clawville banner | A |
+| `assets/logos/src/candidate-a-constructed.svg` | source geometry for the vector logo builder | both |
 | `assets/logos/clawville-logo-wood-large.png` | opaque hi-res logo (baked checkerboard); do not use, see `-transparent` | n/a |
-| `assets/logos/clawville-logo-wood-large-transparent.png` | hi-res logo with real alpha; default for large backgrounds | both |
+| `assets/logos/clawville-logo-wood-large-transparent.png` | hi-res raster wordmark with real alpha | both |
 | `assets/logos/clawville-wordmark-mono.svg` | 1-color vector wordmark | both |
 | `assets/logos/clawville-logo-sky.jpg` | logo on sky header | A |
 | `assets/mascot/mascot-logo-lockup-transparent.png` | mascot + logo, transparent | A |
@@ -272,13 +283,15 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 | `graphics/banner-uos-launch.html` | uOS App Store launch banner: partner-palette variant of Register B. uOS magenta `#FF00C5` replaces lime as the accent; Electric Blue stays. `.keep{text-transform:none}` preserves lowercase "u" in "uOS" against Anton's uppercase. | B |
 | `assets/fonts/ClawvilleDisplay.otf` / `.woff2` | THE brand display font (locked, one weight) | A |
+| `scripts/build_logo_svg.py` | official vector logo builder | both |
+| `scripts/wood.py` | shared vector wood builder | both |
+| `scripts/render_sign_svg.py` | vector sign renderer for any text | A |
+| `scripts/add_claw_v.py` | claw v font glyph builder | A |
 | `assets/fonts/render-embossed-text.py` | emboss renderer: text in, transparent headline PNG out | A |
 | `brand-board.html` | visual one-page board of colors, logos, mascot, stickers | both |
 | `logo-usage.html` | visual logo rules and examples | both |
-| `logo-work/` | vector candidates, not approved for use | n/a |
 | `scripts/build_icons.py` | icon, social card, and web brand asset builder | both |
 | `assets/icons/` | full-square claw-girl favicon, PNG, PWA, and social avatar set | both |
-| `assets/icons/alt/` | claw-mark small-size comparison alternate | both |
 | `assets/social/` | 1200x630 beach scene and wood-sign social cards | both |
 
 Team-only notes are kept outside this repository.

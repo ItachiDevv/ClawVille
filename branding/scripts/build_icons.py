@@ -1,33 +1,37 @@
 """Build the ClawVille icon and social asset set from the approved raster art.
 
 Run from any directory: python branding/scripts/build_icons.py [-o report.md]
-Requires Pillow and NumPy. No source asset is modified.
+Requires Pillow and NumPy. Banner rendering needs headless Chrome at the Windows path below.
+Hosted files are never overwritten.
 """
 
 from __future__ import annotations
 
 import argparse
+import tempfile
 from io import BytesIO
 from pathlib import Path
 import struct
+import subprocess
+from tempfile import TemporaryDirectory
+import xml.etree.ElementTree as ET
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageFilter
 
 
 ROOT = Path(__file__).resolve().parents[2]
 BRANDING = ROOT / "branding"
 ICONS = BRANDING / "assets" / "icons"
-ALT = ICONS / "alt"
 SOCIAL = BRANDING / "assets" / "social"
 WEB_PUBLIC = ROOT / "apps" / "web" / "public"
 WEB_APP = ROOT / "apps" / "web" / "src" / "app"
-LOGO_WORK = BRANDING / "logo-work"
 SOURCE = BRANDING / "assets" / "logos" / "clawville-logo-official.png"
-STICKER = BRANDING / "assets" / "stickers" / "claw-yellow.png"
 SIGN = BRANDING / "assets" / "logos" / "clawville-logo-wood-large-transparent.png"
+VECTOR_SIGN = BRANDING / "assets" / "logos" / "clawville-sign-font.svg"
+CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+CHROME_PROFILE = Path.home() / ".cold-load-probe-profiles" / "clawville-banner-v2"
 BEACH = BRANDING / "assets" / "world" / "beach-banner-wide.jpg"
-NAVY = (0, 24, 88)
 SAFE_RADIUS = 204.8
 
 
@@ -64,6 +68,33 @@ def copy_app_assets() -> list[Path]:
     return [target for _, target in copies]
 
 
+def render_sign_svg(width: int, height: int) -> Image.Image:
+    """Rasterize the vector sign at the exact output dimensions with Chrome."""
+    with TemporaryDirectory(prefix=".sign-render-", dir=BRANDING) as work_dir:
+        work = Path(work_dir)
+        CHROME_PROFILE.parent.mkdir(parents=True, exist_ok=True)
+        html = work / ".render-sign.html"
+        shot = work / f".render-sign-{width}.png"
+        html.write_text(
+            '<!doctype html><style>html,body{margin:0;background:transparent}'
+            f'img{{display:block;width:{width}px;height:{height}px}}</style>'
+            f'<img src="{VECTOR_SIGN.resolve().as_uri()}">', encoding="utf-8"
+        )
+        command = [str(CHROME), "--headless=new", "--disable-gpu", "--no-first-run",
+                   "--no-default-browser-check", "--disable-extensions",
+                   "--disable-background-mode", "--force-device-scale-factor=1",
+                   f"--user-data-dir={CHROME_PROFILE}",
+                   "--default-background-color=00000000",
+                   f"--screenshot={shot}",
+                   f"--window-size={max(width, 800)},{max(height + 120, 600)}",
+                   html.as_uri()]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        if result.returncode or not shot.exists():
+            raise RuntimeError(f"Chrome SVG render failed: {result.stderr[-1000:]}")
+        with Image.open(shot) as captured:
+            return captured.convert("RGBA").crop((0, 0, width, height))
+
+
 def publish_web_assets() -> list[Path]:
     """Publish versioned web assets from the approved sign and icon set."""
     brand_dir = WEB_PUBLIC / "brand"
@@ -72,17 +103,20 @@ def publish_web_assets() -> list[Path]:
     icon_dir.mkdir(parents=True, exist_ok=True)
     outputs: list[Path] = []
 
-    with Image.open(SIGN) as source:
-        if source.size != (1792, 576) or source.mode != "RGBA":
-            raise ValueError("Keyed sign must be 1792x576 RGBA")
-        for width, height, quality in ((480, 154, 68), (960, 309, 68)):
-            # Premultiplied resize keeps transparent edge pixels free of dark halos.
-            sign = source.convert("RGBa").resize((width, height), Image.Resampling.LANCZOS).convert("RGBA")
-            path = brand_dir / f"clawville-sign-v1-{width}.webp"
-            data = BytesIO()
-            sign.save(data, format="WEBP", quality=quality, method=6)
-            write_hosted_asset(path, data.getvalue())
+    svg_size = ET.parse(VECTOR_SIGN).getroot().attrib
+    aspect = int(svg_size["width"]) / int(svg_size["height"])
+    w1 = round(aspect * 88)
+    for label, width, height in (("1x", w1, 88), ("2x", 2 * w1, 176)):
+        path = brand_dir / f"clawville-banner-v2-{label}.webp"
+        if path.exists():
+            print(f"kept existing {path}")
             outputs.append(path)
+            continue
+        sign = render_sign_svg(width, height)
+        data = BytesIO()
+        sign.save(data, format="WEBP", quality=72, method=6, exact=True)
+        write_hosted_asset(path, data.getvalue())
+        outputs.append(path)
 
     for source_name, target_name in (("pwa-192.png", "pwa-192-v1.png"),
                                      ("pwa-512.png", "pwa-512-v1.png"),
@@ -190,25 +224,6 @@ def make_maskable(source: Image.Image) -> tuple[Image.Image, int, float, str]:
     return background, side, farthest * side / source.width, measurement
 
 
-def make_alt(sticker: Image.Image, size: int) -> Image.Image:
-    scale = 4
-    large = size * scale
-    alpha = sticker.getchannel("A")
-    bbox = alpha.getbbox()
-    if bbox is None:
-        raise ValueError("Sticker has no visible pixels")
-    visible = sticker.crop(bbox)
-    target_height = round(large * 0.78)
-    target_width = round(visible.width * target_height / visible.height)
-    visible = visible.resize((target_width, target_height), Image.Resampling.LANCZOS)
-    tile = Image.new("RGBA", (large, large), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(tile)
-    draw.rounded_rectangle((0, 0, large - 1, large - 1), radius=round(large * 0.2), fill=(*NAVY, 255))
-    tile.alpha_composite(visible, ((large - target_width) // 2, (large - target_height) // 2))
-    tile = tile.resize((size, size), Image.Resampling.LANCZOS)
-    return tile.filter(ImageFilter.UnsharpMask(radius=0.6, percent=80, threshold=2))
-
-
 def make_og(beach: Image.Image, sign: Image.Image) -> Image.Image:
     width = round(beach.width * 630 / beach.height)
     background = beach.resize((width, 630), Image.Resampling.LANCZOS)
@@ -222,48 +237,8 @@ def make_og(beach: Image.Image, sign: Image.Image) -> Image.Image:
     return background.convert("RGB")
 
 
-COMPARE_HTML = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ClawVille icon comparison</title><style>
-:root{font-family:Arial,sans-serif;color:#eaf3ff;background:#061520}*{box-sizing:border-box}
-body{margin:0;padding:28px;max-width:1380px}h1,h2{margin:0 0 16px}section{margin:30px 0}
-.row{display:flex;flex-wrap:wrap;gap:18px;align-items:start}.card{padding:18px;border:1px solid #365171;border-radius:14px;background:#102337}
-.tabbar{display:flex;gap:5px;align-items:end;padding:8px 10px 0;border-radius:11px 11px 0 0;min-width:520px}
-.tabbar.dark{background:#202124}.tabbar.light{background:#dce0e5;color:#202124}
-.tab{display:flex;gap:8px;align-items:center;width:230px;padding:10px 12px;border-radius:9px 9px 0 0;background:#30343b;font-size:13px}
-.light .tab{background:#fafafa}.tab img{width:16px;height:16px}.tab.big img{width:32px;height:32px}
-.phone{width:320px;padding:24px;border:8px solid #293444;border-radius:38px;background:linear-gradient(#378baf,#70bfbb 55%,#e3cf9c);color:white}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;text-align:center;font-size:12px}
-.grid img{width:68px;height:68px;object-fit:cover;border-radius:15px;box-shadow:0 3px 8px #0008}.grid label{display:block;margin-top:6px}
-.mask img{width:160px;height:160px;object-fit:cover}.circle img{clip-path:circle(50%)}.squircle img{border-radius:36%}.rounded img{border-radius:20%}
-.og img{display:block;max-width:100%;height:auto}.og.small img{width:600px}
-p{line-height:1.4;color:#c9d5e0}small{color:#b7c8d6}
-</style></head><body>
-<h1>ClawVille icon comparison</h1><p>Set 1 uses the full official logo. Set 2 uses the yellow claw sticker.</p>
-<section><h2>Browser tabs</h2><div class="row">
-<div class="card"><small>Dark · 16 px</small><div class="tabbar dark"><div class="tab"><img src="../assets/icons/icon-clawgirl-16.png">ClawVille · Set 1</div><div class="tab"><img src="../assets/icons/alt/icon-claw-16.png">ClawVille · Set 2</div></div></div>
-<div class="card"><small>Light · 16 px</small><div class="tabbar light"><div class="tab"><img src="../assets/icons/icon-clawgirl-16.png">ClawVille · Set 1</div><div class="tab"><img src="../assets/icons/alt/icon-claw-16.png">ClawVille · Set 2</div></div></div>
-<div class="card"><small>Dark · 32 px at 2×</small><div class="tabbar dark"><div class="tab big"><img src="../assets/icons/icon-clawgirl-32.png">ClawVille · Set 1</div><div class="tab big"><img src="../assets/icons/alt/icon-claw-32.png">ClawVille · Set 2</div></div></div>
-<div class="card"><small>Light · 32 px at 2×</small><div class="tabbar light"><div class="tab big"><img src="../assets/icons/icon-clawgirl-32.png">ClawVille · Set 1</div><div class="tab big"><img src="../assets/icons/alt/icon-claw-32.png">ClawVille · Set 2</div></div></div>
-</div></section>
-<section><h2>Phone home screen</h2><div class="phone"><div class="grid">
-<div><img src="../assets/icons/apple-touch-icon-180.png"><label>Apple touch</label></div>
-<div><img src="../assets/icons/pwa-192.png"><label>PWA 192</label></div>
-<div><img src="../assets/icons/pwa-512.png"><label>PWA 512</label></div>
-</div></div></section>
-<section><h2>Maskable icon</h2><div class="row">
-<div class="card mask circle"><img src="../assets/icons/pwa-maskable-512.png"><p>Circle</p></div>
-<div class="card mask squircle"><img src="../assets/icons/pwa-maskable-512.png"><p>Squircle</p></div>
-<div class="card mask rounded"><img src="../assets/icons/pwa-maskable-512.png"><p>Rounded square</p></div>
-</div></section>
-<section><h2>OG card · 1200 × 630</h2><div class="og"><img src="../assets/social/og-1200x630.png"></div></section>
-<section><h2>OG card · 600 × 315 display</h2><div class="og small"><img src="../assets/social/og-1200x630.png"></div></section>
-</body></html>
-"""
-
-
 def build(report_path: Path) -> None:
-    for directory in (ICONS, ALT, SOCIAL, LOGO_WORK, report_path.parent):
+    for directory in (ICONS, SOCIAL, report_path.parent):
         directory.mkdir(parents=True, exist_ok=True)
     outputs: list[Path] = []
     source = Image.open(SOURCE).convert("RGB")
@@ -290,16 +265,6 @@ def build(report_path: Path) -> None:
     save_png(maskable, path)
     outputs.append(path)
 
-    sticker = Image.open(STICKER).convert("RGBA")
-    alternate = {size: make_alt(sticker, size) for size in (16, 32, 48)}
-    for size, image in alternate.items():
-        path = ALT / f"icon-claw-{size}.png"
-        save_png(image, path)
-        outputs.append(path)
-    path = ALT / "favicon-claw.ico"
-    write_ico([alternate[n] for n in (16, 32, 48)], path)
-    outputs.append(path)
-
     og = make_og(Image.open(BEACH).convert("RGB"), Image.open(SIGN).convert("RGBA"))
     path = SOCIAL / "og-1200x630.png"
     save_png(og, path)
@@ -309,10 +274,6 @@ def build(report_path: Path) -> None:
     outputs.append(path)
     outputs.extend(publish_web_assets())
     outputs.extend(copy_app_assets())
-
-    path = LOGO_WORK / "icons-compare.html"
-    path.write_text(COMPARE_HTML, encoding="utf-8", newline="\n")
-    outputs.append(path)
 
     lines = ["# ClawVille icon set", "", "Rebuild: `python branding/scripts/build_icons.py`", "",
              "## Maskable measurement", "", measurement,
@@ -335,7 +296,7 @@ def build(report_path: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-o", "--output", type=Path, default=LOGO_WORK / "icons-report.md",
+    parser.add_argument("-o", "--output", type=Path, default=Path(tempfile.gettempdir()) / "clawville-icons-report.md",
                         help="Path for the generated asset report")
     args = parser.parse_args()
     build(args.output.resolve())
