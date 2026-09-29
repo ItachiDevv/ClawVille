@@ -13,8 +13,7 @@
     "apps/api/src/routes/quests.ts",
     "apps/api/src/routes/claws.ts",
     "apps/api/src/routes/avatars.ts",
-    "apps/api/src/services/claw-token-ledger.ts",
-    "apps/api/src/services/daily-login*.ts"
+    "apps/api/src/services/claw-token-ledger.ts"
   ],
   "requires": [
     [

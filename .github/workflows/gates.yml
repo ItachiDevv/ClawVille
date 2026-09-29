@@ -61,6 +61,8 @@ jobs:
         env:
           COUPLING_BASE_SHA: ${{ inputs.coupling-base-sha }}
         run: bun scripts/ci/run-coupling-gates.ts --github
+      - name: Check canonical doc paths
+        run: bun test scripts/ci/check-doc-paths.test.ts && bun scripts/ci/check-doc-paths.ts
 
   web-tests:
     name: web Trading Floor tests

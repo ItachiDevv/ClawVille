@@ -7,7 +7,6 @@
   "trigger": [
     "apps/api/src/routes/partner-hatcher*.ts",
     "apps/api/src/routes/portal.ts",
-    "apps/api/src/routes/portal/**",
     "apps/api/src/routes/skills.ts",
     "apps/api/src/services/partner-signature.ts",
     "apps/api/src/services/service-issuer.ts",
@@ -21,8 +20,7 @@
     "apps/api/src/middleware/require-auth-or-agent.ts",
     "packages/shared/src/types/agent-substrate.ts",
     "packages/shared/src/types/openclaw.ts",
-    "apps/api/scripts/hatcher/**",
-    ".hatcher-ref/CONTRACT.md"
+    "apps/api/scripts/hatcher/**"
   ],
   "requires": [
     [

@@ -68,6 +68,22 @@ export function loadRegistry(root: string): Gate[] {
 export function matches(path: string, glob: string): boolean {
   return new Bun.Glob(glob).match(path);
 }
+export type DeadGlob = { gateId: string; kind: 'trigger' | 'requires'; glob: string };
+export function findDeadGlobs(gates: Gate[], files: string[]): DeadGlob[] {
+  const dead: DeadGlob[] = [];
+  for (const gate of gates) {
+    if (gate.status !== 'active') continue;
+    for (const [kind, globs] of [
+      ['trigger', gate.trigger],
+      ['requires', gate.requires.flat()],
+    ] as const) {
+      for (const glob of globs) {
+        if (!files.some((file) => matches(file, glob))) dead.push({ gateId: gate.id, kind, glob });
+      }
+    }
+  }
+  return dead;
+}
 export function protocolVersion(source: string | null): number | null {
   const declarations = [...(source ?? '').matchAll(/^export const PROTOCOL_VERSION\s*=\s*([^;\r\n]+);?\s*$/gm)];
   if (declarations.length !== 1 || !/^\d+$/.test(declarations[0][1].trim())) return null;
@@ -185,6 +201,10 @@ function main(): void {
   if (range.mergeBase) range.base = sha(git(root, ['merge-base', range.base, range.head]).trim());
   if (range.base === range.head) throw new Error('Coupling base must differ from head');
   const gates = loadRegistry(root);
+  const trackedFiles = git(root, ['ls-files', '-z', '--']).split('\0').filter(Boolean);
+  const deadGlobs = findDeadGlobs(gates, trackedFiles);
+  if (deadGlobs.length) throw new Error(deadGlobs.map(({ gateId, kind, glob }) =>
+    `dead glob: ${gateId} ${kind} ${glob}`).join('\n'));
   if (readFileSync(resolve(root, '.claude/gates/INDEX.md'), 'utf8') !== indexText(gates)) throw new Error('Coupling INDEX.md is stale; regenerate it');
   const result = evaluate(gates, collectChanges(root, range.base, range.head), git(root, ['show', '-s', '--format=%B', range.head]));
   console.log(`Coupling range ${range.base}..${range.head}; ${gates.length} rules; ${result.triggered.length} triggered`);

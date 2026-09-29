@@ -7,7 +7,8 @@
   "trigger": [
     "apps/api/src/services/wager-program-client.ts",
     "apps/api/src/routes/wager.ts",
-    "contracts/wager/**",
+    "contracts/programs/clawville-wager/**",
+    "contracts/tests/wager-*.ts",
     "packages/wager-program/**"
   ],
   "requires": [

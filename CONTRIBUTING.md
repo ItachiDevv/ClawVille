@@ -17,9 +17,18 @@ Read `CLAUDE.md` first. It documents the load-bearing project invariants and con
 
 ### The bidirectional sync rule
 
-**If your change touches any code path tabulated in `CLAUDE.md` "Path → doc decision matrix", you must stage the matching doc update in the same commit.** Reverse holds: changing a manifest doc requires the corresponding code change. Mismatch is a bug.
+**If your change touches a code path in the table below, stage the matching doc update in the same commit.** Reverse holds: changing a manifest doc requires the corresponding code change. Mismatch is a bug.
 
-This is enforced at the contributor/review level — there's no pre-commit hook or CI gate by design. Every contributor and reviewer is responsible.
+| Editing | Update |
+|---|---|
+| `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, `apps/web/public/sw.js` | `3dStructure.md` |
+| `apps/web/src/components/game/**`, economy code, quest and login routes | `GameFeatures.md` |
+| New or changed API route, Drizzle schema, service, environment variable, deploy or CI config | `ARCHITECTURE.md` (environment variables in §4) |
+| Agent connect, `/api/agent/*`, skill protocol, partner routes | `GameFeatures.md` §2, `ARCHITECTURE.md` §6, `docs/hatcher-integration-spec.md` |
+| `branding/**`, logos, fonts, outward graphics and copy | `branding/BRAND.md`, `docs/brand-language.md` |
+| Deploy runbook steps | `docs/DEPLOY-HETZNER.md` |
+
+Bump the doc's "Last Audited" line with a one-line drift note. Most of this is enforced at review. Two CI gates also enforce parts of it: the coupling gates (`scripts/ci/run-coupling-gates.ts`) require the knowledge surfaces to change with gameplay code, and the doc path guard (`scripts/ci/check-doc-paths.ts`) fails when a canonical doc gains a reference to a repo path that does not exist. When you delete or rename a file, update every doc that names it in the same commit.
 
 ### Workflow runbooks
 

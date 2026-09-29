@@ -7,8 +7,7 @@
   "trigger": [
     "apps/api/src/routes/agent*.ts",
     "apps/web/src/components/agent-connect-instructions.tsx",
-    "apps/web/src/components/game/agent-connect*.tsx",
-    "apps/web/src/components/game/connect-agent*.tsx"
+    "apps/web/src/components/game/agent-connect*.tsx"
   ],
   "requires": [
     [
