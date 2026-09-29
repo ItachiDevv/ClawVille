@@ -465,6 +465,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-29 (session cvBrand) — brand kit v1 founder decisions + sw fallback + doc guards (staging push)
+
+**What changed:** founder decisions from the brand decisions page: official vector logo (A letters + generated vector wood), one new ClawvilleDisplay glyph (the claw v, U+E000), font-rendered sign renderer, landing hero and /game loading screen use the font-rendered banner (`/brand/clawville-banner-v2-*`, never taller than the old title), claw-girl icons only, usage rules as variation 1. Fixes: `sw.js` falls back to the network when a cache strategy rejects (broken Cache Storage crashed the page); ARCHITECTURE § i18n and GameFeatures Languages rewritten (the documented cookie/next-intl/middleware layer is not in the code); uOS doc says live, no hold; tutorial copy em dashes. CI: `check-doc-paths.ts` (new canonical-doc references to untracked paths fail; 71-entry shrink-only baseline) and dead coupling-gate globs now fail (five gates repaired). `skill-protocol.ts` version-log comment only; protocol stays 72.
+**What broke + root cause + fix:** local only: a stale `next start` kept port 3000, so the new server exited with EADDRINUSE and the old one served a replaced build (chunk 500, "This page couldn't load" on /game). Killed the stale process; the matrix passed on a fresh server. Codex once over-deleted `docs/uos-integration-plan.md` (dropped the manifest re-sign rules); reverted and edited surgically.
+**Verified locally:** typecheck, 6 site-url tests, 27 CI-script tests, doc path check, prod build, matrix 390x844 / 744x1133 / 820x1180 / 1024x1366 portrait + landscape and 1440x900 (banner 56/68/88 px, loading 32/56 px, no horizontal scroll, 0 page errors), broken-cache profile now loads the landing page. Staging verification: follow-up entry.
+**Who it is for:** founder brand review (FOUNDER-REVIEW BRAND entry) and every session editing docs.
+**SCHEMA:** `synced`. PARITY: presentation, docs, and CI only.
+
 ### 2026-09-28 10:05–11:00 UTC (session sql2) — staging box: second tenant RevealAI; sol-mafia anon revoked (docs-only push, no ClawVille deploy)
 
 **What changed:** no ClawVille code. The staging box now also runs the RevealAI backend that replaced its Supabase project (`/opt/revealai`: `revealai-db`, `revealai-rest`, `revealai-storage`, ~500 MB RAM, Traefik host `data.revealai.fun` only, own cron 04:47 UTC with a nightly restore test). RevealAI's Vercel project switched to it at 10:38:30 UTC. sol-mafia Supabase: anon/authenticated grants revoked 10:08:24 UTC (founder: archive only). Docs: audit §4.4, `docs/DEPLOY-HETZNER.md` "Other tenant on the staging box".
