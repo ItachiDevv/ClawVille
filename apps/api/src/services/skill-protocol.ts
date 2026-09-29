@@ -581,6 +581,8 @@ import {
 // The bounty modal's touch-target sizing is presentation only.
 // 2026-09-28 (branding): manual reviewed, no version change. The /game loading
 // screen shows the brand sign image instead of typed text; presentation only.
+// 2026-09-29 (branding round 2): manual reviewed, no version change. The loading
+// banner is font-rendered and smaller; tutorial copy loses em dashes. Presentation only.
 export const PROTOCOL_VERSION = 72;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
