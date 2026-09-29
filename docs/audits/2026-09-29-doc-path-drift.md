@@ -1,7 +1,7 @@
 # Canonical doc path drift, 2026-09-29
 
 Owner: any session that edits the canonical docs (fix one reference, shrink the baseline).
-Tracker: `scripts/ci/doc-paths-baseline.txt` (CI fails on NEW missing paths; the baseline may only shrink).
+Tracker: `scripts/ci/doc-paths-baseline.txt` (CI fails on NEW missing paths and on stale entries; the baseline grows only through a reviewed `--write-baseline` diff).
 Review deadline: 2026-10-31. On deadline: fix every remaining current-state reference, or mark it as history in the doc and regenerate the baseline.
 Guard: `scripts/ci/check-doc-paths.ts`, run in the gates coupling job.
 

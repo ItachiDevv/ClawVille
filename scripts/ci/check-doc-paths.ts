@@ -87,7 +87,12 @@ function run(): void {
   if (added.length) {
     console.error('fix the reference, or if the text is deliberate history mark it and run --write-baseline');
     process.exitCode = 1;
-  } else {
+  }
+  if (stale.length) {
+    console.error('baseline has repaired or removed entries: run --write-baseline so it shrinks');
+    process.exitCode = 1;
+  }
+  if (!added.length && !stale.length) {
     console.log(`Doc path check passed (${references.size} references, ${baseline.size} baseline entries).`);
   }
 }

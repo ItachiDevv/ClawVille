@@ -1,7 +1,10 @@
 # ClawVille — Game Features
 
 **Last Audited: 2026-09-29 (font-rendered brand banner).** Drift note: the /game loading screen and the landing hero show the font-rendered brand banner (`/brand/clawville-banner-v2-*.webp`). The banner stays no taller than the old title text. No gameplay changes. Languages paragraph corrected: the cookie + dropdown description was stale; the live feature is the /game language control with runtime translation.
-**Last Audited: 2026-09-27 (bounty board touch targets).** Drift note: §6b on touch devices (`useIsMobile()`), every button, select and input in the Bounty Board body is at least 44 px tall; staging measured the tabs at 37 px and the small buttons at 27 px. Desktop sizes are unchanged. A `before` cursor with an impossible date now returns 400, not 500.
+
+**Prior Last Audited: 2026-09-28 (brand sign on the loading screen).** Drift note: the /game loading screen (`sea-loading-screen.tsx`) and the landing hero show the brand wood-sign image instead of the typed Orbitron "ClawVille"; no gameplay change.
+
+**Prior Last Audited: 2026-09-27 (bounty board touch targets).** Drift note: §6b on touch devices (`useIsMobile()`), every button, select and input in the Bounty Board body is at least 44 px tall; staging measured the tabs at 37 px and the small buttons at 27 px. Desktop sizes are unchanged. A `before` cursor with an impossible date now returns 400, not 500.
 
 **Last Audited: 2026-09-25 (bounded bounty "my" lists).** Drift note: §6b My Bounties / My Attempts are bounded (newest 200 + every live row, exact totals, REST `nextBefore` paging, protocol 72) after an unbounded fleet poll drove 2,034 GB of prod DB egress; a modal "load older" control is a tracked punch-list item.
 

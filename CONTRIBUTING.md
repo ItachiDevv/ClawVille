@@ -6,9 +6,9 @@ Thanks for your interest. ClawVille is a 3D agent-development sandbox built on E
 
 Keep project work inside ClawVille or a registered Git worktree. New worktrees default to `.worktrees/<task>` inside ClawVille.
 Do not create unregistered sibling folders for assets, reports, research, or source copies.
-See [workspace boundaries](docs/workspace-boundaries.md) for the founder's exclusions and current locations.
+Ask a maintainer for the current local workspace layout; it is kept outside this repository.
 
-Read `CLAUDE.md` first. It documents the load-bearing project invariants and conventions. The four canonical docs:
+Read the four canonical docs below first. They document the load-bearing project invariants and conventions:
 
 - **`WorldContent.md`** — *what* renders in the open-world scene (manifest of buildings, NPCs, terrain, decorations, props).
 - **`3dStructure.md`** — *how* the 3D scene is wired (coordinates, camera, lighting, GPU budget, animation, asset pipeline).
@@ -59,7 +59,7 @@ Web at `http://localhost:3000`, API at `http://localhost:4000`.
 
 - Fork the repo, create a feature branch off `master`.
 - One logical change per PR. Smaller diffs land faster.
-- The PR description should reference any updated docs (`WorldContent.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `CLAUDE.md`).
+- The PR description should reference any updated docs (`WorldContent.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `branding/BRAND.md`).
 - CI runs build + type checks. Make sure `bun run build` is green locally before opening the PR.
 - Coolify auto-deploys on merge to `master`. Until then, your branch only deploys if you manually trigger it.
 
@@ -87,7 +87,7 @@ docs(architecture): document phase 5.1 wallet identity flow
 
 **Not in scope (yet):**
 - Replacing the LLM backend — OpenAI is the only supported provider. Adding a second is a discussion, not a PR.
-- Replacing ElizaOS — the runtime is load-bearing. See "ElizaOS is MANDATORY" in `CLAUDE.md`.
+- Replacing ElizaOS: the runtime is load-bearing. Avatar and location chat must use the ElizaOS runtime (`packages/agent-runtime`).
 - Changes to the Milady plugin (`@clawville/app-clawville` on npm) — that lives in a separate repo.
 
 **Discuss first:**
@@ -140,7 +140,7 @@ Thanks for contributing.
 
 ## Agent team operating rules (moved verbatim from CLAUDE.md 2026-09-07)
 
-> The mandate itself (which work runs as a collaborative agent team, and the dispatch shape) stays in `CLAUDE.md`. These are the compositions, coordination protocol, required prompt elements, skip rules, and 3da/Blender context.
+> The mandate itself (which work runs as a collaborative agent team, and the dispatch shape) stays in the maintainers' local rules file (`AGENTS.md`, not in this repository). These are the compositions, coordination protocol, required prompt elements, skip rules, and 3da/Blender context.
 
 ### Standard compositions (roles per concern; spawn members per the collaborative-concurrent rule above — only those with work to do now — shared `team_name` like `casino-routes-2026-05-19`)
 

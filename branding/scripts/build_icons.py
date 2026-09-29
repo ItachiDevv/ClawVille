@@ -2,7 +2,8 @@
 
 Run from any directory: python branding/scripts/build_icons.py [-o report.md]
 Requires Pillow and NumPy. Banner rendering needs headless Chrome at the Windows path below.
-Hosted files are never overwritten.
+Versioned public files (apps/web/public/brand, apps/web/public/icons) are never overwritten;
+the Next.js metadata files in apps/web/src/app are refreshed.
 """
 
 from __future__ import annotations
