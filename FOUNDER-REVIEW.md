@@ -461,6 +461,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## HUD
 
+### Phone game menu: bigger tap targets (staging)
+- **What:** on phones and tablets every row in the game menu (gear button) and the "Create Agent"
+  button are now at least 44 px tall (they were 40.5 px and 27 px). Desktop is unchanged.
+- **Where:** staging.clawville.world → /game on a phone → gear button (top right).
+- **Feedback wanted:** are the rows easy to hit; does the longer list still feel right.
+- Session sql2/Opus, 2026-09-29.
+
 ### Quest card no longer covers the minimap (LIVE on prod via #284)
 - **What:** the Town Tour card used to sit on the bottom of the minimap, worst next to a
   building with a long name. It now always sits 8 px below the minimap. The minimap's

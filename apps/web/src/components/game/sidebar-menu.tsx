@@ -1703,6 +1703,13 @@ const SIDEBAR_CSS = `
   padding: 0 !important;
 }
 
+/* Touch menu only: this body exists only in the useIsMobile() branch. Tap targets >= 44px
+   (staging measured the rows at 40.5px and "Create Agent" at 27px, 2026-09-29). */
+.rpg-sidebar-mobile-body .rpg-sidebar-row,
+.rpg-sidebar-mobile-body .rpg-button {
+  min-height: 44px;
+}
+
 /* Screen-reader-only utility — matches Tailwind's sr-only for status dots */
 .sr-only {
   position: absolute;

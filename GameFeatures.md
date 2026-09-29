@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-09-29 (font-rendered brand banner).** Drift note: the /game loading screen and the landing hero show the font-rendered brand banner (`/brand/clawville-banner-v2-*.webp`). The banner stays no taller than the old title text. No gameplay changes. Languages paragraph corrected: the cookie + dropdown description was stale; the live feature is the /game language control with runtime translation.
+**Last Audited: 2026-09-29 (phone menu tap targets).** Drift note: on touch devices (the `useIsMobile()` branch of the game menu), every row and button in the menu is at least 44 px tall; staging measured the rows at 40.5 px and "Create Agent" at 27 px. Desktop sizes are unchanged. No gameplay change.
+
+**Prior Last Audited: 2026-09-29 (font-rendered brand banner).** Drift note: the /game loading screen and the landing hero show the font-rendered brand banner (`/brand/clawville-banner-v2-*.webp`). The banner stays no taller than the old title text. No gameplay changes. Languages paragraph corrected: the cookie + dropdown description was stale; the live feature is the /game language control with runtime translation.
 
 **Prior Last Audited: 2026-09-28 (brand sign on the loading screen).** Drift note: the /game loading screen (`sea-loading-screen.tsx`) and the landing hero show the brand wood-sign image instead of the typed Orbitron "ClawVille"; no gameplay change.
 

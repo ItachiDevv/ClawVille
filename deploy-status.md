@@ -467,6 +467,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-29 (session sql2) — phone game menu tap targets (staging push)
+
+**What changed:** `sidebar-menu.tsx` scoped CSS: in the touch menu body (`.rpg-sidebar-mobile-body`, rendered only in the `useIsMobile()` branch) every `.rpg-sidebar-row` and `.rpg-button` gets `min-height: 44px`. Gate notes: `GameFeatures.md`, `skill-protocol.ts` version-log comment (protocol stays v72), Hatcher spec drift note; FOUNDER-REVIEW HUD entry.
+**What broke + root cause + fix:** staging measured all 14 touch-menu rows at 40.5 px and "Create Agent" at 27 px (below the 44 px AGENTS.md minimum; the rows use 8px padding + 12px text). A CSS preview injected on staging gave 16/16 controls at 44 px with the list still scrollable. Staging verification after deploy: see the follow-up entry.
+**Who it's for:** phone and tablet players (founder request 2026-09-29).
+**SCHEMA:** `synced`. PARITY: presentation only; no state, economy, or agent-surface change.
+
 ### 2026-09-29 (session cvBrand) — brand kit v1 founder decisions + sw fallback + doc guards (staging push)
 
 **What changed:** founder decisions from the brand decisions page: official vector logo (A letters + generated vector wood), one new ClawvilleDisplay glyph (the claw v, U+E000), font-rendered sign renderer, landing hero and /game loading screen use the font-rendered banner (`/brand/clawville-banner-v2-*`, never taller than the old title), claw-girl icons only, usage rules as variation 1. Fixes: `sw.js` falls back to the network when a cache strategy rejects (broken Cache Storage crashed the page); ARCHITECTURE § i18n and GameFeatures Languages rewritten (the documented cookie/next-intl/middleware layer is not in the code); uOS doc says live, no hold; tutorial copy em dashes. CI: `check-doc-paths.ts` (new canonical-doc references to untracked paths fail; 71-entry baseline that grows only through a reviewed `--write-baseline` diff) and dead coupling-gate globs now fail (five gates repaired). `skill-protocol.ts` version-log comment only; protocol stays 72.
