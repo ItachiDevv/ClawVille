@@ -330,6 +330,14 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   a TP leg sells only when the QUOTED multiple reaches the TP multiple (as the Python runner did); otherwise hold and log
   'tp_not_confirmed_by_quote'; stops, trail and time exits still sell at the quote.
 
+- 14:49Z: verifier A (staging 315abf26) steps 1-3 PASS; launch as landtest1 created ClawPump agent
+  136de7ec "CV Arena (staging) · LandTest1 #4821bfae4287" in 2 s (private, no bids, stopped) BUT it kept ClawPump's 6
+  default skills (action-plans, web-browsing, private-transfers, bitget-intel, self-learning, skill-management; no
+  trading skill). Fix ordered: provisioning reads the agent back and strips any denied trading/spending skill, else
+  fails with `clawpump_denied_skill_present`.
+- 14:58Z: Codex r11 (on fcc60ed2): TP rule reaches stop/trail/time (OK); two items ordered: wall-clock freshness under
+  the position lock right before booking; the TP-skip path persists the low-quote guard.
+
 ## 8. Punch list (tracked deferrals, rule E6)
 
 | # | Item | Owner condition | Review deadline |

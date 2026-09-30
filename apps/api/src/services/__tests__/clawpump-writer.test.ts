@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
+  CLAWPUMP_ARENA_DENIED_SKILLS,
   ClawPumpWriterError,
+  readClawPumpArenaAgent,
   _resetClawPumpWriterCacheForTest,
   createClawPumpAgent,
   getClawPumpWalletBalances,
@@ -125,6 +127,32 @@ describe('updateClawPumpAgent', () => {
     await expect(x402PayViaClawPump(HOUSE_ID, { url: 'https://api.nansen.ai/x', method: 'GET', maxAmountUsd: 0.1 }, { env, fetchImpl }))
       .rejects.toMatchObject({ code: 'not_arena_agent' });
     expect(calls.filter((call) => call.method !== 'GET')).toHaveLength(0);
+  });
+});
+
+describe('skills', () => {
+  test('a PATCH may keep harmless defaults but never a denied skill (x402 aside)', async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      [`GET /agents/${ARENA_ID}`]: () => json(agentBody(ARENA_ID, 'CV Arena · Bob #abcd12340000', { enabled_skills: ['web-browsing'] })),
+      [`PATCH /agents/${ARENA_ID}`]: (call) => json(agentBody(ARENA_ID, 'CV Arena · Bob #abcd12340000', call.body as Record<string, unknown>)),
+    });
+    await updateClawPumpAgent(ARENA_ID, { enabled_skills: ['action-plans', 'web-browsing', 'x402'] }, { env, fetchImpl });
+    expect(calls.at(-1)!.body).toEqual({ enabled_skills: ['action-plans', 'web-browsing', 'x402'] });
+    const before = calls.length;
+    for (const denied of ['defi-trading', 'private-transfers', 'wallet-ops', 'perps-trading', 'token-launch', 'agenc-worker']) {
+      await expect(updateClawPumpAgent(ARENA_ID, { enabled_skills: ['web-browsing', denied] }, { env, fetchImpl }))
+        .rejects.toMatchObject({ code: 'invalid_input' });
+    }
+    expect(calls.length).toBe(before);
+    expect(CLAWPUMP_ARENA_DENIED_SKILLS.has('x402')).toBe(true);
+  });
+
+  test('readClawPumpArenaAgent returns the enabled skills from GET /agents/{id}', async () => {
+    const { fetchImpl } = fakeFetch({
+      [`GET /agents/${ARENA_ID}`]: () => json({ agent: agentBody(ARENA_ID, 'CV Arena · Bob', { enabled_skills: ['self-learning', 'x402'] }) }),
+    });
+    expect((await readClawPumpArenaAgent(ARENA_ID, { env, fetchImpl })).enabledSkills).toEqual(['self-learning', 'x402']);
+    await expect(readClawPumpArenaAgent('nope', { env, fetchImpl })).rejects.toMatchObject({ code: 'invalid_agent_id' });
   });
 });
 

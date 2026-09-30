@@ -1,5 +1,6 @@
 import { withKeyedMutex } from '../keyed-mutex';
 import {
+  CLAWPUMP_ARENA_DENIED_SKILLS,
   ClawPumpWriterError,
   clawPumpArenaWriter,
   getClawPumpWallet,
@@ -135,7 +136,7 @@ function logText(error: unknown): string {
 }
 
 class ArenaProvisionError extends Error {
-  constructor(readonly code: string) {
+  constructor(readonly code: string, readonly detail: Record<string, unknown> | null = null) {
     super(code);
     this.name = 'ArenaProvisionError';
   }
@@ -153,11 +154,32 @@ export function _resetArenaProvisioningForTest(): void {
   syncedSkill.clear();
 }
 
+/** The denied skills present in `skills` (x402 counts only when no add-on is on). */
+export function deniedSkillsPresent(skills: readonly string[], allowX402: boolean): string[] {
+  return [...new Set(skills.map((skill) => skill.trim().toLowerCase()))]
+    .filter((skill) => CLAWPUMP_ARENA_DENIED_SKILLS.has(skill) && !(allowX402 && skill === 'x402'));
+}
+
+function readSkills(agent: { enabledSkills: string[] | null }): string[] {
+  // Fail closed: an answer without the skill list cannot prove the agent is safe.
+  if (agent.enabledSkills === null) throw new ArenaProvisionError('clawpump_skills_unreadable');
+  return [...new Set(agent.enabledSkills.map((skill) => skill.trim().toLowerCase()).filter((skill) => skill.length > 0))];
+}
+
+/**
+ * Makes the ClawPump agent private, closed to bids, and free of every denied
+ * skill (CLAWPUMP_ARENA_DENIED_SKILLS; x402 only while an add-on is on).
+ * Live staging showed ClawPump KEEPS its default skills when asked for [], so
+ * the result is read back with a GET, a denied skill is PATCHed away (the
+ * current list minus the denied ones, plus x402 when wanted), and read back
+ * again. A denied skill that survives fails the attempt with
+ * 'clawpump_denied_skill_present'. Returns the final skill list.
+ */
 async function syncAgentConfig(
   deps: ArenaProvisionDeps,
   agent: ArenaAgentRecord,
   clawpumpAgentId: string,
-): Promise<string | null> {
+): Promise<{ wallet: string | null; skills: string[]; x402Enabled: boolean }> {
   const x402 = wantsX402(agent);
   const updated = await deps.writer.updateAgent(clawpumpAgentId, {
     accepting_bids: false,
@@ -167,8 +189,20 @@ async function syncAgentConfig(
   // Verify what ClawPump echoes back when it echoes it (null = field absent).
   if (updated.acceptingBids === true) throw new ArenaProvisionError('accepting_bids_not_cleared');
   if (updated.isPublic === true) throw new ArenaProvisionError('agent_still_public');
-  syncedSkill.set(agent.id, x402);
-  return updated.walletAddress;
+
+  let skills = readSkills(await deps.writer.readAgent(clawpumpAgentId));
+  let denied = deniedSkillsPresent(skills, x402);
+  if (denied.length > 0 || (x402 && !skills.includes('x402'))) {
+    const desired = skills.filter((skill) => !denied.includes(skill));
+    if (x402 && !desired.includes('x402')) desired.push('x402');
+    await deps.writer.updateAgent(clawpumpAgentId, { enabled_skills: desired });
+    skills = readSkills(await deps.writer.readAgent(clawpumpAgentId));
+    denied = deniedSkillsPresent(skills, x402);
+  }
+  if (denied.length > 0) throw new ArenaProvisionError('clawpump_denied_skill_present', { deniedSkills: denied, skills });
+  const x402Enabled = x402 && skills.includes('x402');
+  syncedSkill.set(agent.id, x402Enabled);
+  return { wallet: updated.walletAddress, skills, x402Enabled };
 }
 
 async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promise<ArenaProvisionOutcome> {
@@ -213,8 +247,8 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
       clawpumpAgentId = stored.clawpumpAgentId;
       wallet = stored.clawpumpAgentId === adopted.id ? adopted.walletAddress : stored.clawpumpWallet;
     }
-    const echoedWallet = await syncAgentConfig(deps, agent, clawpumpAgentId);
-    wallet = wallet ?? echoedWallet ?? (await deps.writer.getWallet(clawpumpAgentId));
+    const synced = await syncAgentConfig(deps, agent, clawpumpAgentId);
+    wallet = wallet ?? synced.wallet ?? (await deps.writer.getWallet(clawpumpAgentId));
     if (!wallet) throw new ArenaProvisionError('wallet_missing');
     if (!(await deps.store.markReady(agent.id, clawpumpAgentId, wallet, lease))) {
       // Our lease expired and another process re-claimed the row (or it was
@@ -227,7 +261,7 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
     await deps.store.insertEvent(agent.id, {
       type: 'addon',
       summary: 'Execution wallet ready. Fund it with USDC to use paid add-ons.',
-      data: { provisionState: 'ready', paymentAddress: wallet },
+      data: { provisionState: 'ready', paymentAddress: wallet, skills: synced.skills },
     });
     return 'ready';
   } catch (error) {
@@ -244,7 +278,10 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
       summary: exhausted
         ? `Execution wallet setup failed (${code}) after ${attempts} attempts. Paper trading continues; add-ons stay off.`
         : `Execution wallet setup failed (${code}), attempt ${attempts} of ${ARENA_PROVISION_MAX_ATTEMPTS}. Next try in 10 minutes. Paper trading continues.`,
-      data: { provisionState: 'failed', error: code, attempts },
+      data: {
+        provisionState: 'failed', error: code, attempts,
+        ...(error instanceof ArenaProvisionError && error.detail ? error.detail : {}),
+      },
     });
     return 'failed';
   }
@@ -270,7 +307,9 @@ export function ensureAddonSkill(
   return withKeyedMutex(`floor-arena-provision:${agentId}`, async () => {
     const agent = await deps.store.read(agentId);
     if (!agent || agent.kind !== 'user' || agent.provisionState !== 'ready' || !agent.clawpumpAgentId) return false;
-    await syncAgentConfig(deps, agent, agent.clawpumpAgentId);
+    const synced = await syncAgentConfig(deps, agent, agent.clawpumpAgentId);
+    // Add-ons need x402: say so loudly instead of letting the tick skip silently.
+    if (wantsX402(agent) && !synced.x402Enabled) throw new ArenaProvisionError('clawpump_x402_not_enabled');
     return true;
   });
 }

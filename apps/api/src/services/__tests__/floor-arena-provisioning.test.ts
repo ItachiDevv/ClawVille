@@ -9,6 +9,7 @@ import {
   _resetArenaProvisioningForTest,
   arenaClawPumpAgentName,
   arenaSkillSynced,
+  deniedSkillsPresent,
   ensureAddonSkill,
   provisionArenaAgent,
   runArenaProvisioningTick,
@@ -49,6 +50,10 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
   const taken = new Set<string>();
   const ownedElsewhere = new Set<string>();
   let listResult: ClawPumpCreatedAgent[] = [];
+  /** The agent's skills on ClawPump. Clean defaults unless a test says otherwise. */
+  let skills: string[] | null = ['action-plans', 'web-browsing', 'bitget-intel', 'self-learning', 'skill-management'];
+  /** Skills ClawPump re-adds whatever we PATCH (the "denied skill persists" case). */
+  let sticky: string[] = [];
   let createImpl: () => Promise<ClawPumpCreatedAgent> = async () => cpAgent();
   let updateImpl: (patch: Record<string, unknown>) => Promise<ClawPumpCreatedAgent> =
     async (patch) => cpAgent({ acceptingBids: patch.accepting_bids as boolean, isPublic: patch.is_public as boolean });
@@ -111,7 +116,13 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
         log.push(`create ${JSON.stringify(input.enabled_skills)} public=${input.is_public}`);
         return createImpl();
       },
-      updateAgent: async (id, patch) => { log.push(`update ${id} ${JSON.stringify(patch)}`); return updateImpl(patch as Record<string, unknown>); },
+      updateAgent: async (id, patch) => {
+        log.push(`update ${id} ${JSON.stringify(patch)}`);
+        // Live staging: ClawPump keeps its defaults on enabled_skills []; a non-empty list replaces them.
+        if (patch.enabled_skills && patch.enabled_skills.length > 0) skills = [...new Set([...patch.enabled_skills, ...sticky])];
+        return updateImpl(patch as Record<string, unknown>);
+      },
+      readAgent: async (id) => cpAgent({ id, acceptingBids: false, enabledSkills: skills === null ? null : [...skills] }),
       getWalletBalances: async () => [],
       x402Pay: async () => { throw new Error('not used'); },
       getWallet: async () => { log.push('getWallet'); return WALLET; },
@@ -122,6 +133,8 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
     setList: (list: ClawPumpCreatedAgent[]) => { listResult = list; },
     setCreate: (impl: typeof createImpl) => { createImpl = impl; },
     setUpdate: (impl: typeof updateImpl) => { updateImpl = impl; },
+    setSkills: (next: string[] | null, stickyNext: string[] = []) => { skills = next; sticky = stickyNext; },
+    skillsNow: () => skills,
   };
 }
 
@@ -173,6 +186,64 @@ describe('provisionArenaAgent state machine', () => {
     const prod = harness(record(), PROD);
     await provisionArenaAgent(AGENT_ID, prod.deps);
     expect(prod.created[0]).toBe('CV Arena · Bob #a1b2c3d40000');
+  });
+
+  test('live staging: ClawPump kept its 6 defaults on []; the denied spending skill is PATCHed away and the list recorded', async () => {
+    const h = harness(record());
+    const defaults = ['action-plans', 'web-browsing', 'private-transfers', 'bitget-intel', 'self-learning', 'skill-management'];
+    h.setSkills([...defaults, 'defi-trading', 'x402']);
+    const logged: unknown[] = [];
+    const insertEvent = h.deps.store.insertEvent;
+    h.deps.store.insertEvent = async (agentId, event) => { logged.push(event.data); return insertEvent(agentId, event); };
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('ready');
+    const clean = ['action-plans', 'web-browsing', 'bitget-intel', 'self-learning', 'skill-management'];
+    expect(h.log).toContain(`update ${CP_ID} ${JSON.stringify({ enabled_skills: clean })}`);
+    expect(h.skillsNow()).toEqual(clean);
+    expect(logged.at(-1)).toMatchObject({ provisionState: 'ready', skills: clean });
+    expect(deniedSkillsPresent(h.skillsNow()!, false)).toEqual([]);
+  });
+
+  test('a denied skill that survives the PATCH fails the attempt (owner event lists it)', async () => {
+    const h = harness(record());
+    h.setSkills(['web-browsing', 'token-sniper'], ['token-sniper']);
+    const logged: Array<Record<string, unknown>> = [];
+    const insertEvent = h.deps.store.insertEvent;
+    h.deps.store.insertEvent = async (agentId, event) => {
+      logged.push({ type: event.type, ...(event.data as object) });
+      return insertEvent(agentId, event);
+    };
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('failed');
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'failed', provisionError: 'clawpump_denied_skill_present' });
+    expect(logged.at(-1)).toMatchObject({ type: 'addon', error: 'clawpump_denied_skill_present', deniedSkills: ['token-sniper'] });
+  });
+
+  test('fails closed when ClawPump does not return the skill list', async () => {
+    const h = harness(record());
+    h.setSkills(null);
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('failed');
+    expect(h.rows.get(AGENT_ID)!.provisionError).toBe('clawpump_skills_unreadable');
+  });
+
+  test('x402 is denied without an add-on and kept (or added) with one', async () => {
+    expect(deniedSkillsPresent(['X402', 'web-browsing', 'perps-trading', 'laso-finance', 'agenc-worker', 'wallet-ops'], false))
+      .toEqual(['x402', 'perps-trading', 'laso-finance', 'agenc-worker', 'wallet-ops']);
+    expect(deniedSkillsPresent(['x402', 'web-browsing'], true)).toEqual([]);
+    const withAddon = harness(record({ addons: [{ id: 'feed', enabled: true, dailyCapUsd: 1 }] }));
+    withAddon.setSkills(['web-browsing', 'marketplace'], ['web-browsing']);
+    expect(await provisionArenaAgent(AGENT_ID, withAddon.deps)).toBe('ready');
+    expect(withAddon.skillsNow()).toEqual(expect.arrayContaining(['x402', 'web-browsing']));
+    expect(withAddon.skillsNow()).not.toContain('marketplace');
+    expect(arenaSkillSynced(AGENT_ID)).toBe(true);
+  });
+
+  test('ensureAddonSkill throws when ClawPump will not enable x402 for an add-on', async () => {
+    const h = harness(record({ provisionState: 'ready', clawpumpAgentId: CP_ID, addons: [{ id: 'feed', enabled: true, dailyCapUsd: 1 }] }));
+    h.setUpdate(async () => cpAgent({ acceptingBids: false }));
+    // ClawPump drops x402 whatever we send.
+    const readAgent = h.deps.writer.readAgent;
+    h.deps.writer.readAgent = async (id) => ({ ...(await readAgent(id)), enabledSkills: ['web-browsing'] });
+    await expect(ensureAddonSkill(AGENT_ID, h.deps)).rejects.toMatchObject({ code: 'clawpump_x402_not_enabled' });
+    expect(arenaSkillSynced(AGENT_ID)).toBe(false);
   });
 
   test('asks for the x402 skill only when an add-on is enabled', async () => {

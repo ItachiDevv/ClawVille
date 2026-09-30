@@ -27,6 +27,27 @@ import { ClawPumpClientError, getClawPumpAgent, resolveClawPumpConfig, type Claw
 export const CLAWPUMP_ARENA_AGENT_NAME_PREFIX = 'CV Arena';
 /** Skills an arena execution wallet may carry. No trading skill, ever (D8). */
 export const CLAWPUMP_ARENA_ALLOWED_SKILLS: ReadonlySet<string> = new Set(['x402']);
+/**
+ * Skills an arena execution wallet must NEVER carry (lead order after live
+ * staging, 2026-09-30): trading, launching, sniping, marketplace, paid tools
+ * and anything that moves the wallet's funds. Exact ClawPump slugs as the API
+ * returns them (research-20260930-clawpump R6 per-agent lists) PLUS the MCP
+ * aliases (`perps`, `laso`, `trading`) in case a response uses one. `x402` is
+ * denied too unless the arena agent has an enabled add-on (the caller decides).
+ * `private-transfers` and `wallet-ops` are ClawPump defaults that move funds,
+ * so they are denied as spending skills.
+ */
+export const CLAWPUMP_ARENA_DENIED_SKILLS: ReadonlySet<string> = new Set([
+  'defi-trading', 'trading',
+  'perps-trading', 'perps',
+  'token-launch', 'token-sniper',
+  'marketplace',
+  'pay-sh', 'paysh',
+  'laso-finance', 'laso',
+  'agenc-worker', 'agent-c', 'agenc',
+  'private-transfers', 'wallet-ops',
+  'x402',
+]);
 /** A single x402 call may never authorise more than this, whatever the caller asks. */
 export const CLAWPUMP_X402_MAX_CALL_USD = 5;
 /**
@@ -86,8 +107,14 @@ export interface ClawPumpX402Result {
 
 const agentIdSchema = z.string().uuid();
 const skillSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9_-]{1,64}$/);
+/** CREATE: nothing but `x402` (when an add-on is on). */
 const skillsSchema = z.array(skillSchema).max(10).refine(
   (skills) => skills.every((skill) => CLAWPUMP_ARENA_ALLOWED_SKILLS.has(skill)),
+  'skill_not_allowed',
+);
+/** PATCH: ClawPump's harmless defaults may stay; no denied skill except `x402`. */
+const patchSkillsSchema = z.array(skillSchema).max(40).refine(
+  (skills) => skills.every((skill) => skill === 'x402' || !CLAWPUMP_ARENA_DENIED_SKILLS.has(skill)),
   'skill_not_allowed',
 );
 
@@ -104,7 +131,7 @@ export type CreateClawPumpAgentInput = z.infer<typeof createAgentInputSchema>;
 export const updateAgentPatchSchema = z.object({
   accepting_bids: z.boolean().optional(),
   is_public: z.boolean().optional(),
-  enabled_skills: skillsSchema.optional(),
+  enabled_skills: patchSkillsSchema.optional(),
 }).strict().refine((patch) => Object.keys(patch).length > 0, 'empty_patch');
 export type UpdateClawPumpAgentPatch = z.infer<typeof updateAgentPatchSchema>;
 
@@ -379,10 +406,23 @@ export async function x402PayViaClawPump(
 /** The writer surface the arena jobs depend on, so tests inject a fake. */
 export interface ClawPumpArenaWriter {
   listAgentsByName(name: string): Promise<ClawPumpCreatedAgent[]>;
+  /** GET /agents/{id} with its enabled skills (the post-provisioning check). */
+  readAgent(agentId: string): Promise<ClawPumpCreatedAgent>;
   createAgent(input: CreateClawPumpAgentInput): Promise<ClawPumpCreatedAgent>;
   updateAgent(agentId: string, patch: UpdateClawPumpAgentPatch): Promise<ClawPumpCreatedAgent>;
   getWalletBalances(): Promise<ClawPumpWalletBalance[]>;
   x402Pay(agentId: string, input: X402PayInput): Promise<ClawPumpX402Result>;
+}
+
+/** GET /agents/{id}: the agent as ClawPump holds it now, enabled skills included. */
+export async function readClawPumpArenaAgent(
+  agentId: string,
+  options: ClawPumpWriterOptions = {},
+): Promise<ClawPumpCreatedAgent> {
+  assertAgentId(agentId);
+  const agent = toCreatedAgent(await sendJson('GET', `/agents/${agentId}`, undefined, options));
+  if (agent.id !== agentId) throw new ClawPumpWriterError('schema_invalid');
+  return agent;
 }
 
 /** GET /agents filtered to an exact name (the provisioning idempotency check). */
@@ -402,6 +442,7 @@ export async function listClawPumpAgentsByName(
 
 export const clawPumpArenaWriter: ClawPumpArenaWriter = {
   listAgentsByName: (name) => listClawPumpAgentsByName(name),
+  readAgent: (agentId) => readClawPumpArenaAgent(agentId),
   createAgent: (input) => createClawPumpAgent(input),
   updateAgent: (agentId, patch) => updateClawPumpAgent(agentId, patch),
   getWalletBalances: () => getClawPumpWalletBalances(),
