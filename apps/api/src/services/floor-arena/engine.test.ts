@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
   advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, evaluateAgentCandidates,
-  exitSummary, keepNewerMark, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun, quotedTpMultiple,
-  tpConfirmedByQuote, type D4Outcome,
+  exitSummary, freshBookingAllowed, keepNewerMark, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
+  quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
 } from './engine';
 import type { FloorArenaFeatures } from './filters';
@@ -270,6 +270,23 @@ describe('D4 sell-quote failures (persisted exit_run, Codex r4 #1 + r5)', () => 
     expect(markStillFresh(T0 - 59_000, T0 + 5_000)).toBe(false); // 59 s old at tick start, 64 s after a 5-s quote
     expect(markStillFresh(T0 - 59_000, T0 + 500)).toBe(true);    // 59.5 s after a 0.5-s quote
     expect(markStillFresh(null, T0)).toBe(false);
+  });
+
+  test('r11: a booking decided on a fresh mark needs it fresh on the WALL clock under the lock', () => {
+    expect(freshBookingAllowed(true, T0, T0 + 60_000)).toBe(true);
+    expect(freshBookingAllowed(true, T0, T0 + 60_001)).toBe(false);   // any delay (before, during or after the quote)
+    expect(freshBookingAllowed(true, null, T0)).toBe(false);
+    expect(freshBookingAllowed(false, T0, T0 + 3_600_000)).toBe(true); // decided without a fresh mark: no check
+  });
+
+  test('r11: an unconfirmed TP records a LOW quote in the run; a quote merely below TP (or none) changes nothing', () => {
+    const low = tpSkipRunUpdate(null, 'quote_far_below_mark', T0);
+    expect(low).toMatchObject({ failures: 1, lowCount: 1, sawLow: true, lastLowAt: new Date(T0).toISOString() });
+    expect(tpSkipRunUpdate(null, 'quote_far_below_reference', T0)).toMatchObject({ sawLow: true });
+    expect(tpSkipRunUpdate(low, 'quote_far_below_mark', T0 + 10_000)).toMatchObject({ failures: 2, lowCount: 2 });
+    expect(tpSkipRunUpdate(low, null, T0 + 10_000)).toBeNull();            // ok quote below the TP multiple
+    expect(tpSkipRunUpdate(low, 'quote_failed', T0 + 10_000)).toBeNull();  // no quote
+    expect(tpSkipRunUpdate(low, 'drift', T0 + 10_000)).toBeNull();         // other refusal
   });
 
   test('TP is confirmed only by the quote: quoted price / entry price (before the sell haircut) >= the leg multiple', () => {
