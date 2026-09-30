@@ -1066,37 +1066,20 @@ authRoutes.post('/milady-session-exchange', async (c) => {
     });
   }
 
-  // Find or create a guest user for this Milady agent
-  const guestEmail = `milady-${botConfig.agentId}@clawville.guest`;
-  let user = await db.query.users.findFirst({
-    where: eq(users.email, guestEmail),
+  // Mint the login for the agent's REAL bound owner, never a synthetic account. sessionLedgerCapable
+  // above guarantees bot.userId is non-null, equals config.boundUserId, and (per resolveAgentSession's
+  // guest backstop) is a non-guest user. The old code created/logged-in a separate
+  // `milady-<agentId>@clawville.guest` row (is_guest=false), granting a full-user session for an
+  // account that was not the proven owner (Codex C2 review, 2026-09-30). Bind the cookie to the owner.
+  const ownerUserId = bot.userId!;
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, ownerUserId),
   });
-
   if (!user) {
-    // Create a guest user — random password hash, never used for login
-    const guestId = crypto.randomUUID();
-    const randomHash = await Bun.password.hash(crypto.randomUUID(), {
-      algorithm: 'bcrypt',
-      cost: 4, // fast — this hash is never verified
-    });
-
-    await db.insert(users).values({
-      id: guestId,
-      email: guestEmail,
-      passwordHash: randomHash,
-      name: bot.name ?? botConfig.agentId,
-    });
-
-    user = await db.query.users.findFirst({
-      where: eq(users.id, guestId),
-    });
+    throw new HTTPException(404, { message: 'Bound owner account not found' });
   }
 
-  if (!user) {
-    throw new HTTPException(500, { message: 'Failed to create guest user' });
-  }
-
-  // Create a Lucia session for this guest user
+  // Create a Lucia session for the bound owner
   const session = await lucia.createSession(user.id, {});
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
