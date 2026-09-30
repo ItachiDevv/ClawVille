@@ -49,13 +49,8 @@ function inventoryTx(start: Record<string, number>) {
         inv.set(key, inv.get(key)! - 1);
         return [{ id: key }];
       }
-      if (text.startsWith('UPDATE avatar_inventory AS inventory SET quantity = inventory.quantity + 1')) {
-        if (!inv.has(key)) return [];
-        inv.set(key, inv.get(key)! + 1);
-        return [{ id: key }];
-      }
-      if (text.startsWith('INSERT INTO avatar_inventory')) {
-        inv.set(key, 1);
+      if (text.startsWith('INSERT INTO avatar_inventory AS inventory') && text.includes('ON CONFLICT (avatar_id, item_id)')) {
+        inv.set(key, (inv.get(key) ?? 0) + 1);
         return [];
       }
       throw new Error(`unhandled SQL: ${text}`);

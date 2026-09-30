@@ -58,13 +58,16 @@ function inventoryDb(rows: InventoryRow[] = []) {
       await Promise.resolve();
       const { text, params } = render(query);
       statements.push(text);
-      if (text.startsWith('UPDATE avatar_inventory AS inventory SET quantity = inventory.quantity + 1')) {
+      if (
+        text.startsWith('INSERT INTO avatar_inventory AS inventory (avatar_id, item_id, quantity)') &&
+        text.includes('ON CONFLICT (avatar_id, item_id) DO UPDATE SET quantity = inventory.quantity + 1')
+      ) {
+        // Models the unique (avatar_id, item_id) index: conflict → increment.
         const row = pick(params[0], params[1], false);
-        if (!row) return [];
-        row.quantity += 1;
-        return [{ id: row.id }];
-      }
-      if (text.startsWith('INSERT INTO avatar_inventory (avatar_id, item_id, quantity)')) {
+        if (row) {
+          row.quantity += 1;
+          return [];
+        }
         rows.push({
           id: `row-${++seq}`,
           avatarId: String(params[0]),
@@ -92,7 +95,7 @@ const total = (rows: InventoryRow[], avatarId: string, itemId: string) =>
     .reduce((sum, r) => sum + r.quantity, 0);
 
 describe('grantInventoryItem (security M10)', () => {
-  it('inserts a first copy and increments an existing row in ONE statement', async () => {
+  it('inserts a first copy and increments an existing row in ONE upsert statement', async () => {
     const h = inventoryDb();
     await grantInventoryItem(h.db, { avatarId: 'a1', itemId: 'book-x' });
     expect(h.rows).toEqual([expect.objectContaining({ avatarId: 'a1', itemId: 'book-x', quantity: 1 })]);
@@ -100,8 +103,19 @@ describe('grantInventoryItem (security M10)', () => {
     await grantInventoryItem(h.db, { avatarId: 'a1', itemId: 'book-x' });
     expect(h.rows).toHaveLength(1);
     expect(h.rows[0]!.quantity).toBe(2);
-    // No statement ever reads the quantity for a JavaScript-side add.
+    // One statement per grant, and none reads the quantity for a JavaScript add.
+    expect(h.statements).toHaveLength(2);
     expect(h.statements.some((s) => /^SELECT .*quantity/i.test(s))).toBe(false);
+  });
+
+  it('two concurrent FIRST grants end as one row with quantity 2 (unique index upsert)', async () => {
+    const h = inventoryDb();
+    await Promise.all([
+      grantInventoryItem(h.db, { avatarId: 'a1', itemId: 'book-x' }),
+      grantInventoryItem(h.db, { avatarId: 'a1', itemId: 'book-x' }),
+    ]);
+    expect(h.rows).toHaveLength(1);
+    expect(h.rows[0]!.quantity).toBe(2);
   });
 
   it('never loses a concurrent grant', async () => {

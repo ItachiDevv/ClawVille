@@ -9,11 +9,10 @@ import { sql, type Database } from '@clawville/database';
  * consumed came back. These helpers change the count inside ONE SQL statement,
  * so Postgres applies each change to the latest committed row.
  *
- * `avatar_inventory` has no unique (avatar_id, item_id) index. Two concurrent
- * FIRST grants can therefore insert two rows; the total quantity stays correct,
- * and `learnBookAtomically` / `takeInventoryItem` consume from any row with
- * quantity > 0. Callers that already hold the avatar row lock (the ledger debit
- * takes it) never produce the duplicate.
+ * `avatar_inventory_avatar_item_unique` (migration 0070) makes (avatar_id,
+ * item_id) unique, so a grant is one `INSERT ... ON CONFLICT DO UPDATE`: two
+ * concurrent first grants serialize on the index and end as ONE row with
+ * quantity 2, never two rows.
  */
 export type InventoryDatabase = Pick<Database, 'execute'>;
 
@@ -22,28 +21,16 @@ export interface InventoryItemRef {
   itemId: string;
 }
 
-/** Add ONE of `itemId` to the avatar's inventory (atomic increment, else insert). */
+/** Add ONE of `itemId` to the avatar's inventory (one atomic upsert). */
 export async function grantInventoryItem(
   db: InventoryDatabase,
   input: InventoryItemRef,
 ): Promise<void> {
-  const incremented = await db.execute<{ id: string }>(
-    sql`UPDATE avatar_inventory AS inventory
-        SET quantity = inventory.quantity + 1
-        WHERE inventory.id = (
-          SELECT id
-          FROM avatar_inventory
-          WHERE avatar_id = ${input.avatarId}
-            AND item_id = ${input.itemId}
-          ORDER BY acquired_at ASC, id ASC
-          LIMIT 1
-        )
-        RETURNING inventory.id`,
-  );
-  if (incremented[0]) return;
   await db.execute(
-    sql`INSERT INTO avatar_inventory (avatar_id, item_id, quantity)
-        VALUES (${input.avatarId}, ${input.itemId}, 1)`,
+    sql`INSERT INTO avatar_inventory AS inventory (avatar_id, item_id, quantity)
+        VALUES (${input.avatarId}, ${input.itemId}, 1)
+        ON CONFLICT (avatar_id, item_id)
+        DO UPDATE SET quantity = inventory.quantity + 1`,
   );
 }
 

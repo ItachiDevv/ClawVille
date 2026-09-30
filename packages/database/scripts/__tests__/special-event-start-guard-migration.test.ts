@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
-import { pokerTournaments, specialEvents } from '../../src/schema';
+import { avatarInventory, pokerTournaments, specialEvents } from '../../src/schema';
 
 // Security M4 (2026-09-30) migration invariants. Located by suffix, not number,
 // because the integration step may renumber the file.
@@ -61,5 +61,18 @@ describe('special-event start guard migration (security M3/M4/H2)', () => {
       expect(migration).toContain(`CREATE UNIQUE INDEX IF NOT EXISTS "${name}"`);
     }
     expect(indexNames).toContain('poker_tournaments_special_event_active_unique');
+  });
+
+  it('makes (avatar_id, item_id) unique for the inventory upsert (M10, Codex round 2)', () => {
+    const unique = getTableConfig(avatarInventory).indexes.find(
+      (index) => index.config.name === 'avatar_inventory_avatar_item_unique',
+    );
+    expect(unique?.config.unique).toBe(true);
+    expect(unique?.config.columns.map((column) => (column as { name: string }).name)).toEqual([
+      'avatar_id',
+      'item_id',
+    ]);
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "avatar_inventory_avatar_item_unique"');
+    expect(migration).toContain('ON "avatar_inventory" USING btree ("avatar_id", "item_id")');
   });
 });

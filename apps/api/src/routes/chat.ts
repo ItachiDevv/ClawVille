@@ -138,10 +138,10 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
 
   // Build state object for Providers + Actions
   // Only inject services if avatar exists — actions require a avatarId to transact.
-  // A guest gets services whose ledger functions refuse (security M9): guests run
-  // a demo economy, so no chat action may settle their balance on the real ledger.
+  // The adapter's ledger functions refuse a guest-owned avatar on every call
+  // (security M9): guests run a demo economy, never the real ledger.
   const services = avatar
-    ? buildRuntimeServices(db, { actorKind: 'human', guestDemo: canonicalGuest })
+    ? buildRuntimeServices(db, { actorKind: 'human' })
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,

@@ -1,12 +1,13 @@
 -- 0070_special_event_start_guard.sql — security pass 2026-09-30 (M3, M4, H2).
 --
--- ADDITIVE + IDEMPOTENT. Adds three columns, two unique indexes, and (re)states
+-- ADDITIVE + IDEMPOTENT. Adds three columns, three unique indexes, and (re)states
 -- one CHECK predicate. It drops no table, column, index, or data. The file runs
 -- as one implicit transaction, so a failure applies nothing.
 --
 -- RUN THE READ-ONLY PRE-CHECK FIRST (it is in the M3/M4 report and in
--- ARCHITECTURE.md §8): a duplicate (special_event_id) or (tournament_id, placement)
--- row makes the CREATE UNIQUE INDEX fail, and that blocks the deploy gate.
+-- ARCHITECTURE.md §8): a duplicate (special_event_id), (tournament_id, placement)
+-- or (avatar_id, item_id) row makes the CREATE UNIQUE INDEX fail, and that blocks
+-- the deploy gate.
 
 -- 1. M3 — the house-treasury-funded share of a tournament's prize pool.
 --    TournamentManager.createTournament debits the house treasury for a prepaid
@@ -51,3 +52,12 @@ ALTER TABLE "special_events" ADD COLUMN IF NOT EXISTS "start_claimed_at" timesta
 ALTER TABLE "special_events" DROP CONSTRAINT IF EXISTS "special_events_status_check";
 ALTER TABLE "special_events" ADD CONSTRAINT "special_events_status_check"
   CHECK (status = ANY (ARRAY['draft'::text, 'signup_open'::text, 'starting'::text, 'live'::text, 'completed'::text, 'cancelled'::text]));
+
+-- 6. M10 (Codex round 2) — one inventory row per (avatar, item).
+--    grantInventoryItem is an INSERT ... ON CONFLICT (avatar_id, item_id) DO UPDATE
+--    upsert on this index, so two concurrent first grants end as ONE row. The
+--    2026-09-30 read-only check found 0 duplicate groups on staging and prod.
+--    Like 0069, this fails closed if a duplicate appears before promotion and
+--    never merges or deletes rows itself.
+CREATE UNIQUE INDEX IF NOT EXISTS "avatar_inventory_avatar_item_unique"
+  ON "avatar_inventory" USING btree ("avatar_id", "item_id");

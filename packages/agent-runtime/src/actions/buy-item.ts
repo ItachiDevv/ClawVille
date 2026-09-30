@@ -61,7 +61,7 @@ export const buyItemAction: Action = {
       }
 
       const { avatarId, services } = state;
-      const { db, debitClawTokens, creditClawTokens } = services;
+      const { db, debitClawTokens } = services;
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -121,31 +121,24 @@ export const buyItemAction: Action = {
         };
       }
 
-      // Debit ClawTokens
-      const { balanceAfter } = await debitClawTokens({
-        avatarId,
-        amount: book.price,
-        reason: `Purchased book: ${book.name}`,
-        source: 'shop',
-        metadata: { bookId: book.id, buildingId: book.building },
+      // Debit + grant in ONE transaction: if the grant fails, the debit rolls
+      // back with it. The old debit-then-grant with a best-effort refund could
+      // lose the buyer's vCLAW when the refund also failed (security, Codex
+      // round 2). The grant is one atomic upsert (security M10).
+      const balanceAfter = await db.transaction(async (tx: any) => {
+        const debit = await debitClawTokens(
+          {
+            avatarId,
+            amount: book.price,
+            reason: `Purchased book: ${book.name}`,
+            source: 'shop',
+            metadata: { bookId: book.id, buildingId: book.building },
+          },
+          tx,
+        );
+        await grantInventoryItem(tx, { avatarId, itemId });
+        return debit.balanceAfter;
       });
-
-      // Add or increment inventory (one atomic SQL increment — a read-then-write
-      // could lose a concurrent buy or learn, security M10) — compensating credit
-      // on failure
-      try {
-        await grantInventoryItem(db, { avatarId, itemId });
-      } catch (invErr: any) {
-        // Compensating credit — refund the debit so the avatar doesn't lose tokens
-        await creditClawTokens({
-          avatarId,
-          amount: book.price,
-          reason: 'buy_item_refund',
-          source: 'api',
-          metadata: { bookId: book.id, error: invErr.message },
-        }).catch(() => {});
-        return { success: false, text: `Purchase failed after payment — tokens refunded. Error: ${invErr.message}` };
-      }
 
       return {
         success: true,
