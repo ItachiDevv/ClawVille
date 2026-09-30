@@ -1,6 +1,7 @@
 import { withKeyedMutex } from '../keyed-mutex';
 import {
   CLAWPUMP_ARENA_DENIED_SKILLS,
+  CLAWPUMP_STICKY_DEFAULT_SKILLS,
   ClawPumpWriterError,
   clawPumpArenaWriter,
   getClawPumpWallet,
@@ -154,6 +155,19 @@ export function _resetArenaProvisioningForTest(): void {
   syncedSkill.clear();
 }
 
+/**
+ * The enabled_skills list to PATCH, given ClawPump's real semantics (live
+ * staging): the sticky platform defaults always stay and cannot be removed, so
+ * the list carries only the NON-default skills we keep (current minus defaults
+ * minus denied), plus x402 while an add-on is on. [] removes every non-default.
+ */
+export function desiredArenaSkills(current: readonly string[], allowX402: boolean): string[] {
+  const denied = new Set(deniedSkillsPresent(current, allowX402));
+  const keep = [...new Set(current.map((skill) => skill.trim().toLowerCase()))]
+    .filter((skill) => skill.length > 0 && !CLAWPUMP_STICKY_DEFAULT_SKILLS.has(skill) && !denied.has(skill) && skill !== 'x402');
+  return allowX402 ? [...keep, 'x402'] : keep;
+}
+
 /** The denied skills present in `skills` (x402 counts only when no add-on is on). */
 export function deniedSkillsPresent(skills: readonly string[], allowX402: boolean): string[] {
   return [...new Set(skills.map((skill) => skill.trim().toLowerCase()))]
@@ -169,11 +183,11 @@ function readSkills(agent: { enabledSkills: string[] | null }): string[] {
 /**
  * Makes the ClawPump agent private, closed to bids, and free of every denied
  * skill (CLAWPUMP_ARENA_DENIED_SKILLS; x402 only while an add-on is on).
- * Live staging showed ClawPump KEEPS its default skills when asked for [], so
- * the result is read back with a GET, a denied skill is PATCHed away (the
- * current list minus the denied ones, plus x402 when wanted), and read back
- * again. A denied skill that survives fails the attempt with
- * 'clawpump_denied_skill_present'. Returns the final skill list.
+ * Live staging showed ClawPump's six platform defaults are sticky (a PATCH adds
+ * or removes non-default skills only), so the result is read back with a GET;
+ * a denied (non-default) skill is PATCHed away with `desiredArenaSkills`, and
+ * the agent is read back again. A denied skill that survives fails the
+ * attempt with 'clawpump_denied_skill_present'. Returns the final skill list.
  */
 async function syncAgentConfig(
   deps: ArenaProvisionDeps,
@@ -193,9 +207,7 @@ async function syncAgentConfig(
   let skills = readSkills(await deps.writer.readAgent(clawpumpAgentId));
   let denied = deniedSkillsPresent(skills, x402);
   if (denied.length > 0 || (x402 && !skills.includes('x402'))) {
-    const desired = skills.filter((skill) => !denied.includes(skill));
-    if (x402 && !desired.includes('x402')) desired.push('x402');
-    await deps.writer.updateAgent(clawpumpAgentId, { enabled_skills: desired });
+    await deps.writer.updateAgent(clawpumpAgentId, { enabled_skills: desiredArenaSkills(skills, x402) });
     skills = readSkills(await deps.writer.readAgent(clawpumpAgentId));
     denied = deniedSkillsPresent(skills, x402);
   }

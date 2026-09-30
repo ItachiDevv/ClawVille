@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
   CLAWPUMP_ARENA_DENIED_SKILLS,
+  CLAWPUMP_STICKY_DEFAULT_SKILLS,
   ClawPumpWriterError,
   readClawPumpArenaAgent,
   _resetClawPumpWriterCacheForTest,
@@ -139,12 +140,14 @@ describe('skills', () => {
     await updateClawPumpAgent(ARENA_ID, { enabled_skills: ['action-plans', 'web-browsing', 'x402'] }, { env, fetchImpl });
     expect(calls.at(-1)!.body).toEqual({ enabled_skills: ['action-plans', 'web-browsing', 'x402'] });
     const before = calls.length;
-    for (const denied of ['defi-trading', 'private-transfers', 'wallet-ops', 'perps-trading', 'token-launch', 'agenc-worker']) {
+    for (const denied of ['defi-trading', 'wallet-ops', 'perps-trading', 'token-launch', 'agenc-worker']) {
       await expect(updateClawPumpAgent(ARENA_ID, { enabled_skills: ['web-browsing', denied] }, { env, fetchImpl }))
         .rejects.toMatchObject({ code: 'invalid_input' });
     }
     expect(calls.length).toBe(before);
     expect(CLAWPUMP_ARENA_DENIED_SKILLS.has('x402')).toBe(true);
+    // A sticky platform default is never denied (it cannot be disabled).
+    for (const sticky of CLAWPUMP_STICKY_DEFAULT_SKILLS) expect(CLAWPUMP_ARENA_DENIED_SKILLS.has(sticky)).toBe(false);
   });
 
   test('readClawPumpArenaAgent returns the enabled skills from GET /agents/{id}', async () => {

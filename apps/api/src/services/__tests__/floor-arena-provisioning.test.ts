@@ -10,6 +10,7 @@ import {
   arenaClawPumpAgentName,
   arenaSkillSynced,
   deniedSkillsPresent,
+  desiredArenaSkills,
   ensureAddonSkill,
   provisionArenaAgent,
   runArenaProvisioningTick,
@@ -22,6 +23,7 @@ const AGENT_ID = 'a1b2c3d4-0000-4000-8000-000000000001';
 const CP_ID = '99999999-8888-4777-8666-555555555555';
 const WALLET = 'Wa11etAddre55xxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 const PROD = { CLAWVILLE_ENV: 'production' };
+const STICKY = ['action-plans', 'web-browsing', 'private-transfers', 'bitget-intel', 'self-learning', 'skill-management'];
 const STAGING = { CLAWVILLE_ENV: 'staging' };
 
 function record(overrides: Partial<ArenaAgentRecord> = {}): ArenaAgentRecord {
@@ -50,9 +52,9 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
   const taken = new Set<string>();
   const ownedElsewhere = new Set<string>();
   let listResult: ClawPumpCreatedAgent[] = [];
-  /** The agent's skills on ClawPump. Clean defaults unless a test says otherwise. */
-  let skills: string[] | null = ['action-plans', 'web-browsing', 'bitget-intel', 'self-learning', 'skill-management'];
-  /** Skills ClawPump re-adds whatever we PATCH (the "denied skill persists" case). */
+  /** The agent's skills on ClawPump: the 6 sticky platform defaults unless a test says otherwise. */
+  let skills: string[] | null = [...STICKY];
+  /** Extra skills ClawPump keeps whatever we PATCH (the "denied skill persists" case). */
   let sticky: string[] = [];
   let createImpl: () => Promise<ClawPumpCreatedAgent> = async () => cpAgent();
   let updateImpl: (patch: Record<string, unknown>) => Promise<ClawPumpCreatedAgent> =
@@ -118,8 +120,9 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
       },
       updateAgent: async (id, patch) => {
         log.push(`update ${id} ${JSON.stringify(patch)}`);
-        // Live staging: ClawPump keeps its defaults on enabled_skills []; a non-empty list replaces them.
-        if (patch.enabled_skills && patch.enabled_skills.length > 0) skills = [...new Set([...patch.enabled_skills, ...sticky])];
+        // Live staging: the 6 platform defaults are sticky; the PATCH list sets only the NON-default skills.
+        // (skills === null simulates a ClawPump answer without the list: it stays unreadable.)
+        if (patch.enabled_skills && skills !== null) skills = [...new Set([...STICKY, ...patch.enabled_skills, ...sticky])];
         return updateImpl(patch as Record<string, unknown>);
       },
       readAgent: async (id) => cpAgent({ id, acceptingBids: false, enabledSkills: skills === null ? null : [...skills] }),
@@ -188,19 +191,24 @@ describe('provisionArenaAgent state machine', () => {
     expect(prod.created[0]).toBe('CV Arena · Bob #a1b2c3d40000');
   });
 
-  test('live staging: ClawPump kept its 6 defaults on []; the denied spending skill is PATCHed away and the list recorded', async () => {
+  test('live staging: the 6 sticky defaults (private-transfers included) end READY, the list recorded', async () => {
     const h = harness(record());
-    const defaults = ['action-plans', 'web-browsing', 'private-transfers', 'bitget-intel', 'self-learning', 'skill-management'];
-    h.setSkills([...defaults, 'defi-trading', 'x402']);
+    h.setSkills([...STICKY, 'defi-trading', 'x402']);
     const logged: unknown[] = [];
     const insertEvent = h.deps.store.insertEvent;
     h.deps.store.insertEvent = async (agentId, event) => { logged.push(event.data); return insertEvent(agentId, event); };
     expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('ready');
-    const clean = ['action-plans', 'web-browsing', 'bitget-intel', 'self-learning', 'skill-management'];
-    expect(h.log).toContain(`update ${CP_ID} ${JSON.stringify({ enabled_skills: clean })}`);
-    expect(h.skillsNow()).toEqual(clean);
-    expect(logged.at(-1)).toMatchObject({ provisionState: 'ready', skills: clean });
-    expect(deniedSkillsPresent(h.skillsNow()!, false)).toEqual([]);
+    // The first PATCH ([]) removed every non-default (defi-trading, x402); the defaults stay.
+    expect(h.skillsNow()).toEqual(STICKY);
+    expect(logged.at(-1)).toMatchObject({ provisionState: 'ready', skills: STICKY });
+    expect(deniedSkillsPresent(STICKY, false)).toEqual([]);
+  });
+
+  test('desiredArenaSkills sends only the non-default skills to keep (+ x402 with an add-on)', () => {
+    const current = [...STICKY, 'defi-trading', 'twitter', 'X402', 'wallet-ops'];
+    expect(desiredArenaSkills(current, false)).toEqual(['twitter']);
+    expect(desiredArenaSkills(current, true)).toEqual(['twitter', 'x402']);
+    expect(desiredArenaSkills(STICKY, false)).toEqual([]);
   });
 
   test('a denied skill that survives the PATCH fails the attempt (owner event lists it)', async () => {
@@ -225,7 +233,7 @@ describe('provisionArenaAgent state machine', () => {
   });
 
   test('x402 is denied without an add-on and kept (or added) with one', async () => {
-    expect(deniedSkillsPresent(['X402', 'web-browsing', 'perps-trading', 'laso-finance', 'agenc-worker', 'wallet-ops'], false))
+    expect(deniedSkillsPresent(['X402', 'web-browsing', 'perps-trading', 'laso-finance', 'agenc-worker', 'wallet-ops', 'private-transfers'], false))
       .toEqual(['x402', 'perps-trading', 'laso-finance', 'agenc-worker', 'wallet-ops']);
     expect(deniedSkillsPresent(['x402', 'web-browsing'], true)).toEqual([]);
     const withAddon = harness(record({ addons: [{ id: 'feed', enabled: true, dailyCapUsd: 1 }] }));

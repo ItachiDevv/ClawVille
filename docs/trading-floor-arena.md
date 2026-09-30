@@ -338,6 +338,19 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
 - 14:58Z: Codex r11 (on fcc60ed2): TP rule reaches stop/trail/time (OK); two items ordered: wall-clock freshness under
   the position lock right before booking; the TP-skip path persists the low-quote guard.
 
+- 18:54Z: (session limit paused work 15:10-18:54Z) PUSHED `758177db` (Codex r8-r11 engine fixes, TP-by-quote, skill
+  read-back, two release-gate script fixes, deploy-status entry).
+- 18:58Z: verifier A final report on 315abf26: steps 1-6 PASS. x402 add-on end to end: one real Nansen token-screener
+  call via ClawPump's REST x402 route (D18 confirmed): ledger row state done, $0.010, 50 mints (37 not in the shared
+  feed), private to the agent; the agent traded 5 of them; public views show only 'addon'. Spend: $0.01 left
+  ClawVille's account; Runner moved 0.05 USDC to the test agent wallet (Runner whitelist added then removed).
+  NEW FACT: ClawPump's 6 default skills are sticky (PATCH only toggles x402), so the 758177db deny list (which included
+  private-transfers) would fail every new provision -> D24: private-transfers is a platform default, allowed; every
+  non-default trading/spending skill stays denied. Fix build follows.
+- 18:55Z live board after ~4.5 h: Mid-Cap Climber +1.21 (4 trades, 0 deaths), Late Bloomer -10.94 (11, 0), Dip Hunter
+  -19.13 (15, 0), Genesis -53.74 (44, 5 deaths), Runner -110.08 (20, 9 deaths; the Python C1 had 0 deaths in 15).
+  Analysis of the deaths (real vs artifact, first-sight source, tuner changes) in progress.
+
 ## 8. Punch list (tracked deferrals, rule E6)
 
 | # | Item | Owner condition | Review deadline |

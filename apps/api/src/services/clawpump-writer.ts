@@ -28,14 +28,24 @@ export const CLAWPUMP_ARENA_AGENT_NAME_PREFIX = 'CV Arena';
 /** Skills an arena execution wallet may carry. No trading skill, ever (D8). */
 export const CLAWPUMP_ARENA_ALLOWED_SKILLS: ReadonlySet<string> = new Set(['x402']);
 /**
+ * ClawPump's platform defaults. Live staging (verifier A, 2026-09-30) showed
+ * they are STICKY: a PATCH of enabled_skills never removes them (['x402'] only
+ * adds x402, [] only removes x402). They cannot be disabled, so they are never
+ * in the deny list; the arena agent is stopped and driven only by our API.
+ */
+export const CLAWPUMP_STICKY_DEFAULT_SKILLS: ReadonlySet<string> = new Set([
+  'action-plans', 'web-browsing', 'private-transfers', 'bitget-intel', 'self-learning', 'skill-management',
+]);
+
+/**
  * Skills an arena execution wallet must NEVER carry (lead order after live
  * staging, 2026-09-30): trading, launching, sniping, marketplace, paid tools
- * and anything that moves the wallet's funds. Exact ClawPump slugs as the API
- * returns them (research-20260930-clawpump R6 per-agent lists) PLUS the MCP
- * aliases (`perps`, `laso`, `trading`) in case a response uses one. `x402` is
- * denied too unless the arena agent has an enabled add-on (the caller decides).
- * `private-transfers` and `wallet-ops` are ClawPump defaults that move funds,
- * so they are denied as spending skills.
+ * and wallet operations. Exact ClawPump slugs as the API returns them
+ * (research-20260930-clawpump R6 per-agent lists) PLUS the MCP aliases
+ * (`perps`, `laso`, `trading`) in case a response uses one. `x402` is denied
+ * too unless the arena agent has an enabled add-on (the caller decides).
+ * `private-transfers` is NOT here: it is a sticky platform default that cannot
+ * be disabled (see CLAWPUMP_STICKY_DEFAULT_SKILLS).
  */
 export const CLAWPUMP_ARENA_DENIED_SKILLS: ReadonlySet<string> = new Set([
   'defi-trading', 'trading',
@@ -45,7 +55,7 @@ export const CLAWPUMP_ARENA_DENIED_SKILLS: ReadonlySet<string> = new Set([
   'pay-sh', 'paysh',
   'laso-finance', 'laso',
   'agenc-worker', 'agent-c', 'agenc',
-  'private-transfers', 'wallet-ops',
+  'wallet-ops',
   'x402',
 ]);
 /** A single x402 call may never authorise more than this, whatever the caller asks. */
