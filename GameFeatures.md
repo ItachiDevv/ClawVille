@@ -2,6 +2,8 @@
 
 **Last Audited: 2026-10-02 (Trading Floor UI text spacing).** Drift note: §17g.3 copy unchanged in meaning; the P15 walk-up pop-up now renders "Contest: +$X realised P&L" and launch step (4) "up to 32 characters" with their spaces (the build dropped the space at a wrapped JSX line; seen in the hackathon demo film). No rule, flow or economy change.
 
+**Prior Last Audited: 2026-09-30 (security H1/H3/H4/H6).** Drift note: §5 table corrected — the daily login pays 0 (retired 2026-07-07, streak only), own-avatar chat pays 0, and a real account starts at 1000 SOFT vCLAW (guests: 100 demo); §8 now describes the retired daily login. Code hardening with no player-visible change: the Hold'em settle loads the hand by (hand id, table id); issuing a staging Cove test-fixture run needs a named admin; the API refuses to boot with the x402 mock facilitator unless `CLAWVILLE_ENV=staging`.
+
 **Prior Last Audited: 2026-09-30 (security M12 — land service price binding).** Drift note: a seller could change a service's price between the moment a buyer saw it and the charge. The buy now carries the price the buyer saw (`expectedPriceCt`); a changed price is refused with 409 `price_changed` and the current price, and nothing is charged. The Land Office buy modal sends it and refetches the listings on that refusal. Agents may send it too (manual updated).
 
 **Prior Last Audited: 2026-09-30 (security M10/M11 — book inventory writes + bounty book bonus).** Drift note: a bounty's knowledge-book bonus used to create a copy of the book for the winner out of nothing, under a free-text id that no shop or learn path recognizes. Now the poster must name a real book id when creating the bounty (else 400), and on approval ONE copy moves from the poster's inventory to the winner's. If the poster no longer holds the book, that bonus is skipped and the approval response lists it with the reason (`bonusRewards`). Every book grant (shop buy, guest demo buy, chat BUY_ITEM, bounty bonus) now adds to the inventory in one atomic SQL statement, so two concurrent writes can no longer lose a book. Chat BUY_ITEM also refuses guest accounts (guests buy with demo vCLAW in the shop).
@@ -1346,13 +1348,13 @@ Two books per building cover beginner + advanced takes on that building's domain
 
 ## 5. ClawToken economy
 
-Starting balance: **100 tokens** (`avatars.clawTokens` default).
+Starting balance: a real account's avatar starts at **1000 SOFT vCLAW** (`avatars.clawTokens` DB default since the x10 redenomination, migration `0011_redenominate_ct_x10.sql`); a guest avatar starts at **100 DEMO vCLAW** off the ledger (§1e).
 
 | Action | Reward / cost | Endpoint |
 |---|---|---|
-| Daily login | `10 + streak * 5` (max 100). Resets on a missed day. | `POST /api/avatars/me/daily-login` |
+| Daily login | **0 — retired 2026-07-07** (founder decision). The call still advances `loginStreak` and returns `retired: true`, and the client shows no reward modal. | `POST /api/avatars/me/daily-login` |
 | Chat with building agent | +1 vCLAW at most once per avatar/building/UTC day, shared across human, connected-agent, and autonomous-agent chat; a human location-chat claim also awards 5 XP | `POST /api/locations/:id/chat`, `POST /api/agent/:s/building/:b/chat`, autonomous teacher turn |
-| Chat with own avatar | +1 token per message | `POST /api/avatars/me/chat` (via `AvatarChatBar`) |
+| Chat with own avatar | **0** — no reward (the turn event logs `tokenAwarded: 0`) | `POST /api/avatars/me/chat` (via `AvatarChatBar`) |
 | Chat with town guide (system agent) | +1 token, **rate-limited 1/60s per (userId, slug)** | `POST /api/chat/system/town-guide` |
 | Visit a building | +1 token + knowledge extraction | `POST /api/agent/:s/visit-building` |
 | Buy knowledge book | Varies (10–30 tokens) | `POST /api/items/buy` (real CT for users/agents; guests spend DEMO soft-balance off-ledger) |
@@ -1528,13 +1530,7 @@ Window options: `24h / 7d / 30d / all`. 60-second in-memory cache per window —
 
 ## 8. Daily login streak
 
-Modal: `apps/web/src/components/game/daily-login-modal.tsx`. Pops on first `POST /api/avatars/me/daily-login` of the calendar day. Shows:
-
-- Today's reward (`10 + streak * 5`, max 100)
-- Current streak count
-- Milestone unlocks: ✨ Day 3 / 🌊 Day 7 / 🔱 Day 14 / 👑 Day 30 (visual flair only — no separate reward bump)
-
-Streak resets to 1 if a calendar day is missed.
+**The daily-login CT reward is RETIRED (2026-07-07, founder decision; §5 table).** `POST /api/avatars/me/daily-login` credits 0 CT and writes no ledger row. It still advances `loginStreak` (resets to 1 if a calendar day is missed) and returns `retired: true`, so the modal (`apps/web/src/components/game/daily-login-modal.tsx`) stays hidden instead of showing a reward. The milestone art (✨ Day 3 / 🌊 Day 7 / 🔱 Day 14 / 👑 Day 30) paid no separate reward either.
 
 ---
 

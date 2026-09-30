@@ -63,7 +63,8 @@ import type { paymentMiddleware } from '@x402/hono';
 // affordance. This guard converts "never enable the mock on prod" from ops
 // discipline into a code-enforced invariant: if the mock facilitator is active
 // (`X402_MOCK_FACILITATOR==='true'` OR the resolved preset is `mock`) while the
-// immutable deploy signal says production (`CLAWVILLE_ENV==='production'`), the
+// immutable deploy signal is anything but staging (`CLAWVILLE_ENV!=='staging'`,
+// including UNSET — security H4, 2026-09-30, matching the index.ts mount guard), the
 // API REFUSES TO BOOT — it throws at module load, exactly like the
 // `ALLOW_TEST_PARTNER_PUBKEY` guard in partner-signature.ts and the
 // `FINGERPRINT_SECRET` guard in middleware/fingerprint.ts, so a misconfigured
@@ -73,16 +74,18 @@ import type { paymentMiddleware } from '@x402/hono';
 // of whether `X402_ENABLED` is set.
 //
 // `CLAWVILLE_ENV` is the immutable deploy signal (NODE_ENV is 'production' on
-// BOTH Coolify boxes, so it cannot discriminate). Production forbids the mock;
-// staging and local development retain the test harness.
+// BOTH Coolify boxes, so it cannot discriminate). Only staging may run the mock:
+// a box with CLAWVILLE_ENV unset used to boot with it and mint free vCLAW. Tests
+// that need a facilitator use the explicit X402_FACILITATOR_URL override instead.
 {
   const mockPresetActive =
     process.env.X402_MOCK_FACILITATOR === 'true' ||
     process.env.X402_FACILITATOR_PRESET?.trim().toLowerCase() === 'mock';
-  if (mockPresetActive && process.env.CLAWVILLE_ENV === 'production') {
+  if (mockPresetActive && process.env.CLAWVILLE_ENV !== 'staging') {
     throw new Error(
       `[x402] The MOCK x402 facilitator is active (X402_MOCK_FACILITATOR=true and/or ` +
-        `X402_FACILITATOR_PRESET=mock) on production. The mock rubber-stamps settlement and ` +
+        `X402_FACILITATOR_PRESET=mock) while CLAWVILLE_ENV is ` +
+        `'${process.env.CLAWVILLE_ENV ?? 'UNSET'}', not 'staging'. The mock rubber-stamps settlement and ` +
         `would mint unbacked vCLAW. Unset ` +
         `X402_MOCK_FACILITATOR and set X402_FACILITATOR_PRESET to a real facilitator ` +
         `(payai/cdp).`,

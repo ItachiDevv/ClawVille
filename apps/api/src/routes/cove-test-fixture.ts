@@ -83,6 +83,21 @@ async function resolveFixtureOwner(c: {
   });
 }
 
+/**
+ * Issuing a run arms deterministic outcomes for its owner's games, so beyond the
+ * staging-only env gate it also needs a NAMED admin: a Lucia session whose user id
+ * is in ADMIN_USER_IDS (security H3, 2026-09-30; same rule as tokenomics-earn
+ * `requireNamedAdmin`). Agent sessions and other users get 403. Closing a run
+ * (DELETE) stays owner + run-token scoped.
+ */
+function requireFixtureAdmin(c: { get(key: 'user'): { id: string } | null }): void {
+  const user = c.get('user');
+  const ids = (process.env.ADMIN_USER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+  if (!user || !ids.includes(user.id)) {
+    throw new HTTPException(403, { message: 'named_admin_required' });
+  }
+}
+
 export const coveTestFixtureRouter = new Hono<AppContext>();
 coveTestFixtureRouter.use('*', sessionMiddleware);
 
@@ -253,6 +268,7 @@ coveTestFixtureRouter.post('/run', async (c) => {
   if (!fixtureEnabled()) {
     throw new HTTPException(404, { message: 'test_fixture_unavailable' });
   }
+  requireFixtureAdmin(c);
   const ownerAvatarId = await resolveFixtureOwner(c);
   const parsed = createRunSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
