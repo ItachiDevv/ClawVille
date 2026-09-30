@@ -2273,6 +2273,18 @@ agentGatewayRoutes.post('/join', async (c) => {
   }
   const identityType = presentedIdentity.identityType;
 
+  // Security fix C1 (2026-09-30): /join binds directly via resolvePublicOnboardingIdentity, so it
+  // must apply the same rule as resolveIdentityForTicket — a Milady identityKey is the PUBLIC agent
+  // handle (leaderboard `milady:<id>`), not a secret, and must never bind or create an owned session
+  // here (that let anyone take over a legacy Milady account from its handle). Legit Milady onboarding
+  // uses the one-step magic-link connect; the sideload is retired.
+  if (identityType === 'milady') {
+    return c.json(
+      { error: 'Milady identity cannot bind through /join; use the magic-link connect', code: 'milady_identity_unsupported' },
+      403,
+    );
+  }
+
   // 1. Resolve-or-create user (race-safe against concurrent joins).
   let userId: string;
   try {
@@ -4065,6 +4077,14 @@ agentGatewayRoutes.post('/:sessionId/control-link', async (c) => {
       // route. Mirrors /connect's reserved-namespace refusal.
       if (isReservedPartnerIdentityType(bodyType)) {
         return c.json({ error: 'reserved_identity_type' }, 403);
+      }
+      // Security fix C1 (2026-09-30): a Milady identityKey is the PUBLIC agent handle (leaderboard
+      // `milady:<id>`), not a secret. Binding a control-link (a full-login handback) from it let
+      // anyone take over a legacy Milady account. Refuse the milady identity credential here, the
+      // same rule /connect, the ticket mint, and /join now enforce. The ledger path above (a session
+      // that PROVED ownership) is unaffected; retired-sideload users re-auth via the founder plan.
+      if (bodyType === 'milady') {
+        return c.json({ error: 'milady_identity_unsupported' }, 403);
       }
       try {
         const user = await resolveOrCreateUserByIdentity(bodyType, bodyKey);

@@ -259,11 +259,18 @@ export function resolveIdentityForTicket(
   },
   resolvedIdentityType: AgentIdentityType,
 ): { identityType: AgentIdentityType; identityKey: string } | null {
+  // Security fix C1 (2026-09-30): a Milady identity's only "key" is the miladyAgentId, which is the
+  // PUBLIC agent handle (the leaderboard shows it as `milady:<id>`). It is NOT a secret, so it must
+  // never resolve an owned, ledger-capable identity — that let anyone take over a legacy Milady
+  // account from its public handle (whether supplied as `miladyAgentId` or as `identityKey`). A
+  // Milady connect therefore gets no bindable identity here (perception/chat/movement still work);
+  // real Milady onboarding binds through its one-step magic-link `connectionToken`, not this path,
+  // and the Milady sideload is retired. hermes/openclaw/custom keep their real secret identityKey.
+  if (resolvedIdentityType === 'milady') {
+    return null;
+  }
   if (data.identityKey) {
     return { identityType: resolvedIdentityType, identityKey: data.identityKey };
-  }
-  if (data.miladyAgentId) {
-    return { identityType: resolvedIdentityType, identityKey: data.miladyAgentId };
   }
   if (hasRealDeclaredGateway(data.gatewayUrl) && data.authToken) {
     return {

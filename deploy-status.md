@@ -471,6 +471,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-30 (session sql2) — security C1: legacy Milady public-handle takeover closed (staging push)
+
+**What changed:** a legacy Milady user's identity "secret" was its `miladyAgentId` = the PUBLIC agent handle (leaderboard `milady:<id>`). Closed at all four unsigned public bind entry points: `resolveIdentityForTicket` returns null for `milady` (covers `/connect` bind + the ticket mint), and `/join` + `/:sessionId/control-link` reject a `milady` identity credential (403). Grep-verified all-path: `avatars.ts POST /` uses a server-random key (safe), `partner-hatcher` is signed, and the magic-link `connectionToken` path binds via the token's userId (untouched).
+**What broke + root cause + fix:** audit C1 — anyone knowing a victim's public `milady:<id>` could mint a ledger-capable session / login / control-link for that account. Prod exposure 25 accounts, all 0 CT (founder: ship code fix, no re-auth). tsc clean; agent-session-config tests 63 pass (incl. new C1 case); frontdoor-connect + control-link-schema 10 pass with env set. Codex reviewed the excerpts (no defect found; its file reader was environmentally broken, so it could not do an all-path PASS — I did the all-path grep myself). Pre-prod: mock-Hatcher harness + Codex-final gate the promotion.
+**Staging verification after deploy:** a `/join` and a `/:sessionId/control-link` with identityType=milady → 403; a milady `/connect` with a public-handle key → non-ledger (no bind).
+**Who it's for:** legacy Milady accounts (closes account takeover from a public handle).
+**SCHEMA:** `synced`. PARITY: no change for hermes/openclaw/custom or the magic-link flow.
+
 ### 2026-09-30 (session sql2) — security M2: quest admin gate + reward bound (staging push)
 
 **What changed:** `quests.ts` — admin gate moved from an email match on `admin@clawville.com` to the `ADMIN_USER_IDS` allowlist (codebase-standard named-admin), and `tokenReward` bounded to max 100000 in create/update schemas. Docs: GameFeatures.md, skill-protocol.ts version-log comment (no bump), hatcher-integration-spec §11 note. `[skip-nori-update]` (no orientation/knowledge change).

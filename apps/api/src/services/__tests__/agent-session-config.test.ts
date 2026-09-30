@@ -194,6 +194,20 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
     });
   });
 
+  test('C1: a Milady identity never resolves a bindable key from its public handle', () => {
+    // miladyAgentId is the PUBLIC agent handle (leaderboard `milady:<id>`), not a secret.
+    expect(resolveIdentityForTicket({ miladyAgentId: 'victim-handle' }, 'milady')).toBeNull();
+    // The same public value passed as identityKey must also not bind (the takeover vector).
+    expect(resolveIdentityForTicket({ identityKey: 'victim-handle' }, 'milady')).toBeNull();
+    // Even a declared gateway cannot mint a bindable milady identity.
+    expect(resolveIdentityForTicket({ gatewayUrl: 'https://m.example/v1', authToken: 'x' }, 'milady')).toBeNull();
+    // Non-milady types keep their real secret identityKey.
+    expect(resolveIdentityForTicket({ identityKey: 'real-secret' }, 'openclaw')).toEqual({
+      identityType: 'openclaw',
+      identityKey: 'real-secret',
+    });
+  });
+
   test('ticket identity keeps explicit OpenClaw distinct and ignores dummy gateways', () => {
     expect(resolveIdentityForTicket({
       gatewayUrl: 'https://openclaw.example/v1',

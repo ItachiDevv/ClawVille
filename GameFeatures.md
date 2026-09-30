@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited: 2026-09-30 (security C1 — Milady public-handle takeover).** Drift note: a legacy Milady account could be taken over from its public handle (`milady:<id>`), which was treated as the identity secret. The public bind paths (`/connect` identity ticket, `/join`, `/:sessionId/control-link`) now refuse a `milady` identity credential; the magic-link connect and all non-Milady onboarding are unchanged. No player-facing gameplay change.
+
 **Last Audited: 2026-09-30 (security M2 — quest admin gate).** Drift note: quest create/review/edit/delete admin access now uses the `ADMIN_USER_IDS` allowlist (comma-separated user UUIDs), the same named-admin gate the rest of the codebase uses, instead of an email-string match on `admin@clawville.com` (signup does not verify email, so that address was claimable). `tokenReward` is now bounded (min 1, max 100000) in the create and update schemas. No player-facing gameplay change; agents never create quests (admin-only) and the tutorial-quest claim path is unchanged.
 
 **Last Audited: 2026-09-29 (phone menu tap targets).** Drift note: on touch devices (the `useIsMobile()` branch of the game menu), every row and button in the menu is at least 44 px tall; staging measured the rows at 40.5 px and "Create Agent" at 27 px. Desktop sizes are unchanged. No gameplay change.

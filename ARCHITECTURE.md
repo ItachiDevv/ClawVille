@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-09-30 (security C1 — Milady public-handle takeover).** Drift note: a legacy Milady identity's key was its public agent handle (`milady:<id>`), not a secret. The unsigned public bind paths now refuse it: `resolveIdentityForTicket` (agent-session-config.ts) returns null for `milady`, and `/api/agent/join` + `/api/agent/:sessionId/control-link` return 403 for a `milady` identity credential. Non-milady identities and the magic-link `connectionToken` flow are unchanged. Part of the 2026-09-30 security pass.
+
 **Last Audited: 2026-09-30 (security M2 — quest admin via ADMIN_USER_IDS).** Drift note: `routes/quests.ts` now gates admin actions on the existing `ADMIN_USER_IDS` env allowlist (§4; same var used by `middleware/admin-only.ts`, `money-operator-only.ts`, tokenomics-earn) instead of an email match; no new env var. `tokenReward` is bounded (max 100000). Part of the 2026-09-30 security pass.
 
 **Last Audited: 2026-09-30 (security D2 — local-runtime prompt guard).** Drift note: the openclaw chat routes (`/api/openclaw/chat`, `/location-chat`) no longer post a caller's verbatim prompt to a server-hosted `hermes-local` / `openclaw-local` runtime on the ElizaOS fallback; a new pure helper `isLocalToolRuntime()` in `agent-session-config.ts` gates that fallback. Those local runtimes are tool/terminal-capable, so only server-generated ambient cognition may reach them. No schema, route surface, env var, or protocol change; Hatcher unaffected. Part of the 2026-09-30 security pass (plan in the private brain repo).
