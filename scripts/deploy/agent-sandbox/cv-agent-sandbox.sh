@@ -28,6 +28,7 @@
 # Usage: cv-agent-sandbox.sh ensure hermes|openclaw|all
 #        cv-agent-sandbox.sh firewall
 #        cv-agent-sandbox.sh status
+#        cv-agent-sandbox.sh guard      (long-running; cv-agent-sandbox-guard.service)
 # Config (optional): /etc/cv-agent-sandbox.env may set CV_SBX_LLM_HOST, CV_SBX_LLM_PORT.
 # Rollback: docs/DEPLOY-HETZNER.md, "Hosted agent runtimes (D1 sandbox)".
 set -euo pipefail
@@ -44,15 +45,20 @@ PROXY_CONF=/etc/cv-agent-sandbox/llm-proxy.conf
 HERMES_NET=cv-sbx-hermes;     HERMES_SUBNET=10.201.86.0/29; HERMES_GW=10.201.86.1; HERMES_IP=10.201.86.2; HERMES_PORT=8642
 OPENCLAW_NET=cv-sbx-openclaw; OPENCLAW_SUBNET=10.201.87.0/29; OPENCLAW_GW=10.201.87.1; OPENCLAW_IP=10.201.87.2; OPENCLAW_PORT=8643
 
-HERMES_SIG="${HERMES_NET}|${HERMES_NET}=${HERMES_IP};|10000:10000|[ALL]|[]|false|[no-new-privileges]|no"
-OPENCLAW_SIG="${OPENCLAW_NET}|${OPENCLAW_NET}=${OPENCLAW_IP};|1000:1000|[ALL]|[]|false|[no-new-privileges]|no"
+# Full expected shape: networks + IP, user, caps, privileged, security options, restart policy,
+# image, mounts, namespaces, devices, AppArmor, runtime, published ports.
+HERMES_SIG="${HERMES_NET}|${HERMES_NET}=${HERMES_IP};|10000:10000|[ALL]|[]|false|[no-new-privileges]|no|hermes-agent|/opt/hermes-data:/opt/data:true;|pid=|ipc=private|uts=|userns=|dev=0|docker-default|runc|map[]"
+OPENCLAW_SIG="${OPENCLAW_NET}|${OPENCLAW_NET}=${OPENCLAW_IP};|1000:1000|[ALL]|[]|false|[no-new-privileges]|no|openclaw:local|/opt/openclaw-data:/home/node/.openclaw:true;|pid=|ipc=private|uts=|userns=|dev=0|docker-default|runc|map[]"
+GUARD_UNIT=/etc/systemd/system/cv-agent-sandbox-guard.service
+SELF=/usr/local/bin/cv-agent-sandbox.sh
+GUARD_STAMP=/run/cv-agent-sandbox.guard-hash
 
 log() { echo "[cv-agent-sandbox] $*"; }
 die() { log "$*"; exit 1; }
 
 # ---- container checks -------------------------------------------------------------------------
 container_sig() {
-  docker inspect -f '{{.HostConfig.NetworkMode}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}};{{end}}|{{.Config.User}}|{{.HostConfig.CapDrop}}|{{.HostConfig.CapAdd}}|{{.HostConfig.Privileged}}|{{.HostConfig.SecurityOpt}}|{{.HostConfig.RestartPolicy.Name}}' "$1" 2>/dev/null || true
+  docker inspect -f '{{.HostConfig.NetworkMode}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}};{{end}}|{{.Config.User}}|{{.HostConfig.CapDrop}}|{{.HostConfig.CapAdd}}|{{.HostConfig.Privileged}}|{{.HostConfig.SecurityOpt}}|{{.HostConfig.RestartPolicy.Name}}|{{.Config.Image}}|{{range .Mounts}}{{.Source}}:{{.Destination}}:{{.RW}};{{end}}|pid={{.HostConfig.PidMode}}|ipc={{.HostConfig.IpcMode}}|uts={{.HostConfig.UTSMode}}|userns={{.HostConfig.UsernsMode}}|dev={{len .HostConfig.Devices}}|{{.AppArmorProfile}}|{{.HostConfig.Runtime}}|{{.HostConfig.PortBindings}}' "$1" 2>/dev/null || true
 }
 is_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = "true" ]; }
 
@@ -77,11 +83,21 @@ quarantine() { # name expected-signature
   fi
 }
 
-# The sandbox boundary is the mangle egress chain + its PREROUTING jump.
+# The sandbox boundary is TWO independent layers that both drop the same traffic:
+#   (a) iptables mangle chain CV-SBX-EGRESS + its PREROUTING jump;
+#   (b) a native nftables table `inet cv_sbx` (prerouting hook, priority -160 = "mangle - 10") that no other
+#       tool manages (Docker, ufw and Tailscale only touch their own chains/tables).
+# A drop in either base chain is final, so losing one layer does not open the sandbox.
 egress_intact() {
   iptables -t mangle -C PREROUTING -i cv-sbx-+ -j CV-SBX-EGRESS 2>/dev/null &&
     [ "$(iptables -t mangle -S CV-SBX-EGRESS 2>/dev/null | grep -c -- '-j DROP')" -ge 9 ]
 }
+nft_intact() {
+  local t; t=$(nft list table inet cv_sbx 2>/dev/null) || return 1
+  grep -q 'hook prerouting priority mangle - 10' <<<"$t" && grep -q 'fib daddr type local drop' <<<"$t" &&
+    grep -q '10.0.0.0/8' <<<"$t" && grep -q '100.64.0.0/10' <<<"$t" && grep -q 'meta nfproto ipv6 drop' <<<"$t"
+}
+boundary_intact() { egress_intact && nft_intact; }
 
 # ---- networks ---------------------------------------------------------------------------------
 ensure_network() { # name subnet only-allowed-container
@@ -181,6 +197,24 @@ COMMIT
 EOF
   ensure_rule mangle PREROUTING -i cv-sbx-+ -j CV-SBX-EGRESS
 
+  # 1b) The independent nftables layer, replaced atomically in one transaction.
+  nft -f - <<EOF
+table inet cv_sbx
+delete table inet cv_sbx
+table inet cv_sbx {
+  chain prerouting {
+    type filter hook prerouting priority -160; policy accept;
+    iifname != "cv-sbx-*" accept
+    ct state established,related accept
+    iifname "${HERMES_NET}" ip daddr ${HERMES_GW} tcp dport ${PROXY_PORT} accept
+    iifname "${OPENCLAW_NET}" ip daddr ${OPENCLAW_GW} tcp dport ${PROXY_PORT} accept
+    fib daddr type local drop
+    meta nfproto ipv6 drop
+    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } drop
+  }
+}
+EOF
+
   # 2) The proxy is a host process (host network); ufw's INPUT policy is DROP, so accept exactly
   #    runtime bridge -> its own gateway IP :PROXY_PORT.
   ensure_rule filter INPUT -i "$HERMES_NET" -d "${HERMES_GW}/32" -p tcp --dport "$PROXY_PORT" -j ACCEPT
@@ -198,11 +232,65 @@ EOF
     -m conntrack --ctstate ESTABLISHED -j ACCEPT
 }
 
-# Refuse to start a runtime unless the egress policy is attached for its bridge.
+# Refuse to start a runtime unless both egress layers and the guard are in place.
 verify_firewall() { # bridge
   egress_intact || die "egress jump or chain missing — refusing to start $1"
+  nft_intact || die "nftables table inet cv_sbx missing — refusing to start $1"
+  systemctl is-active --quiet cv-agent-sandbox-guard.service || die "guard service not active — refusing to start $1"
   case "$1" in cv-sbx-*) : ;; *) die "bridge $1 does not match cv-sbx-+ — refusing" ;; esac
   ip link show "$1" >/dev/null 2>&1 || die "bridge $1 missing — refusing"
+}
+
+# ---- guard ------------------------------------------------------------------------------------
+# Between timer runs, a lost rule would otherwise leave a live runtime unfenced for up to 120 s.
+# The guard polls every 2 s and KILLS both runtimes the moment either egress layer is missing;
+# they stay down until the next `ensure` rebuilds the rules. Runtimes refuse to start without it.
+guard() {
+  # Record which script version this guard runs, so `ensure` restarts it after an update.
+  sha256sum "$SELF" | cut -d' ' -f1 > "$GUARD_STAMP"
+  while true; do
+    if { is_running hermes-local || is_running openclaw-local; } && ! boundary_intact; then
+      sleep 0.5   # one re-check: rule replacement is atomic, but never kill on a single odd read
+      if ! boundary_intact; then
+        docker kill hermes-local openclaw-local >/dev/null 2>&1 || true
+        log "GUARD: egress policy missing — killed the hosted runtimes"
+      fi
+    fi
+    sleep 2
+  done
+}
+
+ensure_guard() {
+  local tmp; tmp=$(mktemp)
+  cat > "$tmp" <<EOF
+[Unit]
+Description=ClawVille D1 agent sandbox guard (kills hosted runtimes if the egress policy disappears)
+After=docker.service
+Wants=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/cv-agent-sandbox.sh guard
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  if ! cmp -s "$tmp" "$GUARD_UNIT" 2>/dev/null; then
+    install -m 0644 "$tmp" "$GUARD_UNIT"; systemctl daemon-reload; log "installed $GUARD_UNIT"
+  fi
+  rm -f "$tmp"
+  systemctl is-enabled --quiet cv-agent-sandbox-guard.service || systemctl enable --quiet cv-agent-sandbox-guard.service
+  if ! systemctl is-active --quiet cv-agent-sandbox-guard.service; then
+    systemctl start cv-agent-sandbox-guard.service
+  elif [ "$(cat "$GUARD_STAMP" 2>/dev/null)" != "$(sha256sum "$SELF" | cut -d' ' -f1)" ]; then
+    systemctl restart cv-agent-sandbox-guard.service; log "guard restarted (script changed)"
+  fi
+  local i; for i in 1 2 3 4 5 6 7 8 9 10; do   # wait until the new guard has stamped its version
+    [ "$(cat "$GUARD_STAMP" 2>/dev/null)" = "$(sha256sum "$SELF" | cut -d' ' -f1)" ] && return 0
+    sleep 0.5
+  done
+  die "guard did not start with the current script — refusing to continue"
 }
 
 # ---- inference-only model proxy ---------------------------------------------------------------
@@ -331,17 +419,18 @@ ensure() { # hermes|openclaw|all
   # A runtime that was alive while the egress policy was missing or incomplete (firewall reload,
   # manual flush) may hold connections the policy would refuse; RELATED/ESTABLISHED would keep them.
   # Remove BOTH runtimes before the rules are rebuilt; they restart below with the policy in place.
-  if ! egress_intact; then
+  if ! boundary_intact; then
     remove_container hermes-local "egress policy was missing"
     remove_container openclaw-local "egress policy was missing"
   fi
   ensure_network "$HERMES_NET" "$HERMES_SUBNET" hermes-local
   ensure_network "$OPENCLAW_NET" "$OPENCLAW_SUBNET" openclaw-local
   firewall
+  ensure_guard
   ensure_proxy
   if [ $want_h = 1 ]; then
     if point_hermes_at_proxy; then remove_container hermes-local "model URL moved to the proxy"; fi
-    is_running hermes-local || start_hermes
+    is_running hermes-local || { remove_container hermes-local "stopped"; start_hermes; }
   fi
   if [ $want_o = 1 ]; then
     chmod 600 /opt/openclaw-data/openclaw.json
@@ -351,7 +440,7 @@ ensure() { # hermes|openclaw|all
       1) : ;;
       *) die "openclaw.json unreadable or has no model providers (rc=$rc) — refusing to start openclaw" ;;
     esac
-    is_running openclaw-local || start_openclaw
+    is_running openclaw-local || { remove_container openclaw-local "stopped"; start_openclaw; }
   fi
 }
 
@@ -363,11 +452,15 @@ status() {
   iptables -t raw -S CV-SBX-RAW 2>/dev/null | sed 's/^/raw: /' || true
   iptables -t raw -S PREROUTING | sed -n 2p | sed 's/^/raw first rule: /'
   iptables -t mangle -S CV-SBX-EGRESS 2>/dev/null | sed 's/^/mangle: /' || true
+  nft list table inet cv_sbx 2>/dev/null | sed 's/^/nft: /' || echo "nft: table inet cv_sbx absent"
+  echo "guard: $(systemctl is-active cv-agent-sandbox-guard.service 2>/dev/null || true)"
   iptables -S INPUT | grep cv-sbx | sed 's/^/filter: /' || true
   iptables -S DOCKER-USER | grep cv-sbx | sed 's/^/filter: /' || true
 }
 
 cmd="${1:-}"; target="${2:-all}"
+# The guard runs unlocked (it must keep watching while an ensure holds the lock).
+[ "$cmd" = guard ] && guard
 # Both timers fire on the same tick; serialize so the check-then-insert rules never duplicate.
 exec 9>/run/cv-agent-sandbox.lock
 flock -w 60 9
@@ -375,5 +468,5 @@ case "$cmd" in
   ensure) ensure "$target" ;;
   firewall) firewall ;;
   status) status ;;
-  *) echo "usage: $0 ensure hermes|openclaw|all | firewall | status" >&2; exit 2 ;;
+  *) echo "usage: $0 ensure hermes|openclaw|all | firewall | status | guard" >&2; exit 2 ;;
 esac
