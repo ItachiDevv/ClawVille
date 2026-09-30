@@ -926,6 +926,11 @@ async function runHermesLane(composedPrompt: string): Promise<CapturedGatewayReq
     process.env.CLOUDFLARE_WORKER_URL ??= 'https://example.invalid';
     process.env.CLOUDFLARE_WORKER_BEARER ??= 'x';
     process.env.PARTNER_PUBKEYS ??= '{}';
+    // D3: chatHermesLocal sends nothing without a key (the proxy/mock accept any value).
+    // D1: the proxy listens on loopback, so pin the loopback topology even when this runs
+    // inside an api container configured with LOCAL_RUNTIME_TOPOLOGY=sandbox.
+    process.env.HERMES_LOCAL_GATEWAY_KEY ||= 'probe-local-gateway-key';
+    process.env.LOCAL_RUNTIME_TOPOLOGY = 'loopback';
     const { AgentSubstrateClient } = await import('../../src/services/agent-substrate-client');
     const client = new AgentSubstrateClient({
       agentId: 'hosted-skill-runtime-probe-hermes',

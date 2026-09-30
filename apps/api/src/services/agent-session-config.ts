@@ -309,23 +309,53 @@ export function resolveConnectGatewayForPersistence(input: {
  * stub to a 'hermes-local' client that POSTs OpenAI-compat chat to the runtime.
  *
  * SSRF STANCE — READ BEFORE "FIXING" THIS: the URL is a HARDCODED server-side
- * constant, deliberately NOT env-overridable and NEVER read from caller input or
- * the bot row. `validateOutboundUrlResolved` (hatcher-config.ts) keeps rejecting
+ * constant, deliberately NOT env-overridable (the D1 topology switch below only
+ * selects between two constants) and NEVER read from caller input or the bot
+ * row. `validateOutboundUrlResolved` (hatcher-config.ts) keeps rejecting
  * localhost/RFC1918 for every CALLER-SUPPLIED URL — this constant is not a
  * loosening of that guard, it is the one server-owned exception that never mixes
  * with caller data. Making it configurable would reopen the exact
  * POST-a-bearer-to-an-internal-address class the general guard closes.
+ *
+ * D1 SANDBOX (security pass, 2026-09-30): the hosted runtimes no longer have to
+ * share the API container's network namespace. On a box set up with
+ * `scripts/deploy/agent-sandbox/`, each runtime runs in its OWN Docker network
+ * at a FIXED address (hermes 10.201.86.2:8642, openclaw 10.201.87.2:8643),
+ * non-root with all capabilities dropped, and host firewall rules allow only
+ * API → runtime and runtime → the model endpoint (no DB, no Coolify, no API
+ * port, no host). `LOCAL_RUNTIME_TOPOLOGY=sandbox` (boot-time env) SELECTS those
+ * fixed addresses; unset keeps loopback for a box that was not moved yet. The
+ * env only chooses between compile-time constants and can never carry a URL,
+ * so the SSRF stance above is unchanged.
  */
-export const HERMES_LOCAL_GATEWAY_URL = 'http://localhost:8642';
+export type LocalRuntimeTopology = 'loopback' | 'sandbox';
+export const LOCAL_RUNTIME_TOPOLOGY: LocalRuntimeTopology =
+  process.env.LOCAL_RUNTIME_TOPOLOGY === 'sandbox' ? 'sandbox' : 'loopback';
+
+const LOCAL_RUNTIME_URLS = {
+  hermes: { loopback: 'http://localhost:8642', sandbox: 'http://10.201.86.2:8642' },
+  openclaw: { loopback: 'http://localhost:8643', sandbox: 'http://10.201.87.2:8643' },
+} as const;
+
+/** Pure lookup of the server-owned runtime address for a topology (tests pin both). */
+export function localRuntimeGatewayUrl(
+  runtime: 'hermes' | 'openclaw',
+  topology: LocalRuntimeTopology,
+): string {
+  return LOCAL_RUNTIME_URLS[runtime][topology];
+}
+
+export const HERMES_LOCAL_GATEWAY_URL = localRuntimeGatewayUrl('hermes', LOCAL_RUNTIME_TOPOLOGY);
 
 /**
- * Optional bearer for the local Hermes runtime (2026-07-08, real-runtime
- * deploy). Hermes ≥0.12 REFUSES to start its OpenAI-compat API server without
- * an API_SERVER_KEY, even on loopback — so the real hosted runtime demands a
- * key the D7 "bare POST" contract didn't carry. Read ONCE at module load like
- * the gate above. Unset ⇒ no Authorization header is sent (the mock-hermes
- * harness contract is unchanged). This is a same-box shared secret, not a
- * user credential: it never leaves localhost and is never logged.
+ * REQUIRED bearer for the local Hermes runtime (2026-07-08, real-runtime
+ * deploy; required since the D3 fix, 2026-09-30). Hermes ≥0.12 REFUSES to
+ * start its OpenAI-compat API server without an API_SERVER_KEY, even on
+ * loopback. Read ONCE at module load like the gate above. Unset ⇒ the client
+ * FAILS CLOSED (no POST at all, the body stays silent) — ClawVille never sends
+ * an unauthenticated prompt to a tool-capable runtime. This is a same-box
+ * shared secret, not a user credential: it never leaves the box and is never
+ * logged.
  */
 export const HERMES_LOCAL_GATEWAY_KEY = process.env.HERMES_LOCAL_GATEWAY_KEY ?? '';
 
@@ -369,23 +399,22 @@ const HERMES_LOCAL_GATEWAY_ENABLED = process.env.HERMES_LOCAL_GATEWAY_ENABLED ==
  * this gate is on. Only the gateway-LESS openclaw connect is hosted.
  *
  * SSRF STANCE — READ BEFORE "FIXING" THIS: identical to the Hermes constant. The
- * URL is a HARDCODED server-side constant, deliberately NOT env-overridable and
- * NEVER read from caller input or the bot row. `validateOutboundUrlResolved`
+ * URL is a HARDCODED server-side constant, deliberately NOT env-overridable (the
+ * topology switch only selects between two constants) and NEVER read from caller
+ * input or the bot row. `validateOutboundUrlResolved`
  * (hatcher-config.ts) keeps rejecting localhost/RFC1918 for every CALLER-SUPPLIED
  * URL — this constant is not a loosening of that guard, it is the one server-owned
- * exception that never mixes with caller data.
+ * exception that never mixes with caller data. The D1 sandbox topology switch
+ * (see `LOCAL_RUNTIME_TOPOLOGY` above) selects between two such constants.
  */
-export const OPENCLAW_LOCAL_GATEWAY_URL = 'http://localhost:8643';
+export const OPENCLAW_LOCAL_GATEWAY_URL = localRuntimeGatewayUrl('openclaw', LOCAL_RUNTIME_TOPOLOGY);
 
 /**
- * Optional bearer for the local OpenClaw gateway — the exact mirror of
- * `HERMES_LOCAL_GATEWAY_KEY` (2026-07-08). The real-Hermes deploy proved a hosted
- * OpenAI-compat runtime can REFUSE to serve without an API key even on loopback;
- * the real OpenClaw gateway (github.com/openclaw/openclaw) is assumed no
- * friendlier, so carry a same-box shared secret as `Authorization: Bearer` when
- * set. Read ONCE at module load like the gate. Unset ⇒ no Authorization header
- * (the mock-openclaw harness contract is unchanged). Same-box shared secret, not
- * a user credential: it never leaves localhost and is never logged.
+ * REQUIRED bearer for the local OpenClaw gateway — the exact mirror of
+ * `HERMES_LOCAL_GATEWAY_KEY` (2026-07-08; required since the D3 fix,
+ * 2026-09-30). Carried as `Authorization: Bearer`. Read ONCE at module load like
+ * the gate. Unset ⇒ the client FAILS CLOSED (no POST). Same-box shared secret,
+ * not a user credential: it never leaves the box and is never logged.
  */
 export const OPENCLAW_LOCAL_GATEWAY_KEY = process.env.OPENCLAW_LOCAL_GATEWAY_KEY ?? '';
 

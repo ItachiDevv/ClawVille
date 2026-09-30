@@ -22,9 +22,11 @@
  * server executor (openclaw-local has emitsInWorldActions:true), so the wave is a
  * real in-world action — a live probe of the [ACTION:] path.
  *
- * NO auth and NO signature verification, deliberately: the contract for
- * 'openclaw-local' is a bare OpenAI-compat POST to a same-box runtime (nothing
- * secret is sent — see chatOpenclawLocal in services/agent-substrate-client.ts). To
+ * NO auth check and NO signature verification, deliberately: since the D3 fix
+ * (2026-09-30) the client ALWAYS sends `Authorization: Bearer <*_LOCAL_GATEWAY_KEY>`
+ * and refuses to send anything when the key is unset (see chatOpenclawLocal in
+ * services/agent-substrate-client.ts), so a probe must set the key env; this mock
+ * accepts any key. To
  * keep the mock unreachable from off-box it binds 127.0.0.1, not 0.0.0.0.
  *
  * Run:  bun run apps/api/scripts/agent-connect/mock-openclaw-server.ts [--port 8643]

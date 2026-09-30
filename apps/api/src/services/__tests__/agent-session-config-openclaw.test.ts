@@ -53,6 +53,7 @@ import {
   protocolEmitsInWorldActions,
   protocolProximityGateExempt,
   OPENCLAW_LOCAL_GATEWAY_URL,
+  localRuntimeGatewayUrl,
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
@@ -316,6 +317,12 @@ describe('hermes inertness — openclaw gate cannot touch hermes derivation', ()
 // ---------------------------------------------------------------------------
 describe('OPENCLAW_LOCAL_GATEWAY_URL — hardcoded server-side constant', () => {
   test('is exactly the documented localhost:8643 (never env/caller-derived)', () => {
+    // The suite runs without LOCAL_RUNTIME_TOPOLOGY, so the loopback constant applies.
     expect(OPENCLAW_LOCAL_GATEWAY_URL).toBe('http://localhost:8643');
+  });
+
+  test('D1 sandbox topology selects the fixed sandbox address, never an arbitrary URL', () => {
+    expect(localRuntimeGatewayUrl('openclaw', 'loopback')).toBe('http://localhost:8643');
+    expect(localRuntimeGatewayUrl('openclaw', 'sandbox')).toBe('http://10.201.87.2:8643');
   });
 });

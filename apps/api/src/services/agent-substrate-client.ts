@@ -33,6 +33,18 @@ type Protocol = InWorldWireProtocol;
  */
 const MAX_HATCHER_REPLY_LEN = 4000;
 
+/**
+ * D3 (2026-09-30): a local runtime wire with no gateway key sends nothing. Log that
+ * misconfiguration once per runtime per process, not on every ambient tick.
+ */
+const warnedLocalKeyUnset = new Set<string>();
+function warnLocalKeyUnsetOnce(protocol: 'hermes-local' | 'openclaw-local'): void {
+  if (warnedLocalKeyUnset.has(protocol)) return;
+  warnedLocalKeyUnset.add(protocol);
+  const envName = protocol === 'hermes-local' ? 'HERMES_LOCAL_GATEWAY_KEY' : 'OPENCLAW_LOCAL_GATEWAY_KEY';
+  console.error(`[LocalRuntime] ${envName} is unset — ${protocol} bodies stay silent (fail closed, D3)`);
+}
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -357,7 +369,8 @@ export class AgentSubstrateClient {
   /**
    * D7 host-it-for-me Hermes cognition (magic-link onboarding, 2026-07-02).
    * POSTs an OpenAI chat-completions body ({model:'hermes', messages}) to the
-   * HARDCODED local Hermes runtime (`HERMES_LOCAL_GATEWAY_URL`, localhost:8642).
+   * server-owned local Hermes runtime (`HERMES_LOCAL_GATEWAY_URL`: loopback :8642, or
+   * the D1 sandbox address 10.201.86.2:8642 when `LOCAL_RUNTIME_TOPOLOGY=sandbox`).
    * Reached ONLY when `resolveInWorldProtocol` derived 'hermes-local' — i.e. a
    * 'hermes' identity with the env gate on.
    *
@@ -367,9 +380,9 @@ export class AgentSubstrateClient {
    * bot-row column can influence, so the localhost-rejecting guard would only
    * veto the one address the feature is FOR. The general guard on every
    * caller-supplied gatewayUrl is untouched. Auth: a same-box shared secret
-   * (`HERMES_LOCAL_GATEWAY_KEY`) is carried as a Bearer when configured —
-   * hermes ≥0.12 refuses to serve its API without one, even on loopback;
-   * unset ⇒ bare POST (mock-hermes harness contract).
+   * (`HERMES_LOCAL_GATEWAY_KEY`) is ALWAYS carried as a Bearer — hermes ≥0.12
+   * refuses to serve its API without one. Unset key ⇒ FAIL CLOSED: no POST is
+   * sent at all (security fix D3, 2026-09-30; was a bare POST).
    *
    * FAIL SOFT like the nanoclaw stub: ANY error (runtime not running /
    * ECONNREFUSED, timeout, non-2xx, redirect, malformed JSON) returns '' — an
@@ -377,6 +390,11 @@ export class AgentSubstrateClient {
    * body just doesn't speak this turn.
    */
   private async chatHermesLocal(messages: ChatMessage[]): Promise<string> {
+    if (!HERMES_LOCAL_GATEWAY_KEY) {
+      // D3: never post an unauthenticated prompt to a tool-capable runtime.
+      warnLocalKeyUnsetOnce('hermes-local');
+      return '';
+    }
     const controller = new AbortController();
     // Leash sized for the REAL hosted agent loop (HERMES_LOCAL_TIMEOUT_MS,
     // default 10s, clamp [1s,30s]) — a hung local runtime must not pin the
@@ -392,12 +410,9 @@ export class AgentSubstrateClient {
         redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
-          // Hermes ≥0.12 requires API_SERVER_KEY even on loopback; carry the
-          // same-box shared secret when configured. Unset ⇒ bare POST (the
-          // mock-hermes harness contract, unchanged).
-          ...(HERMES_LOCAL_GATEWAY_KEY
-            ? { Authorization: `Bearer ${HERMES_LOCAL_GATEWAY_KEY}` }
-            : {}),
+          // Hermes ≥0.12 requires API_SERVER_KEY; the key is required here
+          // too (checked above), so the Bearer is always present.
+          Authorization: `Bearer ${HERMES_LOCAL_GATEWAY_KEY}`,
         },
         body: JSON.stringify({
           // Fixed model name per the hermes OpenAI-compat contract — NOT
@@ -446,8 +461,9 @@ export class AgentSubstrateClient {
   /**
    * D-openclaw host-it-for-me OpenClaw cognition (shared-inference onboarding,
    * 2026-07-08) — the exact mirror of `chatHermesLocal`. POSTs an OpenAI-compat
-   * chat-completions body ({model:'openclaw', messages}) to the HARDCODED local
-   * OpenClaw runtime (`OPENCLAW_LOCAL_GATEWAY_URL`, localhost:8643). Reached ONLY
+   * chat-completions body ({model:'openclaw', messages}) to the server-owned local
+   * OpenClaw runtime (`OPENCLAW_LOCAL_GATEWAY_URL`: loopback :8643, or the D1
+   * sandbox address 10.201.87.2:8643). Reached ONLY
    * when `resolveInWorldProtocol` derived 'openclaw-local' — i.e. a GATEWAY-LESS
    * 'openclaw' identity with the env gate on.
    *
@@ -457,10 +473,9 @@ export class AgentSubstrateClient {
    * SERVER-SIDE constant that no caller input or bot-row column can influence, so
    * the localhost-rejecting guard would only veto the one address the feature is
    * FOR. The general guard on every caller-supplied gatewayUrl is untouched.
-   * Auth: a same-box shared secret (`OPENCLAW_LOCAL_GATEWAY_KEY`) is carried as a
-   * Bearer when configured — the real OpenClaw gateway (like hermes ≥0.12) can
-   * refuse to serve its API without one, even on loopback; unset ⇒ bare POST
-   * (mock-openclaw harness contract).
+   * Auth: a same-box shared secret (`OPENCLAW_LOCAL_GATEWAY_KEY`) is ALWAYS carried
+   * as a Bearer. Unset key ⇒ FAIL CLOSED: no POST is sent at all (security fix D3,
+   * 2026-09-30; was a bare POST).
    *
    * FAIL SOFT like the nanoclaw stub: ANY error (runtime not running /
    * ECONNREFUSED, timeout, non-2xx, redirect, malformed JSON) returns '' — an
@@ -468,6 +483,11 @@ export class AgentSubstrateClient {
    * just doesn't speak this turn.
    */
   private async chatOpenclawLocal(messages: ChatMessage[]): Promise<string> {
+    if (!OPENCLAW_LOCAL_GATEWAY_KEY) {
+      // D3: never post an unauthenticated prompt to a tool-capable runtime.
+      warnLocalKeyUnsetOnce('openclaw-local');
+      return '';
+    }
     const controller = new AbortController();
     // Leash sized for the REAL hosted agent loop (OPENCLAW_LOCAL_TIMEOUT_MS,
     // default 10s, clamp [1s,30s]) — a hung local runtime must not pin the sim's
@@ -484,12 +504,9 @@ export class AgentSubstrateClient {
         redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
-          // The real OpenClaw gateway may require an API key even on loopback;
-          // carry the same-box shared secret when configured. Unset ⇒ bare POST
-          // (the mock-openclaw harness contract, unchanged). Mirrors chatHermesLocal.
-          ...(OPENCLAW_LOCAL_GATEWAY_KEY
-            ? { Authorization: `Bearer ${OPENCLAW_LOCAL_GATEWAY_KEY}` }
-            : {}),
+          // The gateway runs in token auth mode; the key is required here too
+          // (checked above), so the Bearer is always present. Mirrors chatHermesLocal.
+          Authorization: `Bearer ${OPENCLAW_LOCAL_GATEWAY_KEY}`,
         },
         body: JSON.stringify({
           // Fixed model name per the OpenClaw OpenAI-compat contract — NOT
@@ -556,7 +573,7 @@ export class AgentSubstrateClient {
    * DISCARDED — it never reaches the sim's [ACTION:] parser, credits no CT, emits
    * no leaderboard/event row, and surfaces nowhere. Byte-identical wire shape to
    * the real `chatHermesLocal` / `chatOpenclawLocal` request (same URL, same
-   * optional Bearer, same fixed model name, and for openclaw the SAME
+   * required Bearer, same fixed model name, and for openclaw the SAME
    * `user: agentId` session pin) so it warms the EXACT session the first real turn
    * will reuse — only the prompt is minimized (`max_tokens:1`) and the leash is
    * longer.
@@ -576,6 +593,11 @@ export class AgentSubstrateClient {
     const gatewayUrl = isOpenclaw ? OPENCLAW_LOCAL_GATEWAY_URL : HERMES_LOCAL_GATEWAY_URL;
     const gatewayKey = isOpenclaw ? OPENCLAW_LOCAL_GATEWAY_KEY : HERMES_LOCAL_GATEWAY_KEY;
     const model = isOpenclaw ? 'openclaw' : 'hermes';
+    // D3: same fail-closed rule as the chat paths — no key, no POST.
+    if (!gatewayKey) {
+      warnLocalKeyUnsetOnce(this.protocol);
+      return;
+    }
 
     // Mirror the real local-chat body EXACTLY (fixed model name; openclaw pins the
     // session via `user: agentId`) so we warm the RIGHT session — only the prompt
@@ -599,7 +621,7 @@ export class AgentSubstrateClient {
         redirect: 'manual',
         headers: {
           'Content-Type': 'application/json',
-          ...(gatewayKey ? { Authorization: `Bearer ${gatewayKey}` } : {}),
+          Authorization: `Bearer ${gatewayKey}`,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -809,7 +831,7 @@ export class AgentSubstrateClient {
     // always-reachable so registration doesn't block. Same for hermes-local and
     // openclaw-local: the local cognition runtime is strictly BEST-EFFORT
     // (chatHermesLocal / chatOpenclawLocal fail soft to ''), so a not-yet-running
-    // localhost:8642 / localhost:8643 must never block a connect/registration.
+    // local runtime (loopback or D1 sandbox address) must never block a connect/registration.
     if (
       this.protocol === 'nanoclaw' ||
       this.protocol === 'hermes-local' ||
