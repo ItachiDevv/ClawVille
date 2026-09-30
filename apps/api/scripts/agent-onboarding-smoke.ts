@@ -11,6 +11,10 @@ import { PROTOCOL_VERSION } from '../src/services/skill-protocol';
 import bs58 from 'bs58';
 import { disconnectProbeBody } from './agent-connect/hosted-skill-runtime-probe';
 
+// Security fix C1 (2026-09-30) made a Milady identityKey non-bindable, so the
+// fixture connects as an OpenClaw agent, which still binds its secret key.
+const SMOKE_IDENTITY_TYPE = 'openclaw' as const;
+
 const protocolPointerSchema = z.object({
   version: z.number().int().positive(),
   contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -21,7 +25,7 @@ const protocolPointerSchema = z.object({
 
 const connectResponseSchema = z.object({
   agentId: z.string().min(1),
-  identityType: z.literal('milady'),
+  identityType: z.literal(SMOKE_IDENTITY_TYPE),
   sessionId: z.string().regex(/^ag-/),
   knowledge: z.array(z.string()),
   protocol: protocolPointerSchema,
@@ -37,7 +41,7 @@ const connectResponseSchema = z.object({
 
 const returningConnectResponseSchema = z.object({
   agentId: z.string().min(1),
-  identityType: z.literal('milady'),
+  identityType: z.literal(SMOKE_IDENTITY_TYPE),
   sessionId: z.string().regex(/^ag-/),
   knowledge: z.array(z.string()),
   protocol: protocolPointerSchema,
@@ -51,6 +55,10 @@ const returningConnectResponseSchema = z.object({
     secretKey: z.never().optional(),
   }),
 });
+
+const issuedIdentitySchema = z.object({
+  identity: z.object({ userId: z.string().min(1), secretKey: z.string().min(1) }),
+}).transform((body) => body.identity);
 
 const ownedSkillsResponseSchema = z.object({
   ownedSkills: z.array(z.object({ buildingId: z.string().min(1) }).passthrough()),
@@ -66,7 +74,7 @@ const claimSkillResponseSchema = z.object({
 const joinResponseSchema = z.object({
   userId: z.string().min(1),
   avatarId: z.string().uuid(),
-  identityType: z.literal('milady'),
+  identityType: z.literal(SMOKE_IDENTITY_TYPE),
 }).passthrough();
 
 const sessionStatusResponseSchema = z.object({
@@ -191,14 +199,12 @@ export async function checkBoundAppearance(base: string, sessionId: string, avat
 async function main(): Promise<void> {
   const base = apiBaseFromArgs(process.argv.slice(2));
   const nonce = randomUUID();
-  const miladyAgentId = `onboarding-smoke-${nonce}`;
-  const agentId = `milady:${miladyAgentId}`;
+  const agentId = `onboarding-smoke-${nonce}`;
   const identityKey = `onboarding-smoke-key:${randomUUID()}`;
   const buildingId = 'agent-security';
   const connectBody = {
     agentId,
-    miladyAgentId,
-    identityType: 'milady' as const,
+    identityType: SMOKE_IDENTITY_TYPE,
     identityKey,
     protocol: 'nanoclaw' as const,
     name: `Smoke-${nonce.slice(0, 8)}`,
@@ -221,12 +227,16 @@ async function main(): Promise<void> {
   });
 
   let firstConnect!: z.infer<typeof connectResponseSchema>;
+  // Read before the contract check, so a mismatch after the server issued an
+  // identity still ends in the signed disconnect below.
+  let issuedIdentity: z.infer<typeof issuedIdentitySchema> | undefined;
   try {
   await check('first identity-key connect', async () => {
-    firstConnect = await expectJson(
-      await postJson(base, '/api/agent/connect', connectBody),
-      connectResponseSchema,
-    );
+    const response = await postJson(base, '/api/agent/connect', connectBody);
+    const raw: unknown = await response.clone().json().catch(() => null);
+    const issued = issuedIdentitySchema.safeParse(raw);
+    if (issued.success) issuedIdentity = issued.data;
+    firstConnect = await expectJson(response, connectResponseSchema);
     if (firstConnect.agentId !== agentId) throw new SmokeFailure('agentId was not stable');
     if (firstConnect.protocol.version !== PROTOCOL_VERSION) {
       throw new SmokeFailure('connect protocol version does not match source');
@@ -370,12 +380,13 @@ async function main(): Promise<void> {
     }
   });
   } finally {
-    if (firstConnect) {
+    const cleanupIdentity = issuedIdentity;
+    if (cleanupIdentity) {
       await check('signed fixture disconnect and live body absence', async () => {
         await disconnectProbeBody(base, {
-          userId: firstConnect.identity.userId,
+          userId: cleanupIdentity.userId,
           platformAgentId: agentId,
-          identitySecretKey: bs58.decode(firstConnect.identity.secretKey),
+          identitySecretKey: bs58.decode(cleanupIdentity.secretKey),
         });
       });
     }
