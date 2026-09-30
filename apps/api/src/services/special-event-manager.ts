@@ -45,6 +45,7 @@
  * services.
  */
 
+import { randomUUID } from 'crypto';
 import { db as realDb } from '@clawville/database';
 import { sql } from 'drizzle-orm';
 import { readSplTokenBalance } from './solana-token-balance';
@@ -178,6 +179,9 @@ type EventRow = {
   created_at: Date | string | null;
   started_at: Date | string | null;
   completed_at: Date | string | null;
+  /** The in-flight start's claim token + time (security M4); null unless 'starting'. */
+  start_claim_id: string | null;
+  start_claimed_at: Date | string | null;
 } & Record<string, unknown>;
 
 export interface SignupResult {
@@ -645,16 +649,28 @@ export class SpecialEventManager {
    *      so `registerEntrant` SKIPS the per-entrant debit (entry was already
    *      settled at the event layer — no double-charge).
    *   4. Force-start the tournament (seat the field).
-   *   5. Flip the event 'starting' → 'live'.
-   * FAILURE: a create failure reopens signups ('starting' → 'signup_open'). A
+   *   5. Flip the event 'starting' → 'live'; the UPDATE must match exactly one row
+   *      (our claim token AND our tournament still running/completed).
+   * FAILURE: a create failure reconciles the claim (normally → 'signup_open'). A
    * register/start failure first cancels the tournament (the cancel credits the
-   * seed back to the treasury), then reopens signups, so an operator can retry.
-   * If only step 5 fails, the tournament is already running: the event stays
-   * 'starting' and `settleEventForTournament` completes it like a 'live' event.
+   * seed back to the treasury), then reopens signups, so an operator can retry. A
+   * 0-row final flip goes to `recoverUnflippedStart`. A CRASHED start leaves a
+   * claim that `reconcileStartingEvent` resolves once it is older than
+   * SPECIAL_EVENT_START_CLAIM_STALE_MS — on the next start call for the event or
+   * the settlement worker tick (`reconcileStaleStarts`).
    */
   async closeSignupAndStart(slug: string): Promise<CloseAndStartResult> {
+    // Phase 0: a claim left by a crashed start is reconciled first, so a dead
+    // start can never block this event forever (fresh claims are left alone).
+    const current = await this.getEventBySlug(slug);
+    if (current?.status === 'starting') {
+      await this.reconcileStartingEvent(current.id, { staleBefore: this.staleClaimCutoff() });
+    }
+
     // Phase 1 (tx): lock, validate, and CLAIM the start ('signup_open' →
-    // 'starting'), then release the row lock for the tournament work.
+    // 'starting' with a fresh claim token), then release the row lock for the
+    // tournament work. Every later write for this start CASes on the token.
+    const claimId = randomUUID();
     const prep = await this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<EventRow>(
         sql`SELECT * FROM special_events WHERE slug = ${slug} FOR UPDATE`,
@@ -691,7 +707,9 @@ export class SpecialEventManager {
       const seedPrizePoolCt = readSeedPrizePoolCt(e.prize_config_json);
 
       const claimed = await tx.execute<{ id: string }>(
-        sql`UPDATE special_events SET status = 'starting'
+        sql`UPDATE special_events
+            SET status = 'starting', start_claim_id = ${claimId},
+                start_claimed_at = ${new Date(this.clock.now())}
             WHERE id = ${e.id} AND status = 'signup_open'
             RETURNING id`,
       );
@@ -731,8 +749,11 @@ export class SpecialEventManager {
         event.created_by,
       );
     } catch (err) {
-      // Nothing was created (the TM create tx rolled back, seed debit included).
-      await this.releaseStartClaim(event.id);
+      // Normally nothing was created (the TM create tx rolled back, seed debit
+      // included). The reconcile also covers an ambiguous commit or a pre-0070
+      // linked tournament: it cancels a registering one (seed refunded) and
+      // reopens signups, or marks a running one live.
+      await this.reconcileStartingEvent(event.id, { claimId });
       if (err instanceof TournamentError) {
         throw new SpecialEventError(`tournament_create_failed:${err.message}`, err.httpStatus);
       }
@@ -780,15 +801,15 @@ export class SpecialEventManager {
       try {
         await this.tm.cancelAndRefundOrphan(tournament.id);
       } catch (cancelErr) {
-        // The tournament still holds the event's active slot, so reopening
-        // signups could never succeed. Leave the event 'starting' for repair.
+        // The tournament still holds the event's active slot. Leave the claim;
+        // the stale-claim reconcile retries the cancel later.
         console.error(
-          `[special-event] start of event ${event.id} failed and tournament ${tournament.id} could not be cancelled; the event stays 'starting' for operator repair:`,
+          `[special-event] start of event ${event.id} failed and tournament ${tournament.id} could not be cancelled; the stale-claim reconcile will retry:`,
           cancelErr,
         );
         throw err;
       }
-      await this.releaseStartClaim(event.id);
+      await this.reconcileStartingEvent(event.id, { claimId });
       if (err instanceof SpecialEventError) throw err;
       if (err instanceof TournamentError) {
         throw new SpecialEventError(`tournament_start_failed:${err.message}`, err.httpStatus);
@@ -797,12 +818,26 @@ export class SpecialEventManager {
     }
 
     // ── Flip the event 'starting' → 'live' (link already on the tournament row) ──
-    await this.db.transaction(async (tx) => {
-      await tx.execute(
-        sql`UPDATE special_events SET status = 'live', started_at = now()
-            WHERE id = ${event.id} AND status = 'starting'`,
-      );
-    });
+    // Exactly one row, or this start does not own the outcome: the claim must
+    // still be ours AND our tournament must still be running/completed (a room
+    // abort or boot recovery may have cancelled it after startTrigger returned).
+    const flipped = await this.db.execute<{ id: string }>(
+      sql`UPDATE special_events
+          SET status = 'live', started_at = now(),
+              start_claim_id = NULL, start_claimed_at = NULL
+          WHERE id = ${event.id} AND status = 'starting'
+            AND start_claim_id = ${claimId}
+            AND EXISTS (
+              SELECT 1 FROM poker_tournaments t
+              WHERE t.id = ${tournament.id}
+                AND t.special_event_id = ${event.id}
+                AND t.status IN ('running', 'completed')
+            )
+          RETURNING id`,
+    );
+    if (flipped.length !== 1) {
+      await this.recoverUnflippedStart(event.id, claimId, tournament.id);
+    }
 
     return {
       tournamentId: tournament.id,
@@ -811,12 +846,149 @@ export class SpecialEventManager {
     };
   }
 
-  /** Reopen signups after a failed start ('starting' → 'signup_open'). */
-  private async releaseStartClaim(eventId: string): Promise<void> {
-    await this.db.execute(
-      sql`UPDATE special_events SET status = 'signup_open'
-          WHERE id = ${eventId} AND status = 'starting'`,
+  /**
+   * The final flip matched 0 rows. Returns only when the event already ended in
+   * the right state WITH our tournament (someone else finalized it); otherwise it
+   * cancels our tournament (the cancel refunds the seed exactly once) and throws.
+   */
+  private async recoverUnflippedStart(
+    eventId: string,
+    claimId: string,
+    tournamentId: string,
+  ): Promise<void> {
+    const outcome = await this.reconcileStartingEvent(eventId, { claimId });
+    if (outcome === 'live' || outcome === 'completed') return;
+    if (outcome === 'reopened') {
+      throw new SpecialEventError('tournament_start_cancelled', 409);
+    }
+    // The claim is gone (the stale-claim reconcile or a settle took over).
+    const rows = await this.db.execute<{ event_status: string; tournament_status: string | null }>(
+      sql`SELECT e.status AS event_status, t.status AS tournament_status
+          FROM special_events e
+          LEFT JOIN poker_tournaments t
+            ON t.id = ${tournamentId} AND t.special_event_id = e.id
+          WHERE e.id = ${eventId}`,
     );
+    const state = rows[0];
+    const eventDone = state?.event_status === 'live' || state?.event_status === 'completed';
+    const oursActive =
+      state?.tournament_status === 'running' || state?.tournament_status === 'completed';
+    if (eventDone && oursActive) return;
+    await this.tm.cancelAndRefundOrphan(tournamentId);
+    throw new SpecialEventError('event_start_claim_lost', 409);
+  }
+
+  /** Claims older than this belong to a dead start (SPECIAL_EVENT_START_CLAIM_STALE_MS). */
+  private staleClaimCutoff(): Date {
+    return new Date(this.clock.now() - SPECIAL_EVENT_START_CLAIM_STALE_MS);
+  }
+
+  /**
+   * Bring ONE 'starting' event back in line with its linked tournament (security
+   * M4 recovery), under the event row lock. Acts only when the event still holds
+   * `claimId` (a start's own failure path) or its claim is older than
+   * `staleBefore` (a crashed start). Outcome by the non-cancelled linked
+   * tournaments:
+   *   - registering/seating → cancel through the TM (seed refunded exactly once:
+   *     the TM cancel is idempotent under its row lock) → 'signup_open';
+   *   - running → 'live'; completed → 'completed';
+   *   - none → 'signup_open'.
+   * Every outcome clears the claim in the same UPDATE. The TM cancel is its own
+   * transaction; if this one then fails, the next reconcile sees the cancelled
+   * tournament and reopens, so no path moves CT twice.
+   */
+  async reconcileStartingEvent(
+    eventId: string,
+    opts: { claimId?: string; staleBefore?: Date },
+  ): Promise<StartReconcileOutcome> {
+    return this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<{
+        id: string;
+        status: string;
+        start_claim_id: string | null;
+        start_claimed_at: Date | string | null;
+      }>(
+        sql`SELECT id, status, start_claim_id, start_claimed_at
+            FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = lockRows[0];
+      if (!e || e.status !== 'starting') return 'not_starting';
+      if (opts.claimId && e.start_claim_id !== opts.claimId) return 'claim_lost';
+      if (
+        opts.staleBefore &&
+        e.start_claimed_at != null &&
+        new Date(e.start_claimed_at).getTime() >= opts.staleBefore.getTime()
+      ) {
+        return 'in_progress';
+      }
+
+      const linked = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM poker_tournaments
+            WHERE special_event_id = ${e.id} AND status <> 'cancelled'
+            ORDER BY created_at DESC`,
+      );
+      for (const t of linked) {
+        if (t.status === 'registering' || t.status === 'seating') {
+          await this.tm.cancelAndRefundOrphan(t.id);
+        }
+      }
+
+      if (linked.some((t) => t.status === 'completed')) {
+        await tx.execute(
+          sql`UPDATE special_events
+              SET status = 'completed', completed_at = now(),
+                  started_at = COALESCE(started_at, now()),
+                  start_claim_id = NULL, start_claimed_at = NULL
+              WHERE id = ${e.id} AND status = 'starting'`,
+        );
+        return 'completed';
+      }
+      if (linked.some((t) => t.status === 'running')) {
+        await tx.execute(
+          sql`UPDATE special_events
+              SET status = 'live', started_at = now(),
+                  start_claim_id = NULL, start_claimed_at = NULL
+              WHERE id = ${e.id} AND status = 'starting'`,
+        );
+        return 'live';
+      }
+      await tx.execute(
+        sql`UPDATE special_events
+            SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${e.id} AND status = 'starting'`,
+      );
+      return 'reopened';
+    });
+  }
+
+  /**
+   * Reconcile every event whose start claim is stale (a crashed start). Run by
+   * the settlement worker on each tick; one bad event never blocks the rest.
+   */
+  async reconcileStaleStarts(
+    limit = 50,
+  ): Promise<{ scanned: number; reconciled: number; failed: number }> {
+    const cutoff = this.staleClaimCutoff();
+    const lim = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const rows = await this.db.execute<{ id: string }>(
+      sql`SELECT id FROM special_events
+          WHERE status = 'starting'
+            AND (start_claimed_at IS NULL OR start_claimed_at < ${cutoff})
+          ORDER BY start_claimed_at ASC NULLS FIRST
+          LIMIT ${lim}`,
+    );
+    let reconciled = 0;
+    let failed = 0;
+    for (const row of rows) {
+      try {
+        const outcome = await this.reconcileStartingEvent(row.id, { staleBefore: cutoff });
+        if (outcome === 'reopened' || outcome === 'live' || outcome === 'completed') reconciled += 1;
+      } catch (err) {
+        failed += 1;
+        console.error(`[special-event] stale start reconcile failed for event ${row.id}:`, err);
+      }
+    }
+    return { scanned: rows.length, reconciled, failed };
   }
 
   /**
@@ -927,7 +1099,8 @@ export class SpecialEventManager {
       // Only mark completed once the dependent tournament has settled.
       if (tournament && tournament.status === 'completed') {
         await tx.execute(
-          sql`UPDATE special_events SET status = 'completed', completed_at = now()
+          sql`UPDATE special_events SET status = 'completed', completed_at = now(),
+                start_claim_id = NULL, start_claimed_at = NULL
               WHERE id = ${e.id} AND status <> 'completed'`,
         );
       }
@@ -988,7 +1161,8 @@ export class SpecialEventManager {
       }
 
       await tx.execute(
-        sql`UPDATE special_events SET status = 'completed', completed_at = now()
+        sql`UPDATE special_events SET status = 'completed', completed_at = now(),
+              start_claim_id = NULL, start_claimed_at = NULL
             WHERE id = ${linked.id} AND status IN ('live', 'starting')`,
       );
       return { alreadySettled: false, tournamentId, results: mapped };
@@ -1006,6 +1180,24 @@ export class SpecialEventManager {
  * bound caps one operator action, and the treasury balance caps the total.
  */
 export const SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT = 100_000;
+
+/**
+ * A start claim older than this belongs to a dead start (process crash) and is
+ * reconciled by the next start call or the settlement worker tick. A live start
+ * is one tournament create, at most 200 single-row registrations, and one seat
+ * pass (seconds), so 10 minutes does not take over a working start in practice.
+ * If it ever did, the start's claim CAS and its guarded final flip still keep
+ * every path conserving (security M4, 2026-09-30).
+ */
+export const SPECIAL_EVENT_START_CLAIM_STALE_MS = 10 * 60_000;
+
+export type StartReconcileOutcome =
+  | 'not_starting'
+  | 'claim_lost'
+  | 'in_progress'
+  | 'reopened'
+  | 'live'
+  | 'completed';
 
 /**
  * Read + bound `prize_config_json.seedPrizePoolCt` (absent ⇒ 0). Enforced at

@@ -10,10 +10,10 @@
  *
  * Surfaces:
  *   POST /create        (NAMED admin) — create an event (status 'draft')
- *   POST /:slug/open    (admin)  — open it for signups (draft → signup_open)
+ *   POST /:slug/open    (NAMED admin) — open it for signups (draft → signup_open)
  *   POST /:slug/start   (NAMED admin) — close signups + create/seat the dependent
  *                                   tournament (signup_open → starting → live)
- *   POST /:slug/settle  (admin)  — explicitly record event completion
+ *   POST /:slug/settle  (NAMED admin) — explicitly record event completion
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
  *   POST /:slug/signup  (AGENT-CAPABLE) — gate-evaluated signup (human XOR agent)
@@ -69,11 +69,13 @@ specialEventsRouter.use('*', sessionMiddleware);
 const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 /**
- * Named-admin gate for the money-bearing event commands (security M3, 2026-09-30).
- * `adminOnly` also accepts the static shared `cv_dash` cookie, which is not tied
- * to a user and never rotates. /create sets the seed prize pool and /start pays
- * it from the house treasury, so both also require a Lucia session whose user id
- * is in ADMIN_USER_IDS — the same rule as tokenomics-earn `requireNamedAdmin`.
+ * Named-admin gate for EVERY special-event admin mutation (security M3,
+ * 2026-09-30): /create, /:slug/open, /:slug/start, /:slug/settle. `adminOnly`
+ * also accepts the static shared `cv_dash` cookie, which is not tied to a user and
+ * never rotates. /create sets the seed prize pool, /start pays it from the house
+ * treasury, and /open + /settle move the event lifecycle, so all four also require
+ * a Lucia session whose user id is in ADMIN_USER_IDS — the same rule as
+ * tokenomics-earn `requireNamedAdmin`. Signup is a player route (unchanged).
  */
 const requireNamedAdmin = createMiddleware<AppContext>(async (c, next) => {
   const user = c.get('user');
@@ -232,8 +234,8 @@ specialEventsRouter.post('/create', adminOnly, requireNamedAdmin, async (c) => {
   }
 });
 
-// ── POST /:slug/open (ADMIN) ──────────────────────────────────────────────────
-specialEventsRouter.post('/:slug/open', adminOnly, async (c) => {
+// ── POST /:slug/open (NAMED ADMIN) ────────────────────────────────────────────
+specialEventsRouter.post('/:slug/open', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {
@@ -263,7 +265,7 @@ specialEventsRouter.post('/:slug/start', adminOnly, requireNamedAdmin, async (c)
 });
 
 // Explicit command: public GET status routes must remain read-only.
-specialEventsRouter.post('/:slug/settle', adminOnly, async (c) => {
+specialEventsRouter.post('/:slug/settle', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {

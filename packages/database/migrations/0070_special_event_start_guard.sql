@@ -1,8 +1,8 @@
 -- 0070_special_event_start_guard.sql — security pass 2026-09-30 (M3, M4, H2).
 --
--- ADDITIVE + IDEMPOTENT. Adds one column with a default, two unique indexes, and
--- widens one CHECK predicate. It drops no table, column, index, or data. The file
--- runs as one implicit transaction, so a failure applies nothing.
+-- ADDITIVE + IDEMPOTENT. Adds three columns, two unique indexes, and (re)states
+-- one CHECK predicate. It drops no table, column, index, or data. The file runs
+-- as one implicit transaction, so a failure applies nothing.
 --
 -- RUN THE READ-ONLY PRE-CHECK FIRST (it is in the M3/M4 report and in
 -- ARCHITECTURE.md §8): a duplicate (special_event_id) or (tournament_id, placement)
@@ -33,22 +33,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS "poker_tournaments_special_event_active_unique
 CREATE UNIQUE INDEX IF NOT EXISTS "poker_results_tournament_placement_unique"
   ON "poker_tournament_results" USING btree ("tournament_id", "placement");
 
--- 4. M4 — special_events.status gains the transient 'starting' claim state.
---    Replace the CHECK only where it exists. 0003 created it inline on an empty
---    database. The lead's 2026-09-30 read-only check found it on BOTH staging and
---    prod; the CI replay lacks it (see ARCHITECTURE.md §12 "CI schema
---    fidelity"), and this migration does not add a CHECK where none
---    existed. The new predicate is a strict superset of the old one, so no
---    existing row can fail it.
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'special_events_status_check'
-      AND conrelid = 'special_events'::regclass
-  ) THEN
-    ALTER TABLE "special_events" DROP CONSTRAINT "special_events_status_check";
-    ALTER TABLE "special_events" ADD CONSTRAINT "special_events_status_check"
-      CHECK (status = ANY (ARRAY['draft'::text, 'signup_open'::text, 'starting'::text, 'live'::text, 'completed'::text, 'cancelled'::text]));
-  END IF;
-END $$;
+-- 4. M4 — the in-flight start's claim. The claim sets status 'starting' plus a
+--    token + time; every write of that start CASes on the token, and every exit
+--    from 'starting' clears both. A claim older than the manager's stale window
+--    belongs to a crashed start and is reconciled by the next start call or the
+--    settlement worker tick (special-event-manager.ts reconcileStartingEvent).
+ALTER TABLE "special_events" ADD COLUMN IF NOT EXISTS "start_claim_id" uuid;
+ALTER TABLE "special_events" ADD COLUMN IF NOT EXISTS "start_claimed_at" timestamptz;
+
+-- 5. M4 — special_events.status gains the transient 'starting' state. The CHECK
+--    is (re)stated unconditionally: 0003 created it on an empty database, the
+--    2026-09-30 read-only check found it on staging and prod (with 0 rows), and
+--    the CI replay lacks it (ARCHITECTURE.md §12 "CI schema fidelity"). A CHECK
+--    has no ADD ... IF NOT EXISTS, so the idempotent form is DROP IF EXISTS + ADD
+--    (0005 precedent). The new predicate is a strict superset of the old one, so
+--    no row the old CHECK allowed can fail it.
+ALTER TABLE "special_events" DROP CONSTRAINT IF EXISTS "special_events_status_check";
+ALTER TABLE "special_events" ADD CONSTRAINT "special_events_status_check"
+  CHECK (status = ANY (ARRAY['draft'::text, 'signup_open'::text, 'starting'::text, 'live'::text, 'completed'::text, 'cancelled'::text]));

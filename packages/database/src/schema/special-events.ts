@@ -143,6 +143,14 @@ export const specialEvents = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }),
     /** When the event settled (status → completed). */
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    /**
+     * The in-flight start's claim (security M4, 2026-09-30): set with status
+     * 'starting' and cleared by every exit from it. Every write of that start
+     * CASes on the token; a claim older than SPECIAL_EVENT_START_CLAIM_STALE_MS
+     * belongs to a crashed start and is reconciled (special-event-manager.ts).
+     */
+    startClaimId: uuid('start_claim_id'),
+    startClaimedAt: timestamp('start_claimed_at', { withTimezone: true }),
   },
   (table) => ({
     slugUnique: uniqueIndex('special_events_slug_unique').on(table.slug),

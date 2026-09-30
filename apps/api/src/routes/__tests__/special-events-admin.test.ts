@@ -2,9 +2,10 @@
  * Security M3 (2026-09-30) — special-event money commands need a NAMED admin.
  *
  * `/create` sets the seed prize pool and `/start` funds it from the house
- * treasury. `adminOnly` alone also accepts the static shared `cv_dash` cookie, so
- * these two routes now also require a Lucia session whose user id is in
- * ADMIN_USER_IDS. `/open` keeps plain `adminOnly` (no money moves there).
+ * treasury; `/open` and `/settle` move the event lifecycle. `adminOnly` alone also
+ * accepts the static shared `cv_dash` cookie, so ALL FOUR admin mutations now also
+ * require a Lucia session whose user id is in ADMIN_USER_IDS (Codex follow-up:
+ * every special-event mutation).
  * The seed bound on the create schema is asserted here too.
  */
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
@@ -36,6 +37,7 @@ mock.module('../../middleware/auth', () => ({
 const originalManagerModule = { ...realManagerModule };
 let startCalls: string[] = [];
 let openCalls: string[] = [];
+let settleCalls: string[] = [];
 mock.module('../../services/special-event-manager', () => ({
   ...realManagerModule,
   specialEventManager: {
@@ -46,6 +48,10 @@ mock.module('../../services/special-event-manager', () => ({
     openSignup: async (slug: string) => {
       openCalls.push(slug);
       return { slug, status: 'signup_open' };
+    },
+    settleEvent: async (slug: string) => {
+      settleCalls.push(slug);
+      return { alreadySettled: false, tournamentId: null, results: [] };
     },
   },
 }));
@@ -78,6 +84,7 @@ async function errorMessage(res: Response): Promise<string> {
 beforeEach(() => {
   startCalls = [];
   openCalls = [];
+  settleCalls = [];
 });
 
 afterAll(() => {
@@ -85,13 +92,16 @@ afterAll(() => {
   mock.module('../../services/special-event-manager', () => originalManagerModule);
 });
 
-describe('special events — named admin on the money commands (security M3)', () => {
+describe('special events — named admin on every admin mutation (security M3)', () => {
   const createBody = { slug: 'launch-champ', name: 'Launch Championship' };
-
-  test.each([
+  const mutations = [
     ['/create', createBody] as const,
+    ['/launch-champ/open', {}] as const,
     ['/launch-champ/start', {}] as const,
-  ])('%s refuses the shared cv_dash cookie without a named admin session', async (path, body) => {
+    ['/launch-champ/settle', {}] as const,
+  ];
+
+  test.each(mutations)('%s refuses the shared cv_dash cookie without a named admin session', async (path, body) => {
     expect(expectedDashCookie()).not.toBeNull();
     const res = await post(path, { dash: true, body });
     expect(res.status).toBe(403);
@@ -99,28 +109,22 @@ describe('special events — named admin on the money commands (security M3)', (
     // The cookie plus a NON-admin Lucia user is still not a named admin.
     const withUser = await post(path, { dash: true, user: OTHER_ID, body });
     expect(withUser.status).toBe(403);
-    expect(startCalls).toHaveLength(0);
+    expect([...startCalls, ...openCalls, ...settleCalls]).toHaveLength(0);
   });
 
-  test.each([
-    ['/create', createBody] as const,
-    ['/launch-champ/start', {}] as const,
-  ])('%s refuses no auth (401) and a non-admin user (403)', async (path, body) => {
+  test.each(mutations)('%s refuses no auth (401) and a non-admin user (403)', async (path, body) => {
     expect((await post(path, { body })).status).toBe(401);
     expect((await post(path, { user: OTHER_ID, body })).status).toBe(403);
-    expect(startCalls).toHaveLength(0);
+    expect([...startCalls, ...openCalls, ...settleCalls]).toHaveLength(0);
   });
 
-  test('/start runs for a named admin session', async () => {
-    const res = await post('/launch-champ/start', { user: ADMIN_ID });
-    expect(res.status).toBe(200);
-    expect(startCalls).toEqual(['launch-champ']);
-  });
-
-  test('/open (no money) still accepts the shared cv_dash cookie', async () => {
-    const res = await post('/launch-champ/open', { dash: true });
-    expect(res.status).toBe(200);
+  test('/open, /start and /settle run for a named admin session', async () => {
+    expect((await post('/launch-champ/open', { user: ADMIN_ID })).status).toBe(200);
+    expect((await post('/launch-champ/start', { user: ADMIN_ID })).status).toBe(200);
+    expect((await post('/launch-champ/settle', { user: ADMIN_ID })).status).toBe(200);
     expect(openCalls).toEqual(['launch-champ']);
+    expect(startCalls).toEqual(['launch-champ']);
+    expect(settleCalls).toEqual(['launch-champ']);
   });
 });
 

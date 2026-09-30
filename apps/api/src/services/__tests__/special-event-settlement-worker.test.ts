@@ -54,6 +54,7 @@ describe('SpecialEventSettlementWorker', () => {
     db.candidates = ['tournament-1'];
     let calls = 0;
     const manager = {
+      reconcileStaleStarts: async () => ({ scanned: 0, reconciled: 0, failed: 0 }),
       settleEventForTournament: async (tournamentId: string) => {
         calls++;
         if (calls === 1) throw new Error('transient parent write failure');
@@ -77,12 +78,48 @@ describe('SpecialEventSettlementWorker', () => {
     expect(db.lastSql).toContain("e.status IN ('live', 'starting')");
   });
 
+  it('reconciles stale start claims on every pass; a failure there is non-fatal (security M4)', async () => {
+    const db = new FakeWorkerDb();
+    db.candidates = ['t-1'];
+    const errors: string[] = [];
+    let reconcileCalls = 0;
+    let settled = 0;
+    const manager = {
+      reconcileStaleStarts: async () => {
+        reconcileCalls++;
+        if (reconcileCalls === 1) throw new Error('reconcile scan failed');
+        return { scanned: 1, reconciled: 1, failed: 0 };
+      },
+      settleEventForTournament: async (tournamentId: string) => {
+        settled++;
+        return fakeOutcome(tournamentId);
+      },
+    };
+    const worker = new SpecialEventSettlementWorker({
+      db,
+      manager,
+      logError: (message) => errors.push(message),
+    });
+
+    const first = await worker.runOnce();
+    const second = await worker.runOnce();
+
+    expect(reconcileCalls).toBe(2);
+    expect(first).toEqual({ scanned: 1, reconciled: 1, failed: 0, skippedOverlap: false });
+    expect(second.reconciled).toBe(1);
+    expect(settled).toBe(2);
+    expect(errors).toEqual([
+      '[SpecialEventSettlementWorker] stale start reconcile failed (non-fatal):',
+    ]);
+  });
+
   it('bounds each pass and continues after one event fails', async () => {
     const db = new FakeWorkerDb();
     db.candidates = ['bad', 'good', 'deferred'];
     const attempted: string[] = [];
     const errors: string[] = [];
     const manager = {
+      reconcileStaleStarts: async () => ({ scanned: 0, reconciled: 0, failed: 0 }),
       settleEventForTournament: async (tournamentId: string) => {
         attempted.push(tournamentId);
         if (tournamentId === 'bad') throw new Error('row failed');
@@ -115,6 +152,7 @@ describe('SpecialEventSettlementWorker', () => {
       entered = resolve;
     });
     const manager = {
+      reconcileStaleStarts: async () => ({ scanned: 0, reconciled: 0, failed: 0 }),
       settleEventForTournament: async (tournamentId: string) => {
         entered();
         await blocked;
@@ -139,6 +177,7 @@ describe('SpecialEventSettlementWorker', () => {
     db.scanError = new Error('database unavailable');
     const errors: string[] = [];
     const manager = {
+      reconcileStaleStarts: async () => ({ scanned: 0, reconciled: 0, failed: 0 }),
       settleEventForTournament: async (tournamentId: string) => fakeOutcome(tournamentId),
     };
     const worker = new SpecialEventSettlementWorker({

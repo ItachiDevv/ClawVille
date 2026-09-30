@@ -6,7 +6,9 @@
  * parent-write failure never rolls back poker prizes. This worker is the durable
  * retry path: at boot and on a bounded interval it finds completed linked poker
  * tournaments whose parent is still live, then replays the exact-id idempotent
- * transition.
+ * transition. Each pass first reconciles stale start claims
+ * (`reconcileStaleStarts`, security M4) so a crashed start never leaves an event
+ * 'starting' forever.
  *
  * Only LIVE parents are candidates, plus 'starting' parents whose final
  * 'starting' → 'live' flip did not commit (security M4, 2026-09-30): a completed
@@ -26,7 +28,10 @@ const DEFAULT_BATCH_SIZE = 50;
 interface WorkerDb {
   execute(query: ReturnType<typeof sql>): PromiseLike<unknown> | unknown;
 }
-type SettlementManager = Pick<typeof realSpecialEventManager, 'settleEventForTournament'>;
+type SettlementManager = Pick<
+  typeof realSpecialEventManager,
+  'settleEventForTournament' | 'reconcileStaleStarts'
+>;
 
 export interface SpecialEventSettlementWorkerDeps {
   db?: WorkerDb;
@@ -79,6 +84,14 @@ export class SpecialEventSettlementWorker {
 
     this.passRunning = true;
     try {
+      // Stale start claims first (security M4): a crashed start must not leave an
+      // event 'starting' forever. Non-fatal, like every other part of the pass.
+      try {
+        await this.manager.reconcileStaleStarts(this.batchSize);
+      } catch (error) {
+        this.logError('[SpecialEventSettlementWorker] stale start reconcile failed (non-fatal):', error);
+      }
+
       let candidates: Array<{ tournament_id: string }>;
       try {
         const rows = await this.db.execute(
