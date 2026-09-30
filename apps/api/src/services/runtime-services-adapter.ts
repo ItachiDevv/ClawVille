@@ -40,9 +40,24 @@ import {
 // through unchanged.
 export function buildRuntimeServices(
   db: any,
-  opts?: { actorKind?: CovenantActorKind | null; doordash?: unknown },
+  opts?: { actorKind?: CovenantActorKind | null; doordash?: unknown; guestDemo?: boolean },
 ): ClawvilleServices {
   const actorKind = opts?.actorKind ?? null;
+  // GUEST BACKSTOP (security M9, 2026-09-30): a guest runs a DEMO economy that
+  // settles off the ledger. A surface that builds services for a guest passes
+  // `guestDemo: true`; the two ledger functions then refuse, so no runtime
+  // action (e.g. BUY_ITEM) can move a guest's balance through the real ledger.
+  // Non-ledger services (db, covenant recorder) are unchanged.
+  if (opts?.guestDemo) {
+    const refuse = async (): Promise<never> => {
+      throw new Error('guest_demo_economy: a guest account cannot move real vCLAW through the ledger');
+    };
+    return {
+      ...buildRuntimeServices(db, { actorKind, doordash: opts.doordash }),
+      creditClawTokens: refuse,
+      debitClawTokens: refuse,
+    };
+  }
   return {
     db,
     doordash: opts?.doordash,

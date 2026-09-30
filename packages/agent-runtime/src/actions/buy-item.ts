@@ -1,6 +1,7 @@
 import { KNOWLEDGE_BOOKS, getBookById } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
 import { hasServices, getMessageText, getParam , getDbModule } from './types';
+import { grantInventoryItem } from './inventory-mutations';
 
 /**
  * BUY_ITEM — purchase a knowledge book from the current building's shop.
@@ -90,17 +91,27 @@ export const buyItemAction: Action = {
         return { success: false, text: `Book "${itemId}" not found.` };
       }
 
-      // Check current balance
-      const { avatars, eq } = await getDbModule();
+      // Check current balance + the canonical guest gate (security M9, 2026-09-30;
+      // mirrors ACCEPT_QUEST). A guest runs a DEMO economy that settles off the
+      // ledger (`items.ts /buy` demo branch). This action spends REAL vCLAW through
+      // the injected ledger, so a guest-owned avatar must never reach the debit.
+      const { avatars, users, eq } = await getDbModule();
 
       const [avatar] = await db
-        .select({ clawTokens: avatars.clawTokens })
+        .select({ clawTokens: avatars.clawTokens, isGuest: users.isGuest })
         .from(avatars)
+        .innerJoin(users, eq(users.id, avatars.userId))
         .where(eq(avatars.id, avatarId))
         .limit(1);
 
       if (!avatar) {
         return { success: false, text: 'Avatar not found.' };
+      }
+      if (avatar.isGuest) {
+        return {
+          success: false,
+          text: 'Guests run a demo economy: buy books in the building shop with demo vCLAW. Buying through chat spends real vCLAW, so it needs a full account.',
+        };
       }
 
       if (avatar.clawTokens < book.price) {
@@ -109,15 +120,6 @@ export const buyItemAction: Action = {
           text: `Not enough vCLAW. You have ${avatar.clawTokens} vCLAW but "${book.name}" costs ${book.price} vCLAW.`,
         };
       }
-
-      // Check if avatar already owns this book
-      const { avatarInventory, and } = await getDbModule();
-
-      const [existing] = await db
-        .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
-        .from(avatarInventory)
-        .where(and(eq(avatarInventory.avatarId, avatarId), eq(avatarInventory.itemId, itemId)))
-        .limit(1);
 
       // Debit ClawTokens
       const { balanceAfter } = await debitClawTokens({
@@ -128,20 +130,11 @@ export const buyItemAction: Action = {
         metadata: { bookId: book.id, buildingId: book.building },
       });
 
-      // Add or increment inventory — compensating credit on failure
+      // Add or increment inventory (one atomic SQL increment — a read-then-write
+      // could lose a concurrent buy or learn, security M10) — compensating credit
+      // on failure
       try {
-        if (existing) {
-          await db
-            .update(avatarInventory)
-            .set({ quantity: existing.quantity + 1 })
-            .where(eq(avatarInventory.id, existing.id));
-        } else {
-          await db.insert(avatarInventory).values({
-            avatarId,
-            itemId,
-            quantity: 1,
-          });
-        }
+        await grantInventoryItem(db, { avatarId, itemId });
       } catch (invErr: any) {
         // Compensating credit — refund the debit so the avatar doesn't lose tokens
         await creditClawTokens({

@@ -131,10 +131,17 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
+  // `users.is_guest` is the canonical security state. `avatars.is_guest` is a
+  // denormalized mirror and may be stale/default-false, so it must not authorize
+  // a ledger write (or the XP level-up mint reachable through awardXp below).
+  const canonicalGuest = avatar ? await isGuestUser(user.id) : false;
+
   // Build state object for Providers + Actions
-  // Only inject services if avatar exists — actions require a avatarId to transact
+  // Only inject services if avatar exists — actions require a avatarId to transact.
+  // A guest gets services whose ledger functions refuse (security M9): guests run
+  // a demo economy, so no chat action may settle their balance on the real ledger.
   const services = avatar
-    ? buildRuntimeServices(db, { actorKind: 'human' })
+    ? buildRuntimeServices(db, { actorKind: 'human', guestDemo: canonicalGuest })
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
@@ -247,10 +254,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   // on level-up) are skipped for guests — gating the whole block is what closes
   // the XP leak (awardXp is only ever called from this file).
   let tokenAwarded: 0 | 1 = 0;
-  // `users.is_guest` is the canonical security state. `avatars.is_guest` is a
-  // denormalized mirror and may be stale/default-false, so it must not authorize
-  // this mint (or the XP level-up mint reachable through awardXp).
-  const canonicalGuest = avatar ? await isGuestUser(user.id) : false;
+  // `canonicalGuest` (resolved above from `users.is_guest`) gates this mint too.
   const rewardAvatarId = humanBuildingChatRewardAvatarId(avatar?.id ?? null, canonicalGuest);
   if (rewardAvatarId) {
     try {

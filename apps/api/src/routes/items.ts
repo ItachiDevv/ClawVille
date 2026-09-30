@@ -17,6 +17,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession, requireLedgerCapableIdentity } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import {
+  grantInventoryItem,
   learnBookAtomically,
   LearnBookError,
 } from '@clawville/agent-runtime';
@@ -156,26 +157,9 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, requireLedgerCapableIdentity,
 
       // Grant the inventory row — scoped to the guest's OWN avatar. Guests have a
       // real `avatars` row and `avatar_inventory` is strictly per-avatar (nothing
-      // shared or global), so this is harmless demo state. Identical insert/
+      // shared or global), so this is harmless demo state. Identical atomic
       // increment to the real path below.
-      const existingItem = await tx.query.avatarInventory.findFirst({
-        where: and(
-          eq(avatarInventory.avatarId, avatar.id),
-          eq(avatarInventory.itemId, result.data.itemId),
-        ),
-      });
-      if (existingItem) {
-        await tx
-          .update(avatarInventory)
-          .set({ quantity: existingItem.quantity + 1 })
-          .where(eq(avatarInventory.id, existingItem.id));
-      } else {
-        await tx.insert(avatarInventory).values({
-          avatarId: avatar.id,
-          itemId: result.data.itemId,
-          quantity: 1,
-        });
-      }
+      await grantInventoryItem(tx, { avatarId: avatar.id, itemId: result.data.itemId });
       return { insufficient: false as const, balanceAfter };
     });
 
@@ -247,26 +231,10 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, requireLedgerCapableIdentity,
       }
     }
 
-    // 2. Check if already in inventory
-    const existingItem = await tx.query.avatarInventory.findFirst({
-      where: and(
-        eq(avatarInventory.avatarId, avatar.id),
-        eq(avatarInventory.itemId, result.data.itemId)
-      ),
-    });
-
-    if (existingItem) {
-      await tx
-        .update(avatarInventory)
-        .set({ quantity: existingItem.quantity + 1 })
-        .where(eq(avatarInventory.id, existingItem.id));
-    } else {
-      await tx.insert(avatarInventory).values({
-        avatarId: avatar.id,
-        itemId: result.data.itemId,
-        quantity: 1,
-      });
-    }
+    // 2. Add the book: one atomic SQL increment (or insert). A read-then-write
+    // here could lose a concurrent buy, or restore a book a concurrent learn had
+    // just consumed (security M10, 2026-09-30).
+    await grantInventoryItem(tx, { avatarId: avatar.id, itemId: result.data.itemId });
 
     return { balanceAfter: bal };
   });
