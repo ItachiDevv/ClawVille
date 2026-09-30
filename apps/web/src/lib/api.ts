@@ -1777,10 +1777,12 @@ export const api = {
    * Buy a listed service with CT (auth). The backend REQUIRES an
    * idempotencyKey (same money-safety rule as upgradeStructure) — callers
    * MUST pass a fresh key per buy click so a retry can never double-charge.
+   * `expectedPriceCt` is the price the buyer was shown: if the seller changed
+   * it since, the backend refuses with 409 `price_changed` and charges nothing.
    */
-  buyService: (listingId: string, idempotencyKey: string) =>
+  buyService: (listingId: string, idempotencyKey: string, expectedPriceCt: number) =>
     honoRequest<BuyServiceResponse>(
       `/api/land/services/${encodeURIComponent(listingId)}/buy`,
-      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+      { method: 'POST', body: JSON.stringify({ idempotencyKey, expectedPriceCt }) },
     ),
 };

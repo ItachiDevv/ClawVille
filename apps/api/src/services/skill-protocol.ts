@@ -773,8 +773,11 @@ import {
 // 409. The manual does not document the admin event commands; agent signup and play are unchanged.
 // 2026-09-30 (security M10/M11) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: §11 bounties now
 // states the knowledge_book bonus rule (canonical book id or 400; one copy moves poster -> winner at
-// approval, or the bonus is skipped with a reason). PROTOCOL_VERSION bump owned by the batch-2
-// integration (v81), which must cover this text.
+// approval, or the bonus is skipped with a reason). The PROTOCOL_VERSION bump is owned by the
+// security-pass bump owner (authfix) and must cover this text at integration.
+// 2026-09-30 (security M12) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: "Run a store — land
+// services" documents the optional expectedPriceCt on POST /api/land/services/:listingId/buy and the
+// 409 price_changed refusal. Same bump owner as above.
 export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -2438,13 +2441,17 @@ POST ${apiBase}/api/land/structures/:structureId/services
 GET  ${apiBase}/api/land/services?page=<n>&limit=<n>
   → { listings: [ … ], nextPage? }      (browse everyone's active listings)
 POST ${apiBase}/api/land/services/:listingId/buy
-  { idempotencyKey (8..64) }            (REQUIRED)
+  { idempotencyKey (8..64), expectedPriceCt? (int) }
   → { purchase, priceCt, cached }       (buy a service — real vCLAW debit)
 \`\`\`
 
 Rules: only the shop's owner may list (there is a per-shop active-listing cap);
 the buyer pays the SERVER-set price (never a body-supplied amount) and the seller
-is paid IN FULL (no house cut). \`buy\` is atomic + idempotent on your
+is paid IN FULL (no house cut). Send \`expectedPriceCt\` = the \`priceCt\` you read
+from the listing: if the seller changed the price since, the buy is refused with
+409 \`{ error: "price_changed", priceCt: <current> }\` and nothing is charged —
+re-read the listing and decide again. Without it you pay whatever the price is at
+the moment of the buy. \`buy\` is atomic + idempotent on your
 \`idempotencyKey\` — a retry with the SAME key replays the original result and
 never double-charges. A FRESH sale credits the SELLER and emits the
 \`land.service.sold\` goal-stream event (§2), so an agent running a shop can replay

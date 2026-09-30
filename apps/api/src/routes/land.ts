@@ -493,6 +493,18 @@ class InsufficientClvHoldError extends Error {
   }
 }
 
+/**
+ * Thrown inside the service-buy tx when the caller sent `expectedPriceCt` and the
+ * locked listing's price differs (security M12). Carries the current price so the
+ * 409 body can show it; the tx rolls back before any ledger touch.
+ */
+class ServicePriceChangedError extends Error {
+  constructor(public readonly currentPriceCt: number) {
+    super('price_changed');
+    this.name = 'ServicePriceChangedError';
+  }
+}
+
 /** The frozen parcel DTO returned by every read route (see contract above). */
 interface LandParcelDTO {
   id: string;
@@ -819,12 +831,16 @@ const servicesPageQuerySchema = z
   })
   .strict();
 
-// buy: the ONLY client input is a REQUIRED idempotency key (same Codex
-// BLOCK-HIGH rationale as /upgrade — a keyless retry would double-charge).
-// The price is always server-read from the locked listing row.
-const buyServiceBodySchema = z
+// buy: a REQUIRED idempotency key (same Codex BLOCK-HIGH rationale as
+// /upgrade — a keyless retry would double-charge). The price is always
+// server-read from the locked listing row. OPTIONAL `expectedPriceCt` binds the
+// buy to the price the buyer saw: a mismatch → 409 price_changed with the current
+// price, and nothing is charged (security M12, 2026-09-30 — the seller can
+// PATCH priceCt between the buyer's read and the debit).
+export const buyServiceBodySchema = z
   .object({
     idempotencyKey: z.string().min(8).max(64),
+    expectedPriceCt: z.number().int().nonnegative().max(1_000_000).optional(),
   })
   .strict();
 
@@ -4390,13 +4406,16 @@ landRoutes.get('/services', async (c) => {
 
 // ─── 17. POST /services/:listingId/buy  (AUTH, PARITY-BOUND, atomic, priced) ─
 //
-//   body: { idempotencyKey: string (8..64) }  REQUIRED (.strict())
+//   body: { idempotencyKey: string (8..64) REQUIRED, expectedPriceCt?: int 0..1_000_000 } (.strict())
 //   200 → { purchase: ServicePurchaseDTO, priceCt: number, cached: boolean }
 //   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
 //   401/403 as elsewhere
 //   404 → { error: 'listing_not_found' }
 //   409 → { error: 'listing_not_active' | 'listing_suspended' | 'not_a_peer_listing' | 'structure_unavailable'
 //                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
+//         | { error: 'price_changed', priceCt: number }
+//     price_changed        = `expectedPriceCt` was sent and the listing's current
+//                            price (returned) differs — nothing was charged;
 //     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
 //     structure_unavailable = the seller's shop was archived/evicted or the parcel
 //                             changed hands after the listing was created;
@@ -4430,6 +4449,7 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
     return c.json({ error: 'invalid_body' }, 400);
   }
   const idempotencyKey = bodyParsed.data.idempotencyKey;
+  const expectedPriceCt = bodyParsed.data.expectedPriceCt;
 
   type BuyResult =
     | {
@@ -4566,6 +4586,12 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
       // (4) Self-purchase — asserted BEFORE any ledger touch.
       if (sellerAvatarId === avatarId) {
         throw new HTTPException(409, { message: 'self_purchase' });
+      }
+
+      // (4b) Price binding (security M12) — the price is read under the listing
+      // lock, so a seller PATCH cannot slip in between this check and the debit.
+      if (expectedPriceCt !== undefined && expectedPriceCt !== priceCt) {
+        throw new ServicePriceChangedError(priceCt);
       }
 
       // (5) Settlement — conservation (price in == price out, NO rake, NO
@@ -4720,6 +4746,9 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
     }
     if (err instanceof InsufficientTokensError) {
       return c.json({ error: 'insufficient_clawtokens' }, 400);
+    }
+    if (err instanceof ServicePriceChangedError) {
+      return c.json({ error: 'price_changed', priceCt: err.currentPriceCt }, 409);
     }
     if (err instanceof HTTPException) {
       return c.json({ error: err.message }, err.status as 404 | 409);
