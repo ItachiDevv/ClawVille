@@ -471,6 +471,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-30 (session sql2) — security M2: quest admin gate + reward bound (staging push)
+
+**What changed:** `quests.ts` — admin gate moved from an email match on `admin@clawville.com` to the `ADMIN_USER_IDS` allowlist (codebase-standard named-admin), and `tokenReward` bounded to max 100000 in create/update schemas. Docs: GameFeatures.md, skill-protocol.ts version-log comment (no bump), hatcher-integration-spec §11 note. `[skip-nori-update]` (no orientation/knowledge change).
+**What broke + root cause + fix:** audit M2 — signup does not verify email, so anyone could register `admin@clawville.com` and then create + self-approve quests with an unbounded reward, minting arbitrary vCLAW. Prod stopgap already in place (that email row reserved). Now only ADMIN_USER_IDS can administer quests, and rewards are bounded. tsc clean; quest tests 13 pass / 11 skip / 0 fail.
+**Staging verification after deploy:** SOURCE_COMMIT; a non-admin logged-in user → 403 on quest create. Recorded in CURRENT STATE.
+**Who it's for:** economy integrity (closes an unbounded-mint admin path). After ADMIN_USER_IDS is confirmed set on prod, remove the reserved `admin@clawville.com` row.
+**SCHEMA:** `synced`. PARITY: admin-only; no human/agent gameplay change.
+
 ### 2026-09-30 (session sql2) — security C2: milady-session-exchange requires ledger capability (staging push)
 
 **What changed:** `POST /api/auth/milady-session-exchange` (auth.ts) now requires `sessionLedgerCapable(config, bot.userId)` before it mints a Lucia browser-login cookie; a non-ledger session gets 403. Rides with the M1 tree (the empty re-trigger commit changed no files, so `paths-ignore` skipped its CI — this real code push re-runs the gates on a valid linear history).

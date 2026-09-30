@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-09-30 (security M2 — quest admin via ADMIN_USER_IDS).** Drift note: `routes/quests.ts` now gates admin actions on the existing `ADMIN_USER_IDS` env allowlist (§4; same var used by `middleware/admin-only.ts`, `money-operator-only.ts`, tokenomics-earn) instead of an email match; no new env var. `tokenReward` is bounded (max 100000). Part of the 2026-09-30 security pass.
+
 **Last Audited: 2026-09-30 (security D2 — local-runtime prompt guard).** Drift note: the openclaw chat routes (`/api/openclaw/chat`, `/location-chat`) no longer post a caller's verbatim prompt to a server-hosted `hermes-local` / `openclaw-local` runtime on the ElizaOS fallback; a new pure helper `isLocalToolRuntime()` in `agent-session-config.ts` gates that fallback. Those local runtimes are tool/terminal-capable, so only server-generated ambient cognition may reach them. No schema, route surface, env var, or protocol change; Hatcher unaffected. Part of the 2026-09-30 security pass (plan in the private brain repo).
 
 **Last Audited: 2026-09-29 (i18n section corrected).** Drift note: the i18n section described a cookie + `next-intl` + `apps/web/middleware.ts` locale layer that does not exist in the code; it now documents the live runtime translator (`game-language-control.tsx` + `POST /api/i18n/translate`).

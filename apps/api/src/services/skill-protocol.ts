@@ -595,6 +595,9 @@ import {
 // vCLAW. Hosted-runtime manual memories are keyed on the version, so the bump reaches already-
 // provisioned agents. No wire-shape change; Hatcher uses the [ACTION:] executor (already gated),
 // not these REST routes.
+// 2026-09-30 (security M2): manual reviewed, no version change. The quest admin gate moved from an
+// email match to the ADMIN_USER_IDS allowlist and tokenReward is bounded; quests are admin-only and
+// no agent-facing route, verb, or served-manual text changed.
 export const PROTOCOL_VERSION = 73;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
