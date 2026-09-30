@@ -144,6 +144,38 @@ describe('bounty approve: book bonus moves poster → hunter, never minted (M11)
   });
 });
 
+describe('web Create form bonus rows match the server schema', () => {
+  // The form used to send { type, label, value }, which createBountySchema
+  // rejects, so a bounty with any bonus could not be posted from the UI.
+  it('mapped rows pass createBountySchema; a free-text book id is still refused', async () => {
+    // A computed path keeps the web file out of the API tsc program (rootDir).
+    const webModule = join(import.meta.dir, '..', '..', '..', '..', 'web', 'src', 'lib', 'bounty-bonus-payload.ts');
+    const { toBonusRewardPayload } = (await import(webModule)) as {
+      toBonusRewardPayload: (row: { type: string; label: string; value: string }) => unknown;
+    };
+    const rows = [
+      { type: 'knowledge_book', label: 'Book', value: BOOK.id },
+      { type: 'custom', label: 'Shout-out', value: 'on the town board' },
+    ];
+    const ok = createBountySchema.safeParse({
+      ...bountyBase,
+      bonusRewards: rows.map(toBonusRewardPayload),
+    });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.data.bonusRewards).toEqual([
+        { rewardType: 'knowledge_book', bookId: BOOK.id },
+        { rewardType: 'custom', customDescription: 'Shout-out: on the town board' },
+      ]);
+    }
+    const bad = createBountySchema.safeParse({
+      ...bountyBase,
+      bonusRewards: [toBonusRewardPayload({ type: 'knowledge_book', label: '', value: 'grimoire' })],
+    });
+    expect(bad.success).toBe(false);
+  });
+});
+
 describe('inventory writers never read-then-write the quantity (M10)', () => {
   const files = [
     join(import.meta.dir, '..', 'items.ts'),
