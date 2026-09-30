@@ -667,6 +667,11 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-10-22 06:25Z (session roundup) - AGENTS.md and CLAUDE.md untracked again (config + docs only)
+- **What changed:** founder 2026-10-22: there is ONE governing `AGENTS.md` and `CLAUDE.md` is only the `@AGENTS.md` pointer. That design (founder order 2026-07-24) keeps both files out of this public repo: the private brain copy `~/.clawville-brain/AGENTS.md` is the only source and its sync installs it plus the pointer in every checkout. A `git add -A` in `edc01d19` (2026-09-30) committed both files because the root `*.md` allow-list negated them; the fix `583c4b9e` was written the same day but never pushed, so staging and master carried a second, drifting copy. This push applies `583c4b9e` (drop the two negations, `git rm --cached` both). It also corrects this session's earlier commit `ab6811311`, which copied the newer brain file into the tracked copy on a wrong premise (that untracking would lose the files; the brain sync restores them).
+- **Effect on checkouts:** a checkout that pulls this commit loses its tracked copies; the brain sync (SessionStart / post-checkout) reinstalls the brain `AGENTS.md` and the `CLAUDE.md` pointer. Verified in this worktree: `git check-ignore` matches both, the sync installed the pointer, the local `AGENTS.md` equals the brain copy. No runtime change (the API and web never read these files). Git history keeps the old copies (no history rewrite, founder decision 2026-09-30).
+- SCHEMA: synced.
+
 ### 2026-10-22 06:15Z (session roundup) - quests wire VERIFIED on staging (`a021925ba`)
 - **Rebase:** session jev pushed `8786b615b` (autonomy talk prompt) at 05:09Z while this job was open; the job was rebased onto it (only doc header and log conflicts, both entries kept); autonomy suites 22 files pass after the rebase.
 - **Deploy:** staging disk 8.5 GB free before the push; `docker builder prune -af` (7.6 GB) + old ClawVille `118dc26bd` images removed, 20 GB free. Run 39730451826: 4 gate lanes, migrate, deploy success. API `yvtwz...-20261022T055611` flipped 06:03:59Z, web `ju0n3...-20261022T055611` by 06:08Z; both `SOURCE_COMMIT` = `a021925ba`; `/health` commit `a021925ba`.
