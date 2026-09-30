@@ -209,6 +209,43 @@ const MANIFEST: Entry[] = [
     guard: 'requireNonGuestIdentity',
     routes: [p('post', '/quote'), p('post', '/settle')],
   },
+  {
+    // Ledger-capability lock on the remaining value routes (security A8/A12/
+    // A13/A14, 2026-09-30). A non-ledger agent session (restored public,
+    // guest-owned, or otherwise ownership-unproven) still resolves to the
+    // OWNER's avatar, so each of these must fail closed before its handler:
+    // the USDC on-ramp (custodial settle decrypts the owner's key), the MoonPay
+    // funding URL, the partner purchase, and the activity queue + party surface
+    // (a match credits real CT; queue-status and party/me hand out the room WS
+    // short code and the party invite code).
+    file: 'ct-topup.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [p('post', '/quote'), p('post', '/settle')],
+  },
+  {
+    file: 'moonpay.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [p('post', '/widget-url')],
+  },
+  {
+    file: 'partner-storefront.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [p('post', '/quote'), p('post', '/settle')],
+  },
+  {
+    file: 'activities.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/:id/queue'),
+      p('post', '/:id/leave-queue'),
+      p('get', '/:id/queue-status'),
+      p('get', '/party/me'),
+      p('post', '/party'),
+      p('post', '/party/:shortCode/join'),
+      p('post', '/party/:partyId/kick'),
+      p('post', '/party/:partyId/leave'),
+    ],
+  },
 ];
 
 const sourceCache = new Map<string, string>();

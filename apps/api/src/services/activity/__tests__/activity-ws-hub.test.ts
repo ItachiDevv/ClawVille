@@ -2,8 +2,9 @@
  * Q2 Activity Portals — WS hub unit tests (chunk #3).
  *
  * Coverage:
- *   - auth handshake success (valid Lucia-shaped sessionToken)
- *   - auth handshake failures (bad frame, no session, shortCode mismatch, not a participant)
+ *   - auth handshake success (valid Lucia-shaped sessionToken, ledger-capable agent)
+ *   - auth handshake failures (bad frame, no session, shortCode mismatch, not a participant,
+ *     non-ledger agent session — security A11)
  *   - broadcast fan-out across all connected WS
  *   - slow-client backpressure (getBufferedAmount > threshold)
  *   - unregister cleans up the room map
@@ -32,6 +33,19 @@ mock.module('../../../middleware/require-auth-or-agent', () => ({
         avatarId: 'avatar-1',
         agentId: 'agent-xyz',
         sessionId: 'valid-agent',
+        ledgerCapable: true,
+      };
+    }
+    // Resolves to the SAME owner avatar as `valid-user`, but never proved
+    // ownership (a restored public session or a guest-owned session).
+    if (input.sessionToken === 'nonledger-agent') {
+      return {
+        kind: 'agent',
+        userId: 'user-1',
+        avatarId: 'avatar-1',
+        agentId: 'agent-xyz',
+        sessionId: 'nonledger-agent',
+        ledgerCapable: false,
       };
     }
     return null;
@@ -264,6 +278,56 @@ describe('WS auth handshake', () => {
       }),
     );
     expect(fake.closes[0]?.code).toBe(ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED);
+  });
+
+  it('accepts a ledger-capable agent session for its bound avatar', async () => {
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const fake = makeFakeWs(room.id);
+    await activityWsHub.handleMessage(
+      fake.ws,
+      JSON.stringify({
+        type: 'auth',
+        sessionToken: 'valid-agent',
+        shortCode: room.shortCode,
+      }),
+    );
+    expect(fake.closes).toHaveLength(0);
+    expect(fake.ws.data.authed).toBe(true);
+    expect(fake.sent.map(readFrame).some((f) => f.type === 'snapshot.init')).toBe(true);
+  });
+
+  it('closes 4001 agent_session_not_ledger_authorized on a non-ledger agent session and leaves the owner socket open', async () => {
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const owner = makeFakeWs(room.id);
+    await activityWsHub.handleMessage(
+      owner.ws,
+      JSON.stringify({
+        type: 'auth',
+        sessionToken: 'valid-user',
+        shortCode: room.shortCode,
+      }),
+    );
+    expect(owner.ws.data.authed).toBe(true);
+
+    const intruder = makeFakeWs(room.id);
+    await activityWsHub.handleMessage(
+      intruder.ws,
+      JSON.stringify({
+        type: 'auth',
+        sessionToken: 'nonledger-agent',
+        shortCode: room.shortCode,
+      }),
+    );
+    expect(intruder.closes).toEqual([
+      { code: ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, reason: 'agent_session_not_ledger_authorized' },
+    ]);
+    expect(intruder.ws.data.authed).toBe(false);
+    expect(intruder.ws.data.identity).toBeNull();
+    expect(intruder.sent.map(readFrame).some((f) => f.type === 'snapshot.init')).toBe(false);
+    // The owner's live socket was NOT superseded.
+    expect(owner.closes).toHaveLength(0);
+    const participant = activityRoomManager.getRoom(room.id)?.participants.get('avatar-1');
+    expect(participant?.wsConnectionId).toBe(owner.ws.data.connectionId);
   });
 
   it('closes 4001 when first frame is not auth', async () => {

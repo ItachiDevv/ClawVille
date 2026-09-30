@@ -20,9 +20,16 @@
  *      the claim RELEASED back to pending. Client-echo mismatch ⇒ 400.
  *   6. CONSERVATION: the credit is BOUGHT with a usd_basis; no other ledger
  *      writer is called.
+ *   7. LEDGER GATE (security A8): an agent session that has not proved
+ *      ownership of its bound avatar ⇒ 403 agent_session_not_ledger_authorized
+ *      on /quote and /settle (custodial or paid) BEFORE any row load, claim,
+ *      custodial decrypt, facilitator call or credit. Ledger-capable agents
+ *      and humans pass.
  *
- * DB + facilitator + ledger are stubbed; middleware is a passthrough injecting a
- * fixed ledger identity. The credit is driven through the real Hono route.
+ * DB + facilitator + ledger are stubbed; requireAuthOrAgentSession is a
+ * passthrough injecting the per-test identity (a ledger-capable agent by
+ * default); the REAL requireLedgerCapableIdentity runs. The credit is driven
+ * through the real Hono route.
  */
 
 const HEX32 = '0'.repeat(64);
@@ -164,11 +171,22 @@ mock.module('../../services/claw-token-ledger', () => ({
   },
 }));
 
-// ── middleware passthrough injecting a fixed ledger identity (leak-guarded:
-//    DELEGATES to the real middleware for every OTHER route test) ────────────
-const IDENTITY = { avatarId: 'avatar-1', userId: 'user-1', kind: 'agent' as const };
+// ── middleware passthrough injecting the per-test identity (leak-guarded:
+//    DELEGATES to the real middleware for every OTHER route test). The REAL
+//    requireLedgerCapableIdentity (spread from the real module) runs next. ───
+const LEDGER_AGENT = {
+  kind: 'agent' as const,
+  userId: 'user-1',
+  avatarId: 'avatar-1',
+  agentId: 'agent-1',
+  sessionId: 'session-1',
+  ledgerCapable: true,
+};
+const NON_LEDGER_AGENT = { ...LEDGER_AGENT, ledgerCapable: false };
+const HUMAN = { kind: 'user' as const, userId: 'user-1', avatarId: 'avatar-1', agentId: null };
+let identity: Record<string, unknown> = LEDGER_AGENT;
 const passIdentity: Mw = async (c, next) => {
-  (c as { set: (k: string, v: unknown) => void }).set('identity', IDENTITY);
+  (c as { set: (k: string, v: unknown) => void }).set('identity', identity);
   await next();
 };
 const passthrough: Mw = async (_c, next) => {
@@ -259,6 +277,7 @@ const throw23505 = () => () => {
 };
 
 beforeEach(() => {
+  identity = LEDGER_AGENT;
   updateCalls.length = 0;
   creditCalls.length = 0;
   receiptInsertCalls.length = 0;
@@ -461,5 +480,73 @@ describe('ct-topup settle — durable claim → capture → resumable credit', (
     const json = (await res.json()) as Record<string, unknown>;
     expect(json.code).toBe('topup_not_found');
     expect(verifyAndSettleCalls).toBe(0);
+  });
+});
+
+describe('ct-topup ledger gate — non-ledger agent sessions never reach the money path (security A8)', () => {
+  async function quote(body: unknown) {
+    return app.request('/api/ct/topup/quote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('non-ledger agent: /quote ⇒ 403 agent_session_not_ledger_authorized', async () => {
+    identity = NON_LEDGER_AGENT;
+    const res = await quote({ asset: 'usdc', usdCents: 500 });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('agent_session_not_ledger_authorized');
+  });
+
+  it('non-ledger agent: custodial /settle ⇒ 403 before any row load, claim, decrypt, facilitator or credit', async () => {
+    identity = NON_LEDGER_AGENT;
+    findFirstQueue = [pendingRow()];
+    const res = await app.request('/api/ct/topup/settle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'Idempotency-Key': 'idem-1' },
+      body: JSON.stringify({ topupId: TOPUP_ID, asset: 'usdc', usdCents: 500, custodial: true }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('agent_session_not_ledger_authorized');
+    // The handler never ran: the bound-avatar row load (and so the custodial
+    // key decrypt that follows it) never happened.
+    expect(findFirstQueue).toHaveLength(1);
+    expect(updateCalls).toHaveLength(0);
+    expect(verifyAndSettleCalls).toBe(0);
+    expect(creditCalls).toHaveLength(0);
+    expect(txRan).toBe(0);
+  });
+
+  it('non-ledger agent: paid /settle (PAYMENT-SIGNATURE) ⇒ 403, nothing settles', async () => {
+    identity = NON_LEDGER_AGENT;
+    findFirstQueue = [pendingRow()];
+    const res = await settle();
+    expect(res.status).toBe(403);
+    expect(findFirstQueue).toHaveLength(1);
+    expect(verifyAndSettleCalls).toBe(0);
+    expect(creditCalls).toHaveLength(0);
+  });
+
+  it('ledger-capable agent and human pass the gate into the /quote handler', async () => {
+    for (const who of [LEDGER_AGENT, HUMAN]) {
+      identity = who;
+      // An invalid body is answered by the handler's own validation — proof the
+      // gate let the caller through without touching the database.
+      const res = await quote({ asset: 'sol', usdCents: 500 });
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as Record<string, unknown>;
+      expect(json.code).toBe('invalid_request');
+    }
+  });
+
+  it('human: settle credits exactly as for a ledger-capable agent', async () => {
+    identity = HUMAN;
+    findFirstQueue = [pendingRow(), capturedRow()];
+    const res = await settle();
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json.ctCredited).toBe(500);
+    expect(creditCalls).toHaveLength(1);
   });
 });

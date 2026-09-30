@@ -33,6 +33,11 @@
  * `requireAuthOrAgentSession`. An agent tops up ITS OWN avatar (identity.avatarId)
  * for REAL CT + leaderboard consequence — never a guest demotion, never a body-
  * supplied avatarId. Unbound/expired agent ⇒ the middleware 401/403s.
+ * An agent session that has not proved ownership of its bound avatar (a
+ * restored public session, a guest-owned session) ⇒ 403
+ * agent_session_not_ledger_authorized (requireLedgerCapableIdentity), because a
+ * `custodial: true` settle decrypts the owner's custodial key and pays USDC
+ * (security A8, 2026-09-30).
  *
  * DOUBLE-CREDIT INVARIANT (R-doublecredit, Critical): one settled tx signature
  * credits CT EXACTLY ONCE. Enforced by the DB, not by application logic:
@@ -53,6 +58,7 @@ import { db, ctTopups, avatars, wallets, and, eq, isNull, inArray, sql } from '@
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
@@ -306,7 +312,7 @@ const quoteSchema = z.object({
   usdCents: z.number().int().positive().max(1_000_000),
 });
 
-ctTopupRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+ctTopupRoutes.post('/quote', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
 
   let body: unknown;
@@ -463,7 +469,7 @@ type TopupOutcome = {
 /** The x402_checkouts row shape ct_topups mirrors for the settle machine. */
 type TopupRow = NonNullable<Awaited<ReturnType<typeof db.query.ctTopups.findFirst>>>;
 
-ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
 
   // 1) Idempotency-Key header is REQUIRED on settle (terminal money action).
