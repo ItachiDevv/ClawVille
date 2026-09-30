@@ -147,6 +147,10 @@ export * from './constants/house-trader-lineup';
 // House-trader RISK STATUS wire contract (2026-09-20). The runner REPORTS why
 // it cannot enter; nothing is ever inferred from trade silence.
 export * from './constants/house-trader-status';
+// Trading Floor Arena (2026-09-30) — paper-contest templates, param bounds and
+// validation, hard rules, contest window, and the DB value sets. Paper only.
+// Contract: docs/trading-floor-arena.md §2 + §4.
+export * from './constants/floor-arena';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';

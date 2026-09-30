@@ -2,26 +2,27 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { TRADE_MINTS } from '@clawville/shared';
-import type { FloorTrade } from '@/stores/trade-ticker';
-import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
-
 import {
+  ARENA_TAPE_LIMIT,
   buildTapeSources,
-  classifyTapeTrade,
+  classifyArenaTapeItem,
   createTapeChipTransform,
   drawTapeAtlas,
   formatTapeSignedUsd,
   formatTapeUsd,
+  readArenaTape,
   reconcileTapeChips,
   tapeCellRect,
   tapeCellUv,
   tapeChipPhase,
   tapeTraderName,
   TAPE_CHIP_COLOR,
+  TAPE_ENTRY_LANE,
+  TAPE_EXIT_LANE,
   TAPE_LANE_YAW,
   TAPE_POP_MIN_SCALE,
   writeTapeChipTransform,
+  TAPE_ACTION_MAX_CHARS,
   TAPE_AMOUNT_MAX_CHARS,
   TAPE_ATLAS_HEIGHT,
   TAPE_ATLAS_WIDTH,
@@ -41,6 +42,7 @@ import {
   TAPE_Y,
   TAPE_Z_END,
   TAPE_Z_START,
+  type ArenaTapeItem,
   type TapeChip,
 } from './trading-floor-trade-tape';
 import {
@@ -57,185 +59,225 @@ import {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const MEME = 'MemeMintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const MINT = '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1';
+const T0 = Date.parse('2026-10-01T12:00:00.000Z');
+const at = (secondsAfterT0: number) => new Date(T0 + secondsAfterT0 * 1000).toISOString();
 
-function trade(overrides: Partial<FloorTrade> & { signature: string }): FloorTrade {
+/** One tape row as the contract describes it (docs/trading-floor-arena.md §5). */
+function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    keys: [overrides.signature],
-    kind: 'trade',
-    subject: null,
-    wallet: null,
-    inputMint: TRADE_MINTS.USDC,
-    outputMint: MEME,
-    notionalUsd: 12.5,
-    dex: 'jupiter',
-    blockTime: 1_700_000_000,
-    multiplier: 1,
-    multiplierTier: 'base',
-    decisionId: null,
-    scored: true,
-    unscoredReason: null,
-    operatedByClawville: true,
+    id: 'e1',
+    at: at(0),
+    agentId: 'house:genesis',
+    agentName: 'Genesis',
+    kind: 'house',
+    type: 'entry',
+    mint: MINT,
+    symbol: 'BONK',
+    side: 'buy',
+    usd: 20,
+    pnlUsd: null,
+    pnlMult: null,
+    reason: null,
     ...overrides,
   };
 }
 
-function slot(
-  slotName: string,
-  trades: FloorTrade[],
-): HouseTraderSlotView {
+/** An exit row. */
+function exit(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return row({ id: 'x1', type: 'exit', side: 'sell', symbol: 'WIF', pnlUsd: 1.237, pnlMult: 1.06, reason: 'tp', ...overrides });
+}
+
+function item(overrides: Partial<ArenaTapeItem> = {}): ArenaTapeItem {
   return {
-    objective: 'momentum',
-    slotName,
-    strategyNote: '',
-    status: 'live-observed',
-    subject: null,
-    counts: { verified: trades.length, scored: trades.length, lastTradeAt: null },
-    risk: null,
-    realised: null,
-    recentTrades: trades,
+    id: 'e1',
+    atMs: T0,
+    agentName: 'Genesis',
+    type: 'entry',
+    symbol: 'BONK',
+    usd: 20,
+    pnlUsd: null,
+    ...overrides,
   };
 }
 
 function chip(overrides: Partial<TapeChip> = {}): TapeChip {
   return {
-    key: 'sig',
+    key: 'id',
     lane: 0,
     seed: 0.3,
     kind: 'gain',
     trader: 'GENESIS',
-    amount: 'SELL +$1.24',
+    action: 'SELL WIF',
+    amount: '+$1.24',
     releasedAtMs: 0,
     ...overrides,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Classification
+// The feed
 // ---------------------------------------------------------------------------
 
-describe('classifyTapeTrade', () => {
-  test('quote in, token out is a BUY and carries the notional, never a P&L', () => {
-    const face = classifyTapeTrade(
-      trade({ signature: 'a', inputMint: TRADE_MINTS.USDC, outputMint: TRADE_MINTS.ANSEM }),
-    );
-    expect(face.kind).toBe('buy');
-    expect(face.amount).toBe('BUY $12.50');
+describe('readArenaTape', () => {
+  test('reads the bare array and the two envelopes, and nothing else', () => {
+    const expected = readArenaTape([row()]);
+    expect(expected).toHaveLength(1);
+    expect(readArenaTape({ items: [row()] })).toEqual(expected);
+    expect(readArenaTape({ tape: [row()] })).toEqual(expected);
+    for (const junk of [undefined, null, 'tape', 7, {}, { items: 'x' }]) {
+      expect(readArenaTape(junk)).toEqual([]);
+    }
   });
 
-  test('a sell with a positive realised figure is a GAIN', () => {
-    const face = classifyTapeTrade({
-      ...trade({ signature: 'b', inputMint: TRADE_MINTS.ANSEM, outputMint: TRADE_MINTS.USDC }),
-      realisedUsd: 1.237,
-    } as FloorTrade);
-    expect(face.kind).toBe('gain');
-    expect(face.amount).toBe('SELL +$1.24');
+  test('carries exactly the fields a face or the board row draws — never the mint', () => {
+    const [read] = readArenaTape([row()]);
+    expect(read).toEqual({
+      id: 'e1',
+      atMs: T0,
+      agentName: 'Genesis',
+      type: 'entry',
+      symbol: 'BONK',
+      usd: 20,
+      pnlUsd: null,
+    });
+    expect(JSON.stringify(read)).not.toContain(MINT);
   });
 
-  test('a sell with a negative realised figure is a LOSS', () => {
-    const face = classifyTapeTrade({
-      ...trade({ signature: 'c', inputMint: TRADE_MINTS.CLAWVILLE, outputMint: TRADE_MINTS.WSOL }),
-      realisedUsd: -0.87,
-    } as FloorTrade);
-    expect(face.kind).toBe('loss');
-    expect(face.amount).toBe('SELL -$0.87');
+  test('a row with no id, an unknown side, or no object at all is dropped', () => {
+    const read = readArenaTape([
+      row({ id: '' }),
+      row({ id: 7 }),
+      row({ id: 'a', type: 'swap' }),
+      null,
+      'row',
+      row({ id: 'ok' }),
+    ]);
+    expect(read.map((value) => value.id)).toEqual(['ok']);
   });
 
-  test('a sell we cannot price is FLAT and states the side, never a figure', () => {
-    const face = classifyTapeTrade(
-      trade({
-        signature: 'd',
-        inputMint: MEME,
-        outputMint: TRADE_MINTS.USDC,
-        notionalUsd: null,
-      }),
-    );
-    expect(face.kind).toBe('flat');
-    expect(face.amount).toBe('SELL');
+  test('one tape id is one row, first wins', () => {
+    const read = readArenaTape([row({ id: 'same', agentName: 'First' }), row({ id: 'same', agentName: 'Second' })]);
+    expect(read).toHaveLength(1);
+    expect(read[0]!.agentName).toBe('First');
+  });
+
+  test('newest first; an undated or unparsable time sorts last and is kept', () => {
+    const read = readArenaTape([
+      row({ id: 'old', at: at(-600) }),
+      row({ id: 'undated', at: null }),
+      row({ id: 'garbage', at: 'yesterday' }),
+      row({ id: 'new', at: at(0) }),
+    ]);
+    expect(read.map((value) => value.id)).toEqual(['new', 'old', 'undated', 'garbage']);
+    expect(read[2]!.atMs).toBeNull();
+    expect(read[3]!.atMs).toBeNull();
+  });
+
+  test('a money field that is not a finite number is unknown, never 0', () => {
+    const [read] = readArenaTape([exit({ usd: '20', pnlUsd: Number.NaN })]);
+    expect(read!.usd).toBeNull();
+    expect(read!.pnlUsd).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Faces
+// ---------------------------------------------------------------------------
+
+describe('classifyArenaTapeItem', () => {
+  test('an entry is a BUY of the token for the ticket, never a P&L', () => {
+    expect(classifyArenaTapeItem(item())).toEqual({ kind: 'buy', action: 'BUY BONK', amount: '$20.00' });
+  });
+
+  test('an exit with a positive result is a GAIN, a negative one a LOSS', () => {
+    expect(classifyArenaTapeItem(item({ type: 'exit', symbol: 'WIF', pnlUsd: 1.237 }))).toEqual({
+      kind: 'gain',
+      action: 'SELL WIF',
+      amount: '+$1.24',
+    });
+    expect(classifyArenaTapeItem(item({ type: 'exit', symbol: 'WIF', pnlUsd: -0.87 }))).toEqual({
+      kind: 'loss',
+      action: 'SELL WIF',
+      amount: '-$0.87',
+    });
   });
 
   test('a realised ZERO is flat and prints unsigned — it is neither', () => {
-    const face = classifyTapeTrade({
-      ...trade({ signature: 'e', inputMint: MEME, outputMint: TRADE_MINTS.USDC }),
-      realisedUsd: 0,
-    } as FloorTrade);
-    expect(face.kind).toBe('flat');
-    expect(face.amount).toBe('SELL $0.00');
+    expect(classifyArenaTapeItem(item({ type: 'exit', pnlUsd: 0 }))).toMatchObject({
+      kind: 'flat',
+      amount: '$0.00',
+    });
   });
 
-  test('a non-finite realised figure never renders as 0', () => {
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, '1.5', null, undefined]) {
-      const face = classifyTapeTrade({
-        ...trade({ signature: 'f', inputMint: MEME, outputMint: TRADE_MINTS.USDC }),
-        realisedUsd: bad,
-      } as unknown as FloorTrade);
-      expect(face.kind).toBe('flat');
-      expect(face.amount).toBe('SELL $12.50');
-    }
+  // "SELL WIF $20.00" would read as "sold for $20", a figure we were not given.
+  test('an exit the route could not price is flat and shows no figure at all', () => {
+    expect(classifyArenaTapeItem(item({ type: 'exit', symbol: 'WIF', pnlUsd: null }))).toEqual({
+      kind: 'flat',
+      action: 'SELL WIF',
+      amount: '',
+    });
   });
 
-  test('quote on both legs (or neither) is a SWAP, not a guessed side', () => {
-    const bothQuote = classifyTapeTrade(
-      trade({ signature: 'g', inputMint: TRADE_MINTS.USDC, outputMint: TRADE_MINTS.WSOL }),
-    );
-    expect(bothQuote.kind).toBe('flat');
-    expect(bothQuote.amount).toBe('SWAP');
-
-    const neitherQuote = classifyTapeTrade(
-      trade({ signature: 'h', inputMint: MEME, outputMint: TRADE_MINTS.ANSEM }),
-    );
-    expect(neitherQuote.amount).toBe('SWAP');
+  test('no symbol states the side alone; no ticket states no figure', () => {
+    expect(classifyArenaTapeItem(item({ symbol: null })).action).toBe('BUY');
+    expect(classifyArenaTapeItem(item({ symbol: '' })).action).toBe('BUY');
+    expect(classifyArenaTapeItem(item({ usd: null })).amount).toBe('');
+    expect(classifyArenaTapeItem(item({ usd: 0 })).amount).toBe('');
   });
 
-  test('side and signed money fit the cell without losing cents', () => {
-    for (const [realisedUsd, expected] of [
-      [6.97, 'SELL +$6.97'], [-3.21, 'SELL -$3.21'],
-      [12.5, 'SELL +$12.50'], [-999.99, 'SELL -$999.99'],
+  // The symbol is DexScreener text. Sanitised BEFORE it is cut, or a truncated
+  // address would be a printable fragment the address strip no longer sees.
+  test('a symbol that is an address is dropped, and one hidden by an invisible char too', () => {
+    expect(classifyArenaTapeItem(item({ symbol: MINT })).action).toBe('BUY');
+    const split = `${MINT.slice(0, 20)}​${MINT.slice(20)}`;
+    expect(classifyArenaTapeItem(item({ symbol: split })).action).toBe('BUY');
+    expect(classifyArenaTapeItem(item({ symbol: 'ｂｏｎｋ' })).action).toBe('BUY BONK');
+  });
+
+  test('side, token and signed money fit the cell without losing cents', () => {
+    for (const [pnlUsd, expected] of [
+      [6.97, '+$6.97'],
+      [-3.21, '-$3.21'],
+      [12.5, '+$12.50'],
+      [-999.99, '-$999.99'],
+      [-99_999.99, '-$99,999.99'],
+      [9_999_999, '+$10.0M'],
     ] as const) {
-      const face = classifyTapeTrade({
-        ...trade({ signature: 'sell', inputMint: MEME, outputMint: TRADE_MINTS.USDC }),
-        realisedUsd,
-      } as FloorTrade);
+      const face = classifyArenaTapeItem(item({ type: 'exit', pnlUsd }));
       expect(face.amount).toBe(expected);
       expect(face.amount.length).toBeLessThanOrEqual(TAPE_AMOUNT_MAX_CHARS);
     }
-    expect(classifyTapeTrade(trade({ signature: 'buy', notionalUsd: 10 })).amount).toBe('BUY $10.00');
+    // Every magnitude fits the row WITHOUT being cut: the drawn amount is the
+    // formatter's whole output, at every power of ten and just below it.
+    for (let power = -2; power <= 16; power++) {
+      for (const magnitude of [10 ** power, 10 ** power - 0.004, 10 ** power * 9.9996]) {
+        for (const pnlUsd of [magnitude, -magnitude]) {
+          const face = classifyArenaTapeItem(item({ type: 'exit', pnlUsd }));
+          expect({ pnlUsd, amount: face.amount, fits: face.amount.length <= TAPE_AMOUNT_MAX_CHARS }).toEqual({
+            pnlUsd,
+            amount: formatTapeSignedUsd(pnlUsd),
+            fits: true,
+          });
+        }
+      }
+    }
+    const long = classifyArenaTapeItem(item({ type: 'exit', symbol: 'SUPERLONGSYMBOL', pnlUsd: 1 }));
+    expect(long.action).toBe('SELL SUPERLON');
+    expect(long.action.length).toBeLessThanOrEqual(TAPE_ACTION_MAX_CHARS);
   });
-
-  test('large amounts remain inside one atlas cell', () => {
-    const face = classifyTapeTrade(trade({ signature: 'large', notionalUsd: 9_999_999 }));
-    expect(face.amount.length).toBeLessThanOrEqual(TAPE_AMOUNT_MAX_CHARS);
-  });
-
 });
 
 describe('trader labels', () => {
-  test('short names come from slots, including reversed lineup order', () => {
-    const sources = buildTapeSources([
-      slot('ClawVille Runner', [trade({ signature: 'r' })]),
-      slot('Genesis', [trade({ signature: 'g' })]),
-    ]);
-    expect(sources.map((s) => [s.trader, s.lane])).toEqual([['RUNNER', 0], ['GENESIS', 1]]);
-  });
-
-  test('venue and mints never appear on chip faces', () => {
-    for (const dex of ['jupiter', 'pumpswap', 'pumpfun'] as const) {
-      for (const outputMint of [MEME, TRADE_MINTS.ANSEM, TRADE_MINTS.CLAWVILLE]) {
-        const source = buildTapeSources([slot('Genesis', [trade({ signature: dex, dex, outputMint })])])[0]!;
-        expect(source.trader).toBe('GENESIS');
-        expect(source.amount).toBe('BUY $12.50');
-      }
-    }
-  });
-
-  test('full names use the existing sanitizer before shortening', () => {
+  test('names are sanitised before they are shortened', () => {
     expect(tapeTraderName('Ｇｅｎｅｓｉｓ')).toBe('GENESIS');
     expect(tapeTraderName('ClawVille\u0000 Runner')).toBe('RUNNER');
-    for (const name of [TRADE_MINTS.USDC, TRADE_MINTS.WSOL, '0x' + 'ab'.repeat(20)]) {
+    expect(tapeTraderName('Mid-Cap Climber')).toBe('MID-CAP CL');
+    for (const name of [MINT, '0x' + 'ab'.repeat(20)]) {
       expect(tapeTraderName(name)).toBe('TRADER');
-      expect(tapeTraderName(name.slice(0, 12) + '\u200b' + name.slice(12))).toBe('TRADER');
+      expect(tapeTraderName(name.slice(0, 12) + '​' + name.slice(12))).toBe('TRADER');
     }
-    for (const name of ['Genesis\n🎲', 'ClawVille Runner', 'Very Long Trader Name', '']) {
+    for (const name of ['Genesis\n🎲', 'Very Long Trader Name', '']) {
       const label = tapeTraderName(name);
       expect(label).toMatch(/^[\x20-\x7e]+$/);
       expect(label.length).toBeLessThanOrEqual(TAPE_TRADER_MAX_CHARS);
@@ -244,13 +286,24 @@ describe('trader labels', () => {
 });
 
 describe('money formatting', () => {
-  test('two decimals under 1000, none above, so a big trade cannot overflow', () => {
+  // Codex review 2026-09-30: amounts from 1,000 up were rounded to whole
+  // dollars with no mark, and the builder then CUT anything past 13 characters
+  // ("+$1,000,000,000" -> "+$1,000,000,0", a different figure).
+  test('exact to the cent below 100,000, compact above, and never cut', () => {
     expect(formatTapeUsd(12.5)).toBe('$12.50');
     expect(formatTapeUsd(0.004)).toBe('$0.00');
-    expect(formatTapeUsd(1234.6)).toBe('$1,235');
+    expect(formatTapeUsd(1234.6)).toBe('$1,234.60');
+    expect(formatTapeUsd(99_999.99)).toBe('$99,999.99');
+    expect(formatTapeUsd(99_999.996)).toBe('$100.0K');
+    expect(formatTapeUsd(123_456)).toBe('$123.5K');
+    expect(formatTapeUsd(999_960)).toBe('$1.0M');
+    expect(formatTapeUsd(1.2e9)).toBe('$1.2B');
+    expect(formatTapeUsd(1e18)).toBe('N/A');
+    expect(formatTapeUsd(Number.NaN)).toBe('N/A');
     expect(formatTapeSignedUsd(-1.5)).toBe('-$1.50');
     expect(formatTapeSignedUsd(1.5)).toBe('+$1.50');
     expect(formatTapeSignedUsd(0)).toBe('$0.00');
+    expect(formatTapeSignedUsd(1e18)).toBe('N/A');
   });
 });
 
@@ -259,56 +312,67 @@ describe('money formatting', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildTapeSources', () => {
-  test('slot 0 takes the left lane, slot 1 the right', () => {
-    const sources = buildTapeSources([
-      slot('Genesis', [trade({ signature: 'g1' })]),
-      slot('ClawVille Runner', [trade({ signature: 'r1' })]),
-    ]);
-    expect(sources.map((s) => [s.key, s.lane])).toEqual([
-      ['g1', 0],
-      ['r1', 1],
+  test('entries fly down the left lane, exits down the right', () => {
+    expect(TAPE_ENTRY_LANE).toBe(0);
+    expect(TAPE_EXIT_LANE).toBe(1);
+    const sources = buildTapeSources([row({ id: 'e', at: at(0) }), exit({ id: 'x', at: at(-5) })]);
+    expect(sources.map((value) => [value.key, value.lane, value.kind])).toEqual([
+      ['e', 0, 'buy'],
+      ['x', 1, 'gain'],
     ]);
   });
 
-  test('newest first within a lane, and an undated trade sorts last', () => {
-    const sources = buildTapeSources([
-      slot('Genesis', [
-        trade({ signature: 'old', blockTime: 100 }),
-        trade({ signature: 'undated', blockTime: null }),
-        trade({ signature: 'new', blockTime: 900 }),
-      ]),
-    ]);
-    expect(sources.map((s) => s.key)).toEqual(['new', 'old', 'undated']);
-  });
-
-  test('capped per lane, so the geometry can never be asked for a 13th quad', () => {
-    const many = Array.from({ length: 40 }, (_, index) =>
-      trade({ signature: `s${index}`, blockTime: 1000 - index }),
+  test('each lane holds its own newest six: a run of up to 18 entries still leaves six exits', () => {
+    const entries = Array.from({ length: 18 }, (_unused, index) =>
+      row({ id: `e${index}`, at: at(-index) }),
     );
-    const sources = buildTapeSources([slot('Genesis', many), slot('Runner', many.slice(20))]);
-    expect(sources.filter((s) => s.lane === 0)).toHaveLength(TAPE_PER_LANE);
-    expect(sources.filter((s) => s.lane === 1)).toHaveLength(TAPE_PER_LANE);
+    const exits = Array.from({ length: 6 }, (_unused, index) =>
+      exit({ id: `x${index}`, at: at(-100 - index) }),
+    );
+    const sources = buildTapeSources([...entries, ...exits]);
+    expect(sources.filter((value) => value.lane === TAPE_ENTRY_LANE)).toHaveLength(TAPE_PER_LANE);
+    expect(sources.filter((value) => value.lane === TAPE_EXIT_LANE)).toHaveLength(TAPE_PER_LANE);
     expect(sources.length).toBeLessThanOrEqual(TAPE_MAX_CHIPS);
-  });
-
-  test('ONE on-chain trade never becomes two objects in the room', () => {
-    const shared = trade({ signature: 'shared' });
-    const sources = buildTapeSources([slot('Genesis', [shared]), slot('Runner', [shared])]);
-    expect(sources).toHaveLength(1);
-    expect(sources[0]!.lane).toBe(0);
-  });
-
-  test('a row with no signature is dropped rather than keyed on empty', () => {
-    const sources = buildTapeSources([
-      slot('Genesis', [trade({ signature: '' }), trade({ signature: 'ok' })]),
+    // Newest of each side.
+    expect(sources.filter((value) => value.lane === 0).map((value) => value.key)).toEqual([
+      'e0', 'e1', 'e2', 'e3', 'e4', 'e5',
     ]);
-    expect(sources.map((s) => s.key)).toEqual(['ok']);
   });
 
-  test('no data and no trades both yield an empty tape, never a throw', () => {
+  // The limit of the claim, pinned so nobody reads the lanes as guaranteed:
+  // 24 entries in a row fill the window and the exit lane is empty.
+  test('a run longer than 18 entries leaves the exit lane short, and says nothing false', () => {
+    const entries = Array.from({ length: 24 }, (_unused, index) =>
+      row({ id: `e${index}`, at: at(-index) }),
+    );
+    const sources = buildTapeSources([...entries, exit({ id: 'old-exit', at: at(-500) })]);
+    expect(sources.filter((value) => value.lane === TAPE_ENTRY_LANE)).toHaveLength(TAPE_PER_LANE);
+    // The route window is 24 rows; the 25th (the exit) is outside it in the
+    // live feed, and inside it here only because the fixture passes it.
+    expect(sources.filter((value) => value.lane === TAPE_EXIT_LANE)).toHaveLength(1);
+    expect(buildTapeSources(entries).filter((value) => value.lane === TAPE_EXIT_LANE)).toHaveLength(0);
+  });
+
+  test('both surfaces ask for enough rows to fill both lanes', () => {
+    expect(ARENA_TAPE_LIMIT).toBe(24);
+    expect(ARENA_TAPE_LIMIT).toBeGreaterThanOrEqual(TAPE_MAX_CHIPS);
+  });
+
+  test('ONE tape row never becomes two objects in the room', () => {
+    expect(buildTapeSources([row({ id: 'same' }), row({ id: 'same' })])).toHaveLength(1);
+  });
+
+  test('the mint never reaches a chip face', () => {
+    for (const source of buildTapeSources([row(), exit(), row({ id: 'n', symbol: MINT })])) {
+      expect(`${source.trader} ${source.action} ${source.amount}`).not.toContain(MINT.slice(0, 5).toUpperCase());
+      expect(`${source.trader} ${source.action} ${source.amount}`).not.toContain(MINT.slice(0, 5));
+    }
+  });
+
+  test('no data and no rows both yield an empty tape, never a throw', () => {
     expect(buildTapeSources(undefined)).toEqual([]);
     expect(buildTapeSources([])).toEqual([]);
-    expect(buildTapeSources([slot('Genesis', [])])).toEqual([]);
+    expect(buildTapeSources({ items: [] })).toEqual([]);
   });
 });
 
@@ -321,11 +385,9 @@ describe('reconcileTapeChips', () => {
 
   test('THE FIRST FILL SEEDS: the hall is already moving, and nothing pops', () => {
     const sources = buildTapeSources([
-      slot('Genesis', [
-        trade({ signature: 'g1', blockTime: 300 }),
-        trade({ signature: 'g2', blockTime: 200 }),
-        trade({ signature: 'g3', blockTime: 100 }),
-      ]),
+      row({ id: 'g1', at: at(-100) }),
+      row({ id: 'g2', at: at(-200) }),
+      row({ id: 'g3', at: at(-300) }),
     ]);
     const chips = reconcileTapeChips([], sources, now);
     const phases = chips.map((c) => tapeChipPhase(c, now));
@@ -333,19 +395,16 @@ describe('reconcileTapeChips', () => {
     // Every seeded chip is past its first traverse, so none of them pops.
     for (const phase of phases) expect(phase.cycle).toBeGreaterThanOrEqual(1);
     // And they are spread along the lane rather than stacked at the wall.
-    expect(phases.map((p) => Number(p.phase.toFixed(4)))).toEqual([0, 1 / 3, 2 / 3].map((v) => Number(v.toFixed(4))));
+    expect(phases.map((p) => Number(p.phase.toFixed(4)))).toEqual(
+      [0, 1 / 3, 2 / 3].map((v) => Number(v.toFixed(4))),
+    );
   });
 
-  test('a trade that arrives LATER enters at the wall and pops', () => {
-    const first = reconcileTapeChips([], buildTapeSources([slot('G', [trade({ signature: 'a' })])]), now);
+  test('a row that arrives LATER enters at the wall and pops', () => {
+    const first = reconcileTapeChips([], buildTapeSources([row({ id: 'a', at: at(-60) })]), now);
     const later = reconcileTapeChips(
       first,
-      buildTapeSources([
-        slot('G', [
-          trade({ signature: 'fresh', blockTime: 9_000 }),
-          trade({ signature: 'a', blockTime: 1_000 }),
-        ]),
-      ]),
+      buildTapeSources([row({ id: 'fresh', at: at(0) }), row({ id: 'a', at: at(-60) })]),
       now + 5_000,
     );
     const fresh = later.find((c) => c.key === 'fresh')!;
@@ -355,45 +414,44 @@ describe('reconcileTapeChips', () => {
     expect(phase.phase).toBeLessThan(TAPE_POP);
   });
 
-  test('a surviving trade keeps its flight across a poll', () => {
-    const sources = buildTapeSources([slot('G', [trade({ signature: 'a' })])]);
+  test('a surviving row keeps its flight across a poll', () => {
+    const sources = buildTapeSources([row({ id: 'a' })]);
     const first = reconcileTapeChips([], sources, now);
     const second = reconcileTapeChips(first, sources, now + 15_000);
     expect(second[0]!.releasedAtMs).toBe(first[0]!.releasedAtMs);
   });
 
   test('a poll that changed nothing returns the SAME array, so no atlas repaint', () => {
-    const sources = buildTapeSources([slot('G', [trade({ signature: 'a' })])]);
-    const first = reconcileTapeChips([], sources, now);
-    const second = reconcileTapeChips(
-      first,
-      buildTapeSources([slot('G', [trade({ signature: 'a' })])]),
-      now + 15_000,
-    );
+    const first = reconcileTapeChips([], buildTapeSources([row({ id: 'a' })]), now);
+    const second = reconcileTapeChips(first, buildTapeSources([row({ id: 'a' })]), now + 15_000);
     expect(second).toBe(first);
   });
 
   test('an emptied payload clears the tape, and stays empty without churning', () => {
-    const first = reconcileTapeChips([], buildTapeSources([slot('G', [trade({ signature: 'a' })])]), now);
+    const first = reconcileTapeChips([], buildTapeSources([row({ id: 'a' })]), now);
     const cleared = reconcileTapeChips(first, [], now);
     expect(cleared).toEqual([]);
-    const stillEmpty = reconcileTapeChips(cleared, [], now);
-    expect(stillEmpty).toBe(cleared);
+    expect(reconcileTapeChips(cleared, [], now)).toBe(cleared);
   });
 
   test('a chip whose FACE changed keeps flying rather than restarting', () => {
-    const before = reconcileTapeChips([], buildTapeSources([slot('G', [trade({ signature: 'a' })])]), now);
+    const before = reconcileTapeChips([], buildTapeSources([exit({ id: 'a', pnlUsd: null })]), now);
+    expect(before[0]!.kind).toBe('flat');
     const after = reconcileTapeChips(
       before,
-      buildTapeSources([
-        slot('G', [
-          { ...trade({ signature: 'a', inputMint: MEME, outputMint: TRADE_MINTS.USDC }), realisedUsd: 2 } as FloorTrade,
-        ]),
-      ]),
+      buildTapeSources([exit({ id: 'a', pnlUsd: 2 })]),
       now + 30_000,
     );
     expect(after[0]!.kind).toBe('gain');
+    expect(after[0]!.amount).toBe('+$2.00');
     expect(after[0]!.releasedAtMs).toBe(before[0]!.releasedAtMs);
+  });
+
+  test('a changed ACTION alone repaints the atlas', () => {
+    const before = reconcileTapeChips([], buildTapeSources([row({ id: 'a', symbol: 'BONK' })]), now);
+    const after = reconcileTapeChips(before, buildTapeSources([row({ id: 'a', symbol: 'WIF' })]), now);
+    expect(after).not.toBe(before);
+    expect(after[0]!.action).toBe('BUY WIF');
   });
 });
 
@@ -682,31 +740,55 @@ function approximateWidth(text: string, font: string): number {
   const px = Number(font.match(/(\d+)px/)?.[1] ?? 16);
   return text.length * px * 0.6;
 }
-
 describe('drawTapeAtlas', () => {
+  /** The widest face each row can hold. */
+  const widest = (index: number) =>
+    chip({
+      key: `k${index}`,
+      lane: index % TAPE_LANES,
+      trader: 'W'.repeat(TAPE_TRADER_MAX_CHARS),
+      action: 'W'.repeat(TAPE_ACTION_MAX_CHARS),
+      amount: 'W'.repeat(TAPE_AMOUNT_MAX_CHARS),
+    });
+
   test('every glyph stays inside its OWN cell — no bleed onto a neighbour', () => {
-    const chips: TapeChip[] = Array.from({ length: TAPE_MAX_CHIPS }, (_, index) =>
-      chip({
-        key: `k${index}`,
-        lane: index % TAPE_LANES,
-        trader: 'GENESIS',
-        amount: 'SELL -$999.99',
-      }),
-    );
+    const chips: TapeChip[] = Array.from({ length: TAPE_MAX_CHIPS }, (_, index) => widest(index));
     const { ctx, texts } = recordingContext();
     drawTapeAtlas(ctx, chips);
 
-    expect(texts).toHaveLength(TAPE_MAX_CHIPS * 2);
+    expect(texts).toHaveLength(TAPE_MAX_CHIPS * 3);
     for (let index = 0; index < TAPE_MAX_CHIPS; index++) {
       const rect = tapeCellRect(index);
-      for (const drawn of texts.slice(index * 2, index * 2 + 2)) {
+      for (const drawn of texts.slice(index * 3, index * 3 + 3)) {
+        const px = Number(drawn.font.match(/(\d+)px/)?.[1] ?? 16);
         expect(drawn.x).toBeGreaterThanOrEqual(rect.x);
-        expect(drawn.y).toBeGreaterThan(rect.y);
-        expect(drawn.y).toBeLessThanOrEqual(rect.y + rect.height);
+        // The glyph BOX, not the baseline: 0.72 em above, 0.2 em below, inside
+        // the 5 px slab inset.
+        expect(drawn.y - 0.72 * px).toBeGreaterThanOrEqual(rect.y + 5);
+        expect(drawn.y + 0.2 * px).toBeLessThanOrEqual(rect.y + rect.height - 5);
         const right = drawn.x + approximateWidth(drawn.text, drawn.font);
         expect(right).toBeLessThanOrEqual(rect.x + rect.width);
       }
     }
+  });
+
+  test('the three rows of a face never overlap each other', () => {
+    const { ctx, texts } = recordingContext();
+    drawTapeAtlas(ctx, [widest(0)]);
+    const boxes = texts.map((drawn) => {
+      const px = Number(drawn.font.match(/(\d+)px/)?.[1] ?? 16);
+      return { top: drawn.y - 0.72 * px, bottom: drawn.y + 0.2 * px };
+    });
+    expect(boxes).toHaveLength(3);
+    for (let index = 1; index < boxes.length; index++) {
+      expect(boxes[index]!.top).toBeGreaterThan(boxes[index - 1]!.bottom);
+    }
+  });
+
+  test('the face reads trader, action, amount — and an empty amount is not painted', () => {
+    const { ctx, texts } = recordingContext();
+    drawTapeAtlas(ctx, [chip(), chip({ key: 'b', action: 'SELL WIF', amount: '' })]);
+    expect(texts.map((drawn) => drawn.text)).toEqual(['GENESIS', 'SELL WIF', '+$1.24', 'GENESIS', 'SELL WIF']);
   });
 
   test('the atlas clears to transparent, so a recycled cell cannot ghost', () => {
@@ -721,7 +803,7 @@ describe('drawTapeAtlas', () => {
       drawTapeAtlas(ctx, [chip({ kind })]);
       expect(fills[0]!.fillStyle).toBe('#ffffff');
       expect(fills[0]!.w * fills[0]!.h / (TAPE_CELL_WIDTH * TAPE_CELL_HEIGHT)).toBeGreaterThan(0.85);
-      expect(texts.map((t) => t.fillStyle)).toEqual(['#071018', '#071018']);
+      expect(texts.map((t) => t.fillStyle)).toEqual(['#071018', '#071018', '#071018']);
       const rgb = TAPE_CHIP_COLOR[kind];
       const max = Math.max(...rgb);
       const min = Math.min(...rgb);
@@ -748,13 +830,19 @@ describe('drawTapeAtlas', () => {
     expect(source.match(/<mesh\s/g)).toHaveLength(1);
   });
 
+  test('the mesh reads the arena tape through the shared limit', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-trade-tape-mesh.tsx'), 'utf8');
+    expect(source).toContain('useFloorArenaTape(ARENA_TAPE_LIMIT, active)');
+    expect(source).not.toContain('useHouseTraders');
+  });
+
   test('more chips than cells never paints past the atlas', () => {
     const chips = Array.from({ length: TAPE_MAX_CHIPS + 9 }, (_, index) =>
       chip({ key: `k${index}` }),
     );
     const { ctx, texts } = recordingContext();
     drawTapeAtlas(ctx, chips);
-    expect(texts).toHaveLength(TAPE_MAX_CHIPS * 2);
+    expect(texts).toHaveLength(TAPE_MAX_CHIPS * 3);
     for (const drawn of texts) {
       expect(drawn.x).toBeLessThan(TAPE_ATLAS_WIDTH);
       expect(drawn.y).toBeLessThan(TAPE_ATLAS_HEIGHT);

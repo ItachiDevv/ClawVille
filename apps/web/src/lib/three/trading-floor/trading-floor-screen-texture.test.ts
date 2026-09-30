@@ -3,65 +3,41 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_PAPER_COSTS,
+  FLOOR_ARENA_POSITION_USD,
+} from '@clawville/shared';
+
+import {
+  BOARD_MIN_PX,
+  COLOR,
   drawFloorScreen,
   FLOOR_SCREEN_CANVAS,
+  FLOOR_SCREEN_MAX_ROWS,
+  formatAmount,
+  formatCount,
+  formatOrdinal,
+  formatPercent,
+  formatRank,
   formatSignedUsd,
+  formatUsd,
   pickCanvasScale,
   pnlColor,
   sanitiseScreenText,
-  COLOR,
-  wrapBasis,
+  type FloorScreenContest,
   type FloorScreenContext,
   type FloorScreenData,
-  type FloorScreenRealised,
-  type FloorScreenRealisedState,
-  type FloorScreenSlot,
+  type FloorScreenRow,
 } from './trading-floor-screen-texture';
 import {
-  buildFloorScreenData as rawBuildFloorScreenData,
+  buildFloorScreenData,
+  contestCountdownLabel,
   floorClockLabel,
-  floorScreenSignature as rawFloorScreenSignature,
+  floorScreenSignature,
+  type ArenaQueryInput,
+  type FloorScreenInputs,
 } from './trading-floor-screen-data';
-import type { RiskFreshness } from '@/components/game/trading-floor/house-trader-risk';
-
-/**
- * DEFAULT FRESHNESS for the tests that are not about expiry: the response was
- * fetched at the instant it is being read, so `heldSeconds` is 0 and only the
- * block's own `ageSeconds` counts. Every fixture sits well inside the 150 s
- * budget, so these calls behave exactly as they did before expiry existed.
- * The expiry tests pass their own clock explicitly.
- *
- * Wrapping rather than editing twenty call sites keeps the PRODUCTION
- * signatures strict: `freshness` is a required parameter there precisely so a
- * new caller cannot forget it, which is the same reason `frozen` is required
- * on `resolveTradingFloorInteraction`.
- */
-const FRESH: RiskFreshness = { nowMs: 0, dataUpdatedAt: 0 };
-
-function buildFloorScreenData(
-  slots: Parameters<typeof rawBuildFloorScreenData>[0],
-  state: Parameters<typeof rawBuildFloorScreenData>[1],
-  nowMs: number,
-  dataUpdatedAt: number = nowMs,
-) {
-  // DEFAULTS TO `nowMs`, not to zero. Fetched at the instant it is read, so
-  // `heldSeconds` is 0 and only the block's own `ageSeconds` counts. Defaulting
-  // to 0 against a real wall-clock `nowMs` made every fixture look 56 years
-  // stale and expired the lot.
-  return rawBuildFloorScreenData(slots, state, nowMs, dataUpdatedAt);
-}
-
-function floorScreenSignature(
-  slots: Parameters<typeof rawFloorScreenSignature>[0],
-  state: Parameters<typeof rawFloorScreenSignature>[1],
-  freshness: RiskFreshness = FRESH,
-) {
-  return rawFloorScreenSignature(slots, state, freshness);
-}
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
-import { HOUSE_TRADER_LINEUP, TRADE_MINTS } from '@clawville/shared';
-import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
-import type { FloorTrade } from '@/stores/trade-ticker';
 
 /**
  * Recording 2D context. `drawFloorScreen` never measures or reads back, so a
@@ -69,7 +45,7 @@ import type { FloorTrade } from '@/stores/trade-ticker';
  * the SHIPPING draw code rather than a parallel description of it.
  */
 type Painted =
-  | { kind: 'rect'; x: number; y: number; w: number; h: number }
+  | { kind: 'rect'; x: number; y: number; w: number; h: number; fill?: string }
   | {
       kind: 'text';
       x: number;
@@ -123,13 +99,10 @@ function boxHitsRect(
 }
 
 /**
- * THE TWO GEOMETRY PINS, as functions so a new board state can be swept by both
- * without copying their loops.
- *
- * They were inline in one test each when the card had one live layout. The
- * status word can now say "PAUSED: RISK LIMIT" — 18 characters where "LIVE" was
- * four — so every state has to be swept, and a copied loop is how one of them
- * would quietly stop being.
+ * THE TWO GEOMETRY PINS, as functions so every board state can be swept by both
+ * without copying their loops — a copied loop is how one of them would quietly
+ * stop being run. The layout is hand-placed and `drawFloorScreen` measures
+ * nothing, so these are what catch a row drawn through its neighbour.
  */
 function assertNoFillOverText(painted: Painted[]): void {
   for (let i = 0; i < painted.length; i += 1) {
@@ -146,26 +119,17 @@ function assertNoFillOverText(painted: Painted[]): void {
 }
 
 /**
- * `focus` narrows the sweep to pairs involving a named string. It exists for
- * the NARROWEST card the layout produces — a three-slot board at 314 px — where
- * the estimator reports a 0.6 px collision between the `(PARTIAL)` caption and
- * the 30 px headline that the real metrics do not have: Courier New's cap
- * height is 0.572 em against the estimator's 0.72, so the headline's true top
- * is 70.5 and the caption's true bottom is 68.4, two pixels clear. Rather than
- * loosen the estimator, which exists to be pessimistic, a new string is swept
- * against every other string at every width and the full pairwise sweep runs at
- * the one and two-slot widths the lineup actually produces.
+ * Every pair of strings, both ways. The estimator is PESSIMISTIC on purpose
+ * (0.72 em rise against Courier New's real 0.572 em cap height), so a pass here
+ * has margin; do not loosen it to make a new layout fit (memory:
+ * gotchas/canvas-paint-pin-estimator-false-positive.md).
  */
-function assertNoTextOverlap(
-  painted: Painted[],
-  focus?: (value: string) => boolean,
-): void {
+function assertNoTextOverlap(painted: Painted[]): void {
   const texts = painted.filter(
     (p): p is Extract<Painted, { kind: 'text' }> => p.kind === 'text',
   );
   for (let i = 0; i < texts.length; i += 1) {
     for (let j = i + 1; j < texts.length; j += 1) {
-      if (focus && !focus(texts[i]!.value) && !focus(texts[j]!.value)) continue;
       const a = textBox(texts[i]!);
       const b = textBox(texts[j]!);
       const overlap =
@@ -198,7 +162,7 @@ function recorder() {
     globalAlpha: 1,
     fillRect: (x: number, y: number, w: number, h: number) => {
       rects.push([x, y, w, h]);
-      painted.push({ kind: 'rect', x, y, w, h });
+      painted.push({ kind: 'rect', x, y, w, h, fill: String(context.fillStyle) });
     },
     strokeRect: () => undefined,
     fillText: (value: string, x: number, y: number) => {
@@ -223,96 +187,7 @@ function recorder() {
   return { context: context as unknown as FloorScreenContext, strings, rects, painted };
 }
 
-function slot(overrides: Partial<FloorScreenSlot> = {}): FloorScreenSlot {
-  return {
-    label: 'Genesis',
-    status: 'live',
-    verified: 12,
-    scored: 8,
-    lastTradeLabel: '4m ago',
-    ...overrides,
-  };
-}
 
-/** The drawable realised block. Genesis's real staging figure is negative, and
- *  the default is negative on purpose: a loss is the case most likely to be got
- *  wrong by a change that only ever looked at a win. */
-function realised(
-  overrides: Partial<FloorScreenRealised> = {},
-): FloorScreenRealisedState {
-  return {
-    kind: 'ready',
-    closedPositions: 10,
-    wins: 4,
-    losses: 6,
-    realisedUsd: -5.2,
-    bestUsd: 2.4,
-    worstUsd: -3.1,
-    openPositions: 1,
-    basisCode: 'gross_usdc_leg',
-    costBasis: 'round_trip_fifo',
-    noExitHours: 24,
-    note: 'Gross realised on the USDC leg; excludes network fees and rent',
-    partial: false,
-    excludedNonUsdc: 0,
-    noExitClosures: 0,
-    ...overrides,
-  };
-}
-
-/** Narrow to the READY arm, asserting the state on the way. Every use of this
- *  is a test that means "this input should have produced figures". */
-function ready(state: FloorScreenRealisedState | undefined) {
-  expect(state?.kind).toBe('ready');
-  return state as Extract<FloorScreenRealisedState, { kind: 'ready' }>;
-}
-
-/** The shape as it arrives ON THE WIRE, which is NOT the drawable shape: the
- *  route sends `basis` (a machine code) plus `note`, and the leg counters that
- *  become `partial`. */
-function fullRealised(): Record<string, unknown> {
-  return {
-    closedPositions: 10,
-    wins: 4,
-    losses: 6,
-    realisedUsd: -5.2,
-    bestUsd: 2.4,
-    worstUsd: -3.1,
-    openPositions: 1,
-    basis: 'gross_usdc_leg',
-    note: 'Gross realised on the USDC leg; excludes network fees and rent',
-    preBindIncluded: false,
-    unpricedLegs: 0,
-    unclassifiedLegs: 0,
-    computedAt: '2026-09-20T12:00:00.000Z',
-  };
-}
-
-/** Every `draw` call supplies the clock and tape, so a new drawn field can
- *  never slip into the board without passing the banned-token gate below. */
-function board(
-  data: Omit<FloorScreenData, 'clockLabel' | 'tape'> &
-    Partial<Pick<FloorScreenData, 'clockLabel' | 'tape'>>,
-): FloorScreenData {
-  return { clockLabel: '14:32 UTC', tape: [], ...data };
-}
-
-function draw(data: Parameters<typeof board>[0]) {
-  const rec = recorder();
-  drawFloorScreen(rec.context, board(data));
-  return rec;
-}
-
-// ---------------------------------------------------------------------------
-// THE RULE, AS IT ACTUALLY IS (founder, 2026-09-20): the board is a PUBLIC LIVE
-// P&L board. Money DRAWS. What this block gates is the two things that are
-// still true: a wallet address never reaches the wall, and every money figure
-// comes from a TYPED field rather than from server text.
-//
-// This file previously asserted the opposite, in detail, because a peer session
-// relayed a "no P&L" rule that was never the founder's. The tests are the
-// record of what we believe, so they had to move too.
-// ---------------------------------------------------------------------------
 
 /** A base58 run long enough to be a Solana address. */
 const ADDRESS = /[1-9A-HJ-NP-Za-km-z]{32,64}/;
@@ -336,7 +211,7 @@ const INVISIBLE = /[\u0000-\u001f­​-‏‪-‮﻿]/;
  * clean. A base58 regex over the output fails too, because base58 excludes `O`
  * and an uppercased address breaks into short runs at every `O`. A
  * strip-the-spaces-then-look-for-a-long-run check fires on legitimate copy,
- * since the basis band is 46 characters once its spaces are gone.
+ * since ordinary copy is long once its spaces are gone.
  *
  * So: slide a 16-character window over the address and assert none of them
  * survives anywhere, comparing against the drawn text with its non-alphanumerics
@@ -372,95 +247,263 @@ function assertDrawable(strings: string[]) {
       base58: ADDRESS.test(value),
       hex: HEX_ADDRESS.test(value),
       invisible: INVISIBLE.test(value),
-      tooLong: value.length > 64,
+      // 95 is the widest string the board is DESIGNED to draw (the ticker's
+      // cap), so anything longer is a runaway. It was 64 while the widest
+      // string was a card label; the arena board's basis line is 77 and its
+      // prize line 60, both by design.
+      tooLong: value.length > 95,
     }).toEqual({ value, base58: false, hex: false, invisible: false, tooLong: false });
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Drawable fixtures
+// ---------------------------------------------------------------------------
+
+/** A drawable row. The default is a LOSS on purpose: a loss is the case most
+ *  likely to be got wrong by a change that only ever looked at a win. */
+function row(overrides: Partial<FloorScreenRow> = {}): FloorScreenRow {
+  return {
+    rank: 1,
+    name: 'Genesis',
+    tag: 'house',
+    template: 'Genesis',
+    realisedUsd: -5.2,
+    trades: 10,
+    wins: 4,
+    losses: 6,
+    openPositions: 1,
+    ...overrides,
+  };
+}
+
+const CONTEST: FloorScreenContest = {
+  title: 'Trading Arena Week 1',
+  countdownLabel: 'ENDS IN 3D 15H 59M',
+  prizes: [
+    { place: 1, amount: 1_000_000 },
+    { place: 2, amount: 500_000 },
+    { place: 3, amount: 250_000 },
+  ],
+};
+
+const BASIS = { positionUsd: 20, buyCostPct: 2.5, sellCostPct: 1 } as const;
+
+/** Every `draw` supplies every field, so a new drawn field can never slip onto
+ *  the board without passing the hygiene gate below. */
+function board(
+  data: Partial<FloorScreenData> & Pick<FloorScreenData, 'phase'>,
+): FloorScreenData {
+  return {
+    rows: [],
+    hasPlayerAgents: false,
+    contest: CONTEST,
+    basis: BASIS,
+    clockLabel: '14:32 UTC',
+    tape: [],
+    ...data,
+  };
+}
+
+function draw(data: Parameters<typeof board>[0]) {
+  const rec = recorder();
+  drawFloorScreen(rec.context, board(data));
+  return rec;
+}
+
+/** The five house agents plus two players, as the live board will look. */
+function liveRows(): FloorScreenRow[] {
+  return [
+    row({ rank: 1, name: 'Runner', template: 'Runner', realisedUsd: 12.4, trades: 9, wins: 6, losses: 3 }),
+    row({ rank: 2, name: 'alice trader', tag: null, template: 'Genesis', realisedUsd: 3.05, trades: 4, wins: 3, losses: 1, openPositions: 2 }),
+    row({ rank: 3, name: 'Genesis', template: 'Genesis', realisedUsd: 0, trades: 2, wins: 1, losses: 1, openPositions: 0 }),
+    row({ rank: 4, name: 'Dip Hunter', template: 'Dip Hunter', realisedUsd: -1.1 }),
+    row({ rank: 5, name: 'Mid-Cap Climber', template: 'Mid-Cap Climber', realisedUsd: -2.75 }),
+    row({ rank: 6, name: 'Late Bloomer', template: 'Late Bloomer', realisedUsd: -4.4 }),
+    row({ rank: 7, name: 'bob', tag: null, template: 'Runner', realisedUsd: -19.9, trades: 1, wins: 0, losses: 1 }),
+  ];
+}
+
+/**
+ * The widest thing each position can hold, all at once: a full table of the
+ * widest rank, name, tag, template, P&L and counts, the longest countdown and
+ * clock words, a title cut at its cap, and a full tape. Names use spaces so the
+ * address strip does not eat them (a 40-letter base58 run IS an address).
+ */
+function worstCaseBoard(): FloorScreenData {
+  return board({
+    phase: 'ready',
+    rows: Array.from({ length: FLOOR_SCREEN_MAX_ROWS }, (_unused, index) =>
+      row({
+        rank: 100 + index,
+        name: 'WWWWWWW '.repeat(5),
+        tag: index % 2 === 0 ? 'no-prize' : 'house',
+        template: 'MMMMMMM '.repeat(5),
+        realisedUsd: -12345.67,
+        trades: 99999,
+        wins: 99999,
+        losses: 99999,
+        openPositions: 99,
+      }),
+    ),
+    hasPlayerAgents: true,
+    contest: {
+      title: 'TTTTTTT '.repeat(8),
+      countdownLabel: 'STARTS IN 27000D 03H 12M',
+      prizes: CONTEST.prizes,
+    },
+    clockLabel: 'CLOCK OFFLINE',
+    tape: Array.from({ length: 12 }, () => 'MID-CAP CL SELL WWWWWWWW -$19.80 12M'),
+  });
+}
+
+function fontPx(font: string): number {
+  return Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? Number.NaN);
+}
+
+// ---------------------------------------------------------------------------
+// Wire fixtures (the data half)
+// ---------------------------------------------------------------------------
+
+const NOW = Date.parse('2026-10-01T12:00:00.000Z');
+const MINT = '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1';
+
+const ready = (data: unknown): ArenaQueryInput => ({ data, isLoading: false, isError: false });
+const LOADING: ArenaQueryInput = { data: undefined, isLoading: true, isError: false };
+const failed = (data?: unknown): ArenaQueryInput => ({ data, isLoading: false, isError: true });
+
+/** A leaderboard row as the ROUTE sends it (`services/floor-arena/leaderboard.ts`). */
+function wireRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    rank: 1,
+    agentId: 'house:genesis',
+    name: 'Genesis',
+    kind: 'house',
+    templateId: 'genesis',
+    realisedUsd: -5.2,
+    trades: 10,
+    wins: 4,
+    losses: 6,
+    deaths: 1,
+    openPositions: 1,
+    lastTradeAt: '2026-10-01T11:50:00.000Z',
+    eligible: false,
+    ...overrides,
+  };
+}
+
+/** The contest body as the ROUTE sends it (`services/floor-arena/contest.ts`),
+ *  including the two fields that tick on every request. */
+function contestBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    contest: { ...FLOOR_ARENA_CONTEST },
+    status: 'live',
+    secondsLeft: 316_799,
+    top: [],
+    house: [],
+    generatedAt: '2026-10-01T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+
+/** A tape row as the contract describes it (docs/trading-floor-arena.md §5). */
+function tapeRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'e1',
+    at: minutesAgo(4),
+    agentId: 'house:genesis',
+    agentName: 'Genesis',
+    kind: 'house',
+    type: 'entry',
+    mint: MINT,
+    symbol: 'BONK',
+    side: 'buy',
+    usd: 20,
+    pnlUsd: null,
+    pnlMult: null,
+    reason: null,
+    ...overrides,
+  };
+}
+
+function inputs(overrides: Partial<FloorScreenInputs> = {}): FloorScreenInputs {
+  return {
+    leaderboard: ready({ rows: [wireRow()] }),
+    contest: ready(contestBody()),
+    tape: ready([]),
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Hygiene: text from outside never reaches the wall unfiltered
+// ---------------------------------------------------------------------------
+
 describe('Trading Floor board — untrusted text hygiene', () => {
   test('a normal board draws nothing an outside string could poison', () => {
     assertDrawable(
-      draw({
-        phase: 'ready',
-        slots: [slot(), slot({ label: 'ClawVille Runner', status: 'stopped' })],
-      }).strings,
+      draw({ phase: 'ready', rows: liveRows(), hasPlayerAgents: true, tape: ['GENESIS BUY BONK $20.00 4M'] })
+        .strings,
     );
   });
 
-  test('every loading and empty state is clean too', () => {
-    assertDrawable(draw({ phase: 'connecting', slots: [] }).strings);
-    assertDrawable(draw({ phase: 'error', slots: [] }).strings);
-    assertDrawable(draw({ phase: 'ready', slots: [] }).strings);
-    assertDrawable(draw({ phase: 'ready', slots: [slot()] }).strings);
+  test('every loading, error and empty state is clean too', () => {
+    assertDrawable(draw({ phase: 'connecting' }).strings);
+    assertDrawable(draw({ phase: 'error' }).strings);
+    assertDrawable(draw({ phase: 'ready' }).strings);
+    assertDrawable(draw({ phase: 'ready', contest: null }).strings);
+    assertDrawable(draw({ phase: 'ready', rows: [row()] }).strings);
   });
 
-  // The reason the sanitiser still exists. Labels, venue names and the basis
-  // note are server text on a wall in the game world.
-  test('a wallet address in a label never reaches the board', () => {
-    const solana = '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1';
+  // Player-chosen agent names made this matter more than it did for two house
+  // desks: every name, template, contest title and tape entry is outside text.
+  test('a wallet address in any outside string never reaches the board', () => {
+    const solana = MINT;
     const evm = '0x742d35Cc6634C0532925a3b844Bc454e4438f44e';
-    const hostile = draw({
-      phase: 'ready',
-      slots: [
-        slot({ label: `Genesis ${solana}`, lastTradeLabel: solana }),
-        slot({ label: `Genesis ${evm}`, lastTradeLabel: evm }),
-      ],
-    });
-    assertDrawable(hostile.strings);
-    expect(hostile.strings.join(' ')).not.toContain(solana.slice(0, 16));
-    expect(hostile.strings.join(' ')).not.toContain(evm.slice(0, 16));
+    for (const address of [solana, evm]) {
+      const hostile = draw({
+        phase: 'ready',
+        rows: [row({ name: `Genesis ${address}`, template: address })],
+        contest: { ...CONTEST, title: `Arena ${address}` },
+        tape: [`GENESIS BUY ${address} 4M`],
+      });
+      assertDrawable(hostile.strings);
+      assertAddressAbsent(hostile.strings, address);
+    }
   });
 
-  test('an address hidden in the basis note never reaches the board', () => {
-    const solana = '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1';
-    const drawn = draw({
-      phase: 'ready',
-      // An unrecognised code forces the PROSE fallback, which is the only path
-      // where server text reaches the band and therefore the only one where
-      // the sanitiser still matters.
-      slots: [
-        slot({ realised: realised({ costBasis: 'unknown', note: `gross ${solana}` }) }),
-      ],
-    });
-    assertDrawable(drawn.strings);
-    expect(drawn.strings.join(' ')).not.toContain(solana.slice(0, 16));
+  test('a name the wall cannot paint still gets words, and they describe the wall', () => {
+    // A real name in a script the ASCII face cannot draw.
+    expect(draw({ phase: 'ready', rows: [row({ name: 'Трейдер', tag: null })] }).strings).toContain(
+      'NAME NOT SHOWN',
+    );
   });
 
-  // AN ADDRESS SPLIT BY AN INVISIBLE CHARACTER. The header's `pro<ZWSP>fit`
-  // note says the fix is "strip invisibles before anything tokenises" — and for
-  // a COMBINING MARK that was being undone by the `.normalize()` running ahead
-  // of the strip. NFKC COMPOSES `p` + U+0301 into one character the strip does
-  // not know, so `BASE58_RUN` saw a 19 and a 24 and matched neither, and
-  // `DISALLOWED` turned the composed character into a SPACE. The shipped
-  // function returned, verbatim:
+  test('a name that is nothing but an address still gets a word', () => {
+    const drawn = draw({ phase: 'ready', rows: [row({ name: MINT })] });
+    expect(drawn.strings).toContain('NAME NOT SHOWN');
+    assertAddressAbsent(drawn.strings, MINT);
+  });
+
+  // AN ADDRESS SPLIT BY AN INVISIBLE CHARACTER. NFKC COMPOSES `p` + U+0301
+  // into one character the strip does not know, so `BASE58_RUN` saw a 19 and a
+  // 24 and matched neither, and the shipped function returned, verbatim,
+  // "NOTE 7XKXTG2CW87D97TXJSD BD5JBKHETQA83TZRUJOSGASU". NFKD keeps the mark
+  // separate and `INVISIBLE` deletes it. (tfs-audit + tfs-api, 2026-09-20.)
   //
-  //   "NOTE 7XKXTG2CW87D97TXJSD BD5JBKHETQA83TZRUJOSGASU"
-  //
-  // A whole wallet address, readable, on a wall in the game world, out of the
-  // one function whose job is to keep it off. NFKD keeps the mark separate and
-  // `INVISIBLE` already covers U+0300-U+036F. (tfs-audit + tfs-api, both ends
-  // chose NFKD so the two sanitisers agree.)
-  //
-  // THE DETECTOR IS THE OTHER HALF OF THIS TEST. Do NOT assert
-  // `not.toContain(address)`: the output is UPPERCASED and the composed
-  // character is dropped entirely, so the leaked string is the address minus
-  // one letter and a naive `includes` reports clean on text that plainly shows
-  // it. My first probe did exactly that and called this bug fixed. Assert on
-  // what survives instead: with the address stripped there is nothing left but
-  // the prefix.
+  // THE DETECTOR IS THE OTHER HALF OF THIS TEST. `not.toContain(address)` does
+  // not fire on that leak — the output is uppercased and the composed
+  // character is dropped — so the exact output is asserted instead.
   test.each([
     ['a combining acute', 0x0301],
     ['a zero-width space', 0x200b],
     ['a soft hyphen', 0x00ad],
     ['a word joiner', 0x2060],
-    // WIDENED 2026-09-20 from a hand-listed range set to the Unicode
-    // PROPERTIES `\p{M}`, `\p{Cf}`, `\p{Cc}`, `\p{Zl}`, `\p{Zp}` and
-    // `\p{Default_Ignorable_Code_Point}`. The old list was an enumeration of
-    // the shapes we happened to have thought of, and these two were outside
-    // it: U+1AB0 is a combining mark beyond the U+0300-U+036F block the list
-    // named, and U+FE0F is a variation selector, which is also a mark. Both
-    // split a base58 run exactly like a combining acute. Properties are the
-    // derived form of the same idea and cannot be short by omission.
+    // Unicode PROPERTIES, not a hand-listed range set: these two were outside
+    // the old list and split a base58 run exactly like a combining acute.
     ['a high combining mark U+1AB0', 0x1ab0],
     ['a variation selector U+FE0F', 0xfe0f],
   ])('an address split by %s still never reaches the board', (_name, codePoint) => {
@@ -470,51 +513,27 @@ describe('Trading Floor board — untrusted text hygiene', () => {
     const split = `note ${head}${String.fromCharCode(codePoint)}${tail}`;
 
     const out = sanitiseScreenText(split, 200);
-    // The address is GONE, not merely unmatched: only the prefix survives.
     expect(out).toBe('NOTE');
-    // The two HALVES the split creates, named explicitly: these are the exact
-    // strings the leak painted either side of its space.
     expect(out).not.toContain(head.toUpperCase());
     expect(out).not.toContain(tail.toUpperCase());
-    // No long alphanumeric run survives once the splitting space is removed.
-    expect(out.replace(/[^A-Za-z0-9]/g, '')).not.toMatch(/[A-Za-z0-9]{32,}/);
     assertAddressAbsent([out], address);
 
-    // And through the real draw path, not just the function. The 32-run check
-    // is deliberately NOT repeated over the whole board here: the basis band is
-    // 46 characters once its spaces are gone, so that assertion fires on
-    // legitimate copy. `assertAddressAbsent` is the board-safe form.
-    const drawn = draw({ phase: 'ready', slots: [slot({ label: split })] });
+    // And through the real draw path, on a player's agent name.
+    const drawn = draw({ phase: 'ready', rows: [row({ name: split, tag: null })] });
     assertDrawable(drawn.strings);
     assertAddressAbsent(drawn.strings, address);
-    for (const value of drawn.strings) {
-      expect(value).not.toContain(head.toUpperCase());
-      expect(value).not.toContain(tail.toUpperCase());
-    }
   });
 
-  // THE DENSE SHAPE, which no fixed-width window detector can catch. A mark
-  // every 8 characters leaves no 16-character run intact, so `assertAddressAbsent`
-  // would report clean whatever happened. The assertion here is therefore the
-  // EXACT output, which has no blind spot: if a single fragment survived, the
-  // string would not be "NOTE".
-  //
-  // It also exercises something the single-splitter cases do not: that the
-  // strip handles REPEATED marks rather than only the first. NFKD decomposes
-  // each one independently and `INVISIBLE` is a global replace, so the run
-  // rejoins completely and `BASE58_RUN` sees the whole address.
+  // THE DENSE SHAPE, which no fixed-width window detector can catch: a mark
+  // every 8 characters leaves no 16-character run intact. Exact output only.
   test('an address peppered with combining marks is still removed entirely', () => {
     const address = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
     const acute = String.fromCharCode(0x0301);
     const peppered = address.replace(/(.{8})/g, `$1${acute}`);
-    expect(peppered.length).toBeGreaterThan(address.length + 3);
+    expect(sanitiseScreenText(`note ${peppered}`, 200)).toBe('NOTE');
 
-    const out = sanitiseScreenText(`note ${peppered}`, 200);
-    expect(out).toBe('NOTE');
-
-    const drawn = draw({ phase: 'ready', slots: [slot({ label: `note ${peppered}` })] });
+    const drawn = draw({ phase: 'ready', rows: [row({ name: `note ${peppered}` })] });
     assertDrawable(drawn.strings);
-    // Every 8-character piece is gone too, not merely the long runs.
     for (let i = 0; i + 8 <= address.length; i += 8) {
       const piece = address.slice(i, i + 8).toUpperCase();
       for (const value of drawn.strings) {
@@ -526,82 +545,57 @@ describe('Trading Floor board — untrusted text hygiene', () => {
     }
   });
 
-  // THREE SHAPES THAT REACHED THE WALL, each pinned by EXACT OUTPUT rather
-  // than by a detector. tfs-audit proved the first two against this file and
-  // Codex found the same at ingest; the third came out of probing for the set
-  // instead of the reported members.
-  //
-  // Exact output is the assertion that has no sample to be outside of. Every
-  // detector in this file has now been fooled once: `includes` by a dropped
-  // character, a base58 regex by upper-casing, a long-run check by legitimate
-  // copy, and a 16-character window by dense marks. `toBe('NOTE')` cannot be.
+  // THREE SHAPES THAT REACHED THE WALL on the house-trader board, pinned by
+  // EXACT OUTPUT. The `0x` prefix was once matched case-sensitively and ran
+  // BEFORE `toUpperCase()`; unprefixed hex was seen by neither pass.
   test.each([
-    // The digits were case-insensitive; the `0x` PREFIX was a literal lowercase
-    // pair, and the strip runs BEFORE `toUpperCase()`. So `0x…` was caught and
-    // `0X…` printed in full: "NOTE 0XDEADBEEF1234567890ABCDEF".
     ['an UPPERCASE 0X prefix', 'note 0XdeadBEEF1234567890abcdef'],
     ['a lowercase 0x prefix', 'note 0xdeadBEEF1234567890abcdef'],
-    // Neither hex pass saw this one: no `0x` for `HEX_ADDRESS`, and the run
-    // contains `0`, which base58 excludes.
     ['hex with no prefix at all', 'note deadBEEF1234567890abcdef1234'],
   ])('%s never reaches the board', (_name, input) => {
     expect(sanitiseScreenText(input, 200)).toBe('NOTE');
-    const drawn = draw({ phase: 'ready', slots: [slot({ label: input })] });
+    const drawn = draw({ phase: 'ready', rows: [row({ name: input })] });
     assertDrawable(drawn.strings);
     for (const value of drawn.strings) {
       expect(value).not.toMatch(/[0-9A-F]{20,}/);
     }
   });
 
-  // ONE PASS MUST NOT CUT ANOTHER PASS'S TOKEN. `G`x12 + `a`x20 + `H`x12 is a
-  // 44-character base58 run whose middle 20 characters are also a hex run. With
-  // sequential replaces the bare-hex pass blanked the middle FIRST, leaving two
-  // 12-character pieces that were each under the base58 minimum and printed:
-  // "NOTE GGGGGGGGGGGG HHHHHHHHHHHH". Self-inflicted, by the bare-hex pass
-  // added to close a different hole. The strip now matches every pattern on the
-  // INTACT text and deletes the union, so there is no ordering question left to
-  // get wrong. (Codex round 3.)
+  // ONE PASS MUST NOT CUT ANOTHER PASS'S TOKEN (Codex round 3): every pattern
+  // matches on the INTACT text and the union is deleted.
   test('a hex run inside a base58 run cannot split it into printable halves', () => {
     const spliced = `note ${'G'.repeat(12)}${'a'.repeat(20)}${'H'.repeat(12)}`;
     expect(sanitiseScreenText(spliced, 200)).toBe('NOTE');
-    const drawn = draw({ phase: 'ready', slots: [slot({ label: spliced })] });
-    assertDrawable(drawn.strings);
+    const drawn = draw({ phase: 'ready', rows: [row({ template: spliced })] });
     for (const value of drawn.strings) {
       expect(value).not.toMatch(/G{8,}|H{8,}/);
     }
   });
 
-  // THE UPPER BOUND WAS A TAIL. `{32,64}` with `/g` consumed the first 64
-  // characters of an 88-character run and left the remaining 24 under the
-  // minimum, so they were not matched and they printed:
-  // "NOTE BD5JBKHETQA83TZRUJOSGASU". A run being LONGER than an address is not
-  // a reason to publish part of it.
+  // THE UPPER BOUND WAS A TAIL: `{32,64}` left the last 24 characters of an
+  // 88-character run printable.
   test('a base58 run longer than an address leaves no tail', () => {
     const address = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
     const doubled = `note ${address}${address}`;
     expect(sanitiseScreenText(doubled, 200)).toBe('NOTE');
-    assertAddressAbsent([sanitiseScreenText(doubled, 200)], address);
   });
 
-  // The fold NFKD is still there to do, unchanged by the switch: a label may
-  // not smuggle an address through in another alphabet.
   test('fullwidth look-alikes are still folded onto ASCII', () => {
     expect(sanitiseScreenText('ＧＥＮＥＳＩＳ', 40)).toBe('GENESIS');
-    // And an accent now reads as its letter rather than losing its place to a
-    // space, which is what NFKC did here.
     expect(sanitiseScreenText('Café desk', 40)).toBe('CAFE DESK');
   });
 
   test('invisible characters and unrenderable glyphs are stripped', () => {
     const drawn = draw({
       phase: 'ready',
-      slots: [slot({ label: 'Gen​esis\u0000 🚀' })],
+      rows: [row({ name: 'Gen​esis\u0000 🚀', tag: null })],
     });
     assertDrawable(drawn.strings);
+    expect(drawn.strings).toContain('GENESIS');
   });
 
-  test('an over-long label is truncated rather than overflowing the card', () => {
-    expect(sanitiseScreenText('A'.repeat(80), 18).length).toBeLessThanOrEqual(18);
+  test('an over-long label is truncated rather than overflowing its column', () => {
+    expect(sanitiseScreenText('A'.repeat(80), 16).length).toBeLessThanOrEqual(16);
   });
 
   test('the sanitiser is linear on a hostile-length input', () => {
@@ -611,28 +605,27 @@ describe('Trading Floor board — untrusted text hygiene', () => {
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 
-  // MONEY NOW DRAWS. These are the strings the previous rule destroyed; they
-  // are here so a future reader cannot mistake the old behaviour for intent.
+  // MONEY DRAWS. The board publishes P&L (founder, 2026-09-20).
   test.each([
     ['a dollar figure in a label', '$GENESIS', '$GENESIS'],
     ['a percentage', 'UP 40%', 'UP 40%'],
     ['a signed number', '+420', '+420'],
     ['a money word', 'PROFIT RUN', 'PROFIT RUN'],
-    ['a currency code', 'USD 100', 'USD 100'],
     ['an underscore compound', 'UP_10', 'UP 10'],
-  ])('%s now survives — the board publishes money', (_name, input, expected) => {
+  ])('%s survives the sanitiser — the board publishes money', (_name, input, expected) => {
     expect(sanitiseScreenText(input, 40)).toBe(expected);
   });
 
-  test('every shipped label still survives unchanged', () => {
+  test('every shipped label survives unchanged', () => {
     for (const [input, expected] of [
-      ['PUMP.FUN', 'PUMP.FUN'],
-      ['4m ago', '4M AGO'],
-      ['ANSEM PUMPSWAP 4M', 'ANSEM PUMPSWAP 4M'],
+      ['Trading Arena Week 1', 'TRADING ARENA WEEK 1'],
+      ['ENDS IN 3D 15H 59M', 'ENDS IN 3D 15H 59M'],
+      ['HOUSE AGENTS NOT ELIGIBLE', 'HOUSE AGENTS NOT ELIGIBLE'],
+      ['Mid-Cap Climber', 'MID-CAP CLIMBER'],
+      ['GENESIS BUY BONK $20.00 4M', 'GENESIS BUY BONK $20.00 4M'],
+      ['RUNNER SELL WIF +$2.14 12M', 'RUNNER SELL WIF +$2.14 12M'],
+      ['REALISED P&L', 'REALISED P&L'],
       ['14:32 UTC', '14:32 UTC'],
-      ['ClawVille Runner', 'CLAWVILLE RUNNER'],
-      ['NOT RUNNING YET', 'NOT RUNNING YET'],
-      ['gross, excludes network fees', 'GROSS, EXCLUDES NETWORK FEES'],
     ] as const) {
       expect(sanitiseScreenText(input, 44)).toBe(expected);
     }
@@ -640,763 +633,463 @@ describe('Trading Floor board — untrusted text hygiene', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PROVENANCE. Every money figure on this board is formatted here from a typed
-// numeric field. Nothing is pasted from server text, and nothing is a literal.
+// PROVENANCE. Every money figure is formatted here from a typed number.
 // ---------------------------------------------------------------------------
 
 describe('Trading Floor board — money comes from typed fields only', () => {
-  // THREE absences, three words (orchestrator decision, 2026-09-20). Saying
-  // "this trader has not closed anything" when the truth is "we could not read
-  // its figures" is a false claim about the TRADER, made by a board that cannot
-  // tell the difference. Neither is ever a zero.
-  test('a missing realised block reads P&L UNAVAILABLE, not empty', () => {
-    const joined = draw({ phase: 'ready', slots: [slot()] }).strings.join(' | ');
-    expect(joined).not.toContain('$');
-    expect(joined).toContain('P&L UNAVAILABLE');
-    expect(joined).not.toContain('NO CLOSED POSITIONS YET');
-  });
-
-  test('a block that fails the runtime guard reads P&L UNAVAILABLE', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const broken = buildFloorScreenData(
-      [
-        {
-          ...view(),
-          realised: { ...fullRealised(), realisedUsd: Number.NaN },
-        } as unknown as HouseTraderSlotView,
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(broken.slots[0]!.realised?.kind).toBe('unavailable');
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: broken.slots[0]!.realised })],
-    }).strings.join(' | ');
-    expect(joined).toContain('P&L UNAVAILABLE');
-    expect(joined).not.toContain('NO CLOSED POSITIONS YET');
-    expect(joined).not.toContain('$0.00');
-  });
-
-  test('a VALID block with nothing closed reads NO CLOSED POSITIONS YET', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const fresh = buildFloorScreenData(
-      [
-        {
-          ...view(),
-          realised: { ...fullRealised(), closedPositions: 0, realisedUsd: 0 },
-        } as unknown as HouseTraderSlotView,
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(fresh.slots[0]!.realised?.kind).toBe('none');
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: fresh.slots[0]!.realised })],
-    }).strings.join(' | ');
-    expect(joined).toContain('NO CLOSED POSITIONS YET');
-    expect(joined).not.toContain('P&L UNAVAILABLE');
-    expect(joined).not.toContain('$0.00');
-  });
-
-  test('P&L is drawn when the typed block is present', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ realisedUsd: -5.2, wins: 3, losses: 7 }) })],
-    }).strings.join(' | ');
-    expect(joined).toContain('-$5.20');
-    expect(joined).toContain('W 3');
-    expect(joined).toContain('L 7');
-  });
-
-  // `String(...)` is not noise: `formatSignedUsd` returns a BRANDED type, so a
-  // bare string literal is not assignable to it and `toBe('+$8.87')` is itself
-  // a type error. That is the brand doing its job at the assertion site.
-  test('a gain is signed and a loss is signed, both published alike', () => {
-    expect(String(formatSignedUsd(8.87))).toBe('+$8.87');
-    expect(String(formatSignedUsd(-5.2))).toBe('-$5.20');
-    expect(String(formatSignedUsd(0))).toBe('$0.00');
+  test('the formatters print NaN as a marker, never as a zero', () => {
     expect(String(formatSignedUsd(Number.NaN))).toBe('N/A');
-    // Three outcomes, three meanings: null is "nothing closed", non-finite is
-    // bad data, and neither is allowed to become a zero.
     expect(String(formatSignedUsd(null))).toBe('-');
+    expect(String(formatSignedUsd(0))).toBe('$0.00');
+    expect(String(formatSignedUsd(2.144))).toBe('+$2.14');
+    expect(String(formatSignedUsd(-19.8))).toBe('-$19.80');
+    expect(String(formatUsd(20))).toBe('$20');
+    expect(String(formatUsd(20.5))).toBe('$20.50');
+    expect(String(formatUsd(Number.NaN))).toBe('N/A');
+    expect(String(formatPercent(2.5))).toBe('2.5%');
+    expect(String(formatPercent(1))).toBe('1%');
+    expect(String(formatPercent(Number.NaN))).toBe('-');
+    expect(String(formatAmount(1_000_000))).toBe('1,000,000');
+    expect(String(formatAmount(250_000))).toBe('250,000');
+    expect(String(formatAmount(999))).toBe('999');
+    expect(String(formatAmount(Number.NaN))).toBe('-');
+    expect(String(formatRank(1))).toBe('#1');
+    expect(String(formatRank(0))).toBe('-');
+    expect(String(formatRank(Number.NaN))).toBe('-');
   });
 
-  test('colour follows the sign, and flat is neither', () => {
-    expect(pnlColor(1)).toBe(pnlColor(99));
-    expect(pnlColor(-1)).toBe(pnlColor(-99));
-    expect(pnlColor(1)).not.toBe(pnlColor(-1));
-    expect(pnlColor(0)).not.toBe(pnlColor(1));
-    expect(pnlColor(0)).not.toBe(pnlColor(-1));
+  // Codex review 2026-09-30: a finite but absurd figure ("+$1000000000.00",
+  // 15 characters) started left of its column and ran into the template name.
+  // Realistic paper figures print exactly; beyond 100,000 they go compact.
+  test('large figures and counts go compact instead of running out of their column', () => {
+    expect(String(formatSignedUsd(99_999.99))).toBe('+$99999.99');
+    expect(String(formatSignedUsd(-99_999.99))).toBe('-$99999.99');
+    expect(String(formatSignedUsd(100_000))).toBe('+$100.0K');
+    // The rounded cents decide the branch, so nothing prints wider than the
+    // widest exact string.
+    expect(String(formatSignedUsd(99_999.996))).toBe('+$100.0K');
+    expect(String(formatSignedUsd(-99_999.994))).toBe('-$99999.99');
+    expect(String(formatSignedUsd(1e9))).toBe('+$1.0B');
+    expect(String(formatSignedUsd(-2.5e12))).toBe('-$2.5T');
+    expect(String(formatSignedUsd(1e18))).toBe('N/A');
+    expect(String(formatCount(99_999))).toBe('99999');
+    expect(String(formatCount(120_960))).toBe('121K');
+    expect(String(formatCount(999_499))).toBe('999K');
+    expect(String(formatCount(999_500))).toBe('1M');
+    expect(String(formatCount(1e9))).toBe('-');
+    expect(String(formatCount(-1))).toBe('-');
+    expect(String(formatCount(-99_999))).toBe('-');
+    expect(String(formatRank(9999))).toBe('#9999');
+    expect(String(formatRank(10_000))).toBe('-');
   });
 
-  test('best and worst are drawn from their own fields', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ bestUsd: 12.5, worstUsd: -9.75 }) })],
-    }).strings.join(' | ');
-    expect(joined).toContain('BEST +$12.50');
-    expect(joined).toContain('WORST -$9.75');
+  test('ordinals read as places, including the teens', () => {
+    expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111].map((n) => String(formatOrdinal(n)))).toEqual([
+      '1ST', '2ND', '3RD', '4TH', '11TH', '12TH', '13TH', '21ST', '22ND', '23RD', '101ST', '111TH',
+    ]);
+    expect(String(formatOrdinal(0))).toBe('-');
   });
 
-  test('positions left out of the figure are counted on the card', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ excludedNonUsdc: 3 }) })],
-    }).strings.join(' | ');
-    expect(joined).toContain('3 NON-USDC EXCLUDED');
-  });
-
-  test('no excluded line when nothing was left out', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ excludedNonUsdc: 0 }) })],
-    }).strings.join(' | ');
-    expect(joined).not.toContain('EXCLUDED');
-  });
-
-  test('unpriced legs mark the headline PARTIAL, excluded legs do not', () => {
-    const partial = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ partial: true }) })],
-    }).strings.join(' | ');
-    expect(partial).toContain('REALISED P&L (PARTIAL)');
-    const excludedOnly = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ excludedNonUsdc: 2 }) })],
-    }).strings.join(' | ');
-    expect(excludedOnly).toContain('REALISED P&L');
-    expect(excludedOnly).not.toContain('(PARTIAL)');
-  });
-
-  test('the two leg counters map to their own meanings', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const state = { isLoading: false, isError: false };
-    const build = (legs: Record<string, unknown>) =>
-      buildFloorScreenData(
-        [
-          {
-            ...view(),
-            realised: { ...fullRealised(), ...legs },
-          } as unknown as HouseTraderSlotView,
-        ],
-        state,
-        now,
-      ).slots[0]!.realised;
-    // THREE causes of PARTIAL now. `excludedNonUsdc` became a real field on the
-    // route, so it is read directly instead of being inferred from
-    // `unclassifiedLegs` as it was when the board had to guess the shape.
-    expect(ready(build({ unpricedLegs: 2 })).partial).toBe(true);
-    expect(ready(build({ unpricedLegs: 2 })).excludedNonUsdc).toBe(0);
-    expect(ready(build({ unclassifiedLegs: 3 })).partial).toBe(true);
-    expect(ready(build({ unclassifiedLegs: 3 })).excludedNonUsdc).toBe(0);
-    // The real field drives BOTH the partial caption and its own count line.
-    expect(ready(build({ excludedNonUsdc: 4 })).excludedNonUsdc).toBe(4);
-    expect(ready(build({ excludedNonUsdc: 4 })).partial).toBe(true);
-    // All three clear -> a complete figure.
-    expect(ready(build({})).partial).toBe(false);
-  });
-
-  // THE CASE THE COUNTERS CANNOT SEE. The route sets `partial` when
-  // `computedOverTrades` disagrees with `counts.verified` — a figure computed
-  // over a truncated read — and in that state every exclusion counter is ZERO.
-  // The derived condition would call it complete and the board would present a
-  // truncated figure as final, which is the defect that once flipped Genesis
-  // from -5.20 to +8.87 USD.
-  test('the server partial flag wins even with every counter at zero', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const built = buildFloorScreenData(
-      [
-        {
-          ...view(),
-          realised: {
-            ...fullRealised(),
-            partial: true,
-            unpricedLegs: 0,
-            unclassifiedLegs: 0,
-            excludedNonUsdc: 0,
-          },
-        } as unknown as HouseTraderSlotView,
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(ready(built.slots[0]!.realised).partial).toBe(true);
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: built.slots[0]!.realised })],
-    }).strings.join(' | ');
-    expect(joined).toContain('REALISED P&L (PARTIAL)');
-  });
-
-  test('the derived condition still catches an older payload with no flag', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const legacy = { ...fullRealised(), unpricedLegs: 2 };
-    delete (legacy as Record<string, unknown>).partial;
-    const built = buildFloorScreenData(
-      [{ ...view(), realised: legacy } as unknown as HouseTraderSlotView],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(ready(built.slots[0]!.realised).partial).toBe(true);
-  });
-
-  test('a stringy flag does not flip the caption', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const built = buildFloorScreenData(
-      [
-        {
-          ...view(),
-          realised: { ...fullRealised(), partial: 'false' },
-        } as unknown as HouseTraderSlotView,
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(ready(built.slots[0]!.realised).partial).toBe(false);
-  });
-
-  test('rug write-offs are carried through and drawn', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const built = buildFloorScreenData(
-      [
-        {
-          ...view(),
-          realised: { ...fullRealised(), noExitClosures: 2 },
-        } as unknown as HouseTraderSlotView,
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(ready(built.slots[0]!.realised).noExitClosures).toBe(2);
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ noExitClosures: 2 }) })],
-    }).strings.join(' | ');
-    // A total loss booked by a TIMER, not by a sell. Without this rule Genesis
-    // reads profitable, because its worst position never produced a sell leg.
-    expect(joined).toContain('2 NO-EXIT WRITE-OFF');
-  });
-
-  test('no write-off line when nothing was written off', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ noExitClosures: 0 }) })],
-    }).strings.join(' | ');
-    expect(joined).not.toContain('NO-EXIT WRITE-OFF');
-  });
-
-  // The route's real sentence, 161 characters. It was being drawn at max 64,
-  // which cut it mid-word AND left it ending in a full stop — a complete-looking
-  // sentence that had lost the FIFO rule and the 24-hour write-off entirely.
-  const ROUTE_NOTE =
-    'Gross realised on the USDC leg, excludes network fees. Round trips are matched FIFO by token units; ' +
-    'a position with no exit after 24 hours counts as a total loss.';
-
-  test('the whole basis sentence reaches the board, method intact', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ note: ROUTE_NOTE }) })],
-    }).strings.join(' ');
-    // Read the window from the NOTE, never hard-coded: the rule is the route's
-    // to change, and a test that pins 24 would pass while the board lied.
-    const hours = /after (\d+) hours/i.exec(ROUTE_NOTE)![1]!;
-    expect(joined).toContain('FIFO');
-    expect(joined).toContain(`${hours} HOURS`);
-    expect(joined).toContain('TOTAL LOSS');
-    expect(joined).toContain('EXCLUDES NETWORK FEES');
-    // And it does not end mid-word pretending to be finished.
-    expect(joined).not.toContain('ROUND.');
-  });
-
-  test('the basis wraps rather than truncating, and is drawn once per board', () => {
+  test('a row whose figures are unreadable says so, never $0.00 or a zero count', () => {
     const drawn = draw({
       phase: 'ready',
-      slots: [
-        slot({ realised: realised({ note: ROUTE_NOTE }) }),
-        slot({ label: 'ClawVille Runner', realised: realised({ note: ROUTE_NOTE }) }),
+      rows: [
+        row({
+          rank: Number.NaN,
+          realisedUsd: Number.NaN,
+          trades: Number.NaN,
+          wins: Number.NaN,
+          losses: Number.NaN,
+          openPositions: Number.NaN,
+        }),
       ],
     });
-    const basisLines = drawn.strings.filter((s) => s.includes('FIFO') || s.includes('TOTAL LOSS'));
-    expect(basisLines.length).toBeGreaterThan(0);
-    // TWO slots, but the sentence is a route CONSTANT: drawing it per card was
-    // what made it not fit. It belongs to the board, so it appears once.
-    expect(drawn.strings.filter((s) => s.includes('FIFO'))).toHaveLength(1);
+    expect(drawn.strings).toContain('N/A');
+    expect(drawn.strings).toContain('-/-');
+    expect(drawn.strings).not.toContain('$0.00');
+    expect(drawn.strings).not.toContain('0');
+    expect(drawn.strings.join(' | ')).not.toContain('NAN');
   });
 
-  test('wrapBasis breaks on words and marks a real overflow', () => {
-    expect(wrapBasis('one two three four', 9, 3)).toEqual(['one two', 'three', 'four']);
-    // Fits exactly: no ellipsis, nothing lost.
-    expect(wrapBasis('abc def', 7, 1)).toEqual(['abc def']);
-    // Genuinely too long for the lines allowed -> visible ellipsis, never a
-    // silent stop. "..." not a unicode ellipsis, which the sanitiser strips.
-    const clipped = wrapBasis('alpha beta gamma delta epsilon', 11, 1);
-    expect(clipped).toHaveLength(1);
-    expect(clipped[0]!.endsWith('...')).toBe(true);
-  });
-
-  // LEGIBILITY FLOOR, measured not guessed. tf3d-interior2 measured the board
-  // from the spawn at 0.593 screen px per canvas px: the old 10px band read at
-  // 5.9px and the 9px disclosure at 5.3px, both under the 6-7px floor, while
-  // the 30px headline read at 17.8px. A money figure that is legible while its
-  // qualification is not is an UNQUALIFIED money figure.
-  // LEGIBILITY FLOOR, measured not guessed. tf3d-interior2 measured the board
-  // from the spawn at 0.593 screen px per canvas px; the contract viewport is a
-  // 1366x768 laptop, where 15 canvas px is 7.6 screen px. A money figure that is
-  // legible while its qualification is not is an UNQUALIFIED money figure.
-  //
-  // THE SET IS DERIVED, NOT LISTED. The first version selected by four
-  // substrings and the `(PARTIAL)` caption was invisible to its own floor,
-  // because nobody had added it. Two sources now, both read off the drawing:
-  //   - every string the drawing chose to render in COLOR.muted, which IS the
-  //     "this is secondary text" decision; and
-  //   - every string that appears ONLY when a realised block is present,
-  //     obtained by differencing against the same board with no figures.
-  test('no disclosure text is drawn below the legibility floor, in ANY state', () => {
-    // FOUR boards, not one. The selector used to examine only the ready
-    // fixture, so "NO CLOSED POSITIONS YET" and "P&L UNAVAILABLE" could have
-    // sat at 10px unnoticed - they are drawn in the absence branches the test
-    // never rendered. Codex round 7. The fallback-prose path is here too, so
-    // one loop covers every path that can put a qualifier on the wall.
-    const boards: Array<[string, FloorScreenData]> = [
-      [
-        'ready',
-        board({
-          phase: 'ready',
-          slots: [
-            slot({
-              realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
-            }),
-          ],
-        }),
-      ],
-      ['none', board({ phase: 'ready', slots: [slot({ realised: { kind: 'none' } })] })],
-      [
-        'unavailable',
-        board({ phase: 'ready', slots: [slot({ realised: { kind: 'unavailable' } })] }),
-      ],
-      [
-        'fallback prose',
-        board({
-          phase: 'ready',
-          slots: [
-            slot({
-              realised: realised({
-                costBasis: 'some_unknown_method',
-                note: 'Net after venue fees',
-              }),
-            }),
-          ],
-        }),
-      ],
-      // THE RISK STATES. "PAUSED: RISK LIMIT" is the most load-bearing word on
-      // the card when it is present: a reader who cannot make it out reads a
-      // live P&L card for a desk that is not trading, which is the same
-      // unqualified money figure the `(PARTIAL)` caption was raised for. The
-      // status word joined the disclosure class the day it could say this.
-      [
-        'paused',
-        board({ phase: 'ready', slots: [slot({ status: 'paused', realised: realised() })] }),
-      ],
-      [
-        'fault',
-        board({ phase: 'ready', slots: [slot({ status: 'fault', realised: realised() })] }),
-      ],
-    ];
-
-    // Baseline for the "emitted by the realised builders" half of the
-    // derivation: strings a card shows with no figures at all.
-    const baseline = new Set(
-      draw({ phase: 'ready', slots: [slot({ realised: { kind: 'none' } })] }).strings,
-    );
-
-    let checked = 0;
-    for (const [name, data] of boards) {
-      const rec = recorder();
-      drawFloorScreen(rec.context, data);
-      const disclosures = rec.painted.filter(
-        (p): p is Extract<Painted, { kind: 'text' }> =>
-          p.kind === 'text' &&
-          (p.fill === COLOR.muted || !baseline.has(p.value)),
-      );
-      expect({ name, found: disclosures.length > 0 }).toEqual({ name, found: true });
-      for (const drawn of disclosures) {
-        const px = Number(/(\d+(?:\.\d+)?)px/.exec(drawn.font)![1]);
-        expect({ name, text: drawn.value.slice(0, 36), px, ok: px >= 15 }).toEqual({
-          name,
-          text: drawn.value.slice(0, 36),
-          px,
-          ok: true,
-        });
-        checked += 1;
-      }
-    }
-    // Guard: a derivation that selects nothing passes vacuously.
-    expect(checked).toBeGreaterThan(10);
-  });
-
-  // THE FALLBACK PATH HAS ITS OWN FLOOR, and the test above never reached it:
-  // it only ever drew the COMPOSED band. An unrecognised code routes the
-  // route's prose through the sanitised path instead, and a note like
-  // "NET AFTER VENUE FEES" would have been just as invisible at 10px as the
-  // composed method was. Codex round 6 named exactly that case.
-  test('the fallback prose note also clears the legibility floor', () => {
-    const rec = recorder();
-    drawFloorScreen(
-      rec.context,
-      board({
-        phase: 'ready',
-        slots: [
-          slot({
-            realised: realised({
-              costBasis: 'some_unknown_method',
-              note: 'Net after venue fees',
-            }),
-          }),
-        ],
-      }),
-    );
-    const note = rec.painted.filter(
-      (p): p is Extract<Painted, { kind: 'text' }> =>
-        p.kind === 'text' && p.value.includes('NET AFTER VENUE FEES'),
-    );
-    expect(note).toHaveLength(1);
-    const px = Number(/(\d+(?:\.\d+)?)px/.exec(note[0]!.font)![1]);
-    expect({ px, ok: px >= 15 }).toEqual({ px, ok: true });
-    // And it is muted, so the derived selector above would catch it too.
-    expect(note[0]!.fill).toBe(COLOR.muted);
-  });
-
-  test('a method clause is never split across a line break', () => {
-    const rec = recorder();
-    drawFloorScreen(
-      rec.context,
-      board({ phase: 'ready', slots: [slot({ realised: realised() })] }),
-    );
-    const joined = rec.strings.join(' | ');
-    // Each clause moves whole to the next line rather than breaking inside.
-    expect(joined).toContain('NO EXIT AFTER 24 HOURS = TOTAL LOSS');
-    expect(joined).not.toContain('= TOTAL | LOSS');
-  });
-
-  test('the method is COMPOSED from typed codes, not echoed from prose', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised() })],
-    }).strings.join(' | ');
-    // The board's own words, keyed on the route's machine codes.
-    expect(joined).toContain('GROSS REALISED ON THE USDC LEG, EXCLUDES NETWORK FEES');
-    expect(joined).toContain('ROUND TRIPS MATCHED FIFO BY TOKEN UNITS');
-    expect(joined).toContain('NO EXIT AFTER 24 HOURS = TOTAL LOSS');
-  });
-
-  test('an unrecognised code falls back to the route prose, visibly', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot({ realised: realised({ costBasis: 'some_new_method' }) })],
-    }).strings.join(' | ');
-    // Composition is ALL-OR-NOTHING: a half-composed method would state the
-    // parts we know and silently drop the rest, which is the truncation
-    // defect again in a different shape.
-    expect(joined).not.toContain('ROUND TRIPS MATCHED FIFO BY TOKEN UNITS');
-    expect(joined).toContain('GROSS REALISED ON THE USDC LEG; EXCLUDES NETWORK FEES AND RENT');
-  });
-
-  // The audit bar's item 4, at the DRAW site rather than the data site. The
-  // data guard already refuses these, but a caller can build `FloorScreenData`
-  // by hand — that is the whole reason the sanitiser lives at the draw site —
-  // so the board must survive a realised block whose "numbers" are strings.
-  test('a hostile string in a realised field cannot reach fillText as money', () => {
+  // A caller can build `FloorScreenData` by hand — that is why the sanitiser
+  // lives at the draw site — so the draw must survive "numbers" that are
+  // strings. The formatters' `Number.isFinite` is the boundary.
+  test('a hostile string in a numeric field cannot reach fillText as money', () => {
     const poisoned = {
-      kind: 'ready' as const,
-      closedPositions: 10,
-      wins: '9999' as unknown as number,
-      losses: '<script>' as unknown as number,
+      ...row(),
+      rank: '1 WINNER' as unknown as number,
       realisedUsd: '+$999,999.00 PROFIT' as unknown as number,
-      bestUsd: '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1' as unknown as number,
-      worstUsd: Number.NaN,
-      openPositions: '2' as unknown as number,
-      note: 'gross',
-      partial: false,
-      excludedNonUsdc: 0,
-    } as unknown as FloorScreenRealisedState;
-    const drawn = draw({ phase: 'ready', slots: [slot({ realised: poisoned })] });
-    const joined = drawn.strings.join(' | ');
-
-    // No server string reaches the wall as a figure.
+      trades: MINT as unknown as number,
+      wins: '<script>' as unknown as number,
+    } as FloorScreenRow;
+    const joined = draw({ phase: 'ready', rows: [poisoned] }).strings.join(' | ');
     expect(joined).not.toContain('999,999');
     expect(joined).not.toContain('PROFIT');
     expect(joined).not.toContain('<script>');
-    // A non-number formats as the explicit unavailable marker, never as 0.00.
+    expect(joined).not.toContain('WINNER');
     expect(joined).toContain('N/A');
-    expect(joined).not.toContain('$0.00');
-    // And the address in a "number" field never lands.
-    assertDrawable(drawn.strings);
+    assertAddressAbsent(joined.split(' | '), MINT);
   });
 
-  // The BRAND. `value()` skips the untrusted-text pass by design, so "only pass
-  // numbers you formatted here" used to be a convention held by a comment. It
-  // is now a type: `BoardValue`'s symbol is not exported, so the only ways to
-  // obtain one are the two formatters and the `label` tag. A future edit that
-  // passes a server string into the unsanitised path is a COMPILE error.
-  //
-  // The grep below is the belt to that braces: it fails if a `value()` call is
-  // ever handed a bare literal or an untagged template, which is what such an
-  // edit looks like before the type error is noticed.
+  // The BRAND. `value()` skips the untrusted-text pass by design, and a
+  // `value()` handed a bare literal or an untagged template is what an edit
+  // that routes server text around the sanitiser looks like.
   test('value() is never called with a bare string or untagged template', () => {
     const source = readFileSync(
       join(import.meta.dir, 'trading-floor-screen-texture.ts'),
       'utf8',
     );
-    // Every call site, second argument captured. `value(` also appears as the
-    // function's own declaration, which the `ctx,` prefix excludes.
     const calls = [...source.matchAll(/value\(\s*ctx,\s*([^\n]{0,24})/g)].map(
       (hit) => hit[1]!.trim(),
     );
-    expect(calls.length).toBeGreaterThan(5);
+    expect(calls.length).toBeGreaterThan(8);
     for (const argument of calls) {
-      // BANNED: a string literal or an untagged template. A branded VARIABLE is
-      // legitimate — `drawBasisBand` passes wrapped lines — and the BRAND is
-      // what proves those came from a formatter. This grep is the belt: it
-      // catches the shape such an edit takes before anyone reads the type
-      // error. Allow-listing the producers here failed on the first legitimate
-      // variable, which is how a useful grep starts getting deleted.
       const literal = /^['"`]/.test(argument);
       expect({ argument, literal }).toEqual({ argument, literal: false });
     }
   });
 
-  // The grep. A money figure in the SOURCE would be a figure nobody computed.
+  // A money figure in the SOURCE would be a figure nobody computed. The $20
+  // ticket and the cost percentages arrive as numbers from `@clawville/shared`.
   test('the drawing code contains no hard-coded money figure', () => {
     const source = readFileSync(
       join(import.meta.dir, 'trading-floor-screen-texture.ts'),
       'utf8',
     );
-    // Strip comments: the file DOCUMENTS the -5.20/+8.87 window incident, and
-    // prose about a number is not a number on the wall.
     const code = source
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
     expect(code).not.toMatch(/\$\d/);
     expect(code).not.toMatch(/['"`][^'"`]*\bUSD\s*\d/i);
-    // The only "$" the drawing code may contain is the one in the formatter and
-    // in replacement patterns, both of which are template syntax, not a figure.
+    expect(code).not.toMatch(/\d(\.\d+)?%/);
     const dollarLiterals = code.match(/\$(?!\{)[^{]/g) ?? [];
     expect(dollarLiterals.every((hit) => /\$\D/.test(hit))).toBe(true);
   });
 
-  test('the data layer refuses a half-populated or non-numeric realised block', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const state = { isLoading: false, isError: false };
-    const build = (realisedValue: unknown) =>
-      buildFloorScreenData(
-        [{ ...view(), realised: realisedValue } as HouseTraderSlotView],
-        state,
-        now,
-      ).slots[0]!.realised;
-
-    // A BROKEN read is 'unavailable' — a statement about our read.
-    expect(build(undefined)?.kind).toBe('unavailable');
-    expect(build({ closedPositions: 4 })?.kind).toBe('unavailable');
-    expect(build({ ...fullRealised(), realisedUsd: '-5.20' })?.kind).toBe('unavailable');
-    expect(build({ ...fullRealised(), realisedUsd: Number.NaN })?.kind).toBe('unavailable');
-    // A VALID block reporting nothing closed is 'none' — about the TRADER.
-    expect(build({ ...fullRealised(), closedPositions: 0 })?.kind).toBe('none');
-    expect(ready(build(fullRealised())).realisedUsd).toBe(-5.2);
-    // A missing basis falls back rather than drawing a figure with no basis.
-    const noBasis = { ...fullRealised(), note: '' };
-    expect(ready(build(noBasis)).note).toBe(
-      'Gross realised on the USDC leg; excludes network fees and rent',
-    );
+  test('colour follows the sign, and flat is neither', () => {
+    expect(pnlColor(1)).toBe(COLOR.gain);
+    expect(pnlColor(-1)).toBe(COLOR.drop);
+    expect(pnlColor(0)).toBe(COLOR.value);
+    expect(pnlColor(Number.NaN)).toBe(COLOR.muted);
+    const painted = draw({ phase: 'ready', rows: liveRows() }).painted;
+    const fillOf = (value: string) =>
+      painted.find((p) => p.kind === 'text' && p.value === value)?.fill;
+    expect(fillOf('+$12.40')).toBe(COLOR.gain);
+    expect(fillOf('-$19.90')).toBe(COLOR.drop);
+    expect(fillOf('$0.00')).toBe(COLOR.value);
   });
 });
+
+// ---------------------------------------------------------------------------
+// What the board shows
+// ---------------------------------------------------------------------------
+
 describe('Trading Floor board — what it actually shows', () => {
-  test('the header, the statuses and the counts are all on the board', () => {
-    const { strings } = draw({
-      phase: 'ready',
-      slots: [slot({ label: 'Genesis', status: 'live', verified: 12, scored: 8 })],
-    });
-    const joined = strings.join(' | ');
-    expect(joined).toContain('CLAWVILLE TRADING FLOOR');
-    expect(joined).toContain('GENESIS');
-    expect(joined).toContain('LIVE');
-    expect(joined).toContain('VERIFIED');
-    expect(joined).toContain('12');
-    expect(joined).toContain('SCORED');
-    expect(joined).toContain('8');
-    expect(joined).toContain('4M AGO');
+  test('the header names the contest, says PAPER, counts down and keeps the clock', () => {
+    const { strings } = draw({ phase: 'ready', rows: liveRows() });
+    expect(strings).toContain('TRADING ARENA WEEK 1 · PAPER');
+    expect(strings).toContain('ENDS IN 3D 15H 59M');
+    expect(strings).toContain('14:32 UTC');
   });
 
-  test('each of the five statuses gets its own words', () => {
-    const read = (status: FloorScreenSlot['status']) =>
-      draw({ phase: 'ready', slots: [slot({ status })] }).strings.join(' | ');
-    expect(read('live')).toContain('LIVE');
-    expect(read('stopped')).toContain('STOPPED');
-    expect(read('waiting')).toContain('NOT RUNNING YET');
-    // A risk pause and a failed risk READ are two different facts, so they get
-    // two different words. Merging them would put an unearned claim on a wall.
-    expect(read('paused')).toContain('PAUSED: RISK LIMIT');
-    expect(read('fault')).toContain('FAULT');
-    // And a paused card never also says LIVE: the status word is one word.
-    expect(read('paused')).not.toContain('| LIVE |');
-    // The hygiene gate, on a card with no basis band: that band wraps at 105
-    // characters by design and would trip the 64-character runaway guard, which
-    // is a rule about labels rather than about the method sentence.
-    for (const status of ['paused', 'fault'] as const) {
-      assertDrawable(draw({ phase: 'ready', slots: [slot({ status })] }).strings);
+  test('the prize line states the places, the amounts and the token', () => {
+    const { strings } = draw({ phase: 'ready', rows: liveRows() });
+    expect(strings).toContain(
+      'PRIZES  1ST 1,000,000 · 2ND 500,000 · 3RD 250,000 $CLAWVILLE',
+    );
+    // House agents are ranked in the same table, so the prize line must say
+    // they cannot place.
+    expect(strings).toContain('HOUSE AGENTS NOT ELIGIBLE');
+  });
+
+  // Codex review round 4: three prizes of 1e18 ran off the canvas edge.
+  test('a prize line too long for its room is dropped whole, never cut or overlapped', () => {
+    for (const prizes of [
+      [1, 2, 3].map((place) => ({ place, amount: 1e18 })),
+      Array.from({ length: 10 }, (_unused, index) => ({ place: index + 1, amount: 250_000 })),
+    ]) {
+      const rec = recorder();
+      drawFloorScreen(rec.context, board({ phase: 'ready', rows: liveRows(), contest: { ...CONTEST, prizes } }));
+      expect(rec.strings.join(' | ')).not.toContain('PRIZES');
+      expect(rec.strings).not.toContain('HOUSE AGENTS NOT ELIGIBLE');
+      assertNoTextOverlap(rec.painted);
+      for (const painted of rec.painted) {
+        if (painted.kind !== 'text') continue;
+        const box = textBox(painted);
+        expect(box.right).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.width);
+      }
+    }
+    // The longest line that still fits is drawn, and clears the note beside it.
+    const wide = [1, 2, 3, 4].map((place) => ({ place, amount: 999_999 }));
+    const rec = recorder();
+    drawFloorScreen(rec.context, board({ phase: 'ready', rows: liveRows(), contest: { ...CONTEST, prizes: wide } }));
+    const line = rec.strings.find((value) => value.startsWith('PRIZES'));
+    expect(line?.length).toBeLessThanOrEqual(82);
+    expect(rec.strings).toContain('HOUSE AGENTS NOT ELIGIBLE');
+    assertNoTextOverlap(rec.painted);
+  });
+
+  test('with no contest data the header still says PAPER and names nothing it lacks', () => {
+    const { strings } = draw({ phase: 'ready', rows: liveRows(), contest: null });
+    expect(strings).toContain('TRADING ARENA · PAPER');
+    expect(strings.join(' | ')).not.toContain('PRIZES');
+    expect(strings.join(' | ')).not.toContain('ENDS IN');
+    expect(strings).toContain('14:32 UTC');
+  });
+
+  test('a contest title that sanitises to nothing falls back rather than painting "· PAPER"', () => {
+    const { strings } = draw({ phase: 'ready', contest: { ...CONTEST, title: MINT } });
+    expect(strings).toContain('TRADING ARENA · PAPER');
+    expect(strings).not.toContain('· PAPER');
+  });
+
+  test('every column of a row is on the board', () => {
+    const { strings } = draw({ phase: 'ready', rows: [row()] });
+    for (const expected of ['#1', 'GENESIS', 'HOUSE', '-$5.20', '10', '4/6', '1']) {
+      expect(strings).toContain(expected);
+    }
+    for (const caption of ['#', 'TRADER', 'TEMPLATE', 'REALISED P&L', 'TRADES', 'W/L', 'OPEN']) {
+      expect(strings).toContain(caption);
     }
   });
 
-  test('a board with no data says it is connecting, never shows an empty card', () => {
-    const connecting = draw({ phase: 'connecting', slots: [] }).strings.join(' | ');
-    expect(connecting).toContain('CONNECTING TO THE FLOOR');
-    const failed = draw({ phase: 'error', slots: [] }).strings.join(' | ');
-    expect(failed).toContain('FLOOR DATA UNAVAILABLE');
+  test('house rows are tagged HOUSE, eligible players carry no tag', () => {
+    const { strings } = draw({ phase: 'ready', rows: liveRows(), hasPlayerAgents: true });
+    expect(strings.filter((value) => value === 'HOUSE')).toHaveLength(5);
+    expect(strings).not.toContain('NO PRIZE');
+    expect(strings).toContain('ALICE TRADER');
   });
 
-  // THE SPARKLINE IS GONE. It was squeezed across eight layout passes and at
-  // 15px disclosures the card has no room for it. It was the only element with
-  // no honesty function - scoring-TIER shape, which the tape and the counts
-  // already carry - and a chart too small to read is decoration impersonating
-  // data. These two tests pinned its behaviour; this one pins its ABSENCE, so
-  // a future reader does not restore it without re-reading why it went.
-  // THE CHART IS GONE, field and all. It was squeezed across eight layout
-  // passes; at the height left for it Codex round 6 measured all three scoring
-  // tiers rendering as the same 4px stub, and a chart that cannot show its own
-  // distinctions is decoration impersonating data. This pins the ABSENCE at
-  // the type level - `FloorScreenSlot` has no `spark` - so restoring it is a
-  // deliberate act with a reason attached, not a quiet re-add.
-  // THE PRODUCTION MAPPER, not the test's own fixture. Checking `slot()` only
-  // proved that I had edited my own helper — Codex round 7 called that out. The
-  // assertion that means something is on what `buildFloorScreenData` actually
-  // projects from a full wire payload WITH trade data, which is where a chart
-  // field would come back from.
-  test('the production mapper emits no chart data from a busy desk', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const projected = buildFloorScreenData(
-      [
-        view({
-          recentTrades: Array.from({ length: 7 }, (_, index) =>
-            trade(index % 2 ? 2 : 1, `sig-${index}`, {
-              dex: 'jupiter',
-              blockTime: 1_700_000_000 + index,
+  test('an ineligible player is tagged NO PRIZE so its place is not read as a prize place', () => {
+    const { strings } = draw({ phase: 'ready', rows: [row({ tag: 'no-prize', name: 'carol' })] });
+    expect(strings).toContain('NO PRIZE');
+    expect(strings).not.toContain('HOUSE');
+  });
+
+  test('the call to action shows only while no player agent is on the board', () => {
+    const cta = 'NO PLAYER TRADERS YET · LAUNCH YOUR TRADER AT THE KIOSK';
+    const houseOnly = liveRows().filter((value) => value.tag === 'house');
+    expect(draw({ phase: 'ready', rows: houseOnly }).strings).toContain(cta);
+    expect(draw({ phase: 'ready', rows: [] }).strings).toContain(cta);
+    expect(
+      draw({ phase: 'ready', rows: houseOnly, hasPlayerAgents: true }).strings,
+    ).not.toContain(cta);
+    // Never over a ranked agent: a full table has no free row for it.
+    const full = Array.from({ length: FLOOR_SCREEN_MAX_ROWS }, (_unused, index) =>
+      row({ rank: index + 1 }),
+    );
+    expect(draw({ phase: 'ready', rows: full }).strings).not.toContain(cta);
+  });
+
+  test('the call to action sits in the first free row', () => {
+    const cta = 'NO PLAYER TRADERS YET · LAUNCH YOUR TRADER AT THE KIOSK';
+    const houseOnly = liveRows().filter((value) => value.tag === 'house');
+    const painted = draw({ phase: 'ready', rows: houseOnly }).painted;
+    const rowY = (value: string) =>
+      painted.find((p) => p.kind === 'text' && p.value === value)?.y ?? Number.NaN;
+    const lastRank = rowY(`#${houseOnly.length}`);
+    expect(rowY(cta)).toBeGreaterThan(lastRank);
+  });
+
+  test('at most FLOOR_SCREEN_MAX_ROWS rows are drawn', () => {
+    const many = Array.from({ length: 20 }, (_unused, index) => row({ rank: index + 1 }));
+    const { strings } = draw({ phase: 'ready', rows: many });
+    expect(strings).toContain(`#${FLOOR_SCREEN_MAX_ROWS}`);
+    expect(strings).not.toContain(`#${FLOOR_SCREEN_MAX_ROWS + 1}`);
+  });
+
+  test('the method line is composed from the numbers, and only when a figure is up', () => {
+    const line =
+      'PAPER TRADES · $20 PER POSITION · REALISED P&L AFTER 2.5% BUY + 1% SELL COSTS';
+    expect(draw({ phase: 'ready', rows: [row()] }).strings).toContain(line);
+    expect(draw({ phase: 'ready', rows: [] }).strings).not.toContain(line);
+    // A different engine constant is a different sentence: nothing is typed in.
+    expect(
+      draw({
+        phase: 'ready',
+        rows: [row()],
+        basis: { positionUsd: 25, buyCostPct: 3, sellCostPct: 1.5 },
+      }).strings,
+    ).toContain('PAPER TRADES · $25 PER POSITION · REALISED P&L AFTER 3% BUY + 1.5% SELL COSTS');
+  });
+
+  test('a board with no data says it is connecting, never an empty table', () => {
+    const connecting = draw({ phase: 'connecting' }).strings;
+    expect(connecting).toContain('CONNECTING TO THE ARENA');
+    expect(connecting).not.toContain('TRADER');
+    expect(draw({ phase: 'error' }).strings).toContain('ARENA DATA UNAVAILABLE');
+    // The header still reads in every phase.
+    expect(connecting).toContain('TRADING ARENA WEEK 1 · PAPER');
+    expect(connecting).toContain('14:32 UTC');
+  });
+
+  test('the bottom tape draws the arena entries and exits, or says it is standing by', () => {
+    const tape = ['GENESIS BUY BONK $20.00 4M', 'RUNNER SELL WIF +$2.14 12M'];
+    // The sanitiser collapses runs of spaces, so the joiner paints as " /// ".
+    expect(draw({ phase: 'ready', rows: [row()], tape }).strings).toContain(
+      'GENESIS BUY BONK $20.00 4M /// RUNNER SELL WIF +$2.14 12M',
+    );
+    expect(draw({ phase: 'ready', rows: [row()] }).strings).toContain(
+      'ARENA TRADE TAPE STANDING BY',
+    );
+  });
+
+  // Found on the Skia preview: the line was joined and then cut at 95
+  // characters, which ended it "DIP HUNTER SE." — and with money on the tape a
+  // cut can turn "-$3.21" into "-$3.2.", a different figure.
+  test('the ticker packs whole entries and never cuts one, least of all a figure', () => {
+    const tape = [
+      'RUNNER SELL WIF +$2.14 2M',
+      'GENESIS BUY BONK $20.00 4M',
+      'DIP HUNTER SELL POPCAT -$3.21 12M',
+      'ALICE TRAD BUY MOODENG $20.00 15M',
+    ];
+    const drawn = draw({ phase: 'ready', rows: [row()], tape }).strings;
+    const line = drawn.find((value) => value.startsWith('RUNNER SELL WIF'))!;
+    expect(line).toBe(
+      'RUNNER SELL WIF +$2.14 2M /// GENESIS BUY BONK $20.00 4M /// DIP HUNTER SELL POPCAT -$3.21 12M',
+    );
+    expect(line.length).toBeLessThanOrEqual(95);
+    // Every entry on the line is WHOLE: it is one of the inputs, unchanged.
+    for (const part of line.split(' /// ')) expect(tape).toContain(part);
+    // A first entry too long for the row is skipped rather than cut.
+    const skipped = draw({ phase: 'ready', rows: [row()], tape: ['O'.repeat(120), tape[0]!] }).strings;
+    expect(skipped).toContain('RUNNER SELL WIF +$2.14 2M');
+  });
+
+  test('stripes sit only under real rows', () => {
+    const stripes = (count: number) =>
+      draw({
+        phase: 'ready',
+        rows: Array.from({ length: count }, (_unused, index) => row({ rank: index + 1 })),
+      }).painted.filter((p) => p.kind === 'rect' && p.fill === COLOR.rowStripe).length;
+    expect(stripes(0)).toBe(0);
+    expect(stripes(1)).toBe(0);
+    expect(stripes(5)).toBe(2);
+    expect(stripes(FLOOR_SCREEN_MAX_ROWS)).toBe(FLOOR_SCREEN_MAX_ROWS / 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Geometry: the hand-placed layout, pinned
+// ---------------------------------------------------------------------------
+
+describe('Trading Floor board — layout', () => {
+  test('no later fill paints over text already on the board, in any phase', () => {
+    for (const data of [
+      worstCaseBoard(),
+      board({ phase: 'ready', rows: liveRows() }),
+      board({ phase: 'ready', rows: liveRows().slice(0, 5) }),
+      board({ phase: 'ready', rows: [] }),
+      board({ phase: 'connecting' }),
+      board({ phase: 'error', contest: null }),
+    ]) {
+      const rec = recorder();
+      drawFloorScreen(rec.context, data);
+      assertNoFillOverText(rec.painted);
+    }
+  });
+
+  test('no two strings share space, even with every column at its widest', () => {
+    for (const data of [
+      worstCaseBoard(),
+      board({ phase: 'ready', rows: liveRows().slice(0, 5) }),
+      board({ phase: 'connecting' }),
+    ]) {
+      const rec = recorder();
+      drawFloorScreen(rec.context, data);
+      assertNoTextOverlap(rec.painted);
+    }
+  });
+
+  test('absurd figures still keep to their columns and the canvas', () => {
+    for (const scale of [-1e4, 1e4 - 0.0005, 1e5, 1e8, 1e11, 1e14, 1e17]) {
+      const rec = recorder();
+      drawFloorScreen(
+        rec.context,
+        board({
+          phase: 'ready',
+          rows: Array.from({ length: FLOOR_SCREEN_MAX_ROWS }, (_unused, index) =>
+            row({
+              rank: 9990 + index,
+              name: 'WWWWWWW '.repeat(5),
+              tag: 'no-prize',
+              template: 'MMMMMMM '.repeat(5),
+              realisedUsd: (index % 2 === 0 ? -1 : 1) * scale * 9.99,
+              trades: scale * 9.99,
+              wins: scale * 9.99,
+              losses: scale * 9.99,
+              openPositions: scale,
             }),
           ),
         }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    ).slots[0]!;
-    expect(Object.keys(projected)).not.toContain('spark');
-    expect(JSON.stringify(projected)).not.toContain('spark');
-    // NOT asserting the absence of "NO TRADES YET" any more: that string used
-    // to be the empty CHART's placeholder, and it is now a legitimate
-    // last-trade LABEL for a desk with no `lastTradeAt`. Asserting its absence
-    // would fail on correct output — the shape proof is the rect-count test.
-    expect(draw({ phase: 'ready', slots: [projected] }).strings.length).toBeGreaterThan(5);
-  });
-
-  // RECT COUNT, kept from the original absence pin. A chart is the only thing
-  // on this card whose number of filled rectangles varies with the DATA, so a
-  // constant rect count across a busy desk and an idle one is the shape-level
-  // proof that no chart came back. It is driven through the real data layer,
-  // since the drawable slot no longer has a field a test could set directly.
-  test('the card draws the same rectangles whether the desk is busy or idle', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const state = { isLoading: false, isError: false };
-    const build = (count: number) =>
-      buildFloorScreenData(
-        [
-          view({
-            recentTrades: Array.from({ length: count }, (_, index) =>
-              trade(1, `sig-${index}`, { dex: 'jupiter', blockTime: 1_700_000_000 + index }),
-            ),
-          }),
-        ],
-        state,
-        now,
       );
-    const busy = recorder();
-    drawFloorScreen(busy.context, build(7));
-    const idle = recorder();
-    drawFloorScreen(idle.context, build(0));
-    expect(busy.rects.length).toBe(idle.rects.length);
-  });
-
-  test('the header carries the clock in every phase', () => {
-    for (const phase of ['connecting', 'error', 'ready'] as const) {
-      const joined = draw({
-        phase,
-        slots: phase === 'ready' ? [slot()] : [],
-      }).strings.join(' | ');
-      expect(joined).toContain('CLAWVILLE TRADING FLOOR');
-      expect(joined).toContain('14:32 UTC');
+      assertNoFillOverText(rec.painted);
+      assertNoTextOverlap(rec.painted);
+      for (const painted of rec.painted) {
+        if (painted.kind !== 'text') continue;
+        const box = textBox(painted);
+        expect({ value: painted.value, inside: box.left >= 0 && box.right <= FLOOR_SCREEN_CANVAS.width }).toEqual({
+          value: painted.value,
+          inside: true,
+        });
+      }
     }
   });
 
-  test('the bottom tape draws the recent trades, not the counts again', () => {
-    const joined = draw({
-      phase: 'ready',
-      slots: [slot()],
-      tape: ['ANSEM PUMPSWAP 4M', 'JUPITER 9M'],
-    }).strings.join(' | ');
-    expect(joined).toContain('ANSEM PUMPSWAP 4M');
-    expect(joined).toContain('JUPITER 9M');
+  test('the worst case really is at its caps', () => {
+    const { strings } = draw(worstCaseBoard());
+    // The name and template columns truncate rather than overflow.
+    expect(strings).toContain('WWWWWWW WWWWWWW.');
+    expect(strings).toContain('MMMMMMM MMMMMMM.');
+    expect(strings).toContain('-$12345.67');
+    expect(strings).toContain('99999/99999');
+    expect(strings).toContain('#100');
+    expect(strings).toContain('CLOCK OFFLINE');
+    expect(strings).toContain('STARTS IN 27000D 03H 12M');
   });
 
-  test('an empty tape says the tape is standing by', () => {
-    const joined = draw({ phase: 'ready', slots: [slot()], tape: [] }).strings.join(
-      ' | ',
+  // Found while re-deriving the header: the clock was capped at 12 characters,
+  // so its own failure word painted as "CLOCK OFFLI." — on the one state that
+  // most needs to be read.
+  test('the offline clock word is drawn whole', () => {
+    expect(draw({ phase: 'ready', clockLabel: 'CLOCK OFFLINE' }).strings).toContain(
+      'CLOCK OFFLINE',
     );
-    expect(joined).toContain('LIVE TRADE TAPE STANDING BY');
   });
 
-  // The shipped lineup is one slot, but the board must already be right on the
-  // day a second is paired — including the case where the new desk is live and
-  // has not traded yet, which is a valid state and NOT an error.
-  test('a two-slot lineup draws both, including a live slot with zero trades', () => {
-    const { strings } = draw({
-      phase: 'ready',
-      slots: [
-        slot({ label: 'Genesis', status: 'live', verified: 12, scored: 8 }),
-        slot({
-          label: 'ClawVille Runner',
-          status: 'live',
-          verified: 0,
-          scored: 0,
-          lastTradeLabel: 'no trades yet',
-        }),
-      ],
-      tape: ['ANSEM PUMPSWAP 4M'],
-    });
-    const joined = strings.join(' | ');
-    expect(joined).toContain('GENESIS');
-    expect(joined).toContain('CLAWVILLE RUNNER');
-    expect(joined).toContain('NO TRADES YET');
-    expect(joined).not.toContain('CONNECTING TO THE FLOOR');
-    expect(joined).not.toContain('FLOOR DATA UNAVAILABLE');
-    assertDrawable(strings);
+  test('nothing on the board is drawn below the legibility floor', () => {
+    for (const data of [worstCaseBoard(), board({ phase: 'connecting' })]) {
+      const rec = recorder();
+      drawFloorScreen(rec.context, data);
+      for (const painted of rec.painted) {
+        if (painted.kind !== 'text') continue;
+        expect({ value: painted.value, px: fontPx(painted.font) >= BOARD_MIN_PX }).toEqual({
+          value: painted.value,
+          px: true,
+        });
+      }
+    }
+    expect(BOARD_MIN_PX).toBe(15);
   });
 
-  // THE REFLOW PIN. The card's row offsets are hand-placed, so a canvas height
-  // change silently moves text under the sparkline: at 325 px the OLD offsets
-  // put the LAST row at y + 174 and the sparkline bed at y + 149, i.e. the bed
-  // painted straight over the text. `drawFloorScreen` measures nothing and the
-  // bounds test below only pins the canvas edges, so neither would have caught
-  // it. The bed is filled AFTER the card text, which is exactly what makes the
-  // ordering assertion able to see the collision.
-  test('no later fill paints over text already on the board', () => {
+  test('the whole board fits the declared canvas', () => {
     const rec = recorder();
-    drawFloorScreen(
-      rec.context,
-      board({
-        phase: 'ready',
-        slots: [slot(), slot({ label: 'ClawVille Runner' })],
-        tape: ['ANSEM PUMPSWAP 4M'],
-      }),
-    );
-    assertNoFillOverText(rec.painted);
+    drawFloorScreen(rec.context, worstCaseBoard());
+    for (const [x, y, w, h] of rec.rects) {
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x + w).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.width + 0.001);
+      expect(y + h).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.height + 0.001);
+    }
+    for (const painted of rec.painted) {
+      if (painted.kind !== 'text') continue;
+      const box = textBox(painted);
+      expect({ value: painted.value.slice(0, 20), inside: box.left >= 0 && box.right <= FLOOR_SCREEN_CANVAS.width && box.top >= 0 && box.bottom <= FLOOR_SCREEN_CANVAS.height }).toEqual({
+        value: painted.value.slice(0, 20),
+        inside: true,
+      });
+    }
   });
 
   // The pin above is only worth its line if the CHECKER catches the shapes we
@@ -1475,410 +1168,377 @@ describe('Trading Floor board — what it actually shows', () => {
       ).toBe(false);
     });
   });
-
-  // TEXT OVER TEXT. The paint-order pin watched text against later RECTS and
-  // was blind to two strings sharing a position: when the counts and last-trade
-  // rows merged, "OPEN 1" drew at the same x and y as "VERIFIED 12" and painted
-  // straight over it on EVERY ready card. Codex round 7 found it; nothing in
-  // this file could have. Colour is irrelevant — two glyph boxes overlapping is
-  // the defect regardless of which is on top.
-  test('no two strings share space on the board', () => {
-    const rec = recorder();
-    drawFloorScreen(
-      rec.context,
-      board({
-        phase: 'ready',
-        slots: [
-          // PAUSED on the worst card: the widest status word this row can hold
-          // (18 characters where LIVE is 4) beside the widest counts, the
-          // longest last-trade label and both per-slot disclosures.
-          slot({
-            status: 'paused',
-            verified: 1234,
-            scored: 1234,
-            lastTradeLabel: 'time unavailable',
-            realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
-          }),
-          slot({ label: 'ClawVille Runner', status: 'fault', realised: { kind: 'none' } }),
-        ],
-      }),
-    );
-    assertNoTextOverlap(rec.painted);
-  });
-
-  // FEATURE_GATE: trading_floor_board_three_slot_full_sweep
-  // Status: the FULL pairwise overlap sweep runs at the card widths the live
-  //   lineup produces. At three slots (cardW 314.67px, usable 278.67px) only
-  //   the new status word is swept, because TWO pairs collide there and neither
-  //   is reachable with a two-trader lineup. One is an estimator artifact
-  //   (caption vs headline, 0.6px); the other is REAL (the two disclosure
-  //   strings need 342px and have 278.67px, a 63.3px overrun) and needs a
-  //   second disclosure row or shorter wording, not a tolerance change. Both
-  //   are pinned to an exact set by the test below, so this gate cannot go
-  //   vacuous and a third collision cannot hide behind them.
-  // Metric to graduate: HOUSE_TRADER_LINEUP.length > 2 — i.e. a third house
-  //   trader is paired and the 314px card becomes a width players actually see.
-  // Current reading: HOUSE_TRADER_LINEUP.length === 2 (Genesis, ClawVille
-  //   Runner) as of 2026-09-20.
-  // Review deadline: fires on its own. `STRICT_SWEEP_MAX_SLOTS` below reads the
-  //   lineup constant, so adding a third entry switches the full sweep on at
-  //   three slots in the same run, with no human step and no date to miss.
-  // On deadline: that sweep WILL go red on the disclosure pair, because that
-  //   overlap is arithmetic rather than estimator slack. The card is then
-  //   re-derived for the 314px width: a second disclosure row, or wording short
-  //   enough that two strings fit 278.67px. Do NOT loosen `textBox` to make it
-  //   pass — the estimator is pessimistic on purpose and has caught two real
-  //   bugs, and it is not what is failing here.
-  // Evidence it fits today and ONLY today: `drawCard`'s own comment records
-  //   that the shortened wording (`n NON-USDC EXCLUDED` / `n NO-EXIT
-  //   WRITE-OFF`, 171px each) was measured against **394px of usable card**,
-  //   which is the TWO-slot width. A three-slot card has 278.67px, so the same
-  //   two strings need 342px and overrun by 63.3px. The wording was never sized
-  //   for three.
-  // Reference: 3dStructure.md §9h; .claude/memory/threejs/gotchas/
-  //   canvas-paint-pin-estimator-false-positive.md
-  const STRICT_SWEEP_MAX_SLOTS = HOUSE_TRADER_LINEUP.length > 2 ? 3 : 2;
-
-  // THE NEW STATUS WORDS, through BOTH geometry pins and at every card width.
-  // "PAUSED: RISK LIMIT" is 18 characters where "LIVE" was four, so it is the
-  // widest string that row has ever carried; the three-slot board is the
-  // narrowest card the layout produces (314 px against 430 px).
-  test.each([1, 2, 3])(
-    'the paused and fault cards clear the layout on a %i-slot board',
-    (count) => {
-      for (const status of ['paused', 'fault'] as const) {
-        const rec = recorder();
-        drawFloorScreen(
-          rec.context,
-          board({
-            phase: 'ready',
-            slots: Array.from({ length: count }, (_unused, index) =>
-              slot({
-                label: index === 0 ? 'Genesis' : 'ClawVille Runner',
-                // The FIRST card carries the verdict and the rest stay live, so
-                // one board exercises the widest word beside the ordinary one.
-                status: index === 0 ? status : 'live',
-                realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
-              }),
-            ),
-            tape: ['ANSEM PUMPSWAP 4M'],
-          }),
-        );
-        const word = status === 'paused' ? 'PAUSED: RISK LIMIT' : 'FAULT';
-        expect(rec.strings.join(' | ')).toContain(word);
-        assertNoFillOverText(rec.painted);
-        // The FULL pairwise sweep at the widths the lineup produces, and only
-        // the new word beyond them. The boundary is DERIVED from the lineup
-        // constant, so a third house trader turns the strict sweep on here by
-        // itself — see the FEATURE_GATE above for why three slots is currently
-        // outside it.
-        if (count <= STRICT_SWEEP_MAX_SLOTS) assertNoTextOverlap(rec.painted);
-        else assertNoTextOverlap(rec.painted, (value) => value === word);
-        // And the whole board still fits the declared canvas.
-        for (const [x, y, w, h] of rec.rects) {
-          expect(x).toBeGreaterThanOrEqual(0);
-          expect(y).toBeGreaterThanOrEqual(0);
-          expect(x + w).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.width + 0.001);
-          expect(y + h).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.height + 0.001);
-        }
-      }
-    },
-  );
-
-  // THE DEFERRAL, PINNED TO AN EXACT SET rather than left as a prose note.
-  //
-  // Two pairs collide at the three-slot width and they are NOT the same kind of
-  // problem. Writing the set down is what stops the gate above going vacuous:
-  // if a re-derive clears them this test goes red and says "lift the gate", and
-  // if a THIRD pair starts colliding it goes red too, which a focused sweep
-  // would never have noticed.
-  //
-  //   1. `REALISED P&L (PARTIAL)` vs the 30px headline. 0.6px by the estimator,
-  //      and an ARTIFACT: Courier's cap height is 0.572em against the 0.72em
-  //      this file models, so the real gap is about 2px of clearance.
-  //   2. `n NON-USDC EXCLUDED` vs `n NO-EXIT WRITE-OFF`. **63.3px, and REAL.**
-  //      Two 19-character strings at 9px per character need 342px; a three-slot
-  //      card has 278.67px between its padding. No cap-height slack touches a
-  //      number that size. The shortened wording in `drawCard` was measured
-  //      against the TWO-slot card's 394px, which is why it fits today and only
-  //      today. This one needs a second disclosure row or shorter words, not a
-  //      tolerance change, and the FEATURE_GATE above is what will force it.
-  test('the three-slot width has exactly the two known collisions, no more', () => {
-    const rec = recorder();
-    drawFloorScreen(
-      rec.context,
-      board({
-        phase: 'ready',
-        slots: Array.from({ length: 3 }, (_unused, index) =>
-          slot({
-            label: index === 0 ? 'Genesis' : 'ClawVille Runner',
-            status: index === 0 ? 'paused' : 'live',
-            realised: realised({ excludedNonUsdc: 2, noExitClosures: 1, partial: true }),
-          }),
-        ),
-        tape: ['ANSEM PUMPSWAP 4M'],
-      }),
-    );
-    const texts = rec.painted.filter(
-      (p): p is Extract<Painted, { kind: 'text' }> => p.kind === 'text',
-    );
-    const collisions = new Set<string>();
-    for (let i = 0; i < texts.length; i += 1) {
-      for (let j = i + 1; j < texts.length; j += 1) {
-        const a = textBox(texts[i]!);
-        const b = textBox(texts[j]!);
-        if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
-          collisions.add([texts[i]!.value, texts[j]!.value].sort().join(' || '));
-        }
-      }
-    }
-    expect([...collisions].sort()).toEqual([
-      '-$5.20 || REALISED P&L (PARTIAL)',
-      '1 NO-EXIT WRITE-OFF || 2 NON-USDC EXCLUDED',
-    ]);
-  });
-
-  // THE FIGURES STAY. A paused desk's P&L is real; it has simply stopped
-  // moving. Blanking it would lose the fact the reader came for, and the founder
-  // asked for a pause NOTICE, not a pause screen.
-  test('a paused card still paints its P&L, unchanged from the live card', () => {
-    const figures = (status: FloorScreenSlot['status']) =>
-      draw({ phase: 'ready', slots: [slot({ status, realised: realised() })] })
-        .strings.filter((value) => value.includes('$') || value.startsWith('W '));
-    expect(figures('paused')).toEqual(figures('live'));
-    expect(figures('paused').join(' ')).toContain('-$5.20');
-  });
-
-  test('the whole board fits the declared canvas', () => {
-    const { rects } = draw({ phase: 'ready', slots: [slot(), slot(), slot()] });
-    for (const [x, y, w, h] of rects) {
-      expect(x).toBeGreaterThanOrEqual(0);
-      expect(y).toBeGreaterThanOrEqual(0);
-      expect(x + w).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.width + 0.001);
-      expect(y + h).toBeLessThanOrEqual(FLOOR_SCREEN_CANVAS.height + 0.001);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
-// The data half: the live payload -> the drawable shape.
+// The data half: the three arena payloads -> the drawable shape
 // ---------------------------------------------------------------------------
 
-function trade(
-  multiplier: 1 | 1.5 | 2,
-  signature: string,
-  overrides: Partial<FloorTrade> = {},
-): FloorTrade {
-  return {
-    kind: 'trade',
-    keys: [`t:${signature}`],
-    signature,
-    subject: { type: 'agent', id: 'agent-1', avatarName: 'Genesis' },
-    wallet: null,
-    inputMint: 'So11111111111111111111111111111111111111112',
-    outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    notionalUsd: 12.5,
-    dex: 'jupiter',
-    blockTime: 1_700_000_000,
-    multiplier,
-    multiplierTier: multiplier === 2 ? 'ansem' : multiplier === 1.5 ? 'clawville' : 'base',
-    decisionId: null,
-    scored: true,
-    unscoredReason: null,
-    operatedByClawville: true,
-    operator: 'clawville',
-    ...overrides,
-  } as FloorTrade;
-}
+describe('Trading Floor board — leaderboard mapping', () => {
+  test('reads the route envelope and the bare array the panel hook returns', () => {
+    const fromEnvelope = buildFloorScreenData(inputs(), NOW);
+    const fromArray = buildFloorScreenData(inputs({ leaderboard: ready([wireRow()]) }), NOW);
+    expect(fromEnvelope.rows).toEqual(fromArray.rows);
+    expect(fromEnvelope.rows[0]).toEqual({
+      rank: 1,
+      name: 'Genesis',
+      tag: 'house',
+      template: 'Genesis',
+      realisedUsd: -5.2,
+      trades: 10,
+      wins: 4,
+      losses: 6,
+      openPositions: 1,
+    });
+  });
 
-function view(overrides: Partial<HouseTraderSlotView> = {}): HouseTraderSlotView {
-  return {
-    objective: 'momentum-board',
-    slotName: 'Genesis',
-    strategyNote: 'Momentum on small-cap memecoins.',
-    status: 'live-observed',
-    subject: { type: 'agent', id: 'agent-1', avatarName: 'Genesis' },
-    counts: { verified: 12, scored: 8, lastTradeAt: null },
-    // The route's OWN empty view: a paired desk that has closed nothing. It is
-    // the default here because it is the default there, so a test that says
-    // nothing about P&L exercises the state most slots are actually in.
-    //
-    // Expressed as a DELTA on `fullRealised()` and cast, deliberately. The
-    // route's type keeps growing — it gained `openCostUsd`, `costBasis`,
-    // `noExitHours` and four more mid-session — and a second hand-written copy
-    // of the wire shape would need chasing every time. The board reads BY KEY
-    // and ignores fields it does not know, so a fixture carrying the keys the
-    // board reads is the honest model of what it consumes.
-    realised: {
-      ...fullRealised(),
-      closedPositions: 0,
-      wins: 0,
-      losses: 0,
-      realisedUsd: 0,
-      bestUsd: null,
-      worstUsd: null,
-      openPositions: 0,
-      computedAt: null,
-    } as unknown as HouseTraderSlotView['realised'],
-    // NULL by default, which is what the route serves today. Every assertion
-    // written before the field existed keeps meaning what it meant.
-    risk: null,
-    recentTrades: [],
-    ...overrides,
-  };
-}
+  test('loading and error are their own phases, never an empty table', () => {
+    expect(buildFloorScreenData(inputs({ leaderboard: LOADING }), NOW).phase).toBe('connecting');
+    expect(buildFloorScreenData(inputs({ leaderboard: ready(undefined) }), NOW).phase).toBe(
+      'connecting',
+    );
+    // react-query keeps the last good data through a failed refetch; the board
+    // does not present that as current.
+    const failedBoard = buildFloorScreenData(
+      inputs({ leaderboard: failed({ rows: [wireRow()] }) }),
+      NOW,
+    );
+    expect(failedBoard.phase).toBe('error');
+    expect(failedBoard.rows).toEqual([]);
+  });
 
-/** A paused verdict as the hook hands it over, already validated. */
-function riskView(
-  overrides: Partial<NonNullable<HouseTraderSlotView['risk']>> = {},
-): NonNullable<HouseTraderSlotView['risk']> {
-  return {
-    state: 'paused',
-    reason: 'daily_loss_floor',
-    detail: 'Daily loss floor reached.',
-    dayLossUsd: 9.99,
-    dayLossCapUsd: 20,
-    roomNeededUsd: 10.25,
-    at: '2026-09-20T10:40:00.000Z',
-    ageSeconds: 42,
-    ...overrides,
-  };
-}
+  test('rows are drawn in rank order, an unreadable rank last, capped at the table', () => {
+    const rows = [
+      wireRow({ rank: 3, agentId: 'c', name: 'C' }),
+      wireRow({ rank: 'x', agentId: 'z', name: 'Z' }),
+      wireRow({ rank: 1, agentId: 'a', name: 'A' }),
+      wireRow({ rank: 2, agentId: 'b', name: 'B' }),
+      ...Array.from({ length: 10 }, (_unused, index) =>
+        wireRow({ rank: 4 + index, agentId: `n${index}`, name: `N${index}` }),
+      ),
+    ];
+    const data = buildFloorScreenData(inputs({ leaderboard: ready(rows) }), NOW);
+    expect(data.rows).toHaveLength(FLOOR_SCREEN_MAX_ROWS);
+    expect(data.rows.slice(0, 3).map((value) => value.name)).toEqual(['A', 'B', 'C']);
+    expect(data.rows.map((value) => value.name)).not.toContain('Z');
+  });
 
-describe('Trading Floor board — data mapping', () => {
-  const now = Date.parse('2026-09-19T12:00:00.000Z');
+  test('the panel hook maps a missing rank to 0; "#0" is not a place', () => {
+    const data = buildFloorScreenData(inputs({ leaderboard: ready([wireRow({ rank: 0 })]) }), NOW);
+    expect(Number.isNaN(data.rows[0]!.rank)).toBe(true);
+  });
 
-  test('loading and error states never claim a trader is running', () => {
+  test('a player anywhere on the board, not only in the top rows, silences the call to action', () => {
+    const rows = [
+      ...Array.from({ length: 12 }, (_unused, index) =>
+        wireRow({ rank: index + 1, agentId: `house:${index}` }),
+      ),
+      wireRow({ rank: 40, agentId: 'u1', name: 'late player', kind: 'user', eligible: true }),
+    ];
+    const data = buildFloorScreenData(inputs({ leaderboard: ready(rows) }), NOW);
+    expect(data.rows.every((value) => value.tag === 'house')).toBe(true);
+    expect(data.hasPlayerAgents).toBe(true);
+    expect(buildFloorScreenData(inputs(), NOW).hasPlayerAgents).toBe(false);
+  });
+
+  test('a name that is the agent id is no name — an identifier never goes on the wall', () => {
+    const id = '5b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0';
+    const data = buildFloorScreenData(
+      inputs({ leaderboard: ready([wireRow({ agentId: id, name: id, kind: 'user', eligible: true })]) }),
+      NOW,
+    );
+    expect(data.rows[0]!.name).toBe('');
+    const { strings } = draw({ ...data, phase: 'ready' });
+    expect(strings).toContain('NAME NOT SHOWN');
+    expect(strings.join(' ')).not.toContain('5B1C2D3E');
+  });
+
+  test('the template column shows the display name, from the shared templates', () => {
+    const rows = [
+      wireRow({ templateId: 'midcap-climber' }),
+      wireRow({ rank: 2, agentId: 'x', templateId: 'no-such-template' }),
+    ];
+    const data = buildFloorScreenData(inputs({ leaderboard: ready(rows) }), NOW);
+    expect(data.rows.map((value) => value.template)).toEqual(['Mid-Cap Climber', 'no-such-template']);
+  });
+
+  test('tags: house, ineligible player, eligible player', () => {
+    const rows = [
+      wireRow({ rank: 1, kind: 'house', eligible: false }),
+      wireRow({ rank: 2, agentId: 'u1', kind: 'user', eligible: true }),
+      wireRow({ rank: 3, agentId: 'u2', kind: 'user', eligible: false }),
+      wireRow({ rank: 4, agentId: 'u3', kind: 'robot', eligible: true }),
+    ];
+    const data = buildFloorScreenData(inputs({ leaderboard: ready(rows) }), NOW);
+    expect(data.rows.map((value) => value.tag)).toEqual(['house', null, 'no-prize', null]);
+  });
+
+  // Codex review round 2: `trades - wins` counted a zero-P&L close as a loss
+  // while the tape calls it flat. The board reads the route's `losses` only.
+  test('losses come from the route only, so a flat close is neither a win nor a loss', () => {
+    const read = (overrides: Record<string, unknown>) =>
+      buildFloorScreenData(inputs({ leaderboard: ready([wireRow(overrides)]) }), NOW).rows[0]!;
+    // Three closes: one win, one loss, one flat.
+    const flat = read({ trades: 3, wins: 1, losses: 1 });
+    expect(flat.losses).toBe(1);
+    const drawn = draw({ phase: 'ready', rows: [flat] }).strings;
+    expect(drawn).toContain('1/1');
+    expect(drawn).not.toContain('1/2');
+    // Absent: printed "-", never derived.
+    const absent = read({ trades: 10, wins: 4, losses: undefined });
+    expect(Number.isNaN(absent.losses)).toBe(true);
+    expect(draw({ phase: 'ready', rows: [absent] }).strings).toContain('4/-');
+    expect(Number.isNaN(read({ losses: '2' }).losses)).toBe(true);
+  });
+
+  test('a numeric STRING is refused, not coerced: it prints N/A, never a figure', () => {
+    const data = buildFloorScreenData(
+      inputs({ leaderboard: ready([wireRow({ realisedUsd: '-5.20', openPositions: '2' })]) }),
+      NOW,
+    );
+    expect(Number.isNaN(data.rows[0]!.realisedUsd)).toBe(true);
+    expect(Number.isNaN(data.rows[0]!.openPositions)).toBe(true);
+  });
+
+  test('a row that is not an object is dropped rather than drawn as a blank', () => {
+    const data = buildFloorScreenData(
+      inputs({ leaderboard: ready([null, 'x', 7, wireRow()]) }),
+      NOW,
+    );
+    expect(data.rows).toHaveLength(1);
+  });
+
+  test('the method line comes from the engine constants, not from a second copy', () => {
+    expect(buildFloorScreenData(inputs(), NOW).basis).toEqual({
+      positionUsd: FLOOR_ARENA_POSITION_USD,
+      buyCostPct: FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct,
+      sellCostPct: FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct,
+    });
+  });
+});
+
+describe('Trading Floor board — contest header', () => {
+  test('reads the route body and the shipped contest constant', () => {
+    const contest = buildFloorScreenData(inputs(), NOW).contest;
+    expect(contest).toEqual({
+      title: 'Trading Arena Week 1',
+      countdownLabel: 'ENDS IN 3D 15H 59M',
+      prizes: [
+        { place: 1, amount: 1_000_000 },
+        { place: 2, amount: 500_000 },
+        { place: 3, amount: 250_000 },
+      ],
+    });
+  });
+
+  test('a flattened contest view reads the same', () => {
+    const flat = buildFloorScreenData(inputs({ contest: ready({ ...FLOOR_ARENA_CONTEST }) }), NOW);
+    expect(flat.contest).toEqual(buildFloorScreenData(inputs(), NOW).contest);
+  });
+
+  test('prizes are all or nothing: one unknown token drops the whole line', () => {
+    const prizes = (list: unknown) =>
+      buildFloorScreenData(
+        inputs({ contest: ready(contestBody({ contest: { ...FLOOR_ARENA_CONTEST, prizes: list } })) }),
+        NOW,
+      ).contest!.prizes;
     expect(
-      buildFloorScreenData(undefined, { isLoading: true, isError: false }, now).phase,
-    ).toBe('connecting');
+      prizes([
+        { place: 1, amount: 1_000_000, token: '$CLAWVILLE' },
+        { place: 2, amount: 500_000, token: 'USDC' },
+      ]),
+    ).toEqual([]);
+    expect(prizes([{ place: 1, amount: '1000000', token: '$CLAWVILLE' }])).toEqual([]);
+    expect(prizes([{ place: 0, amount: 5, token: '$CLAWVILLE' }])).toEqual([]);
+    expect(prizes([])).toEqual([]);
+    expect(prizes('lots')).toEqual([]);
+    // Out of order on the wire, in order on the wall.
     expect(
-      buildFloorScreenData([], { isLoading: false, isError: true }, now).phase,
-    ).toBe('error');
+      prizes([
+        { place: 2, amount: 5, token: '$CLAWVILLE' },
+        { place: 1, amount: 9, token: '$CLAWVILLE' },
+      ]),
+    ).toEqual([
+      { place: 1, amount: 9 },
+      { place: 2, amount: 5 },
+    ]);
   });
 
-  test('the three server statuses map to the three board statuses', () => {
-    const data = buildFloorScreenData(
-      [
-        view({ status: 'live-observed' }),
-        view({ objective: 'a', status: 'stopped' }),
-        view({ objective: 'b', status: 'not-yet-running' }),
-      ],
-      { isLoading: false, isError: false },
-      now,
+  // The panel hook (`hooks/use-floor-arena.ts` `readContest`) sends
+  // `{ contest: {...} | null, status, top, house }`. A null block must leave
+  // the header generic rather than paint an empty title.
+  test("the panel hook's view reads the same, and its null contest block leaves the header generic", () => {
+    const view = {
+      contest: {
+        name: FLOOR_ARENA_CONTEST.name,
+        startsAt: FLOOR_ARENA_CONTEST.startsAt,
+        endsAt: FLOOR_ARENA_CONTEST.endsAt,
+        prizes: FLOOR_ARENA_CONTEST.prizes.map((prize) => ({ ...prize })),
+      },
+      status: 'live',
+      top: [],
+      house: [],
+    };
+    expect(buildFloorScreenData(inputs({ contest: ready(view) }), NOW).contest).toEqual(
+      buildFloorScreenData(inputs(), NOW).contest,
     );
-    expect(data.slots.map((s) => s.status)).toEqual(['live', 'stopped', 'waiting']);
+    const empty = buildFloorScreenData(
+      inputs({ contest: ready({ ...view, contest: null }) }),
+      NOW,
+    );
+    expect(empty.contest?.countdownLabel).toBeNull();
+    expect(empty.contest?.prizes).toEqual([]);
+    expect(draw({ ...empty }).strings).toContain('TRADING ARENA · PAPER');
   });
 
-  test('the age label is derived, never a raw timestamp', () => {
-    const data = buildFloorScreenData(
-      [
-        view({
-          counts: {
-            verified: 3,
-            scored: 1,
-            lastTradeAt: new Date(now - 7 * 60_000).toISOString(),
-          },
+  test('a loading contest leaves the header generic, a failed refetch keeps the last good one', () => {
+    expect(buildFloorScreenData(inputs({ contest: LOADING }), NOW).contest).toBeNull();
+    // Static configuration: its last good value is still true after a failure.
+    expect(buildFloorScreenData(inputs({ contest: failed(contestBody()) }), NOW).contest?.title).toBe(
+      'Trading Arena Week 1',
+    );
+  });
+
+  describe('the countdown', () => {
+    const start = Date.parse(FLOOR_ARENA_CONTEST.startsAt);
+    const end = Date.parse(FLOOR_ARENA_CONTEST.endsAt);
+
+    test('before, during and after the window', () => {
+      expect(contestCountdownLabel(start, end, Date.parse('2026-09-30T18:47:30.000Z'))).toBe(
+        'STARTS IN 3H 12M',
+      );
+      expect(contestCountdownLabel(start, end, NOW)).toBe('ENDS IN 3D 15H 59M');
+      expect(contestCountdownLabel(start, end, end - 45 * 60_000)).toBe('ENDS IN 45M');
+      expect(contestCountdownLabel(start, end, end - (26 * 60 + 3) * 60_000)).toBe(
+        'ENDS IN 1D 02H 03M',
+      );
+      expect(contestCountdownLabel(start, end, end - 30_000)).toBe('ENDS IN UNDER 1M');
+      expect(contestCountdownLabel(start, end, end)).toBe('ENDS IN UNDER 1M');
+      expect(contestCountdownLabel(start, end, end + 1)).toBe('CONTEST ENDED');
+    });
+
+    test('floors, so it can run behind the true time but never ahead of it', () => {
+      // 59 min 59 s left reads 59M, not 1H.
+      expect(contestCountdownLabel(start, end, end - 3_599_000)).toBe('ENDS IN 59M');
+    });
+
+    test('a countdown to a guessed time is worse than none', () => {
+      expect(contestCountdownLabel(null, end, NOW)).toBeNull();
+      expect(contestCountdownLabel(start, null, NOW)).toBeNull();
+      expect(contestCountdownLabel(end, start, NOW)).toBeNull();
+      for (const hostile of [Number.NaN, 1e20, 8.64e15, -1]) {
+        expect(contestCountdownLabel(start, end, hostile)).toBeNull();
+      }
+      const broken = buildFloorScreenData(
+        inputs({
+          contest: ready(
+            contestBody({ contest: { ...FLOOR_ARENA_CONTEST, endsAt: '+275760-09-13T00:00:00.000Z' } }),
+          ),
         }),
-      ],
-      { isLoading: false, isError: false },
-      now,
+        NOW,
+      );
+      expect(broken.contest?.countdownLabel).toBeNull();
+      expect(draw({ ...broken }).strings.join(' | ')).not.toContain('ENDS IN');
+    });
+  });
+});
+
+describe('Trading Floor board — the bottom tape', () => {
+  const tapeFor = (rows: unknown[], nowMs = NOW) =>
+    buildFloorScreenData(inputs({ tape: ready(rows) }), nowMs).tape;
+
+  test('an entry names the agent, the side, the token and the ticket', () => {
+    expect(tapeFor([tapeRow()])).toEqual(['GENESIS BUY BONK $20.00 4M']);
+  });
+
+  // The panel hook's `readTapeItem` output: the same keys, no mint, `at` may
+  // be null. The board must read it exactly as it reads the route's rows.
+  test("the panel hook's tape items read the same as the route's rows", () => {
+    const hookItem = { id: 'e1', at: minutesAgo(4), agentName: 'Genesis', type: 'entry', symbol: 'BONK', usd: 20, pnlUsd: null };
+    expect(tapeFor([hookItem])).toEqual(tapeFor([tapeRow()]));
+    expect(tapeFor([{ ...hookItem, at: null }])).toEqual(['GENESIS BUY BONK $20.00 RECENT']);
+  });
+
+  test('an exit carries its signed result', () => {
+    expect(
+      tapeFor([
+        tapeRow({ id: 'x1', type: 'exit', side: 'sell', agentName: 'Runner', symbol: 'WIF', pnlUsd: 2.144, at: minutesAgo(12) }),
+        tapeRow({ id: 'x2', type: 'exit', side: 'sell', agentName: 'Dip Hunter', symbol: 'POPCAT', pnlUsd: -3.21, at: minutesAgo(15) }),
+      ]),
+    ).toEqual(['RUNNER SELL WIF +$2.14 12M', 'DIP HUNTER SELL POPCAT -$3.21 15M']);
+  });
+
+  test('an unpriced exit states the side and no figure', () => {
+    expect(
+      tapeFor([tapeRow({ type: 'exit', side: 'sell', symbol: 'WIF', pnlUsd: null, at: minutesAgo(2) })]),
+    ).toEqual(['GENESIS SELL WIF 2M']);
+  });
+
+  test('the mint never reaches the wall, and a symbol that is an address is dropped', () => {
+    const tape = tapeFor([tapeRow({ symbol: MINT }), tapeRow({ id: 'e2', symbol: null })]);
+    expect(tape).toEqual(['GENESIS BUY $20.00 4M', 'GENESIS BUY $20.00 4M']);
+    assertAddressAbsent([...tape], MINT);
+  });
+
+  test('entries run newest first; an undated one is kept, last, and never dated', () => {
+    expect(
+      tapeFor([
+        tapeRow({ id: 'old', at: minutesAgo(120) }),
+        tapeRow({ id: 'undated', at: null, agentName: 'Runner' }),
+        tapeRow({ id: 'new', at: minutesAgo(2) }),
+      ]),
+    ).toEqual(['GENESIS BUY BONK $20.00 2M', 'GENESIS BUY BONK $20.00 2H', 'RUNNER BUY BONK $20.00 RECENT']);
+  });
+
+  test('a future time never reads as a trade that just happened', () => {
+    const at = (ms: number) => new Date(ms).toISOString();
+    expect(tapeFor([tapeRow({ at: at(NOW + 59_000) })])).toEqual(['GENESIS BUY BONK $20.00 NOW']);
+    expect(tapeFor([tapeRow({ at: at(NOW + 61_000) })])).toEqual([
+      'GENESIS BUY BONK $20.00 TIME UNKNOWN',
+    ]);
+    expect(tapeFor([tapeRow({ at: '2099-01-01T00:00:00.000Z' })])).toEqual([
+      'GENESIS BUY BONK $20.00 TIME UNKNOWN',
+    ]);
+    expect(tapeFor([tapeRow({ at: '+275760-09-13T00:00:00.000Z' })])).toEqual([
+      'GENESIS BUY BONK $20.00 TIME UNKNOWN',
+    ]);
+  });
+
+  // The same bad `nowMs` reaches three formatters and only the clock fails
+  // loudly; the others would paint "NaNM" without an error anywhere.
+  test('a hostile clock cannot blank the board or paint NaN anywhere on it', () => {
+    for (const hostile of [Number.NaN, 1e20, 8.64e15, -62167219200001]) {
+      const build = () =>
+        buildFloorScreenData(
+          inputs({ leaderboard: ready([wireRow()]), tape: ready([tapeRow()]) }),
+          hostile,
+        );
+      expect(build).not.toThrow();
+      const data = build();
+      expect(data.clockLabel).toBe('CLOCK OFFLINE');
+      expect(data.contest?.countdownLabel).toBeNull();
+      expect(data.tape).toEqual(['GENESIS BUY BONK $20.00 TIME UNKNOWN']);
+      const drawn = draw({ ...data });
+      expect(drawn.strings.join(' | ')).not.toContain('NAN');
+      assertDrawable(drawn.strings);
+    }
+  });
+
+  test('the tape is bounded, and runs independently of the leaderboard', () => {
+    const many = Array.from({ length: 40 }, (_unused, index) =>
+      tapeRow({ id: `t${index}`, at: minutesAgo(index + 1) }),
     );
-    expect(data.slots[0]!.lastTradeLabel).toBe('7m ago');
+    expect(tapeFor(many)).toHaveLength(12);
+    // The table is still connecting; the tape it already has is still drawn.
+    expect(
+      buildFloorScreenData(inputs({ leaderboard: LOADING, tape: ready([tapeRow()]) }), NOW).tape,
+    ).toEqual(['GENESIS BUY BONK $20.00 4M']);
   });
 
-  test('a slot with no trades reads as "no trades yet", not as zero minutes', () => {
-    const data = buildFloorScreenData(
-      [view()],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(data.slots[0]!.lastTradeLabel).toBe('no trades yet');
-  });
-
-  // The sparkline is scoring TIER, not notional. A bar chart of trade SIZE
-  // reads as a bar chart of money even with no axis on it.
-  test('no notional, wallet or subject id survives into the drawable shape', () => {
-    const data = buildFloorScreenData(
-      [view({ recentTrades: [trade(2, 'sig')] })],
-      { isLoading: false, isError: false },
-      now,
-    );
-    const serialised = JSON.stringify(data);
-    expect(serialised).not.toContain('12.5');
-    expect(serialised).not.toContain('agent-1');
-    expect(serialised).not.toContain('So11111111111111111111111111111111111111112');
-    // And the strategy note stays on the Exchange panel, which is where it fits.
-    expect(serialised).not.toContain('Momentum');
-  });
-
-  // ── THE RISK VERDICT ON THE WALL (founder, 2026-09-20) ────────────────────
-
-  test('a paused verdict replaces the LIVE word and nothing else', () => {
-    const data = buildFloorScreenData(
-      [view({ risk: riskView() })],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(data.slots[0]!.status).toBe('paused');
-    // The rest of the card is untouched — same counts, same age, same block.
-    const plain = buildFloorScreenData([view()], { isLoading: false, isError: false }, now);
-    expect({ ...data.slots[0]!, status: 'live' }).toEqual(plain.slots[0]!);
-  });
-
-  test('a fault maps to FAULT and is never folded into the pause', () => {
-    const data = buildFloorScreenData(
-      [view({ risk: riskView({ state: 'fault', reason: 'price_feed_down' }) })],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(data.slots[0]!.status).toBe('fault');
-  });
-
-  test('a live verdict, a null block and an absent field are the same board', () => {
-    const state = { isLoading: false, isError: false };
-    const { risk: _absent, ...withoutRisk } = view();
-    const statuses = [
-      buildFloorScreenData([view({ risk: riskView({ state: 'live', reason: 'ok' }) })], state, now),
-      buildFloorScreenData([view({ risk: null })], state, now),
-      buildFloorScreenData([withoutRisk as HouseTraderSlotView], state, now),
-    ].map((data) => data.slots[0]!.status);
-    expect(statuses).toEqual(['live', 'live', 'live']);
-  });
-
-  // PAIRING FIRST. A stopped or unpaired desk already says why it is idle; a
-  // risk word over the top of that would replace a true statement with a
-  // narrower one that is not the reason the desk is not trading. The panel
-  // applies the same precedence through the same resolver.
-  test('a verdict never overrides a stopped or unpaired desk', () => {
-    const state = { isLoading: false, isError: false };
-    const read = (status: HouseTraderSlotView['status']) =>
-      buildFloorScreenData([view({ status, risk: riskView() })], state, now).slots[0]!.status;
-    expect(read('stopped')).toBe('stopped');
-    expect(read('not-yet-running')).toBe('waiting');
-    expect(read('live-observed')).toBe('paused');
-  });
-
-  test('the verdict carries no prose, no timestamp and no figures onto the wall', () => {
-    const data = buildFloorScreenData(
-      [
-        view({
-          risk: riskView({
-            detail: 'Daily loss floor reached; resumes after the UTC reset.',
-          }),
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    const serialised = JSON.stringify(data);
-    // The board says the WORD. The detail, the cap arithmetic and the verdict
-    // time are the panel's to render: the board has one row for this and a
-    // wall is read from across a hall.
-    expect(serialised).not.toContain('resumes after');
-    expect(serialised).not.toContain('10.25');
-    expect(serialised).not.toContain('2026-09-20T10:40');
-    expect(serialised).not.toContain('daily_loss_floor');
+  test('a failed tape refetch reads STANDING BY, not a dead feed shown as live', () => {
+    const data = buildFloorScreenData(inputs({ tape: failed([tapeRow()]) }), NOW);
+    expect(data.tape).toEqual([]);
+    expect(draw({ ...data }).strings).toContain('ARENA TRADE TAPE STANDING BY');
   });
 });
 
@@ -1918,300 +1578,87 @@ describe('Trading Floor board — the header clock', () => {
     expect(floorClockLabel(0)).toBe('CLOCK OFFLINE');
     expect(floorClockLabel(-1)).toBe('CLOCK OFFLINE');
   });
+});
 
-  // The same bad `nowMs` reaches THREE formatters and only the clock fails
-  // loudly. The card age and the tape age produce "NaNd ago" and "NaNM", which
-  // are not errors anywhere — they are just painted on a wall in the world.
-  test('a hostile clock cannot blank the board or paint NaN anywhere on it', () => {
-    const traded = view({
-      counts: { verified: 3, scored: 1, lastTradeAt: '2026-09-19T11:00:00.000Z' },
-      recentTrades: [trade(1, 'x', { dex: 'jupiter', blockTime: 1_700_000_000 })],
-    });
-    for (const hostile of [Number.NaN, 1e20, 8.64e15, -62167219200001]) {
-      const build = () =>
-        buildFloorScreenData([traded], { isLoading: false, isError: false }, hostile);
-      expect(build).not.toThrow();
-      const data = build();
-      expect(data.clockLabel).toBe('CLOCK OFFLINE');
-      expect(data.slots[0]!.lastTradeLabel).toBe('time unavailable');
-      // NOT "RECENT". The trade carries a good time, but a broken clock means
-      // we cannot say how long ago it was, so recency is not ours to claim.
-      expect(data.tape).toEqual(['JUPITER TIME UNKNOWN']);
+describe('Trading Floor board — redraw signature', () => {
+  test('does NOT change when a refetch returns the same board', () => {
+    expect(floorScreenSignature(inputs())).toBe(floorScreenSignature(inputs()));
+  });
 
-      const drawn = draw({ ...data, slots: [...data.slots], tape: [...data.tape] });
-      expect(drawn.strings.join(' | ')).not.toContain('NAN');
-      assertDrawable(drawn.strings);
+  // The load-bearing exclusion (memory: canvas-texture-signature-ticking-field).
+  // The contest body carries two fields that move on EVERY request; letting
+  // either into the signature is a full redraw plus a whole-texture upload
+  // every poll, forever, for identical pixels.
+  test('the contest body fields that tick on every request do not repaint the board', () => {
+    const a = inputs({ contest: ready(contestBody({ secondsLeft: 100, generatedAt: '2026-10-01T12:00:00.000Z' })) });
+    const b = inputs({ contest: ready(contestBody({ secondsLeft: 70, generatedAt: '2026-10-01T12:00:30.000Z' })) });
+    expect(floorScreenSignature(a)).toBe(floorScreenSignature(b));
+  });
+
+  test('fields the board does not draw do not repaint it', () => {
+    const a = inputs({ leaderboard: ready([wireRow({ lastTradeAt: '2026-10-01T11:00:00.000Z', deaths: 1 })]) });
+    const b = inputs({ leaderboard: ready([wireRow({ lastTradeAt: '2026-10-01T11:59:00.000Z', deaths: 3 })]) });
+    expect(floorScreenSignature(a)).toBe(floorScreenSignature(b));
+    const c = inputs({ tape: ready([tapeRow({ pnlMult: 1.1, reason: 'tp', mint: MINT })]) });
+    const d = inputs({ tape: ready([tapeRow({ pnlMult: 1.3, reason: 'time', mint: 'other' })]) });
+    expect(floorScreenSignature(c)).toBe(floorScreenSignature(d));
+  });
+
+  test('changes when anything the table draws changes', () => {
+    const base = floorScreenSignature(inputs());
+    for (const change of [
+      { realisedUsd: -5.21 },
+      { rank: 2 },
+      { trades: 11 },
+      { wins: 5 },
+      { openPositions: 2 },
+      { name: 'Genesis II' },
+      { templateId: 'runner' },
+      { kind: 'user', eligible: true },
+    ]) {
+      expect({
+        change,
+        moved: floorScreenSignature(inputs({ leaderboard: ready([wireRow(change)]) })) !== base,
+      }).toEqual({ change, moved: true });
     }
   });
 
-  // THE REACHABLE ONE. `lastTradeAt` and `blockTime` come from the API, and a
-  // future timestamp clamps to zero age through `Math.max(0, …)`, so before the
-  // plausibility bound a trade dated year 275760 rendered as "now" — the board
-  // asserting a house trader had just traded. An unearned claim reached through
-  // arithmetic rather than wording, which is the rule this board exists for.
-  test('an implausible TRADE time never reads as a trade that just happened', () => {
-    const now = Date.parse('2026-09-19T12:00:00.000Z');
-    const future = buildFloorScreenData(
-      [
-        view({
-          counts: { verified: 3, scored: 1, lastTradeAt: '+275760-09-13T00:00:00.000Z' },
-          recentTrades: [trade(1, 'f', { dex: 'jupiter', blockTime: 8.64e12 })],
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(Number.isFinite(Date.parse('+275760-09-13T00:00:00.000Z'))).toBe(true);
-    expect(future.slots[0]!.lastTradeLabel).toBe('time unavailable');
-    expect(future.slots[0]!.lastTradeLabel).not.toBe('now');
-    expect(future.tape).toEqual(['JUPITER TIME UNKNOWN']);
-
-    // Pre-epoch is equally implausible for a ClawVille trade.
-    const past = buildFloorScreenData(
-      [
-        view({
-          counts: { verified: 1, scored: 0, lastTradeAt: '1969-07-20T20:17:00.000Z' },
-          recentTrades: [trade(1, 'p', { dex: 'pumpswap', blockTime: -1 })],
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(past.slots[0]!.lastTradeLabel).toBe('time unavailable');
-    expect(past.tape).toEqual(['PUMPSWAP TIME UNKNOWN']);
-  });
-
-  // CODEX ROUND 3, and the plausibility bound did not cover it: 2099-01-01 is
-  // inside 1970..2100, so it passed, and `Math.max(0, nowMs - atMs)` clamped
-  // the negative age to zero. The card said "now" — the board asserting a house
-  // trader had just traded, off a server-supplied timestamp. Fixed clock, so
-  // this cannot rot into a passing test in 2099.
-  test('a FUTURE trade time never reads as a trade that just happened', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const future = buildFloorScreenData(
-      [
-        view({
-          counts: { verified: 3, scored: 1, lastTradeAt: '2099-01-01T00:00:00.000Z' },
-          recentTrades: [
-            trade(1, 'fut', {
-              dex: 'jupiter',
-              blockTime: Math.floor(Date.parse('2099-01-01T00:00:00.000Z') / 1000),
-            }),
-          ],
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(future.slots[0]!.lastTradeLabel).not.toBe('now');
-    expect(future.slots[0]!.lastTradeLabel).toBe('time unavailable');
-    expect(future.tape).toEqual(['JUPITER TIME UNKNOWN']);
-  });
-
-  // The bound is RELATIVE to the clock, so these are the two sides of 60 s.
-  test('59 seconds ahead is forgiven — chain time and our clock differ by seconds', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const skewed = buildFloorScreenData(
-      [
-        view({
-          counts: {
-            verified: 1,
-            scored: 1,
-            lastTradeAt: new Date(now + 59_000).toISOString(),
-          },
-          recentTrades: [
-            trade(1, 'skew', { dex: 'jupiter', blockTime: Math.floor(now / 1000) + 59 }),
-          ],
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(skewed.slots[0]!.lastTradeLabel).toBe('now');
-    expect(skewed.tape).toEqual(['JUPITER NOW']);
-  });
-
-  test('61 seconds ahead is refused', () => {
-    const now = Date.parse('2026-09-20T12:00:00.000Z');
-    const beyond = buildFloorScreenData(
-      [
-        view({
-          counts: {
-            verified: 1,
-            scored: 1,
-            lastTradeAt: new Date(now + 61_000).toISOString(),
-          },
-          recentTrades: [
-            trade(1, 'far', { dex: 'jupiter', blockTime: Math.floor(now / 1000) + 61 }),
-          ],
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(beyond.slots[0]!.lastTradeLabel).toBe('time unavailable');
-    expect(beyond.tape).toEqual(['JUPITER TIME UNKNOWN']);
-  });
-
-  test('an undated trade still says RECENT, which provenance earns', () => {
-    const now = Date.parse('2026-09-19T12:00:00.000Z');
-    const data = buildFloorScreenData(
-      [view({ recentTrades: [trade(1, 'u', { dex: 'jupiter', blockTime: null })] })],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(data.tape).toEqual(['JUPITER RECENT']);
-  });
-
-  test('a usable clock still ages both the card and the tape', () => {
-    const now = Date.parse('2026-09-19T12:00:00.000Z');
-    const data = buildFloorScreenData(
-      [
-        view({
-          counts: {
-            verified: 3,
-            scored: 1,
-            lastTradeAt: new Date(now - 7 * 60_000).toISOString(),
-          },
-          recentTrades: [
-            trade(1, 'y', { dex: 'jupiter', blockTime: Math.floor((now - 120_000) / 1000) }),
-          ],
-        }),
-      ],
-      { isLoading: false, isError: false },
-      now,
-    );
-    expect(data.slots[0]!.lastTradeLabel).toBe('7m ago');
-    expect(data.tape).toEqual(['JUPITER 2M']);
-  });
-
-  test('every phase carries a clock', () => {
-    const now = Date.parse('2026-09-19T14:32:00.000Z');
-    const state = { isLoading: false, isError: false };
-    expect(buildFloorScreenData(undefined, { ...state, isLoading: true }, now).clockLabel)
-      .toBe('14:32 UTC');
-    expect(buildFloorScreenData([], { ...state, isError: true }, now).clockLabel).toBe(
-      '14:32 UTC',
-    );
-    expect(buildFloorScreenData([view()], state, now).clockLabel).toBe('14:32 UTC');
-  });
-});
-
-describe('Trading Floor board — the bottom tape', () => {
-  const now = Date.parse('2026-09-19T12:00:00.000Z');
-  const state = { isLoading: false, isError: false };
-  const at = (minutesAgo: number) => Math.floor((now - minutesAgo * 60_000) / 1000);
-
-  function tapeFor(trades: FloorTrade[]): readonly string[] {
-    return buildFloorScreenData([view({ recentTrades: trades })], state, now).tape;
-  }
-
-  test('a listed token is named; an unlisted one shows the venue only', () => {
+  test('changes when the contest header or the tape changes', () => {
+    const base = floorScreenSignature(inputs());
     expect(
-      tapeFor([
-        trade(2, 'a', {
-          inputMint: TRADE_MINTS.USDC,
-          outputMint: TRADE_MINTS.ANSEM,
-          dex: 'pumpswap',
-          blockTime: at(4),
-        }),
-      ]),
-    ).toEqual(['ANSEM PUMPSWAP 4M']);
-
+      floorScreenSignature(
+        inputs({ contest: ready(contestBody({ contest: { ...FLOOR_ARENA_CONTEST, name: 'Week 2' } })) }),
+      ),
+    ).not.toBe(base);
+    expect(floorScreenSignature(inputs({ tape: ready([tapeRow()]) }))).not.toBe(base);
     expect(
-      tapeFor([
-        trade(1, 'b', {
-          inputMint: TRADE_MINTS.WSOL,
-          outputMint: '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1',
-          dex: 'jupiter',
-          blockTime: at(9),
-        }),
-      ]),
-    ).toEqual(['JUPITER 9M']);
+      floorScreenSignature(inputs({ tape: ready([tapeRow({ type: 'exit', pnlUsd: 1 })]) })),
+    ).not.toBe(floorScreenSignature(inputs({ tape: ready([tapeRow({ type: 'exit', pnlUsd: 2 })]) })));
   });
 
-  // The whole reason the tape does not reuse the panel's `symbolForMint`.
-  test('an unlisted mint never puts a chain identifier on the wall', () => {
-    const mint = '7xKXtg2CW3eTA1hqzVfKp8mKQqZ9rPfLmNbVcXyZaQw1';
-    const tape = tapeFor([
-      trade(1, 'c', { inputMint: TRADE_MINTS.WSOL, outputMint: mint, blockTime: at(1) }),
+  test('loading, error and ready have their own signatures', () => {
+    const signatures = new Set([
+      floorScreenSignature(inputs({ leaderboard: LOADING })),
+      floorScreenSignature(inputs({ leaderboard: failed() })),
+      floorScreenSignature(inputs()),
     ]);
-    expect(tape.join(' ')).not.toContain(mint.slice(0, 5));
-    assertDrawable(
-      draw({ phase: 'ready', slots: [slot()], tape: [...tape] }).strings,
-    );
+    expect(signatures.size).toBe(3);
   });
 
-  test('the token side is read off whichever leg is not the quote', () => {
-    // Selling the listed token back into USDC still names the listed token.
-    expect(
-      tapeFor([
-        trade(2, 'd', {
-          inputMint: TRADE_MINTS.CLAWVILLE,
-          outputMint: TRADE_MINTS.USDC,
-          dex: 'pumpfun',
-          blockTime: at(30),
-        }),
-      ]),
-    ).toEqual(['CLAWVILLE PUMP.FUN 30M']);
-  });
-
-  test('entries run newest first across every slot', () => {
-    const data = buildFloorScreenData(
-      [
-        view({
-          recentTrades: [
-            trade(1, 'old', { dex: 'jupiter', blockTime: at(120) }),
-          ],
-        }),
-        view({
-          objective: 'second',
-          recentTrades: [trade(1, 'new', { dex: 'pumpswap', blockTime: at(2) })],
-        }),
-      ],
-      state,
-      now,
-    );
-    expect(data.tape).toEqual(['PUMPSWAP 2M', 'JUPITER 2H']);
-  });
-
-  test('a trade row carrying realised USD puts it on the tape, signed', () => {
-    expect(
-      tapeFor([
-        trade(1, 'm', {
-          dex: 'pumpswap',
-          blockTime: at(3),
-          realisedUsd: -1.25,
-        } as Partial<FloorTrade>),
-      ]),
-    ).toEqual(['PUMPSWAP 3M -$1.25']);
-  });
-
-  test('a trade row without the field omits it rather than printing zero', () => {
-    expect(tapeFor([trade(1, 'n', { dex: 'pumpswap', blockTime: at(3) })])).toEqual([
-      'PUMPSWAP 3M',
-    ]);
-  });
-
-  test('an undated trade is kept and labelled, never dropped and never dated', () => {
-    expect(
-      tapeFor([trade(1, 'e', { dex: 'jupiter', blockTime: null })]),
-    ).toEqual(['JUPITER RECENT']);
-  });
-
-  test('the tape is bounded even when a desk has been busy', () => {
-    const many = Array.from({ length: 40 }, (_, index) =>
-      trade(1, `sig-${index}`, { dex: 'jupiter', blockTime: at(index + 1) }),
-    );
-    expect(tapeFor(many).length).toBe(12);
-  });
-
-  test('no tape at all in the loading and error phases', () => {
-    expect(buildFloorScreenData(undefined, { isLoading: true, isError: false }, now).tape)
-      .toEqual([]);
-    expect(buildFloorScreenData([], { isLoading: false, isError: true }, now).tape).toEqual(
-      [],
-    );
+  // THE PIXELS are what is load-bearing, not the signature string: fields the
+  // board does not draw must change nothing a player can see.
+  test('a payload with extra undrawn fields paints exactly the same board', () => {
+    const paint = (payload: FloorScreenInputs) => {
+      const rec = recorder();
+      drawFloorScreen(rec.context, buildFloorScreenData(payload, NOW));
+      return rec.painted;
+    };
+    const plain = inputs({ tape: ready([tapeRow()]) });
+    const noisy = inputs({
+      leaderboard: ready({ rows: [wireRow({ extra: 'x', deaths: 9, lastTradeAt: null })], generatedAt: 'now' }),
+      tape: ready([tapeRow({ pnlMult: 3, reason: 'manual', kind: 'user' })]),
+    });
+    expect(paint(noisy)).toEqual(paint(plain));
   });
 });
 
@@ -2293,325 +1740,5 @@ describe('Trading Floor board — canvas sizing', () => {
     expect(pickCanvasScale(2)).toBe(2);
     expect(pickCanvasScale(3)).toBe(2);
     expect(pickCanvasScale(Number.NaN)).toBe(1);
-  });
-});
-
-describe('Trading Floor board — redraw signature', () => {
-  test('changes when a count changes', () => {
-    const before = floorScreenSignature([view()], { isLoading: false, isError: false });
-    const after = floorScreenSignature(
-      [view({ counts: { verified: 13, scored: 8, lastTradeAt: null } })],
-      { isLoading: false, isError: false },
-    );
-    expect(after).not.toBe(before);
-  });
-
-  test('does NOT change when a refetch returns the same board', () => {
-    const state = { isLoading: false, isError: false };
-    expect(floorScreenSignature([view()], state)).toBe(
-      floorScreenSignature([view()], state),
-    );
-  });
-
-  // The tape reads venue and block time, which the counts do not cover: a
-  // confirmation that fills in a block time changes the bottom row and nothing
-  // else, and the board has to redraw for it.
-  test('changes when only a tape field changes', () => {
-    const state = { isLoading: false, isError: false };
-    const pending = floorScreenSignature(
-      [view({ recentTrades: [trade(1, 'sig', { blockTime: null })] })],
-      state,
-    );
-    const confirmed = floorScreenSignature(
-      [view({ recentTrades: [trade(1, 'sig', { blockTime: 1_700_000_000 })] })],
-      state,
-    );
-    expect(confirmed).not.toBe(pending);
-    const elsewhere = floorScreenSignature(
-      [view({ recentTrades: [trade(1, 'sig', { dex: 'pumpswap' })] })],
-      state,
-    );
-    expect(elsewhere).not.toBe(
-      floorScreenSignature([view({ recentTrades: [trade(1, 'sig')] })], state),
-    );
-  });
-
-  // CODEX ROUND 4. The signature omitted the realised block entirely, so a
-  // refreshed response that changed the P&L did not repaint until the 30 s
-  // clock tick — a money board holding fresh data and showing a stale figure.
-  describe('the realised block reaches the redraw trigger', () => {
-    const state = { isLoading: false, isError: false };
-    const sign = (realisedOverrides: Record<string, unknown>) =>
-      floorScreenSignature(
-        [
-          {
-            ...view(),
-            realised: { ...fullRealised(), ...realisedOverrides },
-          } as unknown as HouseTraderSlotView,
-        ],
-        state,
-      );
-
-    test('identical data produces an identical signature', () => {
-      expect(sign({})).toBe(sign({}));
-    });
-
-    test.each([
-      ['partial', { partial: true }],
-      ['realisedUsd', { realisedUsd: -6.4 }],
-      ['wins', { wins: 5 }],
-      ['losses', { losses: 7 }],
-      ['closedPositions', { closedPositions: 11 }],
-      ['openPositions', { openPositions: 3 }],
-      ['bestUsd', { bestUsd: 9.1 }],
-      ['worstUsd', { worstUsd: -9.1 }],
-      ['noExitClosures', { noExitClosures: 2 }],
-      ['excludedNonUsdc', { excludedNonUsdc: 4 }],
-      ['basisCode', { basis: 'some_other_basis' }],
-      ['costBasis', { costBasis: 'some_other_method' }],
-      ['noExitHours', { noExitHours: 48 }],
-      ['note', { note: 'a different sentence' }],
-    ])('a change in %s changes the signature', (_name, overrides) => {
-      expect(sign(overrides)).not.toBe(sign({}));
-    });
-
-    test('a change in AVAILABILITY changes the signature', () => {
-      // ready -> none -> unavailable are three different boards.
-      const readySig = sign({});
-      const noneSig = sign({ closedPositions: 0 });
-      const brokenSig = sign({ realisedUsd: Number.NaN });
-      expect(noneSig).not.toBe(readySig);
-      expect(brokenSig).not.toBe(readySig);
-      expect(brokenSig).not.toBe(noneSig);
-    });
-  });
-
-  // CODEX ROUND 5: the same defect as round 4, one level down. The per-trade
-  // part of the signature was hand-enumerated, so when the TAPE grew a
-  // realised USD figure the trigger did not, and a trade whose only change was
-  // its realised amount repainted nothing until the 30 s tick.
-  describe('every tape input reaches the redraw trigger', () => {
-    const state = { isLoading: false, isError: false };
-    const sign = (overrides: Partial<FloorTrade>) =>
-      floorScreenSignature(
-        [view({ recentTrades: [trade(1, 'sig', overrides)] })],
-        state,
-      );
-
-    test('identical trades produce an identical signature', () => {
-      expect(sign({})).toBe(sign({}));
-    });
-
-    test.each([
-      ['realisedUsd', { realisedUsd: -1.25 } as Partial<FloorTrade>],
-      ['dex', { dex: 'pumpswap' } as Partial<FloorTrade>],
-      ['blockTime', { blockTime: 1_700_000_999 } as Partial<FloorTrade>],
-      ['inputMint', { inputMint: TRADE_MINTS.ANSEM } as Partial<FloorTrade>],
-      ['outputMint', { outputMint: TRADE_MINTS.CLAWVILLE } as Partial<FloorTrade>],
-      ['multiplier', { multiplier: 2 } as Partial<FloorTrade>],
-    ])('a change in one trade\'s %s changes the signature', (_name, overrides) => {
-      expect(sign(overrides)).not.toBe(sign({}));
-    });
-
-    test('a realised figure appearing on a trade changes the signature', () => {
-      // The exact round-5 case: same trade, same venue, same time, and the
-      // tape gains "-$1.25". Before the fix these two were identical strings.
-      const without = sign({});
-      const with_ = sign({ realisedUsd: -1.25 } as Partial<FloorTrade>);
-      expect(with_).not.toBe(without);
-    });
-  });
-
-  // THE RISK VERDICT REACHES THE TRIGGER. The status word changes with it, so a
-  // desk that goes paused between two polls must repaint within one poll rather
-  // than waiting up to 30 s for the clock tick — the board would be showing
-  // LIVE for a desk that cannot trade, which is the failure this feature ends.
-  describe('the risk block reaches the redraw trigger', () => {
-    const state = { isLoading: false, isError: false };
-    const sign = (risk: HouseTraderSlotView['risk']) =>
-      floorScreenSignature([view({ risk })], state);
-
-    test('identical verdicts produce an identical signature', () => {
-      expect(sign(riskView())).toBe(sign(riskView()));
-    });
-
-    test.each([
-      ['state', riskView({ state: 'fault' })],
-      ['reason', riskView({ reason: 'at_max_positions' })],
-    ])('a change in %s changes the signature', (_name, next) => {
-      expect(sign(next)).not.toBe(sign(riskView()));
-    });
-
-    test('a verdict appearing or clearing changes the signature', () => {
-      const none = sign(null);
-      expect(sign(riskView())).not.toBe(none);
-      expect(sign(riskView({ state: 'fault' }))).not.toBe(none);
-    });
-
-    // A LIVE verdict and NO verdict draw the same card, so they sign the same
-    // and the board does not repaint between them. That changed when `reason`
-    // started being nulled alongside an unshown display: before, a live block
-    // leaked its `ok` into the trigger and bought a repaint for identical
-    // pixels. Asserted rather than left implicit, because it looks like a
-    // missing case until you notice the two boards are the same board.
-    test('a live verdict and no verdict are one board, so one signature', () => {
-      expect(sign(riskView({ state: 'live', reason: 'ok' }))).toBe(sign(null));
-    });
-
-    // THE STAGING CASE. An absent field and an explicit null are the same
-    // board, so they must be the same trigger. (The signature STRING format
-    // changed when the projection landed, which costs nothing: the signature is
-    // recomputed from live data on every render and is never compared against
-    // one from a previous deploy. What has to hold is the DRAWN PIXELS, pinned
-    // by the test below.)
-    test('an absent field and an explicit null produce one signature', () => {
-      const { risk: _absent, ...withoutRisk } = view();
-      expect(floorScreenSignature([withoutRisk as HouseTraderSlotView], state)).toBe(
-        sign(null),
-      );
-    });
-
-    // THE REPAINT-STORM PIN, and the reason the signature does NOT stringify
-    // the whole wire block. `ageSeconds` counts up on every poll, so a derived
-    // signature that included it would change every 15 s forever, and every
-    // change is a full canvas redraw plus a 1.28 MB texture upload (5.13 MB on
-    // the 2x backing store) for pixels that are identical. `at` moves with it.
-    // The board draws neither.
-    test('a field that only moves with the clock does not repaint the board', () => {
-      const base = sign(riskView());
-      // BOTH SIDES OF THE EXPIRY BUDGET, deliberately. 42 s and 100 s are the
-      // same board, so the ticking age must not repaint it. Crossing 150 s is
-      // a different board and has its own test below; using 9_999 here (as an
-      // earlier version did) was asserting that expiry does NOT work.
-      expect(sign(riskView({ ageSeconds: 100 }))).toBe(base);
-      expect(sign(riskView({ at: '2026-09-20T23:59:00.000Z' }))).toBe(base);
-      // Nor do the panel's figures and prose, which the BOARD does not draw.
-      expect(sign(riskView({ detail: 'something else entirely' }))).toBe(base);
-      expect(sign(riskView({ dayLossUsd: 88.5, roomNeededUsd: 4, dayLossCapUsd: 90 }))).toBe(base);
-    });
-
-    // And the trigger is DERIVED from the same projection the draw reads, so a
-    // risk field the board starts drawing cannot be one the trigger forgot.
-    test('the signature is derived from the drawn projection, not hand-listed', () => {
-      const source = readFileSync(
-        join(import.meta.dir, 'trading-floor-screen-data.ts'),
-        'utf8',
-      );
-      expect(source).toContain('JSON.stringify(readRiskForBoard(slot, freshness))');
-      // `readRiskForBoard` feeds the DRAW too, which is what makes the
-      // derivation worth anything.
-      expect(source).toContain('readRiskForBoard(slot, freshness).display');
-    });
-
-    // And the DRAW is identical too, not just the trigger.
-    test('a payload without the field draws exactly what a null verdict draws', () => {
-      const now = Date.parse('2026-09-20T12:00:00.000Z');
-      const { risk: _absent, ...withoutRisk } = view();
-      const paint = (slots: HouseTraderSlotView[]) => {
-        const rec = recorder();
-        drawFloorScreen(rec.context, buildFloorScreenData(slots, state, now));
-        return rec.painted;
-      };
-      expect(paint([withoutRisk as HouseTraderSlotView])).toEqual(paint([view({ risk: null })]));
-    });
-  });
-
-  // CLIENT-SIDE EXPIRY. react-query KEEPS the last good data when a refetch
-  // fails or hangs, so without this a route outage during a pause leaves
-  // PAUSED on the wall for as long as the player stands there, fed by a dead
-  // feed. The client budget is the server's own 150 s applied to the SUM of
-  // the report's age and how long we have held the response. (Codex round 2.)
-  describe('a verdict expires in the client when the feed stops', () => {
-    const state = { isLoading: false, isError: false };
-    const FETCHED = Date.parse('2026-09-20T12:00:00.000Z');
-    const at = (heldSeconds: number) => ({
-      nowMs: FETCHED + heldSeconds * 1000,
-      dataUpdatedAt: FETCHED,
-    });
-    const statusAt = (heldSeconds: number, ageSeconds = 40) =>
-      buildFloorScreenData(
-        [view({ risk: riskView({ ageSeconds }) })],
-        state,
-        FETCHED + heldSeconds * 1000,
-        FETCHED,
-      ).slots[0]!.status;
-
-    test('holds the pause while the sum is inside the budget', () => {
-      expect(statusAt(0)).toBe('paused');
-      expect(statusAt(100)).toBe('paused');
-      // 40 + 110 = 150 exactly. The budget is "> 150", so the edge still holds.
-      expect(statusAt(110)).toBe('paused');
-    });
-
-    test('drops the pause once the sum passes the budget', () => {
-      // 40 + 111 = 151. The desk reverts to its pairing word, LIVE, which is
-      // the honest reading: we have stopped being told anything, which is not
-      // the same as being told the risk read failed.
-      expect(statusAt(111)).toBe('live');
-      expect(statusAt(10_000)).toBe('live');
-    });
-
-    test('an expired FAULT also reverts, and never becomes a pause', () => {
-      const expired = buildFloorScreenData(
-        [view({ risk: riskView({ state: 'fault', ageSeconds: 40 }) })],
-        state,
-        FETCHED + 200_000,
-        FETCHED,
-      ).slots[0]!.status;
-      expect(expired).toBe('live');
-    });
-
-    // ONE BIT reaches the trigger, never the ticking age: the signature moves
-    // exactly once, when the verdict crosses the budget, and is stable either
-    // side of it. That is what keeps a 15 s poll from repainting the board.
-    test('expiry flips the signature exactly once', () => {
-      const slots = [view({ risk: riskView({ ageSeconds: 40 }) })];
-      const live = floorScreenSignature(slots, state, at(0));
-      expect(floorScreenSignature(slots, state, at(100))).toBe(live);
-      const expired = floorScreenSignature(slots, state, at(111));
-      expect(expired).not.toBe(live);
-      expect(floorScreenSignature(slots, state, at(9_999))).toBe(expired);
-    });
-
-    // A clock we cannot reason about must not expire a live pause on its own
-    // authority; the server is still the primary decider.
-    test('an unusable clock holds the verdict rather than dropping it', () => {
-      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
-        const held = buildFloorScreenData(
-          [view({ risk: riskView({ ageSeconds: 40 }) })],
-          state,
-          bad,
-          FETCHED,
-        ).slots[0]!.status;
-        expect({ bad, held }).toEqual({ bad, held: 'paused' });
-      }
-    });
-
-    // A response dated in the FUTURE is clock skew, not extra freshness.
-    test('a future fetch time is clamped rather than credited', () => {
-      const skewed = buildFloorScreenData(
-        [view({ risk: riskView({ ageSeconds: 40 }) })],
-        state,
-        FETCHED,
-        FETCHED + 600_000,
-      ).slots[0]!.status;
-      expect(skewed).toBe('paused');
-    });
-  });
-
-  test('ignores fields the board does not draw', () => {
-    const state = { isLoading: false, isError: false };
-    expect(
-      floorScreenSignature([view({ strategyNote: 'something else entirely' })], state),
-    ).toBe(floorScreenSignature([view()], state));
-  });
-
-  test('loading and error have their own signatures', () => {
-    expect(floorScreenSignature(undefined, { isLoading: true, isError: false })).toBe(
-      'connecting',
-    );
-    expect(floorScreenSignature([view()], { isLoading: false, isError: true })).toBe(
-      'error',
-    );
   });
 });

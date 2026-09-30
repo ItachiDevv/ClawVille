@@ -25,6 +25,7 @@ Read the four canonical docs below first. They document the load-bearing project
 | `apps/web/src/components/game/**`, economy code, quest and login routes | `GameFeatures.md` |
 | New or changed API route, Drizzle schema, service, environment variable, deploy or CI config | `ARCHITECTURE.md` (environment variables in §4) |
 | Agent connect, `/api/agent/*`, skill protocol, partner routes | `GameFeatures.md` §2, `ARCHITECTURE.md` §6, `docs/hatcher-integration-spec.md` |
+| Trading Arena: `packages/shared/src/constants/floor-arena.ts`, `apps/api/src/routes/floor-arena.ts`, `apps/api/src/routes/admin-floor-arena.ts`, `apps/api/src/services/floor-arena/`, `apps/api/src/services/clawpump-writer.ts`, `apps/web/src/hooks/use-floor-arena.ts`, `apps/web/src/stores/floor-arena-ui.ts` | `GameFeatures.md` §17g.3, `ARCHITECTURE.md` (Trading Floor Arena section, §4, §8), `docs/trading-floor-arena.md`, `docs/clawpump-integration.md` |
 | `branding/**`, logos, fonts, outward graphics and copy | `branding/BRAND.md`, `docs/brand-language.md` |
 | Deploy runbook steps | `docs/DEPLOY-HETZNER.md` |
 

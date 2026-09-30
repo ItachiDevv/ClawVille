@@ -24,10 +24,12 @@
  *     from `buildInstancedRow`, both read their placement out of
  *     `trading-floor-room.ts`.
  *   - The BIG BOARD (`TradingFloorScreen`), one plane on the -Z wall carrying
- *     live house-trader statuses and counts.
- *   - The TRADE TAPE (`TradingFloorTradeTape`), the same trades as physical
- *     objects: one emissive slab per recent trade, drifting from the board wall
- *     toward the door in two lanes, one lane per desk. ONE mesh, one draw call.
+ *     the Trading Arena paper leaderboard (contest header, prize line, top 8,
+ *     tape row).
+ *   - The TRADE TAPE (`TradingFloorTradeTape`), the arena's entries and exits
+ *     as physical objects: one slab per tape row, drifting from the board wall
+ *     toward the door in two lanes, entries left and exits right. ONE mesh, one
+ *     draw call.
  *   - Walk-up hotspots: the MONITOR, which opens the EXISTING Exchange modal on
  *     its Trading Floor tab (`useGameStore.openTradingFloor`) — no second
  *     modal, no duplicated panel — the DOOR, and six SEATS.
@@ -71,6 +73,7 @@ import {
   type RefObject,
 } from 'react';
 import * as THREE from 'three/webgpu';
+import { reportTradingFloorSeat } from '@/hooks/use-floor-arena';
 import { useGameStore } from '@/stores/game';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
@@ -298,6 +301,22 @@ const _arming = createTradingFloorArming();
 /** Seat the player currently occupies, or -1. Not geometry — a choice. */
 let _seatedIndex = -1;
 
+/**
+ * The ONE writer of `_seatedIndex` after init. Sit, stand, walking out of the
+ * chair and leaving the room all pass through here, so the Trading Floor Arena
+ * hears every transition exactly once: a sit seats the player's arena agent
+ * and opens "My trader", a stand or a room exit frees the desk
+ * (docs/trading-floor-arena.md D7). One call per transition, never per frame:
+ * the walk-out stand runs inside the frame callback, but only on the frame the
+ * player leaves the chair. The server write is a fire-and-forget fetch that
+ * nothing here awaits.
+ */
+function setTradingFloorSeatedIndex(next: number): void {
+  if (next === _seatedIndex) return;
+  _seatedIndex = next;
+  reportTradingFloorSeat(next);
+}
+
 /** Test/probe seam — the arming state the frame loop last published. */
 export function readTradingFloorProximity(): {
   monitorArmed: boolean;
@@ -321,7 +340,7 @@ export function readTradingFloorProximity(): {
 
 function resetTradingFloorProximity(): void {
   resetTradingFloorArming(_arming);
-  _seatedIndex = -1;
+  setTradingFloorSeatedIndex(-1);
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +415,7 @@ export function activateTradingFloorUse(): boolean {
     )
   ) {
     case 'stand':
-      _seatedIndex = -1;
+      setTradingFloorSeatedIndex(-1);
       return true;
     case 'monitor':
       openTradingFloorMonitor();
@@ -405,7 +424,7 @@ export function activateTradingFloorUse(): boolean {
       requestTradingFloorExit();
       return true;
     case 'sit':
-      _seatedIndex = _arming.seatArmedIndex;
+      setTradingFloorSeatedIndex(_arming.seatArmedIndex);
       return true;
     default:
       return false;
@@ -1149,7 +1168,7 @@ function TradingFloorAvatarMotion({
         _seatedIndex >= 0 &&
         (state.intent.move.moving || state.intent.escapeEdge)
       ) {
-        _seatedIndex = -1;
+        setTradingFloorSeatedIndex(-1);
       }
 
       const seated =

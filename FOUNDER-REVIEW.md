@@ -64,8 +64,25 @@
 
 ## TRADING FLOOR
 
+### TRADING FLOOR ARENA (2026-09-30): paper contest, five house agents, launch your own trader
+
+- **Session:** tradeDeskMain (team `trading-floor-arena`), 2026-09-30. Branch `feat/trading-floor-arena`, staging after the lead's push. Not yet checked in a browser at the time of writing; the lead's staging verification is the evidence.
+- **Where:** staging `https://staging.clawville.world/game` -> walk to the Trading Floor (south of the ring) -> E at the door -> `/trading-floor`. Look at the back-wall TV, sit at a desk (E), and press E at the kiosk for the Exchange modal's Trading Floor tab, where the Trading Arena section is now at the top.
+- **Look at:**
+  1. **Three new templates** beside Genesis and Runner: Dip Hunter, Mid-Cap Climber and Late Bloomer. The evidence is a small in-sample simulation: Dip Hunter about +0.4 percent per trade (15 trades), Mid-Cap Climber about +0.7 percent (20 trades), and **Late Bloomer about -5.5 to -6.3 percent per trade (42 trades), which is about the round-trip cost**. Its card says so: "it has not beaten trading costs yet".
+  2. **Dip Hunter's stop at 0.90 (-10 percent)** is a lead decision made while you slept. Every other template has no stop.
+  3. **Contest "Trading Arena Week 1":** 6 PM EDT Wed 2026-09-30 to 11:59:59 PM EDT Sun 2026-10-04. Score = realised paper P&L of positions opened and closed in the window, $20 per position, at most 5 open, one agent per account, no guests, house agents shown but not eligible. A player agent is prize-eligible only when it was launched before the end AND has at least one position opened and closed inside the window. Prizes **1,000,000 / 500,000 / 250,000 $CLAWVILLE**, paid by the team by hand after an abuse review. Privacy: anyone sees a player agent's rules, results, trades and rule changes; its add-ons, wallet, reports and scans stay with its owner. House agents are fully public.
+  4. **Seat gating is persistent:** an agent opens new positions only while seated; sitting at a desk seats it; standing up or leaving the room frees the desk; closing the tab while seated keeps the desk, so the agent keeps trading overnight. Open positions always exit. In v1 the seat is DECLARED, not checked: the game client sends it for a human, an agent sends it with its seat tool, the server does not check where the avatar is, and two agents can share one desk number.
+  5. **Staging creates REAL ClawPump agents** under ClawVille's ClawPump account for every staging launch, named `CV Arena (staging) · <name> #<id>` (production drops "(staging)"). Private, no bids, no trading skills. They will pile up in the dashboard; the account's agent limit is unknown.
+  6. **Two paid add-ons, real prices:** Nansen Token Screener $0.01 per call (about $1.44 per day at the fastest rate) and Nansen Smart Money DEX Trades $0.05 per call (about $4.80 per day). The player funds their own agent wallet with USDC; caps $1 per add-on by default and $5 per agent per day at most. The vetting paid $0.119 from the Runner wallet, and Runner now carries the `x402` skill.
+  7. **Live mode is off.** The form shows "Live trading · Coming later"; the API refuses it. Turning it on needs your go and a Codex money review.
+  8. **Gap P1:** a hosted agent that acts only through `[ACTION:]` verbs can read the arena manual but has no verb to launch or seat a trader. Connected agents use the tools. Review deadline 2026-10-07.
+  9. **Owed:** the AnsemHack X post announcing the contest is not written or posted yet.
+- **Feedback wanted:** keep, change or drop Late Bloomer; the Dip Hunter stop; the contest dates and prize split; whether the seat should stay held after the tab closes; whether staging should create real ClawPump agents; the add-on prices and caps; board legibility from the door.
+
 ### Player trading controls show Coming soon (production `7473e809`; founder review remains open)
 
+- **Update 2026-09-30 (staging, arena branch):** launching a trader is now OPEN as a paper agent in the Trading Arena (entry above). The "Start a ClawPump trader" copy cards, with their Copy persona, Copy skills and ClawPump dashboard buttons, are no longer rendered. The wallet controls below still read Coming soon.
 - **Last Audited: 2026-09-23.** Drift note: production browser evidence now confirms the guest controls; founder order keeps player trading and player trader launches paused in the client.
 - **Greyed out:** Use my linked wallet, Use my in-game wallet, Connect and sign, and the guest Create a free account button. The signature input and Verify trade button are disabled. Each template's Copy persona and Copy skills buttons, Open the ClawPump dashboard, and Open Jupiter are disabled too. Each control retains its label, explanation title, and Coming soon tag.
 - **Monitoring:** Genesis and ClawVille Runner retain their live realised profit and loss, risk state, house-trader board, panel, public trade tape, and flying trade chips. Their read-only route remains unchanged.

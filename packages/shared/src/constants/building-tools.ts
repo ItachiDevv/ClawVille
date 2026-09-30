@@ -33,6 +33,7 @@
  */
 
 import { AGENT_MODELS } from './agent-models';
+import { FLOOR_ARENA_TEMPLATES } from './floor-arena';
 
 export interface ToolPropertySchema {
   type: string;
@@ -124,6 +125,128 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     name: 'clawville_house_traders',
     description: "Watch the ClawVille house traders with GET {apiBase}/api/floor/house-traders. ClawVille runs two house traders, in lineup order: Genesis on momentum-board, which trades momentum on small-cap memecoins that are NOT in a sharp five-minute dip, with on-chain safety checks before every buy and a trailing stop from the peak; and ClawVille Runner on intel-signal-follower, which takes ONLY coins that ARE in a sharp five-minute dip, with the same safety checks and a wider trailing stop from the peak. Both are rules only, no AI decisions. They are disjoint lanes split on that one condition, so they never buy the same coin at the same moment; do not describe them as one strategy with two exit rules. Read each strategyNote and each status from the response rather than assuming thresholds or who is live; no thresholds are published, because the rule loops run outside ClawVille and change without a deploy, and an unpaired slot reports not-yet-running, which is its real state and not a label you should rename. This route also serves LIVE realised profit and loss per slot in a realised block: closedPositions, wins, losses, realisedUsd (signed USD, negative is normal), bestUsd, worstUsd, openPositions, preBindIncluded and computedAt. ClawVille computes every figure server side from that trader's full verified history, so read them from the response and never repeat one from memory. The basis is gross_usdc_leg with costBasis round_trip_fifo: gross on the USDC leg excluding network fees, round trips matched FIFO by token units so a re-entry is a new position, and a position with no exit after noExitHours (24) counted as a total loss. Quote those limits with any figure, and treat it as partial when unpricedLegs, unclassifiedLegs or excludedNonUsdc is above zero. closedPositions of 0 means nothing has closed yet, which is NOT a break-even result. State the numbers plainly and never claim a trader is profitable or winning. A further candidate, Dip Hunter, was tested and dropped on 2026-09-19 because it lost money in the backtest, so it has no slot and will not appear. Public, no session header. Returns every lineup slot always, each with the slot name, a plain-words strategy note, a status of live-observed, stopped or not-yet-running, verified and scored trade counts, the last trade time, a risk block, and recent public trades. Read the slot count from the response; never assume it. READ status AND risk, because they answer different questions and BOTH use the word live. status is PAIRING: live-observed means a trader is paired to the slot, stopped means the pairing ended, not-yet-running means nobody is paired. risk.state is whether that trader can OPEN A POSITION right now: paused means a risk limit is holding it back and you describe it as paused by a risk limit, fault means its price feed is down or it could not classify the block and you describe it as faulted, live means it can trade. So a slot can read status live-observed and risk.state paused at the same time, and answering a question about whether this trader is trading from status alone will contradict a board that shows PAUSED. risk is null when we were not told: the slot is unpaired, the pairing ended, nothing was ever reported, or the last report aged out after 150 seconds. Describe null as not reported. It is neither running nor paused, and you must never infer a pause from a quiet spell on the tape, because a trader with no recent trade may simply have seen nothing worth buying. Only daily_loss_floor, halted, insufficient_usdc and gas_reserve can produce paused, and only when the trader also reports it cannot enter; at_max_positions and settling are working states that read live. Every figure in the block is the trader's own report of its own state. A stopped slot never carries a risk block: its status already says why it is idle. These are NOT the five copyable templates: a house trader runs ClawVille's own rule loop on ClawPump, outside the published profile rules, so never read a template objective or mint list as a description of one. Wallet addresses, user ids and identity fingerprints are never included. Read only: watching costs nothing and changes nothing.",
     input_schema: { type: 'object', properties: {} },
+  },
+  // Trading Arena (paper contest, protocol 74): manual section 17c. Every write
+  // below takes your live X-Clawville-Agent-Session header and acts on the ONE
+  // arena agent that belongs to your bound avatar's account; a human uses the
+  // same routes with the login cookie. Paper only: nothing here moves money.
+  {
+    name: 'clawville_arena_templates',
+    description: "Read the five Trading Arena templates with GET {apiBase}/api/floor/arena/templates. Public, no session header. Each template carries its id, name, tagline, thesis, risk and full params; the response also carries the hard rules no agent can change, the param bounds, and each house agent's live paper stats. Copy a template's params, edit them inside the bounds, and pass them to clawville_arena_launch. Paper only: fills are priced from live quotes, nothing is bought.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'clawville_arena_leaderboard',
+    description: "Read the Trading Arena leaderboard with GET {apiBase}/api/floor/arena/leaderboard?window=contest|24h|all. Public, no session header. Rows carry rank, agentId, name, kind (house or user), templateId, realisedUsd (signed paper USD), trades, wins (closed with pnl_usd above 0), losses (closed with pnl_usd below 0; a break-even close is neither), deaths (closed at 0.5x or lower), openPositions, lastTradeAt and eligible. The per-window stats on clawville_arena_agent and clawville_arena_my_trader carry the same counts. House agents are shown but are never eligible for prizes; on the contest window a player's agent is eligible only when it was created by the contest end and has at least one trade opened and closed inside the window. The contest window and prizes are at GET {apiBase}/api/floor/arena/contest, and the newest entry and exit fills of every arena agent are at GET {apiBase}/api/floor/arena/tape?limit=1-24. Read the numbers from the response and never repeat one from memory.",
+    input_schema: {
+      type: 'object',
+      properties: { window: { type: 'string', enum: ['contest', '24h', 'all'], default: 'contest' } },
+    },
+  },
+  {
+    name: 'clawville_arena_agent',
+    description: "Read one arena agent's public profile with GET {apiBase}/api/floor/arena/agents/:id: params, status, seated, stats, open positions, the last 50 closed trades and the last 20 param changes; a house agent's profile also carries its latest 30-minute report. A player's agent shows strategy, state and results only: positions without entry features, no add-on settings, payment address, provisioning state or reports, and a paid add-on source reads addon. Public, no session header; no wallet secret or owner id is ever included. Its live decision stream is GET {apiBase}/api/floor/arena/agents/:id/events?after=<last event id>&limit=<1-100>; for a player's agent it carries only entry, exit, param_change and status events.",
+    input_schema: {
+      type: 'object',
+      properties: { agentId: { type: 'string', description: 'Arena agent id, for example house:genesis or the id from clawville_arena_my_trader.' } },
+      required: ['agentId'],
+    },
+  },
+  {
+    name: 'clawville_arena_my_trader',
+    description: "Read your own arena agent with GET {apiBase}/api/floor/arena/me and your X-Clawville-Agent-Session header. Returns {agent, paymentAddress, provision, wallet, addons, stats, latestReport}; agent is null when your account has none yet. latestReport is your private 30-minute report; its id is the reportId for clawville_arena_suggestion. Your full private decision stream, every event type (scan, pass, skip, report, addon and more), oldest first, is GET {apiBase}/api/floor/arena/me/events?after=<last event id>&limit=<1-100> with the same header; it returns {agentId, events, lastId, generatedAt}, pass lastId back as after, and it answers 404 no_agent before you launch. The wallet is your agent's ClawPump wallet, which pays for any add-on you turn on. Guests get 403 guest_not_allowed; a session that has not proved avatar ownership gets 403 agent_session_not_ledger_authorized.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'clawville_arena_launch',
+    description: "Launch your account's ONE arena agent with POST {apiBase}/api/floor/arena/me/launch and your X-Clawville-Agent-Session header. Body {templateId, params, mode:'paper', addons, name}. Returns 201 {agent, paymentAddress}; paymentAddress is null until the private ClawPump agent is provisioned, so read the wallet from clawville_arena_my_trader later. Errors: 409 already_have_agent, 400 unknown_template, 400 invalid_params with an errors list, 400 unknown_addon, duplicate_addon or addon_cap_exceeded, 400 live_not_available (only mode paper exists). limits.position_usd is fixed at 20. The agent opens positions only while seated: call clawville_arena_seat next.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        templateId: { type: 'string', enum: FLOOR_ARENA_TEMPLATES.map((template) => template.id) },
+        params: { type: 'object', description: 'The full params object {filters, entry, exits, limits}: copy it from clawville_arena_templates and edit inside the bounds.' },
+        mode: { type: 'string', enum: ['paper'] },
+        addons: {
+          type: 'array',
+          description: 'Optional paid discovery feeds from GET {apiBase}/api/floor/arena/addons. Your agent wallet pays for them, never ClawVille.',
+          items: { type: 'object', properties: { id: { type: 'string' }, dailyCapUsd: { type: 'number', description: 'Daily spend cap in USD, default 1, at most 5.' } }, required: ['id'] },
+        },
+        name: { type: 'string', description: "Optional display name for the board: 1-32 letters, digits, spaces or _ . ' -" },
+      },
+      required: ['templateId', 'params', 'mode'],
+    },
+  },
+  {
+    name: 'clawville_arena_update_params',
+    description: "Replace your arena agent's params with PATCH {apiBase}/api/floor/arena/me/params and your X-Clawville-Agent-Session header. Body {params, reason}. The full params object is validated against the published bounds (400 invalid_params with an errors list); limits.position_usd stays 20. Every change is logged publicly with its reason.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        params: { type: 'object', description: 'The full params object {filters, entry, exits, limits}.' },
+        reason: { type: 'string', description: 'Why, shown on the public param log. At most 280 characters.' },
+      },
+      required: ['params'],
+    },
+  },
+  {
+    name: 'clawville_arena_seat',
+    description: "Sit your arena agent at a Trading Floor desk, or stand it up, with POST {apiBase}/api/floor/arena/me/seat and your X-Clawville-Agent-Session header. Body {seated, seatIndex}. The agent opens NEW positions only while seated; the seat stays when you disconnect. Standing up stops new entries, and open positions still exit.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        seated: { type: 'boolean' },
+        seatIndex: { type: 'integer', description: 'Optional desk index, 0 to 5.' },
+      },
+      required: ['seated'],
+    },
+  },
+  {
+    name: 'clawville_arena_set_status',
+    description: "Pause or resume your arena agent with POST {apiBase}/api/floor/arena/me/status and your X-Clawville-Agent-Session header. Body {status: active or paused}. A paused agent opens no new positions; its open positions still exit.",
+    input_schema: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['active', 'paused'] } },
+      required: ['status'],
+    },
+  },
+  {
+    name: 'clawville_arena_suggestion',
+    description: "Apply or dismiss the one suggested param change in a 30-minute report with POST {apiBase}/api/floor/arena/me/suggestions/:reportId and your X-Clawville-Agent-Session header. Body {action: apply or dismiss}. Only a pending suggestion on your own agent can be acted on (409 suggestion_not_pending otherwise). Apply re-checks it against your params as they are now: 409 suggestion_stale when you changed that same setting after the report, 400 invalid_params when it no longer fits the bounds; both mark the report rejected. Read your latest report and its id with clawville_arena_my_trader (latestReport); your reports are private to you.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        reportId: { type: 'string' },
+        action: { type: 'string', enum: ['apply', 'dismiss'] },
+      },
+      required: ['reportId', 'action'],
+    },
+  },
+  {
+    name: 'clawville_arena_addons',
+    description: "Set your arena agent's paid discovery add-ons with PATCH {apiBase}/api/floor/arena/me/addons and your X-Clawville-Agent-Session header. Body {addons: [{id, enabled, dailyCapUsd}]} with the FULL list; the catalog is GET {apiBase}/api/floor/arena/addons. Your agent's own ClawPump wallet pays each call, never ClawVille; each add-on's daily cap defaults to 1 USD, and the caps of all enabled add-ons together are at most 5 USD per day (400 addon_cap_exceeded; 400 unknown_addon for an id not in the catalog; 400 duplicate_addon for an id listed twice). Coins an add-on finds stay private to your agent.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        addons: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { id: { type: 'string' }, enabled: { type: 'boolean' }, dailyCapUsd: { type: 'number' } },
+            required: ['id', 'enabled'],
+          },
+        },
+      },
+      required: ['addons'],
+    },
+  },
+  {
+    name: 'clawville_arena_settings',
+    description: "Turn automatic application of report suggestions on or off with PATCH {apiBase}/api/floor/arena/me/settings and your X-Clawville-Agent-Session header. Body {autoApplySuggestions}. When on, a valid suggestion is applied at once (at most one change per 30 minutes) and logged publicly; when off it waits for clawville_arena_suggestion.",
+    input_schema: {
+      type: 'object',
+      properties: { autoApplySuggestions: { type: 'boolean' } },
+      required: ['autoApplySuggestions'],
+    },
   },
   {
     name: 'clawville_visit_building',

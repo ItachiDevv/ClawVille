@@ -286,7 +286,7 @@ function SlotCard({
           <div style={{ color: FLOOR_TEXT.primary, fontSize: 11 }}>
             {slot.counts.verified} verified · {slot.counts.scored} scored ·{' '}
             {slot.counts.lastTradeAt
-              ? `last ${tradeAgeLabel(Date.parse(slot.counts.lastTradeAt), nowMs)}`
+              ? `last ${tradeAgeLabel(Date.parse(slot.counts.lastTradeAt) / 1_000, nowMs)}`
               : 'no trades yet'}
           </div>
           {rows.length > 0 ? (

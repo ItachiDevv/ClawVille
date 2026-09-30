@@ -135,6 +135,17 @@ jobs:
           src/components/game/__tests__/spawn-on-load-route-exit.test.ts
           src/lib/__tests__/hud-short-touch.test.ts
           src/lib/site-url.test.ts
+          src/hooks/use-floor-arena.test.tsx
+          src/components/game/trading-floor/arena/arena-panels.test.tsx
+          src/lib/three/trading-floor/trading-floor-asset.test.ts
+          src/lib/three/trading-floor/trading-floor-exit-intent.test.ts
+          src/lib/three/trading-floor/trading-floor-exit-spawn.test.ts
+          src/lib/three/trading-floor/trading-floor-monitor.test.ts
+          src/lib/three/trading-floor/trading-floor-room.test.ts
+          src/lib/three/trading-floor/trading-floor-screen-texture.test.ts
+          src/lib/three/trading-floor/trading-floor-seats.test.ts
+          src/lib/three/trading-floor/trading-floor-trade-tape.test.ts
+          src/lib/three/trading-floor/trading-floor-walk-in.test.ts
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process
@@ -199,7 +210,7 @@ jobs:
         shell: bash
         run: |
           cd apps/api
-          mapfile -d '' files < <(find src/services/poker src/services/__tests__ -name '*.test.ts' -print0 | sort -z)
+          mapfile -d '' files < <(find src/services/poker src/services/__tests__ src/services/floor-arena -name '*.test.ts' -print0 | sort -z)
           test "${#files[@]}" -gt 0
           shared=()
           isolated=()
