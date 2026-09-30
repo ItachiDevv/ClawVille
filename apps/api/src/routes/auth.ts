@@ -6,6 +6,7 @@ import { db, users, agentBots, avatars } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import { sessionLedgerCapable } from '../services/agent-owner-binding';
 import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { noStorePrivate } from '../middleware/no-store';
@@ -1051,6 +1052,19 @@ authRoutes.post('/milady-session-exchange', async (c) => {
     throw new HTTPException(404, { message: 'Agent session not found or expired' });
   }
   const { config: botConfig, bot } = live;
+
+  // Security fix C2 (2026-09-30): this route mints a full Lucia browser-login cookie from an
+  // agent-session bearer. Before, ANY live session (including a credentialless, perception-only,
+  // or restored-after-deploy session bound to an owner's avatar WITHOUT ownership proof) could
+  // exchange into an authed browser session. Fail closed: require a ledger-capable session — one
+  // that proved ownership of its bound avatar (identityKey connect or signed /reconnect), the same
+  // bar the cove and the value routes use. A non-ledger session may still perceive/chat/move; it
+  // just cannot mint a login.
+  if (!sessionLedgerCapable(botConfig, bot.userId ?? null)) {
+    throw new HTTPException(403, {
+      message: 'agent_session_not_ledger_authorized: prove avatar ownership before exchanging for a login',
+    });
+  }
 
   // Find or create a guest user for this Milady agent
   const guestEmail = `milady-${botConfig.agentId}@clawville.guest`;

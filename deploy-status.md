@@ -469,6 +469,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-30 (session sql2) — security C2: milady-session-exchange requires ledger capability (staging push)
+
+**What changed:** `POST /api/auth/milady-session-exchange` (auth.ts) now requires `sessionLedgerCapable(config, bot.userId)` before it mints a Lucia browser-login cookie; a non-ledger session gets 403. Rides with the M1 tree (the empty re-trigger commit changed no files, so `paths-ignore` skipped its CI — this real code push re-runs the gates on a valid linear history).
+**What broke + root cause + fix:** audit C2 — the route minted a full browser login from ANY live agent session (no ledger/owner check); prod exposure was 4 synthetic accounts, 0 CT, 0 uses ever. Now fail-closed. Whether to also retire the route (Milady sideload was retired 2026-07-23) or change its mint-for-synthetic-user behavior is a founder decision, tracked in the plan. tsc clean; no existing test for this route (staging functional probe verifies).
+**Staging verification after deploy:** SOURCE_COMMIT + probe (non-ledger session → 403). Recorded in CURRENT STATE.
+**Who it's for:** every legacy Milady account (closes an account-takeover-to-browser-login path).
+**SCHEMA:** `synced`. PARITY: no gameplay change; login mint now needs proven ownership.
+
 ### 2026-09-30 (session sql2) — security M1: ledger gate on value routes; protocol 73 (staging push)
 
 **What changed:** `requireLedgerCapableIdentity` added to the bounty write routes (create, review, claim, submit, abandon, PATCH, DELETE), the exchange write routes (create, order, submit/confirm/cancel), and item buy/learn. PROTOCOL_VERSION 72→73 with the recovery text in `skill-protocol.ts`; Nori/orientation entry in `orientation-skill.ts`. Second of the 2026-09-30 security pass.
