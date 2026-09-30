@@ -11,7 +11,7 @@ import {
   type FloorArenaFeatures, type FloorArenaSnapshot,
 } from './filters';
 import {
-  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, lastRememberedPrice, markFallbackProceeds, markPrices, quoteBuy,
+  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, lastRememberedMark, markFallbackProceeds, markPrices, quoteBuy,
   quoteSell, rememberedSnapshot, type BuyQuoteResult, type SellQuoteResult,
 } from './pricing';
 import type { ArenaChainVerdict } from './chain-checks';
@@ -149,6 +149,20 @@ export function keepNewerMark(
 ): { mult: number | null; atMs: number } {
   if (stored.atMs === null || stored.atMs <= incoming.atMs) return { mult: incoming.mult, atMs: incoming.atMs };
   return { mult: stored.mult, atMs: stored.atMs };
+}
+
+/** A known mark and where it came from; atMs is its DexScreener snapshot time (0 = stored without a time). */
+export interface KnownMark { priceUsd: number; atMs: number; source: 'memory' | 'stored' }
+
+/**
+ * Codex r8 #2: the D4 reference / fallback price is the NEWEST of the leader-memory mark and the stored mark, by
+ * snapshot time. A tie goes to the stored mark, so a restarted process (no memory) and a running one choose the
+ * same price whenever the memory holds nothing newer than the row.
+ */
+export function newestKnownMark(memory: KnownMark | null, stored: KnownMark | null): KnownMark | null {
+  if (!memory) return stored;
+  if (!stored) return memory;
+  return memory.atMs > stored.atMs ? memory : stored;
 }
 
 /** Drizzle SET values that apply keepNewerMark in SQL (every SET expression reads the OLD row). */
@@ -834,18 +848,25 @@ function exitRunUnchanged(position: FloorArenaPositionRow) {
   return sql`${floorArenaPositions.exitRun} IS NOT DISTINCT FROM ${prev}::jsonb`;
 }
 
-/** Last known mark (memory, any age), else the last stored mark. Null when the position was never marked. */
-function lastKnownMark(position: FloorArenaPositionRow, entryPriceUsd: number): number | null {
-  const remembered = lastRememberedPrice(position.mint);
-  if (remembered !== null) return remembered;
+/** Newest known mark (memory or stored, by snapshot time). Null when the position was never marked. */
+function lastKnownMark(position: FloorArenaPositionRow, entryPriceUsd: number): KnownMark | null {
+  const remembered = lastRememberedMark(position.mint);
   const lastMult = positiveNumber(position.lastMarkMult);
-  return lastMult !== null ? lastMult * entryPriceUsd : null;
+  const storedAt = position.lastMarkAt ? position.lastMarkAt.getTime() : 0;
+  return newestKnownMark(
+    remembered ? { ...remembered, source: 'memory' } : null,
+    lastMult !== null ? { priceUsd: lastMult * entryPriceUsd, atMs: Number.isFinite(storedAt) ? storedAt : 0, source: 'stored' } : null,
+  );
 }
 
-/** Stale-mark D4 fallback when no sell quote exists at all: last known mark, else the entry DS price. */
-function staleFallbackPrice(position: FloorArenaPositionRow, entryPriceUsd: number): number | null {
-  return lastKnownMark(position, entryPriceUsd)
-    ?? positiveNumber((position.entryFeatures as { dsEntryPriceUsd?: unknown } | null)?.dsEntryPriceUsd);
+/**
+ * Codex r8 #1: a booking (or unresolved close) is valid only if no NEWER mark was stored after this tick decided.
+ * decisionAtMs = the snapshot time of the mark the decision used (null = it used none). On 0 rows the tick lost the
+ * race and the next tick re-decides with the newer mark.
+ */
+function storedMarkNotNewer(decisionAtMs: number | null) {
+  if (decisionAtMs === null) return sql`${floorArenaPositions.lastMarkAt} IS NULL`;
+  return sql`(${floorArenaPositions.lastMarkAt} IS NULL OR ${floorArenaPositions.lastMarkAt} <= ${new Date(decisionAtMs).toISOString()}::timestamptz)`;
 }
 
 async function executeExit(
@@ -862,8 +883,16 @@ async function executeExit(
   const nowMs = now.getTime();
   const tokensToSell = state.tokens * trigger.fraction;
   const decimals = (position.entryFeatures as { decimals?: unknown } | null)?.decimals;
-  // With no fresh mark, a sell quote under half the reference (last known mark, else entry price) is a failure.
-  const referencePriceUsd = freshMarkPrice === null ? lastKnownMark(position, state.entryPriceUsd) ?? state.entryPriceUsd : null;
+  // The mark this decision uses: the fresh one, else the newest known one (memory vs stored, Codex r8 #2).
+  const known = freshMarkPrice === null ? lastKnownMark(position, state.entryPriceUsd) : null;
+  const decisionAtMs = freshMarkPrice !== null ? markAtMs : known?.atMs ?? null;
+  // The mark written with the booking: the fresh one, or a memory mark newer than the row (the row then holds the
+  // very price the decision used).
+  const writtenMark = freshMarkPrice !== null
+    ? { mult: markMult, atMs: markAtMs }
+    : known?.source === 'memory' ? { mult: known.priceUsd / state.entryPriceUsd, atMs: known.atMs } : { mult: null, atMs: null };
+  // With no fresh mark, a sell quote under half the reference (newest known mark, else entry price) is a failure.
+  const referencePriceUsd = freshMarkPrice === null ? known?.priceUsd ?? state.entryPriceUsd : null;
   const quote: SellQuoteResult = typeof decimals === 'number'
     ? await (deps.quoteSell ?? quoteSell)(position.mint, tokensToSell, decimals, { markPriceUsd: freshMarkPrice, referencePriceUsd })
     : { ok: false, reason: 'quote_output_bad', detail: 'decimals unknown' };
@@ -882,7 +911,9 @@ async function executeExit(
       currentLowQuotePrice: currentLow?.priceUsd ?? null,
       run,
       nowMs,
-      staleFallbackPrice: staleFallbackPrice(position, state.entryPriceUsd),
+      // Stale fallback when no sell quote exists at all: the newest known mark, else the entry DS price.
+      staleFallbackPrice: known?.priceUsd
+        ?? positiveNumber((position.entryFeatures as { dsEntryPriceUsd?: unknown } | null)?.dsEntryPriceUsd),
     });
     if (d4 === null) {
       const written = await db.update(floorArenaPositions)
@@ -891,7 +922,7 @@ async function executeExit(
         .returning({ id: floorArenaPositions.id });
       return written.length > 0 ? { kind: 'quote_failed' } : { kind: 'lost_race' };
     }
-    if (d4.kind === 'unresolved') return closeUnresolved(position, state, trigger, run, markMult, markAtMs, now);
+    if (d4.kind === 'unresolved') return closeUnresolved(position, state, trigger, run, writtenMark, decisionAtMs, now);
     // quote_confirmed books THIS attempt's quote (after the sell cost); mark_fallback books tokens x price - cost.
     proceedsUsd = d4.source === 'quote_confirmed' && currentLow ? currentLow.proceedsUsd : markFallbackProceeds(tokensToSell, d4.priceUsd);
     fillSource = d4.source;
@@ -907,7 +938,7 @@ async function executeExit(
       exitQuoteFailures: 0,
       exitRun: null,
       exitFillSource: stickySource,
-      ...newerMarkSet(markMult, markAtMs),
+      ...newerMarkSet(writtenMark.mult, writtenMark.atMs),
       ...(fill.closed ? {
         status: 'closed' as const,
         closedAt: now,
@@ -922,6 +953,7 @@ async function executeExit(
       // used, makes this a no-op.
       eq(floorArenaPositions.remainingFraction, position.remainingFraction),
       exitRunUnchanged(position),
+      storedMarkNotNewer(decisionAtMs),
     )).returning({ id: floorArenaPositions.id });
     if (rows.length === 0) return false;
     const label = tokenLabel(position.symbol, position.mint);
@@ -952,8 +984,8 @@ async function closeUnresolved(
   state: ExitState,
   trigger: ExitTrigger,
   run: ExitRun,
-  markMult: number | null,
-  markAtMs: number | null,
+  writtenMark: { mult: number | null; atMs: number | null },
+  decisionAtMs: number | null,
   now: Date,
 ): Promise<ExitOutcome> {
   const nowMs = now.getTime();
@@ -968,12 +1000,13 @@ async function closeUnresolved(
       exitQuoteFailures: run.failures,
       exitRun: run,
       ...risingPeakSet(state.peakMult),
-      ...newerMarkSet(markMult, markAtMs),
+      ...newerMarkSet(writtenMark.mult, writtenMark.atMs),
     }).where(and(
       eq(floorArenaPositions.id, position.id),
       eq(floorArenaPositions.status, 'open'),
       eq(floorArenaPositions.remainingFraction, position.remainingFraction),
       exitRunUnchanged(position),
+      storedMarkNotNewer(decisionAtMs),
     )).returning({ id: floorArenaPositions.id });
     if (rows.length === 0) return false;
     const label = tokenLabel(position.symbol, position.mint);

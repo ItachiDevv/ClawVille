@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
   advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, evaluateAgentCandidates,
-  exitSummary, keepNewerMark, parseExitRun, type D4Outcome,
+  exitSummary, keepNewerMark, newestKnownMark, parseExitRun, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
 } from './engine';
 import type { FloorArenaFeatures } from './filters';
@@ -241,6 +241,19 @@ describe('D4 sell-quote failures (persisted exit_run, Codex r4 #1 + r5)', () => 
     expect(keepNewerMark({ mult: 1.1, atMs: T0 }, { mult: 0.9, atMs: T0 + 1 })).toEqual({ mult: 0.9, atMs: T0 + 1 });
     expect(keepNewerMark({ mult: 1.1, atMs: T0 }, { mult: 0.9, atMs: T0 })).toEqual({ mult: 0.9, atMs: T0 });
     expect(keepNewerMark({ mult: 1.1, atMs: T0 }, { mult: 0.2, atMs: T0 - 1 })).toEqual({ mult: 1.1, atMs: T0 });
+  });
+
+  test('r8 #2: the fallback / reference mark is the NEWEST of memory and the stored row; a tie goes to the row', () => {
+    const mem = (atMs: number) => ({ priceUsd: 1, atMs, source: 'memory' as const });
+    const row = (atMs: number) => ({ priceUsd: 2, atMs, source: 'stored' as const });
+    expect(newestKnownMark(mem(T0 + 1), row(T0))).toEqual(mem(T0 + 1));
+    expect(newestKnownMark(mem(T0), row(T0 + 1))).toEqual(row(T0 + 1));
+    expect(newestKnownMark(mem(T0), row(T0))).toEqual(row(T0));
+    expect(newestKnownMark(null, row(T0))).toEqual(row(T0));
+    expect(newestKnownMark(mem(T0), null)).toEqual(mem(T0));
+    expect(newestKnownMark(null, null)).toBeNull();
+    // After a restart the memory is empty: the row decides, the same as a process whose memory is not newer.
+    expect(newestKnownMark(null, row(T0 + 5))).toEqual(newestKnownMark(mem(T0 + 5), row(T0 + 5)));
   });
 
   test('exit_fill_source is sticky: mark_fallback > quote_confirmed > quote', () => {

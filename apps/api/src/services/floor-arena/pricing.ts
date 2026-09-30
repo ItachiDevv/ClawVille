@@ -208,9 +208,14 @@ export async function markPrices(mints: readonly string[], now: Date = new Date(
   return out;
 }
 
-/** Any-age last price in leader memory (D4 fallback when no fresh mark exists). */
-export function lastRememberedPrice(mint: string): number | null {
-  return positivePrice(latestSnapshots.get(mint)?.snapshot);
+/**
+ * Any-age last price in leader memory WITH its snapshot time (Codex r8 #2): the D4 fallback compares it with the
+ * stored mark and uses the newer one, so a running process and a restarted one choose the same price.
+ */
+export function lastRememberedMark(mint: string): { priceUsd: number; atMs: number } | null {
+  const remembered = latestSnapshots.get(mint);
+  const price = positivePrice(remembered?.snapshot);
+  return remembered && price !== null ? { priceUsd: price, atMs: remembered.at } : null;
 }
 
 // ---------------------------------------------------------------- ClawPump quote wire
