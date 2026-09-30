@@ -174,6 +174,30 @@ export function markNewerThanDecision(latestAtMs: number | null, decisionAtMs: n
   return latestAtMs > decisionAtMs;
 }
 
+/**
+ * Codex r10: a decision that used a FRESH mark books only while that mark is still fresh after the sell quote
+ * (tick time + the quote's duration). A mark that aged past 60 s during the quote makes the booking a lost race;
+ * the next tick re-decides under the no-fresh-mark rules (low-quote confirmation / stale price / unresolved).
+ */
+export function markStillFresh(decisionAtMs: number | null, afterQuoteMs: number): boolean {
+  return decisionAtMs !== null && afterQuoteMs - decisionAtMs <= ARENA_MARK_MAX_AGE_MS;
+}
+
+/**
+ * A take-profit leg sells ONLY when the sell QUOTE confirms it (as the Python runner judged TP on the quote): the
+ * quoted multiple for the leg = quoted proceeds / the leg's entry cost, BEFORE the 1 % sell haircut, which equals
+ * quoted price / entry price. The DexScreener mark only raises the trigger. No quote = not confirmed.
+ * (Staging tape 2026-09-30 14:46:47Z: a TP fired on a 1.10x mark and booked a loss at the quote.)
+ */
+export function quotedTpMultiple(quotedPriceUsd: number | null, entryPriceUsd: number): number | null {
+  if (quotedPriceUsd === null || !Number.isFinite(quotedPriceUsd) || quotedPriceUsd <= 0 || entryPriceUsd <= 0) return null;
+  return quotedPriceUsd / entryPriceUsd;
+}
+
+export function tpConfirmedByQuote(quoteMult: number | null, legMult: number): boolean {
+  return quoteMult !== null && quoteMult >= legMult - 1e-9;
+}
+
 /** Drizzle SET values that apply keepNewerMark in SQL (every SET expression reads the OLD row). */
 function newerMarkSet(markMult: number | null, markAtMs: number | null) {
   if (markMult === null || markAtMs === null) return {};
@@ -755,11 +779,15 @@ async function openPosition(
 
 // ---------------------------------------------------------------- exits
 
-interface ExitDeps { quoteSell?: typeof quoteSell }
+interface ExitDeps {
+  quoteSell?: typeof quoteSell;
+  /** Real-time clock used only to measure how long the sell quote took (tests inject one). */
+  clock?: () => number;
+}
 
 export interface ExitTickResult {
   open: number; marked: number; exits: number; closed: number; fallbacks: number; confirmedQuotes: number;
-  unresolved: number; quoteFailures: number; errors: number;
+  unresolved: number; tpUnconfirmed: number; quoteFailures: number; errors: number;
 }
 
 function exitsOf(position: FloorArenaPositionRow, agentParams: FloorArenaParams | null): FloorArenaExits | null {
@@ -775,7 +803,7 @@ function positiveNumber(value: unknown): number | null {
 
 export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): Promise<ExitTickResult> {
   const nowMs = now.getTime();
-  const result: ExitTickResult = { open: 0, marked: 0, exits: 0, closed: 0, fallbacks: 0, confirmedQuotes: 0, unresolved: 0, quoteFailures: 0, errors: 0 };
+  const result: ExitTickResult = { open: 0, marked: 0, exits: 0, closed: 0, fallbacks: 0, confirmedQuotes: 0, unresolved: 0, tpUnconfirmed: 0, quoteFailures: 0, errors: 0 };
   const positions = await db.select().from(floorArenaPositions).where(eq(floorArenaPositions.status, 'open'));
   result.open = positions.length;
   if (positions.length === 0) return result;
@@ -816,7 +844,14 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
       }
       const trigger = decideExitTrigger(state, exits, markMult, nowMs);
       if (!trigger) continue;
-      const outcome = await executeExit(position, state, exits, trigger, known, fresh, now, deps);
+      let outcome = await executeExit(position, state, exits, trigger, known, fresh, now, deps);
+      if (outcome.kind === 'tp_unconfirmed') {
+        // The mark says TP but the quote does not: hold the TP, but a stop / trail / time exit that is due still
+        // runs now (with TP first in the order, a mark above TP would otherwise hide the time cap forever).
+        result.tpUnconfirmed += 1;
+        const other = decideExitTrigger(state, { ...exits, tp: [] }, markMult, nowMs);
+        if (other) outcome = await executeExit(position, state, exits, other, known, fresh, now, deps);
+      }
       if (outcome.kind === 'filled') {
         result.exits += 1;
         if (outcome.closed) result.closed += 1;
@@ -844,7 +879,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
 }
 
 type ExitOutcome = { kind: 'filled'; closed: boolean; source: ExitFillSource } | { kind: 'quote_failed' } | { kind: 'unresolved' }
-  | { kind: 'lost_race' };
+  | { kind: 'tp_unconfirmed' } | { kind: 'lost_race' };
 
 /**
  * Compare-and-swap guard for every write that replaces exit_run (Codex r6 #2): the row must still hold the run this
@@ -917,9 +952,32 @@ async function executeExit(
     ? { mult: known.priceUsd / state.entryPriceUsd, atMs: known.atMs } : { mult: null, atMs: null };
   // With no fresh mark, a sell quote under half the reference (newest known mark, else entry price) is a failure.
   const referencePriceUsd = freshMarkPrice === null ? known?.priceUsd ?? state.entryPriceUsd : null;
+  const clock = deps.clock ?? Date.now;
+  const quoteStartedMs = clock();
   const quote: SellQuoteResult = typeof decimals === 'number'
     ? await (deps.quoteSell ?? quoteSell)(position.mint, tokensToSell, decimals, { markPriceUsd: freshMarkPrice, referencePriceUsd })
     : { ok: false, reason: 'quote_output_bad', detail: 'decimals unknown' };
+  // The decision's clock after the (possibly slow) quote: tick time + how long the quote took.
+  const afterQuoteMs = nowMs + Math.max(0, clock() - quoteStartedMs);
+  if (trigger.reason === 'tp') {
+    const legMult = exits.tp[(trigger.leg ?? 1) - 1]?.[0] ?? Number.POSITIVE_INFINITY;
+    const quoteMult = quotedTpMultiple(quote.ok ? quote.priceUsd : null, state.entryPriceUsd);
+    if (!tpConfirmedByQuote(quoteMult, legMult)) {
+      if (shouldEmit(`${position.agentId}|skip|${position.id}|tp_not_confirmed_by_quote`, nowMs)) {
+        const label = tokenLabel(position.symbol, position.mint);
+        const quoteText = quoteMult === null ? 'no usable sell quote' : `the sell quote is ${quoteMult.toFixed(2)}x`;
+        await writeArenaEvent({
+          agentId: position.agentId, type: 'skip', mint: position.mint,
+          summary: `Held ${label}: the mark shows ${markMult !== null ? markMult.toFixed(2) : 'n/a'}x (TP ${legMult.toFixed(2)}x) but ${quoteText}. Waiting for the quote to confirm the take-profit.`,
+          data: {
+            reason: 'tp_not_confirmed_by_quote', positionId: position.id, leg: trigger.leg, tpMult: legMult, markMult, quoteMult,
+            quoteRefusal: quote.ok ? null : quote.reason,
+          },
+        });
+      }
+      return { kind: 'tp_unconfirmed' };
+    }
+  }
   let proceedsUsd: number;
   let fillSource: ExitFillSource;
   let fillPrice: number | null;
@@ -956,6 +1014,9 @@ async function executeExit(
   const stickySource = combineFillSource(position.exitFillSource, fillSource);
   const updated = await db.transaction(async (tx) => {
     if (markNewerThanDecision(await lockAndReadNewestMarkAt(tx, position, state.entryPriceUsd), decisionAtMs)) return false;
+    // Codex r10: every booking decided with a fresh mark (its trigger, its mark fallback, its quote checks) needs
+    // that mark to be fresh still, after the quote.
+    if (fresh && !markStillFresh(decisionAtMs, afterQuoteMs)) return false;
     const rows = await tx.update(floorArenaPositions).set({
       remainingFraction: String(fill.remainingFraction),
       realisedUsd: String(fill.realisedUsd),

@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
   advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, evaluateAgentCandidates,
-  exitSummary, keepNewerMark, markNewerThanDecision, newestKnownMark, parseExitRun, type D4Outcome,
+  exitSummary, keepNewerMark, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun, quotedTpMultiple,
+  tpConfirmedByQuote, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
 } from './engine';
 import type { FloorArenaFeatures } from './filters';
@@ -261,6 +262,24 @@ describe('D4 sell-quote failures (persisted exit_run, Codex r4 #1 + r5)', () => 
     expect(markNewerThanDecision(T0 - 1, T0)).toBe(false);        // only older marks
     expect(markNewerThanDecision(T0 + 1, T0)).toBe(true);         // a newer snapshot arrived during the quote
     expect(markNewerThanDecision(T0, null)).toBe(true);           // decided with no mark, a mark exists now
+  });
+
+  test('r10: a fresh decision mark must still be fresh after the sell quote (<= 60 s at tick time + quote time)', () => {
+    expect(markStillFresh(T0, T0 + 60_000)).toBe(true);
+    expect(markStillFresh(T0, T0 + 60_001)).toBe(false);
+    expect(markStillFresh(T0 - 59_000, T0 + 5_000)).toBe(false); // 59 s old at tick start, 64 s after a 5-s quote
+    expect(markStillFresh(T0 - 59_000, T0 + 500)).toBe(true);    // 59.5 s after a 0.5-s quote
+    expect(markStillFresh(null, T0)).toBe(false);
+  });
+
+  test('TP is confirmed only by the quote: quoted price / entry price (before the sell haircut) >= the leg multiple', () => {
+    const entry = 0.001;
+    expect(quotedTpMultiple(0.00102, entry)).toBeCloseTo(1.02, 12);
+    expect(tpConfirmedByQuote(quotedTpMultiple(0.00102, entry), 1.1)).toBe(false); // mark 1.12x, quote 1.02x: hold
+    expect(tpConfirmedByQuote(quotedTpMultiple(0.00111, entry), 1.1)).toBe(true);  // quote 1.11x: sell
+    expect(tpConfirmedByQuote(quotedTpMultiple(0.0011, entry), 1.1)).toBe(true);   // exactly the TP multiple
+    expect(tpConfirmedByQuote(quotedTpMultiple(null, entry), 1.1)).toBe(false);    // no usable quote
+    expect(quotedTpMultiple(0, entry)).toBeNull();
   });
 
   test('exit_fill_source is sticky: mark_fallback > quote_confirmed > quote', () => {

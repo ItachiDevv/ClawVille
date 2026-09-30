@@ -321,6 +321,15 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   not the instance: the engine keeps NO in-memory marks; every exit decision reads the newest DB mark and re-reads it
   inside the booking transaction after the quote; a newer mark means lost race and re-decide next tick.
 
+- 14:34Z: staging API serves `315abf26`; the engine runs: 5 house agents trading paper, discovery rows arriving
+  (gecko:trending_5m, ds:*, bitget). 14:47Z live board: Genesis +$5.20 (6 trades), Dip Hunter -$2.55 (1), Runner
+  -$7.87 (3, 1 death), Mid-Cap Climber and Late Bloomer open positions only.
+- 14:47Z: Codex r10 (on 8f5b80f2, single mark source): every r9 item FIXED. One new item: re-judge mark freshness
+  inside the booking transaction (a mark can age past 60 s during the quote). LIVE finding by the lead: a TP leg fired
+  on the DexScreener mark but the sell quote realised a loss ("Genesis exit SAID reason tp pnl -0.096"). Decision D23:
+  a TP leg sells only when the QUOTED multiple reaches the TP multiple (as the Python runner did); otherwise hold and log
+  'tp_not_confirmed_by_quote'; stops, trail and time exits still sell at the quote.
+
 ## 8. Punch list (tracked deferrals, rule E6)
 
 | # | Item | Owner condition | Review deadline |
