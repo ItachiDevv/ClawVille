@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
   advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, evaluateAgentCandidates,
-  exitSummary, keepNewerMark, newestKnownMark, parseExitRun, type D4Outcome,
+  exitSummary, keepNewerMark, markNewerThanDecision, newestKnownMark, parseExitRun, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
 } from './engine';
 import type { FloorArenaFeatures } from './filters';
@@ -243,17 +243,24 @@ describe('D4 sell-quote failures (persisted exit_run, Codex r4 #1 + r5)', () => 
     expect(keepNewerMark({ mult: 1.1, atMs: T0 }, { mult: 0.2, atMs: T0 - 1 })).toEqual({ mult: 1.1, atMs: T0 });
   });
 
-  test('r8 #2: the fallback / reference mark is the NEWEST of memory and the stored row; a tie goes to the row', () => {
-    const mem = (atMs: number) => ({ priceUsd: 1, atMs, source: 'memory' as const });
-    const row = (atMs: number) => ({ priceUsd: 2, atMs, source: 'stored' as const });
-    expect(newestKnownMark(mem(T0 + 1), row(T0))).toEqual(mem(T0 + 1));
-    expect(newestKnownMark(mem(T0), row(T0 + 1))).toEqual(row(T0 + 1));
-    expect(newestKnownMark(mem(T0), row(T0))).toEqual(row(T0));
-    expect(newestKnownMark(null, row(T0))).toEqual(row(T0));
-    expect(newestKnownMark(mem(T0), null)).toEqual(mem(T0));
+  test('r9: the decision mark is the NEWEST DB mark (snapshot row vs stored position mark); a tie goes to the snapshot', () => {
+    const snapM = (atMs: number) => ({ priceUsd: 1, atMs, source: 'snapshot' as const });
+    const rowM = (atMs: number) => ({ priceUsd: 2, atMs, source: 'position' as const });
+    expect(newestKnownMark(snapM(T0 + 1), rowM(T0))).toEqual(snapM(T0 + 1));
+    expect(newestKnownMark(snapM(T0), rowM(T0 + 1))).toEqual(rowM(T0 + 1));
+    expect(newestKnownMark(snapM(T0), rowM(T0))).toEqual(snapM(T0));
+    expect(newestKnownMark(null, rowM(T0))).toEqual(rowM(T0));
+    expect(newestKnownMark(snapM(T0), null)).toEqual(snapM(T0));
     expect(newestKnownMark(null, null)).toBeNull();
-    // After a restart the memory is empty: the row decides, the same as a process whose memory is not newer.
-    expect(newestKnownMark(null, row(T0 + 5))).toEqual(newestKnownMark(mem(T0 + 5), row(T0 + 5)));
+  });
+
+  test('r9: a booking is blocked when the DB holds a mark newer than the decision mark', () => {
+    expect(markNewerThanDecision(null, T0)).toBe(false);          // no mark at all
+    expect(markNewerThanDecision(null, null)).toBe(false);
+    expect(markNewerThanDecision(T0, T0)).toBe(false);            // same mark
+    expect(markNewerThanDecision(T0 - 1, T0)).toBe(false);        // only older marks
+    expect(markNewerThanDecision(T0 + 1, T0)).toBe(true);         // a newer snapshot arrived during the quote
+    expect(markNewerThanDecision(T0, null)).toBe(true);           // decided with no mark, a mark exists now
   });
 
   test('exit_fill_source is sticky: mark_fallback > quote_confirmed > quote', () => {

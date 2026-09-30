@@ -4,7 +4,7 @@ import { db, sql } from '@clawville/database';
 import { tradingConnection, tradingRpcConfigured } from '../trading-rpc';
 import type { FloorArenaHardRuleId } from '@clawville/shared';
 import type { FloorArenaSnapshot } from './filters';
-import { currentSolPriceUsd, rememberedSnapshot, USDC_MINT, WSOL_MINT } from './pricing';
+import { currentSolPriceUsd, USDC_MINT, WSOL_MINT } from './pricing';
 
 /**
  * D5 hard rules, checked on chain (port of the paper runner's `chain_checks`, `lp_lock_fail`,
@@ -541,8 +541,8 @@ export async function runChainCheckTick(
   let errors = 0;
   for (let i = 0; i < due.length; i += CHECK_CONCURRENCY) {
     await Promise.all(due.slice(i, i + CHECK_CONCURRENCY).map(async (row) => {
-      // Prefer the newest in-memory snapshot (same pair the engine will price).
-      const snapshot = rememberedSnapshot(row.mint)?.snapshot ?? row.snapshot;
+      // The DB snapshot is the only snapshot source (Codex r9).
+      const snapshot = row.snapshot;
       if (!snapshot) return;
       const verdict = await runChainCheck(rpc, row.mint, snapshot, solPrice, now);
       if (verdict.pass) passed += 1;

@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { and, db, gte, inArray, isNotNull } from '@clawville/database';
-import { floorArenaPrivateMints, floorDiscoveryMints } from '@clawville/database';
+import { db, sql } from '@clawville/database';
 import { FLOOR_ARENA_PAPER_COSTS, TRADE_MINTS } from '@clawville/shared';
 import {
   CLAWPUMP_ALLOWED_API_HOSTS, CLAWPUMP_DEFAULT_API_BASE_URL, ClawPumpClientError, resolveClawPumpConfig,
@@ -126,25 +125,7 @@ export function dexscreenerCallsLastMinute(nowMs = Date.now()): number {
   return dexscreenerCalls.length;
 }
 
-// ---------------------------------------------------------------- latest snapshots (leader memory)
-
-interface RememberedSnapshot { snapshot: FloorArenaSnapshot; at: number }
-const latestSnapshots = new Map<string, RememberedSnapshot>();
-const LATEST_SNAPSHOT_MAX = 20_000;
-
-/** The enrichment loop records every snapshot here as well as in the DB (open-position mints may have no row). */
-export function rememberSnapshot(mint: string, snapshot: FloorArenaSnapshot, atMs: number): void {
-  latestSnapshots.delete(mint);
-  latestSnapshots.set(mint, { snapshot, at: atMs });
-  if (latestSnapshots.size > LATEST_SNAPSHOT_MAX) {
-    const oldest = latestSnapshots.keys().next().value;
-    if (oldest !== undefined) latestSnapshots.delete(oldest);
-  }
-}
-
-export function rememberedSnapshot(mint: string): RememberedSnapshot | null {
-  return latestSnapshots.get(mint) ?? null;
-}
+// ---------------------------------------------------------------- SOL price
 
 /** SOL in USD (DexScreener WSOL/USDC pair, refreshed by the enrichment loop); the pool reserve check needs it. */
 let solPrice: { usd: number; at: number } | null = null;
@@ -160,7 +141,6 @@ export function currentSolPriceUsd(nowMs = Date.now()): number | null {
 
 export function resetPricingStateForTest(): void {
   solPrice = null;
-  latestSnapshots.clear();
   dexscreenerCalls.length = 0;
   dexscreenerBlockedUntil = 0;
   buyQuoteCache.clear();
@@ -168,54 +148,48 @@ export function resetPricingStateForTest(): void {
   breaker.openUntil = 0;
 }
 
-export interface ArenaMark { priceUsd: number; at: Date; snapshot: FloorArenaSnapshot }
+// ---------------------------------------------------------------- marks (the DB is the ONLY source)
 
 function positivePrice(snapshot: FloorArenaSnapshot | null | undefined): number | null {
   const price = snapshot?.priceUsd;
   return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null;
 }
 
-/** Marks from snapshots at most 60 s old: leader memory first, then the two snapshot tables. */
-export async function markPrices(mints: readonly string[], now: Date = new Date()): Promise<Map<string, ArenaMark>> {
-  const out = new Map<string, ArenaMark>();
-  const cutoff = now.getTime() - ARENA_MARK_MAX_AGE_MS;
-  const missing: string[] = [];
-  for (const mint of new Set(mints)) {
-    const remembered = latestSnapshots.get(mint);
-    const price = positivePrice(remembered?.snapshot);
-    if (remembered && price !== null && remembered.at >= cutoff) {
-      out.set(mint, { priceUsd: price, at: new Date(remembered.at), snapshot: remembered.snapshot });
-    } else {
-      missing.push(mint);
-    }
-  }
-  if (missing.length === 0) return out;
-  const since = new Date(cutoff);
-  const shared = await db.select({ mint: floorDiscoveryMints.mint, snapshot: floorDiscoveryMints.snapshot, at: floorDiscoveryMints.snapshotAt })
-    .from(floorDiscoveryMints)
-    .where(and(inArray(floorDiscoveryMints.mint, missing), gte(floorDiscoveryMints.snapshotAt, since)));
-  const privateRows = await db.select({ mint: floorArenaPrivateMints.mint, snapshot: floorArenaPrivateMints.snapshot, at: floorArenaPrivateMints.snapshotAt })
-    .from(floorArenaPrivateMints)
-    .where(and(inArray(floorArenaPrivateMints.mint, missing), isNotNull(floorArenaPrivateMints.snapshotAt), gte(floorArenaPrivateMints.snapshotAt, since)));
-  for (const row of [...shared, ...privateRows]) {
-    const snapshot = row.snapshot as FloorArenaSnapshot | null;
-    const price = positivePrice(snapshot);
-    if (!snapshot || price === null || !row.at) continue;
-    const prior = out.get(row.mint);
-    if (prior && prior.at.getTime() >= row.at.getTime()) continue;
-    out.set(row.mint, { priceUsd: price, at: row.at, snapshot });
-  }
-  return out;
+/** A DexScreener snapshot mark as stored in the DB; atMs is the snapshot time. */
+export interface SnapshotMark { priceUsd: number; atMs: number }
+
+type SqlExecutor = Pick<typeof db, 'execute'>;
+
+function rowsOf(result: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(result) ? result as Array<Record<string, unknown>> : ((result as { rows?: Array<Record<string, unknown>> })?.rows ?? []);
 }
 
 /**
- * Any-age last price in leader memory WITH its snapshot time (Codex r8 #2): the D4 fallback compares it with the
- * stored mark and uses the newer one, so a running process and a restarted one choose the same price.
+ * Codex r9: marks live ONLY in the DB (no process memory), so a running process and a restarted one, and a tick
+ * that re-checks after a slow sell quote, all read the same thing. Newest snapshot per mint (any age) across the
+ * shared and private snapshot tables. `executor` lets the booking transaction re-read under its row lock.
  */
-export function lastRememberedMark(mint: string): { priceUsd: number; atMs: number } | null {
-  const remembered = latestSnapshots.get(mint);
-  const price = positivePrice(remembered?.snapshot);
-  return remembered && price !== null ? { priceUsd: price, atMs: remembered.at } : null;
+export async function latestSnapshotMarks(mints: readonly string[], executor: SqlExecutor = db): Promise<Map<string, SnapshotMark>> {
+  const out = new Map<string, SnapshotMark>();
+  const unique = [...new Set(mints)];
+  if (unique.length === 0) return out;
+  const list = JSON.stringify(unique);
+  const rows = rowsOf(await executor.execute(sql`
+    SELECT mint, snapshot, snapshot_at FROM floor_discovery_mints
+    WHERE mint IN (SELECT jsonb_array_elements_text(${list}::jsonb)) AND snapshot IS NOT NULL AND snapshot_at IS NOT NULL
+    UNION ALL
+    SELECT mint, snapshot, snapshot_at FROM floor_arena_private_mints
+    WHERE mint IN (SELECT jsonb_array_elements_text(${list}::jsonb)) AND snapshot IS NOT NULL AND snapshot_at IS NOT NULL
+  `));
+  for (const row of rows) {
+    const price = positivePrice(row.snapshot as FloorArenaSnapshot | null);
+    const at = row.snapshot_at instanceof Date ? row.snapshot_at.getTime() : Date.parse(String(row.snapshot_at));
+    if (price === null || !Number.isFinite(at)) continue;
+    const mint = String(row.mint);
+    const prior = out.get(mint);
+    if (!prior || at > prior.atMs) out.set(mint, { priceUsd: price, atMs: at });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- ClawPump quote wire

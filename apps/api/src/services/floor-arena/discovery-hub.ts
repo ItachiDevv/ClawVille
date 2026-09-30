@@ -4,7 +4,7 @@ import { finiteOrNull } from './filters';
 import { CHAIN_UNIVERSE } from './chain-checks';
 import {
   ArenaHttpError, arenaFetchJson, clawpumpBackend, dexscreenerBudgetLeft, noteDexscreenerCall,
-  noteDexscreenerRateLimited, rememberSnapshot, rememberSolPrice, USDC_MINT, WSOL_MINT, type ArenaFetch,
+  noteDexscreenerRateLimited, rememberSolPrice, USDC_MINT, WSOL_MINT, type ArenaFetch,
 } from './pricing';
 
 /**
@@ -438,7 +438,6 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
     const best = pickBestPairs(body, new Set(batch));
     for (const [mint, pair] of best) {
       const snapshot = buildSnapshot(pair, nowMs);
-      rememberSnapshot(mint, snapshot, nowMs);
       snapshots.push({ mint, snapshot, symbol: snapshot.symbol, name: snapshot.name });
     }
   }

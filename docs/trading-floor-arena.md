@@ -313,6 +313,14 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   and non-overlapping loops prevent; fixed anyway: stored-mark writes keep the newer timestamp). Lead decision: push to
   staging after this fix with its tests; Codex r8 runs in parallel; any r8 finding is fixed before promotion to prod.
 
+- 14:20Z: PUSHED `315abf26` to staging (fast-forward on f78b8f42, workflow-scope token). CI run 36728304050: all 4
+  gate jobs (incl. the Postgres-backed route tests), migrate (0070 applied to the staging DB) and deploy: success.
+- 14:23Z: Codex r8 (on 315abf26): every r7 item FIXED; two new fallback-mark items -> follow-up commit `078e00d3`
+  (not yet pushed; one staging build at a time). 14:33Z Codex r9: both r8 items FIXED; two more interleavings of the
+  same class (marks kept in memory AND in the DB, with a slow sell quote between). Lead decision D22: remove the class,
+  not the instance: the engine keeps NO in-memory marks; every exit decision reads the newest DB mark and re-reads it
+  inside the booking transaction after the quote; a newer mark means lost race and re-decide next tick.
+
 ## 8. Punch list (tracked deferrals, rule E6)
 
 | # | Item | Owner condition | Review deadline |

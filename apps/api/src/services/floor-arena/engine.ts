@@ -11,8 +11,8 @@ import {
   type FloorArenaFeatures, type FloorArenaSnapshot,
 } from './filters';
 import {
-  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, lastRememberedMark, markFallbackProceeds, markPrices, quoteBuy,
-  quoteSell, rememberedSnapshot, type BuyQuoteResult, type SellQuoteResult,
+  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, latestSnapshotMarks, markFallbackProceeds, quoteBuy,
+  quoteSell, type BuyQuoteResult, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
 import type { ArenaChainVerdict } from './chain-checks';
 import {
@@ -151,18 +151,27 @@ export function keepNewerMark(
   return { mult: stored.mult, atMs: stored.atMs };
 }
 
-/** A known mark and where it came from; atMs is its DexScreener snapshot time (0 = stored without a time). */
-export interface KnownMark { priceUsd: number; atMs: number; source: 'memory' | 'stored' }
+/**
+ * A DB mark (Codex r9: marks live ONLY in the DB, never in process memory): a snapshot row of the shared / private
+ * snapshot tables, or the position's stored last_mark. atMs is the DexScreener snapshot time (0 = stored without one).
+ */
+export interface KnownMark { priceUsd: number; atMs: number; source: 'snapshot' | 'position' }
 
 /**
- * Codex r8 #2: the D4 reference / fallback price is the NEWEST of the leader-memory mark and the stored mark, by
- * snapshot time. A tie goes to the stored mark, so a restarted process (no memory) and a running one choose the
- * same price whenever the memory holds nothing newer than the row.
+ * The newer of two DB marks by snapshot time; a tie goes to `primary`. Every input comes from the DB, so a running
+ * process, a restarted one and a re-check after a slow sell quote all make the same choice from the same rows.
  */
-export function newestKnownMark(memory: KnownMark | null, stored: KnownMark | null): KnownMark | null {
-  if (!memory) return stored;
-  if (!stored) return memory;
-  return memory.atMs > stored.atMs ? memory : stored;
+export function newestKnownMark(primary: KnownMark | null, secondary: KnownMark | null): KnownMark | null {
+  if (!primary) return secondary;
+  if (!secondary) return primary;
+  return secondary.atMs > primary.atMs ? secondary : primary;
+}
+
+/** Codex r9: true when the DB now holds a mark newer than the one the decision used (null = it used none). */
+export function markNewerThanDecision(latestAtMs: number | null, decisionAtMs: number | null): boolean {
+  if (latestAtMs === null) return false;
+  if (decisionAtMs === null) return true;
+  return latestAtMs > decisionAtMs;
 }
 
 /** Drizzle SET values that apply keepNewerMark in SQL (every SET expression reads the OLD row). */
@@ -477,13 +486,10 @@ function verdictOf(raw: unknown, snapshot: FloorArenaSnapshot): { verdict: 'pass
   return { verdict: v.pass ? 'pass' : 'fail', top10Pct: typeof v.top10Pct === 'number' ? v.top10Pct : null };
 }
 
-/** Freshest of the row snapshot and the leader memory; null when neither is <= 60 s old. */
-function freshSnapshot(mint: string, rowSnapshot: unknown, rowAt: unknown, nowMs: number): FloorArenaSnapshot | null {
-  const memory = rememberedSnapshot(mint);
-  const rowMs = msOf(rowAt);
-  const useMemory = memory && (rowMs === null || memory.at >= rowMs);
-  const snapshot = useMemory ? memory!.snapshot : (rowSnapshot as FloorArenaSnapshot | null);
-  const at = useMemory ? memory!.at : rowMs;
+/** The row snapshot when it is <= 60 s old; the DB is the only snapshot source (Codex r9). */
+function freshSnapshot(rowSnapshot: unknown, rowAt: unknown, nowMs: number): FloorArenaSnapshot | null {
+  const at = msOf(rowAt);
+  const snapshot = rowSnapshot as FloorArenaSnapshot | null;
   if (!snapshot || at === null || nowMs - at > ARENA_MARK_MAX_AGE_MS) return null;
   return snapshot;
 }
@@ -518,7 +524,7 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
   const shared: ArenaCandidate[] = [];
   for (const row of sharedRows) {
     const mint = String(row.mint);
-    const snapshot = freshSnapshot(mint, row.snapshot, row.snapshot_at, nowMs);
+    const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
     if (!snapshot) continue;
     const { verdict, top10Pct } = verdictOf(row.chain_verdict, snapshot);
     shared.push({
@@ -593,7 +599,7 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
   `));
   for (const row of rows) {
     const mint = String(row.mint);
-    const snapshot = freshSnapshot(mint, row.snapshot, row.snapshot_at, nowMs);
+    const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
     if (!snapshot) continue;
     const { verdict, top10Pct } = verdictOf(row.chain_verdict, snapshot);
     const agentId = String(row.agent_id);
@@ -780,7 +786,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
     const checked = validateFloorArenaParams(row.params);
     return [row.id, checked.ok ? checked.params : null] as const;
   }));
-  const marks = await markPrices(positions.map((p) => p.mint), now);
+  const snapshotMarks = await latestSnapshotMarks(positions.map((p) => p.mint));
   const markUpdates: Array<{ id: string; peak: number; mult: number; at: string }> = [];
 
   for (const position of positions) {
@@ -793,8 +799,10 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
         result.errors += 1;
         continue;
       }
-      const mark = marks.get(position.mint) ?? null;
-      const markMult = mark ? mark.priceUsd / entryPriceUsd : null;
+      // The newest DB mark (snapshot rows vs the position's stored mark); fresh = at most 60 s old.
+      const known = newestDbMark(snapshotMarks.get(position.mint) ?? null, position.lastMarkMult, msOf(position.lastMarkAt), entryPriceUsd);
+      const fresh = known !== null && nowMs - known.atMs <= ARENA_MARK_MAX_AGE_MS;
+      const markMult = fresh ? known.priceUsd / entryPriceUsd : null;
       const state: ExitState = {
         entryPriceUsd, tokens, sizeUsd,
         openedAtMs: position.openedAt.getTime(),
@@ -804,11 +812,11 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
       };
       if (markMult !== null) {
         result.marked += 1;
-        markUpdates.push({ id: position.id, peak: round9(state.peakMult), mult: round9(markMult), at: mark!.at.toISOString() });
+        markUpdates.push({ id: position.id, peak: round9(state.peakMult), mult: round9(markMult), at: new Date(known!.atMs).toISOString() });
       }
       const trigger = decideExitTrigger(state, exits, markMult, nowMs);
       if (!trigger) continue;
-      const outcome = await executeExit(position, state, exits, trigger, mark?.priceUsd ?? null, markMult, mark?.at.getTime() ?? null, now, deps);
+      const outcome = await executeExit(position, state, exits, trigger, known, fresh, now, deps);
       if (outcome.kind === 'filled') {
         result.exits += 1;
         if (outcome.closed) result.closed += 1;
@@ -848,15 +856,32 @@ function exitRunUnchanged(position: FloorArenaPositionRow) {
   return sql`${floorArenaPositions.exitRun} IS NOT DISTINCT FROM ${prev}::jsonb`;
 }
 
-/** Newest known mark (memory or stored, by snapshot time). Null when the position was never marked. */
-function lastKnownMark(position: FloorArenaPositionRow, entryPriceUsd: number): KnownMark | null {
-  const remembered = lastRememberedMark(position.mint);
-  const lastMult = positiveNumber(position.lastMarkMult);
-  const storedAt = position.lastMarkAt ? position.lastMarkAt.getTime() : 0;
+/** Newest DB mark of a position: its snapshot rows (preferred on a tie: exact price) vs its stored last_mark. */
+function newestDbMark(
+  snapshot: SnapshotMark | null,
+  lastMarkMult: unknown,
+  lastMarkAtMs: number | null,
+  entryPriceUsd: number,
+): KnownMark | null {
+  const mult = positiveNumber(lastMarkMult);
   return newestKnownMark(
-    remembered ? { ...remembered, source: 'memory' } : null,
-    lastMult !== null ? { priceUsd: lastMult * entryPriceUsd, atMs: Number.isFinite(storedAt) ? storedAt : 0, source: 'stored' } : null,
+    snapshot ? { ...snapshot, source: 'snapshot' } : null,
+    mult !== null ? { priceUsd: mult * entryPriceUsd, atMs: lastMarkAtMs ?? 0, source: 'position' } : null,
   );
+}
+
+type TxExecutor = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Codex r9: inside the booking / close transaction, lock the position row and re-read the newest DB mark AFTER the
+ * slow sell quote returned. The caller books only when it is not newer than the decision mark.
+ */
+async function lockAndReadNewestMarkAt(tx: TxExecutor, position: FloorArenaPositionRow, entryPriceUsd: number): Promise<number | null> {
+  const locked = rowsOf(await tx.execute(sql`
+    SELECT last_mark_mult, last_mark_at FROM floor_arena_positions WHERE id = ${position.id} FOR UPDATE
+  `))[0];
+  const snapshot = (await latestSnapshotMarks([position.mint], tx)).get(position.mint) ?? null;
+  return newestDbMark(snapshot, locked?.last_mark_mult, msOf(locked?.last_mark_at), entryPriceUsd)?.atMs ?? null;
 }
 
 /**
@@ -874,23 +899,22 @@ async function executeExit(
   state: ExitState,
   exits: FloorArenaExits,
   trigger: ExitTrigger,
-  freshMarkPrice: number | null,
-  markMult: number | null,
-  markAtMs: number | null,
+  known: KnownMark | null,
+  fresh: boolean,
   now: Date,
   deps: ExitDeps,
 ): Promise<ExitOutcome> {
   const nowMs = now.getTime();
   const tokensToSell = state.tokens * trigger.fraction;
   const decimals = (position.entryFeatures as { decimals?: unknown } | null)?.decimals;
-  // The mark this decision uses: the fresh one, else the newest known one (memory vs stored, Codex r8 #2).
-  const known = freshMarkPrice === null ? lastKnownMark(position, state.entryPriceUsd) : null;
-  const decisionAtMs = freshMarkPrice !== null ? markAtMs : known?.atMs ?? null;
-  // The mark written with the booking: the fresh one, or a memory mark newer than the row (the row then holds the
-  // very price the decision used).
-  const writtenMark = freshMarkPrice !== null
-    ? { mult: markMult, atMs: markAtMs }
-    : known?.source === 'memory' ? { mult: known.priceUsd / state.entryPriceUsd, atMs: known.atMs } : { mult: null, atMs: null };
+  // The decision mark is the newest DB mark (Codex r9): when fresh (<= 60 s) it drives the fallback, else it is the
+  // reference / stale price. Its snapshot time is re-checked under the row lock before any booking.
+  const freshMarkPrice = fresh && known ? known.priceUsd : null;
+  const markMult = freshMarkPrice !== null ? freshMarkPrice / state.entryPriceUsd : null;
+  const decisionAtMs = known?.atMs ?? null;
+  // A snapshot mark is stored with the booking (newer-mark rule), so the row holds the price the decision used.
+  const writtenMark = known?.source === 'snapshot'
+    ? { mult: known.priceUsd / state.entryPriceUsd, atMs: known.atMs } : { mult: null, atMs: null };
   // With no fresh mark, a sell quote under half the reference (newest known mark, else entry price) is a failure.
   const referencePriceUsd = freshMarkPrice === null ? known?.priceUsd ?? state.entryPriceUsd : null;
   const quote: SellQuoteResult = typeof decimals === 'number'
@@ -931,6 +955,7 @@ async function executeExit(
   const fill = applyExitFill(state, trigger, proceedsUsd);
   const stickySource = combineFillSource(position.exitFillSource, fillSource);
   const updated = await db.transaction(async (tx) => {
+    if (markNewerThanDecision(await lockAndReadNewestMarkAt(tx, position, state.entryPriceUsd), decisionAtMs)) return false;
     const rows = await tx.update(floorArenaPositions).set({
       remainingFraction: String(fill.remainingFraction),
       realisedUsd: String(fill.realisedUsd),
@@ -990,6 +1015,7 @@ async function closeUnresolved(
 ): Promise<ExitOutcome> {
   const nowMs = now.getTime();
   const updated = await db.transaction(async (tx) => {
+    if (markNewerThanDecision(await lockAndReadNewestMarkAt(tx, position, state.entryPriceUsd), decisionAtMs)) return false;
     const rows = await tx.update(floorArenaPositions).set({
       status: 'closed',
       closedAt: now,
