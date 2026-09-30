@@ -665,6 +665,10 @@ export class SpecialEventManager {
     const current = await this.getEventBySlug(slug);
     if (current?.status === 'starting') {
       await this.reconcileStartingEvent(current.id, { staleBefore: this.staleClaimCutoff() });
+    } else if (current?.status === 'live') {
+      // A live event whose tournament was cancelled (room abort / boot recovery)
+      // reopens here, so the operator can start it again.
+      await this.reconcileOrphanedLiveEvent(current.id);
     }
 
     // Phase 1 (tx): lock, validate, and CLAIM the start ('signup_open' →
@@ -821,21 +825,8 @@ export class SpecialEventManager {
     // Exactly one row, or this start does not own the outcome: the claim must
     // still be ours AND our tournament must still be running/completed (a room
     // abort or boot recovery may have cancelled it after startTrigger returned).
-    const flipped = await this.db.execute<{ id: string }>(
-      sql`UPDATE special_events
-          SET status = 'live', started_at = now(),
-              start_claim_id = NULL, start_claimed_at = NULL
-          WHERE id = ${event.id} AND status = 'starting'
-            AND start_claim_id = ${claimId}
-            AND EXISTS (
-              SELECT 1 FROM poker_tournaments t
-              WHERE t.id = ${tournament.id}
-                AND t.special_event_id = ${event.id}
-                AND t.status IN ('running', 'completed')
-            )
-          RETURNING id`,
-    );
-    if (flipped.length !== 1) {
+    const flipped = await this.flipStartToLive(event.id, claimId, tournament.id);
+    if (!flipped) {
       await this.recoverUnflippedStart(event.id, claimId, tournament.id);
     }
 
@@ -844,6 +835,55 @@ export class SpecialEventManager {
       seatedCount: start.seatedCount || seatedCount,
       status: 'live',
     };
+  }
+
+  /**
+   * The guarded 'starting' → 'live' flip, in ONE transaction that locks the
+   * event row and THEN the tournament row (Codex round 2, item 9). Every TM
+   * cancel takes the tournament row lock (FOR UPDATE), so the status check and
+   * the flip are atomic against it: a cancel either commits first (the check
+   * sees 'cancelled', no flip) or waits until the flip commits (the event is
+   * live; `reconcileOrphanedLiveEvent` then reopens it). The event-then-
+   * tournament order matches `reconcileStartingEvent` (event lock held while the
+   * TM cancel locks the tournament), so the two paths cannot deadlock.
+   * Returns true only when exactly one event row flipped.
+   */
+  private async flipStartToLive(
+    eventId: string,
+    claimId: string,
+    tournamentId: string,
+  ): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const eventRows = await tx.execute<{
+        id: string;
+        status: string;
+        start_claim_id: string | null;
+        start_claimed_at: Date | string | null;
+      }>(
+        sql`SELECT id, status, start_claim_id, start_claimed_at
+            FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = eventRows[0];
+      if (!e || e.status !== 'starting' || e.start_claim_id !== claimId) return false;
+
+      const tournamentRows = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM poker_tournaments
+            WHERE id = ${tournamentId} AND special_event_id = ${eventId}
+            FOR UPDATE`,
+      );
+      const t = tournamentRows[0];
+      if (!t || (t.status !== 'running' && t.status !== 'completed')) return false;
+
+      const flipped = await tx.execute<{ id: string }>(
+        sql`UPDATE special_events
+            SET status = 'live', started_at = now(),
+                start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${eventId} AND status = 'starting'
+              AND start_claim_id = ${claimId}
+            RETURNING id`,
+      );
+      return flipped.length === 1;
+    });
   }
 
   /**
@@ -962,8 +1002,71 @@ export class SpecialEventManager {
   }
 
   /**
+   * A 'live' event whose linked tournaments were ALL cancelled after it went
+   * live (room abort, boot orphan recovery) goes back to 'signup_open' under the
+   * event row lock (Codex round 2, item 9), so an operator can start it again.
+   * No CT moves here: the TM cancel already refunded the seed exactly once, and
+   * a second pass finds the event not 'live' and does nothing. Confirmed signups
+   * stay confirmed; their entry is not charged again at the next start.
+   */
+  async reconcileOrphanedLiveEvent(eventId: string): Promise<'not_live' | 'has_tournament' | 'reopened'> {
+    return this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = lockRows[0];
+      if (!e || e.status !== 'live') return 'not_live';
+      const active = await tx.execute<{ active: number }>(
+        sql`SELECT count(*)::int AS active FROM poker_tournaments
+            WHERE special_event_id = ${e.id} AND status <> 'cancelled'`,
+      );
+      if (Number(active[0]?.active ?? 0) > 0) return 'has_tournament';
+      await tx.execute(
+        sql`UPDATE special_events
+            SET status = 'signup_open', started_at = NULL,
+                start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${e.id} AND status = 'live'`,
+      );
+      return 'reopened';
+    });
+  }
+
+  /**
+   * One recovery pass for the settlement worker: stale start claims first, then
+   * live events left without a tournament. One bad event never blocks the rest.
+   */
+  async reconcileEvents(
+    limit = 50,
+  ): Promise<{ scanned: number; reconciled: number; failed: number }> {
+    const starts = await this.reconcileStaleStarts(limit);
+    const lim = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const rows = await this.db.execute<{ id: string }>(
+      sql`SELECT e.id FROM special_events e
+          WHERE e.status = 'live'
+            AND NOT EXISTS (
+              SELECT 1 FROM poker_tournaments t
+              WHERE t.special_event_id = e.id AND t.status <> 'cancelled'
+            )
+          ORDER BY e.started_at ASC NULLS FIRST
+          LIMIT ${lim}`,
+    );
+    let reconciled = starts.reconciled;
+    let failed = starts.failed;
+    for (const row of rows) {
+      try {
+        if ((await this.reconcileOrphanedLiveEvent(row.id)) === 'reopened') reconciled += 1;
+      } catch (err) {
+        failed += 1;
+        console.error(`[special-event] orphaned live event reconcile failed for event ${row.id}:`, err);
+      }
+    }
+    return { scanned: starts.scanned + rows.length, reconciled, failed };
+  }
+
+  /**
    * Reconcile every event whose start claim is stale (a crashed start). Run by
-   * the settlement worker on each tick; one bad event never blocks the rest.
+   * the settlement worker on each tick (through `reconcileEvents`); one bad
+   * event never blocks the rest.
    */
   async reconcileStaleStarts(
     limit = 50,

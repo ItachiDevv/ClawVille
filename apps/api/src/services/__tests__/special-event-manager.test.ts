@@ -105,8 +105,12 @@ class FakeDb {
     return fn(this);
   }
 
+  /** Every statement's normalized text, in order (lock-order assertions). */
+  statements: string[] = [];
+
   async execute<T = Row>(q: SQL): Promise<T[]> {
     const { text, params } = renderSql(q);
+    this.statements.push(text);
     return this.dispatch(text, params) as T[];
   }
 
@@ -179,17 +183,52 @@ class FakeDb {
       e.start_claimed_at = p[1];
       return [{ id: e.id }];
     }
-    if (text.startsWith("UPDATE special_events SET status = 'live', started_at = now(), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id = ? AND EXISTS")) {
+    // Item 9: the flip is one tx — event lock, tournament lock, then the UPDATE.
+    if (text.startsWith("UPDATE special_events SET status = 'live', started_at = now(), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id = ? RETURNING id")) {
       const e = this.events.get(String(p[0]));
-      const t = this.tournaments.get(String(p[2]));
-      const tournamentOk =
-        !!t && t.special_event_id === p[3] && (t.status === 'running' || t.status === 'completed');
-      if (!e || e.status !== 'starting' || e.start_claim_id !== p[1] || !tournamentOk) return [];
+      if (!e || e.status !== 'starting' || e.start_claim_id !== p[1]) return [];
       e.status = 'live';
       e.started_at = new Date(++this.seq);
       e.start_claim_id = null;
       e.start_claimed_at = null;
       return [{ id: e.id }];
+    }
+    if (text.startsWith('SELECT id, status FROM poker_tournaments WHERE id = ? AND special_event_id = ? FOR UPDATE')) {
+      const t = this.tournaments.get(String(p[0]));
+      return t && t.special_event_id === p[1] ? [{ id: t.id, status: t.status }] : [];
+    }
+    // Item 9: live events whose tournaments were all cancelled.
+    if (text.startsWith('SELECT id, status FROM special_events WHERE id = ? FOR UPDATE')) {
+      const e = this.events.get(String(p[0]));
+      return e ? [{ id: e.id, status: e.status }] : [];
+    }
+    if (text.startsWith("SELECT count(*)::int AS active FROM poker_tournaments WHERE special_event_id = ? AND status <> 'cancelled'")) {
+      const active = [...this.tournaments.values()].filter(
+        (t) => t.special_event_id === p[0] && t.status !== 'cancelled',
+      ).length;
+      return [{ active }];
+    }
+    if (text.startsWith("UPDATE special_events SET status = 'signup_open', started_at = NULL, start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'live'")) {
+      const e = this.events.get(String(p[0]));
+      if (e?.status === 'live') {
+        e.status = 'signup_open';
+        e.started_at = null;
+        e.start_claim_id = null;
+        e.start_claimed_at = null;
+      }
+      return [];
+    }
+    if (text.startsWith("SELECT e.id FROM special_events e WHERE e.status = 'live' AND NOT EXISTS")) {
+      return [...this.events.values()]
+        .filter(
+          (e) =>
+            e.status === 'live' &&
+            ![...this.tournaments.values()].some(
+              (t) => t.special_event_id === e.id && t.status !== 'cancelled',
+            ),
+        )
+        .slice(0, Number(p[0]))
+        .map((e) => ({ id: e.id }));
     }
     if (text.startsWith('SELECT id, status, start_claim_id, start_claimed_at FROM special_events WHERE id = ? FOR UPDATE')) {
       const e = this.events.get(String(p[0]));
@@ -1177,6 +1216,73 @@ describe('SpecialEventManager — start recovery + guarded final flip (Codex BLO
     expect(result.tournamentId).toBe(tm.created[0]!.id);
     expect(ev.status).toBe('live');
     expect(tm.cancelCalls).toBe(0);
+  });
+});
+
+describe('SpecialEventManager — tournament cancelled around/after the live flip (Codex round 2, item 9)', () => {
+  async function liveEvent(slug: string) {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug, name: `Event ${slug}`, prizeConfigJson: { seedPrizePoolCt: 500 } }, null);
+    await h.mgr.openSignup(slug);
+    await h.mgr.signup(slug, human(), { entryMethod: 'free' });
+    await h.mgr.signup(slug, human(), { entryMethod: 'free' });
+    const result = await h.mgr.closeSignupAndStart(slug);
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    return { ...h, ev, tournamentId: result.tournamentId };
+  }
+
+  it('the flip locks the event row, THEN the tournament row, then updates (atomic vs a TM cancel)', async () => {
+    const { db, ev, tournamentId } = await liveEvent('lock-order');
+    const flipIdx = db.statements.findIndex((q) =>
+      q.startsWith("UPDATE special_events SET status = 'live', started_at = now(), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id = ? RETURNING id"),
+    );
+    const tournamentLockIdx = db.statements.lastIndexOf(
+      'SELECT id, status FROM poker_tournaments WHERE id = ? AND special_event_id = ? FOR UPDATE',
+    );
+    const eventLockIdx = db.statements.lastIndexOf(
+      'SELECT id, status, start_claim_id, start_claimed_at FROM special_events WHERE id = ? FOR UPDATE',
+    );
+    expect(flipIdx).toBeGreaterThan(-1);
+    expect(eventLockIdx).toBeGreaterThan(-1);
+    expect(eventLockIdx).toBeLessThan(tournamentLockIdx);
+    expect(tournamentLockIdx).toBeLessThan(flipIdx);
+    expect(ev.status).toBe('live');
+    expect(db.tournaments.get(tournamentId)!.status).toBe('running');
+  });
+
+  it('room abort AFTER live: the worker pass reopens signups; a second pass is a no-op, no second refund', async () => {
+    const { mgr, tm, db, ev, tournamentId } = await liveEvent('abort-after-live');
+    // The room-abort / boot-recovery path is exactly tm.cancelAndRefundOrphan.
+    await tm.cancelAndRefundOrphan(tournamentId);
+    expect(tm.cancelCalls).toBe(1);
+    expect(ev.status).toBe('live');
+
+    expect(await mgr.reconcileEvents()).toEqual({ scanned: 1, reconciled: 1, failed: 0 });
+    expect(ev.status).toBe('signup_open');
+    expect(ev.started_at).toBeNull();
+    expect(ev.start_claim_id).toBeNull();
+
+    expect(await mgr.reconcileEvents()).toEqual({ scanned: 0, reconciled: 0, failed: 0 });
+    expect(tm.cancelCalls).toBe(1); // the reopen itself never cancels or refunds
+    expect(db.tournaments.get(tournamentId)!.status).toBe('cancelled');
+  });
+
+  it('a live event with a running tournament is never reopened', async () => {
+    const { mgr, ev } = await liveEvent('still-running');
+    expect(await mgr.reconcileEvents()).toEqual({ scanned: 0, reconciled: 0, failed: 0 });
+    expect(await mgr.reconcileOrphanedLiveEvent(ev.id as string)).toBe('has_tournament');
+    expect(ev.status).toBe('live');
+  });
+
+  it('a start on an orphaned live event reopens it first, then starts a fresh tournament', async () => {
+    const { mgr, tm, ev, tournamentId } = await liveEvent('restart');
+    await tm.cancelAndRefundOrphan(tournamentId);
+
+    const again = await mgr.closeSignupAndStart('restart');
+    expect(again.status).toBe('live');
+    expect(again.tournamentId).not.toBe(tournamentId);
+    expect(tm.created).toHaveLength(2);
+    expect(ev.status).toBe('live');
   });
 });
 
