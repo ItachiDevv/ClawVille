@@ -8,8 +8,11 @@
  * tournaments whose parent is still live, then replays the exact-id idempotent
  * transition.
  *
- * Only LIVE parents are candidates. Draft, signup-open, cancelled, and already
- * completed events are never revived or rewritten by this recovery process.
+ * Only LIVE parents are candidates, plus 'starting' parents whose final
+ * 'starting' → 'live' flip did not commit (security M4, 2026-09-30): a completed
+ * linked tournament proves that start succeeded. Draft, signup-open, cancelled,
+ * and already completed events are never revived or rewritten by this recovery
+ * process.
  */
 
 import { db as realDb } from '@clawville/database';
@@ -83,7 +86,7 @@ export class SpecialEventSettlementWorker {
               FROM poker_tournaments t
               JOIN special_events e ON e.id = t.special_event_id
               WHERE t.status = 'completed'
-                AND e.status = 'live'
+                AND e.status IN ('live', 'starting')
               ORDER BY COALESCE(t.settled_at, t.created_at) ASC, t.id ASC
               LIMIT ${this.batchSize}`,
         );

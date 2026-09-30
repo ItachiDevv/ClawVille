@@ -38,8 +38,9 @@
  * Entry settlement at the EVENT layer is one of: nothing (free/hold), a verified
  * SOL transfer to the treasury, or a CT debit via `claw-token-ledger`. The event
  * funds the dependent poker tournament's PRIZE POOL directly (the tournament is
- * created in PREPAID mode with `seedPrizePoolCt`), so the per-entrant tournament
- * buy-in debit is SKIPPED — entry was already settled here. CT amounts are
+ * created in PREPAID mode with `seedPrizePoolCt`, debited from the HOUSE TREASURY
+ * in the tournament-create tx since security M3, 2026-09-30), so the per-entrant
+ * tournament buy-in debit is SKIPPED — entry was already settled here. CT amounts are
  * TEXT-stringified atomic integers (mirroring poker.ts / cove-events.ts); SOL is
  * a stringified lamport bigint.
  */
@@ -94,6 +95,9 @@ export const specialEvents = pgTable(
      * Lifecycle:
      *   'draft'        → created, not yet open for signups
      *   'signup_open'  → accepting signups (gate-evaluated)
+     *   'starting'     → a start claimed the event (signups closed) and is creating
+     *                    + seating the dependent tournament; → 'live' on success,
+     *                    back to 'signup_open' on failure (security M4, 2026-09-30)
      *   'live'         → signups closed, the dependent tournament(s) seated + running
      *   'completed'    → settled (prizes paid from the linked tournament results)
      *   'cancelled'    → called off
@@ -145,7 +149,7 @@ export const specialEvents = pgTable(
     statusIdx: index('special_events_status_idx').on(table.status),
     statusCheck: check(
       'special_events_status_check',
-      sql`status in ('draft','signup_open','live','completed','cancelled')`,
+      sql`status in ('draft','signup_open','starting','live','completed','cancelled')`,
     ),
     // gate_hold_bps, when present, is a basis-points fraction of supply (1..10000).
     gateHoldBpsCheck: check(

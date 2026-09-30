@@ -25,9 +25,11 @@
  * ── MONEY (no new ledger path) ───────────────────────────────────────────────
  * Entry settlement is one of: nothing (free/hold), a verified SOL transfer to
  * the treasury, or a CT debit via `claw-token-ledger`. The dependent tournament
- * is funded directly (`seedPrizePoolCt`), so seating a confirmed signup as an
- * entrant SKIPS the per-entrant tournament buy-in debit (entry was already
- * settled here). CT is atomic-integer; SOL is lamports.
+ * is funded directly (`seedPrizePoolCt`, bounded by
+ * SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT and debited from the HOUSE TREASURY by
+ * the TournamentManager in its create tx — security M3, 2026-09-30), so seating
+ * a confirmed signup as an entrant SKIPS the per-entrant tournament buy-in debit
+ * (entry was already settled here). CT is atomic-integer; SOL is lamports.
  *
  * ── AGENT PARITY (Rule E5) ───────────────────────────────────────────────────
  * `signup` takes a `SignupSubject` resolved upstream from a Lucia human XOR an
@@ -268,6 +270,8 @@ export class SpecialEventManager {
     ) {
       throw new SpecialEventError('invalid_max_participants', 400);
     }
+    // The seed prize pool is funded from the house treasury at start (M3); bound it.
+    readSeedPrizePoolCt(config.prizeConfigJson ?? null);
 
     const inserted = await this.db.execute<EventRow>(
       sql`INSERT INTO special_events
@@ -307,7 +311,10 @@ export class SpecialEventManager {
 
   // ── Signup lifecycle ────────────────────────────────────────────────────────
 
-  /** Open an event for signups (draft → signup_open). Idempotent. */
+  /**
+   * Open an event for signups (draft → signup_open). Idempotent. A 'starting'
+   * event is not reopened here (409); only a failed start reopens it.
+   */
   async openSignup(slug: string): Promise<EventRow> {
     return this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<EventRow>(
@@ -625,22 +632,29 @@ export class SpecialEventManager {
   /**
    * Close signups and stand up the DEPENDENT poker tournament. Steps:
    *   1. Lock the event; require status 'signup_open'; collect every CONFIRMED
-   *      signup.
+   *      signup; CLAIM the start by flipping 'signup_open' → 'starting' in the
+   *      SAME tx (security M4, 2026-09-30). A concurrent second start then finds
+   *      'starting' and gets 409 — it can never create a second tournament or
+   *      fund a second seed pool. The partial unique index
+   *      `poker_tournaments_special_event_active_unique` is the DB backstop.
    *   2. Create a PREPAID tournament (`buyInCt: 0`, `seedPrizePoolCt` from
    *      prize_config_json, `specialEventId = event.id`) — the link is the FK on
-   *      the tournament (dependency points UP).
+   *      the tournament (dependency points UP). The TournamentManager debits the
+   *      seed from the HOUSE TREASURY in its create tx (security M3).
    *   3. Register every confirmed signup as an entrant. The tournament buyIn is 0,
    *      so `registerEntrant` SKIPS the per-entrant debit (entry was already
    *      settled at the event layer — no double-charge).
    *   4. Force-start the tournament (seat the field).
-   *   5. Flip the event → 'live'.
-   * Idempotent-ish: a second call after the event is 'live' is a 409 (the
-   * tournament already exists); the registers themselves are idempotent.
+   *   5. Flip the event 'starting' → 'live'.
+   * FAILURE: a create failure reopens signups ('starting' → 'signup_open'). A
+   * register/start failure first cancels the tournament (the cancel credits the
+   * seed back to the treasury), then reopens signups, so an operator can retry.
+   * If only step 5 fails, the tournament is already running: the event stays
+   * 'starting' and `settleEventForTournament` completes it like a 'live' event.
    */
   async closeSignupAndStart(slug: string): Promise<CloseAndStartResult> {
-    // Phase 1 (tx): lock + flip status to a transient 'live' marker is deferred
-    // until after the tournament is created; here we just read confirmed signups
-    // and assert the state under the lock, then release for the tournament work.
+    // Phase 1 (tx): lock, validate, and CLAIM the start ('signup_open' →
+    // 'starting'), then release the row lock for the tournament work.
     const prep = await this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<EventRow>(
         sql`SELECT * FROM special_events WHERE slug = ${slug} FOR UPDATE`,
@@ -649,6 +663,9 @@ export class SpecialEventManager {
       if (!e) throw new SpecialEventError('event_not_found', 404);
       if (e.status === 'live' || e.status === 'completed') {
         throw new SpecialEventError('event_already_started', 409);
+      }
+      if (e.status === 'starting') {
+        throw new SpecialEventError('event_start_in_progress', 409);
       }
       if (e.status !== 'signup_open') {
         throw new SpecialEventError('event_not_open_for_start', 409);
@@ -668,22 +685,32 @@ export class SpecialEventManager {
       if (signups.length < 2) {
         throw new SpecialEventError('not_enough_confirmed_signups', 409);
       }
-      return { event: e, signups };
+
+      // Validate the seed BEFORE the claim so a bad legacy prize config leaves the
+      // event open (rows created before the route bound may exceed it).
+      const seedPrizePoolCt = readSeedPrizePoolCt(e.prize_config_json);
+
+      const claimed = await tx.execute<{ id: string }>(
+        sql`UPDATE special_events SET status = 'starting'
+            WHERE id = ${e.id} AND status = 'signup_open'
+            RETURNING id`,
+      );
+      if (!claimed[0]) {
+        throw new SpecialEventError('event_start_in_progress', 409);
+      }
+      return { event: e, signups, seedPrizePoolCt };
     });
 
-    const { event, signups } = prep;
+    const { event, signups, seedPrizePoolCt } = prep;
 
     // ── Create the PREPAID dependent tournament (link via FK) ───────────────────
     const prize = (event.prize_config_json ?? {}) as {
-      seedPrizePoolCt?: number | bigint | string;
       payoutCurve?: Array<{ placement: number; share: number }>;
       startingStack?: number;
       seatsPerTable?: number;
       rakeBps?: number;
       blindScheduleId?: string;
     };
-    const seedPrizePoolCt =
-      prize.seedPrizePoolCt != null ? toBigIntStrict(prize.seedPrizePoolCt, 'seedPrizePoolCt') : 0n;
 
     let tournament: CreateTournamentResult;
     try {
@@ -704,42 +731,76 @@ export class SpecialEventManager {
         event.created_by,
       );
     } catch (err) {
+      // Nothing was created (the TM create tx rolled back, seed debit included).
+      await this.releaseStartClaim(event.id);
       if (err instanceof TournamentError) {
         throw new SpecialEventError(`tournament_create_failed:${err.message}`, err.httpStatus);
+      }
+      if (isUniqueViolation(err)) {
+        // A non-cancelled tournament already links to this event (pre-0070 data).
+        throw new SpecialEventError('event_tournament_already_exists', 409);
       }
       throw err;
     }
 
-    // ── Seat every confirmed signup WITHOUT a second buy-in (buyIn 0 → no debit) ─
+    let start: Awaited<ReturnType<TournamentManager['startTrigger']>>;
     let seatedCount = 0;
-    for (const s of signups) {
-      const regSubject: RegisterSubject =
-        s.subject_type === 'agent'
-          ? {
-              kind: 'agent',
-              userId: s.user_id ?? s.avatar_id,
-              avatarId: s.avatar_id,
-              agentId: s.agent_id ?? s.avatar_id,
-            }
-          : {
-              kind: 'user',
-              userId: s.user_id ?? s.avatar_id,
-              avatarId: s.avatar_id,
-              agentId: null,
-            };
-      const reg = await this.tm.registerEntrant(regSubject, tournament.id);
-      if (!reg.alreadyRegistered) seatedCount += 1;
-      else seatedCount += 1; // already-present entrant still counts as seated
+    try {
+      // ── Seat every confirmed signup WITHOUT a second buy-in (buyIn 0 → no debit) ─
+      for (const s of signups) {
+        const regSubject: RegisterSubject =
+          s.subject_type === 'agent'
+            ? {
+                kind: 'agent',
+                userId: s.user_id ?? s.avatar_id,
+                avatarId: s.avatar_id,
+                agentId: s.agent_id ?? s.avatar_id,
+              }
+            : {
+                kind: 'user',
+                userId: s.user_id ?? s.avatar_id,
+                avatarId: s.avatar_id,
+                agentId: null,
+              };
+        const reg = await this.tm.registerEntrant(regSubject, tournament.id);
+        if (!reg.alreadyRegistered) seatedCount += 1;
+        else seatedCount += 1; // already-present entrant still counts as seated
+      }
+
+      // ── Force-start the tournament (seat the field) ───────────────────────────
+      start = await this.tm.startTrigger(tournament.id, { force: true });
+      if (start.status === 'cancelled') {
+        // The TM cancelled it (field below the floor) and refunded the seed.
+        throw new SpecialEventError('tournament_start_cancelled', 409);
+      }
+    } catch (err) {
+      // Cancel (idempotent; credits the seed back to the treasury) and reopen
+      // signups. A cancelled tournament drops out of the active-unique index, so
+      // a retried start can create a fresh one.
+      try {
+        await this.tm.cancelAndRefundOrphan(tournament.id);
+      } catch (cancelErr) {
+        // The tournament still holds the event's active slot, so reopening
+        // signups could never succeed. Leave the event 'starting' for repair.
+        console.error(
+          `[special-event] start of event ${event.id} failed and tournament ${tournament.id} could not be cancelled; the event stays 'starting' for operator repair:`,
+          cancelErr,
+        );
+        throw err;
+      }
+      await this.releaseStartClaim(event.id);
+      if (err instanceof SpecialEventError) throw err;
+      if (err instanceof TournamentError) {
+        throw new SpecialEventError(`tournament_start_failed:${err.message}`, err.httpStatus);
+      }
+      throw err;
     }
 
-    // ── Force-start the tournament (seat the field) ─────────────────────────────
-    const start = await this.tm.startTrigger(tournament.id, { force: true });
-
-    // ── Flip the event → 'live' (link already on the tournament row) ────────────
+    // ── Flip the event 'starting' → 'live' (link already on the tournament row) ──
     await this.db.transaction(async (tx) => {
       await tx.execute(
         sql`UPDATE special_events SET status = 'live', started_at = now()
-            WHERE id = ${event.id} AND status = 'signup_open'`,
+            WHERE id = ${event.id} AND status = 'starting'`,
       );
     });
 
@@ -748,6 +809,14 @@ export class SpecialEventManager {
       seatedCount: start.seatedCount || seatedCount,
       status: 'live',
     };
+  }
+
+  /** Reopen signups after a failed start ('starting' → 'signup_open'). */
+  private async releaseStartClaim(eventId: string): Promise<void> {
+    await this.db.execute(
+      sql`UPDATE special_events SET status = 'signup_open'
+          WHERE id = ${eventId} AND status = 'starting'`,
+    );
   }
 
   /**
@@ -911,13 +980,16 @@ export class SpecialEventManager {
       if (linked.status === 'completed') {
         return { alreadySettled: true, tournamentId, results: mapped };
       }
-      if (linked.tournament_status !== 'completed' || linked.status !== 'live') {
+      // 'starting' counts as live here: a completed tournament proves the start
+      // succeeded even if the final 'starting' → 'live' flip did not commit.
+      const eventStarted = linked.status === 'live' || linked.status === 'starting';
+      if (linked.tournament_status !== 'completed' || !eventStarted) {
         return { alreadySettled: false, tournamentId, results: mapped };
       }
 
       await tx.execute(
         sql`UPDATE special_events SET status = 'completed', completed_at = now()
-            WHERE id = ${linked.id} AND status = 'live'`,
+            WHERE id = ${linked.id} AND status IN ('live', 'starting')`,
       );
       return { alreadySettled: false, tournamentId, results: mapped };
     });
@@ -925,6 +997,39 @@ export class SpecialEventManager {
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Upper bound on a special event's seed prize pool (atomic CT). 100,000 vCLAW is
+ * $1,000 at 1 vCLAW = $0.01 — the same ceiling as the quest `tokenReward` bound
+ * (security M2) and the `CASH_HOUSE_BANK_BANKROLL` default, the largest single
+ * house-funded amounts elsewhere. The house treasury pays the seed (M3), so the
+ * bound caps one operator action, and the treasury balance caps the total.
+ */
+export const SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT = 100_000;
+
+/**
+ * Read + bound `prize_config_json.seedPrizePoolCt` (absent ⇒ 0). Enforced at
+ * create AND again at start, because events created before the bound may hold
+ * any value.
+ */
+export function readSeedPrizePoolCt(prizeConfig: unknown): bigint {
+  const raw = (prizeConfig as { seedPrizePoolCt?: unknown } | null)?.seedPrizePoolCt;
+  if (raw == null) return 0n;
+  if (typeof raw !== 'number' && typeof raw !== 'bigint' && typeof raw !== 'string') {
+    throw new SpecialEventError('invalid_seedPrizePoolCt', 400);
+  }
+  const seed = toBigIntStrict(raw, 'seedPrizePoolCt');
+  if (seed > BigInt(SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT)) {
+    throw new SpecialEventError('seed_prize_pool_exceeds_max', 400);
+  }
+  return seed;
+}
+
+/** Postgres unique violation (23505), raw or wrapped in `cause`. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
+}
 
 /**
  * Strictly coerce a non-negative atomic amount (number | bigint | decimal string)

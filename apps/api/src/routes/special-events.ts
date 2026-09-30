@@ -9,10 +9,10 @@
  * event lifecycle; the dependent tournament is created + seated by the manager.
  *
  * Surfaces:
- *   POST /create        (admin)  — create an event (status 'draft')
+ *   POST /create        (NAMED admin) — create an event (status 'draft')
  *   POST /:slug/open    (admin)  — open it for signups (draft → signup_open)
- *   POST /:slug/start   (admin)  — close signups + create/seat the dependent
- *                                   tournament (→ live)
+ *   POST /:slug/start   (NAMED admin) — close signups + create/seat the dependent
+ *                                   tournament (signup_open → starting → live)
  *   POST /:slug/settle  (admin)  — explicitly record event completion
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
@@ -38,6 +38,7 @@
  */
 
 import { Hono } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -50,6 +51,7 @@ import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import {
   specialEventManager,
   SpecialEventError,
+  SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT,
   type SignupSubject,
   type EntryChoice,
   type CreateEventConfig,
@@ -65,6 +67,22 @@ specialEventsRouter.use('*', fingerprintMiddleware);
 specialEventsRouter.use('*', sessionMiddleware);
 
 const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
+
+/**
+ * Named-admin gate for the money-bearing event commands (security M3, 2026-09-30).
+ * `adminOnly` also accepts the static shared `cv_dash` cookie, which is not tied
+ * to a user and never rotates. /create sets the seed prize pool and /start pays
+ * it from the house treasury, so both also require a Lucia session whose user id
+ * is in ADMIN_USER_IDS — the same rule as tokenomics-earn `requireNamedAdmin`.
+ */
+const requireNamedAdmin = createMiddleware<AppContext>(async (c, next) => {
+  const user = c.get('user');
+  const ids = (process.env.ADMIN_USER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+  if (!user || !ids.includes(user.id)) {
+    throw new HTTPException(403, { message: 'named_admin_required' });
+  }
+  await next();
+});
 
 /**
  * Resolve the request subject for a signup. Precedence: Lucia human → agent
@@ -118,7 +136,19 @@ async function resolveSignupSubject(c: {
 const slugParamSchema = z.object({ slug: z.string().min(1).max(64) });
 
 // ── Admin create-event schema (gate config validated) ─────────────────────────
-const createEventSchema = z
+// The seed prize pool is paid from the house treasury at start (M3), so it is
+// bounded here (integer or digit string, 0..SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT).
+// Other prize keys pass through; the TournamentManager validates them at start.
+const prizeConfigSchema = z
+  .object({
+    seedPrizePoolCt: z
+      .union([z.number(), z.string().trim().regex(/^\d{1,16}$/).transform(Number)])
+      .pipe(z.number().int().min(0).max(SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT))
+      .optional(),
+  })
+  .passthrough();
+
+export const createEventSchema = z
   .object({
     slug: z
       .string()
@@ -132,7 +162,7 @@ const createEventSchema = z
     gateSolLamports: z.number().int().positive().optional(),
     gateCt: z.number().int().min(0).optional(),
     venueConfigJson: z.record(z.unknown()).optional(),
-    prizeConfigJson: z.record(z.unknown()).optional(),
+    prizeConfigJson: prizeConfigSchema.optional(),
     maxParticipants: z.number().int().min(1).optional(),
     registrationOpensAt: z.string().datetime().optional(),
     registrationClosesAt: z.string().datetime().optional(),
@@ -152,7 +182,7 @@ const signupSchema = z.object({
 });
 
 // ── POST /create (ADMIN) ──────────────────────────────────────────────────────
-specialEventsRouter.post('/create', adminOnly, async (c) => {
+specialEventsRouter.post('/create', adminOnly, requireNamedAdmin, async (c) => {
   let body: z.infer<typeof createEventSchema>;
   try {
     body = createEventSchema.parse(await c.req.json());
@@ -217,8 +247,8 @@ specialEventsRouter.post('/:slug/open', adminOnly, async (c) => {
   }
 });
 
-// ── POST /:slug/start (ADMIN — close signups + create/seat the tournament) ─────
-specialEventsRouter.post('/:slug/start', adminOnly, async (c) => {
+// ── POST /:slug/start (NAMED ADMIN — close signups + create/seat the tournament) ─
+specialEventsRouter.post('/:slug/start', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {

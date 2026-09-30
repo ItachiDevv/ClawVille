@@ -29,16 +29,19 @@ import { randomUUID } from 'crypto';
 import {
   SpecialEventManager,
   SpecialEventError,
+  SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT,
+  readSeedPrizePoolCt,
   toBigIntStrict,
   type EventRpc,
   type SignupSubject,
 } from '../special-event-manager';
-import type {
-  CreateTournamentConfig,
-  CreateTournamentResult,
-  RegisterSubject,
-  RegisterResult,
-  StartResult,
+import {
+  TournamentError,
+  type CreateTournamentConfig,
+  type CreateTournamentResult,
+  type RegisterSubject,
+  type RegisterResult,
+  type StartResult,
 } from '../poker/tournament-manager';
 
 // ─── SQL render (same approach as the TM test) ────────────────────────────────
@@ -161,6 +164,35 @@ class FakeDb {
       const e = this.events.get(String(p[0]))!;
       e.status = 'signup_open';
       return [e];
+    }
+    // Security M4 (2026-09-30): the start CLAIM (CAS signup_open → starting), the
+    // failure release (starting → signup_open), and the success flip (starting → live).
+    if (text.startsWith("UPDATE special_events SET status = 'starting' WHERE id = ? AND status = 'signup_open' RETURNING id")) {
+      const e = this.events.get(String(p[0]));
+      if (!e || e.status !== 'signup_open') return [];
+      e.status = 'starting';
+      return [{ id: e.id }];
+    }
+    if (text.startsWith("UPDATE special_events SET status = 'signup_open' WHERE id = ? AND status = 'starting'")) {
+      const e = this.events.get(String(p[0]));
+      if (e?.status === 'starting') e.status = 'signup_open';
+      return [];
+    }
+    if (text.startsWith("UPDATE special_events SET status = 'live', started_at = now() WHERE id = ? AND status = 'starting'")) {
+      const e = this.events.get(String(p[0]));
+      if (e?.status === 'starting') {
+        e.status = 'live';
+        e.started_at = new Date(++this.seq);
+      }
+      return [];
+    }
+    if (text.startsWith("UPDATE special_events SET status = 'completed', completed_at = now() WHERE id = ? AND status IN ('live', 'starting')")) {
+      const e = this.events.get(String(p[0]));
+      if (e?.status === 'live' || e?.status === 'starting') {
+        e.status = 'completed';
+        e.completed_at = new Date(++this.seq);
+      }
+      return [];
     }
     if (text.startsWith("UPDATE special_events SET status = 'live', started_at = now() WHERE id = ? AND status = 'signup_open'")) {
       const e = this.events.get(String(p[0]));
@@ -368,11 +400,33 @@ class FakeTM {
   created: Array<{ config: CreateTournamentConfig; createdBy: string | null; id: string }> = [];
   registered: Array<{ subject: RegisterSubject; tournamentId: string }> = [];
   started: string[] = [];
+  /** Security M4 harness: every create ATTEMPT, cancels, and injected failures. */
+  createCalls = 0;
+  cancelled: string[] = [];
+  createError: Error | null = null;
+  registerError: Error | null = null;
+  startStatus: StartResult['status'] = 'running';
 
   async createTournament(
     config: CreateTournamentConfig,
     createdBy: string | null,
   ): Promise<CreateTournamentResult> {
+    this.createCalls += 1;
+    // Yield so a concurrent start can interleave (the real create does DB I/O).
+    await Promise.resolve();
+    if (this.createError) throw this.createError;
+    // Model `poker_tournaments_special_event_active_unique` (migration 0070).
+    if (
+      config.specialEventId &&
+      this.created.some(
+        (c) => c.config.specialEventId === config.specialEventId && !this.cancelled.includes(c.id),
+      )
+    ) {
+      throw Object.assign(
+        new Error('duplicate key value violates unique constraint "poker_tournaments_special_event_active_unique"'),
+        { code: '23505' },
+      );
+    }
     const id = randomUUID();
     this.created.push({ config, createdBy, id });
     return {
@@ -395,6 +449,7 @@ class FakeTM {
     };
   }
   async registerEntrant(subject: RegisterSubject, tournamentId: string): Promise<RegisterResult> {
+    if (this.registerError) throw this.registerError;
     this.registered.push({ subject, tournamentId });
     return {
       entrantId: randomUUID(),
@@ -405,12 +460,21 @@ class FakeTM {
   }
   async startTrigger(tournamentId: string): Promise<StartResult> {
     this.started.push(tournamentId);
+    if (this.startStatus === 'cancelled') {
+      // The real TM cancels (and refunds the seed) when the field is below the floor.
+      this.cancelled.push(tournamentId);
+      return { status: 'cancelled', seatedCount: 0, refundedCount: 0, tableCount: 0 };
+    }
     return {
       status: 'running',
       seatedCount: this.registered.filter((r) => r.tournamentId === tournamentId).length,
       refundedCount: 0,
       tableCount: 1,
     };
+  }
+  async cancelAndRefundOrphan(tournamentId: string): Promise<number> {
+    if (!this.cancelled.includes(tournamentId)) this.cancelled.push(tournamentId);
+    return 0;
   }
 }
 
@@ -750,6 +814,154 @@ describe('SpecialEventManager — closeSignupAndStart (DEPENDENCY DIRECTION + pr
     ledger.setBalance(s.avatarId, 100);
     await mgr.signup('lonely', s, { entryMethod: 'ct' });
     await expect(mgr.closeSignupAndStart('lonely')).rejects.toThrow(/not_enough_confirmed_signups/);
+  });
+});
+
+describe('SpecialEventManager — start claim + seed bound (security M3/M4, 2026-09-30)', () => {
+  /** A free event in 'signup_open' with two confirmed human signups. */
+  async function openEventWithTwoSignups(
+    slug: string,
+    prizeConfigJson?: Record<string, unknown>,
+  ) {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug, name: `Event ${slug}`, prizeConfigJson }, null);
+    await h.mgr.openSignup(slug);
+    await h.mgr.signup(slug, human(), { entryMethod: 'free' });
+    await h.mgr.signup(slug, human(), { entryMethod: 'free' });
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    return { ...h, ev };
+  }
+
+  it('two CONCURRENT starts create exactly one tournament; the loser gets 409', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('race', { seedPrizePoolCt: 5000 });
+
+    const [a, b] = await Promise.allSettled([
+      mgr.closeSignupAndStart('race'),
+      mgr.closeSignupAndStart('race'),
+    ]);
+
+    const outcomes = [a, b];
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(SpecialEventError);
+    expect(loser.reason.message).toBe('event_start_in_progress');
+    expect(loser.reason.httpStatus).toBe(409);
+    // The claim stops the loser BEFORE it reaches tournament creation (one seed).
+    expect(tm.createCalls).toBe(1);
+    expect(tm.created).toHaveLength(1);
+    expect(ev.status).toBe('live');
+  });
+
+  it('a start on a live event and on a starting event is refused without a create', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('again');
+    await mgr.closeSignupAndStart('again');
+    await expect(mgr.closeSignupAndStart('again')).rejects.toThrow(/event_already_started/);
+
+    ev.status = 'starting';
+    await expect(mgr.closeSignupAndStart('again')).rejects.toThrow(/event_start_in_progress/);
+    expect(tm.createCalls).toBe(1);
+  });
+
+  it('a create failure (treasury short) reopens signups and a retry succeeds', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('short', { seedPrizePoolCt: 5000 });
+    tm.createError = new TournamentError('house_treasury_insufficient_for_seed', 402);
+
+    await expect(mgr.closeSignupAndStart('short')).rejects.toMatchObject({
+      message: 'tournament_create_failed:house_treasury_insufficient_for_seed',
+      httpStatus: 402,
+    });
+    expect(ev.status).toBe('signup_open');
+    expect(tm.created).toHaveLength(0);
+
+    tm.createError = null;
+    const result = await mgr.closeSignupAndStart('short');
+    expect(result.status).toBe('live');
+    expect(ev.status).toBe('live');
+    expect(tm.created).toHaveLength(1);
+  });
+
+  it('a register failure cancels the created tournament (seed refund path) and reopens signups', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('reg-fail', { seedPrizePoolCt: 1000 });
+    tm.registerError = new TournamentError('tournament_full', 409);
+
+    await expect(mgr.closeSignupAndStart('reg-fail')).rejects.toMatchObject({
+      message: 'tournament_start_failed:tournament_full',
+      httpStatus: 409,
+    });
+    expect(tm.created).toHaveLength(1);
+    expect(tm.cancelled).toEqual([tm.created[0]!.id]);
+    expect(ev.status).toBe('signup_open');
+
+    // The cancelled tournament no longer holds the event's active slot → retry works.
+    tm.registerError = null;
+    const result = await mgr.closeSignupAndStart('reg-fail');
+    expect(result.tournamentId).toBe(tm.created[1]!.id);
+    expect(ev.status).toBe('live');
+  });
+
+  it('a start the TM cancels (field below floor) reopens signups instead of going live', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('floor');
+    tm.startStatus = 'cancelled';
+
+    await expect(mgr.closeSignupAndStart('floor')).rejects.toMatchObject({
+      message: 'tournament_start_cancelled',
+      httpStatus: 409,
+    });
+    expect(tm.cancelled).toEqual([tm.created[0]!.id]);
+    expect(ev.status).toBe('signup_open');
+  });
+
+  it('an existing active tournament for the event (DB unique index) → 409, signups reopened', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('dup');
+    tm.created.push({ config: { specialEventId: ev.id } as never, createdBy: null, id: 'legacy-t' });
+
+    await expect(mgr.closeSignupAndStart('dup')).rejects.toMatchObject({
+      message: 'event_tournament_already_exists',
+      httpStatus: 409,
+    });
+    expect(ev.status).toBe('signup_open');
+  });
+
+  it(`bounds the seed prize pool at create (max ${SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT})`, async () => {
+    const { mgr } = makeManager();
+    await expect(
+      mgr.createEvent(
+        { slug: 'too-rich', name: 'x', prizeConfigJson: { seedPrizePoolCt: SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT + 1 } },
+        null,
+      ),
+    ).rejects.toMatchObject({ message: 'seed_prize_pool_exceeds_max', httpStatus: 400 });
+    await expect(
+      mgr.createEvent({ slug: 'weird', name: 'x', prizeConfigJson: { seedPrizePoolCt: { n: 1 } } }, null),
+    ).rejects.toMatchObject({ message: 'invalid_seedPrizePoolCt' });
+    const ok = await mgr.createEvent(
+      { slug: 'at-max', name: 'x', prizeConfigJson: { seedPrizePoolCt: String(SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT) } },
+      null,
+    );
+    expect(ok.status).toBe('draft');
+    expect(readSeedPrizePoolCt(ok.prize_config_json)).toBe(BigInt(SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT));
+  });
+
+  it('a legacy over-bound seed is refused at start BEFORE the claim (event stays open)', async () => {
+    const { mgr, tm, ev } = await openEventWithTwoSignups('legacy-seed');
+    ev.prize_config_json = { seedPrizePoolCt: '999999999' };
+
+    await expect(mgr.closeSignupAndStart('legacy-seed')).rejects.toMatchObject({
+      message: 'seed_prize_pool_exceeds_max',
+      httpStatus: 400,
+    });
+    expect(ev.status).toBe('signup_open');
+    expect(tm.createCalls).toBe(0);
+  });
+
+  it("settleEventForTournament completes a 'starting' event whose tournament completed", async () => {
+    const { mgr, db, ev } = await openEventWithTwoSignups('flip-lost');
+    ev.status = 'starting'; // the final starting → live flip did not commit
+    const tid = randomUUID();
+    db.seedTournament({ id: tid, status: 'completed', special_event_id: ev.id, created_at: 1 });
+
+    const out = await mgr.settleEventForTournament(tid);
+    expect(out?.alreadySettled).toBe(false);
+    expect(ev.status).toBe('completed');
   });
 });
 

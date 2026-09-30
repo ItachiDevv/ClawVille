@@ -74,7 +74,7 @@ describe('SpecialEventSettlementWorker', () => {
     expect(db.scans).toBe(1);
     expect(worker.isStarted()).toBe(false);
     expect(db.lastSql).toContain("t.status = 'completed'");
-    expect(db.lastSql).toContain("e.status = 'live'");
+    expect(db.lastSql).toContain("e.status IN ('live', 'starting')");
   });
 
   it('bounds each pass and continues after one event fails', async () => {

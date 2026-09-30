@@ -131,6 +131,14 @@ export const pokerTournaments = pgTable(
      *   sum(results.prizeCt) + rakeTakenCt == prizePoolCt.
      */
     prizePoolCt: text('prize_pool_ct').notNull().default('0'),
+    /**
+     * The HOUSE-TREASURY-funded share of `prizePoolCt` (atomic CT, stringified).
+     * A prepaid (special-event) seed is debited from the house treasury in the
+     * same tx as the INSERT and recorded here; a cancel credits it back to the
+     * treasury in the cancel tx. '0' for buy-in tournaments and for legacy rows
+     * whose seed was minted before migration 0070 (security M3, 2026-09-30).
+     */
+    seedPrizePoolCt: text('seed_prize_pool_ct').notNull().default('0'),
     /** Rake actually taken off the pool at settle (stringified bigint). Null until settle. */
     rakeTakenCt: text('rake_taken_ct'),
     /** Payout curve. Shape = PayoutCurveEntry[]. */
@@ -176,6 +184,12 @@ export const pokerTournaments = pgTable(
   (table) => ({
     statusIdx: index('poker_tournaments_status_idx').on(table.status),
     specialEventIdx: index('poker_tournaments_special_event_idx').on(table.specialEventId),
+    // At most ONE non-cancelled tournament per special event (migration 0070,
+    // security M4). A cancelled start refunds its treasury seed in the cancel tx,
+    // so excluding it lets an operator retry the start without a second funding.
+    specialEventActiveUnique: uniqueIndex('poker_tournaments_special_event_active_unique')
+      .on(table.specialEventId)
+      .where(sql`special_event_id IS NOT NULL AND status <> 'cancelled'`),
     statusCheck: check(
       'poker_tournaments_status_check',
       sql`status in ('registering','seating','running','completed','cancelled')`,
@@ -366,6 +380,12 @@ export const pokerTournamentResults = pgTable(
       table.avatarId,
     ),
     tournamentPlacementIdx: index('poker_results_tournament_placement_idx').on(
+      table.tournamentId,
+      table.placement,
+    ),
+    // One result per (tournament, placement) (migration 0070, security H2): a
+    // duplicate placement would pay that placement's prize twice.
+    tournamentPlacementUnique: uniqueIndex('poker_results_tournament_placement_unique').on(
       table.tournamentId,
       table.placement,
     ),

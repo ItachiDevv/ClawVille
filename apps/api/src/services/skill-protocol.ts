@@ -768,6 +768,9 @@ import {
 // under the big screen) and "launch with the same templateId"; no new tool, no `[ACTION:]` change.
 // 2026-10-02 (walk-up "realised P&L" and launch "up to 32 characters" spacing, 787c1a22):
 // manual and Nori orientation reviewed, no version change. Human UI spacing only; agents never read it.
+// 2026-09-30 (security M3/M4): manual reviewed, no version change. Special-event create/start now need
+// a named admin, the seed prize pool is debited from the house treasury, and a concurrent start gets
+// 409. The manual does not document the admin event commands; agent signup and play are unchanged.
 export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
