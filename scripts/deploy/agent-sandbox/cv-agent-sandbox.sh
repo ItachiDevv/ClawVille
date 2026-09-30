@@ -41,14 +41,15 @@ PROXY_NAME=cv-sbx-llm-proxy
 PROXY_IMAGE="nginxinc/nginx-unprivileged@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"
 PROXY_PORT=11434
 PROXY_CONF=/etc/cv-agent-sandbox/llm-proxy.conf
+PROXY_SIG="${PROXY_IMAGE}|host|101|true|[ALL]|[]|false|[no-new-privileges]|${PROXY_CONF}:/etc/nginx/conf.d/default.conf:false;|map[/tmp:rw,size=64m]|false|map[]|pid=|dev=0|docker-default|runc|unless-stopped"
 
 HERMES_NET=cv-sbx-hermes;     HERMES_SUBNET=10.201.86.0/29; HERMES_GW=10.201.86.1; HERMES_IP=10.201.86.2; HERMES_PORT=8642
 OPENCLAW_NET=cv-sbx-openclaw; OPENCLAW_SUBNET=10.201.87.0/29; OPENCLAW_GW=10.201.87.1; OPENCLAW_IP=10.201.87.2; OPENCLAW_PORT=8643
 
 # Full expected shape: networks + IP, user, caps, privileged, security options, restart policy,
-# image, mounts, namespaces, devices, AppArmor, runtime, published ports.
-HERMES_SIG="${HERMES_NET}|${HERMES_NET}=${HERMES_IP};|10000:10000|[ALL]|[]|false|[no-new-privileges]|no|hermes-agent|/opt/hermes-data:/opt/data:true;|pid=|ipc=private|uts=|userns=|dev=0|docker-default|runc|map[]"
-OPENCLAW_SIG="${OPENCLAW_NET}|${OPENCLAW_NET}=${OPENCLAW_IP};|1000:1000|[ALL]|[]|false|[no-new-privileges]|no|openclaw:local|/opt/openclaw-data:/home/node/.openclaw:true;|pid=|ipc=private|uts=|userns=|dev=0|docker-default|runc|map[]"
+# image, mounts, namespaces, devices, AppArmor, runtime, published ports (explicit and -P).
+HERMES_SIG="${HERMES_NET}|${HERMES_NET}=${HERMES_IP};|10000:10000|[ALL]|[]|false|[no-new-privileges]|no|hermes-agent|/opt/hermes-data:/opt/data:true;|pid=|ipc=private|uts=|userns=|dev=0|docker-default|runc|map[]|false"
+OPENCLAW_SIG="${OPENCLAW_NET}|${OPENCLAW_NET}=${OPENCLAW_IP};|1000:1000|[ALL]|[]|false|[no-new-privileges]|no|openclaw:local|/opt/openclaw-data:/home/node/.openclaw:true;|pid=|ipc=private|uts=|userns=|dev=0|docker-default|runc|map[]|false"
 GUARD_UNIT=/etc/systemd/system/cv-agent-sandbox-guard.service
 SELF=/usr/local/bin/cv-agent-sandbox.sh
 GUARD_STAMP=/run/cv-agent-sandbox.guard-hash
@@ -58,7 +59,7 @@ die() { log "$*"; exit 1; }
 
 # ---- container checks -------------------------------------------------------------------------
 container_sig() {
-  docker inspect -f '{{.HostConfig.NetworkMode}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}};{{end}}|{{.Config.User}}|{{.HostConfig.CapDrop}}|{{.HostConfig.CapAdd}}|{{.HostConfig.Privileged}}|{{.HostConfig.SecurityOpt}}|{{.HostConfig.RestartPolicy.Name}}|{{.Config.Image}}|{{range .Mounts}}{{.Source}}:{{.Destination}}:{{.RW}};{{end}}|pid={{.HostConfig.PidMode}}|ipc={{.HostConfig.IpcMode}}|uts={{.HostConfig.UTSMode}}|userns={{.HostConfig.UsernsMode}}|dev={{len .HostConfig.Devices}}|{{.AppArmorProfile}}|{{.HostConfig.Runtime}}|{{.HostConfig.PortBindings}}' "$1" 2>/dev/null || true
+  docker inspect -f '{{.HostConfig.NetworkMode}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}};{{end}}|{{.Config.User}}|{{.HostConfig.CapDrop}}|{{.HostConfig.CapAdd}}|{{.HostConfig.Privileged}}|{{.HostConfig.SecurityOpt}}|{{.HostConfig.RestartPolicy.Name}}|{{.Config.Image}}|{{range .Mounts}}{{.Source}}:{{.Destination}}:{{.RW}};{{end}}|pid={{.HostConfig.PidMode}}|ipc={{.HostConfig.IpcMode}}|uts={{.HostConfig.UTSMode}}|userns={{.HostConfig.UsernsMode}}|dev={{len .HostConfig.Devices}}|{{.AppArmorProfile}}|{{.HostConfig.Runtime}}|{{.HostConfig.PortBindings}}|{{.HostConfig.PublishAllPorts}}' "$1" 2>/dev/null || true
 }
 is_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = "true" ]; }
 
@@ -326,11 +327,16 @@ write_proxy_conf() {
   rm -f "$tmp"; return 1                                             # unchanged
 }
 
+proxy_sig() {
+  docker inspect -f '{{.Config.Image}}|{{.HostConfig.NetworkMode}}|{{.Config.User}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.CapDrop}}|{{.HostConfig.CapAdd}}|{{.HostConfig.Privileged}}|{{.HostConfig.SecurityOpt}}|{{range .Mounts}}{{.Source}}:{{.Destination}}:{{.RW}};{{end}}|{{.HostConfig.Tmpfs}}|{{.HostConfig.PublishAllPorts}}|{{.HostConfig.PortBindings}}|pid={{.HostConfig.PidMode}}|dev={{len .HostConfig.Devices}}|{{.AppArmorProfile}}|{{.HostConfig.Runtime}}|{{.HostConfig.RestartPolicy.Name}}' "$PROXY_NAME" 2>/dev/null || true
+}
+
 ensure_proxy() {
   local changed=0
   write_proxy_conf && changed=1
-  if [ "$changed" = 1 ] || ! is_running "$PROXY_NAME"; then
-    docker rm -f "$PROXY_NAME" >/dev/null 2>&1 || true
+  # Replace the proxy unless it is exactly our pinned image with our read-only config and hardening.
+  if [ "$changed" = 1 ] || ! is_running "$PROXY_NAME" || [ "$(proxy_sig)" != "$PROXY_SIG" ]; then
+    remove_container "$PROXY_NAME" "config changed, not running, or not the expected shape"
     docker run -d --name "$PROXY_NAME" --network host --restart unless-stopped \
       --read-only --tmpfs /tmp:rw,size=64m --cap-drop ALL --security-opt no-new-privileges \
       --pids-limit 128 --memory 256m \
