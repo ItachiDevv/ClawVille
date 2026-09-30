@@ -35,8 +35,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "poker_results_tournament_placement_unique"
 
 -- 4. M4 — special_events.status gains the transient 'starting' claim state.
 --    Replace the CHECK only where it exists. 0003 created it inline on an empty
---    database (prod). Staging and the CI replay lack it (see ARCHITECTURE.md §12
---    "CI schema fidelity"), and this migration does not add a CHECK where none
+--    database. The lead's 2026-09-30 read-only check found it on BOTH staging and
+--    prod; the CI replay lacks it (see ARCHITECTURE.md §12 "CI schema
+--    fidelity"), and this migration does not add a CHECK where none
 --    existed. The new predicate is a strict superset of the old one, so no
 --    existing row can fail it.
 DO $$
