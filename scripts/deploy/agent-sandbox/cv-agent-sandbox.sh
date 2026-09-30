@@ -56,14 +56,31 @@ container_sig() {
 }
 is_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = "true" ]; }
 
+# Remove a container and PROVE it is gone; a runtime that cannot be removed is a hard failure.
+remove_container() { # name reason
+  docker inspect "$1" >/dev/null 2>&1 || return 0
+  docker rm -f "$1" >/dev/null 2>&1 || true
+  if docker inspect "$1" >/dev/null 2>&1; then
+    docker kill "$1" >/dev/null 2>&1 || true
+    is_running "$1" && die "FAILED to stop $1 ($2) — it may still be serving; stop it by hand"
+    die "FAILED to remove the stopped container $1 ($2)"
+  fi
+  log "removed $1 ($2)"
+}
+
 # Remove a runtime that is not EXACTLY the sandboxed shape (legacy shared-netns runtime, an extra
 # network attachment, a missing hardening flag) or not running. Runs before anything else.
 quarantine() { # name expected-signature
   local sig; sig=$(container_sig "$1")
   if [ -n "$sig" ] && { [ "$sig" != "$2" ] || ! is_running "$1"; }; then
-    docker rm -f "$1" >/dev/null 2>&1 || true
-    log "removed $1 (not the sandboxed shape or not running)"
+    remove_container "$1" "not the sandboxed shape or not running"
   fi
+}
+
+# The sandbox boundary is the mangle egress chain + its PREROUTING jump.
+egress_intact() {
+  iptables -t mangle -C PREROUTING -i cv-sbx-+ -j CV-SBX-EGRESS 2>/dev/null &&
+    [ "$(iptables -t mangle -S CV-SBX-EGRESS 2>/dev/null | grep -c -- '-j DROP')" -ge 9 ]
 }
 
 # ---- networks ---------------------------------------------------------------------------------
@@ -87,6 +104,12 @@ ensure_network() { # name subnet only-allowed-container
     docker network disconnect -f "$name" "$c" >/dev/null 2>&1 || true
     log "disconnected foreign container $c from $name"
   done
+  local left
+  left=$(docker network inspect -f '{{range $k,$v := .Containers}}{{$v.Name}} {{end}}' "$name" | tr ' ' '\n' | grep -v -x -e "$allowed" -e '' || true)
+  if [ -n "$left" ]; then
+    remove_container "$allowed" "foreign container still on $name"
+    die "could not disconnect $(echo $left) from $name — $allowed stopped"
+  fi
 }
 
 api_subnet() {
@@ -177,8 +200,7 @@ EOF
 
 # Refuse to start a runtime unless the egress policy is attached for its bridge.
 verify_firewall() { # bridge
-  iptables -t mangle -C PREROUTING -i cv-sbx-+ -j CV-SBX-EGRESS 2>/dev/null || die "egress jump missing — refusing to start $1"
-  [ "$(iptables -t mangle -S CV-SBX-EGRESS | grep -c -- '-j DROP')" -ge 9 ] || die "egress chain incomplete — refusing to start $1"
+  egress_intact || die "egress jump or chain missing — refusing to start $1"
   case "$1" in cv-sbx-*) : ;; *) die "bridge $1 does not match cv-sbx-+ — refusing" ;; esac
   ip link show "$1" >/dev/null 2>&1 || die "bridge $1 missing — refusing"
 }
@@ -306,19 +328,26 @@ ensure() { # hermes|openclaw|all
   # Fail closed first: nothing unsandboxed keeps serving if a later step fails.
   [ $want_h = 1 ] && quarantine hermes-local "$HERMES_SIG"
   [ $want_o = 1 ] && quarantine openclaw-local "$OPENCLAW_SIG"
+  # A runtime that was alive while the egress policy was missing or incomplete (firewall reload,
+  # manual flush) may hold connections the policy would refuse; RELATED/ESTABLISHED would keep them.
+  # Remove BOTH runtimes before the rules are rebuilt; they restart below with the policy in place.
+  if ! egress_intact; then
+    remove_container hermes-local "egress policy was missing"
+    remove_container openclaw-local "egress policy was missing"
+  fi
   ensure_network "$HERMES_NET" "$HERMES_SUBNET" hermes-local
   ensure_network "$OPENCLAW_NET" "$OPENCLAW_SUBNET" openclaw-local
   firewall
   ensure_proxy
   if [ $want_h = 1 ]; then
-    if point_hermes_at_proxy; then docker rm -f hermes-local >/dev/null 2>&1 || true; log "hermes config now uses the proxy"; fi
+    if point_hermes_at_proxy; then remove_container hermes-local "model URL moved to the proxy"; fi
     is_running hermes-local || start_hermes
   fi
   if [ $want_o = 1 ]; then
     chmod 600 /opt/openclaw-data/openclaw.json
     local rc=0; point_openclaw_at_proxy || rc=$?
     case $rc in
-      0) docker rm -f openclaw-local >/dev/null 2>&1 || true; log "openclaw config now uses the proxy" ;;
+      0) remove_container openclaw-local "model URL moved to the proxy" ;;
       1) : ;;
       *) die "openclaw.json unreadable or has no model providers (rc=$rc) — refusing to start openclaw" ;;
     esac
