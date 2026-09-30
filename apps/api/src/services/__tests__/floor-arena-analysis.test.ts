@@ -400,6 +400,39 @@ describe('Trading Arena D27 split check', () => {
     expect(evidence.reason).toContain(`${EVIDENCE_MIN_EDGE} mean multiple`);
   });
 
+  test('decides on the raw means: 1.02996 vs 1.00004 (real edge 0.02992) is refused although both round to 0.03', () => {
+    // Codex r12: rounding each mean to 4 places first gave 1.03 - 1.0 = 0.03
+    // and confirmed a change whose real edge is below the bar.
+    const trades = [
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(10, 1.02996, i)),
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(30, 1.00004, 8 + i)),
+    ];
+    const evidence = evaluateSuggestionEvidence({ change: change(20.74), current: current(), next: next(20.74), trades });
+    expect(evidence.confirmed).toBe(false);
+    expect(evidence.reason).toContain(`${EVIDENCE_MIN_EDGE} mean multiple`);
+    // The stored display values are still rounded; the edge is rounded from the raw difference.
+    expect(evidence).toMatchObject({ kept: { n: 8, meanMult: 1.03 }, excluded: { n: 8, meanMult: 1 }, edge: 0.0299 });
+  });
+
+  test('confirms a real 0.0301 edge', () => {
+    const trades = [
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(10, 1.0301, i)),
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(30, 1.0, 8 + i)),
+    ];
+    const evidence = evaluateSuggestionEvidence({ change: change(20.74), current: current(), next: next(20.74), trades });
+    expect(evidence).toMatchObject({ confirmed: true, kept: { n: 8, meanMult: 1.0301 }, excluded: { n: 8, meanMult: 1 }, edge: 0.0301 });
+  });
+
+  test('counts raw trades per side: 7 excluded trades are refused even with a large edge', () => {
+    const trades = [
+      ...Array.from({ length: 13 }, (_, i) => withChg5m(10, 1.2, i)),
+      ...Array.from({ length: 7 }, (_, i) => withChg5m(30, 0.3, 13 + i)),
+    ];
+    const evidence = evaluateSuggestionEvidence({ change: change(20.74), current: current(), next: next(20.74), trades });
+    expect(evidence).toMatchObject({ confirmed: false, kept: { n: 13 }, excluded: { n: 7 } });
+    expect(evidence.reason).toContain(`at least ${EVIDENCE_MIN_PER_SIDE}`);
+  });
+
   test('confirms an 8/8 split exactly 3 points better', () => {
     const trades = [
       ...Array.from({ length: 8 }, (_, i) => withChg5m(10, 1.03, i)),

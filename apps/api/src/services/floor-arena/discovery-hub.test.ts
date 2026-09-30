@@ -3,6 +3,7 @@ import {
   buildSnapshot, cleanVendorText, isTradableMint, mergeDiscoveryRow, mergeSightings, orderEnrichment,
   parseClawpumpRows, parseDexscreenerList, parseGeckoPools, pickBestPairs, type Sighting,
 } from './discovery-hub';
+import { tradeableFirstSeenMs } from './filters';
 
 const A = '3b5fTE5NyvCtMgKcDkvt4vUW2KDc7mgUSW8a8XYVpump';
 const B = '84D3VopU3g5qo7jUwzQK4P4BnVPQWr2MzeaRCFkHpump';
@@ -98,6 +99,40 @@ describe('discovery upsert merge', () => {
     expect(withDs.sourceFirstSeen).toEqual({ 'gecko:new-pools': NOW.toISOString(), 'ds:token-profiles': t1.toISOString() });
     const again = mergeDiscoveryRow(withDs, mergeSightings([s(A, 'ds:token-profiles')])[0]!, t2);
     expect(again.sourceFirstSeen['ds:token-profiles']).toBe(t1.toISOString());
+  });
+
+  test('r12: a source the row already lists WITHOUT a key gets the row first_seen_at, never now', () => {
+    const t0 = new Date(NOW.getTime() - 3 * 3_600_000);
+    const t1 = NOW;
+    // (a) legacy row (before D25): sources [gecko, ds], map only {gecko: t0}; DexScreener is sighted again at t1.
+    const legacy = {
+      mint: A, firstSeenAt: t0, firstSource: 'gecko:trending_5m', sources: ['gecko:trending_5m', 'ds:token-profiles'],
+      lastSeenAt: t0, symbol: null, name: null, expiresAt: new Date(t0.getTime() + 24 * 3_600_000),
+      sourceFirstSeen: { 'gecko:trending_5m': t0.toISOString() },
+    };
+    const row = mergeDiscoveryRow(legacy, mergeSightings([s(A, 'ds:token-profiles'), s(A, 'clawpump:signals')])[0]!, t1);
+    expect(row.sourceFirstSeen).toEqual({
+      'gecko:trending_5m': t0.toISOString(),
+      'ds:token-profiles': t0.toISOString(),   // (a) already listed -> first_seen_at, not t1
+      'clawpump:signals': t1.toISOString(),    // (b) new to the row -> now
+    });
+    // (c) an existing key is never overwritten.
+    const later = mergeDiscoveryRow(row, mergeSightings([s(A, 'ds:token-profiles')])[0]!, new Date(t1.getTime() + 60_000));
+    expect(later.sourceFirstSeen['ds:token-profiles']).toBe(t0.toISOString());
+    expect(later.sourceFirstSeen['clawpump:signals']).toBe(t1.toISOString());
+    // The reader agrees: the tradeable clock starts at t0, not t1.
+    expect(tradeableFirstSeenMs(later.sources, later.sourceFirstSeen, t0.getTime())).toBe(t0.getTime());
+  });
+
+  test('r12: a row the OLD code wrote during a deploy flip (empty map, grown sources) behaves the same', () => {
+    const t0 = new Date(NOW.getTime() - 3_600_000);
+    const oldCode = {
+      mint: A, firstSeenAt: t0, firstSource: 'gecko:new-pools', sources: ['gecko:new-pools', 'ds:token-boosts-top'],
+      lastSeenAt: t0, symbol: null, name: null, expiresAt: new Date(t0.getTime() + 24 * 3_600_000), sourceFirstSeen: {},
+    };
+    const row = mergeDiscoveryRow(oldCode, mergeSightings([s(A, 'ds:token-boosts-top'), s(A, 'ds:token-profiles')])[0]!, NOW);
+    expect(row.sourceFirstSeen).toEqual({ 'ds:token-boosts-top': t0.toISOString(), 'ds:token-profiles': NOW.toISOString() });
+    expect(tradeableFirstSeenMs(row.sources, row.sourceFirstSeen, t0.getTime())).toBe(t0.getTime());
   });
 
   test('expiry never moves backwards', () => {

@@ -1,6 +1,6 @@
 # Trading Floor Arena (paper contest) — build spec + decision log
 
-Last Audited: 2026-09-30 (session tradeDeskMain, lead). Status: IN BUILD on branch `feat/trading-floor-arena`
+Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs). Status: IN BUILD on branch `feat/trading-floor-arena`
 (worktree `.worktrees/trading-floor-arena`, base `origin/staging` a2a073a7).
 
 Founder goal (2026-09-30, verbatim summary): five house trading agents on the Trading Floor, each running its own
@@ -38,7 +38,7 @@ This file is the canonical design for the arena until its content moves into Gam
 | D3 | Paper fills are priced with ClawPump `POST /swap/quote` (our Enterprise key, 10M calls/month); marks and triggers use DexScreener batch prices; costs 2.5% buy haircut + 1.0% sell haircut on top of the quote. No Jupiter key use. | Jupiter credits are nearly spent (22.5M/25M until Oct 7). Costs = measured execution cost (memory 09-21). |
 | D4 | A quote failure never books a near-zero exit: retry the sell quote each exit tick; after 3 failures over >= 45 s, fill at the DexScreener mark minus costs and flag `fill_source='mark_fallback'`. | Lesson 13 (no-quote exits booked 0.01x during a ClawPump outage). |
 | D5 | Hard rules (not editable, shown on every form): LP burned or locked >= 95%, mint authority revoked, freeze authority revoked, no Token-2022 transfer fee, pool reserves present, liquidity >= $5,000. | Founder rules (LP lock etc.); the liquidity floor removes bonding-curve coins (liq 0) that we cannot price safely. |
-| D6 | Contest "Trading Arena Week 1": starts 2026-09-30 22:00Z (6 PM EDT), ends 2026-10-05 03:59:59Z (Sun Oct 4, 11:59:59 PM EDT). Score = realised paper P&L in USD of positions opened in the window and closed by the end. Fixed $20 per position, max 5 open. One arena agent per account; guests excluded; house agents shown but not eligible. Prize eligibility (after the Codex review): launched before the end AND at least one position opened and closed inside the window. Prizes 1,000,000 / 500,000 / 250,000 $CLAWVILLE, paid manually by the team after review. | "By the end of the week"; equal ticket size makes USD P&L comparable. |
+| D6 | Contest "Trading Arena Week 1": starts 2026-09-30 22:00Z (6 PM EDT), ends 2026-10-05 03:59:59Z (Sun Oct 4, 11:59:59 PM EDT). Score = realised paper P&L in USD of positions opened in the window and closed by the end. Fixed $20 per position, max 5 open. One arena agent per account; guests excluded; house agents shown but never eligible. Prize eligibility (Codex r2 #6 / r3 #6; `FLOOR_ARENA_CONTEST.rules` rule 6, verbatim): "To be eligible for a prize, your agent must be launched before the contest ends and have at least one position opened and closed inside the contest window." Code: launch writes `contest_id` only before the end (enrolment), and `eligible` = a user agent with that `contest_id` and at least one qualifying closed trade; the contest top 10 ranks eligible rows only. Prizes 1,000,000 / 500,000 / 250,000 $CLAWVILLE, paid manually by the team after review. | "By the end of the week"; equal ticket size makes USD P&L comparable. |
 | D7 | Seat gating: a user agent opens NEW positions only while seated at a Trading Floor desk. Seated is a server state set by "sit" and cleared by "stand"/leaving; it persists when the player closes the tab (the agent stays at its desk). Exits always run. House agents are always seated. | Founder: the agent must be in the arena to trade; persistent seat avoids "keep the tab open" contests. |
 | D8 | Launch creates one ClawPump agent under ClawVille's account per user agent (name `CV Arena · <name>`, private, not accepting bids, no trading skills; `x402` skill only when paid add-ons are on). Provisioning failure does not block paper trading; it retries. | Founder requirement; paper mode needs no ClawPump execution yet. |
 | D9 | Paid x402 add-ons: catalog of vetted feeds only; the engine pays from the agent's own ClawPump wallet via the ClawPump x402 route with `max_amount_usd` = catalog price; per-agent daily cap (default $1, max $5); poll interval per add-on >= 10 min; mints from an add-on stay private to that agent. | Vetting found listed prices 100x below real prices (seerium $0.10 not $0.001). Users pay for their own add-ons. |
@@ -376,6 +376,16 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   side, >= 3 points better); house agents reset to template v2 (migration 0072 adds `source_first_seen`,
   `template_version`); every exit quote refusal is logged. The contest window starts clean at 22:00Z, so rows are
   not reset or deleted.
+- 19:46Z: PUSHED `66b710e7` (D25-D27, protocol 75, migration 0072). 19:47-19:49Z Codex r12 on the diff: BLOCK, 2
+  findings. (1) A discovery row written before D25 has tradeable sources with no recorded time; the next sighting
+  would record them at NOW, so an old coin could look freshly seen to a 'tradeable' clock. Fix (lead): the hub
+  writer records a previously known source without a time at the row's `first_seen_at` (the earliest time the hub
+  knows); only a source new to the row gets now; a recorded time never changes. The reader already counts a missing
+  time from `first_seen_at`. We have no per-source history before 0072, so for those rows the tradeable window can
+  only close sooner, never open later; the effect ends when the rows expire (at most 24 h after first sight).
+  (2) The D27 edge check compared rounded means (an edge of 0.02992 rounded to 0.03). Fix: compare raw means.
+  19:51Z: CI run 36767948215 cancelled before the migrate step (the migrate job stopped at job setup), so 0072 is
+  applied nowhere; staging stays on `758177db` until the fix build.
 
 ## 8. Punch list (tracked deferrals, rule E6)
 
@@ -427,4 +437,5 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   DEFAULT 1, a backfill of entry.first_sight_sources = 'any' into stored params that lack it, and a backfill of
   source_first_seen = {first_source: first_seen_at} (UTC ISO) into existing discovery rows whose map is empty. Number note: branch
   (lead) numbered 0072, not 0071: branch chore/self-hosted-db carries 0071_special_event_start_guard.sql.
-  Owed by the lead: ARCHITECTURE.md §8 table list + migrations 0070/0072, and the deploy-status SCHEMA line for 0072.
+  ARCHITECTURE.md §8 now lists the tables and migrations 0070/0072 (arena-docs). deploy-status.md carries the SCHEMA
+  line (prod-migration-pending: 0070_floor_arena.sql, 0072_floor_arena_sources.sql) since `66b710e7`.

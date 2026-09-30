@@ -186,17 +186,25 @@ export interface DiscoveryRowState {
 /**
  * The upsert rule (mirrored by `upsertSightings` SQL): first_seen_at / first_source only on insert; sources is a
  * set in order of appearance; last_seen_at moves forward; symbol / name keep the first non-null;
- * expires_at = max(previous, first_seen + 24 h, last_seen + 6 h); source_first_seen[source] is set on that
- * source's first sighting and never overwritten (D25).
+ * expires_at = max(previous, first_seen + 24 h, last_seen + 6 h).
+ * source_first_seen (D25), per sighted source: an existing key is never overwritten > a source the row already lists
+ * WITHOUT a key (a row written before D25, or by the old code during a deploy flip) gets the row's first_seen_at,
+ * never now (Codex r12: "now" would make a coin DexScreener saw hours ago look fresh to a tradeable clock) > a source
+ * NEW to the row gets now. The reader (`tradeableFirstSeenMs`: missing key -> first_seen_at) agrees, so the window
+ * can only close sooner, never open later.
  */
 export function mergeDiscoveryRow(existing: DiscoveryRowState | null, sighting: MergedSighting, now: Date): DiscoveryRowState {
-  const seenNow = Object.fromEntries(sighting.sources.map((source) => [source, now.toISOString()]));
   if (!existing) {
     return {
       mint: sighting.mint, firstSeenAt: now, firstSource: sighting.firstSource, sources: [...sighting.sources],
       lastSeenAt: now, symbol: sighting.symbol, name: sighting.name, expiresAt: new Date(now.getTime() + DISCOVERY_FIRST_TTL_MS),
-      sourceFirstSeen: seenNow,
+      sourceFirstSeen: Object.fromEntries(sighting.sources.map((source) => [source, now.toISOString()])),
     };
+  }
+  const sourceFirstSeen = { ...existing.sourceFirstSeen };
+  for (const source of sighting.sources) {
+    if (sourceFirstSeen[source] !== undefined) continue;
+    sourceFirstSeen[source] = existing.sources.includes(source) ? existing.firstSeenAt.toISOString() : now.toISOString();
   }
   const sources = [...existing.sources];
   for (const s of sighting.sources) if (!sources.includes(s)) sources.push(s);
@@ -209,7 +217,7 @@ export function mergeDiscoveryRow(existing: DiscoveryRowState | null, sighting: 
   return {
     ...existing, sources, lastSeenAt, symbol: existing.symbol ?? sighting.symbol, name: existing.name ?? sighting.name,
     expiresAt: new Date(expiresMs),
-    sourceFirstSeen: { ...seenNow, ...existing.sourceFirstSeen },
+    sourceFirstSeen,
   };
 }
 
@@ -226,8 +234,16 @@ export async function upsertSightings(merged: readonly MergedSighting[], now: Da
            ${at}::timestamptz, r.symbol, r.name, ${at}::timestamptz + interval '24 hours', r.source_first_seen
     FROM jsonb_to_recordset(${payload}::jsonb) AS r(mint text, first_source text, sources jsonb, symbol text, name text, source_first_seen jsonb)
     ON CONFLICT (mint) DO UPDATE SET
-      -- D25: jsonb || keeps the RIGHT side on a key clash, so an existing first sighting is never overwritten.
-      source_first_seen = EXCLUDED.source_first_seen || floor_discovery_mints.source_first_seen,
+      -- D25 (mergeDiscoveryRow mirror; every SET expression reads the OLD row): a sighted source the row already
+      -- lists gets the row's first_seen_at (same UTC ISO format as 0072 and toISOString), a new source gets now;
+      -- jsonb || keeps the RIGHT side on a key clash, so an existing key is never overwritten.
+      source_first_seen = COALESCE((
+        SELECT jsonb_object_agg(e.key, CASE
+          WHEN e.key = ANY(floor_discovery_mints.sources)
+            THEN to_jsonb(to_char(floor_discovery_mints.first_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+          ELSE e.value END)
+        FROM jsonb_each(EXCLUDED.source_first_seen) AS e(key, value)
+      ), '{}'::jsonb) || floor_discovery_mints.source_first_seen,
       sources = ARRAY(
         SELECT s FROM unnest(floor_discovery_mints.sources || EXCLUDED.sources) WITH ORDINALITY AS t(s, i)
         GROUP BY s ORDER BY min(i)

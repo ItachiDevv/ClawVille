@@ -606,12 +606,16 @@ export function evaluateArenaSuggestion(input: {
   return { ok: true, next: checked.params, change: diff[0]! };
 }
 
-function evidenceSide(trades: readonly ArenaClosedTrade[]): ArenaEvidenceSide {
-  const n = trades.length;
-  const sum = trades.reduce((total, t) => total + t.pnlMult, 0);
+/** The UNROUNDED mean pnl_mult; the decision uses this, never a display value. */
+function rawMeanMult(trades: readonly ArenaClosedTrade[]): number | null {
+  return trades.length > 0 ? trades.reduce((total, t) => total + t.pnlMult, 0) / trades.length : null;
+}
+
+/** The side as stored in the report: means rounded for display only. */
+function evidenceSide(trades: readonly ArenaClosedTrade[], mean: number | null): ArenaEvidenceSide {
   return {
-    n,
-    meanMult: n > 0 ? round(sum / n, 4) : null,
+    n: trades.length,
+    meanMult: mean === null ? null : round(mean, 4),
     deaths: trades.filter((t) => t.pnlMult <= ARENA_DEATH_MULT).length,
   };
 }
@@ -656,19 +660,26 @@ export function evaluateSuggestionEvidence(input: {
     if (after.some((code) => !before.has(code))) excluded.push(trade);
     else kept.push(trade);
   }
-  const keptSide = evidenceSide(kept);
-  const excludedSide = evidenceSide(excluded);
-  const edge = keptSide.meanMult !== null && excludedSide.meanMult !== null
-    ? round(keptSide.meanMult - excludedSide.meanMult, 4)
-    : null;
-  const base = { method: 'filter_split' as const, kept: keptSide, excluded: excludedSide, edge };
-  if (excludedSide.n === 0) {
+  // Decide on the RAW means and raw counts (Codex r12): rounding each mean to 4
+  // places first can lift a real 0.02992 edge to 0.03 and confirm it. The
+  // rounded values are for the stored report only. EPS absorbs float noise
+  // (1e-9), far below any edge the rounding could have moved.
+  const keptMean = rawMeanMult(kept);
+  const excludedMean = rawMeanMult(excluded);
+  const rawEdge = keptMean !== null && excludedMean !== null ? keptMean - excludedMean : null;
+  const base = {
+    method: 'filter_split' as const,
+    kept: evidenceSide(kept, keptMean),
+    excluded: evidenceSide(excluded, excludedMean),
+    edge: rawEdge === null ? null : round(rawEdge, 4),
+  };
+  if (excluded.length === 0) {
     return { ...base, confirmed: false, reason: 'the new value excludes no traded coin, so nothing shows it helps' };
   }
-  if (keptSide.n < EVIDENCE_MIN_PER_SIDE || excludedSide.n < EVIDENCE_MIN_PER_SIDE) {
+  if (kept.length < EVIDENCE_MIN_PER_SIDE || excluded.length < EVIDENCE_MIN_PER_SIDE) {
     return { ...base, confirmed: false, reason: `each side needs at least ${EVIDENCE_MIN_PER_SIDE} closed trades` };
   }
-  if (edge === null || edge < EVIDENCE_MIN_EDGE - EPS) {
+  if (rawEdge === null || rawEdge < EVIDENCE_MIN_EDGE - EPS) {
     return { ...base, confirmed: false, reason: `the kept trades must beat the excluded ones by at least ${EVIDENCE_MIN_EDGE} mean multiple` };
   }
   return { ...base, confirmed: true };
