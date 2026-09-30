@@ -422,6 +422,16 @@ const OPENCLAW_LOCAL_GATEWAY_ENABLED = process.env.OPENCLAW_LOCAL_GATEWAY_ENABLE
  */
 export type InWorldWireProtocol = AgentWireProtocol | 'hermes-local' | 'openclaw-local';
 
+/**
+ * True for the server-hosted local runtime wires (hermes-local / openclaw-local). Those runtimes
+ * are tool/terminal-capable and run on the box, so a CALLER's verbatim prompt must never be posted
+ * to them — only server-generated ambient cognition may. Chat routes use this to skip the direct
+ * `client.chat` fallback for these protocols (security fix D2, 2026-09-30).
+ */
+export function isLocalToolRuntime(protocol: string | null | undefined): boolean {
+  return protocol === 'hermes-local' || protocol === 'openclaw-local';
+}
+
 export type ConnectCognitionMode = 'hosted' | 'pull' | 'gateway' | 'partner-proxy';
 
 export interface ConnectCognitionDecision {

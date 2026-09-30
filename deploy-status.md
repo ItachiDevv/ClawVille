@@ -469,6 +469,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-30 (session sql2) — security D2: local-runtime prompt guard (staging push)
+
+**What changed:** `apps/api/src/routes/openclaw.ts` (`/chat`, `/location-chat`) no longer fall back to `client.chat([...user content...])` when the wire is `hermes-local`/`openclaw-local`; new pure helper `isLocalToolRuntime()` in `agent-session-config.ts` gates it. Docs: hatcher-integration-spec §11 drift note (agent-session-config.ts is protected), ARCHITECTURE.md note. New unit test `is-local-tool-runtime.test.ts`. First of the 2026-09-30 security pass (plan in the private brain repo).
+**What broke + root cause + fix:** audit finding D2 — a public unauthenticated `/connect` can create a gateway-less hermes/openclaw body wired to the on-box tool/terminal runtime, and the chat fallback posted the caller's verbatim prompt to it. Fixed by skipping that fallback for local runtimes (ambient server-generated cognition to them is unchanged). tsc clean; new test 2/2; coupling gate 2 triggered, both satisfied.
+**Staging verification after deploy:** SOURCE_COMMIT match + mock-Hatcher signed harness (§11) — recorded in CURRENT STATE.
+**Who it's for:** all players (prod hosts hermes/openclaw agents; this keeps hosting on and makes the prompt path safe).
+**SCHEMA:** `synced`. PARITY: safety only; Hatcher unaffected (not a local runtime); served manual + PROTOCOL_VERSION 72 unchanged.
+
 ### 2026-09-29 (session sql2) — phone game menu tap targets (staging push)
 
 **What changed:** `sidebar-menu.tsx` scoped CSS: in the touch menu body (`.rpg-sidebar-mobile-body`, rendered only in the `useIsMobile()` branch) every `.rpg-sidebar-row` and `.rpg-button` gets `min-height: 44px`. Gate notes: `GameFeatures.md`, `skill-protocol.ts` version-log comment (protocol stays v72), Hatcher spec drift note; FOUNDER-REVIEW HUD entry.

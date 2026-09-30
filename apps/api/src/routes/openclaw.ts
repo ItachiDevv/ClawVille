@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { NPC_IDS, BUILDING_OPENCLAW_THEMES, getAgentModel, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import type { AgentSubstrateRegistration, AgentBotIdentity } from '@clawville/shared';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
+import { isLocalToolRuntime } from '../services/agent-session-config';
 import { npcSimulation } from '../services/npc-simulation';
 import { db, avatars, users, npcMemories, activityLog, agentBots, agents, eq, and, desc, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
@@ -603,8 +604,12 @@ openclawRoutes.post('/chat', async (c) => {
     }
   }
 
-  // Fallback to direct client
-  if (!reply) {
+  // Fallback to direct client — but NEVER forward a caller's verbatim prompt to a local
+  // tool-capable runtime (hermes-local / openclaw-local). Those wires exist for
+  // server-generated ambient cognition only; a user turn must not reach a runtime that can
+  // run tools/terminal on the box. When the ElizaOS path produced nothing, return the canned
+  // reply below instead of posting `content`. (Security fix D2, 2026-09-30.)
+  if (!reply && !isLocalToolRuntime(client.getProtocol())) {
     const systemParts: string[] = [
       `You are ${avatarContext?.name ?? 'a ClawVille avatar'}, a ${avatarContext?.species ?? 'avatar'} exploring ClawVille World — a sea-themed 3D game for training AI agents with OpenClaw knowledge.`,
       ...contextParts,
@@ -752,8 +757,10 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     }
   }
 
-  // Fallback to direct client
-  if (!reply) {
+  // Fallback to direct client — but NEVER forward a caller's verbatim prompt to a local
+  // tool-capable runtime (hermes-local / openclaw-local). See the /chat route above.
+  // (Security fix D2, 2026-09-30.)
+  if (!reply && !isLocalToolRuntime(client.getProtocol())) {
     try {
       reply = await client.chat([
         { role: 'system', content: systemParts.join(' ') },
@@ -766,7 +773,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   }
 
   try {
-    const knowledgeLearned = extractKnowledge(reply, locationId);
+    const knowledgeLearned = extractKnowledge(reply ?? '', locationId);
 
     if (knowledgeLearned.length > 0) {
       const user = c.get('user');

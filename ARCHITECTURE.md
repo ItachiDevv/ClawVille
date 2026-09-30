@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-09-30 (security D2 — local-runtime prompt guard).** Drift note: the openclaw chat routes (`/api/openclaw/chat`, `/location-chat`) no longer post a caller's verbatim prompt to a server-hosted `hermes-local` / `openclaw-local` runtime on the ElizaOS fallback; a new pure helper `isLocalToolRuntime()` in `agent-session-config.ts` gates that fallback. Those local runtimes are tool/terminal-capable, so only server-generated ambient cognition may reach them. No schema, route surface, env var, or protocol change; Hatcher unaffected. Part of the 2026-09-30 security pass (plan in the private brain repo).
+
 **Last Audited: 2026-09-29 (i18n section corrected).** Drift note: the i18n section described a cookie + `next-intl` + `apps/web/middleware.ts` locale layer that does not exist in the code; it now documents the live runtime translator (`game-language-control.tsx` + `POST /api/i18n/translate`).
 
 **Last Audited: 2026-09-28 (brand metadata base).** Drift note: §4 `NEXT_PUBLIC_API_URL` now also sets the web metadata base through `apps/web/src/lib/site-url.ts`; no new environment variable.
