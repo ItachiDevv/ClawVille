@@ -469,6 +469,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-09-30 (session sql2) — security M1: ledger gate on value routes; protocol 73 (staging push)
+
+**What changed:** `requireLedgerCapableIdentity` added to the bounty write routes (create, review, claim, submit, abandon, PATCH, DELETE), the exchange write routes (create, order, submit/confirm/cancel), and item buy/learn. PROTOCOL_VERSION 72→73 with the recovery text in `skill-protocol.ts`; Nori/orientation entry in `orientation-skill.ts`. Second of the 2026-09-30 security pass.
+**What broke + root cause + fix:** audit M1 — those routes accepted a non-ledger agent session (a session bound to an owner's avatar WITHOUT ownership proof, e.g. a credentialless reconnect or a restored-after-deploy session), letting a stranger escrow/move the owner's vCLAW. Now they 403 `agent_session_not_ledger_authorized`, same as the cove; the owner's human path and Hatcher's [ACTION:] executor (already gated) are unaffected. tsc clean.
+**Staging verification after deploy:** SOURCE_COMMIT + functional probe (non-ledger agent session → 403 on bounty/exchange/items; human/ledger session → 200) — recorded in CURRENT STATE. Mock-Hatcher harness + Codex-final held for the prod-promotion gate (founder go).
+**Who it's for:** every player with vCLAW (closes an agent-session theft path).
+**SCHEMA:** `synced`. PARITY: human path unchanged; connected/BYO agents must reconnect signed to spend (documented, protocol 73); Hatcher unaffected.
+
 ### 2026-09-30 (session sql2) — security D2: local-runtime prompt guard (staging push)
 
 **What changed:** `apps/api/src/routes/openclaw.ts` (`/chat`, `/location-chat`) no longer fall back to `client.chat([...user content...])` when the wire is `hermes-local`/`openclaw-local`; new pure helper `isLocalToolRuntime()` in `agent-session-config.ts` gates it. Docs: hatcher-integration-spec §11 drift note (agent-session-config.ts is protected), ARCHITECTURE.md note. New unit test `is-local-tool-runtime.test.ts`. First of the 2026-09-30 security pass (plan in the private brain repo).

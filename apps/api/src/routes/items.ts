@@ -14,7 +14,7 @@ import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
-import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import { requireAuthOrAgentSession, requireLedgerCapableIdentity } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import {
   learnBookAtomically,
@@ -75,7 +75,7 @@ const buySchema = z.object({
   itemId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
+itemRoutes.post('/buy', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const identity = c.get('identity');
   const userId = identity.userId;
   const body = await c.req.json();
@@ -301,7 +301,7 @@ const learnSchema = z.object({
   bookId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
+itemRoutes.post('/learn', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const identity = c.get('identity');
   const userId = identity.userId;
   const body = await c.req.json();

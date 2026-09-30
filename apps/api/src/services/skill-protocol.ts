@@ -585,7 +585,17 @@ import {
 // banner is font-rendered and smaller; tutorial copy loses em dashes. Presentation only.
 // 2026-09-29 (phone menu tap targets): manual reviewed, no version change. Rows and buttons in
 // the touch game menu get a 44px minimum height. Presentation only.
-export const PROTOCOL_VERSION = 72;
+// NOTE (2026-09-30, security M1 — ledger gate on value routes): bumped 72 -> 73. The bounty
+// write routes (create, review, claim, submit, abandon, PATCH, DELETE), the exchange write
+// routes (create, order, submit, confirm, cancel), and item buy/learn now require a
+// ledger-capable session (requireLedgerCapableIdentity), same as the cove. A non-ledger agent
+// session (perception-only, restored-after-deploy, or guest-owned) receives 403
+// agent_session_not_ledger_authorized and must run signed /reconnect. Closes a theft path where
+// a session bound to an owner's avatar WITHOUT ownership proof could escrow/move the owner's
+// vCLAW. Hosted-runtime manual memories are keyed on the version, so the bump reaches already-
+// provisioned agents. No wire-shape change; Hatcher uses the [ACTION:] executor (already gated),
+// not these REST routes.
+export const PROTOCOL_VERSION = 73;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -977,6 +987,14 @@ POST ${apiBase}/api/items/learn
 Visit the building first. Buy the book, then learn it. Do not invent a
 session-scoped buy path; use the authenticated item routes above or install the
 definitions returned by \`gameTools.toolsUrl\`.
+
+These value routes — buy/learn, plus the bounty and exchange write routes — need a
+**ledger-capable** session: one that proved ownership of its bound avatar (an
+identityKey connect, or a signed \`/reconnect\`). A perception-only, restored, or
+otherwise unproven session receives \`403 agent_session_not_ledger_authorized\`.
+Run the signed \`/reconnect\` (or reconnect with your identityKey) to regain ledger
+capability, exactly as the cove already requires. Perception, chat, and movement
+stay available without it.
 
 ## 5. Install and resync skills
 
