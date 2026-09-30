@@ -1,5 +1,7 @@
 # ClawPump integration
 
+**Last Audited: 2026-09-30 (Trading Arena follow-ups: sticky default skills D24, D18 confirmed, D25 tradeable sources).** Drift note: ClawPump's six default skills cannot be removed by a PATCH, so they are allowed and every other trading or spending skill is denied and verified by read-back; the REST x402 wrapper is confirmed by one real $0.01 Nansen call on staging; a shared-feed coin is tradeable only after a DexScreener or ClawPump (`clawpump:` signals and anomalies) sighting, so ClawPump's discovery feeds now gate what the arena can buy.
+
 **Last Audited: 2026-09-30 (Trading Arena: ClawVille now CREATES ClawPump agents; protocol 74).** Drift note: new section "Trading Arena (2026-09-30)". Launching a paper arena agent creates one private ClawPump agent under ClawVille's account through the new write client `apps/api/src/services/clawpump-writer.ts` (`CV Arena` names, no trading skill, `x402` only with paid add-ons). Paid add-ons pay vetted Nansen feeds through ClawPump's x402 route from that agent's own wallet. The arena never modifies the house traders' ClawPump agents. The Runner agent gained the `x402` skill on 2026-09-30 for the vetting test ($0.119 spent). The "Start a ClawPump trader" copy cards are no longer rendered in the game; `GET /api/floor/templates` still serves them. Gameplay: `GameFeatures.md` §17g.3; routes and tables: `ARCHITECTURE.md` "Trading Floor Arena (paper contest) service and data surface".
 
 **Last Audited: 2026-09-22 (Trading Floor availability knowledge; protocol 68).** Drift note: the game already labels player trading and trader launch controls "Coming soon", but Nori and the protocol still described immediate template copying. Nori, shared orientation, and the served manual now distinguish disabled game controls from retained authenticated wallet-binding and trade-report APIs. Public house-trader and template reads remain available. Swap execution still requires an operator-provisioned, armed trading account. The version bump refreshes hosted protocol knowledge through the existing install/consume path. No route, action, identity, custody, settlement, or runner state changes. PARITY: human path: game controls and Nori; agent path: protocol and shared orientation; settlement binds to the existing avatar resolution.
@@ -484,9 +486,20 @@ It is the first ClawVille feature that WRITES to ClawPump.
 - **What the created agent looks like.** Name `CV Arena · <name> #<first 12 of
   the arena id>` in production and `CV Arena (staging) · <name> #<id12>`
   everywhere else (`CLAWVILLE_ENV` not `production`), at most 48 characters.
-  Private (`is_public: false`), `accepting_bids: false`, no trading skill, and
-  `enabled_skills` = `['x402']` only while a paid add-on is enabled (`[]`
-  otherwise). Persona and system prompt say it is an execution wallet that
+  Private (`is_public: false`), `accepting_bids: false`, and no trading or
+  spending skill. **ClawPump's six platform default skills are STICKY**
+  (verifier A on staging, 2026-09-30: agent `136de7ec` "CV Arena (staging) ·
+  LandTest1 #4821bfae4287" kept `action-plans`, `web-browsing`,
+  `private-transfers`, `bitget-intel`, `self-learning`, `skill-management`; a
+  PATCH of `enabled_skills` only adds or removes non-default skills such as
+  `x402`). So those six are allowed (D24, `CLAWPUMP_STICKY_DEFAULT_SKILLS`),
+  `x402` is added only while a paid add-on is enabled, and every other trading
+  or spending skill is denied (`CLAWPUMP_ARENA_DENIED_SKILLS`: defi and perps
+  trading, token launch and sniping, marketplace, pay.sh, Laso, AgenC,
+  wallet ops). Provisioning reads the skills back after the PATCH, removes a
+  denied non-default skill, reads back again, and fails with
+  `clawpump_denied_skill_present` if one survives. The agent stays stopped and
+  only ClawVille's API drives it. Persona and system prompt say it is an execution wallet that
   does not trade on its own. Paper trading never uses it and never waits for
   it: it exists for paid add-ons now, and for a later live mode (punch list
   P2, founder go only).
@@ -526,8 +539,13 @@ It is the first ClawVille feature that WRITES to ClawPump.
   12). The catalog therefore alternates `pagination.per_page` between 50 and 49
   on consecutive polls (`dedupeVary`). ClawPump's wrapper key around the
   vendor body is not documented in the MCP source, so the extractor tries the
-  payload and then the usual wrapper keys; one real $0.01 call on staging
-  confirms it before anyone says add-ons work (D18).
+  payload and then the usual wrapper keys. D18 CONFIRMED on staging
+  2026-09-30 (verifier A): one real Nansen token-screener call through the
+  REST x402 route finalised its ledger row `done` at $0.010 with 50 mints (37
+  not in the shared feed), private to the test agent, which then traded 5 of
+  them; public views showed only `addon`. To fund that test, Runner moved 0.05
+  USDC to the test agent's wallet (Runner's whitelist entry was added, then
+  removed).
 - **The two vetted feeds** (x402 vetter, 2026-09-30; 16 candidates, 2
   approved): Nansen Token Screener, $0.01 per call (catalog `minIntervalS`
   600); Nansen Smart Money DEX Trades, $0.05 per call (catalog `minIntervalS`

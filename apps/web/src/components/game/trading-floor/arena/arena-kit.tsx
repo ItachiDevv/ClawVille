@@ -140,6 +140,7 @@ export function ArenaHardRules() {
         ))}
       </ul>
       <ArenaMuted size={11}>No one can turn these off, and they apply before your own rules.</ArenaMuted>
+      <ArenaMuted size={11}>Coins seen only by GeckoTerminal are shown in the feed but are not traded.</ArenaMuted>
     </div>
   );
 }

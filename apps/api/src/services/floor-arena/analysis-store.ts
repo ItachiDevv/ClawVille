@@ -149,6 +149,7 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
     async loadClosedTrades(agentId, limit) {
       const rows = await db
         .select({
+          openedAt: floorArenaPositions.openedAt,
           closedAt: floorArenaPositions.closedAt,
           paramsVersion: floorArenaPositions.paramsVersion,
           exitReason: floorArenaPositions.exitReason,
@@ -170,6 +171,7 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
         .orderBy(desc(floorArenaPositions.closedAt))
         .limit(limit);
       return rows.map((row): ArenaClosedTrade => ({
+        openedAt: toDate(row.openedAt) ?? new Date(0),
         closedAt: toDate(row.closedAt) ?? new Date(0),
         paramsVersion: row.paramsVersion,
         exitReason: row.exitReason,

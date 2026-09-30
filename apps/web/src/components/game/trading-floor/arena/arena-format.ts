@@ -1,7 +1,9 @@
 import {
+  FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
   FLOOR_ARENA_PARAM_BOUNDS,
   FLOOR_ARENA_RANK_BY_LABELS,
   type FloorArenaBound,
+  type FloorArenaFirstSightSources,
   type FloorArenaParams,
   type FloorArenaRankBy,
 } from '@clawville/shared';
@@ -151,6 +153,10 @@ export function rankByLabel(value: FloorArenaRankBy): string {
   return FLOOR_ARENA_RANK_BY_LABELS[value] ?? value;
 }
 
+export function firstSightLabel(value: FloorArenaFirstSightSources): string {
+  return FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS[value] ?? value;
+}
+
 /** One leg as "1.10x sells 100%". */
 export function formatTpLeg([multiple, fraction]: readonly [number, number]): string {
   return `${multiple.toFixed(2)}x sells ${formatFraction(fraction)}`;
@@ -175,6 +181,7 @@ export function paramPathLabel(path: string): string {
   const [section, key] = path.split('.') as [keyof typeof FLOOR_ARENA_PARAM_BOUNDS | 'entry', string];
   if (path === 'exits.tp') return 'Take-profit legs';
   if (path === 'entry.rank_by') return 'Pick order';
+  if (path === 'entry.first_sight_sources') return 'Count first sight from';
   const group = (FLOOR_ARENA_PARAM_BOUNDS as unknown as Record<string, Record<string, FloorArenaBound>>)[section];
   return group?.[key]?.label ?? path;
 }
@@ -190,6 +197,9 @@ export function formatParamValue(path: string, value: unknown): string {
       .join(', ');
   }
   if (path === 'entry.rank_by') return typeof value === 'string' ? rankByLabel(value as FloorArenaRankBy) : String(value);
+  if (path === 'entry.first_sight_sources') {
+    return typeof value === 'string' ? firstSightLabel(value as FloorArenaFirstSightSources) : String(value);
+  }
   const [section, key] = path.split('.');
   const group = (FLOOR_ARENA_PARAM_BOUNDS as unknown as Record<string, Record<string, FloorArenaBound>>)[section ?? ''];
   const bound = group?.[key ?? ''];

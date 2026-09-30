@@ -5,7 +5,12 @@ import { act, createElement } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
-import { FLOOR_ARENA_CONTEST, FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
+import {
+  FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
+  FLOOR_ARENA_HARD_RULES,
+  FLOOR_ARENA_TEMPLATES,
+} from '@clawville/shared';
 
 import { readEvent } from '@/hooks/use-floor-arena';
 import { useFloorArenaUi } from '@/stores/floor-arena-ui';
@@ -23,6 +28,8 @@ import {
   exitTargets,
   formatCountdown,
   formatDuration,
+  formatParamValue,
+  paramPathLabel,
   signedUsd,
 } from './arena-format';
 import { arenaEventTone } from './arena-parts';
@@ -249,6 +256,24 @@ describe('Launch flow', () => {
     expect(live.textContent).toContain('Coming later');
   });
 
+  test('Runner starts with the first-sight select on "tradeable", and liq_min has an off toggle', async () => {
+    const host = await render();
+    await click(buttonByText(host.querySelector('[data-testid="arena-template-runner"]') as HTMLElement, 'Start from this template'));
+    const field = host.querySelector('[data-testid="arena-field-entry.first_sight_sources"]') as HTMLElement;
+    const select = field.querySelector('select') as HTMLSelectElement;
+    expect(select.value).toBe('tradeable');
+    expect(select.disabled).toBe(false);
+    expect([...select.querySelectorAll('option')].map((node) => node.textContent)).toEqual([
+      FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS.any,
+      FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS.tradeable,
+    ]);
+    const liq = host.querySelector('[data-testid="arena-field-filters.liq_min"]') as HTMLElement;
+    expect(liq.querySelector('button[aria-pressed]')).not.toBeNull();
+    const rules = host.querySelector('[data-testid="arena-hard-rules"]')?.textContent ?? '';
+    for (const rule of FLOOR_ARENA_HARD_RULES) expect(rules).toContain(rule.label);
+    expect(rules).toContain('Coins seen only by GeckoTerminal are shown in the feed but are not traded.');
+  });
+
   test('a value outside its bound is refused next to its own field and the flow stays on the rules', async () => {
     const host = await render();
     await click(buttonByText(host.querySelector('[data-testid="arena-template-genesis"]') as HTMLElement, 'Start from this template'));
@@ -398,6 +423,13 @@ describe('Arena pure helpers', () => {
     expect(contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, start - 1)).toBe('upcoming');
     expect(contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, start)).toBe('live');
     expect(contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, end + 1)).toBe('ended');
+  });
+
+  test('the first-sight choice has a label and formats in diffs and suggestions', () => {
+    expect(paramPathLabel('entry.first_sight_sources')).toBe('Count first sight from');
+    expect(formatParamValue('entry.first_sight_sources', 'tradeable')).toBe(
+      FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS.tradeable,
+    );
   });
 
   test('a position row lists the exit rules of its agent', () => {

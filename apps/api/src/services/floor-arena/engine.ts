@@ -1,13 +1,14 @@
 import {
-  and, db, eq, floorArenaAgents, floorArenaPositions, inArray, or, sql,
+  and, db, eq, floorArenaAgents, floorArenaParamChanges, floorArenaPositions, inArray, lt, or, sql,
   type FloorArenaAgentRow, type FloorArenaPositionRow,
 } from '@clawville/database';
 import {
-  cloneFloorArenaParams, FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_RANK_BY_LABELS, floorArenaTemplateById,
-  validateFloorArenaParams, type FloorArenaExitRun, type FloorArenaExits, type FloorArenaParams,
+  cloneFloorArenaParams, diffFloorArenaParams, FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_RANK_BY_LABELS,
+  FLOOR_ARENA_TEMPLATE_VERSION, floorArenaTemplateById, validateFloorArenaParams, type FloorArenaExitRun,
+  type FloorArenaExits, type FloorArenaParams,
 } from '@clawville/shared';
 import {
-  FLOOR_ARENA_LIQ_FLOOR_USD, hardFloorFails, passesFilters, rankCandidates, withinDiscoveryWindow,
+  hasTradeableSource, passesFilters, rankCandidates, tradeableFirstSeenMs, withinDiscoveryWindow,
   type FloorArenaFeatures, type FloorArenaSnapshot,
 } from './filters';
 import {
@@ -371,6 +372,10 @@ export interface ArenaCandidate {
   features: FloorArenaFeatures;
   verdict: 'pass' | 'fail' | 'pending';
   isPrivate: boolean;
+  /** D25: the shared coin has a tradeable source (always true for a private add-on mint). */
+  tradeable: boolean;
+  /** D25: first sighting by a tradeable source (null for private mints and coins without one). */
+  tradeableFirstSeenAtMs: number | null;
 }
 
 export interface AgentEvaluation {
@@ -396,10 +401,18 @@ export function evaluateAgentCandidates(
     if (held.has(c.mint)) continue;
     evaluated += 1;
     const fails: string[] = [];
-    if (!withinDiscoveryWindow(c.firstSeenAtMs, params.entry.discovered_within_s, nowMs)) fails.push('window');
+    // D25: shared-feed coins need a tradeable source (private add-on mints are exempt). With first_sight_sources
+    // 'tradeable' the discovery window starts at the first TRADEABLE sighting; 'any' keeps the hub's first_seen_at.
+    if (!c.isPrivate && !c.tradeable) fails.push('source_not_tradeable');
+    const windowStart = params.entry.first_sight_sources === 'tradeable' && !c.isPrivate
+      ? c.tradeableFirstSeenAtMs ?? c.firstSeenAtMs
+      : c.firstSeenAtMs;
+    if (!withinDiscoveryWindow(windowStart, params.entry.discovered_within_s, nowMs)) fails.push('window');
     if (c.verdict === 'fail') fails.push('hard_rules');
     else if (c.verdict === 'pending') fails.push('chain_pending');
-    fails.push(...hardFloorFails(c.features), ...passesFilters(c.features, params.filters, nowMs));
+    // D26: no platform liquidity floor (pump.fun curve coins show DexScreener liquidity 0); the template's
+    // liq_min, the chain LP rule (a launch curve counts as locked) and the reserve check still apply.
+    fails.push(...passesFilters(c.features, params.filters, nowMs));
     for (const code of fails) failCounts[code] = (failCounts[code] ?? 0) + 1;
     if (fails.length > 0) continue;
     const closedAt = lastClosedAtMs.get(c.mint);
@@ -463,9 +476,9 @@ const lastScanAt = new Map<string, number>();
 const entryRefusalUntil = new Map<string, number>();
 const invalidParamsLogged = new Map<string, number>();
 
-function shouldEmit(key: string, nowMs: number): boolean {
+function shouldEmit(key: string, nowMs: number, windowMs = EVENT_DEDUPE_MS): boolean {
   const last = emitted.get(key);
-  if (last !== undefined && nowMs - last < EVENT_DEDUPE_MS) return false;
+  if (last !== undefined && nowMs - last < windowMs) return false;
   emitted.set(key, nowMs);
   return true;
 }
@@ -502,10 +515,55 @@ export async function ensureHouseAgents(): Promise<number> {
       status: 'active',
       seated: true,
       clawpumpAgentId: house.clawpumpAgentId,
+      templateVersion: FLOOR_ARENA_TEMPLATE_VERSION,
     }).onConflictDoNothing({ target: floorArenaAgents.id }).returning({ id: floorArenaAgents.id });
     inserted += rows.length;
   }
   return inserted;
+}
+
+/**
+ * D27: a HOUSE agent whose template_version is below FLOOR_ARENA_TEMPLATE_VERSION gets its params reset to its
+ * (changed) template: params_version + 1, template_version = current, a public param_changes row (source 'admin',
+ * reason 'template updated to vN') and a 'param_change' event. Runs on leader start and hourly. The version CAS
+ * makes a second leader's run a no-op. Open positions keep the exits they entered with. Returns agents reset.
+ */
+export async function refreshHouseTemplates(now: Date = new Date()): Promise<number> {
+  const stale = await db.select({
+    id: floorArenaAgents.id, templateId: floorArenaAgents.templateId, params: floorArenaAgents.params,
+    paramsVersion: floorArenaAgents.paramsVersion, templateVersion: floorArenaAgents.templateVersion,
+  }).from(floorArenaAgents).where(and(
+    eq(floorArenaAgents.kind, 'house'),
+    lt(floorArenaAgents.templateVersion, FLOOR_ARENA_TEMPLATE_VERSION),
+  ));
+  const reason = `template updated to v${FLOOR_ARENA_TEMPLATE_VERSION}`;
+  let reset = 0;
+  for (const row of stale) {
+    const template = floorArenaTemplateById(row.templateId);
+    if (!template) continue;
+    const next = cloneFloorArenaParams(template.params);
+    const changes = diffFloorArenaParams(row.params, next);
+    const paramsVersion = row.paramsVersion + 1;
+    const done = await db.transaction(async (tx) => {
+      const updated = await tx.update(floorArenaAgents).set({
+        params: next, paramsVersion, templateVersion: FLOOR_ARENA_TEMPLATE_VERSION, updatedAt: now,
+      }).where(and(
+        eq(floorArenaAgents.id, row.id),
+        eq(floorArenaAgents.templateVersion, row.templateVersion),
+        eq(floorArenaAgents.paramsVersion, row.paramsVersion),
+      )).returning({ id: floorArenaAgents.id });
+      if (updated.length === 0) return false;
+      await tx.insert(floorArenaParamChanges).values({ agentId: row.id, at: now, source: 'admin', changes, paramsVersion, reason });
+      await writeArenaEvent({
+        agentId: row.id, type: 'param_change', at: now,
+        summary: `House rules reset to the ${template.displayName} template v${FLOOR_ARENA_TEMPLATE_VERSION} (${changes.length} change${changes.length === 1 ? '' : 's'}).`,
+        data: { source: 'admin', reason, paramsVersion, templateVersion: FLOOR_ARENA_TEMPLATE_VERSION, changes },
+      }, tx);
+      return true;
+    });
+    if (done) reset += 1;
+  }
+  return reset;
 }
 
 // ---------------------------------------------------------------- DB helpers
@@ -559,7 +617,7 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
 
   const freshCutoff = new Date(nowMs - ARENA_MARK_MAX_AGE_MS).toISOString();
   const sharedRows = rowsOf(await db.execute(sql`
-    SELECT mint, first_seen_at, first_source, symbol, snapshot, snapshot_at, chain_verdict
+    SELECT mint, first_seen_at, first_source, sources, source_first_seen, symbol, snapshot, snapshot_at, chain_verdict
     FROM floor_discovery_mints
     WHERE expires_at > ${now.toISOString()}::timestamptz AND snapshot IS NOT NULL AND snapshot_at >= ${freshCutoff}::timestamptz
   `));
@@ -569,9 +627,13 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
     const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
     if (!snapshot) continue;
     const { verdict, top10Pct } = verdictOf(row.chain_verdict, snapshot);
+    const firstSeenAtMs = msOf(row.first_seen_at) ?? nowMs;
+    const sources = Array.isArray(row.sources) ? row.sources.map(String) : [];
     shared.push({
       mint, source: String(row.first_source), symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
-      firstSeenAtMs: msOf(row.first_seen_at) ?? nowMs, features: { ...snapshot, top10Pct }, verdict, isPrivate: false,
+      firstSeenAtMs, features: { ...snapshot, top10Pct }, verdict, isPrivate: false,
+      tradeable: hasTradeableSource(sources),
+      tradeableFirstSeenAtMs: tradeableFirstSeenMs(sources, row.source_first_seen as Record<string, string> | null, firstSeenAtMs),
     });
   }
   // Deterministic evaluation order before ranking: newest first sight first.
@@ -649,6 +711,7 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
     out.get(agentId)!.push({
       mint, source: `private:${String(row.source)}`, symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
       firstSeenAtMs: msOf(row.first_seen_at) ?? nowMs, features: { ...snapshot, top10Pct }, verdict, isPrivate: true,
+      tradeable: true, tradeableFirstSeenAtMs: null,
     });
   }
   return out;
@@ -788,7 +851,6 @@ async function openPosition(
         positionId, sizeUsd: ARENA_POSITION_USD, entryPriceUsd: quote.entryPriceUsd, tokens: quote.tokens,
         dsPriceUsd: c.features.priceUsd, impactPct: quote.impactPct, driftPct: quote.driftPct, source: c.source,
         mcap: c.features.mcap, liqUsd: c.features.liqUsd, paramsVersion: agent.paramsVersion,
-        liqFloorUsd: FLOOR_ARENA_LIQ_FLOOR_USD,
       },
     }, tx);
     return 'opened' as const;
@@ -898,6 +960,41 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
     `);
   }
   return result;
+}
+
+/** R6: a refused exit quote is always visible on the decision stream, at most once per position per 2 min. */
+export const EXIT_REFUSAL_EVENT_MS = 2 * 60_000;
+const EXIT_REFUSAL_WORDS: Record<string, string> = {
+  quote_failed: 'no sell quote',
+  not_configured: 'sell quotes are not configured',
+  quote_far_below_mark: 'the sell quote is under half the mark',
+  quote_far_below_reference: 'the sell quote is under half the last known price',
+  drift: 'the sell quote is more than 35% above the mark',
+  quote_echo_mismatch: 'the sell quote did not match the request',
+  quote_output_bad: 'the sell quote had no usable output',
+};
+
+async function emitExitRefusal(
+  position: FloorArenaPositionRow,
+  state: ExitState,
+  trigger: ExitTrigger,
+  quote: Extract<SellQuoteResult, { ok: false }>,
+  markMult: number | null,
+  nowMs: number,
+): Promise<void> {
+  if (!shouldEmit(`${position.agentId}|skip|${position.id}|exit_quote_refused`, nowMs, EXIT_REFUSAL_EVENT_MS)) return;
+  const quoteMult = quote.quotedPriceUsd !== undefined ? quote.quotedPriceUsd / state.entryPriceUsd : null;
+  const label = tokenLabel(position.symbol, position.mint);
+  const why = trigger.reason === 'tp' ? `TP ${trigger.leg}` : REASON_WORDS[trigger.reason];
+  const mults = `mark ${markMult !== null ? `${markMult.toFixed(2)}x` : 'not fresh'}, quote ${quoteMult !== null ? `${quoteMult.toFixed(2)}x` : 'none'}`;
+  await writeArenaEvent({
+    agentId: position.agentId, type: 'skip', mint: position.mint,
+    summary: `Exit of ${label} (${why}) not booked yet: ${EXIT_REFUSAL_WORDS[quote.reason] ?? quote.reason} (${mults}). Retrying.`,
+    data: {
+      reason: 'exit_quote_refused', refusal: quote.reason, detail: quote.detail ?? null, trigger: trigger.reason,
+      positionId: position.id, markMult, quoteMult,
+    },
+  });
 }
 
 type ExitOutcome = { kind: 'filled'; closed: boolean; source: ExitFillSource } | { kind: 'quote_failed' } | { kind: 'unresolved' }
@@ -1013,6 +1110,7 @@ async function executeExit(
     fillSource = 'quote';
     fillPrice = quote.priceUsd;
   } else {
+    await emitExitRefusal(position, state, trigger, quote, markMult, nowMs);
     const run = advanceExitRun(parseExitRun(position.exitRun), classifyExitAttempt(quote.reason), nowMs);
     const currentLow = quote.reason === 'quote_far_below_reference' && quote.fill ? quote.fill : null;
     const d4 = d4Decision({

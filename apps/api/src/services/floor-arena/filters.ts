@@ -1,4 +1,4 @@
-import type { FloorArenaFilters, FloorArenaRankBy } from '@clawville/shared';
+import { isFloorArenaTradeableSource, type FloorArenaFilters, type FloorArenaRankBy } from '@clawville/shared';
 
 /**
  * Pure entry filters and ranking for the Trading Floor Arena (docs/trading-floor-arena.md §2, §6).
@@ -52,12 +52,9 @@ export const FLOOR_ARENA_FAIL_CODES = [
   'chg5m', 'chg5m_max', 'chg1h', 'chg1h_max', 'chg6h', 'chg6h_max', 'chg24h', 'chg24h_max',
   'txns', 'txns_max', 'top10', 'top10_unknown',
   // engine codes (never from passesFilters)
-  'window', 'hard_rules', 'chain_pending', 'liq_floor', 'cooldown',
+  'window', 'hard_rules', 'chain_pending', 'cooldown', 'source_not_tradeable',
 ] as const;
 export type FloorArenaFailCode = (typeof FLOOR_ARENA_FAIL_CODES)[number];
-
-/** D5: the liquidity floor is a hard rule, not a parameter. */
-export const FLOOR_ARENA_LIQ_FLOOR_USD = 5_000;
 
 export function finiteOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -125,10 +122,30 @@ export function passesFilters(features: FloorArenaFeatures, filters: FloorArenaF
   return fails;
 }
 
-/** D5 liquidity floor, judged on the fresh snapshot at every entry (liquidity moves). */
-export function hardFloorFails(features: Pick<FloorArenaSnapshot, 'liqUsd'>): string[] {
-  const liq = finiteOrNull(features.liqUsd);
-  return liq !== null && liq >= FLOOR_ARENA_LIQ_FLOOR_USD ? [] : ['liq_floor'];
+/** D25: a shared-feed coin is tradeable only when one of its sources is a tradeable feed (DexScreener / ClawPump). */
+export function hasTradeableSource(sources: readonly string[]): boolean {
+  return sources.some(isFloorArenaTradeableSource);
+}
+
+/**
+ * D25: when a shared-feed coin was first seen by a TRADEABLE source: the earliest recorded first sighting among its
+ * tradeable sources. A tradeable source with no recorded time (a row written before migration 0072) falls back to
+ * the coin's first_seen_at, the earliest time the hub knows (so the window can only close sooner, never later).
+ * null = the coin has no tradeable source.
+ */
+export function tradeableFirstSeenMs(
+  sources: readonly string[],
+  sourceFirstSeen: Readonly<Record<string, string>> | null | undefined,
+  firstSeenAtMs: number,
+): number | null {
+  let best: number | null = null;
+  for (const source of sources) {
+    if (!isFloorArenaTradeableSource(source)) continue;
+    const recorded = Date.parse(sourceFirstSeen?.[source] ?? '');
+    const at = Number.isFinite(recorded) ? recorded : firstSeenAtMs;
+    if (best === null || at < best) best = at;
+  }
+  return best;
 }
 
 /** `entry.discovered_within_s`: null = any age on the radar; else first sight must be at most that old. */

@@ -24,6 +24,11 @@ import {
   FLOOR_ARENA_PROVISION_STATES,
   FLOOR_ARENA_RANK_BY,
   FLOOR_ARENA_RANK_BY_LABELS,
+  FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
+  FLOOR_ARENA_FIRST_SIGHT_SOURCES,
+  FLOOR_ARENA_TEMPLATE_VERSION,
+  FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
+  isFloorArenaTradeableSource,
   FLOOR_ARENA_SUGGESTION_STATES,
   FLOOR_ARENA_TEMPLATES,
   FLOOR_ARENA_VERSION,
@@ -70,7 +75,9 @@ function expectPlainSentence(text: string): void {
 
 describe('floor arena templates and house agents', () => {
   test('ships exactly five templates with unique ids', () => {
-    expect(FLOOR_ARENA_VERSION).toBe(1);
+    expect(FLOOR_ARENA_VERSION).toBe(2);
+    expect(Number.isInteger(FLOOR_ARENA_TEMPLATE_VERSION)).toBe(true);
+    expect(FLOOR_ARENA_TEMPLATE_VERSION).toBeGreaterThanOrEqual(2);
     expect(FLOOR_ARENA_TEMPLATES.map((t) => t.id)).toEqual([
       'genesis',
       'runner',
@@ -122,16 +129,16 @@ describe('floor arena templates and house agents', () => {
         age_min_s: 1_800,
         age_max_s: 21_600,
       },
-      entry: { discovered_within_s: null, rank_by: 'vol_over_mcap', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'vol_over_mcap', entries_per_tick: 1 },
       exits: { tp: [[1.1, 1]], stop_mult: null, trail_from_peak: null, trail_arm_mult: null, max_hold_s: 900 },
       limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
     });
   });
 
-  test('Runner is the locked paper C1 set, clamped to 3 entries per tick', () => {
+  test('Runner is the locked paper C1 set (no liquidity floor, tradeable first sight), clamped to 3 entries per tick', () => {
     expect(floorArenaTemplateById('runner')!.params).toEqual({
-      filters: { ...nullFilters(), liq_min: 5_000, chg5m_max: 41.48, chg6h_min: 680.4 },
-      entry: { discovered_within_s: 120, rank_by: 'newest', entries_per_tick: 3 },
+      filters: { ...nullFilters(), chg5m_max: 41.48, chg6h_min: 680.4 },
+      entry: { discovered_within_s: 120, first_sight_sources: 'tradeable', rank_by: 'newest', entries_per_tick: 3 },
       exits: { tp: [[1.2, 1]], stop_mult: null, trail_from_peak: null, trail_arm_mult: null, max_hold_s: 900 },
       limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
     });
@@ -140,7 +147,7 @@ describe('floor arena templates and house agents', () => {
   test('the three new templates carry the lead-approved params', () => {
     expect(floorArenaTemplateById('dip-hunter')!.params).toEqual({
       filters: { ...nullFilters(), mcap_min: 250_000, mcap_max: 50_000_000, liq_min: 50_000, age_min_s: 21_600, chg1h_max: -5, chg24h_min: 0 },
-      entry: { discovered_within_s: null, rank_by: 'lowest_vol_over_mcap', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'lowest_vol_over_mcap', entries_per_tick: 1 },
       exits: { tp: [[1.08, 1]], stop_mult: 0.9, trail_from_peak: null, trail_arm_mult: null, max_hold_s: 7_200 },
       limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
     });
@@ -156,7 +163,7 @@ describe('floor arena templates and house agents', () => {
         chg1h_min: 5,
         chg1h_max: 60,
       },
-      entry: { discovered_within_s: null, rank_by: 'txns1h', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'txns1h', entries_per_tick: 1 },
       exits: { tp: [[1.1, 1]], stop_mult: null, trail_from_peak: null, trail_arm_mult: null, max_hold_s: 3_600 },
       limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
     });
@@ -171,7 +178,7 @@ describe('floor arena templates and house agents', () => {
         chg5m_min: 2,
         chg1h_min: 20,
       },
-      entry: { discovered_within_s: null, rank_by: 'txns1h', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'txns1h', entries_per_tick: 1 },
       exits: { tp: [[1.1, 1]], stop_mult: null, trail_from_peak: null, trail_arm_mult: null, max_hold_s: 1_800 },
       limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
     });
@@ -226,7 +233,6 @@ describe('floor arena static tables', () => {
       { id: 'freeze-authority', label: 'Freeze authority revoked' },
       { id: 't22-fee', label: 'Token-2022: no transfer fee or risky extension' },
       { id: 'pool-reserves', label: 'Pool reserves present' },
-      { id: 'min-liquidity', label: 'Liquidity of $5,000 or more' },
     ]);
   });
 
@@ -234,7 +240,7 @@ describe('floor arena static tables', () => {
     expect(Object.keys(FLOOR_ARENA_PARAM_BOUNDS.filters)).toEqual([...FLOOR_ARENA_FILTER_KEYS]);
     const size = FLOOR_ARENA_PARAM_BOUNDS.limits.position_usd;
     expect(size).toMatchObject({ min: 20, max: 20, locked: true, nullable: false });
-    expect(FLOOR_ARENA_PARAM_BOUNDS.filters.liq_min).toMatchObject({ min: 5_000, max: 50_000_000, nullable: false });
+    expect(FLOOR_ARENA_PARAM_BOUNDS.filters.liq_min).toMatchObject({ min: 0, max: 50_000_000, nullable: true });
     expect(FLOOR_ARENA_PARAM_BOUNDS.exits.max_hold_s).toMatchObject({ min: 60, max: 86_400, nullable: false });
     for (const section of Object.values(FLOOR_ARENA_PARAM_BOUNDS)) {
       for (const b of Object.values(section) as FloorArenaBound[]) {
@@ -245,12 +251,33 @@ describe('floor arena static tables', () => {
     }
   });
 
-  test('rank_by options all have labels', () => {
+  test('rank_by and first_sight_sources options all have labels', () => {
     expect(Object.keys(FLOOR_ARENA_RANK_BY_LABELS)).toEqual([...FLOOR_ARENA_RANK_BY]);
+    expect(FLOOR_ARENA_FIRST_SIGHT_SOURCES).toEqual(['any', 'tradeable']);
+    expect(Object.keys(FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS)).toEqual([...FLOOR_ARENA_FIRST_SIGHT_SOURCES]);
+  });
+
+  test('D25: only ds: and clawpump: sources are tradeable', () => {
+    expect(FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES).toEqual(['ds:', 'clawpump:']);
+    for (const source of ['ds:token-profiles', 'ds:token-boosts-top', 'clawpump:signals', 'clawpump:anomalies']) {
+      expect(isFloorArenaTradeableSource(source)).toBe(true);
+    }
+    for (const source of ['gecko:new-pools', 'gecko:trending-pools', 'dsx:feed', 'DS:token-profiles', 'ds', '']) {
+      expect(isFloorArenaTradeableSource(source)).toBe(false);
+    }
+  });
+
+  test('D26: no hard rule and no template sets a platform liquidity floor', () => {
+    expect(FLOOR_ARENA_HARD_RULES.map((rule) => rule.id)).not.toContain('min-liquidity');
+    expect(floorArenaTemplateById('runner')!.params.filters.liq_min).toBeNull();
+    expect(
+      Object.fromEntries(FLOOR_ARENA_TEMPLATES.map((template) => [template.id, template.params.filters.liq_min])),
+    ).toEqual({ genesis: 15_000, runner: null, 'dip-hunter': 50_000, 'midcap-climber': 30_000, 'late-bloomer': 15_000 });
   });
 
   test('param paths list every leaf once, in canonical order', () => {
-    expect(FLOOR_ARENA_PARAM_PATHS).toHaveLength(19 + 3 + 5 + 3);
+    expect(FLOOR_ARENA_PARAM_PATHS).toHaveLength(19 + 4 + 5 + 3);
+    expect(FLOOR_ARENA_PARAM_PATHS).toContain('entry.first_sight_sources');
     expect(new Set(FLOOR_ARENA_PARAM_PATHS).size).toBe(FLOOR_ARENA_PARAM_PATHS.length);
     expect(FLOOR_ARENA_PARAM_PATHS[0]).toBe('filters.mcap_min');
     expect(FLOOR_ARENA_PARAM_PATHS).toContain('exits.tp');
@@ -428,12 +455,26 @@ describe('validateFloorArenaParams', () => {
     expect(errorsOf(p)).toEqual(['limits.position_usd: is fixed at 20']);
   });
 
-  test('enforces the $5,000 liquidity floor and requires liq_min', () => {
+  test('treats liq_min as an optional filter from 0 to 50,000,000 (D26)', () => {
     const p = genesis();
-    p.filters.liq_min = 4_999;
-    expect(errorsOf(p)).toEqual(['filters.liq_min: must be between 5000 and 50000000']);
-    p.filters.liq_min = null;
-    expect(errorsOf(p)).toEqual(['filters.liq_min: must be set']);
+    for (const value of [null, 0, 4_999, 50_000_000]) {
+      p.filters.liq_min = value;
+      expect(validateFloorArenaParams(p).ok).toBe(true);
+    }
+    p.filters.liq_min = -1;
+    expect(errorsOf(p)).toEqual(['filters.liq_min: must be between 0 and 50000000']);
+    p.filters.liq_min = 50_000_001;
+    expect(errorsOf(p)).toEqual(['filters.liq_min: must be between 0 and 50000000']);
+  });
+
+  test('requires entry.first_sight_sources and accepts only its two values (D25)', () => {
+    const p = genesis();
+    p.entry.first_sight_sources = 'tradeable';
+    expect(validateFloorArenaParams(p).ok).toBe(true);
+    (p.entry as { first_sight_sources: string }).first_sight_sources = 'gecko';
+    expect(errorsOf(p)).toEqual(['entry.first_sight_sources: must be one of any, tradeable']);
+    delete (p.entry as { first_sight_sources?: string }).first_sight_sources;
+    expect(errorsOf(p)).toEqual(['entry.first_sight_sources: required']);
   });
 
   test('requires at least one exit besides max_hold_s', () => {

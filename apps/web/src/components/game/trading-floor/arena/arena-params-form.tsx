@@ -2,11 +2,13 @@
 
 import { useId, useState, type ReactNode } from 'react';
 import {
+  FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_MAX_TP_LEGS,
   FLOOR_ARENA_PARAM_BOUNDS,
   FLOOR_ARENA_RANK_BY,
   type FloorArenaBound,
   type FloorArenaFilters,
+  type FloorArenaFirstSightSources,
   type FloorArenaParams,
   type FloorArenaRankBy,
 } from '@clawville/shared';
@@ -14,6 +16,7 @@ import {
 import { FLOOR_TEXT } from '../tokens';
 import {
   errorsByPath,
+  firstSightLabel,
   formatBoundValue,
   rankByLabel,
   UNIT_SUFFIX,
@@ -329,6 +332,7 @@ export function ArenaParamsForm({
 }) {
   const byPath = errorsByPath(errors);
   const rankId = useId();
+  const firstSightId = useId();
   const filterErrorCount = [...byPath.keys()].filter((path) => path.startsWith('filters')).length;
 
   const setFilter = (key: keyof FloorArenaFilters, next: number | null) =>
@@ -405,6 +409,30 @@ export function ArenaParamsForm({
             disabled={disabled}
             offLabel="Any"
           />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} data-testid="arena-field-entry.first_sight_sources">
+            <label htmlFor={firstSightId} style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
+              Count first sight from
+            </label>
+            <select
+              id={firstSightId}
+              value={value.entry.first_sight_sources}
+              // Only the "first seen within" clock reads it, so it waits until
+              // that filter is on. The value stays in the rules either way.
+              disabled={disabled || value.entry.discovered_within_s === null}
+              onChange={(event) => setEntry({ first_sight_sources: event.target.value as FloorArenaFirstSightSources })}
+              style={{ ...arenaInputStyle, opacity: disabled || value.entry.discovered_within_s === null ? 0.5 : 1 }}
+            >
+              {FLOOR_ARENA_FIRST_SIGHT_SOURCES.map((option) => (
+                <option key={option} value={option}>
+                  {firstSightLabel(option)}
+                </option>
+              ))}
+            </select>
+            {value.entry.discovered_within_s === null ? (
+              <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>Used only when &quot;Only coins first seen within&quot; is on.</div>
+            ) : null}
+            <FieldErrors errors={byPath.get('entry.first_sight_sources')} />
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} data-testid="arena-field-entry.rank_by">
             <label htmlFor={rankId} style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
               Pick order when several coins pass

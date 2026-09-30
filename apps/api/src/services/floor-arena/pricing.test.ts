@@ -63,6 +63,23 @@ describe('evaluateBuyQuote (paper runner quote_refusal + fill model)', () => {
       .toMatchObject({ reason: 'quote_echo_mismatch' });
   });
 
+  test('D26: a pump.fun CURVE coin quotes through ClawPump (live response 2026-09-30, route Pump.fun) and passes the buy checks', () => {
+    const CURVE = 'C4X6i2zNCGeXLodnHmj2faZjaA47iR1JmgmJhotbpump';
+    const live = {
+      status: 'quoted', venue: 'jupiter', swapMode: 'ExactIn',
+      input: { token: 'USDC', mint: USDC_MINT, amount: '20', rawAmount: '20000000', decimals: 6 },
+      output: { token: 'C4X6i2zN...', mint: CURVE, amount: '7605468.192649', rawAmount: '7605468192649', decimals: 6 },
+      slippageBps: 300, priceImpactPct: '0.0114332421793368856384902623', route: ['Kipseli', 'Pump.fun'],
+      otherAmountThreshold: '7377304.14687', platformFee: null,
+    };
+    // DexScreener marked the same curve pair at $0.000002575 (dexId pumpfun, no liquidity field).
+    const r = evaluateBuyQuote(live, { mint: CURVE, usd: 20, amountRaw: '20000000', slippageBps: 300, dsPriceUsd: 0.000002575 }, COSTS);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.impactPct).toBeCloseTo(1.1433, 3);
+    expect(r.driftPct).toBeCloseTo(2.08, 1);
+    expect(r.route).toEqual(['Kipseli', 'Pump.fun']);
+  });
+
   test('status other than quoted, bad schema and zero output refuse', () => {
     expect(evaluateBuyQuote(buyQuote({ status: 'error' }), BUY_REQ, COSTS)).toMatchObject({ reason: 'quote_failed' });
     expect(evaluateBuyQuote({ nope: true }, BUY_REQ, COSTS)).toMatchObject({ reason: 'quote_failed' });

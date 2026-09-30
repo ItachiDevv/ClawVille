@@ -345,7 +345,7 @@ describe('evaluateAgentCandidates', () => {
   };
   const params: FloorArenaParams = {
     filters: { ...OFF, mcap_max: 250_000 },
-    entry: { discovered_within_s: 120, rank_by: 'vol_over_mcap', entries_per_tick: 1 },
+    entry: { discovered_within_s: 120, first_sight_sources: 'any', rank_by: 'vol_over_mcap', entries_per_tick: 1 },
     exits: exits({ tp: [[1.1, 1]] }),
     limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
   };
@@ -357,7 +357,10 @@ describe('evaluateAgentCandidates', () => {
     };
   }
   function cand(mint: string, over: Partial<ArenaCandidate> = {}, f: Partial<FloorArenaFeatures> = {}): ArenaCandidate {
-    return { mint, source: 'ds:token-profiles', symbol: mint, firstSeenAtMs: T0 - 30_000, features: features(f), verdict: 'pass', isPrivate: false, ...over };
+    return {
+      mint, source: 'ds:token-profiles', symbol: mint, firstSeenAtMs: T0 - 30_000, features: features(f), verdict: 'pass',
+      isPrivate: false, tradeable: true, tradeableFirstSeenAtMs: T0 - 30_000, ...over,
+    };
   }
 
   test('window, hard rules, pending verdict, liquidity floor, filters, held and cooldown', () => {
@@ -368,6 +371,7 @@ describe('evaluateAgentCandidates', () => {
       cand('rug', { verdict: 'fail' }),
       cand('new', { verdict: 'pending' }),
       cand('thin', {}, { liqUsd: 4_000 }),
+      cand('curve', {}, { dexId: 'pumpfun', liqUsd: 0 }),
       cand('big', {}, { mcap: 300_000 }),
       cand('mine'),
       cand('recent'),
@@ -375,9 +379,37 @@ describe('evaluateAgentCandidates', () => {
     const out = evaluateAgentCandidates(params, list, new Set(['mine']), new Map([['recent', T0 - 60_000]]), T0);
     expect(out.passed.map((c) => c.mint)).toEqual(['good1', 'good2']);
     expect(out.cooling.map((c) => c.mint)).toEqual(['recent']);
-    expect(out.evaluated).toBe(8);
-    expect(out.failCounts).toEqual({ window: 1, hard_rules: 1, chain_pending: 1, liq_floor: 1, liq: 1, mcap: 1, cooldown: 1 });
-    expect(topFailCodes(out.failCounts, 2)).toEqual([['chain_pending', 1], ['cooldown', 1]]);
+    expect(out.evaluated).toBe(9);
+    // D26: no platform floor; 'thin' and 'curve' fail only this template's own liq_min (5,000).
+    expect(out.failCounts).toEqual({ window: 1, hard_rules: 1, chain_pending: 1, liq: 2, mcap: 1, cooldown: 1 });
+    expect(topFailCodes(out.failCounts, 2)).toEqual([['liq', 2], ['chain_pending', 1]]);
+  });
+
+  test('D25: a shared coin without a tradeable source fails source_not_tradeable; a private add-on mint is exempt', () => {
+    const out = evaluateAgentCandidates(params, [
+      cand('gecko-only', { tradeable: false, tradeableFirstSeenAtMs: null }),
+      cand('addon', { isPrivate: true, tradeable: true, tradeableFirstSeenAtMs: null, source: 'private:feed' }),
+    ], new Set(), new Map(), T0);
+    expect(out.passed.map((c) => c.mint)).toEqual(['addon']);
+    expect(out.failCounts).toEqual({ source_not_tradeable: 1 });
+  });
+
+  test('D25: first_sight_sources tradeable starts the window at the first TRADEABLE sighting; any = first_seen_at', () => {
+    // First seen by gecko 10 min ago, by DexScreener 60 s ago: a 120-s window.
+    const coin = cand('late-ds', { firstSeenAtMs: T0 - 600_000, tradeableFirstSeenAtMs: T0 - 60_000 });
+    const tradeable = { ...params, entry: { ...params.entry, first_sight_sources: 'tradeable' as const } };
+    expect(evaluateAgentCandidates(tradeable, [coin], new Set(), new Map(), T0).passed.map((c) => c.mint)).toEqual(['late-ds']);
+    expect(evaluateAgentCandidates(params, [coin], new Set(), new Map(), T0).failCounts).toEqual({ window: 1 });
+    // A private mint uses its own first sighting in either mode.
+    const addon = cand('addon', { isPrivate: true, firstSeenAtMs: T0 - 60_000, tradeableFirstSeenAtMs: null });
+    expect(evaluateAgentCandidates(tradeable, [addon], new Set(), new Map(), T0).passed.map((c) => c.mint)).toEqual(['addon']);
+  });
+
+  test('D26: with liq_min off, a pump.fun curve coin (DexScreener liquidity 0) passes', () => {
+    const offLiq = { ...params, filters: { ...params.filters, liq_min: null } };
+    const out = evaluateAgentCandidates(offLiq, [cand('curve', {}, { dexId: 'pumpfun', liqUsd: 0, mcap: 35_000 })], new Set(), new Map(), T0);
+    expect(out.passed.map((c) => c.mint)).toEqual(['curve']);
+    expect(out.failCounts).toEqual({});
   });
 
   test('a cooldown that has run out lets the coin back in', () => {

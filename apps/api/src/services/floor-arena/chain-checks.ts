@@ -14,8 +14,8 @@ import { currentSolPriceUsd, USDC_MINT, WSOL_MINT } from './pricing';
  *   - >= 95 % of the pool's liquidity burned or locked (launch-curve programs hold the reserves: OK);
  *   - the pool's SOL / USDC side holds >= max($5k, 1/4 of DexScreener's claimed side) (a pulled pool fails);
  *   - the top-10 holder share (pool account removed) is MEASURED here; the template's top10_max_pct judges it.
- * Any read error fails closed (`chain_check_error`). The liquidity floor ($5k) is judged by the engine on the
- * fresh snapshot at entry.
+ * Any read error fails closed (`chain_check_error`). D26: there is no platform liquidity floor any more; a pump.fun
+ * curve coin (DexScreener liquidity 0) passes the LP rule as a launch curve and has no pool reserves to check.
  */
 
 const PUMPSWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
@@ -52,8 +52,11 @@ export const CHAIN_VERDICT_TTL_MS = 30 * 60_000;
 const CHECK_DEADLINE_MS = 25_000;
 const CHECKS_PER_TICK = 20;
 const CHECK_CONCURRENCY = 4;
-/** Coarse universe (lead brief): only these coins are worth an RPC budget. */
-export const CHAIN_UNIVERSE = { liqMin: 5_000, mcapMin: 1_000, mcapMax: 100_000_000 } as const;
+/**
+ * Coarse universe: only these coins are worth an RPC budget. D26: no liquidity bound (pump.fun curve coins show
+ * DexScreener liquidity 0 and must still get a verdict); a positive price and mcap 1k-100M.
+ */
+export const CHAIN_UNIVERSE = { mcapMin: 1_000, mcapMax: 100_000_000 } as const;
 
 /**
  * `chain_verdict` jsonb. `fails` holds ONLY hard-rule ids (FLOOR_ARENA_HARD_RULES, the UI labels them);
@@ -461,7 +464,7 @@ export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): 
   const universe = (table: 'floor_discovery_mints' | 'floor_arena_private_mints') => sql`
     snapshot IS NOT NULL
     AND snapshot_at >= ${fresh}::timestamptz
-    AND (snapshot->>'liqUsd')::double precision >= ${CHAIN_UNIVERSE.liqMin}
+    AND (snapshot->>'priceUsd')::double precision > 0
     AND (snapshot->>'mcap')::double precision BETWEEN ${CHAIN_UNIVERSE.mcapMin} AND ${CHAIN_UNIVERSE.mcapMax}
     AND (chain_checked_at IS NULL OR chain_checked_at <= ${stale}::timestamptz
          OR chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress'

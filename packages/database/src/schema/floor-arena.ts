@@ -1,6 +1,6 @@
 /**
  * Trading Floor Arena (paper contest) tables. Contract:
- * `docs/trading-floor-arena.md` §4. Migration: `0070_floor_arena.sql`
+ * `docs/trading-floor-arena.md` §4. Migrations: `0070_floor_arena.sql` + `0072_floor_arena_sources.sql`
  * (idempotent, applied by the CI migrate gate, NEVER db:push).
  *
  * PAPER ONLY. No table here holds money, a ClawToken balance or a wallet
@@ -58,6 +58,8 @@ export const floorDiscoveryMints = pgTable('floor_discovery_mints', {
   firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
   firstSource: text('first_source').notNull(),
   sources: text('sources').array().notNull().default(sql`'{}'::text[]`),
+  /** D25: first sighting per source, {"<source id>": "<ISO time>"} (migration 0072). */
+  sourceFirstSeen: jsonb('source_first_seen').$type<Record<string, string>>().default(sql`'{}'::jsonb`).notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
   symbol: text('symbol'),
   name: text('name'),
@@ -81,6 +83,8 @@ export const floorArenaAgents = pgTable('floor_arena_agents', {
   avatarId: uuid('avatar_id'),
   name: text('name').notNull(),
   templateId: text('template_id').notNull(),
+  /** House rows below FLOOR_ARENA_TEMPLATE_VERSION get their params reset to the template (migration 0072). */
+  templateVersion: integer('template_version').default(1).notNull(),
   params: jsonb('params').$type<FloorArenaParams>().notNull(),
   paramsVersion: integer('params_version').default(1).notNull(),
   mode: text('mode').$type<FloorArenaMode>().default('paper').notNull(),

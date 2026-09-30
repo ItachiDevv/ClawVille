@@ -179,18 +179,23 @@ export function mergeSightings(sightings: readonly Sighting[]): MergedSighting[]
 export interface DiscoveryRowState {
   mint: string; firstSeenAt: Date; firstSource: string; sources: string[]; lastSeenAt: Date;
   symbol: string | null; name: string | null; expiresAt: Date;
+  /** D25: first sighting per source ({source: ISO}); a key, once set, never changes. */
+  sourceFirstSeen: Record<string, string>;
 }
 
 /**
  * The upsert rule (mirrored by `upsertSightings` SQL): first_seen_at / first_source only on insert; sources is a
  * set in order of appearance; last_seen_at moves forward; symbol / name keep the first non-null;
- * expires_at = max(previous, first_seen + 24 h, last_seen + 6 h).
+ * expires_at = max(previous, first_seen + 24 h, last_seen + 6 h); source_first_seen[source] is set on that
+ * source's first sighting and never overwritten (D25).
  */
 export function mergeDiscoveryRow(existing: DiscoveryRowState | null, sighting: MergedSighting, now: Date): DiscoveryRowState {
+  const seenNow = Object.fromEntries(sighting.sources.map((source) => [source, now.toISOString()]));
   if (!existing) {
     return {
       mint: sighting.mint, firstSeenAt: now, firstSource: sighting.firstSource, sources: [...sighting.sources],
       lastSeenAt: now, symbol: sighting.symbol, name: sighting.name, expiresAt: new Date(now.getTime() + DISCOVERY_FIRST_TTL_MS),
+      sourceFirstSeen: seenNow,
     };
   }
   const sources = [...existing.sources];
@@ -204,21 +209,25 @@ export function mergeDiscoveryRow(existing: DiscoveryRowState | null, sighting: 
   return {
     ...existing, sources, lastSeenAt, symbol: existing.symbol ?? sighting.symbol, name: existing.name ?? sighting.name,
     expiresAt: new Date(expiresMs),
+    sourceFirstSeen: { ...seenNow, ...existing.sourceFirstSeen },
   };
 }
 
 export async function upsertSightings(merged: readonly MergedSighting[], now: Date = new Date()): Promise<number> {
   if (merged.length === 0) return 0;
+  const at = now.toISOString();
   const payload = JSON.stringify(merged.map((m) => ({
     mint: m.mint, first_source: m.firstSource, sources: m.sources, symbol: m.symbol, name: m.name,
+    source_first_seen: Object.fromEntries(m.sources.map((source) => [source, at])),
   })));
-  const at = now.toISOString();
   await db.execute(sql`
-    INSERT INTO floor_discovery_mints (mint, first_seen_at, first_source, sources, last_seen_at, symbol, name, expires_at)
+    INSERT INTO floor_discovery_mints (mint, first_seen_at, first_source, sources, last_seen_at, symbol, name, expires_at, source_first_seen)
     SELECT r.mint, ${at}::timestamptz, r.first_source, ARRAY(SELECT jsonb_array_elements_text(r.sources)),
-           ${at}::timestamptz, r.symbol, r.name, ${at}::timestamptz + interval '24 hours'
-    FROM jsonb_to_recordset(${payload}::jsonb) AS r(mint text, first_source text, sources jsonb, symbol text, name text)
+           ${at}::timestamptz, r.symbol, r.name, ${at}::timestamptz + interval '24 hours', r.source_first_seen
+    FROM jsonb_to_recordset(${payload}::jsonb) AS r(mint text, first_source text, sources jsonb, symbol text, name text, source_first_seen jsonb)
     ON CONFLICT (mint) DO UPDATE SET
+      -- D25: jsonb || keeps the RIGHT side on a key clash, so an existing first sighting is never overwritten.
+      source_first_seen = EXCLUDED.source_first_seen || floor_discovery_mints.source_first_seen,
       sources = ARRAY(
         SELECT s FROM unnest(floor_discovery_mints.sources || EXCLUDED.sources) WITH ORDINALITY AS t(s, i)
         GROUP BY s ORDER BY min(i)
@@ -396,7 +405,7 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
   `));
   const shared = rowsOf(await db.execute(sql`
     SELECT mint, first_seen_at, snapshot_at,
-      COALESCE((snapshot->>'liqUsd')::double precision >= ${CHAIN_UNIVERSE.liqMin}
+      COALESCE((snapshot->>'priceUsd')::double precision > 0
         AND (snapshot->>'mcap')::double precision BETWEEN ${CHAIN_UNIVERSE.mcapMin} AND ${CHAIN_UNIVERSE.mcapMax}, false) AS in_universe
     FROM floor_discovery_mints WHERE expires_at > ${nowIso}::timestamptz
   `));

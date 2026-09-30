@@ -248,7 +248,12 @@ export interface SellFill {
   venue: string | null;
 }
 /** `fill` is set only on `quote_far_below_reference`: the engine books it as `quote_confirmed` once D4 is reached. */
-export type SellQuoteResult = SellFill | { ok: false; reason: SellRefusal; detail?: string; fill?: SellFill };
+/**
+ * `fill` is set only on `quote_far_below_reference`: the engine books it as `quote_confirmed` once D4 is reached.
+ * `quotedPriceUsd` is set on every refusal of a quote that DID quote (drift / far below mark / reference), for the
+ * exit-refusal events.
+ */
+export type SellQuoteResult = SellFill | { ok: false; reason: SellRefusal; detail?: string; fill?: SellFill; quotedPriceUsd?: number };
 
 export interface SellQuotePrices {
   /** DexScreener mark at most 60 s old, else null. */
@@ -352,16 +357,16 @@ export function evaluateSellQuote(
   const mark = req.markPriceUsd;
   if (usable(mark)) {
     if (priceUsd > mark * (1 + ARENA_MAX_DRIFT_PCT / 100)) {
-      return { ok: false, reason: 'drift', detail: `${(100 * (priceUsd / mark - 1)).toFixed(2)}% over mark` };
+      return { ok: false, reason: 'drift', detail: `${(100 * (priceUsd / mark - 1)).toFixed(2)}% over mark`, quotedPriceUsd: priceUsd };
     }
     if (priceUsd < mark * ARENA_SELL_FLOOR_OF_MARK) {
-      return { ok: false, reason: 'quote_far_below_mark', detail: `${(priceUsd / mark).toFixed(4)}x of mark` };
+      return { ok: false, reason: 'quote_far_below_mark', detail: `${(priceUsd / mark).toFixed(4)}x of mark`, quotedPriceUsd: priceUsd };
     }
     return fill;
   }
   const reference = req.referencePriceUsd;
   if (usable(reference) && priceUsd < reference * ARENA_SELL_FLOOR_OF_MARK) {
-    return { ok: false, reason: 'quote_far_below_reference', detail: `${(priceUsd / reference).toFixed(4)}x of reference`, fill };
+    return { ok: false, reason: 'quote_far_below_reference', detail: `${(priceUsd / reference).toFixed(4)}x of reference`, fill, quotedPriceUsd: priceUsd };
   }
   return fill;
 }

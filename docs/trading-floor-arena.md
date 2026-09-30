@@ -202,6 +202,16 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   "half to double" of the template value (the gain above 1 for a TP or trail-arm multiple, the loss below 1 for the stop,
   +/-10 for a template 0), and keeps at most 4 leaves away from the template. A failed check stores no suggestion,
   state `rejected`, reason in `stats.suggestionCheck`.
+- D27 automatic-apply guard (house agents, and owners with `auto_apply_suggestions`; constants in
+  `floor-arena/analysis-rules.ts`): the model may propose only after 20 closed trades on the current params
+  (`insufficient_sample` otherwise), and the change must pass `evaluateSuggestionEvidence`. Each closed trade on the
+  current params is re-run through the engine's own `passesFilters` on its `entry_features` at its `opened_at`, under the
+  current and the new filters; a trade the new value adds a fail code to is EXCLUDED, else KEPT. Confirmed only when
+  kept and excluded each hold >= 8 trades and the kept mean pnl_mult beats the excluded mean by >= 0.03. A looser
+  filter excludes nothing, and exit, entry or limit changes are `not_evaluable`, so none of them is ever applied
+  automatically (`insufficient_evidence`, report kept). A click-to-apply owner still gets the suggestion as `pending`
+  with the check in `stats.suggestionCheck.evidence`. Reproduced on the 2026-09-30 Runner change (chg5m_max 41.48 ->
+  20.74: kept 13, excluded 7): refused.
 - Apply: house agents auto-apply (source `house-tuner`, state `auto_applied`); user agents get `pending`, or
   auto-apply with source `suggestion` when `auto_apply_suggestions` is on. At most one automatic change per agent per
   30 min. The report is inserted first (`pending`, under a per-agent advisory lock; a report from the last 25 min makes
@@ -351,6 +361,22 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   -19.13 (15, 0), Genesis -53.74 (44, 5 deaths), Runner -110.08 (20, 9 deaths; the Python C1 had 0 deaths in 15).
   Analysis of the deaths (real vs artifact, first-sight source, tuner changes) in progress.
 
+- 19:05Z: deaths analysis (`ops/house-traders/arena-review/ARENA_DEATHS_2026-09-30.md`): all 14 deaths are REAL
+  collapses (valid ClawPump sell quotes; DexScreener marks agree on 12/14 within 2%; GeckoTerminal candles on 13/14
+  within 4%; no outage; 0 quote-failure skips). Cause = discovery: 19 of Runner's 20 coins were GeckoTerminal-only
+  sightings (never seen by DexScreener or ClawPump): 9 TP, 9 deaths, -$114.45; all 19 later had 95-100% of supply in
+  the pool. Genesis's 3 arena-only deaths vs the Python agent were also GeckoTerminal-only. Runner != C1 because the
+  $5k liquidity floor (D5) blocks pump.fun curve coins (16 of C1's 18 trades). The tuner's one change (Runner
+  chg5m_max 41.48 -> 20.74) was not supported by the data. Lead decisions: D25 a shared-feed coin is tradeable only
+  after a DexScreener or ClawPump sighting (GeckoTerminal-only coins shown, not traded; add-on mints exempt); D26 the
+  $5k liquidity floor stops being a hard rule (the founder's hard rules stay: LP burned/locked with curves OK, mint +
+  freeze authority revoked, no risky Token-2022 extension, pool reserves present) and Runner follows C1 (liq_min
+  null, first sight counted from the first DexScreener/ClawPump sighting, param `entry.first_sight_sources`); D27
+  the tuner auto-applies only with >= 20 closed trades on current params and a deterministic split check (n >= 8 per
+  side, >= 3 points better); house agents reset to template v2 (migration 0072 adds `source_first_seen`,
+  `template_version`); every exit quote refusal is logged. The contest window starts clean at 22:00Z, so rows are
+  not reset or deleted.
+
 ## 8. Punch list (tracked deferrals, rule E6)
 
 | # | Item | Owner condition | Review deadline |
@@ -392,4 +418,13 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   (10) Codex r5 (lead): floor_arena_positions.exit_run jsonb NULL; 'unresolved' added to exit_reason and exit_fill_source
   (CHECKs + FLOOR_ARENA_EXIT_REASONS / FLOOR_ARENA_EXIT_FILL_SOURCES); new CHECK floor_arena_positions_closed_pnl: a closed
   position has pnl_usd unless exit_reason = 'unresolved'.
-  Owed by the lead: ARCHITECTURE.md §8 table list + migration 0070, and `prod-migration-pending: 0070_floor_arena.sql`.
+  (11) D25/D26 (lead): FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES ['ds:', 'clawpump:'] + isFloorArenaTradeableSource(); new
+  required param entry.first_sight_sources 'any' | 'tradeable' (FLOOR_ARENA_FIRST_SIGHT_SOURCES + _LABELS; Runner
+  'tradeable', the rest 'any'); hard rule min-liquidity and FLOOR_ARENA_MIN_LIQUIDITY_USD removed; liq_min nullable
+  0..50,000,000; Runner liq_min null; FLOOR_ARENA_TEMPLATE_VERSION 2; FLOOR_ARENA_VERSION 1 -> 2 (params shape changed).
+  0070 is applied on staging, so new migration `packages/database/migrations/0072_floor_arena_sources.sql`:
+  floor_discovery_mints.source_first_seen jsonb NOT NULL DEFAULT '{}', floor_arena_agents.template_version int NOT NULL
+  DEFAULT 1, a backfill of entry.first_sight_sources = 'any' into stored params that lack it, and a backfill of
+  source_first_seen = {first_source: first_seen_at} (UTC ISO) into existing discovery rows whose map is empty. Number note: branch
+  (lead) numbered 0072, not 0071: branch chore/self-hosted-db carries 0071_special_event_start_guard.sql.
+  Owed by the lead: ARCHITECTURE.md §8 table list + migrations 0070/0072, and the deploy-status SCHEMA line for 0072.

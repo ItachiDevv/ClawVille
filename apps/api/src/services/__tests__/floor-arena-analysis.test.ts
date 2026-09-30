@@ -7,8 +7,12 @@ import {
   type FloorArenaParams,
 } from '@clawville/shared';
 import {
+  EVIDENCE_MIN_EDGE,
+  EVIDENCE_MIN_PER_SIDE,
+  MIN_CLOSED_FOR_AUTO_APPLY,
   MIN_CLOSED_ON_CURRENT_PARAMS,
   arenaReportDue,
+  evaluateSuggestionEvidence,
   buildArenaAnalysisMessages,
   checkHouseDrift,
   computeArenaTradeStats,
@@ -33,6 +37,7 @@ const genesis = floorArenaTemplateById('genesis')!;
 
 function trade(partial: Partial<ArenaClosedTrade> & { pnlMult: number }): ArenaClosedTrade {
   return {
+    openedAt: new Date(NOW.getTime() - 20 * MIN),
     closedAt: new Date(NOW.getTime() - 10 * MIN),
     paramsVersion: 1,
     exitReason: 'tp',
@@ -77,6 +82,33 @@ function busyTrades(): ArenaClosedTrade[] {
     ...Array.from({ length: 8 }, (_, i) => trade({ pnlMult: 1.1, closedAt: new Date(NOW.getTime() - (i + 1) * MIN) })),
     trade({ pnlMult: 0.3, exitReason: 'time', features: { ageS: 1_900, chg5m: -4, volOverMcap: 5 } }),
     trade({ pnlMult: 0.45, exitReason: 'time', features: { ageS: 2_000, chg5m: -2, volOverMcap: 4 } }),
+  ];
+}
+
+/** One closed trade whose entry features put its pair at `ageS` at entry. */
+function aged(ageS: number, pnlMult: number, i: number, extra: Record<string, unknown> = {}): ArenaClosedTrade {
+  const openedAt = new Date(NOW.getTime() - 20 * MIN);
+  return trade({
+    pnlMult,
+    exitReason: pnlMult >= 1.1 ? 'tp' : 'time',
+    openedAt,
+    closedAt: new Date(NOW.getTime() - (i + 1) * 10_000),
+    features: {
+      priceUsd: 0.001, mcap: 50_000, liqUsd: 20_000, chg5m: 1.5, volOverMcap: 0.8,
+      ageS, pairCreatedAt: openedAt.getTime() - ageS * 1000, ...extra,
+    },
+  });
+}
+
+/**
+ * 24 closed trades on params version 1 that SUPPORT raising Genesis's
+ * `filters.age_min_s` from 1800 to 2400: the 10 pairs younger than 2400 s at
+ * entry averaged 0.65x (5 deaths); the 14 older ones 1.10x.
+ */
+function evidenceTrades(): ArenaClosedTrade[] {
+  return [
+    ...Array.from({ length: 10 }, (_, i) => aged(2_000, i < 5 ? 0.4 : 0.9, i)),
+    ...Array.from({ length: 14 }, (_, i) => aged(5_000, 1.1, 10 + i)),
   ];
 }
 
@@ -242,8 +274,10 @@ describe('Trading Arena suggestion validation', () => {
     expect(evaluateArenaSuggestion({ current, path: 'filters.chg5m_min', to: { x: 1 } })).toMatchObject({ reason: 'invalid_value' });
     expect(evaluateArenaSuggestion({ current, path: 'filters.chg5m_min', to: Number.NaN })).toMatchObject({ reason: 'invalid_value' });
     expect(evaluateArenaSuggestion({ current, path: 'limits.max_open', to: 9 })).toMatchObject({ reason: 'invalid_params' });
-    // liq_min below the 5,000 hard floor.
-    expect(evaluateArenaSuggestion({ current, path: 'filters.liq_min', to: 1_000 })).toMatchObject({ reason: 'invalid_params' });
+    // D26: liquidity is an ordinary filter now (no $5,000 floor), but never negative.
+    expect(evaluateArenaSuggestion({ current, path: 'filters.liq_min', to: 1_000 }).ok).toBe(true);
+    expect(evaluateArenaSuggestion({ current, path: 'filters.liq_min', to: -1 })).toMatchObject({ reason: 'invalid_params' });
+    expect(evaluateArenaSuggestion({ current, path: 'entry.first_sight_sources', to: 'sometimes' })).toMatchObject({ reason: 'invalid_params' });
     // min above its max.
     expect(evaluateArenaSuggestion({ current, path: 'filters.mcap_min', to: 300_000 })).toMatchObject({ reason: 'invalid_params' });
     expect(evaluateArenaSuggestion({ current, path: 'exits.max_hold_s', to: 900 })).toMatchObject({ reason: 'no_change' });
@@ -323,6 +357,93 @@ describe('Trading Arena house identity guard', () => {
   });
 });
 
+describe('Trading Arena D27 split check', () => {
+  /** A trade with only the entry feature the check needs, besides price. */
+  const withChg5m = (chg5m: number | null, pnlMult: number, i: number) =>
+    aged(3_000, pnlMult, i, { chg5m });
+  const current = (): FloorArenaParams => {
+    const p = cloneFloorArenaParams(genesis.params);
+    p.filters.chg5m_max = 41.48;
+    return p;
+  };
+  const change = (to: number | null, from: number | null = 41.48) => ({ path: 'filters.chg5m_max', from, to });
+  const next = (to: number | null) => {
+    const p = current();
+    p.filters.chg5m_max = to;
+    return p;
+  };
+
+  test('reproduces the 2026-09-30 Runner change and refuses it (7 excluded trades, no edge)', () => {
+    // ARENA_DEATHS_2026-09-30.md section 6: chg5m <= 20.74 had 13 trades (6 TP,
+    // 6 deaths); above it 7 trades (4 TP, 3 deaths). TP 1.2, a death 0.3x.
+    const trades = [
+      ...[...Array(6).fill(1.2), ...Array(6).fill(0.3), 0.8].map((m, i) => withChg5m(10, m, i)),
+      ...[...Array(4).fill(1.2), ...Array(3).fill(0.3)].map((m, i) => withChg5m(30, m, 13 + i)),
+    ];
+    const evidence = evaluateSuggestionEvidence({ change: change(20.74), current: current(), next: next(20.74), trades });
+    expect(evidence).toMatchObject({
+      method: 'filter_split',
+      confirmed: false,
+      kept: { n: 13, deaths: 6 },
+      excluded: { n: 7, deaths: 3 },
+    });
+    expect(evidence.reason).toContain(`at least ${EVIDENCE_MIN_PER_SIDE}`);
+  });
+
+  test('refuses an 8/8 split whose kept side is not 3 points better', () => {
+    const trades = [
+      ...Array.from({ length: 10 }, (_, i) => withChg5m(10, i < 5 ? 1.2 : 0.4, i)),
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(30, i < 4 ? 1.2 : 0.4, 10 + i)),
+    ];
+    const evidence = evaluateSuggestionEvidence({ change: change(20.74), current: current(), next: next(20.74), trades });
+    expect(evidence).toMatchObject({ confirmed: false, kept: { n: 10, meanMult: 0.8 }, excluded: { n: 8, meanMult: 0.8 }, edge: 0 });
+    expect(evidence.reason).toContain(`${EVIDENCE_MIN_EDGE} mean multiple`);
+  });
+
+  test('confirms an 8/8 split exactly 3 points better', () => {
+    const trades = [
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(10, 1.03, i)),
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(30, 1.0, 8 + i)),
+    ];
+    const evidence = evaluateSuggestionEvidence({ change: change(20.74), current: current(), next: next(20.74), trades });
+    expect(evidence).toMatchObject({ confirmed: true, kept: { n: 8 }, excluded: { n: 8 }, edge: 0.03 });
+  });
+
+  test('a looser filter excludes nothing and is never confirmed', () => {
+    const trades = Array.from({ length: 30 }, (_, i) => withChg5m(10, 1.1, i));
+    const evidence = evaluateSuggestionEvidence({ change: change(null), current: current(), next: next(null), trades });
+    expect(evidence).toMatchObject({ method: 'filter_split', confirmed: false, excluded: { n: 0 } });
+  });
+
+  test('a trade without the feature is excluded when the filter is set, as the engine fails it closed', () => {
+    const trades = [
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(10, 1.2, i)),
+      ...Array.from({ length: 8 }, (_, i) => withChg5m(null, 0.4, 8 + i)),
+    ];
+    const p = current();
+    p.filters.chg5m_max = null;
+    const evidence = evaluateSuggestionEvidence({
+      change: { path: 'filters.chg5m_max', from: null, to: 41.48 },
+      current: p,
+      next: current(),
+      trades,
+    });
+    expect(evidence).toMatchObject({ confirmed: true, kept: { n: 8 }, excluded: { n: 8 } });
+  });
+
+  test('exit, entry and limit changes are not evaluable', () => {
+    for (const path of ['exits.stop_mult', 'exits.tp', 'entry.entries_per_tick', 'limits.max_open']) {
+      const evidence = evaluateSuggestionEvidence({
+        change: { path, from: 1, to: 2 },
+        current: current(),
+        next: current(),
+        trades: [],
+      });
+      expect(evidence).toMatchObject({ method: 'not_evaluable', confirmed: false });
+    }
+  });
+});
+
 describe('Trading Arena model reply parsing', () => {
   test('reads a fenced JSON object and clamps every field', () => {
     const reply = parseArenaAnalysisReply(
@@ -371,8 +492,11 @@ describe('Trading Arena prompt', () => {
       },
       priorReports: [{ createdAt: NOW, summary: 'Earlier report text', suggestion: null, suggestionState: 'none' }],
       suggestionAllowed: true,
+      autoApply: false,
     });
     const all = messages.map((m) => m.content).join('\n');
+    // A click-to-apply owner decides, so the automatic-apply test is not in its prompt.
+    expect(all).not.toContain('applies a suggestion automatically');
     expect(all).toContain(genesis.thesis);
     expect(all).toContain('LP burned or locked');
     expect(all).toContain('Earlier report text');
@@ -395,11 +519,15 @@ describe('Trading Arena prompt', () => {
       },
       priorReports: [],
       suggestionAllowed: false,
+      autoApply: true,
     });
     const all = messages.map((m) => m.content).join('\n');
     expect(all).toContain('houseRanges');
     expect(all).toContain('HOUSE agent');
-    expect(all).toContain('suggestion MUST be null');
+    expect(all).toContain(`fewer than ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, so suggestion MUST be null`);
+    // The model is told the D27 test it must pass.
+    expect(all).toContain(`at least ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded trades`);
+    expect(all).toContain(`at least ${EVIDENCE_MIN_EDGE} above the excluded`);
   });
 });
 
@@ -430,7 +558,7 @@ describe('Trading Arena analysis tick', () => {
 
   test('a house agent applies a valid suggestion itself and logs it publicly', async () => {
     const a = agent();
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: busyTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: evidenceTrades() } });
     const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
     const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
 
@@ -453,8 +581,16 @@ describe('Trading Arena analysis tick', () => {
     );
     expect(report.suggestionState).toBe('auto_applied');
     expect(report.suggestion).toMatchObject({ path: 'filters.age_min_s', from: 1_800, to: 2_400 });
-    expect(report.stats.period).toMatchObject({ trades: 10, deaths: 2, entries: 2 });
+    expect(report.stats.period).toMatchObject({ trades: 24, deaths: 5, entries: 2 });
     expect(report.stats.suggestionCheck.llm).toBe('ok');
+    // D27: applied only because the split check on the 24 trades confirmed it.
+    expect(report.stats.suggestionCheck.evidence).toMatchObject({
+      method: 'filter_split',
+      confirmed: true,
+      kept: { n: 14, meanMult: 1.1, deaths: 0 },
+      excluded: { n: 10, meanMult: 0.65, deaths: 5 },
+      edge: 0.45,
+    });
     expect(report.eventSummary.startsWith('Report: Eight of ten')).toBe(true);
   });
 
@@ -486,7 +622,7 @@ describe('Trading Arena analysis tick', () => {
     // can never disagree about what names an add-on.
     const addon = FLOOR_ARENA_ADDONS[0]!;
     const a = agent({ id: 'u7', kind: 'user', autoApplySuggestions: true });
-    const store = fakeStore({ candidates: [candidate(a)], trades: { u7: busyTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { u7: evidenceTrades() } });
     const { llm } = llmReply({
       summary: 'Two deaths.',
       observations: [],
@@ -505,21 +641,51 @@ describe('Trading Arena analysis tick', () => {
     }
   });
 
-  test('a user agent with auto-apply applies with source suggestion', async () => {
+  test('a user agent with auto-apply applies a confirmed filter change with source suggestion', async () => {
     const a = agent({ id: 'u2', kind: 'user', autoApplySuggestions: true });
-    const store = fakeStore({ candidates: [candidate(a)], trades: { u2: busyTrades() } });
-    // A user agent is not held to the house band.
-    const { llm } = llmReply(tpReply(0.8, 'exits.stop_mult'));
+    const store = fakeStore({ candidates: [candidate(a)], trades: { u2: evidenceTrades() } });
+    // A user agent is not held to the house band: 1800 -> 4000 is fine for it.
+    const { llm } = llmReply(tpReply(4_000, 'filters.age_min_s'));
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(store.changes).toHaveLength(1);
     expect(store.changes[0]!.source).toBe('suggestion');
-    expect(store.changes[0]!.eventSummary.startsWith('Auto-applied suggestion changed exits.stop_mult from off to 0.8')).toBe(true);
+    expect(store.changes[0]!.eventSummary.startsWith('Auto-applied suggestion changed filters.age_min_s from 1800 to 4000')).toBe(true);
     expect(store.reports[0]!.suggestionState).toBe('auto_applied');
+  });
+
+  test('D27: an exit change is never applied automatically, but a click-to-apply owner still sees it', async () => {
+    const auto = agent({ id: 'u8', kind: 'user', autoApplySuggestions: true });
+    const manual = agent({ id: 'u9', kind: 'user' });
+    const store = fakeStore({ candidates: [candidate(auto), candidate(manual)], trades: { u8: evidenceTrades(), u9: evidenceTrades() } });
+    const { llm } = llmReply(tpReply(0.8, 'exits.stop_mult'));
+    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(store.changes).toHaveLength(0);
+    const byAgent = new Map(store.reports.map((r) => [r.agentId, r]));
+    expect(byAgent.get('u8')).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
+    expect(byAgent.get('u8')!.stats.suggestionCheck).toMatchObject({
+      reason: 'insufficient_evidence',
+      evidence: { method: 'not_evaluable', confirmed: false },
+    });
+    // The owner who applies by hand keeps the suggestion, with the check attached.
+    expect(byAgent.get('u9')).toMatchObject({ suggestionState: 'pending', suggestion: { path: 'exits.stop_mult', to: 0.8 } });
+    expect(byAgent.get('u9')!.stats.suggestionCheck.evidence).toMatchObject({ method: 'not_evaluable', confirmed: false });
+  });
+
+  test('D27: a house agent with fewer than 20 closed trades on its params changes nothing', async () => {
+    const a = agent();
+    // busyTrades: 10 closed trades, above the old minimum of 6, below 20.
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: busyTrades() } });
+    const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(calls[0]![0]!.content).toContain(`fewer than ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
+    expect(store.changes).toHaveLength(0);
+    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
+    expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('insufficient_sample');
   });
 
   test('a position_usd suggestion is dropped and marked rejected', async () => {
     const a = agent();
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: busyTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: evidenceTrades() } });
     const { llm } = llmReply(tpReply(50, 'limits.position_usd'));
     const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(result.rejected).toBe(1);
@@ -533,7 +699,7 @@ describe('Trading Arena analysis tick', () => {
 
   test('a house suggestion outside the identity band is rejected, not applied', async () => {
     const a = agent();
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: busyTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: evidenceTrades() } });
     const { llm } = llmReply(tpReply(0.9, 'exits.stop_mult'));
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(store.changes).toHaveLength(0);
@@ -558,7 +724,7 @@ describe('Trading Arena analysis tick', () => {
     const a = agent();
     const store = fakeStore({
       candidates: [candidate(a)],
-      trades: { [a.id]: busyTrades() },
+      trades: { [a.id]: evidenceTrades() },
       lastChangeAt: new Date(NOW.getTime() - 10 * MIN),
     });
     const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));
@@ -573,7 +739,7 @@ describe('Trading Arena analysis tick', () => {
     const user = agent({ id: 'u6', kind: 'user', autoApplySuggestions: true });
     const store = fakeStore({
       candidates: [candidate(house), candidate(user)],
-      trades: { [house.id]: busyTrades(), u6: busyTrades() },
+      trades: { [house.id]: evidenceTrades(), u6: evidenceTrades() },
       conflict: true,
     });
     const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));

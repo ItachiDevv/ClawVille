@@ -23,8 +23,11 @@
  *   4. APPLY: a house agent applies a valid suggestion itself (source
  *      `house-tuner`); a user agent keeps it `pending` for one click, unless
  *      the owner turned on `auto_apply_suggestions` (source `suggestion`).
- *      At most one automatic change per agent per 30 minutes, and none before
- *      the current params have `MIN_CLOSED_ON_CURRENT_PARAMS` closed trades.
+ *      An AUTOMATIC apply (D27, after the tuner halved Runner's chg5m_max on
+ *      a 46% vs 43% death split) needs `MIN_CLOSED_FOR_AUTO_APPLY` closed
+ *      trades on the current params AND a deterministic split check on those
+ *      trades (`evaluateSuggestionEvidence`); only filter changes can pass it.
+ *      At most one automatic change per agent per 30 minutes.
  *   5. MEMORY: a user agent whose avatar has a RUNNING hosted ElizaOS runtime
  *      also gets the report as an earned-skill memory (best effort, never
  *      lazy-starts a runtime).
@@ -56,6 +59,13 @@ import {
   type FloorArenaSuggestionState,
   type FloorArenaTemplate,
 } from '@clawville/shared';
+import {
+  EVIDENCE_MIN_EDGE,
+  EVIDENCE_MIN_PER_SIDE,
+  MIN_CLOSED_FOR_AUTO_APPLY,
+  MIN_CLOSED_ON_CURRENT_PARAMS,
+} from './analysis-rules';
+import { passesFilters, type FloorArenaFeatures } from './filters';
 import { redactArenaText } from './queries';
 
 // ── Tuning constants ──────────────────────────────────────────────────────────
@@ -78,9 +88,12 @@ export const ARENA_MAX_LLM_REPORTS_PER_TICK = 12;
 export const ARENA_MAX_QUIET_REPORTS_PER_TICK = 40;
 /** Newest closed trades loaded for the lifetime stats. */
 export const ARENA_LIFETIME_TRADE_LIMIT = 5_000;
-/** No suggestion until the CURRENT params have this many closed trades: a
- *  change must rest on trades that ran under the rules it changes. */
-export const MIN_CLOSED_ON_CURRENT_PARAMS = 6;
+export {
+  EVIDENCE_MIN_EDGE,
+  EVIDENCE_MIN_PER_SIDE,
+  MIN_CLOSED_FOR_AUTO_APPLY,
+  MIN_CLOSED_ON_CURRENT_PARAMS,
+} from './analysis-rules';
 /** A house agent may differ from its template in at most this many leaves. */
 export const HOUSE_MAX_DRIFT_FIELDS = 4;
 /** Allowed range for a template leaf of 0 (the percent-change filters). */
@@ -102,6 +115,7 @@ const PRIOR_REPORTS = 3;
 
 /** One closed position, as the analysis reads it. */
 export interface ArenaClosedTrade {
+  openedAt: Date;
   closedAt: Date;
   paramsVersion: number;
   exitReason: string | null;
@@ -153,6 +167,27 @@ export interface ArenaSuggestionCheck {
   errors?: string[];
   /** The model's raw proposal, kept for the record when it was rejected. */
   proposed?: { path: string; to: unknown };
+  /** The D27 split check on the current params' closed trades. */
+  evidence?: ArenaSuggestionEvidence;
+}
+
+export interface ArenaEvidenceSide {
+  n: number;
+  meanMult: number | null;
+  deaths: number;
+}
+
+export interface ArenaSuggestionEvidence {
+  /** `filter_split`: judged on the closed trades; `not_evaluable`: the leaf
+   *  cannot be judged honestly from closed trades (exits, entry, limits). */
+  method: 'filter_split' | 'not_evaluable';
+  confirmed: boolean;
+  /** Why the check did not confirm the change. */
+  reason?: string;
+  kept?: ArenaEvidenceSide;
+  excluded?: ArenaEvidenceSide;
+  /** kept.meanMult - excluded.meanMult. */
+  edge?: number | null;
 }
 
 /** `floor_arena_reports.stats`. */
@@ -571,6 +606,74 @@ export function evaluateArenaSuggestion(input: {
   return { ok: true, next: checked.params, change: diff[0]! };
 }
 
+function evidenceSide(trades: readonly ArenaClosedTrade[]): ArenaEvidenceSide {
+  const n = trades.length;
+  const sum = trades.reduce((total, t) => total + t.pnlMult, 0);
+  return {
+    n,
+    meanMult: n > 0 ? round(sum / n, 4) : null,
+    deaths: trades.filter((t) => t.pnlMult <= ARENA_DEATH_MULT).length,
+  };
+}
+
+/**
+ * D27: the deterministic check an AUTOMATIC change must pass. Only a filter
+ * change can be judged from closed trades: each trade is re-run through the
+ * engine's own `passesFilters` on its entry features (at its entry time) under
+ * the current and the new filters. A trade is EXCLUDED when the new value adds
+ * a fail code the current filters did not have, else KEPT. The change is
+ * confirmed only when both sides hold at least EVIDENCE_MIN_PER_SIDE trades and
+ * the kept side's mean pnl_mult beats the excluded side's by at least
+ * EVIDENCE_MIN_EDGE. A looser filter excludes nothing, so it can never be
+ * confirmed: the coins it would add have no track record here.
+ *
+ * Exit, entry and limit changes are `not_evaluable`: closed trades do not show
+ * what a different take-profit, stop, hold time or rank would have done
+ * without the price path, so they are never applied automatically.
+ *
+ * `trades` must be the closed trades opened under the CURRENT params.
+ */
+export function evaluateSuggestionEvidence(input: {
+  change: FloorArenaParamDiff;
+  current: FloorArenaParams;
+  next: FloorArenaParams;
+  trades: readonly ArenaClosedTrade[];
+}): ArenaSuggestionEvidence {
+  if (!input.change.path.startsWith('filters.')) {
+    return {
+      method: 'not_evaluable',
+      confirmed: false,
+      reason: 'only a filter change can be checked against closed trades',
+    };
+  }
+  const kept: ArenaClosedTrade[] = [];
+  const excluded: ArenaClosedTrade[] = [];
+  for (const trade of input.trades) {
+    if (!Number.isFinite(trade.pnlMult)) continue;
+    const features = (trade.features ?? {}) as unknown as FloorArenaFeatures;
+    const before = new Set(passesFilters(features, input.current.filters, trade.openedAt));
+    const after = passesFilters(features, input.next.filters, trade.openedAt);
+    if (after.some((code) => !before.has(code))) excluded.push(trade);
+    else kept.push(trade);
+  }
+  const keptSide = evidenceSide(kept);
+  const excludedSide = evidenceSide(excluded);
+  const edge = keptSide.meanMult !== null && excludedSide.meanMult !== null
+    ? round(keptSide.meanMult - excludedSide.meanMult, 4)
+    : null;
+  const base = { method: 'filter_split' as const, kept: keptSide, excluded: excludedSide, edge };
+  if (excludedSide.n === 0) {
+    return { ...base, confirmed: false, reason: 'the new value excludes no traded coin, so nothing shows it helps' };
+  }
+  if (keptSide.n < EVIDENCE_MIN_PER_SIDE || excludedSide.n < EVIDENCE_MIN_PER_SIDE) {
+    return { ...base, confirmed: false, reason: `each side needs at least ${EVIDENCE_MIN_PER_SIDE} closed trades` };
+  }
+  if (edge === null || edge < EVIDENCE_MIN_EDGE - EPS) {
+    return { ...base, confirmed: false, reason: `the kept trades must beat the excluded ones by at least ${EVIDENCE_MIN_EDGE} mean multiple` };
+  }
+  return { ...base, confirmed: true };
+}
+
 // ── LLM prompt + reply (pure) ─────────────────────────────────────────────────
 
 /** The validation bound for a flattened leaf path, or null for a locked or
@@ -626,10 +729,18 @@ export interface ArenaPromptInput {
   stats: ArenaReportStats;
   priorReports: readonly ArenaPriorReport[];
   suggestionAllowed: boolean;
+  /** True when a valid suggestion would be applied without a click (house
+   *  agent, or an owner who turned on auto-apply): the D27 rules apply. */
+  autoApply: boolean;
+}
+
+/** The closed-trade minimum before the model may propose anything. */
+export function minClosedForSuggestion(autoApply: boolean): number {
+  return autoApply ? MIN_CLOSED_FOR_AUTO_APPLY : MIN_CLOSED_ON_CURRENT_PARAMS;
 }
 
 export function buildArenaAnalysisMessages(input: ArenaPromptInput): ArenaInferenceMessage[] {
-  const { agent, params, template, stats, priorReports, suggestionAllowed } = input;
+  const { agent, params, template, stats, priorReports, suggestionAllowed, autoApply } = input;
   const isHouse = agent.kind === 'house';
   const rules = [
     'You analyse ONE paper trading agent in the ClawVille Trading Arena. Paper means every fill is priced from a live quote plus fixed costs, but nothing is bought and no money moves.',
@@ -641,7 +752,12 @@ export function buildArenaAnalysisMessages(input: ArenaPromptInput): ArenaInfere
     'Look at the prior reports: do not repeat a suggestion that was rejected or dismissed unless new trades support it, and judge whether an applied change helped.',
   ];
   if (!suggestionAllowed) {
-    rules.push(`The current params have fewer than ${MIN_CLOSED_ON_CURRENT_PARAMS} closed trades, so suggestion MUST be null this time.`);
+    rules.push(`The current params have fewer than ${minClosedForSuggestion(autoApply)} closed trades, so suggestion MUST be null this time.`);
+  }
+  if (autoApply) {
+    rules.push(
+      `This agent applies a suggestion automatically, so code tests it first: only a filter change can pass, and only when the closed trades on the current params split by the new value into at least ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded trades, with the kept trades' mean multiple at least ${EVIDENCE_MIN_EDGE} above the excluded trades'. A looser filter, or an exit, entry or limit change, is never applied automatically. Propose null unless a filter change clearly meets that test.`,
+    );
   }
   if (isHouse) {
     rules.push(
@@ -950,7 +1066,9 @@ async function analyseAgent(
 
   const checkedParams = validateFloorArenaParams(agent.params);
   const template = floorArenaTemplateById(agent.templateId) ?? null;
-  const suggestionAllowed = checkedParams.ok && stats.currentParams.trades >= MIN_CLOSED_ON_CURRENT_PARAMS;
+  const isHouse = agent.kind === 'house';
+  const autoApply = isHouse || agent.autoApplySuggestions;
+  const suggestionAllowed = checkedParams.ok && stats.currentParams.trades >= minClosedForSuggestion(autoApply);
 
   let summary = deterministicSummary(stats);
   let proposal: ArenaParsedReply['suggestion'] = null;
@@ -963,6 +1081,7 @@ async function analyseAgent(
       stats,
       priorReports,
       suggestionAllowed,
+      autoApply,
     });
     tally.llmCalls += 1;
     try {
@@ -990,7 +1109,6 @@ async function analyseAgent(
   let suggestion: FloorArenaSuggestion | null = null;
   let state: FloorArenaSuggestionState = 'none';
   let change: Omit<ArenaParamChangeWrite, 'reportId'> | null = null;
-  const isHouse = agent.kind === 'house';
 
   if (proposal && checkedParams.ok) {
     const proposed = { path: proposal.path, to: proposal.to };
@@ -1022,7 +1140,19 @@ async function analyseAgent(
         // The report is written `pending` first; an automatic apply then claims
         // it as `auto_applied` in the params writer's own transaction.
         state = 'pending';
-        if (isHouse || agent.autoApplySuggestions) {
+        // D27: every suggestion carries the split check on the current params'
+        // trades, so an owner deciding by hand sees it too; an automatic apply
+        // requires it.
+        const evidence = evaluateSuggestionEvidence({
+          change: evaluation.change,
+          current: checkedParams.params,
+          next: evaluation.next,
+          trades: currentTrades,
+        });
+        stats.suggestionCheck = { ...stats.suggestionCheck, evidence };
+        if (autoApply && !evidence.confirmed) {
+          reject('insufficient_evidence');
+        } else if (autoApply) {
           const last = await store.lastParamChangeAt(agent.id);
           const recent = last !== null && now.getTime() - last.getTime() < ARENA_AUTO_CHANGE_MIN_GAP_MS;
           if (recent && isHouse) {

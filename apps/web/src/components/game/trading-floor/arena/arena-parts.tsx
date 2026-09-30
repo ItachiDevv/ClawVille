@@ -24,6 +24,7 @@ import {
   formatDuration,
   formatMultiple,
   formatParamValue,
+  firstSightLabel,
   formatTpLeg,
   isoAgo,
   paramPathLabel,
@@ -362,6 +363,9 @@ export function ArenaParamsSummary({ params }: { params: FloorArenaParams | null
     params.entry.discovered_within_s !== null
       ? `Only coins first seen within ${formatDuration(params.entry.discovered_within_s)}`
       : 'Coins of any discovery age',
+    ...(params.entry.discovered_within_s !== null
+      ? [`Count first sight from: ${firstSightLabel(params.entry.first_sight_sources)}`]
+      : []),
     `Pick order: ${rankByLabel(params.entry.rank_by)}`,
     `${B.entry.entries_per_tick.label}: ${params.entry.entries_per_tick}`,
     ...(params.exits.tp.length > 0 ? params.exits.tp.map((leg) => `Take-profit: ${formatTpLeg(leg)}`) : ['No take-profit legs']),

@@ -4,11 +4,19 @@ import {
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
   DECISION_SCOPE,
   FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_HARD_RULES,
   FLOOR_ARENA_PAPER_COSTS,
   FLOOR_ARENA_POSITION_USD,
+  FLOOR_ARENA_TEMPLATE_VERSION,
   FLOOR_ARENA_TEMPLATES,
+  FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
 } from '@clawville/shared';
+import {
+  EVIDENCE_MIN_EDGE,
+  EVIDENCE_MIN_PER_SIDE,
+  MIN_CLOSED_FOR_AUTO_APPLY,
+} from '../floor-arena/analysis-rules';
 import { townGuide } from '@clawville/agent-templates';
 import { PROTOCOL_VERSION, buildProtocolManual, contentHashOf, protocolPointer } from '../skill-protocol';
 
@@ -55,9 +63,9 @@ describe('Trading Arena manual section 17c', () => {
     for (const chunk of chunks) expect(chunk.length).toBeLessThan(24_000);
   });
 
-  test('rides protocol 74 and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(74);
-    expect(protocolPointer(API)).toMatchObject({ version: 74, contentHash: contentHashOf(buildProtocolManual(API)) });
+  test('rides protocol 75 and the served pointer hashes the same bytes', () => {
+    expect(PROTOCOL_VERSION).toBe(75);
+    expect(protocolPointer(API)).toMatchObject({ version: 75, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -135,6 +143,34 @@ describe('Trading Arena manual section 17c', () => {
     for (const name of Object.keys(ARENA_TOOLS)) expect(section).toContain(`\`${name}\``);
   });
 
+  test('states D25-D27 and the template version from their constants', () => {
+    const section = arenaSection();
+    // D26: the $5,000 liquidity floor is not a hard rule any more.
+    expect(FLOOR_ARENA_HARD_RULES.some((rule) => /liquidity/i.test(rule.label))).toBe(false);
+    expect(section).not.toContain('Liquidity of $5,000 or more');
+    expect(section).toMatch(/Liquidity is not a hard rule: `filters\.liq_min` is an ordinary setting/);
+    for (const t of FLOOR_ARENA_TEMPLATES.filter((x) => x.params.filters.liq_min === null)) expect(section).toContain(`off in ${t.displayName}`);
+    // D25: tradeable sources, GeckoTerminal-only coins shown but not traded, add-ons exempt.
+    for (const prefix of FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES) expect(section).toContain(`\`${prefix}\``);
+    expect(section).toMatch(/a coin seen only by GeckoTerminal is shown in the feed\s+but never traded/);
+    expect(section).toMatch(/paid add-ons find are exempt/);
+    for (const value of FLOOR_ARENA_FIRST_SIGHT_SOURCES) expect(section).toContain(`\`${value}\``);
+    expect(section).toContain(`version ${FLOOR_ARENA_TEMPLATE_VERSION}`);
+    // D27: the served numbers are the enforced ones.
+    expect(section).toContain(`at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
+    expect(section).toMatch(new RegExp(`at least ${EVIDENCE_MIN_PER_SIDE}, and the kept trades' mean multiple must beat the excluded\\s+trades' by at least ${EVIDENCE_MIN_EDGE}`));
+    expect(section).toContain('`insufficient_evidence`');
+    // New engine codes an agent sees on its own stream; the retired floor code is gone.
+    expect(section).toContain('`source_not_tradeable`');
+    expect(section).toContain('`exit_quote_refused`');
+    expect(section).not.toContain('liq_floor');
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
+    expect(orientation).toContain('trades only after DexScreener or ClawPump has seen it');
+    expect(orientation).toContain('liquidity is a template setting, not a hard rule');
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Floor now runs the Trading Arena'))!;
+    expect(nori).toContain('once DexScreener or ClawPump has spotted it');
+  });
+
   test('keeps paper arena agents apart from the live house traders and the 17a personas', () => {
     const section = arenaSection();
     expect(section).toMatch(/They are NOT the live house traders of\s+§17b/);
@@ -192,6 +228,13 @@ describe('Trading Arena tools', () => {
     expect(byName.get('clawville_arena_suggestion')!.description).not.toContain('Read reports with clawville_arena_agent');
     expect(byName.get('clawville_arena_my_trader')!.description).toContain('GET {apiBase}/api/floor/arena/me/events');
     expect(byName.get('clawville_arena_agent')!.description).toContain('no add-on settings, payment address, provisioning state or reports');
+    expect(byName.get('clawville_arena_templates')!.description).toContain('a GeckoTerminal-only coin is shown but never traded');
+    // The shared tool text cannot import the API's tuner constants, so pin it to them here.
+    const settings = byName.get('clawville_arena_settings')!.description;
+    expect(settings).toContain(`at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
+    expect(settings).toContain(`number at least ${EVIDENCE_MIN_PER_SIDE} each`);
+    expect(settings).toContain(`at least ${EVIDENCE_MIN_EDGE} better`);
+    expect(settings).toContain('insufficient_evidence');
   });
 });
 

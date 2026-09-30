@@ -78,6 +78,7 @@ describe('discovery upsert merge', () => {
     const existing = {
       mint: A, firstSeenAt: first, firstSource: 'gecko:new-pools', sources: ['gecko:new-pools'], lastSeenAt: first,
       symbol: 'OLD', name: null, expiresAt: new Date(first.getTime() + 24 * 3_600_000),
+      sourceFirstSeen: { 'gecko:new-pools': first.toISOString() },
     };
     const row = mergeDiscoveryRow(existing, mergeSightings([s(A, 'clawpump:signals', 'NEW'), s(A, 'gecko:new-pools')])[0]!, NOW);
     expect(row.firstSeenAt).toEqual(first);
@@ -88,10 +89,22 @@ describe('discovery upsert merge', () => {
     expect(row.expiresAt.getTime()).toBe(NOW.getTime() + 6 * 3_600_000);
   });
 
+  test('D25: source_first_seen sets each source ONCE; a later sighting never overwrites it', () => {
+    const t1 = new Date(NOW.getTime() + 60_000);
+    const t2 = new Date(NOW.getTime() + 120_000);
+    const inserted = mergeDiscoveryRow(null, mergeSightings([s(A, 'gecko:new-pools')])[0]!, NOW);
+    expect(inserted.sourceFirstSeen).toEqual({ 'gecko:new-pools': NOW.toISOString() });
+    const withDs = mergeDiscoveryRow(inserted, mergeSightings([s(A, 'ds:token-profiles'), s(A, 'gecko:new-pools')])[0]!, t1);
+    expect(withDs.sourceFirstSeen).toEqual({ 'gecko:new-pools': NOW.toISOString(), 'ds:token-profiles': t1.toISOString() });
+    const again = mergeDiscoveryRow(withDs, mergeSightings([s(A, 'ds:token-profiles')])[0]!, t2);
+    expect(again.sourceFirstSeen['ds:token-profiles']).toBe(t1.toISOString());
+  });
+
   test('expiry never moves backwards', () => {
     const existing = {
       mint: A, firstSeenAt: NOW, firstSource: 'gecko:new-pools', sources: ['gecko:new-pools'], lastSeenAt: NOW,
       symbol: null, name: null, expiresAt: new Date(NOW.getTime() + 24 * 3_600_000),
+      sourceFirstSeen: { 'gecko:new-pools': NOW.toISOString() },
     };
     const later = new Date(NOW.getTime() + 60_000);
     const row = mergeDiscoveryRow(existing, mergeSightings([s(A, 'gecko:new-pools')])[0]!, later);
@@ -135,6 +148,14 @@ describe('DexScreener snapshots', () => {
     priceUsd: '0.0000628', marketCap: 62_800, fdv: 62_800, liquidity: { usd: 23_700, base: 1e8, quote: 60 },
     pairCreatedAt: NOW.getTime() - 20_040_000, priceChange: { m5: 1.5, h1: -3, h6: 40, h24: 120 },
     txns: { h1: { buys: 120, sells: 80 } }, volume: { h1: 31_400 }, ...over,
+  });
+
+  test('D26: a pump.fun curve pair (no liquidity field) is picked and marked with its price', () => {
+    const curvePair = pair({ dexId: 'pumpfun', pairAddress: B, liquidity: undefined, marketCap: 35_000, priceUsd: '0.000002575' });
+    const best = pickBestPairs([pair({ dexId: 'orca', pairAddress: 'ORCA', liquidity: { usd: 1_000 } }), curvePair], new Set([A]));
+    expect(best.get(A)?.dexId).toBe('pumpfun');
+    const snapshot = buildSnapshot(best.get(A)!, NOW.getTime());
+    expect(snapshot).toMatchObject({ dexId: 'pumpfun', priceUsd: 0.000002575, liqUsd: null, mcap: 35_000, pairAddress: B });
   });
 
   test('a verifiable pool type wins over a deeper unverifiable one; then the deepest', () => {

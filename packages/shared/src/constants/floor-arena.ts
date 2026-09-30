@@ -16,7 +16,9 @@
  * Start an editable copy with `cloneFloorArenaParams`.
  */
 
-export const FLOOR_ARENA_VERSION = 1;
+/** Params contract version. 2 (2026-09-30): `entry.first_sight_sources` added (required, D25) and
+ *  the platform liquidity floor removed (D26). */
+export const FLOOR_ARENA_VERSION = 2;
 
 // ── Types (docs §2) ─────────────────────────────────────────────────────────
 
@@ -39,6 +41,26 @@ export const FLOOR_ARENA_RANK_BY_LABELS: Readonly<Record<FloorArenaRankBy, strin
   lowest_vol_over_mcap: 'Lowest 1-hour volume to market cap',
   mid_vol_over_mcap: 'Middle 1-hour volume to market cap',
 });
+
+/** D25: which sighting starts the `discovered_within_s` clock. `tradeable` = the first sighting by a
+ *  tradeable source (see FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES); `any` = the hub's `first_seen_at`. */
+export const FLOOR_ARENA_FIRST_SIGHT_SOURCES = deepFreeze(['any', 'tradeable'] as const);
+export type FloorArenaFirstSightSources = (typeof FLOOR_ARENA_FIRST_SIGHT_SOURCES)[number];
+
+/** Form labels for `entry.first_sight_sources`, in `FLOOR_ARENA_FIRST_SIGHT_SOURCES` order. */
+export const FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS: Readonly<Record<FloorArenaFirstSightSources, string>> = deepFreeze({
+  any: 'First seen by any feed',
+  tradeable: 'First seen by a tradeable feed (DexScreener or ClawPump)',
+});
+
+/** D25: a shared-feed coin is tradeable only when at least one of its sources starts with one of
+ *  these prefixes (a GeckoTerminal-only sighting is not). Mints from a paid add-on are exempt. */
+export const FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES = deepFreeze(['ds:', 'clawpump:'] as const);
+
+/** True when a discovery source id (e.g. `ds:token-profiles`) is a tradeable source (D25). */
+export function isFloorArenaTradeableSource(source: string): boolean {
+  return FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES.some((prefix) => source.startsWith(prefix));
+}
 
 /** Every field is `number | null`; null turns the filter off. `chg*` values are
  *  percent, `age_*_s` is the DexScreener PAIR age in seconds. */
@@ -66,6 +88,7 @@ export interface FloorArenaFilters {
 
 export interface FloorArenaEntry {
   discovered_within_s: number | null;
+  first_sight_sources: FloorArenaFirstSightSources;
   rank_by: FloorArenaRankBy;
   entries_per_tick: number;
 }
@@ -142,7 +165,7 @@ export const FLOOR_ARENA_FILTER_KEYS = deepFreeze([
   'top10_max_pct',
 ] as const satisfies readonly (keyof FloorArenaFilters)[]);
 
-const ENTRY_KEYS = ['discovered_within_s', 'rank_by', 'entries_per_tick'] as const satisfies readonly (keyof FloorArenaEntry)[];
+const ENTRY_KEYS = ['discovered_within_s', 'first_sight_sources', 'rank_by', 'entries_per_tick'] as const satisfies readonly (keyof FloorArenaEntry)[];
 const EXIT_KEYS = ['tp', 'stop_mult', 'trail_from_peak', 'trail_arm_mult', 'max_hold_s'] as const satisfies readonly (keyof FloorArenaExits)[];
 const LIMIT_KEYS = ['position_usd', 'max_open', 'reentry_cooldown_s'] as const satisfies readonly (keyof FloorArenaLimits)[];
 const SECTION_KEYS = {
@@ -209,9 +232,6 @@ export interface FloorArenaParamBounds {
   limits: Readonly<Record<keyof FloorArenaLimits, FloorArenaBound>>;
 }
 
-/** Liquidity floor in USD. Also a hard rule (`min-liquidity`); a template or a
- *  player form can raise it but never lower it. */
-export const FLOOR_ARENA_MIN_LIQUIDITY_USD = 5_000;
 /** Fixed paper ticket size in USD (D6). Equal tickets keep USD P&L comparable. */
 export const FLOOR_ARENA_POSITION_USD = 20;
 export const FLOOR_ARENA_MAX_OPEN_POSITIONS = 5;
@@ -238,7 +258,8 @@ function bound(
 }
 
 const MCAP = [1_000, 100_000_000, 1_000] as const;
-const LIQ = [FLOOR_ARENA_MIN_LIQUIDITY_USD, 50_000_000, 1_000] as const;
+/** D26: no platform liquidity floor; `liq_min` is an ordinary, optional filter. */
+const LIQ = [0, 50_000_000, 1_000] as const;
 const AGE = [0, 2_592_000, 60] as const;
 const VOL_RATIO = [0, 100, 0.01] as const;
 const CHG_SHORT = [-100, 1_000_000, 0.01] as const;
@@ -251,7 +272,7 @@ export const FLOOR_ARENA_PARAM_BOUNDS: FloorArenaParamBounds = deepFreeze({
   filters: {
     mcap_min: bound('Min market cap', 'usd', ...MCAP, OFF),
     mcap_max: bound('Max market cap', 'usd', ...MCAP, OFF),
-    liq_min: bound('Min liquidity', 'usd', ...LIQ, { nullable: false }),
+    liq_min: bound('Min liquidity', 'usd', ...LIQ, OFF),
     liq_max: bound('Max liquidity', 'usd', ...LIQ, OFF),
     age_min_s: bound('Min pair age', 'seconds', ...AGE, OFF_INT),
     age_max_s: bound('Max pair age', 'seconds', ...AGE, OFF_INT),
@@ -297,14 +318,14 @@ export const FLOOR_ARENA_PARAM_BOUNDS: FloorArenaParamBounds = deepFreeze({
 
 // ── Hard rules, costs, contest, add-ons ─────────────────────────────────────
 
-/** D5, in display order. Not editable; every form shows them. */
+/** D5, in display order. Not editable; every form shows them. D26 removed the $5,000 liquidity
+ *  rule: the founder's hard rules are these five (bonding-curve pools pass the LP rule). */
 export const FLOOR_ARENA_HARD_RULES = deepFreeze([
   { id: 'lp-locked', label: 'LP burned or locked (95% or more)' },
   { id: 'mint-authority', label: 'Mint authority revoked' },
   { id: 'freeze-authority', label: 'Freeze authority revoked' },
   { id: 't22-fee', label: 'Token-2022: no transfer fee or risky extension' },
   { id: 'pool-reserves', label: 'Pool reserves present' },
-  { id: 'min-liquidity', label: 'Liquidity of $5,000 or more' },
 ] as const);
 export type FloorArenaHardRuleId = (typeof FLOOR_ARENA_HARD_RULES)[number]['id'];
 
@@ -454,11 +475,17 @@ const ARENA_LIMITS: FloorArenaLimits = {
  * designer's (ops/house-traders/TEMPLATES_2026-09-30.md §5, in-sample on a
  * 31.4-hour paper log), clamped by the lead to the §2 bounds: `max_open` 5
  * (designer: 20), Runner `entries_per_tick` 3 (designer: 99) and Runner
- * `liq_min` 5,000 (designer: null). The designer's `top10_max_pct` 100 meant
- * "off" and is written as null: a set cap fails any coin whose top-10 share is
- * unmeasured. Volume Surge and the Trend Rider trail were rejected by that data
- * and are not templates.
+ * `liq_min` null, as in C1 (D26 removed the 5,000 floor). Runner starts its
+ * 120-s first-sight clock at the first TRADEABLE sighting (D25). The designer's
+ * `top10_max_pct` 100 meant "off" and is written as null: a set cap fails any
+ * coin whose top-10 share is unmeasured. Volume Surge and the Trend Rider trail
+ * were rejected by that data and are not templates.
  */
+/** Bumped whenever a template's params change. The engine resets a HOUSE agent's params to its
+ *  template when the row's `template_version` is lower (user agents keep their own params).
+ *  2 (2026-09-30): D25 first-sight sources, D26 Runner liq_min null. */
+export const FLOOR_ARENA_TEMPLATE_VERSION = 2;
+
 export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
   {
     id: 'genesis',
@@ -470,7 +497,7 @@ export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
     risk: 'No stop loss: a coin that collapses costs the full $20.',
     params: {
       filters: { ...NO_FILTERS, mcap_min: 10_000, mcap_max: 250_000, liq_min: 15_000, age_min_s: 1_800, age_max_s: 21_600 },
-      entry: { discovered_within_s: null, rank_by: 'vol_over_mcap', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'vol_over_mcap', entries_per_tick: 1 },
       exits: { tp: [[1.1, 1]], ...NO_STOPS, max_hold_s: 900 },
       limits: { ...ARENA_LIMITS },
     },
@@ -484,8 +511,8 @@ export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
       'A coin that already ran hard and is not spiking right now often has one more leg. Runner looks once, at first sight, and sells at +20% or after 15 minutes.',
     risk: 'Few entries, and a 15-minute time exit can still lose a lot.',
     params: {
-      filters: { ...NO_FILTERS, liq_min: FLOOR_ARENA_MIN_LIQUIDITY_USD, chg5m_max: 41.48, chg6h_min: 680.4 },
-      entry: { discovered_within_s: 120, rank_by: 'newest', entries_per_tick: 3 },
+      filters: { ...NO_FILTERS, chg5m_max: 41.48, chg6h_min: 680.4 },
+      entry: { discovered_within_s: 120, first_sight_sources: 'tradeable', rank_by: 'newest', entries_per_tick: 3 },
       exits: { tp: [[1.2, 1]], ...NO_STOPS, max_hold_s: 900 },
       limits: { ...ARENA_LIMITS },
     },
@@ -508,7 +535,7 @@ export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
         chg1h_max: -5,
         chg24h_min: 0,
       },
-      entry: { discovered_within_s: null, rank_by: 'lowest_vol_over_mcap', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'lowest_vol_over_mcap', entries_per_tick: 1 },
       exits: { tp: [[1.08, 1]], ...NO_STOPS, stop_mult: 0.9, max_hold_s: 7_200 },
       limits: { ...ARENA_LIMITS },
     },
@@ -533,7 +560,7 @@ export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
         chg1h_min: 5,
         chg1h_max: 60,
       },
-      entry: { discovered_within_s: null, rank_by: 'txns1h', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'txns1h', entries_per_tick: 1 },
       exits: { tp: [[1.1, 1]], ...NO_STOPS, max_hold_s: 3_600 },
       limits: { ...ARENA_LIMITS },
     },
@@ -557,7 +584,7 @@ export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
         chg5m_min: 2,
         chg1h_min: 20,
       },
-      entry: { discovered_within_s: null, rank_by: 'txns1h', entries_per_tick: 1 },
+      entry: { discovered_within_s: null, first_sight_sources: 'any', rank_by: 'txns1h', entries_per_tick: 1 },
       exits: { tp: [[1.1, 1]], ...NO_STOPS, max_hold_s: 1_800 },
       limits: { ...ARENA_LIMITS },
     },
@@ -686,11 +713,22 @@ export function validateFloorArenaParams(
     const perTick = 'entries_per_tick' in e
       ? checkNumber(e.entries_per_tick, B.entry.entries_per_tick, 'entry.entries_per_tick', errors)
       : undefined;
+    const firstSight = e.first_sight_sources;
+    const firstSightOk =
+      typeof firstSight === 'string' && (FLOOR_ARENA_FIRST_SIGHT_SOURCES as readonly string[]).includes(firstSight);
+    if ('first_sight_sources' in e && !firstSightOk) {
+      errors.push(`entry.first_sight_sources: must be one of ${FLOOR_ARENA_FIRST_SIGHT_SOURCES.join(', ')}`);
+    }
     const rankBy = e.rank_by;
     const rankOk = typeof rankBy === 'string' && (FLOOR_ARENA_RANK_BY as readonly string[]).includes(rankBy);
     if ('rank_by' in e && !rankOk) errors.push(`entry.rank_by: must be one of ${FLOOR_ARENA_RANK_BY.join(', ')}`);
-    if (within !== undefined && typeof perTick === 'number' && rankOk) {
-      entry = { discovered_within_s: within, rank_by: rankBy as FloorArenaRankBy, entries_per_tick: perTick };
+    if (within !== undefined && typeof perTick === 'number' && rankOk && firstSightOk) {
+      entry = {
+        discovered_within_s: within,
+        first_sight_sources: firstSight as FloorArenaFirstSightSources,
+        rank_by: rankBy as FloorArenaRankBy,
+        entries_per_tick: perTick,
+      };
     }
   }
 

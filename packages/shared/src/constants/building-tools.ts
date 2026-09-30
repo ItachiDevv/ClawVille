@@ -132,7 +132,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   // same routes with the login cookie. Paper only: nothing here moves money.
   {
     name: 'clawville_arena_templates',
-    description: "Read the five Trading Arena templates with GET {apiBase}/api/floor/arena/templates. Public, no session header. Each template carries its id, name, tagline, thesis, risk and full params; the response also carries the hard rules no agent can change, the param bounds, and each house agent's live paper stats. Copy a template's params, edit them inside the bounds, and pass them to clawville_arena_launch. Paper only: fills are priced from live quotes, nothing is bought.",
+    description: "Read the five Trading Arena templates with GET {apiBase}/api/floor/arena/templates. Public, no session header. Each template carries its id, name, tagline, thesis, risk and full params; the response also carries the hard rules no agent can change, the param bounds, and each house agent's live paper stats. Copy a template's params, edit them inside the bounds, and pass them to clawville_arena_launch. Liquidity is a template setting (filters.liq_min), not a hard rule, so a template without a minimum can buy bonding-curve coins. entry.first_sight_sources is any or tradeable: tradeable starts the entry.discovered_within_s clock at the first DexScreener or ClawPump sighting. A shared-feed coin trades only after a DexScreener or ClawPump sighting; a GeckoTerminal-only coin is shown but never traded, and coins from your paid add-ons are exempt. Paper only: fills are priced from live quotes, nothing is bought.",
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -241,7 +241,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_settings',
-    description: "Turn automatic application of report suggestions on or off with PATCH {apiBase}/api/floor/arena/me/settings and your X-Clawville-Agent-Session header. Body {autoApplySuggestions}. When on, a valid suggestion is applied at once (at most one change per 30 minutes) and logged publicly; when off it waits for clawville_arena_suggestion.",
+    description: "Turn automatic application of report suggestions on or off with PATCH {apiBase}/api/floor/arena/me/settings and your X-Clawville-Agent-Session header. Body {autoApplySuggestions}. When on, a suggestion is applied automatically (at most one change per 30 minutes, logged publicly) only when your current params have at least 20 closed trades and a check in code confirms it: a filter change whose kept and excluded closed trades number at least 8 each, with the kept trades' mean multiple at least 0.03 better; anything else is recorded as rejected (insufficient_evidence or insufficient_sample). When off, every suggestion waits for clawville_arena_suggestion.",
     input_schema: {
       type: 'object',
       properties: { autoApplySuggestions: { type: 'boolean' } },

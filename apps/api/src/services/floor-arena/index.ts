@@ -3,7 +3,7 @@ import { runArenaAddonsTick } from './addons';
 import { runArenaAnalysisTick } from './analysis';
 import { runChainCheckTick } from './chain-checks';
 import { DISCOVERY_SOURCES, runDiscoveryExpiryTick, runDiscoveryPoll, runEnrichmentTick } from './discovery-hub';
-import { ensureHouseAgents, entriesPaused, runEntryTick, runExitTick, setEntriesPaused } from './engine';
+import { ensureHouseAgents, entriesPaused, refreshHouseTemplates, runEntryTick, runExitTick, setEntriesPaused } from './engine';
 import { pruneArenaEvents } from './events';
 import { createPgLeaderLock, LeaderElector } from './leader';
 import { clawpumpQuoteBreakerState, currentSolPriceUsd, dexscreenerCallsLastMinute } from './pricing';
@@ -139,6 +139,8 @@ function buildLoops(): ArenaLoop[] {
     new ArenaLoop('provisioning', 60_000, (now) => runArenaProvisioningTick(now), { initialDelayMs: 25_000 }),
     new ArenaLoop('discovery-expiry', 5 * 60_000, runDiscoveryExpiryTick, { initialDelayMs: 60_000 }),
     new ArenaLoop('event-prune', 60 * 60_000, pruneArenaEvents, { initialDelayMs: 120_000 }),
+    // D27: house params follow template changes (also run once right after election, below).
+    new ArenaLoop('house-templates', 60 * 60_000, refreshHouseTemplates, { initialDelayMs: 60 * 60_000 }),
   ];
 }
 
@@ -147,7 +149,7 @@ interface ArenaRuntime {
   loops: ArenaLoop[];
   startedAt: string;
   electedAt: string | null;
-  houseAgents: { at: string; inserted: number } | { at: string; error: string } | null;
+  houseAgents: { at: string; inserted: number; templatesReset: number } | { at: string; error: string } | null;
   pausedBy: string | null;
   pausedAt: string | null;
 }
@@ -182,7 +184,9 @@ export function startFloorArena(): void {
       onElected: async () => {
         state.electedAt = new Date().toISOString();
         try {
-          state.houseAgents = { at: new Date().toISOString(), inserted: await ensureHouseAgents() };
+          const inserted = await ensureHouseAgents();
+          const templatesReset = await refreshHouseTemplates();
+          state.houseAgents = { at: new Date().toISOString(), inserted, templatesReset };
         } catch (error) {
           // The loops still start: existing house rows keep trading; the next election retries the insert.
           state.houseAgents = { at: new Date().toISOString(), error: safeMessage(error) };

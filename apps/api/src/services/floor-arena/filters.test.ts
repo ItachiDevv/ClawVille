@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { FloorArenaFilters } from '@clawville/shared';
 import {
-  hardFloorFails, pairAgeSeconds, passesFilters, rankCandidates, volOverMcap, withinDiscoveryWindow,
+  hasTradeableSource, pairAgeSeconds, passesFilters, rankCandidates, tradeableFirstSeenMs, volOverMcap, withinDiscoveryWindow,
   type FloorArenaFeatures,
 } from './filters';
 
@@ -94,11 +94,33 @@ describe('passesFilters', () => {
   });
 });
 
-describe('hard floor and discovery window', () => {
-  test('liquidity floor is $5,000 and fails closed', () => {
-    expect(hardFloorFails({ liqUsd: 5_000 })).toEqual([]);
-    expect(hardFloorFails({ liqUsd: 4_999.99 })).toEqual(['liq_floor']);
-    expect(hardFloorFails({ liqUsd: null })).toEqual(['liq_floor']);
+describe('D25 tradeable sources', () => {
+  test('a coin is tradeable only with a DexScreener or ClawPump source', () => {
+    expect(hasTradeableSource(['gecko:new-pools'])).toBe(false);
+    expect(hasTradeableSource(['gecko:trending_5m', 'gecko:new-pools'])).toBe(false);
+    expect(hasTradeableSource(['gecko:new-pools', 'ds:token-boosts-top'])).toBe(true);
+    expect(hasTradeableSource(['clawpump:anomalies'])).toBe(true);
+    expect(hasTradeableSource([])).toBe(false);
+  });
+
+  test('the tradeable first sighting is the earliest recorded tradeable time; a missing time falls back to first_seen_at', () => {
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const seen = { 'gecko:new-pools': iso(NOW - 600_000), 'ds:token-profiles': iso(NOW - 60_000), 'clawpump:signals': iso(NOW - 90_000) };
+    expect(tradeableFirstSeenMs(['gecko:new-pools', 'ds:token-profiles', 'clawpump:signals'], seen, NOW - 600_000)).toBe(NOW - 90_000);
+    expect(tradeableFirstSeenMs(['gecko:new-pools'], seen, NOW - 600_000)).toBeNull();
+    expect(tradeableFirstSeenMs(['ds:token-boosts-top'], {}, NOW - 600_000)).toBe(NOW - 600_000);
+    expect(tradeableFirstSeenMs(['ds:token-boosts-top'], null, NOW - 5)).toBe(NOW - 5);
+  });
+});
+
+describe('curve coins and the discovery window', () => {
+  test('D26: a pump.fun curve coin (DexScreener liquidity 0 or absent) passes when the template sets no liq_min', () => {
+    const curve = coin({ dexId: 'pumpfun', liqUsd: 0, liqBase: null, liqQuote: null, mcap: 35_000 });
+    expect(passesFilters(curve, OFF, NOW)).toEqual([]);
+    expect(passesFilters(coin({ dexId: 'pumpfun', liqUsd: null }), OFF, NOW)).toEqual([]);
+    // A template that sets liq_min still judges it (fail closed on a missing value).
+    expect(passesFilters(curve, { ...OFF, liq_min: 5_000 }, NOW)).toEqual(['liq']);
+    expect(passesFilters(coin({ liqUsd: null }), { ...OFF, liq_min: 1 }, NOW)).toEqual(['liq']);
   });
 
   test('discovered_within_s: null = no limit; else first sight at most that old (inclusive)', () => {

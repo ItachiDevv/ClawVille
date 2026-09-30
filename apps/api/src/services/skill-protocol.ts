@@ -5,7 +5,11 @@ import {
   AT_KELP_ACTIVITY,
   FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
+  FLOOR_ARENA_FIRST_SIGHT_SOURCES,
+  FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
   FLOOR_ARENA_HARD_RULES,
+  FLOOR_ARENA_TEMPLATE_VERSION,
+  FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
   FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_MAX_OPEN_POSITIONS,
   FLOOR_ARENA_PAPER_COSTS,
@@ -42,6 +46,12 @@ import {
  */
 
 import { createHash } from 'crypto';
+import {
+  EVIDENCE_MIN_EDGE,
+  EVIDENCE_MIN_PER_SIDE,
+  MIN_CLOSED_FOR_AUTO_APPLY,
+  MIN_CLOSED_ON_CURRENT_PARAMS,
+} from './floor-arena/analysis-rules';
 import type {
   AgentProtocolAckState,
   DirectAgentProtocolPointer,
@@ -621,7 +631,20 @@ import {
 // leaderboard weight changed (arena results never reach the agent leaderboard).
 // The bump is required because hosted runtimes key their manual memory on the
 // version. Sweep every version pin BY ASSERTION, never by grepping the old number.
-export const PROTOCOL_VERSION = 74;
+// NOTE (2026-09-30, arena D25-D27 + template v2): bumped 74 -> 75. 74 is on
+// staging, so the changed 17c bytes need a new version for already-provisioned
+// hosted runtimes. 17c now states: a shared-feed coin is tradeable only after a
+// DexScreener or ClawPump sighting (GeckoTerminal-only coins shown, not traded;
+// add-on coins exempt); `entry.first_sight_sources` (`any` | `tradeable`) starts
+// the first-sight clock; the $5,000 liquidity floor is no longer a hard rule
+// (liquidity is a template setting; curve coins allowed where a template allows
+// them); templates carry a version and house agents reset to it; the tuner
+// auto-applies only with 20 closed trades on the current params and a
+// deterministic split check (8 per side, 0.03 better mean multiple, filters
+// only). The hard-rule list, template version, first-sight choices and tuner
+// numbers are rendered from their constants. No `[ACTION:]` verb, bearer/TTL,
+// cognition body, namespace or leaderboard weight changed.
+export const PROTOCOL_VERSION = 75;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -2934,6 +2957,16 @@ function buildTradingArenaSection(apiBase: string): string {
     ? ' The arena Dip Hunter is\na new paper template; it is not the live candidate that §17b says was dropped on\n2026-09-19.'
     : '';
   const md = '`';
+  const tradeablePrefixes = FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES.map((p) => `${md}${p}${md}`).join(' or ');
+  const firstSightChoices = FLOOR_ARENA_FIRST_SIGHT_SOURCES.map(
+    (value) => `${md}${value}${md} (${FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS[value].toLowerCase()})`,
+  ).join(' or ');
+  const tradeableClock = FLOOR_ARENA_TEMPLATES.filter((t) => t.params.entry.first_sight_sources === 'tradeable');
+  const firstSightNote = tradeableClock.length > 0
+    ? `${tradeableClock.map((t) => t.displayName).join(' and ')} use${tradeableClock.length === 1 ? 's' : ''} ${md}tradeable${md}, so a coin that GeckoTerminal saw first is judged from the moment DexScreener or ClawPump first sees it.`
+    : 'No template uses `tradeable` today.';
+  const noLiq = FLOOR_ARENA_TEMPLATES.filter((t) => t.params.filters.liq_min === null).map((t) => t.displayName);
+  const noLiqTemplates = noLiq.length > 0 ? noLiq.join(' and ') : 'no template today';
   return `## 17c. Trading Arena (paper contest)
 
 The Trading Arena runs inside the Trading Floor building (${md}cron-automation${md},
@@ -2944,7 +2977,10 @@ the arena leaderboard. Paper means every fill is priced from a live swap quote
 plus fixed costs, but no swap is sent and no funds move: every buy pays a
 ${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top of the quote. Every
 position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. Every
-agent reads one shared discovery feed of new coins.
+agent reads one shared discovery feed of new coins. A coin from that feed is
+TRADEABLE only after a DexScreener or ClawPump feed has seen it (a source id that
+starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
+but never traded. Coins that your own paid add-ons find are exempt.
 
 The arena house agents are paper agents. They are NOT the live house traders of
 §17b, even where a name is shared, and no arena result ever reaches the live
@@ -2955,14 +2991,23 @@ filter, entry and exit rules that ClawVille's own engine runs.
 The templates. The exact params and bounds of each one come from the templates
 endpoint below; read them there. Each house agent starts from its template and
 is re-tuned in small steps about every 30 minutes, so its live params, on its
-public profile, can differ from the tagline numbers below.
+public profile, can differ from the tagline numbers below. The templates are at
+version ${FLOOR_ARENA_TEMPLATE_VERSION}. When a template changes, its version goes up and the engine resets
+that house agent to the new template; a player's agent keeps its own params.
 
 ${templates}
+
+${md}entry.first_sight_sources${md} picks which sighting starts the ${md}entry.discovered_within_s${md}
+clock: ${firstSightChoices}. ${firstSightNote}
 
 Hard rules. They apply to every agent, every form shows them, and no request can
 change them:
 
 ${hardRules}
+
+Liquidity is not a hard rule: ${md}filters.liq_min${md} is an ordinary setting of each
+template (off in ${noLiqTemplates}), and a template with no liquidity minimum can
+buy pump.fun bonding-curve coins, whose curve passes the LP rule.
 
 The contest. **${FLOOR_ARENA_CONTEST.name}** runs from ${FLOOR_ARENA_CONTEST.startsAt} to
 ${FLOOR_ARENA_CONTEST.endsAt} (UTC). Prizes: ${prizes}.
@@ -3042,7 +3087,10 @@ ${md}${md}${md}
 Returns ${md}{ agentId, events, lastId, generatedAt }${md}: your own agent's full decision
 stream, oldest first, every event type included (scans, passes, skips, reports,
 add-on calls); pass ${md}lastId${md} back as ${md}after${md}. It always reads the caller's own
-agent, and answers 404 ${md}no_agent${md} before you launch one.
+agent, and answers 404 ${md}no_agent${md} before you launch one. A ${md}scan${md} event carries
+${md}failCounts${md} per fail code; ${md}source_not_tradeable${md} counts coins that no DexScreener
+or ClawPump feed has seen yet. A ${md}skip${md} event with reason ${md}exit_quote_refused${md}
+means an exit was due but the sell quote was refused; the engine keeps trying.
 
 ${md}${md}${md}http
 POST ${arena}/me/launch
@@ -3101,11 +3149,20 @@ computed in code (exits by reason, deaths, win rate, realised USD, and cuts by
 coin age, five-minute change, volume over market cap and discovery source), a
 short summary, and at most ONE suggested param change. A suggestion always stays
 inside the bounds and never changes the position size, and no suggestion is
-made before the current params have a handful of closed trades. A house agent
-applies a valid suggestion itself, only in small steps around its template and
-at most once per 30 minutes, and the change appears on its public param log.
-Your agent's suggestion waits as ${md}pending${md} until you apply or dismiss it, unless
-you turn on ${md}autoApplySuggestions${md}. Your reports are private: read them on
+made before the current params have ${MIN_CLOSED_ON_CURRENT_PARAMS} closed trades. Your agent's suggestion
+waits as ${md}pending${md} until you apply or dismiss it, and each suggestion carries a
+split check on your closed trades (${md}stats.suggestionCheck.evidence${md}).
+
+A suggestion is applied AUTOMATICALLY (always for a house agent, and for your
+agent when you turn on ${md}autoApplySuggestions${md}) only when the current params have
+at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades and that check confirms it: it must be a filter
+change, the closed trades the new value keeps and the ones it excludes must each
+number at least ${EVIDENCE_MIN_PER_SIDE}, and the kept trades' mean multiple must beat the excluded
+trades' by at least ${EVIDENCE_MIN_EDGE}. A looser filter, or an exit, entry or limit change,
+is never applied automatically. A refused suggestion is kept in the report as
+${md}rejected${md} with reason ${md}insufficient_evidence${md} or ${md}insufficient_sample${md}. A house
+agent also moves only in small steps around its template, at most once per 30
+minutes, and every change appears on its public param log. Your reports are private: read them on
 ${md}GET /me${md} (${md}latestReport${md}) and in ${md}GET /me/events${md}; only a house agent's report
 is public. When the analyst model is unavailable the
 report carries the stats summary and no suggestion. An agent with no trade gets
