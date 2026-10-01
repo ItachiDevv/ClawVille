@@ -671,14 +671,30 @@ export const RIBBON_BRAND_PHRASES = Object.freeze([
   'AGENTS TRADE HERE',
 ] as const);
 /**
- * The tag on EVERY trade that prints a dollar figure. The board writes PAPER
+ * The tag on EVERY trade segment, unconditionally. The board writes PAPER
  * twice for the same reason: a P&L figure a reader could take for real money
  * is the one dishonesty a wall can commit while every number on it is right.
  * Once per strip was not enough: a single wall shows only part of a strip
  * period, so a figure could be on screen with no PAPER anywhere near it. On
- * the segment itself, PAPER travels with the figure through any packing.
+ * the segment itself, PAPER travels with the trade through any packing.
+ *
+ * Unconditional, not "when there is an amount" (Codex review of 6b9593db):
+ * the API lets `$` into token symbols (`sanitizeArenaSymbol` keeps `$ . _ -`),
+ * so a symbol `$100` on an unpriced exit printed `GENESIS SELL $100`, a
+ * dollar-looking figure with no amount and therefore no PAPER.
  */
 export const RIBBON_PAPER_TAG = 'PAPER';
+
+/**
+ * `$` removed from untrusted text (token symbol, agent name) before it reaches
+ * the shared tape helpers, so the ONLY `$` the ribbon can print is the amount
+ * `formatTapeUsd` / `formatTapeSignedUsd` produce. The board's own
+ * `sanitiseScreenText` keeps `$` on purpose (the board prints money), so it is
+ * not the place for this; the strip happens here, before that sanitiser runs.
+ */
+function withoutDollar(text: string): string {
+  return text.replace(/\$/g, '');
+}
 /** Newest rows offered to the packer; it keeps only what fits the strip. */
 export const RIBBON_MAX_ITEMS = 8;
 
@@ -694,8 +710,8 @@ export interface RibbonTextSegment {
  * What the ribbon says, in crawl order. Honest by construction: every trade is
  * the board's own tape row (`tapeTraderName` + `classifyArenaTapeItem`, the
  * helpers `tapeLine` uses), minus the age, because the ribbon is not redrawn by
- * the clock and an age would go stale on the wall. A row with a dollar figure
- * ends in `RIBBON_PAPER_TAG`.
+ * the clock and an age would go stale on the wall. Every trade row ends in
+ * `RIBBON_PAPER_TAG`, and its symbol and agent name lose any `$` first.
  *
  * DATA FIRST, then the error flag (room-wide rule, lead 2026-10-01): a FAILED
  * refetch keeps the last good tape, because react-query keeps `data` across a
@@ -713,9 +729,11 @@ export function buildRibbonSegments(tape: { readonly data: unknown; readonly isE
 
   const out: RibbonTextSegment[] = [brand(0)];
   items.forEach((item, index) => {
-    const face = classifyArenaTapeItem(item);
-    const parts = [tapeTraderName(item.agentName), face.action, face.amount];
-    if (face.amount.length > 0) parts.push(RIBBON_PAPER_TAG);
+    // A symbol that was nothing but `$` becomes no symbol, so the helper
+    // prints the side alone instead of a dangling space.
+    const symbol = item.symbol === null ? null : withoutDollar(item.symbol);
+    const face = classifyArenaTapeItem({ ...item, symbol: symbol && symbol.length > 0 ? symbol : null });
+    const parts = [tapeTraderName(withoutDollar(item.agentName)), face.action, face.amount, RIBBON_PAPER_TAG];
     out.push({
       text: parts.filter((part) => part.length > 0).join(' '),
       tone: face.kind,

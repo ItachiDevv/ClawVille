@@ -77,6 +77,8 @@ import {
   TAPE_Z_END,
   TAPE_Z_START,
   classifyArenaTapeItem,
+  formatTapeSignedUsd,
+  formatTapeUsd,
   readArenaTape,
   tapeTraderName,
 } from './trading-floor-trade-tape';
@@ -882,26 +884,24 @@ describe('ribbon text', () => {
     const segments = buildRibbonSegments({ data: FIXTURE, isError: false });
     const rows = readArenaTape(FIXTURE).map((item) => {
       const face = classifyArenaTapeItem(item);
-      const parts = [tapeTraderName(item.agentName), face.action, face.amount];
-      if (face.amount.length > 0) parts.push(RIBBON_PAPER_TAG);
+      const parts = [tapeTraderName(item.agentName), face.action, face.amount, RIBBON_PAPER_TAG];
       return { text: parts.filter((p) => p.length > 0).join(' '), tone: face.kind };
     });
     expect(rows.map((r) => r.text)).toEqual([
       'GENESIS BUY BONK $20.00 PAPER',
       'RUNNER SELL WIF +$2.14 PAPER',
       'DIP HUNTER SELL POPCAT -$3.21 PAPER',
-      'LATE BLOOM SELL',
+      'LATE BLOOM SELL PAPER',
     ]);
     const allowed = new Set<string>([...RIBBON_BRAND_PHRASES, ...rows.map((r) => r.text)]);
     for (const segment of segments) expect(allowed.has(segment.text)).toBe(true);
     // Every row appears exactly once, newest first, with its own tone.
     const tradeSegments = segments.filter((s) => s.tone !== 'brand');
     expect(tradeSegments).toEqual(rows);
-    // BLOCKING-class honesty pin: no dollar figure ever travels without PAPER,
-    // so no wall stretch can show a figure that reads as real money.
-    for (const segment of segments) {
-      if (segment.text.includes('$')) expect(segment.text.endsWith(` ${RIBBON_PAPER_TAG}`)).toBe(true);
-    }
+    // BLOCKING-class honesty pin: EVERY trade segment carries PAPER, with or
+    // without a figure, so no wall stretch can show a trade that reads as real
+    // money (Codex review of 6b9593db).
+    for (const segment of tradeSegments) expect(segment.text.endsWith(` ${RIBBON_PAPER_TAG}`)).toBe(true);
     // Every brand phrase still appears.
     for (const phrase of RIBBON_BRAND_PHRASES) expect(segments.some((s) => s.text === phrase)).toBe(true);
     // No mint, no fragment of one.
@@ -910,6 +910,38 @@ describe('ribbon text', () => {
     // The only digits are the route's own figures.
     for (const segment of segments) {
       if (/\d/.test(segment.text)) expect(rows.some((r) => r.text === segment.text)).toBe(true);
+    }
+  });
+
+  // Codex BLOCK on 6b9593db: the API keeps `$` in token symbols
+  // (`sanitizeArenaSymbol` allows `$ . _ -`), and the board's
+  // `sanitiseScreenText` keeps `$` on purpose. So the ribbon strips `$` from
+  // the symbol and the agent name itself; the only `$` left is the amount the
+  // tape formatters print.
+  test('a $ in a token symbol or agent name never reads as a figure', () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [tapeRow({ id: 's1', symbol: '$100', usd: 20 }), 'GENESIS BUY 100 $20.00 PAPER'],
+      [tapeRow({ id: 's2', type: 'exit', symbol: '$100', pnlUsd: null }), 'GENESIS SELL 100 PAPER'],
+      [tapeRow({ id: 's3', type: 'exit', symbol: '$WIF', pnlUsd: 2.14 }), 'GENESIS SELL WIF +$2.14 PAPER'],
+      [tapeRow({ id: 's4', type: 'exit', symbol: '$', pnlUsd: null }), 'GENESIS SELL PAPER'],
+      [tapeRow({ id: 's5', type: 'exit', symbol: '$1,000.00', pnlUsd: null }), 'GENESIS SELL 1,000.00 PAPER'],
+      [tapeRow({ id: 's6', agentName: '$500 Club', symbol: 'BONK', usd: 20 }), '500 CLUB BUY BONK $20.00 PAPER'],
+      // `USD100`: neither sanitiser treats it (no `$`, nothing to strip), so it
+      // prints as the route's symbol and is still carried by PAPER.
+      [tapeRow({ id: 's7', type: 'exit', symbol: 'USD100', pnlUsd: null }), 'GENESIS SELL USD100 PAPER'],
+    ];
+    for (const [row, expected] of cases) {
+      const segments = buildRibbonSegments({ data: [row], isError: false });
+      const trades = segments.filter((s) => s.tone !== 'brand');
+      expect(trades.map((s) => s.text)).toEqual([expected]);
+      const trade = trades[0]!;
+      expect(trade.text.endsWith(` ${RIBBON_PAPER_TAG}`)).toBe(true);
+      // Remove the one figure the tape formatters print; no `$` may remain.
+      const usd = typeof row.usd === 'number' && row.type === 'entry' ? formatTapeUsd(row.usd) : '';
+      const pnl = typeof row.pnlUsd === 'number' ? formatTapeSignedUsd(row.pnlUsd) : '';
+      const figure = row.type === 'entry' ? usd : pnl;
+      const rest = figure ? trade.text.replace(figure, '') : trade.text;
+      expect({ expected, dollarOutsideFigure: rest.includes('$') }).toEqual({ expected, dollarOutsideFigure: false });
     }
   });
 
