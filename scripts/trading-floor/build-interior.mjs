@@ -438,11 +438,17 @@ function octagonGeo(cx, y0, cz, halfX, halfZ, height, chamfer, tile = 0, cap = t
 
 function bannerGeo(x, y, z) {
   const h=420, w=210, side=x<0?1:-1;
+  const atlasSize=1024, rect=bannerAtlasRect;
+  if (Math.abs((rect.w / rect.h) / (w / h) - 1) > 0.01) {
+    throw new Error(`banner atlas aspect ${rect.w}/${rect.h} differs from quad ${w}/${h} by over 1%`);
+  }
+  const u0=rect.x/atlasSize, u1=(rect.x+rect.w)/atlasSize;
+  const v0=rect.y/atlasSize, v1=(rect.y+rect.h)/atlasSize;
   boxRegistry.push({group:currentGroup.name,exempt:currentGroup.exempt,
     min:[x,y-h/2,z-w/2],max:[x,y+h/2,z+w/2]});
   return {pos:[x,y-h/2,z-w/2,x,y-h/2,z+w/2,x,y+h/2,z+w/2,x,y+h/2,z-w/2],
     nrm:Array(4).fill([side,0,0]).flat(), idx:side>0?[0,2,1,0,3,2]:[0,1,2,0,2,3],
-    uv:side>0?[.995,.745,.755,.745,.755,.005,.995,.005]:[.755,.745,.995,.745,.995,.005,.755,.005]};
+    uv:side>0?[u1,v1,u0,v1,u0,v0,u1,v0]:[u0,v1,u1,v1,u1,v0,u0,v0]};
 }
 
 function clawReliefGeo(outline, triangles, baseY, height, depth) {
@@ -683,7 +689,9 @@ const BRASS = mat('TradingFloorBrass', [0.75, 0.53, 0.16], { rough: 0.36, metal:
   .setEmissiveFactor([0.13, 0.095, 0.032]);
 const GRANITE = texturedMat('TradingFloorGranite', await granitePng(), { rough: 0.28, metal: 0.02 });
 const atlasPath = resolve(dirname(output), 'lane-a-identity-atlas.png');
-execFileSync('python', [resolve(REPO_ROOT, 'scripts/trading-floor/render-identity-atlas.py'), atlasPath]);
+const bannerAtlasRect = JSON.parse(execFileSync('python', [
+  resolve(REPO_ROOT, 'scripts/trading-floor/render-identity-atlas.py'), atlasPath,
+], { encoding: 'utf8' }));
 const IDENTITY = texturedMat('TradingFloorIdentity', await sharp(atlasPath).png().toBuffer(), { rough: 0.6 });
 IDENTITY.setDoubleSided(true);
 IDENTITY.setAlphaMode('MASK');

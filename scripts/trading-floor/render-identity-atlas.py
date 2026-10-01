@@ -1,4 +1,5 @@
 """Build the seal and banner atlas with real Barlow glyphs at asset-build time."""
+import json
 import sys
 from pathlib import Path
 from fontTools.ttLib import TTFont
@@ -30,17 +31,19 @@ d.text((cx, 91), 'THE GOLDEN CLAW', font=small_font, fill=gold, anchor='mm')
 for x in (104, 664):
     d.regular_polygon((x, 384, 18), 5, rotation=-90, fill=gold)
 
-# Banner plate occupies the right 256 x 768 part of the atlas.
-d.rectangle((772, 5, 1019, 763), fill=gold)
-d.rectangle((781, 14, 1010, 741), fill=navy)
-d.rectangle((793, 28, 998, 725), outline=gold, width=8)
+# The 250 x 500 banner matches its 210 x 420 wu quad without stretching.
+bx, by, bw, bh = 772, 5, 250, 500
+d.rectangle((bx, by, bx + bw - 1, by + bh - 23), fill=gold)
+d.rectangle((bx + 9, by + 9, bx + bw - 10, by + bh - 36), fill=navy)
+d.rectangle((bx + 21, by + 23, bx + bw - 22, by + bh - 49), outline=gold, width=8)
 claw = Image.open(root / 'apps/web/public/assets/slot-symbols/claw.png').convert('RGBA')
-claw.thumbnail((222, 300), Image.Resampling.LANCZOS)
+claw.thumbnail((210, 210), Image.Resampling.LANCZOS)
 mask = claw.getchannel('A')
 silhouette = Image.new('RGBA', claw.size, gold)
-im.paste(silhouette, (896 - claw.width // 2, 120), mask)
-d.text((896, 540), 'CLAWVILLE', font=ImageFont.truetype(str(ttf_path), 31), fill=gold, anchor='mm')
-d.text((896, 585), 'EXCHANGE', font=ImageFont.truetype(str(ttf_path), 29), fill=gold, anchor='mm')
-for x in range(779, 1016, 20):
-    d.polygon(((x, 743), (x + 10, 766), (x + 20, 743)), fill=gold)
+im.paste(silhouette, (bx + bw // 2 - claw.width // 2, by + 83), mask)
+d.text((bx + bw // 2, by + 373), 'CLAWVILLE', font=ImageFont.truetype(str(ttf_path), 31), fill=gold, anchor='mm')
+d.text((bx + bw // 2, by + 419), 'EXCHANGE', font=ImageFont.truetype(str(ttf_path), 29), fill=gold, anchor='mm')
+for x in range(bx + 7, bx + bw - 20, 20):
+    d.polygon(((x, by + bh - 27), (x + 10, by + bh - 1), (x + 20, by + bh - 27)), fill=gold)
 im.save(out)
+print(json.dumps({'x': bx, 'y': by, 'w': bw, 'h': bh}))
