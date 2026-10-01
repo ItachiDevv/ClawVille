@@ -148,7 +148,7 @@ export async function bindAgentOwnerAtRedemption(input: {
       // caller gets the same error with `rowBurned: false`.
       let rowBurned = false;
       try {
-        await db
+        const burned = await db
           .update(agentBots)
           .set({
             sessionKeyHash: sha256Hex(`revoked:${randomBytes(32).toString('base64url')}`),
@@ -159,8 +159,12 @@ export async function bindAgentOwnerAtRedemption(input: {
             eq(agentBots.agentId, agentId),
             eq(agentBots.userId, redeemerUserId),
             rowHash === null ? isNull(agentBots.sessionKeyHash) : eq(agentBots.sessionKeyHash, rowHash),
-          ));
-        rowBurned = true;
+          ))
+          .returning({ id: agentBots.id });
+        // Zero rows = a concurrent rotation already replaced the hash this bind
+        // wrote (that newer hash fails every stray); do not log a burn that did
+        // not happen (Codex r3 should-fix).
+        rowBurned = burned.length > 0;
       } catch (err) {
         console.error(`[AgentRedemptionBind] SECURITY: hash-burn UPDATE threw for agentId=${agentId}; agent stays quarantined:`, err);
       }

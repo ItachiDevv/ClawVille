@@ -140,7 +140,10 @@ function returnedHash(call: UpdateCall, rowHashBefore: string | null): string {
 /** First UPDATE binds the row whose hash before the bind is `rowHashBefore`. */
 function firstBindOn(rowHashBefore: string | null) {
   updateReturns = (index, call) =>
-    index === 1 ? [{ id: BOT_ID, sessionKeyHash: returnedHash(call, rowHashBefore) }] : [];
+    index === 1
+      ? [{ id: BOT_ID, sessionKeyHash: returnedHash(call, rowHashBefore) }]
+      // Index 2 is only ever the fail-closed burn UPDATE (RETURNING id): one row = burned.
+      : index === 2 ? [{ id: BOT_ID }] : [];
 }
 
 beforeEach(() => {
@@ -458,6 +461,28 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     expect(npcSimulation.getAgentBotClient(bodyIdFor(agentId))).toBeNull();
     expect(keeper.boundUserId).toBeNull();
     expect(updateCalls).toHaveLength(2);
+  });
+
+  test('a burn UPDATE that matches no row (a concurrent rotation) reports rowBurned false (Codex r3)', async () => {
+    const agentId = 'redeem-q-burn-zero';
+    const keeperSid = 'ag-redeem-q-burn-zero-keeper';
+    const straySid = 'ag-redeem-q-burn-zero-stray';
+    register(agentId, keeperSid);
+    register(agentId, straySid);
+    updateReturns = (index, call) =>
+      index === 1 ? [{ id: BOT_ID, sessionKeyHash: returnedHash(call, sha256Hex(keeperSid)) }] : [];
+    const spy = throwOnUnregister(straySid);
+    let err: InstanceType<typeof RedemptionEvictionIncompleteError>;
+    try {
+      err = await bindExpectingIncomplete(agentId, keeperSid);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(err.rowBurned).toBe(false);
+    expect(isAgentQuarantined(agentId)).toBe(true);
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[1].returningKeys).toEqual(['id']);
   });
 
   test('a control-link first bind keeps an anonymous Hatcher session: no quarantine, and the stamp makes it ledger-capable for the redeemer', async () => {

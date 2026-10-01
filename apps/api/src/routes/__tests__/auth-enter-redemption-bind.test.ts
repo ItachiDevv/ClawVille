@@ -13,7 +13,7 @@ let ticketRow: Record<string, unknown> | null = null;
 let botBindReturns: (index: number) => unknown[] = () => [];
 let botBindThrows = false;
 let botUpdates = 0;
-// The fail-closed burn awaits its UPDATE with no RETURNING (round 4).
+// The fail-closed burn awaits its UPDATE with RETURNING { id } (Codex r3: rowBurned comes from the row count).
 let burnThrows = false;
 let burnAttempts = 0;
 
@@ -29,8 +29,14 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
       return (table: unknown) => ({
         set: () => ({
           where: () => ({
-            returning: async () => {
+            returning: async (columns?: Record<string, unknown>) => {
               if (table === realDatabase.agentSessionTickets) return ticketRow ? [ticketRow] : [];
+              // The fail-closed burn is the only agentBots UPDATE with RETURNING { id } alone.
+              if (table === realDatabase.agentBots && Object.keys(columns ?? {}).join(',') === 'id') {
+                burnAttempts++;
+                if (burnThrows) throw new Error('burn write failed');
+                return [{ id: 'burned-row' }];
+              }
               if (table === realDatabase.agentBots) {
                 botUpdates++;
                 if (botBindThrows) throw new Error('bind write failed');
