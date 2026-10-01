@@ -343,7 +343,7 @@ async function assetVertices(name: string) {
       p: [0, 1, 2].map((axis) => world[12 + axis]! + world[axis]! * p[0]! +
         world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]!) as Point,
       n: direction.map((v) => v / length) as Point,
-      color: colors?.getElement(index, []),
+      color: colors?.getElement(index, [] as number[]),
     };
   });
   return { vertices, primitive };
@@ -373,12 +373,12 @@ function triangleCameraMargins(triangle: Point[]): number[] {
     [2, -1, TRADING_FLOOR_ROOM.halfZ, -TRADING_FLOOR_CAMERA_Z_MIN],
     [2, 1, TRADING_FLOOR_ROOM.halfZ, TRADING_FLOOR_CAMERA_Z_MAX],
   ] as const).map(([axis, sign, innerFace, limit]) => {
-    // Restrict the other axis to the camera's reachable slab. A back-wall
-    // face crosses the X planes outside reachable Z; that is not an intrusion.
+    // Include the 6 wu margin beyond the reachable slab to catch corner faces.
+    // A back-wall face beyond that band is not an X-plane intrusion.
     const tangent = axis === 0 ? 2 : 0;
     const tangentMin = axis === 0 ? TRADING_FLOOR_CAMERA_Z_MIN : -TRADING_FLOOR_DESK_INNER_X;
     const tangentMax = axis === 0 ? TRADING_FLOOR_CAMERA_Z_MAX : TRADING_FLOOR_DESK_INNER_X;
-    const clipped = clip(clip(belowCamera, tangent, tangentMin, 1), tangent, tangentMax, -1);
+    const clipped = clip(clip(belowCamera, tangent, tangentMin - 6, 1), tangent, tangentMax + 6, -1);
     const values = clipped.map((p) => p[axis] * sign);
     const min = Math.min(...values), max = Math.max(...values);
     const inBand = values.some((v) => v >= limit - 6 && v <= innerFace);
@@ -388,6 +388,15 @@ function triangleCameraMargins(triangle: Point[]): number[] {
 }
 
 describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
+  test('a synthetic corner triangle inside the 6 wu margin fails the margin gate', () => {
+    const margins = triangleCameraMargins([[990, 270, -1056], [990, 300, -1056], [995, 270, -1060]]);
+    expect(Number.isFinite(margins[1])).toBe(true);
+    expect(Number.isFinite(margins[2])).toBe(true);
+    expect(margins[1]).toBe(5);
+    expect(margins[2]).toBe(2);
+    expect(() => expect(Math.min(...margins)).toBeGreaterThanOrEqual(6)).toThrow();
+  });
+
   test('a synthetic back-wall triangle that crosses the camera plane fails the margin gate', () => {
     // Its wall-side vertices clear by 46 wu. Its room-side vertex crosses by 14.
     const margins = triangleCameraMargins([[0, 270, -1100], [20, 410, -1040], [40, 270, -1100]]);
@@ -504,9 +513,12 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
     expect(Math.abs(jambInner - revealInner)).toBeGreaterThanOrEqual(2);
     expect(lintelEdge - jambInner).toBeGreaterThanOrEqual(2);
     expect(lintelBottom - headerBottom).toBeGreaterThanOrEqual(2);
-    const railFront = brass.filter(([x, y, z]) => Math.abs(x) > 179 && Math.abs(x) < 1301 &&
+    const railFront = brass.filter(([x, y, z]) => Math.abs(x) > 181 && Math.abs(x) < 1301 &&
       y > 286 && y < 306 && z > 1094 && z < 1096);
     expect(railFront.length).toBeGreaterThan(0);
+    expect(Math.min(...railFront.map(([x]) => Math.abs(x)))).toBeCloseTo(182, 0);
+    // The authored 2 wu gap permits .2 wu of room-wide quantization noise.
+    expect(Math.min(...railFront.map(([x]) => Math.abs(x))) - revealInner).toBeGreaterThanOrEqual(1.8);
     expect(Math.min(...railFront.map((p) => p[2])) - Math.min(...jamb.map((p) => p[2]))).toBeGreaterThan(.3);
     expect(Math.max(...jamb.map((p) => p[2])) - Math.min(...jamb.map((p) => p[2]))).toBeCloseTo(11, 0);
     const standoffs = brass.filter(([x, y, z]) => Math.abs(x) > 18 && Math.abs(x) < 30 && y > 174 && y < 186 && z > 1110 && z < 1131);

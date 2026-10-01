@@ -624,7 +624,7 @@ function bannerGeo(x, y, z) {
     uv:side>0?[u1,v1,u0,v1,u0,v0,u1,v0]:[u0,v1,u1,v1,u1,v0,u0,v0]};
 }
 
-/** Atlas labels face into the room; the plaque faces +Z, the door faces -Z. */
+/** The lintel label is the only caller and faces into the room (-Z). */
 function labelGeo(rect, cx, cy, cz, width, faceZ) {
   const height = width * rect.h / rect.w;
   boxRegistry.push({group:currentGroup.name,exempt:currentGroup.exempt,
@@ -911,7 +911,7 @@ addMesh(
       boxGeo(hx - PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, {u:WALL_TILE_WU,v:RH}),
     ]),
     // back-wall pilasters, outboard of the screen (screen half-width is 850)
-    // Two extra units absorb quantization while preserving the 6 wu camera margin.
+    // Inner face z=-1062; these outboard pilasters lie beyond the camera X margin band.
     ...backPilasterX.map((x) => boxGeo(x, RH / 2, -hz + 19, PIL_W, RH, 38, {u:WALL_TILE_WU,v:RH})),
     // The board surround now belongs to the single brass mesh below.
     //
@@ -946,7 +946,7 @@ const brassGeos = group('brass', null, () => [
   // the front rail; the side-wall pilaster lips cover their own faces.
   boxGeo(0, 296, -hz + 7, RW, 18, 12),
   boxGeo(-hx + 7, 296, 0, 12, 18, RD), boxGeo(hx - 7, 296, 0, 12, 18, RD),
-  boxGeo(-740, 296, hz - 1, 1120, 18, 8), boxGeo(740, 296, hz - 1, 1120, 18, 8),
+  boxGeo(-741, 296, hz - 1, 1118, 18, 8), boxGeo(741, 296, hz - 1, 1118, 18, 8),
   ...sidePilasterZ.flatMap((z) => [
     boxGeo(-hx + PIL_D + 7, 296, z, 12, 18, PIL_W),
     boxGeo(hx - PIL_D - 7, 296, z, 12, 18, PIL_W),

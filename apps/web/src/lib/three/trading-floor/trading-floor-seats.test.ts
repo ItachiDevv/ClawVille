@@ -447,19 +447,19 @@ describe('Trading Floor seats — clicking a chair', () => {
 describe('Trading Floor seats — the authored-prop assert', () => {
   /**
    * The SHIPPED numbers, read with `scripts/trading-floor/inspect-glb.mjs`
-   * against `trading-floor-interior-opt1-mo-ktx.glb` (367,068 bytes, the
-   * 2026-09-19 23:06 re-export). `KHR_mesh_quantization` normalises each mesh
+   * against `trading-floor-interior-opt1-mo-ktx.glb` (350,128 bytes, v4).
+   * `KHR_mesh_quantization` normalises each mesh
    * into [-1, 1] and pushes the real size onto the node scale, which is why the
    * bounds below are fractions and the scale is ~87 to ~182.
    */
   const SHIPPED_CONSOLE = {
-    scaleX: 182.165,
-    scaleY: 182.165,
-    scaleZ: 182.165,
+    scaleX: 182,
+    scaleY: 182,
+    scaleZ: 182,
     minX: -1,
     maxX: 1,
-    minZ: -0.741,
-    maxZ: 0.741,
+    minZ: -0.7417828913235878,
+    maxZ: 0.7417828913235878,
     expectedHalfX: TRADING_FLOOR_CONSOLE_HALF_X,
     expectedHalfZ: TRADING_FLOOR_CONSOLE_HALF_Z,
     nodeX: -1120,
@@ -468,13 +468,13 @@ describe('Trading Floor seats — the authored-prop assert', () => {
     expectedNodeZ: TRADING_FLOOR_CONSOLE_ROW[0]!.z,
   };
   const SHIPPED_CHAIR = {
-    scaleX: 87.5,
-    scaleY: 87.5,
-    scaleZ: 87.5,
-    minX: -0.731,
-    maxX: 0.731,
-    minZ: -0.697,
-    maxZ: 0.697,
+    scaleX: 87,
+    scaleY: 87,
+    scaleZ: 87,
+    minX: -0.7356791894283883,
+    maxX: 0.7356791894283883,
+    minZ: -0.7011322367015594,
+    maxZ: 0.7011322367015594,
     expectedHalfX: TRADING_FLOOR_CHAIR_HALF_X,
     expectedHalfZ: TRADING_FLOOR_CHAIR_HALF_Z,
     nodeX: 0,
@@ -504,14 +504,20 @@ describe('Trading Floor seats — the authored-prop assert', () => {
     expect(TRADING_FLOOR_CONSOLE_ROW[0]!.x).toBe(-1120);
   });
 
-  // The console measures 182.165 against a stated 182. The tolerance has to
+  // The console Z half-extent measures 135.0045 against a stated 135. The tolerance has to
   // absorb that rounding, or the assert cries wolf on a correct asset.
   test('the tolerance absorbs the sub-wu rounding the constants carry', () => {
-    const measuredHalfX = SHIPPED_CONSOLE.maxX * SHIPPED_CONSOLE.scaleX;
-    expect(Math.abs(measuredHalfX - TRADING_FLOOR_CONSOLE_HALF_X)).toBeGreaterThan(0);
-    expect(Math.abs(measuredHalfX - TRADING_FLOOR_CONSOLE_HALF_X)).toBeLessThan(
+    const measuredHalfZ = SHIPPED_CONSOLE.maxZ * SHIPPED_CONSOLE.scaleZ;
+    expect(Math.abs(measuredHalfZ - TRADING_FLOOR_CONSOLE_HALF_Z)).toBeGreaterThan(0);
+    expect(Math.abs(measuredHalfZ - TRADING_FLOOR_CONSOLE_HALF_Z)).toBeLessThan(
       AUTHORED_PROP_TOLERANCE_WU,
     );
+    const mismatched = validateAuthoredProp('c', {
+      ...SHIPPED_CONSOLE,
+      minZ: -(TRADING_FLOOR_CONSOLE_HALF_Z + AUTHORED_PROP_TOLERANCE_WU * 1.1) / SHIPPED_CONSOLE.scaleZ,
+      maxZ: (TRADING_FLOOR_CONSOLE_HALF_Z + AUTHORED_PROP_TOLERANCE_WU * 1.1) / SHIPPED_CONSOLE.scaleZ,
+    });
+    expect(mismatched.problems.join(' ')).toContain('halfZ');
   });
 
   // Rule 1. The row composes its matrices from scale.x alone, so a non-uniform
@@ -584,7 +590,7 @@ describe('Trading Floor seats — the authored-prop assert', () => {
       expect((prop.minX + prop.maxX) / 2).toBeCloseTo(0, 9);
       expect((prop.minZ + prop.maxZ) / 2).toBeCloseTo(0, 9);
     }
-    // Yet the console genuinely sits on the floor, 82.88 wu below its own
+    // Yet the console genuinely sits on the floor, 82.99 wu below its own
     // centre — the quantizer put that on the node, which is the whole point.
     expect(SHIPPED_CONSOLE.nodeX).not.toBe(0);
   });
