@@ -400,7 +400,7 @@ describe('Trading Floor seats — sit clips', () => {
   // pin's clamp has to be wide enough to absorb a real one and narrow enough
   // that a bad reading cannot put the avatar through the floor.
   test('the cushion height is inside the chair, under the backrest rail', () => {
-    const CHAIR_TOP_RAIL = 173;
+    const CHAIR_TOP_RAIL = 174;
     expect(TRADING_FLOOR_CHAIR_SEAT_Y).toBeGreaterThan(0);
     expect(TRADING_FLOOR_CHAIR_SEAT_Y).toBeLessThan(CHAIR_TOP_RAIL);
     // Below the desk surface, or the avatar's knees are through the desk.

@@ -523,6 +523,7 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
       const primitives = node.getMesh()!.listPrimitives();
       expect(primitives).toHaveLength(1);
       expect(primitives[0]!.getIndices()!.getCount() / 3).toBeLessThanOrEqual(budget);
+      expect(primitives[0]!.getIndices()!.getCount() / 3).toBe(name === 'TradingFloorChairModule' ? 864 : 980);
       expect(node.getRotation()).toEqual([0, 0, 0, 1]);
     }
     const desk = doc.getRoot().listMaterials().find((material) => material.getName() === 'TradingFloorConsoleModuleMtl')!;
@@ -568,10 +569,65 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
     }
     const points = triangles.flat();
     expect(Math.abs(Math.min(...points.map((p) => p[1])))).toBeLessThan(0.02);
+    expect(Math.max(...points.map((p) => p[1]))).toBeCloseTo(174, 2);
     for (const axis of [0, 2]) {
       const half = axis === 0 ? TRADING_FLOOR_CHAIR_HALF_X : TRADING_FLOOR_CHAIR_HALF_Z;
       expect(Math.abs(Math.min(...points.map((p) => p[axis]!)) + half)).toBeLessThan(TOL);
       expect(Math.abs(Math.max(...points.map((p) => p[axis]!)) - half)).toBeLessThan(TOL);
+    }
+  });
+
+  test('arm posts enter the cushion and arm pads within the chair footprint', async () => {
+    const { vertices } = await assetVertices('TradingFloorChairModule');
+    for (const side of [-1, 1]) {
+      const posts = vertices.filter(({ p, color }) => side * p[0] > 49 && side * p[0] < 59 &&
+        p[1] > 60 && p[2] > 10 && p[2] < 20 && Math.abs(color![0]! - 110 / 255) < 1e-6 &&
+        Math.abs(color![1]! - 125 / 255) < 1e-6);
+      expect(posts).toHaveLength(24);
+      for (const [axis, low, high] of [[0, 50, 58], [1, 64, 100], [2, 11, 19]] as const) {
+        const values = posts.map(({ p }) => axis === 0 ? side * p[0] : p[axis]);
+        expect(Math.abs(Math.min(...values) - low)).toBeLessThan(0.02);
+        expect(Math.abs(Math.max(...values) - high)).toBeLessThan(0.02);
+      }
+    }
+  });
+
+  test('the brass hood strip meets the hood without overlapping its top', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorConsoleModule');
+    const uv = primitive.getAttribute('TEXCOORD_0')!;
+    const strip = vertices.filter(({ p }, i) => p[1] > 161 && p[2] > -601 && p[2] < -597 &&
+      Math.abs(uv.getElement(i, [])[0]! - 416 / 512) < 0.001);
+    expect(strip).toHaveLength(24);
+    expect(Math.abs(Math.min(...strip.map(({ p }) => p[2])) + 600)).toBeLessThan(0.02);
+    expect(Math.abs(Math.max(...strip.map(({ p }) => p[2])) + 598)).toBeLessThan(0.02);
+  });
+
+  test('desktop end faces map wood grain across depth instead of a constant u', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorConsoleModule');
+    const uv = primitive.getAttribute('TEXCOORD_0')!;
+    const ends = vertices.flatMap(({ p, n }, i) => {
+      if (Math.abs(p[0] + 1120) < 181.95 || Math.abs(n[0]) < 0.99) return [];
+      const u = uv.getElement(i, [])[0]!;
+      if (u > 320 / 512) return []; // Exclude the brass desktop lip swatch.
+      expect(Math.abs(u - (8 + ((p[2] + 500 + 135) / 270) * 304) / 512)).toBeLessThan(0.001);
+      return [u];
+    });
+    expect(ends.length).toBeGreaterThanOrEqual(8);
+    expect(Math.max(...ends) - Math.min(...ends)).toBeGreaterThan(0.5);
+  });
+
+  test('chair and brass retain normalized byte colors and welded sculpt creases', async () => {
+    for (const name of ['TradingFloorChairModule', 'TradingFloorBrass']) {
+      const { vertices, primitive } = await assetVertices(name);
+      const colors = primitive.getAttribute('COLOR_0')!;
+      expect(colors.getComponentType()).toBe(5121);
+      expect(colors.getNormalized()).toBe(true);
+      expect(colors.getType()).toBe('VEC3');
+      expect(new Set(vertices.map(({ color }) => color!.join(','))).size).toBeGreaterThan(1);
+      if (name === 'TradingFloorBrass') {
+        expect(vertices.length).toBeLessThanOrEqual(5500);
+        expect(primitive.getIndices()!.getCount() / 3).toBe(6040);
+      }
     }
   });
 });

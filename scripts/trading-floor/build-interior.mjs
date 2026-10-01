@@ -44,7 +44,7 @@
 
 import { Document, NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, KHRMaterialsUnlit } from '@gltf-transform/extensions';
-import { prune, dedup } from '@gltf-transform/functions';
+import { prune, dedup, weldPrimitive } from '@gltf-transform/functions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import draco3d from 'draco3d';
 import sharp from 'sharp';
@@ -679,6 +679,8 @@ function addMesh(name, geo, material, translation = [0, 0, 0]) {
     );
   }
   if (geo.col) prim.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(new Float32Array(geo.col)).setBuffer(buffer));
+  // Reuse identical claw corners without merging crease normals or colours.
+  if (name === 'TradingFloorBrass') weldPrimitive(prim);
   const m = doc.createMesh(name).addPrimitive(prim);
   const node = doc.createNode(name).setMesh(m).setTranslation(translation);
   scene.addChild(node);
@@ -1038,13 +1040,13 @@ addMesh(
   group('chair template', 'extracted at runtime; authored copy never renders', () => mergeGeos([
     colored(boxGeo(0, 65, 4, 94, 8, 86), CHAIR_DARK),
     colored(cushionGeo(0, 76, 4, 104, 18, 98, 6), LEATHER_PAD),
-    colored(cushionGeo(0, 135, -44, 102, 110, 24, 9), LEATHER),
+    colored(cushionGeo(0, 127, -44, 102, 94, 24, 9), LEATHER),
     // Three padded bands leave two recessed horizontal tuft seams. The back
     // shell closes the seams, so neither is a gap through the chair.
-    ...[103,137,171].map((y) => colored(cushionGeo(0,y,-34,94,34,8,3,true), LEATHER_PAD)),
+    ...[100.5,129.5,158.5].map((y) => colored(cushionGeo(0,y,-34,94,29,8,3,true), LEATHER_PAD)),
     ...[-57,57].flatMap((x) => [
       colored(cushionGeo(x,103,4,14,14,82,5), LEATHER_PAD),
-      colored(boxGeo(x,86,15,6,28,8), CHROME),
+      colored(boxGeo(Math.sign(x)*54,82,15,8,36,8), CHROME),
     ]),
     colored(cylinderGeo(0,40,0,8,44,10), CHROME),
     colored(cylinderGeo(0,22,0,12,14), CHAIR_DARK),
@@ -1091,8 +1093,8 @@ function deskSurface(geo, finish) {
   geo.uv=[];
   for(let i=0;i<geo.pos.length;i+=3) {
     if(finish==='wood') {
-      const [x,y,z]=geo.pos.slice(i,i+3), ny=geo.nrm[i+1];
-      const u=(x+182)/364, v=Math.abs(ny)>.5?(z+135)/270:y/166;
+      const [x,y,z]=geo.pos.slice(i,i+3), nx=geo.nrm[i], ny=geo.nrm[i+1];
+      const u=Math.abs(nx)>.5?(z+135)/270:(x+182)/364, v=Math.abs(ny)>.5?(z+135)/270:y/166;
       geo.uv.push((8+u*304)/512,(8+v*240)/256);
     } else geo.uv.push(...swatches[finish].map((v,i)=>v/(i?256:512)));
   }
@@ -1116,7 +1118,7 @@ const deskGeo=group('console template', 'extracted at runtime; collider in TRADI
     surface(boxGeo(0,62,-82.5,164,72,1), 'wood'),
     // FLAT hood top covers the full mount band, including the back boundary.
     surface(boxGeo(0,149,-117.5,352,34,35), 'black'),
-    surface(boxGeo(0,164,-99.5,352,4,2), 'brass'),
+    surface(boxGeo(0,164,-99,352,4,2), 'brass'),
     surface(cushionGeo(-20,136,65,136,8,44,3), 'plastic'),
     surface(cushionGeo(80,137,72,22,10,33,4), 'plastic'),
     surface(boxGeo(80,142.2,77,1.5,.5,8), 'black'),
