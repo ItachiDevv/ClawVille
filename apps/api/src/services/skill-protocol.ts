@@ -743,6 +743,8 @@ import {
 // text (N5, tools only, the manual text is unchanged). Check:
 // services/floor-arena/content-mask.ts. No `[ACTION:]` verb, bearer/TTL, cognition
 // body, namespace or leaderboard weight changed.
+// 2026-10-01 (Exchange live-traders heading, abab368b): manual and Nori orientation
+// reviewed, no version change. Human Exchange UI wording only; agents never read it.
 export const PROTOCOL_VERSION = 78;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
