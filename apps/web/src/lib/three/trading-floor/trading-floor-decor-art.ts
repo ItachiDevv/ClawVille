@@ -688,9 +688,10 @@ export const RIBBON_PAPER_TAG = 'PAPER';
 /**
  * `$` removed from untrusted text (token symbol, agent name) before it reaches
  * the shared tape helpers, so the ONLY `$` the ribbon can print is the amount
- * `formatTapeUsd` / `formatTapeSignedUsd` produce. The board's own
- * `sanitiseScreenText` keeps `$` on purpose (the board prints money), so it is
- * not the place for this; the strip happens here, before that sanitiser runs.
+ * `formatTapeUsd` / `formatTapeSignedUsd` produce. DEFENCE IN DEPTH: the root
+ * fix is in those helpers (`tapeSymbol`, `tapeTraderName`), which the board's
+ * tape row and the 3D chips share. `sanitiseScreenText` itself keeps `$` on
+ * purpose, because the board prints money in its own labels.
  */
 function withoutDollar(text: string): string {
   return text.replace(/\$/g, '');

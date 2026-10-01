@@ -14,6 +14,7 @@ import {
   reconcileTapeChips,
   tapeCellRect,
   tapeCellUv,
+  tapeSymbol,
   tapeChipPhase,
   tapeTraderName,
   TAPE_CHIP_COLOR,
@@ -235,6 +236,46 @@ describe('classifyArenaTapeItem', () => {
     expect(classifyArenaTapeItem(item({ symbol: 'ｂｏｎｋ' })).action).toBe('BUY BONK');
   });
 
+  // Symbols are attacker-chosen (anyone launches a memecoin) and both the route
+  // and `sanitiseScreenText` keep `$ + - , .` and digits. Found by Codex review
+  // (lane B) and tfx-audit: `+$4,200.00` printed "SELL +$4,200." on the board,
+  // the chips and the ribbon. A symbol may never print as a dollar figure.
+  test('a symbol can never print a dollar figure', () => {
+    const cases: [ReturnType<typeof item>, { action: string; amount: string }][] = [
+      [item({ type: 'exit', symbol: '+$4,200.00', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      [item({ symbol: '$500', usd: 20 }), { action: 'BUY', amount: '$20.00' }],
+      [item({ type: 'exit', symbol: '$9999999', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      [item({ symbol: '$PEPE' }), { action: 'BUY PEPE', amount: '$20.00' }],
+      [item({ type: 'exit', symbol: '-$WIF', pnlUsd: null }), { action: 'SELL WIF', amount: '' }],
+      [item({ type: 'exit', symbol: '$', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      [item({ type: 'exit', symbol: '1,000.00', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      // tfx-audit r2: a decimal number reads as a price even with letters on it.
+      [item({ type: 'exit', symbol: '4200.00USD', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      [item({ type: 'exit', symbol: '$4200.00K', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      [item({ symbol: '$1.5M' }), { action: 'BUY', amount: '$20.00' }],
+      [item({ symbol: '0.5X' }), { action: 'BUY', amount: '$20.00' }],
+      [item({ symbol: 'BONK 2.0' }), { action: 'BUY', amount: '$20.00' }],
+      // Integers with letters are real tickers and stay.
+      [item({ symbol: '1INCH' }), { action: 'BUY 1INCH', amount: '$20.00' }],
+      [item({ symbol: 'W3' }), { action: 'BUY W3', amount: '$20.00' }],
+      [item({ symbol: 'BONK2' }), { action: 'BUY BONK2', amount: '$20.00' }],
+    ];
+    for (const [input, expected] of cases) {
+      const face = classifyArenaTapeItem(input);
+      expect({ symbol: input.symbol, action: face.action, amount: face.amount }).toEqual({
+        symbol: input.symbol,
+        ...expected,
+      });
+      expect(face.action.includes('$')).toBe(false);
+    }
+    // The 13-character cut still applies, to the CLEANED symbol.
+    expect(classifyArenaTapeItem(item({ type: 'exit', symbol: '$SUPERLONGSYMBOL', pnlUsd: null })).action).toBe(
+      'SELL SUPERLON',
+    );
+    expect(tapeSymbol(null)).toBe('');
+    expect(tapeSymbol('$PEPE')).toBe('PEPE');
+  });
+
   test('side, token and signed money fit the cell without losing cents', () => {
     for (const [pnlUsd, expected] of [
       [6.97, '+$6.97'],
@@ -269,6 +310,15 @@ describe('classifyArenaTapeItem', () => {
 });
 
 describe('trader labels', () => {
+  // Found by Codex review (lane B) and tfx-audit: a user-chosen name may never
+  // print as a dollar figure on the tape.
+  test('a $ in a trader name is dropped', () => {
+    expect(tapeTraderName('$500 Club')).toBe('500 CLUB');
+    expect(tapeTraderName('$')).toBe('TRADER');
+    expect(tapeTraderName('ClawVille $ Runner')).toBe('RUNNER');
+    expect(tapeTraderName('Big $ Money').includes('$')).toBe(false);
+  });
+
   test('names are sanitised before they are shortened', () => {
     expect(tapeTraderName('Ｇｅｎｅｓｉｓ')).toBe('GENESIS');
     expect(tapeTraderName('ClawVille\u0000 Runner')).toBe('RUNNER');

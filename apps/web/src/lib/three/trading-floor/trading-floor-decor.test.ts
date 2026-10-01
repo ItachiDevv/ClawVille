@@ -76,12 +76,14 @@ import {
   TAPE_Y,
   TAPE_Z_END,
   TAPE_Z_START,
+  buildTapeSources,
   classifyArenaTapeItem,
   formatTapeSignedUsd,
   formatTapeUsd,
   readArenaTape,
   tapeTraderName,
 } from './trading-floor-trade-tape';
+import { buildFloorScreenData } from './trading-floor-screen-data';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -920,11 +922,13 @@ describe('ribbon text', () => {
   // tape formatters print.
   test('a $ in a token symbol or agent name never reads as a figure', () => {
     const cases: [Record<string, unknown>, string][] = [
-      [tapeRow({ id: 's1', symbol: '$100', usd: 20 }), 'GENESIS BUY 100 $20.00 PAPER'],
-      [tapeRow({ id: 's2', type: 'exit', symbol: '$100', pnlUsd: null }), 'GENESIS SELL 100 PAPER'],
+      // A symbol with no letter left after the `$` goes is no symbol at all
+      // (`tapeSymbol`, the shared root fix): a price is not a token.
+      [tapeRow({ id: 's1', symbol: '$100', usd: 20 }), 'GENESIS BUY $20.00 PAPER'],
+      [tapeRow({ id: 's2', type: 'exit', symbol: '$100', pnlUsd: null }), 'GENESIS SELL PAPER'],
       [tapeRow({ id: 's3', type: 'exit', symbol: '$WIF', pnlUsd: 2.14 }), 'GENESIS SELL WIF +$2.14 PAPER'],
       [tapeRow({ id: 's4', type: 'exit', symbol: '$', pnlUsd: null }), 'GENESIS SELL PAPER'],
-      [tapeRow({ id: 's5', type: 'exit', symbol: '$1,000.00', pnlUsd: null }), 'GENESIS SELL 1,000.00 PAPER'],
+      [tapeRow({ id: 's5', type: 'exit', symbol: '$1,000.00', pnlUsd: null }), 'GENESIS SELL PAPER'],
       [tapeRow({ id: 's6', agentName: '$500 Club', symbol: 'BONK', usd: 20 }), '500 CLUB BUY BONK $20.00 PAPER'],
       // `USD100`: neither sanitiser treats it (no `$`, nothing to strip), so it
       // prints as the route's symbol and is still carried by PAPER.
@@ -943,6 +947,105 @@ describe('ribbon text', () => {
       const rest = figure ? trade.text.replace(figure, '') : trade.text;
       expect({ expected, dollarOutsideFigure: rest.includes('$') }).toEqual({ expected, dollarOutsideFigure: false });
     }
+  });
+
+  // Found by Codex review (lane B) and tfx-audit: attacker-chosen symbols like
+  // `+$4,200.00`, and a user-chosen name like `$500 Club`, printed as dollar
+  // figures on the board's tape row, the 3D chips and the ribbon, all through
+  // `classifyArenaTapeItem` / `tapeTraderName`. The only `$` any of the three
+  // surfaces may print is the tape formatters' own amount.
+  test('no surface prints a dollar figure from a token symbol or a trader name', () => {
+    const rows = [
+      { id: 'a', type: 'exit', at: '2026-10-01T03:58:00.000Z', agentName: 'Runner', symbol: '+$4,200.00', usd: 20, pnlUsd: null },
+      { id: 'b', type: 'entry', at: '2026-10-01T03:57:00.000Z', agentName: 'Genesis', symbol: '$500', usd: 20, pnlUsd: null },
+      { id: 'c', type: 'exit', at: '2026-10-01T03:56:00.000Z', agentName: 'Dip Hunter', symbol: '$9999999', usd: 20, pnlUsd: null },
+      { id: 'd', type: 'entry', at: '2026-10-01T03:55:00.000Z', agentName: 'Late Bloomer', symbol: '$PEPE', usd: 20, pnlUsd: null },
+      { id: 'e', type: 'entry', at: '2026-10-01T03:54:00.000Z', agentName: '$500 Club', symbol: 'BONK', usd: 20, pnlUsd: null },
+    ];
+    // The only figure these rows may print: an entry's $20.00 ticket (every
+    // exit here is unpriced, so it prints no figure at all).
+    const withoutTicket = (text: string) => text.split(formatTapeUsd(20)).join('');
+    const assertOnlyTicket = (surface: string, text: string) =>
+      expect({ surface, text, stray: withoutTicket(text).includes('$') }).toEqual({ surface, text, stray: false });
+
+    const now = Date.parse('2026-10-01T04:00:00.000Z');
+    const query = (data: unknown) => ({ data, isLoading: false, isError: false });
+    const board = buildFloorScreenData({ leaderboard: query({ rows: [] }), contest: query(null), tape: query({ items: rows }) }, now);
+    expect(board.tape).toHaveLength(5);
+    for (const line of board.tape) assertOnlyTicket('board', line);
+    expect(board.tape[3]).toContain('BUY PEPE');
+    expect(board.tape[4]).toContain('500 CLUB BUY BONK $20.00');
+
+    const chips = buildTapeSources({ items: rows });
+    expect(chips).toHaveLength(5);
+    for (const chip of chips) {
+      expect({ trader: chip.trader, dollar: chip.trader.includes('$') }).toEqual({ trader: chip.trader, dollar: false });
+      expect({ action: chip.action, dollar: chip.action.includes('$') }).toEqual({ action: chip.action, dollar: false });
+      assertOnlyTicket('chip amount', chip.amount);
+    }
+    expect(chips.map((chip) => chip.action)).toEqual(['SELL', 'BUY', 'SELL', 'BUY PEPE', 'BUY BONK']);
+    expect(chips[4]!.trader).toBe('500 CLUB');
+
+    const ribbon = buildRibbonSegments({ data: { items: rows }, isError: false }).filter((s) => s.tone !== 'brand');
+    expect(ribbon.map((s) => s.text)).toEqual([
+      'RUNNER SELL PAPER',
+      'GENESIS BUY $20.00 PAPER',
+      'DIP HUNTER SELL PAPER',
+      'LATE BLOOM BUY PEPE $20.00 PAPER',
+      '500 CLUB BUY BONK $20.00 PAPER',
+    ]);
+    for (const segment of ribbon) assertOnlyTicket('ribbon', segment.text);
+  });
+
+  // tfx-audit r2: a decimal number in a symbol reads as a price even with
+  // letters on it (`4200.00USD` printed "SELL 4200.00U"; `1.5M` collided with
+  // the board's "12M" age column). Integer tickers stay.
+  test('no surface prints a decimal-number symbol; integer tickers stay', () => {
+    const rows = [
+      { id: 'a', type: 'exit', at: '2026-10-01T03:58:00.000Z', agentName: 'Agent4', symbol: '4200.00USD', usd: 20, pnlUsd: null },
+      { id: 'b', type: 'entry', at: '2026-10-01T03:57:00.000Z', agentName: 'Genesis', symbol: '$1.5M', usd: 20, pnlUsd: null },
+      { id: 'c', type: 'entry', at: '2026-10-01T03:56:00.000Z', agentName: 'Runner', symbol: '1INCH', usd: 20, pnlUsd: null },
+      { id: 'd', type: 'exit', at: '2026-10-01T03:55:00.000Z', agentName: 'Dip Hunter', symbol: 'W3', usd: 20, pnlUsd: null },
+      { id: 'e', type: 'entry', at: '2026-10-01T03:54:00.000Z', agentName: 'Late Bloomer', symbol: 'BONK2', usd: 20, pnlUsd: null },
+    ];
+    const ticket = formatTapeUsd(20);
+    const decimal = /\d[.,]\d/;
+
+    const now = Date.parse('2026-10-01T04:00:00.000Z');
+    const query = (data: unknown) => ({ data, isLoading: false, isError: false });
+    const board = buildFloorScreenData({ leaderboard: query({ rows: [] }), contest: query(null), tape: query({ items: rows }) }, now);
+    expect(board.tape).toHaveLength(5);
+    for (const line of board.tape) {
+      // Drop the formatter's ticket and the trailing age ("2M"); nothing left
+      // may be a decimal number.
+      const rest = line.split(ticket).join('').replace(/ \S+$/, '');
+      expect({ line, decimal: decimal.test(rest) }).toEqual({ line, decimal: false });
+    }
+    expect(board.tape[0]).toMatch(/^AGENT4 SELL \d+M$/);
+    expect(board.tape[1]).toMatch(/^GENESIS BUY \$20\.00 \d+M$/);
+    expect(board.tape.slice(2).map((line) => line.replace(/ \S+$/, ''))).toEqual([
+      'RUNNER BUY 1INCH $20.00',
+      'DIP HUNTER SELL W3',
+      'LATE BLOOM BUY BONK2 $20.00',
+    ]);
+
+    expect(buildTapeSources({ items: rows }).map((chip) => chip.action)).toEqual([
+      'SELL',
+      'BUY',
+      'BUY 1INCH',
+      'SELL W3',
+      'BUY BONK2',
+    ]);
+
+    const ribbon = buildRibbonSegments({ data: { items: rows }, isError: false }).filter((s) => s.tone !== 'brand');
+    expect(ribbon.map((s) => s.text)).toEqual([
+      'AGENT4 SELL PAPER',
+      'GENESIS BUY $20.00 PAPER',
+      'RUNNER BUY 1INCH $20.00 PAPER',
+      'DIP HUNTER SELL W3 PAPER',
+      'LATE BLOOM BUY BONK2 $20.00 PAPER',
+    ]);
+    for (const segment of ribbon) expect(decimal.test(segment.text.split(ticket).join(''))).toBe(false);
   });
 
   test('the signature ignores time: a re-timed tape in the same order repaints nothing', () => {

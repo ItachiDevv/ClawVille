@@ -235,7 +235,14 @@ export const TAPE_CHIP_COLOR: Readonly<
 /** Short agent name for a chip, never an id. Sanitised BEFORE truncation so
  *  an address cannot become a printable prefix. */
 export function tapeTraderName(agentName: string): string {
+  // `$` goes too: a name is user-chosen at launch, and `sanitiseScreenText`
+  // keeps `$` for the board's money labels, so "$500 Club" would otherwise
+  // print "$500 CLUB BUY BONK $20.00" on the tape. The launch route's name
+  // pattern rejects `$` today; this keeps the tape honest if that ever widens.
   const safe = sanitiseScreenText(agentName, Number.MAX_SAFE_INTEGER)
+    .replace(/\$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
     .replace(/^CLAWVILLE\s+/, '');
   return truncate(safe || 'TRADER', TAPE_TRADER_MAX_CHARS);
 }
@@ -286,17 +293,47 @@ export interface TapeTradeFace {
 }
 
 /**
+ * A token symbol as the tape may print it, or '' for none.
+ *
+ * Symbols are ATTACKER-CHOSEN text: anyone can launch a memecoin, and the
+ * route keeps `$ . _ -` in them (`sanitizeArenaSymbol`). `sanitiseScreenText`
+ * then keeps `$ + - , .` and digits too, on purpose, because the board prints
+ * money in its own labels. So a symbol could be a dollar figure: `+$4,200.00`
+ * on an unpriced exit printed "SELL +$4,200." (cut at the action limit, which
+ * also made it a DIFFERENT figure), on the board's tape row, on a 3D chip and
+ * on the ribbon alike, all through `classifyArenaTapeItem`.
+ *
+ * The rule, after the shared sanitiser: every `$` goes, then a leading sign;
+ * a symbol with no letter left, or with a decimal number in it, is no symbol
+ * at all (the action becomes the bare side). `$PEPE` stays a token, `PEPE`;
+ * `$500` and `1.5M` are prices, so they go.
+ */
+export function tapeSymbol(raw: string | null): string {
+  if (raw === null) return '';
+  const cleaned = sanitiseScreenText(raw, Number.MAX_SAFE_INTEGER)
+    .replace(/\$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[+-]+\s*/, '');
+  // A DECIMAL number reads as a price even with letters on it: `4200.00USD`
+  // printed "SELL 4200.00U", and `1.5M` collides with the board's "12M" age
+  // column. Integers with letters (`1INCH`, `W3`, `BONK2`) are real tickers.
+  if (/\d[.,]\d/.test(cleaned)) return '';
+  return /[A-Z]/.test(cleaned) ? cleaned : '';
+}
+
+/**
  * What one tape row's face says, and what colour it is.
  *
  * The symbol is sanitised BEFORE it is cut to fit, for the same reason as the
  * name: a truncated address is a printable fragment that the address strip no
- * longer recognises.
+ * longer recognises. It also goes through `tapeSymbol`, so a symbol can never
+ * print as a dollar figure.
  */
 export function classifyArenaTapeItem(
   item: ArenaTapeItem,
 ): Omit<TapeTradeFace, 'trader'> {
-  const symbol =
-    item.symbol === null ? '' : sanitiseScreenText(item.symbol, Number.MAX_SAFE_INTEGER);
+  const symbol = tapeSymbol(item.symbol);
   const side = item.type === 'entry' ? 'BUY' : 'SELL';
   const action = truncate(symbol ? `${side} ${symbol}` : side, TAPE_ACTION_MAX_CHARS);
   const size = item.usd !== null && item.usd > 0 ? formatTapeUsd(item.usd) : '';
