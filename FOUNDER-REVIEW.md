@@ -64,6 +64,23 @@
 
 ## TRADING FLOOR
 
+### Trading Floor INTERIOR v3 "The Claw Exchange": the new inside look (staging, 2026-10-01)
+- **What:** the inside of the Trading Floor building is restyled. Nothing moved: same desks, seats, kiosk, board, door and trade tape.
+  Walls: walnut wainscot with a brass rail, navy upper panels, a gold-framed board. Floor: dark stone with thin gold lines and a gold
+  "CLAWVILLE EXCHANGE" seal. The rock dais in the middle is now the twin **Golden Claws** (traced from the brand claw art) on a
+  black granite plinth. Every desk has a 3 x 2 bank of glowing chart monitors, big chart screens hang above the desks, an LED ticker
+  crawls round the walls with the real arena tape (every dollar figure says PAPER), claw banners hang in the back corners, chairs
+  are oxblood leather, and the three lights are warmer.
+- **Where:** staging, `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
+  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door.
+- **Feedback wanted:** (1) overall: does it read as a cool claw-themed NYSE floor? (2) the Golden Claws: twin flat reliefs (chosen
+  because a single centre claw is hidden behind your avatar on arrival) - keep, make them chunkier/rounder, or one big claw?
+  (3) the gold floor lines: too strong or right? (4) the ticker: readable at your display scaling? (5) the warmer light vs the old
+  cool blue. (6) FPS on your Iris Xe laptop inside the room (this box is an RTX 3080; Iris Xe is unmeasured).
+- **Known, not new:** a 0.6 to 1 s hitch right after the room appears is pre-existing (your avatar's shaders compile after the
+  loading warm-up); it is diagnosed and being fixed separately.
+- **Session:** coolerTrading, 2026-10-01.
+
 ### Floor TV board redesign P6: larger text, 5 rows per page (design approved by the lead, 2026-10-01; you can veto)
 
 - **Session:** tradeDeskMain (team `trading-floor-arena`), arena-board (3da), 2026-10-01. Punch list P6 in `docs/trading-floor-arena.md` §8, review deadline 2026-10-04.
@@ -114,7 +131,7 @@
 ### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
 - **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,
   green TRADING FLOOR sign, solid claw on the dome) and a room you walk into like the cove.
-  Inside: six trading desks, a hologram dais and a monitor at the far wall. Walk to the
+  Inside: six trading desks, a hologram dais (replaced by the twin Golden Claws in interior v3, 2026-10-01) and a monitor at the far wall. Walk to the
   monitor and press E (USE on touch): the Trading Floor panel opens, the same one the
   sidebar opens. Escape closes it. E at the door takes you out. Pearl still teaches
   automation, outside the building, and her books did not change. The building id did

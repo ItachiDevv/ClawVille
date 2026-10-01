@@ -55,10 +55,12 @@
  *   - NO InstancedMesh + ShaderMaterial — both rows keep the GLB's own
  *     MeshStandardMaterial.
  *   - NO per-frame allocation — module-scope scratch only.
- *   - Draw calls: 6 static from the room GLB (floor, walls, ceiling, trim,
- *     dais, kiosk) + 1 instanced desk row + 1 instanced chair row + 1 board
- *     + 1 trade tape, = 10, plus the avatar. Every hotspot is `visible: false`,
- *     so they cost none.
+ *   - Draw calls (v3, 2026-10-01): 8 static from the room GLB (floor, walls,
+ *     ceiling, trim, brass, granite plinth, seal + banners, kiosk) + 1
+ *     instanced desk row + 1 instanced chair row + 1 board + 1 trade tape + 3
+ *     decor meshes (`trading-floor-decor.tsx`: monitors, ticker ribbon, glow),
+ *     = 15, plus the avatar. Every hotspot is `visible: false`, so they cost
+ *     none.
  *   - 3 lights total (ambient + hemisphere + one non-shadow directional).
  */
 
@@ -141,13 +143,14 @@ import {
 
 /**
  * The authored hall. Built by `scripts/trading-floor/build-interior.mjs` and
- * documented in 3dStructure.md §9g: 358 KB, 7,277 tris, 8 materials, 6 ETC1S
- * textures (measured with `scripts/trading-floor/inspect-glb.mjs` against the
- * shipped bytes, 2026-09-19 23:06), authored at 1 unit = 1 wu and ALREADY at
- * final scale — it is mounted with NO auto-fit (unlike `cove-interior.tsx`,
- * whose GLB is normalised to a target height). Two of those 8 materials belong
- * to props the scene pulls out and re-draws as instanced rows, so the room
- * costs 6 static draw calls + 2 instanced rows + 1 board = 9.
+ * documented in 3dStructure.md §9g and §9i: v3 is 365,252 B, 6,431 tris, 10
+ * meshes, 10 materials, 7 ETC1S textures (measured with
+ * `scripts/trading-floor/inspect-glb.mjs` against the shipped bytes,
+ * 2026-10-01), authored at 1 unit = 1 wu and ALREADY at final scale — it is
+ * mounted with NO auto-fit (unlike `cove-interior.tsx`, whose GLB is
+ * normalised to a target height). Two of those 10 meshes are props the scene
+ * pulls out and re-draws as instanced rows, so the GLB costs 8 static draw
+ * calls + 2 instanced rows = 10, and the board adds 1.
  *
  * v2 reached production on 2026-09-20. Serve the v3 bytes through a new query
  * because Cloudflare can keep the old path in its edge cache for one week.
@@ -904,8 +907,15 @@ const _doorAnchorRef = makeAnchor(
  * registered with the overlay for the whole visit. Six entries would each cost
  * a projection every overlay pass forever, and only one can ever be visible:
  * the seat hint radius is 420 and the desks are 500 apart.
+ *
+ * 360, not 250 (2026-10-01): each desk now carries a 3 x 2 monitor rig whose
+ * top is 332 wu, under a 335 wu cap (`trading-floor-decor-layout.ts`). From
+ * the seated camera a 250 wu anchor at the seat projected onto the middle of
+ * that rig, so the "PRESS E TO STAND" capsule covered the screens the player
+ * sat down to look at. 360 puts the capsule above the rig in the seated view
+ * and above the avatar's head when standing.
  */
-const SEAT_LABEL_Y = 250;
+const SEAT_LABEL_Y = 360;
 const _seatAnchorRef = makeAnchor(0, SEAT_LABEL_Y, 0);
 
 function moveSeatAnchor(seat: TradingFloorSeat): void {
