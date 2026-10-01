@@ -34,6 +34,14 @@ import { withKeyedMutex } from '../services/keyed-mutex';
 import type { ClawPumpWalletBalance } from '../services/clawpump-writer';
 import { ARENA_ADDON_MIN_INTERVAL_S, addonPaymentsEnabled, readArenaWalletBalance, utcDayStart } from '../services/floor-arena/addons';
 import { readArenaContest, type ArenaContestView } from '../services/floor-arena/contest';
+import {
+  isArenaTextOffensive,
+  maskArenaDiscoveryRow,
+  maskArenaName,
+  maskArenaPosition,
+  maskArenaSummary,
+  maskArenaTapeItem,
+} from '../services/floor-arena/content-mask';
 import { isFloorArenaReservedName } from '../services/floor-arena/names';
 import {
   isArenaLeaderboardWindow,
@@ -365,6 +373,11 @@ function nameNeedsLetter(c: Context) {
   return c.json({ error: 'The name needs at least one letter, so it cannot look like a number.', code: 'name_needs_letter' }, 400);
 }
 
+/** An offensive trader name (content-mask.ts, the same check that masks names on the public board). */
+function nameNotAllowed(c: Context) {
+  return c.json({ error: 'This name is not allowed. Choose another name.', code: 'name_not_allowed' }, 400);
+}
+
 // ─── Small TTL cache for public GETs ───────────────────────────────────────
 
 function createTtlCache<T>(ttlMs: number, maxEntries = 500) {
@@ -486,7 +499,8 @@ export function createFloorArenaRoutes(
     const body = await leaderboardCache.get(window, now.getTime(), async () => ({
       window,
       contest: { id: FLOOR_ARENA_CONTEST.id, startsAt: FLOOR_ARENA_CONTEST.startsAt, endsAt: FLOOR_ARENA_CONTEST.endsAt },
-      rows: await deps.readLeaderboard(window, now),
+      // Player-chosen trader names pass the content mask (content-mask.ts), as on every public payload.
+      rows: (await deps.readLeaderboard(window, now)).map(maskArenaName),
       generatedAt: now.toISOString(),
     }));
     return publicJson(c, body);
@@ -512,12 +526,13 @@ export function createFloorArenaRoutes(
       // Codex r2 #1/#2: another player's agent shows strategy, state and
       // results only. Add-on settings, payment address, provisioning state and
       // reports stay with the owner (/me); an add-on source reads 'addon'.
+      // Content mask: the trader name, each coin symbol and the report summary.
       return {
-        agent: house ? toPublicAgent(agent) : toPublicUserProfile(agent),
+        agent: maskArenaName(house ? toPublicAgent(agent) : toPublicUserProfile(agent)),
         stats: stats.get(agent.id) ?? emptyStats(),
-        openPositions: house ? openPositions : openPositions.map(redactArenaPositionForPublic),
-        closedPositions: house ? closedPositions : closedPositions.map(redactArenaPositionForPublic),
-        latestReport,
+        openPositions: (house ? openPositions : openPositions.map(redactArenaPositionForPublic)).map(maskArenaPosition),
+        closedPositions: (house ? closedPositions : closedPositions.map(redactArenaPositionForPublic)).map(maskArenaPosition),
+        latestReport: latestReport ? maskArenaSummary(latestReport) : null,
         paramChanges: house ? paramChanges : paramChanges.map(redactArenaParamChangeForPublic),
         generatedAt: now.toISOString(),
       };
@@ -543,9 +558,10 @@ export function createFloorArenaRoutes(
       // status only (no scan/pass/skip/addon/report, which can name private
       // add-on mints), with add-on sources redacted. The owner reads every
       // type through GET /me/events.
-      const events = agent.kind === 'house'
+      // Content mask on every summary: it names the coin by its vendor symbol.
+      const events = (agent.kind === 'house'
         ? await deps.readEvents(id, after, limit)
-        : (await deps.readEvents(id, after, limit, ARENA_PUBLIC_USER_EVENT_TYPES)).map(publicUserEvent);
+        : (await deps.readEvents(id, after, limit, ARENA_PUBLIC_USER_EVENT_TYPES)).map(publicUserEvent)).map(maskArenaSummary);
       return {
         agentId: id,
         events,
@@ -565,7 +581,8 @@ export function createFloorArenaRoutes(
     const limit = parsed.data ?? 50;
     const now = deps.now();
     const body = await discoveryCache.get(String(limit), now.getTime(), async () => ({
-      mints: await deps.readDiscovery(limit, now),
+      // Vendor symbols and names pass the content mask; the mint stays the identifier.
+      mints: (await deps.readDiscovery(limit, now)).map(maskArenaDiscoveryRow),
       generatedAt: now.toISOString(),
     }));
     return publicJson(c, body, 10);
@@ -581,7 +598,8 @@ export function createFloorArenaRoutes(
     const limit = parsed.data ?? TAPE_DEFAULT;
     const now = deps.now();
     const body = await tapeCache.get(String(limit), now.getTime(), async () => ({
-      items: await deps.readTape(limit),
+      // The coin symbol and the trader name pass the content mask (the TV board, the 3D chips, the LED ticker).
+      items: (await deps.readTape(limit)).map(maskArenaTapeItem),
       generatedAt: now.toISOString(),
     }));
     return publicJson(c, body);
@@ -591,7 +609,11 @@ export function createFloorArenaRoutes(
     const blocked = limited(c, 'contest');
     if (blocked) return blocked;
     const now = deps.now();
-    const body = await contestCache.get('contest', now.getTime(), () => deps.readContest(now));
+    const body = await contestCache.get('contest', now.getTime(), async () => {
+      const view = await deps.readContest(now);
+      // The same leaderboard rows: trader names pass the content mask.
+      return { ...view, top: view.top.map(maskArenaName), house: view.house.map(maskArenaName) };
+    });
     return publicJson(c, body, 10);
   });
 
@@ -699,7 +721,8 @@ export function createFloorArenaRoutes(
     const agent = await myAgent(c);
     if (!agent) return noAgent(c);
     const after = query.data.after ?? null;
-    const events = await deps.readEvents(agent.id, after, query.data.limit ?? 50);
+    // Private, but a summary still names coins by their vendor symbol: the same content mask.
+    const events = (await deps.readEvents(agent.id, after, query.data.limit ?? 50)).map(maskArenaSummary);
     return c.json({
       agentId: agent.id,
       events,
@@ -727,6 +750,7 @@ export function createFloorArenaRoutes(
     if (body.name !== undefined && !NAME_LETTER.test(body.name)) return nameNeedsLetter(c);
     // A house agent's display name (and its look-alikes) is reserved; the avatar-name fallback below too.
     if (body.name !== undefined && isFloorArenaReservedName(body.name)) return nameReserved(c);
+    if (body.name !== undefined && isArenaTextOffensive(body.name)) return nameNotAllowed(c);
 
     const identity = identityOf(c);
     const now = deps.now();
@@ -738,6 +762,7 @@ export function createFloorArenaRoutes(
       // Same letter rule as a typed name: an avatar named `4200` launches as 'Arena Agent'.
       const fallback = NAME_LETTER.test(cleaned) ? cleaned : 'Arena Agent';
       if (body.name === undefined && isFloorArenaReservedName(fallback)) return { reserved: true } as const;
+      if (body.name === undefined && isArenaTextOffensive(fallback)) return { notAllowed: true } as const;
       const inserted = await deps.insertUserAgent({
         id: deps.newId(),
         ownerUserId: identity.userId,
@@ -752,6 +777,7 @@ export function createFloorArenaRoutes(
       return inserted ? ({ agent: inserted } as const) : ({ conflict: null } as const);
     });
     if ('reserved' in result) return nameReserved(c);
+    if ('notAllowed' in result) return nameNotAllowed(c);
     if ('conflict' in result) {
       return c.json({
         error: 'This account already has an arena agent.',

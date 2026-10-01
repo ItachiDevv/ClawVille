@@ -717,6 +717,132 @@ describe('authed arena routes', () => {
   });
 });
 
+// Prod finding 2026-10-01: a coin symbol with a racial slur on the public discovery feed. The slur
+// is built from parts, so the word itself is not written in the source.
+const SLUR = ['N', 'I', 'G', 'G', 'A'].join('');
+const SLUR_LEET = 'N1GG4';
+const MINT_X = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+
+describe('content mask on every public arena payload (content-mask.ts)', () => {
+  test('discovery: an offensive symbol and name read ***, masked: true, the mint stays; a clean row is unchanged', async () => {
+    const { routes, deps } = app();
+    const base = {
+      firstSeenAt: NOW.toISOString(), firstSource: 'ds:token-profiles', sources: ['ds:token-profiles'], lastSeenAt: NOW.toISOString(),
+      snapshot: null, snapshotAt: null, chainVerdict: null, chainCheckedAt: null,
+    };
+    deps.readDiscovery = async () => [
+      { ...base, mint: MINT_X, symbol: `$${SLUR}`, name: `${SLUR} Coin` },
+      { ...base, mint: 'CleanMint', symbol: 'WIF', name: 'dogwifhat' },
+    ];
+    const body = await (await routes.request('/discovery')).json() as { mints: Array<Record<string, unknown>> };
+    expect(body.mints[0]).toMatchObject({ mint: MINT_X, symbol: '***', name: '***', masked: true });
+    expect(body.mints[1]).toMatchObject({ mint: 'CleanMint', symbol: 'WIF', name: 'dogwifhat' });
+    expect(body.mints[1]).not.toHaveProperty('masked');
+    expect(JSON.stringify(body)).not.toContain(SLUR);
+  });
+
+  test('tape: the coin symbol and the trader name are masked separately', async () => {
+    const { routes, deps } = app();
+    const item = {
+      id: 'entry:1', at: NOW.toISOString(), agentId: AGENT_ID, agentName: 'Trader', kind: 'user' as const, type: 'entry' as const,
+      mint: MINT_X, symbol: 'WIF', side: 'buy' as const, usd: 20, pnlUsd: null, pnlMult: null, reason: null,
+    };
+    deps.readTape = async () => [{ ...item, symbol: SLUR_LEET }, { ...item, id: 'entry:2', agentName: `Big ${SLUR}` }, { ...item, id: 'entry:3' }];
+    const body = await (await routes.request('/tape')).json() as { items: Array<Record<string, unknown>> };
+    expect(body.items[0]).toMatchObject({ mint: MINT_X, symbol: '***', agentName: 'Trader', masked: true });
+    expect(body.items[1]).toMatchObject({ symbol: 'WIF', agentName: '***', masked: true });
+    expect(body.items[2]).toEqual({ ...item, id: 'entry:3' });
+  });
+
+  test('leaderboard and contest: a player-chosen trader name reads ***', async () => {
+    const { routes, deps } = app();
+    const row = {
+      rank: 1, agentId: AGENT_ID, name: `${SLUR} Trader`, kind: 'user' as const, templateId: 'genesis', realisedUsd: 1, trades: 1,
+      wins: 1, losses: 0, deaths: 0, openPositions: 0, lastTradeAt: null, eligible: true,
+    };
+    deps.readLeaderboard = async () => [row, { ...row, rank: 2, agentId: 'house:genesis', name: 'Genesis', kind: 'house' }];
+    const board = await (await routes.request('/leaderboard?window=all')).json() as { rows: Array<Record<string, unknown>> };
+    expect(board.rows[0]).toMatchObject({ agentId: AGENT_ID, name: '***', masked: true });
+    expect(board.rows[1]).toMatchObject({ name: 'Genesis' });
+    expect(board.rows[1]).not.toHaveProperty('masked');
+    deps.readContest = async () => ({
+      contest: FLOOR_ARENA_CONTEST, status: 'live', secondsLeft: 1, standings: null, openWindowPositions: null,
+      top: [row], house: [{ ...row, name: 'N.I.G.G.A', kind: 'house' }], generatedAt: NOW.toISOString(),
+    });
+    const contest = await (await routes.request('/contest')).json() as { top: Array<Record<string, unknown>>; house: Array<Record<string, unknown>> };
+    expect(contest.top[0]).toMatchObject({ name: '***', masked: true });
+    expect(contest.house[0]).toMatchObject({ name: '***', masked: true });
+  });
+
+  test('agent profile: the trader name, each position symbol and the report summary', async () => {
+    const { routes, deps, agents } = app();
+    const userRow = { ...houseLikeRow(), id: AGENT_ID, kind: 'user' as const, ownerUserId: USER, name: `${SLUR} Trader` };
+    agents.set(AGENT_ID, userRow);
+    const closed = await deps.readPositions(AGENT_ID, 'closed', 50);
+    deps.readPositions = async (_id, status) => (status === 'closed' ? [{ ...closed[0]!, symbol: SLUR_LEET }, closed[1]!] : []);
+    deps.readLatestReport = async (agentId) => ({
+      id: REPORT_ID, agentId, periodStart: NOW.toISOString(), periodEnd: NOW.toISOString(), stats: {},
+      summary: `Bought ${SLUR} twice at 1.53x`, suggestion: null, suggestionState: 'none', createdAt: NOW.toISOString(),
+    });
+    const user = await (await routes.request(`/agents/${AGENT_ID}`)).json() as Record<string, any>;
+    expect(user.agent).toMatchObject({ name: '***', masked: true });
+    expect(user.closedPositions[0]).toMatchObject({ mint: 'MintA', symbol: '***', masked: true });
+    expect(user.closedPositions[1]).toMatchObject({ symbol: 'RUG' });
+    agents.set('house:genesis', { ...userRow, id: 'house:genesis', kind: 'house', ownerUserId: null, name: 'Genesis' });
+    const house = await (await routes.request('/agents/house:genesis')).json() as Record<string, any>;
+    expect(house.agent.name).toBe('Genesis');
+    expect(house.latestReport).toMatchObject({ summary: 'Bought *** twice at 1.53x', masked: true });
+    expect(JSON.stringify([user, house])).not.toContain(SLUR);
+  });
+
+  test('events: house and user public streams and the owner /me/events mask the summary only', async () => {
+    const { routes, deps, agents, call } = app();
+    const entry: ArenaEvent = {
+      id: 9, at: NOW.toISOString(), type: 'entry', mint: MINT_X, summary: `Bought $20 of ${SLUR} at $0.00123`, data: { sizeUsd: 20 },
+    };
+    deps.readEvents = async () => [entry, { ...entry, id: 10, summary: 'Bought $20 of WIF at $0.00123' }];
+    agents.set('house:genesis', { ...houseLikeRow(), id: 'house:genesis', kind: 'house', ownerUserId: null });
+    const house = await (await routes.request('/agents/house:genesis/events')).json() as { events: Array<Record<string, unknown>> };
+    expect(house.events[0]).toMatchObject({ id: 9, mint: MINT_X, summary: 'Bought $20 of *** at $0.00123', masked: true });
+    expect(house.events[1]).toEqual({ ...entry, id: 10, summary: 'Bought $20 of WIF at $0.00123' });
+    await call('POST', '/me/launch', launchBody());
+    const user = await (await routes.request(`/agents/${AGENT_ID}/events`)).json() as { events: Array<Record<string, unknown>> };
+    expect(user.events[0]).toMatchObject({ summary: 'Bought $20 of *** at $0.00123', masked: true });
+    const own = await (await call('GET', '/me/events')).json() as { events: Array<Record<string, unknown>> };
+    expect(own.events[0]).toMatchObject({ summary: 'Bought $20 of *** at $0.00123', masked: true });
+  });
+
+  test('launch: an offensive name gets 400 name_not_allowed for a human and an agent, and creates nothing', async () => {
+    for (const name of [SLUR, SLUR_LEET, 'N.I.G.G.A', `Big ${SLUR} Energy`, 'NІGGA']) {
+      for (const headers of [{ 'x-test-user': USER }, { 'x-test-user': USER, 'x-test-kind': 'agent' }] as Array<Record<string, string>>) {
+        const { call, agents } = app();
+        const response = await call('POST', '/me/launch', launchBody({ name }), headers);
+        expect({ name, status: response.status }).toEqual({ name, status: 400 });
+        expect(await response.json()).toEqual({ error: 'This name is not allowed. Choose another name.', code: 'name_not_allowed' });
+        expect(agents.size).toBe(0);
+      }
+    }
+    // With no name sent, an offensive avatar name is refused the same way; a clean name still launches.
+    const fallback = app();
+    fallback.deps.readAvatarName = async () => `${SLUR} 99`;
+    const refused = await fallback.call('POST', '/me/launch', launchBody());
+    expect(refused.status).toBe(400);
+    expect((await refused.json() as { code: string }).code).toBe('name_not_allowed');
+    expect(fallback.agents.size).toBe(0);
+    expect((await fallback.call('POST', '/me/launch', launchBody({ name: 'Clean Trader' }))).status).toBe(201);
+  });
+});
+
+/** A complete agent row for the profile and events tests. */
+function houseLikeRow(): ArenaAgentRecord {
+  return {
+    id: 'x', kind: 'house', ownerUserId: null, avatarId: null, name: 'Trader', templateId: 'genesis', params: params(), paramsVersion: 1,
+    mode: 'paper', status: 'active', seated: true, seatIndex: 0, seatedAt: NOW, clawpumpAgentId: null, clawpumpWallet: null,
+    provisionState: 'pending', provisionError: null, provisionAttempts: 0, provisionNextAt: null, addons: [], autoApplySuggestions: false,
+    contestId: null, createdAt: NOW, updatedAt: NOW,
+  };
+}
+
 describe('admin arena routes', () => {
   test('every operator route is 401 without a session (session + moneyOperatorOnly guard)', async () => {
     const { adminFloorArenaRoutes } = await import('../admin-floor-arena');

@@ -229,6 +229,9 @@ describe('Floor arena wire readers', () => {
     expect(floorArenaErrorCopy(new ApiError('No letter', 400, 'name_needs_letter'))).toBe(
       'Use at least one letter, so the name does not look like a number.',
     );
+    expect(floorArenaErrorCopy(new ApiError('Not allowed', 400, 'name_not_allowed'))).toBe(
+      'This name is not allowed. Choose another name.',
+    );
     expect(floorArenaErrorCopy(new ApiError('Guests cannot', 403, 'guest_not_allowed'))).toBe(
       'Create a free account to run an arena trader.',
     );

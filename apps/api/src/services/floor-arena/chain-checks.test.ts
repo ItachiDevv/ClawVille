@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair, PublicKey } from '@solana/web3.js';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   chainErrorCode, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus, isTransientChainError, lpLockFail, mintRuleFails,
-  orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, top10Percent, verdictFromCodes,
+  orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, storeChainVerdict, top10Percent, verdictFromCodes,
   type ChainRpc, type ParsedAccount, type RawAccount,
 } from './chain-checks';
 
@@ -273,5 +275,53 @@ describe('top-10 share and the full verdict', () => {
   test('a Token-2022 extension name that is not a plain identifier becomes t22_unknown', () => {
     const acc = mintAccount({ extensions: [{ extension: 'evil<b>‮', state: {} }] }, T22);
     expect(mintRuleFails(acc).fails).toEqual(['t22_unknown']);
+  });
+});
+
+/**
+ * O3 (N4): the verdict write to the private table (one row per agent for the mint) must lock in the shared order
+ * (mint, then agent_id COLLATE "C") before it updates, like the snapshot write, or the two can deadlock. A fake
+ * database records each statement and the transaction it ran in.
+ */
+describe('O3: storeChainVerdict locks the private rows in order first', () => {
+  const dialect = new PgDialect();
+  type Logged = { tx: number; sql: string; params: unknown[] };
+  function fakeDatabase(locked: Array<Record<string, unknown>>) {
+    const log: Logged[] = [];
+    let txCount = 0;
+    const exec = (tx: number) => async (statement: SQL) => {
+      const query = dialect.sqlToQuery(statement);
+      const text = query.sql.replace(/\s+/g, ' ').trim();
+      log.push({ tx, sql: text, params: query.params });
+      return /FOR (NO KEY )?UPDATE/.test(text) ? locked : [];
+    };
+    const database = {
+      execute: exec(0),
+      transaction: async (run: (tx: { execute: (statement: SQL) => Promise<unknown> }) => Promise<unknown>) => {
+        txCount += 1;
+        return run({ execute: exec(txCount) });
+      },
+    };
+    return { database: database as never, log };
+  }
+  const verdict = verdictFromCodes([], { checkedAt: NOW.toISOString() });
+  const MINT = 'So11111111111111111111111111111111111111112';
+
+  test('shared row: one keyed UPDATE; private rows: lock by agent_id COLLATE "C", then update only those agents', async () => {
+    const { database, log } = fakeDatabase([{ agent_id: 'agent-1' }, { agent_id: 'agent-2' }]);
+    await storeChainVerdict(MINT, verdict, NOW, database);
+    expect(log.map((entry) => entry.tx)).toEqual([0, 1, 1]);
+    expect(log[0]!.sql).toContain('UPDATE floor_discovery_mints SET chain_verdict');
+    expect(log[1]!.sql).toContain('FROM floor_arena_private_mints AS p WHERE p.mint = $1 ORDER BY p.agent_id COLLATE "C" FOR NO KEY UPDATE OF p');
+    expect(log[1]!.params).toEqual([MINT]);
+    expect(log[2]!.sql).toContain('UPDATE floor_arena_private_mints AS p SET chain_verdict');
+    expect(log[2]!.sql).toContain('p.agent_id IN (SELECT jsonb_array_elements_text(');
+    expect(log[2]!.params).toContain(JSON.stringify(['agent-1', 'agent-2']));
+  });
+
+  test('no private row locked -> no private UPDATE', async () => {
+    const { database, log } = fakeDatabase([]);
+    await storeChainVerdict(MINT, verdict, NOW, database);
+    expect(log.map((entry) => entry.sql.split(' ')[0])).toEqual(['UPDATE', 'SELECT']);
   });
 });

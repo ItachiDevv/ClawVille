@@ -779,6 +779,7 @@ export function floorArenaErrorCopy(error: unknown): string {
   if (code === 'agent_stopped') return 'This trader is stopped, so it cannot be paused or resumed.';
   if (code === 'name_reserved') return 'That name belongs to a house trader. Type another name for your trader.';
   if (code === 'name_needs_letter') return 'Use at least one letter, so the name does not look like a number.';
+  if (code === 'name_not_allowed') return 'This name is not allowed. Choose another name.';
   if (code === 'invalid_body') return 'Some details were not accepted. Check the name and the numbers, then try again.';
   if (code === 'no_agent' || (error instanceof ApiError && error.status === 404)) return 'You do not run an arena trader yet.';
   if (error instanceof ApiError && error.status === 401) return 'Your session ended. Sign in again.';

@@ -56,6 +56,8 @@ let profileBody: Record<string, unknown> = {};
 let houseAgentsBody: unknown[] = [];
 let addonsBody: Record<string, unknown> = { addons: [], paymentsEnabled: false };
 let contestBody: Record<string, unknown> = {};
+/** Answers for GET /discovery, in order; an empty queue answers an empty feed. */
+let discoveryResponses: Array<{ status: number; body: unknown }> = [];
 let requests: string[] = [];
 
 function installDom(): void {
@@ -173,12 +175,17 @@ beforeEach(() => {
   houseAgentsBody = [];
   addonsBody = { addons: [], paymentsEnabled: false };
   contestBody = {};
+  discoveryResponses = [];
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
     writable: true,
     value: async (input: string) => {
       const url = String(input);
       requests.push(url);
+      if (url.includes('/discovery')) {
+        const next = discoveryResponses.shift() ?? { status: 200, body: { mints: [] } };
+        return new Response(JSON.stringify(next.body), { status: next.status, headers: { 'content-type': 'application/json' } });
+      }
       let body: unknown = {};
       if (url.includes('/me')) body = meBody;
       else if (url.includes('/leaderboard')) body = { rows: [] };
@@ -417,6 +424,93 @@ describe('Guest sign-up prompt for the arena', () => {
     const entry = host.querySelector('[data-testid="arena-launch-entry"]') as HTMLElement;
     await click(buttonByText(entry, 'Launch your trader'));
     expect(variants).toEqual(['arena', 'arena']);
+  });
+});
+
+/** Opens the discovery `<details>` the way a tap does: `open` flips, then the toggle handler runs. */
+async function openDiscovery(host: HTMLElement): Promise<HTMLElement> {
+  const details = host.querySelector('[data-testid="arena-discovery"]') as HTMLElement & { open: boolean };
+  expect(details).not.toBeNull();
+  await act(async () => {
+    details.open = true;
+    (reactProps(details) as unknown as { onToggle?: (event: { currentTarget: Element }) => void })
+      .onToggle?.({ currentTarget: details });
+  });
+  await flush();
+  return details;
+}
+
+describe('Shared discovery feed card (prod verify b8d52ab6, finding 3)', () => {
+  // On prod the closed card read as a bare heading: `display: flex` on the
+  // summary removes the disclosure triangle, and nothing else said it opens.
+  test('closed, it shows a Show coins cue and asks the server for nothing', async () => {
+    const host = await render();
+    const details = host.querySelector('[data-testid="arena-discovery"]') as HTMLElement;
+    expect(details.querySelector('[data-testid="arena-discovery-toggle"]')?.textContent).toBe('Show coins');
+    expect(requests.some((url) => url.includes('/discovery'))).toBe(false);
+  });
+
+  test('an empty feed says it fills when the engine scans, and the cue turns to Hide', async () => {
+    discoveryResponses = [{ status: 200, body: { mints: [], generatedAt: '2026-10-01T14:00:00.000Z' } }];
+    const host = await render();
+    const details = await openDiscovery(host);
+    expect(requests.filter((url) => url.includes('/discovery'))).toHaveLength(1);
+    expect(details.querySelector('[data-testid="arena-discovery-empty"]')?.textContent).toBe(
+      'No coins in the feed yet; it fills when the engine scans.',
+    );
+    expect(details.querySelector('[data-testid="arena-discovery-toggle"]')?.textContent).toBe('Hide');
+  });
+
+  test('a failed fetch says so, and Try again fetches again and shows the coins', async () => {
+    discoveryResponses = [
+      { status: 503, body: { error: 'The discovery feed is unavailable.' } },
+      {
+        status: 200,
+        body: {
+          mints: [{
+            mint: 'TestMint11111111111111111111111111111111111',
+            symbol: 'TESTCOIN',
+            firstSeenAt: '2026-10-01T13:56:45.528Z',
+            firstSource: 'gecko:new-pools',
+            snapshot: null,
+          }],
+        },
+      },
+    ];
+    const host = await render();
+    const details = await openDiscovery(host);
+    const error = details.querySelector('[data-testid="arena-discovery-error"]') as HTMLElement | null;
+    expect(error?.textContent).toContain('The feed could not be loaded right now.');
+    expect(details.querySelector('[data-testid="arena-discovery-empty"]')).toBeNull();
+    await click(buttonByText(error!, 'Try again'));
+    expect(requests.filter((url) => url.includes('/discovery'))).toHaveLength(2);
+    expect(details.querySelector('[data-testid="arena-discovery-error"]')).toBeNull();
+    expect(details.textContent).toContain('TESTCOIN');
+  });
+});
+
+describe('Paper arena and live traders are named apart (prod verify b8d52ab6, finding 2)', () => {
+  test('the Trading Floor tab says paper for the arena and real money for the live traders', async () => {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(
+          QueryClientProvider,
+          { client: client! },
+          createElement(TradingFloorTab, { active: true, isGuest: true, onGuestBlocked: () => undefined }),
+        ),
+      );
+    });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('The five arena house agents (paper)');
+    expect(text).toContain('Live traders (real money');
+    // The old heading sat on the live floor card AND on the live traders panel,
+    // right under the arena's own house agents of the same names.
+    expect(text).not.toContain('Watch the house traders');
   });
 });
 

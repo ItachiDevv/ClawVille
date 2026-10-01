@@ -589,11 +589,40 @@ export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): 
   return pickDueChainChecks([...byMint.values()], limit);
 }
 
-export async function storeChainVerdict(mint: string, verdict: ArenaChainVerdict, now: Date): Promise<void> {
+type ArenaDatabase = Pick<typeof db, 'execute' | 'transaction'>;
+
+/**
+ * O3 lock order (discovery-hub.ts byMint: mint COLLATE "C", then agent_id). The shared row is ONE row (mint is its
+ * key). The private table has one row per agent for the mint, and a bare `UPDATE ... WHERE mint = X` locks them in
+ * scan order, which can wait in a cycle with the snapshot write (storeSnapshots locks mint, then agent_id). So a
+ * short transaction locks them first in that order (agent_id COLLATE "C", FOR NO KEY UPDATE = the UPDATE's own
+ * strength), then updates ONLY the rows it locked; a row that appears between the two statements stays unchecked and
+ * is checked on a later tick.
+ */
+export async function storeChainVerdict(
+  mint: string,
+  verdict: ArenaChainVerdict,
+  now: Date,
+  database: ArenaDatabase = db,
+): Promise<void> {
   const payload = JSON.stringify(verdict);
   const at = now.toISOString();
-  await db.execute(sql`UPDATE floor_discovery_mints SET chain_verdict = ${payload}::jsonb, chain_checked_at = ${at}::timestamptz WHERE mint = ${mint}`);
-  await db.execute(sql`UPDATE floor_arena_private_mints SET chain_verdict = ${payload}::jsonb, chain_checked_at = ${at}::timestamptz WHERE mint = ${mint}`);
+  await database.execute(sql`UPDATE floor_discovery_mints SET chain_verdict = ${payload}::jsonb, chain_checked_at = ${at}::timestamptz WHERE mint = ${mint}`);
+  await database.transaction(async (tx) => {
+    const locked = rowsOf(await tx.execute(sql`
+      SELECT p.agent_id FROM floor_arena_private_mints AS p
+      WHERE p.mint = ${mint}
+      ORDER BY p.agent_id COLLATE "C"
+      FOR NO KEY UPDATE OF p
+    `));
+    if (locked.length === 0) return;
+    const agentIds = JSON.stringify(locked.map((row) => String(row.agent_id)));
+    await tx.execute(sql`
+      UPDATE floor_arena_private_mints AS p
+      SET chain_verdict = ${payload}::jsonb, chain_checked_at = ${at}::timestamptz
+      WHERE p.mint = ${mint} AND p.agent_id IN (SELECT jsonb_array_elements_text(${agentIds}::jsonb))
+    `);
+  });
 }
 
 export interface ChainTickResult { checked: number; passed: number; errors: number; skipped: 'rpc_not_configured' | null }

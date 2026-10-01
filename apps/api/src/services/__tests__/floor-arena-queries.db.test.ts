@@ -238,4 +238,31 @@ describeIfDb('floor arena money SQL on Postgres', () => {
       provisionState: 'pending', provisionAttempts: 0, provisionError: null, provisionNextAt: null,
     });
   });
+
+  test('O1 (2026-10-01): a row whose pay POST never left the process does not advance the dedupe rotation', async () => {
+    const q = await import('../floor-arena/queries');
+    const { db, sql } = await import('@clawville/database');
+    const addonId = 'o1-rotation-test';
+    const now = new Date();
+    // Any window start before the six rows (a UTC-midnight start could fall between them).
+    const dayStart = new Date(now.getTime() - 3_600_000);
+    const book = (error: string | null, ok: boolean, priceUsd: number, secondsAgo: number) => db.execute(sql`
+      INSERT INTO floor_arena_addon_calls (agent_id, addon_id, at, price_usd, ok, error, mints, response_ref, state)
+      VALUES (${ids.offFailed}, ${addonId}, ${new Date(now.getTime() - secondsAgo * 1000).toISOString()}::timestamptz,
+        ${priceUsd}, ${ok}, ${error}, 0, NULL, 'done')
+    `);
+    await book(null, true, 0.01, 60);                          // sent, paid
+    await book('vendor_500', false, 0.01, 50);                 // sent, vendor failure: counts
+    await book('released_before_pay', false, 0, 40);           // confirmDispatch release: not sent
+    await book('clawpump_budget_exhausted', false, 0, 30);     // our own budget: not sent
+    await book('clawpump_agent_running', false, 0, 20);        // writer guard refusal: not sent
+    await book('clawpump_timeout', false, 0.01, 10);           // may have been sent: counts
+    const stat = (await q.readArenaAddonStats(ids.offFailed, dayStart)).find((row) => row.addonId === addonId)!;
+    // The old COUNT(*) gave 6: three unsent rows moved the 2-value rotation.
+    expect(stat.callsTotal).toBe(3);
+    // Money and display fields are unchanged: every row's price, the newest row of any kind.
+    expect(stat.spentTodayUsd).toBeCloseTo(0.03, 9);
+    expect(stat.lastError).toBe('clawpump_timeout');
+    expect(stat.lastOk).toBe(false);
+  });
 });

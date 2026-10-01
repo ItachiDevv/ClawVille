@@ -222,18 +222,37 @@ export function mergeDiscoveryRow(existing: DiscoveryRowState | null, sighting: 
   };
 }
 
-export async function upsertSightings(merged: readonly MergedSighting[], now: Date = new Date()): Promise<number> {
+/**
+ * O3 (staging 2026-10-01, `enrichment failed: deadlock detected`): every multi-row writer of
+ * floor_discovery_mints / floor_arena_private_mints takes its row locks in ONE order: mint ascending in byte order
+ * (COLLATE "C" = JS code-unit order for base58), then agent_id. Two writers that lock in the same total order cannot
+ * wait on each other in a cycle. Before this, the poller upsert locked in vendor order and the enrichment UPDATE in
+ * join-plan order (the Postgres log showed exactly that pair).
+ */
+export function byMint<T extends { mint: string }>(rows: readonly T[]): T[] {
+  return [...rows].sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
+}
+
+type ArenaDatabase = Pick<typeof db, 'execute' | 'transaction'>;
+
+export async function upsertSightings(
+  merged: readonly MergedSighting[],
+  now: Date = new Date(),
+  database: ArenaDatabase = db,
+): Promise<number> {
   if (merged.length === 0) return 0;
   const at = now.toISOString();
-  const payload = JSON.stringify(merged.map((m) => ({
+  // O3: insert/lock in mint order (the ORDER BY below makes the SQL keep it).
+  const payload = JSON.stringify(byMint(merged).map((m) => ({
     mint: m.mint, first_source: m.firstSource, sources: m.sources, symbol: m.symbol, name: m.name,
     source_first_seen: Object.fromEntries(m.sources.map((source) => [source, at])),
   })));
-  await db.execute(sql`
+  await database.execute(sql`
     INSERT INTO floor_discovery_mints (mint, first_seen_at, first_source, sources, last_seen_at, symbol, name, expires_at, source_first_seen)
     SELECT r.mint, ${at}::timestamptz, r.first_source, ARRAY(SELECT jsonb_array_elements_text(r.sources)),
            ${at}::timestamptz, r.symbol, r.name, ${at}::timestamptz + interval '24 hours', r.source_first_seen
     FROM jsonb_to_recordset(${payload}::jsonb) AS r(mint text, first_source text, sources jsonb, symbol text, name text, source_first_seen jsonb)
+    ORDER BY r.mint COLLATE "C"
     ON CONFLICT (mint) DO UPDATE SET
       -- D25 (mergeDiscoveryRow mirror; every SET expression reads the OLD row): a sighted source the row already
       -- lists gets the row's first_seen_at (same UTC ISO format as 0072 and toISOString), a new source gets now;
@@ -488,46 +507,108 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
   return { requested: ordered.length, priced: snapshots.length, calls: made, rateLimited };
 }
 
+/**
+ * O3: an UPDATE ... FROM locks rows in join-plan order. So each table gets its own short transaction: lock the
+ * rows first in the shared order (ORDER BY ... FOR NO KEY UPDATE, the strength the UPDATE itself takes), then
+ * update ONLY the rows that lock returned (a row that appears between the two statements was not locked in order,
+ * so it waits for the next tick).
+ */
 export async function storeSnapshots(
   rows: ReadonlyArray<{ mint: string; snapshot: FloorArenaSnapshot; symbol: string | null; name: string | null }>,
   now: Date,
+  database: ArenaDatabase = db,
 ): Promise<void> {
   if (rows.length === 0) return;
   const at = now.toISOString();
-  for (let offset = 0; offset < rows.length; offset += 500) {
-    const payload = JSON.stringify(rows.slice(offset, offset + 500));
-    await db.execute(sql`
-      UPDATE floor_discovery_mints AS d
-      SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz,
-          symbol = COALESCE(d.symbol, r.symbol), name = COALESCE(d.name, r.name)
-      FROM jsonb_to_recordset(${payload}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text)
-      WHERE d.mint = r.mint
-    `);
-    await db.execute(sql`
-      UPDATE floor_arena_private_mints AS p
-      SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz, symbol = COALESCE(p.symbol, r.symbol)
-      FROM jsonb_to_recordset(${payload}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text)
-      WHERE p.mint = r.mint
-    `);
+  const ordered = byMint(rows);
+  for (let offset = 0; offset < ordered.length; offset += 500) {
+    const chunk = ordered.slice(offset, offset + 500);
+    const mints = JSON.stringify(chunk.map((row) => row.mint));
+    await database.transaction(async (tx) => {
+      const locked = new Set(rowsOf(await tx.execute(sql`
+        SELECT d.mint FROM floor_discovery_mints AS d
+        WHERE d.mint IN (SELECT jsonb_array_elements_text(${mints}::jsonb))
+        ORDER BY d.mint COLLATE "C"
+        FOR NO KEY UPDATE OF d
+      `)).map((row) => String(row.mint)));
+      const payload = chunk.filter((row) => locked.has(row.mint));
+      if (payload.length === 0) return;
+      await tx.execute(sql`
+        UPDATE floor_discovery_mints AS d
+        SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz,
+            symbol = COALESCE(d.symbol, r.symbol), name = COALESCE(d.name, r.name)
+        FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text)
+        WHERE d.mint = r.mint
+      `);
+    });
+    await database.transaction(async (tx) => {
+      const locked = rowsOf(await tx.execute(sql`
+        SELECT p.agent_id, p.mint FROM floor_arena_private_mints AS p
+        WHERE p.mint IN (SELECT jsonb_array_elements_text(${mints}::jsonb))
+        ORDER BY p.mint COLLATE "C", p.agent_id COLLATE "C"
+        FOR NO KEY UPDATE OF p
+      `));
+      if (locked.length === 0) return;
+      const keys = JSON.stringify(locked.map((row) => ({ agent_id: String(row.agent_id), mint: String(row.mint) })));
+      await tx.execute(sql`
+        UPDATE floor_arena_private_mints AS p
+        SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz, symbol = COALESCE(p.symbol, r.symbol)
+        FROM jsonb_to_recordset(${JSON.stringify(chunk)}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text),
+             jsonb_to_recordset(${keys}::jsonb) AS k(agent_id text, mint text)
+        WHERE p.mint = r.mint AND p.agent_id = k.agent_id AND p.mint = k.mint
+      `);
+    });
   }
 }
 
-/** Removes expired shared rows and stale private rows, never one that backs an open position. */
-export async function runDiscoveryExpiryTick(now: Date = new Date()): Promise<{ shared: number; private: number }> {
+/**
+ * Removes expired shared rows and stale private rows, never one that backs an open position. O3: a DELETE locks in
+ * scan order, so each table locks its doomed rows first in the shared order (FOR UPDATE, the DELETE's strength), then
+ * deletes only those, with every condition re-checked on a fresh snapshot.
+ */
+export async function runDiscoveryExpiryTick(
+  now: Date = new Date(),
+  database: ArenaDatabase = db,
+): Promise<{ shared: number; private: number }> {
   const at = now.toISOString();
-  const shared = rowsOf(await db.execute(sql`
-    DELETE FROM floor_discovery_mints AS d
-    WHERE d.expires_at < ${at}::timestamptz
-      AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND p.status = 'open')
-    RETURNING d.mint
-  `));
-  const priv = rowsOf(await db.execute(sql`
-    DELETE FROM floor_arena_private_mints AS m
-    WHERE GREATEST(m.first_seen_at + interval '24 hours', COALESCE(m.last_seen_at, m.first_seen_at) + interval '6 hours') < ${at}::timestamptz
-      AND NOT EXISTS (
-        SELECT 1 FROM floor_arena_positions p WHERE p.mint = m.mint AND p.agent_id = m.agent_id AND p.status = 'open'
-      )
-    RETURNING m.mint
-  `));
+  const shared = await database.transaction(async (tx) => {
+    const doomed = rowsOf(await tx.execute(sql`
+      SELECT d.mint FROM floor_discovery_mints AS d
+      WHERE d.expires_at < ${at}::timestamptz
+        AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND p.status = 'open')
+      ORDER BY d.mint COLLATE "C"
+      FOR UPDATE OF d
+    `)).map((row) => String(row.mint));
+    if (doomed.length === 0) return [];
+    return rowsOf(await tx.execute(sql`
+      DELETE FROM floor_discovery_mints AS d
+      WHERE d.mint IN (SELECT jsonb_array_elements_text(${JSON.stringify(doomed)}::jsonb))
+        AND d.expires_at < ${at}::timestamptz
+        AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND p.status = 'open')
+      RETURNING d.mint
+    `));
+  });
+  const priv = await database.transaction(async (tx) => {
+    const doomed = rowsOf(await tx.execute(sql`
+      SELECT m.agent_id, m.mint FROM floor_arena_private_mints AS m
+      WHERE GREATEST(m.first_seen_at + interval '24 hours', COALESCE(m.last_seen_at, m.first_seen_at) + interval '6 hours') < ${at}::timestamptz
+        AND NOT EXISTS (
+          SELECT 1 FROM floor_arena_positions p WHERE p.mint = m.mint AND p.agent_id = m.agent_id AND p.status = 'open'
+        )
+      ORDER BY m.mint COLLATE "C", m.agent_id COLLATE "C"
+      FOR UPDATE OF m
+    `)).map((row) => ({ agent_id: String(row.agent_id), mint: String(row.mint) }));
+    if (doomed.length === 0) return [];
+    return rowsOf(await tx.execute(sql`
+      DELETE FROM floor_arena_private_mints AS m
+      USING jsonb_to_recordset(${JSON.stringify(doomed)}::jsonb) AS k(agent_id text, mint text)
+      WHERE m.agent_id = k.agent_id AND m.mint = k.mint
+        AND GREATEST(m.first_seen_at + interval '24 hours', COALESCE(m.last_seen_at, m.first_seen_at) + interval '6 hours') < ${at}::timestamptz
+        AND NOT EXISTS (
+          SELECT 1 FROM floor_arena_positions p WHERE p.mint = m.mint AND p.agent_id = m.agent_id AND p.status = 'open'
+        )
+      RETURNING m.mint
+    `));
+  });
   return { shared: shared.length, private: priv.length };
 }
