@@ -64,6 +64,14 @@
 
 ## TRADING FLOOR
 
+### Arena house agents now change rules rarely, and every report says why (staging, 2026-10-01)
+
+- **What to look at:** on staging, `/trading-floor` -> Exchange -> Arena -> a house agent's reports. Each report has one line such as "Tuner: no change, next check at 40 trades on these rules (has 27)".
+- **What changed:** the old tuner never changed anything since 09-30 (the AI model never proposed). The new code tuner tests one filter change only at 20, 40, 80, 160, 200, 400 and 800 closed trades on the current rules, and needs real evidence (p 0.01 or less at the early checks). On random data it changes 4% of agents, not 53%. So "tuned every 30 minutes" now means "reviewed every 30 minutes, changed rarely".
+- **Also:** a guest no longer gets console errors on the floor, the welcome tour no longer tells a guest it "created an agent", and a trader name needs at least one letter.
+- **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
+- Session tradeDeskMain, 2026-10-01.
+
 ### Trading Floor INTERIOR v3 "The Claw Exchange": the new inside look (staging, 2026-10-01)
 - **What:** the inside of the Trading Floor building is restyled. Nothing moved: same desks, seats, kiosk, board, door and trade tape.
   Walls: walnut wainscot with a brass rail, navy upper panels, a gold-framed board. Floor: dark stone with thin gold lines and a gold
