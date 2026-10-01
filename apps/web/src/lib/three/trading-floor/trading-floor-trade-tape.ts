@@ -304,22 +304,32 @@ export interface TapeTradeFace {
  * on the ribbon alike, all through `classifyArenaTapeItem`.
  *
  * The rule, after the shared sanitiser: every `$` goes, then a leading sign;
- * a symbol with no letter left, or with a decimal number in it, is no symbol
- * at all (the action becomes the bare side). `$PEPE` stays a token, `PEPE`;
+ * then the symbol is CUT to `maxLength`, and only then validated, because
+ * the cut is what gets printed. A symbol is no symbol at all (the action
+ * becomes the bare side) unless what survives the cut has a letter, no
+ * decimal number and no run of 5+ digits. `$PEPE` stays a token, `PEPE`;
  * `$500` and `1.5M` are prices, so they go.
  */
-export function tapeSymbol(raw: string | null): string {
+export function tapeSymbol(raw: string | null, maxLength: number = Number.MAX_SAFE_INTEGER): string {
   if (raw === null) return '';
   const cleaned = sanitiseScreenText(raw, Number.MAX_SAFE_INTEGER)
     .replace(/\$/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^[+-]+\s*/, '');
+  // Cut FIRST (Codex re-review): validating the whole symbol and cutting
+  // afterwards let `123456789A` lose its only letter and print
+  // "SELL 12345678".
+  const shown = cleaned.slice(0, Math.max(0, maxLength)).trim();
+  // A letter, or it is a number, not a token.
+  if (!/[A-Z]/.test(shown)) return '';
   // A DECIMAL number reads as a price even with letters on it: `4200.00USD`
   // printed "SELL 4200.00U", and `1.5M` collides with the board's "12M" age
   // column. Integers with letters (`1INCH`, `W3`, `BONK2`) are real tickers.
-  if (/\d[.,]\d/.test(cleaned)) return '';
-  return /[A-Z]/.test(cleaned) ? cleaned : '';
+  if (/\d[.,]\d/.test(shown)) return '';
+  // A long digit run reads as a figure too (`1234567A`).
+  if (/\d{5,}/.test(shown)) return '';
+  return shown;
 }
 
 /**
@@ -333,9 +343,12 @@ export function tapeSymbol(raw: string | null): string {
 export function classifyArenaTapeItem(
   item: ArenaTapeItem,
 ): Omit<TapeTradeFace, 'trader'> {
-  const symbol = tapeSymbol(item.symbol);
   const side = item.type === 'entry' ? 'BUY' : 'SELL';
-  const action = truncate(symbol ? `${side} ${symbol}` : side, TAPE_ACTION_MAX_CHARS);
+  // The symbol gets exactly the room the action leaves after the side and a
+  // space, and is validated AFTER that cut, so what is printed is what was
+  // checked. No second cut follows: the action already fits.
+  const symbol = tapeSymbol(item.symbol, TAPE_ACTION_MAX_CHARS - side.length - 1);
+  const action = symbol ? `${side} ${symbol}` : side;
   const size = item.usd !== null && item.usd > 0 ? formatTapeUsd(item.usd) : '';
 
   let kind: TapeChipKind;

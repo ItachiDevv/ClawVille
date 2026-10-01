@@ -1048,6 +1048,54 @@ describe('ribbon text', () => {
     for (const segment of ribbon) expect(decimal.test(segment.text.split(ticket).join(''))).toBe(false);
   });
 
+  // Codex re-review: the symbol is validated AFTER the 13-character cut, so a
+  // cut can no longer remove the only letter (`123456789A` printed
+  // "SELL 12345678") and a 5+ digit run never prints. Earlier rows stay
+  // pinned by the two tests above.
+  test('no surface prints a number-shaped symbol left by the length cut', () => {
+    const symbols = ['123456789A', '1234567A', 'ABCDEFGHIJKL1234', 'PEPE', '1INCH', 'W3', 'BONK2', 'BTC.B'];
+    const types = ['exit', 'exit', 'exit', 'entry', 'entry', 'exit', 'entry', 'entry'];
+    const now = Date.parse('2026-10-01T04:00:00.000Z');
+    const rows = symbols.map((symbol, i) => ({
+      id: `n${i}`,
+      type: types[i],
+      at: new Date(now - (i + 1) * 60_000).toISOString(),
+      agentName: `Agent${i}`,
+      symbol,
+      usd: 20,
+      pnlUsd: null,
+    }));
+    const ticket = formatTapeUsd(20);
+    const numberShaped = (text: string) => /\d{5,}/.test(text) || /\d[.,]\d/.test(text);
+    const expected = [
+      'AGENT0 SELL',
+      'AGENT1 SELL',
+      'AGENT2 SELL ABCDEFGH',
+      'AGENT3 BUY PEPE $20.00',
+      'AGENT4 BUY 1INCH $20.00',
+      'AGENT5 SELL W3',
+      'AGENT6 BUY BONK2 $20.00',
+      'AGENT7 BUY BTC.B $20.00',
+    ];
+
+    const query = (data: unknown) => ({ data, isLoading: false, isError: false });
+    const board = buildFloorScreenData({ leaderboard: query({ rows: [] }), contest: query(null), tape: query({ items: rows }) }, now);
+    // Trailing age ("3M") trimmed; the ticket is the only figure allowed.
+    const lines = board.tape.map((line) => line.replace(/ \S+$/, ''));
+    expect(lines).toEqual(expected);
+    for (const line of lines) expect({ line, numberShaped: numberShaped(line.split(ticket).join('')) }).toEqual({ line, numberShaped: false });
+
+    const chips = buildTapeSources({ items: rows });
+    expect(chips.map((chip) => chip.action)).toEqual(expected.map((line) => line.replace(/^AGENT\d /, '').replace(` ${ticket}`, '')));
+    for (const chip of chips) {
+      expect(chip.action.length).toBeLessThanOrEqual(13);
+      expect(numberShaped(chip.action)).toBe(false);
+    }
+
+    const ribbon = buildRibbonSegments({ data: { items: rows }, isError: false }).filter((s) => s.tone !== 'brand');
+    expect(ribbon.map((s) => s.text)).toEqual(expected.map((line) => `${line} PAPER`));
+  });
+
   test('the signature ignores time: a re-timed tape in the same order repaints nothing', () => {
     const later = FIXTURE.map((row, index) => ({ ...row, at: `2026-09-30T13:0${index}:00.000Z` })).reverse();
     // Reverse the times too, so the newest-first order is unchanged.

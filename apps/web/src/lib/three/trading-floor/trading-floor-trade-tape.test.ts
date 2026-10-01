@@ -259,6 +259,20 @@ describe('classifyArenaTapeItem', () => {
       [item({ symbol: '1INCH' }), { action: 'BUY 1INCH', amount: '$20.00' }],
       [item({ symbol: 'W3' }), { action: 'BUY W3', amount: '$20.00' }],
       [item({ symbol: 'BONK2' }), { action: 'BUY BONK2', amount: '$20.00' }],
+      [item({ symbol: 'BTC.B' }), { action: 'BUY BTC.B', amount: '$20.00' }],
+      [item({ symbol: 'PEPE' }), { action: 'BUY PEPE', amount: '$20.00' }],
+      // Codex re-review: validate AFTER the cut. The cut used to remove the
+      // only letter: `123456789A` printed "SELL 12345678".
+      [item({ type: 'exit', symbol: '123456789A', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      [item({ symbol: '123456789A' }), { action: 'BUY', amount: '$20.00' }],
+      // Valid as a whole (a letter, no decimal, no 5-digit run), but the cut
+      // leaves "12-34-56": only cut-then-validate catches this one.
+      [item({ type: 'exit', symbol: '12-34-56-A', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      // A run of 5+ digits reads as a figure even with a letter on it.
+      [item({ type: 'exit', symbol: '1234567A', pnlUsd: null }), { action: 'SELL', amount: '' }],
+      // Letters that survive the cut keep the symbol, cut to the room left.
+      [item({ type: 'exit', symbol: 'ABCDEFGHIJKL1234', pnlUsd: null }), { action: 'SELL ABCDEFGH', amount: '' }],
+      [item({ symbol: 'ABCDEFGHIJKL1234' }), { action: 'BUY ABCDEFGHI', amount: '$20.00' }],
     ];
     for (const [input, expected] of cases) {
       const face = classifyArenaTapeItem(input);
@@ -267,6 +281,14 @@ describe('classifyArenaTapeItem', () => {
         ...expected,
       });
       expect(face.action.includes('$')).toBe(false);
+      expect(face.action.length).toBeLessThanOrEqual(TAPE_ACTION_MAX_CHARS);
+      // What is printed is what was validated: the symbol part of the action
+      // has a letter, no decimal number and no 5+ digit run.
+      const printed = face.action.replace(/^(BUY|SELL) ?/, '');
+      if (printed) {
+        expect({ printed, ok: /[A-Z]/.test(printed) && !/\d[.,]\d/.test(printed) && !/\d{5,}/.test(printed) })
+          .toEqual({ printed, ok: true });
+      }
     }
     // The 13-character cut still applies, to the CLEANED symbol.
     expect(classifyArenaTapeItem(item({ type: 'exit', symbol: '$SUPERLONGSYMBOL', pnlUsd: null })).action).toBe(
@@ -274,6 +296,11 @@ describe('classifyArenaTapeItem', () => {
     );
     expect(tapeSymbol(null)).toBe('');
     expect(tapeSymbol('$PEPE')).toBe('PEPE');
+    // The cut is the caller's room; validation runs on the cut text.
+    expect(tapeSymbol('123456789A', 8)).toBe('');
+    expect(tapeSymbol('123456789A')).toBe('');
+    expect(tapeSymbol('ABCDEFGHIJKL1234', 8)).toBe('ABCDEFGH');
+    expect(tapeSymbol('ABCDEFGHIJKL1234')).toBe('ABCDEFGHIJKL1234');
   });
 
   test('side, token and signed money fit the cell without losing cents', () => {
