@@ -28,10 +28,11 @@
  *      trades on the current params AND a deterministic split check on those
  *      trades (`evaluateSuggestionEvidence`); only filter changes can pass it.
  *      At most one automatic change per agent per 30 minutes.
- *   5. MEMORY (D29): every user agent's report is stored as an earned-skill
- *      lesson of the owner's avatar, in its warm hosted ElizaOS runtime or
- *      else the avatar-keyed keyword store (`writeArenaReportMemory`; never
- *      lazy-starts a runtime, never throws).
+ *   5. MEMORY (D29): every FULL report of a user agent (never a short
+ *      no-trade report, which is not a useful lesson) is stored as an
+ *      earned-skill lesson of the owner's avatar, in its warm hosted ElizaOS
+ *      runtime or else the avatar-keyed keyword store (`writeArenaReportMemory`;
+ *      never lazy-starts a runtime, never throws).
  *
  * If the LLM fails or times out the report is still written, with a
  * deterministic summary and no suggestion. Nothing here moves money: the arena
@@ -61,6 +62,9 @@ import {
   type FloorArenaTemplate,
 } from '@clawville/shared';
 import {
+  ARENA_AUTO_CHANGE_MIN_GAP_MS,
+  ARENA_QUIET_REPORT_INTERVAL_MS,
+  ARENA_REPORT_INTERVAL_MS,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
@@ -71,16 +75,9 @@ import { redactArenaText } from './queries';
 
 // ── Tuning constants ──────────────────────────────────────────────────────────
 
-/** A report is due when the last one is at least this old. */
-export const ARENA_REPORT_INTERVAL_MS = 30 * 60_000;
-/** An agent with no trade in the period gets a short "no trades" report at
- *  most this often, so the stream shows the analysis still runs. */
-export const ARENA_QUIET_REPORT_INTERVAL_MS = 2 * 60 * 60_000;
 /** A period never reaches further back than this (after an outage the older
  *  trades still count in the lifetime stats). */
 export const ARENA_MAX_PERIOD_MS = 6 * 60 * 60_000;
-/** At most one automatic param change per agent in this window. */
-export const ARENA_AUTO_CHANGE_MIN_GAP_MS = 30 * 60_000;
 export const ARENA_LLM_TIMEOUT_MS = 20_000;
 export const ARENA_LLM_CONCURRENCY = 2;
 /** LLM reports per tick. With the timeout and concurrency above, a tick
@@ -90,6 +87,9 @@ export const ARENA_MAX_QUIET_REPORTS_PER_TICK = 40;
 /** Newest closed trades loaded for the lifetime stats. */
 export const ARENA_LIFETIME_TRADE_LIMIT = 5_000;
 export {
+  ARENA_AUTO_CHANGE_MIN_GAP_MS,
+  ARENA_QUIET_REPORT_INTERVAL_MS,
+  ARENA_REPORT_INTERVAL_MS,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
@@ -622,11 +622,27 @@ function evidenceSide(trades: readonly ArenaClosedTrade[], mean: number | null):
 }
 
 /**
+ * The instant the engine judged a trade's filters: `entry_features.judgedAt`
+ * (the entry tick's time). `openedAt` is the later insert time, so a pair-age
+ * filter replayed at it can flip a trade near a bound. Rows written before
+ * `judgedAt` existed (or with an unreadable value) fall back to `openedAt`.
+ */
+export function tradeJudgedAt(trade: ArenaClosedTrade): Date {
+  const raw = trade.features?.judgedAt;
+  if (typeof raw === 'string') {
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return new Date(ms);
+  }
+  return trade.openedAt;
+}
+
+/**
  * D27: the deterministic check an AUTOMATIC change must pass. Only a filter
  * change can be judged from closed trades: each trade is re-run through the
- * engine's own `passesFilters` on its entry features (at its entry time) under
- * the current and the new filters. A trade is EXCLUDED when the new value adds
- * a fail code the current filters did not have, else KEPT. The change is
+ * engine's own `passesFilters` on its entry features, at the instant the engine
+ * judged them (`tradeJudgedAt`), under the current and the new filters. A
+ * trade is EXCLUDED when the new value adds a fail code the current filters
+ * did not have, else KEPT. The change is
  * confirmed only when both sides hold at least EVIDENCE_MIN_PER_SIDE trades and
  * the kept side's mean pnl_mult beats the excluded side's by at least
  * EVIDENCE_MIN_EDGE. A looser filter excludes nothing, so it can never be
@@ -656,8 +672,9 @@ export function evaluateSuggestionEvidence(input: {
   for (const trade of input.trades) {
     if (!Number.isFinite(trade.pnlMult)) continue;
     const features = (trade.features ?? {}) as unknown as FloorArenaFeatures;
-    const before = new Set(passesFilters(features, input.current.filters, trade.openedAt));
-    const after = passesFilters(features, input.next.filters, trade.openedAt);
+    const judgedAt = tradeJudgedAt(trade);
+    const before = new Set(passesFilters(features, input.current.filters, judgedAt));
+    const after = passesFilters(features, input.next.filters, judgedAt);
     if (after.some((code) => !before.has(code))) excluded.push(trade);
     else kept.push(trade);
   }
@@ -755,7 +772,7 @@ export function buildArenaAnalysisMessages(input: ArenaPromptInput): ArenaInfere
   const { agent, params, template, stats, priorReports, suggestionAllowed, autoApply } = input;
   const isHouse = agent.kind === 'house';
   const rules = [
-    'You analyse ONE paper trading agent in the ClawVille Trading Arena. Paper means every fill is priced from a live quote plus fixed costs, but nothing is bought and no money moves.',
+    'You analyse ONE paper trading agent in the ClawVille Trading Arena. Paper means every fill is priced from a live quote plus fixed costs, but no swap is sent and no token is bought.',
     'Write a short, plain English report from the stats you are given. State numbers plainly. Never call the agent profitable or winning, never promise results, and never invent a number that is not in the stats.',
     'You may propose AT MOST ONE parameter change. Propose null when no stat clearly supports a change.',
     'A proposal names one path from allowedPaths and the new value for that whole leaf. For exits.tp the value is the full list of [multiple, fraction] legs.',

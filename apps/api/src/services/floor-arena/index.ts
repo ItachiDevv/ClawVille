@@ -7,14 +7,16 @@ import { ensureHouseAgents, entriesPaused, refreshHouseTemplates, runEntryTick, 
 import { pruneArenaEvents } from './events';
 import { createPgLeaderLock, LeaderElector } from './leader';
 import { clawpumpQuoteBreakerState, currentSolPriceUsd, dexscreenerCallsLastMinute } from './pricing';
-import { runArenaProvisioningTick } from './provisioning';
+import { runArenaProvisioningTick, startArenaX402LeaderTerm } from './provisioning';
 
 /**
  * Trading Floor Arena engine wiring (docs/trading-floor-arena.md §6). `startFloorArena()` is called from
  * apps/api/src/index.ts; only the leader (advisory lock) runs the loops:
  *   discovery pollers (one per source, 30-60 s, jittered backoff on failure), enrichment 20 s, chain checks 20 s,
- *   entries 15 s, exits 10 s, analysis / add-ons / provisioning 60 s, discovery expiry 5 min, event prune 1 h.
- * Kill switch: FLOOR_ARENA_ENGINE_ENABLED='false'. Admin pause stops NEW entries only (exits keep running).
+ *   entries 15 s, exits 10 s, provisioning + x402 reconcile 30 s, analysis / add-ons 60 s, discovery expiry 5 min,
+ *   event prune 1 h. Only the leader writes to ClawPump (single writer, Codex r19).
+ * Kill switch: FLOOR_ARENA_ENGINE_ENABLED='false'. Admin pause stops new entries, paid add-on calls, ClawPump
+ * creates and config writes, and x402 adds; exits and x402 removals keep running.
  */
 
 const MAX_BACKOFF_MS = 10 * 60_000;
@@ -136,7 +138,8 @@ function buildLoops(): ArenaLoop[] {
     new ArenaLoop('exits', 10_000, (now) => runExitTick(now), { initialDelayMs: 5_000, jitter: 0.05 }),
     new ArenaLoop('analysis', 60_000, runArenaAnalysisTick, { initialDelayMs: 30_000 }),
     new ArenaLoop('addons', 60_000, (now) => runArenaAddonsTick(now), { initialDelayMs: 40_000 }),
-    new ArenaLoop('provisioning', 60_000, (now) => runArenaProvisioningTick(now), { initialDelayMs: 25_000 }),
+    // Codex r19 single writer: also applies every player's x402 change, so a short interval bounds that latency.
+    new ArenaLoop('provisioning', 30_000, (now) => runArenaProvisioningTick(now), { initialDelayMs: 25_000 }),
     new ArenaLoop('discovery-expiry', 5 * 60_000, runDiscoveryExpiryTick, { initialDelayMs: 60_000 }),
     new ArenaLoop('event-prune', 60 * 60_000, pruneArenaEvents, { initialDelayMs: 120_000 }),
     // D27: house params follow template changes (also run once right after election, below).
@@ -183,6 +186,8 @@ export function startFloorArena(): void {
       lock: createPgLeaderLock(url),
       onElected: async () => {
         state.electedAt = new Date().toISOString();
+        // Codex r21 (2): the first x402 pass of a new term checks every add-on-free agent.
+        startArenaX402LeaderTerm();
         try {
           const inserted = await ensureHouseAgents();
           const templatesReset = await refreshHouseTemplates();

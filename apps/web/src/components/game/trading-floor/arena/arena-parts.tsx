@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from 'react';
 import {
+  FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_PARAM_BOUNDS,
   FLOOR_ARENA_FILTER_KEYS,
   type FloorArenaParams,
@@ -20,6 +21,7 @@ import { FLOOR_TEXT } from '../tokens';
 import {
   ARENA_TONE,
   exitTargets,
+  positionExits,
   formatBoundValue,
   formatDuration,
   formatMultiple,
@@ -184,11 +186,11 @@ export function ArenaOpenPositions({
   nowMs: number;
 }) {
   if (positions.length === 0) return <ArenaMuted>No open positions.</ArenaMuted>;
-  const targets = params ? exitTargets(params) : [];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-testid="arena-open-positions">
       {positions.map((position) => {
         const mark = position.lastMarkMult;
+        const exits = positionExits(position, params, paramsVersion);
         return (
           <div
             key={position.id}
@@ -207,12 +209,11 @@ export function ArenaOpenPositions({
                   : ''}
               </span>
             </div>
-            {targets.length > 0 ? (
+            {exits ? (
+              <div style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>{exitTargets(exits).join(' · ')}</div>
+            ) : position.paramsVersion !== null ? (
               <div style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
-                {targets.join(' · ')}
-                {position.paramsVersion !== null && paramsVersion !== null && position.paramsVersion !== paramsVersion
-                  ? ' (current rules; this position opened under older ones)'
-                  : ''}
+                Opened under rules v{position.paramsVersion}; it keeps the exits it was opened with.
               </div>
             ) : null}
           </div>
@@ -228,7 +229,33 @@ const EXIT_REASON_LABEL: Record<string, string> = {
   trail: 'trailing stop',
   time: 'max hold',
   manual: 'closed by hand',
+  unresolved: 'no usable price for 30 min',
 };
+
+/**
+ * D31: an 'unresolved' close has no P&L of its own (pnl_usd NULL), but the
+ * contest score counts it as a loss of its open stake: the proceeds of earlier
+ * take-profit legs minus the position size. Only for a position OPENED inside
+ * the contest window, the same inclusive bounds the leaderboard SQL uses
+ * (opened_at >= startsAt AND opened_at <= endsAt): any other unresolved close
+ * is in no contest score, so it gets no contest line. Null when it cannot be
+ * read.
+ */
+export function unresolvedContestLoss(
+  position: Pick<FloorArenaPositionView, 'exitReason' | 'pnlUsd' | 'realisedUsd' | 'sizeUsd' | 'openedAt'>,
+): number | null {
+  if (position.exitReason !== 'unresolved' || position.pnlUsd !== null) return null;
+  if (position.realisedUsd === null || position.sizeUsd === null || position.openedAt === null) return null;
+  const openedMs = Date.parse(position.openedAt);
+  if (
+    !Number.isFinite(openedMs) ||
+    openedMs < Date.parse(FLOOR_ARENA_CONTEST.startsAt) ||
+    openedMs > Date.parse(FLOOR_ARENA_CONTEST.endsAt)
+  ) {
+    return null;
+  }
+  return position.realisedUsd - position.sizeUsd;
+}
 
 export function ArenaClosedTrades({
   positions,
@@ -261,8 +288,21 @@ export function ArenaClosedTrades({
             </div>
           </div>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ color: pnlTone(position.pnlUsd), fontSize: 13, fontWeight: 700 }}>{signedUsd(position.pnlUsd)}</div>
-            <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>{formatMultiple(position.pnlMult)}</div>
+            {position.exitReason === 'unresolved' && position.pnlUsd === null ? (
+              <>
+                <div style={{ color: FLOOR_TEXT.muted, fontSize: 13, fontWeight: 700 }}>unresolved</div>
+                {unresolvedContestLoss(position) !== null ? (
+                  <div style={{ color: FLOOR_TEXT.danger, fontSize: 10 }} data-testid="arena-unresolved-loss">
+                    contest: {signedUsd(unresolvedContestLoss(position))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div style={{ color: pnlTone(position.pnlUsd), fontSize: 13, fontWeight: 700 }}>{signedUsd(position.pnlUsd)}</div>
+                <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>{formatMultiple(position.pnlMult)}</div>
+              </>
+            )}
           </div>
         </div>
       ))}

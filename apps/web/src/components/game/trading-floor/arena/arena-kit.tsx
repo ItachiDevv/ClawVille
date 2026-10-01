@@ -9,6 +9,23 @@ import { FLOOR_TEXT } from '../tokens';
 // Shared look for the arena panels. Same card, button and pill language as the
 // rest of the Trading Floor tab, and every tap target is at least 44 px.
 
+/**
+ * Copy for the shared guest sign-up prompt when a guest tries to launch an
+ * arena trader. The Exchange's own prompt talks about real vCLAW escrow, which
+ * is wrong here: the arena's TRADES are paper. It must not say "no real money
+ * moves", because optional paid add-ons spend real USDC from the agent's own
+ * wallet (addon-picker.tsx, manual §17c). Wording follows FLOOR_ARENA_CONTEST.
+ */
+export const ARENA_GUEST_UPSELL = {
+  headline: 'Sign in to launch a paper trader',
+  body:
+    'Trades in the Trading Arena are paper only: no vCLAW is spent and no real tokens are bought. ' +
+    "Paid data add-ons are optional and spend only USDC that you send to your agent's own wallet. " +
+    'Each account can enter one arena agent, and guests cannot enter. Create a free account to launch your trader and ' +
+    'play for the $CLAWVILLE prizes.',
+  ctaLabel: 'Create free account',
+} as const;
+
 export const arenaCardStyle = {
   border: '1px solid rgba(125,211,252,0.18)',
   borderRadius: 12,

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, createElement } from 'react';
@@ -12,7 +12,7 @@ import {
   FLOOR_ARENA_TEMPLATES,
 } from '@clawville/shared';
 
-import { readEvent } from '@/hooks/use-floor-arena';
+import { readContest, readEvent, readPosition } from '@/hooks/use-floor-arena';
 import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 import { useGameStore } from '@/stores/game';
 import { FLOOR_TEXT } from '../tokens';
@@ -24,15 +24,20 @@ import {
 import {
   compactUsd,
   contestPhase,
+  contestStandingsCopy,
+  countLabel,
   errorsByPath,
   exitTargets,
   formatCountdown,
   formatDuration,
   formatParamValue,
   paramPathLabel,
+  positionExits,
   signedUsd,
 } from './arena-format';
-import { arenaEventTone } from './arena-parts';
+import { ADDON_WALLET_WARNING, ARENA_WALLET_NO_WITHDRAW } from './addon-picker';
+import { ARENA_GUEST_UPSELL } from './arena-kit';
+import { ArenaClosedTrades, arenaEventTone, unresolvedContestLoss } from './arena-parts';
 import { addonUnderfunded, deskStatus } from './my-trader';
 
 // Same DOM harness as floor-components.test.tsx: bun has no global DOM.
@@ -41,12 +46,16 @@ const globalNames = ['Node', 'Element', 'HTMLElement', 'HTMLAnchorElement', 'Eve
 const installedNames = ['window', 'document', 'navigator', 'fetch', 'IS_REACT_ACT_ENVIRONMENT', ...globalNames] as const;
 let createRoot: typeof import('react-dom/client').createRoot;
 let FloorArenaSection: typeof import('./arena-section').FloorArenaSection;
+let TradingFloorTab: typeof import('../trading-floor-tab').TradingFloorTab;
 let root: Root | null = null;
 let container: HTMLElement | null = null;
 let client: QueryClient | null = null;
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 let meBody: Record<string, unknown> = { agent: null };
 let profileBody: Record<string, unknown> = {};
+let houseAgentsBody: unknown[] = [];
+let addonsBody: Record<string, unknown> = { addons: [], paymentsEnabled: false };
+let contestBody: Record<string, unknown> = {};
 let requests: string[] = [];
 
 function installDom(): void {
@@ -155,11 +164,15 @@ beforeAll(async () => {
   installDom();
   ({ createRoot } = await import('react-dom/client'));
   ({ FloorArenaSection } = await import('./arena-section'));
+  ({ TradingFloorTab } = await import('../trading-floor-tab'));
 });
 
 beforeEach(() => {
   requests = [];
   meBody = { agent: null };
+  houseAgentsBody = [];
+  addonsBody = { addons: [], paymentsEnabled: false };
+  contestBody = {};
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
     writable: true,
@@ -169,8 +182,9 @@ beforeEach(() => {
       let body: unknown = {};
       if (url.includes('/me')) body = meBody;
       else if (url.includes('/leaderboard')) body = { rows: [] };
-      else if (url.includes('/templates')) body = { houseAgents: [] };
-      else if (url.includes('/addons')) body = { addons: [], paymentsEnabled: false };
+      else if (url.includes('/templates')) body = { houseAgents: houseAgentsBody };
+      else if (url.includes('/addons')) body = addonsBody;
+      else if (url.includes('/contest')) body = contestBody;
       else if (url.includes('/events')) body = { events: [] };
       else if (url.includes('/agents/')) body = profileBody;
       return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -222,6 +236,21 @@ describe('Arena overview', () => {
       expect(text).toContain(template.tagline);
     }
     expect(buttonByText(host, 'Launch your trader')).toBeDefined();
+  });
+
+  test('template card counts are singular for 1 and plural otherwise', async () => {
+    const stats = (trades: number, wins: number, losses: number) => ({
+      realisedUsd: 0.4, trades, wins, losses, deaths: 0, openPositions: 0, lastTradeAt: null,
+    });
+    houseAgentsBody = [
+      { id: 'house:genesis', name: 'Genesis', templateId: 'genesis', stats: { all: stats(1, 1, 0) } },
+      { id: 'house:runner', name: 'Runner', templateId: 'runner', stats: { all: stats(2, 0, 1) } },
+    ];
+    const host = await render();
+    const genesis = host.querySelector('[data-testid="arena-template-genesis"]')?.textContent ?? '';
+    const runner = host.querySelector('[data-testid="arena-template-runner"]')?.textContent ?? '';
+    expect(genesis).toContain('1 trade · 1 win · 0 losses · 0 open');
+    expect(runner).toContain('2 trades · 0 wins · 1 loss · 0 open');
   });
 
   test('a guest who taps Launch gets the sign-up prompt, not the form', async () => {
@@ -330,6 +359,257 @@ function publicProfile(kind: 'house' | 'user', latestReport: unknown) {
   };
 }
 
+describe('Guest sign-up prompt for the arena', () => {
+  test('the arena wording says paper trades, names the USDC add-on exception, and prizes need an account', () => {
+    const text = `${ARENA_GUEST_UPSELL.headline} ${ARENA_GUEST_UPSELL.body} ${ARENA_GUEST_UPSELL.ctaLabel}`;
+    const lower = text.toLowerCase();
+    expect(lower).toContain('paper only');
+    // Paid add-ons spend real USDC, so the prompt names that exception and
+    // never claims that no real money moves.
+    expect(lower).toContain('add-ons are optional');
+    expect(text).toContain('USDC');
+    expect(lower).toContain("your agent's own wallet");
+    expect(lower).not.toContain('no real money');
+    // The same phrases the contest rules use, so the prompt and the rules agree.
+    for (const phrase of [
+      'no vclaw is spent',
+      'no real tokens are bought',
+      "add-ons are optional and spend only usdc that you send to your agent's own wallet",
+      'guests cannot enter',
+    ]) {
+      expect({ phrase, inPrompt: lower.includes(phrase) }).toEqual({ phrase, inPrompt: true });
+      expect({ phrase, inRules: FLOOR_ARENA_CONTEST.rules.some((rule) => rule.toLowerCase().includes(phrase)) }).toEqual({
+        phrase,
+        inRules: true,
+      });
+    }
+    expect(text).toContain('$CLAWVILLE');
+    expect(text).toContain('vCLAW');
+    // The Exchange copy this replaces talked about escrow; the arena has none.
+    expect(text.toLowerCase()).not.toContain('escrow');
+    expect(text).not.toContain('\u2014');
+    expect(text.toLowerCase()).not.toContain('casino');
+    expect(text).not.toMatch(/\bCT\b/);
+  });
+
+  test('both arena launch buttons in the Trading Floor tab ask for the arena wording', async () => {
+    const variants: Array<string | undefined> = [];
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(
+          QueryClientProvider,
+          { client: client! },
+          createElement(TradingFloorTab, {
+            active: true,
+            isGuest: true,
+            onGuestBlocked: (variant?: 'arena') => { variants.push(variant); },
+          }),
+        ),
+      );
+    });
+    await flush();
+    const host = container;
+    await click(host.querySelector('[data-testid="arena-launch-button"]') as HTMLElement);
+    const entry = host.querySelector('[data-testid="arena-launch-entry"]') as HTMLElement;
+    await click(buttonByText(entry, 'Launch your trader'));
+    expect(variants).toEqual(['arena', 'arena']);
+  });
+});
+
+describe('Agent wallet: no withdrawal disclosure (audit-money M3)', () => {
+  const WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+  const NO_WITHDRAW =
+    "Send only USDC on Solana. You cannot withdraw USDC from this wallet in ClawVille, so send only what your add-ons will spend (at most $5 a day).";
+
+  test('the text is the agreed wording and the $5 comes from the shared cap', () => {
+    expect(ARENA_WALLET_NO_WITHDRAW).toBe(NO_WITHDRAW);
+  });
+
+  test('the desk panel shows it under the wallet address', async () => {
+    meBody = { ...myAgentBody({ paymentAddress: WALLET, provisionState: 'ready' }), paymentAddress: WALLET, provision: { state: 'ready', error: null } };
+    useFloorArenaUi.setState({ panel: 'desk' });
+    const host = await render();
+    const note = host.querySelector('[data-testid="arena-wallet-no-withdraw"]');
+    expect(note?.textContent).toBe(NO_WITHDRAW);
+    // Both warnings sit in the same block as the address the player copies.
+    const block = note?.closest('section') as HTMLElement;
+    expect((block.querySelector('input') as HTMLInputElement | null)?.value).toBe(WALLET);
+    expect(block.textContent).toContain(ADDON_WALLET_WARNING);
+  });
+
+  test('the launch success screen shows it under the wallet address', async () => {
+    meBody = { ...myAgentBody({ paymentAddress: WALLET, provisionState: 'ready' }), paymentAddress: WALLET, provision: { state: 'ready', error: null } };
+    useFloorArenaUi.setState({ launched: { agentName: 'My Genesis', paymentAddress: WALLET } });
+    const host = await render();
+    const success = host.querySelector('[data-testid="arena-launch-success"]') as HTMLElement;
+    expect(success).not.toBeNull();
+    expect(success.querySelector('[data-testid="arena-wallet-no-withdraw"]')?.textContent).toBe(NO_WITHDRAW);
+    expect(success.textContent).toContain(ADDON_WALLET_WARNING);
+  });
+
+  test('the add-on picker (launch step 3) shows both warnings when add-ons are offered', async () => {
+    addonsBody = {
+      addons: [{ id: 'feed-1', vendor: 'Vendor', name: 'Paid feed', priceUsd: 0.01, minIntervalS: 600, note: '' }],
+      paymentsEnabled: true,
+    };
+    const host = await render();
+    await click(buttonByText(host.querySelector('[data-testid="arena-template-genesis"]') as HTMLElement, 'Start from this template'));
+    await click(buttonByText(host, 'Next'));
+    const picker = host.querySelector('[data-testid="arena-addon-picker"]') as HTMLElement;
+    expect(picker).not.toBeNull();
+    expect(picker.textContent).toContain(NO_WITHDRAW);
+    expect(picker.textContent).toContain(ADDON_WALLET_WARNING);
+    // The wording the lead asked for: Solana USDC only, only for this agent's
+    // add-ons, no way back out, and no refund of spend.
+    const lower = picker.textContent!.toLowerCase();
+    for (const phrase of ['usdc on solana', 'only for its own paid data add-ons', 'cannot withdraw', 'does not refund']) {
+      expect({ phrase, present: lower.includes(phrase) }).toEqual({ phrase, present: true });
+    }
+  });
+
+  test('saving rules says that open positions keep their exits (audit-contest W-2)', async () => {
+    meBody = myAgentBody();
+    useFloorArenaUi.setState({ panel: 'desk' });
+    const host = await render();
+    await click(buttonByText(host, 'Edit rules'));
+    const editor = host.querySelector('[data-testid="arena-rules-editor"]') as HTMLElement;
+    expect(editor.textContent).toContain(
+      'Changes apply to positions opened after you save. Open positions keep the exits they were opened with.',
+    );
+  });
+
+  test('no address yet means no wallet text at all', async () => {
+    meBody = myAgentBody();
+    useFloorArenaUi.setState({ panel: 'desk' });
+    const host = await render();
+    expect(host.querySelector('[data-testid="arena-wallet-no-withdraw"]')).toBeNull();
+  });
+});
+
+describe('Contest rules 2, 5 and 6 and the standings after the end (D30/D31)', () => {
+  const AFTER_END = Date.parse(FLOOR_ARENA_CONTEST.endsAt) + 3_600_000;
+
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  test('the standings wording: final, provisional with a count, and unknown', () => {
+    expect(contestStandingsCopy('final', 0)).toEqual({
+      pill: 'Final',
+      text: 'The contest has ended. These are the final standings; the team reviews them and then pays the prizes.',
+    });
+    expect(contestStandingsCopy('provisional', 1).text).toBe(
+      'The contest has ended. Standings are provisional: 1 position opened in the window is still open, and they still count.',
+    );
+    expect(contestStandingsCopy('provisional', 3).text).toContain('3 positions opened in the window are still open');
+    expect(contestStandingsCopy('provisional', null).text).toContain('Some positions opened in the window are still open');
+    expect(contestStandingsCopy(null, null)).toEqual({
+      pill: null,
+      text: 'The contest has ended. Final standings are published when the last position opened in the window closes.',
+    });
+  });
+
+  test('GET /contest standings are read, and anything else is unknown', () => {
+    expect(readContest({ status: 'ended', standings: 'provisional', openWindowPositions: 2 })).toMatchObject({
+      standings: 'provisional',
+      openWindowPositions: 2,
+    });
+    expect(readContest({ status: 'live', standings: null, openWindowPositions: null })).toMatchObject({
+      standings: null,
+      openWindowPositions: null,
+    });
+    expect(readContest({ standings: 'maybe' }).standings).toBeNull();
+  });
+
+  test('after the end the banner, the leaderboard and the rules panel say provisional', async () => {
+    setSystemTime(new Date(AFTER_END));
+    contestBody = { status: 'ended', standings: 'provisional', openWindowPositions: 2, top: [], house: [] };
+    const host = await render();
+    expect(host.querySelector('[data-testid="arena-standings"]')?.textContent).toBe('Provisional');
+    expect(host.querySelector('[data-testid="arena-countdown"]')?.textContent).toBe(
+      'The contest has ended. Standings are provisional: 2 positions opened in the window are still open, and they still count.',
+    );
+    expect(host.querySelector('[data-testid="arena-leaderboard"]')?.textContent).toContain('Provisional');
+    await click(buttonByText(host, 'Contest rules'));
+    expect(host.querySelector('[data-testid="arena-contest-rules"]')?.textContent).toContain('Top 10 (provisional)');
+  });
+
+  test('a final answer turns every label to final', async () => {
+    setSystemTime(new Date(AFTER_END));
+    contestBody = { status: 'ended', standings: 'final', openWindowPositions: 0, top: [], house: [] };
+    const host = await render();
+    expect(host.querySelector('[data-testid="arena-standings"]')?.textContent).toBe('Final');
+    await click(buttonByText(host, 'Contest rules'));
+    expect(host.querySelector('[data-testid="arena-contest-rules"]')?.textContent).toContain('Final top 10');
+  });
+
+  test('before the end nothing says provisional or final', async () => {
+    setSystemTime(new Date(Date.parse(FLOOR_ARENA_CONTEST.startsAt) + 3_600_000));
+    const host = await render();
+    expect(host.querySelector('[data-testid="arena-standings"]')).toBeNull();
+    expect(host.querySelector('[data-testid="arena-countdown"]')?.textContent).toContain('Ends in');
+  });
+
+  test('the score and eligibility copy follows rules 5 and 6, not the old "closed by its end"', async () => {
+    const rule5 = FLOOR_ARENA_CONTEST.rules.find((rule) => rule.startsWith('Your score is'))!;
+    const rule6 = FLOOR_ARENA_CONTEST.rules.find((rule) => rule.startsWith('To be eligible'))!;
+    expect(rule5).toContain('including positions that close after the end');
+    expect(rule6).toContain('opened inside the contest window and closed');
+    const host = await render();
+    const footnote = host.querySelector('[data-testid="arena-leaderboard"]')?.textContent ?? '';
+    expect(footnote).toContain('also when they close after it ends');
+    expect(footnote).toContain('once a position it opened inside the window has closed');
+    // No arena source keeps the old wording.
+    for (const name of readdirSync(import.meta.dir).filter((file) => /\.tsx?$/.test(file) && !file.includes('.test.'))) {
+      const source = readFileSync(join(import.meta.dir, name), 'utf8');
+      expect({ name, old: /closed by its end|opens and closes inside|opened and\s+closed between/.test(source) }).toEqual({
+        name,
+        old: false,
+      });
+    }
+  });
+
+  test('an unresolved close shows its contest loss only when it opened inside the window (rule 2, D31)', async () => {
+    const unresolved = readPosition({
+      id: 'p1', mint: 'Mint1111', symbol: 'DEAD', status: 'closed', openedAt: '2026-10-01T00:00:00Z',
+      closedAt: '2026-10-01T01:00:00Z', sizeUsd: 20, realisedUsd: 5, pnlUsd: null, pnlMult: null, exitReason: 'unresolved',
+    })!;
+    expect(unresolvedContestLoss(unresolved)).toBe(-15);
+    expect(unresolvedContestLoss({ ...unresolved, exitReason: 'tp' })).toBeNull();
+    expect(unresolvedContestLoss({ ...unresolved, realisedUsd: null })).toBeNull();
+    // The leaderboard window is inclusive at both ends; outside it, no contest loss.
+    const startMs = Date.parse(FLOOR_ARENA_CONTEST.startsAt);
+    const endMs = Date.parse(FLOOR_ARENA_CONTEST.endsAt);
+    const at = (ms: number) => ({ ...unresolved, openedAt: new Date(ms).toISOString() });
+    expect(unresolvedContestLoss(at(startMs - 1_000))).toBeNull();
+    expect(unresolvedContestLoss(at(startMs))).toBe(-15);
+    expect(unresolvedContestLoss(at(endMs))).toBe(-15);
+    expect(unresolvedContestLoss(at(endMs + 1_000))).toBeNull();
+    expect(unresolvedContestLoss({ ...unresolved, openedAt: null })).toBeNull();
+
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(createElement(ArenaClosedTrades, { positions: [unresolved], nowMs: Date.now() }));
+    });
+    expect(container.textContent).toContain('no usable price for 30 min');
+    expect(container.querySelector('[data-testid="arena-unresolved-loss"]')?.textContent).toBe('contest: -$15.00');
+
+    // Opened before the start: "unresolved" and no contest line.
+    await act(async () => {
+      root?.render(createElement(ArenaClosedTrades, { positions: [at(startMs - 3_600_000)], nowMs: Date.now() }));
+    });
+    expect(container.textContent).toContain('unresolved');
+    expect(container.querySelector('[data-testid="arena-unresolved-loss"]')).toBeNull();
+  });
+});
+
 describe('Contest rules panel', () => {
   test('renders every rule from the shared constant, including the eligibility rule', async () => {
     useFloorArenaUi.setState({ panel: 'rules' });
@@ -408,6 +688,21 @@ describe('Arena pure helpers', () => {
     expect(compactUsd(20)).toBe('$20');
   });
 
+  test('count labels are singular for exactly 1 and plural for 0, 2 and an unknown count', () => {
+    const kinds: Array<[string, string | undefined, string]> = [
+      ['trade', undefined, 'trades'],
+      ['win', undefined, 'wins'],
+      ['loss', 'losses', 'losses'],
+      ['rule', undefined, 'rules'],
+    ];
+    for (const [singular, plural, expectedPlural] of kinds) {
+      expect(countLabel(0, singular, plural)).toBe(`0 ${expectedPlural}`);
+      expect(countLabel(1, singular, plural)).toBe(`1 ${singular}`);
+      expect(countLabel(2, singular, plural)).toBe(`2 ${expectedPlural}`);
+      expect(countLabel(null, singular, plural)).toBe(`- ${expectedPlural}`);
+    }
+  });
+
   test('durations and the countdown read in plain units', () => {
     expect(formatDuration(900)).toBe('15 min');
     expect(formatDuration(21_600)).toBe('6 h');
@@ -433,7 +728,18 @@ describe('Arena pure helpers', () => {
   });
 
   test('a position row lists the exit rules of its agent', () => {
-    expect(exitTargets(FLOOR_ARENA_TEMPLATES[0]!.params)).toEqual(['TP 1.10x sells 100%', 'Max hold 15 min']);
+    expect(exitTargets(FLOOR_ARENA_TEMPLATES[0]!.params.exits)).toEqual(['TP 1.10x sells 100%', 'Max hold 15 min']);
+  });
+
+  test('an open position runs on its frozen exits, not on rules saved later (audit-contest W-2)', () => {
+    const params = FLOOR_ARENA_TEMPLATES[0]!.params;
+    const frozen = { ...params.exits, stop_mult: 0.7 };
+    // Frozen exits from the route always win.
+    expect(positionExits({ entryExits: frozen, paramsVersion: 1 }, params, 3)).toBe(frozen);
+    // Without them, the current rules apply only to a position opened under the same version.
+    expect(positionExits({ entryExits: null, paramsVersion: 3 }, params, 3)).toBe(params.exits);
+    expect(positionExits({ entryExits: null, paramsVersion: 1 }, params, 3)).toBeNull();
+    expect(positionExits({ entryExits: null, paramsVersion: null }, params, 3)).toBeNull();
   });
 
   test('add-on caps: each on cap counts toward the $5 total; an off add-on costs nothing', () => {

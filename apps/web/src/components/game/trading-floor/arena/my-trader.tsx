@@ -29,6 +29,7 @@ import { FLOOR_TEXT } from '../tokens';
 import {
   ADDON_WALLET_WARNING,
   AddonPicker,
+  ArenaWalletWarnings,
   addonChoicesValid,
   defaultAddonChoice,
   type AddonChoice,
@@ -181,6 +182,12 @@ function RulesEditor({ me, compact }: { me: FloorArenaMyAgent; compact: boolean 
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="arena-rules-editor">
       <ArenaParamsForm value={draft} onChange={setDraft} errors={errors} compact={compact} disabled={save.isPending} />
       <InlineMessage text={message} />
+      {/* The engine freezes a position's exits when it opens (engine.ts
+          exitsOf, entry_features.exits), so a tighter stop cannot rescue a
+          position that is already open. */}
+      <ArenaMuted size={11}>
+        Changes apply to positions opened after you save. Open positions keep the exits they were opened with.
+      </ArenaMuted>
       <ArenaStickyFooter>
         <button type="button" onClick={() => setDraft(null)} style={arenaButtonStyle} disabled={save.isPending}>
           Cancel
@@ -476,6 +483,7 @@ export function MyTrader({
         {me.paymentAddress ? (
           <>
             <ArenaCopyField value={me.paymentAddress} label="Your agent's wallet (pays for add-ons)" />
+            <ArenaWalletWarnings />
             <ArenaMuted size={11}>
               USDC in the wallet: {me.walletUsdc === null ? 'not known right now' : `$${me.walletUsdc.toFixed(2)}`}
             </ArenaMuted>

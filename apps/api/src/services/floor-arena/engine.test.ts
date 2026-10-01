@@ -1,11 +1,17 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { floorArenaPositions } from '@clawville/database';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
-  advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, evaluateAgentCandidates,
-  exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
+  advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
+  ENTRY_STATEMENT_TIMEOUT_MS, ENTRY_TX_TIMEOUT_MS, exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, openPosition,
+  tryOpenPosition, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
   quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
 } from './engine';
+import { ARENA_CONTEST_FINAL_GRACE_MS } from './contest';
 import type { FloorArenaFeatures } from './filters';
 
 const T0 = Date.UTC(2026, 8, 30, 22, 0, 0);
@@ -359,7 +365,8 @@ describe('evaluateAgentCandidates', () => {
   function cand(mint: string, over: Partial<ArenaCandidate> = {}, f: Partial<FloorArenaFeatures> = {}): ArenaCandidate {
     return {
       mint, source: 'ds:token-profiles', symbol: mint, firstSeenAtMs: T0 - 30_000, features: features(f), verdict: 'pass',
-      chainCheckedAtMs: T0 - 60_000, isPrivate: false, tradeable: true, tradeableFirstSeenAtMs: T0 - 30_000, ...over,
+      chainCheckedAtMs: T0 - 60_000, isPrivate: false, tradeable: true, tradeableFirstSeenAtMs: T0 - 30_000,
+      tradeableSource: 'ds:token-profiles', ...over,
     };
   }
 
@@ -444,6 +451,151 @@ describe('evaluateAgentCandidates', () => {
     expect(insertTimeGate(cand('whale'), capped, verdict(1_000, { top10Pct: 45 }), insertAt, tick)).toEqual({ ok: false, code: 'top10' });
     expect(insertTimeGate(cand('newer'), capped, verdict(1_000, { top10Pct: 20 }), insertAt, tick))
       .toEqual({ ok: true, features: { ...cand('newer').features, top10Pct: 20 }, chainCheckedAtMs: tick - 1_000 });
+  });
+
+  test('audit-contest NIT: a gecko-first entry names the tradeable source that admitted it', () => {
+    const geckoFirst = cand('gk', { source: 'gecko:new-pools', tradeableSource: 'ds:token-profiles' });
+    expect(entryVia(geckoFirst)).toBe('ds:token-profiles (first seen by gecko:new-pools)');
+    const line = entrySummary('GK', 0.001, geckoFirst.features, entryVia(geckoFirst), T0);
+    expect(line.endsWith(' via ds:token-profiles (first seen by gecko:new-pools)')).toBe(true);
+    expect(line.length).toBeLessThanOrEqual(280);
+    // First source already tradeable: unchanged. Private add-on mint: its own source, unchanged.
+    expect(entryVia(cand('ds'))).toBe('ds:token-profiles');
+    expect(entryVia(cand('pv', { isPrivate: true, source: 'private:feed', tradeableSource: null }))).toBe('private:feed');
+  });
+
+  describe('openPosition with a fake transaction: insert-time opened_at (lead decision on audit-contest)', () => {
+    /**
+     * A transaction that logs every step. openPosition runs: execute #1 the transaction bound (Codex r20), #2 advisory
+     * lock, #3 open count, #4 the verdict re-read (FOR SHARE), then the clock, the position insert and the entry-event
+     * insert. `failAt` makes that execute throw (a timeout ends the session: the transaction rolls back).
+     */
+    function fakeDatabase(gateRow: Record<string, unknown> | null, failAt: number | null = null) {
+      const log: string[] = [];
+      const statements: SQL[] = [];
+      const inserted: { position: Record<string, unknown> | null; events: Array<Record<string, unknown>> } = { position: null, events: [] };
+      let executes = 0;
+      const tx = {
+        execute: async (statement: SQL) => {
+          executes += 1;
+          log.push(`execute${executes}`);
+          statements.push(statement);
+          if (executes === failAt) {
+            throw Object.assign(new Error('terminating connection due to transaction timeout'), { code: '25P04' });
+          }
+          if (executes === 1) return [{ statement_bound: '30000ms', tx_bound: '60000ms' }];
+          if (executes === 3) return [{ n: 0 }];
+          if (executes === 4) return gateRow ? [gateRow] : [];
+          return [];
+        },
+        insert: (table: unknown) => ({
+          values: (value: unknown) => {
+            if (table === floorArenaPositions) {
+              log.push('insert:position');
+              inserted.position = value as Record<string, unknown>;
+              return { onConflictDoNothing: () => ({ returning: async () => [{ id: 'pos-1' }] }) };
+            }
+            log.push('insert:event');
+            inserted.events.push(...(value as Array<Record<string, unknown>>));
+            return Promise.resolve();
+          },
+        }),
+      };
+      const database = { transaction: async (run: (t: typeof tx) => Promise<unknown>) => run(tx) };
+      return { database: database as never, log, inserted, statements };
+    }
+    const agent = { id: 'house:test', paramsVersion: 3 } as never;
+    const quote = {
+      ok: true as const, usd: 20, tokens: 19_500, entryPriceUsd: 0.001 / 0.975, decimals: 6, quotedTokens: 20_000,
+      impactPct: 1, driftPct: 1, venue: 'jupiter', route: ['x'],
+    };
+    const gateRow = (checkedAgoMs: number) => ({
+      chain_verdict: { pass: true, fails: [], codes: [], checkedAt: new Date(T0 - checkedAgoMs).toISOString(), pairAddress: 'p', top10Pct: 10 },
+      chain_checked_at: new Date(T0 - checkedAgoMs),
+      pair_address: 'p',
+    });
+
+    test('opened_at and the entry event at = max(tick start, clock()), read AFTER the verdict re-read and BEFORE the insert', async () => {
+      const { database, log, inserted } = fakeDatabase(gateRow(60_000));
+      const clock = () => { log.push('clock'); return T0 + 40_000; };   // a slow tick: the insert runs 40 s after the start
+      expect(await openPosition(agent, params, cand('slow'), quote, new Date(T0), clock, database)).toBe('opened');
+      expect(log).toEqual(['execute1', 'execute2', 'execute3', 'execute4', 'clock', 'insert:position', 'insert:event']);
+      expect(inserted.position!.openedAt).toEqual(new Date(T0 + 40_000));
+      expect(inserted.events).toHaveLength(1);
+      expect(inserted.events[0]!.type).toBe('entry');
+      expect(inserted.events[0]!.at).toEqual(new Date(T0 + 40_000));
+      // The rules judged the coin at the tick start; that time stays in the record.
+      expect((inserted.position!.entryFeatures as { judgedAt: string }).judgedAt).toBe(new Date(T0).toISOString());
+      expect((inserted.events[0]!.data as { chainCheckedAt: string }).chainCheckedAt).toBe(new Date(T0 - 60_000).toISOString());
+    });
+
+    test('a clock behind the tick start never stamps an earlier opened_at', async () => {
+      const { database, inserted } = fakeDatabase(gateRow(60_000));
+      expect(await openPosition(agent, params, cand('skew'), quote, new Date(T0), () => T0 - 5_000, database)).toBe('opened');
+      expect(inserted.position!.openedAt).toEqual(new Date(T0));
+      expect(inserted.events[0]!.at).toEqual(new Date(T0));
+    });
+
+    test('Codex r14 wiring: a verdict 29m59s old at the tick start and 30m01s at the insert clock is refused, nothing inserted', async () => {
+      const edge = 30 * 60_000 - 1_000;
+      const slow = fakeDatabase(gateRow(edge));
+      const slowClock = () => { slow.log.push('clock'); return T0 + 2_000; };
+      expect(await openPosition(agent, params, cand('edge', { chainCheckedAtMs: T0 - edge }), quote, new Date(T0), slowClock, slow.database))
+        .toEqual({ gate: 'chain_verdict_stale' });
+      expect(slow.log).toEqual(['execute1', 'execute2', 'execute3', 'execute4', 'clock']);
+      expect(slow.inserted).toEqual({ position: null, events: [] });
+      // The same verdict with no delay is still valid: the refusal above came from the insert-time clock.
+      const fast = fakeDatabase(gateRow(edge));
+      expect(await openPosition(agent, params, cand('edge'), quote, new Date(T0), () => T0, fast.database)).toBe('opened');
+    });
+
+    test('Codex r20: the FIRST statement bounds the transaction (transaction_timeout 60 s + statement_timeout 30 s, local)', async () => {
+      const { database, statements } = fakeDatabase(gateRow(60_000));
+      expect(await openPosition(agent, params, cand('bound'), quote, new Date(T0), () => T0, database)).toBe('opened');
+      const first = new PgDialect().sqlToQuery(statements[0]!);
+      const text = first.sql.replace(/\s+/g, ' ').trim();
+      // Codex r21: reset to 0 FIRST, then arm 60 s. PostgreSQL 17 does not restart an ACTIVE transaction timer when
+      // the value changes, so on a connection with a longer session/role transaction_timeout a plain 60 s value would
+      // keep the longer timer; 0 disables the active timer and the next value arms a fresh one. The CASE runs its
+      // conditions in order: the PG < 17 guard (no such setting: skip, no error), the reset, then the arm.
+      expect(text).toBe(
+        "SELECT set_config('statement_timeout', $1, true) AS statement_bound, "
+        + "CASE WHEN current_setting('transaction_timeout', true) IS NULL THEN NULL "
+        + "WHEN set_config('transaction_timeout', '0', true) IS NOT NULL "
+        + "THEN set_config('transaction_timeout', $2, true) END AS tx_bound",
+      );
+      expect(first.params).toEqual(['30000ms', '60000ms']);
+      expect([ENTRY_STATEMENT_TIMEOUT_MS, ENTRY_TX_TIMEOUT_MS]).toEqual([30_000, 60_000]);
+      // The lock is the SECOND statement: the bound covers the lock wait too.
+      expect(new PgDialect().sqlToQuery(statements[1]!).sql).toContain('pg_advisory_xact_lock');
+    });
+
+    test('Codex r20 wiring (source pin): the entry loop opens through tryOpenPosition, the only caller of openPosition', () => {
+      const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+      expect(source.match(/await openPosition\(/g)).toHaveLength(1);
+      expect(source).toContain('return await openPosition(...args);');
+      expect(source).toContain('const opened = await tryOpenPosition(agent, params, c, quote, now, deps.clock ?? Date.now);');
+    });
+
+    test('Codex r20: the transaction bound stays below the contest final margin', () => {
+      expect(ENTRY_STATEMENT_TIMEOUT_MS).toBeLessThan(ENTRY_TX_TIMEOUT_MS);
+      expect(ENTRY_TX_TIMEOUT_MS).toBeLessThan(ARENA_CONTEST_FINAL_GRACE_MS);
+    });
+
+    test('Codex r20: a timed-out entry transaction rolls back (nothing inserted) and is reported, not thrown', async () => {
+      for (const failAt of [2, 4]) {   // during the lock wait; during the verdict re-read
+        const { database, log, inserted } = fakeDatabase(gateRow(60_000), failAt);
+        await expect(openPosition(agent, params, cand('slowdb'), quote, new Date(T0), () => T0, database)).rejects.toThrow('transaction timeout');
+        const again = fakeDatabase(gateRow(60_000), failAt);
+        expect(await tryOpenPosition(agent, params, cand('slowdb'), quote, new Date(T0), () => T0, again.database)).toEqual({ failed: '25P04' });
+        expect(again.inserted).toEqual({ position: null, events: [] });
+        expect(inserted).toEqual({ position: null, events: [] });
+        expect(log.at(-1)).toBe(`execute${failAt}`);
+      }
+      // An error without a SQLSTATE is reported as 'error'.
+      const broken = { transaction: async () => { throw new Error('connection closed'); } } as never;
+      expect(await tryOpenPosition(agent, params, cand('down'), quote, new Date(T0), () => T0, broken)).toEqual({ failed: 'error' });
+    });
   });
 
   test('D26: with liq_min off, a pump.fun curve coin (DexScreener liquidity 0) passes', () => {

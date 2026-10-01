@@ -87,9 +87,11 @@ function createSurface(): TapeSurface | null {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
-  // No mipmaps: the atlas is redrawn on every data change and a mip chain would
-  // be regenerated with it, for 33% more upload on a surface that is only ever
-  // seen inside one room.
+  // NO MIPMAPS. Tried with the big board on 2026-09-30 and reverted with it:
+  // on the board, trilinear mips broke bold letters that had read correctly
+  // single-level at the spawn (c-10b vs c-00b), and no shot showed the chips
+  // losing letters single-level, so the atlas keeps the state that has
+  // real-GPU evidence behind it. See `trading-floor-screen.tsx`.
   texture.generateMipmaps = false;
   return { canvas, context, texture };
 }

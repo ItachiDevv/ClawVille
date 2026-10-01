@@ -830,6 +830,25 @@ describe('drawTapeAtlas', () => {
     expect(source.match(/<mesh\s/g)).toHaveLength(1);
   });
 
+  // Reverted with the board's mipmaps (2026-09-30): trilinear mips broke bold
+  // letters on the board at the spawn, and no shot showed chips losing letters
+  // single-level. See `trading-floor-screen.tsx`.
+  test('the atlas is single-level (mipmaps were tried and reverted)', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-trade-tape-mesh.tsx'), 'utf8');
+    expect(source).toContain('texture.generateMipmaps = false;');
+    expect(source).toContain('texture.minFilter = THREE.LinearFilter;');
+    expect(source).not.toContain('LinearMipmapLinearFilter');
+  });
+
+  // ONE RULE FOR THE ROOM (lead, 2026-10-01): a failed refetch keeps the last
+  // good chips. The mesh builds from `query.data` alone, which react-query keeps
+  // through an error; the board's tape row now follows the same rule.
+  test('the mesh keeps its chips on a failed refetch: it never reads isError', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-trade-tape-mesh.tsx'), 'utf8');
+    expect(source).toContain('buildTapeSources(query.data)');
+    expect(source).not.toContain('isError');
+  });
+
   test('the mesh reads the arena tape through the shared limit', () => {
     const source = readFileSync(join(import.meta.dir, 'trading-floor-trade-tape-mesh.tsx'), 'utf8');
     expect(source).toContain('useFloorArenaTape(ARENA_TAPE_LIMIT, active)');

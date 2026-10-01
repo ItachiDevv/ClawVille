@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   CLAWVILLE_GAME_TOOLS,
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
@@ -6,6 +8,8 @@ import {
   FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_HARD_RULES,
+  FLOOR_ARENA_HOUSE_AGENTS,
+  FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_PAPER_COSTS,
   FLOOR_ARENA_POSITION_USD,
   FLOOR_ARENA_TEMPLATE_VERSION,
@@ -13,11 +17,17 @@ import {
   FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
 } from '@clawville/shared';
 import {
+  ARENA_AUTO_CHANGE_MIN_GAP_MS,
+  ARENA_QUIET_REPORT_INTERVAL_MS,
+  ARENA_REPORT_INTERVAL_MS,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
 } from '../floor-arena/analysis-rules';
 import { townGuide } from '@clawville/agent-templates';
+import { CHAIN_VERDICT_TTL_MS } from '../floor-arena/chain-checks';
+import { ARENA_CONTEST_FINAL_GRACE_MS } from '../floor-arena/contest';
+import { resolveLeaderboardBounds } from '../floor-arena/leaderboard';
 import { PROTOCOL_VERSION, buildProtocolManual, contentHashOf, protocolPointer } from '../skill-protocol';
 
 // Trading Arena (paper contest) knowledge surfaces, docs/trading-floor-arena.md
@@ -27,6 +37,12 @@ import { PROTOCOL_VERSION, buildProtocolManual, contentHashOf, protocolPointer }
 
 const API = 'https://api.example.test';
 const ARENA = `${API}/api/floor/arena`;
+
+/** The manual's duration wording: whole hours as hours, else minutes. */
+function durationLabel(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  return min % 60 === 0 ? `${min / 60} hour${min === 60 ? '' : 's'}` : `${min} minute${min === 1 ? '' : 's'}`;
+}
 
 function arenaSection(): string {
   const manual = buildProtocolManual(API);
@@ -63,9 +79,9 @@ describe('Trading Arena manual section 17c', () => {
     for (const chunk of chunks) expect(chunk.length).toBeLessThan(24_000);
   });
 
-  test('rides protocol 75 and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(75);
-    expect(protocolPointer(API)).toMatchObject({ version: 75, contentHash: contentHashOf(buildProtocolManual(API)) });
+  test('rides protocol 76 and the served pointer hashes the same bytes', () => {
+    expect(PROTOCOL_VERSION).toBe(76);
+    expect(protocolPointer(API)).toMatchObject({ version: 76, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -129,7 +145,7 @@ describe('Trading Arena manual section 17c', () => {
       expect(section).toContain(`\`${field}\``);
     }
     expect(section).toMatch(/a\s+break-even close is neither/);
-    expect(section).toMatch(/exit reason `unresolved` and no P&L: it is left out of\s+`realisedUsd` and of every count/);
+    expect(section).toMatch(/exit reason `unresolved` and no P&L\. On the `24h` and\s+`all` windows/);
     // Privacy split (arena-api Codex r2): a player's agent is public for
     // strategy, state and results only; reports and add-ons stay on /me.
     expect(section).toMatch(/carries no add-on settings, payment address,\s+provisioning state or reports/);
@@ -138,7 +154,9 @@ describe('Trading Arena manual section 17c', () => {
     expect(section).toMatch(/`chainVerdict` of `\{ pass, fails, checkedAt \}`\s+only/);
     expect(section).toMatch(/answers 404 `no_agent` before you launch one/);
     expect(section).toMatch(/Your reports are private/);
-    expect(section).toMatch(/`eligible` only when it was created by the\s+contest end and has at least one trade opened and closed inside the window/);
+    // Rule 6 (lead decision B): a window-opened position that has closed, at any close time.
+    expect(section).toMatch(/`eligible` only when it was created by the contest end and\s+has at least one position opened inside the window and closed, before or after\s+the end;/);
+    expect(section).not.toMatch(/opened and closed inside the window/);
     // Every arena tool is named in the manual, so a tool never exists without its prose.
     for (const name of Object.keys(ARENA_TOOLS)) expect(section).toContain(`\`${name}\``);
   });
@@ -169,6 +187,136 @@ describe('Trading Arena manual section 17c', () => {
     expect(orientation).toContain('liquidity is a template setting, not a hard rule');
     const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Floor now runs the Trading Arena'))!;
     expect(nori).toContain('once DexScreener or ClawPump has spotted it');
+  });
+
+  test('states D28 (fresh chain check at entry) and D29 (reports kept as lessons), punch-list P4', () => {
+    const section = arenaSection();
+    // D28: the served age is the engine's own verdict TTL, rendered (E6.2).
+    const ttl = durationLabel(CHAIN_VERDICT_TTL_MS);
+    // The engine RE-READS the stored verdict at insertion (insertTimeGate); it
+    // runs no new on-chain check, so the manual must not say it does.
+    expect(section).toMatch(new RegExp(`CURRENT pool\\s+that is younger than ${ttl}, and the engine re-reads that check right before\\s+the buy \\(it must still pass, match the pool and be under ${ttl}\\)`));
+    expect(section).not.toMatch(/checks it again right before/);
+    expect(section).toContain('`chain_pending`');
+    expect(section).toMatch(new RegExp(`\`chain_verdict_stale\` \\(the check is ${ttl} old or older\\)`));
+    // D29: the memory sentence is the complete one, and the old partial one is gone.
+    // Only FULL reports are stored: the quiet no-trade path returns before writeMemory (analysis.ts).
+    expect(section).toMatch(/Every full \d+-(minute|hour) report \(not the\s+short no-trade reports\) is also stored as your avatar's own Trading Floor lesson \(in your hosted agent's memory when it is\s+awake, else in your avatar's lesson store\)\./);
+    expect(section).not.toMatch(/Every report is also stored/);
+    expect(section).not.toMatch(/that runtime is running, the report is also written/);
+    // T1-A: only the owner's avatar chat recalls for everyone; the teacher and the
+    // decide loop are hosted-only (world-teacher-chat `if (platformAgentId)`, the
+    // autonomy driver); a connected agent reads the skill-memory route.
+    expect(section).toMatch(/Your owner's avatar chat can recall\s+them, and for a hosted agent so can the Trading Floor teacher and its autonomous\s+decisions; a connected agent reads them with\s+GET https:\/\/api\.example\.test\/api\/agent\/:sessionId\/skills\/cron-automation\/skill-memory\./);
+    expect(section).not.toMatch(/your avatar chat, the Trading Floor\s+teacher and your hosted agent's decisions/);
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
+    expect(orientation).toContain('keeps each of its full reports (not the short no-trade reports) as its own Trading Floor lesson');
+    expect(orientation).toContain("the owner's avatar chat can recall them, and for a hosted agent so can the Trading Floor teacher and its autonomous decisions");
+    expect(orientation).toContain('a connected agent reads them with GET /api/agent/:sessionId/skills/cron-automation/skill-memory');
+    expect(orientation).not.toContain('which the avatar chat, the Trading Floor teacher');
+    // Recall is semantic search and the write can land nowhere: never promise it.
+    for (const text of [section, orientation]) expect(text).not.toMatch(/decisions recall/);
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Floor now runs the Trading Arena'))!;
+    expect(nori).toContain('keeps every full report (not the short no-trade reports) as a Trading Floor lesson');
+    expect(nori).toContain('a connected agent can read those lessons from its skill-memory route');
+  });
+
+  test('says paid add-ons spend real USDC; never "no money moves" (audit-money B1)', () => {
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Floor now runs the Trading Arena'))!;
+    expect(orientation).toContain("Paper only: no vCLAW is spent and no real tokens are bought; optional paid add-ons spend only USDC that the player sends to the agent's own wallet;");
+    expect(nori).toContain("Paper trades buy nothing real and spend no vCLAW; only optional paid data add-ons spend real USDC that you send to your trader's own wallet.");
+    for (const text of [orientation, nori, arenaSection()]) {
+      expect(text.toLowerCase()).not.toContain('no money moves');
+      expect(text).not.toContain('Nothing real is bought');
+    }
+    // audit-parity: the string joins around the contest name keep their space
+    // (an Edit once dropped it: "route.Trading Arena Week 1 pays").
+    expect(nori).toContain(`from its skill-memory route. ${FLOOR_ARENA_CONTEST.name} pays`);
+    expect(orientation).toContain(`agent's own wallet; ${FLOOR_ARENA_CONTEST.name} pays`);
+    for (const text of [orientation, nori]) expect(text).not.toMatch(/[.;,][A-Z]/);
+  });
+
+  test('states the add-on money lines, the private reason, the exits rule and every refusal code (audit punch lists)', () => {
+    const section = arenaSection();
+    const tool = (name: string) => CLAWVILLE_GAME_TOOLS.find((t) => t.name === name)!;
+    // audit-money M1/M2 (addons.ts seated gate + operator pause).
+    expect(section).toMatch(/Standing up or pausing stops new\s+entries and paid add-on calls \(add-ons run only while your agent is active and\s+seated\)/);
+    expect(section).toMatch(/An operator pause of the arena\s+engine stops new entries and paid add-on calls for every agent\./);
+    expect(tool('clawville_arena_seat').description).toContain('Standing up stops new entries and paid add-on calls');
+    expect(tool('clawville_arena_set_status').description).toContain('makes no paid add-on calls');
+    // audit-money M3: the same no-withdraw line as the UI (ARENA_WALLET_NO_WITHDRAW), cap rendered.
+    expect(section).toMatch(new RegExp(`Send only USDC on Solana\\. You cannot withdraw\\s+USDC from this wallet in ClawVille, so send only what your add-ons will spend \\(at\\s+most \\$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day\\)\\. ClawVille does not refund add-on spend\\.`));
+    expect(tool('clawville_arena_addons').description).toContain('Send only USDC on Solana: you cannot withdraw it through ClawVille');
+    // audit-parity M1: a user agent's reason is dropped from every public view (queries.ts redactArenaParamChangeForPublic).
+    expect(section).toMatch(/every change is logged publicly \(the diff and its source\); your\s+`reason`, at most 280 characters, stays private and shows only in\s+`GET \/me\/events`/);
+    expect(section).not.toMatch(/logged publicly with its reason/);
+    // A house agent's param change keeps its reason in public (routes/floor-arena.ts: house ? paramChanges : redacted).
+    expect(section).toMatch(/`GET \/me\/events` \(only a house agent's reason is public\)/);
+    const update = tool('clawville_arena_update_params');
+    expect(update.description).toContain('your reason stays private and shows only in GET {apiBase}/api/floor/arena/me/events');
+    expect(update.description).not.toContain('logged publicly with its reason');
+    expect(JSON.stringify(update.input_schema)).not.toContain('shown on the public param log');
+    // audit-contest M-1: exits are frozen at entry (engine.ts exitsOf).
+    expect(section).toMatch(/A change\s+applies to positions opened after it; an open\s+position keeps the exits it\s+was opened with/);
+    expect(update.description).toContain('A change applies to positions opened after it; an open position keeps the exits it was opened with.');
+    // audit-parity L1-L3: the codes and body shapes the live routes return.
+    expect(section).toContain('an unknown report id answers 404 `report_not_found`');
+    expect(tool('clawville_arena_suggestion').description).toContain('404 report_not_found');
+    expect(section).toMatch(/A malformed body or an out-of-range field\s+answers 400 `invalid_body`/);
+    expect(section).toMatch(/403 with an `error` that\s+starts with `agent_session_not_ledger_authorized` \(in that body `code` is the number\s+403\)/);
+    expect(section).toMatch(/with `Agent session is not bound to an active avatar`/);
+    expect(tool('clawville_arena_my_trader').description).toContain('403 with an error that starts with agent_session_not_ledger_authorized');
+  });
+
+  test('states D30/D31 contest scoring, the standings and reserved names, and matches the leaderboard code', () => {
+    const section = arenaSection();
+    // D30: the contest window counts window-OPENED positions whatever their close time.
+    expect(section).toMatch(/The `contest` window counts the positions\s+OPENED inside the contest window, whatever their close time: a window position\s+that closes after the end still counts\./);
+    // D31: unresolved counts nowhere on 24h/all and in reports; on contest it is a loss of its stake.
+    expect(section).toMatch(/On the `24h` and\s+`all` windows, and in the \d+-(minute|hour) reports, it is left out of `realisedUsd` and\s+of every count/);
+    expect(section).toMatch(new RegExp(`On the \`contest\` window it counts\\s+as a loss of its open stake: its P&L is the proceeds of its earlier sold legs\\s+minus its \\$${FLOOR_ARENA_POSITION_USD} size`));
+    expect(section).toMatch(/size, that P&L is in `realisedUsd`, and it counts like any other close \(a trade, a win or a\s+loss by the sign of that P&L, and a death when proceeds divided by size is 0\.5\s+or lower\)/);
+    expect(section).not.toMatch(/no P&L: it is left out of/);
+    // The manual's words are the code's rules (leaderboard.ts resolveLeaderboardBounds).
+    const contestBounds = resolveLeaderboardBounds('contest', new Date('2026-10-02T00:00:00Z')) as unknown as Record<string, unknown>;
+    expect(contestBounds.closedTo).toBeNull();
+    expect(contestBounds.unresolvedAsLoss).toBe(true);
+    // "closed, before or after the end": no qualifying close cut-off may remain on the contest window.
+    expect(contestBounds.qualifyingClosedTo ?? null).toBeNull();
+    for (const window of ['24h', 'all'] as const) {
+      expect((resolveLeaderboardBounds(window, new Date('2026-10-02T00:00:00Z')) as unknown as Record<string, unknown>).unresolvedAsLoss).toBe(false);
+    }
+    // GET /contest standings; the settle margin is rendered from contest.ts.
+    expect(section).toMatch(new RegExp(`\`standings\` is \`provisional\` while a\\s+position opened inside the window is still open, and for ${durationLabel(ARENA_CONTEST_FINAL_GRACE_MS)} after the end\\s+in any case; then it is \`final\`\\.`));
+    expect(section).toContain('`openWindowPositions` counts the positions opened');
+    // Reserved names: every house agent's name, from the constant.
+    expect(section).toContain('400 `name_reserved` when the');
+    for (const house of FLOOR_ARENA_HOUSE_AGENTS) expect(section).toContain(house.name);
+    const board = CLAWVILLE_GAME_TOOLS.find((t) => t.name === 'clawville_arena_leaderboard')!.description;
+    expect(board).toContain('has at least one position opened inside the window and closed, before or after the end');
+    expect(board).toContain('counts as a loss of its open stake');
+    expect(board).not.toContain('opened and closed inside the window');
+  });
+
+  test('renders every 17c duration from its constant, never a typed number (E6.2)', () => {
+    const section = arenaSection();
+    const every = durationLabel(ARENA_REPORT_INTERVAL_MS);
+    expect(section).toContain(`is re-tuned in small steps about every ${every}`);
+    expect(section).toContain(`Reports. About every ${every} each agent with activity`);
+    expect(section).toContain(`at most once per ${durationLabel(ARENA_AUTO_CHANGE_MIN_GAP_MS)},`);
+    expect(section).toContain(`a short report at most every ${durationLabel(ARENA_QUIET_REPORT_INTERVAL_MS)}.`);
+    const kind = every.replace(/ (minute|hour)s?$/, '-$1');
+    expect(section).toMatch(new RegExp(`and in the ${kind} reports, it is left out`));
+    expect(section).toMatch(new RegExp(`read your own\\s+${kind} report;`));
+    // The builder source must not type these numbers back in.
+    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
+    const start = src.indexOf('function buildTradingArenaSection(');
+    const body = src.slice(start, src.indexOf('\n}\n', start));
+    expect(start).toBeGreaterThan(0);
+    for (const literal of [/younger than \d/, /under \d+ minutes/, /is \d+ minutes old/, /every \d+ (minutes|hours)/, /once per \d+/, /\n\d+-minute report/]) {
+      expect(body).not.toMatch(literal);
+    }
   });
 
   test('keeps paper arena agents apart from the live house traders and the 17a personas', () => {
@@ -251,7 +399,9 @@ describe('Trading Arena orientation and Nori', () => {
     for (const t of FLOOR_ARENA_TEMPLATES) expect(line).toContain(t.displayName);
     expect(line).toContain('not the live house traders');
     // The eligibility rule the constant states, paraphrased on both copy surfaces.
-    expect(line).toContain('have at least one position opened and closed inside the contest window');
+    // Rule 6 (D30): opened inside the window and closed, at any close time.
+    expect(line).toContain('have at least one position opened inside the contest window and closed (the close may come after the end)');
+    expect(line).not.toContain('opened and closed inside the contest window');
     // Nori spreads the orientation list, so she carries the same line.
     expect(townGuide.knowledge).toContain(line!);
   });
@@ -264,7 +414,8 @@ describe('Trading Arena orientation and Nori', () => {
     expect(nori).toContain('Pearl teaches outside and does not run the arena');
     expect(nori).toContain('protocol manual section 17c');
     expect(nori).toContain(`${FLOOR_ARENA_TEMPLATES.length} house agents`);
-    expect(nori).toContain('open and close at least one position inside the contest window');
+    expect(nori).toContain('open at least one position inside the contest window that has closed, even if it closes after the end');
+    expect(nori).not.toContain('open and close at least one position inside the contest window');
   });
 
   test('adds no arena line to the per-decision scope, because no [ACTION:] verb exists for it', () => {

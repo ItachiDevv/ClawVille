@@ -8,6 +8,7 @@ import {
 
 import { ApiError } from '@/lib/api';
 import {
+  useFloorArenaContest,
   useFloorArenaDiscovery,
   useFloorArenaLeaderboard,
   useFloorArenaMe,
@@ -22,6 +23,8 @@ import { AgentProfile } from './agent-profile';
 import {
   compactUsd,
   contestPhase,
+  contestStandingsCopy,
+  countLabel,
   formatCountdown,
   isoAgo,
   pnlTone,
@@ -58,11 +61,14 @@ const PLACE: Record<1 | 2 | 3, string> = { 1: '1st', 2: '2nd', 3: '3rd' };
 function ContestBanner({ active, onRules }: { active: boolean; onRules: () => void }) {
   const nowMs = useArenaNow(active, 1_000);
   const phase = contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, nowMs);
+  // Only after the end: before it the clock alone says everything.
+  const contest = useFloorArenaContest(active && phase === 'ended');
+  const standings = contestStandingsCopy(contest.data?.standings ?? null, contest.data?.openWindowPositions ?? null);
   const countdown = phase === 'upcoming'
     ? `Starts in ${formatCountdown(Date.parse(FLOOR_ARENA_CONTEST.startsAt) - nowMs)}`
     : phase === 'live'
       ? `Ends in ${formatCountdown(Date.parse(FLOOR_ARENA_CONTEST.endsAt) - nowMs)}`
-      : 'The contest has ended. The team is reviewing the results.';
+      : standings.text;
 
   return (
     <header
@@ -72,6 +78,11 @@ function ContestBanner({ active, onRules }: { active: boolean; onRules: () => vo
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <h2 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 17 }}>{FLOOR_ARENA_CONTEST.name}</h2>
         <ArenaPill colour={FLOOR_TEXT.warning}>Paper trading only</ArenaPill>
+        {phase === 'ended' && standings.pill ? (
+          <ArenaPill colour={standings.pill === 'Final' ? FLOOR_TEXT.positive : FLOOR_TEXT.accent} testId="arena-standings">
+            {standings.pill}
+          </ArenaPill>
+        ) : null}
       </div>
       <div style={{ color: FLOOR_TEXT.accent, fontSize: 14, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }} data-testid="arena-countdown">
         {countdown}
@@ -152,7 +163,7 @@ function LeaderboardRow({
           <span style={{ marginLeft: 'auto' }}>{pnl}</span>
         </span>
         <span style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
-          {countText(row.trades)} trades · {countText(row.wins)} wins · {countText(row.openPositions)} open
+          {countLabel(row.trades, 'trade')} · {countLabel(row.wins, 'win')} · {countText(row.openPositions)} open
         </span>
       </button>
     );
@@ -196,12 +207,24 @@ function ArenaLeaderboard({
 }) {
   const [range, setRange] = useState<FloorArenaLeaderboardWindow>('contest');
   const board = useFloorArenaLeaderboard(range, active);
+  const nowMs = useArenaNow(active, 60_000);
+  const ended = contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, nowMs) === 'ended';
+  // The same query key as the banner, so this adds no fetch.
+  const contest = useFloorArenaContest(active && ended && range === 'contest');
+  const standingsPill = range === 'contest' && ended
+    ? contestStandingsCopy(contest.data?.standings ?? null, contest.data?.openWindowPositions ?? null).pill
+    : null;
   const rows = board.data ?? [];
 
   return (
     <section style={arenaCardStyle} data-testid="arena-leaderboard">
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <h3 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 14 }}>Arena leaderboard</h3>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <h3 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 14 }}>Arena leaderboard</h3>
+          {standingsPill ? (
+            <ArenaPill colour={standingsPill === 'Final' ? FLOOR_TEXT.positive : FLOOR_TEXT.accent}>{standingsPill}</ArenaPill>
+          ) : null}
+        </div>
         <div role="group" aria-label="Leaderboard window" style={{ display: 'flex', gap: 6 }}>
           {WINDOWS.map((option) => (
             <button
@@ -262,8 +285,9 @@ function ArenaLeaderboard({
         </div>
       )}
       <ArenaMuted size={11}>
-        Realised paper P&amp;L in USD after the paper trading costs. A player&apos;s agent becomes eligible for a prize
-        once one of its positions opens and closes inside the contest window. House agents cannot win prizes.
+        Realised paper P&amp;L in USD after the paper trading costs. The contest score counts positions opened inside
+        the contest window, also when they close after it ends. A player&apos;s agent becomes eligible for a prize once
+        a position it opened inside the window has closed. House agents cannot win prizes.
       </ArenaMuted>
     </section>
   );
@@ -311,8 +335,8 @@ function TemplateCards({
                   <span style={{ color: pnlTone(live.stats.all.realisedUsd), fontWeight: 700 }}>
                     {signedUsd(live.stats.all.realisedUsd)}
                   </span>
-                  {' '}· {countText(live.stats.all.trades)} trades · {countText(live.stats.all.wins)} wins ·{' '}
-                  {countText(live.stats.all.losses)} losses · {countText(live.stats.all.openPositions)} open
+                  {' '}· {countLabel(live.stats.all.trades, 'trade')} · {countLabel(live.stats.all.wins, 'win')} ·{' '}
+                  {countLabel(live.stats.all.losses, 'loss', 'losses')} · {countText(live.stats.all.openPositions)} open
                 </div>
               ) : (
                 <div style={{ color: FLOOR_TEXT.faint, fontSize: 11 }}>

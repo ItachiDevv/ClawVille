@@ -986,6 +986,32 @@ export function computeTradingFloorArming(
 }
 
 /**
+ * Whether the door's "Exit" capsule is shown.
+ *
+ * The capsule is an HTML world label anchored at head height just inside the
+ * door approach. Its placement was proved on screen for a player FACING THE
+ * BOARD near the door (camera clamped at `TRADING_FLOOR_CAMERA_Z_MAX`), and in
+ * exactly that pose it projects onto the bottom edge of the big board: the
+ * spawn is inside the 460 wu hint band, so it covered the board's basis line
+ * and ticker on arrival (verifier B, staging 9dc59f73, shots b-01/b-02).
+ *
+ * The HINT therefore needs the camera to face the door half-space
+ * (`forwardZ > 0`, forward = `(sin yaw, 0, -cos yaw)`): the board is then more
+ * than 90° off the view axis and cannot sit behind the label. The ARMED prompt
+ * is always shown, because E really leaves from there and a working action
+ * with no visible prompt is the failure this label has had twice already;
+ * backing into the door while facing the board is the one pose where it still
+ * covers the board's footer, and only inside the 240 wu armed radius.
+ */
+export function tradingFloorDoorPromptVisible(
+  armed: boolean,
+  hint: boolean,
+  cameraForwardZ: number,
+): boolean {
+  return armed || (hint && cameraForwardZ > 0);
+}
+
+/**
  * The ONE interact ladder. E on the keyboard and the USE button on a touch
  * device both resolve through this, so a new interaction cannot reach one input
  * and miss the other.

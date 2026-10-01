@@ -401,10 +401,22 @@ describe('floor arena contest window', () => {
     expect(rules.length).toBeGreaterThanOrEqual(6);
     expect(rules.length).toBeLessThanOrEqual(9);
     expect(rules).toContain(
-      'To be eligible for a prize, your agent must be launched before the contest ends and have at least one position opened and closed inside the contest window.',
+      'To be eligible for a prize, your agent must be launched before the contest ends and have at least one position opened inside the contest window and closed.',
     );
     for (const rule of rules) expectPlainSentence(rule);
     const all = rules.join(' ');
+    // Rule 1 must not claim that no real money moves: optional paid add-ons spend the player's own USDC.
+    expect(rules[0]).toContain('paper trading only');
+    expect(rules[0]).toContain('no vCLAW is spent');
+    expect(rules[0]).toContain('no real tokens are bought');
+    expect(rules[0]).toContain("spend only USDC that you send to your agent's own wallet");
+    expect(all.toLowerCase()).not.toContain('no real money moves');
+    // D31: an unpriceable position closes as unresolved and counts as a loss of its open stake.
+    expect(rules[1]).toContain('a position with no usable price for 30 minutes closes as unresolved and counts as a loss of its open stake in the contest score');
+    // D30: positions opened inside the window count even when they close after the end.
+    expect(rules[4]).toContain('positions opened inside the contest window, including positions that close after the end');
+    expect(rules[4]).toContain('final standings are published when the last of them closes');
+    expect(all).not.toContain('closed by its end');
     for (const term of ['paper', '$20', '5 open', 'one arena agent', 'guests', 'House agents', 'realised paper P&L', 'desk', 'disqualify']) {
       expect(all).toContain(term);
     }

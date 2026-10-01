@@ -7,6 +7,8 @@ import {
   mock,
   test,
 } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, createElement } from 'react';
 import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
@@ -377,5 +379,42 @@ describe('Trading Floor rows', () => {
       warning: false,
     });
     expect(floorStatusCopy('live', undefined, false).label).toBe('LIVE FLOOR');
+  });
+
+  // A cold /trading-floor load never opens the world stream, so the header
+  // must not read CONNECTING forever once the polled feed has answered.
+  test('a stream that never opened follows the polled feed once it answers', () => {
+    const healthy = { enabled: true, stale: false, lastTickAt: '2026-10-01T00:14:13.908Z' };
+    expect(floorStatusCopy('stopped', healthy, false)).toEqual({
+      label: 'LIVE FLOOR',
+      detail: 'Updates every 30 seconds.',
+      warning: false,
+    });
+    expect(floorStatusCopy('stopped', { ...healthy, enabled: false }, false).label).toBe('FLOOR PAUSED');
+    expect(floorStatusCopy('stopped', { ...healthy, stale: true }, false)).toMatchObject({
+      label: 'LIVE FLOOR',
+      warning: true,
+    });
+    // A stream that opened and then stopped is still broken, not polling.
+    expect(floorStatusCopy('stopped', healthy, true)).toEqual({ label: 'STOPPED', detail: null, warning: true });
+    // A live stream carries no polling note.
+    expect(floorStatusCopy('live', healthy, true)).toEqual({ label: 'LIVE FLOOR', detail: null, warning: false });
+  });
+
+  test('a never-opened stream whose feed failed says so instead of CONNECTING forever', () => {
+    expect(floorStatusCopy('stopped', undefined, false, true)).toEqual({
+      label: 'FEED UNAVAILABLE',
+      detail: 'The floor feed could not be read. It tries again every 30 seconds.',
+      warning: true,
+    });
+    // No error yet: still connecting.
+    expect(floorStatusCopy('stopped', undefined, false, false).label).toBe('CONNECTING');
+    // A failed refetch with cached data keeps the cached observer label.
+    const healthy = { enabled: true, stale: false, lastTickAt: '2026-10-01T00:14:13.908Z' };
+    expect(floorStatusCopy('stopped', healthy, false, true).label).toBe('LIVE FLOOR');
+    // Both headers pass the feed error through.
+    const callSite = 'floorStatusCopy(stream, feed.data?.observer, streamHasOpened, feed.isError)';
+    expect(readFileSync(join(import.meta.dir, 'floor-tape.tsx'), 'utf8')).toContain(callSite);
+    expect(readFileSync(join(import.meta.dir, 'trading-floor-tab.tsx'), 'utf8')).toContain(callSite);
   });
 });

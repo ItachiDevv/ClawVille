@@ -222,6 +222,9 @@ describe('Floor arena wire readers', () => {
   test('auth refusals with a numeric code still get plain copy by status', () => {
     expect(floorArenaErrorCopy(new ApiError('Unauthorized', 401, 401))).toBe('Your session ended. Sign in again.');
     expect(floorArenaErrorCopy(new ApiError('Forbidden', 403, 403))).toContain('cannot run an arena trader');
+    expect(floorArenaErrorCopy(new ApiError('Reserved', 400, 'name_reserved'))).toBe(
+      'That name belongs to a house trader. Type another name for your trader.',
+    );
     expect(floorArenaErrorCopy(new ApiError('Guests cannot', 403, 'guest_not_allowed'))).toBe(
       'Create a free account to run an arena trader.',
     );

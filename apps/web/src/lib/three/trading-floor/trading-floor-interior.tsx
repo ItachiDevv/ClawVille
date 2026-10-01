@@ -112,6 +112,7 @@ import {
   pushCameraOutOfSolids,
   resetTradingFloorArming,
   resolveTradingFloorInteraction,
+  tradingFloorDoorPromptVisible,
   tradingFloorSeatedCameraYaw,
   validateAuthoredProp,
   wrapTradingFloorAngle,
@@ -251,8 +252,11 @@ const AVATAR_MAX_FOOTPRINT = 150;
  * camera always looks inward and the desk is behind it; between desks there is
  * no desk in the sightline at all. Adding a margin here would cost 60 wu of
  * framing in a room that is already short of it, for no artefact.
+ *
+ * Exported so the exit-prompt projection test places the camera with the SAME
+ * clamp the frame loop uses, instead of a copy that could drift from it.
  */
-const ROOM_BOUNDS: RoomBounds = {
+export const TRADING_FLOOR_CAMERA_BOUNDS: RoomBounds = {
   halfX: TRADING_FLOOR_DESK_INNER_X + TRADING_FLOOR_CAMERA.roomMargin,
   // Z is pre-EXPANDED by the margin for the same reason X is pre-shrunk: the
   // clamp subtracts one shared margin from every bound, so this is how each axis
@@ -300,6 +304,13 @@ export const tradingFloorPlayerPositionRef: { x: number; z: number } = {
 const _arming = createTradingFloorArming();
 /** Seat the player currently occupies, or -1. Not geometry — a choice. */
 let _seatedIndex = -1;
+/**
+ * Z of the chase camera's forward vector, written by the camera frame and read
+ * by the label poll (`tradingFloorDoorPromptVisible`). One number, no
+ * allocation. 0 until the first camera frame of a visit, which keeps the Exit
+ * HINT hidden rather than showing it for a frame off a previous visit's yaw.
+ */
+let _cameraForwardZ = 0;
 
 /**
  * The ONE writer of `_seatedIndex` after init. Sit, stand, walking out of the
@@ -341,6 +352,7 @@ export function readTradingFloorProximity(): {
 function resetTradingFloorProximity(): void {
   resetTradingFloorArming(_arming);
   setTradingFloorSeatedIndex(-1);
+  _cameraForwardZ = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -876,6 +888,13 @@ const _monitorAnchorRef = makeAnchor(
  * worst off-axis angle is 17.3° at default pitch and 22.3° at full pitch-down,
  * against a 30° half-FOV. Both numbers are derived, so moving the approach limit
  * carries the label with it. `trading-floor-seats.test.ts` pins the angle.
+ *
+ * ON SCREEN IS NOT ENOUGH (2026-09-30). That sweep is a player FACING THE BOARD,
+ * and in that pose this anchor projects onto the bottom edge of the big board
+ * (y 243 against the board's 245 at the spawn, 1350 x 805), so the capsule sat
+ * on the board's basis line and ticker from the moment a player arrived.
+ * Visibility is therefore `tradingFloorDoorPromptVisible`: the hint shows only
+ * while the camera faces the door half-space, the armed prompt always.
  */
 const _doorAnchorRef = makeAnchor(
   TRADING_FLOOR_DOOR.x,
@@ -956,7 +975,7 @@ function promptCapsule(name: string, hint: string, armed: boolean): ReactNode {
 function TradingFloorLabels() {
   const [monitorHint, setMonitorHint] = useState(false);
   const [monitorArmed, setMonitorArmed] = useState(false);
-  const [doorHint, setDoorHint] = useState(false);
+  const [doorPrompt, setDoorPrompt] = useState(false);
   const [doorArmed, setDoorArmed] = useState(false);
   const [seatHintIndex, setSeatHintIndex] = useState(-1);
   const [seatArmed, setSeatArmed] = useState(false);
@@ -989,9 +1008,17 @@ function TradingFloorLabels() {
       setMonitorVisible(_arming.monitorHint);
     }
     if (_arming.monitorArmed !== monitorArmed) setMonitorArmed(_arming.monitorArmed);
-    if (_arming.doorHint !== doorHint) {
-      setDoorHint(_arming.doorHint);
-      setDoorVisible(_arming.doorHint);
+    // NOT `doorHint` alone: facing the board inside the hint band (the spawn
+    // is inside it) put the capsule over the board's footer. See
+    // `tradingFloorDoorPromptVisible`.
+    const nextDoorPrompt = tradingFloorDoorPromptVisible(
+      _arming.doorArmed,
+      _arming.doorHint,
+      _cameraForwardZ,
+    );
+    if (nextDoorPrompt !== doorPrompt) {
+      setDoorPrompt(nextDoorPrompt);
+      setDoorVisible(nextDoorPrompt);
     }
     if (_arming.doorArmed !== doorArmed) setDoorArmed(_arming.doorArmed);
 
@@ -1220,12 +1247,16 @@ function TradingFloorAvatarMotion({
           0,
           -Math.cos(cameraYaw.current),
         );
+        // Published for the Exit capsule: its HINT needs the camera to face
+        // the door half-space (see `tradingFloorDoorPromptVisible`). A number
+        // write, no allocation; the label poll does the setState on change.
+        _cameraForwardZ = _forwardScratch.z;
         _cameraScratch.set(
           bodyX - Math.sin(cameraYaw.current) * TRADING_FLOOR_CAMERA.behind,
           TRADING_FLOOR_CAMERA.above + cameraPitch.current,
           bodyZ + Math.cos(cameraYaw.current) * TRADING_FLOOR_CAMERA.behind,
         );
-        clampCameraToRoom(_cameraScratch, ROOM_BOUNDS);
+        clampCameraToRoom(_cameraScratch, TRADING_FLOOR_CAMERA_BOUNDS);
         // The room clamp knows the walls and nothing else, so it will park the
         // camera inside a prop — the holo dais swallowed it whole when the
         // player stood on the far side of the ring and pitched down. Pushing

@@ -1,6 +1,6 @@
 /**
- * D29: every player arena report is stored as an earned-skill lesson of the
- * owner's avatar (warm runtime first, avatar-keyed keyword store otherwise),
+ * D29: every full player arena report (not a short no-trade report) is stored
+ * as an earned-skill lesson of the owner's avatar (warm runtime first, avatar-keyed keyword store otherwise),
  * and the owner's avatar chat folds those Trading Floor lessons in.
  *
  * Same seam pattern as earned-skill-memory.test.ts: the `agentOrchestrator` and

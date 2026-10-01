@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { Hono, type MiddlewareHandler } from 'hono';
 import {
   FLOOR_ARENA_CONTEST,
@@ -58,6 +59,9 @@ const fakeIdentity: MiddlewareHandler = async (c, next) => {
   c.set('identity' as never, (kind === 'agent'
     ? { kind, userId: user, avatarId: AVATAR, agentId: 'bot-1', sessionId: 's', ledgerCapable: c.req.header('x-test-ledger') !== 'false' }
     : { kind, userId: user, avatarId: AVATAR, agentId: null }) as never);
+  // What the global fingerprintMiddleware stamps on every request.
+  c.set('fpHash' as never, `fp-${user}` as never);
+  c.set('ipPrefixHash' as never, 'ip-203.0.113' as never);
   return next();
 };
 
@@ -69,9 +73,11 @@ function makeDeps() {
   const tapeLimits: number[] = [];
   const eventReads: Array<readonly string[] | null> = [];
   const eventAgents: string[] = [];
+  const logged: Array<{ input: Record<string, unknown>; fpHash: unknown; ipPrefixHash: unknown }> = [];
+  let clock = NOW.getTime();
   let conflictNext = false;
   const deps: FloorArenaRouteDeps = {
-    now: () => NOW,
+    now: () => new Date(clock),
     newId: () => AGENT_ID,
     readAgent: async (id) => agents.get(id) ?? null,
     readAgentByOwner: async (userId) => [...agents.values()].find((agent) => agent.ownerUserId === userId) ?? null,
@@ -165,16 +171,21 @@ function makeDeps() {
       rank: 1, agentId: AGENT_ID, name: 'x', kind: 'user', templateId: 'genesis', realisedUsd: 1, trades: 1, wins: 1,
       losses: 0, deaths: 0, openPositions: 0, lastTradeAt: null, eligible: window === 'contest',
     }],
-    readContest: async () => ({ contest: FLOOR_ARENA_CONTEST, status: 'live', secondsLeft: 1, top: [], house: [], generatedAt: NOW.toISOString() }),
+    readContest: async () => ({
+      contest: FLOOR_ARENA_CONTEST, status: 'live', secondsLeft: 1, standings: null, openWindowPositions: null, top: [], house: [],
+      generatedAt: NOW.toISOString(),
+    }),
     readAddonStats: async () => [],
     readWalletBalance: async () => null,
     addonCatalog: () => [FEED],
     addonPaymentsEnabled: () => true,
-    kickProvisioning: (id) => { log.push(`provision ${id}`); },
-    syncAddonSkill: (id) => { log.push(`skill ${id}`); },
+    logArenaEvent: async (c, input) => {
+      logged.push({ input: input as unknown as Record<string, unknown>, fpHash: c.get('fpHash'), ipPrefixHash: c.get('ipPrefixHash') });
+    },
   };
   return {
-    deps, agents, reports, log, updates, tapeLimits, eventReads, eventAgents,
+    deps, agents, reports, log, updates, tapeLimits, eventReads, eventAgents, logged,
+    advance: (ms: number) => { clock += ms; },
     conflictOnce: () => { conflictNext = true; },
   };
 }
@@ -444,7 +455,7 @@ describe('authed arena routes', () => {
     }
   });
 
-  test('launch: 201 paper agent named after the avatar, provisioning kicked, one per account for human AND agent', async () => {
+  test('launch: 201 paper agent named after the avatar, provisioning left to the engine leader, one per account for human AND agent', async () => {
     const { call, log, agents } = app();
     const created = await call('POST', '/me/launch', launchBody({ addons: [{ id: 'feed-a', dailyCapUsd: 2 }] }));
     expect(created.status).toBe(201);
@@ -456,7 +467,9 @@ describe('authed arena routes', () => {
       addons: [{ id: 'feed-a', enabled: true, dailyCapUsd: 2 }],
     });
     expect(body.agent).not.toHaveProperty('ownerUserId');
-    expect(log).toContain(`provision ${AGENT_ID}`);
+    // Codex r19 single writer: the request makes no ClawPump call; the row waits as 'pending'.
+    expect(agents.get(AGENT_ID)!.provisionState).toBe('pending');
+    expect(log.some((line) => line.startsWith('provision'))).toBe(false);
     const again = await call('POST', '/me/launch', launchBody());
     expect(again.status).toBe(409);
     expect(await again.json()).toMatchObject({ code: 'already_have_agent', agentId: AGENT_ID });
@@ -474,6 +487,42 @@ describe('authed arena routes', () => {
     justBefore.deps.now = () => new Date(new Date(FLOOR_ARENA_CONTEST.endsAt).getTime() - 1);
     const onTime = await (await justBefore.call('POST', '/me/launch', launchBody())).json() as { agent: { contestId: string | null } };
     expect(onTime.agent.contestId).toBe(FLOOR_ARENA_CONTEST.id);
+  });
+
+  test('reserved names: a house agent name or look-alike gets 400 name_reserved and creates nothing', async () => {
+    for (const name of ['Genesis', 'runner', 'Dip-Hunter', 'Mid Cap Climber', 'Late Bl00mer', 'G\u0435nesis', 'Ge\u039desis']) {
+      const { call, agents, log } = app();
+      const response = await call('POST', '/me/launch', launchBody({ name }));
+      expect({ name, status: response.status }).toEqual({ name, status: 400 });
+      expect(await response.json()).toEqual({ error: 'That name belongs to a house agent. Choose another name.', code: 'name_reserved' });
+      expect(agents.size).toBe(0);
+      expect(log.some((line) => line.startsWith('provision'))).toBe(false);
+    }
+    // Same rule for a connected agent, and the name check runs after the add-on check.
+    const { call } = app();
+    const viaAgent = await call('POST', '/me/launch', launchBody({ name: 'Runner' }), { 'x-test-user': USER, 'x-test-kind': 'agent' });
+    expect(viaAgent.status).toBe(400);
+    expect((await viaAgent.json() as { code: string }).code).toBe('name_reserved');
+    const addonFirst = await call('POST', '/me/launch', launchBody({ name: 'Runner', addons: [{ id: 'nope' }] }));
+    expect((await addonFirst.json() as { code: string }).code).toBe('unknown_addon');
+    // A name that only contains a house name is free.
+    const free = await call('POST', '/me/launch', launchBody({ name: 'Genesis Fan' }));
+    expect(free.status).toBe(201);
+  });
+
+  test('reserved names: with no name sent, an avatar named like a house agent gets 400 name_reserved', async () => {
+    const reserved = app();
+    reserved.deps.readAvatarName = async () => 'Runner';
+    const response = await reserved.call('POST', '/me/launch', launchBody());
+    expect(response.status).toBe(400);
+    expect((await response.json() as { code: string }).code).toBe('name_reserved');
+    expect(reserved.agents.size).toBe(0);
+    // An explicit free name still launches for that account.
+    const named = await reserved.call('POST', '/me/launch', launchBody({ name: 'Runner Fan' }));
+    expect(named.status).toBe(201);
+    // The existing agent wins over the fallback check: a second launch is 409, not 400.
+    const again = await reserved.call('POST', '/me/launch', launchBody());
+    expect(again.status).toBe(409);
   });
 
   test('two concurrent launches for one account create one agent', async () => {
@@ -520,18 +569,17 @@ describe('authed arena routes', () => {
     expect(await (await call('PATCH', '/me/settings', { autoApplySuggestions: true })).json()).toMatchObject({ agent: { autoApplySuggestions: true } });
   });
 
-  test('PATCH /me/addons caps the enabled sum at $5 and re-syncs the skill only when ready', async () => {
-    const { call, log, agents } = app();
+  test('PATCH /me/addons caps the enabled sum at $5 and writes only the DB row', async () => {
+    const { call, agents } = app();
     await call('POST', '/me/launch', launchBody());
     const over = normaliseAddons([{ id: 'feed-a', dailyCapUsd: 5 }, { id: 'feed-b', dailyCapUsd: 1 }], [FEED, { ...FEED, id: 'feed-b' }]);
     expect(over).toMatchObject({ ok: false, code: 'addon_cap_exceeded' });
     const ok = await call('PATCH', '/me/addons', { addons: [{ id: 'feed-a', enabled: true, dailyCapUsd: 3 }] });
     expect(ok.status).toBe(200);
-    expect(log.some((line) => line.startsWith('skill'))).toBe(false);
     agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, provisionState: 'ready', clawpumpAgentId: 'cp', clawpumpWallet: 'W' });
     const me = await call('PATCH', '/me/addons', { addons: [{ id: 'feed-a', enabled: false }] });
     expect(await me.json()).toMatchObject({ paymentAddress: 'W', addons: [{ id: 'feed-a', enabled: false, dailyCapUsd: 1 }] });
-    expect(log).toContain(`skill ${AGENT_ID}`);
+    expect(agents.get(AGENT_ID)!.addons).toEqual([{ id: 'feed-a', enabled: false, dailyCapUsd: 1 }]);
   });
 
   test('suggestions: apply through the same params path, dismiss, and refuse foreign or stale reports', async () => {
@@ -587,6 +635,42 @@ describe('authed arena routes', () => {
     expect(updates.length).toBe(before);
   });
 
+  test('audit-contest B1: launch and seat write an anti-sybil event with fp/ip from the request context', async () => {
+    const { call, logged } = app();
+    await call('POST', '/me/launch', launchBody());
+    expect(logged).toEqual([{
+      input: {
+        eventType: 'floor_arena.launch', userId: USER, avatarId: AVATAR, agentId: null,
+        payload: { arenaAgentId: AGENT_ID, templateId: 'genesis', identityKind: 'user', contestId: 'arena-week-1' },
+      },
+      fpHash: `fp-${USER}`,
+      ipPrefixHash: 'ip-203.0.113',
+    }]);
+    // A refused launch (409) writes nothing.
+    await call('POST', '/me/launch', launchBody());
+    expect(logged).toHaveLength(1);
+    // Seating writes one; standing up and a no-op re-seat write none.
+    await call('POST', '/me/seat', { seated: true, seatIndex: 1 }, { 'x-test-user': USER, 'x-test-kind': 'agent' });
+    expect(logged[1]).toMatchObject({
+      input: { eventType: 'floor_arena.seat', userId: USER, agentId: 'bot-1', payload: { arenaAgentId: AGENT_ID, seatIndex: 1, identityKind: 'agent' } },
+      fpHash: `fp-${USER}`,
+    });
+    await call('POST', '/me/seat', { seated: true, seatIndex: 1 });
+    await call('POST', '/me/seat', { seated: false });
+    expect(logged).toHaveLength(2);
+  });
+
+  test('Codex r19 single writer: no request route can reach a ClawPump write (no provisioning import, writer types only)', () => {
+    for (const file of ['../floor-arena.ts', '../admin-floor-arena.ts']) {
+      const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+      expect(source).not.toMatch(/floor-arena\/provisioning/);
+      expect(source).not.toMatch(/\b(ensureAddonSkill|removeArenaX402|reconcileArenaX402|provisionArenaAgent|clawPumpArenaWriter|updateClawPumpAgent|x402PayViaClawPump|createClawPumpAgent)\b/);
+      for (const line of source.split('\n').filter((text) => text.includes("from '../services/clawpump-writer'"))) {
+        expect(line.startsWith('import type ')).toBe(true);
+      }
+    }
+  });
+
   test('writes are rate limited per account, shared by the human and the agent', async () => {
     const { call } = app({ writeMax: 2 });
     await call('POST', '/me/launch', launchBody());
@@ -610,6 +694,8 @@ describe('admin arena routes', () => {
     expect((await adminFloorArenaRoutes.request('/house/house:genesis/params', {
       method: 'POST', headers: json, body: JSON.stringify({ params: params(), reason: 'x' }),
     })).status).toBe(401);
+    // Money audit N4: the operator re-provision route sits behind the same guard.
+    expect((await adminFloorArenaRoutes.request(`/agents/${AGENT_ID}/reprovision`, { method: 'POST', headers: json, body: '{}' })).status).toBe(401);
   });
 });
 

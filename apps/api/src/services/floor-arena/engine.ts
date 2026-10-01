@@ -8,7 +8,7 @@ import {
   type FloorArenaExits, type FloorArenaParams,
 } from '@clawville/shared';
 import {
-  hasTradeableSource, passesFilters, rankCandidates, tradeableFirstSeenMs, withinDiscoveryWindow,
+  firstTradeableSource, hasTradeableSource, passesFilters, rankCandidates, withinDiscoveryWindow,
   type FloorArenaFeatures, type FloorArenaSnapshot,
 } from './filters';
 import {
@@ -379,6 +379,8 @@ export interface ArenaCandidate {
   tradeable: boolean;
   /** D25: first sighting by a tradeable source (null for private mints and coins without one). */
   tradeableFirstSeenAtMs: number | null;
+  /** The tradeable source that admitted a shared coin (null for private mints and coins without one). */
+  tradeableSource: string | null;
 }
 
 export interface AgentEvaluation {
@@ -438,6 +440,16 @@ export function topFailCodes(failCounts: Record<string, number>, n = 5): Array<[
 
 const REASON_WORDS: Record<ExitReason, string> = { tp: 'take profit', stop: 'stop', trail: 'trailing stop', time: 'time cap' };
 
+/**
+ * The "via" of an entry line. `source` is the hub's first source (the window clock and the analysis use it); when
+ * GeckoTerminal saw a shared coin first, the line names the tradeable source that admitted it, so a reader never
+ * sees "via gecko" on a legal entry (D25: a GeckoTerminal-only coin is never traded).
+ */
+export function entryVia(c: Pick<ArenaCandidate, 'source' | 'isPrivate' | 'tradeableSource'>): string {
+  if (c.isPrivate || c.tradeableSource === null || c.tradeableSource === c.source) return c.source;
+  return `${c.tradeableSource} (first seen by ${c.source})`;
+}
+
 export function entrySummary(label: string, priceUsd: number, f: FloorArenaFeatures, source: string, nowMs: number): string {
   const age = f.pairCreatedAt ? (nowMs - f.pairCreatedAt) / 1000 : f.ageS;
   return `Bought $${ARENA_POSITION_USD} of ${label} at ${formatPrice(priceUsd)} (mcap ${formatUsdCompact(f.mcap)}, liq ${formatUsdCompact(f.liqUsd)}, age ${formatAge(age)}) via ${source}`;
@@ -477,6 +489,8 @@ const SKIP_WORDS: Record<string, string> = {
   hard_rules: 'a new chain check failed a hard rule',
   top10: 'a new chain check shows the top 10 holders above the limit',
   top10_unknown: 'a new chain check has no top 10 holder share',
+  // Codex r20: the bounded entry transaction timed out or failed; it rolled back, nothing was bought.
+  entry_tx_failed: 'the buy transaction timed out or failed (rolled back, nothing bought)',
 };
 
 // ---------------------------------------------------------------- in-memory rate limits
@@ -599,7 +613,7 @@ function freshSnapshot(rowSnapshot: unknown, rowAt: unknown, nowMs: number): Flo
 
 interface EntryDeps {
   quoteBuy?: typeof quoteBuy;
-  /** Wall clock (ms) read in the entry transaction just before the insert (default Date.now; tests inject one). */
+  /** Wall clock (ms) read in the entry transaction just before the insert: the verdict gate time and opened_at. */
   clock?: () => number;
 }
 
@@ -667,11 +681,12 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
     const { verdict, top10Pct, checkedAtMs } = entryVerdictStatus(row.chain_verdict, msOf(row.chain_checked_at), snapshot.pairAddress, nowMs);
     const firstSeenAtMs = msOf(row.first_seen_at) ?? nowMs;
     const sources = Array.isArray(row.sources) ? row.sources.map(String) : [];
+    const admitted = firstTradeableSource(sources, row.source_first_seen as Record<string, string> | null, firstSeenAtMs);
     shared.push({
       mint, source: String(row.first_source), symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
       firstSeenAtMs, features: { ...snapshot, top10Pct }, verdict, chainCheckedAtMs: checkedAtMs, isPrivate: false,
       tradeable: hasTradeableSource(sources),
-      tradeableFirstSeenAtMs: tradeableFirstSeenMs(sources, row.source_first_seen as Record<string, string> | null, firstSeenAtMs),
+      tradeableFirstSeenAtMs: admitted?.atMs ?? null, tradeableSource: admitted?.source ?? null,
     });
   }
   // Deterministic evaluation order before ranking: newest first sight first.
@@ -749,7 +764,7 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
     out.get(agentId)!.push({
       mint, source: `private:${String(row.source)}`, symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
       firstSeenAtMs: msOf(row.first_seen_at) ?? nowMs, features: { ...snapshot, top10Pct }, verdict,
-      chainCheckedAtMs: checkedAtMs, isPrivate: true, tradeable: true, tradeableFirstSeenAtMs: null,
+      chainCheckedAtMs: checkedAtMs, isPrivate: true, tradeable: true, tradeableFirstSeenAtMs: null, tradeableSource: null,
     });
   }
   return out;
@@ -824,17 +839,24 @@ async function runAgentEntries(
       if (quote.reason === 'quote_breaker' || quote.reason === 'not_configured') break;
       continue;
     }
-    const opened = await openPosition(agent, params, c, quote, now, deps.clock ?? Date.now);
+    const opened = await tryOpenPosition(agent, params, c, quote, now, deps.clock ?? Date.now);
     if (opened === 'max_open') break;
     if (opened === 'opened') {
       entries += 1;
       held.add(c.mint);
-    } else if (typeof opened === 'object' && shouldEmit(`${agent.id}|skip|${c.mint}|${opened.gate}`, nowMs)) {
+    } else if (typeof opened === 'object' && 'gate' in opened && shouldEmit(`${agent.id}|skip|${c.mint}|${opened.gate}`, nowMs)) {
       skips += 1;
       events.push({
         agentId: agent.id, type: 'skip', mint: c.mint,
         summary: `Skipped ${tokenLabel(c.symbol, c.mint)}: ${SKIP_WORDS[opened.gate] ?? opened.gate}`,
         data: { reason: opened.gate, at: 'insert' },
+      });
+    } else if (typeof opened === 'object' && 'failed' in opened && shouldEmit(`${agent.id}|skip|${c.mint}|entry_tx_failed`, nowMs)) {
+      skips += 1;
+      events.push({
+        agentId: agent.id, type: 'skip', mint: c.mint,
+        summary: `Skipped ${tokenLabel(c.symbol, c.mint)}: ${SKIP_WORDS.entry_tx_failed}`,
+        data: { reason: 'entry_tx_failed', code: opened.failed },
       });
     }
   }
@@ -842,17 +864,48 @@ async function runAgentEntries(
   return { entries, skips };
 }
 
-async function openPosition(
+/**
+ * Codex r20: a DATABASE-enforced bound on the entry transaction. Its first statement sets transaction_timeout
+ * (PostgreSQL 17: the server ends the session when the transaction runs longer, so it rolls back) and
+ * statement_timeout (every statement, lock waits included). The insert-time clock is read after that statement, so a
+ * position commits at most ENTRY_TX_TIMEOUT_MS after its opened_at clock read: below the contest's final margin
+ * (ARENA_CONTEST_FINAL_GRACE_MS). One statement with set_config(..., true) (= SET LOCAL): a server without
+ * transaction_timeout (before 17) skips it with no error (current_setting(..., true) is null there), keeps the
+ * statement bound, and the engine warns once.
+ * Codex r21: PostgreSQL 17 arms the timer only when none is active and does not restart an active one when the value
+ * changes, so on a connection that already runs a longer transaction_timeout (a session or role default) a plain
+ * 60 s value keeps the longer timer. The statement first sets 0 (that disables an active timer), then 60 s (that arms
+ * a fresh one). The CASE evaluates its conditions in order (set_config is volatile, never folded): the PG < 17 guard,
+ * then the reset, then the arm. Verified on staging PG 17.11 with a 10-min session timeout: without the reset a 1 s
+ * bound did not end the transaction; with it the session ended at 1 s.
+ */
+export const ENTRY_TX_TIMEOUT_MS = 60_000;
+export const ENTRY_STATEMENT_TIMEOUT_MS = 30_000;
+let entryTxBoundMissingWarned = false;
+
+/** Exported for the repo test that pins the insert-time opened_at with a fake transaction (`database`). */
+export async function openPosition(
   agent: FloorArenaAgentRow,
   params: FloorArenaParams,
   c: ArenaCandidate,
   quote: Extract<BuyQuoteResult, { ok: true }>,
   now: Date,
   clock: () => number,
+  database: Pick<typeof db, 'transaction'> = db,
 ): Promise<'opened' | 'max_open' | 'duplicate' | { gate: string }> {
   const nowMs = now.getTime();
   const label = tokenLabel(c.symbol, c.mint);
-  return db.transaction(async (tx) => {
+  return database.transaction(async (tx) => {
+    const bound = rowsOf(await tx.execute(sql`
+      SELECT set_config('statement_timeout', ${`${ENTRY_STATEMENT_TIMEOUT_MS}ms`}, true) AS statement_bound,
+        CASE WHEN current_setting('transaction_timeout', true) IS NULL THEN NULL
+             WHEN set_config('transaction_timeout', '0', true) IS NOT NULL
+               THEN set_config('transaction_timeout', ${`${ENTRY_TX_TIMEOUT_MS}ms`}, true) END AS tx_bound
+    `));
+    if (!bound[0]?.tx_bound && !entryTxBoundMissingWarned) {
+      entryTxBoundMissingWarned = true;
+      console.warn('[floor-arena] this Postgres has no transaction_timeout (needs 17): entry transactions are bounded per statement only');
+    }
     // Per-agent lock: max_open stays exact even if two leaders overlap during a deploy flip.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`floor-arena-agent:${agent.id}`}, 0))`);
     const open = rowsOf(await tx.execute(sql`
@@ -867,16 +920,24 @@ async function openPosition(
       : sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address FROM floor_discovery_mints
           WHERE mint = ${c.mint} FOR SHARE`));
     const gateRow = gateRows[0];
+    // The insert time: the wall clock read here, never earlier than the tick start. It judges the verdict and
+    // stamps opened_at and the entry event, so a tick that started before a contest boundary but inserts after it
+    // is stamped after it, and max-hold counts from the real entry. The window, the filters and the pair age in the
+    // summary stay on the tick time they were judged at (`judgedAt`).
+    const insertMs = Math.max(nowMs, clock());
+    const openedAt = new Date(insertMs);
     const gate = insertTimeGate(c, params.filters, gateRow ? {
       chainVerdict: gateRow.chain_verdict,
       chainCheckedAtMs: msOf(gateRow.chain_checked_at),
       pairAddress: typeof gateRow.pair_address === 'string' ? gateRow.pair_address : null,
-    } : null, Math.max(nowMs, clock()), nowMs);
+    } : null, insertMs, nowMs);
     if (!gate.ok) return { gate: gate.code };
     const entryFeatures = {
       ...gate.features,
       source: c.source,
+      tradeableSource: c.tradeableSource,
       firstSeenAt: new Date(c.firstSeenAtMs).toISOString(),
+      judgedAt: now.toISOString(),
       exits: params.exits,
       decimals: quote.decimals,
       dsEntryPriceUsd: c.features.priceUsd,
@@ -887,7 +948,7 @@ async function openPosition(
       mint: c.mint,
       symbol: c.symbol,
       source: c.source,
-      openedAt: now,
+      openedAt,
       sizeUsd: String(ARENA_POSITION_USD),
       tokens: String(quote.tokens),
       entryPriceUsd: String(quote.entryPriceUsd),
@@ -905,18 +966,36 @@ async function openPosition(
     const positionId = inserted[0]?.id;
     if (!positionId) return 'duplicate' as const;
     await writeArenaEvent({
-      agentId: agent.id, type: 'entry', mint: c.mint,
-      summary: entrySummary(label, quote.entryPriceUsd, c.features, c.source, nowMs),
+      agentId: agent.id, type: 'entry', mint: c.mint, at: openedAt,
+      summary: entrySummary(label, quote.entryPriceUsd, c.features, entryVia(c), nowMs),
       data: {
         positionId, sizeUsd: ARENA_POSITION_USD, entryPriceUsd: quote.entryPriceUsd, tokens: quote.tokens,
         dsPriceUsd: c.features.priceUsd, impactPct: quote.impactPct, driftPct: quote.driftPct, source: c.source,
-        mcap: c.features.mcap, liqUsd: c.features.liqUsd, paramsVersion: agent.paramsVersion,
+        tradeableSource: c.tradeableSource, mcap: c.features.mcap, liqUsd: c.features.liqUsd, paramsVersion: agent.paramsVersion,
         // D28: when the chain verdict this entry relied on was checked (re-read at insertion, Codex r14).
         chainCheckedAt: gate.chainCheckedAtMs !== null ? new Date(gate.chainCheckedAtMs).toISOString() : null,
       },
     }, tx);
     return 'opened' as const;
   });
+}
+
+/**
+ * openPosition with a failed transaction reported, not thrown: a transaction timeout ends the session and rolls the
+ * entry back (no position), and any other database error does the same. The tick goes on with the next candidate,
+ * and the agent's scan and skip events are still written.
+ */
+export async function tryOpenPosition(
+  ...args: Parameters<typeof openPosition>
+): Promise<Awaited<ReturnType<typeof openPosition>> | { failed: string }> {
+  try {
+    return await openPosition(...args);
+  } catch (error) {
+    const code = typeof (error as { code?: unknown } | null)?.code === 'string' ? (error as { code: string }).code.slice(0, 40) : 'error';
+    console.warn('[floor-arena] entry transaction rolled back', args[0].id, args[2].mint, code,
+      error instanceof Error ? error.message.slice(0, 200) : '');
+    return { failed: code };
+  }
 }
 
 // ---------------------------------------------------------------- exits

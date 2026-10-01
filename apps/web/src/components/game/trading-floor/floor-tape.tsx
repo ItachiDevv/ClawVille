@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import {
+  FLOOR_FEED_POLL_MS,
   useFloorConsumer,
   useFloorFeed,
   useFloorStreamState,
@@ -29,15 +30,31 @@ export function floorStatusCopy(
   stream: 'live' | 'reconnecting' | 'stopped',
   observer: ObserverHealth | undefined,
   hasOpened: boolean = true,
+  /** The polled feed query failed (react-query `isError`). */
+  feedError: boolean = false,
 ): { label: string; detail: string | null; warning: boolean } {
   if (stream === 'reconnecting') {
     return { label: 'RECONNECTING', detail: null, warning: true };
   }
-  if (stream === 'stopped') {
-    // Before the world stream opens for the first time there is nothing to
-    // reload: the stream is still connecting, not broken.
-    if (!hasOpened) return { label: 'CONNECTING', detail: null, warning: false };
+  if (stream === 'stopped' && hasOpened) {
     return { label: 'STOPPED', detail: null, warning: true };
+  }
+  // A stream that never opened is not broken and may never open: a cold load
+  // of /trading-floor never joins the world. The feed then refreshes by
+  // polling (`FLOOR_FEED_POLL_MS`), so the label follows the feed's own
+  // observer health. Before the first feed answer there is nothing to say,
+  // unless that answer failed: then CONNECTING would be a claim with nothing
+  // behind it, forever. Cached data, when there is some, still wins.
+  const polling = stream === 'stopped';
+  if (polling && observer === undefined) {
+    if (feedError) {
+      return {
+        label: 'FEED UNAVAILABLE',
+        detail: `The floor feed could not be read. It tries again every ${FLOOR_FEED_POLL_MS / 1_000} seconds.`,
+        warning: true,
+      };
+    }
+    return { label: 'CONNECTING', detail: null, warning: false };
   }
   if (observer?.enabled === false) {
     return {
@@ -54,7 +71,11 @@ export function floorStatusCopy(
       warning: true,
     };
   }
-  return { label: 'LIVE FLOOR', detail: null, warning: false };
+  return {
+    label: 'LIVE FLOOR',
+    detail: polling ? `Updates every ${FLOOR_FEED_POLL_MS / 1_000} seconds.` : null,
+    warning: false,
+  };
 }
 
 export function FloorTapeBody() {
@@ -71,7 +92,7 @@ export function FloorTapeBody() {
     if (feed.data?.trades.length) seedTrades(feed.data.trades);
   }, [feed.data?.trades, seedTrades]);
 
-  const status = floorStatusCopy(stream, feed.data?.observer, streamHasOpened);
+  const status = floorStatusCopy(stream, feed.data?.observer, streamHasOpened, feed.isError);
   const showReload = stream === 'stopped' && streamHasOpened;
 
   return (

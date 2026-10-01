@@ -87,9 +87,18 @@ function createSurface(): ScreenSurface | null {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
-  // No mipmaps: the board is only ever seen roughly head-on from inside one
-  // room, so a mip chain is 33% more upload for no visible gain, and every
-  // redraw would have to regenerate it.
+  // NO MIPMAPS — tried on 2026-09-30 and REVERTED the same night on real-GPU
+  // evidence. From the spawn the plane shows about 0.52 screen px per canvas px
+  // (1366 x 768), so a 15-16 px Courier capital is about 5 screen px tall:
+  // an "E" needs five distinct rows there, and ANY 1.8:1 resample loses or
+  // merges one of its bars depending on sub-pixel phase. Mips only moved the
+  // damage. Without them, regular-weight cells broke ("GENZSIS", verifier B
+  // b-02); with trilinear mips, bold cells that had read correctly broke
+  // instead ("LANDTKST1", "NO PRIZR", local prod bundle c-10b vs staging
+  // c-00b). The real-GPU shot of BOLD text WITHOUT mips (c-00b: every bold
+  // cell correct at the spawn) is the best evidence we have, so the board is
+  // bold everywhere (`FONT_SMALL`) and single-level. The durable fix is larger
+  // glyphs at the spawn distance, which is a layout change, not a filter.
   texture.generateMipmaps = false;
   return { canvas, context, texture };
 }

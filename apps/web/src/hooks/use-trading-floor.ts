@@ -34,6 +34,17 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const FEED_LIMIT = 25;
 
 /**
+ * How often the floor feed re-reads the route while the world stream is NOT
+ * live. A cold load of a remote page such as /trading-floor never joins the
+ * world (the stream machine bootstraps only after the page has been on /game,
+ * `world-stream-machine.ts` everActive), so no live trade frames arrive and
+ * this poll is the floor's only refresh there. While the stream is live the
+ * frames and the reconnect refetch in `useFloorFeed` keep it current, so /game
+ * does not poll.
+ */
+export const FLOOR_FEED_POLL_MS = 30_000;
+
+/**
  * How often the house-trader surfaces re-read the route, and how long a result
  * is considered fresh.
  *
@@ -310,6 +321,7 @@ async function fetchFloorFeed(): Promise<FloorFeed> {
 
 export function useFloorFeed(enabled: boolean) {
   const generation = useWorldStreamStore((state) => state.generation);
+  const streamLive = useWorldStreamStore((state) => state.state === 'live');
   const baseline = useRef(generation);
   const wasEnabled = useRef(false);
   const query = useQuery({
@@ -317,6 +329,8 @@ export function useFloorFeed(enabled: boolean) {
     queryFn: fetchFloorFeed,
     enabled,
     staleTime: 60_000,
+    refetchInterval: streamLive ? false : FLOOR_FEED_POLL_MS,
+    refetchIntervalInBackground: false,
   });
   const { refetch } = query;
 

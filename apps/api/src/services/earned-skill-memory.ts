@@ -17,8 +17,10 @@
  * already hold a warm runtime hit the ElizaOS path).
  *
  * READ (`readEarnedSkillLessons`): semantic RAG from the agent's OWN warmed
- * ElizaOS runtime; the keyword store (avatar-keyed, filtered to earned-skill) is
- * the not-running fallback. NEVER lazy-starts.
+ * ElizaOS runtime first, then the keyword store (avatar-keyed, filtered to
+ * earned-skill) fills up to the limit, so lessons written while the runtime was
+ * cold stay visible once it is warm; with no warm runtime the keyword store
+ * alone answers. NEVER lazy-starts.
  *
  * `npc_memories` otherwise stays for the NPC town-liveliness sim ONLY — no old
  * rows are migrated; the fallback simply reuses the same audited store keyed to
@@ -151,10 +153,74 @@ export async function recordEarnedSkillLesson(
 }
 
 /**
+ * PURE — RAG lessons first, then keyword-store lessons, exact-duplicate texts
+ * dropped, capped at `limit`.
+ */
+export function mergeEarnedSkillLessons(
+  rag: readonly string[],
+  keyword: readonly string[],
+  limit: number,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const lesson of [...rag, ...keyword]) {
+    if (out.length >= limit) break;
+    if (seen.has(lesson)) continue;
+    seen.add(lesson);
+    out.push(lesson);
+  }
+  return out;
+}
+
+/** Semantic RAG from the warm runtime only (no lazy-start); [] when cold or on failure. */
+async function readRuntimeLessons(input: ReadEarnedSkillInput, limit: number): Promise<string[]> {
+  try {
+    if (!input.platformAgentId) return [];
+    const rt = agentOrchestrator.getRunningAgentRuntime(input.platformAgentId);
+    if (!rt) return [];
+    return await rt.searchEarnedSkillMemories({
+      avatarId: input.avatarId,
+      query: input.query,
+      buildingId: input.buildingId,
+      limit,
+    });
+  } catch (err) {
+    console.warn(
+      '[earned-skill-memory] ElizaOS read failed — using the keyword store only:',
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+}
+
+/** The avatar-keyed keyword-store rows (unfiltered); [] on failure. */
+async function readKeywordRows(input: ReadEarnedSkillInput, limit: number): Promise<KeywordMemoryRow[]> {
+  try {
+    const rows = await memoryService.getRelevantMemories({
+      entityId: input.avatarId,
+      targetEntityId: input.buildingId,
+      limit: Math.max(limit * 3, 15),
+    });
+    return rows.map((r) => ({ content: r.content, metadata: r.metadata as Record<string, unknown> | null }));
+  } catch (err) {
+    console.warn(
+      '[earned-skill-memory] keyword read failed (non-fatal):',
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+}
+
+/**
  * Read the agent's recent earned-skill lessons. Semantic RAG from the agent's
- * OWN warmed ElizaOS runtime; the avatar-keyed keyword store (filtered to
- * earned-skill) is the not-running fallback. Never lazy-starts; never throws
- * (returns [] on any failure). Returns lesson strings, most relevant first.
+ * OWN warmed ElizaOS runtime comes first, and the avatar-keyed keyword store
+ * (filtered to earned-skill) fills the rest up to `limit`: a lesson written
+ * while the runtime was cold lives ONLY in the keyword store, so a warm read
+ * must not hide it (D29, verifier A). Exact-duplicate texts collapse. With no
+ * warm runtime, or no RAG hit, the keyword store alone answers, as before. The
+ * two stores are read in parallel, so the warm path adds no wait inside the
+ * callers' time boxes. Never lazy-starts; never throws (a failed store adds
+ * nothing). Returns lesson strings, most relevant first.
  */
 export async function readEarnedSkillLessons(
   input: ReadEarnedSkillInput,
@@ -162,46 +228,8 @@ export async function readEarnedSkillLessons(
   const limit = input.limit ?? 5;
   if (!input.avatarId) return [];
 
-  // 1. Semantic RAG from the warm runtime (no lazy-start).
-  try {
-    if (input.platformAgentId) {
-      const rt = agentOrchestrator.getRunningAgentRuntime(input.platformAgentId);
-      if (rt) {
-        const lessons = await rt.searchEarnedSkillMemories({
-          avatarId: input.avatarId,
-          query: input.query,
-          buildingId: input.buildingId,
-          limit,
-        });
-        // A warm runtime with lessons wins; if it has none yet (e.g. mid-migration
-        // where older lessons still sit in the keyword store), fall through.
-        if (lessons.length > 0) return lessons;
-      }
-    }
-  } catch (err) {
-    console.warn(
-      '[earned-skill-memory] ElizaOS read failed — falling back to keyword store:',
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // 2. Keyword fallback — avatar-keyed, filtered to earned-skill (+ building).
-  try {
-    const rows = await memoryService.getRelevantMemories({
-      entityId: input.avatarId,
-      targetEntityId: input.buildingId,
-      limit: Math.max(limit * 3, 15),
-    });
-    return projectEarnedSkillRows(
-      rows.map((r) => ({ content: r.content, metadata: r.metadata as Record<string, unknown> | null })),
-      input.buildingId,
-      limit,
-    );
-  } catch (err) {
-    console.warn(
-      '[earned-skill-memory] keyword fallback read failed (non-fatal):',
-      err instanceof Error ? err.message : err,
-    );
-    return [];
-  }
+  const [rag, rows] = await Promise.all([readRuntimeLessons(input, limit), readKeywordRows(input, limit)]);
+  if (rag.length === 0) return projectEarnedSkillRows(rows, input.buildingId, limit);
+  // Up to `limit` keyword lessons can repeat a RAG lesson, so project twice the limit.
+  return mergeEarnedSkillLessons(rag, projectEarnedSkillRows(rows, input.buildingId, limit * 2), limit);
 }

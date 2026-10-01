@@ -1,4 +1,5 @@
 import {
+  type FloorArenaExits,
   FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
   FLOOR_ARENA_PARAM_BOUNDS,
   FLOOR_ARENA_RANK_BY_LABELS,
@@ -67,6 +68,15 @@ export function formatMultiple(value: number | null): string {
   return value === null ? 'n/a' : `${value.toFixed(2)}x`;
 }
 
+/**
+ * A count with its noun: singular for exactly 1, plural for everything else
+ * ("0 trades", "1 trade", "2 trades"). A count the route did not send prints
+ * as "-" with the plural noun, never as 0.
+ */
+export function countLabel(value: number | null, singular: string, plural = `${singular}s`): string {
+  return `${value === null ? '-' : value} ${value === 1 ? singular : plural}`;
+}
+
 export function formatFraction(value: number): string {
   return `${trimZeros((value * 100).toFixed(1))}%`;
 }
@@ -97,6 +107,37 @@ export function formatCountdown(ms: number): string {
 }
 
 export type ContestPhase = 'upcoming' | 'live' | 'ended';
+
+/**
+ * After the end, the score still moves while positions opened inside the
+ * window are open (contest rule 5, D30). `standings` comes from GET /contest;
+ * null means the answer has not arrived, so the copy states the rule instead
+ * of guessing which state it is in.
+ */
+export function contestStandingsCopy(
+  standings: 'provisional' | 'final' | null,
+  openWindowPositions: number | null,
+): { pill: string | null; text: string } {
+  if (standings === 'final') {
+    return {
+      pill: 'Final',
+      text: 'The contest has ended. These are the final standings; the team reviews them and then pays the prizes.',
+    };
+  }
+  if (standings === 'provisional') {
+    const still = openWindowPositions === null || openWindowPositions < 1
+      ? 'Some positions opened in the window are still open'
+      : `${countLabel(openWindowPositions, 'position')} opened in the window ${openWindowPositions === 1 ? 'is' : 'are'} still open`;
+    return {
+      pill: 'Provisional',
+      text: `The contest has ended. Standings are provisional: ${still}, and they still count.`,
+    };
+  }
+  return {
+    pill: null,
+    text: 'The contest has ended. Final standings are published when the last position opened in the window closes.',
+  };
+}
 
 export function contestPhase(startsAt: string, endsAt: string, nowMs: number): ContestPhase {
   if (nowMs < Date.parse(startsAt)) return 'upcoming';
@@ -162,18 +203,31 @@ export function formatTpLeg([multiple, fraction]: readonly [number, number]): st
   return `${multiple.toFixed(2)}x sells ${formatFraction(fraction)}`;
 }
 
-/** The exit rules of a params object as short phrases, for a position row. */
-export function exitTargets(params: FloorArenaParams): string[] {
-  const out = params.exits.tp.map((leg) => `TP ${formatTpLeg(leg)}`);
-  if (params.exits.stop_mult !== null) out.push(`Stop ${formatMultiple(params.exits.stop_mult)}`);
-  if (params.exits.trail_from_peak !== null) {
-    const arm = params.exits.trail_arm_mult;
-    out.push(
-      `Trail ${formatFraction(params.exits.trail_from_peak)} from peak${arm !== null ? ` after ${formatMultiple(arm)}` : ''}`,
-    );
+/** Exit rules as short phrases, for a position row. */
+export function exitTargets(exits: FloorArenaExits): string[] {
+  const out = exits.tp.map((leg) => `TP ${formatTpLeg(leg)}`);
+  if (exits.stop_mult !== null) out.push(`Stop ${formatMultiple(exits.stop_mult)}`);
+  if (exits.trail_from_peak !== null) {
+    const arm = exits.trail_arm_mult;
+    out.push(`Trail ${formatFraction(exits.trail_from_peak)} from peak${arm !== null ? ` after ${formatMultiple(arm)}` : ''}`);
   }
-  out.push(`Max hold ${formatDuration(params.exits.max_hold_s)}`);
+  out.push(`Max hold ${formatDuration(exits.max_hold_s)}`);
   return out;
+}
+
+/**
+ * The exits an OPEN position actually runs on. The engine freezes them at
+ * entry, so the agent's current rules apply only when the position opened
+ * under the same rules version. Null when they cannot be known here.
+ */
+export function positionExits(
+  position: { entryExits: FloorArenaExits | null; paramsVersion: number | null },
+  params: FloorArenaParams | null,
+  paramsVersion: number | null,
+): FloorArenaExits | null {
+  if (position.entryExits) return position.entryExits;
+  if (params && position.paramsVersion !== null && position.paramsVersion === paramsVersion) return params.exits;
+  return null;
 }
 
 /** The label a dotted param path has in the form, e.g. "Min market cap". */

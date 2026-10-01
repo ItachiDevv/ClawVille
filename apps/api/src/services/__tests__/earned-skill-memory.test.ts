@@ -184,14 +184,60 @@ describe('readEarnedSkillLessons', () => {
 
   it('returns RAG lessons from the warm runtime when it has any', async () => {
     orch.getRunningAgentRuntime = () => fakeRuntime({ search: async () => ['rag lesson 1', 'rag lesson 2'] });
-    let keywordCalled = false;
-    mem.getRelevantMemories = async () => {
-      keywordCalled = true;
-      return [];
-    };
     const lessons = await readEarnedSkillLessons(base);
     expect(lessons).toEqual(['rag lesson 1', 'rag lesson 2']);
-    expect(keywordCalled).toBe(false); // RAG hit → no fallback
+  });
+
+  it('a warm read keeps the lessons stored while the runtime was cold (RAG first, then keyword)', async () => {
+    // D29 / verifier A: a Trading Floor report filed while the runtime slept lives
+    // ONLY in npc_memories; a warm RAG hit used to hide it.
+    let searched: any = null;
+    orch.getRunningAgentRuntime = () => fakeRuntime({
+      search: async (i) => {
+        searched = i;
+        return ['warm rag lesson'];
+      },
+    });
+    let keywordQuery: any = null;
+    mem.getRelevantMemories = async (opts) => {
+      keywordQuery = opts;
+      return [
+        { content: 'older cold lesson', metadata: { subtype: EARNED_SKILL_MEMORY_SUBTYPE, buildingId: 'cron-automation' } },
+        { content: 'npc banter', metadata: { subtype: 'world-knowledge' } },
+      ];
+    };
+    expect(await readEarnedSkillLessons(base)).toEqual(['warm rag lesson', 'older cold lesson']);
+    // Same avatar + building scope on both stores.
+    expect(searched).toMatchObject({ avatarId: 'av-1', buildingId: 'cron-automation', limit: 5 });
+    expect(keywordQuery).toMatchObject({ entityId: 'av-1', targetEntityId: 'cron-automation' });
+  });
+
+  it('collapses exact-duplicate texts across the two stores and respects the limit', async () => {
+    orch.getRunningAgentRuntime = () => fakeRuntime({ search: async () => ['a', 'b', 'a'] });
+    const earned = (content: string) => ({ content, metadata: { subtype: EARNED_SKILL_MEMORY_SUBTYPE, buildingId: 'cron-automation' } });
+    mem.getRelevantMemories = async () => [earned('b'), earned('a'), earned('c'), earned('d'), earned('e')];
+    expect(await readEarnedSkillLessons({ ...base, limit: 3 })).toEqual(['a', 'b', 'c']);
+    expect(await readEarnedSkillLessons({ ...base, limit: 10 })).toEqual(['a', 'b', 'c', 'd', 'e']);
+    // RAG alone at the limit: the keyword lessons add nothing.
+    orch.getRunningAgentRuntime = () => fakeRuntime({ search: async () => ['r1', 'r2'] });
+    expect(await readEarnedSkillLessons({ ...base, limit: 2 })).toEqual(['r1', 'r2']);
+  });
+
+  it('a failing store adds nothing and never throws (warm RAG + broken keyword store, and the reverse)', async () => {
+    orch.getRunningAgentRuntime = () => fakeRuntime({ search: async () => ['rag only'] });
+    mem.getRelevantMemories = async () => {
+      throw new Error('db down');
+    };
+    expect(await readEarnedSkillLessons(base)).toEqual(['rag only']);
+    orch.getRunningAgentRuntime = () => fakeRuntime({
+      search: async () => {
+        throw new Error('embed down');
+      },
+    });
+    mem.getRelevantMemories = async () => [
+      { content: 'kw only', metadata: { subtype: EARNED_SKILL_MEMORY_SUBTYPE, buildingId: 'cron-automation' } },
+    ];
+    expect(await readEarnedSkillLessons(base)).toEqual(['kw only']);
   });
 
   it('falls back to the keyword store when no runtime is warm, projecting earned-skill only', async () => {

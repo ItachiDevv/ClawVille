@@ -38,6 +38,7 @@ import {
   type FloorScreenInputs,
 } from './trading-floor-screen-data';
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
+import { buildTapeSources } from './trading-floor-trade-tape';
 
 /**
  * Recording 2D context. `drawFloorScreen` never measures or reads back, so a
@@ -1073,6 +1074,42 @@ describe('Trading Floor board — layout', () => {
     expect(BOARD_MIN_PX).toBe(15);
   });
 
+  // Verifier B, staging 9dc59f73 (shot b-02): at the spawn's ~1.9:1
+  // minification the REGULAR 15 px template column read "GENZSIS" and
+  // "LATZ BLOOMER" while the BOLD 16 px name column beside it read correctly.
+  // A regular Courier stroke is under one texel and falls between samples.
+  test('every string on the board is bold, so no stroke is thinner than a texel', () => {
+    for (const data of [
+      worstCaseBoard(),
+      board({ phase: 'ready', rows: liveRows(), tape: ['GENESIS BUY BONK $20.00 4M'] }),
+      board({ phase: 'connecting' }),
+      board({ phase: 'error', contest: null }),
+    ]) {
+      const rec = recorder();
+      drawFloorScreen(rec.context, data);
+      for (const painted of rec.painted) {
+        if (painted.kind !== 'text') continue;
+        expect({ value: painted.value, bold: painted.font.startsWith('bold ') }).toEqual({
+          value: painted.value,
+          bold: true,
+        });
+      }
+    }
+  });
+
+  // Mipmaps were tried and REVERTED on real-GPU evidence (2026-09-30): with
+  // trilinear sampling, bold cells that had read correctly single-level broke
+  // at the spawn ("LANDTKST1", "NO PRIZR", local c-10b vs staging c-00b). At
+  // ~5 screen px per capital, any resample moves the damage; bold +
+  // single-level is the state with a clean real-GPU shot. Pinned so a later
+  // "obvious" mipmap fix has to read why it was taken out.
+  test('the board texture is single-level (mipmaps were tried and reverted)', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-screen.tsx'), 'utf8');
+    expect(source).toContain('texture.generateMipmaps = false;');
+    expect(source).toContain('texture.minFilter = THREE.LinearFilter;');
+    expect(source).not.toContain('LinearMipmapLinearFilter');
+  });
+
   test('the whole board fits the declared canvas', () => {
     const rec = recorder();
     drawFloorScreen(rec.context, worstCaseBoard());
@@ -1192,19 +1229,25 @@ describe('Trading Floor board — leaderboard mapping', () => {
     });
   });
 
-  test('loading and error are their own phases, never an empty table', () => {
+  test('loading and a never-answered error are their own phases, never an empty table', () => {
     expect(buildFloorScreenData(inputs({ leaderboard: LOADING }), NOW).phase).toBe('connecting');
     expect(buildFloorScreenData(inputs({ leaderboard: ready(undefined) }), NOW).phase).toBe(
       'connecting',
     );
-    // react-query keeps the last good data through a failed refetch; the board
-    // does not present that as current.
-    const failedBoard = buildFloorScreenData(
-      inputs({ leaderboard: failed({ rows: [wireRow()] }) }),
-      NOW,
-    );
-    expect(failedBoard.phase).toBe('error');
-    expect(failedBoard.rows).toEqual([]);
+    expect(buildFloorScreenData(inputs({ leaderboard: failed() }), NOW).phase).toBe('error');
+  });
+
+  // ONE RULE FOR THE ROOM (lead, 2026-10-01): a failed refetch keeps the LAST
+  // GOOD data, as react-query does and as the 3D tape and the floor status
+  // label already draw it; only a query that never had data shows the error.
+  test('a failed refetch keeps the last good table, and costs no redraw', () => {
+    const good = inputs({ leaderboard: ready({ rows: [wireRow()] }) });
+    const failedAfterData = inputs({ leaderboard: failed({ rows: [wireRow()] }) });
+    const kept = buildFloorScreenData(failedAfterData, NOW);
+    expect(kept.phase).toBe('ready');
+    expect(kept.rows).toEqual(buildFloorScreenData(good, NOW).rows);
+    // The error alone moves nothing the board draws, so no repaint.
+    expect(floorScreenSignature(failedAfterData)).toBe(floorScreenSignature(good));
   });
 
   test('rows are drawn in rank order, an unreadable rank last, capped at the table', () => {
@@ -1535,10 +1578,24 @@ describe('Trading Floor board — the bottom tape', () => {
     ).toEqual(['GENESIS BUY BONK $20.00 4M']);
   });
 
-  test('a failed tape refetch reads STANDING BY, not a dead feed shown as live', () => {
-    const data = buildFloorScreenData(inputs({ tape: failed([tapeRow()]) }), NOW);
+  // coolerTrading's auditor: on a tape refetch ERROR the 3D tape kept its chips
+  // and the board cleared its row, so the room gave two answers for one feed.
+  // Both now keep the last good rows; only a tape that never answered is empty.
+  test('a failed tape refetch keeps the last good tape row, and costs no redraw', () => {
+    const good = inputs({ tape: ready([tapeRow()]) });
+    const failedAfterData = inputs({ tape: failed([tapeRow()]) });
+    expect(buildFloorScreenData(failedAfterData, NOW).tape).toEqual(['GENESIS BUY BONK $20.00 4M']);
+    expect(floorScreenSignature(failedAfterData)).toBe(floorScreenSignature(good));
+    // The 3D tape reads the same `data`, so it shows the same row.
+    expect(buildTapeSources([tapeRow()]).map((source) => source.key)).toEqual(['e1']);
+  });
+
+  test('a tape that never answered is empty and says it is standing by', () => {
+    const data = buildFloorScreenData(inputs({ tape: failed() }), NOW);
     expect(data.tape).toEqual([]);
     expect(draw({ ...data }).strings).toContain('ARENA TRADE TAPE STANDING BY');
+    // And the 3D tape has no chips for it.
+    expect(buildTapeSources(undefined)).toEqual([]);
   });
 });
 

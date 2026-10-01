@@ -43,9 +43,11 @@
  * more now than it did for two house desks.
  *
  * LEGIBILITY FLOOR: nothing on the board is drawn below 15 canvas px
- * (`BOARD_MIN_PX`). The contract viewport is a 1366 x 768 laptop, where the
- * board measured 0.593 screen px per canvas px from the spawn; 15 canvas px is
- * the smallest size that stays above the 6-7 screen-px floor there.
+ * (`BOARD_MIN_PX`), and everything is BOLD (see `FONT_SMALL`). The contract
+ * viewport is a 1366 x 768 laptop. A 2026-09-19 measurement gave 0.593 screen
+ * px per canvas px from the spawn; projecting the plane with the rig constants
+ * on 2026-09-30 gives 0.52 (camera clamped at z 1088), so 15 canvas px is about
+ * 7.8 screen px there — at the 6-7 px floor, not above it with room to spare.
  */
 
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
@@ -631,15 +633,27 @@ function value(
 
 /**
  * The legibility floor for EVERY string on the board, in canvas px. Pinned by a
- * test that reads the font of every `fillText`. At the measured 0.593 screen px
- * per canvas px, 15 is ~8.9 screen px on the 1366 x 768 contract viewport.
+ * test that reads the font of every `fillText`. At the 0.52 screen px per canvas
+ * px projected from the spawn, 15 is about 7.8 screen px on the 1366 x 768
+ * contract viewport — which is why it must also be bold.
  */
 export const BOARD_MIN_PX = 15;
 const MONO = '"Courier New", monospace';
 const FONT_TITLE = `bold 22px ${MONO}`;
 const FONT_HEADER = `bold 16px ${MONO}`;
-const FONT_SMALL = `${BOARD_MIN_PX}px ${MONO}`;
-const FONT_SMALL_BOLD = `bold ${BOARD_MIN_PX}px ${MONO}`;
+/**
+ * EVERY font on this board is bold, and the small one most of all. At the
+ * spawn the board is minified about 1.9:1 (0.52 screen px per canvas px at
+ * 1366 x 768), and a REGULAR Courier New stroke is under one texel wide, so it
+ * can fall between texture samples and vanish: the template column read
+ * "GENZSIS" and "LATZ BLOOMER" on staging while the bold TRADER column beside
+ * it, one pixel larger, read correctly (verifier B, shot b-02). Bold strokes
+ * are about twice as wide; the advance is the same 0.6 em, so no layout moves.
+ * Mipmaps were tried alongside and reverted: they broke OTHER bold cells at
+ * the spawn ("LANDTKST1"); see `trading-floor-screen.tsx`. At ~5 screen px per
+ * capital, bold + single-level is the state with a clean real-GPU shot.
+ */
+const FONT_SMALL = `bold ${BOARD_MIN_PX}px ${MONO}`;
 const FONT_ROW = `bold 16px ${MONO}`;
 const FONT_PNL = `bold 18px ${MONO}`;
 const FONT_MESSAGE = `bold 26px ${MONO}`;
@@ -849,7 +863,7 @@ function drawHeader(ctx: FloorScreenContext, data: FloorScreenData, W: number): 
     // prize) and never drawn through the note beside it. Codex review round
     // 4: three prizes of 1e18 ran off the canvas. The shipped line is 60.
     if (line.length > PRIZE_MAX_CHARS) return;
-    value(ctx, line, MARGIN_X, PRIZE_Y, { font: FONT_SMALL_BOLD, color: COLOR.prize });
+    value(ctx, line, MARGIN_X, PRIZE_Y, { font: FONT_SMALL, color: COLOR.prize });
     // House agents are ranked in the same table, so the prize line must say
     // they cannot take a place — otherwise a house row at #1 reads as the
     // winner of 1,000,000.
@@ -901,7 +915,7 @@ function drawRow(ctx: FloorScreenContext, row: FloorScreenRow, y: number): void 
   });
   if (row.tag) {
     value(ctx, TAG_LABEL[row.tag], COL_TAG_X, y, {
-      font: FONT_SMALL_BOLD,
+      font: FONT_SMALL,
       color: TAG_TEXT[row.tag],
     });
   }

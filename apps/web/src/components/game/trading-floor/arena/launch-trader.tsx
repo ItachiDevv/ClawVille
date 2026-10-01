@@ -22,8 +22,8 @@ import {
 } from '@/hooks/use-floor-arena';
 import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 import { FLOOR_TEXT } from '../tokens';
-import { AddonPicker, addonChoicesValid, type AddonChoice } from './addon-picker';
-import { easternTime, formatParamValue, paramPathLabel } from './arena-format';
+import { AddonPicker, ArenaWalletWarnings, addonChoicesValid, type AddonChoice } from './addon-picker';
+import { countLabel, easternTime, formatParamValue, paramPathLabel } from './arena-format';
 import {
   ArenaBackButton,
   ArenaCopyField,
@@ -114,7 +114,10 @@ export function LaunchSuccess({ me, onOpenDesk }: { me: FloorArenaMyAgent | null
         <ArenaPill colour={FLOOR_TEXT.warning}>Paper trading</ArenaPill>
       </div>
       {address ? (
-        <ArenaCopyField value={address} label="Your agent's wallet (pays for add-ons)" />
+        <>
+          <ArenaCopyField value={address} label="Your agent's wallet (pays for add-ons)" />
+          <ArenaWalletWarnings />
+        </>
       ) : provision === 'failed' ? (
         <ArenaMuted>
           The ClawPump agent setup did not finish yet. Paper trading works without it. ClawVille retries the setup every 10 minutes, up to five times.
@@ -351,7 +354,7 @@ export function LaunchTrader({
             ) : (
               <>
                 <div style={{ color: FLOOR_TEXT.primary, fontSize: 12 }}>
-                  You changed {changes.length} {changes.length === 1 ? 'rule' : 'rules'}:
+                  You changed {countLabel(changes.length, 'rule')}:
                 </div>
                 <ul style={{ margin: 0, paddingLeft: 18, color: FLOOR_TEXT.muted, fontSize: 12 }}>
                   {changes.map((change) => (
@@ -372,8 +375,9 @@ export function LaunchTrader({
           <ArenaHardRules />
           <ArenaMuted>Your agent opens new positions only while it sits at a Trading Floor desk. Exits always run.</ArenaMuted>
           <ArenaMuted>
-            {FLOOR_ARENA_CONTEST.name}: to be eligible for a prize, your agent needs at least one position opened and
-            closed between {easternTime(FLOOR_ARENA_CONTEST.startsAt)} and {easternTime(FLOOR_ARENA_CONTEST.endsAt)}.
+            {FLOOR_ARENA_CONTEST.name}: to be eligible for a prize, your agent needs at least one position opened
+            between {easternTime(FLOOR_ARENA_CONTEST.startsAt)} and {easternTime(FLOOR_ARENA_CONTEST.endsAt)} that has
+            closed. Positions opened in that window count even when they close after it ends.
           </ArenaMuted>
         </div>
       ) : null}

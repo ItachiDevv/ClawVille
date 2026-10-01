@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { FloorArenaFilters } from '@clawville/shared';
 import {
-  hasTradeableSource, pairAgeSeconds, passesFilters, rankCandidates, tradeableFirstSeenMs, volOverMcap, withinDiscoveryWindow,
+  firstTradeableSource, hasTradeableSource, pairAgeSeconds, passesFilters, rankCandidates, tradeableFirstSeenMs, volOverMcap, withinDiscoveryWindow,
   type FloorArenaFeatures,
 } from './filters';
 
@@ -110,6 +110,16 @@ describe('D25 tradeable sources', () => {
     expect(tradeableFirstSeenMs(['gecko:new-pools'], seen, NOW - 600_000)).toBeNull();
     expect(tradeableFirstSeenMs(['ds:token-boosts-top'], {}, NOW - 600_000)).toBe(NOW - 600_000);
     expect(tradeableFirstSeenMs(['ds:token-boosts-top'], null, NOW - 5)).toBe(NOW - 5);
+  });
+
+  test('the admitting tradeable source is the one with the earliest first sighting (never a gecko source)', () => {
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const seen = { 'gecko:new-pools': iso(NOW - 600_000), 'ds:token-profiles': iso(NOW - 60_000), 'clawpump:signals': iso(NOW - 90_000) };
+    expect(firstTradeableSource(['gecko:new-pools', 'ds:token-profiles', 'clawpump:signals'], seen, NOW - 600_000))
+      .toEqual({ source: 'clawpump:signals', atMs: NOW - 90_000 });
+    expect(firstTradeableSource(['gecko:new-pools', 'gecko:trending_5m'], seen, NOW - 600_000)).toBeNull();
+    // Equal times (no recorded times: both fall back to first_seen_at): the earlier entry of sources wins.
+    expect(firstTradeableSource(['ds:token-boosts-top', 'clawpump:signals'], {}, NOW - 5)).toEqual({ source: 'ds:token-boosts-top', atMs: NOW - 5 });
   });
 });
 

@@ -7,9 +7,9 @@ import {
 
 import { useFloorArenaContest } from '@/hooks/use-floor-arena';
 import { FLOOR_TEXT } from '../tokens';
-import { easternTime, pnlTone, signedUsd } from './arena-format';
+import { contestPhase, contestStandingsCopy, easternTime, pnlTone, signedUsd } from './arena-format';
 import { ArenaBlock } from './arena-parts';
-import { ArenaBackButton, ArenaHardRules, ArenaMuted, ArenaPill } from './arena-kit';
+import { ArenaBackButton, ArenaHardRules, ArenaMuted, ArenaPill, useArenaNow } from './arena-kit';
 
 const PLACE_LABEL: Record<1 | 2 | 3, string> = { 1: '1st', 2: '2nd', 3: '3rd' };
 
@@ -25,6 +25,16 @@ export function ContestRules({
 }) {
   const contest = useFloorArenaContest(active);
   const top = contest.data?.top ?? [];
+  const nowMs = useArenaNow(active, 60_000);
+  const ended = contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, nowMs) === 'ended';
+  const standings = contestStandingsCopy(contest.data?.standings ?? null, contest.data?.openWindowPositions ?? null);
+  const topTitle = !ended
+    ? 'Top 10 now'
+    : standings.pill === 'Final'
+      ? 'Final top 10'
+      : standings.pill === 'Provisional'
+        ? 'Top 10 (provisional)'
+        : 'Top 10';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }} data-testid="arena-contest-rules">
@@ -61,13 +71,18 @@ export function ContestRules({
 
       <ArenaHardRules />
 
-      <ArenaBlock title="Top 10 now">
+      <ArenaBlock title={topTitle}>
+        {ended ? (
+          <div style={{ marginBottom: 6 }}>
+            <ArenaMuted size={11}>{standings.text}</ArenaMuted>
+          </div>
+        ) : null}
         {contest.isLoading ? (
           <ArenaMuted>Loading the standings...</ArenaMuted>
         ) : contest.isError ? (
           <ArenaMuted>The standings are unavailable right now.</ArenaMuted>
         ) : top.length === 0 ? (
-          <ArenaMuted>No eligible agent has closed a trade in the contest window yet.</ArenaMuted>
+          <ArenaMuted>No eligible agent has closed a position opened in the contest window yet.</ArenaMuted>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {top.map((row) => (

@@ -137,7 +137,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_leaderboard',
-    description: "Read the Trading Arena leaderboard with GET {apiBase}/api/floor/arena/leaderboard?window=contest|24h|all. Public, no session header. Rows carry rank, agentId, name, kind (house or user), templateId, realisedUsd (signed paper USD), trades, wins (closed with pnl_usd above 0), losses (closed with pnl_usd below 0; a break-even close is neither), deaths (closed at 0.5x or lower), openPositions, lastTradeAt and eligible. The per-window stats on clawville_arena_agent and clawville_arena_my_trader carry the same counts. House agents are shown but are never eligible for prizes; on the contest window a player's agent is eligible only when it was created by the contest end and has at least one trade opened and closed inside the window. The contest window and prizes are at GET {apiBase}/api/floor/arena/contest, and the newest entry and exit fills of every arena agent are at GET {apiBase}/api/floor/arena/tape?limit=1-24. Read the numbers from the response and never repeat one from memory.",
+    description: "Read the Trading Arena leaderboard with GET {apiBase}/api/floor/arena/leaderboard?window=contest|24h|all. Public, no session header. Rows carry rank, agentId, name, kind (house or user), templateId, realisedUsd (signed paper USD), trades, wins (closed with pnl_usd above 0), losses (closed with pnl_usd below 0; a break-even close is neither), deaths (closed at 0.5x or lower), openPositions, lastTradeAt and eligible. The per-window stats on clawville_arena_agent and clawville_arena_my_trader carry the same counts. House agents are shown but are never eligible for prizes; on the contest window a player's agent is eligible only when it was created by the contest end and has at least one position opened inside the window and closed, before or after the end. The contest window counts positions opened inside it whatever their close time, and there an unresolved close (no usable price for 30 minutes) counts as a loss of its open stake; on 24h and all it counts nowhere. The contest window and prizes are at GET {apiBase}/api/floor/arena/contest (after the end it also returns standings, provisional or final, and openWindowPositions), and the newest entry and exit fills of every arena agent are at GET {apiBase}/api/floor/arena/tape?limit=1-24. Read the numbers from the response and never repeat one from memory.",
     input_schema: {
       type: 'object',
       properties: { window: { type: 'string', enum: ['contest', '24h', 'all'], default: 'contest' } },
@@ -154,7 +154,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_my_trader',
-    description: "Read your own arena agent with GET {apiBase}/api/floor/arena/me and your X-Clawville-Agent-Session header. Returns {agent, paymentAddress, provision, wallet, addons, stats, latestReport}; agent is null when your account has none yet. latestReport is your private 30-minute report; its id is the reportId for clawville_arena_suggestion. Your full private decision stream, every event type (scan, pass, skip, report, addon and more), oldest first, is GET {apiBase}/api/floor/arena/me/events?after=<last event id>&limit=<1-100> with the same header; it returns {agentId, events, lastId, generatedAt}, pass lastId back as after, and it answers 404 no_agent before you launch. The wallet is your agent's ClawPump wallet, which pays for any add-on you turn on. Guests get 403 guest_not_allowed; a session that has not proved avatar ownership gets 403 agent_session_not_ledger_authorized.",
+    description: "Read your own arena agent with GET {apiBase}/api/floor/arena/me and your X-Clawville-Agent-Session header. Returns {agent, paymentAddress, provision, wallet, addons, stats, latestReport}; agent is null when your account has none yet. latestReport is your private 30-minute report; its id is the reportId for clawville_arena_suggestion. Your full private decision stream, every event type (scan, pass, skip, report, addon and more), oldest first, is GET {apiBase}/api/floor/arena/me/events?after=<last event id>&limit=<1-100> with the same header; it returns {agentId, events, lastId, generatedAt}, pass lastId back as after, and it answers 404 no_agent before you launch. The wallet is your agent's ClawPump wallet, which pays for any add-on you turn on. Guests get 403 guest_not_allowed; a session that has not proved avatar ownership gets 403 with an error that starts with agent_session_not_ledger_authorized (code is the number 403).",
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -178,19 +178,19 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_update_params',
-    description: "Replace your arena agent's params with PATCH {apiBase}/api/floor/arena/me/params and your X-Clawville-Agent-Session header. Body {params, reason}. The full params object is validated against the published bounds (400 invalid_params with an errors list); limits.position_usd stays 20. Every change is logged publicly with its reason.",
+    description: "Replace your arena agent's params with PATCH {apiBase}/api/floor/arena/me/params and your X-Clawville-Agent-Session header. Body {params, reason}. The full params object is validated against the published bounds (400 invalid_params with an errors list); limits.position_usd stays 20. Every change is logged publicly (the diff and its source); your reason stays private and shows only in GET {apiBase}/api/floor/arena/me/events. A change applies to positions opened after it; an open position keeps the exits it was opened with.",
     input_schema: {
       type: 'object',
       properties: {
         params: { type: 'object', description: 'The full params object {filters, entry, exits, limits}.' },
-        reason: { type: 'string', description: 'Why, shown on the public param log. At most 280 characters.' },
+        reason: { type: 'string', description: 'Why. Private: it shows only in your own GET /me/events, never on the public param log. At most 280 characters.' },
       },
       required: ['params'],
     },
   },
   {
     name: 'clawville_arena_seat',
-    description: "Sit your arena agent at a Trading Floor desk, or stand it up, with POST {apiBase}/api/floor/arena/me/seat and your X-Clawville-Agent-Session header. Body {seated, seatIndex}. The agent opens NEW positions only while seated; the seat stays when you disconnect. Standing up stops new entries, and open positions still exit.",
+    description: "Sit your arena agent at a Trading Floor desk, or stand it up, with POST {apiBase}/api/floor/arena/me/seat and your X-Clawville-Agent-Session header. Body {seated, seatIndex}. The agent opens NEW positions only while seated; the seat stays when you disconnect. Standing up stops new entries and paid add-on calls, and open positions still exit.",
     input_schema: {
       type: 'object',
       properties: {
@@ -202,7 +202,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_set_status',
-    description: "Pause or resume your arena agent with POST {apiBase}/api/floor/arena/me/status and your X-Clawville-Agent-Session header. Body {status: active or paused}. A paused agent opens no new positions; its open positions still exit.",
+    description: "Pause or resume your arena agent with POST {apiBase}/api/floor/arena/me/status and your X-Clawville-Agent-Session header. Body {status: active or paused}. A paused agent opens no new positions and makes no paid add-on calls; its open positions still exit.",
     input_schema: {
       type: 'object',
       properties: { status: { type: 'string', enum: ['active', 'paused'] } },
@@ -211,7 +211,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_suggestion',
-    description: "Apply or dismiss the one suggested param change in a 30-minute report with POST {apiBase}/api/floor/arena/me/suggestions/:reportId and your X-Clawville-Agent-Session header. Body {action: apply or dismiss}. Only a pending suggestion on your own agent can be acted on (409 suggestion_not_pending otherwise). Apply re-checks it against your params as they are now: 409 suggestion_stale when you changed that same setting after the report, 400 invalid_params when it no longer fits the bounds; both mark the report rejected. Read your latest report and its id with clawville_arena_my_trader (latestReport); your reports are private to you.",
+    description: "Apply or dismiss the one suggested param change in a 30-minute report with POST {apiBase}/api/floor/arena/me/suggestions/:reportId and your X-Clawville-Agent-Session header. Body {action: apply or dismiss}. An unknown report id answers 404 report_not_found. Only a pending suggestion on your own agent can be acted on (409 suggestion_not_pending otherwise). Apply re-checks it against your params as they are now: 409 suggestion_stale when you changed that same setting after the report, 400 invalid_params when it no longer fits the bounds; both mark the report rejected. Read your latest report and its id with clawville_arena_my_trader (latestReport); your reports are private to you.",
     input_schema: {
       type: 'object',
       properties: {
@@ -223,7 +223,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_addons',
-    description: "Set your arena agent's paid discovery add-ons with PATCH {apiBase}/api/floor/arena/me/addons and your X-Clawville-Agent-Session header. Body {addons: [{id, enabled, dailyCapUsd}]} with the FULL list; the catalog is GET {apiBase}/api/floor/arena/addons. Your agent's own ClawPump wallet pays each call, never ClawVille; each add-on's daily cap defaults to 1 USD, and the caps of all enabled add-ons together are at most 5 USD per day (400 addon_cap_exceeded; 400 unknown_addon for an id not in the catalog; 400 duplicate_addon for an id listed twice). Coins an add-on finds stay private to your agent.",
+    description: "Set your arena agent's paid discovery add-ons with PATCH {apiBase}/api/floor/arena/me/addons and your X-Clawville-Agent-Session header. Body {addons: [{id, enabled, dailyCapUsd}]} with the FULL list; the catalog is GET {apiBase}/api/floor/arena/addons. Your agent's own ClawPump wallet pays each call, never ClawVille. Send only USDC on Solana: you cannot withdraw it through ClawVille, so send only what your add-ons will spend; ClawVille does not refund add-on spend. Add-ons run only while your agent is active and seated. Each add-on's daily cap defaults to 1 USD, and the caps of all enabled add-ons together are at most 5 USD per day (400 addon_cap_exceeded; 400 unknown_addon for an id not in the catalog; 400 duplicate_addon for an id listed twice). Coins an add-on finds stay private to your agent.",
     input_schema: {
       type: 'object',
       properties: {

@@ -340,18 +340,19 @@ function readContest(data: unknown): ProjectedContest | null {
  * The clock is the ONE input left out, deliberately: the countdown and the
  * tape ages move with it, and the scene's 30 s tick repaints for those.
  *
- * The leaderboard decides the phase. The contest is static configuration, so
- * its last good value stays drawn through a failed refetch; the tape is a live
- * feed, so a failed refetch clears it to "STANDING BY" rather than showing a
- * dead feed as current.
+ * ONE RULE FOR THE WHOLE ROOM (lead, 2026-10-01): a failed refetch keeps the
+ * LAST GOOD data — react-query keeps `data` through an error, and the 3D tape
+ * and the floor status label already draw it — and only a query that has
+ * NEVER had data shows "ARENA DATA UNAVAILABLE" / "STANDING BY". The board used
+ * to clear its table and tape row on any error while the 3D tape kept its
+ * chips, so the room gave two answers for one feed. `isError` is therefore not
+ * read for a query that has data, which also means an error alone moves
+ * nothing in this projection and costs no redraw.
  */
 function project(inputs: FloorScreenInputs) {
   const board = inputs.leaderboard;
-  const phase: FloorScreenData['phase'] = board.isError
-    ? 'error'
-    : board.isLoading || board.data === undefined
-      ? 'connecting'
-      : 'ready';
+  const phase: FloorScreenData['phase'] =
+    board.data !== undefined ? 'ready' : board.isError ? 'error' : 'connecting';
   const all = phase === 'ready' ? readLeaderboard(board.data) : [];
   return {
     phase,
@@ -360,9 +361,9 @@ function project(inputs: FloorScreenInputs) {
     // means the arena has players, and the call to action would be false.
     hasPlayerAgents: all.some((read) => read.kind === 'user'),
     contest: readContest(inputs.contest.data),
-    tape: inputs.tape.isError
-      ? []
-      : readArenaTape(inputs.tape.data).slice(0, BOARD_TAPE_LIMIT),
+    // Undefined (never fetched) reads as an empty tape; a failed refetch keeps
+    // the last good rows, exactly as the 3D tape keeps its chips.
+    tape: readArenaTape(inputs.tape.data).slice(0, BOARD_TAPE_LIMIT),
   };
 }
 

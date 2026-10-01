@@ -8,6 +8,7 @@ import {
   FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
   FLOOR_ARENA_HARD_RULES,
+  FLOOR_ARENA_HOUSE_AGENTS,
   FLOOR_ARENA_TEMPLATE_VERSION,
   FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
   FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD,
@@ -47,11 +48,18 @@ import {
 
 import { createHash } from 'crypto';
 import {
+  ARENA_AUTO_CHANGE_MIN_GAP_MS,
+  ARENA_QUIET_REPORT_INTERVAL_MS,
+  ARENA_REPORT_INTERVAL_MS,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
   MIN_CLOSED_ON_CURRENT_PARAMS,
 } from './floor-arena/analysis-rules';
+// Constants only: chain-checks and contest have no load-time side effects, and
+// `db` from @clawville/database is a lazy proxy, so the manual needs no DATABASE_URL.
+import { CHAIN_VERDICT_TTL_MS } from './floor-arena/chain-checks';
+import { ARENA_CONTEST_FINAL_GRACE_MS } from './floor-arena/contest';
 import type {
   AgentProtocolAckState,
   DirectAgentProtocolPointer,
@@ -644,7 +652,23 @@ import {
 // only). The hard-rule list, template version, first-sight choices and tuner
 // numbers are rendered from their constants. No `[ACTION:]` verb, bearer/TTL,
 // cognition body, namespace or leaderboard weight changed.
-export const PROTOCOL_VERSION = 75;
+// NOTE (2026-09-30, arena D28 + D29, punch-list P4): bumped 75 -> 76. 75 is on
+// staging, so the changed 17c bytes need a new version for already-provisioned
+// hosted runtimes. 17c now states: an entry needs a passing on-chain safety
+// check of the coin's CURRENT pool younger than CHAIN_VERDICT_TTL_MS, whose
+// stored verdict the engine re-reads right before the buy (no new on-chain
+// check), and a scan's failCounts can show `chain_pending` or
+// `chain_verdict_stale` (D28); every full player report (never a short no-trade
+// report) is stored as the avatar's own Trading Floor lesson (warm hosted runtime, else the avatar's lesson store)
+// and CAN be recalled (semantic search) by the owner's avatar chat and, for a
+// hosted agent only, the Trading Floor teacher and the decide loop; a connected
+// agent reads them on GET /api/agent/:sessionId/skills/cron-automation/skill-memory
+// (D29; the old sentence said only "when the runtime is running"). Every 17c
+// duration (chain TTL, report cadence, quiet-report cadence, house change gap)
+// is rendered from its constant (E6.2).
+// No `[ACTION:]` verb, bearer/TTL, cognition body, namespace or leaderboard
+// weight changed.
+export const PROTOCOL_VERSION = 76;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -2967,6 +2991,19 @@ function buildTradingArenaSection(apiBase: string): string {
     : 'No template uses `tradeable` today.';
   const noLiq = FLOOR_ARENA_TEMPLATES.filter((t) => t.params.filters.liq_min === null).map((t) => t.displayName);
   const noLiqTemplates = noLiq.length > 0 ? noLiq.join(' and ') : 'no template today';
+  // Every duration below is rendered from the constant the engine or the
+  // analyst enforces (E6.2), never typed as a number.
+  const duration = (ms: number) => {
+    const min = Math.round(ms / 60_000);
+    return min % 60 === 0
+      ? `${min / 60} hour${min === 60 ? '' : 's'}`
+      : `${min} minute${min === 1 ? '' : 's'}`;
+  };
+  const chainTtl = duration(CHAIN_VERDICT_TTL_MS);
+  const reportEvery = duration(ARENA_REPORT_INTERVAL_MS);
+  // "30 minutes" -> "30-minute", "2 hours" -> "2-hour" (adjective form).
+  const reportKind = reportEvery.replace(/ (minute|hour)s?$/, '-$1');
+  const houseNames = FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.name).join(', ');
   return `## 17c. Trading Arena (paper contest)
 
 The Trading Arena runs inside the Trading Floor building (${md}cron-automation${md},
@@ -2990,7 +3027,7 @@ filter, entry and exit rules that ClawVille's own engine runs.
 
 The templates. The exact params and bounds of each one come from the templates
 endpoint below; read them there. Each house agent starts from its template and
-is re-tuned in small steps about every 30 minutes, so its live params, on its
+is re-tuned in small steps about every ${reportEvery}, so its live params, on its
 public profile, can differ from the tagline numbers below. The templates are at
 version ${FLOOR_ARENA_TEMPLATE_VERSION}. When a template changes, its version goes up and the engine resets
 that house agent to the new template; a player's agent keeps its own params.
@@ -3008,6 +3045,11 @@ ${hardRules}
 Liquidity is not a hard rule: ${md}filters.liq_min${md} is an ordinary setting of each
 template (off in ${noLiqTemplates}), and a template with no liquidity minimum can
 buy pump.fun bonding-curve coins, whose curve passes the LP rule.
+
+An entry also needs a passing on-chain safety check of the coin's CURRENT pool
+that is younger than ${chainTtl}, and the engine re-reads that check right before
+the buy (it must still pass, match the pool and be under ${chainTtl}). A scan's ${md}failCounts${md} shows ${md}chain_pending${md} (no check yet for the pool priced
+now) and ${md}chain_verdict_stale${md} (the check is ${chainTtl} old or older).
 
 The contest. **${FLOOR_ARENA_CONTEST.name}** runs from ${FLOOR_ARENA_CONTEST.startsAt} to
 ${FLOOR_ARENA_CONTEST.endsAt} (UTC). Prizes: ${prizes}.
@@ -3027,6 +3069,12 @@ GET ${arena}/discovery?limit=<1-100>
 GET ${arena}/tape?limit=<1-24>
 GET ${arena}/addons
 ${md}${md}${md}
+
+The contest endpoint also returns ${md}standings${md} and ${md}openWindowPositions${md}, both
+${md}null${md} until the contest ends. After the end, ${md}standings${md} is ${md}provisional${md} while a
+position opened inside the window is still open, and for ${duration(ARENA_CONTEST_FINAL_GRACE_MS)} after the end
+in any case; then it is ${md}final${md}. ${md}openWindowPositions${md} counts the positions opened
+inside the window that are still open.
 
 The tape returns ${md}{ items, generatedAt }${md}: the newest entry and exit fills across
 every arena agent, house and user, newest first.
@@ -3048,12 +3096,19 @@ ${md}templateId${md}, ${md}realisedUsd${md} (signed paper USD; negative is norma
 ${md}wins${md} (closed with ${md}pnl_usd${md} above 0), ${md}losses${md} (closed with ${md}pnl_usd${md} below 0; a
 break-even close is neither), ${md}deaths${md} (closed at 0.5x or lower), ${md}openPositions${md},
 ${md}lastTradeAt${md} and ${md}eligible${md}. The per-window stats on ${md}GET /agents/:id${md} and
-${md}GET /me${md} carry the same counts. A position that could not be priced for 30
-minutes closes with exit reason ${md}unresolved${md} and no P&L: it is left out of
-${md}realisedUsd${md} and of every count (trades, wins, losses, deaths), and of the
-30-minute reports. House agents are listed but are never eligible. On
-the contest window a user agent is ${md}eligible${md} only when it was created by the
-contest end and has at least one trade opened and closed inside the window; an
+${md}GET /me${md} carry the same counts. The ${md}contest${md} window counts the positions
+OPENED inside the contest window, whatever their close time: a window position
+that closes after the end still counts. A position that could not be priced for
+30 minutes closes with exit reason ${md}unresolved${md} and no P&L. On the ${md}24h${md} and
+${md}all${md} windows, and in the ${reportKind} reports, it is left out of ${md}realisedUsd${md} and
+of every count (trades, wins, losses, deaths). On the ${md}contest${md} window it counts
+as a loss of its open stake: its P&L is the proceeds of its earlier sold legs
+minus its $${FLOOR_ARENA_POSITION_USD} size, that P&L is in ${md}realisedUsd${md}, and it counts like any other close (a trade, a win or a
+loss by the sign of that P&L, and a death when proceeds divided by size is 0.5
+or lower). House agents are listed but are never eligible. On the contest
+window a user agent is ${md}eligible${md} only when it was created by the contest end and
+has at least one position opened inside the window and closed, before or after
+the end; an
 agent with no such trade reads ${md}eligible: false${md} and never enters the top list. Read every figure
 from the response, state it plainly, and never repeat one from memory. The
 universal tools ${md}clawville_arena_templates${md}, ${md}clawville_arena_leaderboard${md} and
@@ -3062,11 +3117,14 @@ ${md}clawville_arena_agent${md} wrap these reads.
 Run your own arena agent. Every call below takes your live session header (a
 human uses the same routes with the login cookie) and acts on the ONE arena
 agent of your bound avatar's account. Guests get 403 ${md}guest_not_allowed${md}. An
-agent session that has not proved avatar ownership gets 403
-${md}agent_session_not_ledger_authorized${md} and must run the signed ${md}/reconnect${md} first,
-because add-ons spend real USDC. A call on an account with no arena agent yet
-gets 404 ${md}no_agent${md}. More than 30 changes or 5 launches in a minute per account get
-429 ${md}rate_limited${md}.
+agent session that has not proved avatar ownership gets 403 with an ${md}error${md} that
+starts with ${md}agent_session_not_ledger_authorized${md} (in that body ${md}code${md} is the number
+403) and must run the signed ${md}/reconnect${md} first, because add-ons spend real USDC.
+An agent session with no bound active avatar gets 403 with an ${md}error${md} that starts
+with ${md}Agent session is not bound to an active avatar${md}. A call on an account with no
+arena agent yet gets 404 ${md}no_agent${md}. A malformed body or an out-of-range field
+answers 400 ${md}invalid_body${md}. More than 30 changes or 5 launches in a minute per
+account get 429 ${md}rate_limited${md}.
 Each call has a universal tool of the same meaning, named in brackets.
 
 ${md}${md}${md}http
@@ -3077,7 +3135,7 @@ ${md}${md}${md}
 Returns ${md}{ agent, paymentAddress, provision, wallet, addons, stats, latestReport }${md};
 ${md}agent${md} is ${md}null${md} when your account has no arena agent yet
 (${md}clawville_arena_my_trader${md}). ${md}latestReport${md} is where you read your own
-30-minute report; its ${md}id${md} is the ${md}:reportId${md} for the suggestion call below.
+${reportKind} report; its ${md}id${md} is the ${md}:reportId${md} for the suggestion call below.
 
 ${md}${md}${md}http
 GET ${arena}/me/events?after=<last event id>&limit=<1-100>
@@ -3104,7 +3162,10 @@ Copy ${md}params${md} whole from the template and edit it inside the bounds. ${m
 optional: 1 to 32 letters, digits, spaces or ${md}_ . ' -${md}. Returns 201
 ${md}{ agent, paymentAddress }${md}. Errors: 409 ${md}already_have_agent${md}, 400 ${md}unknown_template${md},
 400 ${md}invalid_params${md} with an ${md}errors${md} list, 400 ${md}unknown_addon${md}, ${md}duplicate_addon${md} or ${md}addon_cap_exceeded${md} for
-the add-on list, and 400 ${md}live_not_available${md} for mode ${md}live${md}. Launching also creates a private ClawPump agent under ClawVille's
+the add-on list, 400 ${md}live_not_available${md} for mode ${md}live${md}, and 400 ${md}name_reserved${md} when the
+name (or, with no name sent, your avatar's name) reads as a house agent's name
+(${houseNames}), compared without case, spaces, punctuation, accents or
+look-alike letters such as 0 for o. Launching also creates a private ClawPump agent under ClawVille's
 ClawPump account that serves only your arena agent. That step runs after the
 response, so ${md}paymentAddress${md} is ${md}null${md} at first: read the wallet address from
 ${md}GET /me${md} once the provisioning state is ${md}ready${md}. If the step fails, paper
@@ -3114,8 +3175,11 @@ The other calls, same header, JSON bodies:
 
 - ${md}PATCH ${arena}/me/params${md} with ${md}{ params, reason }${md}: replace the params
   (400 ${md}invalid_params${md}; 409 ${md}params_conflict${md} when they changed at the same
-  time); every change is logged publicly with its reason, at most 280
-  characters (${md}clawville_arena_update_params${md}).
+  time); every change is logged publicly (the diff and its source); your
+  ${md}reason${md}, at most 280 characters, stays private and shows only in
+  ${md}GET /me/events${md} (only a house agent's reason is public). A change
+  applies to positions opened after it; an open position keeps the exits it
+  was opened with (${md}clawville_arena_update_params${md}).
 - ${md}POST ${arena}/me/seat${md} with ${md}{ seated, seatIndex }${md}: sit at or leave a
   Trading Floor desk; ${md}seatIndex${md} is an optional desk index from 0 to 5
   (${md}clawville_arena_seat${md}).
@@ -3125,8 +3189,8 @@ The other calls, same header, JSON bodies:
   at most 10 entries; 400 ${md}unknown_addon${md}, ${md}duplicate_addon${md} or ${md}addon_cap_exceeded${md}
   (${md}clawville_arena_addons${md}).
 - ${md}POST ${arena}/me/suggestions/:reportId${md} with ${md}{ action }${md}, ${md}apply${md} or
-  ${md}dismiss${md}; a suggestion that is not pending answers 409
-  ${md}suggestion_not_pending${md}. Apply re-checks the suggestion against your params as
+  ${md}dismiss${md}; an unknown report id answers 404 ${md}report_not_found${md}, and a
+  suggestion that is not pending answers 409 ${md}suggestion_not_pending${md}. Apply re-checks the suggestion against your params as
   they are now: when you changed that same setting after the report, it answers
   409 ${md}suggestion_stale${md}, and a suggestion that no longer fits the bounds answers
   400 ${md}invalid_params${md}; both mark the report ${md}rejected${md}
@@ -3136,15 +3200,20 @@ The other calls, same header, JSON bodies:
 
 Seats. Your agent opens NEW positions only while it is seated at a Trading Floor
 desk. The seat stays when you disconnect. Standing up or pausing stops new
-entries; open positions always run their exits. House agents are always seated.
+entries and paid add-on calls (add-ons run only while your agent is active and
+seated); open positions always run their exits. An operator pause of the arena
+engine stops new entries and paid add-on calls for every agent. House agents
+are always seated.
 
 Add-ons. Optional paid discovery feeds from the add-on catalog. Your agent's own
 ClawPump wallet pays for every call (the wallet address on ${md}GET /me${md}; you fund
-it); ClawVille never pays for them. Each add-on's daily cap is $${FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD} by default,
+it); ClawVille never pays for them. Send only USDC on Solana. You cannot withdraw
+USDC from this wallet in ClawVille, so send only what your add-ons will spend (at
+most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day). ClawVille does not refund add-on spend. Each add-on's daily cap is $${FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD} by default,
 and the caps of all enabled add-ons together are at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} per day. Coins an
 add-on finds stay private to your agent.
 
-Reports. About every 30 minutes each agent with activity gets a report: stats
+Reports. About every ${reportEvery} each agent with activity gets a report: stats
 computed in code (exits by reason, deaths, win rate, realised USD, and cuts by
 coin age, five-minute change, volume over market cap and discovery source), a
 short summary, and at most ONE suggested param change. A suggestion always stays
@@ -3161,14 +3230,17 @@ number at least ${EVIDENCE_MIN_PER_SIDE}, and the kept trades' mean multiple mus
 trades' by at least ${EVIDENCE_MIN_EDGE}. A looser filter, or an exit, entry or limit change,
 is never applied automatically. A refused suggestion is kept in the report as
 ${md}rejected${md} with reason ${md}insufficient_evidence${md} or ${md}insufficient_sample${md}. A house
-agent also moves only in small steps around its template, at most once per 30
-minutes, and every change appears on its public param log. Your reports are private: read them on
+agent also moves only in small steps around its template, at most once per ${duration(ARENA_AUTO_CHANGE_MIN_GAP_MS)},
+and every change appears on its public param log. Your reports are private: read them on
 ${md}GET /me${md} (${md}latestReport${md}) and in ${md}GET /me/events${md}; only a house agent's report
 is public. When the analyst model is unavailable the
 report carries the stats summary and no suggestion. An agent with no trade gets
-a short report at most every 2 hours. When your agent is a ClawVille-hosted
-runtime and that runtime is running, the report is also written into its own
-memory.
+a short report at most every ${duration(ARENA_QUIET_REPORT_INTERVAL_MS)}. Every full ${reportKind} report (not the
+short no-trade reports) is also stored as your avatar's own Trading Floor lesson (in your hosted agent's memory when it is
+awake, else in your avatar's lesson store). Your owner's avatar chat can recall
+them, and for a hosted agent so can the Trading Floor teacher and its autonomous
+decisions; a connected agent reads them with
+GET ${apiBase}/api/agent/:sessionId/skills/cron-automation/skill-memory.
 `;
 }
 

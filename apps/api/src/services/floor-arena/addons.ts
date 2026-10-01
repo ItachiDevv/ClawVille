@@ -7,13 +7,17 @@ import {
   CLAWPUMP_X402_MAX_CALL_USD,
   ClawPumpWriterError,
   clawPumpArenaWriter,
+  clawPumpWriterBudget,
   isAllowedX402Url,
   type ClawPumpWalletBalance,
   type ClawPumpX402Result,
   type X402PayInput,
 } from '../clawpump-writer';
-import { arenaSkillSynced, ensureAddonSkill } from './provisioning';
+import { entriesPaused } from './engine';
+import { ARENA_X402_ADDS_PER_TICK, arenaX402RemovalsDeferred, ensureArenaX402ForPay, type ArenaX402Outcome } from './provisioning';
 import {
+  arenaAddonChargeRefSeen,
+  confirmArenaAddonDispatch,
   finalizeArenaAddonCall,
   insertArenaEvent,
   insertArenaPrivateMints,
@@ -34,7 +38,10 @@ import {
  * x402 route with `maxAmountUsd` = the catalog price, never more.
  *
  * Limits, all enforced before a payment:
- *  - global kill switch FLOOR_ARENA_ADDON_PAYMENTS_ENABLED ('false' = off; default on),
+ *  - global kill switch FLOOR_ARENA_ADDON_PAYMENTS_ENABLED ('false' = off; default on;
+ *    read at container start, so a change needs a restart),
+ *  - the operator pause (POST /api/admin/floor-arena/engine/pause), immediate,
+ *  - only ACTIVE, SEATED, provisioned agents (a standing agent opens no positions),
  *  - only vetted hosts (CLAWPUMP_X402_ALLOWED_HOSTS), whatever the catalog says,
  *  - per add-on poll interval >= max(catalog minIntervalS, 600 s) (D9 / D15),
  *    measured from the last ATTEMPT (ok or not), so a failing feed is not hammered,
@@ -46,10 +53,11 @@ import {
  * payment as a 'reserved' row (catalog price) under a per-agent advisory lock
  * with the cap check and a re-read of the agent's settings in the same
  * transaction, then finalised. `price_usd` is the amount counted against the
- * cap: what ClawPump reports it charged; else 0 ONLY for a verified no-charge
- * (duplicate:true, a refused ClawPump request, a documented no-charge vendor
- * status); else the catalog price (success without an amount, any unverified
- * failure, a transport error).
+ * cap: 0 for a duplicate:true whose settlement tx is already booked; else what
+ * ClawPump reports it charged; else 0 ONLY for a verified no-charge (a refused
+ * ClawPump request, a documented no-charge vendor status); else the catalog
+ * price (success or a duplicate without an amount, any unverified failure, a
+ * transport error).
  * Dedupe: consecutive calls alternate `dedupeVary` (all-time call count).
  * Mints from an add-on stay private to that agent (`floor_arena_private_mints`).
  */
@@ -195,7 +203,7 @@ export function extractAddonMints(payload: unknown, mintPath: string): string[] 
   return extractAddonTokens(payload, mintPath).map((token) => token.mint);
 }
 
-/** `duplicate: true` = ClawPump replayed a cached body for an identical call: no new charge, old data. */
+/** `duplicate: true` = ClawPump replayed a cached body for an identical call: old data; a new charge is not ruled out. */
 export function isDuplicatePayload(payload: unknown): boolean {
   return !!payload && typeof payload === 'object' && (payload as Record<string, unknown>).duplicate === true;
 }
@@ -291,6 +299,9 @@ export function mayHaveCharged(error: unknown): boolean {
       return true;
     case 'http_error':
       return (error.status ?? 500) >= 500;
+    // Our own call budget refused it BEFORE any request (Codex r21 / audit-money P3).
+    case 'budget_exhausted':
+      return false;
     default:
       return false;
   }
@@ -364,6 +375,10 @@ export function checkAddonCall(input: {
 export interface ArenaAddonDeps {
   catalog: () => readonly FloorArenaAddon[];
   paymentsEnabled: () => boolean;
+  /** Money audit M2: the operator pause (POST /api/admin/floor-arena/engine/pause) also stops payments. */
+  paused: () => boolean;
+  /** Money audit N3: each agent (and each reservation) reads the real clock, never the tick start. */
+  clock: () => Date;
   listAgents: () => Promise<ArenaAgentRecord[]>;
   readStats: (agentId: string, dayStart: Date) => Promise<ArenaAddonCallStat[]>;
   /** Cap check + 'reserved' ledger row in ONE transaction under the per-agent advisory lock. */
@@ -373,9 +388,22 @@ export interface ArenaAddonDeps {
   insertPrivateMints: typeof insertArenaPrivateMints;
   insertEvent: (agentId: string, event: { type: ArenaEventType; summary: string; data?: unknown }) => Promise<void>;
   walletUsdc: (clawpumpAgentId: string) => Promise<number | null>;
-  skillSynced: (agentId: string) => boolean | undefined;
-  ensureSkill: (agentId: string) => Promise<boolean>;
-  pay: (clawpumpAgentId: string, input: X402PayInput) => Promise<ClawPumpX402Result>;
+  /**
+   * Codex r19 (single writer, audit-money S5): the leader's x402 reconcile for
+   * this arena agent (x402 lock, current row, fresh GET, add if wanted), then
+   * true only when x402 is on a stopped agent that wants it. No cache.
+   */
+  x402Ready: (agentId: string, allowAdd: boolean) => Promise<ArenaX402Outcome>;
+  /** Codex r20 (3): false when the shared ClawPump call budget has no room for normal work (removals keep a reserve). */
+  budgetOk: () => boolean;
+  /** audit-money F: true while the leader still owes an x402 removal it could not attempt; adds wait. */
+  removalsDeferred: () => boolean;
+  /** Codex r17 #1/#2: the last check before the pay (same lock as seat/status/add-on writes); releases the reservation on failure. */
+  confirmDispatch: typeof confirmArenaAddonDispatch;
+  /** Codex r17 #5: was this provider charge (settlement tx) already booked for the agent? */
+  chargeRefSeen: (agentId: string, ref: string) => Promise<boolean>;
+  /** `arenaAgentId` binds the payment to the arena row that owns the ClawPump agent (writer proof). */
+  pay: (clawpumpAgentId: string, input: X402PayInput, arenaAgentId: string) => Promise<ClawPumpX402Result>;
 }
 
 export const defaultArenaAddonDeps: ArenaAddonDeps = {
@@ -388,13 +416,20 @@ export const defaultArenaAddonDeps: ArenaAddonDeps = {
   insertPrivateMints: insertArenaPrivateMints,
   insertEvent: insertArenaEvent,
   walletUsdc,
-  skillSynced: arenaSkillSynced,
-  ensureSkill: (agentId) => ensureAddonSkill(agentId),
-  pay: (clawpumpAgentId, input) => clawPumpArenaWriter.x402Pay(clawpumpAgentId, input),
+  x402Ready: (agentId, allowAdd) => ensureArenaX402ForPay(agentId, undefined, allowAdd),
+  budgetOk: () => clawPumpWriterBudget().normalAllowed,
+  removalsDeferred: () => arenaX402RemovalsDeferred(),
+  pay: (clawpumpAgentId, input, arenaAgentId) => clawPumpArenaWriter.x402Pay(clawpumpAgentId, input, arenaAgentId),
+  confirmDispatch: confirmArenaAddonDispatch,
+  chargeRefSeen: arenaAddonChargeRefSeen,
+  paused: () => entriesPaused(),
+  clock: () => new Date(),
 };
 
 const notices = new Map<string, number>();
 let tickRunning = false;
+/** Adds left in the current add-on tick (audit-money F). */
+let addsLeft = ARENA_X402_ADDS_PER_TICK;
 
 /** Test seam. */
 export function _resetArenaAddonsForTest(): void {
@@ -403,6 +438,7 @@ export function _resetArenaAddonsForTest(): void {
   walletFailureAt = 0;
   walletInflight = null;
   tickRunning = false;
+  addsLeft = ARENA_X402_ADDS_PER_TICK;
 }
 
 /** A short code for a failed ClawPump x402 payload: `vendor_<code>`, never the vendor's text. */
@@ -478,6 +514,8 @@ export async function runArenaAddonAgent(
   const dayStart = utcDayStart(now);
   const dayMs = dayStart.getTime();
   const stats = await deps.readStats(agent.id, dayStart);
+  // Read once per agent per tick, never kept across ticks (Codex r19).
+  let x402: boolean | null = null;
 
   for (const addon of enabled) {
     const item = catalog.get(addon.id)!;
@@ -520,28 +558,45 @@ export async function runArenaAddonAgent(
       continue;
     }
 
-    if (deps.skillSynced(agent.id) !== true) {
+    // Codex r19 (single writer, audit-money S5): this tick runs on the leader,
+    // so it reconciles x402 itself right before paying (adds it when wanted).
+    // Without x402 on a stopped agent nothing is reserved and nothing is paid;
+    // confirmDispatch and the writer's last read check again before the POST.
+    if (x402 === null) {
       try {
-        await deps.ensureSkill(agent.id);
+        // At most ARENA_X402_ADDS_PER_TICK adds a tick, and none while a removal is deferred.
+        const outcome = await deps.x402Ready(agent.id, addsLeft > 0 && !deps.removalsDeferred());
+        if (outcome === 'added') addsLeft -= 1;
+        x402 = outcome === 'added' || outcome === 'on';
       } catch (error) {
-        await notice(deps, `${key}:skill`, nowMs, NOTICE_INTERVAL_MS, agent.id,
-          `${item.name}: skipped, could not enable x402 on the execution wallet (${errorText(error)}).`,
-          { addonId: addon.id, reason: 'skill_sync_failed', error: errorText(error) });
-        continue;
+        x402 = false;
+        console.error('[floor-arena] add-on x402 check failed:', errorText(error));
       }
-      if (deps.skillSynced(agent.id) !== true) continue;
+    }
+    if (!x402) {
+      await notice(deps, `${key}:skill`, nowMs, NOTICE_INTERVAL_MS, agent.id,
+        `${item.name}: waiting for x402 on the execution wallet. The engine retries on its next pass.`,
+        { addonId: addon.id, reason: 'x402_not_ready' });
+      continue;
     }
 
-    // The authoritative check + reservation, under the per-agent advisory lock.
+    // Audit-money: a pause that lands while an earlier add-on of this agent was
+    // paying stops this one before it even reserves.
+    if (deps.paused()) return;
+    // The authoritative check + reservation, under the per-agent advisory lock,
+    // at the REAL time (balance and skill calls above can take seconds).
+    const reserveAt = deps.clock();
     const reservation = await deps.reserveCall({
       agentId: agent.id,
       addonId: addon.id,
       clawpumpAgentId,
-      at: now,
+      at: reserveAt,
       priceUsd: price,
-      dayStart,
+      dayStart: utcDayStart(reserveAt),
       // Codex r3 #10: the cap is the one on the agent row NOW, read under the lock.
-      check: (locked, currentCapUsd) => checkAddonCall({ ...checkInput, addonCapUsd: currentCapUsd, stats: locked }),
+      check: (locked, currentCapUsd) => checkAddonCall({
+        ...checkInput, nowMs: reserveAt.getTime(), addonCapUsd: currentCapUsd, stats: locked,
+      }),
     });
     if (!reservation.reserved) {
       // Another container reserved first (interval) or the cap filled meanwhile.
@@ -551,11 +606,35 @@ export async function runArenaAddonAgent(
     // Dedupe rotation: the all-time call count BEFORE this reservation.
     const request = buildAddonRequest(item, reservation.callNumber);
 
+    // Codex r17 #1/#2: the LAST gate before money moves. Same per-agent lock as
+    // the owner's seat/status/add-on writes: a stand-up, pause, stop or add-on
+    // change that committed after the reservation releases it here (price 0,
+    // 'released_before_pay'), and nothing is paid. ACCEPTED residual window:
+    // a change that commits after this check and before the request reaches
+    // ClawPump; it can no longer stop this one call.
+    const dispatch = await deps.confirmDispatch({
+      reservationId: reservation.id,
+      agentId: agent.id,
+      addonId: addon.id,
+      clawpumpAgentId,
+      paused: deps.paused,
+    });
+    if (!dispatch.ok) {
+      await notice(deps, `${key}:released:${dispatch.reason}`, nowMs, NOTICE_INTERVAL_MS, agent.id,
+        `${item.name}: skipped before paying (${dispatch.reason === 'paused' ? 'the arena is paused' : 'the agent stood up, paused or changed its add-ons'}). Nothing was charged.`,
+        { addonId: addon.id, reason: dispatch.reason });
+      if (dispatch.reason === 'paused') return;
+      continue;
+    }
+
     // What counts against the cap is what ClawPump CHARGED (lead rule):
     //  - ok: `amount_charged_atomic` when reported, else the catalog price;
-    //  - duplicate:true: 0 (a cached replay, no new charge, old data: parse nothing);
-    //  - a vendor failure in a 200 (400/402/422 upstream): the reported charge, else 0;
-    //  - a transport error (timeout, 5xx, ...): the catalog price, because it may have paid.
+    //  - duplicate:true: 0 only when its settlement tx is already booked, else
+    //    the reported amount, else the catalog price (old data: parse nothing);
+    //  - a vendor failure in a 200: the reported charge, else 0 only for a documented
+    //    no-charge status (original_code 400/402/422), else the catalog price;
+    //  - a thrown error: the catalog price when it may have paid (timeout, 5xx, ...),
+    //    0 when ClawPump refused the request (mayHaveCharged).
     // The stored error is a CODE, never vendor text (vendor fields are untrusted).
     let result: ClawPumpX402Result | null = null;
     let error: string | null = null;
@@ -567,7 +646,7 @@ export async function runArenaAddonAgent(
         ...(request.query ? { query: request.query } : {}),
         ...(request.body ? { body: request.body } : {}),
         maxAmountUsd: price,
-      });
+      }, agent.id);
       const reported = chargedUsdFromPayload(result.payload);
       if (!result.ok) {
         error = vendorErrorCode(result.payload);
@@ -576,7 +655,15 @@ export async function runArenaAddonAgent(
         // no-charge vendor status). Otherwise the catalog price stays booked.
         charged = reported ?? (isDocumentedNoChargeFailure(result.payload) ? 0 : price);
       } else if (isDuplicatePayload(result.payload)) {
-        charged = 0;
+        // A cached replay of the FIRST call: same body, same settlement tx
+        // (X402_FEEDS_2026-09-30.md). Codex r17 #5: book its charge at most
+        // once per provider charge id: 0 when that tx was already booked for
+        // this agent (the only proof of no NEW charge). Codex r18: otherwise
+        // the reported amount, and with no amount the reserved catalog price
+        // (an unknown charge is never booked as 0). Over-counts against the
+        // cap at worst: the safe side.
+        const ref = extractResponseRef(result.payload);
+        charged = ref !== null && (await deps.chargeRefSeen(agent.id, ref)) ? 0 : reported ?? price;
       } else {
         // A 200 without `amount_charged_atomic` keeps the catalog price.
         charged = reported ?? price;
@@ -591,23 +678,27 @@ export async function runArenaAddonAgent(
     const tokens = ok && !duplicate ? extractAddonTokens(result!.payload, item.mintPath, item.symbolPath) : [];
     let fresh = 0;
     try {
-      fresh = tokens.length > 0 ? await deps.insertPrivateMints(agent.id, addon.id, tokens, now) : 0;
+      fresh = tokens.length > 0 ? await deps.insertPrivateMints(agent.id, addon.id, tokens, deps.clock()) : 0;
     } catch (insertError) {
       console.error('[floor-arena] add-on mint insert failed:', insertError instanceof Error ? insertError.message : 'error');
     }
     // If this update fails, the reservation stays 'reserved' at the catalog
-    // price: still counted against the cap (the safe side).
+    // price: still counted against the cap (the safe side). A duplicate keeps
+    // its tx only when it booked a charge, so a later replay of the same tx
+    // matches it and books 0 (Codex r17 #5).
     await deps.finalizeCall(reservation.id, {
       priceUsd: charged,
       ok,
       error,
       mints: tokens.length,
-      responseRef: ok && !duplicate ? extractResponseRef(result!.payload) : null,
+      responseRef: ok && (!duplicate || charged > 0) ? extractResponseRef(result!.payload) : null,
     });
     await deps.insertEvent(agent.id, {
       type: 'addon',
       summary: duplicate
-        ? `${item.name}: ClawPump returned a cached duplicate. No charge, no new tokens.`
+        ? charged > 0
+          ? `${item.name}: ClawPump returned a cached duplicate we cannot match to a booked charge. ${usd(charged)} counted against the daily cap, no new tokens.`
+          : `${item.name}: ClawPump returned a cached duplicate. No charge, no new tokens.`
         : ok
           ? `${item.name}: paid ${usd(charged)}, ${tokens.length} tokens (${fresh} new, private to this agent).`
           : `${item.name}: call failed (${error}). ${charged > 0 ? `${usd(charged)} counted against the daily cap.` : 'Nothing was charged.'}`,
@@ -620,18 +711,30 @@ export async function runArenaAddonAgent(
 
 /** Called every 60 s by the arena engine. Never throws. */
 export async function runArenaAddonsTick(
-  now: Date = new Date(),
+  _tickStart: Date = new Date(),
   deps: ArenaAddonDeps = defaultArenaAddonDeps,
 ): Promise<void> {
   if (tickRunning) return;
   tickRunning = true;
   try {
     if (!deps.paymentsEnabled()) return;
+    // Money audit M2: the operator pause stops paid calls at once (the env
+    // switch needs a container restart). In memory on this process, like the
+    // entry pause; the add-on tick runs on the same leader as the entries.
+    if (deps.paused()) return;
     const catalog = new Map(deps.catalog().map((addon) => [addon.id, addon]));
     if (catalog.size === 0) return;
+    addsLeft = ARENA_X402_ADDS_PER_TICK;
     for (const agent of await deps.listAgents()) {
+      if (deps.paused()) return;
+      // Codex r20 (3): the shared ClawPump budget is low -> defer the rest of this
+      // tick (x402 removals keep their reserve). One line per tick.
+      if (!deps.budgetOk()) {
+        console.warn('[floor-arena] ClawPump call budget reached: add-on calls deferred to the next tick.');
+        return;
+      }
       try {
-        await runArenaAddonAgent(deps, agent, catalog, now);
+        await runArenaAddonAgent(deps, agent, catalog, deps.clock());
       } catch (error) {
         console.error('[floor-arena] add-on tick failed for one agent:', error instanceof Error ? error.message : 'error');
       }

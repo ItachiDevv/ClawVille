@@ -14,6 +14,7 @@ import {
   validateFloorArenaParams,
   type FloorArenaAgentStatus,
   type FloorArenaEventType,
+  type FloorArenaExits,
   type FloorArenaParams,
   type FloorArenaProvisionState,
   type FloorArenaSuggestion,
@@ -136,6 +137,12 @@ export interface FloorArenaPositionView {
   pnlMult: number | null;
   exitReason: string | null;
   paramsVersion: number | null;
+  /**
+   * The exits frozen when the position opened (`entry_features.exits`), which
+   * the engine uses instead of the agent's current rules. Null when the route
+   * did not send them (a player's public profile leaves `entryFeatures` out).
+   */
+  entryExits: FloorArenaExits | null;
 }
 
 export interface FloorArenaReportView {
@@ -249,6 +256,14 @@ export interface FloorArenaContestView {
   /** The contest block as the route sends it; the 3D board reads it by key. */
   contest: { name: string; startsAt: string; endsAt: string; prizes: FloorArenaContestPrize[] } | null;
   status: 'upcoming' | 'live' | 'ended' | null;
+  /**
+   * D30: null until the contest ends; then 'provisional' while a position
+   * opened inside the window is still open (it can still change the score),
+   * and 'final' once the last of them has closed.
+   */
+  standings: 'provisional' | 'final' | null;
+  /** Positions opened inside the window that are still open; null until the end. */
+  openWindowPositions: number | null;
   /** Top 10 eligible player agents on the contest window. */
   top: FloorArenaLeaderboardRow[];
   /** House agents on the same window, for comparison; never eligible. */
@@ -383,7 +398,27 @@ export function readPosition(value: unknown): FloorArenaPositionView | null {
     pnlMult: num(row.pnlMult),
     exitReason: str(row.exitReason),
     paramsVersion: num(row.paramsVersion),
+    entryExits: readExits(record(row.entryFeatures)?.exits),
   };
+}
+
+/** Same acceptance rule as the engine's `exitsOf`: a tp list and a max hold. */
+function readExits(value: unknown): FloorArenaExits | null {
+  const row = record(value);
+  if (!row || !Array.isArray(row.tp) || typeof row.max_hold_s !== 'number') return null;
+  const tp: Array<[number, number]> = [];
+  for (const leg of row.tp) {
+    const multiple = Array.isArray(leg) ? num(leg[0]) : null;
+    const fraction = Array.isArray(leg) ? num(leg[1]) : null;
+    if (multiple === null || fraction === null) return null;
+    tp.push([multiple, fraction]);
+  }
+  const optional = (input: unknown): number | null | undefined => (input === null || input === undefined ? null : num(input) ?? undefined);
+  const stop = optional(row.stop_mult);
+  const trail = optional(row.trail_from_peak);
+  const arm = optional(row.trail_arm_mult);
+  if (stop === undefined || trail === undefined || arm === undefined) return null;
+  return { tp, stop_mult: stop, trail_from_peak: trail, trail_arm_mult: arm, max_hold_s: row.max_hold_s };
 }
 
 export function readReport(value: unknown): FloorArenaReportView | null {
@@ -569,6 +604,8 @@ export function readContest(body: Record<string, unknown>): FloorArenaContestVie
       ? { name, startsAt, endsAt, prizes: list(contest.prizes, readPrize) }
       : null,
     status: body.status === 'upcoming' || body.status === 'live' || body.status === 'ended' ? body.status : null,
+    standings: body.standings === 'provisional' || body.standings === 'final' ? body.standings : null,
+    openWindowPositions: countOrNull(body.openWindowPositions),
     top: list(body.top, readLeaderboardRow),
     house: list(body.house, readLeaderboardRow),
   };
@@ -681,6 +718,7 @@ export function floorArenaErrorCopy(error: unknown): string {
   if (code === 'suggestion_not_pending') return 'That suggestion was already answered.';
   if (code === 'suggestion_stale') return 'You changed that rule after the report, so the suggestion no longer applies.';
   if (code === 'agent_stopped') return 'This trader is stopped, so it cannot be paused or resumed.';
+  if (code === 'name_reserved') return 'That name belongs to a house trader. Type another name for your trader.';
   if (code === 'invalid_body') return 'Some details were not accepted. Check the name and the numbers, then try again.';
   if (code === 'no_agent' || (error instanceof ApiError && error.status === 404)) return 'You do not run an arena trader yet.';
   if (error instanceof ApiError && error.status === 401) return 'Your session ended. Sign in again.';

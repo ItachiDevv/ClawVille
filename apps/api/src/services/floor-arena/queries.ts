@@ -668,12 +668,25 @@ async function writeParamsLocked(tx: Tx, input: ParamUpdateInput): Promise<numbe
 }
 
 /** One column update plus one event, atomically. `set` is a fixed SQL fragment built by the callers below. */
+/**
+ * The per-agent lock that serialises add-on payment with the owner's state
+ * changes (Codex r17 #2). Reservation, pre-dispatch confirmation and every
+ * seat/status/add-on write take it FIRST, then touch the agent row, so the lock
+ * order is the same everywhere (no deadlock).
+ */
+function addonLock(agentId: string): SQL {
+  return sql`SELECT pg_advisory_xact_lock(hashtextextended(${`floor-arena-addon:${agentId}`}, 0))`;
+}
+
 async function updateAgentWithEvent(
   agentId: string,
   set: SQL,
   event: { type: ArenaEventType; summary: string; data: unknown },
 ): Promise<ArenaAgentRecord | null> {
   return db.transaction(async (tx) => {
+    // Lock BEFORE the update (same order as the payment path): a stand-up,
+    // pause or add-on change waits for an in-flight confirmation and vice versa.
+    await tx.execute(addonLock(agentId));
     const updated = await rows(sql`
       UPDATE floor_arena_agents SET ${set}, updated_at = now() WHERE id = ${agentId} RETURNING *
     `, tx);
@@ -895,9 +908,9 @@ export type ArenaAddonReservation =
  *
  * Codex r3 #10: the same transaction re-reads the AGENT row `FOR SHARE` (a
  * concurrent PATCH /me/addons waits for this commit) and aborts with
- * 'agent_changed' unless the agent is still active, provisioned, on the same
- * ClawPump agent, and the add-on is still enabled. `check` receives the
- * CURRENT daily cap, not the one the tick read earlier.
+ * 'agent_changed' unless the agent is still active, SEATED, provisioned, on
+ * the same ClawPump agent, and the add-on is still enabled. `check` receives
+ * the CURRENT daily cap, not the one the tick read earlier.
  */
 export async function reserveArenaAddonCall(input: {
   agentId: string;
@@ -909,14 +922,15 @@ export async function reserveArenaAddonCall(input: {
   check: (stats: ArenaAddonCallStat[], currentCapUsd: number) => ArenaAddonReserveCheck;
 }): Promise<ArenaAddonReservation> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`floor-arena-addon:${input.agentId}`}, 0))`);
+    await tx.execute(addonLock(input.agentId));
     const current = (await rows(sql`
-      SELECT status, provision_state, clawpump_agent_id, addons FROM floor_arena_agents
+      SELECT status, seated, provision_state, clawpump_agent_id, addons FROM floor_arena_agents
       WHERE id = ${input.agentId} AND kind = 'user'
       FOR SHARE
     `, tx))[0];
     const addon = current ? parseAgentAddons(current.addons).find((entry) => entry.id === input.addonId) : undefined;
-    if (!current || current.status !== 'active' || current.provision_state !== 'ready'
+    // Money audit M1: standing up (seated false) stops paid calls like pausing does.
+    if (!current || current.status !== 'active' || current.seated !== true || current.provision_state !== 'ready'
       || current.clawpump_agent_id !== input.clawpumpAgentId || !addon?.enabled) {
       return { reserved: false, check: { ok: false, reason: 'agent_changed', spentUsd: 0, capUsd: 0 } };
     }
@@ -932,6 +946,72 @@ export async function reserveArenaAddonCall(input: {
     const callNumber = stats.find((row) => row.addonId === input.addonId)?.callsTotal ?? 0;
     return { reserved: true, id: num(inserted[0]!.id), callNumber };
   });
+}
+
+/**
+ * Codex r17 #1/#2: the LAST check before the x402 pay is dispatched. A short
+ * transaction takes the same per-agent lock as the owner's seat/status/add-on
+ * writes, re-reads the agent row (active, seated, provisioned, same ClawPump
+ * agent, add-on enabled) and the engine pause. If anything fails it RELEASES the
+ * committed reservation (state done, price 0, error 'released_before_pay') in
+ * the same transaction, so it costs nothing against the cap; nothing was paid.
+ * A state change that commits after this transaction can no longer stop the
+ * payment: that window is the network send itself and is accepted.
+ */
+export async function confirmArenaAddonDispatch(input: {
+  reservationId: number;
+  agentId: string;
+  addonId: string;
+  clawpumpAgentId: string;
+  paused: () => boolean;
+}): Promise<{ ok: true } | { ok: false; reason: 'paused' | 'agent_changed' }> {
+  return db.transaction(async (tx) => {
+    await tx.execute(addonLock(input.agentId));
+    const current = (await rows(sql`
+      SELECT status, seated, provision_state, clawpump_agent_id, addons FROM floor_arena_agents
+      WHERE id = ${input.agentId} AND kind = 'user'
+      FOR SHARE
+    `, tx))[0];
+    const addon = current ? parseAgentAddons(current.addons).find((entry) => entry.id === input.addonId) : undefined;
+    const reason = input.paused()
+      ? 'paused'
+      : (!current || current.status !== 'active' || current.seated !== true || current.provision_state !== 'ready'
+        || current.clawpump_agent_id !== input.clawpumpAgentId || !addon?.enabled)
+        ? 'agent_changed'
+        : null;
+    if (reason === null) return { ok: true };
+    await tx.execute(sql`
+      UPDATE floor_arena_addon_calls
+      SET state = 'done', price_usd = 0, ok = false, error = 'released_before_pay', mints = 0
+      WHERE id = ${input.reservationId} AND state = 'reserved'
+    `);
+    return { ok: false, reason };
+  });
+}
+
+/** Codex r17 #5: has this agent already booked the provider charge `ref` (a settlement tx)? */
+export async function arenaAddonChargeRefSeen(agentId: string, ref: string): Promise<boolean> {
+  const list = await rows(sql`
+    SELECT 1 FROM floor_arena_addon_calls
+    WHERE agent_id = ${agentId} AND response_ref = ${ref} AND state = 'done' AND price_usd > 0
+    LIMIT 1
+  `);
+  return list.length > 0;
+}
+
+/**
+ * Codex r17 #4: row-specific ownership proof for the ClawPump writer. True
+ * only when `clawpumpAgentId` is the ClawPump agent of the USER arena row
+ * `arenaAgentId`. Read fresh every time (no cache), so a re-pointed or deleted
+ * row stops the writer at once.
+ */
+export async function isArenaClawPumpOwnedBy(clawpumpAgentId: string, arenaAgentId: string): Promise<boolean> {
+  const list = await rows(sql`
+    SELECT 1 FROM floor_arena_agents
+    WHERE id = ${arenaAgentId} AND kind = 'user' AND clawpump_agent_id = ${clawpumpAgentId}
+    LIMIT 1
+  `);
+  return list.length > 0;
 }
 
 /** Finalises a reservation with what was actually charged (0 for a duplicate or a refused call). */
@@ -1060,16 +1140,155 @@ export async function readArenaTape(limit: number): Promise<ArenaTapeItem[]> {
   return list.map(mapTapeRow).filter((item): item is ArenaTapeItem => item !== null);
 }
 
-/** User agents that may spend on add-ons right now (the add-on tick's work list). */
+/**
+ * User agents that may spend on add-ons right now (the add-on tick's work
+ * list). Money audit M1: only SEATED agents. A standing agent opens no new
+ * positions (D7), so it could not use the private mints it would pay for.
+ */
 export async function readArenaAddonAgents(): Promise<ArenaAgentRecord[]> {
   const list = await rows(sql`
     SELECT * FROM floor_arena_agents
-    WHERE kind = 'user' AND status = 'active' AND provision_state = 'ready'
+    WHERE kind = 'user' AND status = 'active' AND seated = true AND provision_state = 'ready'
       AND clawpump_agent_id IS NOT NULL
       AND addons @> '[{"enabled": true}]'::jsonb
     ORDER BY id ASC
   `);
   return list.map(mapAgentRow);
+}
+
+/**
+ * The R1 list: USER agents with a ClawPump agent, provision state ready or
+ * failed, NO enabled add-on, and a row change at or after `since` (turning
+ * add-ons off bumps updated_at); `since` null = every such agent (a new leader
+ * term's full pass). Keyset pages by id after `afterId`, so no row limit.
+ */
+export async function readArenaX402RecentOff(since: Date | null, afterId: string, limit: number): Promise<string[]> {
+  const list = await rows(sql`
+    SELECT id FROM floor_arena_agents
+    WHERE kind = 'user' AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
+      AND NOT (addons @> '[{"enabled": true}]'::jsonb)
+      AND (${since ? since.toISOString() : null}::timestamptz IS NULL OR updated_at >= ${since ? since.toISOString() : null}::timestamptz)
+      AND id > ${afterId}
+    ORDER BY id ASC
+    LIMIT ${limit}
+  `);
+  return list.map((row) => String(row.id));
+}
+
+/**
+ * The x402 background sweep's page: every USER agent with a ClawPump agent in
+ * provision state ready or failed, ids after `afterId` in id order (the
+ * caller keeps the cursor and wraps to '' at the end).
+ */
+export async function readArenaX402SweepAgents(afterId: string, limit: number): Promise<string[]> {
+  const list = await rows(sql`
+    SELECT id FROM floor_arena_agents
+    WHERE kind = 'user' AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
+      AND id > ${afterId}
+    ORDER BY id ASC
+    LIMIT ${limit}
+  `);
+  return list.map((row) => String(row.id));
+}
+
+/** Codex r21: the bounds of the x402 transaction (engine.ts openPosition pattern). */
+export const ARENA_X402_TX_TIMEOUT_MS = 60_000;
+export const ARENA_X402_STATEMENT_TIMEOUT_MS = 30_000;
+let x402TxBoundMissingWarned = false;
+
+/**
+ * Codex r20 (2) / r21 / audit-money L: runs `fn` while holding the per-agent
+ * x402 advisory lock ('floor-arena-x402:<id>') in a transaction that stays open
+ * for the whole call (ClawPump calls included).
+ * - pg_TRY_advisory_xact_lock: when another process (an old leader during a
+ *   failover) holds it, this returns { acquired: false } at once; the caller
+ *   skips the agent this tick, so the serial loop never waits behind it.
+ * - Bounded like engine.ts openPosition: ONE first statement sets
+ *   statement_timeout 30 s and, on PostgreSQL 17, resets transaction_timeout to
+ *   0 and arms it at 60 s (a server before 17 keeps the statement bound only and
+ *   we warn once). Each ClawPump HTTP call is bounded at 15 s by default
+ *   (CLAWPUMP_HTTP_TIMEOUT_MS, at most 30 s), below the 60 s transaction bound;
+ *   a section whose calls together pass 60 s is ended by Postgres (rolled back,
+ *   lock released) and the next tick re-checks (Codex D32: x402 hygiene).
+ * - A DIFFERENT key from the add-on row lock: route writes never wait on
+ *   ClawPump. The row read inside is readArenaAgentLocked, its own SHORT
+ *   transaction, so the add-on lock is never held across a ClawPump call.
+ */
+export async function tryWithArenaX402Lock<T>(
+  agentId: string,
+  fn: () => Promise<T>,
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
+  return db.transaction(async (tx) => {
+    const bound = await rows<{ tx_bound: string | null }>(sql`
+      SELECT set_config('statement_timeout', ${`${ARENA_X402_STATEMENT_TIMEOUT_MS}ms`}, true) AS statement_bound,
+        CASE WHEN current_setting('transaction_timeout', true) IS NULL THEN NULL
+             WHEN set_config('transaction_timeout', '0', true) IS NOT NULL
+               THEN set_config('transaction_timeout', ${`${ARENA_X402_TX_TIMEOUT_MS}ms`}, true) END AS tx_bound
+    `, tx);
+    if (!bound[0]?.tx_bound && !x402TxBoundMissingWarned) {
+      x402TxBoundMissingWarned = true;
+      console.warn('[floor-arena] this Postgres has no transaction_timeout (needs 17): x402 transactions are bounded per statement only');
+    }
+    const got = (await rows<{ locked: boolean }>(sql`
+      SELECT pg_try_advisory_xact_lock(hashtextextended(${`floor-arena-x402:${agentId}`}, 0)) AS locked
+    `, tx))[0];
+    if (got?.locked !== true) return { acquired: false } as const;
+    return { acquired: true, value: await fn() } as const;
+  });
+}
+
+/** The database clock (the R1 "changed since" watermark uses DB time, never the API host's clock). */
+export async function readDbNow(): Promise<Date> {
+  const list = await rows<{ now: unknown }>(sql`SELECT now() AS now`);
+  const value = list[0]?.now;
+  return value instanceof Date ? value : new Date(String(value));
+}
+
+/**
+ * Codex r20 (1): the fair removal cursor's page. USER agents with a ClawPump
+ * agent, provision state ready or failed, and NO enabled add-on, ids after
+ * `afterId` in id order (paged, so it never stops at a row limit).
+ */
+export async function readArenaX402OffAgents(afterId: string, limit: number): Promise<string[]> {
+  const list = await rows(sql`
+    SELECT id FROM floor_arena_agents
+    WHERE kind = 'user' AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
+      AND NOT (addons @> '[{"enabled": true}]'::jsonb)
+      AND id > ${afterId}
+    ORDER BY id ASC
+    LIMIT ${limit}
+  `);
+  return list.map((row) => String(row.id));
+}
+
+/**
+ * Codex r19: the agent row read under the per-agent advisory lock (the same
+ * lock the seat, status and add-on writes take FIRST), so the read sees every
+ * committed change. The leader reads this right before each x402 decision.
+ */
+export async function readArenaAgentLocked(agentId: string): Promise<ArenaAgentRecord | null> {
+  return db.transaction(async (tx) => {
+    await tx.execute(addonLock(agentId));
+    const list = await rows(sql`SELECT * FROM floor_arena_agents WHERE id = ${agentId} LIMIT 1`, tx);
+    return list[0] ? mapAgentRow(list[0]) : null;
+  });
+}
+
+/**
+ * Money audit N4: an operator re-provision. Resets a FAILED user agent (also
+ * one that used all its attempts) to 'pending' with a fresh attempt budget, so
+ * a ClawPump outage longer than the retry window never strands a launch.
+ * Returns false for a house row, a missing row, or any state but 'failed'.
+ */
+export async function resetArenaProvision(agentId: string): Promise<boolean> {
+  const updated = await rows(sql`
+    UPDATE floor_arena_agents
+    SET provision_state = 'pending', provision_attempts = 0, provision_next_at = NULL,
+        provision_error = NULL, updated_at = now()
+    WHERE id = ${agentId} AND kind = 'user' AND provision_state = 'failed'
+    RETURNING id
+  `);
+  return updated.length > 0;
 }
 
 // ─── Provisioning ──────────────────────────────────────────────────────────
@@ -1126,13 +1345,6 @@ function isUniqueViolation(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
-}
-
-export async function isArenaClawPumpIdTaken(clawpumpAgentId: string, exceptAgentId: string): Promise<boolean> {
-  const list = await rows(sql`
-    SELECT id FROM floor_arena_agents WHERE clawpump_agent_id = ${clawpumpAgentId} AND id <> ${exceptAgentId} LIMIT 1
-  `);
-  return list.length > 0;
 }
 
 /**

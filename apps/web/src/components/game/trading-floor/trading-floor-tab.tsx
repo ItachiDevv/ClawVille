@@ -52,7 +52,8 @@ import {
 export interface TradingFloorTabProps {
   active: boolean;
   isGuest: boolean;
-  onGuestBlocked: () => void;
+  /** `'arena'` asks for the paper-arena wording of the sign-up prompt. */
+  onGuestBlocked: (variant?: 'arena') => void;
 }
 
 const cardStyle = {
@@ -94,11 +95,11 @@ const WALLET_SOURCE_LABELS: Record<TradingWallet['source'], string> = {
  * keeps the `clawpump-templates` id because the house traders panel above
  * links to it ("Start your own below").
  */
-function ArenaLaunchEntry({ isGuest, onGuestBlocked }: { isGuest: boolean; onGuestBlocked: () => void }) {
+function ArenaLaunchEntry({ isGuest, onGuestBlocked }: { isGuest: boolean; onGuestBlocked: (variant?: 'arena') => void }) {
   const hasTrader = useFloorArenaUi((state) => state.myAgent === 'present');
   const openLaunch = () => {
     if (isGuest) {
-      onGuestBlocked();
+      onGuestBlocked('arena');
       return;
     }
     useFloorArenaUi.getState().showPanel(hasTrader ? 'desk' : 'launch', { templateId: null });
@@ -292,7 +293,7 @@ export function TradingFloorTab({
   const custodialAddress = (avatar as { walletAddress?: string | null } | undefined)
     ?.walletAddress;
   const canReport = signature.trim().length >= 64 && signature.trim().length <= 128;
-  const status = floorStatusCopy(stream, feed.data?.observer, streamHasOpened);
+  const status = floorStatusCopy(stream, feed.data?.observer, streamHasOpened, feed.isError);
   const generatedAge = useMemo(() => {
     if (!feed.data?.generatedAt) return null;
     const seconds = Date.parse(feed.data.generatedAt) / 1_000;
@@ -355,7 +356,7 @@ export function TradingFloorTab({
         color: FLOOR_TEXT.primary,
       }}
     >
-      <FloorArenaSection active={active} isGuest={isGuest} onGuestBlocked={onGuestBlocked} />
+      <FloorArenaSection active={active} isGuest={isGuest} onGuestBlocked={() => onGuestBlocked('arena')} />
 
       <header style={cardStyle}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 10 }}>

@@ -292,7 +292,8 @@ async function readAvatarPlatformAgentId(avatarId: string): Promise<string | nul
 }
 
 /**
- * D29: files every player report as an EARNED-SKILL lesson of the owner's
+ * D29: files every full player report (the analysis tick never sends a short
+ * no-trade report here) as an EARNED-SKILL lesson of the owner's
  * avatar under the Trading Floor building, through `recordEarnedSkillLesson`.
  * It lands in the avatar's own hosted ElizaOS runtime when that runtime is
  * warm in this API process (embedded; id seeded with the runtime agent id),

@@ -12,7 +12,34 @@ import { formatDuration } from './arena-format';
 import { ArenaMuted, arenaInnerCardStyle, arenaInputStyle } from './arena-kit';
 
 export const ADDON_WALLET_WARNING =
-  "Your agent's wallet pays for add-ons in USDC. ClawVille does not refund add-on spend.";
+  "Your agent's wallet pays only for its own paid data add-ons, in USDC. ClawVille does not refund add-on spend.";
+
+/**
+ * Shown under the agent's wallet address wherever a player can copy it. The
+ * wallet is a ClawPump agent under ClawVille's own account (spec D8) and no
+ * route moves funds back out of it, so unspent USDC stays there: the player
+ * must hear that BEFORE sending (audit-money M3). Mirrored in manual §17c.
+ */
+export const ARENA_WALLET_NO_WITHDRAW =
+  `Send only USDC on Solana. You cannot withdraw USDC from this wallet in ClawVille, so send only what your ` +
+  `add-ons will spend (at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day).`;
+
+/**
+ * Both wallet warnings together: what the USDC is for and that it cannot come
+ * back out. Rendered wherever the wallet address or the add-on funding shows
+ * (launch step 3, the launch success screen, the desk's add-on editor and its
+ * Wallet block), so the player reads them before sending anything.
+ */
+export function ArenaWalletWarnings() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} data-testid="arena-wallet-warnings">
+      <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }} data-testid="arena-wallet-no-withdraw">
+        {ARENA_WALLET_NO_WITHDRAW}
+      </div>
+      <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }}>{ADDON_WALLET_WARNING}</div>
+    </div>
+  );
+}
 
 /** One add-on's choice: on or off, and its own daily cap in USD. */
 export interface AddonChoice {
@@ -162,7 +189,7 @@ export function AddonPicker({
           {overTotal ? ' Lower a cap or turn an add-on off.' : ''}
         </div>
       ) : null}
-      <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }}>{ADDON_WALLET_WARNING}</div>
+      <ArenaWalletWarnings />
     </div>
   );
 }

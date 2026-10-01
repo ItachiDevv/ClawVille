@@ -34,6 +34,7 @@ import { withKeyedMutex } from '../services/keyed-mutex';
 import type { ClawPumpWalletBalance } from '../services/clawpump-writer';
 import { ARENA_ADDON_MIN_INTERVAL_S, addonPaymentsEnabled, readArenaWalletBalance, utcDayStart } from '../services/floor-arena/addons';
 import { readArenaContest, type ArenaContestView } from '../services/floor-arena/contest';
+import { isFloorArenaReservedName } from '../services/floor-arena/names';
 import {
   isArenaLeaderboardWindow,
   readArenaLeaderboard,
@@ -41,7 +42,7 @@ import {
   type ArenaLeaderboardWindow,
 } from '../services/floor-arena/leaderboard';
 import { evaluateArenaSuggestion } from '../services/floor-arena/analysis';
-import { ensureAddonSkill, provisionArenaAgent } from '../services/floor-arena/provisioning';
+import { logEventFromContext, type EventInput } from '../services/event-logger';
 import {
   insertUserArenaAgent,
   readArenaAddonStats,
@@ -180,10 +181,13 @@ export interface FloorArenaRouteDeps {
   readWalletBalance(clawpumpAgentId: string): Promise<ClawPumpWalletBalance | null>;
   addonCatalog(): readonly FloorArenaAddon[];
   addonPaymentsEnabled(): boolean;
-  /** Fire and forget: one provisioning attempt right after launch. */
-  kickProvisioning(agentId: string): void;
-  /** Fire and forget: re-sync the x402 skill after an add-on change. */
-  syncAddonSkill(agentId: string): void;
+  /**
+   * Audit-contest B1: an anti-sybil `events` row. The default is
+   * logEventFromContext, which stamps fp_hash and ip_prefix_hash from the
+   * request (fingerprintMiddleware) and never throws. The event types are not
+   * weighted by the leaderboard scoring (it selects named types only).
+   */
+  logArenaEvent(c: { get(key: string): unknown }, input: EventInput): Promise<void>;
 }
 
 export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
@@ -214,18 +218,12 @@ export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
   readWalletBalance: (clawpumpAgentId) => readArenaWalletBalance(clawpumpAgentId),
   addonCatalog: () => FLOOR_ARENA_ADDONS,
   addonPaymentsEnabled: () => addonPaymentsEnabled(),
-  kickProvisioning: (agentId) => {
-    void provisionArenaAgent(agentId).catch((error: unknown) => {
-      console.error('[floor-arena] launch provisioning failed:', error instanceof Error ? error.message : 'error');
-    });
-  },
-  syncAddonSkill: (agentId) => {
-    void ensureAddonSkill(agentId).catch((error: unknown) => {
-      // The add-on tick retries the sync before its next payment.
-      console.error('[floor-arena] x402 skill sync failed:', error instanceof Error ? error.message : 'error');
-    });
-  },
+  logArenaEvent: (c, input) => logEventFromContext(c, input),
 };
+
+/** Anti-sybil event types (audit-contest B1). Not in the leaderboard scoring. */
+export const ARENA_LAUNCH_EVENT = 'floor_arena.launch';
+export const ARENA_SEAT_EVENT = 'floor_arena.seat';
 
 // ─── Validation ────────────────────────────────────────────────────────────
 
@@ -355,6 +353,10 @@ async function readJson(c: Context): Promise<unknown> {
 
 function invalidBody(c: Context) {
   return c.json({ error: 'Invalid request body.', code: 'invalid_body' }, 400);
+}
+
+function nameReserved(c: Context) {
+  return c.json({ error: 'That name belongs to a house agent. Choose another name.', code: 'name_reserved' }, 400);
 }
 
 // ─── Small TTL cache for public GETs ───────────────────────────────────────
@@ -716,6 +718,8 @@ export function createFloorArenaRoutes(
     if (!params.ok) return c.json({ error: 'The strategy settings are not valid.', code: 'invalid_params', errors: params.errors }, 400);
     const addons = normaliseAddons(body.addons ?? [], deps.addonCatalog());
     if (!addons.ok) return c.json({ error: addons.error, code: addons.code }, 400);
+    // A house agent's display name (and its look-alikes) is reserved; the avatar-name fallback below too.
+    if (body.name !== undefined && isFloorArenaReservedName(body.name)) return nameReserved(c);
 
     const identity = identityOf(c);
     const now = deps.now();
@@ -724,6 +728,7 @@ export function createFloorArenaRoutes(
       if (existing) return { conflict: existing } as const;
       const avatarName = (await deps.readAvatarName(identity.avatarId)) ?? 'Arena Agent';
       const fallback = avatarName.replace(/[^\p{L}\p{N} _.'-]/gu, '').trim().slice(0, NAME_MAX) || 'Arena Agent';
+      if (body.name === undefined && isFloorArenaReservedName(fallback)) return { reserved: true } as const;
       const inserted = await deps.insertUserAgent({
         id: deps.newId(),
         ownerUserId: identity.userId,
@@ -737,6 +742,7 @@ export function createFloorArenaRoutes(
       });
       return inserted ? ({ agent: inserted } as const) : ({ conflict: null } as const);
     });
+    if ('reserved' in result) return nameReserved(c);
     if ('conflict' in result) {
       return c.json({
         error: 'This account already has an arena agent.',
@@ -744,7 +750,23 @@ export function createFloorArenaRoutes(
         agentId: result.conflict?.id ?? null,
       }, 409);
     }
-    deps.kickProvisioning(result.agent.id);
+    // Audit-contest B1: record the device + network behind each contest entry
+    // (fp_hash, ip_prefix_hash from the request) for the P3 payout review.
+    await deps.logArenaEvent(c, {
+      eventType: ARENA_LAUNCH_EVENT,
+      userId: identity.userId,
+      avatarId: identity.avatarId,
+      agentId: identity.kind === 'agent' ? identity.agentId : null,
+      payload: {
+        arenaAgentId: result.agent.id,
+        templateId: result.agent.templateId,
+        identityKind: identity.kind,
+        contestId: result.agent.contestId,
+      },
+    });
+    // Codex r19 (single writer): no ClawPump call here. The row starts
+    // 'pending'; the engine leader creates the execution wallet on its next
+    // provisioning tick (every 30 s).
     // The profile cache may hold a 404 for this id from a poll before launch.
     forgetPublic();
     return c.json({ agent: toPublicAgent(result.agent), paymentAddress: null }, 201);
@@ -810,6 +832,17 @@ export function createFloorArenaRoutes(
       : 'Stood up. No new entries; open positions still exit on their rules.';
     const updated = await deps.setSeat(agent.id, seated, seatIndex, summary);
     if (!updated) return noAgent(c);
+    if (seated) {
+      // Audit-contest B1: the device + network of whoever seats the agent (it starts trading).
+      const identity = identityOf(c);
+      await deps.logArenaEvent(c, {
+        eventType: ARENA_SEAT_EVENT,
+        userId: identity.userId,
+        avatarId: identity.avatarId,
+        agentId: identity.kind === 'agent' ? identity.agentId : null,
+        payload: { arenaAgentId: agent.id, seatIndex, identityKind: identity.kind },
+      });
+    }
     forgetPublic();
     return c.json({ agent: toPublicAgent(updated) });
   });
@@ -847,7 +880,10 @@ export function createFloorArenaRoutes(
       : `Paid add-ons on: ${on.map((addon) => `${addon.id} (cap $${addon.dailyCapUsd.toFixed(2)}/day)`).join(', ')}.`;
     const updated = await deps.setAddons(agent.id, addons.addons, summary);
     if (!updated) return noAgent(c);
-    if (updated.provisionState === 'ready') deps.syncAddonSkill(updated.id);
+    // Codex r19 (single writer): this request writes ONLY the DB row (under the
+    // per-agent advisory lock). The engine leader's x402 reconcile applies the
+    // change on ClawPump on its next tick (every 30 s): off also while paused,
+    // on only when not paused. No ClawPump call happens here.
     forgetPublic();
     return c.json(await meBody(updated, deps.now()));
   });

@@ -138,12 +138,24 @@ export function tradeableFirstSeenMs(
   sourceFirstSeen: Readonly<Record<string, string>> | null | undefined,
   firstSeenAtMs: number,
 ): number | null {
-  let best: number | null = null;
+  return firstTradeableSource(sources, sourceFirstSeen, firstSeenAtMs)?.atMs ?? null;
+}
+
+/**
+ * The tradeable source that admitted a shared-feed coin (D25): the one with the earliest first sighting (same times
+ * as tradeableFirstSeenMs; a tie keeps the earlier entry of `sources`). null = the coin has no tradeable source.
+ */
+export function firstTradeableSource(
+  sources: readonly string[],
+  sourceFirstSeen: Readonly<Record<string, string>> | null | undefined,
+  firstSeenAtMs: number,
+): { source: string; atMs: number } | null {
+  let best: { source: string; atMs: number } | null = null;
   for (const source of sources) {
     if (!isFloorArenaTradeableSource(source)) continue;
     const recorded = Date.parse(sourceFirstSeen?.[source] ?? '');
     const at = Number.isFinite(recorded) ? recorded : firstSeenAtMs;
-    if (best === null || at < best) best = at;
+    if (best === null || at < best.atMs) best = { source, atMs: at };
   }
   return best;
 }

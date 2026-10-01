@@ -1,6 +1,6 @@
 # Trading Floor Arena (paper contest) — build spec + decision log
 
-Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs; §1 decision rows D13-D29 added with amendment pointers on D2-D10 and D26; D28 fresh chain verdicts on tradeable coins; D29 every user-agent report stored as an earned-skill lesson and recalled in owner avatar chat; punch list P4). Status: IN BUILD on branch `feat/trading-floor-arena`
+Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs; §1 decision rows D13-D29 added with amendment pointers on D2-D10 and D26; D28 fresh chain verdicts on tradeable coins; D29 every user-agent report stored as an earned-skill lesson and recalled in owner avatar chat; punch list P4; 2026-10-01: D30/D31 rows synced to the code, P3 B1 events, P5, D6 rule-6 wording; D30/D31/rule 6 marked BUILT, not deployed, after Codex r22 APPROVE, r19-r22 chain in §7; single ClawPump writer, Codex r19 money, in §5/§6/D8; D32 x402 removal = hygiene, design v8b in §6). Status: IN BUILD on branch `feat/trading-floor-arena`
 (worktree `.worktrees/trading-floor-arena`, base `origin/staging` a2a073a7).
 
 Founder goal (2026-09-30, verbatim summary): five house trading agents on the Trading Floor, each running its own
@@ -38,9 +38,9 @@ This file is the canonical design for the arena until its content moves into Gam
 | D3 | Paper fills are priced with ClawPump `POST /swap/quote` (our Enterprise key, 10M calls/month); marks and triggers use DexScreener batch prices; costs 2.5% buy haircut + 1.0% sell haircut on top of the quote. No Jupiter key use. (See D22: marks come only from the DB; D23: a take-profit is judged on the quote, not the mark.) | Jupiter credits are nearly spent (22.5M/25M until Oct 7). Costs = measured execution cost (memory 09-21). |
 | D4 | A quote failure never books a near-zero exit: retry the sell quote each exit tick; after 3 failures over >= 45 s, fill at the DexScreener mark minus costs and flag `fill_source='mark_fallback'`. (Extended: Codex r3 `quote_confirmed` and r5 `unresolved` exits with the run persisted in `exit_run`; see D22 DB-only marks, D23 take-profit on the quote.) | Lesson 13 (no-quote exits booked 0.01x during a ClawPump outage). |
 | D5 | Hard rules (not editable, shown on every form): LP burned or locked >= 95%, mint authority revoked, freeze authority revoked, no Token-2022 transfer fee, pool reserves present, liquidity >= $5,000. (Amended by D26: no liquidity floor; hard rules = 5. Wording of the Token-2022 rule: see D14.) | Founder rules (LP lock etc.); the liquidity floor removes bonding-curve coins (liq 0) that we cannot price safely. |
-| D6 | Contest "Trading Arena Week 1": starts 2026-09-30 22:00Z (6 PM EDT), ends 2026-10-05 03:59:59Z (Sun Oct 4, 11:59:59 PM EDT). Score = realised paper P&L in USD of positions opened in the window and closed by the end. Fixed $20 per position, max 5 open. One arena agent per account; guests excluded; house agents shown but never eligible. Prize eligibility (Codex r2 #6 / r3 #6; `FLOOR_ARENA_CONTEST.rules` rule 6, verbatim): "To be eligible for a prize, your agent must be launched before the contest ends and have at least one position opened and closed inside the contest window." Code: launch writes `contest_id` only before the end (enrolment), and `eligible` = a user agent with that `contest_id` and at least one qualifying closed trade; the contest top 10 ranks eligible rows only. Prizes 1,000,000 / 500,000 / 250,000 $CLAWVILLE, paid manually by the team after review. | "By the end of the week"; equal ticket size makes USD P&L comparable. |
+| D6 | Contest "Trading Arena Week 1": starts 2026-09-30 22:00Z (6 PM EDT), ends 2026-10-05 03:59:59Z (Sun Oct 4, 11:59:59 PM EDT). Score = realised paper P&L in USD of positions opened in the window and closed by the end. Fixed $20 per position, max 5 open. One arena agent per account; guests excluded; house agents shown but never eligible. Prize eligibility (Codex r2 #6 / r3 #6; `FLOOR_ARENA_CONTEST.rules` rule 6, verbatim): "To be eligible for a prize, your agent must be launched before the contest ends and have at least one position opened inside the contest window and closed." (wording since D30, lead decision B: the qualifying position may close at any time, the same set as the D30 score; the matching code change is built with D30, not deployed.) Code: launch writes `contest_id` only strictly before the end (enrolment), and `eligible` = a user agent with that `contest_id` and at least one qualifying closed trade; the contest top 10 ranks eligible rows only. Prizes 1,000,000 / 500,000 / 250,000 $CLAWVILLE, paid manually by the team after review. (Amended by D30: the score counts positions opened in the window whatever their close time, final standings after the last one closes; by D31: an unresolved close is a loss of its open stake; rule 6, decision B: a qualifying trade may close at any time. All three built (Codex r22 APPROVE), not deployed.) | "By the end of the week"; equal ticket size makes USD P&L comparable. |
 | D7 | Seat gating: a user agent opens NEW positions only while seated at a Trading Floor desk. Seated is a server state set by "sit" and cleared by "stand"/leaving; it persists when the player closes the tab (the agent stays at its desk). Exits always run. House agents are always seated. | Founder: the agent must be in the arena to trade; persistent seat avoids "keep the tab open" contests. |
-| D8 | Launch creates one ClawPump agent under ClawVille's account per user agent (name `CV Arena · <name>`, private, not accepting bids, no trading skills; `x402` skill only when paid add-ons are on). Provisioning failure does not block paper trading; it retries. (See D16: staging form `CV Arena (staging) · <name> #<id12>`, production `CV Arena · <name> #<id12>`; see D24: ClawPump's six sticky default skills stay, every other trading or spending skill is denied.) | Founder requirement; paper mode needs no ClawPump execution yet. |
+| D8 | Launch creates one ClawPump agent under ClawVille's account per user agent (name `CV Arena · <name>`, private, not accepting bids, no trading skills; `x402` skill only when paid add-ons are on). Provisioning failure does not block paper trading; it retries. (Amended by the single-writer design, Codex r19 money, 2026-10-01: the launch request writes only the row as `pending`, and the engine LEADER creates the ClawPump agent on its next provisioning tick, every 30 s; only the leader writes to ClawPump. See D16: staging form `CV Arena (staging) · <name> #<id12>`, production `CV Arena · <name> #<id12>`; see D24: ClawPump's six sticky default skills stay, every other trading or spending skill is denied.) | Founder requirement; paper mode needs no ClawPump execution yet. |
 | D9 | Paid x402 add-ons: catalog of vetted feeds only; the engine pays from the agent's own ClawPump wallet via the ClawPump x402 route with `max_amount_usd` = catalog price; per-agent daily cap (default $1, max $5); poll interval per add-on >= 10 min; mints from an add-on stay private to that agent. (See D15: run-time floor 600 s; D18: the x402 wrapper confirmed on staging.) | Vetting found listed prices 100x below real prices (seerium $0.10 not $0.001). Users pay for their own add-ons. |
 | D10 | 30-minute analysis for every agent with activity: stats + an LLM summary + at most ONE suggested parameter change within bounds. House agents apply the suggestion automatically (logged publicly as a param change); user agents see it and apply with one click. The report is also written into the agent's ElizaOS memory when a runtime exists. (Amended by D27: an automatic apply needs 20 closed trades and the split check; see D21: house reports are public.) | "Self-learning", "fine-tuning every 30 minutes". |
 | D11 | Live mode is in the schema but rejected (`live_not_available`) until a later founder go. | Founder: start paper-only. |
@@ -61,7 +61,10 @@ This file is the canonical design for the arena until its content moves into Gam
 | D26 | The $5k liquidity floor stops being a hard rule (the founder's five stay: LP burned or locked with curves OK, mint and freeze authority revoked, no risky Token-2022 extension, pool reserves present). Runner follows C1: `liq_min` null, first sight counted from the first DexScreener or ClawPump sighting (`entry.first_sight_sources`). (See D28: D26 also dropped the liquidity bound from the chain-check universe; D28 limits checks to tradeable coins.) | The floor blocked pump.fun curve coins (16 of C1's 18 trades), so the arena Runner did not match C1 (19:05Z). |
 | D27 | The tuner auto-applies only with >= 20 closed trades on the current params and a deterministic split check (>= 8 kept and >= 8 excluded, kept mean `pnl_mult` >= 0.03 better, raw means; filter changes only). House agents reset to template v2 (migration 0072). Every exit quote refusal is logged. | The tuner's one change (Runner `chg5m_max` 41.48 -> 20.74) was not supported by the data (19:05Z; raw-mean fix after Codex r12). |
 | D28 | Chain-check budget and verdict age. (1) `selectDueChainChecks` checks only SHARED coins with a tradeable source (a `ds:` or `clawpump:` source, the `FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES` rule) plus every private add-on mint; each tick (`pickDueChainChecks`, Codex r14) gives at least half of its checks, rounded up (10 of 20), to already-checked due rows, oldest verdict first, and the rest to never-checked rows, newest first sight first; each half fills the other's spare room, and the SQL reads both sets separately (UNION ALL), so a flood of new coins cannot hide the old ones. (2) Entry gate `entryVerdictStatus`, run TWICE (Codex r14): at candidate load, and again inside the entry transaction right before the INSERT (`insertTimeGate`: the discovery or private-mint row re-read `FOR SHARE`, the wall clock, the current snapshot pair; abort codes `chain_verdict_stale`, `chain_pending`, `hard_rules`, and `top10` / `top10_unknown` when a newer verdict's top-10 share fails the filters; an abort writes a `skip` event with `at: 'insert'`). Rule at both points: a verdict counts only for the pair priced now (strict `pairAddress` equality; a verdict with no `pairAddress` for a priced pair is pending) and only while it is younger than `CHAIN_VERDICT_TTL_MS` (30 min, measured from `chain_checked_at`, else `verdict.checkedAt`; exactly 30 min is stale); an older verdict fails the entry with code `chain_verdict_stale`, for shared and private mints alike. (3) The entry event data carries `chainCheckedAt`, taken from the insert-time re-read; a newer verdict's `top10Pct` is re-filtered and stored in `entry_features`. (4) Enrichment puts non-tradeable shared rows in the last tier (`enrichTier` 4). No protocol change: PROTOCOL_VERSION stays 75. | Verifier A on `9dc59f73` (23:44Z): D26 also removed the liquidity bound from the chain-check universe, so 95% of the check budget went to GeckoTerminal-only coins that are never bought; 309 of 390 tradeable coins had verdicts older than the 30-min TTL, and entries used verdicts 62-90 min old, so an LP pulled after the check would not be seen. |
-| D29 | Every user-agent report is stored by `writeArenaReportMemory` through `recordEarnedSkillLesson` as an earned-skill lesson of the owner's avatar (building `cron-automation`, teacher "Trading Arena analyst"): in the avatar's warm hosted ElizaOS runtime, else in the avatar-keyed `npc_memories` store (`subtype: 'earned-skill'`); one log line names the store (`eliza`, `npc_memories` or `none`); never lazy-starts a runtime. Owner avatar chat (`POST /api/avatars/me/chat`) folds up to 3 Trading Floor lessons as `dynamicContext` for arena owners only (`tradingFloorLessonContext`; ONE 1.5 s time box over the arena-owner lookup and the lesson read together, Codex r14; fail-soft). Readers, all via `readEarnedSkillLessons`: owner chat, the Trading Floor teacher chat, the autonomy decide loop, `GET /api/agent/:sessionId/skills/cron-automation/skill-memory`. The runtime's KnowledgeProvider does not read them. | Verifier A found 0 arena memories on staging: the old writer needed a warm runtime, and runtimes sleep after 30 idle minutes. |
+| D29 | Every FULL user-agent report (not a short no-trade report, which returns before the memory write) is stored by `writeArenaReportMemory` through `recordEarnedSkillLesson` as an earned-skill lesson of the owner's avatar (building `cron-automation`, teacher "Trading Arena analyst"): in the avatar's warm hosted ElizaOS runtime, else in the avatar-keyed `npc_memories` store (`subtype: 'earned-skill'`); one log line names the store (`eliza`, `npc_memories` or `none`); never lazy-starts a runtime. Owner avatar chat (`POST /api/avatars/me/chat`) folds up to 3 Trading Floor lessons as `dynamicContext` for arena owners only (`tradingFloorLessonContext`; ONE 1.5 s time box over the arena-owner lookup and the lesson read together, Codex r14; fail-soft). Readers, all via `readEarnedSkillLessons`: owner chat (human cookie), the Trading Floor teacher chat and the autonomy decide loop (both HOSTED agents only: `world-teacher-chat.ts` folds lessons only with a `platformAgentId`, and only the hosted autonomy driver calls it), and `GET /api/agent/:sessionId/skills/cron-automation/skill-memory` (the CONNECTED agent's read path). The runtime's KnowledgeProvider does not read them. | Verifier A found 0 arena memories on staging: the old writer needed a warm runtime, and runtimes sleep after 30 idle minutes. |
+| D30 | BUILT, not deployed (arena-contest-impl; consolidated build; Codex r19-r22, r22 VERDICT: APPROVE; `leaderboard.ts`, `contest.ts`, `engine.ts`). The contest score counts every closed position OPENED in the contest window, whatever its close time (`closedTo: null` on the contest window). `GET /contest` reports `standings`: null before the end, then `provisional` while a window position is still open or until 5 min after the end (`ARENA_CONTEST_FINAL_GRACE_MS`: the commit of one entry transaction, bounded by `transaction_timeout` = `ENTRY_TX_TIMEOUT_MS` (60 s, `engine.ts`), plus the 10 s caches; the first statement of the entry transaction sets `statement_timeout` = `ENTRY_STATEMENT_TIMEOUT_MS` (30 s) and resets `transaction_timeout` to 0, then to 60 s, because PostgreSQL 17 does not restart an active timer when its value changes (Codex r21); on a server before PostgreSQL 17 only the statement bound applies and the engine warns once; the engine reads the insert-time wall clock after that statement and stamps it as `opened_at`, so an entry inserted after the end is not a window position; a failed or timed-out entry transaction rolls back, buys nothing, and the tick skips that coin with the skip reason `entry_tx_failed`), then `final`; `openWindowPositions` counts the open ones. Prize eligibility (rule 6, lead decision B, 2026-10-01): a qualifying trade is a position opened in the window and closed at ANY time, the same set as the D30 score; the code (`isContestEligible`) now requires an enrolled user agent with contest-window `trades >= 1`, so an unresolved close counts too; the separate close-by-end count (`qualifyingClosedTo`) is removed. Rules text (`FLOOR_ARENA_CONTEST.rules` 2, 5, 6) updated by arena-core. | audit-contest D-A: "closed by the end" gives a free option in the final 24 h (a losing position still open at the end would drop out of the score). |
+| D31 | BUILT, not deployed (arena-contest-impl; consolidated build; Codex r22 VERDICT: APPROVE; `leaderboard.ts`). On the contest window only, an `unresolved` close counts with P&L = `realised_usd - size_usd` (the gross proceeds of earlier take-profit legs minus the $20 stake, i.e. a loss of its open stake) and multiple = `realised_usd / size_usd`; it counts as a trade, as a loss when below 0, and as a death at 0.5x or lower (with today's single-leg templates: always -$20, a loss and a death). The 24 h and all-time windows, agent reports and the analysis stats keep leaving it out. | audit-contest D-B: a rug with no usable price closes `unresolved` and would otherwise drop out of the score. |
+| D32 | IN BUILD (lead, 2026-10-01; consolidated build, Codex money re-review pending; `provisioning.ts`, `addons.ts`, `clawpump-writer.ts`). `x402` removal from a player's ClawPump agent is HYGIENE, not a money control. The money invariant: no USDC moves unless the reservation and `confirmDispatch` pass (add-on enabled, agent active and seated, engine not paused, caps) AND the ClawPump writer's own last read before the pay shows a stopped agent that holds `x402`. A late or failed `x402` removal therefore never lets a payment through; the removal passes (§6) only keep the skill off agents that do not need it. | Lead decision (relayed by arena-api). A removal can wait on a busy lock, an empty call budget or a ClawPump failure (§6), while the payment gates are checked at pay time on every call. |
 
 ## 2. CONTRACT — shared (`packages/shared/src/constants/floor-arena.ts`, exported from the package index)
 
@@ -183,8 +186,24 @@ state + addon status), `POST /me/launch` {templateId, params, mode:'paper', addo
 'active'|'paused'}, `PATCH /me/addons` {addons}, `POST /me/suggestions/:reportId` {action:'apply'|'dismiss'},
 `PATCH /me/settings` {autoApplySuggestions}.
 Admin (`/api/admin/floor-arena`, same guard as admin-trading: session + moneyOperatorOnly): `POST
-/house/:id/params`, `POST /engine/pause|resume`, `GET /engine/state`.
+/house/:id/params`, `POST /engine/pause|resume`, `GET /engine/state`, `POST /agents/:id/reprovision` (money audit N4: a
+failed user agent back to `pending`; no ClawPump call in the route, the engine leader provisions it on its next tick).
+Single writer (Codex r19 money): no request handler calls ClawPump. `POST /me/launch` leaves the row `pending`,
+`PATCH /me/addons` changes the row only, reprovision resets the row; the engine leader applies each one: a launch or a
+reprovision on its next 30 s provisioning tick, an add-on OFF on the next tick (x402 removal is hygiene, not a money
+control, D32), an add-on ON right before the first payment (details in §6).
 SSE: reuse the world stream if cheap; else the client polls `/agents/:id/events` every 5 s.
+Anti-sybil events (audit-contest B1, built; table `events`, written by `logEventFromContext` in `routes/floor-arena.ts`,
+constants `ARENA_LAUNCH_EVENT` / `ARENA_SEAT_EVENT`):
+- `floor_arena.launch`: one row after a successful `POST /me/launch` insert; payload `{arenaAgentId, templateId,
+  identityKind ('user' | 'agent'), contestId (null after the contest end)}`.
+- `floor_arena.seat`: one row when `POST /me/seat` really changes the seat AND `seated = true` (the agent starts to
+  trade); no row on stand-up or on a no-op; payload `{arenaAgentId, seatIndex, identityKind}`.
+- Both rows carry `user_id`, `avatar_id`, `agent_id` (only for an agent session), `fp_hash` and `ip_prefix_hash`
+  (`fingerprintMiddleware` stamps both hashes on every request). Weight 0 in scoring: the leaderboard scores named event
+  types only, and these two are not among them. Purpose: the P3 payout review (§8, "P3 review query (B1)" at the end of §8).
+- PARITY: the human (login session) and the agent (agent session) launch and seat paths both write the rows;
+  `identityKind` tells them apart.
 
 ## 6. Engine (`apps/api/src/services/floor-arena/`)
 
@@ -192,9 +211,71 @@ SSE: reuse the world stream if cheap; else the client polls `/agents/:id/events`
 `chain-checks.ts` (hard rules, 30-min cache; port of the Python runner's `chain_checks` / `lp_lock_fail` / reserve
 check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump quote fills + DexScreener marks),
 `engine.ts` (15 s entry tick, 10 s exit tick), `analysis.ts` (30-min reports + house tuner), `provisioning.ts`
-(ClawPump create/update agent), `addons.ts` (x402 polling + spend ledger), `leaderboard.ts`, `index.ts`
-(`startFloorArena()` called from `apps/api/src/index.ts` next to the trade observer; env kill switch
-`FLOOR_ARENA_ENGINE_ENABLED` default on).
+(ClawPump create/update agent and the x402 reconcile, 30 s tick), `addons.ts` (x402 polling + spend ledger),
+`leaderboard.ts`, `index.ts` (`startFloorArena()` called from `apps/api/src/index.ts` next to the trade observer; env
+kill switch `FLOOR_ARENA_ENGINE_ENABLED` default on).
+
+Single writer for ClawPump (Codex r19 money, lead design, 2026-10-01; design v8b after Codex r20/r21 and audit-money).
+Only the arena engine LEADER writes to ClawPump: creates, config PATCHes, x402 on/off and add-on payments. Request
+handlers write only the DB row (§5): launch leaves `pending`, `PATCH /me/addons` changes the row, admin reprovision
+resets to `pending`.
+D32 (lead): x402 removal is HYGIENE, not a money control. The money invariant: no USDC moves unless the reservation and
+`confirmDispatch` pass (add-on enabled, active, seated, engine not paused, caps) and the ClawPump writer's last read
+shows a stopped agent that holds x402.
+- x402 ON only for a READY agent with an enabled add-on, not while paused, never on a `running` agent.
+- x402 OFF otherwise, also while paused and on a `running` agent (a removal only takes capability away).
+- Provisioning NEVER adds x402: its config sync runs in the x402 section with x402 not allowed and PATCHes
+  `enabled_skills: []`, which removes x402 if present (a busy lock fails the attempt with `x402_lock_busy`).
+Each 30 s provisioning tick (±10%, leader, also while the operator pause is on) runs the x402 REMOVALS first
+(`runArenaX402Reconcile` -> `removeUnwantedArenaX402`, removal-priority calls), then, unless paused, up to 20 due rows:
+- R1: every add-on-free agent whose row changed since the previous pass start minus 2 minutes, keyset-paged by id with
+  no row limit (`readArenaX402RecentOff`). The watermark is DATABASE time (`readDbNow`, `SELECT now()` at pass start).
+  The FIRST pass of each leader term (`startArenaX402LeaderTerm`, called on election) covers EVERY add-on-free agent.
+- R2: a fair cursor over all add-on-free agents, 6 per tick, paged, advancing every tick (`readArenaX402OffAgents`).
+- R3: earlier failures and deferrals, oldest first, one attempt per agent per tick. An agent whose removal FAILS
+  backs off 30 s, 1, 2, 4 ... minutes (at most 30) in every pass; a busy lock or an empty budget retries next tick.
+Then, only when no removal was deferred (busy lock or call budget) and the budget allows normal calls, 4 re-checks per
+tick over all agents (`readArenaX402SweepAgents`, a second cursor); a re-check that finds unwanted x402, or a running
+agent with x402, removes it at once.
+x402 is ADDED only by the add-on tick (60 s, leader) right before it pays (`ensureArenaX402ForPay`): at most 8 adds per
+tick, none while a removal is deferred, and a failed or impossible add backs off 1, 2, 4 ... minutes (at most 30) for
+that agent. If the player turns add-ons off during an add, x402 comes off in the same call. The add-on tick reserves
+only when x402 is on a stopped agent that wants it; `confirmDispatch` then re-checks the add-on under the add-on lock,
+and the ClawPump writer re-checks x402 and the status at its own last read before the POST: any status other than
+`stopped` (`agent_running` for `running`, `agent_not_stopped` for null, missing or any other value; Codex r22-money)
+refuses every PATCH that is not removal-only (only `enabled_skills`, no x402, a subset of the agent's skills) and every
+payment; a payment also needs x402 on the agent.
+Every x402 decision runs in ONE x402 section at a time per process (an in-process mutex shared by the provisioning
+tick and the add-on tick), inside a transaction (`tryWithArenaX402Lock`) whose first statement sets `statement_timeout`
+30 s (`ARENA_X402_STATEMENT_TIMEOUT_MS`) and, on PostgreSQL 17, resets `transaction_timeout` to 0 and arms it at 60 s
+(`ARENA_X402_TX_TIMEOUT_MS`; the engine.ts pattern; before 17 only the statement bound applies and a warning is logged
+once), then takes `pg_try_advisory_xact_lock('floor-arena-x402:<id>')`, a separate key from the add-on lock. The lock is
+held across the row read (`readArenaAgentLocked`, its own short transaction under the add-on lock), a fresh ClawPump
+GET, a PATCH only when needed and a verifying GET. Each ClawPump call is bounded at 15 s by default
+(`CLAWPUMP_HTTP_TIMEOUT_MS`, at most 30 s); a section makes at most 4 calls for a removal, 8 for provisioning's
+config sync and 13 for an add with its compensating removal; a section that passes 60 s is ended by Postgres (rolled
+back, lock released), its caller sees an error and the next tick re-checks (D32: hygiene, never a payment). A busy
+agent is skipped and retried next tick. Two leaders during a failover never interleave on one agent, and a slow
+ClawPump call never blocks a player's seat, status or add-on write. The x402 path uses at most 2 pooled connections
+per process (the long x402 transaction plus one short query: the add-on-lock row read or the writer's ownership
+query); the add-on reservation, `confirmDispatch` and finalize transactions run outside it. No in-memory cache ever
+skips a ClawPump read. CI: the gates step "Run PostgreSQL-backed Trading Floor database contracts" runs
+`floor-arena-queries.db.test.ts` on a real Postgres, including a two-connection test of the x402 try-lock (A holds
+it; B is refused at once; another agent's lock is free; a route-style seat write commits while A is open).
+ClawPump call budget: the writer allows 60 calls a minute per process with a burst of 10, checked before each request
+(`CLAWPUMP_WRITER_CALLS_PER_MINUTE`, `CLAWPUMP_WRITER_BURST`). It covers every arena call through the writer, the
+arena's agent GETs included; the house traders' calls and the paper-fill quotes are out of its scope. The last 5 of
+the 10 tokens are reserved for removal calls (`CLAWPUMP_WRITER_REMOVAL_RESERVE`). An empty budget refuses with
+`budget_exhausted` (ClawPump's HTTP 429 stays `rate_limited`) before sending. When the budget is low, the add-on tick
+defers its tick and re-checks are skipped, with one log line per tick. A refused payment books 0 (stored error
+`clawpump_budget_exhausted`).
+ClawPump quota: Enterprise 10,000,000 calls a month, "recorded but not enforced", no per-second limit (research
+2026-09-30: ops/house-traders/research-20260930-clawpump R2-api.md, R1-docs.md; outside git).
+Post-condition: x402 comes OFF on the tick after the change, also while paused, unless the agent's x402 lock is busy,
+the call budget is empty or ClawPump fails. Those are retried every tick, and a failing agent backs off 30 s, 1, 2,
+4 ... min (at most 30 min). The fair cursor reaches every add-on-free agent within ceil(N / 6) ticks (30 s each). x402
+comes ON only right before the first payment, never while paused or while the agent runs. No payment depends on x402
+alone.
 
 ## 6a. Analysis as built (D10; `analysis.ts` + `analysis-store.ts`, tests `services/__tests__/floor-arena-analysis.test.ts`)
 
@@ -222,8 +303,9 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
 - D27 automatic-apply guard (house agents, and owners with `auto_apply_suggestions`; constants in
   `floor-arena/analysis-rules.ts`): the model may propose only after 20 closed trades on the current params
   (`insufficient_sample` otherwise), and the change must pass `evaluateSuggestionEvidence`. Each closed trade on the
-  current params is re-run through the engine's own `passesFilters` on its `entry_features` at its `opened_at`, under the
-  current and the new filters; a trade the new value adds a fail code to is EXCLUDED, else KEPT. Confirmed only when
+  current params is re-run through the engine's own `passesFilters` on its `entry_features` at the instant the engine
+  judged it (`entry_features.judgedAt`, the entry tick time; `opened_at` is the later insert time, and older rows
+  without `judgedAt` fall back to it; `tradeJudgedAt`), under the current and the new filters; a trade the new value adds a fail code to is EXCLUDED, else KEPT. Confirmed only when
   kept and excluded each hold >= 8 trades and the kept mean pnl_mult beats the excluded mean by >= 0.03. A looser
   filter excludes nothing, and exit, entry or limit changes are `not_evaluable`, so none of them is ever applied
   automatically (`insufficient_evidence`, report kept). A click-to-apply owner still gets the suggestion as `pending`
@@ -237,7 +319,7 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   re-checks `params_version`, and writes the param change and its event in one transaction. On a version conflict a
   house report turns `rejected` (`params_changed`); a user report stays `pending` for its owner. Events: `report`, then
   `param_change` ("Tuner changed <path> from <a> to <b>: <reason>").
-- Memory (D29): EVERY user agent's report is stored with `recordEarnedSkillLesson` as an earned-skill lesson of the
+- Memory (D29): EVERY full report of a user agent (not a short no-trade report, which returns before the memory write) is stored with `recordEarnedSkillLesson` as an earned-skill lesson of the
   owner's avatar (building `cron-automation`, teacher "Trading Arena analyst", provenance = the arena agent id): in the
   avatar's hosted ElizaOS runtime when it is warm in this API process (memory id seeded with the runtime agent id), else
   in the avatar-keyed `npc_memories` keyword store. Never lazy-starts a runtime, never throws, logs `store=eliza |
@@ -428,6 +510,84 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   Lead decision D28: chain checks select only shared coins with a tradeable source (private mints unchanged), oldest
   first; an entry needs a verdict younger than CHAIN_VERDICT_TTL_MS (30 min) on the current pair, else the fail
   code `chain_verdict_stale`; the entry event records the verdict time. Fix build follows.
+- 2026-10-01: audit-contest (reported by the lead): scoring VERIFIED: the leaderboard matches the audit's own SQL
+  recompute row for row; 185/185 entry fills and 176/176 exit fills match their ClawPump quotes. 25 house entries in
+  the contest window (22:04Z-00:27Z) predate D28, so their entry events carry no `chainCheckedAt`; house agents only,
+  no prize impact. Lead decisions from the audit: D30 (count positions opened in the window whatever their close
+  time; audit D-A) and D31 (an `unresolved` close counts as a loss of its open stake in the contest score; audit D-B),
+  both in build; P3 gains the test-account exclusions and the top-10 hand check.
+- 2026-10-01 (later): D30 and D31 (arena-contest-impl: `leaderboard.ts`, `contest.ts` `standings` /
+  `openWindowPositions`, 15-min final grace, later cut to 5 min when `opened_at` became the insert time), the contest rules text (arena-core: rules 2, 5, 6), B1 (`floor_arena.launch`
+  / `floor_arena.seat` events with fp/ip hashes) and the reserved house names (`floor-arena/names.ts`, launch 400
+  `name_reserved`) are in the working tree for the consolidated build; docs synced by arena-docs. Not yet committed.
+- 2026-10-01: Codex chain on the contest build (D30, D31, rule 6, reserved names, the entry transaction bound);
+  verdict files codex_verdict_arena_r19_contest.txt to codex_verdict_arena_r22_contest.txt in
+  ops/house-traders/arena-review/ of the main checkout (not tracked).
+  r19 BLOCK: (1) the 15-min final margin had no proven bound, so a late backdated entry could turn a `final` board
+  back to `provisional`; (2) "GeΝesis" with a Greek capital Nu passed the name check. Fixes: `opened_at` and the entry
+  event time = max(tick start, clock read inside the entry transaction right before the INSERT); margin cut to 5 min;
+  the name key maps each EXACT character before any case change.
+  r20 BLOCK: (1) the 5-min margin still had no database-enforced bound on a slow entry transaction; (2) the
+  Cherokee look-alike "ᏀᎬneᏚᎥs" passed, because the hand table missed four letters; NON-BLOCKING: the backstop
+  reserved "Ge猫esis". Fixes: `transaction_timeout` = `ENTRY_TX_TIMEOUT_MS` (60 s) and `statement_timeout` =
+  `ENTRY_STATEMENT_TIMEOUT_MS` (30 s) set by the first statement of the entry transaction (a failed entry
+  transaction rolls back and the tick skips the coin, `entry_tx_failed`); the hand table and the backstop replaced
+  by a table generated from Unicode's UTS #39 confusables.txt (Version 18.0.0) plus the named extra folds
+  (`FLOOR_ARENA_EXTRA_FOLDS`).
+  r21 BLOCK: (1) PostgreSQL 17 does not restart an active transaction timer when its value changes, so a longer
+  session or role default kept the longer timer; (2) "Ɠenesis" passed, because Unicode maps Ɠ to "G'" and the
+  generator dropped prototypes with punctuation. Fixes: the same statement resets `transaction_timeout` to 0, then
+  arms 60 s, in a CASE that skips on PostgreSQL before 17 (team probe on staging PostgreSQL 17.11 with a 10-min
+  session timeout: without the reset a 1 s bound did not end the transaction; with it the session ended at 1 s);
+  the generator cleans each prototype the way the name key cleans a name (NFD, marks removed, letters and digits
+  only), regenerated with 2,263 entries.
+  r22 VERDICT: APPROVE: all five findings FIXED, no new blocking finding. Codex could not run the repository tests
+  (shell policy); the staging probe is team evidence. D30, D31 and rule 6 are now BUILT, not deployed. arena-docs
+  re-ran the name key on the current tree: "GeΝesis", "ᏀᎬneᏚᎥs", "Ɠenesis", "G3nesis", "Genesi5", "ʀunner" refused;
+  "Ge猫esis", "Genesis Two", "Generic" free; the generated table has 2,263 entries.
+- 2026-10-01: single ClawPump writer (lead design after Codex r19 money, VERDICT: BLOCK with three blockers: #3 the
+  writer's own last GET before a PATCH did not refuse a `running` agent; N7 a process treated its local "x402 absent"
+  as proof and skipped re-checks; new: a stale `syncAgentConfig` row snapshot could add x402 back after another process
+  removed it). Fixes: the writer guard (`isRemovalOnlyPatch`, payment needs stopped + x402 at the last read), the
+  leader-only reconcile, and the row read under the per-agent advisory lock before each PATCH. In the working tree for
+  the consolidated build, not committed, Codex money re-review pending. Only the engine leader writes to ClawPump;
+  launch, `PATCH /me/addons` and the admin reprovision route write only the DB row; the provisioning tick is 30 s (was
+  60 s) and starts with the x402 pass. A first version (v6) ordered a 10-agent reconcile by an in-memory record of what
+  ClawPump showed (8 slots for changes and unknowns, 2 re-checks); audit-money's constraints replaced it with design v7:
+  S4 removals with no throttle on the next tick plus a 10-agent id-cursor sweep, S2 a separate per-agent lock
+  `floor-arena-x402:<id>` across GET, PATCH and verifying GET, the add-on tick reconciles right before paying
+  (`ensureArenaX402ForPay`), S6 a 60-calls-a-minute writer rate limit per process, S7 the post-condition; no in-memory
+  cache can skip a ClawPump read. Then design v8 (Codex r20 BLOCK on removal fairness + audit-money F, L, B): removals
+  first each tick (R1 fresh OFFs, no cap; R2 a fair 6-per-tick cursor over all add-on-free agents; R3 retries, oldest
+  first), then 4 re-checks only when nothing was deferred; provisioning never adds x402 and only the add-on tick adds
+  it, right before paying (at most 8 adds a tick, none while a removal is deferred, per-agent backoff 1-30 min); the
+  lock became `pg_try_advisory_xact_lock` with `statement_timeout` 30 s (a busy agent is skipped, never waited on);
+  the writer budget became 60 a minute with a burst of 10, the last 5 tokens for removals, `budget_exhausted` before
+  sending. Then v8b (Codex r21 + lead D32): D32 makes x402 removal hygiene, not a money control (§1); R1 is
+  keyset-paged with no row limit and uses a DATABASE-time watermark, and the first pass of each leader term covers
+  every add-on-free agent; a failing removal backs off 30 s to 30 min; one x402 section at a time per process; the x402
+  transaction is bounded (`statement_timeout` 30 s, `transaction_timeout` 60 s on PostgreSQL 17). It replaces the money
+  audit N7 design (an immediate `removeArenaX402` on the last add-on off, plus a removal sweep of
+  at most 10 agents a tick with a cursor), and launch and reprovision no longer run a provisioning attempt in the
+  request. Docs synced by arena-docs (§5, §6, D8; ARCHITECTURE, `docs/clawpump-integration.md`, GameFeatures §17g.3).
+- 2026-10-01 02:43Z: verifier A on staging `90939209` (api flip 00:28:25Z, web 00:31:33Z, both SOURCE_COMMIT
+  909392095a6b, restarts 0). D28 PASS: 55 entries since the flip, all with `data.chainCheckedAt`; max verdict age at
+  entry 29.64 min, 0 at or above 30 min; insert-gate skips 0; tradeable in-universe verdict age median 7.3 min, p90
+  16.5, max 29.7, 0 older than 30 min (was median 64 min on `9dc59f73`); 0 checks on shared GeckoTerminal-only rows in
+  10 min (the 5 GeckoTerminal-only rows checked were also private add-on mints); 0 TP exits with negative P&L since
+  the flip. D29 live test on landtest2 (arena 251f806a, avatar 372a0ce6, hosted runtime 8025ea44), paper only, no
+  USDC: COLD report 853993f7 (02:10:32) -> `npc_memories` 598f01fd (entity avatar, target cron-automation, subtype
+  earned-skill, teacher 'Trading Arena analyst') + log "report memory store=npc_memories"; the skill-memory read
+  through an agent session returned it; owner `/api/avatars/me/chat` (lazy-started the runtime) quoted it ("146
+  minutes ... zero closed trades ... $0 realized"). WARM report 9dcde48a (02:40:38) -> log "report memory
+  store=eliza" -> ElizaOS row f88a7851 (agent_id 8025ea44, room earned-skill:<avatar>, unique); the recomputed uuidv5
+  seed `earned-skill:<agentId>:<avatarId>:cron-automation:<text>` matches the stored id (without the agentId it does
+  not), so the per-agent seed rule holds; the warm skill-memory read returned the 02:40 report (text only in
+  ElizaOS); owner chat 2 quoted "11 trades, 54.5% win rate, realized loss $8.24" and the pending age_min_s 1800 ->
+  7200 suggestion. Limit: the chat fold logs nothing, so its time inside the 1.5 s box was not measured.
+  Observations sent to the lead: quiet reports are not stored (the text now says only full reports are stored); a
+  warm read returns only ElizaOS rows and hides older `npc_memories` lessons (fix in progress). Teardown: landtest2
+  paused and unseated; verifier A's connected session expires 2026-10-02 02:11:50Z.
 
 ## 8. Punch list (tracked deferrals, rule E6)
 
@@ -435,8 +595,11 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
 |---|---|---|---|
 | P1 | Hosted runtimes that act only through `[ACTION:]` can read §17c but have no verb to launch or seat an arena agent (connected agents use tools.json). Add `[ACTION:]` verbs through the protected-surface process (§11 harness + Codex). | After the founder reviews the arena on staging. | 2026-10-07 |
 | P2 | Live mode (D11) stays rejected; enabling it needs a founder go, the live execution path through the player's ClawPump agent, and a Codex money review. | Founder go. | 2026-10-14 |
-| P3 | Contest payout (1,000,000 / 500,000 / 250,000 $CLAWVILLE) is manual; the team reviews the final standings for abuse before paying. | Contest end 2026-10-05 03:59:59Z. | 2026-10-06 |
-| P4 | Manual §17c memory sentence (`skill-protocol.ts` ~3169-3171) is true but incomplete after D29; replace with: "Every report is also stored as your avatar's own Trading Floor lesson (in your hosted agent's memory when it is awake, else in your avatar's lesson store); your avatar chat, the Trading Floor teacher and your hosted agent's decisions recall it." Needs PROTOCOL_VERSION 76 + the release gates + the §11 harness. | With the next protocol change, at the latest in the promotion prep. | 2026-10-03 |
+| P3 | Contest payout (1,000,000 / 500,000 / 250,000 $CLAWVILLE) is manual; the team reviews the final standings for abuse before paying. The review EXCLUDES test agents (staging arena agent ids: LandTest1 `4821bfae-4287-4c92-8314-b7c949ef4999`, LandTest2 `251f806a-850a-4e69-a136-9d1c333892bb`, the ParityAudit agent `9b5839f1-03e5-4033-9e5a-8ce522bfaf91` with owner user `bd17a5e2-b536-4ee5-8eda-c59c3381ff7b` per audit-parity, and any later test agent), hand-checks every `unresolved` or `mark_fallback` position of the top 10, and uses the launch and seat fingerprint / IP-prefix events (B1, BUILT, passed audit-contest: `events` rows `floor_arena.launch` on every successful launch and `floor_arena.seat` on every sit, stamped with `fp_hash` and `ip_prefix_hash` by `logEventFromContext`; weight 0 in scoring, because the leaderboard scores named event types only and these are not among them; the review runs the read-only "P3 review query (B1)" and its companion query for agents with no launch event, at the end of §8). | Contest end 2026-10-05 03:59:59Z. | 2026-10-06 |
+| P4 | RESOLVED 2026-09-30 (PROTOCOL_VERSION 75 -> 76): manual §17c now carries the D29 memory sentence ("Every full 30-minute report (not the short no-trade reports) is also stored as your avatar's own Trading Floor lesson ..."; verifier A: the quiet no-trade path never wrote memory, so the text was narrowed, not the code) and the D28 entry rule (a passing chain check of the CURRENT pool younger than `CHAIN_VERDICT_TTL_MS`, re-read right before the buy, no new on-chain check; `chain_pending` / `chain_verdict_stale` in `failCounts`); shared orientation and Nori say a player's arena trader keeps its reports as lessons. Recall wording (audit-parity T1-A): the owner's avatar chat can recall them; the Trading Floor teacher and the decide loop only for a HOSTED agent; a CONNECTED agent reads `GET /api/agent/:sessionId/skills/cron-automation/skill-memory`. Every 17c duration the analyst or the chain gate enforces (chain TTL, report cadence, quiet-report cadence, house change gap) is rendered from its constant (T1-C, E6.2; cadences in `analysis-rules.ts`). Orientation and Nori no longer say "no money moves": paid add-ons spend real USDC (audit-money B1). Still owed before promotion: the release gates (onboarding smoke, hosted-skill-runtime probe) and the §11 mock-Hatcher harness on staging for 76. | Done in code; gates with the staging push. | 2026-10-03 |
+| P5 | No path returns unspent USDC from a player's arena ClawPump execution wallet (players can fund it for paid add-ons). A refund/withdraw path (or a cap on what the UI asks a player to send) is a founder decision; until then the UI warns: Solana USDC only, add-on spend only, not withdrawable through ClawVille (audit-money M3; `ARENA_WALLET_NO_WITHDRAW` under every copyable wallet address: "Send only USDC on Solana. You cannot withdraw USDC from this wallet in ClawVille, so send only what your add-ons will spend (at most $5 a day)."). | Founder decision. | 2026-10-05 (before prod promotion) |
+| P6 | The floor TV's text is at the legibility limit from the /trading-floor spawn: the board is minified about 1.85:1 there (0.52-0.54 screen px per canvas px), so a 15-16 px Courier capital is about 5 screen px and some letters swap depending on sub-pixel phase (verifier B: "GENZSIS" single-level with regular text; "LANDTKST1" / "NO PRIZR" with trilinear mips, which were reverted). This build ships bold + single-level (best real-GPU evidence). Durable fix: larger glyphs at the spawn distance (about 22 canvas px fonts, about 6.5 screen px capitals), which means fewer rows and/or columns, e.g. no TEMPLATE text on house rows; design sketch + mock PNG prepared by arena-board for the founder. Same note: 3dStructure.md §9g Big board row. | After the founder sees the board on staging. | 2026-10-04 |
+| P7 | E6.2 rest of manual §17c (audit-parity T1-C follow-up, arena-analysis 2026-09-30): three numbers in the 17c text are still typed, because their constants live in files the manual must not import or that have no exported constant: the `unresolved` exit clock ("could not be priced for 30 minutes", `EXIT_UNRESOLVED_AFTER_MS` in `engine.ts`, which pulls the engine into the manual graph), the route limits ("60 requests per minute", "30 changes or 5 launches in a minute", inline literals in `routes/floor-arena.ts`), and the death line ("0.5x or lower", `ARENA_DEATH_MULT` defined twice, in `analysis.ts` and `leaderboard.ts`). Fix: move each to an import-free module (`analysis-rules.ts` or `packages/shared` `floor-arena.ts`), import it from the engine, the route and the manual, and pin it in `floor-arena-knowledge.test.ts`. Today the values match the code. | Owners arena-engine (clock), arena-api (limits, death line); next arena build. | 2026-10-04 |
 - 12:03Z (date -u) arena-core: shared constants + DB contract landed; shared and database dists rebuilt. Files:
   `packages/shared/src/constants/floor-arena.ts` (+ test, 42 pass), `packages/database/src/schema/floor-arena.ts`,
   `packages/database/migrations/0070_floor_arena.sql` (0070 is free on origin/staging; checked on PGlite: applies twice, and
@@ -478,7 +641,73 @@ check, reuse `trading-rpc.ts` / `trading-mint-info.ts`), `pricing.ts` (ClawPump 
   0070 is applied on staging, so new migration `packages/database/migrations/0072_floor_arena_sources.sql`:
   floor_discovery_mints.source_first_seen jsonb NOT NULL DEFAULT '{}', floor_arena_agents.template_version int NOT NULL
   DEFAULT 1, a backfill of entry.first_sight_sources = 'any' into stored params that lack it, and a backfill of
-  source_first_seen = {first_source: first_seen_at} (UTC ISO) into existing discovery rows whose map is empty. Number note: branch
-  (lead) numbered 0072, not 0071: branch chore/self-hosted-db carries 0071_special_event_start_guard.sql.
+  source_first_seen = {first_source: first_seen_at} (UTC ISO) into existing discovery rows whose map is empty. Number note
+  (lead): numbered 0072, not 0071, because branch chore/self-hosted-db carries 0071_special_event_start_guard.sql.
   ARCHITECTURE.md §8 now lists the tables and migrations 0070/0072 (arena-docs). deploy-status.md carries the SCHEMA
   line (prod-migration-pending: 0070_floor_arena.sql, 0072_floor_arena_sources.sql) since `66b710e7`.
+  (12) audit-contest SHOULD-FIX (lead): FLOOR_ARENA_CONTEST.rules[0] no longer claims that no real money moves. It now
+  reads: paper trading only, no vCLAW is spent and no real tokens are bought; optional paid data add-ons spend only USDC
+  that you send to your agent's own wallet. Wording only: no number, window, eligibility rule, count or order changed.
+  (13) D30/D31 rule text (lead): rule 2 adds "a position with no usable price for 30 minutes closes as unresolved and
+  counts as a loss of its open stake in the contest score"; rule 5 counts positions opened inside the window including
+  those that close after the end (final standings once the last closes); rule 6 = "...at least one position opened inside
+  the contest window and closed." 9 rules, same order; floor-arena.test.ts pins all three.
+
+### P3 review query (B1)
+
+Provided by arena-api (2026-10-01; not in a repo file under the build freeze, so it is kept here verbatim). Run it
+read-only on the database of the box where the contest ran (staging today; the recipe is the same, inside that
+box's api container). arena-api ran it on PGlite fixtures: it found a shared device and a shared
+network, and it excluded a non-contest agent and an event after the end.
+
+```sql
+-- P3 payout review, audit-contest B1: contest arena agents that share a device (fp_hash)
+-- or a network prefix (ip_prefix_hash) on their launch or seat events. Read-only.
+-- Contest: FLOOR_ARENA_CONTEST arena-week-1, ends 2026-10-05T03:59:59Z.
+-- A launch can come before the contest start (it enrols while now < endsAt), so the
+-- window filter is the end only; the contest itself is chosen by floor_arena_agents.contest_id.
+WITH entries AS (
+  SELECT e.ts, e.event_type, e.user_id, e.fp_hash, e.ip_prefix_hash,
+         e.payload->>'arenaAgentId' AS arena_agent_id
+  FROM events e
+  JOIN floor_arena_agents a ON a.id = e.payload->>'arenaAgentId'
+  WHERE e.event_type IN ('floor_arena.launch', 'floor_arena.seat')
+    AND a.kind = 'user'
+    AND a.contest_id = 'arena-week-1'
+    AND e.ts <= '2026-10-05T03:59:59Z'::timestamptz
+),
+links AS (
+  SELECT 'device' AS link, fp_hash AS link_hash, arena_agent_id, user_id, ts
+  FROM entries WHERE fp_hash IS NOT NULL
+  UNION ALL
+  SELECT 'network', ip_prefix_hash, arena_agent_id, user_id, ts
+  FROM entries WHERE ip_prefix_hash IS NOT NULL
+)
+SELECT link, link_hash,
+       count(DISTINCT arena_agent_id) AS arena_agents,
+       count(DISTINCT user_id) AS accounts,
+       array_agg(DISTINCT arena_agent_id ORDER BY arena_agent_id) AS arena_agent_ids,
+       min(ts) AS first_seen, max(ts) AS last_seen
+FROM links
+GROUP BY link, link_hash
+HAVING count(DISTINCT arena_agent_id) > 1
+ORDER BY link, arena_agents DESC, link_hash;
+```
+
+How to read it: it groups by device and by network SEPARATELY, because a pair grouping (fp_hash, ip_prefix_hash) would
+miss one device used on two networks. A shared device is strong evidence. A shared network alone is weak (shared NAT,
+mobile carriers, the same office). The query only lists candidates; the reviewer decides. Also exclude the listed test
+agents (P3).
+
+Agents launched BEFORE the B1 deploy have no `floor_arena.launch` event, so the cluster query cannot see them. List
+them with this companion query (audit-contest) and review each one by hand as "no device data":
+
+```sql
+SELECT a.id, a.name, a.created_at FROM floor_arena_agents a
+WHERE a.kind = 'user' AND a.contest_id = 'arena-week-1'
+  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.event_type = 'floor_arena.launch' AND e.payload->>'arenaAgentId' = a.id)
+ORDER BY a.created_at;
+```
+
+On staging (2026-10-01) it would list LandTest1, LandTest2 and the ParityAudit agent. audit-contest ran the cluster query
+read-only on staging Postgres: it parses and runs (0 rows, because no `floor_arena.*` events exist before the deploy).

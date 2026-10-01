@@ -20,6 +20,7 @@ import {
   houseTunableRanges,
   parseArenaAnalysisReply,
   runArenaAnalysisTickWith,
+  tradeJudgedAt,
   type ArenaAnalysisAgent,
   type ArenaAnalysisCandidate,
   type ArenaAnalysisStore,
@@ -464,6 +465,55 @@ describe('Trading Arena D27 split check', () => {
     expect(evidence).toMatchObject({ confirmed: true, kept: { n: 8 }, excluded: { n: 8 } });
   });
 
+  describe('replays each trade at the instant the engine judged it (entry_features.judgedAt)', () => {
+    // The engine judges the filters at the tick time (judgedAt) and stamps
+    // opened_at at the later insert time. Genesis age_min_s 1800 -> 2400: a pair
+    // 2380 s old when judged is EXCLUDED by the new value, but 40 s later, at
+    // opened_at, it is 2420 s old and would wrongly read as KEPT.
+    const ageCurrent = (): FloorArenaParams => cloneFloorArenaParams(genesis.params);
+    const ageNext = (): FloorArenaParams => {
+      const p = cloneFloorArenaParams(genesis.params);
+      p.filters.age_min_s = 2_400;
+      return p;
+    };
+    const ageChange = { path: 'filters.age_min_s', from: genesis.params.filters.age_min_s, to: 2_400 };
+    const judged = (judgedAt: unknown, ageAtJudgeS: number, pnlMult: number, i: number): ArenaClosedTrade => {
+      const openedAt = new Date(NOW.getTime() - 20 * MIN);
+      const judgedMs = openedAt.getTime() - 40_000;
+      const t = aged(ageAtJudgeS, pnlMult, i);
+      return {
+        ...t,
+        openedAt,
+        features: {
+          ...t.features,
+          pairCreatedAt: judgedMs - ageAtJudgeS * 1000,
+          ...(judgedAt === undefined ? {} : { judgedAt: judgedAt === 'iso' ? new Date(judgedMs).toISOString() : judgedAt }),
+        },
+      };
+    };
+    const tradesWith = (judgedAt: unknown) => [
+      ...Array.from({ length: 8 }, (_, i) => judged(judgedAt, 2_380, 0.4, i)),
+      ...Array.from({ length: 8 }, (_, i) => judged(judgedAt, 5_000, 1.1, 8 + i)),
+    ];
+
+    test('a trade with judgedAt 40 s before openedAt replays at judgedAt', () => {
+      const one = judged('iso', 2_380, 0.4, 0);
+      expect(one.openedAt.getTime() - tradeJudgedAt(one).getTime()).toBe(40_000);
+      const evidence = evaluateSuggestionEvidence({ change: ageChange, current: ageCurrent(), next: ageNext(), trades: tradesWith('iso') });
+      expect(evidence).toMatchObject({ method: 'filter_split', confirmed: true, kept: { n: 8, deaths: 0 }, excluded: { n: 8, deaths: 8 } });
+    });
+
+    test('an older row without judgedAt (or with an unreadable one) falls back to openedAt', () => {
+      for (const judgedAt of [undefined, 'not-a-date', 12345]) {
+        const trades = tradesWith(judgedAt);
+        expect(tradeJudgedAt(trades[0]!).getTime()).toBe(trades[0]!.openedAt.getTime());
+        // At openedAt every boundary pair is 2420 s old, so the new value excludes nothing.
+        const evidence = evaluateSuggestionEvidence({ change: ageChange, current: ageCurrent(), next: ageNext(), trades });
+        expect(evidence).toMatchObject({ confirmed: false, kept: { n: 16 }, excluded: { n: 0 } });
+      }
+    });
+  });
+
   test('exit, entry and limit changes are not evaluable', () => {
     for (const path of ['exits.stop_mult', 'exits.tp', 'entry.entries_per_tick', 'limits.max_open']) {
       const evidence = evaluateSuggestionEvidence({
@@ -536,6 +586,10 @@ describe('Trading Arena prompt', () => {
     expect(all).toContain('Never propose limits.position_usd');
     expect(all).not.toContain('IGNORE ALL RULES');
     expect(all).not.toContain('houseRanges');
+    // audit-money B1: paid add-ons spend real USDC, so the analyst (whose summary
+    // the owner reads) must not be told that no money moves.
+    expect(all).toContain('no swap is sent and no token is bought');
+    expect(all.toLowerCase()).not.toContain('no money moves');
   });
 
   test('a house prompt lists the house ranges and the no-toggle rule', () => {
@@ -648,6 +702,24 @@ describe('Trading Arena analysis tick', () => {
     expect(memories[0]!.text).toContain('Trading Arena report for my paper trader My Trader');
     expect(memories[0]!.text).toContain('Suggested change: exits.tp');
     expect(memories[0]!.text).toContain('(pending)');
+  });
+
+  test('a short no-trade report is written but never stored as a lesson (the served text says "full reports")', async () => {
+    const a = agent({ id: 'u9', kind: 'user', name: 'Quiet Trader', avatarId: 'avatar-9' });
+    const c = candidate(a, { closedSince: 0, openedSince: 0, lastReportAt: new Date(NOW.getTime() - 121 * MIN) });
+    expect(arenaReportDue(c, NOW)).toBe('quiet');
+    const store = fakeStore({ candidates: [c], trades: { u9: [] } });
+    const { llm, calls } = llmReply(tpReply([[1.15, 1]]));
+    const memories: ArenaReportMemoryInput[] = [];
+    const result = await runArenaAnalysisTickWith(
+      { store, llm, log: quietLog, writeMemory: async (m) => { memories.push(m); } },
+      NOW,
+    );
+    expect(result).toMatchObject({ reports: 1 });
+    expect(store.reports).toHaveLength(1);
+    expect(store.reports[0]!.suggestion).toBeNull();
+    expect(calls).toHaveLength(0);
+    expect(memories).toHaveLength(0);
   });
 
   test('a suggestion reason never names a paid add-on, because it becomes public once applied', async () => {
