@@ -334,8 +334,10 @@ describe('Floor arena wire readers', () => {
       reason: 'changed',
       n: 24,
       needed: 20,
-      best: { path: 'filters.chg5m_max', from: 25, to: 12.5 },
+      best: { path: 'filters.chg5m_max', from: 25, to: 12.5, edge: 0.4 },
       p: 0.03,
+      checkpoint: null,
+      alpha: null,
     });
     // Old reports: no stats, no suggestionCheck, or no tuner field.
     expect(readReport({ id: 'r4', suggestionState: 'none' })?.tuner).toBeNull();
@@ -345,8 +347,58 @@ describe('Floor arena wire readers', () => {
     expect(readTunerCheck({ decision: 'maybe', reason: 'changed' })).toBeNull();
     expect(readTunerCheck({ decision: 'none', reason: 'mystery' })).toBeNull();
     expect(readTunerCheck({ decision: 'none', reason: 'no_candidate', best: { from: 1 } })).toEqual({
-      decision: 'none', reason: 'no_candidate', n: null, needed: null, best: null, p: null,
+      decision: 'none', reason: 'no_candidate', n: null, needed: null, best: null, p: null, checkpoint: null, alpha: null,
     });
+  });
+
+  test('the checkpoint contract: waiting_checkpoint and budget_spent read, with checkpoint, alpha and best.edge', () => {
+    // A look between checkpoints: no test ran, `needed` is the next checkpoint.
+    expect(
+      readTunerCheck({ decision: 'none', reason: 'waiting_checkpoint', n: 27, needed: 40, best: null, p: null, checkpoint: null, alpha: null }),
+    ).toEqual({ decision: 'none', reason: 'waiting_checkpoint', n: 27, needed: 40, best: null, p: null, checkpoint: null, alpha: null });
+    // Every checkpoint used: `needed` is null and still reads as a line.
+    expect(readTunerCheck({ decision: 'none', reason: 'budget_spent', n: 812, needed: null, best: null, p: null })).toEqual({
+      decision: 'none', reason: 'budget_spent', n: 812, needed: null, best: null, p: null, checkpoint: null, alpha: null,
+    });
+    // A tested look keeps the checkpoint, its alpha and the edge; numeric strings read as numbers.
+    expect(
+      readTunerCheck({
+        decision: 'none',
+        reason: 'not_significant',
+        n: '40',
+        needed: 80,
+        best: { path: 'filters.liq_min', from: 5000, to: 8000, kept: 22, excluded: 18, edge: '0.0215' },
+        p: 0.004,
+        checkpoint: '40',
+        alpha: 0.01,
+      }),
+    ).toEqual({
+      decision: 'none',
+      reason: 'not_significant',
+      n: 40,
+      needed: 80,
+      best: { path: 'filters.liq_min', from: 5000, to: 8000, edge: 0.0215 },
+      p: 0.004,
+      checkpoint: 40,
+      alpha: 0.01,
+    });
+    // Absent or junk checkpoint, alpha and edge read as null, never as 0.
+    expect(
+      readTunerCheck({
+        decision: 'changed', reason: 'changed', n: 20, needed: 20,
+        best: { path: 'filters.liq_min', from: 5000, to: 8000 }, p: 0.002, checkpoint: 'soon', alpha: {},
+      }),
+    ).toEqual({
+      decision: 'changed', reason: 'changed', n: 20, needed: 20,
+      best: { path: 'filters.liq_min', from: 5000, to: 8000, edge: null }, p: 0.002, checkpoint: null, alpha: null,
+    });
+    // Unknown values still read as no line.
+    expect(readTunerCheck({ decision: 'none', reason: 'waiting_for_godot', needed: 40 })).toBeNull();
+    expect(readTunerCheck({ decision: 'skipped', reason: 'budget_spent' })).toBeNull();
+    // Through readReport, as the report panel reads it.
+    expect(
+      readReport({ id: 'r7', stats: { suggestionCheck: { tuner: { decision: 'none', reason: 'budget_spent', n: 900, needed: null } } } })?.tuner?.reason,
+    ).toBe('budget_spent');
   });
 
   test('merging keeps newest first, drops duplicates, caps the list, and reuses the array when nothing is new', () => {

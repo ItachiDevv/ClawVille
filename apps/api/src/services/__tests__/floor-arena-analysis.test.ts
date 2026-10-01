@@ -5,12 +5,15 @@ import {
   cloneFloorArenaParams,
   floorArenaTemplateById,
   type FloorArenaParams,
+  type FloorArenaSuggestionState,
 } from '@clawville/shared';
 import {
   EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
+  TUNER_CHECKPOINT_ALPHA,
+  TUNER_CHECKPOINTS,
   arenaReportDue,
   evaluateSuggestionEvidence,
   buildArenaAnalysisMessages,
@@ -140,6 +143,9 @@ function fakeStore(opts: {
   prior?: ArenaPriorReport[];
   conflict?: boolean;
   duplicate?: boolean;
+  /** Another writer (the owner's click) moves the report to this state just
+   *  before the automatic apply claims it. */
+  movedBy?: FloorArenaSuggestionState;
 }): FakeStore {
   const byId = new Map<string, ArenaReportWrite>();
   const store: FakeStore = {
@@ -151,6 +157,15 @@ function fakeStore(opts: {
     async countOpen() { return 1; },
     async loadRecentReports() { return opts.prior ?? []; },
     async lastParamChangeAt() { return opts.lastChangeAt ?? null; },
+    async maxTestedCheckpoint(agentId, paramsVersion) {
+      let max: number | null = null;
+      for (const r of store.reports) {
+        if (r.agentId !== agentId || r.stats.paramsVersion !== paramsVersion) continue;
+        const c = r.stats.suggestionCheck.tuner?.checkpoint;
+        if (typeof c === 'number' && (max === null || c > max)) max = c;
+      }
+      return max;
+    },
     async insertReport(report) {
       if (opts.duplicate) return { duplicate: true as const };
       const row = { ...report };
@@ -163,6 +178,7 @@ function fakeStore(opts: {
       store.changes.push(change);
       if (opts.conflict) return { ok: false as const, reason: 'version_conflict' as const };
       const row = byId.get(change.reportId);
+      if (row && opts.movedBy) row.suggestionState = opts.movedBy;
       if (!row || row.suggestionState !== 'pending') return { ok: false as const, reason: 'report_not_pending' as const };
       row.suggestionState = 'auto_applied';
       return { ok: true as const, paramsVersion: change.expectedParamsVersion + 1 };
@@ -172,7 +188,16 @@ function fakeStore(opts: {
       if (!row || row.suggestionState !== 'pending') return;
       row.suggestionState = 'rejected';
       row.suggestion = null;
-      row.stats = { ...row.stats, suggestionCheck: { ...row.stats.suggestionCheck, reason, ...(tuner ? { tuner } : {}) } };
+      const { evidence: _dropped, ...check } = row.stats.suggestionCheck;
+      row.stats = { ...row.stats, suggestionCheck: { ...check, reason, ...(tuner ? { tuner } : {}) } };
+    },
+    async setReportTuner(reportId, _agentId, tuner) {
+      const row = byId.get(reportId);
+      if (!row) return null;
+      if (row.suggestionState !== 'auto_applied') {
+        row.stats = { ...row.stats, suggestionCheck: { ...row.stats.suggestionCheck, tuner } };
+      }
+      return row.suggestionState;
     },
   };
   return store;
@@ -630,7 +655,10 @@ describe('Trading Arena prompt', () => {
     // The model is told the gate CODE applies, so its commentary is accurate.
     expect(all).toContain(`at least ${EVIDENCE_MIN_PER_SIDE} trades fall on each side`);
     expect(all).toContain(`at least ${EVIDENCE_MIN_EDGE} mean multiple`);
-    expect(all).toContain(`p of ${EVIDENCE_MAX_SEARCH_P} or less`);
+    // D33 checkpoints: the model is told code tests only at checkpoints, each once.
+    expect(all).toContain(`passes at a checkpoint. Code tests only at ${TUNER_CHECKPOINTS.join(', ')} closed trades`);
+    expect(all).toContain(`with p thresholds ${TUNER_CHECKPOINT_ALPHA.join(', ')} (${EVIDENCE_MAX_SEARCH_P} in total per params version)`);
+    expect(all).not.toContain(`p of ${EVIDENCE_MAX_SEARCH_P} or less`);
     expect(all).toContain('Always set "suggestion" to null');
   });
 });
@@ -707,6 +735,9 @@ describe('Trading Arena analysis tick', () => {
       needed: MIN_CLOSED_FOR_AUTO_APPLY,
       best: { path: 'filters.age_min_s', from: 1_800, to: 3_000, kept: 14, excluded: 10, edge: 0.45 },
       p: 0.0005,
+      // 24 trades: the 20-trade checkpoint, tested at its own alpha.
+      checkpoint: 20,
+      alpha: 0.01,
     });
     expect(report.eventSummary.startsWith('Report: Eight of ten')).toBe(true);
   });
@@ -738,7 +769,7 @@ describe('Trading Arena analysis tick', () => {
     expect(memories[0]!.text).toContain(
       '\nTuner decision: suggested (reason: suggested); 24 closed trades on the current params, 20 needed. ' +
         'Best filter idea: filters.age_min_s from 1800 to 3000, keeps 14 and excludes 10 trades, edge +0.450, ' +
-        `shuffle p 0.0005 (needs ${EVIDENCE_MAX_SEARCH_P} or less).`,
+        'shuffle p 0.0005 (needs 0.01 or less at the 20-trade test).',
     );
   });
 
@@ -842,6 +873,7 @@ describe('Trading Arena analysis tick', () => {
     expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'none' });
     expect(store.reports[0]!.stats.suggestionCheck.tuner).toEqual({
       decision: 'none', reason: 'below_sample', n: 10, needed: MIN_CLOSED_FOR_AUTO_APPLY, best: null, p: null,
+      checkpoint: null, alpha: null,
     });
   });
 
@@ -918,9 +950,80 @@ describe('Trading Arena analysis tick', () => {
     for (const report of store.reports) {
       expect(report).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
       expect(report.stats.suggestionCheck.reason).toBe('params_changed');
-      // The tuner's final word lands with the reject (one store update).
-      expect(report.stats.suggestionCheck.tuner).toMatchObject({ decision: 'none', reason: 'params_changed' });
+      // The tuner's final word lands with the reject (one store update); the
+      // look stays recorded (it spent the 20-trade alpha).
+      expect(report.stats.suggestionCheck.tuner).toMatchObject({
+        decision: 'none', reason: 'params_changed', checkpoint: 20, alpha: 0.01, needed: 20,
+      });
+      // No suggestion is stored, so no evidence either.
+      expect(report.stats.suggestionCheck.evidence).toBeUndefined();
     }
+  });
+
+  test('report_not_pending: the owner moved the report first; only the tuner line is corrected, tally and memory follow the row', async () => {
+    const cases: Array<{ movedBy: FloorArenaSuggestionState; tuner: Record<string, unknown>; tally: Record<string, number> }> = [
+      { movedBy: 'applied', tuner: { decision: 'none', reason: 'params_changed' }, tally: { applied: 0, pending: 0, rejected: 0 } },
+      { movedBy: 'dismissed', tuner: { decision: 'none', reason: 'params_changed' }, tally: { applied: 0, pending: 0, rejected: 0 } },
+      { movedBy: 'rejected', tuner: { decision: 'none', reason: 'params_changed' }, tally: { applied: 0, pending: 0, rejected: 1 } },
+      // An auto_applied row keeps its `changed` line (the store guard).
+      { movedBy: 'auto_applied', tuner: { decision: 'changed', reason: 'changed' }, tally: { applied: 1, pending: 0, rejected: 0 } },
+    ];
+    for (const { movedBy, tuner, tally } of cases) {
+      const a = agent({ id: 'u10', kind: 'user', name: 'Auto Trader', autoApplySuggestions: true, avatarId: 'avatar-10' });
+      const store = fakeStore({ candidates: [candidate(a)], trades: { u10: tunerSplitTrades() }, movedBy });
+      const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+      const memories: ArenaReportMemoryInput[] = [];
+      const result = await runArenaAnalysisTickWith(
+        { store, llm, log: quietLog, writeMemory: async (m) => { memories.push(m); } },
+        NOW,
+      );
+      expect(result).toMatchObject({ reports: 1, ...tally });
+      const report = store.reports[0]!;
+      // The other writer's state and suggestion stay as that writer left them.
+      expect(report.suggestionState).toBe(movedBy);
+      expect(report.suggestion).toMatchObject({ path: 'filters.age_min_s', from: 1_800, to: 3_000 });
+      expect(report.stats.suggestionCheck.tuner).toMatchObject({ ...tuner, checkpoint: 20, alpha: 0.01 });
+      expect(report.stats.suggestionCheck.tuner!.decision === 'changed').toBe(movedBy === 'auto_applied');
+      expect(memories).toHaveLength(1);
+      expect(memories[0]!.text).toContain(`Suggested change: filters.age_min_s from 1800 to 3000 (${movedBy}).`);
+      expect(memories[0]!.text).toContain(`Tuner decision: ${tuner.decision} (reason: ${tuner.reason});`);
+    }
+  });
+
+  test('a tuner that throws (search or store read) writes not_tunable, logs one line, and the report is still written', async () => {
+    // The search throws: a feature read fails inside it (the stats never read liqUsd).
+    const throwing = tunerSplitTrades().map((t) => {
+      const features = { ...t.features };
+      Object.defineProperty(features, 'liqUsd', { enumerable: true, get() { throw new Error('feature read failed'); } });
+      return { ...t, features };
+    });
+    const house = agent();
+    const user = agent({ id: 'u11', kind: 'user' });
+    const store = fakeStore({ candidates: [candidate(house), candidate(user)], trades: { [house.id]: throwing, u11: tunerSplitTrades() } });
+    const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+    const lines: string[] = [];
+    const result = await runArenaAnalysisTickWith({ store, llm, log: (line) => lines.push(line) }, NOW);
+    expect(result).toMatchObject({ reports: 2, applied: 0, pending: 1 });
+    expect(store.changes).toHaveLength(0);
+    const byAgent = new Map(store.reports.map((r) => [r.agentId, r]));
+    expect(byAgent.get(house.id)!.stats.suggestionCheck.tuner).toEqual({
+      decision: 'none', reason: 'not_tunable', n: 24, needed: MIN_CLOSED_FOR_AUTO_APPLY, best: null, p: null,
+      checkpoint: null, alpha: null,
+    });
+    expect(byAgent.get(house.id)).toMatchObject({ suggestion: null, suggestionState: 'none' });
+    expect(byAgent.get(house.id)!.stats.suggestionCheck.llm).toBe('ok');
+    expect(lines.filter((l) => l.includes('tuner failed'))).toEqual([
+      `[floor-arena/analysis] ${house.id}: tuner failed, no change this report (feature read failed)`,
+    ]);
+    // The other agent in the same tick is tuned as usual.
+    expect(byAgent.get('u11')!.stats.suggestionCheck.tuner).toMatchObject({ decision: 'suggested', checkpoint: 20 });
+
+    // A store read that throws is the same: not_tunable, no checkpoint recorded.
+    const failing = fakeStore({ candidates: [candidate(agent())], trades: { [house.id]: tunerSplitTrades() } });
+    failing.maxTestedCheckpoint = async () => { throw new Error('db down'); };
+    const failed = await runArenaAnalysisTickWith({ store: failing, llm, log: quietLog }, NOW);
+    expect(failed).toMatchObject({ reports: 1, applied: 0 });
+    expect(failing.reports[0]!.stats.suggestionCheck.tuner).toMatchObject({ reason: 'not_tunable', checkpoint: null });
   });
 
   test('a second leader in the same window writes no report and applies nothing', async () => {
@@ -986,6 +1089,7 @@ describe('Trading Arena analysis tick', () => {
     expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('current_params_invalid');
     expect(store.reports[0]!.stats.suggestionCheck.tuner).toEqual({
       decision: 'none', reason: 'not_tunable', n: 10, needed: MIN_CLOSED_FOR_AUTO_APPLY, best: null, p: null,
+      checkpoint: null, alpha: null,
     });
   });
 

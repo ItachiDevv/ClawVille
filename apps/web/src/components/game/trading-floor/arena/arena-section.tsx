@@ -1,12 +1,14 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_TEMPLATES,
 } from '@clawville/shared';
 
 import { ApiError } from '@/lib/api';
+import { AUTH_ME_QUERY_KEY, fetchAuthMe } from '@/hooks/use-auth-me';
 import {
   useFloorArenaContest,
   useFloorArenaDiscovery,
@@ -418,7 +420,15 @@ export function FloorArenaSection({
   const launched = useFloorArenaUi((state) => state.launched);
   const showPanel = useFloorArenaUi((state) => state.showPanel);
   const setLaunched = useFloorArenaUi((state) => state.setLaunched);
-  const me = useFloorArenaMe(active && !isGuest);
+  // GET /me answers a guest or a logged-out visitor with 401 (a red console
+  // error). `isGuest` comes from useIsGuest(), which reads false while auth-me
+  // is still loading, so also wait for auth-me to resolve, like the floor tab.
+  // The shared auth-me query and fetcher (see use-auth-me.ts); a known guest
+  // only reads the cache, so this observer never asks for auth-me for one.
+  const authResolved =
+    useQuery({ queryKey: AUTH_ME_QUERY_KEY, queryFn: fetchAuthMe, retry: false, enabled: active && !isGuest }).data !==
+    undefined;
+  const me = useFloorArenaMe(active && authResolved && !isGuest);
   const myAgent = me.data?.agent ?? null;
   // A 401 or 403 from GET /me means this viewer cannot own an arena agent,
   // exactly like a guest: the launch flow then shows the sign-up card.
@@ -458,7 +468,9 @@ export function FloorArenaSection({
   } else if (panel === 'rules') {
     body = <ContestRules active={active} onBack={toOverview} onOpenAgent={openAgent} />;
   } else if (panel === 'desk' || panel === 'launch') {
-    if (!cannotOwn && me.isLoading) {
+    // Until auth-me resolves, GET /me waits (disabled, so not "loading"); show
+    // the same wait, never the launch form to a player who already owns one.
+    if (!cannotOwn && (!authResolved || me.isLoading)) {
       body = <ArenaMuted>Loading your arena trader...</ArenaMuted>;
     } else if (!cannotOwn && me.isError && !me.data) {
       body = (

@@ -11,11 +11,15 @@ import {
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
+  TUNER_CHECKPOINT_ALPHA,
+  TUNER_CHECKPOINTS,
   checkHouseDrift,
   houseLeafInBand,
   roundTunerCandidate,
   runArenaAnalysisTickWith,
   searchFilterChange,
+  tunerCheckpointStep,
+  tunerMemoryLine,
   type ArenaAnalysisAgent,
   type ArenaAnalysisCandidate,
   type ArenaAnalysisStore,
@@ -133,6 +137,17 @@ function fakeStore(opts: { candidates: ArenaAnalysisCandidate[]; trades?: Record
     async countOpen() { return 1; },
     async loadRecentReports() { return []; },
     async lastParamChangeAt() { return null; },
+    // The SQL reads max(stats.suggestionCheck.tuner.checkpoint) over this
+    // agent's reports whose stats.paramsVersion is the version asked.
+    async maxTestedCheckpoint(agentId, paramsVersion) {
+      let max: number | null = null;
+      for (const r of store.reports) {
+        if (r.agentId !== agentId || r.stats.paramsVersion !== paramsVersion) continue;
+        const c = r.stats.suggestionCheck.tuner?.checkpoint;
+        if (typeof c === 'number' && (max === null || c > max)) max = c;
+      }
+      return max;
+    },
     async insertReport(report) {
       const row = { ...report };
       store.reports.push(row);
@@ -152,7 +167,14 @@ function fakeStore(opts: { candidates: ArenaAnalysisCandidate[]; trades?: Record
       if (!row || row.suggestionState !== 'pending') return;
       row.suggestionState = 'rejected';
       row.suggestion = null;
-      row.stats = { ...row.stats, suggestionCheck: { ...row.stats.suggestionCheck, reason, ...(tuner ? { tuner } : {}) } };
+      const { evidence: _dropped, ...check } = row.stats.suggestionCheck;
+      row.stats = { ...row.stats, suggestionCheck: { ...check, reason, ...(tuner ? { tuner } : {}) } };
+    },
+    async setReportTuner(reportId, _agentId, tuner) {
+      const row = byId.get(reportId);
+      if (!row) return null;
+      if (row.suggestionState !== 'auto_applied') row.stats = { ...row.stats, suggestionCheck: { ...row.stats.suggestionCheck, tuner } };
+      return row.suggestionState;
     },
   };
   return store;
@@ -169,6 +191,45 @@ function nullModel() {
 }
 
 const quietLog = () => {};
+
+/** Shuffles per look in the multi-look test (production: 2000). 400 keeps
+ *  every checkpoint reachable (the smallest p is 1/401, below 0.0025) and the
+ *  test under 20 s; at 2000 the first 100 streams gave 6/100. */
+const MULTI_LOOK_SHUFFLES = 400;
+
+/** A pure-noise stream in closing order: trade j closes j seconds after the
+ *  stream starts, so the first m trades are the oldest m. */
+function noiseStream(n: number, seed: number): ArenaClosedTrade[] {
+  const start = NOW.getTime() - 10 * 24 * 60 * MIN;
+  return noiseTrades(n, seed).map((t, j) => ({ ...t, closedAt: new Date(start + j * 1_000) }));
+}
+
+/**
+ * Runs the REAL tick (`runArenaAnalysisTickWith`) on one house agent over a
+ * growing noise stream: one due report every `step` closed trades from `from`
+ * to `to`. The store keeps every report, so the tick reads which checkpoints
+ * this params version already tested. Returns true at the first change.
+ */
+async function streamEverChanges(seed: number, opts: { from: number; to: number; step: number; shuffles: number }): Promise<boolean> {
+  const all = noiseStream(opts.to, seed);
+  const a = agent();
+  let visible: ArenaClosedTrade[] = [];
+  let tickAt = NOW;
+  const store = fakeStore({ candidates: [] });
+  // A quiet report (no model call): the tuner runs on it all the same.
+  store.listCandidates = async () => [
+    candidate(a, { closedSince: 0, openedSince: 0, lastReportAt: new Date(tickAt.getTime() - 3 * 60 * MIN) }),
+  ];
+  store.loadClosedTrades = async () => visible;
+  const { llm } = nullModel();
+  for (let m = opts.from, k = 0; m <= opts.to; m += opts.step, k += 1) {
+    visible = all.slice(0, m).reverse();
+    tickAt = new Date(NOW.getTime() + k * 3 * 60 * MIN);
+    await runArenaAnalysisTickWith({ store, llm, log: quietLog, tunerShuffles: opts.shuffles }, tickAt);
+    if (store.changes.length > 0) return true;
+  }
+  return false;
+}
 
 describe('D33 tuner in the analysis tick (model reply: suggestion null)', () => {
   test('(1) an eligible house agent with a clear 12/12 age split is tuned by code', async () => {
@@ -197,6 +258,8 @@ describe('D33 tuner in the analysis tick (model reply: suggestion null)', () => 
       best: { path: 'filters.age_min_s', from: 1_800, to: 3_000, kept: 12, excluded: 12, edge: 0.6 },
       // No shuffle reaches an edge of 0.6: p = 1 / 2001.
       p: 0.0005,
+      checkpoint: 20,
+      alpha: 0.01,
     });
     expect(report.stats.suggestionCheck.evidence).toMatchObject({ method: 'filter_split', confirmed: true });
   });
@@ -216,6 +279,8 @@ describe('D33 tuner in the analysis tick (model reply: suggestion null)', () => 
     expect(tuner.decision).toBe('none');
     expect(tuner.reason).toBe('not_significant');
     expect(tuner.n).toBe(51);
+    // 51 trades: the largest untested checkpoint is 40 (20 is forfeited).
+    expect(tuner).toMatchObject({ checkpoint: 40, alpha: 0.01, needed: 40 });
     expect(tuner.p!).toBeGreaterThan(EVIDENCE_MAX_SEARCH_P);
     // The naive fix (code search + D27 as written) WOULD have applied this
     // noise: its best split passes the raw D27 check. The shuffle test is what
@@ -241,6 +306,8 @@ describe('D33 tuner in the analysis tick (model reply: suggestion null)', () => 
       needed: 20,
       best: null,
       p: null,
+      checkpoint: null,
+      alpha: null,
     });
   });
 
@@ -269,8 +336,10 @@ describe('D33 tuner in the analysis tick (model reply: suggestion null)', () => 
 });
 
 describe('D33 searchFilterChange (pure)', () => {
+  // One look at the 0.05 family budget: these tests check one search, not the schedule.
+  const alpha = EVIDENCE_MAX_SEARCH_P;
   const house = (trades: ArenaClosedTrade[], seed = 's', shuffles?: number) =>
-    searchFilterChange({ template: genesis.params, current: genesis.params, trades, house: true, seed, shuffles });
+    searchFilterChange({ template: genesis.params, current: genesis.params, trades, house: true, seed, alpha, shuffles });
 
   test('(5) the same seed gives the same result; the best split never depends on the seed', async () => {
     const trades = noiseTrades(51, 11);
@@ -288,7 +357,7 @@ describe('D33 searchFilterChange (pure)', () => {
     const h = await house(trades);
     expect(h.outcome).toBe('no_candidate');
     expect(h.best).toBeNull();
-    const u = await searchFilterChange({ template: genesis.params, current: genesis.params, trades, house: false, seed: 's' });
+    const u = await searchFilterChange({ template: genesis.params, current: genesis.params, trades, house: false, seed: 's', alpha });
     expect(u.outcome).toBe('confirmed');
     expect(u.best!.summary).toMatchObject({ path: 'filters.age_min_s', from: 1_800, to: 5_000 });
 
@@ -353,7 +422,7 @@ describe('D33 searchFilterChange (pure)', () => {
       ...Array.from({ length: 12 }, (_, i) => arenaTrade(i, 0.5, 3_000, { chg5m: 33.333333, chg6h: 700 })),
       ...Array.from({ length: 12 }, (_, i) => arenaTrade(12 + i, 1.1, 3_000, { chg5m: 12.345678, chg6h: 700 })),
     ];
-    const dec = await searchFilterChange({ template: runner.params, current: runner.params, trades: decimals, house: false, seed: 's' });
+    const dec = await searchFilterChange({ template: runner.params, current: runner.params, trades: decimals, house: false, seed: 's', alpha });
     expect(dec.best!.summary).toMatchObject({ path: 'filters.chg5m_max', from: 41.48, to: 12.4, kept: 12, excluded: 12 });
 
     // Across noise data, every value a house or user search proposes has at
@@ -362,7 +431,7 @@ describe('D33 searchFilterChange (pure)', () => {
     for (let seed = 1; seed <= 20; seed += 1) {
       for (const isHouse of [true, false]) {
         const result = await searchFilterChange({
-          template: genesis.params, current: genesis.params, trades: noiseTrades(51, seed), house: isHouse, seed: `r-${seed}`, shuffles: 20,
+          template: genesis.params, current: genesis.params, trades: noiseTrades(51, seed), house: isHouse, seed: `r-${seed}`, alpha, shuffles: 20,
         });
         if (!result.best) continue;
         const to = result.best.summary.to;
@@ -372,4 +441,119 @@ describe('D33 searchFilterChange (pure)', () => {
     }
     expect(checked).toBeGreaterThan(20);
   });
+
+  test('(10) the band check runs BEFORE the 64-value cap: an in-band split is never cut away by out-of-band values', async () => {
+    // Genesis mcap_min 10000 (band 5000 to 20000). Values in order: 10500,
+    // 12000, then 150 values from 30000 up (out of band). Cut first, the even
+    // spacing over 152 values keeps index 0 and then index 2, so 12000 (the
+    // only in-band split) was lost and the search found nothing to change.
+    const trades = [
+      ...Array.from({ length: 12 }, (_, i) => arenaTrade(i, 0.5, 3_000, { mcap: 10_500 })),
+      ...Array.from({ length: 12 }, (_, i) => arenaTrade(12 + i, 1.1, 3_000, { mcap: 12_000 })),
+      ...Array.from({ length: 150 }, (_, i) => arenaTrade(24 + i, 1.1, 3_000, { mcap: 30_000 + i * 1_400 })),
+    ];
+    const result = await house(trades);
+    expect(result.outcome).toBe('confirmed');
+    expect(result.best!.summary).toMatchObject({ path: 'filters.mcap_min', from: 10_000, to: 12_000, kept: 162, excluded: 12 });
+    expect(houseLeafInBand('filters.mcap_min', 10_000, 12_000)).toBe(true);
+  });
+});
+
+describe('D33 checkpoint schedule (bookkeeping)', () => {
+  test('(11) the constants: 20 first, ascending, one alpha each, summing to the 0.05 family budget', () => {
+    expect([...TUNER_CHECKPOINTS]).toEqual([20, 40, 80, 160, 200, 400, 800]);
+    expect([...TUNER_CHECKPOINT_ALPHA]).toEqual([0.01, 0.01, 0.01, 0.01, 0.005, 0.0025, 0.0025]);
+    expect(TUNER_CHECKPOINTS[0]).toBe(MIN_CLOSED_FOR_AUTO_APPLY);
+    expect(TUNER_CHECKPOINT_ALPHA).toHaveLength(TUNER_CHECKPOINTS.length);
+    expect(TUNER_CHECKPOINT_ALPHA.reduce((a, b) => a + b, 0)).toBeCloseTo(EVIDENCE_MAX_SEARCH_P, 12);
+  });
+
+  test('(12) tunerCheckpointStep: largest untested checkpoint, forfeits, waiting, budget spent', () => {
+    expect(tunerCheckpointStep(0, null)).toEqual({ kind: 'below_sample', needed: 20 });
+    expect(tunerCheckpointStep(19, null)).toEqual({ kind: 'below_sample', needed: 20 });
+    expect(tunerCheckpointStep(20, null)).toEqual({ kind: 'look', checkpoint: 20, alpha: 0.01 });
+    expect(tunerCheckpointStep(25, 20)).toEqual({ kind: 'waiting_checkpoint', needed: 40 });
+    // 57 trades, nothing tested: 40 is tested, 20 is forfeited for good.
+    expect(tunerCheckpointStep(57, null)).toEqual({ kind: 'look', checkpoint: 40, alpha: 0.01 });
+    expect(tunerCheckpointStep(57, 40)).toEqual({ kind: 'waiting_checkpoint', needed: 80 });
+    expect(tunerCheckpointStep(199, 160)).toEqual({ kind: 'waiting_checkpoint', needed: 200 });
+    expect(tunerCheckpointStep(200, 160)).toEqual({ kind: 'look', checkpoint: 200, alpha: 0.005 });
+    // A jump past 200 and 400: 400 is tested at ITS alpha; 200's alpha is not reused.
+    expect(tunerCheckpointStep(450, 160)).toEqual({ kind: 'look', checkpoint: 400, alpha: 0.0025 });
+    expect(tunerCheckpointStep(450, 400)).toEqual({ kind: 'waiting_checkpoint', needed: 800 });
+    expect(tunerCheckpointStep(800, 400)).toEqual({ kind: 'look', checkpoint: 800, alpha: 0.0025 });
+    expect(tunerCheckpointStep(5_000, 80)).toEqual({ kind: 'look', checkpoint: 800, alpha: 0.0025 });
+    expect(tunerCheckpointStep(800, 800)).toEqual({ kind: 'budget_spent' });
+    expect(tunerCheckpointStep(5_000, 800)).toEqual({ kind: 'budget_spent' });
+  });
+
+  test('(13) through the tick: each checkpoint once, no search between, budget_spent after 800, restart on a new params version', async () => {
+    // Identical entry features: every look ends no_candidate, so nothing
+    // changes and the version stays 1 for the whole run.
+    const flat = (count: number, version = 1) =>
+      Array.from({ length: count }, (_, i) => ({ ...arenaTrade(i, i % 3 === 0 ? 0.4 : 1.1, 3_000), paramsVersion: version }));
+    let a = agent();
+    let visible: ArenaClosedTrade[] = [];
+    let tickAt = NOW;
+    let lastChangeReads = 0;
+    const store = fakeStore({ candidates: [] });
+    store.listCandidates = async () => [candidate(a, { lastReportAt: new Date(tickAt.getTime() - 31 * MIN) })];
+    store.loadClosedTrades = async () => visible;
+    // An automatic agent reads its last change time only at a look, before the search.
+    store.lastParamChangeAt = async () => { lastChangeReads += 1; return null; };
+    const { llm } = nullModel();
+    const tickWith = async (trades: ArenaClosedTrade[]) => {
+      visible = trades;
+      tickAt = new Date(tickAt.getTime() + 31 * MIN);
+      await runArenaAnalysisTickWith({ store, llm, log: quietLog, tunerShuffles: 50 }, tickAt);
+      return store.reports[store.reports.length - 1]!.stats.suggestionCheck.tuner!;
+    };
+
+    expect(await tickWith(flat(12))).toMatchObject({ reason: 'below_sample', needed: 20, checkpoint: null, alpha: null });
+    expect(await tickWith(flat(20))).toMatchObject({ reason: 'no_candidate', n: 20, needed: 20, checkpoint: 20, alpha: 0.01 });
+    expect(await tickWith(flat(30))).toEqual({
+      decision: 'none', reason: 'waiting_checkpoint', n: 30, needed: 40, best: null, p: null, checkpoint: null, alpha: null,
+    });
+    // 90 trades: 80 is tested, 40 is forfeited.
+    expect(await tickWith(flat(90))).toMatchObject({ reason: 'no_candidate', n: 90, needed: 80, checkpoint: 80, alpha: 0.01 });
+    expect(await tickWith(flat(150))).toMatchObject({ reason: 'waiting_checkpoint', needed: 160, checkpoint: null });
+    // 850 trades: 800 is tested; 160, 200 and 400 are forfeited.
+    expect(await tickWith(flat(850))).toMatchObject({ reason: 'no_candidate', n: 850, needed: 800, checkpoint: 800, alpha: 0.0025 });
+    const spent = await tickWith(flat(900));
+    expect(spent).toEqual({
+      decision: 'none', reason: 'budget_spent', n: 900, needed: null, best: null, p: null, checkpoint: null, alpha: null,
+    });
+    expect(tunerMemoryLine(spent)).toBe(
+      'Tuner decision: none (reason: budget_spent); 900 closed trades on the current params, every test of these params is used, so code changes nothing until the params change.',
+    );
+    // Three looks (20, 80, 800): only they read the change time (no search ran between).
+    expect(lastChangeReads).toBe(3);
+
+    // A params change starts a new version: the schedule starts again at 20.
+    a = agent({ paramsVersion: 2 });
+    expect(await tickWith([...flat(900, 1), ...flat(25, 2)])).toMatchObject({
+      reason: 'no_candidate', n: 25, needed: 20, checkpoint: 20, alpha: 0.01,
+    });
+    expect(await tickWith([...flat(900, 1), ...flat(30, 2)])).toMatchObject({ reason: 'waiting_checkpoint', n: 30, needed: 40 });
+    expect(lastChangeReads).toBe(4);
+    expect(store.changes).toHaveLength(0);
+  });
+});
+
+describe('D33 checkpoint schedule (repeated looks)', () => {
+  test('(9) multi-look: 150 pure-noise streams, a report every 2 trades from 20 to 400: at most 7% ever change', async () => {
+    // Every report looks at a growing sample. Testing each look at p <= 0.05
+    // is optional stopping: this same test on the 10cd060d code (a search on
+    // every report at p <= 0.05, 2000 shuffles) gave 80/150 = 53%. The
+    // schedule tests each checkpoint once at its own alpha, 0.05 in total per
+    // params version: 6/150 = 4% here.
+    const started = performance.now();
+    let changed = 0;
+    const streams = 150;
+    for (let s = 0; s < streams; s += 1) {
+      if (await streamEverChanges(5_000 + s, { from: 20, to: 400, step: 2, shuffles: MULTI_LOOK_SHUFFLES })) changed += 1;
+    }
+    console.log(`[multi-look] ${changed}/${streams} noise streams changed (${Math.round(performance.now() - started)} ms)`);
+    expect(changed / streams).toBeLessThanOrEqual(0.07);
+  }, 120_000);
 });

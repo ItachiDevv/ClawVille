@@ -317,17 +317,57 @@ const SUGGESTION_STATE_LABEL: Record<FloorArenaReportView['suggestionState'], st
   applied: 'Applied',
   dismissed: 'Dismissed',
   auto_applied: 'Applied automatically',
-  rejected: 'Not applied: it was outside the limits',
+  rejected: 'Not applied: the rules changed or it was outside the limits',
 };
 
-function tunerP(p: number | null): string {
+/**
+ * A shuffle-test p: 3 decimals, or "< 0.001". When 3 decimals would put p on
+ * the wrong side of alpha (0.0025 shows as 0.003, 0.0051 as 0.005), it shows
+ * 4 decimals, the server's own rounding, so the line never contradicts itself.
+ */
+function tunerPText(p: number, alpha: number | null): string {
+  if (p < 0.001) return '< 0.001';
+  const three = p.toFixed(3);
+  return alpha !== null && (p <= alpha) !== (Number(three) <= alpha) ? p.toFixed(4) : three;
+}
+
+/** The p a test had to reach (0.01, 0.005, 0.0025), without trailing zeros. */
+function tunerAlphaText(alpha: number): string {
+  return alpha.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+/** " (p 0.004, needs 0.01)"; an older report with no alpha gives " (p 0.030)". */
+function tunerEvidence(p: number | null, alpha: number | null): string {
   if (p === null) return '';
-  return p < 0.01 ? ' (p < 0.01)' : ` (p ${p.toFixed(2)})`;
+  return alpha === null ? ` (p ${tunerPText(p, null)})` : ` (p ${tunerPText(p, alpha)}, needs ${tunerAlphaText(alpha)})`;
+}
+
+/**
+ * The not_significant line. A tested look compares p with that checkpoint's
+ * alpha: above it, the filter is not significant; at or below it, the split
+ * failed only the edge rule.
+ */
+function tunerNotSignificant(tuner: FloorArenaTunerCheck): string {
+  const { p, alpha } = tuner;
+  if (p !== null && alpha !== null && p <= alpha) {
+    // The server stores the edge to 4 places and judged the raw value, so 4
+    // places (trailing zeros cut to 2) never round a 0.0299 up to the 0.03 bar.
+    const edge = tuner.best?.edge ?? null;
+    return edge === null
+      ? 'Tuner: no change, edge too small'
+      : `Tuner: no change, edge too small (${edge >= 0 ? '+' : ''}${edge.toFixed(4).replace(/0{1,2}$/, '')})`;
+  }
+  if (p !== null && alpha !== null) {
+    return `Tuner: no change, best filter not significant (p ${tunerPText(p, alpha)} needs ${tunerAlphaText(alpha)} or less)`;
+  }
+  return `Tuner: no change, best filter not significant${tunerEvidence(p, null)}`;
 }
 
 /**
  * One plain line that says why the tuner changed, suggested or kept the rules
  * in this report (D33). Null when the report has no tuner field (older reports).
+ * The server tests only at checkpoints on the current rules, so most reports
+ * say "next check at N trades"; a rule set that used every checkpoint says so.
  */
 export function arenaTunerLine(tuner: FloorArenaTunerCheck | null | undefined): string | null {
   if (!tuner) return null;
@@ -335,17 +375,25 @@ export function arenaTunerLine(tuner: FloorArenaTunerCheck | null | undefined): 
   const change = best
     ? `${paramPathLabel(best.path)} ${formatParamValue(best.path, best.from)} -> ${formatParamValue(best.path, best.to)}`
     : null;
-  if (tuner.decision === 'changed') return change ? `Tuner: changed ${change}${tunerP(tuner.p)}` : 'Tuner: changed a rule';
-  if (tuner.decision === 'suggested') return change ? `Tuner: suggested ${change}${tunerP(tuner.p)}` : 'Tuner: suggested a change';
+  const evidence = tunerEvidence(tuner.p, tuner.alpha);
+  if (tuner.decision === 'changed') return change ? `Tuner: changed ${change}${evidence}` : 'Tuner: changed a rule';
+  if (tuner.decision === 'suggested') return change ? `Tuner: suggested ${change}${evidence}` : 'Tuner: suggested a change';
+  const counts = tuner.needed !== null && tuner.n !== null;
   switch (tuner.reason) {
     case 'below_sample':
-      return tuner.needed !== null && tuner.n !== null
-        ? `Tuner: no change, needs ${countText(tuner.needed)} closed trades (has ${countText(tuner.n)})`
-        : 'Tuner: no change, needs more closed trades';
+      return counts
+        ? `Tuner: no change, needs ${countText(tuner.needed)} closed trades on these rules (has ${countText(tuner.n)})`
+        : 'Tuner: no change, needs more closed trades on these rules';
+    case 'waiting_checkpoint':
+      return counts
+        ? `Tuner: no change, next check at ${countText(tuner.needed)} trades on these rules (has ${countText(tuner.n)})`
+        : 'Tuner: no change, next check after more trades on these rules';
+    case 'budget_spent':
+      return 'Tuner: no change, these rules used their test budget; it checks again after a rule change';
     case 'not_significant':
-      return `Tuner: no change, best filter not significant${tunerP(tuner.p)}`;
+      return tunerNotSignificant(tuner);
     case 'no_candidate':
-      return 'Tuner: no change, no filter passes the evidence gate';
+      return 'Tuner: no change, no filter change splits the trades 8 and 8';
     case 'rate_limited':
       return 'Tuner: no change, the last rule change is too recent';
     case 'params_changed':

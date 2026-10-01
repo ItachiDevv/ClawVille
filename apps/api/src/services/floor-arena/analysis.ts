@@ -15,16 +15,21 @@
  *      the hard rules, the stats and the last three reports. The model is told
  *      to set `suggestion` to null, and code ignores any proposal (D33: since
  *      D27 the model proposed nothing, so the tuner never ran).
- *   3. THE CODE TUNER (D33, `searchFilterChange`) on EVERY due report, quiet
- *      ones included, whatever the model replied: one-filter tightenings of
- *      the filters the template sets, at values observed in the entry
- *      features (never from outcomes), inside the house band for a house agent
- *      and inside the validation bounds for a user agent, judged on the closed
- *      trades of the CURRENT params version. The best split must pass D27
- *      (`MIN_CLOSED_FOR_AUTO_APPLY` trades, `EVIDENCE_MIN_PER_SIDE` per side,
- *      `EVIDENCE_MIN_EDGE` raw mean edge) AND a max-statistic shuffle test over
- *      the whole search family (p <= `EVIDENCE_MAX_SEARCH_P`). The outcome is
- *      always in `stats.suggestionCheck.tuner`.
+ *   3. THE CODE TUNER (D33, `planTunerDecision`) on EVERY due report, quiet
+ *      ones included, whatever the model replied. It runs the search
+ *      (`searchFilterChange`) only at a CHECKPOINT (`tunerCheckpointStep`):
+ *      at most once per entry of `TUNER_CHECKPOINTS` per params version, at
+ *      that checkpoint's alpha (`TUNER_CHECKPOINT_ALPHA`, 0.05 in total), so
+ *      repeated reports on a growing sample are not repeated tests. The
+ *      search: one-filter tightenings of the filters the template sets, at
+ *      values observed in the entry features (never from outcomes), inside
+ *      the house band for a house agent and inside the validation bounds for a
+ *      user agent, judged on the closed trades of the CURRENT params version.
+ *      The best split must pass D27 (`MIN_CLOSED_FOR_AUTO_APPLY` trades,
+ *      `EVIDENCE_MIN_PER_SIDE` per side, `EVIDENCE_MIN_EDGE` raw mean edge)
+ *      AND a max-statistic shuffle test over the whole search family (p <= the
+ *      checkpoint alpha). The outcome is always in
+ *      `stats.suggestionCheck.tuner`.
  *   4. APPLY: a house agent applies a confirmed change itself (source
  *      `house-tuner`), and so does a user agent whose owner turned on
  *      `auto_apply_suggestions` (source `suggestion`); at most one automatic
@@ -71,11 +76,14 @@ import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
   ARENA_REPORT_INTERVAL_MS,
+  ARENA_TUNER_REASONS,
   EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   EVIDENCE_PERMUTATIONS,
   MIN_CLOSED_FOR_AUTO_APPLY,
+  TUNER_CHECKPOINT_ALPHA,
+  TUNER_CHECKPOINTS,
 } from './analysis-rules';
 import { finiteOrNull, pairAgeSeconds, passesFilters, volOverMcap, type FloorArenaFeatures } from './filters';
 import { redactArenaText } from './queries';
@@ -97,16 +105,18 @@ export {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
   ARENA_REPORT_INTERVAL_MS,
+  ARENA_TUNER_REASONS,
   EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   EVIDENCE_PERMUTATIONS,
   MIN_CLOSED_FOR_AUTO_APPLY,
-  MIN_CLOSED_ON_CURRENT_PARAMS,
+  TUNER_CHECKPOINT_ALPHA,
+  TUNER_CHECKPOINTS,
 } from './analysis-rules';
 /** D33: the tuner judges at most this many closed trades of the current
  *  params (the newest), so its CPU cost has a ceiling however long a version
- *  lives. */
+ *  lives. The 400 and 800 checkpoints judge the newest 200 of them. */
 export const TUNER_MAX_TRADES = 200;
 /** D33: at most this many candidate values per filter leaf (evenly spaced by
  *  rank when there are more); chosen from entry features only. */
@@ -195,15 +205,7 @@ export interface ArenaSuggestionCheck {
 }
 
 export type ArenaTunerDecision = 'changed' | 'suggested' | 'none';
-export type ArenaTunerReason =
-  | 'below_sample'
-  | 'no_candidate'
-  | 'not_significant'
-  | 'rate_limited'
-  | 'changed'
-  | 'suggested'
-  | 'params_changed'
-  | 'not_tunable';
+export type ArenaTunerReason = (typeof ARENA_TUNER_REASONS)[number];
 
 /** The best one-filter change the search found (display values). */
 export interface ArenaTunerBest {
@@ -221,20 +223,32 @@ export interface ArenaTunerBest {
 /** `stats.suggestionCheck.tuner` (D33). Other code renders this exact shape. */
 export interface ArenaTunerCheck {
   decision: ArenaTunerDecision;
-  /** below_sample: fewer than `needed` closed trades; no_candidate: no legal
-   *  one-filter split (>= EVIDENCE_MIN_PER_SIDE per side); not_significant:
-   *  the best split failed the D27 edge or the shuffle test; rate_limited: an
-   *  automatic change happened less than 30 minutes ago; params_changed: the
-   *  params moved between the read and the apply; not_tunable: the stored
-   *  params fail validation or the template is unknown. */
+  /** below_sample: fewer than `needed` (20) closed trades; waiting_checkpoint:
+   *  no untested checkpoint at or below n, so no search ran (the next test is
+   *  at `needed` trades); budget_spent: every checkpoint of this params version
+   *  was tested or forfeited, so nothing changes until the params change;
+   *  no_candidate: no legal one-filter split (>= EVIDENCE_MIN_PER_SIDE per
+   *  side); not_significant: the best split failed the D27 edge or p was above
+   *  the checkpoint `alpha`; rate_limited: an automatic change happened less
+   *  than 30 minutes ago; params_changed: the params or the report row moved
+   *  (another writer) between the read and the apply, so the automatic change
+   *  was dropped; not_tunable: the stored params fail validation, the template
+   *  is unknown, or the tuner threw. */
   reason: ArenaTunerReason;
-  /** Closed trades on the current params version the search judged. */
+  /** Closed trades on the current params version (the search judges the
+   *  newest TUNER_MAX_TRADES of them). */
   n: number;
-  needed: number;
+  /** below_sample and not_tunable: 20; waiting_checkpoint: the next
+   *  checkpoint; a tested look: its checkpoint; budget_spent: null. */
+  needed: number | null;
   best: ArenaTunerBest | null;
   /** Max-statistic shuffle p of the best edge (4 places); null when no
    *  shuffle test ran. */
   p: number | null;
+  /** The checkpoint this report tested; null when it tested none. */
+  checkpoint: number | null;
+  /** The p threshold of that checkpoint; null when it tested none. */
+  alpha: number | null;
 }
 
 export interface ArenaEvidenceSide {
@@ -338,6 +352,10 @@ export interface ArenaAnalysisStore {
   countOpen(agentId: string): Promise<number>;
   loadRecentReports(agentId: string, limit: number): Promise<ArenaPriorReport[]>;
   lastParamChangeAt(agentId: string): Promise<Date | null>;
+  /** D33: the largest `stats.suggestionCheck.tuner.checkpoint` over this
+   *  agent's reports with `stats.paramsVersion` = `paramsVersion`; null when
+   *  none tested one. */
+  maxTestedCheckpoint(agentId: string, paramsVersion: number): Promise<number | null>;
   /**
    * Inserts the report and its `report` event in one transaction, under a
    * per-agent lock. Returns `{ duplicate: true }` and writes nothing when the
@@ -354,10 +372,16 @@ export interface ArenaAnalysisStore {
   applyParamChange(change: ArenaParamChangeWrite): Promise<
     { ok: true; paramsVersion: number } | { ok: false; reason: 'version_conflict' | 'report_not_pending' }
   >;
-  /** Moves a still-pending report to `rejected`, drops its suggestion, and
-   *  records `reason` in `stats.suggestionCheck.reason` and, when given,
-   *  `tuner` in `stats.suggestionCheck.tuner`, in ONE update. */
+  /** Moves a still-pending report to `rejected`, drops its suggestion and
+   *  `stats.suggestionCheck.evidence` (evidence exists only beside a stored
+   *  suggestion or change), and records `reason` in
+   *  `stats.suggestionCheck.reason` and, when given, `tuner` in
+   *  `stats.suggestionCheck.tuner`, in ONE update. */
   rejectPendingReport(reportId: string, agentId: string, reason: string, tuner?: ArenaTunerCheck): Promise<void>;
+  /** Replaces `stats.suggestionCheck.tuner` of a report that is NOT
+   *  `auto_applied` (nothing else). Returns the row's suggestion state after
+   *  the call, or null when the row is gone. */
+  setReportTuner(reportId: string, agentId: string, tuner: ArenaTunerCheck): Promise<FloorArenaSuggestionState | null>;
 }
 
 export interface ArenaInferenceMessage {
@@ -383,6 +407,8 @@ export interface ArenaAnalysisDeps {
   log?: (line: string) => void;
   /** Defaults to ARENA_LLM_TIMEOUT_MS; tests shorten it. */
   llmTimeoutMs?: number;
+  /** Shuffles per tuner search. Defaults to EVIDENCE_PERMUTATIONS; tests lower it. */
+  tunerShuffles?: number;
 }
 
 export interface ArenaTickResult {
@@ -841,6 +867,47 @@ export function tunerTrades(trades: readonly ArenaClosedTrade[]): ArenaClosedTra
     .slice(0, TUNER_MAX_TRADES);
 }
 
+/** n for the checkpoint schedule: closed trades with a finite pnl_mult (the
+ *  trades `tunerTrades` takes from), not capped at TUNER_MAX_TRADES. */
+export function tunerSampleSize(trades: readonly ArenaClosedTrade[]): number {
+  let n = 0;
+  for (const t of trades) if (Number.isFinite(t.pnlMult)) n += 1;
+  return n;
+}
+
+export type ArenaTunerStep =
+  | { kind: 'below_sample'; needed: number }
+  | { kind: 'waiting_checkpoint'; needed: number }
+  | { kind: 'budget_spent' }
+  | { kind: 'look'; checkpoint: number; alpha: number };
+
+/**
+ * D33 checkpoint schedule (pure). `n` = closed trades on the current params
+ * version; `maxTested` = the largest checkpoint an earlier report of this
+ * version tested (null: none).
+ *   - n below the first checkpoint: `below_sample`, needed 20.
+ *   - else the LARGEST checkpoint c <= n with c > maxTested is tested once at
+ *     its own alpha (`look`); smaller untested checkpoints are forfeited.
+ *   - else, when a checkpoint above max(n, maxTested) remains:
+ *     `waiting_checkpoint` with that checkpoint (no search runs);
+ *   - else `budget_spent`: no test until the params change.
+ * Every look spends its own alpha once, so the chance that a version on pure
+ * noise ever changes is at most the sum, EVIDENCE_MAX_SEARCH_P.
+ */
+export function tunerCheckpointStep(n: number, maxTested: number | null): ArenaTunerStep {
+  const first = TUNER_CHECKPOINTS[0]!;
+  if (n < first) return { kind: 'below_sample', needed: first };
+  const done = maxTested ?? 0;
+  for (let i = TUNER_CHECKPOINTS.length - 1; i >= 0; i -= 1) {
+    const c = TUNER_CHECKPOINTS[i]!;
+    if (c > n) continue;
+    if (c > done) return { kind: 'look', checkpoint: c, alpha: TUNER_CHECKPOINT_ALPHA[i]! };
+    break;
+  }
+  const next = TUNER_CHECKPOINTS.find((c) => c > Math.max(n, done));
+  return next === undefined ? { kind: 'budget_spent' } : { kind: 'waiting_checkpoint', needed: next };
+}
+
 export interface ArenaFilterSearchInput {
   /** The template's params: only a filter the template sets is searched. */
   template: FloorArenaParams;
@@ -852,6 +919,9 @@ export interface ArenaFilterSearchInput {
   house: boolean;
   /** `agentId:paramsVersion:n`: the shuffles depend on it only. */
   seed: string;
+  /** The p threshold of THIS look: the checkpoint alpha
+   *  (`tunerCheckpointStep`), never the 0.05 family budget per report. */
+  alpha: number;
   /** Defaults to EVIDENCE_PERMUTATIONS. */
   shuffles?: number;
 }
@@ -900,12 +970,14 @@ let searchQueue: Promise<unknown> = Promise.resolve();
  *    reads, at the judged instant; cut to 3 significant figures by
  *    `roundTunerCandidate`, then whole numbers for an integer leaf, both
  *    rounded toward keeping that trade; duplicates dropped) that TIGHTENS the
- *    live value (a higher min, a lower max) and passes
- *    `evaluateArenaSuggestion` (bounds, one leaf, and
- *    the house band for a house agent). Each value splits the trades exactly
- *    as `evaluateSuggestionEvidence` does; a split with fewer than
- *    EVIDENCE_MIN_PER_SIDE kept or excluded trades is not legal. The family
- *    never looks at outcomes. None legal -> `no_candidate`.
+ *    live value (a higher min, a lower max) and lies inside the validation
+ *    bounds and, for a house agent, the house band. Only then is a leaf cut
+ *    to TUNER_MAX_VALUES_PER_LEAF values, so a value out of range never takes
+ *    a place. Each value must also pass `evaluateArenaSuggestion` (full
+ *    validation, one leaf, the house drift guard). Each value splits the
+ *    trades exactly as `evaluateSuggestionEvidence` does; a split with fewer
+ *    than EVIDENCE_MIN_PER_SIDE kept or excluded trades is not legal. The
+ *    family never looks at outcomes. None legal -> `no_candidate`.
  * 3. Statistic: the max over the family of (kept mean - excluded mean)
  *    pnl_mult; the first split in leaf order, smallest move first, wins a tie.
  * 4. Shuffle test: EVIDENCE_PERMUTATIONS seeded shuffles of pnl_mult across
@@ -913,8 +985,8 @@ let searchQueue: Promise<unknown> = Promise.resolve();
  *    pays for every split it tried. p = (1 + shuffles whose max >= observed)
  *    / (1 + shuffles).
  * 5. `confirmed` only when the best split passes D27
- *    (`evaluateSuggestionEvidence`) AND p <= EVIDENCE_MAX_SEARCH_P; else
- *    `not_significant`.
+ *    (`evaluateSuggestionEvidence`) AND p <= `alpha`; else `not_significant`.
+ *    The caller runs a search only at a checkpoint (`tunerCheckpointStep`).
  */
 export function searchFilterChange(input: ArenaFilterSearchInput): Promise<ArenaFilterSearchResult> {
   const run = searchQueue.then(() => runFilterSearch(input));
@@ -951,17 +1023,20 @@ async function runFilterSearch(input: ArenaFilterSearchInput): Promise<ArenaFilt
     if (key === 'top10_max_pct' && from >= 100) continue;
     const path = `filters.${key}`;
     const isMin = key.includes('_min');
-    const integer = FLOOR_ARENA_PARAM_BOUNDS.filters[key].integer;
+    const bound = FLOOR_ARENA_PARAM_BOUNDS.filters[key];
     const values = new Set<number>();
     for (let i = 0; i < n; i += 1) {
       const x = FILTER_FEATURE[key](features[i]!, judgedMs[i]!);
       if (x === null) continue;
       // 3 significant figures, then whole numbers for an integer leaf; both
-      // round toward keeping trade i. The Set dedupes; the tighten, band and
-      // bounds checks below all see the rounded value.
+      // round toward keeping trade i. The Set dedupes; the tighten, bounds and
+      // band checks all see the rounded value, BEFORE the per-leaf cap below.
       const r = roundTunerCandidate(x, isMin);
-      const v = integer ? (isMin ? Math.floor(r) : Math.ceil(r)) : r;
-      if (isMin ? v > from : v < from) values.add(v);
+      const v = bound.integer ? (isMin ? Math.floor(r) : Math.ceil(r)) : r;
+      if (!(isMin ? v > from : v < from)) continue;
+      if (v < bound.min || v > bound.max) continue;
+      if (input.house && !houseLeafInBand(path, templateValue, v)) continue;
+      values.add(v);
     }
     // Smallest move first, so a tie keeps the value nearest the live one.
     let ordered = [...values].sort((a, b) => (isMin ? a - b : b - a));
@@ -972,7 +1047,6 @@ async function runFilterSearch(input: ArenaFilterSearchInput): Promise<ArenaFilt
     }
     let chainTail = -1;
     for (const to of ordered) {
-      if (input.house && !houseLeafInBand(path, templateValue, to)) continue;
       const evaluation = evaluateArenaSuggestion({
         current: input.current,
         path,
@@ -1069,7 +1143,7 @@ async function runFilterSearch(input: ArenaFilterSearchInput): Promise<ArenaFilt
   };
   return {
     n,
-    outcome: evidence.confirmed && p <= EVIDENCE_MAX_SEARCH_P ? 'confirmed' : 'not_significant',
+    outcome: evidence.confirmed && p <= input.alpha ? 'confirmed' : 'not_significant',
     best: { change: top.change, next: top.next, evidence, summary },
     p,
     splits: splits.length,
@@ -1155,7 +1229,7 @@ export function buildArenaAnalysisMessages(input: ArenaPromptInput): ArenaInfere
   const rules = [
     'You analyse ONE paper trading agent in the ClawVille Trading Arena. Paper means every fill is priced from a live quote plus fixed costs, but no swap is sent and no token is bought.',
     'Write a short, plain English report from the stats you are given. State numbers plainly. Never call the agent profitable or winning, never promise results, and never invent a number that is not in the stats.',
-    `You do not change parameters. Code decides every change: it tests one-filter tightenings on the closed trades of the current params and changes or suggests one only when at least ${EVIDENCE_MIN_PER_SIDE} trades fall on each side, the kept trades beat the excluded ones by at least ${EVIDENCE_MIN_EDGE} mean multiple, and a shuffle test over every filter it tried gives p of ${EVIDENCE_MAX_SEARCH_P} or less.`,
+    `You do not change parameters. Code decides every change: it tests one-filter tightenings on the closed trades of the current params and changes or suggests one only when at least ${EVIDENCE_MIN_PER_SIDE} trades fall on each side, the kept trades beat the excluded ones by at least ${EVIDENCE_MIN_EDGE} mean multiple, and a shuffle test over every filter it tried passes at a checkpoint. Code tests only at ${TUNER_CHECKPOINTS.join(', ')} closed trades on the current params, each checkpoint once, with p thresholds ${TUNER_CHECKPOINT_ALPHA.join(', ')} (${EVIDENCE_MAX_SEARCH_P} in total per params version), so most reports run no test.`,
     'Always set "suggestion" to null; code ignores any proposal. Never claim that this report changes a parameter.',
     'Look at the prior reports and judge whether an applied change helped.',
   ];
@@ -1356,11 +1430,16 @@ export function reportMemoryText(input: {
 
 /** D29 + D33: the one memory line that says what the code tuner decided and why. */
 export function tunerMemoryLine(t: ArenaTunerCheck): string {
-  let line = `Tuner decision: ${t.decision} (reason: ${t.reason}); ${t.n} closed trades on the current params, ${t.needed} needed.`;
+  let line = `Tuner decision: ${t.decision} (reason: ${t.reason}); ${t.n} closed trades on the current params`;
+  line += t.needed === null
+    ? ', every test of these params is used, so code changes nothing until the params change.'
+    : `, ${t.needed} needed.`;
   if (t.best) {
     const edge = `${t.best.edge >= 0 ? '+' : ''}${t.best.edge.toFixed(3)}`;
     line += ` Best filter idea: ${t.best.path} from ${t.best.from} to ${t.best.to}, keeps ${t.best.kept} and excludes ${t.best.excluded} trades, edge ${edge}`;
-    line += t.p === null ? '.' : `, shuffle p ${t.p} (needs ${EVIDENCE_MAX_SEARCH_P} or less).`;
+    if (t.p === null) line += '.';
+    else if (t.alpha === null || t.checkpoint === null) line += `, shuffle p ${t.p}.`;
+    else line += `, shuffle p ${t.p} (needs ${t.alpha} or less at the ${t.checkpoint}-trade test).`;
   }
   return line;
 }
@@ -1433,10 +1512,22 @@ interface ArenaTunerPlan {
   change: Omit<ArenaParamChangeWrite, 'reportId'> | null;
 }
 
+/** A tuner line for a report that tested no checkpoint. */
+function untestedTuner(reason: ArenaTunerReason, n: number, needed: number | null = MIN_CLOSED_FOR_AUTO_APPLY): ArenaTunerCheck {
+  return { decision: 'none', reason, n, needed, best: null, p: null, checkpoint: null, alpha: null };
+}
+
+function noTunerChange(tuner: ArenaTunerCheck): ArenaTunerPlan {
+  return { tuner, evidence: null, suggestion: null, change: null };
+}
+
 /**
- * D33: runs `searchFilterChange` for one agent and turns it into this
- * report's decision. Reads only the last param change time (the 30-minute
- * limit, automatic agents only); writes nothing.
+ * D33: decides this report's tuner step (`tunerCheckpointStep`) and, at a
+ * checkpoint only, runs `searchFilterChange` once at that checkpoint's alpha.
+ * Reads the largest checkpoint this params version tested (n >= 20 only) and,
+ * for an automatic agent at a checkpoint, the last param change time (the
+ * 30-minute limit), both BEFORE the search, so nothing can fail after a look
+ * that the report would then not record. Writes nothing.
  */
 async function planTunerDecision(
   deps: ArenaAnalysisDeps,
@@ -1451,16 +1542,17 @@ async function planTunerDecision(
   },
 ): Promise<ArenaTunerPlan> {
   const { agent, template, params, autoApply, now } = input;
-  const needed = MIN_CLOSED_FOR_AUTO_APPLY;
-  const n = tunerTrades(input.currentTrades).length;
-  if (!params || !template) {
-    return {
-      tuner: { decision: 'none', reason: 'not_tunable', n, needed, best: null, p: null },
-      evidence: null,
-      suggestion: null,
-      change: null,
-    };
-  }
+  const n = tunerSampleSize(input.currentTrades);
+  if (!params || !template) return noTunerChange(untestedTuner('not_tunable', n));
+  const maxTested = n >= MIN_CLOSED_FOR_AUTO_APPLY
+    ? await deps.store.maxTestedCheckpoint(agent.id, agent.paramsVersion)
+    : null;
+  const step = tunerCheckpointStep(n, maxTested);
+  if (step.kind === 'below_sample') return noTunerChange(untestedTuner('below_sample', n, step.needed));
+  if (step.kind === 'waiting_checkpoint') return noTunerChange(untestedTuner('waiting_checkpoint', n, step.needed));
+  if (step.kind === 'budget_spent') return noTunerChange(untestedTuner('budget_spent', n, null));
+
+  const last = autoApply ? await deps.store.lastParamChangeAt(agent.id) : null;
   const isHouse = agent.kind === 'house';
   const search = await searchFilterChange({
     template: template.params,
@@ -1468,20 +1560,25 @@ async function planTunerDecision(
     trades: input.currentTrades,
     house: isHouse,
     seed: `${agent.id}:${agent.paramsVersion}:${n}`,
+    alpha: step.alpha,
+    ...(deps.tunerShuffles !== undefined ? { shuffles: deps.tunerShuffles } : {}),
   });
+  // Every outcome below records the checkpoint: this look spent its alpha.
   const check = (decision: ArenaTunerDecision, reason: ArenaTunerReason): ArenaTunerCheck => ({
     decision,
     reason,
-    n: search.n,
-    needed,
+    n,
+    needed: step.checkpoint,
     best: search.best?.summary ?? null,
     p: search.p === null ? null : round(search.p, 4),
+    checkpoint: step.checkpoint,
+    alpha: step.alpha,
   });
   // `evidence` (with its raw D27 `confirmed`) is stored only beside a stored
   // suggestion; for a no-change report `tuner.best` and `tuner.p` say why.
   if (search.outcome !== 'confirmed' || !search.best || search.p === null) {
     const reason = search.outcome === 'confirmed' ? 'not_significant' : search.outcome;
-    return { tuner: check('none', reason), evidence: null, suggestion: null, change: null };
+    return noTunerChange(check('none', reason));
   }
   const top = search.best;
   const evidence = top.evidence;
@@ -1489,9 +1586,8 @@ async function planTunerDecision(
   const suggestion: FloorArenaSuggestion = { path: top.change.path, from: top.change.from, to: top.change.to, reason };
   if (!autoApply) return { tuner: check('suggested', 'suggested'), evidence, suggestion, change: null };
 
-  const last = await deps.store.lastParamChangeAt(agent.id);
   if (last !== null && now.getTime() - last.getTime() < ARENA_AUTO_CHANGE_MIN_GAP_MS) {
-    return { tuner: check('none', 'rate_limited'), evidence: null, suggestion: null, change: null };
+    return noTunerChange(check('none', 'rate_limited'));
   }
   const source = isHouse ? 'house-tuner' : 'suggestion';
   return {
@@ -1560,15 +1656,23 @@ async function analyseAgent(
   const suggestionAllowed = checkedParams.ok && stats.currentParams.trades >= MIN_CLOSED_FOR_AUTO_APPLY;
 
   // D33: the code tuner decides on every due report (quiet ones too), apart
-  // from the model and before it, so a model failure never blocks it.
-  const plan = await planTunerDecision(deps, {
-    agent,
-    template,
-    params: checkedParams.ok ? checkedParams.params : null,
-    currentTrades,
-    autoApply,
-    now,
-  });
+  // from the model and before it, so a model failure never blocks it. A
+  // tuner failure (a store read or the search) changes nothing and records
+  // no checkpoint; the report is still written.
+  let plan: ArenaTunerPlan;
+  try {
+    plan = await planTunerDecision(deps, {
+      agent,
+      template,
+      params: checkedParams.ok ? checkedParams.params : null,
+      currentTrades,
+      autoApply,
+      now,
+    });
+  } catch (err) {
+    log(`[floor-arena/analysis] ${agent.id}: tuner failed, no change this report (${errorText(err)})`);
+    plan = noTunerChange(untestedTuner('not_tunable', tunerSampleSize(currentTrades)));
+  }
 
   let summary: string;
   if (due === 'quiet') {
@@ -1642,15 +1746,28 @@ async function analyseAgent(
       state = 'auto_applied';
       log(`[floor-arena/analysis] ${agent.id}: ${plan.change.eventSummary}`);
     } else {
-      // The params moved on between the read and the apply (an admin or the
-      // owner edited them): the change was computed against the old params,
-      // so it is dropped. An automatic agent never keeps a pending suggestion
-      // (D33). On `report_not_pending` another writer already moved the row,
-      // and the reject below is a no-op there.
-      tuner = { ...tuner, decision: 'none', reason: 'params_changed' };
-      await store.rejectPendingReport(written.reportId, agent.id, 'params_changed', tuner);
-      state = 'rejected';
-      suggestion = null;
+      // The automatic change is dropped; the checkpoint stays recorded (the
+      // look spent its alpha).
+      const dropped: ArenaTunerCheck = { ...tuner, decision: 'none', reason: 'params_changed' };
+      if (applied.reason === 'version_conflict') {
+        // The params moved on between the read and the apply (an admin or the
+        // owner edited them): the change was computed against the old params.
+        // An automatic agent never keeps a pending suggestion (D33).
+        await store.rejectPendingReport(written.reportId, agent.id, 'params_changed', dropped);
+        tuner = dropped;
+        state = 'rejected';
+        suggestion = null;
+      } else {
+        // report_not_pending: another writer (the owner's apply or dismiss)
+        // moved this report first. Its state and suggestion are that writer's;
+        // only the stored tuner line, which said `changed`, is corrected
+        // (never on an auto_applied row). The tally and the memory text follow
+        // the row as the store returns it.
+        const rowState = await store.setReportTuner(written.reportId, agent.id, dropped);
+        if (rowState !== 'auto_applied') tuner = dropped;
+        state = rowState ?? 'none';
+        if (rowState === null) suggestion = null;
+      }
       log(`[floor-arena/analysis] ${agent.id}: automatic apply refused (${applied.reason}); change dropped`);
     }
   }

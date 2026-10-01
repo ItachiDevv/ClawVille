@@ -35,7 +35,7 @@ import {
   type ArenaReportWrite,
 } from './analysis';
 import type { EarnedSkillStore } from '../earned-skill-memory';
-import { updateArenaAgentParams } from './queries';
+import { rowsOf, updateArenaAgentParams } from './queries';
 
 /** The Trading Floor building id; earned-skill memories are filed under it. */
 const TRADING_FLOOR_BUILDING_ID = 'cron-automation';
@@ -234,6 +234,24 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
       return row?.at ?? null;
     },
 
+    async maxTestedCheckpoint(agentId, paramsVersion) {
+      // floor_arena_reports has no params_version column; every report since
+      // stats version 1 writes `stats.paramsVersion`, and since the D33
+      // checkpoint schedule `stats.suggestionCheck.tuner.checkpoint`. The
+      // agent_id prefix of floor_arena_reports_agent_created_idx bounds the
+      // scan to this agent's reports. jsonb equality compares numbers by
+      // value and never throws on an odd row (a cast could).
+      const [row] = rowsOf<{ c: string | number | null }>(await db.execute(sql`
+        SELECT max((stats #>> '{suggestionCheck,tuner,checkpoint}')::numeric) AS c
+        FROM floor_arena_reports
+        WHERE agent_id = ${agentId}
+          AND stats -> 'paramsVersion' = to_jsonb(${paramsVersion}::int)
+          AND jsonb_typeof(stats #> '{suggestionCheck,tuner,checkpoint}') = 'number'
+      `));
+      const c = row?.c;
+      return c === null || c === undefined ? null : Number(c);
+    },
+
     async insertReport(report) {
       return db.transaction(async (tx) => {
         // Two leaders can overlap for a few seconds during a failover. The
@@ -266,12 +284,14 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
     },
 
     async rejectPendingReport(reportId, agentId, reason, tuner) {
+      // `#-` drops `suggestionCheck.evidence` with the suggestion: evidence
+      // exists only beside a stored suggestion or change (manual §17c).
       if (!tuner) {
         await db.execute(sql`
           UPDATE floor_arena_reports
           SET suggestion_state = 'rejected',
               suggestion = NULL,
-              stats = jsonb_set(stats, '{suggestionCheck,reason}', to_jsonb(${reason}::text), true)
+              stats = jsonb_set(stats #- '{suggestionCheck,evidence}', '{suggestionCheck,reason}', to_jsonb(${reason}::text), true)
           WHERE id = ${reportId}::uuid AND agent_id = ${agentId} AND suggestion_state = 'pending'
         `);
         return;
@@ -282,11 +302,29 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
         SET suggestion_state = 'rejected',
             suggestion = NULL,
             stats = jsonb_set(
-              jsonb_set(stats, '{suggestionCheck,reason}', to_jsonb(${reason}::text), true),
+              jsonb_set(stats #- '{suggestionCheck,evidence}', '{suggestionCheck,reason}', to_jsonb(${reason}::text), true),
               '{suggestionCheck,tuner}', ${JSON.stringify(tuner)}::jsonb, true
             )
         WHERE id = ${reportId}::uuid AND agent_id = ${agentId} AND suggestion_state = 'pending'
       `);
+    },
+
+    async setReportTuner(reportId, agentId, tuner) {
+      // An auto_applied row keeps its `changed` tuner line; any other state
+      // (the owner applied, dismissed, or the row was rejected) gets the
+      // tick's final decision. Only the tuner key changes.
+      const updated = rowsOf<{ state: FloorArenaSuggestionState }>(await db.execute(sql`
+        UPDATE floor_arena_reports
+        SET stats = jsonb_set(stats, '{suggestionCheck,tuner}', ${JSON.stringify(tuner)}::jsonb, true)
+        WHERE id = ${reportId}::uuid AND agent_id = ${agentId} AND suggestion_state <> 'auto_applied'
+        RETURNING suggestion_state AS state
+      `));
+      if (updated[0]) return updated[0].state;
+      const current = rowsOf<{ state: FloorArenaSuggestionState }>(await db.execute(sql`
+        SELECT suggestion_state AS state FROM floor_arena_reports
+        WHERE id = ${reportId}::uuid AND agent_id = ${agentId}
+      `));
+      return current[0]?.state ?? null;
     },
   };
 }

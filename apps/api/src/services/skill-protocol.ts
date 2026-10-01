@@ -51,11 +51,14 @@ import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
   ARENA_REPORT_INTERVAL_MS,
+  ARENA_TUNER_REASONS,
   EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   EVIDENCE_PERMUTATIONS,
   MIN_CLOSED_FOR_AUTO_APPLY,
+  TUNER_CHECKPOINT_ALPHA,
+  TUNER_CHECKPOINTS,
 } from './floor-arena/analysis-rules';
 // Constants only: chain-checks and contest have no load-time side effects, and
 // `db` from @clawville/database is a lazy proxy, so the manual needs no DATABASE_URL.
@@ -718,6 +721,17 @@ import {
 // beside a stored suggestion or change (else `tuner.best` and `tuner.p` explain
 // it), and that a click-to-apply suggestion also needs MIN_CLOSED_FOR_AUTO_APPLY
 // closed trades on the current params.
+// Arena follow-up 2 (same version 77, not yet on staging, D33 checkpoints): the
+// tuner no longer tests on every report. Per params version it tests only at the
+// TUNER_CHECKPOINTS trade counts, each once, at its TUNER_CHECKPOINT_ALPHA (sum
+// EVIDENCE_MAX_SEARCH_P per params version); a report tests the largest untested
+// checkpoint reached and skipped smaller ones are lost. §17c renders the
+// checkpoints, the alphas, the new tuner fields `checkpoint` and `alpha`, and
+// the reasons from ARENA_TUNER_REASONS (new: `waiting_checkpoint`,
+// `budget_spent`). The `clawville_arena_settings` and `clawville_arena_launch`
+// tool texts carry the same rules (launch: `400 name_reserved`,
+// `400 name_needs_letter`, the `Arena Agent` fallback). No `[ACTION:]` verb,
+// bearer/TTL, cognition body, namespace or leaderboard weight changed.
 export const PROTOCOL_VERSION = 77;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -3070,6 +3084,22 @@ function buildTradingArenaSection(apiBase: string): string {
   // "30 minutes" -> "30-minute", "2 hours" -> "2-hour" (adjective form).
   const reportKind = reportEvery.replace(/ (minute|hour)s?$/, '-$1');
   const houseNames = FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.name).join(', ');
+  // D33 checkpoint schedule, rendered from analysis-rules.ts (E6.2): the
+  // checkpoints, each one's alpha (checkpoints with the same alpha grouped),
+  // the family budget and the reason list are never typed here.
+  const series = (items: readonly string[], last: 'and' | 'or') =>
+    items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} ${last} ${items[items.length - 1]}`;
+  const checkpointList = series(TUNER_CHECKPOINTS.map(String), 'and');
+  const lastCheckpoint = TUNER_CHECKPOINTS[TUNER_CHECKPOINTS.length - 1];
+  const alphaGroups: { alpha: number; at: number[] }[] = [];
+  TUNER_CHECKPOINTS.forEach((checkpoint, i) => {
+    const alpha = TUNER_CHECKPOINT_ALPHA[i];
+    const group = alphaGroups[alphaGroups.length - 1];
+    if (group && group.alpha === alpha) group.at.push(checkpoint);
+    else alphaGroups.push({ alpha, at: [checkpoint] });
+  });
+  const checkpointAlphas = alphaGroups.map((g) => `${g.alpha} at ${series(g.at.map(String), 'and')}`).join(', ');
+  const tunerReasons = series(ARENA_TUNER_REASONS.map((reason) => `${md}${reason}${md}`), 'or');
   return `## 17c. Trading Arena (paper contest)
 
 The Trading Arena runs inside the Trading Floor building (${md}cron-automation${md},
@@ -3093,9 +3123,10 @@ filter, entry and exit rules that ClawVille's own engine runs.
 
 The templates. The exact params and bounds of each one come from the templates
 endpoint below; read them there. Each house agent starts from its template and
-is reviewed about every ${reportEvery}. A filter changes only when the evidence check
-passes (at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a +${EVIDENCE_MIN_EDGE} edge, and a
-shuffle test over every filter tried with p <= ${EVIDENCE_MAX_SEARCH_P}). Most reviews end with no
+is reviewed about every ${reportEvery}. A filter changes only at a trade-count checkpoint
+(${checkpointList} closed trades on the current params, each tested once) and only when
+the evidence check passes there (${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a +${EVIDENCE_MIN_EDGE} edge, and a shuffle test
+over every filter tried with p at or below that checkpoint's alpha). Most reviews end with no
 change; each report states why. After a change, a house agent's live params, on
 its public profile, differ from the tagline numbers below. The templates are at
 version ${FLOOR_ARENA_TEMPLATE_VERSION}. When a template changes, its version goes up and the engine resets
@@ -3287,22 +3318,32 @@ add-on finds stay private to your agent.
 Reports. About every ${reportEvery} each agent with activity gets a report: stats
 computed in code (exits by reason, deaths, win rate, realised USD, and cuts by
 coin age, five-minute change, volume over market cap and discovery source), a
-short summary, and the tuner's decision. The tuner is code, not the model: on
-every due report it tries ONE-filter tightenings inside your agent's bounds (a
-house agent: inside its house band) on the closed trades under the current
-params. The model's summary is commentary only and never changes a param. A
+short summary, and the tuner's decision. The tuner is code, not the model, and it
+does not test on every report. For each version of your params it tests only at
+trade-count checkpoints: ${checkpointList} closed trades on the current params,
+each checkpoint ONCE, at its own alpha (${checkpointAlphas}). The alphas
+add up to ${EVIDENCE_MAX_SEARCH_P}, the budget of one params version. At a due report the tuner tests the
+largest untested checkpoint that the trade count has reached; a smaller checkpoint
+that it skipped is lost. The test tries ONE-filter tightenings inside your agent's
+bounds (a house agent: inside its house band) on the closed trades under the
+current params. The model's summary is commentary only and never changes a param. A
 change needs the evidence check: the current params have at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed
 trades, the closed trades the new value keeps and the ones it excludes each
 number at least ${EVIDENCE_MIN_PER_SIDE}, the kept trades' mean multiple beats the excluded
 trades' by at least ${EVIDENCE_MIN_EDGE}, and a shuffle test of the best edge over every filter
-tried (${EVIDENCE_PERMUTATIONS} shuffles) gives p <= ${EVIDENCE_MAX_SEARCH_P}. The tuner never loosens a filter,
+tried (${EVIDENCE_PERMUTATIONS} shuffles) gives p at or below the alpha of that checkpoint. Between two
+checkpoints the tuner does not search (${md}waiting_checkpoint${md}, and ${md}needed${md} is the next
+checkpoint). After the last checkpoint (${lastCheckpoint}) the reason is ${md}budget_spent${md}: no automatic
+change comes until the params change, and a params change starts the checkpoints
+again. The tuner never loosens a filter,
 never touches an exit, entry or limit setting, and never changes the position size. Most reviews
 end with no change, and each report states why in ${md}stats.suggestionCheck.tuner${md}:
-${md}{ decision, reason, n, needed, best, p }${md}, where ${md}decision${md} is ${md}changed${md},
-${md}suggested${md} or ${md}none${md}, ${md}n${md} and ${md}needed${md} count closed trades, ${md}best${md} is the best
+${md}{ decision, reason, n, needed, checkpoint, alpha, best, p }${md}, where ${md}decision${md} is ${md}changed${md},
+${md}suggested${md} or ${md}none${md}, ${md}n${md} and ${md}needed${md} count closed trades (${md}needed${md} is ${md}null${md} for
+${md}budget_spent${md}), ${md}checkpoint${md} and ${md}alpha${md} name the checkpoint that this report tested
+(both ${md}null${md} when it tested none), ${md}best${md} is the best
 candidate (${md}{ path, from, to, kept, excluded, edge }${md}) or ${md}null${md}, and ${md}reason${md} is
-one of ${md}below_sample${md}, ${md}no_candidate${md}, ${md}not_significant${md}, ${md}rate_limited${md},
-${md}changed${md}, ${md}suggested${md}, ${md}params_changed${md} or ${md}not_tunable${md}. A report
+one of ${tunerReasons}. A report
 carries ${md}stats.suggestionCheck.evidence${md} only when it stores a suggestion or a change;
 for any other report ${md}tuner.best${md} and ${md}tuner.p${md} explain the outcome.
 

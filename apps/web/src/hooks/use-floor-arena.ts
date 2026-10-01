@@ -167,18 +167,30 @@ export const FLOOR_ARENA_TUNER_REASONS = [
   'suggested',
   'params_changed',
   'not_tunable',
+  'waiting_checkpoint',
+  'budget_spent',
 ] as const;
 
-/** Why the tuner changed, suggested or kept the rules in one report (D33). */
+/**
+ * Why the tuner changed, suggested or kept the rules in one report (D33). The
+ * server tests only at checkpoints (trade counts on the current rules):
+ * `waiting_checkpoint` means no test ran and `needed` is the next checkpoint;
+ * `budget_spent` means these rules used every checkpoint and nothing changes
+ * until the rules change.
+ */
 export interface FloorArenaTunerCheck {
   decision: (typeof FLOOR_ARENA_TUNER_DECISIONS)[number];
   reason: (typeof FLOOR_ARENA_TUNER_REASONS)[number];
-  /** Closed trades the check used, and the count it needs. */
+  /** Closed trades the check used, and the count it needs (null when none applies). */
   n: number | null;
   needed: number | null;
-  /** The best filter change the check found, or null when it found none. */
-  best: { path: string; from: unknown; to: unknown } | null;
+  /** The best filter change the check found, or null when it found none. `edge`
+   *  is the kept mean multiple minus the excluded mean multiple. */
+  best: { path: string; from: unknown; to: unknown; edge: number | null } | null;
+  /** The shuffle-test p, the checkpoint it ran at, and the p it had to reach. */
   p: number | null;
+  checkpoint: number | null;
+  alpha: number | null;
 }
 
 export interface FloorArenaParamChangeView {
@@ -494,8 +506,10 @@ export function readTunerCheck(value: unknown): FloorArenaTunerCheck | null {
     reason,
     n: num(row.n),
     needed: num(row.needed),
-    best: best && str(best.path) ? { path: best.path as string, from: best.from, to: best.to } : null,
+    best: best && str(best.path) ? { path: best.path as string, from: best.from, to: best.to, edge: num(best.edge) } : null,
     p: num(row.p),
+    checkpoint: num(row.checkpoint),
+    alpha: num(row.alpha),
   };
 }
 

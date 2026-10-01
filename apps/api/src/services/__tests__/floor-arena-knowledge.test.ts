@@ -20,11 +20,14 @@ import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
   ARENA_REPORT_INTERVAL_MS,
+  ARENA_TUNER_REASONS,
   EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   EVIDENCE_PERMUTATIONS,
   MIN_CLOSED_FOR_AUTO_APPLY,
+  TUNER_CHECKPOINT_ALPHA,
+  TUNER_CHECKPOINTS,
 } from '../floor-arena/analysis-rules';
 import { townGuide } from '@clawville/agent-templates';
 import { CHAIN_VERDICT_TTL_MS } from '../floor-arena/chain-checks';
@@ -44,6 +47,23 @@ const ARENA = `${API}/api/floor/arena`;
 function durationLabel(ms: number): string {
   const min = Math.round(ms / 60_000);
   return min % 60 === 0 ? `${min / 60} hour${min === 60 ? '' : 's'}` : `${min} minute${min === 1 ? '' : 's'}`;
+}
+
+/** "a, b and c" / "a, b or c", the manual's list form. */
+function series(items: readonly (string | number)[], last: 'and' | 'or'): string {
+  const text = items.map(String);
+  return text.length <= 1 ? text.join('') : `${text.slice(0, -1).join(', ')} ${last} ${text[text.length - 1]}`;
+}
+
+/** The D33 checkpoints grouped by alpha, in order: [{ alpha: 0.01, at: [20, 40, 80, 160] }, ...]. */
+function checkpointAlphaGroups(): { alpha: number; at: number[] }[] {
+  const groups: { alpha: number; at: number[] }[] = [];
+  TUNER_CHECKPOINTS.forEach((checkpoint, i) => {
+    const group = groups[groups.length - 1];
+    if (group && group.alpha === TUNER_CHECKPOINT_ALPHA[i]) group.at.push(checkpoint);
+    else groups.push({ alpha: TUNER_CHECKPOINT_ALPHA[i], at: [checkpoint] });
+  });
+  return groups;
 }
 
 function arenaSection(): string {
@@ -178,14 +198,17 @@ describe('Trading Arena manual section 17c', () => {
     expect(section).toContain(`version ${FLOOR_ARENA_TEMPLATE_VERSION}`);
     // D27 + D33: the served numbers are the enforced ones, and the tuner is code.
     expect(section).toMatch(new RegExp(`the current params have at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed\\s+trades`));
-    expect(section).toMatch(new RegExp(`each\\s+number at least ${EVIDENCE_MIN_PER_SIDE}, the kept trades' mean multiple beats the excluded\\s+trades' by at least ${EVIDENCE_MIN_EDGE}, and a shuffle test of the best edge over every filter\\s+tried \\(${EVIDENCE_PERMUTATIONS} shuffles\\) gives p <= ${EVIDENCE_MAX_SEARCH_P}\\.`));
-    expect(section).toMatch(/The tuner is code, not the model: on\s+every due report it tries ONE-filter tightenings/);
+    expect(section).toMatch(new RegExp(`each\\s+number at least ${EVIDENCE_MIN_PER_SIDE}, the kept trades' mean multiple beats the excluded\\s+trades' by at least ${EVIDENCE_MIN_EDGE}, and a shuffle test of the best edge over every filter\\s+tried \\(${EVIDENCE_PERMUTATIONS} shuffles\\) gives p at or below the alpha of that checkpoint\\.`));
+    expect(section).not.toMatch(/gives p <= /);
+    expect(section).toMatch(/The tuner is code, not the model, and it\s+does not test on every report\./);
+    expect(section).not.toMatch(/on\s+every due report it tries/);
     expect(section).toMatch(/The model's summary is commentary only and never changes a param\./);
     expect(section).toMatch(/When the analyst model is unavailable the report carries the stats\s+summary, and the tuner still decides\./);
     expect(section).toContain('`stats.suggestionCheck.tuner`');
-    for (const reason of ['below_sample', 'no_candidate', 'not_significant', 'rate_limited', 'changed', 'suggested', 'params_changed', 'not_tunable']) {
-      expect(section).toContain(`\`${reason}\``);
-    }
+    expect(section).toContain('`{ decision, reason, n, needed, checkpoint, alpha, best, p }`');
+    // Every tuner reason the code can store, in the code's order (analysis-rules.ts ARENA_TUNER_REASONS).
+    expect(section).toContain(`one of ${series(ARENA_TUNER_REASONS.map((reason) => `\`${reason}\``), 'or')}.`);
+    for (const reason of ['waiting_checkpoint', 'budget_spent'] as const) expect(ARENA_TUNER_REASONS).toContain(reason);
     // D33: a model proposal is ignored, so the old model-refusal codes and the 6-trade suggestion gate are gone.
     expect(section).not.toContain('`insufficient_evidence`');
     expect(section).not.toMatch(/no suggestion is\s+made before/);
@@ -320,6 +343,30 @@ describe('Trading Arena manual section 17c', () => {
     expect(route).toContain("NAME_LETTER.test(cleaned) ? cleaned : 'Arena Agent'");
   });
 
+  test('states the D33 checkpoint schedule from its constants: checkpoints, alphas, budget, the two new reasons', () => {
+    // The docs (GameFeatures §17g.3, the spec D33 row and §6a, ARCHITECTURE) and the
+    // shared tool text type these numbers, so a change to the constants fails here first.
+    expect([...TUNER_CHECKPOINTS]).toEqual([20, 40, 80, 160, 200, 400, 800]);
+    expect([...TUNER_CHECKPOINT_ALPHA]).toEqual([0.01, 0.01, 0.01, 0.01, 0.005, 0.0025, 0.0025]);
+    expect(TUNER_CHECKPOINTS[0]).toBe(MIN_CLOSED_FOR_AUTO_APPLY);
+    // The family budget per params version is the sum of the alphas.
+    expect(Math.abs(TUNER_CHECKPOINT_ALPHA.reduce((sum, alpha) => sum + alpha, 0) - EVIDENCE_MAX_SEARCH_P)).toBeLessThan(1e-12);
+    const section = arenaSection();
+    const list = series(TUNER_CHECKPOINTS, 'and');
+    const alphas = checkpointAlphaGroups().map((g) => `${g.alpha} at ${series(g.at, 'and')}`).join(', ');
+    expect(alphas).toBe('0.01 at 20, 40, 80 and 160, 0.005 at 200, 0.0025 at 400 and 800');
+    // Templates paragraph: a change comes only at a checkpoint.
+    expect(section).toMatch(new RegExp(`A filter changes only at a trade-count checkpoint\\s+\\(${list} closed trades on the current params, each tested once\\)`));
+    // Reports paragraph: the full rule.
+    expect(section).toMatch(new RegExp(`For each version of your params it tests only at\\s+trade-count checkpoints: ${list} closed trades on the current params,\\s+each checkpoint ONCE, at its own alpha \\(${alphas}\\)\\. The alphas\\s+add up to ${EVIDENCE_MAX_SEARCH_P}, the budget of one params version\\.`));
+    expect(section).toMatch(/At a due report the tuner tests the\s+largest untested checkpoint that the trade count has reached; a smaller checkpoint\s+that it skipped is lost\./);
+    expect(section).toMatch(/Between two\s+checkpoints the tuner does not search \(`waiting_checkpoint`, and `needed` is the next\s+checkpoint\)\./);
+    expect(section).toMatch(new RegExp(`After the last checkpoint \\(${TUNER_CHECKPOINTS[TUNER_CHECKPOINTS.length - 1]}\\) the reason is \`budget_spent\`: no automatic\\s+change comes until the params change`));
+    // analysis.ts ArenaTunerCheck: needed is null for budget_spent; checkpoint and alpha are null with no test.
+    expect(section).toMatch(/\(`needed` is `null` for\s+`budget_spent`\), `checkpoint` and `alpha` name the checkpoint that this report tested\s+\(both `null` when it tested none\)/);
+    expect(section).toMatch(/Most reviews\s+end with no change, and each report states why/);
+  });
+
   test('says when a report carries evidence and that a click-to-apply suggestion needs the sample (D33)', () => {
     const section = arenaSection();
     expect(section).toMatch(/A report\s+carries `stats\.suggestionCheck\.evidence` only when it stores a suggestion or a change;\s+for any other report `tuner\.best` and `tuner\.p` explain the outcome\./);
@@ -330,7 +377,7 @@ describe('Trading Arena manual section 17c', () => {
     const section = arenaSection();
     const every = durationLabel(ARENA_REPORT_INTERVAL_MS);
     // D33: the honest cadence claim (TUNER_CHECK 2026-10-01: 0 changes in 104 house reports).
-    expect(section).toMatch(new RegExp(`is reviewed about every ${every}\\. A filter changes only when the evidence check\\s+passes \\(at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a \\+${EVIDENCE_MIN_EDGE} edge, and a\\s+shuffle test over every filter tried with p <= ${EVIDENCE_MAX_SEARCH_P}\\)\\. Most reviews end with no\\s+change; each report states why\\.`));
+    expect(section).toMatch(new RegExp(`is reviewed about every ${every}\\. A filter changes only at a trade-count checkpoint\\s+\\(${series(TUNER_CHECKPOINTS, 'and')} closed trades on the current params, each tested once\\) and only when\\s+the evidence check passes there \\(${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a \\+${EVIDENCE_MIN_EDGE} edge, and a shuffle test\\s+over every filter tried with p at or below that checkpoint's alpha\\)\\. Most reviews end with no\\s+change; each report states why\\.`));
     expect(section).not.toMatch(/re-tuned|fine-tuned/);
     expect(section).toContain(`Reports. About every ${every} each agent with activity`);
     expect(section).toContain(`at most once per ${durationLabel(ARENA_AUTO_CHANGE_MIN_GAP_MS)},`);
@@ -343,7 +390,7 @@ describe('Trading Arena manual section 17c', () => {
     const start = src.indexOf('function buildTradingArenaSection(');
     const body = src.slice(start, src.indexOf('\n}\n', start));
     expect(start).toBeGreaterThan(0);
-    for (const literal of [/younger than \d/, /under \d+ minutes/, /is \d+ minutes old/, /every \d+ (minutes|hours)/, /once per \d+/, /\n\d+-minute report/, /p <= \d/, /\d+ shuffles/, /at least \d+ closed/]) {
+    for (const literal of [/younger than \d/, /under \d+ minutes/, /is \d+ minutes old/, /every \d+ (minutes|hours)/, /once per \d+/, /\n\d+-minute report/, /p <= \d/, /\d+ shuffles/, /at least \d+ closed/, /\d+, \d+ and \d+ closed/, /0\.\d+ at \d/, /add up to \d/, /last checkpoint \(\d/, /`below_sample`, `waiting_checkpoint`/]) {
       expect(body).not.toMatch(literal);
     }
   });
@@ -391,6 +438,10 @@ describe('Trading Arena tools', () => {
     expect(launch.input_schema.required).toEqual(['templateId', 'params', 'mode']);
     expect(launch.input_schema.properties.templateId?.enum).toEqual(FLOOR_ARENA_TEMPLATES.map((t) => t.id));
     expect(launch.input_schema.properties.mode?.enum).toEqual(['paper']);
+    // P8 (review M1): the launch tool names both name codes the route returns, and the letterless fallback.
+    expect(launch.description).toContain("400 name_reserved when the name (or, with no name sent, your avatar's name) reads as a house agent's name");
+    expect(launch.description).toContain('400 name_needs_letter when the name has no letter (with no name sent, an avatar name with no letter launches as Arena Agent)');
+    expect(launch.input_schema.properties.name?.description).toContain('with at least one letter');
     expect(byName.get('clawville_arena_seat')!.input_schema.required).toEqual(['seated']);
     expect(byName.get('clawville_arena_set_status')!.input_schema.properties.status?.enum).toEqual(['active', 'paused']);
     expect(byName.get('clawville_arena_suggestion')!.input_schema.properties.action?.enum).toEqual(['apply', 'dismiss']);
@@ -408,12 +459,19 @@ describe('Trading Arena tools', () => {
     expect(byName.get('clawville_arena_templates')!.description).toContain('a GeckoTerminal-only coin is shown but never traded');
     // The shared tool text cannot import the API's tuner constants, so pin it to them here.
     const settings = byName.get('clawville_arena_settings')!.description;
-    expect(settings).toContain(`at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
     expect(settings).toContain(`number at least ${EVIDENCE_MIN_PER_SIDE} each`);
     expect(settings).toContain(`at least ${EVIDENCE_MIN_EDGE} better`);
-    // D33: the shuffle gate, the tuner reasons, and no model-refusal code.
-    expect(settings).toContain(`shuffle test over every filter tried gives p <= ${EVIDENCE_MAX_SEARCH_P}`);
-    expect(settings).toContain('stats.suggestionCheck.tuner.reason (below_sample, no_candidate, not_significant, rate_limited, changed, suggested, params_changed or not_tunable)');
+    // D33 checkpoints: the list, each checkpoint's alpha ("0.01 (20 to 160)"), the budget, the gate.
+    expect(settings).toContain(`tests only at trade-count checkpoints: ${series(TUNER_CHECKPOINTS, 'and')} closed trades on the current params, each once`);
+    const toolAlphas = checkpointAlphaGroups().map((g) => `${g.alpha} (${g.at.length > 2 ? `${g.at[0]} to ${g.at[g.at.length - 1]}` : series(g.at, 'and')})`);
+    expect(settings).toContain(`at alpha ${series(toolAlphas, 'or')}, ${EVIDENCE_MAX_SEARCH_P} in total per rule set`);
+    expect(settings).toContain('At a report it tests the largest untested checkpoint reached; a smaller one it skipped is lost.');
+    expect(settings).toContain("shuffle test over every filter tried gives p at or below that checkpoint's alpha");
+    expect(settings).not.toContain('gives p <=');
+    expect(settings).toContain(`budget_spent means the last checkpoint (${TUNER_CHECKPOINTS[TUNER_CHECKPOINTS.length - 1]}) is tested`);
+    expect(settings).toContain('waiting_checkpoint means the next checkpoint is not reached yet (tuner.needed names it)');
+    // Every tuner reason, in the code's order, and no model-refusal code.
+    expect(settings).toContain(`stats.suggestionCheck.tuner.reason (${series(ARENA_TUNER_REASONS, 'or')})`);
     expect(settings).toContain('commentary only');
     expect(settings).not.toContain('insufficient_evidence');
   });
