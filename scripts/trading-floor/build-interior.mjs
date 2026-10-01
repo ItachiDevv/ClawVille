@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// build-interior.mjs — assemble the Trading Floor interior hall GLB (v4).
+// build-interior.mjs — assemble the Trading Floor interior hall GLB (v5).
 //
 // The hall SHELL is authored here rather than generated: Meshy reliably returns
 // a solid exterior blob when asked for a room, and the shell is the one piece
@@ -410,8 +410,7 @@ function colored(geo, rgb) {
   return geo;
 }
 
-/** Weld duplicate positions for angle-weighted normals, but split creases.
- * Curvature and vertical exposure bake shading into the claw's amber tint. */
+/** Weld duplicate positions for angle-weighted normals, but split creases. */
 function sculptClaw(geo) {
   const epsilon = 1e-4, crease = Math.cos(55 * Math.PI / 180);
   const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
@@ -429,7 +428,7 @@ function sculptClaw(geo) {
       const b = unit(sub(points[(corner+2)%3], points[corner]));
       const angle = Math.acos(Math.max(-1, Math.min(1, dot(a, b))));
       const key = keys[ids[corner]], entries = groups.get(key) ?? [];
-      const entry = {normal, angle, neighbours:[points[(corner+1)%3], points[(corner+2)%3]],
+      const entry = {normal, angle,
         edges:[keys[ids[(corner+1)%3]], keys[ids[(corner+2)%3]]]};
       face.entries.push(entry); entries.push(entry);
       groups.set(key, entries);
@@ -456,25 +455,14 @@ function sculptClaw(geo) {
       for (const entry of fan) entry.smooth = dot(normal, entry.normal) > .6 ? normal : entry.normal;
     }
   }
-  const pos = [], nrm = [], idx = [], col = [];
+  const pos = [], nrm = [], idx = [];
   for (const face of faces) for (let corner = 0; corner < 3; corner++) {
-    const point = face.points[corner], adjacent = groups.get(keys[face.ids[corner]]);
+    const point = face.points[corner];
     const normal = face.entries[corner].smooth;
-    let bend = 0, distance = 0;
-    for (const entry of adjacent) for (const neighbour of entry.neighbours) {
-      const delta = sub(neighbour, point);
-      bend += dot(normal, delta) * entry.angle;
-      distance += Math.hypot(...delta) * entry.angle;
-    }
-    // Positive Laplacian displacement along the outward normal is concave.
-    const curvature = Math.max(-1, Math.min(1, 12 * bend / distance));
-    const shade = Math.max(.45, Math.min(1,
-      .72 + .22 * normal[1] - .20 * Math.max(0, curvature) + .06 * Math.max(0, -curvature)));
     idx.push(pos.length / 3); pos.push(...point); nrm.push(...normal);
-    col.push(...[.827, .755, .625].map((tint) => shade * tint));
   }
-  console.log(`  claw sculpt: position weld ${epsilon} wu, angle-weighted 55 deg crease; COLOR_0 ${Math.min(...col).toFixed(3)}..${Math.max(...col).toFixed(3)}`);
-  return {pos, nrm, idx, col, uv:null};
+  console.log(`  claw sculpt: position weld ${epsilon} wu, angle-weighted 55 deg crease; no COLOR_0`);
+  return {pos, nrm, idx, uv:null};
 }
 
 /** Rounded cuboid, 108 triangles; chamfer-only mode costs 44 triangles.
@@ -680,8 +668,8 @@ function addMesh(name, geo, material, translation = [0, 0, 0]) {
     );
   }
   if (geo.col) prim.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(new Float32Array(geo.col)).setBuffer(buffer));
-  // Reuse identical claw corners without merging crease normals or colours.
-  if (name === 'TradingFloorBrass') weldPrimitive(prim);
+  // Reuse identical corners without merging crease normals.
+  if (name === 'TradingFloorBrass' || name === 'TradingFloorClaws') weldPrimitive(prim);
   const m = doc.createMesh(name).addPrimitive(prim);
   const node = doc.createNode(name).setMesh(m).setTranslation(translation);
   scene.addChild(node);
@@ -959,7 +947,7 @@ const brassGeos = group('brass', null, () => [
   boxGeo(0, SCREEN_BOTTOM_Y - 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44),
   boxGeo(-(SCREEN_W / 2 + 34), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44),
   boxGeo(SCREEN_W / 2 + 34, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44),
-  // Thin tier rims share the brass draw call with the claw.
+  // Thin tier rims share the brass draw call with the room trim.
   ...[[32,350,346,65],[50,330,210,55],[70,310,160,35]].map(([y,x,z,c]) =>
     group('plinth rim', 'inside TradingFloorHoloDais collider', () =>
       octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, 3.5, c, 0, false))),
@@ -1244,6 +1232,20 @@ const clawDoc = await io.read(resolve(REPO_ROOT,
   'apps/web/public/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb'));
 const clawNode = clawDoc.getRoot().listNodes().find((n) => n.getName()==='TradingFloorClawProp');
 if (!clawNode?.getMesh()) throw new Error('exterior has no TradingFloorClawProp mesh');
+const exteriorClawMaterial = clawDoc.getRoot().listMaterials()
+  .find((material) => material.getName() === 'TradingFloorClawMtl');
+if (!exteriorClawMaterial) throw new Error('exterior has no TradingFloorClawMtl material');
+const CLAW = doc.createMaterial('TradingFloorClawMtl')
+  .setBaseColorFactor(exteriorClawMaterial.getBaseColorFactor())
+  .setEmissiveFactor(exteriorClawMaterial.getEmissiveFactor())
+  .setRoughnessFactor(exteriorClawMaterial.getRoughnessFactor())
+  .setMetallicFactor(exteriorClawMaterial.getMetallicFactor())
+  .setDoubleSided(exteriorClawMaterial.getDoubleSided());
+console.log(`  copied exterior TradingFloorClawMtl: ${JSON.stringify({
+  baseColorFactor: CLAW.getBaseColorFactor(), emissiveFactor: CLAW.getEmissiveFactor(),
+  roughnessFactor: CLAW.getRoughnessFactor(), metallicFactor: CLAW.getMetallicFactor(),
+  doubleSided: CLAW.getDoubleSided(), textures: 0, unlit: false,
+})}`);
 const world = clawNode.getWorldMatrix();
 const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 const columns = [[world[0],world[1],world[2]],[world[4],world[5],world[6]],[world[8],world[9],world[10]]];
@@ -1275,6 +1277,7 @@ for(let i=0;i<clawBase.pos.length;i+=3) {
 }
 const clawSculpt = sculptClaw(clawBase);
 const clawBounds=[];
+const clawGeos=[];
 for (const [centreX, mirror] of [[-220, false], [220, true]]) {
   const geo={...clawSculpt,pos:[...clawSculpt.pos],nrm:[...clawSculpt.nrm],idx:[...clawSculpt.idx]};
   const yaw=(mirror?-1:1)*28*Math.PI/180, co=Math.cos(yaw), si=Math.sin(yaw);
@@ -1288,7 +1291,7 @@ for (const [centreX, mirror] of [[-220, false], [220, true]]) {
     // The chamfered tier excludes the four corners of its rectangular AABB.
     if(Math.abs(geo.pos[i])>310 || Math.abs(geo.pos[i+2]-DAIS_POS[2])>160 ||
        Math.abs(geo.pos[i])+Math.abs(geo.pos[i+2]-DAIS_POS[2])>310+160-35)
-      throw new Error('golden claw vertex exceeds the top tier');
+      throw new Error('claw vertex exceeds the top tier');
   }
   if(mirror) for(let i=0;i<geo.idx.length;i+=3) [geo.idx[i+1],geo.idx[i+2]]=[geo.idx[i+2],geo.idx[i+1]];
   const bounds={min:[Infinity,Infinity,Infinity],max:[-Infinity,-Infinity,-Infinity]};
@@ -1297,20 +1300,20 @@ for (const [centreX, mirror] of [[-220, false], [220, true]]) {
     bounds.min[axis]=Math.min(bounds.min[axis],v);
     bounds.max[axis]=Math.max(bounds.max[axis],v);
   }
-  if(bounds.max[1]>230) throw new Error(`golden claw top ${bounds.max[1]} exceeds 230 wu`);
+  if(bounds.max[1]>230) throw new Error(`claw top ${bounds.max[1]} exceeds 230 wu`);
   if(bounds.min[0]<-310 || bounds.max[0]>310 ||
      bounds.min[2]<DAIS_POS[2]-160 || bounds.max[2]>DAIS_POS[2]+160)
-    throw new Error(`golden claw exceeds the top tier: ${JSON.stringify(bounds)}`);
-  boxRegistry.push({group:'golden claw',exempt:'inside TradingFloorHoloDais collider',
+    throw new Error(`claw exceeds the top tier: ${JSON.stringify(bounds)}`);
+  boxRegistry.push({group:'claw',exempt:'inside TradingFloorHoloDais collider',
     min:bounds.min,max:bounds.max});
   clawBounds.push(bounds);
-  // mergeGeos fills every non-claw brass vertex with unchanged white.
-  brassGeos.push(geo);
+  clawGeos.push(geo);
 }
 for(const [y,x,z] of [[32,350,346],[50,330,210],[70,310,160]])
   if(x>350 || z>346) throw new Error(`plinth rim at y ${y} exceeds the dais solid`);
 addMesh('TradingFloorBrass', mergeGeos(brassGeos), BRASS);
-console.log(`  golden claws: solid Meshy copies, yaw +28/-28 deg, 158 wu over 70 wu plinth = ${clawBounds[0].max[1].toFixed(2)} wu top; AABBs ${JSON.stringify(clawBounds)}`);
+addMesh('TradingFloorClaws', mergeGeos(clawGeos), CLAW);
+console.log(`  claws: solid Meshy copies, yaw +28/-28 deg, 158 wu over 70 wu plinth = ${clawBounds[0].max[1].toFixed(2)} wu top; AABBs ${JSON.stringify(clawBounds)}`);
 assertWallDetailClears();
 
 // ---- the asset/scene contract, as DATA -------------------------------------
@@ -1351,7 +1354,7 @@ await doc.transform(dedup(), prune());
 let tris = 0;
 for (const m of doc.getRoot().listMeshes()) for (const p of m.listPrimitives()) tris += p.getIndices().getCount() / 3;
 console.log(
-  `interior v4: ${tris} tris | ${doc.getRoot().listMeshes().length} meshes | ` +
+  `interior v5: ${tris} tris | ${doc.getRoot().listMeshes().length} meshes | ` +
     `${doc.getRoot().listMaterials().length} materials (= draw calls) | ` +
     `${doc.getRoot().listTextures().length} textures | room ${RW}x${RH}x${RD} wu, door ${DOOR_W}x${DOOR_H} on +Z`
 );

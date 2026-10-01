@@ -248,6 +248,7 @@ describe('Trading Floor asset — the node names the scene resolves', () => {
     ['TradingFloorCeiling'],
     ['TradingFloorFloorSlab'],
     ['TradingFloorBrass'],
+    ['TradingFloorClaws'],
     ['TradingFloorIdentity'],
   ])('%s exists', (name) => {
     expect(() => nodeByName(name)).not.toThrow();
@@ -440,7 +441,7 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
   });
 
   test('each claw has at most 40 inverted or degenerate triangles after room-wide quantization', async () => {
-    const { vertices, primitive } = await assetVertices('TradingFloorBrass');
+    const { vertices, primitive } = await assetVertices('TradingFloorClaws');
     const indices = primitive.getIndices()!.getArray()!;
     const counts = [0, 0], totals = [0, 0];
     for (let i = 0; i < indices.length; i += 3) {
@@ -460,37 +461,57 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
     console.log(`claw inverted/degenerate triangles: ${counts.join('/')} of ${totals.join('/')}; maximum 40 each`);
   });
 
-  test('A4 indexing stays compact and amber claw shading leaves every other brass vertex white', async () => {
+  test('brass factors stay unchanged and both claws retain compact indexing without vertex colors', async () => {
     const { vertices, primitive } = await assetVertices('TradingFloorBrass');
-    expect(primitive.getAttribute('COLOR_0')!.getCount()).toBe(vertices.length);
+    expect(primitive.getAttribute('COLOR_0')).toBeNull();
     expect(primitive.getMaterial()!.getExtension('KHR_materials_unlit')).toBeNull();
     expect(primitive.getMaterial()!.getBaseColorFactor()).toEqual([.75, .53, .16, 1]);
     expect(primitive.getMaterial()!.getEmissiveFactor()).toEqual([.13, .095, .032]);
     expect(primitive.getMaterial()!.getRoughnessFactor()).toBe(.32);
-    expect(primitive.getMaterial()!.getMetallicFactor()).toBeLessThanOrEqual(.45);
-    const shades: number[] = [];
+    expect(primitive.getMaterial()!.getMetallicFactor()).toBe(.25);
+    const claws = await assetVertices('TradingFloorClaws');
+    expect(claws.primitive.getAttribute('COLOR_0')).toBeNull();
     const clawCounts = [0, 0];
-    for (const { p, color } of vertices) {
-      const claw = extras!.statue!.claws.some((bounds) =>
+    for (const { p } of claws.vertices) {
+      const index = extras!.statue!.claws.findIndex((bounds) =>
         p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2));
-      expect(color).toBeDefined();
-      if (claw) {
-        const shade = color![0]! / .827;
-        // Meshopt stores colours as normalized bytes; permit one byte of error.
-        expect(Math.abs(color![1]! - shade * .755)).toBeLessThanOrEqual(2 / 255);
-        expect(Math.abs(color![2]! - shade * .625)).toBeLessThanOrEqual(2 / 255);
-        expect(shade).toBeGreaterThanOrEqual(.44);
-        expect(shade).toBeLessThanOrEqual(1.01);
-        shades.push(shade);
-        const index = extras!.statue!.claws.findIndex((bounds) =>
-          p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2));
-        clawCounts[index]!++;
-      } else expect(color).toEqual([1, 1, 1]);
+      expect(index).toBeGreaterThanOrEqual(0);
+      clawCounts[index]!++;
     }
     expect(clawCounts.every((count) => count > 2000 && count <= 2250)).toBe(true);
-    expect(vertices.length).toBeLessThanOrEqual(5500);
-    console.log(`indexed brass vertices ${vertices.length}; claw vertices ${clawCounts.join('/')} (total ${clawCounts[0]! + clawCounts[1]!})`);
-    expect(Math.max(...shades) - Math.min(...shades)).toBeGreaterThan(.3);
+    expect(vertices.length + claws.vertices.length).toBeLessThanOrEqual(5500);
+    console.log(`indexed brass vertices ${vertices.length}; claw vertices ${clawCounts.join('/')} (total ${claws.vertices.length})`);
+  });
+
+  test('the shipped claws copy the exterior material factors and have no COLOR_0', async () => {
+    const interior = await decodedAsset;
+    const exterior = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder })
+      .read(join(GLB_PATH, '..', 'trading-floor-exterior-opt1-mo-ktx.glb'));
+    const source = exterior.getRoot().listMaterials()
+      .find((material) => material.getName() === 'TradingFloorClawMtl');
+    const material = interior.getRoot().listMaterials()
+      .find((candidate) => candidate.getName() === 'TradingFloorClawMtl');
+    expect(source).toBeDefined();
+    expect(material).toBeDefined();
+    // PBR factors stay in JSON; geometry quantization adds no material noise.
+    const actual = [...material!.getBaseColorFactor(), ...material!.getEmissiveFactor(),
+      material!.getRoughnessFactor(), material!.getMetallicFactor()];
+    const expected = [...source!.getBaseColorFactor(), ...source!.getEmissiveFactor(),
+      source!.getRoughnessFactor(), source!.getMetallicFactor()];
+    for (let index = 0; index < actual.length; index++)
+      expect(Math.abs(actual[index]! - expected[index]!)).toBeLessThanOrEqual(1e-6);
+    expect(material!.getDoubleSided()).toBe(source!.getDoubleSided());
+    expect(material!.getExtension('KHR_materials_unlit')).toBeNull();
+    for (const texture of [material!.getBaseColorTexture(), material!.getEmissiveTexture(),
+      material!.getMetallicRoughnessTexture(), material!.getNormalTexture(), material!.getOcclusionTexture()])
+      expect(texture).toBeNull();
+    const mesh = interior.getRoot().listMeshes().find((candidate) => candidate.getName() === 'TradingFloorClaws');
+    expect(mesh).toBeDefined();
+    expect(mesh!.listPrimitives()).toHaveLength(1);
+    const primitive = mesh!.listPrimitives()[0]!;
+    expect(primitive.getMaterial()).toBe(material!);
+    expect(primitive.getAttribute('COLOR_0')).toBeNull();
   });
 
   test('portal contacts have deliberate clearance and the plate fits the lowest tier', async () => {
@@ -701,19 +722,18 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
     expect(Math.max(...ends) - Math.min(...ends)).toBeGreaterThan(0.5);
   });
 
-  test('chair and brass retain normalized byte colors and welded sculpt creases', async () => {
-    for (const name of ['TradingFloorChairModule', 'TradingFloorBrass']) {
-      const { vertices, primitive } = await assetVertices(name);
-      const colors = primitive.getAttribute('COLOR_0')!;
-      expect(colors.getComponentType()).toBe(5121);
-      expect(colors.getNormalized()).toBe(true);
-      expect(colors.getType()).toBe('VEC3');
-      expect(new Set(vertices.map(({ color }) => color!.join(','))).size).toBeGreaterThan(1);
-      if (name === 'TradingFloorBrass') {
-        expect(vertices.length).toBeLessThanOrEqual(5500);
-        expect(primitive.getIndices()!.getCount() / 3).toBe(6040);
-      }
-    }
+  test('chairs retain normalized byte colors and claws retain welded sculpt creases', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorChairModule');
+    const colors = primitive.getAttribute('COLOR_0')!;
+    expect(colors.getComponentType()).toBe(5121);
+    expect(colors.getNormalized()).toBe(true);
+    expect(colors.getType()).toBe('VEC3');
+    expect(new Set(vertices.map(({ color }) => color!.join(','))).size).toBeGreaterThan(1);
+    const brass = await assetVertices('TradingFloorBrass');
+    const claws = await assetVertices('TradingFloorClaws');
+    expect(brass.vertices.length + claws.vertices.length).toBeLessThanOrEqual(5500);
+    expect((brass.primitive.getIndices()!.getCount() + claws.primitive.getIndices()!.getCount()) / 3).toBe(6040);
+    expect(new Set(claws.vertices.map(({ n }) => n.join(','))).size).toBeGreaterThan(1);
   });
 });
 
@@ -769,13 +789,13 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
       'meshopt.decoder': MeshoptDecoder,
     });
     const doc = await io.read(GLB_PATH);
-    const brass = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorBrass');
-    expect(brass).toBeDefined();
-    const mesh = brass!.getMesh()!.listPrimitives()[0]!;
+    const clawNode = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorClaws');
+    expect(clawNode).toBeDefined();
+    const mesh = clawNode!.getMesh()!.listPrimitives()[0]!;
     const accessor = mesh.getAttribute('POSITION')!;
     const positions = accessor.getArray()!;
     const divisor = accessor.getNormalized() && positions instanceof Int16Array ? 32767 : 1;
-    const world = brass!.getWorldMatrix();
+    const world = clawNode!.getWorldMatrix();
     const claws = extras?.statue?.claws;
     expect(claws).toHaveLength(2);
     const points: { x: number; y: number; z: number }[][] = [[], []];
@@ -914,8 +934,8 @@ describe('Trading Floor asset — v4 colours, seal and portal', () => {
   });
 
   test('the seal and both banners share one draw call', () => {
-    expect(gltf.meshes).toHaveLength(10);
-    expect(gltf.materials).toHaveLength(10);
+    expect(gltf.meshes).toHaveLength(11);
+    expect(gltf.materials).toHaveLength(11);
     expect(gltf.textures).toHaveLength(7);
     const identity = nodeByName('TradingFloorIdentity');
     expect(gltf.meshes[identity.mesh!]!.primitives).toHaveLength(1);
