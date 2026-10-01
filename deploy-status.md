@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-01 ~16:40 UTC (session tradeDeskMain). **Staging** is receiving `fix/arena-next` (6 commits on top of `6dda4e80`): x402 add-on budget + rotation fixes, arena lock-order (deadlock) fixes, the content mask for hate slurs in public arena payloads + offensive launch names refused (`400 name_not_allowed`), Exchange labels (live vs arena traders) + the discovery card, PROTOCOL_VERSION 77 -> 78. No migration. Verification PENDING (DEPLOY LOG entry below). **PROD = `b8d52ab6`** (unchanged). SCHEMA: `synced`.
+Last Audited: 2026-10-01 15:40 UTC (session tradeDeskMain). **Staging** is receiving `fix/arena-next` (6 commits on top of `6dda4e80`): x402 add-on budget + rotation fixes, arena lock-order (deadlock) fixes, the content mask for hate slurs in public arena payloads + offensive launch names refused (`400 name_not_allowed`), Exchange labels (live vs arena traders) + the discovery card, PROTOCOL_VERSION 77 -> 78. No migration. Verification PENDING (DEPLOY LOG entry below). **PROD = `b8d52ab6`** (unchanged). SCHEMA: `synced`.
 
 Prior — Last Audited: 2026-10-01 14:00 UTC (session tradeDeskMain). **PROD = `b8d52ab6` (PROMOTION PR #305, merged 13:30:35Z, flipped 13:39-13:40Z), VERIFIED.** It carries all of staging `86007f7c` (75 commits since `61fdcffc`): the connect-sec security fix, the Trading Floor Arena (D24-D33), interior v3 + stall fix, the security batch D1-D3/M1/M2/C1/C2, brand kit v1. PROTOCOL_VERSION 77. Migrations 0070, 0072, 0073 applied by the CI migrate job. Founder go for the prod `CLAWPUMP_API_KEY` (copied from the staging api env, value never printed; prod api app 2). **Staging** = `86007f7c` (same code). SCHEMA: `synced`. See the PROMOTION entry at the top of the DEPLOY LOG.
 
