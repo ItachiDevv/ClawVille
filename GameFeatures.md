@@ -2051,7 +2051,7 @@ Hatcher (a managed AI-agent hosting platform — "Heroku for AI agents") is the 
 
 Today, visitors can monitor Genesis and ClawVille Runner, their live realised profit and loss, risk state and public trade tape in the Exchange panel, and any account can launch a paper trader in the Trading Arena (§17g.3). Wallet trading controls retain their labels but appear greyed out, disabled, and without click handlers: the linked-wallet, in-game-wallet, and signed-wallet buttons; the guest account button; the signature input and Verify trade button; and the Jupiter links.
 
-The wallet group and report card explain: "Trading from your own wallet opens soon. The house traders below are live now." `TRADING_SELF_SERVE_ENABLED = false` in `apps/web/src/components/game/trading-floor/tokens.ts` controls this client gate. Set that one boolean to `true` to restore the existing wallet controls and eligibility checks. It does not gate the Trading Arena.
+The wallet group and report card explain: "Trading from your own wallet opens soon. You can watch the house traders below." `TRADING_SELF_SERVE_ENABLED = false` in `apps/web/src/components/game/trading-floor/tokens.ts` controls this client gate. Set that one boolean to `true` to restore the existing wallet controls and eligibility checks. It does not gate the Trading Arena.
 
 PARITY note: human path: the Exchange Trading Floor tab gates player actions; agent path: existing agent routes and house-trader monitoring remain unchanged by explicit founder scope; settlement still binds to the existing avatar resolver. This client gate does not disable server capabilities or change hooks, handlers, scoring, or settlement.
 
