@@ -358,7 +358,3 @@ describe('Trading Floor GPU drain', () => {
     } } } });
   });
 });
-
-
-
-
