@@ -196,6 +196,55 @@ const waitForTradingFloorGpuDrain = new Function(
 )() as typeof import('./StageHostedTradingFloorScene').waitForTradingFloorGpuDrain;
 
 describe('Trading Floor GPU drain', () => {
+  test('default timers wait for WebGPU work and a WebGL fence in browsers', async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    globalThis.setTimeout = function (this: unknown, ...args: Parameters<typeof setTimeout>) {
+      if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+      return Reflect.apply(realSetTimeout, globalThis, args);
+    } as typeof setTimeout;
+    globalThis.clearTimeout = function (this: unknown, ...args: Parameters<typeof clearTimeout>) {
+      if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+      return Reflect.apply(realClearTimeout, globalThis, args);
+    } as typeof clearTimeout;
+
+    try {
+      let gpuSettled = false;
+      let submitted = 0;
+      const work = new Promise<void>((resolve) => realSetTimeout(resolve, 40));
+      const gpuWait = waitForTradingFloorGpuDrain({
+        backend: { device: { queue: { onSubmittedWorkDone: () => { submitted++; return work; } } } },
+      }).then(() => { gpuSettled = true; });
+      await Promise.resolve();
+      expect(submitted).toBe(1);
+      expect(gpuSettled).toBe(false);
+      await gpuWait;
+      expect(gpuSettled).toBe(true);
+
+      let polls = 0;
+      let deleted = 0;
+      let glSettled = false;
+      const sync = {};
+      const glWait = waitForTradingFloorGpuDrain({ backend: { gl: {
+        SYNC_GPU_COMMANDS_COMPLETE: 1, SYNC_STATUS: 2, SIGNALED: 3,
+        fenceSync: () => sync,
+        flush: () => undefined,
+        getSyncParameter: () => ++polls === 3 ? 3 : 0,
+        deleteSync: () => { deleted++; },
+      } } }).then(() => { glSettled = true; });
+      await Promise.resolve();
+      expect(polls).toBe(1);
+      expect(glSettled).toBe(false);
+      await glWait;
+      expect(polls).toBe(3);
+      expect(deleted).toBe(1);
+      expect(glSettled).toBe(true);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+  });
+
   test('WebGPU waits for submitted work', async () => {
     const timers = fakeTimers();
     let finish!: () => void;

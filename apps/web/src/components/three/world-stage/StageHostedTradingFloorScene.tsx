@@ -15,15 +15,18 @@ import { warmStageSlotRenderer } from './stage-warmup-entry-manager';
 import { TRADING_FLOOR_SCENE_ID } from './stage-scene-id';
 
 type GpuDrainTimer = {
-  schedule: typeof setTimeout;
-  cancel: typeof clearTimeout;
+  schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  cancel: (timer: ReturnType<typeof setTimeout>) => void;
 };
 
 /** Wait for work submitted by the direct warm draw. All paths fail open. */
 export async function waitForTradingFloorGpuDrain(
   renderer: unknown,
   timeoutMs = 3000,
-  timers: GpuDrainTimer = { schedule: setTimeout, cancel: clearTimeout },
+  timers: GpuDrainTimer = {
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: (timer) => clearTimeout(timer),
+  },
 ): Promise<void> {
   try {
     const render = renderer as {
