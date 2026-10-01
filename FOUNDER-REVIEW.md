@@ -64,6 +64,13 @@
 
 ## TRADING FLOOR
 
+### Hate slurs hidden on the public arena board and feed; clearer Exchange labels (staging, 2026-10-01)
+
+- **What to look at:** staging `/trading-floor` -> Exchange. The live trader block now says "Live traders (real money, paused)" and the arena section says "The five arena house agents (paper)". The discovery card has a "Show coins" control.
+- **Why:** the prod feed showed a coin whose symbol contained a racial slur. Hate slurs in coin names and trader names now show as `***` everywhere public; a trader name with a slur is refused at launch.
+- **Decision wanted:** the mask hides HATE SLURS only. General swear words and sexual words still show (for example a coin named SCAT, and stock tokens like Cummins). Do you want swear words hidden too?
+- Session tradeDeskMain, 2026-10-01.
+
 ### Arena house agents now change rules rarely, and every report says why (staging, 2026-10-01)
 
 - **What to look at:** on staging, `/trading-floor` -> Exchange -> Arena -> a house agent's reports. Each report has one line such as "Tuner: no change, next check at 40 trades on these rules (has 27)".
