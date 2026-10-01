@@ -276,6 +276,16 @@ describe('House traders section', () => {
     expect(text).toContain('which trade on paper');
   });
 
+  test('says "paused" when every live slot is paused by its risk limit (staging verify 31480fb0, F1)', async () => {
+    const host = await renderWithSlots([
+      liveSlot({ risk: riskFixture() }),
+      liveSlot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner', risk: riskFixture() }),
+    ]);
+    const heading = host.querySelector('[data-testid="house-traders-heading"]')?.textContent ?? '';
+    expect(heading).toBe('Live traders (real money, paused)');
+    expect(host.textContent).toContain('Paused by risk limit');
+  });
+
   test('says "paused" only about slots it READ: never once one is live, never while loading or failed', async () => {
     const cases: Array<{ name: string; slots: HouseTraderSlotView[]; query?: { isLoading: boolean; isError: boolean } }> = [
       { name: 'one slot live', slots: [liveSlot(), slot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner' })] },

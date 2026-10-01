@@ -345,7 +345,12 @@ export function HouseTradersView({
   // The word agrees with the slot cards (review MINOR 5): every card says
   // "Stopped." -> "stopped"; some "Stopped." and some "Paused by the team" ->
   // "not trading"; otherwise "paused".
-  const idle = !isLoading && !isError && !slots.some((slot) => slot.status === 'live-observed');
+  // A live slot whose risk display is "paused" is not trading: its card says
+  // "Paused by risk limit", so the heading must not imply it trades (staging
+  // browser verify 31480fb0, F1). A "fault" is not a pause: it keeps the plain heading.
+  const trading = (slot: HouseTraderSlotView) =>
+    slot.status === 'live-observed' && resolveHouseTraderRiskDisplay(slot.status, slot.risk, freshness) !== 'paused';
+  const idle = !isLoading && !isError && !slots.some(trading);
   const stopped = slots.filter((slot) => slot.status === 'stopped').length;
   const idleWord = stopped === 0 ? 'paused' : stopped === slots.length ? 'stopped' : 'not trading';
   return (
