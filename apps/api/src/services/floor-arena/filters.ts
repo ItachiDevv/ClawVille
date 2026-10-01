@@ -52,7 +52,7 @@ export const FLOOR_ARENA_FAIL_CODES = [
   'chg5m', 'chg5m_max', 'chg1h', 'chg1h_max', 'chg6h', 'chg6h_max', 'chg24h', 'chg24h_max',
   'txns', 'txns_max', 'top10', 'top10_unknown',
   // engine codes (never from passesFilters)
-  'window', 'hard_rules', 'chain_pending', 'cooldown', 'source_not_tradeable',
+  'window', 'hard_rules', 'chain_pending', 'chain_verdict_stale', 'cooldown', 'source_not_tradeable',
 ] as const;
 export type FloorArenaFailCode = (typeof FLOOR_ARENA_FAIL_CODES)[number];
 

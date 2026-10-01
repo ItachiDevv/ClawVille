@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
   advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, evaluateAgentCandidates,
-  exitSummary, freshBookingAllowed, keepNewerMark, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
+  exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
   quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
 } from './engine';
@@ -359,7 +359,7 @@ describe('evaluateAgentCandidates', () => {
   function cand(mint: string, over: Partial<ArenaCandidate> = {}, f: Partial<FloorArenaFeatures> = {}): ArenaCandidate {
     return {
       mint, source: 'ds:token-profiles', symbol: mint, firstSeenAtMs: T0 - 30_000, features: features(f), verdict: 'pass',
-      isPrivate: false, tradeable: true, tradeableFirstSeenAtMs: T0 - 30_000, ...over,
+      chainCheckedAtMs: T0 - 60_000, isPrivate: false, tradeable: true, tradeableFirstSeenAtMs: T0 - 30_000, ...over,
     };
   }
 
@@ -403,6 +403,47 @@ describe('evaluateAgentCandidates', () => {
     // A private mint uses its own first sighting in either mode.
     const addon = cand('addon', { isPrivate: true, firstSeenAtMs: T0 - 60_000, tradeableFirstSeenAtMs: null });
     expect(evaluateAgentCandidates(tradeable, [addon], new Set(), new Map(), T0).passed.map((c) => c.mint)).toEqual(['addon']);
+  });
+
+  test('D28: a stale verdict is not passed, for shared AND private mints (chain_verdict_stale)', () => {
+    const out = evaluateAgentCandidates(params, [
+      cand('stale-shared', { verdict: 'stale', chainCheckedAtMs: T0 - 31 * 60_000 }),
+      cand('stale-private', { verdict: 'stale', isPrivate: true, tradeableFirstSeenAtMs: null, source: 'private:feed' }),
+      cand('fresh', { verdict: 'pass', chainCheckedAtMs: T0 - 29 * 60_000 }),
+    ], new Set(), new Map(), T0);
+    expect(out.passed.map((c) => c.mint)).toEqual(['fresh']);
+    expect(out.failCounts).toEqual({ chain_verdict_stale: 2 });
+  });
+
+  test('Codex r14 insert gate: the verdict is judged again at insertion with the wall clock', () => {
+    const tick = T0;
+    const insertAt = T0 + 2_000;
+    const verdict = (agoAtTickMs: number, over: Record<string, unknown> = {}) => ({
+      chainVerdict: { pass: true, fails: [], codes: [], checkedAt: new Date(tick - agoAtTickMs).toISOString(), pairAddress: 'p', top10Pct: 10, ...over },
+      chainCheckedAtMs: tick - agoAtTickMs,
+      pairAddress: 'p',
+    });
+    const edge = 30 * 60_000 - 1_000;   // 29m59s at load, 30m01s at insert
+    const loaded = cand('edge', { chainCheckedAtMs: tick - edge });
+    expect(insertTimeGate(loaded, params.filters, verdict(edge), insertAt, tick)).toEqual({ ok: false, code: 'chain_verdict_stale' });
+    // Fresh: passes and records the re-read verdict time.
+    expect(insertTimeGate(cand('fresh'), params.filters, verdict(60_000), insertAt, tick))
+      .toEqual({ ok: true, features: cand('fresh').features, chainCheckedAtMs: tick - 60_000 });
+    // The priced pair changed after the load: the candidate's features are for another pair.
+    expect(insertTimeGate(cand('moved'), params.filters, { ...verdict(60_000), pairAddress: 'q' }, insertAt, tick))
+      .toEqual({ ok: false, code: 'chain_pending' });
+    // The row is gone (an expired add-on mint), or a verdict for another pair: pending.
+    expect(insertTimeGate(cand('gone'), params.filters, null, insertAt, tick)).toEqual({ ok: false, code: 'chain_pending' });
+    expect(insertTimeGate(cand('other'), params.filters, verdict(60_000, { pairAddress: 'q' }), insertAt, tick))
+      .toEqual({ ok: false, code: 'chain_pending' });
+    // A fresh FAIL written after the load.
+    expect(insertTimeGate(cand('rug'), params.filters, verdict(1_000, { pass: false, fails: ['lp_locked'] }), insertAt, tick))
+      .toEqual({ ok: false, code: 'hard_rules' });
+    // A newer pass verdict with another top-10 share re-runs the filters and is recorded.
+    const capped = { ...params.filters, top10_max_pct: 30 };
+    expect(insertTimeGate(cand('whale'), capped, verdict(1_000, { top10Pct: 45 }), insertAt, tick)).toEqual({ ok: false, code: 'top10' });
+    expect(insertTimeGate(cand('newer'), capped, verdict(1_000, { top10Pct: 20 }), insertAt, tick))
+      .toEqual({ ok: true, features: { ...cand('newer').features, top10Pct: 20 }, chainCheckedAtMs: tick - 1_000 });
   });
 
   test('D26: with liq_min off, a pump.fun curve coin (DexScreener liquidity 0) passes', () => {

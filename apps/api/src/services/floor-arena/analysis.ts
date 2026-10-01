@@ -28,9 +28,10 @@
  *      trades on the current params AND a deterministic split check on those
  *      trades (`evaluateSuggestionEvidence`); only filter changes can pass it.
  *      At most one automatic change per agent per 30 minutes.
- *   5. MEMORY: a user agent whose avatar has a RUNNING hosted ElizaOS runtime
- *      also gets the report as an earned-skill memory (best effort, never
- *      lazy-starts a runtime).
+ *   5. MEMORY (D29): every user agent's report is stored as an earned-skill
+ *      lesson of the owner's avatar, in its warm hosted ElizaOS runtime or
+ *      else the avatar-keyed keyword store (`writeArenaReportMemory`; never
+ *      lazy-starts a runtime, never throws).
  *
  * If the LLM fails or times out the report is still written, with a
  * deterministic summary and no suggestion. Nothing here moves money: the arena
@@ -312,7 +313,7 @@ export interface ArenaAnalysisDeps {
   store: ArenaAnalysisStore;
   llm: ArenaLlm;
   /** Best effort; errors are logged, never thrown. */
-  writeMemory?: (input: ArenaReportMemoryInput) => Promise<void>;
+  writeMemory?: (input: ArenaReportMemoryInput) => Promise<unknown>;
   log?: (line: string) => void;
   /** Defaults to ARENA_LLM_TIMEOUT_MS; tests shorten it. */
   llmTimeoutMs?: number;

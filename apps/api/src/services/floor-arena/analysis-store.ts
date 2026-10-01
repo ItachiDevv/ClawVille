@@ -1,10 +1,10 @@
 /**
  * Postgres side of the Trading Arena analysis (`analysis.ts`): the queries and
- * writes behind `ArenaAnalysisStore`, plus the best-effort ElizaOS memory
- * writer. Params changes go through `updateArenaAgentParams` (queries.ts), the
- * one arena params writer the owner routes use too. Kept apart from
- * `analysis.ts` so the analysis logic and its tests load without a database or
- * an agent runtime.
+ * writes behind `ArenaAnalysisStore`, plus the report memory writer and the
+ * owner-chat lesson fold (D29). Params changes go through
+ * `updateArenaAgentParams` (queries.ts), the one arena params writer the owner
+ * routes use too. Kept apart from `analysis.ts` so the analysis logic and its
+ * tests load without a database or an agent runtime.
  */
 
 import {
@@ -13,6 +13,7 @@ import {
   db,
   desc,
   eq,
+  floorArenaAgents,
   floorArenaEvents,
   floorArenaParamChanges,
   floorArenaPositions,
@@ -33,6 +34,7 @@ import {
   type ArenaReportMemoryInput,
   type ArenaReportWrite,
 } from './analysis';
+import type { EarnedSkillStore } from '../earned-skill-memory';
 import { updateArenaAgentParams } from './queries';
 
 /** The Trading Floor building id; earned-skill memories are filed under it. */
@@ -275,41 +277,104 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
   };
 }
 
+function errorText(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).slice(0, 160);
+}
+
+/** The avatar's hosted platform agent id, or null for a BYO or unprovisioned avatar. */
+async function readAvatarPlatformAgentId(avatarId: string): Promise<string | null> {
+  const [avatar] = await db
+    .select({ platformAgentId: avatars.platformAgentId })
+    .from(avatars)
+    .where(eq(avatars.id, avatarId))
+    .limit(1);
+  return avatar?.platformAgentId ?? null;
+}
+
 /**
- * Files the report as an earned-skill memory in the agent's OWN running
- * ElizaOS runtime, under the Trading Floor building, so its chat and its
- * decide loop can recall it (`readEarnedSkillLessons`). The memory id seed
- * includes the runtime agent id (`recordEarnedSkillMemory`). Never starts a
- * runtime: a BYO agent, or a hosted one that is asleep, is skipped with a log
- * line. Never throws.
+ * D29: files every player report as an EARNED-SKILL lesson of the owner's
+ * avatar under the Trading Floor building, through `recordEarnedSkillLesson`.
+ * It lands in the avatar's own hosted ElizaOS runtime when that runtime is
+ * warm in this API process (embedded; id seeded with the runtime agent id),
+ * else in the avatar-keyed `npc_memories` keyword store (no hosted runtime, a
+ * runtime asleep after 30 idle minutes, or a failed embed). Never lazy-starts
+ * a runtime, never throws, logs ONE line with the store.
+ *
+ * Readers, all through `readEarnedSkillLessons` (it reads either store): the
+ * owner's avatar chat `POST /api/avatars/me/chat` (via `tradingFloorLessonContext`
+ * below), the Trading Floor teacher's chat (`world-teacher-chat.ts`), the
+ * hosted autonomy decide loop (`agent-autonomy-driver.ts` `readRecentLessons`)
+ * and `GET /api/agent/:sessionId/skills/cron-automation/skill-memory`. The
+ * runtime's KnowledgeProvider does NOT read these rows.
  */
-export async function writeArenaReportMemory(input: ArenaReportMemoryInput): Promise<void> {
+export async function writeArenaReportMemory(
+  input: ArenaReportMemoryInput,
+  lookupPlatformAgentId: (avatarId: string) => Promise<string | null> = readAvatarPlatformAgentId,
+): Promise<EarnedSkillStore> {
+  let platformAgentId = '';
   try {
-    const [avatar] = await db
-      .select({ platformAgentId: avatars.platformAgentId })
-      .from(avatars)
-      .where(eq(avatars.id, input.avatarId))
-      .limit(1);
-    if (!avatar?.platformAgentId) {
-      console.log(`[floor-arena/analysis] ${input.agentId}: no hosted runtime for the avatar; report memory skipped`);
-      return;
-    }
-    const { agentOrchestrator } = await import('../agent-orchestrator');
-    const runtime = agentOrchestrator.getRunningAgentRuntime(avatar.platformAgentId);
-    if (!runtime) {
-      console.log(`[floor-arena/analysis] ${input.agentId}: hosted runtime not running; report memory skipped`);
-      return;
-    }
-    const ok = await runtime.recordEarnedSkillMemory({
+    platformAgentId = (await lookupPlatformAgentId(input.avatarId)) ?? '';
+  } catch (err) {
+    console.log(`[floor-arena/analysis] ${input.agentId}: avatar lookup failed (${errorText(err)}); keyword store only`);
+  }
+  let store: EarnedSkillStore = 'none';
+  try {
+    const { recordEarnedSkillLesson } = await import('../earned-skill-memory');
+    store = await recordEarnedSkillLesson({
+      platformAgentId,
       avatarId: input.avatarId,
+      agentId: input.agentId,
       buildingId: TRADING_FLOOR_BUILDING_ID,
       teacherName: 'Trading Arena analyst',
       lesson: input.text,
     });
-    if (!ok) console.log(`[floor-arena/analysis] ${input.agentId}: runtime refused the report memory; skipped`);
   } catch (err) {
-    console.log(
-      `[floor-arena/analysis] ${input.agentId}: report memory skipped (${(err instanceof Error ? err.message : String(err)).slice(0, 160)})`,
-    );
+    console.log(`[floor-arena/analysis] ${input.agentId}: report memory write failed (${errorText(err)})`);
   }
+  console.log(`[floor-arena/analysis] ${input.agentId}: report memory store=${store}`);
+  return store;
+}
+
+const LESSON_FOLD_LIMIT = 3;
+const LESSON_FOLD_TIMEOUT_MS = 1_500;
+
+/**
+ * D29: the owner's avatar chat recalls what their agent learned at the Trading
+ * Floor (its 30-minute arena reports, and the teacher's lessons there), the way
+ * `world-teacher-chat.ts` folds prior lessons into a teacher turn. Only for an
+ * owner who has an arena agent (one indexed lookup), so other chats pay no
+ * embedding. Returns the context block, or null when there is nothing to add.
+ * Bounded and fail-soft: the lookup and the read together get 1.5 s; a slow
+ * or failing step returns null, never throws.
+ */
+export async function tradingFloorLessonContext(
+  input: { userId: string; platformAgentId: string; avatarId: string; query: string },
+  deps: {
+    hasArenaAgent?: (userId: string) => Promise<boolean>;
+    read?: (i: { platformAgentId: string; avatarId: string; buildingId: string; query: string; limit: number }) => Promise<string[]>;
+    timeoutMs?: number;
+  } = {},
+): Promise<string | null> {
+  const hasArenaAgent = deps.hasArenaAgent ?? (async (userId: string) => {
+    const [row] = await db.select({ id: floorArenaAgents.id }).from(floorArenaAgents)
+      .where(and(eq(floorArenaAgents.ownerUserId, userId), eq(floorArenaAgents.kind, 'user'))).limit(1);
+    return Boolean(row);
+  });
+  const fold = async (): Promise<string | null> => {
+    if (!(await hasArenaAgent(input.userId))) return null;
+    const read = deps.read ?? (await import('../earned-skill-memory')).readEarnedSkillLessons;
+    const lessons = await read({ ...input, buildingId: TRADING_FLOOR_BUILDING_ID, limit: LESSON_FOLD_LIMIT });
+    if (lessons.length === 0) return null;
+    return `What you have learned at the Trading Floor (your own Trading Arena reports and lessons there). Use it when the question is about trading or your arena agent:\n${lessons.map((l) => `- ${l}`).join('\n')}`;
+  };
+  // ONE time box over the whole fold, the arena lookup included (Codex r14): a
+  // stalled database query must never hold the owner's chat. The fold's own
+  // promise always has a handler, so a rejection that lands after the timeout
+  // is swallowed, never unhandled.
+  return new Promise<string | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), deps.timeoutMs ?? LESSON_FOLD_TIMEOUT_MS);
+    fold()
+      .then((context) => { clearTimeout(timer); resolve(context); })
+      .catch(() => { clearTimeout(timer); resolve(null); });
+  });
 }

@@ -2,7 +2,7 @@ import { Connection, PublicKey, type ParsedAccountData } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { db, sql } from '@clawville/database';
 import { tradingConnection, tradingRpcConfigured } from '../trading-rpc';
-import type { FloorArenaHardRuleId } from '@clawville/shared';
+import { FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES, type FloorArenaHardRuleId } from '@clawville/shared';
 import type { FloorArenaSnapshot } from './filters';
 import { currentSolPriceUsd, USDC_MINT, WSOL_MINT } from './pricing';
 
@@ -413,7 +413,58 @@ export async function runChainCheck(
 
 // ---------------------------------------------------------------- the 20 s tick
 
-interface DueRow { mint: string; snapshot: FloorArenaSnapshot | null; unchecked: boolean; firstSeenMs: number }
+interface DueRow { mint: string; snapshot: FloorArenaSnapshot | null; unchecked: boolean; firstSeenMs: number; checkedAtMs: number | null }
+
+/**
+ * D28: the check order. Never-checked rows first (newest first sight first), then the OLDEST verdicts first, so no
+ * tradeable coin's verdict starves past the 30-min TTL while newer coins keep arriving.
+ */
+export function orderDueChainChecks<T extends { unchecked: boolean; firstSeenMs: number; checkedAtMs: number | null }>(rows: readonly T[]): T[] {
+  return [...rows].sort((a, b) => Number(b.unchecked) - Number(a.unchecked)
+    || (a.unchecked ? 0 : (a.checkedAtMs ?? 0) - (b.checkedAtMs ?? 0))
+    || b.firstSeenMs - a.firstSeenMs);
+}
+
+/**
+ * Codex r14: reserved capacity. At least half of each tick's checks (rounded up) go to already-checked due rows
+ * (oldest verdict first), the rest to never-checked rows (newest first sight first); a half with spare room is
+ * backfilled by the other. Without it a steady flow of new coins fills every slot, and older tradeable coins are
+ * never re-checked, go stale and become unbuyable (D28). The result keeps the orderDueChainChecks order.
+ */
+export function pickDueChainChecks<T extends { unchecked: boolean; firstSeenMs: number; checkedAtMs: number | null }>(
+  rows: readonly T[],
+  limit: number,
+): T[] {
+  const ordered = orderDueChainChecks(rows);
+  const fresh = ordered.filter((r) => r.unchecked);
+  const recheck = ordered.filter((r) => !r.unchecked);
+  const recheckTake = Math.min(recheck.length, Math.max(Math.ceil(limit / 2), limit - fresh.length));
+  const freshTake = Math.min(fresh.length, Math.max(limit - recheckTake, 0));
+  return [...fresh.slice(0, freshTake), ...recheck.slice(0, recheckTake)];
+}
+
+/** A verdict as the entry gate sees it (D28). */
+export type EntryVerdict = 'pass' | 'fail' | 'pending' | 'stale';
+
+/**
+ * D28: the entry gate. A verdict counts only for the pair priced now (a missing or different pairAddress = pending),
+ * and only while it is younger than CHAIN_VERDICT_TTL_MS at the entry decision (older = 'stale', not passed: a pulled
+ * LP after the check would not be seen). `checkedAtMs` is the row's chain_checked_at (fallback: verdict.checkedAt).
+ */
+export function entryVerdictStatus(
+  raw: unknown,
+  checkedAtMs: number | null,
+  snapshotPairAddress: string | null,
+  nowMs: number,
+): { verdict: EntryVerdict; top10Pct: number | null; checkedAtMs: number | null } {
+  const v = raw as Partial<ArenaChainVerdict> | null;
+  if (!v || typeof v.pass !== 'boolean') return { verdict: 'pending', top10Pct: null, checkedAtMs: null };
+  if ((v.pairAddress ?? null) !== snapshotPairAddress) return { verdict: 'pending', top10Pct: null, checkedAtMs: null };
+  const fromVerdict = typeof v.checkedAt === 'string' ? Date.parse(v.checkedAt) : Number.NaN;
+  const at = checkedAtMs ?? (Number.isFinite(fromVerdict) ? fromVerdict : null);
+  if (at === null || nowMs - at >= CHAIN_VERDICT_TTL_MS) return { verdict: 'stale', top10Pct: null, checkedAtMs: at };
+  return { verdict: v.pass ? 'pass' : 'fail', top10Pct: typeof v.top10Pct === 'number' ? v.top10Pct : null, checkedAtMs: at };
+}
 
 function rowsOf(result: unknown): Array<Record<string, unknown>> {
   return Array.isArray(result) ? result as Array<Record<string, unknown>> : ((result as { rows?: Array<Record<string, unknown>> })?.rows ?? []);
@@ -460,6 +511,7 @@ export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): 
   const stale = new Date(now.getTime() - CHAIN_VERDICT_TTL_MS).toISOString();
   const retryFloor = new Date(now.getTime() - CHAIN_ERROR_RETRY_MS).toISOString();
   const transient = JSON.stringify(CHAIN_TRANSIENT_ERRORS.map((code) => `chain_check_error: ${code}`));
+  const tradeablePrefixes = JSON.stringify(FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES);
   const nowIso = now.toISOString();
   const universe = (table: 'floor_discovery_mints' | 'floor_arena_private_mints') => sql`
     snapshot IS NOT NULL
@@ -470,29 +522,47 @@ export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): 
          OR chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress'
          OR (chain_verdict->>'error' IN (SELECT jsonb_array_elements_text(${transient}::jsonb))
              AND chain_checked_at <= ${retryFloor}::timestamptz))
-    ${table === 'floor_discovery_mints' ? sql`AND expires_at > ${nowIso}::timestamptz` : sql``}
+    ${table === 'floor_discovery_mints' ? sql`
+      AND expires_at > ${nowIso}::timestamptz
+      -- D28: only coins with a TRADEABLE source (same rule as isFloorArenaTradeableSource); a GeckoTerminal-only coin
+      -- is never bought (D25), so it gets no RPC budget. Private add-on mints are all eligible.
+      AND EXISTS (
+        SELECT 1 FROM unnest(sources) AS src(s), jsonb_array_elements_text(${tradeablePrefixes}::jsonb) AS p(prefix)
+        WHERE starts_with(src.s, p.prefix)
+      )` : sql``}
   `;
-  // Twice the limit: the per-mint jitter below may drop some errored rows this tick.
-  const shared = rowsOf(await db.execute(sql`
+  // Twice the limit: the per-mint jitter below may drop some errored rows this tick. Never-checked and checked rows
+  // are read with separate limits, so a flood of new coins cannot hide the checked rows (Codex r14 reserve).
+  const sharedColumns = sql`
     SELECT mint, snapshot, chain_checked_at IS NULL AS unchecked, first_seen_at, chain_checked_at,
       chain_verdict->>'error' AS verdict_error,
       (chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress') AS pair_changed
-    FROM floor_discovery_mints
-    WHERE ${universe('floor_discovery_mints')}
-    ORDER BY chain_checked_at ASC NULLS FIRST, first_seen_at DESC
-    LIMIT ${limit * 2}
+    FROM floor_discovery_mints`;
+  const shared = rowsOf(await db.execute(sql`
+    (${sharedColumns}
+      WHERE ${universe('floor_discovery_mints')} AND chain_checked_at IS NULL
+      ORDER BY first_seen_at DESC
+      LIMIT ${limit * 2})
+    UNION ALL
+    (${sharedColumns}
+      WHERE ${universe('floor_discovery_mints')} AND chain_checked_at IS NOT NULL
+      ORDER BY chain_checked_at ASC, first_seen_at DESC
+      LIMIT ${limit * 2})
   `));
   const privateRows = rowsOf(await db.execute(sql`
-    SELECT mint, snapshot, chain_checked_at IS NULL AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM (
+    WITH due AS (
       SELECT DISTINCT ON (mint) mint, snapshot, chain_checked_at, first_seen_at,
         chain_verdict->>'error' AS verdict_error,
         (chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress') AS pair_changed
       FROM floor_arena_private_mints
       WHERE ${universe('floor_arena_private_mints')}
       ORDER BY mint, chain_checked_at ASC NULLS FIRST, first_seen_at DESC
-    ) due
-    ORDER BY chain_checked_at ASC NULLS FIRST, first_seen_at DESC
-    LIMIT ${limit * 2}
+    )
+    (SELECT mint, snapshot, true AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM due
+      WHERE chain_checked_at IS NULL ORDER BY first_seen_at DESC LIMIT ${limit * 2})
+    UNION ALL
+    (SELECT mint, snapshot, false AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM due
+      WHERE chain_checked_at IS NOT NULL ORDER BY chain_checked_at ASC, first_seen_at DESC LIMIT ${limit * 2})
   `));
   const nowMs = now.getTime();
   const byMint = new Map<string, DueRow>();
@@ -512,12 +582,11 @@ export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): 
       mint,
       snapshot: (row.snapshot ?? null) as FloorArenaSnapshot | null,
       unchecked: row.unchecked === true || row.unchecked === 't',
-      firstSeenMs: new Date(String(row.first_seen_at)).getTime(),
+      firstSeenMs: new Date(row.first_seen_at instanceof Date ? row.first_seen_at.getTime() : String(row.first_seen_at)).getTime(),
+      checkedAtMs: checkedAt !== null && Number.isFinite(checkedAt) ? checkedAt : null,
     });
   }
-  return [...byMint.values()]
-    .sort((a, b) => Number(b.unchecked) - Number(a.unchecked) || b.firstSeenMs - a.firstSeenMs)
-    .slice(0, limit);
+  return pickDueChainChecks([...byMint.values()], limit);
 }
 
 export async function storeChainVerdict(mint: string, verdict: ArenaChainVerdict, now: Date): Promise<void> {

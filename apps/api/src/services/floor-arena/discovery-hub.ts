@@ -1,4 +1,5 @@
 import { db, sql } from '@clawville/database';
+import { FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES } from '@clawville/shared';
 import type { FloorArenaSnapshot } from './filters';
 import { finiteOrNull } from './filters';
 import { CHAIN_UNIVERSE } from './chain-checks';
@@ -358,8 +359,20 @@ export interface EnrichCandidate { mint: string; tier: number; firstSeenMs: numb
 
 /**
  * Enrichment order: 0 open positions, 1 private mints, 2 never priced (newest first), 3 coins in the chain
- * universe or first seen < 2 h ago, 4 the rest; inside a tier the least recently priced first.
+ * universe or first seen < 2 h ago, 4 the rest; inside a tier the least recently priced first. Tiers 2 and 3 are
+ * for TRADEABLE shared coins only (D28, see enrichTier).
  */
+/**
+ * Tier of a shared discovery row (D28). A GeckoTerminal-only coin (no ds:/clawpump: source) is never bought (D25), so
+ * it always gets the last tier and is priced only with leftover budget: on staging 95 % of the in-universe rows were
+ * GeckoTerminal-only and crowded the tradeable coins out of tiers 2 and 3.
+ */
+export function enrichTier(row: { lastMs: number; tradeable: boolean; inUniverse: boolean; firstSeenMs: number }, nowMs: number): number {
+  if (!row.tradeable) return 4;
+  if (row.lastMs === 0) return 2;
+  return row.inUniverse || nowMs - row.firstSeenMs < 2 * 3_600_000 ? 3 : 4;
+}
+
 export function orderEnrichment(candidates: readonly EnrichCandidate[], slots: number): string[] {
   const seen = new Set<string>();
   const sorted = [...candidates].sort((a, b) => a.tier - b.tier
@@ -419,10 +432,15 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
     SELECT mint, min(first_seen_at) AS first_seen_at, max(snapshot_at) AS snapshot_at
     FROM floor_arena_private_mints GROUP BY mint
   `));
+  const tradeablePrefixes = JSON.stringify(FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES);
   const shared = rowsOf(await db.execute(sql`
     SELECT mint, first_seen_at, snapshot_at,
       COALESCE((snapshot->>'priceUsd')::double precision > 0
-        AND (snapshot->>'mcap')::double precision BETWEEN ${CHAIN_UNIVERSE.mcapMin} AND ${CHAIN_UNIVERSE.mcapMax}, false) AS in_universe
+        AND (snapshot->>'mcap')::double precision BETWEEN ${CHAIN_UNIVERSE.mcapMin} AND ${CHAIN_UNIVERSE.mcapMax}, false) AS in_universe,
+      EXISTS (
+        SELECT 1 FROM unnest(sources) AS src(s), jsonb_array_elements_text(${tradeablePrefixes}::jsonb) AS p(prefix)
+        WHERE starts_with(src.s, p.prefix)
+      ) AS tradeable
     FROM floor_discovery_mints WHERE expires_at > ${nowIso}::timestamptz
   `));
   const candidates: EnrichCandidate[] = [];
@@ -437,8 +455,8 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
     const firstSeenMs = msOf(row.first_seen_at) ?? 0;
     const lastMs = last(mint, row.snapshot_at);
     const inUniverse = row.in_universe === true || row.in_universe === 't';
-    const tier = lastMs === 0 ? 2 : inUniverse || nowMs - firstSeenMs < 2 * 3_600_000 ? 3 : 4;
-    candidates.push({ mint, tier, firstSeenMs, lastMs });
+    const tradeable = row.tradeable === true || row.tradeable === 't';
+    candidates.push({ mint, tier: enrichTier({ lastMs, tradeable, inUniverse, firstSeenMs }, nowMs), firstSeenMs, lastMs });
   }
   const live = new Set(candidates.map((c) => c.mint));
   for (const mint of lastAttempt.keys()) if (!live.has(mint)) lastAttempt.delete(mint);

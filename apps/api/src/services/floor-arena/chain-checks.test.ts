@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import {
-  chainErrorCode, chainRetryJitterMs, chainVerdictDue, isTransientChainError, lpLockFail, mintRuleFails, poolReserveFail, runChainCheck, top10Percent, verdictFromCodes,
+  chainErrorCode, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus, isTransientChainError, lpLockFail, mintRuleFails,
+  orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, top10Percent, verdictFromCodes,
   type ChainRpc, type ParsedAccount, type RawAccount,
 } from './chain-checks';
 
@@ -219,6 +220,54 @@ describe('top-10 share and the full verdict', () => {
   test('retry jitter spreads a burst of mints over the minute', () => {
     const buckets = new Set(Array.from({ length: 200 }, () => Math.floor(chainRetryJitterMs(key()) / 10_000)));
     expect(buckets.size).toBe(6);
+  });
+
+  test('D28 entry gate: a pass verdict counts under 30 min only, and only for the pair priced now', () => {
+    const now = NOW.getTime();
+    const pass = { pass: true, fails: [], codes: [], checkedAt: new Date(now - 29 * 60_000).toISOString(), pairAddress: 'P', top10Pct: 12 };
+    expect(entryVerdictStatus(pass, now - 29 * 60_000, 'P', now)).toEqual({ verdict: 'pass', top10Pct: 12, checkedAtMs: now - 29 * 60_000 });
+    expect(entryVerdictStatus(pass, now - 31 * 60_000, 'P', now)).toMatchObject({ verdict: 'stale', checkedAtMs: now - 31 * 60_000 });
+    expect(entryVerdictStatus(pass, now - 30 * 60_000, 'P', now).verdict).toBe('stale');   // due for re-check = stale
+    // The column wins; the verdict's own checkedAt is the fallback.
+    expect(entryVerdictStatus(pass, null, 'P', now).verdict).toBe('pass');
+    expect(entryVerdictStatus({ ...pass, checkedAt: 'x' }, null, 'P', now).verdict).toBe('stale');
+    // Another pair, or a verdict without a pair, is pending.
+    expect(entryVerdictStatus(pass, now - 60_000, 'Q', now).verdict).toBe('pending');
+    expect(entryVerdictStatus({ ...pass, pairAddress: undefined }, now - 60_000, 'P', now).verdict).toBe('pending');
+    // A stale FAIL is stale too (not passed either way); no verdict = pending.
+    expect(entryVerdictStatus({ ...pass, pass: false }, now - 31 * 60_000, 'P', now).verdict).toBe('stale');
+    expect(entryVerdictStatus({ ...pass, pass: false }, now - 60_000, 'P', now).verdict).toBe('fail');
+    expect(entryVerdictStatus(null, null, 'P', now).verdict).toBe('pending');
+  });
+
+  test('D28 check order: never-checked first (newest first sight), then the OLDEST verdicts', () => {
+    const rows = [
+      { mint: 'checked-recent', unchecked: false, firstSeenMs: 5, checkedAtMs: 900 },
+      { mint: 'new-older', unchecked: true, firstSeenMs: 10, checkedAtMs: null },
+      { mint: 'checked-oldest', unchecked: false, firstSeenMs: 1, checkedAtMs: 100 },
+      { mint: 'new-newest', unchecked: true, firstSeenMs: 20, checkedAtMs: null },
+      { mint: 'checked-mid', unchecked: false, firstSeenMs: 50, checkedAtMs: 500 },
+    ];
+    expect(orderDueChainChecks(rows).map((r) => r.mint)).toEqual(['new-newest', 'new-older', 'checked-oldest', 'checked-mid', 'checked-recent']);
+  });
+
+  test('Codex r14 reserve: at least half the picks are the oldest checked rows; spare room is backfilled', () => {
+    const fresh = (n: number) => Array.from({ length: n }, (_, i) => ({ mint: `new${i}`, unchecked: true, firstSeenMs: 1_000 + i, checkedAtMs: null }));
+    const old = (n: number) => Array.from({ length: n }, (_, i) => ({ mint: `old${i}`, unchecked: false, firstSeenMs: 1, checkedAtMs: 100 + i }));
+    const names = (rows: Array<{ mint: string }>) => rows.map((r) => r.mint);
+    // A flood of new coins (30) and 15 due re-checks, limit 20: 10 + 10, newest new coins and OLDEST verdicts.
+    const flood = pickDueChainChecks([...fresh(30), ...old(15)], 20);
+    expect(names(flood)).toEqual([
+      ...Array.from({ length: 10 }, (_, i) => `new${29 - i}`),
+      ...Array.from({ length: 10 }, (_, i) => `old${i}`),
+    ]);
+    // Few new coins: re-checks take the spare room; few re-checks: new coins take it.
+    expect(names(pickDueChainChecks([...fresh(3), ...old(30)], 20)).filter((m) => m.startsWith('old'))).toHaveLength(17);
+    expect(names(pickDueChainChecks([...fresh(30), ...old(4)], 20)).filter((m) => m.startsWith('new'))).toHaveLength(16);
+    // Odd limit: re-checks get the larger half; small sets are taken whole.
+    expect(names(pickDueChainChecks([...fresh(10), ...old(10)], 5)).filter((m) => m.startsWith('old'))).toHaveLength(3);
+    expect(pickDueChainChecks([...fresh(2), ...old(1)], 20)).toHaveLength(3);
+    expect(pickDueChainChecks([...fresh(2), ...old(1)], 0)).toHaveLength(0);
   });
 
   test('a Token-2022 extension name that is not a plain identifier becomes t22_unknown', () => {

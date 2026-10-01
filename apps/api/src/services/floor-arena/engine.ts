@@ -15,7 +15,7 @@ import {
   ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, latestSnapshotMarks, markFallbackProceeds, quoteBuy,
   quoteSell, type BuyQuoteResult, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
-import type { ArenaChainVerdict } from './chain-checks';
+import { entryVerdictStatus, type EntryVerdict } from './chain-checks';
 import {
   formatAge, formatPrice, formatSignedUsd, formatUsdCompact, tokenLabel, writeArenaEvent, writeArenaEvents,
   type ArenaEventInput,
@@ -370,7 +370,10 @@ export interface ArenaCandidate {
   symbol: string | null;
   firstSeenAtMs: number;
   features: FloorArenaFeatures;
-  verdict: 'pass' | 'fail' | 'pending';
+  /** D28: 'stale' = the verdict is 30 min old or older at the entry decision (not passed). */
+  verdict: EntryVerdict;
+  /** D28: chain_checked_at of the verdict used (recorded in the entry event). */
+  chainCheckedAtMs: number | null;
   isPrivate: boolean;
   /** D25: the shared coin has a tradeable source (always true for a private add-on mint). */
   tradeable: boolean;
@@ -410,6 +413,7 @@ export function evaluateAgentCandidates(
     if (!withinDiscoveryWindow(windowStart, params.entry.discovered_within_s, nowMs)) fails.push('window');
     if (c.verdict === 'fail') fails.push('hard_rules');
     else if (c.verdict === 'pending') fails.push('chain_pending');
+    else if (c.verdict === 'stale') fails.push('chain_verdict_stale');
     // D26: no platform liquidity floor (pump.fun curve coins show DexScreener liquidity 0); the template's
     // liq_min, the chain LP rule (a launch curve counts as locked) and the reserve check still apply.
     fails.push(...passesFilters(c.features, params.filters, nowMs));
@@ -467,6 +471,12 @@ const SKIP_WORDS: Record<string, string> = {
   not_configured: 'quotes are not configured',
   max_open: 'all position slots are full',
   cooldown: 'traded recently (re-entry cooldown)',
+  // Codex r14: the insert-time chain gate.
+  chain_verdict_stale: 'the chain check expired before the buy (30 min or older)',
+  chain_pending: 'no chain check for the pair priced now',
+  hard_rules: 'a new chain check failed a hard rule',
+  top10: 'a new chain check shows the top 10 holders above the limit',
+  top10_unknown: 'a new chain check has no top 10 holder share',
 };
 
 // ---------------------------------------------------------------- in-memory rate limits
@@ -578,13 +588,6 @@ function msOf(value: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-function verdictOf(raw: unknown, snapshot: FloorArenaSnapshot): { verdict: 'pass' | 'fail' | 'pending'; top10Pct: number | null } {
-  const v = raw as Partial<ArenaChainVerdict> | null;
-  if (!v || typeof v.pass !== 'boolean') return { verdict: 'pending', top10Pct: null };
-  // A verdict for another pair than the one priced now is stale: wait for the re-check.
-  if (v.pairAddress !== undefined && v.pairAddress !== snapshot.pairAddress) return { verdict: 'pending', top10Pct: null };
-  return { verdict: v.pass ? 'pass' : 'fail', top10Pct: typeof v.top10Pct === 'number' ? v.top10Pct : null };
-}
 
 /** The row snapshot when it is <= 60 s old; the DB is the only snapshot source (Codex r9). */
 function freshSnapshot(rowSnapshot: unknown, rowAt: unknown, nowMs: number): FloorArenaSnapshot | null {
@@ -594,7 +597,41 @@ function freshSnapshot(rowSnapshot: unknown, rowAt: unknown, nowMs: number): Flo
   return snapshot;
 }
 
-interface EntryDeps { quoteBuy?: typeof quoteBuy }
+interface EntryDeps {
+  quoteBuy?: typeof quoteBuy;
+  /** Wall clock (ms) read in the entry transaction just before the insert (default Date.now; tests inject one). */
+  clock?: () => number;
+}
+
+/** The re-read chain state of a candidate's row at insertion (null = the row is gone). */
+export interface InsertGateRow { chainVerdict: unknown; chainCheckedAtMs: number | null; pairAddress: string | null }
+
+const INSERT_GATE_CODES: Record<Exclude<EntryVerdict, 'pass'>, string> = {
+  stale: 'chain_verdict_stale', pending: 'chain_pending', fail: 'hard_rules',
+};
+
+/**
+ * Codex r14: the chain verdict judged again at insertion. The load-time gate ran before the quote, so between the
+ * two the verdict can expire, be replaced, or stop matching the priced pair. Anything but a pass verdict for the
+ * candidate's pair aborts with its fail code. A newer verdict with another top-10 share re-runs the filters, so the
+ * entry records the verdict it used. `gateMs` is the wall clock; the filters keep the tick time of the load gate.
+ */
+export function insertTimeGate(
+  c: ArenaCandidate,
+  filters: FloorArenaParams['filters'],
+  row: InsertGateRow | null,
+  gateMs: number,
+  tickMs: number,
+): { ok: true; features: FloorArenaFeatures; chainCheckedAtMs: number | null } | { ok: false; code: string } {
+  if (!row || (row.pairAddress ?? null) !== (c.features.pairAddress ?? null)) return { ok: false, code: 'chain_pending' };
+  const status = entryVerdictStatus(row.chainVerdict, row.chainCheckedAtMs, row.pairAddress ?? null, gateMs);
+  if (status.verdict !== 'pass') return { ok: false, code: INSERT_GATE_CODES[status.verdict] };
+  if (status.top10Pct === c.features.top10Pct) return { ok: true, features: c.features, chainCheckedAtMs: status.checkedAtMs };
+  const features = { ...c.features, top10Pct: status.top10Pct };
+  const fails = passesFilters(features, filters, tickMs);
+  if (fails.length > 0) return { ok: false, code: fails[0]! };
+  return { ok: true, features, chainCheckedAtMs: status.checkedAtMs };
+}
 
 export interface EntryTickResult { agents: number; candidates: number; entries: number; skips: number; errors: number }
 
@@ -617,7 +654,8 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
 
   const freshCutoff = new Date(nowMs - ARENA_MARK_MAX_AGE_MS).toISOString();
   const sharedRows = rowsOf(await db.execute(sql`
-    SELECT mint, first_seen_at, first_source, sources, source_first_seen, symbol, snapshot, snapshot_at, chain_verdict
+    SELECT mint, first_seen_at, first_source, sources, source_first_seen, symbol, snapshot, snapshot_at, chain_verdict,
+      chain_checked_at
     FROM floor_discovery_mints
     WHERE expires_at > ${now.toISOString()}::timestamptz AND snapshot IS NOT NULL AND snapshot_at >= ${freshCutoff}::timestamptz
   `));
@@ -626,12 +664,12 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
     const mint = String(row.mint);
     const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
     if (!snapshot) continue;
-    const { verdict, top10Pct } = verdictOf(row.chain_verdict, snapshot);
+    const { verdict, top10Pct, checkedAtMs } = entryVerdictStatus(row.chain_verdict, msOf(row.chain_checked_at), snapshot.pairAddress, nowMs);
     const firstSeenAtMs = msOf(row.first_seen_at) ?? nowMs;
     const sources = Array.isArray(row.sources) ? row.sources.map(String) : [];
     shared.push({
       mint, source: String(row.first_source), symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
-      firstSeenAtMs, features: { ...snapshot, top10Pct }, verdict, isPrivate: false,
+      firstSeenAtMs, features: { ...snapshot, top10Pct }, verdict, chainCheckedAtMs: checkedAtMs, isPrivate: false,
       tradeable: hasTradeableSource(sources),
       tradeableFirstSeenAtMs: tradeableFirstSeenMs(sources, row.source_first_seen as Record<string, string> | null, firstSeenAtMs),
     });
@@ -697,7 +735,7 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
   if (agentIds.length === 0) return out;
   const nowMs = now.getTime();
   const rows = rowsOf(await db.execute(sql`
-    SELECT agent_id, mint, first_seen_at, source, symbol, snapshot, snapshot_at, chain_verdict
+    SELECT agent_id, mint, first_seen_at, source, symbol, snapshot, snapshot_at, chain_verdict, chain_checked_at
     FROM floor_arena_private_mints
     WHERE agent_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(agentIds)}::jsonb))
   `));
@@ -705,13 +743,13 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
     const mint = String(row.mint);
     const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
     if (!snapshot) continue;
-    const { verdict, top10Pct } = verdictOf(row.chain_verdict, snapshot);
+    const { verdict, top10Pct, checkedAtMs } = entryVerdictStatus(row.chain_verdict, msOf(row.chain_checked_at), snapshot.pairAddress, nowMs);
     const agentId = String(row.agent_id);
     if (!out.has(agentId)) out.set(agentId, []);
     out.get(agentId)!.push({
       mint, source: `private:${String(row.source)}`, symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
-      firstSeenAtMs: msOf(row.first_seen_at) ?? nowMs, features: { ...snapshot, top10Pct }, verdict, isPrivate: true,
-      tradeable: true, tradeableFirstSeenAtMs: null,
+      firstSeenAtMs: msOf(row.first_seen_at) ?? nowMs, features: { ...snapshot, top10Pct }, verdict,
+      chainCheckedAtMs: checkedAtMs, isPrivate: true, tradeable: true, tradeableFirstSeenAtMs: null,
     });
   }
   return out;
@@ -786,11 +824,18 @@ async function runAgentEntries(
       if (quote.reason === 'quote_breaker' || quote.reason === 'not_configured') break;
       continue;
     }
-    const opened = await openPosition(agent, params, c, quote, now);
+    const opened = await openPosition(agent, params, c, quote, now, deps.clock ?? Date.now);
     if (opened === 'max_open') break;
     if (opened === 'opened') {
       entries += 1;
       held.add(c.mint);
+    } else if (typeof opened === 'object' && shouldEmit(`${agent.id}|skip|${c.mint}|${opened.gate}`, nowMs)) {
+      skips += 1;
+      events.push({
+        agentId: agent.id, type: 'skip', mint: c.mint,
+        summary: `Skipped ${tokenLabel(c.symbol, c.mint)}: ${SKIP_WORDS[opened.gate] ?? opened.gate}`,
+        data: { reason: opened.gate, at: 'insert' },
+      });
     }
   }
   await writeArenaEvents(events);
@@ -803,7 +848,8 @@ async function openPosition(
   c: ArenaCandidate,
   quote: Extract<BuyQuoteResult, { ok: true }>,
   now: Date,
-): Promise<'opened' | 'max_open' | 'duplicate'> {
+  clock: () => number,
+): Promise<'opened' | 'max_open' | 'duplicate' | { gate: string }> {
   const nowMs = now.getTime();
   const label = tokenLabel(c.symbol, c.mint);
   return db.transaction(async (tx) => {
@@ -813,8 +859,22 @@ async function openPosition(
       SELECT count(*)::int AS n FROM floor_arena_positions WHERE agent_id = ${agent.id} AND status = 'open'
     `));
     if (Number(open[0]?.n ?? 0) >= params.limits.max_open) return 'max_open' as const;
+    // Codex r14: re-read the verdict and the priced pair now. FOR SHARE holds off a verdict or snapshot write on
+    // this row until the entry commits, so the entry relies on the verdict that is current at insertion.
+    const gateRows = rowsOf(await tx.execute(c.isPrivate
+      ? sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address FROM floor_arena_private_mints
+          WHERE agent_id = ${agent.id} AND mint = ${c.mint} FOR SHARE`
+      : sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address FROM floor_discovery_mints
+          WHERE mint = ${c.mint} FOR SHARE`));
+    const gateRow = gateRows[0];
+    const gate = insertTimeGate(c, params.filters, gateRow ? {
+      chainVerdict: gateRow.chain_verdict,
+      chainCheckedAtMs: msOf(gateRow.chain_checked_at),
+      pairAddress: typeof gateRow.pair_address === 'string' ? gateRow.pair_address : null,
+    } : null, Math.max(nowMs, clock()), nowMs);
+    if (!gate.ok) return { gate: gate.code };
     const entryFeatures = {
-      ...c.features,
+      ...gate.features,
       source: c.source,
       firstSeenAt: new Date(c.firstSeenAtMs).toISOString(),
       exits: params.exits,
@@ -851,6 +911,8 @@ async function openPosition(
         positionId, sizeUsd: ARENA_POSITION_USD, entryPriceUsd: quote.entryPriceUsd, tokens: quote.tokens,
         dsPriceUsd: c.features.priceUsd, impactPct: quote.impactPct, driftPct: quote.driftPct, source: c.source,
         mcap: c.features.mcap, liqUsd: c.features.liqUsd, paramsVersion: agent.paramsVersion,
+        // D28: when the chain verdict this entry relied on was checked (re-read at insertion, Codex r14).
+        chainCheckedAt: gate.chainCheckedAtMs !== null ? new Date(gate.chainCheckedAtMs).toISOString() : null,
       },
     }, tx);
     return 'opened' as const;

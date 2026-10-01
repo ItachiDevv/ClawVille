@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  buildSnapshot, cleanVendorText, isTradableMint, mergeDiscoveryRow, mergeSightings, orderEnrichment,
+  buildSnapshot, cleanVendorText, enrichTier, isTradableMint, mergeDiscoveryRow, mergeSightings, orderEnrichment,
   parseClawpumpRows, parseDexscreenerList, parseGeckoPools, pickBestPairs, type Sighting,
 } from './discovery-hub';
 import { tradeableFirstSeenMs } from './filters';
@@ -223,6 +223,18 @@ describe('DexScreener snapshots', () => {
 });
 
 describe('enrichment order', () => {
+  test('D28: a GeckoTerminal-only row always gets the last tier; tradeable rows keep tiers 2 and 3', () => {
+    const now = NOW.getTime();
+    const young = now - 60_000;
+    const old = now - 5 * 3_600_000;
+    expect(enrichTier({ lastMs: 0, tradeable: false, inUniverse: true, firstSeenMs: young }, now)).toBe(4);
+    expect(enrichTier({ lastMs: 5, tradeable: false, inUniverse: true, firstSeenMs: young }, now)).toBe(4);
+    expect(enrichTier({ lastMs: 0, tradeable: true, inUniverse: false, firstSeenMs: old }, now)).toBe(2);
+    expect(enrichTier({ lastMs: 5, tradeable: true, inUniverse: true, firstSeenMs: old }, now)).toBe(3);
+    expect(enrichTier({ lastMs: 5, tradeable: true, inUniverse: false, firstSeenMs: young }, now)).toBe(3);
+    expect(enrichTier({ lastMs: 5, tradeable: true, inUniverse: false, firstSeenMs: old }, now)).toBe(4);
+  });
+
   test('open positions, private mints, never priced (newest first), universe, rest; least recent first', () => {
     const order = orderEnrichment([
       { mint: 'rest-old', tier: 4, firstSeenMs: 1, lastMs: 100 },
