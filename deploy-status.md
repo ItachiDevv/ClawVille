@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-01 15:40 UTC (session tradeDeskMain). **Staging** is receiving `fix/arena-next` (6 commits on top of `6dda4e80`): x402 add-on budget + rotation fixes, arena lock-order (deadlock) fixes, the content mask for hate slurs in public arena payloads + offensive launch names refused (`400 name_not_allowed`), Exchange labels (live vs arena traders) + the discovery card, PROTOCOL_VERSION 77 -> 78. No migration. Verification PENDING (DEPLOY LOG entry below). **PROD = `b8d52ab6`** (unchanged). SCHEMA: `synced`.
+Last Audited: 2026-10-01 16:10 UTC (session coolerDesk2). **Staging** is receiving `feat/tfx-v4-shell` (8 code commits + 1 docs commit on top of `31480fb0`): Trading Floor INTERIOR v4, visual only (solid 3D claws, procedural walnut trading desks + leather chairs, brass door portal, monitor stands + CLAW TERMINAL panels; interior GLB `?v=4`, 350,128 B). No API change, no protocol change, no migration. Verification PENDING (DEPLOY LOG entry below). **PROD = `b8d52ab6`** (unchanged; serves the interior `?v=3`). SCHEMA: `synced`.
+
+Prior — Last Audited: 2026-10-01 15:40 UTC (session tradeDeskMain). **Staging** is receiving `fix/arena-next` (6 commits on top of `6dda4e80`): x402 add-on budget + rotation fixes, arena lock-order (deadlock) fixes, the content mask for hate slurs in public arena payloads + offensive launch names refused (`400 name_not_allowed`), Exchange labels (live vs arena traders) + the discovery card, PROTOCOL_VERSION 77 -> 78. No migration. Verification PENDING (DEPLOY LOG entry below). **PROD = `b8d52ab6`** (unchanged). SCHEMA: `synced`.
 
 Prior — Last Audited: 2026-10-01 14:00 UTC (session tradeDeskMain). **PROD = `b8d52ab6` (PROMOTION PR #305, merged 13:30:35Z, flipped 13:39-13:40Z), VERIFIED.** It carries all of staging `86007f7c` (75 commits since `61fdcffc`): the connect-sec security fix, the Trading Floor Arena (D24-D33), interior v3 + stall fix, the security batch D1-D3/M1/M2/C1/C2, brand kit v1. PROTOCOL_VERSION 77. Migrations 0070, 0072, 0073 applied by the CI migrate job. Founder go for the prod `CLAWPUMP_API_KEY` (copied from the staging api env, value never printed; prod api app 2). **Staging** = `86007f7c` (same code). SCHEMA: `synced`. See the PROMOTION entry at the top of the DEPLOY LOG.
 
@@ -490,6 +492,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-01 (session coolerDesk2) — Trading Floor INTERIOR v4: solid claws, procedural desks + chairs, brass door portal, monitor stands + CLAW TERMINAL panels (staging push)
+- **What changed (visual only):** the interior GLB is rebuilt and served `?v=4` (350,128 B, 10,605 tris, 10 materials; v3 was 364,788 B / 6,431 tris). The flat traced claws are two solid 3D claws (the exterior's Meshy claw, top 228 under the 230 sightline cap); the copied Meshy console is a procedural walnut / black lacquer / brass desk (same footprint, height 166, hood contract kept); the box chair is a rounded oxblood executive chair (top 174, seat 85); the door has a brass portal with smoked-glass doors and a full 360 wu reveal; the plinth is lighter granite with gold glow lines. Runtime decor: monitor housings, stands, three static CLAW TERMINAL panels (town building names, no figures, arrows or tickers), a desk spill pool; +0 draw calls (WebGPU 30 at the spawn, 28 at the door, same as v3). `trading-floor-room.ts` changed in comments only; seat Y, desk height, footprints, `SEAT_LABEL_Y` unchanged (arena lead told). Record: `3dStructure.md` §9i "Interior v4".
+- **How it was built:** eight Codex jobs (`gpt-6.1-sol`) one at a time, each frozen as a local commit and audited by an Opus adversarial auditor by SHA; the lead built the prod bundle locally and screenshotted WebGPU + WebGL2 after each job.
+- **What broke on the way (caught before the push):** A3 un-welded the claw mesh (+125 KB) and darkened all brass (fixed in A4/A5); A2's first chair (top 190) hid the seated avatar (lowered to 174); a test line from A3 failed `tsc` while Codex reported only the known missing `agent-runtime` build output (fixed in A6; lesson: build the workspace packages before trusting a typecheck); the first terminal panels showed a "DECOR" debug header and REEF / SHELL / CLAW with up/down arrows that read as live quotes (B2 replaced them with town building names, no arrows). A new decoded-GLB test found a PRE-EXISTING bug: the v3 chair rail on the door wall sat 1 wu inside the camera clamp (fixed).
+- **Local evidence before the push:** `bun test --isolate src/lib/three/trading-floor/ src/components/three/world-stage/` 672 pass / 0 fail; `bunx tsc --noEmit -p apps/web/tsconfig.json` exit 0 (after the rebase on `31480fb0`). Not verified: Iris Xe, founder feel.
+- **Who it is for:** the founder (FOUNDER-REVIEW.md, Trading Floor, v4 entry replaces the v3 entry; v3 is on prod) and the demo-video session clawpDemo, which films this room.
+- **Staging verification:** PENDING.
+- SCHEMA: `synced`.
 
 ### 2026-10-01 (session tradeDeskMain) — arena post-promotion fixes: x402 budget, deadlocks, content mask, Exchange labels, protocol 78 (staging push)
 
