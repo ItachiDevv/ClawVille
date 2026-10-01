@@ -386,7 +386,10 @@ export const TRADING_FLOOR_DESK_INNER_X = Math.min(
  * at `TRADING_FLOOR_SCREEN.z`, and it is the thing the chase camera must not
  * reverse into at the back wall.
  */
-export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -1066;
+export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -TRADING_FLOOR_ROOM.halfZ + 34;
+
+/** Brass surround width scales with the board rectangle. */
+export const TRADING_FLOOR_SCREEN_FRAME_WIDTH = TRADING_FLOOR_SCREEN.width / 25;
 
 /** Avatar-scale approach tuning, independent of the camera look target. */
 export const TRADING_FLOOR_END_STANDOFF = 180;
@@ -684,8 +687,12 @@ export interface TradingFloorAABB {
 }
 
 /** Corner pillars: `boxGeo(±(halfX − 190), …, ±(halfZ − 190), 110, RH, 110)`. */
-const PILLAR_INSET = 190;
-const PILLAR_HALF = 55;
+export const TRADING_FLOOR_PILLAR_INSET_X = 190;
+export const TRADING_FLOOR_PILLAR_INSET_Z = 190;
+export const TRADING_FLOOR_PILLAR_HALF = 55;
+
+/** Plinth footprint, independent of any larger movement collider. */
+export const TRADING_FLOOR_DAIS = Object.freeze({ x: 0, z: -60, halfX: 350, halfZ: 346 });
 
 /** Desk boxes share the rendered row's rotated footprints. */
 export const TRADING_FLOOR_DESK_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
@@ -695,7 +702,8 @@ export const TRADING_FLOOR_DESK_SOLIDS: readonly TradingFloorAABB[] = Object.fre
 );
 /** TradingFloorHoloDais: node (0, -60), 700 x 692 footprint. */
 export const TRADING_FLOOR_DAIS_SOLID: TradingFloorAABB = Object.freeze({
-  centerX: 0, centerZ: -60, halfX: 350, halfZ: 346,
+  centerX: TRADING_FLOOR_DAIS.x, centerZ: TRADING_FLOOR_DAIS.z,
+  halfX: TRADING_FLOOR_DAIS.halfX, halfZ: TRADING_FLOOR_DAIS.halfZ,
 });
 export const TRADING_FLOOR_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
   centerX: TRADING_FLOOR_MONITOR.x, centerZ: TRADING_FLOOR_MONITOR.z,
@@ -703,9 +711,9 @@ export const TRADING_FLOOR_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
 });
 export const TRADING_FLOOR_PILLAR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
   [-1, 1].flatMap((sx) => [-1, 1].map((sz) => Object.freeze({
-    centerX: sx * (TRADING_FLOOR_ROOM.halfX - PILLAR_INSET),
-    centerZ: sz * (TRADING_FLOOR_ROOM.halfZ - PILLAR_INSET),
-    halfX: PILLAR_HALF, halfZ: PILLAR_HALF,
+    centerX: sx * (TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PILLAR_INSET_X),
+    centerZ: sz * (TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PILLAR_INSET_Z),
+    halfX: TRADING_FLOOR_PILLAR_HALF, halfZ: TRADING_FLOOR_PILLAR_HALF,
   }))),
 );
 export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
@@ -744,8 +752,8 @@ export const TRADING_FLOOR_CLAW_EXTENTS = Object.freeze({
   topY: 230,
 });
 export const TRADING_FLOOR_CAMERA_CLAW_SOLID: TradingFloorAABB = Object.freeze({
-  centerX: TRADING_FLOOR_DAIS_SOLID.centerX,
-  centerZ: TRADING_FLOOR_DAIS_SOLID.centerZ + TRADING_FLOOR_CLAW_EXTENTS.offsetZ,
+  centerX: TRADING_FLOOR_DAIS.x,
+  centerZ: TRADING_FLOOR_DAIS.z + TRADING_FLOOR_CLAW_EXTENTS.offsetZ,
   halfX: TRADING_FLOOR_CLAW_EXTENTS.halfX,
   halfZ: TRADING_FLOOR_CLAW_EXTENTS.halfZ,
 });

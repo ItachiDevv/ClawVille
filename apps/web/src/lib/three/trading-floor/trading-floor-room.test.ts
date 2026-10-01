@@ -37,6 +37,8 @@ import {
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_ROOM_DIAGONAL_WU,
   TRADING_FLOOR_CHAIR_OFFSET,
+  TRADING_FLOOR_CHAIR_HALF_X,
+  TRADING_FLOOR_CHAIR_SEAT_Y,
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SEAT_HINT_RADIUS,
   TRADING_FLOOR_SEAT_INTERACT_RADIUS,
@@ -253,7 +255,7 @@ describe('Trading Floor interior — movement clamp', () => {
   });
 
   test('the desk row lines the SIDE walls and faces the aisle', () => {
-    expect(TRADING_FLOOR_CONSOLE_ROW.length).toBe(6);
+    expect(TRADING_FLOOR_CONSOLE_ROW.length).toBe(TRADING_FLOOR_SEATS.length);
     for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
       const { halfX, halfZ } = consoleHalfExtents(slot.rotY);
       // Against the wall: the desk's outer face is within a pilaster depth of
@@ -344,19 +346,26 @@ describe('Trading Floor interior — movement clamp', () => {
       const p = positions.getElement(index, []);
       return [0, 1, 2].map((axis) => matrix[12 + axis]! + matrix[axis]! * p[0]!
         + matrix[4 + axis]! * p[1]! + matrix[8 + axis]! * p[2]! - (axis === 1 ? 0 : at[axis]!));
-    }).filter((p) => Math.abs(p[1]! - 85) < 0.02);
+    }).filter((p) => Math.abs(p[1]! - TRADING_FLOOR_CHAIR_SEAT_Y) < 0.02);
+    // R1 must re-measure this decoded cushion vertex count.
     expect(cushion).toHaveLength(16);
     const bounds = [0, 2].map((axis) => ({
       min: Math.min(...cushion.map((p) => p[axis]!)), max: Math.max(...cushion.map((p) => p[axis]!)),
     }));
-    expect(TRADING_FLOOR_SEATS.map((seat) => [seat.index, seat.x, seat.z, seat.facing])).toEqual([
-      [0, -915, -500, -Math.PI / 2], [1, -915, 0, -Math.PI / 2], [2, -915, 500, -Math.PI / 2],
-      [3, 915, -500, Math.PI / 2], [4, 915, 0, Math.PI / 2], [5, 915, 500, Math.PI / 2],
-    ]);
-    expect(TRADING_FLOOR_SEATS.map((seat) => [seat.sitX, seat.sitZ])).toEqual([
-      [-803.5, -500], [-803.5, Math.cos(-Math.PI / 2) * 8.5], [-803.5, 500],
-      [803.5, -500], [803.5, Math.cos(Math.PI / 2) * 8.5], [803.5, 500],
-    ]);
+    expect(TRADING_FLOOR_SEATS.map((seat) => [seat.index, seat.x, seat.z, seat.facing])).toEqual(
+      TRADING_FLOOR_CONSOLE_ROW.map((slot, index) => [index,
+        Math.round(slot.x + Math.sin(slot.rotY) * TRADING_FLOOR_SEAT_OFFSET),
+        Math.round(slot.z + Math.cos(slot.rotY) * TRADING_FLOOR_SEAT_OFFSET),
+        Math.sign(slot.x) * Math.PI / 2]),
+    );
+    const cushionCenterZ = (Math.max(-30, Math.round(bounds[1]!.min)) + Math.round(bounds[1]!.max)) / 2;
+    expect(TRADING_FLOOR_SEATS.map((seat) => [seat.sitX, seat.sitZ])).toEqual(
+      TRADING_FLOOR_CONSOLE_ROW.map((slot) => {
+        const facing = Math.sign(slot.x) * Math.PI / 2;
+        return [Math.round(slot.x + Math.sin(slot.rotY) * TRADING_FLOOR_CHAIR_OFFSET) + Math.sin(facing) * cushionCenterZ,
+          Math.round(slot.z + Math.cos(slot.rotY) * TRADING_FLOOR_CHAIR_OFFSET) + Math.cos(facing) * cushionCenterZ];
+      }),
+    );
     for (const seat of TRADING_FLOOR_SEATS) {
       const dx = seat.sitX - seat.chairX, dz = seat.sitZ - seat.chairZ;
       const local = [Math.cos(seat.chairRotY) * dx - Math.sin(seat.chairRotY) * dz,
@@ -379,7 +388,7 @@ describe('Trading Floor interior — movement clamp', () => {
   // standing position, and the gap has to clear the chair's half-width plus the
   // player radius or the defect comes straight back.
   test('the chair stands clear of the avatar, further from the desk', () => {
-    const CHAIR_HALF_WIDTH = 64;
+    const CHAIR_HALF_WIDTH = TRADING_FLOOR_CHAIR_HALF_X;
     for (const seat of TRADING_FLOOR_SEATS) {
       const desk = TRADING_FLOOR_CONSOLE_ROW[seat.index]!;
       expect(Math.hypot(seat.chairX - desk.x, seat.chairZ - desk.z)).toBeCloseTo(
@@ -495,11 +504,10 @@ describe('Trading Floor interior — movement clamp', () => {
     }
     expect(clearLanes.length).toBeGreaterThan(0);
 
-    // Walking in down the nearest clear lane, then across, reaches the monitor's
-    // interact radius.
-    const lane = clearLanes[0]!;
+    // Scan the full approach width so a wider room cannot hide the kiosk
+    // outside the nearest clear lane.
     let best = Number.POSITIVE_INFINITY;
-    for (let x = lane; x >= -lane; x -= 10) {
+    for (let x = TRADING_FLOOR_SIDE_APPROACH_X; x >= -TRADING_FLOOR_SIDE_APPROACH_X; x -= 10) {
       if (tradingFloorHitsSolid(x, TRADING_FLOOR_MONITOR.z + 200)) continue;
       best = Math.min(
         best,
@@ -548,7 +556,7 @@ describe('Trading Floor camera blockers - named parts', () => {
     expect(out).toEqual({ x, z });
     clampTradingFloorMovement2D(x, z, x, z - 10, out);
     expect(out).toEqual({ x, z });
-    expect(z - TRADING_FLOOR_MONITOR.z).toBeCloseTo(96.45, 2);
+    expect(z - TRADING_FLOOR_MONITOR.z).toBeCloseTo(TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS, 2);
     expect(z).toBeGreaterThan(TRADING_FLOOR_BOARD_APPROACH_Z);
     const arming = createTradingFloorArming();
     computeTradingFloorArming(out.x, out.z, arming);

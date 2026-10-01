@@ -33,7 +33,7 @@
  * off their desks.
  */
 
-import { TRADING_FLOOR_CONSOLE_ROW, TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_ROOM, type TradingFloorConsoleSlot } from './trading-floor-room';
+import { TRADING_FLOOR_CONSOLE_ROW, TRADING_FLOOR_DAIS, TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_ROOM, TRADING_FLOOR_SCREEN, type TradingFloorConsoleSlot } from './trading-floor-room';
 
 // ---------------------------------------------------------------------------
 // Atlas map (canvas pixels). The art module draws INTO these rects; the layout
@@ -474,6 +474,15 @@ export const DECOR_DESK_CROSS_SECONDS = Object.freeze({ min: 20, max: 60 });
 /** The wall screens drift slower: they are big and in the corner of the eye. */
 export const DECOR_WALL_CROSS_SECONDS = Object.freeze({ min: 30, max: 60 });
 
+/** The side-wall pilasters, mirrored from `scripts/trading-floor/build-interior.mjs`
+ *  (`sidePilasterZ`, `PIL_W`, `PIL_D`). */
+export const DECOR_SIDE_PILASTERS = Object.freeze({
+  z: Object.freeze([-3, -1, 1, 3].map((quarter) => quarter * TRADING_FLOOR_ROOM.halfZ / 4)),
+  halfWidth: 50,
+  faceX: TRADING_FLOOR_ROOM.halfX - 40,
+});
+
+
 /**
  * The big wall screens: the three MIDDLE bays of each side wall. The bays are
  * bounded by the side pilasters (100 wide, 40 deep, faces at |x| 1260), so a
@@ -483,9 +492,9 @@ export const DECOR_WALL_CROSS_SECONDS = Object.freeze({ min: 30, max: 60 });
 export const DECOR_WALL_SCREEN = Object.freeze({
   width: 410,
   height: 330,
-  bottomY: 430,
+  bottomY: TRADING_FLOOR_ROOM.height * 43 / 95,
   depth: 14,
-  frontX: 1284,
+  frontX: TRADING_FLOOR_ROOM.halfX - 16,
   bezel: 8,
   trimWidth: 2.5,
   plateLift: 1,
@@ -493,15 +502,8 @@ export const DECOR_WALL_SCREEN = Object.freeze({
   gap: 4,
   leftPaneWidth: 250,
   barsPaneHeight: 90,
-  bayCentersZ: Object.freeze([-550, 0, 550] as const),
-});
-
-/** The side-wall pilasters, mirrored from `scripts/trading-floor/build-interior.mjs`
- *  (`sidePilasterZ`, `PIL_W`, `PIL_D`). */
-export const DECOR_SIDE_PILASTERS = Object.freeze({
-  z: Object.freeze([-825, -275, 275, 825] as const),
-  halfWidth: 50,
-  faceX: TRADING_FLOOR_ROOM.halfX - 40,
+  bayCentersZ: Object.freeze(DECOR_SIDE_PILASTERS.z.slice(1).map((z, index) =>
+    (DECOR_SIDE_PILASTERS.z[index]! + z) / 2)),
 });
 
 export interface DecorScrollTable {
@@ -923,8 +925,8 @@ export const RIBBON_CANVAS_HEIGHT = 64;
 export const RIBBON_RIM_ROWS = 4;
 /** The band fills lane B's whole 790..860 zone: every wu of height is glyph
  *  height at the distances the side runs are read from. */
-export const RIBBON_BOTTOM_Y = 790;
-export const RIBBON_TOP_Y = 860;
+export const RIBBON_BOTTOM_Y = TRADING_FLOOR_ROOM.height * 79 / 95;
+export const RIBBON_TOP_Y = TRADING_FLOOR_ROOM.height * 86 / 95;
 /**
  * |x| of the ribbon's face on the side walls: 6 wu in front of the pilaster
  * faces (1260), so the crawl runs past the ribs instead of behind them. It is
@@ -1106,7 +1108,7 @@ export const GLOW_SPRITE_SIZE = 128;
 /** Floor pools sit here; lane A's floor seal owns y 1..2. */
 export const DECOR_GLOW_FLOOR_Y = 3;
 /** The floor seal's annulus around the dais. No pool may overlap it. */
-export const DECOR_SEAL = Object.freeze({ x: 0, z: -60, innerRadius: 380, outerRadius: 600 });
+export const DECOR_SEAL = Object.freeze({ x: TRADING_FLOOR_DAIS.x, z: TRADING_FLOOR_DAIS.z, innerRadius: 380, outerRadius: 600 });
 
 /** Linear RGBA. Alpha is the strength: additive blending adds `rgb * a`. */
 export const DECOR_GLOW_COLOR = Object.freeze({
@@ -1146,7 +1148,8 @@ export function glowPools(): GlowPool[] {
     pools.push({ kind: 'desktop', center: deskLocalToWorld(slot, 0, DECOR_DESKTOP.topY + 3, -51),
       halfA: 36, halfB: 130, color: DECOR_GLOW_COLOR.desktop });
   }
-  pools.push({ kind: 'floor', center: [0, DECOR_GLOW_FLOOR_Y, -962], halfA: 900, halfB: 133, color: DECOR_GLOW_COLOR.board });
+  pools.push({ kind: 'floor', center: [0, DECOR_GLOW_FLOOR_Y, -TRADING_FLOOR_ROOM.halfZ * 481 / 550],
+    halfA: TRADING_FLOOR_SCREEN.width * 9 / 17, halfB: Math.round(TRADING_FLOOR_ROOM.height * 133 / 950), color: DECOR_GLOW_COLOR.board });
   for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
     const side = Math.sign(slot.x);
     pools.push({ kind: 'wall', center: [side * (TRADING_FLOOR_ROOM.halfX - 5), 290, slot.z], halfA: 230, halfB: 130, color: DECOR_GLOW_COLOR.deskWall });
@@ -1157,8 +1160,8 @@ export function glowPools(): GlowPool[] {
     pools.push({
       kind: 'wall',
       center: [side * (TRADING_FLOOR_ROOM.halfX - 4), DECOR_WALL_SCREEN.bottomY + DECOR_WALL_SCREEN.height / 2, bays[wallIndex % bays.length]!],
-      halfA: 265,
-      halfB: 195,
+      halfA: DECOR_WALL_SCREEN.width / 2 + 60,
+      halfB: DECOR_WALL_SCREEN.height / 2 + 30,
       color: DECOR_GLOW_COLOR.screenHalo,
     });
   }

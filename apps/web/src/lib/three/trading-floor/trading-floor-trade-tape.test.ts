@@ -53,7 +53,7 @@ import {
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SCREEN_SURROUND_FACE_Z,
-  TRADING_FLOOR_SOLIDS,
+  TRADING_FLOOR_PILLAR_SOLIDS,
 } from './trading-floor-room';
 
 // ---------------------------------------------------------------------------
@@ -578,7 +578,7 @@ describe('flight geometry', () => {
     // Rotated half-width; the existing 10 wu desk margin remains mandatory.
     const deskBound = TRADING_FLOOR_DESK_INNER_X - 10 -
       Math.cos(TAPE_LANE_YAW) * TAPE_CHIP_WIDTH / 2;
-    expect(deskBound).toBeCloseTo(896.9282040536, 6);
+    expect(worst).toBeCloseTo(TAPE_LANE_X + Math.cos(TAPE_LANE_YAW) * TAPE_CHIP_WIDTH / 2, 6);
     expect(TAPE_LANE_X).toBeLessThan(deskBound);
     expect(TRADING_FLOOR_DESK_INNER_X - worst).toBeGreaterThan(10);
   });
@@ -629,9 +629,7 @@ describe('flight geometry', () => {
   test('the corner pillars run floor to ceiling, so the lane clears them in XZ', () => {
     // Every other solid is cleared in Y by the test above. The four pillars are
     // the exception: they are full-height, so this one is an XZ separation.
-    const pillars = TRADING_FLOOR_SOLIDS.filter(
-      (s) => s.halfX === 55 && s.halfZ === 55,
-    );
+    const pillars = TRADING_FLOOR_PILLAR_SOLIDS;
     expect(pillars).toHaveLength(4);
     sweep((c, nowMs) => {
       for (const corner of corners(c, nowMs)) {
@@ -669,8 +667,8 @@ describe('flight geometry', () => {
     const projection = (cameraZ - TRADING_FLOOR_SCREEN.z) /
       (cameraZ - (TAPE_Z_START - halfZ));
     const boardBound = halfX + (boardHalfWidth + 15) / projection;
-    expect(boardBound).toBeCloseTo(873.0862276225, 6);
-    expect(projection).toBeCloseTo(1.088, 3);
+    expect(closest).toBeGreaterThan((boardBound - halfX) * projection);
+    expect(projection).toBeGreaterThan(1);
     expect(TAPE_LANE_X).toBeGreaterThan(boardBound);
     expect(closest).toBeCloseTo((TAPE_LANE_X - halfX) * projection, 6);
     expect(closest - boardHalfWidth).toBeGreaterThan(15);

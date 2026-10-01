@@ -361,7 +361,7 @@ describe('Trading Floor interact — the Exchange panel freezes everything', () 
     arming.monitorArmed = true;
     arming.doorArmed = true;
     arming.seatArmedIndex = 2;
-    for (const seated of [-1, 0, 5]) {
+    for (const seated of [-1, 0, TRADING_FLOOR_SEATS.length - 1]) {
       expect(resolveTradingFloorInteraction(arming, seated, true)).toBe('none');
     }
   });
