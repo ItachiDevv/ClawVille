@@ -14,6 +14,11 @@ import {
 // The slur is built from parts, so the word itself is not written in the source.
 const SLUR = ['N', 'I', 'G', 'G', 'A'].join('');
 const SLUR_ER = ['n', 'i', 'g', 'g', 'e', 'r'].join('');
+// Every evasion below is built from SLUR at run time (review m1), so no string literal in this file reads as a slur.
+/** SLUR with `separator` between each two letters. */
+const withSeparator = (separator: string): string => SLUR.split('').join(separator);
+/** SLUR in leetspeak: 1 for I, 4 for A. */
+const SLUR_LEET = SLUR.replace('I', '1').replace('A', '4');
 const MINT = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 
 /** ROT13 (its own inverse): the term lists below are built at run time, so the source does not print them. */
@@ -78,11 +83,16 @@ describe('arena content mask: fields', () => {
   test('a slur and its evasions read as offensive', () => {
     for (const text of [
       SLUR, SLUR_ER, `$${SLUR}`, `SUPER${SLUR}`, `${SLUR}COIN`,
-      'N1GG4', 'NI66A', 'NI99A', // leetspeak; 9 -> g comes from the arena folds (name-folds.ts)
-      'N.I.G.G.A', 'N-I-G-G-A', 'N_I_G_G_A', // separators
-      'N I G G A', 'N. I. G. G. A', "N' I G G A", '$N I G G A', 'NI GG A', 'N IG GA', 'Big N I G G A Energy', // runs of short pieces
-      'NІGGA', 'NIGGА', 'NΙGGA', 'nıgga', 'ＮＩＧＧＡ', // Cyrillic, Greek, dotless and full-width look-alikes
-      'Big N1gga Energy',
+      SLUR_LEET, SLUR.replace(/G/g, '6'), SLUR.replace(/G/g, '9'), // leetspeak; 9 -> g comes from the arena folds (name-folds.ts)
+      withSeparator('.'), withSeparator('-'), withSeparator('_'), // separators
+      // runs of short pieces
+      withSeparator(' '), withSeparator('. '), `${SLUR[0]}' ${SLUR.slice(1).split('').join(' ')}`, `$${withSeparator(' ')}`,
+      `${SLUR.slice(0, 2)} ${SLUR.slice(2, 4)} ${SLUR.slice(4)}`, `${SLUR[0]} ${SLUR.slice(1, 3)} ${SLUR.slice(3)}`,
+      `Big ${withSeparator(' ')} Energy`,
+      // Cyrillic, Greek, dotless and full-width look-alikes
+      SLUR.replace('I', 'І'), SLUR.replace('A', 'А'), SLUR.replace('I', 'Ι'), SLUR.toLowerCase().replace('i', 'ı'),
+      [...SLUR].map((ch) => String.fromCharCode(ch.charCodeAt(0) + 0xfee0)).join(''),
+      `Big ${SLUR[0]}1${SLUR.slice(2).toLowerCase()} Energy`,
     ]) {
       expect({ text, offensive: isArenaTextOffensive(text) }).toEqual({ text, offensive: true });
     }
@@ -147,6 +157,32 @@ describe('arena content mask: fields', () => {
     }
   });
 
+  test('R1: a term split into two words is masked; a match inside a pair of real words is not', () => {
+    // Failure messages name the term in ROT13 only.
+    for (const term of [SLUR, SLUR_ER.toUpperCase(), rot13('ERGNEQ')]) {
+      for (let split = 1; split < term.length; split++) {
+        const offensive = isArenaTextOffensive(`${term.slice(0, split)} ${term.slice(split)}`);
+        expect({ term: rot13(term), split, offensive }).toEqual({ term: rot13(term), split, offensive: true });
+      }
+    }
+    expect(isArenaTextOffensive(`$${SLUR_ER.slice(0, 3)} ${SLUR_ER.slice(3)}`)).toBe(true);
+    for (const text of ["Ansem's Cat", 'Valentine Grok Companion', 'GNOME MINING GAME', 'Honky Tonk']) {
+      expect({ text, offensive: isArenaTextOffensive(text) }).toEqual({ text, offensive: false });
+    }
+  });
+
+  test('M-A: each punctuation, symbol and invisible separator between the letters is masked', () => {
+    const separators = ['*', '/', '+', '~', '|', ',', ':', '^', '=', '#', '!', '·', '•', '​', '‌', '‍', '­', '⁠'];
+    expect(separators.length).toBe(18);
+    for (const term of [SLUR, rot13('SNTTBG')]) {
+      for (const separator of separators) {
+        const code = separator.codePointAt(0)?.toString(16);
+        const offensive = isArenaTextOffensive(term.split('').join(separator));
+        expect({ term: rot13(term), code, offensive }).toEqual({ term: rot13(term), code, offensive: true });
+      }
+    }
+  });
+
   test('clean symbols, coin names and trader names are not offensive', () => {
     for (const text of [
       'WIF', 'BONK', 'CAT', '$CAT', '$AURA', '$LABEAST', 'BTC', 'AK47', 'DOGEPAID', 'Pump Fighter', 'Scared Black Lab',
@@ -169,14 +205,14 @@ describe('arena content mask: fields', () => {
   test('a tape item masks the symbol and the trader name separately', () => {
     const item = { id: 'entry:1', mint: MINT, symbol: 'WIF', agentName: `Big ${SLUR}` };
     expect(maskArenaTapeItem(item)).toEqual({ id: 'entry:1', mint: MINT, symbol: 'WIF', agentName: ARENA_MASK, masked: true });
-    expect(maskArenaTapeItem({ ...item, symbol: 'N1GG4', agentName: 'Genesis' })).toEqual({
+    expect(maskArenaTapeItem({ ...item, symbol: SLUR_LEET, agentName: 'Genesis' })).toEqual({
       id: 'entry:1', mint: MINT, symbol: ARENA_MASK, agentName: 'Genesis', masked: true,
     });
   });
 
   test('a position and a name', () => {
     expect(maskArenaPosition({ id: 'p1', mint: MINT, symbol: SLUR_ER })).toEqual({ id: 'p1', mint: MINT, symbol: ARENA_MASK, masked: true });
-    expect(maskArenaName({ rank: 1, name: 'N.I.G.G.A' })).toEqual({ rank: 1, name: ARENA_MASK, masked: true });
+    expect(maskArenaName({ rank: 1, name: withSeparator('.') })).toEqual({ rank: 1, name: ARENA_MASK, masked: true });
     const clean = { rank: 2, name: 'Mid-Cap Climber' };
     expect(maskArenaName(clean)).toBe(clean);
   });
@@ -187,7 +223,7 @@ describe('arena content mask: free text (summaries)', () => {
     expect(maskArenaFreeText(`Bought $20 of ${SLUR} at $0.00123 (mcap 250k, age 12 min)`)).toEqual({
       text: `Bought $20 of ${ARENA_MASK} at $0.00123 (mcap 250k, age 12 min)`, masked: true,
     });
-    expect(maskArenaFreeText(`Exit of $N.I.G.G.A (tp) at 1.53x: +$10.60`)).toEqual({
+    expect(maskArenaFreeText(`Exit of $${withSeparator('.')} (tp) at 1.53x: +$10.60`)).toEqual({
       text: `Exit of ${ARENA_MASK} (tp) at 1.53x: +$10.60`, masked: true,
     });
   });

@@ -25,13 +25,19 @@ import { FLOOR_ARENA_EXTRA_FOLDS } from './name-folds';
  *
  * Arena forms, because coin symbols are short and written to evade a filter:
  * - a ticker's leading `$` ($CAT) is a prefix, not leetspeak for s;
- * - a word is also read with `. _ ' -` removed (N.I.G.G.A), then folded: each non-ASCII letter,
- *   lower-cased, to its Unicode prototype (confusables.generated.ts, the table names.ts uses; the
- *   obscenity table misses capitals such as Cyrillic І and Greek Ι), and the arena's extra folds
- *   (name-folds.ts: 9 -> g, which the obscenity leetspeak table does not have);
- * - a run of pieces of one or two characters (after `$ . _ ' -` are removed) is read joined
- *   (N I G G A, N. I GG A). Only short pieces join (review M1): joining whole words read
- *   "Valentine Grok Companion" and "GNOME MINING GAME" as slurs.
+ * - a word is also read with `. _ ' -` removed (N.I.G.G.A) and with every punctuation, symbol and
+ *   invisible format character removed (review M-A: `* / + ~ | , : ^ = # !`, a middle dot, a bullet,
+ *   a zero-width space, a zero-width joiner or a soft hyphen between the letters), each then folded:
+ *   each non-ASCII letter, lower-cased, to its Unicode prototype (confusables.generated.ts, the table
+ *   names.ts uses; the obscenity table misses capitals such as Cyrillic І and Greek Ι), and the
+ *   arena's extra folds (name-folds.ts: 9 -> g, which the obscenity leetspeak table does not have);
+ * - a word is a piece once `$` and every punctuation, symbol and format character are removed; a run
+ *   of pieces of one or two characters is read joined (N I G G A, N. I GG A). Only short pieces join
+ *   this way (review M1): joining whole words read "Valentine Grok Companion" and "GNOME MINING GAME"
+ *   as slurs;
+ * - each two adjacent pieces are also read joined, and count only when the match covers the whole
+ *   pair: it starts at the first letter and ends at one of the last two (review R1: a term split in
+ *   two, TE RM or TER MS). A match inside the pair, as in the two names above, does not count.
  * The whole field is read first, so a whitelisted phrase of several words applies; a word is then
  * read alone only in a form the whole-field read did not see.
  *
@@ -146,16 +152,29 @@ function letterCount(text: string): number {
   return text.match(/\p{L}/gu)?.length ?? 0;
 }
 
-/** The forms one word is read in: as written (a leading `$` dropped), with separators removed, and folded. */
-function wordForms(word: string): string[] {
-  const body = word.replace(/^\$+/, '');
-  const joined = body.replace(/[._'-]+/g, '');
+/** Every punctuation, symbol (`$` too) and invisible format character (U+200B, U+200D, U+00AD, U+2060). */
+const ANY_SEPARATOR = /[\p{P}\p{S}\p{Cf}]+/gu;
+
+/** Each non-ASCII letter to its Unicode prototype (lower-cased first), then the arena's extra folds. */
+function fold(text: string): string {
   let folded = '';
-  for (const ch of joined) {
+  for (const ch of text) {
     const proto = ch.charCodeAt(0) < 0x80 ? ch : FLOOR_ARENA_CONFUSABLES[ch.toLowerCase()] ?? FLOOR_ARENA_CONFUSABLES[ch] ?? ch;
     for (const part of proto) folded += FLOOR_ARENA_EXTRA_FOLDS[part] ?? part;
   }
-  return [...new Set([body, joined, folded])].filter((form) => form.length > 0);
+  return folded;
+}
+
+/**
+ * The forms one word is read in: as written (a leading `$` dropped), with `. _ ' -` removed, with every
+ * separator removed (ANY_SEPARATOR), and the last two folded. The `. _ ' -` form keeps `$ @ !`, which
+ * the leetspeak table reads as letters.
+ */
+function wordForms(word: string): string[] {
+  const body = word.replace(/^\$+/, '');
+  const joined = body.replace(/[._'-]+/g, '');
+  const bare = body.replace(ANY_SEPARATOR, '');
+  return [...new Set([body, joined, bare, fold(joined), fold(bare)])].filter((form) => form.length > 0);
 }
 
 function wordOffensive(word: string): boolean {
@@ -175,10 +194,15 @@ function blankTickerSigns(text: string): string {
   return text.replace(/(^|\s)(\$+)/g, (_match, lead: string, signs: string) => lead + ' '.repeat(signs.length));
 }
 
-/** Each run of two or more pieces of one or two characters (`$ . _ ' -` removed), read joined: N I G G A. */
-function shortRunOffensive(words: readonly string[]): boolean {
+/**
+ * True when the words read as a term split into pieces (each word with every separator removed; a word
+ * of separators only is skipped): a run of two or more pieces of one or two characters read joined
+ * (N I G G A), or two adjacent pieces read joined when the match covers the whole pair (TE RM).
+ */
+function splitTermOffensive(words: readonly string[]): boolean {
+  const pieces = words.map((word) => word.replace(ANY_SEPARATOR, '')).filter((piece) => piece.length > 0);
   let run: string[] = [];
-  for (const piece of [...words.map((word) => word.replace(/^\$+/, '').replace(/[._'-]+/g, '')), '']) {
+  for (const piece of [...pieces, '']) {
     const length = [...piece].length;
     if (length >= 1 && length <= 2) {
       run.push(piece);
@@ -186,6 +210,10 @@ function shortRunOffensive(words: readonly string[]): boolean {
     }
     if (run.length > 1 && wordOffensive(run.join(''))) return true;
     run = [];
+  }
+  for (let i = 0; i + 1 < pieces.length; i++) {
+    const pair = pieces[i] + pieces[i + 1];
+    if (matcher.getAllMatches(pair).some((hit) => hit.startIndex === 0 && hit.endIndex >= pair.length - 2)) return true;
   }
   return false;
 }
@@ -199,7 +227,7 @@ export function isArenaTextOffensive(text: string): boolean {
   if (matcher.hasMatch(blankTickerSigns(clean))) return true;
   const words = clean.split(/\s+/).filter((word) => word.length > 0);
   if (words.some((word) => otherFormOffensive(word, word.replace(/^\$+/, '')))) return true;
-  return shortRunOffensive(words);
+  return splitTermOffensive(words);
 }
 
 /**
