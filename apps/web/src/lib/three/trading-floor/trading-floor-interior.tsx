@@ -105,6 +105,7 @@ import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
 import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
 import { TradingFloorTradeTape } from './trading-floor-trade-tape-mesh';
+import { TradingFloorDecor } from './trading-floor-decor';
 import {
   clampTradingFloorMovementSeated,
   computeTradingFloorArming,
@@ -1544,6 +1545,7 @@ export default function TradingFloorInteriorScene({
       <RoomShell onReady={handleReady} />
       <TradingFloorScreen active={active} />
       <TradingFloorTradeTape active={active} />
+      <TradingFloorDecor active={active} />
       <TradingFloorHotspots />
       <TradingFloorLabels />
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
