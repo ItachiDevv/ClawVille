@@ -646,15 +646,16 @@ export const TRADING_FLOOR_SEATS: readonly TradingFloorSeat[] = Object.freeze(
     const chairZ = Math.round(slot.z + alongZ * TRADING_FLOOR_CHAIR_OFFSET);
     // Decoded TradingFloorChairModule cushion top: X +/-46.0024,
     // Z [-39.0009, 47.0008], Y 85.0034 wu (node Y/scale 87).
-    // Its local centre is (0, 4) wu; rotate it by the chair yaw.
+    // The backrest ends at local Z -30; the exposed cushion spans [-30, 47].
+    // Its centre is (0, 8.5) wu; rotate it by the chair yaw.
     return Object.freeze({
       index,
       x: Math.round(slot.x + alongX * TRADING_FLOOR_SEAT_OFFSET),
       z: Math.round(slot.z + alongZ * TRADING_FLOOR_SEAT_OFFSET),
       chairX,
       chairZ,
-      sitX: chairX + Math.sin(facing) * 4,
-      sitZ: chairZ + Math.cos(facing) * 4,
+      sitX: chairX + Math.sin(facing) * 8.5,
+      sitZ: chairZ + Math.cos(facing) * 8.5,
       facing,
       chairRotY: facing,
     });

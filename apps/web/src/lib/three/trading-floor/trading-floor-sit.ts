@@ -1,5 +1,6 @@
 import { Euler, Quaternion, type Object3D } from 'three';
 import type { VRMHumanoid } from '@pixiv/three-vrm';
+import type { TradingFloorSeat } from './trading-floor-room';
 
 export const TRADING_FLOOR_SIT_NATIVE_SECONDS = 4.8;
 export const TRADING_FLOOR_SIT_TIME_SCALE = 3.2;
@@ -7,6 +8,16 @@ export const TRADING_FLOOR_SIT_SECONDS = TRADING_FLOOR_SIT_NATIVE_SECONDS / TRAD
 export const TRADING_FLOOR_EXIT_SECONDS = 6.233333 / TRADING_FLOOR_SIT_TIME_SCALE;
 export const TRADING_FLOOR_MOVE_FADE_SECONDS = 0.2;
 export const TRADING_FLOOR_ARM_FADE_SECONDS = 0.3;
+
+/** Render-only travel; controller position and hotspot arming stay at the stand point. */
+export function tradingFloorSeatedBodyPoint(
+  seat: Pick<TradingFloorSeat, 'x' | 'z' | 'sitX' | 'sitZ'>,
+  travel: number,
+  out: { x: number; z: number },
+): void {
+  out.x = seat.x + (seat.sitX - seat.x) * travel;
+  out.z = seat.z + (seat.sitZ - seat.z) * travel;
+}
 
 /** Manual legs change instantly; their cushion correction must change with them. */
 export function tradingFloorPinBlend(current: number, target: number, delta: number, clipOwner: boolean, fastStand: boolean): number {

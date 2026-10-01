@@ -9,7 +9,11 @@ import { pointerOrbitClickAllowed, pointerOrbitYawEaseAllowed } from '@/lib/thre
 import { createPlayerControllerTestRuntime, runPlayerControllerFrameForTests, type PlayerCapabilityControllerConfig } from '@/lib/three/player/player-capability-controller';
 import { playerKeyState, resetPlayerKeys } from '@/lib/three/player/player-input';
 import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
-import { tradingFloorStandRequested, tradingFloorManualSit, tradingFloorPinBlend, tradingFloorArmWeight } from './trading-floor-sit';
+import {
+  tradingFloorStandRequested, tradingFloorManualSit, tradingFloorPinBlend, tradingFloorArmWeight,
+  tradingFloorSeatedBodyPoint, TRADING_FLOOR_SIT_SECONDS, TRADING_FLOOR_EXIT_SECONDS,
+  TRADING_FLOOR_MOVE_FADE_SECONDS,
+} from './trading-floor-sit';
 
 describe('Trading Floor pointer orbit interaction guards', () => {
   test('a drag click cannot activate a chair, kiosk or door', () => {
@@ -107,10 +111,11 @@ const FRAME_STEP = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
 describe('Trading Floor stand intent', () => {
   test('manual-seat cushion pin snaps with the legs on sit and every stand path', () => {
     for (const id of ['hermes-female', 'hermes-male', 'tekk', 'adinero', 'chibi']) {
-      expect(tradingFloorManualSit(id)).toBe(true);
-      expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, false, false)).toBe(1);
+      const clipOwner = !tradingFloorManualSit(id);
+      expect(clipOwner).toBe(false);
+      expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, clipOwner, false)).toBe(1);
       for (const fastStand of [false, true]) {
-        expect(tradingFloorPinBlend(1, 0, FRAME_SECONDS, false, fastStand)).toBe(0);
+        expect(tradingFloorPinBlend(1, 0, FRAME_SECONDS, clipOwner, fastStand)).toBe(0);
       }
     }
     expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, true, false)).toBeLessThan(0.02);
@@ -179,6 +184,101 @@ describe('Trading Floor stand intent', () => {
       expect(tradingFloorSitClips('vrm', id)).toBeNull();
     }
     expect(tradingFloorSitClips('vrm', 'vrm-milady')?.enter).toBe('sit_stand_to_sit');
+  });
+});
+
+describe('Trading Floor visible seated body travel', () => {
+  test('the same output reaches both endpoints and moves monotonically between them', () => {
+    const out = { x: NaN, z: NaN };
+    for (const seat of TRADING_FLOOR_SEATS) {
+      const direction = Math.sign(seat.sitX - seat.x);
+      let previousX = seat.x;
+      for (let step = 0; step <= 100; step++) {
+        const travel = step / 100;
+        tradingFloorSeatedBodyPoint(seat, travel, out);
+        expect((out.x - previousX) * direction).toBeGreaterThanOrEqual(0);
+        expect(out.x).toBeCloseTo(seat.x + (seat.sitX - seat.x) * travel);
+        expect(out.z).toBeCloseTo(seat.z + (seat.sitZ - seat.z) * travel);
+        if (step === 0) expect(out).toEqual({ x: seat.x, z: seat.z });
+        if (step === 100) expect(out).toEqual({ x: seat.sitX, z: seat.sitZ });
+        previousX = out.x;
+      }
+    }
+  });
+
+  test('clip travel starts at zero, reaches one, and returns to zero on both stand paths', () => {
+    const out = { x: 0, z: 0 };
+    for (const id of ['vrm-milady', 'biggie', 'ansem']) {
+      const clipOwner = !tradingFloorManualSit(id);
+      expect(clipOwner).toBe(true);
+      for (const seat of TRADING_FLOOR_SEATS) for (const fastStand of [false, true]) {
+        let blend = tradingFloorPinBlend(0, 1, 0, clipOwner, false);
+        expect(blend).toBe(0);
+        for (let frame = 0; frame <= Math.ceil(TRADING_FLOOR_SIT_SECONDS / FRAME_SECONDS); frame++) {
+          const previous = blend;
+          blend = tradingFloorPinBlend(blend, 1, FRAME_SECONDS, clipOwner, false);
+          expect(blend).toBeGreaterThanOrEqual(previous);
+          tradingFloorSeatedBodyPoint(seat, blend, out);
+          expect((out.x - seat.x) / (seat.sitX - seat.x)).toBeCloseTo(blend);
+        }
+        expect(blend).toBe(1);
+        expect(out).toEqual({ x: seat.sitX, z: seat.sitZ });
+        const seconds = fastStand ? TRADING_FLOOR_MOVE_FADE_SECONDS : TRADING_FLOOR_EXIT_SECONDS;
+        for (let frame = 0; frame <= Math.ceil(seconds / FRAME_SECONDS); frame++) {
+          const previous = blend;
+          blend = tradingFloorPinBlend(blend, 0, FRAME_SECONDS, clipOwner, fastStand);
+          expect(blend).toBeLessThanOrEqual(previous);
+          tradingFloorSeatedBodyPoint(seat, blend, out);
+          expect((out.x - seat.x) / (seat.sitX - seat.x)).toBeCloseTo(blend);
+        }
+        expect(blend).toBe(0);
+        expect(out).toEqual({ x: seat.x, z: seat.z });
+      }
+    }
+  });
+
+  test('arming stays at the stand point throughout travel and hides the seat-zero monitor hint', () => {
+    const body = { x: 0, z: 0 };
+    const position = { x: 0, z: 0 };
+    const arming = createTradingFloorArming();
+    for (const seat of TRADING_FLOOR_SEATS) for (const travel of [0, 0.25, 0.5, 0.75, 1]) {
+      clampTradingFloorMovementSeated(seat.index, seat.x, seat.z, seat.sitX, seat.sitZ, position);
+      tradingFloorSeatedBodyPoint(seat, travel, body);
+      computeTradingFloorArming(position.x, position.z, arming);
+      expect(position).toEqual({ x: seat.x, z: seat.z });
+      expect(arming.seatArmedIndex).toBe(seat.index);
+      expect(arming.monitorHint).toBe(false);
+    }
+    // Non-vacuous: arming at the cushion reproduces the rejected seat-zero hint.
+    computeTradingFloorArming(TRADING_FLOOR_SEATS[0]!.sitX, TRADING_FLOOR_SEATS[0]!.sitZ, arming);
+    expect(arming.monitorHint).toBe(true);
+  });
+
+  test('VRM travel uses the pin blend before body/camera frames, including frozen frames', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+    const motion = source.slice(source.indexOf('function TradingFloorAvatarMotion'), source.indexOf('type AvatarMountCallback'));
+    const vrm = source.slice(source.indexOf('function TradingFloorVRMPlayer'), source.indexOf('const _glbBoundsScratch'));
+    expect(vrm).toContain('_sitClipOwner = !manualSeat;');
+    expect(vrm).toContain('_sitTravel = sitBlendRef.current;');
+    expect(vrm).toContain('if (_sitShownIndex >= 0) _sitTravelSeat = _sitShownIndex;');
+    expect(vrm).toContain('if (_sitTravel === 0) _sitTravelSeat = -1;');
+    expect(vrm.indexOf('_sitTravel = sitBlendRef.current;')).toBeLessThan(vrm.indexOf('if (sitBlendRef.current <= 0)'));
+    expect(vrm).toContain('}, -50);');
+    expect(vrm).toContain("if ((armWeightRef.current > 0 && reg.animatorId !== 'chibi') || snapSeat)");
+    const visual = motion.slice(motion.indexOf('  useSceneFrame((_, rawDelta) => {'));
+    expect(visual).toContain('}, -40);');
+    expect(visual).not.toContain('exchangeOpen');
+    expect(visual).not.toContain('return;');
+    expect(visual).toContain('posX.current = seated.x;');
+    expect(visual).toContain('posZ.current = seated.z;');
+    expect(visual).toContain('computeTradingFloorArming(posX.current, posZ.current, _arming);');
+    expect(visual).toContain('_sitTravel > 0 ? TRADING_FLOOR_SEATS[_sitTravelSeat]');
+    expect(visual).toContain('tradingFloorSeatedBodyPoint(travelSeat, _sitTravel, _bodyScratch)');
+    expect(visual).toContain('group.position.set(bodyX, baseY, bodyZ);');
+    expect(visual).toContain('travelSeat ? travelSeat.facing');
+    expect(visual).toContain('bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch');
+    expect(visual).not.toContain('new THREE.');
+    expect(motion).not.toContain('bodySeatRef');
   });
 });
 
@@ -471,7 +571,7 @@ describe('Trading Floor seats — sit clips', () => {
   });
 
   // GLB avatars (the lobster) have no humanoid rig and no animator, so there is
-  // nothing to retarget onto. They keep the snap-only behaviour.
+  // nothing to retarget onto. They stay at the stand point with zero body travel.
   test('a GLB avatar gets no clips at all', () => {
     expect(tradingFloorSitClips('glb')).toBeNull();
   });
@@ -507,6 +607,17 @@ describe('Trading Floor seats — sit clips', () => {
     const body = source.slice(start, end);
     expect(body).not.toContain('playOneShot');
     expect(body).not.toContain('TRADING_FLOOR_SIT_CLIPS');
+    expect(body).not.toContain('_sitTravel');
+    expect(source).toContain('let _sitTravel = 0;');
+    expect(source).toContain('GLB avatars have no sit pose or hip pin. They stay at the stand point:');
+    const vrm = source.slice(source.indexOf('function TradingFloorVRMPlayer'), start);
+    // Avatar replacement must clear travel before the GLB takes over.
+    expect(vrm).toContain('_sitClipOwner = false;\n      _sitTravel = 0;\n      _sitTravelSeat = -1;');
+    const out = { x: NaN, z: NaN };
+    for (const seat of TRADING_FLOOR_SEATS) {
+      tradingFloorSeatedBodyPoint(seat, 0, out);
+      expect(out).toEqual({ x: seat.x, z: seat.z });
+    }
   });
 
   // The cushion pin is what makes the seat Y agree with the chair. The clips

@@ -89,6 +89,7 @@ import {
   applyTradingFloorSeatPose, tradingFloorSeatBones, tradingFloorManualSit,
   tradingFloorStandRequested, TRADING_FLOOR_SIT_TIME_SCALE,
   TRADING_FLOOR_MOVE_FADE_SECONDS, tradingFloorPinBlend, tradingFloorArmWeight,
+  tradingFloorSeatedBodyPoint,
 } from './trading-floor-sit';
 export { tradingFloorStandRequested } from './trading-floor-sit';
 import { useGameStore } from '@/stores/game';
@@ -251,6 +252,7 @@ export { TRADING_FLOOR_CAMERA_BOUNDS } from './trading-floor-room';
 // ---------------------------------------------------------------------------
 // Module-scope scratch — zero allocation in the frame loop.
 // ---------------------------------------------------------------------------
+const _bodyScratch = { x: 0, z: 0 };
 const _forwardScratch = new THREE.Vector3();
 const _cameraScratch = new THREE.Vector3();
 const _lookScratch = new THREE.Vector3();
@@ -286,6 +288,10 @@ let _seatedIndex = -1;
 let _sitShownIndex = -1;
 let _seatGeneration = 0;
 let _sitClipOwner = false;
+// Only the VRM player publishes travel from its visible sit blend. GLBs stay at 0.
+let _sitTravel = 0;
+// Retain the seat through the stand clip or movement fade, after seat state clears.
+let _sitTravelSeat = -1;
 /**
  * Z of the chase camera's forward vector, written by the camera frame and read
  * by the label poll (`tradingFloorDoorPromptVisible`). One number, no
@@ -336,6 +342,8 @@ export function readTradingFloorProximity(): {
 function resetTradingFloorProximity(): void {
   resetTradingFloorArming(_arming);
   setTradingFloorSeatedIndex(-1);
+  _sitTravel = 0;
+  _sitTravelSeat = -1;
   _cameraForwardZ = 0;
 }
 
@@ -553,7 +561,9 @@ function buildInstancedRow(
 }
 
 /** Chair placement and seated body points share the SEAT list.
- *  `x/z` remain the separate stand points, clear of the chair. */
+ *  `x/z` remain the separate stand points, clear of the chair.
+ *  GLB avatars have no sit pose or hip pin. They stay at the stand point:
+ *  placing them on the cushion passes through the seat pan and backrest. */
 const CHAIR_SLOTS: readonly RowSlot[] = TRADING_FLOOR_SEATS.map((seat) => ({
   x: seat.chairX,
   z: seat.chairZ,
@@ -1123,7 +1133,7 @@ function TradingFloorAvatarMotion({
   const groupRef = useRef<THREE.Group>(null);
   const posX = useRef<number>(TRADING_FLOOR_PLAYER_SPAWN.x);
   const posZ = useRef<number>(TRADING_FLOOR_PLAYER_SPAWN.z);
-  const bodySeatRef = useRef(-1);
+  const facingRef = useRef<number>(TRADING_FLOOR_POLICY.motion.initialFacing);
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
   const snapCameraRef = useRef(true);
@@ -1157,13 +1167,6 @@ function TradingFloorAvatarMotion({
     () => ({
       speedPerSec: TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
       readPosition: (out) => {
-        // E consumes its controller frame; restore before the next movement step.
-        if (bodySeatRef.current >= 0 && _seatedIndex < 0) {
-          const stand = TRADING_FLOOR_SEATS[bodySeatRef.current]!;
-          posX.current = stand.x;
-          posZ.current = stand.z;
-          bodySeatRef.current = -1;
-        }
         out.x = posX.current;
         out.z = posZ.current;
       },
@@ -1198,7 +1201,7 @@ function TradingFloorAvatarMotion({
   );
 
   const resetToSpawn = useCallback(() => {
-    bodySeatRef.current = -1;
+    facingRef.current = TRADING_FLOOR_POLICY.motion.initialFacing;
     posX.current = TRADING_FLOOR_PLAYER_SPAWN.x;
     posZ.current = TRADING_FLOOR_PLAYER_SPAWN.z;
     tradingFloorPlayerPositionRef.x = TRADING_FLOOR_PLAYER_SPAWN.x;
@@ -1285,39 +1288,21 @@ function TradingFloorAvatarMotion({
 
       const seated =
         _seatedIndex >= 0 ? TRADING_FLOOR_SEATS[_seatedIndex] : undefined;
-      // Escape can stand without a movement clamp. Return to the stand point.
-      const stand = !seated && bodySeatRef.current >= 0
-        ? TRADING_FLOOR_SEATS[bodySeatRef.current] : undefined;
-      const bodyX = seated ? seated.sitX : stand ? stand.x : state.x;
-      const bodyZ = seated ? seated.sitZ : stand ? stand.z : state.z;
-
-      if (seated || stand) {
-        // Keep the space adapter's own position ON the seat every frame, not
-        // just on the frame E was pressed. `activateTradingFloorUse` is a
-        // module function with no access to these refs, and without this the
-        // avatar would snap back to wherever it was standing the moment it
-        // stood up.
-        posX.current = bodyX;
-        posZ.current = bodyZ;
+      // Controller coordinates stay at the legal stand point, never the cushion.
+      if (seated) {
+        posX.current = seated.x;
+        posZ.current = seated.z;
       }
-      bodySeatRef.current = seated?.index ?? -1;
+      facingRef.current = state.facing;
 
-      tradingFloorPlayerPositionRef.x = bodyX;
-      tradingFloorPlayerPositionRef.z = bodyZ;
-
-      const group = groupRef.current;
-      if (group) {
-        group.position.set(bodyX, baseY, bodyZ);
-        group.rotation.y = seated ? seated.facing : state.facing;
-      }
-      // Snap avatars notify only AFTER the controller places the body on the chair.
+      // Snap avatars acknowledge the seat before the VRM and visual frame updates.
       if (seated && !_sitClipOwner && _sitShownIndex !== _seatedIndex) {
         _sitShownIndex = _seatedIndex;
         notifyTradingFloorSeatSettled(_seatedIndex);
       }
 
       // --- Hotspot arming (scalar, zero allocation, filled in place) --------
-      computeTradingFloorArming(bodyX, bodyZ, _arming);
+      computeTradingFloorArming(posX.current, posZ.current, _arming);
 
       // Seated framing. Every desk faces a side WALL, so a player who sits
       // down keeps whatever yaw they walked in with and can end up looking at
@@ -1331,46 +1316,6 @@ function TradingFloorAvatarMotion({
         cameraYaw.current += yawDelta * (1 - Math.exp(-6 * safeDelta));
       }
 
-      // --- Chase camera, one backward spring arm ---------------------------
-      const camera = slotCamera;
-      if (camera) {
-        // Authoritative look direction from the OWNED yaw — never read back off
-        // the camera, which keeps whatever the previous visit left on it.
-        _forwardScratch.set(
-          Math.sin(cameraYaw.current),
-          0,
-          -Math.cos(cameraYaw.current),
-        );
-        // Published for the Exit capsule: its HINT needs the camera to face
-        // the door half-space (see `tradingFloorDoorPromptVisible`). A number
-        // write, no allocation; the label poll does the setState on change.
-        _cameraForwardZ = _forwardScratch.z;
-        const rawArm = placeTradingFloorChaseCamera(
-          bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch,
-          TRADING_FLOOR_CAMERA.behind, snapCameraRef.current ? Infinity : cameraBoom.current,
-        );
-        cameraArm.current = smoothTradingFloorCameraArm(
-          cameraArm.current, rawArm, safeDelta, snapCameraRef.current,
-        );
-        // Shorten the already clipped endpoint on the same ray; no second cast.
-        const armRetraction = rawArm - cameraArm.current;
-        _cameraScratch.x += _forwardScratch.x * armRetraction;
-        _cameraScratch.z += _forwardScratch.z * armRetraction;
-        cameraBoom.current = smoothTradingFloorCameraBoom(
-          cameraBoom.current, tradingFloorCameraBoom(cameraPitch.current, cameraArm.current),
-          safeDelta, snapCameraRef.current,
-        );
-        _cameraScratch.y = TRADING_FLOOR_CAMERA.above + cameraPitch.current + cameraBoom.current;
-        camera.position.copy(_cameraScratch);
-        snapCameraRef.current = false;
-        _lookScratch.set(
-          bodyX + _forwardScratch.x * TRADING_FLOOR_CAMERA.lookAhead,
-          TRADING_FLOOR_CAMERA.lookY,
-          bodyZ + _forwardScratch.z * TRADING_FLOOR_CAMERA.lookAhead,
-        );
-        camera.lookAt(_lookScratch);
-      }
-
       // Seated reports NOT moving, which is what lets the sit one-shot chain
       // hold `sit_idle_m`. The clips themselves are driven by the VRM player's
       // own seat watcher, not from here: this callback has no animator and the
@@ -1382,6 +1327,70 @@ function TradingFloorAvatarMotion({
       );
     },
   });
+
+  // Controller (-100), VRM pose/travel (-50), then body and camera (-40).
+  // This frame also runs while a modal or consumed E frame freezes the controller.
+  useSceneFrame((_, rawDelta) => {
+    const safeDelta = Math.min(rawDelta, TRADING_FLOOR_POLICY.motion.maxDeltaSeconds);
+    const seated = _seatedIndex >= 0 ? TRADING_FLOOR_SEATS[_seatedIndex] : undefined;
+    if (seated) {
+      posX.current = seated.x;
+      posZ.current = seated.z;
+    }
+    computeTradingFloorArming(posX.current, posZ.current, _arming);
+
+    const travelSeat = _sitTravel > 0 ? TRADING_FLOOR_SEATS[_sitTravelSeat] : undefined;
+    if (travelSeat) tradingFloorSeatedBodyPoint(travelSeat, _sitTravel, _bodyScratch);
+    const bodyX = travelSeat ? _bodyScratch.x : posX.current;
+    const bodyZ = travelSeat ? _bodyScratch.z : posZ.current;
+    tradingFloorPlayerPositionRef.x = bodyX;
+    tradingFloorPlayerPositionRef.z = bodyZ;
+    const group = groupRef.current;
+    if (group) {
+      group.position.set(bodyX, baseY, bodyZ);
+      group.rotation.y = travelSeat ? travelSeat.facing : seated ? seated.facing : facingRef.current;
+    }
+
+    // --- Chase camera, one backward spring arm ---------------------------
+    const camera = slotCamera;
+    if (camera) {
+      // Authoritative look direction from the OWNED yaw — never read back off
+      // the camera, which keeps whatever the previous visit left on it.
+      _forwardScratch.set(
+        Math.sin(cameraYaw.current),
+        0,
+        -Math.cos(cameraYaw.current),
+      );
+      // Published for the Exit capsule: its HINT needs the camera to face
+      // the door half-space (see `tradingFloorDoorPromptVisible`). A number
+      // write, no allocation; the label poll does the setState on change.
+      _cameraForwardZ = _forwardScratch.z;
+      const rawArm = placeTradingFloorChaseCamera(
+        bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch,
+        TRADING_FLOOR_CAMERA.behind, snapCameraRef.current ? Infinity : cameraBoom.current,
+      );
+      cameraArm.current = smoothTradingFloorCameraArm(
+        cameraArm.current, rawArm, safeDelta, snapCameraRef.current,
+      );
+      // Shorten the already clipped endpoint on the same ray; no second cast.
+      const armRetraction = rawArm - cameraArm.current;
+      _cameraScratch.x += _forwardScratch.x * armRetraction;
+      _cameraScratch.z += _forwardScratch.z * armRetraction;
+      cameraBoom.current = smoothTradingFloorCameraBoom(
+        cameraBoom.current, tradingFloorCameraBoom(cameraPitch.current, cameraArm.current),
+        safeDelta, snapCameraRef.current,
+      );
+      _cameraScratch.y = TRADING_FLOOR_CAMERA.above + cameraPitch.current + cameraBoom.current;
+      camera.position.copy(_cameraScratch);
+      snapCameraRef.current = false;
+      _lookScratch.set(
+        bodyX + _forwardScratch.x * TRADING_FLOOR_CAMERA.lookAhead,
+        TRADING_FLOOR_CAMERA.lookY,
+        bodyZ + _forwardScratch.z * TRADING_FLOOR_CAMERA.lookAhead,
+      );
+      camera.lookAt(_lookScratch);
+    }
+  }, -40);
 
   return <group ref={groupRef}>{children}</group>;
 }
@@ -1527,6 +1536,8 @@ function TradingFloorVRMPlayer({
     return () => {
       cancelled = true;
       _sitClipOwner = false;
+      _sitTravel = 0;
+      _sitTravelSeat = -1;
       animatorRef.current = null;
       animator.dispose();
     };
@@ -1563,6 +1574,8 @@ function TradingFloorVRMPlayer({
     }
     seatedRef.current = -1;
     sitBlendRef.current = 0;
+    _sitTravel = 0;
+    _sitTravelSeat = -1;
     sitOffsetRef.current = 0;
   }, [vrm, reg.path]);
 
@@ -1573,6 +1586,8 @@ function TradingFloorVRMPlayer({
     fastStandRef.current = false;
     armWeightRef.current = 0;
     sitBlendRef.current = 0;
+    _sitTravel = 0;
+    _sitTravelSeat = -1;
     sitOffsetRef.current = 0;
     if (sitGroupRef.current) sitGroupRef.current.position.y = 0;
     animatorRef.current?.returnToLocomotion(false, false, 0);
@@ -1582,7 +1597,11 @@ function TradingFloorVRMPlayer({
     const delta = Math.min(rawDelta, 0.1);
     const animator = animatorRef.current;
     const group = sitGroupRef.current;
-    if (!group) return;
+    if (!group) {
+      _sitTravel = 0;
+      _sitTravelSeat = -1;
+      return;
+    }
 
     const frozen = useGameStore.getState().exchangeOpen;
     const moving = !frozen && _seatedIndex < 0 && locomotionRef.current.moving;
@@ -1640,7 +1659,7 @@ function TradingFloorVRMPlayer({
     const poseActive = _sitShownIndex >= 0 || standClipRef.current;
     armWeightRef.current = tradingFloorArmWeight(armWeightRef.current, poseActive, delta, fastStandRef.current);
     const snapSeat = !_sitClipOwner && _sitShownIndex >= 0;
-    if (armWeightRef.current > 0 || snapSeat) {
+    if ((armWeightRef.current > 0 && reg.animatorId !== 'chibi') || snapSeat) {
       applyTradingFloorSeatPose(seatBones, armWeightRef.current, snapSeat, reg.animatorId !== 'chibi');
       vrm.humanoid.update();
       vrm.scene.updateMatrixWorld(true);
@@ -1649,6 +1668,10 @@ function TradingFloorVRMPlayer({
 
     const target = _sitShownIndex >= 0 ? 1 : 0;
     sitBlendRef.current = tradingFloorPinBlend(sitBlendRef.current, target, delta, _sitClipOwner, fastStandRef.current);
+
+    if (_sitShownIndex >= 0) _sitTravelSeat = _sitShownIndex;
+    _sitTravel = sitBlendRef.current;
+    if (_sitTravel === 0) _sitTravelSeat = -1;
 
     if (sitBlendRef.current <= 0) {
       if (sitOffsetRef.current !== 0) {
@@ -1673,7 +1696,7 @@ function TradingFloorVRMPlayer({
     );
     sitOffsetRef.current = desired * sitBlendRef.current;
     group.position.y = sitOffsetRef.current;
-  });
+  }, -50);
 
   return (
     <TradingFloorAvatarMotion updateAnimation={updateAnimation}>

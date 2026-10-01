@@ -332,7 +332,7 @@ describe('Trading Floor interior — movement clamp', () => {
     }
   });
 
-  test('sit points sit over the decoded chair cushion centre; stand points and facing stay unchanged', async () => {
+  test('sit points centre the cushion ahead of the backrest; stand points and facing stay unchanged', async () => {
     const doc = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
       .registerDependencies({ 'meshopt.decoder': MeshoptDecoder })
       .read(join(import.meta.dir, '../../../../public/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb'));
@@ -353,6 +353,10 @@ describe('Trading Floor interior — movement clamp', () => {
       [0, -915, -500, -Math.PI / 2], [1, -915, 0, -Math.PI / 2], [2, -915, 500, -Math.PI / 2],
       [3, 915, -500, Math.PI / 2], [4, 915, 0, Math.PI / 2], [5, 915, 500, Math.PI / 2],
     ]);
+    expect(TRADING_FLOOR_SEATS.map((seat) => [seat.sitX, seat.sitZ])).toEqual([
+      [-803.5, -500], [-803.5, Math.cos(-Math.PI / 2) * 8.5], [-803.5, 500],
+      [803.5, -500], [803.5, Math.cos(Math.PI / 2) * 8.5], [803.5, 500],
+    ]);
     for (const seat of TRADING_FLOOR_SEATS) {
       const dx = seat.sitX - seat.chairX, dz = seat.sitZ - seat.chairZ;
       const local = [Math.cos(seat.chairRotY) * dx - Math.sin(seat.chairRotY) * dz,
@@ -360,7 +364,9 @@ describe('Trading Floor interior — movement clamp', () => {
       for (const [axis, value] of local.entries()) {
         expect(value).toBeGreaterThan(bounds[axis]!.min);
         expect(value).toBeLessThan(bounds[axis]!.max);
-        expect(value).toBeCloseTo((bounds[axis]!.min + bounds[axis]!.max) / 2, 3);
+        // The backrest covers local Z through -30; centre only the exposed cushion.
+        const frontMin = axis === 1 ? Math.max(-30, bounds[axis]!.min) : bounds[axis]!.min;
+        expect(value).toBeCloseTo((frontMin + bounds[axis]!.max) / 2, 3);
       }
       expect(tradingFloorHitsSolid(seat.sitX, seat.sitZ)).toBe(false);
       expect(seat.chairRotY).toBe(seat.facing);
