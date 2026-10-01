@@ -27,7 +27,10 @@
  * the regression test asserts deep-equality of the spawn-relevant fields built
  * from a row vs. built fresh, for every identity type.
  *
- * PURE: no DB, no sim, no crypto. Just identity → config mapping — with ONE
+ * PURE: no DB, no sim, and no crypto except the one-way sha256 of a gateway
+ * token in `resolveIdentityForTicket` (2026-09-30, deterministic, no I/O). The
+ * reserved derived-key predicate `isReservedDerivedIdentityKey` lives beside it.
+ * Just identity → config mapping — with ONE
  * deliberate, documented env read: the boot-time `HERMES_LOCAL_GATEWAY_ENABLED`
  * gate below (D7 host-it-for-me Hermes cognition, 2026-07-02). Every resolver
  * that consults the gate also takes it as an optional parameter so tests stay
@@ -48,6 +51,7 @@ import {
   type AgentSubstrateRegistration,
   type AgentAvatarConfig,
 } from '@clawville/shared';
+import { sha256Hex } from './session-digest';
 
 /**
  * Combat-stat block carried on an avatar body. Matches the inline `stats` shape
@@ -273,13 +277,51 @@ export function resolveIdentityForTicket(
     return { identityType: resolvedIdentityType, identityKey: data.identityKey };
   }
   if (hasRealDeclaredGateway(data.gatewayUrl) && data.authToken) {
+    // Security 2026-09-30: the key binds the FULL gateway token through a
+    // one-way sha256, under the reserved `gateway-inferred:v2:` prefix. It used
+    // only the first 8 characters, so two different tokens with the same
+    // prefix on one gateway mapped to one account, and the ticket row stored
+    // those 8 characters of a secret. The prefix keeps a derived key apart
+    // from every explicit identityKey (`isReservedDerivedIdentityKey` below).
     return {
       identityType: resolvedIdentityType,
-      identityKey: `${data.gatewayUrl}#${data.authToken.slice(0, 8)}`,
+      identityKey: `gateway-inferred:v2:${data.gatewayUrl}#${sha256Hex(data.authToken)}`,
     };
   }
   return null;
 }
+
+/**
+ * Is `identityKey` a SERVER-DERIVED gateway-inferred key shape that a caller
+ * must never present as an explicit identityKey? (security 2026-09-30)
+ *
+ * An explicit identityKey shares the fingerprint namespace
+ * `sha256(type + ":" + key)` (`identity-service.ts` `identityFingerprint`) with
+ * the gateway-inferred key. So a caller that sent the legacy shape
+ * `<gatewayUrl>#<first 8 token chars>` (often a public prefix such as
+ * `sk-proj-`) reached every legacy gateway-inferred account, and the current
+ * derived key was stored raw in `agent_session_tickets.identity_key` (hashed
+ * since F4, 2026-10-01). Two shapes
+ * are reserved: the `gateway-inferred:` prefix (current and future derived
+ * keys) and the legacy `<scheme>:...#<1-8 chars>` shape (any URL scheme, because
+ * the gateway URL schema accepts more than http(s), e.g. ws/wss; whitespace is
+ * allowed anywhere because the URL schema does not trim). The public routes
+ * (`POST /api/agent/connect`, `/join`, `/:sessionId/control-link`) refuse them
+ * with `400 identity_key_reserved`.
+ *
+ * Legacy accounts derived from the 8-character key are reachable now only by
+ * the signed `/reconnect` (identity secret) or the human's own login. They are
+ * NOT migrated or healed from the legacy key: no proof of the full token exists.
+ */
+export function isReservedDerivedIdentityKey(identityKey: string): boolean {
+  return identityKey.startsWith('gateway-inferred:') || /^\s*[a-z][a-z0-9+.-]*:[\s\S]+#[\s\S]{1,8}$/i.test(identityKey);
+}
+
+/** Generic 400 body for a reserved identityKey; never echoes the key. */
+export const IDENTITY_KEY_RESERVED_BODY = Object.freeze({
+  error: 'Invalid request',
+  code: 'identity_key_reserved',
+});
 
 /**
  * Normalize the row's routing fact for `/connect`. Once validation succeeds,

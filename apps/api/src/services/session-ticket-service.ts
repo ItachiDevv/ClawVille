@@ -17,7 +17,7 @@
 import { randomBytes } from 'crypto';
 import { and, eq, isNull, gt } from 'drizzle-orm';
 import { db, agentSessionTickets, sql } from '@clawville/database';
-import { sessionDigest } from './session-digest';
+import { sessionDigest, sha256Hex } from './session-digest';
 
 /**
  * Default TTL matches the spec (10 min). Overridable via env for load
@@ -103,6 +103,15 @@ export interface MintedTicket {
  * instruction copy so the human sees e.g. "Open this URL to enter
  * ClawVille as Reef-King" instead of the generic fallback.
  */
+/**
+ * The stored audit form of a ticket's identity key: `sha256:` + hex sha256 of
+ * `${identityType}:${identityKey}` (the `users.identity_fingerprint` form).
+ * Migration 0073 rewrites older raw rows to exactly this shape.
+ */
+export function ticketIdentityKeyDigest(identityType: string, identityKey: string): string {
+  return `sha256:${sha256Hex(`${identityType}:${identityKey}`)}`;
+}
+
 export async function mintSessionTicket(params: {
   userId: string;
   avatarId?: string | null;
@@ -140,7 +149,14 @@ export async function mintSessionTicket(params: {
     issuedToAgentId: issuedToAgentId ?? null,
     expiresAt,
     identityType,
-    identityKey,
+    // Audit form only, NEVER the raw key (security F4, 2026-10-01). An explicit
+    // identityKey is the account credential (sha256(type:key) finds the user and
+    // an identityKey connect is ledger-capable), so a raw copy here let anyone
+    // with DB read access connect as that agent. Store the same one-way value
+    // as `users.identity_fingerprint`, with a `sha256:` prefix so migration 0073
+    // can tell hashed rows from raw keys that happen to be 64 hex characters.
+    // This is the ONLY writer of agent_session_tickets; every caller passes here.
+    identityKey: ticketIdentityKeyDigest(identityType, identityKey),
   });
 
   const webOrigin = resolveWebOrigin();
@@ -174,6 +190,13 @@ export interface ConsumedTicket {
    * (the deferred-bind claim event — see the schema column JSDoc).
    */
   issuedToAgentId: string | null;
+  /**
+   * The stored 16-hex `sessionDigest` of the agent session that minted this
+   * ticket, or null. A correlation digest, never a bearer. Redemption uses it
+   * to keep that one session and evict any other live session for the agent
+   * (security 2026-09-30, `services/agent-redemption-bind.ts`).
+   */
+  issuedToAgentSession: string | null;
 }
 
 /**
@@ -208,6 +231,7 @@ export async function consumeTicket(ticket: string): Promise<ConsumedTicket | nu
       ticket: agentSessionTickets.ticket,
       identityType: agentSessionTickets.identityType,
       issuedToAgentId: agentSessionTickets.issuedToAgentId,
+      issuedToAgentSession: agentSessionTickets.issuedToAgentSession,
     });
 
   const row = updated[0];
@@ -218,5 +242,6 @@ export async function consumeTicket(ticket: string): Promise<ConsumedTicket | nu
     ticket: row.ticket,
     identityType: row.identityType,
     issuedToAgentId: row.issuedToAgentId ?? null,
+    issuedToAgentSession: row.issuedToAgentSession ?? null,
   };
 }

@@ -668,7 +668,30 @@ import {
 // is rendered from its constant (E6.2).
 // No `[ACTION:]` verb, bearer/TTL, cognition body, namespace or leaderboard
 // weight changed.
-export const PROTOCOL_VERSION = 76;
+// NOTE (2026-09-30, security: credentialless connect cannot displace an owned
+// agent): bumped 76 -> 77 (76 is the arena audit build).
+// POST /api/agent/connect and the legacy POST /api/openclaw/register now refuse
+// a connect to an agentId that already has an owner when the request carries no
+// owner credential (no owned connection token, no resolved identityKey), with
+// the new error `409 owner_credential_required`. Before, that request rotated
+// the row's bearer hash and moved the body, which evicted the owner's live
+// session. Manual §1 gains one sentence for the new code. No `[ACTION:]` verb,
+// bearer/TTL gate, cognition body, namespace, signing or leaderboard weight
+// changed. Sweep every version pin BY ASSERTION, never by grepping the old number.
+// Round 2 (same version 77, not yet on staging): an authenticated connection
+// token from another account no longer moves an owned agent (`409
+// agent_owned_by_other_account`; manual §1 gains one more sentence); a magic-link
+// first bind at GET /api/auth/enter evicts every live session except the one the
+// ticket was issued to; the gateway-inferred identity key hashes the full token.
+// Round 2b (same version 77, not yet on staging): the gateway-inferred key moves
+// to the reserved `gateway-inferred:v2:` prefix, and an explicit identityKey in a
+// reserved derived shape (that prefix, or the legacy `<scheme>:...#<1-8 chars>`)
+// is refused with `400 identity_key_reserved` on /connect, /join and
+// /:sessionId/control-link (manual §1 gains two sentences). A first bind at
+// GET /api/auth/enter keeps a session only when the row AND the ticket name it,
+// else it burns the row hash and evicts every live session. An in-process owner
+// fence refuses a credentialless connect that resolves after an owner bind.
+export const PROTOCOL_VERSION = 77;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -709,6 +732,12 @@ export function buildUniversalConnectBlock(
 
 Choose one stable ${md}agentId${md}, one framework label, and one secret ${md}identityKey${md}.
 Reuse all three on every reconnect.
+If this ${md}agentId${md} already has an owner, a connect without that owner's
+${md}identityKey${md} (or a connection token from the owner) is refused with
+${md}409 owner_credential_required${md}; the live session and body stay untouched.
+Use your ${md}identityKey${md}, or the signed ${md}/api/agent/reconnect${md}.
+A connection token works only for an agent with no owner or the same owner; a
+token from another account gets ${md}409 agent_owned_by_other_account${md}.
 
 ${md}${md}${md}http
 POST ${apiBase}/api/agent/connect
@@ -726,7 +755,10 @@ ${tokenLine}  "agentId": "your-stable-agent-id",
 ${md}${md}${md}
 
 ${md}agentId${md} is your public handle. ${md}identityKey${md} is a private account credential:
-never log or share it. Any bounded framework name is accepted; unknown names use
+never log or share it. Use a long random ${md}identityKey${md}. A reserved shape is
+refused with ${md}400 identity_key_reserved${md}: a key that starts with
+${md}gateway-inferred:${md}, or a URL plus ${md}#${md} and 1 to 8 characters.
+Any bounded framework name is accepted; unknown names use
 ClawVille's general adapter.
 
 Gateway fields are optional. Supply them only when ClawVille should POST cognition

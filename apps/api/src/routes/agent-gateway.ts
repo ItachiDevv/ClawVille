@@ -35,12 +35,15 @@ import {
   isSessionRestorable,
   hasRealDeclaredGateway,
   canonicalizePublicAgentIdentityType,
+  isReservedDerivedIdentityKey,
   normalizeDirectAgentConnectRequest,
   resolveExistingAgentConnectProtocol,
   resolveAutonomyMode,
   resolveIdentityForTicket,
   resolveConnectGatewayForPersistence,
+  IDENTITY_KEY_RESERVED_BODY,
 } from '../services/agent-session-config';
+import { agentOwnedRecently, markAgentOwnedNow } from '../services/agent-owner-fence';
 // /reconnect session-mint planner (P0 gate fix, 2026-07-03) — pure decision
 // module (ledger/dormancy/credential rules) shared with its DB-free unit tests.
 // `gatewayCredentialZodFields` is the SAME zod trio connectSchema spreads below,
@@ -83,6 +86,10 @@ import {
   buildAgentStatusResponse,
   buildReturningIdentityDisclosure,
   connectionTokenClaimError,
+  connectRequiresOwnerCredential,
+  connectTokenOwnedByOtherAccount,
+  AGENT_OWNED_BY_OTHER_ACCOUNT_BODY,
+  OWNER_CREDENTIAL_REQUIRED_BODY,
   planConnectOwnerBinding,
   resolvePersistedConnectOwnerProof,
   sessionLedgerCapable,
@@ -538,6 +545,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: 'Invalid request' }, 400);
   }
 
+  // Reserved derived identityKey (security 2026-09-30). The server derives a
+  // gateway-inferred key in the SAME fingerprint namespace as an explicit
+  // identityKey, so a caller must never present one: the legacy shape
+  // `<gatewayUrl>#<first 8 token chars>` (often a public prefix) would reach
+  // every legacy gateway-inferred account. Deterministic + body-only, so it
+  // runs BEFORE the single-use token reservation (a reject must not burn it).
+  if (data.identityKey && isReservedDerivedIdentityKey(data.identityKey)) {
+    return c.json(IDENTITY_KEY_RESERVED_BODY, 400);
+  }
+
   // Universal tolerant normalization happens only AFTER both public Hatcher
   // guards above. Every downstream path consumes this one decision object.
   const normalized = normalizeDirectAgentConnectRequest({
@@ -686,10 +703,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // userId) can find this bot on every subsequent page load. Without it,
   // the connect succeeds server-side but agentConnected reverts to false
   // on the next reload — agent state evaporates between sessions.
-  // An authenticated token is direct owner proof. A logged-out public token is
-  // intentionally different: its agent-supplied identityKey proves ownership,
-  // so it follows the never-clobber identity binding path instead of gaining
-  // the authenticated token path's legacy rebind precedence.
+  // An authenticated token is direct owner proof, but only for an unowned row
+  // or a row its own user already owns. It never moves a row that another
+  // account owns (409 agent_owned_by_other_account, security 2026-09-30). A
+  // logged-out public token is different: its agent-supplied identityKey
+  // proves ownership, so it follows the never-clobber identity binding path.
   const tokenUserId = pendingConn?.publicHandoff
     ? null
     : pendingConn?.userId ?? null;
@@ -742,6 +760,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let existingBoundUserId: string | null = null;
   let persistedLiveUserId: string | null = null;
   let ownerBindConflict = false;
+  // Set when a credentialless metadata refresh loses its `user_id IS NULL` CAS
+  // (the row was bound concurrently). Distinct from ownerBindConflict, whose
+  // 409 body is OWNER_BIND_CONFLICT for token/identity claims.
+  let ownerCredentialRequired = false;
   let ownerBinding = planConnectOwnerBinding({
     existingUserId: null,
     tokenUserId,
@@ -765,9 +787,41 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // router's 404/409 opacity), so this is indistinguishable from the generic
       // bad-request above.
       if (isReservedPartnerIdentityType(existing.identityType)) {
+        if (pendingConn) releasePendingConnectionClaim(pendingConn);
         return c.json({ error: 'Invalid request' }, 400);
       }
       existingBoundUserId = existing.userId ?? null;
+      // Owned row + no owner credential (security 2026-09-30). A public agentId
+      // is not an ownership credential. Refuse BEFORE any UPDATE, body
+      // registration, ticket mint or event, so the owner's live session, bearer
+      // hash, TTL and body stay untouched. The body names no owner detail.
+      if (connectRequiresOwnerCredential({
+        existingUserId: existingBoundUserId,
+        tokenUserId,
+        identityKeyUserId,
+      })) {
+        console.warn(
+          `[AgentConnect] owner credential required for agentId=${resolvedAgentId}; refusing credentialless connect`,
+        );
+        if (pendingConn) releasePendingConnectionClaim(pendingConn);
+        return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
+      }
+      // Cross-account move removed (security 2026-09-30). An authenticated
+      // token from user B used to rewrite a row owned by user A to B and evict
+      // A's sessions. A token now binds only an unowned row or its own user's
+      // row. Refuse BEFORE any UPDATE, eviction, body registration, pre-warm,
+      // ticket mint, identity or wallet block, or event, and release the token.
+      // The body names no owner detail.
+      if (connectTokenOwnedByOtherAccount({
+        existingUserId: existingBoundUserId,
+        tokenUserId,
+      })) {
+        console.warn(
+          `[AgentConnect] connection token from another account for agentId=${resolvedAgentId}; refusing cross-account move`,
+        );
+        if (pendingConn) releasePendingConnectionClaim(pendingConn);
+        return c.json(AGENT_OWNED_BY_OTHER_ACCOUNT_BODY, 409);
+      }
       ownerBinding = planConnectOwnerBinding({
         existingUserId: existingBoundUserId,
         tokenUserId,
@@ -778,7 +832,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // Cross-pod atomic identity claim. The read above is only a snapshot; a
       // second credential may bind the row before this write. This conditional
       // UPDATE is therefore the enforcement point for NEVER REBIND. Owned-token
-      // claims intentionally keep their existing direct-write precedence below.
+      // claims write userId directly below under their own CAS; a token never
+      // reaches a row that another account owns (refused above).
       if (tokenUserId === null && identityKeyUserId !== null) {
         const [claimed] = await db
           .update(agentBots)
@@ -832,6 +887,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
       const persistedSpecies = data.species ?? existing.species ?? resolvedSpecies;
       resolvedSpecies = persistedSpecies;
 
+      // Every branch carries a CAS. A credentialless refresh reaches this point
+      // only for a row that was unowned at the snapshot read, so it must still be
+      // unowned at write time; zero rows means it was bound concurrently.
+      const credentialless = tokenUserId === null && identityKeyUserId === null;
       const ownerCas =
         tokenUserId !== null
           ? existing.userId === null
@@ -839,7 +898,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
             : eq(agentBots.userId, existing.userId)
           : identityKeyUserId !== null
             ? eq(agentBots.userId, identityKeyUserId)
-            : undefined;
+            : isNull(agentBots.userId);
       const [persisted] = await db.update(agentBots).set({
         identityType,
         gatewayUrl: resolveConnectGatewayForPersistence({
@@ -858,9 +917,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
-        // Token proof retains its legacy rebind precedence. Identity claims
-        // were already applied by the conditional UPDATE above; credentialless
-        // metadata refreshes omit userId entirely and cannot clobber a race.
+        // Token proof writes its own user: on an unowned row (`user_id IS
+        // NULL` CAS) or on the same owner's row (`user_id = owner` CAS); a
+        // different owner was refused above, so a token never moves a row
+        // between accounts. Identity claims were already applied by the
+        // conditional UPDATE above. Credentialless
+        // refreshes omit userId and apply only while the row stays unowned
+        // (`user_id IS NULL` CAS below); an owned row was refused above.
         ...(tokenUserId !== null ? { userId: tokenUserId } : {}),
         // Fresh 24h TTL on every reconnect — matches the Phase 6 session
         // liveness contract. Without this, returning bots kept whatever
@@ -879,13 +942,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
         sessionSweptAt: null,
         updatedAt: new Date(),
       }).where(
-        ownerCas
-          ? and(eq(agentBots.id, existing.id), ownerCas)
-          : eq(agentBots.id, existing.id),
+        and(eq(agentBots.id, existing.id), ownerCas),
       ).returning({ userId: agentBots.userId });
       if (persisted) {
         persistedLiveUserId = persisted.userId ?? null;
-      } else if (ownerCas) {
+      } else if (credentialless) {
+        ownerCredentialRequired = true;
+      } else {
         ownerBindConflict = true;
         const liveOwner = await db.query.agentBots.findFirst({
           where: eq(agentBots.id, existing.id),
@@ -913,7 +976,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         species: resolvedSpecies,
         color: data.color ?? null,
         // A new row binds only from an owned token or caller-supplied secret
-        // identity credential. Bare agentId connects stay unbound/non-ledger.
+        // identity credential. A bare agentId connect creates an unbound,
+        // non-ledger row; on an owned row it is refused (409) above.
         userId: ownerBinding.persistedUserId,
         metadata: {
           personality: data.personality,
@@ -944,6 +1008,31 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // token rather than being told it was "already claimed".
     if (pendingConn) releasePendingConnectionClaim(pendingConn);
     return c.json({ error: 'Database error during agent registration' }, 500);
+  }
+
+  // The credentialless CAS lost: the row gained an owner after the snapshot
+  // read. Same refusal as the snapshot check, still before any registration.
+  if (ownerCredentialRequired) {
+    console.warn(
+      `[AgentConnect] owner credential required for agentId=${resolvedAgentId}; row was bound during connect`,
+    );
+    if (pendingConn) releasePendingConnectionClaim(pendingConn);
+    return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
+  }
+
+  // Owner fence (security 2026-09-30, `services/agent-owner-fence.ts`). A
+  // credentialless CAS write can commit while the row is still unowned and
+  // resolve AFTER an owner bind evicted the agent's sessions; this session
+  // would then register as a stray. Refuse it when an owner bind landed
+  // recently. NO await may sit between this check and `registerAgentBot`
+  // below on the credentialless path: it skips the owner-proven provisioning
+  // block, and the eviction and config building are synchronous.
+  if (tokenUserId === null && identityKeyUserId === null && agentOwnedRecently(resolvedAgentId)) {
+    console.warn(
+      `[AgentConnect] owner credential required for agentId=${resolvedAgentId}; an owner bind landed during connect`,
+    );
+    if (pendingConn) releasePendingConnectionClaim(pendingConn);
+    return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
   }
 
   if (ownerBindConflict) {
@@ -1061,16 +1150,23 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
   // Eviction on ownership rebind (Codex auth-lens hardening round 2 — Option B,
   // the primary close). If this connect CHANGES the row's bound userId (an
-  // agentId that was unbound or owned by user A is now bound to user B via an
-  // owned token), every PRIOR in-memory session for this agentId is stale: it was
-  // issued against the old owner (or no owner) and must never resolve against the
-  // new owner's avatar. Evict them BEFORE registering the new session so a stale
+  // unbound agentId is now bound to a user via an owned token or an explicit
+  // identity credential; since 2026-09-30 a token never moves a row that another
+  // account owns), every PRIOR in-memory session for this agentId is stale: it
+  // was issued against no owner and must never resolve against the new owner's
+  // avatar. Evict them BEFORE registering the new session so a stale
   // ledger-capable handle can't spend the new owner's real CT. The map is keyed on
   // sessionId, so we scan by agentId (same helper partner-hatcher already uses for
-  // its re-register hygiene). This includes healing an unbound row with an
-  // explicit identity credential, not only owned-token rebinds.
+  // its re-register hygiene). This covers both an owned-token bind and healing an
+  // unbound row with an explicit identity credential.
   const ownershipRebound = ownerBinding.ownershipChanged;
   if (ownershipRebound) {
+    // Unowned -> owned: mark the owner fence BEFORE the eviction scan, in the
+    // same synchronous block, so a credentialless connect that resolves later
+    // is refused instead of registering after this eviction.
+    if (existingBoundUserId === null && persistedLiveUserId !== null) {
+      markAgentOwnedNow(resolvedAgentId);
+    }
     try {
       for (const stale of npcSimulation.findActiveSessionsByAgentIds([resolvedAgentId])) {
         npcSimulation.unregisterAgentBot(stale);
@@ -2265,6 +2361,11 @@ agentGatewayRoutes.post('/join', async (c) => {
   }
 
   const { identityType: presentedIdentityType, identityKey } = parsed.data;
+  // Same reserved derived-key refusal as /connect (security 2026-09-30): a
+  // caller never presents a server-derived gateway-inferred key.
+  if (isReservedDerivedIdentityKey(identityKey)) {
+    return c.json(IDENTITY_KEY_RESERVED_BODY, 400);
+  }
   // Same unsigned-public Hatcher boundary as /connect. Reject the presented
   // label before coercion so it can never enter the general custom namespace.
   const presentedIdentity = resolvePresentedPublicIdentityType(presentedIdentityType);
@@ -4085,6 +4186,11 @@ agentGatewayRoutes.post('/:sessionId/control-link', async (c) => {
       // that PROVED ownership) is unaffected; retired-sideload users re-auth via the founder plan.
       if (bodyType === 'milady') {
         return c.json({ error: 'milady_identity_unsupported' }, 403);
+      }
+      // Same reserved derived-key refusal as /connect and /join (security
+      // 2026-09-30): a caller never presents a gateway-inferred key.
+      if (isReservedDerivedIdentityKey(bodyKey)) {
+        return c.json(IDENTITY_KEY_RESERVED_BODY, 400);
       }
       try {
         const user = await resolveOrCreateUserByIdentity(bodyType, bodyKey);

@@ -1,9 +1,9 @@
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, or, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, agentBots, avatars } from '@clawville/database';
-import { npcSimulation } from '../services/npc-simulation';
+import { bindAgentOwnerAtRedemption } from '../services/agent-redemption-bind';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionLedgerCapable } from '../services/agent-owner-binding';
@@ -957,34 +957,25 @@ authRoutes.get('/enter', async (c) => {
   // claim event. First-contact /connect deliberately does NOT bind
   // `openclaw_bots.user_id` (see the agent-gateway "deliberately do NOT bind"
   // comment); the human CLICKING the agent-issued link is the proof that this
-  // agent belongs to this account, so the bind happens HERE. Atomic guarded
-  // UPDATE: `user_id IS NULL OR user_id = <redeemer>` means we only fill an
-  // unowned row or re-affirm the same owner — a DIFFERENT existing owner is
-  // NEVER clobbered (skip + warn; `agentId` is a public handle, safe to log —
-  // never log the ticket or any bearer). Best-effort: a bind failure must not
-  // block the human's login, so the whole block is non-fatal.
+  // agent belongs to this account, so the bind happens HERE, in
+  // `bindAgentOwnerAtRedemption` (`services/agent-redemption-bind.ts`). It only
+  // fills an unowned row or re-affirms the same owner — a DIFFERENT existing
+  // owner is NEVER clobbered (skip + warn; `agentId` is a public handle, safe to
+  // log — never log the ticket or any bearer). Security 2026-09-30: a first
+  // bind keeps only the live session the ticket was issued to, and only while
+  // the row still names it; it evicts every other live session for the agent
+  // and burns a stray's row bearer hash so it cannot restore. The owner stamp on the kept session never grants ledger
+  // capability: a session minted without owner proof stays non-ledger until an
+  // identityKey connect or a signed /reconnect. Best-effort: a bind failure
+  // must not block the human's login, so the whole block is non-fatal.
   if (consumed.issuedToAgentId) {
     try {
-      const bound = await db
-        .update(agentBots)
-        .set({ userId: consumed.userId, updatedAt: new Date() })
-        .where(
-          and(
-            eq(agentBots.agentId, consumed.issuedToAgentId),
-            or(
-              isNull(agentBots.userId),
-              eq(agentBots.userId, consumed.userId),
-            ),
-          ),
-        )
-        .returning({ id: agentBots.id });
-      if (bound.length > 0) {
-        // Propagate onto the LIVE in-memory session config(s) so the agent's
-        // demotion backstop (`resolveAgentSession`: config.boundUserId must
-        // equal the row's userId) passes WITHOUT a reconnect — the connected
-        // agent becomes ledger-capable the moment its human lands in-game.
-        npcSimulation.bindAgentOwner(consumed.issuedToAgentId, consumed.userId);
-      } else {
+      const outcome = await bindAgentOwnerAtRedemption({
+        agentId: consumed.issuedToAgentId,
+        redeemerUserId: consumed.userId,
+        issuedSessionDigest: consumed.issuedToAgentSession,
+      });
+      if (outcome === 'skipped') {
         // Row missing, or already owned by a DIFFERENT user (the guard
         // refused). Either way: no bind, login proceeds normally.
         console.warn(

@@ -76,6 +76,7 @@ import { AgentSubstrateClient } from './agent-substrate-client';
 import { decryptToken } from './keypair-vault';
 import { validateHatcherProxyUrl } from './hatcher-config';
 import { sha256Hex, sessionDigest } from './session-digest';
+import { agentOwnedRecently } from './agent-owner-fence';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
@@ -459,6 +460,12 @@ export async function restoreAgentSessionFromRow(
     if (sweptAt && sweptAt.getTime() >= expiresAt.getTime()) return null;
 
     const avatarId = await resolveRestoreAvatarIdFailOpen(bot.userId);
+    // Owner fence (security 2026-10-01, `agent-owner-fence.ts`). This row was
+    // read while UNOWNED, and an owner bind has landed since (it burned or kept
+    // the row hash and evicted the agent's other sessions). Registering now
+    // would bring a stray back after that eviction. No await sits between this
+    // check and rebuildAndRegister, which registers synchronously.
+    if (bot.userId == null && agentOwnedRecently(bot.agentId)) return null;
     const live = rebuildAndRegister(bot, sessionId, avatarId);
     if (live) {
       console.log(

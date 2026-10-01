@@ -1803,24 +1803,31 @@ class NpcSimulation {
 
   /**
    * Magic-link onboarding D1b (2026-07-02) — propagate the bind-at-redemption
-   * claim event into every LIVE in-memory session for `agentId`, so the
-   * already-connected agent becomes ledger-capable WITHOUT a reconnect.
+   * claim event into every LIVE in-memory session for `agentId`.
+   * (2026-09-30 note: since `/connect` grants `ledgerCapable` only with owner
+   * proof, a session with a null `boundUserId` is always non-ledger, so this
+   * bind never makes a session ledger-capable; the agent re-proves ownership
+   * through an identityKey connect or the signed /reconnect.)
    *
-   * Called by `GET /api/auth/enter` right after it atomically binds the
-   * `openclaw_bots.user_id` row (guarded UPDATE). The row bind alone is not
+   * Called by `bindAgentOwnerAtRedemption` (`agent-redemption-bind.ts`, for
+   * `GET /api/auth/enter`) right after it atomically binds the
+   * `openclaw_bots.user_id` row (guarded UPDATE). On a first bind it first
+   * evicts every live session except the one the ticket was issued to
+   * (security 2026-09-30), so only that session gets the stamp; a re-affirm
+   * of the same owner evicts nothing. The row bind alone is not
    * enough: `resolveAgentSession` grants real-CT spend only when the session
    * config's `boundUserId` matches the row's CURRENT `userId` (the round-2
    * rebind demotion backstop), and a first-contact session was minted with
    * `boundUserId: null` — so without this in-memory update the freshly-bound
    * agent would stay demoted until its next /connect. Setting `boundUserId`
-   * here makes the backstop PASS for first-contact sessions (whose
-   * `ledgerCapable` flag is already true — no existing owner at registration).
+   * here only aligns the config with the row; `ledgerCapable` is unchanged.
    *
    * NEVER-CLOBBER (same rule as the SQL guard, via the shared
    * `canBindAgentOwner`): a config that already proved ownership of a
    * DIFFERENT user is left untouched — we only fill a null `boundUserId` or
    * re-affirm the same user. `ledgerCapable` is deliberately NOT flipped: a
-   * session registered non-ledger (agentId-only reconnect to a bound bot)
+   * session registered non-ledger (for example a session minted on an unowned
+   * row before the bind)
    * stays non-ledger; it re-proves ownership through connect-token or the
    * signed-challenge reconnect, exactly as before.
    *

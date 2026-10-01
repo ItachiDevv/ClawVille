@@ -79,9 +79,9 @@ describe('Trading Arena manual section 17c', () => {
     for (const chunk of chunks) expect(chunk.length).toBeLessThan(24_000);
   });
 
-  test('rides protocol 76 and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(76);
-    expect(protocolPointer(API)).toMatchObject({ version: 76, contentHash: contentHashOf(buildProtocolManual(API)) });
+  test('rides the current protocol and the served pointer hashes the same bytes', () => {
+    expect(PROTOCOL_VERSION).toBe(77);
+    expect(protocolPointer(API)).toMatchObject({ version: 77, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {

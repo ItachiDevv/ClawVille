@@ -3,6 +3,10 @@ import {
   canBindAgentOwner,
   buildReturningIdentityDisclosure,
   connectionTokenClaimError,
+  connectRequiresOwnerCredential,
+  connectTokenOwnedByOtherAccount,
+  AGENT_OWNED_BY_OTHER_ACCOUNT_BODY,
+  OWNER_CREDENTIAL_REQUIRED_BODY,
   planConnectOwnerBinding,
   resolvePersistedConnectOwnerProof,
 } from '../agent-owner-binding';
@@ -44,6 +48,44 @@ describe('connect owner binding', () => {
       boundUserId: null,
       ledgerCapable: false,
       ownershipChanged: false,
+    });
+  });
+
+  test('a credentialless connect to an owned row requires an owner credential', () => {
+    // Owned row, bare agentId (no token, no resolved identityKey): refused.
+    expect(connectRequiresOwnerCredential({
+      existingUserId: 'owner-a',
+      tokenUserId: null,
+      identityKeyUserId: null,
+    })).toBe(true);
+    // Unowned row keeps the anonymous model: no credential exists to demand.
+    expect(connectRequiresOwnerCredential({
+      existingUserId: null,
+      tokenUserId: null,
+      identityKeyUserId: null,
+    })).toBe(false);
+    // An owned connection token is a credential, so this check lets it pass;
+    // a token from ANOTHER account is refused by connectTokenOwnedByOtherAccount.
+    expect(connectRequiresOwnerCredential({
+      existingUserId: 'owner-a',
+      tokenUserId: 'owner-token',
+      identityKeyUserId: null,
+    })).toBe(false);
+    // A resolved identityKey is a credential: the same owner passes, and a
+    // different owner stays on the OWNER_BIND_CONFLICT path, not this refusal.
+    expect(connectRequiresOwnerCredential({
+      existingUserId: 'owner-a',
+      tokenUserId: null,
+      identityKeyUserId: 'owner-a',
+    })).toBe(false);
+    expect(connectRequiresOwnerCredential({
+      existingUserId: 'owner-a',
+      tokenUserId: null,
+      identityKeyUserId: 'owner-b',
+    })).toBe(false);
+    expect(OWNER_CREDENTIAL_REQUIRED_BODY).toEqual({
+      error: 'This agentId already has an owner. Connect with its identityKey or use the signed /api/agent/reconnect.',
+      code: 'owner_credential_required',
     });
   });
 
@@ -89,11 +131,28 @@ describe('connect owner binding', () => {
     });
   });
 
-  test('owned connection token retains intentional precedence', () => {
+  test('a connection token never moves a row owned by another account', () => {
+    // Security 2026-09-30: the token used to rewrite owner-a's row to the
+    // token's user (persistedUserId 'owner-token', ownershipChanged true).
     expect(planConnectOwnerBinding({
       existingUserId: 'owner-a',
       tokenUserId: 'owner-token',
       identityKeyUserId: 'owner-key',
+      activeAvatarId: 'avatar-token',
+    })).toEqual({
+      persistedUserId: 'owner-a',
+      identityMismatch: true,
+      boundUserId: null,
+      ledgerCapable: false,
+      ownershipChanged: false,
+    });
+  });
+
+  test('a connection token binds an unowned row or proves its own owner', () => {
+    expect(planConnectOwnerBinding({
+      existingUserId: null,
+      tokenUserId: 'owner-token',
+      identityKeyUserId: null,
       activeAvatarId: 'avatar-token',
     })).toEqual({
       persistedUserId: 'owner-token',
@@ -102,6 +161,32 @@ describe('connect owner binding', () => {
       ledgerCapable: true,
       ownershipChanged: true,
     });
+    expect(planConnectOwnerBinding({
+      existingUserId: 'owner-token',
+      tokenUserId: 'owner-token',
+      identityKeyUserId: null,
+      activeAvatarId: 'avatar-token',
+    })).toEqual({
+      persistedUserId: 'owner-token',
+      identityMismatch: false,
+      boundUserId: 'owner-token',
+      ledgerCapable: true,
+      ownershipChanged: false,
+    });
+  });
+
+  test('connectTokenOwnedByOtherAccount flags only a token for a different owner', () => {
+    expect(connectTokenOwnedByOtherAccount({ existingUserId: 'owner-a', tokenUserId: 'owner-b' })).toBe(true);
+    expect(connectTokenOwnedByOtherAccount({ existingUserId: 'owner-a', tokenUserId: 'owner-a' })).toBe(false);
+    expect(connectTokenOwnedByOtherAccount({ existingUserId: null, tokenUserId: 'owner-b' })).toBe(false);
+    // No token user (no token, or a public front-door token): not this rule.
+    expect(connectTokenOwnedByOtherAccount({ existingUserId: 'owner-a', tokenUserId: null })).toBe(false);
+    expect(connectTokenOwnedByOtherAccount({ existingUserId: null, tokenUserId: null })).toBe(false);
+    expect(AGENT_OWNED_BY_OTHER_ACCOUNT_BODY).toEqual({
+      error: 'This agentId belongs to another account. Connect it from that account, or use its identityKey or the signed /api/agent/reconnect.',
+      code: 'agent_owned_by_other_account',
+    });
+    expect(Object.isFrozen(AGENT_OWNED_BY_OTHER_ACCOUNT_BODY)).toBe(true);
   });
 
   test.each([

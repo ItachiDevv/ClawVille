@@ -42,9 +42,11 @@ import {
   hasRealDeclaredGateway,
   resolveIdentityForTicket,
   resolveConnectGatewayForPersistence,
+  isReservedDerivedIdentityKey,
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
+import { sha256Hex } from '../session-digest';
 
 describe('public identity canonicalization', () => {
   test('preserves known labels and collapses novel labels to custom', () => {
@@ -182,7 +184,7 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
       authToken: 'custom-secret',
     }, inferredIdentityType)).toEqual({
       identityType: 'custom',
-      identityKey: 'https://custom.example/v1#custom-s',
+      identityKey: `gateway-inferred:v2:https://custom.example/v1#${sha256Hex('custom-secret')}`,
     });
     expect(resolveIdentityForTicket({
       identityKey: 'explicit-custom-key',
@@ -214,12 +216,83 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
       authToken: 'openclaw-secret',
     }, 'openclaw')).toEqual({
       identityType: 'openclaw',
-      identityKey: 'https://openclaw.example/v1#openclaw',
+      identityKey: `gateway-inferred:v2:https://openclaw.example/v1#${sha256Hex('openclaw-secret')}`,
     });
     expect(resolveIdentityForTicket({
       gatewayUrl: 'http://localhost:0',
       authToken: 'not-an-owner-proof',
     }, 'openclaw')).toBeNull();
+  });
+
+  test('gateway-inferred identity binds the full token, not its first 8 characters (2026-09-30)', () => {
+    const gatewayUrl = 'https://shared-gateway.example/v1';
+    const tokenA = 'samepfx8-token-belonging-to-agent-a';
+    const tokenB = 'samepfx8-token-belonging-to-agent-b';
+    expect(tokenA.slice(0, 8)).toBe(tokenB.slice(0, 8));
+    const a = resolveIdentityForTicket({ gatewayUrl, authToken: tokenA }, 'custom');
+    const b = resolveIdentityForTicket({ gatewayUrl, authToken: tokenB }, 'custom');
+    // Same 8-character prefix on one gateway no longer maps to one account.
+    expect(a?.identityKey).not.toBe(b?.identityKey);
+    expect(a).toEqual({ identityType: 'custom', identityKey: `gateway-inferred:v2:${gatewayUrl}#${sha256Hex(tokenA)}` });
+    // The key carries neither the raw token nor its 8-character prefix.
+    for (const [token, ident] of [[tokenA, a], [tokenB, b]] as const) {
+      expect(ident?.identityKey).not.toContain(token);
+      expect(ident?.identityKey).not.toContain(token.slice(0, 8));
+    }
+    // Unchanged: Milady never resolves a key, and an explicit identityKey wins.
+    expect(resolveIdentityForTicket({ gatewayUrl, authToken: tokenA }, 'milady')).toBeNull();
+    expect(resolveIdentityForTicket({ identityKey: 'explicit-key', gatewayUrl, authToken: tokenA }, 'custom')).toEqual({
+      identityType: 'custom',
+      identityKey: 'explicit-key',
+    });
+  });
+
+  test('the derived key is in the reserved gateway-inferred:v2 namespace and leaks no token (round 2b)', () => {
+    const gatewayUrl = 'https://gateway.example/v1';
+    const token = 'sk-proj-a-long-secret-gateway-token-value';
+    const derived = resolveIdentityForTicket({ gatewayUrl, authToken: token }, 'openclaw');
+    expect(derived?.identityKey.startsWith('gateway-inferred:v2:')).toBe(true);
+    expect(derived?.identityKey).toBe(`gateway-inferred:v2:${gatewayUrl}#${sha256Hex(token)}`);
+    expect(derived?.identityKey).not.toContain(token);
+    expect(derived?.identityKey).not.toContain(token.slice(0, 8));
+    // A caller can never present the derived key (or the legacy one) explicitly.
+    expect(isReservedDerivedIdentityKey(derived!.identityKey)).toBe(true);
+    expect(isReservedDerivedIdentityKey(`${gatewayUrl}#${token.slice(0, 8)}`)).toBe(true);
+  });
+
+  test('isReservedDerivedIdentityKey reserves only the derived shapes (round 2b)', () => {
+    for (const reserved of [
+      'gateway-inferred:',
+      'gateway-inferred:v2:https://g.example#abc',
+      'gateway-inferred:v9:anything',
+      'https://gateway.example/v1#sk-proj-',
+      'http://gateway.example#a',
+      'HTTPS://Gateway.Example/v1#12345678',
+      'https://gateway.example/v1#ab cd',
+      // Any URL scheme the gateway schema accepts (ws/wss and others).
+      'wss://gateway.example/socket#sk-proj-',
+      'ws://gateway.example#abc',
+      // Scheme-like prefixes with a short fragment tail are the legacy shape too.
+      'x-gateway-inferred:v2:https://g.example#abc',
+      'Gateway-Inferred:v2:https://g.example#abc',
+    ]) {
+      expect(isReservedDerivedIdentityKey(reserved)).toBe(true);
+    }
+    for (const allowed of [
+      'f3b9c1d2-normal-random-identity-key-7a6e',
+      'explicit-custom-key',
+      // A tail longer than 8 characters is not the legacy shape.
+      'https://gateway.example/v1#123456789',
+      `https://gateway.example/v1#${sha256Hex('x')}`,
+      // No URL scheme, or no fragment, or an empty tail.
+      'gateway.example/v1#sk-proj-',
+      'https://gateway.example/v1',
+      'https://gateway.example/v1#',
+      // The reserved prefix must be at the start (and a long tail is not legacy).
+      'x-gateway-inferred:v2:https://g.example#abcdefghij',
+    ]) {
+      expect(isReservedDerivedIdentityKey(allowed)).toBe(false);
+    }
   });
 
   test('gateway-less OpenClaw clears stale BYO row state and restores by the same fact', () => {
