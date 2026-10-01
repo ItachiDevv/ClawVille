@@ -135,6 +135,8 @@ import {
   TRADING_FLOOR_CAMERA,
   placeTradingFloorChaseCamera,
   smoothTradingFloorCameraArm,
+  smoothTradingFloorCameraBoom,
+  tradingFloorCameraBoom,
   TRADING_FLOOR_CHAIR_HALF_X,
   TRADING_FLOOR_CHAIR_HALF_Z,
   TRADING_FLOOR_CHAIR_SEAT_Y,
@@ -1113,6 +1115,7 @@ function TradingFloorAvatarMotion({
   const cameraPitch = useRef(0);
   const snapCameraRef = useRef(true);
   const cameraArm = useRef<number>(TRADING_FLOOR_CAMERA.behind);
+  const cameraBoom = useRef(0);
   const frozenLastRef = useRef(false);
   const frozenPrevRef = useRef(false);
   const capabilities = useSlotCapabilities();
@@ -1176,6 +1179,7 @@ function TradingFloorAvatarMotion({
     cameraPitch.current = 0;
     snapCameraRef.current = true;
     cameraArm.current = TRADING_FLOOR_CAMERA.behind;
+    cameraBoom.current = 0;
     resetTradingFloorProximity();
     const group = groupRef.current;
     if (group) {
@@ -1308,13 +1312,20 @@ function TradingFloorAvatarMotion({
         _cameraForwardZ = _forwardScratch.z;
         const rawArm = placeTradingFloorChaseCamera(
           bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch,
+          TRADING_FLOOR_CAMERA.behind, snapCameraRef.current ? Infinity : cameraBoom.current,
         );
         cameraArm.current = smoothTradingFloorCameraArm(
           cameraArm.current, rawArm, safeDelta, snapCameraRef.current,
         );
-        placeTradingFloorChaseCamera(
-          bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch, cameraArm.current,
+        // Shorten the already clipped endpoint on the same ray; no second cast.
+        const armRetraction = rawArm - cameraArm.current;
+        _cameraScratch.x += _forwardScratch.x * armRetraction;
+        _cameraScratch.z += _forwardScratch.z * armRetraction;
+        cameraBoom.current = smoothTradingFloorCameraBoom(
+          cameraBoom.current, tradingFloorCameraBoom(cameraPitch.current, cameraArm.current),
+          safeDelta, snapCameraRef.current,
         );
+        _cameraScratch.y = TRADING_FLOOR_CAMERA.above + cameraPitch.current + cameraBoom.current;
         camera.position.copy(_cameraScratch);
         snapCameraRef.current = false;
         _lookScratch.set(

@@ -21,6 +21,8 @@ import {
   createTradingFloorArming,
   placeTradingFloorChaseCamera,
   smoothTradingFloorCameraArm,
+  smoothTradingFloorCameraBoom,
+  tradingFloorCameraBoom,
   TRADING_FLOOR_CAMERA_BOUNDS,
   TRADING_FLOOR_CAMERA_ARM,
   TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
@@ -751,10 +753,10 @@ describe('Trading Floor camera — the rig never inverts at a wall', () => {
 
   test('both side clamps leave an arm even between desks and past the row', () => {
     const out = { x: 0, z: 0 };
-    for (const sign of [-1, 1]) {
-      clampTradingFloorMovement2D(0, TRADING_FLOOR_DOOR_APPROACH_Z,
-        sign * TRADING_FLOOR_ROOM.halfX, TRADING_FLOOR_DOOR_APPROACH_Z, out);
-      expect(out.x).toBe(sign * TRADING_FLOOR_SIDE_APPROACH_X);
+    const betweenDesksZ = (TRADING_FLOOR_CONSOLE_ROW[0]!.z + TRADING_FLOOR_CONSOLE_ROW[1]!.z) / 2;
+    for (const z of [betweenDesksZ, TRADING_FLOOR_DOOR_APPROACH_Z]) for (const sign of [-1, 1]) {
+      clampTradingFloorMovement2D(0, z, sign * TRADING_FLOOR_ROOM.halfX, z, out);
+      expect(out).toEqual({ x: sign * TRADING_FLOOR_SIDE_APPROACH_X, z });
       expect(cameraMaxX - Math.abs(out.x)).toBe(TRADING_FLOOR_PLAYER_RADIUS);
     }
   });
@@ -1206,7 +1208,129 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
 });
 
 
+/** Mirror the scene's single cast, scalar arm retraction and boom-only ease. */
+function drawSpringArm(
+  x: number, z: number, yaw: number, pitch: number,
+  state: { arm: number; boom: number }, out: { x: number; y: number; z: number }, snap = false,
+): void {
+  const raw = placeTradingFloorChaseCamera(x, z, yaw, pitch, out,
+    TRADING_FLOOR_CAMERA.behind, snap ? Infinity : state.boom);
+  state.arm = smoothTradingFloorCameraArm(state.arm, raw, FRAME_SECONDS, snap);
+  out.x += Math.sin(yaw) * (raw - state.arm);
+  out.z -= Math.cos(yaw) * (raw - state.arm);
+  state.boom = smoothTradingFloorCameraBoom(state.boom,
+    tradingFloorCameraBoom(pitch, state.arm), FRAME_SECONDS, snap);
+  out.y = TRADING_FLOOR_CAMERA.above + pitch + state.boom;
+}
+
 describe('Trading Floor camera - spring arm', () => {
+  test('kiosk graze at yaw 85..93 never shrinks more than two walk steps', () => {
+    const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
+    let worstShrink = 0;
+    const step = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
+    for (let deg = 85; deg <= 93; deg++) {
+      const yaw = deg * Math.PI / 180;
+      let x = 300, z = TRADING_FLOOR_BOARD_APPROACH_Z;
+      let arm = placeTradingFloorChaseCamera(x, z, yaw, 0, camera);
+      for (let frame = 0; frame < 120; frame++) {
+        clampTradingFloorMovement2D(x, z, x - Math.sin(yaw) * step, z, out);
+        x = out.x; z = out.z;
+        const raw = placeTradingFloorChaseCamera(x, z, yaw, 0, camera);
+        const next = smoothTradingFloorCameraArm(arm, raw, FRAME_SECONDS);
+        worstShrink = Math.max(worstShrink, arm - next);
+        arm = next;
+      }
+    }
+    console.log(`kiosk graze: worst shrink=${worstShrink.toFixed(6)} wu/frame`);
+    expect(worstShrink).toBeLessThanOrEqual(2 * step);
+  });
+
+  test('boom lag uses LOW blockers and pitch input has no height lag', () => {
+    const camera = { x: 0, y: 0, z: 0 };
+    const high = placeTradingFloorChaseCamera(0, 400, Math.PI, -30, camera, 50);
+    const low = placeTradingFloorChaseCamera(0, 400, Math.PI, -30, camera, 50, 0);
+    expect(low).toBeLessThan(high);
+    const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+    drawSpringArm(0, 0, 0, 0, state, camera, true);
+    const previousY = camera.y;
+    drawSpringArm(0, 0, 0, 3, state, camera);
+    expect(camera.y - previousY).toBe(3);
+    expect(smoothTradingFloorCameraBoom(100, 0, FRAME_SECONDS)).toBeGreaterThan(0);
+    expect(smoothTradingFloorCameraBoom(100, 0, FRAME_SECONDS, true)).toBe(0);
+  });
+
+  test('6000 constant-yaw random walks bound each 3D view step to 21 degrees', () => {
+    let seed = 11;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+    const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
+    const pitches = [TRADING_FLOOR_CAMERA.pitchMin, -60, 0, 75, TRADING_FLOOR_CAMERA.pitchMax];
+    const direction = new THREE.Vector3(), previous = new THREE.Vector3();
+    let worst = 0, frames = 0, gt05 = 0, gt5 = 0, gt10 = 0, inversions = 0, inside = 0;
+    for (let run = 0; run < 6000; run++) {
+      let x = 0, z = 0;
+      do {
+        x = (rnd() * 2 - 1) * TRADING_FLOOR_SIDE_APPROACH_X;
+        z = TRADING_FLOOR_BOARD_APPROACH_Z + rnd() *
+          (TRADING_FLOOR_DOOR_APPROACH_Z - TRADING_FLOOR_BOARD_APPROACH_Z);
+      } while (tradingFloorHitsSolid(x, z));
+      const yaw = rnd() * Math.PI * 2, pitch = pitches[Math.floor(rnd() * pitches.length)]!;
+      const move = rnd() * Math.PI * 2;
+      const step = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
+      const vx = Math.sin(move) * step, vz = Math.cos(move) * step;
+      const fx = Math.sin(yaw), fz = -Math.cos(yaw);
+      const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+      drawSpringArm(x, z, yaw, pitch, state, camera, true);
+      for (let frame = 0; frame < 120; frame++) {
+        clampTradingFloorMovement2D(x, z, x + vx, z + vz, out);
+        x = out.x; z = out.z;
+        drawSpringArm(x, z, yaw, pitch, state, camera);
+        direction.set(x + fx * TRADING_FLOOR_CAMERA.lookAhead - camera.x,
+          TRADING_FLOOR_CAMERA.lookY - camera.y,
+          z + fz * TRADING_FLOOR_CAMERA.lookAhead - camera.z).normalize();
+        if (frame > 0) {
+          const angle = previous.angleTo(direction) * 180 / Math.PI;
+          frames++; worst = Math.max(worst, angle);
+          if (angle > 0.5) gt05++;
+          if (angle > 5) gt5++;
+          if (angle > 10) gt10++;
+        }
+        previous.copy(direction);
+        if ((x - camera.x) * fx + (z - camera.z) * fz < -1e-8) inversions++;
+        const solids = camera.y < TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE ?
+          TRADING_FLOOR_CAMERA_SOLIDS_LOW : TRADING_FLOOR_CAMERA_SOLIDS_HIGH;
+        if (solids.some((s) => Math.abs(camera.x - s.centerX) < s.halfX + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE &&
+          Math.abs(camera.z - s.centerZ) < s.halfZ + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE)) inside++;
+      }
+    }
+    console.log(`spring-arm random walks: frames=${frames}, worst=${worst.toFixed(3)} deg, >0.5=${(100 * gt05 / frames).toFixed(3)}%, >5=${(100 * gt5 / frames).toFixed(3)}%, >10=${(100 * gt10 / frames).toFixed(3)}%, inversions=${inversions}, camera-in-solid=${inside}`);
+    // Immediate collision shrink changes the elevation angle at a box corner.
+    // 21 degrees covers the measured 20.0-degree maximum with 1 degree headroom.
+    expect(frames).toBe(714_000);
+    expect(worst).toBeLessThanOrEqual(21);
+    expect(inversions).toBe(0);
+    expect(inside).toBe(0);
+  }, 30_000);
+
+  test('a full turn at the founder point (-330, -464) stays below 1.5 degrees per frame', () => {
+    const camera = { x: 0, y: 0, z: 0 };
+    const direction = new THREE.Vector3(), previous = new THREE.Vector3();
+    const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+    expect(tradingFloorHitsSolid(-330, -464)).toBe(false);
+    let worst = 0;
+    const yawStep = TRADING_FLOOR_CAMERA.yawSpeed * FRAME_SECONDS;
+    for (let frame = 0; frame <= Math.ceil(2 * Math.PI / yawStep); frame++) {
+      const yaw = frame * yawStep;
+      drawSpringArm(-330, -464, yaw, 0, state, camera, frame === 0);
+      direction.set(-330 + Math.sin(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.x,
+        TRADING_FLOOR_CAMERA.lookY - camera.y,
+        -464 - Math.cos(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.z).normalize();
+      if (frame > 0) worst = Math.max(worst, previous.angleTo(direction) * 180 / Math.PI);
+      previous.copy(direction);
+    }
+    console.log(`founder turn: worst=${worst.toFixed(3)} deg/frame; pure yaw=${(yawStep * 180 / Math.PI).toFixed(3)} deg/frame`);
+    expect(worst).toBeLessThanOrEqual(1.5);
+  });
+
   test('all legal floor poses keep the camera behind, on the ray and outside blockers', () => {
     const camera = { x: 0, y: 0, z: 0 };
     let poses = 0, inversions = 0, inside = 0, envelopeErrors = 0, armErrors = 0;
@@ -1308,11 +1432,9 @@ describe('Trading Floor camera - spring arm', () => {
         const camera = new THREE.PerspectiveCamera();
         const scratch = new THREE.Vector3(), look = new THREE.Vector3(), direction = new THREE.Vector3();
         const previousDirection = new THREE.Vector3();
-        let arm: number = TRADING_FLOOR_CAMERA.behind;
+        const cameraState = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
         const draw = (snap: boolean) => {
-          const raw = placeTradingFloorChaseCamera(position.x, position.z, trial.yaw, 0, scratch);
-          arm = smoothTradingFloorCameraArm(arm, raw, FRAME_SECONDS, snap);
-          placeTradingFloorChaseCamera(position.x, position.z, trial.yaw, 0, scratch, arm);
+          drawSpringArm(position.x, position.z, trial.yaw, 0, cameraState, scratch, snap);
           camera.position.copy(scratch);
           look.set(position.x + Math.sin(trial.yaw) * TRADING_FLOOR_CAMERA.lookAhead,
             TRADING_FLOOR_CAMERA.lookY, position.z - Math.cos(trial.yaw) * TRADING_FLOOR_CAMERA.lookAhead);
@@ -1356,6 +1478,6 @@ describe('Trading Floor camera - spring arm', () => {
     } finally { resetPlayerKeys(); }
     console.log(`spring-arm controller: max horizontal view step=${maxHeadingStep.toFixed(6)} deg, max held-key direction step=${maxMoveStep.toFixed(6)} deg, max full 3D view step=${maxFullViewStep.toFixed(6)} deg`);
     expect(maxHeadingStep).toBeLessThanOrEqual(0.5);
-    expect(maxMoveStep).toBeLessThanOrEqual(90);
+    expect(maxMoveStep).toBeLessThanOrEqual(0.5);
   });
 });

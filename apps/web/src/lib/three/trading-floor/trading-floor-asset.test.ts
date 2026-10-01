@@ -8,6 +8,8 @@ import {
   consoleHalfExtents,
   AUTHORED_PROP_TOLERANCE_WU,
   TRADING_FLOOR_CAMERA,
+  TRADING_FLOOR_CAMERA_CLAW_SOLID,
+  TRADING_FLOOR_CLAW_EXTENTS,
   TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
   TRADING_FLOOR_CAMERA_Z_MAX,
   TRADING_FLOOR_CAMERA_Z_MIN,
@@ -1087,4 +1089,24 @@ describe('Trading Floor asset — nothing intersects anything', () => {
       expect(gapX > 0 || gapZ > 0).toBe(true);
     }
   });
+});
+
+test('the measured claw camera box covers every decoded claw vertex', async () => {
+  const doc = await decodedAsset;
+  const mesh = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorClaws')!.getMesh()!;
+  expect(mesh.listPrimitives()).toHaveLength(1);
+  const { vertices } = await assetVertices('TradingFloorClaws');
+  const box = TRADING_FLOOR_CAMERA_CLAW_SOLID;
+  expect(vertices.length).toBeGreaterThan(100);
+  let marginX = Infinity, marginZ = Infinity, marginY = Infinity;
+  for (const { p: [x, y, z] } of vertices) {
+    marginX = Math.min(marginX, box.halfX - Math.abs(x - box.centerX));
+    marginZ = Math.min(marginZ, box.halfZ - Math.abs(z - box.centerZ));
+    marginY = Math.min(marginY, TRADING_FLOOR_CLAW_EXTENTS.topY - y);
+  }
+  expect(marginX).toBeGreaterThan(0);
+  expect(marginZ).toBeGreaterThan(0);
+  expect(marginY).toBeGreaterThan(0);
+  expect(extras!.statue!.top).toBeLessThanOrEqual(TRADING_FLOOR_CLAW_EXTENTS.topY);
+  console.log(`claw camera box margins: x=${marginX.toFixed(3)}, z=${marginZ.toFixed(3)}, y=${marginY.toFixed(3)} wu`);
 });

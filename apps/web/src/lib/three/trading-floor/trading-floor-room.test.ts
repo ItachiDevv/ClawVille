@@ -10,6 +10,18 @@ import {
   tradingFloorDistanceSq,
   tradingFloorHitsSolid,
   TRADING_FLOOR_CAMERA,
+  TRADING_FLOOR_CAMERA_Z_MIN,
+  TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+  TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
+  TRADING_FLOOR_CAMERA_SOLIDS_LOW,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
+  TRADING_FLOOR_CAMERA_CLAW_SOLID,
+  TRADING_FLOOR_DESK_SOLIDS,
+  TRADING_FLOOR_DAIS_SOLID,
+  TRADING_FLOOR_KIOSK_SOLID,
+  TRADING_FLOOR_PILLAR_SOLIDS,
+  computeTradingFloorArming,
+  createTradingFloorArming,
   TRADING_FLOOR_SIDE_APPROACH_X,
   TRADING_FLOOR_BOARD_APPROACH_Z,
   TRADING_FLOOR_DOOR_APPROACH_Z,
@@ -496,5 +508,44 @@ describe('Trading Floor interior — movement clamp', () => {
     expect(best).toBeLessThan(
       TRADING_FLOOR_MONITOR.interactRadius * TRADING_FLOOR_MONITOR.interactRadius,
     );
+  });
+});
+
+describe('Trading Floor camera blockers - named parts', () => {
+  test('HIGH contains desks, pillars and the extended kiosk; LOW adds only claws', () => {
+    expect(TRADING_FLOOR_CAMERA_SOLIDS_HIGH).toEqual([
+      ...TRADING_FLOOR_DESK_SOLIDS, ...TRADING_FLOOR_PILLAR_SOLIDS,
+      TRADING_FLOOR_CAMERA_KIOSK_SOLID,
+    ]);
+    expect(TRADING_FLOOR_CAMERA_SOLIDS_LOW).toEqual([
+      ...TRADING_FLOOR_CAMERA_SOLIDS_HIGH, TRADING_FLOOR_CAMERA_CLAW_SOLID,
+    ]);
+    for (const list of [TRADING_FLOOR_CAMERA_SOLIDS_HIGH, TRADING_FLOOR_CAMERA_SOLIDS_LOW]) {
+      expect(list).not.toContain(TRADING_FLOOR_DAIS_SOLID);
+      expect(list).not.toContain(TRADING_FLOOR_KIOSK_SOLID);
+    }
+    expect(TRADING_FLOOR_DESK_SOLIDS).toHaveLength(TRADING_FLOOR_CONSOLE_ROW.length);
+    expect(TRADING_FLOOR_PILLAR_SOLIDS).toHaveLength(4);
+  });
+
+  test('the extended kiosk remains backed by the board wall after a resize', () => {
+    expect(TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_MONITOR.halfZ).toBeLessThanOrEqual(
+      TRADING_FLOOR_CAMERA_Z_MIN + 2 * TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+    );
+  });
+
+  test('the kiosk collider stops the body about 96 wu from its centre and keeps E armed', () => {
+    const x = TRADING_FLOOR_MONITOR.x;
+    const z = TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS;
+    const out = { x: 0, z: 0 };
+    clampTradingFloorMovement2D(x, z + 10, x, z, out);
+    expect(out).toEqual({ x, z });
+    clampTradingFloorMovement2D(x, z, x, z - 10, out);
+    expect(out).toEqual({ x, z });
+    expect(z - TRADING_FLOOR_MONITOR.z).toBeCloseTo(96.45, 2);
+    expect(z).toBeGreaterThan(TRADING_FLOOR_BOARD_APPROACH_Z);
+    const arming = createTradingFloorArming();
+    computeTradingFloorArming(out.x, out.z, arming);
+    expect(arming.monitorArmed).toBe(true);
   });
 });

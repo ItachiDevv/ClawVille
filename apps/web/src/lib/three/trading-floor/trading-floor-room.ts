@@ -80,10 +80,9 @@ export const TRADING_FLOOR_CAMERA = Object.freeze({
   pitchMin: -120,
   pitchMax: 150,
   /**
-   * Inward margin for clampCameraToRoom so the camera never clips a wall.
-   * Small on purpose: in a 2600 x 2200 hall the chase arm is longer than the
-   * room's half-depth, so the camera lives clamped against the back wall most
-   * of the time and every wu of margin costs framing distance.
+   * Shared envelope margin. TRADING_FLOOR_CAMERA_BOUNDS pre-expands X/Z;
+   * spring-arm placement subtracts this same margin on each axis.
+   * This value does not change the effective wall limits.
    */
   roomMargin: 60,
 });
@@ -389,33 +388,26 @@ export const TRADING_FLOOR_DESK_INNER_X = Math.min(
  */
 export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -1066;
 
-/**
- * How close to the door wall the PLAYER may walk.
- *
- * The camera-side bound above stops the rig inverting, but 34 wu of arm is not a
- * chase shot — the avatar fills the near plane. The honest fix is on the player
- * side: stop them 180 wu short of the door and the camera gets a real arm
- * (168 wu with the bound above) without any of it being taken from the room.
- *
- * 180 is chosen against `TRADING_FLOOR_DOOR.interactRadius` (240): the player's
- * closest legal approach is INSIDE the arm band, so E still fires at the wall.
- * The spawn at `halfZ - 320` = 780 is well short of this and is unchanged, and
- * the exit spawn and the walk-in path are world-side, so neither is touched.
- *
- * The board approach mirrors this standoff; its kiosk remains in reach.
- */
-export const TRADING_FLOOR_DOOR_APPROACH_Z = TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_CAMERA.lookY;
-/** Mirror the door standoff so the board end also keeps a nonnegative arm. */
-export const TRADING_FLOOR_BOARD_APPROACH_Z = -TRADING_FLOOR_DOOR_APPROACH_Z;
+/** Avatar-scale approach tuning, independent of the camera look target. */
+export const TRADING_FLOOR_END_STANDOFF = 180;
+/** Camera near-plane standoff; movement retains the larger player radius. */
+export const TRADING_FLOOR_CAMERA_SOLID_CLEARANCE = 12;
+/** The door remains armed within its 240 wu interaction radius. */
+export const TRADING_FLOOR_DOOR_APPROACH_Z =
+  TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_END_STANDOFF;
+/** Keep the body outside the kiosk's padded camera band, including sideways rays. */
+export const TRADING_FLOOR_BOARD_APPROACH_Z = Math.max(
+  -(TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_END_STANDOFF),
+  TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ +
+    2.5 * TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+);
 /** All side gaps obey the same approach limit as a desk face. */
 export const TRADING_FLOOR_SIDE_APPROACH_X =
   TRADING_FLOOR_DESK_INNER_X - TRADING_FLOOR_PLAYER_RADIUS;
 
-/** Camera near-plane standoff; movement retains the larger player radius. */
-export const TRADING_FLOOR_CAMERA_SOLID_CLEARANCE = 12;
-
 /**
  * Door-wall clearance and board-surround clearance use separate Z limits.
+ * The camera Z bound must leave an arm behind the player Z bound at both ends.
  * The spring-arm envelope preserves these limits. The approach clamps leave
  * positive arms at both ends instead of placing the camera ahead of the body.
  */
@@ -440,8 +432,9 @@ export const TRADING_FLOOR_CAMERA_BOUNDS = Object.freeze({
 export const TRADING_FLOOR_CAMERA_ARM = Object.freeze({
   originInset: TRADING_FLOOR_CAMERA_SOLID_CLEARANCE / 3,
   outRate: 4,
-  boomStart: 2 * (TRADING_FLOOR_CAMERA.above - TRADING_FLOOR_CAMERA.lookY),
-  boomRise: 1 + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE / TRADING_FLOOR_CAMERA.roomMargin,
+  boomStart: 160,
+  boomRise: 1.2,
+  boomRate: 6,
 });
 
 /**
@@ -693,77 +686,71 @@ export interface TradingFloorAABB {
 const PILLAR_INSET = 190;
 const PILLAR_HALF = 55;
 
+/** Desk boxes share the rendered row's rotated footprints. */
+export const TRADING_FLOOR_DESK_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
+  TRADING_FLOOR_CONSOLE_ROW.map((slot) => Object.freeze({
+    centerX: slot.x, centerZ: slot.z, ...consoleHalfExtents(slot.rotY),
+  })),
+);
+/** TradingFloorHoloDais: node (0, -60), 700 x 692 footprint. */
+export const TRADING_FLOOR_DAIS_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: 0, centerZ: -60, halfX: 350, halfZ: 346,
+});
+export const TRADING_FLOOR_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_MONITOR.x, centerZ: TRADING_FLOOR_MONITOR.z,
+  halfX: TRADING_FLOOR_MONITOR.halfX, halfZ: TRADING_FLOOR_MONITOR.halfZ,
+});
+export const TRADING_FLOOR_PILLAR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
+  [-1, 1].flatMap((sx) => [-1, 1].map((sz) => Object.freeze({
+    centerX: sx * (TRADING_FLOOR_ROOM.halfX - PILLAR_INSET),
+    centerZ: sz * (TRADING_FLOOR_ROOM.halfZ - PILLAR_INSET),
+    halfX: PILLAR_HALF, halfZ: PILLAR_HALF,
+  }))),
+);
 export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
-  // The instanced console row — same source array the renderer uses, with the
-  // footprint derived from each slot's own yaw.
-  ...TRADING_FLOOR_CONSOLE_ROW.map((slot) => {
-    const { halfX, halfZ } = consoleHalfExtents(slot.rotY);
-    return Object.freeze({
-      centerX: slot.x,
-      centerZ: slot.z,
-      halfX,
-      halfZ,
-    });
-  }),
-  // TradingFloorHoloDais — node (0, -60), 700 x 692 footprint. Since v3 it is
-  // the stepped granite plinth under the twin plinth claws (top 226.96 wu).
-  Object.freeze({ centerX: 0, centerZ: -60, halfX: 350, halfZ: 346 }),
-  // TradingFloorMonitorStation — node (-300, -980), 129 x 101 footprint (v3).
-  Object.freeze({
-    centerX: TRADING_FLOOR_MONITOR.x,
-    centerZ: TRADING_FLOOR_MONITOR.z,
-    halfX: TRADING_FLOOR_MONITOR.halfX,
-    halfZ: TRADING_FLOOR_MONITOR.halfZ,
-  }),
-  // Four corner pillars.
-  ...[-1, 1].flatMap((sx) =>
-    [-1, 1].map((sz) =>
-      Object.freeze({
-        centerX: sx * (TRADING_FLOOR_ROOM.halfX - PILLAR_INSET),
-        centerZ: sz * (TRADING_FLOOR_ROOM.halfZ - PILLAR_INSET),
-        halfX: PILLAR_HALF,
-        halfZ: PILLAR_HALF,
-      }),
-    ),
-  ),
+  ...TRADING_FLOOR_DESK_SOLIDS,
+  TRADING_FLOOR_DAIS_SOLID,
+  TRADING_FLOOR_KIOSK_SOLID,
+  ...TRADING_FLOOR_PILLAR_SOLIDS,
 ]);
 
-/**
- * Separate camera blockers. The kiosk extends through the board wall so an
- * arm cannot pass behind it. The low plinth is deliberately absent.
- */
+/** Extend the wall-backed kiosk through the board wall; do not add the low plinth. */
 const CAMERA_KIOSK_FRONT_Z = TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ;
 const CAMERA_KIOSK_BACK_Z = -(TRADING_FLOOR_ROOM.halfZ + TRADING_FLOOR_ROOM.height);
+export const TRADING_FLOOR_CAMERA_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_MONITOR.x,
+  centerZ: (CAMERA_KIOSK_FRONT_Z + CAMERA_KIOSK_BACK_Z) / 2,
+  halfX: TRADING_FLOOR_MONITOR.halfX,
+  halfZ: (CAMERA_KIOSK_FRONT_Z - CAMERA_KIOSK_BACK_Z) / 2,
+});
+// Chairs stay outside camera lists: they shorten the seated arm to about 47 wu,
+// while camera overlap occurs only at extreme downward pitch (<= -87).
 export const TRADING_FLOOR_CAMERA_SOLIDS_HIGH: readonly TradingFloorAABB[] = Object.freeze([
-  ...TRADING_FLOOR_SOLIDS.slice(0, TRADING_FLOOR_CONSOLE_ROW.length),
-  ...TRADING_FLOOR_SOLIDS.slice(TRADING_FLOOR_CONSOLE_ROW.length + 2),
-  Object.freeze({
-    centerX: TRADING_FLOOR_MONITOR.x,
-    centerZ: (CAMERA_KIOSK_FRONT_Z + CAMERA_KIOSK_BACK_Z) / 2,
-    halfX: TRADING_FLOOR_MONITOR.halfX,
-    halfZ: (CAMERA_KIOSK_FRONT_Z - CAMERA_KIOSK_BACK_Z) / 2,
-  }),
+  ...TRADING_FLOOR_DESK_SOLIDS,
+  ...TRADING_FLOOR_PILLAR_SOLIDS,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
 ]);
 
-const CAMERA_DAIS = TRADING_FLOOR_SOLIDS[TRADING_FLOOR_CONSOLE_ROW.length]!;
 /**
- * Measured claw extents as fractions of the authored dais footprint, rounded
- * outwards. The cap is five avatar radii. Props remain fixed on a shell resize.
+ * MEASURED v5 claws in room space: |x| 177.14..263.60, z -116.85..-2.41.
+ * Round outwards around the dais centre (0, -60); extras.statue top is 228.
+ * The 230 wu cap encloses the measured top; these extents do not scale with the avatar or room.
  */
 export const TRADING_FLOOR_CLAW_EXTENTS = Object.freeze({
-  halfX: Math.ceil(CAMERA_DAIS.halfX * 0.753152140514344),
-  halfZ: Math.ceil(CAMERA_DAIS.halfZ * 0.165380631320289),
-  offsetZ: CAMERA_DAIS.halfZ * 0.0010115606936416185,
-  topY: TRADING_FLOOR_PLAYER_RADIUS * 5,
+  halfX: 264,
+  halfZ: 58,
+  offsetZ: 0.35,
+  topY: 230,
+});
+export const TRADING_FLOOR_CAMERA_CLAW_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_DAIS_SOLID.centerX,
+  centerZ: TRADING_FLOOR_DAIS_SOLID.centerZ + TRADING_FLOOR_CLAW_EXTENTS.offsetZ,
+  halfX: TRADING_FLOOR_CLAW_EXTENTS.halfX,
+  halfZ: TRADING_FLOOR_CLAW_EXTENTS.halfZ,
 });
 export const TRADING_FLOOR_CAMERA_SOLIDS_LOW: readonly TradingFloorAABB[] = Object.freeze([
   ...TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
-  Object.freeze({
-    centerX: CAMERA_DAIS.centerX,
-    centerZ: CAMERA_DAIS.centerZ + TRADING_FLOOR_CLAW_EXTENTS.offsetZ,
-    halfX: TRADING_FLOOR_CLAW_EXTENTS.halfX,
-    halfZ: TRADING_FLOOR_CLAW_EXTENTS.halfZ,
-  }),
+  TRADING_FLOOR_CAMERA_CLAW_SOLID,
 ]);
 
 /** Shrink immediately; only unobstructed extension receives exponential ease. */
@@ -774,10 +761,20 @@ export function smoothTradingFloorCameraArm(
     current + (raw - current) * (1 - Math.exp(-TRADING_FLOOR_CAMERA_ARM.outRate * delta));
 }
 
-function tradingFloorCameraHeight(pitch: number, arm: number): number {
-  return Math.min(TRADING_FLOOR_ROOM.height - TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
-    TRADING_FLOOR_CAMERA.above + pitch +
-    Math.max(0, TRADING_FLOOR_CAMERA_ARM.boomStart - arm) * TRADING_FLOOR_CAMERA_ARM.boomRise);
+/** The boom alone receives ease; live pitch remains an immediate height offset. */
+export function tradingFloorCameraBoom(pitch: number, arm: number): number {
+  return Math.min(
+    TRADING_FLOOR_ROOM.height - TRADING_FLOOR_CAMERA_SOLID_CLEARANCE -
+      TRADING_FLOOR_CAMERA.above - pitch,
+    Math.max(0, TRADING_FLOOR_CAMERA_ARM.boomStart - arm) * TRADING_FLOOR_CAMERA_ARM.boomRise,
+  );
+}
+
+export function smoothTradingFloorCameraBoom(
+  current: number, target: number, delta: number, snap = false,
+): number {
+  return snap ? target : current + (target - current) *
+    (1 - Math.exp(-TRADING_FLOOR_CAMERA_ARM.boomRate * delta));
 }
 
 /** First slab entry along the backward arm, with no objects or vectors allocated. */
@@ -816,12 +813,14 @@ function clipTradingFloorCameraArm(
  * Cast the backward arm against the envelope and expanded camera solids.
  * Return the full raw limit. Optional armLength draws a shorter, smoothed arm
  * through the same placement path. Legal body positions need no origin inset.
+ * boomFloor is the previously drawn boom; LOW blockers protect its height lag.
  * The inset protects a spawn/snap at an envelope plane without a sideways push.
  */
 export function placeTradingFloorChaseCamera(
   bodyX: number, bodyZ: number, yaw: number, pitch: number,
   out: { x: number; y: number; z: number },
   armLength: number = TRADING_FLOOR_CAMERA.behind,
+  boomFloor: number = Infinity,
 ): number {
   const w = TRADING_FLOOR_CAMERA_BOUNDS, inset = TRADING_FLOOR_CAMERA_ARM.originInset;
   const minX = -w.halfX + w.margin, maxX = w.halfX - w.margin;
@@ -835,13 +834,14 @@ export function placeTradingFloorChaseCamera(
   if (dz > 1e-9) raw = Math.min(raw, (maxZ - oz) / dz);
   else if (dz < -1e-9) raw = Math.min(raw, (minZ - oz) / dz);
   raw = clipTradingFloorCameraArm(ox, oz, dx, dz, raw, TRADING_FLOOR_CAMERA_SOLIDS_HIGH);
-  if (tradingFloorCameraHeight(pitch, raw) <
+  const boomTarget = tradingFloorCameraBoom(pitch, Math.min(raw, armLength));
+  if (TRADING_FLOOR_CAMERA.above + pitch + Math.min(boomFloor, boomTarget) <
       TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE) {
     raw = clipTradingFloorCameraArm(ox, oz, dx, dz, raw, TRADING_FLOOR_CAMERA_SOLIDS_LOW);
   }
   const length = Math.max(0, Math.min(raw, armLength));
   out.x = ox + dx * length;
-  out.y = tradingFloorCameraHeight(pitch, length);
+  out.y = TRADING_FLOOR_CAMERA.above + pitch + tradingFloorCameraBoom(pitch, length);
   out.z = oz + dz * length;
   return raw;
 }
