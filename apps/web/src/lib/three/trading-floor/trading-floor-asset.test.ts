@@ -17,6 +17,7 @@ import {
   tradingFloorHitsSolid,
   TRADING_FLOOR_CHAIR_HALF_X,
   TRADING_FLOOR_CHAIR_HALF_Z,
+  TRADING_FLOOR_CHAIR_SEAT_Y,
   TRADING_FLOOR_CONSOLE_HALF_X,
   TRADING_FLOOR_CONSOLE_HALF_Z,
   TRADING_FLOOR_CONSOLE_HEIGHT,
@@ -26,6 +27,7 @@ import {
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SOLIDS,
 } from './trading-floor-room';
+import { DECOR_BANK, DECOR_DESK_HOOD } from './trading-floor-decor-layout';
 
 /**
  * trading-floor-asset.test.ts
@@ -305,16 +307,137 @@ describe('Trading Floor asset — instanced props sit where the row expects', ()
   // there. If a prop ever shipped with node Y 0, the row would sink into the
   // floor by half its height.
   //
-  // Tolerance is 5 wu here, not the usual 1, and the reason is measured rather
-  // than defensive: the chair's base spider dips to y -2.00 (top 173.00), which
-  // agrees with the Blender importer's `min=[-64,-61,-2] max=[64,61,173]`. Two
-  // wu of a chair foot inside a 60 wu floor slab is invisible and not worth an
-  // asset change, but it is real and a 1 wu bound would fail on it.
+  // Both v4 modules start at y=0. Only quantizer noise is permitted.
   test('both instanced props carry their base-seating offset on the node', () => {
     for (const name of ['TradingFloorConsoleModule', 'TradingFloorChairModule']) {
       const node = nodeByName(name);
       const base = translation(node).y - worldHalfExtents(node).y;
-      expect({ name, sunkBy: Math.abs(base) < 5 }).toEqual({ name, sunkBy: true });
+      expect({ name, sunkBy: Math.abs(base) < TOL }).toEqual({ name, sunkBy: true });
+    }
+  });
+});
+
+type Point = [number, number, number];
+
+const decodedAsset = (async () => {
+  await MeshoptDecoder.ready;
+  return new NodeIO().registerExtensions(ALL_EXTENSIONS)
+    .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
+})();
+
+/** Undo quantization and the template anchor, exactly as the row does. */
+async function moduleTriangles(name: string): Promise<Point[][]> {
+  const doc = await decodedAsset;
+  const node = doc.getRoot().listNodes().find((candidate) => candidate.getName() === name)!;
+  const primitive = node.getMesh()!.listPrimitives()[0]!;
+  const positions = primitive.getAttribute('POSITION')!;
+  const world = node.getWorldMatrix();
+  const at = node.getTranslation();
+  const vertices = Array.from({ length: positions.getCount() }, (_, index): Point => {
+    const p = positions.getElement(index, []);
+    return [0, 1, 2].map((axis) => world[12 + axis]! +
+      world[axis]! * p[0]! + world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]! -
+      (axis === 1 ? 0 : at[axis]!)) as Point;
+  });
+  const indices = primitive.getIndices()!.getArray()!;
+  return Array.from({ length: indices.length / 3 }, (_, index) =>
+    [0, 1, 2].map((corner) => vertices[indices[index * 3 + corner]!]!));
+}
+
+/** Height of the uppermost triangle over a desk-local point. */
+function surfaceY(triangles: Point[][], x: number, z: number, ceiling = Infinity): number {
+  let top = -Infinity;
+  for (const [a, b, c] of triangles) {
+    const det = (b![2] - c![2]) * (a![0] - c![0]) + (c![0] - b![0]) * (a![2] - c![2]);
+    if (Math.abs(det) < 1e-8) continue;
+    const u = ((b![2] - c![2]) * (x - c![0]) + (c![0] - b![0]) * (z - c![2])) / det;
+    const v = ((c![2] - a![2]) * (x - c![0]) + (a![0] - c![0]) * (z - c![2])) / det;
+    if (Math.min(u, v, 1 - u - v) < -0.0001) continue;
+    const y = u * a![1] + v * b![1] + (1 - u - v) * c![1];
+    if (y <= ceiling) top = Math.max(top, y);
+  }
+  return top;
+}
+
+/** Clip whole triangles to the mount corridor. Vertex-only tests miss a broad
+ * hood or a sloped face whose vertices all sit outside the corridor. */
+function clipToMount(triangle: Point[]): Point[] {
+  let polygon = triangle;
+  for (const [axis, boundary, direction] of [[0, -60, 1], [0, 60, -1],
+    [2, DECOR_DESK_HOOD.minLocalZ, 1], [2, -100, -1]]) {
+    const clipped: Point[] = [];
+    for (let index = 0; index < polygon.length; index++) {
+      const a = polygon[index]!, b = polygon[(index + 1) % polygon.length]!;
+      const da = (a[axis!]! - boundary!) * direction!;
+      const db = (b[axis!]! - boundary!) * direction!;
+      if (da >= 0) clipped.push(a);
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        clipped.push(a.map((v, i) => v + (b[i]! - v) * t) as Point);
+      }
+    }
+    polygon = clipped;
+  }
+  return polygon;
+}
+
+describe('Trading Floor asset — v4 desk and leather chair', () => {
+  test('one primitive per row, module budgets and atlas size survive compression', async () => {
+    const doc = await decodedAsset;
+    for (const [name, budget] of [['TradingFloorConsoleModule', 1500], ['TradingFloorChairModule', 900]] as const) {
+      const node = doc.getRoot().listNodes().find((candidate) => candidate.getName() === name)!;
+      const primitives = node.getMesh()!.listPrimitives();
+      expect(primitives).toHaveLength(1);
+      expect(primitives[0]!.getIndices()!.getCount() / 3).toBeLessThanOrEqual(budget);
+      expect(node.getRotation()).toEqual([0, 0, 0, 1]);
+    }
+    const desk = doc.getRoot().listMaterials().find((material) => material.getName() === 'TradingFloorConsoleModuleMtl')!;
+    expect(desk.getBaseColorTexture()!.getSize()).toEqual([512, 256]);
+    expect(desk.getBaseColorTexture()!.getImage()!.byteLength).toBeLessThan(16000);
+    const chair = doc.getRoot().listMaterials().find((material) => material.getName() === 'TradingFloorChair')!;
+    expect(chair.getRoughnessFactor()).toBe(0.48);
+    expect(chair.getMetallicFactor()).toBe(0.18);
+    expect(readFileSync(GLB_PATH).byteLength).toBeLessThanOrEqual(650000);
+    const total = doc.getRoot().listMeshes().flatMap((mesh) => mesh.listPrimitives())
+      .reduce((sum, primitive) => sum + primitive.getIndices()!.getCount() / 3, 0);
+    expect(total).toBeLessThanOrEqual(16000);
+  });
+
+  test('the complete flat hood supports the runtime mount and nothing crosses its corridor', async () => {
+    const triangles = await moduleTriangles('TradingFloorConsoleModule');
+    const heights: number[] = [];
+    for (const x of [-60, -30, 0, 30, 60]) {
+      for (const z of [-135, -128, -120, -110]) {
+        const y = surfaceY(triangles, x, z);
+        heights.push(y);
+        expect(y).toBeGreaterThanOrEqual(164);
+        expect(y).toBeLessThanOrEqual(DECOR_DESK_HOOD.topY + 0.02);
+      }
+    }
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(0.02);
+    const corridor = triangles.flatMap(clipToMount);
+    expect(corridor.length).toBeGreaterThan(0);
+    const top = Math.max(...corridor.map((p) => p[1]));
+    expect(top).toBeLessThanOrEqual(166.02);
+    for (const x of [-DECOR_BANK.plate.halfX, 0, DECOR_BANK.plate.halfX]) {
+      const top = surfaceY(triangles, x, DECOR_BANK.plate.centerZ);
+      expect(top).toBeGreaterThan(DECOR_BANK.footY);
+      expect(top).toBeLessThan(DECOR_BANK.plate.topY);
+    }
+    console.log(`desk hood sampled y ${Math.min(...heights).toFixed(4)}..${Math.max(...heights).toFixed(4)}; corridor top ${top.toFixed(4)}`);
+  });
+
+  test('the flat cushion stays at seat y85 and casters meet the floor', async () => {
+    const triangles = await moduleTriangles('TradingFloorChairModule');
+    for (const x of [-30, 0, 30]) for (const z of [0, 20, 35]) {
+      expect(Math.abs(surfaceY(triangles, x, z, 90) - TRADING_FLOOR_CHAIR_SEAT_Y)).toBeLessThan(0.02);
+    }
+    const points = triangles.flat();
+    expect(Math.abs(Math.min(...points.map((p) => p[1])))).toBeLessThan(0.02);
+    for (const axis of [0, 2]) {
+      const half = axis === 0 ? TRADING_FLOOR_CHAIR_HALF_X : TRADING_FLOOR_CHAIR_HALF_Z;
+      expect(Math.abs(Math.min(...points.map((p) => p[axis]!)) + half)).toBeLessThan(TOL);
+      expect(Math.abs(Math.max(...points.map((p) => p[axis]!)) - half)).toBeLessThan(TOL);
     }
   });
 });

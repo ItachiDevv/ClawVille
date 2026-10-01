@@ -29,8 +29,8 @@
 // instances once per desk. The light-rig half of the fix lives in
 // `trading-floor-interior.tsx`.
 //
-// The two console/kiosk props are Meshy text-to-3d refines from the v1 run.
-// They are copied through from a PROPS SOURCE GLB rather than re-slimmed:
+// Only the kiosk remains a Meshy text-to-3d refine from the v1 run.
+// It is copied through from a PROPS SOURCE GLB rather than re-slimmed:
 // re-running Meshy costs credits we do not have, and the v1 props are already
 // decimated, base-centred and at final scale. Default source is the durable
 // copy at ../.clawville-assets/trading-floor/interior-props-src.glb (kept out
@@ -407,6 +407,113 @@ function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48, polarUV = false) {
 
 function colored(geo, rgb) {
   geo.col = Array(geo.pos.length / 3).fill(rgb).flat();
+  return geo;
+}
+
+/** Rounded cuboid, 108 triangles; chamfer-only mode costs 44 triangles.
+ * Normals follow the bevel, while the broad faces stay flat. Both modes
+ * register their complete bounds, including the rounded corners. */
+function cushionGeo(cx, cy, cz, sx, sy, sz, radius, chamferOnly = false) {
+  const centre = [cx, cy, cz], half = [sx / 2, sy / 2, sz / 2];
+  if (radius <= 0 || half.some((h) => radius >= h)) throw new Error('invalid cushion radius');
+  boxRegistry.push({ group: currentGroup.name, exempt: currentGroup.exempt,
+    min: centre.map((c, i) => c - half[i]), max: centre.map((c, i) => c + half[i]) });
+  const core = half.map((h) => h - radius), pos = [], nrm = [], idx = [];
+  const face = (points) => {
+    const a = points[0], b = points[1], c = points[2];
+    const u = b.map((v, i) => v - a[i]), v = c.map((v, i) => v - a[i]);
+    const normal = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    const midpoint = points.reduce((sum, p) => sum.map((v, i) => v + p[i]), [0,0,0]);
+    if (normal.reduce((sum, v, i) => sum + v * midpoint[i], 0) < 0) points.reverse();
+    const base = pos.length / 3;
+    for (const p of points) {
+      pos.push(...p.map((v, i) => v + centre[i]));
+      const delta = p.map((v, i) => v - Math.max(-core[i], Math.min(core[i], v)));
+      const length = Math.hypot(...delta);
+      nrm.push(...delta.map((v) => v / length));
+    }
+    for (let i = 1; i < points.length - 1; i++) idx.push(base, base+i, base+i+1);
+  };
+  if (chamferOnly) {
+    for (let axis = 0; axis < 3; axis++) for (const sign of [-1, 1]) {
+      const axes = [0,1,2].filter((i) => i !== axis);
+      face([[-1,-1],[1,-1],[1,1],[-1,1]].map(([u,v]) => {
+        const p = [0,0,0]; p[axis] = sign*half[axis];
+        p[axes[0]] = u*core[axes[0]]; p[axes[1]] = v*core[axes[1]]; return p;
+      }));
+    }
+    for (let axis = 0; axis < 3; axis++) for (const sa of [-1,1]) for (const sb of [-1,1]) {
+      const [a,b] = [0,1,2].filter((i) => i !== axis);
+      face([[-1,0],[1,0],[1,1],[-1,1]].map(([end, side]) => {
+        const p = [0,0,0]; p[axis] = end*core[axis];
+        p[a] = sa*(side ? core[a] : half[a]); p[b] = sb*(side ? half[b] : core[b]); return p;
+      }));
+    }
+    for (const x of [-1,1]) for (const y of [-1,1]) for (const z of [-1,1])
+      face([0,1,2].map((axis) => [x,y,z].map((s,i) => s*(i === axis ? half[i] : core[i]))));
+  } else {
+    for (let axis = 0; axis < 3; axis++) for (const sign of [-1,1]) {
+      const [a,b] = [0,1,2].filter((i) => i !== axis);
+      const grid = (i) => [-half[i], -core[i], core[i], half[i]];
+      for (let u = 0; u < 3; u++) for (let v = 0; v < 3; v++) {
+        face([[u,v],[u+1,v],[u+1,v+1],[u,v+1]].map(([iu,iv]) => {
+          const p = [0,0,0]; p[axis] = sign*half[axis]; p[a] = grid(a)[iu]; p[b] = grid(b)[iv];
+          const clamped = p.map((n,i) => Math.max(-core[i], Math.min(core[i], n)));
+          const delta = p.map((n,i) => n-clamped[i]), length = Math.hypot(...delta);
+          return clamped.map((n,i) => n+radius*delta[i]/length);
+        }));
+      }
+    }
+  }
+  return { pos, nrm, idx, uv: null };
+}
+
+/** Capped 8–10 sided cylinder, along Y or X (casters); no centre-fan waste. */
+function cylinderGeo(cx, cy, cz, radius, length, segments = 8, axis = 1) {
+  const centre = [cx,cy,cz], radial = [0,1,2].filter((i) => i !== axis);
+  const half = centre.map((_,i) => i === axis ? length/2 : radius);
+  boxRegistry.push({ group: currentGroup.name, exempt: currentGroup.exempt,
+    min: centre.map((v,i) => v-half[i]), max: centre.map((v,i) => v+half[i]) });
+  const pos=[], nrm=[], idx=[];
+  const emit = (points, normals) => {
+    const base=pos.length/3;
+    for(let i=0;i<points.length;i++) { pos.push(...points[i]); nrm.push(...normals[i]); }
+    for(let i=1;i<points.length-1;i++) {
+      const a=points[0], u=points[i].map((v,j)=>v-a[j]), v=points[i+1].map((v,j)=>v-a[j]);
+      const cross=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+      const forward=cross.reduce((sum,v,j)=>sum+v*normals[0][j],0)>0;
+      idx.push(base,base+(forward?i:i+1),base+(forward?i+1:i));
+    }
+  };
+  const ring=(side) => Array.from({length:segments},(_,i)=> {
+    const p=[...centre], a=i/segments*Math.PI*2;
+    p[axis]+=side*length/2; p[radial[0]]+=radius*Math.cos(a); p[radial[1]]+=radius*Math.sin(a); return p;
+  });
+  const lo=ring(-1), hi=ring(1);
+  const normal=(i) => {const n=[0,0,0],a=i/segments*Math.PI*2;
+    n[radial[0]]=Math.cos(a); n[radial[1]]=Math.sin(a); return n;};
+  for(let i=0;i<segments;i++) { const j=(i+1)%segments;
+    emit([lo[i],lo[j],hi[j],hi[i]],[normal(i),normal(j),normal(j),normal(i)]); }
+  for(const [side,points] of [[-1,lo],[1,hi]]) {
+    const n=[0,0,0]; n[axis]=side; emit(points,points.map(()=>n));
+  }
+  return {pos,nrm,idx,uv:null};
+}
+
+/** Star-base spoke; register its rotated bounds rather than a second box. */
+function spokeGeo(x, z) {
+  const length=Math.hypot(x,z), co=z/length, si=x/length;
+  const geo=boxGeo(0,15,length/2,9,6,length);
+  const registered=boxRegistry[boxRegistry.length-1];
+  for(let i=0;i<geo.pos.length;i+=3) {
+    const px=geo.pos[i], pz=geo.pos[i+2], nx=geo.nrm[i], nz=geo.nrm[i+2];
+    geo.pos[i]=co*px+si*pz; geo.pos[i+2]=-si*px+co*pz;
+    geo.nrm[i]=co*nx+si*nz; geo.nrm[i+2]=-si*nx+co*nz;
+  }
+  for(let axis=0;axis<3;axis++) {
+    const values=geo.pos.filter((_,i)=>i%3===axis);
+    registered.min[axis]=Math.min(...values); registered.max[axis]=Math.max(...values);
+  }
   return geo;
 }
 
@@ -855,8 +962,9 @@ addMesh(
 // ONE authored chair at the origin with a base-centre pivot, exactly like the
 // console module: the scene extracts it, draws the six-seat row as a single
 // InstancedMesh and removes the original. Dimensions come from the avatar, not
-// from the room — 270 wu is ~1.7 m, so 1 m is 159 wu and an office chair's
-// 0.46 m seat is 73 wu. The occupant faces +Z at rotY 0, matching the console.
+// from the room. Cushion top remains 85 wu; the occupant faces +Z at rotY 0.
+const LEATHER = [.24,.025,.035], LEATHER_PAD = [.30,.033,.046];
+const CHROME = [.43,.49,.56], CHAIR_DARK = [.035,.044,.056];
 addMesh(
   'TradingFloorChairModule',
   // Exempt as a whole: this authored copy sits at the ORIGIN, dead centre of
@@ -865,29 +973,118 @@ addMesh(
   // original. The instanced copies stand at seat positions derived from the
   // desk constants, which the collider set covers.
   group('chair template', 'extracted at runtime; authored copy never renders', () => mergeGeos([
-    colored(boxGeo(0, 70, 4, 108, 16, 98), [.12,.14,.18]),
-    colored(boxGeo(0, 80, 4, 96, 10, 86), [.55,.075,.07]),
-    colored(boxGeo(0, 120, -44, 98, 74, 16), [.55,.075,.07]),
-    colored(boxGeo(0, 166, -44, 84, 14, 14), [.12,.14,.18]),
-    colored(boxGeo(0, 34, 0, 24, 72, 24), [.12,.14,.18]),
-    colored(boxGeo(0, 16, 0, 40, 18, 40), [.12,.14,.18]),
-    colored(boxGeo(0, 7, 0, 122, 12, 22), [.12,.14,.18]),
-    colored(boxGeo(0, 7, 0, 22, 12, 122), [.12,.14,.18]),
-    colored(boxGeo(-58, 96, 6, 12, 10, 78), [.55,.075,.07]),
-    colored(boxGeo(58, 96, 6, 12, 10, 78), [.55,.075,.07]),
-    colored(boxGeo(-58, 82, 36, 12, 28, 12), [.12,.14,.18]),
-    colored(boxGeo(58, 82, 36, 12, 28, 12), [.12,.14,.18]),
+    colored(boxGeo(0, 65, 4, 94, 8, 86), CHAIR_DARK),
+    colored(cushionGeo(0, 76, 4, 104, 18, 98, 6), LEATHER_PAD),
+    colored(cushionGeo(0, 135, -44, 102, 110, 24, 9), LEATHER),
+    // Three padded bands leave two recessed horizontal tuft seams. The back
+    // shell closes the seams, so neither is a gap through the chair.
+    ...[103,137,171].map((y) => colored(cushionGeo(0,y,-34,94,34,8,3,true), LEATHER_PAD)),
+    ...[-57,57].flatMap((x) => [
+      colored(cushionGeo(x,103,4,14,14,82,5), LEATHER_PAD),
+      colored(boxGeo(x,86,15,6,28,8), CHROME),
+    ]),
+    colored(cylinderGeo(0,40,0,8,44,10), CHROME),
+    colored(cylinderGeo(0,22,0,12,14), CHAIR_DARK),
+    // Five legs, with symmetric XZ extrema despite the odd spoke count:
+    // casters end at x ±64 and z ±61. Quantization must not shift the anchor.
+    ...[[0,54],[57,18],[35,-54],[-35,-54],[-57,18]].flatMap(([x,z]) => [
+      colored(spokeGeo(x,z), CHROME),
+      colored(cylinderGeo(x,7,z,7,14,8,0), CHAIR_DARK),
+    ]),
   ])),
   CHAIR_M,
   [0, 0, 0]
 );
 
-// Run the gate after the sourced claw is registered below. Console and kiosk
-// geometry retain their collider protection outside this authored box gate.
+// ------------------------------------------------------------- 2b. desk -----
+// One 512 x 256 atlas replaces the Meshy console map. Wood uses planar UVs;
+// lacquer/brass/plastic use constant swatches, so mipmaps cannot mix regions.
+// Broad 4 px grain and 8 px keys survive ETC1S. No runtime shader is required.
+const deskAtlas = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="256">
+  <defs><linearGradient id="walnut" x2="0" y2="1"><stop stop-color="#865538"/>
+    <stop offset=".45" stop-color="#a4724a"/><stop offset="1" stop-color="#71422b"/></linearGradient></defs>
+  <rect width="512" height="256" fill="#171c24"/>
+  <rect width="320" height="256" fill="url(#walnut)"/>
+  <g fill="none" stroke="#45291d" stroke-width="4" opacity=".27">
+    ${[8,26,51,85,117,153,188,231].map((y,i)=>`<path d="M-8 ${y} C${60+i*9} ${y-12-(i%3)*9} ${170+i*11} ${y+17+(i%2)*12} 328 ${y+5}"/>`).join('')}
+    <path d="M-8 128 C48 133 51 150 116 150 S178 115 328 122 M-8 166 C66 173 80 180 137 174 S200 144 328 158"/>
+    <ellipse cx="110" cy="157" rx="32" ry="8"/>
+  </g><g fill="none" stroke="#d49b66" stroke-width="4" opacity=".18">
+    ${[34,68,105,182,218].map((y,i)=>`<path d="M-8 ${y} C92 ${y+12+i*2} 217 ${y-16-i*3} 328 ${y+8}"/>`).join('')}
+  </g>
+  <rect x="336" width="48" height="48" fill="#111820"/>
+  <rect x="392" width="48" height="48" fill="#d0a050"/>
+  <rect x="448" width="48" height="48" fill="#252d38"/>
+  <rect x="336" y="64" width="160" height="88" rx="4" fill="#101720"/>
+  ${Array.from({length:5},(_,row)=>Array.from({length:12},(_,col)=>
+    `<rect x="${344+col*12}" y="${72+row*12}" width="8" height="8" fill="${row===0?'#8491a0':'#b8bcc2'}"/>`).join('')).join('')}
+  <rect x="368" y="136" width="96" height="8" fill="#b8bcc2"/>
+</svg>`)).png().toBuffer();
+const DESK_M = texturedMat('TradingFloorConsoleModuleMtl', deskAtlas, {rough:.32,metal:.12});
+DESK_M.getBaseColorTextureInfo().setWrapS(33071).setWrapT(33071);
+
+function deskSurface(geo, finish) {
+  const swatches = {black:[360,24], brass:[416,24], plastic:[472,24]};
+  geo.uv=[];
+  for(let i=0;i<geo.pos.length;i+=3) {
+    if(finish==='wood') {
+      const [x,y,z]=geo.pos.slice(i,i+3), ny=geo.nrm[i+1];
+      const u=(x+182)/364, v=Math.abs(ny)>.5?(z+135)/270:y/166;
+      geo.uv.push((8+u*304)/512,(8+v*240)/256);
+    } else geo.uv.push(...swatches[finish].map((v,i)=>v/(i?256:512)));
+  }
+  return geo;
+}
+
+const deskGeo=group('console template', 'extracted at runtime; collider in TRADING_FLOOR_SOLIDS', () => {
+  const surface=(geo,finish)=>deskSurface(geo,finish);
+  const parts=[
+    surface(cushionGeo(0,124,0,364,16,270,5), 'wood'),
+    surface(cushionGeo(0,119,0,364,3,270,1), 'brass'),
+    // Cabinet bases meet the floor; inset front faces form recessed toe kicks.
+    ...[-132,132].flatMap((x)=>[
+      surface(boxGeo(x,8,-18,80,16,182), 'black'),
+      surface(boxGeo(x,66,-8,88,100,206), 'black'),
+      surface(boxGeo(x,67,95.5,72,86,1), 'wood'),
+      ...[-34,34].map((dx)=>surface(boxGeo(x+dx,67,96.3,2,86,1), 'brass')),
+      surface(boxGeo(x,95,97,26,3,3), 'brass'),
+    ]),
+    surface(boxGeo(0,66,-91,176,100,14), 'black'),
+    surface(boxGeo(0,62,-82.5,164,72,1), 'wood'),
+    // FLAT hood top covers the full mount band, including the back boundary.
+    surface(boxGeo(0,149,-117.5,352,34,35), 'black'),
+    surface(boxGeo(0,164,-99.5,352,4,2), 'brass'),
+    surface(cushionGeo(-20,136,65,136,8,44,3), 'plastic'),
+    surface(cushionGeo(80,137,72,22,10,33,4), 'plastic'),
+    surface(boxGeo(80,142.2,77,1.5,.5,8), 'black'),
+    // Turret phone: keypad base, cradle and a bridged handset with end pads.
+    surface(cushionGeo(-133,139,18,68,14,57,5), 'plastic'),
+    surface(boxGeo(-133,150,-2,54,8,10), 'black'),
+    surface(cushionGeo(-133,156,-2,60,10,16,4), 'black'),
+    ...[-23,23].map((dx)=>surface(cushionGeo(-133+dx,156,-2,16,16,23,5,true), 'plastic')),
+    surface(boxGeo(125,134,79,48,3,15), 'brass'),
+    surface(boxGeo(125,135.7,79,32,.3,2), 'black'),
+  ];
+  // Keyboard and phone keys share the atlas grid; both lie in front of the hood.
+  for(const [x,y,z,w,d] of [[-20,140.2,65,126,34],[-133,146.2,28,42,26]]) {
+    const geo={pos:[x-w/2,y,z-d/2,x-w/2,y,z+d/2,x+w/2,y,z+d/2,x+w/2,y,z-d/2],
+      nrm:Array(4).fill([0,1,0]).flat(),idx:[0,1,2,0,2,3],
+      uv:[336/512,64/256,336/512,152/256,496/512,152/256,496/512,64/256]};
+    boxRegistry.push({group:currentGroup.name,exempt:currentGroup.exempt,
+      min:[x-w/2,y,z-d/2],max:[x+w/2,y,z+d/2]});
+    parts.push(geo);
+  }
+  return mergeGeos(parts);
+});
+addMesh('TradingFloorConsoleModule',deskGeo,DESK_M,[-CONSOLE_WALL_X,0,CONSOLE_ROW_Z[0]]);
+console.log(`  procedural desk: ${deskGeo.idx.length/3} tris, base-centred 364 x 166 x 270; hood y166, x ±176, z -135..-100`);
+
+// Run the gate after the sourced claw is registered below. Both template
+// modules retain the existing exemption; the kiosk has collider protection.
 
 // ------------------------------------------------------------- 3. props -----
-// Copied verbatim out of the v1 stage-1 build. They were decimated, scaled and
-// re-centred on their base there; re-running that work would need the Meshy
+// The kiosk is copied verbatim out of the v1 stage-1 build. It was decimated,
+// scaled and re-centred on its base there; re-running that work needs the Meshy
 // refines, which are not on disk and would cost credits to regenerate.
 const propsDoc = await io.read(PROPS_GLB);
 const propsRoot = propsDoc.getRoot();
@@ -959,7 +1156,6 @@ async function copyProp(sourceName, outName, translation, scale = 1) {
   );
 }
 
-await copyProp('TradingFloorConsoleModule', 'TradingFloorConsoleModule', [-CONSOLE_WALL_X, 0, CONSOLE_ROW_Z[0]]);
 await copyProp('TradingFloorMonitorStation', 'TradingFloorMonitorStation', MONITOR_POS, MONITOR_SCALE);
 
 // Read the solid Meshy claw, including the quantizer's node transform.
