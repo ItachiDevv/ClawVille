@@ -73,6 +73,7 @@ export const DECOR_BAND_INSET = 4;
 
 export const DECOR_DESK_HEADER_COUNT = 8;
 export const DECOR_WALL_HEADER_COUNT = 2;
+// Four panel slots are occupied; depth uses two UV orientations of one tile.
 export const DECOR_DEPTH_PANEL_COUNT = 1;
 export const DECOR_TERMINAL_PANEL_COUNT = 3;
 
@@ -101,6 +102,12 @@ export function depthPanelRect(variant: number): AtlasRect {
 export function terminalPanelRect(variant: number): AtlasRect {
   const index = wrapIndex(variant, DECOR_TERMINAL_PANEL_COUNT);
   return { x: 264 + index * 256, y: 883, width: 240, height: 113 };
+}
+
+/** Alternate the unlabeled depth curves without consuming another atlas slot. */
+export function depthPanelUv(variant: number): QuadUv {
+  const uv = atlasRectUv(depthPanelRect(0));
+  return wrapIndex(variant, 2) === 0 ? uv : { ...uv, u0: uv.u1, u1: uv.u0 };
 }
 
 /**
@@ -312,7 +319,7 @@ function pushBox(
   if (faces.bottom) pushQuad(sink, along(center, UP, -halfHeight), negate(UP), forward, halfWidth, halfDepth, faces.bottom, tag);
 }
 
-/** Six faces, with a smaller back cover. Sloped sides use constant swatch UVs. */
+/** Tapered housing. Wall housings omit the unseen back cover. */
 function pushMonitorHousing(
   sink: QuadSink,
   face: Vec3,
@@ -322,6 +329,7 @@ function pushMonitorHousing(
   depth: number,
   taper: number,
   tag: DecorQuadTag,
+  includeBack = true,
 ): void {
   const right = cross(UP, forward);
   const corner = (x: number, y: number, z: number): Vec3 => along(along(along(face, right, x), UP, y), forward, z);
@@ -338,6 +346,7 @@ function pushMonitorHousing(
     [[back[0], back[1], front[0], front[1]], 'bezelSide'],
   ];
   for (const [vertices, swatch] of faces) {
+    if (swatch === 'bezelBack' && !includeBack) continue;
     const uv = swatchUv(swatch);
     for (const vertex of vertices) {
       sink.positions.push(...vertex);
@@ -431,8 +440,8 @@ export const DECOR_BANK = Object.freeze({
   /** Plate beds 2 wu into the measured flat hood. */
   footY: 164,
   plate: Object.freeze({ halfX: 48, centerZ: -119, halfZ: 14, topY: 172 }),
-  post: Object.freeze({ halfX: 11, centerZ: -125, halfZ: 8, topY: 318 }),
-  arm: Object.freeze({ halfX: 116, halfY: 5, centerZ: -128, halfZ: 4 }),
+  post: Object.freeze({ halfX: 11, centerZ: -126, halfZ: 6, topY: 318 }),
+  arm: Object.freeze({ halfX: 120, halfY: 5, centerZ: -128, halfZ: 4 }),
   vesa: Object.freeze({ halfX: 11, halfY: 11, halfZ: 3 }),
 });
 
@@ -680,7 +689,7 @@ function pushDeskBank(
       const linkDepth = (faceZ - bank.arm.centerZ) / forwardZ - bank.monitorDepth - vesa.halfZ * 2;
       pushBox(fixed, along(face, forward, -bank.monitorDepth - vesa.halfZ * 2 - linkDepth / 2), forward,
         5, 6, linkDepth / 2, BEZEL_FACES, mountTag);
-      const led = along(along(along(face, forward, 0.35), cross(UP, forward), halfW - 11), UP, -halfH + bank.chin / 2);
+      const led = along(along(along(face, forward, bank.screenLift), cross(UP, forward), halfW - 11), UP, -halfH + bank.chin / 2);
       pushQuad(fixed, led, forward, UP, 1.25, 1.25,
         swatchUv(monitor % 3 === 1 ? 'statusAmber' : 'statusGreen'), bezelTag);
 
@@ -706,7 +715,7 @@ function pushDeskBank(
           UP,
           screenHalfW,
           bodyHeight / 2,
-          atlasRectUv(content === 'terminal' ? terminalPanelRect(deskIndex + row) : depthPanelRect(deskIndex + monitor)),
+          content === 'terminal' ? atlasRectUv(terminalPanelRect(deskIndex + row)) : depthPanelUv(deskIndex),
           screenTag,
         );
       } else {
@@ -752,6 +761,7 @@ function pushWallScreen(
     screen.depth,
     4,
     bezelTag,
+    false,
   );
 
   const areaHalfW = screen.width / 2 - screen.bezel;
@@ -808,7 +818,7 @@ function pushWallScreen(
     UP,
     rightW / 2,
     depthH / 2,
-    atlasRectUv(depth),
+    depthPanelUv(wallIndex),
     screenTag,
   );
   const terminalOnLeft = wallIndex % 2 === 0;
@@ -1131,10 +1141,10 @@ export function glowPools(): GlowPool[] {
     pools.push({ kind: 'floor', center: [side * deskPoolX, DECOR_GLOW_FLOOR_Y, slot.z], halfA: 170, halfB: 240, color: DECOR_GLOW_COLOR.desk });
   }
   for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
-    // Desk-local x +/-130, z -87..13: ahead of the hood and behind the keyboard.
+    // Desk-local x +/-130, z -87..-15: ahead of the hood, behind phone and keyboard.
     // Desks face +/-X, so world X takes local depth and world Z local width.
-    pools.push({ kind: 'desktop', center: deskLocalToWorld(slot, 0, DECOR_DESKTOP.topY + 3, -37),
-      halfA: 50, halfB: 130, color: DECOR_GLOW_COLOR.desktop });
+    pools.push({ kind: 'desktop', center: deskLocalToWorld(slot, 0, DECOR_DESKTOP.topY + 3, -51),
+      halfA: 36, halfB: 130, color: DECOR_GLOW_COLOR.desktop });
   }
   pools.push({ kind: 'floor', center: [0, DECOR_GLOW_FLOOR_Y, -962], halfA: 900, halfB: 133, color: DECOR_GLOW_COLOR.board });
   for (const slot of TRADING_FLOOR_CONSOLE_ROW) {

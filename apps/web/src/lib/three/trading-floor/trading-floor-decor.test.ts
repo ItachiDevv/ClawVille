@@ -50,6 +50,7 @@ import {
   RIBBON_CLAW_PX,
   RIBBON_SEPARATOR_PX,
   DECOR_TERMINAL_LABEL,
+  DECOR_TERMINAL_GLYPHS,
   DECOR_TERMINAL_PIXEL,
   DECOR_TERMINAL_ROWS,
   buildRibbonSegments,
@@ -92,6 +93,7 @@ import {
   tapeTraderName,
 } from './trading-floor-trade-tape';
 import { buildFloorScreenData } from './trading-floor-screen-data';
+import { MAP_LOCATIONS } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -245,6 +247,17 @@ describe('desk monitor banks', () => {
       const center = quadCentre(vertices);
       expect([208, 274]).toContain(center[1]);
       expect(aabb(vertices).max[1] - aabb(vertices).min[1]).toBe(2.5);
+      const front = MONITORS.mesh.tags.findIndex((candidate, index) => {
+        if (candidate.part !== 'bank-bezel' || candidate.owner !== tag.owner) return false;
+        if (Math.abs(MONITORS.mesh.uvs[index * 8]! - swatchUv('bezelFront').u0) > EPS) return false;
+        return Math.abs(quadCentre(quadVertices(MONITORS.mesh, index))[1] - center[1] - 27) < EPS &&
+          quadNormal(quadVertices(MONITORS.mesh, index)).every((n, axis) => Math.abs(n - quadNormal(vertices)[axis]!) < 1e-3);
+      });
+      expect(front).toBeGreaterThanOrEqual(0);
+      const face = quadCentre(quadVertices(MONITORS.mesh, front));
+      // Use the large housing face normal; Float32 error distorts tiny LED normals.
+      expect(quadNormal(quadVertices(MONITORS.mesh, front)).reduce((distance, n, axis) => distance + n * (center[axis]! - face[axis]!), 0))
+        .toBeCloseTo(DECOR_BANK.screenLift, 3);
     });
     expect(count).toBe(36);
     expect(DECOR_BANK.monitorDepth).toBe(12);
@@ -267,9 +280,15 @@ describe('desk monitor banks', () => {
         expect(Math.hypot(...vesaBack.map((v, axis) => v - linkFront[axis]!))).toBeLessThan(1e-3);
         const linkBack = quadCentre(quadVertices(MONITORS.mesh, quads[first + 7]!));
         const local = worldToDeskLocal(slot, linkBack[0], linkBack[2]);
-        expect(Math.abs(local.localX)).toBeLessThanOrEqual(116);
+        expect(Math.abs(local.localX)).toBeLessThanOrEqual(DECOR_BANK.arm.halfX);
         expect(local.localZ).toBeCloseTo(-128, 3);
         expect(linkBack[1]).toBe(monitor < 3 ? 235 : 301);
+        // Check all six link faces, including the back corners beyond the centre.
+        for (const quad of quads.slice(first + 6, first + 12)) {
+          for (const v of quadVertices(MONITORS.mesh, quad)) {
+            expect(Math.abs(worldToDeskLocal(slot, v[0], v[2]).localX)).toBeLessThanOrEqual(DECOR_BANK.arm.halfX);
+          }
+        }
       }
       const column = aabb(quads.slice(5, 11).flatMap((quad) => quadVertices(MONITORS.mesh, quad)));
       for (const [start, end] of [[0, 5], [11, 17], [17, 23]]) {
@@ -277,6 +296,17 @@ describe('desk monitor banks', () => {
         expect(disjoint(column, block)).toBe(false);
       }
     }
+  });
+  test('the column stops at the centre housing back plane', () => {
+    expect(DECOR_BANK.post.centerZ - DECOR_BANK.post.halfZ).toBe(-132);
+    expect(DECOR_BANK.post.centerZ + DECOR_BANK.post.halfZ).toBe(-120);
+    expect(DECOR_BANK.post.centerZ + DECOR_BANK.post.halfZ).toBeLessThanOrEqual(DECOR_BANK.frontZ - DECOR_BANK.monitorDepth);
+  });
+
+  test('wall housings omit all six unseen back covers', () => {
+    const back = swatchUv('bezelBack');
+    expect(MONITORS.mesh.tags.some((tag, quad) => tag.part === 'wall-bezel' &&
+      Math.abs(MONITORS.mesh.uvs[quad * 8]! - back.u0) < EPS)).toBe(false);
   });
   test('every bank quad lies inside its own desk footprint in XZ', () => {
     let checked = 0;
@@ -692,13 +722,49 @@ describe('glow pools', () => {
         expect(local.localZ).toBeLessThan(43); // Keyboard starts at z43.
         expect(v[1]).toBe(135); // 3 wu above measured walnut top.
       }
-      // The phone starts at x-167, ends at -99; the pool's plane stays below it.
+      // The pool ends at z-15, behind the phone's rear edge at z-13.5.
       expect(GLOW.colors![quad * 16 + 3]).toBeCloseTo(0.13, 6);
       count++;
     });
     expect(count).toBe(6);
     expect(GLOW.tags.filter((tag) => tag.part === 'glow-floor')).toHaveLength(7);
     expect(GLOW.tags.filter((tag) => tag.part === 'glow-wall')).toHaveLength(12);
+  });
+
+  test('desktop pool rectangles clear the phone bounds from the GLB authoring source', () => {
+    const builder = readFileSync(join(import.meta.dir, '../../../../../../scripts/trading-floor/build-interior.mjs'), 'utf8');
+    const phoneSource = builder.match(/\/\/ Turret phone:([\s\S]*?)\r?\n\s*surface\(boxGeo\([^)]*\), 'brass'\)/)![1]!;
+    const offsets = phoneSource.match(/\.\.\.\[([^\]]+)\]\.map\(\(dx\)/)![1]!.split(',').map(Number);
+    const vertices: P3[] = [];
+    const pieces = [...phoneSource.matchAll(/(?:cushionGeo|boxGeo)\(([^)]+)\)/g)];
+    expect(pieces).toHaveLength(4);
+    for (const piece of pieces) {
+      const args = piece[1]!.split(',');
+      const dimensions = args.slice(1, 6).map(Number);
+      const [y, z, width, height, depth] = dimensions as [number, number, number, number, number];
+      const centerX = Number(args[0]!.replace('+dx', ''));
+      for (const dx of args[0]!.includes('+dx') ? offsets : [0]) {
+        vertices.push([centerX + dx - width / 2, y - height / 2, z - depth / 2],
+          [centerX + dx + width / 2, y + height / 2, z + depth / 2]);
+      }
+    }
+    const phone = aabb(vertices);
+    expect([phone.min[0], phone.max[0], phone.min[2], phone.max[2]]).toEqual([-167, -99, -13.5, 46.5]);
+    let checked = 0;
+    forEachQuad(GLOW, (vertices, quad) => {
+      if (GLOW.tags[quad]!.part !== 'glow-desktop') return;
+      const desk = TRADING_FLOOR_CONSOLE_ROW.find((_, index) => vertices.every((v) => insideDesk(v, index)))!;
+      const pool = aabb(vertices.map((v): P3 => {
+        const local = worldToDeskLocal(desk, v[0], v[2]);
+        return [local.localX, v[1], local.localZ];
+      }));
+      // XZ disjointness matters even if a handset lies above the pool plane.
+      expect(pool.max[0] < phone.min[0] || pool.min[0] > phone.max[0] ||
+        pool.max[2] < phone.min[2] || pool.min[2] > phone.max[2]).toBe(true);
+      expect(pool.max[2]).toBeCloseTo(-15, 8);
+      checked++;
+    });
+    expect(checked).toBe(6);
   });
 });
 
@@ -785,30 +851,76 @@ describe('monitor atlas', () => {
     }
   });
 
-  test('terminal words are fictional symbols and DECOR; no digits or currency signs', () => {
+  test('depth panels use both U orientations on desks and walls', () => {
+    const depth = depthPanelRect(0);
+    for (const part of ['bank-screen', 'wall-screen']) {
+      const orientations = MONITORS.mesh.tags.flatMap((tag, quad) => {
+        if (tag.part !== part) return [];
+        const top = (1 - MONITORS.mesh.uvs[quad * 8 + 5]!) * DECOR_ATLAS_SIZE;
+        const u0 = MONITORS.mesh.uvs[quad * 8]! * DECOR_ATLAS_SIZE;
+        const u1 = MONITORS.mesh.uvs[quad * 8 + 2]! * DECOR_ATLAS_SIZE;
+        return Math.abs(top - depth.y) < 1e-3 && Math.abs(Math.min(u0, u1) - depth.x) < 1e-3 ? [Math.sign(u1 - u0)] : [];
+      });
+      expect(orientations).toHaveLength(6);
+      expect(orientations.filter((sign) => sign === 1)).toHaveLength(3);
+      expect(orientations.filter((sign) => sign === -1)).toHaveLength(3);
+    }
+  });
+
+  test('terminal words name map places; no digits, currency signs or arrow glyphs', () => {
     const { ctx, texts } = recordingContext();
     drawDecorAtlas(ctx);
     expect(texts).toEqual([]);
-    expect(DECOR_TERMINAL_LABEL).toBe('DECOR');
-    expect(DECOR_TERMINAL_ROWS.flat()).toEqual(['CLAW', 'KELP', 'REEF', 'SHELL', 'PEARL', 'TIDE', 'CORAL', 'BRINE', 'CLAW']);
-    for (const word of [DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS.flat()]) expect(word).toMatch(/^[A-Z]+$/);
+    expect(DECOR_TERMINAL_LABEL).toBe('CLAW TERMINAL');
+    expect(DECOR_TERMINAL_ROWS.flat()).toEqual(['CHUM BUCKET', 'KRUSTY KRAB', 'BOATING', 'ARCADE CITY', 'PINEAPPLE',
+      'LIGHTHOUSE', 'SALTY SPITOON', 'TREEDOME', 'PATRICKS ROCK']);
+    const places = MAP_LOCATIONS.map((place) => place.name.toUpperCase().replace(/'/g, ''));
+    for (const place of DECOR_TERMINAL_ROWS.flat()) expect(places.some((name) => name.includes(place))).toBe(true);
+    for (const word of [DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS.flat()]) {
+      expect(word).toMatch(/^[A-Z ]+$/);
+      expect(word).not.toMatch(/[\d$%+\-\u2190-\u21ff\u25b2\u25bc\u25b6\u25c0]/u);
+    }
     expect(DECOR_TERMINAL_PIXEL).toBeGreaterThanOrEqual(4);
     for (let variant = 0; variant < DECOR_TERMINAL_PANEL_COUNT; variant++) {
       const { ctx, points } = recordingContext();
       const rect = terminalPanelRect(variant);
       const original = ctx.fillRect;
+      const pixels: number[][] = [];
       ctx.fillRect = (x, y, w, h) => {
         expect(w).toBeGreaterThanOrEqual(4);
         expect(h).toBeGreaterThanOrEqual(4);
+        if (w === 4 && h === 4) pixels.push([x, y]);
+        else expect(y).toBeLessThan(rect.y + 34); // Only backgrounds use larger rectangles.
         original(x, y, w, h);
       };
+      ctx.beginPath = ctx.stroke = ctx.fill = () => { throw new Error('Directories contain only bitmap text and square bullets'); };
       drawTerminalPanel(ctx, rect, variant);
+      const words = [DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS[variant]!];
+      const letters = words.flatMap((word) => [...word]);
+      const ink = letters.reduce((count, letter) => count + DECOR_TERMINAL_GLYPHS[letter]!.join('').replace(/0/g, '').length, 0);
+      expect(pixels).toHaveLength(ink + 3);
+      for (let row = 0; row < 3; row++) expect(pixels).toContainEqual([rect.x + 8, rect.y + 42 + row * 24]);
       for (const point of points) {
         expect(point.x).toBeGreaterThanOrEqual(rect.x);
         expect(point.x).toBeLessThanOrEqual(rect.x + rect.width);
         expect(point.y).toBeGreaterThanOrEqual(rect.y);
         expect(point.y).toBeLessThanOrEqual(rect.y + rect.height);
       }
+    }
+  });
+
+  test('terminal glyphs retain open diagonals and distinct letter shapes', () => {
+    const glyphs = DECOR_TERMINAL_GLYPHS;
+    expect(glyphs.K).toEqual(['10001', '10010', '11100', '10010', '10001']);
+    for (const [a, b] of [['K', 'H'], ['E', 'F'], ['O', 'D'], ['C', 'G'], ['M', 'N']]) {
+      expect(glyphs[a!]!.join('')).not.toBe(glyphs[b!]!.join(''));
+    }
+    expect(glyphs.B).not.toEqual(['111', '101', '111', '101', '111']); // Closed 8 loops.
+    expect(glyphs.N!.some((row) => /^1+$/.test(row))).toBe(false);
+    for (const letter of new Set([...[DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS.flat()].join('')])) {
+      expect(glyphs[letter]).toBeDefined();
+      expect(glyphs[letter]).toHaveLength(5);
+      expect(glyphs[letter]!.every((row) => row.length === glyphs[letter]![0]!.length)).toBe(true);
     }
   });
 });

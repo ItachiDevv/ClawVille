@@ -8,7 +8,7 @@
  * THREE SURFACES, three redraw budgets:
  *   - The MONITOR ATLAS (`drawDecorAtlas`) is drawn ONCE per mount. It holds
  *     abstract terminal art only: candles, depth curves, an order-book heatmap,
- *     volume bars and static DECOR terminals with fictional world symbols.
+ *     volume bars and static CLAW TERMINAL place directories.
  *     NO digits, currency signs or prices: decor never claims arena data.
  *     The life comes from the layout scrolling
  *     U windows across bands that are PERIODIC along U: every series below is
@@ -617,36 +617,44 @@ function drawDepthPanel(ctx: DecorContext, rect: AtlasRect, variant: number): vo
   ctx.fillRect(mid - 1, rect.y + 6, 2, rect.height - 12);
 }
 
-/** Fictional symbols only, with an explicit DECOR header. No numeric data. */
+/** Map place directories, shortened to fit. No quotes or numeric data. */
 export const DECOR_TERMINAL_ROWS = Object.freeze([
-  Object.freeze(['CLAW', 'KELP', 'REEF'] as const),
-  Object.freeze(['SHELL', 'PEARL', 'TIDE'] as const),
-  Object.freeze(['CORAL', 'BRINE', 'CLAW'] as const),
+  Object.freeze(['CHUM BUCKET', 'KRUSTY KRAB', 'BOATING'] as const),
+  Object.freeze(['ARCADE CITY', 'PINEAPPLE', 'LIGHTHOUSE'] as const),
+  Object.freeze(['SALTY SPITOON', 'TREEDOME', 'PATRICKS ROCK'] as const),
 ]);
-export const DECOR_TERMINAL_LABEL = 'DECOR';
-/** 3 x 5 bitmap monospace. Every stroke occupies at least 4 atlas pixels. */
+export const DECOR_TERMINAL_LABEL = 'CLAW TERMINAL';
+/** Five-row bitmap letters; diagonal letters are wider. Every stroke is >=4 px. */
 export const DECOR_TERMINAL_PIXEL = 4;
-const TERMINAL_GLYPHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+export const DECOR_TERMINAL_GLYPHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   A: ['010', '101', '111', '101', '101'], B: ['110', '101', '110', '101', '110'],
   C: ['011', '100', '100', '100', '011'], D: ['110', '101', '101', '101', '110'],
   E: ['111', '100', '110', '100', '111'], F: ['111', '100', '110', '100', '100'],
+  G: ['01110', '10000', '10111', '10001', '01110'],
   H: ['101', '101', '111', '101', '101'], I: ['111', '010', '010', '010', '111'],
-  K: ['101', '101', '110', '101', '101'], L: ['100', '100', '100', '100', '111'],
-  N: ['101', '111', '111', '111', '101'], O: ['010', '101', '101', '101', '010'],
+  K: ['10001', '10010', '11100', '10010', '10001'], L: ['100', '100', '100', '100', '111'],
+  M: ['10001', '11011', '10101', '10001', '10001'],
+  N: ['1001', '1101', '1011', '1001', '1001'], O: ['010', '101', '101', '101', '010'],
   P: ['110', '101', '110', '100', '100'], R: ['110', '101', '110', '101', '101'],
   S: ['011', '100', '010', '001', '110'], T: ['111', '010', '010', '010', '010'],
-  W: ['101', '101', '111', '111', '101'],
+  U: ['101', '101', '101', '101', '111'],
+  W: ['10001', '10001', '10101', '10101', '01010'],
+  Y: ['101', '101', '010', '010', '010'],
+  ' ': ['0', '0', '0', '0', '0'],
 });
 
 function drawTerminalWord(ctx: DecorContext, text: string, x: number, y: number): void {
   const pixel = DECOR_TERMINAL_PIXEL;
-  [...text].forEach((letter, index) => {
-    TERMINAL_GLYPHS[letter]!.forEach((row, j) => {
+  let cursor = x;
+  for (const letter of text) {
+    const glyph = DECOR_TERMINAL_GLYPHS[letter]!;
+    glyph.forEach((row, j) => {
       [...row].forEach((bit, i) => {
-        if (bit === '1') ctx.fillRect(x + index * pixel * 4 + i * pixel, y + j * pixel, pixel, pixel);
+        if (bit === '1') ctx.fillRect(cursor + i * pixel, y + j * pixel, pixel, pixel);
       });
     });
-  });
+    cursor += (glyph[0]!.length + 1) * pixel;
+  }
 }
 
 export function drawTerminalPanel(ctx: DecorContext, rect: AtlasRect, variant: number): void {
@@ -657,34 +665,11 @@ export function drawTerminalPanel(ctx: DecorContext, rect: AtlasRect, variant: n
   ctx.fillRect(rect.x + 4, rect.y + 4, rect.width - 8, 24);
   ctx.fillStyle = DECOR_PALETTE.amber;
   drawTerminalWord(ctx, DECOR_TERMINAL_LABEL, rect.x + 8, rect.y + 6);
-  rows.forEach((symbol, row) => {
+  rows.forEach((place, row) => {
     const y = rect.y + 34 + row * 24;
-    const up = (row + variant) % 2 === 0;
     ctx.fillStyle = row % 2 === 0 ? DECOR_PALETTE.signalWhite : DECOR_PALETTE.amber;
-    drawTerminalWord(ctx, symbol, rect.x + 8, y);
-    // A 4 px shaft and 4 px staircase wings; no font-dependent tiny arrows.
-    const arrowY = y + (up ? 0 : 16);
-    ctx.fillRect(rect.x + 104, y, 4, 20);
-    for (let step = 1; step <= 2; step++) {
-      const ay = arrowY + (up ? step : -step) * 4;
-      ctx.fillRect(rect.x + 104 - step * 4, ay, 4, 4);
-      ctx.fillRect(rect.x + 104 + step * 4, ay, 4, 4);
-    }
-    for (let bar = 0; bar < 4; bar++) {
-      const height = 4 + ((bar + row + variant) % 4) * 4;
-      ctx.fillRect(rect.x + 132 + bar * 8, y + 20 - height, 4, height);
-    }
-    ctx.strokeStyle = DECOR_PALETTE.amber;
-    ctx.lineWidth = 4;
-    ctx.lineJoin = 'miter';
-    ctx.beginPath();
-    for (let point = 0; point < 6; point++) {
-      const px = rect.x + 184 + point * 8;
-      const py = y + 4 + ((point + row + variant) % 3) * 4;
-      if (point === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
+    ctx.fillRect(rect.x + 8, y + 8, 4, 4);
+    drawTerminalWord(ctx, place, rect.x + 24, y);
   });
 }
 
