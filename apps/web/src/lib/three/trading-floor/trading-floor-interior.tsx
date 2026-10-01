@@ -102,7 +102,6 @@ import {
 import { disposeVRMInstance, useVRMInstance } from '@/lib/three/vrm-loader';
 import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
-import { clampCameraToRoom, type RoomBounds } from '@/lib/three/room-camera';
 import {
   useWorldLabel,
   WorldLabel,
@@ -127,7 +126,6 @@ import {
   clampTradingFloorMovementSeated,
   computeTradingFloorArming,
   createTradingFloorArming,
-  pushCameraOutOfSolids,
   resetTradingFloorArming,
   resolveTradingFloorInteraction,
   tradingFloorDoorPromptVisible,
@@ -135,16 +133,14 @@ import {
   validateAuthoredProp,
   wrapTradingFloorAngle,
   TRADING_FLOOR_CAMERA,
-  TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
-  TRADING_FLOOR_CAMERA_Z_MAX,
-  TRADING_FLOOR_CAMERA_Z_MIN,
+  placeTradingFloorChaseCamera,
+  smoothTradingFloorCameraArm,
   TRADING_FLOOR_CHAIR_HALF_X,
   TRADING_FLOOR_CHAIR_HALF_Z,
   TRADING_FLOOR_CHAIR_SEAT_Y,
   TRADING_FLOOR_CONSOLE_HALF_X,
   TRADING_FLOOR_CONSOLE_HALF_Z,
   TRADING_FLOOR_CONSOLE_ROW,
-  TRADING_FLOOR_DESK_INNER_X,
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_DOOR_APPROACH_Z,
   TRADING_FLOOR_MONITOR,
@@ -152,7 +148,6 @@ import {
   TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SEATS,
-  TRADING_FLOOR_SOLIDS,
   type TradingFloorSeat,
 } from './trading-floor-room';
 
@@ -240,43 +235,8 @@ const AVATAR_TARGET_HEIGHT = 270;
 /** Low, long GLB avatars (lobster) must not fill the aisle. */
 const AVATAR_MAX_FOOTPRINT = 150;
 
-/**
- * `halfX` is the DESK ROW's inner face plus the margin, not the room's half
- * width. v2 moved the desks against the side walls, and they stand 166 wu tall
- * while the camera's own Y floor is `above + pitchMin` = 140: a camera clamped
- * to the wall therefore passed through a desk whenever the player pitched down
- * near the side of the hall. `clampCameraToRoom` takes X and Z bounds
- * separately, so narrowing X alone leaves the 2200 wu depth intact.
- *
- * The four corner pillars are covered by the same bound — they sit at |x| 1055
- * to 1165, outside the desk face — so the only solids the camera can still
- * enter are the central holo dais and the monitor kiosk, both of which the
- * camera reaches only from the middle of the room.
- *
- * TANGENT BY DESIGN, and do NOT "fix" the asymmetry with Z. `clampCameraToRoom`
- * permits `±(halfX − margin)`, so the `+ roomMargin` here cancels the clamp's
- * own inset and lands the bound exactly ON the desk face: X gets zero clearance
- * where Z gets 60. That is safe, not an oversight. At a desk's Z the player's
- * own collider stops them at |x| 939, which is INSIDE the camera bound, so the
- * camera always looks inward and the desk is behind it; between desks there is
- * no desk in the sightline at all. Adding a margin here would cost 60 wu of
- * framing in a room that is already short of it, for no artefact.
- *
- * Exported so the exit-prompt projection test places the camera with the SAME
- * clamp the frame loop uses, instead of a copy that could drift from it.
- */
-export const TRADING_FLOOR_CAMERA_BOUNDS: RoomBounds = {
-  halfX: TRADING_FLOOR_DESK_INNER_X + TRADING_FLOOR_CAMERA.roomMargin,
-  // Z is pre-EXPANDED by the margin for the same reason X is pre-shrunk: the
-  // clamp subtracts one shared margin from every bound, so this is how each axis
-  // gets the limit it actually needs. At the walls the camera must stay BEHIND
-  // the player, and `halfZ` did the opposite — see TRADING_FLOOR_CAMERA_Z_MIN.
-  zMin: TRADING_FLOOR_CAMERA_Z_MIN - TRADING_FLOOR_CAMERA.roomMargin,
-  zMax: TRADING_FLOOR_CAMERA_Z_MAX + TRADING_FLOOR_CAMERA.roomMargin,
-  yMin: 60,
-  yMax: TRADING_FLOOR_ROOM.height + TRADING_FLOOR_CAMERA.above,
-  margin: TRADING_FLOOR_CAMERA.roomMargin,
-};
+// The pure placement function owns the shared envelope and casts one backward ray.
+export { TRADING_FLOOR_CAMERA_BOUNDS } from './trading-floor-room';
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch — zero allocation in the frame loop.
@@ -1148,6 +1108,7 @@ function TradingFloorAvatarMotion({
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
   const snapCameraRef = useRef(true);
+  const cameraArm = useRef<number>(TRADING_FLOOR_CAMERA.behind);
   const frozenLastRef = useRef(false);
   const frozenPrevRef = useRef(false);
   const capabilities = useSlotCapabilities();
@@ -1202,6 +1163,7 @@ function TradingFloorAvatarMotion({
     cameraYaw.current = 0;
     cameraPitch.current = 0;
     snapCameraRef.current = true;
+    cameraArm.current = TRADING_FLOOR_CAMERA.behind;
     resetTradingFloorProximity();
     const group = groupRef.current;
     if (group) {
@@ -1314,7 +1276,7 @@ function TradingFloorAvatarMotion({
         cameraYaw.current += yawDelta * (1 - Math.exp(-6 * safeDelta));
       }
 
-      // --- Chase camera, clamped inside the room ---------------------------
+      // --- Chase camera, one backward spring arm ---------------------------
       const camera = slotCamera;
       if (camera) {
         // Authoritative look direction from the OWNED yaw — never read back off
@@ -1328,36 +1290,17 @@ function TradingFloorAvatarMotion({
         // the door half-space (see `tradingFloorDoorPromptVisible`). A number
         // write, no allocation; the label poll does the setState on change.
         _cameraForwardZ = _forwardScratch.z;
-        _cameraScratch.set(
-          bodyX - Math.sin(cameraYaw.current) * TRADING_FLOOR_CAMERA.behind,
-          TRADING_FLOOR_CAMERA.above + cameraPitch.current,
-          bodyZ + Math.cos(cameraYaw.current) * TRADING_FLOOR_CAMERA.behind,
+        const rawArm = placeTradingFloorChaseCamera(
+          bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch,
         );
-        clampCameraToRoom(_cameraScratch, TRADING_FLOOR_CAMERA_BOUNDS);
-        // The room clamp knows the walls and nothing else, so it will park the
-        // camera inside a prop — the holo dais swallowed it whole when the
-        // player stood on the far side of the ring and pitched down. Pushing
-        // the TARGET keeps the lerp converging somewhere legal; pushing the
-        // POSITION after the lerp is what guarantees the frame actually drawn
-        // is outside. Both are scalar and allocation-free.
-        pushCameraOutOfSolids(
-          _cameraScratch,
-          TRADING_FLOOR_SOLIDS,
-          TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+        cameraArm.current = smoothTradingFloorCameraArm(
+          cameraArm.current, rawArm, safeDelta, snapCameraRef.current,
         );
-        if (snapCameraRef.current) {
-          camera.position.copy(_cameraScratch);
-          snapCameraRef.current = false;
-        } else {
-          camera.position.lerp(_cameraScratch, 1 - Math.exp(-8 * safeDelta));
-          // The lerp path can cut a corner the target does not, so the drawn
-          // position gets the same treatment.
-          pushCameraOutOfSolids(
-            camera.position,
-            TRADING_FLOOR_SOLIDS,
-            TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
-          );
-        }
+        placeTradingFloorChaseCamera(
+          bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch, cameraArm.current,
+        );
+        camera.position.copy(_cameraScratch);
+        snapCameraRef.current = false;
         _lookScratch.set(
           bodyX + _forwardScratch.x * TRADING_FLOOR_CAMERA.lookAhead,
           TRADING_FLOOR_CAMERA.lookY,

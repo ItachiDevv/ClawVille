@@ -13,7 +13,11 @@ import {
   TRADING_FLOOR_CAMERA_Z_MIN,
   TRADING_FLOOR_DESK_INNER_X,
   TRADING_FLOOR_DOOR,
-  pushCameraOutOfSolids,
+  placeTradingFloorChaseCamera,
+  TRADING_FLOOR_SIDE_APPROACH_X,
+  TRADING_FLOOR_BOARD_APPROACH_Z,
+  TRADING_FLOOR_DOOR_APPROACH_Z,
+  TRADING_FLOOR_PLAYER_SPAWN,
   tradingFloorHitsSolid,
   TRADING_FLOOR_CHAIR_HALF_X,
   TRADING_FLOOR_CHAIR_HALF_Z,
@@ -857,7 +861,7 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
     const dais = nodeByName('TradingFloorHoloDais');
     expect(translation(dais).y + worldHalfExtents(dais).y).toBeLessThan(extras!.statue!.top);
 
-    // Match the room camera: 520 wu arm, axis clamp, solid push, 60-degree FOV.
+    // Use the same spring-arm placement as the room frame loop.
     const inFrame = (cx: number, cy: number, cz: number, lx: number, lz: number,
       px: number, py: number) => {
       let fx = lx - cx, fy = TRADING_FLOOR_CAMERA.lookY - cy, fz = lz - cz;
@@ -875,20 +879,15 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
     };
     const worstShadow = (camY: number, spawnOnly: boolean) => {
       const worst = [0, 0];
-      const bodies: [number, number][] = spawnOnly ? [[0, 780]] : [];
-      if (!spawnOnly) for (let x = -1254; x <= 1254; x += 48)
-        for (let z = -1054; z <= 920; z += 48)
+      const bodies: [number, number][] = spawnOnly ? [[TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z]] : [];
+      if (!spawnOnly) for (let x = -TRADING_FLOOR_SIDE_APPROACH_X; x <= TRADING_FLOOR_SIDE_APPROACH_X; x += 48)
+        for (let z = TRADING_FLOOR_BOARD_APPROACH_Z; z <= TRADING_FLOOR_DOOR_APPROACH_Z; z += 48)
           if (!tradingFloorHitsSolid(x, z)) bodies.push([x, z]);
       for (const [bx, bz] of bodies) for (let degrees = 0; degrees < 360; degrees += spawnOnly ? 2 : 15) {
         const yaw = degrees * Math.PI / 180;
         const forwardX = Math.sin(yaw), forwardZ = -Math.cos(yaw);
-        const camera = {
-          x: Math.max(-TRADING_FLOOR_DESK_INNER_X, Math.min(TRADING_FLOOR_DESK_INNER_X,
-            bx - forwardX * TRADING_FLOOR_CAMERA.behind)),
-          z: Math.max(TRADING_FLOOR_CAMERA_Z_MIN, Math.min(TRADING_FLOOR_CAMERA_Z_MAX,
-            bz - forwardZ * TRADING_FLOOR_CAMERA.behind)),
-        };
-        pushCameraOutOfSolids(camera, TRADING_FLOOR_SOLIDS, TRADING_FLOOR_CAMERA_SOLID_CLEARANCE);
+        const camera = { x: 0, y: 0, z: 0 };
+        placeTradingFloorChaseCamera(bx, bz, yaw, camY - TRADING_FLOOR_CAMERA.above, camera);
         const lookX = bx + forwardX * TRADING_FLOOR_CAMERA.lookAhead;
         const lookZ = bz + forwardZ * TRADING_FLOOR_CAMERA.lookAhead;
         for (let claw = 0; claw < 2; claw++) for (const point of points[claw]!) {
@@ -896,10 +895,10 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
           const t = (camera.z - TRADING_FLOOR_SCREEN.z) / (camera.z - point.z);
           const boardX = camera.x + (point.x - camera.x) * t;
           if (Math.abs(boardX) > TRADING_FLOOR_SCREEN.width / 2) continue;
-          const shadowY = camY + (point.y - camY) * t;
+          const shadowY = camera.y + (point.y - camera.y) * t;
           const boardY = Math.max(TRADING_FLOOR_SCREEN.bottomY,
             Math.min(shadowY, TRADING_FLOOR_SCREEN.bottomY + TRADING_FLOOR_SCREEN.height));
-          if (inFrame(camera.x, camY, camera.z, lookX, lookZ, boardX, boardY))
+          if (inFrame(camera.x, camera.y, camera.z, lookX, lookZ, boardX, boardY))
             worst[claw] = Math.max(worst[claw]!, shadowY);
         }
       }

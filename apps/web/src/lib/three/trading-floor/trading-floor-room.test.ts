@@ -6,6 +6,9 @@ import {
   tradingFloorDistanceSq,
   tradingFloorHitsSolid,
   TRADING_FLOOR_CAMERA,
+  TRADING_FLOOR_SIDE_APPROACH_X,
+  TRADING_FLOOR_BOARD_APPROACH_Z,
+  TRADING_FLOOR_DOOR_APPROACH_Z,
   TRADING_FLOOR_CAMERA_FAR,
   TRADING_FLOOR_CONSOLE_HALF_X,
   TRADING_FLOOR_CONSOLE_HALF_Z,
@@ -32,11 +35,11 @@ import {
  * solid, i.e. somewhere the player can actually stand.
  */
 function closestStandableDistanceSq(targetX: number, targetZ: number): number {
-  const maxX = TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS;
-  const maxZ = TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS;
+  const maxX = TRADING_FLOOR_SIDE_APPROACH_X;
+  const minZ = TRADING_FLOOR_BOARD_APPROACH_Z, maxZ = TRADING_FLOOR_DOOR_APPROACH_Z;
   let best = Number.POSITIVE_INFINITY;
   for (let x = -maxX; x <= maxX; x += 5) {
-    for (let z = -maxZ; z <= maxZ; z += 5) {
+    for (let z = minZ; z <= maxZ; z += 5) {
       if (tradingFloorHitsSolid(x, z)) continue;
       const distanceSq = tradingFloorDistanceSq(x, z, targetX, targetZ);
       if (distanceSq < best) best = distanceSq;
@@ -77,7 +80,7 @@ describe('Trading Floor interior — camera far plane', () => {
 describe('Trading Floor interior — spawn', () => {
   test('spawns inside the walls', () => {
     expect(Math.abs(TRADING_FLOOR_PLAYER_SPAWN.x)).toBeLessThanOrEqual(
-      TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS,
+      TRADING_FLOOR_SIDE_APPROACH_X,
     );
     expect(Math.abs(TRADING_FLOOR_PLAYER_SPAWN.z)).toBeLessThanOrEqual(
       TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS,
@@ -164,14 +167,14 @@ describe('Trading Floor interior — movement clamp', () => {
   test('never lets the player leave the room', () => {
     clampTradingFloorMovement2D(0, 0, 99_999, 99_999, out);
     expect(out.x).toBeLessThanOrEqual(
-      TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS,
+      TRADING_FLOOR_SIDE_APPROACH_X,
     );
     expect(out.z).toBeLessThanOrEqual(
       TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS,
     );
     clampTradingFloorMovement2D(0, 0, -99_999, -99_999, out);
     expect(out.x).toBeGreaterThanOrEqual(
-      -(TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS),
+      -(TRADING_FLOOR_SIDE_APPROACH_X),
     );
     expect(out.z).toBeGreaterThanOrEqual(
       -(TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS),
@@ -287,7 +290,7 @@ describe('Trading Floor interior — movement clamp', () => {
     for (const seat of TRADING_FLOOR_SEATS) {
       expect(tradingFloorHitsSolid(seat.x, seat.z)).toBe(false);
       expect(Math.abs(seat.x)).toBeLessThanOrEqual(
-        TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS,
+        TRADING_FLOOR_SIDE_APPROACH_X,
       );
       expect(Math.abs(seat.z)).toBeLessThanOrEqual(
         TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS,
@@ -426,7 +429,7 @@ describe('Trading Floor interior — movement clamp', () => {
     // Sweep every lane between the dais and the desk row for one that is clear
     // over the whole approach, then prove the end of it arms the monitor.
     const clearLanes: number[] = [];
-    for (let x = 0; x <= TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS; x += 10) {
+    for (let x = 0; x <= TRADING_FLOOR_SIDE_APPROACH_X; x += 10) {
       let clear = true;
       for (let z = TRADING_FLOOR_PLAYER_SPAWN.z; z >= TRADING_FLOOR_MONITOR.z; z -= 10) {
         if (tradingFloorHitsSolid(x, z)) { clear = false; break; }

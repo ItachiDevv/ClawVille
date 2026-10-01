@@ -390,38 +390,6 @@ export const TRADING_FLOOR_DESK_INNER_X = Math.min(
 export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -1066;
 
 /**
- * The chase camera's OWN Z limits — deliberately NOT the room's walls, and
- * deliberately ASYMMETRIC.
- *
- * THE BUG THIS FIXES. `clampCameraToRoom` permits `zMax - margin`, so a bound of
- * `halfZ` gave the camera ±1040 while the movement clamp lets the PLAYER reach
- * `halfZ - PLAYER_RADIUS` = ±1054. The camera therefore ended up 14 wu IN FRONT
- * of the avatar at either end wall: the rig inverts, the view faces away from
- * the wall the player walked to, and the avatar smears across the near plane.
- *
- * At the door that had a second, worse symptom. The exit label's anchor sits at
- * `DOOR.z - 40` = 1060, and the overlay culls any anchor at or behind the camera
- * plane in view space. With the camera pinned at 1040 the anchor was behind it
- * at EVERY distance, so the Exit prompt was never visible — not merely when
- * armed. The exit itself always worked, which is exactly why this survived: the
- * feature was reachable, only its prompt was gone, and an earlier label reader
- * matched hidden `display:none` DOM and reported it present.
- *
- * The general invariant, worth keeping when either number moves: **the camera's
- * Z bound must leave an arm BEHIND the player's own Z bound.** Same class as the
- * `halfX` desk-face bound, on the other axis, with a worse symptom.
- *
- * The two ends differ because the walls carry different things:
- *  - **+Z, the door wall.** Nothing protrudes, so the camera may run to 12 wu off
- *    the wall and sit 34 wu behind a player pressed into the doorway.
- *  - **-Z, the board wall.** The screen surround protrudes to
- *    `TRADING_FLOOR_SCREEN_SURROUND_FACE_Z`, so the camera stops at the player's
- *    own limit, which clears that face by 12 wu. That is zero arm rather than a
- *    negative one: it removes the inversion without reversing into the bezel.
- *    The real fix for the back wall is a collider on the surround so the player
- *    stops before it, which is an asset-side change and not in this diff.
- */
-/**
  * How close to the door wall the PLAYER may walk.
  *
  * The camera-side bound above stops the rig inverting, but 34 wu of arm is not a
@@ -434,31 +402,47 @@ export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -1066;
  * The spawn at `halfZ - 320` = 780 is well short of this and is unchanged, and
  * the exit spawn and the walk-in path are world-side, so neither is touched.
  *
- * Only the +Z end moves. The board wall keeps the full `halfZ - PLAYER_RADIUS`
- * so the player can still walk up and read the board.
+ * The board approach mirrors this standoff; its kiosk remains in reach.
  */
-export const TRADING_FLOOR_DOOR_APPROACH_Z = TRADING_FLOOR_ROOM.halfZ - 180;
+export const TRADING_FLOOR_DOOR_APPROACH_Z = TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_CAMERA.lookY;
+/** Mirror the door standoff so the board end also keeps a nonnegative arm. */
+export const TRADING_FLOOR_BOARD_APPROACH_Z = -TRADING_FLOOR_DOOR_APPROACH_Z;
+/** All side gaps obey the same approach limit as a desk face. */
+export const TRADING_FLOOR_SIDE_APPROACH_X =
+  TRADING_FLOOR_DESK_INNER_X - TRADING_FLOOR_PLAYER_RADIUS;
 
-/**
- * Standoff used when pushing the camera out of a prop.
- *
- * DELIBERATELY NOT `roomMargin` (60), and this is a change from what was asked.
- * The push-out exists to stop the camera being INSIDE geometry, which with
- * `near = 1` needs only a few world units. At 60 the desks would shove the
- * camera from the desk face at 985 out to 925, taking another 60 wu of framing
- * at the side walls — where the integrator has already flagged the framing as
- * tight and a founder call. 12 achieves the same visual result and costs 12.
- * The value is a parameter of `pushCameraOutOfSolids`, so raising it is a
- * one-line change if the founder wants more standoff.
- */
+/** Camera near-plane standoff; movement retains the larger player radius. */
 export const TRADING_FLOOR_CAMERA_SOLID_CLEARANCE = 12;
 
-const CAMERA_WALL_CLEARANCE = 12;
+/**
+ * Door-wall clearance and board-surround clearance use separate Z limits.
+ * The spring-arm envelope preserves these limits. The approach clamps leave
+ * positive arms at both ends instead of placing the camera ahead of the body.
+ */
+const CAMERA_WALL_CLEARANCE = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
 export const TRADING_FLOOR_CAMERA_Z_MAX =
   TRADING_FLOOR_ROOM.halfZ - CAMERA_WALL_CLEARANCE;
 export const TRADING_FLOOR_CAMERA_Z_MIN = -(
   TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS
 );
+
+/** Shared envelope. The margin cancels the pre-expansion on each axis. */
+export const TRADING_FLOOR_CAMERA_BOUNDS = Object.freeze({
+  halfX: TRADING_FLOOR_DESK_INNER_X + TRADING_FLOOR_CAMERA.roomMargin,
+  zMin: TRADING_FLOOR_CAMERA_Z_MIN - TRADING_FLOOR_CAMERA.roomMargin,
+  zMax: TRADING_FLOOR_CAMERA_Z_MAX + TRADING_FLOOR_CAMERA.roomMargin,
+  yMin: TRADING_FLOOR_CAMERA.roomMargin,
+  yMax: TRADING_FLOOR_ROOM.height + TRADING_FLOOR_CAMERA.above,
+  margin: TRADING_FLOOR_CAMERA.roomMargin,
+});
+
+/** Arm tuning is avatar-scale; shell resizing does not scale the avatar. */
+export const TRADING_FLOOR_CAMERA_ARM = Object.freeze({
+  originInset: TRADING_FLOOR_CAMERA_SOLID_CLEARANCE / 3,
+  outRate: 4,
+  boomStart: 2 * (TRADING_FLOOR_CAMERA.above - TRADING_FLOOR_CAMERA.lookY),
+  boomRise: 1 + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE / TRADING_FLOOR_CAMERA.roomMargin,
+});
 
 /**
  * One seat per desk: where the avatar stands when it takes the seat, where the
@@ -678,15 +662,8 @@ export const TRADING_FLOOR_SEATS: readonly TradingFloorSeat[] = Object.freeze(
  * Axis-aligned solid volumes the player cannot walk through. Taken from the
  * GLB's placed props; the wall clamp is handled separately by the room bounds.
  *
- * The wall PILASTERS are deliberately absent. They are 40 wu deep, and the wall
- * clamp already stops the player's CENTRE at halfX − 46 = 1254, which is 6 wu
- * short of the rib's inner face at 1260 — so a rib can never block or trap
- * anyone, and giving each of the ten its own AABB would only add per-frame work
- * for a volume nobody can enter. Be precise about what that does and does not
- * buy: the 46 wu collision circle still overlaps the rib, so an avatar's
- * shoulders can visually clip one along either side wall. That is a render
- * artefact at the room's extreme edge, not a movement bug, and no collider
- * fixes it — only a wall margin wider than the player radius would.
+ * Wall pilasters are absent: the side approach stops the body at the desk
+ * face minus its radius, well inside the wall ribs, including between desks.
  *
  * The six CHAIRS are absent too, and on purpose: a chair collider would block
  * its own seat, which is the one place the player has to be able to stand.
@@ -742,52 +719,121 @@ export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
 ]);
 
 /**
- * Push a camera position out of any solid it has ended up inside, along the
- * axis of least penetration.
- *
- * `clampCameraToRoom` only knows the room's AABB, so it happily parks the chase
- * camera inside a prop: a player on the far side of the holo dais, pitched down,
- * put the camera INSIDE the dais mesh and dark geometry smeared across the whole
- * frame. This is the local fix. The shared `room-camera.ts` is NOT touched — the
- * cove and kelp use it and a per-solid push-out there would be their change too.
- *
- * Axis of least penetration is the right rule for an AABB: it moves the camera
- * the shortest distance that resolves the overlap, so the view shifts as little
- * as possible. Up to three passes, because resolving one solid can push the
- * point into a neighbour; the postcondition the tests assert is "outside every
- * solid", not "one pass happened".
- *
- * Zero allocation, scalar only — the caller owns `pos` and it is mutated in
- * place, so this is safe to call every frame.
+ * Separate camera blockers. The kiosk extends through the board wall so an
+ * arm cannot pass behind it. The low plinth is deliberately absent.
  */
-export function pushCameraOutOfSolids(
-  pos: { x: number; z: number },
+const CAMERA_KIOSK_FRONT_Z = TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ;
+const CAMERA_KIOSK_BACK_Z = -(TRADING_FLOOR_ROOM.halfZ + TRADING_FLOOR_ROOM.height);
+export const TRADING_FLOOR_CAMERA_SOLIDS_HIGH: readonly TradingFloorAABB[] = Object.freeze([
+  ...TRADING_FLOOR_SOLIDS.slice(0, TRADING_FLOOR_CONSOLE_ROW.length),
+  ...TRADING_FLOOR_SOLIDS.slice(TRADING_FLOOR_CONSOLE_ROW.length + 2),
+  Object.freeze({
+    centerX: TRADING_FLOOR_MONITOR.x,
+    centerZ: (CAMERA_KIOSK_FRONT_Z + CAMERA_KIOSK_BACK_Z) / 2,
+    halfX: TRADING_FLOOR_MONITOR.halfX,
+    halfZ: (CAMERA_KIOSK_FRONT_Z - CAMERA_KIOSK_BACK_Z) / 2,
+  }),
+]);
+
+const CAMERA_DAIS = TRADING_FLOOR_SOLIDS[TRADING_FLOOR_CONSOLE_ROW.length]!;
+/**
+ * Measured claw extents as fractions of the authored dais footprint, rounded
+ * outwards. The cap is five avatar radii. Props remain fixed on a shell resize.
+ */
+export const TRADING_FLOOR_CLAW_EXTENTS = Object.freeze({
+  halfX: Math.ceil(CAMERA_DAIS.halfX * 0.753152140514344),
+  halfZ: Math.ceil(CAMERA_DAIS.halfZ * 0.165380631320289),
+  offsetZ: CAMERA_DAIS.halfZ * 0.0010115606936416185,
+  topY: TRADING_FLOOR_PLAYER_RADIUS * 5,
+});
+export const TRADING_FLOOR_CAMERA_SOLIDS_LOW: readonly TradingFloorAABB[] = Object.freeze([
+  ...TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
+  Object.freeze({
+    centerX: CAMERA_DAIS.centerX,
+    centerZ: CAMERA_DAIS.centerZ + TRADING_FLOOR_CLAW_EXTENTS.offsetZ,
+    halfX: TRADING_FLOOR_CLAW_EXTENTS.halfX,
+    halfZ: TRADING_FLOOR_CLAW_EXTENTS.halfZ,
+  }),
+]);
+
+/** Shrink immediately; only unobstructed extension receives exponential ease. */
+export function smoothTradingFloorCameraArm(
+  current: number, raw: number, delta: number, snap = false,
+): number {
+  return snap || raw < current ? raw :
+    current + (raw - current) * (1 - Math.exp(-TRADING_FLOOR_CAMERA_ARM.outRate * delta));
+}
+
+function tradingFloorCameraHeight(pitch: number, arm: number): number {
+  return Math.min(TRADING_FLOOR_ROOM.height - TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+    TRADING_FLOOR_CAMERA.above + pitch +
+    Math.max(0, TRADING_FLOOR_CAMERA_ARM.boomStart - arm) * TRADING_FLOOR_CAMERA_ARM.boomRise);
+}
+
+/** First slab entry along the backward arm, with no objects or vectors allocated. */
+function clipTradingFloorCameraArm(
+  ox: number, oz: number, dx: number, dz: number, arm: number,
   solids: readonly TradingFloorAABB[],
-  clearance: number,
-): void {
-  for (let pass = 0; pass < 3; pass++) {
-    let moved = false;
-    for (let index = 0; index < solids.length; index++) {
-      const solid = solids[index]!;
-      const halfX = solid.halfX + clearance;
-      const halfZ = solid.halfZ + clearance;
-      const dx = pos.x - solid.centerX;
-      const dz = pos.z - solid.centerZ;
-      const penX = halfX - Math.abs(dx);
-      const penZ = halfZ - Math.abs(dz);
-      // Outside on either axis means outside the box.
-      if (penX <= 0 || penZ <= 0) continue;
-      if (penX <= penZ) {
-        // `dx || 1` matters: dead centre gives dx = 0 and Math.sign(0) = 0,
-        // which would "resolve" the overlap by leaving the camera inside.
-        pos.x = solid.centerX + Math.sign(dx || 1) * halfX;
-      } else {
-        pos.z = solid.centerZ + Math.sign(dz || 1) * halfZ;
-      }
-      moved = true;
+): number {
+  const c = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
+  for (let index = 0; index < solids.length; index++) {
+    const s = solids[index]!;
+    const minX = s.centerX - s.halfX - c, maxX = s.centerX + s.halfX + c;
+    const minZ = s.centerZ - s.halfZ - c, maxZ = s.centerZ + s.halfZ + c;
+    let entry = -Infinity, exit = Infinity;
+    if (Math.abs(dx) < 1e-9) {
+      if (ox <= minX || ox >= maxX) continue;
+    } else {
+      const a = (minX - ox) / dx, b = (maxX - ox) / dx;
+      entry = Math.max(entry, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
     }
-    if (!moved) return;
+    if (Math.abs(dz) < 1e-9) {
+      if (oz <= minZ || oz >= maxZ) continue;
+    } else {
+      const a = (minZ - oz) / dz, b = (maxZ - oz) / dz;
+      entry = Math.max(entry, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
+    }
+    if (exit <= 0 || entry > exit || entry < 0) continue;
+    // Stay just before the face, including floating-point roundoff.
+    arm = Math.min(arm, Math.max(0, entry - TRADING_FLOOR_CAMERA.near * 1e-6));
   }
+  return arm;
+}
+
+/**
+ * Cast the backward arm against the envelope and expanded camera solids.
+ * Return the full raw limit. Optional armLength draws a shorter, smoothed arm
+ * through the same placement path. Legal body positions need no origin inset.
+ * The inset protects a spawn/snap at an envelope plane without a sideways push.
+ */
+export function placeTradingFloorChaseCamera(
+  bodyX: number, bodyZ: number, yaw: number, pitch: number,
+  out: { x: number; y: number; z: number },
+  armLength: number = TRADING_FLOOR_CAMERA.behind,
+): number {
+  const w = TRADING_FLOOR_CAMERA_BOUNDS, inset = TRADING_FLOOR_CAMERA_ARM.originInset;
+  const minX = -w.halfX + w.margin, maxX = w.halfX - w.margin;
+  const minZ = w.zMin + w.margin, maxZ = w.zMax - w.margin;
+  const ox = Math.max(minX + inset, Math.min(maxX - inset, bodyX));
+  const oz = Math.max(minZ + inset, Math.min(maxZ - inset, bodyZ));
+  const dx = -Math.sin(yaw), dz = Math.cos(yaw);
+  let raw: number = TRADING_FLOOR_CAMERA.behind;
+  if (dx > 1e-9) raw = Math.min(raw, (maxX - ox) / dx);
+  else if (dx < -1e-9) raw = Math.min(raw, (minX - ox) / dx);
+  if (dz > 1e-9) raw = Math.min(raw, (maxZ - oz) / dz);
+  else if (dz < -1e-9) raw = Math.min(raw, (minZ - oz) / dz);
+  raw = clipTradingFloorCameraArm(ox, oz, dx, dz, raw, TRADING_FLOOR_CAMERA_SOLIDS_HIGH);
+  if (tradingFloorCameraHeight(pitch, raw) <
+      TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE) {
+    raw = clipTradingFloorCameraArm(ox, oz, dx, dz, raw, TRADING_FLOOR_CAMERA_SOLIDS_LOW);
+  }
+  const length = Math.max(0, Math.min(raw, armLength));
+  out.x = ox + dx * length;
+  out.y = tradingFloorCameraHeight(pitch, length);
+  out.z = oz + dz * length;
+  return raw;
 }
 
 /** True when (x, z) is inside any solid, expanded by the player radius. */
@@ -818,12 +864,11 @@ export function clampTradingFloorMovement2D(
   desiredZ: number,
   out: { x: number; z: number },
 ): void {
-  const maxX = TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS;
+  const maxX = TRADING_FLOOR_SIDE_APPROACH_X;
   const nextX = Math.max(-maxX, Math.min(maxX, desiredX));
-  // Z is ASYMMETRIC: the door end stops early so the chase camera keeps a real
-  // arm behind the player. See TRADING_FLOOR_DOOR_APPROACH_Z.
+  // Both end approaches preserve an arm behind the body.
   const nextZ = Math.max(
-    -(TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS),
+    TRADING_FLOOR_BOARD_APPROACH_Z,
     Math.min(TRADING_FLOOR_DOOR_APPROACH_Z, desiredZ),
   );
   out.x = tradingFloorHitsSolid(nextX, currentZ) ? currentX : nextX;
