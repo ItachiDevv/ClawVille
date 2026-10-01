@@ -614,6 +614,19 @@ describe('House traders section', () => {
     expect(text).toContain('past trades stay on the floor');
     expect(text).toContain('9 verified');
     expect(text).not.toContain('Paused by the team');
+    // Review MINOR 5: the heading agrees with the card, so it does not say "paused" over "Stopped.".
+    expect(host.querySelector('[data-testid="house-traders-heading"]')?.textContent).toBe('Live traders (real money, stopped)');
+  });
+
+  test('a stopped slot beside a paused-by-the-team slot heads the panel "not trading"', async () => {
+    const host = await renderWithSlots([
+      slot({ status: 'stopped', subject: { type: 'agent', id: AVATAR_ID, avatarName: 'Genesis' } }),
+      slot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner' }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Stopped.');
+    expect(text).toContain('Paused by the team');
+    expect(host.querySelector('[data-testid="house-traders-heading"]')?.textContent).toBe('Live traders (real money, not trading)');
   });
 
   test('states at section level that the tape outlives a pairing', async () => {

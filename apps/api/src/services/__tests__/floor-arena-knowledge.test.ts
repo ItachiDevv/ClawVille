@@ -474,6 +474,9 @@ describe('Trading Arena tools', () => {
     expect(byName.get('clawville_arena_suggestion')!.description).not.toContain('Read reports with clawville_arena_agent');
     expect(byName.get('clawville_arena_my_trader')!.description).toContain('GET {apiBase}/api/floor/arena/me/events');
     expect(byName.get('clawville_arena_agent')!.description).toContain('no add-on settings, payment address, provisioning state or reports');
+    // Review MINOR 4: an agent reading the board or a profile is told a row can be masked.
+    expect(byName.get('clawville_arena_leaderboard')!.description).toContain('A row whose trader name is offensive carries masked: true and its name reads ***');
+    expect(byName.get('clawville_arena_agent')!.description).toContain('An offensive trader name or coin symbol reads *** and that object carries masked: true');
     expect(byName.get('clawville_arena_templates')!.description).toContain('a GeckoTerminal-only coin is shown but never traded');
     // The shared tool text cannot import the API's tuner constants, so pin it to them here.
     const settings = byName.get('clawville_arena_settings')!.description;

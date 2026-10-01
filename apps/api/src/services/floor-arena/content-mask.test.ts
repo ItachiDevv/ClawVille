@@ -16,17 +16,134 @@ const SLUR = ['N', 'I', 'G', 'G', 'A'].join('');
 const SLUR_ER = ['n', 'i', 'g', 'g', 'e', 'r'].join('');
 const MINT = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 
+/** ROT13 (its own inverse): the term lists below are built at run time, so the source does not print them. */
+function rot13(text: string): string {
+  return text.replace(/[a-z]/gi, (ch) => {
+    const base = ch <= 'Z' ? 65 : 97;
+    return String.fromCharCode(((ch.charCodeAt(0) - base + 13) % 26) + base);
+  });
+}
+
+/**
+ * The review's term list (B1, 2026-10-01), ROT13, by category: [term, glued forms caught]. `c` is
+ * TERMCOIN and `p` is BIGTERM. A short term that is also part of common words has a word-edge guard,
+ * so it is not caught glued on that side: the known glued-form limit (docs/trading-floor-arena.md
+ * §8 P12). Every term is caught in every other form. The reclaimed q(5) is not in the list.
+ */
+const REVIEW_TERMS: Record<'racial' | 'homophobic' | 'ableist', ReadonlyArray<readonly [string, '' | 'c' | 'p' | 'cp']>> = {
+  racial: [
+    ['avttre', 'cp'], ['avttn', 'cp'], ['avttnu', 'cp'], ['avtthu', 'cp'], ['avtyrg', 'cp'], ['avtabt', 'cp'],
+    ['arteb', 'cp'], ['arterff', 'cp'], ['fcvp', 'c'], ['fcvpx', 'c'], ['fcvx', ''], ['pbba', 'c'], ['puvax', 'cp'],
+    ['puvaxl', 'cp'], ['tbbx', ''], ['xvxr', 'cp'], ['xlxr', 'cp'], ['ulzvr', 'c'], ['urro', ''], ['uror', ''],
+    ['lvq', ''], ['jrgonpx', 'cp'], ['ornare', 'cp'], ['enturnq', 'cp'], ['gbjryurnq', 'cp'], ['fnaqavttre', 'cp'],
+    ['cnxv', ''], ['wnc', ''], ['qntb', ''], ['jbc', ''], ['tlc', ''], ['tlcfl', ''], ['erqfxva', 'cp'],
+    ['vawha', ''], ['fdhnj', ''], ['wvtnobb', 'cp'], ['wvttnobb', 'cp'], ['cbepuzbaxrl', 'cp'], ['fnzob', ''],
+    ['qnexvr', 'c'], ['qnexl', ''], ['tbyyvjbt', 'cp'], ['jbt', ''], ['mvccreurnq', 'cp'], ['fynagrlr', 'cp'],
+    ['ubaxl', ''], ['ubaxrl', ''], ['juvgrl', ''], ['nob', ''], ['noob', ''], ['pbbyvr', ''], ['xnssve', ''],
+    ['xnsve', ''], ['cbynpx', 'c'], ['pnzrywbpxrl', 'cp'], ['gneonol', 'cp'], ['cvpxnavaal', 'cp'],
+    ['unysoerrq', 'cp'], ['whatyrohaal', 'cp'], ['fcrnepuhpxre', 'cp'], ['puvatpubat', 'cp'], ['puvanzna', 'cp'],
+    ['ternfronyy', 'cp'], ['jvttre', ''], ['jvttn', ''], ['zhqfunex', 'cp'], ['pbbanff', 'cp'], ['hapyrgbz', 'cp'],
+  ],
+  homophobic: [
+    ['snttbg', 'c'], ['snt', 'c'], ['snttvg', 'c'], ['sntbg', 'c'], ['sntt', 'c'], ['qlxr', 'cp'],
+    ['ohyyqlxr', 'cp'], ['ubzb', ''], ['yrfob', ''], ['genaal', 'c'], ['genaavr', 'c'], ['furznyr', 'c'],
+    ['cbbs', ''], ['cbbsgre', 'c'], ['cbhs', ''], ['shqtrcnpxre', 'cp'], ['pnecrgzhapure', 'cp'],
+    ['cvyybjovgre', 'cp'], ['ongglobl', 'cp'], ['ongglzna', 'cp'], ['ynqlobl', 'cp'], ['anaplobl', 'cp'],
+  ],
+  ableist: [
+    ['ergneq', 'cp'], ['ergneqrq', 'cp'], ['fcnm', 'c'], ['fcnfgvp', 'c'], ['zbatbybvq', 'cp'],
+  ],
+};
+
+/** Form + term not pinned, with the reason: the plural of l(5) is the Greek island Lesbos. */
+const NOT_PINNED = new Set(['yrfob:plural']);
+
+/** The review's forms (B1): as written, case, ticker, plural, leetspeak, separators, spaced letters, Cyrillic look-alikes, inside a phrase. */
+function reviewForms(term: string): Record<string, string> {
+  const upper = term.toUpperCase();
+  return {
+    lower: term,
+    upper,
+    ticker: `$${upper}`,
+    plural: `${term}s`,
+    leet: upper.replace(/I/g, '1').replace(/O/g, '0').replace(/E/g, '3').replace(/A/g, '4'),
+    dots: upper.split('').join('.'),
+    spaced: upper.split('').join(' '),
+    cyrillic: term.replace(/a/g, 'а').replace(/o/g, 'о').replace(/e/g, 'е').replace(/c/g, 'с').replace(/p/g, 'р'),
+    phrase: `Big ${upper} Energy`,
+  };
+}
+
 describe('arena content mask: fields', () => {
   test('a slur and its evasions read as offensive', () => {
     for (const text of [
       SLUR, SLUR_ER, `$${SLUR}`, `SUPER${SLUR}`, `${SLUR}COIN`,
       'N1GG4', 'NI66A', 'NI99A', // leetspeak; 9 -> g comes from the arena folds (name-folds.ts)
       'N.I.G.G.A', 'N-I-G-G-A', 'N_I_G_G_A', // separators
-      'N I G G A', // spaced letters
+      'N I G G A', 'N. I. G. G. A', "N' I G G A", '$N I G G A', 'NI GG A', 'N IG GA', 'Big N I G G A Energy', // runs of short pieces
       'NІGGA', 'NIGGА', 'NΙGGA', 'nıgga', 'ＮＩＧＧＡ', // Cyrillic, Greek, dotless and full-width look-alikes
       'Big N1gga Energy',
     ]) {
       expect({ text, offensive: isArenaTextOffensive(text) }).toEqual({ text, offensive: true });
+    }
+  });
+
+  test('B1: every review term is caught in every form the review used (glued forms per the table)', () => {
+    const missed: string[] = [];
+    let terms = 0;
+    for (const [category, list] of Object.entries(REVIEW_TERMS)) {
+      for (const [encoded, glued] of list) {
+        terms += 1;
+        const term = rot13(encoded);
+        const forms: Record<string, string> = { ...reviewForms(term) };
+        if (glued.includes('c')) forms.coin = `${term.toUpperCase()}COIN`;
+        if (glued.includes('p')) forms.pre = `BIG${term.toUpperCase()}`;
+        for (const [name, text] of Object.entries(forms)) {
+          // The failure message names the term in ROT13 only.
+          if (!NOT_PINNED.has(`${encoded}:${name}`) && !isArenaTextOffensive(text)) missed.push(`${category} ${encoded} ${name}`);
+        }
+      }
+    }
+    expect(terms).toBe(95);
+    expect(missed).toEqual([]);
+  });
+
+  test("B1: the dataset's own slur entries stay; the reclaimed q(5) is not masked", () => {
+    for (const encoded of ['norrq', 'nob', 'nsevpbba', 'nenohfu', 'obbatn', 'puvatpubat', 'puvax', 'qlxr', 'snt', 'xvxr', 'arteb', 'avttre', 'ergneq', 'fcnfgvp', 'genaal']) {
+      expect({ encoded, offensive: isArenaTextOffensive(rot13(encoded).toUpperCase()) }).toEqual({ encoded, offensive: true });
+    }
+    expect(isArenaTextOffensive(rot13('DHRRE'))).toBe(false);
+  });
+
+  test('B1 scope: profanity and sexual words are not masked, so real coins and stocks show as written', () => {
+    for (const text of [
+      'SCAT', '$SCAT', 'Supa Cat', 'Thanus', 'Cummins xStock', "Dick's Sporting Goods xStock", 'Becton Dickinson xStock',
+      'Annaly Capital Management xStock', 'Analytics', 'Cummingtonite', 'cummunity', 'BORGY', 'SHITCOIN', 'ASSDAQ',
+    ]) {
+      expect({ text, offensive: isArenaTextOffensive(text) }).toEqual({ text, offensive: false });
+    }
+  });
+
+  test('B1: whitelisted words, and words that only contain a term, are not masked', () => {
+    for (const text of [
+      'Spicy', 'Spice', 'SPICE', 'Spicy Cat', 'Allspice', 'Spica', 'Spick and Span', 'Tycoon', 'Raccoon', 'Cocoon', 'Racoon',
+      'Coonhound', 'Cooney', 'Japan', 'Japanese', 'Pakistan', 'Homogeneous', 'Homer', 'Homeboy', 'Homo Sapiens', 'Lesbos',
+      'Pouffe', 'Beanery', 'Hebrew', 'Darkness', 'Dagobert', 'Wogan', 'Injunction', 'Squawk', 'Coolidge', 'Honkytonk',
+      'Honky Tonk', 'honky-tonk', 'Kaffir Lime', 'Kafirstan', 'Spearmint', 'Gooky', 'Yiddish', 'Battery', 'Batty', 'Tranquil',
+      'Transform', 'Ladybug', 'Poofy', 'Pillow', 'Chinatown', 'Greaser', 'Wiggle', 'Mudskipper', 'Uncle Sam', 'Samba',
+      'Pikachu', 'Jigsaw', 'Tarzan', 'Zipper', 'Polka', 'Gypsum', 'Egypt', 'Egyptian', 'Niger', 'Nigeria', 'Nigerian', 'Spaza',
+      'Mongolia', 'Mongoose', 'Mongo', 'Hymn', 'Van Dyke', 'Snigger',
+    ]) {
+      expect({ text, offensive: isArenaTextOffensive(text) }).toEqual({ text, offensive: false });
+    }
+  });
+
+  test('M1: two real words are never glued into a match; only runs of one- or two-character pieces join', () => {
+    for (const text of [
+      "Ansem's Cat", "Hasbulla's Cat", "Simon's Cat", "Taylor Swift's Cat",
+      'Valentine Grok Companion', 'KEANU SLEAZE', 'GNOME MINING GAME', 'Verisk Analytics xStock',
+    ]) {
+      expect({ text, offensive: isArenaTextOffensive(text) }).toEqual({ text, offensive: false });
     }
   });
 
@@ -85,6 +202,17 @@ describe('arena content mask: free text (summaries)', () => {
       'Changed 2 settings: filters.mcap_max 250000 -> 300000; exits.max_hold_s 900 -> 1200',
       'Closed 5eX7...9Kq2 as unresolved: no usable sell price for 30 min. Not counted in P&L.',
     ]) {
+      expect(maskArenaFreeText(text)).toEqual({ text, masked: false });
+    }
+  });
+
+  test('a term from the added list is masked as a word; a whitelisted phrase and a profane coin stay', () => {
+    const term = rot13('FCVP');
+    expect(maskArenaFreeText(`Bought $20 of ${term} at $0.001`)).toEqual({ text: `Bought $20 of ${ARENA_MASK} at $0.001`, masked: true });
+    expect(maskArenaFreeText(`Exit of $${term.split('').join('.')} (tp)`)).toEqual({ text: `Exit of ${ARENA_MASK} (tp)`, masked: true });
+    // A pattern of two words masks each word it touches.
+    expect(maskArenaFreeText(`Skipped ${rot13('Cbepu Zbaxrl')}: cooldown`)).toEqual({ text: `Skipped ${ARENA_MASK} ${ARENA_MASK}: cooldown`, masked: true });
+    for (const text of ['Bought $20 of SCAT at $0.001', 'Skipped Homo Sapiens: cooldown', "Skipped Ansem's Cat: cooldown"]) {
       expect(maskArenaFreeText(text)).toEqual({ text, masked: false });
     }
   });

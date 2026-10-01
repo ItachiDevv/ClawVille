@@ -342,11 +342,16 @@ export function HouseTradersView({
   // with these live traders, so this heading says "real money" and the arena
   // heading says "paper". "paused" is a claim about the slots we READ, so it
   // waits for a successful load and drops as soon as one slot is live.
-  const paused = !isLoading && !isError && !slots.some((slot) => slot.status === 'live-observed');
+  // The word agrees with the slot cards (review MINOR 5): every card says
+  // "Stopped." -> "stopped"; some "Stopped." and some "Paused by the team" ->
+  // "not trading"; otherwise "paused".
+  const idle = !isLoading && !isError && !slots.some((slot) => slot.status === 'live-observed');
+  const stopped = slots.filter((slot) => slot.status === 'stopped').length;
+  const idleWord = stopped === 0 ? 'paused' : stopped === slots.length ? 'stopped' : 'not trading';
   return (
     <section style={cardStyle} data-testid="house-traders">
       <h3 style={{ margin: '0 0 6px', color: FLOOR_TEXT.value, fontSize: 14 }} data-testid="house-traders-heading">
-        {paused ? 'Live traders (real money, paused)' : 'Live traders (real money)'}
+        {idle ? `Live traders (real money, ${idleWord})` : 'Live traders (real money)'}
       </h3>
       <p style={{ margin: '0 0 12px', color: FLOOR_TEXT.muted, fontSize: 12 }}>
         {/* Worded to survive the empty case: on prod both slots are unpaired,

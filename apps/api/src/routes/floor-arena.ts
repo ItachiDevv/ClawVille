@@ -373,9 +373,12 @@ function nameNeedsLetter(c: Context) {
   return c.json({ error: 'The name needs at least one letter, so it cannot look like a number.', code: 'name_needs_letter' }, 400);
 }
 
-/** An offensive trader name (content-mask.ts, the same check that masks names on the public board). */
+/**
+ * An offensive trader name (content-mask.ts, the same check that masks names on the public board).
+ * One copy for a typed name and for the avatar-name fallback (review MINOR 2).
+ */
 function nameNotAllowed(c: Context) {
-  return c.json({ error: 'This name is not allowed. Choose another name.', code: 'name_not_allowed' }, 400);
+  return c.json({ error: 'This name is not allowed. Type another name for your trader.', code: 'name_not_allowed' }, 400);
 }
 
 // ─── Small TTL cache for public GETs ───────────────────────────────────────

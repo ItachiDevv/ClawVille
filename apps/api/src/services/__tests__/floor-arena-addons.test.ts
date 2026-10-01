@@ -665,6 +665,25 @@ describe('runArenaAddonsTick', () => {
     expect(vendor429.calls).toEqual([expect.objectContaining({ state: 'done', priceUsd: 0, ok: false, error: 'clawpump_rate_limited_429' })]);
   });
 
+  test('money-lens MINOR 1: a long budget contention writes at most one budget event per notice interval', async () => {
+    let at = NOW;
+    const h = harness({ pay: async () => { throw new ClawPumpWriterError('budget_exhausted'); }, clock: () => at });
+    const budgetEvents = () => h.events.filter((summary) => summary.includes('call budget was full')).length;
+    // A refusal is not an attempt for the interval, so every tick retries the pay: four refusals here.
+    for (const minutes of [0, 1, 2, 30]) {
+      at = new Date(NOW.getTime() + minutes * 60_000);
+      await runArenaAddonsTick(at, h.deps);
+    }
+    expect(h.pays).toHaveLength(4);
+    expect(budgetEvents()).toBe(1);
+    // The notice interval (1 h) has passed: one more event.
+    at = new Date(NOW.getTime() + 61 * 60_000);
+    await runArenaAddonsTick(at, h.deps);
+    expect(h.pays).toHaveLength(5);
+    expect(budgetEvents()).toBe(2);
+    expect(h.calls.every((row) => row.state === 'done' && row.priceUsd === 0)).toBe(true);
+  });
+
   test('D1: one paid call needs 4 budget calls; with room for fewer nothing is reserved and no ClawPump call is made', async () => {
     // A fake of the writer bucket (clawpump-writer takeWriterToken): each ClawPump call takes one token, and a
     // normal call is refused when tokens - 1 < 5 (the removal reserve). The staging case: 8 tokens left.

@@ -738,7 +738,9 @@ import {
 // public arena read and in GET /me/events (an offensive word in an event or report
 // summary reads `***`; the mint is never masked), and that launch refuses an
 // offensive name (or avatar-name fallback) with `400 name_not_allowed`. The
-// `clawville_arena_launch` tool text lists the new code. Check:
+// `clawville_arena_launch` tool text lists the new code; the `clawville_arena_leaderboard`
+// and `clawville_arena_agent` tool texts say a row can carry `masked: true` with `***`
+// text (N5, tools only, the manual text is unchanged). Check:
 // services/floor-arena/content-mask.ts. No `[ACTION:]` verb, bearer/TTL, cognition
 // body, namespace or leaderboard weight changed.
 export const PROTOCOL_VERSION = 78;

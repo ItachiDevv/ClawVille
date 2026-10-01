@@ -818,16 +818,16 @@ describe('content mask on every public arena payload (content-mask.ts)', () => {
         const { call, agents } = app();
         const response = await call('POST', '/me/launch', launchBody({ name }), headers);
         expect({ name, status: response.status }).toEqual({ name, status: 400 });
-        expect(await response.json()).toEqual({ error: 'This name is not allowed. Choose another name.', code: 'name_not_allowed' });
+        expect(await response.json()).toEqual({ error: 'This name is not allowed. Type another name for your trader.', code: 'name_not_allowed' });
         expect(agents.size).toBe(0);
       }
     }
-    // With no name sent, an offensive avatar name is refused the same way; a clean name still launches.
+    // With no name sent, an offensive avatar name is refused the same way, with the same copy; a clean name still launches.
     const fallback = app();
     fallback.deps.readAvatarName = async () => `${SLUR} 99`;
     const refused = await fallback.call('POST', '/me/launch', launchBody());
     expect(refused.status).toBe(400);
-    expect((await refused.json() as { code: string }).code).toBe('name_not_allowed');
+    expect(await refused.json()).toEqual({ error: 'This name is not allowed. Type another name for your trader.', code: 'name_not_allowed' });
     expect(fallback.agents.size).toBe(0);
     expect((await fallback.call('POST', '/me/launch', launchBody({ name: 'Clean Trader' }))).status).toBe(201);
   });

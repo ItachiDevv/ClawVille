@@ -733,22 +733,28 @@ export async function runArenaAddonAgent(
       mints: tokens.length,
       responseRef: ok && (!duplicate || charged > 0) ? extractResponseRef(result!.payload) : null,
     });
+    const data = {
+      addonId: addon.id, ok, duplicate, priceUsd: price, chargedUsd: charged, mints: tokens.length, newMints: fresh, error,
+    };
+    if (budgetRefused) {
+      // Money-lens MINOR 1: a long budget contention retries every tick, so its event goes through
+      // the notice throttle (at most one per NOTICE_INTERVAL_MS per agent and add-on).
+      await notice(deps, `${key}:budget`, nowMs, NOTICE_INTERVAL_MS, agent.id,
+        `${item.name}: the engine's ClawPump call budget was full. Nothing was sent or charged; the next pass retries.`,
+        data);
+      return 'budget_deferred';
+    }
     await deps.insertEvent(agent.id, {
       type: 'addon',
-      summary: budgetRefused
-        ? `${item.name}: the engine's ClawPump call budget was full. Nothing was sent or charged; the next pass retries.`
-        : duplicate
+      summary: duplicate
         ? charged > 0
           ? `${item.name}: ClawPump returned a cached duplicate we cannot match to a booked charge. ${usd(charged)} counted against the daily cap, no new tokens.`
           : `${item.name}: ClawPump returned a cached duplicate. No charge, no new tokens.`
         : ok
           ? `${item.name}: paid ${usd(charged)}, ${tokens.length} tokens (${fresh} new, private to this agent).`
           : `${item.name}: call failed (${error}). ${charged > 0 ? `${usd(charged)} counted against the daily cap.` : 'Nothing was charged.'}`,
-      data: {
-        addonId: addon.id, ok, duplicate, priceUsd: price, chargedUsd: charged, mints: tokens.length, newMints: fresh, error,
-      },
+      data,
     });
-    if (budgetRefused) return 'budget_deferred';
   }
   return undefined;
 }
