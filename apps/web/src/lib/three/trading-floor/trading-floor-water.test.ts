@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import * as THREE from 'three/webgpu';
-import { uniform } from 'three/tsl';
+import { positionWorld, time, uniform } from 'three/tsl';
 import { WORLD_DEVICE_PROFILE } from '../device-class';
 import {
   TRADING_FLOOR_BOARD_APPROACH_Z,
@@ -16,9 +16,15 @@ import {
 import {
   TRADING_FLOOR_WATER_ALPHA,
   TRADING_FLOOR_WATER_BOUNDS,
+  TRADING_FLOOR_WATER_GRAZING_ALPHA,
+  TRADING_FLOOR_WATER_GRAZING_COLOR,
+  TRADING_FLOOR_WATER_GRAZING_DOT,
   TRADING_FLOOR_WATER_RENDER_ORDER,
   TRADING_FLOOR_WATER_SHIMMER_ALPHA,
+  TRADING_FLOOR_WATER_STEEP_COLOR,
+  TRADING_FLOOR_WATER_STEEP_DOT,
   TRADING_FLOOR_WATER_Y,
+  tradingFloorWaterAlpha,
   tradingFloorWaterBounds,
 } from './trading-floor-water-layout';
 import { createTradingFloorWater } from './trading-floor-water';
@@ -28,7 +34,41 @@ function disposeWater(mesh: ReturnType<typeof createTradingFloorWater>) {
   mesh.material.dispose();
 }
 
+function graphHasNode(mesh: ReturnType<typeof createTradingFloorWater>, uuid: string): boolean {
+  let found = false;
+  for (const root of [mesh.material.colorNode, mesh.material.opacityNode]) {
+    root?.traverse((node) => { if (node.uuid === uuid) found = true; });
+  }
+  return found;
+}
+
 describe('Trading Floor shallow water', () => {
+  test('Fresnel alpha keeps the near seal clear and the far floor reflective', () => {
+    expect(TRADING_FLOOR_WATER_ALPHA).toBeGreaterThanOrEqual(0.10);
+    expect(TRADING_FLOOR_WATER_ALPHA).toBeLessThanOrEqual(0.15);
+    expect(TRADING_FLOOR_WATER_GRAZING_ALPHA).toBeGreaterThanOrEqual(0.40);
+    expect(TRADING_FLOOR_WATER_GRAZING_ALPHA + TRADING_FLOOR_WATER_SHIMMER_ALPHA).toBeLessThanOrEqual(0.50);
+    for (const angle of [25, 30, 35, 90]) {
+      expect(tradingFloorWaterAlpha(angle)).toBeCloseTo(TRADING_FLOOR_WATER_ALPHA, 8);
+    }
+    for (const angle of [0, 5, 8]) {
+      expect(tradingFloorWaterAlpha(angle)).toBeCloseTo(TRADING_FLOOR_WATER_GRAZING_ALPHA, 8);
+    }
+    const midpointAngle = Math.asin((TRADING_FLOOR_WATER_GRAZING_DOT + TRADING_FLOOR_WATER_STEEP_DOT) / 2) * 180 / Math.PI;
+    expect(tradingFloorWaterAlpha(midpointAngle)).toBeCloseTo(
+      (TRADING_FLOOR_WATER_ALPHA + TRADING_FLOOR_WATER_GRAZING_ALPHA) / 2, 8,
+    );
+    expect(tradingFloorWaterAlpha(12)).toBeGreaterThan(0.40);
+    expect(tradingFloorWaterAlpha(20)).toBeLessThan(0.20);
+    for (let angle = 1; angle <= 90; angle++) {
+      expect(tradingFloorWaterAlpha(angle)).toBeLessThanOrEqual(tradingFloorWaterAlpha(angle - 1));
+    }
+    expect(tradingFloorWaterAlpha(-10)).toBe(TRADING_FLOOR_WATER_GRAZING_ALPHA);
+    expect(tradingFloorWaterAlpha(100)).toBe(TRADING_FLOOR_WATER_ALPHA);
+    expect(TRADING_FLOOR_WATER_STEEP_COLOR).toBe('#4e8d7c');
+    expect(TRADING_FLOOR_WATER_GRAZING_COLOR).toBe('#8ccfd0');
+  });
+
   test('surface stays halfway up the smallest specified foot, below its ankle', () => {
     expect(TRADING_FLOOR_WATER_Y).toBeGreaterThanOrEqual(6);
     expect(TRADING_FLOOR_WATER_Y).toBeLessThanOrEqual(8);
@@ -117,22 +157,29 @@ describe('Trading Floor shallow water', () => {
       expect(mesh.renderOrder).toBe(TRADING_FLOOR_WATER_RENDER_ORDER);
       expect(mesh.renderOrder).toBeGreaterThan(-1);
       expect(mesh.renderOrder).toBeLessThan(0);
-      expect(TRADING_FLOOR_WATER_ALPHA + TRADING_FLOOR_WATER_SHIMMER_ALPHA).toBeLessThanOrEqual(0.12);
+      expect(TRADING_FLOOR_WATER_ALPHA + TRADING_FLOOR_WATER_SHIMMER_ALPHA * 0.15).toBeLessThanOrEqual(0.15);
     } finally { disposeWater(mesh); }
   });
 
-  test('stage low tiers omit animation nodes and keep the same mesh and tint', () => {
-    const animated = createTradingFloorWater(false);
+  test('stage low tiers keep fixed Fresnel tint without time, ripples or motion nodes', () => {
+    const motion = uniform(1);
+    const animated = createTradingFloorWater(false, motion);
     try {
       expect(animated.material.colorNode).not.toBeNull();
       expect(animated.material.opacityNode).not.toBeNull();
+      expect(graphHasNode(animated, time.uuid)).toBe(true);
+      expect(graphHasNode(animated, positionWorld.uuid)).toBe(true);
+      expect(graphHasNode(animated, motion.uuid)).toBe(true);
       for (const deviceClass of ['desktop-low', 'phone', 'tablet'] as const) {
         const lowTier = WORLD_DEVICE_PROFILE[deviceClass].initialQualityTier > 0;
         expect(lowTier).toBe(true);
-        const mesh = createTradingFloorWater(lowTier);
+        const mesh = createTradingFloorWater(lowTier, motion);
         try {
-          expect(mesh.material.colorNode).toBeNull();
-          expect(mesh.material.opacityNode).toBeNull();
+          expect(mesh.material.colorNode).not.toBeNull();
+          expect(mesh.material.opacityNode).not.toBeNull();
+          expect(graphHasNode(mesh, time.uuid)).toBe(false);
+          expect(graphHasNode(mesh, positionWorld.uuid)).toBe(false);
+          expect(graphHasNode(mesh, motion.uuid)).toBe(false);
           expect(mesh.material.opacity).toBe(TRADING_FLOOR_WATER_ALPHA);
           expect(mesh.material.color.equals(animated.material.color)).toBe(true);
           expect(mesh.geometry.index!.count).toBe(animated.geometry.index!.count);

@@ -2,13 +2,19 @@
 
 import { useEffect, useLayoutEffect, useMemo } from 'react';
 import * as THREE from 'three/webgpu';
-import { float, positionGeometry, sin, time, uniform, vec3 } from 'three/tsl';
+import { color, dot, float, mix, normalView, positionViewDirection, positionWorld, sin, smoothstep, time, uniform } from 'three/tsl';
 import { CURRENT_WORLD_DEVICE_PROFILE } from '../device-class';
 import {
   TRADING_FLOOR_WATER_ALPHA,
   TRADING_FLOOR_WATER_BOUNDS,
+  TRADING_FLOOR_WATER_GRAZING_ALPHA,
+  TRADING_FLOOR_WATER_GRAZING_COLOR,
+  TRADING_FLOOR_WATER_GRAZING_DOT,
+  TRADING_FLOOR_WATER_HIGHLIGHT_COLOR,
   TRADING_FLOOR_WATER_RENDER_ORDER,
   TRADING_FLOOR_WATER_SHIMMER_ALPHA,
+  TRADING_FLOOR_WATER_STEEP_COLOR,
+  TRADING_FLOOR_WATER_STEEP_DOT,
   TRADING_FLOOR_WATER_Y,
 } from './trading-floor-water-layout';
 
@@ -21,7 +27,7 @@ export function createTradingFloorWater(lowTier: boolean, motion = uniform(1)) {
     TRADING_FLOOR_WATER_BOUNDS.halfZ * 2,
   );
   const material = new THREE.MeshBasicNodeMaterial({
-    color: '#4e8d7c',
+    color: TRADING_FLOOR_WATER_STEEP_COLOR,
     opacity: TRADING_FLOOR_WATER_ALPHA,
     transparent: true,
     blending: THREE.NormalBlending,
@@ -32,20 +38,35 @@ export function createTradingFloorWater(lowTier: boolean, motion = uniform(1)) {
     toneMapped: false,
   });
 
+  // Per-fragment view direction, not one angle at each of the four corners.
+  // Low tiers use this fixed Fresnel tint with no time or ripple nodes.
+  const normalDotView = dot(normalView, positionViewDirection).clamp(0, 1);
+  const grazing = smoothstep(
+    TRADING_FLOOR_WATER_GRAZING_DOT, TRADING_FLOOR_WATER_STEEP_DOT, normalDotView,
+  ).oneMinus();
+  const tint = mix(color(TRADING_FLOOR_WATER_STEEP_COLOR), color(TRADING_FLOOR_WATER_GRAZING_COLOR), grazing);
+  const alpha = mix(float(TRADING_FLOOR_WATER_ALPHA), float(TRADING_FLOOR_WATER_GRAZING_ALPHA), grazing);
+  material.colorNode = tint;
+  material.opacityNode = alpha;
+
   if (!lowTier) {
-    // Local XY becomes floor XZ after rotation. World-unit wavelengths keep
-    // ripples the same size when the room grows. No vertex displacement.
-    const x = positionGeometry.x;
-    const z = positionGeometry.y;
-    const w1 = sin(x.mul(0.027).add(z.mul(0.012)).add(time.mul(0.24))).mul(0.5).add(0.5);
-    const w2 = sin(x.mul(0.014).sub(z.mul(0.031)).sub(time.mul(0.19))).mul(0.5).add(0.5);
-    const w3 = sin(x.mul(0.009).add(z.mul(0.018)).add(time.mul(0.13))).mul(0.5).add(0.5);
-    const shimmer = w1.mul(w2).mul(w3).pow(3).mul(motion);
-    const tint = vec3(material.color.r, material.color.g, material.color.b);
-    material.colorNode = tint.add(vec3(0.16, 0.22, 0.17).mul(shimmer));
-    // At least 88% of the seal, gold seams and additive pools survives.
-    material.opacityNode = float(TRADING_FLOOR_WATER_ALPHA)
-      .add(shimmer.mul(TRADING_FLOOR_WATER_SHIMMER_ALPHA));
+    // Three bent crest families, ~153 / 102 / 109 wu apart, anchored in world XZ.
+    // Soft bands span ~15-25 wu, rather than subpixel sparkles at the spawn.
+    const x = positionWorld.x;
+    const z = positionWorld.z;
+    const w1 = sin(x.mul(0.036).add(z.mul(0.020)).add(time.mul(0.22)));
+    const w2 = sin(x.mul(-0.021).add(z.mul(0.058)).sub(time.mul(0.17)).add(w1.mul(0.65)));
+    const w3 = sin(x.mul(0.057).add(z.mul(0.010)).add(time.mul(0.12)).add(w2.mul(0.45)));
+    const crests = smoothstep(0.85, 0.985, w1).mul(0.50)
+      .add(smoothstep(0.85, 0.985, w2).mul(0.32))
+      .add(smoothstep(0.85, 0.985, w3).mul(0.18));
+    // Strongest on the mid floor; fade at the horizon to avoid thin far bands.
+    const visibility = mix(float(0.15), float(1), grazing)
+      .mul(smoothstep(0.06, 0.18, normalDotView));
+    const shimmer = crests.mul(visibility).mul(motion);
+    material.colorNode = mix(tint, color(TRADING_FLOOR_WATER_HIGHLIGHT_COLOR), shimmer.mul(0.85));
+    // Near-floor alpha <= 0.126; even overlapping far crests stay <= 0.50.
+    material.opacityNode = alpha.add(shimmer.mul(TRADING_FLOOR_WATER_SHIMMER_ALPHA));
   }
 
   const mesh = new THREE.Mesh(geometry, material);
