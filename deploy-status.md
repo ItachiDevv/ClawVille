@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-01 19:11 UTC (session tradeDeskMain). **Staging** is receiving Job 4 (branch `fix/tutorial-guest-mobile`, on top of `1bc360eb`): the welcome tutorial on touch (44 px buttons, card fits landscape, modal above the HUD), no tutorial claim from logged-out or guest visitors (was one 401 per `/game` load), the Trading Floor wallet note no longer says the paused house traders are live, and a CI step that runs both new suites. No API change, no migration, PROTOCOL_VERSION stays 78. VERIFIED 19:34Z on staging `2446cafc` (DEPLOY LOG entry below). **PROD = `ba5b69f6`** (unchanged). SCHEMA: `synced`.
+Last Audited: 2026-10-01 20:29 UTC (session tradeDeskMain). **Staging** is receiving one API + manual change on top of `4df52ae4` (Job 4, verified): the Trading Floor desk range is 0..9 (`FLOOR_ARENA_DESK_COUNT` = 10, founder order for 10 desks, 5 per side wall; the room resize itself ships later from session coolerDesk3), PROTOCOL_VERSION 78 -> 79. No migration. Verification PENDING (DEPLOY LOG entry below). **PROD = `ba5b69f6`** (unchanged). SCHEMA: `synced`.
+
+Prior — Last Audited: 2026-10-01 19:11 UTC (session tradeDeskMain). **Staging** is receiving Job 4 (branch `fix/tutorial-guest-mobile`, on top of `1bc360eb`): the welcome tutorial on touch (44 px buttons, card fits landscape, modal above the HUD), no tutorial claim from logged-out or guest visitors (was one 401 per `/game` load), the Trading Floor wallet note no longer says the paused house traders are live, and a CI step that runs both new suites. No API change, no migration, PROTOCOL_VERSION stays 78. VERIFIED 19:34Z on staging `2446cafc` (DEPLOY LOG entry below). **PROD = `ba5b69f6`** (unchanged). SCHEMA: `synced`.
 
 Prior — Last Audited: 2026-10-01 18:35 UTC (session tradeDeskMain). **PROD = `ba5b69f6` (PROMOTION PR #306, merged 18:14:40Z, api flipped 18:22:19Z, web 18:24:03Z), VERIFIED.** It carries staging `7d81b752` (23 commits since `6dda4e80`): x402 add-on budget + rotation fixes, arena deadlock lock order, the hate-slur mask + `400 name_not_allowed`, Exchange labels + the live-traders heading fix, interior v4 (`?v=4`). PROTOCOL_VERSION 78. No migration. **Staging** = `7d81b752` (same code; `/health` 18:35Z). SCHEMA: `synced`. See the PROMOTION entry at the top of the DEPLOY LOG.
 
@@ -498,6 +500,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-01 (session tradeDeskMain) — Trading Floor desk range 0..9, PROTOCOL_VERSION 79 (staging push)
+
+**What changed:** founder order (relayed by session coolerDesk3, 20:30Z): the hall grows 1.5x each way with 10 desks, 5 per side wall (was 6). New shared constant `FLOOR_ARENA_DESK_COUNT` = 10 drives `POST /api/floor/arena/me/seat` (`seatIndex` 0..9, was 0..5), the `clawville_arena_seat` tool text and the manual seat line; PROTOCOL_VERSION 78 -> 79. The wider range is harmless before the room resize: the web room sends only the seat the player sits at, and coolerDesk3's branch sends 6..9 only after this push.
+**Local checks:** api tsc exit 0; shared 164/0; 10 API test files each in its own process green (route test rejects 10 and -1; knowledge test pins 0 to 9 in manual, tool and route; version pins 79); Hatcher offline selftest 87/0; coupling gate exit 0; doc paths pass.
+**Who it's for:** human players and agents who sit at the new desks.
+**SCHEMA:** `synced`. PARITY: human path: desk seat in `/trading-floor` (`reportTradingFloorSeat` -> `POST /me/seat`); agent path: `clawville_arena_seat` / `POST /api/floor/arena/me/seat` with the agent session; settlement unchanged (paper; the seat only turns new entries on).
 
 ### 2026-10-01 (session tradeDeskMain) — Job 4: tutorial touch layout, guest claim gate, wallet note copy (staging push)
 
