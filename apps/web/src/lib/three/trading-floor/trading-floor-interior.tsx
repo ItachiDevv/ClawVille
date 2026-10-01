@@ -84,7 +84,13 @@ import { withStageSlotFrustumCullingDisabledSync } from '@/components/three/worl
 import {
   chainPostBootCompile,
 } from '@/lib/three/boot-core-compile';
-import { reportTradingFloorSeat } from '@/hooks/use-floor-arena';
+import { reportTradingFloorSeat, notifyTradingFloorSeatSettled } from '@/hooks/use-floor-arena';
+import {
+  applyTradingFloorSeatPose, tradingFloorSeatBones, tradingFloorManualSit,
+  tradingFloorStandRequested, TRADING_FLOOR_SIT_TIME_SCALE,
+  TRADING_FLOOR_SIT_SECONDS, TRADING_FLOOR_EXIT_SECONDS, TRADING_FLOOR_MOVE_FADE_SECONDS,
+} from './trading-floor-sit';
+export { tradingFloorStandRequested } from './trading-floor-sit';
 import { useGameStore } from '@/stores/game';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
@@ -186,10 +192,6 @@ const TRADING_FLOOR_SIT_CLIPS = Object.freeze({
   exit: 'sit_to_stand_m',
 }) satisfies Readonly<Record<'enter' | 'hold' | 'exit', AnimName>>;
 
-/** Same playback speed the cove and the hold'em room use for this bundle. */
-const SIT_CLIP_TIME_SCALE = 1.5;
-/** The authored transition is ~4.8 s; at 1.5x it lands at 3.2 s. */
-const SIT_CLIP_SECONDS = 4.8 / SIT_CLIP_TIME_SCALE;
 /**
  * Hard cap on the cushion pin. A pin is a correction, not a placement: if a VRM
  * ever reports a wild hips position, clamping keeps the avatar in the room
@@ -224,14 +226,14 @@ if (typeof window !== 'undefined') {
  * driven without a live canvas, but WHICH clips each avatar type gets is the
  * part that can silently regress.
  *
- * GLB avatars get null. They have no humanoid rig, no `VRMCharacterAnimator` and
- * no retarget path, so they keep the snap-only behaviour: the body moves to the
- * seat and holds its own idle.
+ * GLB avatars get null: they have no humanoid animator. The five hold'em
+ * fallback rigs also use a manual seat pose instead of these sit clips.
  */
 export function tradingFloorSitClips(
   avatarType: ModelRegistryEntry['avatar_type'],
+  animatorId?: string,
 ): Readonly<Record<'enter' | 'hold' | 'exit', AnimName>> | null {
-  return avatarType === 'vrm' ? TRADING_FLOOR_SIT_CLIPS : null;
+  return avatarType === 'vrm' && !tradingFloorManualSit(animatorId) ? TRADING_FLOOR_SIT_CLIPS : null;
 }
 
 const AVATAR_TARGET_HEIGHT = 270;
@@ -311,6 +313,9 @@ export const tradingFloorPlayerPositionRef: { x: number; z: number } = {
 const _arming = createTradingFloorArming();
 /** Seat the player currently occupies, or -1. Not geometry — a choice. */
 let _seatedIndex = -1;
+let _sitShownIndex = -1;
+let _seatGeneration = 0;
+let _sitClipOwner = false;
 /**
  * Z of the chase camera's forward vector, written by the camera frame and read
  * by the label poll (`tradingFloorDoorPromptVisible`). One number, no
@@ -332,6 +337,8 @@ let _cameraForwardZ = 0;
 function setTradingFloorSeatedIndex(next: number): void {
   if (next === _seatedIndex) return;
   _seatedIndex = next;
+  _sitShownIndex = -1;
+  _seatGeneration++;
   reportTradingFloorSeat(next);
 }
 
@@ -1099,7 +1106,7 @@ function TradingFloorLabels() {
     }
     const nextSeatArmed = !suppressed && _arming.seatArmedIndex >= 0;
     if (nextSeatArmed !== seatArmed) setSeatArmed(nextSeatArmed);
-    const nextSeated = _seatedIndex >= 0;
+    const nextSeated = _seatedIndex >= 0 && _sitShownIndex === _seatedIndex;
     if (nextSeated !== seated) setSeated(nextSeated);
   });
 
@@ -1141,6 +1148,8 @@ function TradingFloorAvatarMotion({
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
   const snapCameraRef = useRef(true);
+  const frozenLastRef = useRef(false);
+  const frozenPrevRef = useRef(false);
   const capabilities = useSlotCapabilities();
   const active = useSceneActive();
   // The slot's PERSISTENT camera. Reading the R3F default camera here can bind
@@ -1224,6 +1233,12 @@ function TradingFloorAvatarMotion({
     isDriving: () => true,
     // The Exchange panel owns the screen while it is up: no walking behind it,
     // no E re-firing the monitor or dropping the player out of the room.
+    onFrameStart: () => {
+      frozenPrevRef.current = frozenLastRef.current;
+      frozenLastRef.current = useGameStore.getState().exchangeOpen;
+      // Consumed E frames and modal frames cannot retain stale movement.
+      updateAnimation(0, false, false);
+    },
     isFrozen: () => useGameStore.getState().exchangeOpen,
     onEscapeWhileFrozen: () => useGameStore.getState().closeExchange(),
     onActivationReset: resetToSpawn,
@@ -1248,14 +1263,10 @@ function TradingFloorAvatarMotion({
         ),
       );
 
-      // Walking out of a seat. The clamp pinned the avatar for this frame, so
-      // the stand-up happens before the position is published and the avatar
-      // never appears to slide out of the chair. Escape stands up too, which
-      // is the habit the Exchange modal already teaches in this room.
-      if (
-        _seatedIndex >= 0 &&
-        (state.intent.move.moving || state.intent.escapeEdge)
-      ) {
+      // Ignore the Escape edge from the modal's last frozen frame.
+      if (tradingFloorStandRequested(
+        _seatedIndex, state.intent.move.moving, state.intent.escapeEdge, frozenPrevRef.current,
+      )) {
         setTradingFloorSeatedIndex(-1);
       }
 
@@ -1281,6 +1292,11 @@ function TradingFloorAvatarMotion({
       if (group) {
         group.position.set(bodyX, baseY, bodyZ);
         group.rotation.y = seated ? seated.facing : state.facing;
+      }
+      // Snap avatars notify only AFTER the controller places the body on the chair.
+      if (seated && !_sitClipOwner && _sitShownIndex !== _seatedIndex) {
+        _sitShownIndex = _seatedIndex;
+        notifyTradingFloorSeatSettled(_seatedIndex);
       }
 
       // --- Hotspot arming (scalar, zero allocation, filled in place) --------
@@ -1478,21 +1494,42 @@ function TradingFloorVRMPlayer({
     [reg.path],
   );
 
+  const locomotionRef = useRef({ moving: false, running: false });
+  const clipsReadyRef = useRef(false);
+  const standClipRef = useRef(false);
+  const fastStandRef = useRef(false);
+  const armWeightRef = useRef(0);
+  const seatBones = useMemo(() => tradingFloorSeatBones(vrm.humanoid), [vrm]);
+  const manualSeat = tradingFloorManualSit(reg.animatorId);
+
   useEffect(() => {
+    let cancelled = false;
     const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
     animatorRef.current = animator;
-    animator.init().catch((error) => {
-      console.warn('[TradingFloor VRM] animator init failed:', error);
+    _sitClipOwner = !manualSeat;
+    clipsReadyRef.current = false;
+    animator.init().then(async () => {
+      if (cancelled) return;
+      if (!manualSeat) await animator.prepareClips([
+        TRADING_FLOOR_SIT_CLIPS.enter, TRADING_FLOOR_SIT_CLIPS.hold, TRADING_FLOOR_SIT_CLIPS.exit,
+      ]);
+      if (!cancelled) clipsReadyRef.current = true;
+    }).catch((error) => {
+      if (!cancelled) _sitClipOwner = false;
+      console.warn('[TradingFloor VRM] animator preparation failed:', error);
     });
     return () => {
+      cancelled = true;
+      _sitClipOwner = false;
       animatorRef.current = null;
       animator.dispose();
     };
-  }, [vrm, reg.animatorId]);
+  }, [vrm, reg.animatorId, manualSeat]);
 
   const updateAnimation = useCallback(
-    (delta: number, moving: boolean, running: boolean) => {
-      animatorRef.current?.update(delta, moving, running);
+    (_delta: number, moving: boolean, running: boolean) => {
+      locomotionRef.current.moving = moving;
+      locomotionRef.current.running = running;
     },
     [],
   );
@@ -1529,36 +1566,76 @@ function TradingFloorVRMPlayer({
     const group = sitGroupRef.current;
     if (!group) return;
 
-    // 1. Transition edges drive the clips.
-    if (_seatedIndex !== seatedRef.current) {
+    const frozen = useGameStore.getState().exchangeOpen;
+    const moving = !frozen && _seatedIndex < 0 && locomotionRef.current.moving;
+    const running = moving && locomotionRef.current.running;
+
+    // Wait for preparation so the first E frame does not retarget two clips.
+    if ((!_sitClipOwner || clipsReadyRef.current) && _seatedIndex !== seatedRef.current) {
       const wasSeated = seatedRef.current >= 0;
       seatedRef.current = _seatedIndex;
-      if (animator) {
-        if (_seatedIndex >= 0) {
+      const seat = _seatedIndex;
+      const generation = _seatGeneration;
+      if (seat >= 0) {
+        standClipRef.current = false;
+        fastStandRef.current = false;
+        if (_sitClipOwner && animator) {
           void animator.playOneShot(
-            TRADING_FLOOR_SIT_CLIPS.enter,
-            TRADING_FLOOR_SIT_CLIPS.hold,
-            SIT_CLIP_TIME_SCALE,
-          );
-        } else if (wasSeated) {
+            TRADING_FLOOR_SIT_CLIPS.enter, TRADING_FLOOR_SIT_CLIPS.hold, TRADING_FLOOR_SIT_TIME_SCALE,
+            {
+              onStart: () => {
+                if (_seatGeneration === generation && _seatedIndex === seat) _sitShownIndex = seat;
+              },
+              onFinish: () => {
+                if (_seatGeneration === generation && _seatedIndex === seat) notifyTradingFloorSeatSettled(seat);
+              },
+            },
+          ).then((started) => {
+            // The controller's next snap frame supplies label + completion.
+            if (!started && _seatGeneration === generation) _sitClipOwner = false;
+          });
+        }
+      } else if (wasSeated && animator) {
+        fastStandRef.current = moving;
+        if (moving || !_sitClipOwner) {
+          animator.returnToLocomotion(moving, running, TRADING_FLOOR_MOVE_FADE_SECONDS);
+        } else {
+          standClipRef.current = true;
           void animator.playOneShot(
-            TRADING_FLOOR_SIT_CLIPS.exit,
-            'idle',
-            SIT_CLIP_TIME_SCALE,
-          );
+            TRADING_FLOOR_SIT_CLIPS.exit, undefined, TRADING_FLOOR_SIT_TIME_SCALE,
+            { onFinish: () => { if (_seatGeneration === generation) standClipRef.current = false; } },
+          ).then((started) => { if (!started && _seatGeneration === generation) standClipRef.current = false; });
         }
       }
     }
+    if (standClipRef.current && moving && animator) {
+      standClipRef.current = false;
+      fastStandRef.current = true;
+      animator.returnToLocomotion(true, running, TRADING_FLOOR_MOVE_FADE_SECONDS);
+    }
 
-    // 2. Blend toward 1 while seated, back to 0 while standing up, over the
-    //    same span the clip takes. The blend is what keeps the cushion pin from
-    //    POPPING: at blend 0 the avatar is exactly where the clip puts it.
-    const target = seatedRef.current >= 0 ? 1 : 0;
-    const step = delta / SIT_CLIP_SECONDS;
-    sitBlendRef.current =
-      target > sitBlendRef.current
-        ? Math.min(target, sitBlendRef.current + step)
-        : Math.max(target, sitBlendRef.current - step);
+    // Exactly one mixer tick per room frame, including modal/frozen frames.
+    animator?.update(delta, moving, running);
+
+    // The bundle's arms do not produce a lap pose on all target rigs.
+    // Override only inside this room; the mixer supplies locomotion on release.
+    const poseActive = _sitShownIndex >= 0 || standClipRef.current;
+    armWeightRef.current = poseActive ? 1 : Math.max(0, armWeightRef.current - delta / TRADING_FLOOR_MOVE_FADE_SECONDS);
+    const snapSeat = !_sitClipOwner && _sitShownIndex >= 0;
+    if (armWeightRef.current > 0 || snapSeat) {
+      applyTradingFloorSeatPose(seatBones, armWeightRef.current, snapSeat);
+      vrm.humanoid.update();
+      vrm.scene.updateMatrixWorld(true);
+      animator?.flushSkeletonUpdates();
+    }
+
+    const target = _sitShownIndex >= 0 ? 1 : 0;
+    const blendSeconds = target > 0 ? TRADING_FLOOR_SIT_SECONDS
+      : fastStandRef.current ? TRADING_FLOOR_MOVE_FADE_SECONDS : TRADING_FLOOR_EXIT_SECONDS;
+    const step = delta / blendSeconds;
+    sitBlendRef.current = target > sitBlendRef.current
+      ? Math.min(target, sitBlendRef.current + step)
+      : Math.max(target, sitBlendRef.current - step);
 
     if (sitBlendRef.current <= 0) {
       if (sitOffsetRef.current !== 0) {

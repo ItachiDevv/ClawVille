@@ -2,6 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
+import type { RootState } from '@react-three/fiber';
+import { useGameStore } from '@/stores/game';
+import { DEFAULT_PLAYER_CAPABILITIES } from '@/lib/three/player/player-capability-mask';
+import { createPlayerControllerTestRuntime, runPlayerControllerFrameForTests, type PlayerCapabilityControllerConfig } from '@/lib/three/player/player-capability-controller';
+import { playerKeyState, resetPlayerKeys } from '@/lib/three/player/player-input';
+import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
+import { tradingFloorStandRequested, tradingFloorManualSit } from './trading-floor-sit';
 import { clampCameraToRoom } from '@/lib/three/room-camera';
 import {
   activateTradingFloorSeat,
@@ -67,6 +74,65 @@ import {
 /** One frame of held input at full walk speed — the real step size. */
 const FRAME_SECONDS = 1 / 60;
 const FRAME_STEP = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
+
+describe('Trading Floor stand intent', () => {
+  test('full seated/movement/Escape/previous-freeze truth table', () => {
+    for (const seat of [-1, ...TRADING_FLOOR_SEATS.map((seat) => seat.index)]) {
+      for (const moving of [false, true]) for (const escape of [false, true]) for (const frozenPrev of [false, true]) {
+        expect(tradingFloorStandRequested(seat, moving, escape, frozenPrev))
+          .toBe(seat >= 0 && (moving || (escape && !frozenPrev)));
+      }
+    }
+  });
+
+  test('Escape after a modal frozen frame cannot stand the avatar', () => {
+    resetPlayerKeys();
+    const oldExchangeOpen = useGameStore.getState().exchangeOpen;
+    let seated = 0;
+    let frozenLast = false;
+    let frozenPrev = false;
+    let afterMove = 0;
+    const config: PlayerCapabilityControllerConfig = {
+      sceneId: 'trading-floor', capabilities: DEFAULT_PLAYER_CAPABILITIES,
+      motion: TRADING_FLOOR_POLICY.motion, input: TRADING_FLOOR_POLICY.input,
+      isDriving: () => true, isFrozen: () => useGameStore.getState().exchangeOpen,
+      onFrameStart: () => { frozenPrev = frozenLast; frozenLast = useGameStore.getState().exchangeOpen; },
+      space: {
+        speedPerSec: 1, readPosition: (out) => { out.x = 0; out.z = 0; },
+        clampMovement: (_px, _pz, x, z, out) => { out.x = x; out.z = z; out.groundY = 0; },
+        commitPosition: () => {},
+      },
+      onAfterMove: (state) => {
+        afterMove++;
+        if (tradingFloorStandRequested(seated, state.intent.move.moving, state.intent.escapeEdge, frozenPrev)) seated = -1;
+      },
+    };
+    const runtime = createPlayerControllerTestRuntime(config.motion);
+    const state = { camera: new THREE.PerspectiveCamera(), clock: { elapsedTime: 0 } } as RootState;
+    try {
+      useGameStore.setState({ exchangeOpen: true });
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+      expect(afterMove).toBe(0);
+      // Modal keydown closes the store before the next controller frame.
+      useGameStore.getState().closeExchange();
+      playerKeyState.escape = true;
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+      expect(afterMove).toBe(1);
+      expect(seated).toBe(0);
+    } finally {
+      resetPlayerKeys();
+      useGameStore.setState({ exchangeOpen: oldExchangeOpen });
+    }
+  });
+
+  test('all five hold’em fallback rigs use manual seats; Milady retains the enter clip', () => {
+    for (const id of ['hermes-female', 'hermes-male', 'tekk', 'adinero', 'chibi']) {
+      expect(tradingFloorManualSit(id)).toBe(true);
+      expect(tradingFloorSitClips('vrm', id)).toBeNull();
+    }
+    expect(tradingFloorSitClips('vrm', 'vrm-milady')?.enter).toBe('sit_stand_to_sit');
+  });
+});
 
 /** Eight compass directions, so no single lucky axis carries a test. */
 const DIRECTIONS: readonly (readonly [number, number])[] = [

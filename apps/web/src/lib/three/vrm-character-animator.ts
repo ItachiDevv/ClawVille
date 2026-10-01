@@ -1438,6 +1438,41 @@ export class VRMCharacterAnimator {
     }
   }
 
+  /** Load and retarget room-specific clips without starting any action. */
+  async prepareClips(names: readonly AnimName[]): Promise<void> {
+    if (!this.ready || this.disposed || !this.mixer) return;
+    for (const name of names) {
+      if (this.actions[name]) continue;
+      const gltf = await loadRawGltf(name, this.characterId);
+      if (this.disposed || !this.mixer) return;
+      if (this.actions[name]) continue;
+      const clip = retargetAnimationClip(gltf, this.vrm, name);
+      if (shouldStripPosition(name, this.characterId)) stripPositionTracks(clip);
+      this.actions[name] = this.mixer.clipAction(clip);
+    }
+  }
+
+  /** Leave either a one-shot or its held loop with an explicit fade duration. */
+  returnToLocomotion(isMoving: boolean, isRunning: boolean, fadeSeconds: number): void {
+    this.oneShotRequestToken++;
+    if (this.disposed || !this.ready || !this.mixer) return;
+    if (this.oneShotFinishedHandler) {
+      this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
+      this.oneShotFinishedHandler = null;
+    }
+    this.oneShotActive = false;
+    this.wasMoving = isMoving;
+    this.wasMotion = !isMoving ? 'idle' : isRunning ? 'run' : 'walk';
+    this.setAttachmentForLocomotion(this.wasMotion);
+    const backName = this.wasMotion === 'idle' ? this.surfaceClip : this.wasMotion;
+    const back = this.actions[backName] ?? this.actions.walk ?? this.actions[this.surfaceClip];
+    if (!back) return;
+    const previous = this.currentAction;
+    back.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(fadeSeconds).play();
+    if (previous && previous !== back) previous.fadeOut(fadeSeconds);
+    this.currentAction = back;
+  }
+
   /**
    * Play a one-shot emote (LoopOnce). Lazy-loads + retargets the clip on
    * first request so the player only pays for emotes they trigger.
@@ -1464,9 +1499,10 @@ export class VRMCharacterAnimator {
     name: AnimName,
     nextLoopingClip?: AnimName,
     timeScale = 1,
-  ): Promise<void> {
-    if (!this.ready) return;
-    if (!this.mixer) return; // disposed
+    hooks?: { onStart?: () => void; onFinish?: () => void },
+  ): Promise<boolean> {
+    if (!this.ready || this.disposed) return false;
+    if (!this.mixer) return false; // disposed
     const requestToken = ++this.oneShotRequestToken;
 
     // A single AnimationAction cannot be faded in as a loop and faded out as
@@ -1475,7 +1511,7 @@ export class VRMCharacterAnimator {
       console.warn(
         `[VRMCharacterAnimator] one-shot "${name}" cannot transition to itself`,
       );
-      return;
+      return false;
     }
     this.attachment?.setState('moving');
 
@@ -1483,7 +1519,7 @@ export class VRMCharacterAnimator {
     if (!this.actions[name]) {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
-        if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+        if (this.disposed || requestToken !== this.oneShotRequestToken) return false;
         const retargeted = retargetAnimationClip(gltf, this.vrm, name);
         if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
@@ -1493,11 +1529,11 @@ export class VRMCharacterAnimator {
         if (requestToken === this.oneShotRequestToken) {
           this.setAttachmentForLocomotion(this.wasMotion);
         }
-        return;
+        return false;
       }
     }
     // Re-check post-await — we may have been disposed mid-load.
-    if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+    if (this.disposed || requestToken !== this.oneShotRequestToken) return false;
 
     // An explicit post-transition loop must be ready before the one-shot
     // starts; otherwise a cold network fetch could outlast the transition and
@@ -1506,7 +1542,7 @@ export class VRMCharacterAnimator {
     if (nextLoopingClip && !this.actions[nextLoopingClip]) {
       try {
         const gltf = await loadRawGltf(nextLoopingClip, this.characterId);
-        if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+        if (this.disposed || requestToken !== this.oneShotRequestToken) return false;
         const retargeted = retargetAnimationClip(gltf, this.vrm, nextLoopingClip);
         if (shouldStripPosition(nextLoopingClip, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
@@ -1521,16 +1557,16 @@ export class VRMCharacterAnimator {
         if (requestToken === this.oneShotRequestToken) {
           this.setAttachmentForLocomotion(this.wasMotion);
         }
-        return;
+        return false;
       }
     }
     // Re-check post-await — we may have been disposed mid-load.
-    if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+    if (this.disposed || requestToken !== this.oneShotRequestToken) return false;
 
     const oneShot = this.actions[name];
     if (!oneShot) {
       this.setAttachmentForLocomotion(this.wasMotion);
-      return;
+      return false;
     }
 
     oneShot.setLoop(THREE.LoopOnce, 1);
@@ -1578,6 +1614,7 @@ export class VRMCharacterAnimator {
         oneShot.fadeOut(CROSSFADE_DURATION);
         this.currentAction = back;
       }
+      if (requestToken === this.oneShotRequestToken) hooks?.onFinish?.();
     };
     this.oneShotFinishedHandler = onFinished;
     this.mixer.addEventListener('finished', onFinished as any);
@@ -1593,6 +1630,8 @@ export class VRMCharacterAnimator {
       previous.fadeOut(CROSSFADE_DURATION);
     }
     this.currentAction = oneShot;
+    hooks?.onStart?.();
+    return true;
   }
 
   /**

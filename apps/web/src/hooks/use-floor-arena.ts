@@ -808,11 +808,25 @@ let reconciledFor: string | null = null;
  * How long after a sit the desk panel opens. The panel freezes the room's
  * player controller, and the controller is what moves the avatar onto the
  * chair on the frame AFTER the sit, so opening at once would leave the avatar
- * sitting down in the aisle behind the panel. 1.2 s lets it reach the chair and
- * start the sit clip first.
+ * sitting down in the aisle behind the panel. Normally the room notifies us
+ * after the sit clip finishes; this timeout covers a missing completion.
  */
-export const FLOOR_ARENA_DESK_PANEL_DELAY_MS = 1_200;
+export const FLOOR_ARENA_DESK_PANEL_FALLBACK_MS = 3_000;
 let deskPanelTimer: ReturnType<typeof setTimeout> | null = null;
+let deskPanelSeat = -1;
+
+function clearDeskPanel(): void {
+  if (deskPanelTimer !== null) clearTimeout(deskPanelTimer);
+  deskPanelTimer = null;
+  deskPanelSeat = -1;
+}
+
+export function notifyTradingFloorSeatSettled(seatIndex: number): void {
+  if (seatIndex < 0 || deskPanelSeat !== seatIndex) return;
+  clearDeskPanel();
+  const ui = useFloorArenaUi.getState();
+  if (ui.localSeatIndex === seatIndex) ui.openArena('desk');
+}
 
 type SeatBody = { seated: true; seatIndex: number } | { seated: false };
 
@@ -838,8 +852,8 @@ function enqueueSeatWrite(body: SeatBody): void {
 
 /**
  * The room calls this on every seat TRANSITION: sit (desk index), stand or
- * leave the room (-1). A sit opens "My trader" after
- * FLOOR_ARENA_DESK_PANEL_DELAY_MS; the arena section shows the launch flow
+ * leave the room (-1). A settled sit opens "My trader", with
+ * FLOOR_ARENA_DESK_PANEL_FALLBACK_MS as a fallback; the arena section shows the launch flow
  * there instead when the player has no arena agent.
  *
  * The server write goes out only when GET /me has already said the player has
@@ -852,16 +866,10 @@ export function reportTradingFloorSeat(seatIndex: number): void {
   if (ui.localSeatIndex === seatIndex) return;
   reconciledFor = null;
   ui.setLocalSeatIndex(seatIndex);
-  if (deskPanelTimer !== null) {
-    clearTimeout(deskPanelTimer);
-    deskPanelTimer = null;
-  }
+  clearDeskPanel();
   if (seatIndex >= 0) {
-    deskPanelTimer = setTimeout(() => {
-      deskPanelTimer = null;
-      // Still in THAT seat: a stand or a room exit in between cancels it.
-      if (useFloorArenaUi.getState().localSeatIndex === seatIndex) useFloorArenaUi.getState().openArena('desk');
-    }, FLOOR_ARENA_DESK_PANEL_DELAY_MS);
+    deskPanelSeat = seatIndex;
+    deskPanelTimer = setTimeout(() => notifyTradingFloorSeatSettled(seatIndex), FLOOR_ARENA_DESK_PANEL_FALLBACK_MS);
   }
   if (ui.myAgent !== 'present') return;
   enqueueSeatWrite(seatIndex >= 0 ? { seated: true, seatIndex } : { seated: false });
@@ -875,8 +883,7 @@ export function flushFloorArenaSeatWritesForTest(): Promise<void> {
 /** Test seam: forgets the last reconcile and any pending panel, as a fresh page load would. */
 export function resetFloorArenaSeatSyncForTest(): void {
   reconciledFor = null;
-  if (deskPanelTimer !== null) clearTimeout(deskPanelTimer);
-  deskPanelTimer = null;
+  clearDeskPanel();
 }
 
 // ---------------------------------------------------------------------------
