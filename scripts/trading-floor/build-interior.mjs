@@ -437,7 +437,7 @@ function octagonGeo(cx, y0, cz, halfX, halfZ, height, chamfer, tile = 0, cap = t
 }
 
 function bannerGeo(x, y, z) {
-  const h=470, w=210, side=x<0?1:-1;
+  const h=420, w=210, side=x<0?1:-1;
   boxRegistry.push({group:currentGroup.name,exempt:currentGroup.exempt,
     min:[x,y-h/2,z-w/2],max:[x,y+h/2,z+w/2]});
   return {pos:[x,y-h/2,z-w/2,x,y-h/2,z+w/2,x,y+h/2,z+w/2,x,y+h/2,z-w/2],
@@ -654,16 +654,21 @@ async function floorPanelPng() {
 }
 
 async function granitePng() {
-  let seed=71;
-  const marks=[];
-  for(let i=0;i<150;i++) {
-    seed=(seed*1664525+1013904223)>>>0;
-    const x=seed%128; seed=(seed*1664525+1013904223)>>>0;
-    const y=seed%128;
-    marks.push(`<rect x="${x}" y="${y}" width="4" height="4" fill="${i%9?'#31343a':'#6a6250'}" opacity=".65"/>`);
-  }
-  return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">
-    <rect width="128" height="128" fill="#10141b"/>${marks.join('')}</svg>`)).png().toBuffer();
+  return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">
+    <defs>
+      <radialGradient id="cloud"><stop stop-color="#2b2d32"/><stop offset="1" stop-color="#101219" stop-opacity="0"/></radialGradient>
+      <filter id="soft"><feGaussianBlur stdDeviation="2"/></filter>
+    </defs>
+    <rect width="256" height="256" fill="#101219"/>
+    <ellipse cx="47" cy="88" rx="112" ry="72" fill="url(#cloud)" opacity=".7"/>
+    <ellipse cx="206" cy="207" rx="119" ry="83" fill="url(#cloud)" opacity=".55"/>
+    <ellipse cx="172" cy="30" rx="90" ry="64" fill="#06080d" opacity=".28" filter="url(#soft)"/>
+    <g fill="none" stroke="#77777a" stroke-linecap="round" filter="url(#soft)" opacity=".18">
+      <path d="M-8 185 C42 153 60 169 105 125 S175 92 264 34" stroke-width="1.8"/>
+      <path d="M18 257 C57 218 79 232 121 194 S187 177 229 132" stroke-width="1.1"/>
+      <path d="M87 -7 C108 34 134 39 151 68 S188 99 197 116" stroke-width="1"/>
+    </g>
+  </svg>`)).png().toBuffer();
 }
 
 // ------------------------------------------------------------- 1. shell -----
@@ -676,7 +681,7 @@ const FLOOR_M = texturedMat('TradingFloorFloor', await floorPanelPng(), { rough:
 const TRIM = mat('TradingFloorTrim', [1, 1, 1], { unlit: true });
 const BRASS = mat('TradingFloorBrass', [0.75, 0.53, 0.16], { rough: 0.36, metal: 0.25 })
   .setEmissiveFactor([0.13, 0.095, 0.032]);
-const GRANITE = texturedMat('TradingFloorGranite', await granitePng(), { rough: 0.35, metal: 0.12 });
+const GRANITE = texturedMat('TradingFloorGranite', await granitePng(), { rough: 0.28, metal: 0.02 });
 const atlasPath = resolve(dirname(output), 'lane-a-identity-atlas.png');
 execFileSync('python', [resolve(REPO_ROOT, 'scripts/trading-floor/render-identity-atlas.py'), atlasPath]);
 const IDENTITY = texturedMat('TradingFloorIdentity', await sharp(atlasPath).png().toBuffer(), { rough: 0.6 });
@@ -801,7 +806,7 @@ addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOO
 
 addMesh('TradingFloorIdentity', mergeGeos([
   group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 380, 600, 96, true)),
-  ...[-1294,1294].map((x) => group('wall banners', null, () => bannerGeo(x, 530, -985))),
+  ...[-1294,1294].map((x) => group('wall banners', null, () => bannerGeo(x, 540, -985))),
 ]), IDENTITY);
 
 addMesh(
