@@ -88,6 +88,18 @@ describe('VRM animator prepared one-shot lifecycle', () => {
     expect(actions.sit_idle_m.getEffectiveWeight()).toBe(0);
   });
 
+  test('manual-seat stand preserves the current idle pose and full weight', () => {
+    const { animator, actions, mixer } = harness();
+    mixer.update(0.4);
+    animator.returnToLocomotion(false, false, 0.2);
+    expect(actions.idle.time).toBeCloseTo(0.4);
+    for (const delta of [0.016, 0.034, 0.05, 0.1]) {
+      animator.update(delta, false);
+      expect(actions.idle.getEffectiveWeight()).toBe(1);
+    }
+    expect(actions.idle.time).toBeCloseTo(0.6);
+  });
+
   test('movement cancels a running exit and suppresses its finish callback', async () => {
     const { animator, actions } = harness();
     let finished = 0;
@@ -162,6 +174,21 @@ function boneAsset(relative: string) {
   return { scene, nodes, json, animations };
 }
 
+/** Anatomical forward is independent of the VRM0/VRM1 scene convention. */
+function rigForward(humanoid: VRMHumanoid): THREE.Vector3 {
+  const left = humanoid.getRawBoneNode('leftUpperArm')!.getWorldPosition(new THREE.Vector3());
+  const right = humanoid.getRawBoneNode('rightUpperArm')!.getWorldPosition(new THREE.Vector3());
+  return left.sub(right).cross(new THREE.Vector3(0, 1, 0)).normalize();
+}
+
+function expectForwardLap(humanoid: VRMHumanoid, forward: THREE.Vector3, sample = ''): void {
+  for (const side of ['left', 'right'] as const) {
+    const hand = humanoid.getRawBoneNode(`${side}Hand`)!.getWorldPosition(new THREE.Vector3());
+    const arm = humanoid.getRawBoneNode(`${side}UpperArm`)!.getWorldPosition(new THREE.Vector3());
+    expect(hand.sub(arm).dot(forward), `${sample} ${side}`).toBeGreaterThan(0.1);
+  }
+}
+
 test('actual Milady rig: sit arm tracks exist; room lap pose releases to locomotion', () => {
   const target = boneAsset('avatars/milady-official-1.vrm');
   const humanBones = Object.fromEntries(target.json.extensions!.VRM!.humanoid.humanBones.map((bone) =>
@@ -172,6 +199,8 @@ test('actual Milady rig: sit arm tracks exist; room lap pose releases to locomot
   const vrm = { scene: target.scene, humanoid, meta: { metaVersion: '0' } } as VRM;
   const source = boneAsset('avatars/animations/_cove_sit.glb');
   const bones = tradingFloorSeatBones(humanoid);
+  target.scene.updateMatrixWorld(true);
+  const forward = rigForward(humanoid);
   const mixer = new THREE.AnimationMixer(target.scene);
   const left = new THREE.Vector3();
   const right = new THREE.Vector3();
@@ -191,12 +220,12 @@ test('actual Milady rig: sit arm tracks exist; room lap pose releases to locomot
       mixer.setTime(time);
       humanoid.update();
       target.scene.updateMatrixWorld(true);
-      console.info('sit-arm-trace', name, time.toFixed(3), 'uncorrected hand drop', handDrop('left', left), handDrop('right', right));
       applyTradingFloorSeatPose(bones, 1, false);
       humanoid.update();
       target.scene.updateMatrixWorld(true);
       expect(handDrop('left', left)).toBeLessThan(-0.15);
       expect(handDrop('right', right)).toBeLessThan(-0.15);
+      expectForwardLap(humanoid, forward);
     }
     action.stop();
   }
@@ -211,6 +240,10 @@ test('actual Milady rig: sit arm tracks exist; room lap pose releases to locomot
   const hold = mixer.clipAction(retargetMeshyClip({ scene: source.scene,
     animations: [source.animations.find((clip) => clip.name === 'sit_idle_m')!] }, vrm, 'sit_idle_m')).play();
   mixer.update(0.1);
+  applyTradingFloorSeatPose(bones, 1, false);
+  humanoid.update();
+  target.scene.updateMatrixWorld(true);
+  expectForwardLap(humanoid, forward, 'held sit before locomotion release');
   const animator = Object.create(VRMCharacterAnimator.prototype) as VRMCharacterAnimator;
   Object.assign(animator, {
     ready: true, disposed: false, mixer, actions: { walk, sit_idle_m: hold }, currentAction: hold,
@@ -227,7 +260,7 @@ test('actual Milady rig: sit arm tracks exist; room lap pose releases to locomot
   expect(handDrop('right', right)).toBeLessThan(-0.15);
 });
 
-test('room arm pose lowers both hands on every registered VRM rig', () => {
+test('room lap pose lowers both hands and puts them forward on every registered VRM rig', () => {
   const paths = new Set(Object.values(MODEL_REGISTRY).filter((reg) => reg.avatar_type === 'vrm').map((reg) => reg.path));
   for (const path of paths) {
     const target = boneAsset(path.slice(1).split('?')[0]!);
@@ -247,5 +280,56 @@ test('room arm pose lowers both hands on every registered VRM rig', () => {
       humanoid.getRawBoneNode(`${side}UpperArm`)!.getWorldPosition(arm);
       expect({ path, side, handsBelowArms: hand.y < arm.y }).toEqual({ path, side, handsBelowArms: true });
     }
+    expectForwardLap(humanoid, rigForward(humanoid), path);
   }
+});
+
+test('actual VRM0 and VRM1 manual-seat knees and feet face forward', () => {
+  for (const path of ['avatars/milady-official-1.vrm', 'avatars/hermes-female.vrm']) {
+    const target = boneAsset(path);
+    const extension = target.json.extensions!;
+    const mapping = extension.VRM
+      ? extension.VRM.humanoid.humanBones.map((bone) => [bone.bone, { node: target.nodes[bone.node]! }])
+      : Object.entries(extension.VRMC_vrm!.humanoid.humanBones).map(([bone, value]) => [bone, { node: target.nodes[value!.node]! }]);
+    const humanoid = new VRMHumanoid(Object.fromEntries(mapping) as ConstructorParameters<typeof VRMHumanoid>[0]);
+    target.scene.add(humanoid.normalizedHumanBonesRoot);
+    target.scene.updateMatrixWorld(true);
+    const forward = rigForward(humanoid);
+    const bones = tradingFloorSeatBones(humanoid);
+    expect(bones.vrm0Basis).toBe(path.includes('milady'));
+    applyTradingFloorSeatPose(bones, 1, true);
+    humanoid.update();
+    target.scene.updateMatrixWorld(true);
+    expectForwardLap(humanoid, forward);
+    for (const side of ['left', 'right'] as const) {
+      const position = (bone: VRMHumanBoneName) => humanoid.getRawBoneNode(bone)!.getWorldPosition(new THREE.Vector3());
+      const arm = position(`${side}UpperArm`), elbow = position(`${side}LowerArm`), hand = position(`${side}Hand`);
+      const thigh = position(`${side}UpperLeg`), knee = position(`${side}LowerLeg`), foot = position(`${side}Foot`);
+      expect(knee.clone().sub(thigh).dot(forward)).toBeGreaterThan(0.1);
+      expect(foot.clone().sub(thigh).dot(forward)).toBeGreaterThan(0.1);
+      expect(knee.clone().sub(thigh).normalize().dot(forward)).toBeGreaterThan(0.99);
+      expect(foot.y).toBeLessThan(knee.y);
+      console.info('seat-rig-after', path, side, JSON.stringify({
+        handForward: hand.clone().sub(arm).dot(forward), handHeight: hand.y - arm.y,
+        forearmForward: hand.clone().sub(elbow).normalize().dot(forward),
+        thighForward: knee.clone().sub(thigh).normalize().dot(forward),
+      }));
+    }
+  }
+});
+
+test('chibi manual seat changes only the legs', () => {
+  const target = boneAsset('avatars/eliza-chibi-mo.vrm');
+  const mapping = Object.entries(target.json.extensions!.VRMC_vrm!.humanoid.humanBones)
+    .map(([bone, value]) => [bone, { node: target.nodes[value!.node]! }]);
+  const humanoid = new VRMHumanoid(Object.fromEntries(mapping) as ConstructorParameters<typeof VRMHumanoid>[0]);
+  const bones = tradingFloorSeatBones(humanoid);
+  const arms = [bones.leftShoulder, bones.rightShoulder, bones.leftArm, bones.rightArm,
+    bones.leftElbow, bones.rightElbow, bones.leftHand, bones.rightHand].filter((bone) => bone !== null);
+  arms.forEach((bone) => bone.quaternion.setFromEuler(new THREE.Euler(0.2, 0.1, -0.3)));
+  const before = arms.map((bone) => bone.quaternion.clone());
+  applyTradingFloorSeatPose(bones, 1, true, false);
+  arms.forEach((bone, index) => expect(bone.quaternion.equals(before[index]!)).toBe(true));
+  expect(Math.abs(bones.leftThigh!.quaternion.x)).toBeCloseTo(Math.SQRT1_2);
+  expect(Math.abs(bones.rightThigh!.quaternion.x)).toBeCloseTo(Math.SQRT1_2);
 });

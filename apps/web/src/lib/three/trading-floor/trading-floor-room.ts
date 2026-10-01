@@ -485,6 +485,9 @@ export interface TradingFloorSeat {
   /** Where the CHAIR prop is drawn — 120 wu further out, behind the avatar. */
   readonly chairX: number;
   readonly chairZ: number;
+  /** Seated body over the measured cushion centre, separate from the stand point. */
+  readonly sitX: number;
+  readonly sitZ: number;
   /** Avatar yaw while seated — looks at the desk. */
   readonly facing: number;
   /** Yaw of the chair prop. Same value: the chair model seats a +Z occupant. */
@@ -646,12 +649,19 @@ export const TRADING_FLOOR_SEATS: readonly TradingFloorSeat[] = Object.freeze(
     const facing = wrapTradingFloorAngle(slot.rotY + Math.PI);
     const alongX = Math.sin(slot.rotY);
     const alongZ = Math.cos(slot.rotY);
+    const chairX = Math.round(slot.x + alongX * TRADING_FLOOR_CHAIR_OFFSET);
+    const chairZ = Math.round(slot.z + alongZ * TRADING_FLOOR_CHAIR_OFFSET);
+    // Decoded TradingFloorChairModule cushion top: X +/-46.0024,
+    // Z [-39.0009, 47.0008], Y 85.0034 wu (node Y/scale 87).
+    // Its local centre is (0, 4) wu; rotate it by the chair yaw.
     return Object.freeze({
       index,
       x: Math.round(slot.x + alongX * TRADING_FLOOR_SEAT_OFFSET),
       z: Math.round(slot.z + alongZ * TRADING_FLOOR_SEAT_OFFSET),
-      chairX: Math.round(slot.x + alongX * TRADING_FLOOR_CHAIR_OFFSET),
-      chairZ: Math.round(slot.z + alongZ * TRADING_FLOOR_CHAIR_OFFSET),
+      chairX,
+      chairZ,
+      sitX: chairX + Math.sin(facing) * 4,
+      sitZ: chairZ + Math.cos(facing) * 4,
       facing,
       chairRotY: facing,
     });

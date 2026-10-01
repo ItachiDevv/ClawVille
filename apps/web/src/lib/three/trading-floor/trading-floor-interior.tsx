@@ -88,7 +88,7 @@ import { reportTradingFloorSeat, notifyTradingFloorSeatSettled } from '@/hooks/u
 import {
   applyTradingFloorSeatPose, tradingFloorSeatBones, tradingFloorManualSit,
   tradingFloorStandRequested, TRADING_FLOOR_SIT_TIME_SCALE,
-  TRADING_FLOOR_SIT_SECONDS, TRADING_FLOOR_EXIT_SECONDS, TRADING_FLOOR_MOVE_FADE_SECONDS,
+  TRADING_FLOOR_MOVE_FADE_SECONDS, tradingFloorPinBlend, tradingFloorArmWeight,
 } from './trading-floor-sit';
 export { tradingFloorStandRequested } from './trading-floor-sit';
 import { useGameStore } from '@/stores/game';
@@ -542,10 +542,8 @@ function buildInstancedRow(
   return row;
 }
 
-/** Chair placement comes from the SEAT list, so a chair and the avatar that
- *  takes that seat can never drift apart. `chairX/chairZ`, NOT `x/z`: the chair
- *  sits 120 wu BEHIND the standing avatar, because with no sit clip an avatar
- *  drawn at the chair's own origin passes through the seat pan and backrest. */
+/** Chair placement and seated body points share the SEAT list.
+ *  `x/z` remain the separate stand points, clear of the chair. */
 const CHAIR_SLOTS: readonly RowSlot[] = TRADING_FLOOR_SEATS.map((seat) => ({
   x: seat.chairX,
   z: seat.chairZ,
@@ -942,7 +940,11 @@ const _seatAnchorRef = makeAnchor(0, SEAT_LABEL_Y, 0);
 function moveSeatAnchor(seat: TradingFloorSeat): void {
   const anchor = _seatAnchorRef.current;
   if (!anchor) return;
-  anchor.position.set(seat.x, SEAT_LABEL_Y, seat.z);
+  anchor.position.set(
+    _seatedIndex === seat.index ? seat.sitX : seat.x,
+    SEAT_LABEL_Y,
+    _seatedIndex === seat.index ? seat.sitZ : seat.z,
+  );
   anchor.updateMatrix();
   anchor.updateWorldMatrix(false, false);
 }
@@ -1056,17 +1058,18 @@ function TradingFloorLabels() {
     // extraction exists to stop.
     const suppressed = _arming.monitorArmed || _arming.doorArmed;
     const nextSeatHint = suppressed ? -1 : _arming.seatHintIndex;
+    // E can stand immediately, including while the sit clips still prepare.
+    const nextSeated = _seatedIndex >= 0;
+    if (nextSeatHint >= 0 && (nextSeatHint !== seatHintIndex || nextSeated !== seated)) {
+      const seat = TRADING_FLOOR_SEATS[nextSeatHint];
+      if (seat) moveSeatAnchor(seat);
+    }
     if (nextSeatHint !== seatHintIndex) {
-      if (nextSeatHint >= 0) {
-        const seat = TRADING_FLOOR_SEATS[nextSeatHint];
-        if (seat) moveSeatAnchor(seat);
-      }
       setSeatHintIndex(nextSeatHint);
       setSeatVisible(nextSeatHint >= 0);
     }
     const nextSeatArmed = !suppressed && _arming.seatArmedIndex >= 0;
     if (nextSeatArmed !== seatArmed) setSeatArmed(nextSeatArmed);
-    const nextSeated = _seatedIndex >= 0 && _sitShownIndex === _seatedIndex;
     if (nextSeated !== seated) setSeated(nextSeated);
   });
 
@@ -1105,6 +1108,7 @@ function TradingFloorAvatarMotion({
   const groupRef = useRef<THREE.Group>(null);
   const posX = useRef<number>(TRADING_FLOOR_PLAYER_SPAWN.x);
   const posZ = useRef<number>(TRADING_FLOOR_PLAYER_SPAWN.z);
+  const bodySeatRef = useRef(-1);
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
   const snapCameraRef = useRef(true);
@@ -1122,6 +1126,13 @@ function TradingFloorAvatarMotion({
     () => ({
       speedPerSec: TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
       readPosition: (out) => {
+        // E consumes its controller frame; restore before the next movement step.
+        if (bodySeatRef.current >= 0 && _seatedIndex < 0) {
+          const stand = TRADING_FLOOR_SEATS[bodySeatRef.current]!;
+          posX.current = stand.x;
+          posZ.current = stand.z;
+          bodySeatRef.current = -1;
+        }
         out.x = posX.current;
         out.z = posZ.current;
       },
@@ -1156,6 +1167,7 @@ function TradingFloorAvatarMotion({
   );
 
   const resetToSpawn = useCallback(() => {
+    bodySeatRef.current = -1;
     posX.current = TRADING_FLOOR_PLAYER_SPAWN.x;
     posZ.current = TRADING_FLOOR_PLAYER_SPAWN.z;
     tradingFloorPlayerPositionRef.x = TRADING_FLOOR_PLAYER_SPAWN.x;
@@ -1234,18 +1246,22 @@ function TradingFloorAvatarMotion({
 
       const seated =
         _seatedIndex >= 0 ? TRADING_FLOOR_SEATS[_seatedIndex] : undefined;
-      const bodyX = seated ? seated.x : state.x;
-      const bodyZ = seated ? seated.z : state.z;
+      // Escape can stand without a movement clamp. Return to the stand point.
+      const stand = !seated && bodySeatRef.current >= 0
+        ? TRADING_FLOOR_SEATS[bodySeatRef.current] : undefined;
+      const bodyX = seated ? seated.sitX : stand ? stand.x : state.x;
+      const bodyZ = seated ? seated.sitZ : stand ? stand.z : state.z;
 
-      if (seated) {
+      if (seated || stand) {
         // Keep the space adapter's own position ON the seat every frame, not
         // just on the frame E was pressed. `activateTradingFloorUse` is a
         // module function with no access to these refs, and without this the
         // avatar would snap back to wherever it was standing the moment it
         // stood up.
-        posX.current = seated.x;
-        posZ.current = seated.z;
+        posX.current = bodyX;
+        posZ.current = bodyZ;
       }
+      bodySeatRef.current = seated?.index ?? -1;
 
       tradingFloorPlayerPositionRef.x = bodyX;
       tradingFloorPlayerPositionRef.z = bodyZ;
@@ -1423,6 +1439,7 @@ function TradingFloorVRMPlayer({
   onAvatarMounted: AvatarMountCallback;
   onAvatarUnmounted: () => void;
 }) {
+  const active = useSceneActive();
   const vrm = useVRMInstance(reg.path, 'trading-floor-player');
   const { scale, offsetY } = useMemo(
     () => computeVRMAvatarFit(vrm, reg.animatorId, AVATAR_TARGET_HEIGHT),
@@ -1503,6 +1520,18 @@ function TradingFloorVRMPlayer({
     sitOffsetRef.current = 0;
   }, [vrm, reg.path]);
 
+  useEffect(() => {
+    if (active) return;
+    seatedRef.current = -1;
+    standClipRef.current = false;
+    fastStandRef.current = false;
+    armWeightRef.current = 0;
+    sitBlendRef.current = 0;
+    sitOffsetRef.current = 0;
+    if (sitGroupRef.current) sitGroupRef.current.position.y = 0;
+    animatorRef.current?.returnToLocomotion(false, false, 0);
+  }, [active]);
+
   useSceneFrame((_, rawDelta) => {
     const delta = Math.min(rawDelta, 0.1);
     const animator = animatorRef.current;
@@ -1563,22 +1592,17 @@ function TradingFloorVRMPlayer({
     // The bundle's arms do not produce a lap pose on all target rigs.
     // Override only inside this room; the mixer supplies locomotion on release.
     const poseActive = _sitShownIndex >= 0 || standClipRef.current;
-    armWeightRef.current = poseActive ? 1 : Math.max(0, armWeightRef.current - delta / TRADING_FLOOR_MOVE_FADE_SECONDS);
+    armWeightRef.current = tradingFloorArmWeight(armWeightRef.current, poseActive, delta, fastStandRef.current);
     const snapSeat = !_sitClipOwner && _sitShownIndex >= 0;
     if (armWeightRef.current > 0 || snapSeat) {
-      applyTradingFloorSeatPose(seatBones, armWeightRef.current, snapSeat);
+      applyTradingFloorSeatPose(seatBones, armWeightRef.current, snapSeat, reg.animatorId !== 'chibi');
       vrm.humanoid.update();
       vrm.scene.updateMatrixWorld(true);
       animator?.flushSkeletonUpdates();
     }
 
     const target = _sitShownIndex >= 0 ? 1 : 0;
-    const blendSeconds = target > 0 ? TRADING_FLOOR_SIT_SECONDS
-      : fastStandRef.current ? TRADING_FLOOR_MOVE_FADE_SECONDS : TRADING_FLOOR_EXIT_SECONDS;
-    const step = delta / blendSeconds;
-    sitBlendRef.current = target > sitBlendRef.current
-      ? Math.min(target, sitBlendRef.current + step)
-      : Math.max(target, sitBlendRef.current - step);
+    sitBlendRef.current = tradingFloorPinBlend(sitBlendRef.current, target, delta, _sitClipOwner, fastStandRef.current);
 
     if (sitBlendRef.current <= 0) {
       if (sitOffsetRef.current !== 0) {

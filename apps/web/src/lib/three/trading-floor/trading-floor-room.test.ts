@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
+import { NodeIO } from '@gltf-transform/core';
+import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { MeshoptDecoder } from 'meshoptimizer';
 import {
   clampTradingFloorMovement2D,
   consoleHalfExtents,
@@ -312,6 +316,41 @@ describe('Trading Floor interior — movement clamp', () => {
       const toDesk = Math.atan2(desk.x - seat.x, desk.z - seat.z);
       expect(Math.cos(seat.facing - toDesk)).toBeCloseTo(1, 6);
       // The chair prop shares that yaw — the model seats a +Z occupant.
+      expect(seat.chairRotY).toBe(seat.facing);
+    }
+  });
+
+  test('sit points sit over the decoded chair cushion centre; stand points and facing stay unchanged', async () => {
+    const doc = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder })
+      .read(join(import.meta.dir, '../../../../public/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb'));
+    const chair = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorChairModule')!;
+    const positions = chair.getMesh()!.listPrimitives()[0]!.getAttribute('POSITION')!;
+    const matrix = chair.getWorldMatrix();
+    const at = chair.getTranslation();
+    const cushion = Array.from({ length: positions.getCount() }, (_, index) => {
+      const p = positions.getElement(index, []);
+      return [0, 1, 2].map((axis) => matrix[12 + axis]! + matrix[axis]! * p[0]!
+        + matrix[4 + axis]! * p[1]! + matrix[8 + axis]! * p[2]! - (axis === 1 ? 0 : at[axis]!));
+    }).filter((p) => Math.abs(p[1]! - 85) < 0.02);
+    expect(cushion).toHaveLength(16);
+    const bounds = [0, 2].map((axis) => ({
+      min: Math.min(...cushion.map((p) => p[axis]!)), max: Math.max(...cushion.map((p) => p[axis]!)),
+    }));
+    expect(TRADING_FLOOR_SEATS.map((seat) => [seat.index, seat.x, seat.z, seat.facing])).toEqual([
+      [0, -915, -500, -Math.PI / 2], [1, -915, 0, -Math.PI / 2], [2, -915, 500, -Math.PI / 2],
+      [3, 915, -500, Math.PI / 2], [4, 915, 0, Math.PI / 2], [5, 915, 500, Math.PI / 2],
+    ]);
+    for (const seat of TRADING_FLOOR_SEATS) {
+      const dx = seat.sitX - seat.chairX, dz = seat.sitZ - seat.chairZ;
+      const local = [Math.cos(seat.chairRotY) * dx - Math.sin(seat.chairRotY) * dz,
+        Math.sin(seat.chairRotY) * dx + Math.cos(seat.chairRotY) * dz];
+      for (const [axis, value] of local.entries()) {
+        expect(value).toBeGreaterThan(bounds[axis]!.min);
+        expect(value).toBeLessThan(bounds[axis]!.max);
+        expect(value).toBeCloseTo((bounds[axis]!.min + bounds[axis]!.max) / 2, 3);
+      }
+      expect(tradingFloorHitsSolid(seat.sitX, seat.sitZ)).toBe(false);
       expect(seat.chairRotY).toBe(seat.facing);
     }
   });

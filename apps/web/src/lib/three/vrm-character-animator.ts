@@ -1468,6 +1468,11 @@ export class VRMCharacterAnimator {
     const back = this.actions[backName] ?? this.actions.walk ?? this.actions[this.surfaceClip];
     if (!back) return;
     const previous = this.currentAction;
+    if (back === previous) {
+      back.enabled = true;
+      back.setEffectiveTimeScale(1).setEffectiveWeight(1).play();
+      return;
+    }
     back.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(fadeSeconds).play();
     if (previous && previous !== back) previous.fadeOut(fadeSeconds);
     this.currentAction = back;

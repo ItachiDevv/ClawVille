@@ -811,6 +811,7 @@ let reconciledFor: string | null = null;
  * sitting down in the aisle behind the panel. Normally the room notifies us
  * after the sit clip finishes; this timeout covers a missing completion.
  */
+// Matches trading-floor-sit's TRADING_FLOOR_SIT_SECONDS + 1.5 seconds; keep this hook independent of the room.
 export const FLOOR_ARENA_DESK_PANEL_FALLBACK_MS = 3_000;
 let deskPanelTimer: ReturnType<typeof setTimeout> | null = null;
 let deskPanelSeat = -1;

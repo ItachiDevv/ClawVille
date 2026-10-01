@@ -8,7 +8,7 @@ import { DEFAULT_PLAYER_CAPABILITIES } from '@/lib/three/player/player-capabilit
 import { createPlayerControllerTestRuntime, runPlayerControllerFrameForTests, type PlayerCapabilityControllerConfig } from '@/lib/three/player/player-capability-controller';
 import { playerKeyState, resetPlayerKeys } from '@/lib/three/player/player-input';
 import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
-import { tradingFloorStandRequested, tradingFloorManualSit } from './trading-floor-sit';
+import { tradingFloorStandRequested, tradingFloorManualSit, tradingFloorPinBlend, tradingFloorArmWeight } from './trading-floor-sit';
 import {
   activateTradingFloorSeat,
   tradingFloorSitClips,
@@ -83,6 +83,25 @@ const FRAME_SECONDS = 1 / 60;
 const FRAME_STEP = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
 
 describe('Trading Floor stand intent', () => {
+  test('manual-seat cushion pin snaps with the legs on sit and every stand path', () => {
+    for (const id of ['hermes-female', 'hermes-male', 'tekk', 'adinero', 'chibi']) {
+      expect(tradingFloorManualSit(id)).toBe(true);
+      expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, false, false)).toBe(1);
+      for (const fastStand of [false, true]) {
+        expect(tradingFloorPinBlend(1, 0, FRAME_SECONDS, false, fastStand)).toBe(0);
+      }
+    }
+    expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, true, false)).toBeLessThan(0.02);
+    expect(tradingFloorPinBlend(1, 0, FRAME_SECONDS, true, false)).toBeGreaterThan(0.98);
+  });
+
+  test('arm override follows the 0.3 second clip fades and the 0.2 second movement stand', () => {
+    expect(tradingFloorArmWeight(0, true, FRAME_SECONDS, false)).toBeCloseTo(1 / 18);
+    expect(tradingFloorArmWeight(0, true, 0.3, false)).toBe(1);
+    expect(tradingFloorArmWeight(1, false, 0.2, false)).toBeCloseTo(1 / 3);
+    expect(tradingFloorArmWeight(1, false, 0.3, false)).toBe(0);
+    expect(tradingFloorArmWeight(1, false, 0.2, true)).toBe(0);
+  });
   test('full seated/movement/Escape/previous-freeze truth table', () => {
     for (const seat of [-1, ...TRADING_FLOOR_SEATS.map((seat) => seat.index)]) {
       for (const moving of [false, true]) for (const escape of [false, true]) for (const frozenPrev of [false, true]) {
