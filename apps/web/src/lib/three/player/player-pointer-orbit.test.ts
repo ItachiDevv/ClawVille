@@ -8,9 +8,11 @@ import {
   attachPlayerPointerOrbit,
   createPlayerPointerOrbitState,
   pointerOrbitRadians,
+  pointerOrbitClickAllowed,
   POINTER_ORBIT_SLOP_PX,
   POINTER_ORBIT_DESKTOP_SPEED,
   POINTER_ORBIT_TOUCH_SPEED,
+  POINTER_ORBIT_TOUCH_SLOP_PX,
 } from './player-pointer-orbit';
 
 class FakeTarget extends EventTarget {
@@ -43,9 +45,9 @@ class FakeElement extends FakeTarget {
   releasePointerCapture(_id: number) { this.captured = null; }
 }
 
-function pointer(type: string, x: number, y = 0, pointerId = 1, pointerType = 'mouse', button = 0) {
+function pointer(type: string, x: number, y = 0, pointerId = 1, pointerType = 'mouse', button = 0, buttons = 1) {
   const event = new Event(type, { cancelable: true });
-  Object.assign(event, { clientX: x, clientY: y, pointerId, pointerType, button });
+  Object.assign(event, { clientX: x, clientY: y, pointerId, pointerType, button, buttons });
   return event;
 }
 
@@ -117,6 +119,73 @@ describe('pointer orbit lifecycle', () => {
     element.dispatchEvent(pointer('pointerdown', 0));
     windowTarget.dispatchEvent(pointer('pointermove', 3, 3));
     expect(state.dragging).toBe(true);
+  });
+
+  test('a return-to-start drag suppresses the click after pointerup until the next pointerdown', () => {
+    const { element, windowTarget, state } = attach();
+    element.dispatchEvent(pointer('pointerdown', 0));
+    windowTarget.dispatchEvent(pointer('pointermove', 4));
+    expect(pointerOrbitClickAllowed(state.clickSuppressed)).toBe(true);
+    windowTarget.dispatchEvent(pointer('pointermove', 4.1));
+    expect(state.dragging).toBe(true);
+    windowTarget.dispatchEvent(pointer('pointermove', 0));
+    windowTarget.dispatchEvent(pointer('pointerup', 0));
+    expect(state.dragging).toBe(false);
+    expect(pointerOrbitClickAllowed(state.clickSuppressed)).toBe(false);
+    element.dispatchEvent(pointer('pointerdown', 0));
+    windowTarget.dispatchEvent(pointer('pointermove', 3));
+    windowTarget.dispatchEvent(pointer('pointerup', 3));
+    expect(pointerOrbitClickAllowed(state.clickSuppressed)).toBe(true);
+  });
+
+  for (const pointerType of ['touch', 'pen']) {
+    test(`${pointerType} uses 10 px slop and retains implicit capture`, () => {
+      const { element, windowTarget, state } = attach();
+      element.dispatchEvent(pointer('pointerdown', 0, 0, 1, pointerType));
+      windowTarget.dispatchEvent(pointer('pointermove', POINTER_ORBIT_TOUCH_SLOP_PX, 0, 1, pointerType));
+      expect(state.dragging).toBe(false);
+      expect(state.clickSuppressed).toBe(false);
+      windowTarget.dispatchEvent(pointer('pointermove', 11, 0, 1, pointerType));
+      expect(state.dragging).toBe(true);
+      expect(state.clickSuppressed).toBe(true);
+      expect(element.captureCalls).toBe(0);
+      const lostCapture = [...element.listeners.get('lostpointercapture')!][0] as EventListener;
+      lostCapture({ pointerId: 1, target: new FakeElement() } as unknown as PointerEvent);
+      expect(state.dragging).toBe(true);
+      windowTarget.dispatchEvent(pointer('pointermove', 160, 0, 1, pointerType));
+      expect(state.yawRad).toBeCloseTo(pointerOrbitRadians(160, 600, pointerType === 'touch' ? 0.4 : 1));
+      lostCapture({ pointerId: 2, target: element } as unknown as PointerEvent);
+      expect(state.dragging).toBe(true);
+      lostCapture({ pointerId: 1, target: element } as unknown as PointerEvent);
+      expect(state).toEqual(createPlayerPointerOrbitState());
+    });
+
+    for (const type of ['pointerup', 'pointercancel']) {
+      test(`${pointerType} ${type} ends only the active pointer`, () => {
+        const { element, windowTarget, state } = attach();
+        element.dispatchEvent(pointer('pointerdown', 0, 0, 1, pointerType));
+        windowTarget.dispatchEvent(pointer('pointermove', 20, 0, 1, pointerType));
+        windowTarget.dispatchEvent(pointer(type, 20, 0, 2, pointerType));
+        expect(state.dragging).toBe(true);
+        windowTarget.dispatchEvent(pointer(type, 20, 0, 1, pointerType));
+        expect(state.dragging).toBe(false);
+        expect(state.pointerId).toBeNull();
+        expect(state.yawRad === 0).toBe(type === 'pointercancel');
+      });
+    }
+  }
+
+  test('mouse movement without the left button ends a stuck drag without losing pending yaw', () => {
+    const { element, windowTarget, state } = attach();
+    element.dispatchEvent(pointer('pointerdown', 0));
+    windowTarget.dispatchEvent(pointer('pointermove', 10));
+    const yaw = state.yawRad;
+    windowTarget.dispatchEvent(pointer('pointermove', 20, 0, 1, 'mouse', 0, 0));
+    expect(state.pointerId).toBeNull();
+    expect(state.dragging).toBe(false);
+    expect(state.yawRad).toBe(yaw);
+    expect(state.clickSuppressed).toBe(true);
+    expect(element.captured).toBeNull();
   });
 
   test('ignores blocked pointerdown and clears an active drag when blocked', () => {

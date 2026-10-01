@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import type { RootState } from '@react-three/fiber';
 import { useGameStore } from '@/stores/game';
 import { DEFAULT_PLAYER_CAPABILITIES } from '@/lib/three/player/player-capability-mask';
-import { pointerOrbitClickAllowed, pointerOrbitYawEaseAllowed } from '@/lib/three/player/player-pointer-orbit';
+import { createPlayerPointerOrbitState, pointerOrbitYawEaseAllowed } from '@/lib/three/player/player-pointer-orbit';
 import { createPlayerControllerTestRuntime, runPlayerControllerFrameForTests, type PlayerCapabilityControllerConfig } from '@/lib/three/player/player-capability-controller';
 import { playerKeyState, resetPlayerKeys } from '@/lib/three/player/player-input';
 import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
@@ -15,27 +15,12 @@ import {
   TRADING_FLOOR_MOVE_FADE_SECONDS,
 } from './trading-floor-sit';
 
-describe('Trading Floor pointer orbit interaction guards', () => {
-  test('a drag click cannot activate a chair, kiosk or door', () => {
-    expect(pointerOrbitClickAllowed(3)).toBe(true);
-    expect(pointerOrbitClickAllowed(4)).toBe(true);
-    expect(pointerOrbitClickAllowed(5)).toBe(false);
-    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
-    expect(source).toContain('if (!pointerOrbitClickAllowed(event.delta)) return;');
-  });
-
-  test('seated yaw ease yields to a drag even between pointer moves', () => {
-    expect(pointerOrbitYawEaseAllowed(0, false, 0)).toBe(true);
-    expect(pointerOrbitYawEaseAllowed(0, true, 0)).toBe(false);
-    expect(pointerOrbitYawEaseAllowed(0, false, 0.1)).toBe(false);
-    expect(pointerOrbitYawEaseAllowed(1, false, 0)).toBe(false);
-    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
-    expect(source).toContain('seated && pointerOrbitYawEaseAllowed(state.intent.cameraYawInput, _pointerOrbit.dragging, pointerYaw)');
-  });
-});
 import {
   activateTradingFloorSeat,
   tradingFloorSitClips,
+  attachTradingFloorPointerOrbit,
+  drainTradingFloorPointerOrbit,
+  updateTradingFloorSeatedYaw,
 } from './trading-floor-interior';
 import {
   clampTradingFloorMovement2D,
@@ -85,6 +70,128 @@ import {
   TRADING_FLOOR_SEATS,
   TRADING_FLOOR_SOLIDS,
 } from './trading-floor-room';
+
+
+describe('Trading Floor pointer orbit interaction guards', () => {
+  test('seated yaw ease yields to a drag even between pointer moves', () => {
+    expect(pointerOrbitYawEaseAllowed(0, false, 0)).toBe(true);
+    expect(pointerOrbitYawEaseAllowed(0, true, 0)).toBe(false);
+    expect(pointerOrbitYawEaseAllowed(0, false, 0.1)).toBe(false);
+    expect(pointerOrbitYawEaseAllowed(1, false, 0)).toBe(false);
+  });
+
+  for (const input of ['drag', 'arrow']) {
+    test(`seated ${input} yaw stays after release and a new sit restores desk framing`, () => {
+      const yaw = { current: 0.75 };
+      const override = { current: false };
+      const generation = { current: 1 };
+      updateTradingFloorSeatedYaw(yaw, override, generation, 1, 0,
+        input === 'arrow' ? 1 : 0, input === 'drag', input === 'drag' ? 0.1 : 0, 1 / 60);
+      expect(override.current).toBe(true);
+      for (let frame = 0; frame < 30; frame++) {
+        updateTradingFloorSeatedYaw(yaw, override, generation, 1, 0, 0, false, 0, 1 / 60);
+      }
+      expect(yaw.current).toBe(0.75);
+      updateTradingFloorSeatedYaw(yaw, override, generation, 2, -1, 0, false, 0, 1 / 60);
+      expect(override.current).toBe(false);
+      updateTradingFloorSeatedYaw(yaw, override, generation, 3, 0, 0, false, 0, 0.5);
+      const deskYaw = tradingFloorSeatedCameraYaw(TRADING_FLOOR_SEATS[0]!.facing);
+      expect(yaw.current).toBeCloseTo(0.75 + wrapTradingFloorAngle(deskYaw - 0.75) * (1 - Math.exp(-3)));
+    });
+  }
+
+  test('changing directly to another seat clears the yaw override', () => {
+    const yaw = { current: 0.75 };
+    const override = { current: true };
+    const generation = { current: 1 };
+    updateTradingFloorSeatedYaw(yaw, override, generation, 2, 1, 0, false, 0, 0.5);
+    expect(override.current).toBe(false);
+    expect(yaw.current).not.toBe(0.75);
+  });
+
+  test('pointer drain uses current arm plus look-ahead and clears both accumulators', () => {
+    const state = createPlayerPointerOrbitState();
+    state.yawRad = 0.25;
+    state.pitchRad = 0.1;
+    const yaw = { current: 1 };
+    const pitch = { current: 10 };
+    expect(drainTradingFloorPointerOrbit(state, yaw, pitch, 100)).toBe(0.25);
+    expect(yaw.current).toBe(1.25);
+    expect(pitch.current).toBeCloseTo(10 + 0.1 * (100 + TRADING_FLOOR_CAMERA.lookAhead));
+    expect(state.yawRad).toBe(0);
+    expect(state.pitchRad).toBe(0);
+    const drainedPitch = pitch.current;
+    expect(drainTradingFloorPointerOrbit(state, yaw, pitch, 520)).toBe(0);
+    expect(yaw.current).toBe(1.25);
+    expect(pitch.current).toBe(drainedPitch);
+    state.pitchRad = 0.1;
+    drainTradingFloorPointerOrbit(state, yaw, pitch, 520);
+    expect(pitch.current - drainedPitch).toBeCloseTo(0.1 * (520 + TRADING_FLOOR_CAMERA.lookAhead));
+  });
+
+  test('pointer drain clamps pitch at both limits', () => {
+    const state = createPlayerPointerOrbitState();
+    const yaw = { current: 0 };
+    const pitch = { current: 0 };
+    for (const sign of [1, -1]) {
+      state.yawRad = sign * 0.1;
+      state.pitchRad = sign * 10;
+      drainTradingFloorPointerOrbit(state, yaw, pitch, 100);
+      expect(pitch.current).toBe(sign > 0 ? TRADING_FLOOR_CAMERA.pitchMax : TRADING_FLOOR_CAMERA.pitchMin);
+      expect(state.yawRad).toBe(0);
+      expect(state.pitchRad).toBe(0);
+    }
+  });
+
+  test('opening the Exchange resets the actual orbit subscription and prevents stale input', () => {
+    const previousExchangeOpen = useGameStore.getState().exchangeOpen;
+    useGameStore.setState({ exchangeOpen: false });
+    const capture = { pointerId: null as number | null };
+    const element = Object.assign(new EventTarget(), {
+      style: { touchAction: 'pan-y' }, clientHeight: 600,
+      setPointerCapture: (id: number) => { capture.pointerId = id; },
+      hasPointerCapture: (id: number) => capture.pointerId === id,
+      releasePointerCapture: () => { capture.pointerId = null; },
+    });
+    const windowTarget = new EventTarget();
+    const state = createPlayerPointerOrbitState();
+    const orbit = attachTradingFloorPointerOrbit(element as unknown as HTMLElement, state, {
+      windowTarget, isBlocked: () => useGameStore.getState().exchangeOpen,
+    });
+    const dispatch = (type: string, x: number) => {
+      const event = Object.assign(new Event(type), {
+        pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1, clientX: x, clientY: x,
+      });
+      (type === 'pointerdown' ? element : windowTarget).dispatchEvent(event);
+    };
+    try {
+      dispatch('pointerdown', 0);
+      dispatch('pointermove', 20);
+      expect(state.dragging).toBe(true);
+      expect(state.clickSuppressed).toBe(true);
+      expect(state.yawRad).not.toBe(0);
+      expect(capture.pointerId).toBe(1);
+      useGameStore.setState({ exchangeOpen: true });
+      expect(state).toEqual(createPlayerPointerOrbitState());
+      expect(capture.pointerId).toBeNull();
+      dispatch('pointermove', 40);
+      expect(state).toEqual(createPlayerPointerOrbitState());
+      useGameStore.setState({ exchangeOpen: false });
+      dispatch('pointermove', 60);
+      expect(state).toEqual(createPlayerPointerOrbitState());
+      dispatch('pointerdown', 60);
+      dispatch('pointermove', 80);
+      expect(state.dragging).toBe(true);
+    } finally {
+      orbit.detach();
+      useGameStore.setState({ exchangeOpen: previousExchangeOpen });
+    }
+    state.yawRad = 1;
+    useGameStore.setState({ exchangeOpen: !previousExchangeOpen });
+    useGameStore.setState({ exchangeOpen: previousExchangeOpen });
+    expect(state.yawRad).toBe(1); // Detached Exchange subscription cannot reset this state.
+  });
+});
 
 /**
  * trading-floor-seats.test.ts

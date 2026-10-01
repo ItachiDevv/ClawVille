@@ -126,6 +126,7 @@ import {
   pointerOrbitYawEaseAllowed,
   POINTER_ORBIT_DESKTOP_SPEED,
   POINTER_ORBIT_TOUCH_SPEED,
+  type PlayerPointerOrbitState,
 } from '@/lib/three/player/player-pointer-orbit';
 import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
@@ -752,6 +753,61 @@ function TradingFloorLighting() {
 
 const _pointerOrbit = createPlayerPointerOrbitState();
 
+/** Keep the Exchange reset on the same subscription path used by the room. */
+export function attachTradingFloorPointerOrbit(
+  element: HTMLElement,
+  state: PlayerPointerOrbitState,
+  config: Parameters<typeof attachPlayerPointerOrbit>[2],
+): ReturnType<typeof attachPlayerPointerOrbit> {
+  const orbit = attachPlayerPointerOrbit(element, state, config);
+  const unsubscribe = useGameStore.subscribe((next, previous) => {
+    if (next.exchangeOpen && !previous.exchangeOpen) orbit.reset();
+  });
+  return { reset: orbit.reset, detach: () => { unsubscribe(); orbit.detach(); } };
+}
+
+/** Drain once per frame, using the current eye-to-target horizontal distance. */
+export function drainTradingFloorPointerOrbit(
+  state: PlayerPointerOrbitState,
+  yaw: { current: number },
+  pitch: { current: number },
+  arm: number,
+): number {
+  const pointerYaw = state.yawRad;
+  yaw.current += pointerYaw;
+  pitch.current = Math.max(TRADING_FLOOR_CAMERA.pitchMin, Math.min(
+    TRADING_FLOOR_CAMERA.pitchMax,
+    pitch.current + state.pitchRad * (arm + TRADING_FLOOR_CAMERA.lookAhead),
+  ));
+  state.yawRad = state.pitchRad = 0;
+  return pointerYaw;
+}
+
+/** A new seat transition restores desk framing; manual yaw retains its view. */
+export function updateTradingFloorSeatedYaw(
+  yaw: { current: number },
+  override: { current: boolean },
+  generation: { current: number },
+  nextGeneration: number,
+  seatIndex: number,
+  keyYaw: number,
+  dragging: boolean,
+  pointerYaw: number,
+  delta: number,
+): void {
+  if (generation.current !== nextGeneration) {
+    generation.current = nextGeneration;
+    override.current = false;
+  }
+  const seat = TRADING_FLOOR_SEATS[seatIndex];
+  if (!seat) return;
+  if (Math.abs(keyYaw) >= 1e-3 || pointerYaw !== 0) override.current = true;
+  if (!override.current && pointerOrbitYawEaseAllowed(keyYaw, dragging, pointerYaw)) {
+    const yawDelta = wrapTradingFloorAngle(tradingFloorSeatedCameraYaw(seat.facing) - yaw.current);
+    yaw.current += yawDelta * (1 - Math.exp(-6 * delta));
+  }
+}
+
 function ClickVolume({
   position,
   size,
@@ -786,12 +842,11 @@ function ClickVolume({
       }}
       onPointerOut={(event) => {
         event.stopPropagation();
-        if (_pointerOrbit.dragging) return;
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(event) => {
         event.stopPropagation();
-        if (!pointerOrbitClickAllowed(event.delta)) return;
+        if (!pointerOrbitClickAllowed(_pointerOrbit.clickSuppressed)) return;
         onActivate();
       }}
     />
@@ -1136,6 +1191,8 @@ function TradingFloorAvatarMotion({
   const facingRef = useRef<number>(TRADING_FLOOR_POLICY.motion.initialFacing);
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
+  const seatedYawOverride = useRef(false);
+  const seatedYawGeneration = useRef(_seatGeneration);
   const snapCameraRef = useRef(true);
   const cameraArm = useRef<number>(TRADING_FLOOR_CAMERA.behind);
   const cameraBoom = useRef(0);
@@ -1148,15 +1205,12 @@ function TradingFloorAvatarMotion({
     if (!active || !capabilities.cameraOrbitDrag) return;
     const { events, gl } = get();
     const element = events.connected ?? gl.domElement;
-    const orbit = attachPlayerPointerOrbit(element, _pointerOrbit, {
+    const orbit = attachTradingFloorPointerOrbit(element, _pointerOrbit, {
       isBlocked: tradingFloorInteractionsFrozen,
       rotateSpeed: window.matchMedia('(pointer: fine)').matches
         ? POINTER_ORBIT_DESKTOP_SPEED : POINTER_ORBIT_TOUCH_SPEED,
     });
-    const unsubscribe = useGameStore.subscribe((state, previous) => {
-      if (state.exchangeOpen && !previous.exchangeOpen) orbit.reset();
-    });
-    return () => { unsubscribe(); orbit.detach(); };
+    return () => orbit.detach();
   }, [active, capabilities.cameraOrbitDrag, get]);
   // The slot's PERSISTENT camera. Reading the R3F default camera here can bind
   // another slot's camera during the stage swap window
@@ -1208,6 +1262,7 @@ function TradingFloorAvatarMotion({
     tradingFloorPlayerPositionRef.z = TRADING_FLOOR_PLAYER_SPAWN.z;
     cameraYaw.current = 0;
     cameraPitch.current = 0;
+    seatedYawOverride.current = false;
     snapCameraRef.current = true;
     cameraArm.current = TRADING_FLOOR_CAMERA.behind;
     cameraBoom.current = 0;
@@ -1259,13 +1314,9 @@ function TradingFloorAvatarMotion({
     },
     onAfterMove: (state) => {
       const safeDelta = state.integrationDelta;
-      const pointerYaw = _pointerOrbit.yawRad;
-      cameraYaw.current += pointerYaw;
-      cameraPitch.current = Math.max(TRADING_FLOOR_CAMERA.pitchMin, Math.min(
-        TRADING_FLOOR_CAMERA.pitchMax,
-        cameraPitch.current + _pointerOrbit.pitchRad * TRADING_FLOOR_CAMERA.behind,
-      ));
-      _pointerOrbit.yawRad = _pointerOrbit.pitchRad = 0;
+      const pointerYaw = drainTradingFloorPointerOrbit(
+        _pointerOrbit, cameraYaw, cameraPitch, cameraArm.current,
+      );
       cameraYaw.current +=
         state.intent.cameraYawInput * TRADING_FLOOR_CAMERA.yawSpeed * safeDelta;
       cameraPitch.current = Math.max(
@@ -1304,17 +1355,11 @@ function TradingFloorAvatarMotion({
       // --- Hotspot arming (scalar, zero allocation, filled in place) --------
       computeTradingFloorArming(posX.current, posZ.current, _arming);
 
-      // Seated framing. Every desk faces a side WALL, so a player who sits
-      // down keeps whatever yaw they walked in with and can end up looking at
-      // brickwork instead of the screens they came to use. Ease the yaw around
-      // to the over-the-shoulder angle, but ONLY while the player is not
-      // steering — easing against live input would fight them for the camera.
-      if (seated && pointerOrbitYawEaseAllowed(state.intent.cameraYawInput, _pointerOrbit.dragging, pointerYaw)) {
-        const yawDelta = wrapTradingFloorAngle(
-          tradingFloorSeatedCameraYaw(seated.facing) - cameraYaw.current,
-        );
-        cameraYaw.current += yawDelta * (1 - Math.exp(-6 * safeDelta));
-      }
+      // Ease on sit entry, then retain any view the player turns to manually.
+      updateTradingFloorSeatedYaw(
+        cameraYaw, seatedYawOverride, seatedYawGeneration, _seatGeneration, _seatedIndex,
+        state.intent.cameraYawInput, _pointerOrbit.dragging, pointerYaw, safeDelta,
+      );
 
       // Seated reports NOT moving, which is what lets the sit one-shot chain
       // hold `sit_idle_m`. The clips themselves are driven by the VRM player's
