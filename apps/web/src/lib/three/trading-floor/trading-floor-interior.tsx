@@ -118,6 +118,14 @@ import {
   type PlayerSpaceAdapter,
 } from '@/lib/three/player/player-capability-controller';
 import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
+import {
+  attachPlayerPointerOrbit,
+  createPlayerPointerOrbitState,
+  pointerOrbitClickAllowed,
+  pointerOrbitYawEaseAllowed,
+  POINTER_ORBIT_DESKTOP_SPEED,
+  POINTER_ORBIT_TOUCH_SPEED,
+} from '@/lib/three/player/player-pointer-orbit';
 import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
 import { TradingFloorTradeTape } from './trading-floor-trade-tape-mesh';
@@ -732,6 +740,8 @@ function TradingFloorLighting() {
 // Click hotspots — invisible boxes, no draw call, frozen matrices.
 // ---------------------------------------------------------------------------
 
+const _pointerOrbit = createPlayerPointerOrbitState();
+
 function ClickVolume({
   position,
   size,
@@ -761,14 +771,17 @@ function ClickVolume({
       material={HIDDEN_MATERIAL}
       onPointerOver={(event) => {
         event.stopPropagation();
+        if (_pointerOrbit.dragging) return;
         if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
       }}
       onPointerOut={(event) => {
         event.stopPropagation();
+        if (_pointerOrbit.dragging) return;
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(event) => {
         event.stopPropagation();
+        if (!pointerOrbitClickAllowed(event.delta)) return;
         onActivate();
       }}
     />
@@ -1120,6 +1133,21 @@ function TradingFloorAvatarMotion({
   const frozenPrevRef = useRef(false);
   const capabilities = useSlotCapabilities();
   const active = useSceneActive();
+  const get = useThree((state) => state.get);
+  useEffect(() => {
+    if (!active || !capabilities.cameraOrbitDrag) return;
+    const { events, gl } = get();
+    const element = events.connected ?? gl.domElement;
+    const orbit = attachPlayerPointerOrbit(element, _pointerOrbit, {
+      isBlocked: tradingFloorInteractionsFrozen,
+      rotateSpeed: window.matchMedia('(pointer: fine)').matches
+        ? POINTER_ORBIT_DESKTOP_SPEED : POINTER_ORBIT_TOUCH_SPEED,
+    });
+    const unsubscribe = useGameStore.subscribe((state, previous) => {
+      if (state.exchangeOpen && !previous.exchangeOpen) orbit.reset();
+    });
+    return () => { unsubscribe(); orbit.detach(); };
+  }, [active, capabilities.cameraOrbitDrag, get]);
   // The slot's PERSISTENT camera. Reading the R3F default camera here can bind
   // another slot's camera during the stage swap window
   // (memory feedback_stage_default_camera_cross_scene_writers).
@@ -1228,6 +1256,13 @@ function TradingFloorAvatarMotion({
     },
     onAfterMove: (state) => {
       const safeDelta = state.integrationDelta;
+      const pointerYaw = _pointerOrbit.yawRad;
+      cameraYaw.current += pointerYaw;
+      cameraPitch.current = Math.max(TRADING_FLOOR_CAMERA.pitchMin, Math.min(
+        TRADING_FLOOR_CAMERA.pitchMax,
+        cameraPitch.current + _pointerOrbit.pitchRad * TRADING_FLOOR_CAMERA.behind,
+      ));
+      _pointerOrbit.yawRad = _pointerOrbit.pitchRad = 0;
       cameraYaw.current +=
         state.intent.cameraYawInput * TRADING_FLOOR_CAMERA.yawSpeed * safeDelta;
       cameraPitch.current = Math.max(
@@ -1289,7 +1324,7 @@ function TradingFloorAvatarMotion({
       // brickwork instead of the screens they came to use. Ease the yaw around
       // to the over-the-shoulder angle, but ONLY while the player is not
       // steering — easing against live input would fight them for the camera.
-      if (seated && Math.abs(state.intent.cameraYawInput) < 1e-3) {
+      if (seated && pointerOrbitYawEaseAllowed(state.intent.cameraYawInput, _pointerOrbit.dragging, pointerYaw)) {
         const yawDelta = wrapTradingFloorAngle(
           tradingFloorSeatedCameraYaw(seated.facing) - cameraYaw.current,
         );

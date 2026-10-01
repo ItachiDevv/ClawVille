@@ -5,10 +5,30 @@ import * as THREE from 'three';
 import type { RootState } from '@react-three/fiber';
 import { useGameStore } from '@/stores/game';
 import { DEFAULT_PLAYER_CAPABILITIES } from '@/lib/three/player/player-capability-mask';
+import { pointerOrbitClickAllowed, pointerOrbitYawEaseAllowed } from '@/lib/three/player/player-pointer-orbit';
 import { createPlayerControllerTestRuntime, runPlayerControllerFrameForTests, type PlayerCapabilityControllerConfig } from '@/lib/three/player/player-capability-controller';
 import { playerKeyState, resetPlayerKeys } from '@/lib/three/player/player-input';
 import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
 import { tradingFloorStandRequested, tradingFloorManualSit, tradingFloorPinBlend, tradingFloorArmWeight } from './trading-floor-sit';
+
+describe('Trading Floor pointer orbit interaction guards', () => {
+  test('a drag click cannot activate a chair, kiosk or door', () => {
+    expect(pointerOrbitClickAllowed(3)).toBe(true);
+    expect(pointerOrbitClickAllowed(4)).toBe(true);
+    expect(pointerOrbitClickAllowed(5)).toBe(false);
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+    expect(source).toContain('if (!pointerOrbitClickAllowed(event.delta)) return;');
+  });
+
+  test('seated yaw ease yields to a drag even between pointer moves', () => {
+    expect(pointerOrbitYawEaseAllowed(0, false, 0)).toBe(true);
+    expect(pointerOrbitYawEaseAllowed(0, true, 0)).toBe(false);
+    expect(pointerOrbitYawEaseAllowed(0, false, 0.1)).toBe(false);
+    expect(pointerOrbitYawEaseAllowed(1, false, 0)).toBe(false);
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+    expect(source).toContain('seated && pointerOrbitYawEaseAllowed(state.intent.cameraYawInput, _pointerOrbit.dragging, pointerYaw)');
+  });
+});
 import {
   activateTradingFloorSeat,
   tradingFloorSitClips,
