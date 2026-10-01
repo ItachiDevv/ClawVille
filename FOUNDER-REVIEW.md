@@ -79,18 +79,17 @@
 - **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
 - Session tradeDeskMain, 2026-10-01.
 
-### Trading Floor INTERIOR v4: solid claws, real trading desks, monitor stands, brass door (staging, 2026-10-01)
-- **What:** the second visual pass on the inside of the Trading Floor (v3 "The Claw Exchange" is on prod since PR #305; v4 is
-  on staging only). Nothing moved: same desks, seats, kiosk, board, door position and trade tape. Changes from v3:
+### Trading Floor INTERIOR v4: solid claws, real trading desks, monitor stands, brass door (prod + staging, 2026-10-01)
+- **What:** the second visual pass on the inside of the Trading Floor (v3 "The Claw Exchange" reached prod in PR #305; v4
+  reached prod in PR #306, 18:24Z). Nothing moved: same desks, seats, kiosk, board, door position and trade tape. Changes from v3:
   (1) the twin **Golden Claws** are now SOLID 3D claws (the same claw as on the roof outside), amber gold with soft shading, on a
   lighter marble plinth with thin glowing gold lines on each step; (2) the teal sci-fi consoles are now **walnut-and-brass trading
   desks** with drawers, a keyboard, a mouse, a desk phone and a brass nameplate; (3) the box chairs are now rounded **oxblood
   leather executive chairs**; (4) each 3 x 2 monitor bank stands on a real stand with arms, the monitors have depth and a status
   light, and some screens are amber **CLAW TERMINAL** screens that list town buildings (decoration only: no prices or numbers);
   (5) the door is a **brass portal with smoked-glass double doors** and a "TO CLAWVILLE" sign.
-- **Where:** staging, `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
-  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door. Prod still shows v3 for comparison:
-  `https://clawville.world/trading-floor`.
+- **Where:** prod `https://clawville.world/trading-floor` or staging `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
+  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door.
 - **Feedback wanted:** (1) overall: is v4 cooler than v3? (2) the solid claws: right size, or bigger (they must stay under the
   board's bottom edge seen from the door, so taller means wider and lower)? (3) the desks and chairs: right style? (4) the CLAW
   TERMINAL screens: keep, or charts only? (5) the brass door. (6) still open from v3: the gold floor lines, the ticker legibility
