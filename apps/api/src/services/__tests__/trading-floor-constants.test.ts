@@ -20,12 +20,24 @@ import {
 } from '@clawville/shared';
 import { buildProtocolManual, PROTOCOL_VERSION } from '../skill-protocol';
 
+/** Section 17b only. Since protocol 74 the paper Trading Arena (`## 17c.`, its
+ *  own embedding chunk) follows it, and 17c legitimately says "paper" and names
+ *  its own house agents, so the house-trader gates below must not read past
+ *  the 17c heading. */
+function houseTraderSection(manual: string): string {
+  const start = manual.indexOf('### 17b.');
+  const end = manual.indexOf('\n## 17c.');
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return manual.slice(start, end);
+}
+
 describe('Trading Floor frozen constants', () => {
   // Sweep this pin by ASSERTION, never by grepping the old number: the title
   // sat stale at 61 through the v62, v63 and v64 bumps because only the
   // assertion below was updated.
   test('pins the current protocol version and the multiplier contracts', () => {
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(TRADE_TIER_WEIGHTS).toEqual({ base: 20, clv: 30, ansem: 40 });
     expect(TRADE_TIER_MULTIPLIER).toEqual({ base: 1, clv: 1.5, ansem: 2 });
     expect(TRADE_DAILY_SCORED_CAP).toBe(20);
@@ -105,7 +117,7 @@ describe('Trading Floor frozen constants', () => {
     // describes a response the server does not send, which is the CONSUMPTION
     // MANDATE defect in its purest form. These names are the live DTO.
     const manual = buildProtocolManual('https://api.example.test');
-    const section = manual.slice(manual.indexOf('### 17b.'));
+    const section = houseTraderSection(manual);
     for (const field of ['objective', 'slotName', 'strategyNote', 'subject', 'counts', 'recentTrades']) {
       expect(section).toContain(field);
     }
@@ -192,7 +204,7 @@ describe('Trading Floor frozen constants', () => {
     // OPPOSITE of what they said yesterday: the figures exist, they are server
     // computed, and they must be read from the route rather than remembered.
     const manual = buildProtocolManual('https://api.example.test');
-    const section = manual.slice(manual.indexOf('### 17b.'));
+    const section = houseTraderSection(manual);
     const houseKnowledge = CLAWVILLE_ORIENTATION_KNOWLEDGE.filter(
       (line) => line.includes('house trader') || line.includes('Genesis'),
     ).join('\n');
@@ -227,7 +239,7 @@ describe('Trading Floor frozen constants', () => {
     // lineup constant and the web panel have their own gates; this one covers
     // the two SERVED knowledge surfaces.
     const manual = buildProtocolManual('https://api.example.test');
-    const section = manual.slice(manual.indexOf('### 17b.'));
+    const section = houseTraderSection(manual);
     // Scoped to the HOUSE-TRADER copy, not the whole corpus: the rule is about
     // Genesis, and the wider orientation legitimately says things like "winning
     // bounties" about the game's own economy.
@@ -305,7 +317,7 @@ describe('Trading Floor frozen constants', () => {
     // Em dashes are NOT gated: the manual carries about 120 in prose that
     // predates this change. Removing them is a separate, deliberate copy pass.
     // The two sections this diff adds carry none, which is asserted here.
-    for (const heading of ['### 17a.', '### 17b.']) {
+    for (const heading of ['### 17a.', '### 17b.', '## 17c.']) {
       const section = manual.slice(manual.indexOf(heading));
       expect(manual.includes(heading)).toBe(true);
       expect(section.slice(0, section.indexOf('\n## ') + 1 || undefined)).not.toContain('—');

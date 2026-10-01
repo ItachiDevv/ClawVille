@@ -1,6 +1,15 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { Hono } from 'hono';
 // Run in its own process: no network, database, runtime, or ledger is loaded.
+// Real copies, taken BEFORE the mocks below, so afterAll can restore them: a
+// single-process run (`bun test src/routes/__tests__ ...`) must not leak the
+// partial drizzle-orm / database stubs into every later test file.
+const realDrizzle = { ...(await import('drizzle-orm')) };
+const realDatabase = { ...(await import('@clawville/database')) };
+afterAll(() => {
+  mock.module('drizzle-orm', () => realDrizzle);
+  mock.module('@clawville/database', () => realDatabase);
+});
 let guest = false;
 let avatar: Record<string, unknown> | null;
 let resolved: { userId: string | null; avatarId: string | null; agentId: string; ledgerCapable: boolean } | null;

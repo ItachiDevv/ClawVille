@@ -4,8 +4,9 @@ import { randomBytes } from 'crypto';
 import { NPC_IDS, BUILDING_OPENCLAW_THEMES, getAgentModel, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import type { AgentSubstrateRegistration, AgentBotIdentity } from '@clawville/shared';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
+import { isLocalToolRuntime } from '../services/agent-session-config';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, avatars, users, npcMemories, activityLog, agentBots, agents, eq, and, desc, sql } from '@clawville/database';
+import { db, avatars, users, npcMemories, activityLog, agentBots, agents, eq, and, desc, isNull, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
@@ -20,6 +21,11 @@ import {
   isReservedPartnerAgentId,
   isReservedPartnerIdentityType,
 } from '../services/reserved-agent-namespaces';
+import {
+  connectRequiresOwnerCredential,
+  OWNER_CREDENTIAL_REQUIRED_BODY,
+} from '../services/agent-owner-binding';
+import { agentOwnerBoundSince, ownerBindSnapshot } from '../services/agent-owner-fence';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
 let _systemUserId: string | null = null;
@@ -132,6 +138,11 @@ const registerRateLimiter = createRateLimiter({
 
 // POST /api/openclaw/register
 openclawRoutes.post('/register', async (c) => {
+  // Owner fence snapshot (connect-sec round 4, `services/agent-owner-fence.ts`).
+  // Taken before this request reads or writes the row, so an owner bind that
+  // lands at any later time refuses this registration (no expiry).
+  const ownerBindSnapshotAtStart = ownerBindSnapshot();
+
   // Rate limit BEFORE any body parse / DB work (the /join Fix M1 pattern —
   // don't let a spam wave burn Postgres round-trips).
   const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
@@ -193,11 +204,17 @@ openclawRoutes.post('/register', async (c) => {
   // Rebind hardening (round 2, 2026-06-03): `boundUserId: null` keeps these
   // fail-closed at the resolveAgentSession rebind backstop too. NOTE on Option B
   // (eviction): this path NEVER writes `openclaw_bots.userId` (see the upsert
-  // below — neither branch sets it), so it can never REBIND a row's owner. We
-  // therefore do NOT evict prior sessions here: a blanket eviction would let an
-  // unauthenticated caller knock a victim's legitimate live (ledger-capable)
-  // session out of the map just by re-registering the victim's known agentId — a
-  // griefing/DoS vector. No rebind happens, so no eviction is warranted.
+  // below — neither branch sets it), so it can never REBIND a row's owner, and
+  // it does NOT evict prior sessions explicitly. That alone did not protect an
+  // owner: re-registering an owned agentId rotated the row's bearer hash and
+  // moved the deterministic body, which evicted the owner's live session.
+  // Rule (security 2026-09-30): this route has no credential path, so it
+  // refuses ANY row that already has an owner (409 owner_credential_required),
+  // the refresh UPDATE carries a `user_id IS NULL` CAS, and the body registers
+  // directly after that write with no await between them (the platform-agent
+  // work runs after). The in-process owner fence refuses a register whose
+  // write resolved after an owner bind (round 2b). Unowned rows keep the old
+  // behavior.
   const config: AgentSubstrateRegistration = {
     ...data,
     sessionId,
@@ -232,8 +249,19 @@ openclawRoutes.post('/register', async (c) => {
       if (isReservedPartnerIdentityType(existing.identityType)) {
         return c.json({ error: 'Invalid request' }, 400);
       }
+      // Owned row (security 2026-09-30): this unauthenticated route cannot
+      // prove ownership, so it never touches a row that has an owner. Refuse
+      // before the UPDATE and before any body registration.
+      if (connectRequiresOwnerCredential({
+        existingUserId: existing.userId ?? null,
+        tokenUserId: null,
+        identityKeyUserId: null,
+      })) {
+        console.warn(`[OpenClaw] owner credential required for agentId=${data.agentId}; refusing register`);
+        return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
+      }
       // Returning bot — increment sessions, update gateway
-      await db.update(agentBots).set({
+      const [refreshed] = await db.update(agentBots).set({
         gatewayUrl: data.gatewayUrl,
         protocol: data.protocol ?? 'openai-compat',
         mode: data.mode,
@@ -252,7 +280,15 @@ openclawRoutes.post('/register', async (c) => {
         // one event. Same rationale as the /api/agent/connect path.
         sessionSweptAt: null,
         updatedAt: new Date(),
-      }).where(eq(agentBots.id, existing.id));
+      }).where(
+        // CAS: the snapshot read above is not enough; a row bound after it
+        // must not be refreshed. Zero rows means it gained an owner.
+        and(eq(agentBots.id, existing.id), isNull(agentBots.userId)),
+      ).returning({ id: agentBots.id });
+      if (!refreshed) {
+        console.warn(`[OpenClaw] owner credential required for agentId=${data.agentId}; row was bound during register`);
+        return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
+      }
 
       const meta = existing.metadata as any;
       if (data.mode === 'avatar' && meta?.lastX != null && meta?.lastY != null) {
@@ -322,6 +358,27 @@ openclawRoutes.post('/register', async (c) => {
     return c.json({ error: 'Registration failed — could not persist agent. Please retry.', code: 'registration_failed' }, 500);
   }
 
+  // Register with simulation directly after the CAS'd row write, with no await
+  // in between (security 2026-09-30). The platformAgents work below awaits
+  // several DB calls; registering after it let an owner bind and register in
+  // that gap, and this unauthenticated session then took the owner's body. An
+  // owner bind that commits after this point evicts this session (ownership
+  // change in /api/agent/connect, or a first bind at GET /api/auth/enter).
+  // An owner bind that already evicted while this CAS write was in flight
+  // marked the owner fence (`services/agent-owner-fence.ts`); refuse when that
+  // mark came after this request's snapshot, however long the write stalled
+  // (round 4: a bind sequence, no clock expiry). NO await may sit between this
+  // check and `registerAgentBot`.
+  if (agentOwnerBoundSince(data.agentId, ownerBindSnapshotAtStart)) {
+    console.warn(`[OpenClaw] owner credential required for agentId=${data.agentId}; an owner bind landed during register`);
+    return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
+  }
+  try {
+    npcSimulation.registerAgentBot(config, client, restoredState);
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Registration failed' }, 400);
+  }
+
   // Create/update platformAgents record for ElizaOS runtime
   let elizaAgentId: string | undefined;
   if (identity.botId) {
@@ -388,13 +445,6 @@ openclawRoutes.post('/register', async (c) => {
     }
   }
 
-  // Register with simulation
-  try {
-    npcSimulation.registerAgentBot(config, client, restoredState);
-  } catch (err: any) {
-    return c.json({ error: err.message || 'Registration failed' }, 400);
-  }
-
   return c.json({ ...identity, elizaAgentId });
 });
 
@@ -402,8 +452,20 @@ openclawRoutes.post('/register', async (c) => {
 openclawRoutes.delete('/unregister/:sessionId', async (c) => {
   const sessionId = c.req.param('sessionId');
 
+  // Live-session gate (connect-sec round 4, session-lens MINOR 1). Map
+  // membership alone is not proof: a stray session still in the Map (its row
+  // hash rotated away by an owner bind) used to end the OWNER's session here,
+  // because the row UPDATE below is keyed by agentId. `validateLiveAgentSession`
+  // refuses (and unregisters) a bearer whose row hash is present and different,
+  // or whose TTL ended. The UPDATE also matches this bearer's hash, so it can
+  // only end the row's session when this bearer IS the row's session.
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+
   // Save avatar position before removing from simulation
-  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
+  const botConfig = live.config;
   if (botConfig) {
     const pos = botConfig.mode === 'avatar' ? npcSimulation.getAgentBotAvatarPosition(sessionId) : null;
     // Fire-and-forget: persist last position + update lastSeenAt
@@ -438,7 +500,12 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             // explicit disconnect).
             sessionKeyHash: null,
             updatedAt: new Date(),
-          }).where(eq(agentBots.id, existing.id));
+          }).where(and(
+            eq(agentBots.id, existing.id),
+            // Only this bearer's own row session ends (round 4, MINOR 1). A
+            // rotation after the gate above leaves the newer session alone.
+            eq(agentBots.sessionKeyHash, sha256Hex(sessionId)),
+          ));
         }
       } catch (err) {
         console.error('[OpenClaw] Failed to save disconnect state:', err);
@@ -603,8 +670,12 @@ openclawRoutes.post('/chat', async (c) => {
     }
   }
 
-  // Fallback to direct client
-  if (!reply) {
+  // Fallback to direct client — but NEVER forward a caller's verbatim prompt to a local
+  // tool-capable runtime (hermes-local / openclaw-local). Those wires exist for
+  // server-generated ambient cognition only; a user turn must not reach a runtime that can
+  // run tools/terminal on the box. When the ElizaOS path produced nothing, return the canned
+  // reply below instead of posting `content`. (Security fix D2, 2026-09-30.)
+  if (!reply && !isLocalToolRuntime(client.getProtocol())) {
     const systemParts: string[] = [
       `You are ${avatarContext?.name ?? 'a ClawVille avatar'}, a ${avatarContext?.species ?? 'avatar'} exploring ClawVille World — a sea-themed 3D game for training AI agents with OpenClaw knowledge.`,
       ...contextParts,
@@ -752,8 +823,10 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     }
   }
 
-  // Fallback to direct client
-  if (!reply) {
+  // Fallback to direct client — but NEVER forward a caller's verbatim prompt to a local
+  // tool-capable runtime (hermes-local / openclaw-local). See the /chat route above.
+  // (Security fix D2, 2026-09-30.)
+  if (!reply && !isLocalToolRuntime(client.getProtocol())) {
     try {
       reply = await client.chat([
         { role: 'system', content: systemParts.join(' ') },
@@ -766,7 +839,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   }
 
   try {
-    const knowledgeLearned = extractKnowledge(reply, locationId);
+    const knowledgeLearned = extractKnowledge(reply ?? '', locationId);
 
     if (knowledgeLearned.length > 0) {
       const user = c.get('user');

@@ -335,8 +335,8 @@ Inventory 2026-09-28 ~03:30 UTC (Management API `/organizations`, `/projects`; f
 |---|---|---|---|---|
 | `znldqhesvhlvhrknhqnt` pumpcaster (Pro, billed) | ClawVille `wheuidgiyyccqyoppxoa` | ACTIVE | **prod app (live), Hatcher** | Phase 1 |
 | same | ClawVille-staging `mtpixvtclsjqjguouxes` | ACTIVE | nothing live (frozen 2026-09-25); local dev `.env.local` files | Phase 1 |
-| same | RevealAI `ltkwykzsnvtmfttiaccg` | ACTIVE | Vercel project `gudtek` → `https://gudtek.club` (HTTP 200): `SUPABASE_URL` + `SUPABASE_ANON_KEY`, cache tables + Storage bucket `repo-code`. Last code commit 2026-05-27. | Phase 1 (DB + all 46,321 files) |
-| same | sol-mafia `fiiwmhyxhyuzszgkqjfz` | ACTIVE | `SOLMAFIA_DATABASE_URL` in `~/.itachi-api-keys` (itachi222) and `~/.itachi-brain-env` (idex) — its password is **already rejected** by Supabase | Phase 1 |
+| same | RevealAI `ltkwykzsnvtmfttiaccg` | ACTIVE, **no traffic since 2026-09-28 10:40 UTC** (moved, §4.4) | Vercel project `gudtek` → `https://www.revealai.fun` (`revealai.fun` redirects): `SUPABASE_URL` + `SUPABASE_ANON_KEY`, cache tables + Storage bucket `repo-code`. Correction 10:55 UTC: `gudtek.club` is a parked third-party page ("domain may be for sale", Apache on 103.224.182.214), not this app. | Phase 1 (DB + all 46,321 files) |
+| same | sol-mafia `fiiwmhyxhyuzszgkqjfz` | ACTIVE, anon access revoked (§4.4) | `SOLMAFIA_DATABASE_URL` in `~/.itachi-api-keys` (itachi222) and `~/.itachi-brain-env` (idex) — its password is **already rejected** by Supabase. Founder: archive only. | Phase 1 |
 | `isseowarbfelehzfhohv` LotItachi (Free) | LotItachi `ptcdomfwegkfttxypwek`, LotiScan `ersenhkthyqoptpqyzam` | INACTIVE (paused) | unknown | none (paused projects cannot be dumped without a restore) |
 | `tynscmsukdfzcgzwznzy` PolyPocket (Free) | vantage `khaxenqgapsgoixuxwqu` | INACTIVE | unknown | none |
 | `mvfauruejhqslhefnkck` StrategyNet (Free) | `lqpzhhbzkvtahgcekvhi` | INACTIVE | unknown | none |
@@ -346,10 +346,10 @@ Not on this login (other account; not affected): `SUPABASE_URL` → `zhbchbslvwr
 
 A Pro org cannot pause a project (`POST /v1/projects/{ref}/pause` → 400 "Project is not free-tier", memory `supabase-cost-cull-workflow`, 2026-07-01). Compute is billed hourly for every existing project ($10/project/month). The ways to stop the charges: delete projects (only on the founder's explicit order), or downgrade/transfer to a Free org and pause (Free: 2 active projects, 500 MB DB cap — ClawVille prod at 2.9 GB does not fit). Invoice #14 ($233.45) is OUTSTANDING.
 
-### 4.2 Security findings on the other projects (read-only checks; no change made)
+### 4.2 Security findings on the other projects (read-only checks at ~03:30 UTC; later changes in §4.4)
 
-- sol-mafia: RLS off on 12/12 `public` tables; `anon` can read and write all 12 (same exposure prod had until 2026-09-28 01:24 UTC).
-- RevealAI: `anon` can read 14/14 tables; 5 of them have no RLS (30 policies exist on the other 9). The app uses the anon key server-side on purpose.
+- sol-mafia: RLS off on 12/12 `public` tables; `anon` could read and write all 12 (same exposure prod had until 2026-09-28 01:24 UTC). **Revoked 10:08:24 UTC** with the founder's go (§4.4).
+- RevealAI: `anon` can read 14/14 tables; 5 of them have no RLS (policies exist on the other 9). The app uses the anon key server-side on purpose. The key is not in any browser bundle, so the Supabase gateway (which requires the key) was the barrier. The self-hosted copy keeps that barrier (§4.4).
 - Old ClawVille staging: `anon` has 0 table privileges (no exposure).
 
 ### 4.3 Other things that hold Supabase references
@@ -367,3 +367,29 @@ A Pro org cannot pause a project (`POST /v1/projects/{ref}/pause` → 400 "Proje
 | ClawVille `AGENTS.md` (local, untracked), `ARCHITECTURE.md`, `docs/DEPLOY-HETZNER.md` | "separate Supabase each", "DB: PostgreSQL + Drizzle (Supabase)", `ELIZA_DATABASE_URL` note | update in W7 |
 | `SUPABASE_ACCESS_TOKEN` on itachi222 and idex | Management API token | revoke after the account is closed |
 | memory files (`clawville-supabase-egress-my-bounties`, `supabase-cost-cull-workflow`) | describe the Supabase setup | update after the cutover |
+| itachi222 `gudtek/.env.local` (untracked, local dev) | `SUPABASE_URL` / `SUPABASE_ANON_KEY` → RevealAI Supabase | not changed (the folder has other people's uncommitted work). Local runs and `gudtek/scripts/*.ts` still read and write the frozen Supabase copy. Founder decides: point it at `https://data.revealai.fun` or leave it. |
+
+### 4.4 Founder decisions executed (2026-09-28)
+
+Founder answers: sol-mafia → "Archive only" + "Revoke anon now"; RevealAI → "Move to our VPS", host "Staging box"; scope → "Billed org only" (the 4 free orgs are left alone).
+
+**sol-mafia — anon revoke (10:08:24 UTC).** Before-snapshots: session scratch `sec/solmafia-public-acl-before-20260928.txt`, `sec/solmafia-default-acl-before-20260928.txt`. Re-check 10:55 UTC: `anon` + `authenticated` hold 0 table grants on the 12 `public` tables; REST with the anon key returns 401 on 12/12 tables. The Phase 1 backup is the archive (restore-tested). The project itself is not deleted.
+
+**RevealAI — moved to a self-hosted stack on the staging box.** Runbook on the box: `/opt/revealai/README.md`.
+
+| Step (UTC) | Evidence |
+|---|---|
+| Stack | `/opt/revealai`: Postgres 17 + pgvector + pg-safeupdate (`revealai-db`, internal only), PostgREST v12.2.12 at `https://data.revealai.fun/rest/v1`, supabase storage-api 1.79.20 (file backend) at `/storage/v1`. Let's Encrypt cert via Coolify Traefik. DNS A record in zone revealai.fun (DNS only). |
+| Data | Restore of the Phase 1 dump `20260928T013616Z`; Storage 46,321 objects / 594,417,746 bytes uploaded through the storage API and read back with matching size + MD5. |
+| Parity 10:37:44 and 10:42:20 | 14/14 `public` tables identical on both sides by exact count + streaming row hash; Supabase unchanged between the two checks (no lost writes). Security catalog: grants, RLS flags, policies, functions, buckets, memberships, role settings identical, except storage-api migration `0073-revoke-grants-to-unused-operations` (removes TRUNCATE/REFERENCES/TRIGGER/MAINTAIN from `anon`/`authenticated` on storage tables; the app uses none) and the unused `supabase_vault` extension. |
+| Fix before the switch | PostgREST first answered without a key (anon read of all 14 tables). Removed `PGRST_DB_ANON_ROLE`: now no key or a forged JWT → 401 (PGRST302), like the Supabase gateway. |
+| Write tests (anon key, public URL) | upsert insert + update, select, filtered PATCH, 2 RPCs (result 65 = Supabase), Storage upload with upsert ×2 + public read (bytes identical); all test rows/files removed. `wall-of-shame` upload is refused by RLS — also on Supabase (no anon INSERT policy there; 0 rows, 0 files). |
+| Switch 10:38:30 | Vercel project `gudtek`: `SUPABASE_URL` + `SUPABASE_ANON_KEY` (type sensitive, Preview + Production) set by the API; production redeployed from the same deployment (source commit 6e841d7f) → `dpl_H94Qmb9SVtPfJeDNCy47Sb4TFkvS`, aliased to `www.revealai.fun`, ready in 53 s. The local gudtek folder was not deployed. |
+| Proof | 3 live calls to `/api/wall-of-shame`: `pg_stat_statements` on Supabase stayed 67; on the self-hosted DB it rose 1 → 4. A live-site write (`shared_analyses.view_count`) landed on the self-hosted DB. 7/8 read routes byte-identical to the pre-switch baseline; the 8th (`/api/repositories?sortBy=score`) has the same 24 coins in the same places, only the inner `repos` order of 4 coins differs (app query without ORDER BY; content equal). |
+| Backups | `/opt/revealai/backup.sh`, cron 04:47 UTC. One recovery point: storage-api frozen (`docker pause`, 10–16 s measured) from before the DB snapshot until the files are read; watchdog + checked unfreeze. Snapshot dump + exact counts; nightly restore test in a throwaway container (52 tables, 117,001 rows IDENTICAL on every run); Storage pack `zstd -t` + re-extracted + SHA-256 manifest; a set marker `revealai-set-<ts>.meta` is published only when both pass. The laptop task copies `/opt/revealai/backups` to `D:\revealai-backups`, checks the newest set end to end, exits 1 on any failure or a copy older than 48 h. |
+| Restore | `restore-set.sh <marker> [--yes]`: every check first, under the backup lock; live DB renamed (not dropped), storage kept as `_data.pre-restore-<ts>`, roles changed only after identical row counts and in one transaction; automatic put-back (`rollback-db.sh`) on failure. Tested: dry run + lock refusal on the live stack; `test-restore-rollback.sh` 15/15 on a throwaway container. The full `--yes` path was not run on the live stack. |
+| Review | Codex CLI 0.156.0, 15 rounds on `backup.sh`, `restore-set.sh`, `restore-into.sh`, `rollback-db.sh`, `put-back-db.sql`, the laptop pull script: rounds 1–14 BLOCKING (all findings fixed and re-tested), round 15 `VERDICT: PASS` (CLI output read directly). |
+| Staging box cleanup | Two orphaned shell loops from older sessions (153 and 82 days old) waited for containers that no longer exist and polled Docker every 3–10 s; stopped 11:52 UTC. `recorder.py` (10 days, intentional) left running. |
+| Rollback | While Supabase exists: promote `dpl_3N4XDu4mbpEzPVRumih4LwQxHTL6` (keeps the old env). Writes made after 10:40 UTC would then be missing on Supabase. |
+
+Pre-existing RevealAI app defects found during the tests (they also exist on Supabase; the gudtek code was not changed): the `wall-of-shame` upload is always refused (no anon INSERT policy on the bucket); `GET /api/share/[id]` increments `view_count` without `await`, so counts arrive late or get lost; the app calls RPCs `check_rate_limit`, `add_credits`, `deduct_credits` that do not exist; `getAllAnalyzedCoins` reads developer entries without ORDER BY.

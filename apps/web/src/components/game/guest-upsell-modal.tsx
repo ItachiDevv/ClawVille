@@ -21,11 +21,41 @@
  *
  * Styling: `.claw-panel` conventions — light text on the dark cyan panel
  * (no dark-on-dark), fits a 390px phone viewport, always dismissable.
+ *
+ * FITS ANY VIEWPORT (2026-09-30, verifier at 844x390 landscape: the panel was
+ * 445 px tall in a 390 px viewport, close button off-screen). The panel is
+ * bounded by the dynamic viewport height minus the backdrop's 16 px margins;
+ * the icon, headline and body scroll inside it, while the close button and the
+ * action row stay in view. On touch (`useIsMobile`, never a width query) the
+ * close button and every action are at least 44 px; desktop keeps its sizes.
  */
 
-import { useEffect } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { useRouter } from 'next/navigation';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
+
+/** The tap-target floor for touch devices (AGENTS.md mobile rule). */
+export const GUEST_UPSELL_TOUCH_TARGET_PX = 44;
+
+/**
+ * The panel's height bound. `100vh` is the fallback a browser without `dvh`
+ * keeps (an unsupported inline value is dropped and the class applies);
+ * `100dvh` follows the visible area when the mobile browser bars show or hide.
+ * 32 px = the backdrop's `p-4` above and below.
+ */
+export const GUEST_UPSELL_PANEL_MAX_HEIGHT = 'calc(100dvh - 32px)';
+export const GUEST_UPSELL_PANEL_FALLBACK_CLASS = 'max-h-[calc(100vh-2rem)]';
+
+/** Sizes that change with the input type. Desktop values are the pre-fix ones. */
+export function guestUpsellSizing(touch: boolean): {
+  closePx: number;
+  actionStyle: CSSProperties | undefined;
+} {
+  return touch
+    ? { closePx: GUEST_UPSELL_TOUCH_TARGET_PX, actionStyle: { minHeight: GUEST_UPSELL_TOUCH_TARGET_PX } }
+    : { closePx: 28, actionStyle: undefined };
+}
 
 export interface GuestUpsellModalProps {
   open: boolean;
@@ -46,6 +76,8 @@ export function GuestUpsellModal({
   ctaLabel = 'Create free account',
 }: GuestUpsellModalProps) {
   const router = useRouter();
+  const touch = useIsMobile();
+  const sizing = guestUpsellSizing(touch);
   const setAgentConnectModalOpen = useGameStore(
     (state) => state.setAgentConnectModalOpen,
   );
@@ -82,20 +114,28 @@ export function GuestUpsellModal({
       aria-label={headline}
     >
       <div
-        className="claw-panel w-full max-w-sm relative"
+        className={`claw-panel w-full max-w-sm relative flex flex-col overflow-hidden ${GUEST_UPSELL_PANEL_FALLBACK_CLASS}`}
+        style={{ maxHeight: GUEST_UPSELL_PANEL_MAX_HEIGHT }}
         onClick={(e) => e.stopPropagation()}
+        data-testid="guest-upsell-panel"
       >
+        {/* Absolute on the panel, which never scrolls, so it stays in view. */}
         <button
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="absolute top-3 right-3 flex h-7 w-7 items-center justify-center rounded-full text-cyan-200/70 hover:text-white hover:bg-cyan-500/20 border border-cyan-500/20 transition-colors"
+          className="absolute top-3 right-3 z-10 flex items-center justify-center rounded-full text-cyan-200/70 hover:text-white hover:bg-cyan-500/20 border border-cyan-500/20 transition-colors"
+          style={{ width: sizing.closePx, height: sizing.closePx }}
         >
           ✕
         </button>
 
-        <div className="flex flex-col items-center text-center gap-3 pt-2 pb-1 px-1">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-cyan-500/15 border border-cyan-400/30 text-2xl">
+        {/* The only part that scrolls when the viewport is short. */}
+        <div
+          className="flex min-h-0 flex-1 flex-col items-center text-center gap-3 overflow-y-auto pt-2 px-1"
+          data-testid="guest-upsell-scroll"
+        >
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 border border-cyan-400/30 text-2xl">
             🪙
           </div>
 
@@ -104,12 +144,19 @@ export function GuestUpsellModal({
           </h2>
 
           <p className="text-cyan-100/70 text-sm leading-relaxed">{body}</p>
+        </div>
 
+        {/* Always in view: the three actions and the footnote. */}
+        <div
+          className="flex shrink-0 flex-col items-center text-center gap-3 mt-3 pb-1 px-1"
+          data-testid="guest-upsell-actions"
+        >
           <div className="mt-2 flex w-full flex-col gap-2">
             <button
               type="button"
               onClick={() => router.push('/login?mode=signup')}
               className="w-full rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm py-2.5 transition-colors"
+              style={sizing.actionStyle}
             >
               {ctaLabel}
             </button>
@@ -120,6 +167,7 @@ export function GuestUpsellModal({
                 setAgentConnectModalOpen(true, 'login');
               }}
               className="w-full rounded-lg bg-transparent hover:bg-cyan-500/10 text-cyan-200 font-semibold text-sm py-2 border border-cyan-500/25 transition-colors"
+              style={sizing.actionStyle}
             >
               I already have an account
             </button>
@@ -127,6 +175,7 @@ export function GuestUpsellModal({
               type="button"
               onClick={onClose}
               className="w-full text-cyan-200/50 hover:text-cyan-100/80 text-xs py-1 transition-colors"
+              style={sizing.actionStyle}
             >
               Keep looking around
             </button>

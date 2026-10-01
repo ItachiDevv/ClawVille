@@ -24,10 +24,12 @@
  *     from `buildInstancedRow`, both read their placement out of
  *     `trading-floor-room.ts`.
  *   - The BIG BOARD (`TradingFloorScreen`), one plane on the -Z wall carrying
- *     live house-trader statuses and counts.
- *   - The TRADE TAPE (`TradingFloorTradeTape`), the same trades as physical
- *     objects: one emissive slab per recent trade, drifting from the board wall
- *     toward the door in two lanes, one lane per desk. ONE mesh, one draw call.
+ *     the Trading Arena paper leaderboard (contest header, prize line, top 8,
+ *     tape row).
+ *   - The TRADE TAPE (`TradingFloorTradeTape`), the arena's entries and exits
+ *     as physical objects: one slab per tape row, drifting from the board wall
+ *     toward the door in two lanes, entries left and exits right. ONE mesh, one
+ *     draw call.
  *   - Walk-up hotspots: the MONITOR, which opens the EXISTING Exchange modal on
  *     its Trading Floor tab (`useGameStore.openTradingFloor`) — no second
  *     modal, no duplicated panel — the DOOR, and six SEATS.
@@ -53,17 +55,21 @@
  *   - NO InstancedMesh + ShaderMaterial — both rows keep the GLB's own
  *     MeshStandardMaterial.
  *   - NO per-frame allocation — module-scope scratch only.
- *   - Draw calls: 6 static from the room GLB (floor, walls, ceiling, trim,
- *     dais, kiosk) + 1 instanced desk row + 1 instanced chair row + 1 board
- *     + 1 trade tape, = 10, plus the avatar. Every hotspot is `visible: false`,
- *     so they cost none.
+ *   - Draw calls (v3, 2026-10-01): 8 static from the room GLB (floor, walls,
+ *     ceiling, trim, brass, granite plinth, seal + banners, kiosk) + 1
+ *     instanced desk row + 1 instanced chair row + 1 board + 1 trade tape + 3
+ *     decor meshes (`trading-floor-decor.tsx`: monitors, ticker ribbon, glow),
+ *     = 15, plus the avatar. Every hotspot is `visible: false`, so they cost
+ *     none.
  *   - 3 lights total (ambient + hemisphere + one non-shadow directional).
  */
 
 import {
+  Component,
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -71,6 +77,14 @@ import {
   type RefObject,
 } from 'react';
 import * as THREE from 'three/webgpu';
+import { useThree } from '@react-three/fiber';
+import { useStageStore } from '@/components/three/world-stage/stage-store';
+import { TRADING_FLOOR_SCENE_ID } from '@/components/three/world-stage/stage-scene-id';
+import { withStageSlotFrustumCullingDisabledSync } from '@/components/three/world-stage/resource-ledger';
+import {
+  chainPostBootCompile,
+} from '@/lib/three/boot-core-compile';
+import { reportTradingFloorSeat } from '@/hooks/use-floor-arena';
 import { useGameStore } from '@/stores/game';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
@@ -102,6 +116,7 @@ import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
 import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
 import { TradingFloorTradeTape } from './trading-floor-trade-tape-mesh';
+import { TradingFloorDecor } from './trading-floor-decor';
 import {
   clampTradingFloorMovementSeated,
   computeTradingFloorArming,
@@ -109,6 +124,7 @@ import {
   pushCameraOutOfSolids,
   resetTradingFloorArming,
   resolveTradingFloorInteraction,
+  tradingFloorDoorPromptVisible,
   tradingFloorSeatedCameraYaw,
   validateAuthoredProp,
   wrapTradingFloorAngle,
@@ -136,23 +152,19 @@ import {
 
 /**
  * The authored hall. Built by `scripts/trading-floor/build-interior.mjs` and
- * documented in 3dStructure.md §9g: 358 KB, 7,277 tris, 8 materials, 6 ETC1S
- * textures (measured with `scripts/trading-floor/inspect-glb.mjs` against the
- * shipped bytes, 2026-09-19 23:06), authored at 1 unit = 1 wu and ALREADY at
- * final scale — it is mounted with NO auto-fit (unlike `cove-interior.tsx`,
- * whose GLB is normalised to a target height). Two of those 8 materials belong
- * to props the scene pulls out and re-draws as instanced rows, so the room
- * costs 6 static draw calls + 2 instanced rows + 1 board = 9.
+ * documented in 3dStructure.md §9g and §9i: v3 is 364,788 B, 6,431 tris, 10
+ * meshes, 10 materials, 7 ETC1S textures (measured with
+ * `scripts/trading-floor/inspect-glb.mjs` against the shipped bytes,
+ * 2026-10-01), authored at 1 unit = 1 wu and ALREADY at final scale — it is
+ * mounted with NO auto-fit (unlike `cove-interior.tsx`, whose GLB is
+ * normalised to a target height). Two of those 10 meshes are props the scene
+ * pulls out and re-draws as instanced rows, so the GLB costs 8 static draw
+ * calls + 2 instanced rows = 10, and the board adds 1.
  *
- * `?v=2` since the v2 rebuild (textured walls, own ceiling material, textured
- * floor deck, screen surround, chair module, desks on the side walls). The
- * bytes at this path changed, so the query HAD to move: Cloudflare's edge cache
- * cannot be purged with our deploy token, so the query is the only invalidator
- * (CLAUDE.md, animation rule 9). `?v=2` has never been deployed, so re-exports
- * during this build are safe; from the first deploy on, never mutate the bytes
- * at an existing `?v=`.
+ * v2 reached production on 2026-09-20. Serve the v3 bytes through a new query
+ * because Cloudflare can keep the old path in its edge cache for one week.
  */
-const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=2';
+const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=3';
 
 // ---------------------------------------------------------------------------
 // Sit clips
@@ -248,8 +260,11 @@ const AVATAR_MAX_FOOTPRINT = 150;
  * camera always looks inward and the desk is behind it; between desks there is
  * no desk in the sightline at all. Adding a margin here would cost 60 wu of
  * framing in a room that is already short of it, for no artefact.
+ *
+ * Exported so the exit-prompt projection test places the camera with the SAME
+ * clamp the frame loop uses, instead of a copy that could drift from it.
  */
-const ROOM_BOUNDS: RoomBounds = {
+export const TRADING_FLOOR_CAMERA_BOUNDS: RoomBounds = {
   halfX: TRADING_FLOOR_DESK_INNER_X + TRADING_FLOOR_CAMERA.roomMargin,
   // Z is pre-EXPANDED by the margin for the same reason X is pre-shrunk: the
   // clamp subtracts one shared margin from every bound, so this is how each axis
@@ -297,6 +312,29 @@ export const tradingFloorPlayerPositionRef: { x: number; z: number } = {
 const _arming = createTradingFloorArming();
 /** Seat the player currently occupies, or -1. Not geometry — a choice. */
 let _seatedIndex = -1;
+/**
+ * Z of the chase camera's forward vector, written by the camera frame and read
+ * by the label poll (`tradingFloorDoorPromptVisible`). One number, no
+ * allocation. 0 until the first camera frame of a visit, which keeps the Exit
+ * HINT hidden rather than showing it for a frame off a previous visit's yaw.
+ */
+let _cameraForwardZ = 0;
+
+/**
+ * The ONE writer of `_seatedIndex` after init. Sit, stand, walking out of the
+ * chair and leaving the room all pass through here, so the Trading Floor Arena
+ * hears every transition exactly once: a sit seats the player's arena agent
+ * and opens "My trader", a stand or a room exit frees the desk
+ * (docs/trading-floor-arena.md D7). One call per transition, never per frame:
+ * the walk-out stand runs inside the frame callback, but only on the frame the
+ * player leaves the chair. The server write is a fire-and-forget fetch that
+ * nothing here awaits.
+ */
+function setTradingFloorSeatedIndex(next: number): void {
+  if (next === _seatedIndex) return;
+  _seatedIndex = next;
+  reportTradingFloorSeat(next);
+}
 
 /** Test/probe seam — the arming state the frame loop last published. */
 export function readTradingFloorProximity(): {
@@ -321,7 +359,8 @@ export function readTradingFloorProximity(): {
 
 function resetTradingFloorProximity(): void {
   resetTradingFloorArming(_arming);
-  _seatedIndex = -1;
+  setTradingFloorSeatedIndex(-1);
+  _cameraForwardZ = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +435,7 @@ export function activateTradingFloorUse(): boolean {
     )
   ) {
     case 'stand':
-      _seatedIndex = -1;
+      setTradingFloorSeatedIndex(-1);
       return true;
     case 'monitor':
       openTradingFloorMonitor();
@@ -405,7 +444,7 @@ export function activateTradingFloorUse(): boolean {
       requestTradingFloorExit();
       return true;
     case 'sit':
-      _seatedIndex = _arming.seatArmedIndex;
+      setTradingFloorSeatedIndex(_arming.seatArmedIndex);
       return true;
     default:
       return false;
@@ -552,7 +591,55 @@ const INSTANCED_ROW_NAMES = [
   'TradingFloorChairRow',
 ] as const;
 
-function RoomShell({ onReady }: { onReady: () => void }) {
+/** Room and avatar may commit in either order. The timer starts only at room mount. */
+export function createTradingFloorReadyGate(
+  onReady: () => void,
+  hasAvatar = true,
+  schedule: typeof setTimeout = setTimeout,
+  cancel: typeof clearTimeout = clearTimeout,
+) {
+  let roomMounted = false;
+  let avatarMounted = false;
+  let fired = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const fire = (fallback = false) => {
+    if (fired || !roomMounted || (hasAvatar && !avatarMounted && !fallback)) return;
+    fired = true;
+    if (timer !== undefined) cancel(timer);
+    timer = undefined;
+    onReady();
+  };
+  return {
+    roomMounted() {
+      if (roomMounted) return;
+      roomMounted = true;
+      if (hasAvatar && !avatarMounted) {
+        timer = schedule(() => {
+          timer = undefined;
+          fire(true); // bounded fallback, even if the load never settles
+        }, 1500);
+      }
+      fire();
+    },
+    avatarMounted(): boolean {
+      const late = fired;
+      avatarMounted = true;
+      fire();
+      return late;
+    },
+    avatarUnmounted() {
+      avatarMounted = false;
+    },
+    roomUnmounted() {
+      if (timer !== undefined) cancel(timer);
+      timer = undefined;
+      roomMounted = false;
+      fired = false;
+    },
+  };
+}
+
+function RoomShell({ onMounted }: { onMounted: () => () => void }) {
   const { scene } = useGLTFWithKTX2(INTERIOR_GLB);
 
   const cloned = useMemo(() => {
@@ -623,9 +710,7 @@ function RoomShell({ onReady }: { onReady: () => void }) {
     [cloned],
   );
 
-  useEffect(() => {
-    onReady();
-  }, [cloned, onReady]);
+  useEffect(() => onMounted(), [cloned, onMounted]);
 
   // The room itself is deliberately NOT disposed: `clone(true)` shares
   // geometries, materials and textures by reference with the useGLTF cache, and
@@ -653,23 +738,24 @@ function RoomShell({ onReady }: { onReady: () => void }) {
  * Ambient stays, at a third of its old value, purely so the unlit faces do not
  * crush to black.
  *
- * Hue is unchanged on purpose — the founder said the lighting was good. What
- * changed is where it comes from.
+ * v3 warms the three existing lights so walnut stays brown and brass stays
+ * gold. The ground fill stays bright enough to reveal the navy ceiling.
  */
 function TradingFloorLighting() {
   return (
     <>
-      <ambientLight color={0xb7cfe6} intensity={0.85} />
+      <ambientLight color={0xe8dac4} intensity={0.78} />
       {/* The GROUND colour is not decoration. A hemisphere light lights a
           surface by `mix(ground, sky, 0.5 * normal.y + 0.5)`, and the ceiling's
           normal is -Y, so the ground colour is ALL the ceiling ever receives —
           the directional key contributes nothing to it. The first v2 pass used
-          0x2b2318 there and rendered a black void overhead. */}
-      <hemisphereLight args={[0xa9cbe8, 0x585048, 1.15]} />
+          0x2b2318 there and rendered a black void overhead. The warm v3
+          ground fill keeps the navy coffers visible. */}
+      <hemisphereLight args={[0xd9d9d1, 0x888077, 1.12]} />
       <directionalLight
         position={[900, 1500, -1100]}
-        color={0xfff0dc}
-        intensity={1.15}
+        color={0xffdfac}
+        intensity={1.2}
         castShadow={false}
       />
     </>
@@ -857,6 +943,13 @@ const _monitorAnchorRef = makeAnchor(
  * worst off-axis angle is 17.3° at default pitch and 22.3° at full pitch-down,
  * against a 30° half-FOV. Both numbers are derived, so moving the approach limit
  * carries the label with it. `trading-floor-seats.test.ts` pins the angle.
+ *
+ * ON SCREEN IS NOT ENOUGH (2026-09-30). That sweep is a player FACING THE BOARD,
+ * and in that pose this anchor projects onto the bottom edge of the big board
+ * (y 243 against the board's 245 at the spawn, 1350 x 805), so the capsule sat
+ * on the board's basis line and ticker from the moment a player arrived.
+ * Visibility is therefore `tradingFloorDoorPromptVisible`: the hint shows only
+ * while the camera faces the door half-space, the armed prompt always.
  */
 const _doorAnchorRef = makeAnchor(
   TRADING_FLOOR_DOOR.x,
@@ -869,8 +962,15 @@ const _doorAnchorRef = makeAnchor(
  * registered with the overlay for the whole visit. Six entries would each cost
  * a projection every overlay pass forever, and only one can ever be visible:
  * the seat hint radius is 420 and the desks are 500 apart.
+ *
+ * 360, not 250 (2026-10-01): each desk now carries a 3 x 2 monitor rig whose
+ * top is 332 wu, under a 335 wu cap (`trading-floor-decor-layout.ts`). From
+ * the seated camera a 250 wu anchor at the seat projected onto the middle of
+ * that rig, so the "PRESS E TO STAND" capsule covered the screens the player
+ * sat down to look at. 360 puts the capsule above the rig in the seated view
+ * and above the avatar's head when standing.
  */
-const SEAT_LABEL_Y = 250;
+const SEAT_LABEL_Y = 360;
 const _seatAnchorRef = makeAnchor(0, SEAT_LABEL_Y, 0);
 
 function moveSeatAnchor(seat: TradingFloorSeat): void {
@@ -937,7 +1037,7 @@ function promptCapsule(name: string, hint: string, armed: boolean): ReactNode {
 function TradingFloorLabels() {
   const [monitorHint, setMonitorHint] = useState(false);
   const [monitorArmed, setMonitorArmed] = useState(false);
-  const [doorHint, setDoorHint] = useState(false);
+  const [doorPrompt, setDoorPrompt] = useState(false);
   const [doorArmed, setDoorArmed] = useState(false);
   const [seatHintIndex, setSeatHintIndex] = useState(-1);
   const [seatArmed, setSeatArmed] = useState(false);
@@ -970,9 +1070,17 @@ function TradingFloorLabels() {
       setMonitorVisible(_arming.monitorHint);
     }
     if (_arming.monitorArmed !== monitorArmed) setMonitorArmed(_arming.monitorArmed);
-    if (_arming.doorHint !== doorHint) {
-      setDoorHint(_arming.doorHint);
-      setDoorVisible(_arming.doorHint);
+    // NOT `doorHint` alone: facing the board inside the hint band (the spawn
+    // is inside it) put the capsule over the board's footer. See
+    // `tradingFloorDoorPromptVisible`.
+    const nextDoorPrompt = tradingFloorDoorPromptVisible(
+      _arming.doorArmed,
+      _arming.doorHint,
+      _cameraForwardZ,
+    );
+    if (nextDoorPrompt !== doorPrompt) {
+      setDoorPrompt(nextDoorPrompt);
+      setDoorVisible(nextDoorPrompt);
     }
     if (_arming.doorArmed !== doorArmed) setDoorArmed(_arming.doorArmed);
 
@@ -1149,7 +1257,7 @@ function TradingFloorAvatarMotion({
         _seatedIndex >= 0 &&
         (state.intent.move.moving || state.intent.escapeEdge)
       ) {
-        _seatedIndex = -1;
+        setTradingFloorSeatedIndex(-1);
       }
 
       const seated =
@@ -1201,12 +1309,16 @@ function TradingFloorAvatarMotion({
           0,
           -Math.cos(cameraYaw.current),
         );
+        // Published for the Exit capsule: its HINT needs the camera to face
+        // the door half-space (see `tradingFloorDoorPromptVisible`). A number
+        // write, no allocation; the label poll does the setState on change.
+        _cameraForwardZ = _forwardScratch.z;
         _cameraScratch.set(
           bodyX - Math.sin(cameraYaw.current) * TRADING_FLOOR_CAMERA.behind,
           TRADING_FLOOR_CAMERA.above + cameraPitch.current,
           bodyZ + Math.cos(cameraYaw.current) * TRADING_FLOOR_CAMERA.behind,
         );
-        clampCameraToRoom(_cameraScratch, ROOM_BOUNDS);
+        clampCameraToRoom(_cameraScratch, TRADING_FLOOR_CAMERA_BOUNDS);
         // The room clamp knows the walls and nothing else, so it will park the
         // camera inside a prop — the holo dais swallowed it whole when the
         // player stood on the far side of the ring and pitched down. Pushing
@@ -1254,13 +1366,113 @@ function TradingFloorAvatarMotion({
   return <group ref={groupRef}>{children}</group>;
 }
 
-function TradingFloorVRMPlayer({ reg }: { reg: ModelRegistryEntry }) {
+type AvatarMountCallback = () => boolean;
+
+function useTradingFloorAvatarWarm(
+  root: THREE.Object3D,
+  wrapperRef: RefObject<THREE.Group | null>,
+  onAvatarMounted: AvatarMountCallback,
+  onAvatarUnmounted: () => void,
+) {
+  const get = useThree((state) => state.get);
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper || !root.parent) {
+      if (wrapper) wrapper.visible = true;
+      if (root.parent) {
+        onAvatarMounted();
+        return () => onAvatarUnmounted();
+      }
+      return;
+    }
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    let revealTimer: ReturnType<typeof setTimeout> | undefined;
+    const late = onAvatarMounted();
+    if (!late) {
+      wrapper.visible = true;
+    } else {
+      // Keep the wrapper hidden, but compile the visible model root. An
+      // invisible compile root produces an empty Three.js render list.
+      wrapper.visible = false;
+      const startCompile = () => {
+        if (cancelled) return;
+        unsubscribe?.();
+        unsubscribe = undefined;
+        const { gl, camera, scene } = get();
+        if (typeof (gl as { compileAsync?: unknown }).compileAsync !== 'function') {
+          wrapper.visible = true;
+          return;
+        }
+        revealTimer = setTimeout(() => {
+          revealTimer = undefined;
+          if (!cancelled) wrapper.visible = true;
+        }, 5000);
+        void chainPostBootCompile({
+          gl,
+          label: 'trading-floor-late-avatar',
+          timeoutMs: 5000,
+          isCancelled: () => cancelled,
+          compile: () =>
+            withStageSlotFrustumCullingDisabledSync(TRADING_FLOOR_SCENE_ID, () =>
+              (
+                gl as unknown as {
+                  compileAsync: (
+                    root: THREE.Object3D,
+                    camera: THREE.Camera,
+                    scene: THREE.Scene,
+                  ) => Promise<void>;
+                }
+              ).compileAsync(root, camera, scene),
+            ),
+        }).then(() => {
+          if (revealTimer !== undefined) clearTimeout(revealTimer);
+          revealTimer = undefined;
+          if (!cancelled) wrapper.visible = true;
+        });
+      };
+      // A fallback avatar can arrive while the stage warm still owns the
+      // renderer. Wait until its direct draw and GPU drain have finished.
+      const stageReady = () => {
+        const state = useStageStore.getState();
+        const status = state.scenes[TRADING_FLOOR_SCENE_ID]?.status;
+        return state.activeScene === TRADING_FLOOR_SCENE_ID &&
+          (status === 'ready' || status === 'resident');
+      };
+      if (stageReady()) startCompile();
+      else {
+        unsubscribe = useStageStore.subscribe(() => {
+          if (stageReady()) startCompile();
+        });
+        if (stageReady()) startCompile();
+      }
+    }
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      if (revealTimer !== undefined) clearTimeout(revealTimer);
+      onAvatarUnmounted();
+    };
+  }, [get, onAvatarMounted, onAvatarUnmounted, root, wrapperRef]);
+}
+
+function TradingFloorVRMPlayer({
+  reg,
+  onAvatarMounted,
+  onAvatarUnmounted,
+}: {
+  reg: ModelRegistryEntry;
+  onAvatarMounted: AvatarMountCallback;
+  onAvatarUnmounted: () => void;
+}) {
   const vrm = useVRMInstance(reg.path, 'trading-floor-player');
   const { scale, offsetY } = useMemo(
     () => computeVRMAvatarFit(vrm, reg.animatorId, AVATAR_TARGET_HEIGHT),
     [vrm, reg.animatorId],
   );
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
+  const warmWrapperRef = useRef<THREE.Group>(null);
+  useTradingFloorAvatarWarm(vrm.scene, warmWrapperRef, onAvatarMounted, onAvatarUnmounted);
 
   useEffect(
     () => () => disposeVRMInstance(reg.path, 'trading-floor-player'),
@@ -1377,11 +1589,13 @@ function TradingFloorVRMPlayer({ reg }: { reg: ModelRegistryEntry }) {
   return (
     <TradingFloorAvatarMotion updateAnimation={updateAnimation}>
       <group ref={sitGroupRef}>
-        <primitive
-          object={vrm.scene}
-          scale={[scale, scale, scale]}
-          position={[0, offsetY, 0]}
-        />
+        <group ref={warmWrapperRef}>
+          <primitive
+            object={vrm.scene}
+            scale={[scale, scale, scale]}
+            position={[0, offsetY, 0]}
+          />
+        </group>
       </group>
     </TradingFloorAvatarMotion>
   );
@@ -1389,7 +1603,15 @@ function TradingFloorVRMPlayer({ reg }: { reg: ModelRegistryEntry }) {
 
 const _glbBoundsScratch = new THREE.Box3();
 
-function TradingFloorGLBPlayer({ reg }: { reg: ModelRegistryEntry }) {
+function TradingFloorGLBPlayer({
+  reg,
+  onAvatarMounted,
+  onAvatarUnmounted,
+}: {
+  reg: ModelRegistryEntry;
+  onAvatarMounted: AvatarMountCallback;
+  onAvatarUnmounted: () => void;
+}) {
   const { scene } = useGLTFWithKTX2(reg.path);
   const { cloned, scale, offsetY } = useMemo(() => {
     const next = scene.clone(true);
@@ -1424,6 +1646,8 @@ function TradingFloorGLBPlayer({ reg }: { reg: ModelRegistryEntry }) {
       offsetY: -_glbBoundsScratch.min.y * renderScale,
     };
   }, [scene]);
+  const warmWrapperRef = useRef<THREE.Group>(null);
+  useTradingFloorAvatarWarm(cloned, warmWrapperRef, onAvatarMounted, onAvatarUnmounted);
 
   useEffect(
     () => () => {
@@ -1444,22 +1668,49 @@ function TradingFloorGLBPlayer({ reg }: { reg: ModelRegistryEntry }) {
 
   return (
     <TradingFloorAvatarMotion updateAnimation={updateAnimation}>
-      <primitive object={cloned} scale={scale} position={[0, offsetY, 0]} />
+      <group ref={warmWrapperRef}>
+        <primitive object={cloned} scale={scale} position={[0, offsetY, 0]} />
+      </group>
     </TradingFloorAvatarMotion>
   );
 }
 
-function TradingFloorPlayer() {
+function TradingFloorPlayer({
+  onAvatarMounted,
+  onAvatarUnmounted,
+}: {
+  onAvatarMounted: AvatarMountCallback;
+  onAvatarUnmounted: () => void;
+}) {
   const avatarModelKey = useGameStore((state) => state.avatarModelKey);
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ??
     MODEL_REGISTRY.lobster;
 
   return reg.avatar_type === 'vrm' ? (
-    <TradingFloorVRMPlayer reg={reg} />
+    <TradingFloorVRMPlayer reg={reg} onAvatarMounted={onAvatarMounted} onAvatarUnmounted={onAvatarUnmounted} />
   ) : (
-    <TradingFloorGLBPlayer reg={reg} />
+    <TradingFloorGLBPlayer reg={reg} onAvatarMounted={onAvatarMounted} onAvatarUnmounted={onAvatarUnmounted} />
   );
+}
+
+class TradingFloorAvatarErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.warn('[TradingFloor] avatar failed to load; continuing without it', error);
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? null : this.props.children;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1477,9 +1728,24 @@ export default function TradingFloorInteriorScene({
   active = true,
   onReady,
 }: TradingFloorInteriorSceneProps = {}) {
-  const handleReady = useCallback(() => {
-    onReady?.();
-  }, [onReady]);
+  const readyCallbackRef = useRef(onReady);
+  readyCallbackRef.current = onReady;
+  const readyGateRef = useRef<ReturnType<typeof createTradingFloorReadyGate> | null>(null);
+  if (!readyGateRef.current) {
+    readyGateRef.current = createTradingFloorReadyGate(() => readyCallbackRef.current?.());
+  }
+  const handleRoomMounted = useCallback(() => {
+    readyGateRef.current!.roomMounted();
+    return () => readyGateRef.current!.roomUnmounted();
+  }, []);
+  const handleAvatarMounted = useCallback(
+    () => readyGateRef.current!.avatarMounted(),
+    [],
+  );
+  const handleAvatarUnmounted = useCallback(
+    () => readyGateRef.current!.avatarUnmounted(),
+    [],
+  );
 
   useEffect(() => {
     if (active) return;
@@ -1491,15 +1757,21 @@ export default function TradingFloorInteriorScene({
     <>
       <TradingFloorLighting />
       <WorldLabelsOverlayMount />
-      <RoomShell onReady={handleReady} />
+      <RoomShell onMounted={handleRoomMounted} />
       <TradingFloorScreen active={active} />
       <TradingFloorTradeTape active={active} />
+      <TradingFloorDecor active={active} />
       <TradingFloorHotspots />
       <TradingFloorLabels />
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
           room appearing. */}
       <Suspense fallback={null}>
-        <TradingFloorPlayer />
+        <TradingFloorAvatarErrorBoundary>
+          <TradingFloorPlayer
+            onAvatarMounted={handleAvatarMounted}
+            onAvatarUnmounted={handleAvatarUnmounted}
+          />
+        </TradingFloorAvatarErrorBoundary>
       </Suspense>
     </>
   );

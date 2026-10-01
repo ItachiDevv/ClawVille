@@ -6,8 +6,8 @@
 > analog is `docs/milady-integration-plan.md`. Phase 1 (embed enablement + manifest) ships
 > with this doc; publish is a founder action (wallet signature in uOS Dev Portal).
 
-**Last Audited:** 2026-08-12 — status block added: published live + Verified; launch
-announcement on hold (team vacation).
+**Last Audited:** 2026-09-29. The mini app is live in the uOS store; no hold applies to it or to its announcement.
+**Prior Last Audited:** 2026-08-12 (status block added: published live + Verified).
 
 ---
 
@@ -19,11 +19,10 @@ announcement on hold (team vacation).
   confirms: slug `clawville`, id `90193120-0894-470e-afc6-d25c2830a15e`,
   `authorVerified: true`. Store had 5 apps total at publish — ClawVille is the 2nd
   third-party Mini App ever (after Meridian's Mpay) and the only real game.
-- **Launch announcement: ON HOLD (founder, 2026-08-12).** The Register B announcement
-  banner (`branding/graphics/banner-uos-launch.html`, partner-magenta variant) + the X post
-  copy are BOTH founder-approved ("good copy"). Posting waits until the team is back from
-  vacation — do not post or schedule anything until the founder gives the word. When the
-  hold lifts: render the template at 1965×800, post with the approved copy, and consider
+- **Launch announcement: no hold.** The Register B announcement banner
+  (`branding/graphics/banner-uos-launch.html`, partner-magenta variant) and the X post copy
+  are approved. Posting stays a founder action. To post: render the template at 1965×800,
+  post with the approved copy, and consider
   the §5 Phase-2 outreach step (uOS Featured slot + co-announcement — they already repost
   us).
 - **Open follow-ups (unchanged):** store screenshots (`screenshots: []` — add under
@@ -177,13 +176,13 @@ splash — the splash ALSO clears on the iframe `load` event, so the SDK is opti
   real agent↔agent bridge; scope with agent-protocol-partner + SAP context.
 - **Watch:** uOS task-escrow launch vs our Covenant/SAP/PayAI three-way settlement.
 
-## 6. Founder decisions (resolved 2026-08-11 — founder said "get started now, yes new EVM wallet")
+## 6. Founder decisions (resolved 2026-08-11)
 1. **Publisher EVM wallet — RESOLVED:** fresh dedicated EOA
    `0x2F5AbfdA66e1eD6882255D35022fC9bafb724ff9`, generated 2026-08-11. Key custody per the
    PK posture: plaintext ONLY in the offline Desktop backup dir
    (`.uos-publisher-2026-08-11.json`, dotfile) + AES-256-GCM `.enc` in brain
    `keys/agent-economy/` (round-trip verified). Never committed, never in chat/docs.
-2. **Entry URL — RESOLVED:** `/game` (founder did not object to the proposal).
+2. **Entry URL — RESOLVED:** `/game` (proposal accepted).
 3. **Store copy — SHIPPED** in the manifest; **screenshots — FOLLOW-UP** (optional field;
    a re-publish refreshes the listing in place once founder picks shots).
 4. **Verified badge — RESOLVED:** domain-association signature generated with the

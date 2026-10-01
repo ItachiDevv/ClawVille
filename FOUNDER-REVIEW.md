@@ -64,8 +64,71 @@
 
 ## TRADING FLOOR
 
+### Arena house agents now change rules rarely, and every report says why (staging, 2026-10-01)
+
+- **What to look at:** on staging, `/trading-floor` -> Exchange -> Arena -> a house agent's reports. Each report has one line such as "Tuner: no change, next check at 40 trades on these rules (has 27)".
+- **What changed:** the old tuner never changed anything since 09-30 (the AI model never proposed). The new code tuner tests one filter change only at 20, 40, 80, 160, 200, 400 and 800 closed trades on the current rules, and needs real evidence (p 0.01 or less at the early checks). On random data it changes 4% of agents, not 53%. So "tuned every 30 minutes" now means "reviewed every 30 minutes, changed rarely".
+- **Also:** a guest no longer gets console errors on the floor, the welcome tour no longer tells a guest it "created an agent", and a trader name needs at least one letter.
+- **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
+- Session tradeDeskMain, 2026-10-01.
+
+### Trading Floor INTERIOR v3 "The Claw Exchange": the new inside look (staging, 2026-10-01)
+- **What:** the inside of the Trading Floor building is restyled. Nothing moved: same desks, seats, kiosk, board, door and trade tape.
+  Walls: walnut wainscot with a brass rail, navy upper panels, a gold-framed board. Floor: dark stone with thin gold lines and a gold
+  "CLAWVILLE EXCHANGE" seal. The rock dais in the middle is now the twin **Golden Claws** (traced from the brand claw art) on a
+  black granite plinth. Every desk has a 3 x 2 bank of glowing chart monitors, big chart screens hang above the desks, an LED ticker
+  crawls round the walls with the real arena tape (every dollar figure says PAPER), claw banners hang in the back corners, chairs
+  are oxblood leather, and the three lights are warmer.
+- **Where:** staging, `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
+  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door.
+- **Feedback wanted:** (1) overall: does it read as a cool claw-themed NYSE floor? (2) the Golden Claws: twin flat reliefs (chosen
+  because a single centre claw is hidden behind your avatar on arrival) - keep, make them chunkier/rounder, or one big claw?
+  (3) the gold floor lines: too strong or right? (4) the ticker: readable at your display scaling? (5) the warmer light vs the old
+  cool blue. (6) FPS on your Iris Xe laptop inside the room (this box is an RTX 3080; Iris Xe is unmeasured).
+- **Known, not new:** a 0.6 to 1 s hitch right after the room appears is pre-existing (your avatar's shaders compile after the
+  loading warm-up); it is diagnosed and being fixed separately.
+- **Session:** coolerTrading, 2026-10-01.
+
+### Floor TV board redesign P6: larger text, 5 rows per page (design approved by the lead, 2026-10-01; you can veto)
+
+- **Session:** tradeDeskMain (team `trading-floor-arena`), arena-board (3da), 2026-10-01. Punch list P6 in `docs/trading-floor-arena.md` §8, review deadline 2026-10-04.
+- **Why:** from the `/trading-floor` spawn point the TV is shrunk to about half size on screen (0.52 screen pixels per board pixel at 1366 x 768), so a capital letter is only about 5 screen pixels tall. At that size some letters change: staging showed "GENZSIS" and "LATZ BLOOMER", and a mipmap fix tried the same night changed other cells instead ("LANDTKST1", "NO PRIZR") and was taken out. The current build draws all board text bold, which is the best state we have, but it is still at the limit.
+- **The redesign (not built yet; it goes into the next build after the current one is committed):** same TV, same cost on the GPU. Larger text: 22 px rows (capitals about 6.5 screen pixels from the spawn), 20 px for the prize line, captions, method line and tape. **5 rows per page:** rows 1-5, then rows 6-10 on the next 15-second refresh, with "1-5 OF N" in the corner; with 5 agents or fewer there is no paging. Column 2 is now "TYPE": a HOUSE or NO PRIZE badge, or the player's template. Shorter copy: "HOUSE: NO PRIZE" beside the prizes, and "PAPER TRADES · $20 EACH · P&L AFTER 2.5% BUY + 1% SELL COSTS".
+- **Look at now:** the mock `C:\Users\itachi\Documents\Crypto\ClawVille\ops\house-traders\arena-review\p6-board-design\p6-spawn-view-current-vs-proposed.png` (the current board and the proposed board, both as a player sees them from the spawn; a simulation, not a screenshot). The full-size proposed board is `p6-proposed-board-full-res.png` in the same folder.
+- **Look at after deploy:** staging `/trading-floor`, stand at the spawn point without moving, and read every row and the tape from there. Wait 15 seconds to see the page change when more than 5 agents are on the board.
+- **Feedback wanted:** paging (5 rows at a time) or top 5 only; the shorter copy ("HOUSE: NO PRIZE", "$20 EACH"); the "TYPE" caption.
+
+### Arena ClawPump account isolation (audit-money M4, 2026-10-01)
+
+- **Session:** tradeDeskMain (team `trading-floor-arena`), audit-money finding M4, 2026-10-01. A DECISION, not a playtest.
+- **What:** the staging api's `CLAWPUMP_API_KEY` is your enterprise ClawPump account. That account also holds the live Genesis (about 37 USDC), Runner (about 61 USDC) and Clawville_World agents (balances as reported by the audit). Every arena create, PATCH and x402 payment (`apps/api/src/services/clawpump-writer.ts`) uses that same key. The guard between the arena and those live agents is code only (updated by Codex r17): on every update and payment the writer refuses the live traders' ClawPump ids outright, requires the ClawPump id to be the one stored on that player's arena row, and requires the arena name prefix plus that row's id suffix. It is the same key and the same account, so a bug in that guard is the remaining risk.
+- **Growth:** every arena launch adds one agent to that account, including launches from free accounts that a sybil can create in bulk. The writer reads the account-wide wallet summary (`GET /wallets/summary`) with a parse limit of 5,000 agents; past that, wallet balances read as unknown, so paid add-ons stop paying (they skip a call when the balance is unknown).
+- **Recommendation:** a SEPARATE ClawPump account and key for arena agents, set up before the prod promotion, so that no arena path can reach the live traders even if the name guard had a bug.
+- **Decision wanted:** approve a separate account for arena agents, OR accept the shared account with the name guard.
+- **Related decision (punch list P5, `docs/trading-floor-arena.md` §8):** no path returns unspent USDC from a player's arena wallet. Until you decide on a refund or withdraw path (or a cap on what the UI asks a player to send), the UI tells players: send only USDC on Solana, add-on spend only, not withdrawable through ClawVille. Review deadline 2026-10-05, before the prod promotion.
+- **Where:** no screen; the setting is the staging api's `CLAWPUMP_API_KEY` and, at promotion, the prod one.
+
+### TRADING FLOOR ARENA (2026-09-30): paper contest, five house agents, launch your own trader
+
+- **Session:** tradeDeskMain (team `trading-floor-arena`), 2026-09-30. Branch `feat/trading-floor-arena`, staging after the lead's push. Not yet checked in a browser at the time of writing; the lead's staging verification is the evidence.
+- **Where:** staging `https://staging.clawville.world/game` -> walk to the Trading Floor (south of the ring) -> E at the door -> `/trading-floor`. Look at the back-wall TV, sit at a desk (E), and press E at the kiosk for the Exchange modal's Trading Floor tab, where the Trading Arena section is now at the top.
+- **Look at:**
+  1. **Three new templates** beside Genesis and Runner: Dip Hunter, Mid-Cap Climber and Late Bloomer. The evidence is a small in-sample simulation: Dip Hunter about +0.4 percent per trade (15 trades), Mid-Cap Climber about +0.7 percent (20 trades), and **Late Bloomer about -5.5 to -6.3 percent per trade (42 trades), which is about the round-trip cost**. Its card says so: "it has not beaten trading costs yet".
+  2. **Dip Hunter's stop at 0.90 (-10 percent)** is a lead decision made while you slept. Every other template has no stop.
+  3. **Contest "Trading Arena Week 1":** 6 PM EDT Wed 2026-09-30 to 11:59:59 PM EDT Sun 2026-10-04. Score = realised paper P&L of positions opened in the window, including positions that close after the end (the standings stay "provisional" until the last one closes, plus 5 minutes, then "final"); a position with no usable price for 30 minutes counts as a loss of its open stake. $20 per position, at most 5 open, one agent per account, no guests, house agents shown but not eligible. A player agent is prize-eligible only when it was launched before the end AND has at least one position opened inside the window and closed (at any time). (Lead decisions D30, D31 and rule 6, 2026-10-01: built, Codex r22 APPROVE, not deployed yet; until that build is live, staging scores positions opened AND closed in the window.) Prizes **1,000,000 / 500,000 / 250,000 $CLAWVILLE**, paid by the team by hand after an abuse review. Privacy: anyone sees a player agent's rules, results, trades and rule changes; its add-ons, wallet, reports and scans stay with its owner. House agents are fully public.
+  4. **Seat gating is persistent:** an agent opens new positions only while seated; sitting at a desk seats it; standing up or leaving the room frees the desk; closing the tab while seated keeps the desk, so the agent keeps trading overnight. Open positions always exit. In v1 the seat is DECLARED, not checked: the game client sends it for a human, an agent sends it with its seat tool, the server does not check where the avatar is, and two agents can share one desk number.
+  5. **Staging creates REAL ClawPump agents** under ClawVille's ClawPump account for every staging launch, named `CV Arena (staging) · <name> #<id>` (production drops "(staging)"). Private, no bids, no trading skills. They will pile up in the dashboard; the account's agent limit is unknown.
+  6. **Two paid add-ons, real prices:** Nansen Token Screener $0.01 per call (about $1.44 per day at the fastest rate) and Nansen Smart Money DEX Trades $0.05 per call (about $4.80 per day). The player funds their own agent wallet with USDC; caps $1 per add-on by default and $5 per agent per day at most. The vetting paid $0.119 from the Runner wallet, and Runner now carries the `x402` skill.
+  7. **Live mode is off.** The form shows "Live trading · Coming later"; the API refuses it. Turning it on needs your go and a Codex money review.
+  8. **Gap P1:** a hosted agent that acts only through `[ACTION:]` verbs can read the arena manual but has no verb to launch or seat a trader. Connected agents use the tools. Review deadline 2026-10-07.
+  9. **Owed:** the AnsemHack X post announcing the contest is not written or posted yet.
+  10. **Lead decisions after the first staging hours (D25-D27, 19:05Z):** the live board at 18:55Z read Mid-Cap Climber +$1.21 (4 trades), Late Bloomer -$10.94 (11), Dip Hunter -$19.13 (15), Genesis -$53.74 (44, 5 deaths), Runner -$110.08 (20, 9 deaths). All 14 deaths were real collapses, and 19 of Runner's 20 coins were seen only by GeckoTerminal. So: (a) only coins that DexScreener or ClawPump has seen are bought; (b) the $5,000 liquidity floor is no longer a hard rule (it was a lead rule, not yours, and it blocked the pump.fun curve coins the Python Runner traded); your five hard rules stay; (c) Runner now matches C1 (no liquidity filter, first sight counted from DexScreener or ClawPump); (d) house agents reset to template v2; (e) the tuner changes a rule automatically only with 20 closed trades and a clear split in the data. The contest window starts clean at 22:00Z; no rows were deleted. Feedback wanted: agree with dropping the $5,000 floor, and with trading only DexScreener/ClawPump-seen coins.
+  11. The STAGING contest board shows test agents (LandTest1, LandTest2, ParityAudit-324303); they can rank and read eligible there. Prod uses a separate database; the P3 payout review excludes listed test agents.
+- **Feedback wanted:** keep, change or drop Late Bloomer; the Dip Hunter stop; the contest dates and prize split; whether the seat should stay held after the tab closes; whether staging should create real ClawPump agents; the add-on prices and caps; board legibility from the door.
+
 ### Player trading controls show Coming soon (production `7473e809`; founder review remains open)
 
+- **Update 2026-09-30 (staging, arena branch):** launching a trader is now OPEN as a paper agent in the Trading Arena (entry above). The "Start a ClawPump trader" copy cards, with their Copy persona, Copy skills and ClawPump dashboard buttons, are no longer rendered. The wallet controls below still read Coming soon.
 - **Last Audited: 2026-09-23.** Drift note: production browser evidence now confirms the guest controls; founder order keeps player trading and player trader launches paused in the client.
 - **Greyed out:** Use my linked wallet, Use my in-game wallet, Connect and sign, and the guest Create a free account button. The signature input and Verify trade button are disabled. Each template's Copy persona and Copy skills buttons, Open the ClawPump dashboard, and Open Jupiter are disabled too. Each control retains its label, explanation title, and Coming soon tag.
 - **Monitoring:** Genesis and ClawVille Runner retain their live realised profit and loss, risk state, house-trader board, panel, public trade tape, and flying trade chips. Their read-only route remains unchanged.
@@ -76,7 +139,7 @@
 ### The Trading Floor building: walk in, monitor, live P&L board, two house traders (staging, 2026-09-20)
 - **What:** the Downtown Building is now the Trading Floor, with a new exterior (stone hall,
   green TRADING FLOOR sign, solid claw on the dome) and a room you walk into like the cove.
-  Inside: six trading desks, a hologram dais and a monitor at the far wall. Walk to the
+  Inside: six trading desks, a hologram dais (replaced by the twin Golden Claws in interior v3, 2026-10-01) and a monitor at the far wall. Walk to the
   monitor and press E (USE on touch): the Trading Floor panel opens, the same one the
   sidebar opens. Escape closes it. E at the door takes you out. Pearl still teaches
   automation, outside the building, and her books did not change. The building id did
@@ -279,6 +342,23 @@
 
 ## AGENTS / ONBOARDING
 
+### Moving an agent to another account with a connect token is removed (staging, pending)
+
+- **WHAT CHANGED:** a connect link made by one account can no longer take over an agent that another account already owns. The agent gets `409 agent_owned_by_other_account`, and the owner keeps the agent, its live session, and its leaderboard history. Also, when a human opens an agent's magic login link, only the agent copy that made the link stays live, and only while it is still the agent's current session; any other copy is removed.
+- **WHO IT AFFECTS:** anyone who moved an agent between two accounts with a connect link; no supported way to do that exists now. Also, an agent that already has an owner must now prove the owner when it connects again. Owner proof is one of these: its `identityKey`, a new magic link from the owning account, or the signed reconnect with its saved identity secret. Without owner proof, the agent gets `409 owner_credential_required`. Before this change, such a connect ended the owner's live session and took control of the agent. That was the security flaw. A Milady agent sends no secret when it reconnects by itself. So its owner must repeat the magic link, or its runtime must use the signed reconnect. Nobody can open an old gateway-key account by sending a guessed short token prefix any more: an `identityKey` that starts with `gateway-inferred:`, or that is a URL plus `#` and 1 to 8 characters, gets `400 identity_key_reserved` (round 2b). If a newer connect replaced the agent copy that made a magic link, opening that link disconnects every copy, and the agent reconnects with its `identityKey` or the signed reconnect.
+- **WHERE:** staging after the lead pushes (pending): `https://staging.clawville.world/game`, agent-connect modal, "Generate Connect Link" on a second account, given to an agent that the first account owns.
+- **LOOK AT:** the agent reports the 409, and the first account still controls the agent.
+- **PROD COUNTS (read-only, 2026-10-01 about 10:15 UTC, agents that have an owner; "7 d / 30 d" = seen in the last 7 / 30 days):**
+  - Milady: 56. 46 have an account with no agent key (4 / 10). 10 have an account made from an agent key (2 / 2).
+  - Custom: 37. 18 have an account made from an agent key (5 / 6). 18 have an account with no agent key (0 / 0). 1 uses a gateway key (0 / 0).
+  - OpenClaw: 3 (3 / 3). Hermes: 2 (2 / 2).
+  - Hatcher: 15. Not affected.
+  - Expected effect: up to about 6 Milady agents that were active this week can need a new magic link or the signed reconnect. We did not make the gateway key count as owner proof, because that helps 0 agents on prod.
+- **DECISION WANTED:** do we need a proof-based transfer, where both accounts prove control? Owner: auth-identity-session. Review deadline: 2026-10-31 (tracked in `ARCHITECTURE.md` §6).
+- **DECISION WANTED (2):** do you accept the reconnect effect above? We recommend yes. Answer yes or no.
+- **Session auth-connect-sec-2026-09-30 (round 2, connect-sec-impl2; round 2b, connect-sec-impl3), 2026-09-30. Round 4 (owner proof on reconnect, impact counts), 2026-10-01.**
+
+
 ### Nori now says where the bounties are (prod)
 
 - **WHERE:** clawville.world/game, ask Nori "where do I get bounties?" (or ask your own agent).
@@ -460,6 +540,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 ---
 
 ## HUD
+
+### Phone game menu: bigger tap targets (staging)
+- **What:** on phones and tablets every row in the game menu (gear button) and the "Create Agent"
+  button are now at least 44 px tall (they were 40.5 px and 27 px). Desktop is unchanged.
+- **Where:** staging.clawville.world → /game on a phone → gear button (top right).
+- **Feedback wanted:** are the rows easy to hit; does the longer list still feel right.
+- Session sql2/Opus, 2026-09-29.
 
 ### Quest card no longer covers the minimap (LIVE on prod via #284)
 - **What:** the Town Tour card used to sit on the bottom of the minimap, worst next to a
@@ -681,10 +768,20 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ---
 
+## BRAND
+
+### September 29: brand kit v1 (font-rendered banner, vector logo, claw-girl icons)
+
+- **Session:** Claude `cvBrand`, 2026-09-29, branch `feat/branding-upgrade`. Founder decisions from the decisions page are absorbed (logo A with vector wood, claw v in the font, font-rendered banner, claw-girl icons, usage rules variation 1). Verification for this push is in `deploy-status.md`.
+- **Where:** staging `https://staging.clawville.world/` (landing) and `https://staging.clawville.world/game` (loading screen); a phone "Add to Home Screen" icon; `branding/logo-usage.html` and `branding/brand-board.html` opened locally.
+- **Look at:** the font-rendered banner on both screens (no taller than the old title text), the new vector wood on the official logo and the banner, and the maskable home-screen icon padding (sky and ocean extension, not a frame).
+- **Feedback wanted:** banner size and look; the wood; the home-screen icon. The share card saturation idea is parked for the v2 variations pass.
+- **Not covered:** a real-iPad safe-area check (none of the changed elements are bottom-anchored) and a real X or Discord link preview (possible only after production).
+
 ## DECISIONS OWED (rulings, not playtests)
 
 *(none open)*
 
 ---
 
-*(Verdict log: 2026-09-13 — LAND Founders' Row ✅ ruled HOLD-ONLY (auction rejected; live behavior already matches, no change). LAND prepay ✅ ruled CONFIRM STEP (one-click rejected; shipped same day, see the LAND entry above). ECONOMY recovered-SOL destination ✅ ruled: swept 0.397129 SOL from the prod house wallet to the founder wallet 2WhyS…ea5H, tx finalized (5PrkM…BnPbfc), house at zero. 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment.)*
+*(Verdict log: 2026-09-13 — LAND Founders' Row ✅ ruled HOLD-ONLY (auction rejected; live behavior already matches, no change). LAND prepay ✅ ruled CONFIRM STEP (one-click rejected; shipped same day, see the LAND entry above). ECONOMY recovered-SOL destination ✅ ruled: swept 0.397129 SOL from the prod house wallet to the founder wallet 2WhyS…ea5H, tx finalized (5PrkM…BnPbfc), house at zero. 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment. 2026-09-29: BRAND decisions absorbed (logo A with vector wood, claw-girl icons, font-rendered banner, usage rules variation 1).)*

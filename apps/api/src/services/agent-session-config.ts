@@ -27,7 +27,10 @@
  * the regression test asserts deep-equality of the spawn-relevant fields built
  * from a row vs. built fresh, for every identity type.
  *
- * PURE: no DB, no sim, no crypto. Just identity → config mapping — with ONE
+ * PURE: no DB, no sim, and no crypto except the one-way sha256 of a gateway
+ * token in `resolveIdentityForTicket` (2026-09-30, deterministic, no I/O). The
+ * reserved derived-key predicate `isReservedDerivedIdentityKey` lives beside it.
+ * Just identity → config mapping — with ONE
  * deliberate, documented env read: the boot-time `HERMES_LOCAL_GATEWAY_ENABLED`
  * gate below (D7 host-it-for-me Hermes cognition, 2026-07-02). Every resolver
  * that consults the gate also takes it as an optional parameter so tests stay
@@ -48,6 +51,7 @@ import {
   type AgentSubstrateRegistration,
   type AgentAvatarConfig,
 } from '@clawville/shared';
+import { sha256Hex } from './session-digest';
 
 /**
  * Combat-stat block carried on an avatar body. Matches the inline `stats` shape
@@ -259,20 +263,70 @@ export function resolveIdentityForTicket(
   },
   resolvedIdentityType: AgentIdentityType,
 ): { identityType: AgentIdentityType; identityKey: string } | null {
+  // Security fix C1 (2026-09-30): a Milady identity's only "key" is the miladyAgentId, which is the
+  // PUBLIC agent handle (the leaderboard shows it as `milady:<id>`). It is NOT a secret, so it must
+  // never resolve an owned, ledger-capable identity — that let anyone take over a legacy Milady
+  // account from its public handle (whether supplied as `miladyAgentId` or as `identityKey`). A
+  // Milady connect therefore gets no bindable identity here (perception/chat/movement still work);
+  // real Milady onboarding binds through its one-step magic-link `connectionToken`, not this path,
+  // and the Milady sideload is retired. hermes/openclaw/custom keep their real secret identityKey.
+  if (resolvedIdentityType === 'milady') {
+    return null;
+  }
   if (data.identityKey) {
     return { identityType: resolvedIdentityType, identityKey: data.identityKey };
   }
-  if (data.miladyAgentId) {
-    return { identityType: resolvedIdentityType, identityKey: data.miladyAgentId };
-  }
   if (hasRealDeclaredGateway(data.gatewayUrl) && data.authToken) {
+    // Security 2026-09-30: the key binds the FULL gateway token through a
+    // one-way sha256, under the reserved `gateway-inferred:v2:` prefix. It used
+    // only the first 8 characters, so two different tokens with the same
+    // prefix on one gateway mapped to one account, and the ticket row stored
+    // those 8 characters of a secret. The prefix keeps a derived key apart
+    // from every explicit identityKey (`isReservedDerivedIdentityKey` below).
     return {
       identityType: resolvedIdentityType,
-      identityKey: `${data.gatewayUrl}#${data.authToken.slice(0, 8)}`,
+      identityKey: `gateway-inferred:v2:${data.gatewayUrl}#${sha256Hex(data.authToken)}`,
     };
   }
   return null;
 }
+
+/**
+ * Is `identityKey` a SERVER-DERIVED gateway-inferred key shape that a caller
+ * must never present as an explicit identityKey? (security 2026-09-30)
+ *
+ * An explicit identityKey shares the fingerprint namespace
+ * `sha256(type + ":" + key)` (`identity-service.ts` `identityFingerprint`) with
+ * the gateway-inferred key. So a caller that sent the legacy shape
+ * `<gatewayUrl>#<first 8 token chars>` (often a public prefix such as
+ * `sk-proj-`) reached every legacy gateway-inferred account, and the current
+ * derived key was stored raw in `agent_session_tickets.identity_key` (hashed
+ * since F4, 2026-10-01). Two shapes
+ * are reserved: the `gateway-inferred:` prefix (current and future derived
+ * keys) and the legacy `<scheme>:...#<1-8 chars>` shape (any URL scheme, because
+ * the gateway URL schema accepts more than http(s), e.g. ws/wss; whitespace is
+ * allowed anywhere because the URL schema does not trim). The URL schema
+ * (`z.string().url()`, WHATWG) also accepts a stored URL with leading C0
+ * control characters (U+0000..U+001F) and with tab/LF/CR inside the scheme,
+ * because the parser strips them; the shape test skips those too (round 4,
+ * 2026-10-01). The public routes
+ * (`POST /api/agent/connect`, `/join`, `/:sessionId/control-link`) refuse them
+ * with `400 identity_key_reserved`.
+ *
+ * Legacy accounts derived from the 8-character key are reachable now only by
+ * the signed `/reconnect` (identity secret) or the human's own login. They are
+ * NOT migrated or healed from the legacy key: no proof of the full token exists.
+ */
+export function isReservedDerivedIdentityKey(identityKey: string): boolean {
+  return identityKey.startsWith('gateway-inferred:')
+    || /^[\s\x00-\x1f]*[a-z][a-z0-9+.\t\n\r-]*:[\s\S]+#[\s\S]{1,8}$/i.test(identityKey);
+}
+
+/** Generic 400 body for a reserved identityKey; never echoes the key. */
+export const IDENTITY_KEY_RESERVED_BODY = Object.freeze({
+  error: 'Invalid request',
+  code: 'identity_key_reserved',
+});
 
 /**
  * Normalize the row's routing fact for `/connect`. Once validation succeeds,
@@ -302,23 +356,53 @@ export function resolveConnectGatewayForPersistence(input: {
  * stub to a 'hermes-local' client that POSTs OpenAI-compat chat to the runtime.
  *
  * SSRF STANCE — READ BEFORE "FIXING" THIS: the URL is a HARDCODED server-side
- * constant, deliberately NOT env-overridable and NEVER read from caller input or
- * the bot row. `validateOutboundUrlResolved` (hatcher-config.ts) keeps rejecting
+ * constant, deliberately NOT env-overridable (the D1 topology switch below only
+ * selects between two constants) and NEVER read from caller input or the bot
+ * row. `validateOutboundUrlResolved` (hatcher-config.ts) keeps rejecting
  * localhost/RFC1918 for every CALLER-SUPPLIED URL — this constant is not a
  * loosening of that guard, it is the one server-owned exception that never mixes
  * with caller data. Making it configurable would reopen the exact
  * POST-a-bearer-to-an-internal-address class the general guard closes.
+ *
+ * D1 SANDBOX (security pass, 2026-09-30): the hosted runtimes no longer have to
+ * share the API container's network namespace. On a box set up with
+ * `scripts/deploy/agent-sandbox/`, each runtime runs in its OWN Docker network
+ * at a FIXED address (hermes 10.201.86.2:8642, openclaw 10.201.87.2:8643),
+ * non-root with all capabilities dropped, and host firewall rules allow only
+ * API → runtime and runtime → the model endpoint (no DB, no Coolify, no API
+ * port, no host). `LOCAL_RUNTIME_TOPOLOGY=sandbox` (boot-time env) SELECTS those
+ * fixed addresses; unset keeps loopback for a box that was not moved yet. The
+ * env only chooses between compile-time constants and can never carry a URL,
+ * so the SSRF stance above is unchanged.
  */
-export const HERMES_LOCAL_GATEWAY_URL = 'http://localhost:8642';
+export type LocalRuntimeTopology = 'loopback' | 'sandbox';
+export const LOCAL_RUNTIME_TOPOLOGY: LocalRuntimeTopology =
+  process.env.LOCAL_RUNTIME_TOPOLOGY === 'sandbox' ? 'sandbox' : 'loopback';
+
+const LOCAL_RUNTIME_URLS = {
+  hermes: { loopback: 'http://localhost:8642', sandbox: 'http://10.201.86.2:8642' },
+  openclaw: { loopback: 'http://localhost:8643', sandbox: 'http://10.201.87.2:8643' },
+} as const;
+
+/** Pure lookup of the server-owned runtime address for a topology (tests pin both). */
+export function localRuntimeGatewayUrl(
+  runtime: 'hermes' | 'openclaw',
+  topology: LocalRuntimeTopology,
+): string {
+  return LOCAL_RUNTIME_URLS[runtime][topology];
+}
+
+export const HERMES_LOCAL_GATEWAY_URL = localRuntimeGatewayUrl('hermes', LOCAL_RUNTIME_TOPOLOGY);
 
 /**
- * Optional bearer for the local Hermes runtime (2026-07-08, real-runtime
- * deploy). Hermes ≥0.12 REFUSES to start its OpenAI-compat API server without
- * an API_SERVER_KEY, even on loopback — so the real hosted runtime demands a
- * key the D7 "bare POST" contract didn't carry. Read ONCE at module load like
- * the gate above. Unset ⇒ no Authorization header is sent (the mock-hermes
- * harness contract is unchanged). This is a same-box shared secret, not a
- * user credential: it never leaves localhost and is never logged.
+ * REQUIRED bearer for the local Hermes runtime (2026-07-08, real-runtime
+ * deploy; required since the D3 fix, 2026-09-30). Hermes ≥0.12 REFUSES to
+ * start its OpenAI-compat API server without an API_SERVER_KEY, even on
+ * loopback. Read ONCE at module load like the gate above. Unset ⇒ the client
+ * FAILS CLOSED (no POST at all, the body stays silent) — ClawVille never sends
+ * an unauthenticated prompt to a tool-capable runtime. This is a same-box
+ * shared secret, not a user credential: it never leaves the box and is never
+ * logged.
  */
 export const HERMES_LOCAL_GATEWAY_KEY = process.env.HERMES_LOCAL_GATEWAY_KEY ?? '';
 
@@ -362,23 +446,22 @@ const HERMES_LOCAL_GATEWAY_ENABLED = process.env.HERMES_LOCAL_GATEWAY_ENABLED ==
  * this gate is on. Only the gateway-LESS openclaw connect is hosted.
  *
  * SSRF STANCE — READ BEFORE "FIXING" THIS: identical to the Hermes constant. The
- * URL is a HARDCODED server-side constant, deliberately NOT env-overridable and
- * NEVER read from caller input or the bot row. `validateOutboundUrlResolved`
+ * URL is a HARDCODED server-side constant, deliberately NOT env-overridable (the
+ * topology switch only selects between two constants) and NEVER read from caller
+ * input or the bot row. `validateOutboundUrlResolved`
  * (hatcher-config.ts) keeps rejecting localhost/RFC1918 for every CALLER-SUPPLIED
  * URL — this constant is not a loosening of that guard, it is the one server-owned
- * exception that never mixes with caller data.
+ * exception that never mixes with caller data. The D1 sandbox topology switch
+ * (see `LOCAL_RUNTIME_TOPOLOGY` above) selects between two such constants.
  */
-export const OPENCLAW_LOCAL_GATEWAY_URL = 'http://localhost:8643';
+export const OPENCLAW_LOCAL_GATEWAY_URL = localRuntimeGatewayUrl('openclaw', LOCAL_RUNTIME_TOPOLOGY);
 
 /**
- * Optional bearer for the local OpenClaw gateway — the exact mirror of
- * `HERMES_LOCAL_GATEWAY_KEY` (2026-07-08). The real-Hermes deploy proved a hosted
- * OpenAI-compat runtime can REFUSE to serve without an API key even on loopback;
- * the real OpenClaw gateway (github.com/openclaw/openclaw) is assumed no
- * friendlier, so carry a same-box shared secret as `Authorization: Bearer` when
- * set. Read ONCE at module load like the gate. Unset ⇒ no Authorization header
- * (the mock-openclaw harness contract is unchanged). Same-box shared secret, not
- * a user credential: it never leaves localhost and is never logged.
+ * REQUIRED bearer for the local OpenClaw gateway — the exact mirror of
+ * `HERMES_LOCAL_GATEWAY_KEY` (2026-07-08; required since the D3 fix,
+ * 2026-09-30). Carried as `Authorization: Bearer`. Read ONCE at module load like
+ * the gate. Unset ⇒ the client FAILS CLOSED (no POST). Same-box shared secret,
+ * not a user credential: it never leaves the box and is never logged.
  */
 export const OPENCLAW_LOCAL_GATEWAY_KEY = process.env.OPENCLAW_LOCAL_GATEWAY_KEY ?? '';
 
@@ -421,6 +504,16 @@ const OPENCLAW_LOCAL_GATEWAY_ENABLED = process.env.OPENCLAW_LOCAL_GATEWAY_ENABLE
  * AgentSubstrateClient, so they stay server-internal widenings here.
  */
 export type InWorldWireProtocol = AgentWireProtocol | 'hermes-local' | 'openclaw-local';
+
+/**
+ * True for the server-hosted local runtime wires (hermes-local / openclaw-local). Those runtimes
+ * are tool/terminal-capable and run on the box, so a CALLER's verbatim prompt must never be posted
+ * to them — only server-generated ambient cognition may. Chat routes use this to skip the direct
+ * `client.chat` fallback for these protocols (security fix D2, 2026-09-30).
+ */
+export function isLocalToolRuntime(protocol: string | null | undefined): boolean {
+  return protocol === 'hermes-local' || protocol === 'openclaw-local';
+}
 
 export type ConnectCognitionMode = 'hosted' | 'pull' | 'gateway' | 'partner-proxy';
 

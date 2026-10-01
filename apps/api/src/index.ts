@@ -171,6 +171,8 @@ import { walletLinkRoutes } from './routes/wallet-link';
 import { walletWithdrawRoutes } from './routes/wallet-withdraw';
 import { tradingFloorRoutes } from './routes/trading-floor';
 import { adminTradingRoutes } from './routes/admin-trading';
+import { floorArenaRoutes } from './routes/floor-arena';
+import { adminFloorArenaRoutes } from './routes/admin-floor-arena';
 import { assertTradingLimitsWithinCode } from '@clawville/shared';
 import { registerTradeVerifiedCallback } from './services/trade-observer';
 import {
@@ -500,6 +502,14 @@ app.route('/api/wallet', walletWithdrawRoutes);
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
 app.route('/api/admin/trading', adminTradingRoutes);
+// Trading Floor Arena (paper contest, docs/trading-floor-arena.md §5). Operator
+// routes use the admin-trading guard (session + moneyOperatorOnly).
+app.route('/api/admin/floor-arena', adminFloorArenaRoutes);
+// ORDER IS LOAD BEARING: mounted BEFORE '/api/floor'. The trading-floor router
+// registers `use('*', sessionMiddleware)` at '/api/floor/*', which also matches
+// '/api/floor/arena/*'. Registered first, the arena's public GETs answer before
+// that middleware can append a Set-Cookie to a `Cache-Control: public` body.
+app.route('/api/floor/arena', floorArenaRoutes);
 app.route('/api/floor', tradingFloorRoutes);
 app.route('/api/doordash', doordashRoutes);
 
@@ -889,6 +899,20 @@ process.on('uncaughtException', (err) => {
     startSessionSweeper();
   } catch (err) {
     console.error('[API] Session sweeper failed to start:', err);
+  }
+
+  // connect-sec round 4 (2026-10-01, Codex C4) — re-run the migration 0073
+  // UPDATE now and 15 minutes later. CI applies 0073 BEFORE the code flip, so an
+  // old container can write raw agent_session_tickets.identity_key rows until it
+  // stops. Fail-soft; one autocommit statement per run.
+  // See `services/session-ticket-identity-sweep.ts`.
+  try {
+    const { startSessionTicketIdentitySweep } = await import(
+      './services/session-ticket-identity-sweep'
+    );
+    startSessionTicketIdentitySweep();
+  } catch (err) {
+    console.error('[API] Session-ticket identity sweep failed to start:', err);
   }
 
   // 2026-06-12 — start the agent BODY idle-despawn sweeper. Runs every 1 min,
@@ -1640,6 +1664,16 @@ process.on('uncaughtException', (err) => {
     } catch (err) {
       console.error('[API] Trading Floor observer init failed (non-fatal):', err);
     }
+
+    // Trading Floor Arena engine (paper contest). Leader-locked inside the
+    // module; kill switch FLOOR_ARENA_ENGINE_ENABLED (default on).
+    try {
+      const { startFloorArena } = await import('./services/floor-arena');
+      startFloorArena();
+      console.log('[API] Trading Floor Arena engine start requested (leader election; see /api/admin/floor-arena/engine/state)');
+    } catch (err) {
+      console.error('[API] Trading Floor Arena engine init failed (non-fatal):', err);
+    }
   } catch (err) {
     console.error('[API] Activity portal init failed:', err);
   }
@@ -1835,6 +1869,12 @@ async function gracefulShutdown(signal: string) {
       stopTradingDrawdownPoller();
     } catch {
       // If the observer module failed to load earlier, there is nothing to stop.
+    }
+    try {
+      const { stopFloorArena } = await import('./services/floor-arena');
+      await stopFloorArena();
+    } catch {
+      // If the arena module failed to load earlier, there is nothing to stop.
     }
     try {
       const { worldPresenceWsHub } = await import(

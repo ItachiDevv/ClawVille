@@ -155,6 +155,29 @@ describe('identity fingerprint heal-on-reconnect', () => {
     expect(ids.size).toBe(4);
   });
 
+  test('a new user name never contains the identity key (security S4)', async () => {
+    const store = new MemoryIdentityStore();
+    const inserted: Array<{ name: string; identityFingerprint: string }> = [];
+    const insert = store.insert.bind(store);
+    store.insert = async (input) => {
+      inserted.push(input);
+      return insert(input);
+    };
+
+    // A short key (12 characters or less) was exposed in full by the old name.
+    // Non-hex leading characters, so the slice check cannot match a hex digest.
+    for (const key of ['shortkey', 'zyxwvutsrqponmlk-long-secret']) {
+      const result = await resolveOrCreateUserByIdentityWithStore('custom', key, store);
+      expect(result.isNewUser).toBe(true);
+      const fingerprint = identityFingerprint('custom', key);
+      const row = inserted.at(-1)!;
+      expect(row.identityFingerprint).toBe(fingerprint);
+      expect(row.name).toBe(`Agent ${fingerprint.slice(0, 12)}`);
+      expect(row.name).not.toContain(key.slice(0, 4));
+    }
+    expect(inserted).toHaveLength(2);
+  });
+
   test('partner-only identities never enter the legacy-probe path', async () => {
     const store = new MemoryIdentityStore();
     const result = await resolveOrCreateUserByIdentityWithStore('hatcher', 'partner-key', store);

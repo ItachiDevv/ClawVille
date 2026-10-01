@@ -1,6 +1,6 @@
 # Coupling registry schema
 
-Last Audited: 2026-09-22. Phase 1 contains the first fourteen coupling rules in the approved taxonomy.
+Last Audited: 2026-09-29. Phase 1 contains the first fourteen coupling rules in the approved taxonomy.
 Asset-version, animation, static-ban, CODEOWNERS, and later plan phases remain separate.
 
 Each coupling file has YAML frontmatter in its JSON subset, between `---` lines.
@@ -9,6 +9,8 @@ Required keys: `id`, `mechanism: coupling`, `owner`, `status: active`, `trigger`
 The filename must equal `<id>.md`. The original fourteen IDs must remain present.
 `trigger` is a nonempty array of repository-relative globs. Glob syntax permits `*`, `?`, and complete `**` segments.
 `requires` is a nonempty array of nonempty alternative groups. Groups use AND; paths within each group use OR.
+The CI runner rejects every active trigger or requires glob that matches no tracked file from `git ls-files`.
+When a file is created under a path a gate once listed (for example `apps/api/src/routes/portal/**` or `apps/api/src/services/cf-secrets-*`), re-add that glob in the same diff.
 A requirement needs different, nonempty resulting content in the evaluated diff. Deletions and unchanged files never qualify.
 
 Selectors: `any`; `architecture` (new route/service files, all other declared triggers); `new-env` (new literal env keys);

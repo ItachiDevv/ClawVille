@@ -8,6 +8,7 @@ auto-installs purchased skills as native Hermes skills under ~/.hermes/skills/.
 
 Usage:
   python3 clawville.py pair --magic-link <URL>
+  python3 clawville.py pair --self          # direct self-registration, no human account
   python3 clawville.py sync
   python3 clawville.py daemon              # SSE auto-install loop
   python3 clawville.py status
@@ -25,14 +26,21 @@ Usage:
   python3 clawville.py disconnect
 
 Stdlib only. Reads/writes ~/.hermes/clawville/state.json (chmod 0600).
+Every command prints exactly one JSON document to stdout.
+A first-connect wallet.secretKey is printed once to stdout for the human and
+is never written to state.json or any other file. `pair` stops before any
+request when stdout is a regular file. identity.secretKey is the
+agent's own credential: it is saved once and signs `reconnect`.
 """
 
 import argparse
+import hashlib
 import http.cookiejar
 import json
 import os
 import os.path
 import secrets
+import stat
 import sys
 import time
 import urllib.error
@@ -63,18 +71,26 @@ def _ensure_state_dir() -> None:
         pass
 
 
-def load_state() -> dict:
+def _read_state_file() -> dict:
     if not os.path.exists(STATE_FILE):
         return {}
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            state = json.load(f)
     except Exception:
         return {}
+    return state if isinstance(state, dict) else {}
+
+
+def load_state() -> dict:
+    state = _read_state_file()
+    _note_legacy_wallet_secret(state)
+    return state
 
 
 def save_state(state: dict) -> None:
     _ensure_state_dir()
+    state = _keep_unshown_legacy_secret(state)
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
@@ -215,7 +231,281 @@ def die(error: str, hint: str = "", code: int = 1) -> "None":
 
 
 def emit(payload) -> None:
+    """Print the one JSON result document of this run. An unshown legacy
+    wallet secret rides along in it once (never into a file), then leaves
+    state.json."""
+    global _legacy_recovery
+    shown = None
+    if _legacy_recovery and isinstance(payload, dict):
+        payload = dict(payload)
+        if _stdout_is_file():
+            payload["legacyWalletNotice"] = LEGACY_WALLET_SECRET_PENDING
+        else:
+            shown = _legacy_recovery
+            payload["legacyWalletNotice"] = LEGACY_WALLET_SECRET_NOTICE
+            payload["legacyWalletRecovery"] = _wallet_recovery(shown["address"], shown["secretKey"])
     sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+    if shown:
+        # Print before the save: if the save fails, the next run shows it again,
+        # which is better than removing the only copy before the human sees it.
+        sys.stdout.flush()
+        _legacy_shown.add(shown["secretKey"])
+        _legacy_recovery = None
+        save_state(_read_state_file())
+
+
+# ───────────────────────────────────────────────────────────────────────
+# One-time wallet secret (Phase 5.1): relay once to the human, never store
+# ───────────────────────────────────────────────────────────────────────
+
+WALLET_SECRET_MESSAGE = (
+    "SAVE THIS NOW. This is the secret key of your ClawVille avatar wallet "
+    "(your self-custody backup). It is shown once and is not stored: this "
+    "script does not save it, and ClawVille cannot show it again."
+)
+WALLET_SECRET_RELAY = (
+    "Show address, secretKey and message to your human one time, now. "
+    "Do not save secretKey in a file or in agent config. Do not log it."
+)
+LEGACY_WALLET_SECRET_NOTICE = (
+    "An older version of this script saved your wallet secret key in "
+    "state.json. This is the last time it is shown: the script removes it "
+    "from state.json right after this output."
+)
+LEGACY_WALLET_SECRET_PENDING = (
+    "An older version of this script saved your wallet secret key in "
+    "state.json. It is not shown here because stdout is a file, so it stays "
+    "in state.json. Run `clawville.py status` with stdout on a terminal or "
+    "pipe to show it once; the script then removes it."
+)
+# state.json key that keeps an unshown legacy wallet secret when a new pair
+# replaces the old `wallet` object.
+LEGACY_WALLET_KEY = "legacyWallet"
+
+# A first-connect wallet.secretKey, held in memory only until it is printed
+# once. It is never written to state.json or to any other file.
+_pending_wallet_recovery = None
+# An older wallet secret found in state.json and not shown yet in this run.
+_legacy_recovery = None
+# Older wallet secrets shown in this run. save_state removes them from state.json.
+_legacy_shown = set()
+
+
+def _stdout_is_file() -> bool:
+    """True when stdout goes to a regular file (the documented
+    `daemon > daemon.log`). A wallet secret must never go into a file."""
+    try:
+        return stat.S_ISREG(os.fstat(sys.stdout.fileno()).st_mode)
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _wallet_recovery(address, secret_key: str) -> dict:
+    return {
+        "message": WALLET_SECRET_MESSAGE,
+        "relay": WALLET_SECRET_RELAY,
+        "address": address,
+        "secretKey": secret_key,
+    }
+
+
+def _take_wallet_secret(body: dict) -> None:
+    """Remove a first-connect wallet.secretKey from the connect response and
+    hold it in memory, so no later step can save it. `_emit_pair_result`
+    prints it once."""
+    global _pending_wallet_recovery
+    wallet = body.get("wallet")
+    if isinstance(wallet, dict) and wallet.get("secretKey"):
+        secret_key = wallet.pop("secretKey")
+        _pending_wallet_recovery = _wallet_recovery(
+            wallet.get("address") or body.get("walletAddress"), secret_key
+        )
+
+
+def _emit_pair_result(summary: dict) -> None:
+    """Emit the pair result, with the held wallet secret attached one time."""
+    global _pending_wallet_recovery
+    if _pending_wallet_recovery:
+        summary["walletRecovery"] = _pending_wallet_recovery
+    emit(summary)
+    _pending_wallet_recovery = None
+
+
+def _find_legacy_wallet_secret(state: dict):
+    """Older magic-link pairs saved the whole connect `wallet` object, secret
+    included, in state.json and never showed the secret to the human. Return
+    the first such secret that this run has not shown, or None."""
+    for key in ("wallet", LEGACY_WALLET_KEY):
+        wallet = state.get(key)
+        if (isinstance(wallet, dict) and wallet.get("secretKey")
+                and wallet["secretKey"] not in _legacy_shown):
+            return {"address": wallet.get("address"), "secretKey": wallet["secretKey"]}
+    return None
+
+
+def _note_legacy_wallet_secret(state: dict) -> None:
+    """Hold an unshown legacy secret; `emit` shows it once in the one result
+    document of this run, and only when stdout is not a regular file."""
+    global _legacy_recovery
+    found = _find_legacy_wallet_secret(state)
+    if found:
+        _legacy_recovery = found
+
+
+def _keep_unshown_legacy_secret(state: dict) -> dict:
+    """Return the dict to write. A legacy secret shown in this run is removed.
+    An unshown one stays in state.json, also when a new pair replaces `wallet`,
+    so it is never lost before the human sees it."""
+    out = dict(state)
+    for key in ("wallet", LEGACY_WALLET_KEY):
+        wallet = out.get(key)
+        if isinstance(wallet, dict) and wallet.get("secretKey") in _legacy_shown:
+            if key == "wallet":
+                out[key] = {k: v for k, v in wallet.items() if k != "secretKey"}
+            else:
+                out.pop(key)
+    unshown = _find_legacy_wallet_secret(_read_state_file()) or _legacy_recovery
+    held = {w.get("secretKey") for w in (out.get("wallet"), out.get(LEGACY_WALLET_KEY))
+            if isinstance(w, dict)}
+    if unshown and unshown["secretKey"] not in held:
+        out[LEGACY_WALLET_KEY] = dict(unshown)
+    return out
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Identity key (agent's own credential): ed25519 (RFC 8032) + base58
+# ───────────────────────────────────────────────────────────────────────
+# Stdlib only. The server verifies with tweetnacl `nacl.sign.detached.verify`
+# over `bs58.decode(nonce)` against users.identity_pubkey. This follows the
+# RFC 8032 section 6 reference code; it is not constant-time, and it only signs
+# a one-time server nonce on the agent's own machine.
+
+_ED_P = 2 ** 255 - 19
+_ED_L = 2 ** 252 + 27742317777372353535851937790883648493
+_ED_D = -121665 * pow(121666, _ED_P - 2, _ED_P) % _ED_P
+_ED_GX = 15112221349535400772501151409588531511454012693041857206046113283949847762202
+_ED_GY = 4 * pow(5, _ED_P - 2, _ED_P) % _ED_P
+_ED_G = (_ED_GX, _ED_GY, 1, _ED_GX * _ED_GY % _ED_P)
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _ed_add(p1, p2):
+    """Point addition in extended coordinates (RFC 8032 section 6)."""
+    x1, y1, z1, t1 = p1
+    x2, y2, z2, t2 = p2
+    a = (y1 - x1) * (y2 - x2) % _ED_P
+    b = (y1 + x1) * (y2 + x2) % _ED_P
+    c = 2 * t1 * t2 * _ED_D % _ED_P
+    d = 2 * z1 * z2 % _ED_P
+    e, f, g, h = b - a, d - c, d + c, b + a
+    return (e * f % _ED_P, g * h % _ED_P, f * g % _ED_P, e * h % _ED_P)
+
+
+def _ed_mul(scalar: int, point):
+    result = (0, 1, 1, 0)
+    while scalar:
+        if scalar & 1:
+            result = _ed_add(result, point)
+        point = _ed_add(point, point)
+        scalar >>= 1
+    return result
+
+
+def _ed_compress(point) -> bytes:
+    x, y, z, _ = point
+    z_inv = pow(z, _ED_P - 2, _ED_P)
+    x, y = x * z_inv % _ED_P, y * z_inv % _ED_P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _ed_expand(seed: bytes):
+    digest = hashlib.sha512(seed).digest()
+    scalar = int.from_bytes(digest[:32], "little")
+    scalar &= (1 << 254) - 8
+    scalar |= 1 << 254
+    return scalar, digest[32:]
+
+
+def _ed25519_public_key(seed: bytes) -> bytes:
+    scalar, _ = _ed_expand(seed)
+    return _ed_compress(_ed_mul(scalar, _ED_G))
+
+
+def _ed25519_sign(seed: bytes, message: bytes) -> bytes:
+    """Detached ed25519 signature (64 bytes) of `message` with a 32-byte seed."""
+    scalar, prefix = _ed_expand(seed)
+    public_key = _ed_compress(_ed_mul(scalar, _ED_G))
+    r = int.from_bytes(hashlib.sha512(prefix + message).digest(), "little") % _ED_L
+    r_point = _ed_compress(_ed_mul(r, _ED_G))
+    k = int.from_bytes(hashlib.sha512(r_point + public_key + message).digest(), "little") % _ED_L
+    return r_point + ((r + k * scalar) % _ED_L).to_bytes(32, "little")
+
+
+def _b58encode(data: bytes) -> str:
+    n = int.from_bytes(data, "big")
+    out = ""
+    while n:
+        n, rem = divmod(n, 58)
+        out = _B58_ALPHABET[rem] + out
+    return "1" * (len(data) - len(data.lstrip(b"\0"))) + out
+
+
+def _b58decode(text: str) -> bytes:
+    n = 0
+    for ch in text:
+        index = _B58_ALPHABET.find(ch)
+        if index < 0:
+            raise ValueError("invalid base58 character")
+        n = n * 58 + index
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return b"\0" * (len(text) - len(text.lstrip("1"))) + body
+
+
+def _identity_seed(identity: dict) -> bytes:
+    """Return the ed25519 seed of the saved identity.secretKey (base58 of the
+    64-byte tweetnacl key: seed, then public key). Raise ValueError when the
+    key is malformed or does not match identity.publicKey."""
+    raw = _b58decode(str(identity["secretKey"]))
+    if len(raw) != 64:
+        raise ValueError("identity.secretKey is not a 64-byte ed25519 key")
+    seed, public_key = raw[:32], raw[32:]
+    if _ed25519_public_key(seed) != public_key:
+        raise ValueError("identity.secretKey is not a valid ed25519 key pair")
+    if identity.get("publicKey") and identity["publicKey"] != _b58encode(public_key):
+        raise ValueError("identity.secretKey does not match identity.publicKey")
+    return seed
+
+
+IDENTITY_MISMATCH_WARNING = (
+    "This connect returned a different identity than the identity.secretKey "
+    "saved by an earlier pair. The script kept the saved key, so `reconnect` "
+    "signs for the earlier account. Tell your human now."
+)
+
+
+def _keep_identity_secret(saved_state: dict, identity):
+    """identity.secretKey comes once per user; a returning connect omits it.
+    Never overwrite a saved secret with a response that has none (protocol
+    manual: do not overwrite your saved identity). Return (identity to save,
+    warning or None)."""
+    fresh = identity if isinstance(identity, dict) else {}
+    saved = saved_state.get("identity")
+    if fresh.get("secretKey") or not isinstance(saved, dict) or not saved.get("secretKey"):
+        return identity, None
+    for field in ("userId", "publicKey"):
+        if fresh.get(field) and saved.get(field) and fresh[field] != saved[field]:
+            return saved, IDENTITY_MISMATCH_WARNING
+    return saved, None
+
+
+def _relay_fields(summary: dict, body: dict, identity_warning) -> dict:
+    """Add what the agent must pass to its human: the single-use
+    sessionTicket.url control link, and an identity mismatch warning."""
+    if body.get("sessionTicket"):
+        summary["sessionTicket"] = body["sessionTicket"]
+    if identity_warning:
+        summary["identityWarning"] = identity_warning
+    return summary
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -283,7 +573,31 @@ if __name__ == "__main__":
 # Pairing — magic link + agent connect
 # ───────────────────────────────────────────────────────────────────────
 
+PAIR_STDOUT_FILE_HINT = (
+    "Run pair in a terminal or through a pipe; the wallet secret is shown "
+    "once and must not be written to a file."
+)
+
+
+def _refuse_pair_to_stdout_file() -> None:
+    """A first connect returns the one-time wallet.secretKey, and pair prints
+    it to stdout. When stdout is a regular file, stop before any request: no
+    secret exists yet, and the magic link or connect token stays unused."""
+    if _stdout_is_file():
+        die("stdout_is_file", PAIR_STDOUT_FILE_HINT)
+
+
 def cmd_pair(args):
+    try:
+        _pair(args)
+    finally:
+        # A step after the connect failed (network error, die()) before the
+        # result was printed: still show the one-time wallet secret.
+        if _pending_wallet_recovery:
+            _emit_pair_result({"ok": False})
+
+
+def _pair(args):
     """One-time pairing. Three modes:
       A) connect-token URL from the in-game "Connect Agent" modal:
          https://api.clawville.world/api/skills/connect?token=ct-xxx
@@ -297,6 +611,7 @@ def cmd_pair(args):
          + avatar for the agent based on its identity. This is the "open
          agent onboarding" path called out in the brand spec.
     """
+    _refuse_pair_to_stdout_file()
     # `--self` is declared optional on the parser; treat missing attr as False.
     if getattr(args, "self", False):
         return _pair_self(args)
@@ -330,34 +645,39 @@ def cmd_pair(args):
         if conn["status"] != 200:
             die("connect_failed", json.dumps(conn["body"]))
         body = conn["body"]
+        _take_wallet_secret(body)
         # Resolve user/avatar from the linked openclaw_bots row — the connect
         # response carries avatarId via state, but we also need the human-
         # facing email/avatarName for the success summary.
         sid = body["sessionId"]
         meta = _resolve_pair_metadata(sid, body)
+        saved = load_state()
+        identity, identity_warning = _keep_identity_secret(saved, body.get("identity"))
         state = {
             "userId": meta["userId"],
             "avatarId": meta["avatarId"],
             "avatarName": meta["avatarName"],
             "agentId": body["agentId"],
             "sessionId": sid,
+            # Keep a `pair --self` account credential from an earlier pair.
+            **({"identityKey": saved["identityKey"]} if saved.get("identityKey") else {}),
             "ownedSkills": body.get("ownedSkills", []),
             "gameTools": body.get("gameTools"),
-            "identity": body.get("identity"),
+            "identity": identity,
             "wallet": {"address": meta["walletAddress"]} if meta["walletAddress"] else None,
             "pairedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "pairedVia": "connect-token",
         }
         save_state(state)
         sync_owned(state)
-        emit({
+        _emit_pair_result(_relay_fields({
             "ok": True,
             "avatarName": state["avatarName"],
             "agentId": body["agentId"],
             "sessionId": sid,
             "ownedSkillCount": len(body.get("ownedSkills", [])),
             "pairedVia": "connect-token",
-        })
+        }, body, identity_warning))
         return
 
     if not magic_ticket or not magic_ticket.startswith("sess-"):
@@ -412,16 +732,23 @@ def cmd_pair(args):
         die("connect_failed", json.dumps(conn["body"]))
 
     body = conn["body"]
+    _take_wallet_secret(body)
+    # Store only the public wallet address, never the whole wallet object.
+    wallet_address = (body.get("wallet") or {}).get("address")
+    saved = load_state()
+    identity, identity_warning = _keep_identity_secret(saved, body.get("identity"))
     state = {
         "userId": user["id"],
         "avatarId": avatar_row["id"],
         "avatarName": avatar_row["name"],
         "agentId": body["agentId"],
         "sessionId": body["sessionId"],
+        # Keep a `pair --self` account credential from an earlier pair.
+        **({"identityKey": saved["identityKey"]} if saved.get("identityKey") else {}),
         "ownedSkills": body.get("ownedSkills", []),
         "gameTools": body.get("gameTools"),
-        "identity": body.get("identity"),
-        "wallet": body.get("wallet"),
+        "identity": identity,
+        "wallet": {"address": wallet_address} if wallet_address else None,
         "pairedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "pairedVia": "magic-link",
     }
@@ -431,18 +758,77 @@ def cmd_pair(args):
     # next prompt sees everything.
     sync_owned(state)
 
-    emit({
+    _emit_pair_result(_relay_fields({
         "ok": True,
         "avatarName": avatar_row["name"],
         "userEmail": user.get("email"),
         "agentId": body["agentId"],
         "sessionId": body["sessionId"],
         "ownedSkillCount": len(body.get("ownedSkills", [])),
-        "warning_about_secrets": (
-            "wallet.secretKey shown ONCE in this response — display to the user, do NOT log it. "
-            "After this pairing, only wallet.address is stored."
-        ) if body.get("wallet", {}).get("secretKey") else None,
-    })
+    }, body, identity_warning))
+
+
+def _pair_self(args):
+    """Flow C: direct self-registration (`pair --self`), no URL, no human account.
+
+    Sends a long random identityKey on the FIRST connect (protocol manual §1),
+    so the server binds this agentId to the account derived from that key. The
+    key is the account credential: it is saved to state.json (0600) BEFORE the
+    request, so a lost response cannot orphan the agentId, and every later
+    `pair --self` reuses it. Never log or print it.
+    """
+    _refuse_pair_to_stdout_file()
+    state = load_state()
+    identity_key = state.get("identityKey")
+    if not identity_key:
+        identity_key = secrets.token_urlsafe(32)
+        state["identityKey"] = identity_key
+        save_state(state)
+
+    conn = _request_json(
+        "POST",
+        "/api/agent/connect",
+        body={
+            "agentId": _stable_hermes_agent_id(),
+            "identityType": "hermes",
+            "identityKey": identity_key,
+            # Internal self-managed pull wire; not an identity type.
+            "protocol": "nanoclaw",
+            "name": "hermes",
+        },
+    )
+    if conn["status"] != 200:
+        die("connect_failed", json.dumps(conn["body"]))
+    body = conn["body"]
+    _take_wallet_secret(body)
+    sid = body["sessionId"]
+    meta = _resolve_pair_metadata(sid, body)
+    # A reconnect omits identity.secretKey; keep the one saved at first pair.
+    identity, identity_warning = _keep_identity_secret(state, body.get("identity"))
+    state = {
+        "userId": meta["userId"],
+        "avatarId": meta["avatarId"],
+        "avatarName": meta["avatarName"],
+        "agentId": body["agentId"],
+        "sessionId": sid,
+        "identityKey": identity_key,
+        "ownedSkills": body.get("ownedSkills", []),
+        "gameTools": body.get("gameTools"),
+        "identity": identity,
+        "wallet": {"address": meta["walletAddress"]} if meta["walletAddress"] else None,
+        "pairedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "pairedVia": "self",
+    }
+    save_state(state)
+    sync_owned(state)
+    _emit_pair_result(_relay_fields({
+        "ok": True,
+        "avatarName": state["avatarName"],
+        "agentId": body["agentId"],
+        "sessionId": sid,
+        "ownedSkillCount": len(body.get("ownedSkills", [])),
+        "pairedVia": "self",
+    }, body, identity_warning))
 
 
 def _resolve_pair_metadata(sid: str, body: dict) -> dict:
@@ -477,21 +863,84 @@ def cmd_status(args):
     })
 
 
+RECONNECT_WAYS_BACK = (
+    "Two ways back: (1) run the signed /api/agent/reconnect from a client that "
+    "holds this account's identity.secretKey; (2) ask the owner for a fresh "
+    "magic link from the ClawVille game UI, then run "
+    "`clawville.py pair --magic-link <URL>`."
+)
+
+
 def cmd_reconnect(args):
+    """Signed-challenge reconnect (protocol manual: GET /api/agent/challenge,
+    then POST /api/agent/reconnect { userId, nonce, signature } with a base58
+    ed25519 signature over the raw decoded nonce). The saved identity.secretKey
+    proves the account; no session bearer is sent. Saves the fresh sessionId."""
     state = load_state()
-    if not state.get("identity", {}).get("secretKey"):
+    identity = state.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    user_id = identity.get("userId") or state.get("userId")
+    if not identity.get("secretKey") or not user_id:
         die("no_identity_keypair",
-            "Cannot reconnect without the identity secret saved at pair time. Run `pair` again.")
-    # TODO: the signed-challenge reconnect requires ed25519 sign() — Python
-    # stdlib has no ed25519. For now, surface the error so the agent does
-    # `pair` again. (Future: bundle nacl shim or shell out to `openssl`.)
-    die("reconnect_not_implemented",
-        "Signed-challenge reconnect needs ed25519 (not in stdlib). Re-pair with a fresh magic link.")
+            "This install has no saved identity.secretKey, so it cannot sign "
+            "/api/agent/reconnect. " + RECONNECT_WAYS_BACK)
+    try:
+        seed = _identity_seed(identity)
+    except ValueError as e:
+        die("identity_key_invalid", f"{e}. {RECONNECT_WAYS_BACK}")
+
+    challenge = _request_json("GET", "/api/agent/challenge")
+    nonce = challenge["body"].get("nonce") if isinstance(challenge["body"], dict) else None
+    if challenge["status"] != 200 or not isinstance(nonce, str) or not nonce:
+        die("challenge_failed", json.dumps({"status": challenge["status"], "body": challenge["body"]}))
+    try:
+        nonce_bytes = _b58decode(nonce)
+    except ValueError:
+        die("challenge_failed", "The server nonce is not base58.")
+    signature = _b58encode(_ed25519_sign(seed, nonce_bytes))
+
+    conn = _request_json("POST", "/api/agent/reconnect",
+                         body={"userId": user_id, "nonce": nonce, "signature": signature})
+    if conn["status"] != 200:
+        die("reconnect_failed", json.dumps({"status": conn["status"], "body": conn["body"]}))
+    body = conn["body"] if isinstance(conn["body"], dict) else {}
+    # /reconnect never returns a wallet secret; if one ever comes, it is
+    # shown once and not stored, like on pair.
+    _take_wallet_secret(body)
+    sid = body.get("sessionId")
+    if sid:
+        state["sessionId"] = sid
+        state["sessionExpiresAt"] = body.get("expiresAt")
+    state["userId"] = user_id
+    if body.get("avatarId"):
+        state["avatarId"] = body["avatarId"]
+    wallet_address = (body.get("wallet") or {}).get("address")
+    if wallet_address:
+        state["wallet"] = {"address": wallet_address}
+    state["reconnectedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    save_state(state)
+
+    summary = _relay_fields({
+        "ok": bool(sid),
+        "sessionId": sid,
+        "expiresAt": body.get("expiresAt"),
+        "dormant": bool(body.get("dormant")),
+    }, body, None)
+    if not sid:
+        summary["hint"] = (
+            "The server accepted the signature but minted no agent session "
+            "(no agent row for this account, or a mint failure). Run "
+            "`clawville.py reconnect` again. If it repeats: " + RECONNECT_WAYS_BACK
+        )
+    _emit_pair_result(summary)
+    if not sid:
+        sys.exit(2)
 
 
 def cmd_disconnect(args):
     die("disconnect_not_implemented",
-        "Signed disconnect needs ed25519. Sessions self-expire after 24h idle.")
+        "This script does not implement the signed /api/agent/disconnect yet. "
+        "Sessions self-expire after 24h idle.")
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -774,12 +1223,12 @@ def cmd_tool(args):
 # ───────────────────────────────────────────────────────────────────────
 
 def main():
-    ap = argparse.ArgumentParser(prog="clawville", description="ClawVille → Hermes integration")
+    ap = argparse.ArgumentParser(prog="clawville", description="ClawVille to Hermes integration")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("pair", help="One-time pairing via Connect Agent URL.")
-    p.add_argument("--magic-link", required=False, help="Connect URL from the in-game modal (Moltbook flow) — https://api.clawville.world/api/skills/connect?token=ct-... OR magic-link https://clawville.world/enter?t=sess-...")
-    p.add_argument("--self", action="store_true", help="Direct agent self-registration — no URL, no human account, server auto-mints user+avatar.")
+    p.add_argument("--magic-link", required=False, help="Connect URL from the in-game modal (Moltbook flow): https://api.clawville.world/api/skills/connect?token=ct-... OR magic-link https://clawville.world/enter?t=sess-...")
+    p.add_argument("--self", action="store_true", help="Direct agent self-registration: no URL, no human account, server auto-mints user+avatar.")
     p.set_defaults(func=cmd_pair)
 
     p = sub.add_parser("status", help="Show current session + ownership.")
@@ -788,7 +1237,7 @@ def main():
     p = sub.add_parser("sync", help="Re-pull owned skills + game tools, write to ~/.hermes/skills/.")
     p.set_defaults(func=cmd_sync)
 
-    p = sub.add_parser("daemon", help="Background SSE listener — auto-installs purchased skills.")
+    p = sub.add_parser("daemon", help="Background SSE listener: auto-installs purchased skills.")
     p.set_defaults(func=cmd_daemon)
 
     p = sub.add_parser("shop", help="List books at a building.")
@@ -799,7 +1248,7 @@ def main():
     p.add_argument("item_id")
     p.set_defaults(func=cmd_buy)
 
-    p = sub.add_parser("read", help="Read a book — triggers auto-install if daemon is running.")
+    p = sub.add_parser("read", help="Read a book: triggers auto-install if daemon is running.")
     p.add_argument("book_id")
     p.set_defaults(func=cmd_read)
 
@@ -833,10 +1282,10 @@ def main():
     p.add_argument("--json", default="{}", help="JSON input for the tool (default: {}).")
     p.set_defaults(func=cmd_tool)
 
-    p = sub.add_parser("reconnect", help="Re-establish session via signed challenge.")
+    p = sub.add_parser("reconnect", help="Get a fresh session with the saved identity key (signed /api/agent/reconnect).")
     p.set_defaults(func=cmd_reconnect)
 
-    p = sub.add_parser("disconnect", help="Clean shutdown via signed nonce.")
+    p = sub.add_parser("disconnect", help="Not implemented yet: sessions self-expire after 24h idle.")
     p.set_defaults(func=cmd_disconnect)
 
     args = ap.parse_args()

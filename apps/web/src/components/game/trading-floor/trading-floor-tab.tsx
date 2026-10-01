@@ -7,6 +7,7 @@ import {
   TRADING_FLOOR_RULES,
 } from '@clawville/shared';
 
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar } from '@/hooks/use-avatar';
 import {
   floorErrorCode,
@@ -28,6 +29,7 @@ import {
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { ApiError } from '@/lib/api';
 import { hasSolanaWallet } from '@/lib/solana-wallet';
+import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 import { useTradeTickerStore } from '@/stores/trade-ticker';
 import { useWorldStreamStore } from '@/stores/world-stream-state';
 import {
@@ -37,7 +39,7 @@ import {
   tradeAgeLabel,
   unscoredReasonCopy,
 } from './format';
-import { ClawPumpTemplatesSection } from './clawpump-templates';
+import { FloorArenaSection } from './arena/arena-section';
 import { HouseTradersSection } from './house-traders';
 import { floorStatusCopy } from './floor-tape';
 import { TapeRow } from './trade-row';
@@ -51,7 +53,8 @@ import {
 export interface TradingFloorTabProps {
   active: boolean;
   isGuest: boolean;
-  onGuestBlocked: () => void;
+  /** `'arena'` asks for the paper-arena wording of the sign-up prompt. */
+  onGuestBlocked: (variant?: 'arena') => void;
 }
 
 const cardStyle = {
@@ -86,6 +89,38 @@ const WALLET_SOURCE_LABELS: Record<TradingWallet['source'], string> = {
   custodial: 'In-game wallet',
   signed: 'Signed wallet',
 };
+
+/**
+ * Where "Start a ClawPump trader" used to sit. Launching a trader now happens
+ * in the arena at the top of this tab, so this card only points there. It
+ * keeps the `clawpump-templates` id because the house traders panel above
+ * links to it ("Start your own below").
+ */
+function ArenaLaunchEntry({ isGuest, onGuestBlocked }: { isGuest: boolean; onGuestBlocked: (variant?: 'arena') => void }) {
+  const hasTrader = useFloorArenaUi((state) => state.myAgent === 'present');
+  const openLaunch = () => {
+    if (isGuest) {
+      onGuestBlocked('arena');
+      return;
+    }
+    useFloorArenaUi.getState().showPanel(hasTrader ? 'desk' : 'launch', { templateId: null });
+    if (typeof document !== 'undefined') {
+      document.getElementById('floor-arena')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    }
+  };
+  return (
+    <section id="clawpump-templates" style={cardStyle} data-testid="arena-launch-entry">
+      <CardTitle>Start your own trader</CardTitle>
+      <p style={{ margin: '0 0 10px', color: FLOOR_TEXT.muted, fontSize: 12 }}>
+        Your own trader runs in the Trading Arena at the top of this tab. Start from any of the five house agents, change
+        its rules, and trade on paper while it sits at a desk.
+      </p>
+      <button type="button" onClick={openLaunch} style={buttonStyle}>
+        {hasTrader ? 'Open my trader' : 'Launch your trader'}
+      </button>
+    </section>
+  );
+}
 
 function walletSourceLabel(source: TradingWallet['source']): string {
   return WALLET_SOURCE_LABELS[source];
@@ -230,13 +265,20 @@ export function TradingFloorTab({
 }: TradingFloorTabProps) {
   const { nowMs } = useFloorConsumer(active);
   const feed = useFloorFeed(active);
-  const myTrades = useMyTrades(active && !isGuest);
-  const wallets = useMyTradingWallets(active && !isGuest);
+  // The three personal reads below answer a guest or a logged-out visitor with
+  // 401 (a red console error). `isGuest` comes from useIsGuest(), which reads
+  // false while auth-me is still loading, so also wait for auth-me to resolve.
+  // A resolved payload (a user, or null for a confirmed 401) counts; a failed
+  // first read with no payload already makes useIsGuest() true.
+  const authResolved = useAuthMe().data !== undefined;
+  const ownReads = active && authResolved && !isGuest;
+  const myTrades = useMyTrades(ownReads);
+  const wallets = useMyTradingWallets(ownReads);
   const stream = useFloorStreamState();
   const streamHasOpened = useWorldStreamStore((state) => state.hasOpened);
   const entries = useTradeTickerStore((state) => state.entries);
   const seedTrades = useTradeTickerStore((state) => state.seedTrades);
-  const linkedWallet = useWalletLink();
+  const linkedWallet = useWalletLink({ enabled: ownReads });
   const { data: avatar } = useAvatar();
   const bindLinked = useBindLinkedWallet();
   const bindCustodial = useBindCustodialWallet();
@@ -259,7 +301,7 @@ export function TradingFloorTab({
   const custodialAddress = (avatar as { walletAddress?: string | null } | undefined)
     ?.walletAddress;
   const canReport = signature.trim().length >= 64 && signature.trim().length <= 128;
-  const status = floorStatusCopy(stream, feed.data?.observer, streamHasOpened);
+  const status = floorStatusCopy(stream, feed.data?.observer, streamHasOpened, feed.isError);
   const generatedAge = useMemo(() => {
     if (!feed.data?.generatedAt) return null;
     const seconds = Date.parse(feed.data.generatedAt) / 1_000;
@@ -322,6 +364,8 @@ export function TradingFloorTab({
         color: FLOOR_TEXT.primary,
       }}
     >
+      <FloorArenaSection active={active} isGuest={isGuest} onGuestBlocked={() => onGuestBlocked('arena')} />
+
       <header style={cardStyle}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 10 }}>
           <div>
@@ -543,7 +587,7 @@ export function TradingFloorTab({
         <CardTitle>Your verified trades</CardTitle>
         {isGuest ? (
           <p style={{ color: FLOOR_TEXT.muted }}>Sign in to see avatar-wide verified history.</p>
-        ) : myTrades.isLoading ? (
+        ) : myTrades.isLoading || !authResolved ? (
           <p style={{ color: FLOOR_TEXT.muted }}>Loading verified trades...</p>
         ) : (myTrades.data?.trades.length ?? 0) === 0 ? (
           <p style={{ color: FLOOR_TEXT.muted }}>No verified trades yet.</p>
@@ -599,7 +643,7 @@ export function TradingFloorTab({
 
       <HouseTradersSection active={active} />
 
-      <ClawPumpTemplatesSection />
+      <ArenaLaunchEntry isGuest={isGuest} onGuestBlocked={onGuestBlocked} />
 
       {TRADING_FLOOR_GUARDRAIL_LINES.length > 0 || TRADING_FLOOR_RULES.executionWhitelist !== null ? (
         <section style={cardStyle}>

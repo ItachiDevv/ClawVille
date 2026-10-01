@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve, dirname, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { collectChanges, evaluate, eventRange, git, loadRegistry, parseGate, PROTOCOL, REQUIRED_IDS, type Change } from './run-coupling-gates';
+import { collectChanges, evaluate, eventRange, findDeadGlobs, git, loadRegistry, parseGate, PROTOCOL, REQUIRED_IDS, type Change, type Gate } from './run-coupling-gates';
 
 const root = resolve(import.meta.dir, '../..');
 const gates = loadRegistry(root);
@@ -16,6 +16,20 @@ const serialize = (value: unknown) => `---\n${JSON.stringify(value)}\n---\nRule.
 const shaA = 'a'.repeat(40); const shaB = 'b'.repeat(40);
 
 describe('coupling registry and changed-content contracts', () => {
+  test('dead-glob guard reports each unmatched trigger and requirement', () => {
+    const fixture: Gate = {
+      id: 'fixture', mechanism: 'coupling', owner: 'fixture', status: 'active',
+      trigger: ['src/live.ts', 'src/dead-*.ts'],
+      requires: [['docs/live.md', 'docs/dead.md'], ['docs/missing/**']], selector: 'any',
+    };
+    const files = ['src/live.ts', 'docs/live.md'];
+    expect(findDeadGlobs([fixture], files)).toEqual([
+      { gateId: 'fixture', kind: 'trigger', glob: 'src/dead-*.ts' },
+      { gateId: 'fixture', kind: 'requires', glob: 'docs/dead.md' },
+      { gateId: 'fixture', kind: 'requires', glob: 'docs/missing/**' },
+    ]);
+    expect(findDeadGlobs([fixture], [...files, 'src/dead-file.ts', 'docs/dead.md', 'docs/missing/item.md'])).toEqual([]);
+  });
   test('all fourteen declared contracts are active and every required group matters', () => {
     expect(gates).toHaveLength(14);
     for (const gate of gates) {

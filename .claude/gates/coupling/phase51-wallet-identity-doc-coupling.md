@@ -6,8 +6,7 @@
   "status": "active",
   "trigger": [
     "apps/api/src/routes/portal.ts",
-    "apps/api/src/routes/portal/**",
-    "apps/api/src/services/cf-secrets-*.ts",
+    "infra/cf-secrets-worker/**",
     "apps/api/src/services/service-issuer.ts",
     "apps/api/src/services/auth-challenge.ts",
     "apps/api/src/services/identity-service.ts",

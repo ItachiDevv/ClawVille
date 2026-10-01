@@ -61,6 +61,8 @@ jobs:
         env:
           COUPLING_BASE_SHA: ${{ inputs.coupling-base-sha }}
         run: bun scripts/ci/run-coupling-gates.ts --github
+      - name: Check canonical doc paths
+        run: bun test scripts/ci/check-doc-paths.test.ts && bun scripts/ci/check-doc-paths.ts
 
   web-tests:
     name: web Trading Floor tests
@@ -132,6 +134,18 @@ jobs:
           src/stores/__tests__/npc-place-player.test.ts
           src/components/game/__tests__/spawn-on-load-route-exit.test.ts
           src/lib/__tests__/hud-short-touch.test.ts
+          src/lib/site-url.test.ts
+          src/hooks/use-floor-arena.test.tsx
+          src/components/game/trading-floor/arena/arena-panels.test.tsx
+          src/lib/three/trading-floor/trading-floor-asset.test.ts
+          src/lib/three/trading-floor/trading-floor-exit-intent.test.ts
+          src/lib/three/trading-floor/trading-floor-exit-spawn.test.ts
+          src/lib/three/trading-floor/trading-floor-monitor.test.ts
+          src/lib/three/trading-floor/trading-floor-room.test.ts
+          src/lib/three/trading-floor/trading-floor-screen-texture.test.ts
+          src/lib/three/trading-floor/trading-floor-seats.test.ts
+          src/lib/three/trading-floor/trading-floor-trade-tape.test.ts
+          src/lib/three/trading-floor/trading-floor-walk-in.test.ts
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process
@@ -196,7 +210,7 @@ jobs:
         shell: bash
         run: |
           cd apps/api
-          mapfile -d '' files < <(find src/services/poker src/services/__tests__ -name '*.test.ts' -print0 | sort -z)
+          mapfile -d '' files < <(find src/services/poker src/services/__tests__ src/services/floor-arena -name '*.test.ts' -print0 | sort -z)
           test "${#files[@]}" -gt 0
           shared=()
           isolated=()
@@ -250,6 +264,13 @@ jobs:
         # of CI for now — it is NOT green without env/DB (FINGERPRINT_SECRET,
         # DATABASE_URL) and remains Phase 0b.
         run: cd apps/api && bun test src/routes/__tests__/agent-paid-surface.test.ts src/routes/__tests__/agent-session-ack.test.ts src/routes/__tests__/dashboard-skill-acks.test.ts
+
+      - name: Run the agent-session owner-proof middleware suite in its own process
+        # connect-sec round 4 (C10): no other lane covers src/middleware/__tests__.
+        # This file uses mock.module (process-global), so it gets its own bun
+        # process. The DB is mocked and the file sets its own FINGERPRINT_SECRET
+        # fixture; DATABASE_URL stays unset, as in the steps above.
+        run: cd apps/api && bun test src/middleware/__tests__/require-auth-or-agent-owner-proof.test.ts
 
   # Phase 0b uses a separate job and Bun process to avoid cross-file singleton
   # pollution. The in-memory lane stays guaranteed-green and required; this lane
@@ -321,13 +342,24 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        run: cd apps/api && bun test src/services/__tests__/trading-migrations-db.test.ts src/services/__tests__/trade-observer.test.ts
+        run: cd apps/api && bun test src/services/__tests__/trading-migrations-db.test.ts src/services/__tests__/trade-observer.test.ts src/services/__tests__/floor-arena-queries.db.test.ts src/services/__tests__/floor-arena-analysis-store.db.test.ts
 
       - name: Run the wager abort-recovery DB tests (real sweep, close and watch SQL)
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: cd apps/api && bun test src/services/activity/__tests__/wager-lobby-bridge.db.test.ts
+
+      - name: Run the connect-sec DB tests (redemption bind SQL, 0073 digest parity)
+        # One process per file: the bind test pins the pool to one connection
+        # (DB_POOL_MAX=1) so its America/New_York session time zone holds.
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          cd apps/api
+          bun test src/services/__tests__/agent-redemption-bind.db.test.ts
+          bun test src/services/__tests__/session-ticket-identity-hash.db.test.ts
 
       - name: Seed the canonical land parcel grid
         # land DB-contract tests pick real parcels; idempotent 56-row seed,

@@ -1,10 +1,10 @@
-# ClawVille Brand Language — Keeper Phrases
+# ClawVille Brand Language: Keeper Phrases
 
-> Living file. Phrases the founder has locked as brand language. Use them verbatim where they
-> fit; never water them down. Started 2026-07-21 (roadmap copy session).
+> Living file. Locked brand phrases. Use them verbatim where they
+> fit; never water them down.
 > Writing rule that governs everything here: NO EM DASHES in outward copy (AI tell).
 
-## Keeper B — "The Agent Passport"
+## Keeper B: "The Agent Passport"
 
 **Phrase:** The Agent Passport
 
@@ -13,7 +13,7 @@
 **Use for:** portability, identity, reputation, anything about an agent carrying value out of
 ClawVille. Works as a product name, a section title, a one-line pitch.
 
-## Keeper C — "Home base, not a cage"
+## Keeper C: "Home base, not a cage"
 
 **Phrase:** ClawVille is home base, not a cage.
 
@@ -21,9 +21,9 @@ ClawVille. Works as a product name, a section title, a one-line pitch.
 keep who they are.
 
 **Use for:** the definitive explanation of what ClawVille actually is. The anti-walled-garden
-positioning. Founder: "C is the legitimate, perfect explanation of what we actually are."
+positioning.
 
-## Combined usage (roadmap card, approved 2026-07-21)
+## Combined usage (roadmap card)
 
 Title: The Agent Passport
 Copy: Portable agent identity, attested reputation, and cross-network settlement, built on

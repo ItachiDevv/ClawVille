@@ -16,15 +16,21 @@
  *   - clv           — the full ClvBalanceResult, or null
  *   - clvUiAmount   — human CLV amount, or null when the on-chain read failed
  *   - clvAvailable  — whether the balance read succeeded
+ *
+ * `enabled` (default true) lets a caller skip the read for a viewer the route
+ * always refuses: GET /api/wallet/link answers a guest or a logged-out visitor
+ * with 401, which the browser logs as a console error (Trading Floor tab,
+ * browser verify 2026-10-01 F1).
  */
 
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-export function useWalletLink() {
+export function useWalletLink({ enabled = true }: { enabled?: boolean } = {}) {
   const query = useQuery({
     queryKey: ['wallet-link'],
     queryFn: api.getWalletLink,
+    enabled,
     retry: false,
     staleTime: 60_000,
   });

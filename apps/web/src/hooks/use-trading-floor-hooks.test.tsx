@@ -19,6 +19,7 @@ import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 
 import {
+  FLOOR_FEED_POLL_MS,
   HOUSE_TRADERS_POLL_MS,
   getFloorClockDiagnosticsForTest,
   resetFloorClockForTest,
@@ -192,6 +193,53 @@ describe('Trading Floor reconnect feed', () => {
     await act(async () => useWorldStreamStore.getState().setStreamState('live'));
     await flush();
     expect(fetchCount).toBe(2);
+  });
+
+  // A cold /trading-floor load never opens the world stream, so the poll is
+  // the floor's only refresh there; with a live stream (/game) it stays off.
+  test('the feed polls while the stream is not live and stops once it is', async () => {
+    jest.useFakeTimers();
+    focusManager.setFocused(true);
+    const originalIsServer = environmentManager.isServer();
+    // See "House trader polling" below: query-core snapshots isServer at
+    // module load, before this harness installs window.
+    environmentManager.setIsServer(() => false);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    queryClients.add(client);
+    try {
+      await mount(createElement(QueryClientProvider, { client }, createElement(Feed)));
+      await flush();
+      expect(fetchCount).toBe(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(FLOOR_FEED_POLL_MS + 100);
+      });
+      await flush();
+      expect(fetchCount).toBe(2);
+
+      // The first live: no reconnect refetch (hasOpened only), and no poll.
+      await act(async () => useWorldStreamStore.getState().setStreamState('live'));
+      await flush();
+      const whenLive = fetchCount;
+      await act(async () => {
+        jest.advanceTimersByTime(FLOOR_FEED_POLL_MS * 3);
+      });
+      await flush();
+      expect(fetchCount).toBe(whenLive);
+    } finally {
+      await act(async () => {
+        await client.cancelQueries();
+        client.clear();
+        await Promise.resolve();
+      });
+      if (root) await act(async () => root?.unmount());
+      container?.remove();
+      root = null;
+      container = null;
+      focusManager.setFocused(undefined);
+      environmentManager.setIsServer(() => originalIsServer);
+      jest.useRealTimers();
+    }
   });
 
   test('disabled feed ignores reconnect generations', async () => {

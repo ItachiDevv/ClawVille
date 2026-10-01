@@ -7,15 +7,19 @@
  * WITHOUT dragging in the agent-gateway route graph (which throws at module
  * load when FINGERPRINT_SECRET is unset) or the DB. Three consumers share the
  * SAME predicates instead of re-implementing them:
- *   - `routes/auth.ts` GET /enter        — the SQL bind guard mirrors
- *     `canBindAgentOwner` (the WHERE clause is the atomic enforcement; this
- *     predicate is the testable statement of it).
+ *   - `services/agent-redemption-bind.ts` (called by `routes/auth.ts` GET
+ *     /enter): its two guarded UPDATEs (`user_id IS NULL`, then
+ *     `user_id = <redeemer>`) mirror `canBindAgentOwner` (the WHERE clauses
+ *     are the atomic enforcement; this predicate is the testable statement).
  *   - `services/npc-simulation.ts` `bindAgentOwner` — the in-memory config
  *     bind obeys the same never-clobber rule.
  *   - `routes/agent-gateway.ts` GET /:sessionId/status — `sessionLedgerCapable`
  *     mirrors the grant condition `resolveAgentSession` enforces at spend time,
  *     and `buildAgentStatusResponse` mechanically nulls stats/ownership for
  *     unbound sessions (Rule E5 honesty — a demo session never shows real CT).
+ * The connect paths (`agent-gateway.ts` POST /connect, `openclaw.ts` POST
+ * /register) also share `connectRequiresOwnerCredential` (2026-09-30), and
+ * POST /connect uses `connectTokenOwnedByOtherAccount` (2026-09-30).
  */
 
 /**
@@ -23,8 +27,9 @@
  * `currentOwnerUserId`? TRUE only when the row is unowned (null) or already
  * owned by the SAME user (idempotent re-bind, the returning scenario). A
  * DIFFERENT existing owner is NEVER clobbered — the caller skips the bind and
- * warns. Mirrors the atomic SQL guard
- * `WHERE user_id IS NULL OR user_id = <redeemer>` in `GET /api/auth/enter`.
+ * warns. Mirrors the atomic SQL guards of `bindAgentOwnerAtRedemption`
+ * (`services/agent-redemption-bind.ts`, called by `GET /api/auth/enter`): a
+ * first bind `WHERE user_id IS NULL`, else a re-affirm `WHERE user_id = <redeemer>`.
  */
 export function canBindAgentOwner(
   currentOwnerUserId: string | null,
@@ -64,7 +69,10 @@ export function buildReturningIdentityDisclosure(userId: string, publicKey: stri
 export interface ConnectOwnerBindingPlan {
   /** The user id that must be written to `openclaw_bots.user_id`. */
   persistedUserId: string | null;
-  /** True when a supplied identity credential resolves to a different owner. */
+  /**
+   * True when a supplied credential (an identityKey, or since 2026-09-30 a
+   * connection token) resolves to a different owner than the row's.
+   */
   identityMismatch: boolean;
   /** The owner this request actually proved; copied into the session config. */
   boundUserId: string | null;
@@ -115,11 +123,14 @@ export function resolvePersistedConnectOwnerProof(inputs: {
 /**
  * Plan the owner write for `POST /api/agent/connect` without touching the DB.
  *
- * An owned connection token remains the strongest proof and retains its legacy
- * rebind behavior. A caller-supplied `identityKey` may bind an unowned row or
- * prove the same owner, but it must never clobber a different non-null owner.
- * Bare `agentId` knowledge is not represented here because it is public and is
- * never an ownership credential.
+ * An owned connection token remains the strongest proof, but only for an
+ * unowned row or a row its own user already owns. A token for a DIFFERENT
+ * existing owner never moves the row (security 2026-09-30; the route refuses
+ * it first with `409 agent_owned_by_other_account`): the plan keeps the
+ * existing owner, proves nothing and reports the mismatch. A caller-supplied
+ * `identityKey` may bind an unowned row or prove the same owner, but it must
+ * never clobber a different non-null owner. Bare `agentId` knowledge is not
+ * represented here because it is public and is never an ownership credential.
  */
 export function planConnectOwnerBinding(inputs: {
   existingUserId: string | null;
@@ -127,14 +138,20 @@ export function planConnectOwnerBinding(inputs: {
   identityKeyUserId: string | null;
   activeAvatarId: string | null;
 }): ConnectOwnerBindingPlan {
+  const tokenMismatch = connectTokenOwnedByOtherAccount({
+    existingUserId: inputs.existingUserId,
+    tokenUserId: inputs.tokenUserId,
+  });
   const identityMismatch =
-    inputs.tokenUserId === null &&
-    inputs.identityKeyUserId !== null &&
-    inputs.existingUserId !== null &&
-    inputs.existingUserId !== inputs.identityKeyUserId;
+    tokenMismatch || (
+      inputs.tokenUserId === null &&
+      inputs.identityKeyUserId !== null &&
+      inputs.existingUserId !== null &&
+      inputs.existingUserId !== inputs.identityKeyUserId
+    );
 
   const acceptedIdentityUserId = identityMismatch ? null : inputs.identityKeyUserId;
-  const provenUserId = inputs.tokenUserId ?? acceptedIdentityUserId;
+  const provenUserId = tokenMismatch ? null : inputs.tokenUserId ?? acceptedIdentityUserId;
   const persistedUserId = provenUserId ?? inputs.existingUserId;
   const boundUserId =
     provenUserId !== null && provenUserId === persistedUserId ? provenUserId : null;
@@ -146,6 +163,71 @@ export function planConnectOwnerBinding(inputs: {
     ledgerCapable: boundUserId !== null && inputs.activeAvatarId !== null,
     ownershipChanged: persistedUserId !== inputs.existingUserId,
   };
+}
+
+export const OWNER_CREDENTIAL_REQUIRED_CODE = 'owner_credential_required' as const;
+
+/**
+ * Generic 409 body: no owner data, never echoes a caller credential. The text
+ * names each path that works per agent type (connect-sec round 4): a Milady
+ * identityKey resolves no identity (`resolveIdentityForTicket` returns null),
+ * so a Milady agent recovers only through the signed reconnect or a new
+ * magic link from its owner.
+ */
+export const OWNER_CREDENTIAL_REQUIRED_BODY = Object.freeze({
+  error:
+    'This agentId already has an owner. Reconnect with an owner credential: your identityKey on /api/agent/connect '
+    + '(every agent type except Milady), a new magic-link connection token from the owning account, or the signed '
+    + '/api/agent/reconnect with your saved identity.secretKey. A Milady agent has no identityKey: use the signed '
+    + '/api/agent/reconnect, or ask the owner for a new magic link.',
+  code: OWNER_CREDENTIAL_REQUIRED_CODE,
+});
+
+/**
+ * Must a connect to an existing row be refused for lack of an owner credential?
+ * TRUE when the row already has an owner and the request carries neither an
+ * owned connection token nor a resolved identityKey. A public agentId is not an
+ * ownership credential: a credentialless re-register of an owned row used to
+ * rotate the row's bearer hash and move the body, which evicted the owner's
+ * live session. Unowned rows keep the anonymous model (no credential exists).
+ */
+export function connectRequiresOwnerCredential(inputs: {
+  existingUserId: string | null;
+  tokenUserId: string | null;
+  identityKeyUserId: string | null;
+}): boolean {
+  return (
+    inputs.existingUserId !== null
+    && inputs.tokenUserId === null
+    && inputs.identityKeyUserId === null
+  );
+}
+
+export const AGENT_OWNED_BY_OTHER_ACCOUNT_CODE = 'agent_owned_by_other_account' as const;
+
+/** Generic 409 body: no owner data, never echoes a caller credential. */
+export const AGENT_OWNED_BY_OTHER_ACCOUNT_BODY = Object.freeze({
+  error: 'This agentId belongs to another account. Connect it from that account, or use its identityKey or the signed /api/agent/reconnect.',
+  code: AGENT_OWNED_BY_OTHER_ACCOUNT_CODE,
+});
+
+/**
+ * Does an authenticated connection token target a row that ANOTHER account
+ * owns? TRUE only when the row has an owner, the token carries a user, and the
+ * two differ. Such a token used to rewrite `user_id` to the token's user and
+ * evict the owner's sessions (security 2026-09-30). A token now binds only an
+ * unowned row or a row its own user already owns. A public front-door token
+ * carries no user here (`tokenUserId` is null) and follows the identityKey path.
+ */
+export function connectTokenOwnedByOtherAccount(inputs: {
+  existingUserId: string | null;
+  tokenUserId: string | null;
+}): boolean {
+  return (
+    inputs.existingUserId !== null
+    && inputs.tokenUserId !== null
+    && inputs.existingUserId !== inputs.tokenUserId
+  );
 }
 
 /**

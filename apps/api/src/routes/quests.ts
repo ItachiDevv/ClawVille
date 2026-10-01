@@ -92,10 +92,17 @@ export const requireLedgerCapableIdentity = createMiddleware<ActivityAuthContext
 // Helpers
 // ---------------------------------------------------------------------------
 
-const ADMIN_EMAILS = ['admin@clawville.com']; // extend later
+// Quest admin = the ADMIN_USER_IDS allowlist (comma-separated user UUIDs), the same named-admin
+// gate the rest of the codebase uses (middleware/admin-only.ts, tokenomics-earn requireNamedAdmin).
+// Replaces the old email-string match on `admin@clawville.com`: signup does not verify email, so
+// anyone could register that address and then create + self-approve quests with an unbounded
+// tokenReward, minting arbitrary vCLAW (security fix M2, 2026-09-30). Parsed at module load.
+const ADMIN_USER_IDS = new Set(
+  (process.env.ADMIN_USER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean),
+);
 
-function isAdmin(userEmail: string | null): boolean {
-  return !!userEmail && ADMIN_EMAILS.includes(userEmail);
+function isAdmin(userId: string | null | undefined): boolean {
+  return !!userId && ADMIN_USER_IDS.has(userId);
 }
 
 async function getUserAvatar(userId: string) {
@@ -116,8 +123,8 @@ function validateUuid(id: string, label = 'Resource') {
 }
 
 function requireAdminUser(c: any): { id: string; email: string } {
-  const user = c.get('user') as { id: string; email: string | null };
-  if (!isAdmin(user.email)) {
+  const user = c.get('user') as { id: string; email: string | null } | undefined;
+  if (!user || !isAdmin(user.id)) {
     throw new HTTPException(403, { message: 'Admin access required' });
   }
   return user as { id: string; email: string };
@@ -142,7 +149,7 @@ const createQuestSchema = z.object({
   title: z.string().min(3).max(200),
   description: z.string().min(10).max(5000),
   tier: z.enum(['side_quest', 'main_quest', 'legendary']),
-  tokenReward: z.number().int().min(1),
+  tokenReward: z.number().int().min(1).max(100000),
   titleReward: z.string().max(100).optional(),
   maxCompletions: z.number().int().min(1).default(1),
   requirements: z.string().max(5000).optional(),
@@ -155,7 +162,7 @@ const updateQuestSchema = z.object({
   description: z.string().min(10).max(5000).optional(),
   tier: z.enum(['side_quest', 'main_quest', 'legendary']).optional(),
   status: z.enum(['draft', 'active', 'completed', 'archived']).optional(),
-  tokenReward: z.number().int().min(1).optional(),
+  tokenReward: z.number().int().min(1).max(100000).optional(),
   titleReward: z.string().max(100).nullable().optional(),
   maxCompletions: z.number().int().min(1).optional(),
   requirements: z.string().max(5000).nullable().optional(),

@@ -107,6 +107,13 @@ export function clearIdentityState(
     useLandStore.getState().clearOwnerStructures();
   } catch { /* store not loaded on this route */ }
 
+  try {
+    // Trading Floor Arena: whether this account has an arena agent, and the
+    // launch screen that shows its wallet address.
+    const { useFloorArenaUi } = require('@/stores/floor-arena-ui') as typeof import('@/stores/floor-arena-ui');
+    useFloorArenaUi.getState().resetIdentity();
+  } catch { /* store not loaded on this route */ }
+
   if (!opts?.preserveQuestProgress) {
     try {
       const { useQuestStore } = require('@/stores/quest') as typeof import('@/stores/quest');

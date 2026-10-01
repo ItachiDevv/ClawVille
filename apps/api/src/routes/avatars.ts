@@ -56,6 +56,7 @@ import {
 } from '../services/agent-autonomy-state';
 import { lucia } from '../lib/auth';
 import { updateAvatarAppearance } from '../services/avatar-appearance';
+import { tradingFloorLessonContext } from '../services/floor-arena/analysis-store';
 import { AGENT_SESSION_HEADER } from '../middleware/require-auth-or-agent';
 import type { AppContext } from '../types';
 import { z } from 'zod';
@@ -1072,13 +1073,24 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     characterConfig: (avatar.characterConfig as any) ?? {},
   };
 
+  // D29: the KnowledgeProvider does not read earned-skill lessons, so the
+  // agent's own Trading Floor lessons (its arena reports) are folded in here,
+  // bounded and fail-soft, and only for an owner with an arena agent.
+  const tradingFloorLessons = await tradingFloorLessonContext({
+    userId: user.id,
+    platformAgentId: avatar.platformAgentId,
+    avatarId: avatar.id,
+    query: result.data.content,
+  });
+
   // Process message — Providers inject avatar/world/inventory/quest/knowledge
-  // context automatically; no manual dynamicContext needed for avatar chat
+  // context automatically; dynamicContext only carries the lesson fold above.
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `avatar-${avatar.id}-${user.id}`,
     platform: 'clawville',
     state,
+    ...(tradingFloorLessons ? { dynamicContext: tradingFloorLessons } : {}),
   });
 
   void logEventFromContext(c, {

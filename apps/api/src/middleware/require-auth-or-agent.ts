@@ -310,6 +310,23 @@ export async function resolveAgentSession(
     return { userId: null, avatarId: null, agentId: config.agentId, ledgerCapable };
   }
 
+  // Owner proof at use time (connect-sec round 4, C10). The row owner and the
+  // owner's avatar go only to a session whose config `boundUserId` equals the
+  // row's CURRENT `userId`. Every legit owner session carries it: /connect
+  // identity claim and same-owner token (`finalOwnerProof`), the /enter keeper
+  // (`npcSimulation.bindAgentOwner`), signed /reconnect (`planReconnectSession`),
+  // Hatcher register/patch (`row.userId`), hosted (`buildHostedAvatarAgentConfig`)
+  // and restore (`resolveRestoredSessionAuthorization`). A null or different
+  // `boundUserId` (a session from the unowned period, or a non-ledger session
+  // whose row moved to another owner) resolves as NON-owner: no userId, no
+  // avatar, non-ledger (the ledger check above already demoted it). Not an
+  // eviction: it can still perceive, chat and move. The house agent (null
+  // `boundUserId`) never reaches an owner path here: its bearer is never
+  // emitted and its cove/land path resolves from the `is_house` row.
+  if ((config.boundUserId ?? null) !== userId) {
+    return { userId: null, avatarId: null, agentId: config.agentId, ledgerCapable: false };
+  }
+
   // Guest-owned agent backstop (2026-07-10 security fix). A guest account is a
   // real Lucia user + avatar (founder ruling 2026-07-06, fully-DEMO economy) and
   // can currently mint a connect-token bound to its OWN guest userId

@@ -65,6 +65,7 @@ import {
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
 import { TradingFloorTab } from '@/components/game/trading-floor/trading-floor-tab';
+import { ARENA_GUEST_UPSELL } from '@/components/game/trading-floor/arena/arena-kit';
 
 // Guests run an all-demo economy (founder ruling 2026-07-06). The Exchange is
 // P2P escrowed trade in REAL ClawTokens — it can't be safely simulated, so a
@@ -1563,6 +1564,10 @@ export default function ExchangeModal() {
   // Guest sign-up upsell — shown instead of any real-CT trade action / any
   // guest_not_allowed 403. One instance for the whole modal.
   const [guestUpsellOpen, setGuestUpsellOpen] = useState(false);
+  // The Trading Arena is paper only, so its launch gets its own wording. Reset
+  // on close, so every other opener keeps the Exchange copy.
+  const [guestUpsellArena, setGuestUpsellArena] = useState(false);
+  const guestUpsell = guestUpsellArena ? ARENA_GUEST_UPSELL : EXCHANGE_UPSELL;
 
   // Browse filter state
   const [browseType, setBrowseType] = useState<ExchangeListingType>('need');
@@ -1715,7 +1720,10 @@ export default function ExchangeModal() {
           <TradingFloorTab
             active={open && tab === 'floor'}
             isGuest={isGuest}
-            onGuestBlocked={() => setGuestUpsellOpen(true)}
+            onGuestBlocked={(variant) => {
+              setGuestUpsellArena(variant === 'arena');
+              setGuestUpsellOpen(true);
+            }}
           />
         )}
 
@@ -1967,10 +1975,13 @@ export default function ExchangeModal() {
 
       <GuestUpsellModal
         open={guestUpsellOpen}
-        onClose={() => setGuestUpsellOpen(false)}
-        headline={EXCHANGE_UPSELL.headline}
-        body={EXCHANGE_UPSELL.body}
-        ctaLabel={EXCHANGE_UPSELL.ctaLabel}
+        onClose={() => {
+          setGuestUpsellOpen(false);
+          setGuestUpsellArena(false);
+        }}
+        headline={guestUpsell.headline}
+        body={guestUpsell.body}
+        ctaLabel={guestUpsell.ctaLabel}
       />
     </>
   );

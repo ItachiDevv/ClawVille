@@ -3,7 +3,8 @@
 /**
  * trading-floor-trade-tape-mesh.tsx
  *
- * The house traders' trades as objects in the hall — ONE mesh, ONE draw call.
+ * The Trading Arena's entries and exits as objects in the hall — ONE mesh, ONE
+ * draw call.
  *
  * The rules (which trade, which lane, which colour, where it is at time t, what
  * its face says) all live in the pure `trading-floor-trade-tape.ts` with an
@@ -38,9 +39,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three/webgpu';
 
-import { useHouseTraders } from '@/hooks/use-trading-floor';
+import { useFloorArenaTape } from '@/hooks/use-floor-arena';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import {
+  ARENA_TAPE_LIMIT,
   buildTapeSources,
   createTapeChipTransform,
   drawTapeAtlas,
@@ -85,9 +87,11 @@ function createSurface(): TapeSurface | null {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
-  // No mipmaps: the atlas is redrawn on every data change and a mip chain would
-  // be regenerated with it, for 33% more upload on a surface that is only ever
-  // seen inside one room.
+  // NO MIPMAPS. Tried with the big board on 2026-09-30 and reverted with it:
+  // on the board, trilinear mips broke bold letters that had read correctly
+  // single-level at the spawn (c-10b vs c-00b), and no shot showed the chips
+  // losing letters single-level, so the atlas keeps the state that has
+  // real-GPU evidence behind it. See `trading-floor-screen.tsx`.
   texture.generateMipmaps = false;
   return { canvas, context, texture };
 }
@@ -139,9 +143,10 @@ function createGeometry(): THREE.BufferGeometry {
 }
 
 export function TradingFloorTradeTape({ active }: { active: boolean }) {
-  // The SAME react-query key the board and the Exchange panel use. react-query
-  // dedupes by key, so this adds no fetch, no interval and no route.
-  const query = useHouseTraders(active);
+  // The SAME react-query key the board's tape row uses (`ARENA_TAPE_LIMIT` is
+  // the shared argument). react-query dedupes by key, so this adds no fetch,
+  // no interval and no route.
+  const query = useFloorArenaTape(ARENA_TAPE_LIMIT, active);
   const meshRef = useRef<THREE.Mesh>(null);
   const chipsRef = useRef<TapeChip[]>([]);
 

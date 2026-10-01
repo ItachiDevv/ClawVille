@@ -17,9 +17,13 @@
  */
 
 // Dummy env so importing the api service graph (service-issuer / hatcher-config
-// / fingerprint) does not throw at module load. None is used by chatHermesLocal
-// (it sends no auth and hits a compile-time constant URL) — these just satisfy
-// crash-loud module-load guards, exactly like scripts/hatcher/selftest-e2e.ts.
+// / fingerprint) does not throw at module load. These just satisfy crash-loud
+// module-load guards, exactly like scripts/hatcher/selftest-e2e.ts.
+// The gateway key IS used: since the D3 fix chatHermesLocal sends nothing without
+// it (the mock accepts any value). The topology is pinned to loopback because the
+// mock listens on 127.0.0.1:8642, even when this runs inside a sandbox-topology box.
+process.env.HERMES_LOCAL_GATEWAY_KEY ||= 'probe-local-gateway-key';
+process.env.LOCAL_RUNTIME_TOPOLOGY = 'loopback';
 process.env.DATABASE_URL ??= 'postgresql://u:p@localhost:5432/db';
 process.env.FINGERPRINT_SECRET ??= 'a'.repeat(64);
 process.env.VANITY_ENCRYPTION_KEY ??= 'b'.repeat(64);

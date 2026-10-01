@@ -96,6 +96,18 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
   },
 });
 
+// Real copies taken BEFORE the mocks below and restored in afterAll, so a
+// single-process run does not leak these (partly partial) stubs into later
+// test files (security 2026-10-01 test hygiene; CI runs mock files alone).
+const restoreModules: Array<[string, Record<string, unknown>]> = [
+  ['@clawville/database', { ...realDatabase }],
+  ['../../services/identity-service', { ...(await import('../../services/identity-service')) }],
+  ['../../services/wallet-service', { ...(await import('../../services/wallet-service')) }],
+  ['../../services/session-ticket-service', { ...(await import('../../services/session-ticket-service')) }],
+  ['../../services/covenant-action-recorder', { ...(await import('../../services/covenant-action-recorder')) }],
+  ['../../services/event-logger', { ...(await import('../../services/event-logger')) }],
+];
+
 mock.module('@clawville/database', () => ({ ...realDatabase, db: dbProxy }));
 
 const realIdentity = await import('../../services/identity-service');
@@ -205,6 +217,7 @@ afterAll(() => {
     if (pending.sessionId) npcSimulation.unregisterAgentBot(pending.sessionId);
   }
   resetPublicConnectTokenStateForTests();
+  for (const [path, real] of restoreModules) mock.module(path, () => real);
 });
 
 describe('logged-out front-door agent connect', () => {

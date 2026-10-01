@@ -1,20 +1,27 @@
 /**
  * trading-floor-trade-tape.ts
  *
- * The house traders' recent trades as PHYSICAL objects in the hall — the pure
- * half. No `three`, no React, no DOM beyond a 2D context the caller hands in,
- * so every rule below (which trade, which lane, which colour, where it is at
- * time t, what its face says) is unit-testable with an injected clock.
+ * The arena's recent entries and exits as PHYSICAL objects in the hall — the
+ * pure half. No `three`, no React, no DOM beyond a 2D context the caller hands
+ * in, so every rule below (which trade, which lane, which colour, where it is
+ * at time t, what its face says) is unit-testable with an injected clock.
  *
  * Founder order 2026-09-20: "your job was supposed to be displaying the trades
  * in 3d ... it's really just to showcase performance." The back-wall board
- * (`trading-floor-screen*.ts(x)`) already prints the trades as TEXT. This is the
- * same trades as MOTION: a slab per trade, drifting from the board wall toward
- * the door in two lanes, one lane per desk.
+ * (`trading-floor-screen*.ts(x)`) prints the same trades as TEXT on its tape
+ * row. This is the same trades as MOTION: a slab per trade, drifting from the
+ * board wall toward the door in two lanes.
  *
- * DATA: the SAME `useHouseTraders` react-query key both other public surfaces
- * use. No route, no second fetch, no poll of its own — react-query dedupes by
- * key, so the tape is free on the network.
+ * DATA (2026-09-30): the Trading Arena paper tape, `GET /api/floor/arena/tape`,
+ * through the SAME react-query key the board's tape row uses (`ARENA_TAPE_LIMIT`
+ * is the one shared argument), so the two surfaces add one poll, not two. It
+ * replaced the live house-trader swaps of `/api/floor/house-traders`.
+ *
+ * LANES: ENTRIES LEFT, EXITS RIGHT. The old tape had one lane per house desk;
+ * the arena has five house agents plus every player, so a lane per agent is
+ * impossible with two lanes. Splitting by side keeps both lanes busy (every
+ * entry eventually becomes an exit) and makes the lane itself mean something:
+ * cyan buys flow down the left, green and red results down the right.
  *
  * ONE DRAW CALL. Every chip is a quad in ONE `BufferGeometry` with ONE atlas
  * texture, not an `InstancedMesh` and not a mesh each. The reason is the text:
@@ -37,21 +44,32 @@
  * Height does not change this horizontal projection.
  */
 
-import { TRADE_MINTS } from '@clawville/shared';
-
-import type { FloorTrade } from '@/stores/trade-ticker';
-import type { HouseTraderSlotView } from '@/hooks/use-trading-floor';
-import { sanitiseScreenText } from './trading-floor-screen-texture';
+import { compactMagnitude, sanitiseScreenText } from './trading-floor-screen-texture';
 
 // ---------------------------------------------------------------------------
 // Geometry + timing constants
 // ---------------------------------------------------------------------------
 
-/** Lanes: 0 = left of the centre aisle, 1 = right. One desk per lane. */
+/** Lanes: 0 = left of the centre aisle (entries), 1 = right (exits). */
 export const TAPE_LANES = 2;
+export const TAPE_ENTRY_LANE = 0;
+export const TAPE_EXIT_LANE = 1;
 /** Chips per lane. 12 total quads, one atlas cell each. */
 export const TAPE_PER_LANE = 6;
 export const TAPE_MAX_CHIPS = TAPE_LANES * TAPE_PER_LANE;
+
+/**
+ * How many tape items BOTH arena surfaces request: the route's maximum.
+ *
+ * 24, not 12, because the lanes split by side. With only the newest 12, six
+ * entries in a row would already push every exit off the tape. With 24, a run
+ * of up to 18 entries still leaves the newest six exits on the right lane; a
+ * longer run leaves that lane short until exits arrive, which is a true
+ * picture of a floor that is only buying. Per-side limits would need a route
+ * parameter; 24 is the route's maximum. ONE constant for the board's tape row
+ * and the 3D tape, so they share one react-query key and one poll.
+ */
+export const ARENA_TAPE_LIMIT = 24;
 
 /** Lane centre, |x|. Bounded on both sides — see the header. */
 export const TAPE_LANE_X = 874;
@@ -98,28 +116,108 @@ export const TAPE_ATLAS_WIDTH = TAPE_ATLAS_COLS * TAPE_CELL_WIDTH;
 export const TAPE_ATLAS_HEIGHT = TAPE_ATLAS_ROWS * TAPE_CELL_HEIGHT;
 
 /**
- * Longest string each row may carry, in characters.
+ * Longest string each chip row may carry, in characters.
  *
  * These are a SUBSTITUTE for a clip path, not a style rule. Courier advances
  * ~0.6em, so the trader row at 26px is ~15.6 px/char against 160 px of usable
- * cell (192 less 16 px of padding each side) and the amount row at 20px is
- * ~12.0. A longer string would not wrap or clip — it would run into the next
- * cell of the atlas and paint itself on a neighbouring chip. The truncation is
- * in the BUILDER so the test can see it, never at the draw site.
+ * cell (192 less 16 px of padding each side) and the action and amount rows at
+ * 20px are ~12.0. A longer string would not wrap or clip — it would run into
+ * the next cell of the atlas and paint itself on a neighbouring chip. The
+ * truncation is in the BUILDER so the test can see it, never at the draw site.
  */
 export const TAPE_TRADER_MAX_CHARS = 10;
+export const TAPE_ACTION_MAX_CHARS = 13;
 export const TAPE_AMOUNT_MAX_CHARS = 13;
 
 // ---------------------------------------------------------------------------
-// Trade classification
+// The arena tape feed
 // ---------------------------------------------------------------------------
 
 /**
- * `buy` — quote in, token out. Cyan: a buy has no realised figure yet.
- * `gain` / `loss` — token out, quote in, with a signed realised figure.
- * `flat` — a sell we cannot price, a realised zero, or a swap that is neither
- *          (both legs quote, or neither). Slate, and it never shows a figure it
- *          does not have.
+ * One arena tape row, read defensively.
+ *
+ * The wire row also carries `agentId`, `kind`, `mint`, `side`, `pnlMult` and
+ * `reason`. They are deliberately NOT read: nothing on a chip or on the board
+ * row shows them, and the MINT in particular is a chain identifier that has no
+ * business on a wall in the game world. Only the route's `symbol` names a
+ * token, and it passes the address strip before it is drawn.
+ */
+export interface ArenaTapeItem {
+  readonly id: string;
+  /** Epoch ms, or null when the route sent no readable time. */
+  readonly atMs: number | null;
+  readonly agentName: string;
+  readonly type: 'entry' | 'exit';
+  readonly symbol: string | null;
+  /** Position size in USD. */
+  readonly usd: number | null;
+  /** Realised USD on an exit; null on an entry and on an unpriced exit. */
+  readonly pnlUsd: number | null;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** A finite number, or null. A missing or NaN money field must never render as
+ *  0, because 0 is a meaningful figure on a chip that shows P&L. */
+function finite(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The route's items, newest first, deduplicated by id.
+ *
+ * Accepts the bare array or an `{ items }` / `{ tape }` envelope, so the board
+ * does not go blank on an envelope change it did not need to care about. A row
+ * with no id or an unknown `type` is dropped: without an id a chip has no
+ * identity across polls, and without a side it has no lane and no colour.
+ */
+export function readArenaTape(data: unknown): ArenaTapeItem[] {
+  const envelope = record(data);
+  const list: unknown = Array.isArray(data)
+    ? data
+    : (envelope?.items ?? envelope?.tape);
+  if (!Array.isArray(list)) return [];
+
+  const seen = new Set<string>();
+  const out: ArenaTapeItem[] = [];
+  for (const raw of list) {
+    const row = record(raw);
+    if (!row) continue;
+    const id = row.id;
+    const type = row.type;
+    if (typeof id !== 'string' || id.length === 0 || seen.has(id)) continue;
+    if (type !== 'entry' && type !== 'exit') continue;
+    seen.add(id);
+    const atMs = typeof row.at === 'string' ? Date.parse(row.at) : Number.NaN;
+    out.push({
+      id,
+      atMs: Number.isFinite(atMs) ? atMs : null,
+      agentName: typeof row.agentName === 'string' ? row.agentName : '',
+      type,
+      symbol: typeof row.symbol === 'string' ? row.symbol : null,
+      usd: finite(row.usd),
+      pnlUsd: finite(row.pnlUsd),
+    });
+  }
+  // Newest first. An undated row sorts last rather than being dropped: it
+  // happened, we just cannot time it. `sort` is stable, so ties keep the
+  // route's own order.
+  return out.sort((a, b) => (b.atMs ?? -1) - (a.atMs ?? -1));
+}
+
+// ---------------------------------------------------------------------------
+// Chip faces
+// ---------------------------------------------------------------------------
+
+/**
+ * `buy` — an entry. Cyan: an entry has no realised figure yet.
+ * `gain` / `loss` — an exit with a signed realised figure.
+ * `flat` — an exit we cannot price, or a realised zero. Slate, and it never
+ *          shows a figure it does not have.
  */
 export type TapeChipKind = 'buy' | 'gain' | 'loss' | 'flat';
 
@@ -134,39 +232,49 @@ export const TAPE_CHIP_COLOR: Readonly<
   flat: Object.freeze([0.62, 0.72, 0.82] as const),
 });
 
-/** The two quote legs. A swap is token-against-one-of-these. */
-const QUOTE_MINTS: ReadonlySet<string> = new Set<string>([
-  TRADE_MINTS.USDC,
-  TRADE_MINTS.WSOL,
-]);
-
-/** Short name from the source slot, never from an identity or lane number.
- * Sanitize before truncation so an address cannot become a printable prefix.
- */
-export function tapeTraderName(slotName: string): string {
-  const safe = sanitiseScreenText(slotName, Number.MAX_SAFE_INTEGER)
+/** Short agent name for a chip, never an id. Sanitised BEFORE truncation so
+ *  an address cannot become a printable prefix. */
+export function tapeTraderName(agentName: string): string {
+  // `$` goes too: a name is user-chosen at launch, and `sanitiseScreenText`
+  // keeps `$` for the board's money labels, so "$500 Club" would otherwise
+  // print "$500 CLUB BUY BONK $20.00" on the tape. The launch route's name
+  // pattern rejects `$` today; this keeps the tape honest if that ever widens.
+  const safe = sanitiseScreenText(agentName, Number.MAX_SAFE_INTEGER)
+    .replace(/\$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
     .replace(/^CLAWVILLE\s+/, '');
   return truncate(safe || 'TRADER', TAPE_TRADER_MAX_CHARS);
 }
 
-/** A finite number, or null. A missing or NaN money field must never render as
- *  0, because 0 is a meaningful figure on a chip that shows P&L. */
-function finite(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-/** `$1.24`, `$1,240` — magnitude only. Two decimals under 1000, none above, so
- *  the string cannot outgrow `TAPE_AMOUNT_MAX_CHARS` on a large trade. */
+/**
+ * `$1.24`, `$1,240.50`, `$1.2M` — magnitude only, and EXACT to the cent below
+ * 100,000. It used to round to whole dollars from 1,000 up with no mark, and
+ * the builder then cut anything past 13 characters, which turned
+ * `+$1,000,000,000` into `+$1,000,000,0` — a different figure (Codex review,
+ * 2026-09-30). Now the widest exact string is `+$99,999.99` (11), compact
+ * notation takes over above that (at most `+$999.9T`, 8), and nothing is cut.
+ */
 export function formatTapeUsd(value: number): string {
   const magnitude = Math.abs(value);
-  if (magnitude >= 1000) return `$${Math.round(magnitude).toLocaleString('en-US')}`;
-  return `$${magnitude.toFixed(2)}`;
+  if (!Number.isFinite(magnitude)) return 'N/A';
+  // The ROUNDED cents decide: 99999.996 must go compact, not print as
+  // "$100,000.00".
+  const fixed = magnitude.toFixed(2);
+  if (Number(fixed) < 100_000) {
+    const [whole, cents] = fixed.split('.');
+    return `$${whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${cents}`;
+  }
+  const compact = compactMagnitude(magnitude);
+  return compact === null ? 'N/A' : `$${compact}`;
 }
 
 /** `+$1.24` / `-$0.87`. A realised zero is `$0.00`, unsigned: it is neither. */
 export function formatTapeSignedUsd(value: number): string {
   if (value === 0) return '$0.00';
-  return `${value > 0 ? '+' : '-'}${formatTapeUsd(value)}`;
+  const magnitude = formatTapeUsd(value);
+  if (magnitude === 'N/A') return magnitude;
+  return `${value > 0 ? '+' : '-'}${magnitude}`;
 }
 
 function truncate(text: string, max: number): string {
@@ -175,55 +283,93 @@ function truncate(text: string, max: number): string {
 
 export interface TapeTradeFace {
   kind: TapeChipKind;
-  /** Sanitized short name of the source slot. Never an identity or mint. */
+  /** Sanitised short agent name. Never an id or a mint. */
   trader: string;
-  /** The signed figure, or the side, or both. Never a figure we do not have. */
+  /** Side and token: "BUY BONK", "SELL WIF", or the side alone. */
+  action: string;
+  /** "$20.00" on an entry, the signed result on an exit, or "". Never a
+   *  figure we do not have. */
   amount: string;
 }
 
 /**
- * What one trade's face says, and what colour it is.
+ * A token symbol as the tape may print it, or '' for none.
  *
- * The realised figure is read off the row's OPTIONAL `realisedUsd`, exactly as
- * the board's tape reads it: the field is additive on the wire and absent from
- * the `FloorTrade` type, so it is read through a cast and normalised to null.
+ * Symbols are ATTACKER-CHOSEN text: anyone can launch a memecoin, and the
+ * route keeps `$ . _ -` in them (`sanitizeArenaSymbol`). `sanitiseScreenText`
+ * then keeps `$ + - , .` and digits too, on purpose, because the board prints
+ * money in its own labels. So a symbol could be a dollar figure: `+$4,200.00`
+ * on an unpriced exit printed "SELL +$4,200." (cut at the action limit, which
+ * also made it a DIFFERENT figure), on the board's tape row, on a 3D chip and
+ * on the ribbon alike, all through `classifyArenaTapeItem`.
+ *
+ * The rule, after the shared sanitiser: every `$` goes, then a leading sign;
+ * then the symbol is CUT to `maxLength`, and only then validated, because
+ * the cut is what gets printed. A symbol is no symbol at all (the action
+ * becomes the bare side) unless what survives the cut has a letter, no
+ * decimal number and no run of 5+ digits. `$PEPE` stays a token, `PEPE`;
+ * `$500` and `1.5M` are prices, so they go.
  */
-export function classifyTapeTrade(trade: FloorTrade): Omit<TapeTradeFace, 'trader'> {
-  const inputIsQuote = QUOTE_MINTS.has(trade.inputMint);
-  const outputIsQuote = QUOTE_MINTS.has(trade.outputMint);
-  const isBuy = inputIsQuote && !outputIsQuote;
-  const isSell = outputIsQuote && !inputIsQuote;
+export function tapeSymbol(raw: string | null, maxLength: number = Number.MAX_SAFE_INTEGER): string {
+  if (raw === null) return '';
+  const cleaned = sanitiseScreenText(raw, Number.MAX_SAFE_INTEGER)
+    .replace(/\$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[+-]+\s*/, '');
+  // Cut FIRST (Codex re-review): validating the whole symbol and cutting
+  // afterwards let `123456789A` lose its only letter and print
+  // "SELL 12345678".
+  const shown = cleaned.slice(0, Math.max(0, maxLength)).trim();
+  // A letter, or it is a number, not a token.
+  if (!/[A-Z]/.test(shown)) return '';
+  // A DECIMAL number reads as a price even with letters on it: `4200.00USD`
+  // printed "SELL 4200.00U", and `1.5M` collides with the board's "12M" age
+  // column. Integers with letters (`1INCH`, `W3`, `BONK2`) are real tickers.
+  if (/\d[.,]\d/.test(shown)) return '';
+  // A long digit run reads as a figure too (`1234567A`).
+  if (/\d{5,}/.test(shown)) return '';
+  return shown;
+}
 
-  const notional = finite(trade.notionalUsd);
-  const realised = finite((trade as { realisedUsd?: unknown }).realisedUsd);
+/**
+ * What one tape row's face says, and what colour it is.
+ *
+ * The symbol is sanitised BEFORE it is cut to fit, for the same reason as the
+ * name: a truncated address is a printable fragment that the address strip no
+ * longer recognises. It also goes through `tapeSymbol`, so a symbol can never
+ * print as a dollar figure.
+ */
+export function classifyArenaTapeItem(
+  item: ArenaTapeItem,
+): Omit<TapeTradeFace, 'trader'> {
+  const side = item.type === 'entry' ? 'BUY' : 'SELL';
+  // The symbol gets exactly the room the action leaves after the side and a
+  // space, and is validated AFTER that cut, so what is printed is what was
+  // checked. No second cut follows: the action already fits.
+  const symbol = tapeSymbol(item.symbol, TAPE_ACTION_MAX_CHARS - side.length - 1);
+  const action = symbol ? `${side} ${symbol}` : side;
+  const size = item.usd !== null && item.usd > 0 ? formatTapeUsd(item.usd) : '';
 
   let kind: TapeChipKind;
   let amount: string;
-  if (isBuy) {
+  if (item.type === 'entry') {
     kind = 'buy';
-    amount = notional !== null && notional > 0 ? `BUY ${formatTapeUsd(notional)}` : 'BUY';
-  } else if (isSell && realised !== null && realised > 0) {
-    kind = 'gain';
-    amount = `SELL ${formatTapeSignedUsd(realised)}`;
-  } else if (isSell && realised !== null && realised < 0) {
-    kind = 'loss';
-    amount = `SELL ${formatTapeSignedUsd(realised)}`;
-  } else if (isSell && realised !== null) {
+    amount = size;
+  } else if (item.pnlUsd === null) {
+    // An exit the route could not price. It happened; it has no result to
+    // show. NOT the size either: "SELL WIF $20.00" reads as "sold for $20",
+    // which is a figure the route did not give us.
     kind = 'flat';
-    amount = `SELL ${formatTapeSignedUsd(realised)}`;
-  } else if (isSell) {
-    kind = 'flat';
-    amount = notional !== null && notional > 0 ? `SELL ${formatTapeUsd(notional)}` : 'SELL';
+    amount = '';
   } else {
-    // Both legs quote, or neither. It happened, we just cannot call it a side.
-    kind = 'flat';
-    amount = 'SWAP';
+    kind = item.pnlUsd > 0 ? 'gain' : item.pnlUsd < 0 ? 'loss' : 'flat';
+    amount = formatTapeSignedUsd(item.pnlUsd);
   }
 
-  return {
-    kind,
-    amount: truncate(amount, TAPE_AMOUNT_MAX_CHARS),
-  };
+  // NOT truncated: a cut figure is a different figure. `formatTapeUsd` bounds
+  // the length instead, and the test sweeps magnitudes against the cap.
+  return { kind, action, amount };
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +377,8 @@ export function classifyTapeTrade(trade: FloorTrade): Omit<TapeTradeFace, 'trade
 // ---------------------------------------------------------------------------
 
 export interface TapeChipSource extends TapeTradeFace {
-  /** The trade signature. Identity across polls: a chip keeps its flight when
-   *  the same trade comes back in the next payload. */
+  /** The tape row's id. Identity across polls: a chip keeps its flight when
+   *  the same row comes back in the next payload. */
   key: string;
   lane: number;
   /** 0..1, stable per key. Decorrelates the idle bob so the lane does not
@@ -247,7 +393,7 @@ export interface TapeChip extends TapeChipSource {
   releasedAtMs: number;
 }
 
-/** Stable 0..1 from a signature. Not security, just decorrelation. */
+/** Stable 0..1 from a key. Not security, just decorrelation. */
 function seedFromKey(key: string): number {
   let hash = 2166136261;
   for (let index = 0; index < key.length; index++) {
@@ -258,45 +404,26 @@ function seedFromKey(key: string): number {
 }
 
 /**
- * The trades the tape will carry, newest first within each lane.
+ * The rows the tape will carry: the newest `TAPE_PER_LANE` entries on the
+ * left lane and the newest `TAPE_PER_LANE` exits on the right, newest first.
  *
- * Lane comes from the slot's position in the lineup, so the two desks are
- * separated spatially and a viewer can tell which desk a trade came from
- * without reading anything. Slot 0 takes the left lane.
- *
- * Deduped by signature ACROSS lanes: the same on-chain trade must never become
- * two objects in the room. First slot wins, which is the same precedence the
- * lineup order already carries.
+ * `readArenaTape` already dedupes by id, so one tape row can never become two
+ * objects in the room.
  */
-export function buildTapeSources(
-  slots: readonly HouseTraderSlotView[] | undefined,
-): TapeChipSource[] {
-  if (!slots || slots.length === 0) return [];
-  const seen = new Set<string>();
+export function buildTapeSources(data: unknown): TapeChipSource[] {
+  const taken = new Array<number>(TAPE_LANES).fill(0);
   const out: TapeChipSource[] = [];
-  for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
-    const slot = slots[slotIndex]!;
-    const lane = slotIndex % TAPE_LANES;
-    const trader = tapeTraderName(slot.slotName);
-    const trades = [...slot.recentTrades]
-      // Newest first. An undated trade sorts last rather than being dropped:
-      // it happened, we just cannot time it.
-      .sort((a, b) => (b.blockTime ?? -1) - (a.blockTime ?? -1));
-    let taken = 0;
-    for (const trade of trades) {
-      if (taken >= TAPE_PER_LANE) break;
-      if (typeof trade.signature !== 'string' || trade.signature.length === 0) continue;
-      if (seen.has(trade.signature)) continue;
-      seen.add(trade.signature);
-      taken++;
-      out.push({
-        key: trade.signature,
-        lane,
-        seed: seedFromKey(trade.signature),
-        trader,
-        ...classifyTapeTrade(trade),
-      });
-    }
+  for (const item of readArenaTape(data)) {
+    const lane = item.type === 'entry' ? TAPE_ENTRY_LANE : TAPE_EXIT_LANE;
+    if (taken[lane]! >= TAPE_PER_LANE) continue;
+    taken[lane] = taken[lane]! + 1;
+    out.push({
+      key: item.id,
+      lane,
+      seed: seedFromKey(item.id),
+      trader: tapeTraderName(item.agentName),
+      ...classifyArenaTapeItem(item),
+    });
   }
   return out;
 }
@@ -307,6 +434,7 @@ function sameSource(a: TapeChipSource, b: TapeChipSource): boolean {
     a.lane === b.lane &&
     a.kind === b.kind &&
     a.trader === b.trader &&
+    a.action === b.action &&
     a.amount === b.amount
   );
 }
@@ -371,7 +499,7 @@ export function reconcileTapeChips(
       releasedAtMs = nowMs - TAPE_LIFETIME_MS - (ordinal / count) * TAPE_LIFETIME_MS;
     } else {
       // A re-keyed chip whose FACE changed keeps flying; only a genuinely new
-      // signature enters at the wall.
+      // tape id enters at the wall.
       releasedAtMs = existing ? existing.releasedAtMs : nowMs;
     }
     next.push({ ...source, releasedAtMs });
@@ -533,9 +661,20 @@ export function tapeCellUv(index: number): {
   };
 }
 
+
 const CELL_PADDING = 16;
 const TRADER_FONT = 'bold 26px "Courier New", monospace';
+const ACTION_FONT = 'bold 20px "Courier New", monospace';
 const AMOUNT_FONT = 'bold 20px "Courier New", monospace';
+/**
+ * Row baselines inside a 108 px cell whose slab spans 5..103. Three rows since
+ * 2026-09-30 (the arena chip names the token): trader, action, amount. At the
+ * test's 0.72 / 0.2 em glyph estimate the boxes are 14.3..38.2, 48.6..67 and
+ * 77.6..96 — inside the slab and clear of each other.
+ */
+const TRADER_BASELINE = 33;
+const ACTION_BASELINE = 63;
+const AMOUNT_BASELINE = 92;
 
 /**
  * Paint every cell. Called ONLY when the chip list changes — never per frame,
@@ -566,12 +705,14 @@ export function drawTapeAtlas(
     ctx.strokeStyle = '#071018';
     ctx.strokeRect(rect.x + 5, rect.y + 5, rect.width - 10, rect.height - 10);
 
+    ctx.fillStyle = '#071018';
     ctx.font = TRADER_FONT;
-    ctx.fillStyle = '#071018';
-    ctx.fillText(chip.trader, rect.x + CELL_PADDING, rect.y + 46);
-
-    ctx.font = AMOUNT_FONT;
-    ctx.fillStyle = '#071018';
-    ctx.fillText(chip.amount, rect.x + CELL_PADDING, rect.y + 84);
+    ctx.fillText(chip.trader, rect.x + CELL_PADDING, rect.y + TRADER_BASELINE);
+    ctx.font = ACTION_FONT;
+    ctx.fillText(chip.action, rect.x + CELL_PADDING, rect.y + ACTION_BASELINE);
+    if (chip.amount.length > 0) {
+      ctx.font = AMOUNT_FONT;
+      ctx.fillText(chip.amount, rect.x + CELL_PADDING, rect.y + AMOUNT_BASELINE);
+    }
   }
 }

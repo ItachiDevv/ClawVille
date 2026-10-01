@@ -68,6 +68,10 @@ export * from './doordash';
 export * from './exchange';
 export * from './trading';
 export * from './trading-fleet';
+// Trading Floor Arena (2026-09-30) — paper-contest agents, positions, decision
+// stream, reports, param log, shared discovery queue, x402 add-on spend ledger.
+// Migration 0070 (idempotent, CI migrate gate — NEVER db:push). Paper only.
+export * from './floor-arena';
 // Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
 // On-chain is authoritative for money; these tables back FE discovery / FE
 // polling / event timelines / leaderboard hooks. See `wager.ts` header.

@@ -70,6 +70,9 @@ import { resolveBuildingId } from './building-center';
 // SAME rule the /enter SQL bind guard states, from its dependency-free module
 // so bindAgentOwner + the route + the tests can never drift on it.
 import { canBindAgentOwner } from './agent-owner-binding';
+// Owner-bind quarantine (connect-sec round 4): dependency-free module, so no
+// import cycle. Map-only readers below skip a quarantined agent.
+import { isAgentQuarantined, releaseAgentQuarantine } from './agent-owner-fence';
 import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
 import {
@@ -1242,6 +1245,21 @@ class NpcSimulation {
   }
 
   /**
+   * Owner-bind quarantine (connect-sec round 4, `agent-owner-fence.ts`): TRUE
+   * when this body belongs to a quarantined agent. Same body resolution as the
+   * human-control predicate above. A quarantined body never joins an ambient
+   * conversation and never runs an [ACTION:] tag.
+   */
+  private isQuarantinedAgentNpc(npcId: string): boolean {
+    const avatarAgentId = this.avatarBodyOwners.get(npcId);
+    if (avatarAgentId) return isAgentQuarantined(avatarAgentId);
+    const sessionId = this.npcOverrides.get(npcId);
+    if (!sessionId) return false;
+    const agentId = this.agentBotSessions.get(sessionId)?.config.agentId;
+    return agentId ? isAgentQuarantined(agentId) : false;
+  }
+
+  /**
    * PUBLIC: is this agent currently human-controlled (its owner is driving the
    * bound avatar in 'player' mode)? The single TTL read for the suppression
    * window — the npcId predicate above, the SSE `control` event, perception's
@@ -1602,7 +1620,51 @@ class NpcSimulation {
     };
   }
 
+  /**
+   * Owner-bind quarantine helper (connect-sec round 4): unregister every
+   * session of `agentId` except `keepSessionId`, then report whether none is
+   * left. A throw on one session never skips the others. Never throws.
+   */
+  private evictOtherAgentSessions(agentId: string, keepSessionId: string): boolean {
+    const others = () => {
+      const found: string[] = [];
+      for (const [sid, { config }] of this.agentBotSessions) {
+        if (config.agentId === agentId && sid !== keepSessionId) found.push(sid);
+      }
+      return found;
+    };
+    for (const sid of others()) {
+      try {
+        this.unregisterAgentBot(sid);
+      } catch (err) {
+        console.error(`[OpenClaw] quarantine eviction threw for agentId=${agentId}:`, err);
+      }
+    }
+    return others().length === 0;
+  }
+
   registerAgentBot(config: AgentSubstrateRegistration, client: AgentSubstrateClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
+    // Owner-bind quarantine release (connect-sec round 4, `agent-owner-fence.ts`).
+    // After an owner bind, only an owner-proven session can register this agent
+    // (the fence and the owned-row check refuse the rest), so this registration
+    // is the release point. It evicts every other session of the agent BEFORE
+    // it registers (an occupied override seat or a stray-owned body cannot block
+    // it), evicts again after, and releases the quarantine only when no other
+    // session is left. Otherwise the agent stays quarantined (SECURITY log).
+    const releaseQuarantine = isAgentQuarantined(config.agentId);
+    if (releaseQuarantine) this.evictOtherAgentSessions(config.agentId, config.sessionId);
+    this.registerAgentBotInMap(config, client, restoredState);
+    if (releaseQuarantine) {
+      if (this.evictOtherAgentSessions(config.agentId, config.sessionId)) {
+        releaseAgentQuarantine(config.agentId);
+        console.log(`[OpenClaw] owner-bind quarantine released for agentId=${config.agentId}`);
+      } else {
+        console.error(`[OpenClaw] SECURITY: a stray session is still live for quarantined agentId=${config.agentId}; quarantine kept`);
+      }
+    }
+  }
+
+  private registerAgentBotInMap(config: AgentSubstrateRegistration, client: AgentSubstrateClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
     if (config.mode === 'override') {
       if (!this.npcs.has(config.targetNpcId)) throw new Error(`NPC "${config.targetNpcId}" not found`);
       // Typed sentinel (not a bare Error) so the partner-hatcher P5-2 path can map
@@ -1689,13 +1751,19 @@ class NpcSimulation {
   unregisterAgentBot(sessionId: string): boolean {
     const bot = this.agentBotSessions.get(sessionId);
     if (!bot) return false;
+    // NON-THROWING REMOVAL (connect-sec round 4, Codex round-2 BLOCK): the
+    // session leaves `agentBotSessions` FIRST, so no later step can leave it
+    // readable by a Map-only reader. The rest is pure Map/Set work; the combat
+    // cleanup, the launch-binding cleanup and the log line run last, each
+    // guarded, and a throw there never undoes the removal.
+    this.agentBotSessions.delete(sessionId);
     // Drop any human-control suppression entry for this agent so a stale TTL
     // can't outlive the session (a re-registered agent gets a fresh window).
     this.humanControlledOpenClawUntil.delete(bot.config.agentId);
-    this.forgetHumanControlledOpenClawLaunch(bot.config.agentId, bot.config.boundUserId);
+    let combatNpcId: string | null = null;
     if (bot.config.mode === 'override') {
       const npcId = bot.config.targetNpcId;
-      this.cleanupNpcFromCombats(npcId);
+      combatNpcId = npcId;
       this.npcOverrides.delete(npcId);
       const npc = this.npcs.get(npcId);
       if (npc) { npc.isOpenClaw = false; npc.inCombat = false; npc.combatTargetId = null; }
@@ -1712,9 +1780,9 @@ class NpcSimulation {
       // if THIS session still owns it — otherwise a stale unregister would orphan the
       // live session (delete the body + override the newer session depends on, while
       // that session stays Map-present so lazy-restore never re-heals it). If we no
-      // longer own it, just drop our own `agentBotSessions` entry below.
+      // longer own it (the `agentBotSessions` entry is already gone above).
       if (this.npcOverrides.get(npcId) === sessionId) {
-        this.cleanupNpcFromCombats(npcId);
+        combatNpcId = npcId;
         this.npcOverrides.delete(npcId);
         this.npcs.delete(npcId);
         // D3 (2026-07-02): the avatar body is gone, so drop its direct
@@ -1724,17 +1792,36 @@ class NpcSimulation {
         this.avatarBodyOwners.delete(npcId);
       }
     }
-    this.agentBotSessions.delete(sessionId);
-    // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - bearer
-    // credential, must not appear in logs.
-    console.log(`[OpenClaw] Unregistered: sess:${sessionDigest(sessionId)}`);
+    try {
+      if (combatNpcId) this.cleanupNpcFromCombats(combatNpcId);
+    } catch (err) {
+      console.error('[OpenClaw] unregister combat cleanup threw after the session left the Map (non-fatal):', err);
+    }
+    try {
+      this.forgetHumanControlledOpenClawLaunch(bot.config.agentId, bot.config.boundUserId);
+      // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) - bearer
+      // credential, must not appear in logs.
+      console.log(`[OpenClaw] Unregistered: sess:${sessionDigest(sessionId)}`);
+    } catch (err) {
+      console.error('[OpenClaw] unregister cleanup threw after the session left the Map (non-fatal):', err);
+    }
     return true;
   }
 
+  // MAP-ONLY READERS and the owner-bind quarantine (connect-sec round 4,
+  // `agent-owner-fence.ts`): the cognition client by body, the public roster
+  // and the client by session return nothing for a quarantined agent, so the
+  // tick's cognition and every route helper that looks a client up without
+  // `validateLiveAgentSession` (the blackjack relay, the Hatcher patch rollback
+  // snapshot) skip it. `dispatchHatcherActions` and the ambient-conversation
+  // pickers skip its body. `findActiveSessionsByAgentIds` stays a raw
+  // enumeration: eviction and its verify must see every session.
   getAgentBotClient(npcId: string): AgentSubstrateClient | null {
     const sessionId = this.npcOverrides.get(npcId);
     if (!sessionId) return null;
-    return this.agentBotSessions.get(sessionId)?.client ?? null;
+    const session = this.agentBotSessions.get(sessionId);
+    if (!session || isAgentQuarantined(session.config.agentId)) return null;
+    return session.client;
   }
 
   /**
@@ -1756,6 +1843,7 @@ class NpcSimulation {
   getActiveAgentBots(): Array<{ agentId: string; mode: string; npcId?: string; name?: string }> {
     const result: Array<{ agentId: string; mode: string; npcId?: string; name?: string }> = [];
     for (const [, { config }] of this.agentBotSessions) {
+      if (isAgentQuarantined(config.agentId)) continue;
       if (config.mode === 'override') {
         result.push({ agentId: config.agentId, mode: 'override', npcId: config.targetNpcId });
       } else {
@@ -1766,9 +1854,15 @@ class NpcSimulation {
   }
 
   getAgentBotClientBySession(sessionId: string): AgentSubstrateClient | null {
-    return this.agentBotSessions.get(sessionId)?.client ?? null;
+    const session = this.agentBotSessions.get(sessionId);
+    if (!session || isAgentQuarantined(session.config.agentId)) return null;
+    return session.client;
   }
 
+  // NOT gated by the quarantine: `validateLiveAgentSession` reads the config
+  // first, and it must still reach the row-hash check that refuses (and
+  // unregisters) a stray bearer. Every caller of this accessor is behind that
+  // REST gate, or is eviction / restore / rollback bookkeeping.
   getAgentBotConfig(sessionId: string): AgentSubstrateRegistration | null {
     return this.agentBotSessions.get(sessionId)?.config ?? null;
   }
@@ -1790,6 +1884,12 @@ class NpcSimulation {
    * the given set. Used by the skill-event-bus auto-install push so a
    * book read by a human triggers a `knowledge_added` SSE event on every
    * one of the user's active agent sessions.
+   *
+   * RAW enumeration: it includes the sessions of a quarantined agent, because
+   * the owner-bind eviction and its verify use it (connect-sec round 4). An
+   * event queued for a stray session is never delivered: only the SSE loop
+   * drains the queue, and it runs `validateLiveAgentSession` every tick, which
+   * refuses and unregisters a stray bearer (row hash present and mismatched).
    */
   findActiveSessionsByAgentIds(agentIds: Iterable<string>): string[] {
     const ids = new Set(agentIds);
@@ -1803,24 +1903,38 @@ class NpcSimulation {
 
   /**
    * Magic-link onboarding D1b (2026-07-02) — propagate the bind-at-redemption
-   * claim event into every LIVE in-memory session for `agentId`, so the
-   * already-connected agent becomes ledger-capable WITHOUT a reconnect.
+   * claim event into every LIVE in-memory session for `agentId`.
+   * (2026-09-30 note: since `/connect` grants `ledgerCapable` only with owner
+   * proof, a `/connect` session with a null `boundUserId` is always non-ledger,
+   * so for those this bind never makes a session ledger-capable; the agent
+   * re-proves ownership through an identityKey connect or the signed /reconnect.
+   * HATCHER EXCEPTION (connect-sec round 4, 2026-10-01): an anonymous Hatcher
+   * register (`partner-hatcher.ts`, partner-signed) mints its session with
+   * `ledgerCapable: true` and `boundUserId: null` (the row has no owner yet).
+   * When a control-link first bind at `GET /api/auth/enter` keeps that session,
+   * this stamp sets its `boundUserId` to the redeemer, so it now equals the
+   * row's `user_id` and the session becomes ledger-capable for the redeemer.
+   * The partner signature is that session's owner proof.)
    *
-   * Called by `GET /api/auth/enter` right after it atomically binds the
-   * `openclaw_bots.user_id` row (guarded UPDATE). The row bind alone is not
+   * Called by `bindAgentOwnerAtRedemption` (`agent-redemption-bind.ts`, for
+   * `GET /api/auth/enter`) right after it atomically binds the
+   * `openclaw_bots.user_id` row (guarded UPDATE). On a first bind it first
+   * evicts every live session except the one the ticket was issued to
+   * (security 2026-09-30), so only that session gets the stamp; a re-affirm
+   * of the same owner evicts nothing. The row bind alone is not
    * enough: `resolveAgentSession` grants real-CT spend only when the session
    * config's `boundUserId` matches the row's CURRENT `userId` (the round-2
    * rebind demotion backstop), and a first-contact session was minted with
    * `boundUserId: null` — so without this in-memory update the freshly-bound
    * agent would stay demoted until its next /connect. Setting `boundUserId`
-   * here makes the backstop PASS for first-contact sessions (whose
-   * `ledgerCapable` flag is already true — no existing owner at registration).
+   * here only aligns the config with the row; `ledgerCapable` is unchanged.
    *
    * NEVER-CLOBBER (same rule as the SQL guard, via the shared
    * `canBindAgentOwner`): a config that already proved ownership of a
    * DIFFERENT user is left untouched — we only fill a null `boundUserId` or
    * re-affirm the same user. `ledgerCapable` is deliberately NOT flipped: a
-   * session registered non-ledger (agentId-only reconnect to a bound bot)
+   * session registered non-ledger (for example a session minted on an unowned
+   * row before the bind)
    * stays non-ledger; it re-proves ownership through connect-token or the
    * signed-challenge reconnect, exactly as before.
    *
@@ -2407,7 +2521,10 @@ class NpcSimulation {
     // Owner is driving this proxy — a cognition reply must not move or act in the
     // world. Strip the action tags from speech (mirrors the post-loop cleanup
     // below) and execute none of them.
-    if (this.isHumanControlledOpenClawNpc(npcId)) {
+    // Owner-bind quarantine (connect-sec round 4): a quarantined agent's body
+    // runs no [ACTION:] tag, from any caller (the ambient-conversation reply or
+    // the autonomy driver), until a new session registers and releases it.
+    if (this.isHumanControlledOpenClawNpc(npcId) || this.isQuarantinedAgentNpc(npcId)) {
       return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
     }
     const npc = this.npcs.get(npcId);
@@ -4728,6 +4845,7 @@ class NpcSimulation {
     return Array.from(this.npcs.values()).filter(
       (n) =>
         !this.isHumanControlledOpenClawNpc(n.id, now) &&
+        !this.isQuarantinedAgentNpc(n.id) && // connect-sec round 4: owner-bind quarantine
         !this.isSelfManagedOpenClawNpc(n) && // N4: never an ambient-conversation subject
         !this.directedRoutes.has(n.path) && // 2026-07-26 (B2): mid-trip agent route
         !n.isDead && !n.inConversation && !n.inCombat && now >= n.conversationCooldownUntil
@@ -4740,6 +4858,7 @@ class NpcSimulation {
     const now = Date.now();
     for (const other of this.npcs.values()) {
       if (this.isHumanControlledOpenClawNpc(other.id, now)) continue;
+      if (this.isQuarantinedAgentNpc(other.id)) continue; // connect-sec round 4: owner-bind quarantine
       if (this.isSelfManagedOpenClawNpc(other)) continue; // N4: not an ambient-conversation partner
       if (this.directedRoutes.has(other.path)) continue; // 2026-07-26 (B2)
       if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil || now < other.conversationCooldownUntil) continue;

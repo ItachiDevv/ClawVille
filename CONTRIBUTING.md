@@ -4,7 +4,11 @@ Thanks for your interest. ClawVille is a 3D agent-development sandbox built on E
 
 ## Before you start
 
-Read `CLAUDE.md` first. It documents the load-bearing project invariants and conventions. The four canonical docs:
+Keep project work inside ClawVille or a registered Git worktree. New worktrees default to `.worktrees/<task>` inside ClawVille.
+Do not create unregistered sibling folders for assets, reports, research, or source copies.
+Ask a maintainer for the current local workspace layout; it is kept outside this repository.
+
+Read the four canonical docs below first. They document the load-bearing project invariants and conventions:
 
 - **`WorldContent.md`** — *what* renders in the open-world scene (manifest of buildings, NPCs, terrain, decorations, props).
 - **`3dStructure.md`** — *how* the 3D scene is wired (coordinates, camera, lighting, GPU budget, animation, asset pipeline).
@@ -13,9 +17,19 @@ Read `CLAUDE.md` first. It documents the load-bearing project invariants and con
 
 ### The bidirectional sync rule
 
-**If your change touches any code path tabulated in `CLAUDE.md` "Path → doc decision matrix", you must stage the matching doc update in the same commit.** Reverse holds: changing a manifest doc requires the corresponding code change. Mismatch is a bug.
+**If your change touches a code path in the table below, stage the matching doc update in the same commit.** Reverse holds: changing a manifest doc requires the corresponding code change. Mismatch is a bug.
 
-This is enforced at the contributor/review level — there's no pre-commit hook or CI gate by design. Every contributor and reviewer is responsible.
+| Editing | Update |
+|---|---|
+| `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, `apps/web/public/sw.js` | `3dStructure.md` |
+| `apps/web/src/components/game/**`, economy code, quest and login routes | `GameFeatures.md` |
+| New or changed API route, Drizzle schema, service, environment variable, deploy or CI config | `ARCHITECTURE.md` (environment variables in §4) |
+| Agent connect, `/api/agent/*`, skill protocol, partner routes | `GameFeatures.md` §2, `ARCHITECTURE.md` §6, `docs/hatcher-integration-spec.md` |
+| Trading Arena: `packages/shared/src/constants/floor-arena.ts`, `apps/api/src/routes/floor-arena.ts`, `apps/api/src/routes/admin-floor-arena.ts`, `apps/api/src/services/floor-arena/`, `apps/api/src/services/clawpump-writer.ts`, `apps/web/src/hooks/use-floor-arena.ts`, `apps/web/src/stores/floor-arena-ui.ts` | `GameFeatures.md` §17g.3, `ARCHITECTURE.md` (Trading Floor Arena section, §4, §8), `docs/trading-floor-arena.md`, `docs/clawpump-integration.md` |
+| `branding/**`, logos, fonts, outward graphics and copy | `branding/BRAND.md`, `docs/brand-language.md` |
+| Deploy runbook steps | `docs/DEPLOY-HETZNER.md` |
+
+Bump the doc's "Last Audited" line with a one-line drift note. Most of this is enforced at review. Two CI gates also enforce parts of it: the coupling gates (`scripts/ci/run-coupling-gates.ts`) require the knowledge surfaces to change with gameplay code, and the doc path guard (`scripts/ci/check-doc-paths.ts`) fails when a canonical doc gains a reference to a repo path that does not exist. When you delete or rename a file, update every doc that names it in the same commit.
 
 ### Workflow runbooks
 
@@ -46,7 +60,7 @@ Web at `http://localhost:3000`, API at `http://localhost:4000`.
 
 - Fork the repo, create a feature branch off `master`.
 - One logical change per PR. Smaller diffs land faster.
-- The PR description should reference any updated docs (`WorldContent.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `CLAUDE.md`).
+- The PR description should reference any updated docs (`WorldContent.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `branding/BRAND.md`).
 - CI runs build + type checks. Make sure `bun run build` is green locally before opening the PR.
 - Coolify auto-deploys on merge to `master`. Until then, your branch only deploys if you manually trigger it.
 
@@ -74,7 +88,7 @@ docs(architecture): document phase 5.1 wallet identity flow
 
 **Not in scope (yet):**
 - Replacing the LLM backend — OpenAI is the only supported provider. Adding a second is a discussion, not a PR.
-- Replacing ElizaOS — the runtime is load-bearing. See "ElizaOS is MANDATORY" in `CLAUDE.md`.
+- Replacing ElizaOS: the runtime is load-bearing. Avatar and location chat must use the ElizaOS runtime (`packages/agent-runtime`).
 - Changes to the Milady plugin (`@clawville/app-clawville` on npm) — that lives in a separate repo.
 
 **Discuss first:**
@@ -127,7 +141,7 @@ Thanks for contributing.
 
 ## Agent team operating rules (moved verbatim from CLAUDE.md 2026-09-07)
 
-> The mandate itself (which work runs as a collaborative agent team, and the dispatch shape) stays in `CLAUDE.md`. These are the compositions, coordination protocol, required prompt elements, skip rules, and 3da/Blender context.
+> The mandate itself (which work runs as a collaborative agent team, and the dispatch shape) stays in the maintainers' local rules file (`AGENTS.md`, not in this repository). These are the compositions, coordination protocol, required prompt elements, skip rules, and 3da/Blender context.
 
 ### Standard compositions (roles per concern; spawn members per the collaborative-concurrent rule above — only those with work to do now — shared `team_name` like `casino-routes-2026-05-19`)
 

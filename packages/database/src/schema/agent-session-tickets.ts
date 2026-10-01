@@ -29,10 +29,11 @@ import { avatars } from './avatars';
  *   - Partial index on `expires_at WHERE consumed_at IS NULL` drives
  *     the hourly GC cron in `scripts/gc-agent-session-tickets.ts`.
  *
- * `identity_type` + `identity_key` are duplicated here (already hashed
- * into `users.identity_fingerprint`) as an audit trail. They're never
- * returned in any API response — the hash stored on users is the only
- * externally-observable form.
+ * `identity_type` + `identity_key` are an audit trail. `identity_key` holds
+ * ONLY `sha256:<hex sha256 of "type:key">` (the `users.identity_fingerprint`
+ * form), never the raw key: an explicit identityKey is an account credential
+ * (security F4, 2026-10-01; writer `mintSessionTicket`, older raw rows
+ * rewritten by migration 0073). Neither column is returned in any API response.
  */
 export const agentSessionTickets = pgTable(
   'agent_session_tickets',
@@ -70,7 +71,7 @@ export const agentSessionTickets = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     /** NULL until redeemed; set to `now()` atomically on redemption. */
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
-    /** Identity audit trail — see JSDoc above. */
+    /** Identity audit trail — see JSDoc above. `identity_key` is `sha256:<hex>`, never raw. */
     identityType: varchar('identity_type', { length: 16 }).notNull(),
     identityKey: text('identity_key'),
   },

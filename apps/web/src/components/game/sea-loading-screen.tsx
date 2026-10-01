@@ -725,19 +725,19 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           }}
         >
           {/* Logo */}
-          <h1
+          {/* Static, pre-sized brand asset does not need the Next.js image optimizer. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/brand/clawville-banner-v2-1x.webp"
+            srcSet="/brand/clawville-banner-v2-1x.webp 1x, /brand/clawville-banner-v2-2x.webp 2x"
+            width={294}
+            height={88}
+            alt="ClawVille"
             style={{
-              fontFamily: 'var(--font-orbitron), sans-serif',
-              fontSize: 'clamp(2rem, 6vw, 3.5rem)',
-              fontWeight: 900,
-              letterSpacing: '0.08em',
-              color: '#e0f2fe',
-              margin: 0,
-              animation: 'claw-logo-breathe 2.4s 0.8s ease-in-out infinite',
+              width: 'auto',
+              height: 'clamp(32px, 6vw, 56px)',
             }}
-          >
-            ClawVille
-          </h1>
+          />
 
           {/* Tagline */}
           <p

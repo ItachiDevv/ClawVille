@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClawVille logo usage</title>
+  <style>
+    :root { font-family: Arial, Helvetica, sans-serif; color: #e9f6f5; background: #061520; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 1320px; padding: 32px 20px 64px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: clamp(2rem, 5vw, 3.5rem); }
+    h2 { margin-top: 40px; font-size: 1.6rem; }
+    h3 { font-size: 1rem; }
+    p, li { line-height: 1.5; }
+    .intro { max-width: 780px; color: #c0d6d3; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+    .card { overflow: hidden; border: 1px solid #48636a; border-radius: 14px; background: #102936; }
+    .card h3, .card p { margin: 12px 16px; }
+    .sample { position: relative; display: flex; align-items: center; justify-content: center; min-height: 190px; padding: 24px; overflow: hidden; }
+    .sample img { display: block; max-width: 100%; height: auto; }
+    .wood { width: min(100%, 340px); }
+    .dark { background: #061520; }
+    .light { background: #fff; color: #061520; }
+    .sky { background: #d8e8e0; color: #061520; }
+    .photo { background: url('assets/world/beach-banner-wide.jpg') center top / cover no-repeat; }
+    .photo-calm { align-items: flex-start; min-height: 270px; padding-top: 8px; background-position: 72% top; }
+    .photo-calm img { width: 220px; }
+    .photo-busy img { width: 330px; }
+    .clear-space { padding: 34px; background: #0d2a3c; }
+    .clear-zone { --logo-width: min(320px, calc(100vw - 130px)); display: inline-block; padding: calc(var(--logo-width) * 0.0803571429); border: 2px dashed #6ce4ea; }
+    .clear-zone img { display: block; width: var(--logo-width); }
+    .size-samples { display: flex; flex-wrap: wrap; align-items: end; gap: 24px; padding: 24px; border-radius: 14px; background: #fff; color: #061520; }
+    .size-samples figure { margin: 0; }
+    .size-samples img { display: block; height: auto; }
+    .size-samples figcaption { margin-top: 8px; font-size: .85rem; }
+    .at-120 { width: 120px; }
+    .at-80 { width: 80px; }
+    .icon-small { width: 48px; }
+    .bad .sample::before { content: '✕'; position: absolute; z-index: 2; top: 10px; left: 12px; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: #fff; background: #c72031; font-weight: bold; }
+    .bad h3 { color: #ff9ba5; }
+    .allowed .sample::before { content: '✓'; position: absolute; z-index: 2; top: 10px; left: 12px; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: #061520; background: #b8f800; font-weight: bold; }
+    .stretch img { width: 260px; height: 105px; max-width: none; }
+    .rotate img { transform: rotate(-13deg); }
+    .recolor img { filter: hue-rotate(185deg); }
+    .glow img { filter: drop-shadow(0 0 2px #f8f8f8) drop-shadow(0 0 9px #2890f8); }
+    .crop-window { width: 230px; height: 48px; overflow: hidden; }
+    .crop-window img { width: 270px; max-width: none; transform: translate(-20px, -20px); }
+    .fake-wordmark { font: bold 40px Georgia, serif; color: #f8ca30; letter-spacing: 2px; }
+    .badge { width: 160px; height: 160px; overflow: hidden; }
+    .badge img { width: 100%; height: 100%; object-fit: contain; }
+    .round { border-radius: 50%; }
+    .rounded { border-radius: 28px; }
+    .wrong-official { width: 160px; height: 160px; overflow: hidden; border: 8px solid #e32742; }
+    .wrong-official img { width: 240px; height: 240px; max-width: none; transform: translate(-40px, -20px); }
+  </style>
+</head>
+<body>
+  <h1>ClawVille logo usage</h1>
+  <p class="intro">Brand kit variation 1. Use the supplied image files. Preserve their shape and lettering. This page uses local assets only.</p>
+
+  <h2>Wood-sign wordmark</h2>
+  <p>Keep clear space on every side equal to 0.25 times the logo height. The dashed outline marks the clear zone.</p>
+  <div class="sample clear-space"><div class="clear-zone"><img src="assets/logos/clawville-logo-color.svg" alt="Wood-sign wordmark with clear space"></div></div>
+  <p>Use the sign at 120 px wide or larger on screen, or 25 mm wide or larger in print. Use the mono wordmark from 80 px to below 120 px. Below 80 px, use the official logo or app icon.</p>
+  <div class="size-samples">
+    <figure><img class="at-120" src="assets/logos/clawville-logo-color.svg" alt="Wood sign at 120 pixels"><figcaption>120 px: wood sign</figcaption></figure>
+    <figure><img class="at-80" src="assets/logos/clawville-wordmark-mono.svg" alt="Mono wordmark at 80 pixels"><figcaption>80 px: mono wordmark</figcaption></figure>
+    <figure><img class="icon-small" src="assets/logos/clawville-logo-official.png" alt="Official logo at 48 pixels"><figcaption>Below 80 px: official logo</figcaption></figure>
+  </div>
+
+  <h2>Backgrounds</h2>
+  <div class="grid">
+    <div class="card"><div class="sample dark"><img class="wood" src="assets/logos/clawville-logo-color.svg" alt="Wood sign on dark navy"></div><h3>Dark #061520</h3></div>
+    <div class="card"><div class="sample light"><img class="wood" src="assets/logos/clawville-logo-color.svg" alt="Wood sign on white"></div><h3>Light #FFFFFF</h3></div>
+    <div class="card"><div class="sample sky"><img class="wood" src="assets/logos/clawville-logo-color.svg" alt="Wood sign on sky green"></div><h3>Sky #D8E8E0</h3></div>
+    <div class="card"><div class="sample photo photo-calm"><img src="assets/logos/clawville-logo-color.svg" alt="Wood sign in a calm area of a photo"></div><h3>Photo with a calm area</h3></div>
+  </div>
+
+  <h2>Allowed variations</h2>
+  <p>Allowed when the colors fit the brand palette.</p>
+  <div class="grid">
+    <div class="card allowed"><div class="sample light recolor"><img class="wood" src="assets/logos/clawville-logo-color.svg" alt="Recolored wood sign"></div><h3>Recolor</h3><p>Allowed when the colors fit the brand palette.</p></div>
+    <div class="card allowed"><div class="sample dark glow"><img class="wood" src="assets/logos/clawville-logo-color.svg" alt="Wood sign with glow ring"></div><h3>Add an outline or glow ring</h3><p>Allowed when the colors fit the brand palette.</p></div>
+  </div>
+
+  <h2>Do not</h2>
+  <div class="grid">
+    <div class="card bad"><div class="sample light stretch"><img src="assets/logos/clawville-logo-color.svg" alt="Stretched wood sign"></div><h3>Stretch or squash</h3></div>
+    <div class="card bad"><div class="sample light rotate"><img class="wood" src="assets/logos/clawville-logo-color.svg" alt="Rotated wood sign"></div><h3>Rotate</h3></div>
+    <div class="card bad"><div class="sample photo photo-busy"><img src="assets/logos/clawville-logo-wood-large-transparent.png" alt="Wood sign over busy photo detail"></div><h3>Place on a busy area</h3></div>
+    <div class="card bad"><div class="sample light"><div class="crop-window"><img src="assets/logos/clawville-logo-color.svg" alt="Cropped wood sign"></div></div><h3>Crop the plank</h3></div>
+    <div class="card bad"><div class="sample light"><span class="fake-wordmark">ClawVille</span></div><h3>Retype in another font: never</h3></div>
+  </div>
+
+  <h2>Official logo</h2>
+  <p>Keep the claw girl square. Preserve the claws and bow. Never recolor the art or add a border. On dark scenes, use a round or rounded-square badge.</p>
+  <div class="grid">
+    <div class="card"><div class="sample dark"><div class="badge round"><img src="assets/logos/clawville-logo-official.png" alt="Correct round official logo badge"></div></div><h3>Correct: round badge</h3></div>
+    <div class="card"><div class="sample dark"><div class="badge rounded"><img src="assets/logos/clawville-logo-official.png" alt="Correct rounded-square official logo badge"></div></div><h3>Correct: rounded-square badge</h3></div>
+    <div class="card bad"><div class="sample dark"><div class="wrong-official"><img src="assets/logos/clawville-logo-official.png" alt="Wrong cropped official logo with border"></div></div><h3>Wrong: cropped art and added border</h3></div>
+  </div>
+</body>
+</html>

@@ -1,15 +1,21 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as THREE from 'three';
+import { clampCameraToRoom } from '@/lib/three/room-camera';
 import {
   activateTradingFloorSeat,
   tradingFloorSitClips,
+  TRADING_FLOOR_CAMERA_BOUNDS,
 } from './trading-floor-interior';
 import {
   clampTradingFloorMovement2D,
   clampTradingFloorMovementSeated,
+  computeTradingFloorArming,
   consoleHalfExtents,
+  createTradingFloorArming,
   pushCameraOutOfSolids,
+  tradingFloorDoorPromptVisible,
   tradingFloorDistanceSq,
   validateAuthoredProp,
   AUTHORED_PROP_TOLERANCE_WU,
@@ -744,7 +750,10 @@ describe('Trading Floor camera — the exit prompt is actually on screen', () =>
     expect(anchorZ).toBeLessThan(TRADING_FLOOR_CAMERA_Z_MAX);
   });
 
-  // Swept across the whole band the label is shown in, not just at the clamp.
+  // Swept across the whole hint band, not just at the clamp. Facing the board
+  // (this pose), the capsule has been shown only inside the ARMED band since
+  // 2026-09-30 (`tradingFloorDoorPromptVisible`, next describe); the sweep still
+  // covers the whole band so the anchor stays on screen if that rule widens.
   test('the prompt stays inside the vertical FOV across the whole approach', () => {
     const hintStart = TRADING_FLOOR_DOOR.z - TRADING_FLOOR_DOOR.nearHintRadius;
     let worst = 0;
@@ -782,6 +791,193 @@ describe('Trading Floor camera — the exit prompt is actually on screen', () =>
     // The first replacement proposed from an elevation figure that ignored the
     // camera's own downward pitch. Still off-screen.
     expect(historical(300, 980)).toBeGreaterThan(HALF_FOV_DEG);
+  });
+});
+
+describe('Trading Floor exit capsule — never a hint over the big board', () => {
+  /**
+   * Verifier B, staging 9dc59f73 (shots b-01/b-02): the "Exit" capsule sat on
+   * the board's basis line and ticker from the spawn. The spawn is 320 wu from
+   * the door, inside the 460 wu hint band, and facing the board the anchor
+   * projects onto the board's bottom edge at EVERY point of that band, because
+   * the camera is clamped at z 1088 the whole way. The hint now needs the camera
+   * to face the door half-space; the armed prompt is always shown.
+   */
+  test('the rule: armed always, the hint only while facing the door', () => {
+    expect(tradingFloorDoorPromptVisible(true, true, -1)).toBe(true);
+    expect(tradingFloorDoorPromptVisible(true, true, 1)).toBe(true);
+    expect(tradingFloorDoorPromptVisible(false, true, 1)).toBe(true);
+    expect(tradingFloorDoorPromptVisible(false, true, 0.01)).toBe(true);
+    // Facing the board, or exactly sideways: no hint.
+    expect(tradingFloorDoorPromptVisible(false, true, -1)).toBe(false);
+    expect(tradingFloorDoorPromptVisible(false, true, 0)).toBe(false);
+    // Out of the band: nothing, whichever way the camera faces.
+    expect(tradingFloorDoorPromptVisible(false, false, 1)).toBe(false);
+  });
+
+  test('on arrival (spawn, camera facing the board) the hint is on and the capsule is hidden', () => {
+    const arming = createTradingFloorArming();
+    computeTradingFloorArming(TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z, arming);
+    expect(arming.doorHint).toBe(true);
+    expect(arming.doorArmed).toBe(false);
+    // Yaw 0 is the spawn yaw: forward = (sin 0, 0, -cos 0).
+    expect(tradingFloorDoorPromptVisible(arming.doorArmed, arming.doorHint, -Math.cos(0))).toBe(
+      false,
+    );
+  });
+
+  /**
+   * THE PROJECTION PIN. The camera is placed exactly as the frame loop places
+   * it (orbit, `TRADING_FLOOR_CAMERA_BOUNDS` clamp, solid push-out, look-ahead
+   * target), the capsule's screen rectangle is sampled, and a ray from the
+   * camera through each sample is tested against the board's rectangle in the
+   * world. A ray test rather than projecting the board's corners, because a
+   * board partly behind the camera has no meaningful projected outline.
+   *
+   * The capsule is centred horizontally on the anchor and sits ABOVE it
+   * (`translate(-50%,-50%)` in the overlay plus the capsule's own
+   * `translateY(-50%)`): about 63 x 33 px as a hint and 102 x 44 px armed, so
+   * the sampled box is a conservative 128 x 48 px.
+   */
+  const ANCHOR = new THREE.Vector3(
+    TRADING_FLOOR_DOOR.x,
+    270, // AVATAR_TARGET_HEIGHT, the label's head-height anchor
+    TRADING_FLOOR_DOOR_APPROACH_Z - 40,
+  );
+  const CAPSULE_HALF_W = 64;
+  const CAPSULE_H = 48;
+  const VIEWPORTS: ReadonlyArray<readonly [number, number]> = [
+    [1366, 768],
+    [1350, 805],
+    [1920, 1080],
+    [2560, 1080],
+  ];
+  const BOARD_HALF_W = TRADING_FLOOR_SCREEN.width / 2;
+  const BOARD_BOTTOM = TRADING_FLOOR_SCREEN.bottomY;
+  const BOARD_TOP = TRADING_FLOOR_SCREEN.bottomY + TRADING_FLOOR_SCREEN.height;
+
+  const camera = new THREE.PerspectiveCamera(TRADING_FLOOR_CAMERA.fov, 1, TRADING_FLOOR_CAMERA.near, 10_000);
+  const camPos = new THREE.Vector3();
+  const look = new THREE.Vector3();
+  const ndc = new THREE.Vector3();
+  const view = new THREE.Vector3();
+  const sample = new THREE.Vector3();
+
+  /**
+   * Where the capsule lands for the current camera:
+   *   culled    — the anchor is behind the camera; the overlay draws nothing.
+   *   offscreen — in front, but the anchor projects outside the viewport.
+   *   over      — some sampled point of the capsule lies over the board.
+   *   clear     — on screen and clear of the board.
+   * Codex r16: the sweep's "shown" count must count only what a player can SEE,
+   * or a sweep of culled labels would pass while proving nothing.
+   */
+  function capsuleState(width: number, height: number): 'culled' | 'offscreen' | 'over' | 'clear' {
+    view.copy(ANCHOR).applyMatrix4(camera.matrixWorldInverse);
+    if (view.z >= 0) return 'culled';
+    ndc.copy(ANCHOR).project(camera);
+    const onScreen = Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1;
+    if (capsuleOverBoard(width, height)) return 'over';
+    return onScreen ? 'clear' : 'offscreen';
+  }
+
+  /** True when any sampled point of the capsule lies over the board. Call
+   *  after `ndc` holds the anchor's projection (see `capsuleState`). */
+  function capsuleOverBoard(width: number, height: number): boolean {
+    for (const dx of [-CAPSULE_HALF_W, 0, CAPSULE_HALF_W]) {
+      for (const dy of [0, CAPSULE_H / 2, CAPSULE_H]) {
+        // Screen y grows DOWN, NDC y grows UP: "above the anchor" is +NDC y.
+        sample
+          .set(ndc.x + (dx * 2) / width, ndc.y + (dy * 2) / height, 0.5)
+          .unproject(camera)
+          .sub(camPos);
+        if (sample.z >= 0) continue; // the board is at -Z of every camera
+        const t = (TRADING_FLOOR_SCREEN.z - camPos.z) / sample.z;
+        const x = camPos.x + sample.x * t;
+        const y = camPos.y + sample.y * t;
+        if (Math.abs(x) <= BOARD_HALF_W && y >= BOARD_BOTTOM && y <= BOARD_TOP) return true;
+      }
+    }
+    return false;
+  }
+
+  function placeCamera(bodyX: number, bodyZ: number, yaw: number, pitch: number): void {
+    const sin = Math.sin(yaw);
+    const cos = Math.cos(yaw);
+    camPos.set(
+      bodyX - sin * TRADING_FLOOR_CAMERA.behind,
+      TRADING_FLOOR_CAMERA.above + pitch,
+      bodyZ + cos * TRADING_FLOOR_CAMERA.behind,
+    );
+    clampCameraToRoom(camPos, TRADING_FLOOR_CAMERA_BOUNDS);
+    pushCameraOutOfSolids(camPos, TRADING_FLOOR_SOLIDS, TRADING_FLOOR_CAMERA_SOLID_CLEARANCE);
+    look.set(
+      bodyX + sin * TRADING_FLOOR_CAMERA.lookAhead,
+      TRADING_FLOOR_CAMERA.lookY,
+      bodyZ - cos * TRADING_FLOOR_CAMERA.lookAhead,
+    );
+    camera.position.copy(camPos);
+    camera.lookAt(look);
+    camera.updateMatrixWorld(true);
+  }
+
+  test('swept over the hint band, every yaw, pitch and viewport: a visible HINT never covers the board', () => {
+    const arming = createTradingFloorArming();
+    /** Visible hints whose capsule a player can actually see on screen. */
+    let hintsOnScreen = 0;
+    /** Visible hints over the board, on screen or partly off it. */
+    let hintOverlaps = 0;
+    let oldRuleOverlaps = 0;
+    let armedOverlaps = 0;
+    for (const [width, height] of VIEWPORTS) {
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      for (let bodyX = -900; bodyX <= 900; bodyX += 100) {
+        for (let bodyZ = TRADING_FLOOR_DOOR.z - TRADING_FLOOR_DOOR.nearHintRadius; bodyZ <= TRADING_FLOOR_DOOR_APPROACH_Z; bodyZ += 40) {
+          if (tradingFloorHitsSolid(bodyX, bodyZ)) continue;
+          computeTradingFloorArming(bodyX, bodyZ, arming);
+          if (!arming.doorHint) continue;
+          for (let step = 0; step < 24; step += 1) {
+            const yaw = (step / 24) * Math.PI * 2;
+            const forwardZ = -Math.cos(yaw);
+            for (const pitch of [TRADING_FLOOR_CAMERA.pitchMin, 0, TRADING_FLOOR_CAMERA.pitchMax]) {
+              placeCamera(bodyX, bodyZ, yaw, pitch);
+              const state = capsuleState(width, height);
+              const over = state === 'over';
+              if (over) oldRuleOverlaps += 1; // the shipped rule: doorHint alone
+              if (!tradingFloorDoorPromptVisible(arming.doorArmed, arming.doorHint, forwardZ)) continue;
+              if (arming.doorArmed) {
+                if (over) armedOverlaps += 1;
+                continue;
+              }
+              if (state === 'clear') hintsOnScreen += 1;
+              if (over) hintOverlaps += 1;
+            }
+          }
+        }
+      }
+    }
+    // Non-vacuous: many hints are ON SCREEN (in front of the camera, anchor
+    // inside the viewport) in this sweep, and the sweep DOES detect the defect
+    // under the shipped rule.
+    expect(hintsOnScreen).toBeGreaterThan(1000);
+    expect(oldRuleOverlaps).toBeGreaterThan(0);
+    // The fix: no visible hint over the board, on screen or partly off it.
+    expect(hintOverlaps).toBe(0);
+    // The documented exception, pinned so it cannot grow unnoticed: the ARMED
+    // prompt facing the board may still cover the board's footer. It exists
+    // (backing into the door with the camera on the board), and it is bounded
+    // by the 240 wu armed radius.
+    expect(armedOverlaps).toBeGreaterThan(0);
+  });
+
+  test('the frame loop publishes the camera forward Z for the label rule', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+    expect(source).toContain('_cameraForwardZ = _forwardScratch.z;');
+    expect(source).toContain('tradingFloorDoorPromptVisible(');
+    expect(source).toContain('clampCameraToRoom(_cameraScratch, TRADING_FLOOR_CAMERA_BOUNDS);');
+    // The old rule, visibility straight off the hint, must not come back.
+    expect(source).not.toContain('setDoorVisible(_arming.doorHint)');
   });
 });
 

@@ -926,6 +926,12 @@ async function runHermesLane(composedPrompt: string): Promise<CapturedGatewayReq
     process.env.CLOUDFLARE_WORKER_URL ??= 'https://example.invalid';
     process.env.CLOUDFLARE_WORKER_BEARER ??= 'x';
     process.env.PARTNER_PUBKEYS ??= '{}';
+    // D3: chatHermesLocal sends nothing without a key (the proxy/mock accept any value).
+    // D1: the proxy listens on loopback. main() already pinned the loopback topology before the
+    // first application import; the topology is read once at module load, so this line alone
+    // could not take effect.
+    process.env.HERMES_LOCAL_GATEWAY_KEY ||= 'probe-local-gateway-key';
+    process.env.LOCAL_RUNTIME_TOPOLOGY = 'loopback';
     const { AgentSubstrateClient } = await import('../../src/services/agent-substrate-client');
     const client = new AgentSubstrateClient({
       agentId: 'hosted-skill-runtime-probe-hermes',
@@ -1180,6 +1186,10 @@ async function main(): Promise<void> {
   if (elizaDatabase && elizaDatabase.logicalIdentity !== applicationDatabase.logicalIdentity) {
     throw new ProbeFailure('ELIZA_DATABASE_URL must target the same logical database as DATABASE_URL');
   }
+  // D1: skill-protocol imports agent-session-config, which reads LOCAL_RUNTIME_TOPOLOGY once at
+  // module load. Pin loopback before that first import so Lane B reaches its loopback proxy even
+  // inside an api container configured with LOCAL_RUNTIME_TOPOLOGY=sandbox.
+  process.env.LOCAL_RUNTIME_TOPOLOGY = 'loopback';
   // Import protected application source only after every target guard passes.
   const protocolSource = await import('../../src/services/skill-protocol');
   const sharedSource = await import('@clawville/shared');

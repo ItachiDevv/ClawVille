@@ -228,9 +228,17 @@ export const TRADING_FLOOR_DOOR = Object.freeze({
  * y 360). The board keeps its full 1700 width; what moved is the height and the
  * sill. The kiosk was shortened from 470 to 300 wu — it was 1.74x a 270 wu
  * avatar, about 2.95 m — which drops its occlusion shadow on the board plane
- * from 595 to 339. A sill at 360 therefore clears the shadow by 21 wu, so the
- * board is no longer occluded from any ground viewpoint and the layout needs no
- * keep-out zone in its lower-left.
+ * from 595 to 339. A sill at 360 therefore clears the kiosk's shadow by 21 wu
+ * and the layout needs no keep-out zone in its lower-left.
+ *
+ * What is actually true for the centre statue (v3 twin Golden Claws, top
+ * 226.96 wu, cap 230; measured, swept and pinned in
+ * `trading-floor-asset.test.ts`): the board is clear of it from the SPAWN at
+ * any yaw and any camera pitch, and from ANYWHERE in the hall at the default
+ * camera height. A camera lowered to its floor right next to the plinth can
+ * look up past it at the board's bottom edge; that was already true of the old
+ * 206 wu dais (it reached y 510 from that pose), so the older sentence here,
+ * "no longer occluded from any ground viewpoint", was never literally true.
  *
  * The ceiling sets the ceiling: the surround's top edge is
  * `bottomY + height + 68` against a 950 inner face, so `bottomY + height <= 882`
@@ -712,7 +720,8 @@ export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
       halfZ,
     });
   }),
-  // TradingFloorHoloDais — node (0, -60), 700 x 692 footprint, 206 tall.
+  // TradingFloorHoloDais — node (0, -60), 700 x 692 footprint. Since v3 it is
+  // the stepped granite plinth under the twin Golden Claws (top 226.96 wu).
   Object.freeze({ centerX: 0, centerZ: -60, halfX: 350, halfZ: 346 }),
   // TradingFloorMonitorStation — node (-300, -980), 129 x 101 footprint (v3).
   Object.freeze({
@@ -983,6 +992,32 @@ export function computeTradingFloorArming(
     seatIndex >= 0 && _armingNearestSeat.distanceSq <= SEAT_HINT_SQ
       ? seatIndex
       : -1;
+}
+
+/**
+ * Whether the door's "Exit" capsule is shown.
+ *
+ * The capsule is an HTML world label anchored at head height just inside the
+ * door approach. Its placement was proved on screen for a player FACING THE
+ * BOARD near the door (camera clamped at `TRADING_FLOOR_CAMERA_Z_MAX`), and in
+ * exactly that pose it projects onto the bottom edge of the big board: the
+ * spawn is inside the 460 wu hint band, so it covered the board's basis line
+ * and ticker on arrival (verifier B, staging 9dc59f73, shots b-01/b-02).
+ *
+ * The HINT therefore needs the camera to face the door half-space
+ * (`forwardZ > 0`, forward = `(sin yaw, 0, -cos yaw)`): the board is then more
+ * than 90° off the view axis and cannot sit behind the label. The ARMED prompt
+ * is always shown, because E really leaves from there and a working action
+ * with no visible prompt is the failure this label has had twice already;
+ * backing into the door while facing the board is the one pose where it still
+ * covers the board's footer, and only inside the 240 wu armed radius.
+ */
+export function tradingFloorDoorPromptVisible(
+  armed: boolean,
+  hint: boolean,
+  cameraForwardZ: number,
+): boolean {
+  return armed || (hint && cameraForwardZ > 0);
 }
 
 /**

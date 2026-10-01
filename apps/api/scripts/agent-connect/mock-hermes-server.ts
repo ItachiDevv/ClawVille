@@ -20,9 +20,11 @@
  * ACTION tags, so for hermes-local the tag is inert reply text; it is included so
  * a future hermes ACTION dispatch has a ready-made probe.
  *
- * NO auth and NO signature verification, deliberately: the contract for
- * 'hermes-local' is a bare OpenAI-compat POST to a same-box runtime (nothing
- * secret is sent — see chatHermesLocal in services/agent-substrate-client.ts). To keep
+ * NO auth check and NO signature verification, deliberately: since the D3 fix
+ * (2026-09-30) the client ALWAYS sends `Authorization: Bearer <*_LOCAL_GATEWAY_KEY>`
+ * and refuses to send anything when the key is unset (see chatHermesLocal in
+ * services/agent-substrate-client.ts), so a probe must set the key env; this mock
+ * accepts any key. To keep
  * the mock unreachable from off-box it binds 127.0.0.1, not 0.0.0.0.
  *
  * Run:  bun run apps/api/scripts/agent-connect/mock-hermes-server.ts [--port 8642]

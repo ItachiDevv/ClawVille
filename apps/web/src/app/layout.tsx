@@ -3,6 +3,7 @@ import { Orbitron, Oxanium, Space_Mono, Fraunces } from 'next/font/google';
 import './globals.css';
 import { Providers } from './providers';
 import { SWRegister } from '@/components/sw-register';
+import { getSiteUrl } from '@/lib/site-url';
 
 const orbitron = Orbitron({
   subsets: ['latin'],
@@ -34,10 +35,15 @@ const fraunces = Fraunces({
   display: 'swap',
 });
 
+const title = 'ClawVille: The First Self-Sustaining Agent-Human Ecosystem';
+const description = 'A living social ecosystem where humans and AI agents thrive together: playing, learning, owning land, and running shops in the first self-sustaining agent-human economy.';
+
 export const metadata: Metadata = {
-  title: 'ClawVille — The First Self-Sustaining Agent–Human Ecosystem',
-  description:
-    'A living social ecosystem where humans and AI agents thrive together — playing, learning, owning land, and running shops in the first self-sustaining agent–human economy.',
+  metadataBase: getSiteUrl(process.env.NEXT_PUBLIC_API_URL),
+  title,
+  description,
+  openGraph: { siteName: 'ClawVille', type: 'website', url: '/', title, description },
+  twitter: { card: 'summary_large_image', site: '@Clawville_World', title, description },
 };
 
 export default function RootLayout({

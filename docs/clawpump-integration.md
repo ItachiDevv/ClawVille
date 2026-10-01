@@ -1,5 +1,11 @@
 # ClawPump integration
 
+**Last Audited: 2026-10-01 (Trading Arena single ClawPump writer, Codex r19 money; in the consolidated build).** Drift note: only the arena engine leader writes to ClawPump now; launch, add-on changes and the admin reprovision write only the database row, and the leader applies them on its 30 s provisioning tick (design v8b: x402 removals first, R1 fresh OFFs with no cap on a database-time watermark, R2 a fair 6-per-tick cursor, R3 retries with backoff, then 4 re-checks; a per-agent try-lock in a bounded transaction). D32: x402 removal is hygiene, not a money control; the payment gates are the reservation, `confirmDispatch` and the writer's last read. Only the add-on tick adds x402, right before a payment, at most 8 a tick; provisioning never adds it. The arena writer now allows 60 ClawPump calls a minute per process, burst 10, the last 5 reserved for removals (new section "Call budget and quota"). The immediate x402 removal on the last add-on off and the 60 s removal sweep are gone.
+
+**Last Audited: 2026-09-30 (Trading Arena follow-ups: sticky default skills D24, D18 confirmed, D25 tradeable sources; protocol 75).** Drift note: ClawPump's six default skills cannot be removed by a PATCH, so they are allowed and every other trading or spending skill is denied and verified by read-back; the REST x402 wrapper is confirmed by one real $0.01 Nansen call on staging; a shared-feed coin is tradeable only after a DexScreener or ClawPump (`clawpump:` signals and anomalies) sighting, so ClawPump's discovery feeds now gate what the arena can buy.
+
+**Last Audited: 2026-09-30 (Trading Arena: ClawVille now CREATES ClawPump agents; protocol 74).** Drift note: new section "Trading Arena (2026-09-30)". Launching a paper arena agent creates one private ClawPump agent under ClawVille's account through the new write client `apps/api/src/services/clawpump-writer.ts` (`CV Arena` names, no trading skill, `x402` only with paid add-ons). Paid add-ons pay vetted Nansen feeds through ClawPump's x402 route from that agent's own wallet. The arena never modifies the house traders' ClawPump agents. The Runner agent gained the `x402` skill on 2026-09-30 for the vetting test ($0.119 spent). The "Start a ClawPump trader" copy cards are no longer rendered in the game; `GET /api/floor/templates` still serves them. Gameplay: `GameFeatures.md` §17g.3; routes and tables: `ARCHITECTURE.md` "Trading Floor Arena (paper contest) service and data surface".
+
 **Last Audited: 2026-09-22 (Trading Floor availability knowledge; protocol 68).** Drift note: the game already labels player trading and trader launch controls "Coming soon", but Nori and the protocol still described immediate template copying. Nori, shared orientation, and the served manual now distinguish disabled game controls from retained authenticated wallet-binding and trade-report APIs. Public house-trader and template reads remain available. Swap execution still requires an operator-provisioned, armed trading account. The version bump refreshes hosted protocol knowledge through the existing install/consume path. No route, action, identity, custody, settlement, or runner state changes. PARITY: human path: game controls and Nori; agent path: protocol and shared orientation; settlement binds to the existing avatar resolution.
 
 **Last Audited: 2026-09-20 (Genesis runner: LP lock rule for all pool types, cap reset, +15 percent trail, all launchpads; plus the RUNNER STATUS FEED).** Drift note: new "Runner status feed" subsection under House traders records `POST /api/floor/house-traders/status`, the `HOUSE_TRADER_STATUS_TOKEN` bearer, the body contract, the post-on-change plus 60 second heartbeat cadence, the 150 second ageout, and the rule that a pause is REPORTED and never inferred from trade silence. Runner section records the FEELSGOOD rug, the on-chain LP lock check per pool type, the replayed exit change and StonkFun support. Earlier: the read-only ownership client, four operator routes, script flow, and recorded fixture inventory.
@@ -13,7 +19,7 @@
 | Item | State |
 |---|---|
 | ClawPump account | "Hoodie Management", Google sign-in, user `b40f15d4-fb15-458b-94ee-690607725e6c`, deposit wallet `GGzvQQMunrhPEuaCatbMHScpxfps1cAxmU7E4vGQJeoh`. |
-| API key | `cpk_` + 43 chars, ENTERPRISE (readable: `POST /api/mcp/token` returns `"tier": "enterprise"`). ClawPump's developer page says call limits are "recorded but not enforced" and the tier swap fee is "not currently applied on-chain". Stored off-repo on the operator desktop and the founder laptop. Set on the STAGING api app as `CLAWPUMP_API_KEY`; no code reads it yet. |
+| API key | `cpk_` + 43 chars, ENTERPRISE (readable: `POST /api/mcp/token` returns `"tier": "enterprise"`). ClawPump's developer page says call limits are "recorded but not enforced" and the tier swap fee is "not currently applied on-chain". Stored off-repo on the operator desktop and the founder laptop. Set on the STAGING api app as `CLAWPUMP_API_KEY`. (Stale since 2026-09-18: `clawpump-client.ts` reads it for the operator ownership proof, and since 2026-09-30 the Trading Arena reads it for quotes, agent creation, wallet balances and x402 pay.) |
 | AI (model) credits | **0.** Separate from the API tier. See "Two meters" below. |
 | Genesis | Agent `0f600d73-05a0-4c2e-8215-ab2a770ba192`, wallet `4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n`, about 0.28 SOL + 12.02 USDC. Rules in its system prompt: four-mint list, at most $2 per trade under a $50 float, 10 percent of equity, one trade per hour, quote first, skip above 1 percent impact, keep 0.02 SOL, never transfer out, no perps, snipes or launches. Perps disabled on the agent. |
 | Genesis proof trade | `swap_execute` 0.01 SOL to 1.021564 USDC, tx `5MpMtdFafzC4hoNs4m7Ho99bQMPddk7L83EKBFuaujLU69gSHFjvs66pzdccfEy9RWphRj3Fg94d4m7HiZvK4QRa` (Jupiter route, no platform fee). |
@@ -465,11 +471,194 @@ buy. Nothing gates on them, because we hold no history to set a threshold
 against. They are stored so the trade record can answer that question later.
 Setting a threshold on them today would be a guess.
 
+## Trading Arena (2026-09-30)
+
+The Trading Arena is a PAPER trading contest in the Trading Floor (gameplay:
+`GameFeatures.md` §17g.3; design and decisions: `docs/trading-floor-arena.md`).
+It is the first ClawVille feature that WRITES to ClawPump.
+
+- **ClawVille creates ClawPump agents.** Launching a player arena agent
+  creates ONE ClawPump agent under ClawVille's ClawPump account (the "Hoodie
+  Management" account above) that serves only that player's agent (D8). Client:
+  `apps/api/src/services/clawpump-writer.ts` (`POST /agents`, `PATCH
+  /agents/{id}`, `GET /agents/{id}`, `GET /wallets/summary`, the two x402
+  routes), same host allowlist and `CLAWPUMP_API_KEY` as the read client,
+  no logging, no retry of a create or a pay. Job:
+  `apps/api/src/services/floor-arena/provisioning.ts`.
+- **Single writer (Codex r19, lead design, 2026-10-01).** Only the arena
+  engine LEADER writes to ClawPump: creates, config PATCHes, `x402` on/off
+  and add-on payments. Request handlers write only the DB row: `POST
+  /me/launch` leaves the row `pending` and the leader creates the execution
+  wallet on its next provisioning tick; `PATCH /me/addons` changes the row
+  only; the admin `POST /api/admin/floor-arena/agents/:id/reprovision` resets
+  a failed row to `pending` and the leader provisions it. The provisioning
+  loop runs every 30 s (±10%), also while the operator pause is on (then it
+  only removes `x402`). **D32 (lead): `x402` removal is HYGIENE, not a
+  money control.** The money invariant: no USDC moves unless the
+  reservation and `confirmDispatch` pass (add-on enabled, agent active and
+  seated, engine not paused, caps) and the writer's last read before the pay
+  shows a stopped agent that holds `x402`. `x402` ON only for a READY agent
+  with an enabled add-on, not while paused, never on a `running` agent; OFF
+  otherwise, also while paused and on a `running` agent (a removal only
+  takes capability away). Provisioning never adds `x402` (its config sync
+  removes it if present). Each tick runs the `x402` REMOVALS first (design
+  v8b, Codex r20/r21 + audit-money): R1 every add-on-free agent whose row
+  changed since the previous pass start minus 2 minutes, keyset-paged with
+  no row limit, on a DATABASE-time watermark (the first pass of each leader
+  term covers every add-on-free agent); R2 a fair cursor over all add-on-free
+  agents, 6 per tick, paged, advancing every tick; R3 earlier failures and
+  deferrals, oldest first, one attempt per agent per tick (a failing agent
+  backs off 30 s, 1, 2, 4 ... minutes, at most 30). Then, only when no
+  removal was deferred (busy lock or call budget), 4 re-checks per tick over
+  all agents; a re-check that finds unwanted `x402`, or a running agent with
+  `x402`, removes it at once. `x402` is ADDED only by the add-on tick (60 s,
+  leader) right before it pays: at most 8 adds per tick, none while a
+  removal is deferred, and a failed or impossible add backs off 1, 2, 4 ...
+  minutes (at most 30) for that agent; if the player turns add-ons off during
+  an add, `x402` comes off in the same call. The add-on tick reserves only
+  when `x402` is on a stopped agent that wants it; `confirmDispatch`
+  re-checks the add-on under the add-on lock, and the writer's own last read
+  before a write requires status `stopped` for a payment and for any PATCH
+  that is not removal-only (only `enabled_skills`, no `x402`, a subset of the
+  agent's skills); any other status refuses before the request
+  (`agent_running` for `running`, `agent_not_stopped` for a null, missing or
+  other status; Codex r22), and a payment also needs `x402` on the agent. One `x402` section runs at a time per process; it is a
+  transaction bounded by `statement_timeout` 30 s and, on PostgreSQL 17,
+  `transaction_timeout` 60 s, that takes
+  `pg_try_advisory_xact_lock('floor-arena-x402:<id>')` (separate from the
+  add-on lock), held across the row read, a fresh ClawPump GET, a PATCH only
+  when needed and a verifying GET; a busy agent is skipped and retried next
+  tick, and a section whose ClawPump calls pass 60 s is rolled back and
+  re-checked next tick. No in-memory cache ever skips a ClawPump read.
+- **Call budget and quota.** The arena writer allows 60 ClawPump calls a
+  minute per process with a burst of 10, checked before each request
+  (create, PATCH, x402 pay and check, agent GETs including the guard GET,
+  wallet summary). The last 5 tokens are reserved for `x402` removal calls.
+  An empty budget refuses with `budget_exhausted` (our own code, not
+  ClawPump's 429 `rate_limited`) before sending, so nothing can have been
+  charged; a refused payment books 0 (`clawpump_budget_exhausted`). When the
+  budget is low, the add-on tick defers its tick and re-checks are skipped,
+  with one log line per tick. The house traders' own calls and the
+  paper-fill quotes use other clients and are outside this budget. ClawPump
+  quota for this key: Enterprise, 10,000,000 calls a month, "recorded but
+  not enforced", no per-second limit and no documented burst ceiling (see
+  the API key row above; research 2026-09-30 in
+  ops/house-traders/research-20260930-clawpump, R2-api.md and R1-docs.md,
+  outside git). 60 a minute leaves most of it to the house traders.
+- **What the created agent looks like.** Name `CV Arena · <name> #<first 12 of
+  the arena id>` in production and `CV Arena (staging) · <name> #<id12>`
+  everywhere else (`CLAWVILLE_ENV` not `production`), at most 48 characters.
+  Private (`is_public: false`), `accepting_bids: false`, and no trading or
+  spending skill. **ClawPump's six platform default skills are STICKY**
+  (verifier A on staging, 2026-09-30: agent `136de7ec` "CV Arena (staging) ·
+  LandTest1 #4821bfae4287" kept `action-plans`, `web-browsing`,
+  `private-transfers`, `bitget-intel`, `self-learning`, `skill-management`; a
+  PATCH of `enabled_skills` only adds or removes non-default skills such as
+  `x402`). So those six are allowed (D24, `CLAWPUMP_STICKY_DEFAULT_SKILLS`),
+  `x402` is added only while a paid add-on is enabled, and every other trading
+  or spending skill is denied (`CLAWPUMP_ARENA_DENIED_SKILLS`: defi and perps
+  trading, token launch and sniping, marketplace, pay.sh, Laso, AgenC,
+  wallet ops). Provisioning reads the skills back after the PATCH, removes a
+  denied non-default skill, reads back again, and fails with
+  `clawpump_denied_skill_present` if one survives. The agent stays stopped and
+  only ClawVille's API drives it. Persona and system prompt say it is an execution wallet that
+  does not trade on its own. Paper trading never uses it and never waits for
+  it: it exists for paid add-ons now, and for a later live mode (punch list
+  P2, founder go only).
+- **Idempotency.** Only one API container may talk to ClawPump for an arena
+  agent at a time: an atomic claim moves the row to `creating` with a
+  10-minute lease, and a claimer that dies leaves the row due again when the
+  lease ends. Provisioning never adopts an existing ClawPump agent, not even
+  one with the exact arena name, because a name proves nothing (Codex r18 #4).
+  It always creates; the ClawPump id is saved before the config update (a
+  failed update retries the same agent); a unique index keeps one ClawPump id
+  on one row (a clash fails with `clawpump_agent_owned`). A create whose
+  response was lost leaves a private agent with no skill of ours that is never
+  funded (the payment address appears only after `markReady`). Every config
+  PATCH reads the agent fresh right before it and refuses a `running` agent;
+  the one exception is the removal-only PATCH (`x402` off), which the leader
+  also sends to a `running` agent and while the engine is paused (single
+  writer above). The writer's own final GET requires status `stopped`; any
+  other status refuses (`agent_running` / `agent_not_stopped`), except a
+  removal-only PATCH. A failure retries every 10 minutes, up to 5 attempts. Unknown:
+  ClawPump's per-account agent limit; a failure never blocks paper trading.
+- **The house agents are never modified by the arena.** The writer proves
+  ownership on every update and pay (Codex r17 #4, money audit N1): a house
+  ClawPump id is refused outright, the ClawPump id must be the
+  `clawpump_agent_id` of the USER arena row the call acts for (DB proof), and
+  ClawPump's current name must carry this environment's arena prefix plus that
+  row's 12-character id suffix; any failure answers `not_arena_agent`.
+  Provisioning and add-ons also skip every `house` row. The arena's house rows carry the live Genesis
+  (`0f600d73-05a0-4c2e-8215-ab2a770ba192`) and Runner
+  (`1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1`) ClawPump ids for reference only;
+  their prompts, skills and wallets are untouched by any arena code path.
+- **x402 pay route.** `POST /agents/{id}/x402/x402_service_pay` with `{ url,
+  method, body | query, maxAmountAtomic }` (USDC 6 decimals, set to the
+  catalog price, never more than $5 per call); the free quote is `POST
+  /agents/{id}/x402/x402_service_details`. Before paying, the add-on tick writes a
+  `reserved` ledger row (`floor_arena_addon_calls`) at the catalog price under
+  a per-agent advisory lock, together with the cap check, so two containers
+  cannot both pay past a cap and a crash leaves the price counted; after the
+  call the row becomes `done`. A pay is NOT retried: a timeout may still have
+  paid, so the ledger counts the catalog price as spent. Otherwise the ledger counts what ClawPump reports it
+  charged (`amount_charged_atomic`), the catalog price when a successful answer
+  does not say. A `duplicate: true` replay books 0 only when its settlement tx
+  is already booked for that agent (`done`, price > 0); otherwise it books the
+  reported `amount_charged_atomic`, and with no amount the catalog (reserved)
+  price (Codex r18). Its stale body is never parsed. The writer pays only https URLs on hosts in
+  `CLAWPUMP_X402_ALLOWED_HOSTS` (today `api.nansen.ai`), and the add-on tick
+  polls each feed at most once per `max(catalog minIntervalS, 600 s)`. ClawPump answers an identical x402 call made within about 3 to 12
+  minutes with the cached body and `duplicate: true` (observed in the vetting
+  run: the same Otto call was a duplicate at about 3 minutes and fresh at about
+  12). The catalog therefore alternates `pagination.per_page` between 50 and 49
+  on consecutive polls (`dedupeVary`). ClawPump's wrapper key around the
+  vendor body is not documented in the MCP source, so the extractor tries the
+  payload and then the usual wrapper keys. D18 CONFIRMED on staging
+  2026-09-30 (verifier A): one real Nansen token-screener call through the
+  REST x402 route finalised its ledger row `done` at $0.010 with 50 mints (37
+  not in the shared feed), private to the test agent, which then traded 5 of
+  them; public views showed only `addon`. To fund that test, Runner moved 0.05
+  USDC to the test agent's wallet (Runner's whitelist entry was added, then
+  removed).
+- **The two vetted feeds** (x402 vetter, 2026-09-30; 16 candidates, 2
+  approved): Nansen Token Screener, $0.01 per call (catalog `minIntervalS`
+  600); Nansen Smart Money DEX Trades, $0.05 per call (catalog `minIntervalS`
+  900). Each is polled at most once per `max(catalog minIntervalS, 600 s)`, so
+  every 10 and every 15 minutes at most.
+  Rejected: seerium (real price $0.10, not the listed $0.001, and ClawPump's
+  payment failed), Birdeye x402 (needs a `payment-identifier` extension that
+  ClawPump does not send), Otto, CoinGecko x402 and Syra (resell free
+  GeckoTerminal or DexScreener data), Heurist (6.7-day-old data), PayAI DEX
+  Trending (Base only). Per agent: a daily cap per add-on and $5 per UTC day in
+  total; the player funds the agent wallet with USDC and ClawVille does not
+  refund. Kill switch: `FLOOR_ARENA_ADDON_PAYMENTS_ENABLED='false'`.
+- **Runner gained `x402` (2026-09-30).** For the vetting test, the house
+  Runner ClawPump agent (`1a0a153e...`) got the `x402` skill at 11:39Z and paid
+  12 on-chain USDC transfers, $0.119 in total (Runner USDC 61.330385 ->
+  61.211385; failed and duplicate calls cost nothing). Nothing else on the
+  agent changed and the skill stays on. To remove it, send its previous
+  10-skill list with `update_agent`. Evidence: the operator workspace file
+  ops/house-traders/X402_FEEDS_2026-09-30.md (not in git).
+- **Paper fills use the Enterprise key.** Every arena buy and sell quote is a
+  ClawPump `POST /swap/quote` (D3): one call per entry attempt, and one per exit that
+  a DexScreener mark triggers (repeated each 10-second exit tick while the
+  quote fails, D4); marks themselves cost no ClawPump call. No Jupiter key is
+  used. The ClawPump
+  `/intelligence/signals` and `/signals/anomalies` discovery feeds are polled
+  once a minute each for all agents together.
+
 ## Trader templates (2026-09-19)
 
+**Update 2026-09-30:** the Trading Floor tab no longer renders these copy
+cards; a "Start your own trader" card points to the paper Trading Arena above,
+which is now the in-game way to launch a trader. `GET /api/floor/templates`,
+the `clawville_trading_templates` tool and manual §17a still serve the five
+templates unchanged, and the rest of this section still describes them.
+
 ClawVille publishes five copyable ClawPump trader templates, one per fleet
-objective. `GET /api/floor/templates` serves them and the Trading Floor tab
-renders them from the same constant, so the two cannot disagree.
+objective. `GET /api/floor/templates` serves them and, until 2026-09-30, the
+Trading Floor tab rendered them from the same constant, so the two could not
+disagree.
 
 - **Source:** `packages/shared/src/constants/trading-agent-templates.ts`. Every
   persona line is DERIVED from `TRADING_OBJECTIVE_BRIEFS`,

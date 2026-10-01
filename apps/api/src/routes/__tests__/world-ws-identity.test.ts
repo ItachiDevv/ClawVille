@@ -42,11 +42,22 @@ mock.module('../../lib/auth', () => ({
 mock.module('../../middleware/require-auth-or-agent', () => ({
   AGENT_SESSION_HEADER: 'X-Clawville-Agent-Session',
   async validateLiveAgentSession(sessionId: string) {
-    if (sessionId !== 'valid-agent') return null;
-    return {
-      config: { agentId: 'agent-7' },
-      bot: { userId: 'user-agent-owner' },
-    };
+    // C12 owner proof: the owner goes only to a session whose config
+    // `boundUserId` equals the row `userId`. 'stray-agent' is live on the
+    // same owned row but never proved that owner.
+    if (sessionId === 'valid-agent') {
+      return {
+        config: { agentId: 'agent-7', boundUserId: 'user-agent-owner' },
+        bot: { userId: 'user-agent-owner' },
+      };
+    }
+    if (sessionId === 'stray-agent') {
+      return {
+        config: { agentId: 'agent-7', boundUserId: null },
+        bot: { userId: 'user-agent-owner' },
+      };
+    }
+    return null;
   },
 }));
 
@@ -156,6 +167,18 @@ describe('world presence identity resolver', () => {
       headers({ 'X-Clawville-Agent-Session': 'expired-agent' }),
     );
     expect(invalid.body.kind).toBe('guest');
+  });
+
+  it('gives a stray agent session (no owner proof) no owner userId', async () => {
+    const stray = await readPresence(
+      '/resolve',
+      headers({ 'X-Clawville-Agent-Session': 'stray-agent' }),
+    );
+    expect(stray.body).toMatchObject({
+      kind: 'agent',
+      sessionId: 'a:agent-7',
+      userId: null,
+    });
   });
 
   it('keeps Lucia precedence over an agent bearer', async () => {

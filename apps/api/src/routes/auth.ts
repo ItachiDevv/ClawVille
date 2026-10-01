@@ -1,11 +1,12 @@
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, or, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, agentBots, avatars } from '@clawville/database';
-import { npcSimulation } from '../services/npc-simulation';
+import { bindAgentOwnerAtRedemption, RedemptionEvictionIncompleteError } from '../services/agent-redemption-bind';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import { sessionLedgerCapable } from '../services/agent-owner-binding';
 import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { noStorePrivate } from '../middleware/no-store';
@@ -956,34 +957,36 @@ authRoutes.get('/enter', async (c) => {
   // claim event. First-contact /connect deliberately does NOT bind
   // `openclaw_bots.user_id` (see the agent-gateway "deliberately do NOT bind"
   // comment); the human CLICKING the agent-issued link is the proof that this
-  // agent belongs to this account, so the bind happens HERE. Atomic guarded
-  // UPDATE: `user_id IS NULL OR user_id = <redeemer>` means we only fill an
-  // unowned row or re-affirm the same owner — a DIFFERENT existing owner is
-  // NEVER clobbered (skip + warn; `agentId` is a public handle, safe to log —
-  // never log the ticket or any bearer). Best-effort: a bind failure must not
-  // block the human's login, so the whole block is non-fatal.
+  // agent belongs to this account, so the bind happens HERE, in
+  // `bindAgentOwnerAtRedemption` (`services/agent-redemption-bind.ts`). It only
+  // fills an unowned row or re-affirms the same owner — a DIFFERENT existing
+  // owner is NEVER clobbered (skip + warn; `agentId` is a public handle, safe to
+  // log — never log the ticket or any bearer). Security 2026-09-30: a first
+  // bind keeps only the live session the ticket was issued to, and only while
+  // the row still names it; it evicts every other live session for the agent
+  // and burns a stray's row bearer hash so it cannot restore. The owner stamp on
+  // a kept `/connect` session never grants ledger capability: a session minted
+  // without owner proof stays non-ledger until an identityKey connect or a
+  // signed /reconnect. HATCHER EXCEPTION: an anonymous Hatcher register
+  // (`partner-hatcher.ts`, partner-signed) mints its session with
+  // `ledgerCapable: true` and `boundUserId: null`; when a control-link first
+  // bind keeps that session, the stamp sets `boundUserId` to the redeemer, so
+  // the session becomes ledger-capable for the redeemer (the partner signature
+  // is its owner proof). Best-effort FOR THE LOGIN: a bind failure must not
+  // block the human's login. It is fail-closed FOR THE AGENT: if eviction cannot
+  // be proven complete (a stray left, or a session enumeration threw), the bind
+  // quarantines the agent for every Map-only reader, burns the row hash and
+  // throws `RedemptionEvictionIncompleteError` (round 4), so no agent bearer
+  // survives the ownership change. A throw of that burn UPDATE ends in the same
+  // error (`rowBurned: false`, quarantine kept). Both are logged as SECURITY.
   if (consumed.issuedToAgentId) {
     try {
-      const bound = await db
-        .update(agentBots)
-        .set({ userId: consumed.userId, updatedAt: new Date() })
-        .where(
-          and(
-            eq(agentBots.agentId, consumed.issuedToAgentId),
-            or(
-              isNull(agentBots.userId),
-              eq(agentBots.userId, consumed.userId),
-            ),
-          ),
-        )
-        .returning({ id: agentBots.id });
-      if (bound.length > 0) {
-        // Propagate onto the LIVE in-memory session config(s) so the agent's
-        // demotion backstop (`resolveAgentSession`: config.boundUserId must
-        // equal the row's userId) passes WITHOUT a reconnect — the connected
-        // agent becomes ledger-capable the moment its human lands in-game.
-        npcSimulation.bindAgentOwner(consumed.issuedToAgentId, consumed.userId);
-      } else {
+      const outcome = await bindAgentOwnerAtRedemption({
+        agentId: consumed.issuedToAgentId,
+        redeemerUserId: consumed.userId,
+        issuedSessionDigest: consumed.issuedToAgentSession,
+      });
+      if (outcome === 'skipped') {
         // Row missing, or already owned by a DIFFERENT user (the guard
         // refused). Either way: no bind, login proceeds normally.
         console.warn(
@@ -991,7 +994,13 @@ authRoutes.get('/enter', async (c) => {
         );
       }
     } catch (err) {
-      console.error('[AuthEnter] agent bind failed (non-fatal):', err);
+      if (err instanceof RedemptionEvictionIncompleteError) {
+        console.error(
+          `[AuthEnter] SECURITY: agent bind for agentId=${err.agentId} could not prove eviction (${err.remainingSessions < 0 ? 'unknown' : err.remainingSessions} stray session(s)); agent quarantined; row hash ${err.rowBurned ? 'burned' : 'NOT burned (burn UPDATE failed)'}; agent must reconnect`,
+        );
+      } else {
+        console.error('[AuthEnter] agent bind failed (non-fatal):', err);
+      }
     }
   }
 
@@ -1052,37 +1061,33 @@ authRoutes.post('/milady-session-exchange', async (c) => {
   }
   const { config: botConfig, bot } = live;
 
-  // Find or create a guest user for this Milady agent
-  const guestEmail = `milady-${botConfig.agentId}@clawville.guest`;
-  let user = await db.query.users.findFirst({
-    where: eq(users.email, guestEmail),
+  // Security fix C2 (2026-09-30): this route mints a full Lucia browser-login cookie from an
+  // agent-session bearer. Before, ANY live session (including a credentialless, perception-only,
+  // or restored-after-deploy session bound to an owner's avatar WITHOUT ownership proof) could
+  // exchange into an authed browser session. Fail closed: require a ledger-capable session — one
+  // that proved ownership of its bound avatar (identityKey connect or signed /reconnect), the same
+  // bar the cove and the value routes use. A non-ledger session may still perceive/chat/move; it
+  // just cannot mint a login.
+  if (!sessionLedgerCapable(botConfig, bot.userId ?? null)) {
+    throw new HTTPException(403, {
+      message: 'agent_session_not_ledger_authorized: prove avatar ownership before exchanging for a login',
+    });
+  }
+
+  // Mint the login for the agent's REAL bound owner, never a synthetic account. sessionLedgerCapable
+  // above guarantees bot.userId is non-null, equals config.boundUserId, and (per resolveAgentSession's
+  // guest backstop) is a non-guest user. The old code created/logged-in a separate
+  // `milady-<agentId>@clawville.guest` row (is_guest=false), granting a full-user session for an
+  // account that was not the proven owner (Codex C2 review, 2026-09-30). Bind the cookie to the owner.
+  const ownerUserId = bot.userId!;
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, ownerUserId),
   });
-
   if (!user) {
-    // Create a guest user — random password hash, never used for login
-    const guestId = crypto.randomUUID();
-    const randomHash = await Bun.password.hash(crypto.randomUUID(), {
-      algorithm: 'bcrypt',
-      cost: 4, // fast — this hash is never verified
-    });
-
-    await db.insert(users).values({
-      id: guestId,
-      email: guestEmail,
-      passwordHash: randomHash,
-      name: bot.name ?? botConfig.agentId,
-    });
-
-    user = await db.query.users.findFirst({
-      where: eq(users.id, guestId),
-    });
+    throw new HTTPException(404, { message: 'Bound owner account not found' });
   }
 
-  if (!user) {
-    throw new HTTPException(500, { message: 'Failed to create guest user' });
-  }
-
-  // Create a Lucia session for this guest user
+  // Create a Lucia session for the bound owner
   const session = await lucia.createSession(user.id, {});
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());

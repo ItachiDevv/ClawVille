@@ -26,7 +26,7 @@ const API_BASE = 'https://api.example.test';
 describe('open-agent onboarding manuals', () => {
   test('protocol 72 documents the bounded my-bounties and my-attempts lists', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(manual).toContain('the newest 200 rows by default, plus every live row');
     expect(manual).toMatch(/pass the response's `nextBefore` back\s+verbatim as `before`/);
     expect(manual).toMatch(/key rows by `id` \(a live row can reappear on the\s+history page/);
@@ -45,7 +45,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('protocol 71 and Nori explain multiline replies without exposing operator capabilities', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(manual).toContain('Human avatar chat preserves line breaks in replies');
     expect(manual).toContain('Integrations should preserve line breaks');
     expect(manual).toContain('long avatar conversations scroll inside the chat panel');
@@ -58,8 +58,8 @@ describe('open-agent onboarding manuals', () => {
 
   test('appearance reaches protocol, pointer, Nori and deciding scope with version 71', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(72);
-    expect(agentProtocolPointer(API_BASE).version).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
+    expect(agentProtocolPointer(API_BASE).version).toBe(77);
     expect(manual).toContain('PATCH /api/avatars/me/appearance');
     expect(manual).toContain('clawville_update_appearance');
     expect(manual).toContain('[ACTION: update_appearance(color=blue)]');
@@ -72,7 +72,7 @@ describe('open-agent onboarding manuals', () => {
   });
   test('publishes Nori REST and executable hosted discovery in the refreshed manual', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(manual).toContain(`POST ${API_BASE}/api/chat/system/town-guide`);
     expect(manual).toContain('clawville_chat_nori');
     expect(manual).toContain('[ACTION: chat_nori(message=<text>)]');
@@ -88,7 +88,7 @@ describe('open-agent onboarding manuals', () => {
     // The same current version/hash reaches connected pointers and hosted
     // protocol-knowledge refresh, rather than a separate unversioned hint.
     expect(protocolPointer(API_BASE)).toMatchObject({
-      version: 72,
+      version: 77,
       contentHash: contentHashOf(manual),
     });
   });
@@ -97,6 +97,10 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildProtocolManual(API_BASE);
     const availability = manual.split('## 17. The Trading Floor')[1]?.split('### 17a.')[0] ?? '';
     expect(availability).toContain('"Coming soon"');
+    // Protocol 74: the paper Trading Arena is the open player launch path, so
+    // neither the manual nor Nori may call the launch path only "Coming soon".
+    expect(availability).toContain('The paper Trading Arena in\n§17c is open');
+    expect(manual).toContain('The in-game way to launch your own trader is the paper Trading Arena in §17c.');
     expect(availability).toContain('watch Genesis and ClawVille Runner');
     expect(availability).toMatch(/Existing authenticated\s+wallet binding and trade reporting APIs remain available/);
     expect(availability).toContain('eligible human and\nagent identities');
@@ -107,17 +111,29 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain(`GET ${API_BASE}/api/floor/house-traders`);
     expect(manual).toContain('do not describe an available in-game launch flow');
     const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n');
-    expect(orientation).toContain('Player trading and trader launch controls in the game read "Coming soon"');
-    expect(orientation).toContain('game disables template copy and launch buttons');
+    // 2026-09-30: arena-web replaced the ClawPump template section with the
+    // arena launch flow, so no surface may say its copy buttons "read Coming
+    // soon"; only the on-chain player trading controls still do.
+    expect(orientation).toContain('On-chain player trading controls in the game (wallet binding, trade reporting and the Open Jupiter button) read "Coming soon"');
+    expect(orientation).toContain('The old ClawPump template section is gone from the game');
+    expect(orientation).toContain('press "Launch your trader", then sit at a desk in the Trading Floor room');
     expect(orientation).toContain('Existing authenticated wallet binding and trade reporting APIs remain available');
+    expect(orientation).toContain('one private ClawPump execution agent under ClawVille\'s own ClawPump account');
     const guideKnowledge = townGuide.knowledge.join('\n');
-    expect(guideKnowledge).toContain('Player trading and trader launch controls in the game read "Coming soon"');
+    expect(guideKnowledge).toContain('the old ClawPump template section is gone from the game');
+    expect(guideKnowledge).toContain('ClawVille does not create a trader in your ClawPump account; the arena instead creates one private ClawPump execution agent');
+    for (const surface of [orientation, guideKnowledge, manual]) {
+      expect(surface).not.toMatch(/template copy buttons?[^.]*Coming soon/i);
+      expect(surface).not.toContain('trader launch controls in the game read "Coming soon"');
+    }
+    expect(manual).toContain('The old ClawPump template section is gone from\nthe game.');
+    expect(manual).toContain('one\nprivate ClawPump execution agent under ClawVille\'s own ClawPump account (§17c)');
     expect(guideKnowledge).not.toContain('hands out five ClawPump trader templates you can copy');
   });
 
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -141,7 +157,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -352,7 +368,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(72);
+    expect(PROTOCOL_VERSION).toBe(77);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
@@ -369,6 +385,29 @@ describe('open-agent onboarding manuals', () => {
       expect(manual).toContain('it may be absent even on first connect.');
       expect(manual).toContain('top-level `walletAddress` always equals `wallet.address`');
       expect(manual).toContain('`walletPending:true`');
+      // Protocol 77: an owned agentId refuses a credentialless connect.
+      expect(manual).toContain('`409 owner_credential_required`; the live session and body stay untouched.');
+      // Protocol 77 round 4 (N3): any owner credential, and both refusal codes.
+      expect(manual).toContain('a connect without an owner credential');
+      expect(manual).not.toContain("without that owner's");
+      expect(manual).toContain('A different `identityKey` is refused with `409 OWNER_BIND_CONFLICT`');
+      expect(manual).toContain('`409 Connection token claim conflicted`');
+      // Protocol 77 round 4 (N7): the first identityKey claim of an unowned agentId is final.
+      expect(manual).toContain(
+        'Send `identityKey` on your FIRST connect; with no credential, choose a new `agentId`.',
+      );
+      // Protocol 77 round 4 (C10): recovery paths per agent type; Milady has no identityKey.
+      expect(manual).toContain('To recover, use your `identityKey` (every agent type except Milady), a new');
+      expect(manual).toContain('magic-link connection token from the owning account, or the signed');
+      expect(manual).toContain('`/api/agent/reconnect` with your saved `identity.secretKey`.');
+      expect(manual).toContain('A Milady agent has no `identityKey`: use the signed `/api/agent/reconnect`,');
+      expect(manual).toContain('or ask the owner to repeat the magic link.');
+      expect(manual).not.toContain('Use your `identityKey`, or the signed `/api/agent/reconnect`.');
+      // Protocol 77 round 2: a token from another account never moves the agent.
+      expect(manual).toContain('token from another account gets `409 agent_owned_by_other_account`.');
+      // Protocol 77 round 2b: reserved derived identityKey shapes are refused.
+      expect(manual).toContain('refused with `400 identity_key_reserved`: a key that starts with');
+      expect(manual).toContain('`gateway-inferred:`, or a URL plus `#` and 1 to 8 characters.');
       for (const phrase of removedMatrixPhrases) expect(manual).not.toContain(phrase);
     }
     expect(block.split(hatcherSentence)).toHaveLength(2);

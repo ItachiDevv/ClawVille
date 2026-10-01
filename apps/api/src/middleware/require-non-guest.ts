@@ -12,7 +12,7 @@ export async function isGuestUser(userId: string): Promise<boolean> {
   const row = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { isGuest: true } });
   return !!row?.isGuest;
 }
-const GUEST_BLOCKED = { error: 'Guests run a demo economy — create a free account to use real ClawTokens.', code: 'guest_not_allowed' as const };
+const GUEST_BLOCKED = { error: 'Guests run a demo economy. Create a free account to use this feature.', code: 'guest_not_allowed' as const };
 /** After requireAuth OR any sessionMiddleware route: 403 a guest; non-guest users + agent (null Lucia user) pass. */
 export const requireNonGuestUser = createMiddleware<AppContext>(async (c, next) => {
   const user = c.get('user');

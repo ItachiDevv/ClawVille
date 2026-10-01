@@ -28,7 +28,7 @@
 
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
-import { db, buildingSkills, agentBots, avatars, eq, and } from '@clawville/database';
+import { db, buildingSkills, avatars, eq } from '@clawville/database';
 import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { lucia } from '../lib/auth';
 import { sessionMiddleware } from '../middleware/auth';
@@ -301,7 +301,7 @@ skillsRoutes.get(
  * authenticated end-user may download, exactly as before Phase C.
  *
  * Cheap by design: a Lucia cookie validation OR an in-memory session-map hit;
- * it does NOT load the avatar row (resolveAvatarId does, and we don't need it).
+ * it does NOT load the avatar row (we don't need it).
  */
 async function hasEndUserIdentity(c: import('hono').Context<AppContext>): Promise<boolean> {
   // Lucia browser session (the human "Claim Skill" path).
@@ -394,67 +394,6 @@ const endUserOrPartnerKey: MiddlewareHandler<AppContext> = async (c, next) => {
 };
 
 /**
- * Resolve the caller's avatar ID via either Lucia session cookie or
- * Authorization: Bearer <agent-sessionId>. Returns null if both fail.
- */
-async function resolveAvatarId(c: any): Promise<string | null> {
-  // Try Lucia session cookie first
-  const cookieHeader = c.req.header('Cookie');
-  if (cookieHeader) {
-    const cookieName = lucia.sessionCookieName;
-    const sessionMatch = cookieHeader.match(new RegExp(`${cookieName}=([^;]+)`));
-    if (sessionMatch) {
-      try {
-        const { user } = await lucia.validateSession(sessionMatch[1]);
-        if (user) {
-          const row = await db.query.avatars.findFirst({
-            where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-            columns: { id: true },
-          });
-          if (row) return row.id;
-        }
-      } catch {
-        /* fall through to bearer */
-      }
-    }
-  }
-
-  // Try agent Bearer sessionId — sessionId itself is opaque, so we look up
-  // the openclaw_bots row by agent_id matching the in-memory map. Cheap
-  // alternative: skip sessionId resolution entirely and take agent_id from
-  // the X-Clawville-Agent-Id header that self-managed clients already send for
-  // event logging.
-  const auth = c.req.header('Authorization');
-  const agentIdHeader = c.req.header('X-Clawville-Agent-Id');
-  if (auth?.startsWith('Bearer ') || agentIdHeader) {
-    // Prefer agent-id header (set by self-managed harnesses); fall back to the
-    // session-resolution map for sessionId-only callers.
-    const { npcSimulation } = await import('../services/npc-simulation');
-    let agentId: string | null = agentIdHeader ?? null;
-    if (!agentId && auth) {
-      const sid = auth.slice(7);
-      const cfg = npcSimulation.getAgentBotConfig(sid);
-      agentId = cfg?.agentId ?? null;
-    }
-    if (agentId) {
-      const bot = await db.query.agentBots.findFirst({
-        where: eq(agentBots.agentId, agentId),
-        columns: { userId: true },
-      });
-      if (bot?.userId) {
-        const avatar = await db.query.avatars.findFirst({
-          where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
-          columns: { id: true },
-        });
-        if (avatar) return avatar.id;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
  * Returns true if the avatar's characterConfig.knowledge contains at least
  * one entry from any of the building's books' knowledgeEntries arrays.
  * This matches the in-game definition of "you've read at least one book
@@ -528,9 +467,12 @@ function teaserBody(buildingId: string, skillName: string, description: string):
  * Metric to graduate: peer-skill-commerce unpause shipping (improvements.md §7)
  * Current reading: paused
  * Review deadline: TBD on commerce re-enable
- * On deadline: re-enable the avatarOwnsBuilding(avatarId, buildingId) gate by
- *   uncommenting the resolveAvatarId + check + 402 teaser block. Preserved
- *   commented so re-enable is a 3-line diff.
+ * On deadline: re-enable the avatarOwnsBuilding(avatarId, buildingId) check and
+ *   the 402 teaserBody() response (headers X-Skill-Locked, X-Skill-Building).
+ *   Take avatarId only from a verified identity (Lucia session, or the owner
+ *   avatar of a validateLiveAgentSession session), never from a request header.
+ *   The old resolveAvatarId trusted X-Clawville-Agent-Id and was deleted
+ *   2026-10-01 (connect-sec round 4).
  * Reference: CLAUDE.md Brand Identity §3, improvements.md §7
  */
 async function serveBuildingSkill(
@@ -552,16 +494,6 @@ async function serveBuildingSkill(
 
   // Entry-point skill: always public so agents can install the play loop.
   const isEntrySkill = buildingId === 'clawville-play';
-
-  // // const avatarId = await resolveAvatarId(c);
-  // // const unlocked = isEntrySkill || (avatarId ? await avatarOwnsBuilding(avatarId, buildingId) : false);
-  // // if (!unlocked) {
-  // //   return c.text(teaserBody(buildingId, row.name, row.description), 402, {
-  // //     'Content-Type': 'text/markdown; charset=utf-8',
-  // //     'X-Skill-Locked': 'true',
-  // //     'X-Skill-Building': buildingId,
-  // //   });
-  // // }
 
   void logEventFromContext(c, {
     eventType: 'skill_md.fetched',

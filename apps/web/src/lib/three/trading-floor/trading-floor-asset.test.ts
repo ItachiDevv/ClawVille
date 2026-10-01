@@ -1,9 +1,20 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { NodeIO } from '@gltf-transform/core';
+import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { MeshoptDecoder } from 'meshoptimizer';
 import {
   consoleHalfExtents,
   AUTHORED_PROP_TOLERANCE_WU,
+  TRADING_FLOOR_CAMERA,
+  TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+  TRADING_FLOOR_CAMERA_Z_MAX,
+  TRADING_FLOOR_CAMERA_Z_MIN,
+  TRADING_FLOOR_DESK_INNER_X,
+  TRADING_FLOOR_PLAYER_RADIUS,
+  pushCameraOutOfSolids,
+  tradingFloorHitsSolid,
   TRADING_FLOOR_CHAIR_HALF_X,
   TRADING_FLOOR_CHAIR_HALF_Z,
   TRADING_FLOOR_CONSOLE_HALF_X,
@@ -76,6 +87,7 @@ interface GltfSceneExtras {
     height: number;
   };
   room?: { halfX: number; halfZ: number; height: number };
+  statue?: { top: number; claws: { min: number[]; max: number[] }[] };
 }
 interface GltfJson {
   scene?: number;
@@ -140,18 +152,20 @@ describe('Trading Floor asset — the published contract in scene extras', () =>
    * `undefined?.width === undefined`. The guard turns that silent hole into a
    * red test, which is the whole reason tf3d-shell asked for it.
    */
-  test('extras survives the compression pipeline and carries all three blocks', () => {
+  test('extras survives the compression pipeline and carries the measured statue', () => {
     expect(extras).toBeDefined();
     expect(Object.keys(extras ?? {}).sort()).toEqual([
       'contract',
       'kiosk',
       'room',
       'screen',
+      'statue',
     ]);
     for (const value of [
       extras?.screen?.width,
       extras?.kiosk?.halfX,
       extras?.room?.halfX,
+      extras?.statue?.top,
     ]) {
       expect(typeof value).toBe('number');
     }
@@ -229,6 +243,8 @@ describe('Trading Floor asset — the node names the scene resolves', () => {
     ['TradingFloorWalls'],
     ['TradingFloorCeiling'],
     ['TradingFloorFloorSlab'],
+    ['TradingFloorBrass'],
+    ['TradingFloorIdentity'],
   ])('%s exists', (name) => {
     expect(() => nodeByName(name)).not.toThrow();
   });
@@ -345,6 +361,136 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
     expect(solid).toBeDefined();
     expect(Math.abs(solid!.halfX - half.x)).toBeLessThan(TOL);
     expect(Math.abs(solid!.halfZ - half.z)).toBeLessThan(TOL);
+  });
+
+  test('both measured claws clear the board from spawn and default-height reachable poses', async () => {
+    await MeshoptDecoder.ready;
+    const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({
+      'meshopt.decoder': MeshoptDecoder,
+    });
+    const doc = await io.read(GLB_PATH);
+    const brass = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorBrass');
+    expect(brass).toBeDefined();
+    const mesh = brass!.getMesh()!.listPrimitives()[0]!;
+    const accessor = mesh.getAttribute('POSITION')!;
+    const positions = accessor.getArray()!;
+    const divisor = accessor.getNormalized() && positions instanceof Int16Array ? 32767 : 1;
+    const world = brass!.getWorldMatrix();
+    const claws = extras?.statue?.claws;
+    expect(claws).toHaveLength(2);
+    const points: { x: number; y: number; z: number }[][] = [[], []];
+    const seen = [new Set<string>(), new Set<string>()];
+    for (let index = 0; index < positions.length; index += 3) {
+      const x = positions[index]! / divisor * world[0]! + world[12]!;
+      const y = positions[index + 1]! / divisor * world[5]! + world[13]!;
+      const z = positions[index + 2]! / divisor * world[10]! + world[14]!;
+      for (let claw = 0; claw < 2; claw++) {
+        const bounds = claws![claw]!;
+        if (y < 74 || x < bounds.min[0]! - 1 || x > bounds.max[0]! + 1 ||
+            z < bounds.min[2]! - 1 || z > bounds.max[2]! + 1) continue;
+        const key = [x, y, z].map((v) => Math.round(v)).join(',');
+        if (!seen[claw]!.has(key)) {
+          seen[claw]!.add(key);
+          points[claw]!.push({ x, y, z });
+        }
+      }
+    }
+    for (let claw = 0; claw < 2; claw++) {
+      const bounds = claws![claw]!;
+      const top = Math.max(...points[claw]!.map((point) => point.y));
+      expect(points[claw]!.length).toBeGreaterThan(50);
+      expect(Math.abs(top - bounds.max[1]!)).toBeLessThan(1);
+      expect(top).toBeLessThanOrEqual(230);
+      expect(Math.abs(bounds.min[0]! + bounds.max[0]!)).toBeGreaterThan(300);
+      expect(bounds.min[0]!).toBeGreaterThanOrEqual(-310);
+      expect(bounds.max[0]!).toBeLessThanOrEqual(310);
+    }
+    // At the default camera height, every claw point is below the camera.
+    // Projection toward the board has t > 1, so shadowY < pointY < the sill.
+    // This proves the reachable-pose rule beyond the finite diagnostic sweep.
+    expect(points.flat().every((point) => point.y < TRADING_FLOOR_CAMERA.above &&
+      point.y < TRADING_FLOOR_SCREEN.bottomY)).toBe(true);
+    expect(Math.abs(claws![0]!.max[0]! + claws![1]!.min[0]!)).toBeLessThan(0.01);
+    expect(extras!.statue!.top).toBeLessThanOrEqual(230);
+    const dais = nodeByName('TradingFloorHoloDais');
+    expect(translation(dais).y + worldHalfExtents(dais).y).toBeLessThan(extras!.statue!.top);
+
+    // Match the room camera: 520 wu arm, axis clamp, solid push, 60-degree FOV.
+    const inFrame = (cx: number, cy: number, cz: number, lx: number, lz: number,
+      px: number, py: number) => {
+      let fx = lx - cx, fy = TRADING_FLOOR_CAMERA.lookY - cy, fz = lz - cz;
+      const length = Math.hypot(fx, fy, fz);
+      fx /= length; fy /= length; fz /= length;
+      let rx = -fz, rz = fx;
+      const rightLength = Math.hypot(rx, rz);
+      rx /= rightLength; rz /= rightLength;
+      const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+      const dx = px - cx, dy = py - cy, dz = TRADING_FLOOR_SCREEN.z - cz;
+      const depth = dx * fx + dy * fy + dz * fz;
+      const tanV = Math.tan(TRADING_FLOOR_CAMERA.fov * Math.PI / 360);
+      return depth > 1 && Math.abs((dx * rx + dz * rz) / depth) <= tanV * 1366 / 768 &&
+        Math.abs((dx * ux + dy * uy + dz * uz) / depth) <= tanV;
+    };
+    const worstShadow = (camY: number, spawnOnly: boolean) => {
+      const worst = [0, 0];
+      const bodies: [number, number][] = spawnOnly ? [[0, 780]] : [];
+      if (!spawnOnly) for (let x = -1254; x <= 1254; x += 48)
+        for (let z = -1054; z <= 920; z += 48)
+          if (!tradingFloorHitsSolid(x, z)) bodies.push([x, z]);
+      for (const [bx, bz] of bodies) for (let degrees = 0; degrees < 360; degrees += spawnOnly ? 2 : 15) {
+        const yaw = degrees * Math.PI / 180;
+        const forwardX = Math.sin(yaw), forwardZ = -Math.cos(yaw);
+        const camera = {
+          x: Math.max(-TRADING_FLOOR_DESK_INNER_X, Math.min(TRADING_FLOOR_DESK_INNER_X,
+            bx - forwardX * TRADING_FLOOR_CAMERA.behind)),
+          z: Math.max(TRADING_FLOOR_CAMERA_Z_MIN, Math.min(TRADING_FLOOR_CAMERA_Z_MAX,
+            bz - forwardZ * TRADING_FLOOR_CAMERA.behind)),
+        };
+        pushCameraOutOfSolids(camera, TRADING_FLOOR_SOLIDS, TRADING_FLOOR_CAMERA_SOLID_CLEARANCE);
+        const lookX = bx + forwardX * TRADING_FLOOR_CAMERA.lookAhead;
+        const lookZ = bz + forwardZ * TRADING_FLOOR_CAMERA.lookAhead;
+        for (let claw = 0; claw < 2; claw++) for (const point of points[claw]!) {
+          if (camera.z <= point.z + 1) continue;
+          const t = (camera.z - TRADING_FLOOR_SCREEN.z) / (camera.z - point.z);
+          const boardX = camera.x + (point.x - camera.x) * t;
+          if (Math.abs(boardX) > TRADING_FLOOR_SCREEN.width / 2) continue;
+          const shadowY = camY + (point.y - camY) * t;
+          const boardY = Math.max(TRADING_FLOOR_SCREEN.bottomY,
+            Math.min(shadowY, TRADING_FLOOR_SCREEN.bottomY + TRADING_FLOOR_SCREEN.height));
+          if (inFrame(camera.x, camY, camera.z, lookX, lookZ, boardX, boardY))
+            worst[claw] = Math.max(worst[claw]!, shadowY);
+        }
+      }
+      return worst;
+    };
+    for (const camY of [140, 260, 410]) {
+      const worst = worstShadow(camY, true);
+      console.log(`statue spawn camera ${camY}: left ${worst[0]!.toFixed(2)}, right ${worst[1]!.toFixed(2)}, sill 360`);
+      expect(Math.max(...worst)).toBeLessThanOrEqual(TRADING_FLOOR_SCREEN.bottomY);
+    }
+    const reachable = worstShadow(TRADING_FLOOR_CAMERA.above, false);
+    console.log(`statue reachable camera 260: left ${reachable[0]!.toFixed(2)}, right ${reachable[1]!.toFixed(2)}, sill 360`);
+    expect(Math.max(...reachable)).toBeLessThanOrEqual(TRADING_FLOOR_SCREEN.bottomY);
+  });
+});
+
+describe('Trading Floor asset — v3 colours and seal', () => {
+  test('the seal and both banners share one draw call', () => {
+    expect(gltf.meshes).toHaveLength(10);
+    const identity = nodeByName('TradingFloorIdentity');
+    expect(gltf.meshes[identity.mesh!]!.primitives).toHaveLength(1);
+  });
+
+  test('the old mint dais ring is absent from unlit trim', () => {
+    const node = nodeByName('TradingFloorTrimGlow');
+    expect(translation(node).y - worldHalfExtents(node).y).toBeGreaterThan(15);
+  });
+
+  test('trim and instanced chairs carry vertex colours', () => {
+    for (const name of ['TradingFloorTrimGlow', 'TradingFloorChairModule']) {
+      const node = nodeByName(name);
+      expect(gltf.meshes[node.mesh!]!.primitives[0]!.attributes.COLOR_0).toBeNumber();
+    }
   });
 });
 

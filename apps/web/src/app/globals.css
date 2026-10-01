@@ -7,6 +7,22 @@
     --background: 218 50% 10%;
     --foreground: 0 0% 100%;
     --claw-glow: 187 100% 50%;
+    --brand-yellow: #F8D038;
+    --brand-wood: #8A4A20;
+    --brand-wood-light: #A9622F;
+    --brand-red: #C8503C;
+    --brand-belly: #D8A860;
+    --brand-sky: #D8E8E0;
+    --brand-lagoon: #80C0B8;
+    --brand-sand: #F8E0A8;
+    --brand-abyss: #000010;
+    --brand-navy: #001858;
+    --brand-lime: #B8F800;
+    --brand-blue: #2890F8;
+    --brand-gold: #E0C070;
+    --brand-parchment: #F8F0D8;
+    --brand-white: #F8F8F8;
+    --brand-alert: #E02020;
   }
 
   body {
