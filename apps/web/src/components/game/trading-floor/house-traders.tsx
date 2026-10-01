@@ -254,11 +254,15 @@ function SlotCard({
           trades stay on the floor.
         </div>
       ) : (
-        // Never a spinner here: "not running yet" is the true state, not a
+        // Never a spinner here: an unpaired slot is the true state, not a
         // pending load, and a spinner would imply activity that does not exist.
+        // "Paused by the team", not "Not running yet": the arena board above
+        // shows paper agents with the same names trading, and "not running
+        // yet" beside them read as a contradiction (prod verify b8d52ab6,
+        // finding 2). The team decides when a live slot is paired.
         <>
           <div style={{ color: FLOOR_TEXT.faint, fontSize: 11 }}>
-            Not running yet. This slot has no paired trader.
+            Paused by the team. No live trader is paired to this slot right now.
           </div>
           {/* Unpair DELETES the link, so an unpaired slot has no row to read
               and cannot show a `stopped` state, while that trader's verified
@@ -333,16 +337,33 @@ export function HouseTradersView({
   freshness: RiskFreshness;
 }) {
   const query = { isLoading, isError };
+  // NAMED APART FROM THE ARENA (prod verify b8d52ab6, finding 2). The arena
+  // section above this panel shows paper house agents that share two names
+  // with these live traders, so this heading says "real money" and the arena
+  // heading says "paper". "paused" is a claim about the slots we READ, so it
+  // waits for a successful load and drops as soon as one slot is live.
+  // The word agrees with the slot cards (review MINOR 5): every card says
+  // "Stopped." -> "stopped"; some "Stopped." and some "Paused by the team" ->
+  // "not trading"; otherwise "paused".
+  // A live slot whose risk display is "paused" is not trading: its card says
+  // "Paused by risk limit", so the heading must not imply it trades (staging
+  // browser verify 31480fb0, F1). A "fault" is not a pause: it keeps the plain heading.
+  const trading = (slot: HouseTraderSlotView) =>
+    slot.status === 'live-observed' && resolveHouseTraderRiskDisplay(slot.status, slot.risk, freshness) !== 'paused';
+  const idle = !isLoading && !isError && !slots.some(trading);
+  const stopped = slots.filter((slot) => slot.status === 'stopped').length;
+  const idleWord = stopped === 0 ? 'paused' : stopped === slots.length ? 'stopped' : 'not trading';
   return (
     <section style={cardStyle} data-testid="house-traders">
-      <h3 style={{ margin: '0 0 6px', color: FLOOR_TEXT.value, fontSize: 14 }}>
-        Watch the house traders
+      <h3 style={{ margin: '0 0 6px', color: FLOOR_TEXT.value, fontSize: 14 }} data-testid="house-traders-heading">
+        {idle ? `Live traders (real money, ${idleWord})` : 'Live traders (real money)'}
       </h3>
       <p style={{ margin: '0 0 12px', color: FLOOR_TEXT.muted, fontSize: 12 }}>
-        {/* Worded to survive the empty case: on prod at ship time both slots
-            are unpaired, so copy implying something is running would be wrong
-            on the very first view. */}
-        The traders the house runs, each one either paired or waiting.{' '}
+        {/* Worded to survive the empty case: on prod both slots are unpaired,
+            so copy implying something is running would be wrong on the very
+            first view. */}
+        The team&apos;s own traders on ClawPump. They trade real money and are not the arena house agents above,
+        which trade on paper, even where a name is the same.{' '}
         <a href="#clawpump-templates" style={{ color: FLOOR_TEXT.link }}>
           Start your own below.
         </a>

@@ -333,7 +333,7 @@ export function LaunchTrader({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label htmlFor={nameId} style={{ color: FLOOR_TEXT.muted, fontSize: 11 }}>
               Name your trader (optional, up to {NAME_MAX} characters with at least one letter, so it does not look like
-              a number; empty uses your avatar&apos;s name)
+              a number; offensive names are refused; empty uses your avatar&apos;s name)
             </label>
             <input
               id={nameId}

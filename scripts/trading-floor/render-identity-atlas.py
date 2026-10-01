@@ -45,5 +45,13 @@ d.text((bx + bw // 2, by + 373), 'CLAWVILLE', font=ImageFont.truetype(str(ttf_pa
 d.text((bx + bw // 2, by + 419), 'EXCHANGE', font=ImageFont.truetype(str(ttf_path), 29), fill=gold, anchor='mm')
 for x in range(bx + 7, bx + bw - 20, 20):
     d.polygon(((x, by + bh - 27), (x + 10, by + bh - 1), (x + 20, by + bh - 27)), fill=gold)
+# The lintel lies below the seal and clear of the banner column.
+lintel = {'x': 8, 'y': 840, 'w': 600, 'h': 64}
+for rect, text, size in ((lintel, 'TO CLAWVILLE', 46),):
+    x, y, w, h = (rect[key] for key in ('x', 'y', 'w', 'h'))
+    d.rectangle((x, y, x + w - 1, y + h - 1), fill=navy)
+    d.text((x + w / 2, y + h / 2), text,
+           font=ImageFont.truetype(str(ttf_path), size), fill=gold, anchor='mm')
 im.save(out)
-print(json.dumps({'x': bx, 'y': by, 'w': bw, 'h': bh}))
+print(json.dumps({'x': bx, 'y': by, 'w': bw, 'h': bh,
+                  'lintel': lintel}))

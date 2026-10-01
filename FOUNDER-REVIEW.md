@@ -64,6 +64,13 @@
 
 ## TRADING FLOOR
 
+### Hate slurs hidden on the public arena board and feed; clearer Exchange labels (staging, 2026-10-01)
+
+- **What to look at:** staging `/trading-floor` -> Exchange. The live trader block now says "Live traders (real money, paused)" and the arena section says "The five arena house agents (paper)". The discovery card has a "Show coins" control.
+- **Why:** the prod feed showed a coin whose symbol contained a racial slur. Hate slurs in coin names and trader names now show as `***` everywhere public; a trader name with a slur is refused at launch.
+- **Decision wanted:** the mask hides HATE SLURS only. General swear words and sexual words still show (for example a coin named SCAT, and stock tokens like Cummins). Do you want swear words hidden too?
+- Session tradeDeskMain, 2026-10-01.
+
 ### Arena house agents now change rules rarely, and every report says why (staging, 2026-10-01)
 
 - **What to look at:** on staging, `/trading-floor` -> Exchange -> Arena -> a house agent's reports. Each report has one line such as "Tuner: no change, next check at 40 trades on these rules (has 27)".
@@ -72,22 +79,23 @@
 - **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
 - Session tradeDeskMain, 2026-10-01.
 
-### Trading Floor INTERIOR v3 "The Claw Exchange": the new inside look (staging, 2026-10-01)
-- **What:** the inside of the Trading Floor building is restyled. Nothing moved: same desks, seats, kiosk, board, door and trade tape.
-  Walls: walnut wainscot with a brass rail, navy upper panels, a gold-framed board. Floor: dark stone with thin gold lines and a gold
-  "CLAWVILLE EXCHANGE" seal. The rock dais in the middle is now the twin **Golden Claws** (traced from the brand claw art) on a
-  black granite plinth. Every desk has a 3 x 2 bank of glowing chart monitors, big chart screens hang above the desks, an LED ticker
-  crawls round the walls with the real arena tape (every dollar figure says PAPER), claw banners hang in the back corners, chairs
-  are oxblood leather, and the three lights are warmer.
+### Trading Floor INTERIOR v4: solid claws, real trading desks, monitor stands, brass door (staging, 2026-10-01)
+- **What:** the second visual pass on the inside of the Trading Floor (v3 "The Claw Exchange" is on prod since PR #305; v4 is
+  on staging only). Nothing moved: same desks, seats, kiosk, board, door position and trade tape. Changes from v3:
+  (1) the twin **Golden Claws** are now SOLID 3D claws (the same claw as on the roof outside), amber gold with soft shading, on a
+  lighter marble plinth with thin glowing gold lines on each step; (2) the teal sci-fi consoles are now **walnut-and-brass trading
+  desks** with drawers, a keyboard, a mouse, a desk phone and a brass nameplate; (3) the box chairs are now rounded **oxblood
+  leather executive chairs**; (4) each 3 x 2 monitor bank stands on a real stand with arms, the monitors have depth and a status
+  light, and some screens are amber **CLAW TERMINAL** screens that list town buildings (decoration only: no prices or numbers);
+  (5) the door is a **brass portal with smoked-glass double doors** and a "TO CLAWVILLE" sign.
 - **Where:** staging, `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
-  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door.
-- **Feedback wanted:** (1) overall: does it read as a cool claw-themed NYSE floor? (2) the Golden Claws: twin flat reliefs (chosen
-  because a single centre claw is hidden behind your avatar on arrival) - keep, make them chunkier/rounder, or one big claw?
-  (3) the gold floor lines: too strong or right? (4) the ticker: readable at your display scaling? (5) the warmer light vs the old
-  cool blue. (6) FPS on your Iris Xe laptop inside the room (this box is an RTX 3080; Iris Xe is unmeasured).
-- **Known, not new:** a 0.6 to 1 s hitch right after the room appears is pre-existing (your avatar's shaders compile after the
-  loading warm-up); it is diagnosed and being fixed separately.
-- **Session:** coolerTrading, 2026-10-01.
+  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door. Prod still shows v3 for comparison:
+  `https://clawville.world/trading-floor`.
+- **Feedback wanted:** (1) overall: is v4 cooler than v3? (2) the solid claws: right size, or bigger (they must stay under the
+  board's bottom edge seen from the door, so taller means wider and lower)? (3) the desks and chairs: right style? (4) the CLAW
+  TERMINAL screens: keep, or charts only? (5) the brass door. (6) still open from v3: the gold floor lines, the ticker legibility
+  at your display scaling, the warm light, and FPS on your Iris Xe laptop inside the room (every number so far is from an RTX 3080).
+- **Session:** coolerDesk2, 2026-10-01 (v3: coolerTrading).
 
 ### Floor TV board redesign P6: larger text, 5 rows per page (design approved by the lead, 2026-10-01; you can veto)
 

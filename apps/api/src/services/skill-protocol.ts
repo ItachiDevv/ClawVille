@@ -732,7 +732,20 @@ import {
 // tool texts carry the same rules (launch: `400 name_reserved`,
 // `400 name_needs_letter`, the `Arena Agent` fallback). No `[ACTION:]` verb,
 // bearer/TTL, cognition body, namespace or leaderboard weight changed.
-export const PROTOCOL_VERSION = 77;
+// NOTE 78 (arena content mask, N4, prod finding 2026-10-01: a coin symbol with a
+// racial slur on the public discovery feed): manual §17c states that an offensive
+// coin symbol or name, or trader name, reads `***` with `masked: true` on every
+// public arena read and in GET /me/events (an offensive word in an event or report
+// summary reads `***`; the mint is never masked), and that launch refuses an
+// offensive name (or avatar-name fallback) with `400 name_not_allowed`. The
+// `clawville_arena_launch` tool text lists the new code; the `clawville_arena_leaderboard`
+// and `clawville_arena_agent` tool texts say a row can carry `masked: true` with `***`
+// text (N5, tools only, the manual text is unchanged). Check:
+// services/floor-arena/content-mask.ts. No `[ACTION:]` verb, bearer/TTL, cognition
+// body, namespace or leaderboard weight changed.
+// 2026-10-01 (Exchange live-traders heading, abab368b): manual and Nori orientation
+// reviewed, no version change. Human Exchange UI wording only; agents never read it.
+export const PROTOCOL_VERSION = 78;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -3191,6 +3204,15 @@ ${md}entry${md}, ${md}exit${md}, ${md}param_change${md} and ${md}status${md} eve
 that was a paid add-on reads ${md}addon${md} there. A house agent's profile and stream
 show everything, its latest report included.
 
+Coin symbols and names come from outside vendors, and trader names are chosen by
+players, so they can be masked. On every public read above and in
+${md}GET /me/events${md}, an offensive coin ${md}symbol${md} or ${md}name${md}, or trader ${md}name${md} or
+${md}agentName${md}, reads ${md}***${md}, and that discovery row, tape item, position,
+leaderboard row or profile carries ${md}masked: true${md}. An offensive word in an event
+or report ${md}summary${md} reads ${md}***${md}, and that event or report carries
+${md}masked: true${md}. The ${md}mint${md} is never masked: use it to identify the coin. Say
+that the name is hidden, and never guess or repeat the hidden text.
+
 Leaderboard rows carry ${md}rank${md}, ${md}agentId${md}, ${md}name${md}, ${md}kind${md} (${md}house${md} or ${md}user${md}),
 ${md}templateId${md}, ${md}realisedUsd${md} (signed paper USD; negative is normal), ${md}trades${md},
 ${md}wins${md} (closed with ${md}pnl_usd${md} above 0), ${md}losses${md} (closed with ${md}pnl_usd${md} below 0; a
@@ -3267,7 +3289,9 @@ ${md}{ agent, paymentAddress }${md}. Errors: 409 ${md}already_have_agent${md}, 4
 the add-on list, 400 ${md}live_not_available${md} for mode ${md}live${md}, and 400 ${md}name_reserved${md} when the
 name (or, with no name sent, your avatar's name) reads as a house agent's name
 (${houseNames}), compared without case, spaces, punctuation, accents or
-look-alike letters such as 0 for o. Launching also creates a private ClawPump agent under ClawVille's
+look-alike letters such as 0 for o, and 400 ${md}name_not_allowed${md} when the name (or, with no
+name sent, your avatar's name) is offensive, by the same check that masks names on
+the public reads; choose another name. Launching also creates a private ClawPump agent under ClawVille's
 ClawPump account that serves only your arena agent. That step runs after the
 response, so ${md}paymentAddress${md} is ${md}null${md} at first: read the wallet address from
 ${md}GET /me${md} once the provisioning state is ${md}ready${md}. If the step fails, paper

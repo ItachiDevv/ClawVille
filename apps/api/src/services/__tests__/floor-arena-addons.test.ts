@@ -1,10 +1,22 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { FLOOR_ARENA_ADDONS, FLOOR_ARENA_TEMPLATES, type FloorArenaAddon } from '@clawville/shared';
-import { ClawPumpWriterError, type ClawPumpX402Result, type X402PayInput } from '../clawpump-writer';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import {
+  _resetClawPumpWriterRateForTest,
+  ClawPumpWriterError,
+  type ClawPumpWriterErrorCode,
+  type ClawPumpX402Result,
+  type X402PayInput,
+} from '../clawpump-writer';
 import type { ArenaX402Outcome } from '../floor-arena/provisioning';
 import {
   _resetArenaAddonsForTest,
+  ARENA_ADDON_BUDGET_REFUSED_ERROR,
+  ARENA_ADDON_DISPATCH_CALLS,
+  ARENA_ADDON_PAY_CALLS,
   addonPaymentsEnabled,
+  defaultArenaAddonDeps,
   buildAddonRequest,
   extractAddonMints,
   extractMintsAtPath,
@@ -17,7 +29,13 @@ import {
   utcDayStart,
   type ArenaAddonDeps,
 } from '../floor-arena/addons';
-import type { ArenaAddonCallStat, ArenaAgentAddon, ArenaAgentRecord } from '../floor-arena/queries';
+import {
+  ARENA_ADDON_NOT_SENT_ERRORS,
+  readArenaAddonStats,
+  type ArenaAddonCallStat,
+  type ArenaAgentAddon,
+  type ArenaAgentRecord,
+} from '../floor-arena/queries';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
@@ -86,7 +104,7 @@ function harness(options: {
   enabled?: boolean;
   /** The leader's locked x402 check/add before pay (default: 'on'). */
   x402Ready?: (agentId: string, allowAdd: boolean) => Promise<ArenaX402Outcome>;
-  budgetOk?: () => boolean;
+  budgetOk?: (calls: number) => boolean;
   removalsDeferred?: () => boolean;
   finalize?: () => Promise<void>;
   ledger?: LedgerRow[];
@@ -104,7 +122,8 @@ function harness(options: {
       const stat = byAddon.get(row.addonId)
         ?? { addonId: row.addonId, spentTodayUsd: 0, lastAt: null, lastOk: null, lastError: null, callsTotal: 0 };
       if (row.at >= dayStart) stat.spentTodayUsd += row.priceUsd;
-      stat.callsTotal += 1;
+      // Mirrors calls_total in readArenaAddonStats (O1): a row whose pay POST never left the process is not counted.
+      if (row.error === null || !ARENA_ADDON_NOT_SENT_ERRORS.includes(row.error)) stat.callsTotal += 1;
       if (!stat.lastAt || row.at >= stat.lastAt) {
         stat.lastAt = row.at;
         stat.lastOk = row.ok;
@@ -181,7 +200,7 @@ function harness(options: {
         h.allowAdds.push(allowAdd);
         return options.x402Ready ? options.x402Ready(agentId, allowAdd) : 'on';
       },
-      budgetOk: () => options.budgetOk?.() ?? true,
+      budgetOk: (calls) => options.budgetOk?.(calls) ?? true,
       removalsDeferred: () => options.removalsDeferred?.() ?? false,
       pay: async (clawpumpAgentId, input, arenaAgentId) => {
         h.pays.push({ clawpumpAgentId, input, arenaAgentId });
@@ -203,7 +222,8 @@ describe('runArenaAddonsTick', () => {
       input: { url: FEED.url, method: 'GET', query: { chain: 'solana' }, maxAmountUsd: 0.1 },
       arenaAgentId: 'agent-1',
     }]);
-    expect(h.mints).toEqual([USDC, BONK]);
+    // O3: the insert gets the mints in mint order (BONK 'D...' < USDC 'E...'), not the vendor order.
+    expect(h.mints).toEqual([BONK, USDC]);
     expect(h.calls).toEqual([{
       id: 1, agentId: 'agent-1', addonId: 'feed-a', at: NOW, priceUsd: 0.1, ok: true, error: null, mints: 2, responseRef: null,
       state: 'done',
@@ -559,8 +579,16 @@ describe('runArenaAddonsTick', () => {
       ] } } }),
     });
     await runArenaAddonsTick(NOW, h.deps);
-    expect(h.mints).toEqual([USDC, BONK]);
-    expect(h.symbols).toEqual(['USDC', 'BONKscript']);
+    // Mint order (O3); each symbol stays paired with its mint.
+    expect(h.mints).toEqual([BONK, USDC]);
+    expect(h.symbols).toEqual(['BONKscript', 'USDC']);
+  });
+
+  test('O3: the private-mint insert gets the rows in mint order, the order the enrichment write locks them in', async () => {
+    const h = harness({ pay: async () => ({ ok: true, error: null, payload: { data: [{ mint: WSOL }, { mint: BONK }, { mint: USDC }] } }) });
+    await runArenaAddonsTick(NOW, h.deps);
+    // Vendor order was WSOL, BONK, USDC; code-unit order (= COLLATE "C") is D < E < S.
+    expect(h.mints).toEqual([BONK, USDC, WSOL]);
   });
 
   test('a crash after paying (finalize fails) leaves the reservation counted at the catalog price', async () => {
@@ -635,6 +663,163 @@ describe('runArenaAddonsTick', () => {
     const vendor429 = harness({ pay: async () => { throw new ClawPumpWriterError('rate_limited', 429); } });
     await runArenaAddonsTick(NOW, vendor429.deps);
     expect(vendor429.calls).toEqual([expect.objectContaining({ state: 'done', priceUsd: 0, ok: false, error: 'clawpump_rate_limited_429' })]);
+  });
+
+  test('money-lens MINOR 1: a long budget contention writes at most one budget event per notice interval', async () => {
+    let at = NOW;
+    const h = harness({ pay: async () => { throw new ClawPumpWriterError('budget_exhausted'); }, clock: () => at });
+    const budgetEvents = () => h.events.filter((summary) => summary.includes('call budget was full')).length;
+    // A refusal is not an attempt for the interval, so every tick retries the pay: four refusals here.
+    for (const minutes of [0, 1, 2, 30]) {
+      at = new Date(NOW.getTime() + minutes * 60_000);
+      await runArenaAddonsTick(at, h.deps);
+    }
+    expect(h.pays).toHaveLength(4);
+    expect(budgetEvents()).toBe(1);
+    // The notice interval (1 h) has passed: one more event.
+    at = new Date(NOW.getTime() + 61 * 60_000);
+    await runArenaAddonsTick(at, h.deps);
+    expect(h.pays).toHaveLength(5);
+    expect(budgetEvents()).toBe(2);
+    expect(h.calls.every((row) => row.state === 'done' && row.priceUsd === 0)).toBe(true);
+  });
+
+  test('D1: one paid call needs 4 budget calls; with room for fewer nothing is reserved and no ClawPump call is made', async () => {
+    // A fake of the writer bucket (clawpump-writer takeWriterToken): each ClawPump call takes one token, and a
+    // normal call is refused when tokens - 1 < 5 (the removal reserve). The staging case: 8 tokens left.
+    const bucket = (start: number) => {
+      const state = { tokens: start };
+      const take = () => {
+        if (state.tokens - 1 < 5) throw new ClawPumpWriterError('budget_exhausted');
+        state.tokens -= 1;
+      };
+      const h = harness({
+        // `calls = 1`: the old code asked for room for one call only.
+        budgetOk: (calls = 1) => state.tokens - calls >= 5,
+        x402Ready: async () => { take(); return 'on'; },
+        // The writer's guard GET, then the pay POST.
+        pay: async () => { take(); take(); return { ok: true, error: null, payload: { data: [{ mint: USDC }] } }; },
+      });
+      h.deps.walletUsdc = async () => { take(); return 10; };
+      return { h, state };
+    };
+    const short = bucket(8);
+    await runArenaAddonsTick(NOW, short.h.deps);
+    // Old code: a reservation, then the POST refused -> a $0 'clawpump_budget_exhausted' row that reset the interval.
+    expect(short.h.calls).toHaveLength(0);
+    expect(short.h.pays).toHaveLength(0);
+    expect(short.state.tokens).toBe(8);
+    _resetArenaAddonsForTest();
+    const enough = bucket(9);
+    await runArenaAddonsTick(NOW, enough.h.deps);
+    expect(enough.h.calls).toEqual([expect.objectContaining({ state: 'done', ok: true, priceUsd: 0.1 })]);
+    // The removal reserve is never touched.
+    expect(enough.state.tokens).toBe(5);
+    expect(ARENA_ADDON_PAY_CALLS).toBe(4);
+    expect(ARENA_ADDON_DISPATCH_CALLS).toBe(2);
+  });
+
+  test('D1: the budget is checked again right before the reservation (guard GET + POST)', async () => {
+    const asked: number[] = [];
+    let room = 4;
+    const h = harness({
+      budgetOk: (calls) => { asked.push(calls); return calls <= room; },
+      // Another loop spends tokens while the x402 check runs.
+      x402Ready: async () => { room = 1; return 'on'; },
+    });
+    await runArenaAddonsTick(NOW, h.deps);
+    expect(asked).toEqual([ARENA_ADDON_PAY_CALLS, ARENA_ADDON_PAY_CALLS, ARENA_ADDON_DISPATCH_CALLS]);
+    expect(h.calls).toHaveLength(0);
+    expect(h.pays).toHaveLength(0);
+  });
+
+  test('D1: the default budget check needs room for every call of the sequence above the removal reserve', () => {
+    try {
+      // 8 tokens: one normal call fits (8 - 1 >= 5) but four do not (8 - 4 < 5).
+      _resetClawPumpWriterRateForTest(8);
+      expect(defaultArenaAddonDeps.budgetOk(ARENA_ADDON_PAY_CALLS)).toBe(false);
+      expect(defaultArenaAddonDeps.budgetOk(ARENA_ADDON_DISPATCH_CALLS)).toBe(true);
+      _resetClawPumpWriterRateForTest(9);
+      expect(defaultArenaAddonDeps.budgetOk(ARENA_ADDON_PAY_CALLS)).toBe(true);
+    } finally {
+      _resetClawPumpWriterRateForTest();
+    }
+  });
+
+  test('D1: our own budget refusal is not an attempt: the next pass (60 s later) pays, then the interval runs from that pay', async () => {
+    let refuse = true;
+    const h = harness({
+      pay: async () => {
+        if (refuse) throw new ClawPumpWriterError('budget_exhausted');
+        return { ok: true, error: null, payload: { data: [{ mint: USDC }] } };
+      },
+    });
+    await runArenaAddonsTick(NOW, h.deps);
+    expect(h.calls).toEqual([expect.objectContaining({ state: 'done', priceUsd: 0, ok: false, error: ARENA_ADDON_BUDGET_REFUSED_ERROR })]);
+    expect(h.events[0]).toBe('Feed A: the engine\'s ClawPump call budget was full. Nothing was sent or charged; the next pass retries.');
+    refuse = false;
+    const pass = async (secondsLater: number) => {
+      const at = new Date(NOW.getTime() + secondsLater * 1000);
+      await runArenaAddonsTick(at, { ...h.deps, clock: () => at });
+    };
+    // Old code: the $0 refusal row reset the 600 s interval, so this pass did nothing (11 min gap on staging).
+    await pass(60);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]).toMatchObject({ state: 'done', ok: true, priceUsd: 0.1 });
+    await pass(120);
+    expect(h.calls).toHaveLength(2);
+    await pass(60 + 600);
+    expect(h.calls).toHaveLength(3);
+  });
+
+  test('O1: an unsent row does not advance the dedupe rotation: the next SENT body differs from the last sent one', async () => {
+    const post: FloorArenaAddon = {
+      ...FEED, method: 'POST', query: {}, body: { per_page: 50 }, dedupeVary: { path: 'per_page', values: [50, 49] },
+    };
+    let refuse = false;
+    const h = harness({
+      catalog: [post],
+      pay: async () => {
+        if (refuse) throw new ClawPumpWriterError('budget_exhausted');
+        return { ok: true, error: null, payload: { data: [{ mint: USDC }] } };
+      },
+    });
+    const pass = async (secondsLater: number) => {
+      const at = new Date(NOW.getTime() + secondsLater * 1000);
+      await runArenaAddonsTick(at, { ...h.deps, clock: () => at });
+    };
+    await pass(0);
+    refuse = true;
+    await pass(660);
+    refuse = false;
+    await pass(720);
+    const sent = h.pays.map((pay) => (pay.input.body as { per_page: number }).per_page);
+    // [sent 50, unsent 49, sent ?]: the old all-rows count made the third 50 again (staging rows 2 and 4).
+    expect(sent).toEqual([50, 49, 49]);
+    // A dispatch release (nothing sent) does not advance it either.
+    expect(ARENA_ADDON_NOT_SENT_ERRORS).toContain('released_before_pay');
+  });
+
+  test('O1: the not-sent list is the dispatch release plus the writer refusals thrown before the POST, and the SQL uses it', async () => {
+    const preRequest: ClawPumpWriterErrorCode[] = [
+      'budget_exhausted', 'not_configured', 'invalid_base_url', 'invalid_agent_id', 'invalid_input', 'host_not_allowed',
+      'not_arena_agent', 'agent_running', 'agent_not_stopped', 'x402_not_enabled',
+    ];
+    expect([...ARENA_ADDON_NOT_SENT_ERRORS].sort())
+      .toEqual(['released_before_pay', ...preRequest.map((code) => new ClawPumpWriterError(code).message)].sort());
+    expect(ARENA_ADDON_NOT_SENT_ERRORS).toContain(ARENA_ADDON_BUDGET_REFUSED_ERROR);
+    // A code that a sent (or maybe sent) POST produces never matches.
+    for (const sentCode of [new ClawPumpWriterError('http_error', 400), new ClawPumpWriterError('timeout'), new ClawPumpWriterError('not_found', 404)]) {
+      expect(ARENA_ADDON_NOT_SENT_ERRORS).not.toContain(sentCode.message);
+    }
+    const statements: SQL[] = [];
+    await readArenaAddonStats('agent-1', NOW, { execute: async (statement: SQL) => { statements.push(statement); return []; } } as never);
+    const rendered = new PgDialect().sqlToQuery(statements[0]!);
+    // Old SQL: a bare COUNT(*) AS calls_total.
+    expect(rendered.sql.replace(/\s+/g, ' ')).toContain('COUNT(*) FILTER (WHERE error IS NULL OR error NOT IN ( SELECT jsonb_array_elements_text(');
+    expect(rendered.params).toContain(JSON.stringify(ARENA_ADDON_NOT_SENT_ERRORS));
+    // The money sum is unfiltered.
+    expect(rendered.sql.replace(/\s+/g, ' ')).toContain('COALESCE(SUM(price_usd) FILTER (WHERE at >= $');
   });
 
   test('audit-money P2: a busy x402 lock (another process) is never "ready": nothing reserved, nothing paid', async () => {

@@ -4,6 +4,7 @@ import {
   type FloorArenaAddon,
 } from '@clawville/shared';
 import {
+  CLAWPUMP_WRITER_REMOVAL_RESERVE,
   CLAWPUMP_X402_MAX_CALL_USD,
   ClawPumpWriterError,
   clawPumpArenaWriter,
@@ -44,7 +45,12 @@ import {
  *  - only ACTIVE, SEATED, provisioned agents (a standing agent opens no positions),
  *  - only vetted hosts (CLAWPUMP_X402_ALLOWED_HOSTS), whatever the catalog says,
  *  - per add-on poll interval >= max(catalog minIntervalS, 600 s) (D9 / D15),
- *    measured from the last ATTEMPT (ok or not), so a failing feed is not hammered,
+ *    measured from the last ATTEMPT (ok or not), so a failing feed is not hammered;
+ *    a pay that our own ClawPump call budget refused before the request is NOT an
+ *    attempt (D1, 2026-10-01): it retries on the next pass,
+ *  - the shared ClawPump call budget must hold the WHOLE pay sequence
+ *    (ARENA_ADDON_PAY_CALLS) before the first call, and the last two calls before
+ *    the reservation, above the removal reserve,
  *  - per add-on daily cap (the player's dailyCapUsd, 0..5) AND an agent-wide
  *    hard cap of $5 per UTC day across all add-ons,
  *  - wallet USDC balance >= price (read from ClawPump, cached 60 s).
@@ -58,12 +64,24 @@ import {
  * ClawPump request, a documented no-charge vendor status); else the catalog
  * price (success or a duplicate without an amount, any unverified failure, a
  * transport error).
- * Dedupe: consecutive calls alternate `dedupeVary` (all-time call count).
+ * Dedupe: consecutive SENT calls alternate `dedupeVary` (all-time count of rows whose
+ * pay may have been sent; an unsent row does not advance it, O1).
  * Mints from an add-on stay private to that agent (`floor_arena_private_mints`).
  */
 
 /** D15: the run-time poll floor; the interval is max(catalog minIntervalS, 600 s). */
 export const ARENA_ADDON_MIN_INTERVAL_S = 600;
+/**
+ * D1 (X402_PAID_TEST_2026-10-01): normal-priority ClawPump calls one paid call can make:
+ * the wallet summary (when the 60 s cache is stale), the x402 GET in `x402Ready`, the
+ * writer's guard GET and the pay POST. An x402 ADD costs more; that path backs off on
+ * its own and never reserves.
+ */
+export const ARENA_ADDON_PAY_CALLS = 4;
+/** The calls left after the reservation: the writer's guard GET and the pay POST. */
+export const ARENA_ADDON_DISPATCH_CALLS = 2;
+/** The ledger error of a pay our own call budget refused BEFORE any pay request (writer code 'budget_exhausted'). */
+export const ARENA_ADDON_BUDGET_REFUSED_ERROR = new ClawPumpWriterError('budget_exhausted').message;
 const BASE58_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MAX_MINTS_PER_CALL = 100;
 const MAX_PARSE_CHARS = 1_000_000;
@@ -360,7 +378,11 @@ export function checkAddonCall(input: {
   const stat = input.stats.find((row) => row.addonId === input.addonId);
   const cap = Math.min(Math.max(input.addonCapUsd, 0), FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD);
   const spent = stat?.spentTodayUsd ?? 0;
-  if (stat?.lastAt && input.nowMs - stat.lastAt.getTime() < input.intervalMs) {
+  // D1: the newest row a budget refusal (nothing sent) does not start the interval. That row was itself reserved
+  // only after the interval since the newest COUNTED attempt had passed, so skipping the check here equals
+  // measuring from that attempt. An in-flight reservation (error still null) keeps blocking.
+  const countedAt = stat?.lastAt && stat.lastError !== ARENA_ADDON_BUDGET_REFUSED_ERROR ? stat.lastAt : null;
+  if (countedAt && input.nowMs - countedAt.getTime() < input.intervalMs) {
     return { ok: false, reason: 'interval', spentUsd: spent, capUsd: cap };
   }
   if (spent + input.priceUsd > cap + EPSILON) return { ok: false, reason: 'addon_cap', spentUsd: spent, capUsd: cap };
@@ -394,8 +416,11 @@ export interface ArenaAddonDeps {
    * true only when x402 is on a stopped agent that wants it. No cache.
    */
   x402Ready: (agentId: string, allowAdd: boolean) => Promise<ArenaX402Outcome>;
-  /** Codex r20 (3): false when the shared ClawPump call budget has no room for normal work (removals keep a reserve). */
-  budgetOk: () => boolean;
+  /**
+   * Codex r20 (3) / D1: true when the shared ClawPump call budget holds `calls` more normal-priority calls above
+   * the removal reserve (removals keep their claim).
+   */
+  budgetOk: (calls: number) => boolean;
   /** audit-money F: true while the leader still owes an x402 removal it could not attempt; adds wait. */
   removalsDeferred: () => boolean;
   /** Codex r17 #1/#2: the last check before the pay (same lock as seat/status/add-on writes); releases the reservation on failure. */
@@ -417,7 +442,8 @@ export const defaultArenaAddonDeps: ArenaAddonDeps = {
   insertEvent: insertArenaEvent,
   walletUsdc,
   x402Ready: (agentId, allowAdd) => ensureArenaX402ForPay(agentId, undefined, allowAdd),
-  budgetOk: () => clawPumpWriterBudget().normalAllowed,
+  // The writer refuses a normal call when tokens - 1 < reserve, so N calls in a row need tokens - N >= reserve.
+  budgetOk: (calls) => clawPumpWriterBudget().tokens - calls >= CLAWPUMP_WRITER_REMOVAL_RESERVE,
   removalsDeferred: () => arenaX402RemovalsDeferred(),
   pay: (clawpumpAgentId, input, arenaAgentId) => clawPumpArenaWriter.x402Pay(clawpumpAgentId, input, arenaAgentId),
   confirmDispatch: confirmArenaAddonDispatch,
@@ -499,17 +525,18 @@ async function capNotice(
  * transaction under a per-agent advisory lock, so two containers can never both
  * pay past the cap, and a crash after the reservation leaves it counted (the
  * safe side). After the call the row is finalised to what was charged.
+ * Returns 'budget_deferred' when the shared ClawPump call budget stopped it (D1): the tick ends there.
  */
 export async function runArenaAddonAgent(
   deps: ArenaAddonDeps,
   agent: ArenaAgentRecord,
   catalog: ReadonlyMap<string, FloorArenaAddon>,
   now: Date,
-): Promise<void> {
+): Promise<'budget_deferred' | undefined> {
   const clawpumpAgentId = agent.clawpumpAgentId;
-  if (!clawpumpAgentId) return;
+  if (!clawpumpAgentId) return undefined;
   const enabled = agent.addons.filter((addon) => addon.enabled && catalog.has(addon.id));
-  if (enabled.length === 0) return;
+  if (enabled.length === 0) return undefined;
   const nowMs = now.getTime();
   const dayStart = utcDayStart(now);
   const dayMs = dayStart.getTime();
@@ -543,6 +570,9 @@ export async function runArenaAddonAgent(
       await capNotice(deps, agent.id, item, pre, nowMs, dayMs);
       continue;
     }
+    // D1: room for the WHOLE pay sequence before its first ClawPump call. The budget is shared,
+    // so a miss ends the tick; nothing is reserved and the next pass retries.
+    if (!deps.budgetOk(ARENA_ADDON_PAY_CALLS)) return 'budget_deferred';
 
     const balance = await deps.walletUsdc(clawpumpAgentId);
     if (balance === null) {
@@ -582,7 +612,10 @@ export async function runArenaAddonAgent(
 
     // Audit-money: a pause that lands while an earlier add-on of this agent was
     // paying stops this one before it even reserves.
-    if (deps.paused()) return;
+    if (deps.paused()) return undefined;
+    // D1: the guard GET and the pay POST must still fit (the calls above spent tokens and
+    // other loops share the bucket). A miss here costs no reservation.
+    if (!deps.budgetOk(ARENA_ADDON_DISPATCH_CALLS)) return 'budget_deferred';
     // The authoritative check + reservation, under the per-agent advisory lock,
     // at the REAL time (balance and skill calls above can take seconds).
     const reserveAt = deps.clock();
@@ -603,7 +636,7 @@ export async function runArenaAddonAgent(
       await capNotice(deps, agent.id, item, reservation.check, nowMs, dayMs);
       continue;
     }
-    // Dedupe rotation: the all-time call count BEFORE this reservation.
+    // Dedupe rotation: the all-time SENT call count BEFORE this reservation (readArenaAddonStats, O1).
     const request = buildAddonRequest(item, reservation.callNumber);
 
     // Codex r17 #1/#2: the LAST gate before money moves. Same per-agent lock as
@@ -623,7 +656,7 @@ export async function runArenaAddonAgent(
       await notice(deps, `${key}:released:${dispatch.reason}`, nowMs, NOTICE_INTERVAL_MS, agent.id,
         `${item.name}: skipped before paying (${dispatch.reason === 'paused' ? 'the arena is paused' : 'the agent stood up, paused or changed its add-ons'}). Nothing was charged.`,
         { addonId: addon.id, reason: dispatch.reason });
-      if (dispatch.reason === 'paused') return;
+      if (dispatch.reason === 'paused') return undefined;
       continue;
     }
 
@@ -639,6 +672,9 @@ export async function runArenaAddonAgent(
     let result: ClawPumpX402Result | null = null;
     let error: string | null = null;
     let charged = 0;
+    // D1: our own call budget refused the pay before its request (the guard GET or the POST
+    // never left this process): $0, and not an attempt for the interval (checkAddonCall).
+    let budgetRefused = false;
     try {
       result = await deps.pay(clawpumpAgentId, {
         url: item.url,
@@ -669,7 +705,8 @@ export async function runArenaAddonAgent(
         charged = reported ?? price;
       }
     } catch (thrown) {
-      error = errorText(thrown);
+      budgetRefused = thrown instanceof ClawPumpWriterError && thrown.code === 'budget_exhausted';
+      error = budgetRefused ? ARENA_ADDON_BUDGET_REFUSED_ERROR : errorText(thrown);
       charged = mayHaveCharged(thrown) ? price : 0;
     }
 
@@ -678,7 +715,10 @@ export async function runArenaAddonAgent(
     const tokens = ok && !duplicate ? extractAddonTokens(result!.payload, item.mintPath, item.symbolPath) : [];
     let fresh = 0;
     try {
-      fresh = tokens.length > 0 ? await deps.insertPrivateMints(agent.id, addon.id, tokens, deps.clock()) : 0;
+      // O3: rows in mint order (code units = COLLATE "C" for base58), the same order the
+      // enrichment's snapshot write locks them in (discovery-hub storeSnapshots): no deadlock.
+      const ordered = [...tokens].sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0));
+      fresh = ordered.length > 0 ? await deps.insertPrivateMints(agent.id, addon.id, ordered, deps.clock()) : 0;
     } catch (insertError) {
       console.error('[floor-arena] add-on mint insert failed:', insertError instanceof Error ? insertError.message : 'error');
     }
@@ -693,6 +733,17 @@ export async function runArenaAddonAgent(
       mints: tokens.length,
       responseRef: ok && (!duplicate || charged > 0) ? extractResponseRef(result!.payload) : null,
     });
+    const data = {
+      addonId: addon.id, ok, duplicate, priceUsd: price, chargedUsd: charged, mints: tokens.length, newMints: fresh, error,
+    };
+    if (budgetRefused) {
+      // Money-lens MINOR 1: a long budget contention retries every tick, so its event goes through
+      // the notice throttle (at most one per NOTICE_INTERVAL_MS per agent and add-on).
+      await notice(deps, `${key}:budget`, nowMs, NOTICE_INTERVAL_MS, agent.id,
+        `${item.name}: the engine's ClawPump call budget was full. Nothing was sent or charged; the next pass retries.`,
+        data);
+      return 'budget_deferred';
+    }
     await deps.insertEvent(agent.id, {
       type: 'addon',
       summary: duplicate
@@ -702,12 +753,13 @@ export async function runArenaAddonAgent(
         : ok
           ? `${item.name}: paid ${usd(charged)}, ${tokens.length} tokens (${fresh} new, private to this agent).`
           : `${item.name}: call failed (${error}). ${charged > 0 ? `${usd(charged)} counted against the daily cap.` : 'Nothing was charged.'}`,
-      data: {
-        addonId: addon.id, ok, duplicate, priceUsd: price, chargedUsd: charged, mints: tokens.length, newMints: fresh, error,
-      },
+      data,
     });
   }
+  return undefined;
 }
+
+const BUDGET_DEFERRED_LOG = '[floor-arena] ClawPump call budget reached: add-on calls deferred to the next tick.';
 
 /** Called every 60 s by the arena engine. Never throws. */
 export async function runArenaAddonsTick(
@@ -727,14 +779,18 @@ export async function runArenaAddonsTick(
     addsLeft = ARENA_X402_ADDS_PER_TICK;
     for (const agent of await deps.listAgents()) {
       if (deps.paused()) return;
-      // Codex r20 (3): the shared ClawPump budget is low -> defer the rest of this
-      // tick (x402 removals keep their reserve). One line per tick.
-      if (!deps.budgetOk()) {
-        console.warn('[floor-arena] ClawPump call budget reached: add-on calls deferred to the next tick.');
+      // Codex r20 (3) / D1: the shared ClawPump budget cannot hold a whole pay
+      // sequence -> defer the rest of this tick (x402 removals keep their reserve).
+      // One line per tick.
+      if (!deps.budgetOk(ARENA_ADDON_PAY_CALLS)) {
+        console.warn(BUDGET_DEFERRED_LOG);
         return;
       }
       try {
-        await runArenaAddonAgent(deps, agent, catalog, deps.clock());
+        if ((await runArenaAddonAgent(deps, agent, catalog, deps.clock())) === 'budget_deferred') {
+          console.warn(BUDGET_DEFERRED_LOG);
+          return;
+        }
       } catch (error) {
         console.error('[floor-arena] add-on tick failed for one agent:', error instanceof Error ? error.message : 'error');
       }

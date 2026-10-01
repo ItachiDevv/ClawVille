@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
-  buildSnapshot, cleanVendorText, enrichTier, isTradableMint, mergeDiscoveryRow, mergeSightings, orderEnrichment,
-  parseClawpumpRows, parseDexscreenerList, parseGeckoPools, pickBestPairs, type Sighting,
+  buildSnapshot, byMint, cleanVendorText, enrichTier, isTradableMint, mergeDiscoveryRow, mergeSightings, orderEnrichment,
+  parseClawpumpRows, parseDexscreenerList, parseGeckoPools, pickBestPairs, runDiscoveryExpiryTick, storeSnapshots,
+  upsertSightings, type Sighting,
 } from './discovery-hub';
 import { tradeableFirstSeenMs } from './filters';
 
@@ -248,5 +251,97 @@ describe('enrichment order', () => {
     ], 10);
     expect(order).toEqual(['open', 'priv', 'new-newest', 'new-older', 'uni-stale', 'uni-recent', 'rest-old']);
     expect(orderEnrichment([{ mint: 'a', tier: 0, firstSeenMs: 0, lastMs: 0 }, { mint: 'b', tier: 1, firstSeenMs: 0, lastMs: 0 }], 1)).toEqual(['a']);
+  });
+});
+
+/**
+ * O3 (staging 2026-10-01, Postgres log 12:15:38 UTC): the enrichment UPDATE (join-plan order) and a poller upsert
+ * (vendor order) deadlocked on floor_discovery_mints. Every multi-row writer now locks in one order: mint (byte
+ * order), then agent. A fake database records each statement and the transaction it ran in.
+ */
+describe('O3: one row-lock order for every multi-row discovery writer', () => {
+  const dialect = new PgDialect();
+  type Logged = { tx: number; sql: string; params: unknown[] };
+  function fakeDatabase(lockResults: Array<Array<Record<string, unknown>>>) {
+    const log: Logged[] = [];
+    let txCount = 0;
+    let lockCall = 0;
+    const exec = (tx: number) => async (statement: SQL) => {
+      const query = dialect.sqlToQuery(statement);
+      const text = query.sql.replace(/\s+/g, ' ').trim();
+      log.push({ tx, sql: text, params: query.params });
+      return /FOR (NO KEY )?UPDATE/.test(text) ? (lockResults[lockCall++] ?? []) : [];
+    };
+    const database = {
+      execute: exec(0),
+      transaction: async (run: (tx: { execute: (statement: SQL) => Promise<unknown> }) => Promise<unknown>) => {
+        txCount += 1;
+        return run({ execute: exec(txCount) });
+      },
+    };
+    return { database: database as never, log };
+  }
+  const has = (params: unknown[], text: string) => params.some((param) => typeof param === 'string' && param.includes(text));
+
+  test('byMint sorts by code units (= COLLATE "C"), not by locale', () => {
+    expect(byMint([{ mint: 'b' }, { mint: 'B' }, { mint: 'a' }, { mint: '9' }]).map((row) => row.mint)).toEqual(['9', 'B', 'a', 'b']);
+  });
+
+  test('the poller upsert sends its rows in mint order and the SQL keeps that order', async () => {
+    const { database, log } = fakeDatabase([]);
+    // B ('84D3...') was sighted before A ('3b5f...'): vendor order B, A.
+    await upsertSightings(mergeSightings([
+      { mint: B, source: 'ds:token-profiles', symbol: null, name: null },
+      { mint: A, source: 'ds:token-profiles', symbol: null, name: null },
+    ]), NOW, database);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.sql).toContain('ORDER BY r.mint COLLATE "C" ON CONFLICT (mint) DO UPDATE');
+    const payload = JSON.parse(log[0]!.params.find((param) => typeof param === 'string' && param.startsWith('[')) as string) as Array<{ mint: string }>;
+    expect(payload.map((row) => row.mint)).toEqual([A, B]);
+  });
+
+  test('the snapshot write locks each table in order first, then updates only the rows it locked', async () => {
+    const snap = (mint: string) => ({ mint, snapshot: buildSnapshot({ chainId: 'solana', priceUsd: '1' }, NOW.getTime()), symbol: null, name: null });
+    const { database, log } = fakeDatabase([
+      [{ mint: A }],                                               // B has no shared row
+      [{ agent_id: 'agent-1', mint: A }, { agent_id: 'agent-2', mint: B }],
+    ]);
+    await storeSnapshots([snap(B), snap(A)], NOW, database);
+    // No statement outside a transaction; each table in its own short transaction.
+    expect(log.map((entry) => entry.tx)).toEqual([1, 1, 2, 2]);
+    expect(log[0]!.sql).toContain('FROM floor_discovery_mints AS d WHERE d.mint IN (SELECT jsonb_array_elements_text(');
+    expect(log[0]!.sql).toContain('ORDER BY d.mint COLLATE "C" FOR NO KEY UPDATE OF d');
+    expect(log[0]!.params).toContain(JSON.stringify([A, B]));
+    expect(log[1]!.sql).toContain('UPDATE floor_discovery_mints AS d');
+    // Only the locked row is updated (a row that appeared after the lock waits for the next tick).
+    expect(has(log[1]!.params, A)).toBe(true);
+    expect(has(log[1]!.params, B)).toBe(false);
+    expect(log[2]!.sql).toContain('ORDER BY p.mint COLLATE "C", p.agent_id COLLATE "C" FOR NO KEY UPDATE OF p');
+    expect(log[3]!.sql).toContain('UPDATE floor_arena_private_mints AS p');
+    expect(log[3]!.sql).toContain('p.agent_id = k.agent_id AND p.mint = k.mint');
+    expect(log[3]!.params).toContain(JSON.stringify([{ agent_id: 'agent-1', mint: A }, { agent_id: 'agent-2', mint: B }]));
+  });
+
+  test('nothing locked -> no UPDATE', async () => {
+    const { database, log } = fakeDatabase([[], []]);
+    await storeSnapshots([{ mint: A, snapshot: buildSnapshot({}, NOW.getTime()), symbol: null, name: null }], NOW, database);
+    expect(log.map((entry) => entry.sql.split(' ')[0])).toEqual(['SELECT', 'SELECT']);
+  });
+
+  test('the expiry locks the doomed rows in order, then deletes only those (conditions re-checked)', async () => {
+    const { database, log } = fakeDatabase([[{ mint: A }], [{ agent_id: 'agent-1', mint: B }]]);
+    expect(await runDiscoveryExpiryTick(NOW, database)).toEqual({ shared: 0, private: 0 });
+    expect(log.map((entry) => entry.tx)).toEqual([1, 1, 2, 2]);
+    expect(log[0]!.sql).toContain('ORDER BY d.mint COLLATE "C" FOR UPDATE OF d');
+    expect(log[1]!.sql).toContain('DELETE FROM floor_discovery_mints AS d WHERE d.mint IN (SELECT jsonb_array_elements_text(');
+    expect(log[1]!.sql).toContain('d.expires_at <');
+    expect(log[1]!.sql).toContain('NOT EXISTS');
+    expect(log[1]!.params).toContain(JSON.stringify([A]));
+    expect(log[2]!.sql).toContain('ORDER BY m.mint COLLATE "C", m.agent_id COLLATE "C" FOR UPDATE OF m');
+    expect(log[3]!.sql).toContain('DELETE FROM floor_arena_private_mints AS m USING jsonb_to_recordset(');
+    expect(log[3]!.params).toContain(JSON.stringify([{ agent_id: 'agent-1', mint: B }]));
+    const empty = fakeDatabase([[], []]);
+    await runDiscoveryExpiryTick(NOW, empty.database);
+    expect(empty.log.map((entry) => entry.sql.split(' ')[0])).toEqual(['SELECT', 'SELECT']);
   });
 });

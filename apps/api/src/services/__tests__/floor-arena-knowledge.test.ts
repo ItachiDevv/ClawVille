@@ -102,8 +102,8 @@ describe('Trading Arena manual section 17c', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(77);
-    expect(protocolPointer(API)).toMatchObject({ version: 77, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(78);
+    expect(protocolPointer(API)).toMatchObject({ version: 78, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -343,6 +343,23 @@ describe('Trading Arena manual section 17c', () => {
     expect(route).toContain("NAME_LETTER.test(cleaned) ? cleaned : 'Arena Agent'");
   });
 
+  test('v78 (N4): states the content mask and the offensive-name refusal, the same contract the route serves', () => {
+    const section = arenaSection();
+    expect(section).toMatch(/an offensive coin `symbol` or `name`, or trader `name` or\s+`agentName`, reads `\*\*\*`, and that discovery row, tape item, position,\s+leaderboard row or profile carries `masked: true`\./);
+    expect(section).toMatch(/An offensive word in an event\s+or report `summary` reads `\*\*\*`, and that event or report carries\s+`masked: true`\./);
+    expect(section).toMatch(/The `mint` is never masked: use it to identify the coin\./);
+    expect(section).toMatch(/and 400 `name_not_allowed` when the name \(or, with no\s+name sent, your avatar's name\) is offensive/);
+    // The route answers that code and the public reads use the shared mask (content-mask.ts).
+    const route = readFileSync(join(import.meta.dir, '..', '..', 'routes', 'floor-arena.ts'), 'utf8');
+    expect(route).toContain("code: 'name_not_allowed'");
+    for (const helper of ['maskArenaDiscoveryRow', 'maskArenaTapeItem', 'maskArenaName', 'maskArenaPosition', 'maskArenaSummary']) {
+      expect(route).toContain(`.map(${helper})`);
+    }
+    const mask = readFileSync(join(import.meta.dir, '..', 'floor-arena', 'content-mask.ts'), 'utf8');
+    expect(mask).toContain("export const ARENA_MASK = '***';");
+    expect(mask).toContain('masked: true');
+  });
+
   test('states the D33 checkpoint schedule from its constants: checkpoints, alphas, budget, the two new reasons', () => {
     // The docs (GameFeatures §17g.3, the spec D33 row and §6a, ARCHITECTURE) and the
     // shared tool text type these numbers, so a change to the constants fails here first.
@@ -441,6 +458,7 @@ describe('Trading Arena tools', () => {
     // P8 (review M1): the launch tool names both name codes the route returns, and the letterless fallback.
     expect(launch.description).toContain("400 name_reserved when the name (or, with no name sent, your avatar's name) reads as a house agent's name");
     expect(launch.description).toContain('400 name_needs_letter when the name has no letter (with no name sent, an avatar name with no letter launches as Arena Agent)');
+    expect(launch.description).toContain("400 name_not_allowed when the name (or, with no name sent, your avatar's name) is offensive");
     expect(launch.input_schema.properties.name?.description).toContain('with at least one letter');
     expect(byName.get('clawville_arena_seat')!.input_schema.required).toEqual(['seated']);
     expect(byName.get('clawville_arena_set_status')!.input_schema.properties.status?.enum).toEqual(['active', 'paused']);
@@ -456,6 +474,9 @@ describe('Trading Arena tools', () => {
     expect(byName.get('clawville_arena_suggestion')!.description).not.toContain('Read reports with clawville_arena_agent');
     expect(byName.get('clawville_arena_my_trader')!.description).toContain('GET {apiBase}/api/floor/arena/me/events');
     expect(byName.get('clawville_arena_agent')!.description).toContain('no add-on settings, payment address, provisioning state or reports');
+    // Review MINOR 4: an agent reading the board or a profile is told a row can be masked.
+    expect(byName.get('clawville_arena_leaderboard')!.description).toContain('A row whose trader name is offensive carries masked: true and its name reads ***');
+    expect(byName.get('clawville_arena_agent')!.description).toContain('An offensive trader name or coin symbol reads *** and that object carries masked: true');
     expect(byName.get('clawville_arena_templates')!.description).toContain('a GeckoTerminal-only coin is shown but never traded');
     // The shared tool text cannot import the API's tuner constants, so pin it to them here.
     const settings = byName.get('clawville_arena_settings')!.description;

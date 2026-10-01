@@ -12,11 +12,12 @@ import {
   TRADING_FLOOR_CAMERA_Z_MAX,
   TRADING_FLOOR_CAMERA_Z_MIN,
   TRADING_FLOOR_DESK_INNER_X,
-  TRADING_FLOOR_PLAYER_RADIUS,
+  TRADING_FLOOR_DOOR,
   pushCameraOutOfSolids,
   tradingFloorHitsSolid,
   TRADING_FLOOR_CHAIR_HALF_X,
   TRADING_FLOOR_CHAIR_HALF_Z,
+  TRADING_FLOOR_CHAIR_SEAT_Y,
   TRADING_FLOOR_CONSOLE_HALF_X,
   TRADING_FLOOR_CONSOLE_HALF_Z,
   TRADING_FLOOR_CONSOLE_HEIGHT,
@@ -26,6 +27,7 @@ import {
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SOLIDS,
 } from './trading-floor-room';
+import { DECOR_BANK, DECOR_DESK_HOOD } from './trading-floor-decor-layout';
 
 /**
  * trading-floor-asset.test.ts
@@ -95,6 +97,8 @@ interface GltfJson {
   nodes: GltfNode[];
   meshes: { primitives: { attributes: Record<string, number> }[] }[];
   accessors: GltfAccessor[];
+  materials: { name?: string; pbrMetallicRoughness?: { metallicFactor?: number } }[];
+  textures: unknown[];
 }
 
 /** Read the JSON chunk out of a binary glTF container. */
@@ -303,16 +307,412 @@ describe('Trading Floor asset — instanced props sit where the row expects', ()
   // there. If a prop ever shipped with node Y 0, the row would sink into the
   // floor by half its height.
   //
-  // Tolerance is 5 wu here, not the usual 1, and the reason is measured rather
-  // than defensive: the chair's base spider dips to y -2.00 (top 173.00), which
-  // agrees with the Blender importer's `min=[-64,-61,-2] max=[64,61,173]`. Two
-  // wu of a chair foot inside a 60 wu floor slab is invisible and not worth an
-  // asset change, but it is real and a 1 wu bound would fail on it.
+  // Both v4 modules start at y=0. Only quantizer noise is permitted.
   test('both instanced props carry their base-seating offset on the node', () => {
     for (const name of ['TradingFloorConsoleModule', 'TradingFloorChairModule']) {
       const node = nodeByName(name);
       const base = translation(node).y - worldHalfExtents(node).y;
-      expect({ name, sunkBy: Math.abs(base) < 5 }).toEqual({ name, sunkBy: true });
+      expect({ name, sunkBy: Math.abs(base) < TOL }).toEqual({ name, sunkBy: true });
+    }
+  });
+});
+
+type Point = [number, number, number];
+
+const decodedAsset = (async () => {
+  await MeshoptDecoder.ready;
+  return new NodeIO().registerExtensions(ALL_EXTENSIONS)
+    .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
+})();
+
+/** World-space vertices after meshopt decoding, including the quantizer transform. */
+async function assetVertices(name: string) {
+  const doc = await decodedAsset;
+  const node = doc.getRoot().listNodes().find((candidate) => candidate.getName() === name)!;
+  const primitive = node.getMesh()!.listPrimitives()[0]!;
+  const positions = primitive.getAttribute('POSITION')!;
+  const normals = primitive.getAttribute('NORMAL');
+  const colors = primitive.getAttribute('COLOR_0');
+  const world = node.getWorldMatrix();
+  const vertices = Array.from({ length: positions.getCount() }, (_, index) => {
+    const p = positions.getElement(index, []), n = normals?.getElement(index, []) ?? [0, 1, 0];
+    const direction = [0, 1, 2].map((axis) =>
+      world[axis]! * n[0]! + world[4 + axis]! * n[1]! + world[8 + axis]! * n[2]!);
+    const length = Math.hypot(...direction);
+    return {
+      p: [0, 1, 2].map((axis) => world[12 + axis]! + world[axis]! * p[0]! +
+        world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]!) as Point,
+      n: direction.map((v) => v / length) as Point,
+      color: colors?.getElement(index, [] as number[]),
+    };
+  });
+  return { vertices, primitive };
+}
+
+/** Clip to camera height before checking a triangle's complete axis interval.
+ * A face can cross a camera plane without having a vertex near that plane. */
+function triangleCameraMargins(triangle: Point[]): number[] {
+  const maximumY = TRADING_FLOOR_CAMERA.above + TRADING_FLOOR_CAMERA.pitchMax;
+  const clip = (polygon: Point[], axis: number, boundary: number, sign: number) => {
+    const result: Point[] = [];
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i]!, b = polygon[(i + 1) % polygon.length]!;
+      const da = (a[axis]! - boundary) * sign, db = (b[axis]! - boundary) * sign;
+      if (da >= 0) result.push(a);
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        result.push(a.map((value, coordinate) => value + (b[coordinate]! - value) * t) as Point);
+      }
+    }
+    return result;
+  };
+  const belowCamera = clip(triangle, 1, maximumY, -1);
+  return ([
+    [0, -1, TRADING_FLOOR_ROOM.halfX, TRADING_FLOOR_DESK_INNER_X],
+    [0, 1, TRADING_FLOOR_ROOM.halfX, TRADING_FLOOR_DESK_INNER_X],
+    [2, -1, TRADING_FLOOR_ROOM.halfZ, -TRADING_FLOOR_CAMERA_Z_MIN],
+    [2, 1, TRADING_FLOOR_ROOM.halfZ, TRADING_FLOOR_CAMERA_Z_MAX],
+  ] as const).map(([axis, sign, innerFace, limit]) => {
+    // Include the 6 wu margin beyond the reachable slab to catch corner faces.
+    // A back-wall face beyond that band is not an X-plane intrusion.
+    const tangent = axis === 0 ? 2 : 0;
+    const tangentMin = axis === 0 ? TRADING_FLOOR_CAMERA_Z_MIN : -TRADING_FLOOR_DESK_INNER_X;
+    const tangentMax = axis === 0 ? TRADING_FLOOR_CAMERA_Z_MAX : TRADING_FLOOR_DESK_INNER_X;
+    const clipped = clip(clip(belowCamera, tangent, tangentMin - 6, 1), tangent, tangentMax + 6, -1);
+    const values = clipped.map((p) => p[axis] * sign);
+    const min = Math.min(...values), max = Math.max(...values);
+    const inBand = values.some((v) => v >= limit - 6 && v <= innerFace);
+    const crossesLimit = min <= limit && max >= limit;
+    return inBand || crossesLimit ? min - limit : Infinity;
+  });
+}
+
+describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
+  test('a synthetic corner triangle inside the 6 wu margin fails the margin gate', () => {
+    const margins = triangleCameraMargins([[990, 270, -1056], [990, 300, -1056], [995, 270, -1060]]);
+    expect(Number.isFinite(margins[1])).toBe(true);
+    expect(Number.isFinite(margins[2])).toBe(true);
+    expect(margins[1]).toBe(5);
+    expect(margins[2]).toBe(2);
+    expect(() => expect(Math.min(...margins)).toBeGreaterThanOrEqual(6)).toThrow();
+  });
+
+  test('a synthetic back-wall triangle that crosses the camera plane fails the margin gate', () => {
+    // Its wall-side vertices clear by 46 wu. Its room-side vertex crosses by 14.
+    const margins = triangleCameraMargins([[0, 270, -1100], [20, 410, -1040], [40, 270, -1100]]);
+    expect(margins[2]).toBe(-14);
+    expect(() => expect(margins[2]).toBeGreaterThanOrEqual(6)).toThrow();
+    // Also catch a tall triangle whose wall-side vertices sit above camera height.
+    expect(triangleCameraMargins([[0, 500, -1100], [20, 270, -1040], [40, 500, -1100]])[2]).toBe(-14);
+    expect(triangleCameraMargins([[0, 411, -1100], [20, 500, -1040], [40, 411, -1100]])).toEqual(
+      [Infinity, Infinity, Infinity, Infinity]);
+    // A back-wall strip crosses both X planes but stays outside reachable Z.
+    const backWall = triangleCameraMargins([[-1300, 270, -1100], [1300, 270, -1100], [1300, 410, -1100]]);
+    expect(backWall[0]).toBe(Infinity); expect(backWall[1]).toBe(Infinity);
+    expect(backWall[2]).toBe(46);
+  });
+
+  test('all four wall bands clear the camera by at least 6 wu below its maximum height', async () => {
+    const doc = await decodedAsset;
+    const maximumY = TRADING_FLOOR_CAMERA.above + TRADING_FLOOR_CAMERA.pitchMax;
+    const failures: string[] = [], margins = [Infinity, Infinity, Infinity, Infinity];
+    for (const node of doc.getRoot().listNodes()) {
+      // The floor spans every wall band but sits below the camera's Y floor.
+      // Desk/chair source templates never render; the row rotates their copies.
+      // Their decoded extents and actual row camera clamps have separate tests.
+      // No board or kiosk exemption: the kiosk stands clear of the back band.
+      if (!node.getMesh() || ['TradingFloorFloorSlab', 'TradingFloorConsoleModule',
+        'TradingFloorChairModule'].includes(node.getName())) continue;
+      const { vertices, primitive } = await assetVertices(node.getName());
+      const indices = primitive.getIndices()!.getArray()!;
+      for (let i = 0; i < indices.length; i += 3) {
+        const triangle = [0, 1, 2].map((corner) => vertices[indices[i + corner]!]!.p);
+        const candidates = triangleCameraMargins(triangle);
+        candidates.forEach((margin, wall) => {
+          margins[wall] = Math.min(margins[wall]!, margin);
+          if (margin < 6) failures.push(`${node.getName()} triangle ${i / 3} wall ${wall}: margin ${margin}`);
+        });
+      }
+    }
+    expect(margins.every(Number.isFinite)).toBe(true);
+    console.log(`wall camera margins left/right/back/front: ${margins.map((v) => v.toFixed(4)).join('/')} wu; y <= ${maximumY}`);
+    expect(failures).toEqual([]);
+  });
+
+  test('each claw has at most 40 inverted or degenerate triangles after room-wide quantization', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorBrass');
+    const indices = primitive.getIndices()!.getArray()!;
+    const counts = [0, 0], totals = [0, 0];
+    for (let i = 0; i < indices.length; i += 3) {
+      const corners = [0, 1, 2].map((j) => vertices[indices[i + j]!]!);
+      const claw = extras!.statue!.claws.findIndex((bounds) => corners.every(({ p }) =>
+        p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2)));
+      if (claw < 0) continue;
+      totals[claw]!++;
+      const [a, b, c] = corners;
+      const u = b!.p.map((v, axis) => v - a!.p[axis]!), v = c!.p.map((p, axis) => p - a!.p[axis]!);
+      const face = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
+      if (Math.hypot(...face) <= 1e-8 || corners.some(({ n }) =>
+        face.reduce((sum, value, axis) => sum + value * n[axis]!, 0) <= 0)) counts[claw]!++;
+    }
+    for (const total of totals) expect(total).toBeGreaterThan(2000);
+    for (const count of counts) expect(count).toBeLessThanOrEqual(40);
+    console.log(`claw inverted/degenerate triangles: ${counts.join('/')} of ${totals.join('/')}; maximum 40 each`);
+  });
+
+  test('A4 indexing stays compact and amber claw shading leaves every other brass vertex white', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorBrass');
+    expect(primitive.getAttribute('COLOR_0')!.getCount()).toBe(vertices.length);
+    expect(primitive.getMaterial()!.getExtension('KHR_materials_unlit')).toBeNull();
+    expect(primitive.getMaterial()!.getBaseColorFactor()).toEqual([.75, .53, .16, 1]);
+    expect(primitive.getMaterial()!.getEmissiveFactor()).toEqual([.13, .095, .032]);
+    expect(primitive.getMaterial()!.getRoughnessFactor()).toBe(.32);
+    expect(primitive.getMaterial()!.getMetallicFactor()).toBeLessThanOrEqual(.45);
+    const shades: number[] = [];
+    const clawCounts = [0, 0];
+    for (const { p, color } of vertices) {
+      const claw = extras!.statue!.claws.some((bounds) =>
+        p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2));
+      expect(color).toBeDefined();
+      if (claw) {
+        const shade = color![0]! / .827;
+        // Meshopt stores colours as normalized bytes; permit one byte of error.
+        expect(Math.abs(color![1]! - shade * .755)).toBeLessThanOrEqual(2 / 255);
+        expect(Math.abs(color![2]! - shade * .625)).toBeLessThanOrEqual(2 / 255);
+        expect(shade).toBeGreaterThanOrEqual(.44);
+        expect(shade).toBeLessThanOrEqual(1.01);
+        shades.push(shade);
+        const index = extras!.statue!.claws.findIndex((bounds) =>
+          p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2));
+        clawCounts[index]!++;
+      } else expect(color).toEqual([1, 1, 1]);
+    }
+    expect(clawCounts.every((count) => count > 2000 && count <= 2250)).toBe(true);
+    expect(vertices.length).toBeLessThanOrEqual(5500);
+    console.log(`indexed brass vertices ${vertices.length}; claw vertices ${clawCounts.join('/')} (total ${clawCounts[0]! + clawCounts[1]!})`);
+    expect(Math.max(...shades) - Math.min(...shades)).toBeGreaterThan(.3);
+  });
+
+  test('portal contacts have deliberate clearance and the plate fits the lowest tier', async () => {
+    const brass = (await assetVertices('TradingFloorBrass')).vertices.map(({ p }) => p);
+    const walls = (await assetVertices('TradingFloorWalls')).vertices.map(({ p }) => p);
+    const trim = (await assetVertices('TradingFloorTrimGlow')).vertices;
+    const jamb = brass.filter(([x, y, z]) => Math.abs(x) > 176 && Math.abs(x) < 208 && y < 501 && z > 1090 && z < 1107);
+    // Only the room-facing front wall at z=1100 supplies the visible reveal.
+    // Rear/hidden wall faces cannot substitute for this opening.
+    const reveal = walls.filter(([x, y, z]) => Math.abs(x) > 100 && Math.abs(x) < 300 && y < 410 && z > 1099 && z < 1101);
+    const header = brass.filter(([x, y, z]) => Math.abs(x) < 209 && y > 490 && y < 505 && z > 1085 && z < 1107);
+    const lintel = walls.filter(([x, y, z]) => Math.abs(x) < 200 && y > 490 && y < 510 && z > 1099);
+    for (const points of [jamb, reveal, header, lintel]) expect(points.length).toBeGreaterThan(0);
+    const jambInner = Math.min(...jamb.map(([x]) => Math.abs(x)));
+    const revealInner = Math.min(...reveal.map(([x]) => Math.abs(x)));
+    const headerBottom = Math.min(...header.map((p) => p[1]));
+    const lintelBottom = Math.min(...lintel.map((p) => p[1]));
+    const lintelEdge = Math.min(...lintel.map(([x]) => Math.abs(x)));
+    expect(Math.abs(revealInner * 2 - TRADING_FLOOR_DOOR.width)).toBeLessThan(.2);
+    expect(Math.abs(jambInner - revealInner)).toBeGreaterThanOrEqual(2);
+    expect(lintelEdge - jambInner).toBeGreaterThanOrEqual(2);
+    expect(lintelBottom - headerBottom).toBeGreaterThanOrEqual(2);
+    const railFront = brass.filter(([x, y, z]) => Math.abs(x) > 181 && Math.abs(x) < 1301 &&
+      y > 286 && y < 306 && z > 1094 && z < 1096);
+    expect(railFront.length).toBeGreaterThan(0);
+    expect(Math.min(...railFront.map(([x]) => Math.abs(x)))).toBeCloseTo(182, 0);
+    // The authored 2 wu gap permits .2 wu of room-wide quantization noise.
+    expect(Math.min(...railFront.map(([x]) => Math.abs(x))) - revealInner).toBeGreaterThanOrEqual(1.8);
+    expect(Math.min(...railFront.map((p) => p[2])) - Math.min(...jamb.map((p) => p[2]))).toBeGreaterThan(.3);
+    expect(Math.max(...jamb.map((p) => p[2])) - Math.min(...jamb.map((p) => p[2]))).toBeCloseTo(11, 0);
+    const standoffs = brass.filter(([x, y, z]) => Math.abs(x) > 18 && Math.abs(x) < 30 && y > 174 && y < 186 && z > 1110 && z < 1131);
+    const glass = trim.filter(({ p: [x, y, z], color }) =>
+      Math.abs(x) < 180 && y > 10 && y < 490 && z > 1127 && color![0]! < .025);
+    expect(standoffs.length).toBeGreaterThan(0); expect(glass.length).toBeGreaterThan(0);
+    const standoffBack = Math.max(...standoffs.map((p) => p[2]));
+    const glassFront = Math.min(...glass.map(({ p }) => p[2]));
+    // A small insertion removes the gap; separate contact planes cannot flicker.
+    expect(standoffBack - glassFront).toBeGreaterThan(.2);
+    expect(standoffBack - glassFront).toBeLessThan(2);
+    const plate = brass.filter(([x, y, z]) => Math.abs(x) < 131 && y > 3 && y < 29 && z > 284.5 && z < 289);
+    expect(plate.length).toBeGreaterThan(0);
+    expect(Math.min(...plate.map((p) => p[1]))).toBeGreaterThan(3);
+    expect(Math.max(...plate.map((p) => p[1]))).toBeLessThan(29);
+    expect(plate.every(([x, , z]) => Math.hypot(x, z + 60) < 380)).toBe(true);
+    const plateBack = Math.min(...plate.map((p) => p[2])), plateFront = Math.max(...plate.map((p) => p[2]));
+    expect(plateFront - plateBack).toBeCloseTo(3, 0);
+    expect(plateFront).toBeCloseTo(288, 0);
+    expect(plateFront - 286).toBeCloseTo(2, 0);
+    console.log(`portal: jamb x +/-${jambInner.toFixed(4)}, wall reveal +/-${revealInner.toFixed(4)}, lintel edge +/-${lintelEdge.toFixed(4)}; header/lintel y ${headerBottom.toFixed(4)}/${lintelBottom.toFixed(4)}; standoff/glass z ${standoffBack.toFixed(4)}/${glassFront.toFixed(4)}`);
+    console.log(`plate y ${Math.min(...plate.map((p) => p[1])).toFixed(4)}..${Math.max(...plate.map((p) => p[1])).toFixed(4)}, z ${Math.min(...plate.map((p) => p[2])).toFixed(4)}..${Math.max(...plate.map((p) => p[2])).toFixed(4)}`);
+  });
+});
+
+/** Undo quantization and the template anchor, exactly as the row does. */
+async function moduleTriangles(name: string): Promise<Point[][]> {
+  const doc = await decodedAsset;
+  const node = doc.getRoot().listNodes().find((candidate) => candidate.getName() === name)!;
+  const primitive = node.getMesh()!.listPrimitives()[0]!;
+  const positions = primitive.getAttribute('POSITION')!;
+  const world = node.getWorldMatrix();
+  const at = node.getTranslation();
+  const vertices = Array.from({ length: positions.getCount() }, (_, index): Point => {
+    const p = positions.getElement(index, []);
+    return [0, 1, 2].map((axis) => world[12 + axis]! +
+      world[axis]! * p[0]! + world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]! -
+      (axis === 1 ? 0 : at[axis]!)) as Point;
+  });
+  const indices = primitive.getIndices()!.getArray()!;
+  return Array.from({ length: indices.length / 3 }, (_, index) =>
+    [0, 1, 2].map((corner) => vertices[indices[index * 3 + corner]!]!));
+}
+
+/** Height of the uppermost triangle over a desk-local point. */
+function surfaceY(triangles: Point[][], x: number, z: number, ceiling = Infinity): number {
+  let top = -Infinity;
+  for (const [a, b, c] of triangles) {
+    const det = (b![2] - c![2]) * (a![0] - c![0]) + (c![0] - b![0]) * (a![2] - c![2]);
+    if (Math.abs(det) < 1e-8) continue;
+    const u = ((b![2] - c![2]) * (x - c![0]) + (c![0] - b![0]) * (z - c![2])) / det;
+    const v = ((c![2] - a![2]) * (x - c![0]) + (a![0] - c![0]) * (z - c![2])) / det;
+    if (Math.min(u, v, 1 - u - v) < -0.0001) continue;
+    const y = u * a![1] + v * b![1] + (1 - u - v) * c![1];
+    if (y <= ceiling) top = Math.max(top, y);
+  }
+  return top;
+}
+
+/** Clip whole triangles to the mount corridor. Vertex-only tests miss a broad
+ * hood or a sloped face whose vertices all sit outside the corridor. */
+function clipToMount(triangle: Point[]): Point[] {
+  let polygon = triangle;
+  for (const [axis, boundary, direction] of [[0, -60, 1], [0, 60, -1],
+    [2, DECOR_DESK_HOOD.minLocalZ, 1], [2, -100, -1]]) {
+    const clipped: Point[] = [];
+    for (let index = 0; index < polygon.length; index++) {
+      const a = polygon[index]!, b = polygon[(index + 1) % polygon.length]!;
+      const da = (a[axis!]! - boundary!) * direction!;
+      const db = (b[axis!]! - boundary!) * direction!;
+      if (da >= 0) clipped.push(a);
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        clipped.push(a.map((v, i) => v + (b[i]! - v) * t) as Point);
+      }
+    }
+    polygon = clipped;
+  }
+  return polygon;
+}
+
+describe('Trading Floor asset — v4 desk and leather chair', () => {
+  test('one primitive per row, module budgets and atlas size survive compression', async () => {
+    const doc = await decodedAsset;
+    for (const [name, budget] of [['TradingFloorConsoleModule', 1500], ['TradingFloorChairModule', 900]] as const) {
+      const node = doc.getRoot().listNodes().find((candidate) => candidate.getName() === name)!;
+      const primitives = node.getMesh()!.listPrimitives();
+      expect(primitives).toHaveLength(1);
+      expect(primitives[0]!.getIndices()!.getCount() / 3).toBeLessThanOrEqual(budget);
+      expect(primitives[0]!.getIndices()!.getCount() / 3).toBe(name === 'TradingFloorChairModule' ? 864 : 980);
+      expect(node.getRotation()).toEqual([0, 0, 0, 1]);
+    }
+    const desk = doc.getRoot().listMaterials().find((material) => material.getName() === 'TradingFloorConsoleModuleMtl')!;
+    expect(desk.getBaseColorTexture()!.getSize()).toEqual([512, 256]);
+    expect(desk.getBaseColorTexture()!.getImage()!.byteLength).toBeLessThan(16000);
+    const chair = doc.getRoot().listMaterials().find((material) => material.getName() === 'TradingFloorChair')!;
+    expect(chair.getRoughnessFactor()).toBe(0.48);
+    expect(chair.getMetallicFactor()).toBe(0.18);
+    expect(readFileSync(GLB_PATH).byteLength).toBeLessThanOrEqual(650000);
+    const total = doc.getRoot().listMeshes().flatMap((mesh) => mesh.listPrimitives())
+      .reduce((sum, primitive) => sum + primitive.getIndices()!.getCount() / 3, 0);
+    expect(total).toBeLessThanOrEqual(16000);
+  });
+
+  test('the complete flat hood supports the runtime mount and nothing crosses its corridor', async () => {
+    const triangles = await moduleTriangles('TradingFloorConsoleModule');
+    const heights: number[] = [];
+    for (const x of [-60, -30, 0, 30, 60]) {
+      for (const z of [-135, -128, -120, -110]) {
+        const y = surfaceY(triangles, x, z);
+        heights.push(y);
+        expect(y).toBeGreaterThanOrEqual(164);
+        expect(y).toBeLessThanOrEqual(DECOR_DESK_HOOD.topY + 0.02);
+      }
+    }
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(0.02);
+    const corridor = triangles.flatMap(clipToMount);
+    expect(corridor.length).toBeGreaterThan(0);
+    const top = Math.max(...corridor.map((p) => p[1]));
+    expect(top).toBeLessThanOrEqual(166.02);
+    for (const x of [-DECOR_BANK.plate.halfX, 0, DECOR_BANK.plate.halfX]) {
+      const top = surfaceY(triangles, x, DECOR_BANK.plate.centerZ);
+      expect(top).toBeGreaterThan(DECOR_BANK.footY);
+      expect(top).toBeLessThan(DECOR_BANK.plate.topY);
+    }
+    console.log(`desk hood sampled y ${Math.min(...heights).toFixed(4)}..${Math.max(...heights).toFixed(4)}; corridor top ${top.toFixed(4)}`);
+  });
+
+  test('the flat cushion stays at seat y85 and casters meet the floor', async () => {
+    const triangles = await moduleTriangles('TradingFloorChairModule');
+    for (const x of [-30, 0, 30]) for (const z of [0, 20, 35]) {
+      expect(Math.abs(surfaceY(triangles, x, z, 90) - TRADING_FLOOR_CHAIR_SEAT_Y)).toBeLessThan(0.02);
+    }
+    const points = triangles.flat();
+    expect(Math.abs(Math.min(...points.map((p) => p[1])))).toBeLessThan(0.02);
+    expect(Math.max(...points.map((p) => p[1]))).toBeCloseTo(174, 2);
+    for (const axis of [0, 2]) {
+      const half = axis === 0 ? TRADING_FLOOR_CHAIR_HALF_X : TRADING_FLOOR_CHAIR_HALF_Z;
+      expect(Math.abs(Math.min(...points.map((p) => p[axis]!)) + half)).toBeLessThan(TOL);
+      expect(Math.abs(Math.max(...points.map((p) => p[axis]!)) - half)).toBeLessThan(TOL);
+    }
+  });
+
+  test('arm posts enter the cushion and arm pads within the chair footprint', async () => {
+    const { vertices } = await assetVertices('TradingFloorChairModule');
+    for (const side of [-1, 1]) {
+      const posts = vertices.filter(({ p, color }) => side * p[0] > 49 && side * p[0] < 59 &&
+        p[1] > 60 && p[2] > 10 && p[2] < 20 && Math.abs(color![0]! - 110 / 255) < 1e-6 &&
+        Math.abs(color![1]! - 125 / 255) < 1e-6);
+      expect(posts).toHaveLength(24);
+      for (const [axis, low, high] of [[0, 50, 58], [1, 64, 100], [2, 11, 19]] as const) {
+        const values = posts.map(({ p }) => axis === 0 ? side * p[0] : p[axis]);
+        expect(Math.abs(Math.min(...values) - low)).toBeLessThan(0.02);
+        expect(Math.abs(Math.max(...values) - high)).toBeLessThan(0.02);
+      }
+    }
+  });
+
+  test('the brass hood strip meets the hood without overlapping its top', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorConsoleModule');
+    const uv = primitive.getAttribute('TEXCOORD_0')!;
+    const strip = vertices.filter(({ p }, i) => p[1] > 161 && p[2] > -601 && p[2] < -597 &&
+      Math.abs(uv.getElement(i, [])[0]! - 416 / 512) < 0.001);
+    expect(strip).toHaveLength(24);
+    expect(Math.abs(Math.min(...strip.map(({ p }) => p[2])) + 600)).toBeLessThan(0.02);
+    expect(Math.abs(Math.max(...strip.map(({ p }) => p[2])) + 598)).toBeLessThan(0.02);
+  });
+
+  test('desktop end faces map wood grain across depth instead of a constant u', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorConsoleModule');
+    const uv = primitive.getAttribute('TEXCOORD_0')!;
+    const ends = vertices.flatMap(({ p, n }, i) => {
+      if (Math.abs(p[0] + 1120) < 181.95 || Math.abs(n[0]) < 0.99) return [];
+      const u = uv.getElement(i, [])[0]!;
+      if (u > 320 / 512) return []; // Exclude the brass desktop lip swatch.
+      expect(Math.abs(u - (8 + ((p[2] + 500 + 135) / 270) * 304) / 512)).toBeLessThan(0.001);
+      return [u];
+    });
+    expect(ends.length).toBeGreaterThanOrEqual(8);
+    expect(Math.max(...ends) - Math.min(...ends)).toBeGreaterThan(0.5);
+  });
+
+  test('chair and brass retain normalized byte colors and welded sculpt creases', async () => {
+    for (const name of ['TradingFloorChairModule', 'TradingFloorBrass']) {
+      const { vertices, primitive } = await assetVertices(name);
+      const colors = primitive.getAttribute('COLOR_0')!;
+      expect(colors.getComponentType()).toBe(5121);
+      expect(colors.getNormalized()).toBe(true);
+      expect(colors.getType()).toBe('VEC3');
+      expect(new Set(vertices.map(({ color }) => color!.join(','))).size).toBeGreaterThan(1);
+      if (name === 'TradingFloorBrass') {
+        expect(vertices.length).toBeLessThanOrEqual(5500);
+        expect(primitive.getIndices()!.getCount() / 3).toBe(6040);
+      }
     }
   });
 });
@@ -404,6 +804,13 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
       expect(Math.abs(bounds.min[0]! + bounds.max[0]!)).toBeGreaterThan(300);
       expect(bounds.min[0]!).toBeGreaterThanOrEqual(-310);
       expect(bounds.max[0]!).toBeLessThanOrEqual(310);
+      expect(bounds.min[1]!).toBe(70);
+      expect(bounds.max[2]! - bounds.min[2]!).toBeGreaterThan(80);
+      expect(bounds.min[2]!).toBeGreaterThanOrEqual(-220);
+      expect(bounds.max[2]!).toBeLessThanOrEqual(100);
+      for (const point of points[claw]!) {
+        expect(Math.abs(point.x) + Math.abs(point.z + 60)).toBeLessThanOrEqual(435 + 1);
+      }
     }
     // At the default camera height, every claw point is below the camera.
     // Projection toward the board has t > 1, so shadowY < pointY < the sill.
@@ -474,16 +881,62 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
   });
 });
 
-describe('Trading Floor asset — v3 colours and seal', () => {
+describe('Trading Floor asset — v4 colours, seal and portal', () => {
+  test('three warm-gold glow bands surround recessed tier faces inside the dais collider', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorTrimGlow');
+    expect(primitive.getMaterial()!.getExtension('KHR_materials_unlit')).not.toBeNull();
+    const granite = (await assetVertices('TradingFloorHoloDais')).vertices;
+    const glow = vertices.filter(({ color }) => color && color[0]! > .99 &&
+      Math.abs(color[1]! - .57758) < .01 && Math.abs(color[2]! - .11697) < .01);
+    expect(glow).toHaveLength(96);
+    for (const [top, halfX, halfZ, chamfer] of [[32, 350, 346, 65], [50, 330, 210, 55], [70, 310, 160, 35]]) {
+      const band = glow.filter(({ p }) => p[1] > top! - 4.2 && p[1] < top! - 1.3);
+      expect(band).toHaveLength(32);
+      expect(Math.max(...band.map(({ p }) => p[1])) - Math.min(...band.map(({ p }) => p[1]))).toBeCloseTo(2.5, 0);
+      const insetFace = granite.filter(({ p, n }) => Math.abs(n[1]) < .1 && Math.abs(p[1] - top!) < .2);
+      expect(insetFace.length).toBeGreaterThanOrEqual(16);
+      const bandX = Math.max(...band.map(({ p }) => Math.abs(p[0])));
+      const bandZ = Math.max(...band.map(({ p }) => Math.abs(p[2] + 60)));
+      expect(bandX).toBeCloseTo(halfX! - .75, 0);
+      expect(bandZ).toBeCloseTo(halfZ! - .75, 0);
+      expect(bandX - Math.max(...insetFace.map(({ p }) => Math.abs(p[0])))).toBeGreaterThan(.5);
+      expect(bandX - Math.max(...insetFace.map(({ p }) => Math.abs(p[0])))).toBeLessThan(1);
+      for (const { p: [x, y, z] } of band) {
+        expect(Math.abs(x)).toBeLessThanOrEqual(350);
+        expect(Math.abs(z + 60)).toBeLessThanOrEqual(346);
+        expect(y).toBeLessThan(top! - 1.3);
+        // The diagonal face also has a 0.75 wu offset, not a corner overlap.
+        expect(Math.abs(x) + Math.abs(z + 60)).toBeLessThanOrEqual(
+          halfX! + halfZ! - chamfer! - Math.SQRT2 * .75 + .2);
+      }
+      console.log(`plinth glow tier ${top}: height 2.5 wu, X proud ${(bandX - Math.max(...insetFace.map(({ p }) => Math.abs(p[0])))).toFixed(4)} wu; footprint ${bandX.toFixed(4)}/${bandZ.toFixed(4)}`);
+    }
+  });
+
   test('the seal and both banners share one draw call', () => {
     expect(gltf.meshes).toHaveLength(10);
+    expect(gltf.materials).toHaveLength(10);
+    expect(gltf.textures).toHaveLength(7);
     const identity = nodeByName('TradingFloorIdentity');
     expect(gltf.meshes[identity.mesh!]!.primitives).toHaveLength(1);
   });
 
-  test('the old mint dais ring is absent from unlit trim', () => {
-    const node = nodeByName('TradingFloorTrimGlow');
-    expect(translation(node).y - worldHalfExtents(node).y).toBeGreaterThan(15);
+  test('the old mint dais ring is absent from unlit trim', async () => {
+    await MeshoptDecoder.ready;
+    const doc = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
+    const trim = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorTrimGlow')!;
+    const positions = trim.getMesh()!.listPrimitives()[0]!.getAttribute('POSITION')!;
+    const world = trim.getWorldMatrix();
+    for (let i = 0; i < positions.getCount(); i++) {
+      const p = positions.getElement(i, []);
+      const x = p[0]! * world[0]! + world[12]!;
+      const y = p[1]! * world[5]! + world[13]!;
+      const z = p[2]! * world[10]! + world[14]!;
+      // Door glass reaches y=12, outside the dais. Keep the original 15 wu
+      // exclusion on the dais footprint rather than the whole merged mesh.
+      if (Math.hypot(x, z + 60) <= 600) expect(y).toBeGreaterThan(15);
+    }
   });
 
   test('trim and instanced chairs carry vertex colours', () => {
@@ -491,6 +944,37 @@ describe('Trading Floor asset — v3 colours and seal', () => {
       const node = nodeByName(name);
       expect(gltf.meshes[node.mesh!]!.primitives[0]!.attributes.COLOR_0).toBeNumber();
     }
+  });
+
+  test('the smoked double doors stay behind the wall face and share the trim draw', async () => {
+    await MeshoptDecoder.ready;
+    const doc = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
+    const trim = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorTrimGlow')!;
+    const primitive = trim.getMesh()!.listPrimitives()[0]!;
+    const positions = primitive.getAttribute('POSITION')!;
+    const colors = primitive.getAttribute('COLOR_0')!;
+    const world = trim.getWorldMatrix();
+    const leaves: number[][][] = [[], []];
+    for (let i = 0; i < positions.getCount(); i++) {
+      const p = positions.getElement(i, []);
+      const [x, y, z] = [0, 1, 2].map((axis) => world[12 + axis]! +
+        world[axis]! * p[0]! + world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]!);
+      if (Math.abs(x!) > 180 || y! < 10 || y! > 490 || z! < 1127 || z! > 1137) continue;
+      const color = colors.getElement(i, []);
+      expect(color[2]!).toBeGreaterThan(color[0]!);
+      expect(color[0]!).toBeGreaterThan(0);
+      expect(z!).toBeGreaterThan(TRADING_FLOOR_ROOM.halfZ);
+      expect(z!).toBeLessThan(TRADING_FLOOR_ROOM.halfZ + TRADING_FLOOR_ROOM.wallThickness);
+      leaves[x! < 0 ? 0 : 1]!.push([x!, y!, z!]);
+    }
+    for (const leaf of leaves) {
+      expect(leaf.length).toBeGreaterThanOrEqual(8);
+      expect(Math.max(...leaf.map((p) => p[1]!))).toBeCloseTo(488, 0);
+      expect(Math.min(...leaf.map((p) => p[1]!))).toBeCloseTo(12, 0);
+    }
+    const brass = gltf.materials.find((material) => material.name === 'TradingFloorBrass')!;
+    expect(brass.pbrMetallicRoughness!.metallicFactor!).toBeLessThanOrEqual(0.45);
   });
 });
 

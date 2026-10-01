@@ -370,7 +370,10 @@ export function TradingFloorTab({
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 10 }}>
           <div>
             <h2 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 16 }}>
-              {TRADING_SELF_SERVE_ENABLED ? 'Trade in your wallet, then it shows here.' : 'Watch the house traders.'}
+              {/* Not "Watch the house traders": this card heads the REAL-money
+                  floor right under the paper arena's house agents (prod verify
+                  b8d52ab6, finding 2). */}
+              {TRADING_SELF_SERVE_ENABLED ? 'Trade in your wallet, then it shows here.' : 'The live floor: real trades, verified on-chain.'}
             </h2>
             {TRADING_SELF_SERVE_ENABLED ? (
               <a

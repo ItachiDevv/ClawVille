@@ -1,6 +1,6 @@
 # Trading Floor Arena (paper contest) — build spec + decision log
 
-Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups T3 on branch `fix/arena-followups`: D33 checkpoint schedule (tests only at 20/40/80/160/200/400/800 closed trades on the current params, each once, alpha 0.01/0.005/0.0025, 0.05 per rule set; reasons `waiting_checkpoint`, `budget_spent`) in D10, D27, D33 and §6a; status log corrects the `10cd060d` "4.0%" claim (per look, not per rule set); §6a redaction drift (model text redacted, the reason is code text); P8 no-rename record). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups A3 on branch `fix/arena-followups`: new decision D33 (honest tuner: code searches one-filter tightenings, a change needs D27 AND a shuffle test p <= 0.05, the model reply is commentary only, every report states why); line 7, D10, D27 and §6a no longer claim "fine-tuned about every 30 minutes"; D30/D31 deployed on staging in `5049971e`, verified 2026-10-01; D32 Codex r23-money APPROVE, deployed on staging, live add-on call owed; D6 score wording; §8 P8 FIXED on the branch, P6 three notes; status log 2026-10-01 verify entry). Prior Last Audited: 2026-10-01 (session coolerTrading: P9 RESOLVED (post-reveal stall fixed, lane C), new rows P10 (late WebGL avatar first-draw compile) and P11 (from-/game WebGL curtain freeze)). Prior Last Audited: 2026-10-01 (session coolerTrading: §8 rows P8 (number-shaped agent names on the leaderboard) and P9 (post-reveal stall) added; the shared tape path now strips `$` from symbols and trader names and validates the symbol AFTER the action-length cut and drops it unless it keeps a letter, has no decimal number and no run of 5+ digits, `trading-floor-trade-tape.ts`, so the board tape row, the 3D chips and the interior ticker can never print a figure the route did not send). Prior Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs; §1 decision rows D13-D29 added with amendment pointers on D2-D10 and D26; D28 fresh chain verdicts on tradeable coins; D29 every user-agent report stored as an earned-skill lesson and recalled in owner avatar chat; punch list P4; 2026-10-01: D30/D31 rows synced to the code, P3 B1 events, P5, D6 rule-6 wording; D30/D31/rule 6 marked BUILT, not deployed, after Codex r22 APPROVE, r19-r22 chain in §7; single ClawPump writer, Codex r19 money, in §5/§6/D8; D32 x402 removal = hygiene, design v8b in §6). Status: IN BUILD on branch `feat/trading-floor-arena`
+Last Audited: 2026-10-01 (task N5 on branch `fix/arena-next`: §5 content mask scope is hate slurs only, measured counts, the short-run join, the 3D display of a masked item and the one refusal copy; §8 P12 known gaps; status log entry). Prior Last Audited: 2026-10-01 (task N4 on branch `fix/arena-next`: §5 content mask on every public arena payload (`content-mask.ts`, MIT `obscenity`) and launch 400 `name_not_allowed`, PROTOCOL_VERSION 78; §6 O3 lock order covers the private chain-check verdict; status log entry). Prior Last Audited: 2026-10-01 (task N2 on branch `fix/arena-next`: §6 D1 add-on call budget (4 calls before the first call, a budget refusal is not an attempt), O1 rotation counts sent rows only, O3 one row-lock order for the discovery writers; status log entry). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups T3 on branch `fix/arena-followups`: D33 checkpoint schedule (tests only at 20/40/80/160/200/400/800 closed trades on the current params, each once, alpha 0.01/0.005/0.0025, 0.05 per rule set; reasons `waiting_checkpoint`, `budget_spent`) in D10, D27, D33 and §6a; status log corrects the `10cd060d` "4.0%" claim (per look, not per rule set); §6a redaction drift (model text redacted, the reason is code text); P8 no-rename record). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups A3 on branch `fix/arena-followups`: new decision D33 (honest tuner: code searches one-filter tightenings, a change needs D27 AND a shuffle test p <= 0.05, the model reply is commentary only, every report states why); line 7, D10, D27 and §6a no longer claim "fine-tuned about every 30 minutes"; D30/D31 deployed on staging in `5049971e`, verified 2026-10-01; D32 Codex r23-money APPROVE, deployed on staging, live add-on call owed; D6 score wording; §8 P8 FIXED on the branch, P6 three notes; status log 2026-10-01 verify entry). Prior Last Audited: 2026-10-01 (session coolerTrading: P9 RESOLVED (post-reveal stall fixed, lane C), new rows P10 (late WebGL avatar first-draw compile) and P11 (from-/game WebGL curtain freeze)). Prior Last Audited: 2026-10-01 (session coolerTrading: §8 rows P8 (number-shaped agent names on the leaderboard) and P9 (post-reveal stall) added; the shared tape path now strips `$` from symbols and trader names and validates the symbol AFTER the action-length cut and drops it unless it keeps a letter, has no decimal number and no run of 5+ digits, `trading-floor-trade-tape.ts`, so the board tape row, the 3D chips and the interior ticker can never print a figure the route did not send). Prior Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs; §1 decision rows D13-D29 added with amendment pointers on D2-D10 and D26; D28 fresh chain verdicts on tradeable coins; D29 every user-agent report stored as an earned-skill lesson and recalled in owner avatar chat; punch list P4; 2026-10-01: D30/D31 rows synced to the code, P3 B1 events, P5, D6 rule-6 wording; D30/D31/rule 6 marked BUILT, not deployed, after Codex r22 APPROVE, r19-r22 chain in §7; single ClawPump writer, Codex r19 money, in §5/§6/D8; D32 x402 removal = hygiene, design v8b in §6). Status: IN BUILD on branch `feat/trading-floor-arena`
 (worktree `.worktrees/trading-floor-arena`, base `origin/staging` a2a073a7).
 
 Founder goal (2026-09-30, verbatim summary): five house trading agents on the Trading Floor, each running its own
@@ -181,9 +181,35 @@ positions, last 50 closed, latest report, last 20 param changes; never a wallet 
 first), `GET /contest` (window, prizes, rules, top 10), `GET /addons` (catalog), `GET /tape?limit<=24` (newest
 entry/exit events across all agents for the TV tape: id, at, agentId, agentName, kind, type, mint, symbol, side, usd,
 pnlUsd, pnlMult, reason).
+Content mask (task N4, prod finding 2026-10-01: a discovery coin symbol carried a racial slur): coin symbols and names
+come from vendors and trader names from players, so every public payload passes ONE helper,
+`apps/api/src/services/floor-arena/content-mask.ts` (the MIT `obscenity` package and its recommended transformers, plus
+arena forms: a ticker's leading `$` is not an s, separators `. _ ' -` removed, non-ASCII look-alikes through
+`confusables.generated.ts`, the `name-folds.ts` digit folds, and a run of pieces of one or two characters read joined,
+so spaced single letters are caught but two real words such as "Ansem's Cat" or "Valentine Grok" are never glued; the whole field
+is read first, so a whitelisted phrase of several words applies). SCOPE (task N5, founder default 2026-10-01, the
+founder may change it): hate slurs only (racial, ethnic, religious, homophobic, transphobic, ableist): the dataset's
+slur entries (all other entries removed with `removePhrasesIf`) plus the slurs it lacks (`ARENA_SLUR_PHRASES`, ROT13
+in the source), each with word-edge guards and whitelisted words (spice, raccoon, Pakistan, Japan, "Homo sapiens",
+"honky tonk"). General profanity and sexual words are not masked (SCAT, Cummins, Dick's Sporting Goods, Becton
+Dickinson and Annaly show), and one reclaimed word is not masked. Measured (N5, the review's term list and forms): every
+term is caught as written, in capitals, as a `$` ticker, in leetspeak, with separators, as spaced letters, with
+Cyrillic look-alikes and inside a phrase; one plural is not masked because it is a Greek island; glued forms (BIGxxx,
+xxxCOIN) are missed for guarded short terms (the glued-form limit, P12). False positives on 7,622 real coin strings
+(prod and staging discovery, the prod tape, the Jupiter verified list and the CoinGecko list): 0; the 10 flagged are
+real slurs. 3D views: the TV board tape, the 3D chips and the LED ticker drop a masked symbol (the action reads BUY or
+SELL) and print a masked trader name as TRADER; the 3D leaderboard prints NAME NOT SHOWN. An offensive
+discovery `symbol`/`name`, tape `symbol`/`agentName`, position `symbol`, leaderboard or contest row `name` or profile
+`name` reads `***` and that object carries `masked: true`; an offensive word in an event or report `summary` reads
+`***` (only that word; figures such as `1.53x` are never read as words) and the event or report carries
+`masked: true`. Applied on `/leaderboard`, `/contest`, `/agents/:id`, `/agents/:id/events`, `/discovery`, `/tape` and
+the owner's `/me/events` (its summaries name coins by vendor symbol). The `mint` is never masked; the database is never
+changed. `/templates` serves only our own house names and is not masked.
 Authed (`requireAuthOrAgentSession`, non-guest, subject -> avatar): `GET /me` (my agent or null + wallet + provision
 state + addon status), `POST /me/launch` {templateId, params, mode:'paper', addons:[{id, dailyCapUsd}], name?} ->
-201 {agent, paymentAddress|null}; 409 `already_have_agent`; 400 `invalid_params` {errors}; 400 `live_not_available`,
+201 {agent, paymentAddress|null}; 409 `already_have_agent`; 400 `invalid_params` {errors}; 400 `live_not_available`;
+400 `name_not_allowed` when the name (or, with no name sent, the avatar-name fallback) is offensive by the content mask
+check (task N4; one copy for both, "This name is not allowed. Type another name for your trader.", task N5),
 `PATCH /me/params` {params, reason?}, `POST /me/seat` {seated, seatIndex?}, `POST /me/status` {status:
 'active'|'paused'}, `PATCH /me/addons` {addons}, `POST /me/suggestions/:reportId` {action:'apply'|'dismiss'},
 `PATCH /me/settings` {autoApplySuggestions}.
@@ -271,6 +297,30 @@ the 10 tokens are reserved for removal calls (`CLAWPUMP_WRITER_REMOVAL_RESERVE`)
 `budget_exhausted` (ClawPump's HTTP 429 stays `rate_limited`) before sending. When the budget is low, the add-on tick
 defers its tick and re-checks are skipped, with one log line per tick. A refused payment books 0 (stored error
 `clawpump_budget_exhausted`).
+D1 (2026-10-01, staging paid test `ops/house-traders/arena-review/X402_PAID_TEST_2026-10-01.md`): one paid call makes
+up to 4 normal-priority calls (`ARENA_ADDON_PAY_CALLS`: wallet summary when its 60 s cache is stale, the x402 GET in
+`ensureArenaX402ForPay`, the writer's guard GET, the pay POST). The add-on tick starts an add-on only when the budget
+holds all 4 above the removal reserve, and checks again for the last 2 (`ARENA_ADDON_DISPATCH_CALLS`) right before the
+reservation; a miss ends the tick with no reservation. A pay that the budget still refuses (another loop took tokens
+in between) books 0 and is NOT an attempt for the poll interval (`checkAddonCall` skips a newest row whose error is
+`clawpump_budget_exhausted`; that row was itself reserved only after the interval had passed), so the next 60 s pass
+retries. Dedupe rotation (O1): `calls_total` in `readArenaAddonStats` counts only rows whose pay POST may have left the
+process; `ARENA_ADDON_NOT_SENT_ERRORS` (`released_before_pay` and the writer refusals thrown before the POST:
+`clawpump_budget_exhausted`, `_not_configured`, `_invalid_base_url`, `_invalid_agent_id`, `_invalid_input`,
+`_host_not_allowed`, `_not_arena_agent`, `_agent_running`, `_agent_not_stopped`, `_x402_not_enabled`) do not advance
+it, so the next sent body never repeats the last sent one. No money field changed (spend sum, caps, reservation,
+`confirmDispatch`, the writer's `stopped` + `x402` read, one booking per settlement tx, the advisory lock).
+Row-lock order (O3, 2026-10-01; Postgres log on staging: the enrichment `UPDATE floor_discovery_mints ... FROM` and a
+poller upsert deadlocked): every multi-row writer of `floor_discovery_mints` and `floor_arena_private_mints` locks in
+one order, mint ascending in byte order (`COLLATE "C"`), then `agent_id`. The poller upsert sends its rows sorted
+(`byMint`) with `ORDER BY r.mint COLLATE "C"`; the snapshot write and the expiry each lock their rows first in a short
+transaction per table (`ORDER BY ... FOR NO KEY UPDATE` / `FOR UPDATE`) and then write only the rows that lock
+returned; the add-on mint insert passes its rows in mint order. Chosen over a 40P01 retry: the same order removes the
+cycle, so no 1 s `deadlock_timeout` stall and no aborted write. Single-row writers (the chain-check verdict on the
+shared table, the entry transaction's `FOR SHARE`) hold one row and cannot close a cycle. The chain-check verdict on
+the PRIVATE table (task N4) is one row per agent for the mint, so `storeChainVerdict` (`chain-checks.ts`) locks those
+rows first in a short transaction (`ORDER BY agent_id COLLATE "C" FOR NO KEY UPDATE`) and then updates only the
+agents that lock returned; before, a bare `UPDATE ... WHERE mint = X` locked them in scan order.
 ClawPump quota: Enterprise 10,000,000 calls a month, "recorded but not enforced", no per-second limit (research
 2026-09-30: ops/house-traders/research-20260930-clawpump R2-api.md, R1-docs.md; outside git).
 Post-condition: x402 comes OFF on the tick after the change, also while paused, unless the agent's x402 lock is busy,
@@ -642,6 +692,42 @@ alone.
   that no staging agent name lacks a letter, so no rename; manual §17c, the `clawville_arena_settings` and
   `clawville_arena_launch` tool texts, GameFeatures §17g.3 and ARCHITECTURE state the checkpoints and the
   `name_needs_letter` rule (PROTOCOL_VERSION 77, unpublished, no new bump).
+- 2026-10-01 (task N2 on branch `fix/arena-next`, not deployed): D1, O1 and O3 from the staging paid add-on test, §6.
+  D1: the budget check reserved room for 1 call, a pay needs 4, so row 3 was refused mid-way at $0 and reset the 600 s
+  interval; now 4 calls are checked before the first call, 2 before the reservation, and a budget refusal is not an
+  attempt. O1: confirmed a bug (an unsent row moved the 2-value rotation, so rows 2 and 4 sent the same `per_page`);
+  `calls_total` now counts sent rows only. O3: the deadlock pair from the staging Postgres log (12:15:38 UTC) was the
+  enrichment UPDATE against a poller upsert; fixed by one lock order. Exchange "shared discovery feed" card: the prod
+  API (`GET /api/floor/arena/discovery?limit=20`) returned 200 with 20 rows at 13:58Z, so the API is not empty and not
+  gated; the card is a closed `<details>` whose `<summary>` has `display: flex`, which hides the open marker (web, N3).
+  Tests: add-ons 54 pass (9 new or changed fail on the old code), discovery-hub 23 pass (4 new fail on the old code),
+  the new SQL parses with libpg-query; the O1 database test runs only in the CI Postgres lane.
+- 2026-10-01 (task N4 on branch `fix/arena-next`, not deployed): content mask and offensive launch names (§5). Prod
+  finding: a coin symbol on the public discovery feed carried a racial slur, and the same raw vendor symbols and
+  player-chosen trader names reach the TV board tape, the 3D chips, the LED ticker, the leaderboard and the agent
+  tools. New `content-mask.ts` (MIT `obscenity` 0.4.6, no dependencies) masks them on every public arena payload and
+  `/me/events`; launch answers 400 `name_not_allowed` (human and agent, typed name and avatar-name fallback).
+  PROTOCOL_VERSION 78: manual §17c and the `clawville_arena_launch` tool text state both. A read of the public prod
+  feed at 14:19Z (`generatedAt` 14:19:33 to 14:19:50; 100 discovery rows, 24 tape items, 5 house streams; 257 summaries, 325 symbols and names) no
+  longer held the slur (24 h window); it found one false positive, the coin "Thanus" (the dataset's own `anus`
+  pattern, unchanged), and no masked summary. Plain `obscenity` reads our figure `1.53x` as a word, so the summary mask
+  reads only words with two or more letters. Same task: the O3 lock order now covers the private-table chain-check
+  verdict (§6), and the `reserveArenaAddonCall` comment says sent-call count (O1). Tests: content-mask 9 pass (new
+  file), routes 40 pass (6 new fail on the old route file), chain-checks 22 pass (2 new fail on the old file).
+- 2026-10-01 (task N5 on branch `fix/arena-next`, not deployed): fix pass after the N4 review. B1: the mask used the
+  whole `obscenity` English dataset and missed most slurs; the scope is now hate slurs only (§5): the dataset keeps its
+  15 slur entries, its profanity and sexual entries are removed, and 61 phrases add the missing slurs. Measured on the
+  review's list (95 terms, the reclaimed one excluded) in its nine non-glued forms: racial 68/68 (11 before), homophobic
+  21/22 (8 before; the miss is a plural that is a Greek island), ableist 5/5 (3 before); glued forms are missed for 32
+  racial, 13 homophobic and 2 ableist terms (P12). Real coin strings: 55 flagged before (45 not slurs), 10 now (all
+  slurs), 0 false positives. M1: a field's words are joined only in runs of one- or two-character pieces (the old
+  whole-field join masked "Valentine Grok Companion", "KEANU SLEAZE", "GNOME MINING GAME", "Verisk Analytics xStock"
+  and four "Name's Cat" coins); a word is read alone only in a form the whole-field read did not see, so whitelisted
+  phrases apply, and free text masks every word a match touches. MINOR 2: one refusal copy, "This name is not allowed.
+  Type another name for your trader." (typed name and avatar-name fallback, route and web). Money-lens MINOR 1: the
+  add-on `budgetRefused` event goes through the notice throttle (at most one per hour per agent and add-on). MINOR 4:
+  the leaderboard and profile tool texts name `masked: true` (PROTOCOL_VERSION stays 78, unpublished). MINOR 5: the
+  live-traders heading says "stopped" when every slot card says "Stopped.", "not trading" for a mix, else "paused".
 
 ## 8. Punch list (tracked deferrals, rule E6)
 
@@ -658,6 +744,7 @@ alone.
 | P9 | RESOLVED 2026-10-01 (session coolerTrading, lane C): the post-reveal 0.6-1.0 s stall is gone (WebGPU 550-617 ms -> 17-18 ms after the reveal; WebGL2 17 ms after the reveal with the 1.8-2.1 s warm freeze removed; a failed avatar no longer blocks the room). Ready gate waits for room + avatar (1500 ms fallback), late avatars compile hidden via chainPostBootCompile, GPU drain before ackReady, avatar error boundary. Record: 3dStructure.md §9i. | Done. | 2026-10-03 |
 | P10 | A LATE player avatar (mounting more than 1.5 s after the room) on the WebGL2 backend still costs one 633-667 ms frame at its first visible draw, in the Trading Floor and probably in `/game`. Measured cause: the default avatar's (milady-official-1.vrm) 12 skinned meshes carry an 8-bit `JOINTS_0` skinIndex, so ANGLE D3D11 compiles a draw-time vertex variant that `compileAsync` does not cover; converting skinIndex to Float32 before the first draw removed the freeze in a page experiment (3/3 runs, same look). Fix in the VRM loader normalisation, WebGL backend only (WebGPU not tested); check the other avatars and `/game` too. Found by tfx-audit (session coolerTrading). | VRM loader owner (3da). | 2026-10-10 |
 | P11 | Arriving from `/game` on the WebGL2 backend, the transition curtain freezes for 2.0-3.7 s over the after-fix runs (2.1-2.2 s before lane C): 22-23 synchronous program-link waits during the Trading Floor slot warm (pre-existing). WebGPU has separate 250-350 ms hitches before the reveal; their cause is not traced. It happens before the reveal, so nothing is drawn wrong, but the page is unresponsive. Candidate: poll `KHR_parallel_shader_compile` completion instead of blocking link-status reads in the stage warm, for every slot. Found by tfx-audit (session coolerTrading). | World-stage owner (3da). | 2026-10-15 |
+| P12 | Content mask known gaps (task N5, §5; `content-mask.ts`). (1) Glued-form limit: a short slur with a word-edge guard is not caught glued to other letters on its guarded side (BIGxxx, xxxCOIN); of the review's 95 terms, 32 racial, 13 homophobic and 2 ableist miss at least one glued form. A read with common coin affixes stripped (BIG, SUPER in front; COIN, TOKEN, INU behind) would close the usual cases, but it needs its own false-positive scan on the real coin strings first. (2) A short slur that is also a harmless word is masked as written (for example a martial art, a garden plant, a piece of furniture, a vulture genus). (3) One homophobic plural is the name of a Greek island and is not masked. (4) The scope itself (hate slurs only; profanity and sexual words shown; one reclaimed word shown) is the founder default and waits for the founder's decision. (5) Tripled letters (task N6, measured on the review's 95 terms): a term with each letter written three times is missed for 63 terms (47 racial, 11 homophobic, 5 ableist). The repeated-letter transformer keeps two of b, e, o, l, s and g, so a tripled one of those letters reads as a double that the pattern does not have. (6) Digit suffix (TERM420, task N6): missed for 30 terms (26 racial, 4 homophobic, 0 ableist); a guarded term followed by digits has no word edge on that side. (7) Two-word splits (review R1, task N6): the field check reads each two adjacent words joined and counts a match only when it covers the whole pair; 473 of the 492 two-word splits of the terms with 4 or more letters are caught. The 19 missed splits are in 6 terms (1 racial, 4 homophobic, 1 ableist), where the match in the joined pair is a shorter term inside it. | Arena lead (owner of `content-mask.ts`); item 4 needs the founder. | 2026-10-08 |
 - 12:03Z (date -u) arena-core: shared constants + DB contract landed; shared and database dists rebuilt. Files:
   `packages/shared/src/constants/floor-arena.ts` (+ test, 42 pass), `packages/database/src/schema/floor-arena.ts`,
   `packages/database/migrations/0070_floor_arena.sql` (0070 is free on origin/staging; checked on PGlite: applies twice, and

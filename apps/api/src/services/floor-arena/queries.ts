@@ -852,9 +852,34 @@ export interface ArenaAddonCallStat {
   lastAt: Date | null;
   lastOk: boolean | null;
   lastError: string | null;
-  /** Every attempt ever booked for this agent and add-on (drives the dedupe rotation). */
+  /**
+   * Every attempt ever booked for this agent and add-on whose pay request MAY have left this process (drives the
+   * dedupe rotation). Rows in ARENA_ADDON_NOT_SENT_ERRORS are left out (O1, 2026-10-01).
+   */
   callsTotal: number;
 }
+
+/**
+ * O1 (X402_PAID_TEST_2026-10-01): ledger errors of add-on rows whose x402 pay POST never left this process, so
+ * ClawPump never saw that body. They must not advance the dedupe rotation, or the next SENT call repeats the last
+ * sent body (2 values) inside ClawPump's 3-12 min replay window. 'released_before_pay' = confirmArenaAddonDispatch;
+ * the rest = `ClawPumpWriterError(code).message` for codes x402PayViaClawPump / sendJson throw before the POST's
+ * fetch (pinned by floor-arena-addons.test.ts). An HTTP status or vendor code (sent or maybe sent) never matches.
+ * Money fields (spent_today, last_*) do NOT use this list.
+ */
+export const ARENA_ADDON_NOT_SENT_ERRORS: readonly string[] = Object.freeze([
+  'released_before_pay',
+  'clawpump_budget_exhausted',
+  'clawpump_not_configured',
+  'clawpump_invalid_base_url',
+  'clawpump_invalid_agent_id',
+  'clawpump_invalid_input',
+  'clawpump_host_not_allowed',
+  'clawpump_not_arena_agent',
+  'clawpump_agent_running',
+  'clawpump_agent_not_stopped',
+  'clawpump_x402_not_enabled',
+]);
 
 export async function readArenaAddonStats(
   agentId: string,
@@ -866,7 +891,9 @@ export async function readArenaAddonStats(
     WITH agg AS (
       SELECT addon_id,
         COALESCE(SUM(price_usd) FILTER (WHERE at >= ${dayStart.toISOString()}::timestamptz), 0) AS spent_today,
-        COUNT(*) AS calls_total
+        COUNT(*) FILTER (WHERE error IS NULL OR error NOT IN (
+          SELECT jsonb_array_elements_text(${JSON.stringify(ARENA_ADDON_NOT_SENT_ERRORS)}::jsonb)
+        )) AS calls_total
       FROM floor_arena_addon_calls
       WHERE agent_id = ${agentId}
       GROUP BY addon_id
@@ -903,8 +930,10 @@ export type ArenaAddonReservation =
  * the per-agent advisory lock, re-reads today's ledger (reservations included),
  * runs `check`, and only then inserts a 'reserved' row priced at the catalog
  * price. Two containers therefore serialise on the lock and the second sees
- * the first reservation. `callNumber` = this add-on's all-time call count
- * before this row (the dedupe rotation index).
+ * the first reservation. `callNumber` = this add-on's SENT-call count before
+ * this row (`callsTotal`: every booked call whose pay request may have left
+ * this process; rows in ARENA_ADDON_NOT_SENT_ERRORS are not counted, O1), the
+ * dedupe rotation index.
  *
  * Codex r3 #10: the same transaction re-reads the AGENT row `FOR SHARE` (a
  * concurrent PATCH /me/addons waits for this commit) and aborts with

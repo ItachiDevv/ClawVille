@@ -300,16 +300,14 @@ export interface TradingFloorConsoleSlot {
 /**
  * Half-extents of one console footprint at `rotY = 0` (364 × 270 wu).
  *
- * `inspect-glb.mjs` reports the node at scale 182.165 with a bbox half of 1.0
- * in X and 0.741 in Z, i.e. 182.165 × 135.0 exactly. The 0.165 wu rounded off X
- * is deliberate and harmless against a 46 wu player radius — it is recorded here
- * only so nobody "corrects" the collider to 182.165 and then wonders why the
- * seat-offset floor test moved.
+ * The decoded v4 GLB measures half 182.00 × 135.0045 wu at node scale 182.
+ * The 0.0045 wu quantization difference in Z is harmless against a 46 wu
+ * player radius. Keep the authored collider dimensions and seat-offset floor.
  */
 export const TRADING_FLOOR_CONSOLE_HALF_X = 182;
 export const TRADING_FLOOR_CONSOLE_HALF_Z = 135;
 /**
- * Desk height, read off the GLB (§9g: console 364 × 166 × 270, desk at hip
+ * Desk height, read off the GLB (v4: height 165.99 wu, desk at hip
  * height against a 270 wu avatar). Load-bearing for the CAMERA, not just for
  * looks: the chase camera's own Y floor is `above + pitchMin` = 140, which is
  * BELOW this, so the camera has to be bounded in X by the desk face rather than
@@ -318,10 +316,10 @@ export const TRADING_FLOOR_CONSOLE_HALF_Z = 135;
 export const TRADING_FLOOR_CONSOLE_HEIGHT = 166;
 
 /**
- * The chair's CUSHION TOP, world Y. Measured off the shipped GLB by tf3d-shell
- * (`TradingFloorChairModule`, 128 x 175 x 122 wu, base-centre origin, sit
- * surface 85 wu, backrest top rail 173 wu) and independently confirmed by
- * Blender's importer at `min=[-64,-61,-2] max=[64,61,173]`.
+ * The chair's CUSHION TOP, world Y. Measured off the decoded v4 GLB
+ * (`TradingFloorChairModule`, 128 x 174 x 122 wu, base-centre origin, sit
+ * surface 85 wu, backrest top 174 wu). World bounds round to
+ * `min=[-64,0,-61] max=[64,174,61]`.
  *
  * This is the number the seated avatar's HIPS are pinned to. The cove's sit
  * clips carry their own authored hip descent, and that descent was calibrated
@@ -511,8 +509,8 @@ export interface TradingFloorSeat {
 
 /**
  * Half-extents of the authored chair, world units. Measured off the shipped GLB
- * (128 x 175 x 122; the armrests at x ±58 set the width, NOT the 122 wu base
- * spider). `TRADING_FLOOR_CHAIR_OFFSET` is derived from the 64.
+ * (v4: 128 x 174 x 122; casters at x ±64 and z ±61 set the footprint).
+ * `TRADING_FLOOR_CHAIR_OFFSET` is derived from the 64.
  */
 export const TRADING_FLOOR_CHAIR_HALF_X = 64;
 export const TRADING_FLOOR_CHAIR_HALF_Z = 61;
@@ -542,8 +540,8 @@ export interface AuthoredPropCheck {
 /**
  * Tolerance for both checks. 1 wu is far under the 46 wu player radius, so
  * nothing inside it can make a collider wrong, and it is wide enough for the
- * rounding the constants already carry (the console measures 182.165 against a
- * stated 182).
+ * quantization the constants already carry (the console half-extents measure
+ * 182.00 x 135.0045 against authored 182 x 135).
  */
 export const AUTHORED_PROP_TOLERANCE_WU = 1;
 
@@ -570,8 +568,8 @@ export const AUTHORED_PROP_TOLERANCE_WU = 1;
  * `KHR_mesh_quantization` CENTRES every mesh into [-1, 1] and pushes the
  * centring term onto the node, so a quantized prop's geometry bbox centre is
  * structurally (0, 0, 0) on every axis. The console proves it — the mesh really
- * does sit on the floor spanning y 0 to 165.77, yet its bbox centre Y still
- * reads 0 because the 82.88 went onto `node.translation.y`. So the detectable
+ * does sit on the floor spanning y 0.01 to 165.99, yet its bbox centre Y still
+ * reads 0 because 83.00 went onto `node.translation.y`. So the detectable
  * quantity is the NODE translation: if a re-export makes a prop asymmetric, the
  * quantizer moves the node, and the node stops matching where the build script
  * put it.

@@ -8,9 +8,9 @@
  * THREE SURFACES, three redraw budgets:
  *   - The MONITOR ATLAS (`drawDecorAtlas`) is drawn ONCE per mount. It holds
  *     abstract terminal art only: candles, depth curves, an order-book heatmap,
- *     volume bars, header bars made of blocks. NO text, NO digits, NO tickers
- *     and NO prices anywhere on it: a decorative screen that printed a number
- *     would be a claim nobody made. The life comes from the layout scrolling
+ *     volume bars and static CLAW TERMINAL place directories.
+ *     NO digits, currency signs or prices: decor never claims arena data.
+ *     The life comes from the layout scrolling
  *     U windows across bands that are PERIODIC along U: every series below is
  *     built on a closed loop (zero-sum steps, circular averages, integer-cycle
  *     waves), so the band's last column runs straight into its first.
@@ -39,6 +39,7 @@ import {
   DECOR_DEPTH_PANEL_COUNT,
   DECOR_DESK_HEADER_COUNT,
   DECOR_SWATCH_IDS,
+  DECOR_TERMINAL_PANEL_COUNT,
   DECOR_WALL_HEADER_COUNT,
   GLOW_SPRITE_SIZE,
   RIBBON_CANVAS_HEIGHT,
@@ -48,6 +49,7 @@ import {
   depthPanelRect,
   deskHeaderRect,
   swatchRect,
+  terminalPanelRect,
   wallHeaderRect,
   type AtlasRect,
   type DecorBand,
@@ -126,6 +128,8 @@ export const DECOR_SWATCH_COLORS: Readonly<Record<DecorSwatchId, string>> = Obje
   brassSide: '#6e5a32',
   brassTop: '#d9bd7c',
   trimGold: '#e0c070',
+  statusGreen: '#63dd91',
+  statusAmber: '#ffbf57',
 });
 
 // ---------------------------------------------------------------------------
@@ -613,6 +617,62 @@ function drawDepthPanel(ctx: DecorContext, rect: AtlasRect, variant: number): vo
   ctx.fillRect(mid - 1, rect.y + 6, 2, rect.height - 12);
 }
 
+/** Map place directories, shortened to fit. No quotes or numeric data. */
+export const DECOR_TERMINAL_ROWS = Object.freeze([
+  Object.freeze(['CHUM BUCKET', 'KRUSTY KRAB', 'BOATING'] as const),
+  Object.freeze(['ARCADE CITY', 'PINEAPPLE', 'LIGHTHOUSE'] as const),
+  Object.freeze(['SALTY SPITOON', 'TREEDOME', 'PATRICKS ROCK'] as const),
+]);
+export const DECOR_TERMINAL_LABEL = 'CLAW TERMINAL';
+/** Five-row bitmap letters; diagonal letters are wider. Every stroke is >=4 px. */
+export const DECOR_TERMINAL_PIXEL = 4;
+export const DECOR_TERMINAL_GLYPHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  A: ['010', '101', '111', '101', '101'], B: ['110', '101', '110', '101', '110'],
+  C: ['011', '100', '100', '100', '011'], D: ['110', '101', '101', '101', '110'],
+  E: ['111', '100', '110', '100', '111'], F: ['111', '100', '110', '100', '100'],
+  G: ['01110', '10000', '10111', '10001', '01110'],
+  H: ['101', '101', '111', '101', '101'], I: ['111', '010', '010', '010', '111'],
+  K: ['10001', '10010', '11100', '10010', '10001'], L: ['100', '100', '100', '100', '111'],
+  M: ['10001', '11011', '10101', '10001', '10001'],
+  N: ['1001', '1101', '1011', '1001', '1001'], O: ['010', '101', '101', '101', '010'],
+  P: ['110', '101', '110', '100', '100'], R: ['110', '101', '110', '101', '101'],
+  S: ['011', '100', '010', '001', '110'], T: ['111', '010', '010', '010', '010'],
+  U: ['101', '101', '101', '101', '111'],
+  W: ['10001', '10001', '10101', '10101', '01010'],
+  Y: ['101', '101', '010', '010', '010'],
+  ' ': ['0', '0', '0', '0', '0'],
+});
+
+function drawTerminalWord(ctx: DecorContext, text: string, x: number, y: number): void {
+  const pixel = DECOR_TERMINAL_PIXEL;
+  let cursor = x;
+  for (const letter of text) {
+    const glyph = DECOR_TERMINAL_GLYPHS[letter]!;
+    glyph.forEach((row, j) => {
+      [...row].forEach((bit, i) => {
+        if (bit === '1') ctx.fillRect(cursor + i * pixel, y + j * pixel, pixel, pixel);
+      });
+    });
+    cursor += (glyph[0]!.length + 1) * pixel;
+  }
+}
+
+export function drawTerminalPanel(ctx: DecorContext, rect: AtlasRect, variant: number): void {
+  const rows = DECOR_TERMINAL_ROWS[((variant % DECOR_TERMINAL_PANEL_COUNT) + DECOR_TERMINAL_PANEL_COUNT) % DECOR_TERMINAL_PANEL_COUNT]!;
+  ctx.fillStyle = '#020407';
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.fillStyle = '#43270b';
+  ctx.fillRect(rect.x + 4, rect.y + 4, rect.width - 8, 24);
+  ctx.fillStyle = DECOR_PALETTE.amber;
+  drawTerminalWord(ctx, DECOR_TERMINAL_LABEL, rect.x + 8, rect.y + 6);
+  rows.forEach((place, row) => {
+    const y = rect.y + 34 + row * 24;
+    ctx.fillStyle = row % 2 === 0 ? DECOR_PALETTE.signalWhite : DECOR_PALETTE.amber;
+    ctx.fillRect(rect.x + 8, y + 8, 4, 4);
+    drawTerminalWord(ctx, place, rect.x + 24, y);
+  });
+}
+
 /**
  * The whole monitor atlas, once. Order matters only for the gutters: the
  * background goes down first so every unused pixel is screen black.
@@ -633,6 +693,9 @@ export function drawDecorAtlas(ctx: DecorContext): void {
   }
   for (let variant = 0; variant < DECOR_DEPTH_PANEL_COUNT; variant++) {
     drawDepthPanel(ctx, depthPanelRect(variant), variant);
+  }
+  for (let variant = 0; variant < DECOR_TERMINAL_PANEL_COUNT; variant++) {
+    drawTerminalPanel(ctx, terminalPanelRect(variant), variant);
   }
   for (const id of DECOR_SWATCH_IDS) {
     const rect = swatchRect(id);

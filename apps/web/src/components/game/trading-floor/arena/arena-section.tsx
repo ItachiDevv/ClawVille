@@ -313,8 +313,14 @@ function TemplateCards({
 
   return (
     <section style={arenaCardStyle} data-testid="arena-templates">
-      <h3 style={{ margin: '0 0 6px', color: FLOOR_TEXT.value, fontSize: 14 }}>The five house agents</h3>
-      <ArenaMuted>Each house agent is a template. Watch one trade, then start your own trader from its rules.</ArenaMuted>
+      {/* "(paper)" and the last sentence keep these apart from the live
+          real-money traders further down the tab, which share two names
+          (prod verify b8d52ab6, finding 2). */}
+      <h3 style={{ margin: '0 0 6px', color: FLOOR_TEXT.value, fontSize: 14 }}>The five arena house agents (paper)</h3>
+      <ArenaMuted>
+        Each house agent is a template. Watch one trade, then start your own trader from its rules. They trade on paper
+        and are not the live traders further down this tab.
+      </ArenaMuted>
       <div
         style={{
           display: 'grid',
@@ -366,6 +372,7 @@ function TemplateCards({
 function DiscoveryFeed({ active }: { active: boolean }) {
   const [open, setOpen] = useState(false);
   const nowMs = useArenaNow(active && open, 30_000);
+  // Fetched only while open: a closed card costs no request.
   const feed = useFloorArenaDiscovery(active && open);
   const rows = (feed.data ?? []).slice(0, 10);
   return (
@@ -374,17 +381,35 @@ function DiscoveryFeed({ active }: { active: boolean }) {
       onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}
       data-testid="arena-discovery"
     >
-      <summary style={{ minHeight: 44, display: 'flex', alignItems: 'center', cursor: 'pointer', color: FLOOR_TEXT.value, fontSize: 13, fontWeight: 700 }}>
-        The shared discovery feed every agent reads
+      {/* `display: flex` removes the browser's disclosure triangle, so a closed
+          card read as a bare heading with nothing under it (prod verify
+          b8d52ab6, finding 3). The Show / Hide label is the visible cue. */}
+      <summary style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: FLOOR_TEXT.value, fontSize: 13, fontWeight: 700 }}>
+        <span style={{ flex: '1 1 auto' }}>The shared discovery feed every agent reads</span>
+        <span data-testid="arena-discovery-toggle" style={{ color: FLOOR_TEXT.link, fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
+          {open ? 'Hide' : 'Show coins'}
+        </span>
       </summary>
       {!open ? null : feed.isLoading ? (
         <ArenaMuted>Loading the feed...</ArenaMuted>
       ) : feed.isError && rows.length === 0 ? (
-        <ArenaMuted>The feed is unavailable right now.</ArenaMuted>
+        <div data-testid="arena-discovery-error" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={{ margin: 0, color: FLOOR_TEXT.warning, fontSize: 12 }}>The feed could not be loaded right now.</p>
+          <button type="button" onClick={() => void feed.refetch()} style={{ ...arenaButtonStyle, alignSelf: 'flex-start' }}>
+            Try again
+          </button>
+        </div>
       ) : rows.length === 0 ? (
-        <ArenaMuted>No coins in the feed yet.</ArenaMuted>
+        <div data-testid="arena-discovery-empty">
+          <ArenaMuted>No coins in the feed yet; it fills when the engine scans.</ArenaMuted>
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', marginTop: 6 }}>
+          {feed.isError ? (
+            <p style={{ margin: 0, color: FLOOR_TEXT.warning, fontSize: 11 }}>
+              The latest refresh failed. These are the last coins loaded.
+            </p>
+          ) : null}
           {rows.map((row) => (
             <div
               key={row.mint}

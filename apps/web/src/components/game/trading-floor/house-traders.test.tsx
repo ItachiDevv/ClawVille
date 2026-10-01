@@ -158,6 +158,7 @@ const NOW = Date.parse('2026-09-20T12:00:00.000Z');
 async function renderWithSlots(
   slots: HouseTraderSlotView[],
   freshness?: { nowMs: number; dataUpdatedAt: number },
+  query: { isLoading: boolean; isError: boolean } = { isLoading: false, isError: false },
 ): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.append(container);
@@ -166,8 +167,8 @@ async function renderWithSlots(
     root?.render(
       createElement(HouseTradersView, {
         slots,
-        isLoading: false,
-        isError: false,
+        isLoading: query.isLoading,
+        isError: query.isError,
         nowMs: Date.now(),
         compact: false,
         // Fetched "just now", so only the block's own `ageSeconds` counts and
@@ -208,7 +209,7 @@ describe('House traders section', () => {
   // not need another edit the next time the lineup changes. The names in the
   // fixture are arbitrary slot data, not a claim about the live lineup, which
   // `house-trader-lineup.test.ts` pins instead.
-  test('renders every slot the route returns, with the not-running copy on each', async () => {
+  test('renders every slot the route returns, with the paused-by-the-team copy on each', async () => {
     const host = await renderWithSlots([
       slot(),
       slot({
@@ -218,8 +219,11 @@ describe('House traders section', () => {
       }),
     ]);
     const text = host.textContent ?? '';
-    const occurrences = text.split('Not running yet. This slot has no paired trader.').length - 1;
+    const occurrences = text.split('Paused by the team. No live trader is paired to this slot right now.').length - 1;
     expect(occurrences).toBe(2);
+    // The old wording beside the arena's trading paper agents of the same
+    // names read as a contradiction (prod verify b8d52ab6, finding 2).
+    expect(text).not.toContain('Not running yet');
     // Unpair deletes the link, so an unpaired slot cannot show `stopped` while
     // its old trades stay on the tape. This sentence is what keeps the two
     // public surfaces in one tab from contradicting each other.
@@ -254,8 +258,50 @@ describe('House traders section', () => {
     const positions = HOUSE_TRADER_LINEUP.map((entry) => text.indexOf(entry.label));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(text).not.toContain('Dip Hunter');
-    const occurrences = text.split('Not running yet. This slot has no paired trader.').length - 1;
+    const occurrences = text.split('Paused by the team. No live trader is paired to this slot right now.').length - 1;
     expect(occurrences).toBe(HOUSE_TRADER_LINEUP.length);
+  });
+
+  // ── NAMED APART FROM THE ARENA (prod verify b8d52ab6, finding 2) ─────────
+  // The arena section above this panel shows PAPER house agents named Genesis
+  // and Runner with open positions, while these live slots were unpaired and
+  // said "Not running yet". A guest read the two as one contradictory claim.
+  test('heads the panel as live real-money traders, paused while no slot is live, apart from the arena', async () => {
+    const host = await renderWithSlots([slot(), slot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner' })]);
+    const heading = host.querySelector('[data-testid="house-traders-heading"]')?.textContent ?? '';
+    expect(heading).toBe('Live traders (real money, paused)');
+    const text = host.textContent ?? '';
+    expect(text).not.toContain('Watch the house traders');
+    expect(text).toContain('They trade real money and are not the arena house agents above');
+    expect(text).toContain('which trade on paper');
+  });
+
+  test('says "paused" when every live slot is paused by its risk limit (staging verify 31480fb0, F1)', async () => {
+    const host = await renderWithSlots([
+      liveSlot({ risk: riskFixture() }),
+      liveSlot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner', risk: riskFixture() }),
+    ]);
+    const heading = host.querySelector('[data-testid="house-traders-heading"]')?.textContent ?? '';
+    expect(heading).toBe('Live traders (real money, paused)');
+    expect(host.textContent).toContain('Paused by risk limit');
+  });
+
+  test('says "paused" only about slots it READ: never once one is live, never while loading or failed', async () => {
+    const cases: Array<{ name: string; slots: HouseTraderSlotView[]; query?: { isLoading: boolean; isError: boolean } }> = [
+      { name: 'one slot live', slots: [liveSlot(), slot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner' })] },
+      { name: 'loading', slots: [], query: { isLoading: true, isError: false } },
+      { name: 'error', slots: [], query: { isLoading: false, isError: true } },
+    ];
+    for (const entry of cases) {
+      const host = await renderWithSlots(entry.slots, undefined, entry.query);
+      const heading = host.querySelector('[data-testid="house-traders-heading"]')?.textContent ?? '';
+      expect({ name: entry.name, heading }).toEqual({ name: entry.name, heading: 'Live traders (real money)' });
+      // One root per render, as in the pause-precedence loop below.
+      if (root) await act(async () => root?.unmount());
+      container?.remove();
+      root = null;
+      container = null;
+    }
   });
 
   test('renders the lineup strategy note, never the profile brief or its mints', async () => {
@@ -532,7 +578,7 @@ describe('House traders section', () => {
     expect(text).toContain('Live as Genesis');
     expect(text).toContain('7 verified');
     expect(text).toContain('4 scored');
-    expect(text).not.toContain('Not running yet');
+    expect(text).not.toContain('Paused by the team');
   });
 
   test('prepends a live ticker row for the slot avatar', async () => {
@@ -577,7 +623,20 @@ describe('House traders section', () => {
     expect(text).toContain('Stopped.');
     expect(text).toContain('past trades stay on the floor');
     expect(text).toContain('9 verified');
-    expect(text).not.toContain('Not running yet');
+    expect(text).not.toContain('Paused by the team');
+    // Review MINOR 5: the heading agrees with the card, so it does not say "paused" over "Stopped.".
+    expect(host.querySelector('[data-testid="house-traders-heading"]')?.textContent).toBe('Live traders (real money, stopped)');
+  });
+
+  test('a stopped slot beside a paused-by-the-team slot heads the panel "not trading"', async () => {
+    const host = await renderWithSlots([
+      slot({ status: 'stopped', subject: { type: 'agent', id: AVATAR_ID, avatarName: 'Genesis' } }),
+      slot({ objective: 'intel-signal-follower', slotName: 'ClawVille Runner' }),
+    ]);
+    const text = host.textContent ?? '';
+    expect(text).toContain('Stopped.');
+    expect(text).toContain('Paused by the team');
+    expect(host.querySelector('[data-testid="house-traders-heading"]')?.textContent).toBe('Live traders (real money, not trading)');
   });
 
   test('states at section level that the tape outlives a pairing', async () => {
