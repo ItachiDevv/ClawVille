@@ -411,7 +411,7 @@ function colored(geo, rgb) {
 }
 
 /** Weld duplicate positions for angle-weighted normals, but split creases.
- * Curvature and vertical exposure bake neutral sculpt shading, not yellow. */
+ * Curvature and vertical exposure bake shading into the claw's amber tint. */
 function sculptClaw(geo) {
   const epsilon = 1e-4, crease = Math.cos(55 * Math.PI / 180);
   const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
@@ -470,7 +470,8 @@ function sculptClaw(geo) {
     const curvature = Math.max(-1, Math.min(1, 12 * bend / distance));
     const shade = Math.max(.45, Math.min(1,
       .72 + .22 * normal[1] - .20 * Math.max(0, curvature) + .06 * Math.max(0, -curvature)));
-    idx.push(pos.length / 3); pos.push(...point); nrm.push(...normal); col.push(shade, shade, shade);
+    idx.push(pos.length / 3); pos.push(...point); nrm.push(...normal);
+    col.push(...[.827, .755, .625].map((tint) => shade * tint));
   }
   console.log(`  claw sculpt: position weld ${epsilon} wu, angle-weighted 55 deg crease; COLOR_0 ${Math.min(...col).toFixed(3)}..${Math.max(...col).toFixed(3)}`);
   return {pos, nrm, idx, col, uv:null};
@@ -816,17 +817,17 @@ async function floorPanelPng() {
 async function granitePng() {
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">
     <defs>
-      <radialGradient id="cloud"><stop stop-color="#3d4045"/><stop offset="1" stop-color="#25272c" stop-opacity="0"/></radialGradient>
+      <radialGradient id="cloud"><stop stop-color="#6a6e78"/><stop offset="1" stop-color="#4a4d55" stop-opacity="0"/></radialGradient>
       <filter id="soft"><feGaussianBlur stdDeviation="2"/></filter>
     </defs>
-    <rect width="256" height="256" fill="#25272c"/>
+    <rect width="256" height="256" fill="#4a4d55"/>
     <ellipse cx="47" cy="88" rx="112" ry="72" fill="url(#cloud)" opacity=".7"/>
     <ellipse cx="206" cy="207" rx="119" ry="83" fill="url(#cloud)" opacity=".55"/>
-    <ellipse cx="172" cy="30" rx="90" ry="64" fill="#14171d" opacity=".20" filter="url(#soft)"/>
-    <g fill="none" stroke="#77777a" stroke-linecap="round" filter="url(#soft)" opacity=".18">
-      <path d="M-8 185 C42 153 60 169 105 125 S175 92 264 34" stroke-width="1.8"/>
-      <path d="M18 257 C57 218 79 232 121 194 S187 177 229 132" stroke-width="1.1"/>
-      <path d="M87 -7 C108 34 134 39 151 68 S188 99 197 116" stroke-width="1"/>
+    <ellipse cx="172" cy="30" rx="90" ry="64" fill="#363941" opacity=".20" filter="url(#soft)"/>
+    <g fill="none" stroke="#6a6e78" stroke-linecap="round" filter="url(#soft)" opacity=".65">
+      <path d="M-8 185 C42 153 60 169 105 125 S175 92 264 34" stroke-width="6"/>
+      <path d="M18 257 C57 218 79 232 121 194 S187 177 229 132" stroke-width="4"/>
+      <path d="M87 -7 C108 34 134 39 151 68 S188 99 197 116" stroke-width="4"/>
     </g>
   </svg>`)).png().toBuffer();
 }
@@ -839,8 +840,8 @@ const CEIL_M = texturedMat('TradingFloorCeiling', await ceilingPanelPng(), { rou
 // `texturedMat`'s 0.92 default would flatten it.
 const FLOOR_M = texturedMat('TradingFloorFloor', await floorPanelPng(), { rough: 0.45 });
 const TRIM = mat('TradingFloorTrim', [1, 1, 1], { unlit: true });
-const BRASS = mat('TradingFloorBrass', [0.62, 0.40, 0.10], { rough: 0.32, metal: 0.25 })
-  .setEmissiveFactor([0.085, 0.055, 0.014]);
+const BRASS = mat('TradingFloorBrass', [0.75, 0.53, 0.16], { rough: 0.32, metal: 0.25 })
+  .setEmissiveFactor([0.13, 0.095, 0.032]);
 const GRANITE = texturedMat('TradingFloorGranite', await granitePng(), { rough: 0.28, metal: 0.02 });
 const atlasPath = resolve(dirname(output), 'lane-a-identity-atlas.png');
 const bannerAtlasRect = JSON.parse(execFileSync('python', [
@@ -889,9 +890,10 @@ addMesh(
     boxGeo(-hx - WT / 2, RH / 2, 0, WT, RH, RD, {u:WALL_TILE_WU,v:RH}),                // left
     boxGeo(hx + WT / 2, RH / 2, 0, WT, RH, RD, {u:WALL_TILE_WU,v:RH}),                 // right
     // front (+Z) wall, split around the entrance so the arch lines up with
-    // the exterior doorway (both are on +Z).
-    boxGeo(-(DOOR_W / 2 + (RW - DOOR_W) / 4), RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, {u:WALL_TILE_WU,v:RH}),
-    boxGeo(DOOR_W / 2 + (RW - DOOR_W) / 4, RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, {u:WALL_TILE_WU,v:RH}),
+    // the exterior doorway (both are centred on +Z). Include the outer-wall
+    // thickness in each centre offset: the visible reveal stays at +/-180.
+    boxGeo(-(DOOR_W / 2 + (RW - DOOR_W) / 4 + WT / 2), RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, {u:WALL_TILE_WU,v:RH}),
+    boxGeo(DOOR_W / 2 + (RW - DOOR_W) / 4 + WT / 2, RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, {u:WALL_TILE_WU,v:RH}),
     boxGeo(0, DOOR_H + (RH - DOOR_H) / 2, hz + WT / 2, DOOR_W, RH - DOOR_H, WT, {u:WALL_TILE_WU,v:RH}),  // lintel
     // Four corner pillars. These DO stand in reachable floor, which is legal
     // only because they are colliders — see the pillar entries in
@@ -966,7 +968,7 @@ const brassGeos = group('brass', null, () => [
 // All portal faces stay outside the player/camera clamps. The door leaves
 // sit inside the existing 60 wu wall thickness, behind its z=1100 inner face.
 brassGeos.push(...group('door portal', null, () => [
-  ...[-1,1].map((side) => boxGeo(side*(DOOR_W/2+11.5), DOOR_H/2, hz, 28, DOOR_H, 10)),
+  ...[-1,1].map((side) => boxGeo(side*(DOOR_W/2+11.5), DOOR_H/2, hz, 28, DOOR_H, 11)),
   boxGeo(0, DOOR_H+12, hz-4, DOOR_W+56, 28, 16),
   boxGeo(0, DOOR_H+42, hz-8, DOOR_W+84, 28, 24),
   boxGeo(0, DOOR_H+68, hz-5, DOOR_W+104, 12, 30),
@@ -980,12 +982,18 @@ brassGeos.push(...group('door portal', null, () => [
     ...[180,300].map((y) => boxGeo(x, y, hz+22, 10, 10, 14)),
   ]),
 ]));
-brassGeos.push(group('plinth plaque', 'inside TradingFloorHoloDais collider', () =>
-  boxGeo(0,16,DAIS_POS[2]+349,260,24,6)));
+brassGeos.push(group('plinth plaque', 'front protrudes 2 wu beyond the dais collider face z=286; plate is 3 wu deep', () =>
+  boxGeo(0,16,DAIS_POS[2]+346.5,260,24,3)));
 
+const plinthTiers = [[0,350,346,32,65],[32,330,210,18,55],[50,310,160,20,35]];
 addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOOR_SOLIDS', () =>
-  mergeGeos([[0,350,346,32,65],[32,330,210,18,55],[50,310,160,20,35]].map(([y,x,z,h,c]) =>
-    octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, h, c, 180)))), GRANITE);
+  // Recess the upper 5 wu by 1.5 wu. The lower faces retain the exact footprint.
+  // The parallel inset also preserves the eight corner-face offsets.
+  mergeGeos(plinthTiers.flatMap(([y,x,z,h,c]) => [
+    octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, h-5, c, 180),
+    octagonGeo(DAIS_POS[0], y+h-5, DAIS_POS[2], x-1.5, z-1.5, 5,
+      c-(2-Math.SQRT2)*1.5, 180),
+  ]))), GRANITE);
 
 addMesh('TradingFloorIdentity', mergeGeos([
   group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 380, 600, 96, true)),
@@ -997,6 +1005,12 @@ addMesh('TradingFloorIdentity', mergeGeos([
 addMesh(
   'TradingFloorTrimGlow',
   group('trim', null, () => mergeGeos([
+    // 2.5 wu warm-gold bands stand 0.75 wu proud of the recessed granite faces,
+    // below the brass rims and 0.75 wu inside the original collider footprint.
+    ...group('plinth glow', 'inside TradingFloorHoloDais collider; faces recessed 1.5 wu, glow inset 0.75 wu', () =>
+      plinthTiers.map(([y,x,z,h,c]) => colored(
+        octagonGeo(DAIS_POS[0], y+h-4, DAIS_POS[2], x-.75, z-.75, 2.5,
+          c-(2-Math.SQRT2)*.75, 0, false), [255,200,96].map(srgbToLinear)))),
     ...group('smoked doors', null, () => [-1,1].map((side) =>
       colored(boxGeo(side*DOOR_W/4,DOOR_H/2,hz+32,DOOR_W/2-12,DOOR_H-24,8), [.018,.038,.075]))),
     // Restrained vertical reflections make the opaque smoked panels read as
