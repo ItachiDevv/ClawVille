@@ -73,28 +73,34 @@ export const DECOR_BAND_INSET = 4;
 
 export const DECOR_DESK_HEADER_COUNT = 8;
 export const DECOR_WALL_HEADER_COUNT = 2;
-export const DECOR_DEPTH_PANEL_COUNT = 4;
+export const DECOR_DEPTH_PANEL_COUNT = 1;
+export const DECOR_TERMINAL_PANEL_COUNT = 3;
 
 function wrapIndex(index: number, count: number): number {
   return ((Math.trunc(index) % count) + count) % count;
 }
 
-/** Desk monitor header strip: 240 x 18, the 94 x 7 wu strip's own aspect. */
+/** Desk monitor header strip, with 8 px between rows. */
 export function deskHeaderRect(variant: number): AtlasRect {
   const index = wrapIndex(variant, DECOR_DESK_HEADER_COUNT);
-  return { x: 8 + (index % 4) * 256, y: 792 + Math.floor(index / 4) * 22, width: 240, height: 18 };
+  return { x: 8 + (index % 4) * 256, y: 792 + Math.floor(index / 4) * 26, width: 240, height: 18 };
 }
 
 /** Wall screen header strip: 496 x 31. */
 export function wallHeaderRect(variant: number): AtlasRect {
   const index = wrapIndex(variant, DECOR_WALL_HEADER_COUNT);
-  return { x: 8 + index * 512, y: 840, width: 496, height: 31 };
+  return { x: 8 + index * 512, y: 844, width: 496, height: 31 };
 }
 
-/** Static order-book depth panel: 240 x 125, the 94 x 49 wu body's aspect. */
+/** Static depth and terminal panels: 240 x 113 for the 91 x 42.5 wu body. */
 export function depthPanelRect(variant: number): AtlasRect {
   const index = wrapIndex(variant, DECOR_DEPTH_PANEL_COUNT);
-  return { x: 8 + index * 256, y: 876, width: 240, height: 125 };
+  return { x: 8 + index * 256, y: 883, width: 240, height: 113 };
+}
+
+export function terminalPanelRect(variant: number): AtlasRect {
+  const index = wrapIndex(variant, DECOR_TERMINAL_PANEL_COUNT);
+  return { x: 264 + index * 256, y: 883, width: 240, height: 113 };
 }
 
 /**
@@ -112,6 +118,8 @@ export const DECOR_SWATCH_IDS = [
   'brassSide',
   'brassTop',
   'trimGold',
+  'statusGreen',
+  'statusAmber',
 ] as const;
 export type DecorSwatchId = (typeof DECOR_SWATCH_IDS)[number];
 
@@ -182,6 +190,7 @@ export type DecorPart =
   | 'ribbon-face'
   | 'ribbon-soffit'
   | 'glow-floor'
+  | 'glow-desktop'
   | 'glow-wall';
 
 export interface DecorQuadTag {
@@ -303,6 +312,41 @@ function pushBox(
   if (faces.bottom) pushQuad(sink, along(center, UP, -halfHeight), negate(UP), forward, halfWidth, halfDepth, faces.bottom, tag);
 }
 
+/** Six faces, with a smaller back cover. Sloped sides use constant swatch UVs. */
+function pushMonitorHousing(
+  sink: QuadSink,
+  face: Vec3,
+  forward: Vec3,
+  halfWidth: number,
+  halfHeight: number,
+  depth: number,
+  taper: number,
+  tag: DecorQuadTag,
+): void {
+  const right = cross(UP, forward);
+  const corner = (x: number, y: number, z: number): Vec3 => along(along(along(face, right, x), UP, y), forward, z);
+  const front = [corner(-halfWidth, -halfHeight, 0), corner(halfWidth, -halfHeight, 0),
+    corner(-halfWidth, halfHeight, 0), corner(halfWidth, halfHeight, 0)] as const;
+  const back = [corner(-halfWidth + taper, -halfHeight + taper, -depth), corner(halfWidth - taper, -halfHeight + taper, -depth),
+    corner(-halfWidth + taper, halfHeight - taper, -depth), corner(halfWidth - taper, halfHeight - taper, -depth)] as const;
+  const faces: readonly [readonly Vec3[], DecorSwatchId][] = [
+    [front, 'bezelFront'],
+    [[back[1], back[0], back[3], back[2]], 'bezelBack'],
+    [[front[1], back[1], front[3], back[3]], 'bezelSide'],
+    [[back[0], front[0], back[2], front[2]], 'bezelSide'],
+    [[front[2], front[3], back[2], back[3]], 'bezelTop'],
+    [[back[0], back[1], front[0], front[1]], 'bezelSide'],
+  ];
+  for (const [vertices, swatch] of faces) {
+    const uv = swatchUv(swatch);
+    for (const vertex of vertices) {
+      sink.positions.push(...vertex);
+      sink.uvs.push(uv.u0, uv.vTop);
+    }
+    sink.tags.push(tag);
+  }
+}
+
 function finish(sinks: readonly QuadSink[], withColors: boolean): DecorMeshData {
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -357,13 +401,12 @@ export function decorRandom(seed: number): () => number {
  * One 3 x 2 bank per desk, in the DESK'S OWN frame (local +Z faces the aisle,
  * local -Z is the wall side, local +X is the operator's right).
  *
- * The console's back HOOD tops out at y 157..166 over local z -135..-110 (read
- * off the shipped GLB: the hood is flat at ~164 for |local x| <= 60 there). The
- * brass mount stands on it: a plinth whose foot is SUNK into the hood to y 148
- * so the sloping hood front never shows a gap under it, a post, and one arm per
- * row behind the centre column. Monitors are 100 x 62 with a 3 wu bezel and a
- * 7 wu header strip, 4 wu apart, and the two outer columns are hinged on their
- * inner edge and turned 18 degrees in toward the seated operator.
+ * The v4 procedural walnut top is y132, 364 x 270. Its flat hood is y166,
+ * x +/-176, z -135..-100 (`build-interior.mjs`, desk module). A weighted brass
+ * plate beds into that hood, with a graphite column, full-width brass arms,
+ * graphite reach links and VESA blocks meeting each tapered back cover.
+ * Monitors are 100 x 62 with a 4.5 wu bezel, 8 wu chin and 7 wu header strip,
+ * 4 wu apart; the outer columns turn 18 degrees toward the operator.
  *
  * Top of the bank: 204 + 62 + 4 + 62 = 332, under the 335 ceiling the room
  * leaves for it.
@@ -371,8 +414,10 @@ export function decorRandom(seed: number): () => number {
 export const DECOR_BANK = Object.freeze({
   monitorWidth: 100,
   monitorHeight: 62,
-  monitorDepth: 5,
-  bezel: 3,
+  monitorDepth: 12,
+  backTaper: 5,
+  bezel: 4.5,
+  chin: 8,
   headerHeight: 7,
   columnGap: 4,
   rowGap: 4,
@@ -383,11 +428,12 @@ export const DECOR_BANK = Object.freeze({
   bottomY: 204,
   /** Screens sit this far proud of the bezel face (depth-precision margin). */
   screenLift: 1,
-  /** The mount's foot, sunk into the hood. */
-  footY: 148,
-  plate: Object.freeze({ halfX: 34, centerZ: -123, halfZ: 11, topY: 170 }),
-  post: Object.freeze({ halfX: 7, centerZ: -125, halfZ: 6, topY: 318 }),
-  arm: Object.freeze({ halfX: 70, halfY: 5, centerZ: -122, halfZ: 3 }),
+  /** Plate beds 2 wu into the measured flat hood. */
+  footY: 164,
+  plate: Object.freeze({ halfX: 48, centerZ: -119, halfZ: 14, topY: 172 }),
+  post: Object.freeze({ halfX: 11, centerZ: -125, halfZ: 8, topY: 318 }),
+  arm: Object.freeze({ halfX: 116, halfY: 5, centerZ: -128, halfZ: 4 }),
+  vesa: Object.freeze({ halfX: 11, halfY: 11, halfZ: 3 }),
 });
 
 /** The hood band of the console, desk-local. Only the mount may go below the
@@ -395,16 +441,18 @@ export const DECOR_BANK = Object.freeze({
 export const DECOR_DESK_HOOD = Object.freeze({
   topY: 166,
   minLocalZ: -135,
-  maxLocalZ: -110,
-  /** The hood is flat at ~164 inside this |local x|. */
-  flatHalfX: 60,
+  maxLocalZ: -100,
+  flatHalfX: 176,
 });
+
+/** Measured v4 walnut desktop; the bevel occupies its outermost 5 wu. */
+export const DECOR_DESKTOP = Object.freeze({ topY: 132, halfX: 182, halfZ: 135, bevel: 5 });
 
 /** What each of the six monitors shows, by bank position, rotated per desk so
  *  neighbouring desks do not mirror each other. Row-major, bottom row first. */
 export const DECOR_DESK_CONTENT = Object.freeze([
   'candleA',
-  'heat',
+  'terminal',
   'candleB',
   'line',
   'depth',
@@ -550,7 +598,7 @@ function pushDeskBank(
   const mountTag: DecorQuadTag = { part: 'bank-mount', owner: deskIndex };
   const forwardLocal = deskDirection(slot, 0, 1);
 
-  // Brass mount: plinth on the hood, post, one arm per row.
+  // Weighted brass foot, graphite column and full-width brass row arms.
   const plateHalfY = (bank.plate.topY - bank.footY) / 2;
   pushBox(
     fixed,
@@ -570,7 +618,7 @@ function pushDeskBank(
     bank.post.halfX,
     postHalfY,
     bank.post.halfZ,
-    BRASS_FACES,
+    BEZEL_FACES,
     mountTag,
   );
   for (let row = 0; row < 2; row++) {
@@ -590,7 +638,7 @@ function pushDeskBank(
   const halfW = bank.monitorWidth / 2;
   const halfH = bank.monitorHeight / 2;
   const screenHalfW = halfW - bank.bezel;
-  const bodyHeight = bank.monitorHeight - bank.bezel * 2 - bank.headerHeight;
+  const bodyHeight = bank.monitorHeight - bank.bezel - bank.chin - bank.headerHeight;
   const screenTag: DecorQuadTag = { part: 'bank-screen', owner: deskIndex };
   const bezelTag: DecorQuadTag = { part: 'bank-bezel', owner: deskIndex };
 
@@ -614,16 +662,27 @@ function pushDeskBank(
       const forward = deskDirection(slot, forwardX, forwardZ);
       const face = deskLocalToWorld(slot, faceX, centerY, faceZ);
 
-      pushBox(
+      pushMonitorHousing(
         fixed,
-        along(face, forward, -bank.monitorDepth / 2),
+        face,
         forward,
         halfW,
         halfH,
-        bank.monitorDepth / 2,
-        BEZEL_FACES,
+        bank.monitorDepth,
+        bank.backTaper,
         bezelTag,
       );
+
+      // The VESA block meets the back cover; the reach link meets the arm.
+      const vesa = bank.vesa;
+      pushBox(fixed, along(face, forward, -bank.monitorDepth - vesa.halfZ), forward,
+        vesa.halfX, vesa.halfY, vesa.halfZ, BEZEL_FACES, mountTag);
+      const linkDepth = (faceZ - bank.arm.centerZ) / forwardZ - bank.monitorDepth - vesa.halfZ * 2;
+      pushBox(fixed, along(face, forward, -bank.monitorDepth - vesa.halfZ * 2 - linkDepth / 2), forward,
+        5, 6, linkDepth / 2, BEZEL_FACES, mountTag);
+      const led = along(along(along(face, forward, 0.35), cross(UP, forward), halfW - 11), UP, -halfH + bank.chin / 2);
+      pushQuad(fixed, led, forward, UP, 1.25, 1.25,
+        swatchUv(monitor % 3 === 1 ? 'statusAmber' : 'statusGreen'), bezelTag);
 
       const lifted = along(face, forward, bank.screenLift);
       pushQuad(
@@ -637,9 +696,9 @@ function pushDeskBank(
         screenTag,
       );
 
-      const bodyCenter = along(lifted, UP, -halfH + bank.bezel + bodyHeight / 2);
+      const bodyCenter = along(lifted, UP, -halfH + bank.chin + bodyHeight / 2);
       const content = DECOR_DESK_CONTENT[(monitor + deskIndex) % DECOR_DESK_CONTENT.length]!;
-      if (content === 'depth') {
+      if (content === 'depth' || content === 'terminal') {
         pushQuad(
           fixed,
           bodyCenter,
@@ -647,7 +706,7 @@ function pushDeskBank(
           UP,
           screenHalfW,
           bodyHeight / 2,
-          atlasRectUv(depthPanelRect(deskIndex + monitor)),
+          atlasRectUv(content === 'terminal' ? terminalPanelRect(deskIndex + row) : depthPanelRect(deskIndex + monitor)),
           screenTag,
         );
       } else {
@@ -683,15 +742,15 @@ function pushWallScreen(
   const bezelTag: DecorQuadTag = { part: 'wall-bezel', owner: wallIndex };
   const screenTag: DecorQuadTag = { part: 'wall-screen', owner: wallIndex };
 
-  // The back face sits 2 wu off the wall and is never visible: not emitted.
-  pushBox(
+  // Graphite cover tapers toward the back, which stays 2 wu off the wall.
+  pushMonitorHousing(
     fixed,
-    along(face, forward, -screen.depth / 2),
+    face,
     forward,
     screen.width / 2,
     screen.height / 2,
-    screen.depth / 2,
-    { front: BEZEL_FACES.front, side: BEZEL_FACES.side, top: BEZEL_FACES.top, bottom: BEZEL_FACES.side },
+    screen.depth,
+    4,
     bezelTag,
   );
 
@@ -700,14 +759,13 @@ function pushWallScreen(
   const plate = along(face, forward, screen.plateLift);
   pushQuad(fixed, plate, forward, UP, areaHalfW, areaHalfH, swatchUv('screenBlack'), screenTag);
 
-  // A thin champagne-gold rule around the glass: brass catching the light.
+  // Brass outer frame stays within the original wall-screen rectangle.
   const trim = swatchUv('trimGold');
-  const trimMid = 0.5 + screen.trimWidth / 2;
   const trimHalf = screen.trimWidth / 2;
-  pushQuad(fixed, along(plate, UP, areaHalfH + trimMid), forward, UP, areaHalfW + 0.5 + screen.trimWidth, trimHalf, trim, bezelTag);
-  pushQuad(fixed, along(plate, UP, -(areaHalfH + trimMid)), forward, UP, areaHalfW + 0.5 + screen.trimWidth, trimHalf, trim, bezelTag);
-  pushQuad(fixed, along(plate, right, areaHalfW + trimMid), forward, UP, trimHalf, areaHalfH + 0.5, trim, bezelTag);
-  pushQuad(fixed, along(plate, right, -(areaHalfW + trimMid)), forward, UP, trimHalf, areaHalfH + 0.5, trim, bezelTag);
+  pushQuad(fixed, along(plate, UP, screen.height / 2 - trimHalf), forward, UP, screen.width / 2, trimHalf, trim, bezelTag);
+  pushQuad(fixed, along(plate, UP, -(screen.height / 2 - trimHalf)), forward, UP, screen.width / 2, trimHalf, trim, bezelTag);
+  pushQuad(fixed, along(plate, right, screen.width / 2 - trimHalf), forward, UP, trimHalf, screen.height / 2 - screen.trimWidth, trim, bezelTag);
+  pushQuad(fixed, along(plate, right, -(screen.width / 2 - trimHalf)), forward, UP, trimHalf, screen.height / 2 - screen.trimWidth, trim, bezelTag);
 
   // Panes, in screen-area coordinates (origin top-left, x right, y down).
   const areaW = areaHalfW * 2;
@@ -730,6 +788,17 @@ function pushWallScreen(
       UP,
       areaHalfH - (py + ph / 2),
     );
+  // Preserve terminal glyph aspect. Tall panes stack panels, with black gutters.
+  const terminalPane = (px: number, py: number, pw: number, ph: number): void => {
+    const rect = terminalPanelRect(wallIndex);
+    const height = pw * rect.height / rect.width;
+    const rows = Math.max(1, Math.floor((ph + screen.gap) / (height + screen.gap)));
+    const padding = (ph - rows * height - (rows - 1) * screen.gap) / 2;
+    for (let row = 0; row < rows; row++) {
+      pushQuad(fixed, pane(px, py + padding + row * (height + screen.gap), pw, height), forward, UP,
+        pw / 2, height / 2, atlasRectUv(terminalPanelRect(wallIndex + row)), screenTag);
+    }
+  };
 
   pushQuad(fixed, pane(0, 0, areaW, headerH), forward, UP, areaW / 2, headerH / 2, atlasRectUv(header), screenTag);
   pushQuad(
@@ -742,17 +811,13 @@ function pushWallScreen(
     atlasRectUv(depth),
     screenTag,
   );
-  pushScrollingQuad(
-    scroll,
-    pane(0, contentTop, leftW, chartH),
-    forward,
-    leftW / 2,
-    chartH / 2,
-    wallIndex % 2 === 0 ? DECOR_BANDS.candleA : DECOR_BANDS.candleB,
-    crossSeconds(random, DECOR_WALL_CROSS_SECONDS),
-    random(),
-    screenTag,
-  );
+  const terminalOnLeft = wallIndex % 2 === 0;
+  if (terminalOnLeft) {
+    terminalPane(0, contentTop, leftW, chartH);
+  } else {
+    pushScrollingQuad(scroll, pane(0, contentTop, leftW, chartH), forward, leftW / 2, chartH / 2,
+      DECOR_BANDS.candleB, crossSeconds(random, DECOR_WALL_CROSS_SECONDS), random(), screenTag);
+  }
   pushScrollingQuad(
     scroll,
     pane(0, contentTop + chartH + screen.gap, leftW, screen.barsPaneHeight),
@@ -764,17 +829,12 @@ function pushWallScreen(
     random(),
     screenTag,
   );
-  pushScrollingQuad(
-    scroll,
-    pane(rightX, contentTop, rightW, upperRightH),
-    forward,
-    rightW / 2,
-    upperRightH / 2,
-    wallIndex % 2 === 0 ? DECOR_BANDS.heat : DECOR_BANDS.line,
-    crossSeconds(random, DECOR_WALL_CROSS_SECONDS),
-    random(),
-    screenTag,
-  );
+  if (terminalOnLeft) {
+    pushScrollingQuad(scroll, pane(rightX, contentTop, rightW, upperRightH), forward, rightW / 2, upperRightH / 2,
+      DECOR_BANDS.heat, crossSeconds(random, DECOR_WALL_CROSS_SECONDS), random(), screenTag);
+  } else {
+    terminalPane(rightX, contentTop, rightW, upperRightH);
+  }
 }
 
 /** Wall screen order: left wall bays back to front, then the right wall. */
@@ -1041,13 +1101,14 @@ export const DECOR_SEAL = Object.freeze({ x: 0, z: -60, innerRadius: 380, outerR
 /** Linear RGBA. Alpha is the strength: additive blending adds `rgb * a`. */
 export const DECOR_GLOW_COLOR = Object.freeze({
   desk: Object.freeze([0.05, 0.42, 1.0, 0.34] as const),
+  desktop: Object.freeze([0.38, 0.64, 1.0, 0.13] as const),
   board: Object.freeze([0.03, 0.3, 1.0, 0.3] as const),
   deskWall: Object.freeze([0.04, 0.36, 1.0, 0.3] as const),
   screenHalo: Object.freeze([0.06, 0.5, 1.0, 0.4] as const),
 });
 
 export interface GlowPool {
-  readonly kind: 'floor' | 'wall';
+  readonly kind: 'floor' | 'wall' | 'desktop';
   readonly center: Vec3;
   /** Floor: half-extent along X. Wall: half-extent along Z. */
   readonly halfA: number;
@@ -1068,6 +1129,12 @@ export function glowPools(): GlowPool[] {
   for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
     const side = Math.sign(slot.x);
     pools.push({ kind: 'floor', center: [side * deskPoolX, DECOR_GLOW_FLOOR_Y, slot.z], halfA: 170, halfB: 240, color: DECOR_GLOW_COLOR.desk });
+  }
+  for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
+    // Desk-local x +/-130, z -87..13: ahead of the hood and behind the keyboard.
+    // Desks face +/-X, so world X takes local depth and world Z local width.
+    pools.push({ kind: 'desktop', center: deskLocalToWorld(slot, 0, DECOR_DESKTOP.topY + 3, -37),
+      halfA: 50, halfB: 130, color: DECOR_GLOW_COLOR.desktop });
   }
   pools.push({ kind: 'floor', center: [0, DECOR_GLOW_FLOOR_Y, -962], halfA: 900, halfB: 133, color: DECOR_GLOW_COLOR.board });
   for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
@@ -1093,9 +1160,10 @@ const FULL_UV: QuadUv = Object.freeze({ u0: 0, u1: 1, vTop: 1, vBottom: 0 });
 export function buildGlowDecor(): DecorMeshData {
   const sink = createSink();
   glowPools().forEach((pool, index) => {
-    if (pool.kind === 'floor') {
+    if (pool.kind === 'floor' || pool.kind === 'desktop') {
       // Normal +Y, up -Z, so right = up x normal = +X: halfA runs along X.
-      pushQuad(sink, pool.center, UP, [0, 0, -1], pool.halfA, pool.halfB, FULL_UV, { part: 'glow-floor', owner: index }, pool.color);
+      pushQuad(sink, pool.center, UP, [0, 0, -1], pool.halfA, pool.halfB, FULL_UV,
+        { part: pool.kind === 'desktop' ? 'glow-desktop' : 'glow-floor', owner: index }, pool.color);
     } else {
       const normal: Vec3 = [-Math.sign(pool.center[0]), 0, 0];
       pushQuad(sink, pool.center, normal, UP, pool.halfA, pool.halfB, FULL_UV, { part: 'glow-wall', owner: index }, pool.color);

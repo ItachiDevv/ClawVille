@@ -8,9 +8,9 @@
  * THREE SURFACES, three redraw budgets:
  *   - The MONITOR ATLAS (`drawDecorAtlas`) is drawn ONCE per mount. It holds
  *     abstract terminal art only: candles, depth curves, an order-book heatmap,
- *     volume bars, header bars made of blocks. NO text, NO digits, NO tickers
- *     and NO prices anywhere on it: a decorative screen that printed a number
- *     would be a claim nobody made. The life comes from the layout scrolling
+ *     volume bars and static DECOR terminals with fictional world symbols.
+ *     NO digits, currency signs or prices: decor never claims arena data.
+ *     The life comes from the layout scrolling
  *     U windows across bands that are PERIODIC along U: every series below is
  *     built on a closed loop (zero-sum steps, circular averages, integer-cycle
  *     waves), so the band's last column runs straight into its first.
@@ -39,6 +39,7 @@ import {
   DECOR_DEPTH_PANEL_COUNT,
   DECOR_DESK_HEADER_COUNT,
   DECOR_SWATCH_IDS,
+  DECOR_TERMINAL_PANEL_COUNT,
   DECOR_WALL_HEADER_COUNT,
   GLOW_SPRITE_SIZE,
   RIBBON_CANVAS_HEIGHT,
@@ -48,6 +49,7 @@ import {
   depthPanelRect,
   deskHeaderRect,
   swatchRect,
+  terminalPanelRect,
   wallHeaderRect,
   type AtlasRect,
   type DecorBand,
@@ -126,6 +128,8 @@ export const DECOR_SWATCH_COLORS: Readonly<Record<DecorSwatchId, string>> = Obje
   brassSide: '#6e5a32',
   brassTop: '#d9bd7c',
   trimGold: '#e0c070',
+  statusGreen: '#63dd91',
+  statusAmber: '#ffbf57',
 });
 
 // ---------------------------------------------------------------------------
@@ -613,6 +617,77 @@ function drawDepthPanel(ctx: DecorContext, rect: AtlasRect, variant: number): vo
   ctx.fillRect(mid - 1, rect.y + 6, 2, rect.height - 12);
 }
 
+/** Fictional symbols only, with an explicit DECOR header. No numeric data. */
+export const DECOR_TERMINAL_ROWS = Object.freeze([
+  Object.freeze(['CLAW', 'KELP', 'REEF'] as const),
+  Object.freeze(['SHELL', 'PEARL', 'TIDE'] as const),
+  Object.freeze(['CORAL', 'BRINE', 'CLAW'] as const),
+]);
+export const DECOR_TERMINAL_LABEL = 'DECOR';
+/** 3 x 5 bitmap monospace. Every stroke occupies at least 4 atlas pixels. */
+export const DECOR_TERMINAL_PIXEL = 4;
+const TERMINAL_GLYPHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  A: ['010', '101', '111', '101', '101'], B: ['110', '101', '110', '101', '110'],
+  C: ['011', '100', '100', '100', '011'], D: ['110', '101', '101', '101', '110'],
+  E: ['111', '100', '110', '100', '111'], F: ['111', '100', '110', '100', '100'],
+  H: ['101', '101', '111', '101', '101'], I: ['111', '010', '010', '010', '111'],
+  K: ['101', '101', '110', '101', '101'], L: ['100', '100', '100', '100', '111'],
+  N: ['101', '111', '111', '111', '101'], O: ['010', '101', '101', '101', '010'],
+  P: ['110', '101', '110', '100', '100'], R: ['110', '101', '110', '101', '101'],
+  S: ['011', '100', '010', '001', '110'], T: ['111', '010', '010', '010', '010'],
+  W: ['101', '101', '111', '111', '101'],
+});
+
+function drawTerminalWord(ctx: DecorContext, text: string, x: number, y: number): void {
+  const pixel = DECOR_TERMINAL_PIXEL;
+  [...text].forEach((letter, index) => {
+    TERMINAL_GLYPHS[letter]!.forEach((row, j) => {
+      [...row].forEach((bit, i) => {
+        if (bit === '1') ctx.fillRect(x + index * pixel * 4 + i * pixel, y + j * pixel, pixel, pixel);
+      });
+    });
+  });
+}
+
+export function drawTerminalPanel(ctx: DecorContext, rect: AtlasRect, variant: number): void {
+  const rows = DECOR_TERMINAL_ROWS[((variant % DECOR_TERMINAL_PANEL_COUNT) + DECOR_TERMINAL_PANEL_COUNT) % DECOR_TERMINAL_PANEL_COUNT]!;
+  ctx.fillStyle = '#020407';
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.fillStyle = '#43270b';
+  ctx.fillRect(rect.x + 4, rect.y + 4, rect.width - 8, 24);
+  ctx.fillStyle = DECOR_PALETTE.amber;
+  drawTerminalWord(ctx, DECOR_TERMINAL_LABEL, rect.x + 8, rect.y + 6);
+  rows.forEach((symbol, row) => {
+    const y = rect.y + 34 + row * 24;
+    const up = (row + variant) % 2 === 0;
+    ctx.fillStyle = row % 2 === 0 ? DECOR_PALETTE.signalWhite : DECOR_PALETTE.amber;
+    drawTerminalWord(ctx, symbol, rect.x + 8, y);
+    // A 4 px shaft and 4 px staircase wings; no font-dependent tiny arrows.
+    const arrowY = y + (up ? 0 : 16);
+    ctx.fillRect(rect.x + 104, y, 4, 20);
+    for (let step = 1; step <= 2; step++) {
+      const ay = arrowY + (up ? step : -step) * 4;
+      ctx.fillRect(rect.x + 104 - step * 4, ay, 4, 4);
+      ctx.fillRect(rect.x + 104 + step * 4, ay, 4, 4);
+    }
+    for (let bar = 0; bar < 4; bar++) {
+      const height = 4 + ((bar + row + variant) % 4) * 4;
+      ctx.fillRect(rect.x + 132 + bar * 8, y + 20 - height, 4, height);
+    }
+    ctx.strokeStyle = DECOR_PALETTE.amber;
+    ctx.lineWidth = 4;
+    ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    for (let point = 0; point < 6; point++) {
+      const px = rect.x + 184 + point * 8;
+      const py = y + 4 + ((point + row + variant) % 3) * 4;
+      if (point === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  });
+}
+
 /**
  * The whole monitor atlas, once. Order matters only for the gutters: the
  * background goes down first so every unused pixel is screen black.
@@ -633,6 +708,9 @@ export function drawDecorAtlas(ctx: DecorContext): void {
   }
   for (let variant = 0; variant < DECOR_DEPTH_PANEL_COUNT; variant++) {
     drawDepthPanel(ctx, depthPanelRect(variant), variant);
+  }
+  for (let variant = 0; variant < DECOR_TERMINAL_PANEL_COUNT; variant++) {
+    drawTerminalPanel(ctx, terminalPanelRect(variant), variant);
   }
   for (const id of DECOR_SWATCH_IDS) {
     const rect = swatchRect(id);
