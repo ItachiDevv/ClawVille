@@ -231,7 +231,7 @@ export const TRADING_FLOOR_DOOR = Object.freeze({
  * from 595 to 339. A sill at 360 therefore clears the kiosk's shadow by 21 wu
  * and the layout needs no keep-out zone in its lower-left.
  *
- * What is actually true for the centre statue (v3 twin Golden Claws, top
+ * What is actually true for the centre statue (v5 twin plinth claws, top
  * 226.96 wu, cap 230; measured, swept and pinned in
  * `trading-floor-asset.test.ts`): the board is clear of it from the SPAWN at
  * any yaw and any camera pitch, and from ANYWHERE in the hall at the default
@@ -719,7 +719,7 @@ export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
     });
   }),
   // TradingFloorHoloDais — node (0, -60), 700 x 692 footprint. Since v3 it is
-  // the stepped granite plinth under the twin Golden Claws (top 226.96 wu).
+  // the stepped granite plinth under the twin plinth claws (top 226.96 wu).
   Object.freeze({ centerX: 0, centerZ: -60, halfX: 350, halfZ: 346 }),
   // TradingFloorMonitorStation — node (-300, -980), 129 x 101 footprint (v3).
   Object.freeze({

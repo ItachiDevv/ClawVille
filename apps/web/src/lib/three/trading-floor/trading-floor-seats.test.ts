@@ -447,7 +447,7 @@ describe('Trading Floor seats — clicking a chair', () => {
 describe('Trading Floor seats — the authored-prop assert', () => {
   /**
    * The SHIPPED numbers, read with `scripts/trading-floor/inspect-glb.mjs`
-   * against `trading-floor-interior-opt1-mo-ktx.glb` (350,128 bytes, v4).
+   * against `trading-floor-interior-opt1-mo-ktx.glb` (340,820 bytes, ?v=5).
    * `KHR_mesh_quantization` normalises each mesh
    * into [-1, 1] and pushes the real size onto the node scale, which is why the
    * bounds below are fractions and the scale is ~87 to ~182.

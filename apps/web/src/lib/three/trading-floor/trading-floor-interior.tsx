@@ -55,11 +55,11 @@
  *   - NO InstancedMesh + ShaderMaterial — both rows keep the GLB's own
  *     MeshStandardMaterial.
  *   - NO per-frame allocation — module-scope scratch only.
- *   - Draw calls (v3, 2026-10-01): 8 static from the room GLB (floor, walls,
- *     ceiling, trim, brass, granite plinth, seal + banners, kiosk) + 1
+ *   - Draw calls (v5, 2026-10-01): 9 static from the room GLB (floor, walls,
+ *     ceiling, trim, brass, plinth claws, granite plinth, seal + banners, kiosk) + 1
  *     instanced desk row + 1 instanced chair row + 1 board + 1 trade tape + 3
  *     decor meshes (`trading-floor-decor.tsx`: monitors, ticker ribbon, glow),
- *     = 15, plus the avatar. Every hotspot is `visible: false`, so they cost
+ *     = 16, plus the avatar. Every hotspot is `visible: false`, so they cost
  *     none.
  *   - 3 lights total (ambient + hemisphere + one non-shadow directional).
  */
@@ -152,16 +152,15 @@ import {
 
 /**
  * The authored hall. Built by `scripts/trading-floor/build-interior.mjs` and
- * documented in 3dStructure.md §9g and §9i: v3 is 364,788 B, 6,431 tris, 10
- * meshes, 10 materials, 7 ETC1S textures (measured with
- * `scripts/trading-floor/inspect-glb.mjs` against the shipped bytes,
+ * documented in 3dStructure.md §9g and §9i: v5 is 340,820 B, 10,605 tris, 11
+ * meshes, 11 materials, 7 ETC1S textures (measured from the shipped GLB JSON,
  * 2026-10-01), authored at 1 unit = 1 wu and ALREADY at final scale — it is
  * mounted with NO auto-fit (unlike `cove-interior.tsx`, whose GLB is
- * normalised to a target height). Two of those 10 meshes are props the scene
- * pulls out and re-draws as instanced rows, so the GLB costs 8 static draw
- * calls + 2 instanced rows = 10, and the board adds 1.
+ * normalised to a target height). Two of those 11 meshes are props the scene
+ * pulls out and re-draws as instanced rows, so the GLB costs 9 static draw
+ * calls + 2 instanced rows = 11. The board, trade tape and decor add 5, for 16.
  *
- * v2 reached production on 2026-09-20. Serve the v3 bytes through a new query
+ * v2 reached production on 2026-09-20. Serve the v5 bytes through a new query
  * because Cloudflare can keep the old path in its edge cache for one week.
  */
 const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=5';

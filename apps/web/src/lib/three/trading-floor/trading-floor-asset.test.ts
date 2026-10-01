@@ -97,7 +97,7 @@ interface GltfJson {
   nodes: GltfNode[];
   meshes: { primitives: { attributes: Record<string, number> }[] }[];
   accessors: GltfAccessor[];
-  materials: { name?: string; pbrMetallicRoughness?: { metallicFactor?: number } }[];
+  materials: { name?: string; extensions?: Record<string, unknown>; pbrMetallicRoughness?: { metallicFactor?: number } }[];
   textures: unknown[];
 }
 
@@ -440,7 +440,7 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
     expect(failures).toEqual([]);
   });
 
-  test('each claw has at most 40 inverted or degenerate triangles after room-wide quantization', async () => {
+  test('each claw has at most 40 inverted or degenerate triangles after per-mesh quantization', async () => {
     const { vertices, primitive } = await assetVertices('TradingFloorClaws');
     const indices = primitive.getIndices()!.getArray()!;
     const counts = [0, 0], totals = [0, 0];
@@ -485,9 +485,10 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
 
   test('the shipped claws copy the exterior material factors and have no COLOR_0', async () => {
     const interior = await decodedAsset;
-    const exterior = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
-      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder })
-      .read(join(GLB_PATH, '..', 'trading-floor-exterior-opt1-mo-ktx.glb'));
+    const io = new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder });
+    const exteriorJson = await io.readAsJSON(join(GLB_PATH, '..', 'trading-floor-exterior-opt1-mo-ktx.glb'));
+    const exterior = await io.readJSON(exteriorJson);
     const source = exterior.getRoot().listMaterials()
       .find((material) => material.getName() === 'TradingFloorClawMtl');
     const material = interior.getRoot().listMaterials()
@@ -502,10 +503,22 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
     for (let index = 0; index < actual.length; index++)
       expect(Math.abs(actual[index]! - expected[index]!)).toBeLessThanOrEqual(1e-6);
     expect(material!.getDoubleSided()).toBe(source!.getDoubleSided());
+    expect(material!.getAlphaMode()).toBe(source!.getAlphaMode());
+    expect(source!.getAlphaMode()).toBe('OPAQUE');
+    expect(material!.listExtensions().map((extension) => extension.extensionName).sort())
+      .toEqual(source!.listExtensions().map((extension) => extension.extensionName).sort());
+    expect(source!.listExtensions()).toHaveLength(0);
+    // Compare raw extensions too: the decoder can ignore unknown extensions.
+    const sourceExtensions = exteriorJson.json.materials!
+      .find((candidate) => candidate.name === 'TradingFloorClawMtl')!.extensions ?? {};
+    expect(gltf.materials.find((candidate) => candidate.name === 'TradingFloorClawMtl')!.extensions ?? {})
+      .toEqual(sourceExtensions);
+    expect(Object.keys(sourceExtensions)).toHaveLength(0);
     expect(material!.getExtension('KHR_materials_unlit')).toBeNull();
-    for (const texture of [material!.getBaseColorTexture(), material!.getEmissiveTexture(),
-      material!.getMetallicRoughnessTexture(), material!.getNormalTexture(), material!.getOcclusionTexture()])
-      expect(texture).toBeNull();
+    for (const candidate of [source!, material!])
+      for (const texture of [candidate.getBaseColorTexture(), candidate.getEmissiveTexture(),
+        candidate.getMetallicRoughnessTexture(), candidate.getNormalTexture(), candidate.getOcclusionTexture()])
+        expect(texture).toBeNull();
     const mesh = interior.getRoot().listMeshes().find((candidate) => candidate.getName() === 'TradingFloorClaws');
     expect(mesh).toBeDefined();
     expect(mesh!.listPrimitives()).toHaveLength(1);
@@ -733,6 +746,8 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
     const claws = await assetVertices('TradingFloorClaws');
     expect(brass.vertices.length + claws.vertices.length).toBeLessThanOrEqual(5500);
     expect((brass.primitive.getIndices()!.getCount() + claws.primitive.getIndices()!.getCount()) / 3).toBe(6040);
+    // An un-welded build retains 16,536 vertices, one per triangle corner.
+    expect(claws.vertices).toHaveLength(4280);
     expect(new Set(claws.vertices.map(({ n }) => n.join(','))).size).toBeGreaterThan(1);
   });
 });

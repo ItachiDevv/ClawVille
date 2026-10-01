@@ -1227,14 +1227,29 @@ await copyProp('TradingFloorMonitorStation', 'TradingFloorMonitorStation', MONIT
 
 // Read the solid Meshy claw, including the quantizer's node transform.
 // getElement decodes normalized integers; positions use the full world matrix
-// and normals use its inverse transpose. No source textures enter the room.
-const clawDoc = await io.read(resolve(REPO_ROOT,
+// and normals use its inverse transpose. Reject source textures and extensions.
+const clawSource = await io.readAsJSON(resolve(REPO_ROOT,
   'apps/web/public/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb'));
+const clawDoc = await io.readJSON(clawSource);
 const clawNode = clawDoc.getRoot().listNodes().find((n) => n.getName()==='TradingFloorClawProp');
 if (!clawNode?.getMesh()) throw new Error('exterior has no TradingFloorClawProp mesh');
 const exteriorClawMaterial = clawDoc.getRoot().listMaterials()
   .find((material) => material.getName() === 'TradingFloorClawMtl');
 if (!exteriorClawMaterial) throw new Error('exterior has no TradingFloorClawMtl material');
+const clawTextureCount = [
+  exteriorClawMaterial.getBaseColorTexture(), exteriorClawMaterial.getEmissiveTexture(),
+  exteriorClawMaterial.getMetallicRoughnessTexture(), exteriorClawMaterial.getNormalTexture(),
+  exteriorClawMaterial.getOcclusionTexture(),
+].filter((texture) => texture !== null).length;
+// Read raw extension names too: the decoder can ignore unknown extensions.
+const clawExtensions = Object.keys(clawSource.json.materials
+  .find((material) => material.name === 'TradingFloorClawMtl').extensions ?? {});
+const clawAlphaMode = exteriorClawMaterial.getAlphaMode();
+if (clawTextureCount || clawExtensions.length || clawAlphaMode !== 'OPAQUE') {
+  throw new Error(`exterior TradingFloorClawMtl must be texture-free, extension-free and OPAQUE: ${JSON.stringify({
+    textures: clawTextureCount, extensions: clawExtensions, alphaMode: clawAlphaMode,
+  })}`);
+}
 const CLAW = doc.createMaterial('TradingFloorClawMtl')
   .setBaseColorFactor(exteriorClawMaterial.getBaseColorFactor())
   .setEmissiveFactor(exteriorClawMaterial.getEmissiveFactor())
@@ -1244,7 +1259,8 @@ const CLAW = doc.createMaterial('TradingFloorClawMtl')
 console.log(`  copied exterior TradingFloorClawMtl: ${JSON.stringify({
   baseColorFactor: CLAW.getBaseColorFactor(), emissiveFactor: CLAW.getEmissiveFactor(),
   roughnessFactor: CLAW.getRoughnessFactor(), metallicFactor: CLAW.getMetallicFactor(),
-  doubleSided: CLAW.getDoubleSided(), textures: 0, unlit: false,
+  doubleSided: CLAW.getDoubleSided(), alphaMode: clawAlphaMode,
+  textures: clawTextureCount, extensions: clawExtensions,
 })}`);
 const world = clawNode.getWorldMatrix();
 const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
