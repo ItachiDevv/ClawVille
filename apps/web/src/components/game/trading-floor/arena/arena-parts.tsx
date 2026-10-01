@@ -15,6 +15,7 @@ import type {
   FloorArenaParamChangeView,
   FloorArenaPositionView,
   FloorArenaReportView,
+  FloorArenaTunerCheck,
 } from '@/hooks/use-floor-arena';
 import { shortMint } from '../format';
 import { FLOOR_TEXT } from '../tokens';
@@ -319,6 +320,43 @@ const SUGGESTION_STATE_LABEL: Record<FloorArenaReportView['suggestionState'], st
   rejected: 'Not applied: it was outside the limits',
 };
 
+function tunerP(p: number | null): string {
+  if (p === null) return '';
+  return p < 0.01 ? ' (p < 0.01)' : ` (p ${p.toFixed(2)})`;
+}
+
+/**
+ * One plain line that says why the tuner changed, suggested or kept the rules
+ * in this report (D33). Null when the report has no tuner field (older reports).
+ */
+export function arenaTunerLine(tuner: FloorArenaTunerCheck | null | undefined): string | null {
+  if (!tuner) return null;
+  const best = tuner.best;
+  const change = best
+    ? `${paramPathLabel(best.path)} ${formatParamValue(best.path, best.from)} -> ${formatParamValue(best.path, best.to)}`
+    : null;
+  if (tuner.decision === 'changed') return change ? `Tuner: changed ${change}${tunerP(tuner.p)}` : 'Tuner: changed a rule';
+  if (tuner.decision === 'suggested') return change ? `Tuner: suggested ${change}${tunerP(tuner.p)}` : 'Tuner: suggested a change';
+  switch (tuner.reason) {
+    case 'below_sample':
+      return tuner.needed !== null && tuner.n !== null
+        ? `Tuner: no change, needs ${countText(tuner.needed)} closed trades (has ${countText(tuner.n)})`
+        : 'Tuner: no change, needs more closed trades';
+    case 'not_significant':
+      return `Tuner: no change, best filter not significant${tunerP(tuner.p)}`;
+    case 'no_candidate':
+      return 'Tuner: no change, no filter passes the evidence gate';
+    case 'rate_limited':
+      return 'Tuner: no change, the last rule change is too recent';
+    case 'params_changed':
+      return 'Tuner: no change, the rules changed during the check';
+    case 'not_tunable':
+      return 'Tuner: no change, the rules could not be checked';
+    default:
+      return 'Tuner: no change';
+  }
+}
+
 export function ArenaReport({
   report,
   nowMs,
@@ -330,6 +368,7 @@ export function ArenaReport({
   actions?: ReactNode;
 }) {
   if (!report) return <ArenaMuted>No report yet. The agent writes one every 30 minutes once it has activity.</ArenaMuted>;
+  const tunerLine = arenaTunerLine(report.tuner);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-testid="arena-report">
       <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>Written {isoAgo(report.periodEnd, nowMs)}</div>
@@ -356,6 +395,11 @@ export function ArenaReport({
           {SUGGESTION_STATE_LABEL[report.suggestionState] && !(report.suggestionState === 'pending' && actions) ? (
             <div style={{ color: FLOOR_TEXT.faint, fontSize: 11 }}>{SUGGESTION_STATE_LABEL[report.suggestionState]}</div>
           ) : null}
+        </div>
+      ) : null}
+      {tunerLine ? (
+        <div data-testid="arena-tuner-line" style={{ color: FLOOR_TEXT.muted, fontSize: 11, overflowWrap: 'anywhere' }}>
+          {tunerLine}
         </div>
       ) : null}
     </div>

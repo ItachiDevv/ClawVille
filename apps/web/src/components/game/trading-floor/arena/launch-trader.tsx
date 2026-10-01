@@ -51,12 +51,15 @@ const STEP_TITLES: Record<Step, string> = {
 const NAME_MAX = 32;
 /** The route's own name rule (`floor-arena.ts` NAME): letters, digits, space and _ . ' - */
 const NAME_PATTERN = /^[\p{L}\p{N} _.'-]+$/u;
+/** The route's NAME_LETTER (P8): at least one letter, so a name never reads as a P&L number. */
+const NAME_LETTER = /\p{L}/u;
 
 export function arenaNameProblem(name: string): string | null {
   const trimmed = name.trim();
   if (trimmed === '') return null;
   if (trimmed.length > NAME_MAX) return `Use ${NAME_MAX} characters or fewer.`;
-  return NAME_PATTERN.test(trimmed) ? null : "Use letters, numbers, spaces and . _ ' - only.";
+  if (!NAME_PATTERN.test(trimmed)) return "Use letters, numbers, spaces and . _ ' - only.";
+  return NAME_LETTER.test(trimmed) ? null : 'Use at least one letter, so the name does not look like a number.';
 }
 
 /** Paper selected; live shown but closed until a founder go (spec D11). */

@@ -153,6 +153,32 @@ export interface FloorArenaReportView {
   observations: string[];
   suggestion: FloorArenaSuggestion | null;
   suggestionState: FloorArenaSuggestionState;
+  /** `stats.suggestionCheck.tuner`; null on a report written before the field existed. */
+  tuner: FloorArenaTunerCheck | null;
+}
+
+export const FLOOR_ARENA_TUNER_DECISIONS = ['changed', 'suggested', 'none'] as const;
+export const FLOOR_ARENA_TUNER_REASONS = [
+  'below_sample',
+  'no_candidate',
+  'not_significant',
+  'rate_limited',
+  'changed',
+  'suggested',
+  'params_changed',
+  'not_tunable',
+] as const;
+
+/** Why the tuner changed, suggested or kept the rules in one report (D33). */
+export interface FloorArenaTunerCheck {
+  decision: (typeof FLOOR_ARENA_TUNER_DECISIONS)[number];
+  reason: (typeof FLOOR_ARENA_TUNER_REASONS)[number];
+  /** Closed trades the check used, and the count it needs. */
+  n: number | null;
+  needed: number | null;
+  /** The best filter change the check found, or null when it found none. */
+  best: { path: string; from: unknown; to: unknown } | null;
+  p: number | null;
 }
 
 export interface FloorArenaParamChangeView {
@@ -451,6 +477,25 @@ export function readReport(value: unknown): FloorArenaReportView | null {
     suggestionState: (FLOOR_ARENA_SUGGESTION_STATES as readonly string[]).includes(row.suggestionState as string)
       ? (row.suggestionState as FloorArenaSuggestionState)
       : 'none',
+    tuner: readTunerCheck(record(stats?.suggestionCheck)?.tuner),
+  };
+}
+
+/** `stats.suggestionCheck.tuner`. Absent, or an unknown decision or reason, reads as null (no line). */
+export function readTunerCheck(value: unknown): FloorArenaTunerCheck | null {
+  const row = record(value);
+  if (!row) return null;
+  const decision = FLOOR_ARENA_TUNER_DECISIONS.find((known) => known === row.decision);
+  const reason = FLOOR_ARENA_TUNER_REASONS.find((known) => known === row.reason);
+  if (!decision || !reason) return null;
+  const best = record(row.best);
+  return {
+    decision,
+    reason,
+    n: num(row.n),
+    needed: num(row.needed),
+    best: best && str(best.path) ? { path: best.path as string, from: best.from, to: best.to } : null,
+    p: num(row.p),
   };
 }
 
@@ -719,6 +764,7 @@ export function floorArenaErrorCopy(error: unknown): string {
   if (code === 'suggestion_stale') return 'You changed that rule after the report, so the suggestion no longer applies.';
   if (code === 'agent_stopped') return 'This trader is stopped, so it cannot be paused or resumed.';
   if (code === 'name_reserved') return 'That name belongs to a house trader. Type another name for your trader.';
+  if (code === 'name_needs_letter') return 'Use at least one letter, so the name does not look like a number.';
   if (code === 'invalid_body') return 'Some details were not accepted. Check the name and the numbers, then try again.';
   if (code === 'no_agent' || (error instanceof ApiError && error.status === 404)) return 'You do not run an arena trader yet.';
   if (error instanceof ApiError && error.status === 401) return 'Your session ended. Sign in again.';

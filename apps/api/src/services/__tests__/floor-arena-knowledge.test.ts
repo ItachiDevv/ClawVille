@@ -20,8 +20,10 @@ import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
   ARENA_REPORT_INTERVAL_MS,
+  EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
+  EVIDENCE_PERMUTATIONS,
   MIN_CLOSED_FOR_AUTO_APPLY,
 } from '../floor-arena/analysis-rules';
 import { townGuide } from '@clawville/agent-templates';
@@ -174,10 +176,20 @@ describe('Trading Arena manual section 17c', () => {
     expect(section).toMatch(/paid add-ons find are exempt/);
     for (const value of FLOOR_ARENA_FIRST_SIGHT_SOURCES) expect(section).toContain(`\`${value}\``);
     expect(section).toContain(`version ${FLOOR_ARENA_TEMPLATE_VERSION}`);
-    // D27: the served numbers are the enforced ones.
-    expect(section).toContain(`at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
-    expect(section).toMatch(new RegExp(`at least ${EVIDENCE_MIN_PER_SIDE}, and the kept trades' mean multiple must beat the excluded\\s+trades' by at least ${EVIDENCE_MIN_EDGE}`));
-    expect(section).toContain('`insufficient_evidence`');
+    // D27 + D33: the served numbers are the enforced ones, and the tuner is code.
+    expect(section).toMatch(new RegExp(`the current params have at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed\\s+trades`));
+    expect(section).toMatch(new RegExp(`each\\s+number at least ${EVIDENCE_MIN_PER_SIDE}, the kept trades' mean multiple beats the excluded\\s+trades' by at least ${EVIDENCE_MIN_EDGE}, and a shuffle test of the best edge over every filter\\s+tried \\(${EVIDENCE_PERMUTATIONS} shuffles\\) gives p <= ${EVIDENCE_MAX_SEARCH_P}\\.`));
+    expect(section).toMatch(/The tuner is code, not the model: on\s+every due report it tries ONE-filter tightenings/);
+    expect(section).toMatch(/The model's summary is commentary only and never changes a param\./);
+    expect(section).toMatch(/When the analyst model is unavailable the report carries the stats\s+summary, and the tuner still decides\./);
+    expect(section).toContain('`stats.suggestionCheck.tuner`');
+    for (const reason of ['below_sample', 'no_candidate', 'not_significant', 'rate_limited', 'changed', 'suggested', 'params_changed', 'not_tunable']) {
+      expect(section).toContain(`\`${reason}\``);
+    }
+    // D33: a model proposal is ignored, so the old model-refusal codes and the 6-trade suggestion gate are gone.
+    expect(section).not.toContain('`insufficient_evidence`');
+    expect(section).not.toMatch(/no suggestion is\s+made before/);
+    expect(section).not.toMatch(/report carries the stats summary and no suggestion/);
     // New engine codes an agent sees on its own stream; the retired floor code is gone.
     expect(section).toContain('`source_not_tradeable`');
     expect(section).toContain('`exit_quote_refused`');
@@ -299,10 +311,27 @@ describe('Trading Arena manual section 17c', () => {
     expect(board).not.toContain('opened and closed inside the window');
   });
 
+  test('states the launch name rule (P8) with its code, the same rule the route enforces', () => {
+    const section = arenaSection();
+    expect(section).toMatch(/It needs at least one letter, so a\s+name such as `-4200\.00` answers 400 `name_needs_letter`, and with no name sent an avatar\s+name with no letter launches as `Arena Agent`\./);
+    // The route returns that code and uses that fallback (routes/floor-arena.ts).
+    const route = readFileSync(join(import.meta.dir, '..', '..', 'routes', 'floor-arena.ts'), 'utf8');
+    expect(route).toContain("code: 'name_needs_letter'");
+    expect(route).toContain("NAME_LETTER.test(cleaned) ? cleaned : 'Arena Agent'");
+  });
+
+  test('says when a report carries evidence and that a click-to-apply suggestion needs the sample (D33)', () => {
+    const section = arenaSection();
+    expect(section).toMatch(/A report\s+carries `stats\.suggestionCheck\.evidence` only when it stores a suggestion or a change;\s+for any other report `tuner\.best` and `tuner\.p` explain the outcome\./);
+    expect(section).toMatch(new RegExp(`A click-to-apply suggestion also\\s+needs at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades on the current params: below that the tuner\\s+suggests nothing\\.`));
+  });
+
   test('renders every 17c duration from its constant, never a typed number (E6.2)', () => {
     const section = arenaSection();
     const every = durationLabel(ARENA_REPORT_INTERVAL_MS);
-    expect(section).toContain(`is re-tuned in small steps about every ${every}`);
+    // D33: the honest cadence claim (TUNER_CHECK 2026-10-01: 0 changes in 104 house reports).
+    expect(section).toMatch(new RegExp(`is reviewed about every ${every}\\. A filter changes only when the evidence check\\s+passes \\(at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a \\+${EVIDENCE_MIN_EDGE} edge, and a\\s+shuffle test over every filter tried with p <= ${EVIDENCE_MAX_SEARCH_P}\\)\\. Most reviews end with no\\s+change; each report states why\\.`));
+    expect(section).not.toMatch(/re-tuned|fine-tuned/);
     expect(section).toContain(`Reports. About every ${every} each agent with activity`);
     expect(section).toContain(`at most once per ${durationLabel(ARENA_AUTO_CHANGE_MIN_GAP_MS)},`);
     expect(section).toContain(`a short report at most every ${durationLabel(ARENA_QUIET_REPORT_INTERVAL_MS)}.`);
@@ -314,7 +343,7 @@ describe('Trading Arena manual section 17c', () => {
     const start = src.indexOf('function buildTradingArenaSection(');
     const body = src.slice(start, src.indexOf('\n}\n', start));
     expect(start).toBeGreaterThan(0);
-    for (const literal of [/younger than \d/, /under \d+ minutes/, /is \d+ minutes old/, /every \d+ (minutes|hours)/, /once per \d+/, /\n\d+-minute report/]) {
+    for (const literal of [/younger than \d/, /under \d+ minutes/, /is \d+ minutes old/, /every \d+ (minutes|hours)/, /once per \d+/, /\n\d+-minute report/, /p <= \d/, /\d+ shuffles/, /at least \d+ closed/]) {
       expect(body).not.toMatch(literal);
     }
   });
@@ -382,7 +411,11 @@ describe('Trading Arena tools', () => {
     expect(settings).toContain(`at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
     expect(settings).toContain(`number at least ${EVIDENCE_MIN_PER_SIDE} each`);
     expect(settings).toContain(`at least ${EVIDENCE_MIN_EDGE} better`);
-    expect(settings).toContain('insufficient_evidence');
+    // D33: the shuffle gate, the tuner reasons, and no model-refusal code.
+    expect(settings).toContain(`shuffle test over every filter tried gives p <= ${EVIDENCE_MAX_SEARCH_P}`);
+    expect(settings).toContain('stats.suggestionCheck.tuner.reason (below_sample, no_candidate, not_significant, rate_limited, changed, suggested, params_changed or not_tunable)');
+    expect(settings).toContain('commentary only');
+    expect(settings).not.toContain('insufficient_evidence');
   });
 });
 

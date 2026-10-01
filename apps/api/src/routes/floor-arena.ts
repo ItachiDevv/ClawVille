@@ -229,6 +229,8 @@ export const ARENA_SEAT_EVENT = 'floor_arena.seat';
 
 const AGENT_ID = /^(house:[a-z0-9-]{1,40}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const NAME = /^[\p{L}\p{N} _.'-]+$/u;
+/** P8: a name needs a letter, so `-4200.00` cannot sit in the board's TRADER column beside the P&L. */
+const NAME_LETTER = /\p{L}/u;
 const NAME_MAX = 32;
 const SEAT_MAX_INDEX = 5;
 
@@ -357,6 +359,10 @@ function invalidBody(c: Context) {
 
 function nameReserved(c: Context) {
   return c.json({ error: 'That name belongs to a house agent. Choose another name.', code: 'name_reserved' }, 400);
+}
+
+function nameNeedsLetter(c: Context) {
+  return c.json({ error: 'The name needs at least one letter, so it cannot look like a number.', code: 'name_needs_letter' }, 400);
 }
 
 // ─── Small TTL cache for public GETs ───────────────────────────────────────
@@ -718,6 +724,7 @@ export function createFloorArenaRoutes(
     if (!params.ok) return c.json({ error: 'The strategy settings are not valid.', code: 'invalid_params', errors: params.errors }, 400);
     const addons = normaliseAddons(body.addons ?? [], deps.addonCatalog());
     if (!addons.ok) return c.json({ error: addons.error, code: addons.code }, 400);
+    if (body.name !== undefined && !NAME_LETTER.test(body.name)) return nameNeedsLetter(c);
     // A house agent's display name (and its look-alikes) is reserved; the avatar-name fallback below too.
     if (body.name !== undefined && isFloorArenaReservedName(body.name)) return nameReserved(c);
 
@@ -727,7 +734,9 @@ export function createFloorArenaRoutes(
       const existing = await deps.readAgentByOwner(identity.userId);
       if (existing) return { conflict: existing } as const;
       const avatarName = (await deps.readAvatarName(identity.avatarId)) ?? 'Arena Agent';
-      const fallback = avatarName.replace(/[^\p{L}\p{N} _.'-]/gu, '').trim().slice(0, NAME_MAX) || 'Arena Agent';
+      const cleaned = avatarName.replace(/[^\p{L}\p{N} _.'-]/gu, '').trim().slice(0, NAME_MAX);
+      // Same letter rule as a typed name: an avatar named `4200` launches as 'Arena Agent'.
+      const fallback = NAME_LETTER.test(cleaned) ? cleaned : 'Arena Agent';
       if (body.name === undefined && isFloorArenaReservedName(fallback)) return { reserved: true } as const;
       const inserted = await deps.insertUserAgent({
         id: deps.newId(),

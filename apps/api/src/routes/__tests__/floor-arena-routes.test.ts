@@ -510,6 +510,39 @@ describe('authed arena routes', () => {
     expect(free.status).toBe(201);
   });
 
+  test('P8: a name with no letter gets 400 name_needs_letter and creates nothing; one letter is enough', async () => {
+    for (const name of ['-4200.00', '4200', '-12.5', '0.00', "'-'", '1 2 3', '_._']) {
+      const { call, agents } = app();
+      const response = await call('POST', '/me/launch', launchBody({ name }));
+      expect({ name, status: response.status }).toEqual({ name, status: 400 });
+      expect(await response.json()).toEqual({
+        error: 'The name needs at least one letter, so it cannot look like a number.',
+        code: 'name_needs_letter',
+      });
+      expect(agents.size).toBe(0);
+    }
+    // Same rule for a connected agent.
+    const viaAgent = await app().call('POST', '/me/launch', launchBody({ name: '-4200.00' }), { 'x-test-user': USER, 'x-test-kind': 'agent' });
+    expect((await viaAgent.json() as { code: string }).code).toBe('name_needs_letter');
+    // Every other rule is unchanged: bad characters are still invalid_body, add-ons are still checked first.
+    expect((await (await app().call('POST', '/me/launch', launchBody({ name: '$4200' }))).json() as { code: string }).code).toBe('invalid_body');
+    expect((await (await app().call('POST', '/me/launch', launchBody({ name: '4200', addons: [{ id: 'nope' }] }))).json() as { code: string }).code).toBe('unknown_addon');
+    for (const name of ['Trader 4200', 'x-4200.00', 'R2 D2', 'Ж 42', '吉 7']) {
+      const { call, agents } = app();
+      const response = await call('POST', '/me/launch', launchBody({ name }));
+      expect({ name, status: response.status }).toEqual({ name, status: 201 });
+      expect(agents.get(AGENT_ID)!.name).toBe(name);
+    }
+  });
+
+  test('P8: with no name sent, an avatar name with no letter launches as Arena Agent', async () => {
+    const numeric = app();
+    numeric.deps.readAvatarName = async () => '4200 \u{1F680}';
+    const response = await numeric.call('POST', '/me/launch', launchBody());
+    expect(response.status).toBe(201);
+    expect(numeric.agents.get(AGENT_ID)!.name).toBe('Arena Agent');
+  });
+
   test('reserved names: with no name sent, an avatar named like a house agent gets 400 name_reserved', async () => {
     const reserved = app();
     reserved.deps.readAvatarName = async () => 'Runner';

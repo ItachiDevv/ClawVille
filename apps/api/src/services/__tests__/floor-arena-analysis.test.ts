@@ -7,10 +7,10 @@ import {
   type FloorArenaParams,
 } from '@clawville/shared';
 import {
+  EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
   MIN_CLOSED_FOR_AUTO_APPLY,
-  MIN_CLOSED_ON_CURRENT_PARAMS,
   arenaReportDue,
   evaluateSuggestionEvidence,
   buildArenaAnalysisMessages,
@@ -106,11 +106,22 @@ function aged(ageS: number, pnlMult: number, i: number, extra: Record<string, un
  * `filters.age_min_s` from 1800 to 2400: the 10 pairs younger than 2400 s at
  * entry averaged 0.65x (5 deaths); the 14 older ones 1.10x.
  */
-function evidenceTrades(): ArenaClosedTrade[] {
+function evidenceTrades(keptAge = 5_000): ArenaClosedTrade[] {
   return [
     ...Array.from({ length: 10 }, (_, i) => aged(2_000, i < 5 ? 0.4 : 0.9, i)),
-    ...Array.from({ length: 14 }, (_, i) => aged(5_000, 1.1, 10 + i)),
+    ...Array.from({ length: 14 }, (_, i) => aged(keptAge, 1.1, 10 + i)),
   ];
+}
+
+/** The same 10/14 split with the older pairs at 3000 s: inside Genesis's
+ *  house band for `age_min_s` (900 to 3600), so the D33 code tuner finds it. */
+function tunerSplitTrades(): ArenaClosedTrade[] {
+  return evidenceTrades(3_000);
+}
+
+/** 24 trades with identical entry features: no filter value splits them. */
+function flatTrades(): ArenaClosedTrade[] {
+  return Array.from({ length: 24 }, (_, i) => aged(3_000, i % 3 === 0 ? 0.4 : 1.1, i));
 }
 
 interface FakeStore extends ArenaAnalysisStore {
@@ -156,12 +167,12 @@ function fakeStore(opts: {
       row.suggestionState = 'auto_applied';
       return { ok: true as const, paramsVersion: change.expectedParamsVersion + 1 };
     },
-    async rejectPendingReport(reportId, _agentId, reason) {
+    async rejectPendingReport(reportId, _agentId, reason, tuner) {
       const row = byId.get(reportId);
       if (!row || row.suggestionState !== 'pending') return;
       row.suggestionState = 'rejected';
       row.suggestion = null;
-      row.stats = { ...row.stats, suggestionCheck: { ...row.stats.suggestionCheck, reason } };
+      row.stats = { ...row.stats, suggestionCheck: { ...row.stats.suggestionCheck, reason, ...(tuner ? { tuner } : {}) } };
     },
   };
   return store;
@@ -578,12 +589,15 @@ describe('Trading Arena prompt', () => {
       autoApply: false,
     });
     const all = messages.map((m) => m.content).join('\n');
-    // A click-to-apply owner decides, so the automatic-apply test is not in its prompt.
-    expect(all).not.toContain('applies a suggestion automatically');
+    // A click-to-apply owner decides with one click; code never applies for it.
+    expect(all).not.toContain('code applies a confirmed change itself');
+    expect(all).toContain('the owner applies a confirmed change with one click');
     expect(all).toContain(genesis.thesis);
     expect(all).toContain('LP burned or locked');
     expect(all).toContain('Earlier report text');
-    expect(all).toContain('Never propose limits.position_usd');
+    // D33: the model is commentary only; code ignores any proposal.
+    expect(all).toContain('Always set "suggestion" to null; code ignores any proposal.');
+    expect(all).toContain('"suggestion": null}');
     expect(all).not.toContain('IGNORE ALL RULES');
     expect(all).not.toContain('houseRanges');
     // audit-money B1: paid add-ons spend real USDC, so the analyst (whose summary
@@ -592,7 +606,7 @@ describe('Trading Arena prompt', () => {
     expect(all.toLowerCase()).not.toContain('no money moves');
   });
 
-  test('a house prompt lists the house ranges and the no-toggle rule', () => {
+  test('a house prompt lists the house ranges and states the D33 gate the code tuner applies', () => {
     const messages = buildArenaAnalysisMessages({
       agent: agent(),
       params: cloneFloorArenaParams(genesis.params),
@@ -611,10 +625,13 @@ describe('Trading Arena prompt', () => {
     const all = messages.map((m) => m.content).join('\n');
     expect(all).toContain('houseRanges');
     expect(all).toContain('HOUSE agent');
-    expect(all).toContain(`fewer than ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, so suggestion MUST be null`);
-    // The model is told the D27 test it must pass.
-    expect(all).toContain(`at least ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded trades`);
-    expect(all).toContain(`at least ${EVIDENCE_MIN_EDGE} above the excluded`);
+    expect(all).toContain('code applies a confirmed change itself');
+    expect(all).toContain(`fewer than ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, so code changes nothing yet`);
+    // The model is told the gate CODE applies, so its commentary is accurate.
+    expect(all).toContain(`at least ${EVIDENCE_MIN_PER_SIDE} trades fall on each side`);
+    expect(all).toContain(`at least ${EVIDENCE_MIN_EDGE} mean multiple`);
+    expect(all).toContain(`p of ${EVIDENCE_MAX_SEARCH_P} or less`);
+    expect(all).toContain('Always set "suggestion" to null');
   });
 });
 
@@ -637,15 +654,18 @@ describe('Trading Arena report scheduling', () => {
 });
 
 describe('Trading Arena analysis tick', () => {
+  // D33: the model's reply is commentary only. Every test below still feeds
+  // the model a proposal, so each one also pins that code ignores it.
   const tpReply = (to: unknown, path = 'exits.tp') => ({
     summary: 'Eight of ten trades hit +10%; two coins under 35 minutes old died.',
     observations: ['Both deaths were coins 30 to 35 minutes old.'],
     suggestion: { path, to, reason: 'Both deaths sit in the 30m-2h age bucket.' },
   });
 
-  test('a house agent applies a valid suggestion itself and logs it publicly', async () => {
+  test('a house agent is tuned by CODE (the model proposal is ignored) and the change is logged publicly', async () => {
     const a = agent();
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: evidenceTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: tunerSplitTrades() } });
+    // The model asks for 2400; the code tuner picks the observed 3000.
     const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
     const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
 
@@ -660,17 +680,19 @@ describe('Trading Arena analysis tick', () => {
     expect(change.agentId).toBe('house:genesis');
     expect(change.source).toBe('house-tuner');
     expect(change.expectedParamsVersion).toBe(1);
-    expect(change.changes).toEqual([{ path: 'filters.age_min_s', from: 1_800, to: 2_400 }]);
-    expect(change.params.filters.age_min_s).toBe(2_400);
+    expect(change.changes).toEqual([{ path: 'filters.age_min_s', from: 1_800, to: 3_000 }]);
+    expect(change.params.filters.age_min_s).toBe(3_000);
     expect(change.params.limits.position_usd).toBe(20);
-    expect(change.eventSummary).toBe(
-      'Tuner changed filters.age_min_s from 1800 to 2400: Both deaths sit in the 30m-2h age bucket.',
+    expect(change.reason).toBe(
+      'Code tuner: keeps 14 closed trades and excludes 10; kept mean multiple +0.450 vs excluded, shuffle p 0.0005.',
     );
+    expect(change.eventSummary).toBe(`Tuner changed filters.age_min_s from 1800 to 3000: ${change.reason}`);
     expect(report.suggestionState).toBe('auto_applied');
-    expect(report.suggestion).toMatchObject({ path: 'filters.age_min_s', from: 1_800, to: 2_400 });
+    expect(report.suggestion).toMatchObject({ path: 'filters.age_min_s', from: 1_800, to: 3_000 });
     expect(report.stats.period).toMatchObject({ trades: 24, deaths: 5, entries: 2 });
     expect(report.stats.suggestionCheck.llm).toBe('ok');
-    // D27: applied only because the split check on the 24 trades confirmed it.
+    expect(report.stats.suggestionCheck.proposed).toBeUndefined();
+    // D27 + D33: applied only because the split check AND the shuffle test confirmed it.
     expect(report.stats.suggestionCheck.evidence).toMatchObject({
       method: 'filter_split',
       confirmed: true,
@@ -678,12 +700,20 @@ describe('Trading Arena analysis tick', () => {
       excluded: { n: 10, meanMult: 0.65, deaths: 5 },
       edge: 0.45,
     });
+    expect(report.stats.suggestionCheck.tuner).toEqual({
+      decision: 'changed',
+      reason: 'changed',
+      n: 24,
+      needed: MIN_CLOSED_FOR_AUTO_APPLY,
+      best: { path: 'filters.age_min_s', from: 1_800, to: 3_000, kept: 14, excluded: 10, edge: 0.45 },
+      p: 0.0005,
+    });
     expect(report.eventSummary.startsWith('Report: Eight of ten')).toBe(true);
   });
 
-  test('a user agent keeps the suggestion pending and gets the report in memory', async () => {
+  test('a click-to-apply user agent gets the TUNER suggestion pending (never the model one) and the report in memory', async () => {
     const a = agent({ id: 'u1', kind: 'user', name: 'My Trader', avatarId: 'avatar-1' });
-    const store = fakeStore({ candidates: [candidate(a)], trades: { u1: busyTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { u1: tunerSplitTrades() } });
     const { llm } = llmReply(tpReply([[1.15, 1]]));
     const memories: ArenaReportMemoryInput[] = [];
     const result = await runArenaAnalysisTickWith(
@@ -695,13 +725,21 @@ describe('Trading Arena analysis tick', () => {
     expect(store.reports[0]).toMatchObject({
       agentId: 'u1',
       suggestionState: 'pending',
-      suggestion: { path: 'exits.tp', from: [[1.1, 1]], to: [[1.15, 1]] },
+      suggestion: { path: 'filters.age_min_s', from: 1_800, to: 3_000 },
     });
+    expect(store.reports[0]!.stats.suggestionCheck.evidence).toMatchObject({ confirmed: true });
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toMatchObject({ decision: 'suggested', reason: 'suggested' });
     expect(memories).toHaveLength(1);
     expect(memories[0]!.avatarId).toBe('avatar-1');
     expect(memories[0]!.text).toContain('Trading Arena report for my paper trader My Trader');
-    expect(memories[0]!.text).toContain('Suggested change: exits.tp');
-    expect(memories[0]!.text).toContain('(pending)');
+    expect(memories[0]!.text).toContain('Suggested change: filters.age_min_s from 1800 to 3000 (pending).');
+    expect(memories[0]!.text).not.toContain('exits.tp');
+    // D29 + D33: one line with the tuner decision and reason.
+    expect(memories[0]!.text).toContain(
+      '\nTuner decision: suggested (reason: suggested); 24 closed trades on the current params, 20 needed. ' +
+        'Best filter idea: filters.age_min_s from 1800 to 3000, keeps 14 and excludes 10 trades, edge +0.450, ' +
+        `shuffle p 0.0005 (needs ${EVIDENCE_MAX_SEARCH_P} or less).`,
+    );
   });
 
   test('a short no-trade report is written but never stored as a lesson (the served text says "full reports")', async () => {
@@ -718,149 +756,176 @@ describe('Trading Arena analysis tick', () => {
     expect(result).toMatchObject({ reports: 1 });
     expect(store.reports).toHaveLength(1);
     expect(store.reports[0]!.suggestion).toBeNull();
+    // The quiet report still states the tuner's reason.
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toMatchObject({ decision: 'none', reason: 'below_sample', n: 0 });
     expect(calls).toHaveLength(0);
     expect(memories).toHaveLength(0);
   });
 
-  test('a suggestion reason never names a paid add-on, because it becomes public once applied', async () => {
-    // The tuner uses the public routes' own redaction (queries.ts), so the two
-    // can never disagree about what names an add-on.
+  test('a quiet report still runs the tuner: an eligible house agent changes with no model call', async () => {
+    const a = agent();
+    const c = candidate(a, { closedSince: 0, openedSince: 0, lastReportAt: new Date(NOW.getTime() - 3 * 60 * MIN) });
+    expect(arenaReportDue(c, NOW)).toBe('quiet');
+    const store = fakeStore({ candidates: [c], trades: { [a.id]: tunerSplitTrades() } });
+    const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+    const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(calls).toHaveLength(0);
+    expect(result).toMatchObject({ reports: 1, applied: 1 });
+    expect(store.changes[0]!.changes).toEqual([{ path: 'filters.age_min_s', from: 1_800, to: 3_000 }]);
+    expect(store.reports[0]!.summary).toContain('No trade opened or closed');
+    expect(store.reports[0]!.stats.suggestionCheck).toMatchObject({ llm: 'skipped', tuner: { decision: 'changed' } });
+  });
+
+  test('model text never names a paid add-on (summary, observations, event), and the change reason is code text', async () => {
+    // The stored summary and observations use the public routes' own
+    // redaction (queries.ts), so the two can never disagree.
     const addon = FLOOR_ARENA_ADDONS[0]!;
     const a = agent({ id: 'u7', kind: 'user', autoApplySuggestions: true });
-    const store = fakeStore({ candidates: [candidate(a)], trades: { u7: evidenceTrades() } });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { u7: tunerSplitTrades() } });
+    const leak = `private:${addon.id}, a ${addon.vendor.toUpperCase()} feed`;
     const { llm } = llmReply({
-      summary: 'Two deaths.',
-      observations: [],
-      suggestion: {
-        path: 'filters.age_min_s',
-        to: 2_400,
-        reason: `Both deaths came from private:${addon.id}, a ${addon.vendor.toUpperCase()} feed.`,
-      },
+      summary: `Both deaths came from ${leak}.`,
+      observations: [`Avoid ${leak}.`],
+      suggestion: { path: 'filters.age_min_s', to: 2_400, reason: `Both deaths came from ${leak}.` },
     });
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
-    expect(store.reports[0]!.suggestion?.reason).toBe('Both deaths came from addon, a addon feed.');
-    expect(store.changes[0]!.reason).toBe('Both deaths came from addon, a addon feed.');
-    for (const text of [store.changes[0]!.eventSummary, store.changes[0]!.reason]) {
+    const report = store.reports[0]!;
+    expect(report.summary).toBe('Both deaths came from addon, a addon feed.');
+    expect(report.stats.observations).toEqual(['Avoid addon, a addon feed.']);
+    expect(store.changes).toHaveLength(1);
+    expect(store.changes[0]!.reason.startsWith('Code tuner:')).toBe(true);
+    for (const text of [report.summary, report.eventSummary, ...report.stats.observations, store.changes[0]!.eventSummary, store.changes[0]!.reason]) {
       expect(text).not.toContain(addon.id);
       expect(text.toLowerCase()).not.toContain(addon.vendor.toLowerCase());
     }
   });
 
-  test('a user agent with auto-apply applies a confirmed filter change with source suggestion', async () => {
+  test('a user agent with auto-apply applies a confirmed filter change with source suggestion, inside the bounds only', async () => {
     const a = agent({ id: 'u2', kind: 'user', autoApplySuggestions: true });
+    // The split sits at 5000 s: outside the house band, inside the bounds.
     const store = fakeStore({ candidates: [candidate(a)], trades: { u2: evidenceTrades() } });
-    // A user agent is not held to the house band: 1800 -> 4000 is fine for it.
     const { llm } = llmReply(tpReply(4_000, 'filters.age_min_s'));
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(store.changes).toHaveLength(1);
     expect(store.changes[0]!.source).toBe('suggestion');
-    expect(store.changes[0]!.eventSummary.startsWith('Auto-applied suggestion changed filters.age_min_s from 1800 to 4000')).toBe(true);
+    expect(store.changes[0]!.eventSummary.startsWith('Auto-applied suggestion changed filters.age_min_s from 1800 to 5000')).toBe(true);
     expect(store.reports[0]!.suggestionState).toBe('auto_applied');
   });
 
-  test('D27: an exit change is never applied automatically, but a click-to-apply owner still sees it', async () => {
+  test('the tuner never changes an exit, entry or limit: a model exit proposal is ignored for every agent', async () => {
     const auto = agent({ id: 'u8', kind: 'user', autoApplySuggestions: true });
     const manual = agent({ id: 'u9', kind: 'user' });
-    const store = fakeStore({ candidates: [candidate(auto), candidate(manual)], trades: { u8: evidenceTrades(), u9: evidenceTrades() } });
-    const { llm } = llmReply(tpReply(0.8, 'exits.stop_mult'));
-    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
-    expect(store.changes).toHaveLength(0);
-    const byAgent = new Map(store.reports.map((r) => [r.agentId, r]));
-    expect(byAgent.get('u8')).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(byAgent.get('u8')!.stats.suggestionCheck).toMatchObject({
-      reason: 'insufficient_evidence',
-      evidence: { method: 'not_evaluable', confirmed: false },
+    const house = agent();
+    // Identical entry features: no filter split, so nothing can change.
+    const store = fakeStore({
+      candidates: [candidate(auto), candidate(manual), candidate(house)],
+      trades: { u8: flatTrades(), u9: flatTrades(), [house.id]: flatTrades() },
     });
-    // The owner who applies by hand keeps the suggestion, with the check attached.
-    expect(byAgent.get('u9')).toMatchObject({ suggestionState: 'pending', suggestion: { path: 'exits.stop_mult', to: 0.8 } });
-    expect(byAgent.get('u9')!.stats.suggestionCheck.evidence).toMatchObject({ method: 'not_evaluable', confirmed: false });
+    const { llm } = llmReply(tpReply(0.8, 'exits.stop_mult'));
+    const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(result).toMatchObject({ reports: 3, applied: 0, pending: 0, rejected: 0 });
+    expect(store.changes).toHaveLength(0);
+    for (const report of store.reports) {
+      expect(report).toMatchObject({ suggestion: null, suggestionState: 'none' });
+      expect(report.stats.suggestionCheck.tuner).toMatchObject({ decision: 'none', reason: 'no_candidate', best: null, p: null });
+    }
   });
 
-  test('D27: a house agent with fewer than 20 closed trades on its params changes nothing', async () => {
+  test('D27: a house agent with fewer than 20 closed trades on its params changes nothing and says so', async () => {
     const a = agent();
-    // busyTrades: 10 closed trades, above the old minimum of 6, below 20.
+    // busyTrades: 10 closed trades, below 20.
     const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: busyTrades() } });
     const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(calls[0]![0]!.content).toContain(`fewer than ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades`);
     expect(store.changes).toHaveLength(0);
-    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('insufficient_sample');
-  });
-
-  test('a position_usd suggestion is dropped and marked rejected', async () => {
-    const a = agent();
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: evidenceTrades() } });
-    const { llm } = llmReply(tpReply(50, 'limits.position_usd'));
-    const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
-    expect(result.rejected).toBe(1);
-    expect(store.changes).toHaveLength(0);
-    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(store.reports[0]!.stats.suggestionCheck).toMatchObject({
-      reason: 'position_usd_locked',
-      proposed: { path: 'limits.position_usd', to: 50 },
+    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'none' });
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toEqual({
+      decision: 'none', reason: 'below_sample', n: 10, needed: MIN_CLOSED_FOR_AUTO_APPLY, best: null, p: null,
     });
   });
 
-  test('a house suggestion outside the identity band is rejected, not applied', async () => {
+  test('a model position_usd proposal is ignored; a tuner change never touches limits.position_usd', async () => {
     const a = agent();
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: tunerSplitTrades() } });
+    const { llm } = llmReply(tpReply(50, 'limits.position_usd'));
+    const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(result).toMatchObject({ applied: 1, rejected: 0 });
+    expect(store.changes[0]!.changes).toEqual([{ path: 'filters.age_min_s', from: 1_800, to: 3_000 }]);
+    expect(store.changes[0]!.params.limits.position_usd).toBe(20);
+    expect(store.changes[0]!.params.exits).toEqual(genesis.params.exits);
+    expect(store.changes[0]!.params.entry).toEqual(genesis.params.entry);
+  });
+
+  test('a house agent never leaves its identity band: a split only outside the band changes nothing', async () => {
+    const a = agent();
+    // The only split is at 5000 s; the Genesis band for age_min_s ends at 3600.
     const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: evidenceTrades() } });
     const { llm } = llmReply(tpReply(0.9, 'exits.stop_mult'));
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(store.changes).toHaveLength(0);
-    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('identity_drift');
+    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'none' });
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toMatchObject({ decision: 'none', reason: 'no_candidate' });
   });
 
-  test('too few closed trades on the current params means no suggestion', async () => {
-    const a = agent({ paramsVersion: 2 });
-    const trades = busyTrades().map((t, i) => ({ ...t, paramsVersion: i < MIN_CLOSED_ON_CURRENT_PARAMS - 1 ? 2 : 1 }));
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: trades } });
+  test('only trades on the CURRENT params version count: 5 of 24 is below the sample', async () => {
+    const a = agent({ id: 'u5', kind: 'user', paramsVersion: 2 });
+    const trades = tunerSplitTrades().map((t, i) => ({ ...t, paramsVersion: i < 5 ? 2 : 1 }));
+    const store = fakeStore({ candidates: [candidate(a)], trades: { u5: trades } });
     const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
     await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
-    expect(calls[0]![0]!.content).toContain('suggestion MUST be null');
+    expect(calls[0]![0]!.content).toContain('so code changes nothing yet');
     expect(store.changes).toHaveLength(0);
-    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('insufficient_sample');
-    expect(store.reports[0]!.stats.currentParams.trades).toBe(MIN_CLOSED_ON_CURRENT_PARAMS - 1);
+    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'none' });
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toMatchObject({ reason: 'below_sample', n: 5 });
+    expect(store.reports[0]!.stats.currentParams.trades).toBe(5);
   });
 
-  test('a house agent changed less than 30 minutes ago is not changed again', async () => {
-    const a = agent();
+  test('an automatic agent changed less than 30 minutes ago is not changed again and gets no pending suggestion', async () => {
+    const house = agent();
+    const user = agent({ id: 'u3', kind: 'user', autoApplySuggestions: true });
     const store = fakeStore({
-      candidates: [candidate(a)],
-      trades: { [a.id]: evidenceTrades() },
+      candidates: [candidate(house), candidate(user)],
+      trades: { [house.id]: tunerSplitTrades(), u3: tunerSplitTrades() },
       lastChangeAt: new Date(NOW.getTime() - 10 * MIN),
     });
     const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));
-    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(result).toMatchObject({ applied: 0, pending: 0 });
     expect(store.changes).toHaveLength(0);
-    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('rate_limited');
+    for (const report of store.reports) {
+      expect(report).toMatchObject({ suggestion: null, suggestionState: 'none' });
+      expect(report.stats.suggestionCheck.tuner).toMatchObject({
+        decision: 'none',
+        reason: 'rate_limited',
+        best: { path: 'filters.age_min_s', to: 3_000 },
+      });
+    }
   });
 
-  test('a params conflict at apply time rejects a house suggestion and leaves a user one pending', async () => {
+  test('a params conflict at apply time rejects the change for EVERY automatic agent (never pending)', async () => {
     const house = agent();
     const user = agent({ id: 'u6', kind: 'user', autoApplySuggestions: true });
     const store = fakeStore({
       candidates: [candidate(house), candidate(user)],
-      trades: { [house.id]: evidenceTrades(), u6: evidenceTrades() },
+      trades: { [house.id]: tunerSplitTrades(), u6: tunerSplitTrades() },
       conflict: true,
     });
     const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));
     const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(store.changes).toHaveLength(2);
-    expect(result).toMatchObject({ reports: 2, applied: 0, rejected: 1, pending: 1 });
-    const byAgent = new Map(store.reports.map((r) => [r.agentId, r]));
-    expect(byAgent.get(house.id)).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
-    expect(byAgent.get(house.id)!.stats.suggestionCheck.reason).toBe('params_changed');
-    // The owner changed the params meanwhile; they decide with one click.
-    expect(byAgent.get('u6')).toMatchObject({ suggestionState: 'pending', suggestion: { path: 'filters.age_min_s' } });
+    expect(result).toMatchObject({ reports: 2, applied: 0, rejected: 2, pending: 0 });
+    for (const report of store.reports) {
+      expect(report).toMatchObject({ suggestion: null, suggestionState: 'rejected' });
+      expect(report.stats.suggestionCheck.reason).toBe('params_changed');
+      // The tuner's final word lands with the reject (one store update).
+      expect(report.stats.suggestionCheck.tuner).toMatchObject({ decision: 'none', reason: 'params_changed' });
+    }
   });
 
   test('a second leader in the same window writes no report and applies nothing', async () => {
     const a = agent();
-    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: busyTrades() }, duplicate: true });
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: tunerSplitTrades() }, duplicate: true });
     const { llm } = llmReply(tpReply(2_400, 'filters.age_min_s'));
     const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
     expect(result).toMatchObject({ reports: 0, applied: 0 });
@@ -868,10 +933,10 @@ describe('Trading Arena analysis tick', () => {
     expect(store.changes).toHaveLength(0);
   });
 
-  test('an LLM failure or timeout still writes a deterministic report with no suggestion', async () => {
+  test('an LLM failure or timeout still writes a deterministic report, and the tuner still decides', async () => {
     const a = agent();
     const b = agent({ id: 'u3', kind: 'user' });
-    const store = fakeStore({ candidates: [candidate(a), candidate(b)], trades: { [a.id]: busyTrades(), u3: busyTrades() } });
+    const store = fakeStore({ candidates: [candidate(a), candidate(b)], trades: { [a.id]: tunerSplitTrades(), u3: busyTrades() } });
     let n = 0;
     const llm = async () => {
       n += 1;
@@ -879,15 +944,19 @@ describe('Trading Arena analysis tick', () => {
       return new Promise<string>(() => {});
     };
     const result = await runArenaAnalysisTickWith({ store, llm, log: quietLog, llmTimeoutMs: 20 }, NOW);
-    expect(result).toMatchObject({ reports: 2, llmCalls: 2, llmFailures: 2 });
-    for (const report of store.reports) {
-      expect(report.suggestionState).toBe('none');
-      expect(report.suggestion).toBeNull();
-      expect(report.stats.suggestionCheck.llm).toBe('failed');
-      expect(report.summary).toContain('10 trades closed in the last 31 minutes: 8 take-profit, 0 stop, 0 trail, 2 time, 2 deaths.');
-      // 8 x +$2.00, then -$14.00 and -$11.00.
-      expect(report.summary).toContain('Realised -$9.00, win rate 80%.');
-    }
+    expect(result).toMatchObject({ reports: 2, llmCalls: 2, llmFailures: 2, applied: 1 });
+    const byAgent = new Map(store.reports.map((r) => [r.agentId, r]));
+    for (const report of store.reports) expect(report.stats.suggestionCheck.llm).toBe('failed');
+    // The house agent is tuned although its model call failed.
+    expect(byAgent.get(a.id)).toMatchObject({ suggestionState: 'auto_applied' });
+    expect(byAgent.get(a.id)!.stats.suggestionCheck.tuner).toMatchObject({ decision: 'changed' });
+    expect(byAgent.get(a.id)!.summary).toContain('24 trades closed in the last 31 minutes');
+    const user = byAgent.get('u3')!;
+    expect(user).toMatchObject({ suggestionState: 'none', suggestion: null });
+    expect(user.stats.suggestionCheck.tuner).toMatchObject({ reason: 'below_sample', n: 10 });
+    expect(user.summary).toContain('10 trades closed in the last 31 minutes: 8 take-profit, 0 stop, 0 trail, 2 time, 2 deaths.');
+    // 8 x +$2.00, then -$14.00 and -$11.00.
+    expect(user.summary).toContain('Realised -$9.00, win rate 80%.');
   });
 
   test('a quiet agent gets a short report every 2 hours with no model call', async () => {
@@ -907,7 +976,7 @@ describe('Trading Arena analysis tick', () => {
     expect(store.reports[0]!.summary).toContain('not seated at a Trading Floor desk');
   });
 
-  test('stored params that fail validation skip the model and never apply anything', async () => {
+  test('stored params that fail validation skip the model and never apply anything (not_tunable)', async () => {
     const bad = agent({ params: { filters: {} } });
     const store = fakeStore({ candidates: [candidate(bad)], trades: { [bad.id]: busyTrades() } });
     const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
@@ -915,6 +984,20 @@ describe('Trading Arena analysis tick', () => {
     expect(calls).toHaveLength(0);
     expect(store.changes).toHaveLength(0);
     expect(store.reports[0]!.stats.suggestionCheck.reason).toBe('current_params_invalid');
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toEqual({
+      decision: 'none', reason: 'not_tunable', n: 10, needed: MIN_CLOSED_FOR_AUTO_APPLY, best: null, p: null,
+    });
+  });
+
+  test('an unknown template is not_tunable: the model still writes the report, nothing changes', async () => {
+    const odd = agent({ templateId: 'no-such-template' });
+    const store = fakeStore({ candidates: [candidate(odd)], trades: { [odd.id]: tunerSplitTrades() } });
+    const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    expect(calls).toHaveLength(1);
+    expect(store.changes).toHaveLength(0);
+    expect(store.reports[0]).toMatchObject({ suggestion: null, suggestionState: 'none' });
+    expect(store.reports[0]!.stats.suggestionCheck.tuner).toMatchObject({ decision: 'none', reason: 'not_tunable', n: 24 });
   });
 
   test('a failing store never throws out of the tick', async () => {

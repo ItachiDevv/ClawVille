@@ -7,6 +7,7 @@ import {
   TRADING_FLOOR_RULES,
 } from '@clawville/shared';
 
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar } from '@/hooks/use-avatar';
 import {
   floorErrorCode,
@@ -264,13 +265,20 @@ export function TradingFloorTab({
 }: TradingFloorTabProps) {
   const { nowMs } = useFloorConsumer(active);
   const feed = useFloorFeed(active);
-  const myTrades = useMyTrades(active && !isGuest);
-  const wallets = useMyTradingWallets(active && !isGuest);
+  // The three personal reads below answer a guest or a logged-out visitor with
+  // 401 (a red console error). `isGuest` comes from useIsGuest(), which reads
+  // false while auth-me is still loading, so also wait for auth-me to resolve.
+  // A resolved payload (a user, or null for a confirmed 401) counts; a failed
+  // first read with no payload already makes useIsGuest() true.
+  const authResolved = useAuthMe().data !== undefined;
+  const ownReads = active && authResolved && !isGuest;
+  const myTrades = useMyTrades(ownReads);
+  const wallets = useMyTradingWallets(ownReads);
   const stream = useFloorStreamState();
   const streamHasOpened = useWorldStreamStore((state) => state.hasOpened);
   const entries = useTradeTickerStore((state) => state.entries);
   const seedTrades = useTradeTickerStore((state) => state.seedTrades);
-  const linkedWallet = useWalletLink();
+  const linkedWallet = useWalletLink({ enabled: ownReads });
   const { data: avatar } = useAvatar();
   const bindLinked = useBindLinkedWallet();
   const bindCustodial = useBindCustodialWallet();
@@ -579,7 +587,7 @@ export function TradingFloorTab({
         <CardTitle>Your verified trades</CardTitle>
         {isGuest ? (
           <p style={{ color: FLOOR_TEXT.muted }}>Sign in to see avatar-wide verified history.</p>
-        ) : myTrades.isLoading ? (
+        ) : myTrades.isLoading || !authResolved ? (
           <p style={{ color: FLOOR_TEXT.muted }}>Loading verified trades...</p>
         ) : (myTrades.data?.trades.length ?? 0) === 0 ? (
           <p style={{ color: FLOOR_TEXT.muted }}>No verified trades yet.</p>

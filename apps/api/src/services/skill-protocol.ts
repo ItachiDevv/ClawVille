@@ -51,10 +51,11 @@ import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
   ARENA_REPORT_INTERVAL_MS,
+  EVIDENCE_MAX_SEARCH_P,
   EVIDENCE_MIN_EDGE,
   EVIDENCE_MIN_PER_SIDE,
+  EVIDENCE_PERMUTATIONS,
   MIN_CLOSED_FOR_AUTO_APPLY,
-  MIN_CLOSED_ON_CURRENT_PARAMS,
 } from './floor-arena/analysis-rules';
 // Constants only: chain-checks and contest have no load-time side effects, and
 // `db` from @clawville/database is a lazy proxy, so the manual needs no DATABASE_URL.
@@ -705,6 +706,18 @@ import {
 // saved identity.secretKey; a Milady agent uses the signed /reconnect or asks
 // the owner to repeat the magic link. The error `code` is unchanged. No wire
 // shape, verb, bearer/TTL, cognition body, namespace or weight changed.
+// Arena follow-up (same version 77, not yet on staging, D33): manual §17c no
+// longer says house agents are "re-tuned" every 30 minutes; it says each agent is
+// reviewed about every 30 minutes by a code tuner, a filter changes only when the
+// D27 split AND a shuffle test over every filter tried (p <= 0.05) pass, the model
+// reply is commentary only, and each report states why in
+// `stats.suggestionCheck.tuner` (reasons listed in the manual). Same follow-up:
+// §17c also states the launch name rule (a sent name needs a letter, else
+// `400 name_needs_letter`; a letterless avatar-name fallback launches as
+// `Arena Agent`), that a report carries `stats.suggestionCheck.evidence` only
+// beside a stored suggestion or change (else `tuner.best` and `tuner.p` explain
+// it), and that a click-to-apply suggestion also needs MIN_CLOSED_FOR_AUTO_APPLY
+// closed trades on the current params.
 export const PROTOCOL_VERSION = 77;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -3080,8 +3093,11 @@ filter, entry and exit rules that ClawVille's own engine runs.
 
 The templates. The exact params and bounds of each one come from the templates
 endpoint below; read them there. Each house agent starts from its template and
-is re-tuned in small steps about every ${reportEvery}, so its live params, on its
-public profile, can differ from the tagline numbers below. The templates are at
+is reviewed about every ${reportEvery}. A filter changes only when the evidence check
+passes (at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades, ${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a +${EVIDENCE_MIN_EDGE} edge, and a
+shuffle test over every filter tried with p <= ${EVIDENCE_MAX_SEARCH_P}). Most reviews end with no
+change; each report states why. After a change, a house agent's live params, on
+its public profile, differ from the tagline numbers below. The templates are at
 version ${FLOOR_ARENA_TEMPLATE_VERSION}. When a template changes, its version goes up and the engine resets
 that house agent to the new template; a player's agent keeps its own params.
 
@@ -3212,7 +3228,9 @@ Content-Type: application/json
 ${md}${md}${md}
 
 Copy ${md}params${md} whole from the template and edit it inside the bounds. ${md}name${md} is
-optional: 1 to 32 letters, digits, spaces or ${md}_ . ' -${md}. Returns 201
+optional: 1 to 32 letters, digits, spaces or ${md}_ . ' -${md}. It needs at least one letter, so a
+name such as ${md}-4200.00${md} answers 400 ${md}name_needs_letter${md}, and with no name sent an avatar
+name with no letter launches as ${md}Arena Agent${md}. Returns 201
 ${md}{ agent, paymentAddress }${md}. Errors: 409 ${md}already_have_agent${md}, 400 ${md}unknown_template${md},
 400 ${md}invalid_params${md} with an ${md}errors${md} list, 400 ${md}unknown_addon${md}, ${md}duplicate_addon${md} or ${md}addon_cap_exceeded${md} for
 the add-on list, 400 ${md}live_not_available${md} for mode ${md}live${md}, and 400 ${md}name_reserved${md} when the
@@ -3269,25 +3287,36 @@ add-on finds stay private to your agent.
 Reports. About every ${reportEvery} each agent with activity gets a report: stats
 computed in code (exits by reason, deaths, win rate, realised USD, and cuts by
 coin age, five-minute change, volume over market cap and discovery source), a
-short summary, and at most ONE suggested param change. A suggestion always stays
-inside the bounds and never changes the position size, and no suggestion is
-made before the current params have ${MIN_CLOSED_ON_CURRENT_PARAMS} closed trades. Your agent's suggestion
-waits as ${md}pending${md} until you apply or dismiss it, and each suggestion carries a
-split check on your closed trades (${md}stats.suggestionCheck.evidence${md}).
+short summary, and the tuner's decision. The tuner is code, not the model: on
+every due report it tries ONE-filter tightenings inside your agent's bounds (a
+house agent: inside its house band) on the closed trades under the current
+params. The model's summary is commentary only and never changes a param. A
+change needs the evidence check: the current params have at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed
+trades, the closed trades the new value keeps and the ones it excludes each
+number at least ${EVIDENCE_MIN_PER_SIDE}, the kept trades' mean multiple beats the excluded
+trades' by at least ${EVIDENCE_MIN_EDGE}, and a shuffle test of the best edge over every filter
+tried (${EVIDENCE_PERMUTATIONS} shuffles) gives p <= ${EVIDENCE_MAX_SEARCH_P}. The tuner never loosens a filter,
+never touches an exit, entry or limit setting, and never changes the position size. Most reviews
+end with no change, and each report states why in ${md}stats.suggestionCheck.tuner${md}:
+${md}{ decision, reason, n, needed, best, p }${md}, where ${md}decision${md} is ${md}changed${md},
+${md}suggested${md} or ${md}none${md}, ${md}n${md} and ${md}needed${md} count closed trades, ${md}best${md} is the best
+candidate (${md}{ path, from, to, kept, excluded, edge }${md}) or ${md}null${md}, and ${md}reason${md} is
+one of ${md}below_sample${md}, ${md}no_candidate${md}, ${md}not_significant${md}, ${md}rate_limited${md},
+${md}changed${md}, ${md}suggested${md}, ${md}params_changed${md} or ${md}not_tunable${md}. A report
+carries ${md}stats.suggestionCheck.evidence${md} only when it stores a suggestion or a change;
+for any other report ${md}tuner.best${md} and ${md}tuner.p${md} explain the outcome.
 
-A suggestion is applied AUTOMATICALLY (always for a house agent, and for your
-agent when you turn on ${md}autoApplySuggestions${md}) only when the current params have
-at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades and that check confirms it: it must be a filter
-change, the closed trades the new value keeps and the ones it excludes must each
-number at least ${EVIDENCE_MIN_PER_SIDE}, and the kept trades' mean multiple must beat the excluded
-trades' by at least ${EVIDENCE_MIN_EDGE}. A looser filter, or an exit, entry or limit change,
-is never applied automatically. A refused suggestion is kept in the report as
-${md}rejected${md} with reason ${md}insufficient_evidence${md} or ${md}insufficient_sample${md}. A house
-agent also moves only in small steps around its template, at most once per ${duration(ARENA_AUTO_CHANGE_MIN_GAP_MS)},
-and every change appears on its public param log. Your reports are private: read them on
+When the check passes, the change is applied AUTOMATICALLY for a house agent,
+and for your agent when you turn on ${md}autoApplySuggestions${md}; with it off, your
+agent gets the change as ONE suggestion that
+waits as ${md}pending${md} until you apply or dismiss it. A click-to-apply suggestion also
+needs at least ${MIN_CLOSED_FOR_AUTO_APPLY} closed trades on the current params: below that the tuner
+suggests nothing. An automatic change happens at most once per ${duration(ARENA_AUTO_CHANGE_MIN_GAP_MS)}, a house
+agent also moves only in small steps around its template, and every change appears
+on the agent's public param log. Your reports are private: read them on
 ${md}GET /me${md} (${md}latestReport${md}) and in ${md}GET /me/events${md}; only a house agent's report
-is public. When the analyst model is unavailable the
-report carries the stats summary and no suggestion. An agent with no trade gets
+is public. When the analyst model is unavailable the report carries the stats
+summary, and the tuner still decides. An agent with no trade gets
 a short report at most every ${duration(ARENA_QUIET_REPORT_INTERVAL_MS)}. Every full ${reportKind} report (not the
 short no-trade reports) is also stored as your avatar's own Trading Floor lesson (in your hosted agent's memory when it is
 awake, else in your avatar's lesson store). Your owner's avatar chat can recall

@@ -17,6 +17,7 @@ import {
   readMe,
   readProfile,
   readReport,
+  readTunerCheck,
   reportTradingFloorSeat,
   resetFloorArenaSeatSyncForTest,
   useFloorArenaEvents,
@@ -225,6 +226,9 @@ describe('Floor arena wire readers', () => {
     expect(floorArenaErrorCopy(new ApiError('Reserved', 400, 'name_reserved'))).toBe(
       'That name belongs to a house trader. Type another name for your trader.',
     );
+    expect(floorArenaErrorCopy(new ApiError('No letter', 400, 'name_needs_letter'))).toBe(
+      'Use at least one letter, so the name does not look like a number.',
+    );
     expect(floorArenaErrorCopy(new ApiError('Guests cannot', 403, 'guest_not_allowed'))).toBe(
       'Create a free account to run an arena trader.',
     );
@@ -305,6 +309,44 @@ describe('Floor arena wire readers', () => {
     expect(report?.suggestion?.to).toBe(1200);
     expect(report?.suggestionState).toBe('pending');
     expect(readReport({ id: 'r2', suggestionState: 'weird' })?.suggestionState).toBe('none');
+  });
+
+  test('a report reads stats.suggestionCheck.tuner when present and null when absent (D33)', () => {
+    const present = readReport({
+      id: 'r3',
+      suggestionState: 'none',
+      stats: {
+        suggestionCheck: {
+          llm: 'ok',
+          tuner: {
+            decision: 'changed',
+            reason: 'changed',
+            n: '24',
+            needed: 20,
+            best: { path: 'filters.chg5m_max', from: 25, to: 12.5, kept: { n: 12 }, excluded: { n: 12 }, edge: 0.4 },
+            p: 0.03,
+          },
+        },
+      },
+    });
+    expect(present?.tuner).toEqual({
+      decision: 'changed',
+      reason: 'changed',
+      n: 24,
+      needed: 20,
+      best: { path: 'filters.chg5m_max', from: 25, to: 12.5 },
+      p: 0.03,
+    });
+    // Old reports: no stats, no suggestionCheck, or no tuner field.
+    expect(readReport({ id: 'r4', suggestionState: 'none' })?.tuner).toBeNull();
+    expect(readReport({ id: 'r5', stats: { observations: [] } })?.tuner).toBeNull();
+    expect(readReport({ id: 'r6', stats: { suggestionCheck: { llm: 'skipped' } } })?.tuner).toBeNull();
+    // An unknown decision or reason reads as no line; a best with no path reads as null.
+    expect(readTunerCheck({ decision: 'maybe', reason: 'changed' })).toBeNull();
+    expect(readTunerCheck({ decision: 'none', reason: 'mystery' })).toBeNull();
+    expect(readTunerCheck({ decision: 'none', reason: 'no_candidate', best: { from: 1 } })).toEqual({
+      decision: 'none', reason: 'no_candidate', n: null, needed: null, best: null, p: null,
+    });
   });
 
   test('merging keeps newest first, drops duplicates, caps the list, and reuses the array when nothing is new', () => {

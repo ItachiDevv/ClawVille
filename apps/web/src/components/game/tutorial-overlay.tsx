@@ -1,9 +1,14 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, Gamepad2, X } from 'lucide-react';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { shortTouchRowStyle, useShortTouchRow } from '@/hooks/use-short-touch-viewport';
+import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
+import { api } from '@/lib/api';
+import { useGameStore } from '@/stores/game';
 
 const STORAGE_KEY = 'clawville-tutorial-seen';
 const CONTROLS_STEP_INDEX = 2;
@@ -48,19 +53,88 @@ function controlTone(tone: (typeof CONTROL_ITEMS)[number]['tone']) {
   }
 }
 
+/**
+ * Who reads the deck (GameFeatures.md §1e guest mode, §2g provisioning-pending).
+ * The first card, the menu card, and the last card name an agent the reader
+ * may not have, so their copy follows the reader: a guest (or a logged-out visitor) has no
+ * agent, a signed-in Player may have none yet, and a Trainer has one.
+ * 'unknown' (auth or the agent-session read still loading, or a dismissed
+ * agent banner) gets copy that is true for every reader.
+ */
+export type TutorialAudience = 'unknown' | 'guest' | 'player' | 'trainer';
+
+/**
+ * Same inputs the /game NanoClawBanner uses: the shared ['auth-me'] read, the
+ * ['agent-session'] mode, and the store's in-session pairing.
+ */
+export function tutorialAudience({
+  authResolved,
+  isAuthenticated,
+  isGuest,
+  agentPaired,
+  agentSessionMode,
+}: {
+  authResolved: boolean;
+  isAuthenticated: boolean;
+  isGuest: boolean;
+  agentPaired: boolean;
+  agentSessionMode: string | undefined;
+}): TutorialAudience {
+  // Banner order: an in-session pairing wins, then the guest check.
+  if (agentPaired) return 'trainer';
+  if (!authResolved) return 'unknown';
+  if (!isAuthenticated || isGuest) return 'guest';
+  if (isBoundAgentSessionMode(agentSessionMode)) return 'trainer';
+  if (agentSessionMode === 'none' || agentSessionMode === 'provisioning-pending') return 'player';
+  return 'unknown';
+}
+
+const WELCOME_COPY: Record<TutorialAudience, string> = {
+  unknown:
+    'ClawVille is one shared underwater town for people and AI agents. The residents you meet are real ElizaOS agents with their own personalities, memories, and ways of speaking. They aren\'t chatbots with a skin.',
+  guest:
+    'You\'re exploring as a guest, so you don\'t have an agent yet. Walk around, step into buildings, and talk to the residents: each one is a real ElizaOS agent with its own personality and memory. Log in or sign up to get an agent of your own, or connect one you already run.',
+  player:
+    'You\'re signed in, but your account has no agent yet. You can still explore, step into buildings, and talk to the residents: each one is a real ElizaOS agent. Use the agent button at the top of the screen to set up your agent or connect one you already run.',
+  trainer:
+    'Your agent is here with you, with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin: your agent thinks for itself. Drive it yourself in Controlled mode, or switch to Autonomous and let it play on its own.',
+};
+
+// The closing card names "your agent" only for a reader who has one.
+const CLOSING_COPY =
+  "Go explore! Every conversation is unique, and the shopkeepers remember what you've said. The world is alive, so go see what they have to say.";
+const CLOSING_COPY_TRAINER =
+  "Go explore! Every conversation is unique. Your agent and the shopkeepers all remember what you've said. The world is alive, so go see what they have to say.";
+
+// The menu card. The old copy sent every reader to a "gear menu (top right)"
+// to "manage your agent" and "configure location agents": a guest has no
+// agent, and the location-agent editor has no entry point any more. The menu
+// is the right-side sidebar (sidebar-menu.tsx; a gear button on touch
+// screens) and the World Map opens from the Map button at the top left
+// (minimap.tsx).
+const MENU_STEP_TITLE = 'Open the Menu';
+const MENU_PLACES = 'the Land Office, the Trading Floor, the Quest Board, and the Leaderboard';
+const MAP_LINE = 'Press Map at the top left to see every building on the World Map.';
+const MENU_COPY: Record<TutorialAudience, string> = {
+  unknown: `The menu on the right side of the screen (the gear button on touch screens) opens ${MENU_PLACES}. ${MAP_LINE}`,
+  guest: `The menu on the right side of the screen (the gear button on touch screens) lets you look around ${MENU_PLACES}. Log In and Sign Up sit at the bottom of the menu: sign up to get an agent of your own. ${MAP_LINE}`,
+  player: `The menu on the right side of the screen (the gear button on touch screens) opens ${MENU_PLACES}. Its first row sets up your agent or connects one you already run. ${MAP_LINE}`,
+  trainer: `The menu on the right side of the screen (the gear button on touch screens) is where you manage your agent: My Agent shows its profile, and Skill Forge lets you write new skills for it. The menu also opens ${MENU_PLACES}. ${MAP_LINE}`,
+};
+
 const STEPS = [
   {
     title: 'Welcome to ClawVille!',
     icon: '🎉',
-    content:
-      'You just created an AI-powered agent: a real ElizaOS agent with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin. Your agent thinks for itself.',
+    // Replaced per reader by tutorialSteps() (WELCOME_COPY).
+    content: WELCOME_COPY.unknown,
     tip: null,
   },
   {
     title: 'Move Around',
     icon: '🗺️',
     content:
-      'Use WASD to walk your agent through The Depths. On touch screens, use the left joystick to move and the right joystick to rotate the camera.',
+      'Use WASD to move through The Depths. On touch screens, use the left joystick to move and the right joystick to rotate the camera.',
     tip: 'WASD / joysticks',
   },
   {
@@ -85,11 +159,11 @@ const STEPS = [
     tip: 'Press ESC to leave',
   },
   {
-    title: 'Customize Everything',
+    title: MENU_STEP_TITLE,
     icon: '⚙️',
-    content:
-      'Open the gear menu (top right) to manage your agent, configure location agents with custom personalities, or view all 10 buildings on the map.',
-    tip: 'Gear icon = settings',
+    // Replaced per reader by tutorialSteps() (MENU_COPY).
+    content: MENU_COPY.unknown,
+    tip: 'Right side · gear button on touch screens',
   },
   // Land steps (2026-08-10). The land economy shipped with no first-session
   // explanation at all, so a player never learned that lots, buildings and
@@ -126,17 +200,54 @@ const STEPS = [
   {
     title: 'You\'re Ready!',
     icon: '🚀',
-    content:
-      'Go explore! Every conversation is unique. Your agent and the shopkeepers all remember what you\'ve said. The world is alive, so go see what they have to say.',
+    // Replaced per reader by tutorialSteps() (CLOSING_COPY / CLOSING_COPY_TRAINER).
+    content: CLOSING_COPY,
     tip: null,
   },
 ];
 
+/** The deck for one reader: only the first card, the menu card, and the last card change. */
+export function tutorialSteps(audience: TutorialAudience): typeof STEPS {
+  return STEPS.map((step, index) => {
+    if (index === 0) return { ...step, content: WELCOME_COPY[audience] };
+    if (step.title === MENU_STEP_TITLE) return { ...step, content: MENU_COPY[audience] };
+    if (index === STEPS.length - 1) {
+      return { ...step, content: audience === 'trainer' ? CLOSING_COPY_TRAINER : CLOSING_COPY };
+    }
+    return step;
+  });
+}
+
+/**
+ * The reader's audience from state the app already holds: the shared
+ * ['auth-me'] read, a cache-only read of ['agent-session'] (the /game page
+ * owns that fetch, enabled for a signed-in viewer), and the store's pairing.
+ */
+function useTutorialAudience(): TutorialAudience {
+  const { data: authData } = useAuthMe();
+  const { data: agentSession } = useQuery({
+    queryKey: ['agent-session'],
+    queryFn: api.getAgentSession,
+    enabled: false,
+    staleTime: 30_000,
+  });
+  const agentPaired = useGameStore((state) => state.agentPaired || state.agentConnected);
+  return tutorialAudience({
+    authResolved: authData !== undefined,
+    isAuthenticated: !!authData?.user,
+    isGuest: !!authData?.user?.isGuest,
+    agentPaired,
+    agentSessionMode: agentSession?.mode,
+  });
+}
+
 export default function TutorialOverlay() {
+  const audience = useTutorialAudience();
   const [visible, setVisible] = useState(false);
   const [step, setStep] = useState(0);
   const [animating, setAnimating] = useState(false);
   const isMobile = useIsMobile();
+  const steps = useMemo(() => tutorialSteps(audience), [audience]);
   const shortRow = shortTouchRowStyle(useShortTouchRow(), 'controls');
 
   // Show on first visit
@@ -153,7 +264,7 @@ export default function TutorialOverlay() {
   }, []);
 
   const nextStep = () => {
-    if (step >= STEPS.length - 1) {
+    if (step >= steps.length - 1) {
       close();
       return;
     }
@@ -190,7 +301,7 @@ export default function TutorialOverlay() {
     return () => document.removeEventListener('keydown', handler);
   });
 
-  const current = STEPS[step];
+  const current = steps[step];
 
   return (
     <>
@@ -264,7 +375,7 @@ export default function TutorialOverlay() {
               {/* Step indicator */}
               <div className="flex items-center justify-between px-5 pb-2 pt-5">
                 <div className="flex gap-1.5">
-                  {STEPS.map((_, i) => (
+                  {steps.map((_, i) => (
                     <div
                       key={i}
                       className={`h-2 rounded-full transition-all duration-300 ${
@@ -373,7 +484,7 @@ export default function TutorialOverlay() {
                 </button>
 
                 <div className="font-mono text-[11px] font-bold tracking-[0.16em] text-cyan-100/50">
-                  {step + 1}/{STEPS.length}
+                  {step + 1}/{steps.length}
                 </div>
 
                 <button
@@ -381,7 +492,7 @@ export default function TutorialOverlay() {
                   onClick={nextStep}
                   className="flex h-10 items-center gap-2 rounded-full border border-emerald-200/35 bg-emerald-400/18 px-4 text-sm font-black text-emerald-50 shadow-[0_0_22px_rgba(74,222,128,0.16)] transition-all hover:bg-emerald-400/28"
                 >
-                  {step >= STEPS.length - 1 ? "Let's Go" : 'Next'}
+                  {step >= steps.length - 1 ? "Let's Go" : 'Next'}
                   <ArrowRight className="h-4 w-4" aria-hidden />
                 </button>
               </div>

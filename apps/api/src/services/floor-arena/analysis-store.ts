@@ -265,12 +265,26 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
       });
     },
 
-    async rejectPendingReport(reportId, agentId, reason) {
+    async rejectPendingReport(reportId, agentId, reason, tuner) {
+      if (!tuner) {
+        await db.execute(sql`
+          UPDATE floor_arena_reports
+          SET suggestion_state = 'rejected',
+              suggestion = NULL,
+              stats = jsonb_set(stats, '{suggestionCheck,reason}', to_jsonb(${reason}::text), true)
+          WHERE id = ${reportId}::uuid AND agent_id = ${agentId} AND suggestion_state = 'pending'
+        `);
+        return;
+      }
+      // D33: the tuner's final decision lands in the same UPDATE as the reject.
       await db.execute(sql`
         UPDATE floor_arena_reports
         SET suggestion_state = 'rejected',
             suggestion = NULL,
-            stats = jsonb_set(stats, '{suggestionCheck,reason}', to_jsonb(${reason}::text), true)
+            stats = jsonb_set(
+              jsonb_set(stats, '{suggestionCheck,reason}', to_jsonb(${reason}::text), true),
+              '{suggestionCheck,tuner}', ${JSON.stringify(tuner)}::jsonb, true
+            )
         WHERE id = ${reportId}::uuid AND agent_id = ${agentId} AND suggestion_state = 'pending'
       `);
     },
