@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   useQuestStore,
   retryUnclaimedRewards,
-  retryServerClaimsRestore,
+  syncTutorialClaimsFromServer,
 } from '@/stores/quest';
 import { QUEST_DEFINITIONS, type QuestId, type QuestDefinition } from '@/lib/quests';
 import {
@@ -256,10 +256,10 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
     sweptAccountRef.current = claimAccountId;
     // Quest-board restore belt (2026-07-29): server-known completions land
     // BEFORE the local claim sweep, so the sweep doesn't 409-spam the claim
-    // endpoint for quests the server already recorded. No-op when unstamped
-    // or already synced.
+    // endpoint for quests the server already recorded. Synced for THIS
+    // account: deduped per account, applied only when the store owner matches.
     void (async () => {
-      await retryServerClaimsRestore();
+      await syncTutorialClaimsFromServer(claimAccountId);
       await retryUnclaimedRewards();
     })();
   }, [claimAccountId]);

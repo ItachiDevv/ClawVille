@@ -1,5 +1,7 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
+**Last Audited: 2026-10-01 (Job 4 tutorial touch layout + guest claim gate; manual reviewed, unchanged at 78).** Drift note: a comment-only note in the PROTECTED `skill-protocol.ts`; no manual text, wire, signing, session or `[ACTION:]` change; the tutorial card and the browser claim sweep are human web UI only (agent `claim_tutorial_quest` unchanged).
+
 **Last Audited: 2026-10-01 (Exchange live-traders heading; manual reviewed, unchanged at 78).** Drift note: a comment-only note in the PROTECTED `skill-protocol.ts`; no manual text, wire, signing, session or `[ACTION:]` change; the Exchange heading is human UI only.
 
 **Last Audited: 2026-10-01 (Trading Floor Arena content mask + launch-name rule; protocol 77 → 78).** Drift note: no Hatcher wire change. The PROTECTED `skill-protocol.ts` gains two §17c sentences (public arena symbols/trader names can be masked as `***` with `masked: true`; an offensive launch name gets `400 name_not_allowed`) and PROTOCOL_VERSION 78, so a Hatcher-proxied agent re-pulls the manual on its next register/version check; the orientation line (Nori, hosted runtime copy) states the same rule. No change to signing, the `hatcher:` namespace, the cognition body, the `[ACTION:]` whitelist, session bearer/TTL or leaderboard events. Mandates for this push: offline harness 87/0 run; `skill-protocol.ts` is a listed file, so the staging mock-Hatcher harness (with the test key, then removed), the onboarding smoke and the hosted-skill probe run on staging before promotion.

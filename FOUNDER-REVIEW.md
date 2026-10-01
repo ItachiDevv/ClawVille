@@ -33,6 +33,14 @@
 - **Landscape check:** a staged 844x390 check exposed a clipped header. The follow-up limits message height and keeps input and Close accessible in world and table chat. Review a long menu on a phone in landscape.
 
 
+### Welcome tutorial on phones and tablets: bigger buttons, card fits landscape (staging, 2026-10-01)
+
+- **Where:** staging `https://staging.clawville.world/game` on a phone or iPad, as a fresh visitor (private window), portrait AND landscape.
+- **Look at:** the 10-card welcome tutorial. Close, Previous and Next are at least 44 px. In landscape, card 3 "Run and Jump" shows the Jump row (scroll inside the card) and the Next button. No HUD button covers the card; Log In and Sign Up work after you close it.
+- **Also:** a logged-out visitor no longer sends a tutorial reward claim (one 401 per `/game` load before). The Trading Floor wallet note now says "You can watch the house traders below." (it said they were live while they are paused).
+- **Feedback wanted:** does the card feel right on your phone, and does a real iPad show it clear of the Safari bars (emulation cannot show safe areas)?
+- **Session:** tradeDeskMain, 2026-10-01.
+
 ### September 22 cleanup: Nori, touch controls, and Cove close controls
 
 - **Release state:** production API and web serve `7473e809`, verified at 2026-09-23 05:08 UTC after normal PR #296 promotion. All four production gates, migration, and deployment jobs pass. Staging retains tested `dfebf028`: onboarding 14/14, signed partner 14/14, and hosted Nori/appearance 125/125 twice, including after signer removal. Production Nori reply/Close, Baccarat Fairness/Close, and Cove return pass browser checks at 05:09-05:12 UTC. One initial navigation required a reload during rollout; its cause remains unproven. The final documentation-only commit does not change deployed application source.

@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-01 18:35 UTC (session tradeDeskMain). **PROD = `ba5b69f6` (PROMOTION PR #306, merged 18:14:40Z, api flipped 18:22:19Z, web 18:24:03Z), VERIFIED.** It carries staging `7d81b752` (23 commits since `6dda4e80`): x402 add-on budget + rotation fixes, arena deadlock lock order, the hate-slur mask + `400 name_not_allowed`, Exchange labels + the live-traders heading fix, interior v4 (`?v=4`). PROTOCOL_VERSION 78. No migration. **Staging** = `7d81b752` (same code; `/health` 18:35Z). SCHEMA: `synced`. See the PROMOTION entry at the top of the DEPLOY LOG.
+Last Audited: 2026-10-01 19:11 UTC (session tradeDeskMain). **Staging** is receiving Job 4 (branch `fix/tutorial-guest-mobile`, on top of `1bc360eb`): the welcome tutorial on touch (44 px buttons, card fits landscape, modal above the HUD), no tutorial claim from logged-out or guest visitors (was one 401 per `/game` load), the Trading Floor wallet note no longer says the paused house traders are live, and a CI step that runs both new suites. No API change, no migration, PROTOCOL_VERSION stays 78. Verification PENDING (DEPLOY LOG entry below). **PROD = `ba5b69f6`** (unchanged). SCHEMA: `synced`.
+
+Prior — Last Audited: 2026-10-01 18:35 UTC (session tradeDeskMain). **PROD = `ba5b69f6` (PROMOTION PR #306, merged 18:14:40Z, api flipped 18:22:19Z, web 18:24:03Z), VERIFIED.** It carries staging `7d81b752` (23 commits since `6dda4e80`): x402 add-on budget + rotation fixes, arena deadlock lock order, the hate-slur mask + `400 name_not_allowed`, Exchange labels + the live-traders heading fix, interior v4 (`?v=4`). PROTOCOL_VERSION 78. No migration. **Staging** = `7d81b752` (same code; `/health` 18:35Z). SCHEMA: `synced`. See the PROMOTION entry at the top of the DEPLOY LOG.
 
 Prior — Last Audited: 2026-10-01 16:27 UTC (session tradeDeskMain). **Staging** is receiving one web fix on top of `166d8633` (interior v4 + its verification record): the live-traders heading says "paused" when every live slot is paused by its risk limit (browser verify of `31480fb0`, F1), plus the staging verification record of `31480fb0` (all gates PASS; see that DEPLOY LOG entry). No migration, no protocol change (78). **PROD = `b8d52ab6`** (unchanged). Next: promotion PR once coolerDesk2 confirms v4.
 
@@ -496,6 +498,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-01 (session tradeDeskMain) — Job 4: tutorial touch layout, guest claim gate, wallet note copy (staging push)
+
+**What changed (web only):** (1) `tutorial-overlay.tsx`: on touch (`useIsMobile()`) the welcome card is a modal at `z-[90]` above the /game HUD, bounded to `100dvh` with a scrolling middle and a fixed header and footer; close, Previous and Next are at least 44x44 (prod had Next 91x40, Previous 40x40, close about 32; card 3 cut off at 844x390 with HUD buttons over its top). Mouse keeps `z-[44]` and its sizes. (2) `quest-tracker.tsx`: the restore-then-claim sweep runs only for a signed-in non-guest account (`useAuthMe()`), once per account, with the claims sync for that account (prod: every logged-out `/game` load sent `POST /api/quests/tutorial/on-the-board/claim` -> 401). (3) `tokens.ts`: "The house traders below are live now." -> "You can watch the house traders below." (4) `gates.yml`: both suites run in their own processes.
+**Review:** one code-lens pass GO (server validates each claim from the claimant's own events, so client progress cannot credit another account; guest progress carrying into a new account is the designed behavior). Its should-fix (sync claims for the signed-in account, not the stale store owner) is applied. Accepted: toasts show under the touch backdrop while the card is open. Tests: claim gate 6 fail on the old file / 6 pass; overlay 3 new touch tests fail on the old file / 15 pass; quest-restore 4/0.
+**What broke on the way:** the local browser check was not valid: the local build had no API, so the world loading screen never closed and covered the card. The browser check runs on staging instead.
+**Who it's for:** phone and tablet visitors (tutorial), every logged-out visitor (no 401), Trading Floor visitors (true copy).
+**SCHEMA:** `synced`. PARITY: human path: `/game` tutorial card + browser claim sweep; agent path: unchanged (`claim_tutorial_quest` action / session-authed claim route); settlement unchanged (server validates per claimant avatar).
 
 ### 2026-10-01 (session tradeDeskMain) — PROMOTION PR #306 staging -> master: PROD = `ba5b69f6` (arena fixes, slur mask, protocol 78, Exchange labels, interior v4)
 

@@ -743,6 +743,8 @@ import {
 // text (N5, tools only, the manual text is unchanged). Check:
 // services/floor-arena/content-mask.ts. No `[ACTION:]` verb, bearer/TTL, cognition
 // body, namespace or leaderboard weight changed.
+// 2026-10-01 (Job 4: tutorial touch layout, guest claim gate, wallet note copy): manual and
+// Nori orientation reviewed, no version change. Human web UI only; agents claim via their own paths.
 // 2026-10-01 (Exchange live-traders heading, abab368b): manual and Nori orientation
 // reviewed, no version change. Human Exchange UI wording only; agents never read it.
 export const PROTOCOL_VERSION = 78;
