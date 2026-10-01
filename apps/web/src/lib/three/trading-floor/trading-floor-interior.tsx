@@ -149,15 +149,10 @@ import {
  * to props the scene pulls out and re-draws as instanced rows, so the room
  * costs 6 static draw calls + 2 instanced rows + 1 board = 9.
  *
- * `?v=2` since the v2 rebuild (textured walls, own ceiling material, textured
- * floor deck, screen surround, chair module, desks on the side walls). The
- * bytes at this path changed, so the query HAD to move: Cloudflare's edge cache
- * cannot be purged with our deploy token, so the query is the only invalidator
- * (CLAUDE.md, animation rule 9). `?v=2` has never been deployed, so re-exports
- * during this build are safe; from the first deploy on, never mutate the bytes
- * at an existing `?v=`.
+ * v2 reached production on 2026-09-20. Serve the v3 bytes through a new query
+ * because Cloudflare can keep the old path in its edge cache for one week.
  */
-const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=2';
+const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=3';
 
 // ---------------------------------------------------------------------------
 // Sit clips
@@ -685,23 +680,24 @@ function RoomShell({ onReady }: { onReady: () => void }) {
  * Ambient stays, at a third of its old value, purely so the unlit faces do not
  * crush to black.
  *
- * Hue is unchanged on purpose — the founder said the lighting was good. What
- * changed is where it comes from.
+ * v3 warms the three existing lights so walnut stays brown and brass stays
+ * gold. The ground fill stays bright enough to reveal the navy ceiling.
  */
 function TradingFloorLighting() {
   return (
     <>
-      <ambientLight color={0xb7cfe6} intensity={0.85} />
+      <ambientLight color={0xe8dac4} intensity={0.78} />
       {/* The GROUND colour is not decoration. A hemisphere light lights a
           surface by `mix(ground, sky, 0.5 * normal.y + 0.5)`, and the ceiling's
           normal is -Y, so the ground colour is ALL the ceiling ever receives —
           the directional key contributes nothing to it. The first v2 pass used
-          0x2b2318 there and rendered a black void overhead. */}
-      <hemisphereLight args={[0xa9cbe8, 0x585048, 1.15]} />
+          0x2b2318 there and rendered a black void overhead. The warm v3
+          ground fill keeps the navy coffers visible. */}
+      <hemisphereLight args={[0xd9d9d1, 0x888077, 1.12]} />
       <directionalLight
         position={[900, 1500, -1100]}
-        color={0xfff0dc}
-        intensity={1.15}
+        color={0xffdfac}
+        intensity={1.2}
         castShadow={false}
       />
     </>

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// build-interior.mjs — assemble the Trading Floor interior hall GLB (v2).
+// build-interior.mjs — assemble the Trading Floor interior hall GLB (v3).
 //
 // The hall SHELL is authored here rather than generated: Meshy reliably returns
 // a solid exterior blob when asked for a room, and the shell is the one piece
@@ -29,7 +29,7 @@
 // instances once per desk. The light-rig half of the fix lives in
 // `trading-floor-interior.tsx`.
 //
-// The three HERO PROPS are Meshy text-to-3d refines, slimmed on the v1 run.
+// The two console/kiosk props are Meshy text-to-3d refines from the v1 run.
 // They are copied through from a PROPS SOURCE GLB rather than re-slimmed:
 // re-running Meshy costs credits we do not have, and the v1 props are already
 // decimated, base-centred and at final scale. Default source is the durable
@@ -49,6 +49,8 @@ import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import draco3d from 'draco3d';
 import sharp from 'sharp';
 import { existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -85,11 +87,8 @@ const DOOR_H = 500;
 const hx = RW / 2, hz = RD / 2;
 
 // ---- texture tiling ---------------------------------------------------------
-// One texture repeat every WALL_TILE_WU world units, and the texture carries a
-// 2x2 panel grid, so one visible panel is 237.5 wu — about 88% of the 270 wu
-// avatar's height, which is the size a wall panel has to be before the eye
-// reads it as architecture instead of noise. 950 / 475 is exactly 2, so the
-// wall is four whole panel rows with no cut at the cornice.
+// One wall texture repeat spans 475 wu horizontally and the full 950 wu height.
+// Each repeat carries two walnut panels below the chair rail and navy above.
 const WALL_TILE_WU = 475;
 const CEIL_TILE_WU = 550;
 // The floor carries a 2x2 grid too, so one panel is 190 wu — about 1.2 m, the
@@ -98,7 +97,7 @@ const CEIL_TILE_WU = 550;
 // wu hall is noise from the chase camera, not architecture.
 const FLOOR_TILE_WU = 380;
 const WALL_TEX_PX = 512;
-const CEIL_TEX_PX = 256;
+const CEIL_TEX_PX = 512;
 const FLOOR_TEX_PX = 512;
 
 // ---- prop placement (world units) ------------------------------------------
@@ -344,7 +343,9 @@ function boxGeo(cx, cy, cz, sx, sy, sz, tile = 0, opts = {}) {
     [[0, 4, 7, 3], [-1, 0, 0]], [[5, 1, 2, 6], [1, 0, 0]],
     [[3, 7, 6, 2], [0, 1, 0]], [[0, 1, 5, 4], [0, -1, 0]],
   ];
-  const pos = [], nrm = [], idx = [], uv = tile > 0 ? [] : null;
+  const tileU = typeof tile === 'number' ? tile : tile.u;
+  const tileV = typeof tile === 'number' ? tile : tile.v;
+  const pos = [], nrm = [], idx = [], uv = tileU > 0 ? [] : null;
   for (const [quad, n] of faces) {
     const base = pos.length / 3;
     for (const vi of quad) {
@@ -354,9 +355,9 @@ function boxGeo(cx, cy, cz, sx, sy, sz, tile = 0, opts = {}) {
       if (uv) {
         // Pick the two axes that lie IN the face. glTF's V axis points down, so
         // vertical surfaces negate world Y to keep the panel upright.
-        if (n[1] !== 0) uv.push(wx / tile, wz / tile);
-        else if (n[0] !== 0) uv.push(wz / tile, -wy / tile);
-        else uv.push(wx / tile, -wy / tile);
+        if (n[1] !== 0) uv.push(wx / tileU, wz / tileV);
+        else if (n[0] !== 0) uv.push(wz / tileU, -wy / tileV);
+        else uv.push(wx / tileU, -wy / tileV);
       }
     }
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
@@ -364,8 +365,8 @@ function boxGeo(cx, cy, cz, sx, sy, sz, tile = 0, opts = {}) {
   return { pos, nrm, idx, uv };
 }
 
-/** Flat annulus on the XZ plane — the glowing floor ring around the dais. */
-function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48) {
+/** Flat annulus on the XZ plane for the textured Exchange seal. */
+function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48, polarUV = false) {
   // Registers like a box, so the clearance gate covers EVERY primitive this
   // script emits rather than only the box helper. A flat ring is the same
   // structural case as the floor slab: zero Y thickness means the overlap test
@@ -378,12 +379,19 @@ function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48) {
     min: [cx - rOuter, cy, cz - rOuter],
     max: [cx + rOuter, cy, cz + rOuter],
   });
-  const pos = [], nrm = [], idx = [];
+  const pos = [], nrm = [], idx = [], uv = polarUV ? [] : null;
   for (let i = 0; i <= seg; i++) {
     const a = (i / seg) * Math.PI * 2;
     const s = Math.sin(a), co = Math.cos(a);
     pos.push(cx + co * rInner, cy, cz + s * rInner, cx + co * rOuter, cy, cz + s * rOuter);
     nrm.push(0, 1, 0, 0, 1, 0);
+    if (uv) {
+      for (const r of [rInner, rOuter]) {
+        // glTF V=0 samples the atlas top. +Z is the near, lower half of
+        // the seal image, where CLAWVILLE EXCHANGE sits upright for spawn.
+        uv.push(0.375 + co * r / 1600, 0.375 + s * r / 1600);
+      }
+    }
   }
   // Winding matters here. With vertices laid out as (inner_i, outer_i) and the
   // angle advancing via (cos a, sin a) in XZ, the naive order (b, b+1, b+3)
@@ -395,12 +403,85 @@ function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48) {
     const b = i * 2;
     idx.push(b, b + 3, b + 1, b, b + 2, b + 3);
   }
-  return { pos, nrm, idx, uv: null };
+  return { pos, nrm, idx, uv };
+}
+
+function colored(geo, rgb) {
+  geo.col = Array(geo.pos.length / 3).fill(rgb).flat();
+  return geo;
+}
+
+// Octagonal tiers keep the collider's exact 700 x 692 world-unit footprint.
+function octagonGeo(cx, y0, cz, halfX, halfZ, height, chamfer, tile = 0, cap = true) {
+  boxRegistry.push({ group: currentGroup.name, exempt: currentGroup.exempt,
+    min: [cx - halfX, y0, cz - halfZ], max: [cx + halfX, y0 + height, cz + halfZ] });
+  const corners = [[-halfX + chamfer,-halfZ],[halfX-chamfer,-halfZ],[halfX,-halfZ+chamfer],
+    [halfX,halfZ-chamfer],[halfX-chamfer,halfZ],[-halfX+chamfer,halfZ],
+    [-halfX,halfZ-chamfer],[-halfX,-halfZ+chamfer]];
+  const pos=[], nrm=[], idx=[], uv=tile?[]:null;
+  for (let k=0;k<8;k++) {
+    const a=corners[k], b=corners[(k+1)%8];
+    const nx=b[1]-a[1], nz=-(b[0]-a[0]);
+    const len=Math.hypot(nx,nz), base=pos.length/3;
+    pos.push(cx+a[0],y0,cz+a[1],cx+b[0],y0,cz+b[1],cx+b[0],y0+height,cz+b[1],cx+a[0],y0+height,cz+a[1]);
+    if (uv) uv.push(a[0]/tile,y0/tile,b[0]/tile,y0/tile,b[0]/tile,(y0+height)/tile,a[0]/tile,(y0+height)/tile);
+    for(let j=0;j<4;j++) nrm.push(nx/len,0,nz/len);
+    idx.push(base,base+2,base+1,base,base+3,base+2);
+  }
+  if (cap) {
+    const base=pos.length/3;
+    for(const [x,z] of corners) { pos.push(cx+x,y0+height,cz+z); nrm.push(0,1,0); if(uv) uv.push(x/tile,z/tile); }
+    for(let k=1;k<7;k++) idx.push(base,base+k+1,base+k);
+  }
+  return {pos,nrm,idx,uv};
+}
+
+function bannerGeo(x, y, z) {
+  const h=470, w=210, side=x<0?1:-1;
+  boxRegistry.push({group:currentGroup.name,exempt:currentGroup.exempt,
+    min:[x,y-h/2,z-w/2],max:[x,y+h/2,z+w/2]});
+  return {pos:[x,y-h/2,z-w/2,x,y-h/2,z+w/2,x,y+h/2,z+w/2,x,y+h/2,z-w/2],
+    nrm:Array(4).fill([side,0,0]).flat(), idx:side>0?[0,2,1,0,3,2]:[0,1,2,0,2,3],
+    uv:side>0?[.995,.745,.755,.745,.755,.005,.995,.005]:[.755,.745,.995,.745,.995,.005,.755,.005]};
+}
+
+function clawReliefGeo(outline, triangles, baseY, height, depth) {
+  const points = outline.map(([px, py]) => [(px - 256) * height / 456, baseY + (484 - py) * height / 456]);
+  const pos=[], nrm=[], idx=[];
+  const tri = (vertices, normal) => {
+    const off=pos.length/3;
+    for (const p of vertices) { pos.push(...p); nrm.push(...normal); }
+    idx.push(off,off+1,off+2);
+  };
+  for (const source of triangles) {
+    const face=source.map(([px,py]) => [(px-256)*height/456,baseY+(484-py)*height/456]);
+    const cross=(face[1][0]-face[0][0])*(face[2][1]-face[0][1])-(face[1][1]-face[0][1])*(face[2][0]-face[0][0]);
+    if (cross < 0) [face[1],face[2]]=[face[2],face[1]];
+    // The front is a shallow hammered relief. Its tilted normal catches the
+    // existing overhead key behind the sculpture while the face stays +Z.
+    tri(face.map(([x,y]) => [x,y,DAIS_POS[2]+depth/2]),[0,0.8,0.6]);
+    tri([...face].reverse().map(([x,y]) => [x,y,DAIS_POS[2]-depth/2]),[0,0,-1]);
+  }
+  let area=0;
+  for(let i=0;i<points.length;i++) {
+    const a=points[i],b=points[(i+1)%points.length]; area+=a[0]*b[1]-b[0]*a[1];
+  }
+  if(area<0) points.reverse();
+  for(let i=0;i<points.length;i++) {
+    const a=points[i],b=points[(i+1)%points.length];
+    const dx=b[0]-a[0],dy=b[1]-a[1],len=Math.hypot(dx,dy);
+    const normal=[dy/len,-dx/len,0];
+    const af=[a[0],a[1],DAIS_POS[2]+depth/2],ab=[a[0],a[1],DAIS_POS[2]-depth/2];
+    const bf=[b[0],b[1],DAIS_POS[2]+depth/2],bb=[b[0],b[1],DAIS_POS[2]-depth/2];
+    tri([af,ab,bb],normal); tri([af,bb,bf],normal);
+  }
+  return {pos,nrm,idx,uv:null};
 }
 
 function mergeGeos(geos) {
   const wantUV = geos.some((g) => g.uv);
-  const pos = [], nrm = [], idx = [], uv = wantUV ? [] : null;
+  const wantColor = geos.some((g) => g.col);
+  const pos = [], nrm = [], idx = [], uv = wantUV ? [] : null, col = wantColor ? [] : null;
   for (const g of geos) {
     const off = pos.length / 3;
     pos.push(...g.pos); nrm.push(...g.nrm);
@@ -408,12 +489,25 @@ function mergeGeos(geos) {
       if (g.uv) uv.push(...g.uv);
       else for (let i = 0; i < g.pos.length / 3; i++) uv.push(0, 0);
     }
+    if (col) {
+      if (g.col) col.push(...g.col);
+      else for (let i = 0; i < g.pos.length / 3; i++) col.push(1, 1, 1);
+    }
     for (const i of g.idx) idx.push(i + off);
   }
-  return { pos, nrm, idx, uv };
+  return { pos, nrm, idx, uv, col };
 }
 
 function addMesh(name, geo, material, translation = [0, 0, 0]) {
+  for (let i = 0; i < geo.idx.length; i += 3) {
+    const [a,b,c] = geo.idx.slice(i,i+3);
+    const ax=geo.pos[a*3], ay=geo.pos[a*3+1], az=geo.pos[a*3+2];
+    const ux=geo.pos[b*3]-ax, uy=geo.pos[b*3+1]-ay, uz=geo.pos[b*3+2]-az;
+    const vx=geo.pos[c*3]-ax, vy=geo.pos[c*3+1]-ay, vz=geo.pos[c*3+2]-az;
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const dot=nx*geo.nrm[a*3]+ny*geo.nrm[a*3+1]+nz*geo.nrm[a*3+2];
+    if (dot <= 1e-8) throw new Error(`${name} triangle ${i/3} has inverted or degenerate winding (${dot})`);
+  }
   const prim = doc
     .createPrimitive()
     .setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(new Float32Array(geo.pos)).setBuffer(buffer))
@@ -426,6 +520,7 @@ function addMesh(name, geo, material, translation = [0, 0, 0]) {
       doc.createAccessor().setType('VEC2').setArray(new Float32Array(geo.uv)).setBuffer(buffer),
     );
   }
+  if (geo.col) prim.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(new Float32Array(geo.col)).setBuffer(buffer));
   const m = doc.createMesh(name).addPrimitive(prim);
   const node = doc.createNode(name).setMesh(m).setTranslation(translation);
   scene.addChild(node);
@@ -443,81 +538,61 @@ function addMesh(name, geo, material, translation = [0, 0, 0]) {
 // A neutral grey texel therefore renders as the same blue the founder saw. The
 // warmth is what survives the rig.
 async function wallPanelPng() {
-  const S = WALL_TEX_PX, CELL = S / 2, INSET = 7, P = CELL - INSET * 2;
+  // Negative wall V places the image's first rows at floor level. One repeat
+  // now spans all 950 wu, so the walnut cannot restart halfway up a wall.
   const panels = [];
-  for (let gy = 0; gy < 2; gy++) {
-    for (let gx = 0; gx < 2; gx++) {
-      const x = gx * CELL + INSET, y = gy * CELL + INSET;
-      panels.push(`
-    <rect x="${x}" y="${y}" width="${P}" height="${P}" fill="url(#face)"/>
-    <rect x="${x}" y="${y}" width="${P}" height="5" fill="#a89b86" opacity="0.42"/>
-    <rect x="${x}" y="${y}" width="5" height="${P}" fill="#93897b" opacity="0.28"/>
-    <rect x="${x}" y="${y + P - 6}" width="${P}" height="6" fill="#0e0d0b" opacity="0.72"/>
-    <rect x="${x + P - 5}" y="${y}" width="5" height="${P}" fill="#12110e" opacity="0.5"/>
-    <circle cx="${x + 16}" cy="${y + 16}" r="4.5" fill="#b3a892" opacity="0.42"/>
-    <circle cx="${x + P - 16}" cy="${y + 16}" r="4.5" fill="#b3a892" opacity="0.42"/>
-    <circle cx="${x + 16}" cy="${y + P - 18}" r="4.5" fill="#9e9484" opacity="0.34"/>
-    <circle cx="${x + P - 16}" cy="${y + P - 18}" r="4.5" fill="#9e9484" opacity="0.34"/>`);
-    }
+  for (let x = 0; x < 512; x += 256) {
+    panels.push(`<rect x="${x+13}" y="34" width="230" height="250" rx="3" fill="#683619" stroke="#321908" stroke-width="9"/>
+      <rect x="${x+25}" y="46" width="206" height="226" fill="url(#wood)" stroke="#bd7740" stroke-width="5"/>
+      <path d="M${x+34} 52 V266 M${x+56} 52 V266 M${x+151} 52 V266 M${x+209} 52 V266" stroke="#47220f" stroke-width="5" opacity=".35"/>
+      <path d="M${x+43} 52 V266 M${x+72} 52 V266 M${x+175} 52 V266" stroke="#c08047" stroke-width="4" opacity=".32"/>
+      <rect x="${x+15}" y="343" width="226" height="545" fill="url(#navy)" stroke="#b49356" stroke-width="5"/>
+      <rect x="${x+27}" y="355" width="202" height="521" fill="none" stroke="#665631" stroke-width="4"/>`);
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}">
-  <defs>
-    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7c7468"/>
-      <stop offset="0.55" stop-color="#6b6358"/>
-      <stop offset="1" stop-color="#524b43"/>
-    </linearGradient>
-  </defs>
-  <rect width="${S}" height="${S}" fill="#1b1815"/>
-  ${panels.join('\n')}
-</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="1024">
+  <defs><linearGradient id="wood" x2="1" y2="0"><stop stop-color="#8A4A20"/><stop offset=".5" stop-color="#A9622F"/><stop offset="1" stop-color="#793c1c"/></linearGradient>
+  <linearGradient id="navy" x2="1" y2="1"><stop stop-color="#0b1a3a"/><stop offset="1" stop-color="#001858"/></linearGradient></defs>
+  <g transform="translate(0 1024) scale(1 -1)"><rect width="512" height="1024" fill="#08152d"/>
+  <rect width="512" height="308" fill="#8A4A20"/>${panels.join('')}
+  <rect y="0" width="512" height="25" fill="#27180f"/><rect y="23" width="512" height="6" fill="#b37e44"/>
+  <rect y="306" width="512" height="26" fill="#32261b"/><rect y="306" width="512" height="6" fill="#dda960"/>
+  <rect y="895" width="512" height="129" fill="#30291e"/>
+  <rect y="901" width="512" height="9" fill="#c29b55"/><rect y="922" width="512" height="8" fill="#806037"/>
+  <rect y="949" width="512" height="45" fill="#4b3720"/><rect y="997" width="512" height="8" fill="#d1a964"/></g>
+  </svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 async function ceilingPanelPng() {
-  const S = CEIL_TEX_PX, CELL = S / 2, RIB = 16;
+  const S = CEIL_TEX_PX, CELL = S / 2, RIB = 14;
   const cells = [];
   for (let gy = 0; gy < 2; gy++) {
     for (let gx = 0; gx < 2; gx++) {
       const x = gx * CELL + RIB, y = gy * CELL + RIB, W = CELL - RIB * 2;
       cells.push(`
-    <rect x="${x}" y="${y}" width="${W}" height="${W}" fill="#2d3a45"/>
-    <rect x="${x}" y="${y}" width="${W}" height="5" fill="#141c23" opacity="0.85"/>
-    <rect x="${x + 10}" y="${y + 10}" width="${W - 20}" height="${W - 20}" fill="#3a4854"/>`);
+    <rect x="${x}" y="${y}" width="${W}" height="${W}" fill="#0b1a3a" stroke="#8f7546" stroke-width="5"/>
+    <rect x="${x + 10}" y="${y + 10}" width="${W - 20}" height="${W - 20}" fill="#132d50" stroke="#36476a" stroke-width="5"/>`);
     }
   }
   // Brighter than it looks right, on purpose. The ceiling's normal is -Y, so
   // it takes NO directional key and only the hemisphere's GROUND term; a
   // ceiling authored at wall brightness renders as a black void overhead.
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}">
-  <rect width="${S}" height="${S}" fill="#5e6e7c"/>
-  <rect width="${S}" height="6" fill="#8399ab"/>
-  <rect y="${CELL}" width="${S}" height="6" fill="#8399ab"/>
-  <rect width="6" height="${S}" fill="#75899a"/>
-  <rect x="${CELL}" width="6" height="${S}" fill="#75899a"/>
+  <rect width="${S}" height="${S}" fill="#8e826d"/>
+  <rect width="${S}" height="7" fill="#e0c070"/>
+  <rect y="${CELL}" width="${S}" height="7" fill="#e0c070"/>
+  <rect width="7" height="${S}" fill="#e0c070"/>
+  <rect x="${CELL}" width="7" height="${S}" fill="#e0c070"/>
   ${cells.join('\n')}
 </svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-// A RAISED ACCESS FLOOR — the bolted panel grid every real dealing room and
-// server hall stands on, and the last flat surface left in the shell. The v1
-// audit finding was that EVERY shell surface rendered one byte value; walls and
-// ceiling got fixed first, which left the floor as the only untextured plane,
-// and it is the single largest surface in the chase camera's frame.
-//
-// BRIGHTNESS IS MATCHED, NOT CHOSEN, AND IT IS MATCHED BY MEASUREMENT.
-// The founder signed off "the lighting is good", so adding a texture here must
-// not move the floor's tone. The outgoing factor was the LINEAR triple
-// [0.052, 0.068, 0.086].
-//
-// Hand-picking hex codes to hit that does NOT work: the first attempt centred
-// the panel gradient on srgb(0.052,0.068,0.086) = #404a53 and predicted a 2.5%
-// drop, but the 8 px seams plus the gradient's dark half MEASURED -10.9, -13.3,
-// -11.8 percent. So the art is authored freely and then normalised against the
-// target by `normalizeMeanLinear`. Retune the art all you like; the tone is
-// pinned by the measurement, not by the swatches.
-const FLOOR_TARGET_LINEAR = [0.052, 0.068, 0.086];
+// Dark stone panels carry champagne inlay. The former mean was the LINEAR
+// triple [0.052, 0.068, 0.086]. `normalizeMeanLinear` keeps the new target
+// stable when the stone artwork changes.
+// 69% of the old mean gives the hall darker stone without crushing it to black.
+const FLOOR_TARGET_LINEAR = [0.036, 0.045, 0.056];
 
 const srgbToLinear = (c) => {
   const v = c / 255;
@@ -554,46 +629,64 @@ async function normalizeMeanLinear(png, target) {
   return sharp(data, { raw: info }).png().toBuffer();
 }
 async function floorPanelPng() {
-  const S = FLOOR_TEX_PX, CELL = S / 2, SEAM = 8, BOLT = 5;
+  const S = FLOOR_TEX_PX, CELL = S / 2, SEAM = 3;
   const panels = [];
   for (let gy = 0; gy < 2; gy++) {
     for (let gx = 0; gx < 2; gx++) {
       const x = gx * CELL + SEAM, y = gy * CELL + SEAM, W = CELL - SEAM * 2;
       panels.push(`
     <rect x="${x}" y="${y}" width="${W}" height="${W}" fill="url(#deck)"/>
-    <rect x="${x}" y="${y}" width="${W}" height="4" fill="#5b646e" opacity="0.5"/>
-    <rect x="${x}" y="${y + W - 4}" width="${W}" height="4" fill="#1d2329" opacity="0.6"/>
-    <circle cx="${x + 18}" cy="${y + 18}" r="${BOLT}" fill="#59626c" opacity="0.55"/>
-    <circle cx="${x + W - 18}" cy="${y + 18}" r="${BOLT}" fill="#59626c" opacity="0.55"/>
-    <circle cx="${x + 18}" cy="${y + W - 18}" r="${BOLT}" fill="#4c555e" opacity="0.45"/>
-    <circle cx="${x + W - 18}" cy="${y + W - 18}" r="${BOLT}" fill="#4c555e" opacity="0.45"/>`);
+    <rect x="${x+8}" y="${y+8}" width="${W-16}" height="${W-16}" fill="none" stroke="#9a875c" stroke-width="2" opacity=".42"/>
+    <path d="M${x+18} ${y+32} H${x+W-18}" stroke="#78859a" stroke-width="5" opacity=".18"/>`);
     }
   }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}">
   <defs>
     <linearGradient id="deck" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#474f59"/>
-      <stop offset="1" stop-color="#39414a"/>
+      <stop offset="0" stop-color="#263746"/>
+      <stop offset="1" stop-color="#101f31"/>
     </linearGradient>
   </defs>
-  <rect width="${S}" height="${S}" fill="#262d34"/>
+  <rect width="${S}" height="${S}" fill="#6d6248"/>
   ${panels.join('\n')}
 </svg>`;
   return normalizeMeanLinear(await sharp(Buffer.from(svg)).png().toBuffer(), FLOOR_TARGET_LINEAR);
 }
 
+async function granitePng() {
+  let seed=71;
+  const marks=[];
+  for(let i=0;i<150;i++) {
+    seed=(seed*1664525+1013904223)>>>0;
+    const x=seed%128; seed=(seed*1664525+1013904223)>>>0;
+    const y=seed%128;
+    marks.push(`<rect x="${x}" y="${y}" width="4" height="4" fill="${i%9?'#31343a':'#6a6250'}" opacity=".65"/>`);
+  }
+  return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">
+    <rect width="128" height="128" fill="#10141b"/>${marks.join('')}</svg>`)).png().toBuffer();
+}
+
 // ------------------------------------------------------------- 1. shell -----
-const WALL_M = texturedMat('TradingFloorWall', await wallPanelPng(), { rough: 0.94 });
-const CEIL_M = texturedMat('TradingFloorCeiling', await ceilingPanelPng(), { rough: 0.96 });
+const WALL_M = texturedMat('TradingFloorWall', await wallPanelPng(), { rough: 0.82 });
+const CEIL_M = texturedMat('TradingFloorCeiling', await ceilingPanelPng(), { rough: 0.86 });
 // rough 0.55 is carried over from the factor-only v2 floor on purpose: it is
 // what gives the deck its broad sheen under the directional key, and
 // `texturedMat`'s 0.92 default would flatten it.
-const FLOOR_M = texturedMat('TradingFloorFloor', await floorPanelPng(), { rough: 0.55 });
-const TRIM = mat('TradingFloorTrim', [0.22, 0.88, 0.58], { unlit: true });
+const FLOOR_M = texturedMat('TradingFloorFloor', await floorPanelPng(), { rough: 0.45 });
+const TRIM = mat('TradingFloorTrim', [1, 1, 1], { unlit: true });
+const BRASS = mat('TradingFloorBrass', [0.75, 0.53, 0.16], { rough: 0.36, metal: 0.25 })
+  .setEmissiveFactor([0.13, 0.095, 0.032]);
+const GRANITE = texturedMat('TradingFloorGranite', await granitePng(), { rough: 0.35, metal: 0.12 });
+const atlasPath = resolve(dirname(output), 'lane-a-identity-atlas.png');
+execFileSync('python', [resolve(REPO_ROOT, 'scripts/trading-floor/render-identity-atlas.py'), atlasPath]);
+const IDENTITY = texturedMat('TradingFloorIdentity', await sharp(atlasPath).png().toBuffer(), { rough: 0.6 });
+IDENTITY.setDoubleSided(true);
+IDENTITY.setAlphaMode('MASK');
+IDENTITY.setEmissiveTexture(IDENTITY.getBaseColorTexture()).setEmissiveFactor([0.3, 0.26, 0.14]);
 // Lighter than a task chair really is. The first v2 pass used 0.085 and the
 // chairs rendered as a stack of black slabs against a mid-grey floor — a dark
 // prop in a room with no shadows has nothing to separate its own faces.
-const CHAIR_M = mat('TradingFloorChair', [0.175, 0.168, 0.185], { rough: 0.58, metal: 0.2 });
+const CHAIR_M = mat('TradingFloorChair', [1, 1, 1], { rough: 0.48, metal: 0.18 });
 
 addMesh(
   'TradingFloorFloorSlab',
@@ -625,33 +718,32 @@ const backPilasterX = [-1050, 1050];
 addMesh(
   'TradingFloorWalls',
   group('walls', null, () => mergeGeos([
-    boxGeo(0, RH / 2, -hz - WT / 2, RW + WT * 2, RH, WT, WALL_TILE_WU),                 // back (-Z)
-    boxGeo(-hx - WT / 2, RH / 2, 0, WT, RH, RD, WALL_TILE_WU),                          // left
-    boxGeo(hx + WT / 2, RH / 2, 0, WT, RH, RD, WALL_TILE_WU),                           // right
+    boxGeo(0, RH / 2, -hz - WT / 2, RW + WT * 2, RH, WT, {u:WALL_TILE_WU,v:RH}),       // back (-Z)
+    boxGeo(-hx - WT / 2, RH / 2, 0, WT, RH, RD, {u:WALL_TILE_WU,v:RH}),                // left
+    boxGeo(hx + WT / 2, RH / 2, 0, WT, RH, RD, {u:WALL_TILE_WU,v:RH}),                 // right
     // front (+Z) wall, split around the entrance so the arch lines up with
     // the exterior doorway (both are on +Z).
-    boxGeo(-(DOOR_W / 2 + (RW - DOOR_W) / 4), RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, WALL_TILE_WU),
-    boxGeo(DOOR_W / 2 + (RW - DOOR_W) / 4, RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, WALL_TILE_WU),
-    boxGeo(0, DOOR_H + (RH - DOOR_H) / 2, hz + WT / 2, DOOR_W, RH - DOOR_H, WT, WALL_TILE_WU),  // lintel
+    boxGeo(-(DOOR_W / 2 + (RW - DOOR_W) / 4), RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, {u:WALL_TILE_WU,v:RH}),
+    boxGeo(DOOR_W / 2 + (RW - DOOR_W) / 4, RH / 2, hz + WT / 2, (RW - DOOR_W) / 2 + WT, RH, WT, {u:WALL_TILE_WU,v:RH}),
+    boxGeo(0, DOOR_H + (RH - DOOR_H) / 2, hz + WT / 2, DOOR_W, RH - DOOR_H, WT, {u:WALL_TILE_WU,v:RH}),  // lintel
     // Four corner pillars. These DO stand in reachable floor, which is legal
     // only because they are colliders — see the pillar entries in
     // TRADING_FLOOR_SOLIDS. If that collider is ever removed, remove this
     // exemption in the same diff or the gate stops protecting the room.
     ...[[-hx + 190, -hz + 190], [hx - 190, -hz + 190], [-hx + 190, hz - 190], [hx - 190, hz - 190]].map(
-      ([x, z]) => boxGeo(x, RH / 2, z, 110, RH, 110, WALL_TILE_WU, {
+      ([x, z]) => boxGeo(x, RH / 2, z, 110, RH, 110, {u:WALL_TILE_WU,v:RH}, {
         label: 'corner pillar',
         exempt: 'collider in TRADING_FLOOR_SOLIDS',
       })
     ),
     // side-wall pilasters
     ...sidePilasterZ.flatMap((z) => [
-      boxGeo(-hx + PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, WALL_TILE_WU),
-      boxGeo(hx - PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, WALL_TILE_WU),
+      boxGeo(-hx + PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, {u:WALL_TILE_WU,v:RH}),
+      boxGeo(hx - PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, {u:WALL_TILE_WU,v:RH}),
     ]),
     // back-wall pilasters, outboard of the screen (screen half-width is 850)
-    ...backPilasterX.map((x) => boxGeo(x, RH / 2, -hz + PIL_D / 2, PIL_W, RH, PIL_D, WALL_TILE_WU)),
-    // Screen surround: a shallow recessed frame so the board is mounted IN the
-    // wall rather than stuck on it.
+    ...backPilasterX.map((x) => boxGeo(x, RH / 2, -hz + PIL_D / 2, PIL_W, RH, PIL_D, {u:WALL_TILE_WU,v:RH})),
+    // The board surround now belongs to the single brass mesh below.
     //
     // THE INSET IS A CLEARANCE NUMBER, NOT A STYLE CHOICE. The player's CENTRE
     // clamps at `halfZ - PLAYER_RADIUS` = 1100 - 46 = 1054, so anything whose
@@ -669,10 +761,6 @@ addMesh(
     // TOGETHER or that separation is what breaks. Found by tf3d-audit,
     // 2026-09-19; the pilaster 40/6 derivation below does NOT generalise to
     // wall detail, and the surround was the deepest protrusion in the room.
-    boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44, WALL_TILE_WU),
-    boxGeo(0, SCREEN_BOTTOM_Y - 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44, WALL_TILE_WU),
-    boxGeo(-(SCREEN_W / 2 + 34), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44, WALL_TILE_WU),
-    boxGeo(SCREEN_W / 2 + 34, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44, WALL_TILE_WU),
   ])),
   WALL_M
 );
@@ -683,26 +771,58 @@ addMesh(
   CEIL_M
 );
 
+const brassGeos = group('brass', null, () => [
+  // Chair rail and crown stand proud of each inner wall. The entrance breaks
+  // the front rail; the side-wall pilaster lips cover their own faces.
+  boxGeo(0, 296, -hz + 7, RW, 18, 12),
+  boxGeo(-hx + 7, 296, 0, 12, 18, RD), boxGeo(hx - 7, 296, 0, 12, 18, RD),
+  boxGeo(-740, 296, hz - 7, 1120, 18, 12), boxGeo(740, 296, hz - 7, 1120, 18, 12),
+  ...sidePilasterZ.flatMap((z) => [
+    boxGeo(-hx + PIL_D + 7, 296, z, 12, 18, PIL_W),
+    boxGeo(hx - PIL_D - 7, 296, z, 12, 18, PIL_W),
+  ]),
+  boxGeo(0, 925, -hz + 7, RW, 20, 15),
+  boxGeo(-hx + 7, 925, 0, 15, 20, RD), boxGeo(hx - 7, 925, 0, 15, 20, RD),
+  boxGeo(0, 925, hz - 7, RW, 20, 15),
+  // Exact v2 board surround positions and sizes, now gilt.
+  boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44),
+  boxGeo(0, SCREEN_BOTTOM_Y - 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44),
+  boxGeo(-(SCREEN_W / 2 + 34), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44),
+  boxGeo(SCREEN_W / 2 + 34, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44),
+  // Thin tier rims share the brass draw call with the claw.
+  ...[[32,350,346,65],[50,330,210,55],[70,310,160,35]].map(([y,x,z,c]) =>
+    group('plinth rim', 'inside TradingFloorHoloDais collider', () =>
+      octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, 2, c, 0, false))),
+]);
+
+addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOOR_SOLIDS', () =>
+  mergeGeos([[0,350,346,32,65],[32,330,210,18,55],[50,310,160,20,35]].map(([y,x,z,h,c]) =>
+    octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, h, c, 180)))), GRANITE);
+
+addMesh('TradingFloorIdentity', mergeGeos([
+  group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 380, 600, 96, true)),
+  ...[-1294,1294].map((x) => group('wall banners', null, () => bannerGeo(x, 530, -985))),
+]), IDENTITY);
+
 addMesh(
   'TradingFloorTrimGlow',
   group('trim', null, () => mergeGeos([
-    ringGeo(DAIS_POS[0], 3, DAIS_POS[2], 504, 560),                        // dais floor ring
-    boxGeo(0, 26, -hz + 6, RW, 16, 10),                                    // wall base strips
-    boxGeo(-hx + 6, 26, 0, 10, 16, RD),
-    boxGeo(hx - 6, 26, 0, 10, 16, RD),
-    boxGeo(0, RH - 40, -hz + 6, RW, 12, 10),                               // cornice strip
+    colored(boxGeo(0, 26, -hz + 6, RW, 16, 10), [.08,.28,.94]),             // blue base strips
+    colored(boxGeo(-hx + 6, 26, 0, 10, 16, RD), [.08,.28,.94]),
+    colored(boxGeo(hx - 6, 26, 0, 10, 16, RD), [.08,.28,.94]),
+    colored(boxGeo(0, RH - 40, -hz + 6, RW, 12, 10), [.08,.28,.94]),
     // ceiling light strips — three runs down the length of the hall. A lit
     // grid overhead is most of what makes an interior read as a ROOM rather
     // than a box, and it costs nothing: same unlit material, same mesh.
-    ...[-700, 0, 700].map((z) => boxGeo(0, RH - 14, z, RW - 240, 14, 64)),
+    ...[-700, 0, 700].map((z) => colored(boxGeo(0, RH - 14, z, RW - 240, 14, 64), [1,.81,.55])),
     // Screen surround glow, 6 wu proud of the frame. `-hz + 36` is paired with
     // the frame's `-hz + 12` above and the two MUST move together: this inner
     // face is the deepest protrusion in the room, and at the old `-hz + 46` it
     // sat 4 wu past the player-centre clamp. See the note on the frame.
-    boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 10, -hz + GLOW_INSET, SCREEN_W + 40, 12, 8),
-    boxGeo(0, SCREEN_BOTTOM_Y - 10, -hz + GLOW_INSET, SCREEN_W + 40, 12, 8),
-    boxGeo(-(SCREEN_W / 2 + 10), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 12, SCREEN_H + 40, 8),
-    boxGeo(SCREEN_W / 2 + 10, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 12, SCREEN_H + 40, 8),
+    colored(boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 10, -hz + GLOW_INSET, SCREEN_W + 40, 12, 8), [.08,.28,.94]),
+    colored(boxGeo(0, SCREEN_BOTTOM_Y - 10, -hz + GLOW_INSET, SCREEN_W + 40, 12, 8), [.08,.28,.94]),
+    colored(boxGeo(-(SCREEN_W / 2 + 10), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 12, SCREEN_H + 40, 8), [.08,.28,.94]),
+    colored(boxGeo(SCREEN_W / 2 + 10, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 12, SCREEN_H + 40, 8), [.08,.28,.94]),
   ])),
   TRIM
 );
@@ -721,28 +841,25 @@ addMesh(
   // original. The instanced copies stand at seat positions derived from the
   // desk constants, which the collider set covers.
   group('chair template', 'extracted at runtime; authored copy never renders', () => mergeGeos([
-    boxGeo(0, 70, 4, 108, 16, 98),           // seat pan
-    boxGeo(0, 80, 4, 96, 10, 86),            // seat cushion, proud of the pan
-    boxGeo(0, 120, -44, 98, 74, 16),         // backrest, lower pad
-    boxGeo(0, 166, -44, 84, 14, 14),         // backrest, top rail
-    boxGeo(0, 34, 0, 24, 72, 24),            // gas post
-    boxGeo(0, 16, 0, 40, 18, 40),            // hub above the base
-    boxGeo(0, 7, 0, 122, 12, 22),            // base spider, X arm
-    boxGeo(0, 7, 0, 22, 12, 122),            // base spider, Z arm
-    boxGeo(-58, 96, 6, 12, 10, 78),          // armrests
-    boxGeo(58, 96, 6, 12, 10, 78),
-    boxGeo(-58, 82, 36, 12, 28, 12),         // armrest posts
-    boxGeo(58, 82, 36, 12, 28, 12),
+    colored(boxGeo(0, 70, 4, 108, 16, 98), [.12,.14,.18]),
+    colored(boxGeo(0, 80, 4, 96, 10, 86), [.55,.075,.07]),
+    colored(boxGeo(0, 120, -44, 98, 74, 16), [.55,.075,.07]),
+    colored(boxGeo(0, 166, -44, 84, 14, 14), [.12,.14,.18]),
+    colored(boxGeo(0, 34, 0, 24, 72, 24), [.12,.14,.18]),
+    colored(boxGeo(0, 16, 0, 40, 18, 40), [.12,.14,.18]),
+    colored(boxGeo(0, 7, 0, 122, 12, 22), [.12,.14,.18]),
+    colored(boxGeo(0, 7, 0, 22, 12, 122), [.12,.14,.18]),
+    colored(boxGeo(-58, 96, 6, 12, 10, 78), [.55,.075,.07]),
+    colored(boxGeo(58, 96, 6, 12, 10, 78), [.55,.075,.07]),
+    colored(boxGeo(-58, 82, 36, 12, 28, 12), [.12,.14,.18]),
+    colored(boxGeo(58, 82, 36, 12, 28, 12), [.12,.14,.18]),
   ])),
   CHAIR_M,
   [0, 0, 0]
 );
 
-// Every box is registered by now, so the gate can see the whole room. It runs
-// BEFORE the props are copied and before export: the props come in as finished
-// primitives rather than through `boxGeo`, and they are covered by the desk and
-// kiosk colliders, so they are outside this gate's remit by construction.
-assertWallDetailClears();
+// Run the gate after the sourced claw is registered below. Console and kiosk
+// geometry retain their collider protection outside this authored box gate.
 
 // ------------------------------------------------------------- 3. props -----
 // Copied verbatim out of the v1 stage-1 build. They were decimated, scaled and
@@ -819,8 +936,45 @@ async function copyProp(sourceName, outName, translation, scale = 1) {
 }
 
 await copyProp('TradingFloorConsoleModule', 'TradingFloorConsoleModule', [-CONSOLE_WALL_X, 0, CONSOLE_ROW_Z[0]]);
-await copyProp('TradingFloorHoloDais', 'TradingFloorHoloDais', DAIS_POS);
 await copyProp('TradingFloorMonitorStation', 'TradingFloorMonitorStation', MONITOR_POS, MONITOR_SCALE);
+
+// The exterior Meshy model closes the open V from the spawn. Two mirrored
+// reliefs preserve the brand outline and remain visible beside the avatar.
+const traced = JSON.parse(execFileSync('python', [
+  resolve(REPO_ROOT, 'scripts/trading-floor/trace-claw-relief.py'),
+  resolve(REPO_ROOT, 'apps/web/public/assets/slot-symbols/claw.png'),
+], {encoding:'utf8'}));
+const clawBase=clawReliefGeo(traced.outline,traced.triangles,70,158,56);
+const clawBounds=[];
+for (const [centreX, mirror] of [[-220, false], [220, true]]) {
+  const geo={...clawBase,pos:[...clawBase.pos],nrm:[...clawBase.nrm],idx:[...clawBase.idx]};
+  for(let i=0;i<geo.pos.length;i+=3) {
+    geo.pos[i]=centreX+(mirror?-1:1)*geo.pos[i];
+    if(mirror) geo.nrm[i]=-geo.nrm[i];
+  }
+  if(mirror) for(let i=0;i<geo.idx.length;i+=3) [geo.idx[i+1],geo.idx[i+2]]=[geo.idx[i+2],geo.idx[i+1]];
+  const bounds={min:[Infinity,Infinity,Infinity],max:[-Infinity,-Infinity,-Infinity]};
+  for(let i=0;i<geo.pos.length;i+=3) for(let axis=0;axis<3;axis++) {
+    const v=geo.pos[i+axis];
+    bounds.min[axis]=Math.min(bounds.min[axis],v);
+    bounds.max[axis]=Math.max(bounds.max[axis],v);
+  }
+  if(bounds.max[1]>230) throw new Error(`golden claw top ${bounds.max[1]} exceeds 230 wu`);
+  if(bounds.min[0]<-310 || bounds.max[0]>310 ||
+     bounds.min[2]<DAIS_POS[2]-160 || bounds.max[2]>DAIS_POS[2]+160)
+    throw new Error(`golden claw exceeds the top tier: ${JSON.stringify(bounds)}`);
+  boxRegistry.push({group:'golden claw',exempt:'inside TradingFloorHoloDais collider',
+    min:bounds.min,max:bounds.max});
+  clawBounds.push(bounds);
+  // Keep the same brass draw call. A lower blue vertex channel gives the
+  // broad relief faces a gold hue under the warm ambient fill.
+  brassGeos.push(colored(geo, [1,1,0.15]));
+}
+for(const [y,x,z] of [[32,350,346],[50,330,210],[70,310,160]])
+  if(x>350 || z>346) throw new Error(`plinth rim at y ${y} exceeds the dais solid`);
+addMesh('TradingFloorBrass', mergeGeos(brassGeos), BRASS);
+console.log(`  golden claws: twin reliefs face +Z, 158 wu over 70 wu plinth = ${clawBounds[0].max[1].toFixed(2)} wu top; AABBs ${JSON.stringify(clawBounds)}`);
+assertWallDetailClears();
 
 // ---- the asset/scene contract, as DATA -------------------------------------
 // `trading-floor-room.ts` has always carried the sentence "these numbers and
@@ -851,6 +1005,7 @@ scene.setExtras({
     height: Number((kiosk.maxY - kiosk.minY).toFixed(2)),
   },
   room: { halfX: hx, halfZ: hz, height: RH },
+  statue: {top:Math.max(...clawBounds.map((b)=>b.max[1])),claws:clawBounds},
 });
 console.log(`  extras: screen ${SCREEN_W}x${SCREEN_H}@${SCREEN_BOTTOM_Y} | kiosk half ${scene.getExtras().kiosk.halfX}/${scene.getExtras().kiosk.halfZ} h${scene.getExtras().kiosk.height} | room ${hx}/${hz}/${RH}`);
 
@@ -859,7 +1014,7 @@ await doc.transform(dedup(), prune());
 let tris = 0;
 for (const m of doc.getRoot().listMeshes()) for (const p of m.listPrimitives()) tris += p.getIndices().getCount() / 3;
 console.log(
-  `interior v2: ${tris} tris | ${doc.getRoot().listMeshes().length} meshes | ` +
+  `interior v3: ${tris} tris | ${doc.getRoot().listMeshes().length} meshes | ` +
     `${doc.getRoot().listMaterials().length} materials (= draw calls) | ` +
     `${doc.getRoot().listTextures().length} textures | room ${RW}x${RH}x${RD} wu, door ${DOOR_W}x${DOOR_H} on +Z`
 );
