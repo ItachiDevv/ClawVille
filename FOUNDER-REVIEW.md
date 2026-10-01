@@ -87,22 +87,29 @@
 - **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
 - Session tradeDeskMain, 2026-10-01.
 
-### Trading Floor INTERIOR v4: solid claws, real trading desks, monitor stands, brass door (prod + staging, 2026-10-01)
-- **What:** the second visual pass on the inside of the Trading Floor (v3 "The Claw Exchange" reached prod in PR #305; v4
-  reached prod in PR #306, 18:24Z). Nothing moved: same desks, seats, kiosk, board, door position and trade tape. Changes from v3:
-  (1) the twin **Golden Claws** are now SOLID 3D claws (the same claw as on the roof outside), amber gold with soft shading, on a
-  lighter marble plinth with thin glowing gold lines on each step; (2) the teal sci-fi consoles are now **walnut-and-brass trading
-  desks** with drawers, a keyboard, a mouse, a desk phone and a brass nameplate; (3) the box chairs are now rounded **oxblood
-  leather executive chairs**; (4) each 3 x 2 monitor bank stands on a real stand with arms, the monitors have depth and a status
-  light, and some screens are amber **CLAW TERMINAL** screens that list town buildings (decoration only: no prices or numbers);
-  (5) the door is a **brass portal with smoked-glass double doors** and a "TO CLAWVILLE" sign.
-- **Where:** prod `https://clawville.world/trading-floor` or staging `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
-  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door.
-- **Feedback wanted:** (1) overall: is v4 cooler than v3? (2) the solid claws: right size, or bigger (they must stay under the
-  board's bottom edge seen from the door, so taller means wider and lower)? (3) the desks and chairs: right style? (4) the CLAW
-  TERMINAL screens: keep, or charts only? (5) the brass door. (6) still open from v3: the gold floor lines, the ticker legibility
-  at your display scaling, the warm light, and FPS on your Iris Xe laptop inside the room (every number so far is from an RTX 3080).
-- **Session:** coolerDesk2, 2026-10-01 (v3: coolerTrading).
+### Trading Floor INTERIOR v5 part 1: green claws, the desk sit, the camera, mouse drag (staging, 2026-10-01)
+- **Your v4 verdict is absorbed** (2026-10-01 ~19:20Z: "It honestly looks great ... You nailed the theme."): recorded in
+  3dStructure.md §9i "Interior v5" and GameFeatures.md §17g.2. Your v5 asks, in two parts. Part 2 comes next: the room
+  1.5x larger each way with 10 desks, a big Trading Monitor, velvet ropes round the plinth (your choice: it stays blocked),
+  a shallow water layer with coral, seaweed, starfish and light algae on the desks.
+- **What (part 1):** (1) the two claws on the plinth now use the SAME green material as the claw on the roof outside;
+  (2) the desk sit is rebuilt: E at a desk plays the sit-down at once (no arms-up T-pose), the label changes when the
+  animation starts, the avatar sits ON the chair cushion (before it floated in front of the chair, also on prod), the
+  "My trader" panel opens when the avatar has sat down (about 1.5 s), the avatar stays seated while the panel is open,
+  closing the panel (Escape or X) keeps you seated, E stands you up with the stand-up animation, and walking away cancels
+  the sit pose at once (no walking in a sitting pose); (3) the camera no longer flips 180 degrees: it stays on a line
+  behind you and moves closer to you when a wall, desk, pillar or the Trading Monitor is in the way (it ignores the
+  plinth), and you can no longer walk into the narrow gaps behind the desk line where it used to flip; (4) left-drag
+  with the mouse turns the view like in the open world (drag right = turn right, drag up/down = camera height); on a
+  touch screen a one-finger drag above the joysticks does the same.
+- **Where:** staging `https://staging.clawville.world/trading-floor` (or walk in from `/game`). Sit at a desk and close
+  the panel; walk to the gap between the Trading Monitor and the plinth near the back wall and turn round with the arrow
+  keys and with a mouse drag.
+- **Feedback wanted:** (1) do the claws now match the roof claw (the inside light is warmer, so the green can look a
+  little lighter inside)? (2) does the sit feel right, and is ~1.5 s to sit down too fast or too slow? (3) does the camera
+  still flip or jump anywhere? (4) is the drag speed right (it is the same as the open world)? (5) on your phone: does a
+  one-finger drag turn the view, and do the joysticks still work?
+- **Session:** coolerDesk3, 2026-10-01 (v4: coolerDesk2, v3: coolerTrading).
 
 ### Floor TV board redesign P6: larger text, 5 rows per page (design approved by the lead, 2026-10-01; you can veto)
 
