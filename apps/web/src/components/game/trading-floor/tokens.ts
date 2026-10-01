@@ -17,6 +17,6 @@ export const FLOOR_TEXT = {
 export const TRADING_SELF_SERVE_ENABLED = false;
 export const TRADING_SELF_SERVE_COMING_SOON = 'Coming soon';
 export const TRADING_SELF_SERVE_WALLET_EXPLANATION =
-  'Trading from your own wallet opens soon. The house traders below are live now.';
+  'Trading from your own wallet opens soon. You can watch the house traders below.';
 export const TRADING_SELF_SERVE_AGENT_EXPLANATION =
   'Launching your own trader opens soon. You can watch Genesis and ClawVille Runner below.';

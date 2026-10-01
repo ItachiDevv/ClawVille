@@ -589,7 +589,9 @@ describe('authed arena routes', () => {
   test('seat, status and settings write one event each and skip no-ops', async () => {
     const { call, log } = app();
     await call('POST', '/me/launch', launchBody());
-    expect((await call('POST', '/me/seat', { seated: true, seatIndex: 6 })).status).toBe(400);
+    // FLOOR_ARENA_DESK_COUNT = 10 (founder 2026-10-01): desks 0..9; 10 is out of range.
+    expect((await call('POST', '/me/seat', { seated: true, seatIndex: 10 })).status).toBe(400);
+    expect((await call('POST', '/me/seat', { seated: true, seatIndex: -1 })).status).toBe(400);
     const sat = await call('POST', '/me/seat', { seated: true, seatIndex: 2 });
     expect(await sat.json()).toMatchObject({ agent: { seated: true, seatIndex: 2 } });
     expect(log.at(-1)).toContain('Sat down at desk 3');

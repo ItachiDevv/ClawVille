@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   useQuestStore,
   retryUnclaimedRewards,
-  retryServerClaimsRestore,
+  syncTutorialClaimsFromServer,
 } from '@/stores/quest';
 import { QUEST_DEFINITIONS, type QuestId, type QuestDefinition } from '@/lib/quests';
 import {
@@ -13,6 +13,7 @@ import {
   getHudElement,
   subscribeHudElement,
 } from '@/lib/hud-anchors';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
@@ -217,20 +218,51 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
     desktopTopPx,
   );
 
+  // Who may claim (2026-10-01). The claim route needs a non-guest account
+  // (requireNonGuestIdentity), and the browser sends only its cookie, so
+  // only a resolved non-guest account can be credited here. Anonymous is a
+  // 401 and a guest-tier account a 403: the sweep used to run for every
+  // visitor and probe the serverOnly `on-the-board` quest (no prerequisites),
+  // which put one 401 in every logged-out /game console.
+  //   undefined = auth-me not resolved yet (loading, reset, or errored with
+  //               no cached payload): wait, it is transient.
+  //   null      = resolved, cannot claim (anonymous or guest tier).
+  //   string    = the account id that can claim.
+  const { data: authMe } = useAuthMe();
+  const claimAccountId: string | null | undefined =
+    authMe === undefined
+      ? undefined
+      : authMe?.user?.id && authMe.user.isGuest !== true
+        ? authMe.user.id
+        : null;
+  // The account this mount already swept for. A re-render or a refetch of the
+  // same account must not sweep again: the store only coalesces a sweep that
+  // is still in flight, so a second one would re-probe the serverOnly quests.
+  const sweptAccountRef = useRef<string | null>(null);
+
   // Q3 plan §2.6 + audit-fix 2026-04-29 — settle any locally-completed
   // tutorial quests whose server-side credit didn't land due to a one-time
   // network failure. Server is idempotent (409 = already_claimed = no-op).
   // Also probes serverOnly quests once their prereqs land.
   useEffect(() => {
+    if (claimAccountId === undefined) return;
+    if (claimAccountId === null) {
+      // Confirmed signed out or guest: the next sign-in, even to the same
+      // account, sweeps again (guest progress survives into the account).
+      sweptAccountRef.current = null;
+      return;
+    }
+    if (sweptAccountRef.current === claimAccountId) return;
+    sweptAccountRef.current = claimAccountId;
     // Quest-board restore belt (2026-07-29): server-known completions land
     // BEFORE the local claim sweep, so the sweep doesn't 409-spam the claim
-    // endpoint for quests the server already recorded. No-op when unstamped
-    // or already synced.
+    // endpoint for quests the server already recorded. Synced for THIS
+    // account: deduped per account, applied only when the store owner matches.
     void (async () => {
-      await retryServerClaimsRestore();
+      await syncTutorialClaimsFromServer(claimAccountId);
       await retryUnclaimedRewards();
     })();
-  }, []);
+  }, [claimAccountId]);
 
   // Only show after tutorial dismissed
   useEffect(() => {

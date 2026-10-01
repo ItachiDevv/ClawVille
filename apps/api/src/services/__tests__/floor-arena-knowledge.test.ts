@@ -6,6 +6,7 @@ import {
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
   DECISION_SCOPE,
   FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_DESK_COUNT,
   FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_HARD_RULES,
   FLOOR_ARENA_HOUSE_AGENTS,
@@ -102,8 +103,8 @@ describe('Trading Arena manual section 17c', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(78);
-    expect(protocolPointer(API)).toMatchObject({ version: 78, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(79);
+    expect(protocolPointer(API)).toMatchObject({ version: 79, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -358,6 +359,15 @@ describe('Trading Arena manual section 17c', () => {
     const mask = readFileSync(join(import.meta.dir, '..', 'floor-arena', 'content-mask.ts'), 'utf8');
     expect(mask).toContain("export const ARENA_MASK = '***';");
     expect(mask).toContain('masked: true');
+  });
+
+  test('v79: states the desk range 0 to 9 from FLOOR_ARENA_DESK_COUNT, the same bound the route and the seat tool use', () => {
+    expect(FLOOR_ARENA_DESK_COUNT).toBe(10);
+    expect(arenaSection()).toMatch(/`seatIndex` is an optional desk index from 0 to 9\s/);
+    const seatTool = CLAWVILLE_GAME_TOOLS.find((tool) => tool.name === 'clawville_arena_seat')!;
+    expect(seatTool.input_schema.properties.seatIndex?.description).toBe('Optional desk index, 0 to 9.');
+    const route = readFileSync(join(import.meta.dir, '..', '..', 'routes', 'floor-arena.ts'), 'utf8');
+    expect(route).toContain('const SEAT_MAX_INDEX = FLOOR_ARENA_DESK_COUNT - 1;');
   });
 
   test('states the D33 checkpoint schedule from its constants: checkpoints, alphas, budget, the two new reasons', () => {
