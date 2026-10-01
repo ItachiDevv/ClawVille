@@ -164,7 +164,7 @@ import {
  * v2 reached production on 2026-09-20. Serve the v3 bytes through a new query
  * because Cloudflare can keep the old path in its edge cache for one week.
  */
-const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=3';
+const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=4';
 
 // ---------------------------------------------------------------------------
 // Sit clips

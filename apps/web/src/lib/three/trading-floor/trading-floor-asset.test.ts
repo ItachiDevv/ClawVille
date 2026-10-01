@@ -95,6 +95,8 @@ interface GltfJson {
   nodes: GltfNode[];
   meshes: { primitives: { attributes: Record<string, number> }[] }[];
   accessors: GltfAccessor[];
+  materials: { name?: string; pbrMetallicRoughness?: { metallicFactor?: number } }[];
+  textures: unknown[];
 }
 
 /** Read the JSON chunk out of a binary glTF container. */
@@ -404,6 +406,13 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
       expect(Math.abs(bounds.min[0]! + bounds.max[0]!)).toBeGreaterThan(300);
       expect(bounds.min[0]!).toBeGreaterThanOrEqual(-310);
       expect(bounds.max[0]!).toBeLessThanOrEqual(310);
+      expect(bounds.min[1]!).toBe(70);
+      expect(bounds.max[2]! - bounds.min[2]!).toBeGreaterThan(80);
+      expect(bounds.min[2]!).toBeGreaterThanOrEqual(-220);
+      expect(bounds.max[2]!).toBeLessThanOrEqual(100);
+      for (const point of points[claw]!) {
+        expect(Math.abs(point.x) + Math.abs(point.z + 60)).toBeLessThanOrEqual(435 + 1);
+      }
     }
     // At the default camera height, every claw point is below the camera.
     // Projection toward the board has t > 1, so shadowY < pointY < the sill.
@@ -474,16 +483,31 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
   });
 });
 
-describe('Trading Floor asset — v3 colours and seal', () => {
+describe('Trading Floor asset — v4 colours, seal and portal', () => {
   test('the seal and both banners share one draw call', () => {
     expect(gltf.meshes).toHaveLength(10);
+    expect(gltf.materials).toHaveLength(10);
+    expect(gltf.textures).toHaveLength(7);
     const identity = nodeByName('TradingFloorIdentity');
     expect(gltf.meshes[identity.mesh!]!.primitives).toHaveLength(1);
   });
 
-  test('the old mint dais ring is absent from unlit trim', () => {
-    const node = nodeByName('TradingFloorTrimGlow');
-    expect(translation(node).y - worldHalfExtents(node).y).toBeGreaterThan(15);
+  test('the old mint dais ring is absent from unlit trim', async () => {
+    await MeshoptDecoder.ready;
+    const doc = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
+    const trim = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorTrimGlow')!;
+    const positions = trim.getMesh()!.listPrimitives()[0]!.getAttribute('POSITION')!;
+    const world = trim.getWorldMatrix();
+    for (let i = 0; i < positions.getCount(); i++) {
+      const p = positions.getElement(i, []);
+      const x = p[0]! * world[0]! + world[12]!;
+      const y = p[1]! * world[5]! + world[13]!;
+      const z = p[2]! * world[10]! + world[14]!;
+      // Door glass reaches y=12, outside the dais. Keep the original 15 wu
+      // exclusion on the dais footprint rather than the whole merged mesh.
+      if (Math.hypot(x, z + 60) <= 600) expect(y).toBeGreaterThan(15);
+    }
   });
 
   test('trim and instanced chairs carry vertex colours', () => {
@@ -491,6 +515,37 @@ describe('Trading Floor asset — v3 colours and seal', () => {
       const node = nodeByName(name);
       expect(gltf.meshes[node.mesh!]!.primitives[0]!.attributes.COLOR_0).toBeNumber();
     }
+  });
+
+  test('the smoked double doors stay behind the wall face and share the trim draw', async () => {
+    await MeshoptDecoder.ready;
+    const doc = await new NodeIO().registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
+    const trim = doc.getRoot().listNodes().find((node) => node.getName() === 'TradingFloorTrimGlow')!;
+    const primitive = trim.getMesh()!.listPrimitives()[0]!;
+    const positions = primitive.getAttribute('POSITION')!;
+    const colors = primitive.getAttribute('COLOR_0')!;
+    const world = trim.getWorldMatrix();
+    const leaves: number[][][] = [[], []];
+    for (let i = 0; i < positions.getCount(); i++) {
+      const p = positions.getElement(i, []);
+      const [x, y, z] = [0, 1, 2].map((axis) => world[12 + axis]! +
+        world[axis]! * p[0]! + world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]!);
+      if (Math.abs(x!) > 180 || y! < 10 || y! > 490 || z! < 1127 || z! > 1137) continue;
+      const color = colors.getElement(i, []);
+      expect(color[2]!).toBeGreaterThan(color[0]!);
+      expect(color[0]!).toBeGreaterThan(0);
+      expect(z!).toBeGreaterThan(TRADING_FLOOR_ROOM.halfZ);
+      expect(z!).toBeLessThan(TRADING_FLOOR_ROOM.halfZ + TRADING_FLOOR_ROOM.wallThickness);
+      leaves[x! < 0 ? 0 : 1]!.push([x!, y!, z!]);
+    }
+    for (const leaf of leaves) {
+      expect(leaf.length).toBeGreaterThanOrEqual(8);
+      expect(Math.max(...leaf.map((p) => p[1]!))).toBeCloseTo(488, 0);
+      expect(Math.min(...leaf.map((p) => p[1]!))).toBeCloseTo(12, 0);
+    }
+    const brass = gltf.materials.find((material) => material.name === 'TradingFloorBrass')!;
+    expect(brass.pbrMetallicRoughness!.metallicFactor!).toBeLessThanOrEqual(0.45);
   });
 });
 
