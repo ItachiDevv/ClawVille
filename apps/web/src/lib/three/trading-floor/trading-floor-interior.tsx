@@ -143,7 +143,7 @@ import {
 
 /**
  * The authored hall. Built by `scripts/trading-floor/build-interior.mjs` and
- * documented in 3dStructure.md §9g and §9i: v3 is 365,252 B, 6,431 tris, 10
+ * documented in 3dStructure.md §9g and §9i: v3 is 364,788 B, 6,431 tris, 10
  * meshes, 10 materials, 7 ETC1S textures (measured with
  * `scripts/trading-floor/inspect-glb.mjs` against the shipped bytes,
  * 2026-10-01), authored at 1 unit = 1 wu and ALREADY at final scale — it is
