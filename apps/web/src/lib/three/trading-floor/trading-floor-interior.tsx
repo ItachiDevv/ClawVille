@@ -65,6 +65,7 @@
  */
 
 import {
+  Component,
   Suspense,
   useCallback,
   useEffect,
@@ -601,8 +602,8 @@ export function createTradingFloorReadyGate(
   let avatarMounted = false;
   let fired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const fire = () => {
-    if (fired || !roomMounted || (hasAvatar && !avatarMounted)) return;
+  const fire = (fallback = false) => {
+    if (fired || !roomMounted || (hasAvatar && !avatarMounted && !fallback)) return;
     fired = true;
     if (timer !== undefined) cancel(timer);
     timer = undefined;
@@ -615,8 +616,7 @@ export function createTradingFloorReadyGate(
       if (hasAvatar && !avatarMounted) {
         timer = schedule(() => {
           timer = undefined;
-          avatarMounted = true; // bounded fallback, even if the load never settles
-          fire();
+          fire(true); // bounded fallback, even if the load never settles
         }, 1500);
       }
       fire();
@@ -628,13 +628,12 @@ export function createTradingFloorReadyGate(
       return late;
     },
     avatarUnmounted() {
-      if (!fired) avatarMounted = false;
+      avatarMounted = false;
     },
     roomUnmounted() {
       if (timer !== undefined) cancel(timer);
       timer = undefined;
       roomMounted = false;
-      avatarMounted = false;
       fired = false;
     },
   };
@@ -1695,6 +1694,25 @@ function TradingFloorPlayer({
   );
 }
 
+class TradingFloorAvatarErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.warn('[TradingFloor] avatar failed to load; continuing without it', error);
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Default export — the whole interior
 // ---------------------------------------------------------------------------
@@ -1748,10 +1766,12 @@ export default function TradingFloorInteriorScene({
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
           room appearing. */}
       <Suspense fallback={null}>
-        <TradingFloorPlayer
-          onAvatarMounted={handleAvatarMounted}
-          onAvatarUnmounted={handleAvatarUnmounted}
-        />
+        <TradingFloorAvatarErrorBoundary>
+          <TradingFloorPlayer
+            onAvatarMounted={handleAvatarMounted}
+            onAvatarUnmounted={handleAvatarUnmounted}
+          />
+        </TradingFloorAvatarErrorBoundary>
       </Suspense>
     </>
   );

@@ -130,6 +130,49 @@ describe('Trading Floor ready gate', () => {
     expect(count).toBe(1);
   });
 
+  test('room remount fires immediately while the avatar remains mounted', () => {
+    const timers = fakeTimers();
+    let count = 0;
+    const gate = createTradingFloorReadyGate(() => count++, true, timers.schedule, timers.cancel);
+    gate.avatarMounted();
+    gate.roomMounted();
+    expect(count).toBe(1);
+    gate.roomUnmounted();
+    gate.roomMounted();
+    expect(count).toBe(2);
+    expect(timers.pending()).toBe(0);
+  });
+
+  test('avatar unmount leaves the next room mount on its own fallback', () => {
+    const timers = fakeTimers();
+    let count = 0;
+    const gate = createTradingFloorReadyGate(() => count++, true, timers.schedule, timers.cancel);
+    gate.avatarMounted();
+    gate.roomMounted();
+    gate.avatarUnmounted();
+    gate.roomUnmounted();
+    gate.roomMounted();
+    expect(count).toBe(1);
+    timers.advance(1499);
+    expect(count).toBe(1);
+    timers.advance(1);
+    expect(count).toBe(2);
+  });
+
+  test('fallback does not mark a missing avatar as mounted for the next room', () => {
+    const timers = fakeTimers();
+    let count = 0;
+    const gate = createTradingFloorReadyGate(() => count++, true, timers.schedule, timers.cancel);
+    gate.roomMounted();
+    timers.advance(1500);
+    expect(count).toBe(1);
+    gate.roomUnmounted();
+    gate.roomMounted();
+    expect(count).toBe(1);
+    timers.advance(1500);
+    expect(count).toBe(2);
+  });
+
   test('duplicate notifications and rerenders never double fire', () => {
     const timers = fakeTimers();
     let count = 0;
