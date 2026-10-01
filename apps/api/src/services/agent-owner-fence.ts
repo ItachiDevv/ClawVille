@@ -13,42 +13,63 @@
  * present-and-mismatch gate), but Map-only readers (the cognition client
  * lookup by body, the active roster) would still use it.
  *
- * RULE: every owner bind marks the agentId synchronously, before its eviction
- * loop. A credentialless connect checks the mark right before it registers its
- * body, with no await in between, and refuses with
- * `409 owner_credential_required`. A late session then either registered
- * before the eviction (and was evicted) or sees the mark (and is refused).
+ * RULE: every unowned-to-owned bind marks the agentId synchronously, before its
+ * eviction loop. A credentialless request takes `ownerBindSnapshot()` BEFORE it
+ * reads or writes the row, and checks `agentOwnerBoundSince(agentId, snapshot)`
+ * right before it registers its body, with no await in between. A late session
+ * then either registered before the eviction (and was evicted) or sees the
+ * mark (and is refused with `409 owner_credential_required`).
  *
- * SCOPE: this Map is per process. That holds under the single-API-replica
- * invariant; the DB CAS stays the cross-process enforcement. The mark expires
- * after RECENT_OWNER_BIND_MS, far longer than any one connect request.
+ * NO EXPIRY (connect-sec round 4, 2026-10-01): the check compares a bind
+ * sequence number, not a clock. A request that stalls for any length of time
+ * between its row write and its registration is still refused. A bind that
+ * landed BEFORE the request started never refuses it (that request reads the
+ * owned row, or the row was unbound again later and the anonymous model holds).
+ *
+ * MEMORY: `lastOwnerBindSeq` keeps one entry per agentId bound in this process.
+ * Its size is bounded by the `openclaw_bots` row count, not by time.
+ *
+ * SCOPE: this state is per process. That holds under the single-API-replica
+ * invariant; the DB CAS stays the cross-process enforcement.
+ *
+ * CALLERS (round 4): `POST /api/agent/connect`, the legacy
+ * `POST /api/openclaw/register` and session restore all use the snapshot
+ * check. The five-minute clock reader (`agentOwnedRecently`) is deleted.
  */
 
-const RECENT_OWNER_BIND_MS = 5 * 60_000;
+/** Monotonic count of owner-bind marks in this process. Never reset. */
+let ownerBindSeq = 0;
 
-/** agentId -> expiry (epoch ms) of its recent-owner-bind mark. */
-const recentOwnerBinds = new Map<string, number>();
+/** agentId -> the `ownerBindSeq` value of its latest owner-bind mark. */
+const lastOwnerBindSeq = new Map<string, number>();
 
-/** Mark `agentId` as bound to an owner now. Prunes expired marks. */
-export function markAgentOwnedNow(agentId: string, now = Date.now()): void {
-  for (const [id, expiresAt] of recentOwnerBinds) {
-    if (expiresAt <= now) recentOwnerBinds.delete(id);
-  }
-  recentOwnerBinds.set(agentId, now + RECENT_OWNER_BIND_MS);
+/**
+ * Mark `agentId` as bound to an owner now. `_now` is ignored: the fence keeps
+ * no clock. Tests pass a stale time to prove that a mark never expires.
+ */
+export function markAgentOwnedNow(agentId: string, _now?: number): void {
+  ownerBindSeq += 1;
+  lastOwnerBindSeq.set(agentId, ownerBindSeq);
 }
 
-/** TRUE while `agentId` carries an unexpired recent-owner-bind mark. */
-export function agentOwnedRecently(agentId: string, now = Date.now()): boolean {
-  const expiresAt = recentOwnerBinds.get(agentId);
-  if (expiresAt === undefined) return false;
-  if (expiresAt <= now) {
-    recentOwnerBinds.delete(agentId);
-    return false;
-  }
-  return true;
+/**
+ * Take this BEFORE the request reads or writes the agent row. Pass the value
+ * to `agentOwnerBoundSince` right before body registration.
+ */
+export function ownerBindSnapshot(): number {
+  return ownerBindSeq;
 }
 
-/** Test seam: clear every mark. Never called by runtime code. */
+/** TRUE when an owner bind of `agentId` was marked after `snapshot` was taken. */
+export function agentOwnerBoundSince(agentId: string, snapshot: number): boolean {
+  return (lastOwnerBindSeq.get(agentId) ?? 0) > snapshot;
+}
+
+/**
+ * Test seam: clear every mark. Never called by runtime code. The sequence
+ * itself stays monotonic, so an earlier snapshot never matches a later mark
+ * by accident.
+ */
 export function __resetAgentOwnerFenceForTests(): void {
-  recentOwnerBinds.clear();
+  lastOwnerBindSeq.clear();
 }

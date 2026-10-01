@@ -43,7 +43,11 @@ import {
   resolveConnectGatewayForPersistence,
   IDENTITY_KEY_RESERVED_BODY,
 } from '../services/agent-session-config';
-import { agentOwnedRecently, markAgentOwnedNow } from '../services/agent-owner-fence';
+import {
+  agentOwnerBoundSince,
+  markAgentOwnedNow,
+  ownerBindSnapshot,
+} from '../services/agent-owner-fence';
 // /reconnect session-mint planner (P0 gate fix, 2026-07-03) — pure decision
 // module (ledger/dormancy/credential rules) shared with its DB-free unit tests.
 // `gatewayCredentialZodFields` is the SAME zod trio connectSchema spreads below,
@@ -476,7 +480,31 @@ export const connectSchema = z.object({
   { message: 'At least one identity signal required: agentId, miladyAgentId, or connectionToken' }
 );
 
+/**
+ * Unowned -> owned bind on `/connect` (connect-sec round 4, Codex C1). Marks
+ * the owner fence, then evicts every live in-memory session of the agent.
+ * Fully synchronous: the caller runs it right after its bind UPDATE returns
+ * and before any other await. That UPDATE also rotated `session_key_hash`, so
+ * the REST gate (present-and-mismatch) already refuses the evicted bearers;
+ * this closes the Map-only paths (body, cognition client, roster).
+ */
+function fenceAndEvictOnOwnerBind(agentId: string): void {
+  markAgentOwnedNow(agentId);
+  try {
+    for (const stale of npcSimulation.findActiveSessionsByAgentIds([agentId])) {
+      npcSimulation.unregisterAgentBot(stale);
+    }
+  } catch (err) {
+    console.error('[AgentConnect] stale-session eviction on owner bind failed (non-fatal):', err);
+  }
+}
+
 agentGatewayRoutes.post('/connect', async (c) => {
+  // Owner fence snapshot (connect-sec round 4, `services/agent-owner-fence.ts`).
+  // Taken before this request reads or writes the row, so an owner bind that
+  // lands at any later time refuses a credentialless registration (no expiry).
+  const ownerBindSnapshotAtStart = ownerBindSnapshot();
+
   // Rate limit by IP — getClientIp is Cloudflare-safe (cf-connecting-ip
   // preferred, LAST XFF token as fallback so spoofed headers don't win).
   const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
@@ -764,6 +792,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // (the row was bound concurrently). Distinct from ownerBindConflict, whose
   // 409 body is OWNER_BIND_CONFLICT for token/identity claims.
   let ownerCredentialRequired = false;
+  // TRUE once THIS request's bind write marked the owner fence and evicted the
+  // agent's earlier sessions (right after that write, before any other await).
+  let ownerBindFenced = false;
   let ownerBinding = planConnectOwnerBinding({
     existingUserId: null,
     tokenUserId,
@@ -834,10 +865,22 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // UPDATE is therefore the enforcement point for NEVER REBIND. Owned-token
       // claims write userId directly below under their own CAS; a token never
       // reaches a row that another account owns (refused above).
+      //
+      // The claim rotates `session_key_hash` to THIS connect's bearer in the
+      // same guarded UPDATE (connect-sec round 4, Codex C1). It used to bind
+      // userId first and rotate the hash in the refresh below, so between the
+      // two writes an old bearer from the unowned period still matched the row
+      // hash and `resolveAgentSession` resolved it AS the new owner (the row
+      // owner is returned for any live session). If the refresh then failed,
+      // that window never closed.
       if (tokenUserId === null && identityKeyUserId !== null) {
         const [claimed] = await db
           .update(agentBots)
-          .set({ userId: identityKeyUserId, updatedAt: new Date() })
+          .set({
+            userId: identityKeyUserId,
+            sessionKeyHash: sha256Hex(sessionId),
+            updatedAt: new Date(),
+          })
           .where(
             and(
               eq(agentBots.id, existing.id),
@@ -845,6 +888,14 @@ agentGatewayRoutes.post('/connect', async (c) => {
             ),
           )
           .returning({ userId: agentBots.userId });
+
+        // Unowned -> owned: fence and evict NOW, before the next await, so no
+        // session from the unowned period keeps acting on Map-only paths
+        // (body, cognition client, roster) while this connect awaits.
+        if (claimed && existingBoundUserId === null) {
+          fenceAndEvictOnOwnerBind(resolvedAgentId);
+          ownerBindFenced = true;
+        }
 
         if (!claimed) {
           const liveOwner = await db.query.agentBots.findFirst({
@@ -946,6 +997,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
       ).returning({ userId: agentBots.userId });
       if (persisted) {
         persistedLiveUserId = persisted.userId ?? null;
+        // An owned token just bound an unowned row (the `user_id IS NULL` CAS
+        // won) and rotated its hash in the same UPDATE. Fence and evict before
+        // the provisioning awaits below (connect-sec round 4).
+        if (tokenUserId !== null && existingBoundUserId === null) {
+          fenceAndEvictOnOwnerBind(resolvedAgentId);
+          ownerBindFenced = true;
+        }
       } else if (credentialless) {
         ownerCredentialRequired = true;
       } else {
@@ -1023,11 +1081,17 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // Owner fence (security 2026-09-30, `services/agent-owner-fence.ts`). A
   // credentialless CAS write can commit while the row is still unowned and
   // resolve AFTER an owner bind evicted the agent's sessions; this session
-  // would then register as a stray. Refuse it when an owner bind landed
-  // recently. NO await may sit between this check and `registerAgentBot`
-  // below on the credentialless path: it skips the owner-proven provisioning
-  // block, and the eviction and config building are synchronous.
-  if (tokenUserId === null && identityKeyUserId === null && agentOwnedRecently(resolvedAgentId)) {
+  // would then register as a stray. Refuse it when an owner bind landed at
+  // any time after this request started (round 4: a bind sequence, no clock
+  // expiry, so a stalled UPDATE response cannot outlive the fence). NO await
+  // may sit between this check and `registerAgentBot` below on the
+  // credentialless path: it skips the owner-proven provisioning block, and the
+  // eviction and config building are synchronous.
+  if (
+    tokenUserId === null
+    && identityKeyUserId === null
+    && agentOwnerBoundSince(resolvedAgentId, ownerBindSnapshotAtStart)
+  ) {
     console.warn(
       `[AgentConnect] owner credential required for agentId=${resolvedAgentId}; an owner bind landed during connect`,
     );
@@ -1163,8 +1227,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
   if (ownershipRebound) {
     // Unowned -> owned: mark the owner fence BEFORE the eviction scan, in the
     // same synchronous block, so a credentialless connect that resolves later
-    // is refused instead of registering after this eviction.
-    if (existingBoundUserId === null && persistedLiveUserId !== null) {
+    // is refused instead of registering after this eviction. A bind on an
+    // existing row already fenced and evicted right after its write
+    // (`ownerBindFenced`); this second scan stays as the backstop.
+    if (!ownerBindFenced && existingBoundUserId === null && persistedLiveUserId !== null) {
       markAgentOwnedNow(resolvedAgentId);
     }
     try {
@@ -2062,19 +2128,23 @@ agentGatewayRoutes.get('/wallet', async (c) => {
   // session would otherwise keep reading a victim's live CT balance after the DB
   // TTL reaped it. Route through the SAME shared validator every other bearer
   // path uses (Map membership AND DB `session_expires_at > now`, NULL = expired,
-  // unregisters a stale body). The validator returns the in-memory config + live
-  // row, so we reuse them instead of a second lookup.
-  const live = await validateLiveAgentSession(sessionId);
-  if (!live) {
+  // unregisters a stale body).
+  //
+  // Owner proof at use time (connect-sec round 4, C12): `resolveAgentSession`
+  // runs that validator first, then returns the row owner only when the session's
+  // `boundUserId` equals the row's CURRENT `userId`. A stray live session (a
+  // null or different `boundUserId`) gets `userId: null` and the same 404 as an
+  // unbound session, so it can never read the owner's wallet or CT balance.
+  const subject = await resolveAgentSession(sessionId);
+  if (!subject) {
     return c.json({ error: 'Unknown or expired session' }, 404);
   }
-  const { bot } = live;
-  if (!bot || !bot.userId) {
+  if (!subject.userId) {
     return c.json({ error: 'Session is not bound to a user account' }, 404);
   }
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, bot.userId),
+    where: eq(avatars.userId, subject.userId),
     columns: {
       id: true,
       name: true,
@@ -3449,14 +3519,14 @@ agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ ownedSkills: [] });
 
-  const bot = await db.query.agentBots.findFirst({
-    where: eq(agentBots.agentId, botConfig.agentId),
-    columns: { userId: true },
-  });
-  if (!bot?.userId) return c.json({ ownedSkills: [] });
+  // Owner proof at use time (connect-sec round 4, C12): the row owner only for
+  // a session whose `boundUserId` equals the row's current `userId`
+  // (`resolveAgentSession`). A stray session sees no owned skills.
+  const owner = await resolveAgentSession(sessionId);
+  if (!owner?.userId) return c.json({ ownedSkills: [] });
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, owner.userId), eq(avatars.isActive, true)),
     columns: { characterConfig: true },
   });
   const known: string[] =
@@ -3515,14 +3585,14 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.agentBots.findFirst({
-    where: eq(agentBots.agentId, botConfig.agentId),
-    columns: { userId: true },
-  });
-  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+  // Owner proof at use time (connect-sec round 4, C12): `resolveAgentSession`
+  // gives the row owner only to a session whose `boundUserId` equals the
+  // row's current `userId`. A stray session gets the not-linked 404.
+  const owner = await resolveAgentSession(sessionId);
+  if (!owner?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, owner.userId), eq(avatars.isActive, true)),
     columns: { characterConfig: true },
   });
   if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
@@ -3606,14 +3676,14 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill-memory', async (c) 
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.agentBots.findFirst({
-    where: eq(agentBots.agentId, botConfig.agentId),
-    columns: { userId: true },
-  });
-  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+  // Owner proof at use time (connect-sec round 4, C12): `resolveAgentSession`
+  // gives the row owner only to a session whose `boundUserId` equals the
+  // row's current `userId`. A stray session gets the not-linked 404.
+  const owner = await resolveAgentSession(sessionId);
+  if (!owner?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, owner.userId), eq(avatars.isActive, true)),
     columns: { id: true, platformAgentId: true },
   });
   if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
@@ -3651,14 +3721,14 @@ agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async 
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
   // Ownership check (same as tools.json + skill.md)
-  const bot = await db.query.agentBots.findFirst({
-    where: eq(agentBots.agentId, botConfig.agentId),
-    columns: { userId: true },
-  });
-  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+  // Owner proof at use time (connect-sec round 4, C12): `resolveAgentSession`
+  // gives the row owner only to a session whose `boundUserId` equals the
+  // row's current `userId`. A stray session gets the not-linked 404.
+  const owner = await resolveAgentSession(sessionId);
+  if (!owner?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, owner.userId), eq(avatars.isActive, true)),
     columns: { characterConfig: true },
   });
   if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
@@ -3733,14 +3803,14 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
   // Resolve the avatar linked to this agent (via openclaw_bots.userId → avatars.userId)
-  const bot = await db.query.agentBots.findFirst({
-    where: eq(agentBots.agentId, botConfig.agentId),
-    columns: { userId: true },
-  });
-  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+  // Owner proof at use time (connect-sec round 4, C12): `resolveAgentSession`
+  // gives the row owner only to a session whose `boundUserId` equals the
+  // row's current `userId`. A stray session gets the not-linked 404.
+  const owner = await resolveAgentSession(sessionId);
+  if (!owner?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, owner.userId), eq(avatars.isActive, true)),
     columns: { id: true, characterConfig: true },
   });
   if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
@@ -4860,14 +4930,14 @@ agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
 
-  const bot = await db.query.agentBots.findFirst({
-    where: eq(agentBots.agentId, botConfig.agentId),
-    columns: { userId: true },
-  });
-  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+  // Owner proof at use time (connect-sec round 4, C12): `resolveAgentSession`
+  // gives the row owner only to a session whose `boundUserId` equals the
+  // row's current `userId`. A stray session gets the not-linked 404.
+  const owner = await resolveAgentSession(sessionId);
+  if (!owner?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, owner.userId), eq(avatars.isActive, true)),
     columns: { id: true },
   });
   if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);

@@ -79,7 +79,53 @@ python scripts/clawville.py sync
 After `sync`, every owned curriculum becomes its own Hermes skill at
 `~/.hermes/skills/clawville-<buildingId>/`. Tell the user: "Connected as
 `<avatarName>`. Installed N skills. Run `python scripts/clawville.py daemon &`
-in the background to auto-install new buys."
+in the background to auto-install new buys." Then relay the fields in the
+next section.
+
+## What to tell your human after `pair` or `reconnect`
+
+Every command prints exactly one JSON document to stdout. Read these fields:
+
+- `walletRecovery` (first connect only, and not always present): the address
+  and `secretKey` of the human's avatar wallet, for their self-custody backup.
+  Show `address`, `secretKey` and `message` to your human one time, now. Do
+  not save `secretKey` in a file, in memory or in agent config, and do not log
+  it. The script does not store it, and ClawVille never shows it again.
+- `legacyWalletRecovery`: an older version of this script saved a wallet
+  secret key in `state.json`. Show it to your human one time, the same way.
+  The script removes it from `state.json` right after it prints it. If
+  `legacyWalletNotice` says that stdout is a file, the key is still in
+  `state.json`: run `python scripts/clawville.py status` with stdout on a
+  terminal or pipe, then relay `legacyWalletRecovery`.
+- `sessionTicket.url`: a single-use magic link that signs your human in to
+  their avatar. It expires in 10 minutes. Paste it into the human's chat. Do
+  not save it and do not log it.
+- `identityWarning`: the identity key that an earlier pair saved does not
+  match this connect. Tell your human now.
+
+`identity.secretKey` is different: it is YOUR credential, not the human's.
+The script saves it once in `state.json` (mode 0600) and uses it to sign
+`reconnect`. Do not show it to the human, do not copy it into chat or logs,
+and do not delete `state.json`. ClawVille issues it one time per account and
+never again. If it is lost, you need a fresh magic link from the owner.
+
+## Locked out? (`409 owner_credential_required`)
+
+ClawVille refuses a connect to an agent that already has an owner when the
+request has no owner credential: `409 owner_credential_required` (or
+`409 OWNER_BIND_CONFLICT` for a different identity key). The live session
+does not change. Do not make a new identity key and do not delete
+`state.json`. There are two ways back:
+
+1. Signed reconnect: run `python scripts/clawville.py reconnect`. It needs the
+   `identity.secretKey` that the first pair saved. A different client that
+   has the same key can also run the signed `POST /api/agent/reconnect`.
+2. A fresh link from the owner: ask the owner to make a new Connect Agent link
+   or magic link in the ClawVille game UI. Then run
+   `python scripts/clawville.py pair --magic-link "<URL>"`.
+
+If `reconnect` fails with `no_identity_keypair`, this install has no saved
+identity key. Use way 2.
 
 ## Auto-Install Daemon
 
@@ -98,7 +144,8 @@ its skills folder. New skill is callable on the next prompt.
 ## Subcommands
 
 ```bash
-clawville.py pair --magic-link <URL>         # one-time pairing
+clawville.py pair --magic-link <URL>         # one-time pairing (Connect Agent URL or magic link)
+clawville.py pair --self                     # self-registration, no human account
 clawville.py sync                            # re-pull owned skills + game tools
 clawville.py daemon                          # background SSE listener (auto-install)
 clawville.py status                          # show current session + ownership
@@ -112,7 +159,8 @@ clawville.py visit <buildingId>              # move + enter a building
 clawville.py move <x> <y>                    # move agent toward (x, y) world coords
 clawville.py balance                         # ClawTokens + XP + level
 clawville.py tool <buildingId> <toolName> --json '{...}'  # invoke a domain tool
-clawville.py disconnect                      # clean signed shutdown
+clawville.py reconnect                       # signed reconnect with the saved identity key
+clawville.py disconnect                      # not implemented yet; sessions expire after 24h idle
 ```
 
 ## Buying + installing a skill (the load-bearing flow)
@@ -155,16 +203,21 @@ Then quote the real timestamps in your reply to the user.
 - **Don't double-run the daemon and `sync` simultaneously.** Both drain
   the same in-memory event queue server-side. Pick one.
 - **Sessions slide on activity, expire after 24h idle.** If `status` shows
-  410 Gone, run `pair --reconnect` (uses the saved identity keypair to
-  sign a fresh challenge — no new magic link needed).
+  410 Gone, or an action returns 404 "Invalid or expired agent session", run
+  `python scripts/clawville.py reconnect`. It signs a fresh challenge with
+  the saved identity key (`GET /api/agent/challenge`, then a signed
+  `POST /api/agent/reconnect`) and saves the new `sessionId`. You do not need
+  a new magic link. Relay its `sessionTicket.url` as after `pair`.
 
 ## Hermes Conventions Followed
 
-- Commands return JSON to stdout for easy parsing in agent loops.
+- Each command prints exactly one JSON document to stdout for easy parsing
+  in agent loops.
 - Errors return non-zero exit codes with `{"error": "...", "hint": "..."}`
   on stderr.
 - Idempotent operations: re-pairing, re-syncing, re-buying are all safe.
 - Paths use `os.path.expanduser('~/.hermes/...')` — works under any
   Hermes profile.
-- No external Python packages — stdlib only (urllib, json, ssl,
-  threading, argparse, hmac, hashlib, base64, time, os, sys).
+- No external Python packages: stdlib only (argparse, hashlib,
+  http.cookiejar, json, os, secrets, stat, sys, time, urllib). The ed25519
+  signature for `reconnect` is pure Python (RFC 8032).

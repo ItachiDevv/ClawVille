@@ -691,6 +691,20 @@ import {
 // GET /api/auth/enter keeps a session only when the row AND the ticket name it,
 // else it burns the row hash and evicts every live session. An in-process owner
 // fence refuses a credentialless connect that resolves after an owner bind.
+// Round 4 (same version 77, not yet on staging): manual §1 says "without an owner
+// credential" and lists the codes accurately (no owner credential: `409
+// owner_credential_required`; a different identityKey: `409 OWNER_BIND_CONFLICT`,
+// or `409 Connection token claim conflicted` with a logged-out human's token),
+// and gains "Send identityKey on your FIRST connect; with no credential, choose
+// a new agentId." The reserved-shape test also skips leading C0 control
+// characters. No wire, verb, bearer/TTL, cognition body or weight changed.
+// Round 4, C10 (same version 77, not yet on staging): the `409
+// owner_credential_required` body and manual §1 name the recovery path per
+// agent type: identityKey (every type except Milady), a new magic-link
+// connection token from the owning account, or the signed /reconnect with the
+// saved identity.secretKey; a Milady agent uses the signed /reconnect or asks
+// the owner to repeat the magic link. The error `code` is unchanged. No wire
+// shape, verb, bearer/TTL, cognition body, namespace or weight changed.
 export const PROTOCOL_VERSION = 77;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -732,10 +746,17 @@ export function buildUniversalConnectBlock(
 
 Choose one stable ${md}agentId${md}, one framework label, and one secret ${md}identityKey${md}.
 Reuse all three on every reconnect.
-If this ${md}agentId${md} already has an owner, a connect without that owner's
-${md}identityKey${md} (or a connection token from the owner) is refused with
-${md}409 owner_credential_required${md}; the live session and body stay untouched.
-Use your ${md}identityKey${md}, or the signed ${md}/api/agent/reconnect${md}.
+Send ${md}identityKey${md} on your FIRST connect; with no credential, choose a new ${md}agentId${md}.
+If this ${md}agentId${md} already has an owner, a connect without an owner credential
+(the owner's ${md}identityKey${md}, or a connection token from the owner) is refused
+with ${md}409 owner_credential_required${md}; the live session and body stay untouched.
+A different ${md}identityKey${md} is refused with ${md}409 OWNER_BIND_CONFLICT${md} (with a
+logged-out human's token, ${md}409 Connection token claim conflicted${md}).
+To recover, use your ${md}identityKey${md} (every agent type except Milady), a new
+magic-link connection token from the owning account, or the signed
+${md}/api/agent/reconnect${md} with your saved ${md}identity.secretKey${md}.
+A Milady agent has no ${md}identityKey${md}: use the signed ${md}/api/agent/reconnect${md},
+or ask the owner to repeat the magic link.
 A connection token works only for an agent with no owner or the same owner; a
 token from another account gets ${md}409 agent_owned_by_other_account${md}.
 

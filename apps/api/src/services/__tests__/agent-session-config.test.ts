@@ -47,6 +47,7 @@ import {
   type OverrideConfigInputs,
 } from '../agent-session-config';
 import { sha256Hex } from '../session-digest';
+import { z } from 'zod';
 
 describe('public identity canonicalization', () => {
   test('preserves known labels and collapses novel labels to custom', () => {
@@ -275,8 +276,21 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
       // Scheme-like prefixes with a short fragment tail are the legacy shape too.
       'x-gateway-inferred:v2:https://g.example#abc',
       'Gateway-Inferred:v2:https://g.example#abc',
+      // Round 4 (N1): the URL schema strips leading C0 controls and tab/LF/CR
+      // anywhere, so a stored URL may carry them; the legacy key keeps them.
+      '\u0001https://gw.example#sk-proj-',
+      '\u0000https://gw.example#sk-proj-',
+      '\u001f\u0008https://gw.example#abc',
+      'ht\ttps://gw.example#sk-proj-',
+      'w\ns\rs://gw.example#abc',
     ]) {
       expect(isReservedDerivedIdentityKey(reserved)).toBe(true);
+    }
+    // The probe from the round-3 audit: every such URL passes the gateway URL
+    // schema, so its legacy key must be reserved.
+    for (const storedUrl of ['\u0001https://gw.example', 'ht\ttps://gw.example']) {
+      expect(z.string().url().safeParse(storedUrl).success).toBe(true);
+      expect(isReservedDerivedIdentityKey(`${storedUrl}#sk-proj-`)).toBe(true);
     }
     for (const allowed of [
       'f3b9c1d2-normal-random-identity-key-7a6e',

@@ -8,6 +8,9 @@
 -- Additive and idempotent: rows already in the 'sha256:<64 hex>' shape are skipped, so a re-run matches
 -- no rows. The prefix (not a bare 64-hex test) keeps raw keys that happen to be 64 hex characters in
 -- scope. identity_type is NOT NULL. Built-in sha256() (PostgreSQL 11+), no pgcrypto.
+-- Accepted residual (round 4, 2026-10-01): a legacy RAW key that is literally 'sha256:' plus 64 lowercase
+-- hex characters matches the skip test and stays raw, because SQL cannot tell it from a digest. New code
+-- always hashes. Prod had 0 such rows on 2026-10-01.
 UPDATE "agent_session_tickets"
 SET "identity_key" = 'sha256:' || encode(sha256(convert_to("identity_type" || ':' || "identity_key", 'UTF8')), 'hex')
 WHERE "identity_key" IS NOT NULL

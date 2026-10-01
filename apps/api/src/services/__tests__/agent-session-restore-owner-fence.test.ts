@@ -6,7 +6,10 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 // the stray back. The owner fence (agent-owner-fence.ts) is the in-process check.
 
 const AGENT_ID = 'restore-fence-agent';
+const FIVE_MINUTES = 5 * 60_000;
 let row: Record<string, unknown> | null = null;
+// Runs inside the row read: an owner bind that lands while the read is in flight.
+let onRowRead: (() => void) | null = null;
 
 const realDatabase = await import('@clawville/database');
 const realDatabaseCopy = { ...realDatabase };
@@ -18,7 +21,13 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
   get(_target, property) {
     if (property === 'query') {
       return {
-        agentBots: { findFirst: async () => (row ? { ...row } : undefined) },
+        agentBots: {
+          findFirst: async () => {
+            const read = row ? { ...row } : undefined;
+            onRowRead?.();
+            return read;
+          },
+        },
         avatars: { findFirst: async () => undefined },
       };
     }
@@ -64,6 +73,7 @@ beforeEach(() => {
   __resetAgentOwnerFenceForTests();
   registerCalls = 0;
   row = null;
+  onRowRead = null;
 });
 
 afterAll(() => {
@@ -84,7 +94,8 @@ describe('session restore honours the owner fence', () => {
 
   test('an unowned row read before an owner bind is NOT restored after it', async () => {
     row = unownedLiveRow(null);
-    markAgentOwnedNow(AGENT_ID);
+    // The bind lands after the restore started and before it registers.
+    onRowRead = () => markAgentOwnedNow(AGENT_ID);
     const sid = 'ag-restore-fence-stray';
     const live = await restoreAgentSessionFromRow(sid);
     expect(live).toBeNull();
@@ -92,9 +103,32 @@ describe('session restore honours the owner fence', () => {
     expect(npcSimulation.isValidAgentSession(sid)).toBe(false);
   });
 
+  // connect-sec round 4 (2026-10-01, Codex C2): the guard compares a bind
+  // sequence captured before the row read, not a five-minute clock.
+  test('round 4: the stray stays refused when the bind mark is older than five minutes', async () => {
+    row = unownedLiveRow(null);
+    onRowRead = () => markAgentOwnedNow(AGENT_ID, Date.now() - FIVE_MINUTES - 1_000);
+    const sid = 'ag-restore-fence-stalled-stray';
+    const live = await restoreAgentSessionFromRow(sid);
+    expect(live).toBeNull();
+    expect(registerCalls).toBe(0);
+    expect(npcSimulation.isValidAgentSession(sid)).toBe(false);
+  });
+
+  test('round 4: a bind marked before the restore started does not refuse an unowned row', async () => {
+    row = unownedLiveRow(null);
+    markAgentOwnedNow(AGENT_ID);
+    const sid = 'ag-restore-fence-earlier-bind';
+    const live = await restoreAgentSessionFromRow(sid);
+    registered.add(sid);
+    expect(live).not.toBeNull();
+    expect(registerCalls).toBe(1);
+  });
+
   test('an owned row still restores while the fence mark is set', async () => {
     row = unownedLiveRow('92222222-2222-4222-8222-222222222222');
-    markAgentOwnedNow(AGENT_ID);
+    // A mark during the read refuses only a row read while UNOWNED.
+    onRowRead = () => markAgentOwnedNow(AGENT_ID);
     const sid = 'ag-restore-fence-owner';
     const live = await restoreAgentSessionFromRow(sid);
     registered.add(sid);

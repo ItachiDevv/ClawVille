@@ -305,7 +305,11 @@ export function resolveIdentityForTicket(
  * are reserved: the `gateway-inferred:` prefix (current and future derived
  * keys) and the legacy `<scheme>:...#<1-8 chars>` shape (any URL scheme, because
  * the gateway URL schema accepts more than http(s), e.g. ws/wss; whitespace is
- * allowed anywhere because the URL schema does not trim). The public routes
+ * allowed anywhere because the URL schema does not trim). The URL schema
+ * (`z.string().url()`, WHATWG) also accepts a stored URL with leading C0
+ * control characters (U+0000..U+001F) and with tab/LF/CR inside the scheme,
+ * because the parser strips them; the shape test skips those too (round 4,
+ * 2026-10-01). The public routes
  * (`POST /api/agent/connect`, `/join`, `/:sessionId/control-link`) refuse them
  * with `400 identity_key_reserved`.
  *
@@ -314,7 +318,8 @@ export function resolveIdentityForTicket(
  * NOT migrated or healed from the legacy key: no proof of the full token exists.
  */
 export function isReservedDerivedIdentityKey(identityKey: string): boolean {
-  return identityKey.startsWith('gateway-inferred:') || /^\s*[a-z][a-z0-9+.-]*:[\s\S]+#[\s\S]{1,8}$/i.test(identityKey);
+  return identityKey.startsWith('gateway-inferred:')
+    || /^[\s\x00-\x1f]*[a-z][a-z0-9+.\t\n\r-]*:[\s\S]+#[\s\S]{1,8}$/i.test(identityKey);
 }
 
 /** Generic 400 body for a reserved identityKey; never echoes the key. */

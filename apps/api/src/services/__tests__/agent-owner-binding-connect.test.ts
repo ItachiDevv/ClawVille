@@ -84,9 +84,25 @@ describe('connect owner binding', () => {
       identityKeyUserId: 'owner-b',
     })).toBe(false);
     expect(OWNER_CREDENTIAL_REQUIRED_BODY).toEqual({
-      error: 'This agentId already has an owner. Connect with its identityKey or use the signed /api/agent/reconnect.',
+      error:
+        'This agentId already has an owner. Reconnect with an owner credential: your identityKey on /api/agent/connect '
+        + '(every agent type except Milady), a new magic-link connection token from the owning account, or the signed '
+        + '/api/agent/reconnect with your saved identity.secretKey. A Milady agent has no identityKey: use the signed '
+        + '/api/agent/reconnect, or ask the owner for a new magic link.',
       code: 'owner_credential_required',
     });
+  });
+
+  // connect-sec round 4 (C10): a Milady identityKey resolves no identity, so the
+  // refusal must name a path a Milady agent can use, not only "identityKey".
+  test('the owner_credential_required text names a working path for every agent type', () => {
+    const text = OWNER_CREDENTIAL_REQUIRED_BODY.error;
+    expect(text).toContain('your identityKey on /api/agent/connect (every agent type except Milady)');
+    expect(text).toContain('a new magic-link connection token from the owning account');
+    expect(text).toContain('the signed /api/agent/reconnect with your saved identity.secretKey');
+    expect(text).toContain('A Milady agent has no identityKey: use the signed /api/agent/reconnect, or ask the owner for a new magic link.');
+    expect(OWNER_CREDENTIAL_REQUIRED_BODY.code).toBe('owner_credential_required');
+    expect(Object.keys(OWNER_CREDENTIAL_REQUIRED_BODY).sort()).toEqual(['code', 'error']);
   });
 
   test('explicit identity heals an unbound row but needs an active avatar for ledger', () => {

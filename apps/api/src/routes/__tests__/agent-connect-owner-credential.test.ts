@@ -105,6 +105,9 @@ mock.module('../../services/identity-service', () => ({
 
 // Every mock spreads the real module so a later test file that imports another
 // export (e.g. consumeTicket) never sees a partial module in a full-suite run.
+// Round 4: the provisioning step awaits after the bind write; this hook
+// observes what is still live at that point. Declared before the mock.
+let onProvisionWallet: (() => void) | null = null;
 const realWallet = await import('../../services/wallet-service');
 restoreModules.push(['../../services/wallet-service', { ...realWallet }]);
 mock.module('../../services/wallet-service', () => ({
@@ -113,12 +116,15 @@ mock.module('../../services/wallet-service', () => ({
     publicKey: 'avatar-wallet',
     firstTimeSecretKeyBase58: undefined,
   }),
-  provisionAvatarWallet: async () => ({
-    status: 'ready',
-    branch: 'canonical-valid-mirror-equal',
-    address: 'avatar-wallet',
-    inserted: false,
-  }),
+  provisionAvatarWallet: async () => {
+    onProvisionWallet?.();
+    return {
+      status: 'ready',
+      branch: 'canonical-valid-mirror-equal',
+      address: 'avatar-wallet',
+      inserted: false,
+    };
+  },
   resolveAvatarSettlementAddress: async () => ({
     status: 'ready',
     address: 'avatar-wallet',
@@ -163,7 +169,7 @@ const { agentGatewayRoutes, pendingConnections } = await import('../agent-gatewa
 const { npcSimulation } = await import('../../services/npc-simulation');
 const { buildAvatarSessionConfig } = await import('../../services/agent-session-config');
 const { AgentSubstrateClient } = await import('../../services/agent-substrate-client');
-const { agentOwnedRecently, markAgentOwnedNow, __resetAgentOwnerFenceForTests } = await import(
+const { agentOwnerBoundSince, markAgentOwnedNow, ownerBindSnapshot, __resetAgentOwnerFenceForTests } = await import(
   '../../services/agent-owner-fence'
 );
 const { sha256Hex } = await import('../../services/session-digest');
@@ -223,7 +229,11 @@ function whereSql(index: number): string {
 function expectOwnerCredentialRefusal(result: { status: number; json: Record<string, unknown> }) {
   expect(result.status).toBe(409);
   expect(result.json).toEqual({
-    error: 'This agentId already has an owner. Connect with its identityKey or use the signed /api/agent/reconnect.',
+    error:
+      'This agentId already has an owner. Reconnect with an owner credential: your identityKey on /api/agent/connect '
+      + '(every agent type except Milady), a new magic-link connection token from the owning account, or the signed '
+      + '/api/agent/reconnect with your saved identity.secretKey. A Milady agent has no identityKey: use the signed '
+      + '/api/agent/reconnect, or ask the owner for a new magic link.',
     code: 'owner_credential_required',
   });
   // The refusal never echoes the owner, the avatar, or a session.
@@ -243,6 +253,7 @@ beforeEach(() => {
   ticketMints = 0;
   loggedEvents = 0;
   registerCalls = 0;
+  onProvisionWallet = null;
   __resetAgentOwnerFenceForTests();
 });
 
@@ -597,9 +608,11 @@ describe('POST /api/agent/connect connection-token owner rule', () => {
     registerLiveSession(agentId, anonymousSessionId, null);
     const token = authenticatedToken('unowned', OTHER_ID, OTHER_AVATAR_ID);
     const fencedAtEviction: boolean[] = [];
+    // Taken before the connect, so only a mark made by this connect counts.
+    const fenceSnapshot = ownerBindSnapshot();
     const realUnregister = npcSimulation.unregisterAgentBot.bind(npcSimulation);
     npcSimulation.unregisterAgentBot = ((sid: string) => {
-      fencedAtEviction.push(agentOwnedRecently(agentId));
+      fencedAtEviction.push(agentOwnerBoundSince(agentId, fenceSnapshot));
       return realUnregister(sid);
     }) as typeof npcSimulation.unregisterAgentBot;
     try {
@@ -616,7 +629,7 @@ describe('POST /api/agent/connect connection-token owner rule', () => {
       expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([result.json.sessionId as string]);
       // The fence was marked before the eviction scan (round 2b).
       expect(fencedAtEviction).toEqual([true]);
-      expect(agentOwnedRecently(agentId)).toBe(true);
+      expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(true);
     } finally {
       delete (npcSimulation as unknown as Record<string, unknown>).unregisterAgentBot;
       pendingConnections.delete(token);
@@ -735,22 +748,152 @@ describe('POST /api/agent/connect owner fence', () => {
     const agentId = 'identity-bind-marks-fence';
     botRow = boundRow(agentId, null);
     updateReturns = () => [{ userId: OWNER_ID }];
+    const fenceSnapshot = ownerBindSnapshot();
     const result = await connect({
       agentId,
       identityType: 'custom',
       identityKey: 'owner-identity-secret',
     });
     expect(result.status).toBe(200);
-    expect(agentOwnedRecently(agentId)).toBe(true);
+    expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(true);
   });
 
   test('an unowned credentialless refresh marks no fence', async () => {
     const agentId = 'credentialless-no-fence';
     botRow = boundRow(agentId, null);
     updateReturns = () => [{ userId: null }];
+    const fenceSnapshot = ownerBindSnapshot();
     const result = await connect({ agentId });
     expect(result.status).toBe(200);
-    expect(agentOwnedRecently(agentId)).toBe(false);
+    expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(false);
+  });
+});
+
+// connect-sec round 4 (2026-10-01, Codex C1 + C2).
+// C1: an owner bind must rotate the bearer hash in the SAME guarded UPDATE that
+// writes user_id, and evict the agent's earlier sessions before any further
+// await. Before, the identity claim wrote user_id alone, so an old bearer from
+// the unowned period still matched the row hash and resolved AS the new owner
+// until the refresh UPDATE landed; eviction ran only after the provisioning
+// awaits.
+// C2: the fence is a bind sequence captured at request start, not a five-minute
+// clock, so a stalled UPDATE response cannot outlive it.
+describe('POST /api/agent/connect round 4: atomic bind + no-expiry fence', () => {
+  const FIVE_MINUTES = 5 * 60_000;
+  const OTHER_ID = '56666666-6666-4666-8666-666666666666';
+  const OTHER_AVATAR_ID = '57777777-7777-4777-8777-777777777777';
+
+  function registerAnonymousSession(agentId: string, sessionId: string) {
+    const config = buildAvatarSessionConfig({
+      mode: 'avatar',
+      agentId,
+      sessionId,
+      identityType: 'custom',
+      storedProtocol: 'nanoclaw',
+      ledgerCapable: false,
+      boundUserId: null,
+      name: 'Unowned Period',
+      species: null,
+      color: null,
+      stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+      homeX: 2560,
+      homeY: 2560,
+      patrolRadius: 100,
+      personality: 'unowned period session',
+    });
+    realRegister(config, new AgentSubstrateClient(config));
+    registeredSessions.add(sessionId);
+  }
+
+  test('C1: the identity claim writes user_id and the new bearer hash in one UPDATE, then evicts before the next write', async () => {
+    const agentId = 'r4-identity-claim-agent';
+    const anonymousSessionId = 'ag-r4-anonymous-before-identity-claim';
+    registerAnonymousSession(agentId, anonymousSessionId);
+    botRow = boundRow(agentId, null);
+    const anonymousLiveAtWrite: boolean[] = [];
+    updateReturns = () => {
+      anonymousLiveAtWrite.push(npcSimulation.isValidAgentSession(anonymousSessionId));
+      return [{ userId: OWNER_ID }];
+    };
+    const fenceSnapshot = ownerBindSnapshot();
+    const result = await connect({
+      agentId,
+      identityType: 'custom',
+      identityKey: 'owner-identity-secret',
+    });
+    expect(result.status).toBe(200);
+    const sessionId = result.json.sessionId as string;
+    expect(typeof sessionId).toBe('string');
+    expect(updateCalls).toHaveLength(2);
+    // One guarded UPDATE carries the owner AND the rotated hash.
+    expect(updateCalls[0].values.userId).toBe(OWNER_ID);
+    expect(updateCalls[0].values.sessionKeyHash).toBe(sha256Hex(sessionId));
+    expect(whereSql(0)).toContain('IS NULL OR');
+    // Live at the claim write; already evicted when the refresh write is issued.
+    expect(anonymousLiveAtWrite).toEqual([true, false]);
+    expect(npcSimulation.isValidAgentSession(anonymousSessionId)).toBe(false);
+    expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([sessionId]);
+    expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(true);
+  });
+
+  test('C1: an owned-token bind of an unowned row evicts before the provisioning awaits', async () => {
+    const agentId = 'r4-token-bind-agent';
+    const anonymousSessionId = 'ag-r4-anonymous-before-token-bind';
+    registerAnonymousSession(agentId, anonymousSessionId);
+    const token = `ct-r4-token-bind-${'k'.repeat(20)}`;
+    pendingConnections.set(token, {
+      token,
+      avatarId: OTHER_AVATAR_ID,
+      avatarName: 'Token Avatar',
+      userId: OTHER_ID,
+      expiresAt: Date.now() + 60_000,
+      connected: false,
+    });
+    const anonymousLiveAtProvision: boolean[] = [];
+    onProvisionWallet = () => {
+      anonymousLiveAtProvision.push(npcSimulation.isValidAgentSession(anonymousSessionId));
+    };
+    try {
+      botRow = boundRow(agentId, null);
+      updateReturns = () => [{ userId: OTHER_ID }];
+      const result = await connect({ connectionToken: token, agentId });
+      expect(result.status).toBe(200);
+      const sessionId = result.json.sessionId as string;
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0].values.userId).toBe(OTHER_ID);
+      expect(updateCalls[0].values.sessionKeyHash).toBe(sha256Hex(sessionId));
+      expect(anonymousLiveAtProvision).toEqual([false]);
+      expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([sessionId]);
+    } finally {
+      pendingConnections.delete(token);
+    }
+  });
+
+  test('C2: a credentialless CAS that resolves after a five-minute-old owner bind mark is still refused', async () => {
+    const agentId = 'r4-stalled-bare-agent';
+    botRow = boundRow(agentId, null);
+    // The CAS won while the row was unowned; an owner bind then marked the
+    // fence, and this request saw its UPDATE response more than five minutes
+    // after that mark.
+    updateReturns = () => {
+      markAgentOwnedNow(agentId, Date.now() - FIVE_MINUTES - 1_000);
+      return [{ userId: null }];
+    };
+    const result = await connect({ agentId, name: 'Stalled Stray' });
+    expectOwnerCredentialRefusal(result);
+    expect(registerCalls).toBe(0);
+    expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([]);
+    expect(ticketMints).toBe(0);
+  });
+
+  test('C2: an owner bind marked before this request started does not refuse a connect to an unowned row', async () => {
+    const agentId = 'r4-earlier-bind-agent';
+    markAgentOwnedNow(agentId);
+    botRow = boundRow(agentId, null);
+    updateReturns = () => [{ userId: null }];
+    const result = await connect({ agentId });
+    expect(result.status).toBe(200);
+    expect(registerCalls).toBe(1);
   });
 });
 

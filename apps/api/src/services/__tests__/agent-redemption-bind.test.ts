@@ -60,7 +60,7 @@ const { consumeTicket } = await import('../session-ticket-service');
 const { npcSimulation } = await import('../npc-simulation');
 const { buildAvatarSessionConfig } = await import('../agent-session-config');
 const { sessionDigest, sha256Hex } = await import('../session-digest');
-const { agentOwnedRecently, __resetAgentOwnerFenceForTests } = await import('../agent-owner-fence');
+const { agentOwnerBoundSince, ownerBindSnapshot, __resetAgentOwnerFenceForTests } = await import('../agent-owner-fence');
 
 const REDEEMER = '61111111-1111-4111-8111-111111111111';
 const BOT_ID = '62222222-2222-4222-8222-222222222222';
@@ -311,13 +311,15 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     register(agentId, straySid);
     firstBindOn(sha256Hex(keeperSid));
     const fencedAtEviction: boolean[] = [];
+    // Taken before the bind, so only a mark made by this bind counts.
+    const fenceSnapshot = ownerBindSnapshot();
     const realUnregister = npcSimulation.unregisterAgentBot.bind(npcSimulation);
     npcSimulation.unregisterAgentBot = ((sid: string) => {
-      fencedAtEviction.push(agentOwnedRecently(agentId));
+      fencedAtEviction.push(agentOwnerBoundSince(agentId, fenceSnapshot));
       return realUnregister(sid);
     }) as typeof npcSimulation.unregisterAgentBot;
     try {
-      expect(agentOwnedRecently(agentId)).toBe(false);
+      expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(false);
       const outcome = await bindAgentOwnerAtRedemption({
         agentId,
         redeemerUserId: REDEEMER,
@@ -328,7 +330,7 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
       delete (npcSimulation as unknown as Record<string, unknown>).unregisterAgentBot;
     }
     expect(fencedAtEviction).toEqual([true]);
-    expect(agentOwnedRecently(agentId)).toBe(true);
+    expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(true);
     expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([keeperSid]);
   });
 
@@ -339,6 +341,7 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     const keeper = register(agentId, keeperSid);
     const other = register(agentId, otherSid);
     updateReturns = (index) => (index === 2 ? [{ id: BOT_ID }] : []);
+    const fenceSnapshot = ownerBindSnapshot();
 
     const outcome = await bindAgentOwnerAtRedemption({
       agentId,
@@ -351,7 +354,7 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     // Unchanged behavior: the stamp reaches every live config.
     expect(keeper.config.boundUserId).toBe(REDEEMER);
     expect(other.config.boundUserId).toBe(REDEEMER);
-    expect(agentOwnedRecently(agentId)).toBe(false);
+    expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(false);
     expect(updateCalls).toHaveLength(2);
     expectFirstBindWhere(updateCalls[0], agentId);
     const reaffirm = updateCalls[1];
@@ -366,6 +369,7 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     const sid = 'ag-redeem-skipped-1';
     const session = register(agentId, sid);
     updateReturns = () => [];
+    const fenceSnapshot = ownerBindSnapshot();
 
     const outcome = await bindAgentOwnerAtRedemption({
       agentId,
@@ -376,7 +380,7 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     expect(outcome).toBe('skipped');
     expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([sid]);
     expect(session.config.boundUserId).toBeNull();
-    expect(agentOwnedRecently(agentId)).toBe(false);
+    expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(false);
     expect(updateCalls).toHaveLength(2);
   });
 });

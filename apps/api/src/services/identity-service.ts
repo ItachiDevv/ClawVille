@@ -210,9 +210,10 @@ export async function resolvePublicOnboardingIdentity(
  * The created user row has:
  *   - `email = null`, `password_hash = null` — the CHECK constraint
  *     `users_has_auth_method` is satisfied via `identity_fingerprint`.
- *   - `name` defaulted to a human-readable slice of the identity key so
+ *   - `name` defaulted to `Agent <first 12 of the fingerprint>` so
  *     Milady/OpenClaw agents show up in admin listings with something
- *     meaningful even before the human adds recovery credentials.
+ *     meaningful even before the human adds recovery credentials. It never
+ *     contains any part of the identity key (the account credential).
  *
  * Postgres error code 23505 = unique_violation. If two requests race
  * into the "not found → insert" window, the loser catches 23505 and
@@ -255,14 +256,18 @@ export async function resolveOrCreateUserByIdentityWithStore(
     if (healed) return identityResult(healed, false);
   }
 
-  // 2. Not found — try to insert. Friendly default name: `Agent <first-12-of-key>`.
-  //    The key might itself be a UUID or a long hash, so slicing keeps
-  //    admin surfaces readable without leaking the full identity.
+  // 2. Not found — try to insert. Friendly default name:
+  //    `Agent <first-12-of-fingerprint>`. The identityKey is the account
+  //    credential, so no part of it goes into users.name (security S4,
+  //    2026-10-01): the old `Agent <first-12-of-key>` exposed a key of 12
+  //    characters or less in full to DB read access. The fingerprint is
+  //    already stored on the row, so its slice reveals nothing new.
   //    12-char slice (bumped from 8 on 2026-04-23 per audit HIGH #3)
   //    reduces cross-user display-name collision in admin lists: 8 hex
   //    chars gives birthday-paradox collisions around 65k users, 12
-  //    pushes that to ~16M.
-  const displayName = `Agent ${identityKey.slice(0, 12)}`;
+  //    pushes that to ~16M. Existing users keep their old name until the
+  //    tracked one-time rename (ARCHITECTURE.md, Rule E6).
+  const displayName = `Agent ${fingerprint.slice(0, 12)}`;
 
   try {
     const inserted = await store.insert({

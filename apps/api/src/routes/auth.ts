@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, agentBots, avatars } from '@clawville/database';
-import { bindAgentOwnerAtRedemption } from '../services/agent-redemption-bind';
+import { bindAgentOwnerAtRedemption, RedemptionEvictionIncompleteError } from '../services/agent-redemption-bind';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { sessionLedgerCapable } from '../services/agent-owner-binding';
@@ -966,8 +966,11 @@ authRoutes.get('/enter', async (c) => {
   // the row still names it; it evicts every other live session for the agent
   // and burns a stray's row bearer hash so it cannot restore. The owner stamp on the kept session never grants ledger
   // capability: a session minted without owner proof stays non-ledger until an
-  // identityKey connect or a signed /reconnect. Best-effort: a bind failure
-  // must not block the human's login, so the whole block is non-fatal.
+  // identityKey connect or a signed /reconnect. Best-effort FOR THE LOGIN: a
+  // bind failure must not block the human's login. It is fail-closed FOR THE
+  // AGENT: if eviction cannot remove a stray, the bind burns the row hash and
+  // throws `RedemptionEvictionIncompleteError` (round 4), so no agent bearer
+  // survives the ownership change; it is logged as a security failure.
   if (consumed.issuedToAgentId) {
     try {
       const outcome = await bindAgentOwnerAtRedemption({
@@ -983,7 +986,13 @@ authRoutes.get('/enter', async (c) => {
         );
       }
     } catch (err) {
-      console.error('[AuthEnter] agent bind failed (non-fatal):', err);
+      if (err instanceof RedemptionEvictionIncompleteError) {
+        console.error(
+          `[AuthEnter] SECURITY: agent bind for agentId=${err.agentId} could not evict ${err.remainingSessions} stray session(s); row hash burned, agent must reconnect`,
+        );
+      } else {
+        console.error('[AuthEnter] agent bind failed (non-fatal):', err);
+      }
     }
   }
 

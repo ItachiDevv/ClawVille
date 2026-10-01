@@ -19,6 +19,7 @@ let registerCallsAtFirstPlatformRead: number | null = null;
 let updateReturns: () => unknown[] = () => [];
 let botUpdateCalls: Array<{ values: Record<string, unknown>; where: unknown }> = [];
 let botInsertCalls = 0;
+let onBotInsert: () => void = () => {};
 
 const realDatabase = await import('@clawville/database');
 // Copies taken BEFORE the mocks, restored in afterAll, so a single-process run
@@ -54,7 +55,10 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
       return (table: unknown) => ({
         values: (values: Record<string, unknown>) => ({
           returning: async () => {
-            if (table === realDatabase.agentBots) botInsertCalls++;
+            if (table === realDatabase.agentBots) {
+              botInsertCalls++;
+              onBotInsert();
+            }
             return [{ ...values, id: table === realDatabase.agentBots ? BOT_ID : 'platform-agent-id' }];
           },
         }),
@@ -147,7 +151,11 @@ async function register(agentId: string) {
 function expectOwnerCredentialRefusal(result: { status: number; json: Record<string, unknown> }) {
   expect(result.status).toBe(409);
   expect(result.json).toEqual({
-    error: 'This agentId already has an owner. Connect with its identityKey or use the signed /api/agent/reconnect.',
+    error:
+      'This agentId already has an owner. Reconnect with an owner credential: your identityKey on /api/agent/connect '
+      + '(every agent type except Milady), a new magic-link connection token from the owning account, or the signed '
+      + '/api/agent/reconnect with your saved identity.secretKey. A Milady agent has no identityKey: use the signed '
+      + '/api/agent/reconnect, or ask the owner for a new magic link.',
     code: 'owner_credential_required',
   });
   expect(JSON.stringify(result.json)).not.toContain(OWNER_ID);
@@ -160,6 +168,7 @@ beforeEach(() => {
   updateReturns = () => [];
   botUpdateCalls = [];
   botInsertCalls = 0;
+  onBotInsert = () => {};
   registerCalls = 0;
   __resetAgentOwnerFenceForTests();
 });
@@ -234,12 +243,38 @@ describe('POST /api/openclaw/register owner credential rule', () => {
     expect(npcSimulation.findActiveSessionsByAgentIds(['legacy-fenced-bot'])).toEqual([]);
   });
 
-  test('a new-row register is refused by a live owner-fence mark too', async () => {
-    markAgentOwnedNow('legacy-fenced-new-bot');
+  test('a new-row register is refused when an owner bind lands while the INSERT is in flight', async () => {
+    onBotInsert = () => markAgentOwnedNow('legacy-fenced-new-bot');
     const result = await register('legacy-fenced-new-bot');
     expectOwnerCredentialRefusal(result);
     expect(botInsertCalls).toBe(1);
     expect(registerCalls).toBe(0);
+  });
+
+  // connect-sec round 4 (C10, Codex C2): the fence is a bind sequence taken at
+  // handler start, not a five-minute clock. A register whose UPDATE response
+  // arrives more than five minutes after the owner-bind mark is still refused.
+  test('a CAS that resolves more than five minutes after the owner-bind mark is still refused', async () => {
+    const FIVE_MINUTES = 5 * 60_000;
+    botRow = row('legacy-stalled-bot', null);
+    updateReturns = () => {
+      markAgentOwnedNow('legacy-stalled-bot', Date.now() - FIVE_MINUTES - 1_000);
+      return [{ id: BOT_ID }];
+    };
+    const result = await register('legacy-stalled-bot');
+    expectOwnerCredentialRefusal(result);
+    expect(botUpdateCalls).toHaveLength(1);
+    expect(registerCalls).toBe(0);
+    expect(npcSimulation.findActiveSessionsByAgentIds(['legacy-stalled-bot'])).toEqual([]);
+  });
+
+  test('an owner bind marked before this register started does not refuse an unowned row', async () => {
+    markAgentOwnedNow('legacy-earlier-bind-bot');
+    botRow = row('legacy-earlier-bind-bot', null);
+    updateReturns = () => [{ id: BOT_ID }];
+    const result = await register('legacy-earlier-bind-bot');
+    expect(result.status).toBe(200);
+    expect(registerCalls).toBe(1);
   });
 
   test('a fence mark for another agentId does not refuse this register', async () => {

@@ -76,7 +76,7 @@ import { AgentSubstrateClient } from './agent-substrate-client';
 import { decryptToken } from './keypair-vault';
 import { validateHatcherProxyUrl } from './hatcher-config';
 import { sha256Hex, sessionDigest } from './session-digest';
-import { agentOwnedRecently } from './agent-owner-fence';
+import { agentOwnerBoundSince, ownerBindSnapshot } from './agent-owner-fence';
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
@@ -438,6 +438,8 @@ export async function restoreAgentSessionFromRow(
   if (existing) return existing;
 
   const work = (async (): Promise<LiveAgentSession | null> => {
+    // Owner fence snapshot, taken BEFORE the row read (round 4: no expiry).
+    const ownerBindSnapshotAtStart = ownerBindSnapshot();
     const bot = await db.query.agentBots.findFirst({
       where: eq(agentBots.sessionKeyHash, keyHash),
     });
@@ -465,7 +467,9 @@ export async function restoreAgentSessionFromRow(
     // the row hash and evicted the agent's other sessions). Registering now
     // would bring a stray back after that eviction. No await sits between this
     // check and rebuildAndRegister, which registers synchronously.
-    if (bot.userId == null && agentOwnedRecently(bot.agentId)) return null;
+    if (bot.userId == null && agentOwnerBoundSince(bot.agentId, ownerBindSnapshotAtStart)) {
+      return null;
+    }
     const live = rebuildAndRegister(bot, sessionId, avatarId);
     if (live) {
       console.log(

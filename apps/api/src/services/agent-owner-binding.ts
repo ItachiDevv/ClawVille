@@ -167,9 +167,19 @@ export function planConnectOwnerBinding(inputs: {
 
 export const OWNER_CREDENTIAL_REQUIRED_CODE = 'owner_credential_required' as const;
 
-/** Generic 409 body: no owner data, never echoes a caller credential. */
+/**
+ * Generic 409 body: no owner data, never echoes a caller credential. The text
+ * names each path that works per agent type (connect-sec round 4): a Milady
+ * identityKey resolves no identity (`resolveIdentityForTicket` returns null),
+ * so a Milady agent recovers only through the signed reconnect or a new
+ * magic link from its owner.
+ */
 export const OWNER_CREDENTIAL_REQUIRED_BODY = Object.freeze({
-  error: 'This agentId already has an owner. Connect with its identityKey or use the signed /api/agent/reconnect.',
+  error:
+    'This agentId already has an owner. Reconnect with an owner credential: your identityKey on /api/agent/connect '
+    + '(every agent type except Milady), a new magic-link connection token from the owning account, or the signed '
+    + '/api/agent/reconnect with your saved identity.secretKey. A Milady agent has no identityKey: use the signed '
+    + '/api/agent/reconnect, or ask the owner for a new magic link.',
   code: OWNER_CREDENTIAL_REQUIRED_CODE,
 });
 

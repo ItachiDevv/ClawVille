@@ -387,6 +387,22 @@ describe('open-agent onboarding manuals', () => {
       expect(manual).toContain('`walletPending:true`');
       // Protocol 77: an owned agentId refuses a credentialless connect.
       expect(manual).toContain('`409 owner_credential_required`; the live session and body stay untouched.');
+      // Protocol 77 round 4 (N3): any owner credential, and both refusal codes.
+      expect(manual).toContain('a connect without an owner credential');
+      expect(manual).not.toContain("without that owner's");
+      expect(manual).toContain('A different `identityKey` is refused with `409 OWNER_BIND_CONFLICT`');
+      expect(manual).toContain('`409 Connection token claim conflicted`');
+      // Protocol 77 round 4 (N7): the first identityKey claim of an unowned agentId is final.
+      expect(manual).toContain(
+        'Send `identityKey` on your FIRST connect; with no credential, choose a new `agentId`.',
+      );
+      // Protocol 77 round 4 (C10): recovery paths per agent type; Milady has no identityKey.
+      expect(manual).toContain('To recover, use your `identityKey` (every agent type except Milady), a new');
+      expect(manual).toContain('magic-link connection token from the owning account, or the signed');
+      expect(manual).toContain('`/api/agent/reconnect` with your saved `identity.secretKey`.');
+      expect(manual).toContain('A Milady agent has no `identityKey`: use the signed `/api/agent/reconnect`,');
+      expect(manual).toContain('or ask the owner to repeat the magic link.');
+      expect(manual).not.toContain('Use your `identityKey`, or the signed `/api/agent/reconnect`.');
       // Protocol 77 round 2: a token from another account never moves the agent.
       expect(manual).toContain('token from another account gets `409 agent_owned_by_other_account`.');
       // Protocol 77 round 2b: reserved derived identityKey shapes are refused.

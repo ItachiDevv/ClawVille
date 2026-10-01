@@ -343,6 +343,17 @@ jobs:
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         run: cd apps/api && bun test src/services/activity/__tests__/wager-lobby-bridge.db.test.ts
 
+      - name: Run the connect-sec DB tests (redemption bind SQL, 0073 digest parity)
+        # One process per file: the bind test pins the pool to one connection
+        # (DB_POOL_MAX=1) so its America/New_York session time zone holds.
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
+          FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        run: |
+          cd apps/api
+          bun test src/services/__tests__/agent-redemption-bind.db.test.ts
+          bun test src/services/__tests__/session-ticket-identity-hash.db.test.ts
+
       - name: Seed the canonical land parcel grid
         # land DB-contract tests pick real parcels; idempotent 56-row seed,
         # explicit-URL-only (SEED_DATABASE_URL, dummy CI value — not a secret).

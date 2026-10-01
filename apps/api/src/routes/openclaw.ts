@@ -25,7 +25,7 @@ import {
   connectRequiresOwnerCredential,
   OWNER_CREDENTIAL_REQUIRED_BODY,
 } from '../services/agent-owner-binding';
-import { agentOwnedRecently } from '../services/agent-owner-fence';
+import { agentOwnerBoundSince, ownerBindSnapshot } from '../services/agent-owner-fence';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
 let _systemUserId: string | null = null;
@@ -138,6 +138,11 @@ const registerRateLimiter = createRateLimiter({
 
 // POST /api/openclaw/register
 openclawRoutes.post('/register', async (c) => {
+  // Owner fence snapshot (connect-sec round 4, `services/agent-owner-fence.ts`).
+  // Taken before this request reads or writes the row, so an owner bind that
+  // lands at any later time refuses this registration (no expiry).
+  const ownerBindSnapshotAtStart = ownerBindSnapshot();
+
   // Rate limit BEFORE any body parse / DB work (the /join Fix M1 pattern —
   // don't let a spam wave burn Postgres round-trips).
   const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
@@ -360,9 +365,11 @@ openclawRoutes.post('/register', async (c) => {
   // owner bind that commits after this point evicts this session (ownership
   // change in /api/agent/connect, or a first bind at GET /api/auth/enter).
   // An owner bind that already evicted while this CAS write was in flight
-  // marked the owner fence (`services/agent-owner-fence.ts`); refuse then. NO
-  // await may sit between this check and `registerAgentBot`.
-  if (agentOwnedRecently(data.agentId)) {
+  // marked the owner fence (`services/agent-owner-fence.ts`); refuse when that
+  // mark came after this request's snapshot, however long the write stalled
+  // (round 4: a bind sequence, no clock expiry). NO await may sit between this
+  // check and `registerAgentBot`.
+  if (agentOwnerBoundSince(data.agentId, ownerBindSnapshotAtStart)) {
     console.warn(`[OpenClaw] owner credential required for agentId=${data.agentId}; an owner bind landed during register`);
     return c.json(OWNER_CREDENTIAL_REQUIRED_BODY, 409);
   }
