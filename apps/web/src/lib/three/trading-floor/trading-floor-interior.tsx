@@ -68,6 +68,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -75,6 +76,13 @@ import {
   type RefObject,
 } from 'react';
 import * as THREE from 'three/webgpu';
+import { useThree } from '@react-three/fiber';
+import { useStageStore } from '@/components/three/world-stage/stage-store';
+import { TRADING_FLOOR_SCENE_ID } from '@/components/three/world-stage/stage-scene-id';
+import { withStageSlotFrustumCullingDisabledSync } from '@/components/three/world-stage/resource-ledger';
+import {
+  chainPostBootCompile,
+} from '@/lib/three/boot-core-compile';
 import { reportTradingFloorSeat } from '@/hooks/use-floor-arena';
 import { useGameStore } from '@/stores/game';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
@@ -582,7 +590,57 @@ const INSTANCED_ROW_NAMES = [
   'TradingFloorChairRow',
 ] as const;
 
-function RoomShell({ onReady }: { onReady: () => void }) {
+/** Room and avatar may commit in either order. The timer starts only at room mount. */
+export function createTradingFloorReadyGate(
+  onReady: () => void,
+  hasAvatar = true,
+  schedule: typeof setTimeout = setTimeout,
+  cancel: typeof clearTimeout = clearTimeout,
+) {
+  let roomMounted = false;
+  let avatarMounted = false;
+  let fired = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const fire = () => {
+    if (fired || !roomMounted || (hasAvatar && !avatarMounted)) return;
+    fired = true;
+    if (timer !== undefined) cancel(timer);
+    timer = undefined;
+    onReady();
+  };
+  return {
+    roomMounted() {
+      if (roomMounted) return;
+      roomMounted = true;
+      if (hasAvatar && !avatarMounted) {
+        timer = schedule(() => {
+          timer = undefined;
+          avatarMounted = true; // bounded fallback, even if the load never settles
+          fire();
+        }, 1500);
+      }
+      fire();
+    },
+    avatarMounted(): boolean {
+      const late = fired;
+      avatarMounted = true;
+      fire();
+      return late;
+    },
+    avatarUnmounted() {
+      if (!fired) avatarMounted = false;
+    },
+    roomUnmounted() {
+      if (timer !== undefined) cancel(timer);
+      timer = undefined;
+      roomMounted = false;
+      avatarMounted = false;
+      fired = false;
+    },
+  };
+}
+
+function RoomShell({ onMounted }: { onMounted: () => () => void }) {
   const { scene } = useGLTFWithKTX2(INTERIOR_GLB);
 
   const cloned = useMemo(() => {
@@ -653,9 +711,7 @@ function RoomShell({ onReady }: { onReady: () => void }) {
     [cloned],
   );
 
-  useEffect(() => {
-    onReady();
-  }, [cloned, onReady]);
+  useEffect(() => onMounted(), [cloned, onMounted]);
 
   // The room itself is deliberately NOT disposed: `clone(true)` shares
   // geometries, materials and textures by reference with the useGLTF cache, and
@@ -1311,13 +1367,113 @@ function TradingFloorAvatarMotion({
   return <group ref={groupRef}>{children}</group>;
 }
 
-function TradingFloorVRMPlayer({ reg }: { reg: ModelRegistryEntry }) {
+type AvatarMountCallback = () => boolean;
+
+function useTradingFloorAvatarWarm(
+  root: THREE.Object3D,
+  wrapperRef: RefObject<THREE.Group | null>,
+  onAvatarMounted: AvatarMountCallback,
+  onAvatarUnmounted: () => void,
+) {
+  const get = useThree((state) => state.get);
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper || !root.parent) {
+      if (wrapper) wrapper.visible = true;
+      if (root.parent) {
+        onAvatarMounted();
+        return () => onAvatarUnmounted();
+      }
+      return;
+    }
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    let revealTimer: ReturnType<typeof setTimeout> | undefined;
+    const late = onAvatarMounted();
+    if (!late) {
+      wrapper.visible = true;
+    } else {
+      // Keep the wrapper hidden, but compile the visible model root. An
+      // invisible compile root produces an empty Three.js render list.
+      wrapper.visible = false;
+      const startCompile = () => {
+        if (cancelled) return;
+        unsubscribe?.();
+        unsubscribe = undefined;
+        const { gl, camera, scene } = get();
+        if (typeof (gl as { compileAsync?: unknown }).compileAsync !== 'function') {
+          wrapper.visible = true;
+          return;
+        }
+        revealTimer = setTimeout(() => {
+          revealTimer = undefined;
+          if (!cancelled) wrapper.visible = true;
+        }, 5000);
+        void chainPostBootCompile({
+          gl,
+          label: 'trading-floor-late-avatar',
+          timeoutMs: 5000,
+          isCancelled: () => cancelled,
+          compile: () =>
+            withStageSlotFrustumCullingDisabledSync(TRADING_FLOOR_SCENE_ID, () =>
+              (
+                gl as unknown as {
+                  compileAsync: (
+                    root: THREE.Object3D,
+                    camera: THREE.Camera,
+                    scene: THREE.Scene,
+                  ) => Promise<void>;
+                }
+              ).compileAsync(root, camera, scene),
+            ),
+        }).then(() => {
+          if (revealTimer !== undefined) clearTimeout(revealTimer);
+          revealTimer = undefined;
+          if (!cancelled) wrapper.visible = true;
+        });
+      };
+      // A fallback avatar can arrive while the stage warm still owns the
+      // renderer. Wait until its direct draw and GPU drain have finished.
+      const stageReady = () => {
+        const state = useStageStore.getState();
+        const status = state.scenes[TRADING_FLOOR_SCENE_ID]?.status;
+        return state.activeScene === TRADING_FLOOR_SCENE_ID &&
+          (status === 'ready' || status === 'resident');
+      };
+      if (stageReady()) startCompile();
+      else {
+        unsubscribe = useStageStore.subscribe(() => {
+          if (stageReady()) startCompile();
+        });
+        if (stageReady()) startCompile();
+      }
+    }
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      if (revealTimer !== undefined) clearTimeout(revealTimer);
+      onAvatarUnmounted();
+    };
+  }, [get, onAvatarMounted, onAvatarUnmounted, root, wrapperRef]);
+}
+
+function TradingFloorVRMPlayer({
+  reg,
+  onAvatarMounted,
+  onAvatarUnmounted,
+}: {
+  reg: ModelRegistryEntry;
+  onAvatarMounted: AvatarMountCallback;
+  onAvatarUnmounted: () => void;
+}) {
   const vrm = useVRMInstance(reg.path, 'trading-floor-player');
   const { scale, offsetY } = useMemo(
     () => computeVRMAvatarFit(vrm, reg.animatorId, AVATAR_TARGET_HEIGHT),
     [vrm, reg.animatorId],
   );
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
+  const warmWrapperRef = useRef<THREE.Group>(null);
+  useTradingFloorAvatarWarm(vrm.scene, warmWrapperRef, onAvatarMounted, onAvatarUnmounted);
 
   useEffect(
     () => () => disposeVRMInstance(reg.path, 'trading-floor-player'),
@@ -1434,11 +1590,13 @@ function TradingFloorVRMPlayer({ reg }: { reg: ModelRegistryEntry }) {
   return (
     <TradingFloorAvatarMotion updateAnimation={updateAnimation}>
       <group ref={sitGroupRef}>
-        <primitive
-          object={vrm.scene}
-          scale={[scale, scale, scale]}
-          position={[0, offsetY, 0]}
-        />
+        <group ref={warmWrapperRef}>
+          <primitive
+            object={vrm.scene}
+            scale={[scale, scale, scale]}
+            position={[0, offsetY, 0]}
+          />
+        </group>
       </group>
     </TradingFloorAvatarMotion>
   );
@@ -1446,7 +1604,15 @@ function TradingFloorVRMPlayer({ reg }: { reg: ModelRegistryEntry }) {
 
 const _glbBoundsScratch = new THREE.Box3();
 
-function TradingFloorGLBPlayer({ reg }: { reg: ModelRegistryEntry }) {
+function TradingFloorGLBPlayer({
+  reg,
+  onAvatarMounted,
+  onAvatarUnmounted,
+}: {
+  reg: ModelRegistryEntry;
+  onAvatarMounted: AvatarMountCallback;
+  onAvatarUnmounted: () => void;
+}) {
   const { scene } = useGLTFWithKTX2(reg.path);
   const { cloned, scale, offsetY } = useMemo(() => {
     const next = scene.clone(true);
@@ -1481,6 +1647,8 @@ function TradingFloorGLBPlayer({ reg }: { reg: ModelRegistryEntry }) {
       offsetY: -_glbBoundsScratch.min.y * renderScale,
     };
   }, [scene]);
+  const warmWrapperRef = useRef<THREE.Group>(null);
+  useTradingFloorAvatarWarm(cloned, warmWrapperRef, onAvatarMounted, onAvatarUnmounted);
 
   useEffect(
     () => () => {
@@ -1501,21 +1669,29 @@ function TradingFloorGLBPlayer({ reg }: { reg: ModelRegistryEntry }) {
 
   return (
     <TradingFloorAvatarMotion updateAnimation={updateAnimation}>
-      <primitive object={cloned} scale={scale} position={[0, offsetY, 0]} />
+      <group ref={warmWrapperRef}>
+        <primitive object={cloned} scale={scale} position={[0, offsetY, 0]} />
+      </group>
     </TradingFloorAvatarMotion>
   );
 }
 
-function TradingFloorPlayer() {
+function TradingFloorPlayer({
+  onAvatarMounted,
+  onAvatarUnmounted,
+}: {
+  onAvatarMounted: AvatarMountCallback;
+  onAvatarUnmounted: () => void;
+}) {
   const avatarModelKey = useGameStore((state) => state.avatarModelKey);
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ??
     MODEL_REGISTRY.lobster;
 
   return reg.avatar_type === 'vrm' ? (
-    <TradingFloorVRMPlayer reg={reg} />
+    <TradingFloorVRMPlayer reg={reg} onAvatarMounted={onAvatarMounted} onAvatarUnmounted={onAvatarUnmounted} />
   ) : (
-    <TradingFloorGLBPlayer reg={reg} />
+    <TradingFloorGLBPlayer reg={reg} onAvatarMounted={onAvatarMounted} onAvatarUnmounted={onAvatarUnmounted} />
   );
 }
 
@@ -1534,9 +1710,24 @@ export default function TradingFloorInteriorScene({
   active = true,
   onReady,
 }: TradingFloorInteriorSceneProps = {}) {
-  const handleReady = useCallback(() => {
-    onReady?.();
-  }, [onReady]);
+  const readyCallbackRef = useRef(onReady);
+  readyCallbackRef.current = onReady;
+  const readyGateRef = useRef<ReturnType<typeof createTradingFloorReadyGate> | null>(null);
+  if (!readyGateRef.current) {
+    readyGateRef.current = createTradingFloorReadyGate(() => readyCallbackRef.current?.());
+  }
+  const handleRoomMounted = useCallback(() => {
+    readyGateRef.current!.roomMounted();
+    return () => readyGateRef.current!.roomUnmounted();
+  }, []);
+  const handleAvatarMounted = useCallback(
+    () => readyGateRef.current!.avatarMounted(),
+    [],
+  );
+  const handleAvatarUnmounted = useCallback(
+    () => readyGateRef.current!.avatarUnmounted(),
+    [],
+  );
 
   useEffect(() => {
     if (active) return;
@@ -1548,7 +1739,7 @@ export default function TradingFloorInteriorScene({
     <>
       <TradingFloorLighting />
       <WorldLabelsOverlayMount />
-      <RoomShell onReady={handleReady} />
+      <RoomShell onMounted={handleRoomMounted} />
       <TradingFloorScreen active={active} />
       <TradingFloorTradeTape active={active} />
       <TradingFloorDecor active={active} />
@@ -1557,7 +1748,10 @@ export default function TradingFloorInteriorScene({
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
           room appearing. */}
       <Suspense fallback={null}>
-        <TradingFloorPlayer />
+        <TradingFloorPlayer
+          onAvatarMounted={handleAvatarMounted}
+          onAvatarUnmounted={handleAvatarUnmounted}
+        />
       </Suspense>
     </>
   );
