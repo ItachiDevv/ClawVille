@@ -152,6 +152,14 @@ jobs:
         # This suite installs a DOM and API spies. Keep global test state local.
         run: cd apps/web && bun test src/components/game/__tests__/chat-panel-guest.test.tsx
 
+      - name: Run tutorial card and guest claim-gate suites in their own processes
+        # Pins the 44 px touch targets, the viewport-bounded card and the guest
+        # no-claim gate (prod 2026-10-01: a 401 claim on every guest /game load).
+        run: |
+          cd apps/web
+          bun test src/components/game/tutorial-overlay.test.tsx
+          bun test src/components/game/quest-tracker-claim-gate.test.tsx
+
       # Founder-reported regressions (2026-09-18) come back when nothing runs the
       # test that pinned them. The shared constants suite pins world data that
       # the web and the server both read (land showroom coverage of every plot,
