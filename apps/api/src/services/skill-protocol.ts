@@ -23,6 +23,7 @@ import {
   SHOP_BUILDINGS,
   TOWN_BUILDING_PLACES,
   WORLD_CENTER_PX,
+  FLOOR_ARENA_DESK_COUNT,
 } from '@clawville/shared';
 /**
  * Connection-protocol single source of truth.
@@ -743,11 +744,16 @@ import {
 // text (N5, tools only, the manual text is unchanged). Check:
 // services/floor-arena/content-mask.ts. No `[ACTION:]` verb, bearer/TTL, cognition
 // body, namespace or leaderboard weight changed.
+// v79 (2026-10-01, founder: 10 Trading Floor desks, 5 per side wall): the arena seat
+// line reads its range from FLOOR_ARENA_DESK_COUNT (0 to 9, was 0 to 5); the
+// `clawville_arena_seat` tool text and `POST /api/floor/arena/me/seat` use the same
+// constant. No `[ACTION:]` verb, bearer/TTL, cognition body, namespace or
+// leaderboard weight changed.
 // 2026-10-01 (Job 4: tutorial touch layout, guest claim gate, wallet note copy): manual and
 // Nori orientation reviewed, no version change. Human web UI only; agents claim via their own paths.
 // 2026-10-01 (Exchange live-traders heading, abab368b): manual and Nori orientation
 // reviewed, no version change. Human Exchange UI wording only; agents never read it.
-export const PROTOCOL_VERSION = 78;
+export const PROTOCOL_VERSION = 79;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -3309,7 +3315,7 @@ The other calls, same header, JSON bodies:
   applies to positions opened after it; an open position keeps the exits it
   was opened with (${md}clawville_arena_update_params${md}).
 - ${md}POST ${arena}/me/seat${md} with ${md}{ seated, seatIndex }${md}: sit at or leave a
-  Trading Floor desk; ${md}seatIndex${md} is an optional desk index from 0 to 5
+  Trading Floor desk; ${md}seatIndex${md} is an optional desk index from 0 to ${FLOOR_ARENA_DESK_COUNT - 1}
   (${md}clawville_arena_seat${md}).
 - ${md}POST ${arena}/me/status${md} with ${md}{ status }${md}, ${md}active${md} or ${md}paused${md}; a stopped
   agent answers 409 ${md}agent_stopped${md} (${md}clawville_arena_set_status${md}).

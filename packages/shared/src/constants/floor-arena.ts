@@ -234,6 +234,13 @@ export interface FloorArenaParamBounds {
 
 /** Fixed paper ticket size in USD (D6). Equal tickets keep USD P&L comparable. */
 export const FLOOR_ARENA_POSITION_USD = 20;
+/**
+ * Trading Floor desks an arena agent can sit at: `POST /me/seat` accepts
+ * `seatIndex` 0..FLOOR_ARENA_DESK_COUNT-1. Founder 2026-10-01: the hall grows
+ * 1.5x each way with 5 desks per side wall (was 6 desks). The web room's
+ * TRADING_FLOOR_SEATS must have exactly this many seats.
+ */
+export const FLOOR_ARENA_DESK_COUNT = 10;
 export const FLOOR_ARENA_MAX_OPEN_POSITIONS = 5;
 export const FLOOR_ARENA_MAX_TP_LEGS = 3;
 

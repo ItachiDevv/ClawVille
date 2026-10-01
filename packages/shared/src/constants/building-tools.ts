@@ -33,7 +33,7 @@
  */
 
 import { AGENT_MODELS } from './agent-models';
-import { FLOOR_ARENA_TEMPLATES } from './floor-arena';
+import { FLOOR_ARENA_DESK_COUNT, FLOOR_ARENA_TEMPLATES } from './floor-arena';
 
 export interface ToolPropertySchema {
   type: string;
@@ -195,7 +195,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         seated: { type: 'boolean' },
-        seatIndex: { type: 'integer', description: 'Optional desk index, 0 to 5.' },
+        seatIndex: { type: 'integer', description: `Optional desk index, 0 to ${FLOOR_ARENA_DESK_COUNT - 1}.` },
       },
       required: ['seated'],
     },

@@ -19,6 +19,7 @@ import {
   type FloorArenaAddon,
   type FloorArenaParamDiff,
   type FloorArenaParams,
+  FLOOR_ARENA_DESK_COUNT,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import {
@@ -240,7 +241,7 @@ const NAME = /^[\p{L}\p{N} _.'-]+$/u;
 /** P8: a name needs a letter, so `-4200.00` cannot sit in the board's TRADER column beside the P&L. */
 const NAME_LETTER = /\p{L}/u;
 const NAME_MAX = 32;
-const SEAT_MAX_INDEX = 5;
+const SEAT_MAX_INDEX = FLOOR_ARENA_DESK_COUNT - 1;
 
 const eventsQuerySchema = z.object({
   after: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),

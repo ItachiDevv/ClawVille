@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-10-01 (Job 4 tutorial touch layout + guest claim gate; manual reviewed, unchanged at 78).** Drift note: a comment-only note in the PROTECTED `skill-protocol.ts`; no manual text, wire, signing, session or `[ACTION:]` change; the tutorial card and the browser claim sweep are human web UI only (agent `claim_tutorial_quest` unchanged).
+**Last Audited: 2026-10-01 (PROTOCOL_VERSION 78 -> 79: Trading Floor desk range 0..9).** Drift note: MANUAL-TEXT change in the PROTECTED `skill-protocol.ts`: the arena seat line now reads its range from the shared `FLOOR_ARENA_DESK_COUNT` (10; founder order 2026-10-01: 10 desks, 5 per side wall; was 0 to 5), the `clawville_arena_seat` tool text and `POST /api/floor/arena/me/seat` use the same constant. No wire, signing, session, bearer/TTL, cognition body, namespace, leaderboard weight or `[ACTION:]` change. Offline selftest 87/0; staging mock-Hatcher harness + hosted-skill probe run after the deploy (recorded in `deploy-status.md`).
+
+**Prior Last Audited: 2026-10-01 (Job 4 tutorial touch layout + guest claim gate; manual reviewed, unchanged at 78).** Drift note: a comment-only note in the PROTECTED `skill-protocol.ts`; no manual text, wire, signing, session or `[ACTION:]` change; the tutorial card and the browser claim sweep are human web UI only (agent `claim_tutorial_quest` unchanged).
 
 **Last Audited: 2026-10-01 (Exchange live-traders heading; manual reviewed, unchanged at 78).** Drift note: a comment-only note in the PROTECTED `skill-protocol.ts`; no manual text, wire, signing, session or `[ACTION:]` change; the Exchange heading is human UI only.
 
