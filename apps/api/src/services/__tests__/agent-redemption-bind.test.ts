@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { SQL } from 'drizzle-orm';
 import type { AgentSubstrateClient } from '../agent-substrate-client';
@@ -45,6 +45,17 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
               updateCalls.push(call);
               return updateReturns(updateCalls.length, call);
             },
+            // The fail-closed burn awaits the UPDATE with no RETURNING. Record
+            // it too, and let `updateReturns` throw to simulate a failed write.
+            then: (resolve: (rows: unknown[]) => void, reject: (err: unknown) => void) => {
+              const call = { table, values, where, returningKeys: [] };
+              updateCalls.push(call);
+              try {
+                resolve(updateReturns(updateCalls.length, call));
+              } catch (err) {
+                reject(err);
+              }
+            },
           }),
         }),
       });
@@ -55,12 +66,14 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
 
 mock.module('@clawville/database', () => ({ ...realDatabase, db: dbProxy }));
 
-const { bindAgentOwnerAtRedemption } = await import('../agent-redemption-bind');
+const { bindAgentOwnerAtRedemption, RedemptionEvictionIncompleteError } = await import('../agent-redemption-bind');
 const { consumeTicket } = await import('../session-ticket-service');
 const { npcSimulation } = await import('../npc-simulation');
 const { buildAvatarSessionConfig } = await import('../agent-session-config');
 const { sessionDigest, sha256Hex } = await import('../session-digest');
-const { agentOwnerBoundSince, ownerBindSnapshot, __resetAgentOwnerFenceForTests } = await import('../agent-owner-fence');
+const { agentOwnerBoundSince, isAgentQuarantined, ownerBindSnapshot, __resetAgentOwnerFenceForTests } = await import(
+  '../agent-owner-fence'
+);
 
 const REDEEMER = '61111111-1111-4111-8111-111111111111';
 const BOT_ID = '62222222-2222-4222-8222-222222222222';
@@ -332,6 +345,166 @@ describe('bindAgentOwnerAtRedemption (GET /api/auth/enter)', () => {
     expect(fencedAtEviction).toEqual([true]);
     expect(agentOwnerBoundSince(agentId, fenceSnapshot)).toBe(true);
     expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([keeperSid]);
+  });
+
+  // Connect-sec round 4, Codex round-2 BLOCK: an enumeration throw, an
+  // eviction that keeps throwing, or a throwing burn UPDATE used to leave a
+  // stray readable by Map-only paths while `/enter` logged and went on. Each
+  // now quarantines the agent before any await and ends in the fail-closed
+  // `RedemptionEvictionIncompleteError`.
+  function throwOnUnregister(sessionId: string) {
+    const realUnregister = npcSimulation.unregisterAgentBot.bind(npcSimulation);
+    return spyOn(npcSimulation, 'unregisterAgentBot').mockImplementation((sid: string) => {
+      if (sid === sessionId) throw new Error('simulated eviction fault');
+      return realUnregister(sid);
+    });
+  }
+
+  async function bindExpectingIncomplete(agentId: string, keeperSid: string) {
+    let thrown: unknown = null;
+    try {
+      await bindAgentOwnerAtRedemption({
+        agentId,
+        redeemerUserId: REDEEMER,
+        issuedSessionDigest: sessionDigest(keeperSid),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(RedemptionEvictionIncompleteError);
+    return thrown as InstanceType<typeof RedemptionEvictionIncompleteError>;
+  }
+
+  test('an eviction that keeps throwing quarantines the agent, burns the row hash, and throws', async () => {
+    const agentId = 'redeem-q-evict';
+    const keeperSid = 'ag-redeem-q-evict-keeper';
+    const straySid = 'ag-redeem-q-evict-stray';
+    const { config: keeper } = register(agentId, keeperSid);
+    register(agentId, straySid);
+    firstBindOn(sha256Hex(keeperSid));
+    const spy = throwOnUnregister(straySid);
+    let err: InstanceType<typeof RedemptionEvictionIncompleteError>;
+    try {
+      err = await bindExpectingIncomplete(agentId, keeperSid);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(err.rowBurned).toBe(true);
+    expect(err.remainingSessions).toBe(1);
+    expect(isAgentQuarantined(agentId)).toBe(true);
+    // The stray is still in the Map, but no Map-only reader hands it out.
+    expect(npcSimulation.findActiveSessionsByAgentIds([agentId]).sort()).toEqual([keeperSid, straySid].sort());
+    expect(npcSimulation.getAgentBotClientBySession(straySid)).toBeNull();
+    expect(npcSimulation.getAgentBotClient(bodyIdFor(agentId))).toBeNull();
+    expect(npcSimulation.getActiveAgentBots().some((bot) => bot.agentId === agentId)).toBe(false);
+    // No owner stamp on a failed bind.
+    expect(keeper.boundUserId).toBeNull();
+    // The burn: a second UPDATE writes a fresh 64-hex hash, never the keeper's.
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[1].values.sessionKeyHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(updateCalls[1].values.sessionKeyHash).not.toBe(sha256Hex(keeperSid));
+  });
+
+  test('a session enumeration that throws at the keeper lookup quarantines the agent and fails closed', async () => {
+    const agentId = 'redeem-q-enum';
+    const keeperSid = 'ag-redeem-q-enum-keeper';
+    const straySid = 'ag-redeem-q-enum-stray';
+    const { config: keeper } = register(agentId, keeperSid);
+    register(agentId, straySid);
+    firstBindOn(sha256Hex(keeperSid));
+    const realFind = npcSimulation.findActiveSessionsByAgentIds.bind(npcSimulation);
+    let calls = 0;
+    const spy = spyOn(npcSimulation, 'findActiveSessionsByAgentIds').mockImplementation((ids: Iterable<string>) => {
+      calls++;
+      if (calls === 1) throw new Error('simulated enumeration fault');
+      return realFind(ids);
+    });
+    let err: InstanceType<typeof RedemptionEvictionIncompleteError>;
+    try {
+      err = await bindExpectingIncomplete(agentId, keeperSid);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(err.rowBurned).toBe(true);
+    expect(isAgentQuarantined(agentId)).toBe(true);
+    expect(keeper.boundUserId).toBeNull();
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[1].values.sessionKeyHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('a burn UPDATE that throws still quarantines the agent and throws the fail-closed error', async () => {
+    const agentId = 'redeem-q-burn';
+    const keeperSid = 'ag-redeem-q-burn-keeper';
+    const straySid = 'ag-redeem-q-burn-stray';
+    const { config: keeper } = register(agentId, keeperSid);
+    register(agentId, straySid);
+    updateReturns = (index, call) => {
+      if (index === 1) return [{ id: BOT_ID, sessionKeyHash: returnedHash(call, sha256Hex(keeperSid)) }];
+      throw new Error('simulated burn write failure');
+    };
+    const spy = throwOnUnregister(straySid);
+    let err: InstanceType<typeof RedemptionEvictionIncompleteError>;
+    try {
+      err = await bindExpectingIncomplete(agentId, keeperSid);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(err.rowBurned).toBe(false);
+    expect(isAgentQuarantined(agentId)).toBe(true);
+    expect(npcSimulation.getAgentBotClientBySession(straySid)).toBeNull();
+    expect(npcSimulation.getAgentBotClient(bodyIdFor(agentId))).toBeNull();
+    expect(keeper.boundUserId).toBeNull();
+    expect(updateCalls).toHaveLength(2);
+  });
+
+  test('a control-link first bind keeps an anonymous Hatcher session: no quarantine, and the stamp makes it ledger-capable for the redeemer', async () => {
+    const agentId = 'hatcher:redeem-q-keeper';
+    const keeperSid = 'hat-redeem-q-keeper';
+    // Same builder inputs as the anonymous Hatcher register (partner-signed).
+    const config = buildAvatarSessionConfig({
+      mode: 'avatar',
+      agentId,
+      sessionId: keeperSid,
+      identityType: 'hatcher',
+      storedProtocol: 'hatcher-proxy',
+      autonomyMode: 'server-managed',
+      name: 'Hatcher Keeper',
+      species: null,
+      color: null,
+      stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+      homeX: 11264,
+      homeY: 11264,
+      patrolRadius: 100,
+      personality: '',
+      ledgerCapable: true,
+      boundUserId: null,
+      protocolOverride: 'hatcher-proxy',
+    });
+    const client = {
+      getProtocol: () => 'hatcher-proxy',
+      setWorldStateProvider: () => {},
+      setSystemContextProvider: () => {},
+    } as unknown as AgentSubstrateClient;
+    npcSimulation.registerAgentBot(config, client);
+    liveSessions.add(keeperSid);
+    firstBindOn(sha256Hex(keeperSid));
+
+    const outcome = await bindAgentOwnerAtRedemption({
+      agentId,
+      redeemerUserId: REDEEMER,
+      issuedSessionDigest: sessionDigest(keeperSid),
+    });
+
+    expect(outcome).toBe('first-bind');
+    expect(isAgentQuarantined(agentId)).toBe(false);
+    expect(npcSimulation.getAgentBotClientBySession(keeperSid)).toBe(client);
+    // m2: the stamp aligns boundUserId with the row owner on a session that
+    // was already ledger-capable, so it is ledger-capable for the redeemer.
+    expect(config.boundUserId).toBe(REDEEMER);
+    expect(config.ledgerCapable).toBe(true);
   });
 
   test('re-affirm for the same owner evicts nothing, changes no hash, and marks no fence', async () => {

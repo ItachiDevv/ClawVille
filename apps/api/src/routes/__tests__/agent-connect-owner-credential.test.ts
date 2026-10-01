@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { NPC_IDS } from '@clawville/shared';
@@ -169,7 +169,7 @@ const { agentGatewayRoutes, pendingConnections } = await import('../agent-gatewa
 const { npcSimulation } = await import('../../services/npc-simulation');
 const { buildAvatarSessionConfig } = await import('../../services/agent-session-config');
 const { AgentSubstrateClient } = await import('../../services/agent-substrate-client');
-const { agentOwnerBoundSince, markAgentOwnedNow, ownerBindSnapshot, __resetAgentOwnerFenceForTests } = await import(
+const { agentOwnerBoundSince, isAgentQuarantined, markAgentOwnedNow, ownerBindSnapshot, __resetAgentOwnerFenceForTests } = await import(
   '../../services/agent-owner-fence'
 );
 const { sha256Hex } = await import('../../services/session-digest');
@@ -865,6 +865,64 @@ describe('POST /api/agent/connect round 4: atomic bind + no-expiry fence', () =>
       expect(anonymousLiveAtProvision).toEqual([false]);
       expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([sessionId]);
     } finally {
+      pendingConnections.delete(token);
+    }
+  });
+
+  test('Codex r2: an eviction throw at the owner bind quarantines the agent through the provisioning await; this connect registration releases it', async () => {
+    const agentId = 'r4-evict-throw-agent';
+    const straySid = 'ag-r4-evict-throw-stray';
+    const bodyId = `ocb-${Buffer.from(agentId, 'utf8').toString('base64url')}`;
+    registerAnonymousSession(agentId, straySid);
+    const token = `ct-r4-evict-throw-${'q'.repeat(20)}`;
+    pendingConnections.set(token, {
+      token,
+      avatarId: OTHER_AVATAR_ID,
+      avatarName: 'Token Avatar',
+      userId: OTHER_ID,
+      expiresAt: Date.now() + 60_000,
+      connected: false,
+    });
+    const realUnregister = npcSimulation.unregisterAgentBot.bind(npcSimulation);
+    let faultActive = true;
+    const spy = spyOn(npcSimulation, 'unregisterAgentBot').mockImplementation((sid: string) => {
+      if (faultActive && sid === straySid) throw new Error('simulated eviction fault');
+      return realUnregister(sid);
+    });
+    const atProvision: Array<Record<string, boolean>> = [];
+    onProvisionWallet = () => {
+      atProvision.push({
+        quarantined: isAgentQuarantined(agentId),
+        strayInMap: npcSimulation.isValidAgentSession(straySid),
+        strayClient: npcSimulation.getAgentBotClientBySession(straySid) !== null,
+        bodyClient: npcSimulation.getAgentBotClient(bodyId) !== null,
+        inRoster: npcSimulation.getActiveAgentBots().some((bot) => bot.agentId === agentId),
+      });
+      // The fault clears, so this connect's own registration can evict the stray.
+      faultActive = false;
+    };
+    try {
+      botRow = boundRow(agentId, null);
+      updateReturns = () => [{ userId: OTHER_ID }];
+      const result = await connect({ connectionToken: token, agentId });
+      expect(result.status).toBe(200);
+      const sessionId = result.json.sessionId as string;
+      // During the provisioning await the stray is still in the Map, but no
+      // Map-only reader hands it out.
+      expect(atProvision).toEqual([{
+        quarantined: true,
+        strayInMap: true,
+        strayClient: false,
+        bodyClient: false,
+        inRoster: false,
+      }]);
+      // The owner-proven registration evicted the stray and released the agent.
+      expect(isAgentQuarantined(agentId)).toBe(false);
+      expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([sessionId]);
+      expect(npcSimulation.getAgentBotClientBySession(sessionId)).not.toBeNull();
+      expect(npcSimulation.getAgentBotClient(bodyId)).toBe(npcSimulation.getAgentBotClientBySession(sessionId));
+    } finally {
+      spy.mockRestore();
       pendingConnections.delete(token);
     }
   });

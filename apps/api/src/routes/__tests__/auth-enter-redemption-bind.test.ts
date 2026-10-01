@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { Hono } from 'hono';
 import type { AgentSubstrateClient } from '../../services/agent-substrate-client';
 import type { AppContext } from '../../types';
@@ -13,6 +13,9 @@ let ticketRow: Record<string, unknown> | null = null;
 let botBindReturns: (index: number) => unknown[] = () => [];
 let botBindThrows = false;
 let botUpdates = 0;
+// The fail-closed burn awaits its UPDATE with no RETURNING (round 4).
+let burnThrows = false;
+let burnAttempts = 0;
 
 const realDatabase = await import('@clawville/database');
 // Copies taken BEFORE the mocks, restored in afterAll, so a single-process run
@@ -34,6 +37,12 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
                 return botBindReturns(botUpdates);
               }
               throw new Error('unexpected update target');
+            },
+            then: (resolve: (rows: unknown[]) => void, reject: (err: unknown) => void) => {
+              if (table !== realDatabase.agentBots) return resolve([]);
+              burnAttempts++;
+              if (burnThrows) return reject(new Error('burn write failed'));
+              return resolve([]);
             },
           }),
         }),
@@ -58,6 +67,7 @@ const { lucia } = await import('../../lib/auth');
 const { npcSimulation } = await import('../../services/npc-simulation');
 const { buildAvatarSessionConfig } = await import('../../services/agent-session-config');
 const { sessionDigest, sha256Hex } = await import('../../services/session-digest');
+const { isAgentQuarantined, __resetAgentOwnerFenceForTests } = await import('../../services/agent-owner-fence');
 
 const REDEEMER = '71111111-1111-4111-8111-111111111111';
 const AVATAR_ID = '72222222-2222-4222-8222-222222222222';
@@ -127,6 +137,8 @@ beforeEach(() => {
   botBindReturns = () => [];
   botBindThrows = false;
   botUpdates = 0;
+  burnThrows = false;
+  burnAttempts = 0;
 });
 
 afterEach(() => {
@@ -190,6 +202,44 @@ describe('GET /api/auth/enter bind-at-redemption', () => {
     expect(response.headers.get('location')).toMatch(/\/game$/);
     expect(response.headers.get('set-cookie')).toContain('enter-bind-test-session');
     expect(npcSimulation.findActiveSessionsByAgentIds([agentId])).toEqual([sid]);
+  });
+
+  test('Codex r2: an unproven eviction and a throwing burn UPDATE quarantine the agent; login still succeeds', async () => {
+    const agentId = 'enter-bind-burn-throw';
+    const keeperSid = 'ag-enter-burn-keeper';
+    const straySid = 'ag-enter-burn-stray';
+    const keeper = register(agentId, keeperSid);
+    register(agentId, straySid);
+    ticketRow = ticketFor(agentId, keeperSid);
+    botBindReturns = (index) => (index === 1 ? [{ id: BOT_ID, sessionKeyHash: sha256Hex(keeperSid) }] : []);
+    burnThrows = true;
+    const realUnregister = npcSimulation.unregisterAgentBot.bind(npcSimulation);
+    const unregisterSpy = spyOn(npcSimulation, 'unregisterAgentBot').mockImplementation((sid: string) => {
+      if (sid === straySid) throw new Error('simulated eviction fault');
+      return realUnregister(sid);
+    });
+    const errors: string[] = [];
+    const errorSpy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    let response: Response;
+    try {
+      response = await enter();
+    } finally {
+      unregisterSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toMatch(/\/game$/);
+    expect(response.headers.get('set-cookie')).toContain('enter-bind-test-session');
+    expect(burnAttempts).toBe(1);
+    expect(isAgentQuarantined(agentId)).toBe(true);
+    expect(npcSimulation.getAgentBotClientBySession(straySid)).toBeNull();
+    expect(npcSimulation.getAgentBotClientBySession(keeperSid)).toBeNull();
+    expect(keeper.boundUserId).toBeNull();
+    expect(errors.some((line) => line.includes('[AuthEnter] SECURITY') && line.includes('NOT burned'))).toBe(true);
+    __resetAgentOwnerFenceForTests();
   });
 
   test('an invalid ticket redirects to the expired-link page with no bind', async () => {

@@ -48,6 +48,12 @@ import {
   markAgentOwnedNow,
   ownerBindSnapshot,
 } from '../services/agent-owner-fence';
+// Owner-bind eviction with verify + quarantine (connect-sec round 4, Codex
+// round-2 BLOCK). Shared with the hosted mint bind.
+import {
+  evictAgentSessionsOrQuarantine,
+  fenceAndEvictOnOwnerBind,
+} from '../services/agent-owner-bind-eviction';
 // /reconnect session-mint planner (P0 gate fix, 2026-07-03) — pure decision
 // module (ledger/dormancy/credential rules) shared with its DB-free unit tests.
 // `gatewayCredentialZodFields` is the SAME zod trio connectSchema spreads below,
@@ -480,24 +486,14 @@ export const connectSchema = z.object({
   { message: 'At least one identity signal required: agentId, miladyAgentId, or connectionToken' }
 );
 
-/**
- * Unowned -> owned bind on `/connect` (connect-sec round 4, Codex C1). Marks
- * the owner fence, then evicts every live in-memory session of the agent.
- * Fully synchronous: the caller runs it right after its bind UPDATE returns
- * and before any other await. That UPDATE also rotated `session_key_hash`, so
- * the REST gate (present-and-mismatch) already refuses the evicted bearers;
- * this closes the Map-only paths (body, cognition client, roster).
- */
-function fenceAndEvictOnOwnerBind(agentId: string): void {
-  markAgentOwnedNow(agentId);
-  try {
-    for (const stale of npcSimulation.findActiveSessionsByAgentIds([agentId])) {
-      npcSimulation.unregisterAgentBot(stale);
-    }
-  } catch (err) {
-    console.error('[AgentConnect] stale-session eviction on owner bind failed (non-fatal):', err);
-  }
-}
+// Unowned -> owned bind on `/connect`: `fenceAndEvictOnOwnerBind` lives in
+// `services/agent-owner-bind-eviction.ts` (connect-sec round 4, Codex round-2
+// BLOCK). It marks the owner fence, evicts in two passes, verifies, and
+// quarantines the agent for every Map-only reader when a stray is left. The
+// caller runs it right after its bind UPDATE returns and before any other
+// await. That UPDATE also rotated `session_key_hash`, so the REST gate
+// (present-and-mismatch) already refuses the evicted bearers. This connect's
+// own `registerAgentBot` below releases the quarantine after it evicts the rest.
 
 agentGatewayRoutes.post('/connect', async (c) => {
   // Owner fence snapshot (connect-sec round 4, `services/agent-owner-fence.ts`).
@@ -1233,13 +1229,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
     if (!ownerBindFenced && existingBoundUserId === null && persistedLiveUserId !== null) {
       markAgentOwnedNow(resolvedAgentId);
     }
-    try {
-      for (const stale of npcSimulation.findActiveSessionsByAgentIds([resolvedAgentId])) {
-        npcSimulation.unregisterAgentBot(stale);
-      }
-    } catch (err) {
-      console.error('[AgentConnect] stale-session eviction on rebind failed (non-fatal):', err);
-    }
+    // Two passes, verify, quarantine on a stray left (round-2 BLOCK); never
+    // throws. The registration below releases the quarantine.
+    evictAgentSessionsOrQuarantine(resolvedAgentId, { source: 'connect-rebind' });
   }
 
   // Wallet advertisement is derived only from the verified avatar settlement

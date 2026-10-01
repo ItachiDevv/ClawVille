@@ -452,8 +452,20 @@ openclawRoutes.post('/register', async (c) => {
 openclawRoutes.delete('/unregister/:sessionId', async (c) => {
   const sessionId = c.req.param('sessionId');
 
+  // Live-session gate (connect-sec round 4, session-lens MINOR 1). Map
+  // membership alone is not proof: a stray session still in the Map (its row
+  // hash rotated away by an owner bind) used to end the OWNER's session here,
+  // because the row UPDATE below is keyed by agentId. `validateLiveAgentSession`
+  // refuses (and unregisters) a bearer whose row hash is present and different,
+  // or whose TTL ended. The UPDATE also matches this bearer's hash, so it can
+  // only end the row's session when this bearer IS the row's session.
+  const live = await validateLiveAgentSession(sessionId);
+  if (!live) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+
   // Save avatar position before removing from simulation
-  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
+  const botConfig = live.config;
   if (botConfig) {
     const pos = botConfig.mode === 'avatar' ? npcSimulation.getAgentBotAvatarPosition(sessionId) : null;
     // Fire-and-forget: persist last position + update lastSeenAt
@@ -488,7 +500,12 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             // explicit disconnect).
             sessionKeyHash: null,
             updatedAt: new Date(),
-          }).where(eq(agentBots.id, existing.id));
+          }).where(and(
+            eq(agentBots.id, existing.id),
+            // Only this bearer's own row session ends (round 4, MINOR 1). A
+            // rotation after the gate above leaves the newer session alone.
+            eq(agentBots.sessionKeyHash, sha256Hex(sessionId)),
+          ));
         }
       } catch (err) {
         console.error('[OpenClaw] Failed to save disconnect state:', err);

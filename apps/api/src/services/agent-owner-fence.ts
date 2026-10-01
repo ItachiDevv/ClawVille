@@ -66,10 +66,57 @@ export function agentOwnerBoundSince(agentId: string, snapshot: number): boolean
 }
 
 /**
- * Test seam: clear every mark. Never called by runtime code. The sequence
- * itself stays monotonic, so an earlier snapshot never matches a later mark
- * by accident.
+ * QUARANTINE (connect-sec round 4, Codex round-2 BLOCK, 2026-10-01).
+ *
+ * WHY: an owner bind evicts the agent's live in-memory sessions. When that
+ * eviction cannot be proven complete (a stray session is still in the session
+ * Map after both passes, or a session enumeration threw), the stray could still
+ * drive the owner's body or receive cognition through a Map-only reader (a path
+ * that reads the Map without `validateLiveAgentSession`).
+ *
+ * RULE: the eviction (`agent-owner-bind-eviction.ts`) quarantines the agentId
+ * synchronously, before its caller's next await. Every Map-only reader in
+ * `npc-simulation.ts` skips a quarantined agent: no cognition client (by body or
+ * by session), no [ACTION:] dispatch, no ambient conversation, no public roster
+ * entry. Validated paths (REST and the agent SSE loop run
+ * `validateLiveAgentSession` every call or tick) already refuse a stray bearer by
+ * its row hash and unregister it, so the session config stays readable for them.
+ * The next `registerAgentBot` for the agent (after an owner bind, the fence and
+ * the owned-row check let only an owner-proven session register: connect proof,
+ * the /enter keeper, signed /reconnect, Hatcher register or patch, hosted, or a
+ * restore of the hash the bind wrote) evicts every other session of the agent,
+ * verifies that none is left, and only then releases the quarantine.
+ *
+ * SCOPE: per process, like the fence (single-API-replica invariant). The set
+ * holds at most one entry per agentId; a release removes it.
+ */
+const quarantinedAgents = new Set<string>();
+
+/** Quarantine `agentId` for every Map-only reader. Pure Set write, never throws. */
+export function quarantineAgent(agentId: string): void {
+  quarantinedAgents.add(agentId);
+}
+
+/** TRUE while `agentId` is quarantined. */
+export function isAgentQuarantined(agentId: string): boolean {
+  return quarantinedAgents.has(agentId);
+}
+
+/**
+ * Release the quarantine. Only `npcSimulation.registerAgentBot` calls this,
+ * after it verified that no other session of the agent is left in the Map.
+ * Returns TRUE when the agent was quarantined.
+ */
+export function releaseAgentQuarantine(agentId: string): boolean {
+  return quarantinedAgents.delete(agentId);
+}
+
+/**
+ * Test seam: clear every mark and every quarantine. Never called by runtime
+ * code. The sequence itself stays monotonic, so an earlier snapshot never
+ * matches a later mark by accident.
  */
 export function __resetAgentOwnerFenceForTests(): void {
   lastOwnerBindSeq.clear();
+  quarantinedAgents.clear();
 }

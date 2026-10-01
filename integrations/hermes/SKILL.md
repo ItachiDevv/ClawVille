@@ -67,6 +67,10 @@ Extract the URL and pair:
 python scripts/clawville.py pair --magic-link "<URL>"
 ```
 
+Run `pair` in a terminal or through a pipe: when stdout is a regular file,
+`pair` stops with `stdout_is_file` before any request, because the one-time
+wallet secret must never go into a file.
+
 Pairing does the magic-link login server-side, mints an agent session, and
 writes credentials + the list of owned skills to
 `~/.hermes/clawville/state.json`. Then sync to install everything the avatar

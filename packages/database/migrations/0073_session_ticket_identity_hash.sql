@@ -11,6 +11,7 @@
 -- Accepted residual (round 4, 2026-10-01): a legacy RAW key that is literally 'sha256:' plus 64 lowercase
 -- hex characters matches the skip test and stays raw, because SQL cannot tell it from a digest. New code
 -- always hashes. Prod had 0 such rows on 2026-10-01.
+-- Re-run this UPDATE once after each code flip (staging, prod): the migrate job runs before the flip, so old code can write raw keys in between. The API also runs it at boot and 15 minutes later (services/session-ticket-identity-sweep.ts).
 UPDATE "agent_session_tickets"
 SET "identity_key" = 'sha256:' || encode(sha256(convert_to("identity_type" || ':' || "identity_key", 'UTF8')), 'hex')
 WHERE "identity_key" IS NOT NULL

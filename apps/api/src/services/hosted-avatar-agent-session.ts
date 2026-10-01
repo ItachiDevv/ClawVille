@@ -55,7 +55,7 @@
  */
 
 import { randomBytes, createHash } from 'node:crypto';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, sql } from 'drizzle-orm';
 import { db, agentBots, avatars } from '@clawville/database';
 import { npcSimulation } from './npc-simulation';
 import { AgentSubstrateClient } from './agent-substrate-client';
@@ -63,6 +63,7 @@ import { sha256Hex, sessionDigest } from './session-digest';
 import { computeSessionExpiresAt, extendSessionTtl } from './agent-session-sweeper';
 import { withKeyedMutex } from './keyed-mutex';
 import { isReservedPartnerIdentityType } from './reserved-agent-namespaces';
+import { fenceAndEvictOnOwnerBind } from './agent-owner-bind-eviction';
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import {
   hostedAvatarAgentId,
@@ -200,7 +201,9 @@ export async function ensureHostedAvatarAgentSession(
     // Upsert row + atomic hash under the per-agent advisory lock (cross-process),
     // re-reading the row UNDER the lock so the insert/update decision is made on
     // the post-lock state. The mutex above covers the post-commit sim mutation.
-    await db.transaction(async (tx) => {
+    // TRUE when this write bound a row that had NO owner (no row, or
+    // `user_id IS NULL`) to the avatar owner.
+    const boundUnownedRow = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${hostedAvatarLockKey(agentId)})`);
 
       const existing = await tx.query.agentBots.findFirst({
@@ -217,14 +220,46 @@ export async function ensureHostedAvatarAgentSession(
             `refusing to mutate reserved partner row for agentId ${agentId}`,
           );
         }
-        await tx
+        // Owner guard (connect-sec round 4, session lens): never rebind a row that
+        // another account owns. `rowValues` writes `userId`, so an unguarded
+        // UPDATE would move the row (and its ledger binding) to this owner.
+        if (existing.userId !== null && existing.userId !== ownerUserId) {
+          throw new HostedAvatarAgentError(
+            `refusing to rebind agentId ${agentId}: the row has a different owner`,
+          );
+        }
+        // Compare-and-set on the owner. The advisory lock serializes only the
+        // hosted mints; a /connect owner bind (its own `user_id IS NULL` CAS) can
+        // commit between the read above and this UPDATE. Zero rows = refuse.
+        const updated = await tx
           .update(agentBots)
           .set(rowValues)
-          .where(eq(agentBots.id, existing.id));
-      } else {
-        await tx.insert(agentBots).values({ agentId, ...rowValues });
+          .where(
+            and(
+              eq(agentBots.id, existing.id),
+              or(isNull(agentBots.userId), eq(agentBots.userId, ownerUserId)),
+            ),
+          )
+          .returning({ id: agentBots.id });
+        if (updated.length === 0) {
+          throw new HostedAvatarAgentError(
+            `refusing to rebind agentId ${agentId}: the row owner changed during the mint`,
+          );
+        }
+        return existing.userId === null;
       }
+      await tx.insert(agentBots).values({ agentId, ...rowValues });
+      return true;
     });
+
+    // Unowned -> owned (connect-sec round 4): mark the owner fence and evict
+    // every live in-memory session of this agent, synchronously, after the
+    // commit and before registerAgentBot (the same helper the /connect bind
+    // uses). A stray session issued while the row had no owner must never stay
+    // in the Map beside the owner's session (body, cognition client, roster).
+    if (boundUnownedRow) {
+      fenceAndEvictOnOwnerBind(agentId);
+    }
 
     // Post-commit: register the in-world body (self-managed, deterministic
     // `ocb-<base64url(agentId)>`) under the fresh bearer. registerAgentBot Map-SETs

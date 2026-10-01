@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
@@ -332,21 +333,35 @@ class WalletSecretRelayTest(TempHomeTest):
                 "wallet": {"address": WALLET_ADDRESS, "chain": "solana"},
             }}
 
+        with open(clawville.STATE_FILE, "rb") as f:
+            state_before = f.read()
+
+        # pair refuses a stdout file before any request: state.json stays as it was.
         out_path = os.path.join(self.home, "pair-output.json")
         with open(out_path, "w", encoding="utf-8") as out, contextlib.ExitStack() as stack:
+            sent = stack.enter_context(patch.object(clawville, "_request_json", side_effect=request_json))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            with self.assertRaises(SystemExit):
+                clawville.cmd_pair(pair_args(CONNECT_TOKEN_URL))
+        sent.assert_not_called()
+        with open(out_path, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "")
+        os.remove(out_path)
+        with open(clawville.STATE_FILE, "rb") as f:
+            self.assertEqual(f.read(), state_before)
+
+        # A pair on a pipe that fails after it rewrote state.json (before its
+        # output) keeps the unshown secret.
+        with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(clawville, "_request_json", side_effect=request_json))
             stack.enter_context(patch.object(clawville, "_resolve_pair_metadata", return_value=PAIR_META))
-            stack.enter_context(patch.object(clawville, "sync_owned"))
-            stack.enter_context(contextlib.redirect_stdout(out))
-            clawville.cmd_pair(pair_args(CONNECT_TOKEN_URL))
-        with open(out_path, "r", encoding="utf-8") as f:
-            text = f.read()
-        os.remove(out_path)
-        self.assertNotIn(WALLET_SECRET, text)
-        doc = json.loads(text)
-        self.assertTrue(doc["ok"])
-        self.assertIn("stdout is a file", doc["legacyWalletNotice"])
-        # The new pair rewrote state.json but kept the unshown secret.
+            stack.enter_context(patch.object(
+                clawville, "sync_owned", side_effect=urllib.error.URLError("network down")
+            ))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            with self.assertRaises(urllib.error.URLError):
+                clawville.cmd_pair(pair_args(CONNECT_TOKEN_URL))
         state = clawville.load_state()
         self.assertEqual(state["sessionId"], "s-1")
         self.assertEqual(state["wallet"], {"address": WALLET_ADDRESS})
@@ -360,6 +375,80 @@ class WalletSecretRelayTest(TempHomeTest):
         self.assert_relayed_once(shown.getvalue())
         self.assert_stored_nowhere()
         self.assertEqual(clawville.load_state()["wallet"], {"address": WALLET_ADDRESS})
+
+
+PAIR_MODES = (
+    ("connect-token", pair_args(CONNECT_TOKEN_URL)),
+    ("magic-link", pair_args(MAGIC_LINK_URL)),
+    ("self", pair_args(self_flag=True)),
+)
+
+
+class PairStdoutFileTest(TempHomeTest):
+    """A first connect returns the one-time wallet secret, and pair prints it.
+    With stdout on a regular file, pair stops before any HTTP request."""
+
+    def test_stdout_file_is_refused_before_any_http_request(self) -> None:
+        out_path = os.path.join(self.home, "pair-output.json")
+        calls = [(name, lambda a=args: clawville.cmd_pair(a)) for name, args in PAIR_MODES]
+        calls.append(("_pair_self direct", lambda: clawville._pair_self(pair_args(self_flag=True))))
+        for name, call in calls:
+            with self.subTest(mode=name):
+                err = io.StringIO()
+                with open(out_path, "w", encoding="utf-8") as out, contextlib.ExitStack() as stack:
+                    request_json = stack.enter_context(patch.object(clawville, "_request_json"))
+                    request = stack.enter_context(patch.object(clawville, "_request"))
+                    stack.enter_context(contextlib.redirect_stdout(out))
+                    stack.enter_context(contextlib.redirect_stderr(err))
+                    with self.assertRaises(SystemExit) as raised:
+                        call()
+                self.assertEqual(raised.exception.code, 1)
+                request_json.assert_not_called()
+                request.assert_not_called()
+                message = json.loads(err.getvalue())
+                self.assertEqual(message["error"], "stdout_is_file")
+                self.assertIn("terminal or through a pipe", message["hint"])
+                with open(out_path, "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read(), "")
+                # No state.json, no identityKey, no install id: nothing was started.
+                self.assertEqual(os.listdir(self.home), ["pair-output.json"])
+
+    def pair_through_a_pipe(self, args) -> str:
+        def request_json(method, path, body=None, bearer=None, **_):
+            if path == "/api/agent/connect":
+                return {"status": 200, "headers": {}, "body": first_connect_body(body["agentId"])}
+            return {"status": 200, "headers": {}, "body": FLOW_B_REPLIES[path]}
+
+        read_fd, write_fd = os.pipe()
+        chunks = []
+        with open(read_fd, "rb") as reader:
+            # Read while pair writes, so a full pipe buffer cannot block it.
+            thread = threading.Thread(target=lambda: chunks.append(reader.read()))
+            thread.start()
+            try:
+                with open(write_fd, "w", encoding="utf-8") as pipe, contextlib.ExitStack() as stack:
+                    stack.enter_context(patch.object(clawville, "_request_json", side_effect=request_json))
+                    stack.enter_context(patch.object(clawville, "_request", return_value=(302, {}, b"")))
+                    stack.enter_context(patch.object(clawville, "_resolve_pair_metadata", return_value=PAIR_META))
+                    stack.enter_context(patch.object(clawville, "sync_owned"))
+                    stack.enter_context(contextlib.redirect_stdout(pipe))
+                    self.assertFalse(clawville._stdout_is_file())
+                    clawville.cmd_pair(args)
+            finally:
+                thread.join(timeout=30)
+        return chunks[0].decode("utf-8")
+
+    def test_pipe_is_allowed_and_relays_the_secret_once(self) -> None:
+        for name, args in PAIR_MODES:
+            with self.subTest(mode=name):
+                clawville._pending_wallet_recovery = None
+                stdout = self.pair_through_a_pipe(args)
+                self.assertEqual(stdout.count(WALLET_SECRET), 1, stdout)
+                doc = json.loads(stdout)
+                self.assertTrue(doc["ok"])
+                self.assertEqual(doc["walletRecovery"]["secretKey"], WALLET_SECRET)
+                self.assert_stored_nowhere()
+                self.assertEqual(clawville.load_state()["wallet"], {"address": WALLET_ADDRESS})
 
 
 SAVED_IDENTITY_KEY = "saved-identity-key-test-only"

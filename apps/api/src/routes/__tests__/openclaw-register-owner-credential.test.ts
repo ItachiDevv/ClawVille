@@ -286,3 +286,88 @@ describe('POST /api/openclaw/register owner credential rule', () => {
     expect(registerCalls).toBe(1);
   });
 });
+
+// Connect-sec round 4, session-lens MINOR 1: DELETE /api/openclaw/unregister
+// trusted Map membership and ended the row's session by agentId, so a stray
+// still in the Map (its hash rotated away by an owner bind) could end the
+// OWNER's session. The route now runs `validateLiveAgentSession` (404 when it
+// refuses) and its row UPDATE also matches this bearer's hash.
+const { buildAvatarSessionConfig } = await import('../../services/agent-session-config');
+const { AgentSubstrateClient } = await import('../../services/agent-substrate-client');
+const { sha256Hex } = await import('../../services/session-digest');
+describe('DELETE /api/openclaw/unregister/:sessionId live-session gate', () => {
+  function registerLive(agentId: string, sessionId: string, boundUserId: string | null) {
+    const config = buildAvatarSessionConfig({
+      mode: 'avatar',
+      agentId,
+      sessionId,
+      identityType: 'custom',
+      storedProtocol: 'nanoclaw',
+      ledgerCapable: boundUserId !== null,
+      boundUserId,
+      name: 'Unregister Gate',
+      species: null,
+      color: null,
+      stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+      homeX: 2560,
+      homeY: 2560,
+      patrolRadius: 100,
+      personality: 'unregister gate',
+    });
+    realRegister(config, new AgentSubstrateClient(config));
+    registeredSessions.add(sessionId);
+  }
+
+  function liveRow(agentId: string, rowSessionId: string): Record<string, unknown> {
+    return {
+      ...row(agentId, OWNER_ID),
+      sessionKeyHash: sha256Hex(rowSessionId),
+      sessionExpiresAt: new Date(Date.now() + 3_600_000),
+      sessionSweptAt: null,
+    };
+  }
+
+  async function unregister(sessionId: string) {
+    const app = new Hono();
+    app.route('/api/openclaw', openclawRoutes);
+    const response = await app.request(`/api/openclaw/unregister/${sessionId}`, { method: 'DELETE' });
+    // Let the fire-and-forget disconnect write run.
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    return { status: response.status, json: await response.json() as Record<string, unknown> };
+  }
+
+  test('a stray whose row hash an owner bind rotated away gets 404 and cannot end the owner session', async () => {
+    const agentId = 'legacy-unregister-stray';
+    const straySid = 'ag-legacy-unregister-stray';
+    const ownerSid = 'ag-legacy-unregister-owner';
+    registerLive(agentId, straySid, null);
+    registerLive(agentId, ownerSid, OWNER_ID);
+    botRow = liveRow(agentId, ownerSid);
+
+    const result = await unregister(straySid);
+
+    expect(result.status).toBe(404);
+    expect(botUpdateCalls).toHaveLength(0);
+    // The owner's session is untouched; the gate dropped the stray.
+    expect(npcSimulation.isValidAgentSession(ownerSid)).toBe(true);
+    expect(npcSimulation.isValidAgentSession(straySid)).toBe(false);
+  });
+
+  test('the row session itself unregisters, and the UPDATE matches its own bearer hash', async () => {
+    const agentId = 'legacy-unregister-owner';
+    const ownerSid = 'ag-legacy-unregister-self';
+    registerLive(agentId, ownerSid, OWNER_ID);
+    botRow = liveRow(agentId, ownerSid);
+
+    const result = await unregister(ownerSid);
+
+    expect(result.status).toBe(200);
+    expect(result.json).toEqual({ success: true });
+    expect(npcSimulation.isValidAgentSession(ownerSid)).toBe(false);
+    expect(botUpdateCalls).toHaveLength(1);
+    expect(botUpdateCalls[0].values.sessionKeyHash).toBeNull();
+    const where = dialect.sqlToQuery(botUpdateCalls[0].where as Parameters<PgDialect['sqlToQuery']>[0]);
+    expect(where.sql).toBe('("openclaw_bots"."id" = $1 and "openclaw_bots"."session_key_hash" = $2)');
+    expect(where.params).toEqual([BOT_ID, sha256Hex(ownerSid)]);
+  });
+});

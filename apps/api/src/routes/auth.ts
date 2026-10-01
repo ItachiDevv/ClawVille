@@ -964,13 +964,21 @@ authRoutes.get('/enter', async (c) => {
   // log — never log the ticket or any bearer). Security 2026-09-30: a first
   // bind keeps only the live session the ticket was issued to, and only while
   // the row still names it; it evicts every other live session for the agent
-  // and burns a stray's row bearer hash so it cannot restore. The owner stamp on the kept session never grants ledger
-  // capability: a session minted without owner proof stays non-ledger until an
-  // identityKey connect or a signed /reconnect. Best-effort FOR THE LOGIN: a
-  // bind failure must not block the human's login. It is fail-closed FOR THE
-  // AGENT: if eviction cannot remove a stray, the bind burns the row hash and
+  // and burns a stray's row bearer hash so it cannot restore. The owner stamp on
+  // a kept `/connect` session never grants ledger capability: a session minted
+  // without owner proof stays non-ledger until an identityKey connect or a
+  // signed /reconnect. HATCHER EXCEPTION: an anonymous Hatcher register
+  // (`partner-hatcher.ts`, partner-signed) mints its session with
+  // `ledgerCapable: true` and `boundUserId: null`; when a control-link first
+  // bind keeps that session, the stamp sets `boundUserId` to the redeemer, so
+  // the session becomes ledger-capable for the redeemer (the partner signature
+  // is its owner proof). Best-effort FOR THE LOGIN: a bind failure must not
+  // block the human's login. It is fail-closed FOR THE AGENT: if eviction cannot
+  // be proven complete (a stray left, or a session enumeration threw), the bind
+  // quarantines the agent for every Map-only reader, burns the row hash and
   // throws `RedemptionEvictionIncompleteError` (round 4), so no agent bearer
-  // survives the ownership change; it is logged as a security failure.
+  // survives the ownership change. A throw of that burn UPDATE ends in the same
+  // error (`rowBurned: false`, quarantine kept). Both are logged as SECURITY.
   if (consumed.issuedToAgentId) {
     try {
       const outcome = await bindAgentOwnerAtRedemption({
@@ -988,7 +996,7 @@ authRoutes.get('/enter', async (c) => {
     } catch (err) {
       if (err instanceof RedemptionEvictionIncompleteError) {
         console.error(
-          `[AuthEnter] SECURITY: agent bind for agentId=${err.agentId} could not evict ${err.remainingSessions} stray session(s); row hash burned, agent must reconnect`,
+          `[AuthEnter] SECURITY: agent bind for agentId=${err.agentId} could not prove eviction (${err.remainingSessions < 0 ? 'unknown' : err.remainingSessions} stray session(s)); agent quarantined; row hash ${err.rowBurned ? 'burned' : 'NOT burned (burn UPDATE failed)'}; agent must reconnect`,
         );
       } else {
         console.error('[AuthEnter] agent bind failed (non-fatal):', err);

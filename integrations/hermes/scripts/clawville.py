@@ -28,7 +28,8 @@ Usage:
 Stdlib only. Reads/writes ~/.hermes/clawville/state.json (chmod 0600).
 Every command prints exactly one JSON document to stdout.
 A first-connect wallet.secretKey is printed once to stdout for the human and
-is never written to state.json or any other file. identity.secretKey is the
+is never written to state.json or any other file. `pair` stops before any
+request when stdout is a regular file. identity.secretKey is the
 agent's own credential: it is saved once and signs `reconnect`.
 """
 
@@ -572,6 +573,20 @@ if __name__ == "__main__":
 # Pairing — magic link + agent connect
 # ───────────────────────────────────────────────────────────────────────
 
+PAIR_STDOUT_FILE_HINT = (
+    "Run pair in a terminal or through a pipe; the wallet secret is shown "
+    "once and must not be written to a file."
+)
+
+
+def _refuse_pair_to_stdout_file() -> None:
+    """A first connect returns the one-time wallet.secretKey, and pair prints
+    it to stdout. When stdout is a regular file, stop before any request: no
+    secret exists yet, and the magic link or connect token stays unused."""
+    if _stdout_is_file():
+        die("stdout_is_file", PAIR_STDOUT_FILE_HINT)
+
+
 def cmd_pair(args):
     try:
         _pair(args)
@@ -596,6 +611,7 @@ def _pair(args):
          + avatar for the agent based on its identity. This is the "open
          agent onboarding" path called out in the brand spec.
     """
+    _refuse_pair_to_stdout_file()
     # `--self` is declared optional on the parser; treat missing attr as False.
     if getattr(args, "self", False):
         return _pair_self(args)
@@ -761,6 +777,7 @@ def _pair_self(args):
     request, so a lost response cannot orphan the agentId, and every later
     `pair --self` reuses it. Never log or print it.
     """
+    _refuse_pair_to_stdout_file()
     state = load_state()
     identity_key = state.get("identityKey")
     if not identity_key:

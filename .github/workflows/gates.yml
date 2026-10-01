@@ -265,6 +265,13 @@ jobs:
         # DATABASE_URL) and remains Phase 0b.
         run: cd apps/api && bun test src/routes/__tests__/agent-paid-surface.test.ts src/routes/__tests__/agent-session-ack.test.ts src/routes/__tests__/dashboard-skill-acks.test.ts
 
+      - name: Run the agent-session owner-proof middleware suite in its own process
+        # connect-sec round 4 (C10): no other lane covers src/middleware/__tests__.
+        # This file uses mock.module (process-global), so it gets its own bun
+        # process. The DB is mocked and the file sets its own FINGERPRINT_SECRET
+        # fixture; DATABASE_URL stays unset, as in the steps above.
+        run: cd apps/api && bun test src/middleware/__tests__/require-auth-or-agent-owner-proof.test.ts
+
   # Phase 0b uses a separate job and Bun process to avoid cross-file singleton
   # pollution. The in-memory lane stays guaranteed-green and required; this lane
   # is required by both deploy callers before any live migration starts.

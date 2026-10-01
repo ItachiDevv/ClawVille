@@ -901,6 +901,20 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Session sweeper failed to start:', err);
   }
 
+  // connect-sec round 4 (2026-10-01, Codex C4) — re-run the migration 0073
+  // UPDATE now and 15 minutes later. CI applies 0073 BEFORE the code flip, so an
+  // old container can write raw agent_session_tickets.identity_key rows until it
+  // stops. Fail-soft; one autocommit statement per run.
+  // See `services/session-ticket-identity-sweep.ts`.
+  try {
+    const { startSessionTicketIdentitySweep } = await import(
+      './services/session-ticket-identity-sweep'
+    );
+    startSessionTicketIdentitySweep();
+  } catch (err) {
+    console.error('[API] Session-ticket identity sweep failed to start:', err);
+  }
+
   // 2026-06-12 — start the agent BODY idle-despawn sweeper. Runs every 1 min,
   // removes the in-world body (NOT the session) of any agent idle past
   // AGENT_BODY_IDLE_DESPAWN_MS so dormant agents stop costing sim CPU. The
