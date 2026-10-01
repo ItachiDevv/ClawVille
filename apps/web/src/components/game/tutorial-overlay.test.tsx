@@ -218,3 +218,84 @@ describe('TutorialOverlay reads the reader from app state', () => {
     expect(fetched.some((url) => url.includes('agent-session'))).toBe(false);
   });
 });
+
+// --- Layout (prod check 2026-10-01, 390x844 and 844x390 touch) ---
+// Next 91x40, Previous 40x40 and the close X ~32 px were below 44 px; at
+// 844x390 card 3 hid its Jump row and step buttons below the view, and the
+// HUD (z-45 gear, z-50 auth banner, toggle, language, Controls) covered the card top.
+
+function button(label: string): HTMLButtonElement {
+  const found = [...container!.querySelectorAll('button')].find(
+    (candidate) => candidate.getAttribute('aria-label') === label || candidate.textContent?.trim() === label,
+  );
+  expect(found).toBeDefined();
+  return found!;
+}
+
+function heading(title: string): HTMLElement {
+  const found = [...container!.querySelectorAll('h2')].find((candidate) => candidate.textContent === title);
+  expect(found).toBeDefined();
+  return found!;
+}
+
+const classesOf = (element: Element) => element.className.split(/\s+/);
+
+describe('TutorialOverlay on a touch device (useIsMobile true)', () => {
+  // useIsMobile reads navigator.maxTouchPoints > 1.
+  beforeEach(() => {
+    Object.defineProperty(testWindow.navigator, 'maxTouchPoints', { configurable: true, get: () => 5 });
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(testWindow.navigator, 'maxTouchPoints');
+  });
+
+  test('Next, Previous and the card close are 44 px tap targets', async () => {
+    await firstCardText((client) => client.setQueryData(['auth-me'], null));
+    for (const label of ['Next', 'Previous tutorial step', 'Close controls help']) {
+      expect(classesOf(button(label))).toEqual(expect.arrayContaining(['min-h-11', 'min-w-11']));
+    }
+  });
+
+  test('card 3 is bounded to the viewport: its middle scrolls, the close control and step buttons stay outside', async () => {
+    await firstCardText((client) => client.setQueryData(['auth-me'], null));
+    await act(async () => { button('Open controls help').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    const scroll = heading('Run and Jump').closest('.overflow-y-auto');
+    expect(scroll).not.toBeNull();
+    expect(classesOf(scroll!)).toContain('min-h-0');
+    expect(scroll!.textContent).toContain('Tap, hold to charge');
+    for (const label of ['Close controls help', 'Previous tutorial step', 'Next']) {
+      const control = button(label);
+      expect(scroll!.contains(control)).toBe(false);
+      expect(control.closest('.shrink-0')).not.toBeNull();
+    }
+    const card = scroll!.parentElement!;
+    expect(classesOf(card)).toEqual(expect.arrayContaining(['flex', 'flex-col', 'min-h-0', 'overflow-hidden']));
+    expect(card.parentElement!.className).toMatch(/(^|\s)max-h-\[calc\(100dvh-[^\]]+\)\](\s|$)/);
+  });
+
+  test('the card is a modal above every /game HUD layer and below the z-[100] modals; the backdrop closes it', async () => {
+    await firstCardText((client) => client.setQueryData(['auth-me'], null));
+    const overlay = heading('Welcome to ClawVille!').closest('.fixed') as HTMLElement;
+    const z = Number(/(?:^|\s)z-\[(\d+)\]/.exec(overlay.className)?.[1]);
+    // HUD: z-40 minimap, z-45 gear, z-50 auth banner / mode toggle / language /
+    // Controls / toasts, z-[60] and z-[70] agent chat bar. Modals: z-[100].
+    expect(z).toBeGreaterThan(70);
+    expect(z).toBeLessThan(100);
+    const backdrop = overlay.firstElementChild as HTMLElement;
+    expect(classesOf(backdrop)).toContain('inset-0');
+    await act(async () => { backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(container!.querySelector('h2')).toBeNull();
+    expect(testWindow.localStorage.getItem('clawville-tutorial-seen')).toBe('true');
+  });
+});
+
+test('with a mouse the card keeps its place beside the sidebar, no backdrop, 32/40 px buttons', async () => {
+  await firstCardText((client) => client.setQueryData(['auth-me'], null));
+  const overlay = heading('Welcome to ClawVille!').closest('.fixed') as HTMLElement;
+  expect(classesOf(overlay)).toContain('z-[44]');
+  expect(overlay.style.top).toBe('114px');
+  expect(overlay.querySelector('.inset-0')).toBeNull();
+  for (const label of ['Next', 'Previous tutorial step', 'Close controls help']) {
+    expect(classesOf(button(label))).not.toContain('min-h-11');
+  }
+});

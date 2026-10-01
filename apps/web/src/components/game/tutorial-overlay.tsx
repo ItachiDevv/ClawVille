@@ -302,6 +302,9 @@ export default function TutorialOverlay() {
   });
 
   const current = steps[step];
+  // Touch: 44 px tap targets (AGENTS.md mobile rule). A min-* size beats the
+  // h-/w- size, so the mouse layout keeps its 32/40 px buttons.
+  const touchTarget = isMobile ? ' min-h-11 min-w-11' : '';
 
   return (
     <>
@@ -331,10 +334,16 @@ export default function TutorialOverlay() {
         <Gamepad2 className="h-5 w-5" aria-hidden />
       </button>
 
-      {/* Tutorial overlay */}
+      {/* Tutorial overlay. Touch: a true modal ABOVE the /game HUD (z-40
+          minimap, z-45 gear, z-50 auth banner, mode toggle, language,
+          Controls and toasts, z-[60]/[70] agent chat bar), which covered the
+          card top at 844x390, and below the z-[100] agent-connect and
+          first-time backup modals. The backdrop takes every tap until the
+          card closes (X, backdrop, Escape, Let's Go); then Log In and Sign
+          Up are tappable. Mouse: unchanged, a card beside the sidebar. */}
       {visible && (
         <div
-          className={`fixed z-[44] ${isMobile ? 'inset-0 flex items-center justify-center p-4' : ''}`}
+          className={`fixed ${isMobile ? 'inset-0 z-[90] flex items-center justify-center p-4' : 'z-[44]'}`}
           style={!isMobile
             ? {
                 top: 114,
@@ -350,13 +359,19 @@ export default function TutorialOverlay() {
             />
           )}
 
+          {/* Card plus badge fit the dynamic viewport (the 2rem padding on
+              touch, the 114 px top offset plus a 16 px gap with a mouse). A
+              taller card scrolls its middle; the header close control and the
+              footer step buttons stay on screen (844x390 hid Next on card 3). */}
           <div
-            className={`relative w-full transition-all duration-150 ${
+            className={`relative flex w-full flex-col transition-all duration-150 ${
+              isMobile ? 'max-h-[calc(100dvh-2rem)]' : 'max-h-[calc(100dvh-130px)]'
+            } ${
               animating ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
             }`}
           >
             <div
-              className="relative max-h-[calc(100svh-2rem)] overflow-hidden rounded-lg border p-0 shadow-[0_22px_80px_rgba(0,0,0,0.42),0_0_40px_rgba(45,212,191,0.22)]"
+              className="relative flex min-h-0 flex-col overflow-hidden rounded-lg border p-0 shadow-[0_22px_80px_rgba(0,0,0,0.42),0_0_40px_rgba(45,212,191,0.22)]"
               style={{
                 background:
                   'linear-gradient(180deg, rgba(6, 47, 70, 0.96) 0%, rgba(7, 28, 49, 0.98) 46%, rgba(8, 20, 35, 0.98) 100%)',
@@ -373,7 +388,7 @@ export default function TutorialOverlay() {
               />
 
               {/* Step indicator */}
-              <div className="flex items-center justify-between px-5 pb-2 pt-5">
+              <div className="flex shrink-0 items-center justify-between px-5 pb-2 pt-5">
                 <div className="flex gap-1.5">
                   {steps.map((_, i) => (
                     <div
@@ -391,93 +406,96 @@ export default function TutorialOverlay() {
                 <button
                   type="button"
                   onClick={close}
-                  className="flex h-8 w-8 items-center justify-center rounded-full border border-cyan-200/20 bg-cyan-950/40 text-cyan-100/75 transition-colors hover:border-cyan-200/45 hover:text-white"
+                  className={`flex h-8 w-8 items-center justify-center rounded-full border border-cyan-200/20 bg-cyan-950/40 text-cyan-100/75 transition-colors hover:border-cyan-200/45 hover:text-white${touchTarget}`}
                   aria-label="Close controls help"
                 >
                   <X className="h-4 w-4" aria-hidden />
                 </button>
               </div>
 
-              {/* Icon + Title */}
-              <div className="px-5 pt-1">
-                <div className="mb-3 flex items-center gap-3">
-                  <span
-                    className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-cyan-200/25 bg-cyan-200/10 text-3xl shadow-[inset_0_0_24px_rgba(125,211,252,0.12)]"
-                    aria-hidden
-                  >
-                    {current.icon}
-                  </span>
-                  <div>
-                    <div className="font-mono text-[10px] font-black uppercase tracking-[0.22em] text-cyan-200/70">
-                      Field Manual
+              {/* Title and body scroll inside the card when it is too tall. */}
+              <div className="min-h-0 overflow-y-auto overscroll-contain">
+                {/* Icon + Title */}
+                <div className="px-5 pt-1">
+                  <div className="mb-3 flex items-center gap-3">
+                    <span
+                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-cyan-200/25 bg-cyan-200/10 text-3xl shadow-[inset_0_0_24px_rgba(125,211,252,0.12)]"
+                      aria-hidden
+                    >
+                      {current.icon}
+                    </span>
+                    <div>
+                      <div className="font-mono text-[10px] font-black uppercase tracking-[0.22em] text-cyan-200/70">
+                        Field Manual
+                      </div>
+                      <h2 className="font-clawville text-2xl leading-tight text-white">
+                        {current.title}
+                      </h2>
                     </div>
-                    <h2 className="font-clawville text-2xl leading-tight text-white">
-                      {current.title}
-                    </h2>
                   </div>
                 </div>
-              </div>
 
-              {/* Body */}
-              <div className="space-y-4 px-5 pb-4">
-                <p className="text-sm leading-relaxed text-cyan-50/82">
-                  {current.content}
-                </p>
+                {/* Body */}
+                <div className="space-y-4 px-5 pb-4">
+                  <p className="text-sm leading-relaxed text-cyan-50/82">
+                    {current.content}
+                  </p>
 
-                {step === CONTROLS_STEP_INDEX && (
-                  <div className="grid grid-cols-1 gap-2">
-                    {CONTROL_ITEMS.map((item) => {
-                      const tone = controlTone(item.tone);
-                      return (
-                        <div
-                          key={item.key}
-                          className="rounded-md border px-3 py-2"
-                          style={{
-                            borderColor: tone.border,
-                            background: tone.bg,
-                            boxShadow: `inset 0 0 18px ${tone.glow}`,
-                          }}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span
-                              className="min-w-[76px] rounded border px-2 py-1 text-center font-mono text-[11px] font-black uppercase tracking-[0.12em]"
-                              style={{
-                                borderColor: tone.border,
-                                color: tone.key,
-                                background: 'rgba(0, 0, 0, 0.22)',
-                              }}
-                            >
-                              {item.key}
-                            </span>
-                            <div className="min-w-0">
-                              <div className="text-sm font-black text-white">
-                                {item.label}
-                              </div>
-                              <div className="text-xs leading-snug text-cyan-50/70">
-                                {item.detail}
+                  {step === CONTROLS_STEP_INDEX && (
+                    <div className="grid grid-cols-1 gap-2">
+                      {CONTROL_ITEMS.map((item) => {
+                        const tone = controlTone(item.tone);
+                        return (
+                          <div
+                            key={item.key}
+                            className="rounded-md border px-3 py-2"
+                            style={{
+                              borderColor: tone.border,
+                              background: tone.bg,
+                              boxShadow: `inset 0 0 18px ${tone.glow}`,
+                            }}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span
+                                className="min-w-[76px] rounded border px-2 py-1 text-center font-mono text-[11px] font-black uppercase tracking-[0.12em]"
+                                style={{
+                                  borderColor: tone.border,
+                                  color: tone.key,
+                                  background: 'rgba(0, 0, 0, 0.22)',
+                                }}
+                              >
+                                {item.key}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="text-sm font-black text-white">
+                                  {item.label}
+                                </div>
+                                <div className="text-xs leading-snug text-cyan-50/70">
+                                  {item.detail}
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  )}
 
-                {current.tip && (
-                  <div className="inline-flex rounded-md border border-cyan-200/24 bg-cyan-950/40 px-3 py-1.5 font-mono text-[11px] font-bold text-cyan-100/80">
-                    {current.tip}
-                  </div>
-                )}
+                  {current.tip && (
+                    <div className="inline-flex rounded-md border border-cyan-200/24 bg-cyan-950/40 px-3 py-1.5 font-mono text-[11px] font-bold text-cyan-100/80">
+                      {current.tip}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Navigation */}
-              <div className="flex items-center justify-between border-t border-cyan-200/12 bg-black/18 px-5 py-4">
+              <div className="flex shrink-0 items-center justify-between border-t border-cyan-200/12 bg-black/18 px-5 py-4">
                 <button
                   type="button"
                   onClick={prevStep}
                   disabled={step === 0}
-                  className="flex h-10 w-10 items-center justify-center rounded-full border border-cyan-200/20 text-cyan-100/70 transition-all hover:border-cyan-200/45 hover:text-white disabled:opacity-0 disabled:pointer-events-none"
+                  className={`flex h-10 w-10 items-center justify-center rounded-full border border-cyan-200/20 text-cyan-100/70 transition-all hover:border-cyan-200/45 hover:text-white disabled:opacity-0 disabled:pointer-events-none${touchTarget}`}
                   aria-label="Previous tutorial step"
                 >
                   <ArrowLeft className="h-4 w-4" aria-hidden />
@@ -490,7 +508,7 @@ export default function TutorialOverlay() {
                 <button
                   type="button"
                   onClick={nextStep}
-                  className="flex h-10 items-center gap-2 rounded-full border border-emerald-200/35 bg-emerald-400/18 px-4 text-sm font-black text-emerald-50 shadow-[0_0_22px_rgba(74,222,128,0.16)] transition-all hover:bg-emerald-400/28"
+                  className={`flex h-10 items-center gap-2 rounded-full border border-emerald-200/35 bg-emerald-400/18 px-4 text-sm font-black text-emerald-50 shadow-[0_0_22px_rgba(74,222,128,0.16)] transition-all hover:bg-emerald-400/28${touchTarget}`}
                 >
                   {step >= steps.length - 1 ? "Let's Go" : 'Next'}
                   <ArrowRight className="h-4 w-4" aria-hidden />
@@ -499,7 +517,7 @@ export default function TutorialOverlay() {
             </div>
 
             {/* Powered by badge */}
-            <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-100/45">
+            <p className="mt-2 shrink-0 text-center font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-100/45">
               Each agent powered by ElizaOS
             </p>
           </div>
