@@ -171,7 +171,7 @@ const SCREEN_Z = -hz + 6;
 // Surround insets, as named constants because a clearance assertion below reads
 // them. The glow must stay proud of the frame, so these two move TOGETHER.
 const FRAME_INSET = 12, FRAME_DEPTH = 44;
-const GLOW_INSET = 36, GLOW_DEPTH = 8;
+const GLOW_INSET = 35.5, GLOW_DEPTH = 8;
 
 // ---- clearance gate ---------------------------------------------------------
 // Mirrors TRADING_FLOOR_PLAYER_RADIUS / TRADING_FLOOR_ROOM in
@@ -408,6 +408,72 @@ function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48, polarUV = false) {
 function colored(geo, rgb) {
   geo.col = Array(geo.pos.length / 3).fill(rgb).flat();
   return geo;
+}
+
+/** Weld duplicate positions for angle-weighted normals, but split creases.
+ * Curvature and vertical exposure bake neutral sculpt shading, not yellow. */
+function sculptClaw(geo) {
+  const epsilon = 1e-4, crease = Math.cos(55 * Math.PI / 180);
+  const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
+  const sub = (a, b) => a.map((v, i) => v - b[i]);
+  const unit = (v) => { const length = Math.hypot(...v); return v.map((n) => n / length); };
+  const groups = new Map(), faces = [];
+  const keys = Array.from({length:geo.pos.length / 3}, (_, i) =>
+    geo.pos.slice(i*3, i*3+3).map((v) => Math.round(v / epsilon)).join(','));
+  for (let i = 0; i < geo.idx.length; i += 3) {
+    const ids = geo.idx.slice(i, i+3), points = ids.map((v) => geo.pos.slice(v*3, v*3+3));
+    const normal = unit(cross(sub(points[1], points[0]), sub(points[2], points[0])));
+    const face = {ids, points, normal, entries:[]};
+    for (let corner = 0; corner < 3; corner++) {
+      const a = unit(sub(points[(corner+1)%3], points[corner]));
+      const b = unit(sub(points[(corner+2)%3], points[corner]));
+      const angle = Math.acos(Math.max(-1, Math.min(1, dot(a, b))));
+      const key = keys[ids[corner]], entries = groups.get(key) ?? [];
+      const entry = {normal, angle, neighbours:[points[(corner+1)%3], points[(corner+2)%3]],
+        edges:[keys[ids[(corner+1)%3]], keys[ids[(corner+2)%3]]]};
+      face.entries.push(entry); entries.push(entry);
+      groups.set(key, entries);
+    }
+    faces.push(face);
+  }
+  // Smooth connected face fans across shared edges. A per-face normal-angle
+  // filter gives different averages at the same position and leaves seams.
+  for (const adjacent of groups.values()) {
+    const pending = new Set(adjacent);
+    while (pending.size) {
+      const fan = [pending.values().next().value]; pending.delete(fan[0]);
+      for (let i = 0; i < fan.length; i++) for (const entry of pending) {
+        if (dot(fan[i].normal, entry.normal) >= crease &&
+            fan[i].edges.some((key) => entry.edges.includes(key))) {
+          pending.delete(entry); fan.push(entry);
+        }
+      }
+      const sum = [0,0,0];
+      for (const entry of fan) for (let axis = 0; axis < 3; axis++)
+        sum[axis] += entry.normal[axis] * entry.angle;
+      const normal = unit(sum);
+      // Meshy slivers can fold a fan behind one face. Keep those corners crisp.
+      for (const entry of fan) entry.smooth = dot(normal, entry.normal) > .6 ? normal : entry.normal;
+    }
+  }
+  const pos = [], nrm = [], idx = [], col = [];
+  for (const face of faces) for (let corner = 0; corner < 3; corner++) {
+    const point = face.points[corner], adjacent = groups.get(keys[face.ids[corner]]);
+    const normal = face.entries[corner].smooth;
+    let bend = 0, distance = 0;
+    for (const entry of adjacent) for (const neighbour of entry.neighbours) {
+      const delta = sub(neighbour, point);
+      bend += dot(normal, delta) * entry.angle;
+      distance += Math.hypot(...delta) * entry.angle;
+    }
+    // Positive Laplacian displacement along the outward normal is concave.
+    const curvature = Math.max(-1, Math.min(1, 12 * bend / distance));
+    const shade = Math.max(.45, Math.min(1,
+      .72 + .22 * normal[1] - .20 * Math.max(0, curvature) + .06 * Math.max(0, -curvature)));
+    idx.push(pos.length / 3); pos.push(...point); nrm.push(...normal); col.push(shade, shade, shade);
+  }
+  console.log(`  claw sculpt: position weld ${epsilon} wu, angle-weighted 55 deg crease; COLOR_0 ${Math.min(...col).toFixed(3)}..${Math.max(...col).toFixed(3)}`);
+  return {pos, nrm, idx, col, uv:null};
 }
 
 /** Rounded cuboid, 108 triangles; chamfer-only mode costs 44 triangles.
@@ -748,13 +814,13 @@ async function floorPanelPng() {
 async function granitePng() {
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">
     <defs>
-      <radialGradient id="cloud"><stop stop-color="#2b2d32"/><stop offset="1" stop-color="#101219" stop-opacity="0"/></radialGradient>
+      <radialGradient id="cloud"><stop stop-color="#3d4045"/><stop offset="1" stop-color="#25272c" stop-opacity="0"/></radialGradient>
       <filter id="soft"><feGaussianBlur stdDeviation="2"/></filter>
     </defs>
-    <rect width="256" height="256" fill="#101219"/>
+    <rect width="256" height="256" fill="#25272c"/>
     <ellipse cx="47" cy="88" rx="112" ry="72" fill="url(#cloud)" opacity=".7"/>
     <ellipse cx="206" cy="207" rx="119" ry="83" fill="url(#cloud)" opacity=".55"/>
-    <ellipse cx="172" cy="30" rx="90" ry="64" fill="#06080d" opacity=".28" filter="url(#soft)"/>
+    <ellipse cx="172" cy="30" rx="90" ry="64" fill="#14171d" opacity=".20" filter="url(#soft)"/>
     <g fill="none" stroke="#77777a" stroke-linecap="round" filter="url(#soft)" opacity=".18">
       <path d="M-8 185 C42 153 60 169 105 125 S175 92 264 34" stroke-width="1.8"/>
       <path d="M18 257 C57 218 79 232 121 194 S187 177 229 132" stroke-width="1.1"/>
@@ -771,8 +837,8 @@ const CEIL_M = texturedMat('TradingFloorCeiling', await ceilingPanelPng(), { rou
 // `texturedMat`'s 0.92 default would flatten it.
 const FLOOR_M = texturedMat('TradingFloorFloor', await floorPanelPng(), { rough: 0.45 });
 const TRIM = mat('TradingFloorTrim', [1, 1, 1], { unlit: true });
-const BRASS = mat('TradingFloorBrass', [0.75, 0.53, 0.16], { rough: 0.36, metal: 0.25 })
-  .setEmissiveFactor([0.13, 0.095, 0.032]);
+const BRASS = mat('TradingFloorBrass', [0.62, 0.40, 0.10], { rough: 0.32, metal: 0.25 })
+  .setEmissiveFactor([0.085, 0.055, 0.014]);
 const GRANITE = texturedMat('TradingFloorGranite', await granitePng(), { rough: 0.28, metal: 0.02 });
 const atlasPath = resolve(dirname(output), 'lane-a-identity-atlas.png');
 const bannerAtlasRect = JSON.parse(execFileSync('python', [
@@ -841,7 +907,8 @@ addMesh(
       boxGeo(hx - PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, {u:WALL_TILE_WU,v:RH}),
     ]),
     // back-wall pilasters, outboard of the screen (screen half-width is 850)
-    ...backPilasterX.map((x) => boxGeo(x, RH / 2, -hz + PIL_D / 2, PIL_W, RH, PIL_D, {u:WALL_TILE_WU,v:RH})),
+    // Two extra units absorb quantization while preserving the 6 wu camera margin.
+    ...backPilasterX.map((x) => boxGeo(x, RH / 2, -hz + 19, PIL_W, RH, 38, {u:WALL_TILE_WU,v:RH})),
     // The board surround now belongs to the single brass mesh below.
     //
     // THE INSET IS A CLEARANCE NUMBER, NOT A STYLE CHOICE. The player's CENTRE
@@ -854,9 +921,9 @@ addMesh(
     // blocked that approach: the dais ends at z -406 and the kiosk collider
     // only spans x -447..-153.
     //
-    // `-hz + 12` puts the frame face at -1066 and `-hz + 36` puts the glow face
-    // at -1060, which is the same 6 wu margin the pilasters run and keeps the
-    // glow 6 wu proud of the frame so the two cannot z-fight. MOVE THEM
+    // `-hz + 12` puts the frame face at -1066; the glow now ends at -1060.5.
+    // The extra half-unit preserves the 6 wu camera margin after quantization.
+    // The glow stands 5.5 wu proud of the frame, so they cannot z-fight. MOVE THEM
     // TOGETHER or that separation is what breaks. Found by tf3d-audit,
     // 2026-09-19; the pilaster 40/6 derivation below does NOT generalise to
     // wall detail, and the surround was the deepest protrusion in the room.
@@ -875,7 +942,7 @@ const brassGeos = group('brass', null, () => [
   // the front rail; the side-wall pilaster lips cover their own faces.
   boxGeo(0, 296, -hz + 7, RW, 18, 12),
   boxGeo(-hx + 7, 296, 0, 12, 18, RD), boxGeo(hx - 7, 296, 0, 12, 18, RD),
-  boxGeo(-740, 296, hz - 7, 1120, 18, 12), boxGeo(740, 296, hz - 7, 1120, 18, 12),
+  boxGeo(-740, 296, hz - 1, 1120, 18, 8), boxGeo(740, 296, hz - 1, 1120, 18, 8),
   ...sidePilasterZ.flatMap((z) => [
     boxGeo(-hx + PIL_D + 7, 296, z, 12, 18, PIL_W),
     boxGeo(hx - PIL_D - 7, 296, z, 12, 18, PIL_W),
@@ -891,14 +958,14 @@ const brassGeos = group('brass', null, () => [
   // Thin tier rims share the brass draw call with the claw.
   ...[[32,350,346,65],[50,330,210,55],[70,310,160,35]].map(([y,x,z,c]) =>
     group('plinth rim', 'inside TradingFloorHoloDais collider', () =>
-      octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, 2, c, 0, false))),
+      octagonGeo(DAIS_POS[0], y, DAIS_POS[2], x, z, 3.5, c, 0, false))),
 ]);
 
 // All portal faces stay outside the player/camera clamps. The door leaves
 // sit inside the existing 60 wu wall thickness, behind its z=1100 inner face.
 brassGeos.push(...group('door portal', null, () => [
-  ...[-1,1].map((side) => boxGeo(side*(DOOR_W/2+14), DOOR_H/2, hz-4, 28, DOOR_H, 16)),
-  boxGeo(0, DOOR_H+14, hz-4, DOOR_W+56, 28, 16),
+  ...[-1,1].map((side) => boxGeo(side*(DOOR_W/2+11.5), DOOR_H/2, hz, 28, DOOR_H, 10)),
+  boxGeo(0, DOOR_H+12, hz-4, DOOR_W+56, 28, 16),
   boxGeo(0, DOOR_H+42, hz-8, DOOR_W+84, 28, 24),
   boxGeo(0, DOOR_H+68, hz-5, DOOR_W+104, 12, 30),
   boxGeo(0, DOOR_H+100, hz-4, DOOR_W+40, 56, 16),
@@ -908,11 +975,11 @@ brassGeos.push(...group('door portal', null, () => [
   ...[6,DOOR_H-6].map((y) => boxGeo(0, y, hz+24, DOOR_W, 12, 12)),
   ...[-24,24].flatMap((x) => [
     boxGeo(x, 240, hz+15, 10, 130, 8),
-    ...[180,300].map((y) => boxGeo(x, y, hz+21, 10, 10, 12)),
+    ...[180,300].map((y) => boxGeo(x, y, hz+22, 10, 10, 14)),
   ]),
 ]));
 brassGeos.push(group('plinth plaque', 'inside TradingFloorHoloDais collider', () =>
-  boxGeo(0,41,DAIS_POS[2]+213,260,14,6)));
+  boxGeo(0,16,DAIS_POS[2]+349,260,24,6)));
 
 addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOOR_SOLIDS', () =>
   mergeGeos([[0,350,346,32,65],[32,330,210,18,55],[50,310,160,20,35]].map(([y,x,z,h,c]) =>
@@ -921,8 +988,6 @@ addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOO
 addMesh('TradingFloorIdentity', mergeGeos([
   group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 380, 600, 96, true)),
   ...[-1294,1294].map((x) => group('wall banners', null, () => bannerGeo(x, 540, -985))),
-  group('plinth label', 'inside TradingFloorHoloDais collider', () =>
-    labelGeo(bannerAtlasRect.plaque,0,41,DAIS_POS[2]+217.2,246,1)),
   group('door label', null, () =>
     labelGeo(bannerAtlasRect.lintel,0,DOOR_H+100,hz-12.2,360,-1)),
 ]), IDENTITY);
@@ -930,8 +995,6 @@ addMesh('TradingFloorIdentity', mergeGeos([
 addMesh(
   'TradingFloorTrimGlow',
   group('trim', null, () => mergeGeos([
-    group('plinth inset', 'inside TradingFloorHoloDais collider', () =>
-      colored(boxGeo(0,41,DAIS_POS[2]+216.5,250,11,1), [.008,.017,.04])),
     ...group('smoked doors', null, () => [-1,1].map((side) =>
       colored(boxGeo(side*DOOR_W/4,DOOR_H/2,hz+32,DOOR_W/2-12,DOOR_H-24,8), [.018,.038,.075]))),
     // Restrained vertical reflections make the opaque smoked panels read as
@@ -946,7 +1009,7 @@ addMesh(
     // grid overhead is most of what makes an interior read as a ROOM rather
     // than a box, and it costs nothing: same unlit material, same mesh.
     ...[-700, 0, 700].map((z) => colored(boxGeo(0, RH - 14, z, RW - 240, 14, 64), [1,.81,.55])),
-    // Screen surround glow, 6 wu proud of the frame. `-hz + 36` is paired with
+    // Screen surround glow, 5.5 wu proud of the frame. `-hz + 35.5` is paired with
     // the frame's `-hz + 12` above and the two MUST move together: this inner
     // face is the deepest protrusion in the room, and at the old `-hz + 46` it
     // sat 4 wu past the player-centre clamp. See the note on the frame.
@@ -1184,23 +1247,6 @@ const clawBase = mergeGeos(clawNode.getMesh().listPrimitives().map((primitive) =
   }
   const idx=primitive.getIndices()?Array.from(primitive.getIndices().getArray()):Array.from({length:positions.getCount()},(_,i)=>i);
   if(determinant<0) for(let i=0;i<idx.length;i+=3) [idx[i+1],idx[i+2]]=[idx[i+2],idx[i+1]];
-  // A few Meshy smooth normals point behind their own triangle. Split only
-  // those faces and use their geometric normal; keep geometry and winding.
-  let repaired=0;
-  for(let i=0;i<idx.length;i+=3) {
-    const vertices=idx.slice(i,i+3), a=vertices[0]*3;
-    const edges=vertices.slice(1).map((v)=>[0,1,2].map((axis)=>pos[v*3+axis]-pos[a+axis]));
-    const face=cross(...edges), length=Math.hypot(...face);
-    if(!length) throw new Error('source claw has a degenerate triangle');
-    if(vertices.every((v)=>face.reduce((sum,f,axis)=>sum+f*nrm[v*3+axis],0)>0)) continue;
-    for(let j=0;j<3;j++) {
-      idx[i+j]=pos.length/3;
-      pos.push(...pos.slice(vertices[j]*3,vertices[j]*3+3));
-      nrm.push(...face.map((v)=>v/length));
-    }
-    repaired++;
-  }
-  console.log(`  solid claw: repaired ${repaired} source face normals; triangle count unchanged`);
   return {pos,nrm,idx,uv:null};
 }));
 const sourceMin=[0,1,2].map((axis)=>Math.min(...clawBase.pos.filter((_,i)=>i%3===axis)));
@@ -1211,9 +1257,10 @@ for(let i=0;i<clawBase.pos.length;i+=3) {
   clawBase.pos[i+1]=(clawBase.pos[i+1]-sourceMin[1])*clawScale;
   clawBase.pos[i+2]=(clawBase.pos[i+2]-(sourceMin[2]+sourceMax[2])/2)*clawScale;
 }
+const clawSculpt = sculptClaw(clawBase);
 const clawBounds=[];
 for (const [centreX, mirror] of [[-220, false], [220, true]]) {
-  const geo={...clawBase,pos:[...clawBase.pos],nrm:[...clawBase.nrm],idx:[...clawBase.idx]};
+  const geo={...clawSculpt,pos:[...clawSculpt.pos],nrm:[...clawSculpt.nrm],idx:[...clawSculpt.idx]};
   const yaw=(mirror?-1:1)*28*Math.PI/180, co=Math.cos(yaw), si=Math.sin(yaw);
   for(let i=0;i<geo.pos.length;i+=3) {
     const x=(mirror?-1:1)*geo.pos[i], z=geo.pos[i+2];
@@ -1241,8 +1288,8 @@ for (const [centreX, mirror] of [[-220, false], [220, true]]) {
   boxRegistry.push({group:'golden claw',exempt:'inside TradingFloorHoloDais collider',
     min:bounds.min,max:bounds.max});
   clawBounds.push(bounds);
-  // Keep the same brass draw call and the warm v3 gold vertex colour.
-  brassGeos.push(colored(geo, [1,1,0.15]));
+  // mergeGeos fills every non-claw brass vertex with unchanged white.
+  brassGeos.push(geo);
 }
 for(const [y,x,z] of [[32,350,346],[50,330,210],[70,310,160]])
   if(x>350 || z>346) throw new Error(`plinth rim at y ${y} exceeds the dais solid`);

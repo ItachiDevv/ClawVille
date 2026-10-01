@@ -325,6 +325,140 @@ const decodedAsset = (async () => {
     .registerDependencies({ 'meshopt.decoder': MeshoptDecoder }).read(GLB_PATH);
 })();
 
+/** World-space vertices after meshopt decoding, including the quantizer transform. */
+async function assetVertices(name: string) {
+  const doc = await decodedAsset;
+  const node = doc.getRoot().listNodes().find((candidate) => candidate.getName() === name)!;
+  const primitive = node.getMesh()!.listPrimitives()[0]!;
+  const positions = primitive.getAttribute('POSITION')!;
+  const normals = primitive.getAttribute('NORMAL');
+  const colors = primitive.getAttribute('COLOR_0');
+  const world = node.getWorldMatrix();
+  const vertices = Array.from({ length: positions.getCount() }, (_, index) => {
+    const p = positions.getElement(index, []), n = normals?.getElement(index, []) ?? [0, 1, 0];
+    const direction = [0, 1, 2].map((axis) =>
+      world[axis]! * n[0]! + world[4 + axis]! * n[1]! + world[8 + axis]! * n[2]!);
+    const length = Math.hypot(...direction);
+    return {
+      p: [0, 1, 2].map((axis) => world[12 + axis]! + world[axis]! * p[0]! +
+        world[4 + axis]! * p[1]! + world[8 + axis]! * p[2]!) as Point,
+      n: direction.map((v) => v / length) as Point,
+      color: colors?.getElement(index, []),
+    };
+  });
+  return { vertices, primitive };
+}
+
+describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
+  test('all four wall bands clear the camera by at least 6 wu below its maximum height', async () => {
+    const doc = await decodedAsset;
+    const maximumY = TRADING_FLOOR_CAMERA.above + TRADING_FLOOR_CAMERA.pitchMax;
+    const failures: string[] = [], margins = [Infinity, Infinity, Infinity, Infinity];
+    for (const node of doc.getRoot().listNodes()) {
+      // The floor spans every wall band but sits below the camera's Y floor.
+      // No board exemption: even its bottom surround and glow must clear.
+      if (!node.getMesh() || node.getName() === 'TradingFloorFloorSlab') continue;
+      const { vertices } = await assetVertices(node.getName());
+      for (const { p: [x, y, z] } of vertices) {
+        if (y > maximumY) continue;
+        // A wall-mounted vertex occupies the inner-face-to-player-clamp band.
+        // Centre props and collider pillars lie outside these four wall bands.
+        const candidates = [
+          x <= -TRADING_FLOOR_ROOM.halfX + TRADING_FLOOR_PLAYER_RADIUS ? -x - TRADING_FLOOR_DESK_INNER_X : Infinity,
+          x >= TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS ? x - TRADING_FLOOR_DESK_INNER_X : Infinity,
+          z <= -TRADING_FLOOR_ROOM.halfZ + TRADING_FLOOR_PLAYER_RADIUS ? TRADING_FLOOR_CAMERA_Z_MIN - z : Infinity,
+          z >= TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS ? z - TRADING_FLOOR_CAMERA_Z_MAX : Infinity,
+        ];
+        candidates.forEach((margin, wall) => {
+          margins[wall] = Math.min(margins[wall]!, margin);
+          if (margin < 6) failures.push(`${node.getName()} wall ${wall}: [${x},${y},${z}] margin ${margin}`);
+        });
+      }
+    }
+    expect(margins.every(Number.isFinite)).toBe(true);
+    console.log(`wall camera margins left/right/back/front: ${margins.map((v) => v.toFixed(4)).join('/')} wu; y <= ${maximumY}`);
+    expect(failures).toEqual([]);
+  });
+
+  test('each claw has at most 40 inverted or degenerate triangles after room-wide quantization', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorBrass');
+    const indices = primitive.getIndices()!.getArray()!;
+    const counts = [0, 0], totals = [0, 0];
+    for (let i = 0; i < indices.length; i += 3) {
+      const corners = [0, 1, 2].map((j) => vertices[indices[i + j]!]!);
+      const claw = extras!.statue!.claws.findIndex((bounds) => corners.every(({ p }) =>
+        p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2)));
+      if (claw < 0) continue;
+      totals[claw]!++;
+      const [a, b, c] = corners;
+      const u = b!.p.map((v, axis) => v - a!.p[axis]!), v = c!.p.map((p, axis) => p - a!.p[axis]!);
+      const face = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
+      if (Math.hypot(...face) <= 1e-8 || corners.some(({ n }) =>
+        face.reduce((sum, value, axis) => sum + value * n[axis]!, 0) <= 0)) counts[claw]!++;
+    }
+    for (const total of totals) expect(total).toBeGreaterThan(2000);
+    for (const count of counts) expect(count).toBeLessThanOrEqual(40);
+    console.log(`claw inverted/degenerate triangles: ${counts.join('/')} of ${totals.join('/')}; maximum 40 each`);
+  });
+
+  test('sculpt shading stays neutral and leaves every other brass vertex white', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorBrass');
+    expect(primitive.getAttribute('COLOR_0')!.getCount()).toBe(vertices.length);
+    expect(primitive.getMaterial()!.getExtension('KHR_materials_unlit')).toBeNull();
+    expect(primitive.getMaterial()!.getBaseColorFactor()).toEqual([.62, .40, .10, 1]);
+    expect(primitive.getMaterial()!.getRoughnessFactor()).toBe(.32);
+    expect(primitive.getMaterial()!.getMetallicFactor()).toBeLessThanOrEqual(.45);
+    const shades: number[] = [];
+    for (const { p, color } of vertices) {
+      const claw = extras!.statue!.claws.some((bounds) =>
+        p.every((v, axis) => v >= bounds.min[axis]! - .2 && v <= bounds.max[axis]! + .2));
+      expect(color).toBeDefined();
+      if (claw) {
+        expect(Math.max(...color!) - Math.min(...color!)).toBe(0);
+        expect(color![0]!).toBeGreaterThanOrEqual(.44);
+        expect(color![0]!).toBeLessThanOrEqual(1);
+        shades.push(color![0]!);
+      } else expect(color).toEqual([1, 1, 1]);
+    }
+    expect(Math.max(...shades) - Math.min(...shades)).toBeGreaterThan(.3);
+  });
+
+  test('portal contacts have deliberate clearance and the plate fits the lowest tier', async () => {
+    const brass = (await assetVertices('TradingFloorBrass')).vertices.map(({ p }) => p);
+    const walls = (await assetVertices('TradingFloorWalls')).vertices.map(({ p }) => p);
+    const trim = (await assetVertices('TradingFloorTrimGlow')).vertices;
+    const jamb = brass.filter(([x, y, z]) => Math.abs(x) > 176 && Math.abs(x) < 208 && y < 501 && z > 1090 && z < 1107);
+    const reveal = walls.filter(([x, y, z]) => Math.abs(x) > 100 && Math.abs(x) < 300 && y < 410 && z > 1099);
+    const header = brass.filter(([x, y, z]) => Math.abs(x) < 209 && y > 490 && y < 505 && z > 1085 && z < 1107);
+    const lintel = walls.filter(([x, y, z]) => Math.abs(x) < 200 && y > 490 && y < 510 && z > 1099);
+    for (const points of [jamb, reveal, header, lintel]) expect(points.length).toBeGreaterThan(0);
+    const jambInner = Math.min(...jamb.map(([x]) => Math.abs(x)));
+    const revealInner = Math.min(...reveal.map(([x]) => Math.abs(x)));
+    const headerBottom = Math.min(...header.map((p) => p[1]));
+    const lintelBottom = Math.min(...lintel.map((p) => p[1]));
+    const lintelEdge = Math.min(...lintel.map(([x]) => Math.abs(x)));
+    expect(Math.abs(jambInner - revealInner)).toBeGreaterThanOrEqual(2);
+    expect(lintelEdge - jambInner).toBeGreaterThanOrEqual(2);
+    expect(lintelBottom - headerBottom).toBeGreaterThanOrEqual(2);
+    const standoffs = brass.filter(([x, y, z]) => Math.abs(x) > 18 && Math.abs(x) < 30 && y > 174 && y < 186 && z > 1110 && z < 1131);
+    const glass = trim.filter(({ p: [x, y, z], color }) =>
+      Math.abs(x) < 180 && y > 10 && y < 490 && z > 1127 && color![0]! < .025);
+    expect(standoffs.length).toBeGreaterThan(0); expect(glass.length).toBeGreaterThan(0);
+    const standoffBack = Math.max(...standoffs.map((p) => p[2]));
+    const glassFront = Math.min(...glass.map(({ p }) => p[2]));
+    // A small insertion removes the gap; separate contact planes cannot flicker.
+    expect(standoffBack - glassFront).toBeGreaterThan(.2);
+    expect(standoffBack - glassFront).toBeLessThan(2);
+    const plate = brass.filter(([x, y, z]) => Math.abs(x) < 131 && y > 3 && y < 29 && z > 285 && z < 293);
+    expect(plate.length).toBeGreaterThan(0);
+    expect(Math.min(...plate.map((p) => p[1]))).toBeGreaterThan(3);
+    expect(Math.max(...plate.map((p) => p[1]))).toBeLessThan(29);
+    expect(plate.every(([x, , z]) => Math.hypot(x, z + 60) < 380)).toBe(true);
+    console.log(`portal: jamb x +/-${jambInner.toFixed(4)}, wall reveal +/-${revealInner.toFixed(4)}, lintel edge +/-${lintelEdge.toFixed(4)}; header/lintel y ${headerBottom.toFixed(4)}/${lintelBottom.toFixed(4)}; standoff/glass z ${standoffBack.toFixed(4)}/${glassFront.toFixed(4)}`);
+    console.log(`plate y ${Math.min(...plate.map((p) => p[1])).toFixed(4)}..${Math.max(...plate.map((p) => p[1])).toFixed(4)}, z ${Math.min(...plate.map((p) => p[2])).toFixed(4)}..${Math.max(...plate.map((p) => p[2])).toFixed(4)}`);
+  });
+});
+
 /** Undo quantization and the template anchor, exactly as the row does. */
 async function moduleTriangles(name: string): Promise<Point[][]> {
   const doc = await decodedAsset;
