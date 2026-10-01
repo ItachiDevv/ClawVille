@@ -132,6 +132,7 @@ import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
 import { TradingFloorTradeTape } from './trading-floor-trade-tape-mesh';
 import { TradingFloorDecor } from './trading-floor-decor';
+import { TradingFloorWater } from './trading-floor-water';
 import {
   clampTradingFloorMovementSeated,
   computeTradingFloorArming,
@@ -1918,6 +1919,8 @@ export default function TradingFloorInteriorScene({
       <TradingFloorScreen active={active} />
       <TradingFloorTradeTape active={active} />
       <TradingFloorDecor active={active} />
+      {/* Mounted before room readiness; the slot compile + direct warm sees it. */}
+      <TradingFloorWater active={active} />
       <TradingFloorHotspots />
       <TradingFloorLabels />
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
