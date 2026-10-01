@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-01 ~16:50 UTC (session tradeDeskMain). **Staging** is receiving one web fix on top of `91608cd8` (interior v4): the live-traders heading says "paused" when every live slot is paused by its risk limit (browser verify of `31480fb0`, F1), plus the staging verification record of `31480fb0` (all gates PASS; see that DEPLOY LOG entry). No migration, no protocol change (78). **PROD = `b8d52ab6`** (unchanged). Next: promotion PR once coolerDesk2 confirms v4.
+Last Audited: 2026-10-01 16:27 UTC (session tradeDeskMain). **Staging** is receiving one web fix on top of `91608cd8` (interior v4): the live-traders heading says "paused" when every live slot is paused by its risk limit (browser verify of `31480fb0`, F1), plus the staging verification record of `31480fb0` (all gates PASS; see that DEPLOY LOG entry). No migration, no protocol change (78). **PROD = `b8d52ab6`** (unchanged). Next: promotion PR once coolerDesk2 confirms v4.
 
 Prior — Last Audited: 2026-10-01 16:10 UTC (session coolerDesk2). **Staging** is receiving `feat/tfx-v4-shell` (8 code commits + 1 docs commit on top of `31480fb0`): Trading Floor INTERIOR v4, visual only (solid 3D claws, procedural walnut trading desks + leather chairs, brass door portal, monitor stands + CLAW TERMINAL panels; interior GLB `?v=4`, 350,128 B). No API change, no protocol change, no migration. VERIFIED 16:40Z (both containers `91608cd8`, /health x4, GLB 350,128 B, WebGPU + WebGL2 browser pass; DEPLOY LOG entry below). **PROD = `b8d52ab6`** (unchanged; serves the interior `?v=3`). SCHEMA: `synced`.
 
