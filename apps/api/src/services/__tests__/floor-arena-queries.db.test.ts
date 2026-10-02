@@ -82,14 +82,14 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     const dayStart = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
     const reservation = await q.reserveArenaAddonCall({
       agentId: ids.seated, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp1,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     expect(reservation.reserved).toBe(true);
     const id = (reservation as { id: number }).id;
     // The standing agent cannot reserve at all.
     const refused = await q.reserveArenaAddonCall({
       agentId: ids.standing, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp2,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     expect(refused).toMatchObject({ reserved: false, check: { reason: 'agent_changed' } });
     // A pause releases; then (after a fresh reservation) a stand-up releases.
@@ -104,7 +104,7 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     expect(Number(released[0]!.price_usd)).toBe(0);
     const second = await q.reserveArenaAddonCall({
       agentId: ids.seated, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp1,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     const secondId = (second as { id: number }).id;
     await q.setArenaAgentSeat(ids.seated, false, null, 'Stood up');
@@ -114,7 +114,7 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     await q.setArenaAgentSeat(ids.seated, true, 0, 'Sat down');
     const third = await q.reserveArenaAddonCall({
       agentId: ids.seated, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp1,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     const thirdId = (third as { id: number }).id;
     expect(await q.confirmArenaAddonDispatch({
