@@ -146,6 +146,12 @@ jobs:
           src/lib/three/trading-floor/trading-floor-seats.test.ts
           src/lib/three/trading-floor/trading-floor-trade-tape.test.ts
           src/lib/three/trading-floor/trading-floor-walk-in.test.ts
+          src/lib/three/trading-floor/trading-floor-screen-data.test.ts
+          src/lib/three/trading-floor/trading-floor-house-agents-asset.test.ts
+          src/hooks/use-floor-arena-house-board.test.tsx
+          src/stores/house-agent-walkup.test.ts
+          src/components/trading-floor/house-agent-walkup-placement.test.ts
+          src/components/trading-floor/house-agent-walkup.test.tsx
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process
