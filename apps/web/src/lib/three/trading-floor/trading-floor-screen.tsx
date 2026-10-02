@@ -43,21 +43,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 
-import { useFloorArenaContest } from '@/hooks/use-floor-arena';
+import { useFloorArenaContest, useFloorArenaLeaderboard } from '@/hooks/use-floor-arena';
 import { useFloorArenaHouseBoard } from '@/hooks/use-floor-arena-house-board';
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
 import {
   buildFloorScreenData,
+  floorScreenPage,
   floorScreenSignature,
 } from './trading-floor-screen-data';
 import {
   drawFloorScreen,
   FLOOR_SCREEN_CANVAS,
+  FLOOR_SCREEN_PAGE_MS,
   pickCanvasScale,
 } from './trading-floor-screen-texture';
 
-/** Wall-clock redraw cadence, only for the clock, the countdown and the P&L window. */
-const AGE_TICK_MS = 30_000;
+/** Fire just after each page boundary, so the page read then is the new one. */
+const PAGE_TICK_SLACK_MS = 20;
 
 interface ScreenSurface {
   canvas: HTMLCanvasElement;
@@ -107,7 +109,10 @@ function createSurface(): ScreenSurface | null {
 export function TradingFloorScreen({ active }: { active: boolean }) {
   const houseBoard = useFloorArenaHouseBoard(active);
   const contest = useFloorArenaContest(active);
-  const [ageTick, setAgeTick] = useState(0);
+  // Page B (founder order 2026-10-02): the contest leaderboard, the same query
+  // key the Exchange panel uses, as the pre-P15 board read it.
+  const leaderboard = useFloorArenaLeaderboard('contest', active);
+  const [pageTick, setPageTick] = useState(0);
   const meshRef = useRef<THREE.Mesh>(null);
 
   const surface = useMemo(() => createSurface(), []);
@@ -131,28 +136,40 @@ export function TradingFloorScreen({ active }: { active: boolean }) {
     return next;
   }, [surface]);
 
-  // Read on every render; the two query results are all the board needs.
-  const inputs = { houseBoard, contest };
-  const signature = floorScreenSignature(inputs);
+  // Read on every render; the three query results are all the board needs.
+  // The page comes from the clock, not from React state: the timer below only
+  // re-renders at each page boundary, and the page is in the signature.
+  const inputs = { houseBoard, contest, leaderboard };
+  const page = floorScreenPage(Date.now());
+  const signature = floorScreenSignature(inputs, page);
 
-  // The ONLY redraw site. Runs on a data change and on the 30 s age tick.
+  // The ONLY redraw site. Runs on a data change of the shown page, on a page
+  // change, and on every page tick (which also moves the clock and countdown).
   useEffect(() => {
     if (!surface) return;
-    drawFloorScreen(surface.context, buildFloorScreenData(inputs, Date.now()));
+    drawFloorScreen(surface.context, buildFloorScreenData(inputs, Date.now(), page));
     surface.texture.needsUpdate = true;
     // `inputs` is intentionally absent from the dep list: `signature` is its
     // drawable projection, and depending on the query objects' identity would
     // redraw on every refetch that changed nothing the board shows.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [surface, signature, ageTick]);
+  }, [surface, signature, pageTick]);
 
+  // One timer, aligned to the 15 s page boundaries: a page change every tick
+  // (one redraw and one texture upload per 15 s), and the clock and countdown
+  // move with it. No frame callback.
   useEffect(() => {
     if (!active || typeof window === 'undefined') return;
-    const handle = window.setInterval(
-      () => setAgeTick((value) => value + 1),
-      AGE_TICK_MS,
-    );
-    return () => window.clearInterval(handle);
+    let handle = 0;
+    const schedule = () => {
+      const wait = FLOOR_SCREEN_PAGE_MS - (Date.now() % FLOOR_SCREEN_PAGE_MS) + PAGE_TICK_SLACK_MS;
+      handle = window.setTimeout(() => {
+        setPageTick((value) => value + 1);
+        schedule();
+      }, wait);
+    };
+    schedule();
+    return () => window.clearTimeout(handle);
   }, [active]);
 
   useEffect(

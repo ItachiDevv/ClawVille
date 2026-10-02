@@ -127,10 +127,41 @@ export interface FloorScreenBasis {
   readonly maxOpen: number;
 }
 
+/**
+ * The board ROTATES (founder order 2026-10-02): page A is the five house-agent
+ * columns, page B the arena contest leaderboard, `FLOOR_SCREEN_PAGE_MS` each.
+ * The page comes from the clock (`floorScreenPage` in the data module), so
+ * there is no per-frame state; the scene's timer redraws on a page change.
+ */
+export type FloorScreenPage = 'house' | 'leaderboard';
+export const FLOOR_SCREEN_PAGE_MS = 15_000;
+
+/**
+ * One contest-leaderboard row, DRAWABLE. NaN for any unreadable number (it
+ * prints N/A or "-"); `name` is outside text, sanitised at draw time, and ""
+ * when the route sent the agent id as the name.
+ */
+export interface FloorScreenLeaderRow {
+  readonly rank: number;
+  readonly name: string;
+  readonly realisedUsd: number;
+  readonly trades: number;
+}
+
+export interface FloorScreenLeaderboard {
+  readonly phase: 'connecting' | 'error' | 'ready';
+  /** Rank order, unranked last. Empty = "NO TRADERS YET", never fake rows. */
+  readonly rows: readonly FloorScreenLeaderRow[];
+}
+
 export interface FloorScreenData {
   readonly phase: 'connecting' | 'error' | 'ready';
+  /** Which page this redraw shows. */
+  readonly page: FloorScreenPage;
   /** Five columns in house-agent order once ready; empty before the first data. */
   readonly columns: readonly FloorScreenColumn[];
+  /** Page B. */
+  readonly leaderboard: FloorScreenLeaderboard;
   readonly window: FloorScreenWindow;
   /**
    * Pre-formatted, e.g. "ENDS IN 4D 03H 12M". Null when either end of the
@@ -494,6 +525,16 @@ export function formatUsd(value: number): BoardValue {
   }
   return brand(
     Number.isInteger(magnitude) ? `$${magnitude}` : `$${magnitude.toFixed(2)}`,
+  );
+}
+
+/**
+ * "#1" for a readable rank, "-" otherwise. Never "#0" and never "#NaN". Capped
+ * at 9999 so the right-aligned rank column never starts left of the canvas.
+ */
+export function formatRank(value: number): BoardValue {
+  return brand(
+    Number.isFinite(value) && value >= 1 && value < 10_000 ? `#${Math.trunc(value)}` : '-',
   );
 }
 
@@ -926,6 +967,11 @@ export function drawFloorScreen(
 
   drawHeader(ctx, data, W, modes);
 
+  if (data.page === 'leaderboard') {
+    drawLeaderboardPage(ctx, data, W, H);
+    return;
+  }
+
   if (data.phase !== 'ready') {
     // Only before the first data. Never an empty grid: an empty grid would say
     // the house agents are idle, which is a claim about them, not our read.
@@ -1011,7 +1057,9 @@ function drawHeader(
       : modes.anyLive
         ? label`LIVE`
         : label`PAPER`;
-  value(ctx, label`HOUSE AGENTS · ${mode}`, MARGIN_X, HEADER_BASELINE, {
+  const title =
+    data.page === 'leaderboard' ? label`LEADERBOARD · CONTEST` : label`HOUSE AGENTS · ${mode}`;
+  value(ctx, title, MARGIN_X, HEADER_BASELINE, {
     px: BOARD_MIN_PX,
     color: COLOR.headerText,
   });
@@ -1081,4 +1129,92 @@ function drawFooter(
           )
         : label`P&L = REALISED, ${windowWord}`;
   value(ctx, method, MARGIN_X, H - FOOTER_BASELINE_UP, { px: BOARD_MIN_PX, color: COLOR.value });
+}
+
+// ── page B: the arena contest leaderboard ──────────────────────────────────
+
+/** Leaderboard columns, logical px at 22 px (13.2 px a character). */
+const LEADER_RANK_RIGHT = MARGIN_X + 66; // "#9999" ends here, starts at x 16
+const LEADER_NAME_X = 100;
+/** 24 characters end at x 416.8, clear of the P&L column's widest start (676). */
+const LEADER_NAME_CHARS = 24;
+const LEADER_PNL_FROM_RIGHT = 200;
+
+/**
+ * Page B, as the pre-P15 board showed it, at the 22 px floor: captions on the
+ * first line, then one row per line (8 at 313): rank, trader, realised P&L,
+ * trades. The rows are the contest-window leaderboard, house and player alike.
+ */
+function drawLeaderboardPage(
+  ctx: FloorScreenContext,
+  data: FloorScreenData,
+  W: number,
+  H: number,
+): void {
+  const board = data.leaderboard;
+  const messageY = (HEADER_H + H - FOOTER_H) / 2 + 9;
+  if (board.phase !== 'ready') {
+    value(
+      ctx,
+      board.phase === 'error' ? label`ARENA DATA UNAVAILABLE` : label`CONNECTING TO THE ARENA`,
+      W / 2,
+      messageY,
+      { px: MESSAGE_PX, color: COLOR.muted, align: 'center' },
+    );
+    return;
+  }
+  // The paper disclosure is on page B too: these are paper contest figures.
+  const footer = { ...data, window: 'contest' as const };
+  const paper: BoardModes = { anyLive: false, anyPaper: true };
+  if (board.rows.length === 0) {
+    value(ctx, label`NO TRADERS YET`, W / 2, messageY, {
+      px: MESSAGE_PX,
+      color: COLOR.muted,
+      align: 'center',
+    });
+    drawFooter(ctx, footer, W, H, paper);
+    return;
+  }
+
+  const pnlRight = W - MARGIN_X - LEADER_PNL_FROM_RIGHT;
+  const tradesRight = W - MARGIN_X;
+  const rows = board.rows.slice(0, Math.max(0, floorScreenLineCount(H) - 1));
+
+  // Backgrounds first: the caption rule.
+  ctx.fillStyle = COLOR.divider;
+  ctx.fillRect(MARGIN_X, FIRST_BASELINE + 7, W - 2 * MARGIN_X, 1.5);
+
+  const caption = { px: BOARD_MIN_PX, color: COLOR.muted } as const;
+  value(ctx, label`#`, LEADER_RANK_RIGHT, FIRST_BASELINE, { ...caption, align: 'right' });
+  value(ctx, label`TRADER`, LEADER_NAME_X, FIRST_BASELINE, caption);
+  value(ctx, label`REALISED P&L`, pnlRight, FIRST_BASELINE, { ...caption, align: 'right' });
+  value(ctx, label`TRADES`, tradesRight, FIRST_BASELINE, { ...caption, align: 'right' });
+
+  rows.forEach((row, index) => {
+    const y = FIRST_BASELINE + (index + 1) * LINE_PITCH;
+    value(ctx, formatRank(row.rank), LEADER_RANK_RIGHT, y, {
+      px: BOARD_MIN_PX,
+      color: COLOR.value,
+      align: 'right',
+    });
+    // A name that sanitises to nothing still gets words, and they describe
+    // the wall (an id-name, an address, or a script this face cannot paint).
+    const name = cleaned(row.name, LEADER_NAME_CHARS);
+    value(ctx, name.length > 0 ? name : label`NAME NOT SHOWN`, LEADER_NAME_X, y, {
+      px: BOARD_MIN_PX,
+      color: name.length > 0 ? COLOR.label : COLOR.muted,
+    });
+    value(ctx, formatSignedUsd(row.realisedUsd), pnlRight, y, {
+      px: BOARD_MIN_PX,
+      color: pnlColor(row.realisedUsd),
+      align: 'right',
+    });
+    value(ctx, formatCount(row.trades), tradesRight, y, {
+      px: BOARD_MIN_PX,
+      color: COLOR.value,
+      align: 'right',
+    });
+  });
+
+  drawFooter(ctx, footer, W, H, paper);
 }

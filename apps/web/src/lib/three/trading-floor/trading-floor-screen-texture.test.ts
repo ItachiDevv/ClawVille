@@ -21,6 +21,7 @@ import {
   FLOOR_SCREEN_COLUMNS,
   FLOOR_SCREEN_SKIP_WORDS,
   FLOOR_SCREEN_STRATEGY_WORDS,
+  FLOOR_SCREEN_PAGE_MS,
   floorScreenLineCount,
   formatCount,
   formatExitRule,
@@ -36,6 +37,7 @@ import {
   type FloorScreenContext,
   type FloorScreenData,
   type FloorScreenExits,
+  type FloorScreenLeaderRow,
   type FloorScreenSize,
 } from './trading-floor-screen-texture';
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
@@ -257,7 +259,9 @@ function houseColumns(overrides: Partial<FloorScreenColumn> = {}): FloorScreenCo
 function board(data: Partial<FloorScreenData> = {}): FloorScreenData {
   return {
     phase: 'ready',
+    page: 'house',
     columns: houseColumns(),
+    leaderboard: { phase: 'ready', rows: [] },
     window: 'contest',
     countdownLabel: 'ENDS IN 3D 15H 59M',
     clockLabel: '14:32 UTC',
@@ -757,7 +761,7 @@ describe('Trading Floor board — five house-agent columns', () => {
       expect({ gone, present: joined.includes(gone) }).toEqual({ gone, present: false });
     }
     expect(Object.keys(board()).sort()).toEqual(
-      ['basis', 'clockLabel', 'columns', 'countdownLabel', 'phase', 'window'].sort(),
+      ['basis', 'clockLabel', 'columns', 'countdownLabel', 'leaderboard', 'page', 'phase', 'window'].sort(),
     );
   });
 
@@ -1133,13 +1137,15 @@ describe('Trading Floor board — layout', () => {
     expect(source).not.toContain('LinearMipmapLinearFilter');
   });
 
-  test('the board component reads only the house-board hook and the contest hook', () => {
+  test('the board component reads the house-board, leaderboard and contest hooks, no tape', () => {
     const source = readFileSync(join(import.meta.dir, 'trading-floor-screen.tsx'), 'utf8');
     const code = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
     expect(code).toContain('useFloorArenaHouseBoard(active)');
     expect(code).toContain('useFloorArenaContest(active)');
-    expect(code).not.toContain('useFloorArenaLeaderboard');
+    expect(code).toContain("useFloorArenaLeaderboard('contest', active)");
     expect(code).not.toContain('useFloorArenaTape');
+    // The page comes from the clock (floorScreenPage), redrawn by a timer: no per-frame state.
+    expect(code).toContain('floorScreenPage(');
     // Redraw only on a signature change or the 30 s tick: no frame callback,
     // no per-frame allocation, no drei text, no instanced shader material.
     expect(code).not.toContain('useFrame');
@@ -1229,5 +1235,116 @@ describe('Trading Floor board — canvas sizing', () => {
     const b = recorder();
     drawFloorScreen(b.context, board(), FLOOR_SCREEN_CANVAS);
     expect(a.painted).toEqual(b.painted);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Page B: the arena contest leaderboard (founder order 2026-10-02, rotation)
+// ---------------------------------------------------------------------------
+
+function leaderRow(overrides: Partial<FloorScreenLeaderRow> = {}): FloorScreenLeaderRow {
+  return { rank: 1, name: 'alice trader', realisedUsd: 12.4, trades: 9, ...overrides };
+}
+
+function leaderBoard(rows: FloorScreenLeaderRow[]): Partial<FloorScreenData> {
+  return { page: 'leaderboard', leaderboard: { phase: 'ready', rows } };
+}
+
+function worstLeaderRows(count = 12): FloorScreenLeaderRow[] {
+  return Array.from({ length: count }, (_unused, i) =>
+    leaderRow({ rank: 9990 + i, name: 'WWWWWWW '.repeat(5), realisedUsd: i % 2 ? 99_999.99 : -99_999.99, trades: 99_999 }),
+  );
+}
+
+describe('Trading Floor board — page B, the contest leaderboard', () => {
+  test('pages rotate every 15 s', () => {
+    expect(FLOOR_SCREEN_PAGE_MS).toBe(15_000);
+  });
+
+  test('the header names the page; the countdown and the clock stay', () => {
+    expect(headerTexts(draw(leaderBoard([leaderRow()])).painted)).toEqual([
+      'LEADERBOARD · CONTEST',
+      '14:32 UTC',
+      '·',
+      'ENDS IN 3D 15H 59M',
+    ]);
+    expect(headerTexts(draw().painted)[0]).toBe('HOUSE AGENTS · PAPER');
+  });
+
+  test('rows show rank, trader name, realised P&L and trades under the captions', () => {
+    const { strings, painted } = draw(
+      leaderBoard([leaderRow(), leaderRow({ rank: 2, name: 'Runner', realisedUsd: -5.2, trades: 17 })]),
+    );
+    for (const expected of ['#', 'TRADER', 'REALISED P&L', 'TRADES', '#1', 'ALICE TRADER', '+$12.40', '9', '#2', 'RUNNER', '-$5.20', '17']) {
+      expect({ expected, present: strings.includes(expected) }).toEqual({ expected, present: true });
+    }
+    for (const gone of ['BUSIEST YOUNG', 'WATCH BONK', 'OPEN 2 OF 5', 'ACTIVE']) expect(strings).not.toContain(gone);
+    const fill = (value: string) => painted.find((p) => p.kind === 'text' && p.value === value)?.fill;
+    expect(fill('+$12.40')).toBe(COLOR.gain);
+    expect(fill('-$5.20')).toBe(COLOR.drop);
+    expect(footerText(painted)).toEqual(['PAPER: $20 A POSITION, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, CONTEST']);
+  });
+
+  test('an empty leaderboard says NO TRADERS YET, never fake rows', () => {
+    const { strings } = draw(leaderBoard([]));
+    expect(strings).toContain('NO TRADERS YET');
+    expect(strings).not.toContain('#1');
+    expect(strings).not.toContain('TRADER');
+  });
+
+  test('before the first leaderboard data it says CONNECTING or UNAVAILABLE', () => {
+    expect(draw({ page: 'leaderboard', leaderboard: { phase: 'connecting', rows: [] } }).strings).toContain('CONNECTING TO THE ARENA');
+    expect(draw({ page: 'leaderboard', leaderboard: { phase: 'error', rows: [] } }).strings).toContain('ARENA DATA UNAVAILABLE');
+  });
+
+  test('a masked or unpaintable name says NAME NOT SHOWN; an address never prints; NaN prints N/A', () => {
+    const drawn = draw(
+      leaderBoard([
+        leaderRow({ name: MINT }),
+        leaderRow({ rank: 2, name: 'Трейдер' }),
+        leaderRow({ rank: Number.NaN, name: 'bob', realisedUsd: Number.NaN, trades: Number.NaN }),
+      ]),
+    );
+    expect(drawn.strings.filter((s) => s === 'NAME NOT SHOWN')).toHaveLength(2);
+    assertAddressAbsent(drawn.strings, MINT);
+    assertDrawable(drawn.strings);
+    expect(drawn.strings).toContain('N/A');
+    expect(drawn.strings).toContain('-');
+    expect(drawn.strings).not.toContain('$0.00');
+  });
+
+  test('rows fill the lines under the captions: 8 at 313, never more', () => {
+    const many = Array.from({ length: 20 }, (_unused, i) => leaderRow({ rank: i + 1, name: `T${i + 1}` }));
+    const { strings } = draw(leaderBoard(many));
+    expect(strings).toContain('#8');
+    expect(strings).not.toContain('#9');
+  });
+
+  test('every string is bold, at least 22 px, inside the canvas, with no overlap and no fill over text', () => {
+    for (const height of HEIGHTS) {
+      const size = { width: 1024, height };
+      for (const rows of [worstLeaderRows(), [leaderRow()], []]) {
+        for (const extra of [{}, { clockLabel: 'CLOCK OFFLINE', countdownLabel: 'STARTS IN 27000D 03H 12M' }]) {
+          const rec = recorder();
+          drawFloorScreen(rec.context, board({ ...leaderBoard(rows), ...extra }), size);
+          for (const p of rec.painted) {
+            if (p.kind !== 'text') continue;
+            expect({ value: p.value, px: fontPx(p.font) >= BOARD_MIN_PX, bold: p.font.startsWith('bold ') }).toEqual({
+              value: p.value,
+              px: true,
+              bold: true,
+            });
+          }
+          assertInsideCanvas(rec.painted, size);
+          assertNoTextOverlap(rec.painted);
+          assertNoFillOverText(rec.painted);
+        }
+      }
+    }
+    const { strings } = draw(leaderBoard(worstLeaderRows()));
+    expect(strings).toContain('WWWWWWW WWWWWWW WWWWWWW.');
+    expect(strings).toContain('-$99999.99');
+    expect(strings).toContain('99999');
+    expect(strings).toContain('#9990');
   });
 });

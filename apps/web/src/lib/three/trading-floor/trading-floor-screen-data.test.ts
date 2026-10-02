@@ -15,6 +15,7 @@ import {
   buildFloorScreenData,
   contestCountdownLabel,
   floorClockLabel,
+  floorScreenPage,
   floorScreenSignature,
   type ArenaQueryInput,
   type FloorScreenInputs,
@@ -209,7 +210,7 @@ describe('Trading Floor board data — the five house-agent columns', () => {
   test('no player row, no rank, no prize: the board data has none of those fields', () => {
     const data = buildFloorScreenData(inputs(), NOW);
     expect(Object.keys(data).sort()).toEqual(
-      ['basis', 'clockLabel', 'columns', 'countdownLabel', 'phase', 'tape', 'window'].sort(),
+      ['basis', 'clockLabel', 'columns', 'countdownLabel', 'leaderboard', 'page', 'phase', 'tape', 'window'].sort(),
     );
     const joined = drawn(inputs()).map((p) => p.value).join(' | ');
     for (const gone of ['#1', 'PRIZES', '$CLAWVILLE', 'NOT ELIGIBLE', 'TRADING ARENA WEEK 1']) {
@@ -597,5 +598,95 @@ describe('Trading Floor board data — the tape field kept for the decor test', 
     expect(buildFloorScreenData(inputs(), NOW).tape).toEqual([]);
     expect(floorScreenSignature(withTape)).toBe(floorScreenSignature(inputs()));
     expect(drawn(withTape).map((p) => p.value).join(' | ')).not.toContain('BUY BONK $20.00');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rotation: page A house agents, page B the contest leaderboard, 15 s each
+// ---------------------------------------------------------------------------
+
+/** A leaderboard row as the ROUTE sends it (pre-P15 board fixture). */
+function wireRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    rank: 1,
+    agentId: 'u1',
+    name: 'alice trader',
+    kind: 'user',
+    templateId: 'genesis',
+    realisedUsd: 12.4,
+    trades: 9,
+    wins: 6,
+    losses: 3,
+    deaths: 0,
+    openPositions: 1,
+    lastTradeAt: '2026-10-01T11:50:00.000Z',
+    eligible: true,
+    ...overrides,
+  };
+}
+
+const PAGE_B = NOW + 15_000;
+
+describe('Trading Floor board data — page rotation and the leaderboard', () => {
+  test('the page comes from the clock: 15 s house agents, 15 s leaderboard', () => {
+    expect(floorScreenPage(0)).toBe('house');
+    expect(floorScreenPage(14_999)).toBe('house');
+    expect(floorScreenPage(15_000)).toBe('leaderboard');
+    expect(floorScreenPage(29_999)).toBe('leaderboard');
+    expect(floorScreenPage(30_000)).toBe('house');
+    expect(floorScreenPage(NOW)).toBe('house');
+    expect(floorScreenPage(PAGE_B)).toBe('leaderboard');
+    expect(floorScreenPage(Number.NaN)).toBe('house');
+    expect(buildFloorScreenData(inputs(), NOW).page).toBe('house');
+    expect(buildFloorScreenData(inputs(), PAGE_B).page).toBe('leaderboard');
+    expect(buildFloorScreenData(inputs(), NOW, 'leaderboard').page).toBe('leaderboard');
+  });
+
+  test('leaderboard rows: rank order, unranked last, an id-name is no name, strings refused', () => {
+    const rows = [
+      wireRow({ rank: 3, agentId: 'c', name: 'C' }),
+      wireRow({ rank: 'x', agentId: 'z', name: 'Z' }),
+      wireRow({ rank: 1, agentId: 'a', name: 'a' }),
+      wireRow({ rank: 2, agentId: 'b', name: 'B', realisedUsd: '-5.20', trades: '2' }),
+    ];
+    const data = buildFloorScreenData(inputs({ leaderboard: ready({ rows }) }), PAGE_B);
+    expect(data.leaderboard.phase).toBe('ready');
+    expect(data.leaderboard.rows.map((r) => r.name)).toEqual(['', 'B', 'C', 'Z']);
+    expect(Number.isNaN(data.leaderboard.rows[1]!.realisedUsd)).toBe(true);
+    expect(Number.isNaN(data.leaderboard.rows[1]!.trades)).toBe(true);
+    expect(Number.isNaN(data.leaderboard.rows[3]!.rank)).toBe(true);
+    // The bare array the panel hook returns reads the same.
+    expect(buildFloorScreenData(inputs({ leaderboard: ready(rows) }), PAGE_B).leaderboard).toEqual(data.leaderboard);
+    const strings = drawn(inputs({ leaderboard: ready({ rows }) }), PAGE_B).map((p) => p.value);
+    expect(strings).toContain('LEADERBOARD · CONTEST');
+    expect(strings).toContain('NAME NOT SHOWN');
+    expect(strings).toContain('N/A');
+  });
+
+  test('no rows says NO TRADERS YET; never fetched connects; a failed refetch keeps the last rows', () => {
+    expect(drawn(inputs({ leaderboard: ready({ rows: [] }) }), PAGE_B).map((p) => p.value)).toContain('NO TRADERS YET');
+    expect(buildFloorScreenData(inputs({ leaderboard: LOADING }), PAGE_B).leaderboard.phase).toBe('connecting');
+    expect(buildFloorScreenData(inputs(), PAGE_B).leaderboard.phase).toBe('connecting');
+    expect(buildFloorScreenData(inputs({ leaderboard: failed() }), PAGE_B).leaderboard.phase).toBe('error');
+    const kept = buildFloorScreenData(inputs({ leaderboard: failed({ rows: [wireRow()] }) }), PAGE_B);
+    expect(kept.leaderboard).toEqual(
+      buildFloorScreenData(inputs({ leaderboard: ready({ rows: [wireRow()] }) }), PAGE_B).leaderboard,
+    );
+  });
+
+  test('the signature includes the page and only the shown page data', () => {
+    const lb = (rows: unknown[]) => inputs({ leaderboard: ready({ rows }) });
+    expect(floorScreenSignature(lb([wireRow()]), 'house')).not.toBe(floorScreenSignature(lb([wireRow()]), 'leaderboard'));
+    // House page: a leaderboard change repaints nothing.
+    expect(floorScreenSignature(lb([wireRow()]), 'house')).toBe(floorScreenSignature(lb([]), 'house'));
+    // Leaderboard page: a drawn row field repaints; an undrawn one does not; house data does not.
+    const base = floorScreenSignature(lb([wireRow()]), 'leaderboard');
+    for (const change of [{ rank: 2 }, { name: 'bob' }, { realisedUsd: 12.41 }, { trades: 10 }]) {
+      expect({ change, moved: floorScreenSignature(lb([wireRow(change)]), 'leaderboard') !== base }).toEqual({ change, moved: true });
+    }
+    expect(floorScreenSignature(lb([wireRow({ wins: 9, lastTradeAt: null, deaths: 4 })]), 'leaderboard')).toBe(base);
+    const otherHouse = { ...lb([wireRow()]), houseBoard: ready(view({ 'house:genesis': { status: 'paused' } })) };
+    expect(floorScreenSignature(otherHouse, 'leaderboard')).toBe(base);
+    expect(floorScreenSignature(otherHouse, 'house')).not.toBe(floorScreenSignature(lb([wireRow()]), 'house'));
   });
 });

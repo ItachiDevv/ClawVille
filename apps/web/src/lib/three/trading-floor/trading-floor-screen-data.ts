@@ -38,10 +38,14 @@ import {
 
 import {
   FLOOR_SCREEN_COIN_WORD,
+  FLOOR_SCREEN_PAGE_MS,
   type FloorScreenBasis,
   type FloorScreenColumn,
   type FloorScreenData,
   type FloorScreenExits,
+  type FloorScreenLeaderboard,
+  type FloorScreenLeaderRow,
+  type FloorScreenPage,
   type FloorScreenScan,
   type FloorScreenWindow,
 } from './trading-floor-screen-texture';
@@ -67,14 +71,19 @@ export interface FloorScreenInputs {
   /** The contest query: the fallback contest window. */
   readonly contest: ArenaQueryInput;
   /**
+   * Page B (founder order 2026-10-02): the contest-window leaderboard query,
+   * `GET /api/floor/arena/leaderboard?window=contest` (the pre-P15 board's
+   * read). Absent reads as never fetched.
+   */
+  readonly leaderboard?: ArenaQueryInput;
+  /**
    * COMPATIBILITY ONLY, removed with plan request W5: the room owner's
    * `trading-floor-decor.test.ts` still calls
    * `buildFloorScreenData({ leaderboard, contest, tape }, now).tape`. `tape`
    * feeds only the `tape` result field, which the board does not draw and the
-   * signature does not read; `leaderboard` is ignored.
+   * signature does not read.
    */
   readonly tape?: ArenaQueryInput;
-  readonly leaderboard?: ArenaQueryInput;
 }
 
 /** The board data plus the tape lines kept for the decor test (W5). */
@@ -376,6 +385,62 @@ function project(inputs: FloorScreenInputs) {
   };
 }
 
+// ── page B: the contest leaderboard ─────────────────────────────────────────
+
+/** Rows page B can ever show (8 fit at 313); the draw slices to the canvas. */
+const LEADER_ROWS_MAX = 10;
+
+/**
+ * The page this instant shows: house agents, then the leaderboard, 15 s each,
+ * from the wall clock alone. An unusable clock shows the house agents.
+ */
+export function floorScreenPage(nowMs: number): FloorScreenPage {
+  if (!Number.isFinite(nowMs)) return 'house';
+  return Math.floor(nowMs / FLOOR_SCREEN_PAGE_MS) % 2 === 1 ? 'leaderboard' : 'house';
+}
+
+/** A finite NUMBER, or NaN. A numeric STRING is refused, as on the pre-P15 board. */
+function num(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function readLeaderRow(raw: unknown): FloorScreenLeaderRow | null {
+  const wire = record(raw);
+  if (!wire) return null;
+  const agentId = typeof wire.agentId === 'string' ? wire.agentId : '';
+  const name = typeof wire.name === 'string' ? wire.name : '';
+  const rank = num(wire.rank);
+  return {
+    // The panel hook maps a missing rank to 0; "#0" is not a place.
+    rank: rank >= 1 ? rank : Number.NaN,
+    // An identifier never goes on the wall: a name that EQUALS the id is no name.
+    name: name === agentId ? '' : name,
+    realisedUsd: num(wire.realisedUsd),
+    trades: num(wire.trades),
+  };
+}
+
+/**
+ * Same rule as the house board: a failed refetch keeps the last good rows; only
+ * a query that never had data is connecting or an error. Reads the route's
+ * `{ rows }` envelope or the bare array the panel hook returns; rank order, an
+ * unreadable rank last, the route's own order among ties.
+ */
+function projectLeaderboard(input: ArenaQueryInput | undefined): FloorScreenLeaderboard {
+  const query = input ?? NEVER_FETCHED;
+  if (query.data === undefined) return { phase: query.isError ? 'error' : 'connecting', rows: [] };
+  const list: unknown = Array.isArray(query.data) ? query.data : record(query.data)?.rows;
+  const rows = (Array.isArray(list) ? list : [])
+    .map(readLeaderRow)
+    .filter((row): row is FloorScreenLeaderRow => row !== null);
+  const order = (row: FloorScreenLeaderRow) => (Number.isFinite(row.rank) ? row.rank : Infinity);
+  rows.sort((a, b) => {
+    const delta = order(a) - order(b);
+    return Number.isNaN(delta) ? 0 : delta;
+  });
+  return { phase: 'ready', rows: rows.slice(0, LEADER_ROWS_MAX) };
+}
+
 function contestRunning(window: ContestWindow | null, nowMs: number): boolean {
   return (
     window !== null &&
@@ -392,12 +457,18 @@ function tapeLine(item: ArenaTapeItem, nowMs: number): string {
     .join(' ');
 }
 
-export function buildFloorScreenData(inputs: FloorScreenInputs, nowMs: number): FloorScreenBuild {
+export function buildFloorScreenData(
+  inputs: FloorScreenInputs,
+  nowMs: number,
+  page: FloorScreenPage = floorScreenPage(nowMs),
+): FloorScreenBuild {
   const projected = project(inputs);
   const running = contestRunning(projected.window, nowMs);
   const windowKey: FloorScreenWindow = running ? 'contest' : '24h';
   return {
     phase: projected.phase,
+    page,
+    leaderboard: projectLeaderboard(inputs.leaderboard),
     columns: projected.columns.map(({ contest, last24h, ...column }) => ({
       ...column,
       ...(running ? contest : last24h),
@@ -423,8 +494,15 @@ export function buildFloorScreenData(inputs: FloorScreenInputs, nowMs: number): 
  * no texture upload. NaN is kept apart from null ("N/A" against "-"):
  * `JSON.stringify` would print both as `null`.
  */
-export function floorScreenSignature(inputs: FloorScreenInputs): string {
-  return JSON.stringify(project(inputs), (_key, value: unknown) =>
+export function floorScreenSignature(inputs: FloorScreenInputs, page: FloorScreenPage = 'house'): string {
+  // The page is IN the signature (a page change is a redraw), and only the
+  // shown page's data is: a leaderboard poll does not repaint page A.
+  const projected = project(inputs);
+  const shown =
+    page === 'house'
+      ? { page, ...projected }
+      : { page, window: projected.window, leaderboard: projectLeaderboard(inputs.leaderboard) };
+  return JSON.stringify(shown, (_key, value: unknown) =>
     typeof value === 'number' && !Number.isFinite(value) ? String(value) : value,
   );
 }
