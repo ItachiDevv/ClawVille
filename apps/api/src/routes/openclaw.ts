@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
 import { NPC_IDS, BUILDING_OPENCLAW_THEMES, getAgentModel, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
@@ -9,7 +9,17 @@ import { npcSimulation } from '../services/npc-simulation';
 import { db, avatars, users, npcMemories, activityLog, agentBots, agents, eq, and, desc, isNull, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
-import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import {
+  AGENT_SESSION_HEADER,
+  resolveAgentSession,
+  validateLiveAgentSession,
+} from '../middleware/require-auth-or-agent';
+import {
+  AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY,
+  botKnowledgeAccessible,
+  botKnowledgeAppend,
+  botKnowledgeWriteOwnerCondition,
+} from '../services/agent-bot-knowledge';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
@@ -863,7 +873,10 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
         }
       }
 
-      // Also persist knowledge to openclaw_bots table (fire-and-forget)
+      // Also persist knowledge to openclaw_bots table (fire-and-forget).
+      // Security C4 (batch 2): an owned row only accepts it from an
+      // ownership-proven session; an unproven session must not write into the
+      // owner's knowledge. The UPDATE re-checks the owner condition atomically.
       const botCfg = npcSimulation.getAgentBotConfig(sessionId);
       if (botCfg) {
         (async () => {
@@ -871,14 +884,14 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
             const bot = await db.query.agentBots.findFirst({
               where: eq(agentBots.agentId, botCfg.agentId),
             });
-            if (bot) {
+            if (bot && botKnowledgeAccessible(botCfg, bot.userId ?? null)) {
               const currentBotKnowledge: string[] = bot.knowledge ?? [];
               const newBotEntries = knowledgeLearned.filter((e) => !currentBotKnowledge.includes(e));
               if (newBotEntries.length > 0) {
                 await db.update(agentBots).set({
-                  knowledge: [...currentBotKnowledge, ...newBotEntries],
+                  knowledge: botKnowledgeAppend(newBotEntries),
                   updatedAt: new Date(),
-                }).where(eq(agentBots.id, bot.id));
+                }).where(and(eq(agentBots.id, bot.id), botKnowledgeWriteOwnerCondition(botCfg)));
               }
             }
           } catch (err) {
@@ -913,12 +926,49 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   }
 });
 
+// Security C7 (batch 2): the knowledge and memory exports are owner-only.
+// A human (Lucia cookie, which takes precedence as in requireAuthOrAgentSession)
+// must own the avatar row itself (`avatars.user_id`), whether or not it is the
+// active avatar. An agent session must be ledger-capable (connect-sec's use-time
+// owner proof in `resolveAgentSession`) and bound to exactly that avatar.
+// Returns the refusal (401 without auth, 403 otherwise) or null.
+const EXPORT_AVATAR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function exportOwnerRefusal(c: Context<AppContext>, avatarId: string): Promise<Response | null> {
+  const notOwned = () => c.json({ error: 'Not your avatar', code: 'avatar_not_owned' }, 403);
+  const user = c.get('user');
+  if (user) {
+    const owned = EXPORT_AVATAR_ID.test(avatarId)
+      ? await db.query.avatars.findFirst({
+          where: and(eq(avatars.id, avatarId), eq(avatars.userId, user.id)),
+          columns: { id: true },
+        })
+      : undefined;
+    return owned ? null : notOwned();
+  }
+  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (!agentSessionId) {
+    return c.json({ error: 'Authentication required', code: 'unauthenticated' }, 401);
+  }
+  const agent = await resolveAgentSession(agentSessionId);
+  if (!agent) {
+    return c.json({ error: 'Invalid or expired agent session', code: 'agent_session_not_found' }, 401);
+  }
+  if (!agent.ledgerCapable) {
+    return c.json(AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY, 403);
+  }
+  return agent.avatarId === avatarId ? null : notOwned();
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/openclaw/knowledge-export/:avatarId
 // Returns learned knowledge in SKILL.md-compatible format (upgraded)
+// Owner-only (security C7 — see exportOwnerRefusal above).
 // ---------------------------------------------------------------------------
-openclawRoutes.get('/knowledge-export/:avatarId', async (c) => {
+openclawRoutes.get('/knowledge-export/:avatarId', sessionMiddleware, async (c) => {
   const avatarId = c.req.param('avatarId');
+  const refusal = await exportOwnerRefusal(c, avatarId);
+  if (refusal) return refusal;
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(avatarId)) {
@@ -1034,6 +1084,9 @@ openclawRoutes.post('/generate-skill', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
   const avatarId = c.req.param('avatarId');
+  // Security C7 (batch 2): owner-only (see exportOwnerRefusal above).
+  const refusal = await exportOwnerRefusal(c, avatarId);
+  if (refusal) return refusal;
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(avatarId)) {
