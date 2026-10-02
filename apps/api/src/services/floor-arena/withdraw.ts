@@ -58,6 +58,8 @@ export const ARENA_WITHDRAW_SENT_GIVE_UP_MS = 30 * 60_000;
 export const ARENA_WITHDRAW_HISTORY_LIMIT = 50;
 /** An 'unknown' row whose history window stays uncovered goes to an operator after this. */
 export const ARENA_WITHDRAW_REVIEW_AFTER_MS = 24 * 60 * 60_000;
+/** Hard deadline of every remote read (ClawPump history, RPC). The writer's transfer keeps its own 45 s. */
+export const ARENA_WITHDRAW_REMOTE_TIMEOUT_MS = 20_000;
 /** History match window starts this long before dispatched_at (seconds). */
 const WINDOW_SLACK_S = 60;
 const ALERT_SOURCE = 'floor-arena-withdraw';
@@ -114,6 +116,35 @@ export interface ArenaWithdrawDeps {
   signatureUsed: typeof arenaWithdrawSignatureUsed;
   addonSpentSince: typeof readArenaAddonSpentSince;
   alert: (params: AlertErrorParams) => Promise<void>;
+  /**
+   * Codex B4: the engine races every remote read (readWalletLive, destinationHasUsdcAccount,
+   * getSignatureStatus, getTransaction) against this deadline, for injected and default deps
+   * alike, so one stalled call cannot keep the tick running. Default ARENA_WITHDRAW_REMOTE_TIMEOUT_MS.
+   */
+  remoteTimeoutMs?: number;
+}
+
+/** A remote read passed its deadline: a read error (no decision). */
+export class ArenaWithdrawDeadlineError extends Error {
+  readonly code = 'deadline';
+  constructor() {
+    super('deadline');
+    this.name = 'ArenaWithdrawDeadlineError';
+  }
+}
+
+/** Races one remote read against the deadline. The late result, if any, is ignored. Never used for transfer. */
+async function remote<T>(deps: ArenaWithdrawDeps, work: () => Promise<T>): Promise<T> {
+  const ms = deps.remoteTimeoutMs ?? ARENA_WITHDRAW_REMOTE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new ArenaWithdrawDeadlineError()), ms);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(work), deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 const txCache = new Map<string, ArenaWithdrawChainTx>();
@@ -350,7 +381,7 @@ export async function dispatchArenaWithdrawal(deps: ArenaWithdrawDeps, row: Aren
   if (row.state !== 'requested') return 'skipped';
   let live: ClawPumpArenaWalletLive;
   try {
-    live = await deps.readWalletLive(row.sourceClawpumpAgentId, row.agentId);
+    live = await remote(deps, () => deps.readWalletLive(row.sourceClawpumpAgentId, row.agentId));
   } catch (error) {
     alertOnce(deps, 'withdraw:balance_unavailable', 'warning',
       'Arena withdraw: the live wallet read failed; requests wait.', { code: errorCode(error), withdrawalId: row.id });
@@ -360,7 +391,7 @@ export async function dispatchArenaWithdrawal(deps: ArenaWithdrawDeps, row: Aren
   if (row.asset === 'USDC') {
     let exists: boolean | null;
     try {
-      exists = await deps.destinationHasUsdcAccount(row.destination);
+      exists = await remote(deps, () => deps.destinationHasUsdcAccount(row.destination));
     } catch {
       exists = null;
     }
@@ -558,10 +589,59 @@ async function applyBalanceRule(
   return review(deps, row, 'not_found_balance_drop');
 }
 
-/** A live read for the balance rule or the history scan. Null = skip this row now (budget short). */
+/** A live read for the balance rule or the history scan (with the remote deadline). Null = skip this row now (budget short). */
 async function readLiveForReconcile(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord): Promise<ClawPumpArenaWalletLive | null> {
   if (!deps.budgetOk(1)) return null;
-  return deps.readWalletLive(row.sourceClawpumpAgentId, row.agentId);
+  return remote(deps, () => deps.readWalletLive(row.sourceClawpumpAgentId, row.agentId));
+}
+
+/** A remote read failed or passed its deadline: no decision; alert once per cause (codes only). */
+function noteReadError(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, error: unknown): void {
+  const code = errorCode(error);
+  alertOnce(deps, `withdraw:read_error:${code}`, 'warning',
+    'Arena withdraw reconcile: a remote read failed or timed out; no decision is made.', { code, withdrawalId: row.id });
+}
+
+/** ClawPump history statuses the scan understands. Any other status (or none) means the item is not resolved. */
+const KNOWN_HISTORY_STATUSES: ReadonlySet<string> = new Set(['success', 'failed']);
+
+interface HistoryScan {
+  /**
+   * True only when EVERY listed item resolved (known status + finalized transaction with a block time),
+   * the list is newest-first (block times never rise), and the oldest item is at or before the window
+   * start: then the list is a contiguous, resolved window back past dispatched_at - 60 s (Codex B3).
+   */
+  complete: boolean;
+  /** In-window 'success' items with an unused signature and an exact match. */
+  matches: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
+}
+
+async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, live: ClawPumpArenaWalletLive): Promise<HistoryScan> {
+  const windowStart = row.dispatchedAt ? Math.floor(row.dispatchedAt.getTime() / 1000) - WINDOW_SLACK_S : Number.NEGATIVE_INFINITY;
+  const matches: HistoryScan['matches'] = [];
+  const seen = new Set<string>();
+  let previous: number | null = null;
+  for (const item of live.transactions) {
+    if (seen.has(item.signature)) continue;
+    seen.add(item.signature);
+    const status = item.status?.toLowerCase() ?? null;
+    // Stop at the first unresolved item: one gap already means "not covered", and stopping bounds the RPC time.
+    if (status === null || !KNOWN_HISTORY_STATUSES.has(status)) return { complete: false, matches };
+    let tx: ArenaWithdrawChainTx | null;
+    try {
+      tx = await remote(deps, () => deps.getTransaction(item.signature));
+    } catch (error) {
+      noteReadError(deps, row, error);
+      return { complete: false, matches };
+    }
+    if (!tx || tx.blockTime === null) return { complete: false, matches };
+    if (previous !== null && tx.blockTime > previous) return { complete: false, matches };
+    previous = tx.blockTime;
+    if (status !== 'success' || tx.blockTime < windowStart) continue;
+    if (await deps.signatureUsed(item.signature)) continue;
+    if (matchWithdrawTransfer(tx, row) === 'match') matches.push({ signature: item.signature, tx });
+  }
+  return { complete: previous !== null && previous <= windowStart, matches };
 }
 
 function liveIsSource(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, live: ClawPumpArenaWalletLive): boolean {
@@ -578,17 +658,41 @@ async function reconcileBySignature(
   signature: string,
   now: Date,
 ): Promise<ArenaWithdrawReconcileResult> {
-  const status = await deps.getSignatureStatus(signature);
+  let status: ArenaWithdrawSignatureStatus | null;
+  try {
+    status = await remote(deps, () => deps.getSignatureStatus(signature));
+  } catch (error) {
+    noteReadError(deps, row, error);
+    return undecided(deps, row, now);
+  }
   if (status === null) {
     if (ageMs(row, now) <= ARENA_WITHDRAW_SENT_GIVE_UP_MS) return touch(deps, row, now);
-    const live = await readLiveForReconcile(deps, row);
+    // Codex B2: a missing signature plus "no balance drop" is not enough (a deposit can hide the drop).
+    // The balance rule runs only when the ClawPump history does not list the signature AND the history is a
+    // complete, resolved window back past dispatched_at - 60 s with no exact match. Anything else waits.
+    let live: ClawPumpArenaWalletLive | null;
+    try {
+      live = await readLiveForReconcile(deps, row);
+    } catch (error) {
+      noteReadError(deps, row, error);
+      return undecided(deps, row, now);
+    }
     if (!live) return 'skipped';
     if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
+    if (live.transactions.some((item) => item.signature === signature)) return undecided(deps, row, now);
+    const scan = await scanHistory(deps, row, live);
+    if (!scan.complete || scan.matches.length > 0) return undecided(deps, row, now);
     return applyBalanceRule(deps, row, live);
   }
   if (!status.finalized) return touch(deps, row, now);
   if (status.err !== null && status.err !== undefined) return finish(deps, row, { state: 'failed', errorCode: 'chain_error' });
-  const tx = await deps.getTransaction(signature);
+  let tx: ArenaWithdrawChainTx | null;
+  try {
+    tx = await remote(deps, () => deps.getTransaction(signature));
+  } catch (error) {
+    noteReadError(deps, row, error);
+    return undecided(deps, row, now);
+  }
   if (!tx || !tx.meta) return touch(deps, row, now);
   const verdict = matchWithdrawTransfer(tx, row);
   if (verdict === 'chain_error') return finish(deps, row, { state: 'failed', errorCode: 'chain_error' });
@@ -596,30 +700,20 @@ async function reconcileBySignature(
   return finish(deps, row, { state: 'confirmed', postBalanceAtomic: sourcePostBalance(tx, row) });
 }
 
-function earliest(current: number | null, tx: ArenaWithdrawChainTx | null): number | null {
-  const time = tx?.blockTime;
-  if (time === null || time === undefined) return current;
-  return current === null ? time : Math.min(current, time);
-}
-
 async function reconcileByHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, now: Date): Promise<ArenaWithdrawReconcileResult> {
-  const live = await readLiveForReconcile(deps, row);
+  let live: ClawPumpArenaWalletLive | null;
+  try {
+    live = await readLiveForReconcile(deps, row);
+  } catch (error) {
+    noteReadError(deps, row, error);
+    return undecided(deps, row, now);
+  }
   if (!live) return 'skipped';
   if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
-  const windowStart = row.dispatchedAt ? Math.floor(row.dispatchedAt.getTime() / 1000) - WINDOW_SLACK_S : Number.NEGATIVE_INFINITY;
-  const matches: Array<{ signature: string; tx: ArenaWithdrawChainTx }> = [];
-  const fetched = new Set<string>();
-  let oldest: number | null = null;
-  for (const item of live.transactions) {
-    if (fetched.has(item.signature) || item.status?.toLowerCase() !== 'success') continue;
-    if (await deps.signatureUsed(item.signature)) continue;
-    fetched.add(item.signature);
-    const tx = await deps.getTransaction(item.signature);
-    oldest = earliest(oldest, tx);
-    if (!tx || tx.blockTime === null || tx.blockTime < windowStart) continue;
-    if (matchWithdrawTransfer(tx, row) === 'match') matches.push({ signature: item.signature, tx });
-  }
+  const { complete, matches } = await scanHistory(deps, row, live);
   if (matches.length > 1) return review(deps, row, 'ambiguous_match');
+  // Codex B3: no decision (match or no match) unless the window is complete and every item resolved.
+  if (!complete) return undecided(deps, row, now);
   if (matches.length === 1) {
     const match = matches[0]!;
     try {
@@ -632,11 +726,7 @@ async function reconcileByHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalR
       eventFor(row, 'confirmed', null, match.signature));
     return saved ? 'confirmed' : 'cas_lost';
   }
-  // No match. The oldest listed item (by block time) must reach back past the window start, or the list may miss the transfer.
-  const last = live.transactions.at(-1);
-  if (last && !fetched.has(last.signature)) oldest = earliest(oldest, await deps.getTransaction(last.signature));
-  const covered = oldest !== null && oldest <= windowStart;
-  if (!covered) return undecided(deps, row, now);
+  // No match over a complete, resolved window.
   if (ageMs(row, now) <= ARENA_WITHDRAW_UNKNOWN_GIVE_UP_MS) return touch(deps, row, now);
   return applyBalanceRule(deps, row, live);
 }
