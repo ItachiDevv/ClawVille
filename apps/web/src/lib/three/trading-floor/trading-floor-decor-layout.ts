@@ -2,14 +2,14 @@
  * trading-floor-decor-layout.ts
  *
  * Pure layout for the Trading Floor's RUNTIME DECOR ("The Claw Exchange",
- * lane B, 2026-10-01): a trader rig on every desk, six big wall screens, the
+ * lane B, 2026-10-01): a trader rig on every desk, ten wall screens, the
  * LED ticker ribbon and the floor glow pools. No `three`, no React, no DOM.
  * Every builder returns plain typed arrays, so the clearance rules the room
  * depends on are tested against the SAME vertices the GPU draws, not against a
  * second description of them.
  *
  * THREE MESHES, THREE DRAW CALLS, and the split is by material, not by object:
- *   1. MONITORS. Every desk bank, its brass mount and the six wall screens share
+ *   1. MONITORS. Every desk bank, its brass mount and the ten wall screens share
  *      ONE atlas (`DECOR_ATLAS_SIZE` square, drawn once). Bezels and brass sample
  *      a solid swatch at a single UV point, so their derivatives are zero and the
  *      sampler stays on mip 0 at any distance: no swatch can bleed into a chart.
@@ -29,11 +29,11 @@
  * COORDINATES: interior world units, the frame `trading-floor-room.ts` uses.
  * Desk rigs are authored in the DESK'S OWN frame (the console faces local +Z,
  * the wall side is local -Z) and carried into the world through the slot's own
- * `rotY`, so the six rigs follow `TRADING_FLOOR_CONSOLE_ROW` and cannot drift
+ * `rotY`, so the ten rigs follow `TRADING_FLOOR_CONSOLE_ROW` and cannot drift
  * off their desks.
  */
 
-import { TRADING_FLOOR_CONSOLE_ROW, TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_ROOM, type TradingFloorConsoleSlot } from './trading-floor-room';
+import { TRADING_FLOOR_CONSOLE_ROW, TRADING_FLOOR_DAIS, TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_MONITOR, TRADING_FLOOR_ROOM, TRADING_FLOOR_SCREEN, type TradingFloorConsoleSlot } from './trading-floor-room';
 
 // ---------------------------------------------------------------------------
 // Atlas map (canvas pixels). The art module draws INTO these rects; the layout
@@ -135,6 +135,13 @@ export function swatchRect(id: DecorSwatchId): AtlasRect {
   return { x: 8 + index * 32, y: 1008, width: 24, height: 12 };
 }
 
+/** Plate-only tiles in the unused swatch row; screens and columns stay clean. */
+export const DECOR_PLATE_ALGAE_RECTS = Object.freeze({
+  front: Object.freeze({ x: 368, y: 1008, width: 96, height: 12 }),
+  side: Object.freeze({ x: 480, y: 1008, width: 28, height: 12 }),
+  top: Object.freeze({ x: 524, y: 1008, width: 48, height: 12 }),
+});
+
 // ---------------------------------------------------------------------------
 // UVs
 // ---------------------------------------------------------------------------
@@ -192,6 +199,8 @@ export type DecorPart =
   | 'bank-screen'
   | 'bank-bezel'
   | 'bank-mount'
+  | 'kiosk-bezel'
+  | 'kiosk-screen'
   | 'wall-screen'
   | 'wall-bezel'
   | 'ribbon-face'
@@ -445,6 +454,23 @@ export const DECOR_BANK = Object.freeze({
   vesa: Object.freeze({ halfX: 11, halfY: 11, halfZ: 3 }),
 });
 
+/** Six desk-family panels on the kiosk riser, in its own +Z-facing frame. */
+export const DECOR_KIOSK_BANK = Object.freeze({
+  monitorWidth: 148,
+  monitorHeight: 92,
+  monitorDepth: 5,
+  bezel: 6.75,
+  chin: 12,
+  headerHeight: 10.5,
+  columnPitch: 154,
+  rowGap: 6,
+  bottomY: 164,
+  outerYaw: DECOR_BANK.outerYaw,
+  // Content lifts to -34: exactly 6 wu proud of the riser front at -40.
+  frontZ: -35,
+  screenLift: 1,
+});
+
 /** The hood band of the console, desk-local. Only the mount may go below the
  *  hood top, and only inside this band. */
 export const DECOR_DESK_HOOD = Object.freeze({
@@ -474,34 +500,35 @@ export const DECOR_DESK_CROSS_SECONDS = Object.freeze({ min: 20, max: 60 });
 /** The wall screens drift slower: they are big and in the corner of the eye. */
 export const DECOR_WALL_CROSS_SECONDS = Object.freeze({ min: 30, max: 60 });
 
+/** The side-wall pilasters, mirrored from `scripts/trading-floor/build-interior.mjs`
+ *  (`sidePilasterZ`, `PIL_W`, `PIL_D`). */
+export const DECOR_SIDE_PILASTERS = Object.freeze({
+  z: Object.freeze([-1250, -750, -250, 250, 750, 1250]),
+  halfWidth: 50,
+  faceX: TRADING_FLOOR_ROOM.halfX - 40,
+});
+
+
 /**
- * The big wall screens: the three MIDDLE bays of each side wall. The bays are
- * bounded by the side pilasters (100 wide, 40 deep, faces at |x| 1260), so a
- * 410 wide screen centred on a bay clears both pilasters by 20 wu. The box
- * runs |x| 1284..1298, 2 wu off the wall's inner face at 1300.
+ * One wall screen per desk bay, five per side. Each 368 wu screen fits the
+ * 400 wu bay between pilasters with 16 wu clearance on each side.
+ * The screen spans |x| 1934..1948, 2 wu off the wall inner face at 1950.
  */
 export const DECOR_WALL_SCREEN = Object.freeze({
-  width: 410,
-  height: 330,
-  bottomY: 430,
+  width: 368,
+  height: 296,
+  bottomY: TRADING_FLOOR_ROOM.height * 43 / 95,
   depth: 14,
-  frontX: 1284,
+  frontX: TRADING_FLOOR_ROOM.halfX - 16,
   bezel: 8,
   trimWidth: 2.5,
   plateLift: 1,
   paneLift: 2,
   gap: 4,
-  leftPaneWidth: 250,
-  barsPaneHeight: 90,
-  bayCentersZ: Object.freeze([-550, 0, 550] as const),
-});
-
-/** The side-wall pilasters, mirrored from `scripts/trading-floor/build-interior.mjs`
- *  (`sidePilasterZ`, `PIL_W`, `PIL_D`). */
-export const DECOR_SIDE_PILASTERS = Object.freeze({
-  z: Object.freeze([-825, -275, 275, 825] as const),
-  halfWidth: 50,
-  faceX: TRADING_FLOOR_ROOM.halfX - 40,
+  leftPaneWidth: 224,
+  barsPaneHeight: 81,
+  bayCentersZ: Object.freeze(DECOR_SIDE_PILASTERS.z.slice(1).map((z, index) =>
+    (DECOR_SIDE_PILASTERS.z[index]! + z) / 2)),
 });
 
 export interface DecorScrollTable {
@@ -616,7 +643,12 @@ function pushDeskBank(
     bank.plate.halfX,
     plateHalfY,
     bank.plate.halfZ,
-    BRASS_FACES,
+    {
+      front: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.front),
+      back: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.side),
+      side: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.side),
+      top: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.top),
+    },
     mountTag,
   );
   const postHalfY = (bank.post.topY - bank.plate.topY) / 2;
@@ -730,6 +762,48 @@ function pushDeskBank(
           random(),
           screenTag,
         );
+      }
+    }
+  }
+}
+
+function pushKioskBank(scroll: ScrollSink, fixed: QuadSink, random: () => number): void {
+  const bank = DECOR_KIOSK_BANK;
+  const c = Math.cos(TRADING_FLOOR_MONITOR.rotY);
+  const s = Math.sin(TRADING_FLOOR_MONITOR.rotY);
+  const point = (x: number, y: number, z: number): Vec3 =>
+    [TRADING_FLOOR_MONITOR.x + x * c + z * s, y, TRADING_FLOOR_MONITOR.z - x * s + z * c];
+  const direction = (x: number, z: number): Vec3 => [x * c + z * s, 0, -x * s + z * c];
+  const halfW = bank.monitorWidth / 2;
+  const halfH = bank.monitorHeight / 2;
+  const screenHalfW = halfW - bank.bezel;
+  const bodyHeight = bank.monitorHeight - bank.bezel - bank.chin - bank.headerHeight;
+  const bezelTag: DecorQuadTag = { part: 'kiosk-bezel', owner: 0 };
+  const screenTag: DecorQuadTag = { part: 'kiosk-screen', owner: 0 };
+  for (let row = 0; row < 2; row++) {
+    const centerY = bank.bottomY + halfH + row * (bank.monitorHeight + bank.rowGap);
+    for (let column = -1; column <= 1; column++) {
+      const monitor = row * 3 + column + 1;
+      const yaw = -column * bank.outerYaw;
+      const forward = direction(Math.sin(yaw), Math.cos(yaw));
+      // Outer inner edges stay proud of the riser, as on the desk banks.
+      const faceZ = bank.frontZ + (column === 0 ? 0 : Math.sin(bank.outerYaw) * halfW);
+      const face = point(column * bank.columnPitch, centerY, faceZ);
+      pushMonitorHousing(fixed, face, forward, halfW, halfH, bank.monitorDepth, 2, bezelTag, false);
+      const lifted = along(face, forward, bank.screenLift);
+      const led = along(along(lifted, cross(UP, forward), halfW - 16.5), UP, -halfH + bank.chin / 2);
+      pushQuad(fixed, led, forward, UP, 1.875, 1.875,
+        swatchUv(column === 0 ? 'statusAmber' : 'statusGreen'), bezelTag);
+      pushQuad(fixed, along(lifted, UP, halfH - bank.bezel - bank.headerHeight / 2),
+        forward, UP, screenHalfW, bank.headerHeight / 2, atlasRectUv(deskHeaderRect(monitor)), screenTag);
+      const bodyCenter = along(lifted, UP, -halfH + bank.chin + bodyHeight / 2);
+      const content = DECOR_DESK_CONTENT[monitor]!;
+      if (content === 'terminal' || content === 'depth') {
+        pushQuad(fixed, bodyCenter, forward, UP, screenHalfW, bodyHeight / 2,
+          content === 'terminal' ? atlasRectUv(terminalPanelRect(0)) : depthPanelUv(0), screenTag);
+      } else {
+        pushScrollingQuad(scroll, bodyCenter, forward, screenHalfW, bodyHeight / 2,
+          DECOR_BANDS[content], crossSeconds(random, DECOR_DESK_CROSS_SECONDS), random(), screenTag);
       }
     }
   }
@@ -863,6 +937,7 @@ export function buildMonitorDecor(): MonitorDecorData {
   for (let wallIndex = 0; wallIndex < bays.length * 2; wallIndex++) {
     pushWallScreen(scroll, fixed, decorWallScreenSide(wallIndex), bays[wallIndex % bays.length]!, wallIndex, random);
   }
+  pushKioskBank(scroll, fixed, random);
   // Scrolling quads FIRST: the per-frame upload is one range at the start.
   const mesh = finish([scroll.quads, fixed], false);
   return {
@@ -923,8 +998,8 @@ export const RIBBON_CANVAS_HEIGHT = 64;
 export const RIBBON_RIM_ROWS = 4;
 /** The band fills lane B's whole 790..860 zone: every wu of height is glyph
  *  height at the distances the side runs are read from. */
-export const RIBBON_BOTTOM_Y = 790;
-export const RIBBON_TOP_Y = 860;
+export const RIBBON_BOTTOM_Y = TRADING_FLOOR_ROOM.height * 79 / 95;
+export const RIBBON_TOP_Y = TRADING_FLOOR_ROOM.height * 86 / 95;
 /**
  * |x| of the ribbon's face on the side walls: 6 wu in front of the pilaster
  * faces (1260), so the crawl runs past the ribs instead of behind them. It is
@@ -942,7 +1017,7 @@ export const RIBBON_WALL_GAP = 1;
 export const RIBBON_STRIP_WU =
   RIBBON_CANVAS_WIDTH * ((RIBBON_TOP_Y - RIBBON_BOTTOM_Y) / RIBBON_CANVAS_HEIGHT);
 /** Crawl speed. One strip period (4480 wu) passes a point in ~41 s. */
-export const RIBBON_SPEED_WU_PER_SEC = 110;
+export const RIBBON_SPEED_WU_PER_SEC = 165;
 
 export interface RibbonSegment {
   /** Start of the face along the crawl path. */
@@ -1106,7 +1181,7 @@ export const GLOW_SPRITE_SIZE = 128;
 /** Floor pools sit here; lane A's floor seal owns y 1..2. */
 export const DECOR_GLOW_FLOOR_Y = 3;
 /** The floor seal's annulus around the dais. No pool may overlap it. */
-export const DECOR_SEAL = Object.freeze({ x: 0, z: -60, innerRadius: 380, outerRadius: 600 });
+export const DECOR_SEAL = Object.freeze({ x: TRADING_FLOOR_DAIS.x, z: TRADING_FLOOR_DAIS.z, innerRadius: 570, outerRadius: 900 });
 
 /** Linear RGBA. Alpha is the strength: additive blending adds `rgb * a`. */
 export const DECOR_GLOW_COLOR = Object.freeze({
@@ -1146,7 +1221,8 @@ export function glowPools(): GlowPool[] {
     pools.push({ kind: 'desktop', center: deskLocalToWorld(slot, 0, DECOR_DESKTOP.topY + 3, -51),
       halfA: 36, halfB: 130, color: DECOR_GLOW_COLOR.desktop });
   }
-  pools.push({ kind: 'floor', center: [0, DECOR_GLOW_FLOOR_Y, -962], halfA: 900, halfB: 133, color: DECOR_GLOW_COLOR.board });
+  pools.push({ kind: 'floor', center: [0, DECOR_GLOW_FLOOR_Y, -TRADING_FLOOR_ROOM.halfZ * 481 / 550],
+    halfA: TRADING_FLOOR_SCREEN.width * 9 / 17, halfB: Math.round(TRADING_FLOOR_ROOM.height * 133 / 950), color: DECOR_GLOW_COLOR.board });
   for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
     const side = Math.sign(slot.x);
     pools.push({ kind: 'wall', center: [side * (TRADING_FLOOR_ROOM.halfX - 5), 290, slot.z], halfA: 230, halfB: 130, color: DECOR_GLOW_COLOR.deskWall });
@@ -1157,8 +1233,8 @@ export function glowPools(): GlowPool[] {
     pools.push({
       kind: 'wall',
       center: [side * (TRADING_FLOOR_ROOM.halfX - 4), DECOR_WALL_SCREEN.bottomY + DECOR_WALL_SCREEN.height / 2, bays[wallIndex % bays.length]!],
-      halfA: 265,
-      halfB: 195,
+      halfA: DECOR_WALL_SCREEN.width / 2 + 60,
+      halfB: DECOR_WALL_SCREEN.height / 2 + 30,
       color: DECOR_GLOW_COLOR.screenHalo,
     });
   }

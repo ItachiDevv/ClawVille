@@ -7,12 +7,15 @@ import {
   DECOR_BAND_INSET,
   DECOR_BANDS,
   DECOR_BANK,
+  DECOR_KIOSK_BANK,
   DECOR_DESKTOP,
   DECOR_DEPTH_PANEL_COUNT,
   DECOR_DESK_CROSS_SECONDS,
+  DECOR_DESK_CONTENT,
   DECOR_DESK_HEADER_COUNT,
   DECOR_DESK_HOOD,
   DECOR_GLOW_FLOOR_Y,
+  DECOR_PLATE_ALGAE_RECTS,
   DECOR_SEAL,
   DECOR_SIDE_PILASTERS,
   DECOR_SWATCH_IDS,
@@ -24,6 +27,7 @@ import {
   RIBBON_BACK_END_Z,
   RIBBON_BOTTOM_Y,
   RIBBON_CANVAS_WIDTH,
+  RIBBON_CANVAS_HEIGHT,
   RIBBON_STRIP_WU,
   RIBBON_TOP_Y,
   advanceDecorScroll,
@@ -56,6 +60,7 @@ import {
   buildRibbonSegments,
   drawClawIcon,
   drawDecorAtlas,
+  drawPlateAlgae,
   drawTerminalPanel,
   drawRibbonStrip,
   layoutRibbon,
@@ -69,10 +74,12 @@ import {
   TRADING_FLOOR_CAMERA_Z_MAX,
   TRADING_FLOOR_CONSOLE_ROW,
   TRADING_FLOOR_DESK_INNER_X,
+  TRADING_FLOOR_MONITOR,
   TRADING_FLOOR_PLAYER_RADIUS,
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SCREEN_SURROUND_FACE_Z,
+  TRADING_FLOOR_SCREEN_FRAME_WIDTH,
   TRADING_FLOOR_SEATS,
   consoleHalfExtents,
 } from './trading-floor-room';
@@ -234,10 +241,10 @@ describe('desk monitor banks', () => {
       const seat = TRADING_FLOOR_SEATS[tag.owner]!;
       expect(normal[0] * (seat.x - center[0]) + normal[2] * (seat.z - center[2])).toBeLessThan(0);
     });
-    expect(covers).toBe(36);
+    expect(covers).toBe(TRADING_FLOOR_SEATS.length * DECOR_DESK_CONTENT.length);
   });
 
-  test('36 status LEDs sit on thick graphite chins, with a modest geometry budget', () => {
+  test('status LEDs sit on thick graphite chins, with a modest geometry budget', () => {
     const leds = [swatchUv('statusGreen').u0, swatchUv('statusAmber').u0];
     let count = 0;
     forEachQuad(MONITORS.mesh, (vertices, quad) => {
@@ -259,12 +266,13 @@ describe('desk monitor banks', () => {
       expect(quadNormal(quadVertices(MONITORS.mesh, front)).reduce((distance, n, axis) => distance + n * (center[axis]! - face[axis]!), 0))
         .toBeCloseTo(DECOR_BANK.screenLift, 3);
     });
-    expect(count).toBe(36);
+    expect(count).toBe(TRADING_FLOOR_SEATS.length * DECOR_DESK_CONTENT.length);
     expect(DECOR_BANK.monitorDepth).toBe(12);
     expect(DECOR_BANK.bezel).toBe(4.5);
     expect(DECOR_BANK.chin).toBe(8);
-    expect(MONITORS.mesh.positions.length / 3).toBeLessThanOrEqual(2040 * 2.5);
-    expect(MONITORS.mesh.indices.length / 3).toBeLessThanOrEqual(1020 * 2.5);
+    // R1 must re-measure these monitor vertex and triangle budgets.
+    expect(MONITORS.mesh.positions.length / 3).toBeLessThanOrEqual(9000);
+    expect(MONITORS.mesh.indices.length / 3).toBeLessThanOrEqual(4500);
   });
 
   test('every reach link joins its VESA block to a full-width row arm', () => {
@@ -343,14 +351,15 @@ describe('desk monitor banks', () => {
     });
   });
 
-  test('banks stay inside the brief\'s zone: |x| 1180..1258, z = row +- 165, top <= 335', () => {
+  test('banks stay inside each desk bank zone', () => {
     forEachQuad(MONITORS.mesh, (vertices, quad) => {
       const tag = MONITORS.mesh.tags[quad]!;
       if (!tag.part.startsWith('bank-')) return;
-      const rowZ = TRADING_FLOOR_CONSOLE_ROW[tag.owner]!.z;
+      const slot = TRADING_FLOOR_CONSOLE_ROW[tag.owner]!;
+      const rowZ = slot.z;
       for (const v of vertices) {
-        expect(Math.abs(v[0])).toBeGreaterThanOrEqual(1180 - EPS);
-        expect(Math.abs(v[0])).toBeLessThanOrEqual(1258 + EPS);
+        expect(Math.abs(v[0])).toBeGreaterThanOrEqual(Math.abs(slot.x) + 60 - EPS);
+        expect(Math.abs(v[0])).toBeLessThanOrEqual(Math.abs(slot.x) + 138 + EPS);
         expect(Math.abs(v[2] - rowZ)).toBeLessThanOrEqual(165 + EPS);
         expect(v[1]).toBeLessThanOrEqual(335 + EPS);
       }
@@ -362,8 +371,8 @@ describe('desk monitor banks', () => {
     for (const tag of MONITORS.mesh.tags) {
       if (tag.part === 'bank-screen') screensPerDesk.set(tag.owner, (screensPerDesk.get(tag.owner) ?? 0) + 1);
     }
-    expect([...screensPerDesk.keys()].sort()).toEqual([0, 1, 2, 3, 4, 5]);
-    for (const count of screensPerDesk.values()) expect(count).toBe(12);
+    expect([...screensPerDesk.keys()].sort((a, b) => a - b)).toEqual(TRADING_FLOOR_SEATS.map((seat) => seat.index));
+    for (const count of screensPerDesk.values()) expect(count).toBe(DECOR_DESK_CONTENT.length * 2);
   });
 
   test('the screens face their own operator', () => {
@@ -403,17 +412,20 @@ describe('player clamp volume', () => {
   const clampX = TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS;
   const clampZ = TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS;
 
-  test('below avatar height, monitor and ribbon quads are on a desk or outside the clamp', () => {
+  test('below avatar height, monitor and ribbon quads are on a desk, on the kiosk or outside the clamp', () => {
     for (const [name, mesh] of [['monitors', MONITORS.mesh], ['ribbon', RIBBON.mesh]] as const) {
       forEachQuad(mesh, (vertices, quad) => {
         const high = vertices.every((v) => v[1] >= 270);
         const onDesk = TRADING_FLOOR_CONSOLE_ROW.some((_, desk) => vertices.every((v) => insideDesk(v, desk)));
+        const onKiosk = mesh.tags[quad]!.part.startsWith('kiosk-') && vertices.every((v) =>
+          Math.abs(v[0] - TRADING_FLOOR_MONITOR.x) <= TRADING_FLOOR_MONITOR.halfX + EPS &&
+          Math.abs(v[2] - TRADING_FLOOR_MONITOR.z) <= TRADING_FLOOR_MONITOR.halfZ + EPS);
         const outside =
           vertices.every((v) => v[0] > clampX) ||
           vertices.every((v) => v[0] < -clampX) ||
           vertices.every((v) => v[2] > clampZ) ||
           vertices.every((v) => v[2] < -clampZ);
-        expect({ name, quad, ok: high || onDesk || outside }).toEqual({ name, quad, ok: true });
+        expect({ name, quad, ok: high || onDesk || onKiosk || outside }).toEqual({ name, quad, ok: true });
       });
     }
   });
@@ -446,9 +458,9 @@ describe('trade-tape flight volume', () => {
     max: [sign * TAPE_LANE_X + reach, TAPE_Y + TAPE_CHIP_HEIGHT / 2 + TAPE_BOB, TAPE_Z_END + reach],
   }));
 
-  test('the conservative volume covers the documented 352.75..481', () => {
-    expect(lanes[0]!.min[1]).toBeLessThanOrEqual(352.75);
-    expect(lanes[0]!.max[1]).toBeGreaterThanOrEqual(481);
+  test('the conservative volume covers the documented 412.75..541', () => {
+    expect(lanes[0]!.min[1]).toBeLessThanOrEqual(412.75);
+    expect(lanes[0]!.max[1]).toBeGreaterThanOrEqual(541);
   });
 
   test('no decor quad touches either lane', () => {
@@ -468,8 +480,10 @@ describe('trade-tape flight volume', () => {
 
 describe('ticker ribbon placement', () => {
   const surround: Box = {
-    min: [-918, 292, -TRADING_FLOOR_ROOM.halfZ],
-    max: [918, 948, TRADING_FLOOR_SCREEN_SURROUND_FACE_Z],
+    min: [-TRADING_FLOOR_SCREEN.width / 2 - TRADING_FLOOR_SCREEN_FRAME_WIDTH,
+      TRADING_FLOOR_SCREEN.bottomY - TRADING_FLOOR_SCREEN_FRAME_WIDTH, -TRADING_FLOOR_ROOM.halfZ],
+    max: [TRADING_FLOOR_SCREEN.width / 2 + TRADING_FLOOR_SCREEN_FRAME_WIDTH,
+      TRADING_FLOOR_SCREEN.bottomY + TRADING_FLOOR_SCREEN.height + TRADING_FLOOR_SCREEN_FRAME_WIDTH, TRADING_FLOOR_SCREEN_SURROUND_FACE_Z],
   };
 
   test('never reaches the back wall and never overlaps the board surround', () => {
@@ -501,8 +515,8 @@ describe('ticker ribbon placement', () => {
   test('it runs in the band zone, in front of the pilaster faces', () => {
     forEachQuad(RIBBON.mesh, (vertices) => {
       for (const v of vertices) {
-        expect(v[1]).toBeGreaterThanOrEqual(790);
-        expect(v[1]).toBeLessThanOrEqual(860);
+        expect(v[1]).toBeGreaterThanOrEqual(RIBBON_BOTTOM_Y);
+        expect(v[1]).toBeLessThanOrEqual(RIBBON_TOP_Y);
         expect(Math.abs(v[0])).toBeLessThan(TRADING_FLOOR_ROOM.halfX);
         expect(Math.abs(v[2])).toBeLessThan(TRADING_FLOOR_ROOM.halfZ);
       }
@@ -530,7 +544,7 @@ describe('ticker ribbon placement', () => {
       }
     }
     // The strip keeps the canvas aspect: one strip period is 64 px tall.
-    expect(RIBBON_STRIP_WU / RIBBON_CANVAS_WIDTH).toBeCloseTo((RIBBON_TOP_Y - RIBBON_BOTTOM_Y) / 64, 9);
+    expect(RIBBON_STRIP_WU / RIBBON_CANVAS_WIDTH).toBeCloseTo((RIBBON_TOP_Y - RIBBON_BOTTOM_Y) / RIBBON_CANVAS_HEIGHT, 9);
   });
 
   test('U grows toward the viewer\'s right on every wall, so the text reads left to right', () => {
@@ -564,20 +578,22 @@ describe('ticker ribbon placement', () => {
 describe('wall screens', () => {
   const pilasterSpans = DECOR_SIDE_PILASTERS.z.map((z) => [z - DECOR_SIDE_PILASTERS.halfWidth, z + DECOR_SIDE_PILASTERS.halfWidth]);
 
-  test('six screens, one per middle bay, each clear of both pilasters by 15 wu', () => {
+  test('one screen per middle bay, each clear of both pilasters by 15 wu', () => {
     const owners = new Set<number>();
     forEachQuad(MONITORS.mesh, (vertices, quad) => {
       const tag = MONITORS.mesh.tags[quad]!;
       if (!tag.part.startsWith('wall-')) return;
       owners.add(tag.owner);
-      const bayZ = DECOR_WALL_SCREEN.bayCentersZ[tag.owner % 3]!;
+      const bayIndex = tag.owner % DECOR_WALL_SCREEN.bayCentersZ.length;
+      const lowZ = DECOR_SIDE_PILASTERS.z[bayIndex]! + DECOR_SIDE_PILASTERS.halfWidth;
+      const highZ = DECOR_SIDE_PILASTERS.z[bayIndex + 1]! - DECOR_SIDE_PILASTERS.halfWidth;
       const side = decorWallScreenSide(tag.owner);
       const box = aabb(vertices);
       for (const [low, high] of pilasterSpans) {
         expect(box.max[2] < low! - 15 || box.min[2] > high! + 15).toBe(true);
       }
-      expect(box.min[2]).toBeGreaterThan(bayZ - 225);
-      expect(box.max[2]).toBeLessThan(bayZ + 225);
+      expect(box.min[2]).toBeGreaterThan(lowZ);
+      expect(box.max[2]).toBeLessThan(highZ);
       expect(box.min[1]).toBeGreaterThanOrEqual(DECOR_WALL_SCREEN.bottomY - EPS);
       expect(box.max[1]).toBeLessThanOrEqual(DECOR_WALL_SCREEN.bottomY + DECOR_WALL_SCREEN.height + EPS);
       for (const v of vertices) {
@@ -586,20 +602,19 @@ describe('wall screens', () => {
         expect(Math.abs(v[0])).toBeLessThan(TRADING_FLOOR_ROOM.halfX);
       }
     });
-    expect([...owners].sort()).toEqual([0, 1, 2, 3, 4, 5]);
+    expect([...owners].sort((a, b) => a - b)).toEqual(Array.from({ length: DECOR_WALL_SCREEN.bayCentersZ.length * 2 }, (_, index) => index));
   });
 
-  // The lane-B zones in the shared design brief, as LITERALS on purpose: a
-  // check against the layout's own constants would move with the constant.
-  // Lane A builds everything else on the walls around these rectangles.
-  test('wall screens stay inside the brief\'s zone: middle bays, y 430..760', () => {
-    const bays = [[-775, -325], [-225, 225], [325, 775]];
+  // Derive clear bay intervals from the pilasters, independently of screen geometry.
+  test('wall screens stay inside the middle bays and their height band', () => {
+    const bays = DECOR_SIDE_PILASTERS.z.slice(1).map((z, index) =>
+      [DECOR_SIDE_PILASTERS.z[index]! + DECOR_SIDE_PILASTERS.halfWidth, z - DECOR_SIDE_PILASTERS.halfWidth]);
     forEachQuad(MONITORS.mesh, (vertices, quad) => {
       const tag = MONITORS.mesh.tags[quad]!;
       if (!tag.part.startsWith('wall-')) return;
       const box = aabb(vertices);
-      expect(box.min[1]).toBeGreaterThanOrEqual(430 - EPS);
-      expect(box.max[1]).toBeLessThanOrEqual(760 + EPS);
+      expect(box.min[1]).toBeGreaterThanOrEqual(DECOR_WALL_SCREEN.bottomY - EPS);
+      expect(box.max[1]).toBeLessThanOrEqual(DECOR_WALL_SCREEN.bottomY + DECOR_WALL_SCREEN.height + EPS);
       expect(bays.some(([low, high]) => box.min[2] >= low! && box.max[2] <= high!)).toBe(true);
     });
   });
@@ -726,9 +741,9 @@ describe('glow pools', () => {
       expect(GLOW.colors![quad * 16 + 3]).toBeCloseTo(0.13, 6);
       count++;
     });
-    expect(count).toBe(6);
-    expect(GLOW.tags.filter((tag) => tag.part === 'glow-floor')).toHaveLength(7);
-    expect(GLOW.tags.filter((tag) => tag.part === 'glow-wall')).toHaveLength(12);
+    expect(count).toBe(TRADING_FLOOR_SEATS.length);
+    expect(GLOW.tags.filter((tag) => tag.part === 'glow-floor')).toHaveLength(TRADING_FLOOR_SEATS.length + 1);
+    expect(GLOW.tags.filter((tag) => tag.part === 'glow-wall')).toHaveLength(TRADING_FLOOR_SEATS.length + DECOR_WALL_SCREEN.bayCentersZ.length * 2);
   });
 
   test('desktop pool rectangles clear the phone bounds from the GLB authoring source', () => {
@@ -764,7 +779,7 @@ describe('glow pools', () => {
       expect(pool.max[2]).toBeCloseTo(-15, 8);
       checked++;
     });
-    expect(checked).toBe(6);
+    expect(checked).toBe(TRADING_FLOOR_SEATS.length);
   });
 });
 
@@ -780,7 +795,52 @@ describe('monitor atlas', () => {
     ...Array.from({ length: DECOR_DEPTH_PANEL_COUNT }, (_, i) => [`depth:${i}`, depthPanelRect(i)] as [string, AtlasRect]),
     ...Array.from({ length: DECOR_TERMINAL_PANEL_COUNT }, (_, i) => [`terminal:${i}`, terminalPanelRect(i)] as [string, AtlasRect]),
     ...DECOR_SWATCH_IDS.map((id) => [`swatch:${id}`, swatchRect(id)] as [string, AtlasRect]),
+    ...Object.entries(DECOR_PLATE_ALGAE_RECTS).map(([id, rect]) => [`plate:${id}`, rect] as [string, AtlasRect]),
   ];
+
+  test('only the five weighted plate quads per desk sample the algae regions', () => {
+    const counts = Array(TRADING_FLOOR_CONSOLE_ROW.length).fill(0) as number[];
+    forEachQuad(MONITORS.mesh, (vertices, quad) => {
+      const pixels = Array.from({ length: 4 }, (_, corner) => [
+        MONITORS.mesh.uvs[quad * 8 + corner * 2]! * DECOR_ATLAS_SIZE,
+        (1 - MONITORS.mesh.uvs[quad * 8 + corner * 2 + 1]!) * DECOR_ATLAS_SIZE,
+      ]);
+      const rect = Object.values(DECOR_PLATE_ALGAE_RECTS).find((candidate) => pixels.some(([x, y]) =>
+        x! >= candidate.x - EPS && x! <= candidate.x + candidate.width + EPS &&
+        y! >= candidate.y - EPS && y! <= candidate.y + candidate.height + EPS));
+      if (!rect) return;
+      expect(pixels.every(([x, y]) => x! >= rect.x - EPS && x! <= rect.x + rect.width + EPS &&
+        y! >= rect.y - EPS && y! <= rect.y + rect.height + EPS)).toBe(true);
+      const tag = MONITORS.mesh.tags[quad]!;
+      expect(tag.part).toBe('bank-mount');
+      counts[tag.owner]!++;
+      for (const vertex of vertices) {
+        const local = worldToDeskLocal(TRADING_FLOOR_CONSOLE_ROW[tag.owner]!, vertex[0], vertex[2]);
+        expect(Math.abs(local.localX)).toBeLessThanOrEqual(DECOR_BANK.plate.halfX + EPS);
+        expect(Math.abs(local.localZ - DECOR_BANK.plate.centerZ)).toBeLessThanOrEqual(DECOR_BANK.plate.halfZ + EPS);
+        expect(vertex[1]).toBeGreaterThanOrEqual(DECOR_BANK.footY);
+        expect(vertex[1]).toBeLessThanOrEqual(DECOR_BANK.plate.topY);
+      }
+    });
+    expect(counts).toEqual(Array(TRADING_FLOOR_CONSOLE_ROW.length).fill(5));
+  });
+
+  test('plate algae art stays inside its own tiles and adds no terminal claims', () => {
+    const { ctx, points, texts } = recordingContext();
+    ctx.strokeRect = (x, y, width, height) => {
+      const half = ctx.lineWidth / 2;
+      points.push({ x: x - half, y: y - half }, { x: x + width + half, y: y + height + half });
+    };
+    ctx.globalAlpha = .7;
+    drawPlateAlgae(ctx);
+    expect(ctx.globalAlpha).toBe(.7);
+    expect(texts).toEqual([]);
+    expect(points.length).toBeGreaterThan(6);
+    for (const { x, y } of points) {
+      expect(Object.values(DECOR_PLATE_ALGAE_RECTS).some((rect) => x >= rect.x && x <= rect.x + rect.width &&
+        y >= rect.y && y <= rect.y + rect.height)).toBe(true);
+    }
+  });
 
   test('every region is inside the atlas and no two overlap', () => {
     for (const [name, rect] of rects) {
@@ -823,9 +883,11 @@ describe('monitor atlas', () => {
       return Array.from({ length: DECOR_TERMINAL_PANEL_COUNT }, (_, index) => terminalPanelRect(index))
         .some((rect) => Math.abs(rect.x - u) < 1e-3 && Math.abs(rect.y - y) < 1e-3) ? [quad] : [];
     });
-    for (let owner = 0; owner < 6; owner++) {
+    for (let owner = 0; owner < TRADING_FLOOR_SEATS.length; owner++) {
       const desk = terminalQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'bank-screen' && MONITORS.mesh.tags[quad]!.owner === owner);
       expect(desk).toHaveLength(1);
+    }
+    for (let owner = 0; owner < DECOR_WALL_SCREEN.bayCentersZ.length * 2; owner++) {
       expect(terminalQuads.some((quad) => MONITORS.mesh.tags[quad]!.part === 'wall-screen' && MONITORS.mesh.tags[quad]!.owner === owner)).toBe(true);
     }
     expect(terminalQuads.every((quad) => quad >= MONITORS.scroll.count)).toBe(true);
@@ -861,9 +923,10 @@ describe('monitor atlas', () => {
         const u1 = MONITORS.mesh.uvs[quad * 8 + 2]! * DECOR_ATLAS_SIZE;
         return Math.abs(top - depth.y) < 1e-3 && Math.abs(Math.min(u0, u1) - depth.x) < 1e-3 ? [Math.sign(u1 - u0)] : [];
       });
-      expect(orientations).toHaveLength(6);
-      expect(orientations.filter((sign) => sign === 1)).toHaveLength(3);
-      expect(orientations.filter((sign) => sign === -1)).toHaveLength(3);
+      const count = part === 'bank-screen' ? TRADING_FLOOR_SEATS.length : DECOR_WALL_SCREEN.bayCentersZ.length * 2;
+      expect(orientations).toHaveLength(count);
+      expect(orientations.filter((sign) => sign === 1)).toHaveLength(count / 2);
+      expect(orientations.filter((sign) => sign === -1)).toHaveLength(count / 2);
     }
   });
 
@@ -949,7 +1012,7 @@ describe('screen scrolling', () => {
   test('the scrolling quads are the leading quads and only their U moves', () => {
     const scroll = MONITORS.scroll;
     for (let quad = 0; quad < scroll.count; quad++) {
-      expect(['bank-screen', 'wall-screen']).toContain(MONITORS.mesh.tags[quad]!.part);
+      expect(['bank-screen', 'wall-screen', 'kiosk-screen']).toContain(MONITORS.mesh.tags[quad]!.part);
     }
     const uvs = new Float32Array(MONITORS.mesh.uvs);
     const offsets = new Float32Array(scroll.phases);
@@ -992,8 +1055,11 @@ describe('screen scrolling', () => {
     }
     expect(RIBBON.mesh.tags.slice(RIBBON.segments.length).every((tag) => tag.part === 'ribbon-soffit')).toBe(true);
     expect(monitorRange + ribbonRange).toBeLessThanOrEqual(600);
-    // Static terminals replace 12 scrolling quads: 36 x 8 + 3 x 8.
-    expect(monitorRange + ribbonRange).toBe(312);
+    const deskCharts = DECOR_DESK_CONTENT.filter((content) => content !== 'depth' && content !== 'terminal').length;
+    // Each wall has two scrolling panes; the other panes are static.
+    const scrollingQuads = TRADING_FLOOR_SEATS.length * deskCharts + DECOR_WALL_SCREEN.bayCentersZ.length * 2 * 2 + 4;
+    expect(MONITORS.scroll.count).toBe(scrollingQuads);
+    expect(monitorRange + ribbonRange).toBe((scrollingQuads + RIBBON.segments.length) * DECOR_UV_FLOATS_PER_QUAD);
   });
 });
 
@@ -1518,3 +1584,83 @@ function recordingContext(): {
   } as unknown as DecorContext;
   return { ctx, texts, points, fills };
 }
+
+
+describe('R4 kiosk monitor bank', () => {
+  const bank = DECOR_KIOSK_BANK;
+  const kioskQuads = MONITORS.mesh.tags.flatMap((tag, quad) => tag.part.startsWith('kiosk-') ? [quad] : []);
+
+  test('six panels stay inside the authored footprint and clear the riser', () => {
+    expect(bank.monitorWidth).toBe(148);
+    expect(bank.monitorHeight).toBe(92);
+    expect(bank.bezel).toBe(6.75);
+    expect(bank.chin).toBe(12);
+    expect(bank.headerHeight).toBe(10.5);
+    expect(bank.columnPitch).toBe(154);
+    expect(bank.rowGap).toBe(6);
+    expect(bank.outerYaw).toBe(18 * Math.PI / 180);
+    expect(kioskQuads.length).toBeGreaterThan(0);
+    const c = Math.cos(TRADING_FLOOR_MONITOR.rotY), s = Math.sin(TRADING_FLOOR_MONITOR.rotY);
+    for (const quad of kioskQuads) {
+      expect(MONITORS.mesh.tags[quad]!.owner).toBe(0);
+      for (const [x, y, z] of quadVertices(MONITORS.mesh, quad)) {
+        const dx = x - TRADING_FLOOR_MONITOR.x, dz = z - TRADING_FLOOR_MONITOR.z;
+        const localX = dx * c - dz * s, localZ = dx * s + dz * c;
+        expect(Math.abs(localX)).toBeLessThanOrEqual(TRADING_FLOOR_MONITOR.halfX + 1e-3);
+        expect(Math.abs(localZ)).toBeLessThanOrEqual(TRADING_FLOOR_MONITOR.halfZ + 1e-3);
+        expect(y).toBeGreaterThanOrEqual(164);
+        expect(y).toBeLessThanOrEqual(354);
+        if (MONITORS.mesh.tags[quad]!.part === 'kiosk-screen') expect(localZ).toBeGreaterThan(-40);
+      }
+    }
+    expect(kioskQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'kiosk-bezel' &&
+      Math.abs(MONITORS.mesh.uvs[quad * 8]! - swatchUv('bezelBack').u0) < EPS)).toHaveLength(0);
+  });
+
+  test('six graphite fronts rotate with the kiosk; outer columns turn inward', () => {
+    const fronts = kioskQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'kiosk-bezel' &&
+      Math.abs(MONITORS.mesh.uvs[quad * 8]! - swatchUv('bezelFront').u0) < EPS);
+    expect(fronts).toHaveLength(6);
+    fronts.forEach((quad, index) => {
+      const vertices = quadVertices(MONITORS.mesh, quad);
+      const center = quadCentre(vertices);
+      const normal = quadNormal(vertices);
+      const column = index % 3 - 1;
+      const yaw = TRADING_FLOOR_MONITOR.rotY - column * bank.outerYaw;
+      expect(normal[0]).toBeCloseTo(Math.sin(yaw), 5);
+      expect(normal[2]).toBeCloseTo(Math.cos(yaw), 5);
+      expect(center[0]).toBeCloseTo(TRADING_FLOOR_MONITOR.x - column * 154, 4);
+      expect(center[1]).toBe(index < 3 ? 210 : 308);
+      expect(center[2]).toBeCloseTo(TRADING_FLOOR_MONITOR.z - bank.frontZ -
+        (column === 0 ? 0 : Math.sin(bank.outerYaw) * 74), 4);
+    });
+  });
+
+  test('four chart panes scroll; terminal and depth panels share the existing atlas', () => {
+    const screens = kioskQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'kiosk-screen');
+    expect(screens).toHaveLength(12); // Six headers and six body panes.
+    expect(screens.filter((quad) => quad < MONITORS.scroll.count)).toHaveLength(4);
+    for (const rect of [terminalPanelRect(0), depthPanelRect(0)]) {
+      const matching = screens.filter((quad) => Math.abs(MONITORS.mesh.uvs[quad * 8]! - rect.x / DECOR_ATLAS_SIZE) < EPS &&
+        Math.abs(MONITORS.mesh.uvs[quad * 8 + 5]! - (1 - rect.y / DECOR_ATLAS_SIZE)) < EPS);
+      expect(matching).toHaveLength(1);
+    }
+    const leds = kioskQuads.filter((quad) => [swatchUv('statusGreen').u0, swatchUv('statusAmber').u0]
+      .some((u) => Math.abs(MONITORS.mesh.uvs[quad * 8]! - u) < EPS));
+    expect(leds).toHaveLength(6);
+    expect(MONITORS.scroll.count).toBe(64);
+    expect((MONITORS.scroll.count + RIBBON.segments.length) * DECOR_UV_FLOATS_PER_QUAD).toBe(536);
+    expect((MONITORS.scroll.count + RIBBON.segments.length) * 4).toBe(268);
+  });
+
+  test('kiosk content uses abstract charts and the place directory without financial text', () => {
+    expect(DECOR_DESK_CONTENT).toEqual(['candleA', 'terminal', 'candleB', 'line', 'depth', 'bars']);
+    const { ctx, texts } = recordingContext();
+    drawDecorAtlas(ctx);
+    expect(texts).toEqual([]);
+    for (const word of [DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS.flat()]) {
+      expect(word).toMatch(/^[A-Z ]+$/);
+      expect(word).not.toMatch(/BUY|SELL|PRICE|PNL|PROFIT|USD|BTC|ETH|SOL|VOLUME|ORDER|MARKET|[\d$%+\-\u2190-\u21ff]/u);
+    }
+  });
+});

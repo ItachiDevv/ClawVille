@@ -79,6 +79,25 @@
 - **Decided 2026-10-01 (founder):** hate slurs only, final; swear words and sexual words stay visible; no new terms are added. Recorded in `docs/trading-floor-arena.md` §8 P12. On prod since PR #306.
 - Session tradeDeskMain, 2026-10-01.
 
+### Trading Floor INTERIOR v5 part 2: bigger room, 10 desks, big Trading Monitor, ropes, flood + sea life (staging, 2026-10-02)
+- **What:** (1) the hall is 1.5x larger each way (3900 x 3300, higher ceiling) with 10 desks (5 per side wall; desks 0..5
+  keep their positions in the order, 6..9 are the new end desks); the board grew with it (2550 x 780) so its text stays as
+  sharp as before; (2) the **Trading Monitor** is now a large walnut-and-brass trading terminal with a 3 x 2 screen bank,
+  on the door wall LEFT of the door, facing into the room (the floor in front of the big screen is kept free for the five
+  house agents, the arena lead's P15 build); (3) brass stanchions with red velvet ropes round the plinth (your choice: it
+  stays blocked); (4) the shallow flood: a thin water sheet over the floor (clear near you, glossier further away) whose
+  ripples now FLOW from the door toward the big screen (your note "the water should flow"); a SEA FLOOR spread across the
+  open floor (your note "spread it out, not crammed in corners"): 86 low pieces (seaweed tufts, kelp, coral, starfish) in
+  singles and small clusters, the coral now standing UP (your note "the coral is on its side"); the seal letters, the house
+  agent stage, the desks, the kiosk and the door path stay clear; you walk through the plants; light algae at the bottom of
+  the desks and on the monitor stand bases.
+- **Where:** staging `https://staging.clawville.world/trading-floor`. Walk the room, sit at a new end desk (front or back of
+  a side wall), turn left near the door to see the Trading Monitor, watch the floor for the flowing ripples and the sea floor.
+- **Feedback wanted:** (1) room size: right, or still too small/big? (2) the Trading Monitor at the door wall: it is not in
+  the arrival view (you see it when you turn round); OK, or should it move? (3) the water: too pale / too strong, flow too fast / too slow? (4) the
+  sea floor amount (more, fewer, bigger?) and the algae strength (the algae is subtle: say if it should be stronger); (5) FPS on your laptop.
+- **Session:** coolerDesk3, 2026-10-02.
+
 ### Trading Floor INTERIOR v5 part 1: green claws, the desk sit, the camera, mouse drag (staging, 2026-10-01)
 - **Your v4 verdict is absorbed** (2026-10-01 ~19:20Z: "It honestly looks great ... You nailed the theme."): recorded in
   3dStructure.md §9i "Interior v5" and GameFeatures.md §17g.2. Your v5 asks, in two parts. Part 2 comes next: the room

@@ -33,13 +33,13 @@
  * THE LANE GEOMETRY IS NOT A TASTE DECISION. `TAPE_LANE_X` is bounded on BOTH
  * sides by things already in the room, and `trading-floor-trade-tape.test.ts`
  * pins both bounds by computing them:
- *   - OUTBOARD: the desk row's inner face (`TRADING_FLOOR_DESK_INNER_X`, 985).
+ *   - OUTBOARD: the desk row's inner face (`TRADING_FLOOR_DESK_INNER_X`, 1635).
  *     A chip may not reach it.
  *   - INBOARD: the big board must stay unoccluded FROM THE SPAWN. The chase
  *     camera at the spawn sits on the room's centre line at the back of its own
  *     Z clamp, so the ray through a chip's inner edge, continued to the board
  *     plane, must land outside the board's own x span. That is a projection,
- *     not a clearance: the innermost full-size corner projects by 1.088x.
+ *     not a clearance: the innermost full-size corner projects by 1.092x.
  * The tests derive the lane window with 10 wu desk and 15 wu board margins.
  * Height does not change this horizontal projection.
  */
@@ -72,23 +72,21 @@ export const TAPE_MAX_CHIPS = TAPE_LANES * TAPE_PER_LANE;
 export const ARENA_TAPE_LIMIT = 24;
 
 /** Lane centre, |x|. Bounded on both sides — see the header. */
-export const TAPE_LANE_X = 874;
+export const TAPE_LANE_X = 1311;
 /** Chip face, world units. 16:9 so one atlas cell maps 1:1 with no stretch. */
 export const TAPE_CHIP_WIDTH = 160;
 export const TAPE_CHIP_HEIGHT = 90;
 /**
- * Flight height, lowered 100 wu. The conservative lowest corner is 352.75.
- * Above the avatar (270), the desks (166), the dais (206) and
- * the kiosk (300), so a chip can never intersect a prop or a walking player no
- * matter where either is — the tape needs no XZ keep-out at all.
+ * Flight height clears the 360 wu kiosk by more than 50 wu at the lowest
+ * chip corner (412.75), including bob and the entry pop.
  */
-export const TAPE_Y = 420;
+export const TAPE_Y = 480;
 /** Where a chip enters (board end) and leaves (door end). */
-export const TAPE_Z_START = -900;
-export const TAPE_Z_END = 720;
+export const TAPE_Z_START = -1350;
+export const TAPE_Z_END = 1080;
 /**
- * A chip stops 200 wu short of the player's own door limit (920) and 368 wu
- * short of the camera's Z clamp (1088), so the tape never flies into the lens.
+ * A chip stops 390 wu short of the player's door approach (1470) and 558 wu
+ * short of the camera's Z clamp (1638), so the tape never flies into the lens.
  */
 export const TAPE_LIFETIME_MS = 18_000;
 

@@ -132,6 +132,7 @@ import { requestTradingFloorExit } from './trading-floor-exit-intent';
 import { TradingFloorScreen } from './trading-floor-screen';
 import { TradingFloorTradeTape } from './trading-floor-trade-tape-mesh';
 import { TradingFloorDecor } from './trading-floor-decor';
+import { TradingFloorWater } from './trading-floor-water';
 import {
   clampTradingFloorMovementSeated,
   computeTradingFloorArming,
@@ -156,6 +157,7 @@ import {
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_DOOR_APPROACH_Z,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   TRADING_FLOOR_PLAYER_SPAWN,
   TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
   TRADING_FLOOR_ROOM,
@@ -176,7 +178,7 @@ import {
  * v2 reached production on 2026-09-20. Serve the v5 bytes through a new query
  * because Cloudflare can keep the old path in its edge cache for one week.
  */
-const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=5';
+const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=6';
 
 // ---------------------------------------------------------------------------
 // Sit clips
@@ -271,11 +273,26 @@ const _yAxis = new THREE.Vector3(0, 1, 0);
 /** Frame scratch for the seated cushion pin. */
 const _hipScratch = new THREE.Vector3();
 
-/** Live interior position, exported for the stage probe / tests. */
-export const tradingFloorPlayerPositionRef: { x: number; z: number } = {
+/** Movement-collider centre and interaction state, published without allocation. */
+const _player = {
   x: TRADING_FLOOR_PLAYER_SPAWN.x,
   z: TRADING_FLOOR_PLAYER_SPAWN.z,
+  seated: false,
+  otherInteractionArmed: false,
 };
+
+/** Live movement-collider centre, including the stand point while seated. */
+export const tradingFloorPlayerPositionRef: { x: number; z: number } = _player;
+
+/** Arena reader: every call returns the same frame record. */
+export function readTradingFloorPlayer(): {
+  x: number;
+  z: number;
+  seated: boolean;
+  otherInteractionArmed: boolean;
+} {
+  return _player;
+}
 
 /**
  * Proximity state written by the player frame, read by the label components and
@@ -343,6 +360,8 @@ export function readTradingFloorProximity(): {
 function resetTradingFloorProximity(): void {
   resetTradingFloorArming(_arming);
   setTradingFloorSeatedIndex(-1);
+  _player.seated = false;
+  _player.otherInteractionArmed = false;
   _sitTravel = 0;
   _sitTravelSeat = -1;
   _cameraForwardZ = 0;
@@ -858,7 +877,7 @@ function ClickVolume({
 const MONITOR_CLICK_POSITION: [number, number, number] = [
   TRADING_FLOOR_MONITOR.x,
   TRADING_FLOOR_MONITOR.height / 2,
-  TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
 ];
 const MONITOR_CLICK_SIZE: [number, number, number] = [
   TRADING_FLOOR_MONITOR.halfX * 2 + 120,
@@ -1384,12 +1403,16 @@ function TradingFloorAvatarMotion({
     }
     computeTradingFloorArming(posX.current, posZ.current, _arming);
 
+    tradingFloorPlayerPositionRef.x = posX.current;
+    tradingFloorPlayerPositionRef.z = posZ.current;
+    _player.seated = _seatedIndex >= 0;
+    _player.otherInteractionArmed =
+      _arming.monitorArmed || _arming.doorArmed || _arming.seatArmedIndex >= 0;
+
     const travelSeat = _sitTravel > 0 ? TRADING_FLOOR_SEATS[_sitTravelSeat] : undefined;
     if (travelSeat) tradingFloorSeatedBodyPoint(travelSeat, _sitTravel, _bodyScratch);
     const bodyX = travelSeat ? _bodyScratch.x : posX.current;
     const bodyZ = travelSeat ? _bodyScratch.z : posZ.current;
-    tradingFloorPlayerPositionRef.x = bodyX;
-    tradingFloorPlayerPositionRef.z = bodyZ;
     const group = groupRef.current;
     if (group) {
       group.position.set(bodyX, baseY, bodyZ);
@@ -1918,6 +1941,8 @@ export default function TradingFloorInteriorScene({
       <TradingFloorScreen active={active} />
       <TradingFloorTradeTape active={active} />
       <TradingFloorDecor active={active} />
+      {/* Mounted before room readiness; the slot compile + direct warm sees it. */}
+      <TradingFloorWater active={active} />
       <TradingFloorHotspots />
       <TradingFloorLabels />
       {/* Mounted outside the room's tree so a cold VRM parse never delays the
