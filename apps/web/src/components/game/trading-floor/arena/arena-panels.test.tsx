@@ -35,7 +35,7 @@ import {
   positionExits,
   signedUsd,
 } from './arena-format';
-import { ADDON_WALLET_WARNING, ARENA_WALLET_NO_WITHDRAW } from './addon-picker';
+import { ADDON_WALLET_WARNING, ARENA_WALLET_FUNDING_NOTE } from './addon-picker';
 import { ARENA_GUEST_UPSELL } from './arena-kit';
 import { ArenaClosedTrades, arenaEventTone, unresolvedContestLoss } from './arena-parts';
 import { addonUnderfunded, deskStatus } from './my-trader';
@@ -514,25 +514,31 @@ describe('Paper arena and live traders are named apart (prod verify b8d52ab6, fi
   });
 });
 
-describe('Agent wallet: no withdrawal disclosure (audit-money M3)', () => {
+describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-money M3 no-withdraw note)', () => {
   const WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
-  const NO_WITHDRAW =
-    "Send only USDC on Solana. You cannot withdraw USDC from this wallet in ClawVille, so send only what your add-ons will spend (at most $5 a day).";
+  const FUNDING =
+    'Send only USDC or SOL on Solana to this wallet. Keep at least 0.01 SOL in it, because each withdrawal pays its ' +
+    'network fee in SOL. You can withdraw to an address that you prove is yours. Add-ons spend at most $5 a day from it.';
 
   test('the text is the agreed wording and the $5 comes from the shared cap', () => {
-    expect(ARENA_WALLET_NO_WITHDRAW).toBe(NO_WITHDRAW);
+    expect(ARENA_WALLET_FUNDING_NOTE).toBe(FUNDING);
+    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).not.toContain('cannot withdraw');
   });
 
-  test('the desk panel shows it under the wallet address', async () => {
+  test('the desk panel shows it under the wallet address, and the old test id is gone', async () => {
     meBody = { ...myAgentBody({ paymentAddress: WALLET, provisionState: 'ready' }), paymentAddress: WALLET, provision: { state: 'ready', error: null } };
     useFloorArenaUi.setState({ panel: 'desk' });
     const host = await render();
-    const note = host.querySelector('[data-testid="arena-wallet-no-withdraw"]');
-    expect(note?.textContent).toBe(NO_WITHDRAW);
+    expect(host.querySelector('[data-testid="arena-wallet-no-withdraw"]')).toBeNull();
+    const note = host.querySelector('[data-testid="arena-wallet-funding-note"]');
+    expect(note?.textContent).toBe(FUNDING);
     // Both warnings sit in the same block as the address the player copies.
     const block = note?.closest('section') as HTMLElement;
     expect((block.querySelector('input') as HTMLInputElement | null)?.value).toBe(WALLET);
     expect(block.textContent).toContain(ADDON_WALLET_WARNING);
+    // The same Wallet block holds the SOL line and the withdraw panel.
+    expect(block.textContent).toContain('SOL in the wallet: ');
+    expect(block.querySelector('[data-testid="arena-withdraw"]')).not.toBeNull();
   });
 
   test('the launch success screen shows it under the wallet address', async () => {
@@ -541,7 +547,8 @@ describe('Agent wallet: no withdrawal disclosure (audit-money M3)', () => {
     const host = await render();
     const success = host.querySelector('[data-testid="arena-launch-success"]') as HTMLElement;
     expect(success).not.toBeNull();
-    expect(success.querySelector('[data-testid="arena-wallet-no-withdraw"]')?.textContent).toBe(NO_WITHDRAW);
+    expect(success.querySelector('[data-testid="arena-wallet-funding-note"]')?.textContent).toBe(FUNDING);
+    expect(success.querySelector('[data-testid="arena-wallet-no-withdraw"]')).toBeNull();
     expect(success.textContent).toContain(ADDON_WALLET_WARNING);
   });
 
@@ -555,14 +562,21 @@ describe('Agent wallet: no withdrawal disclosure (audit-money M3)', () => {
     await click(buttonByText(host, 'Next'));
     const picker = host.querySelector('[data-testid="arena-addon-picker"]') as HTMLElement;
     expect(picker).not.toBeNull();
-    expect(picker.textContent).toContain(NO_WITHDRAW);
+    expect(picker.textContent).toContain(FUNDING);
     expect(picker.textContent).toContain(ADDON_WALLET_WARNING);
-    // The wording the lead asked for: Solana USDC only, only for this agent's
-    // add-ons, no way back out, and no refund of spend.
+    // Solana USDC or SOL only, the SOL fee rule, a proved address to withdraw
+    // to, only this agent's add-ons, and no refund of spend.
     const lower = picker.textContent!.toLowerCase();
-    for (const phrase of ['usdc on solana', 'only for its own paid data add-ons', 'cannot withdraw', 'does not refund']) {
+    for (const phrase of [
+      'usdc or sol on solana',
+      'keep at least 0.01 sol',
+      'withdraw to an address that you prove is yours',
+      'only for its own paid data add-ons',
+      'does not refund',
+    ]) {
       expect({ phrase, present: lower.includes(phrase) }).toEqual({ phrase, present: true });
     }
+    expect(lower).not.toContain('cannot withdraw');
   });
 
   test('saving rules says that open positions keep their exits (audit-contest W-2)', async () => {
@@ -576,11 +590,12 @@ describe('Agent wallet: no withdrawal disclosure (audit-money M3)', () => {
     );
   });
 
-  test('no address yet means no wallet text at all', async () => {
+  test('no address yet means no wallet text and no withdraw panel', async () => {
     meBody = myAgentBody();
     useFloorArenaUi.setState({ panel: 'desk' });
     const host = await render();
-    expect(host.querySelector('[data-testid="arena-wallet-no-withdraw"]')).toBeNull();
+    expect(host.querySelector('[data-testid="arena-wallet-funding-note"]')).toBeNull();
+    expect(host.querySelector('[data-testid="arena-withdraw"]')).toBeNull();
   });
 });
 

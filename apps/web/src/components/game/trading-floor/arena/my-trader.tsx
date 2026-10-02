@@ -54,6 +54,7 @@ import {
   useArenaNow,
 } from './arena-kit';
 import { ArenaParamsForm } from './arena-params-form';
+import { ArenaWalletSolLine, ArenaWithdrawPanel } from './withdraw-panel';
 
 export type DeskStatus = 'trading' | 'waiting' | 'paused' | 'stopped';
 
@@ -487,6 +488,8 @@ export function MyTrader({
             <ArenaMuted size={11}>
               USDC in the wallet: {me.walletUsdc === null ? 'not known right now' : `$${me.walletUsdc.toFixed(2)}`}
             </ArenaMuted>
+            <ArenaWalletSolLine />
+            <ArenaWithdrawPanel compact={compact} />
           </>
         ) : me.provisionState === 'failed' ? (
           <ArenaMuted>
