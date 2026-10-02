@@ -4,8 +4,10 @@ import { Hono } from 'hono';
 // Security C5 (batch 2): the POST /api/agent/connect response carries the row's
 // learned `knowledge` (owner-private once the row is bound). It now follows the
 // GET /:sessionId/knowledge rule: an unbound row's knowledge is returned as
-// before, a bound row's knowledge only to a session that passes
-// `sessionLedgerCapable` against the persisted owner, else `knowledge: []`.
+// before, a bound row's knowledge only to a session whose proven `boundUserId`
+// equals the persisted owner (connect-sec's use-time owner proof; the ledger
+// flag is NOT needed, so an owner-proven avatarless session still gets it),
+// else `knowledge: []`.
 // The harness mirrors `agent-connect-owner-credential.test.ts` (real route,
 // fake DB, mocked identity/wallet/ticket/event services).
 
@@ -14,8 +16,11 @@ process.env.FINGERPRINT_SECRET ??= '45'.repeat(32);
 const OWNER_ID = '91111111-1111-4111-8111-111111111111';
 const AVATAR_ID = '92222222-2222-4222-8222-222222222222';
 const BOT_ID = '93333333-3333-4333-8333-333333333333';
+const OTHER_ID = '94444444-4444-4444-8444-444444444444';
 const ROW_KNOWLEDGE = ['row lesson one', 'row lesson two'];
 
+/** The user an explicit identityKey resolves to. */
+let identityUserId = OWNER_ID;
 let botRow: Record<string, unknown> | null = null;
 let updateReturns: () => unknown[] = () => [];
 /** False models an owner with no avatar whose onboarding provisioning fails. */
@@ -87,7 +92,7 @@ const realIdentity = await import('../../services/identity-service');
 restoreModules.push(['../../services/identity-service', { ...realIdentity }]);
 mock.module('../../services/identity-service', () => ({
   ...realIdentity,
-  resolvePublicOnboardingIdentity: async (identityType: string) => ({ user: { id: OWNER_ID }, identityType }),
+  resolvePublicOnboardingIdentity: async (identityType: string) => ({ user: { id: identityUserId }, identityType }),
   resolveOrCreateUserByIdentity: async () => ({
     id: OWNER_ID, email: null, name: 'Owner', identityFingerprint: 'fingerprint', isNewUser: false,
   }),
@@ -190,6 +195,7 @@ beforeEach(() => {
   botRow = null;
   updateReturns = () => [];
   avatarPresent = true;
+  identityUserId = OWNER_ID;
   __resetAgentOwnerFenceForTests();
 });
 
@@ -220,7 +226,7 @@ describe('POST /api/agent/connect response knowledge (security C5)', () => {
     expect(result.json.knowledge).toEqual(ROW_KNOWLEDGE);
   });
 
-  test('an owner-proven but non-ledger session (no avatar) receives an empty knowledge array', async () => {
+  test('an owner-proven but non-ledger session (no avatar) still receives its own row knowledge', async () => {
     avatarPresent = false;
     botRow = row('knowledge-avatarless-agent', OWNER_ID);
     updateReturns = () => [{ userId: OWNER_ID }];
@@ -231,6 +237,32 @@ describe('POST /api/agent/connect response knowledge (security C5)', () => {
     });
     expect(result.status).toBe(200);
     expect(typeof result.json.sessionId).toBe('string');
+    // Owner proof (boundUserId === row owner) is enough; the ledger flag is not needed.
+    const session = npcSimulation.getAgentBotConfig(result.json.sessionId as string);
+    expect(session?.ledgerCapable).toBe(false);
+    expect(session?.boundUserId).toBe(OWNER_ID);
+    expect(result.json.knowledge).toEqual(ROW_KNOWLEDGE);
+  });
+
+  test('a session without owner proof on an owned row receives an empty knowledge array', async () => {
+    // Response-time gate (defense in depth). The identityKey resolves to OTHER,
+    // the claim UPDATE loses (row owned by OWNER), and the fake DB lets the
+    // metadata refresh through so the route reaches the response: the session
+    // is not owner-proven (boundUserId null), the persisted owner is OWNER.
+    // With a consistent DB the refresh CAS also loses and the route answers 409
+    // before this point; the gate must still withhold the owner's lessons.
+    identityUserId = OTHER_ID;
+    botRow = row('knowledge-unproven-agent', OWNER_ID);
+    let updates = 0;
+    updateReturns = () => (++updates === 1 ? [] : [{ userId: OWNER_ID }]);
+    const result = await connect({
+      agentId: 'knowledge-unproven-agent',
+      identityType: 'custom',
+      identityKey: 'other-identity-secret',
+    });
+    expect(result.status).toBe(200);
+    const session = npcSimulation.getAgentBotConfig(result.json.sessionId as string);
+    expect(session?.boundUserId ?? null).toBeNull();
     // The shape stays an array; the owned row's lessons are withheld.
     expect(result.json.knowledge).toEqual([]);
     expect(JSON.stringify(result.json)).not.toContain('row lesson');
