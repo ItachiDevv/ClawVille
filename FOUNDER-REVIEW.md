@@ -85,14 +85,17 @@
   sharp as before; (2) the **Trading Monitor** is now a large walnut-and-brass trading terminal with a 3 x 2 screen bank,
   on the door wall LEFT of the door, facing into the room (the floor in front of the big screen is kept free for the five
   house agents, the arena lead's P15 build); (3) brass stanchions with red velvet ropes round the plinth (your choice: it
-  stays blocked); (4) the shallow flood: a thin water sheet over the floor (clear near you, glossier further away, slow
-  ripples); a few coral + seaweed clusters along the side walls between the desks; starfish inside the rope ring, along the
-  walls and one on a desk; light algae at the bottom of the desks and on the monitor stand bases.
+  stays blocked); (4) the shallow flood: a thin water sheet over the floor (clear near you, glossier further away) whose
+  ripples now FLOW from the door toward the big screen (your note "the water should flow"); a SEA FLOOR spread across the
+  open floor (your note "spread it out, not crammed in corners"): 86 low pieces (seaweed tufts, kelp, coral, starfish) in
+  singles and small clusters, the coral now standing UP (your note "the coral is on its side"); the seal letters, the house
+  agent stage, the desks, the kiosk and the door path stay clear; you walk through the plants; light algae at the bottom of
+  the desks and on the monitor stand bases.
 - **Where:** staging `https://staging.clawville.world/trading-floor`. Walk the room, sit at a new end desk (front or back of
-  a side wall), turn left near the door to see the Trading Monitor, look along the side walls for the coral.
+  a side wall), turn left near the door to see the Trading Monitor, watch the floor for the flowing ripples and the sea floor.
 - **Feedback wanted:** (1) room size: right, or still too small/big? (2) the Trading Monitor at the door wall: it is not in
-  the arrival view (you see it when you turn round); OK, or should it move? (3) the water: too pale / too strong? (4) the
-  coral/starfish amount and the algae strength (the algae is subtle: say if it should be stronger); (5) FPS on your laptop.
+  the arrival view (you see it when you turn round); OK, or should it move? (3) the water: too pale / too strong, flow too fast / too slow? (4) the
+  sea floor amount (more, fewer, bigger?) and the algae strength (the algae is subtle: say if it should be stronger); (5) FPS on your laptop.
 - **Session:** coolerDesk3, 2026-10-02.
 
 ### Trading Floor INTERIOR v5 part 1: green claws, the desk sit, the camera, mouse drag (staging, 2026-10-01)
