@@ -149,22 +149,33 @@ describe('open-agent onboarding manuals', () => {
     expect(party).toMatch(/closes with code 4001 and the reason\s+`agent_session_not_ledger_authorized`/);
     expect(party).toMatch(/Both recover with the signed\s+`\/reconnect` \(or a reconnect with your identityKey\)\./);
     expect(party).not.toMatch(/restored, or otherwise unproven session receives/);
-    expect(
-      townGuide.knowledge.some(
-        (entry) =>
-          entry.startsWith('Party play works') &&
-          entry.includes('403 "Agent session is not bound to an active avatar"') &&
-          entry.includes('403 agent_session_not_ledger_authorized'),
-      ),
-    ).toBe(true);
-    expect(
-      DECISION_SCOPE.some(
-        (line) =>
-          line.includes('activity queue, party and match WebSocket') &&
-          line.includes('403 "Agent session is not bound to an active avatar"') &&
-          line.includes('agent_session_not_ledger_authorized'),
-      ),
-    ).toBe(true);
+    // Batch-2 fix wave: only a PUBLIC/BYO restored session is non-ledger (a restored
+    // Hatcher session keeps ledgerCapable), and a guest-owned agent never recovers.
+    expect(party).toMatch(/a public or BYO session restored after a deploy/);
+    expect(party).toMatch(/restored Hatcher\s+session stays ledger-capable/);
+    expect(party).toMatch(/guest-owned agent is the\s+exception: it stays non-ledger/);
+    expect(party).not.toMatch(/\(one restored after a deploy/);
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Party play works'));
+    expect(nori).toBeDefined();
+    expect(nori).toContain('403 "Agent session is not bound to an active avatar"');
+    expect(nori).toContain('403 agent_session_not_ledger_authorized');
+    // The match socket refuses with a 4001 close, never an HTTP 403.
+    expect(nori).toContain('the match WebSocket closes 4001 invalid session');
+    expect(nori).toContain('the match WebSocket closes 4001 agent_session_not_ledger_authorized');
+    expect(nori).toContain('a public or BYO session restored after a deploy');
+    expect(nori).toContain('except a guest-owned agent, which stays non-ledger');
+    const scope = DECISION_SCOPE.find((line) => line.includes('activity queue, party and match WebSocket'));
+    expect(scope).toBeDefined();
+    expect(scope).toContain('403 "Agent session is not bound to an active avatar"');
+    expect(scope).toContain('agent_session_not_ledger_authorized');
+    expect(scope).toContain('the match WebSocket closes 4001 invalid session');
+    expect(scope).toContain('the match WebSocket closes 4001 agent_session_not_ledger_authorized');
+    expect(scope).toContain('a public or BYO session restored after a deploy');
+    expect(scope).toContain('except a guest-owned agent, which stays non-ledger');
+    // A8/A13/A14 routes the v81 note calls agent-visible are named on the decide path.
+    expect(scope).toContain('buying vCLAW (/api/ct/topup quote + settle)');
+    expect(scope).toContain('a MoonPay funding URL (/api/moonpay/widget-url)');
+    expect(scope).toContain('partner storefront buys');
   });
 
   test('v81: the value-route paragraph names both exact refusals', () => {
@@ -176,6 +187,23 @@ describe('open-agent onboarding manuals', () => {
     expect(para).toMatch(/owner-proven\s+session that is not ledger-capable[\s\S]*`agent_session_not_ledger_authorized`/);
     expect(para).toMatch(/Both recover with the signed `\/reconnect`/);
     expect(para).not.toMatch(/restored, or\s+otherwise unproven session receives/);
+    // Batch-2 fix wave: the paragraph names every A8/A13/A14 route, qualifies the
+    // restored session as public/BYO, and says a guest-owned agent never recovers.
+    expect(para).toMatch(/buying\s+vCLAW with USDC \(the top-up quote \+ settle routes\)/);
+    expect(para).toMatch(/a MoonPay funding URL\s+\(`\/api\/moonpay\/widget-url`\)/);
+    expect(para).toMatch(/partner storefront buys/);
+    expect(para).toMatch(/a public or BYO session restored after a\s+deploy/);
+    expect(para).toMatch(/restored\s+Hatcher session stays ledger-capable/);
+    expect(para).toMatch(/except a guest-owned agent: it stays non-ledger, and no reconnect changes that/);
+    expect(para).not.toMatch(/\(one restored after a deploy/);
+  });
+
+  test('batch-2 fix wave: export recovery names the guest-owned exception', () => {
+    const manual = buildProtocolManual(API_BASE);
+    const at = manual.indexOf('### Owner-private knowledge and exports');
+    expect(at).toBeGreaterThan(-1);
+    const section = manual.slice(at, manual.indexOf('## 5. Stay alive', at));
+    expect(section).toMatch(/to regain access; a guest-owned agent stays non-ledger and cannot\./);
   });
 
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
