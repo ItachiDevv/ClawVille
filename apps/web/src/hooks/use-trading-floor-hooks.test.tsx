@@ -142,6 +142,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  // Real timers BEFORE cancelQueries: a query still in flight under fake timers
+  // can wait on a timer that never fires, so the hook timed out on CI (2026-10-02).
+  jest.useRealTimers();
   await act(async () => {
     for (const client of queryClients) {
       await client.cancelQueries();
