@@ -972,6 +972,70 @@ brassGeos.push(...group('door portal', null, () => [
 brassGeos.push(group('plinth plaque', 'front protrudes 2 wu beyond the dais collider face z=286; plate is 3 wu deep', () =>
   boxGeo(0,16,DAIS_POS[2]+346.5,260,24,3)));
 
+// Frozen R3 rope ring: static geometry shares the existing BRASS and TRIM draws.
+function buildRopeRing() {
+  const halfX = 470, halfZ = 466, attachY = 134, sag = 28;
+  const radius = 4, sides = 6, segments = 12, rgb = [.20, .010, .016];
+  const corners = [[-halfX,-halfZ],[halfX,-halfZ],[halfX,halfZ],[-halfX,halfZ]];
+  const posts = corners.flatMap((a, edge) => {
+    const b = corners[(edge + 1) % 4];
+    return [0,1,2].map((i) => ({
+      x: DAIS_POS[0] + a[0] + (b[0] - a[0]) * i / 3,
+      z: DAIS_POS[2] + a[1] + (b[1] - a[1]) * i / 3,
+    }));
+  });
+  function ropeTubeGeo(a, b) {
+    const dx = b.x - a.x, dz = b.z - a.z, length = Math.hypot(dx, dz);
+    const ux = dx / length, uz = dz / length;
+    const pos = [], nrm = [], idx = [], col = [];
+    for (let i = 0; i <= segments; i++) {
+      const s = i / segments, y = attachY - sag * 4 * s * (1 - s);
+      const slope = -4 * sag * (1 - 2 * s) / length;
+      const norm = Math.hypot(1, slope);
+      for (let j = 0; j < sides; j++) {
+        const angle = j / sides * Math.PI * 2, c = Math.cos(angle), sn = Math.sin(angle);
+        const n = [-ux * slope / norm * c + uz * sn, c / norm,
+          -uz * slope / norm * c - ux * sn];
+        pos.push(a.x + dx * s + radius * n[0], y + radius * n[1],
+          a.z + dz * s + radius * n[2]);
+        nrm.push(...n);
+        const shade = .55 + .45 * Math.max(0, n[1]);
+        col.push(...rgb.map((v) => v * shade));
+      }
+    }
+    for (let i = 0; i < segments; i++) for (let j = 0; j < sides; j++) {
+      const a = i * sides + j, b = (i + 1) * sides + j;
+      const c = (i + 1) * sides + (j + 1) % sides, d = i * sides + (j + 1) % sides;
+      idx.push(a, b, c, a, c, d);
+    }
+    boxRegistry.push({ group: currentGroup.name, exempt: currentGroup.exempt,
+      min: [0,1,2].map((axis) => Math.min(...pos.filter((_, i) => i % 3 === axis))),
+      max: [0,1,2].map((axis) => Math.max(...pos.filter((_, i) => i % 3 === axis))) });
+    return { pos, nrm, idx, col, uv: null };
+  }
+  const firstBox = boxRegistry.length;
+  const geometry = group('rope ring', 'inside the rope collider in TRADING_FLOOR_SOLIDS', () => ({
+    brass: posts.flatMap(({x,z}) => [
+      cylinderGeo(x, 3, z, 20, 6, 8),
+      cylinderGeo(x, 73, z, 5, 134, 8),
+      cylinderGeo(x, 146, z, 9, 12, 8),
+    ]),
+    trim: posts.map((a, i) => ropeTubeGeo(a, posts[(i + 1) % posts.length])),
+  }));
+  for (const b of boxRegistry.slice(firstBox)) {
+    if (b.min[0] < DAIS_POS[0] - 492 || b.max[0] > DAIS_POS[0] + 492 ||
+        b.min[2] < DAIS_POS[2] - 488 || b.max[2] > DAIS_POS[2] + 488)
+      throw new Error('rope ring emitter exceeds the movement collider');
+    if (b.min[0] < 1300 && b.max[0] > -1300 && b.min[2] < -1100 && b.max[2] > -1470)
+      throw new Error('rope ring emitter enters the frozen P15 house-agent stage');
+  }
+  console.log(`  rope ring: ${posts.length} posts, ${posts.length} spans; 48 registered bounds; seal clear 128 wu`);
+  return { ...geometry, extras: { x: DAIS_POS[0], z: DAIS_POS[2], halfX, halfZ, posts,
+    post: { baseRadius: 20, baseY: [0,6], poleRadius: 5, poleY: [6,140],
+      finialRadius: 9, finialY: [140,152], sides: 8 },
+    attachY, sag, lowestY: attachY - sag, radius, sides, segments, color: rgb } };
+}
+
 const plinthTiers = [[0,350,346,32,65],[32,330,210,18,55],[50,310,160,20,35]];
 addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOOR_SOLIDS', () =>
   // Recess the upper 5 wu by 1.5 wu. The lower faces retain the exact footprint.
@@ -981,6 +1045,9 @@ addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOO
     octagonGeo(DAIS_POS[0], y+h-5, DAIS_POS[2], x-1.5, z-1.5, 5,
       c-(2-Math.SQRT2)*1.5, 180),
   ]))), GRANITE);
+
+const ropeRing = buildRopeRing();
+brassGeos.push(...ropeRing.brass);
 
 addMesh('TradingFloorIdentity', mergeGeos([
   group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 570, 900, 96, true)),
@@ -992,6 +1059,7 @@ addMesh('TradingFloorIdentity', mergeGeos([
 addMesh(
   'TradingFloorTrimGlow',
   group('trim', null, () => mergeGeos([
+    ...ropeRing.trim,
     // 2.5 wu warm-gold bands stand 0.75 wu proud of the recessed granite faces,
     // below the brass rims and 0.75 wu inside the original collider footprint.
     ...group('plinth glow', 'inside TradingFloorHoloDais collider; faces recessed 1.5 wu, glow inset 0.75 wu', () =>
@@ -1393,6 +1461,7 @@ scene.setExtras({
     height: Number((kiosk.maxY - kiosk.minY).toFixed(2)),
   },
   room: { halfX: hx, halfZ: hz, height: RH },
+  ropeRing: ropeRing.extras,
   statue: {top:Math.max(...clawBounds.map((b)=>b.max[1])),claws:clawBounds},
 });
 console.log(`  extras: screen ${SCREEN_W}x${SCREEN_H}@${SCREEN_BOTTOM_Y} | kiosk half ${scene.getExtras().kiosk.halfX}/${scene.getExtras().kiosk.halfZ} h${scene.getExtras().kiosk.height} | room ${hx}/${hz}/${RH}`);

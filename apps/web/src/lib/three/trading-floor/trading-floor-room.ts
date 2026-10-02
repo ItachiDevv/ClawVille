@@ -713,7 +713,7 @@ export const TRADING_FLOOR_DESK_SOLIDS: readonly TradingFloorAABB[] = Object.fre
 /** TradingFloorHoloDais: node (0, -90), 700 x 692 footprint. */
 export const TRADING_FLOOR_DAIS_SOLID: TradingFloorAABB = Object.freeze({
   centerX: TRADING_FLOOR_DAIS.x, centerZ: TRADING_FLOOR_DAIS.z,
-  halfX: TRADING_FLOOR_DAIS.halfX, halfZ: TRADING_FLOOR_DAIS.halfZ,
+  halfX: 492, halfZ: 488,
 });
 export const TRADING_FLOOR_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
   centerX: TRADING_FLOOR_MONITOR.x, centerZ: TRADING_FLOOR_MONITOR.z,

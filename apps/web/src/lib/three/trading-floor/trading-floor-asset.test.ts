@@ -175,6 +175,7 @@ describe('Trading Floor asset — the published contract in scene extras', () =>
       'contract',
       'kiosk',
       'room',
+      'ropeRing',
       'screen',
       'statue',
     ]);
@@ -502,7 +503,8 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
       clawCounts[index]!++;
     }
     expect(clawCounts.every((count) => count > 2000 && count <= 2250)).toBe(true);
-    expect(vertices.length + claws.vertices.length).toBeLessThanOrEqual(5500);
+    // R3: 5,500 -> 6,536; 36 capped cylinders add exactly 1,152 indexed vertices.
+    expect(vertices.length + claws.vertices.length).toBeLessThanOrEqual(6536);
     console.log(`indexed brass vertices ${vertices.length}; claw vertices ${clawCounts.join('/')} (total ${claws.vertices.length})`);
   });
 
@@ -808,8 +810,9 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
     expect(new Set(vertices.map(({ color }) => color!.join(','))).size).toBeGreaterThan(1);
     const brass = await assetVertices('TradingFloorBrass');
     const claws = await assetVertices('TradingFloorClaws');
-    expect(brass.vertices.length + claws.vertices.length).toBeLessThanOrEqual(5500);
-    expect((brass.primitive.getIndices()!.getCount() + claws.primitive.getIndices()!.getCount()) / 3).toBe(6088);
+    // R3: 5,500 -> 6,536 vertices; 6,088 -> 7,096 triangles (+1,008 post triangles).
+    expect(brass.vertices.length + claws.vertices.length).toBeLessThanOrEqual(6536);
+    expect((brass.primitive.getIndices()!.getCount() + claws.primitive.getIndices()!.getCount()) / 3).toBe(7096);
     // An un-welded build retains 16,536 vertices, one per triangle corner.
     expect(claws.vertices).toHaveLength(4280);
     expect(new Set(claws.vertices.map(({ n }) => n.join(','))).size).toBeGreaterThan(1);
@@ -924,8 +927,11 @@ describe('Trading Floor asset — the holo dais matches its collider', () => {
         candidate.halfX > 300,
     );
     expect(solid).toBeDefined();
-    expect(Math.abs(solid!.halfX - half.x)).toBeLessThan(TOL);
-    expect(Math.abs(solid!.halfZ - half.z)).toBeLessThan(TOL);
+    // R3 grows only the movement collider; the physical plinth retains its footprint.
+    expect(Math.abs(TRADING_FLOOR_DAIS.halfX - half.x)).toBeLessThan(TOL);
+    expect(Math.abs(TRADING_FLOOR_DAIS.halfZ - half.z)).toBeLessThan(TOL);
+    expect(solid!.halfX).toBeGreaterThanOrEqual(half.x);
+    expect(solid!.halfZ).toBeGreaterThanOrEqual(half.z);
   });
 
   test('both measured claws clear the board from spawn and default-height reachable poses', async () => {
@@ -1256,4 +1262,132 @@ test('the house-agent stage has no GLB prop or shell-detail geometry', async () 
     }
   }
   expect(failures).toEqual([]);
+});
+
+describe('Trading Floor asset - frozen R3 rope ring', () => {
+  const ring = (extras as GltfSceneExtras & { ropeRing: {
+    x: number; z: number; halfX: number; halfZ: number;
+    posts: { x: number; z: number }[];
+    post: { baseRadius: number; baseY: number[]; poleRadius: number; poleY: number[];
+      finialRadius: number; finialY: number[]; sides: number };
+    attachY: number; sag: number; lowestY: number; radius: number;
+    sides: number; segments: number; color: number[];
+  } }).ropeRing;
+
+  test('compression retains all twelve equally spaced posts and the frozen rope recipe', () => {
+    expect(ring).toBeDefined();
+    expect([ring.x, ring.z, ring.halfX, ring.halfZ]).toEqual([0, -90, 470, 466]);
+    expect([ring.attachY, ring.sag, ring.lowestY, ring.radius, ring.sides, ring.segments])
+      .toEqual([134, 28, 106, 4, 6, 12]);
+    expect(ring.color).toEqual([.20, .010, .016]);
+    expect(ring.post).toEqual({ baseRadius: 20, baseY: [0,6], poleRadius: 5,
+      poleY: [6,140], finialRadius: 9, finialY: [140,152], sides: 8 });
+    expect(ring.posts).toHaveLength(12);
+    expect(new Set(ring.posts.map(({x,z}) => `${x},${z}`)).size).toBe(12);
+    const corners = [[-470,-556],[470,-556],[470,376],[-470,376]];
+    for (let edge = 0; edge < 4; edge++) for (let i = 0; i < 3; i++) {
+      const a = corners[edge]!, b = corners[(edge + 1) % 4]!, post = ring.posts[edge * 3 + i]!;
+      expect(post.x).toBeCloseTo(a[0]! + (b[0]! - a[0]!) * i / 3, 8);
+      expect(post.z).toBeCloseTo(a[1]! + (b[1]! - a[1]!) * i / 3, 8);
+    }
+  });
+
+  test('decoded posts stay inside the collider and leave 128 wu before the seal text', async () => {
+    const solid = TRADING_FLOOR_SOLIDS.find((s) => s.centerX === 0 && s.centerZ === -90)!;
+    expect(solid).toEqual({ centerX: 0, centerZ: -90, halfX: 492, halfZ: 488 });
+    const { vertices } = await assetVertices('TradingFloorBrass');
+    for (const post of ring.posts) {
+      // 14-bit room-wide position quantization measures up to .1071 wu error here.
+      const points = vertices.filter(({p}) => Math.abs(p[0] - post.x) <= 20.13 &&
+        Math.abs(p[2] - post.z) <= 20.13 && p[1] <= 152.13);
+      expect(points).toHaveLength(96);
+      for (const {p} of points) {
+        expect(Math.abs(p[0] - solid.centerX)).toBeLessThan(solid.halfX);
+        expect(Math.abs(p[2] - solid.centerZ)).toBeLessThan(solid.halfZ);
+        expect(p[2]).toBeLessThan(524);
+      }
+      for (const y of [0,6,140,152])
+        expect(Math.min(...points.map(({p}) => Math.abs(p[1] - y)))).toBeLessThan(.13);
+    }
+    expect(524 - (ring.z + ring.halfZ + ring.post.baseRadius)).toBe(128);
+    expect(ring.z - ring.halfZ - ring.post.baseRadius).toBeGreaterThan(-1100);
+  });
+
+  test('decoded velvet tubes preserve endpoints, sag, shaded red and outward triangles', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorTrimGlow');
+    const ropes = vertices.filter(({color}) => color && color[0]! > .10 && color[0]! < .21 && color[1]! < .02);
+    expect(ropes).toHaveLength(936);
+    expect(primitive.getMaterial()!.getExtension('KHR_materials_unlit')).toBeTruthy();
+    // Unlit compression removes NORMAL. Recover the radial normal from the nearest centreline point.
+    const surfaceNormal = (p: Point): Point => {
+      let best = Infinity, radial: Point = [0,0,0];
+      for (let span = 0; span < 12; span++) {
+        const a = ring.posts[span]!, b = ring.posts[(span + 1) % 12]!;
+        const dx = b.x - a.x, dz = b.z - a.z, lengthSq = dx * dx + dz * dz;
+        let s = Math.max(0,Math.min(1,((p[0] - a.x) * dx + (p[2] - a.z) * dz) / lengthSq));
+        for (let i = 0; i < 5; i++) {
+          const dy = -4 * ring.sag * (1 - 2 * s), oy = p[1] - ring.attachY + 4 * ring.sag * s * (1 - s);
+          const dot = (p[0] - a.x - dx * s) * dx + oy * dy + (p[2] - a.z - dz * s) * dz;
+          s = Math.max(0,Math.min(1,s + dot / (lengthSq + dy * dy - oy * 8 * ring.sag)));
+        }
+        const offset: Point = [p[0] - a.x - dx * s,
+          p[1] - ring.attachY + 4 * ring.sag * s * (1 - s), p[2] - a.z - dz * s];
+        const distance = Math.hypot(...offset);
+        if (distance < best) { best = distance; radial = offset.map((v) => v / distance) as Point; }
+      }
+      return radial;
+    };
+    for (const {p,color} of ropes) {
+      expect(p[1]).toBeGreaterThanOrEqual(102 - .13);
+      expect(p[1]).toBeLessThanOrEqual(138 + .13);
+      expect(p[2]).toBeLessThan(524);
+    }
+    for (let span = 0; span < 12; span++) {
+      const a = ring.posts[span]!, b = ring.posts[(span + 1) % 12]!;
+      const dx = b.x - a.x, dz = b.z - a.z, length = Math.hypot(dx,dz);
+      for (let segment = 0; segment <= 12; segment++) {
+        const s = segment / 12;
+        const x = a.x + (b.x - a.x) * s, z = a.z + (b.z - a.z) * s;
+        const y = ring.attachY - ring.sag * 4 * s * (1 - s);
+        const slope = -112 * (1 - 2 * s) / length, norm = Math.hypot(1,slope);
+        for (let side = 0; side < 6; side++) {
+          const angle = side / 6 * 2 * Math.PI, c = Math.cos(angle), sn = Math.sin(angle);
+          const n: Point = [-dx / length * slope / norm * c + dz / length * sn,
+            c / norm, -dz / length * slope / norm * c - dx / length * sn];
+          const expected: Point = [x + 4 * n[0],y + 4 * n[1],z + 4 * n[2]];
+          const nearest = ropes.reduce((best,v) =>
+            Math.hypot(...v.p.map((p,i) => p - expected[i]!)) <
+              Math.hypot(...best.p.map((p,i) => p - expected[i]!)) ? v : best);
+          // A .13 wu per-axis position tolerance permits .21 wu Euclidean error.
+          expect(Math.hypot(...nearest.p.map((p,i) => p - expected[i]!))).toBeLessThan(.21);
+          const shade = .55 + .45 * Math.max(0,n[1]);
+          ring.color.forEach((v,i) => expect(Math.abs(nearest.color![i]! - v * shade)).toBeLessThan(.003));
+        }
+      }
+    }
+    const indices = primitive.getIndices()!.getArray()!;
+    let ropeTriangles = 0, inversions = 0;
+    for (let i = 0; i < indices.length; i += 3) {
+      const points = [0,1,2].map((j) => vertices[indices[i + j]!]!);
+      if (!points.every(({color}) => color && color[0]! > .10 && color[0]! < .21 && color[1]! < .02)) continue;
+      ropeTriangles++;
+      const [a,b,c] = points.map(({p}) => p) as [Point,Point,Point];
+      const u = b.map((v,j) => v - a[j]!), v = c.map((v,j) => v - a[j]!);
+      const cross = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!,
+        u[0]! * v[1]! - u[1]! * v[0]!];
+      const normal = surfaceNormal(a.map((v,j) => (v + b[j]! + c[j]!) / 3) as Point);
+      if (cross.reduce((sum,v,j) => sum + v * normal[j]!, 0) <= 0) inversions++;
+    }
+    expect(ropeTriangles).toBe(1728);
+    expect(inversions).toBe(0);
+  });
+
+  test('post and rope costs stay measured within the existing draws and total budget', async () => {
+    const brass = await assetVertices('TradingFloorBrass'), trim = await assetVertices('TradingFloorTrimGlow');
+    // Before -> after: BRASS 576/1104 -> 1584/2256; TRIM 228/456 -> 1956/1392 (tris/vertices).
+    expect([brass.primitive.getIndices()!.getCount() / 3, brass.vertices.length]).toEqual([1584,2256]);
+    expect([trim.primitive.getIndices()!.getCount() / 3, trim.vertices.length]).toEqual([1956,1392]);
+    expect([gltf.meshes.length, gltf.materials.length, gltf.textures.length]).toEqual([11,11,7]);
+    console.log('R3 budgets: BRASS 576/1104 -> 1584/2256; TRIM 228/456 -> 1956/1392 tris/vertices');
+  });
 });

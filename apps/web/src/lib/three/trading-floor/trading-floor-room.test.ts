@@ -539,3 +539,67 @@ describe('Trading Floor camera blockers - named parts', () => {
     expect(arming.monitorArmed).toBe(true);
   });
 });
+
+describe('Trading Floor interior - R3 rope collider and frozen P15 clearance', () => {
+  // R5 runs in parallel. Probe its frozen footprints now; reuse them after the lead merges R5.
+  const spots = [-2,-1,0,1,2].map((i) => ({ x: i * TRADING_FLOOR_SCREEN.width / 5, z: -1350 }));
+  const agents = spots.map(({x,z}) => ({ centerX: x, centerZ: z, halfX: 70, halfZ: 76 }));
+  const blockers = [...TRADING_FLOOR_SOLIDS, ...agents.filter((a) =>
+    !TRADING_FLOOR_SOLIDS.some((s) => s.centerX === a.centerX && s.centerZ === a.centerZ))];
+  const hits = (x: number, z: number) => blockers.some((s) =>
+    Math.abs(x - s.centerX) < s.halfX + TRADING_FLOOR_PLAYER_RADIUS &&
+    Math.abs(z - s.centerZ) < s.halfZ + TRADING_FLOOR_PLAYER_RADIUS);
+
+  test('one grown dais solid encloses the ring but remains outside both camera lists', () => {
+    expect(TRADING_FLOOR_DAIS_SOLID).toEqual({ centerX: 0, centerZ: -90, halfX: 492, halfZ: 488 });
+    expect(TRADING_FLOOR_SOLIDS.filter((s) => s === TRADING_FLOOR_DAIS_SOLID)).toHaveLength(1);
+    for (const list of [TRADING_FLOOR_CAMERA_SOLIDS_HIGH, TRADING_FLOOR_CAMERA_SOLIDS_LOW])
+      expect(list).not.toContain(TRADING_FLOOR_DAIS_SOLID);
+    for (const side of [-1,1]) {
+      expect(tradingFloorHitsSolid(side * 491, -90)).toBe(true);
+      expect(tradingFloorHitsSolid(0, -90 + side * 487)).toBe(true);
+    }
+    const out = { x: 0, z: 0 }, edge = 492 + TRADING_FLOOR_PLAYER_RADIUS;
+    clampTradingFloorMovement2D(edge, -90, edge - 1, -80, out);
+    expect(out).toEqual({ x: edge, z: -80 });
+  });
+
+  test('body lanes retain 1051 wu at the desks and 604 wu at the house agents', () => {
+    const deskFace = Math.min(...TRADING_FLOOR_DESK_SOLIDS.map((s) => Math.abs(s.centerX) - s.halfX));
+    expect(deskFace - TRADING_FLOOR_DAIS_SOLID.halfX - 2 * TRADING_FLOOR_PLAYER_RADIUS).toBe(1051);
+    const ringBack = TRADING_FLOOR_DAIS_SOLID.centerZ - TRADING_FLOOR_DAIS_SOLID.halfZ;
+    for (const agent of agents) {
+      const lane = ringBack - (agent.centerZ + agent.halfZ) - 2 * TRADING_FLOOR_PLAYER_RADIUS;
+      expect(lane).toBe(604);
+      expect(lane).toBeGreaterThanOrEqual(600);
+    }
+  });
+
+  test('a flood fill from spawn reaches every seat, door, kiosk and P15 walk-up band', () => {
+    const step = 20, halfColumns = Math.floor(TRADING_FLOOR_SIDE_APPROACH_X / step);
+    const rows = Math.floor((TRADING_FLOOR_DOOR_APPROACH_Z - TRADING_FLOOR_BOARD_APPROACH_Z) / step) + 1;
+    const key = (x: number, z: number) => (x / step + halfColumns) * rows +
+      (z - TRADING_FLOOR_BOARD_APPROACH_Z) / step;
+    const spawn = TRADING_FLOOR_PLAYER_SPAWN;
+    expect(hits(spawn.x, spawn.z)).toBe(false);
+    const visited = new Set<number>([key(spawn.x, spawn.z)]), queue = [{ x: spawn.x, z: spawn.z }];
+    for (let head = 0; head < queue.length; head++) {
+      const p = queue[head]!;
+      for (const [dx,dz] of [[step,0],[-step,0],[0,step],[0,-step]]) {
+        const x = p.x + dx!, z = p.z + dz!;
+        if (Math.abs(x) > halfColumns * step || z < TRADING_FLOOR_BOARD_APPROACH_Z ||
+            z > TRADING_FLOOR_DOOR_APPROACH_Z || hits(x,z)) continue;
+        const cell = key(x,z);
+        if (visited.has(cell)) continue;
+        visited.add(cell); queue.push({x,z});
+      }
+    }
+    const nearest = (x: number, z: number) => Math.min(...queue.map((p) => Math.hypot(p.x - x, p.z - z)));
+    for (const seat of TRADING_FLOOR_SEATS) expect(nearest(seat.x,seat.z)).toBeLessThanOrEqual(step);
+    expect(nearest(TRADING_FLOOR_DOOR.x,TRADING_FLOOR_DOOR.z)).toBeLessThanOrEqual(TRADING_FLOOR_DOOR.interactRadius);
+    expect(nearest(TRADING_FLOOR_MONITOR.x,TRADING_FLOOR_MONITOR.z)).toBeLessThanOrEqual(TRADING_FLOOR_MONITOR.interactRadius);
+    const bands = spots.map(({x,z}) => queue.filter((p) => Math.hypot(p.x - x, p.z - z) <= 250).length);
+    for (const count of bands) expect(count).toBeGreaterThan(0);
+    console.log(`R3 flood fill: ${queue.length} cells; P15 walk-up bands ${bands.join('/')}; lane 604 wu`);
+  });
+});
