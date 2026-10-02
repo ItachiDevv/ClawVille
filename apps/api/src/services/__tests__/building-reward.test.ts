@@ -369,7 +369,9 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     expect(routeSource).toContain('agentBuildingChatRewardAvatarId(rewardSubject)');
     expect(routeSource).toContain('avatarId: rewardAvatarId');
     expect(routeSource).toContain('agentId: bot.agentId');
-    expect(routeSource).toContain('knowledge: [...current, entry]');
+    // Atomic jsonb append under the owner condition (security C4, batch 2).
+    expect(routeSource).toContain('knowledge: botKnowledgeAppend([entry])');
+    expect(routeSource).toContain('botKnowledgeWriteOwnerCondition(botConfig)');
     expect(routeSource).toContain('await recordEarnedSkillLesson({');
     expect(routeSource).toContain('columns: { platformAgentId: true }');
     expect(routeSource).toContain(
