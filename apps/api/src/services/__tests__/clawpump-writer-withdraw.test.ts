@@ -357,10 +357,11 @@ describe('transferFromArenaWallet: reply classification (contract §3)', () => {
     expect(await classify(() => json({ ok: false }, 404))).toEqual({ kind: 'unknown', code: 'http_404', txSignature: null });
   });
 
-  test('HTTP 401, 403, 429 without a txHash -> rejected http_<status>; with a txHash or an unread body -> unknown', async () => {
+  test('Codex blocker: HTTP 401, 403, 429 are not proof of no-send -> unknown http_<status> (signature when present)', async () => {
     for (const status of [401, 403, 429]) {
-      expect(await classify(() => json({ error: 'no' }, status))).toEqual({ kind: 'rejected', code: `http_${status}` });
-      expect(await classify(() => new Response('Unauthorized', { status }))).toEqual({ kind: 'rejected', code: `http_${status}` });
+      expect(await classify(() => json({ error: 'no' }, status))).toEqual({ kind: 'unknown', code: `http_${status}`, txSignature: null });
+      expect(await classify(() => new Response('Unauthorized', { status }))).toEqual({ kind: 'unknown', code: `http_${status}`, txSignature: null });
+      expect(await classify(() => json(FEE_REFUSAL, status))).toEqual({ kind: 'unknown', code: `http_${status}`, txSignature: null });
       expect(await classify(() => json({ error: 'no', txHash: USDC_SIG }, status)))
         .toEqual({ kind: 'unknown', code: `http_${status}`, txSignature: USDC_SIG });
     }
