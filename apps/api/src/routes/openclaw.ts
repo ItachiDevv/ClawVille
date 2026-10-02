@@ -554,6 +554,11 @@ openclawRoutes.get('/active', (c) => {
 });
 
 // GET /api/openclaw/bot/:agentId — public bot profile
+//
+// Unauthenticated, so it follows the C5 owner-private rule: an OWNED row
+// (`user_id` set) returns `totalMessages: null` and `knowledgeCount: null`, the
+// same counters `/api/agent/:sessionId/stats` hides from a session without owner
+// proof. An unbound row keeps its real values.
 openclawRoutes.get('/bot/:agentId', async (c) => {
   const agentId = c.req.param('agentId');
   const bot = await db.query.agentBots.findFirst({
@@ -562,6 +567,7 @@ openclawRoutes.get('/bot/:agentId', async (c) => {
   if (!bot) {
     return c.json({ error: 'Bot not found' }, 404);
   }
+  const ownerPrivate = bot.userId != null;
   return c.json({
     agentId: bot.agentId,
     name: bot.name,
@@ -569,8 +575,8 @@ openclawRoutes.get('/bot/:agentId', async (c) => {
     mode: bot.mode,
     protocol: bot.protocol,
     totalSessions: bot.totalSessions,
-    totalMessages: bot.totalMessages,
-    knowledgeCount: (bot.knowledge ?? []).length,
+    totalMessages: ownerPrivate ? null : bot.totalMessages,
+    knowledgeCount: ownerPrivate ? null : (bot.knowledge ?? []).length,
     lastSeenAt: bot.lastSeenAt.toISOString(),
     createdAt: bot.createdAt.toISOString(),
   });
@@ -931,11 +937,17 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
 // must own the avatar row itself (`avatars.user_id`), whether or not it is the
 // active avatar. An agent session must be ledger-capable (connect-sec's use-time
 // owner proof in `resolveAgentSession`) and bound to exactly that avatar.
-// Returns the refusal (401 without auth, 403 otherwise) or null.
+// Returns the refusal (401 without auth, 403 otherwise) or the owner user id
+// that passed the check. The export reads below carry that owner id in their
+// own WHERE (`exportAvatarOwnedBy`), so an ownership change between this check
+// and a read returns nothing (404 or an empty list), never the old owner's data.
 const EXPORT_AVATAR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function exportOwnerRefusal(c: Context<AppContext>, avatarId: string): Promise<Response | null> {
-  const notOwned = () => c.json({ error: 'Not your avatar', code: 'avatar_not_owned' }, 403);
+async function exportOwner(
+  c: Context<AppContext>,
+  avatarId: string,
+): Promise<{ refusal: Response } | { ownerUserId: string }> {
+  const notOwned = () => ({ refusal: c.json({ error: 'Not your avatar', code: 'avatar_not_owned' }, 403) });
   const user = c.get('user');
   if (user) {
     const owned = EXPORT_AVATAR_ID.test(avatarId)
@@ -944,38 +956,49 @@ async function exportOwnerRefusal(c: Context<AppContext>, avatarId: string): Pro
           columns: { id: true },
         })
       : undefined;
-    return owned ? null : notOwned();
+    return owned ? { ownerUserId: user.id } : notOwned();
   }
   const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
   if (!agentSessionId) {
-    return c.json({ error: 'Authentication required', code: 'unauthenticated' }, 401);
+    return { refusal: c.json({ error: 'Authentication required', code: 'unauthenticated' }, 401) };
   }
   const agent = await resolveAgentSession(agentSessionId);
   if (!agent) {
-    return c.json({ error: 'Invalid or expired agent session', code: 'agent_session_not_found' }, 401);
+    return { refusal: c.json({ error: 'Invalid or expired agent session', code: 'agent_session_not_found' }, 401) };
   }
   if (!agent.ledgerCapable) {
-    return c.json(AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY, 403);
+    return { refusal: c.json(AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY, 403) };
   }
-  return agent.avatarId === avatarId ? null : notOwned();
+  return agent.avatarId === avatarId && agent.userId ? { ownerUserId: agent.userId } : notOwned();
+}
+
+/** True only while avatar `avatarId` still belongs to `ownerUserId` (read-time owner predicate). */
+function exportAvatarOwnedBy(avatarId: string, ownerUserId: string) {
+  return sql`exists (select 1 from ${avatars} where ${avatars.id} = ${avatarId} and ${avatars.userId} = ${ownerUserId})`;
 }
 
 // ---------------------------------------------------------------------------
 // GET /api/openclaw/knowledge-export/:avatarId
 // Returns learned knowledge in SKILL.md-compatible format (upgraded)
-// Owner-only (security C7 — see exportOwnerRefusal above).
+// Owner-only (security C7 — see exportOwner above).
 // ---------------------------------------------------------------------------
 openclawRoutes.get('/knowledge-export/:avatarId', sessionMiddleware, async (c) => {
   const avatarId = c.req.param('avatarId');
-  const refusal = await exportOwnerRefusal(c, avatarId);
-  if (refusal) return refusal;
+  const owner = await exportOwner(c, avatarId);
+  if ('refusal' in owner) return owner.refusal;
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(avatarId)) {
     return c.json({ error: 'Avatar not found' }, 404);
   }
 
-  const [avatar] = await db.select().from(avatars).where(eq(avatars.id, avatarId)).limit(1);
+  // The owner predicate stays on the read itself (C7): an avatar that changed
+  // owner after the check is 404, not the old owner's knowledge.
+  const [avatar] = await db
+    .select()
+    .from(avatars)
+    .where(and(eq(avatars.id, avatarId), eq(avatars.userId, owner.ownerUserId)))
+    .limit(1);
   if (!avatar) {
     return c.json({ error: 'Avatar not found' }, 404);
   }
@@ -1084,16 +1107,23 @@ openclawRoutes.post('/generate-skill', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
   const avatarId = c.req.param('avatarId');
-  // Security C7 (batch 2): owner-only (see exportOwnerRefusal above).
-  const refusal = await exportOwnerRefusal(c, avatarId);
-  if (refusal) return refusal;
+  // Security C7 (batch 2): owner-only (see exportOwner above).
+  const owner = await exportOwner(c, avatarId);
+  if ('refusal' in owner) return owner.refusal;
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(avatarId)) {
     return c.json({ error: 'Avatar not found' }, 404);
   }
 
-  const [avatar] = await db.select().from(avatars).where(eq(avatars.id, avatarId)).limit(1);
+  // Every read below carries the owner predicate (C7): an avatar that changed
+  // owner after the check is 404, and a change between these reads leaves the
+  // later lists empty instead of returning the old owner's memories.
+  const [avatar] = await db
+    .select()
+    .from(avatars)
+    .where(and(eq(avatars.id, avatarId), eq(avatars.userId, owner.ownerUserId)))
+    .limit(1);
   if (!avatar) {
     return c.json({ error: 'Avatar not found' }, 404);
   }
@@ -1102,7 +1132,11 @@ openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
   const memories = await db
     .select()
     .from(npcMemories)
-    .where(and(eq(npcMemories.entityId, avatarId), eq(npcMemories.entityType, 'avatar')))
+    .where(and(
+      eq(npcMemories.entityId, avatarId),
+      eq(npcMemories.entityType, 'avatar'),
+      exportAvatarOwnedBy(avatarId, owner.ownerUserId),
+    ))
     .orderBy(desc(npcMemories.createdAt))
     .limit(500);
 
@@ -1110,7 +1144,7 @@ openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
   const activities = await db
     .select()
     .from(activityLog)
-    .where(eq(activityLog.avatarId, avatarId))
+    .where(and(eq(activityLog.avatarId, avatarId), exportAvatarOwnedBy(avatarId, owner.ownerUserId)))
     .orderBy(desc(activityLog.createdAt))
     .limit(500);
 

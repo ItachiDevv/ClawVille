@@ -7,7 +7,11 @@
  *       `user_id`, connect-sec's use-time owner proof; no ledger flag needed).
  *   C7: GET /knowledge-export/:avatarId and /memory-export/:avatarId are
  *       owner-only (Lucia owner or a LEDGER-CAPABLE agent bound to the avatar;
- *       an owner-proven non-ledger session is still refused).
+ *       an owner-proven non-ledger session is still refused). The export reads
+ *       carry the owner predicate themselves: an ownership change after the
+ *       check gives 404 (avatar read) or empty memory/activity lists.
+ *   C5: the public GET /bot/:agentId hides totalMessages / knowledgeCount
+ *       (null) for an owned row; an unbound row keeps the real values.
  *
  * POST /register on a bound row is connect-sec's rule (409
  * owner_credential_required), pinned in `openclaw-register-owner-credential.test.ts`.
@@ -48,9 +52,35 @@ const avatarOwner: Record<string, string> = {
 };
 /** The avatar each user's active-avatar lookup returns. */
 let activeAvatarByUser: Record<string, string>;
+/**
+ * avatars.id -> avatars.user_id at READ time (the export `select` reads). It
+ * starts equal to `avatarOwner`; a test changes it to model an ownership change
+ * that lands after the export owner check.
+ */
+let readOwner: Record<string, string>;
+/** Runs once after the export's avatar read (models a change between reads). */
+let afterAvatarRead: (() => void) | null;
+let memoryRows: Array<Record<string, unknown>>;
+let activityRows: Array<Record<string, unknown>>;
+/** The `openclaw_bots.knowledge` of the findFirst snapshot row. */
+let snapshotKnowledge: string[];
 
 function paramsOf(where: unknown): unknown[] {
   return where ? dialect.sqlToQuery(where as SQL).params : [];
+}
+
+/**
+ * Evaluate the export read's avatar-owner predicate (`avatars.id = $a and
+ * avatars.user_id = $b`, direct or inside `exists (...)`) against `readOwner`.
+ * Returns null when the read carries no owner predicate (an unrestricted read).
+ */
+function readOwnerPredicateHolds(where: unknown): boolean | null {
+  if (!where) return null;
+  const { sql: text, params } = dialect.sqlToQuery(where as SQL);
+  const match = /"avatars"\."id" = \$(\d+) and "avatars"\."user_id" = \$(\d+)/.exec(text);
+  if (!match) return null;
+  const avatarId = params[Number(match[1]) - 1] as string;
+  return readOwner[avatarId] !== undefined && readOwner[avatarId] === params[Number(match[2]) - 1];
 }
 
 /** Evaluate the owner predicate of an `openclaw_bots` UPDATE against the live owner. */
@@ -90,8 +120,13 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
             name: 'Legacy',
             species: 'crab',
             color: 1,
+            mode: 'avatar',
+            protocol: 'nanoclaw',
             totalSessions: 1,
-            knowledge: [],
+            totalMessages: 7,
+            knowledge: snapshotKnowledge,
+            lastSeenAt: new Date('2026-10-01T12:00:00.000Z'),
+            createdAt: new Date('2026-09-01T12:00:00.000Z'),
             metadata: null,
             sessionExpiresAt: new Date(Date.now() + 3_600_000),
             sessionKeyHash: null,
@@ -112,15 +147,30 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
     }
     if (property === 'select') {
       return () => ({
-        from: (table: unknown) => {
-          const rows = async () => (table === realDatabase.avatars ? [avatarRow(AVATAR_ID)] : []);
-          return {
-            where: () => Object.assign(rows(), {
+        from: (table: unknown) => ({
+          where: (where: unknown) => {
+            // An unrestricted read (no owner predicate) sees the row whoever owns it now.
+            const rows = async () => {
+              const owned = readOwnerPredicateHolds(where);
+              if (table === realDatabase.avatars) {
+                const result = owned === false ? [] : [avatarRow(AVATAR_ID)];
+                const hook = afterAvatarRead;
+                afterAvatarRead = null;
+                hook?.();
+                return result;
+              }
+              if (table === realDatabase.npcMemories) return owned === false ? [] : memoryRows;
+              if (table === realDatabase.activityLog) return owned === false ? [] : activityRows;
+              return [];
+            };
+            // Lazy: the read runs once, on whichever terminal the handler uses.
+            return {
+              then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => rows().then(resolve, reject),
               limit: rows,
               orderBy: () => ({ limit: rows }),
-            }),
-          };
-        },
+            };
+          },
+        }),
       });
     }
     if (property === 'update') {
@@ -231,6 +281,11 @@ beforeEach(() => {
   botUpdates = [];
   knowledgeWrites = [];
   activeAvatarByUser = { [OWNER]: AVATAR_ID, [OTHER]: OTHER_AVATAR_ID };
+  readOwner = { ...avatarOwner };
+  afterAvatarRead = null;
+  memoryRows = [];
+  activityRows = [];
+  snapshotKnowledge = [];
 });
 
 afterEach(() => {
@@ -401,6 +456,71 @@ describe('security C7 — knowledge and memory exports are owner-only', () => {
     }
   });
 
+  describe('the owner predicate stays on the export reads (Codex C7 follow-up)', () => {
+    const MEMORY_DATE = new Date('2026-09-30T10:00:00.000Z');
+    const seedOwnerData = () => {
+      memoryRows = [{
+        id: 'mem-1',
+        entityId: AVATAR_ID,
+        entityType: 'avatar',
+        content: 'owner secret memory',
+        importance: 8,
+        createdAt: MEMORY_DATE,
+      }];
+      activityRows = [{
+        id: 'act-1',
+        avatarId: AVATAR_ID,
+        activityType: 'visited_building',
+        description: 'owner secret activity',
+        tokensEarned: 5,
+        metadata: { buildingId: 'agent-security' },
+        createdAt: MEMORY_DATE,
+      }];
+    };
+    const ownerCookie = { Cookie: 'auth_session=owner-session' };
+
+    test('the owner export still carries memories and activities', async () => {
+      seedOwnerData();
+      const memory = await call('GET', routes[1], { headers: ownerCookie });
+      expect(memory.status).toBe(200);
+      expect(memory.body).toMatchObject({ avatarId: AVATAR_ID, totalMemories: 1, totalActivities: 1 });
+      expect(JSON.stringify(memory.body)).toContain('owner secret memory');
+    });
+
+    test('a human export whose avatar changed owner after the check is 404, not the avatar data', async () => {
+      seedOwnerData();
+      readOwner[AVATAR_ID] = OTHER; // the check saw OWNER; the read sees the new owner
+      for (const path of routes) {
+        expect(await call('GET', path, { headers: ownerCookie })).toEqual({
+          status: 404,
+          body: { error: 'Avatar not found' },
+        });
+      }
+    });
+
+    test('an agent export whose avatar changed owner after the check is 404, not the avatar data', async () => {
+      seedOwnerData();
+      snapshotOwner = OWNER;
+      const provenSession = registerSession({ ledgerCapable: true, boundUserId: OWNER });
+      readOwner[AVATAR_ID] = OTHER;
+      for (const path of routes) {
+        expect(await call('GET', path, { headers: { 'X-Clawville-Agent-Session': provenSession } })).toEqual({
+          status: 404,
+          body: { error: 'Avatar not found' },
+        });
+      }
+    });
+
+    test('an owner change between the avatar read and the memory reads leaves the lists empty', async () => {
+      seedOwnerData();
+      afterAvatarRead = () => { readOwner[AVATAR_ID] = OTHER; };
+      const memory = await call('GET', routes[1], { headers: ownerCookie });
+      expect(memory.status).toBe(200);
+      expect(memory.body).toMatchObject({ totalMemories: 0, totalActivities: 0, dailyLogs: [] });
+      expect(JSON.stringify(memory.body)).not.toContain('owner secret');
+    });
+  });
+
   test('a human cookie wins over an agent header (owner human exports even with a foreign agent header)', async () => {
     snapshotOwner = OWNER;
     const straySession = registerSession({ ledgerCapable: false, boundUserId: null });
@@ -409,5 +529,42 @@ describe('security C7 — knowledge and memory exports are owner-only', () => {
     });
     expect(exported.status).toBe(200);
     expect(exported.body).toMatchObject({ avatarId: AVATAR_ID });
+  });
+});
+
+describe('security C5 consistency — the public bot profile hides an owned row\'s private counters', () => {
+  const profilePath = `/api/openclaw/bot/${AGENT_ID}`;
+  const publicFields = {
+    agentId: AGENT_ID,
+    name: 'Legacy',
+    species: 'crab',
+    mode: 'avatar',
+    protocol: 'nanoclaw',
+    totalSessions: 1,
+    lastSeenAt: '2026-10-01T12:00:00.000Z',
+    createdAt: '2026-09-01T12:00:00.000Z',
+  };
+
+  test('an owned row returns null totalMessages and knowledgeCount; every other field unchanged', async () => {
+    snapshotOwner = OWNER;
+    snapshotKnowledge = ['owner lesson one', 'owner lesson two'];
+    expect(await call('GET', profilePath)).toEqual({
+      status: 200,
+      body: { ...publicFields, totalMessages: null, knowledgeCount: null },
+    });
+  });
+
+  test('an unbound row keeps the real values', async () => {
+    snapshotOwner = null;
+    snapshotKnowledge = ['open lesson one', 'open lesson two'];
+    expect(await call('GET', profilePath)).toEqual({
+      status: 200,
+      body: { ...publicFields, totalMessages: 7, knowledgeCount: 2 },
+    });
+  });
+
+  test('a missing row is still 404', async () => {
+    snapshotOwner = undefined;
+    expect(await call('GET', profilePath)).toEqual({ status: 404, body: { error: 'Bot not found' } });
   });
 });

@@ -1054,8 +1054,10 @@ export const api = {
       mode: string;
       protocol: string;
       totalSessions: number;
-      totalMessages: number;
-      knowledgeCount: number;
+      /** null for an owned bot (owner-private, security C5). */
+      totalMessages: number | null;
+      /** null for an owned bot (owner-private, security C5). */
+      knowledgeCount: number | null;
       lastSeenAt: string;
       createdAt: string;
     }>(`/api/openclaw/bot/${agentId}`),
