@@ -384,10 +384,23 @@ describe('transferFromArenaWallet: reply classification (contract §3)', () => {
     expect(await classify(() => json({ ...USDC_SENT_REPLY, amount: 0.02 }))).toEqual(mismatch);
     expect(await classify(() => json({ ...USDC_SENT_REPLY, amount: '0.009999' }))).toEqual(mismatch);
     expect(await classify(() => json({ ...USDC_SENT_REPLY, mint: TRADE_MINTS.ANSEM }))).toEqual(mismatch);
-    expect(await classify(() => json({ ...USDC_SENT_REPLY, status: 'pending' }))).toEqual(mismatch);
+    // A real field mismatch stays 'mismatch' whatever the status says.
+    expect(await classify(() => json({ ...USDC_SENT_REPLY, to: OTHER_WALLET, status: 'pending' }))).toEqual(mismatch);
     const solMismatch: W.ArenaTransferOutcome = { kind: 'mismatch', code: 'reply_mismatch', txSignature: SOL_SIG };
     expect(await classify(() => json({ ...SOL_SENT_REPLY, token: 'USDC' }), solInput)).toEqual(solMismatch);
     expect(await classify(() => json({ ...SOL_SENT_REPLY, amount: 0.0021 }), solInput)).toEqual(solMismatch);
+  });
+
+  test('lead decision: matching fields but status !== "sent" -> unknown vendor_status_<status> with the signature', async () => {
+    expect(await classify(() => json({ ...USDC_SENT_REPLY, status: 'pending' })))
+      .toEqual({ kind: 'unknown', code: 'vendor_status_pending', txSignature: USDC_SIG });
+    expect(await classify(() => json({ ...SOL_SENT_REPLY, status: 'Submitted' }), solInput))
+      .toEqual({ kind: 'unknown', code: 'vendor_status_submitted', txSignature: SOL_SIG });
+    const { status: _status, ...noStatus } = USDC_SENT_REPLY;
+    for (const body of [{ ...USDC_SENT_REPLY, status: 'in progress' }, { ...USDC_SENT_REPLY, status: 'x'.repeat(51) },
+      { ...USDC_SENT_REPLY, status: 7 }, { ...USDC_SENT_REPLY, status: '' }, noStatus]) {
+      expect(await classify(() => json(body))).toEqual({ kind: 'unknown', code: 'vendor_status_other', txSignature: USDC_SIG });
+    }
   });
 
   test('sent: the amount may be a number or a string; SOL token in any case; SOL ignores mint', async () => {

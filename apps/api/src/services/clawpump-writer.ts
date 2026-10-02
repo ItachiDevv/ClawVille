@@ -614,6 +614,8 @@ const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
 const TX_SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{43,100}$/;
 /** `vendor_` (7 characters) plus this stays inside the stored code shape [a-z0-9_.:-]{1,64}. */
 const VENDOR_CODE_RE = /^[a-z0-9_.:-]{1,57}$/;
+/** `vendor_status_` (14 characters) plus this stays inside [a-z0-9_.:-]{1,64}. */
+const VENDOR_STATUS_RE = /^[a-z0-9_.:-]{1,50}$/;
 const UI_AMOUNT_RE = /^(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,4}))?$/;
 
 export interface ClawPumpArenaWalletLive {
@@ -874,9 +876,15 @@ function classifyTransferReply(reply: TransferPostReply, transfer: CheckedTransf
   const assetMatches = transfer.asset === 'USDC'
     ? payload.mint === TRADE_MINTS.USDC
     : typeof payload.token === 'string' && payload.token.toUpperCase() === 'SOL';
-  if (payload.status !== 'sent' || payload.from !== transfer.expectedSource || payload.to !== transfer.to
-    || amount !== transfer.amountAtomic || !assetMatches) {
+  if (payload.from !== transfer.expectedSource || payload.to !== transfer.to || amount !== transfer.amountAtomic || !assetMatches) {
     return { kind: 'mismatch', code: 'reply_mismatch', txSignature };
+  }
+  if (payload.status !== 'sent') {
+    // Lead decision 2026-10-02: the fields match, so the money may still move.
+    // Reconcile confirms it on chain by the signature (exact deltas); no operator step.
+    const vendorStatus = typeof payload.status === 'string' ? payload.status.toLowerCase() : '';
+    const code = VENDOR_STATUS_RE.test(vendorStatus) ? `vendor_status_${vendorStatus}` : 'vendor_status_other';
+    return { kind: 'unknown', code, txSignature };
   }
   return {
     kind: 'sent',
