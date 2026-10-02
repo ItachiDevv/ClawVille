@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
-import { ClawPumpWriterError, type ClawPumpCallPriority, type ClawPumpCreatedAgent } from '../clawpump-writer';
+import {
+  CLAWPUMP_WRITER_BURST,
+  CLAWPUMP_WRITER_REMOVAL_RESERVE,
+  ClawPumpWriterError,
+  type ClawPumpCallPriority,
+  type ClawPumpCreatedAgent,
+} from '../clawpump-writer';
 import {
   ARENA_CLAWPUMP_PERSONA,
   ARENA_CLAWPUMP_SYSTEM_PROMPT,
@@ -937,5 +943,118 @@ describe('provisionArenaAgent state machine', () => {
   test('the persona and prompt forbid trading', () => {
     expect(ARENA_CLAWPUMP_PERSONA).toContain('does not trade');
     expect(ARENA_CLAWPUMP_SYSTEM_PROMPT).toContain('Do not trade');
+  });
+});
+
+/**
+ * Mirrors the writer's shared token bucket (clawpump-writer takeWriterToken, no
+ * refill): 'removal' calls may spend it down to 0, normal calls stop above the
+ * removal reserve. Empty -> our own 'budget_exhausted' BEFORE the fake call runs.
+ */
+function budgeted(h: ReturnType<typeof harness>, start: number = CLAWPUMP_WRITER_BURST) {
+  let tokens = start;
+  const order: string[] = [];
+  const take = (label: string, priority: ClawPumpCallPriority = 'normal') => {
+    const floor = priority === 'removal' ? 0 : CLAWPUMP_WRITER_REMOVAL_RESERVE;
+    if (tokens - 1 < floor) throw new ClawPumpWriterError('budget_exhausted');
+    tokens -= 1;
+    order.push(label);
+  };
+  const w = h.deps.writer;
+  const writer: ArenaProvisionDeps['writer'] = {
+    ...w,
+    createAgent: async (input) => { take('create'); return w.createAgent(input); },
+    updateAgent: async (id, patch, arenaAgentId, priority) => { take(`patch ${id}`, priority); return w.updateAgent(id, patch, arenaAgentId, priority); },
+    readAgent: async (id, priority) => { take(`read ${id}`, priority); return w.readAgent(id, priority); },
+    getWallet: async (id) => { take('wallet'); return w.getWallet(id); },
+  };
+  return { deps: { ...h.deps, writer }, order, refill: (next: number) => { tokens = next; } };
+}
+
+describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
+  test('(a) our own budget refusal is not an attempt: attempts unchanged, no "attempt N of 5" event, due on the next tick', async () => {
+    const h = harness(record());
+    h.setCreate(async () => { throw new ClawPumpWriterError('budget_exhausted'); });
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('throttled');
+    const row = h.rows.get(AGENT_ID)!;
+    expect(row.provisionAttempts).toBe(0);
+    expect(row.provisionError).toBe('clawpump_budget_exhausted');
+    // Due again before the next 30 s tick (the loop's shortest spacing is 27 s after a tick ends).
+    expect(row.provisionNextAt!.getTime()).toBeLessThanOrEqual(NOW.getTime() + 27_000);
+    expect(await h.deps.store.listDue(new Date(NOW.getTime() + 27_000), ARENA_PROVISION_MAX_ATTEMPTS, 20)).toEqual([AGENT_ID]);
+    expect(h.events).toEqual([]);
+
+    // ClawPump's HTTP 429 mid-flow (after the create): same rule, and the saved id is reused on the retry.
+    const mid = harness(record());
+    mid.setUpdate(async () => { throw new ClawPumpWriterError('rate_limited', 429); });
+    expect(await provisionArenaAgent(AGENT_ID, mid.deps)).toBe('throttled');
+    expect(mid.rows.get(AGENT_ID)).toMatchObject({ provisionAttempts: 0, clawpumpAgentId: CP_ID });
+    expect(mid.events).toEqual([]);
+    mid.setUpdate(async () => cpAgent({ acceptingBids: false }));
+    mid.log.length = 0;
+    const later = { ...mid.deps, now: () => new Date(NOW.getTime() + 30_000) };
+    expect(await provisionArenaAgent(AGENT_ID, later)).toBe('ready');
+    expect(mid.log.some((line) => line.startsWith('create'))).toBe(false);
+  });
+
+  test('(b) six throttled ticks in a row never fail the agent; it is retried every tick, then provisions', async () => {
+    const h = harness(record());
+    let budget = false;
+    h.setCreate(async () => {
+      if (!budget) throw new ClawPumpWriterError('budget_exhausted');
+      return cpAgent();
+    });
+    let clock = NOW.getTime();
+    const deps = { ...h.deps, now: () => new Date(clock) };
+    for (let tick = 0; tick < 6; tick += 1) {
+      clock = NOW.getTime() + tick * 30_000;
+      await runArenaProvisioningTick(new Date(clock), deps);
+    }
+    expect(h.created.length).toBe(6);
+    expect(h.rows.get(AGENT_ID)!.provisionAttempts).toBe(0);
+    expect(h.events).toEqual([]);
+    budget = true;
+    clock = NOW.getTime() + 6 * 30_000;
+    await runArenaProvisioningTick(new Date(clock), deps);
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 0, clawpumpAgentId: CP_ID });
+  });
+
+  test('(b2) a throttle ends the tick\'s provisioning pass: the next due agent is not claimed (it stays pending)', async () => {
+    const h = harness(record());
+    const SECOND = 'a1b2c3d4-0000-4000-8000-000000000002';
+    h.rows.set(SECOND, record({ id: SECOND, name: 'Ann', createdAt: new Date(NOW.getTime() + 1) }));
+    h.setCreate(async () => { throw new ClawPumpWriterError('budget_exhausted'); });
+    await runArenaProvisioningTick(NOW, h.deps);
+    expect(h.created.length).toBe(1);
+    expect(h.rows.get(SECOND)).toMatchObject({ provisionState: 'pending', provisionAttempts: 0 });
+  });
+
+  test('(c) the tick provisions a due agent BEFORE the x402 reconcile spends the shared budget', async () => {
+    const h = harness(record());
+    // Three add-on-free agents that still hold x402: their removals alone can drain the bucket.
+    for (let index = 0; index < 3; index += 1) {
+      const agentId = `b0000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+      h.rows.set(agentId, record({ id: agentId, provisionState: 'ready', clawpumpAgentId: `cp-b${index}`, updatedAt: NOW }));
+      h.perCp.set(`cp-b${index}`, { skills: [...STICKY, 'x402'], status: 'stopped' });
+    }
+    const b = budgeted(h);
+    await runArenaProvisioningTick(NOW, b.deps);
+    // Provisioning's calls (create, then the config sync) come first; the x402 pass follows.
+    expect(b.order.slice(0, 4)).toEqual(['create', `read ${CP_ID}`, `patch ${CP_ID}`, `read ${CP_ID}`]);
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 0, clawpumpAgentId: CP_ID });
+    // Normal calls stop above the removal reserve, so the reconcile still removes x402 this tick.
+    expect(h.perCp.get('cp-b0')!.skills).not.toContain('x402');
+  });
+
+  test('(d) a paused tick runs the x402 reconcile and no provisioning', async () => {
+    const h = harness(record());
+    const OFF = 'b0000000-0000-4000-8000-000000000000';
+    h.rows.set(OFF, record({ id: OFF, provisionState: 'ready', clawpumpAgentId: 'cp-off', updatedAt: NOW }));
+    h.perCp.set('cp-off', { skills: [...STICKY, 'x402'], status: 'stopped' });
+    await runArenaProvisioningTick(NOW, { ...h.deps, paused: () => true });
+    expect(h.perCp.get('cp-off')!.skills).not.toContain('x402');
+    expect(h.created).toEqual([]);
+    expect(h.log).not.toContain('claim');
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'pending', provisionAttempts: 0 });
   });
 });
