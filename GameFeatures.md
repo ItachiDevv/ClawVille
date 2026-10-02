@@ -1884,7 +1884,7 @@ Every user gets an isolated memory partition with each building character. One E
 
 ### 13b. Tutorial quest tracker — **34 quests across 10 tiers**
 
-**Claim sweep gate (2026-10-01):** the tracker's restore-then-claim sweep runs only for a signed-in non-guest account (`useAuthMe()`), once per account and again when another account signs in; a logged-out or guest visitor sends no claim (before: one 401 `on-the-board` claim on every logged-out `/game` load).
+**Claim sweep gate (2026-10-01):** the tracker's restore-then-claim sweep runs only for a signed-in non-guest account (`useAuthMe()`), once per account and again when another account signs in; a logged-out or guest visitor sends no claim (before: one 401 `on-the-board` claim on every logged-out `/game` load). **Refusal memory (2026-10-02):** when the server refuses an automatic sweep claim with a 4xx (for example 400 `engagement_required` on a `serverOnly` quest it cannot verify yet), the sweep remembers that refusal per account and quest in sessionStorage for 10 minutes (`TUTORIAL_CLAIM_REFUSAL_COOLDOWN_MS`) and does not post it again on every load (before: four 400s per signed-in `/game` load on staging); a player-started claim always asks the server; a success or `already_claimed` clears the entry; sign-out clears all entries.
 
 `<QuestTracker>` (`apps/web/src/components/game/quest-tracker.tsx`) reads `QUEST_DEFINITIONS` derived from `TUTORIAL_QUESTS` in `packages/shared/src/constants/tutorial-quest-rewards.ts` (30 vCLAW entries + the 4 tier-10 land quests added 2026-08-09).
 

@@ -802,6 +802,8 @@ import {
 // treasury, like the REST buy (T0); the buyer's debit is unchanged. No `[ACTION:]` verb, signing, bearer/TTL,
 // cognition body, `hatcher:` namespace or leaderboard weight changed. Sweep every version pin BY
 // ASSERTION, never by grepping the old number.
+// 2026-10-02 (tutorial claim sweep remembers a server 4xx refusal for 10 minutes, web only): manual and Nori
+// orientation reviewed, no version change. Client claim retry timing only; agents never read it.
 export const PROTOCOL_VERSION = 81;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
