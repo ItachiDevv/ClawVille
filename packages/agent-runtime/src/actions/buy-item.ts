@@ -61,12 +61,13 @@ export const buyItemAction: Action = {
       }
 
       const { avatarId, services } = state;
-      const { db, debitClawTokens, creditHouseTreasuryBookFee } = services;
+      const { db, chargeBookPurchase } = services;
 
       // T0 fee routing (security batch 2, 2026-10-02): the price moves buyer ->
-      // house treasury, exactly like the REST shop. Without the routing service
-      // the price would silently burn, so refuse before any read or debit.
-      if (typeof creditHouseTreasuryBookFee !== 'function') {
+      // house treasury, exactly like the REST shop, through ONE service op that
+      // writes the debit and the treasury credit together. Without it the price
+      // would silently burn, so refuse before any read or debit.
+      if (typeof chargeBookPurchase !== 'function') {
         return { success: false, text: 'Book purchases through chat are unavailable right now. Use the building shop.' };
       }
 
@@ -98,6 +99,18 @@ export const buyItemAction: Action = {
         return { success: false, text: `Book "${itemId}" not found.` };
       }
 
+      // Price guard (security batch 2, Codex): only a positive safe integer is a
+      // valid price. A fractional price would fail the treasury credit (the price
+      // burns), and a string price would pass the balance comparison below by JS
+      // coercion. Refuse BEFORE any read, debit or credit.
+      const price: unknown = book.price;
+      if (typeof price !== 'number' || !Number.isSafeInteger(price) || price <= 0) {
+        return {
+          success: false,
+          text: `"${book.name}" has no valid price right now, so it cannot be bought through chat. Nothing was charged.`,
+        };
+      }
+
       // Check current balance + the canonical guest gate (security M9, 2026-09-30;
       // mirrors ACCEPT_QUEST). A guest runs a DEMO economy that settles off the
       // ledger (`items.ts /buy` demo branch). This action spends REAL vCLAW through
@@ -121,46 +134,35 @@ export const buyItemAction: Action = {
         };
       }
 
-      if (avatar.clawTokens < book.price) {
+      if (avatar.clawTokens < price) {
         return {
           success: false,
-          text: `Not enough vCLAW. You have ${avatar.clawTokens} vCLAW but "${book.name}" costs ${book.price} vCLAW.`,
+          text: `Not enough vCLAW. You have ${avatar.clawTokens} vCLAW but "${book.name}" costs ${price} vCLAW.`,
         };
       }
 
-      // Debit + treasury credit + grant in ONE transaction: if the credit or the
-      // grant fails, the debit and the credit roll back with it, so no path mints
-      // or loses vCLAW. The old debit-then-grant with a best-effort refund could
-      // lose the buyer's vCLAW when the refund also failed (security, Codex
-      // round 2). The grant is one atomic upsert (security M10).
+      // Charge (buyer debit + treasury credit, one service op) + grant in ONE
+      // transaction: if the grant fails, the debit and the credit roll back with
+      // it, so no path mints or loses vCLAW. The old debit-then-grant with a
+      // best-effort refund could lose the buyer's vCLAW when the refund also
+      // failed (security, Codex round 2). The grant is one atomic upsert
+      // (security M10).
       const balanceAfter = await db.transaction(async (tx: any) => {
-        const debit = await debitClawTokens(
-          {
-            avatarId,
-            amount: book.price,
-            reason: `Purchased book: ${book.name}`,
-            source: 'shop',
-            metadata: { bookId: book.id, buildingId: book.building },
-          },
-          tx,
-        );
-        // Same tx as the debit (REST `items.ts` step 1b). A null treasury is the
-        // service's logged pre-T0 burn; it never aborts the buyer's purchase.
-        await creditHouseTreasuryBookFee(
-          { bookId: book.id, buyerAvatarId: avatarId, amount: book.price },
+        const charge = await chargeBookPurchase(
+          { avatarId, bookId: book.id, amount: price },
           tx,
         );
         await grantInventoryItem(tx, { avatarId, itemId });
-        return debit.balanceAfter;
+        return charge.balanceAfter;
       });
 
       return {
         success: true,
-        text: `${book.icon} Purchased **${book.name}** for ${book.price} vCLAW. New balance: ${balanceAfter} vCLAW. Use "learn" or "read" to absorb its knowledge.`,
+        text: `${book.icon} Purchased **${book.name}** for ${price} vCLAW. New balance: ${balanceAfter} vCLAW. Use "learn" or "read" to absorb its knowledge.`,
         data: {
           bookId: book.id,
           bookName: book.name,
-          price: book.price,
+          price,
           balanceAfter,
         },
       };

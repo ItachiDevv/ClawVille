@@ -17,18 +17,20 @@ function render(query: { queryChunks?: unknown[] }): string {
  * Fake drizzle db with a transaction that ROLLS BACK the fake balance, the
  * treasury balance and the inventory when the callback throws, the way Postgres
  * does. The actor select resolves `actor`; raw SQL on the tx is recorded, and
- * `order` records the money/grant writes in call order.
+ * `order` records the money/grant writes in call order. `chargeBookPurchase`
+ * models the adapter's ONE charge op: guard the amount, debit the buyer, credit
+ * the treasury (or burn when the treasury is unavailable).
  */
 function harness(
   actor: { clawTokens: number; isGuest: boolean } | null,
-  opts: { failGrant?: boolean; failDebit?: boolean; treasuryUnavailable?: boolean; noTreasuryService?: boolean } = {},
+  opts: { failGrant?: boolean; failDebit?: boolean; treasuryUnavailable?: boolean; noChargeService?: boolean } = {},
 ) {
   const state = { balance: actor?.clawTokens ?? 0, treasury: 0, books: 0 };
   const executed: string[] = [];
   const order: string[] = [];
-  const debits: Array<{ params: unknown; tx: unknown }> = [];
-  const credits: unknown[] = [];
-  const treasuryFees: Array<{ params: unknown; tx: unknown }> = [];
+  const charges: Array<{ params: unknown; tx: unknown }> = [];
+  const genericLedgerCalls: unknown[] = [];
+  let actorReads = 0;
   const tx = {
     execute: async (query: { queryChunks?: unknown[] }) => {
       const text = render(query);
@@ -43,7 +45,12 @@ function harness(
     select: () => ({
       from: () => ({
         innerJoin: () => ({
-          where: () => ({ limit: async () => (actor ? [actor] : []) }),
+          where: () => ({
+            limit: async () => {
+              actorReads += 1;
+              return actor ? [actor] : [];
+            },
+          }),
         }),
       }),
     }),
@@ -59,154 +66,184 @@ function harness(
   };
   const services: ClawvilleServices = {
     db,
-    debitClawTokens: async (params, t) => {
-      debits.push({ params, tx: t });
-      order.push('debit');
-      if (opts.failDebit) throw new Error('Avatar has 0 ClawTokens, cannot debit');
-      state.balance -= params.amount;
-      return { balanceAfter: state.balance };
+    // BUY_ITEM must never use the generic ledger services: the charge op owns
+    // both rows.
+    debitClawTokens: async (params) => {
+      genericLedgerCalls.push(params);
+      return { balanceAfter: 0 };
     },
     creditClawTokens: async (params) => {
-      credits.push(params);
-      state.balance += params.amount;
-      return { balanceAfter: state.balance };
+      genericLedgerCalls.push(params);
+      return { balanceAfter: 0 };
     },
-    creditHouseTreasuryBookFee: opts.noTreasuryService
+    chargeBookPurchase: opts.noChargeService
       ? undefined
       : async (params, t) => {
-          treasuryFees.push({ params, tx: t });
+          charges.push({ params, tx: t });
+          if (!Number.isSafeInteger(params.amount) || params.amount <= 0) {
+            throw new Error('book_purchase_charge: invalid amount');
+          }
+          order.push('debit');
+          if (opts.failDebit) throw new Error('Avatar has 0 ClawTokens, cannot debit');
+          state.balance -= params.amount;
           order.push('treasury');
           // The adapter's null-treasury fallback: nothing is credited (burn).
-          if (opts.treasuryUnavailable) return { treasuryAvatarId: null };
-          state.treasury += params.amount;
-          return { treasuryAvatarId: 'house-treasury-avatar' };
+          if (!opts.treasuryUnavailable) state.treasury += params.amount;
+          return {
+            balanceAfter: state.balance,
+            treasuryAvatarId: opts.treasuryUnavailable ? null : 'house-treasury-avatar',
+          };
         },
   };
-  return { services, executed, order, debits, credits, treasuryFees, state, tx };
+  return {
+    services,
+    executed,
+    order,
+    charges,
+    genericLedgerCalls,
+    state,
+    tx,
+    get actorReads() {
+      return actorReads;
+    },
+  };
 }
 
 const message = { content: { text: `buy ${BOOK.name}`, parameters: { itemId: BOOK.id } } };
 
+const run = (h: ReturnType<typeof harness>, avatarId = 'real-avatar') =>
+  buyItemAction.handler(null, message, { avatarId, userId: `${avatarId}-user`, services: h.services });
+
+/** Temporarily replace the catalog book's price (the action reads the shared catalog object). */
+async function withPrice<T>(price: unknown, fn: () => Promise<T>): Promise<T> {
+  const original = BOOK.price;
+  (BOOK as { price: unknown }).price = price;
+  try {
+    return await fn();
+  } finally {
+    (BOOK as { price: unknown }).price = original;
+  }
+}
+
 describe('BUY_ITEM runtime action', () => {
   it('refuses a guest-owned avatar before any ledger call (security M9)', async () => {
     const h = harness({ clawTokens: 100, isGuest: true });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'guest-avatar',
-      userId: 'guest-user',
-      services: h.services,
-    });
+    const result = await run(h, 'guest-avatar');
 
     expect(result.success).toBe(false);
     expect(result.text).toContain('demo economy');
-    expect(h.debits).toHaveLength(0);
-    expect(h.credits).toHaveLength(0);
-    expect(h.treasuryFees).toHaveLength(0);
+    expect(h.charges).toHaveLength(0);
+    expect(h.genericLedgerCalls).toHaveLength(0);
     expect(h.executed).toHaveLength(0);
   });
 
-  it('debits and grants inside ONE transaction, the grant being one upsert (M10 + Codex round 2)', async () => {
+  it('charges and grants inside ONE transaction, the grant being one upsert (M10 + Codex round 2)', async () => {
     const h = harness({ clawTokens: 10_000, isGuest: false });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'real-avatar',
-      userId: 'real-user',
-      services: h.services,
-    });
+    const result = await run(h);
 
     expect(result.success).toBe(true);
-    expect(h.debits).toHaveLength(1);
-    expect(h.debits[0]!.params).toEqual(expect.objectContaining({ avatarId: 'real-avatar', amount: BOOK.price }));
-    expect(h.debits[0]!.tx).toBe(h.tx);
+    expect(result.data).toEqual(expect.objectContaining({ price: BOOK.price, balanceAfter: 10_000 - BOOK.price }));
+    expect(h.charges).toHaveLength(1);
+    expect(h.charges[0]!.tx).toBe(h.tx);
     expect(h.executed).toHaveLength(1);
     expect(h.executed[0]).toContain('ON CONFLICT (avatar_id, item_id) DO UPDATE SET quantity = inventory.quantity + 1');
     expect(h.state).toEqual({ balance: 10_000 - BOOK.price, treasury: BOOK.price, books: 1 });
   });
 
-  it('routes the exact price to the house treasury in the SAME tx as the debit (T0, net-neutral supply)', async () => {
+  it('routes the exact price through the ONE charge op in the SAME tx as the grant (T0, net-neutral supply)', async () => {
     const h = harness({ clawTokens: 10_000, isGuest: false });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'real-avatar',
-      userId: 'real-user',
-      services: h.services,
-    });
+    const result = await run(h);
 
     expect(result.success).toBe(true);
-    expect(h.treasuryFees).toHaveLength(1);
-    expect(h.treasuryFees[0]!.params).toEqual({ bookId: BOOK.id, buyerAvatarId: 'real-avatar', amount: BOOK.price });
-    expect(h.treasuryFees[0]!.tx).toBe(h.tx);
-    expect(h.debits[0]!.tx).toBe(h.tx);
+    expect(h.charges).toEqual([{ params: { avatarId: 'real-avatar', bookId: BOOK.id, amount: BOOK.price }, tx: h.tx }]);
     expect(h.order).toEqual(['debit', 'treasury', 'grant']);
     // Supply is conserved: what left the buyer arrived at the treasury.
     expect(h.state.balance + h.state.treasury).toBe(10_000);
-    // The buyer is never credited back.
-    expect(h.credits).toHaveLength(0);
+    // The generic ledger services are never used for a book buy: no separate
+    // debit, no refund, no standalone treasury credit.
+    expect(h.genericLedgerCalls).toHaveLength(0);
   });
 
-  it('a failed debit credits nothing to the treasury', async () => {
+  it('a failed debit inside the charge credits nothing and grants nothing', async () => {
     const h = harness({ clawTokens: 10_000, isGuest: false }, { failDebit: true });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'real-avatar',
-      userId: 'real-user',
-      services: h.services,
-    });
+    const result = await run(h);
 
     expect(result.success).toBe(false);
-    expect(h.treasuryFees).toHaveLength(0);
     expect(h.executed).toHaveLength(0);
     expect(h.state).toEqual({ balance: 10_000, treasury: 0, books: 0 });
   });
 
   it('a failed grant rolls the debit AND the treasury credit back: no vCLAW minted or lost, no refund write needed', async () => {
     const h = harness({ clawTokens: 10_000, isGuest: false }, { failGrant: true });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'real-avatar',
-      userId: 'real-user',
-      services: h.services,
-    });
+    const result = await run(h);
 
     expect(result.success).toBe(false);
-    expect(h.debits).toHaveLength(1);
-    // The credit ran inside the tx, so the rollback reverses it with the debit.
-    expect(h.treasuryFees).toHaveLength(1);
-    expect(h.treasuryFees[0]!.tx).toBe(h.tx);
+    expect(h.charges).toHaveLength(1);
+    expect(h.charges[0]!.tx).toBe(h.tx);
+    expect(h.order).toEqual(['debit', 'treasury', 'grant']);
     expect(h.state).toEqual({ balance: 10_000, treasury: 0, books: 0 });
-    expect(h.credits).toHaveLength(0);
+    expect(h.genericLedgerCalls).toHaveLength(0);
   });
 
   it('an unavailable treasury burns the price (pre-T0 fallback) and the buyer still gets the book', async () => {
     const h = harness({ clawTokens: 10_000, isGuest: false }, { treasuryUnavailable: true });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'real-avatar',
-      userId: 'real-user',
-      services: h.services,
-    });
+    const result = await run(h);
 
     expect(result.success).toBe(true);
-    expect(h.treasuryFees).toHaveLength(1);
+    expect(h.charges).toHaveLength(1);
     expect(h.state).toEqual({ balance: 10_000 - BOOK.price, treasury: 0, books: 1 });
   });
 
-  it('refuses before any read or debit when the treasury routing service is not wired (never a silent burn)', async () => {
-    const h = harness({ clawTokens: 10_000, isGuest: false }, { noTreasuryService: true });
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'real-avatar',
-      userId: 'real-user',
-      services: h.services,
-    });
+  it('refuses before any read or debit when the charge service is not wired (never a silent burn)', async () => {
+    const h = harness({ clawTokens: 10_000, isGuest: false }, { noChargeService: true });
+    const result = await run(h);
 
     expect(result.success).toBe(false);
-    expect(h.debits).toHaveLength(0);
+    expect(h.actorReads).toBe(0);
+    expect(h.genericLedgerCalls).toHaveLength(0);
     expect(h.executed).toHaveLength(0);
     expect(h.state).toEqual({ balance: 10_000, treasury: 0, books: 0 });
   });
 
+  it('insufficient balance fails without a charge or a credit', async () => {
+    const h = harness({ clawTokens: BOOK.price - 1, isGuest: false });
+    const result = await run(h);
+
+    expect(result.success).toBe(false);
+    expect(result.text).toContain('Not enough vCLAW');
+    expect(h.charges).toHaveLength(0);
+    expect(h.state).toEqual({ balance: BOOK.price - 1, treasury: 0, books: 0 });
+  });
+
+  // Codex BLOCKING (security batch 2): a fractional price burned (the treasury
+  // credit skipped it) and a string price passed the balance check by coercion.
+  for (const [label, price] of [
+    ['fractional', 2.5],
+    ['negative', -5],
+    ['zero', 0],
+    ['NaN', Number.NaN],
+    ['numeric string', '5'],
+    ['above MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER + 2],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ] as const) {
+    it(`refuses a ${label} price before any read, debit or credit`, async () => {
+      const h = harness({ clawTokens: 10_000, isGuest: false });
+      const result = await withPrice(price, () => run(h));
+
+      expect(result.success).toBe(false);
+      expect(result.text).toContain('no valid price');
+      expect(h.actorReads).toBe(0);
+      expect(h.charges).toHaveLength(0);
+      expect(h.genericLedgerCalls).toHaveLength(0);
+      expect(h.executed).toHaveLength(0);
+      expect(h.state).toEqual({ balance: 10_000, treasury: 0, books: 0 });
+    });
+  }
+
   it('an unresolved avatar is refused', async () => {
     const h = harness(null);
-    const result = await buyItemAction.handler(null, message, {
-      avatarId: 'missing',
-      userId: 'u',
-      services: h.services,
-    });
+    const result = await run(h, 'missing');
     expect(result.success).toBe(false);
-    expect(h.debits).toHaveLength(0);
+    expect(h.charges).toHaveLength(0);
   });
 });
