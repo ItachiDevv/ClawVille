@@ -4,6 +4,12 @@ import {
   FLOOR_ARENA_ADDONS,
   FLOOR_ARENA_EVENT_SUMMARY_MAX,
   FLOOR_ARENA_HARD_RULES,
+  FLOOR_ARENA_WITHDRAW_COUNTED_STATES,
+  FLOOR_ARENA_WITHDRAW_LIMITS,
+  FLOOR_ARENA_WITHDRAW_OPEN_STATES,
+  buildFloorArenaWithdrawAddressMessage,
+  type FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
+  type FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
   type FloorArenaAgentAddon,
   type FloorArenaAgentKind,
   type FloorArenaAgentStatus,
@@ -13,7 +19,15 @@ import {
   type FloorArenaProvisionState,
   type FloorArenaSuggestion,
   type FloorArenaSuggestionState,
+  type FloorArenaWithdrawAddressProof,
+  type FloorArenaWithdrawAmountMode,
+  type FloorArenaWithdrawAsset,
+  type FloorArenaWithdrawRevokeReason,
+  type FloorArenaWithdrawState,
+  type FloorArenaWithdrawSubjectKind,
 } from '@clawville/shared';
+// Type only: clawpump-writer imports this module at run time (isArenaClawPumpOwnedBy).
+import type { ClawPumpArenaWalletLive } from '../clawpump-writer';
 import { readArenaAggregates, toCents, type ArenaAgentAggregate, type ArenaLeaderboardWindow } from './leaderboard';
 
 /**
@@ -919,7 +933,13 @@ export async function readArenaAddonStats(
 
 export type ArenaAddonReserveCheck =
   | { ok: true }
-  | { ok: false; reason: 'interval' | 'addon_cap' | 'agent_cap' | 'agent_changed'; spentUsd: number; capUsd: number };
+  | {
+    ok: false;
+    /** 'underfunded' and 'withdraw_pending' come only from the locked reservation (P5 D34-i), never from the pure check. */
+    reason: 'interval' | 'addon_cap' | 'agent_cap' | 'agent_changed' | 'underfunded' | 'withdraw_pending';
+    spentUsd: number;
+    capUsd: number;
+  };
 
 export type ArenaAddonReservation =
   | { reserved: true; id: number; callNumber: number }
@@ -940,6 +960,13 @@ export type ArenaAddonReservation =
  * 'agent_changed' unless the agent is still active, SEATED, provisioned, on
  * the same ClawPump agent, and the add-on is still enabled. `check` receives
  * the CURRENT daily cap, not the one the tick read earlier.
+ *
+ * P5 D34-i (I5, conservation with withdrawals): under the SAME lock as the
+ * withdraw admission, the open withdrawal holds (readArenaOpenWithdrawHold) and
+ * this agent's open 'reserved' rows are subtracted from `walletUsdc` (the value
+ * the tick read). An open USDC 'max' row whose amount is not fixed yet refuses
+ * 'withdraw_pending'; too little left refuses 'underfunded'. A non-finite
+ * `walletUsdc` counts as underfunded (fail closed).
  */
 export async function reserveArenaAddonCall(input: {
   agentId: string;
@@ -948,6 +975,8 @@ export async function reserveArenaAddonCall(input: {
   at: Date;
   priceUsd: number;
   dayStart: Date;
+  /** The wallet USDC (UI units) the tick read before this reservation (P5 D34-i). */
+  walletUsdc: number;
   check: (stats: ArenaAddonCallStat[], currentCapUsd: number) => ArenaAddonReserveCheck;
 }): Promise<ArenaAddonReservation> {
   return db.transaction(async (tx) => {
@@ -962,6 +991,18 @@ export async function reserveArenaAddonCall(input: {
     if (!current || current.status !== 'active' || current.seated !== true || current.provision_state !== 'ready'
       || current.clawpump_agent_id !== input.clawpumpAgentId || !addon?.enabled) {
       return { reserved: false, check: { ok: false, reason: 'agent_changed', spentUsd: 0, capUsd: 0 } };
+    }
+    const hold = await readArenaOpenWithdrawHold(input.agentId, tx);
+    if (hold.usdcMaxPending) {
+      return { reserved: false, check: { ok: false, reason: 'withdraw_pending', spentUsd: 0, capUsd: 0 } };
+    }
+    const open = (await rows(sql`
+      SELECT COALESCE(SUM(price_usd), 0) AS reserved_usd FROM floor_arena_addon_calls
+      WHERE agent_id = ${input.agentId} AND state = 'reserved'
+    `, tx))[0];
+    const left = input.walletUsdc - Number(hold.usdcAtomic) / 1e6 - num(open?.reserved_usd);
+    if (!Number.isFinite(left) || left + 1e-9 < input.priceUsd) {
+      return { reserved: false, check: { ok: false, reason: 'underfunded', spentUsd: 0, capUsd: 0 } };
     }
     const stats = await readArenaAddonStats(input.agentId, input.dayStart, tx);
     const verdict = input.check(stats, addon.dailyCapUsd);
@@ -1449,4 +1490,875 @@ export async function markArenaProvisionFailed(
     RETURNING id
   `);
   return updated.length > 0;
+}
+
+// ─── Wallet withdraw (P5, D34) ─────────────────────────────────────────────
+//
+// REAL MONEY. Contract: ops/house-traders/arena-review/P5_CONTRACT_2026-10-02.md §0, §5.
+// Request handlers write rows only (I4). The ONLY door to the transfer POST is the
+// compare-and-set `requested -> dispatching` in admitArenaWithdrawal (I1); the
+// 0074 guard trigger forbids every way back (I2). Caps, cooldown, one open row and
+// idempotency are decided in Postgres under the locks (I6). Lock order everywhere:
+// `floor-arena-addon:<agentId>` FIRST (the add-on lock, I5), then (admission only)
+// `floor-arena-withdraw-cap`, then row locks. UTC-day bases: `requested_at` for the
+// per-agent count and USDC cap, `dispatched_at` for the account-wide USDC cap.
+// 'withdraw' events are owner-only: they stay out of ARENA_PUBLIC_USER_EVENT_TYPES.
+
+/** floor_arena_withdraw_addresses row. INTERNAL: owner id, message and signature never leave the API as is. */
+export interface ArenaWithdrawAddressRecord {
+  id: string;
+  agentId: string;
+  ownerUserId: string;
+  address: string;
+  proofKind: FloorArenaWithdrawAddressProof;
+  message: string | null;
+  signature: string | null;
+  challengeNonce: string | null;
+  setBy: FloorArenaWithdrawSubjectKind;
+  setByAgentId: string | null;
+  createdAt: Date;
+  activeAt: Date;
+  revokedAt: Date | null;
+  revokeReason: FloorArenaWithdrawRevokeReason | null;
+}
+
+/** floor_arena_withdrawals row. INTERNAL: carries the owner id and the idempotency key. */
+export interface ArenaWithdrawalRecord {
+  id: string;
+  agentId: string;
+  ownerUserId: string;
+  subjectKind: FloorArenaWithdrawSubjectKind;
+  subjectAgentId: string | null;
+  idempotencyKey: string;
+  asset: FloorArenaWithdrawAsset;
+  amountMode: FloorArenaWithdrawAmountMode;
+  requestedAtomic: bigint | null;
+  amountAtomic: bigint | null;
+  sourceClawpumpAgentId: string;
+  sourceWallet: string;
+  destination: string;
+  addressId: string;
+  state: FloorArenaWithdrawState;
+  errorCode: string | null;
+  preBalanceAtomic: bigint | null;
+  preSolLamports: bigint | null;
+  postBalanceAtomic: bigint | null;
+  txSignature: string | null;
+  recipientAccountCreated: boolean | null;
+  reviewNote: string | null;
+  requestedAt: Date;
+  dispatchedAt: Date | null;
+  sentAt: Date | null;
+  finalizedAt: Date | null;
+  lastCheckedAt: Date | null;
+  checkCount: number;
+}
+
+/** A unique violation on floor_arena_withdrawals_tx_uq: that chain signature already belongs to another withdrawal. */
+export class ArenaWithdrawTxReusedError extends Error {
+  readonly code = 'tx_reused';
+  constructor() {
+    super('tx_reused');
+    this.name = 'ArenaWithdrawTxReusedError';
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_BIGINT = 2n ** 63n - 1n;
+const DAY_MS = 24 * 60 * 60_000;
+/** Same value as ARENA_WITHDRAW_DISPATCH_STALE_MS (contract §4, floor-arena/withdraw.ts). */
+const WITHDRAW_DISPATCH_STALE_MS = 120_000;
+/** Bounds of the per-agent withdraw try-lock transaction (contract §4 proof (5)). */
+const WITHDRAW_LOCK_TX_TIMEOUT_MS = 150_000;
+const WITHDRAW_LOCK_STATEMENT_TIMEOUT_MS = 30_000;
+let withdrawTxBoundMissingWarned = false;
+
+function bigOrNull(value: unknown): bigint | null {
+  return value === null || value === undefined ? null : BigInt(String(value));
+}
+
+function mapWithdrawAddressRow(row: Row): ArenaWithdrawAddressRecord {
+  return {
+    id: String(row.id),
+    agentId: String(row.agent_id),
+    ownerUserId: String(row.owner_user_id),
+    address: String(row.address),
+    proofKind: String(row.proof_kind) as FloorArenaWithdrawAddressProof,
+    message: str(row.message),
+    signature: str(row.signature),
+    challengeNonce: str(row.challenge_nonce),
+    setBy: String(row.set_by) as FloorArenaWithdrawSubjectKind,
+    setByAgentId: str(row.set_by_agent_id),
+    createdAt: date(row.created_at) ?? new Date(0),
+    activeAt: date(row.active_at) ?? new Date(0),
+    revokedAt: date(row.revoked_at),
+    revokeReason: (str(row.revoke_reason) as FloorArenaWithdrawRevokeReason | null),
+  };
+}
+
+function mapWithdrawalRow(row: Row): ArenaWithdrawalRecord {
+  return {
+    id: String(row.id),
+    agentId: String(row.agent_id),
+    ownerUserId: String(row.owner_user_id),
+    subjectKind: String(row.subject_kind) as FloorArenaWithdrawSubjectKind,
+    subjectAgentId: str(row.subject_agent_id),
+    idempotencyKey: String(row.idempotency_key),
+    asset: String(row.asset) as FloorArenaWithdrawAsset,
+    amountMode: String(row.amount_mode) as FloorArenaWithdrawAmountMode,
+    requestedAtomic: bigOrNull(row.requested_atomic),
+    amountAtomic: bigOrNull(row.amount_atomic),
+    sourceClawpumpAgentId: String(row.source_clawpump_agent_id),
+    sourceWallet: String(row.source_wallet),
+    destination: String(row.destination),
+    addressId: String(row.address_id),
+    state: String(row.state) as FloorArenaWithdrawState,
+    errorCode: str(row.error_code),
+    preBalanceAtomic: bigOrNull(row.pre_balance_atomic),
+    preSolLamports: bigOrNull(row.pre_sol_lamports),
+    postBalanceAtomic: bigOrNull(row.post_balance_atomic),
+    txSignature: str(row.tx_signature),
+    recipientAccountCreated: typeof row.recipient_account_created === 'boolean' ? row.recipient_account_created : null,
+    reviewNote: str(row.review_note),
+    requestedAt: date(row.requested_at) ?? new Date(0),
+    dispatchedAt: date(row.dispatched_at),
+    sentAt: date(row.sent_at),
+    finalizedAt: date(row.finalized_at),
+    lastCheckedAt: date(row.last_checked_at),
+    checkCount: num(row.check_count),
+  };
+}
+
+/** The constraint of a unique violation (23505) anywhere in the cause chain; '' when unnamed; null when none. */
+function uniqueViolationOn(error: unknown): string | null {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const record = current as { code?: unknown; constraint_name?: unknown; constraint?: unknown; cause?: unknown };
+    if (record.code === '23505') {
+      const name = record.constraint_name ?? record.constraint;
+      return typeof name === 'string' ? name : '';
+    }
+    current = record.cause;
+  }
+  return null;
+}
+
+function stateIn(states: readonly string[]): SQL {
+  return sql`state IN (${sql.join(states.map((state) => sql`${state}`), sql`, `)})`;
+}
+
+function bigParam(value: bigint | null): SQL {
+  return sql`${value === null ? null : value.toString()}::bigint`;
+}
+
+function utcDayOf(at: Date): Date {
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
+}
+
+/** "0.1 USDC" (no float math); "all free USDC" for a max row whose amount is not fixed yet. */
+function withdrawAmountText(atomic: bigint | null, asset: FloorArenaWithdrawAsset): string {
+  if (atomic === null) return `all free ${asset}`;
+  const decimals = asset === 'USDC' ? FLOOR_ARENA_WITHDRAW_LIMITS.usdcDecimals : FLOOR_ARENA_WITHDRAW_LIMITS.solDecimals;
+  const digits = atomic.toString().padStart(decimals + 1, '0');
+  const fraction = digits.slice(digits.length - decimals).replace(/0+$/, '');
+  return `${digits.slice(0, digits.length - decimals)}${fraction ? `.${fraction}` : ''} ${asset}`;
+}
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+/** A 'withdraw' event (owner feed only) in the caller's transaction. bigint values are written as strings. */
+async function insertWithdrawEvent(tx: Tx, agentId: string, summary: string, data: unknown): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO floor_arena_events (agent_id, at, type, summary, data)
+    VALUES (${agentId}, now(), 'withdraw', ${clampSummary(summary)},
+      ${JSON.stringify(data ?? null, (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value))}::jsonb)
+  `);
+}
+
+async function readCurrentWithdrawAddress(agentId: string, executor: typeof db | Tx): Promise<ArenaWithdrawAddressRecord | null> {
+  const list = await rows(sql`
+    SELECT * FROM floor_arena_withdraw_addresses WHERE agent_id = ${agentId} AND revoked_at IS NULL LIMIT 1
+  `, executor);
+  return list[0] ? mapWithdrawAddressRow(list[0]) : null;
+}
+
+async function readOpenWithdrawal(agentId: string, executor: typeof db | Tx): Promise<ArenaWithdrawalRecord | null> {
+  const list = await rows(sql`
+    SELECT * FROM floor_arena_withdrawals WHERE agent_id = ${agentId} AND ${stateIn(FLOOR_ARENA_WITHDRAW_OPEN_STATES)} LIMIT 1
+  `, executor);
+  return list[0] ? mapWithdrawalRow(list[0]) : null;
+}
+
+/**
+ * Issues an address challenge (D34-d): deletes this agent's expired rows, then
+ * refuses when 5 non-expired rows remain (a consumed but unexpired row still
+ * counts, so issue + consume cannot loop without bound). The count and the
+ * insert run under the per-agent add-on lock.
+ */
+export async function issueArenaWithdrawChallenge(input: {
+  agentId: string;
+  ownerUserId: string;
+  address: string;
+  nonce: string;
+  now: Date;
+}): Promise<{ ok: true; nonce: string; message: string; expiresAt: Date } | { ok: false; reason: 'too_many_challenges' }> {
+  const expiresAt = new Date(input.now.getTime() + FLOOR_ARENA_WITHDRAW_LIMITS.challengeTtlMs);
+  const message = buildFloorArenaWithdrawAddressMessage({
+    agentId: input.agentId, userId: input.ownerUserId, address: input.address, nonce: input.nonce, expiresAt: expiresAt.toISOString(),
+  });
+  const nowIso = input.now.toISOString();
+  return db.transaction(async (tx) => {
+    await tx.execute(addonLock(input.agentId));
+    await tx.execute(sql`
+      DELETE FROM floor_arena_withdraw_challenges WHERE agent_id = ${input.agentId} AND expires_at <= ${nowIso}::timestamptz
+    `);
+    const live = await rows(sql`
+      SELECT count(*)::int AS n FROM floor_arena_withdraw_challenges WHERE agent_id = ${input.agentId}
+    `, tx);
+    if (num(live[0]?.n) >= FLOOR_ARENA_WITHDRAW_LIMITS.maxLiveChallengesPerAgent) {
+      return { ok: false, reason: 'too_many_challenges' } as const;
+    }
+    await tx.execute(sql`
+      INSERT INTO floor_arena_withdraw_challenges (nonce, agent_id, owner_user_id, address, message, expires_at, created_at)
+      VALUES (${input.nonce}, ${input.agentId}, ${input.ownerUserId}::uuid, ${input.address}, ${message},
+        ${expiresAt.toISOString()}::timestamptz, ${nowIso}::timestamptz)
+    `);
+    return { ok: true, nonce: input.nonce, message, expiresAt } as const;
+  });
+}
+
+/**
+ * ONE statement: the challenge is spent here, before the caller verifies the
+ * signature, so a nonce works at most once (single use). Null = unknown,
+ * spent, expired, or bound to another user, agent or address.
+ */
+export async function consumeArenaWithdrawChallenge(input: {
+  nonce: string;
+  agentId: string;
+  ownerUserId: string;
+  address: string;
+}): Promise<{ message: string } | null> {
+  const list = await rows(sql`
+    UPDATE floor_arena_withdraw_challenges SET consumed_at = now()
+    WHERE nonce = ${input.nonce} AND agent_id = ${input.agentId} AND owner_user_id = ${input.ownerUserId}::uuid
+      AND address = ${input.address} AND consumed_at IS NULL AND expires_at > now()
+    RETURNING message
+  `);
+  return list[0] ? { message: String(list[0].message) } : null;
+}
+
+/** True when `address` is the ClawPump wallet of ANY arena agent (house or user): never a withdraw destination. */
+export async function isArenaClawPumpWallet(address: string): Promise<boolean> {
+  const list = await rows(sql`SELECT 1 FROM floor_arena_agents WHERE clawpump_wallet = ${address} LIMIT 1`);
+  return list.length > 0;
+}
+
+/** The account's proved self-custody wallet (users.linked_wallet_pubkey) and when it was set; null when either is missing. */
+export async function readArenaLinkedWallet(userId: string): Promise<{ address: string; linkedAt: Date } | null> {
+  const list = await rows(sql`
+    SELECT linked_wallet_pubkey, linked_wallet_at FROM users WHERE id = ${userId}::uuid LIMIT 1
+  `);
+  const address = str(list[0]?.linked_wallet_pubkey);
+  const linkedAt = date(list[0]?.linked_wallet_at);
+  return address && linkedAt ? { address, linkedAt } : null;
+}
+
+/** The agent's one non-revoked address (pending or active), or null. */
+export async function readArenaWithdrawAddress(agentId: string): Promise<ArenaWithdrawAddressRecord | null> {
+  return readCurrentWithdrawAddress(agentId, db);
+}
+
+/**
+ * Sets the agent's withdraw address (D34-e). One transaction: add-on lock ->
+ * agent row FOR SHARE (user row of this owner, provision ready) -> the current
+ * address is revoked ('replaced') -> insert -> 'withdraw' event. `active_at`
+ * is never before the row's `created_at` (CHECK): an `activeAt` in the past
+ * means "active now".
+ */
+export async function setArenaWithdrawAddress(input: {
+  agentId: string;
+  ownerUserId: string;
+  address: string;
+  proofKind: FloorArenaWithdrawAddressProof;
+  message: string | null;
+  signature: string | null;
+  challengeNonce: string | null;
+  setBy: FloorArenaWithdrawSubjectKind;
+  setByAgentId: string | null;
+  activeAt: Date;
+}): Promise<{ ok: true; address: ArenaWithdrawAddressRecord } | { ok: false; reason: 'same_address' | 'wallet_not_ready' }> {
+  return db.transaction(async (tx) => {
+    await tx.execute(addonLock(input.agentId));
+    const agent = await rows(sql`
+      SELECT 1 FROM floor_arena_agents
+      WHERE id = ${input.agentId} AND kind = 'user' AND owner_user_id = ${input.ownerUserId}::uuid AND provision_state = 'ready'
+      FOR SHARE
+    `, tx);
+    if (agent.length === 0) return { ok: false, reason: 'wallet_not_ready' } as const;
+    const current = await readCurrentWithdrawAddress(input.agentId, tx);
+    if (current?.address === input.address) return { ok: false, reason: 'same_address' } as const;
+    if (current) {
+      await tx.execute(sql`
+        UPDATE floor_arena_withdraw_addresses SET revoked_at = now(), revoke_reason = 'replaced'
+        WHERE id = ${current.id}::uuid AND revoked_at IS NULL
+      `);
+    }
+    const inserted = await rows(sql`
+      INSERT INTO floor_arena_withdraw_addresses (agent_id, owner_user_id, address, proof_kind, message, signature,
+        challenge_nonce, set_by, set_by_agent_id, active_at)
+      VALUES (${input.agentId}, ${input.ownerUserId}::uuid, ${input.address}, ${input.proofKind}, ${input.message},
+        ${input.signature}, ${input.challengeNonce}, ${input.setBy}, ${input.setByAgentId},
+        GREATEST(${input.activeAt.toISOString()}::timestamptz, now()))
+      RETURNING *
+    `, tx);
+    const address = mapWithdrawAddressRow(inserted[0]!);
+    await insertWithdrawEvent(tx, input.agentId,
+      `Withdraw address ${shortAddress(address.address)} set; it works from ${address.activeAt.toISOString()}.`
+        + (current ? ` It replaces ${shortAddress(current.address)}.` : ''),
+      {
+        action: 'address_set', addressId: address.id, address: address.address, proofKind: address.proofKind,
+        setBy: address.setBy, activeAt: address.activeAt.toISOString(), replacedAddressId: current?.id ?? null,
+      });
+    return { ok: true, address } as const;
+  });
+}
+
+/** Revokes an address at once (owner or admin), under the add-on lock, with a 'withdraw' event. */
+export async function revokeArenaWithdrawAddress(input: {
+  agentId: string;
+  addressId: string;
+  reason: 'owner' | 'admin';
+}): Promise<{ ok: true } | { ok: false; reason: 'not_found' | 'already_revoked' }> {
+  if (!UUID_RE.test(input.addressId)) return { ok: false, reason: 'not_found' };
+  return db.transaction(async (tx) => {
+    await tx.execute(addonLock(input.agentId));
+    const found = (await rows(sql`
+      SELECT address, revoked_at FROM floor_arena_withdraw_addresses
+      WHERE id = ${input.addressId}::uuid AND agent_id = ${input.agentId}
+      FOR UPDATE
+    `, tx))[0];
+    if (!found) return { ok: false, reason: 'not_found' } as const;
+    if (found.revoked_at !== null && found.revoked_at !== undefined) return { ok: false, reason: 'already_revoked' } as const;
+    await tx.execute(sql`
+      UPDATE floor_arena_withdraw_addresses SET revoked_at = now(), revoke_reason = ${input.reason}
+      WHERE id = ${input.addressId}::uuid AND revoked_at IS NULL
+    `);
+    await insertWithdrawEvent(tx, input.agentId,
+      `Withdraw address ${shortAddress(String(found.address))} removed (${input.reason}).`,
+      { action: 'address_revoked', addressId: input.addressId, reason: input.reason });
+    return { ok: true } as const;
+  });
+}
+
+export type ArenaWithdrawRequestResult =
+  | { kind: 'created' | 'replay'; withdrawal: ArenaWithdrawalRecord }
+  | {
+    kind: 'refused';
+    code: (typeof FLOOR_ARENA_WITHDRAW_REQUEST_CODES)[number];
+    retryAt?: Date;
+    activeAt?: Date;
+    withdrawalId?: string;
+  };
+
+interface ArenaWithdrawRequestInput {
+  agentId: string;
+  ownerUserId: string;
+  subjectKind: FloorArenaWithdrawSubjectKind;
+  subjectAgentId: string | null;
+  idempotencyKey: string;
+  asset: FloorArenaWithdrawAsset;
+  amountMode: FloorArenaWithdrawAmountMode;
+  requestedAtomic: bigint | null;
+  now: Date;
+}
+
+function replayOrConflict(existing: ArenaWithdrawalRecord, input: ArenaWithdrawRequestInput): ArenaWithdrawRequestResult {
+  const same = existing.asset === input.asset && existing.amountMode === input.amountMode
+    && existing.requestedAtomic === input.requestedAtomic;
+  return same
+    ? { kind: 'replay', withdrawal: existing }
+    : { kind: 'refused', code: 'idempotency_conflict', withdrawalId: existing.id };
+}
+
+/**
+ * A withdrawal request (contract §5, steps 1-8 in order): ONE transaction that
+ * takes the add-on lock FIRST, so two requests of one agent serialise and the
+ * second sees the first. Writes the row only (I4): nothing here reads the wallet
+ * or calls ClawPump; the leader's admission does. `requested_at` = `now`, the
+ * same clock as the cooldown and day checks. The source and the destination are
+ * COPIED here (I3). A unique violation (a writer outside this lock) maps back to
+ * replay / idempotency_conflict / withdrawal_open. A shape the table refuses
+ * (exact without a positive int64 amount, max with an amount) is 'invalid_amount'.
+ */
+export async function requestArenaWithdrawal(input: ArenaWithdrawRequestInput): Promise<ArenaWithdrawRequestResult> {
+  const shapeOk = input.amountMode === 'exact'
+    ? input.requestedAtomic !== null && input.requestedAtomic > 0n && input.requestedAtomic <= MAX_BIGINT
+    : input.amountMode === 'max' && input.requestedAtomic === null;
+  if (!shapeOk) return { kind: 'refused', code: 'invalid_amount' };
+  try {
+    return await db.transaction((tx) => requestWithdrawalLocked(tx, input));
+  } catch (error) {
+    const constraint = uniqueViolationOn(error);
+    if (constraint === 'floor_arena_withdrawals_agent_idem_uq') {
+      const existing = (await rows(sql`
+        SELECT * FROM floor_arena_withdrawals WHERE agent_id = ${input.agentId} AND idempotency_key = ${input.idempotencyKey} LIMIT 1
+      `))[0];
+      if (existing) return replayOrConflict(mapWithdrawalRow(existing), input);
+    }
+    if (constraint === 'floor_arena_withdrawals_one_open_uq') {
+      const open = await readOpenWithdrawal(input.agentId, db);
+      return { kind: 'refused', code: 'withdrawal_open', ...(open ? { withdrawalId: open.id } : {}) };
+    }
+    throw error;
+  }
+}
+
+async function requestWithdrawalLocked(tx: Tx, input: ArenaWithdrawRequestInput): Promise<ArenaWithdrawRequestResult> {
+  const limits = FLOOR_ARENA_WITHDRAW_LIMITS;
+  await tx.execute(addonLock(input.agentId));
+  // 1. Idempotency.
+  const existing = (await rows(sql`
+    SELECT * FROM floor_arena_withdrawals WHERE agent_id = ${input.agentId} AND idempotency_key = ${input.idempotencyKey} LIMIT 1
+  `, tx))[0];
+  if (existing) return replayOrConflict(mapWithdrawalRow(existing), input);
+  // 2. The owner's provisioned USER row.
+  const agent = (await rows(sql`
+    SELECT clawpump_agent_id, clawpump_wallet FROM floor_arena_agents
+    WHERE id = ${input.agentId} AND kind = 'user' AND owner_user_id = ${input.ownerUserId}::uuid AND provision_state = 'ready'
+      AND clawpump_agent_id IS NOT NULL AND clawpump_wallet IS NOT NULL
+    FOR SHARE
+  `, tx))[0];
+  if (!agent) return { kind: 'refused', code: 'wallet_not_ready' };
+  // 3. An ACTIVE proved address.
+  const address = await readCurrentWithdrawAddress(input.agentId, tx);
+  if (!address) return { kind: 'refused', code: 'no_withdraw_address' };
+  if (address.activeAt.getTime() > input.now.getTime()) return { kind: 'refused', code: 'address_pending', activeAt: address.activeAt };
+  // 4. One open row per agent.
+  const open = await readOpenWithdrawal(input.agentId, tx);
+  if (open) return { kind: 'refused', code: 'withdrawal_open', withdrawalId: open.id };
+  // 5-7. COUNTED rows: cooldown, the UTC-day count and the UTC-day USDC sum (requested_at basis).
+  const dayStart = utcDayOf(input.now);
+  const dayEnd = new Date(dayStart.getTime() + DAY_MS);
+  const inDay = sql`requested_at >= ${dayStart.toISOString()}::timestamptz AND requested_at < ${dayEnd.toISOString()}::timestamptz`;
+  const counted = (await rows(sql`
+    SELECT MAX(requested_at) AS latest_at,
+      COUNT(*) FILTER (WHERE ${inDay})::int AS day_count,
+      COALESCE(SUM(COALESCE(amount_atomic, requested_atomic)) FILTER (WHERE asset = 'USDC' AND ${inDay}), 0)::text AS day_usdc
+    FROM floor_arena_withdrawals
+    WHERE agent_id = ${input.agentId} AND ${stateIn(FLOOR_ARENA_WITHDRAW_COUNTED_STATES)}
+  `, tx))[0];
+  const latestAt = date(counted?.latest_at);
+  if (latestAt && latestAt.getTime() > input.now.getTime() - limits.cooldownMs) {
+    return { kind: 'refused', code: 'cooldown', retryAt: new Date(latestAt.getTime() + limits.cooldownMs) };
+  }
+  if (num(counted?.day_count) >= limits.agentDailyRequests) return { kind: 'refused', code: 'daily_count_cap', retryAt: dayEnd };
+  if (input.asset === 'USDC' && input.amountMode === 'exact'
+    && BigInt(String(counted?.day_usdc ?? '0')) + input.requestedAtomic! > BigInt(limits.agentDailyUsdcAtomic)) {
+    return { kind: 'refused', code: 'agent_daily_cap' };
+  }
+  // 8. Insert: source and destination are copied from the agent row and the active address (I3).
+  const inserted = await rows(sql`
+    INSERT INTO floor_arena_withdrawals (agent_id, owner_user_id, subject_kind, subject_agent_id, idempotency_key, asset,
+      amount_mode, requested_atomic, source_clawpump_agent_id, source_wallet, destination, address_id, requested_at)
+    VALUES (${input.agentId}, ${input.ownerUserId}::uuid, ${input.subjectKind}, ${input.subjectAgentId}, ${input.idempotencyKey},
+      ${input.asset}, ${input.amountMode}, ${bigParam(input.requestedAtomic)}, ${String(agent.clawpump_agent_id)},
+      ${String(agent.clawpump_wallet)}, ${address.address}, ${address.id}::uuid, ${input.now.toISOString()}::timestamptz)
+    RETURNING *
+  `, tx);
+  const withdrawal = mapWithdrawalRow(inserted[0]!);
+  await insertWithdrawEvent(tx, input.agentId,
+    `Withdrawal requested: ${withdrawAmountText(withdrawal.requestedAtomic, withdrawal.asset)} to ${shortAddress(withdrawal.destination)}.`,
+    {
+      action: 'requested', withdrawalId: withdrawal.id, asset: withdrawal.asset, amountMode: withdrawal.amountMode,
+      requestedAtomic: withdrawal.requestedAtomic, subjectKind: withdrawal.subjectKind,
+    });
+  return { kind: 'created', withdrawal };
+}
+
+/** Cancels a row that is still 'requested' (the CAS loses to an admission that already moved it). */
+export async function cancelArenaWithdrawal(
+  agentId: string,
+  withdrawalId: string,
+): Promise<{ ok: true; withdrawal: ArenaWithdrawalRecord } | { ok: false; reason: 'not_found' | 'not_cancellable' }> {
+  if (!UUID_RE.test(withdrawalId)) return { ok: false, reason: 'not_found' };
+  return db.transaction(async (tx) => {
+    await tx.execute(addonLock(agentId));
+    const updated = (await rows(sql`
+      UPDATE floor_arena_withdrawals SET state = 'cancelled', finalized_at = now()
+      WHERE id = ${withdrawalId}::uuid AND agent_id = ${agentId} AND state = 'requested'
+      RETURNING *
+    `, tx))[0];
+    if (!updated) {
+      const exists = await rows(sql`
+        SELECT 1 FROM floor_arena_withdrawals WHERE id = ${withdrawalId}::uuid AND agent_id = ${agentId}
+      `, tx);
+      return { ok: false, reason: exists.length > 0 ? 'not_cancellable' : 'not_found' } as const;
+    }
+    const withdrawal = mapWithdrawalRow(updated);
+    await insertWithdrawEvent(tx, agentId, `Withdrawal of ${withdrawAmountText(withdrawal.requestedAtomic, withdrawal.asset)} cancelled.`,
+      { action: 'cancelled', withdrawalId: withdrawal.id });
+    return { ok: true, withdrawal } as const;
+  });
+}
+
+/** The agent's withdrawals, newest request first. */
+export async function readArenaWithdrawals(agentId: string, limit: number): Promise<ArenaWithdrawalRecord[]> {
+  const list = await rows(sql`
+    SELECT * FROM floor_arena_withdrawals WHERE agent_id = ${agentId} ORDER BY requested_at DESC LIMIT ${limit}
+  `);
+  return list.map(mapWithdrawalRow);
+}
+
+export async function readArenaWithdrawSummary(
+  agentId: string,
+): Promise<{ address: ArenaWithdrawAddressRecord | null; open: ArenaWithdrawalRecord | null }> {
+  const [address, open] = await Promise.all([readCurrentWithdrawAddress(agentId, db), readOpenWithdrawal(agentId, db)]);
+  return { address, open };
+}
+
+/** The leader's dispatch list: 'requested' rows, oldest request first. */
+export async function readArenaWithdrawalsDue(limit: number): Promise<ArenaWithdrawalRecord[]> {
+  const list = await rows(sql`
+    SELECT * FROM floor_arena_withdrawals WHERE state = 'requested' ORDER BY requested_at ASC LIMIT ${limit}
+  `);
+  return list.map(mapWithdrawalRow);
+}
+
+/** The reconcile list: 'dispatching' older than 2 min, 'sent', 'unknown'; least recently checked first. */
+export async function readArenaWithdrawalsToReconcile(now: Date, limit: number): Promise<ArenaWithdrawalRecord[]> {
+  const staleBefore = new Date(now.getTime() - WITHDRAW_DISPATCH_STALE_MS).toISOString();
+  const list = await rows(sql`
+    SELECT * FROM floor_arena_withdrawals
+    WHERE (state = 'dispatching' AND dispatched_at < ${staleBefore}::timestamptz) OR state IN ('sent', 'unknown')
+    ORDER BY last_checked_at ASC NULLS FIRST, requested_at ASC
+    LIMIT ${limit}
+  `);
+  return list.map(mapWithdrawalRow);
+}
+
+export type ArenaWithdrawAdmission =
+  | { kind: 'dispatched'; withdrawal: ArenaWithdrawalRecord }
+  | { kind: 'refused'; code: (typeof FLOOR_ARENA_WITHDRAW_REFUSAL_CODES)[number]; withdrawal: ArenaWithdrawalRecord }
+  | { kind: 'wait'; reason: 'paused' | 'account_cap' }
+  | { kind: 'gone' };
+
+/** Final refusal in the admission transaction: state refused + code + finalized_at + a 'withdraw' event. */
+async function refuseWithdrawalLocked(
+  tx: Tx,
+  row: ArenaWithdrawalRecord,
+  code: (typeof FLOOR_ARENA_WITHDRAW_REFUSAL_CODES)[number],
+): Promise<ArenaWithdrawAdmission> {
+  const updated = (await rows(sql`
+    UPDATE floor_arena_withdrawals SET state = 'refused', error_code = ${code}, finalized_at = now()
+    WHERE id = ${row.id}::uuid AND state = 'requested'
+    RETURNING *
+  `, tx))[0];
+  if (!updated) return { kind: 'gone' };
+  const withdrawal = mapWithdrawalRow(updated);
+  await insertWithdrawEvent(tx, row.agentId,
+    `Withdrawal of ${withdrawAmountText(row.requestedAtomic, row.asset)} not sent: ${code}.`,
+    { action: 'refused', withdrawalId: row.id, code });
+  return { kind: 'refused', code, withdrawal };
+}
+
+/**
+ * THE ONLY DOOR to the transfer POST (I1). One transaction: add-on lock
+ * `floor-arena-addon:<agentId>` FIRST (I5: an add-on reservation and this
+ * admission never interleave), then the account-wide cap lock, then the row
+ * FOR UPDATE. Checks a-j of contract §5 in order; a refusal books 'refused' +
+ * code + finalized_at + a 'withdraw' event in this transaction; 'wait' leaves
+ * the row 'requested'. 'dispatched' = the compare-and-set
+ * `requested -> dispatching` returned the row: only then may the caller POST,
+ * once, to `withdrawal.destination` for `withdrawal.amountAtomic`.
+ * `now` is the clock for the address activation (d); `dispatched_at` and the
+ * account-wide day (i) both use the database clock of this transaction.
+ */
+export async function admitArenaWithdrawal(input: {
+  withdrawalId: string;
+  live: ClawPumpArenaWalletLive;
+  destinationHasUsdcAccount: boolean;
+  paused: () => boolean;
+  now: Date;
+}): Promise<ArenaWithdrawAdmission> {
+  if (!UUID_RE.test(input.withdrawalId)) return { kind: 'gone' };
+  // agent_id never changes (0074 guard trigger): this unlocked read only picks the lock key.
+  const head = (await rows(sql`SELECT agent_id FROM floor_arena_withdrawals WHERE id = ${input.withdrawalId}::uuid`))[0];
+  if (!head) return { kind: 'gone' };
+  const agentId = String(head.agent_id);
+  const limits = FLOOR_ARENA_WITHDRAW_LIMITS;
+  return db.transaction(async (tx): Promise<ArenaWithdrawAdmission> => {
+    await tx.execute(addonLock(agentId));
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended('floor-arena-withdraw-cap', 0))`);
+    // a. The row, locked; anything but 'requested' is gone (another leader, a cancel).
+    const locked = (await rows(sql`SELECT * FROM floor_arena_withdrawals WHERE id = ${input.withdrawalId}::uuid FOR UPDATE`, tx))[0];
+    if (!locked) return { kind: 'gone' };
+    const row = mapWithdrawalRow(locked);
+    if (row.state !== 'requested' || row.agentId !== agentId) return { kind: 'gone' };
+    // b. The operator pause holds admission (the row waits).
+    if (input.paused()) return { kind: 'wait', reason: 'paused' };
+    // c. The same provisioned USER row and ClawPump wallet as at request time; the live read is of that wallet.
+    const agent = await rows(sql`
+      SELECT 1 FROM floor_arena_agents
+      WHERE id = ${agentId} AND kind = 'user' AND provision_state = 'ready'
+        AND clawpump_agent_id = ${row.sourceClawpumpAgentId} AND clawpump_wallet = ${row.sourceWallet}
+      FOR SHARE
+    `, tx);
+    if (agent.length === 0) return refuseWithdrawalLocked(tx, row, 'agent_changed');
+    if (input.live.address !== row.sourceWallet) return refuseWithdrawalLocked(tx, row, 'source_mismatch');
+    // d. The address the row copied is still this agent's current, ACTIVE address (I3).
+    const address = await rows(sql`
+      SELECT 1 FROM floor_arena_withdraw_addresses
+      WHERE id = ${row.addressId}::uuid AND agent_id = ${agentId} AND revoked_at IS NULL
+        AND active_at <= ${input.now.toISOString()}::timestamptz AND address = ${row.destination}
+    `, tx);
+    if (address.length === 0) return refuseWithdrawalLocked(tx, row, 'address_revoked');
+    // e. Gas (D34-b): the fee pre-check, plus the rent of a new USDC token account.
+    const usdc = row.asset === 'USDC';
+    const needLamports = BigInt(limits.feePrecheckLamports)
+      + (usdc && !input.destinationHasUsdcAccount ? BigInt(limits.ataRentLamports) : 0n);
+    if (input.live.solLamports < needLamports) return refuseWithdrawalLocked(tx, row, 'needs_sol');
+    // f. Free balance. USDC: minus open add-on reservations and add-on calls the live read may not show yet (D34-i).
+    let free: bigint;
+    if (usdc) {
+      const addonHeld = (await rows(sql`
+        SELECT CEIL(1000000 * COALESCE(SUM(price_usd), 0))::bigint::text AS held FROM floor_arena_addon_calls
+        WHERE agent_id = ${agentId}
+          AND (state = 'reserved' OR at >= ${new Date(input.live.readAt.getTime() - 5_000).toISOString()}::timestamptz)
+      `, tx))[0];
+      free = input.live.usdcAtomic - BigInt(String(addonHeld?.held ?? '0'));
+    } else {
+      free = input.live.solLamports - BigInt(limits.solKeepLamports);
+    }
+    // g. The amount. USDC: this agent's COUNTED sum on the row's requested_at UTC day, this row excluded.
+    let daySum = 0n;
+    if (usdc) {
+      const dayStart = utcDayOf(row.requestedAt);
+      const daySumRow = (await rows(sql`
+        SELECT COALESCE(SUM(COALESCE(amount_atomic, requested_atomic)), 0)::text AS sum FROM floor_arena_withdrawals
+        WHERE agent_id = ${agentId} AND asset = 'USDC' AND id <> ${row.id}::uuid
+          AND ${stateIn(FLOOR_ARENA_WITHDRAW_COUNTED_STATES)}
+          AND requested_at >= ${dayStart.toISOString()}::timestamptz
+          AND requested_at < ${new Date(dayStart.getTime() + DAY_MS).toISOString()}::timestamptz
+      `, tx))[0];
+      daySum = BigInt(String(daySumRow?.sum ?? '0'));
+    }
+    const dayCap = BigInt(limits.agentDailyUsdcAtomic);
+    let amount: bigint;
+    if (row.amountMode === 'exact' && row.requestedAtomic !== null) {
+      amount = row.requestedAtomic;
+    } else {
+      amount = free;
+      if (usdc && dayCap - daySum < amount) amount = dayCap - daySum;
+    }
+    // h. Minimum, balance, agent day cap (exact USDC).
+    if (amount < BigInt(usdc ? limits.minUsdcAtomic : limits.minSolLamports)) return refuseWithdrawalLocked(tx, row, 'below_minimum');
+    if (amount > free) return refuseWithdrawalLocked(tx, row, 'insufficient_balance');
+    if (usdc && row.amountMode === 'exact' && daySum + amount > dayCap) return refuseWithdrawalLocked(tx, row, 'agent_daily_cap');
+    // i. Account-wide USDC per UTC day (dispatched_at basis, database clock). Over it the row waits.
+    if (usdc) {
+      const accountRow = (await rows(sql`
+        SELECT COALESCE(SUM(amount_atomic), 0)::text AS sum FROM floor_arena_withdrawals
+        WHERE asset = 'USDC' AND ${stateIn(FLOOR_ARENA_WITHDRAW_COUNTED_STATES)}
+          AND dispatched_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+          AND dispatched_at < (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') + interval '1 day'
+      `, tx))[0];
+      if (BigInt(String(accountRow?.sum ?? '0')) + amount > BigInt(limits.accountDailyUsdcAtomic)) {
+        return { kind: 'wait', reason: 'account_cap' };
+      }
+    }
+    // j. The compare-and-set: the only way into 'dispatching'.
+    const preBalance = usdc ? input.live.usdcAtomic : input.live.solLamports;
+    const dispatched = (await rows(sql`
+      UPDATE floor_arena_withdrawals
+      SET state = 'dispatching', amount_atomic = ${bigParam(amount)}, pre_balance_atomic = ${bigParam(preBalance)},
+          pre_sol_lamports = ${bigParam(input.live.solLamports)}, dispatched_at = now()
+      WHERE id = ${row.id}::uuid AND state = 'requested'
+      RETURNING *
+    `, tx))[0];
+    if (!dispatched) return { kind: 'gone' };
+    const withdrawal = mapWithdrawalRow(dispatched);
+    await insertWithdrawEvent(tx, agentId,
+      `Sending ${withdrawAmountText(amount, row.asset)} to ${shortAddress(row.destination)}.`,
+      { action: 'dispatching', withdrawalId: row.id, asset: row.asset, amountAtomic: amount });
+    return { kind: 'dispatched', withdrawal };
+  });
+}
+
+/**
+ * The finalize compare-and-set: updates only WHERE id AND state = ANY(from);
+ * sets finalized_at for a final state (every state outside the open set); one
+ * 'withdraw' event in the same transaction. Null = CAS lost. A field left
+ * undefined in `patch` is not changed. A unique violation on the signature
+ * index throws ArenaWithdrawTxReusedError (nothing is written).
+ */
+export async function finalizeArenaWithdrawal(
+  id: string,
+  from: readonly FloorArenaWithdrawState[],
+  patch: {
+    state: FloorArenaWithdrawState;
+    errorCode?: string | null;
+    txSignature?: string | null;
+    recipientAccountCreated?: boolean | null;
+    postBalanceAtomic?: bigint | null;
+    sentAt?: Date;
+  },
+  event: { summary: string; data?: unknown },
+): Promise<ArenaWithdrawalRecord | null> {
+  if (from.length === 0 || !UUID_RE.test(id)) return null;
+  const sets: SQL[] = [sql`state = ${patch.state}`];
+  if (patch.errorCode !== undefined) sets.push(sql`error_code = ${patch.errorCode}`);
+  if (patch.txSignature !== undefined) sets.push(sql`tx_signature = ${patch.txSignature}`);
+  if (patch.recipientAccountCreated !== undefined) sets.push(sql`recipient_account_created = ${patch.recipientAccountCreated}::boolean`);
+  if (patch.postBalanceAtomic !== undefined) sets.push(sql`post_balance_atomic = ${bigParam(patch.postBalanceAtomic)}`);
+  if (patch.sentAt !== undefined) sets.push(sql`sent_at = ${patch.sentAt.toISOString()}::timestamptz`);
+  if (!(FLOOR_ARENA_WITHDRAW_OPEN_STATES as readonly string[]).includes(patch.state)) sets.push(sql`finalized_at = now()`);
+  try {
+    return await db.transaction(async (tx) => {
+      const updated = (await rows(sql`
+        UPDATE floor_arena_withdrawals SET ${sql.join(sets, sql`, `)}
+        WHERE id = ${id}::uuid AND ${stateIn(from)}
+        RETURNING *
+      `, tx))[0];
+      if (!updated) return null;
+      const withdrawal = mapWithdrawalRow(updated);
+      await insertWithdrawEvent(tx, withdrawal.agentId, event.summary,
+        event.data ?? { action: withdrawal.state, withdrawalId: withdrawal.id, code: withdrawal.errorCode });
+      return withdrawal;
+    });
+  } catch (error) {
+    if (uniqueViolationOn(error) === 'floor_arena_withdrawals_tx_uq') throw new ArenaWithdrawTxReusedError();
+    throw error;
+  }
+}
+
+/**
+ * Attaches a late signature (an old leader's result, or the one reconcile
+ * match) ONLY to an 'unknown' row that has none. False = no such row. A
+ * signature that another row already holds throws ArenaWithdrawTxReusedError.
+ */
+export async function attachArenaWithdrawalSignature(id: string, txSignature: string): Promise<boolean> {
+  if (!UUID_RE.test(id)) return false;
+  try {
+    const updated = await rows(sql`
+      UPDATE floor_arena_withdrawals SET tx_signature = ${txSignature}
+      WHERE id = ${id}::uuid AND state = 'unknown' AND tx_signature IS NULL
+      RETURNING id
+    `);
+    return updated.length > 0;
+  } catch (error) {
+    if (uniqueViolationOn(error) === 'floor_arena_withdrawals_tx_uq') throw new ArenaWithdrawTxReusedError();
+    throw error;
+  }
+}
+
+/** A reconcile pass that decided nothing: last_checked_at = now, check_count + 1. */
+export async function touchArenaWithdrawalCheck(id: string, now: Date): Promise<void> {
+  if (!UUID_RE.test(id)) return;
+  await db.execute(sql`
+    UPDATE floor_arena_withdrawals SET last_checked_at = ${now.toISOString()}::timestamptz, check_count = check_count + 1
+    WHERE id = ${id}::uuid
+  `);
+}
+
+/** True when any withdrawal row already holds this chain signature. */
+export async function arenaWithdrawSignatureUsed(txSignature: string): Promise<boolean> {
+  const list = await rows(sql`SELECT 1 FROM floor_arena_withdrawals WHERE tx_signature = ${txSignature} LIMIT 1`);
+  return list.length > 0;
+}
+
+/** SUM(price_usd) of this agent's add-on calls at or after `since`, any state (reconcile balance rule). */
+export async function readArenaAddonSpentSince(agentId: string, since: Date): Promise<number> {
+  const list = await rows(sql`
+    SELECT COALESCE(SUM(price_usd), 0) AS spent FROM floor_arena_addon_calls
+    WHERE agent_id = ${agentId} AND at >= ${since.toISOString()}::timestamptz
+  `);
+  return num(list[0]?.spent);
+}
+
+/**
+ * The open-withdrawal hold (D34-i): per asset SUM(COALESCE(amount_atomic,
+ * requested_atomic)) over OPEN rows; `usdcMaxPending` = an open USDC 'max' row
+ * whose amount is not fixed yet (the add-on side refuses while it exists).
+ */
+export async function readArenaOpenWithdrawHold(
+  agentId: string,
+  executor: typeof db | Tx = db,
+): Promise<{ usdcAtomic: bigint; solLamports: bigint; usdcMaxPending: boolean }> {
+  const row = (await rows(sql`
+    SELECT
+      COALESCE(SUM(COALESCE(amount_atomic, requested_atomic)) FILTER (WHERE asset = 'USDC'), 0)::text AS usdc,
+      COALESCE(SUM(COALESCE(amount_atomic, requested_atomic)) FILTER (WHERE asset = 'SOL'), 0)::text AS sol,
+      COALESCE(bool_or(asset = 'USDC' AND amount_mode = 'max' AND amount_atomic IS NULL), false) AS usdc_max_pending
+    FROM floor_arena_withdrawals
+    WHERE agent_id = ${agentId} AND ${stateIn(FLOOR_ARENA_WITHDRAW_OPEN_STATES)}
+  `, executor))[0];
+  return {
+    usdcAtomic: BigInt(String(row?.usdc ?? '0')),
+    solLamports: BigInt(String(row?.sol ?? '0')),
+    usdcMaxPending: row?.usdc_max_pending === true,
+  };
+}
+
+/**
+ * The leader's per-agent withdraw try-lock ('floor-arena-withdraw:<id>'), a copy
+ * of tryWithArenaX402Lock with a 150 s transaction bound. It only keeps two
+ * leaders from doing the same reads twice; it is NOT the money control (the
+ * admission CAS is, contract §4 proof (5)). The local test server (Postgres 16)
+ * has no transaction_timeout: the statement bound applies and we warn once.
+ */
+export async function tryWithArenaWithdrawLock<T>(
+  agentId: string,
+  fn: () => Promise<T>,
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
+  return db.transaction(async (tx) => {
+    const bound = await rows<{ tx_bound: string | null }>(sql`
+      SELECT set_config('statement_timeout', ${`${WITHDRAW_LOCK_STATEMENT_TIMEOUT_MS}ms`}, true) AS statement_bound,
+        CASE WHEN current_setting('transaction_timeout', true) IS NULL THEN NULL
+             WHEN set_config('transaction_timeout', '0', true) IS NOT NULL
+               THEN set_config('transaction_timeout', ${`${WITHDRAW_LOCK_TX_TIMEOUT_MS}ms`}, true) END AS tx_bound
+    `, tx);
+    if (!bound[0]?.tx_bound && !withdrawTxBoundMissingWarned) {
+      withdrawTxBoundMissingWarned = true;
+      console.warn('[floor-arena] this Postgres has no transaction_timeout (needs 17): withdraw lock transactions are bounded per statement only');
+    }
+    const got = (await rows<{ locked: boolean }>(sql`
+      SELECT pg_try_advisory_xact_lock(hashtextextended(${`floor-arena-withdraw:${agentId}`}, 0)) AS locked
+    `, tx))[0];
+    if (got?.locked !== true) return { acquired: false } as const;
+    return { acquired: true, value: await fn() } as const;
+  });
+}
+
+/** Admin list (full records; the route never returns message or signature text), newest request first. */
+export async function readArenaWithdrawalsAdmin(input: {
+  state: FloorArenaWithdrawState | null;
+  limit: number;
+}): Promise<ArenaWithdrawalRecord[]> {
+  const list = await rows(sql`
+    SELECT * FROM floor_arena_withdrawals
+    WHERE (${input.state}::text IS NULL OR state = ${input.state}::text)
+    ORDER BY requested_at DESC
+    LIMIT ${input.limit}
+  `);
+  return list.map(mapWithdrawalRow);
+}
+
+/** Admin: 'sent' or 'unknown' -> 'needs_review' with a note. Never sends, never edits money fields. */
+export async function markArenaWithdrawalNeedsReview(id: string, note: string): Promise<boolean> {
+  if (!UUID_RE.test(id)) return false;
+  return db.transaction(async (tx) => {
+    const updated = (await rows(sql`
+      UPDATE floor_arena_withdrawals SET state = 'needs_review', review_note = ${note}, finalized_at = now()
+      WHERE id = ${id}::uuid AND state IN ('sent', 'unknown')
+      RETURNING agent_id
+    `, tx))[0];
+    if (!updated) return false;
+    await insertWithdrawEvent(tx, String(updated.agent_id), 'An operator checks this withdrawal.',
+      { action: 'needs_review', withdrawalId: id });
+    return true;
+  });
 }
