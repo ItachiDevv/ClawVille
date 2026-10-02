@@ -15,6 +15,17 @@
  *   - Identity-required routes — `requireAuthOrAgentSession` middleware
  *     resolves Lucia OR `X-Clawville-Agent-Session` and populates
  *     `c.var.identity`.
+ *   - Queue + party routes (queue, leave-queue, queue-status, party/me,
+ *     party create/join/kick/leave) also chain `requireLedgerCapableIdentity`
+ *     (security A12, 2026-09-30). A queued match credits real CT and
+ *     leaderboard points to the bound avatar, queue-status hands out the
+ *     matched room's WS short code, and party/me hands out the party invite
+ *     code — so an agent session that has not proved ownership of its bound
+ *     avatar gets 403 `agent_session_not_ledger_authorized`. Humans pass
+ *     unchanged. The remaining identity reads (recent results, room state and
+ *     results, leaderboard/me) and the result acknowledge marker move no value
+ *     and expose nothing a room participant or the public board does not
+ *     already see, so they stay on `requireAuthOrAgentSession` alone.
  *
  * Naming note: `activityRoutes` is already exported by
  * `apps/api/src/routes/activity.ts` (a singular, avatar activity-log
@@ -35,7 +46,10 @@ import {
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { lucia } from '../lib/auth';
-import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import {
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+} from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import {
@@ -253,7 +267,7 @@ activitiesV2Routes.get('/:id', async (c) => {
 
 // ─── POST /api/activities/:id/queue ────────────────────────────────────────
 
-activitiesV2Routes.post('/:id/queue', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.post('/:id/queue', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const id = c.req.param('id');
   const def = getActivityDefinition(id);
   if (!def) throw new HTTPException(404, { message: 'Activity not found' });
@@ -388,7 +402,7 @@ activitiesV2Routes.post('/:id/queue', requireAuthOrAgentSession, async (c) => {
 
 // ─── POST /api/activities/:id/leave-queue ──────────────────────────────────
 
-activitiesV2Routes.post('/:id/leave-queue', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.post('/:id/leave-queue', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const id = c.req.param('id');
   const def = getActivityDefinition(id);
   if (!def) throw new HTTPException(404, { message: 'Activity not found' });
@@ -402,7 +416,7 @@ activitiesV2Routes.post('/:id/leave-queue', requireAuthOrAgentSession, async (c)
 
 // ─── GET /api/activities/:id/queue-status ──────────────────────────────────
 
-activitiesV2Routes.get('/:id/queue-status', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.get('/:id/queue-status', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const id = c.req.param('id');
   const def = getActivityDefinition(id);
   if (!def) throw new HTTPException(404, { message: 'Activity not found' });
@@ -424,13 +438,13 @@ activitiesV2Routes.get('/:id/queue-status', requireAuthOrAgentSession, async (c)
 
 // ─── Party routes ──────────────────────────────────────────────────────────
 
-activitiesV2Routes.get('/party/me', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.get('/party/me', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const identity = c.get('identity');
   const party = activityQueueService.partyForAvatar(identity.avatarId);
   return c.json({ ok: true, party: await serializeParty(party) });
 });
 
-activitiesV2Routes.post('/party', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.post('/party', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const identity = c.get('identity');
 
   const body = await c.req.json().catch(() => ({}));
@@ -453,7 +467,7 @@ activitiesV2Routes.post('/party', requireAuthOrAgentSession, async (c) => {
   return c.json({ ok: true, party: await serializeParty(party) });
 });
 
-activitiesV2Routes.post('/party/:shortCode/join', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.post('/party/:shortCode/join', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const shortCodeParse = partyShortCodeParamSchema.safeParse(c.req.param('shortCode'));
   if (!shortCodeParse.success) {
     throw new HTTPException(400, { message: 'Invalid party short code' });
@@ -471,7 +485,7 @@ activitiesV2Routes.post('/party/:shortCode/join', requireAuthOrAgentSession, asy
   }
 });
 
-activitiesV2Routes.post('/party/:partyId/kick', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.post('/party/:partyId/kick', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const partyIdParse = partyIdParamSchema.safeParse(c.req.param('partyId'));
   if (!partyIdParse.success) {
     throw new HTTPException(400, { message: 'Invalid partyId' });
@@ -495,7 +509,7 @@ activitiesV2Routes.post('/party/:partyId/kick', requireAuthOrAgentSession, async
   }
 });
 
-activitiesV2Routes.post('/party/:partyId/leave', requireAuthOrAgentSession, async (c) => {
+activitiesV2Routes.post('/party/:partyId/leave', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const partyIdParse = partyIdParamSchema.safeParse(c.req.param('partyId'));
   if (!partyIdParse.success) {
     throw new HTTPException(400, { message: 'Invalid partyId' });

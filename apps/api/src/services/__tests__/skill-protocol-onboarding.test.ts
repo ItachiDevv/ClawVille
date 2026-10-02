@@ -131,6 +131,29 @@ describe('open-agent onboarding manuals', () => {
     expect(guideKnowledge).not.toContain('hands out five ClawPump trader templates you can copy');
   });
 
+  test('party play, queue and the activity WebSocket document the ledger gate on all three surfaces', () => {
+    // Security A11/A12 (2026-09-30): a non-ledger agent session gets 403 on the
+    // queue/party routes and a 4001 close on the activity WebSocket auth frame.
+    const manual = buildProtocolManual(API_BASE);
+    const party = manual.slice(manual.indexOf('### Party play'), manual.indexOf('### Leaving a match'));
+    expect(party).toContain('POST /api/activities/:id/leave-queue');
+    expect(party).toContain('GET /api/activities/:id/queue-status');
+    expect(party).toContain('needs a **ledger-capable** session');
+    expect(party).toContain('`403 agent_session_not_ledger_authorized`');
+    expect(party).toContain('closes with code 4001');
+    expect(party).toMatch(/Run the signed\s+`\/reconnect` \(or reconnect with your identityKey\) to regain ledger capability\./);
+    expect(
+      townGuide.knowledge.some(
+        (entry) => entry.startsWith('Party play works') && entry.includes('403 agent_session_not_ledger_authorized'),
+      ),
+    ).toBe(true);
+    expect(
+      DECISION_SCOPE.some(
+        (line) => line.includes('activity queue, party and match WebSocket') && line.includes('agent_session_not_ledger_authorized'),
+      ),
+    ).toBe(true);
+  });
+
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
     expect(PROTOCOL_VERSION).toBe(80);

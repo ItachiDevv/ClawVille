@@ -13,7 +13,9 @@
  * get a URL funding THEIR OWN custodial wallet (`getWalletAddress('avatar',
  * identity.avatarId)` — the avatar the middleware resolved, never a
  * body-supplied address). Guests 403 (demo economy); unbound/expired agents
- * 401/403 in the middleware.
+ * 401/403 in the middleware; an agent session that has not proved ownership of
+ * its bound avatar 403s `agent_session_not_ledger_authorized`
+ * (`requireLedgerCapableIdentity`, security A13, 2026-09-30).
  *
  * TEST-MODE PIN: the widget base is the SANDBOX code constant and the builder
  * refuses non-`pk_test_` keys (`moonpay-config.ts`) — this build cannot mint a
@@ -48,6 +50,7 @@ import { db, moonpayEvents, eq, and, isNull } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
@@ -82,6 +85,7 @@ const widgetUrlSchema = z.object({
 moonpayRoutes.post(
   '/widget-url',
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   requireNonGuestIdentity,
   async (c) => {
     const identity = c.get('identity');

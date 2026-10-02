@@ -80,6 +80,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
 import {
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
@@ -419,8 +420,11 @@ partnerStorefrontRoutes.post('/admin/fulfillment', adminOnly, async (c) => {
 // ---------------------------------------------------------------------------
 // Rule E5 parity: requireAuthOrAgentSession resolves a human (Lucia cookie) OR a
 // connected/hosted agent (X-Clawville-Agent-Session → bound avatar); 403 for an
-// unbound/expired agent, never a guest demotion. No client price is accepted —
-// the purchase names an `offeringId` the SERVER prices.
+// unbound/expired agent, never a guest demotion. An agent session that has not
+// proved ownership of its bound avatar 403s `agent_session_not_ledger_authorized`
+// (requireLedgerCapableIdentity, security A14, 2026-09-30) before fulfillment can
+// ever open. No client price is accepted — the purchase names an `offeringId` the
+// SERVER prices.
 // ---------------------------------------------------------------------------
 
 const quoteSchema = z.object({
@@ -430,7 +434,7 @@ const quoteSchema = z.object({
   offeringId: z.string().min(1).max(128),
 });
 
-partnerStorefrontRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+partnerStorefrontRoutes.post('/quote', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
   if (!storefrontPurchaseRateLimiter.check(ip)) {
     return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
@@ -558,7 +562,7 @@ const settleSchema = z.object({
   offeringId: z.string().min(1).max(128),
 });
 
-partnerStorefrontRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+partnerStorefrontRoutes.post('/settle', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
   if (!storefrontPurchaseRateLimiter.check(ip)) {
     return c.json({ error: 'rate_limited', code: 'rate_limited' }, 429);
