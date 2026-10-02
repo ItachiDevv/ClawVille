@@ -61,7 +61,14 @@ export const buyItemAction: Action = {
       }
 
       const { avatarId, services } = state;
-      const { db, debitClawTokens } = services;
+      const { db, debitClawTokens, creditHouseTreasuryBookFee } = services;
+
+      // T0 fee routing (security batch 2, 2026-10-02): the price moves buyer ->
+      // house treasury, exactly like the REST shop. Without the routing service
+      // the price would silently burn, so refuse before any read or debit.
+      if (typeof creditHouseTreasuryBookFee !== 'function') {
+        return { success: false, text: 'Book purchases through chat are unavailable right now. Use the building shop.' };
+      }
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -121,8 +128,9 @@ export const buyItemAction: Action = {
         };
       }
 
-      // Debit + grant in ONE transaction: if the grant fails, the debit rolls
-      // back with it. The old debit-then-grant with a best-effort refund could
+      // Debit + treasury credit + grant in ONE transaction: if the credit or the
+      // grant fails, the debit and the credit roll back with it, so no path mints
+      // or loses vCLAW. The old debit-then-grant with a best-effort refund could
       // lose the buyer's vCLAW when the refund also failed (security, Codex
       // round 2). The grant is one atomic upsert (security M10).
       const balanceAfter = await db.transaction(async (tx: any) => {
@@ -134,6 +142,12 @@ export const buyItemAction: Action = {
             source: 'shop',
             metadata: { bookId: book.id, buildingId: book.building },
           },
+          tx,
+        );
+        // Same tx as the debit (REST `items.ts` step 1b). A null treasury is the
+        // service's logged pre-T0 burn; it never aborts the buyer's purchase.
+        await creditHouseTreasuryBookFee(
+          { bookId: book.id, buyerAvatarId: avatarId, amount: book.price },
           tx,
         );
         await grantInventoryItem(tx, { avatarId, itemId });
