@@ -1,56 +1,60 @@
 /**
  * trading-floor-screen-data.ts
  *
- * Turns the three Trading Arena queries the big board reads —
- * `GET /api/floor/arena/leaderboard?window=contest`, `GET /api/floor/arena/contest`
- * and `GET /api/floor/arena/tape` — into the small, drawable shape
- * `drawFloorScreen` needs, plus the redraw signature.
+ * Turns the two queries the big board reads into the drawable shape
+ * `drawFloorScreen` needs, plus the redraw signature (P15 T2, plan
+ * `ops/house-traders/arena-review/P15_PLAN_2026-10-02.md` §1):
+ *
+ *   - the house board, `GET /api/floor/arena/house-board`, through the T1 hook
+ *     `hooks/use-floor-arena-house-board.ts` (five columns, house order);
+ *   - the contest, `GET /api/floor/arena/contest`, through the existing hook,
+ *     ONLY as the fallback contest window (the house board carries its own).
  *
  * Kept apart from `trading-floor-screen-texture.ts` so the drawing code stays
  * free of app types, and apart from the React component so both halves are
  * unit-testable. Every input is typed `unknown` and read BY KEY: the hooks'
- * normalisers are a convenience for the panel, not the board's correctness
- * boundary, and a field that is not the type the board draws never reaches it.
- * The only value imports are `@clawville/shared` constants and the pure tape
- * module; nothing from the hooks module (react-query, the wallet adapter)
- * reaches the 3D scene chunk through this file.
+ * readers are a convenience, not the board's correctness boundary. The only
+ * value imports are `@clawville/shared` constants and the pure tape module;
+ * nothing from the hooks module (react-query, the wallet adapter) reaches the
+ * 3D scene chunk through this file.
  *
- * WHAT IS DELIBERATELY NOT CARRIED ACROSS:
- *   - `agentId`. An identifier never goes on the board, and a name that EQUALS
- *     the id (the panel hook's fallback for a missing name) is treated as no
- *     name at all.
- *   - `lastTradeAt`, `deaths`. The table has no column for them.
- *   - Any mint. The tape reader never reads it; only the route's `symbol`
- *     names a token, after the address strip.
- *   - `secondsLeft` / `generatedAt` on the contest body. They tick on every
- *     request, and a ticking field in the signature repaints the whole board
- *     every poll for identical pixels. The countdown is derived from
- *     `startsAt` / `endsAt` and the scene's 30 s clock instead.
+ * WHAT IS DELIBERATELY NOT CARRIED ACROSS: `generatedAt`, every event `at`
+ * (scan, watching, `openedAt`), `paramsVersion`, `held`, `sizeUsd`, the `all`
+ * window, `trades`, `deaths`, `openPositions` and `lastTradeAt`. The board does
+ * not draw them, and the ones that tick would repaint the whole board every
+ * poll for identical pixels. The countdown and the P&L window come from the
+ * contest window and the scene's 30 s clock instead.
  */
 
 import {
+  FLOOR_ARENA_HOUSE_AGENTS,
+  FLOOR_ARENA_MAX_OPEN_POSITIONS,
   FLOOR_ARENA_PAPER_COSTS,
+  FLOOR_ARENA_PARAM_BOUNDS,
   FLOOR_ARENA_POSITION_USD,
-  floorArenaTemplateById,
+  type FloorArenaBound,
+  type FloorArenaHouseAgent,
 } from '@clawville/shared';
 
 import {
-  FLOOR_SCREEN_MAX_ROWS,
+  FLOOR_SCREEN_COIN_WORD,
   type FloorScreenBasis,
+  type FloorScreenColumn,
   type FloorScreenData,
-  type FloorScreenPrize,
-  type FloorScreenRow,
-  type FloorScreenRowTag,
+  type FloorScreenExits,
+  type FloorScreenScan,
+  type FloorScreenWindow,
 } from './trading-floor-screen-texture';
 import {
   classifyArenaTapeItem,
   readArenaTape,
+  tapeSymbol,
   tapeTraderName,
   type ArenaTapeItem,
 } from './trading-floor-trade-tape';
 
 /** What the board needs from one react-query result. A `UseQueryResult` is
- *  assignable as it stands, so the component passes the three results in. */
+ *  assignable as it stands, so the component passes the results in. */
 export interface ArenaQueryInput {
   readonly data: unknown;
   readonly isLoading: boolean;
@@ -58,45 +62,58 @@ export interface ArenaQueryInput {
 }
 
 export interface FloorScreenInputs {
-  readonly leaderboard: ArenaQueryInput;
+  /** The T1 house-board query. Absent reads as never fetched (connecting). */
+  readonly houseBoard?: ArenaQueryInput;
+  /** The contest query: the fallback contest window. */
   readonly contest: ArenaQueryInput;
-  readonly tape: ArenaQueryInput;
+  /**
+   * COMPATIBILITY ONLY, removed with plan request W5: the room owner's
+   * `trading-floor-decor.test.ts` still calls
+   * `buildFloorScreenData({ leaderboard, contest, tape }, now).tape`. `tape`
+   * feeds only the `tape` result field, which the board does not draw and the
+   * signature does not read; `leaderboard` is ignored.
+   */
+  readonly tape?: ArenaQueryInput;
+  readonly leaderboard?: ArenaQueryInput;
 }
 
-/** Newest N entries on the board's bottom row. The row truncates at 95
- *  characters (about three entries) anyway; this only bounds the work. */
+/** The board data plus the tape lines kept for the decor test (W5). */
+export type FloorScreenBuild = FloorScreenData & { readonly tape: readonly string[] };
+
+const NEVER_FETCHED: ArenaQueryInput = Object.freeze({
+  data: undefined,
+  isLoading: true,
+  isError: false,
+});
+
+/** Newest N entries of the compatibility tape. */
 const BOARD_TAPE_LIMIT = 12;
 
+/** The symbol part of a column line: "WATCH " + 8 fits the 14-character budget. */
+const SYMBOL_CHARS = 8;
+
 /**
- * The method line, from the constants the ENGINE runs on. Not re-typed here:
- * the board's "$20 PER POSITION" and "2.5% BUY + 1% SELL COSTS" are the same
- * numbers the paper fills use, so the wall cannot state a method the engine
- * has stopped using.
+ * The footer and the open count, from the constants the ENGINE runs on. Not
+ * re-typed: the wall cannot state a method the engine has stopped using.
+ * `maxOpen` is the platform cap (lead decision 2026-10-02): the house-board
+ * payload carries no live `max_open`, and no agent can hold more than the cap.
  */
 const BASIS: FloorScreenBasis = Object.freeze({
   positionUsd: FLOOR_ARENA_POSITION_USD,
   buyCostPct: FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct,
   sellCostPct: FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct,
+  maxOpen: FLOOR_ARENA_MAX_OPEN_POSITIONS,
 });
-
-/** The one prize token the board will name. A prize in any other token is not
- *  a claim the board makes, so the whole prize line is dropped instead. */
-const PRIZE_TOKEN = '$CLAWVILLE';
 
 // ── time ────────────────────────────────────────────────────────────────────
 
 /**
  * The only times this board will reason about: after the epoch and before 2100.
- *
- * Deliberately PLAUSIBILITY, not representability. The ECMAScript max time
- * value (8.64e15) only stops `toISOString` from throwing and leaves two silent
- * wrongs behind it: the expanded `±YYYYYY` year form, whose extra three
- * characters shift `slice(11, 16)` to "13T00", and age arithmetic that reports
- * "99979284D" with a straight face. Neither is an error anywhere. Both would be
- * painted on a wall in the game world.
- *
- * It bounds the TRADE and CONTEST timestamps too, not just the clock: they come
- * from the API, and `Date.parse('+275760-09-13T00:00:00.000Z')` is finite.
+ * Deliberately PLAUSIBILITY, not representability: the expanded `±YYYYYY` year
+ * form shifts `slice(11, 16)` to "13T00", and age arithmetic on an absurd time
+ * reports "99979284D" with a straight face. It bounds the contest timestamps
+ * too: they come from the API, and `Date.parse('+275760-09-13T00:00:00.000Z')`
+ * is finite.
  */
 const MAX_PLAUSIBLE_TIME_MS = 4102444800000; // 2100-01-01T00:00:00.000Z, exclusive
 
@@ -104,63 +121,37 @@ function isPlausibleTime(ms: number): boolean {
   return Number.isFinite(ms) && ms > 0 && ms < MAX_PLAUSIBLE_TIME_MS;
 }
 
-/**
- * ONE definition of "the clock is usable", read by the header clock, the
- * countdown and the tape age.
- *
- * It exists because they fail differently on the same bad input and only one
- * of those failures is loud: an unusable `nowMs` makes `toISOString` throw, but
- * it makes the age arithmetic produce `NaN`, and `${Math.floor(NaN / 60_000)}M`
- * is the string "NaNM" — which is not an error anywhere, it is just painted on
- * the wall.
- */
+/** ONE definition of "the clock is usable", read by the clock, the countdown,
+ *  the P&L window and the tape ages. */
 function isUsableClock(nowMs: number): boolean {
   return isPlausibleTime(nowMs);
 }
 
-/** Clock skew we will forgive on a trade timestamp. Server time and our clock
- *  disagree by SECONDS, so 60 s is already generous; the bound is RELATIVE to
- *  the clock, which is the only way a plausible-looking 2099 is caught. */
+/** Clock skew we forgive on a trade timestamp (compatibility tape only). */
 const FUTURE_SKEW_MS = 60_000;
 
-/**
- * A trade time we will DATE: plausible, and not in the future. A future time
- * clamps to zero age through `Math.max(0, …)` and would read "NOW" — a board
- * claiming an agent had just traded, reached through arithmetic.
- */
 function isDatableTradeTime(atMs: number, nowMs: number): boolean {
   return isPlausibleTime(atMs) && atMs <= nowMs + FUTURE_SKEW_MS;
 }
 
-/** Length of the ordinary `YYYY-MM-DDTHH:mm:ss.sssZ` form. The expanded
- *  `±YYYYYY` year form is 27 and every index after the year moves. */
+/** Length of the ordinary `YYYY-MM-DDTHH:mm:ss.sssZ` form. */
 const ISO_LENGTH = 24;
 
 /**
- * Header clock, UTC and minute-resolution.
- *
- * `toISOString` rather than `toLocaleTimeString`: the board is redrawn from the
- * scene's 30 s tick, so the reading is already minute-grained, and a locale
- * format would vary by machine — including between a test runner and a browser.
+ * Header clock, UTC and minute-resolution. `toISOString` rather than a locale
+ * format: the wall must not depend on the machine, and the scene redraws on a
+ * 30 s tick, so the reading is minute-grained anyway.
  */
 export function floorClockLabel(nowMs: number): string {
-  // `isUsableClock` already bounds this to 1970-2100, so the length check
-  // below cannot fire today. It stays as an ASSERTION of that bound: the
-  // `slice(11, 16)` offsets are only correct for the ordinary 24-character
-  // form, and a widened bound would return the expanded `±YYYYYY` form, whose
-  // slice reads "13T00" — a string that looks like a time on a wall.
+  // The length check is an ASSERTION of the plausibility bound: `slice(11, 16)`
+  // is only correct for the ordinary 24-character form.
   if (!isUsableClock(nowMs)) return 'CLOCK OFFLINE';
   const iso = new Date(nowMs).toISOString();
   return iso.length === ISO_LENGTH ? `${iso.slice(11, 16)} UTC` : 'CLOCK OFFLINE';
 }
 
-/** Tape-width age: "NOW", "4M", "2H", "3D". */
+/** Tape-width age: "NOW", "4M", "2H", "3D" (compatibility tape only). */
 function shortAge(atMs: number | null, nowMs: number): string {
-  // RECENT = we never had a time and the feed vouches for recency. TIME
-  // UNKNOWN = we had inputs and could not produce a trustworthy reading.
-  // Falling back to RECENT after a failed reading would present a substitute
-  // for a reading we could not make, and on the tape it sits in the same
-  // column as "4M", where it reads as "moments ago". (tf3d-audit, 2026-09-19.)
   if (atMs === null) return 'RECENT';
   if (!isUsableClock(nowMs) || !isDatableTradeTime(atMs, nowMs)) return 'TIME UNKNOWN';
   const ageMs = Math.max(0, nowMs - atMs);
@@ -183,12 +174,10 @@ function span(ms: number): string {
 }
 
 /**
- * "STARTS IN 3H 12M", "ENDS IN 4D 03H 12M", "CONTEST ENDED", or null.
- *
- * Minute resolution and FLOORED, like any countdown: the board redraws every
- * 30 s, so it can be up to half a minute behind, never ahead. Null — nothing
- * drawn — when the clock or either end of the window is unusable, or the
- * window is inverted: a countdown to a guessed time is worse than none.
+ * "STARTS IN 3H 12M", "ENDS IN 4D 03H 12M", "CONTEST ENDED", or null. Minute
+ * resolution (lead decision 2026-10-02: the countdown keeps its minutes) and
+ * FLOORED, so it can run behind the true time but never ahead of it. Null when
+ * the clock or either end of the window is unusable, or the window is inverted.
  */
 export function contestCountdownLabel(
   startsAtMs: number | null,
@@ -210,161 +199,190 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/**
- * A finite NUMBER, or NaN. Not 0: every figure on this board is a claim, and
- * the formatters print NaN as `N/A` (money) or `-` (counts). A numeric STRING
- * is refused on purpose, as it was on the house-trader board: the route sends
- * numbers, and a string where a number belongs means we cannot vouch for it.
- */
-function num(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
-}
-
 function isoMs(value: unknown): number | null {
   if (typeof value !== 'string') return null;
   const ms = Date.parse(value);
   return isPlausibleTime(ms) ? ms : null;
 }
 
-/** A drawable row plus its `kind`, which only the call to action reads. */
-interface ReadRow {
-  readonly kind: 'house' | 'user' | null;
-  readonly row: FloorScreenRow;
+/** Money: null when nothing was sent ("-"), NaN when it is not a finite number ("N/A"). */
+function money(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
 }
 
-function readRow(raw: unknown): ReadRow | null {
-  const wire = record(raw);
-  if (!wire) return null;
-  const kind = wire.kind === 'house' || wire.kind === 'user' ? wire.kind : null;
-  const agentId = typeof wire.agentId === 'string' ? wire.agentId : '';
-  const rawName = typeof wire.name === 'string' ? wire.name : '';
-  const templateId = typeof wire.templateId === 'string' ? wire.templateId : '';
-  const rank = num(wire.rank);
-  const tag: FloorScreenRowTag =
-    kind === 'house' ? 'house' : kind === 'user' && wire.eligible === false ? 'no-prize' : null;
-  return {
-    kind,
-    row: {
-      // The panel hook maps a missing rank to 0; "#0" is not a place.
-      rank: rank >= 1 ? rank : Number.NaN,
-      name: rawName === agentId ? '' : rawName,
-      tag,
-      template: floorArenaTemplateById(templateId)?.displayName ?? templateId,
-      realisedUsd: num(wire.realisedUsd),
-      trades: num(wire.trades),
-      wins: num(wire.wins),
-      // The route's `losses` (closes with `pnl_usd < 0`) and NOTHING derived.
-      // `trades - wins` looked exact and is not: `trades` counts a zero-P&L
-      // close too, which the tape calls flat, so one flat close would read
-      // "0/1" here beside a slate chip (Codex review round 2). Absent prints
-      // "-".
-      losses: num(wire.losses),
-      openPositions: num(wire.openPositions),
-    },
-  };
-}
-
-/** Every readable row, in rank order. Accepts the bare array the panel hook
- *  returns or the route's `{ rows }` envelope. */
-function readLeaderboard(data: unknown): ReadRow[] {
-  const list: unknown = Array.isArray(data) ? data : record(data)?.rows;
-  if (!Array.isArray(list)) return [];
-  const rows = list
-    .map(readRow)
-    .filter((read): read is ReadRow => read !== null);
-  // Stable, and an unreadable rank sorts LAST rather than first: the route's
-  // own order is kept among ties and among the unranked.
-  const order = (read: ReadRow) => (Number.isFinite(read.row.rank) ? read.row.rank : Infinity);
-  return rows.sort((a, b) => {
-    const delta = order(a) - order(b);
-    // Infinity - Infinity is NaN; two unranked rows keep the route's order.
-    return Number.isNaN(delta) ? 0 : delta;
-  });
-}
-
-interface ProjectedContest {
-  readonly title: string;
-  readonly startsAtMs: number | null;
-  readonly endsAtMs: number | null;
-  readonly prizes: readonly FloorScreenPrize[];
+/** A count: a non-negative safe integer, else NaN ("-"). A numeric STRING is refused. */
+function count(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : Number.NaN;
 }
 
 /**
- * The contest header. Reads the route's nested `contest` block or a flattened
- * view, so a panel hook that flattens it does not blank the header.
- *
- * Prizes are ALL-OR-NOTHING: one prize in an unknown token, or with an
- * unreadable place or amount, drops the whole line. A partial prize line would
- * state the places the board happens to read and silently lose the rest.
+ * An exit parameter inside its bound (`FLOOR_ARENA_PARAM_BOUNDS`), null when
+ * OFF, NaN when unreadable or outside the bound (it prints N/A, never a figure
+ * no rule allows).
  */
-function readContest(data: unknown): ProjectedContest | null {
+function bounded(value: unknown, bound: FloorArenaBound): number | null {
+  if (value === null) return null;
+  return typeof value === 'number' && Number.isFinite(value) && value >= bound.min && value <= bound.max
+    ? value
+    : Number.NaN;
+}
+
+/** A coin symbol as the board may print it: masked or unreadable -> COIN. */
+function boardSymbol(raw: unknown, masked: unknown): string {
+  if (masked === true) return FLOOR_SCREEN_COIN_WORD;
+  // The tape's symbol rule: no `$`, no decimal number, no 5+ digit run, cut first.
+  const shown = tapeSymbol(typeof raw === 'string' ? raw : null, SYMBOL_CHARS);
+  return shown.length > 0 ? shown : FLOOR_SCREEN_COIN_WORD;
+}
+
+function readExits(value: unknown): FloorScreenExits | null {
+  const exits = record(value);
+  if (!exits) return null;
+  const bounds = FLOOR_ARENA_PARAM_BOUNDS.exits;
+  return {
+    tpMult: bounded(exits.tpMult, bounds.tp_multiple),
+    stopMult: bounded(exits.stopMult, bounds.stop_mult),
+    maxHoldS: bounded(exits.maxHoldS, bounds.max_hold_s),
+  };
+}
+
+function readScan(value: unknown): FloorScreenScan | null {
+  const scan = record(value);
+  if (!scan) return null;
+  const top = Array.isArray(scan.topSkip) ? record(scan.topSkip[0]) : null;
+  return {
+    evaluated: count(scan.evaluated),
+    passed: count(scan.passed),
+    topSkipCode: typeof top?.code === 'string' && top.code.length > 0 ? top.code : null,
+  };
+}
+
+interface WindowStats {
+  readonly realisedUsd: number | null;
+  readonly wins: number;
+  readonly losses: number;
+}
+
+function readWindowStats(stats: Record<string, unknown> | null, key: string): WindowStats {
+  const slice = record(stats?.[key]);
+  return {
+    realisedUsd: money(slice?.realisedUsd),
+    wins: count(slice?.wins),
+    losses: count(slice?.losses),
+  };
+}
+
+/** A column with BOTH P&L windows; the clock picks one in `buildFloorScreenData`. */
+type ProjectedColumn = Omit<FloorScreenColumn, keyof WindowStats> & {
+  readonly contest: WindowStats;
+  readonly last24h: WindowStats;
+};
+
+function readColumn(house: FloorArenaHouseAgent, raw: Record<string, unknown> | null): ProjectedColumn {
+  const mode = raw?.mode === 'paper' || raw?.mode === 'live' ? raw.mode : null;
+  const status =
+    raw?.status === 'active' || raw?.status === 'paused' || raw?.status === 'stopped'
+      ? raw.status
+      : null;
+  // The payload's rule: a missing house row has null mode and status. Every
+  // live figure of such a column prints N/A or "-", never a zero.
+  const known = mode !== null || status !== null;
+  const open = known && Array.isArray(raw?.open) ? raw.open.slice(0, FLOOR_ARENA_MAX_OPEN_POSITIONS) : null;
+  const first = open ? record(open[0]) : null;
+  const watching = known ? record(raw?.watching) : null;
+  const stats = known ? record(raw?.stats) : null;
+  const name = typeof raw?.name === 'string' && raw.name.length > 0 ? raw.name : house.name;
+  return {
+    name,
+    templateId: house.templateId,
+    mode,
+    status,
+    known,
+    exits: known ? readExits(raw?.exits) : null,
+    scan: known ? readScan(raw?.scan) : null,
+    watching: watching ? { symbol: boardSymbol(watching.symbol, watching.masked) } : null,
+    openCount: open ? open.length : Number.NaN,
+    newest: first
+      ? {
+          symbol: boardSymbol(first.symbol, first.masked),
+          // No mark yet is no figure: N/A, not 1.00X.
+          markMult: money(first.lastMarkMult) ?? Number.NaN,
+        }
+      : null,
+    contest: readWindowStats(stats, 'contest'),
+    last24h: readWindowStats(stats, 'last24h'),
+  };
+}
+
+/**
+ * Five columns in `FLOOR_ARENA_HOUSE_AGENTS` order (= `FLOOR_ARENA_TEMPLATES`
+ * order), whatever order the wire used. A house agent the wire did not send
+ * keeps its name and template with every live field unknown.
+ */
+function readColumns(data: unknown): ProjectedColumn[] {
+  const agents = record(data)?.agents;
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const item of Array.isArray(agents) ? agents : []) {
+    const row = record(item);
+    const id = typeof row?.id === 'string' ? row.id : null;
+    if (row && id && !byId.has(id)) byId.set(id, row);
+  }
+  return FLOOR_ARENA_HOUSE_AGENTS.map((house) => readColumn(house, byId.get(house.id) ?? null));
+}
+
+interface ContestWindow {
+  readonly startsAtMs: number;
+  readonly endsAtMs: number;
+}
+
+/** `{ contest: { startsAt, endsAt } }` (both hooks) or a flattened view. */
+function readContestWindow(data: unknown): ContestWindow | null {
   const outer = record(data);
   if (!outer) return null;
   const contest = record(outer.contest) ?? outer;
-  const prizes: FloorScreenPrize[] = [];
-  let prizesReadable = Array.isArray(contest.prizes) && contest.prizes.length > 0;
-  if (prizesReadable) {
-    for (const raw of contest.prizes as unknown[]) {
-      const prize = record(raw);
-      const place = num(prize?.place);
-      const amount = num(prize?.amount);
-      if (
-        !prize ||
-        prize.token !== PRIZE_TOKEN ||
-        !Number.isInteger(place) ||
-        place < 1 ||
-        !(amount > 0)
-      ) {
-        prizesReadable = false;
-        break;
-      }
-      prizes.push({ place, amount });
-    }
-  }
-  return {
-    title: typeof contest.name === 'string' ? contest.name : '',
-    startsAtMs: isoMs(contest.startsAt),
-    endsAtMs: isoMs(contest.endsAt),
-    prizes: prizesReadable ? prizes.sort((a, b) => a.place - b.place) : [],
-  };
+  const startsAtMs = isoMs(contest.startsAt);
+  const endsAtMs = isoMs(contest.endsAt);
+  return startsAtMs !== null && endsAtMs !== null && endsAtMs > startsAtMs
+    ? { startsAtMs, endsAtMs }
+    : null;
 }
 
 // ── projection: ONE list of what the board draws ────────────────────────────
 
 /**
- * EVERYTHING the board draws, minus the clock. Consumed by the drawable
- * builder AND by the redraw signature, so the trigger cannot forget a field
- * the draw starts showing (derived, not enumerated: two hand-kept lists are
- * how the house-trader board's realised block and tape once repainted late).
- *
- * The clock is the ONE input left out, deliberately: the countdown and the
- * tape ages move with it, and the scene's 30 s tick repaints for those.
+ * EVERYTHING the board draws, minus the clock. Consumed by the drawable builder
+ * AND by the redraw signature, so the trigger cannot forget a field the draw
+ * starts showing. Both P&L windows are in it: the clock picks one, and the
+ * scene's 30 s tick repaints when it flips.
  *
  * ONE RULE FOR THE WHOLE ROOM (lead, 2026-10-01): a failed refetch keeps the
- * LAST GOOD data — react-query keeps `data` through an error, and the 3D tape
- * and the floor status label already draw it — and only a query that has
- * NEVER had data shows "ARENA DATA UNAVAILABLE" / "STANDING BY". The board used
- * to clear its table and tape row on any error while the 3D tape kept its
- * chips, so the room gave two answers for one feed. `isError` is therefore not
- * read for a query that has data, which also means an error alone moves
- * nothing in this projection and costs no redraw.
+ * LAST GOOD data (react-query keeps `data` through an error), and only a query
+ * that has NEVER had data shows "ARENA DATA UNAVAILABLE". `isError` is not read
+ * for a query that has data, so an error alone costs no redraw.
+ *
+ * ONE CONTEST WINDOW (lead decision 2026-10-02): the house board's own window
+ * first, because the server computed `stats.contest` over it; the contest hook
+ * second. The countdown and the P&L window read the same one.
  */
 function project(inputs: FloorScreenInputs) {
-  const board = inputs.leaderboard;
+  const board = inputs.houseBoard ?? NEVER_FETCHED;
   const phase: FloorScreenData['phase'] =
     board.data !== undefined ? 'ready' : board.isError ? 'error' : 'connecting';
-  const all = phase === 'ready' ? readLeaderboard(board.data) : [];
   return {
     phase,
-    rows: all.slice(0, FLOOR_SCREEN_MAX_ROWS).map((read) => read.row),
-    // Over the WHOLE board, not the drawn slice: a player ranked 40th still
-    // means the arena has players, and the call to action would be false.
-    hasPlayerAgents: all.some((read) => read.kind === 'user'),
-    contest: readContest(inputs.contest.data),
-    // Undefined (never fetched) reads as an empty tape; a failed refetch keeps
-    // the last good rows, exactly as the 3D tape keeps its chips.
-    tape: readArenaTape(inputs.tape.data).slice(0, BOARD_TAPE_LIMIT),
+    columns: phase === 'ready' ? readColumns(board.data) : [],
+    window: readContestWindow(board.data) ?? readContestWindow(inputs.contest.data),
   };
+}
+
+function contestRunning(window: ContestWindow | null, nowMs: number): boolean {
+  return (
+    window !== null &&
+    isUsableClock(nowMs) &&
+    nowMs >= window.startsAtMs &&
+    nowMs <= window.endsAtMs
+  );
 }
 
 function tapeLine(item: ArenaTapeItem, nowMs: number): string {
@@ -374,35 +392,39 @@ function tapeLine(item: ArenaTapeItem, nowMs: number): string {
     .join(' ');
 }
 
-export function buildFloorScreenData(
-  inputs: FloorScreenInputs,
-  nowMs: number,
-): FloorScreenData {
+export function buildFloorScreenData(inputs: FloorScreenInputs, nowMs: number): FloorScreenBuild {
   const projected = project(inputs);
-  const contest = projected.contest;
+  const running = contestRunning(projected.window, nowMs);
+  const windowKey: FloorScreenWindow = running ? 'contest' : '24h';
   return {
     phase: projected.phase,
-    rows: projected.rows,
-    hasPlayerAgents: projected.hasPlayerAgents,
-    contest: contest
-      ? {
-          title: contest.title,
-          countdownLabel: contestCountdownLabel(contest.startsAtMs, contest.endsAtMs, nowMs),
-          prizes: contest.prizes,
-        }
+    columns: projected.columns.map(({ contest, last24h, ...column }) => ({
+      ...column,
+      ...(running ? contest : last24h),
+    })),
+    window: windowKey,
+    countdownLabel: projected.window
+      ? contestCountdownLabel(projected.window.startsAtMs, projected.window.endsAtMs, nowMs)
       : null,
-    basis: BASIS,
     clockLabel: floorClockLabel(nowMs),
-    tape: projected.tape.map((item) => tapeLine(item, nowMs)),
+    basis: BASIS,
+    tape: inputs.tape
+      ? readArenaTape(inputs.tape.data)
+          .slice(0, BOARD_TAPE_LIMIT)
+          .map((item) => tapeLine(item, nowMs))
+      : [],
   };
 }
 
 /**
  * A stable string that changes exactly when something the board DRAWS changes,
- * apart from the clock. The redraw trigger: `nowMs` is not in it, and neither
- * is any field that ticks on its own (`secondsLeft`, `generatedAt`), so a poll
- * that changed nothing costs no canvas redraw and no texture upload.
+ * apart from the clock. `nowMs` is not in it, and neither is any field that
+ * ticks on its own, so a poll that changed nothing costs no canvas redraw and
+ * no texture upload. NaN is kept apart from null ("N/A" against "-"):
+ * `JSON.stringify` would print both as `null`.
  */
 export function floorScreenSignature(inputs: FloorScreenInputs): string {
-  return JSON.stringify(project(inputs));
+  return JSON.stringify(project(inputs), (_key, value: unknown) =>
+    typeof value === 'number' && !Number.isFinite(value) ? String(value) : value,
+  );
 }

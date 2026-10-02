@@ -6,22 +6,26 @@
  * The BIG BOARD on the Trading Floor's back wall — ONE plane, ONE draw call.
  *
  * Founder order 2026-09-19: "a big screen in the middle on the back wall that
- * shows a bunch of charts". Since 2026-09-30 it shows the TRADING ARENA paper
- * leaderboard (founder: "ranked on a P&L leaderboard on the floor TV").
+ * shows a bunch of charts". Since 2026-10-02 (P15 T2) it shows the FIVE HOUSE
+ * AGENTS, one column each (founder 2026-10-01: "all trading on the big screen
+ * in the back of the room"). Players stay on the 3D tape, the LED ticker and
+ * the Exchange panel.
  *
- * Data is three `use-floor-arena` queries: the contest-window leaderboard, the
- * contest header, and the tape. They are the SAME react-query keys the
- * Exchange panel's arena section uses, so the board and the panel cannot
- * disagree and the board adds no poller of its own; the tape key is shared
- * with the 3D trade tape through `ARENA_TAPE_LIMIT`. react-query context does
- * reach inside the R3F canvas here — `lib/three/land-state-hydrator.tsx` and
- * `lib/three/cosmetic-loader.tsx` already depend on that.
+ * Data is two queries: the T1 house board (`use-floor-arena-house-board.ts`,
+ * 15 s poll, no background refetch) and the existing contest query (60 s),
+ * which is only the fallback contest window. The contest key is the one the
+ * Exchange panel uses. The board no longer reads the leaderboard or the tape;
+ * the 3D tape and the LED ticker keep their own tape query.
+ * react-query context does reach inside the R3F canvas here —
+ * `lib/three/land-state-hydrator.tsx` and `lib/three/cosmetic-loader.tsx`
+ * already depend on that.
  *
  * REDRAW BUDGET — the load-bearing constraint. The canvas is redrawn ONLY when
- * something the board draws changes (`floorScreenSignature`) or on a 30 s
- * wall-clock tick that moves the clock, the countdown and the tape ages.
- * `texture.needsUpdate` is set in that same place and nowhere else. There is
- * deliberately no `useFrame` in this file: a per-frame canvas redraw plus a
+ * something the board draws changes (`floorScreenSignature`, which ignores
+ * `generatedAt` and every event time) or on a 30 s wall-clock tick that moves
+ * the clock, the countdown and the P&L window. `texture.needsUpdate` is set in
+ * that same place and nowhere else. There is deliberately no per-frame
+ * callback in this file: a per-frame canvas redraw plus a
  * per-frame texture upload of the whole `FLOOR_SCREEN_CANVAS` RGBA buffer is
  * ~1.3 MB/frame over PCIe at the current size, four times that on the 2x
  * backing store a high-DPR display gets, which is exactly the class of cost
@@ -39,11 +43,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 
-import {
-  useFloorArenaContest,
-  useFloorArenaLeaderboard,
-  useFloorArenaTape,
-} from '@/hooks/use-floor-arena';
+import { useFloorArenaContest } from '@/hooks/use-floor-arena';
+import { useFloorArenaHouseBoard } from '@/hooks/use-floor-arena-house-board';
 import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
 import {
   buildFloorScreenData,
@@ -54,9 +55,8 @@ import {
   FLOOR_SCREEN_CANVAS,
   pickCanvasScale,
 } from './trading-floor-screen-texture';
-import { ARENA_TAPE_LIMIT } from './trading-floor-trade-tape';
 
-/** Wall-clock redraw cadence, only for the clock, countdown and tape ages. */
+/** Wall-clock redraw cadence, only for the clock, the countdown and the P&L window. */
 const AGE_TICK_MS = 30_000;
 
 interface ScreenSurface {
@@ -97,16 +97,16 @@ function createSurface(): ScreenSurface | null {
   // instead ("LANDTKST1", "NO PRIZR", local prod bundle c-10b vs staging
   // c-00b). The real-GPU shot of BOLD text WITHOUT mips (c-00b: every bold
   // cell correct at the spawn) is the best evidence we have, so the board is
-  // bold everywhere (`FONT_SMALL`) and single-level. The durable fix is larger
-  // glyphs at the spawn distance, which is a layout change, not a filter.
+  // bold everywhere and single-level. The durable fix was larger glyphs, a
+  // layout change and not a filter: P15 T2 raised the floor to 22 px
+  // (`BOARD_MIN_PX`, about 6.5 screen px a capital, projected, not measured).
   texture.generateMipmaps = false;
   return { canvas, context, texture };
 }
 
 export function TradingFloorScreen({ active }: { active: boolean }) {
-  const leaderboard = useFloorArenaLeaderboard('contest', active);
+  const houseBoard = useFloorArenaHouseBoard(active);
   const contest = useFloorArenaContest(active);
-  const tape = useFloorArenaTape(ARENA_TAPE_LIMIT, active);
   const [ageTick, setAgeTick] = useState(0);
   const meshRef = useRef<THREE.Mesh>(null);
 
@@ -131,8 +131,8 @@ export function TradingFloorScreen({ active }: { active: boolean }) {
     return next;
   }, [surface]);
 
-  // Read on every render; the three query results are all the board needs.
-  const inputs = { leaderboard, contest, tape };
+  // Read on every render; the two query results are all the board needs.
+  const inputs = { houseBoard, contest };
   const signature = floorScreenSignature(inputs);
 
   // The ONLY redraw site. Runs on a data change and on the 30 s age tick.
