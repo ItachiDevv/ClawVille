@@ -273,11 +273,26 @@ const _yAxis = new THREE.Vector3(0, 1, 0);
 /** Frame scratch for the seated cushion pin. */
 const _hipScratch = new THREE.Vector3();
 
-/** Live interior position, exported for the stage probe / tests. */
-export const tradingFloorPlayerPositionRef: { x: number; z: number } = {
+/** Movement-collider centre and interaction state, published without allocation. */
+const _player = {
   x: TRADING_FLOOR_PLAYER_SPAWN.x,
   z: TRADING_FLOOR_PLAYER_SPAWN.z,
+  seated: false,
+  otherInteractionArmed: false,
 };
+
+/** Live movement-collider centre, including the stand point while seated. */
+export const tradingFloorPlayerPositionRef: { x: number; z: number } = _player;
+
+/** Arena reader: every call returns the same frame record. */
+export function readTradingFloorPlayer(): {
+  x: number;
+  z: number;
+  seated: boolean;
+  otherInteractionArmed: boolean;
+} {
+  return _player;
+}
 
 /**
  * Proximity state written by the player frame, read by the label components and
@@ -345,6 +360,8 @@ export function readTradingFloorProximity(): {
 function resetTradingFloorProximity(): void {
   resetTradingFloorArming(_arming);
   setTradingFloorSeatedIndex(-1);
+  _player.seated = false;
+  _player.otherInteractionArmed = false;
   _sitTravel = 0;
   _sitTravelSeat = -1;
   _cameraForwardZ = 0;
@@ -1386,12 +1403,16 @@ function TradingFloorAvatarMotion({
     }
     computeTradingFloorArming(posX.current, posZ.current, _arming);
 
+    tradingFloorPlayerPositionRef.x = posX.current;
+    tradingFloorPlayerPositionRef.z = posZ.current;
+    _player.seated = _seatedIndex >= 0;
+    _player.otherInteractionArmed =
+      _arming.monitorArmed || _arming.doorArmed || _arming.seatArmedIndex >= 0;
+
     const travelSeat = _sitTravel > 0 ? TRADING_FLOOR_SEATS[_sitTravelSeat] : undefined;
     if (travelSeat) tradingFloorSeatedBodyPoint(travelSeat, _sitTravel, _bodyScratch);
     const bodyX = travelSeat ? _bodyScratch.x : posX.current;
     const bodyZ = travelSeat ? _bodyScratch.z : posZ.current;
-    tradingFloorPlayerPositionRef.x = bodyX;
-    tradingFloorPlayerPositionRef.z = bodyZ;
     const group = groupRef.current;
     if (group) {
       group.position.set(bodyX, baseY, bodyZ);

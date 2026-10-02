@@ -1391,8 +1391,11 @@ describe('Trading Floor asset - frozen R3 rope ring', () => {
     // Before -> after: BRASS 576/1104 -> 1584/2256; TRIM 228/456 -> 1956/1392 (tris/vertices).
     expect([brass.primitive.getIndices()!.getCount() / 3, brass.vertices.length]).toEqual([1584,2256]);
     expect([trim.primitive.getIndices()!.getCount() / 3, trim.vertices.length]).toEqual([1956,1392]);
-    expect([gltf.meshes.length, gltf.materials.length, gltf.textures.length]).toEqual([11,11,7]);
+    // Merged W2 adds sea life; R4 shares the desk material and removes one texture.
+    expect([gltf.meshes.length, gltf.materials.length, gltf.textures.length]).toEqual([12,11,6]);
     console.log('R3 budgets: BRASS 576/1104 -> 1584/2256; TRIM 228/456 -> 1956/1392 tris/vertices');
+  });
+});
 
 describe('Trading Floor asset - W2 sea life', () => {
   type SeaLife = { kind: string; x: number; z: number; height: number; min: Point; max: Point };
@@ -1511,6 +1514,8 @@ describe('Trading Floor asset - W2 sea life', () => {
     }
     // Every point between a default-height camera and the board has t > 1.
     // Since each point is below that camera, its projected shadow is lower still.
+  });
+});
 
 describe('R4 procedural kiosk asset', () => {
   test('publishes exact bounds and decodes within 0.05 wu on every axis', async () => {

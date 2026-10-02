@@ -6,7 +6,9 @@ import {
   activateTradingFloorSeat,
   activateTradingFloorUse,
   openTradingFloorMonitor,
+  readTradingFloorPlayer,
   readTradingFloorProximity,
+  tradingFloorPlayerPositionRef,
   tradingFloorInteractionsFrozen,
 } from './trading-floor-interior';
 import {
@@ -30,6 +32,26 @@ import {
 
 beforeEach(() => {
   useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+});
+
+test('the arena player reader retains one record at the movement-collider centre', () => {
+  const player = readTradingFloorPlayer();
+  expect(readTradingFloorPlayer()).toBe(player);
+  expect(tradingFloorPlayerPositionRef).toBe(player);
+  expect(player).toEqual({
+    x: TRADING_FLOOR_PLAYER_SPAWN.x,
+    z: TRADING_FLOOR_PLAYER_SPAWN.z,
+    seated: false,
+    otherInteractionArmed: false,
+  });
+  const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+  const frame = source.slice(source.indexOf('useSceneFrame((_, rawDelta) => {'));
+  expect(frame).toContain('tradingFloorPlayerPositionRef.x = posX.current;');
+  expect(frame).toContain('tradingFloorPlayerPositionRef.z = posZ.current;');
+  expect(frame).toContain('_player.seated = _seatedIndex >= 0;');
+  expect(frame).toContain('_arming.monitorArmed || _arming.doorArmed || _arming.seatArmedIndex >= 0;');
+  expect(frame).not.toContain('tradingFloorPlayerPositionRef.x = bodyX;');
+  expect(frame).not.toContain('tradingFloorPlayerPositionRef.z = bodyZ;');
 });
 
 describe('Trading Floor monitor hotspot', () => {

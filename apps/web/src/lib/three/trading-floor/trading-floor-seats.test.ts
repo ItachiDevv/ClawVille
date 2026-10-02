@@ -40,6 +40,7 @@ import {
   TRADING_FLOOR_CAMERA_SOLIDS_LOW,
   TRADING_FLOOR_CLAW_EXTENTS,
   TRADING_FLOOR_DAIS,
+  TRADING_FLOOR_DAIS_SOLID,
   TRADING_FLOOR_SIDE_APPROACH_X,
   TRADING_FLOOR_BOARD_APPROACH_Z,
   TRADING_FLOOR_MONITOR,
@@ -1040,8 +1041,9 @@ describe('Trading Floor camera — the door approach leaves a real arm', () => {
     const out = { x: 0, z: 0 };
     clampTradingFloorMovement2D(0, 900, 0, 99_999, out);
     expect(out.z).toBe(TRADING_FLOOR_DOOR_APPROACH_Z);
-    // The board approach mirrors the door standoff.
-    clampTradingFloorMovement2D(0, -900, 0, -99_999, out);
+    // Walk through the gap between house agents to reach the board standoff.
+    clampTradingFloorMovement2D(-765, -900, -765, -99_999, out);
+    expect(out.x).toBe(-765);
     expect(out.z).toBe(TRADING_FLOOR_BOARD_APPROACH_Z);
   });
 
@@ -1519,7 +1521,7 @@ describe('Trading Floor camera - spring arm', () => {
     expect(smoothTradingFloorCameraBoom(100, 0, FRAME_SECONDS, true)).toBe(0);
   });
 
-  test('6000 constant-yaw random walks bound each 3D view step to 23 degrees', () => {
+  test('6000 constant-yaw random walks bound each 3D view step to 22.25 degrees', () => {
     let seed = 11;
     const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
     const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
@@ -1564,16 +1566,18 @@ describe('Trading Floor camera - spring arm', () => {
     }
     console.log(`spring-arm random walks: frames=${frames}, worst=${worst.toFixed(3)} deg, >0.5=${(100 * gt05 / frames).toFixed(3)}%, >5=${(100 * gt5 / frames).toFixed(3)}%, >10=${(100 * gt10 / frames).toFixed(3)}%, inversions=${inversions}, camera-in-solid=${inside}`);
     // Immediate collision shrink changes the elevation angle at a box corner.
-    // 23 degrees covers the measured 22.095-degree maximum with the wider R4 kiosk.
+    // Merged room: 22.130 degrees measured; 22.25 adds a 0.120-degree margin.
     expect(frames).toBe(714_000);
-    expect(worst).toBeLessThanOrEqual(23);
+    expect(worst).toBeLessThanOrEqual(22.25);
     expect(inversions).toBe(0);
     expect(inside).toBe(0);
   }, 30_000);
 
   test('a full turn at the relative founder point stays below 1.5 degrees per frame', () => {
     const bodyX = TRADING_FLOOR_DAIS.x - 330;
-    const bodyZ = TRADING_FLOOR_DAIS.z - 404;
+    // Nearest legal point in the same back gap, one wu beyond the rope collider.
+    const bodyZ = TRADING_FLOOR_DAIS_SOLID.centerZ -
+      TRADING_FLOOR_DAIS_SOLID.halfZ - TRADING_FLOOR_PLAYER_RADIUS - 1;
     const camera = { x: 0, y: 0, z: 0 };
     const direction = new THREE.Vector3(), previous = new THREE.Vector3();
     const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
