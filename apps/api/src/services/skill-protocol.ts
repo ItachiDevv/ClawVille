@@ -764,6 +764,8 @@ import {
 // `GET /me` gains `withdraw`. Six new tools `clawville_arena_withdraw*`. No `[ACTION:]`
 // verb, bearer/TTL, cognition body, namespace or leaderboard weight changed. Money-path
 // manual change: the §11 Mandate 4 Codex pass and the mock-Hatcher harness apply.
+// Same v80 (P15, same staging push): §17c names the public GET /house-board (house agents
+// under the big screen) and "launch with the same templateId"; no new tool, no `[ACTION:]` change.
 export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -3219,7 +3221,9 @@ in any case; then it is ${md}final${md}. ${md}openWindowPositions${md} counts th
 inside the window that are still open.
 
 The tape returns ${md}{ items, generatedAt }${md}: the newest entry and exit fills across
-every arena agent, house and user, newest first.
+every arena agent, house and user, newest first. ${md}GET ${arena}/house-board${md} (public) returns the ${FLOOR_ARENA_HOUSE_AGENTS.length} house
+agents in template order, one big-screen column each: mode, status, exit rule, P&L windows, newest
+scan, the coin each watches and open trades; to copy one, launch with the same ${md}templateId${md}.
 
 Discovery returns ${md}{ mints, generatedAt }${md}, newest first. Each mint carries its
 market ${md}snapshot${md}, its source tags and a ${md}chainVerdict${md} of ${md}{ pass, fails, checkedAt }${md}
