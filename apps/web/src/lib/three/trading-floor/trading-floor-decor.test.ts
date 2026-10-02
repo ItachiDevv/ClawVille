@@ -14,6 +14,7 @@ import {
   DECOR_DESK_HEADER_COUNT,
   DECOR_DESK_HOOD,
   DECOR_GLOW_FLOOR_Y,
+  DECOR_PLATE_ALGAE_RECTS,
   DECOR_SEAL,
   DECOR_SIDE_PILASTERS,
   DECOR_SWATCH_IDS,
@@ -58,6 +59,7 @@ import {
   buildRibbonSegments,
   drawClawIcon,
   drawDecorAtlas,
+  drawPlateAlgae,
   drawTerminalPanel,
   drawRibbonStrip,
   layoutRibbon,
@@ -788,7 +790,52 @@ describe('monitor atlas', () => {
     ...Array.from({ length: DECOR_DEPTH_PANEL_COUNT }, (_, i) => [`depth:${i}`, depthPanelRect(i)] as [string, AtlasRect]),
     ...Array.from({ length: DECOR_TERMINAL_PANEL_COUNT }, (_, i) => [`terminal:${i}`, terminalPanelRect(i)] as [string, AtlasRect]),
     ...DECOR_SWATCH_IDS.map((id) => [`swatch:${id}`, swatchRect(id)] as [string, AtlasRect]),
+    ...Object.entries(DECOR_PLATE_ALGAE_RECTS).map(([id, rect]) => [`plate:${id}`, rect] as [string, AtlasRect]),
   ];
+
+  test('only the five weighted plate quads per desk sample the algae regions', () => {
+    const counts = Array(TRADING_FLOOR_CONSOLE_ROW.length).fill(0) as number[];
+    forEachQuad(MONITORS.mesh, (vertices, quad) => {
+      const pixels = Array.from({ length: 4 }, (_, corner) => [
+        MONITORS.mesh.uvs[quad * 8 + corner * 2]! * DECOR_ATLAS_SIZE,
+        (1 - MONITORS.mesh.uvs[quad * 8 + corner * 2 + 1]!) * DECOR_ATLAS_SIZE,
+      ]);
+      const rect = Object.values(DECOR_PLATE_ALGAE_RECTS).find((candidate) => pixels.some(([x, y]) =>
+        x! >= candidate.x - EPS && x! <= candidate.x + candidate.width + EPS &&
+        y! >= candidate.y - EPS && y! <= candidate.y + candidate.height + EPS));
+      if (!rect) return;
+      expect(pixels.every(([x, y]) => x! >= rect.x - EPS && x! <= rect.x + rect.width + EPS &&
+        y! >= rect.y - EPS && y! <= rect.y + rect.height + EPS)).toBe(true);
+      const tag = MONITORS.mesh.tags[quad]!;
+      expect(tag.part).toBe('bank-mount');
+      counts[tag.owner]!++;
+      for (const vertex of vertices) {
+        const local = worldToDeskLocal(TRADING_FLOOR_CONSOLE_ROW[tag.owner]!, vertex[0], vertex[2]);
+        expect(Math.abs(local.localX)).toBeLessThanOrEqual(DECOR_BANK.plate.halfX + EPS);
+        expect(Math.abs(local.localZ - DECOR_BANK.plate.centerZ)).toBeLessThanOrEqual(DECOR_BANK.plate.halfZ + EPS);
+        expect(vertex[1]).toBeGreaterThanOrEqual(DECOR_BANK.footY);
+        expect(vertex[1]).toBeLessThanOrEqual(DECOR_BANK.plate.topY);
+      }
+    });
+    expect(counts).toEqual(Array(TRADING_FLOOR_CONSOLE_ROW.length).fill(5));
+  });
+
+  test('plate algae art stays inside its own tiles and adds no terminal claims', () => {
+    const { ctx, points, texts } = recordingContext();
+    ctx.strokeRect = (x, y, width, height) => {
+      const half = ctx.lineWidth / 2;
+      points.push({ x: x - half, y: y - half }, { x: x + width + half, y: y + height + half });
+    };
+    ctx.globalAlpha = .7;
+    drawPlateAlgae(ctx);
+    expect(ctx.globalAlpha).toBe(.7);
+    expect(texts).toEqual([]);
+    expect(points.length).toBeGreaterThan(6);
+    for (const { x, y } of points) {
+      expect(Object.values(DECOR_PLATE_ALGAE_RECTS).some((rect) => x >= rect.x && x <= rect.x + rect.width &&
+        y >= rect.y && y <= rect.y + rect.height)).toBe(true);
+    }
+  });
 
   test('every region is inside the atlas and no two overlap', () => {
     for (const [name, rect] of rects) {

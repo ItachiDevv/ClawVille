@@ -135,6 +135,13 @@ export function swatchRect(id: DecorSwatchId): AtlasRect {
   return { x: 8 + index * 32, y: 1008, width: 24, height: 12 };
 }
 
+/** Plate-only tiles in the unused swatch row; screens and columns stay clean. */
+export const DECOR_PLATE_ALGAE_RECTS = Object.freeze({
+  front: Object.freeze({ x: 368, y: 1008, width: 96, height: 12 }),
+  side: Object.freeze({ x: 480, y: 1008, width: 28, height: 12 }),
+  top: Object.freeze({ x: 524, y: 1008, width: 48, height: 12 }),
+});
+
 // ---------------------------------------------------------------------------
 // UVs
 // ---------------------------------------------------------------------------
@@ -618,7 +625,12 @@ function pushDeskBank(
     bank.plate.halfX,
     plateHalfY,
     bank.plate.halfZ,
-    BRASS_FACES,
+    {
+      front: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.front),
+      back: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.side),
+      side: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.side),
+      top: atlasRectUv(DECOR_PLATE_ALGAE_RECTS.top),
+    },
     mountTag,
   );
   const postHalfY = (bank.post.topY - bank.plate.topY) / 2;
