@@ -72,6 +72,11 @@
 
 ## TRADING FLOOR
 
+### Trading Floor: P5 wallet withdraw + P15 house agents (session tDesk2Main, 2026-10-02, STAGING)
+- Look at: `https://staging.clawville.world/trading-floor`. Walk to the back wall: five house agents stand under the big screen, one board column above each. Walk up to one; the panel shows its strategy; press "Choose this trading style". Then My Trader > Wallet: the Withdraw panel (add an address, withdraw USDC or SOL).
+- Feedback wanted: the figure looks (Q1 default: Milady official 2-6, still figures); the board without the player leaderboard (Q2); "Open my trader" for a player who has a trader (Q3); the withdraw limits (0.10 USDC min, 3 a day, 500 USDC a day, 24 h address delay) and who pays the SOL fee (default: the player).
+- Phone landscape: the walk-up panel has little height on short phones; a real-phone look is wanted.
+
 ### Hate slurs hidden on the public arena board and feed; clearer Exchange labels (staging, 2026-10-01)
 
 - **What to look at:** staging `/trading-floor` -> Exchange. The live trader block now says "Live traders (real money, paused)" and the arena section says "The five arena house agents (paper)". The discovery card has a "Show coins" control.
