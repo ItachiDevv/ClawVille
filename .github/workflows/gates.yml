@@ -357,6 +357,7 @@ jobs:
           bun packages/database/scripts/ci-restore-schema-invariants.ts
           bun test packages/database/scripts/ci-schema-invariants.test.ts
           bun test packages/database/scripts/__tests__/special-event-start-guard-migration.test.ts
+          bun test packages/database/scripts/__tests__/grant-test-tokens-guard.test.ts
 
       - name: Run PostgreSQL-backed Trading Floor database contracts
         env:
