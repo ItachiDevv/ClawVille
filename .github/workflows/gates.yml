@@ -167,6 +167,7 @@ jobs:
           cd apps/web
           bun test src/components/game/tutorial-overlay.test.tsx
           bun test src/components/game/quest-tracker-claim-gate.test.tsx
+          bun test src/stores/quest-claim-refusal.test.ts
 
       # Founder-reported regressions (2026-09-18) come back when nothing runs the
       # test that pinned them. The shared constants suite pins world data that

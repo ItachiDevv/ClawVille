@@ -209,6 +209,8 @@ export const useQuestStore = create<QuestStoreState>()(
         // ownerUserId guard already makes a stale pending apply a no-op,
         // so surviving a reset is safe in every ordering.
         lastClaimsSyncAccount = null;
+        // The next identity asks the server afresh for every refused quest.
+        clearAllClaimRefusals();
         set({
           progress: getDefaultProgress(),
           counters: { ...DEFAULT_COUNTERS },
@@ -407,7 +409,91 @@ function waitForClaimRetry(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * How long a server REFUSAL of a tutorial claim (a 'terminal' result: 400
+ * engagement_required, pending_feature, a guest 403; never 401, 409 or
+ * already_claimed) keeps the automatic sweep from asking again. The sweep
+ * used to re-POST every refused serverOnly quest on every /game load (four
+ * HTTP 400s per load on staging 18de236e, 2026-10-02). A claim the player
+ * starts (non-silent) ignores it and always asks the server.
+ */
+export const TUTORIAL_CLAIM_REFUSAL_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * sessionStorage key per account + quest:
+ * `clawville-quest-claim-refusal:<ownerUserId | 'unowned'>:<questId>`,
+ * value = the refusal time in epoch ms. Every access is in try/catch
+ * (private mode, blocked storage): without storage the sweep asks every
+ * time, as before.
+ */
+const TUTORIAL_CLAIM_REFUSAL_KEY_PREFIX = 'clawville-quest-claim-refusal:';
+
+function refusalStorage(): Storage | null {
+  try {
+    return typeof window === 'undefined' ? null : (window.sessionStorage ?? null);
+  } catch {
+    return null;
+  }
+}
+
+function claimRefusalKey(owner: string | null, questId: QuestId): string {
+  return `${TUTORIAL_CLAIM_REFUSAL_KEY_PREFIX}${owner ?? 'unowned'}:${questId}`;
+}
+
+function recordClaimRefusal(owner: string | null, questId: QuestId): void {
+  try {
+    refusalStorage()?.setItem(claimRefusalKey(owner, questId), String(Date.now()));
+  } catch {
+    // Storage blocked or full: the next sweep asks the server again.
+  }
+}
+
+function clearClaimRefusal(owner: string | null, questId: QuestId): void {
+  try {
+    refusalStorage()?.removeItem(claimRefusalKey(owner, questId));
+  } catch {
+    // Nothing to clear when storage is blocked.
+  }
+}
+
+function isClaimRefusalFresh(owner: string | null, questId: QuestId): boolean {
+  try {
+    const raw = refusalStorage()?.getItem(claimRefusalKey(owner, questId));
+    if (raw == null) return false;
+    const age = Date.now() - Number(raw);
+    // NaN or a future stamp (clock moved back) counts as stale: ask again.
+    return age >= 0 && age < TUTORIAL_CLAIM_REFUSAL_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function clearAllClaimRefusals(): void {
+  try {
+    const storage = refusalStorage();
+    if (!storage) return;
+    for (let index = storage.length - 1; index >= 0; index -= 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(TUTORIAL_CLAIM_REFUSAL_KEY_PREFIX)) storage.removeItem(key);
+    }
+  } catch {
+    // Storage blocked: there is nothing remembered to clear.
+  }
+}
+
 async function claimTutorialQuestReward(
+  def: QuestDefinition,
+  opts?: { silent?: boolean },
+): Promise<TutorialClaimResult> {
+  // The account this claim runs for; a refusal is remembered under it.
+  const owner = useQuestStore.getState().ownerUserId;
+  const result = await requestTutorialQuestClaim(def, opts);
+  if (result === 'claimed') clearClaimRefusal(owner, def.id);
+  else if (result === 'terminal') recordClaimRefusal(owner, def.id);
+  return result;
+}
+
+async function requestTutorialQuestClaim(
   def: QuestDefinition,
   opts?: { silent?: boolean },
 ): Promise<TutorialClaimResult> {
@@ -468,6 +554,7 @@ async function claimTutorialQuestReward(
         }
         // Do NOT persist serverClaimed for generic 4xx. In particular, a 400
         // engagement_required may become claimable after a later portal/event.
+        // The caller remembers the refusal for TUTORIAL_CLAIM_REFUSAL_COOLDOWN_MS only.
         console.warn('[quest] tutorial claim rejected permanently for', def.id, `HTTP ${status}`, err);
         return 'terminal';
       }
@@ -487,13 +574,15 @@ async function claimTutorialQuestReward(
  * Retry server-side claims for any tutorial quests that the local store
  * marks completed but `serverClaimed` doesn't acknowledge. Also probes
  * `serverOnly` quests whose prerequisites are met — the server validator
- * is the only authority for those, so we ask periodically.
+ * is the only authority for those, so we ask periodically. A quest the
+ * server refused less than TUTORIAL_CLAIM_REFUSAL_COOLDOWN_MS ago is skipped.
  */
 async function runUnclaimedRewardSweep(): Promise<void> {
   const state = useQuestStore.getState();
   const claimed = state.serverClaimed;
   for (const def of QUEST_DEFINITIONS) {
     if (claimed[def.id]) continue;
+    if (isClaimRefusalFresh(state.ownerUserId, def.id)) continue;
     if (state.progress[def.id]?.status === 'completed') {
       const result = await claimTutorialQuestReward(def, { silent: true });
       if (result === 'unauthenticated') return; // logged out — every claim would 401
