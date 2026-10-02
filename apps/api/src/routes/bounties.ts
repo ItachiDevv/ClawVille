@@ -41,12 +41,17 @@ import {
   db,
   avatars,
   agentConfigs,
-  avatarInventory,
   bounties,
   bountyRewards,
   bountyAttempts,
   bountyReputation,
 } from '@clawville/database';
+import { getBookById } from '@clawville/shared';
+import {
+  grantInventoryItem,
+  takeInventoryItem,
+  type InventoryDatabase,
+} from '@clawville/agent-runtime';
 import { eq, and, or, desc, asc, sql, ne, inArray, type SQL } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 
@@ -175,12 +180,74 @@ export function resolveUsdcBountyRewardMin(raw: string | undefined): number {
   return Number.isInteger(n) && n >= 1 ? n : 5;
 }
 
-const bonusRewardSchema = z.object({
-  rewardType: z.enum(['agent_config', 'knowledge_book', 'custom']),
-  agentConfigId: z.string().uuid().optional(),
-  bookId: z.string().optional(),
-  customDescription: z.string().max(500).optional(),
-});
+const bonusRewardSchema = z
+  .object({
+    rewardType: z.enum(['agent_config', 'knowledge_book', 'custom']),
+    agentConfigId: z.string().uuid().optional(),
+    bookId: z.string().optional(),
+    customDescription: z.string().max(500).optional(),
+  })
+  .superRefine((reward, ctx) => {
+    // A knowledge_book bonus must name a CANONICAL book id (security M11,
+    // 2026-09-30): at approval the book moves from the poster's inventory to the
+    // hunter's, so a free-text id could never be held, learned, or transferred.
+    if (reward.rewardType === 'knowledge_book' && !(reward.bookId && getBookById(reward.bookId))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['bookId'],
+        message:
+          'A knowledge_book bonus needs a valid book id (the same id GET /api/items/shop/:buildingId lists).',
+      });
+    }
+  });
+
+export interface BountyBookBonusOutcome {
+  rewardId: string;
+  bookId: string | null;
+  status: 'granted' | 'skipped';
+  reason?: 'unknown_book' | 'poster_no_longer_holds_book';
+}
+
+/**
+ * Move each knowledge_book bonus from the POSTER to the HUNTER inside the
+ * approval tx (security M11, 2026-09-30). The book used to be minted into the
+ * hunter's inventory under a non-canonical `book-<id>` item id with no debit.
+ * Now the poster gives up one copy (atomic conditional decrement, quantity > 0)
+ * and the hunter gets it (atomic increment); no vCLAW moves. When the poster no
+ * longer holds the book, or the id is not a canonical book (legacy rows), that
+ * bonus is skipped and the reason is logged and returned.
+ */
+export async function transferBountyBookBonuses(
+  tx: InventoryDatabase,
+  input: {
+    bountyId: string;
+    posterAvatarId: string;
+    hunterAvatarId: string;
+    rewards: ReadonlyArray<{ id: string; rewardType: string; bookId: string | null }>;
+  },
+): Promise<BountyBookBonusOutcome[]> {
+  const outcomes: BountyBookBonusOutcome[] = [];
+  for (const reward of input.rewards) {
+    // agent_config and custom rewards are noted but don't auto-transfer inventory
+    if (reward.rewardType !== 'knowledge_book') continue;
+    const book = reward.bookId ? getBookById(reward.bookId) : undefined;
+    let reason: BountyBookBonusOutcome['reason'];
+    if (!book) {
+      reason = 'unknown_book';
+    } else if (!(await takeInventoryItem(tx, { avatarId: input.posterAvatarId, itemId: book.id }))) {
+      reason = 'poster_no_longer_holds_book';
+    } else {
+      await grantInventoryItem(tx, { avatarId: input.hunterAvatarId, itemId: book.id });
+      outcomes.push({ rewardId: reward.id, bookId: book.id, status: 'granted' });
+      continue;
+    }
+    console.warn(
+      `[bounties] book bonus ${reward.id} on bounty ${input.bountyId} skipped: ${reason} (bookId=${reward.bookId ?? 'null'})`,
+    );
+    outcomes.push({ rewardId: reward.id, bookId: reward.bookId, status: 'skipped', reason });
+  }
+  return outcomes;
+}
 
 export const createBountySchema = z
   .object({
@@ -1062,7 +1129,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     // Entire approval flow in a single transaction to prevent partial
     // state (e.g. tokens credited but bounty not marked completed). The Tier-1
     // payment runs after this transaction through its own idempotent state machine.
-    const { rewards, hunterAvatarId } = await db.transaction(async (tx) => {
+    const { rewards, hunterAvatarId, bonusOutcomes } = await db.transaction(async (tx) => {
       if (isTier1) {
         try {
           await assertTier1BountyApprovable(tx, {
@@ -1155,38 +1222,18 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
         }, tx);
       }
 
-      // 3. Transfer bonus rewards to hunter
+      // 3. Transfer bonus rewards to hunter (knowledge books move poster → hunter)
       const txRewards = await tx
         .select()
         .from(bountyRewards)
         .where(eq(bountyRewards.bountyId, bounty.id));
 
-      for (const reward of txRewards) {
-        if (reward.rewardType === 'knowledge_book' && reward.bookId) {
-          const itemId = `book-${reward.bookId}`;
-          const existingItem = await tx.query.avatarInventory.findFirst({
-            where: and(
-              eq(avatarInventory.avatarId, hunterAvatar.id),
-              eq(avatarInventory.itemId, itemId)
-            ),
-          });
-
-          if (existingItem) {
-            await tx
-              .update(avatarInventory)
-              .set({ quantity: existingItem.quantity + 1 })
-              .where(eq(avatarInventory.id, existingItem.id));
-          } else {
-            await tx.insert(avatarInventory).values({
-              avatarId: hunterAvatar.id,
-              itemId,
-              quantity: 1,
-            });
-          }
-        }
-
-        // agent_config and custom rewards are noted but don't auto-transfer inventory
-      }
+      const bonusOutcomes = await transferBountyBookBonuses(tx, {
+        bountyId: bounty.id,
+        posterAvatarId: bounty.creatorId,
+        hunterAvatarId: hunterAvatar.id,
+        rewards: txRewards,
+      });
 
       // 4. Mark bounty as 'completed' (guarded on status='open' for symmetry with
       // the atomic approval claim — a bounty can only be completed from open, so a
@@ -1290,7 +1337,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           .where(eq(bountyReputation.id, creatorRep.id));
       }
 
-      return { rewards: txRewards, hunterAvatarId: hunterAvatar.id };
+      return { rewards: txRewards, hunterAvatarId: hunterAvatar.id, bonusOutcomes };
     });
 
     if (isTier1) {
@@ -1325,6 +1372,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
         rewardVclaw: bounty.tokenReward,
         rewardUsdcBaseUnits: tier1Hold.amountBaseUnits,
         bonusRewardsCount: rewards.length,
+        bonusRewards: bonusOutcomes,
         settlement: {
           rail: 'tier1-agent-pay',
           state: 'paid',
@@ -1347,6 +1395,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
         ? usdcRewardBaseUnits(bounty.tokenReward).toString()
         : '0',
       bonusRewardsCount: rewards.length,
+      bonusRewards: bonusOutcomes,
       escrow: escrowResult,
     });
   } else {

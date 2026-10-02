@@ -25,9 +25,11 @@
  * ── MONEY (no new ledger path) ───────────────────────────────────────────────
  * Entry settlement is one of: nothing (free/hold), a verified SOL transfer to
  * the treasury, or a CT debit via `claw-token-ledger`. The dependent tournament
- * is funded directly (`seedPrizePoolCt`), so seating a confirmed signup as an
- * entrant SKIPS the per-entrant tournament buy-in debit (entry was already
- * settled here). CT is atomic-integer; SOL is lamports.
+ * is funded directly (`seedPrizePoolCt`, bounded by
+ * SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT and debited from the HOUSE TREASURY by
+ * the TournamentManager in its create tx — security M3, 2026-09-30), so seating
+ * a confirmed signup as an entrant SKIPS the per-entrant tournament buy-in debit
+ * (entry was already settled here). CT is atomic-integer; SOL is lamports.
  *
  * ── AGENT PARITY (Rule E5) ───────────────────────────────────────────────────
  * `signup` takes a `SignupSubject` resolved upstream from a Lucia human XOR an
@@ -43,6 +45,7 @@
  * services.
  */
 
+import { randomUUID } from 'crypto';
 import { db as realDb } from '@clawville/database';
 import { sql } from 'drizzle-orm';
 import { readSplTokenBalance } from './solana-token-balance';
@@ -176,6 +179,9 @@ type EventRow = {
   created_at: Date | string | null;
   started_at: Date | string | null;
   completed_at: Date | string | null;
+  /** The in-flight start's claim token + time (security M4); null unless 'starting'. */
+  start_claim_id: string | null;
+  start_claimed_at: Date | string | null;
 } & Record<string, unknown>;
 
 export interface SignupResult {
@@ -268,6 +274,8 @@ export class SpecialEventManager {
     ) {
       throw new SpecialEventError('invalid_max_participants', 400);
     }
+    // The seed prize pool is funded from the house treasury at start (M3); bound it.
+    readSeedPrizePoolCt(config.prizeConfigJson ?? null);
 
     const inserted = await this.db.execute<EventRow>(
       sql`INSERT INTO special_events
@@ -307,7 +315,10 @@ export class SpecialEventManager {
 
   // ── Signup lifecycle ────────────────────────────────────────────────────────
 
-  /** Open an event for signups (draft → signup_open). Idempotent. */
+  /**
+   * Open an event for signups (draft → signup_open). Idempotent. A 'starting'
+   * event is not reopened here (409); only a failed start reopens it.
+   */
   async openSignup(slug: string): Promise<EventRow> {
     return this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<EventRow>(
@@ -625,22 +636,45 @@ export class SpecialEventManager {
   /**
    * Close signups and stand up the DEPENDENT poker tournament. Steps:
    *   1. Lock the event; require status 'signup_open'; collect every CONFIRMED
-   *      signup.
+   *      signup; CLAIM the start by flipping 'signup_open' → 'starting' in the
+   *      SAME tx (security M4, 2026-09-30). A concurrent second start then finds
+   *      'starting' and gets 409 — it can never create a second tournament or
+   *      fund a second seed pool. The partial unique index
+   *      `poker_tournaments_special_event_active_unique` is the DB backstop.
    *   2. Create a PREPAID tournament (`buyInCt: 0`, `seedPrizePoolCt` from
    *      prize_config_json, `specialEventId = event.id`) — the link is the FK on
-   *      the tournament (dependency points UP).
+   *      the tournament (dependency points UP). The TournamentManager debits the
+   *      seed from the HOUSE TREASURY in its create tx (security M3).
    *   3. Register every confirmed signup as an entrant. The tournament buyIn is 0,
    *      so `registerEntrant` SKIPS the per-entrant debit (entry was already
    *      settled at the event layer — no double-charge).
    *   4. Force-start the tournament (seat the field).
-   *   5. Flip the event → 'live'.
-   * Idempotent-ish: a second call after the event is 'live' is a 409 (the
-   * tournament already exists); the registers themselves are idempotent.
+   *   5. Flip the event 'starting' → 'live'; the UPDATE must match exactly one row
+   *      (our claim token AND our tournament still running/completed).
+   * FAILURE: a create failure reconciles the claim (normally → 'signup_open'). A
+   * register/start failure first cancels the tournament (the cancel credits the
+   * seed back to the treasury), then reopens signups, so an operator can retry. A
+   * 0-row final flip goes to `recoverUnflippedStart`. A CRASHED start leaves a
+   * claim that `reconcileStartingEvent` resolves once it is older than
+   * SPECIAL_EVENT_START_CLAIM_STALE_MS — on the next start call for the event or
+   * the settlement worker tick (`reconcileStaleStarts`).
    */
   async closeSignupAndStart(slug: string): Promise<CloseAndStartResult> {
-    // Phase 1 (tx): lock + flip status to a transient 'live' marker is deferred
-    // until after the tournament is created; here we just read confirmed signups
-    // and assert the state under the lock, then release for the tournament work.
+    // Phase 0: a claim left by a crashed start is reconciled first, so a dead
+    // start can never block this event forever (fresh claims are left alone).
+    const current = await this.getEventBySlug(slug);
+    if (current?.status === 'starting') {
+      await this.reconcileStartingEvent(current.id, { staleBefore: this.staleClaimCutoff() });
+    } else if (current?.status === 'live') {
+      // A live event whose tournament was cancelled (room abort / boot recovery)
+      // reopens here, so the operator can start it again.
+      await this.reconcileOrphanedLiveEvent(current.id);
+    }
+
+    // Phase 1 (tx): lock, validate, and CLAIM the start ('signup_open' →
+    // 'starting' with a fresh claim token), then release the row lock for the
+    // tournament work. Every later write for this start CASes on the token.
+    const claimId = randomUUID();
     const prep = await this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<EventRow>(
         sql`SELECT * FROM special_events WHERE slug = ${slug} FOR UPDATE`,
@@ -649,6 +683,9 @@ export class SpecialEventManager {
       if (!e) throw new SpecialEventError('event_not_found', 404);
       if (e.status === 'live' || e.status === 'completed') {
         throw new SpecialEventError('event_already_started', 409);
+      }
+      if (e.status === 'starting') {
+        throw new SpecialEventError('event_start_in_progress', 409);
       }
       if (e.status !== 'signup_open') {
         throw new SpecialEventError('event_not_open_for_start', 409);
@@ -668,22 +705,34 @@ export class SpecialEventManager {
       if (signups.length < 2) {
         throw new SpecialEventError('not_enough_confirmed_signups', 409);
       }
-      return { event: e, signups };
+
+      // Validate the seed BEFORE the claim so a bad legacy prize config leaves the
+      // event open (rows created before the route bound may exceed it).
+      const seedPrizePoolCt = readSeedPrizePoolCt(e.prize_config_json);
+
+      const claimed = await tx.execute<{ id: string }>(
+        sql`UPDATE special_events
+            SET status = 'starting', start_claim_id = ${claimId},
+                start_claimed_at = ${new Date(this.clock.now())}
+            WHERE id = ${e.id} AND status = 'signup_open'
+            RETURNING id`,
+      );
+      if (!claimed[0]) {
+        throw new SpecialEventError('event_start_in_progress', 409);
+      }
+      return { event: e, signups, seedPrizePoolCt };
     });
 
-    const { event, signups } = prep;
+    const { event, signups, seedPrizePoolCt } = prep;
 
     // ── Create the PREPAID dependent tournament (link via FK) ───────────────────
     const prize = (event.prize_config_json ?? {}) as {
-      seedPrizePoolCt?: number | bigint | string;
       payoutCurve?: Array<{ placement: number; share: number }>;
       startingStack?: number;
       seatsPerTable?: number;
       rakeBps?: number;
       blindScheduleId?: string;
     };
-    const seedPrizePoolCt =
-      prize.seedPrizePoolCt != null ? toBigIntStrict(prize.seedPrizePoolCt, 'seedPrizePoolCt') : 0n;
 
     let tournament: CreateTournamentResult;
     try {
@@ -704,50 +753,345 @@ export class SpecialEventManager {
         event.created_by,
       );
     } catch (err) {
+      // Normally nothing was created (the TM create tx rolled back, seed debit
+      // included). The reconcile also covers an ambiguous commit or a pre-0075
+      // linked tournament: it cancels a registering one (seed refunded) and
+      // reopens signups, or marks a running one live.
+      await this.reconcileStartingEvent(event.id, { claimId });
       if (err instanceof TournamentError) {
         throw new SpecialEventError(`tournament_create_failed:${err.message}`, err.httpStatus);
+      }
+      if (isUniqueViolation(err)) {
+        // A non-cancelled tournament already links to this event (pre-0075 data).
+        throw new SpecialEventError('event_tournament_already_exists', 409);
       }
       throw err;
     }
 
-    // ── Seat every confirmed signup WITHOUT a second buy-in (buyIn 0 → no debit) ─
+    let start: Awaited<ReturnType<TournamentManager['startTrigger']>>;
     let seatedCount = 0;
-    for (const s of signups) {
-      const regSubject: RegisterSubject =
-        s.subject_type === 'agent'
-          ? {
-              kind: 'agent',
-              userId: s.user_id ?? s.avatar_id,
-              avatarId: s.avatar_id,
-              agentId: s.agent_id ?? s.avatar_id,
-            }
-          : {
-              kind: 'user',
-              userId: s.user_id ?? s.avatar_id,
-              avatarId: s.avatar_id,
-              agentId: null,
-            };
-      const reg = await this.tm.registerEntrant(regSubject, tournament.id);
-      if (!reg.alreadyRegistered) seatedCount += 1;
-      else seatedCount += 1; // already-present entrant still counts as seated
+    try {
+      // ── Seat every confirmed signup WITHOUT a second buy-in (buyIn 0 → no debit) ─
+      for (const s of signups) {
+        const regSubject: RegisterSubject =
+          s.subject_type === 'agent'
+            ? {
+                kind: 'agent',
+                userId: s.user_id ?? s.avatar_id,
+                avatarId: s.avatar_id,
+                agentId: s.agent_id ?? s.avatar_id,
+              }
+            : {
+                kind: 'user',
+                userId: s.user_id ?? s.avatar_id,
+                avatarId: s.avatar_id,
+                agentId: null,
+              };
+        const reg = await this.tm.registerEntrant(regSubject, tournament.id);
+        if (!reg.alreadyRegistered) seatedCount += 1;
+        else seatedCount += 1; // already-present entrant still counts as seated
+      }
+
+      // ── Force-start the tournament (seat the field) ───────────────────────────
+      start = await this.tm.startTrigger(tournament.id, { force: true });
+      if (start.status === 'cancelled') {
+        // The TM cancelled it (field below the floor) and refunded the seed.
+        throw new SpecialEventError('tournament_start_cancelled', 409);
+      }
+    } catch (err) {
+      // Cancel (idempotent; credits the seed back to the treasury) and reopen
+      // signups. A cancelled tournament drops out of the active-unique index, so
+      // a retried start can create a fresh one.
+      try {
+        await this.tm.cancelAndRefundOrphan(tournament.id);
+      } catch (cancelErr) {
+        // The tournament still holds the event's active slot. Leave the claim;
+        // the stale-claim reconcile retries the cancel later.
+        console.error(
+          `[special-event] start of event ${event.id} failed and tournament ${tournament.id} could not be cancelled; the stale-claim reconcile will retry:`,
+          cancelErr,
+        );
+        throw err;
+      }
+      await this.reconcileStartingEvent(event.id, { claimId });
+      if (err instanceof SpecialEventError) throw err;
+      if (err instanceof TournamentError) {
+        throw new SpecialEventError(`tournament_start_failed:${err.message}`, err.httpStatus);
+      }
+      throw err;
     }
 
-    // ── Force-start the tournament (seat the field) ─────────────────────────────
-    const start = await this.tm.startTrigger(tournament.id, { force: true });
-
-    // ── Flip the event → 'live' (link already on the tournament row) ────────────
-    await this.db.transaction(async (tx) => {
-      await tx.execute(
-        sql`UPDATE special_events SET status = 'live', started_at = now()
-            WHERE id = ${event.id} AND status = 'signup_open'`,
-      );
-    });
+    // ── Flip the event 'starting' → 'live' (link already on the tournament row) ──
+    // Exactly one row, or this start does not own the outcome: the claim must
+    // still be ours AND our tournament must still be running/completed (a room
+    // abort or boot recovery may have cancelled it after startTrigger returned).
+    const flipped = await this.flipStartToLive(event.id, claimId, tournament.id);
+    if (!flipped) {
+      await this.recoverUnflippedStart(event.id, claimId, tournament.id);
+    }
 
     return {
       tournamentId: tournament.id,
       seatedCount: start.seatedCount || seatedCount,
       status: 'live',
     };
+  }
+
+  /**
+   * The guarded 'starting' → 'live' flip, in ONE transaction that locks the
+   * event row and THEN the tournament row (Codex round 2, item 9). Every TM
+   * cancel takes the tournament row lock (FOR UPDATE), so the status check and
+   * the flip are atomic against it: a cancel either commits first (the check
+   * sees 'cancelled', no flip) or waits until the flip commits (the event is
+   * live; `reconcileOrphanedLiveEvent` then reopens it). The event-then-
+   * tournament order matches `reconcileStartingEvent` (event lock held while the
+   * TM cancel locks the tournament), so the two paths cannot deadlock.
+   * Returns true only when exactly one event row flipped.
+   */
+  private async flipStartToLive(
+    eventId: string,
+    claimId: string,
+    tournamentId: string,
+  ): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const eventRows = await tx.execute<{
+        id: string;
+        status: string;
+        start_claim_id: string | null;
+        start_claimed_at: Date | string | null;
+      }>(
+        sql`SELECT id, status, start_claim_id, start_claimed_at
+            FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = eventRows[0];
+      if (!e || e.status !== 'starting' || e.start_claim_id !== claimId) return false;
+
+      const tournamentRows = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM poker_tournaments
+            WHERE id = ${tournamentId} AND special_event_id = ${eventId}
+            FOR UPDATE`,
+      );
+      const t = tournamentRows[0];
+      if (!t || (t.status !== 'running' && t.status !== 'completed')) return false;
+
+      const flipped = await tx.execute<{ id: string }>(
+        sql`UPDATE special_events
+            SET status = 'live', started_at = now(),
+                start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${eventId} AND status = 'starting'
+              AND start_claim_id = ${claimId}
+            RETURNING id`,
+      );
+      return flipped.length === 1;
+    });
+  }
+
+  /**
+   * The final flip matched 0 rows. Returns only when the event already ended in
+   * the right state WITH our tournament (someone else finalized it); otherwise it
+   * cancels our tournament (the cancel refunds the seed exactly once) and throws.
+   */
+  private async recoverUnflippedStart(
+    eventId: string,
+    claimId: string,
+    tournamentId: string,
+  ): Promise<void> {
+    const outcome = await this.reconcileStartingEvent(eventId, { claimId });
+    if (outcome === 'live' || outcome === 'completed') return;
+    if (outcome === 'reopened') {
+      throw new SpecialEventError('tournament_start_cancelled', 409);
+    }
+    // The claim is gone (the stale-claim reconcile or a settle took over).
+    const rows = await this.db.execute<{ event_status: string; tournament_status: string | null }>(
+      sql`SELECT e.status AS event_status, t.status AS tournament_status
+          FROM special_events e
+          LEFT JOIN poker_tournaments t
+            ON t.id = ${tournamentId} AND t.special_event_id = e.id
+          WHERE e.id = ${eventId}`,
+    );
+    const state = rows[0];
+    const eventDone = state?.event_status === 'live' || state?.event_status === 'completed';
+    const oursActive =
+      state?.tournament_status === 'running' || state?.tournament_status === 'completed';
+    if (eventDone && oursActive) return;
+    await this.tm.cancelAndRefundOrphan(tournamentId);
+    throw new SpecialEventError('event_start_claim_lost', 409);
+  }
+
+  /** Claims older than this belong to a dead start (SPECIAL_EVENT_START_CLAIM_STALE_MS). */
+  private staleClaimCutoff(): Date {
+    return new Date(this.clock.now() - SPECIAL_EVENT_START_CLAIM_STALE_MS);
+  }
+
+  /**
+   * Bring ONE 'starting' event back in line with its linked tournament (security
+   * M4 recovery), under the event row lock. Acts only when the event still holds
+   * `claimId` (a start's own failure path) or its claim is older than
+   * `staleBefore` (a crashed start). Outcome by the non-cancelled linked
+   * tournaments:
+   *   - registering/seating → cancel through the TM (seed refunded exactly once:
+   *     the TM cancel is idempotent under its row lock) → 'signup_open';
+   *   - running → 'live'; completed → 'completed';
+   *   - none → 'signup_open'.
+   * Every outcome clears the claim in the same UPDATE. The TM cancel is its own
+   * transaction; if this one then fails, the next reconcile sees the cancelled
+   * tournament and reopens, so no path moves CT twice.
+   */
+  async reconcileStartingEvent(
+    eventId: string,
+    opts: { claimId?: string; staleBefore?: Date },
+  ): Promise<StartReconcileOutcome> {
+    return this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<{
+        id: string;
+        status: string;
+        start_claim_id: string | null;
+        start_claimed_at: Date | string | null;
+      }>(
+        sql`SELECT id, status, start_claim_id, start_claimed_at
+            FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = lockRows[0];
+      if (!e || e.status !== 'starting') return 'not_starting';
+      if (opts.claimId && e.start_claim_id !== opts.claimId) return 'claim_lost';
+      if (
+        opts.staleBefore &&
+        e.start_claimed_at != null &&
+        new Date(e.start_claimed_at).getTime() >= opts.staleBefore.getTime()
+      ) {
+        return 'in_progress';
+      }
+
+      const linked = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM poker_tournaments
+            WHERE special_event_id = ${e.id} AND status <> 'cancelled'
+            ORDER BY created_at DESC`,
+      );
+      for (const t of linked) {
+        if (t.status === 'registering' || t.status === 'seating') {
+          await this.tm.cancelAndRefundOrphan(t.id);
+        }
+      }
+
+      if (linked.some((t) => t.status === 'completed')) {
+        await tx.execute(
+          sql`UPDATE special_events
+              SET status = 'completed', completed_at = now(),
+                  started_at = COALESCE(started_at, now()),
+                  start_claim_id = NULL, start_claimed_at = NULL
+              WHERE id = ${e.id} AND status = 'starting'`,
+        );
+        return 'completed';
+      }
+      if (linked.some((t) => t.status === 'running')) {
+        await tx.execute(
+          sql`UPDATE special_events
+              SET status = 'live', started_at = now(),
+                  start_claim_id = NULL, start_claimed_at = NULL
+              WHERE id = ${e.id} AND status = 'starting'`,
+        );
+        return 'live';
+      }
+      await tx.execute(
+        sql`UPDATE special_events
+            SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${e.id} AND status = 'starting'`,
+      );
+      return 'reopened';
+    });
+  }
+
+  /**
+   * A 'live' event whose linked tournaments were ALL cancelled after it went
+   * live (room abort, boot orphan recovery) goes back to 'signup_open' under the
+   * event row lock (Codex round 2, item 9), so an operator can start it again.
+   * No CT moves here: the TM cancel already refunded the seed exactly once, and
+   * a second pass finds the event not 'live' and does nothing. Confirmed signups
+   * stay confirmed; their entry is not charged again at the next start.
+   */
+  async reconcileOrphanedLiveEvent(eventId: string): Promise<'not_live' | 'has_tournament' | 'reopened'> {
+    return this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = lockRows[0];
+      if (!e || e.status !== 'live') return 'not_live';
+      const active = await tx.execute<{ active: number }>(
+        sql`SELECT count(*)::int AS active FROM poker_tournaments
+            WHERE special_event_id = ${e.id} AND status <> 'cancelled'`,
+      );
+      if (Number(active[0]?.active ?? 0) > 0) return 'has_tournament';
+      await tx.execute(
+        sql`UPDATE special_events
+            SET status = 'signup_open', started_at = NULL,
+                start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${e.id} AND status = 'live'`,
+      );
+      return 'reopened';
+    });
+  }
+
+  /**
+   * One recovery pass for the settlement worker: stale start claims first, then
+   * live events left without a tournament. One bad event never blocks the rest.
+   */
+  async reconcileEvents(
+    limit = 50,
+  ): Promise<{ scanned: number; reconciled: number; failed: number }> {
+    const starts = await this.reconcileStaleStarts(limit);
+    const lim = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const rows = await this.db.execute<{ id: string }>(
+      sql`SELECT e.id FROM special_events e
+          WHERE e.status = 'live'
+            AND NOT EXISTS (
+              SELECT 1 FROM poker_tournaments t
+              WHERE t.special_event_id = e.id AND t.status <> 'cancelled'
+            )
+          ORDER BY e.started_at ASC NULLS FIRST
+          LIMIT ${lim}`,
+    );
+    let reconciled = starts.reconciled;
+    let failed = starts.failed;
+    for (const row of rows) {
+      try {
+        if ((await this.reconcileOrphanedLiveEvent(row.id)) === 'reopened') reconciled += 1;
+      } catch (err) {
+        failed += 1;
+        console.error(`[special-event] orphaned live event reconcile failed for event ${row.id}:`, err);
+      }
+    }
+    return { scanned: starts.scanned + rows.length, reconciled, failed };
+  }
+
+  /**
+   * Reconcile every event whose start claim is stale (a crashed start). Run by
+   * the settlement worker on each tick (through `reconcileEvents`); one bad
+   * event never blocks the rest.
+   */
+  async reconcileStaleStarts(
+    limit = 50,
+  ): Promise<{ scanned: number; reconciled: number; failed: number }> {
+    const cutoff = this.staleClaimCutoff();
+    const lim = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const rows = await this.db.execute<{ id: string }>(
+      sql`SELECT id FROM special_events
+          WHERE status = 'starting'
+            AND (start_claimed_at IS NULL OR start_claimed_at < ${cutoff})
+          ORDER BY start_claimed_at ASC NULLS FIRST
+          LIMIT ${lim}`,
+    );
+    let reconciled = 0;
+    let failed = 0;
+    for (const row of rows) {
+      try {
+        const outcome = await this.reconcileStartingEvent(row.id, { staleBefore: cutoff });
+        if (outcome === 'reopened' || outcome === 'live' || outcome === 'completed') reconciled += 1;
+      } catch (err) {
+        failed += 1;
+        console.error(`[special-event] stale start reconcile failed for event ${row.id}:`, err);
+      }
+    }
+    return { scanned: rows.length, reconciled, failed };
   }
 
   /**
@@ -858,7 +1202,8 @@ export class SpecialEventManager {
       // Only mark completed once the dependent tournament has settled.
       if (tournament && tournament.status === 'completed') {
         await tx.execute(
-          sql`UPDATE special_events SET status = 'completed', completed_at = now()
+          sql`UPDATE special_events SET status = 'completed', completed_at = now(),
+                start_claim_id = NULL, start_claimed_at = NULL
               WHERE id = ${e.id} AND status <> 'completed'`,
         );
       }
@@ -911,13 +1256,17 @@ export class SpecialEventManager {
       if (linked.status === 'completed') {
         return { alreadySettled: true, tournamentId, results: mapped };
       }
-      if (linked.tournament_status !== 'completed' || linked.status !== 'live') {
+      // 'starting' counts as live here: a completed tournament proves the start
+      // succeeded even if the final 'starting' → 'live' flip did not commit.
+      const eventStarted = linked.status === 'live' || linked.status === 'starting';
+      if (linked.tournament_status !== 'completed' || !eventStarted) {
         return { alreadySettled: false, tournamentId, results: mapped };
       }
 
       await tx.execute(
-        sql`UPDATE special_events SET status = 'completed', completed_at = now()
-            WHERE id = ${linked.id} AND status = 'live'`,
+        sql`UPDATE special_events SET status = 'completed', completed_at = now(),
+              start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${linked.id} AND status IN ('live', 'starting')`,
       );
       return { alreadySettled: false, tournamentId, results: mapped };
     });
@@ -925,6 +1274,57 @@ export class SpecialEventManager {
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Upper bound on a special event's seed prize pool (atomic CT). 100,000 vCLAW is
+ * $1,000 at 1 vCLAW = $0.01 — the same ceiling as the quest `tokenReward` bound
+ * (security M2) and the `CASH_HOUSE_BANK_BANKROLL` default, the largest single
+ * house-funded amounts elsewhere. The house treasury pays the seed (M3), so the
+ * bound caps one operator action, and the treasury balance caps the total.
+ */
+export const SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT = 100_000;
+
+/**
+ * A start claim older than this belongs to a dead start (process crash) and is
+ * reconciled by the next start call or the settlement worker tick. A live start
+ * is one tournament create, at most 200 single-row registrations, and one seat
+ * pass (seconds), so 10 minutes does not take over a working start in practice.
+ * If it ever did, the start's claim CAS and its guarded final flip still keep
+ * every path conserving (security M4, 2026-09-30).
+ */
+export const SPECIAL_EVENT_START_CLAIM_STALE_MS = 10 * 60_000;
+
+export type StartReconcileOutcome =
+  | 'not_starting'
+  | 'claim_lost'
+  | 'in_progress'
+  | 'reopened'
+  | 'live'
+  | 'completed';
+
+/**
+ * Read + bound `prize_config_json.seedPrizePoolCt` (absent ⇒ 0). Enforced at
+ * create AND again at start, because events created before the bound may hold
+ * any value.
+ */
+export function readSeedPrizePoolCt(prizeConfig: unknown): bigint {
+  const raw = (prizeConfig as { seedPrizePoolCt?: unknown } | null)?.seedPrizePoolCt;
+  if (raw == null) return 0n;
+  if (typeof raw !== 'number' && typeof raw !== 'bigint' && typeof raw !== 'string') {
+    throw new SpecialEventError('invalid_seedPrizePoolCt', 400);
+  }
+  const seed = toBigIntStrict(raw, 'seedPrizePoolCt');
+  if (seed > BigInt(SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT)) {
+    throw new SpecialEventError('seed_prize_pool_exceeds_max', 400);
+  }
+  return seed;
+}
+
+/** Postgres unique violation (23505), raw or wrapped in `cause`. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
+}
 
 /**
  * Strictly coerce a non-negative atomic amount (number | bigint | decimal string)

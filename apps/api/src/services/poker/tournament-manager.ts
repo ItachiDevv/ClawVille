@@ -40,6 +40,8 @@
  * ── MONEY (LOCKED) ───────────────────────────────────────────────────────────
  * Tournament CHIPS are NOT CT. Only the buy-in DEBIT (register) and the prize
  * CREDIT (settle) cross `claw-token-ledger`. Refund on cancel CREDITs back.
+ * A prepaid (special-event) seed is DEBITED from the house treasury at create and
+ * credited back to it on cancel (security M3, 2026-09-30) — never minted.
  * Conservation: sum(prizes) + rakeTaken == prizePoolCt; cancel refunds net 0.
  * Chip conservation: across ALL tables at ALL times, Σ chipStack == startingStack
  * * entrants (rebalancing/breaking moves chips, never creates/destroys them).
@@ -84,6 +86,7 @@ import { sql } from 'drizzle-orm';
 // ── Injectable seams (tests override db / ledger / sim clock) ────────────────
 
 type DbLike = typeof realDb;
+type TxLike = Parameters<Parameters<DbLike['transaction']>[0]>[0];
 type LedgerLike = {
   debitClawTokens: typeof DebitFn;
   creditClawTokens: typeof CreditFn;
@@ -344,8 +347,12 @@ export interface CreateTournamentConfig {
    *     tournament" guard. This is the ONLY way `buyInCt === 0` is accepted.
    *   - `seedPrizePoolCt` (atomic CT) funds the prize pool DIRECTLY at creation
    *     instead of accumulating from buy-ins, so settle still pays out + conserves
-   *     (sum(prizes) + rakeTaken == prizePoolCt). The event manager funds this from
-   *     its `prize_config_json`. Omitted/0 ⇒ a 0 pool (a pure-glory event).
+   *     (sum(prizes) + rakeTaken == prizePoolCt). The amount is DEBITED from the
+   *     HOUSE TREASURY in the same tx as the INSERT (refused, with no tournament,
+   *     when the treasury is short) and recorded in `seed_prize_pool_ct` so a
+   *     cancel credits it back (security M3, 2026-09-30). The event manager reads
+   *     the amount from its `prize_config_json`. Omitted/0 ⇒ a 0 pool (a
+   *     pure-glory event) with no treasury touch.
    * Default (omitted) ⇒ the normal CT-buy-in tournament (buyInCt MUST be > 0).
    */
   prepaid?: {
@@ -594,10 +601,11 @@ export class TournamentManager {
   }
 
   /**
-   * Create a NEW tournament (status 'registering', prizePoolCt 0). VALIDATES the
-   * money config strictly (a bad curve/stack/seat-count mis-settles a CT pool), then
-   * ensures the referenced blind schedule row exists (seeding the idempotent default
-   * when `blindScheduleId` is omitted), then inserts the row. Returns the created row.
+   * Create a NEW tournament (status 'registering', prizePoolCt = the prepaid seed or
+   * 0). VALIDATES the money config strictly (a bad curve/stack/seat-count mis-settles
+   * a CT pool), then ensures the referenced blind schedule row exists (seeding the
+   * idempotent default when `blindScheduleId` is omitted), then debits a prepaid
+   * seed from the house treasury and inserts the row in ONE tx. Returns the created row.
    *
    * @param config validated config (see CreateTournamentConfig).
    * @param createdByAvatarId the admin/creator's avatar id, or null. PERSISTED into
@@ -626,6 +634,10 @@ export class TournamentManager {
     const seedPool = prepaid?.seedPrizePoolCt != null
       ? toBigIntStrict(prepaid.seedPrizePoolCt, 'seedPrizePoolCt')
       : 0n;
+    // The seed is a ledger debit amount (a JS integer), never a minted value.
+    if (seedPool > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new TournamentError('invalid_seedPrizePoolCt', 400);
+    }
 
     const rakeBps = config.rakeBps ?? 0;
     if (!Number.isInteger(rakeBps) || rakeBps < 0 || rakeBps > 10000) {
@@ -675,39 +687,79 @@ export class TournamentManager {
       if (!exists[0]) throw new TournamentError('blind_schedule_not_found', 404);
     }
 
-    // ── Insert (status 'registering', prizePoolCt 0) ────────────────────────────
-    const inserted = await this.db.execute<{
-      id: string;
-      name: string;
-      status: string;
-      buy_in_ct: string;
-      rake_bps: number;
-      min_entrants: number;
-      max_entrants: number;
-      seats_per_table: number;
-      starting_stack: number;
-      prize_pool_ct: string;
-      payout_curve_json: unknown;
-      blind_schedule_id: string;
-      registration_closes_at: Date | string | null;
-      created_by: string | null;
-      special_event_id: string | null;
-      created_at: Date | string | null;
-    }>(
-      sql`INSERT INTO poker_tournaments
-            (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
-             seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
-             blind_schedule_id, registration_closes_at, created_by, special_event_id)
-          VALUES (${name}, 'registering', ${buyIn.toString()}, ${rakeBps}, ${minEntrants},
-                  ${maxEntrants}, ${seatsPerTable}, ${startingStack}, ${seedPool.toString()},
-                  ${JSON.stringify(payoutCurve)}::jsonb, ${blindScheduleId},
-                  ${registrationClosesAt}, ${createdByAvatarId}, ${specialEventId})
-          RETURNING id, name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
-                    seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
-                    blind_schedule_id, registration_closes_at, created_by, special_event_id, created_at`,
-    );
-    const row = inserted[0];
-    if (!row) throw new TournamentError('create_failed', 500);
+    // ── Seed funding source (security M3, 2026-09-30) ───────────────────────────
+    // A prepaid seed used to be written straight into prize_pool_ct with no debit,
+    // so it MINTED the prize CT. It is now debited from the house treasury in the
+    // SAME tx as the INSERT below: no treasury, or too little in it ⇒ refuse and
+    // create nothing. Resolved before the tx (the resolver may self-heal the seed
+    // row with its own queries).
+    let treasuryAvatarId: string | null = null;
+    if (seedPool > 0n) {
+      treasuryAvatarId = await this.resolveTreasuryAvatarId();
+      if (!treasuryAvatarId) {
+        throw new TournamentError('house_treasury_unavailable', 503);
+      }
+    }
+
+    // ── Debit the seed + insert (status 'registering', prizePoolCt = seed) ──────
+    const row = await this.db.transaction(async (tx) => {
+      if (treasuryAvatarId) {
+        try {
+          await this.ledger.debitClawTokens(
+            {
+              avatarId: treasuryAvatarId,
+              amount: Number(seedPool),
+              reason: 'special_event_seed_prize_pool',
+              source: 'system',
+              metadata: { specialEventId, tournamentName: name },
+              actorKind: 'admin',
+            },
+            tx,
+          );
+        } catch (err) {
+          if (err instanceof Error && err.name === 'InsufficientTokensError') {
+            throw new TournamentError('house_treasury_insufficient_for_seed', 402);
+          }
+          throw err;
+        }
+      }
+
+      const inserted = await tx.execute<{
+        id: string;
+        name: string;
+        status: string;
+        buy_in_ct: string;
+        rake_bps: number;
+        min_entrants: number;
+        max_entrants: number;
+        seats_per_table: number;
+        starting_stack: number;
+        prize_pool_ct: string;
+        payout_curve_json: unknown;
+        blind_schedule_id: string;
+        registration_closes_at: Date | string | null;
+        created_by: string | null;
+        special_event_id: string | null;
+        created_at: Date | string | null;
+      }>(
+        sql`INSERT INTO poker_tournaments
+              (name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
+               seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
+               blind_schedule_id, registration_closes_at, created_by, special_event_id,
+               seed_prize_pool_ct)
+            VALUES (${name}, 'registering', ${buyIn.toString()}, ${rakeBps}, ${minEntrants},
+                    ${maxEntrants}, ${seatsPerTable}, ${startingStack}, ${seedPool.toString()},
+                    ${JSON.stringify(payoutCurve)}::jsonb, ${blindScheduleId},
+                    ${registrationClosesAt}, ${createdByAvatarId}, ${specialEventId},
+                    ${seedPool.toString()})
+            RETURNING id, name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
+                      seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
+                      blind_schedule_id, registration_closes_at, created_by, special_event_id, created_at`,
+      );
+      const created = inserted[0];
+      if (!created) throw new TournamentError('create_failed', 500);
+      return created;
+    });
 
     if (createdByAvatarId) {
       console.log(
@@ -982,10 +1034,12 @@ export class TournamentManager {
                 WHERE id = ${e.id}`,
           );
         }
-        await tx.execute(
+        const cancelled = await tx.execute<{ seed_prize_pool_ct: string | null }>(
           sql`UPDATE poker_tournaments SET status = 'cancelled', cancelled_at = now()
-              WHERE id = ${tournamentId}`,
+              WHERE id = ${tournamentId}
+              RETURNING seed_prize_pool_ct`,
         );
+        await this.refundTreasurySeed(tx, tournamentId, cancelled[0]?.seed_prize_pool_ct);
         return { kind: 'cancelled' as const, refundedCount: entrantRows.length };
       }
 
@@ -2126,12 +2180,46 @@ export class TournamentManager {
               WHERE id = ${e.id}`,
         );
       }
-      await tx.execute(
+      const cancelled = await tx.execute<{ seed_prize_pool_ct: string | null }>(
         sql`UPDATE poker_tournaments SET status = 'cancelled', cancelled_at = now()
-            WHERE id = ${tournamentId}`,
+            WHERE id = ${tournamentId}
+            RETURNING seed_prize_pool_ct`,
       );
+      await this.refundTreasurySeed(tx, tournamentId, cancelled[0]?.seed_prize_pool_ct);
       return entrantRows.length;
     });
+  }
+
+  /**
+   * Credit a cancelled tournament's house-treasury-funded seed back to the
+   * treasury, inside the cancel tx (security M3, 2026-09-30). Both cancel paths
+   * run it exactly once: each checks the terminal status under the FOR UPDATE row
+   * lock before it gets here. A legacy (pre-0075, minted) or buy-in-only
+   * tournament carries '0' and returns nothing. A missing treasury THROWS so the
+   * whole cancel rolls back and retries later, instead of burning the seed.
+   */
+  private async refundTreasurySeed(
+    tx: TxLike,
+    tournamentId: string,
+    seedPrizePoolCt: string | null | undefined,
+  ): Promise<void> {
+    const seed = BigInt(seedPrizePoolCt ?? '0');
+    if (seed <= 0n) return;
+    const treasuryAvatarId = await this.resolveTreasuryAvatarId();
+    if (!treasuryAvatarId) {
+      throw new TournamentError('house_treasury_unavailable', 503);
+    }
+    await this.ledger.creditClawTokens(
+      {
+        avatarId: treasuryAvatarId,
+        amount: Number(seed),
+        reason: 'special_event_seed_refund',
+        source: 'system',
+        metadata: { tournamentId },
+        actorKind: 'system',
+      },
+      tx,
+    );
   }
 
   /**

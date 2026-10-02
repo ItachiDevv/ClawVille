@@ -29,10 +29,17 @@ export interface CovenantActionRecordParams {
 }
 
 export interface ClawvilleServices {
-  /** Credit ClawTokens to an avatar (returns new balance) */
-  creditClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
-  /** Debit ClawTokens from an avatar (returns new balance) */
-  debitClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
+  /**
+   * Credit ClawTokens to an avatar (returns new balance). Pass the enclosing
+   * drizzle `tx` to make the credit atomic with the action's other writes.
+   */
+  creditClawTokens: (params: ClawTokenServiceParams, tx?: any) => Promise<{ balanceAfter: number }>;
+  /**
+   * Debit ClawTokens from an avatar (returns new balance). Pass the enclosing
+   * drizzle `tx` to make the debit atomic with the action's other writes (BUY_ITEM
+   * debits and grants the book in ONE transaction, security Codex round 2).
+   */
+  debitClawTokens: (params: ClawTokenServiceParams, tx?: any) => Promise<{ balanceAfter: number }>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
   /**

@@ -1,6 +1,7 @@
 import { KNOWLEDGE_BOOKS, getBookById } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
 import { hasServices, getMessageText, getParam , getDbModule } from './types';
+import { grantInventoryItem } from './inventory-mutations';
 
 /**
  * BUY_ITEM — purchase a knowledge book from the current building's shop.
@@ -60,7 +61,7 @@ export const buyItemAction: Action = {
       }
 
       const { avatarId, services } = state;
-      const { db, debitClawTokens, creditClawTokens } = services;
+      const { db, debitClawTokens } = services;
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -90,17 +91,27 @@ export const buyItemAction: Action = {
         return { success: false, text: `Book "${itemId}" not found.` };
       }
 
-      // Check current balance
-      const { avatars, eq } = await getDbModule();
+      // Check current balance + the canonical guest gate (security M9, 2026-09-30;
+      // mirrors ACCEPT_QUEST). A guest runs a DEMO economy that settles off the
+      // ledger (`items.ts /buy` demo branch). This action spends REAL vCLAW through
+      // the injected ledger, so a guest-owned avatar must never reach the debit.
+      const { avatars, users, eq } = await getDbModule();
 
       const [avatar] = await db
-        .select({ clawTokens: avatars.clawTokens })
+        .select({ clawTokens: avatars.clawTokens, isGuest: users.isGuest })
         .from(avatars)
+        .innerJoin(users, eq(users.id, avatars.userId))
         .where(eq(avatars.id, avatarId))
         .limit(1);
 
       if (!avatar) {
         return { success: false, text: 'Avatar not found.' };
+      }
+      if (avatar.isGuest) {
+        return {
+          success: false,
+          text: 'Guests run a demo economy: buy books in the building shop with demo vCLAW. Buying through chat spends real vCLAW, so it needs a full account.',
+        };
       }
 
       if (avatar.clawTokens < book.price) {
@@ -110,49 +121,24 @@ export const buyItemAction: Action = {
         };
       }
 
-      // Check if avatar already owns this book
-      const { avatarInventory, and } = await getDbModule();
-
-      const [existing] = await db
-        .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
-        .from(avatarInventory)
-        .where(and(eq(avatarInventory.avatarId, avatarId), eq(avatarInventory.itemId, itemId)))
-        .limit(1);
-
-      // Debit ClawTokens
-      const { balanceAfter } = await debitClawTokens({
-        avatarId,
-        amount: book.price,
-        reason: `Purchased book: ${book.name}`,
-        source: 'shop',
-        metadata: { bookId: book.id, buildingId: book.building },
-      });
-
-      // Add or increment inventory — compensating credit on failure
-      try {
-        if (existing) {
-          await db
-            .update(avatarInventory)
-            .set({ quantity: existing.quantity + 1 })
-            .where(eq(avatarInventory.id, existing.id));
-        } else {
-          await db.insert(avatarInventory).values({
+      // Debit + grant in ONE transaction: if the grant fails, the debit rolls
+      // back with it. The old debit-then-grant with a best-effort refund could
+      // lose the buyer's vCLAW when the refund also failed (security, Codex
+      // round 2). The grant is one atomic upsert (security M10).
+      const balanceAfter = await db.transaction(async (tx: any) => {
+        const debit = await debitClawTokens(
+          {
             avatarId,
-            itemId,
-            quantity: 1,
-          });
-        }
-      } catch (invErr: any) {
-        // Compensating credit — refund the debit so the avatar doesn't lose tokens
-        await creditClawTokens({
-          avatarId,
-          amount: book.price,
-          reason: 'buy_item_refund',
-          source: 'api',
-          metadata: { bookId: book.id, error: invErr.message },
-        }).catch(() => {});
-        return { success: false, text: `Purchase failed after payment — tokens refunded. Error: ${invErr.message}` };
-      }
+            amount: book.price,
+            reason: `Purchased book: ${book.name}`,
+            source: 'shop',
+            metadata: { bookId: book.id, buildingId: book.building },
+          },
+          tx,
+        );
+        await grantInventoryItem(tx, { avatarId, itemId });
+        return debit.balanceAfter;
+      });
 
       return {
         success: true,

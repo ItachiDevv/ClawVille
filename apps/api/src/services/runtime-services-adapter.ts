@@ -20,6 +20,7 @@
  */
 
 import type { ClawvilleServices } from '@clawville/agent-runtime';
+import { sql } from 'drizzle-orm';
 import {
   creditClawTokens as ledgerCreditClawTokens,
   debitClawTokens as ledgerDebitClawTokens,
@@ -46,28 +47,36 @@ export function buildRuntimeServices(
   return {
     db,
     doordash: opts?.doordash,
-    creditClawTokens: async (params) => {
+    creditClawTokens: async (params, tx) => {
+      await refuseGuestLedgerSubject(tx ?? db, params.avatarId);
       // The runtime spec has `metadata: Record<string, any>` (always present
       // and required); the ledger has `metadata?: Record<string, unknown>`
       // (optional). Either shape works at the ledger; pass through verbatim.
-      return ledgerCreditClawTokens({
-        avatarId: params.avatarId,
-        amount: params.amount,
-        reason: params.reason,
-        source: mapRuntimeSourceToLedger(params.source),
-        metadata: params.metadata,
-        actorKind,
-      });
+      return ledgerCreditClawTokens(
+        {
+          avatarId: params.avatarId,
+          amount: params.amount,
+          reason: params.reason,
+          source: mapRuntimeSourceToLedger(params.source),
+          metadata: params.metadata,
+          actorKind,
+        },
+        tx,
+      );
     },
-    debitClawTokens: async (params) => {
-      return ledgerDebitClawTokens({
-        avatarId: params.avatarId,
-        amount: params.amount,
-        reason: params.reason,
-        source: mapRuntimeSourceToLedger(params.source),
-        metadata: params.metadata,
-        actorKind,
-      });
+    debitClawTokens: async (params, tx) => {
+      await refuseGuestLedgerSubject(tx ?? db, params.avatarId);
+      return ledgerDebitClawTokens(
+        {
+          avatarId: params.avatarId,
+          amount: params.amount,
+          reason: params.reason,
+          source: mapRuntimeSourceToLedger(params.source),
+          metadata: params.metadata,
+          actorKind,
+        },
+        tx,
+      );
     },
     recordCovenantAction: async (params, tx) => {
       return recordCovenantAction(
@@ -85,6 +94,26 @@ export function buildRuntimeServices(
       );
     },
   };
+}
+
+/**
+ * GUEST BACKSTOP (security M9 + Codex round 2, 2026-09-30). A guest runs a DEMO
+ * economy that settles off the ledger. The runtime ledger services refuse any
+ * credit or debit whose avatar belongs to a guest (canonical `users.is_guest`),
+ * decided HERE on every call, so no surface that builds these services can
+ * forget the guard (callers: chat.ts, avatars.ts, agent-gateway.ts, openclaw.ts,
+ * avatar-simulation-bridge.ts). An id that is not an avatar (e.g. an
+ * openclaw_bots id) is left to the ledger, which refuses an unknown avatar.
+ */
+async function refuseGuestLedgerSubject(db: any, avatarId: string): Promise<void> {
+  const rows = (await db.execute(
+    sql`SELECT u.is_guest AS is_guest
+        FROM avatars a JOIN users u ON u.id = a.user_id
+        WHERE a.id = ${avatarId}`,
+  )) as Array<{ is_guest: boolean | null }>;
+  if (rows[0]?.is_guest === true) {
+    throw new Error('guest_demo_economy: a guest account cannot move real vCLAW through the ledger');
+  }
 }
 
 /**

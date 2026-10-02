@@ -12,7 +12,7 @@
  * ------------------------
  * - Anyone can post a bounty. Creator escrows `tokenReward` NT on post,
  *   refunded on cancel, transferred on approve.
- * - Bonus rewards (`skill`, `agent_config`, `knowledge_book`, `custom`)
+ * - Bonus rewards (`agent_config`, `knowledge_book`, `custom`; legacy `skill` rows still render)
  *   render as inline pill chips in the card footer.
  * - Reputation tier (newcomer → master) maps to rarity:
  *     newcomer=common, apprentice=uncommon, journeyman=rare,
@@ -40,6 +40,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api, ApiError } from '@/lib/api';
+import { toBonusRewardPayload } from '@/lib/bounty-bonus-payload';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
@@ -1181,7 +1182,7 @@ function CreateBountyForm({
       .map((t) => t.trim())
       .filter(Boolean);
 
-    // Preserve exact payload shape of prior implementation.
+    // Payload matches the server createBountySchema (bonus rows via toBonusRewardPayload).
     createMutation.mutate({
       title: title.trim(),
       description: description.trim(),
@@ -1191,10 +1192,12 @@ function CreateBountyForm({
       maxAttempts,
       tags: tags.length > 0 ? tags : undefined,
       expiresAt: expiresAt || undefined,
-      bonusRewards:
-        bonusRewards.length > 0
-          ? bonusRewards.filter((b) => b.label.trim())
-          : undefined,
+      bonusRewards: (() => {
+        const payload = bonusRewards
+          .filter((b) => b.label.trim() || b.value.trim())
+          .map(toBonusRewardPayload);
+        return payload.length > 0 ? payload : undefined;
+      })(),
     });
   };
 
@@ -1404,7 +1407,6 @@ function CreateBountyForm({
                     }
                     style={{ ...INPUT_STYLE, width: 130 }}
                   >
-                    <option value="skill">Skill</option>
                     <option value="agent_config">Agent Config</option>
                     <option value="knowledge_book">Knowledge Book</option>
                     <option value="custom">Custom</option>
@@ -1420,7 +1422,7 @@ function CreateBountyForm({
                   />
                   <input
                     type="text"
-                    placeholder="Value / ID"
+                    placeholder={bonus.type === 'knowledge_book' ? 'Book id (you must own it)' : 'Value / ID'}
                     value={bonus.value}
                     onChange={(e) =>
                       handleBonusChange(i, 'value', e.target.value)
