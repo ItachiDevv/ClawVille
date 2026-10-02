@@ -137,6 +137,7 @@ jobs:
           src/lib/site-url.test.ts
           src/hooks/use-floor-arena.test.tsx
           src/components/game/trading-floor/arena/arena-panels.test.tsx
+          src/components/game/trading-floor/arena/withdraw-panel.test.tsx
           src/lib/three/trading-floor/trading-floor-asset.test.ts
           src/lib/three/trading-floor/trading-floor-exit-intent.test.ts
           src/lib/three/trading-floor/trading-floor-exit-spawn.test.ts
@@ -356,7 +357,7 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/clawville_test
           FINGERPRINT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        run: cd apps/api && bun test src/services/__tests__/trading-migrations-db.test.ts src/services/__tests__/trade-observer.test.ts src/services/__tests__/floor-arena-queries.db.test.ts src/services/__tests__/floor-arena-analysis-store.db.test.ts
+        run: cd apps/api && bun test src/services/__tests__/trading-migrations-db.test.ts src/services/__tests__/trade-observer.test.ts src/services/__tests__/floor-arena-queries.db.test.ts src/services/__tests__/floor-arena-analysis-store.db.test.ts src/services/__tests__/floor-arena-withdraw-schema.db.test.ts src/services/__tests__/floor-arena-withdraw-queries.db.test.ts
 
       - name: Run the wager abort-recovery DB tests (real sweep, close and watch SQL)
         env:

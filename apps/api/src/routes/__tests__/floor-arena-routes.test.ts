@@ -182,6 +182,18 @@ function makeDeps() {
     logArenaEvent: async (c, input) => {
       logged.push({ input: input as unknown as Record<string, unknown>, fpHash: c.get('fpHash'), ipPrefixHash: c.get('ipPrefixHash') });
     },
+    // P5 withdraw deps: inert fakes here; floor-arena-withdraw-routes.test.ts covers the routes.
+    issueWithdrawChallenge: async () => ({ ok: false, reason: 'too_many_challenges' }),
+    consumeWithdrawChallenge: async () => null,
+    isArenaWallet: async () => false,
+    readLinkedWallet: async () => null,
+    setWithdrawAddress: async () => ({ ok: false, reason: 'wallet_not_ready' }),
+    revokeWithdrawAddress: async () => ({ ok: false, reason: 'not_found' }),
+    requestWithdrawal: async () => ({ kind: 'refused', code: 'no_withdraw_address' }),
+    listWithdrawals: async () => [],
+    cancelWithdrawal: async () => ({ ok: false, reason: 'not_found' }),
+    readWithdrawSummary: async () => ({ address: null, open: null }),
+    readWithdrawAddress: async () => null,
   };
   return {
     deps, agents, reports, log, updates, tapeLimits, eventReads, eventAgents, logged,
@@ -429,7 +441,7 @@ describe('authed arena routes', () => {
     const response = await call('GET', '/me');
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(await response.json()).toEqual({
-      agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null,
+      agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null, withdraw: null,
     });
   });
 
@@ -699,9 +711,10 @@ describe('authed arena routes', () => {
     for (const file of ['../floor-arena.ts', '../admin-floor-arena.ts']) {
       const source = readFileSync(new URL(file, import.meta.url), 'utf8');
       expect(source).not.toMatch(/floor-arena\/provisioning/);
-      expect(source).not.toMatch(/\b(ensureAddonSkill|removeArenaX402|reconcileArenaX402|provisionArenaAgent|clawPumpArenaWriter|updateClawPumpAgent|x402PayViaClawPump|createClawPumpAgent)\b/);
+      expect(source).not.toMatch(/\b(ensureAddonSkill|removeArenaX402|reconcileArenaX402|provisionArenaAgent|clawPumpArenaWriter|updateClawPumpAgent|x402PayViaClawPump|createClawPumpAgent|transferFromArenaWallet|readArenaWalletLive|clawPumpArenaWithdrawWriter)\b/);
+      // Types, plus (P5) exactly the two PURE helpers: the destination check and the atomic amount text.
       for (const line of source.split('\n').filter((text) => text.includes("from '../services/clawpump-writer'"))) {
-        expect(line.startsWith('import type ')).toBe(true);
+        expect(line.startsWith('import type ') || line.trimEnd() === "import { arenaDestinationProblem, formatAtomicAmount } from '../services/clawpump-writer';").toBe(true);
       }
     }
   });
