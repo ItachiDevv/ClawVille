@@ -137,6 +137,7 @@ jobs:
           src/lib/site-url.test.ts
           src/hooks/use-floor-arena.test.tsx
           src/components/game/trading-floor/arena/arena-panels.test.tsx
+          src/components/game/trading-floor/arena/withdraw-panel.test.tsx
           src/lib/three/trading-floor/trading-floor-asset.test.ts
           src/lib/three/trading-floor/trading-floor-exit-intent.test.ts
           src/lib/three/trading-floor/trading-floor-exit-spawn.test.ts
