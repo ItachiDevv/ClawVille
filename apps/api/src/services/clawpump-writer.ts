@@ -603,8 +603,6 @@ export const clawPumpArenaWriter: ClawPumpArenaWriter = {
 export const CLAWPUMP_TRANSFER_TIMEOUT_MS = 45_000;
 /** HTTP 200 ok:false codes that Run 2 proved are pre-checks (nothing sent). Any other code is 'unknown'. */
 export const CLAWPUMP_TRANSFER_NO_SEND_VENDOR_CODES: ReadonlySet<string> = new Set(['insufficient_live_balance', 'insufficient_fee_balance']);
-/** Auth and rate-limit refusals: ClawPump answers them before the transfer handler runs. */
-const TRANSFER_NO_SEND_HTTP_STATUSES: ReadonlySet<number> = new Set([401, 403, 429]);
 const USDC_DECIMALS = 6;
 const SOL_DECIMALS = 9;
 const MAX_TRANSFER_ATOMIC = 2n ** 63n - 1n;
@@ -774,7 +772,7 @@ function checkTransferInput(input: ArenaTransferInput): CheckedTransfer {
 }
 
 type TransferPostReply =
-  | { kind: 'reply'; status: number; bodyRead: boolean; payload: unknown }
+  | { kind: 'reply'; status: number; payload: unknown }
   | { kind: 'no_reply'; code: 'timeout' | 'network_error' };
 
 function transportCode(error: unknown): 'timeout' | 'network_error' {
@@ -819,17 +817,17 @@ async function sendTransferPost(path: string, body: unknown, options: ClawPumpWr
   try {
     const status = response.status;
     if (Number(response.headers.get('content-length') ?? 0) > MAX_RESPONSE_CHARS) {
-      return { kind: 'reply', status, bodyRead: false, payload: undefined };
+      return { kind: 'reply', status, payload: undefined };
     }
     const text = await response.text();
-    if (text.length > MAX_RESPONSE_CHARS) return { kind: 'reply', status, bodyRead: false, payload: undefined };
+    if (text.length > MAX_RESPONSE_CHARS) return { kind: 'reply', status, payload: undefined };
     let payload: unknown;
     try {
       payload = JSON.parse(text);
     } catch {
       payload = undefined;
     }
-    return { kind: 'reply', status, bodyRead: true, payload };
+    return { kind: 'reply', status, payload };
   } catch (error) {
     return { kind: 'no_reply', code: transportCode(error) };
   }
@@ -849,10 +847,9 @@ function classifyTransferReply(reply: TransferPostReply, transfer: CheckedTransf
   const txSignature = typeof txHash === 'string' && TX_SIGNATURE_RE.test(txHash) ? txHash : null;
   const { status } = reply;
   if (status < 200 || status > 299) {
-    const code = `http_${status}`;
-    // A body over 1 MB, or one that was not read, cannot prove "no txHash".
-    if (TRANSFER_NO_SEND_HTTP_STATUSES.has(status) && reply.bodyRead && !hasTxHash) return { kind: 'rejected', code };
-    return { kind: 'unknown', code, txSignature };
+    // Codex money review: no HTTP status proves "nothing sent" (401, 403 and 429 included).
+    // Only the two HTTP 200 vendor pre-check codes below are proved.
+    return { kind: 'unknown', code: `http_${status}`, txSignature };
   }
   if (payload === null) return { kind: 'unknown', code: 'reply_unparsed', txSignature: null };
   if (payload.ok === false) {
