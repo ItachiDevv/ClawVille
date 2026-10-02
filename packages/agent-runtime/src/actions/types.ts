@@ -29,16 +29,24 @@ export interface CovenantActionRecordParams {
 }
 
 /**
- * T0 fee routing input for a book bought through BUY_ITEM (security batch 2,
- * 2026-10-02). The service decides the treasury, reason, source and actor; the
- * runtime supplies only the facts of the sale.
+ * Input for the ONE book-purchase charge of BUY_ITEM (security batch 2,
+ * 2026-10-02). The service decides the ledger rows (buyer debit + T0 treasury
+ * credit); the runtime supplies only the facts of the sale.
  */
-export interface HouseTreasuryBookFeeParams {
+export interface BookPurchaseChargeParams {
+  /** The buyer avatar (a guest is refused). */
+  avatarId: string;
+  /** A catalog book id (`getBookById`). */
   bookId: string;
-  /** The avatar whose debit pays for the book (a guest is refused). */
-  buyerAvatarId: string;
-  /** The book price, already debited from the buyer in the SAME tx. */
+  /** The book price: a positive safe integer equal to the catalog price, or the service throws. */
   amount: number;
+}
+
+export interface BookPurchaseChargeResult {
+  /** The buyer's balance after the debit. */
+  balanceAfter: number;
+  /** The treasury avatar credited, or null when the treasury is unavailable (the price burned, logged). */
+  treasuryAvatarId: string | null;
 }
 
 export interface ClawvilleServices {
@@ -54,20 +62,23 @@ export interface ClawvilleServices {
    */
   debitClawTokens: (params: ClawTokenServiceParams, tx?: any) => Promise<{ balanceAfter: number }>;
   /**
-   * T0 fee routing for BUY_ITEM (security batch 2, 2026-10-02): credits the book
-   * price to the house treasury with the SAME ledger row the REST shop writes
-   * (`routes/items.ts` step 1b: reason 'house_fee_book_purchase', source 'system',
-   * actor 'system', metadata { bookId, buyerAvatarId }). `tx` is REQUIRED: the
-   * credit commits or rolls back with the buyer's debit and the inventory grant,
-   * so no path mints or burns by accident. Resolves the treasury avatar id, or
-   * null when the treasury is unavailable (the service logs; the price burns, the
-   * REST pre-T0 fallback). OPTIONAL so bespoke service constructors keep
-   * compiling; BUY_ITEM refuses BEFORE any debit when it is absent (fail closed).
+   * The ONE book-purchase charge for BUY_ITEM (security batch 2, 2026-10-02).
+   * Inside the caller's `tx` (REQUIRED) it refuses a guest buyer, debits the
+   * buyer (reason `Purchased book: <name>`, the surface's actor kind), then
+   * credits the house treasury with the SAME ledger row the REST shop writes
+   * (`routes/items.ts` step 1b: reason 'house_fee_book_purchase', source
+   * 'system', actor 'system', metadata { bookId, buyerAvatarId }). A null
+   * treasury logs and burns the price (the REST pre-T0 fallback). It THROWS on an
+   * amount that is not a positive safe integer or not the catalog price. There
+   * is deliberately NO standalone treasury-credit service: the credit cannot
+   * happen without the matching debit. OPTIONAL so bespoke service constructors
+   * keep compiling; BUY_ITEM refuses BEFORE any read or debit when it is absent
+   * (fail closed).
    */
-  creditHouseTreasuryBookFee?: (
-    params: HouseTreasuryBookFeeParams,
+  chargeBookPurchase?: (
+    params: BookPurchaseChargeParams,
     tx: any,
-  ) => Promise<{ treasuryAvatarId: string | null }>;
+  ) => Promise<BookPurchaseChargeResult>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
   /**

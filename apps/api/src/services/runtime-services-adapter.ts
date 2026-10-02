@@ -16,11 +16,13 @@
  * Lucia-cookie user chats through a runtime, 'agent' for autonomous/hosted/
  * connected surfaces) and every ledger call + explicit action record flowing
  * through these services carries that attribution. Omitted → unattributed
- * (never guessed). The one exception is `creditHouseTreasuryBookFee`: a T0 house
- * fee is always attributed to 'system', exactly like the REST fee sites.
+ * (never guessed). The one exception is the treasury credit inside
+ * `chargeBookPurchase`: a T0 house fee is always attributed to 'system', exactly
+ * like the REST fee sites (the buyer debit in the same op keeps the surface's).
  */
 
 import type { ClawvilleServices } from '@clawville/agent-runtime';
+import { getBookById } from '@clawville/shared';
 import { sql } from 'drizzle-orm';
 import {
   creditClawTokens as ledgerCreditClawTokens,
@@ -80,40 +82,69 @@ export function buildRuntimeServices(
         tx,
       );
     },
-    creditHouseTreasuryBookFee: async (params, tx) => {
-      // T0 fee routing for runtime BUY_ITEM (security batch 2, 2026-10-02):
-      // the SAME ledger row the REST shop writes (`routes/items.ts` step 1b).
-      // A credit outside the buyer's debit tx could mint on a later rollback,
-      // so the tx is mandatory.
+    chargeBookPurchase: async (params, tx) => {
+      // ONE book-purchase charge for runtime BUY_ITEM (security batch 2,
+      // 2026-10-02): the buyer debit and the T0 treasury credit are written
+      // together, so no runtime code can credit the treasury without the
+      // matching debit. A charge outside the caller's tx could survive a
+      // rolled-back inventory grant, so the tx is mandatory.
       if (!tx) {
-        throw new Error('house_fee_book_purchase: the treasury credit must run in the buyer debit transaction');
+        throw new Error('book_purchase_charge: the charge must run in the caller transaction');
       }
-      // Demo money never reaches the treasury.
-      await refuseGuestLedgerSubject(tx, params.buyerAvatarId);
-      if (!Number.isInteger(params.amount) || params.amount <= 0) {
-        return { treasuryAvatarId: null };
+      // An invalid amount THROWS (never a silent skip): a fractional amount would
+      // debit the buyer but fail the treasury credit, and a string amount is not
+      // a price at all.
+      const amount: unknown = params.amount;
+      if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
+        throw new Error(`book_purchase_charge: invalid amount ${String(amount)} (must be a positive safe integer)`);
       }
+      const book = getBookById(params.bookId);
+      if (!book) {
+        throw new Error(`book_purchase_charge: unknown book ${params.bookId}`);
+      }
+      if (book.price !== amount) {
+        throw new Error(`book_purchase_charge: amount ${amount} is not the catalog price ${book.price} of ${book.id}`);
+      }
+      // Demo money never moves through the ledger (same guard the generic
+      // debit applies, on the tx connection).
+      await refuseGuestLedgerSubject(tx, params.avatarId);
+      // Buyer debit: the SAME row the runtime BUY_ITEM debit wrote before this op
+      // existed (reason, runtime source 'shop' -> ledger enum, metadata, and the
+      // surface's actor kind).
+      const debit = await ledgerDebitClawTokens(
+        {
+          avatarId: params.avatarId,
+          amount,
+          reason: `Purchased book: ${book.name}`,
+          source: mapRuntimeSourceToLedger('shop'),
+          metadata: { bookId: book.id, buildingId: book.building },
+          actorKind,
+        },
+        tx,
+      );
+      // Treasury credit: the SAME row the REST shop writes (`routes/items.ts`
+      // step 1b). A null treasury degrades to the logged pre-T0 burn, like REST.
       const treasuryId = await getHouseTreasuryAvatarId();
       if (!treasuryId) {
         console.error(
-          `[runtime BUY_ITEM] house treasury unavailable — ${params.amount} CT book purchase burned (pre-T0 behavior) for book ${params.bookId}`,
+          `[runtime BUY_ITEM] house treasury unavailable — ${amount} CT book purchase burned (pre-T0 behavior) for book ${book.id}`,
         );
-        return { treasuryAvatarId: null };
+        return { balanceAfter: debit.balanceAfter, treasuryAvatarId: null };
       }
       // Attribution is 'system' like every T0 fee site, not the surface's
       // actor: the house, not the buyer, receives the fee.
       await ledgerCreditClawTokens(
         {
           avatarId: treasuryId,
-          amount: params.amount,
+          amount,
           reason: 'house_fee_book_purchase',
           source: 'system',
-          metadata: { bookId: params.bookId, buyerAvatarId: params.buyerAvatarId },
+          metadata: { bookId: book.id, buyerAvatarId: params.avatarId },
           actorKind: 'system',
         },
         tx,
       );
-      return { treasuryAvatarId: treasuryId };
+      return { balanceAfter: debit.balanceAfter, treasuryAvatarId: treasuryId };
     },
     recordCovenantAction: async (params, tx) => {
       return recordCovenantAction(
@@ -141,6 +172,10 @@ export function buildRuntimeServices(
  * forget the guard (callers: chat.ts, avatars.ts, agent-gateway.ts, openclaw.ts,
  * avatar-simulation-bridge.ts). An id that is not an avatar (e.g. an
  * openclaw_bots id) is left to the ledger, which refuses an unknown avatar.
+ *
+ * The INNER JOIN drops no avatar: `avatars.user_id` is NOT NULL with a foreign
+ * key to `users(id)` (`packages/database/src/schema/avatars.ts`), so every avatar
+ * has exactly one users row and its `is_guest` flag is always read.
  */
 async function refuseGuestLedgerSubject(db: any, avatarId: string): Promise<void> {
   const rows = (await db.execute(
