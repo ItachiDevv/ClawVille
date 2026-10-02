@@ -1429,6 +1429,143 @@ for(const [y,x,z] of [[32,350,346],[50,330,210],[70,310,160]])
 addMesh('TradingFloorBrass', mergeGeos(brassGeos), BRASS);
 addMesh('TradingFloorClaws', mergeGeos(clawGeos), CLAW);
 console.log(`  claws: solid Meshy copies, yaw +28/-28 deg, 158 wu over 70 wu plinth = ${clawBounds[0].max[1].toFixed(2)} wu top; AABBs ${JSON.stringify(clawBounds)}`);
+
+// ---------------------------------------------------------- W2. sea life ----
+async function buildSeaLife() {
+  const bounds = (geo) => ({
+    min: [0, 1, 2].map((a) => Math.min(...geo.pos.filter((_, i) => i % 3 === a))),
+    max: [0, 1, 2].map((a) => Math.max(...geo.pos.filter((_, i) => i % 3 === a))),
+  });
+  const load = async (path, upright = false) => {
+    const source = await io.read(resolve(REPO_ROOT, 'apps/web/public/models', path));
+    return sculptClaw(mergeGeos(source.getRoot().listNodes().filter((n) => n.getMesh()).flatMap((node) => {
+      const m = node.getWorldMatrix();
+      const c = [[m[0],m[1],m[2]], [m[4],m[5],m[6]], [m[8],m[9],m[10]]];
+      const cof = [cross(c[1],c[2]), cross(c[2],c[0]), cross(c[0],c[1])];
+      const det = c[0].reduce((sum,v,a) => sum+v*cof[0][a],0);
+      if (Math.abs(det) < 1e-12) throw new Error('sea-life source has a singular transform');
+      const rotate = ([x,y,z]) => upright ? [x,z,-y] : [x,y,z];
+      return node.getMesh().listPrimitives().map((prim) => {
+        const pos = [], nrm = [];
+        const pa = prim.getAttribute('POSITION'), na = prim.getAttribute('NORMAL');
+        if (!pa || !na) throw new Error('sea-life source needs positions and normals');
+        for (let i=0;i<pa.getCount();i++) {
+          const p = pa.getElement(i,[]), n = na.getElement(i,[]);
+          pos.push(...rotate([0,1,2].map((a) => m[12+a]+c.reduce((sum,col,j) => sum+col[a]*p[j],0))));
+          const normal = rotate([0,1,2].map((a) => cof.reduce((sum,col,j) => sum+col[a]*n[j],0)/det));
+          const length = Math.hypot(...normal);
+          nrm.push(...normal.map((v) => v/length));
+        }
+        const idx = prim.getIndices() ? Array.from(prim.getIndices().getArray()) : Array.from({length:pa.getCount()},(_,i)=>i);
+        if (det < 0) for (let i=0;i<idx.length;i+=3) [idx[i+1],idx[i+2]]=[idx[i+2],idx[i+1]];
+        return {pos,nrm,idx};
+      });
+    })));
+  };
+  const stamp = (source, x, y, z, size, rgb, yaw=0) => {
+    const b = bounds(source), scale = size.map((v,a) => v/(b.max[a]-b.min[a]));
+    const co = Math.cos(yaw), si = Math.sin(yaw);
+    const geo = {pos:[],nrm:[],idx:[...source.idx],col:[]};
+    for (let i=0;i<source.pos.length;i+=3) {
+      const px=(source.pos[i]-(b.min[0]+b.max[0])/2)*scale[0];
+      const py=(source.pos[i+1]-b.min[1])*scale[1];
+      const pz=(source.pos[i+2]-(b.min[2]+b.max[2])/2)*scale[2];
+      geo.pos.push(x+co*px+si*pz,y+py,z-si*px+co*pz);
+      const n=source.nrm.slice(i,i+3).map((v,a)=>v/scale[a]), length=Math.hypot(...n);
+      const normal=[(co*n[0]+si*n[2])/length,n[1]/length,(-si*n[0]+co*n[2])/length];
+      geo.nrm.push(...normal);
+      const shade=(.6+.4*Math.max(0,normal[1]))*(.65+.35*py/size[1]);
+      geo.col.push(...rgb.map((v)=>v*shade));
+    }
+    return geo;
+  };
+  const linear = (hex) => [16,8,0].map((shift) => {
+    const c=((hex>>shift)&255)/255;
+    return c<=.04045 ? c/12.92 : ((c+.055)/1.055)**2.4;
+  });
+  // Twenty outline points taper five arms; two top rings form a shallow dome.
+  // The separate underside stays flat. 120 indexed triangles per starfish.
+  const star = {pos:[0,4.2,0],nrm:[],idx:[]};
+  for (const [scale,y] of [[.42,3.5],[1,.65],[1,0]]) for (let i=0;i<20;i++) {
+    const radius=[1,.60,.36,.60][i%4]*scale, angle=i*Math.PI/10;
+    star.pos.push(Math.cos(angle)*radius,y,Math.sin(angle)*radius);
+  }
+  star.pos.push(0,0,0);
+  for (let i=0;i<20;i++) {
+    const next=(i+1)%20;
+    star.idx.push(0,1+next,1+i, 1+i,1+next,21+next, 1+i,21+next,21+i,
+      21+i,21+next,41+next, 21+i,41+next,41+i, 61,41+i,41+next);
+  }
+  star.nrm=Array(star.pos.length).fill(0);
+  for (let i=0;i<star.idx.length;i+=3) {
+    const [a,b,c]=star.idx.slice(i,i+3), pa=star.pos.slice(a*3,a*3+3);
+    const n=cross(star.pos.slice(b*3,b*3+3).map((v,j)=>v-pa[j]),star.pos.slice(c*3,c*3+3).map((v,j)=>v-pa[j]));
+    for (const index of [a,b,c]) for (let j=0;j<3;j++) star.nrm[index*3+j]+=n[j];
+  }
+  for (let i=0;i<star.nrm.length;i+=3) {
+    const length=Math.hypot(...star.nrm.slice(i,i+3));
+    for (let j=0;j<3;j++) star.nrm[i+j]/=length;
+  }
+  const coralNames=['brain','fan','staghorn','tubes'];
+  const corals=await Promise.all(coralNames.map((name)=>load(`kelp-corals/coral-${name}.glb`,name!=='brain')));
+  const kelp=await load('kelp.glb');
+  const geos=[], seaLife=[];
+  const register = (kind,x,z,parts,exempt) => {
+    const geo=mergeGeos(parts), b=bounds(geo), height=b.max[1]-b.min[1];
+    const overlap = (minX,maxX,minZ,maxZ) => b.max[0]>minX && b.min[0]<maxX && b.max[2]>minZ && b.min[2]<maxZ;
+    if (overlap(-1300,1300,-1470,-1100) || overlap(-1300,-700,1300,1650))
+      throw new Error('sea life intrudes into stage or kiosk approach');
+    for (let i=0;i<geo.pos.length;i+=3) {
+      const r=Math.hypot(geo.pos[i],geo.pos[i+2]-DAIS_POS[2]);
+      if (r>=570 && r<=900) throw new Error('sea life intrudes into seal annulus');
+    }
+    if (b.max[1]>300) throw new Error('sea-life height exceeds 300 wu');
+    if (kind!=='starfish') {
+      if (Math.min(Math.abs(b.min[0]),Math.abs(b.max[0]))<1590 || Math.max(Math.abs(b.min[0]),Math.abs(b.max[0]))>1900)
+        throw new Error('sea-life cluster leaves the unreachable side strip');
+      for (const row of [-1000,-500,0,500,1000]) if (b.max[2]>row-182 && b.min[2]<row+182)
+        throw new Error('sea-life cluster intersects a desk row');
+    }
+    // Project every top/outline point, as the statue check does, at all spawn heights.
+    for (const camY of [140,260,410]) for (let i=0;i<geo.pos.length;i+=3) {
+      const t=(1638-SCREEN_Z)/(1638-geo.pos[i+2]);
+      if (Math.abs(geo.pos[i]*t)<=SCREEN_W/2 && camY+(geo.pos[i+1]-camY)*t>SCREEN_BOTTOM_Y)
+        throw new Error('sea life occludes the board from spawn');
+    }
+    boxRegistry.push({group:'sea life',exempt,min:b.min,max:b.max});
+    seaLife.push({kind,x,z,height,min:b.min,max:b.max});
+    geos.push(geo);
+  };
+  const slots=[[-1740,-750,0],[-1740,-250,1],[-1740,750,2],[1740,-750,3],[1740,250,1],[1740,750,2]];
+  const palette=[0xff7f6e,0xffa45c,0x9b5de5,0xe86a86];
+  for (const [index,[x,z,type]] of slots.entries()) {
+    const source=corals[type], b=bounds(source);
+    const scale=Math.min([92,150,185,175][type]/(b.max[1]-b.min[1]),105/(b.max[2]-b.min[2]),150/(b.max[0]-b.min[0]));
+    const size=b.max.map((v,a)=>(v-b.min[a])*scale);
+    const parts=[stamp(source,x,0,z,size,linear(palette[type]))];
+    const weedX=x+Math.sign(x)*115;
+    parts.push(stamp(kelp,weedX,0,z-18,[44,190+index*10,38],linear(index%2?0x80b943:0x5e963b)));
+    if (index===1 || index===4) parts.push(stamp(kelp,weedX-20*Math.sign(x),0,z+24,[30,165,27],linear(0x91c94c)));
+    register(`coral-${coralNames[type]}+kelp`,x,z,parts,'unreachable side strip beyond player clamp x1589');
+  }
+  for (const [x,z,radius] of [[-412,-150,28],[414,25,25],[-80,316,30],[100,-494,26],[1680,-250,22],[-1680,750,24]]) {
+    register('starfish',x,z,[stamp(star,x,.3,z,[radius*2,4.2,radius*2],linear(x<0?0xff8f42:0xe86a32),.17)],
+      Math.abs(x)<500?'inside future rope collider moat; flat, under the water, walk-over':'flat, under the water, walk-over');
+  }
+  // Right desk at z500: local x120,z10, yaw -pi/2; walnut surface is y132.
+  register('starfish',CONSOLE_WALL_X-10,620,[stamp(star,CONSOLE_WALL_X-10,132,620,[48,4.2,48],linear(0xff9a42),.3)],
+    'inside existing desk collider; world-placed on walnut desktop');
+  const material=mat('TradingFloorSeaLifeMtl',[1,1,1],{rough:.7,metal:0}).setEmissiveFactor([.018,.012,.006]);
+  const node=addMesh('TradingFloorSeaLife',mergeGeos(geos),material);
+  const prim=node.getMesh().listPrimitives()[0];
+  weldPrimitive(prim);
+  if (prim.getAttribute('POSITION').getCount()>16000 || prim.getIndices().getCount()/3>16000)
+    throw new Error('sea-life welded vertex/triangle budget exceeded');
+  console.log(`  sea life: ${prim.getIndices().getCount()/3} tris, ${prim.getAttribute('POSITION').getCount()} welded vertices; ${JSON.stringify(seaLife)}`);
+  return seaLife;
+}
+const seaLife = await buildSeaLife();
+
 assertWallDetailClears();
 
 // ---- the asset/scene contract, as DATA -------------------------------------
@@ -1460,6 +1597,7 @@ scene.setExtras({
     halfZ: Number(((kiosk.maxZ - kiosk.minZ) / 2).toFixed(2)),
     height: Number((kiosk.maxY - kiosk.minY).toFixed(2)),
   },
+  seaLife,
   room: { halfX: hx, halfZ: hz, height: RH },
   ropeRing: ropeRing.extras,
   statue: {top:Math.max(...clawBounds.map((b)=>b.max[1])),claws:clawBounds},
