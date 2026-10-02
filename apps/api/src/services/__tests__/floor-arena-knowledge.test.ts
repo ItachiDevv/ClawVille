@@ -16,6 +16,8 @@ import {
   FLOOR_ARENA_TEMPLATE_VERSION,
   FLOOR_ARENA_TEMPLATES,
   FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
+  FLOOR_ARENA_WITHDRAW_LIMITS,
+  FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
 } from '@clawville/shared';
 import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
@@ -87,7 +89,22 @@ const ARENA_TOOLS: Record<string, string> = {
   clawville_arena_suggestion: 'POST {apiBase}/api/floor/arena/me/suggestions/:reportId',
   clawville_arena_addons: 'PATCH {apiBase}/api/floor/arena/me/addons',
   clawville_arena_settings: 'PATCH {apiBase}/api/floor/arena/me/settings',
+  // P5 withdraw (protocol 80).
+  clawville_arena_withdraw_challenge: 'POST {apiBase}/api/floor/arena/me/withdraw-address/challenge',
+  clawville_arena_withdraw_address: 'POST {apiBase}/api/floor/arena/me/withdraw-address',
+  clawville_arena_withdraw_address_revoke: 'POST {apiBase}/api/floor/arena/me/withdraw-address/revoke',
+  clawville_arena_withdraw: 'POST {apiBase}/api/floor/arena/me/withdrawals',
+  clawville_arena_withdrawals: 'GET {apiBase}/api/floor/arena/me/withdrawals',
+  clawville_arena_withdraw_cancel: 'POST {apiBase}/api/floor/arena/me/withdrawals/:id/cancel',
 };
+
+/** Atomic units as the manual writes them: "0.1" -> "0.10" (two decimals when there is a fraction), "500". */
+function amountText(atomic: number, decimals: number): string {
+  const digits = String(atomic).padStart(decimals + 1, '0');
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction = digits.slice(digits.length - decimals).replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction.padEnd(2, '0')}` : whole;
+}
 
 describe('Trading Arena manual section 17c', () => {
   test('is its own hosted-runtime chunk, and no chunk nears the embedding input limit', () => {
@@ -103,8 +120,8 @@ describe('Trading Arena manual section 17c', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(79);
-    expect(protocolPointer(API)).toMatchObject({ version: 79, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(80);
+    expect(protocolPointer(API)).toMatchObject({ version: 80, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -146,6 +163,12 @@ describe('Trading Arena manual section 17c', () => {
       `PATCH ${ARENA}/me/addons`,
       `POST ${ARENA}/me/suggestions/:reportId`,
       `PATCH ${ARENA}/me/settings`,
+      `POST ${ARENA}/me/withdraw-address/challenge`,
+      `POST ${ARENA}/me/withdraw-address`,
+      `POST ${ARENA}/me/withdraw-address/revoke`,
+      `POST ${ARENA}/me/withdrawals`,
+      `GET ${ARENA}/me/withdrawals`,
+      `POST ${ARENA}/me/withdrawals/:id/cancel`,
     ]) {
       expect(section).toContain(path);
     }
@@ -269,7 +292,7 @@ describe('Trading Arena manual section 17c', () => {
     // audit-parity: the string joins around the contest name keep their space
     // (an Edit once dropped it: "route.Trading Arena Week 1 pays").
     expect(nori).toContain(`from its skill-memory route. ${FLOOR_ARENA_CONTEST.name} pays`);
-    expect(orientation).toContain(`agent's own wallet; ${FLOOR_ARENA_CONTEST.name} pays`);
+    expect(orientation).toContain(`for network fees); ${FLOOR_ARENA_CONTEST.name} pays`);
     for (const text of [orientation, nori]) expect(text).not.toMatch(/[.;,][A-Z]/);
   });
 
@@ -281,9 +304,11 @@ describe('Trading Arena manual section 17c', () => {
     expect(section).toMatch(/An operator pause of the arena\s+engine stops new entries and paid add-on calls for every agent\./);
     expect(tool('clawville_arena_seat').description).toContain('Standing up stops new entries and paid add-on calls');
     expect(tool('clawville_arena_set_status').description).toContain('makes no paid add-on calls');
-    // audit-money M3: the same no-withdraw line as the UI (ARENA_WALLET_NO_WITHDRAW), cap rendered.
-    expect(section).toMatch(new RegExp(`Send only USDC on Solana\\. You cannot withdraw\\s+USDC from this wallet in ClawVille, so send only what your add-ons will spend \\(at\\s+most \\$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day\\)\\. ClawVille does not refund add-on spend\\.`));
-    expect(tool('clawville_arena_addons').description).toContain('Send only USDC on Solana: you cannot withdraw it through ClawVille');
+    // P5 (protocol 80): the funding line names both assets and the withdraw path, cap rendered.
+    expect(section).toMatch(new RegExp(`Send only USDC or SOL on Solana\\. You can withdraw both\\s+to an address that you prove is yours \\(see "Wallet and withdrawals" below\\)\\. Add-ons\\s+spend at most \\$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day\\. ClawVille does not refund add-on spend\\.`));
+    expect(tool('clawville_arena_addons').description).toContain(
+      'Send only USDC or SOL on Solana; you can withdraw both to an address you prove (clawville_arena_withdraw)',
+    );
     // audit-parity M1: a user agent's reason is dropped from every public view (queries.ts redactArenaParamChangeForPublic).
     expect(section).toMatch(/every change is logged publicly \(the diff and its source\); your\s+`reason`, at most 280 characters, stays private and shows only in\s+`GET \/me\/events`/);
     expect(section).not.toMatch(/logged publicly with its reason/);
@@ -368,6 +393,76 @@ describe('Trading Arena manual section 17c', () => {
     expect(seatTool.input_schema.properties.seatIndex?.description).toBe('Optional desk index, 0 to 9.');
     const route = readFileSync(join(import.meta.dir, '..', '..', 'routes', 'floor-arena.ts'), 'utf8');
     expect(route).toContain('const SEAT_MAX_INDEX = FLOOR_ARENA_DESK_COUNT - 1;');
+  });
+
+  test('v80 (P5): states the wallet and withdraw rules, every number rendered from FLOOR_ARENA_WITHDRAW_LIMITS', () => {
+    const L = FLOOR_ARENA_WITHDRAW_LIMITS;
+    const flat = arenaSection().replace(/\s+/g, ' ');
+    const sol = (lamports: number) => `${amountText(lamports, L.solDecimals)} SOL`;
+    const usdc = (atomic: number) => `${amountText(atomic, L.usdcDecimals)} USDC`;
+    expect(sol(L.feePrecheckLamports)).toBe('0.005 SOL');
+    expect(sol(L.feePrecheckLamports + L.ataRentLamports)).toBe('0.00704 SOL');
+    expect(usdc(L.minUsdcAtomic)).toBe('0.10 USDC');
+    expect(sol(L.minSolLamports)).toBe('0.001 SOL');
+    expect(usdc(L.agentDailyUsdcAtomic)).toBe('500 USDC');
+    expect(sol(L.solKeepLamports)).toBe('0.0009 SOL');
+    for (const sentence of [
+      'Wallet and withdrawals. Your agent\'s ClawPump wallet (the address on `GET /me`) holds the USDC that pays for add-ons. Send only USDC or SOL on Solana.',
+      `Keep at least ${L.recommendedSolText} SOL in the wallet, because each withdrawal pays its network fee in SOL: a withdrawal is refused with \`needs_sol\` when the wallet holds less than ${sol(L.feePrecheckLamports)}, or less than ${sol(L.feePrecheckLamports + L.ataRentLamports)} when the receiving address has no USDC token account yet.`,
+      'You can withdraw only to an address that you prove is yours.',
+      `(1) \`POST ${ARENA}/me/withdraw-address/challenge\` with \`{ address }\` returns \`{ nonce, messageToSign, expiresAt }\`. Sign the UTF-8 bytes of \`messageToSign\` with the secret key of THAT address (ed25519, base58 signature). The request works once and ends after ${durationLabel(L.challengeTtlMs)}.`,
+      `(2) \`POST ${ARENA}/me/withdraw-address\` with \`{ proof: 'signed', address, nonce, signature }\`, or \`{ proof: 'linked_wallet' }\` to use the wallet your account linked.`,
+      `A new address becomes active ${durationLabel(L.addressDelayMs)} after you set it; a wallet linked more than ${durationLabel(L.addressDelayMs)} ago is active at once. A new address removes the old one.`,
+      `\`POST ${ARENA}/me/withdraw-address/revoke\` with \`{ addressId }\` removes an address at once.`,
+      `(3) \`POST ${ARENA}/me/withdrawals\` with an \`Idempotency-Key\` header (8 to 64 letters, digits, \`_\` or \`-\`) and \`{ asset: 'USDC' | 'SOL', amount: '<decimal>' | 'max' }\` returns 202.`,
+      'The same key and body return the same request (200); the same key with another body answers 409 `idempotency_conflict`.',
+      `Limits: at least ${usdc(L.minUsdcAtomic)} or ${sol(L.minSolLamports)}; per agent and UTC day ${L.agentDailyRequests} requests and ${usdc(L.agentDailyUsdcAtomic)}; ${durationLabel(L.cooldownMs)} between requests; one open withdrawal.`,
+      `\`max\` sends all free USDC (minus add-on calls in progress, and at most the rest of the daily limit) or all SOL minus ${sol(L.solKeepLamports)}.`,
+      'When all arena withdrawals together reach the daily system limit, requests wait until the next UTC day.',
+      `(4) \`GET ${ARENA}/me/withdrawals\` lists your address, your requests and the limits; \`POST ${ARENA}/me/withdrawals/:id/cancel\` cancels a request that is still \`requested\`.`,
+      'ClawVille sends each request once and never sends it again.',
+      'States: `requested`, `dispatching`, `sent`, `confirmed` (final on chain), `refused` with a code, `failed` and `failed_no_send` (nothing sent), `unknown` (ClawVille checks the chain), `needs_review` (an operator checks it), `cancelled`.',
+      'The operator pause holds new sends. ClawVille keeps the wallet under its own ClawPump account until you withdraw.',
+    ]) {
+      expect(flat).toContain(sentence);
+    }
+    // 17c sits near the 24,000-character chunk limit, so the per-call error codes live in the six
+    // tools (pinned in 'the six withdraw tools' below); 17c names each tool by its step and every
+    // send-time refusal code, from the shared constant.
+    expect(flat).toContain('Tools: `clawville_arena_withdraw_challenge` (1), `clawville_arena_withdraw_address` and `clawville_arena_withdraw_address_revoke` (2), `clawville_arena_withdraw` (3), `clawville_arena_withdrawals` and `clawville_arena_withdraw_cancel` (4); each tool lists the error codes of its call.');
+    expect(flat).toContain(`A send can end \`refused\` with ${series(FLOOR_ARENA_WITHDRAW_REFUSAL_CODES.map((code) => `\`${code}\``), 'or')}.`);
+    // GET /me carries the withdraw summary.
+    expect(flat).toContain('Returns `{ agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw }`');
+    // The builder never types a withdraw number by hand (E6.2).
+    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
+    const start = src.indexOf('function buildTradingArenaSection(');
+    const body = src.slice(start, src.indexOf('\n}\n', start));
+    for (const literal of [/0\.005 SOL/, /0\.00704/, /0\.10 USDC/, /0\.001 SOL/, /500 USDC/, /0\.0009/, /keep at least 0\.01/i, /\b24 hours\b/, /3 requests/]) {
+      expect(body).not.toMatch(literal);
+    }
+    expect(PROTOCOL_VERSION).toBe(80);
+    const src2 = src.slice(src.indexOf('export const PROTOCOL_VERSION') - 1200, src.indexOf('export const PROTOCOL_VERSION'));
+    expect(src2).toContain('v80 (2026-10-02');
+  });
+
+  test('v80 (P5): "cannot withdraw" is gone from the manual, every tool, Nori and orientation', () => {
+    const texts = [
+      buildProtocolManual(API),
+      JSON.stringify(CLAWVILLE_GAME_TOOLS),
+      townGuide.knowledge.join('\n'),
+      CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n'),
+    ];
+    for (const text of texts) expect(text.toLowerCase()).not.toContain('cannot withdraw');
+    const L = FLOOR_ARENA_WITHDRAW_LIMITS;
+    const delay = durationLabel(L.addressDelayMs);
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
+    expect(orientation).toContain(`optional paid add-ons spend only USDC that the player sends to the agent's own wallet; the owner, human or agent, can withdraw USDC or SOL from that wallet to an address the owner proved (a new address works after ${delay}; keep at least ${L.recommendedSolText} SOL there for network fees);`);
+    expect(orientation).not.toMatch(/[.;,][A-Z]/);
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: you can take money out of your arena trader'));
+    expect(nori).toBe(`Nori says: you can take money out of your arena trader's wallet. Open your trader in the Trading Floor tab, find the Wallet block, prove an address with your wallet or pick your linked wallet, then withdraw USDC or SOL. A new address waits ${delay} before it works. Keep at least ${L.recommendedSolText} SOL in the trader's wallet for network fees. Agents find the routes in protocol manual section 17c.`);
+    expect(nori!).not.toMatch(/[.;,][A-Z]/);
+    // Nori carries the orientation line too (she spreads the shared list).
+    expect(townGuide.knowledge).toContain(orientation);
   });
 
   test('states the D33 checkpoint schedule from its constants: checkpoints, alphas, budget, the two new reasons', () => {
@@ -505,6 +600,49 @@ describe('Trading Arena tools', () => {
     expect(settings).toContain(`stats.suggestionCheck.tuner.reason (${series(ARENA_TUNER_REASONS, 'or')})`);
     expect(settings).toContain('commentary only');
     expect(settings).not.toContain('insufficient_evidence');
+  });
+
+  test('v80 (P5): the six withdraw tools carry their bodies, the header and every route error code', () => {
+    const byName = new Map(CLAWVILLE_GAME_TOOLS.map((tool) => [tool.name, tool]));
+    const names = CLAWVILLE_GAME_TOOLS.map((tool) => tool.name);
+    // They sit right after clawville_arena_settings, in this order.
+    const at = names.indexOf('clawville_arena_settings');
+    expect(names.slice(at + 1, at + 7)).toEqual([
+      'clawville_arena_withdraw_challenge', 'clawville_arena_withdraw_address', 'clawville_arena_withdraw_address_revoke',
+      'clawville_arena_withdraw', 'clawville_arena_withdrawals', 'clawville_arena_withdraw_cancel',
+    ]);
+    const codes: Record<string, string[]> = {
+      clawville_arena_withdraw_challenge: ['invalid_body', 'invalid_address', 'address_not_allowed', 'no_agent', 'wallet_not_ready', 'rate_limited', 'too_many_challenges'],
+      clawville_arena_withdraw_address: ['invalid_challenge', 'invalid_signature', 'invalid_address', 'address_not_allowed', 'same_address', 'no_agent', 'wallet_not_ready', 'no_linked_wallet'],
+      clawville_arena_withdraw_address_revoke: ['address_not_found', 'already_revoked'],
+      clawville_arena_withdraw: ['idempotency_key_required', 'idempotency_key_invalid', 'invalid_body', 'invalid_amount', 'below_minimum', 'no_agent',
+        'wallet_not_ready', 'no_withdraw_address', 'address_pending', 'withdrawal_open', 'agent_daily_cap', 'idempotency_conflict', 'cooldown', 'daily_count_cap'],
+      clawville_arena_withdrawals: ['invalid_query', 'no_agent'],
+      clawville_arena_withdraw_cancel: ['withdrawal_not_found', 'not_cancellable'],
+    };
+    for (const [name, list] of Object.entries(codes)) {
+      const description = byName.get(name)!.description;
+      expect(description).toContain('X-Clawville-Agent-Session');
+      for (const code of list) expect({ name, code, found: description.includes(code) }).toEqual({ name, code, found: true });
+    }
+    expect(byName.get('clawville_arena_withdraw_challenge')!.input_schema.required).toEqual(['address']);
+    const address = byName.get('clawville_arena_withdraw_address')!;
+    expect(address.input_schema.required).toEqual(['proof']);
+    expect(address.input_schema.properties.proof?.enum).toEqual(['signed', 'linked_wallet']);
+    expect(Object.keys(address.input_schema.properties).sort()).toEqual(['address', 'nonce', 'proof', 'signature']);
+    expect(byName.get('clawville_arena_withdraw_address_revoke')!.input_schema.required).toEqual(['addressId']);
+    const withdraw = byName.get('clawville_arena_withdraw')!;
+    expect(withdraw.input_schema.required).toEqual(['asset', 'amount', 'idempotencyKey']);
+    expect(withdraw.input_schema.properties.asset?.enum).toEqual(['USDC', 'SOL']);
+    expect(withdraw.description).toContain('Idempotency-Key header');
+    expect(Object.keys(byName.get('clawville_arena_withdrawals')!.input_schema.properties)).toEqual(['limit']);
+    expect(byName.get('clawville_arena_withdraw_cancel')!.input_schema.required).toEqual(['withdrawalId']);
+    // The changed texts of two older tools and the section comment (contract §8).
+    expect(byName.get('clawville_arena_my_trader')!.description).toContain('withdraw: your withdraw address and any open withdrawal');
+    expect(byName.get('clawville_arena_addons')!.description).not.toContain('Send only USDC on Solana:');
+    const toolsSrc = readFileSync(join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'shared', 'src', 'constants', 'building-tools.ts'), 'utf8');
+    expect(toolsSrc).toContain("Paper trading; add-ons and withdrawals move real USDC or SOL from the agent's own ClawPump wallet");
+    expect(toolsSrc).not.toContain('Paper only: nothing here moves money');
   });
 });
 

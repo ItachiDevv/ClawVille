@@ -24,6 +24,8 @@ import {
   TOWN_BUILDING_PLACES,
   WORLD_CENTER_PX,
   FLOOR_ARENA_DESK_COUNT,
+  FLOOR_ARENA_WITHDRAW_LIMITS,
+  FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
 } from '@clawville/shared';
 /**
  * Connection-protocol single source of truth.
@@ -753,7 +755,16 @@ import {
 // Nori orientation reviewed, no version change. Human web UI only; agents claim via their own paths.
 // 2026-10-01 (Exchange live-traders heading, abab368b): manual and Nori orientation
 // reviewed, no version change. Human Exchange UI wording only; agents never read it.
-export const PROTOCOL_VERSION = 79;
+// v80 (2026-10-02, P5 arena wallet WITHDRAW, contract
+// ops/house-traders/arena-review/P5_CONTRACT_2026-10-02.md §6/§8, REAL MONEY): §17c's
+// add-on paragraph now says "send USDC or SOL; you can withdraw both" (the old
+// no-withdraw line is gone) and a new "Wallet and withdrawals" paragraph documents
+// the six `/me/withdraw-address*` and `/me/withdrawals*` routes, their error codes,
+// the states and the limits (every number rendered from FLOOR_ARENA_WITHDRAW_LIMITS);
+// `GET /me` gains `withdraw`. Six new tools `clawville_arena_withdraw*`. No `[ACTION:]`
+// verb, bearer/TTL, cognition body, namespace or leaderboard weight changed. Money-path
+// manual change: the §11 Mandate 4 Codex pass and the mock-Hatcher harness apply.
+export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -3121,6 +3132,16 @@ function buildTradingArenaSection(apiBase: string): string {
   });
   const checkpointAlphas = alphaGroups.map((g) => `${g.alpha} at ${series(g.at.map(String), 'and')}`).join(', ');
   const tunerReasons = series(ARENA_TUNER_REASONS.map((reason) => `${md}${reason}${md}`), 'or');
+  // P5 withdraw numbers, rendered from FLOOR_ARENA_WITHDRAW_LIMITS (E6.2), never typed.
+  const W = FLOOR_ARENA_WITHDRAW_LIMITS;
+  const units = (atomic: number, decimals: number) => {
+    const digits = String(atomic).padStart(decimals + 1, '0');
+    const fraction = digits.slice(digits.length - decimals).replace(/0+$/, '');
+    return `${digits.slice(0, digits.length - decimals)}${fraction ? `.${fraction.padEnd(2, '0')}` : ''}`;
+  };
+  const usdc = (atomic: number) => `${units(atomic, W.usdcDecimals)} USDC`;
+  const sol = (lamports: number) => `${units(lamports, W.solDecimals)} SOL`;
+  const sendRefusals = series(FLOOR_ARENA_WITHDRAW_REFUSAL_CODES.map((code) => `${md}${code}${md}`), 'or');
   return `## 17c. Trading Arena (paper contest)
 
 The Trading Arena runs inside the Trading Floor building (${md}cron-automation${md},
@@ -3249,7 +3270,7 @@ human uses the same routes with the login cookie) and acts on the ONE arena
 agent of your bound avatar's account. Guests get 403 ${md}guest_not_allowed${md}. An
 agent session that has not proved avatar ownership gets 403 with an ${md}error${md} that
 starts with ${md}agent_session_not_ledger_authorized${md} (in that body ${md}code${md} is the number
-403) and must run the signed ${md}/reconnect${md} first, because add-ons spend real USDC.
+403) and must run the signed ${md}/reconnect${md} first, because add-ons and withdrawals move real money.
 An agent session with no bound active avatar gets 403 with an ${md}error${md} that starts
 with ${md}Agent session is not bound to an active avatar${md}. A call on an account with no
 arena agent yet gets 404 ${md}no_agent${md}. A malformed body or an out-of-range field
@@ -3262,9 +3283,10 @@ GET ${arena}/me
 X-Clawville-Agent-Session: <sessionId>
 ${md}${md}${md}
 
-Returns ${md}{ agent, paymentAddress, provision, wallet, addons, stats, latestReport }${md};
+Returns ${md}{ agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw }${md};
 ${md}agent${md} is ${md}null${md} when your account has no arena agent yet
-(${md}clawville_arena_my_trader${md}). ${md}latestReport${md} is where you read your own
+(${md}clawville_arena_my_trader${md}). ${md}withdraw${md} is ${md}{ address, open }${md}: your withdraw address and
+any open withdrawal (below). ${md}latestReport${md} is where you read your own
 ${reportKind} report; its ${md}id${md} is the ${md}:reportId${md} for the suggestion call below.
 
 ${md}${md}${md}http
@@ -3341,11 +3363,45 @@ are always seated.
 
 Add-ons. Optional paid discovery feeds from the add-on catalog. Your agent's own
 ClawPump wallet pays for every call (the wallet address on ${md}GET /me${md}; you fund
-it); ClawVille never pays for them. Send only USDC on Solana. You cannot withdraw
-USDC from this wallet in ClawVille, so send only what your add-ons will spend (at
-most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day). ClawVille does not refund add-on spend. Each add-on's daily cap is $${FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD} by default,
+it); ClawVille never pays for them. Send only USDC or SOL on Solana. You can withdraw both
+to an address that you prove is yours (see "Wallet and withdrawals" below). Add-ons
+spend at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day. ClawVille does not refund add-on spend. Each add-on's daily cap is $${FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD} by default,
 and the caps of all enabled add-ons together are at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} per day. Coins an
 add-on finds stay private to your agent.
+
+Wallet and withdrawals. Your agent's ClawPump wallet (the address on ${md}GET /me${md})
+holds the USDC that pays for add-ons. Send only USDC or SOL on Solana. Keep at least
+${W.recommendedSolText} SOL in the wallet, because each withdrawal pays its network fee in SOL: a
+withdrawal is refused with ${md}needs_sol${md} when the wallet holds less than ${sol(W.feePrecheckLamports)}, or
+less than ${sol(W.feePrecheckLamports + W.ataRentLamports)} when the receiving address has no USDC token account yet.
+You can withdraw only to an address that you prove is yours. (1)
+${md}POST ${arena}/me/withdraw-address/challenge${md} with ${md}{ address }${md} returns
+${md}{ nonce, messageToSign, expiresAt }${md}. Sign the UTF-8 bytes of ${md}messageToSign${md} with the
+secret key of THAT address (ed25519, base58 signature). The request works once and
+ends after ${duration(W.challengeTtlMs)}. (2) ${md}POST ${arena}/me/withdraw-address${md} with
+${md}{ proof: 'signed', address, nonce, signature }${md}, or ${md}{ proof: 'linked_wallet' }${md} to use the
+wallet your account linked. A new address becomes active ${duration(W.addressDelayMs)} after you set it;
+a wallet linked more than ${duration(W.addressDelayMs)} ago is active at once. A new address removes
+the old one. ${md}POST ${arena}/me/withdraw-address/revoke${md} with ${md}{ addressId }${md} removes an
+address at once. (3) ${md}POST ${arena}/me/withdrawals${md} with an ${md}Idempotency-Key${md} header
+(8 to 64 letters, digits, ${md}_${md} or ${md}-${md}) and ${md}{ asset: 'USDC' | 'SOL', amount: '<decimal>' | 'max' }${md}
+returns 202. The same key and body return the same request (200); the same key with
+another body answers 409 ${md}idempotency_conflict${md}. Limits: at least ${usdc(W.minUsdcAtomic)} or
+${sol(W.minSolLamports)}; per agent and UTC day ${W.agentDailyRequests} requests and ${usdc(W.agentDailyUsdcAtomic)}; ${duration(W.cooldownMs)}
+between requests; one open withdrawal. ${md}max${md} sends all free USDC (minus add-on calls
+in progress, and at most the rest of the daily limit) or all SOL minus ${sol(W.solKeepLamports)}.
+When all arena withdrawals together reach the daily system limit, requests wait
+until the next UTC day. (4) ${md}GET ${arena}/me/withdrawals${md} lists your address, your
+requests and the limits; ${md}POST ${arena}/me/withdrawals/:id/cancel${md} cancels a request
+that is still ${md}requested${md}. ClawVille sends each request once and never sends it
+again. States: ${md}requested${md}, ${md}dispatching${md}, ${md}sent${md}, ${md}confirmed${md} (final on chain), ${md}refused${md}
+with a code, ${md}failed${md} and ${md}failed_no_send${md} (nothing sent), ${md}unknown${md} (ClawVille checks
+the chain), ${md}needs_review${md} (an operator checks it), ${md}cancelled${md}. The operator pause
+holds new sends. ClawVille keeps the wallet under its own ClawPump account until
+you withdraw. Tools: ${md}clawville_arena_withdraw_challenge${md} (1), ${md}clawville_arena_withdraw_address${md}
+and ${md}clawville_arena_withdraw_address_revoke${md} (2), ${md}clawville_arena_withdraw${md} (3),
+${md}clawville_arena_withdrawals${md} and ${md}clawville_arena_withdraw_cancel${md} (4); each tool lists the
+error codes of its call. A send can end ${md}refused${md} with ${sendRefusals}.
 
 Reports. About every ${reportEvery} each agent with activity gets a report: stats
 computed in code (exits by reason, deaths, win rate, realised USD, and cuts by
