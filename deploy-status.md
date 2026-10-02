@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-02 03:15 UTC (session filmitHelper). **Staging** is receiving one web text fix on top of `2eaace16`: two joined words the demo film showed on camera ("+$32.49realised P&L" in the P15 walk-up pop-up, "up to 32characters" in launch Step 4) get an explicit `{' '}`. No API change, no migration, PROTOCOL_VERSION stays 80. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql` (from `2eaace16`, unchanged by this push).
+Last Audited: 2026-10-02 04:15 UTC (session tDesk2Main). **Staging** is receiving ONE web-only change on top of `b983c660`: the Trading Floor big board ROTATES every 15 s between the five house-agent columns (P15) and the arena contest LEADERBOARD (founder decision 04:01Z, demo reshoot S2/S3). No API change, no migration, PROTOCOL_VERSION stays 80. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
+
+Prior — Last Audited: 2026-10-02 03:15 UTC (session filmitHelper). **Staging** is receiving one web text fix on top of `2eaace16`: two joined words the demo film showed on camera ("+$32.49realised P&L" in the P15 walk-up pop-up, "up to 32characters" in launch Step 4) get an explicit `{' '}`. No API change, no migration, PROTOCOL_VERSION stays 80. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql` (from `2eaace16`, unchanged by this push).
 
 Prior — Last Audited: 2026-10-02 01:50 UTC (session tDesk2Main). **Staging** is receiving ONE combined push on top of session deskBuild's interior v5 part 2: (1) **P5 arena wallet WITHDRAW** (D34): a player's arena ClawPump wallet can send USDC or SOL only to an address the owner proved (signed challenge, or a linked wallet older than 24 h; a new address waits 24 h); single-writer leader loop, exactly one transfer per request, confirmation only by exact on-chain deltas; migration `0074_floor_arena_withdraw.sql` (CI migrate job); 6 routes + 2 admin routes + 6 agent tools; (2) **P15 house agents on the big screen**: the board shows five house-agent columns, five static baked figures (`trading-floor-house-agents.glb?v=1`) stand under it, walk-up pop-up "Choose this trading style" opens the launch form with that template; public `GET /api/floor/arena/house-board`. PROTOCOL_VERSION 79 -> 80 (one bump for both). No new env var. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged; founder: prod is not needed tonight). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
 
@@ -512,6 +514,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-02 (session tDesk2Main) — big board rotates: house agents <-> contest leaderboard (staging, web only)
+
+- What: founder decision 04:01Z (via filmitHelper): put the arena leaderboard back on the big board for the demo reshoot. The board now rotates every 15 s: page A = five house-agent columns, page B = contest leaderboard (rank, trader, realised P&L, trades; empty -> "NO TRADERS YET"). One texture, one draw call; the page comes from the clock, no per-frame state. Files: the 5 board files in `apps/web/src/lib/three/trading-floor/`.
+- Checks: each trading-floor web suite in its own process (15 files, 0 fail), web tsc 0, mock PNG of both pages checked by the lead.
+- Same night, DB-only on staging (03:34-03:44Z, founder request): the Genesis house agent is on a fresh paper run (old 201 rows in `floor_arena_positions_demo_backup_20261002`); the other four keep full history.
+- Known bug found tonight, fix pushed AFTER the reshoot: arena provisioning starves behind the x402 sweep and our own `budget_exhausted` refusal burns its 5 attempts (6 staging player agents `failed`, no ClawPump wallet).
+- SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
 
 ### 2026-10-02 (session filmitHelper) — web text fix: two joined words seen in the demo film (staging push)
 
