@@ -153,6 +153,7 @@ jobs:
           src/stores/house-agent-walkup.test.ts
           src/components/trading-floor/house-agent-walkup-placement.test.ts
           src/components/trading-floor/house-agent-walkup.test.tsx
+          src/lib/three/trading-floor/trading-floor-house-agents-mount.test.ts
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process
