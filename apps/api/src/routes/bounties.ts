@@ -372,6 +372,48 @@ const reviewSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Bonus rewards on the list endpoints (2026-10-02). GET /, /featured and
+// /my-bounties return `bonusRewards` on every item so the board can show the
+// bonus (e.g. a knowledge book) on each card. ONE batched query per request
+// (WHERE bounty_id IN the page's ids), never one query per bounty.
+// ---------------------------------------------------------------------------
+export interface BountyListBonusReward {
+  rewardType: (typeof bountyRewards.rewardType.enumValues)[number];
+  bookId: string | null;
+  agentConfigId: string | null;
+  customDescription: string | null;
+}
+
+export async function loadBonusRewardsByBounty(
+  bountyIds: string[],
+): Promise<Map<string, BountyListBonusReward[]>> {
+  const byBounty = new Map<string, BountyListBonusReward[]>();
+  if (bountyIds.length === 0) return byBounty;
+  const rows = await db
+    .select({
+      bountyId: bountyRewards.bountyId,
+      rewardType: bountyRewards.rewardType,
+      bookId: bountyRewards.bookId,
+      agentConfigId: bountyRewards.agentConfigId,
+      customDescription: bountyRewards.customDescription,
+    })
+    .from(bountyRewards)
+    .where(inArray(bountyRewards.bountyId, bountyIds))
+    .orderBy(asc(bountyRewards.createdAt), asc(bountyRewards.id));
+  for (const row of rows) {
+    const list = byBounty.get(row.bountyId) ?? [];
+    list.push({
+      rewardType: row.rewardType,
+      bookId: row.bookId,
+      agentConfigId: row.agentConfigId,
+      customDescription: row.customDescription,
+    });
+    byBounty.set(row.bountyId, list);
+  }
+  return byBounty;
+}
+
+// ---------------------------------------------------------------------------
 // STATIC ROUTES FIRST (before /:id)
 // ---------------------------------------------------------------------------
 
@@ -408,6 +450,8 @@ bountyRoutes.get('/featured', async (c) => {
     .orderBy(desc(bounties.createdAt))
     .limit(10);
 
+  const bonusByBounty = await loadBonusRewardsByBounty(rows.map((r) => r.id));
+
   const bountyList = rows.map((r) => ({
     id: r.id,
     creatorId: r.creatorId,
@@ -424,6 +468,7 @@ bountyRoutes.get('/featured', async (c) => {
     tags: r.tags,
     expiresAt: r.expiresAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
+    bonusRewards: bonusByBounty.get(r.id) ?? [],
   }));
 
   return c.json({ bounties: bountyList });
@@ -707,7 +752,7 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
   // Fetch attempts for these bounties (with hunter names): the newest
   // MY_BOUNTY_ATTEMPTS_PER_BOUNTY per bounty plus every live attempt.
   const bountyIds = rows.map((r) => r.id);
-  const [attemptRows, attemptTotals, totals, nextBefore] = await Promise.all([
+  const [attemptRows, attemptTotals, totals, nextBefore, bonusByBounty] = await Promise.all([
     bountyIds.length > 0 ? myBountyAttemptsQuery(bountyIds) : Promise.resolve([]),
     bountyIds.length > 0
       ? db
@@ -718,6 +763,7 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
       : Promise.resolve([]),
     statusCounts(bounties.status, eq(bounties.creatorId, avatar.id), bounties),
     nextHistoryCursor(bounties, myBountiesWindow(avatar.id, statuses, before), limit),
+    loadBonusRewardsByBounty(bountyIds),
   ]);
   const attemptCountByBounty = new Map(attemptTotals.map((t) => [t.bountyId, Number(t.n)]));
 
@@ -747,6 +793,7 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, asyn
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
+    bonusRewards: bonusByBounty.get(r.id) ?? [],
     // Exact total; `attempts` below holds at most the newest
     // MY_BOUNTY_ATTEMPTS_PER_BOUNTY plus every live attempt.
     attemptCount: attemptCountByBounty.get(r.id) ?? 0,
@@ -2247,6 +2294,8 @@ bountyRoutes.get('/', async (c) => {
     .limit(pageSize)
     .offset(offset);
 
+  const bonusByBounty = await loadBonusRewardsByBounty(rows.map((r) => r.id));
+
   const bountyList = rows.map((r) => ({
     id: r.id,
     creatorId: r.creatorId,
@@ -2265,6 +2314,7 @@ bountyRoutes.get('/', async (c) => {
     tags: r.tags,
     expiresAt: r.expiresAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
+    bonusRewards: bonusByBounty.get(r.id) ?? [],
   }));
 
   return c.json({ bounties: bountyList, total: totalCount, page, pageSize });
