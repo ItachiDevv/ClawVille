@@ -16,6 +16,7 @@ import {
   ARENA_WITHDRAW_DISPATCH_STALE_MS,
   ARENA_WITHDRAW_HISTORY_LIMIT,
   ARENA_WITHDRAW_RECONCILE_PER_TICK,
+  ARENA_WITHDRAW_REMOTE_TIMEOUT_MS,
   ARENA_WITHDRAW_SENT_GIVE_UP_MS,
   ARENA_WITHDRAW_TICK_MS,
   ARENA_WITHDRAW_UNKNOWN_GIVE_UP_MS,
@@ -668,8 +669,10 @@ describe('reconcile by signature', () => {
     expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 2 });
   });
 
-  test('not found: touched before the sent give-up; after it the balance rule decides', async () => {
+  test('not found: touched before the sent give-up; after it a covered, resolved history + the balance rule decide', async () => {
     const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-20 * MIN) }));
+    world.live = { ...world.live, transactions: [{ signature: 'SIG_OLD_DEPOSIT', status: 'success' }] };
+    world.txs.set('SIG_OLD_DEPOSIT', usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) }));
     await tick(world);
     expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 1 });
     await tick(world, 11 * MIN);
@@ -784,5 +787,121 @@ describe('reconcile an unknown row without a signature (history + exact match)',
     await tick(world);
     expect(world.calls.readWalletLive).toBe(0);
     expect(world.get(row.id).state).toBe('unknown');
+  });
+});
+
+describe('Codex money review blockers (B2, B3, B4)', () => {
+  const OLD_DEPOSIT = (): ArenaWithdrawChainTx => usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) });
+
+  function listHistory(items: Array<{ signature: string; status?: string | null; tx?: ArenaWithdrawChainTx }>): void {
+    world.live = {
+      ...world.live,
+      transactions: items.map((item) => ({ signature: item.signature, status: item.status === undefined ? 'success' : item.status })),
+    };
+    for (const item of items) if (item.tx) world.txs.set(item.signature, item.tx);
+  }
+
+  test('B2: a sent signature not found + a deposit that hides the drop + an uncovered window -> never failed_no_send', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-40 * MIN) }));
+    listHistory([{ signature: 'SIG_NEW_DEPOSIT', tx: usdcTx({ source: OTHER, dest: SOURCE, amount: 100_000n, blockTime: unix(at(-10 * MIN)) }) }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 1 });
+  });
+
+  test('B2: the signature is listed in the ClawPump history -> no decision (touched)', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-40 * MIN) }));
+    listHistory([{ signature: 'SIG_GONE' }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 1 });
+  });
+
+  test('B2: an unresolved in-window history item -> no decision (touched)', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-40 * MIN) }));
+    listHistory([{ signature: 'SIG_PENDING' }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 1 });
+  });
+
+  test('B2: a history read error never decides; after 24 h it goes to an operator', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-25 * HOUR) }));
+    world.liveError = new ClawPumpWriterError('timeout');
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_balance_drop' });
+  });
+
+  test('B3: one match + an unresolved other candidate -> not confirmed until it resolves', async () => {
+    const row = world.add(dispatched());
+    listHistory([{ signature: 'SIG_M', tx: usdcTx() }, { signature: 'SIG_PENDING' }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'unknown', txSignature: null, checkCount: 1 });
+    world.txs.set('SIG_PENDING', usdcTx({ dest: OTHER, blockTime: unix(at(-19 * MIN)) }));
+    await tick(world, 30_000);
+    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_M' });
+  });
+
+  test('B3: an unresolved in-window candidate blocks a no-match decision (no failed_no_send)', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([{ signature: 'SIG_PENDING' }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'unknown', checkCount: 1 });
+  });
+
+  test('B3: a history item with an unknown status breaks coverage (one match is not confirmed)', async () => {
+    const row = world.add(dispatched());
+    listHistory([
+      { signature: 'SIG_M', tx: usdcTx() },
+      { signature: 'SIG_Q', status: null, tx: usdcTx({ dest: OTHER }) },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'unknown', txSignature: null });
+  });
+
+  test('B3: a getTransaction throw is unresolved, not a decision; after 24 h it goes to an operator', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-25 * HOUR) }));
+    listHistory([{ signature: 'SIG_X', tx: usdcTx({ dest: OTHER, blockTime: unix(at(-24 * HOUR)) }) }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    const deps = world.deps();
+    deps.getTransaction = async () => { throw new Error('rpc 503'); };
+    await runArenaWithdrawTick(NOW, deps);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_balance_drop' });
+  });
+
+  test('B3: history listed oldest-first cannot prove a contiguous window', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([{ signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }, { signature: 'SIG_X', tx: usdcTx({ dest: OTHER }) }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'unknown', checkCount: 1 });
+  });
+
+  test('B4: a never-resolving remote read does not block the next tick', async () => {
+    const row = world.add(withdrawal());
+    const deps = world.deps();
+    deps.remoteTimeoutMs = 20;
+    let reads = 0;
+    deps.readWalletLive = () => {
+      reads += 1;
+      return new Promise<ClawPumpArenaWalletLive>(() => undefined);
+    };
+    await runArenaWithdrawTick(NOW, deps);
+    await runArenaWithdrawTick(at(30_000), deps);
+    expect(reads).toBe(2);
+    expect(world.get(row.id).state).toBe('requested');
+    expect(world.transfers).toHaveLength(0);
+    expect(world.causes('withdraw:balance_unavailable')).toHaveLength(1);
+  }, 3_000);
+
+  test('B4: a never-resolving signature status is a read error: touched, alerted once', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_A', errorCode: null }));
+    const deps = world.deps();
+    deps.remoteTimeoutMs = 20;
+    deps.getSignatureStatus = () => new Promise<ArenaWithdrawSignatureStatus | null>(() => undefined);
+    await runArenaWithdrawTick(NOW, deps);
+    await runArenaWithdrawTick(at(30_000), deps);
+    expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 2 });
+    expect(world.causes('withdraw:read_error:deadline')).toHaveLength(1);
+  }, 3_000);
+
+  test('B4: the remote deadline constant is 20 s', () => {
+    expect(ARENA_WITHDRAW_REMOTE_TIMEOUT_MS).toBe(20_000);
   });
 });
