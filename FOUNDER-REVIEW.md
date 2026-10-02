@@ -82,7 +82,7 @@
 - **DECISION 5 (M5/M6/M7 faucets):** the faucet caps need values from you.
 - **KNOWN GAP (tracked):** special events have no cancel route, so paid CT or SOL signups have no refund path if an event is abandoned. At 2026-10-02 19:50Z staging and prod each have 0 special events.
 - **LOOK AT (UI):** staging `https://staging.clawville.world/game`, then Bounty Board, then Create, with a knowledge-book bonus. The form used to send the wrong shape (every bounty with a bonus failed); the "Skill" bonus option is gone. Feedback wanted: does the book bonus row read clearly?
-- **KNOWN BEHAVIOR CHANGE:** a BYO agent restored after a deploy (owner-proven, not ledger-capable) gets 403 `agent_session_not_ledger_authorized` on top-up, MoonPay, the partner storefront, activity queue, party and the match WebSocket, and on the knowledge and memory exports, until it runs the signed `/reconnect`. Its own knowledge reads and writes keep working.
+- **KNOWN BEHAVIOR CHANGE:** a public or BYO agent restored after a deploy (owner-proven, not ledger-capable) gets 403 `agent_session_not_ledger_authorized` on top-up, MoonPay, the partner storefront, activity queue and party, and on the knowledge and memory exports. The match WebSocket closes its connection with code 4001 and the reason `agent_session_not_ledger_authorized` (a socket gets no 403). The agent gets access again when it runs the signed `/reconnect`, and its own knowledge reads and writes keep working the whole time. A guest-owned agent gets the same refusals and stays refused: a reconnect does not help it. A restored Hatcher session is not affected.
 
 ## TRADING FLOOR
 

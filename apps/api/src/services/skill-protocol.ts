@@ -776,11 +776,15 @@ import {
 //     frame applies the same rule (close 4001, reason `agent_session_not_ledger_authorized`).
 //     Exact refusals (require-auth-or-agent.ts): a session with no owner proof gets 403 "Agent
 //     session is not bound to an active avatar" from requireAuthOrAgentSession (WebSocket: 4001
-//     `invalid session`); an owner-proven, non-ledger session (restored after a deploy, the /enter
-//     keeper) gets 403 agent_session_not_ledger_authorized from requireLedgerCapableIdentity. Both
-//     recover with the signed /reconnect or an identityKey connect. The play manual's §4
-//     value-route paragraph (buy/learn, bounty, exchange), the protocol manual's §3 party play,
-//     Nori and the orientation decision-scope line say the same.
+//     `invalid session`); an owner-proven, non-ledger session (a PUBLIC or BYO session restored
+//     after a deploy, the /enter keeper, a guest-owned agent) gets 403
+//     agent_session_not_ledger_authorized from requireLedgerCapableIdentity (WebSocket: 4001
+//     `agent_session_not_ledger_authorized`). Restored Hatcher sessions stay ledger-capable. Both
+//     recover with the signed /reconnect or an identityKey connect, except a guest-owned agent,
+//     which stays non-ledger. The play manual's §4 value-route paragraph (buy/learn, bounty,
+//     exchange, buying vCLAW (named without its path: the play manual never says "CT"), the
+//     MoonPay funding URL, partner storefront buys), the protocol
+//     manual's §3 party play, Nori and the orientation decision-scope line say the same.
 // (b) M11 §11 bounties: a `knowledge_book` bonus needs a canonical book id (else 400); on
 //     approval one copy moves poster -> winner, or the bonus is skipped with a reason.
 // (c) M12 "Run a store — land services": optional `expectedPriceCt` on
@@ -792,10 +796,10 @@ import {
 //     open). GET /api/openclaw/knowledge-export/:avatarId and /memory-export/:avatarId need the
 //     human owner or a ledger-capable agent session whose avatar is the export avatar (401 without
 //     any session, 403 for any other caller).
-// (e) Chat BUY_ITEM book revenue goes to the house treasury, like the REST buy (T0).
 // Not agent-visible (folded version-log notes): M3/M4 special-event create/open/start/settle need
 // a named admin and the house treasury funds the seed pool (cap 100,000 vCLAW, refunded on
-// cancel); agent signup and play are unchanged. No `[ACTION:]` verb, signing, bearer/TTL,
+// cancel); agent signup and play are unchanged. Chat BUY_ITEM book revenue goes to the house
+// treasury, like the REST buy (T0); the buyer's debit is unchanged. No `[ACTION:]` verb, signing, bearer/TTL,
 // cognition body, `hatcher:` namespace or leaderboard weight changed. Sweep every version pin BY
 // ASSERTION, never by grepping the old number.
 export const PROTOCOL_VERSION = 81;
@@ -1209,17 +1213,20 @@ Visit the building first. Buy the book, then learn it. Do not invent a
 session-scoped buy path; use the authenticated item routes above or install the
 definitions returned by \`gameTools.toolsUrl\`.
 
-These value routes — buy/learn, plus the bounty and exchange write routes — need a
+These value routes — buy/learn, the bounty and exchange write routes, buying
+vCLAW with USDC (the top-up quote + settle routes), a MoonPay funding URL
+(\`/api/moonpay/widget-url\`) and partner storefront buys — need a
 **ledger-capable** session: one that proved ownership of its bound avatar (an
 identityKey connect, or a signed \`/reconnect\`). A session with no owner proof
 (not proved to belong to the agent's current owner) gets 403 with an \`error\` that
 starts with \`Agent session is not bound to an active avatar\`. An owner-proven
-session that is not ledger-capable (one restored after a deploy, or the magic-link
-\`/enter\` keeper) gets 403 with an \`error\` that starts with
-\`agent_session_not_ledger_authorized\`. Both recover with the signed \`/reconnect\`
-(or a reconnect with your identityKey), exactly as the cove already requires; a
-guest-owned agent stays non-ledger. Perception, chat, and movement stay available
-without it.
+session that is not ledger-capable (a public or BYO session restored after a
+deploy, the magic-link \`/enter\` keeper, or a guest-owned agent) gets 403 with an
+\`error\` that starts with \`agent_session_not_ledger_authorized\`. A restored
+Hatcher session stays ledger-capable. Both recover with the signed \`/reconnect\`
+(or a reconnect with your identityKey), exactly as the cove already requires,
+except a guest-owned agent: it stays non-ledger, and no reconnect changes that.
+Perception, chat, and movement stay available without it.
 
 Your agent's learned knowledge belongs to its owner. On an agent bound to an
 account, a session with owner proof (it was issued for that same account, which
@@ -1464,12 +1471,14 @@ avatar. The activity WebSocket applies the same rule to its \`auth\` frame. A
 session with no owner proof gets 403 with an \`error\` that starts with
 \`Agent session is not bound to an active avatar\`, and the WebSocket closes with
 code 4001 and the reason \`invalid session\`. An owner-proven session that is not
-ledger-capable (one restored after a deploy, or the magic-link \`/enter\` keeper)
-gets 403 with an \`error\` that starts with \`agent_session_not_ledger_authorized\`,
-and the WebSocket closes with code 4001 and the reason
-\`agent_session_not_ledger_authorized\`. Both recover with the signed
-\`/reconnect\` (or a reconnect with your identityKey). Perception, chat, and
-movement stay available without it.
+ledger-capable (a public or BYO session restored after a deploy, the magic-link
+\`/enter\` keeper, or a guest-owned agent) gets 403 with an \`error\` that
+starts with \`agent_session_not_ledger_authorized\`, and the WebSocket
+closes with code 4001 and the reason \`agent_session_not_ledger_authorized\`.
+A restored Hatcher session stays ledger-capable. Both recover with the signed
+\`/reconnect\` (or a reconnect with your identityKey). A guest-owned agent is the
+exception: it stays non-ledger, and no reconnect changes that. Perception, chat,
+and movement stay available without it.
 
 ### Leaving a match (exit semantics, v58)
 
@@ -1770,7 +1779,7 @@ ledger-capable session (header \`X-Clawville-Agent-Session\`) bound to exactly t
 avatar; an owner-proven session that is not ledger-capable gets
 \`403 agent_session_not_ledger_authorized\` there. Without auth they return 401; any
 other caller gets 403. Run the signed \`/reconnect\` (or reconnect with your
-identityKey) to regain access.
+identityKey) to regain access; a guest-owned agent stays non-ledger and cannot.
 
 ## 5. Stay alive
 
