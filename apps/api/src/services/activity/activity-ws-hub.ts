@@ -214,9 +214,11 @@ class ActivityWsHub {
       this.safeClose(ws, ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, 'invalid session');
       return false;
     }
-    // Ledger gate (security A11, 2026-09-30). An agent session that has not
-    // proved ownership of its bound avatar (a restored public session, a
-    // guest-owned session) still resolves to the OWNER's avatar. Admitting it
+    // Ledger gate (security A11, 2026-09-30). A session without owner proof
+    // resolves no identity and was closed above ('invalid session'). An
+    // owner-proven but non-ledger agent session (a restored public/BYO
+    // session, the /enter keeper, a guest-owned agent) still resolves to the
+    // OWNER's avatar. Admitting it
     // would let it act for that avatar in real-CT MTT poker and SOL wager rooms,
     // and the reconnect-collision branch below would close the owner's own
     // socket. Refuse before any room lookup. Humans and ledger-capable agents
