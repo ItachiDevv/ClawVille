@@ -631,6 +631,16 @@ import {
 // 2026-09-30 (security M2): manual reviewed, no version change. The quest admin gate moved from an
 // email match to the ADMIN_USER_IDS allowlist and tokenReward is bounded; quests are admin-only and
 // no agent-facing route, verb, or served-manual text changed.
+// 2026-09-30 (security M3/M4): manual reviewed, no version change. Special-event create/start now need
+// a named admin, the seed prize pool is debited from the house treasury, and a concurrent start gets
+// 409. The manual does not document the admin event commands; agent signup and play are unchanged.
+// 2026-09-30 (security M10/M11) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: §11 bounties now
+// states the knowledge_book bonus rule (canonical book id or 400; one copy moves poster -> winner at
+// approval, or the bonus is skipped with a reason). PROTOCOL_VERSION bump owned by the batch-2
+// integration (v81), which must cover this text.
+// 2026-09-30 (security M12) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: "Run a store — land
+// services" documents the optional expectedPriceCt on POST /api/land/services/:listingId/buy and the
+// 409 price_changed refusal. PROTOCOL_VERSION bump owned by the batch-2 integration (v81).
 // NOTE (2026-09-30, Trading Arena paper contest): bumped 73 -> 74. New section
 // 17c (a `## ` heading like 3a, so hosted runtimes embed it as its own chunk and
 // section 17 stays far below the embedding input limit) documents the paper
@@ -768,16 +778,6 @@ import {
 // under the big screen) and "launch with the same templateId"; no new tool, no `[ACTION:]` change.
 // 2026-10-02 (walk-up "realised P&L" and launch "up to 32 characters" spacing, 787c1a22):
 // manual and Nori orientation reviewed, no version change. Human UI spacing only; agents never read it.
-// 2026-09-30 (security M3/M4): manual reviewed, no version change. Special-event create/start now need
-// a named admin, the seed prize pool is debited from the house treasury, and a concurrent start gets
-// 409. The manual does not document the admin event commands; agent signup and play are unchanged.
-// 2026-09-30 (security M10/M11) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: §11 bounties now
-// states the knowledge_book bonus rule (canonical book id or 400; one copy moves poster -> winner at
-// approval, or the bonus is skipped with a reason). PROTOCOL_VERSION bump owned by the batch-2
-// integration (v81), which must cover this text.
-// 2026-09-30 (security M12) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: "Run a store — land
-// services" documents the optional expectedPriceCt on POST /api/land/services/:listingId/buy and the
-// 409 price_changed refusal. PROTOCOL_VERSION bump owned by the batch-2 integration (v81).
 export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
