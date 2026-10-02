@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-02 04:15 UTC (session tDesk2Main). **Staging** is receiving ONE web-only change on top of `b983c660`: the Trading Floor big board ROTATES every 15 s between the five house-agent columns (P15) and the arena contest LEADERBOARD (founder decision 04:01Z, demo reshoot S2/S3). No API change, no migration, PROTOCOL_VERSION stays 80. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
+Last Audited: 2026-10-02 (session tDesk2Main, after the demo reshoot). **Staging** is receiving ONE API fix on top of `f51dba79`: arena provisioning runs BEFORE the x402 sweep in the leader tick, and our own `budget_exhausted` (or ClawPump `rate_limited`) refusal is no longer counted as one of the 5 attempts (retry in 25 s). Tonight 6 staging player agents ended `failed` with no ClawPump wallet because the sweep spent the shared 60/min writer budget first. After the flip the 6 rows are reset to `pending` (attempts 0) on staging. No migration, PROTOCOL_VERSION stays 80. Verification PENDING. **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
+
+Prior — Last Audited: 2026-10-02 04:15 UTC (session tDesk2Main). **Staging** is receiving ONE web-only change on top of `b983c660`: the Trading Floor big board ROTATES every 15 s between the five house-agent columns (P15) and the arena contest LEADERBOARD (founder decision 04:01Z, demo reshoot S2/S3). No API change, no migration, PROTOCOL_VERSION stays 80. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
 
 Prior — Last Audited: 2026-10-02 03:15 UTC (session filmitHelper). **Staging** is receiving one web text fix on top of `2eaace16`: two joined words the demo film showed on camera ("+$32.49realised P&L" in the P15 walk-up pop-up, "up to 32characters" in launch Step 4) get an explicit `{' '}`. No API change, no migration, PROTOCOL_VERSION stays 80. Verification PENDING (DEPLOY LOG entry below). **PROD = `d69d4cbe`** (unchanged). SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql` (from `2eaace16`, unchanged by this push).
 
@@ -514,6 +516,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-02 (session tDesk2Main) — arena provisioning no longer starves behind the x402 sweep (staging, API)
+
+- Root cause: `runArenaProvisioningTick` ran `runArenaX402Reconcile` first; its removal-priority passes spent the per-process ClawPump writer bucket (60/min, burst 10, 5 reserved for removals), so provisioning got `budget_exhausted` before any request and `provisionLocked` counted each refusal as an attempt; after 5 the agent was `failed` for good (staging: Reef Rookie, Brine Fund, Deep Blue Desk, Tidepool Trader + 2 more). Log: repeated "ClawPump call budget reached ... re-checks skipped".
+- Fix (`provisioning.ts`, commit `f4bca689` rebased): provisioning first when not paused, then the reconcile; a throttle refusal keeps the attempt count (markFailed with the same attempts, next try in 25 s) and stops that tick's provisioning loop. 5 new tests (4 red on the old code); provisioning file 52/0; wider arena run 339/0; api tsc 0.
+- Known copy gap (punch list): while an agent waits for budget the web card shows the generic "retries every 10 minutes" text.
+- SCHEMA: `prod-migration-pending: 0074_floor_arena_withdraw.sql`.
 
 ### 2026-10-02 (session tDesk2Main) — big board rotates: house agents <-> contest leaderboard (staging, web only)
 
