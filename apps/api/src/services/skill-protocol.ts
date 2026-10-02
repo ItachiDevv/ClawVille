@@ -773,11 +773,11 @@ import {
 // 409. The manual does not document the admin event commands; agent signup and play are unchanged.
 // 2026-09-30 (security M10/M11) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: §11 bounties now
 // states the knowledge_book bonus rule (canonical book id or 400; one copy moves poster -> winner at
-// approval, or the bonus is skipped with a reason). The PROTOCOL_VERSION bump is owned by the
-// security-pass bump owner (authfix) and must cover this text at integration.
+// approval, or the bonus is skipped with a reason). PROTOCOL_VERSION bump owned by the batch-2
+// integration (v81), which must cover this text.
 // 2026-09-30 (security M12) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: "Run a store — land
 // services" documents the optional expectedPriceCt on POST /api/land/services/:listingId/buy and the
-// 409 price_changed refusal. Same bump owner as above.
+// 409 price_changed refusal. PROTOCOL_VERSION bump owned by the batch-2 integration (v81).
 export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
