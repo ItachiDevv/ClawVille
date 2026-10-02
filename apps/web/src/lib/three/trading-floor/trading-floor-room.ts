@@ -128,14 +128,10 @@ export const TRADING_FLOOR_FOG = Object.freeze({
 });
 
 /**
- * Walk-up Trading Monitor: the original 129 x 300 x 101 wu Meshy kiosk.
- * It stays unscaled at the +Z door wall, off-centre, with its screens facing -Z.
- * E or a click opens the Exchange modal on its Trading Floor tab.
- *
- * The GLB publishes authored dimensions and yaw in extras.kiosk. Its authored
- * half-X 64.49 differs slightly from the decoded mesh after quantization;
- * contract comparisons are exact, while decoded geometry uses a tolerance.
- * screenY 211 retains the original 330 scaled by MONITOR_SCALE = 300/470.
+ * Walk-up Trading Monitor: procedural 480 x 360 x 140 wu desk-family terminal.
+ * Its six-screen bank faces -Z from the door wall. E or a click opens the
+ * Exchange modal on its Trading Floor tab. The GLB publishes its measured
+ * authored bounds and yaw in extras.kiosk; decoded geometry allows quantization.
  * Interaction radii remain avatar-scale and disjoint from all seat bands.
  */
 export const TRADING_FLOOR_MONITOR = Object.freeze({
@@ -143,12 +139,12 @@ export const TRADING_FLOOR_MONITOR = Object.freeze({
   z: 1570,
   /** Screens face into the room, toward -Z. */
   rotY: Math.PI,
-  halfX: 64.49,
-  halfZ: 50.45,
+  halfX: 240,
+  halfZ: 70,
   /** Top of the kiosk. */
-  height: 300,
+  height: 360,
   /** Label / screen-centre height. */
-  screenY: 211,
+  screenY: 259,
   /** E arms inside this XZ radius of (x, z). */
   interactRadius: 380,
   /** The floating label appears inside this XZ radius. */

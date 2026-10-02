@@ -7,6 +7,7 @@ import {
   DECOR_BAND_INSET,
   DECOR_BANDS,
   DECOR_BANK,
+  DECOR_KIOSK_BANK,
   DECOR_DESKTOP,
   DECOR_DEPTH_PANEL_COUNT,
   DECOR_DESK_CROSS_SECONDS,
@@ -73,6 +74,7 @@ import {
   TRADING_FLOOR_CAMERA_Z_MAX,
   TRADING_FLOOR_CONSOLE_ROW,
   TRADING_FLOOR_DESK_INNER_X,
+  TRADING_FLOOR_MONITOR,
   TRADING_FLOOR_PLAYER_RADIUS,
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SCREEN,
@@ -410,17 +412,20 @@ describe('player clamp volume', () => {
   const clampX = TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS;
   const clampZ = TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS;
 
-  test('below avatar height, monitor and ribbon quads are on a desk or outside the clamp', () => {
+  test('below avatar height, monitor and ribbon quads are on a desk, on the kiosk or outside the clamp', () => {
     for (const [name, mesh] of [['monitors', MONITORS.mesh], ['ribbon', RIBBON.mesh]] as const) {
       forEachQuad(mesh, (vertices, quad) => {
         const high = vertices.every((v) => v[1] >= 270);
         const onDesk = TRADING_FLOOR_CONSOLE_ROW.some((_, desk) => vertices.every((v) => insideDesk(v, desk)));
+        const onKiosk = mesh.tags[quad]!.part.startsWith('kiosk-') && vertices.every((v) =>
+          Math.abs(v[0] - TRADING_FLOOR_MONITOR.x) <= TRADING_FLOOR_MONITOR.halfX + EPS &&
+          Math.abs(v[2] - TRADING_FLOOR_MONITOR.z) <= TRADING_FLOOR_MONITOR.halfZ + EPS);
         const outside =
           vertices.every((v) => v[0] > clampX) ||
           vertices.every((v) => v[0] < -clampX) ||
           vertices.every((v) => v[2] > clampZ) ||
           vertices.every((v) => v[2] < -clampZ);
-        expect({ name, quad, ok: high || onDesk || outside }).toEqual({ name, quad, ok: true });
+        expect({ name, quad, ok: high || onDesk || onKiosk || outside }).toEqual({ name, quad, ok: true });
       });
     }
   });
@@ -453,9 +458,9 @@ describe('trade-tape flight volume', () => {
     max: [sign * TAPE_LANE_X + reach, TAPE_Y + TAPE_CHIP_HEIGHT / 2 + TAPE_BOB, TAPE_Z_END + reach],
   }));
 
-  test('the conservative volume covers the documented 352.75..481', () => {
-    expect(lanes[0]!.min[1]).toBeLessThanOrEqual(352.75);
-    expect(lanes[0]!.max[1]).toBeGreaterThanOrEqual(481);
+  test('the conservative volume covers the documented 412.75..541', () => {
+    expect(lanes[0]!.min[1]).toBeLessThanOrEqual(412.75);
+    expect(lanes[0]!.max[1]).toBeGreaterThanOrEqual(541);
   });
 
   test('no decor quad touches either lane', () => {
@@ -1007,7 +1012,7 @@ describe('screen scrolling', () => {
   test('the scrolling quads are the leading quads and only their U moves', () => {
     const scroll = MONITORS.scroll;
     for (let quad = 0; quad < scroll.count; quad++) {
-      expect(['bank-screen', 'wall-screen']).toContain(MONITORS.mesh.tags[quad]!.part);
+      expect(['bank-screen', 'wall-screen', 'kiosk-screen']).toContain(MONITORS.mesh.tags[quad]!.part);
     }
     const uvs = new Float32Array(MONITORS.mesh.uvs);
     const offsets = new Float32Array(scroll.phases);
@@ -1052,7 +1057,7 @@ describe('screen scrolling', () => {
     expect(monitorRange + ribbonRange).toBeLessThanOrEqual(600);
     const deskCharts = DECOR_DESK_CONTENT.filter((content) => content !== 'depth' && content !== 'terminal').length;
     // Each wall has two scrolling panes; the other panes are static.
-    const scrollingQuads = TRADING_FLOOR_SEATS.length * deskCharts + DECOR_WALL_SCREEN.bayCentersZ.length * 2 * 2;
+    const scrollingQuads = TRADING_FLOOR_SEATS.length * deskCharts + DECOR_WALL_SCREEN.bayCentersZ.length * 2 * 2 + 4;
     expect(MONITORS.scroll.count).toBe(scrollingQuads);
     expect(monitorRange + ribbonRange).toBe((scrollingQuads + RIBBON.segments.length) * DECOR_UV_FLOATS_PER_QUAD);
   });
@@ -1579,3 +1584,83 @@ function recordingContext(): {
   } as unknown as DecorContext;
   return { ctx, texts, points, fills };
 }
+
+
+describe('R4 kiosk monitor bank', () => {
+  const bank = DECOR_KIOSK_BANK;
+  const kioskQuads = MONITORS.mesh.tags.flatMap((tag, quad) => tag.part.startsWith('kiosk-') ? [quad] : []);
+
+  test('six panels stay inside the authored footprint and clear the riser', () => {
+    expect(bank.monitorWidth).toBe(148);
+    expect(bank.monitorHeight).toBe(92);
+    expect(bank.bezel).toBe(6.75);
+    expect(bank.chin).toBe(12);
+    expect(bank.headerHeight).toBe(10.5);
+    expect(bank.columnPitch).toBe(154);
+    expect(bank.rowGap).toBe(6);
+    expect(bank.outerYaw).toBe(18 * Math.PI / 180);
+    expect(kioskQuads.length).toBeGreaterThan(0);
+    const c = Math.cos(TRADING_FLOOR_MONITOR.rotY), s = Math.sin(TRADING_FLOOR_MONITOR.rotY);
+    for (const quad of kioskQuads) {
+      expect(MONITORS.mesh.tags[quad]!.owner).toBe(0);
+      for (const [x, y, z] of quadVertices(MONITORS.mesh, quad)) {
+        const dx = x - TRADING_FLOOR_MONITOR.x, dz = z - TRADING_FLOOR_MONITOR.z;
+        const localX = dx * c - dz * s, localZ = dx * s + dz * c;
+        expect(Math.abs(localX)).toBeLessThanOrEqual(TRADING_FLOOR_MONITOR.halfX + 1e-3);
+        expect(Math.abs(localZ)).toBeLessThanOrEqual(TRADING_FLOOR_MONITOR.halfZ + 1e-3);
+        expect(y).toBeGreaterThanOrEqual(164);
+        expect(y).toBeLessThanOrEqual(354);
+        if (MONITORS.mesh.tags[quad]!.part === 'kiosk-screen') expect(localZ).toBeGreaterThan(-40);
+      }
+    }
+    expect(kioskQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'kiosk-bezel' &&
+      Math.abs(MONITORS.mesh.uvs[quad * 8]! - swatchUv('bezelBack').u0) < EPS)).toHaveLength(0);
+  });
+
+  test('six graphite fronts rotate with the kiosk; outer columns turn inward', () => {
+    const fronts = kioskQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'kiosk-bezel' &&
+      Math.abs(MONITORS.mesh.uvs[quad * 8]! - swatchUv('bezelFront').u0) < EPS);
+    expect(fronts).toHaveLength(6);
+    fronts.forEach((quad, index) => {
+      const vertices = quadVertices(MONITORS.mesh, quad);
+      const center = quadCentre(vertices);
+      const normal = quadNormal(vertices);
+      const column = index % 3 - 1;
+      const yaw = TRADING_FLOOR_MONITOR.rotY - column * bank.outerYaw;
+      expect(normal[0]).toBeCloseTo(Math.sin(yaw), 5);
+      expect(normal[2]).toBeCloseTo(Math.cos(yaw), 5);
+      expect(center[0]).toBeCloseTo(TRADING_FLOOR_MONITOR.x - column * 154, 4);
+      expect(center[1]).toBe(index < 3 ? 210 : 308);
+      expect(center[2]).toBeCloseTo(TRADING_FLOOR_MONITOR.z - bank.frontZ -
+        (column === 0 ? 0 : Math.sin(bank.outerYaw) * 74), 4);
+    });
+  });
+
+  test('four chart panes scroll; terminal and depth panels share the existing atlas', () => {
+    const screens = kioskQuads.filter((quad) => MONITORS.mesh.tags[quad]!.part === 'kiosk-screen');
+    expect(screens).toHaveLength(12); // Six headers and six body panes.
+    expect(screens.filter((quad) => quad < MONITORS.scroll.count)).toHaveLength(4);
+    for (const rect of [terminalPanelRect(0), depthPanelRect(0)]) {
+      const matching = screens.filter((quad) => Math.abs(MONITORS.mesh.uvs[quad * 8]! - rect.x / DECOR_ATLAS_SIZE) < EPS &&
+        Math.abs(MONITORS.mesh.uvs[quad * 8 + 5]! - (1 - rect.y / DECOR_ATLAS_SIZE)) < EPS);
+      expect(matching).toHaveLength(1);
+    }
+    const leds = kioskQuads.filter((quad) => [swatchUv('statusGreen').u0, swatchUv('statusAmber').u0]
+      .some((u) => Math.abs(MONITORS.mesh.uvs[quad * 8]! - u) < EPS));
+    expect(leds).toHaveLength(6);
+    expect(MONITORS.scroll.count).toBe(64);
+    expect((MONITORS.scroll.count + RIBBON.segments.length) * DECOR_UV_FLOATS_PER_QUAD).toBe(536);
+    expect((MONITORS.scroll.count + RIBBON.segments.length) * 4).toBe(268);
+  });
+
+  test('kiosk content uses abstract charts and the place directory without financial text', () => {
+    expect(DECOR_DESK_CONTENT).toEqual(['candleA', 'terminal', 'candleB', 'line', 'depth', 'bars']);
+    const { ctx, texts } = recordingContext();
+    drawDecorAtlas(ctx);
+    expect(texts).toEqual([]);
+    for (const word of [DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS.flat()]) {
+      expect(word).toMatch(/^[A-Z ]+$/);
+      expect(word).not.toMatch(/BUY|SELL|PRICE|PNL|PROFIT|USD|BTC|ETH|SOL|VOLUME|ORDER|MARKET|[\d$%+\-\u2190-\u21ff]/u);
+    }
+  });
+});

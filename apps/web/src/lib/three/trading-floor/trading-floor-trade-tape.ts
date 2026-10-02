@@ -77,12 +77,10 @@ export const TAPE_LANE_X = 1311;
 export const TAPE_CHIP_WIDTH = 160;
 export const TAPE_CHIP_HEIGHT = 90;
 /**
- * Flight height, lowered 100 wu. The conservative lowest corner is 352.75.
- * Above the avatar (270), the desks (166), the claws (230) and
- * the kiosk (300), so a chip can never intersect a prop or a walking player no
- * matter where either is — the tape needs no XZ keep-out at all.
+ * Flight height clears the 360 wu kiosk by more than 50 wu at the lowest
+ * chip corner (412.75), including bob and the entry pop.
  */
-export const TAPE_Y = 420;
+export const TAPE_Y = 480;
 /** Where a chip enters (board end) and leaves (door end). */
 export const TAPE_Z_START = -1350;
 export const TAPE_Z_END = 1080;

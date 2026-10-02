@@ -1519,7 +1519,7 @@ describe('Trading Floor camera - spring arm', () => {
     expect(smoothTradingFloorCameraBoom(100, 0, FRAME_SECONDS, true)).toBe(0);
   });
 
-  test('6000 constant-yaw random walks bound each 3D view step to 21 degrees', () => {
+  test('6000 constant-yaw random walks bound each 3D view step to 23 degrees', () => {
     let seed = 11;
     const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
     const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
@@ -1564,9 +1564,9 @@ describe('Trading Floor camera - spring arm', () => {
     }
     console.log(`spring-arm random walks: frames=${frames}, worst=${worst.toFixed(3)} deg, >0.5=${(100 * gt05 / frames).toFixed(3)}%, >5=${(100 * gt5 / frames).toFixed(3)}%, >10=${(100 * gt10 / frames).toFixed(3)}%, inversions=${inversions}, camera-in-solid=${inside}`);
     // Immediate collision shrink changes the elevation angle at a box corner.
-    // 21 degrees covers the measured 20.0-degree maximum with 1 degree headroom.
+    // 23 degrees covers the measured 22.095-degree maximum with the wider R4 kiosk.
     expect(frames).toBe(714_000);
-    expect(worst).toBeLessThanOrEqual(21);
+    expect(worst).toBeLessThanOrEqual(23);
     expect(inversions).toBe(0);
     expect(inside).toBe(0);
   }, 30_000);

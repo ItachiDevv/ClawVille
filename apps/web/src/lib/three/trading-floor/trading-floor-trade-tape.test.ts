@@ -620,7 +620,7 @@ describe('flight geometry', () => {
     );
     expect(lowestBound).toBeGreaterThan(TALLEST_PROP + 50);
     expect(lowest).toBeGreaterThanOrEqual(lowestBound);
-    expect(TAPE_Y).toBeLessThanOrEqual(420);
+    expect(TAPE_Y).toBeLessThanOrEqual(480);
     // The Y clearance is what removes the need for ANY XZ keep-out against the
     // desks, chairs, dais and kiosk — so pin the margin, not just the sign.
     expect(lowest - TALLEST_PROP).toBeGreaterThan(50);
@@ -980,5 +980,17 @@ describe('atlas layout', () => {
       const rect = tapeCellRect(index);
       expect(uv.vTop).toBeCloseTo(1 - rect.y / TAPE_ATLAS_HEIGHT, 6);
     }
+  });
+});
+
+
+describe('R4 tape clearance above the procedural kiosk', () => {
+  test('height 480 keeps the conservative bottom corner more than 50 wu above the kiosk', () => {
+    expect(TAPE_Y).toBe(480);
+    expect(TRADING_FLOOR_MONITOR.height).toBe(360);
+    const lowest = TAPE_Y - TAPE_BOB - Math.max(TAPE_CHIP_HEIGHT / 2, TAPE_POP_RISE + TAPE_CHIP_HEIGHT * TAPE_POP_MIN_SCALE / 2);
+    expect(lowest).toBe(412.75);
+    expect(lowest).toBeGreaterThan(TRADING_FLOOR_MONITOR.height + 50);
+    expect(TAPE_Z_END).toBeLessThan(TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_MONITOR.halfZ);
   });
 });

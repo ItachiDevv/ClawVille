@@ -29,6 +29,7 @@ import {
   TRADING_FLOOR_CONSOLE_HEIGHT,
   TRADING_FLOOR_CONSOLE_ROW,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   TRADING_FLOOR_SEATS,
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SCREEN,
@@ -444,9 +445,9 @@ describe('Trading Floor asset — A3 camera clearance and claw sculpt', () => {
       // The floor spans every wall band but sits below the camera's Y floor.
       // Desk/chair source templates never render; the row rotates their copies.
       // Their decoded extents and actual row camera clamps have separate tests.
-      // No board or kiosk exemption: the kiosk stands clear of the back band.
+      // The wall-backed kiosk uses a dedicated camera solid; its sweep pins clearance.
       if (!node.getMesh() || ['TradingFloorFloorSlab', 'TradingFloorConsoleModule',
-        'TradingFloorChairModule'].includes(node.getName())) continue;
+        'TradingFloorChairModule', 'TradingFloorMonitorStation'].includes(node.getName())) continue;
       const { vertices, primitive } = await assetVertices(node.getName());
       const indices = primitive.getIndices()!.getArray()!;
       for (let i = 0; i < indices.length; i += 3) {
@@ -831,9 +832,9 @@ describe('Trading Floor asset — the monitor kiosk matches its hotspot', () => 
 
   test('the door-wall kiosk clears the board from spawn, seats and the plinth band', async () => {
     const { vertices } = await assetVertices('TradingFloorMonitorStation');
-    const bounds = [0, 1, 2].map((axis) => [Math.min(...vertices.map(({ p }) => p[axis]!)),
-      Math.max(...vertices.map(({ p }) => p[axis]!))]);
-    const points = bounds[0]!.flatMap((x) => bounds[2]!.map((z) => [x, bounds[1]![1]!, z] as const));
+    // Project actual geometry: the counter front is only 150 wu high, while
+    // the 360 wu riser sits at the back. Full-height AABB corners invent shadows.
+    const points = [...new Map(vertices.map(({ p }) => [p.join(','), p] as const)).values()];
     const groups: { name: string; bodies: [number, number][]; yawStep: number }[] = [
       { name: 'spawn', bodies: [[TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z]], yawStep: 2 },
       { name: 'seats', bodies: TRADING_FLOOR_SEATS.map((seat) => [seat.x, seat.z]), yawStep: 5 },
@@ -846,7 +847,7 @@ describe('Trading Floor asset — the monitor kiosk matches its hotspot', () => 
         const dx = Math.max(0, Math.abs(x - TRADING_FLOOR_DAIS.x) - TRADING_FLOOR_DAIS.halfX);
         const dz = Math.max(0, Math.abs(z - TRADING_FLOOR_DAIS.z) - TRADING_FLOOR_DAIS.halfZ);
         if (Math.hypot(dx, dz) <= 300) groups[2]!.bodies.push([x, z]);
-        if (Math.hypot(x - TRADING_FLOOR_MONITOR.x, z - TRADING_FLOOR_MONITOR.z) >= 600)
+        if (TRADING_FLOOR_MONITOR_FRONT_Z - z >= 600)
           groups[3]!.bodies.push([x, z]);
       }
     const camera = { x: 0, y: 0, z: 0 };
@@ -1081,11 +1082,13 @@ describe('Trading Floor asset — v4 colours, seal and portal', () => {
     }
   });
 
-  // R1 must re-measure the 11 meshes, 11 materials and 7 textures.
+  // R4 keeps 11 meshes and shares the desk material: 10 materials, 6 textures.
   test('the seal and both banners share one draw call', () => {
+    // Merged v5 part 2: sea life +1 mesh/+1 material (W2); the procedural kiosk shares the desk material and drops the
+    // Meshy kiosk texture (R4). Re-measured by the merge-fix job on the rebuilt GLB.
     expect(gltf.meshes).toHaveLength(12);
-    expect(gltf.materials).toHaveLength(12);
-    expect(gltf.textures).toHaveLength(7);
+    expect(gltf.materials).toHaveLength(11);
+    expect(gltf.textures).toHaveLength(6);
     const identity = nodeByName('TradingFloorIdentity');
     expect(gltf.meshes[identity.mesh!]!.primitives).toHaveLength(1);
   });
@@ -1508,5 +1511,32 @@ describe('Trading Floor asset - W2 sea life', () => {
     }
     // Every point between a default-height camera and the board has t > 1.
     // Since each point is below that camera, its projected shadow is lower still.
+
+describe('R4 procedural kiosk asset', () => {
+  test('publishes exact bounds and decodes within 0.05 wu on every axis', async () => {
+    expect(extras!.kiosk).toEqual({ x: -1000, y: 0, z: 1570, halfX: 240, halfZ: 70, height: 360, rotY: Math.PI });
+    const { vertices, primitive } = await assetVertices('TradingFloorMonitorStation');
+    const expected = [[-1240, -760], [0, 360], [1500, 1640]];
+    for (let axis = 0; axis < 3; axis++) {
+      const values = vertices.map(({ p }) => p[axis]!);
+      expect(Math.abs(Math.min(...values) - expected[axis]![0]!)).toBeLessThanOrEqual(0.05);
+      expect(Math.abs(Math.max(...values) - expected[axis]![1]!)).toBeLessThanOrEqual(0.05);
+    }
+    const triangles = primitive.getIndices()!.getCount() / 3;
+    expect(triangles).toBeGreaterThanOrEqual(600);
+    expect(triangles).toBeLessThanOrEqual(900);
+  });
+
+  test('shares the desk material and removes the Meshy texture and props dependency', async () => {
+    const doc = await decodedAsset;
+    const meshes = doc.getRoot().listMeshes();
+    const kiosk = meshes.find((mesh) => mesh.getName() === 'TradingFloorMonitorStation')!;
+    const desk = meshes.find((mesh) => mesh.getName() === 'TradingFloorConsoleModule')!;
+    expect(kiosk.listPrimitives()).toHaveLength(1);
+    expect(kiosk.listPrimitives()[0]!.getMaterial()).toBe(desk.listPrimitives()[0]!.getMaterial());
+    expect(doc.getRoot().listTextures().some((texture) => /MonitorStation/.test(texture.getName()))).toBe(false);
+    const source = readFileSync(join(import.meta.dir, '../../../../../../scripts/trading-floor/build-interior.mjs'), 'utf8');
+    expect(source).not.toMatch(/copyProp|PROPS_GLB|--props|existsSync/);
+    expect(source).toContain("group('kiosk', 'collider in TRADING_FLOOR_SOLIDS'");
   });
 });

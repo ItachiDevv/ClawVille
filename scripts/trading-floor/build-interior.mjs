@@ -29,18 +29,13 @@
 // instances once per desk. The light-rig half of the fix lives in
 // `trading-floor-interior.tsx`.
 //
-// Only the kiosk remains a Meshy text-to-3d refine from the v1 run.
-// It is copied through from a PROPS SOURCE GLB rather than re-slimmed:
-// re-running Meshy costs credits we do not have, and the v1 props are already
-// decimated, base-centred and at final scale. Default source is the durable
-// copy at ../.clawville-assets/trading-floor/interior-props-src.glb (kept out
-// of the repo, like every raw Meshy output). Pass --props <glb> to override.
+// The desk, chair and kiosk are procedural; the solid claw uses the in-repo exterior.
 //
 // EVERYTHING IS AUTHORED IN WORLD UNITS (1 unit = 1 wu at final scale), so the
 // consumer must NOT auto-fit this GLB by max dimension the way cove-interior
 // does. Avatar reference height is 270 wu (VRM_AVATAR_TARGET_HEIGHT_WU).
 //
-// Usage: node scripts/trading-floor/build-interior.mjs <out.glb> [--props <glb>]
+// Usage: node scripts/trading-floor/build-interior.mjs <out.glb>
 
 import { Document, NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, KHRMaterialsUnlit } from '@gltf-transform/extensions';
@@ -48,34 +43,15 @@ import { prune, dedup, weldPrimitive } from '@gltf-transform/functions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import draco3d from 'draco3d';
 import sharp from 'sharp';
-import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
 const output = argv[0];
-if (!output) throw new Error('usage: build-interior.mjs <out.glb> [--props <glb>]');
+if (!output) throw new Error('usage: build-interior.mjs <out.glb>');
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const DEFAULT_PROPS = resolve(
-  REPO_ROOT,
-  '..',
-  '.clawville-assets',
-  'trading-floor',
-  'interior-props-src.glb',
-);
-const propsFlag = argv.indexOf('--props');
-const PROPS_GLB =
-  propsFlag >= 0 ? argv[propsFlag + 1] : process.env.TRADING_FLOOR_PROPS_GLB || DEFAULT_PROPS;
-if (!existsSync(PROPS_GLB)) {
-  throw new Error(
-    `prop source GLB not found: ${PROPS_GLB}\n` +
-      'Pass --props <glb>, or set TRADING_FLOOR_PROPS_GLB. The source is the v1 ' +
-      'stage-1 build (uncompressed PNG textures); it is kept outside the repo.',
-  );
-}
-
 // ---- hall dimensions (world units) -----------------------------------------
 const RW = 3900;   // interior width  (X)
 const RD = 3300;   // interior depth  (Z)
@@ -121,13 +97,6 @@ const FLOOR_TEX_PX = 512;
 // breaking; it never stopped the prose lying. `trading-floor-monitor.test.ts`
 // is the source of truth for the margin — read it, do not restate it.
 const DAIS_POS = [0, 0, -90];
-// The kiosk was 470 wu tall against a 270 wu avatar — 1.74x human height, about
-// 2.95 m. That oversize, not its position, was the root cause of the board
-// occlusion: no position exists that both clears the board's x-span from the
-// spawn and stays outside the seat bands, because the seat rule wants
-// |x| < 639 and the sightline wants |x| > 751. Cutting it to avatar height is
-// the lever that fixed it, and it let the board stay 1700 wide.
-const MONITOR_SCALE = 300 / 470;   // 0.638297...
 const MONITOR_POS = [-1000, 0, 1570];
 const MONITOR_ROT_Y = Math.PI;
 // Desk row, mirrored in TRADING_FLOOR_CONSOLE_ROW. The authored console faces
@@ -1246,83 +1215,58 @@ console.log(`  procedural desk: ${deskGeo.idx.length/3} tris, base-centred 364 x
 // Run the gate after the sourced claw is registered below. Both template
 // modules retain the existing exemption; the kiosk has collider protection.
 
-// ------------------------------------------------------------- 3. props -----
-// The kiosk is copied verbatim out of the v1 stage-1 build. It was decimated,
-// scaled and re-centred on its base there; re-running that work needs the Meshy
-// refines, which are not on disk and would cost credits to regenerate.
-const propsDoc = await io.read(PROPS_GLB);
-const propsRoot = propsDoc.getRoot();
-
-/** `scale` bakes a uniform factor into the POSITION stream rather than setting
- *  it on the node. That is deliberate: the scene reads `authored.scale.x` off
- *  the node to size its instanced rows, and `KHR_mesh_quantization` rewrites
- *  node scale anyway, so a node-level scale here would be indistinguishable
- *  from the quantizer's and would corrupt that read. Baking keeps the node
- *  transform meaning exactly one thing. */
-const propExtents = {};
-
-async function copyProp(sourceName, outName, translation, scale = 1) {
-  const srcMesh = propsRoot.listMeshes().find((m) => m.getName() === sourceName);
-  if (!srcMesh) throw new Error(`prop "${sourceName}" not in ${PROPS_GLB}`);
-  const sp = srcMesh.listPrimitives()[0];
-
-  const srcTex = sp.getMaterial()?.getBaseColorTexture();
-  if (!srcTex) throw new Error(`prop "${sourceName}" has no baseColor texture`);
-  // Round-trip through sharp so the output is a plain PNG whatever the source
-  // encoding was, and so a re-run against a different props GLB cannot smuggle
-  // a 2048² map into the budget.
-  const png = await sharp(Buffer.from(srcTex.getImage())).resize(512, 512, { fit: 'fill' }).png().toBuffer();
-  const tex = doc.createTexture(outName + 'Tex').setImage(png).setMimeType('image/png');
-  const m = doc
-    .createMaterial(outName + 'Mtl')
-    .setBaseColorTexture(tex)
-    .setMetallicFactor(0)
-    .setRoughnessFactor(0.82);
-
-  const srcPos = sp.getAttribute('POSITION').getArray();
-  const pos = new Float32Array(srcPos.length);
-  for (let i = 0; i < srcPos.length; i++) pos[i] = srcPos[i] * scale;
-  // Measure what we actually produced, so the extents reported to the scene
-  // (and into TRADING_FLOOR_MONITOR) come from the geometry, not from
-  // multiplying the old numbers by hand.
-  let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
-  for (let i = 0; i < pos.length; i += 3) {
-    if (pos[i] < mnx) mnx = pos[i];
-    if (pos[i] > mxx) mxx = pos[i];
-    if (pos[i + 1] < mny) mny = pos[i + 1];
-    if (pos[i + 1] > mxy) mxy = pos[i + 1];
-    if (pos[i + 2] < mnz) mnz = pos[i + 2];
-    if (pos[i + 2] > mxz) mxz = pos[i + 2];
-  }
-
-  const prim = doc
-    .createPrimitive()
-    .setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(pos).setBuffer(buffer))
-    .setIndices(doc.createAccessor().setType('SCALAR').setArray(new Uint32Array(sp.getIndices().getArray())).setBuffer(buffer))
-    .setMaterial(m);
-  for (const sem of ['NORMAL', 'TEXCOORD_0']) {
-    const a = sp.getAttribute(sem);
-    if (a) prim.setAttribute(sem, doc.createAccessor().setType(a.getType()).setArray(new Float32Array(a.getArray())).setBuffer(buffer));
-  }
-
-  const mesh = doc.createMesh(outName).addPrimitive(prim);
-  scene.addChild(doc.createNode(outName).setMesh(mesh).setTranslation(translation));
-  propExtents[outName] = {
-    minX: mnx + translation[0], maxX: mxx + translation[0],
-    minY: mny + translation[1], maxY: mxy + translation[1],
-    minZ: mnz + translation[2], maxZ: mxz + translation[2],
+// ------------------------------------------------------------- 3. kiosk -----
+// The terminal uses the same walnut/lacquer/brass atlas as the desk modules.
+const kioskGeo = group('kiosk', 'collider in TRADING_FLOOR_SOLIDS', () => {
+  const surface = (geo, finish) => {
+    if (finish !== 'wood') return deskSurface(geo, finish);
+    geo.uv = [];
+    for (let i = 0; i < geo.pos.length; i += 3) {
+      const x = geo.pos[i], y = geo.pos[i + 1], z = geo.pos[i + 2];
+      const u = Math.abs(geo.nrm[i]) > .5 ? (z + 70) / 140 : (x + 240) / 480;
+      const v = Math.abs(geo.nrm[i + 1]) > .5 ? (z + 70) / 140 : y / 150;
+      geo.uv.push((8 + u * 304) / 512, (8 + v * 240) / 256);
+    }
+    return geo;
   };
-  console.log(
-    `prop ${outName}: ${sp.getIndices().getCount() / 3} tris from ${sourceName} at [${translation}]` +
-      (scale !== 1 ? ` scale ${scale.toFixed(6)}` : '') +
-      ` | size ${(mxx - mnx).toFixed(1)} x ${(mxy - mny).toFixed(1)} x ${(mxz - mnz).toFixed(1)}` +
-      ` | halfX ${((mxx - mnx) / 2).toFixed(1)} halfZ ${((mxz - mnz) / 2).toFixed(1)}`
-  );
-}
-
-await copyProp('TradingFloorMonitorStation', 'TradingFloorMonitorStation', MONITOR_POS, MONITOR_SCALE);
+  const parts = [
+    surface(cushionGeo(0, 8, 0, 460, 16, 120, 1, true), 'black'),
+    surface(cushionGeo(0, 77.5, -1, 480, 123, 138, 2, true), 'black'),
+    surface(cushionGeo(0, 140.5, 0, 480, 3, 140, 1, true), 'brass'),
+    surface(cushionGeo(0, 146, 0, 480, 8, 140, 3), 'wood'),
+    surface(boxGeo(0, 252, -55, 480, 204, 30), 'black'),
+    ...[-236, 236].map((x) => surface(cushionGeo(x, 252, -55, 8, 204, 30, 1, true), 'brass')),
+    // Keep the cap inside the exact 140 wu footprint (the old spec overhung it).
+    surface(cushionGeo(0, 357, -55, 480, 6, 30, 1, true), 'brass'),
+    ...[-156, 0, 156].flatMap((x) => [
+      surface(boxGeo(x, 77.5, 68.5, 146, 99, 1), 'wood'),
+      ...[-72, 72].map((dx) => surface(boxGeo(x + dx, 77.5, 69.25, 2, 99, .5), 'brass')),
+      ...[29, 126].map((y) => surface(boxGeo(x, y, 69.25, 146, 2, .5), 'brass')),
+      surface(boxGeo(x, 111, 69.5, 30, 3, 1), 'brass'),
+    ]),
+  ];
+  const x = 0, y = 150.2, z = 20, w = 126, d = 34;
+  parts.push({
+    pos: [x-w/2,y,z-d/2, x-w/2,y,z+d/2, x+w/2,y,z+d/2, x+w/2,y,z-d/2],
+    nrm: Array(4).fill([0,1,0]).flat(), idx: [0,1,2,0,2,3],
+    uv: [336/512,64/256,336/512,152/256,496/512,152/256,496/512,64/256],
+  });
+  boxRegistry.push({group:currentGroup.name,exempt:currentGroup.exempt,
+    min:[x-w/2,y,z-d/2],max:[x+w/2,y,z+d/2]});
+  return mergeGeos(parts);
+});
+addMesh('TradingFloorMonitorStation', kioskGeo, DESK_M, MONITOR_POS);
 scene.listChildren().find((n) => n.getName() === 'TradingFloorMonitorStation')
   .setRotation([0, Math.sin(MONITOR_ROT_Y / 2), 0, Math.cos(MONITOR_ROT_Y / 2)]);
+const kiosk = { minX: Infinity, minY: Infinity, minZ: Infinity,
+  maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
+for (let i = 0; i < kioskGeo.pos.length; i += 3) {
+  for (const [axis, offset] of [['X',0], ['Y',1], ['Z',2]]) {
+    kiosk['min' + axis] = Math.min(kiosk['min' + axis], kioskGeo.pos[i + offset]);
+    kiosk['max' + axis] = Math.max(kiosk['max' + axis], kioskGeo.pos[i + offset]);
+  }
+}
+console.log(`  procedural kiosk: ${kioskGeo.idx.length/3} tris, 480 x 360 x 140; yaw ${MONITOR_ROT_Y}`);
 
 // Read the solid Meshy claw, including the quantizer's node transform.
 // getElement decodes normalized integers; positions use the full world matrix
@@ -1582,9 +1526,7 @@ assertWallDetailClears();
 // Two files with two owners cannot silently disagree when one of them publishes
 // its numbers and the other is tested against them.
 //
-// Kiosk extents are MEASURED off the scaled geometry, never recomputed from the
-// scale factor, so a future prop swap cannot make this lie.
-const kiosk = propExtents.TradingFloorMonitorStation;
+// Kiosk extents are measured from the authored procedural geometry above.
 scene.setExtras({
   contract: 'scripts/trading-floor/build-interior.mjs — assert against trading-floor-room.ts',
   screen: { width: SCREEN_W, height: SCREEN_H, bottomY: SCREEN_BOTTOM_Y, z: SCREEN_Z },

@@ -33,7 +33,7 @@
  * off their desks.
  */
 
-import { TRADING_FLOOR_CONSOLE_ROW, TRADING_FLOOR_DAIS, TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_ROOM, TRADING_FLOOR_SCREEN, type TradingFloorConsoleSlot } from './trading-floor-room';
+import { TRADING_FLOOR_CONSOLE_ROW, TRADING_FLOOR_DAIS, TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_MONITOR, TRADING_FLOOR_ROOM, TRADING_FLOOR_SCREEN, type TradingFloorConsoleSlot } from './trading-floor-room';
 
 // ---------------------------------------------------------------------------
 // Atlas map (canvas pixels). The art module draws INTO these rects; the layout
@@ -199,6 +199,8 @@ export type DecorPart =
   | 'bank-screen'
   | 'bank-bezel'
   | 'bank-mount'
+  | 'kiosk-bezel'
+  | 'kiosk-screen'
   | 'wall-screen'
   | 'wall-bezel'
   | 'ribbon-face'
@@ -450,6 +452,23 @@ export const DECOR_BANK = Object.freeze({
   post: Object.freeze({ halfX: 11, centerZ: -126, halfZ: 6, topY: 318 }),
   arm: Object.freeze({ halfX: 120, halfY: 5, centerZ: -128, halfZ: 4 }),
   vesa: Object.freeze({ halfX: 11, halfY: 11, halfZ: 3 }),
+});
+
+/** Six desk-family panels on the kiosk riser, in its own +Z-facing frame. */
+export const DECOR_KIOSK_BANK = Object.freeze({
+  monitorWidth: 148,
+  monitorHeight: 92,
+  monitorDepth: 5,
+  bezel: 6.75,
+  chin: 12,
+  headerHeight: 10.5,
+  columnPitch: 154,
+  rowGap: 6,
+  bottomY: 164,
+  outerYaw: DECOR_BANK.outerYaw,
+  // Content lifts to -34: exactly 6 wu proud of the riser front at -40.
+  frontZ: -35,
+  screenLift: 1,
 });
 
 /** The hood band of the console, desk-local. Only the mount may go below the
@@ -748,6 +767,48 @@ function pushDeskBank(
   }
 }
 
+function pushKioskBank(scroll: ScrollSink, fixed: QuadSink, random: () => number): void {
+  const bank = DECOR_KIOSK_BANK;
+  const c = Math.cos(TRADING_FLOOR_MONITOR.rotY);
+  const s = Math.sin(TRADING_FLOOR_MONITOR.rotY);
+  const point = (x: number, y: number, z: number): Vec3 =>
+    [TRADING_FLOOR_MONITOR.x + x * c + z * s, y, TRADING_FLOOR_MONITOR.z - x * s + z * c];
+  const direction = (x: number, z: number): Vec3 => [x * c + z * s, 0, -x * s + z * c];
+  const halfW = bank.monitorWidth / 2;
+  const halfH = bank.monitorHeight / 2;
+  const screenHalfW = halfW - bank.bezel;
+  const bodyHeight = bank.monitorHeight - bank.bezel - bank.chin - bank.headerHeight;
+  const bezelTag: DecorQuadTag = { part: 'kiosk-bezel', owner: 0 };
+  const screenTag: DecorQuadTag = { part: 'kiosk-screen', owner: 0 };
+  for (let row = 0; row < 2; row++) {
+    const centerY = bank.bottomY + halfH + row * (bank.monitorHeight + bank.rowGap);
+    for (let column = -1; column <= 1; column++) {
+      const monitor = row * 3 + column + 1;
+      const yaw = -column * bank.outerYaw;
+      const forward = direction(Math.sin(yaw), Math.cos(yaw));
+      // Outer inner edges stay proud of the riser, as on the desk banks.
+      const faceZ = bank.frontZ + (column === 0 ? 0 : Math.sin(bank.outerYaw) * halfW);
+      const face = point(column * bank.columnPitch, centerY, faceZ);
+      pushMonitorHousing(fixed, face, forward, halfW, halfH, bank.monitorDepth, 2, bezelTag, false);
+      const lifted = along(face, forward, bank.screenLift);
+      const led = along(along(lifted, cross(UP, forward), halfW - 16.5), UP, -halfH + bank.chin / 2);
+      pushQuad(fixed, led, forward, UP, 1.875, 1.875,
+        swatchUv(column === 0 ? 'statusAmber' : 'statusGreen'), bezelTag);
+      pushQuad(fixed, along(lifted, UP, halfH - bank.bezel - bank.headerHeight / 2),
+        forward, UP, screenHalfW, bank.headerHeight / 2, atlasRectUv(deskHeaderRect(monitor)), screenTag);
+      const bodyCenter = along(lifted, UP, -halfH + bank.chin + bodyHeight / 2);
+      const content = DECOR_DESK_CONTENT[monitor]!;
+      if (content === 'terminal' || content === 'depth') {
+        pushQuad(fixed, bodyCenter, forward, UP, screenHalfW, bodyHeight / 2,
+          content === 'terminal' ? atlasRectUv(terminalPanelRect(0)) : depthPanelUv(0), screenTag);
+      } else {
+        pushScrollingQuad(scroll, bodyCenter, forward, screenHalfW, bodyHeight / 2,
+          DECOR_BANDS[content], crossSeconds(random, DECOR_DESK_CROSS_SECONDS), random(), screenTag);
+      }
+    }
+  }
+}
+
 function pushWallScreen(
   scroll: ScrollSink,
   fixed: QuadSink,
@@ -876,6 +937,7 @@ export function buildMonitorDecor(): MonitorDecorData {
   for (let wallIndex = 0; wallIndex < bays.length * 2; wallIndex++) {
     pushWallScreen(scroll, fixed, decorWallScreenSide(wallIndex), bays[wallIndex % bays.length]!, wallIndex, random);
   }
+  pushKioskBank(scroll, fixed, random);
   // Scrolling quads FIRST: the per-frame upload is one range at the start.
   const mesh = finish([scroll.quads, fixed], false);
   return {

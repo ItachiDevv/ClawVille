@@ -16,6 +16,7 @@ import {
   resolveTradingFloorInteraction,
   tradingFloorDistanceSq,
   tradingFloorHitsSolid,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_MONITOR,
   TRADING_FLOOR_MONITOR_FRONT_Z,
@@ -455,5 +456,26 @@ describe('Trading Floor frame loop allocates nothing', () => {
           !line.includes('new THREE.InstancedMesh'),
       );
     expect(offenders).toEqual([]);
+  });
+});
+
+
+describe('R4 terminal size and derived interaction volumes', () => {
+  test('the procedural footprint and height derive the label, click volume and camera solid', () => {
+    const monitor = TRADING_FLOOR_MONITOR;
+    expect(monitor).toEqual({x: -1000, z: 1570, rotY: Math.PI, halfX: 240, halfZ: 70,
+      height: 360, screenY: 259, interactRadius: 380, nearHintRadius: 760});
+    expect(TRADING_FLOOR_MONITOR_FRONT_Z).toBe(1500);
+    expect([monitor.x, monitor.height + 20, monitor.z]).toEqual([-1000, 380, 1570]);
+    expect([monitor.x, monitor.height / 2, TRADING_FLOOR_MONITOR_FRONT_Z]).toEqual([-1000, 180, 1500]);
+    expect([monitor.halfX * 2 + 120, monitor.height, monitor.halfZ * 2 + 160]).toEqual([600, 360, 300]);
+    expect(TRADING_FLOOR_CAMERA_KIOSK_SOLID).toEqual({centerX: -1000, centerZ: 2287.5, halfX: 240, halfZ: 787.5});
+    const arming = createTradingFloorArming();
+    computeTradingFloorArming(-1000, 1434, arming);
+    expect(tradingFloorHitsSolid(-1000, 1434)).toBe(false);
+    expect(arming.monitorArmed).toBe(true);
+    expect(arming.doorArmed).toBe(false);
+    computeTradingFloorArming(TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z, arming);
+    expect(arming.monitorHint).toBe(false);
   });
 });
