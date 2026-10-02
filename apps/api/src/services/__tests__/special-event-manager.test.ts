@@ -38,7 +38,9 @@ import {
 } from '../special-event-manager';
 import {
   TournamentError,
+  SpecialEventClaimLostError,
   type CreateTournamentConfig,
+  type CreateTournamentOptions,
   type CreateTournamentResult,
   type RegisterSubject,
   type RegisterResult,
@@ -528,6 +530,14 @@ class FakeTM {
   onCancel: ((tournamentId: string) => void) | null = null;
   /** db.txDepth at each cancelAndRefundOrphan call (lock-order assertions). */
   cancelTxDepths: number[] = [];
+  /** The options each createTournament call received (claim pass-through). */
+  createOpts: CreateTournamentOptions[] = [];
+  /** Runs inside createTournament before its tx (a stalled start; race injection). */
+  beforeCreateTx: (() => Promise<void>) | null = null;
+  /** Runs at the top of cancelAndRefundOrphan, before its status checks. */
+  beforeCancel: ((tournamentId: string) => void) | null = null;
+  /** Cancels the status guard refused (the tournament moved past the caller's read). */
+  refusedCancels: string[] = [];
   /** The shared FakeDb, so the manager's SQL sees these tournaments. */
   db: FakeDb | null = null;
   private seq = 0;
@@ -535,10 +545,27 @@ class FakeTM {
   async createTournament(
     config: CreateTournamentConfig,
     createdBy: string | null,
+    opts: CreateTournamentOptions = {},
   ): Promise<CreateTournamentResult> {
     this.createCalls += 1;
+    this.createOpts.push(opts);
+    // Same up-front validation as the real TM: an event-linked create needs the claim.
+    const claimId = opts.specialEventStartClaimId ?? null;
+    if (config.specialEventId && claimId == null) {
+      throw new TournamentError('special_event_start_claim_required', 400);
+    }
     // Yield so a concurrent start can interleave (the real create does DB I/O).
     await Promise.resolve();
+    // A start that stalls here (before the create tx) while a reconcile runs.
+    if (this.beforeCreateTx) await this.beforeCreateTx();
+    // The real TM's first statement in the create tx: lock the event row and
+    // require 'starting' under the caller's claim, BEFORE the seed debit.
+    if (config.specialEventId) {
+      const ev = this.db?.events.get(String(config.specialEventId));
+      if (!ev || ev.status !== 'starting' || ev.start_claim_id !== claimId) {
+        throw new SpecialEventClaimLostError();
+      }
+    }
     if (this.createError) throw this.createError;
     // Model `poker_tournaments_special_event_active_unique` (migration 0075).
     if (
@@ -607,12 +634,22 @@ class FakeTM {
       tableCount: 1,
     };
   }
-  async cancelAndRefundOrphan(tournamentId: string): Promise<number> {
+  async cancelAndRefundOrphan(
+    tournamentId: string,
+    opts: { onlyIfStatusIn?: readonly string[] } = {},
+  ): Promise<number> {
     this.cancelCalls += 1;
     this.cancelTxDepths.push(this.db?.txDepth ?? 0);
+    this.beforeCancel?.(tournamentId);
     const row = this.db?.tournaments.get(tournamentId);
     // Same terminal guard as the real TM: completed/cancelled → idempotent no-op.
     if (row && (row.status === 'completed' || row.status === 'cancelled')) return 0;
+    // Same status guard as the real TM (checked under its row lock): a row whose
+    // current status is outside `onlyIfStatusIn` is left as it is, no refund.
+    if (row && opts.onlyIfStatusIn && !opts.onlyIfStatusIn.includes(String(row.status))) {
+      this.refusedCancels.push(tournamentId);
+      return 0;
+    }
     if (row) row.status = 'cancelled';
     if (!this.cancelled.includes(tournamentId)) this.cancelled.push(tournamentId);
     this.onCancel?.(tournamentId);
@@ -1245,6 +1282,57 @@ describe('SpecialEventManager — start recovery + guarded final flip (Codex BLO
     expect(ev.status).toBe('live');
     expect(tm.cancelCalls).toBe(0);
   });
+
+  // Codex BLOCKING (security batch 2): a start that stalls before its create tx
+  // must not insert a seeded tournament after a stale reconcile reopened the event.
+  it('late insert after a stale reconcile reopened the event: claim lost, nothing created, signups stay open', async () => {
+    const { mgr, tm, db, ev, clock } = await setup('late-insert');
+    tm.beforeCreateTx = async () => {
+      tm.beforeCreateTx = null;
+      // The start stalls past the stale window; the worker tick finds no linked
+      // tournament and reopens the event (Step 1 none → Step 3 reopen).
+      clock.t += STALE;
+      expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 1, reconciled: 1, failed: 0 });
+      expect(ev.status).toBe('signup_open');
+    };
+
+    await expect(mgr.closeSignupAndStart('late-insert')).rejects.toMatchObject({
+      name: 'SpecialEventError',
+      message: 'event_start_claim_lost',
+      httpStatus: 409,
+    });
+    expect(tm.createCalls).toBe(1);
+    expect(tm.created).toHaveLength(0);
+    expect(db.tournaments.size).toBe(0);
+    expect(tm.registered).toHaveLength(0);
+    expect(tm.started).toHaveLength(0);
+    // Nothing was debited, so nothing is cancelled or refunded.
+    expect(tm.cancelCalls).toBe(0);
+    expect(ev.status).toBe('signup_open');
+    expect(ev.start_claim_id).toBeNull();
+
+    // The operator retries; the new claim inserts normally.
+    const retry = await mgr.closeSignupAndStart('late-insert');
+    expect(retry.status).toBe('live');
+    expect(tm.created).toHaveLength(1);
+    expect(ev.status).toBe('live');
+  });
+
+  it('the start passes its OWN claim to the create, and that claim inserts', async () => {
+    const { mgr, tm, ev } = await setup('own-claim');
+    let claimAtCreate: unknown = null;
+    tm.beforeCreateTx = async () => {
+      claimAtCreate = ev.start_claim_id;
+    };
+
+    const result = await mgr.closeSignupAndStart('own-claim');
+
+    expect(typeof claimAtCreate).toBe('string');
+    expect(tm.createOpts).toEqual([{ specialEventStartClaimId: claimAtCreate as string }]);
+    expect(result.tournamentId).toBe(tm.created[0]!.id);
+    expect(tm.created[0]!.config.specialEventId).toBe(ev.id as string);
+    expect(ev.status).toBe('live');
+  });
 });
 
 describe('SpecialEventManager — reconcile lock order: TM cancel outside the event lock (security batch 2)', () => {
@@ -1274,8 +1362,9 @@ describe('SpecialEventManager — reconcile lock order: TM cancel outside the ev
 
     expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 1, reconciled: 1, failed: 0 });
 
-    // The cancel ran between the two event locks, outside every transaction, so a
-    // concurrent createTournament that holds the treasury lock can finish.
+    // The cancel ran between the two event locks, outside every transaction, so
+    // the event lock is never held while the cancel takes the tournament and
+    // treasury rows.
     expect(tm.cancelTxDepths).toEqual([0]);
     expect(locksAtCancel).toBe(1);
     const recon = db.statements.filter(
@@ -1376,6 +1465,25 @@ describe('SpecialEventManager — reconcile lock order: TM cancel outside the ev
     expect(await done.mgr.reconcileStartingEvent(String(done.ev.id), { claimId: 'dead-claim' })).toBe('completed');
     expect(done.ev.status).toBe('completed');
     expect(done.ev.start_claim_id).toBeNull();
+  });
+
+  // Codex SHOULD-FIX (security batch 2): step 2 acts on a snapshot taken under a
+  // released lock. The cancel is limited to registering/seating and re-checked
+  // under the tournament row lock, so a tournament that started since is kept.
+  it('a snapshot tournament that reached running before the cancel is NOT cancelled; the event maps to live', async () => {
+    const { mgr, tm, db, ev } = await staleStarting('started-before-cancel');
+    tm.beforeCancel = (tournamentId) => {
+      db.tournaments.get(tournamentId)!.status = 'running';
+    };
+
+    expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 1, reconciled: 1, failed: 0 });
+
+    expect(tm.cancelCalls).toBe(1);
+    expect(tm.refusedCancels).toEqual(['t-reg']);
+    expect(tm.cancelled).toEqual([]);
+    expect(db.tournaments.get('t-reg')!.status).toBe('running');
+    expect(ev.status).toBe('live');
+    expect(ev.start_claim_id).toBeNull();
   });
 });
 

@@ -31,6 +31,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import {
   TournamentManager,
+  SpecialEventClaimLostError,
   computePrizes,
   computeBustPlacements,
   validatePayoutCurve,
@@ -186,6 +187,10 @@ class FakeDb {
   hands = new Map<string, Row>(); // key = `${tableId}:${handNumber}`
   results = new Map<string, Row>(); // key = `${tournamentId}:${avatarId}`
   blindSchedules = new Map<string, Row>();
+  /** special_events parents (only the create-time claim guard reads them). */
+  events = new Map<string, Row>();
+  /** Every statement's normalized text, in order (lock-order assertions). */
+  statements: string[] = [];
 
   // Drizzle-style query API the route uses (not the TM) — minimal stub.
   query = {};
@@ -203,10 +208,16 @@ class FakeDb {
   async execute<T = Row>(q: SQL): Promise<T[]> {
     assertNoDateParams(q);
     const { text, params } = renderSql(q);
+    this.statements.push(text);
     return this.dispatch(text, params) as T[];
   }
 
   private dispatch(text: string, p: unknown[]): Row[] {
+    // ── special_events (createTournament claim guard, security batch 2) ──────
+    if (text === 'SELECT status, start_claim_id FROM special_events WHERE id = ? FOR UPDATE') {
+      const e = this.events.get(String(p[0]));
+      return e ? [{ status: e.status, start_claim_id: e.start_claim_id ?? null }] : [];
+    }
     // ── poker_tournaments ────────────────────────────────────────────────────
     if (text.startsWith('SELECT id, status, buy_in_ct, max_entrants, prize_pool_ct, registration_closes_at FROM poker_tournaments WHERE id = ?')) {
       const t = this.tournaments.get(String(p[0]));
@@ -550,6 +561,9 @@ class FakeDb {
       cancelled_at: null,
       ...row,
     });
+  }
+  seedEvent(id: string, status: string, startClaimId: string | null): void {
+    this.events.set(id, { id, status, start_claim_id: startClaimId });
   }
   seedBlindSchedule(id: string, levels: BlindLevel[]): void {
     this.blindSchedules.set(id, { id, levels_json: levels });
@@ -1477,10 +1491,15 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
   let ledger: FakeLedger;
   let clock: FakeClock;
 
+  // The special-event start that owns 'event-1' (security batch 2 claim guard).
+  const CLAIM = '11111111-1111-4111-8111-111111111111';
+  const CLAIM_OPTS = { specialEventStartClaimId: CLAIM };
+
   beforeEach(() => {
     db = new FakeDb();
     ledger = new FakeLedger();
     clock = new FakeClock();
+    db.seedEvent('event-1', 'starting', CLAIM);
   });
 
   const prepaidConfig = (seed: number | string) => ({
@@ -1504,7 +1523,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
     const { tm } = buildManager(db, ledger, clock);
     ledger.setBalance(TREASURY_AVATAR, 7000);
 
-    const created = await tm.createTournament(prepaidConfig(5000), 'admin-avatar-1');
+    const created = await tm.createTournament(prepaidConfig(5000), 'admin-avatar-1', CLAIM_OPTS);
 
     expect(created.prizePoolCt).toBe('5000');
     const row = db.tournaments.get(created.id)!;
@@ -1525,7 +1544,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
     const { tm } = buildManager(db, ledger, clock);
     ledger.setBalance(TREASURY_AVATAR, 4999);
 
-    await expect(tm.createTournament(prepaidConfig('5000'), null)).rejects.toMatchObject({
+    await expect(tm.createTournament(prepaidConfig('5000'), null, CLAIM_OPTS)).rejects.toMatchObject({
       name: 'TournamentError',
       message: 'house_treasury_insufficient_for_seed',
       httpStatus: 402,
@@ -1544,7 +1563,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
       resolveTreasuryAvatarId: async () => null,
     });
 
-    await expect(tm.createTournament(prepaidConfig(5000), null)).rejects.toMatchObject({
+    await expect(tm.createTournament(prepaidConfig(5000), null, CLAIM_OPTS)).rejects.toMatchObject({
       message: 'house_treasury_unavailable',
       httpStatus: 503,
     });
@@ -1556,7 +1575,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
     const { tm } = buildManager(db, ledger, clock);
     ledger.setBalance(TREASURY_AVATAR, 100);
 
-    const glory = await tm.createTournament(prepaidConfig(0), null);
+    const glory = await tm.createTournament(prepaidConfig(0), null, CLAIM_OPTS);
     const buyIn = await tm.createTournament(
       { name: 'Buy-in MTT', buyInCt: 100, minEntrants: 2, maxEntrants: 9, startingStack: 1500 },
       null,
@@ -1571,7 +1590,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
   it('start-trigger cancel (floor not met) credits the seed back to the treasury exactly once', async () => {
     const { tm } = buildManager(db, ledger, clock);
     ledger.setBalance(TREASURY_AVATAR, 5000);
-    const created = await tm.createTournament(prepaidConfig(5000), null);
+    const created = await tm.createTournament(prepaidConfig(5000), null, CLAIM_OPTS);
     await register(tm, created.id, 'av-lonely');
 
     const res = await tm.startTrigger(created.id, { force: true });
@@ -1594,7 +1613,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
   it('orphan/abort cancel credits the seed back to the treasury exactly once', async () => {
     const { tm } = buildManager(db, ledger, clock);
     ledger.setBalance(TREASURY_AVATAR, 3000);
-    const created = await tm.createTournament(prepaidConfig(3000), null);
+    const created = await tm.createTournament(prepaidConfig(3000), null, CLAIM_OPTS);
     await register(tm, created.id, 'av-a');
     await register(tm, created.id, 'av-b');
     db.tournaments.get(created.id)!.status = 'running';
@@ -1621,6 +1640,116 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
     await tm.cancelAndRefundOrphan(tid);
     expect(db.tournaments.get(tid)!.status).toBe('cancelled');
     expect(ledger.credits).toHaveLength(0);
+  });
+
+  // ── Security batch 2: the special-event INSERT is claim-guarded ─────────────
+
+  const EVENT_LOCK = 'SELECT status, start_claim_id FROM special_events WHERE id = ? FOR UPDATE';
+
+  it('late insert after the event reopened: claim-lost BEFORE the seed debit, no CT, no row', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    ledger.setBalance(TREASURY_AVATAR, 7000);
+    // A stale-claim reconcile found no tournament and reopened the event while
+    // this start's create was still on its way.
+    db.seedEvent('event-1', 'signup_open', null);
+
+    await expect(tm.createTournament(prepaidConfig(5000), null, CLAIM_OPTS)).rejects.toMatchObject({
+      name: 'SpecialEventClaimLostError',
+      message: 'special_event_start_claim_lost',
+      httpStatus: 409,
+    });
+    await expect(tm.createTournament(prepaidConfig(5000), null, CLAIM_OPTS)).rejects.toBeInstanceOf(
+      SpecialEventClaimLostError,
+    );
+    expect(db.tournaments.size).toBe(0);
+    expect(ledger.debits).toHaveLength(0);
+    expect(ledger.get(TREASURY_AVATAR)).toBe(7000);
+    expect(db.events.get('event-1')!.status).toBe('signup_open');
+    expect(db.statements).toContain(EVENT_LOCK);
+  });
+
+  it('an event re-claimed by a NEW start refuses the old claim (seeded or 0-seed)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    ledger.setBalance(TREASURY_AVATAR, 7000);
+    db.seedEvent('event-1', 'starting', '22222222-2222-4222-8222-222222222222');
+
+    for (const seed of [5000, 0]) {
+      await expect(
+        tm.createTournament(prepaidConfig(seed), null, CLAIM_OPTS),
+      ).rejects.toBeInstanceOf(SpecialEventClaimLostError);
+    }
+    expect(db.tournaments.size).toBe(0);
+    expect(ledger.debits).toHaveLength(0);
+    expect(db.events.get('event-1')!.start_claim_id).toBe('22222222-2222-4222-8222-222222222222');
+  });
+
+  it('the owning claim inserts; lock order = event row, then treasury debit, then INSERT', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    ledger.setBalance(TREASURY_AVATAR, 7000);
+    const realDebit = ledger.debitClawTokens;
+    ledger.debitClawTokens = async (input, tx) => {
+      db.statements.push(`LEDGER DEBIT ${input.avatarId}`);
+      return realDebit(input, tx);
+    };
+
+    const created = await tm.createTournament(prepaidConfig(5000), null, CLAIM_OPTS);
+
+    expect(created.specialEventId).toBe('event-1');
+    expect(db.tournaments.get(created.id)!.special_event_id).toBe('event-1');
+    expect(ledger.get(TREASURY_AVATAR)).toBe(2000);
+    const lockAt = db.statements.indexOf(EVENT_LOCK);
+    const debitAt = db.statements.indexOf(`LEDGER DEBIT ${TREASURY_AVATAR}`);
+    const insertAt = db.statements.findIndex((s) => s.startsWith('INSERT INTO poker_tournaments'));
+    expect(lockAt).toBeGreaterThanOrEqual(0);
+    expect(lockAt).toBeLessThan(debitAt);
+    expect(debitAt).toBeLessThan(insertAt);
+  });
+
+  it('an event-linked create needs the claim; a claim needs an event (400, nothing moves)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    ledger.setBalance(TREASURY_AVATAR, 7000);
+
+    await expect(tm.createTournament(prepaidConfig(5000), null)).rejects.toMatchObject({
+      message: 'special_event_start_claim_required',
+      httpStatus: 400,
+    });
+    await expect(
+      tm.createTournament({ ...prepaidConfig(5000), specialEventId: null }, null, CLAIM_OPTS),
+    ).rejects.toMatchObject({ message: 'special_event_start_claim_without_event', httpStatus: 400 });
+    expect(db.tournaments.size).toBe(0);
+    expect(ledger.debits).toHaveLength(0);
+  });
+
+  it('a standalone (non-event) MTT create is unchanged: no special_events read, no claim', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const created = await tm.createTournament(
+      { name: 'Buy-in MTT', buyInCt: 100, minEntrants: 2, maxEntrants: 9, startingStack: 1500 },
+      null,
+    );
+    expect(created.specialEventId).toBeNull();
+    expect(db.tournaments.get(created.id)!.status).toBe('registering');
+    expect(db.statements.some((s) => s.includes('special_events'))).toBe(false);
+  });
+
+  it("cancel with onlyIfStatusIn refuses a tournament that reached 'running' (no refund)", async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    ledger.setBalance(TREASURY_AVATAR, 3000);
+    const created = await tm.createTournament(prepaidConfig(3000), null, CLAIM_OPTS);
+    await register(tm, created.id, 'av-a');
+    await register(tm, created.id, 'av-b');
+    db.tournaments.get(created.id)!.status = 'running';
+
+    const preRunning = ['registering', 'seating'] as const;
+    expect(await tm.cancelAndRefundOrphan(created.id, { onlyIfStatusIn: preRunning })).toBe(0);
+    expect(db.tournaments.get(created.id)!.status).toBe('running');
+    expect(ledger.credits).toHaveLength(0);
+    expect(ledger.get(TREASURY_AVATAR)).toBe(0);
+
+    // Still 'registering' → the same narrowed cancel runs and refunds the seed once.
+    db.tournaments.get(created.id)!.status = 'registering';
+    expect(await tm.cancelAndRefundOrphan(created.id, { onlyIfStatusIn: preRunning })).toBe(2);
+    expect(db.tournaments.get(created.id)!.status).toBe('cancelled');
+    expect(ledger.totalCredited('special_event_seed_refund')).toBe(3000);
   });
 });
 

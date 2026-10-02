@@ -371,6 +371,19 @@ export interface CreateTournamentConfig {
   specialEventId?: string | null;
 }
 
+/** Per-call options for `createTournament` (not part of the money config). */
+export interface CreateTournamentOptions {
+  /**
+   * The special-event start claim (`special_events.start_claim_id`) of the
+   * caller. REQUIRED when `config.specialEventId` is set, and refused without
+   * it. The create tx locks the event row and inserts only while the event is
+   * still 'starting' under THIS claim; otherwise it throws
+   * `SpecialEventClaimLostError` before the seed debit (security batch 2).
+   * Omitted for a standalone MTT (no behavior change).
+   */
+  specialEventStartClaimId?: string | null;
+}
+
 export interface CreateTournamentResult {
   id: string;
   name: string;
@@ -612,10 +625,13 @@ export class TournamentManager {
    *   the `created_by` audit column (FK to avatars, `set null` on delete) so there is
    *   a durable record of who stood up a money-config tournament. Null when the
    *   creator has no avatar (dash-cookie admin path) or for a system/boot create.
+   * @param opts `specialEventStartClaimId` — required with `config.specialEventId`
+   *   (see CreateTournamentOptions); omitted for a standalone MTT.
    */
   async createTournament(
     config: CreateTournamentConfig,
     createdByAvatarId: string | null,
+    opts: CreateTournamentOptions = {},
   ): Promise<CreateTournamentResult> {
     // ── Validate (crash-loud — never a silent clamp on a money config) ──────────
     const name = (config.name ?? '').trim();
@@ -680,6 +696,14 @@ export class TournamentManager {
       registrationClosesAt == null ? null : new Date(registrationClosesAt).toISOString();
 
     const specialEventId = config.specialEventId ?? null;
+    const startClaimId = opts.specialEventStartClaimId ?? null;
+    // An event-linked insert is ALWAYS claim-guarded (below), so it needs the claim.
+    if (specialEventId != null && startClaimId == null) {
+      throw new TournamentError('special_event_start_claim_required', 400);
+    }
+    if (specialEventId == null && startClaimId != null) {
+      throw new TournamentError('special_event_start_claim_without_event', 400);
+    }
 
     // ── Resolve the blind schedule (seed default OR verify the referenced row) ──
     let blindScheduleId = config.blindScheduleId;
@@ -708,6 +732,40 @@ export class TournamentManager {
 
     // ── Debit the seed + insert (status 'registering', prizePoolCt = seed) ──────
     const row = await this.db.transaction(async (tx) => {
+      // ── Special-event claim guard (security batch 2) ──────────────────────────
+      // Lock the parent event row FIRST and insert only while it is still
+      // 'starting' under the caller's claim. Without it, a start that stalled
+      // before this tx could insert a seeded tournament AFTER the stale-claim
+      // reconcile had found none and reopened signups. A lost claim throws here,
+      // before the seed debit, so the tx moves no CT and inserts no row. The lock
+      // is held to commit, so a reconcile or flip that locks the event either
+      // runs before this tx (we see its write and stop) or after it (it sees our
+      // tournament). FOR UPDATE, not FOR SHARE: same cost, and no shared-lock
+      // upgrade path; the INSERT's FK KEY SHARE on this row is then already held.
+      //
+      // LOCK ORDER (every path that takes more than one of these rows):
+      //   createTournament (event start): special_events → house-treasury avatar
+      //     (seed debit) → the new poker_tournaments row (INSERT);
+      //   SpecialEventManager.flipStartToLive: special_events → poker_tournaments;
+      //   reconcileStartingEvent: special_events only (each step commits before
+      //     the TM cancel runs);
+      //   cancelAndRefundOrphan / startTrigger cancel: poker_tournaments →
+      //     entrant avatars + house-treasury avatar (refunds), no event lock;
+      //   settleTournament: poker_tournaments → prize avatars + house-treasury
+      //     avatar (rake); the parent-event callback runs after that tx commits.
+      // special_events is always taken first and never while a tournament or
+      // treasury row is held, so no cycle exists.
+      if (specialEventId != null) {
+        const eventRows = await tx.execute<{ status: string; start_claim_id: string | null }>(
+          sql`SELECT status, start_claim_id FROM special_events
+              WHERE id = ${specialEventId} FOR UPDATE`,
+        );
+        const ev = eventRows[0];
+        if (!ev || ev.status !== 'starting' || ev.start_claim_id !== startClaimId) {
+          throw new SpecialEventClaimLostError();
+        }
+      }
+
       if (treasuryAvatarId) {
         try {
           await this.ledger.debitClawTokens(
@@ -2135,9 +2193,21 @@ export class TournamentManager {
    * tournament → cancelled. Under the FOR UPDATE row lock so two pods can't double
    * refund. Returns the number of entrants refunded.
    *
+   * STATUSES ACCEPTED (checked under the row lock): by default ANY non-terminal
+   * status ('registering', 'seating', 'running'). A terminal row ('completed',
+   * 'cancelled', or settled_at / cancelled_at set) is an idempotent no-op that
+   * returns 0. `opts.onlyIfStatusIn` narrows this: a row whose CURRENT status is
+   * not in the list is left as it is (no refund, no seed credit) and returns 0.
+   * A caller that decided to cancel from an earlier, unlocked read (the special-
+   * event start reconcile) passes ['registering','seating'] so a tournament that
+   * reached 'running' since that read is never cancelled.
+   *
    * Public so the abort-notification path + a test can drive it directly.
    */
-  async cancelAndRefundOrphan(tournamentId: string): Promise<number> {
+  async cancelAndRefundOrphan(
+    tournamentId: string,
+    opts: { onlyIfStatusIn?: readonly string[] } = {},
+  ): Promise<number> {
     return this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<{
         id: string;
@@ -2152,6 +2222,10 @@ export class TournamentManager {
       if (!t) return 0;
       // Already terminal (settled or cancelled) → idempotent no-op.
       if (t.settled_at || t.cancelled_at || t.status === 'completed' || t.status === 'cancelled') {
+        return 0;
+      }
+      // The caller's read is stale (e.g. the tournament started since): refuse.
+      if (opts.onlyIfStatusIn && !opts.onlyIfStatusIn.includes(t.status)) {
         return 0;
       }
 
@@ -2649,6 +2723,19 @@ export class TournamentError extends Error {
   ) {
     super(message);
     this.name = 'TournamentError';
+  }
+}
+
+/**
+ * A special-event create found the parent event no longer 'starting' under the
+ * caller's claim (another reconcile or start took it over). Thrown inside the
+ * create tx BEFORE the seed debit: nothing was debited and no row was inserted,
+ * so the caller has nothing to refund (security batch 2).
+ */
+export class SpecialEventClaimLostError extends TournamentError {
+  constructor() {
+    super('special_event_start_claim_lost', 409);
+    this.name = 'SpecialEventClaimLostError';
   }
 }
 
