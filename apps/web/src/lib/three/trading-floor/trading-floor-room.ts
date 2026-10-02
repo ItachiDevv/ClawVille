@@ -3,7 +3,7 @@
  *
  * Pure geometry + camera constants for the Trading Floor INTERIOR.
  *
- * Deliberately dependency-free (no `three`, no React, no tilemap): the stage
+ * Renderer-independent (no `three`, no React, no tilemap): the stage
  * root imports `TRADING_FLOOR_CAMERA_FAR` / `TRADING_FLOOR_FOG` eagerly to
  * build its slot definition, and must not drag the interior chunk into the
  * boot bundle for a handful of numbers. Cove solved the same problem by
@@ -20,6 +20,8 @@
  * hall's 1425 wu ceiling is ~5.3x avatar height — a trading hall, not a
  * crawlspace.
  */
+
+import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
 
 /** Stage slot id. Must equal `TRADING_FLOOR_SCENE_ID` in stage-scene-id.ts. */
 export const TRADING_FLOOR_SCENE_ID = 'trading-floor';
@@ -612,6 +614,67 @@ export const TRADING_FLOOR_SEATS: readonly TradingFloorSeat[] = Object.freeze(
   }),
 );
 
+/** P15 stage: board half-width + 25 wu per side; 370 wu from the board approach. */
+const HOUSE_AGENT_STAGE_BOARD_MARGIN = 25;
+const HOUSE_AGENT_STAGE_DEPTH = 370;
+const HOUSE_AGENT_WALL_STANDOFF = 300;
+const HOUSE_AGENT_Z = -(TRADING_FLOOR_ROOM.halfZ - HOUSE_AGENT_WALL_STANDOFF);
+const HOUSE_AGENT_STAGE_HALF_X = TRADING_FLOOR_SCREEN.width / 2 + HOUSE_AGENT_STAGE_BOARD_MARGIN;
+export const TRADING_FLOOR_HOUSE_AGENT_STAGE = Object.freeze({
+  minX: -HOUSE_AGENT_STAGE_HALF_X,
+  maxX: HOUSE_AGENT_STAGE_HALF_X,
+  minZ: TRADING_FLOOR_BOARD_APPROACH_Z,
+  maxZ: TRADING_FLOOR_BOARD_APPROACH_Z + HOUSE_AGENT_STAGE_DEPTH,
+});
+
+/** Template order, centred at (count - 1)/2 with board width/count spacing. Facing 0 is +Z. */
+export const TRADING_FLOOR_HOUSE_AGENT_SPOTS: readonly {
+  readonly index: number; readonly x: number; readonly z: number; readonly facing: number;
+}[] = Object.freeze(FLOOR_ARENA_TEMPLATES.map((_, index) => Object.freeze({
+  index,
+  x: (index - (FLOOR_ARENA_TEMPLATES.length - 1) / 2) *
+    TRADING_FLOOR_SCREEN.width / FLOOR_ARENA_TEMPLATES.length,
+  z: HOUSE_AGENT_Z,
+  facing: 0,
+})));
+export const TRADING_FLOOR_HOUSE_AGENT_WALKUP_RADIUS = 250;
+export const TRADING_FLOOR_HOUSE_AGENT_HEIGHT = 270;
+export const TRADING_FLOOR_HOUSE_AGENT_LABEL_Y = 345;
+export const TRADING_FLOOR_HOUSE_AGENT_HALF_X = 70;
+/** Close the rear strip: spot Z - board approach - player radius + 2 wu. */
+export const TRADING_FLOOR_HOUSE_AGENT_HALF_Z = HOUSE_AGENT_Z -
+  TRADING_FLOOR_BOARD_APPROACH_Z - TRADING_FLOOR_PLAYER_RADIUS + 2;
+/** Movement only: camera blockers here caused 9,516 near-stage jumps in the spec sweep. */
+export const TRADING_FLOOR_HOUSE_AGENT_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
+  TRADING_FLOOR_HOUSE_AGENT_SPOTS.map((spot) => Object.freeze({
+    centerX: spot.x, centerZ: spot.z,
+    halfX: TRADING_FLOOR_HOUSE_AGENT_HALF_X, halfZ: TRADING_FLOOR_HOUSE_AGENT_HALF_Z,
+  })),
+);
+
+/** Hide the mesh near the camera or across the camera-to-body sightline. Zero allocation. */
+export function tradingFloorHouseAgentHidden(
+  index: number, camX: number, camY: number, camZ: number, bodyX: number, bodyZ: number,
+): boolean {
+  const spot = TRADING_FLOOR_HOUSE_AGENT_SPOTS[index];
+  if (!spot) return false;
+  const dx = spot.x - camX, dz = spot.z - camZ;
+  const clearance = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
+  if (Math.abs(dx) < TRADING_FLOOR_HOUSE_AGENT_HALF_X + clearance &&
+      Math.abs(dz) < TRADING_FLOOR_HOUSE_AGENT_HALF_Z + clearance &&
+      camY < TRADING_FLOOR_HOUSE_AGENT_HEIGHT + clearance) return true;
+
+  const segmentX = bodyX - camX, segmentZ = bodyZ - camZ;
+  const lengthSq = segmentX * segmentX + segmentZ * segmentZ;
+  // Restrict the segment to heights <= the agent, then find its closest XZ point.
+  const minT = camY > TRADING_FLOOR_HOUSE_AGENT_HEIGHT ?
+    (camY - TRADING_FLOOR_HOUSE_AGENT_HEIGHT) / (camY - TRADING_FLOOR_CAMERA.lookY) : 0;
+  const t = Math.max(minT, Math.min(1,
+    lengthSq > 0 ? (dx * segmentX + dz * segmentZ) / lengthSq : 0));
+  const offsetX = dx - segmentX * t, offsetZ = dz - segmentZ * t;
+  return offsetX * offsetX + offsetZ * offsetZ <= 45 * 45;
+}
+
 /**
  * Axis-aligned solid volumes the player cannot walk through. Taken from the
  * GLB's placed props; the wall clamp is handled separately by the room bounds.
@@ -668,6 +731,7 @@ export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
   TRADING_FLOOR_DAIS_SOLID,
   TRADING_FLOOR_KIOSK_SOLID,
   ...TRADING_FLOOR_PILLAR_SOLIDS,
+  ...TRADING_FLOOR_HOUSE_AGENT_SOLIDS,
 ]);
 
 /** Extend the wall-backed kiosk through the door wall; exclude the low plinth. */
