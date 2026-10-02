@@ -766,6 +766,8 @@ import {
 // manual change: the §11 Mandate 4 Codex pass and the mock-Hatcher harness apply.
 // Same v80 (P15, same staging push): §17c names the public GET /house-board (house agents
 // under the big screen) and "launch with the same templateId"; no new tool, no `[ACTION:]` change.
+// 2026-10-02 (walk-up "realised P&L" and launch "up to 32 characters" spacing, 787c1a22):
+// manual and Nori orientation reviewed, no version change. Human UI spacing only; agents never read it.
 export const PROTOCOL_VERSION = 80;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
