@@ -58,6 +58,7 @@ import {
   tournamentManager as realTournamentManager,
   TournamentManager,
   TournamentError,
+  SpecialEventClaimLostError,
   type CreateTournamentResult,
   type RegisterSubject,
 } from './poker/tournament-manager';
@@ -655,7 +656,9 @@ export class SpecialEventManager {
    *   2. Create a PREPAID tournament (`buyInCt: 0`, `seedPrizePoolCt` from
    *      prize_config_json, `specialEventId = event.id`) — the link is the FK on
    *      the tournament (dependency points UP). The TournamentManager debits the
-   *      seed from the HOUSE TREASURY in its create tx (security M3).
+   *      seed from the HOUSE TREASURY in its create tx (security M3), after it
+   *      locks the event row and re-checks our claim: a lost claim inserts
+   *      nothing and moves no CT ('event_start_claim_lost', 409).
    *   3. Register every confirmed signup as an entrant. The tournament buyIn is 0,
    *      so `registerEntrant` SKIPS the per-entrant debit (entry was already
    *      settled at the event layer — no double-charge).
@@ -762,8 +765,18 @@ export class SpecialEventManager {
           specialEventId: event.id,
         },
         event.created_by,
+        // The TM inserts only while the event is still 'starting' under THIS
+        // claim (it locks the event row first), so a create that runs after a
+        // stale-claim reconcile reopened the event inserts nothing.
+        { specialEventStartClaimId: claimId },
       );
     } catch (err) {
+      if (err instanceof SpecialEventClaimLostError) {
+        // Another reconcile or start owns the event now. The TM threw before its
+        // seed debit and rolled back, so there is nothing to refund or cancel,
+        // and the event is not ours to reconcile.
+        throw new SpecialEventError('event_start_claim_lost', 409);
+      }
       // Normally nothing was created (the TM create tx rolled back, seed debit
       // included). The reconcile also covers an ambiguous commit or a pre-0075
       // linked tournament: it cancels a registering one (seed refunded) and
@@ -854,9 +867,9 @@ export class SpecialEventManager {
    * cancel takes the tournament row lock (FOR UPDATE), so the status check and
    * the flip are atomic against it: a cancel either commits first (the check
    * sees 'cancelled', no flip) or waits until the flip commits (the event is
-   * live; `reconcileOrphanedLiveEvent` then reopens it). The event-then-
-   * tournament order matches `reconcileStartingEvent` (event lock held while the
-   * TM cancel locks the tournament), so the two paths cannot deadlock.
+   * live; `reconcileOrphanedLiveEvent` then reopens it). The event row is the
+   * first lock here, as in every path that takes it (see the LOCK ORDER note in
+   * `TournamentManager.createTournament`), so the paths cannot deadlock.
    * Returns true only when exactly one event row flipped.
    */
   private async flipStartToLive(
@@ -945,12 +958,14 @@ export class SpecialEventManager {
    *   - none → 'signup_open'.
    *
    * Lock order (security batch 2): the event row lock is never held across a TM
-   * cancel. A concurrent createTournament for this event holds the house-treasury
-   * avatar lock and waits for KEY SHARE on the event row (FK), and the TM cancel
-   * needs that treasury lock to refund the seed: a cross-connection wait cycle
-   * that Postgres cannot detect. So the work runs in three steps:
+   * cancel (tournament row → refund avatars + house treasury), so the event lock
+   * stays short and is never waited on while those rows are held. The work runs
+   * in three steps:
    *   1. tx: lock the event, check the claim, read the linked tournaments, commit;
-   *   2. no event lock: cancel the registering/seating ones through the TM;
+   *   2. no event lock: cancel the registering/seating ones through the TM. The
+   *      TM cancel re-reads the status under the tournament row lock and, with
+   *      `onlyIfStatusIn: ['registering','seating']`, refuses (no refund) a
+   *      tournament that reached 'running' since step 1;
    *   3. tx: re-lock the event, re-check that it still holds the SAME claim,
    *      re-read the linked tournaments, and write the outcome with a CAS on
    *      status + claim (the same UPDATE clears the claim).
@@ -961,6 +976,11 @@ export class SpecialEventManager {
    * while an uncancelled seeded tournament links to the event. A failed TM cancel
    * throws with the event still 'starting'; the next reconcile retries, and the
    * cancel is idempotent, so no path moves CT twice.
+   *
+   * A start that has not yet inserted its tournament when step 3 reopens the
+   * event cannot insert one later: `createTournament` locks the event row and
+   * requires 'starting' + the start's own claim before its seed debit, and step
+   * 3 cleared that claim (Codex BLOCKING, security batch 2).
    */
   async reconcileStartingEvent(
     eventId: string,
@@ -972,8 +992,7 @@ export class SpecialEventManager {
       start_claim_id: string | null;
       start_claimed_at: Date | string | null;
     };
-    const isPreRunning = (t: { status: string }) =>
-      t.status === 'registering' || t.status === 'seating';
+    const isPreRunning = (t: { status: string }) => PRE_RUNNING_STATUSES.includes(t.status);
 
     // Step 1 (tx): lock, check the claim, snapshot the linked tournaments.
     const snapshot = await this.db.transaction(async (tx) => {
@@ -1001,9 +1020,16 @@ export class SpecialEventManager {
     if (typeof snapshot === 'string') return snapshot;
 
     // Step 2 (no event lock): each TM cancel is its own tx under the tournament
-    // row lock, and refunds the seed exactly once.
+    // row lock, and refunds the seed exactly once. The snapshot is stale once
+    // step 1 commits, so the cancel re-checks the status under that lock: by
+    // default it accepts any non-terminal status (running included), and
+    // `onlyIfStatusIn` limits it to the pre-running ones we decided on. A
+    // tournament that started since step 1 is left running; step 3 maps the
+    // event to live.
     for (const t of snapshot.linked) {
-      if (isPreRunning(t)) await this.tm.cancelAndRefundOrphan(t.id);
+      if (isPreRunning(t)) {
+        await this.tm.cancelAndRefundOrphan(t.id, { onlyIfStatusIn: PRE_RUNNING_STATUSES });
+      }
     }
 
     // Step 3 (tx): re-lock, re-check the claim, decide from the CURRENT linked
@@ -1353,6 +1379,9 @@ export const SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT = 100_000;
  * every path conserving (security M4, 2026-09-30).
  */
 export const SPECIAL_EVENT_START_CLAIM_STALE_MS = 10 * 60_000;
+
+/** Linked-tournament statuses a start reconcile cancels (before the field plays). */
+const PRE_RUNNING_STATUSES: readonly string[] = ['registering', 'seating'];
 
 export type StartReconcileOutcome =
   | 'not_starting'
