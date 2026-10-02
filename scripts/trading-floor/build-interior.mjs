@@ -39,8 +39,8 @@
 
 import { Document, NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, KHRMaterialsUnlit } from '@gltf-transform/extensions';
-import { prune, dedup, weldPrimitive } from '@gltf-transform/functions';
-import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
+import { prune, dedup, weldPrimitive, simplify, weld } from '@gltf-transform/functions';
+import { MeshoptDecoder, MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer';
 import draco3d from 'draco3d';
 import sharp from 'sharp';
 import { execFileSync } from 'node:child_process';
@@ -1380,21 +1380,29 @@ async function buildSeaLife() {
     min: [0, 1, 2].map((a) => Math.min(...geo.pos.filter((_, i) => i % 3 === a))),
     max: [0, 1, 2].map((a) => Math.max(...geo.pos.filter((_, i) => i % 3 === a))),
   });
-  const load = async (path, upright = false) => {
+  await MeshoptSimplifier.ready;
+  const load = async (path, upright = true) => {
     const source = await io.read(resolve(REPO_ROOT, 'apps/web/public/models', path));
-    return sculptClaw(mergeGeos(source.getRoot().listNodes().filter((n) => n.getMesh()).flatMap((node) => {
+    const sourceTriangles = source.getRoot().listMeshes().reduce((sum, mesh) => sum + mesh.listPrimitives().reduce((n, prim) => n + (prim.getIndices()?.getCount() ?? prim.getAttribute('POSITION').getCount()) / 3, 0), 0);
+    // Strip UV seams before simplification; these copies use baked vertex colours.
+    for (const mesh of source.getRoot().listMeshes()) for (const prim of mesh.listPrimitives())
+      for (const semantic of prim.listSemantics()) if (semantic !== 'POSITION') prim.setAttribute(semantic, null);
+    await source.transform(weld(),simplify({simplifier: MeshoptSimplifier, ratio: 220 / sourceTriangles, error: 1, lockBorder: false}));
+    if (upright) for (const node of source.getRoot().listNodes().filter(n=>n.getMesh()))
+      node.setRotation([-Math.SQRT1_2,0,0,Math.SQRT1_2]);
+    let geo = sculptClaw(mergeGeos(source.getRoot().listNodes().filter((n) => n.getMesh()).flatMap((node) => {
       const m = node.getWorldMatrix();
       const c = [[m[0],m[1],m[2]], [m[4],m[5],m[6]], [m[8],m[9],m[10]]];
       const cof = [cross(c[1],c[2]), cross(c[2],c[0]), cross(c[0],c[1])];
       const det = c[0].reduce((sum,v,a) => sum+v*cof[0][a],0);
       if (Math.abs(det) < 1e-12) throw new Error('sea-life source has a singular transform');
-      const rotate = ([x,y,z]) => upright ? [x,z,-y] : [x,y,z];
+      const rotate = ([x,y,z]) => [x,y,z];
       return node.getMesh().listPrimitives().map((prim) => {
         const pos = [], nrm = [];
         const pa = prim.getAttribute('POSITION'), na = prim.getAttribute('NORMAL');
-        if (!pa || !na) throw new Error('sea-life source needs positions and normals');
+        if (!pa) throw new Error('sea-life source needs positions');
         for (let i=0;i<pa.getCount();i++) {
-          const p = pa.getElement(i,[]), n = na.getElement(i,[]);
+          const p = pa.getElement(i,[]), n = na?.getElement(i,[]) ?? [0,1,0];
           pos.push(...rotate([0,1,2].map((a) => m[12+a]+c.reduce((sum,col,j) => sum+col[a]*p[j],0))));
           const normal = rotate([0,1,2].map((a) => cof.reduce((sum,col,j) => sum+col[a]*n[j],0)/det));
           const length = Math.hypot(...normal);
@@ -1405,6 +1413,15 @@ async function buildSeaLife() {
         return {pos,nrm,idx};
       });
     })));
+    if (!upright) {
+      const b = bounds(geo), spans = b.max.map((v,a) => v-b.min[a]);
+      if (spans[2] > spans[1]) {
+        for (const values of [geo.pos,geo.nrm]) for (let i=0;i<values.length;i+=3) [values[i+1],values[i+2]]=[values[i+2],-values[i+1]];
+      }
+    }
+    if (geo.idx.length/3 > 250 || geo.idx.length/3 < 150) throw new Error(`${path} simplification outside 150..250 triangles: ${geo.idx.length/3}`);
+    console.log(`  sea-life source ${path}: ${sourceTriangles} -> ${geo.idx.length/3} tris; upright bounds ${JSON.stringify(bounds(geo))}`);
+    return geo;
   };
   const stamp = (source, x, y, z, size, rgb, yaw=0) => {
     const b = bounds(source), scale = size.map((v,a) => v/(b.max[a]-b.min[a]));
@@ -1450,60 +1467,94 @@ async function buildSeaLife() {
     const length=Math.hypot(...star.nrm.slice(i,i+3));
     for (let j=0;j<3;j++) star.nrm[i+j]/=length;
   }
+  // Four curved, tapered ribbon blades, each double-sided: 48 triangles.
+  const tuft = {pos:[],nrm:[],idx:[]};
+  for (let blade=0;blade<4;blade++) {
+    const yaw=blade*2.39996, co=Math.cos(yaw), si=Math.sin(yaw);
+    for (const side of [1,-1]) {
+      const offset=tuft.pos.length/3;
+      for (let row=0;row<=3;row++) {
+        const t=row/3, width=.11*(1-t)+.009, bend=.17*t*t;
+        for (const edge of [-1,1]) {
+          const x=edge*width+bend, z=.035*blade+.09*t*t;
+          tuft.pos.push(co*x+si*z,t*(.76+.08*blade),-si*x+co*z);
+          tuft.nrm.push(si*side,0,co*side);
+        }
+      }
+      for (let row=0;row<3;row++) {
+        const a=offset+row*2;
+        if (side===1) tuft.idx.push(a,a+1,a+3,a,a+3,a+2);
+        else tuft.idx.push(a,a+3,a+1,a,a+2,a+3);
+      }
+    }
+  }
   const coralNames=['brain','fan','staghorn','tubes'];
-  const corals=await Promise.all(coralNames.map((name)=>load(`kelp-corals/coral-${name}.glb`,name!=='brain')));
-  const kelp=await load('kelp.glb');
+  const corals=await Promise.all(coralNames.map((name)=>load(`kelp-corals/coral-${name}.glb`,true)));
+  const kelp=await load('kelp.glb',false);
   const geos=[], seaLife=[];
-  const register = (kind,x,z,parts,exempt) => {
-    const geo=mergeGeos(parts), b=bounds(geo), height=b.max[1]-b.min[1];
-    const overlap = (minX,maxX,minZ,maxZ) => b.max[0]>minX && b.min[0]<maxX && b.max[2]>minZ && b.min[2]<maxZ;
-    if (overlap(-1300,1300,-1470,-1100) || overlap(-1300,-700,1300,1650))
-      throw new Error('sea life intrudes into stage or kiosk approach');
-    for (let i=0;i<geo.pos.length;i+=3) {
-      const r=Math.hypot(geo.pos[i],geo.pos[i+2]-DAIS_POS[2]);
-      if (r>=570 && r<=900) throw new Error('sea life intrudes into seal annulus');
+  let seed=0x52ea10;
+  const random=()=>{ seed=(Math.imul(seed,1664525)+1013904223)>>>0; return seed/4294967296; };
+  const overlap=(b,minX,maxX,minZ,maxZ)=>b.max[0]>minX && b.min[0]<maxX && b.max[2]>minZ && b.min[2]<maxZ;
+  const circleDistance=(b,x,z)=>Math.hypot(Math.max(b.min[0]-x,0,x-b.max[0]),Math.max(b.min[2]-z,0,z-b.max[2]));
+  const clear=(b,kind)=>{
+    if (b.max[1]>140 || b.min[1]<0 || b.min[0]<-1560 || b.max[0]>1560 || b.min[2]<-1470 || b.max[2]>1570) return false;
+    if (overlap(b,-1300,1300,-1470,-950) || overlap(b,-1300,-700,1300,1650) || overlap(b,-300,300,1250,1650)) return false;
+    if (circleDistance(b,0,1170)<200) return false;
+    for (const row of [-1000,-500,0,500,1000])
+      if ((b.min[0]<-1380 || b.max[0]>1380) && b.max[2]>row-182 && b.min[2]<row+182) return false;
+    if (circleDistance(b,0,-90)<900) {
+      // Flat stars may occupy the moat between the plinth and square rope line.
+      if (kind!=='starfish' || b.max[1]>5 || Math.max(Math.abs(b.min[0]),Math.abs(b.max[0]))>470 || Math.max(Math.abs(b.min[2]+90),Math.abs(b.max[2]+90))>466) return false;
+      if (overlap(b,-350,350,-436,256)) return false;
     }
-    if (b.max[1]>300) throw new Error('sea-life height exceeds 300 wu');
-    if (kind!=='starfish') {
-      if (Math.min(Math.abs(b.min[0]),Math.abs(b.max[0]))<1590 || Math.max(Math.abs(b.min[0]),Math.abs(b.max[0]))>1900)
-        throw new Error('sea-life cluster leaves the unreachable side strip');
-      for (const row of [-1000,-500,0,500,1000]) if (b.max[2]>row-182 && b.min[2]<row+182)
-        throw new Error('sea-life cluster intersects a desk row');
-    }
-    // Project every top/outline point, as the statue check does, at all spawn heights.
-    for (const camY of [140,260,410]) for (let i=0;i<geo.pos.length;i+=3) {
-      const t=(1638-SCREEN_Z)/(1638-geo.pos[i+2]);
-      if (Math.abs(geo.pos[i]*t)<=SCREEN_W/2 && camY+(geo.pos[i+1]-camY)*t>SCREEN_BOTTOM_Y)
-        throw new Error('sea life occludes the board from spawn');
-    }
-    boxRegistry.push({group:'sea life',exempt,min:b.min,max:b.max});
-    seaLife.push({kind,x,z,height,min:b.min,max:b.max});
+    return true;
+  };
+  const register=(kind,x,z,geo,cluster)=>{
+    const b=bounds(geo), height=b.max[1]-b.min[1];
+    if (!clear(b,kind)) throw new Error('sea-life exclusion violation');
+    if (kind!=='starfish' && (height<b.max[0]-b.min[0] || height<b.max[2]-b.min[2])) throw new Error('sea-life tallest baked axis must be Y');
+    boxRegistry.push({group:'sea life',exempt:'walk-through sea-floor decoration; no collider',min:b.min,max:b.max});
+    seaLife.push({kind,x,z,height,min:b.min,max:b.max,triangles:geo.idx.length/3,cluster});
     geos.push(geo);
   };
-  const slots=[[-1740,-750,0],[-1740,-250,1],[-1740,750,2],[1740,-750,3],[1740,250,1],[1740,750,2]];
-  const palette=[0xff7f6e,0xffa45c,0x9b5de5,0xe86a86];
-  for (const [index,[x,z,type]] of slots.entries()) {
-    const source=corals[type], b=bounds(source);
-    const scale=Math.min([92,150,185,175][type]/(b.max[1]-b.min[1]),105/(b.max[2]-b.min[2]),150/(b.max[0]-b.min[0]));
-    const size=b.max.map((v,a)=>(v-b.min[a])*scale);
-    const parts=[stamp(source,x,0,z,size,linear(palette[type]))];
-    const weedX=x+Math.sign(x)*115;
-    parts.push(stamp(kelp,weedX,0,z-18,[44,190+index*10,38],linear(index%2?0x80b943:0x5e963b)));
-    if (index===1 || index===4) parts.push(stamp(kelp,weedX-20*Math.sign(x),0,z+24,[30,165,27],linear(0x91c94c)));
-    register(`coral-${coralNames[type]}+kelp`,x,z,parts,'unreachable side strip beyond player clamp x1589');
+  const coralPalette=[0xff7f6e,0xffa45c,0x9b5de5,0xe86a86];
+  const weedPalette=[0x65a743,0x86b951,0x4c8c68,0xabc765];
+  const makePiece=(kind,index,x,z)=>{
+    const source=kind==='seaweed-tuft'?tuft:kind==='kelp'?kelp:kind==='starfish'?star:corals[index%4];
+    const height=kind==='starfish'?4.2:kind==='seaweed-tuft'?40+random()*70:40+random()*98;
+    const b=bounds(source), spans=b.max.map((v,a)=>v-b.min[a]);
+    const factor=height/spans[1];
+    const width=kind==='starfish'?34+random()*32:Math.min(spans[0]*factor*(.8+random()*.3),height*.62);
+    const depth=kind==='starfish'?width:Math.min(spans[2]*factor*(.8+random()*.3),height*.62);
+    const palette=kind==='starfish'?[0xff8f42,0xe86a32,0xffb65b]:kind.startsWith('coral')?coralPalette:weedPalette;
+    const color=linear(palette[index%palette.length]).map(v=>v*(.85+random()*.15));
+    return stamp(source,x,kind==='starfish'?.3:0,z,[width,height,depth],color,random()*Math.PI*2);
+  };
+  // Fixed moat starfish first, so the random scatter's overlap check avoids them.
+  for (const [index,[x,z]] of [[-414,-160],[416,35],[-75,315],[110,-490]].entries())
+    register('starfish',x,z,makePiece('starfish',index,x,z),null);
+  // Seeded Poisson rejection with a few short-range satellites produces singles and small clusters.
+  const kinds=[...Array(50).fill('seaweed-tuft'),...Array(6).fill('kelp'),...Array.from({length:16},(_,i)=>`coral-${coralNames[i%4]}`),...Array(10).fill('starfish')];
+  for (const [index,kind] of kinds.entries()) {
+    let placed=false;
+    for (let attempt=0;attempt<20000;attempt++) {
+      const cluster=index%7===1 && seaLife.length>0 && attempt<50;
+      const anchor=seaLife[Math.max(0,index-1)], angle=random()*Math.PI*2;
+      const distance=135+random()*30;
+      const x=cluster?anchor.x+Math.cos(angle)*distance:-1490+random()*2980;
+      const z=cluster?anchor.z+Math.sin(angle)*distance:-1370+random()*2790;
+      if (seaLife.some(p=>Math.hypot(p.x-x,p.z-z)<(cluster?130:160))) continue;
+      const geo=makePiece(kind,index,x,z), b=bounds(geo);
+      if (!clear(b,kind) || seaLife.some(p=>overlap(b,p.min[0]-.5,p.max[0]+.5,p.min[2]-.5,p.max[2]+.5))) continue;
+      register(kind,x,z,geo,cluster?index-1:null); placed=true; break;
+    }
+    if (!placed) throw new Error(`sea-floor scatter exhausted at piece ${index}`);
   }
-  for (const [x,z,radius] of [[-412,-150,28],[414,25,25],[-80,316,30],[100,-494,26],[1680,-250,22],[-1680,750,24]]) {
-    register('starfish',x,z,[stamp(star,x,.3,z,[radius*2,4.2,radius*2],linear(x<0?0xff8f42:0xe86a32),.17)],
-      Math.abs(x)<500?'inside future rope collider moat; flat, under the water, walk-over':'flat, under the water, walk-over');
-  }
-  // Right desk at z500: local x120,z10, yaw -pi/2; walnut surface is y132.
-  register('starfish',CONSOLE_WALL_X-10,620,[stamp(star,CONSOLE_WALL_X-10,132,620,[48,4.2,48],linear(0xff9a42),.3)],
-    'inside existing desk collider; world-placed on walnut desktop');
   const material=mat('TradingFloorSeaLifeMtl',[1,1,1],{rough:.7,metal:0}).setEmissiveFactor([.018,.012,.006]);
   const node=addMesh('TradingFloorSeaLife',mergeGeos(geos),material);
   const prim=node.getMesh().listPrimitives()[0];
   weldPrimitive(prim);
-  if (prim.getAttribute('POSITION').getCount()>16000 || prim.getIndices().getCount()/3>16000)
+  if (prim.getAttribute('POSITION').getCount()>16000 || prim.getIndices().getCount()/3>12000)
     throw new Error('sea-life welded vertex/triangle budget exceeded');
   console.log(`  sea life: ${prim.getIndices().getCount()/3} tris, ${prim.getAttribute('POSITION').getCount()} welded vertices; ${JSON.stringify(seaLife)}`);
   return seaLife;

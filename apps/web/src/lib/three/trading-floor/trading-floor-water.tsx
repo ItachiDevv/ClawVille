@@ -7,11 +7,17 @@ import { CURRENT_WORLD_DEVICE_PROFILE } from '../device-class';
 import {
   TRADING_FLOOR_WATER_ALPHA,
   TRADING_FLOOR_WATER_BOUNDS,
+  TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR,
+  TRADING_FLOOR_WATER_FLOW_DIRECTION,
+  TRADING_FLOOR_WATER_FLOW_SPEED,
   TRADING_FLOOR_WATER_GRAZING_ALPHA,
   TRADING_FLOOR_WATER_GRAZING_COLOR,
   TRADING_FLOOR_WATER_GRAZING_DOT,
   TRADING_FLOOR_WATER_HIGHLIGHT_COLOR,
   TRADING_FLOOR_WATER_RENDER_ORDER,
+  TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR,
+  TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION,
+  TRADING_FLOOR_WATER_SECONDARY_FLOW_SPEED,
   TRADING_FLOOR_WATER_SHIMMER_ALPHA,
   TRADING_FLOOR_WATER_STEEP_COLOR,
   TRADING_FLOOR_WATER_STEEP_DOT,
@@ -50,22 +56,30 @@ export function createTradingFloorWater(lowTier: boolean, motion = uniform(1)) {
   material.opacityNode = alpha;
 
   if (!lowTier) {
-    // Three bent crest families, ~153 / 102 / 109 wu apart, anchored in world XZ.
-    // Soft bands span ~15-25 wu, rather than subpixel sparkles at the spawn.
-    const x = positionWorld.x;
-    const z = positionWorld.z;
-    const w1 = sin(x.mul(0.036).add(z.mul(0.020)).add(time.mul(0.22)));
-    const w2 = sin(x.mul(-0.021).add(z.mul(0.058)).sub(time.mul(0.17)).add(w1.mul(0.65)));
-    const w3 = sin(x.mul(0.057).add(z.mul(0.010)).add(time.mul(0.12)).add(w2.mul(0.45)));
+    // Sample p - velocity * time: the crests travel from the door toward -Z.
+    // Each layer carries its own bends, with a small GPU-only phase wobble.
+    const primaryTravel = time.mul(TRADING_FLOOR_WATER_FLOW_SPEED);
+    const x = positionWorld.x.sub(primaryTravel.mul(TRADING_FLOOR_WATER_FLOW_DIRECTION.x));
+    const z = positionWorld.z.sub(primaryTravel.mul(TRADING_FLOOR_WATER_FLOW_DIRECTION.z));
+    const secondaryTravel = time.mul(TRADING_FLOOR_WATER_SECONDARY_FLOW_SPEED);
+    const x2 = positionWorld.x.sub(secondaryTravel.mul(TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION.x));
+    const z2 = positionWorld.z.sub(secondaryTravel.mul(TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION.z));
+    const wobble = sin(time.mul(0.45)).mul(0.12);
+    // Three broad crest families across two separately advected layers.
+    const w1 = sin(x.mul(TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR.x)
+      .add(z.mul(TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR.z)).add(sin(z.mul(0.008)).mul(0.65)).add(wobble));
+    const w2 = sin(x2.mul(-0.021).add(z2.mul(0.058)).add(sin(x2.mul(0.012)).mul(0.65)).sub(wobble));
+    const w3 = sin(x.mul(TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR.x)
+      .add(z.mul(TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR.z)).add(w1.mul(0.45)));
     const crests = smoothstep(0.85, 0.985, w1).mul(0.50)
       .add(smoothstep(0.85, 0.985, w2).mul(0.32))
       .add(smoothstep(0.85, 0.985, w3).mul(0.18));
     // Strongest on the mid floor; fade at the horizon to avoid thin far bands.
-    const visibility = mix(float(0.15), float(1), grazing)
+    const visibility = mix(float(0.55), float(1), grazing)
       .mul(smoothstep(0.06, 0.18, normalDotView));
     const shimmer = crests.mul(visibility).mul(motion);
     material.colorNode = mix(tint, color(TRADING_FLOOR_WATER_HIGHLIGHT_COLOR), shimmer.mul(0.85));
-    // Near-floor alpha <= 0.126; even overlapping far crests stay <= 0.50.
+    // Near-floor alpha <= 0.142; even overlapping far crests stay <= 0.50.
     material.opacityNode = alpha.add(shimmer.mul(TRADING_FLOOR_WATER_SHIMMER_ALPHA));
   }
 

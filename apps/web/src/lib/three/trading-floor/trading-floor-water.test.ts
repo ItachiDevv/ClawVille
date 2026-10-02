@@ -16,10 +16,16 @@ import {
 import {
   TRADING_FLOOR_WATER_ALPHA,
   TRADING_FLOOR_WATER_BOUNDS,
+  TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR,
+  TRADING_FLOOR_WATER_FLOW_DIRECTION,
+  TRADING_FLOOR_WATER_FLOW_SPEED,
   TRADING_FLOOR_WATER_GRAZING_ALPHA,
   TRADING_FLOOR_WATER_GRAZING_COLOR,
   TRADING_FLOOR_WATER_GRAZING_DOT,
   TRADING_FLOOR_WATER_RENDER_ORDER,
+  TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR,
+  TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION,
+  TRADING_FLOOR_WATER_SECONDARY_FLOW_SPEED,
   TRADING_FLOOR_WATER_SHIMMER_ALPHA,
   TRADING_FLOOR_WATER_STEEP_COLOR,
   TRADING_FLOOR_WATER_STEEP_DOT,
@@ -43,6 +49,37 @@ function graphHasNode(mesh: ReturnType<typeof createTradingFloorWater>, uuid: st
 }
 
 describe('Trading Floor shallow water', () => {
+  test('pins two steady floor flows toward the board at distinct angles and speeds', () => {
+    expect(TRADING_FLOOR_WATER_FLOW_SPEED).toBe(58);
+    expect(TRADING_FLOOR_WATER_FLOW_DIRECTION).toEqual({ x: 0, z: -1 });
+    expect(TRADING_FLOOR_WATER_SECONDARY_FLOW_SPEED).toBe(44);
+    expect(TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION).toEqual({ x: 0.28, z: -0.96 });
+    for (const direction of [TRADING_FLOOR_WATER_FLOW_DIRECTION, TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION]) {
+      expect(Math.hypot(direction.x, direction.z)).toBeCloseTo(1, 8);
+      expect(direction.z).toBeLessThan(0);
+    }
+    const component = readFileSync(new URL('./trading-floor-water.tsx', import.meta.url), 'utf8');
+    expect(component).toContain('time.mul(TRADING_FLOOR_WATER_FLOW_SPEED)');
+    expect(component).toContain('time.mul(TRADING_FLOOR_WATER_SECONDARY_FLOW_SPEED)');
+    expect(component).toContain('positionWorld.z.sub(primaryTravel.mul(TRADING_FLOOR_WATER_FLOW_DIRECTION.z))');
+    expect(component).toContain('positionWorld.z.sub(secondaryTravel.mul(TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION.z))');
+  });
+
+  test('primary crest normals keep apparent flow toward the board', () => {
+    expect(TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR).toEqual({ x: 0.014, z: 0.040 });
+    expect(TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR).toEqual({ x: 0.010, z: 0.057 });
+    const direction = TRADING_FLOOR_WATER_FLOW_DIRECTION;
+    for (const wave of [TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR, TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR]) {
+      const alignment = Math.abs(wave.x * direction.x + wave.z * direction.z) / Math.hypot(wave.x, wave.z);
+      expect(alignment).toBeGreaterThan(0.85);
+    }
+    const component = readFileSync(new URL('./trading-floor-water.tsx', import.meta.url), 'utf8');
+    for (const wave of ['RIPPLE', 'CAUSTIC']) {
+      expect(component).toContain(`x.mul(TRADING_FLOOR_WATER_${wave}_WAVE_VECTOR.x)`);
+      expect(component).toContain(`z.mul(TRADING_FLOOR_WATER_${wave}_WAVE_VECTOR.z)`);
+    }
+  });
+
   test('Fresnel alpha keeps the near seal clear and the far floor reflective', () => {
     expect(TRADING_FLOOR_WATER_ALPHA).toBeGreaterThanOrEqual(0.10);
     expect(TRADING_FLOOR_WATER_ALPHA).toBeLessThanOrEqual(0.15);
@@ -157,7 +194,7 @@ describe('Trading Floor shallow water', () => {
       expect(mesh.renderOrder).toBe(TRADING_FLOOR_WATER_RENDER_ORDER);
       expect(mesh.renderOrder).toBeGreaterThan(-1);
       expect(mesh.renderOrder).toBeLessThan(0);
-      expect(TRADING_FLOOR_WATER_ALPHA + TRADING_FLOOR_WATER_SHIMMER_ALPHA * 0.15).toBeLessThanOrEqual(0.15);
+      expect(TRADING_FLOOR_WATER_ALPHA + TRADING_FLOOR_WATER_SHIMMER_ALPHA * 0.55).toBeLessThanOrEqual(0.15);
     } finally { disposeWater(mesh); }
   });
 

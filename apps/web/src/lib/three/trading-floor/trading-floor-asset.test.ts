@@ -716,7 +716,7 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
     const chair = doc.getRoot().listMaterials().find((material) => material.getName() === 'TradingFloorChair')!;
     expect(chair.getRoughnessFactor()).toBe(0.48);
     expect(chair.getMetallicFactor()).toBe(0.18);
-    expect(readFileSync(GLB_PATH).byteLength).toBeLessThanOrEqual(650000);
+    expect(readFileSync(GLB_PATH).byteLength).toBeLessThanOrEqual(500000);
     const total = doc.getRoot().listMeshes().flatMap((mesh) => mesh.listPrimitives())
       .reduce((sum, primitive) => sum + primitive.getIndices()!.getCount() / 3, 0);
     expect(total).toBeLessThanOrEqual(32000);
@@ -1397,16 +1397,17 @@ describe('Trading Floor asset - frozen R3 rope ring', () => {
   });
 });
 
-describe('Trading Floor asset - W2 sea life', () => {
-  type SeaLife = { kind: string; x: number; z: number; height: number; min: Point; max: Point };
-  const pieces = async () => {
-    const doc = await decodedAsset;
-    return doc.getRoot().getDefaultScene()!.getExtras().seaLife as SeaLife[];
-  };
+describe('Trading Floor asset - W2 sea floor', () => {
+  type SeaLife = { kind: string; x: number; z: number; height: number; min: Point; max: Point; triangles: number; cluster: number | null };
+  const pieces = async () => (await decodedAsset).getRoot().getDefaultScene()!.getExtras().seaLife as SeaLife[];
   const contains = (p: Point, piece: SeaLife) => p.every((v, a) =>
     v >= piece.min[a]! - .15 && v <= piece.max[a]! + .15);
+  const overlap = (p: SeaLife, minX: number, maxX: number, minZ: number, maxZ: number) =>
+    p.max[0] > minX && p.min[0] < maxX && p.max[2] > minZ && p.min[2] < maxZ;
+  const circleDistance = (p: SeaLife, x: number, z: number) => Math.hypot(
+    Math.max(p.min[0] - x, 0, x - p.max[0]), Math.max(p.min[2] - z, 0, z - p.max[2]));
 
-  test('one lit material and indexed vertex colours add exactly one draw call', async () => {
+  test('one lit indexed vertex-colour draw stays within the welded triangle and byte budgets', async () => {
     const { primitive, vertices } = await assetVertices('TradingFloorSeaLife');
     const node = (await decodedAsset).getRoot().listNodes().find((n) => n.getName() === 'TradingFloorSeaLife')!;
     expect(node.getMesh()!.listPrimitives()).toHaveLength(1);
@@ -1419,91 +1420,103 @@ describe('Trading Floor asset - W2 sea life', () => {
     expect(material.getEmissiveFactor().some((v) => v > 0)).toBe(true);
     expect(primitive.getAttribute('COLOR_0')!.getCount()).toBe(vertices.length);
     const triangles = primitive.getIndices()!.getCount() / 3;
-    expect(triangles).toBe(15202);
+    expect(triangles).toBeLessThanOrEqual(12000);
+    expect(triangles).toBe((await pieces()).reduce((sum, piece) => sum + piece.triangles, 0));
     expect(vertices.length).toBeLessThanOrEqual(16000);
-    expect(vertices.length).toBeLessThan(triangles * 1.1);
+    expect(vertices.length).toBeLessThan(triangles * 3);
+    expect(readFileSync(GLB_PATH).byteLength).toBeLessThanOrEqual(500000);
     expect(new Set(vertices.map(({ color }) => color!.map((v) => v.toFixed(2)).join(','))).size).toBeGreaterThan(50);
   });
 
-  test('thirteen measured placements cover every decoded vertex and triangle', async () => {
+  test('75..95 scattered pieces cover every decoded vertex and triangle with upright low plants', async () => {
     const list = await pieces();
-    expect(list).toHaveLength(13);
-    expect(list.filter((p) => p.kind !== 'starfish').map(({ x, z }) => [x, z])).toEqual([
-      [-1740, -750], [-1740, -250], [-1740, 750], [1740, -750], [1740, 250], [1740, 750],
-    ]);
-    expect(list.filter((p) => p.kind === 'starfish')).toHaveLength(7);
+    expect(list.length).toBeGreaterThanOrEqual(75);
+    expect(list.length).toBeLessThanOrEqual(95);
+    const stars = list.filter((p) => p.kind === 'starfish');
+    expect(stars.length).toBeGreaterThanOrEqual(10);
+    expect(stars.length).toBeLessThanOrEqual(14);
+    expect(list.filter((p) => p.kind === 'seaweed-tuft').length).toBeGreaterThan(list.length / 2);
+    expect(list.some((p) => p.kind === 'kelp')).toBe(true);
+    for (const kind of ['brain', 'fan', 'staghorn', 'tubes']) expect(list.some((p) => p.kind === `coral-${kind}`)).toBe(true);
     const { vertices, primitive } = await assetVertices('TradingFloorSeaLife');
+    const indices = primitive.getIndices()!.getArray()!;
     for (const piece of list) {
       const measured = vertices.filter(({ p }) => contains(p, piece));
-      expect(measured.length).toBeGreaterThan(30);
-      for (const a of [0, 1, 2]) {
-        expect(Math.abs(Math.min(...measured.map(({ p }) => p[a]!)) - piece.min[a]!)).toBeLessThan(.15);
-        expect(Math.abs(Math.max(...measured.map(({ p }) => p[a]!)) - piece.max[a]!)).toBeLessThan(.15);
+      expect(measured.length).toBeGreaterThan(20);
+      const spans = [0, 1, 2].map((a) => {
+        const lo = Math.min(...measured.map(({ p }) => p[a]!)), hi = Math.max(...measured.map(({ p }) => p[a]!));
+        expect(Math.abs(lo - piece.min[a]!)).toBeLessThan(.15);
+        expect(Math.abs(hi - piece.max[a]!)).toBeLessThan(.15);
+        return hi - lo;
+      });
+      expect(Math.abs(spans[1]! - piece.height)).toBeLessThan(.3);
+      expect(piece.min[1]).toBeGreaterThanOrEqual(0);
+      expect(piece.max[1]).toBeLessThanOrEqual(140);
+      if (piece.kind === 'starfish') {
+        expect(piece.max[1]).toBeLessThanOrEqual(5);
+        expect(piece.triangles).toBe(120);
+      } else {
+        expect(piece.height).toBeGreaterThanOrEqual(40);
+        // Decode actual positions rather than trusting metadata or authoring orientation.
+        expect(spans[1]!).toBeGreaterThan(spans[0]!);
+        expect(spans[1]!).toBeGreaterThan(spans[2]!);
+        if (piece.kind === 'seaweed-tuft') {
+          expect(piece.triangles).toBeGreaterThanOrEqual(30);
+          expect(piece.triangles).toBeLessThanOrEqual(60);
+          expect(piece.height).toBeLessThanOrEqual(110);
+        } else {
+          expect(piece.triangles).toBeGreaterThanOrEqual(150);
+          expect(piece.triangles).toBeLessThanOrEqual(250);
+        }
       }
-      expect(Math.abs(Math.max(...measured.map(({ p }) => p[1])) - Math.min(...measured.map(({ p }) => p[1])) - piece.height)).toBeLessThan(.3);
-      expect(piece.height).toBeLessThanOrEqual(300);
-      if (piece.kind !== 'starfish') expect(piece.height).toBeGreaterThanOrEqual(80);
-    }
-    for (const vertex of vertices) expect(list.filter((p) => contains(vertex.p, p))).toHaveLength(1);
-    const indices = primitive.getIndices()!.getArray()!;
-    for (let i = 0; i < indices.length; i += 3) {
-      const triangle = [0, 1, 2].map((a) => vertices[indices[i + a]!]!.p);
-      expect(list.some((p) => triangle.every((v) => contains(v, p)))).toBe(true);
-    }
-    for (const piece of list.filter((p) => p.kind === 'starfish')) {
       let triangles = 0;
       for (let i = 0; i < indices.length; i += 3)
         if ([0, 1, 2].every((a) => contains(vertices[indices[i + a]!]!.p, piece))) triangles++;
-      expect(triangles).toBe(120);
+      expect(triangles).toBe(piece.triangles);
     }
+    for (const vertex of vertices) expect(list.filter((p) => contains(vertex.p, p))).toHaveLength(1);
+    for (let i = 0; i < indices.length; i += 3)
+      expect(list.some((p) => [0, 1, 2].every((a) => contains(vertices[indices[i + a]!]!.p, p)))).toBe(true);
   });
 
-  test('clusters clear desks and ribs; starfish stay in the moat, strips or one desktop', async () => {
-    const list = await pieces();
-    const overlap = (p: SeaLife, minX: number, maxX: number, minZ: number, maxZ: number) =>
-      p.max[0] > minX && p.min[0] < maxX && p.max[2] > minZ && p.min[2] < maxZ;
-    for (const piece of list) {
-      expect(overlap(piece, -1300, 1300, -1470, -1100)).toBe(false);
+  test('full piece bounds clear the seal text, stage front, desks, kiosk, door and spawn', async () => {
+    for (const piece of await pieces()) {
+      expect(overlap(piece, -1300, 1300, -1470, -950)).toBe(false);
       expect(overlap(piece, -1300, -700, 1300, 1650)).toBe(false);
-      expect(overlap(piece, -230, 230, 1470, 1650)).toBe(false);
-      if (piece.kind !== 'starfish') {
-        expect(Math.min(Math.abs(piece.min[0]), Math.abs(piece.max[0]))).toBeGreaterThan(1589);
-        expect(Math.max(Math.abs(piece.min[0]), Math.abs(piece.max[0]))).toBeLessThan(1900);
-        for (const slot of TRADING_FLOOR_CONSOLE_ROW) {
-          const half = consoleHalfExtents(slot.rotY);
-          expect(overlap(piece, slot.x - half.halfX, slot.x + half.halfX, slot.z - half.halfZ, slot.z + half.halfZ)).toBe(false);
-        }
-        for (const pillar of TRADING_FLOOR_PILLAR_SOLIDS)
-          expect(overlap(piece, pillar.centerX - pillar.halfX, pillar.centerX + pillar.halfX,
-            pillar.centerZ - pillar.halfZ, pillar.centerZ + pillar.halfZ)).toBe(false);
-      } else if (piece.min[1] < 1) {
-        expect(piece.min[1]).toBeGreaterThanOrEqual(0);
+      expect(overlap(piece, -300, 300, 1250, 1650)).toBe(false);
+      expect(circleDistance(piece, 0, 1170)).toBeGreaterThanOrEqual(200);
+      for (const row of [-1000, -500, 0, 500, 1000])
+        if (piece.min[0] < -1380 || piece.max[0] > 1380)
+          expect(piece.max[2] <= row - 182 || piece.min[2] >= row + 182).toBe(true);
+      for (const pillar of TRADING_FLOOR_PILLAR_SOLIDS)
+        expect(overlap(piece, pillar.centerX - pillar.halfX, pillar.centerX + pillar.halfX,
+          pillar.centerZ - pillar.halfZ, pillar.centerZ + pillar.halfZ)).toBe(false);
+      if (circleDistance(piece, 0, -90) < 900) {
+        expect(piece.kind).toBe('starfish');
         expect(piece.max[1]).toBeLessThanOrEqual(5);
-        if (Math.abs(piece.x) < 500) {
-          expect(Math.max(Math.abs(piece.min[0]), Math.abs(piece.max[0])) <= 470 &&
-            Math.max(Math.abs(piece.min[2] + 90), Math.abs(piece.max[2] + 90)) <= 466).toBe(true);
-          expect(piece.min[0] > 350 || piece.max[0] < -350 || piece.min[2] > 256 || piece.max[2] < -436).toBe(true);
-        } else expect(Math.min(Math.abs(piece.min[0]), Math.abs(piece.max[0]))).toBeGreaterThan(1589);
+        expect(Math.max(Math.abs(piece.min[0]), Math.abs(piece.max[0]))).toBeLessThanOrEqual(470);
+        expect(Math.max(Math.abs(piece.min[2] + 90), Math.abs(piece.max[2] + 90))).toBeLessThanOrEqual(466);
+        expect(overlap(piece, -350, 350, -436, 256)).toBe(false);
       }
     }
-    const desktop = list.filter((p) => p.kind === 'starfish' && p.min[1] > 100);
-    expect(desktop).toHaveLength(1);
-    const star = desktop[0]!;
-    expect(star.x).toBe(1760); expect(star.z).toBe(620); expect(star.min[1]).toBe(132);
-    // Inverse right-desk yaw: local x = world z - 500; local z = 1770 - world x.
-    expect(star.max[2] - 500).toBeLessThan(182);
-    expect(star.min[2] - 500).toBeGreaterThan(90);
-    expect(1770 - star.min[0]).toBeLessThan(48);
-    expect(1770 - star.max[0]).toBeGreaterThan(-100);
-    for (const { p: [x, , z] } of (await assetVertices('TradingFloorSeaLife')).vertices) {
-      const radius = Math.hypot(x, z + 90);
-      expect(radius < 570 || radius > 900).toBe(true);
-    }
   });
 
-  test('measured sea-life tops clear the board from spawn and reachable default-height cameras', async () => {
-    const { vertices } = await assetVertices('TradingFloorSeaLife');
-    for (const { p: [x, y, z] } of vertices) {
+  test('open-floor distribution spans both sides and front depth with singles and small clusters', async () => {
+    const plants = (await pieces()).filter(p => p.kind !== 'starfish');
+    expect(plants.filter(p => p.x < 0).length).toBeGreaterThanOrEqual(10);
+    expect(plants.filter(p => p.x > 0).length).toBeGreaterThanOrEqual(10);
+    expect(plants.filter(p => p.z < 0).length).toBeGreaterThanOrEqual(8);
+    expect(plants.filter(p => p.z > 700).length).toBeGreaterThanOrEqual(8);
+    expect(plants.filter(p => Math.abs(p.x) < 1380).length).toBeGreaterThanOrEqual(28);
+    expect(plants.some(p => p.cluster !== null)).toBe(true);
+    expect(plants.some(p => p.cluster === null)).toBe(true);
+    for (let i = 0; i < plants.length; i++) for (let j = i + 1; j < plants.length; j++)
+      expect(Math.hypot(plants[i]!.x - plants[j]!.x, plants[i]!.z - plants[j]!.z)).toBeGreaterThanOrEqual(125);
+  });
+
+  test('decoded sea-floor tops clear the board from all spawn camera heights', async () => {
+    for (const { p: [x, y, z] } of (await assetVertices('TradingFloorSeaLife')).vertices) {
+      expect(y).toBeLessThanOrEqual(140);
       expect(y).toBeLessThan(TRADING_FLOOR_CAMERA.above);
       expect(y).toBeLessThan(TRADING_FLOOR_SCREEN.bottomY);
       for (const camY of [140, 260, 410]) {
@@ -1512,8 +1525,6 @@ describe('Trading Floor asset - W2 sea life', () => {
           expect(camY + (y - camY) * t).toBeLessThan(TRADING_FLOOR_SCREEN.bottomY);
       }
     }
-    // Every point between a default-height camera and the board has t > 1.
-    // Since each point is below that camera, its projected shadow is lower still.
   });
 });
 

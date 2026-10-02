@@ -5,6 +5,14 @@ export const TRADING_FLOOR_WATER_Y = 7;
 export const TRADING_FLOOR_WATER_ALPHA = 0.12;
 export const TRADING_FLOOR_WATER_GRAZING_ALPHA = 0.46;
 export const TRADING_FLOOR_WATER_SHIMMER_ALPHA = 0.04;
+/** World-units/second toward the board (-Z); directions have unit length. */
+export const TRADING_FLOOR_WATER_FLOW_SPEED = 58;
+export const TRADING_FLOOR_WATER_FLOW_DIRECTION = Object.freeze({ x: 0, z: -1 });
+export const TRADING_FLOOR_WATER_SECONDARY_FLOW_SPEED = 44;
+export const TRADING_FLOOR_WATER_SECONDARY_FLOW_DIRECTION = Object.freeze({ x: 0.28, z: -0.96 });
+/** Crest normals align with the flow so visible motion reads toward -Z. */
+export const TRADING_FLOOR_WATER_RIPPLE_WAVE_VECTOR = Object.freeze({ x: 0.014, z: 0.040 });
+export const TRADING_FLOOR_WATER_CAUSTIC_WAVE_VECTOR = Object.freeze({ x: 0.010, z: 0.057 });
 /** N dot V = sin(view angle below horizontal): clear by 25 degrees. */
 export const TRADING_FLOOR_WATER_GRAZING_DOT = 0.14;
 export const TRADING_FLOOR_WATER_STEEP_DOT = 0.42;
