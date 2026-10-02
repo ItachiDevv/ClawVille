@@ -1066,7 +1066,7 @@ addMesh(
 // One 512 x 256 atlas replaces the Meshy console map. Wood uses planar UVs;
 // lacquer/brass/plastic use constant swatches, so mipmaps cannot mix regions.
 // Broad 4 px grain and 8 px keys survive ETC1S. No runtime shader is required.
-const deskAtlas = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="256">
+let deskAtlas = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="256">
   <defs><linearGradient id="walnut" x2="0" y2="1"><stop stop-color="#865538"/>
     <stop offset=".45" stop-color="#a4724a"/><stop offset="1" stop-color="#71422b"/></linearGradient></defs>
   <rect width="512" height="256" fill="#171c24"/>
@@ -1086,18 +1086,48 @@ const deskAtlas = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/sv
     `<rect x="${344+col*12}" y="${72+row*12}" width="8" height="8" fill="${row===0?'#8491a0':'#b8bcc2'}"/>`).join('')).join('')}
   <rect x="368" y="136" width="96" height="8" fill="#b8bcc2"/>
 </svg>`)).png().toBuffer();
+// Dedicated bottom-face tiles: black 336..416, drawer wood 424..504,
+// both y168..248, with a 4 px inset. Existing constant swatches stay clean.
+// V increases down the image: the last 12 px fade over 19 wu of cabinet
+// height, or 14 wu above the drawer's y24 lower edge. No geometry is split.
+const drawerCrop = await sharp(deskAtlas).extract({left:8,top:43,width:304,height:125}).png().toBuffer();
+const drawerTile = await sharp(drawerCrop).flip().resize(72,72)
+  .extend({top:4,bottom:4,left:4,right:4,extendWith:'copy'}).png().toBuffer();
+deskAtlas = await sharp(deskAtlas).composite([
+  {input:Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#111820"/></svg>`),left:336,top:168},
+  {input:drawerTile,left:424,top:168},
+  ...[336,424].map((left)=>({left,top:168,input:Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80">
+    <defs><linearGradient id="algae" x1="0" y1="1" x2="0" y2="0">
+      <stop stop-color="#45482b" stop-opacity=".68"/><stop offset=".5" stop-color="#4c5130" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#4c5130" stop-opacity="0"/></linearGradient></defs>
+    <rect y="64" width="80" height="16" fill="url(#algae)"/>
+    <g fill="#505433" opacity=".32">
+      <path d="M4 80 V72 Q8 66 12 72 L16 80 Z M28 80 V76 Q32 68 36 72 L40 80 Z M56 80 V72 Q60 64 64 72 L68 80 Z"/>
+    </g><g stroke="#59603a" stroke-width="4" opacity=".22" fill="none">
+      <path d="M20 80 Q24 76 20 72 M48 80 Q44 72 48 68 M72 80 Q76 76 72 72"/>
+    </g></svg>`)})),
+]).png().toBuffer();
 const DESK_M = texturedMat('TradingFloorConsoleModuleMtl', deskAtlas, {rough:.32,metal:.12});
 DESK_M.getBaseColorTextureInfo().setWrapS(33071).setWrapT(33071);
 
 function deskSurface(geo, finish) {
   const swatches = {black:[360,24], brass:[416,24], plastic:[472,24]};
+  const bottomBlack = finish === 'blackBottom';
+  const bottomWood = finish === 'woodBottom';
+  const min = [0,2].map((axis)=>Math.min(...geo.pos.filter((_,i)=>i%3===axis)));
+  const max = [0,2].map((axis)=>Math.max(...geo.pos.filter((_,i)=>i%3===axis)));
   geo.uv=[];
   for(let i=0;i<geo.pos.length;i+=3) {
-    if(finish==='wood') {
-      const [x,y,z]=geo.pos.slice(i,i+3), nx=geo.nrm[i], ny=geo.nrm[i+1];
+    const [x,y,z]=geo.pos.slice(i,i+3), nx=geo.nrm[i], ny=geo.nrm[i+1];
+    if((bottomBlack && ny < .5) || (bottomWood && geo.nrm[i+2] > .5)) {
+      const axis=Math.abs(nx)>.5?1:0, coord=axis?z:x;
+      const u=bottomWood?(x+182)/364:(coord-min[axis])/(max[axis]-min[axis]);
+      const height=bottomWood?(y-24)/86:y/116;
+      geo.uv.push(((bottomWood?428:340)+u*72)/512,(244-height*72)/256);
+    } else if(finish==='wood' || bottomWood) {
       const u=Math.abs(nx)>.5?(z+135)/270:(x+182)/364, v=Math.abs(ny)>.5?(z+135)/270:y/166;
       geo.uv.push((8+u*304)/512,(8+v*240)/256);
-    } else geo.uv.push(...swatches[finish].map((v,i)=>v/(i?256:512)));
+    } else geo.uv.push(...swatches[bottomBlack?'black':finish].map((v,i)=>v/(i?256:512)));
   }
   return geo;
 }
@@ -1109,13 +1139,13 @@ const deskGeo=group('console template', 'extracted at runtime; collider in TRADI
     surface(cushionGeo(0,119,0,364,3,270,1), 'brass'),
     // Cabinet bases meet the floor; inset front faces form recessed toe kicks.
     ...[-132,132].flatMap((x)=>[
-      surface(boxGeo(x,8,-18,80,16,182), 'black'),
-      surface(boxGeo(x,66,-8,88,100,206), 'black'),
-      surface(boxGeo(x,67,95.5,72,86,1), 'wood'),
+      surface(boxGeo(x,8,-18,80,16,182), 'blackBottom'),
+      surface(boxGeo(x,66,-8,88,100,206), 'blackBottom'),
+      surface(boxGeo(x,67,95.5,72,86,1), 'woodBottom'),
       ...[-34,34].map((dx)=>surface(boxGeo(x+dx,67,96.3,2,86,1), 'brass')),
       surface(boxGeo(x,95,97,26,3,3), 'brass'),
     ]),
-    surface(boxGeo(0,66,-91,176,100,14), 'black'),
+    surface(boxGeo(0,66,-91,176,100,14), 'blackBottom'),
     surface(boxGeo(0,62,-82.5,164,72,1), 'wood'),
     // FLAT hood top covers the full mount band, including the back boundary.
     surface(boxGeo(0,149,-117.5,352,34,35), 'black'),

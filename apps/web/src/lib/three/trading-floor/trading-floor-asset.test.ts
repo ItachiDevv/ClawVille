@@ -659,6 +659,42 @@ function clipToMount(triangle: Point[]): Point[] {
 }
 
 describe('Trading Floor asset — v4 desk and leather chair', () => {
+  test('algae tiles belong only to lower cabinet faces and drawer fronts, never upward faces', async () => {
+    const { vertices, primitive } = await assetVertices('TradingFloorConsoleModule');
+    const uv = primitive.getAttribute('TEXCOORD_0')!;
+    const indices = primitive.getIndices()!.getArray()!;
+    const counts = [0, 0];
+    for (let triangle = 0; triangle < indices.length; triangle += 3) {
+      const corners = Array.from({ length: 3 }, (_, corner) => indices[triangle + corner]!);
+      const tile = corners.map((index) => {
+        const [u, v] = uv.getElement(index, [] as number[]);
+        if (v! < 168 / 256 || v! > 248 / 256) return -1;
+        if (u! >= 336 / 512 && u! <= 416 / 512) return 0;
+        if (u! >= 424 / 512 && u! <= 504 / 512) return 1;
+        return -1;
+      });
+      if (tile.every((region) => region === -1)) continue;
+      expect(tile.every((region) => region === tile[0])).toBe(true);
+      const region = tile[0]!;
+      counts[region]!++;
+      const points = corners.map((index) => vertices[index]!);
+      expect(Math.min(...points.map(({ p }) => p[1]))).toBeLessThanOrEqual(region ? 24.02 : 16.02);
+      for (const [corner, index] of corners.entries()) {
+        const { p, n } = points[corner]!;
+        expect(n[1]).toBeLessThanOrEqual(.001);
+        expect(p[1]).toBeLessThanOrEqual(region ? 110.02 : 116.02);
+        const v = uv.getElement(index, [])[1]! * 256;
+        // Affine Y-to-V mapping confines every sample of the painted band
+        // (image rows 232..248) below y19.34 / drawer y38.34, even mid-triangle.
+        const expectedY = (244 - v) / 72 * (region ? 86 : 116) + (region ? 24 : 0);
+        // Decoded UV/position quantization measures .040583 wu worst-case.
+        expect(Math.abs(p[1] - expectedY)).toBeLessThan(.05);
+        if (region) expect(n[2]).toBeGreaterThan(.99);
+      }
+    }
+    expect(counts).toEqual([50, 4]);
+  });
+
   // R1 must re-measure the module triangle pins, texture bytes and GLB budgets.
   test('one primitive per row, module budgets and atlas size survive compression', async () => {
     const doc = await decodedAsset;
