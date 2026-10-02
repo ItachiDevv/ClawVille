@@ -26,7 +26,7 @@
  *       (sum(buy-ins) == sum(prizes) + rake).
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import {
@@ -43,6 +43,17 @@ import {
 import { PokerTableSim } from '../poker-table-sim';
 import type { SimClock, BroadcastFn, SendToSeatFn } from '../poker-table-types';
 import type { BlindLevel, PayoutCurveEntry } from '@clawville/database';
+import {
+  assertNoDateParams,
+  takeDateParamViolations,
+} from '../../__tests__/helpers/sql-date-param-guard';
+
+// Security batch 2 regression gate: every raw query the TM executes is checked
+// for a bound JS Date (postgres-js throws a TypeError on one). The fake db throws
+// on it; this hook also fails a test whose code swallowed that throw.
+afterEach(() => {
+  expect(takeDateParamViolations()).toEqual([]);
+});
 
 // ─── Fake clock (manual time; setTimer never auto-fires — the test drives all
 // turns via the sim's onTurnTimeout, never the wall clock) ───────────────────
@@ -190,6 +201,7 @@ class FakeDb {
   }
 
   async execute<T = Row>(q: SQL): Promise<T[]> {
+    assertNoDateParams(q);
     const { text, params } = renderSql(q);
     return this.dispatch(text, params) as T[];
   }
@@ -1304,6 +1316,24 @@ describe('TournamentManager — create + default-schedule seed + list (mocked DB
     const anon = await tm.createTournament(validConfig(), null);
     expect(anon.createdBy).toBeNull();
     expect(db.tournaments.get(anon.id)!.created_by).toBeNull();
+  });
+
+  it('registrationClosesAt binds as an ISO string (never a raw Date param) and still closes registration', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const closes = new Date(clock.now() + 60_000);
+
+    const t = await tm.createTournament({ ...validConfig(), registrationClosesAt: closes }, null);
+    expect(db.tournaments.get(t.id)!.registration_closes_at).toBe(closes.toISOString());
+
+    ledger.setBalance('late-avatar', 1_000);
+    clock.advance(60_000);
+    await expect(
+      tm.registerEntrant(
+        { kind: 'user', userId: 'u-late', avatarId: 'late-avatar', agentId: null },
+        t.id,
+      ),
+    ).rejects.toMatchObject({ message: 'registration_closed' });
+    expect(ledger.debits).toHaveLength(0);
   });
 
   it('ensureDefaultBlindSchedule is idempotent across repeated calls (boot path)', async () => {

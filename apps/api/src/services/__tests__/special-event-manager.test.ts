@@ -23,7 +23,7 @@
  *   (9) the parent `special_events` row carries NO poker reference (direction).
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import {
@@ -44,6 +44,14 @@ import {
   type RegisterResult,
   type StartResult,
 } from '../poker/tournament-manager';
+import { assertNoDateParams, takeDateParamViolations } from './helpers/sql-date-param-guard';
+
+// Security batch 2 regression gate: every raw query the manager executes is
+// checked for a bound JS Date (postgres-js throws a TypeError on one). The fake
+// db throws on it; this hook also fails a test whose code swallowed that throw.
+afterEach(() => {
+  expect(takeDateParamViolations()).toEqual([]);
+});
 
 // ─── SQL render (same approach as the TM test) ────────────────────────────────
 
@@ -101,17 +109,33 @@ class FakeDb {
     this.results.push(row);
   }
 
+  /** Open transactions right now (a TM cancel must run with none: lock order). */
+  txDepth = 0;
+
   async transaction<T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> {
-    return fn(this);
+    this.txDepth += 1;
+    try {
+      return await fn(this);
+    } finally {
+      this.txDepth -= 1;
+    }
   }
 
   /** Every statement's normalized text, in order (lock-order assertions). */
   statements: string[] = [];
 
   async execute<T = Row>(q: SQL): Promise<T[]> {
+    assertNoDateParams(q);
     const { text, params } = renderSql(q);
     this.statements.push(text);
     return this.dispatch(text, params) as T[];
+  }
+
+  /** `WHERE id = ? AND status = 'starting' AND start_claim_id IS NOT DISTINCT FROM ?`. */
+  private casStarting(id: unknown, claimId: unknown): Row | undefined {
+    const e = this.events.get(String(id));
+    if (!e || e.status !== 'starting') return undefined;
+    return (e.start_claim_id ?? null) === (claimId ?? null) ? e : undefined;
   }
 
   private bySlug(slug: unknown): Row | undefined {
@@ -175,7 +199,7 @@ class FakeDb {
     // Security M4 (2026-09-30): the start CLAIM (CAS signup_open → starting with a
     // claim token), the guarded final flip, the reconcile outcomes, and the settle
     // updates (all clear the claim).
-    if (text.startsWith("UPDATE special_events SET status = 'starting', start_claim_id = ?, start_claimed_at = ? WHERE id = ? AND status = 'signup_open' RETURNING id")) {
+    if (text.startsWith("UPDATE special_events SET status = 'starting', start_claim_id = ?, start_claimed_at = ?::timestamptz WHERE id = ? AND status = 'signup_open' RETURNING id")) {
       const e = this.events.get(String(p[2]));
       if (!e || e.status !== 'signup_open') return [];
       e.status = 'starting';
@@ -234,38 +258,36 @@ class FakeDb {
       const e = this.events.get(String(p[0]));
       return e ? [e] : [];
     }
-    if (text.startsWith("UPDATE special_events SET status = 'completed', completed_at = now(), started_at = COALESCE(started_at, now()), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting'")) {
-      const e = this.events.get(String(p[0]));
-      if (e?.status === 'starting') {
-        e.status = 'completed';
-        e.completed_at = new Date(++this.seq);
-        e.started_at = e.started_at ?? new Date(++this.seq);
-        e.start_claim_id = null;
-        e.start_claimed_at = null;
-      }
-      return [];
+    // reconcileStartingEvent step 3: CAS on status + the SAME claim (null-safe).
+    if (text === "UPDATE special_events SET status = 'completed', completed_at = now(), started_at = COALESCE(started_at, now()), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id IS NOT DISTINCT FROM ?::uuid RETURNING id") {
+      const e = this.casStarting(p[0], p[1]);
+      if (!e) return [];
+      e.status = 'completed';
+      e.completed_at = new Date(++this.seq);
+      e.started_at = e.started_at ?? new Date(++this.seq);
+      e.start_claim_id = null;
+      e.start_claimed_at = null;
+      return [{ id: e.id }];
     }
-    if (text.startsWith("UPDATE special_events SET status = 'live', started_at = now(), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting'")) {
-      const e = this.events.get(String(p[0]));
-      if (e?.status === 'starting') {
-        e.status = 'live';
-        e.started_at = new Date(++this.seq);
-        e.start_claim_id = null;
-        e.start_claimed_at = null;
-      }
-      return [];
+    if (text === "UPDATE special_events SET status = 'live', started_at = now(), start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id IS NOT DISTINCT FROM ?::uuid RETURNING id") {
+      const e = this.casStarting(p[0], p[1]);
+      if (!e) return [];
+      e.status = 'live';
+      e.started_at = new Date(++this.seq);
+      e.start_claim_id = null;
+      e.start_claimed_at = null;
+      return [{ id: e.id }];
     }
-    if (text.startsWith("UPDATE special_events SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting'")) {
-      const e = this.events.get(String(p[0]));
-      if (e?.status === 'starting') {
-        e.status = 'signup_open';
-        e.start_claim_id = null;
-        e.start_claimed_at = null;
-      }
-      return [];
+    if (text === "UPDATE special_events SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id IS NOT DISTINCT FROM ?::uuid RETURNING id") {
+      const e = this.casStarting(p[0], p[1]);
+      if (!e) return [];
+      e.status = 'signup_open';
+      e.start_claim_id = null;
+      e.start_claimed_at = null;
+      return [{ id: e.id }];
     }
-    if (text.startsWith("SELECT id FROM special_events WHERE status = 'starting' AND (start_claimed_at IS NULL OR start_claimed_at < ?)")) {
-      const cutoff = new Date(p[0] as Date).getTime();
+    if (text.startsWith("SELECT id FROM special_events WHERE status = 'starting' AND (start_claimed_at IS NULL OR start_claimed_at < ?::timestamptz)")) {
+      const cutoff = new Date(p[0] as string).getTime();
       return [...this.events.values()]
         .filter(
           (e) =>
@@ -502,6 +524,10 @@ class FakeTM {
   cancelCalls = 0;
   /** Runs inside startTrigger after the tournament is running (race injection). */
   onStarted: ((tournamentId: string) => void) | null = null;
+  /** Runs after a cancelAndRefundOrphan (race injection between reconcile steps). */
+  onCancel: ((tournamentId: string) => void) | null = null;
+  /** db.txDepth at each cancelAndRefundOrphan call (lock-order assertions). */
+  cancelTxDepths: number[] = [];
   /** The shared FakeDb, so the manager's SQL sees these tournaments. */
   db: FakeDb | null = null;
   private seq = 0;
@@ -583,11 +609,13 @@ class FakeTM {
   }
   async cancelAndRefundOrphan(tournamentId: string): Promise<number> {
     this.cancelCalls += 1;
+    this.cancelTxDepths.push(this.db?.txDepth ?? 0);
     const row = this.db?.tournaments.get(tournamentId);
     // Same terminal guard as the real TM: completed/cancelled → idempotent no-op.
     if (row && (row.status === 'completed' || row.status === 'cancelled')) return 0;
     if (row) row.status = 'cancelled';
     if (!this.cancelled.includes(tournamentId)) this.cancelled.push(tournamentId);
+    this.onCancel?.(tournamentId);
     return 0;
   }
 }
@@ -1216,6 +1244,179 @@ describe('SpecialEventManager — start recovery + guarded final flip (Codex BLO
     expect(result.tournamentId).toBe(tm.created[0]!.id);
     expect(ev.status).toBe('live');
     expect(tm.cancelCalls).toBe(0);
+  });
+});
+
+describe('SpecialEventManager — reconcile lock order: TM cancel outside the event lock (security batch 2)', () => {
+  /** A 'starting' event with a stale claim and a funded registering tournament. */
+  async function staleStarting(slug: string) {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug, name: `Event ${slug}`, prizeConfigJson: { seedPrizePoolCt: 500 } }, null);
+    await h.mgr.openSignup(slug);
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    ev.status = 'starting';
+    ev.start_claim_id = 'dead-claim';
+    ev.start_claimed_at = new Date(h.clock.now() - SPECIAL_EVENT_START_CLAIM_STALE_MS - 1_000);
+    h.db.seedTournament({ id: 't-reg', status: 'registering', special_event_id: ev.id, created_at: 5 });
+    return { ...h, ev };
+  }
+  const LOCK = 'SELECT id, status, start_claim_id, start_claimed_at FROM special_events WHERE id = ? FOR UPDATE';
+  const LINKED =
+    "SELECT id, status FROM poker_tournaments WHERE special_event_id = ? AND status <> 'cancelled' ORDER BY created_at DESC";
+
+  it('cancels with NO open transaction, then re-locks the event before the CAS write', async () => {
+    const { mgr, tm, db, ev } = await staleStarting('lock-order');
+    let locksAtCancel = -1;
+    tm.onCancel = () => {
+      locksAtCancel = db.statements.filter((t) => t === LOCK).length;
+    };
+    db.statements.length = 0;
+
+    expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 1, reconciled: 1, failed: 0 });
+
+    // The cancel ran between the two event locks, outside every transaction, so a
+    // concurrent createTournament that holds the treasury lock can finish.
+    expect(tm.cancelTxDepths).toEqual([0]);
+    expect(locksAtCancel).toBe(1);
+    const recon = db.statements.filter(
+      (t) => t === LOCK || t === LINKED || t.startsWith('UPDATE special_events'),
+    );
+    expect(recon).toEqual([
+      LOCK,
+      LINKED,
+      LOCK,
+      LINKED,
+      "UPDATE special_events SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status = 'starting' AND start_claim_id IS NOT DISTINCT FROM ?::uuid RETURNING id",
+    ]);
+    expect(ev.status).toBe('signup_open');
+    expect(ev.start_claim_id).toBeNull();
+    expect(db.tournaments.get('t-reg')!.status).toBe('cancelled');
+    expect(tm.cancelCalls).toBe(1);
+  });
+
+  it('event reopened by another pass between the cancel and the re-lock: no write, no second cancel', async () => {
+    const { mgr, tm, ev } = await staleStarting('changed-reopened');
+    tm.onCancel = () => {
+      ev.status = 'signup_open';
+      ev.start_claim_id = null;
+      ev.start_claimed_at = null;
+    };
+
+    expect(await mgr.reconcileStartingEvent(String(ev.id), { claimId: 'dead-claim' })).toBe('not_starting');
+    expect(ev.status).toBe('signup_open');
+    expect(tm.cancelCalls).toBe(1);
+    // A later tick finds nothing to do: the seed is refunded exactly once.
+    expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 0, reconciled: 0, failed: 0 });
+    expect(tm.cancelCalls).toBe(1);
+  });
+
+  it('a NEW start claimed the event between the cancel and the re-lock: the new claim is left intact', async () => {
+    const { mgr, tm, ev, clock } = await staleStarting('changed-new-claim');
+    tm.onCancel = () => {
+      // Another pass reopened it and a fresh start claimed it.
+      ev.status = 'starting';
+      ev.start_claim_id = 'new-claim';
+      ev.start_claimed_at = new Date(clock.now());
+    };
+
+    expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 1, reconciled: 0, failed: 0 });
+    expect(ev.status).toBe('starting');
+    expect(ev.start_claim_id).toBe('new-claim');
+    expect(tm.cancelCalls).toBe(1);
+  });
+
+  it('a start finalized the event live between the cancel and the re-lock: live is not clobbered', async () => {
+    const { mgr, tm, db, ev } = await staleStarting('changed-live');
+    tm.onCancel = () => {
+      db.seedTournament({ id: 't-run', status: 'running', special_event_id: ev.id, created_at: 9 });
+      ev.status = 'live';
+      ev.start_claim_id = null;
+      ev.start_claimed_at = null;
+    };
+
+    expect(await mgr.reconcileStartingEvent(String(ev.id), { claimId: 'dead-claim' })).toBe('not_starting');
+    expect(ev.status).toBe('live');
+    expect(db.tournaments.get('t-run')!.status).toBe('running');
+  });
+
+  it('a registering tournament still linked at the re-lock keeps the event starting; the next pass cancels it once and reopens', async () => {
+    const { mgr, tm, db, ev } = await staleStarting('leftover');
+    let injected = false;
+    tm.onCancel = () => {
+      if (injected) return;
+      injected = true;
+      db.seedTournament({ id: 't-late', status: 'registering', special_event_id: ev.id, created_at: 9 });
+    };
+
+    expect(await mgr.reconcileStartingEvent(String(ev.id), { claimId: 'dead-claim' })).toBe('in_progress');
+    expect(ev.status).toBe('starting');
+    expect(ev.start_claim_id).toBe('dead-claim');
+    expect(db.tournaments.get('t-late')!.status).toBe('registering');
+
+    expect(await mgr.reconcileStaleStarts()).toEqual({ scanned: 1, reconciled: 1, failed: 0 });
+    expect(ev.status).toBe('signup_open');
+    expect(db.tournaments.get('t-late')!.status).toBe('cancelled');
+    expect(tm.cancelled.filter((id) => id === 't-late')).toHaveLength(1);
+    expect(tm.cancelCalls).toBe(2);
+  });
+
+  it('after the cancel step, a running tournament maps the event to live and a completed one to completed', async () => {
+    const live = await staleStarting('after-cancel-live');
+    live.tm.onCancel = () => {
+      live.db.seedTournament({ id: 't-run2', status: 'running', special_event_id: live.ev.id, created_at: 9 });
+    };
+    expect(await live.mgr.reconcileStartingEvent(String(live.ev.id), { claimId: 'dead-claim' })).toBe('live');
+    expect(live.ev.status).toBe('live');
+    expect(live.ev.start_claim_id).toBeNull();
+
+    const done = await staleStarting('after-cancel-done');
+    done.tm.onCancel = () => {
+      done.db.seedTournament({ id: 't-done2', status: 'completed', special_event_id: done.ev.id, created_at: 9 });
+    };
+    expect(await done.mgr.reconcileStartingEvent(String(done.ev.id), { claimId: 'dead-claim' })).toBe('completed');
+    expect(done.ev.status).toBe('completed');
+    expect(done.ev.start_claim_id).toBeNull();
+  });
+});
+
+describe('SpecialEventManager — raw sql timestamps bind as ISO strings (security batch 2)', () => {
+  it('createEvent binds the registration/start Dates as ISO strings', async () => {
+    const { mgr, db } = makeManager();
+    const opens = new Date('2026-10-03T12:00:00.000Z');
+    const closes = new Date('2026-10-04T12:00:00.000Z');
+    const starts = new Date('2026-10-04T13:00:00.000Z');
+    const row = await mgr.createEvent(
+      { slug: 'dated', name: 'Dated', registrationOpensAt: opens, registrationClosesAt: closes, startsAt: starts },
+      null,
+    );
+    expect(row.registration_opens_at).toBe(opens.toISOString());
+    expect(row.registration_closes_at).toBe(closes.toISOString());
+    expect(row.starts_at).toBe(starts.toISOString());
+    expect(db.statements[0]).toContain('?::timestamptz, ?::timestamptz, ?::timestamptz');
+  });
+
+  it('the start claim binds start_claimed_at as an ISO string, and the worker pass runs', async () => {
+    const { mgr, db, clock } = makeManager();
+    await mgr.createEvent({ slug: 'claim-iso', name: 'x' }, null);
+    await mgr.openSignup('claim-iso');
+    await mgr.signup('claim-iso', human(), { entryMethod: 'free' });
+    await mgr.signup('claim-iso', human(), { entryMethod: 'free' });
+    const ev = [...db.events.values()].find((e) => e.slug === 'claim-iso')!;
+    const claimTimes: unknown[] = [];
+    const exec = db.execute.bind(db);
+    db.execute = (async (q: SQL) => {
+      const { text, params } = renderSql(q);
+      if (text.startsWith("UPDATE special_events SET status = 'starting'")) claimTimes.push(params[1]);
+      return exec(q);
+    }) as typeof db.execute;
+
+    await mgr.closeSignupAndStart('claim-iso');
+    expect(claimTimes).toEqual([new Date(clock.now()).toISOString()]);
+    expect(ev.status).toBe('live');
+
+    // The worker pass (reconcileEvents → reconcileStaleStarts) binds its cutoff
+    // as an ISO string too, so it runs instead of throwing.
+    expect(await mgr.reconcileEvents()).toEqual({ scanned: 0, reconciled: 0, failed: 0 });
   });
 });
 

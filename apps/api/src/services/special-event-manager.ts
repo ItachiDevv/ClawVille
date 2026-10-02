@@ -99,6 +99,16 @@ export interface EventClock {
 
 const REAL_CLOCK: EventClock = { now: () => Date.now() };
 
+/**
+ * A raw `sql` param for a timestamptz column. Never bind a JS Date: drizzle's
+ * postgres-js driver serializes timestamptz params with an identity function, so
+ * a Date reaches Buffer.byteLength and throws a TypeError. Pair with
+ * `::timestamptz` in the SQL text.
+ */
+function timestamptzParam(d: Date | null | undefined): string | null {
+  return d == null ? null : d.toISOString();
+}
+
 export interface SpecialEventManagerDeps {
   db?: DbLike;
   ledger?: LedgerLike;
@@ -288,8 +298,9 @@ export class SpecialEventManager {
                   ${config.venueConfigJson != null ? JSON.stringify(config.venueConfigJson) : null}::jsonb,
                   ${config.prizeConfigJson != null ? JSON.stringify(config.prizeConfigJson) : null}::jsonb,
                   ${maxParticipants},
-                  ${config.registrationOpensAt ?? null}, ${config.registrationClosesAt ?? null},
-                  ${config.startsAt ?? null}, ${createdByAvatarId})
+                  ${timestamptzParam(config.registrationOpensAt)}::timestamptz,
+                  ${timestamptzParam(config.registrationClosesAt)}::timestamptz,
+                  ${timestamptzParam(config.startsAt)}::timestamptz, ${createdByAvatarId})
           RETURNING *`,
     );
     const row = inserted[0];
@@ -713,7 +724,7 @@ export class SpecialEventManager {
       const claimed = await tx.execute<{ id: string }>(
         sql`UPDATE special_events
             SET status = 'starting', start_claim_id = ${claimId},
-                start_claimed_at = ${new Date(this.clock.now())}
+                start_claimed_at = ${new Date(this.clock.now()).toISOString()}::timestamptz
             WHERE id = ${e.id} AND status = 'signup_open'
             RETURNING id`,
       );
@@ -925,79 +936,128 @@ export class SpecialEventManager {
 
   /**
    * Bring ONE 'starting' event back in line with its linked tournament (security
-   * M4 recovery), under the event row lock. Acts only when the event still holds
-   * `claimId` (a start's own failure path) or its claim is older than
-   * `staleBefore` (a crashed start). Outcome by the non-cancelled linked
-   * tournaments:
+   * M4 recovery). Acts only when the event still holds `claimId` (a start's own
+   * failure path) or its claim is older than `staleBefore` (a crashed start).
+   * Outcome by the non-cancelled linked tournaments:
    *   - registering/seating → cancel through the TM (seed refunded exactly once:
    *     the TM cancel is idempotent under its row lock) → 'signup_open';
    *   - running → 'live'; completed → 'completed';
    *   - none → 'signup_open'.
-   * Every outcome clears the claim in the same UPDATE. The TM cancel is its own
-   * transaction; if this one then fails, the next reconcile sees the cancelled
-   * tournament and reopens, so no path moves CT twice.
+   *
+   * Lock order (security batch 2): the event row lock is never held across a TM
+   * cancel. A concurrent createTournament for this event holds the house-treasury
+   * avatar lock and waits for KEY SHARE on the event row (FK), and the TM cancel
+   * needs that treasury lock to refund the seed: a cross-connection wait cycle
+   * that Postgres cannot detect. So the work runs in three steps:
+   *   1. tx: lock the event, check the claim, read the linked tournaments, commit;
+   *   2. no event lock: cancel the registering/seating ones through the TM;
+   *   3. tx: re-lock the event, re-check that it still holds the SAME claim,
+   *      re-read the linked tournaments, and write the outcome with a CAS on
+   *      status + claim (the same UPDATE clears the claim).
+   * An event that changed between 1 and 3 (another reconcile, a settle, a new
+   * start claim) is left as it is ('not_starting' / 'claim_lost'). A
+   * registering/seating tournament that is still linked in step 3 leaves the
+   * event 'starting' ('in_progress') for the next pass, so signups never reopen
+   * while an uncancelled seeded tournament links to the event. A failed TM cancel
+   * throws with the event still 'starting'; the next reconcile retries, and the
+   * cancel is idempotent, so no path moves CT twice.
    */
   async reconcileStartingEvent(
     eventId: string,
     opts: { claimId?: string; staleBefore?: Date },
   ): Promise<StartReconcileOutcome> {
-    return this.db.transaction(async (tx) => {
-      const lockRows = await tx.execute<{
-        id: string;
-        status: string;
-        start_claim_id: string | null;
-        start_claimed_at: Date | string | null;
-      }>(
+    type ClaimRow = {
+      id: string;
+      status: string;
+      start_claim_id: string | null;
+      start_claimed_at: Date | string | null;
+    };
+    const isPreRunning = (t: { status: string }) =>
+      t.status === 'registering' || t.status === 'seating';
+
+    // Step 1 (tx): lock, check the claim, snapshot the linked tournaments.
+    const snapshot = await this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<ClaimRow>(
         sql`SELECT id, status, start_claim_id, start_claimed_at
             FROM special_events WHERE id = ${eventId} FOR UPDATE`,
       );
       const e = lockRows[0];
-      if (!e || e.status !== 'starting') return 'not_starting';
-      if (opts.claimId && e.start_claim_id !== opts.claimId) return 'claim_lost';
+      if (!e || e.status !== 'starting') return 'not_starting' as const;
+      if (opts.claimId && e.start_claim_id !== opts.claimId) return 'claim_lost' as const;
       if (
         opts.staleBefore &&
         e.start_claimed_at != null &&
         new Date(e.start_claimed_at).getTime() >= opts.staleBefore.getTime()
       ) {
-        return 'in_progress';
+        return 'in_progress' as const;
       }
+      const linked = await tx.execute<{ id: string; status: string }>(
+        sql`SELECT id, status FROM poker_tournaments
+            WHERE special_event_id = ${e.id} AND status <> 'cancelled'
+            ORDER BY created_at DESC`,
+      );
+      return { claimId: e.start_claim_id, linked: [...linked] };
+    });
+    if (typeof snapshot === 'string') return snapshot;
+
+    // Step 2 (no event lock): each TM cancel is its own tx under the tournament
+    // row lock, and refunds the seed exactly once.
+    for (const t of snapshot.linked) {
+      if (isPreRunning(t)) await this.tm.cancelAndRefundOrphan(t.id);
+    }
+
+    // Step 3 (tx): re-lock, re-check the claim, decide from the CURRENT linked
+    // tournaments, and write the outcome with a CAS on status + claim.
+    return this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<ClaimRow>(
+        sql`SELECT id, status, start_claim_id, start_claimed_at
+            FROM special_events WHERE id = ${eventId} FOR UPDATE`,
+      );
+      const e = lockRows[0];
+      if (!e || e.status !== 'starting') return 'not_starting';
+      if (e.start_claim_id !== snapshot.claimId) return 'claim_lost';
 
       const linked = await tx.execute<{ id: string; status: string }>(
         sql`SELECT id, status FROM poker_tournaments
             WHERE special_event_id = ${e.id} AND status <> 'cancelled'
             ORDER BY created_at DESC`,
       );
-      for (const t of linked) {
-        if (t.status === 'registering' || t.status === 'seating') {
-          await this.tm.cancelAndRefundOrphan(t.id);
-        }
-      }
+      if (linked.some(isPreRunning)) return 'in_progress';
 
+      const sameClaim = sql`id = ${e.id} AND status = 'starting'
+              AND start_claim_id IS NOT DISTINCT FROM ${snapshot.claimId}::uuid`;
+      let outcome: 'completed' | 'live' | 'reopened';
+      let written: Array<{ id: string }>;
       if (linked.some((t) => t.status === 'completed')) {
-        await tx.execute(
+        outcome = 'completed';
+        written = await tx.execute<{ id: string }>(
           sql`UPDATE special_events
               SET status = 'completed', completed_at = now(),
                   started_at = COALESCE(started_at, now()),
                   start_claim_id = NULL, start_claimed_at = NULL
-              WHERE id = ${e.id} AND status = 'starting'`,
+              WHERE ${sameClaim}
+              RETURNING id`,
         );
-        return 'completed';
-      }
-      if (linked.some((t) => t.status === 'running')) {
-        await tx.execute(
+      } else if (linked.some((t) => t.status === 'running')) {
+        outcome = 'live';
+        written = await tx.execute<{ id: string }>(
           sql`UPDATE special_events
               SET status = 'live', started_at = now(),
                   start_claim_id = NULL, start_claimed_at = NULL
-              WHERE id = ${e.id} AND status = 'starting'`,
+              WHERE ${sameClaim}
+              RETURNING id`,
         );
-        return 'live';
+      } else {
+        outcome = 'reopened';
+        written = await tx.execute<{ id: string }>(
+          sql`UPDATE special_events
+              SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL
+              WHERE ${sameClaim}
+              RETURNING id`,
+        );
       }
-      await tx.execute(
-        sql`UPDATE special_events
-            SET status = 'signup_open', start_claim_id = NULL, start_claimed_at = NULL
-            WHERE id = ${e.id} AND status = 'starting'`,
-      );
-      return 'reopened';
+      // Unreachable under the row lock + the checks above; the CAS is the backstop.
+      return written.length === 1 ? outcome : 'claim_lost';
     });
   }
 
@@ -1076,7 +1136,7 @@ export class SpecialEventManager {
     const rows = await this.db.execute<{ id: string }>(
       sql`SELECT id FROM special_events
           WHERE status = 'starting'
-            AND (start_claimed_at IS NULL OR start_claimed_at < ${cutoff})
+            AND (start_claimed_at IS NULL OR start_claimed_at < ${cutoff.toISOString()}::timestamptz)
           ORDER BY start_claimed_at ASC NULLS FIRST
           LIMIT ${lim}`,
     );

@@ -674,6 +674,11 @@ export class TournamentManager {
       throw new TournamentError('invalid_registration_closes_at', 400);
     }
 
+    // Bound as an ISO string + `::timestamptz`, never a JS Date: drizzle's
+    // postgres-js driver throws a TypeError on a Date in a raw `sql` param.
+    const registrationClosesAtIso =
+      registrationClosesAt == null ? null : new Date(registrationClosesAt).toISOString();
+
     const specialEventId = config.specialEventId ?? null;
 
     // ── Resolve the blind schedule (seed default OR verify the referenced row) ──
@@ -750,7 +755,7 @@ export class TournamentManager {
             VALUES (${name}, 'registering', ${buyIn.toString()}, ${rakeBps}, ${minEntrants},
                     ${maxEntrants}, ${seatsPerTable}, ${startingStack}, ${seedPool.toString()},
                     ${JSON.stringify(payoutCurve)}::jsonb, ${blindScheduleId},
-                    ${registrationClosesAt}, ${createdByAvatarId}, ${specialEventId},
+                    ${registrationClosesAtIso}::timestamptz, ${createdByAvatarId}, ${specialEventId},
                     ${seedPool.toString()})
             RETURNING id, name, status, buy_in_ct, rake_bps, min_entrants, max_entrants,
                       seats_per_table, starting_stack, prize_pool_ct, payout_curve_json,
