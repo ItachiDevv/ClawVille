@@ -3,9 +3,11 @@
  * owner gates.
  *
  *   C4: POST /location-chat writes the bot-row knowledge of an owned row only
- *       from a session that proved ownership.
+ *       from a session that proved ownership (config `boundUserId` === row
+ *       `user_id`, connect-sec's use-time owner proof; no ledger flag needed).
  *   C7: GET /knowledge-export/:avatarId and /memory-export/:avatarId are
- *       owner-only (Lucia owner or a ledger-capable agent bound to the avatar).
+ *       owner-only (Lucia owner or a LEDGER-CAPABLE agent bound to the avatar;
+ *       an owner-proven non-ledger session is still refused).
  *
  * POST /register on a bound row is connect-sec's rule (409
  * owner_credential_required), pinned in `openclaw-register-owner-credential.test.ts`.
@@ -249,12 +251,31 @@ describe('security C4 — location-chat bot knowledge on an owned row', () => {
 
   const knowledgeUpdates = () => botUpdates.filter((update) => 'knowledge' in update.values);
 
-  test('an unproven session gets the reply but writes nothing into the owner row', async () => {
+  test.each([
+    ['a stray session (no owner proof)', null],
+    ['a session proven for a different user', OTHER],
+  ] as const)('%s gets the reply but writes nothing into the owner row', async (_label, boundUserId) => {
+    snapshotOwner = OWNER;
+    liveOwner = OWNER;
+    const result = await locationChat(registerSession({ ledgerCapable: false, boundUserId }));
+    expect(result.status).toBe(200);
+    expect((result.body.knowledgeLearned as string[]).length).toBe(1);
+    expect(knowledgeWrites).toEqual([]);
+  });
+
+  test('an owner-proven non-ledger session (restored / keeper) persists to its own row', async () => {
     snapshotOwner = OWNER;
     liveOwner = OWNER;
     const result = await locationChat(registerSession({ ledgerCapable: false, boundUserId: OWNER }));
     expect(result.status).toBe(200);
-    expect((result.body.knowledgeLearned as string[]).length).toBe(1);
+    expect(knowledgeWrites).toEqual([result.body.knowledgeLearned as string[]]);
+  });
+
+  test('a rebind to another user after the snapshot blocks the owner-proven write', async () => {
+    snapshotOwner = OWNER; // the handler reads the session's own row...
+    liveOwner = OTHER; // ...but the row moves to another user before the UPDATE runs
+    await locationChat(registerSession({ ledgerCapable: false, boundUserId: OWNER }));
+    expect(knowledgeUpdates().map((update) => update.applied)).toEqual([false]);
     expect(knowledgeWrites).toEqual([]);
   });
 
@@ -315,15 +336,18 @@ describe('security C7 — knowledge and memory exports are owner-only', () => {
     expect(memory.body).toMatchObject({ avatarId: AVATAR_ID, totalMemories: 0 });
   });
 
-  test('a ledger-capable agent bound to the avatar exports; an unproven one is refused', async () => {
+  test('a ledger-capable agent bound to the avatar exports; an owner-proven non-ledger one is refused', async () => {
     snapshotOwner = OWNER;
     const provenSession = registerSession({ ledgerCapable: true, boundUserId: OWNER });
     const exported = await call('GET', routes[0], { headers: { 'X-Clawville-Agent-Session': provenSession } });
     expect(exported.status).toBe(200);
 
-    const unprovenSession = registerSession({ ledgerCapable: false, boundUserId: OWNER });
+    // Owner-proven (boundUserId === row owner) but not ledger-capable: it reads
+    // and writes its own row knowledge (C4/C5), yet the C7 exports stay
+    // ledger-gated (founder kickoff).
+    const restoredSession = registerSession({ ledgerCapable: false, boundUserId: OWNER });
     for (const path of routes) {
-      const refused = await call('GET', path, { headers: { 'X-Clawville-Agent-Session': unprovenSession } });
+      const refused = await call('GET', path, { headers: { 'X-Clawville-Agent-Session': restoredSession } });
       expect(refused.status).toBe(403);
       expect(String(refused.body.error)).toStartWith('agent_session_not_ledger_authorized');
     }

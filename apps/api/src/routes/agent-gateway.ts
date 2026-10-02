@@ -1628,10 +1628,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     isReturning,
     totalSessions,
     // Security C5 (batch 2): a bound row's learned knowledge is owner-private.
-    // Only a session that passes `sessionLedgerCapable` against the persisted
-    // owner reads it (the GET /:sessionId/knowledge rule); else an empty array.
+    // Only a session whose proven `boundUserId` equals the persisted owner reads
+    // it (connect-sec's use-time owner proof, ledger flag not needed; the
+    // GET /:sessionId/knowledge rule); else an empty array.
     knowledge: botKnowledgeAccessible(
-      { ledgerCapable, boundUserId },
+      { boundUserId },
       persistedLiveUserId ?? existingBoundUserId,
     )
       ? knowledge
@@ -2988,7 +2989,8 @@ agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
   }).catch(() => {});
 
   // Keep openclaw_bots continuity for an unbound row or an ownership-proven
-  // session (security C4, batch 2: an unproven session must not write into an
+  // session (`boundUserId` === row `user_id`, ledger flag not needed; security
+  // C4, batch 2: an unproven session must not write into an
   // owned row's knowledge, which later enters the owner's prompts; the UPDATE
   // re-checks the owner condition atomically). Mirror into the
   // active avatar + hosted ElizaOS agent only when this exact bearer proved
@@ -3203,7 +3205,9 @@ agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
         // bot.userId (which could target the row owner's avatar from an
         // ownership-unproven session, or select a historical inactive avatar).
         // A non-ledger session still receives the successful chat response,
-        // but tokenAwarded remains 0 and an owned row's knowledge is untouched.
+        // but tokenAwarded remains 0. Knowledge persistence above follows the
+        // owner proof alone (an owner-proven non-ledger session still writes its
+        // own row; a session without owner proof leaves an owned row untouched).
         const rewardSubject = await resolveAgentSession(sessionId);
         const rewardAvatarId = agentBuildingChatRewardAvatarId(rewardSubject);
         if (rewardAvatarId && rewardSubject?.userId) {
