@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { FLOOR_ARENA_HOUSE_AGENTS } from '@clawville/shared';
+import { PublicKey } from '@solana/web3.js';
+import bs58 from 'bs58';
+import { FLOOR_ARENA_HOUSE_AGENTS, TRADE_MINTS } from '@clawville/shared';
 import { ClawPumpClientError, resolveClawPumpConfig, type ClawPumpClientOptions } from './clawpump-client';
 import { isArenaClawPumpOwnedBy } from './floor-arena/queries';
 
@@ -14,10 +16,13 @@ import { isArenaClawPumpOwnedBy } from './floor-arena/queries';
  *   wallets       -> GET   /wallets/summary -> { wallets: [...] }    (api-client L334)
  *   x402_pay_check-> POST  /agents/{id}/x402/x402_service_details    (server.js L4339)
  *   x402_pay      -> POST  /agents/{id}/x402/x402_service_pay        (server.js L4357)
+ * P5 withdraw (shapes proved on chain, ops/house-traders/arena-review/WITHDRAW_PROBES_2026-10-01.md Run 2):
+ *   wallet live   -> GET   /wallets/{id}/history?limit=N             (live balances; the summary is cached)
+ *   transfer      -> POST  /wallets/{id}/transfer {to, amount, token}
  *
  * Rules: strict timeouts, typed errors that carry only a code and an HTTP
  * status, NO logging at all (so the key and the vendor body never reach a log),
- * and NO retry of a non-idempotent POST (create, pay). The provisioning job
+ * and NO retry of a non-idempotent POST (create, pay, transfer). The provisioning job
  * retries a failed create later with a NEW create; it never adopts an
  * existing agent (Codex r18 #4).
  *
@@ -102,7 +107,7 @@ export type ClawPumpWriterErrorCode =
   | 'not_configured' | 'invalid_base_url' | 'invalid_agent_id' | 'invalid_input' | 'not_arena_agent'
   | 'unauthorized' | 'not_found' | 'payment_required' | 'rate_limited' | 'http_error'
   | 'timeout' | 'network_error' | 'response_too_large' | 'schema_invalid' | 'host_not_allowed'
-  | 'agent_running' | 'agent_not_stopped' | 'x402_not_enabled' | 'budget_exhausted';
+  | 'agent_running' | 'agent_not_stopped' | 'x402_not_enabled' | 'budget_exhausted' | 'wallet_mismatch';
 
 export class ClawPumpWriterError extends Error {
   constructor(readonly code: ClawPumpWriterErrorCode, readonly status: number | null = null) {
@@ -232,7 +237,8 @@ function toWriterError(error: unknown): ClawPumpWriterError {
 
 /**
  * Codex r20 (3) / audit-money B: a per-process token bucket over EVERY call this
- * writer makes (create, PATCH, x402 pay and check, agent GET, wallet summary),
+ * writer makes (create, PATCH, x402 pay and check, agent GET, wallet summary,
+ * wallet history, transfer),
  * checked BEFORE the request, so the arena can never flood the ClawPump key
  * the house traders share. 60 calls a minute, burst 10 (code constants, no env
  * var). The last REMOVAL_RESERVE tokens are for removal-priority calls only, so
@@ -399,15 +405,20 @@ async function assertArenaAgent(
   ownership: ClawPumpWriterOwnership,
   options: ClawPumpWriterOptions,
 ): Promise<ClawPumpCreatedAgent> {
-  if (CLAWPUMP_HOUSE_AGENT_IDS.has(agentId)) throw new ClawPumpWriterError('not_arena_agent');
-  const owned = await (ownership.isOwnedBy ?? isArenaClawPumpOwnedBy)(agentId, ownership.arenaAgentId);
-  if (!owned) throw new ClawPumpWriterError('not_arena_agent');
+  await assertOwnedArenaAgent(agentId, ownership);
   const current = await readClawPumpArenaAgent(agentId, options);
   const name = current.name;
   if (!isArenaAgentName(name, options.env ?? process.env) || !name!.trim().endsWith(arenaAgentNameSuffix(ownership.arenaAgentId))) {
     throw new ClawPumpWriterError('not_arena_agent');
   }
   return current;
+}
+
+/** Steps 1 and 2 of assertArenaAgent: the static house deny set, then the DB proof. No network call. */
+async function assertOwnedArenaAgent(agentId: string, ownership: ClawPumpWriterOwnership): Promise<void> {
+  if (CLAWPUMP_HOUSE_AGENT_IDS.has(agentId)) throw new ClawPumpWriterError('not_arena_agent');
+  const owned = await (ownership.isOwnedBy ?? isArenaClawPumpOwnedBy)(agentId, ownership.arenaAgentId);
+  if (!owned) throw new ClawPumpWriterError('not_arena_agent');
 }
 
 function normalisedSkills(skills: readonly string[]): string[] {
@@ -575,4 +586,349 @@ export const clawPumpArenaWriter: ClawPumpArenaWriter = {
   updateAgent: (agentId, patch, arenaAgentId, priority) => updateClawPumpAgent(agentId, patch, { arenaAgentId }, { priority }),
   getWalletBalances: () => getClawPumpWalletBalances(),
   x402Pay: (agentId, input, arenaAgentId) => x402PayViaClawPump(agentId, input, { arenaAgentId }),
+};
+
+// ---------------------------------------------------------------------------
+// P5 arena wallet WITHDRAW. REAL MONEY. Contract:
+// ops/house-traders/arena-review/P5_CONTRACT_2026-10-02.md §3 (invariants I1, I8, I9).
+// Every refusal is thrown BEFORE the transfer POST, so a throw always means
+// "nothing sent". After the POST starts, transferFromArenaWallet never throws:
+// it returns an outcome. The POST is sent once and never retried. Only a reply
+// that proves "nothing sent" is 'rejected'; every other reply is 'unknown'
+// (the caller reconciles on chain and never sends again). Outcomes carry codes
+// and a signature only: never the key, a body, or vendor `error` text.
+// ---------------------------------------------------------------------------
+
+/** After this time the transfer is 'unknown' (it may have been sent). */
+export const CLAWPUMP_TRANSFER_TIMEOUT_MS = 45_000;
+/** HTTP 200 ok:false codes that Run 2 proved are pre-checks (nothing sent). Any other code is 'unknown'. */
+export const CLAWPUMP_TRANSFER_NO_SEND_VENDOR_CODES: ReadonlySet<string> = new Set(['insufficient_live_balance', 'insufficient_fee_balance']);
+/** Auth and rate-limit refusals: ClawPump answers them before the transfer handler runs. */
+const TRANSFER_NO_SEND_HTTP_STATUSES: ReadonlySet<number> = new Set([401, 403, 429]);
+const USDC_DECIMALS = 6;
+const SOL_DECIMALS = 9;
+const MAX_TRANSFER_ATOMIC = 2n ** 63n - 1n;
+const DEFAULT_HISTORY_LIMIT = 50;
+const MAX_HISTORY_ROWS = 200;
+const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
+const TX_SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{43,100}$/;
+/** `vendor_` (7 characters) plus this stays inside the stored code shape [a-z0-9_.:-]{1,64}. */
+const VENDOR_CODE_RE = /^[a-z0-9_.:-]{1,57}$/;
+const UI_AMOUNT_RE = /^(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,4}))?$/;
+
+export interface ClawPumpArenaWalletLive {
+  address: string;
+  solLamports: bigint;
+  usdcAtomic: bigint;
+  /** Taken BEFORE the request: add-on calls at or after this time may be missing from the balances. */
+  readAt: Date;
+  transactions: Array<{ signature: string; status: string | null }>;
+}
+
+export type ArenaTransferAsset = 'USDC' | 'SOL';
+
+export interface ArenaTransferInput {
+  to: string;
+  asset: ArenaTransferAsset;
+  amountAtomic: bigint;
+  /** The arena row's ClawPump wallet. The agent's wallet at the guard GET must be this address. */
+  expectedSource: string;
+}
+
+export type ArenaTransferOutcome =
+  | { kind: 'sent'; txSignature: string; recipientAccountCreated: boolean | null }
+  | { kind: 'rejected'; code: string } // proved nothing sent
+  | { kind: 'unknown'; code: string; txSignature: string | null } // may have sent
+  | { kind: 'mismatch'; code: 'reply_mismatch'; txSignature: string | null }; // ok:true but from/to/mint/amount differ
+
+/**
+ * Why `address` cannot receive a withdrawal, or null when it can. ON-CURVE
+ * only (same rule as wallet-withdraw-executor `validateWithdrawStatic`): a PDA
+ * has no secret key, so money sent there is lost.
+ */
+export function arenaDestinationProblem(address: string): null | 'not_base58' | 'not_32_bytes' | 'off_curve' {
+  if (typeof address !== 'string' || !BASE58_RE.test(address)) return 'not_base58';
+  // 32 bytes encode to 32..44 base58 characters, so a longer text is never decoded.
+  if (address.length > 44) return 'not_32_bytes';
+  let bytes: Uint8Array;
+  try {
+    bytes = bs58.decode(address);
+  } catch {
+    return 'not_base58';
+  }
+  if (bytes.length !== 32) return 'not_32_bytes';
+  return PublicKey.isOnCurve(bytes) ? null : 'off_curve';
+}
+
+/** Exact decimal text of an atomic amount: 100000n, 6 -> "0.1". No exponent, no trailing zeros. */
+export function formatAtomicAmount(atomic: bigint, decimals: number): string {
+  if (typeof atomic !== 'bigint' || !Number.isSafeInteger(decimals) || decimals < 0 || decimals > 18) {
+    throw new ClawPumpWriterError('invalid_input');
+  }
+  const sign = atomic < 0n ? '-' : '';
+  const digits = (atomic < 0n ? -atomic : atomic).toString().padStart(decimals + 1, '0');
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction = digits.slice(digits.length - decimals).replace(/0+$/, '');
+  return fraction ? `${sign}${whole}.${fraction}` : `${sign}${whole}`;
+}
+
+/**
+ * A vendor UI amount (number or decimal string) in atomic units, rounded DOWN.
+ * A number is read from its shortest decimal text (String(0.29) = "0.29"), so
+ * float error never changes the result; exponent text ("1e-7") is accepted.
+ * Null when the value is not finite, below 0, or not a decimal. Never throws.
+ */
+export function parseUiAmountToAtomic(value: number | string, decimals: number): bigint | null {
+  if (!Number.isSafeInteger(decimals) || decimals < 0 || decimals > 18) return null;
+  let text: string;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return null;
+    text = String(value);
+  } else if (typeof value === 'string') {
+    text = value.trim();
+    const asNumber = Number(text);
+    if (text === '' || text.length > 64 || !Number.isFinite(asNumber) || asNumber < 0) return null;
+  } else {
+    return null;
+  }
+  const match = UI_AMOUNT_RE.exec(text);
+  if (!match) return null;
+  const whole = match[1] ?? '';
+  const fraction = match[2] ?? '';
+  if (whole === '' && fraction === '') return null;
+  const digits = `${whole}${fraction}`;
+  // Count of digits that stay in front of the decimal point after the scale to atomic units.
+  const kept = whole.length + Number(match[3] ?? 0) + decimals;
+  if (kept <= 0) return 0n;
+  if (kept >= digits.length) return BigInt(digits) * 10n ** BigInt(kept - digits.length);
+  return BigInt(digits.slice(0, kept));
+}
+
+const walletBalanceWire = z.union([z.number(), z.string().max(64)]);
+const walletHistoryWire = z.object({
+  address: z.string().max(64),
+  solBalance: walletBalanceWire,
+  usdcBalance: walletBalanceWire,
+  transactions: z.array(z.object({
+    signature: z.string().min(1).max(128),
+    status: z.string().max(64).nullish(),
+  }).passthrough()).max(MAX_HISTORY_ROWS),
+}).passthrough();
+
+/**
+ * GET /wallets/{id}/history: the LIVE balances of an arena agent's wallet
+ * (Run 2 fact 3: /wallets/summary is cached, so it is never used here).
+ * Order: agent id -> house id refused -> DB ownership (no network) -> one
+ * normal-priority GET. A missing or unreadable balance throws schema_invalid.
+ */
+export async function readArenaWalletLive(
+  agentId: string,
+  ownership: ClawPumpWriterOwnership,
+  options: ClawPumpWriterOptions & { limit?: number } = {},
+): Promise<ClawPumpArenaWalletLive> {
+  assertAgentId(agentId);
+  const { limit = DEFAULT_HISTORY_LIMIT, ...rest } = options;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_HISTORY_ROWS) throw new ClawPumpWriterError('invalid_input');
+  await assertOwnedArenaAgent(agentId, ownership);
+  const readAt = new Date();
+  const parsed = walletHistoryWire.safeParse(
+    await sendJson('GET', `/wallets/${agentId}/history?limit=${limit}`, undefined, { ...rest, priority: 'normal' }),
+  );
+  if (!parsed.success) throw new ClawPumpWriterError('schema_invalid');
+  const addressProblem = arenaDestinationProblem(parsed.data.address);
+  if (addressProblem === 'not_base58' || addressProblem === 'not_32_bytes') throw new ClawPumpWriterError('schema_invalid');
+  const solLamports = parseUiAmountToAtomic(parsed.data.solBalance, SOL_DECIMALS);
+  const usdcAtomic = parseUiAmountToAtomic(parsed.data.usdcBalance, USDC_DECIMALS);
+  if (solLamports === null || usdcAtomic === null) throw new ClawPumpWriterError('schema_invalid');
+  return {
+    address: parsed.data.address,
+    solLamports,
+    usdcAtomic,
+    readAt,
+    transactions: parsed.data.transactions.map((tx) => ({ signature: tx.signature, status: tx.status ?? null })),
+  };
+}
+
+interface CheckedTransfer {
+  to: string;
+  asset: ArenaTransferAsset;
+  amountAtomic: bigint;
+  expectedSource: string;
+  decimals: number;
+}
+
+/** A copy of the checked input, so a later change to the caller's object cannot reach the POST. */
+function checkTransferInput(input: ArenaTransferInput): CheckedTransfer {
+  const { to, asset, amountAtomic, expectedSource } = (input ?? {}) as Partial<ArenaTransferInput>;
+  if (asset !== 'USDC' && asset !== 'SOL') throw new ClawPumpWriterError('invalid_input');
+  if (typeof amountAtomic !== 'bigint' || amountAtomic <= 0n || amountAtomic > MAX_TRANSFER_ATOMIC) {
+    throw new ClawPumpWriterError('invalid_input');
+  }
+  if (typeof to !== 'string' || arenaDestinationProblem(to) !== null) throw new ClawPumpWriterError('invalid_input');
+  const sourceProblem = typeof expectedSource === 'string' ? arenaDestinationProblem(expectedSource) : 'not_base58';
+  if (sourceProblem === 'not_base58' || sourceProblem === 'not_32_bytes') throw new ClawPumpWriterError('invalid_input');
+  if (to === expectedSource) throw new ClawPumpWriterError('invalid_input');
+  return { to, asset, amountAtomic, expectedSource: expectedSource as string, decimals: asset === 'USDC' ? USDC_DECIMALS : SOL_DECIMALS };
+}
+
+type TransferPostReply =
+  | { kind: 'reply'; status: number; bodyRead: boolean; payload: unknown }
+  | { kind: 'no_reply'; code: 'timeout' | 'network_error' };
+
+function transportCode(error: unknown): 'timeout' | 'network_error' {
+  const name = (error as { name?: unknown } | null)?.name;
+  return name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network_error';
+}
+
+/**
+ * The transfer POST. Same config, host check and call budget as sendJson. It
+ * throws only not_configured, invalid_base_url or budget_exhausted, all BEFORE
+ * fetch. After fetch starts it never throws and never retries: it returns the
+ * HTTP status and the JSON body (read up to 1 MB) for ANY status, or the
+ * transport failure.
+ */
+async function sendTransferPost(path: string, body: unknown, options: ClawPumpWriterOptions): Promise<TransferPostReply> {
+  let config: ReturnType<typeof resolveClawPumpConfig>;
+  try {
+    config = resolveClawPumpConfig(options.env ?? process.env);
+  } catch (error) {
+    throw toWriterError(error);
+  }
+  const url = new URL(path, config.origin);
+  if (url.origin !== config.origin) throw new ClawPumpWriterError('invalid_base_url');
+  const requestBody = JSON.stringify(body);
+  if (!takeWriterToken('normal')) throw new ClawPumpWriterError('budget_exhausted');
+  let response: Response;
+  try {
+    response = await (options.fetchImpl ?? fetch)(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: requestBody,
+      redirect: 'error',
+      signal: AbortSignal.timeout(CLAWPUMP_TRANSFER_TIMEOUT_MS),
+    });
+  } catch (error) {
+    return { kind: 'no_reply', code: transportCode(error) };
+  }
+  try {
+    const status = response.status;
+    if (Number(response.headers.get('content-length') ?? 0) > MAX_RESPONSE_CHARS) {
+      return { kind: 'reply', status, bodyRead: false, payload: undefined };
+    }
+    const text = await response.text();
+    if (text.length > MAX_RESPONSE_CHARS) return { kind: 'reply', status, bodyRead: false, payload: undefined };
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = undefined;
+    }
+    return { kind: 'reply', status, bodyRead: true, payload };
+  } catch (error) {
+    return { kind: 'no_reply', code: transportCode(error) };
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Contract §3 reply classification. Pure, reads plain JSON values only, never throws. */
+function classifyTransferReply(reply: TransferPostReply, transfer: CheckedTransfer): ArenaTransferOutcome {
+  if (reply.kind === 'no_reply') return { kind: 'unknown', code: reply.code, txSignature: null };
+  const payload = isPlainRecord(reply.payload) ? reply.payload : null;
+  const txHash = payload?.txHash;
+  // Any txHash value, even one that is not a valid signature, means the reply does not prove "nothing sent".
+  const hasTxHash = txHash !== undefined && txHash !== null && txHash !== '';
+  const txSignature = typeof txHash === 'string' && TX_SIGNATURE_RE.test(txHash) ? txHash : null;
+  const { status } = reply;
+  if (status < 200 || status > 299) {
+    const code = `http_${status}`;
+    // A body over 1 MB, or one that was not read, cannot prove "no txHash".
+    if (TRANSFER_NO_SEND_HTTP_STATUSES.has(status) && reply.bodyRead && !hasTxHash) return { kind: 'rejected', code };
+    return { kind: 'unknown', code, txSignature };
+  }
+  if (payload === null) return { kind: 'unknown', code: 'reply_unparsed', txSignature: null };
+  if (payload.ok === false) {
+    const vendorCode = typeof payload.code === 'string' ? payload.code : null;
+    const code = vendorCode !== null && VENDOR_CODE_RE.test(vendorCode) ? `vendor_${vendorCode}` : 'vendor_error';
+    if (status === 200 && !hasTxHash && vendorCode !== null && CLAWPUMP_TRANSFER_NO_SEND_VENDOR_CODES.has(vendorCode)) {
+      return { kind: 'rejected', code };
+    }
+    return { kind: 'unknown', code, txSignature };
+  }
+  if (payload.ok !== true) return { kind: 'unknown', code: 'reply_unparsed', txSignature };
+  if (txSignature === null) return { kind: 'unknown', code: 'no_tx_hash', txSignature: null };
+  const assetField = transfer.asset === 'USDC' ? payload.mint : payload.token;
+  if ([payload.from, payload.to, payload.amount, assetField].some((field) => field === undefined || field === null)) {
+    // ok:true with a signature but without the fields to check: the chain decides (reconcile by signature).
+    return { kind: 'unknown', code: 'reply_unparsed', txSignature };
+  }
+  const amount = typeof payload.amount === 'number' || typeof payload.amount === 'string'
+    ? parseUiAmountToAtomic(payload.amount, transfer.decimals)
+    : null;
+  const assetMatches = transfer.asset === 'USDC'
+    ? payload.mint === TRADE_MINTS.USDC
+    : typeof payload.token === 'string' && payload.token.toUpperCase() === 'SOL';
+  if (payload.status !== 'sent' || payload.from !== transfer.expectedSource || payload.to !== transfer.to
+    || amount !== transfer.amountAtomic || !assetMatches) {
+    return { kind: 'mismatch', code: 'reply_mismatch', txSignature };
+  }
+  return {
+    kind: 'sent',
+    txSignature,
+    recipientAccountCreated: typeof payload.createdRecipientTokenAccount === 'boolean' ? payload.createdRecipientTokenAccount : null,
+  };
+}
+
+/**
+ * POST /wallets/{id}/transfer ONCE from the arena agent's wallet. Guard order
+ * (every throw is BEFORE the POST, so a throw always means "nothing sent"):
+ * agent id -> input -> assertArenaAgent (house id, DB ownership, env prefix and
+ * row suffix; one GET) -> status 'stopped' -> wallet = expectedSource -> POST.
+ * Both calls use a normal-priority token (the removal reserve stays free).
+ * No whitelist call (D34-a). Not retried: a timeout or any unclear reply is
+ * 'unknown', and the caller reconciles on chain.
+ */
+export async function transferFromArenaWallet(
+  agentId: string,
+  input: ArenaTransferInput,
+  ownership: ClawPumpWriterOwnership,
+  options: ClawPumpWriterOptions = {},
+): Promise<ArenaTransferOutcome> {
+  assertAgentId(agentId);
+  const transfer = checkTransferInput(input);
+  const callOptions: ClawPumpWriterOptions = { ...options, priority: 'normal' };
+  const current = await assertArenaAgent(agentId, ownership, callOptions);
+  assertStopped(current.status);
+  if (current.walletAddress !== transfer.expectedSource) throw new ClawPumpWriterError('wallet_mismatch');
+  const reply = await sendTransferPost(`/wallets/${agentId}/transfer`, {
+    to: transfer.to,
+    amount: formatAtomicAmount(transfer.amountAtomic, transfer.decimals),
+    token: transfer.asset === 'USDC' ? TRADE_MINTS.USDC : 'SOL',
+  }, callOptions);
+  try {
+    return classifyTransferReply(reply, transfer);
+  } catch {
+    // The classifier reads plain JSON values only. If it ever threw, a throw here
+    // would tell the caller "nothing sent" after a POST: return 'unknown' instead.
+    return { kind: 'unknown', code: 'reply_unparsed', txSignature: null };
+  }
+}
+
+/** The withdraw surface the arena engine depends on, so tests inject a fake. Separate from ClawPumpArenaWriter. */
+export interface ClawPumpArenaWithdrawWriter {
+  /** `arenaAgentId` = the user arena row that must own this ClawPump agent. */
+  readWalletLive(agentId: string, arenaAgentId: string): Promise<ClawPumpArenaWalletLive>;
+  /** A throw = nothing sent. After the POST starts it returns an outcome and never throws. */
+  transfer(agentId: string, input: ArenaTransferInput, arenaAgentId: string): Promise<ArenaTransferOutcome>;
+}
+
+export const clawPumpArenaWithdrawWriter: ClawPumpArenaWithdrawWriter = {
+  readWalletLive: (agentId, arenaAgentId) => readArenaWalletLive(agentId, { arenaAgentId }),
+  transfer: (agentId, input, arenaAgentId) => transferFromArenaWallet(agentId, input, { arenaAgentId }),
 };
