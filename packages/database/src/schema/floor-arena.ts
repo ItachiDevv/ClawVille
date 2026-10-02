@@ -1,11 +1,13 @@
 /**
  * Trading Floor Arena (paper contest) tables. Contract:
  * `docs/trading-floor-arena.md` §4. Migrations: `0070_floor_arena.sql` + `0072_floor_arena_sources.sql`
- * (idempotent, applied by the CI migrate gate, NEVER db:push).
+ * + `0074_floor_arena_withdraw.sql` (idempotent, applied by the CI migrate gate, NEVER db:push).
  *
- * PAPER ONLY. No table here holds money, a ClawToken balance or a wallet
- * secret; `numeric` P&L columns are paper USD. The live Floor board keeps
- * reading `verified_trades` and never these tables.
+ * `floor_arena_addon_calls` and `floor_arena_withdrawals` record REAL USDC
+ * and SOL that leave an agent's own ClawPump wallet. The other tables are
+ * paper: their `numeric` P&L columns are paper USD. No table here holds a
+ * ClawToken balance or a wallet secret. The live Floor board keeps reading
+ * `verified_trades` and never these tables.
  *
  * The value sets in the CHECK constraints are the `FLOOR_ARENA_*` arrays in
  * `@clawville/shared` (constants/floor-arena.ts). drizzle-kit 0.24 does not
@@ -14,6 +16,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   check,
@@ -47,6 +50,12 @@ import type {
   FloorArenaProvisionState,
   FloorArenaSuggestion,
   FloorArenaSuggestionState,
+  FloorArenaWithdrawAddressProof,
+  FloorArenaWithdrawAmountMode,
+  FloorArenaWithdrawAsset,
+  FloorArenaWithdrawRevokeReason,
+  FloorArenaWithdrawState,
+  FloorArenaWithdrawSubjectKind,
   FloorDiscoverySnapshot,
 } from '@clawville/shared';
 import { users } from './users';
@@ -174,7 +183,7 @@ export const floorArenaEvents = pgTable('floor_arena_events', {
   summary: text('summary').notNull(),
   data: jsonb('data').$type<Record<string, unknown>>(),
 }, (t) => ({
-  typeValid: check('floor_arena_events_type_valid', sql`${t.type} IN ('scan','pass','skip','entry','exit','param_change','report','status','addon')`),
+  typeValid: check('floor_arena_events_type_valid', sql`${t.type} IN ('scan','pass','skip','entry','exit','param_change','report','status','addon','withdraw')`),
   agentIdIdx: index('floor_arena_events_agent_id_idx').on(t.agentId, t.id.desc()),
   atIdx: index('floor_arena_events_at_idx').on(t.at),
   // The public trade tape: newest entry/exit rows without walking scan/pass/skip rows.
@@ -253,6 +262,104 @@ export const floorArenaAddonCalls = pgTable('floor_arena_addon_calls', {
   agentAddonAtIdx: index('floor_arena_addon_calls_agent_addon_at_idx').on(t.agentId, t.addonId, t.at.desc()),
 }));
 
+/** Proved withdraw destinations (D34-d, D34-e). At most one current (not revoked) row per agent: a new
+ *  address revokes the old one (`replaced`) and works from `active_at`. A `signed` row keeps the exact
+ *  message, the signature and the single-use challenge nonce; a `linked_wallet` row keeps none of them. */
+export const floorArenaWithdrawAddresses = pgTable('floor_arena_withdraw_addresses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  agentId: text('agent_id').notNull().references(() => floorArenaAgents.id, { onDelete: 'cascade' }),
+  ownerUserId: uuid('owner_user_id').notNull(),
+  address: text('address').notNull(),
+  proofKind: text('proof_kind').$type<FloorArenaWithdrawAddressProof>().notNull(),
+  message: text('message'),
+  signature: text('signature'),
+  challengeNonce: text('challenge_nonce'),
+  setBy: text('set_by').$type<FloorArenaWithdrawSubjectKind>().notNull(),
+  setByAgentId: text('set_by_agent_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  activeAt: timestamp('active_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokeReason: text('revoke_reason').$type<FloorArenaWithdrawRevokeReason>(),
+}, (t) => ({
+  proofValid: check('floor_arena_withdraw_addresses_proof_valid', sql`(${t.proofKind} = 'signed' AND ${t.message} IS NOT NULL AND ${t.signature} IS NOT NULL AND ${t.challengeNonce} IS NOT NULL) OR (${t.proofKind} = 'linked_wallet' AND ${t.message} IS NULL AND ${t.signature} IS NULL AND ${t.challengeNonce} IS NULL)`),
+  setByValid: check('floor_arena_withdraw_addresses_set_by_valid', sql`${t.setBy} IN ('human','agent') AND ((${t.setBy} = 'agent') = (${t.setByAgentId} IS NOT NULL))`),
+  revokeValid: check('floor_arena_withdraw_addresses_revoke_valid', sql`(${t.revokedAt} IS NULL AND ${t.revokeReason} IS NULL) OR (${t.revokedAt} IS NOT NULL AND ${t.revokeReason} IN ('owner','replaced','admin'))`),
+  shape: check('floor_arena_withdraw_addresses_shape', sql`${t.address} ~ '^[1-9A-HJ-NP-Za-km-z]{32,44}$' AND ${t.activeAt} >= ${t.createdAt}`),
+  oneCurrentUq: uniqueIndex('floor_arena_withdraw_addresses_one_current_uq').on(t.agentId).where(sql`${t.revokedAt} IS NULL`),
+  nonceUq: uniqueIndex('floor_arena_withdraw_addresses_nonce_uq').on(t.challengeNonce).where(sql`${t.challengeNonce} IS NOT NULL`),
+  agentCreatedIdx: index('floor_arena_withdraw_addresses_agent_created_idx').on(t.agentId, t.createdAt.desc()),
+}));
+
+/** Single-use proof challenges (D34-d): a DB row, not memory, because two API containers run during a
+ *  deploy flip. Consumed once, before the signature check; dead after `expires_at`. */
+export const floorArenaWithdrawChallenges = pgTable('floor_arena_withdraw_challenges', {
+  nonce: text('nonce').primaryKey(),
+  agentId: text('agent_id').notNull().references(() => floorArenaAgents.id, { onDelete: 'cascade' }),
+  ownerUserId: uuid('owner_user_id').notNull(),
+  address: text('address').notNull(),
+  message: text('message').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  expiry: check('floor_arena_withdraw_challenges_expiry', sql`${t.expiresAt} > ${t.createdAt}`),
+  agentIdx: index('floor_arena_withdraw_challenges_agent_idx').on(t.agentId, t.createdAt.desc()),
+  expiresIdx: index('floor_arena_withdraw_challenges_expires_idx').on(t.expiresAt),
+}));
+
+/** Wallet withdrawals (D34). REAL USDC or SOL leaves the agent's own ClawPump wallet to `destination`,
+ *  which is copied at request time from the active proved address (I3). States only move forward:
+ *  requested -> dispatching -> sent -> confirmed, with side exits. The guard trigger
+ *  `floor_arena_withdrawals_guard` (migration 0074 only; Drizzle has no triggers) refuses every move
+ *  back to requested or dispatching and every change to a money field once it is set (I1, I2). The
+ *  `*_atomic` and `*_lamports` columns are integer base units (USDC 6 decimals, SOL 9). */
+export const floorArenaWithdrawals = pgTable('floor_arena_withdrawals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  agentId: text('agent_id').notNull().references(() => floorArenaAgents.id, { onDelete: 'cascade' }),
+  ownerUserId: uuid('owner_user_id').notNull(),
+  subjectKind: text('subject_kind').$type<FloorArenaWithdrawSubjectKind>().notNull(),
+  subjectAgentId: text('subject_agent_id'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  asset: text('asset').$type<FloorArenaWithdrawAsset>().notNull(),
+  amountMode: text('amount_mode').$type<FloorArenaWithdrawAmountMode>().notNull(),
+  requestedAtomic: bigint('requested_atomic', { mode: 'bigint' }),
+  amountAtomic: bigint('amount_atomic', { mode: 'bigint' }),
+  sourceClawpumpAgentId: text('source_clawpump_agent_id').notNull(),
+  sourceWallet: text('source_wallet').notNull(),
+  destination: text('destination').notNull(),
+  addressId: uuid('address_id').notNull().references(() => floorArenaWithdrawAddresses.id),
+  state: text('state').$type<FloorArenaWithdrawState>().default('requested').notNull(),
+  errorCode: text('error_code'),
+  preBalanceAtomic: bigint('pre_balance_atomic', { mode: 'bigint' }),
+  preSolLamports: bigint('pre_sol_lamports', { mode: 'bigint' }),
+  postBalanceAtomic: bigint('post_balance_atomic', { mode: 'bigint' }),
+  txSignature: text('tx_signature'),
+  recipientAccountCreated: boolean('recipient_account_created'),
+  reviewNote: text('review_note'),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+  dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  finalizedAt: timestamp('finalized_at', { withTimezone: true }),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  checkCount: integer('check_count').default(0).notNull(),
+}, (t) => ({
+  subjectValid: check('floor_arena_withdrawals_subject_valid', sql`${t.subjectKind} IN ('human','agent') AND ((${t.subjectKind} = 'agent') = (${t.subjectAgentId} IS NOT NULL))`),
+  assetValid: check('floor_arena_withdrawals_asset_valid', sql`${t.asset} IN ('USDC','SOL')`),
+  amountValid: check('floor_arena_withdrawals_amount_valid', sql`((${t.amountMode} = 'exact' AND ${t.requestedAtomic} IS NOT NULL AND ${t.requestedAtomic} > 0) OR (${t.amountMode} = 'max' AND ${t.requestedAtomic} IS NULL)) AND (${t.amountAtomic} IS NULL OR ${t.amountAtomic} > 0)`),
+  stateValid: check('floor_arena_withdrawals_state_valid', sql`${t.state} IN ('requested','dispatching','sent','confirmed','cancelled','refused','failed','unknown','failed_no_send','needs_review')`),
+  dispatchStamp: check('floor_arena_withdrawals_dispatch_stamp', sql`${t.state} IN ('requested','cancelled','refused') OR (${t.amountAtomic} IS NOT NULL AND ${t.dispatchedAt} IS NOT NULL)`),
+  sentSignature: check('floor_arena_withdrawals_sent_signature', sql`${t.state} NOT IN ('sent','confirmed') OR ${t.txSignature} IS NOT NULL`),
+  codesShape: check('floor_arena_withdrawals_codes_shape', sql`(${t.errorCode} IS NULL OR ${t.errorCode} ~ '^[a-z0-9_.:-]{1,64}$') AND ${t.idempotencyKey} ~ '^[A-Za-z0-9_-]{8,64}$'`),
+  agentIdemUq: uniqueIndex('floor_arena_withdrawals_agent_idem_uq').on(t.agentId, t.idempotencyKey),
+  // One open withdrawal per agent (FLOOR_ARENA_WITHDRAW_OPEN_STATES).
+  oneOpenUq: uniqueIndex('floor_arena_withdrawals_one_open_uq').on(t.agentId).where(sql`${t.state} IN ('requested','dispatching','sent','unknown')`),
+  // One chain signature belongs to one row (I7: a reused signature never confirms a second row).
+  txUq: uniqueIndex('floor_arena_withdrawals_tx_uq').on(t.txSignature).where(sql`${t.txSignature} IS NOT NULL`),
+  stateIdx: index('floor_arena_withdrawals_state_idx').on(t.state, t.requestedAt),
+  agentRequestedIdx: index('floor_arena_withdrawals_agent_requested_idx').on(t.agentId, t.requestedAt.desc()),
+  dispatchedIdx: index('floor_arena_withdrawals_dispatched_idx').on(t.dispatchedAt).where(sql`${t.dispatchedAt} IS NOT NULL`),
+}));
+
 export type FloorDiscoveryMintRow = typeof floorDiscoveryMints.$inferSelect;
 export type FloorArenaAgentRow = typeof floorArenaAgents.$inferSelect;
 export type FloorArenaPositionRow = typeof floorArenaPositions.$inferSelect;
@@ -261,3 +368,6 @@ export type FloorArenaReportRow = typeof floorArenaReports.$inferSelect;
 export type FloorArenaParamChangeRow = typeof floorArenaParamChanges.$inferSelect;
 export type FloorArenaPrivateMintRow = typeof floorArenaPrivateMints.$inferSelect;
 export type FloorArenaAddonCallRow = typeof floorArenaAddonCalls.$inferSelect;
+export type FloorArenaWithdrawAddressRow = typeof floorArenaWithdrawAddresses.$inferSelect;
+export type FloorArenaWithdrawChallengeRow = typeof floorArenaWithdrawChallenges.$inferSelect;
+export type FloorArenaWithdrawalRow = typeof floorArenaWithdrawals.$inferSelect;
