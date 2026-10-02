@@ -16,7 +16,8 @@
  * Lucia-cookie user chats through a runtime, 'agent' for autonomous/hosted/
  * connected surfaces) and every ledger call + explicit action record flowing
  * through these services carries that attribution. Omitted → unattributed
- * (never guessed).
+ * (never guessed). The one exception is `creditHouseTreasuryBookFee`: a T0 house
+ * fee is always attributed to 'system', exactly like the REST fee sites.
  */
 
 import type { ClawvilleServices } from '@clawville/agent-runtime';
@@ -31,6 +32,7 @@ import {
   type CovenantAction,
   type CovenantActorKind,
 } from './covenant-action-recorder';
+import { getHouseTreasuryAvatarId } from './house-treasury-seeder';
 
 // Drizzle db handle is `any` on the runtime side (intentional — see
 // SimulationServices in agent-runtime/src/simulation/simulation-runtime.ts).
@@ -77,6 +79,41 @@ export function buildRuntimeServices(
         },
         tx,
       );
+    },
+    creditHouseTreasuryBookFee: async (params, tx) => {
+      // T0 fee routing for runtime BUY_ITEM (security batch 2, 2026-10-02):
+      // the SAME ledger row the REST shop writes (`routes/items.ts` step 1b).
+      // A credit outside the buyer's debit tx could mint on a later rollback,
+      // so the tx is mandatory.
+      if (!tx) {
+        throw new Error('house_fee_book_purchase: the treasury credit must run in the buyer debit transaction');
+      }
+      // Demo money never reaches the treasury.
+      await refuseGuestLedgerSubject(tx, params.buyerAvatarId);
+      if (!Number.isInteger(params.amount) || params.amount <= 0) {
+        return { treasuryAvatarId: null };
+      }
+      const treasuryId = await getHouseTreasuryAvatarId();
+      if (!treasuryId) {
+        console.error(
+          `[runtime BUY_ITEM] house treasury unavailable — ${params.amount} CT book purchase burned (pre-T0 behavior) for book ${params.bookId}`,
+        );
+        return { treasuryAvatarId: null };
+      }
+      // Attribution is 'system' like every T0 fee site, not the surface's
+      // actor: the house, not the buyer, receives the fee.
+      await ledgerCreditClawTokens(
+        {
+          avatarId: treasuryId,
+          amount: params.amount,
+          reason: 'house_fee_book_purchase',
+          source: 'system',
+          metadata: { bookId: params.bookId, buyerAvatarId: params.buyerAvatarId },
+          actorKind: 'system',
+        },
+        tx,
+      );
+      return { treasuryAvatarId: treasuryId };
     },
     recordCovenantAction: async (params, tx) => {
       return recordCovenantAction(

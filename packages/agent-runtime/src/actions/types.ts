@@ -28,6 +28,19 @@ export interface CovenantActionRecordParams {
   payload: Record<string, unknown>;
 }
 
+/**
+ * T0 fee routing input for a book bought through BUY_ITEM (security batch 2,
+ * 2026-10-02). The service decides the treasury, reason, source and actor; the
+ * runtime supplies only the facts of the sale.
+ */
+export interface HouseTreasuryBookFeeParams {
+  bookId: string;
+  /** The avatar whose debit pays for the book (a guest is refused). */
+  buyerAvatarId: string;
+  /** The book price, already debited from the buyer in the SAME tx. */
+  amount: number;
+}
+
 export interface ClawvilleServices {
   /**
    * Credit ClawTokens to an avatar (returns new balance). Pass the enclosing
@@ -40,6 +53,21 @@ export interface ClawvilleServices {
    * debits and grants the book in ONE transaction, security Codex round 2).
    */
   debitClawTokens: (params: ClawTokenServiceParams, tx?: any) => Promise<{ balanceAfter: number }>;
+  /**
+   * T0 fee routing for BUY_ITEM (security batch 2, 2026-10-02): credits the book
+   * price to the house treasury with the SAME ledger row the REST shop writes
+   * (`routes/items.ts` step 1b: reason 'house_fee_book_purchase', source 'system',
+   * actor 'system', metadata { bookId, buyerAvatarId }). `tx` is REQUIRED: the
+   * credit commits or rolls back with the buyer's debit and the inventory grant,
+   * so no path mints or burns by accident. Resolves the treasury avatar id, or
+   * null when the treasury is unavailable (the service logs; the price burns, the
+   * REST pre-T0 fallback). OPTIONAL so bespoke service constructors keep
+   * compiling; BUY_ITEM refuses BEFORE any debit when it is absent (fail closed).
+   */
+  creditHouseTreasuryBookFee?: (
+    params: HouseTreasuryBookFeeParams,
+    tx: any,
+  ) => Promise<{ treasuryAvatarId: string | null }>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
   /**
