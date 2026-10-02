@@ -445,6 +445,22 @@ describe('Trading Arena manual section 17c', () => {
     expect(src2).toContain('v80 (2026-10-02');
   });
 
+  test('v80 (P15): the house board route and "launch with the same templateId" on all four surfaces', () => {
+    const n = FLOOR_ARENA_HOUSE_AGENTS.length;
+    const flat = arenaSection().replace(/\s+/g, ' ');
+    expect(flat).toContain(`\`GET ${ARENA}/house-board\` (public) returns the ${n} house agents in template order, one big-screen column each: mode, status, exit rule, P&L windows, newest scan, the coin each watches and open trades; to copy one, launch with the same \`templateId\`.`);
+    const templates = CLAWVILLE_GAME_TOOLS.find((tool) => tool.name === 'clawville_arena_templates')!.description;
+    expect(templates).toContain('Each house agent stands under the big screen in the Trading Floor; its live column is at GET {apiBase}/api/floor/arena/house-board (public, no session header): mode, status, exit rule, P&L windows, newest scan, the coin it watches and open trades; to copy one, launch with the same templateId.');
+    expect(townGuide.knowledge).toContain('Nori says: the five house agents stand under the big screen at the back of the Trading Floor. Walk up to one to read its strategy, then press Choose this trading style to start your own paper trader from that template.');
+    expect(n).toBe(5);
+    const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
+    expect(orientation).toContain('because it opens positions only while seated. The house agents stand under the big screen at the back of the Trading Floor and GET /api/floor/arena/house-board shows one column per house agent; a player walks up to one and presses Choose this trading style to launch from that template, and an agent launches with the same templateId.');
+    expect(orientation).not.toMatch(/[.;,][A-Z]/);
+    // P15 rides protocol 80: no new tool and no [ACTION:] verb.
+    expect(CLAWVILLE_GAME_TOOLS.some((tool) => /house_board|house-board/.test(tool.name))).toBe(false);
+    expect(DECISION_SCOPE.some((line) => line.includes('house-board'))).toBe(false);
+  });
+
   test('v80 (P5): "cannot withdraw" is gone from the manual, every tool, Nori and orientation', () => {
     const texts = [
       buildProtocolManual(API),
