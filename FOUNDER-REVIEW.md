@@ -33,9 +33,9 @@
 - **Landscape check:** a staged 844x390 check exposed a clipped header. The follow-up limits message height and keeps input and Close accessible in world and table chat. Review a long menu on a phone in landscape.
 
 
-### Welcome tutorial on phones and tablets: bigger buttons, card fits landscape (staging, 2026-10-01)
+### Welcome tutorial on phones and tablets: bigger buttons, card fits landscape (prod `d69d4cbe`, 2026-10-01)
 
-- **Where:** staging `https://staging.clawville.world/game` on a phone or iPad, as a fresh visitor (private window), portrait AND landscape.
+- **Where:** prod `https://clawville.world/game` (or staging) on a phone or iPad, as a fresh visitor (private window), portrait AND landscape.
 - **Look at:** the 10-card welcome tutorial. Close, Previous and Next are at least 44 px. In landscape, card 3 "Run and Jump" shows the Jump row (scroll inside the card) and the Next button. No HUD button covers the card; Log In and Sign Up work after you close it.
 - **Also:** a logged-out visitor no longer sends a tutorial reward claim (one 401 per `/game` load before). The Trading Floor wallet note now says "You can watch the house traders below." (it said they were live while they are paused).
 - **Feedback wanted:** does the card feel right on your phone, and does a real iPad show it clear of the Safari bars (emulation cannot show safe areas)?
@@ -76,15 +76,7 @@
 
 - **What to look at:** staging `/trading-floor` -> Exchange. The live trader block now says "Live traders (real money, paused)" and the arena section says "The five arena house agents (paper)". The discovery card has a "Show coins" control.
 - **Why:** the prod feed showed a coin whose symbol contained a racial slur. Hate slurs in coin names and trader names now show as `***` everywhere public; a trader name with a slur is refused at launch.
-- **Decision wanted:** the mask hides HATE SLURS only. General swear words and sexual words still show (for example a coin named SCAT, and stock tokens like Cummins). Do you want swear words hidden too?
-- Session tradeDeskMain, 2026-10-01.
-
-### Arena house agents now change rules rarely, and every report says why (staging, 2026-10-01)
-
-- **What to look at:** on staging, `/trading-floor` -> Exchange -> Arena -> a house agent's reports. Each report has one line such as "Tuner: no change, next check at 40 trades on these rules (has 27)".
-- **What changed:** the old tuner never changed anything since 09-30 (the AI model never proposed). The new code tuner tests one filter change only at 20, 40, 80, 160, 200, 400 and 800 closed trades on the current rules, and needs real evidence (p 0.01 or less at the early checks). On random data it changes 4% of agents, not 53%. So "tuned every 30 minutes" now means "reviewed every 30 minutes, changed rarely".
-- **Also:** a guest no longer gets console errors on the floor, the welcome tour no longer tells a guest it "created an agent", and a trader name needs at least one letter.
-- **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
+- **Decided 2026-10-01 (founder):** hate slurs only, final; swear words and sexual words stay visible; no new terms are added. Recorded in `docs/trading-floor-arena.md` §8 P12. On prod since PR #306.
 - Session tradeDeskMain, 2026-10-01.
 
 ### Trading Floor INTERIOR v5 part 2: bigger room, 10 desks, big Trading Monitor, ropes, flood + sea life (staging, 2026-10-02)
@@ -126,25 +118,6 @@
   still flip or jump anywhere? (4) is the drag speed right (it is the same as the open world)? (5) on your phone: does a
   one-finger drag turn the view, and do the joysticks still work?
 - **Session:** coolerDesk3, 2026-10-01 (v4: coolerDesk2, v3: coolerTrading).
-
-### Floor TV board redesign P6: larger text, 5 rows per page (design approved by the lead, 2026-10-01; you can veto)
-
-- **Session:** tradeDeskMain (team `trading-floor-arena`), arena-board (3da), 2026-10-01. Punch list P6 in `docs/trading-floor-arena.md` §8, review deadline 2026-10-04.
-- **Why:** from the `/trading-floor` spawn point the TV is shrunk to about half size on screen (0.52 screen pixels per board pixel at 1366 x 768), so a capital letter is only about 5 screen pixels tall. At that size some letters change: staging showed "GENZSIS" and "LATZ BLOOMER", and a mipmap fix tried the same night changed other cells instead ("LANDTKST1", "NO PRIZR") and was taken out. The current build draws all board text bold, which is the best state we have, but it is still at the limit.
-- **The redesign (not built yet; it goes into the next build after the current one is committed):** same TV, same cost on the GPU. Larger text: 22 px rows (capitals about 6.5 screen pixels from the spawn), 20 px for the prize line, captions, method line and tape. **5 rows per page:** rows 1-5, then rows 6-10 on the next 15-second refresh, with "1-5 OF N" in the corner; with 5 agents or fewer there is no paging. Column 2 is now "TYPE": a HOUSE or NO PRIZE badge, or the player's template. Shorter copy: "HOUSE: NO PRIZE" beside the prizes, and "PAPER TRADES · $20 EACH · P&L AFTER 2.5% BUY + 1% SELL COSTS".
-- **Look at now:** the mock `C:\Users\itachi\Documents\Crypto\ClawVille\ops\house-traders\arena-review\p6-board-design\p6-spawn-view-current-vs-proposed.png` (the current board and the proposed board, both as a player sees them from the spawn; a simulation, not a screenshot). The full-size proposed board is `p6-proposed-board-full-res.png` in the same folder.
-- **Look at after deploy:** staging `/trading-floor`, stand at the spawn point without moving, and read every row and the tape from there. Wait 15 seconds to see the page change when more than 5 agents are on the board.
-- **Feedback wanted:** paging (5 rows at a time) or top 5 only; the shorter copy ("HOUSE: NO PRIZE", "$20 EACH"); the "TYPE" caption.
-
-### Arena ClawPump account isolation (audit-money M4, 2026-10-01)
-
-- **Session:** tradeDeskMain (team `trading-floor-arena`), audit-money finding M4, 2026-10-01. A DECISION, not a playtest.
-- **What:** the staging api's `CLAWPUMP_API_KEY` is your enterprise ClawPump account. That account also holds the live Genesis (about 37 USDC), Runner (about 61 USDC) and Clawville_World agents (balances as reported by the audit). Every arena create, PATCH and x402 payment (`apps/api/src/services/clawpump-writer.ts`) uses that same key. The guard between the arena and those live agents is code only (updated by Codex r17): on every update and payment the writer refuses the live traders' ClawPump ids outright, requires the ClawPump id to be the one stored on that player's arena row, and requires the arena name prefix plus that row's id suffix. It is the same key and the same account, so a bug in that guard is the remaining risk.
-- **Growth:** every arena launch adds one agent to that account, including launches from free accounts that a sybil can create in bulk. The writer reads the account-wide wallet summary (`GET /wallets/summary`) with a parse limit of 5,000 agents; past that, wallet balances read as unknown, so paid add-ons stop paying (they skip a call when the balance is unknown).
-- **Recommendation:** a SEPARATE ClawPump account and key for arena agents, set up before the prod promotion, so that no arena path can reach the live traders even if the name guard had a bug.
-- **Decision wanted:** approve a separate account for arena agents, OR accept the shared account with the name guard.
-- **Related decision (punch list P5, `docs/trading-floor-arena.md` §8):** no path returns unspent USDC from a player's arena wallet. Until you decide on a refund or withdraw path (or a cap on what the UI asks a player to send), the UI tells players: send only USDC on Solana, add-on spend only, not withdrawable through ClawVille. Review deadline 2026-10-05, before the prod promotion.
-- **Where:** no screen; the setting is the staging api's `CLAWPUMP_API_KEY` and, at promotion, the prod one.
 
 ### TRADING FLOOR ARENA (2026-09-30): paper contest, five house agents, launch your own trader
 
