@@ -29,6 +29,7 @@ import {
   TRADING_FLOOR_CONSOLE_HEIGHT,
   TRADING_FLOOR_CONSOLE_ROW,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_SEATS,
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SOLIDS,
@@ -81,6 +82,7 @@ interface GltfNode {
   mesh?: number;
   translation?: number[];
   scale?: number[];
+  rotation?: number[];
 }
 /**
  * The contract the build script publishes on the scene root. These are the
@@ -94,6 +96,7 @@ interface GltfSceneExtras {
     x: number;
     y: number;
     z: number;
+    rotY: number;
     halfX: number;
     halfZ: number;
     height: number;
@@ -201,6 +204,7 @@ describe('Trading Floor asset — the published contract in scene extras', () =>
       x: TRADING_FLOOR_MONITOR.x,
       y: 0,
       z: TRADING_FLOOR_MONITOR.z,
+      rotY: TRADING_FLOOR_MONITOR.rotY,
       halfX: TRADING_FLOOR_MONITOR.halfX,
       halfZ: TRADING_FLOOR_MONITOR.halfZ,
       height: TRADING_FLOOR_MONITOR.height,
@@ -769,7 +773,7 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
     const brass = await assetVertices('TradingFloorBrass');
     const claws = await assetVertices('TradingFloorClaws');
     expect(brass.vertices.length + claws.vertices.length).toBeLessThanOrEqual(5500);
-    expect((brass.primitive.getIndices()!.getCount() + claws.primitive.getIndices()!.getCount()) / 3).toBe(6040);
+    expect((brass.primitive.getIndices()!.getCount() + claws.primitive.getIndices()!.getCount()) / 3).toBe(6088);
     // An un-welded build retains 16,536 vertices, one per triangle corner.
     expect(claws.vertices).toHaveLength(4280);
     expect(new Set(claws.vertices.map(({ n }) => n.join(','))).size).toBeGreaterThan(1);
@@ -777,6 +781,72 @@ describe('Trading Floor asset — v4 desk and leather chair', () => {
 });
 
 describe('Trading Floor asset — the monitor kiosk matches its hotspot', () => {
+  test('the kiosk screens face -Z in the actual node transform', () => {
+    const rotation = nodeByName('TradingFloorMonitorStation').rotation ?? [0, 0, 0, 1];
+    expect(rotation[0]).toBeCloseTo(0, 8);
+    expect(Math.abs(rotation[1]!)).toBeCloseTo(1, 8);
+    expect(rotation[2]).toBeCloseTo(0, 8);
+    expect(rotation[3]).toBeCloseTo(0, 8);
+  });
+
+  test('the door-wall kiosk clears the board from spawn, seats and the plinth band', async () => {
+    const { vertices } = await assetVertices('TradingFloorMonitorStation');
+    const bounds = [0, 1, 2].map((axis) => [Math.min(...vertices.map(({ p }) => p[axis]!)),
+      Math.max(...vertices.map(({ p }) => p[axis]!))]);
+    const points = bounds[0]!.flatMap((x) => bounds[2]!.map((z) => [x, bounds[1]![1]!, z] as const));
+    const groups: { name: string; bodies: [number, number][]; yawStep: number }[] = [
+      { name: 'spawn', bodies: [[TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z]], yawStep: 2 },
+      { name: 'seats', bodies: TRADING_FLOOR_SEATS.map((seat) => [seat.x, seat.z]), yawStep: 5 },
+      { name: 'plinth', bodies: [], yawStep: 15 },
+      { name: 'distant', bodies: [], yawStep: 15 },
+    ];
+    for (let x = -TRADING_FLOOR_SIDE_APPROACH_X; x <= TRADING_FLOOR_SIDE_APPROACH_X; x += 48)
+      for (let z = TRADING_FLOOR_BOARD_APPROACH_Z; z <= TRADING_FLOOR_DOOR_APPROACH_Z; z += 48) {
+        if (tradingFloorHitsSolid(x, z)) continue;
+        const dx = Math.max(0, Math.abs(x - TRADING_FLOOR_DAIS.x) - TRADING_FLOOR_DAIS.halfX);
+        const dz = Math.max(0, Math.abs(z - TRADING_FLOOR_DAIS.z) - TRADING_FLOOR_DAIS.halfZ);
+        if (Math.hypot(dx, dz) <= 300) groups[2]!.bodies.push([x, z]);
+        if (Math.hypot(x - TRADING_FLOOR_MONITOR.x, z - TRADING_FLOOR_MONITOR.z) >= 600)
+          groups[3]!.bodies.push([x, z]);
+      }
+    const camera = { x: 0, y: 0, z: 0 };
+    const tanV = Math.tan(TRADING_FLOOR_CAMERA.fov * Math.PI / 360);
+    for (const group of groups) {
+      let worst = -Infinity, projected = 0, poses = 0;
+      for (const [bx, bz] of group.bodies) for (const height of [140, 260, 410])
+        for (let deg = 0; deg < 360; deg += group.yawStep) {
+          poses++;
+          const yaw = deg * Math.PI / 180;
+          placeTradingFloorChaseCamera(bx, bz, yaw, height - TRADING_FLOOR_CAMERA.above, camera);
+          let fx = bx + Math.sin(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.x;
+          let fy = TRADING_FLOOR_CAMERA.lookY - camera.y;
+          let fz = bz - Math.cos(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.z;
+          const length = Math.hypot(fx, fy, fz);
+          fx /= length; fy /= length; fz /= length;
+          const rightLength = Math.hypot(fx, fz), rx = -fz / rightLength, rz = fx / rightLength;
+          const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+          for (const [px, py, pz] of points) {
+            const t = (TRADING_FLOOR_SCREEN.z - camera.z) / (pz - camera.z);
+            if (t < 1 || !Number.isFinite(t)) continue;
+            const shadowX = camera.x + (px - camera.x) * t;
+            const shadowY = camera.y + (py - camera.y) * t;
+            if (Math.abs(shadowX) > TRADING_FLOOR_SCREEN.width / 2) continue;
+            const boardY = Math.max(TRADING_FLOOR_SCREEN.bottomY,
+              Math.min(TRADING_FLOOR_SCREEN.bottomY + TRADING_FLOOR_SCREEN.height, shadowY));
+            const dx = shadowX - camera.x, dy = boardY - camera.y, dz = TRADING_FLOOR_SCREEN.z - camera.z;
+            const depth = dx * fx + dy * fy + dz * fz;
+            if (depth <= 1 || Math.abs((dx * rx + dz * rz) / depth) > tanV * 1366 / 768 ||
+              Math.abs((dx * ux + dy * uy + dz * uz) / depth) > tanV) continue;
+            projected++;
+            worst = Math.max(worst, shadowY);
+          }
+        }
+      expect(poses).toBeGreaterThan(0);
+      console.log(`kiosk shadow ${group.name}: ${projected ? worst.toFixed(2) : 'none'}; visible samples=${projected}; poses=${poses}`);
+      expect(worst).toBeLessThanOrEqual(TRADING_FLOOR_SCREEN.bottomY - 20);
+    }
+  }, 30_000);
+
   // The hotspot, the click volume, the label anchor and the collider are all
   // derived from TRADING_FLOOR_MONITOR. If the constant and the prop disagree,
   // the player presses E at empty air.
@@ -1129,4 +1199,25 @@ test('the measured claw camera box covers every decoded claw vertex', async () =
   expect(marginY).toBeGreaterThan(0);
   expect(extras!.statue!.top).toBeLessThanOrEqual(TRADING_FLOOR_CLAW_EXTENTS.topY);
   console.log(`claw camera box margins: x=${marginX.toFixed(3)}, z=${marginZ.toFixed(3)}, y=${marginY.toFixed(3)} wu`);
+});
+
+
+test('the house-agent stage has no GLB prop or shell-detail geometry', async () => {
+  const doc = await decodedAsset;
+  const failures: string[] = [];
+  for (const node of doc.getRoot().listNodes()) {
+    // Floor and ceiling enclose the stage; source row templates never render here.
+    if (!node.getMesh() || ['TradingFloorFloorSlab', 'TradingFloorCeiling',
+      'TradingFloorConsoleModule', 'TradingFloorChairModule'].includes(node.getName())) continue;
+    const { vertices, primitive } = await assetVertices(node.getName());
+    const indices = primitive.getIndices()!.getArray()!;
+    for (let i = 0; i < indices.length; i += 3) {
+      const points = [0, 1, 2].map((corner) => vertices[indices[i + corner]!]!.p);
+      const minX = Math.min(...points.map((p) => p[0])), maxX = Math.max(...points.map((p) => p[0]));
+      const minZ = Math.min(...points.map((p) => p[2])), maxZ = Math.max(...points.map((p) => p[2]));
+      if (maxX > -1300 && minX < 1300 && maxZ > TRADING_FLOOR_BOARD_APPROACH_Z && minZ < -1100)
+        failures.push(`${node.getName()} triangle ${i / 3}`);
+    }
+  }
+  expect(failures).toEqual([]);
 });

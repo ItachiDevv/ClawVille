@@ -267,8 +267,8 @@ describe('desk monitor banks', () => {
     expect(DECOR_BANK.bezel).toBe(4.5);
     expect(DECOR_BANK.chin).toBe(8);
     // R1 must re-measure these monitor vertex and triangle budgets.
-    expect(MONITORS.mesh.positions.length / 3).toBeLessThanOrEqual(2040 * 2.5);
-    expect(MONITORS.mesh.indices.length / 3).toBeLessThanOrEqual(1020 * 2.5);
+    expect(MONITORS.mesh.positions.length / 3).toBeLessThanOrEqual(9000);
+    expect(MONITORS.mesh.indices.length / 3).toBeLessThanOrEqual(4500);
   });
 
   test('every reach link joins its VESA block to a full-width row arm', () => {

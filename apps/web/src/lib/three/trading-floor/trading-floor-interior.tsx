@@ -157,6 +157,7 @@ import {
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_DOOR_APPROACH_Z,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   TRADING_FLOOR_PLAYER_SPAWN,
   TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
   TRADING_FLOOR_ROOM,
@@ -177,7 +178,7 @@ import {
  * v2 reached production on 2026-09-20. Serve the v5 bytes through a new query
  * because Cloudflare can keep the old path in its edge cache for one week.
  */
-const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=5';
+const INTERIOR_GLB = '/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=6';
 
 // ---------------------------------------------------------------------------
 // Sit clips
@@ -859,7 +860,7 @@ function ClickVolume({
 const MONITOR_CLICK_POSITION: [number, number, number] = [
   TRADING_FLOOR_MONITOR.x,
   TRADING_FLOOR_MONITOR.height / 2,
-  TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
 ];
 const MONITOR_CLICK_SIZE: [number, number, number] = [
   TRADING_FLOOR_MONITOR.halfX * 2 + 120,

@@ -29,7 +29,7 @@ const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies(
 });
 
 const doc = await io.read(input);
-await doc.transform(dedup(), prune(), meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+await doc.transform(dedup(), prune(), meshopt({ encoder: MeshoptEncoder, level: 'medium', quantizePosition: 16 }));
 await io.write(output, doc);
 
 const root = doc.getRoot();

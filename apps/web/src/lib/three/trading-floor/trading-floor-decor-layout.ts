@@ -2,14 +2,14 @@
  * trading-floor-decor-layout.ts
  *
  * Pure layout for the Trading Floor's RUNTIME DECOR ("The Claw Exchange",
- * lane B, 2026-10-01): a trader rig on every desk, six big wall screens, the
+ * lane B, 2026-10-01): a trader rig on every desk, ten wall screens, the
  * LED ticker ribbon and the floor glow pools. No `three`, no React, no DOM.
  * Every builder returns plain typed arrays, so the clearance rules the room
  * depends on are tested against the SAME vertices the GPU draws, not against a
  * second description of them.
  *
  * THREE MESHES, THREE DRAW CALLS, and the split is by material, not by object:
- *   1. MONITORS. Every desk bank, its brass mount and the six wall screens share
+ *   1. MONITORS. Every desk bank, its brass mount and the ten wall screens share
  *      ONE atlas (`DECOR_ATLAS_SIZE` square, drawn once). Bezels and brass sample
  *      a solid swatch at a single UV point, so their derivatives are zero and the
  *      sampler stays on mip 0 at any distance: no swatch can bleed into a chart.
@@ -29,7 +29,7 @@
  * COORDINATES: interior world units, the frame `trading-floor-room.ts` uses.
  * Desk rigs are authored in the DESK'S OWN frame (the console faces local +Z,
  * the wall side is local -Z) and carried into the world through the slot's own
- * `rotY`, so the six rigs follow `TRADING_FLOOR_CONSOLE_ROW` and cannot drift
+ * `rotY`, so the ten rigs follow `TRADING_FLOOR_CONSOLE_ROW` and cannot drift
  * off their desks.
  */
 
@@ -477,21 +477,20 @@ export const DECOR_WALL_CROSS_SECONDS = Object.freeze({ min: 30, max: 60 });
 /** The side-wall pilasters, mirrored from `scripts/trading-floor/build-interior.mjs`
  *  (`sidePilasterZ`, `PIL_W`, `PIL_D`). */
 export const DECOR_SIDE_PILASTERS = Object.freeze({
-  z: Object.freeze([-3, -1, 1, 3].map((quarter) => quarter * TRADING_FLOOR_ROOM.halfZ / 4)),
+  z: Object.freeze([-1250, -750, -250, 250, 750, 1250]),
   halfWidth: 50,
   faceX: TRADING_FLOOR_ROOM.halfX - 40,
 });
 
 
 /**
- * The big wall screens: the three MIDDLE bays of each side wall. The bays are
- * bounded by the side pilasters (100 wide, 40 deep, faces at |x| 1260), so a
- * 410 wide screen centred on a bay clears both pilasters by 20 wu. The box
- * runs |x| 1284..1298, 2 wu off the wall's inner face at 1300.
+ * One wall screen per desk bay, five per side. Each 368 wu screen fits the
+ * 400 wu bay between pilasters with 16 wu clearance on each side.
+ * The screen spans |x| 1934..1948, 2 wu off the wall inner face at 1950.
  */
 export const DECOR_WALL_SCREEN = Object.freeze({
-  width: 410,
-  height: 330,
+  width: 368,
+  height: 296,
   bottomY: TRADING_FLOOR_ROOM.height * 43 / 95,
   depth: 14,
   frontX: TRADING_FLOOR_ROOM.halfX - 16,
@@ -500,8 +499,8 @@ export const DECOR_WALL_SCREEN = Object.freeze({
   plateLift: 1,
   paneLift: 2,
   gap: 4,
-  leftPaneWidth: 250,
-  barsPaneHeight: 90,
+  leftPaneWidth: 224,
+  barsPaneHeight: 81,
   bayCentersZ: Object.freeze(DECOR_SIDE_PILASTERS.z.slice(1).map((z, index) =>
     (DECOR_SIDE_PILASTERS.z[index]! + z) / 2)),
 });
@@ -944,7 +943,7 @@ export const RIBBON_WALL_GAP = 1;
 export const RIBBON_STRIP_WU =
   RIBBON_CANVAS_WIDTH * ((RIBBON_TOP_Y - RIBBON_BOTTOM_Y) / RIBBON_CANVAS_HEIGHT);
 /** Crawl speed. One strip period (4480 wu) passes a point in ~41 s. */
-export const RIBBON_SPEED_WU_PER_SEC = 110;
+export const RIBBON_SPEED_WU_PER_SEC = 165;
 
 export interface RibbonSegment {
   /** Start of the face along the crawl path. */
@@ -1108,7 +1107,7 @@ export const GLOW_SPRITE_SIZE = 128;
 /** Floor pools sit here; lane A's floor seal owns y 1..2. */
 export const DECOR_GLOW_FLOOR_Y = 3;
 /** The floor seal's annulus around the dais. No pool may overlap it. */
-export const DECOR_SEAL = Object.freeze({ x: TRADING_FLOOR_DAIS.x, z: TRADING_FLOOR_DAIS.z, innerRadius: 380, outerRadius: 600 });
+export const DECOR_SEAL = Object.freeze({ x: TRADING_FLOOR_DAIS.x, z: TRADING_FLOOR_DAIS.z, innerRadius: 570, outerRadius: 900 });
 
 /** Linear RGBA. Alpha is the strength: additive blending adds `rgb * a`. */
 export const DECOR_GLOW_COLOR = Object.freeze({

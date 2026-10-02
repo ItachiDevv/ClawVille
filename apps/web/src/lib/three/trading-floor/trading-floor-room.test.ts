@@ -11,6 +11,7 @@ import {
   tradingFloorHitsSolid,
   TRADING_FLOOR_CAMERA,
   TRADING_FLOOR_CAMERA_Z_MIN,
+  TRADING_FLOOR_CAMERA_Z_MAX,
   TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
   TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
   TRADING_FLOOR_CAMERA_SOLIDS_LOW,
@@ -32,6 +33,7 @@ import {
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_FOG,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   TRADING_FLOOR_PLAYER_RADIUS,
   TRADING_FLOOR_PLAYER_SPAWN,
   TRADING_FLOOR_ROOM,
@@ -479,49 +481,20 @@ describe('Trading Floor interior — movement clamp', () => {
     ).toBeCloseTo(TRADING_FLOOR_SCREEN.width / TRADING_FLOOR_SCREEN.height, 2);
   });
 
-  // The monitor has to be REACHABLE, not merely present. The holo dais sits
-  // dead centre between the door and the monitor, so a straight walk is blocked
-  // by design — but there must be a clear lane around it, or the venue's whole
-  // point is unreachable on foot.
-  test('a clear lane runs from the spawn to the monitor around the dais', () => {
-    const straightBlocked = (() => {
-      for (let z = TRADING_FLOOR_PLAYER_SPAWN.z; z >= TRADING_FLOOR_MONITOR.z; z -= 10) {
-        if (tradingFloorHitsSolid(0, z)) return true;
-      }
-      return false;
-    })();
-    expect(straightBlocked).toBe(true);
-
-    // Sweep every lane between the dais and the desk row for one that is clear
-    // over the whole approach, then prove the end of it arms the monitor.
-    const clearLanes: number[] = [];
-    for (let x = 0; x <= TRADING_FLOOR_SIDE_APPROACH_X; x += 10) {
-      let clear = true;
-      for (let z = TRADING_FLOOR_PLAYER_SPAWN.z; z >= TRADING_FLOOR_MONITOR.z; z -= 10) {
-        if (tradingFloorHitsSolid(x, z)) { clear = false; break; }
-      }
-      if (clear) clearLanes.push(x);
+  test('a straight walk from spawn to the kiosk face touches no solid and arms it', () => {
+    const approachX = TRADING_FLOOR_MONITOR.x;
+    const approachZ = TRADING_FLOOR_MONITOR_FRONT_Z - TRADING_FLOOR_PLAYER_RADIUS - 20;
+    for (let step = 0; step <= 200; step++) {
+      const t = step / 200;
+      const x = TRADING_FLOOR_PLAYER_SPAWN.x + (approachX - TRADING_FLOOR_PLAYER_SPAWN.x) * t;
+      const z = TRADING_FLOOR_PLAYER_SPAWN.z + (approachZ - TRADING_FLOOR_PLAYER_SPAWN.z) * t;
+      expect(tradingFloorHitsSolid(x, z)).toBe(false);
+      expect(Math.abs(x)).toBeLessThanOrEqual(TRADING_FLOOR_SIDE_APPROACH_X);
+      expect(z).toBeLessThanOrEqual(TRADING_FLOOR_DOOR_APPROACH_Z);
     }
-    expect(clearLanes.length).toBeGreaterThan(0);
-
-    // Scan the full approach width so a wider room cannot hide the kiosk
-    // outside the nearest clear lane.
-    let best = Number.POSITIVE_INFINITY;
-    for (let x = TRADING_FLOOR_SIDE_APPROACH_X; x >= -TRADING_FLOOR_SIDE_APPROACH_X; x -= 10) {
-      if (tradingFloorHitsSolid(x, TRADING_FLOOR_MONITOR.z + 200)) continue;
-      best = Math.min(
-        best,
-        tradingFloorDistanceSq(
-          x,
-          TRADING_FLOOR_MONITOR.z + 200,
-          TRADING_FLOOR_MONITOR.x,
-          TRADING_FLOOR_MONITOR.z,
-        ),
-      );
-    }
-    expect(best).toBeLessThan(
-      TRADING_FLOOR_MONITOR.interactRadius * TRADING_FLOOR_MONITOR.interactRadius,
-    );
+    const arming = createTradingFloorArming();
+    computeTradingFloorArming(approachX, approachZ, arming);
+    expect(arming.monitorArmed).toBe(true);
   });
 });
 
@@ -542,22 +515,25 @@ describe('Trading Floor camera blockers - named parts', () => {
     expect(TRADING_FLOOR_PILLAR_SOLIDS).toHaveLength(4);
   });
 
-  test('the extended kiosk remains backed by the board wall after a resize', () => {
-    expect(TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_MONITOR.halfZ).toBeLessThanOrEqual(
-      TRADING_FLOOR_CAMERA_Z_MIN + 2 * TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+  test('the extended kiosk remains backed by the door wall after a resize', () => {
+    expect(TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ).toBeGreaterThanOrEqual(
+      TRADING_FLOOR_CAMERA_Z_MAX - 2 * TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
     );
   });
 
-  test('the kiosk collider stops the body about 96 wu from its centre and keeps E armed', () => {
+  test('the door approach clamp stops the body before the kiosk and keeps E armed', () => {
     const x = TRADING_FLOOR_MONITOR.x;
-    const z = TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS;
+    const z = Math.min(TRADING_FLOOR_DOOR_APPROACH_Z,
+      TRADING_FLOOR_MONITOR_FRONT_Z - TRADING_FLOOR_PLAYER_RADIUS);
     const out = { x: 0, z: 0 };
-    clampTradingFloorMovement2D(x, z + 10, x, z, out);
+    clampTradingFloorMovement2D(x, z - 10, x, z, out);
     expect(out).toEqual({ x, z });
-    clampTradingFloorMovement2D(x, z, x, z - 10, out);
+    clampTradingFloorMovement2D(x, z, x, z + 10, out);
     expect(out).toEqual({ x, z });
-    expect(z - TRADING_FLOOR_MONITOR.z).toBeCloseTo(TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS, 2);
-    expect(z).toBeGreaterThan(TRADING_FLOOR_BOARD_APPROACH_Z);
+    expect(z).toBeLessThanOrEqual(TRADING_FLOOR_DOOR_APPROACH_Z);
+    expect(tradingFloorHitsSolid(x, z)).toBe(false);
+    expect(TRADING_FLOOR_MONITOR.z - z).toBeGreaterThanOrEqual(
+      TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS);
     const arming = createTradingFloorArming();
     computeTradingFloorArming(out.x, out.z, arming);
     expect(arming.monitorArmed).toBe(true);

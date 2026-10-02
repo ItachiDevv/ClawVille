@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { FLOOR_ARENA_DESK_COUNT } from '@clawville/shared';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
@@ -35,11 +36,14 @@ import {
   TRADING_FLOOR_CAMERA_BOUNDS,
   TRADING_FLOOR_CAMERA_ARM,
   TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
   TRADING_FLOOR_CAMERA_SOLIDS_LOW,
   TRADING_FLOOR_CLAW_EXTENTS,
+  TRADING_FLOOR_DAIS,
   TRADING_FLOOR_SIDE_APPROACH_X,
   TRADING_FLOOR_BOARD_APPROACH_Z,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   tradingFloorDoorPromptVisible,
   tradingFloorDistanceSq,
   validateAuthoredProp,
@@ -345,7 +349,7 @@ describe('Trading Floor visible seated body travel', () => {
     }
   });
 
-  test('arming stays at the stand point throughout travel and hides the seat-zero monitor hint', () => {
+  test('arming stays at the stand point throughout travel and hides the nearest cushion monitor hint', () => {
     const body = { x: 0, z: 0 };
     const position = { x: 0, z: 0 };
     const arming = createTradingFloorArming();
@@ -357,8 +361,8 @@ describe('Trading Floor visible seated body travel', () => {
       expect(arming.seatArmedIndex).toBe(seat.index);
       expect(arming.monitorHint).toBe(false);
     }
-    // Non-vacuous: arming at the cushion reproduces the rejected seat-zero hint.
-    computeTradingFloorArming(TRADING_FLOOR_SEATS[0]!.sitX, TRADING_FLOOR_SEATS[0]!.sitZ, arming);
+    // The door-wall kiosk hints at seat 7's cushion, but never at its stand point.
+    computeTradingFloorArming(TRADING_FLOOR_SEATS[7]!.sitX, TRADING_FLOOR_SEATS[7]!.sitZ, arming);
     expect(arming.monitorHint).toBe(true);
   });
 
@@ -1164,10 +1168,10 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
     expect(tradingFloorDoorPromptVisible(false, false, 1)).toBe(false);
   });
 
-  test('on arrival (spawn, camera facing the board) the hint is on and the capsule is hidden', () => {
+  test('on arrival (spawn, camera facing the board) the hint is off and the capsule is hidden', () => {
     const arming = createTradingFloorArming();
     computeTradingFloorArming(TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z, arming);
-    expect(arming.doorHint).toBe(true);
+    expect(arming.doorHint).toBe(false);
     expect(arming.doorArmed).toBe(false);
     // Yaw 0 is the spawn yaw: forward = (sin 0, 0, -cos 0).
     expect(tradingFloorDoorPromptVisible(arming.doorArmed, arming.doorHint, -Math.cos(0))).toBe(
@@ -1302,6 +1306,7 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
     // Non-vacuous: many hints are ON SCREEN (in front of the camera, anchor
     // inside the viewport) in this sweep, and the sweep DOES detect the defect
     // under the shipped rule.
+    console.log(`exit capsule: old overlaps=${oldRuleOverlaps}, armed overlaps=${armedOverlaps}, visible hints=${hintsOnScreen}, hint overlaps=${hintOverlaps}`);
     expect(hintsOnScreen).toBeGreaterThan(1000);
     expect(oldRuleOverlaps).toBeGreaterThan(0);
     // The fix: no visible hint over the board, on screen or partly off it.
@@ -1411,8 +1416,8 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
   });
 
   test('the kiosk and door approaches connect to spawn and arm their hotspots', () => {
-    const kioskZ = TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ +
-      TRADING_FLOOR_PLAYER_RADIUS + TRADING_FLOOR_CAMERA_ARM.originInset;
+    const kioskZ = TRADING_FLOOR_MONITOR_FRONT_Z -
+      TRADING_FLOOR_PLAYER_RADIUS - TRADING_FLOOR_CAMERA_ARM.originInset;
     for (const [x, z, hotspot] of [
       [TRADING_FLOOR_MONITOR.x, kioskZ, 'monitor'],
       [TRADING_FLOOR_DOOR.x, TRADING_FLOOR_DOOR_APPROACH_Z, 'door'],
@@ -1464,24 +1469,39 @@ function drawSpringArm(
 }
 
 describe('Trading Floor camera - spring arm', () => {
-  test('kiosk graze at yaw 85..93 never shrinks more than two walk steps', () => {
+  test('positive pitch fades the corner boom without changing default or downward pitch', () => {
+    const arm = 60;
+    const fullBoom = (TRADING_FLOOR_CAMERA_ARM.boomStart - arm) * TRADING_FLOOR_CAMERA_ARM.boomRise;
+    expect(tradingFloorCameraBoom(0, arm)).toBe(fullBoom);
+    expect(tradingFloorCameraBoom(TRADING_FLOOR_CAMERA.pitchMin, arm)).toBe(fullBoom);
+    expect(tradingFloorCameraBoom(TRADING_FLOOR_CAMERA.pitchMax / 2, arm)).toBe(fullBoom / 2);
+    expect(tradingFloorCameraBoom(TRADING_FLOOR_CAMERA.pitchMax, arm)).toBe(0);
+  });
+  test('kiosk graze around the door-wall tangent never shrinks more than two walk steps', () => {
     const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
-    let worstShrink = 0;
+    let worstShrink = 0, kioskHits = 0;
     const step = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
-    for (let deg = 85; deg <= 93; deg++) {
+    const tangent = Math.floor(Math.acos((TRADING_FLOOR_MONITOR_FRONT_Z -
+      TRADING_FLOOR_CAMERA_SOLID_CLEARANCE - TRADING_FLOOR_DOOR_APPROACH_Z) /
+      TRADING_FLOOR_CAMERA.behind) * 180 / Math.PI);
+    for (let deg = tangent - 7; deg <= tangent + 3; deg++) {
       const yaw = deg * Math.PI / 180;
-      let x = 300, z = TRADING_FLOOR_BOARD_APPROACH_Z;
+      let x = TRADING_FLOOR_MONITOR.x + 600, z = TRADING_FLOOR_DOOR_APPROACH_Z;
       let arm = placeTradingFloorChaseCamera(x, z, yaw, 0, camera);
       for (let frame = 0; frame < 120; frame++) {
         clampTradingFloorMovement2D(x, z, x - Math.sin(yaw) * step, z, out);
         x = out.x; z = out.z;
         const raw = placeTradingFloorChaseCamera(x, z, yaw, 0, camera);
+        const kiosk = TRADING_FLOOR_CAMERA_KIOSK_SOLID;
+        if (Math.abs(camera.x - kiosk.centerX) <= kiosk.halfX + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE + 1e-5 &&
+          Math.abs(camera.z - kiosk.centerZ) <= kiosk.halfZ + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE + 1e-5) kioskHits++;
         const next = smoothTradingFloorCameraArm(arm, raw, FRAME_SECONDS);
         worstShrink = Math.max(worstShrink, arm - next);
         arm = next;
       }
     }
-    console.log(`kiosk graze: worst shrink=${worstShrink.toFixed(6)} wu/frame`);
+    console.log(`kiosk graze: worst shrink=${worstShrink.toFixed(6)} wu/frame; kiosk hits=${kioskHits}`);
+    expect(kioskHits).toBeGreaterThan(0);
     expect(worstShrink).toBeLessThanOrEqual(2 * step);
   });
 
@@ -1551,19 +1571,21 @@ describe('Trading Floor camera - spring arm', () => {
     expect(inside).toBe(0);
   }, 30_000);
 
-  test('a full turn at the founder point (-330, -464) stays below 1.5 degrees per frame', () => {
+  test('a full turn at the relative founder point stays below 1.5 degrees per frame', () => {
+    const bodyX = TRADING_FLOOR_DAIS.x - 330;
+    const bodyZ = TRADING_FLOOR_DAIS.z - 404;
     const camera = { x: 0, y: 0, z: 0 };
     const direction = new THREE.Vector3(), previous = new THREE.Vector3();
     const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
-    expect(tradingFloorHitsSolid(-330, -464)).toBe(false);
+    expect(tradingFloorHitsSolid(bodyX, bodyZ)).toBe(false);
     let worst = 0;
     const yawStep = TRADING_FLOOR_CAMERA.yawSpeed * FRAME_SECONDS;
     for (let frame = 0; frame <= Math.ceil(2 * Math.PI / yawStep); frame++) {
       const yaw = frame * yawStep;
-      drawSpringArm(-330, -464, yaw, 0, state, camera, frame === 0);
-      direction.set(-330 + Math.sin(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.x,
+      drawSpringArm(bodyX, bodyZ, yaw, 0, state, camera, frame === 0);
+      direction.set(bodyX + Math.sin(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.x,
         TRADING_FLOOR_CAMERA.lookY - camera.y,
-        -464 - Math.cos(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.z).normalize();
+        bodyZ - Math.cos(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.z).normalize();
       if (frame > 0) worst = Math.max(worst, previous.angleTo(direction) * 180 / Math.PI);
       previous.copy(direction);
     }
@@ -1720,4 +1742,13 @@ describe('Trading Floor camera - spring arm', () => {
     expect(maxHeadingStep).toBeLessThanOrEqual(0.5);
     expect(maxMoveStep).toBeLessThanOrEqual(0.5);
   });
+});
+
+
+test('seat count and stable index order match the shared arena contract', () => {
+  expect(TRADING_FLOOR_SEATS.length).toBe(FLOOR_ARENA_DESK_COUNT);
+  expect(TRADING_FLOOR_CONSOLE_ROW.map((s) => [Math.sign(s.x), s.z])).toEqual([
+    [-1, -500], [-1, 0], [-1, 500], [1, -500], [1, 0], [1, 500],
+    [-1, -1000], [-1, 1000], [1, -1000], [1, 1000],
+  ]);
 });

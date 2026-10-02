@@ -18,6 +18,7 @@ import {
   tradingFloorHitsSolid,
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   TRADING_FLOOR_PLAYER_RADIUS,
   TRADING_FLOOR_PLAYER_SPAWN,
   TRADING_FLOOR_ROOM,
@@ -80,21 +81,22 @@ describe('Trading Floor monitor hotspot', () => {
   });
 });
 
-describe('Trading Floor monitor placement (v2)', () => {
+describe('Trading Floor monitor placement (v5)', () => {
   // v2 moved the kiosk off the centre line so it stops hiding the big board.
   // Both of its constraints are geometric, so both are pinned here rather than
   // left to a screenshot.
-  test('sits clear of the board centre but still in front of the board', () => {
+  test('sits at the door wall, clear of the door and house-agent stage', () => {
     // Off the room's centre line, so the board's middle is unobstructed.
     expect(Math.abs(TRADING_FLOOR_MONITOR.x)).toBeGreaterThan(200);
     // Still inside the board's width, so it reads as the board's podium.
     expect(Math.abs(TRADING_FLOOR_MONITOR.x)).toBeLessThan(
       TRADING_FLOOR_SCREEN.width / 2,
     );
-    // In front of the board, never through it.
-    expect(TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_MONITOR.halfZ).toBeGreaterThan(
-      TRADING_FLOOR_SCREEN.z,
-    );
+    expect(TRADING_FLOOR_MONITOR.rotY).toBe(Math.PI);
+    expect(TRADING_FLOOR_ROOM.halfZ - (TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ)).toBeGreaterThan(0);
+    expect(Math.hypot(TRADING_FLOOR_MONITOR.x - TRADING_FLOOR_DOOR.x,
+      TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_DOOR.z)).toBeGreaterThan(620);
+    expect(TRADING_FLOOR_MONITOR_FRONT_Z).toBeGreaterThan(-1100);
   });
 
   // E must never be ambiguous. `onInteractEdge` resolves ties by priority, but
@@ -118,7 +120,7 @@ describe('Trading Floor monitor placement (v2)', () => {
   // The approach point is the nearest square a player can occupy head-on.
   test('a player can stand at the kiosk face and arm it', () => {
     const approachZ =
-      TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS + 20;
+      TRADING_FLOOR_MONITOR_FRONT_Z - TRADING_FLOOR_PLAYER_RADIUS - 20;
     const approachX = TRADING_FLOOR_MONITOR.x;
 
     // Inside the walls.

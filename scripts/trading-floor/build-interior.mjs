@@ -77,9 +77,9 @@ if (!existsSync(PROPS_GLB)) {
 }
 
 // ---- hall dimensions (world units) -----------------------------------------
-const RW = 2600;   // interior width  (X)
-const RD = 2200;   // interior depth  (Z)
-const RH = 950;    // interior height (Y) ~= 3.5 avatar heights
+const RW = 3900;   // interior width  (X)
+const RD = 3300;   // interior depth  (Z)
+const RH = 1425;    // interior height (Y) ~= 5.3 avatar heights
 const WT = 60;     // wall thickness
 const DOOR_W = 360;
 const DOOR_H = 500;
@@ -88,13 +88,13 @@ const hx = RW / 2, hz = RD / 2;
 // ---- texture tiling ---------------------------------------------------------
 // One wall texture repeat spans 475 wu horizontally and the full 950 wu height.
 // Each repeat carries two walnut panels below the chair rail and navy above.
-const WALL_TILE_WU = 475;
-const CEIL_TILE_WU = 550;
+const WALL_TILE_WU = 712.5;
+const CEIL_TILE_WU = 825;
 // The floor carries a 2x2 grid too, so one panel is 190 wu — about 1.2 m, the
 // size a raised access-floor tile reads at in a real dealing room. 95 wu (a
 // true 600 mm panel) was tried first and shimmers: 27 panel rows across a 2600
 // wu hall is noise from the chase camera, not architecture.
-const FLOOR_TILE_WU = 380;
+const FLOOR_TILE_WU = 570;
 const WALL_TEX_PX = 512;
 const CEIL_TEX_PX = 512;
 const FLOOR_TEX_PX = 512;
@@ -120,7 +120,7 @@ const FLOOR_TEX_PX = 512;
 // sentence that a test stopped it going stale. The test DOES stop the geometry
 // breaking; it never stopped the prose lying. `trading-floor-monitor.test.ts`
 // is the source of truth for the margin — read it, do not restate it.
-const DAIS_POS = [0, 0, -60];
+const DAIS_POS = [0, 0, -90];
 // The kiosk was 470 wu tall against a 270 wu avatar — 1.74x human height, about
 // 2.95 m. That oversize, not its position, was the root cause of the board
 // occlusion: no position exists that both clears the board's x-span from the
@@ -128,10 +128,11 @@ const DAIS_POS = [0, 0, -60];
 // |x| < 639 and the sightline wants |x| > 751. Cutting it to avatar height is
 // the lever that fixed it, and it let the board stay 1700 wide.
 const MONITOR_SCALE = 300 / 470;   // 0.638297...
-const MONITOR_POS = [-300, 0, -980];
+const MONITOR_POS = [-1000, 0, 1570];
+const MONITOR_ROT_Y = Math.PI;
 // Desk row, mirrored in TRADING_FLOOR_CONSOLE_ROW. The authored console faces
 // +Z, so a desk against the -X wall is yawed +pi/2 to face the aisle.
-const CONSOLE_WALL_X = 1120;
+const CONSOLE_WALL_X = hx - 40 - 135 - 5;
 const CONSOLE_ROW_Z = [-500, 0, 500];
 
 // ---- the big screen ---------------------------------------------------------
@@ -143,26 +144,24 @@ const CONSOLE_ROW_Z = [-500, 0, 500];
 // bezel around it, so a mismatch leaves bare wall inside the frame. That is not
 // hypothetical: one export shipped a 250..900 surround around a 340..880 plane.
 //
-// The rect is set by the KIOSK'S SHADOW, not by taste. With the kiosk cut to
-// 300 wu and moved to z -980, the worst shadow on the board plane is ~339 (the
-// dais ring's far side at full pitch-down), so a bottom at 360 clears it by 21.
-// Ceiling limit: the top surround box centres at `bottom + height + 34` with
-// half-height 34, so its top edge is `bottom + height + 68` = 948 against a 950
-// inner face. DO NOT raise SCREEN_H past 522 without moving the ceiling.
-const SCREEN_W = 1700;
-const SCREEN_H = 520;
-const SCREEN_BOTTOM_Y = 360;
+// The shell and board scale together. Props retain their avatar-scale dimensions.
+// Frame top is 540 + 780 + 102 = 1422, 3 wu below the 1425 ceiling.
+// Keep these three screen literals plain: the screen-texture test reads them.
+const SCREEN_W = 2550;
+const SCREEN_H = 780;
+const SCREEN_BOTTOM_Y = 540;
 const SCREEN_Z = -hz + 6;
+const FRAME_W = 102;
 
-// The ceiling limit above is 2 wu from being violated, so it is a check, not a
+// The ceiling limit above is 3 wu from being violated, so it is a check, not a
 // comment. A surround that punches through the ceiling would be invisible from
 // inside the room and would only show up as a hole from outside.
 {
-  const surroundTop = SCREEN_BOTTOM_Y + SCREEN_H + 68;
+  const surroundTop = SCREEN_BOTTOM_Y + SCREEN_H + FRAME_W;
   if (surroundTop > RH) {
     throw new Error(
       `screen surround top ${surroundTop} exceeds the ${RH} wu ceiling; ` +
-        `max SCREEN_H at bottom ${SCREEN_BOTTOM_Y} is ${RH - SCREEN_BOTTOM_Y - 68}`
+        `max SCREEN_H at bottom ${SCREEN_BOTTOM_Y} is ${RH - SCREEN_BOTTOM_Y - FRAME_W}`
     );
   }
   console.log(`  surround top ${surroundTop} vs ceiling ${RH} -> clear by ${RH - surroundTop}`);
@@ -388,7 +387,7 @@ function ringGeo(cx, cy, cz, rInner, rOuter, seg = 48, polarUV = false) {
       for (const r of [rInner, rOuter]) {
         // glTF V=0 samples the atlas top. +Z is the near, lower half of
         // the seal image, where CLAWVILLE EXCHANGE sits upright for spawn.
-        uv.push(0.375 + co * r / 1600, 0.375 + s * r / 1600);
+        uv.push(0.375 + co * r / 2400, 0.375 + s * r / 2400);
       }
     }
   }
@@ -597,8 +596,8 @@ function octagonGeo(cx, y0, cz, halfX, halfZ, height, chamfer, tile = 0, cap = t
   return {pos,nrm,idx,uv};
 }
 
-function bannerGeo(x, y, z) {
-  const h=420, w=210, side=x<0?1:-1;
+function bannerGeo(x, y, z, w, h) {
+  const side=x<0?1:-1;
   const atlasSize=1024, rect=bannerAtlasRect;
   if (Math.abs((rect.w / rect.h) / (w / h) - 1) > 0.01) {
     throw new Error(`banner atlas aspect ${rect.w}/${rect.h} differs from quad ${w}/${h} by over 1%`);
@@ -868,8 +867,8 @@ addMesh(
 // rest of the wall detail — the screen surround is deeper. `assertWallDetailClears`
 // is what actually holds the line now.
 const PIL_D = 40, PIL_W = 100;
-const sidePilasterZ = [-825, -275, 275, 825];
-const backPilasterX = [-1050, 1050];
+const sidePilasterZ = [-1250, -750, -250, 250, 750, 1250];
+const backPilasterX = [-1575, 1575];
 
 addMesh(
   'TradingFloorWalls',
@@ -887,8 +886,8 @@ addMesh(
     // only because they are colliders — see the pillar entries in
     // TRADING_FLOOR_SOLIDS. If that collider is ever removed, remove this
     // exemption in the same diff or the gate stops protecting the room.
-    ...[[-hx + 190, -hz + 190], [hx - 190, -hz + 190], [-hx + 190, hz - 190], [hx - 190, hz - 190]].map(
-      ([x, z]) => boxGeo(x, RH / 2, z, 110, RH, 110, {u:WALL_TILE_WU,v:RH}, {
+    ...[[-hx + 217.5, -hz + 285], [hx - 217.5, -hz + 285], [-hx + 217.5, hz - 285], [hx - 217.5, hz - 285]].map(
+      ([x, z]) => boxGeo(x, RH / 2, z, 165, RH, 165, {u:WALL_TILE_WU,v:RH}, {
         label: 'corner pillar',
         exempt: 'collider in TRADING_FLOOR_SOLIDS',
       })
@@ -898,8 +897,8 @@ addMesh(
       boxGeo(-hx + PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, {u:WALL_TILE_WU,v:RH}),
       boxGeo(hx - PIL_D / 2, RH / 2, z, PIL_D, RH, PIL_W, {u:WALL_TILE_WU,v:RH}),
     ]),
-    // back-wall pilasters, outboard of the screen (screen half-width is 850)
-    // Inner face z=-1062; these outboard pilasters lie beyond the camera X margin band.
+    // back-wall pilasters, outboard of the screen (screen half-width is 1275)
+    // Inner face z=-1612; these outboard pilasters lie beyond the camera X margin band.
     ...backPilasterX.map((x) => boxGeo(x, RH / 2, -hz + 19, PIL_W, RH, 38, {u:WALL_TILE_WU,v:RH})),
     // The board surround now belongs to the single brass mesh below.
     //
@@ -932,21 +931,21 @@ addMesh(
 const brassGeos = group('brass', null, () => [
   // Chair rail and crown stand proud of each inner wall. The entrance breaks
   // the front rail; the side-wall pilaster lips cover their own faces.
-  boxGeo(0, 296, -hz + 7, RW, 18, 12),
-  boxGeo(-hx + 7, 296, 0, 12, 18, RD), boxGeo(hx - 7, 296, 0, 12, 18, RD),
-  boxGeo(-741, 296, hz - 1, 1118, 18, 8), boxGeo(741, 296, hz - 1, 1118, 18, 8),
+  boxGeo(0, 444, -hz + 7, RW, 27, 12),
+  boxGeo(-hx + 7, 444, 0, 12, 27, RD), boxGeo(hx - 7, 444, 0, 12, 27, RD),
+  boxGeo(-1066, 444, hz - 1, 1768, 27, 8), boxGeo(1066, 444, hz - 1, 1768, 27, 8),
   ...sidePilasterZ.flatMap((z) => [
-    boxGeo(-hx + PIL_D + 7, 296, z, 12, 18, PIL_W),
-    boxGeo(hx - PIL_D - 7, 296, z, 12, 18, PIL_W),
+    boxGeo(-hx + PIL_D + 7, 444, z, 12, 27, PIL_W),
+    boxGeo(hx - PIL_D - 7, 444, z, 12, 27, PIL_W),
   ]),
-  boxGeo(0, 925, -hz + 7, RW, 20, 15),
-  boxGeo(-hx + 7, 925, 0, 15, 20, RD), boxGeo(hx - 7, 925, 0, 15, 20, RD),
-  boxGeo(0, 925, hz - 7, RW, 20, 15),
+  boxGeo(0, 1387.5, -hz + 7, RW, 30, 15),
+  boxGeo(-hx + 7, 1387.5, 0, 15, 30, RD), boxGeo(hx - 7, 1387.5, 0, 15, 30, RD),
+  boxGeo(0, 1387.5, hz - 7, RW, 30, 15),
   // Exact v2 board surround positions and sizes, now gilt.
-  boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44),
-  boxGeo(0, SCREEN_BOTTOM_Y - 34, -hz + FRAME_INSET, SCREEN_W + 136, 68, 44),
-  boxGeo(-(SCREEN_W / 2 + 34), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44),
-  boxGeo(SCREEN_W / 2 + 34, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, 68, SCREEN_H + 136, 44),
+  boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + FRAME_W / 2, -hz + FRAME_INSET, SCREEN_W + FRAME_W * 2, FRAME_W, FRAME_DEPTH),
+  boxGeo(0, SCREEN_BOTTOM_Y - FRAME_W / 2, -hz + FRAME_INSET, SCREEN_W + FRAME_W * 2, FRAME_W, FRAME_DEPTH),
+  boxGeo(-(SCREEN_W / 2 + FRAME_W / 2), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, FRAME_W, SCREEN_H + FRAME_W * 2, FRAME_DEPTH),
+  boxGeo(SCREEN_W / 2 + FRAME_W / 2, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + FRAME_INSET, FRAME_W, SCREEN_H + FRAME_W * 2, FRAME_DEPTH),
   // Thin tier rims share the brass draw call with the room trim.
   ...[[32,350,346,65],[50,330,210,55],[70,310,160,35]].map(([y,x,z,c]) =>
     group('plinth rim', 'inside TradingFloorHoloDais collider', () =>
@@ -957,7 +956,7 @@ const brassGeos = group('brass', null, () => [
 // sit inside the existing 60 wu wall thickness, behind its z=1100 inner face.
 brassGeos.push(...group('door portal', null, () => [
   ...[-1,1].map((side) => boxGeo(side*(DOOR_W/2+11.5), DOOR_H/2, hz, 28, DOOR_H, 11)),
-  boxGeo(0, DOOR_H+12, hz-4, DOOR_W+56, 28, 16),
+  boxGeo(0, DOOR_H+11.9, hz-4, DOOR_W+56, 28, 16),
   boxGeo(0, DOOR_H+42, hz-8, DOOR_W+84, 28, 24),
   boxGeo(0, DOOR_H+68, hz-5, DOOR_W+104, 12, 30),
   boxGeo(0, DOOR_H+100, hz-4, DOOR_W+40, 56, 16),
@@ -984,8 +983,8 @@ addMesh('TradingFloorHoloDais', group('dais collider', 'collider in TRADING_FLOO
   ]))), GRANITE);
 
 addMesh('TradingFloorIdentity', mergeGeos([
-  group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 380, 600, 96, true)),
-  ...[-1294,1294].map((x) => group('wall banners', null, () => bannerGeo(x, 540, -985))),
+  group('floor seal', null, () => ringGeo(DAIS_POS[0], 1.5, DAIS_POS[2], 570, 900, 96, true)),
+  ...[-1944,1944].map((x) => group('wall banners', null, () => bannerGeo(x, 810, -1462.5, 315, 630))),
   group('door label', null, () =>
     labelGeo(bannerAtlasRect.lintel,0,DOOR_H+100,hz-12.2,360,-1)),
 ]), IDENTITY);
@@ -1005,22 +1004,22 @@ addMesh(
     // glass without transparency sorting, a new material or a new draw call.
     ...group('glass reflections', null, () => [-1,1].map((side) =>
       colored(boxGeo(side*126,275,hz+27.8,6,370,.2), [.038,.068,.105]))),
-    colored(boxGeo(0, 26, -hz + 6, RW, 16, 10), [.08,.28,.94]),             // blue base strips
-    colored(boxGeo(-hx + 6, 26, 0, 10, 16, RD), [.08,.28,.94]),
-    colored(boxGeo(hx - 6, 26, 0, 10, 16, RD), [.08,.28,.94]),
-    colored(boxGeo(0, RH - 40, -hz + 6, RW, 12, 10), [.08,.28,.94]),
+    colored(boxGeo(0, 39, -hz + 6, RW, 24, 10), [.08,.28,.94]),             // blue base strips
+    colored(boxGeo(-hx + 6, 39, 0, 10, 24, RD), [.08,.28,.94]),
+    colored(boxGeo(hx - 6, 39, 0, 10, 24, RD), [.08,.28,.94]),
+    colored(boxGeo(0, RH - 60, -hz + 6, RW, 18, 10), [.08,.28,.94]),
     // ceiling light strips — three runs down the length of the hall. A lit
     // grid overhead is most of what makes an interior read as a ROOM rather
     // than a box, and it costs nothing: same unlit material, same mesh.
-    ...[-700, 0, 700].map((z) => colored(boxGeo(0, RH - 14, z, RW - 240, 14, 64), [1,.81,.55])),
+    ...[-1050, 0, 1050].map((z) => colored(boxGeo(0, RH - 21, z, RW - 360, 21, 96), [1,.81,.55])),
     // Screen surround glow, 5.5 wu proud of the frame. `-hz + 35.5` is paired with
     // the frame's `-hz + 12` above and the two MUST move together: this inner
     // face is the deepest protrusion in the room, and at the old `-hz + 46` it
     // sat 4 wu past the player-centre clamp. See the note on the frame.
-    colored(boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 10, -hz + GLOW_INSET, SCREEN_W + 40, 12, 8), [.08,.28,.94]),
-    colored(boxGeo(0, SCREEN_BOTTOM_Y - 10, -hz + GLOW_INSET, SCREEN_W + 40, 12, 8), [.08,.28,.94]),
-    colored(boxGeo(-(SCREEN_W / 2 + 10), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 12, SCREEN_H + 40, 8), [.08,.28,.94]),
-    colored(boxGeo(SCREEN_W / 2 + 10, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 12, SCREEN_H + 40, 8), [.08,.28,.94]),
+    colored(boxGeo(0, SCREEN_BOTTOM_Y + SCREEN_H + 15, -hz + GLOW_INSET, SCREEN_W + 60, 18, 8), [.08,.28,.94]),
+    colored(boxGeo(0, SCREEN_BOTTOM_Y - 15, -hz + GLOW_INSET, SCREEN_W + 60, 18, 8), [.08,.28,.94]),
+    colored(boxGeo(-(SCREEN_W / 2 + 15), SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 18, SCREEN_H + 60, 8), [.08,.28,.94]),
+    colored(boxGeo(SCREEN_W / 2 + 15, SCREEN_BOTTOM_Y + SCREEN_H / 2, -hz + GLOW_INSET, 18, SCREEN_H + 60, 8), [.08,.28,.94]),
   ])),
   TRIM
 );
@@ -1224,6 +1223,8 @@ async function copyProp(sourceName, outName, translation, scale = 1) {
 }
 
 await copyProp('TradingFloorMonitorStation', 'TradingFloorMonitorStation', MONITOR_POS, MONITOR_SCALE);
+scene.listChildren().find((n) => n.getName() === 'TradingFloorMonitorStation')
+  .setRotation([0, Math.sin(MONITOR_ROT_Y / 2), 0, Math.cos(MONITOR_ROT_Y / 2)]);
 
 // Read the solid Meshy claw, including the quantizer's node transform.
 // getElement decodes normalized integers; positions use the full world matrix
@@ -1356,6 +1357,7 @@ scene.setExtras({
     x: MONITOR_POS[0],
     y: MONITOR_POS[1],
     z: MONITOR_POS[2],
+    rotY: MONITOR_ROT_Y,
     halfX: Number(((kiosk.maxX - kiosk.minX) / 2).toFixed(2)),
     halfZ: Number(((kiosk.maxZ - kiosk.minZ) / 2).toFixed(2)),
     height: Number((kiosk.maxY - kiosk.minY).toFixed(2)),
