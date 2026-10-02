@@ -1,7 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { z } from 'zod';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
 import {
+  FLOOR_ARENA_WITHDRAW_LIMITS,
+  FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
+  type FloorArenaWithdrawAddressProof,
+  type FloorArenaWithdrawAmountMode,
+  type FloorArenaWithdrawAsset,
+  type FloorArenaWithdrawState,
+  type FloorArenaWithdrawSubjectKind,
   FLOOR_ARENA_ADDONS,
   FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
@@ -33,6 +42,9 @@ import { noStorePrivate } from '../middleware/no-store';
 import { createRateLimiter, getClientIp, type RateLimiter } from '../middleware/rate-limit';
 import { withKeyedMutex } from '../services/keyed-mutex';
 import type { ClawPumpWalletBalance } from '../services/clawpump-writer';
+// PURE helpers only (no network, no DB): the destination check and the atomic
+// amount text. Every ClawPump call stays with the engine leader (I4, D8).
+import { arenaDestinationProblem, formatAtomicAmount } from '../services/clawpump-writer';
 import { ARENA_ADDON_MIN_INTERVAL_S, addonPaymentsEnabled, readArenaWalletBalance, utcDayStart } from '../services/floor-arena/addons';
 import { readArenaContest, type ArenaContestView } from '../services/floor-arena/contest';
 import {
@@ -53,6 +65,19 @@ import {
 import { evaluateArenaSuggestion } from '../services/floor-arena/analysis';
 import { logEventFromContext, type EventInput } from '../services/event-logger';
 import {
+  cancelArenaWithdrawal,
+  consumeArenaWithdrawChallenge,
+  isArenaClawPumpWallet,
+  issueArenaWithdrawChallenge,
+  readArenaLinkedWallet,
+  readArenaWithdrawAddress,
+  readArenaWithdrawals,
+  readArenaWithdrawSummary,
+  requestArenaWithdrawal,
+  revokeArenaWithdrawAddress,
+  setArenaWithdrawAddress,
+  type ArenaWithdrawAddressRecord,
+  type ArenaWithdrawalRecord,
   insertUserArenaAgent,
   readArenaAddonStats,
   readArenaAgent,
@@ -112,6 +137,16 @@ import {
  * spend real USDC from the agent's funded ClawPump wallet.
  *
  * Paper only (D11): `mode: 'live'` is refused with `live_not_available`.
+ *
+ * Wallet withdraw (P5, D34; contract ops/house-traders/arena-review/P5_CONTRACT_2026-10-02.md
+ * §6): REAL MONEY. The `/me/withdraw-address*` and `/me/withdrawals*` routes run
+ * the same chain, resolve the arena row from `identity.userId` (never from the
+ * body), and WRITE DB ROWS ONLY (I4): no route here calls ClawPump or the RPC.
+ * The engine leader (floor-arena/withdraw.ts) admits each row under the add-on
+ * lock and sends it once. PARITY (E5): a human (login cookie) and a ledger-capable
+ * agent (X-Clawville-Agent-Session, tools clawville_arena_withdraw*) use the same
+ * routes; settlement binds to the user arena row of identity.userId: source =
+ * that row's ClawPump wallet, destination = that row's active proved address.
  */
 
 // ─── Response shapes (arena-web consumes these) ────────────────────────────
@@ -158,6 +193,36 @@ export interface ArenaMeResponse {
   addons: ArenaMyAddonStatus[];
   stats: ArenaAgentStatsByWindow | null;
   latestReport: ArenaReport | null;
+  /** P5: the current withdraw address and the one open withdrawal; null with no arena agent. */
+  withdraw: { address: ArenaWithdrawAddressView | null; open: ArenaWithdrawalView | null } | null;
+}
+
+/** A withdraw address as the owner sees it: never the signed message, the signature or the owner id. */
+export interface ArenaWithdrawAddressView {
+  id: string;
+  address: string;
+  proof: FloorArenaWithdrawAddressProof;
+  setBy: FloorArenaWithdrawSubjectKind;
+  createdAt: string;
+  activeAt: string;
+  state: 'pending' | 'active';
+}
+
+/** A withdrawal as the owner sees it: never the idempotency key or the owner id. `amount` is a decimal string. */
+export interface ArenaWithdrawalView {
+  id: string;
+  asset: FloorArenaWithdrawAsset;
+  amountMode: FloorArenaWithdrawAmountMode;
+  /** Decimal text of the sent amount, else of the requested one; null for a `max` row the leader has not fixed yet. */
+  amount: string | null;
+  destination: string;
+  state: FloorArenaWithdrawState;
+  errorCode: string | null;
+  txSignature: string | null;
+  subjectKind: FloorArenaWithdrawSubjectKind;
+  requestedAt: string;
+  dispatchedAt: string | null;
+  finalizedAt: string | null;
 }
 
 // ─── Dependencies (tests inject fakes) ─────────────────────────────────────
@@ -197,6 +262,18 @@ export interface FloorArenaRouteDeps {
    * weighted by the leaderboard scoring (it selects named types only).
    */
   logArenaEvent(c: { get(key: string): unknown }, input: EventInput): Promise<void>;
+  // P5 withdraw (contract §5). Each writes or reads DB rows only; none calls ClawPump.
+  issueWithdrawChallenge: typeof issueArenaWithdrawChallenge;
+  consumeWithdrawChallenge: typeof consumeArenaWithdrawChallenge;
+  isArenaWallet: typeof isArenaClawPumpWallet;
+  readLinkedWallet: typeof readArenaLinkedWallet;
+  setWithdrawAddress: typeof setArenaWithdrawAddress;
+  revokeWithdrawAddress: typeof revokeArenaWithdrawAddress;
+  requestWithdrawal: typeof requestArenaWithdrawal;
+  listWithdrawals: typeof readArenaWithdrawals;
+  cancelWithdrawal: typeof cancelArenaWithdrawal;
+  readWithdrawSummary: typeof readArenaWithdrawSummary;
+  readWithdrawAddress: typeof readArenaWithdrawAddress;
 }
 
 export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
@@ -228,6 +305,17 @@ export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
   addonCatalog: () => FLOOR_ARENA_ADDONS,
   addonPaymentsEnabled: () => addonPaymentsEnabled(),
   logArenaEvent: (c, input) => logEventFromContext(c, input),
+  issueWithdrawChallenge: issueArenaWithdrawChallenge,
+  consumeWithdrawChallenge: consumeArenaWithdrawChallenge,
+  isArenaWallet: isArenaClawPumpWallet,
+  readLinkedWallet: readArenaLinkedWallet,
+  setWithdrawAddress: setArenaWithdrawAddress,
+  revokeWithdrawAddress: revokeArenaWithdrawAddress,
+  requestWithdrawal: requestArenaWithdrawal,
+  listWithdrawals: readArenaWithdrawals,
+  cancelWithdrawal: cancelArenaWithdrawal,
+  readWithdrawSummary: readArenaWithdrawSummary,
+  readWithdrawAddress: readArenaWithdrawAddress,
 };
 
 /** Anti-sybil event types (audit-contest B1). Not in the leaderboard scoring. */
@@ -278,6 +366,117 @@ export const statusBodySchema = z.object({ status: z.enum(['active', 'paused']) 
 export const addonsBodySchema = z.object({ addons: z.array(addonEntrySchema).max(10) }).strict();
 export const suggestionBodySchema = z.object({ action: z.enum(['apply', 'dismiss']) }).strict();
 export const settingsBodySchema = z.object({ autoApplySuggestions: z.boolean() }).strict();
+
+// ─── Withdraw validation (P5, contract §6) ─────────────────────────────────
+
+const SOLANA_ADDRESS = z.string().trim().min(32).max(44).regex(/^[1-9A-HJ-NP-Za-km-z]+$/);
+export const withdrawChallengeBodySchema = z.object({ address: SOLANA_ADDRESS }).strict();
+export const withdrawAddressBodySchema = z.discriminatedUnion('proof', [
+  z.object({ proof: z.literal('signed'), address: SOLANA_ADDRESS, nonce: z.string().min(32).max(64), signature: z.string().min(80).max(96) }).strict(),
+  z.object({ proof: z.literal('linked_wallet') }).strict(),
+]);
+export const withdrawRevokeBodySchema = z.object({ addressId: z.string().uuid() }).strict();
+export const withdrawRequestBodySchema = z.object({
+  asset: z.enum(['USDC', 'SOL']),
+  amount: z.union([z.literal('max'), z.string().regex(/^(0|[1-9]\d{0,11})(\.\d{1,9})?$/)]),
+}).strict();
+/** Cancel takes no body; an object with any key is refused. */
+const withdrawCancelBodySchema = z.object({}).strict();
+const withdrawListQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(50).optional() });
+/** Same as wallet-withdraw.ts and the 0074 CHECK on floor_arena_withdrawals.idempotency_key. */
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{8,64}$/;
+/** bigint max (int64): the column type of every *_atomic field. */
+const MAX_ATOMIC = 2n ** 63n - 1n;
+const ARENA_SIGNATURE_BYTES = 64;
+
+function assetDecimals(asset: FloorArenaWithdrawAsset): number {
+  return asset === 'USDC' ? FLOOR_ARENA_WITHDRAW_LIMITS.usdcDecimals : FLOOR_ARENA_WITHDRAW_LIMITS.solDecimals;
+}
+
+/**
+ * The decimal STRING in atomic units, exactly: split on `.`, pad, BigInt. Never a
+ * float, never rounded. Null for more decimals than the asset has, for 0, and for
+ * a value above int64 (12 integer digits x 1e9 lamports can overflow).
+ */
+export function parseWithdrawAmount(text: string, asset: FloorArenaWithdrawAsset): bigint | null {
+  const match = /^(0|[1-9]\d{0,11})(?:\.(\d{1,9}))?$/.exec(text);
+  if (!match) return null;
+  const decimals = assetDecimals(asset);
+  const fraction = match[2] ?? '';
+  if (fraction.length > decimals) return null;
+  const atomic = BigInt(match[1]!) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, '0') || '0');
+  return atomic > 0n && atomic <= MAX_ATOMIC ? atomic : null;
+}
+
+/** "0.10 USDC" / "0.001 SOL" / "500 USDC": atomic units as copy text (two decimals when there is a fraction). */
+function withdrawAmountCopy(atomic: number, asset: FloorArenaWithdrawAsset): string {
+  const text = formatAtomicAmount(BigInt(atomic), assetDecimals(asset));
+  const dot = text.indexOf('.');
+  return `${dot >= 0 && text.length - dot - 1 < 2 ? `${text}0` : text} ${asset}`;
+}
+
+function minutesCopy(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  return min % 60 === 0 ? `${min / 60} hour${min === 60 ? '' : 's'}` : `${min} minute${min === 1 ? '' : 's'}`;
+}
+
+export function toWithdrawAddressView(row: ArenaWithdrawAddressRecord, now: Date): ArenaWithdrawAddressView {
+  return {
+    id: row.id,
+    address: row.address,
+    proof: row.proofKind,
+    setBy: row.setBy,
+    createdAt: row.createdAt.toISOString(),
+    activeAt: row.activeAt.toISOString(),
+    state: row.activeAt.getTime() > now.getTime() ? 'pending' : 'active',
+  };
+}
+
+export function toWithdrawalView(row: ArenaWithdrawalRecord): ArenaWithdrawalView {
+  const atomic = row.amountAtomic ?? row.requestedAtomic;
+  return {
+    id: row.id,
+    asset: row.asset,
+    amountMode: row.amountMode,
+    amount: atomic === null ? null : formatAtomicAmount(atomic, assetDecimals(row.asset)),
+    destination: row.destination,
+    state: row.state,
+    errorCode: row.errorCode,
+    txSignature: row.txSignature,
+    subjectKind: row.subjectKind,
+    requestedAt: row.requestedAt.toISOString(),
+    dispatchedAt: row.dispatchedAt ? row.dispatchedAt.toISOString() : null,
+    finalizedAt: row.finalizedAt ? row.finalizedAt.toISOString() : null,
+  };
+}
+
+type WithdrawRequestCode = (typeof FLOOR_ARENA_WITHDRAW_REQUEST_CODES)[number];
+
+/** HTTP status + copy per request refusal (no row written). Numbers render from FLOOR_ARENA_WITHDRAW_LIMITS. */
+const WITHDRAW_REFUSALS: Record<WithdrawRequestCode, { status: 400 | 409 | 429; error: string }> = {
+  idempotency_conflict: { status: 409, error: 'This Idempotency-Key was used with another request. Send a new key.' },
+  wallet_not_ready: { status: 409, error: "Your trader's wallet is not ready yet." },
+  no_withdraw_address: { status: 409, error: 'Add a withdraw address first.' },
+  address_pending: { status: 409, error: 'Your new withdraw address is not active yet. It works from the activeAt time.' },
+  withdrawal_open: { status: 409, error: 'One withdrawal is in progress. Wait until it ends.' },
+  cooldown: { status: 429, error: `Wait ${minutesCopy(FLOOR_ARENA_WITHDRAW_LIMITS.cooldownMs)} between withdrawals.` },
+  daily_count_cap: {
+    status: 429,
+    error: `You can withdraw ${FLOOR_ARENA_WITHDRAW_LIMITS.agentDailyRequests} times a day. Try again after 00:00 UTC.`,
+  },
+  agent_daily_cap: {
+    status: 409,
+    error: `You can withdraw at most ${withdrawAmountCopy(FLOOR_ARENA_WITHDRAW_LIMITS.agentDailyUsdcAtomic, 'USDC')} a day.`,
+  },
+  invalid_amount: {
+    status: 400,
+    error: `The amount is not valid. USDC takes at most ${FLOOR_ARENA_WITHDRAW_LIMITS.usdcDecimals} decimals and SOL at most ${FLOOR_ARENA_WITHDRAW_LIMITS.solDecimals}, and it must be more than 0.`,
+  },
+  below_minimum: {
+    status: 400,
+    error: `The minimum is ${withdrawAmountCopy(FLOOR_ARENA_WITHDRAW_LIMITS.minUsdcAtomic, 'USDC')} or ${withdrawAmountCopy(FLOOR_ARENA_WITHDRAW_LIMITS.minSolLamports, 'SOL')}.`,
+  },
+};
 
 type AddonCheck = { ok: true; addons: ArenaAgentAddon[] } | { ok: false; code: string; error: string };
 
@@ -666,16 +865,19 @@ export function createFloorArenaRoutes(
 
   async function meBody(agent: ArenaAgentRecord | null, now: Date): Promise<ArenaMeResponse> {
     if (!agent) {
-      return { agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null };
+      return {
+        agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null, withdraw: null,
+      };
     }
     const catalog = new Map(deps.addonCatalog().map((addon) => [addon.id, addon]));
-    const [stats, addonStats, latestReport, balance] = await Promise.all([
+    const [stats, addonStats, latestReport, balance, withdraw] = await Promise.all([
       deps.readStats([agent.id], now),
       deps.readAddonStats(agent.id, utcDayStart(now)),
       deps.readLatestReport(agent.id),
       agent.provisionState === 'ready' && agent.clawpumpAgentId
         ? deps.readWalletBalance(agent.clawpumpAgentId).catch(() => null)
         : Promise.resolve(null),
+      deps.readWithdrawSummary(agent.id),
     ]);
     const statsById = new Map(addonStats.map((row) => [row.addonId, row]));
     const addons: ArenaMyAddonStatus[] = [];
@@ -709,6 +911,10 @@ export function createFloorArenaRoutes(
       addons,
       stats: stats.get(agent.id) ?? emptyStats(),
       latestReport,
+      withdraw: {
+        address: withdraw.address ? toWithdrawAddressView(withdraw.address, now) : null,
+        open: withdraw.open ? toWithdrawalView(withdraw.open) : null,
+      },
     };
   }
 
@@ -996,6 +1202,254 @@ export function createFloorArenaRoutes(
     if (!updated) return noAgent(c);
     forgetPublic();
     return c.json({ agent: toPublicAgent(updated) });
+  });
+
+  // ── Wallet withdraw (P5, D34; contract §6). REAL MONEY. ──────────────────
+  // Every handler below writes or reads DB rows only (I4): the engine leader
+  // admits and sends. The arena row is ALWAYS the caller's own (myAgent), and no
+  // body carries an arena id. The route checks no balance and no SOL: admission
+  // does, under the add-on lock, against a live wallet read.
+
+  function walletNotReady(c: Context) {
+    return c.json({ error: "Your trader's wallet is not ready yet. Wait until provisioning ends.", code: 'wallet_not_ready' }, 409);
+  }
+
+  function invalidAddress(c: Context) {
+    return c.json({ error: 'This is not a valid Solana wallet address.', code: 'invalid_address' }, 400);
+  }
+
+  function addressNotAllowed(c: Context) {
+    return c.json({ error: 'You cannot use this address.', code: 'address_not_allowed' }, 400);
+  }
+
+  /** A provisioned user row with its ClawPump agent and wallet (the withdraw source). */
+  function walletReady(agent: ArenaAgentRecord): boolean {
+    return agent.kind === 'user' && agent.provisionState === 'ready' && !!agent.clawpumpAgentId && !!agent.clawpumpWallet;
+  }
+
+  function subjectOf(c: Context<ActivityAuthContext>): { kind: FloorArenaWithdrawSubjectKind; agentId: string | null } {
+    const identity = identityOf(c);
+    return identity.kind === 'agent' ? { kind: 'agent', agentId: identity.agentId } : { kind: 'human', agentId: null };
+  }
+
+  routes.post('/me/withdraw-address/challenge', async (c) => {
+    const blocked = writeBlocked(c);
+    if (blocked) return blocked;
+    const parsed = withdrawChallengeBodySchema.safeParse(await readJson(c));
+    if (!parsed.success) return invalidBody(c);
+    const { address } = parsed.data;
+    if (arenaDestinationProblem(address) !== null) return invalidAddress(c);
+    const agent = await myAgent(c);
+    if (!agent) return noAgent(c);
+    if (!walletReady(agent)) return walletNotReady(c);
+    if (address === agent.clawpumpWallet || (await deps.isArenaWallet(address))) return addressNotAllowed(c);
+    const issued = await deps.issueWithdrawChallenge({
+      agentId: agent.id,
+      ownerUserId: identityOf(c).userId,
+      address,
+      nonce: bs58.encode(randomBytes(32)),
+      now: deps.now(),
+    });
+    if (!issued.ok) {
+      return c.json({
+        error: `Too many open sign requests. Use one of them, or wait ${minutesCopy(FLOOR_ARENA_WITHDRAW_LIMITS.challengeTtlMs)}.`,
+        code: 'too_many_challenges',
+      }, 429);
+    }
+    return c.json({ nonce: issued.nonce, messageToSign: issued.message, expiresAt: issued.expiresAt.toISOString(), address });
+  });
+
+  routes.post('/me/withdraw-address', async (c) => {
+    const blocked = writeBlocked(c);
+    if (blocked) return blocked;
+    const parsed = withdrawAddressBodySchema.safeParse(await readJson(c));
+    if (!parsed.success) return invalidBody(c);
+    const body = parsed.data;
+    if (body.proof === 'signed' && arenaDestinationProblem(body.address) !== null) return invalidAddress(c);
+    const identity = identityOf(c);
+    const agent = await myAgent(c);
+    if (!agent) return noAgent(c);
+    if (!walletReady(agent)) return walletNotReady(c);
+    const now = deps.now();
+    const subject = subjectOf(c);
+    let address: string;
+    let activeAt: Date;
+    let proof: { message: string | null; signature: string | null; challengeNonce: string | null };
+    if (body.proof === 'signed') {
+      address = body.address;
+      if (address === agent.clawpumpWallet || (await deps.isArenaWallet(address))) return addressNotAllowed(c);
+      // Single use: the challenge is spent (committed) BEFORE the signature is checked.
+      const consumed = await deps.consumeWithdrawChallenge({ nonce: body.nonce, agentId: agent.id, ownerUserId: identity.userId, address });
+      if (!consumed) {
+        return c.json({ error: 'The sign request expired or was already used. Ask for a new one.', code: 'invalid_challenge' }, 401);
+      }
+      // The DESTINATION key signs the exact challenge text (domain-separated from the wallet-link message).
+      let signatureBytes: Uint8Array;
+      try {
+        signatureBytes = bs58.decode(body.signature);
+      } catch {
+        signatureBytes = new Uint8Array(0);
+      }
+      const valid = signatureBytes.length === ARENA_SIGNATURE_BYTES
+        && nacl.sign.detached.verify(new TextEncoder().encode(consumed.message), signatureBytes, bs58.decode(address));
+      if (!valid) return c.json({ error: 'The wallet signature did not match. Ask for a new sign request.', code: 'invalid_signature' }, 400);
+      activeAt = new Date(now.getTime() + FLOOR_ARENA_WITHDRAW_LIMITS.addressDelayMs);
+      proof = { message: consumed.message, signature: body.signature, challengeNonce: body.nonce };
+    } else {
+      const linked = await deps.readLinkedWallet(identity.userId);
+      if (!linked) {
+        return c.json({ error: 'Your account has no linked wallet. Prove an address with a signature.', code: 'no_linked_wallet' }, 404);
+      }
+      address = linked.address;
+      if (arenaDestinationProblem(address) !== null) return invalidAddress(c);
+      if (address === agent.clawpumpWallet || (await deps.isArenaWallet(address))) return addressNotAllowed(c);
+      // A wallet linked more than the delay ago is active now; a newer one waits the same delay as a signed address.
+      const settled = linked.linkedAt.getTime() <= now.getTime() - FLOOR_ARENA_WITHDRAW_LIMITS.addressDelayMs;
+      activeAt = settled ? now : new Date(now.getTime() + FLOOR_ARENA_WITHDRAW_LIMITS.addressDelayMs);
+      proof = { message: null, signature: null, challengeNonce: null };
+    }
+    const result = await deps.setWithdrawAddress({
+      agentId: agent.id,
+      ownerUserId: identity.userId,
+      address,
+      proofKind: body.proof,
+      ...proof,
+      setBy: subject.kind,
+      setByAgentId: subject.agentId,
+      activeAt,
+    });
+    if (!result.ok) {
+      return result.reason === 'same_address'
+        ? c.json({ error: 'This address is already set.', code: 'same_address' }, 409)
+        : walletNotReady(c);
+    }
+    // A FRESH clock for the state: the query stores GREATEST(activeAt, the DB's now()), which is a
+    // few ms after `now` above, so an "active at once" linked wallet would read pending with `now`.
+    return c.json({ address: toWithdrawAddressView(result.address, deps.now()) }, 201);
+  });
+
+  routes.post('/me/withdraw-address/revoke', async (c) => {
+    const blocked = writeBlocked(c);
+    if (blocked) return blocked;
+    const parsed = withdrawRevokeBodySchema.safeParse(await readJson(c));
+    if (!parsed.success) return invalidBody(c);
+    const agent = await myAgent(c);
+    if (!agent) return noAgent(c);
+    const result = await deps.revokeWithdrawAddress({ agentId: agent.id, addressId: parsed.data.addressId, reason: 'owner' });
+    if (!result.ok) {
+      return result.reason === 'already_revoked'
+        ? c.json({ error: 'This address is already removed.', code: 'already_revoked' }, 409)
+        : c.json({ error: 'Withdraw address not found.', code: 'address_not_found' }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
+  routes.post('/me/withdrawals', async (c) => {
+    const blocked = writeBlocked(c);
+    if (blocked) return blocked;
+    const idempotencyKey = c.req.header('Idempotency-Key');
+    if (!idempotencyKey) {
+      return c.json({ error: 'Send an Idempotency-Key header (8 to 64 letters, digits, _ or -).', code: 'idempotency_key_required' }, 400);
+    }
+    if (!IDEMPOTENCY_KEY_RE.test(idempotencyKey)) {
+      return c.json({ error: 'The Idempotency-Key must be 8 to 64 letters, digits, _ or -.', code: 'idempotency_key_invalid' }, 400);
+    }
+    const parsed = withdrawRequestBodySchema.safeParse(await readJson(c));
+    if (!parsed.success) return invalidBody(c);
+    const { asset, amount } = parsed.data;
+    const amountMode: FloorArenaWithdrawAmountMode = amount === 'max' ? 'max' : 'exact';
+    let requestedAtomic: bigint | null = null;
+    if (amountMode === 'exact') {
+      requestedAtomic = parseWithdrawAmount(amount, asset);
+      if (requestedAtomic === null) {
+        return c.json({ error: WITHDRAW_REFUSALS.invalid_amount.error, code: 'invalid_amount' }, 400);
+      }
+      const minimum = asset === 'USDC' ? FLOOR_ARENA_WITHDRAW_LIMITS.minUsdcAtomic : FLOOR_ARENA_WITHDRAW_LIMITS.minSolLamports;
+      if (requestedAtomic < BigInt(minimum)) {
+        return c.json({ error: WITHDRAW_REFUSALS.below_minimum.error, code: 'below_minimum' }, 400);
+      }
+    }
+    const agent = await myAgent(c);
+    if (!agent) return noAgent(c);
+    const subject = subjectOf(c);
+    const result = await deps.requestWithdrawal({
+      agentId: agent.id,
+      ownerUserId: identityOf(c).userId,
+      subjectKind: subject.kind,
+      subjectAgentId: subject.agentId,
+      idempotencyKey,
+      asset,
+      amountMode,
+      requestedAtomic,
+      now: deps.now(),
+    });
+    if (result.kind !== 'refused') {
+      return result.kind === 'created'
+        ? c.json({ withdrawal: toWithdrawalView(result.withdrawal) }, 202)
+        : c.json({ withdrawal: toWithdrawalView(result.withdrawal), replay: true }, 200);
+    }
+    const refusal = WITHDRAW_REFUSALS[result.code];
+    return c.json({
+      error: refusal.error,
+      code: result.code,
+      ...(result.activeAt ? { activeAt: result.activeAt.toISOString() } : {}),
+      ...(result.retryAt ? { retryAt: result.retryAt.toISOString() } : {}),
+      ...(result.withdrawalId ? { withdrawalId: result.withdrawalId } : {}),
+    }, refusal.status);
+  });
+
+  routes.get('/me/withdrawals', async (c) => {
+    const query = withdrawListQuerySchema.safeParse({ limit: c.req.query('limit') });
+    if (!query.success) return c.json({ error: 'limit must be 1..50.', code: 'invalid_query' }, 400);
+    const agent = await myAgent(c);
+    if (!agent) return noAgent(c);
+    const now = deps.now();
+    const identity = identityOf(c);
+    const [address, linked, rows, balance] = await Promise.all([
+      deps.readWithdrawAddress(agent.id),
+      deps.readLinkedWallet(identity.userId),
+      deps.listWithdrawals(agent.id, query.data.limit ?? 20),
+      // Display only (the 60 s cached summary, the same read as GET /me); admission reads the live balance.
+      agent.provisionState === 'ready' && agent.clawpumpAgentId
+        ? deps.readWalletBalance(agent.clawpumpAgentId).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    const paymentAddress = toPublicAgent(agent).paymentAddress;
+    return c.json({
+      agentId: agent.id,
+      address: address ? toWithdrawAddressView(address, now) : null,
+      linkedWallet: linked
+        ? {
+            address: linked.address,
+            linkedAt: linked.linkedAt.toISOString(),
+            activeNow: linked.linkedAt.getTime() <= now.getTime() - FLOOR_ARENA_WITHDRAW_LIMITS.addressDelayMs,
+          }
+        : null,
+      withdrawals: rows.map(toWithdrawalView),
+      // Atomic amounts and durations as JSON numbers (all are safe integers), exactly the shared constant.
+      limits: FLOOR_ARENA_WITHDRAW_LIMITS,
+      wallet: paymentAddress
+        ? { address: paymentAddress, usdc: balance?.usdc ?? null, sol: balance?.sol ?? null, updatedAt: balance?.updatedAt ?? null }
+        : null,
+    });
+  });
+
+  routes.post('/me/withdrawals/:id/cancel', async (c) => {
+    const blocked = writeBlocked(c);
+    if (blocked) return blocked;
+    const id = c.req.param('id') ?? '';
+    if (!z.string().uuid().safeParse(id).success) return c.json({ error: 'Withdrawal not found.', code: 'withdrawal_not_found' }, 404);
+    const raw = await readJson(c);
+    if (raw !== undefined && !withdrawCancelBodySchema.safeParse(raw).success) return invalidBody(c);
+    const agent = await myAgent(c);
+    if (!agent) return noAgent(c);
+    const result = await deps.cancelWithdrawal(agent.id, id);
+    if (!result.ok) {
+      return result.reason === 'not_cancellable'
+        ? c.json({ error: 'Only a withdrawal that is still waiting to send can be cancelled.', code: 'not_cancellable' }, 409)
+        : c.json({ error: 'Withdrawal not found.', code: 'withdrawal_not_found' }, 404);
+    }
+    return c.json({ withdrawal: toWithdrawalView(result.withdrawal) });
   });
 
   return routes;

@@ -33,7 +33,23 @@
  */
 
 import { AGENT_MODELS } from './agent-models';
-import { FLOOR_ARENA_DESK_COUNT, FLOOR_ARENA_TEMPLATES } from './floor-arena';
+import { FLOOR_ARENA_DESK_COUNT, FLOOR_ARENA_TEMPLATES, FLOOR_ARENA_WITHDRAW_LIMITS } from './floor-arena';
+
+// P5 withdraw tool text: every number renders from FLOOR_ARENA_WITHDRAW_LIMITS (E6.2).
+const WITHDRAW = FLOOR_ARENA_WITHDRAW_LIMITS;
+/** Atomic units as text: 100000 (6 dp) -> "0.10", 500000000 -> "500" (two decimals when there is a fraction). */
+function withdrawUnits(atomic: number, decimals: number): string {
+  const digits = String(atomic).padStart(decimals + 1, '0');
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction = digits.slice(digits.length - decimals).replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction.padEnd(2, '0')}` : whole;
+}
+const withdrawUsdc = (atomic: number) => `${withdrawUnits(atomic, WITHDRAW.usdcDecimals)} USDC`;
+const withdrawSol = (lamports: number) => `${withdrawUnits(lamports, WITHDRAW.solDecimals)} SOL`;
+function withdrawDuration(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  return min % 60 === 0 ? `${min / 60} hour${min === 60 ? '' : 's'}` : `${min} minute${min === 1 ? '' : 's'}`;
+}
 
 export interface ToolPropertySchema {
   type: string;
@@ -129,7 +145,8 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   // Trading Arena (paper contest, protocol 74): manual section 17c. Every write
   // below takes your live X-Clawville-Agent-Session header and acts on the ONE
   // arena agent that belongs to your bound avatar's account; a human uses the
-  // same routes with the login cookie. Paper only: nothing here moves money.
+  // same routes with the login cookie. Paper trading; add-ons and withdrawals move real USDC or SOL from the agent's own ClawPump wallet
+  // (withdraw tools: protocol 80, P5).
   {
     name: 'clawville_arena_templates',
     description: "Read the five Trading Arena templates with GET {apiBase}/api/floor/arena/templates. Public, no session header. Each template carries its id, name, tagline, thesis, risk and full params; the response also carries the hard rules no agent can change, the param bounds, and each house agent's live paper stats. Copy a template's params, edit them inside the bounds, and pass them to clawville_arena_launch. Liquidity is a template setting (filters.liq_min), not a hard rule, so a template without a minimum can buy bonding-curve coins. entry.first_sight_sources is any or tradeable: tradeable starts the entry.discovered_within_s clock at the first DexScreener or ClawPump sighting. A shared-feed coin trades only after a DexScreener or ClawPump sighting; a GeckoTerminal-only coin is shown but never traded, and coins from your paid add-ons are exempt. Paper only: fills are priced from live quotes, nothing is bought.",
@@ -154,7 +171,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_my_trader',
-    description: "Read your own arena agent with GET {apiBase}/api/floor/arena/me and your X-Clawville-Agent-Session header. Returns {agent, paymentAddress, provision, wallet, addons, stats, latestReport}; agent is null when your account has none yet. latestReport is your private 30-minute report; its id is the reportId for clawville_arena_suggestion. Your full private decision stream, every event type (scan, pass, skip, report, addon and more), oldest first, is GET {apiBase}/api/floor/arena/me/events?after=<last event id>&limit=<1-100> with the same header; it returns {agentId, events, lastId, generatedAt}, pass lastId back as after, and it answers 404 no_agent before you launch. The wallet is your agent's ClawPump wallet, which pays for any add-on you turn on. Guests get 403 guest_not_allowed; a session that has not proved avatar ownership gets 403 with an error that starts with agent_session_not_ledger_authorized (code is the number 403).",
+    description: "Read your own arena agent with GET {apiBase}/api/floor/arena/me and your X-Clawville-Agent-Session header. Returns {agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw}; agent is null when your account has none yet. withdraw: your withdraw address and any open withdrawal ({address, open}, null when you have no agent); manage them with the clawville_arena_withdraw tools. latestReport is your private 30-minute report; its id is the reportId for clawville_arena_suggestion. Your full private decision stream, every event type (scan, pass, skip, report, addon and more), oldest first, is GET {apiBase}/api/floor/arena/me/events?after=<last event id>&limit=<1-100> with the same header; it returns {agentId, events, lastId, generatedAt}, pass lastId back as after, and it answers 404 no_agent before you launch. The wallet is your agent's ClawPump wallet, which pays for any add-on you turn on. Guests get 403 guest_not_allowed; a session that has not proved avatar ownership gets 403 with an error that starts with agent_session_not_ledger_authorized (code is the number 403).",
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -223,7 +240,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_arena_addons',
-    description: "Set your arena agent's paid discovery add-ons with PATCH {apiBase}/api/floor/arena/me/addons and your X-Clawville-Agent-Session header. Body {addons: [{id, enabled, dailyCapUsd}]} with the FULL list; the catalog is GET {apiBase}/api/floor/arena/addons. Your agent's own ClawPump wallet pays each call, never ClawVille. Send only USDC on Solana: you cannot withdraw it through ClawVille, so send only what your add-ons will spend; ClawVille does not refund add-on spend. Add-ons run only while your agent is active and seated. Each add-on's daily cap defaults to 1 USD, and the caps of all enabled add-ons together are at most 5 USD per day (400 addon_cap_exceeded; 400 unknown_addon for an id not in the catalog; 400 duplicate_addon for an id listed twice). Coins an add-on finds stay private to your agent.",
+    description: "Set your arena agent's paid discovery add-ons with PATCH {apiBase}/api/floor/arena/me/addons and your X-Clawville-Agent-Session header. Body {addons: [{id, enabled, dailyCapUsd}]} with the FULL list; the catalog is GET {apiBase}/api/floor/arena/addons. Your agent's own ClawPump wallet pays each call, never ClawVille. Send only USDC or SOL on Solana; you can withdraw both to an address you prove (clawville_arena_withdraw). ClawVille does not refund add-on spend. Add-ons run only while your agent is active and seated. Each add-on's daily cap defaults to 1 USD, and the caps of all enabled add-ons together are at most 5 USD per day (400 addon_cap_exceeded; 400 unknown_addon for an id not in the catalog; 400 duplicate_addon for an id listed twice). Coins an add-on finds stay private to your agent.",
     input_schema: {
       type: 'object',
       properties: {
@@ -246,6 +263,71 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: { autoApplySuggestions: { type: 'boolean' } },
       required: ['autoApplySuggestions'],
+    },
+  },
+  // P5 wallet withdraw (protocol 80, manual section 17c "Wallet and withdrawals").
+  // REAL MONEY: each call writes a DB row only; ClawVille's engine sends each
+  // request once. Human parity: the same routes with the login cookie.
+  {
+    name: 'clawville_arena_withdraw_challenge',
+    description: `Start proving a withdraw address with POST {apiBase}/api/floor/arena/me/withdraw-address/challenge and your X-Clawville-Agent-Session header. Body {address}: the base58 Solana address that will RECEIVE the money. Returns 200 {nonce, messageToSign, expiresAt, address}. Sign the UTF-8 bytes of messageToSign with the secret key of THAT address (ed25519, base58 signature), then call clawville_arena_withdraw_address with proof signed. A challenge works once and ends after ${withdrawDuration(WITHDRAW.challengeTtlMs)}. Errors: 400 invalid_body, 400 invalid_address (not a 32-byte on-curve Solana key), 400 address_not_allowed (an arena ClawPump wallet), 404 no_agent, 409 wallet_not_ready (your trader's wallet is not provisioned yet), 429 rate_limited, 429 too_many_challenges (at most ${WITHDRAW.maxLiveChallengesPerAgent} open at once).`,
+    input_schema: {
+      type: 'object',
+      properties: { address: { type: 'string', description: 'The base58 Solana address that receives the withdrawals. You must hold its secret key.' } },
+      required: ['address'],
+    },
+  },
+  {
+    name: 'clawville_arena_withdraw_address',
+    description: `Set your arena agent's withdraw address with POST {apiBase}/api/floor/arena/me/withdraw-address and your X-Clawville-Agent-Session header. Body {proof: 'signed', address, nonce, signature} after clawville_arena_withdraw_challenge, or {proof: 'linked_wallet'} to use the wallet your account linked. Returns 201 {address: {id, address, proof, setBy, createdAt, activeAt, state}}. A new address is pending and works ${withdrawDuration(WITHDRAW.addressDelayMs)} after you set it; a wallet linked more than ${withdrawDuration(WITHDRAW.addressDelayMs)} ago is active at once. A new address replaces the old one. Errors: 400 invalid_body, 401 invalid_challenge (an unknown, used or expired nonce; ask for a new one), 400 invalid_signature (the signature does not verify for that address; the nonce is spent), 400 invalid_address, 400 address_not_allowed, 409 same_address, 404 no_agent, 409 wallet_not_ready, 404 no_linked_wallet.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        proof: { type: 'string', enum: ['signed', 'linked_wallet'] },
+        address: { type: 'string', description: "proof signed only: the address from the challenge." },
+        nonce: { type: 'string', description: 'proof signed only: the nonce from the challenge.' },
+        signature: { type: 'string', description: 'proof signed only: base58 ed25519 signature of messageToSign by that address.' },
+      },
+      required: ['proof'],
+    },
+  },
+  {
+    name: 'clawville_arena_withdraw_address_revoke',
+    description: "Remove a withdraw address at once with POST {apiBase}/api/floor/arena/me/withdraw-address/revoke and your X-Clawville-Agent-Session header. Body {addressId}: the address id from clawville_arena_withdrawals or clawville_arena_my_trader. Returns 200 {ok: true}. A request that still waits to send is then refused with address_revoked. Errors: 400 invalid_body, 404 no_agent, 404 address_not_found, 409 already_revoked.",
+    input_schema: {
+      type: 'object',
+      properties: { addressId: { type: 'string' } },
+      required: ['addressId'],
+    },
+  },
+  {
+    name: 'clawville_arena_withdraw',
+    description: `Withdraw USDC or SOL from your arena agent's own ClawPump wallet to its ACTIVE proved address with POST {apiBase}/api/floor/arena/me/withdrawals and your X-Clawville-Agent-Session header. Send idempotencyKey as the Idempotency-Key header (8 to 64 letters, digits, _ or -) and the body {asset, amount}: amount is a decimal string such as '0.5', or 'max'. Returns 202 {withdrawal}; the same key and body return 200 {withdrawal, replay: true}. ClawVille sends each request once and never sends it again; follow it with clawville_arena_withdrawals. Limits: at least ${withdrawUsdc(WITHDRAW.minUsdcAtomic)} or ${withdrawSol(WITHDRAW.minSolLamports)}; per agent and UTC day ${WITHDRAW.agentDailyRequests} requests and ${withdrawUsdc(WITHDRAW.agentDailyUsdcAtomic)}; ${withdrawDuration(WITHDRAW.cooldownMs)} between requests; one open withdrawal. Keep at least ${WITHDRAW.recommendedSolText} SOL in the wallet for the network fee; SOL max leaves ${withdrawSol(WITHDRAW.solKeepLamports)}. Errors: 400 idempotency_key_required, idempotency_key_invalid, invalid_body, invalid_amount (more decimals than the asset has, or 0) or below_minimum; 404 no_agent; 409 wallet_not_ready, no_withdraw_address, address_pending (with activeAt), withdrawal_open, agent_daily_cap or idempotency_conflict (with withdrawalId); 429 cooldown or daily_count_cap (with retryAt). At send time a request can still be refused with a code such as needs_sol or insufficient_balance.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        asset: { type: 'string', enum: ['USDC', 'SOL'] },
+        amount: { type: 'string', description: `A decimal string (USDC at most ${WITHDRAW.usdcDecimals} decimals, SOL at most ${WITHDRAW.solDecimals}), or max.` },
+        idempotencyKey: { type: 'string', description: 'Sent as the Idempotency-Key header. Reuse it only to retry the SAME request.' },
+      },
+      required: ['asset', 'amount', 'idempotencyKey'],
+    },
+  },
+  {
+    name: 'clawville_arena_withdrawals',
+    description: "Read your withdraw state with GET {apiBase}/api/floor/arena/me/withdrawals?limit=1-50 (default 20) and your X-Clawville-Agent-Session header. Returns {agentId, address, linkedWallet, withdrawals, limits, wallet}: your address with state pending or active, your linked wallet with activeNow, your newest requests (amount as a decimal string; state requested, dispatching, sent, confirmed, cancelled, refused, failed, unknown, failed_no_send or needs_review; errorCode; txSignature), the limits in atomic units, and the wallet balance. Errors: 400 invalid_query, 404 no_agent.",
+    input_schema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', description: 'Rows to return, 1 to 50, default 20.' } },
+    },
+  },
+  {
+    name: 'clawville_arena_withdraw_cancel',
+    description: 'Cancel a withdrawal that is still requested with POST {apiBase}/api/floor/arena/me/withdrawals/:id/cancel and your X-Clawville-Agent-Session header. No body. Returns 200 {withdrawal}. Errors: 404 withdrawal_not_found, 404 no_agent, 409 not_cancellable (it is already sending or done).',
+    input_schema: {
+      type: 'object',
+      properties: { withdrawalId: { type: 'string', description: 'The withdrawal id (the :id in the path).' } },
+      required: ['withdrawalId'],
     },
   },
   {
