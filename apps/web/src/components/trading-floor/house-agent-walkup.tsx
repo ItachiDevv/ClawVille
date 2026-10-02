@@ -147,7 +147,7 @@ function LiveLine({ board, templateId }: { board: { data?: FloorArenaHouseBoardV
   return (
     <p style={mutedStyle} data-testid="house-agent-walkup-live">
       {contestLive ? 'Contest' : 'Last 24 h'}:{' '}
-      <span style={{ color: pnlTone(stats.realisedUsd), fontWeight: 700 }}>{signedUsd(stats.realisedUsd)}</span> realised
+      <span style={{ color: pnlTone(stats.realisedUsd), fontWeight: 700 }}>{signedUsd(stats.realisedUsd)}</span>{' '}realised
       P&amp;L · {countLabel(stats.wins, 'win')} · {countLabel(stats.losses, 'loss', 'losses')} ·{' '}
       {countLabel(agent.open.length, 'open trade')}
     </p>

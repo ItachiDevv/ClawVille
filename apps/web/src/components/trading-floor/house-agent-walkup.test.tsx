@@ -363,6 +363,8 @@ describe('content', () => {
     await walkUp(0);
     await waitFor(() => (panel()?.textContent ?? '').includes('Last 24 h'), 'the 24 h live line');
     expect(panel()!.textContent).toContain('-$2.50');
+    // The staging build rendered "+$32.49realised" (2026-10-02 film QC): the space must be explicit.
+    expect(panel()!.textContent).toContain('-$2.50 realised P&L');
   });
 
   test('a LIVE house agent shows LIVE, not PAPER', async () => {
