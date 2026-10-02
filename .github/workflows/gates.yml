@@ -250,6 +250,9 @@ jobs:
           cd apps/api
           bun test src/services/activity/__tests__/activity-queue.test.ts
           bun test src/services/activity/__tests__/activity-room-manager.test.ts
+          # Security A11 (batch 2): the match WebSocket auth-frame ledger gate.
+          # Uses mock.module, so it gets its own process like the two above.
+          bun test src/services/activity/__tests__/activity-ws-hub.test.ts
 
       - name: Run runtime suites in separate processes
         # mock.module and module caches are process-global. Isolate every runtime
@@ -353,6 +356,7 @@ jobs:
         run: |
           bun packages/database/scripts/ci-restore-schema-invariants.ts
           bun test packages/database/scripts/ci-schema-invariants.test.ts
+          bun test packages/database/scripts/__tests__/special-event-start-guard-migration.test.ts
 
       - name: Run PostgreSQL-backed Trading Floor database contracts
         env:

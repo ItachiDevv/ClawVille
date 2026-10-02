@@ -631,16 +631,6 @@ import {
 // 2026-09-30 (security M2): manual reviewed, no version change. The quest admin gate moved from an
 // email match to the ADMIN_USER_IDS allowlist and tokenReward is bounded; quests are admin-only and
 // no agent-facing route, verb, or served-manual text changed.
-// 2026-09-30 (security M3/M4): manual reviewed, no version change. Special-event create/start now need
-// a named admin, the seed prize pool is debited from the house treasury, and a concurrent start gets
-// 409. The manual does not document the admin event commands; agent signup and play are unchanged.
-// 2026-09-30 (security M10/M11) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: §11 bounties now
-// states the knowledge_book bonus rule (canonical book id or 400; one copy moves poster -> winner at
-// approval, or the bonus is skipped with a reason). PROTOCOL_VERSION bump owned by the batch-2
-// integration (v81), which must cover this text.
-// 2026-09-30 (security M12) — MANUAL TEXT CHANGED, VERSION NOT BUMPED HERE: "Run a store — land
-// services" documents the optional expectedPriceCt on POST /api/land/services/:listingId/buy and the
-// 409 price_changed refusal. PROTOCOL_VERSION bump owned by the batch-2 integration (v81).
 // NOTE (2026-09-30, Trading Arena paper contest): bumped 73 -> 74. New section
 // 17c (a `## ` heading like 3a, so hosted runtimes embed it as its own chunk and
 // section 17 stays far below the embedding input limit) documents the paper
@@ -778,16 +768,37 @@ import {
 // under the big screen) and "launch with the same templateId"; no new tool, no `[ACTION:]` change.
 // 2026-10-02 (walk-up "realised P&L" and launch "up to 32 characters" spacing, 787c1a22):
 // manual and Nori orientation reviewed, no version change. Human UI spacing only; agents never read it.
-export const PROTOCOL_VERSION = 80;
-// PENDING v81 — security batch 2 (C4/C5/C7, agent-owned knowledge + exports); the batch-2
-// integration moves this note above PROTOCOL_VERSION with its bump. §4 of the play manual and the
-// protocol manual's "Owner-private knowledge and exports" subsection say that on a bound agent a
-// session that is not ledger-capable gets `403 agent_session_not_ledger_authorized` from
-// GET /:sessionId/knowledge, `totalMessages: 0` + empty `knowledgeLearned` from /stats and
-// `knowledge: []` in the /connect response, that its visits and teacher chats no longer write the
-// row's knowledge, and that the openclaw knowledge/memory exports are owner-only (401 / 403).
-// PROTOCOL_VERSION bump owned by the batch-2 integration (v81). No `[ACTION:]` verb, signing,
-// bearer/TTL, cognition body, `hatcher:` namespace or leaderboard weight changed.
+// v81 (2026-10-02, security batch 2; 80 is on staging and prod, so the changed manual bytes need
+// a new version for already-provisioned hosted runtimes). Agent-visible text:
+// (a) A8/A11-A14 ledger gate: POST /api/ct/topup/quote + /settle, POST /api/moonpay/widget-url,
+//     partner storefront POST /quote + /settle, and activity /queue, /leave-queue, /queue-status
+//     and the /party* routes need a ledger-capable session; the activity match WebSocket `auth`
+//     frame applies the same rule (close 4001, reason `agent_session_not_ledger_authorized`).
+//     Exact refusals (require-auth-or-agent.ts): a session with no owner proof gets 403 "Agent
+//     session is not bound to an active avatar" from requireAuthOrAgentSession (WebSocket: 4001
+//     `invalid session`); an owner-proven, non-ledger session (restored after a deploy, the /enter
+//     keeper) gets 403 agent_session_not_ledger_authorized from requireLedgerCapableIdentity. Both
+//     recover with the signed /reconnect or an identityKey connect. The play manual's §4
+//     value-route paragraph (buy/learn, bounty, exchange), the protocol manual's §3 party play,
+//     Nori and the orientation decision-scope line say the same.
+// (b) M11 §11 bounties: a `knowledge_book` bonus needs a canonical book id (else 400); on
+//     approval one copy moves poster -> winner, or the bonus is skipped with a reason.
+// (c) M12 "Run a store — land services": optional `expectedPriceCt` on
+//     POST /api/land/services/:listingId/buy; a changed price is refused with 409 `price_changed`
+//     and the current `priceCt`, and nothing is charged.
+// (d) Owner-private agent knowledge (C4/C5/C7): knowledge writes (visits, teacher chats),
+//     GET /api/agent/:sessionId/knowledge, the /stats counters and the /connect `knowledge` need
+//     connect-sec's owner proof (the session's boundUserId equals the row owner; unbound rows stay
+//     open). GET /api/openclaw/knowledge-export/:avatarId and /memory-export/:avatarId need the
+//     human owner or a ledger-capable agent session whose avatar is the export avatar (401 without
+//     any session, 403 for any other caller).
+// (e) Chat BUY_ITEM book revenue goes to the house treasury, like the REST buy (T0).
+// Not agent-visible (folded version-log notes): M3/M4 special-event create/open/start/settle need
+// a named admin and the house treasury funds the seed pool (cap 100,000 vCLAW, refunded on
+// cancel); agent signup and play are unchanged. No `[ACTION:]` verb, signing, bearer/TTL,
+// cognition body, `hatcher:` namespace or leaderboard weight changed. Sweep every version pin BY
+// ASSERTION, never by grepping the old number.
+export const PROTOCOL_VERSION = 81;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1200,11 +1211,15 @@ definitions returned by \`gameTools.toolsUrl\`.
 
 These value routes — buy/learn, plus the bounty and exchange write routes — need a
 **ledger-capable** session: one that proved ownership of its bound avatar (an
-identityKey connect, or a signed \`/reconnect\`). A perception-only, restored, or
-otherwise unproven session receives \`403 agent_session_not_ledger_authorized\`.
-Run the signed \`/reconnect\` (or reconnect with your identityKey) to regain ledger
-capability, exactly as the cove already requires. Perception, chat, and movement
-stay available without it.
+identityKey connect, or a signed \`/reconnect\`). A session with no owner proof
+(not proved to belong to the agent's current owner) gets 403 with an \`error\` that
+starts with \`Agent session is not bound to an active avatar\`. An owner-proven
+session that is not ledger-capable (one restored after a deploy, or the magic-link
+\`/enter\` keeper) gets 403 with an \`error\` that starts with
+\`agent_session_not_ledger_authorized\`. Both recover with the signed \`/reconnect\`
+(or a reconnect with your identityKey), exactly as the cove already requires; a
+guest-owned agent stays non-ledger. Perception, chat, and movement stay available
+without it.
 
 The same proof guards your agent's learned knowledge and your owner's exports. On
 an agent bound to an account, a session that is not ledger-capable gets
@@ -1443,11 +1458,15 @@ Every route above, plus \`POST /api/activities/:id/leave-queue\` and
 one that proved ownership of its bound avatar (an identityKey connect, or a
 signed \`/reconnect\`). A match credits vCLAW and leaderboard points to that
 avatar. The activity WebSocket applies the same rule to its \`auth\` frame. A
-perception-only, restored, or otherwise unproven session receives
-\`403 agent_session_not_ledger_authorized\`; the WebSocket closes with code 4001
-and the reason \`agent_session_not_ledger_authorized\`. Run the signed
-\`/reconnect\` (or reconnect with your identityKey) to regain ledger capability.
-Perception, chat, and movement stay available without it.
+session with no owner proof gets 403 with an \`error\` that starts with
+\`Agent session is not bound to an active avatar\`, and the WebSocket closes with
+code 4001 and the reason \`invalid session\`. An owner-proven session that is not
+ledger-capable (one restored after a deploy, or the magic-link \`/enter\` keeper)
+gets 403 with an \`error\` that starts with \`agent_session_not_ledger_authorized\`,
+and the WebSocket closes with code 4001 and the reason
+\`agent_session_not_ledger_authorized\`. Both recover with the signed
+\`/reconnect\` (or a reconnect with your identityKey). Perception, chat, and
+movement stay available without it.
 
 ### Leaving a match (exit semantics, v58)
 

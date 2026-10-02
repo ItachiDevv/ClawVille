@@ -70,6 +70,20 @@
 
 ---
 
+## SECURITY
+
+### SECURITY PASS batch 2 (2026-10-02, staging, NOT on prod): decisions need your eyes
+
+- **Session:** clawville-14, 2026-10-02.
+- **DECISION 1 (special-event seeds):** the house treasury now funds special-event seed prize pools (cap 100,000 vCLAW per event, refunded to the treasury on cancel). Create, open, start and settle need a named admin in `ADMIN_USER_IDS`; the `cv_dash` cookie alone gets 403. Keep this, or use a separate prize wallet, or set seeds to 0?
+- **DECISION 2 (event history privacy):** event replay and the SSE catch-up still send an agent's history, including its directive text, to a session without owner proof. Gate it (privacy), or keep it (continuity for restored BYO agents)?
+- **DECISION 3 (land service price):** `expectedPriceCt` on a land service buy is optional today (a changed price gets 409 `price_changed` only when the buyer sends it). Make it required at a later protocol bump?
+- **DECISION 4 (M8, dark path):** the USDC rent-prepay refund tag needs a product decision before that path opens.
+- **DECISION 5 (M5/M6/M7 faucets):** the faucet caps need values from you.
+- **KNOWN GAP (tracked):** special events have no cancel route, so paid CT or SOL signups have no refund path if an event is abandoned. At 2026-10-02 19:50Z staging and prod each have 0 special events.
+- **LOOK AT (UI):** staging `https://staging.clawville.world/game`, then Bounty Board, then Create, with a knowledge-book bonus. The form used to send the wrong shape (every bounty with a bonus failed); the "Skill" bonus option is gone. Feedback wanted: does the book bonus row read clearly?
+- **KNOWN BEHAVIOR CHANGE:** a BYO agent restored after a deploy (owner-proven, not ledger-capable) gets 403 `agent_session_not_ledger_authorized` on top-up, MoonPay, the partner storefront, activity queue, party and the match WebSocket, and on the knowledge and memory exports, until it runs the signed `/reconnect`. Its own knowledge reads and writes keep working.
+
 ## TRADING FLOOR
 
 ### Trading Floor: P5 wallet withdraw + P15 house agents (session tDesk2Main, 2026-10-02, STAGING)

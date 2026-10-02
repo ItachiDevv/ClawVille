@@ -120,8 +120,8 @@ describe('Trading Arena manual section 17c', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(80);
-    expect(protocolPointer(API)).toMatchObject({ version: 80, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(81);
+    expect(protocolPointer(API)).toMatchObject({ version: 81, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -440,9 +440,15 @@ describe('Trading Arena manual section 17c', () => {
     for (const literal of [/0\.005 SOL/, /0\.00704/, /0\.10 USDC/, /0\.001 SOL/, /500 USDC/, /0\.0009/, /keep at least 0\.01/i, /\b24 hours\b/, /3 requests/]) {
       expect(body).not.toMatch(literal);
     }
-    expect(PROTOCOL_VERSION).toBe(80);
-    const src2 = src.slice(src.indexOf('export const PROTOCOL_VERSION') - 1200, src.indexOf('export const PROTOCOL_VERSION'));
-    expect(src2).toContain('v80 (2026-10-02');
+    // v81 (security batch 2) sits on top of v80; the v80 P5 note must stay in
+    // the version log, before the v81 note and before the constant.
+    expect(PROTOCOL_VERSION).toBe(81);
+    const constAt = src.indexOf('export const PROTOCOL_VERSION');
+    const v80At = src.indexOf('// v80 (2026-10-02, P5 arena wallet WITHDRAW');
+    const v81At = src.indexOf('// v81 (2026-10-02, security batch 2');
+    expect(v80At).toBeGreaterThan(-1);
+    expect(v81At).toBeGreaterThan(v80At);
+    expect(constAt).toBeGreaterThan(v81At);
   });
 
   test('v80 (P15): the house board route and "launch with the same templateId" on all four surfaces', () => {
