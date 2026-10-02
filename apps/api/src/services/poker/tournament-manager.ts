@@ -2194,7 +2194,7 @@ export class TournamentManager {
    * Credit a cancelled tournament's house-treasury-funded seed back to the
    * treasury, inside the cancel tx (security M3, 2026-09-30). Both cancel paths
    * run it exactly once: each checks the terminal status under the FOR UPDATE row
-   * lock before it gets here. A legacy (pre-0070, minted) or buy-in-only
+   * lock before it gets here. A legacy (pre-0075, minted) or buy-in-only
    * tournament carries '0' and returns nothing. A missing treasury THROWS so the
    * whole cancel rolls back and retries later, instead of burning the seed.
    */

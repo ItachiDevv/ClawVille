@@ -514,7 +514,7 @@ class FakeTM {
     // Yield so a concurrent start can interleave (the real create does DB I/O).
     await Promise.resolve();
     if (this.createError) throw this.createError;
-    // Model `poker_tournaments_special_event_active_unique` (migration 0070).
+    // Model `poker_tournaments_special_event_active_unique` (migration 0075).
     if (
       config.specialEventId &&
       this.created.some(

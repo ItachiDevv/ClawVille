@@ -9,7 +9,7 @@ import { sql, type Database } from '@clawville/database';
  * consumed came back. These helpers change the count inside ONE SQL statement,
  * so Postgres applies each change to the latest committed row.
  *
- * `avatar_inventory_avatar_item_unique` (migration 0070) makes (avatar_id,
+ * `avatar_inventory_avatar_item_unique` (migration 0075) makes (avatar_id,
  * item_id) unique, so a grant is one `INSERT ... ON CONFLICT DO UPDATE`: two
  * concurrent first grants serialize on the index and end as ONE row with
  * quantity 2, never two rows.

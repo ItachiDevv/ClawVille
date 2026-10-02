@@ -136,7 +136,7 @@ export const pokerTournaments = pgTable(
      * A prepaid (special-event) seed is debited from the house treasury in the
      * same tx as the INSERT and recorded here; a cancel credits it back to the
      * treasury in the cancel tx. '0' for buy-in tournaments and for legacy rows
-     * whose seed was minted before migration 0070 (security M3, 2026-09-30).
+     * whose seed was minted before migration 0075 (security M3, 2026-09-30).
      */
     seedPrizePoolCt: text('seed_prize_pool_ct').notNull().default('0'),
     /** Rake actually taken off the pool at settle (stringified bigint). Null until settle. */
@@ -184,7 +184,7 @@ export const pokerTournaments = pgTable(
   (table) => ({
     statusIdx: index('poker_tournaments_status_idx').on(table.status),
     specialEventIdx: index('poker_tournaments_special_event_idx').on(table.specialEventId),
-    // At most ONE non-cancelled tournament per special event (migration 0070,
+    // At most ONE non-cancelled tournament per special event (migration 0075,
     // security M4). A cancelled start refunds its treasury seed in the cancel tx,
     // so excluding it lets an operator retry the start without a second funding.
     specialEventActiveUnique: uniqueIndex('poker_tournaments_special_event_active_unique')
@@ -383,7 +383,7 @@ export const pokerTournamentResults = pgTable(
       table.tournamentId,
       table.placement,
     ),
-    // One result per (tournament, placement) (migration 0070, security H2): a
+    // One result per (tournament, placement) (migration 0075, security H2): a
     // duplicate placement would pay that placement's prize twice.
     tournamentPlacementUnique: uniqueIndex('poker_results_tournament_placement_unique').on(
       table.tournamentId,

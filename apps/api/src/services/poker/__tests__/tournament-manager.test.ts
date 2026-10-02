@@ -1577,7 +1577,7 @@ describe('TournamentManager — prepaid seed funded by the house treasury (secur
     expect(ledger.totalCredited('special_event_seed_refund')).toBe(3000);
   });
 
-  it('a legacy (pre-0070, minted) seeded tournament cancels with no treasury credit', async () => {
+  it('a legacy (pre-0075, minted) seeded tournament cancels with no treasury credit', async () => {
     const { tm } = buildManager(db, ledger, clock);
     const tid = randomUUID();
     db.seedTournament({

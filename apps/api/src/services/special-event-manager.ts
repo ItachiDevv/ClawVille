@@ -754,7 +754,7 @@ export class SpecialEventManager {
       );
     } catch (err) {
       // Normally nothing was created (the TM create tx rolled back, seed debit
-      // included). The reconcile also covers an ambiguous commit or a pre-0070
+      // included). The reconcile also covers an ambiguous commit or a pre-0075
       // linked tournament: it cancels a registering one (seed refunded) and
       // reopens signups, or marks a running one live.
       await this.reconcileStartingEvent(event.id, { claimId });
@@ -762,7 +762,7 @@ export class SpecialEventManager {
         throw new SpecialEventError(`tournament_create_failed:${err.message}`, err.httpStatus);
       }
       if (isUniqueViolation(err)) {
-        // A non-cancelled tournament already links to this event (pre-0070 data).
+        // A non-cancelled tournament already links to this event (pre-0075 data).
         throw new SpecialEventError('event_tournament_already_exists', 409);
       }
       throw err;

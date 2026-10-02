@@ -1,4 +1,4 @@
--- 0070_special_event_start_guard.sql — security pass 2026-09-30 (M3, M4, H2).
+-- 0075_special_event_start_guard.sql — security pass 2026-09-30 (M3, M4, H2).
 --
 -- ADDITIVE + IDEMPOTENT. Adds three columns, three unique indexes, and (re)states
 -- one CHECK predicate. It drops no table, column, index, or data. The file runs
