@@ -802,7 +802,13 @@ import {
 // treasury, like the REST buy (T0); the buyer's debit is unchanged. No `[ACTION:]` verb, signing, bearer/TTL,
 // cognition body, `hatcher:` namespace or leaderboard weight changed. Sweep every version pin BY
 // ASSERTION, never by grepping the old number.
-export const PROTOCOL_VERSION = 81;
+// v82 (2026-10-02, bounty list bonusRewards; 81 is on staging, so the changed manual bytes need a
+// new version for already-provisioned hosted runtimes): §11.0 says GET /api/bounties, /featured
+// and /my-bounties return `bonusRewards` per bounty, an array of { rewardType, bookId,
+// agentConfigId, customDescription } (`[]` when none); GET /api/bounties/:id keeps `rewards`.
+// The Nori/orientation bounty REST line says the same. Read-only list field: no `[ACTION:]` verb,
+// signing, bearer/TTL, cognition body, `hatcher:` namespace or leaderboard weight changed.
+export const PROTOCOL_VERSION = 82;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
