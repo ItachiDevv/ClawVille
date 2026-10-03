@@ -3,7 +3,8 @@
  *
  * `/create` sets the seed prize pool and `/start` funds it from the house
  * treasury; `/open` and `/settle` move the event lifecycle. `adminOnly` alone also
- * accepts the static shared `cv_dash` cookie, so ALL FOUR admin mutations now also
+ * accepts the static shared `cv_dash` cookie, so ALL admin mutations (cancel too,
+ * 2026-10-03: it credits refunds) now also
  * require a Lucia session whose user id is in ADMIN_USER_IDS (Codex follow-up:
  * every special-event mutation).
  * The seed bound on the create schema is asserted here too.
@@ -38,6 +39,7 @@ const originalManagerModule = { ...realManagerModule };
 let startCalls: string[] = [];
 let openCalls: string[] = [];
 let settleCalls: string[] = [];
+let cancelCalls: string[] = [];
 mock.module('../../services/special-event-manager', () => ({
   ...realManagerModule,
   specialEventManager: {
@@ -52,6 +54,19 @@ mock.module('../../services/special-event-manager', () => ({
     settleEvent: async (slug: string) => {
       settleCalls.push(slug);
       return { alreadySettled: false, tournamentId: null, results: [] };
+    },
+    cancelEvent: async (slug: string) => {
+      cancelCalls.push(slug);
+      if (slug === 'already-live') {
+        throw new realManagerModule.SpecialEventError('event_already_started', 409);
+      }
+      return {
+        alreadyCancelled: false,
+        status: 'cancelled',
+        refundedSignups: 1,
+        refundedCt: 50,
+        solRefundsOwed: [],
+      };
     },
   },
 }));
@@ -85,6 +100,7 @@ beforeEach(() => {
   startCalls = [];
   openCalls = [];
   settleCalls = [];
+  cancelCalls = [];
 });
 
 afterAll(() => {
@@ -99,6 +115,7 @@ describe('special events — named admin on every admin mutation (security M3)',
     ['/launch-champ/open', {}] as const,
     ['/launch-champ/start', {}] as const,
     ['/launch-champ/settle', {}] as const,
+    ['/launch-champ/cancel', {}] as const,
   ];
 
   test.each(mutations)('%s refuses the shared cv_dash cookie without a named admin session', async (path, body) => {
@@ -109,13 +126,13 @@ describe('special events — named admin on every admin mutation (security M3)',
     // The cookie plus a NON-admin Lucia user is still not a named admin.
     const withUser = await post(path, { dash: true, user: OTHER_ID, body });
     expect(withUser.status).toBe(403);
-    expect([...startCalls, ...openCalls, ...settleCalls]).toHaveLength(0);
+    expect([...startCalls, ...openCalls, ...settleCalls, ...cancelCalls]).toHaveLength(0);
   });
 
   test.each(mutations)('%s refuses no auth (401) and a non-admin user (403)', async (path, body) => {
     expect((await post(path, { body })).status).toBe(401);
     expect((await post(path, { user: OTHER_ID, body })).status).toBe(403);
-    expect([...startCalls, ...openCalls, ...settleCalls]).toHaveLength(0);
+    expect([...startCalls, ...openCalls, ...settleCalls, ...cancelCalls]).toHaveLength(0);
   });
 
   test('/open, /start and /settle run for a named admin session', async () => {
@@ -125,6 +142,22 @@ describe('special events — named admin on every admin mutation (security M3)',
     expect(openCalls).toEqual(['launch-champ']);
     expect(startCalls).toEqual(['launch-champ']);
     expect(settleCalls).toEqual(['launch-champ']);
+  });
+});
+
+describe('special events — POST /:slug/cancel (security pass gap, 2026-10-03)', () => {
+  test('a named admin cancels and gets the refund summary', async () => {
+    const res = await post('/launch-champ/cancel', { user: ADMIN_ID });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ ok: true, status: 'cancelled', refundedSignups: 1, refundedCt: 50 });
+    expect(cancelCalls).toEqual(['launch-champ']);
+  });
+
+  test('a manager refusal maps to its HTTP status and error code', async () => {
+    const res = await post('/already-live/cancel', { user: ADMIN_ID });
+    expect(res.status).toBe(409);
+    expect(await errorMessage(res)).toContain('event_already_started');
   });
 });
 

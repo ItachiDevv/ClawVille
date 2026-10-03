@@ -99,6 +99,8 @@ class FakeDb {
   signups = new Map<string, Row>(); // by id
   tournaments = new Map<string, Row>(); // by id (linked tournaments)
   results: Row[] = []; // poker_tournament_results
+  /** claw_token_transactions rows the FakeLedger writes (cancel reads the entry burns). */
+  ledgerRows: Row[] = [];
 
   query = {};
   private seq = 0;
@@ -433,6 +435,39 @@ class FakeDb {
         .sort((a, b) => Number(a.placement) - Number(b.placement));
     }
 
+    // ── cancelEvent (security pass gap, 2026-10-03) ─────────────────────────────
+    if (text === "UPDATE special_events SET status = 'cancelled', start_claim_id = NULL, start_claimed_at = NULL WHERE id = ? AND status IN ('draft', 'signup_open') RETURNING id") {
+      const e = this.events.get(String(p[0]));
+      if (!e || (e.status !== 'draft' && e.status !== 'signup_open')) return [];
+      e.status = 'cancelled';
+      e.start_claim_id = null;
+      e.start_claimed_at = null;
+      return [{ id: e.id }];
+    }
+    if (text === "SELECT id, avatar_id, agent_id, entry_method, entry_proof_json, status FROM special_event_signups WHERE event_id = ? AND status <> 'refunded' ORDER BY created_at ASC") {
+      return [...this.signups.values()]
+        .filter((s) => s.event_id === p[0] && s.status !== 'refunded')
+        .sort((a, b) => Number(a.created_at) - Number(b.created_at))
+        .map((s) => ({ ...s }));
+    }
+    if (text === "UPDATE special_event_signups SET status = 'refunded' WHERE id = ? AND status <> 'refunded' RETURNING id") {
+      const s = this.signups.get(String(p[0]));
+      if (!s || s.status === 'refunded') return [];
+      s.status = 'refunded';
+      return [{ id: s.id }];
+    }
+    if (text === "SELECT provenance, (-amount)::int AS amount FROM claw_token_transactions WHERE avatar_id = ? AND reason = 'special_event_entry' AND amount < 0 AND metadata->>'eventId' = ?") {
+      return this.ledgerRows
+        .filter(
+          (r) =>
+            r.avatar_id === p[0] &&
+            r.reason === 'special_event_entry' &&
+            Number(r.amount) < 0 &&
+            (r.metadata as { eventId?: unknown } | null)?.eventId === p[1],
+        )
+        .map((r) => ({ provenance: r.provenance ?? null, amount: -Number(r.amount) }));
+    }
+
     throw new Error(`FakeDb: unhandled SQL: ${text}`);
   }
 }
@@ -450,10 +485,27 @@ class InsufficientTokensError extends Error {
   }
 }
 
+type Tag = 'soft' | 'bought' | 'earned';
+
 class FakeLedger {
   balances = new Map<string, number>();
   debits: Array<{ avatarId: string; amount: number; reason: string }> = [];
-  credits: Array<{ avatarId: string; amount: number; reason: string }> = [];
+  credits: Array<{
+    avatarId: string;
+    amount: number;
+    reason: string;
+    provenance?: 'soft' | 'bought';
+    metadata?: Record<string, unknown>;
+  }> = [];
+  /** Optional per-avatar tag split; absent ⇒ the whole balance is SOFT. */
+  tags = new Map<string, Record<Tag, number>>();
+  /** Shared with FakeDb.ledgerRows (claw_token_transactions). */
+  rows: Row[] = [];
+
+  setTags(a: string, t: Record<Tag, number>): void {
+    this.tags.set(a, { ...t });
+    this.balances.set(a, t.soft + t.bought + t.earned);
+  }
 
   setBalance(a: string, n: number): void {
     this.balances.set(a, n);
@@ -466,12 +518,48 @@ class FakeLedger {
     if (bal < input.amount) throw new InsufficientTokensError(input.avatarId, bal, input.amount);
     this.balances.set(input.avatarId, bal - input.amount);
     this.debits.push({ ...input });
-    return { balanceAfter: bal - input.amount, ledgerId: randomUUID() };
+    // Same burn order as the real ledger: SOFT → BOUGHT → EARNED, one row per tag.
+    const tags = this.tags.get(input.avatarId) ?? { soft: bal, bought: 0, earned: 0 };
+    let remaining = input.amount;
+    let ledgerId = '';
+    for (const tag of ['soft', 'bought', 'earned'] as const) {
+      const take = Math.min(tags[tag], remaining);
+      if (take <= 0) continue;
+      tags[tag] -= take;
+      remaining -= take;
+      ledgerId = randomUUID();
+      this.rows.push({
+        id: ledgerId,
+        avatar_id: input.avatarId,
+        amount: -take,
+        reason: input.reason,
+        provenance: tag,
+        metadata: (input as { metadata?: unknown }).metadata ?? {},
+      });
+    }
+    if (this.tags.has(input.avatarId)) this.tags.set(input.avatarId, tags);
+    return { balanceAfter: bal - input.amount, ledgerId };
   };
-  creditClawTokens = async (input: { avatarId: string; amount: number; reason: string }) => {
+  creditClawTokens = async (input: {
+    avatarId: string;
+    amount: number;
+    reason: string;
+    provenance?: 'soft' | 'bought';
+    metadata?: Record<string, unknown>;
+  }) => {
     const bal = this.get(input.avatarId);
     this.balances.set(input.avatarId, bal + input.amount);
     this.credits.push({ ...input });
+    const t = this.tags.get(input.avatarId);
+    if (t) t[input.provenance ?? 'soft'] += input.amount;
+    this.rows.push({
+      id: randomUUID(),
+      avatar_id: input.avatarId,
+      amount: input.amount,
+      reason: input.reason,
+      provenance: input.provenance ?? 'soft',
+      metadata: input.metadata ?? {},
+    });
     return { balanceAfter: bal + input.amount, ledgerId: randomUUID() };
   };
 }
@@ -672,6 +760,7 @@ function makeManager() {
   const rpc = new FakeRpc();
   const tm = new FakeTM();
   tm.db = db;
+  ledger.rows = db.ledgerRows;
   const clock = { t: 1_900_000_000_000, now() { return this.t; } };
   const mgr = new SpecialEventManager({
     db: db as never,
@@ -1673,6 +1762,293 @@ describe('SpecialEventManager — settleEvent (reads the linked tournament UP th
       expect(reconciliation?.alreadySettled).toBe(false);
       expect(db.events.get(ev.id)!.status).toBe(status);
       expect(db.events.get(ev.id)!.completed_at).toBeNull();
+    }
+  });
+});
+
+describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026-10-03)', () => {
+  const STALE = SPECIAL_EVENT_START_CLAIM_STALE_MS + 1_000;
+  const TREASURY = 'house-treasury-avatar';
+
+  /**
+   * An open event (CT gate 50 + SOL fallback, seed 500) with a human CT signup,
+   * an agent CT signup whose balance spans SOFT/BOUGHT/EARNED, and a SOL signup.
+   */
+  async function paidEvent(slug: string) {
+    const h = makeManager();
+    await h.mgr.createEvent(
+      {
+        slug,
+        name: `Event ${slug}`,
+        gateCt: 50,
+        gateSolLamports: 1_000_000,
+        prizeConfigJson: { seedPrizePoolCt: 500 },
+      },
+      null,
+    );
+    await h.mgr.openSignup(slug);
+    const humanCt = human();
+    h.ledger.setBalance(humanCt.avatarId, 1_000);
+    await h.mgr.signup(slug, humanCt, { entryMethod: 'ct' });
+
+    // 20 SOFT + 10 BOUGHT + 100 EARNED: the 50 entry burns 20 soft, 10 bought, 20 earned.
+    const agentCt = agent();
+    h.ledger.setTags(agentCt.avatarId, { soft: 20, bought: 10, earned: 100 });
+    await h.mgr.signup(slug, agentCt, { entryMethod: 'ct' });
+
+    const solSubj = human();
+    const sig = `sig-${slug}-${'x'.repeat(40)}`;
+    h.rpc.setTx(sig, 'Treasury1111111111111111111111111111111111', 1_000_000n);
+    await h.mgr.signup(slug, solSubj, {
+      entryMethod: 'sol',
+      walletPubkey: 'Payer11111111111111111111111111111111111111',
+      solTxSig: sig,
+    });
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    return { ...h, ev, humanCt, agentCt, solSubj, sig };
+  }
+
+  const signupsOf = (db: { signups: Map<string, Record<string, unknown>> }, eventId: unknown) =>
+    [...db.signups.values()].filter((s) => s.event_id === eventId);
+
+  it('pre-start cancel refunds every paid CT signup exactly once, mirroring provenance; SOL is listed as owed', async () => {
+    const { mgr, db, ledger, ev, humanCt, agentCt, solSubj, sig } = await paidEvent('cancel-open');
+    expect(ledger.get(humanCt.avatarId)).toBe(950);
+    expect(ledger.get(agentCt.avatarId)).toBe(80);
+
+    const result = await mgr.cancelEvent('cancel-open');
+
+    expect(result.alreadyCancelled).toBe(false);
+    expect(result.status).toBe('cancelled');
+    expect(result.refundedSignups).toBe(2);
+    expect(result.refundedCt).toBe(100);
+    expect(ev.status).toBe('cancelled');
+
+    // Human and agent get the same treatment, bound to their own avatar.
+    expect(ledger.get(humanCt.avatarId)).toBe(1_000);
+    expect(ledger.get(agentCt.avatarId)).toBe(130);
+    const refunds = ledger.credits.filter((c) => c.reason === 'special_event_entry_refund');
+    expect(refunds.filter((c) => c.avatarId === humanCt.avatarId)).toEqual([
+      expect.objectContaining({ amount: 50, provenance: 'soft' }),
+    ]);
+    // SOFT → SOFT, BOUGHT → BOUGHT, EARNED → SOFT (EARNED is mintEarned-only).
+    const agentRefunds = refunds.filter((c) => c.avatarId === agentCt.avatarId);
+    expect(agentRefunds.map((c) => [c.amount, c.provenance, c.metadata?.burnedProvenance])).toEqual([
+      [20, 'soft', 'soft'],
+      [10, 'bought', 'bought'],
+      [20, 'soft', 'earned'],
+    ]);
+    expect(ledger.tags.get(agentCt.avatarId)).toEqual({ soft: 40, bought: 10, earned: 80 });
+    for (const c of refunds) {
+      expect(c.metadata?.eventId).toBe(ev.id);
+      expect(typeof c.metadata?.signupId).toBe('string');
+    }
+    // No treasury movement: a signup_open event holds no seed.
+    expect(ledger.credits.some((c) => c.avatarId === TREASURY)).toBe(false);
+
+    // SOL: kept 'confirmed' (tx sig stays reserved) and listed for an operator transfer.
+    const solRow = signupsOf(db, ev.id).find((s) => s.avatar_id === solSubj.avatarId)!;
+    expect(solRow.status).toBe('confirmed');
+    expect(result.solRefundsOwed).toEqual([
+      {
+        signupId: String(solRow.id),
+        avatarId: solSubj.avatarId,
+        txSig: sig,
+        lamports: '1000000',
+        fromPubkey: 'Payer11111111111111111111111111111111111111',
+      },
+    ]);
+    const ctRows = signupsOf(db, ev.id).filter((s) => s.entry_method === 'ct');
+    expect(ctRows.every((s) => s.status === 'refunded')).toBe(true);
+  });
+
+  it('a second cancel is a no-op: no second refund, SOL still listed', async () => {
+    const { mgr, ledger, humanCt, agentCt } = await paidEvent('cancel-twice');
+    const first = await mgr.cancelEvent('cancel-twice');
+    const creditsAfterFirst = ledger.credits.length;
+
+    const second = await mgr.cancelEvent('cancel-twice');
+    expect(second.alreadyCancelled).toBe(true);
+    expect(second.refundedSignups).toBe(0);
+    expect(second.refundedCt).toBe(0);
+    expect(second.solRefundsOwed).toEqual(first.solRefundsOwed);
+    expect(ledger.credits.length).toBe(creditsAfterFirst);
+    expect(ledger.get(humanCt.avatarId)).toBe(1_000);
+    expect(ledger.get(agentCt.avatarId)).toBe(130);
+  });
+
+  it('two concurrent cancels refund each signup once', async () => {
+    const { mgr, ledger, humanCt } = await paidEvent('cancel-concurrent');
+    const results = await Promise.allSettled([
+      mgr.cancelEvent('cancel-concurrent'),
+      mgr.cancelEvent('cancel-concurrent'),
+    ]);
+    const fresh = results.filter((r) => r.status === 'fulfilled' && !r.value.alreadyCancelled);
+    expect(fresh).toHaveLength(1);
+    const refunds = ledger.credits.filter((c) => c.reason === 'special_event_entry_refund');
+    expect(refunds.reduce((n, c) => n + c.amount, 0)).toBe(100);
+    expect(ledger.get(humanCt.avatarId)).toBe(1_000);
+  });
+
+  it('after a cancel: signup, start, open and settle are all refused', async () => {
+    const { mgr } = await paidEvent('cancel-then');
+    await mgr.cancelEvent('cancel-then');
+    const late = human();
+    await expect(mgr.signup('cancel-then', late, { entryMethod: 'ct' })).rejects.toThrow(/signup_not_open/);
+    await expect(mgr.closeSignupAndStart('cancel-then')).rejects.toThrow(/event_not_open_for_start/);
+    await expect(mgr.openSignup('cancel-then')).rejects.toThrow(/event_not_in_draft/);
+    await expect(mgr.settleEvent('cancel-then')).rejects.toThrow(/event_cancelled/);
+  });
+
+  it('a draft event cancels with nothing to refund', async () => {
+    const { mgr, db, ledger } = makeManager();
+    await mgr.createEvent({ slug: 'cancel-draft', name: 'Draft' }, null);
+    const r = await mgr.cancelEvent('cancel-draft');
+    expect(r).toEqual({
+      alreadyCancelled: false,
+      status: 'cancelled',
+      refundedSignups: 0,
+      refundedCt: 0,
+      solRefundsOwed: [],
+    });
+    expect([...db.events.values()][0]!.status).toBe('cancelled');
+    expect(ledger.credits).toHaveLength(0);
+  });
+
+  it('crashed start with a funded registering tournament: the seed goes back to the treasury ONCE, then signups are refunded', async () => {
+    const { mgr, db, tm, ledger, ev, clock, humanCt } = await paidEvent('cancel-crashed');
+    ev.status = 'starting';
+    ev.start_claim_id = 'dead-claim';
+    ev.start_claimed_at = new Date(clock.now() - STALE);
+    db.seedTournament({ id: 't-seeded', status: 'registering', special_event_id: ev.id, created_at: 5 });
+    // The real TM cancel credits the seed to the house treasury in its own tx.
+    tm.onCancel = () => {
+      void ledger.creditClawTokens({ avatarId: TREASURY, amount: 500, reason: 'special_event_seed_refund' });
+    };
+
+    const r = await mgr.cancelEvent('cancel-crashed');
+    expect(r.alreadyCancelled).toBe(false);
+    expect(r.refundedCt).toBe(100);
+    expect(tm.cancelCalls).toBe(1);
+    expect(tm.cancelTxDepths).toEqual([0]); // the TM cancel ran outside the event lock
+    expect(db.tournaments.get('t-seeded')!.status).toBe('cancelled');
+    expect(ev.status).toBe('cancelled');
+    expect(ledger.get(TREASURY)).toBe(500);
+    expect(ledger.get(humanCt.avatarId)).toBe(1_000);
+
+    await mgr.cancelEvent('cancel-crashed');
+    expect(tm.cancelCalls).toBe(1);
+    expect(ledger.get(TREASURY)).toBe(500);
+  });
+
+  it('refuses a started or settled event with a clear code and moves no CT', async () => {
+    const { mgr, db, tm, ledger, ev, clock } = await paidEvent('cancel-refused');
+    const creditsBefore = ledger.credits.length;
+
+    // A FRESH start claim (a start in flight) is never taken over.
+    ev.status = 'starting';
+    ev.start_claim_id = 'live-claim';
+    ev.start_claimed_at = new Date(clock.now() - 1_000);
+    await expect(mgr.cancelEvent('cancel-refused')).rejects.toMatchObject({
+      message: 'event_start_in_progress',
+      httpStatus: 409,
+    });
+
+    // Live with a running tournament: play has started.
+    ev.status = 'live';
+    ev.start_claim_id = null;
+    ev.start_claimed_at = null;
+    db.seedTournament({ id: 't-run', status: 'running', special_event_id: ev.id, created_at: 5 });
+    await expect(mgr.cancelEvent('cancel-refused')).rejects.toMatchObject({
+      message: 'event_already_started',
+      httpStatus: 409,
+    });
+
+    // Settled.
+    db.tournaments.get('t-run')!.status = 'completed';
+    ev.status = 'completed';
+    await expect(mgr.cancelEvent('cancel-refused')).rejects.toMatchObject({
+      message: 'event_already_settled',
+      httpStatus: 409,
+    });
+
+    expect(ledger.credits.length).toBe(creditsBefore);
+    expect(tm.cancelCalls).toBe(0);
+    expect(signupsOf(db, ev.id).every((s) => s.status === 'confirmed')).toBe(true);
+    await expect(mgr.cancelEvent('no-such-event')).rejects.toMatchObject({ httpStatus: 404 });
+  });
+
+  it('an open event that still links an active tournament (legacy data) is refused', async () => {
+    const { mgr, db, ledger, ev } = await paidEvent('cancel-legacy');
+    db.seedTournament({ id: 't-legacy', status: 'registering', special_event_id: ev.id, created_at: 5 });
+    const creditsBefore = ledger.credits.length;
+    await expect(mgr.cancelEvent('cancel-legacy')).rejects.toMatchObject({
+      message: 'event_has_active_tournament',
+      httpStatus: 409,
+    });
+    expect(ev.status).toBe('signup_open');
+    expect(ledger.credits.length).toBe(creditsBefore);
+  });
+
+  it('an orphaned live event (tournament cancelled after live) reopens, then cancels and refunds', async () => {
+    const { mgr, tm, ledger, ev, humanCt } = await paidEvent('cancel-orphan');
+    const started = await mgr.closeSignupAndStart('cancel-orphan');
+    expect(ev.status).toBe('live');
+    await tm.cancelAndRefundOrphan(started.tournamentId); // room abort refunds the seed
+    const r = await mgr.cancelEvent('cancel-orphan');
+    expect(r.refundedCt).toBe(100);
+    expect(ev.status).toBe('cancelled');
+    expect(tm.cancelCalls).toBe(1);
+    expect(ledger.get(humanCt.avatarId)).toBe(1_000);
+  });
+
+  it('cancel racing settle: never both — a cancelled event never completes', async () => {
+    // Open event: cancel wins; settle either ran first (no change) or is refused.
+    const a = await paidEvent('race-settle-a');
+    const [cancelA, settleA] = await Promise.allSettled([
+      a.mgr.cancelEvent('race-settle-a'),
+      a.mgr.settleEvent('race-settle-a'),
+    ]);
+    expect(cancelA.status).toBe('fulfilled');
+    expect(a.ev.status).toBe('cancelled');
+    if (settleA.status === 'fulfilled') {
+      expect(settleA.value.alreadySettled).toBe(false);
+    } else {
+      expect(String(settleA.reason)).toContain('event_cancelled');
+    }
+
+    // Live event whose tournament completed: settle wins, cancel is refused.
+    const b = await paidEvent('race-settle-b');
+    const started = await b.mgr.closeSignupAndStart('race-settle-b');
+    b.db.tournaments.get(started.tournamentId)!.status = 'completed';
+    const creditsBefore = b.ledger.credits.length;
+    const [cancelB, settleB] = await Promise.allSettled([
+      b.mgr.cancelEvent('race-settle-b'),
+      b.mgr.settleEvent('race-settle-b'),
+    ]);
+    expect(settleB.status).toBe('fulfilled');
+    expect(cancelB.status).toBe('rejected');
+    expect(b.ev.status).toBe('completed');
+    expect(b.ledger.credits.length).toBe(creditsBefore);
+  });
+
+  it('cancel racing start: exactly one wins; the loser moves no CT', async () => {
+    const { mgr, tm, ledger, ev } = await paidEvent('race-start');
+    const [start, cancel] = await Promise.allSettled([
+      mgr.closeSignupAndStart('race-start'),
+      mgr.cancelEvent('race-start'),
+    ]);
+    expect([start, cancel].filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const refundTotal = ledger.credits
+      .filter((c) => c.reason === 'special_event_entry_refund')
+      .reduce((n, c) => n + c.amount, 0);
+    if (cancel.status === 'fulfilled') {
+      expect(ev.status).toBe('cancelled');
+      expect(refundTotal).toBe(100);
+      expect(tm.created).toHaveLength(0);
+    } else {
+      expect(ev.status).toBe('live');
+      expect(refundTotal).toBe(0);
     }
   });
 });

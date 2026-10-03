@@ -1284,6 +1284,10 @@ export class SpecialEventManager {
       if (e.status === 'completed') {
         return { alreadySettled: true, tournamentId: tournament?.id ?? null, results: mapped };
       }
+      // A cancelled event was refunded (`cancelEvent`); it can never be settled.
+      if (e.status === 'cancelled') {
+        throw new SpecialEventError('event_cancelled', 409);
+      }
 
       // Only mark completed once the dependent tournament has settled.
       if (tournament && tournament.status === 'completed') {
@@ -1357,6 +1361,221 @@ export class SpecialEventManager {
       return { alreadySettled: false, tournamentId, results: mapped };
     });
   }
+
+  // ── Cancel + refund (named admin; security pass gap, 2026-10-03) ────────────
+
+  /**
+   * Cancel an event that has not started play and refund its signups.
+   *
+   * CANCELLABLE: 'draft' and 'signup_open' with no non-cancelled linked
+   * tournament. Before the main transaction, the same recovery the start uses
+   * runs first: a STALE 'starting' claim (a crashed start) goes through
+   * `reconcileStartingEvent` (a registering/seating tournament is cancelled by
+   * the TM, which credits the house-treasury seed back exactly once, then the
+   * event reopens), and a 'live' event whose tournaments were all cancelled goes
+   * through `reconcileOrphanedLiveEvent` (the seed was already refunded by that
+   * TM cancel). Both can leave the event 'signup_open', so it is then
+   * cancellable. The seed is debited only when a tournament is created, so a
+   * 'draft'/'signup_open' event holds no seed: this method never moves treasury
+   * CT itself, and the TM cancel is the only seed-refund path (no double refund).
+   *
+   * REFUSED (409, no CT moves): 'starting' with a fresh claim
+   * (`event_start_in_progress`), 'live' with a linked tournament
+   * (`event_already_started`), 'completed' (`event_already_settled`), and a
+   * 'draft'/'signup_open' event that still links a non-cancelled tournament
+   * (`event_has_active_tournament`, legacy data only).
+   *
+   * ONE transaction holds the event row lock (FOR UPDATE, the same first lock
+   * start, settle and signup take), CASes the status to 'cancelled', and refunds
+   * every signup. Start, settle and signup re-check the status under that lock,
+   * so none of them can act on a cancelled event, and a cancel never acts on a
+   * started or settled one. A retried cancel finds 'cancelled' and moves no CT.
+   *
+   * PER SIGNUP (human and agent signups are handled the same way; the refund
+   * binds to the signup's avatar):
+   *   - 'ct' (confirmed): the signup row CAS (`status <> 'refunded'` →
+   *     'refunded', RETURNING) runs in the same tx as the credit, so each entry
+   *     is refunded at most once. The credit mirrors the entry debit's ledger
+   *     rows (reason 'special_event_entry', this event id): a SOFT burn comes
+   *     back SOFT and a BOUGHT burn comes back BOUGHT (no usd_basis: no new
+   *     dollars). An EARNED burn comes back SOFT, because EARNED can only be
+   *     minted by `mintEarned` with a backing declaration. Reason
+   *     'special_event_entry_refund', metadata carries the signup id.
+   *   - 'free' / 'hold' / 'pending': flipped to 'refunded'; nothing was paid.
+   *   - 'sol': NOT flipped and NOT paid here. The SOL sits in the treasury
+   *     wallet and goes back by an operator transfer. The row stays 'confirmed'
+   *     so its tx sig stays reserved (the global SOL replay index exempts only
+   *     'refunded' rows), and the result lists it in `solRefundsOwed`; a retried
+   *     cancel lists it again.
+   */
+  async cancelEvent(slug: string): Promise<CancelEventResult> {
+    // Phase 0: the start's own recovery, so a crashed start or an orphaned live
+    // event never blocks a cancel (a fresh claim is left alone).
+    const current = await this.getEventBySlug(slug);
+    if (current?.status === 'starting') {
+      await this.reconcileStartingEvent(current.id, { staleBefore: this.staleClaimCutoff() });
+    } else if (current?.status === 'live') {
+      await this.reconcileOrphanedLiveEvent(current.id);
+    }
+
+    return this.db.transaction(async (tx) => {
+      const lockRows = await tx.execute<EventRow>(
+        sql`SELECT * FROM special_events WHERE slug = ${slug} FOR UPDATE`,
+      );
+      const e = lockRows[0];
+      if (!e) throw new SpecialEventError('event_not_found', 404);
+
+      type SignupRow = {
+        id: string;
+        avatar_id: string;
+        agent_id: string | null;
+        entry_method: string;
+        entry_proof_json: unknown;
+        status: string;
+      };
+      const readOpenSignups = () =>
+        tx.execute<SignupRow>(
+          sql`SELECT id, avatar_id, agent_id, entry_method, entry_proof_json, status
+              FROM special_event_signups
+              WHERE event_id = ${e.id} AND status <> 'refunded'
+              ORDER BY created_at ASC`,
+        );
+
+      if (e.status === 'cancelled') {
+        const open = await readOpenSignups();
+        return {
+          alreadyCancelled: true,
+          status: 'cancelled',
+          refundedSignups: 0,
+          refundedCt: 0,
+          solRefundsOwed: open.filter((s) => s.entry_method === 'sol').map(solRefundOwed),
+        };
+      }
+      if (e.status === 'completed') throw new SpecialEventError('event_already_settled', 409);
+      if (e.status === 'live') throw new SpecialEventError('event_already_started', 409);
+      if (e.status === 'starting') throw new SpecialEventError('event_start_in_progress', 409);
+      if (e.status !== 'draft' && e.status !== 'signup_open') {
+        throw new SpecialEventError('event_not_cancellable', 409);
+      }
+
+      const active = await tx.execute<{ active: number }>(
+        sql`SELECT count(*)::int AS active FROM poker_tournaments
+            WHERE special_event_id = ${e.id} AND status <> 'cancelled'`,
+      );
+      if (Number(active[0]?.active ?? 0) > 0) {
+        throw new SpecialEventError('event_has_active_tournament', 409);
+      }
+
+      const claimed = await tx.execute<{ id: string }>(
+        sql`UPDATE special_events
+            SET status = 'cancelled', start_claim_id = NULL, start_claimed_at = NULL
+            WHERE id = ${e.id} AND status IN ('draft', 'signup_open')
+            RETURNING id`,
+      );
+      if (!claimed[0]) throw new SpecialEventError('event_cancel_conflict', 409);
+
+      let refundedSignups = 0;
+      let refundedCt = 0;
+      const solRefundsOwed: SolRefundOwed[] = [];
+      for (const s of await readOpenSignups()) {
+        if (s.entry_method === 'sol') {
+          solRefundsOwed.push(solRefundOwed(s));
+          continue;
+        }
+        const flipped = await tx.execute<{ id: string }>(
+          sql`UPDATE special_event_signups SET status = 'refunded'
+              WHERE id = ${s.id} AND status <> 'refunded'
+              RETURNING id`,
+        );
+        if (!flipped[0]) continue;
+        refundedSignups += 1;
+        if (s.entry_method !== 'ct' || s.status !== 'confirmed') continue;
+
+        const paid = Number((s.entry_proof_json as { amountCt?: unknown } | null)?.amountCt ?? 0);
+        if (!Number.isInteger(paid) || paid <= 0) continue;
+
+        // The entry debit's per-tag rows (one per provenance burned).
+        const burns = await tx.execute<{ provenance: string | null; amount: number }>(
+          sql`SELECT provenance, (-amount)::int AS amount
+              FROM claw_token_transactions
+              WHERE avatar_id = ${s.avatar_id} AND reason = 'special_event_entry'
+                AND amount < 0 AND metadata->>'eventId' = ${e.id}`,
+        );
+        const burned = burns.reduce((sum, b) => sum + Number(b.amount), 0);
+        if (burned !== paid) {
+          // Fail closed: the whole cancel rolls back, no partial refund.
+          throw new SpecialEventError('entry_debit_ledger_mismatch', 500);
+        }
+        for (const b of burns) {
+          const original = b.provenance ?? 'soft';
+          await this.ledger.creditClawTokens(
+            {
+              avatarId: s.avatar_id,
+              amount: Number(b.amount),
+              reason: 'special_event_entry_refund',
+              source: 'simulation',
+              provenance: original === 'bought' ? 'bought' : 'soft',
+              metadata: {
+                eventId: e.id,
+                slug,
+                signupId: s.id,
+                agentId: s.agent_id,
+                burnedProvenance: original,
+              },
+              actorKind: 'admin',
+            },
+            tx,
+          );
+          refundedCt += Number(b.amount);
+        }
+      }
+
+      return {
+        alreadyCancelled: false,
+        status: 'cancelled',
+        refundedSignups,
+        refundedCt,
+        solRefundsOwed,
+      };
+    });
+  }
+}
+
+/** A SOL entry that an operator must pay back by an on-chain transfer. */
+export interface SolRefundOwed {
+  signupId: string;
+  avatarId: string;
+  txSig: string | null;
+  lamports: string | null;
+  fromPubkey: string | null;
+}
+
+export interface CancelEventResult {
+  /** true when the event was already cancelled (a retry): no CT moved. */
+  alreadyCancelled: boolean;
+  status: 'cancelled';
+  /** Signups flipped to 'refunded' by THIS call. */
+  refundedSignups: number;
+  /** vCLAW credited back to entrants by THIS call. */
+  refundedCt: number;
+  /** Confirmed SOL entries still owed (operator transfer from the treasury). */
+  solRefundsOwed: SolRefundOwed[];
+}
+
+function solRefundOwed(s: { id: string; avatar_id: string; entry_proof_json: unknown }): SolRefundOwed {
+  const proof = (s.entry_proof_json ?? {}) as {
+    txSig?: unknown;
+    lamports?: unknown;
+    fromPubkey?: unknown;
+  };
+  const str = (v: unknown) => (typeof v === 'string' ? v : null);
+  return {
+    signupId: s.id,
+    avatarId: s.avatar_id,
+    txSig: str(proof.txSig),
+    lamports: str(proof.lamports),
+    fromPubkey: str(proof.fromPubkey),
+  };
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────

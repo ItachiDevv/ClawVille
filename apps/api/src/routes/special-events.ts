@@ -14,6 +14,8 @@
  *   POST /:slug/start   (NAMED admin) — close signups + create/seat the dependent
  *                                   tournament (signup_open → starting → live)
  *   POST /:slug/settle  (NAMED admin) — explicitly record event completion
+ *   POST /:slug/cancel  (NAMED admin) — cancel before play (draft / signup_open,
+ *                                   after the start recovery) + refund signups
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
  *   POST /:slug/signup  (AGENT-CAPABLE) — gate-evaluated signup (human XOR agent)
@@ -70,7 +72,8 @@ const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 /**
  * Named-admin gate for EVERY special-event admin mutation (security M3,
- * 2026-09-30): /create, /:slug/open, /:slug/start, /:slug/settle. `adminOnly`
+ * 2026-09-30): /create, /:slug/open, /:slug/start, /:slug/settle, and
+ * /:slug/cancel (2026-10-03: it credits refunds). `adminOnly`
  * also accepts the static shared `cv_dash` cookie, which is not tied to a user and
  * never rotates. /create sets the seed prize pool, /start pays it from the house
  * treasury, and /open + /settle move the event lifecycle, so all four also require
@@ -270,6 +273,24 @@ specialEventsRouter.post('/:slug/settle', adminOnly, requireNamedAdmin, async (c
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {
     const result = await specialEventManager.settleEvent(parsed.data.slug);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// ── POST /:slug/cancel (NAMED ADMIN — cancel before play + refund signups) ─────
+// Refunds every vCLAW entry to the signup's avatar (human or agent, same path)
+// and lists confirmed SOL entries in `solRefundsOwed` for an operator transfer.
+// A retry is a no-op. Refused (409) once play started or the event settled.
+specialEventsRouter.post('/:slug/cancel', adminOnly, requireNamedAdmin, async (c) => {
+  const parsed = slugParamSchema.safeParse(c.req.param());
+  if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
+  try {
+    const result = await specialEventManager.cancelEvent(parsed.data.slug);
     return c.json({ ok: true, ...result });
   } catch (err) {
     if (err instanceof SpecialEventError) {
