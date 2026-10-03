@@ -86,6 +86,12 @@
 
 ## TRADING FLOOR
 
+### Trading Floor small fixes: house-agent walk-up on a phone in landscape, name pills, no-avatar card (session tradeProd, 2026-10-03, STAGING)
+- **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, walk up to a house agent under the big board.
+- **On a real phone turned sideways:** the "Choose this trading style" panel now sits at the top, right of "Back to World", and scrolls inside itself. Do both joysticks stay free? Can you reach and tap its buttons? (Browser tests cannot show the phone's safe area.)
+- **On a laptop (1440x900):** the five house-agent name pills ("Mid-Cap Climber", "Late Bloomer", ...) wrap to two lines and no longer touch. Do they read well?
+- **Feedback wanted:** is the landscape panel usable, or do you prefer a strip at the bottom?
+
 ### Trading Floor: P5 wallet withdraw + P15 house agents (session tDesk2Main, 2026-10-02, STAGING)
 - Look at: `https://staging.clawville.world/trading-floor`. Walk to the back wall: five house agents stand under the big screen, one board column above each. Walk up to one; the panel shows its strategy; press "Choose this trading style". Then My Trader > Wallet: the Withdraw panel (add an address, withdraw USDC or SOL).
 - Feedback wanted: the figure looks (Q1 default: Milady official 2-6, still figures); the board without the player leaderboard (Q2); "Open my trader" for a player who has a trader (Q3); the withdraw limits (0.10 USDC min, 3 a day, 500 USDC a day, 24 h address delay) and who pays the SOL fee (default: the player).
