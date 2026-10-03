@@ -270,14 +270,18 @@ export const specialEventSignups = pgTable(
  *
  *   'owed'     → the treasury still owes `lamports` to `destination_pubkey`
  *   'refunded' → a named admin recorded the payout (`refund_tx_sig`, verified on
- *                chain to pay ≥ `lamports` to `destination_pubkey`)
+ *                chain to pay ≥ `lamports` to `destination_pubkey`, with System
+ *                transfers FROM `receiving_pubkey` TO it summing to ≥ `lamports`)
  *
- * `destination_pubkey` is the sender PROVEN by the entry transfer (never the
- * client-claimed wallet); null only when it could not be resolved at cancel
- * time, and the mark-paid path resolves it again from the entry tx first.
- * `refund_tx_sig` is globally unique: one on-chain payout settles one refund.
- * No FK on `signup_id` / `avatar_id`: the obligation must outlive an avatar
- * delete (the signup row cascades with its avatar).
+ * `receiving_pubkey` is the wallet that received the entry (the treasury); the
+ * payout must come from it (Codex r2). `destination_pubkey` is the single source
+ * whose OWN System transfers into the receiving wallet cover the full credited
+ * entry (Codex r2), never the client-claimed wallet. It is null when the chain
+ * proves no such source; mark-paid re-verifies the entry tx, or a named admin
+ * sets it once (`destination_set_by` / `destination_set_at`; both null for a
+ * chain-proven destination). `refund_tx_sig` is globally unique: one on-chain
+ * payout settles one refund. No FK on `signup_id` / `avatar_id`: the obligation
+ * must outlive an avatar delete (the signup row cascades with its avatar).
  */
 export const specialEventSolRefunds = pgTable(
   'special_event_sol_refunds',
@@ -293,8 +297,13 @@ export const specialEventSolRefunds = pgTable(
     entryTxSig: text('entry_tx_sig').notNull(),
     /** Lamports owed back (stringified bigint) = the verified entry amount. */
     lamports: text('lamports').notNull(),
-    /** Proven entry sender (base58); the only allowed refund destination. */
+    /** The wallet that received the entry (base58); the refund must come FROM it. */
+    receivingPubkey: text('receiving_pubkey').notNull(),
+    /** Proven (or admin-set) entry sender (base58); the only allowed refund destination. */
     destinationPubkey: text('destination_pubkey'),
+    /** Lucia user id of the named admin who set the destination by hand (null = chain-proven). */
+    destinationSetBy: uuid('destination_set_by'),
+    destinationSetAt: timestamp('destination_set_at', { withTimezone: true }),
     status: text('status').notNull().default('owed'),
     refundTxSig: text('refund_tx_sig'),
     refundedAt: timestamp('refunded_at', { withTimezone: true }),
@@ -319,6 +328,31 @@ export const specialEventSolRefunds = pgTable(
   }),
 );
 
+/**
+ * Every transaction signature a special event consumed (2026-10-03, Codex r2,
+ * migration 0076): a SOL entry ('entry') or a SOL refund payout ('refund').
+ * PRIMARY KEY `tx_sig`: the signup and the refund mark-paid paths insert into it
+ * in the same transaction as their own write, so one signature can never serve
+ * as both an entry and a refund, even when two requests race.
+ */
+export const specialEventUsedTxSigs = pgTable(
+  'special_event_used_tx_sigs',
+  {
+    txSig: text('tx_sig').primaryKey(),
+    /** 'entry' | 'refund'. */
+    useKind: text('use_kind').notNull(),
+    /** The signup the signature paid for (entry) or refunded (refund). */
+    signupId: uuid('signup_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  () => ({
+    useKindCheck: check(
+      'special_event_used_tx_sigs_use_kind_check',
+      sql`use_kind in ('entry','refund')`,
+    ),
+  }),
+);
+
 // ── $inferSelect / $inferInsert exports (mirror poker.ts style) ───────────────
 
 export type SpecialEvent = typeof specialEvents.$inferSelect;
@@ -327,3 +361,4 @@ export type SpecialEventSignup = typeof specialEventSignups.$inferSelect;
 export type NewSpecialEventSignup = typeof specialEventSignups.$inferInsert;
 export type SpecialEventSolRefund = typeof specialEventSolRefunds.$inferSelect;
 export type NewSpecialEventSolRefund = typeof specialEventSolRefunds.$inferInsert;
+export type SpecialEventUsedTxSig = typeof specialEventUsedTxSigs.$inferSelect;

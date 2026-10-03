@@ -22,6 +22,9 @@ const SIGNUP_ID = '33333333-3333-4333-8333-333333333333';
 const GOOD_SIG = '5'.repeat(88);
 const REUSED_SIG = '4'.repeat(88);
 const OTHER_ID = '22222222-2222-4222-8222-222222222222';
+// A base58 32-byte public key (System program id) and one the manager refuses.
+const GOOD_DEST = '11111111111111111111111111111111';
+const SET_DEST = '22222222222222222222222222222222';
 
 type Middleware = (c: any, next: () => Promise<void>) => unknown;
 let intercept = true;
@@ -45,6 +48,7 @@ let settleCalls: string[] = [];
 let cancelCalls: string[] = [];
 let solListCalls: string[] = [];
 let paidCalls: Array<{ slug: string; signupId: string; txSignature: string; adminUserId: string | null }> = [];
+let destCalls: Array<{ slug: string; signupId: string; destination: string; adminUserId: string | null }> = [];
 mock.module('../../services/special-event-manager', () => ({
   ...realManagerModule,
   specialEventManager: {
@@ -89,6 +93,18 @@ mock.module('../../services/special-event-manager', () => ({
       }
       return { signupId, status: 'refunded', refundTxSig: txSignature };
     },
+    resolveSolRefundDestination: async (
+      slug: string,
+      signupId: string,
+      destination: string,
+      adminUserId: string | null,
+    ) => {
+      destCalls.push({ slug, signupId, destination, adminUserId });
+      if (destination === SET_DEST) {
+        throw new realManagerModule.SpecialEventError('refund_destination_already_set', 409);
+      }
+      return { signupId, status: 'owed', destinationPubkey: destination, destinationSetBy: adminUserId };
+    },
   },
 }));
 
@@ -128,6 +144,7 @@ beforeEach(() => {
   cancelCalls = [];
   solListCalls = [];
   paidCalls = [];
+  destCalls = [];
 });
 
 afterAll(() => {
@@ -144,6 +161,7 @@ describe('special events — named admin on every admin mutation (security M3)',
     ['/launch-champ/settle', {}] as const,
     ['/launch-champ/cancel', {}] as const,
     [`/launch-champ/sol-refunds/${SIGNUP_ID}/paid`, { txSignature: GOOD_SIG }] as const,
+    [`/launch-champ/sol-refunds/${SIGNUP_ID}/destination`, { destination: GOOD_DEST }] as const,
   ];
   const allCalls = () => [
     ...startCalls,
@@ -152,6 +170,7 @@ describe('special events — named admin on every admin mutation (security M3)',
     ...cancelCalls,
     ...solListCalls,
     ...paidCalls,
+    ...destCalls,
   ];
 
   test.each(mutations)('%s refuses the shared cv_dash cookie without a named admin session', async (path, body) => {
@@ -245,6 +264,42 @@ describe('special events — SOL refund routes (Codex r1, 2026-10-03)', () => {
     });
     expect(res.status).toBe(409);
     expect(await errorMessage(res)).toContain('refund_tx_reused');
+  });
+});
+
+describe('special events — SOL refund destination route (Codex r2, 2026-10-03)', () => {
+  const path = `/launch-champ/sol-refunds/${SIGNUP_ID}/destination`;
+
+  test('a named admin sets the destination; the admin user id is passed through', async () => {
+    const res = await post(path, { user: ADMIN_ID, body: { destination: GOOD_DEST } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      refund: { destinationPubkey: GOOD_DEST, destinationSetBy: ADMIN_ID },
+    });
+    expect(destCalls).toEqual([
+      { slug: 'launch-champ', signupId: SIGNUP_ID, destination: GOOD_DEST, adminUserId: ADMIN_ID },
+    ]);
+  });
+
+  test('a malformed destination or signup id is a 400 before the manager runs', async () => {
+    for (const body of [{}, { destination: 'short' }, { destination: '0'.repeat(44) }, { destination: 42 }]) {
+      const res = await post(path, { user: ADMIN_ID, body });
+      expect(res.status).toBe(400);
+      expect(await errorMessage(res)).toContain('invalid_destination');
+    }
+    const badId = await post('/launch-champ/sol-refunds/not-a-uuid/destination', {
+      user: ADMIN_ID,
+      body: { destination: GOOD_DEST },
+    });
+    expect(badId.status).toBe(400);
+    expect(destCalls).toHaveLength(0);
+  });
+
+  test('a manager refusal maps to its HTTP status and code', async () => {
+    const res = await post(path, { user: ADMIN_ID, body: { destination: SET_DEST } });
+    expect(res.status).toBe(409);
+    expect(await errorMessage(res)).toContain('refund_destination_already_set');
   });
 });
 

@@ -46,6 +46,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import bs58 from 'bs58';
 import { db as realDb } from '@clawville/database';
 import { sql } from 'drizzle-orm';
 import { readSplTokenBalance } from './solana-token-balance';
@@ -87,10 +88,11 @@ export interface EventRpc {
    * null when the tx is unknown / unconfirmed. The manager rejects a tx whose
    * destination sum is below the required lamports or whose success is false.
    *
-   * `payerPubkey` is the sender PROVEN by the tx: the single System-program
-   * `transfer` source that paid `expectedDestPubkey` (a transfer source must sign
-   * the tx). null when the tx has zero or several such sources. It is the only
-   * allowed SOL refund destination; a client-submitted pubkey is never used.
+   * `transfersBySource` holds the lamports that System-program `transfer` and
+   * `transferWithSeed` instructions (top-level AND inner) move INTO
+   * `expectedDestPubkey`, summed per source account. The manager derives the
+   * proven payer from it (`singleCoveringSource`): a source counts only when its
+   * OWN transfers cover the full credited amount (Codex r2, 2026-10-03).
    *
    * `opts.commitment` defaults to 'confirmed' (the entry path); the refund
    * mark-paid path asks for 'finalized'.
@@ -104,10 +106,33 @@ export interface EventRpc {
 
 /** What `EventRpc.getSolTransfer` proves about one transaction. */
 export interface SolTransferProof {
+  /** Balance increase of the destination account (post - pre). */
   lamportsToDest: bigint;
   success: boolean;
-  /** The single proven transfer source into the destination; null if not exactly one. */
-  payerPubkey?: string | null;
+  /**
+   * Verified System transfer lamports INTO the destination, summed per source
+   * (self-transfers excluded). Absent or empty = no source is provable.
+   */
+  transfersBySource?: ReadonlyMap<string, bigint>;
+}
+
+/**
+ * The one source whose OWN verified transfers into a wallet cover the full
+ * `credited` amount, or null (Codex r2, 2026-10-03). A 1-lamport System transfer
+ * from A next to a large credit from B (another instruction type) proves
+ * nothing about who paid, so it never names A. Several covering sources are
+ * ambiguous and also give null; `exclude` drops the receiving wallet itself.
+ */
+export function singleCoveringSource(
+  transfersBySource: ReadonlyMap<string, bigint> | undefined,
+  credited: bigint,
+  exclude?: string | null,
+): string | null {
+  if (!transfersBySource || credited <= 0n) return null;
+  const covering = [...transfersBySource].filter(
+    ([source, lamports]) => source !== exclude && lamports >= credited,
+  );
+  return covering.length === 1 ? covering[0]![0] : null;
 }
 
 /** A pluggable wall clock (for confirmedAt timestamps + window checks). */
@@ -454,9 +479,14 @@ export class SpecialEventManager {
           // Client-claimed wallet: an audit hint only, NEVER a refund destination.
           fromPubkey: choice.walletPubkey ?? null,
           // The sender proven by the verified transfer (2026-10-03): the SOL
-          // refund destination if the event is cancelled. null = not provable
-          // from this tx; cancel/mark-paid then re-verify the tx on chain.
-          payerPubkey: transfer.payerPubkey ?? null,
+          // refund destination if the event is cancelled. Only a source whose
+          // OWN System transfers cover the full credited amount (Codex r2).
+          // null = not provable from this tx; a named admin resolves it.
+          payerPubkey: singleCoveringSource(
+            transfer.transfersBySource,
+            transfer.lamportsToDest,
+            this.treasuryPubkey,
+          ),
         },
       };
     }
@@ -588,18 +618,37 @@ export class SpecialEventManager {
       // (special-events.ts) is the race-proof backstop — two concurrent signups for
       // DIFFERENT events lock different event rows and never serialize on this SELECT,
       // so the DB index is what actually guarantees global single-use.
-      if (decision.method === 'sol') {
-        const sig = (decision.proof as { txSig?: string }).txSig;
-        if (sig) {
-          const dup = await tx.execute<{ id: string }>(
-            sql`SELECT id FROM special_event_signups
-                WHERE status <> 'refunded'
-                  AND entry_method = 'sol'
-                  AND entry_proof_json->>'txSig' = ${sig}`,
-          );
-          if (dup[0]) {
-            throw new SpecialEventError('sol_tx_already_used', 409);
-          }
+      //
+      // Codex r2 (2026-10-03): a signature recorded as a SOL REFUND payout can
+      // never become an entry either (and mark-paid refuses an entry signature).
+      // Both paths claim the signature in `special_event_used_tx_sigs` (PRIMARY
+      // KEY tx_sig) inside their own transaction, so a concurrent signup and
+      // mark-paid with one signature can never both commit.
+      const signupId = randomUUID();
+      const solSig =
+        decision.method === 'sol' ? (decision.proof as { txSig?: string }).txSig ?? null : null;
+      if (solSig) {
+        const dup = await tx.execute<{ id: string }>(
+          sql`SELECT id FROM special_event_signups
+              WHERE status <> 'refunded'
+                AND entry_method = 'sol'
+                AND entry_proof_json->>'txSig' = ${solSig}`,
+        );
+        if (dup[0]) {
+          throw new SpecialEventError('sol_tx_already_used', 409);
+        }
+        const usedElsewhere = await tx.execute<{ hit: number }>(
+          sql`SELECT 1 AS hit FROM special_event_used_tx_sigs WHERE tx_sig = ${solSig}
+              UNION ALL
+              SELECT 1 AS hit FROM special_event_sol_refunds WHERE refund_tx_sig = ${solSig}
+              LIMIT 1`,
+        );
+        if (usedElsewhere[0]) {
+          throw new SpecialEventError('sol_tx_already_used', 409);
+        }
+        // The race-proof claim (first write of this tx for a SOL entry).
+        if (!(await claimTxSig(tx, solSig, 'entry', signupId))) {
+          throw new SpecialEventError('sol_tx_already_used', 409);
         }
       }
 
@@ -627,9 +676,9 @@ export class SpecialEventManager {
       try {
         insRows = await tx.execute<{ id: string }>(
           sql`INSERT INTO special_event_signups
-                (event_id, user_id, avatar_id, agent_id, subject_type, entry_method,
+                (id, event_id, user_id, avatar_id, agent_id, subject_type, entry_method,
                  wallet_used, entry_proof_json, status, confirmed_at)
-              VALUES (${e.id}, ${subject.kind === 'human' ? subject.userId : subject.userId},
+              VALUES (${signupId}, ${e.id}, ${subject.kind === 'human' ? subject.userId : subject.userId},
                       ${subject.avatarId}, ${subject.agentId}, ${subjectType},
                       ${decision.method}, ${walletUsed},
                       ${JSON.stringify(proof)}::jsonb, 'confirmed', now())
@@ -1437,13 +1486,16 @@ export class SpecialEventManager {
    *     carries the signup id.
    *   - 'free' / 'hold': flipped to 'refunded'; nothing was paid.
    *   - 'sol': ONE `special_event_sol_refunds` row (UNIQUE signup_id, status
-   *     'owed') with the verified entry lamports and the destination = the
-   *     sender PROVEN by the entry transfer (`entry_proof_json.payerPubkey`, or
-   *     for an older row a re-verification of its entry tx on chain before the
-   *     transaction; null when not provable, then `markSolRefundPaid` resolves
-   *     it again). The signup row stays 'confirmed' so its entry tx sig stays
-   *     reserved by the global SOL replay index. The SOL leaves the treasury only
-   *     by an operator transfer recorded through `markSolRefundPaid`.
+   *     'owed') with the verified entry lamports, the receiving wallet
+   *     (`entry_proof_json.toPubkey`, the treasury) and the destination = the
+   *     single source whose own System transfers cover the full credited entry
+   *     (`entry_proof_json.payerPubkey`, or for an older row a re-verification
+   *     of its entry tx on chain before the transaction; null when not
+   *     provable, then `markSolRefundPaid` re-verifies it or a named admin sets
+   *     it with `resolveSolRefundDestination`). The signup row stays 'confirmed'
+   *     so its entry tx sig stays reserved by the global SOL replay index. The
+   *     SOL leaves the treasury only by an operator transfer recorded through
+   *     `markSolRefundPaid`.
    */
   async cancelEvent(slug: string): Promise<CancelEventResult> {
     // Phase 0: the start's own recovery, so a crashed start or an orphaned live
@@ -1626,7 +1678,11 @@ export class SpecialEventManager {
     return out;
   }
 
-  /** The proven payer + lamports of an entry tx into the treasury, or null. */
+  /**
+   * The proven payer + lamports of an entry tx into the receiving wallet, or
+   * null. The payer is the single source whose own System transfers cover the
+   * full credited amount (`singleCoveringSource`), else null.
+   */
   private async verifyEntryPayment(
     txSig: string,
     toPubkey: string | null,
@@ -1636,7 +1692,10 @@ export class SpecialEventManager {
     try {
       const t = await this.rpc.getSolTransfer(txSig, dest);
       if (!t || !t.success || t.lamportsToDest <= 0n) return null;
-      return { payerPubkey: t.payerPubkey ?? null, lamports: t.lamportsToDest };
+      return {
+        payerPubkey: singleCoveringSource(t.transfersBySource, t.lamportsToDest, dest),
+        lamports: t.lamportsToDest,
+      };
     } catch (err) {
       console.error(`[special-event] SOL entry re-verification failed for ${txSig}:`, err);
       return null;
@@ -1668,11 +1727,14 @@ export class SpecialEventManager {
       if (!proof.txSig || !lamports) {
         throw new SpecialEventError('sol_entry_proof_invalid', 500);
       }
+      // The wallet that received the entry; the refund must come FROM it.
+      const receiving = proof.toPubkey ?? this.treasuryPubkey;
+      if (!receiving) throw new SpecialEventError('sol_entry_proof_invalid', 500);
       const destination = proof.payerPubkey ?? chain?.payerPubkey ?? null;
       await tx.execute(
         sql`INSERT INTO special_event_sol_refunds
-              (event_id, signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey)
-            VALUES (${eventId}, ${s.id}, ${s.avatar_id}, ${proof.txSig}, ${lamports}, ${destination})
+              (event_id, signup_id, avatar_id, entry_tx_sig, lamports, receiving_pubkey, destination_pubkey)
+            VALUES (${eventId}, ${s.id}, ${s.avatar_id}, ${proof.txSig}, ${lamports}, ${receiving}, ${destination})
             ON CONFLICT (signup_id) DO NOTHING`,
       );
     }
@@ -1700,14 +1762,19 @@ export class SpecialEventManager {
    *   1. the refund row exists for this event + signup and is 'owed'
    *      (else 409 `refund_not_owed`);
    *   2. the destination is known (re-verified from the entry tx when it was
-   *      not resolvable at cancel time; else 409 `refund_destination_unresolved`);
+   *      not resolvable at cancel time, or set by a named admin through
+   *      `resolveSolRefundDestination`; else 409 `refund_destination_unresolved`);
    *   3. the signature was never used by a refund or a SOL entry
-   *      (409 `refund_tx_reused`; the UNIQUE refund_tx_sig index is the race
-   *      backstop);
-   *   4. the tx is FINALIZED, succeeded, and credits ≥ the owed lamports to the
-   *      destination (else 400 `refund_tx_invalid`);
-   *   5. a claim-guarded UPDATE (`status = 'owed'` AND the same destination)
-   *      flips it to 'refunded', so two concurrent calls cannot both succeed.
+   *      (409 `refund_tx_reused`);
+   *   4. the tx is FINALIZED, succeeded, credits ≥ the owed lamports to the
+   *      destination, AND its System transfers FROM the wallet that received the
+   *      entry (`receiving_pubkey`, the treasury) TO the destination sum to ≥ the
+   *      owed lamports (Codex r2, 2026-10-03: a payout from any other wallet
+   *      does not settle a treasury refund). Else 400 `refund_tx_invalid`;
+   *   5. ONE transaction claims the signature in `special_event_used_tx_sigs`
+   *      (PRIMARY KEY: a concurrent signup or mark-paid with the same signature
+   *      loses) and runs a claim-guarded UPDATE (`status = 'owed'` AND the same
+   *      destination), so two concurrent calls cannot both succeed.
    */
   async markSolRefundPaid(
     slug: string,
@@ -1723,16 +1790,13 @@ export class SpecialEventManager {
 
     let destination = row.destinationPubkey;
     if (!destination) {
-      const signup = await this.db.execute<{ entry_proof_json: unknown }>(
-        sql`SELECT entry_proof_json FROM special_event_signups WHERE id = ${signupId}`,
-      );
-      const proof = readSolEntryProof(signup[0]?.entry_proof_json);
-      const verified = await this.verifyEntryPayment(row.entryTxSig, proof.toPubkey);
+      const verified = await this.verifyEntryPayment(row.entryTxSig, row.receivingPubkey);
       destination = verified?.payerPubkey ?? null;
       if (!destination) throw new SpecialEventError('refund_destination_unresolved', 409);
       await this.db.execute(
         sql`UPDATE special_event_sol_refunds SET destination_pubkey = ${destination}
-            WHERE signup_id = ${signupId} AND status = 'owed' AND destination_pubkey IS NULL`,
+            WHERE signup_id = ${signupId} AND event_id = ${event.id}
+              AND status = 'owed' AND destination_pubkey IS NULL`,
       );
     }
 
@@ -1741,6 +1805,8 @@ export class SpecialEventManager {
           UNION ALL
           SELECT 1 AS hit FROM special_event_signups
             WHERE entry_method = 'sol' AND entry_proof_json->>'txSig' = ${txSignature}
+          UNION ALL
+          SELECT 1 AS hit FROM special_event_used_tx_sigs WHERE tx_sig = ${txSignature}
           LIMIT 1`,
     );
     if (reused[0]) throw new SpecialEventError('refund_tx_reused', 409);
@@ -1752,29 +1818,84 @@ export class SpecialEventManager {
       console.error(`[special-event] SOL refund verification failed for ${txSignature}:`, err);
       throw new SpecialEventError('refund_tx_unverifiable', 503);
     }
-    if (!transfer || !transfer.success || transfer.lamportsToDest < BigInt(row.lamports)) {
+    const owed = BigInt(row.lamports);
+    const fromReceiving = transfer?.transfersBySource?.get(row.receivingPubkey) ?? 0n;
+    if (
+      !transfer ||
+      !transfer.success ||
+      transfer.lamportsToDest < owed ||
+      fromReceiving < owed
+    ) {
       throw new SpecialEventError('refund_tx_invalid', 400);
     }
 
-    let updated: SolRefundDbRow[];
-    try {
-      updated = await this.db.execute<SolRefundDbRow>(
-        sql`UPDATE special_event_sol_refunds
-            SET status = 'refunded', refund_tx_sig = ${txSignature},
-                refunded_at = ${new Date(this.clock.now()).toISOString()}::timestamptz,
-                refunded_by = ${adminUserId}
-            WHERE signup_id = ${signupId} AND event_id = ${event.id}
-              AND status = 'owed' AND destination_pubkey = ${destination}
-            RETURNING ${SOL_REFUND_COLUMNS}`,
-      );
-    } catch (err) {
-      if ((err as { code?: string }).code === '23505') {
+    return this.db.transaction(async (tx) => {
+      if (!(await claimTxSig(tx, txSignature, 'refund', signupId))) {
         throw new SpecialEventError('refund_tx_reused', 409);
       }
-      throw err;
+      let updated: SolRefundDbRow[];
+      try {
+        updated = await tx.execute<SolRefundDbRow>(
+          sql`UPDATE special_event_sol_refunds
+              SET status = 'refunded', refund_tx_sig = ${txSignature},
+                  refunded_at = ${new Date(this.clock.now()).toISOString()}::timestamptz,
+                  refunded_by = ${adminUserId}
+              WHERE signup_id = ${signupId} AND event_id = ${event.id}
+                AND status = 'owed' AND destination_pubkey = ${destination}
+              RETURNING ${SOL_REFUND_COLUMNS}`,
+        );
+      } catch (err) {
+        if (isUniqueViolation(err)) throw new SpecialEventError('refund_tx_reused', 409);
+        throw err;
+      }
+      if (!updated[0]) throw new SpecialEventError('refund_not_owed', 409);
+      return mapSolRefundRow(updated[0]);
+    });
+  }
+
+  /**
+   * Set the destination of an owed SOL refund whose entry payer the chain cannot
+   * prove (named admin, Codex r2 2026-10-03). Only while the row is 'owed' with
+   * NO destination; a proven or earlier-set destination is never overwritten.
+   * The destination must be a base58 32-byte public key and must not be the
+   * receiving wallet itself. Records the admin id + time. Codes: 404
+   * `event_not_found`, 409 `refund_not_owed`, 409
+   * `refund_destination_already_set`, 400 `invalid_destination`.
+   */
+  async resolveSolRefundDestination(
+    slug: string,
+    signupId: string,
+    destination: string,
+    adminUserId: string | null,
+  ): Promise<SolRefundRecord> {
+    const event = await this.getEventBySlug(slug);
+    if (!event) throw new SpecialEventError('event_not_found', 404);
+    if (!isBase58Pubkey(destination)) throw new SpecialEventError('invalid_destination', 400);
+
+    const current = (await readSolRefundRows(this.db, event.id)).find((r) => r.signupId === signupId);
+    if (!current || current.status !== 'owed') throw new SpecialEventError('refund_not_owed', 409);
+    if (current.destinationPubkey) {
+      throw new SpecialEventError('refund_destination_already_set', 409);
     }
-    if (!updated[0]) throw new SpecialEventError('refund_not_owed', 409);
-    return mapSolRefundRow(updated[0]);
+    if (destination === current.receivingPubkey) {
+      throw new SpecialEventError('invalid_destination', 400);
+    }
+
+    const updated = await this.db.execute<SolRefundDbRow>(
+      sql`UPDATE special_event_sol_refunds
+          SET destination_pubkey = ${destination}, destination_set_by = ${adminUserId},
+              destination_set_at = ${new Date(this.clock.now()).toISOString()}::timestamptz
+          WHERE signup_id = ${signupId} AND event_id = ${event.id}
+            AND status = 'owed' AND destination_pubkey IS NULL
+          RETURNING ${SOL_REFUND_COLUMNS}`,
+    );
+    if (updated[0]) return mapSolRefundRow(updated[0]);
+    // Lost a race: another call set it, or the row was paid in between.
+    const after = (await readSolRefundRows(this.db, event.id)).find((r) => r.signupId === signupId);
+    if (after?.status === 'owed' && after.destinationPubkey) {
+      throw new SpecialEventError('refund_destination_already_set', 409);
+    }
+    throw new SpecialEventError('refund_not_owed', 409);
   }
 }
 
@@ -1792,8 +1913,12 @@ export interface SolRefundRecord {
   entryTxSig: string;
   /** Lamports owed back (stringified bigint). */
   lamports: string;
-  /** The proven entry sender; null until it is resolved. */
+  /** The wallet that received the entry (the treasury); the payout must come from it. */
+  receivingPubkey: string;
+  /** The proven entry sender (or the admin-set one); null until it is resolved. */
   destinationPubkey: string | null;
+  /** Named admin who set the destination by hand; null when the chain proved it. */
+  destinationSetBy: string | null;
   status: 'owed' | 'refunded';
   refundTxSig: string | null;
   refundedAt: string | null;
@@ -1829,7 +1954,9 @@ type SolRefundDbRow = {
   avatar_id: string;
   entry_tx_sig: string;
   lamports: string;
+  receiving_pubkey: string;
   destination_pubkey: string | null;
+  destination_set_by: string | null;
   status: string;
   refund_tx_sig: string | null;
   refunded_at: Date | string | null;
@@ -1837,8 +1964,40 @@ type SolRefundDbRow = {
 } & Record<string, unknown>;
 
 const SOL_REFUND_COLUMNS = sql.raw(
-  'signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey, status, refund_tx_sig, refunded_at, refunded_by',
+  'signup_id, avatar_id, entry_tx_sig, lamports, receiving_pubkey, destination_pubkey, destination_set_by, status, refund_tx_sig, refunded_at, refunded_by',
 );
+
+/**
+ * Claim a transaction signature for ONE use (a SOL entry or a SOL refund
+ * payout) in `special_event_used_tx_sigs` (PRIMARY KEY tx_sig, Codex r2
+ * 2026-10-03). Runs inside the caller's transaction. false = the signature is
+ * already claimed; a concurrent claim waits on the uncommitted key and then
+ * gets false, so one signature never serves two uses.
+ */
+async function claimTxSig(
+  tx: Pick<DbLike, 'execute'>,
+  txSig: string,
+  use: 'entry' | 'refund',
+  signupId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ tx_sig: string }>(
+    sql`INSERT INTO special_event_used_tx_sigs (tx_sig, use_kind, signup_id)
+        VALUES (${txSig}, ${use}, ${signupId})
+        ON CONFLICT (tx_sig) DO NOTHING
+        RETURNING tx_sig`,
+  );
+  return rows.length > 0;
+}
+
+/** A base58 string that decodes to exactly 32 bytes (a Solana public key). */
+function isBase58Pubkey(value: string): boolean {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return false;
+  try {
+    return bs58.decode(value).length === 32;
+  } catch {
+    return false;
+  }
+}
 
 async function readSolRefundRows(
   executor: Pick<DbLike, 'execute'>,
@@ -1859,7 +2018,9 @@ function mapSolRefundRow(r: SolRefundDbRow): SolRefundRecord {
     avatarId: r.avatar_id,
     entryTxSig: r.entry_tx_sig,
     lamports: String(r.lamports),
+    receivingPubkey: r.receiving_pubkey,
     destinationPubkey: r.destination_pubkey ?? null,
+    destinationSetBy: r.destination_set_by ?? null,
     status: r.status === 'refunded' ? 'refunded' : 'owed',
     refundTxSig: r.refund_tx_sig ?? null,
     refundedAt: at == null ? null : at instanceof Date ? at.toISOString() : String(at),
@@ -1972,6 +2133,89 @@ export function toBigIntStrict(value: number | bigint | string, field: string): 
   return BigInt(s);
 }
 
+/** The System program id (base58). */
+const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+
+/** The part of a `getParsedTransaction` result the SOL proof reads. */
+export interface ParsedSolTxLike {
+  meta: {
+    err: unknown;
+    preBalances: readonly number[];
+    postBalances: readonly number[];
+    innerInstructions?: ReadonlyArray<{ instructions: readonly unknown[] }> | null;
+  } | null;
+  transaction: { message: { accountKeys: readonly unknown[]; instructions: readonly unknown[] } };
+}
+
+/** A base58 key from a parsed account key / PublicKey / string, or null. */
+function keyToString(k: unknown): string | null {
+  if (typeof k === 'string') return k;
+  if (k && typeof k === 'object') {
+    const inner = (k as { pubkey?: unknown }).pubkey ?? k;
+    const s = String(inner);
+    return s && s !== '[object Object]' ? s : null;
+  }
+  return null;
+}
+
+/** A verified System `transfer` / `transferWithSeed` instruction, or null. */
+function readSystemTransfer(ix: unknown): { source: string; destination: string; lamports: bigint } | null {
+  const p = ix as { program?: unknown; programId?: unknown; parsed?: unknown };
+  if (p?.program !== 'system') return null;
+  if (p.programId != null && keyToString(p.programId) !== SYSTEM_PROGRAM_ID) return null;
+  const parsed = p.parsed as { type?: unknown; info?: Record<string, unknown> } | undefined;
+  if (parsed?.type !== 'transfer' && parsed?.type !== 'transferWithSeed') return null;
+  const info = parsed.info ?? {};
+  const source = info.source;
+  const destination = info.destination;
+  const raw = info.lamports;
+  if (typeof source !== 'string' || typeof destination !== 'string') return null;
+  let lamports: bigint;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0) lamports = BigInt(raw);
+  else if (typeof raw === 'string' && /^\d+$/.test(raw)) lamports = BigInt(raw);
+  else return null;
+  if (lamports <= 0n) return null;
+  return { source, destination, lamports };
+}
+
+/**
+ * The SOL proof of one parsed transaction for `expectedDestPubkey` (Codex r2,
+ * 2026-10-03): the destination's balance increase, the success flag, and the
+ * lamports every System `transfer` / `transferWithSeed` (top-level AND inner
+ * instructions) moves into the destination, summed PER SOURCE. A self-transfer
+ * (source = destination) is ignored. null when the tx or its meta is missing.
+ */
+export function summarizeParsedSolTransfer(
+  tx: ParsedSolTxLike | null,
+  expectedDestPubkey: string,
+): SolTransferProof | null {
+  if (!tx || !tx.meta) return null;
+  const meta = tx.meta;
+  const success = meta.err == null;
+  // Sum SOL credited to the expected dest by diffing pre/post balances on the
+  // account keys (robust to the instruction shape).
+  const keys = tx.transaction.message.accountKeys;
+  let lamportsToDest = 0n;
+  for (let i = 0; i < keys.length; i++) {
+    if (keyToString(keys[i]) === expectedDestPubkey) {
+      const pre = BigInt(meta.preBalances[i] ?? 0);
+      const post = BigInt(meta.postBalances[i] ?? 0);
+      if (post > pre) lamportsToDest += post - pre;
+    }
+  }
+  const transfersBySource = new Map<string, bigint>();
+  const visit = (ix: unknown): void => {
+    const t = readSystemTransfer(ix);
+    if (!t || t.destination !== expectedDestPubkey || t.source === expectedDestPubkey) return;
+    transfersBySource.set(t.source, (transfersBySource.get(t.source) ?? 0n) + t.lamports);
+  };
+  for (const ix of tx.transaction.message.instructions) visit(ix);
+  for (const inner of meta.innerInstructions ?? []) {
+    for (const ix of inner.instructions) visit(ix);
+  }
+  return { lamportsToDest, success, transfersBySource };
+}
+
 /**
  * Default production RPC seam — a lazily-constructed `@solana/web3.js` Connection
  * reading SOLANA_RPC_URL (devnet default, mirroring wager-program-client). Only
@@ -2012,46 +2256,7 @@ function defaultEventRpc(): EventRpc {
         commitment: opts?.commitment ?? 'confirmed',
         maxSupportedTransactionVersion: 0,
       });
-      if (!tx || !tx.meta) return null;
-      const success = tx.meta.err == null;
-      // Sum SOL credited to the expected dest by diffing pre/post balances on the
-      // account keys (robust to System-program transfer instruction shape).
-      const keys = tx.transaction.message.accountKeys;
-      let lamportsToDest = 0n;
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
-        const pubkey = typeof k === 'string' ? k : (k.pubkey?.toBase58?.() ?? String(k.pubkey));
-        if (pubkey === expectedDestPubkey) {
-          const pre = BigInt(tx.meta.preBalances[i] ?? 0);
-          const post = BigInt(tx.meta.postBalances[i] ?? 0);
-          if (post > pre) lamportsToDest += post - pre;
-        }
-      }
-      // The proven payer: the System-program `transfer` sources into the dest,
-      // top-level and inner (CPI) instructions. A transfer source must sign the
-      // tx, so it is a key the payer controls. Exactly one source, or null.
-      const sources = new Set<string>();
-      const visit = (ix: unknown): void => {
-        const p = ix as {
-          program?: string;
-          parsed?: { type?: string; info?: { source?: unknown; destination?: unknown } };
-        };
-        const info = p.parsed?.info;
-        if (
-          p.program === 'system' &&
-          p.parsed?.type === 'transfer' &&
-          info?.destination === expectedDestPubkey &&
-          typeof info.source === 'string'
-        ) {
-          sources.add(info.source);
-        }
-      };
-      for (const ix of tx.transaction.message.instructions) visit(ix);
-      for (const inner of tx.meta.innerInstructions ?? []) {
-        for (const ix of inner.instructions) visit(ix);
-      }
-      const payerPubkey = sources.size === 1 ? [...sources][0]! : null;
-      return { lamportsToDest, success, payerPubkey };
+      return summarizeParsedSolTransfer(tx, expectedDestPubkey);
     },
   };
 }

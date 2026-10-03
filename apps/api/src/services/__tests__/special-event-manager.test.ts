@@ -25,13 +25,16 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql, type SQL } from 'drizzle-orm';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
+import bs58 from 'bs58';
 import {
   SpecialEventManager,
   SpecialEventError,
   SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT,
   SPECIAL_EVENT_START_CLAIM_STALE_MS,
   readSeedPrizePoolCt,
+  singleCoveringSource,
+  summarizeParsedSolTransfer,
   toBigIntStrict,
   type EventRpc,
   type SignupSubject,
@@ -116,6 +119,16 @@ class FakeDb {
   /** special_event_sol_refunds rows, by signup_id (UNIQUE signup_id). */
   solRefunds = new Map<string, Row>();
 
+  /** special_event_used_tx_sigs rows, by tx_sig (PRIMARY KEY tx_sig, Codex r2). */
+  usedTxSigs = new Map<string, Row>();
+
+  /**
+   * Race model (Codex r2): the signature PRE-CHECK SELECTs of signup and
+   * mark-paid see nothing, as when two transactions run before either commits.
+   * Only the used-signature PRIMARY KEY can then stop the second use.
+   */
+  blindSigPrechecks = false;
+
   /** Open transactions right now (a TM cancel must run with none: lock order). */
   txDepth = 0;
 
@@ -149,6 +162,7 @@ class FakeDb {
       saveMap(this.events),
       saveMap(this.signups),
       saveMap(this.solRefunds),
+      saveMap(this.usedTxSigs),
       (() => {
         const rows = [...this.ledgerRows];
         return () => void this.ledgerRows.splice(0, this.ledgerRows.length, ...rows);
@@ -193,6 +207,20 @@ class FakeDb {
   }
 
   private dispatch(text: string, p: unknown[]): Row[] {
+    // ── special_event_used_tx_sigs (Codex r2) ──────────────────────────────────
+    if (text === 'INSERT INTO special_event_used_tx_sigs (tx_sig, use_kind, signup_id) VALUES (?, ?, ?) ON CONFLICT (tx_sig) DO NOTHING RETURNING tx_sig') {
+      const sig = String(p[0]);
+      if (this.usedTxSigs.has(sig)) return [];
+      this.usedTxSigs.set(sig, { tx_sig: sig, use_kind: p[1], signup_id: p[2] });
+      return [{ tx_sig: sig }];
+    }
+    if (text === 'SELECT 1 AS hit FROM special_event_used_tx_sigs WHERE tx_sig = ? UNION ALL SELECT 1 AS hit FROM special_event_sol_refunds WHERE refund_tx_sig = ? LIMIT 1') {
+      if (this.blindSigPrechecks) return [];
+      const hit =
+        this.usedTxSigs.has(String(p[0])) ||
+        [...this.solRefunds.values()].some((r) => r.refund_tx_sig === p[1]);
+      return hit ? [{ hit: 1 }] : [];
+    }
     // ── special_events ────────────────────────────────────────────────────────
     if (text.startsWith('INSERT INTO special_events')) {
       const id = randomUUID();
@@ -394,6 +422,7 @@ class FakeDb {
     // ALL SOL-gated events; the treasury is shared, so a per-event scope would let
     // one payment satisfy entry to every concurrent SOL event).
     if (text.startsWith('SELECT id FROM special_event_signups WHERE status <> \'refunded\' AND entry_method = \'sol\' AND entry_proof_json->>\'txSig\' = ?')) {
+      if (this.blindSigPrechecks) return [];
       const found = [...this.signups.values()].find(
         (s) =>
           s.status !== 'refunded' &&
@@ -414,7 +443,10 @@ class FakeDb {
         }));
     }
     if (text.startsWith('INSERT INTO special_event_signups')) {
-      const id = randomUUID();
+      // (id, event_id, user_id, avatar_id, agent_id, subject_type, entry_method,
+      //  wallet_used, entry_proof_json): the manager picks the id (Codex r2).
+      const id = String(p[0]);
+      p = p.slice(1);
       const entryMethod = p[5];
       const proof = parseJsonParam(p[7]) as { txSig?: string } | null;
       // Model the partial unique index
@@ -535,7 +567,7 @@ class FakeDb {
         entry_proof_json: s.entry_proof_json,
       }));
     }
-    if (text === 'INSERT INTO special_event_sol_refunds (event_id, signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (signup_id) DO NOTHING') {
+    if (text === 'INSERT INTO special_event_sol_refunds (event_id, signup_id, avatar_id, entry_tx_sig, lamports, receiving_pubkey, destination_pubkey) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (signup_id) DO NOTHING') {
       const signupId = String(p[1]);
       if (this.solRefunds.has(signupId)) return [];
       this.solRefunds.set(signupId, {
@@ -544,7 +576,10 @@ class FakeDb {
         avatar_id: p[2],
         entry_tx_sig: p[3],
         lamports: p[4],
-        destination_pubkey: p[5] ?? null,
+        receiving_pubkey: p[5],
+        destination_pubkey: p[6] ?? null,
+        destination_set_by: null,
+        destination_set_at: null,
         status: 'owed',
         refund_tx_sig: null,
         refunded_at: null,
@@ -558,36 +593,46 @@ class FakeDb {
       avatar_id: r.avatar_id,
       entry_tx_sig: r.entry_tx_sig,
       lamports: r.lamports,
+      receiving_pubkey: r.receiving_pubkey,
       destination_pubkey: r.destination_pubkey,
+      destination_set_by: r.destination_set_by ?? null,
       status: r.status,
       refund_tx_sig: r.refund_tx_sig,
       refunded_at: r.refunded_at,
       refunded_by: r.refunded_by,
     });
-    if (text === 'SELECT signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey, status, refund_tx_sig, refunded_at, refunded_by FROM special_event_sol_refunds WHERE event_id = ? ORDER BY created_at ASC, signup_id ASC') {
+    if (text === 'SELECT signup_id, avatar_id, entry_tx_sig, lamports, receiving_pubkey, destination_pubkey, destination_set_by, status, refund_tx_sig, refunded_at, refunded_by FROM special_event_sol_refunds WHERE event_id = ? ORDER BY created_at ASC, signup_id ASC') {
       return [...this.solRefunds.values()]
         .filter((r) => r.event_id === p[0])
         .sort((a, b) => Number(a.created_at) - Number(b.created_at))
         .map(refundCols);
     }
-    if (text === 'SELECT entry_proof_json FROM special_event_signups WHERE id = ?') {
-      const s = this.signups.get(String(p[0]));
-      return s ? [{ entry_proof_json: s.entry_proof_json }] : [];
-    }
-    if (text === "UPDATE special_event_sol_refunds SET destination_pubkey = ? WHERE signup_id = ? AND status = 'owed' AND destination_pubkey IS NULL") {
+    if (text === "UPDATE special_event_sol_refunds SET destination_pubkey = ? WHERE signup_id = ? AND event_id = ? AND status = 'owed' AND destination_pubkey IS NULL") {
       const r = this.solRefunds.get(String(p[1]));
-      if (r && r.status === 'owed' && r.destination_pubkey == null) r.destination_pubkey = p[0];
+      if (r && r.event_id === p[2] && r.status === 'owed' && r.destination_pubkey == null) {
+        r.destination_pubkey = p[0];
+      }
       return [];
     }
-    if (text === "SELECT 1 AS hit FROM special_event_sol_refunds WHERE refund_tx_sig = ? UNION ALL SELECT 1 AS hit FROM special_event_signups WHERE entry_method = 'sol' AND entry_proof_json->>'txSig' = ? LIMIT 1") {
+    if (text === "UPDATE special_event_sol_refunds SET destination_pubkey = ?, destination_set_by = ?, destination_set_at = ?::timestamptz WHERE signup_id = ? AND event_id = ? AND status = 'owed' AND destination_pubkey IS NULL RETURNING signup_id, avatar_id, entry_tx_sig, lamports, receiving_pubkey, destination_pubkey, destination_set_by, status, refund_tx_sig, refunded_at, refunded_by") {
+      const r = this.solRefunds.get(String(p[3]));
+      if (!r || r.event_id !== p[4] || r.status !== 'owed' || r.destination_pubkey != null) return [];
+      r.destination_pubkey = p[0];
+      r.destination_set_by = p[1] ?? null;
+      r.destination_set_at = p[2];
+      return [refundCols(r)];
+    }
+    if (text === "SELECT 1 AS hit FROM special_event_sol_refunds WHERE refund_tx_sig = ? UNION ALL SELECT 1 AS hit FROM special_event_signups WHERE entry_method = 'sol' AND entry_proof_json->>'txSig' = ? UNION ALL SELECT 1 AS hit FROM special_event_used_tx_sigs WHERE tx_sig = ? LIMIT 1") {
+      if (this.blindSigPrechecks) return [];
       const hit =
         [...this.solRefunds.values()].some((r) => r.refund_tx_sig === p[0]) ||
         [...this.signups.values()].some(
           (s) => s.entry_method === 'sol' && (s.entry_proof_json as { txSig?: string } | null)?.txSig === p[1],
-        );
+        ) ||
+        this.usedTxSigs.has(String(p[2]));
       return hit ? [{ hit: 1 }] : [];
     }
-    if (text === "UPDATE special_event_sol_refunds SET status = 'refunded', refund_tx_sig = ?, refunded_at = ?::timestamptz, refunded_by = ? WHERE signup_id = ? AND event_id = ? AND status = 'owed' AND destination_pubkey = ? RETURNING signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey, status, refund_tx_sig, refunded_at, refunded_by") {
+    if (text === "UPDATE special_event_sol_refunds SET status = 'refunded', refund_tx_sig = ?, refunded_at = ?::timestamptz, refunded_by = ? WHERE signup_id = ? AND event_id = ? AND status = 'owed' AND destination_pubkey = ? RETURNING signup_id, avatar_id, entry_tx_sig, lamports, receiving_pubkey, destination_pubkey, destination_set_by, status, refund_tx_sig, refunded_at, refunded_by") {
       // Model the UNIQUE index special_event_sol_refunds_refund_tx_unique.
       if ([...this.solRefunds.values()].some((r) => r.refund_tx_sig === p[0])) {
         throw Object.assign(
@@ -705,9 +750,10 @@ class FakeLedger {
 class FakeRpc implements EventRpc {
   supply = new Map<string, bigint>();
   balances = new Map<string, bigint>(); // key = `${mint}:${owner}`
+  /** sig -> destination -> what the tx credits that destination, by source. */
   txs = new Map<
     string,
-    { lamportsToDest: bigint; success: boolean; dest: string; payer: string | null }
+    Map<string, { lamportsToDest: bigint; success: boolean; transfers: Map<string, bigint> }>
   >();
   /** The commitment each getSolTransfer call asked for ('confirmed' when omitted). */
   commitments: string[] = [];
@@ -720,9 +766,32 @@ class FakeRpc implements EventRpc {
   setBalance(mint: string, owner: string, b: bigint): void {
     this.balances.set(`${mint}:${owner}`, b);
   }
-  /** `payer` = the single proven transfer source (null = not provable). */
+  /**
+   * `payer` = the source of ONE System transfer of the full `lamports` into
+   * `dest` (null = no System transfer, so no provable payer).
+   */
   setTx(sig: string, dest: string, lamports: bigint, success = true, payer: string | null = null): void {
-    this.txs.set(sig, { lamportsToDest: lamports, success, dest, payer });
+    this.setTxTransfers(sig, dest, lamports, payer ? [[payer, lamports]] : [], success);
+  }
+  /**
+   * The destination's balance increase plus every System transfer into it as
+   * [source, lamports] (summed per source, like the real parser). Each call sets
+   * one destination of the tx; other destinations of the same sig stay.
+   */
+  setTxTransfers(
+    sig: string,
+    dest: string,
+    lamportsToDest: bigint,
+    transfers: Array<[string, bigint]>,
+    success = true,
+  ): void {
+    const bySource = new Map<string, bigint>();
+    for (const [source, lamports] of transfers) {
+      bySource.set(source, (bySource.get(source) ?? 0n) + lamports);
+    }
+    const legs = this.txs.get(sig) ?? new Map();
+    legs.set(dest, { lamportsToDest, success, transfers: bySource });
+    this.txs.set(sig, legs);
   }
 
   async getTokenSupply(mint: string): Promise<bigint> {
@@ -738,14 +807,14 @@ class FakeRpc implements EventRpc {
   ) {
     this.commitments.push(opts?.commitment ?? 'confirmed');
     if (this.failing.has(sig)) throw new Error('rpc unavailable');
-    const tx = this.txs.get(sig);
-    if (!tx) return null;
-    // Only credit lamports (and prove a payer) if the tx's dest matches.
-    const match = tx.dest === expectedDest;
+    const legs = this.txs.get(sig);
+    if (!legs) return null;
+    // Only a destination the tx credits gets lamports and transfers.
+    const leg = legs.get(expectedDest);
     return {
-      lamportsToDest: match ? tx.lamportsToDest : 0n,
-      success: tx.success,
-      payerPubkey: match ? tx.payer : null,
+      lamportsToDest: leg?.lamportsToDest ?? 0n,
+      success: leg?.success ?? [...legs.values()][0]!.success,
+      transfersBySource: new Map(leg?.transfers ?? []),
     };
   }
 }
@@ -2028,7 +2097,9 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
       avatarId: solSubj.avatarId,
       entryTxSig: sig,
       lamports: '1000000',
+      receivingPubkey: 'Treasury1111111111111111111111111111111111',
       destinationPubkey: PROVEN_PAYER,
+      destinationSetBy: null,
       status: 'owed' as const,
       refundTxSig: null,
       refundedAt: null,
@@ -2325,7 +2396,7 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     const signupId = String(signupOf(agentSubj.avatarId).id);
 
     // Still unprovable: refused, nothing recorded.
-    rpc.setTx('refund-x', AGENT_PAYER, 1_500_000n);
+    rpc.setTx('refund-x', AGENT_PAYER, 1_500_000n, true, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-unresolved', signupId, 'refund-x', ADMIN)).rejects.toMatchObject({
       message: 'refund_destination_unresolved',
       httpStatus: 409,
@@ -2344,7 +2415,7 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     await mgr.cancelEvent('sol-paid');
     const signupId = String(signupOf(humanSubj.avatarId).id);
 
-    rpc.setTx('refund-ok', HUMAN_PAYER, 1_000_000n);
+    rpc.setTx('refund-ok', HUMAN_PAYER, 1_000_000n, true, TREASURY_PK);
     rpc.commitments.length = 0;
     const paid = await mgr.markSolRefundPaid('sol-paid', signupId, 'refund-ok', ADMIN);
     expect(rpc.commitments).toEqual(['finalized']);
@@ -2359,7 +2430,7 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     expect(db.solRefunds.get(signupId)!.status).toBe('refunded');
 
     // A second mark-paid (even with another valid payout) is refused.
-    rpc.setTx('refund-ok-2', HUMAN_PAYER, 1_000_000n);
+    rpc.setTx('refund-ok-2', HUMAN_PAYER, 1_000_000n, true, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-paid', signupId, 'refund-ok-2', ADMIN)).rejects.toMatchObject({
       message: 'refund_not_owed',
       httpStatus: 409,
@@ -2379,18 +2450,18 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     const aId = String(signupOf(agentSubj.avatarId).id);
 
     // Wrong destination: the tx pays someone else.
-    rpc.setTx('refund-elsewhere', 'SomeoneElse1111111111111111111111111111111', 1_500_000n);
+    rpc.setTx('refund-elsewhere', 'SomeoneElse1111111111111111111111111111111', 1_500_000n, true, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-elsewhere', ADMIN)).rejects.toMatchObject({
       message: 'refund_tx_invalid',
       httpStatus: 400,
     });
     // Short amount: 1 lamport below the owed 1,500,000.
-    rpc.setTx('refund-short', AGENT_PAYER, 1_499_999n);
+    rpc.setTx('refund-short', AGENT_PAYER, 1_499_999n, true, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-short', ADMIN)).rejects.toMatchObject({
       message: 'refund_tx_invalid',
     });
     // Failed or unknown tx.
-    rpc.setTx('refund-failed', AGENT_PAYER, 1_500_000n, false);
+    rpc.setTx('refund-failed', AGENT_PAYER, 1_500_000n, false, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-failed', ADMIN)).rejects.toMatchObject({
       message: 'refund_tx_invalid',
     });
@@ -2412,9 +2483,9 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
 
     // A signature already recorded for one refund cannot settle another, even
     // if that tx also paid the other destination enough.
-    rpc.setTx('refund-h', HUMAN_PAYER, 1_000_000n);
+    rpc.setTx('refund-h', HUMAN_PAYER, 1_000_000n, true, TREASURY_PK);
     await mgr.markSolRefundPaid('sol-bad', hId, 'refund-h', ADMIN);
-    rpc.setTx('refund-h', AGENT_PAYER, 1_500_000n);
+    rpc.setTx('refund-h', AGENT_PAYER, 1_500_000n, true, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-h', ADMIN)).rejects.toMatchObject({
       message: 'refund_tx_reused',
       httpStatus: 409,
@@ -2426,8 +2497,8 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     const { mgr, rpc, db, humanSubj, signupOf } = await solEvent('sol-race');
     await mgr.cancelEvent('sol-race');
     const id = String(signupOf(humanSubj.avatarId).id);
-    rpc.setTx('refund-r1', HUMAN_PAYER, 1_000_000n);
-    rpc.setTx('refund-r2', HUMAN_PAYER, 1_000_000n);
+    rpc.setTx('refund-r1', HUMAN_PAYER, 1_000_000n, true, TREASURY_PK);
+    rpc.setTx('refund-r2', HUMAN_PAYER, 1_000_000n, true, TREASURY_PK);
     const results = await Promise.allSettled([
       mgr.markSolRefundPaid('sol-race', id, 'refund-r1', ADMIN),
       mgr.markSolRefundPaid('sol-race', id, 'refund-r2', ADMIN),
@@ -2441,7 +2512,7 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
   it('nothing is owed before a cancel, for an unknown signup, or for an unknown event', async () => {
     const { mgr, rpc, humanSubj, signupOf } = await solEvent('sol-open');
     const id = String(signupOf(humanSubj.avatarId).id);
-    rpc.setTx('refund-early', HUMAN_PAYER, 1_000_000n);
+    rpc.setTx('refund-early', HUMAN_PAYER, 1_000_000n, true, TREASURY_PK);
     await expect(mgr.markSolRefundPaid('sol-open', id, 'refund-early', ADMIN)).rejects.toMatchObject({
       message: 'refund_not_owed',
       httpStatus: 409,
@@ -2552,5 +2623,355 @@ describe('SpecialEventManager — settleEvent refuses an unsettled event (Codex 
     await expect(mgr.settleEvent('settle-live')).rejects.toMatchObject({ message: 'event_not_settleable' });
     expect(db.events.get(live.id)!.status).toBe('live');
     expect(db.events.get(live.id)!.completed_at).toBeNull();
+  });
+});
+
+// ── Codex r2 (2026-10-03): per-source SOL attribution, shared signature guard,
+//    treasury-sourced refunds, admin-set destination ─────────────────────────
+
+describe('summarizeParsedSolTransfer + singleCoveringSource (Codex r2, 2026-10-03)', () => {
+  const T = 'Treasury1111111111111111111111111111111111';
+  const A = 'SourceA111111111111111111111111111111111111';
+  const B = 'SourceB111111111111111111111111111111111111';
+  const SYSTEM = '11111111111111111111111111111111';
+
+  const sysIx = (source: string, destination: string, lamports: number, type = 'transfer', programId = SYSTEM) => ({
+    program: 'system',
+    programId,
+    parsed: { type, info: { source, destination, lamports } },
+  });
+  /** An instruction of another program (no parsed System transfer). */
+  const opaqueIx = () => ({ programId: 'OtherProgram1111111111111111111111111111111', accounts: [], data: 'x' });
+  function parsedTx(o: {
+    keys: string[];
+    pre: number[];
+    post: number[];
+    ixs: unknown[];
+    inner?: unknown[][];
+    err?: unknown;
+  }) {
+    return {
+      meta: {
+        err: o.err ?? null,
+        preBalances: o.pre,
+        postBalances: o.post,
+        innerInstructions: (o.inner ?? []).map((instructions, index) => ({ index, instructions })),
+      },
+      transaction: {
+        message: {
+          accountKeys: o.keys.map((pubkey) => ({ pubkey, signer: false, writable: true })),
+          instructions: o.ixs,
+        },
+      },
+    };
+  }
+
+  it('split source: 1 lamport by System transfer from A + the rest from B by another instruction names NO payer', () => {
+    const tx = parsedTx({
+      keys: [A, B, T],
+      pre: [5_000_000, 5_000_000, 0],
+      post: [4_999_999, 4_000_001, 1_000_000],
+      ixs: [sysIx(A, T, 1), opaqueIx()],
+    });
+    const proof = summarizeParsedSolTransfer(tx, T)!;
+    expect(proof.lamportsToDest).toBe(1_000_000n);
+    expect(proof.success).toBe(true);
+    expect([...proof.transfersBySource!]).toEqual([[A, 1n]]);
+    expect(singleCoveringSource(proof.transfersBySource, proof.lamportsToDest, T)).toBeNull();
+  });
+
+  it('one source paying the full amount is the payer; its transfers are summed (transfer + transferWithSeed)', () => {
+    const tx = parsedTx({
+      keys: [A, T],
+      pre: [5_000_000, 0],
+      post: [4_000_000, 1_000_000],
+      ixs: [sysIx(A, T, 600_000), sysIx(A, T, 400_000, 'transferWithSeed')],
+    });
+    const proof = summarizeParsedSolTransfer(tx, T)!;
+    expect([...proof.transfersBySource!]).toEqual([[A, 1_000_000n]]);
+    expect(singleCoveringSource(proof.transfersBySource, proof.lamportsToDest, T)).toBe(A);
+  });
+
+  it('an inner-instruction (CPI) System transfer is counted', () => {
+    const tx = parsedTx({
+      keys: [A, T],
+      pre: [5_000_000, 0],
+      post: [4_000_000, 1_000_000],
+      ixs: [opaqueIx()],
+      inner: [[sysIx(A, T, 1_000_000)]],
+    });
+    const proof = summarizeParsedSolTransfer(tx, T)!;
+    expect([...proof.transfersBySource!]).toEqual([[A, 1_000_000n]]);
+    expect(singleCoveringSource(proof.transfersBySource, proof.lamportsToDest, T)).toBe(A);
+  });
+
+  it('ignores a fake "system" program id, other destinations, self-transfers and non-transfer types', () => {
+    const tx = parsedTx({
+      keys: [A, B, T],
+      pre: [5_000_000, 5_000_000, 0],
+      post: [4_000_000, 5_000_000, 1_000_000],
+      ixs: [
+        sysIx(B, T, 1_000_000, 'transfer', 'FakeSystem111111111111111111111111111111111'),
+        sysIx(A, B, 1_000_000),
+        sysIx(T, T, 1_000_000),
+        sysIx(B, T, 1_000_000, 'createAccount'),
+      ],
+    });
+    const proof = summarizeParsedSolTransfer(tx, T)!;
+    expect(proof.lamportsToDest).toBe(1_000_000n);
+    expect(proof.transfersBySource!.size).toBe(0);
+  });
+
+  it('a failed tx reports success=false; a missing tx or meta is null', () => {
+    const failed = parsedTx({ keys: [A, T], pre: [1, 0], post: [1, 0], ixs: [], err: { InstructionError: [0, 'x'] } });
+    expect(summarizeParsedSolTransfer(failed, T)!.success).toBe(false);
+    expect(summarizeParsedSolTransfer(null, T)).toBeNull();
+    expect(summarizeParsedSolTransfer({ ...failed, meta: null }, T)).toBeNull();
+  });
+
+  it('singleCoveringSource: two covering sources are ambiguous, partial sources never cover, excluded wallet ignored', () => {
+    const m = (e: Array<[string, bigint]>) => new Map(e);
+    expect(singleCoveringSource(m([[A, 1_000_000n], [B, 1_000_000n]]), 1_000_000n)).toBeNull();
+    expect(singleCoveringSource(m([[A, 1n], [B, 999_999n]]), 1_000_000n)).toBeNull();
+    expect(singleCoveringSource(m([[T, 1_000_000n], [A, 1_000_000n]]), 1_000_000n, T)).toBe(A);
+    expect(singleCoveringSource(m([[A, 1_000_000n]]), 0n)).toBeNull();
+    expect(singleCoveringSource(undefined, 1_000_000n)).toBeNull();
+  });
+});
+
+describe('SpecialEventManager — SOL attribution, signature guard, treasury refunds (Codex r2, 2026-10-03)', () => {
+  const TREASURY_PK = 'Treasury1111111111111111111111111111111111';
+  const ADMIN = '11111111-1111-4111-8111-111111111111';
+  const A = 'SourceA111111111111111111111111111111111111';
+  const B = 'SourceB111111111111111111111111111111111111';
+  const pubkey = () => bs58.encode(randomBytes(32));
+
+  /** A SOL-gated open event (1,000,000 lamports). */
+  async function openSolEvent(h: ReturnType<typeof makeManager>, slug: string) {
+    await h.mgr.createEvent({ slug, name: `R2 ${slug}`, gateSolLamports: 1_000_000 }, null);
+    await h.mgr.openSignup(slug);
+    return [...h.db.events.values()].find((e) => e.slug === slug)!;
+  }
+  /** One SOL signup whose entry tx credits the treasury with the given System transfers. */
+  async function solSignup(
+    h: ReturnType<typeof makeManager>,
+    slug: string,
+    sig: string,
+    transfers: Array<[string, bigint]>,
+    subject: SignupSubject = human(),
+  ) {
+    h.rpc.setTxTransfers(sig, TREASURY_PK, 1_000_000n, transfers);
+    await h.mgr.signup(slug, subject, { entryMethod: 'sol', solTxSig: sig });
+    return [...h.db.signups.values()].find((s) => s.avatar_id === subject.avatarId)!;
+  }
+  const errOf = (r: PromiseSettledResult<unknown>) =>
+    r.status === 'rejected' ? (r.reason as SpecialEventError).message : null;
+
+  it('split-source entry (1 lamport System transfer from A + the rest from B) leaves the destination unresolved', async () => {
+    const h = makeManager();
+    await openSolEvent(h, 'r2-split');
+    // B's 999,999 lamports arrive by a non-System instruction: no transfer entry.
+    const split = await solSignup(h, 'r2-split', 'entry-split', [[A, 1n]]);
+    // Two System transfers, neither covering the full credit, are no proof either.
+    const partial = await solSignup(h, 'r2-split', 'entry-partial', [[A, 1n], [B, 999_999n]], agent());
+    expect((split.entry_proof_json as Record<string, unknown>).payerPubkey).toBeNull();
+    expect((partial.entry_proof_json as Record<string, unknown>).payerPubkey).toBeNull();
+
+    const r = await h.mgr.cancelEvent('r2-split');
+    expect(r.solRefundsOwed.map((o) => o.destinationPubkey)).toEqual([null, null]);
+    expect(r.solRefundsOwed.map((o) => o.receivingPubkey)).toEqual([TREASURY_PK, TREASURY_PK]);
+
+    // A payout to A cannot be recorded: the chain still proves no payer.
+    h.rpc.setTx('refund-to-a', A, 1_000_000n, true, TREASURY_PK);
+    await expect(
+      h.mgr.markSolRefundPaid('r2-split', String(split.id), 'refund-to-a', ADMIN),
+    ).rejects.toMatchObject({ message: 'refund_destination_unresolved', httpStatus: 409 });
+    expect(h.db.solRefunds.get(String(split.id))!.destination_pubkey).toBeNull();
+    expect(h.db.solRefunds.get(String(split.id))!.status).toBe('owed');
+  });
+
+  it('a single source covering the full entry resolves to that source (human and agent alike)', async () => {
+    const h = makeManager();
+    await openSolEvent(h, 'r2-single');
+    const humanRow = await solSignup(h, 'r2-single', 'entry-single-h', [[A, 1_000_000n]]);
+    const agentRow = await solSignup(h, 'r2-single', 'entry-single-a', [[B, 400_000n], [B, 600_000n]], agent());
+    const r = await h.mgr.cancelEvent('r2-single');
+    const dest = (id: unknown) => r.solRefundsOwed.find((o) => o.signupId === id)!.destinationPubkey;
+    expect(dest(humanRow.id)).toBe(A);
+    expect(dest(agentRow.id)).toBe(B);
+  });
+
+  it('signup with a signature already used as a refund payout is refused', async () => {
+    const h = makeManager();
+    await openSolEvent(h, 'r2-refunded');
+    const row = await solSignup(h, 'r2-refunded', 'entry-r1', [[A, 1_000_000n]]);
+    await h.mgr.cancelEvent('r2-refunded');
+    h.rpc.setTx('payout-1', A, 1_000_000n, true, TREASURY_PK);
+    await h.mgr.markSolRefundPaid('r2-refunded', String(row.id), 'payout-1', ADMIN);
+    expect(h.db.usedTxSigs.get('payout-1')).toMatchObject({ use_kind: 'refund', signup_id: row.id });
+
+    // The same tx (if it also credited the treasury) can never buy an entry.
+    const evB = await openSolEvent(h, 'r2-next');
+    h.rpc.setTx('payout-1', TREASURY_PK, 1_000_000n, true, B);
+    await expect(
+      h.mgr.signup('r2-next', human(), { entryMethod: 'sol', solTxSig: 'payout-1' }),
+    ).rejects.toMatchObject({ message: 'sol_tx_already_used', httpStatus: 409 });
+    expect([...h.db.signups.values()].filter((s) => s.event_id === evB.id)).toHaveLength(0);
+  });
+
+  it('mark-paid with an entry signature is refused even after the signup row is gone (used-signature table)', async () => {
+    const h = makeManager();
+    await openSolEvent(h, 'r2-entry-sig');
+    const row1 = await solSignup(h, 'r2-entry-sig', 'entry-e1', [[A, 1_000_000n]]);
+    const row2 = await solSignup(h, 'r2-entry-sig', 'entry-e2', [[B, 1_000_000n]], agent());
+    expect(h.db.usedTxSigs.get('entry-e2')).toMatchObject({ use_kind: 'entry', signup_id: row2.id });
+    await h.mgr.cancelEvent('r2-entry-sig');
+    // The second signup's avatar was deleted: its signup row cascaded away.
+    h.db.signups.delete(String(row2.id));
+    h.rpc.setTx('entry-e2', A, 1_000_000n, true, TREASURY_PK);
+    await expect(
+      h.mgr.markSolRefundPaid('r2-entry-sig', String(row1.id), 'entry-e2', ADMIN),
+    ).rejects.toMatchObject({ message: 'refund_tx_reused', httpStatus: 409 });
+    expect(h.db.solRefunds.get(String(row1.id))!.status).toBe('owed');
+  });
+
+  /** A cancelled event owing A, an open event, and one signature S valid for both uses. */
+  async function raceSetup(slugA: string, slugB: string) {
+    const h = makeManager();
+    await openSolEvent(h, slugA);
+    const owedRow = await solSignup(h, slugA, `entry-${slugA}`, [[A, 1_000_000n]]);
+    await h.mgr.cancelEvent(slugA);
+    const evB = await openSolEvent(h, slugB);
+    const S = `shared-${slugA}`;
+    h.rpc.setTx(S, TREASURY_PK, 1_000_000n, true, B); // S credits the treasury (an entry)
+    h.rpc.setTx(S, A, 1_000_000n, true, TREASURY_PK); // and pays A from the treasury (a refund)
+    // Both requests pass their pre-check SELECTs (neither has committed yet).
+    h.db.blindSigPrechecks = true;
+    const entriesOfB = () => [...h.db.signups.values()].filter((s) => s.event_id === evB.id);
+    return { ...h, owedId: String(owedRow.id), S, entriesOfB };
+  }
+
+  it('concurrent signup and mark-paid with ONE signature: exactly one succeeds', async () => {
+    const h = await raceSetup('r2-race-a', 'r2-race-b');
+    const results = await Promise.allSettled([
+      h.mgr.signup('r2-race-b', human(), { entryMethod: 'sol', solTxSig: h.S }),
+      h.mgr.markSolRefundPaid('r2-race-a', h.owedId, h.S, ADMIN),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const [signup, paid] = results;
+    const used = h.db.usedTxSigs.get(h.S)!;
+    if (signup!.status === 'fulfilled') {
+      expect(errOf(paid!)).toBe('refund_tx_reused');
+      expect(used.use_kind).toBe('entry');
+      expect(h.db.solRefunds.get(h.owedId)!.status).toBe('owed');
+    } else {
+      expect(errOf(signup!)).toBe('sol_tx_already_used');
+      expect(used.use_kind).toBe('refund');
+      expect(h.entriesOfB()).toHaveLength(0);
+    }
+  });
+
+  it('the guard holds in both orders: refund first blocks the entry, entry first blocks the refund', async () => {
+    const r1 = await raceSetup('r2-ord-a', 'r2-ord-b');
+    await r1.mgr.markSolRefundPaid('r2-ord-a', r1.owedId, r1.S, ADMIN);
+    await expect(
+      r1.mgr.signup('r2-ord-b', human(), { entryMethod: 'sol', solTxSig: r1.S }),
+    ).rejects.toMatchObject({ message: 'sol_tx_already_used', httpStatus: 409 });
+    expect(r1.entriesOfB()).toHaveLength(0);
+
+    const r2 = await raceSetup('r2-ord-c', 'r2-ord-d');
+    await r2.mgr.signup('r2-ord-d', human(), { entryMethod: 'sol', solTxSig: r2.S });
+    await expect(r2.mgr.markSolRefundPaid('r2-ord-c', r2.owedId, r2.S, ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_reused',
+      httpStatus: 409,
+    });
+    expect(r2.db.solRefunds.get(r2.owedId)).toMatchObject({ status: 'owed', refund_tx_sig: null });
+  });
+
+  it('mark-paid refuses a payout from a non-treasury wallet and a short payout from the treasury', async () => {
+    const h = makeManager();
+    await openSolEvent(h, 'r2-source');
+    const row = await solSignup(h, 'r2-source', 'entry-src', [[A, 1_000_000n]]);
+    await h.mgr.cancelEvent('r2-source');
+    const id = String(row.id);
+
+    // The full amount reaches A, but from B's wallet, not the treasury.
+    h.rpc.setTx('payout-from-b', A, 1_000_000n, true, B);
+    await expect(h.mgr.markSolRefundPaid('r2-source', id, 'payout-from-b', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+      httpStatus: 400,
+    });
+    // A gets the full amount, but only 999,999 of it from the treasury.
+    h.rpc.setTxTransfers('payout-short', A, 1_000_000n, [[TREASURY_PK, 999_999n], [B, 1n]]);
+    await expect(h.mgr.markSolRefundPaid('r2-source', id, 'payout-short', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+    });
+    // A balance increase with no System transfer at all proves no source.
+    h.rpc.setTxTransfers('payout-opaque', A, 1_000_000n, []);
+    await expect(h.mgr.markSolRefundPaid('r2-source', id, 'payout-opaque', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+    });
+    expect(h.db.solRefunds.get(id)!.status).toBe('owed');
+    expect(h.db.usedTxSigs.has('payout-from-b')).toBe(false);
+
+    // Two treasury transfers that together cover the owed amount are accepted.
+    h.rpc.setTxTransfers('payout-ok', A, 1_000_000n, [[TREASURY_PK, 500_000n], [TREASURY_PK, 500_000n]]);
+    const paid = await h.mgr.markSolRefundPaid('r2-source', id, 'payout-ok', ADMIN);
+    expect(paid).toMatchObject({ status: 'refunded', refundTxSig: 'payout-ok', destinationPubkey: A });
+  });
+
+  it('a named admin sets an unresolved destination once, only while owed and unresolved', async () => {
+    const h = makeManager();
+    await openSolEvent(h, 'r2-dest');
+    const unresolved = await solSignup(h, 'r2-dest', 'entry-u', [[A, 1n]]);
+    const proven = await solSignup(h, 'r2-dest', 'entry-p', [[B, 1_000_000n]], agent());
+    const uId = String(unresolved.id);
+    const D = pubkey();
+
+    // Before the cancel there is no refund row.
+    await expect(h.mgr.resolveSolRefundDestination('r2-dest', uId, D, ADMIN)).rejects.toMatchObject({
+      message: 'refund_not_owed',
+      httpStatus: 409,
+    });
+    await h.mgr.cancelEvent('r2-dest');
+
+    // Not a 32-byte base58 key.
+    for (const bad of ['not-base58!', '1111', `${pubkey()}${pubkey()}`]) {
+      await expect(h.mgr.resolveSolRefundDestination('r2-dest', uId, bad, ADMIN)).rejects.toMatchObject({
+        message: 'invalid_destination',
+        httpStatus: 400,
+      });
+    }
+    // The receiving wallet itself is never a refund destination.
+    const R = pubkey();
+    h.db.solRefunds.get(uId)!.receiving_pubkey = R;
+    await expect(h.mgr.resolveSolRefundDestination('r2-dest', uId, R, ADMIN)).rejects.toMatchObject({
+      message: 'invalid_destination',
+    });
+    h.db.solRefunds.get(uId)!.receiving_pubkey = TREASURY_PK;
+    // A chain-proven destination is never overwritten.
+    await expect(
+      h.mgr.resolveSolRefundDestination('r2-dest', String(proven.id), D, ADMIN),
+    ).rejects.toMatchObject({ message: 'refund_destination_already_set', httpStatus: 409 });
+    await expect(h.mgr.resolveSolRefundDestination('no-such-event', uId, D, ADMIN)).rejects.toMatchObject({
+      message: 'event_not_found',
+      httpStatus: 404,
+    });
+
+    const set = await h.mgr.resolveSolRefundDestination('r2-dest', uId, D, ADMIN);
+    expect(set).toMatchObject({ destinationPubkey: D, destinationSetBy: ADMIN, status: 'owed' });
+    expect(h.db.solRefunds.get(uId)!.destination_set_at).toBe(new Date(1_900_000_000_000).toISOString());
+    // Once only.
+    await expect(h.mgr.resolveSolRefundDestination('r2-dest', uId, pubkey(), ADMIN)).rejects.toMatchObject({
+      message: 'refund_destination_already_set',
+    });
+
+    // The admin-set destination is paid like a proven one (treasury-sourced).
+    h.rpc.setTx('payout-d', D, 1_000_000n, true, TREASURY_PK);
+    const paid = await h.mgr.markSolRefundPaid('r2-dest', uId, 'payout-d', ADMIN);
+    expect(paid).toMatchObject({ status: 'refunded', destinationPubkey: D, destinationSetBy: ADMIN });
+    await expect(h.mgr.resolveSolRefundDestination('r2-dest', uId, pubkey(), ADMIN)).rejects.toMatchObject({
+      message: 'refund_not_owed',
+    });
   });
 });

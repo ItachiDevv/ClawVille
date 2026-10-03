@@ -19,6 +19,8 @@
  *   GET  /:slug/sol-refunds (NAMED admin) — SOL refunds owed + paid (cancelled event)
  *   POST /:slug/sol-refunds/:signupId/paid (NAMED admin) — record an operator SOL
  *                                   payout after on-chain verification
+ *   POST /:slug/sol-refunds/:signupId/destination (NAMED admin) — set the refund
+ *                                   destination once when the chain proves no payer
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
  *   POST /:slug/signup  (AGENT-CAPABLE) — gate-evaluated signup (human XOR agent)
@@ -77,7 +79,7 @@ const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
  * Named-admin gate for EVERY special-event admin mutation (security M3,
  * 2026-09-30): /create, /:slug/open, /:slug/start, /:slug/settle, and
  * /:slug/cancel (2026-10-03: it credits refunds), and the SOL refund routes
- * /:slug/sol-refunds + /:slug/sol-refunds/:signupId/paid. `adminOnly`
+ * /:slug/sol-refunds + /:slug/sol-refunds/:signupId/paid + /destination. `adminOnly`
  * also accepts the static shared `cv_dash` cookie, which is not tied to a user and
  * never rotates. /create sets the seed prize pool, /start pays it from the house
  * treasury, and /open + /settle move the event lifecycle, so all four also require
@@ -344,6 +346,35 @@ specialEventsRouter.post('/:slug/sol-refunds/:signupId/paid', adminOnly, require
       params.data.slug,
       params.data.signupId,
       body.data.txSignature,
+      c.get('user')?.id ?? null,
+    );
+    return c.json({ ok: true, refund });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// Set the destination of an owed refund whose entry payer the chain cannot prove
+// (Codex r2 2026-10-03): only while the row is 'owed' with NO destination, once.
+// The destination must be a base58 32-byte public key (the manager decodes it)
+// and not the receiving wallet. The admin user id is recorded on the row.
+const solRefundDestinationSchema = z.object({
+  destination: z.string().trim().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/),
+});
+
+specialEventsRouter.post('/:slug/sol-refunds/:signupId/destination', adminOnly, requireNamedAdmin, async (c) => {
+  const params = solRefundParamSchema.safeParse(c.req.param());
+  if (!params.success) throw new HTTPException(400, { message: 'invalid_params' });
+  const body = solRefundDestinationSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) throw new HTTPException(400, { message: 'invalid_destination' });
+  try {
+    const refund = await specialEventManager.resolveSolRefundDestination(
+      params.data.slug,
+      params.data.signupId,
+      body.data.destination,
       c.get('user')?.id ?? null,
     );
     return c.json({ ok: true, refund });
