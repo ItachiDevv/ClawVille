@@ -194,10 +194,16 @@ describe('touch: both joystick zones and the USE button stay uncovered', () => {
                 safeAreaBottom: safeArea,
               });
               const bottom = bottomOf(p, panelHeight);
-              // Margins and the Back to World row.
+              // Margins and the Back to World button: below its row, or (short
+              // landscape) beside it, never over it.
               expect(p.left).toBeGreaterThanOrEqual(width < 600 ? 0 : 16);
               expect(p.left + p.width).toBeLessThanOrEqual(width - (width < 600 ? 0 : 16) + 1e-9);
-              expect(p.top).toBeGreaterThanOrEqual(72);
+              if (p.mode === 'short') {
+                expect(p.top).toBe(L.shortTop);
+                expect(p.left).toBeGreaterThanOrEqual(L.backButtonRight + L.touchGap);
+              } else {
+                expect(p.top).toBeGreaterThanOrEqual(72);
+              }
               expect(p.maxHeight).toBeGreaterThanOrEqual(0);
               // Above the joystick band (both zones span the full width), with the gap.
               expect(bottom).toBeLessThanOrEqual(use.bandTop - L.touchGap + 1e-9);
@@ -242,5 +248,78 @@ describe('the frame loop writes transform only on a move of 0.5 px or more', () 
     const out = createHouseAgentWalkupPlacement();
     expect(placeHouseAgentWalkup(input({}), out)).toBe(out);
     expect(placeHouseAgentWalkup(input({ viewportWidth: 390, touch: true }), out)).toBe(out);
+  });
+});
+
+// F3 (browser review 2026-10-02, lead decision): on a short landscape phone the
+// space between top 72 and the joystick band was only 55-70 px. On touch, in
+// landscape, when that space is under `shortMinSpace`, the panel moves up to
+// top 16, to the right of "Back to World", keeps clear of the USE column and
+// the band, and its content scrolls inside it (maxHeight).
+describe('F3: short landscape touch places the panel beside Back to World', () => {
+  test('the numbers: top 16, Back to World right edge, the short-space threshold', () => {
+    expect(L.shortTop).toBe(16);
+    expect(L.shortMinSpace).toBe(160);
+    expect(L.backButtonRight).toBe(176);
+  });
+
+  test('backButtonRight bounds the real Back to World button (trading-floor page styles)', () => {
+    const source = readFileSync(join(import.meta.dir, '../../app/(world)/trading-floor/page.tsx'), 'utf8');
+    for (const line of ['top: 16,', 'left: 16,', 'minHeight: 44,', "padding: '10px 18px',", "font: '700 14px monospace',", "letterSpacing: '0.04em',", 'Back to World']) {
+      expect(source).toContain(line);
+    }
+    // 13 monospace glyphs at <= 0.62 em advance + 0.04 em spacing, 18 px padding a side, 1 px border a side.
+    const widest = 'Back to World'.length * (0.62 * 14 + 0.04 * 14) + 2 * 18 + 2;
+    expect(16 + widest).toBeLessThanOrEqual(L.backButtonRight);
+    // The button's row (16..60) sits above the normal top.
+    expect(16 + 44).toBeLessThan(L.topMin);
+  });
+
+  const SHORT: Array<[number, number]> = [[844, 390], [667, 375], [932, 430]];
+  test.each(SHORT.flatMap(([w, h]) => [0, 34, 44].map((s) => [w, h, s] as const)))(
+    '%ix%i touch, %i px safe area: top 16 beside Back to World, above the band, clear of USE',
+    (width, height, safeArea) => {
+      const use = useBox(width, height, safeArea);
+      const bandLimit = use.bandTop - L.touchGap;
+      // Before F3 the panel had only this much (top 72): the reported 55-70 px, or less.
+      expect(bandLimit - L.topMin).toBeLessThan(L.shortMinSpace);
+      for (const panelHeight of [120, 420, 1400]) {
+        for (const anchorX of [-20, 100, width / 2, width - 40]) {
+          for (const onScreen of [true, false]) {
+            const p = placeHouseAgentWalkup({
+              viewportWidth: width,
+              viewportHeight: height,
+              anchorX,
+              anchorY: height / 2,
+              anchorOnScreen: onScreen,
+              panelHeight,
+              touch: true,
+              safeAreaBottom: safeArea,
+            });
+            expect(p.mode).toBe('short');
+            expect(p.top).toBe(16);
+            expect(p.left).toBe(L.backButtonRight + L.touchGap);
+            expect(p.width).toBe(L.panelWidth);
+            expect(p.maxHeight).toBe(bandLimit - 16);
+            const bottom = bottomOf(p, panelHeight);
+            expect(bottom).toBeLessThanOrEqual(bandLimit + 1e-9);
+            expect(overlaps(p.left, p.left + p.width, use.left - L.touchGap, use.right)).toBe(false);
+          }
+        }
+      }
+    },
+  );
+
+  test('844x390: the panel gets 56 px more height than at top 72', () => {
+    const p = placeHouseAgentWalkup(input({ viewportWidth: 844, viewportHeight: 390, touch: true, panelHeight: 1400 }));
+    expect(p.mode).toBe('short');
+    expect(p.maxHeight).toBe(142 - 16);
+  });
+
+  test('not short: tablets, portrait, and a desktop window keep the old placement', () => {
+    for (const [w, h] of [[1133, 744], [1180, 820], [1366, 1024], [744, 1133], [820, 1180], [1024, 1366]] as const) {
+      expect(placeHouseAgentWalkup(input({ viewportWidth: w, viewportHeight: h, touch: true })).mode).not.toBe('short');
+    }
+    expect(placeHouseAgentWalkup(input({ viewportWidth: 844, viewportHeight: 390, touch: false })).mode).toBe('beside');
   });
 });

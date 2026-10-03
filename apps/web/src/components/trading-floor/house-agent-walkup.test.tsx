@@ -615,19 +615,20 @@ describe('button flow', () => {
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).toBeNull();
   });
 
-  // Plan §3 / §9: NOT VERIFIED what GET /me returns for a logged-in account with
-  // no active avatar. Read from code: requireAuthOrAgentSession throws 403
-  // "Active avatar required" for that account, and the arena section counts a
-  // 403 as "cannot own", so a REAL account sees the guest sign-up card. This
-  // pins the CURRENT behaviour (reported to the lead; not this task's files).
-  test('current behaviour: a real account whose GET /me is 403 (no avatar) is treated like a guest', async () => {
-    meReply = { status: 403, body: { error: 'Active avatar required' } };
+  // F2 (browser review 2026-10-02): requireAuthOrAgentSession answers a
+  // logged-in account with no active avatar with 403 and no typed code. The
+  // walk-up still keeps the choice and opens the launch panel, and the arena
+  // section now shows the avatar card ("Create your avatar"), not the guest
+  // sign-up card.
+  test('a real account whose GET /me is 403 (no avatar) gets the avatar card, not the sign-up card', async () => {
+    meReply = { status: 403, body: { error: 'Active avatar required', code: 403 } };
     await render(createElement(HouseAgentWalkup), createElement(SectionHarness));
     await walkUp(0);
     await waitFor(() => useHouseAgentWalkupPanel.getState().viewer === 'cannot-own', 'the 403 verdict');
     await click(byTestId('house-agent-walkup-primary'));
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'genesis' });
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).not.toBeNull();
-    await waitFor(() => byTestId('arena-launch-guest') !== null, 'the sign-up card');
+    await waitFor(() => byTestId('arena-launch-needs-avatar') !== null, 'the avatar card');
+    expect(byTestId('arena-launch-guest')).toBeNull();
   });
 });

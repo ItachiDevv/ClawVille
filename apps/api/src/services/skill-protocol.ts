@@ -810,6 +810,12 @@ import {
 // agentConfigId, customDescription } (`[]` when none); GET /api/bounties/:id keeps `rewards`.
 // The Nori/orientation bounty REST line says the same. Read-only list field: no `[ACTION:]` verb,
 // signing, bearer/TTL, cognition body, `hatcher:` namespace or leaderboard weight changed.
+// 2026-10-03 (task W5, web only; manual and Nori orientation reviewed, no version change): the
+// arena section shows a signed-in account with no active avatar "Create your avatar" instead of
+// the guest sign-up card; the walk-up panel docks at top 16 on short landscape touch screens;
+// the house-agent name pills wrap; the wallet copy says a ClawPump call-budget wait is not a
+// failed attempt. Human UI copy and layout only: no route, tool, `[ACTION:]` verb or game rule
+// changed, so agents read nothing new.
 export const PROTOCOL_VERSION = 82;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body

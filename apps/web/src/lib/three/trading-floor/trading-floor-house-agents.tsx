@@ -20,8 +20,10 @@
  *     the camera is inside it or the camera-to-body sightline crosses it. The
  *     label and the walk-up stay on. `visible` is written only on a change; the
  *     shared material is never touched.
- *   - Five DOM name labels (WorldLabelsOverlay, not canvas text). Phone (touch
- *     and canvas < 600 px): only the walk-up agent, else the nearest within 900.
+ *   - Five DOM name labels (WorldLabelsOverlay, not canvas text), each a pill
+ *     capped at HOUSE_AGENT_LABEL_MAX_WIDTH px that wraps a two-word name (F4).
+ *     Phone (touch and the canvas's short side < 600 px, so landscape too): only
+ *     the walk-up agent, else the nearest within 900.
  *   - Walk-up detection into `stores/house-agent-walkup.ts`: one store write
  *     per TRANSITION, plus the chest-point anchor in CSS px every frame while an
  *     agent is in reach.
@@ -43,6 +45,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -122,6 +125,48 @@ function houseAgentStageReady(state: StageSnapshot): boolean {
 // Labels
 // ---------------------------------------------------------------------------
 
+/**
+ * F4 (browser review 2026-10-02): the name pills. The five anchors are 510 wu
+ * apart; seen from the far end of the room that is about 124 CSS px at
+ * 1440x900, 106 at 1366x768 and 99 at 1280x720 (the label test projects the
+ * real chase camera). One-line pills of "Mid-Cap Climber" and "Late Bloomer"
+ * were wider than that and touched. So a pill has a hard width cap (border and
+ * padding included) and a two-word name wraps to two lines: two adjacent pills
+ * keep at least HOUSE_AGENT_LABEL_MIN_GAP px between them at every desktop and
+ * tablet size. Phones show one label at a time (`houseAgentLabelsPhone`).
+ */
+export const HOUSE_AGENT_LABEL_MAX_WIDTH = 88;
+export const HOUSE_AGENT_LABEL_MIN_GAP = 8;
+export const HOUSE_AGENT_LABEL_PILL_STYLE: CSSProperties = Object.freeze({
+  boxSizing: 'border-box',
+  width: 'max-content',
+  maxWidth: HOUSE_AGENT_LABEL_MAX_WIDTH,
+  fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+  fontWeight: 520,
+  fontSize: 14,
+  color: '#bff4ff',
+  padding: '6px 10px 7px',
+  borderRadius: 14,
+  background: 'rgba(6, 18, 30, 0.86)',
+  border: '1px solid rgba(90, 226, 255, 0.55)',
+  boxShadow: '0 0 22px rgba(90,226,255,0.45), 0 0 60px -10px rgba(90,226,255,0.4)',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  textAlign: 'center',
+  letterSpacing: '0.02em',
+  lineHeight: 1.15,
+  userSelect: 'none',
+});
+
+/**
+ * Phone label policy (one label at a time). A phone in landscape is still a
+ * phone: at 844x390 the anchors are about 54 px apart, so the SHORT side
+ * decides. Tablets (short side >= 600) and every desktop window show all five.
+ */
+export function houseAgentLabelsPhone(isMobile: boolean, width: number, height: number): boolean {
+  return houseAgentPhoneLabels(isMobile, Math.min(width, height));
+}
+
 /** The room's capsule style (`promptCapsule` in the interior), name only. */
 function nameCapsule(name: string): ReactNode {
   return (
@@ -133,27 +178,7 @@ function nameCapsule(name: string): ReactNode {
         transform: 'translateY(-50%)',
       }}
     >
-      <div
-        style={{
-          fontFamily:
-            'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
-          fontWeight: 520,
-          fontSize: 15,
-          color: '#bff4ff',
-          padding: '7px 15px 9px',
-          borderRadius: 999,
-          background: 'rgba(6, 18, 30, 0.86)',
-          border: '1px solid rgba(90, 226, 255, 0.55)',
-          boxShadow:
-            '0 0 22px rgba(90,226,255,0.45), 0 0 60px -10px rgba(90,226,255,0.4)',
-          whiteSpace: 'nowrap',
-          letterSpacing: '0.02em',
-          lineHeight: 1,
-          userSelect: 'none',
-        }}
-      >
-        {name}
-      </div>
+      <div style={HOUSE_AGENT_LABEL_PILL_STYLE}>{name}</div>
     </div>
   );
 }
@@ -183,6 +208,7 @@ function TradingFloorHouseAgentFigures({ active, readPlayer }: TradingFloorHouse
   const slotCamera = useSceneCamera();
   const isMobile = useIsMobile();
   const canvasWidth = useThree((state) => state.size.width);
+  const canvasHeight = useThree((state) => state.size.height);
 
   const wrapperRef = useRef<THREE.Group | null>(null);
   const revealedRef = useRef(false);
@@ -190,7 +216,7 @@ function TradingFloorHouseAgentFigures({ active, readPlayer }: TradingFloorHouse
   const activeRef = useRef(active);
   activeRef.current = active;
   const phoneRef = useRef(false);
-  phoneRef.current = houseAgentPhoneLabels(isMobile, canvasWidth);
+  phoneRef.current = houseAgentLabelsPhone(isMobile, canvasWidth, canvasHeight);
   const tracker = useMemo(() => createHouseAgentWalkupTracker(), []);
   const timeRef = useRef(0);
   const labelTargetRef = useRef(HOUSE_AGENT_ALL_LABELS);

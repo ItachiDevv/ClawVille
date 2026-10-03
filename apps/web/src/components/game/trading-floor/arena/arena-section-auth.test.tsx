@@ -24,6 +24,8 @@ let client: QueryClient | null = null;
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 let requests: string[] = [];
 let meBody: Record<string, unknown> = { agent: null };
+let meStatus = 200;
+let guestBlockedCalls = 0;
 let resolveAuth: (status: number, body: unknown) => void = () => undefined;
 let authAnswer: Promise<{ status: number; body: unknown }> = Promise.resolve({ status: 200, body: null });
 
@@ -69,7 +71,13 @@ async function waitFor(check: () => boolean, label: string): Promise<void> {
 /** The floor tab's wiring: isGuest from useIsGuest(), passed down. */
 function Harness() {
   const isGuest = useIsGuest();
-  return createElement(FloorArenaSection, { active: true, isGuest, onGuestBlocked: () => undefined });
+  return createElement(FloorArenaSection, {
+    active: true,
+    isGuest,
+    onGuestBlocked: () => {
+      guestBlockedCalls += 1;
+    },
+  });
 }
 
 async function render(element: ReturnType<typeof createElement>): Promise<HTMLElement> {
@@ -93,6 +101,8 @@ beforeAll(async () => {
 beforeEach(() => {
   requests = [];
   meBody = { agent: null };
+  meStatus = 200;
+  guestBlockedCalls = 0;
   authAnswer = new Promise((resolve) => {
     resolveAuth = (status, body) => resolve({ status, body });
   });
@@ -108,7 +118,7 @@ beforeEach(() => {
         const { status, body } = await authAnswer;
         return json(body, status);
       }
-      if (url.endsWith('/api/floor/arena/me')) return json(meBody);
+      if (url.endsWith('/api/floor/arena/me')) return json(meBody, meStatus);
       if (url.includes('/leaderboard')) return json({ rows: [] });
       if (url.includes('/templates')) return json({ houseAgents: [] });
       if (url.includes('/addons')) return json({ addons: [], paymentsEnabled: false });
@@ -224,5 +234,67 @@ describe('Arena section: GET /me waits for resolved auth (no 401 for a guest)', 
     expect(arenaMeCalls()).toBe(1);
     expect(host.querySelector('[data-testid="arena-launch"]')).toBeNull();
     expect(host.textContent).toContain('My Genesis');
+  });
+});
+
+// F2 (browser review 2026-10-02): a signed-in account with NO active avatar gets
+// 403 from requireAuthOrAgentSession ({ error: <text>, code: 403 }: a number,
+// so the web ApiError has no string code). That viewer is NOT a guest: it must
+// see "create your avatar", never "Create a free account". The branch reads the
+// status and the typed code, never the message text.
+describe('Arena section: a signed-in account without an avatar', () => {
+  const NO_AVATAR_403 = { error: 'Active avatar required (any text; the UI never reads it)', code: 403 };
+
+  test('the launch panel offers avatar creation, not the sign-up card', async () => {
+    meStatus = 403;
+    meBody = NO_AVATAR_403;
+    useFloorArenaUi.setState({ panel: 'launch' });
+    const host = await render(createElement(Harness));
+    await waitFor(() => authMeCalls() === 1, 'the auth-me request');
+    resolveAuth(200, { user: { id: 'u1', isGuest: false } });
+    await waitFor(() => host.querySelector('[data-testid="arena-launch-needs-avatar"]') !== null, 'the avatar card');
+    const link = host.querySelector('[data-testid="arena-create-avatar"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('/create-agent');
+    expect(host.textContent).not.toContain('Create a free account');
+    expect(host.querySelector('[data-testid="arena-launch-guest"]')).toBeNull();
+    expect(host.textContent).not.toContain('could not be loaded');
+  });
+
+  test('"Launch your trader" opens the avatar card and never the guest sign-up', async () => {
+    meStatus = 403;
+    meBody = NO_AVATAR_403;
+    const host = await render(createElement(Harness));
+    await waitFor(() => authMeCalls() === 1, 'the auth-me request');
+    resolveAuth(200, { user: { id: 'u1', isGuest: false } });
+    await waitFor(() => arenaMeCalls() > 0, 'GET /me');
+    await settle(50);
+    const button = host.querySelector('[data-testid="arena-launch-button"]') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    await act(async () => {
+      button?.click();
+    });
+    await waitFor(() => host.querySelector('[data-testid="arena-launch-needs-avatar"]') !== null, 'the avatar card');
+    expect(guestBlockedCalls).toBe(0);
+  });
+
+  test('a 403 guest_not_allowed keeps the sign-up card', async () => {
+    meStatus = 403;
+    meBody = { error: 'Guests run a demo economy.', code: 'guest_not_allowed' };
+    useFloorArenaUi.setState({ panel: 'launch' });
+    const host = await render(createElement(Harness));
+    await waitFor(() => authMeCalls() === 1, 'the auth-me request');
+    resolveAuth(200, { user: { id: 'u1', isGuest: false } });
+    await waitFor(() => host.querySelector('[data-testid="arena-launch-guest"]') !== null, 'the sign-up card');
+    expect(host.textContent).toContain('Create a free account');
+    expect(host.querySelector('[data-testid="arena-launch-needs-avatar"]')).toBeNull();
+  });
+
+  test('a guest still gets the sign-up card', async () => {
+    useFloorArenaUi.setState({ panel: 'launch' });
+    const host = await render(createElement(FloorArenaSection, { active: true, isGuest: true, onGuestBlocked: () => undefined }));
+    await settle(50);
+    expect(host.querySelector('[data-testid="arena-launch-guest"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="arena-launch-needs-avatar"]')).toBeNull();
   });
 });

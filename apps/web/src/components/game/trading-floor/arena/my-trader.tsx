@@ -58,6 +58,22 @@ import { ArenaWalletSolLine, ArenaWithdrawPanel } from './withdraw-panel';
 
 export type DeskStatus = 'trading' | 'waiting' | 'paused' | 'stopped';
 
+/**
+ * The Wallet block's copy while provisionState is 'failed' (lead rule
+ * 2026-10-03; apps/api/src/services/floor-arena/provisioning.ts). Our own
+ * ClawPump call-budget wait (`clawpump_budget_exhausted`) is not an attempt and
+ * is due again about 25 s later. A real failure counts as an attempt: the next
+ * try is 10 minutes later, up to 5 attempts (ARENA_PROVISION_RETRY_MS,
+ * ARENA_PROVISION_MAX_ATTEMPTS). /me has no attempt count, so the copy states
+ * the rule, not "attempt N of 5".
+ */
+export function arenaProvisionFailedCopy(provisionError: string | null): string {
+  if (provisionError === 'clawpump_budget_exhausted') {
+    return 'The ClawPump agent setup is waiting for a free ClawPump slot and tries again in a few seconds. Paper trading works without it. This wait does not count as a failed attempt.';
+  }
+  return 'The ClawPump agent setup did not finish yet. Paper trading works without it. After a failed attempt, ClawVille tries again 10 minutes later, up to five attempts in all.';
+}
+
 /** One word for the desk: trading needs BOTH an active agent and a seat. */
 export function deskStatus(agent: Pick<FloorArenaMyAgent, 'status' | 'seated'>): DeskStatus {
   if (agent.status === 'stopped') return 'stopped';
@@ -492,10 +508,7 @@ export function MyTrader({
             <ArenaWithdrawPanel compact={compact} />
           </>
         ) : me.provisionState === 'failed' ? (
-          <ArenaMuted>
-            The ClawPump agent setup did not finish yet. Paper trading works without it. ClawVille retries the
-            setup every 10 minutes, up to five times.
-          </ArenaMuted>
+          <ArenaMuted>{arenaProvisionFailedCopy(me.provisionError)}</ArenaMuted>
         ) : floorArenaProvisionInProgress(me.provisionState) ? (
           <ArenaMuted>Setting up your ClawPump agent...</ArenaMuted>
         ) : (

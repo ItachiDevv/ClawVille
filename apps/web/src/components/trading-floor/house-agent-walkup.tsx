@@ -171,6 +171,10 @@ function HouseAgentWalkupPanel({
     () => typeof window !== 'undefined' && window.innerWidth < HOUSE_AGENT_WALKUP_LAYOUT.phoneMaxWidth,
   );
   const compactRef = useRef(compact);
+  // F3: short landscape touch (placement mode 'short'): the whole panel is the
+  // one scroll container, so the profile and strategy never shrink to 0 px.
+  const [short, setShort] = useState(false);
+  const shortRef = useRef(short);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const board = useFloorArenaHouseBoard(true);
   const agent = board.data?.agents.find((row) => row.templateId === template.id) ?? null;
@@ -242,6 +246,11 @@ function HouseAgentWalkupPanel({
         compactRef.current = nextCompact;
         setCompact(nextCompact);
       }
+      const nextShort = out.mode === 'short';
+      if (nextShort !== shortRef.current) {
+        shortRef.current = nextShort;
+        setShort(nextShort);
+      }
     };
     const houseAgentWalkupFrame = () => {
       step();
@@ -256,7 +265,9 @@ function HouseAgentWalkupPanel({
     return () => window.cancelAnimationFrame(frame);
   }, [touch]);
 
-  const showDetails = !compact || detailsOpen;
+  // Compact card and short landscape: the strategy text waits behind "Details".
+  const collapsed = compact || short;
+  const showDetails = !collapsed || detailsOpen;
   const exitRule = exitTargets(template.params.exits).join(' · ');
   const choose = () => {
     if (hasTrader) useFloorArenaUi.getState().openArena('desk');
@@ -342,7 +353,13 @@ function HouseAgentWalkupPanel({
           </button>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: '1 1 auto', minHeight: 0, overflowY: 'auto' }}>
+        <div
+          style={
+            short
+              ? { display: 'flex', flexDirection: 'column', gap: 10, flex: 'none' }
+              : { display: 'flex', flexDirection: 'column', gap: 10, flex: '1 1 auto', minHeight: 0, overflowY: 'auto' }
+          }
+        >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <h3 style={headingStyle}>Profile</h3>
             <p style={textStyle}>{template.tagline}</p>
@@ -356,7 +373,7 @@ function HouseAgentWalkupPanel({
                 <p style={mutedStyle}>Risk: {template.risk}</p>
               </>
             ) : null}
-            {compact ? (
+            {collapsed ? (
               <button
                 type="button"
                 data-testid="house-agent-walkup-details"

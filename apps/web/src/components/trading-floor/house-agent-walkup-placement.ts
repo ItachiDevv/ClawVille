@@ -18,6 +18,12 @@
  *   middle height.
  * - Phone width < 600: the anchor is ignored; a compact card docks at top
  *   centre (top 72, width min(92vw, 360)).
+ * - Short landscape touch (F3, lead decision 2026-10-03): landscape, touch,
+ *   and less than `shortMinSpace` px between top 72 and the joystick band
+ *   (844x390 had 55-70 px). The anchor is ignored; the panel sits at top 16,
+ *   to the right of "Back to World" (its right edge is at most
+ *   `backButtonRight`, pinned against the page styles by the test), left of the
+ *   USE column, its height capped above the band; its content scrolls inside.
  *
  * The panel's own frame loop calls `placeHouseAgentWalkup` with ONE reused
  * output record (no allocation per frame) and writes `transform` only when
@@ -44,9 +50,15 @@ export const HOUSE_AGENT_WALKUP_LAYOUT = Object.freeze({
   useRight: 24,
   /** The frame loop rewrites `transform` only on a move of at least this many px. */
   moveEpsilon: 0.5,
+  /** Short landscape touch: the panel top, level with "Back to World". */
+  shortTop: 16,
+  /** Short landscape touch: below this many px between topMin and the band, use the short placement. */
+  shortMinSpace: 160,
+  /** Upper bound of the "Back to World" button's right edge (left 16, 14 px monospace, 18 px padding). */
+  backButtonRight: 176,
 });
 
-export type HouseAgentWalkupPlacementMode = 'beside' | 'docked' | 'compact';
+export type HouseAgentWalkupPlacementMode = 'beside' | 'docked' | 'compact' | 'short';
 
 export interface HouseAgentWalkupPlacementInput {
   viewportWidth: number;
@@ -123,6 +135,17 @@ export function placeHouseAgentWalkup(
   const width = L.panelWidth;
   // On touch the panel stays left of the USE column, so it only has to clear the band.
   const rightEdge = input.touch ? Math.min(vw - L.margin, useColumnLeft) : vw - L.margin;
+
+  if (input.touch && vw > vh && bandLimit - L.topMin < L.shortMinSpace) {
+    const left = L.backButtonRight + L.touchGap;
+    out.mode = 'short';
+    out.side = 'right';
+    out.left = left;
+    out.top = L.shortTop;
+    out.width = Math.max(0, Math.min(width, rightEdge - left));
+    out.maxHeight = Math.max(0, bandLimit - L.shortTop);
+    return out;
+  }
   const maxLeft = Math.max(L.margin, rightEdge - width);
   const maxHeight = Math.max(0, bandLimit - L.topMin);
   const shown = Math.min(panelHeight, maxHeight);
