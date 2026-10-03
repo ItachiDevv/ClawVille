@@ -612,16 +612,21 @@ interface HistoryScan {
    * start: then the list is a contiguous, resolved window back past dispatched_at - 60 s (Codex B3).
    */
   complete: boolean;
-  /**
-   * In-window items with an unused signature and an exact finalized chain match, whatever their known vendor
-   * status (Codex r2 B1: the chain decides; a vendor 'failed' item that moved the exact amount is a match).
-   */
+  /** In-window vendor 'success' items with an unused signature and an exact finalized chain match. */
   matches: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
+  /**
+   * Codex r2 B1: in-window items with an unused signature and an exact finalized chain match whose known
+   * vendor status is NOT 'success' (e.g. 'failed'). The vendor and the chain disagree, and the item can belong
+   * to another, already-terminal row of the same agent. A conflict goes to operator review: it is never
+   * confirmed and it never allows failed_no_send.
+   */
+  conflicts: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
 }
 
 async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, live: ClawPumpArenaWalletLive): Promise<HistoryScan> {
   const windowStart = row.dispatchedAt ? Math.floor(row.dispatchedAt.getTime() / 1000) - WINDOW_SLACK_S : Number.NEGATIVE_INFINITY;
   const matches: HistoryScan['matches'] = [];
+  const conflicts: HistoryScan['conflicts'] = [];
   const seen = new Set<string>();
   let previous: number | null = null;
   for (const item of live.transactions) {
@@ -629,25 +634,29 @@ async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, 
     seen.add(item.signature);
     const status = item.status?.toLowerCase() ?? null;
     // Stop at the first unresolved item: one gap already means "not covered", and stopping bounds the RPC time.
-    if (status === null || !KNOWN_HISTORY_STATUSES.has(status)) return { complete: false, matches };
+    if (status === null || !KNOWN_HISTORY_STATUSES.has(status)) return { complete: false, matches, conflicts };
     let tx: ArenaWithdrawChainTx | null;
     try {
       tx = await remote(deps, () => deps.getTransaction(item.signature));
     } catch (error) {
       noteReadError(deps, row, error);
-      return { complete: false, matches };
+      return { complete: false, matches, conflicts };
     }
-    if (!tx || tx.blockTime === null) return { complete: false, matches };
-    if (previous !== null && tx.blockTime > previous) return { complete: false, matches };
+    if (!tx || tx.blockTime === null) return { complete: false, matches, conflicts };
+    if (previous !== null && tx.blockTime > previous) return { complete: false, matches, conflicts };
     previous = tx.blockTime;
-    // Codex r2 B1: the finalized chain transaction decides, not the vendor status. A vendor 'failed' item can
-    // still be an exact transfer; skipping it would let the balance rule book a sent transfer as failed_no_send.
-    // A chain error or any inexact delta stays 'chain_error' / 'no_match' and is never a match.
     if (tx.blockTime < windowStart) continue;
     if (await deps.signatureUsed(item.signature)) continue;
-    if (matchWithdrawTransfer(tx, row) === 'match') matches.push({ signature: item.signature, tx });
+    // Codex r2 B1: every resolved in-window item gets the chain match, whatever its vendor status. A vendor
+    // 'success' exact match is a match. A vendor 'failed' (any non-'success') exact match is a CONFLICT: it can
+    // be this row's transfer (so skipping it could let the balance rule book a sent transfer as failed_no_send)
+    // or another terminal row's transfer (so confirming it could be false). A conflict -> operator review,
+    // never confirmed, never failed_no_send. A chain error or an inexact delta is never a match.
+    if (matchWithdrawTransfer(tx, row) !== 'match') continue;
+    if (status === 'success') matches.push({ signature: item.signature, tx });
+    else conflicts.push({ signature: item.signature, tx });
   }
-  return { complete: previous !== null && previous <= windowStart, matches };
+  return { complete: previous !== null && previous <= windowStart, matches, conflicts };
 }
 
 function liveIsSource(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, live: ClawPumpArenaWalletLive): boolean {
@@ -687,7 +696,8 @@ async function reconcileBySignature(
     if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
     if (live.transactions.some((item) => item.signature === signature)) return undecided(deps, row, now);
     const scan = await scanHistory(deps, row, live);
-    if (!scan.complete || scan.matches.length > 0) return undecided(deps, row, now);
+    // Codex r2 B1: a conflict (vendor non-success + exact chain match) blocks the balance rule like a match.
+    if (!scan.complete || scan.matches.length + scan.conflicts.length > 0) return undecided(deps, row, now);
     return applyBalanceRule(deps, row, live);
   }
   if (!status.finalized) return touch(deps, row, now);
@@ -716,7 +726,9 @@ async function reconcileByHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalR
   }
   if (!live) return 'skipped';
   if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
-  const { complete, matches } = await scanHistory(deps, row, live);
+  const { complete, matches, conflicts } = await scanHistory(deps, row, live);
+  // Codex r2 B1: a conflict never confirms and never allows failed_no_send: an operator decides.
+  if (conflicts.length > 0) return review(deps, row, 'ambiguous_match');
   if (matches.length > 1) return review(deps, row, 'ambiguous_match');
   // Codex B3: no decision (match or no match) unless the window is complete and every item resolved.
   if (!complete) return undecided(deps, row, now);

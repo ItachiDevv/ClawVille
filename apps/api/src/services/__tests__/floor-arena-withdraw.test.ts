@@ -906,7 +906,7 @@ describe('Codex money review blockers (B2, B3, B4)', () => {
   });
 });
 
-describe('Codex r2 B1: the finalized chain transfer wins over a vendor status', () => {
+describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for operator review', () => {
   const OLD_DEPOSIT = (): ArenaWithdrawChainTx => usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) });
   /** A deposit after the transfer that hides the transfer's balance drop (live balance = pre balance). */
   const HIDING_DEPOSIT = (): ArenaWithdrawChainTx => usdcTx({ source: OTHER, dest: SOURCE, amount: 100_000n, blockTime: unix(at(-10 * MIN)) });
@@ -919,7 +919,7 @@ describe('Codex r2 B1: the finalized chain transfer wins over a vendor status', 
     for (const item of items) if (item.tx) world.txs.set(item.signature, item.tx);
   }
 
-  test('unknown row: a vendor-failed item whose finalized tx matches exactly -> confirmed, even when a deposit hides the drop', async () => {
+  test('unknown row: a vendor-failed item whose finalized tx matches exactly + a hidden drop -> needs_review, never confirmed or failed_no_send', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
     listHistory([
       { signature: 'SIG_NEW_DEPOSIT', tx: HIDING_DEPOSIT() },
@@ -928,7 +928,22 @@ describe('Codex r2 B1: the finalized chain transfer wins over a vendor status', 
     ]);
     world.live = { ...world.live, usdcAtomic: 5_000_000n };
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_VF', postBalanceAtomic: 4_900_000n });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
+    expect(world.causes('withdraw:needs_review:ambiguous_match')[0]?.severity).toBe('critical');
+    expect(world.transfers).toHaveLength(0);
+  });
+
+  test('cross-row: a vendor-failed exact match from another terminal row of the agent, 30 s before this dispatch -> needs_review, not confirmed', async () => {
+    // Row B: same agent, same destination and amount, booked 'failed' on a vendor rejection (no stored signature).
+    world.add(dispatched({ state: 'failed', errorCode: 'vendor_rejected', dispatchedAt: at(-21 * MIN), finalizedAt: at(-21 * MIN) }));
+    const rowA = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([
+      { signature: 'SIG_B_VF', status: 'failed', tx: usdcTx({ blockTime: unix(at(-20 * MIN - 30_000)) }) },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    world.live = { ...world.live, usdcAtomic: 4_900_000n };
+    await tick(world);
+    expect(world.get(rowA.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
     expect(world.transfers).toHaveLength(0);
   });
 
@@ -957,7 +972,7 @@ describe('Codex r2 B1: the finalized chain transfer wins over a vendor status', 
     expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'not_found_no_drop', txSignature: null });
   });
 
-  test('a vendor-failed exact match plus a success exact match -> needs_review ambiguous_match', async () => {
+  test('a vendor-failed exact match (conflict) plus one success exact match -> needs_review ambiguous_match, not confirmed', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
     listHistory([
       { signature: 'SIG_OK', tx: usdcTx({ blockTime: unix(at(-18 * MIN)) }) },
