@@ -487,6 +487,7 @@ export class SpecialEventManager {
             transfer.lamportsToDest,
             this.treasuryPubkey,
           ),
+          payerRule: SOL_PAYER_RULE,
         },
       };
     }
@@ -2029,6 +2030,9 @@ function mapSolRefundRow(r: SolRefundDbRow): SolRefundRecord {
 }
 
 /** The fields of a SOL `entry_proof_json` the refund path trusts. */
+/** Tag written beside `payerPubkey` by the single-covering-source rule. */
+const SOL_PAYER_RULE = 'single-covering-source-v1';
+
 function readSolEntryProof(raw: unknown): {
   txSig: string | null;
   lamports: string | null;
@@ -2042,8 +2046,10 @@ function readSolEntryProof(raw: unknown): {
     txSig: str(p.txSig),
     lamports: lamports && /^\d+$/.test(lamports) && BigInt(lamports) > 0n ? lamports : null,
     toPubkey: str(p.toPubkey),
-    // Only the PROVEN payer; the client-claimed `fromPubkey` is ignored.
-    payerPubkey: str(p.payerPubkey),
+    // Only the PROVEN payer; the client-claimed `fromPubkey` is ignored. A
+    // stored payer counts only when the current attribution rule wrote it
+    // (Codex r3); any other value is re-verified on chain at cancel.
+    payerPubkey: p.payerRule === SOL_PAYER_RULE ? str(p.payerPubkey) : null,
   };
 }
 

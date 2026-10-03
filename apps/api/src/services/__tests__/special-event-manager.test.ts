@@ -2386,6 +2386,23 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     expect(rpc.commitments).toEqual(['confirmed']);
   });
 
+  it('a stored payer without the current rule tag is not trusted: cancel re-verifies it (Codex r3)', async () => {
+    const { mgr, rpc, humanSubj, signupOf } = await solEvent('sol-untagged');
+    const row = signupOf(humanSubj.avatarId);
+    const stored = row.entry_proof_json as Record<string, unknown>;
+    expect(stored.payerRule).toBe('single-covering-source-v1');
+    // A payer written by an older attribution rule: wrong wallet, no tag.
+    const proof: Record<string, unknown> = { ...stored, payerPubkey: 'OlderRuleWrongPayer1111111111111111111111111' };
+    delete proof.payerRule;
+    row.entry_proof_json = proof;
+    rpc.commitments.length = 0;
+
+    const r = await mgr.cancelEvent('sol-untagged');
+    const owed = r.solRefundsOwed.find((o) => o.avatarId === humanSubj.avatarId)!;
+    expect(owed.destinationPubkey).toBe(HUMAN_PAYER);
+    expect(rpc.commitments).toEqual(['confirmed']);
+  });
+
   it('an unprovable payer is recorded with no destination; mark-paid resolves it from the entry tx', async () => {
     const { mgr, rpc, db, agentSubj, agentSig, signupOf } = await solEvent('sol-unresolved', {
       agentPayer: null,
