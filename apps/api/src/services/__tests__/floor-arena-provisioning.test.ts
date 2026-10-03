@@ -12,6 +12,7 @@ import {
   ARENA_CLAWPUMP_SYSTEM_PROMPT,
   ARENA_PROVISION_MAX_ATTEMPTS,
   ARENA_PROVISION_RETRY_MS,
+  ARENA_PROVISION_THROTTLE_RETRY_MS,
   ARENA_X402_REMOVAL_SLOTS,
   _resetArenaProvisioningForTest,
   arenaClawPumpAgentName,
@@ -1045,6 +1046,77 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
     // Normal calls stop above the removal reserve, so the reconcile still removes x402 this tick.
     expect(h.perCp.get('cp-b0')!.skills).not.toContain('x402');
   });
+
+  test('(e) Codex r2 B2: ClawPump\'s 429 on the CREATE counts as an attempt (it may have created one); 5 -> exhausted, no 6th create', async () => {
+    const h = harness(record());
+    h.setCreate(async () => { throw new ClawPumpWriterError('rate_limited', 429); });
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('rate_limited');
+    expect(h.rows.get(AGENT_ID)).toMatchObject({
+      provisionState: 'failed',
+      provisionError: 'clawpump_rate_limited_429',
+      provisionAttempts: 1,
+      provisionNextAt: new Date(NOW.getTime() + ARENA_PROVISION_RETRY_MS),
+      clawpumpAgentId: null,
+    });
+    expect(h.events.at(-1)).toContain('attempt 1 of 5');
+    // Not due on the next 30 s tick.
+    expect(await provisionArenaAgent(AGENT_ID, { ...h.deps, now: () => new Date(NOW.getTime() + 30_000) })).toBe('skipped');
+    for (let attempt = 2; attempt <= ARENA_PROVISION_MAX_ATTEMPTS; attempt += 1) {
+      const later = { ...h.deps, now: () => new Date(NOW.getTime() + (attempt - 1) * 11 * 60_000) };
+      expect(await provisionArenaAgent(AGENT_ID, later)).toBe('rate_limited');
+    }
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionAttempts: 5, provisionNextAt: null });
+    expect(h.events.at(-1)).toContain('after 5 attempts');
+    expect(h.created).toHaveLength(ARENA_PROVISION_MAX_ATTEMPTS);
+    const muchLater = { ...h.deps, now: () => new Date(NOW.getTime() + 24 * 60 * 60_000) };
+    expect(await provisionArenaAgent(AGENT_ID, muchLater)).toBe('exhausted');
+    await runArenaProvisioningTick(muchLater.now(), muchLater);
+    expect(h.created).toHaveLength(ARENA_PROVISION_MAX_ATTEMPTS);
+  });
+
+  test('(e2) a 429 on the create ends the tick\'s provisioning pass: the next due agent is not claimed', async () => {
+    const h = harness(record());
+    const SECOND = 'a1b2c3d4-0000-4000-8000-000000000002';
+    h.rows.set(SECOND, record({ id: SECOND, name: 'Ann', createdAt: new Date(NOW.getTime() + 1) }));
+    h.setCreate(async () => { throw new ClawPumpWriterError('rate_limited', 429); });
+    await runArenaProvisioningTick(NOW, h.deps);
+    expect(h.created.length).toBe(1);
+    expect(h.rows.get(SECOND)).toMatchObject({ provisionState: 'pending', provisionAttempts: 0 });
+  });
+
+  for (const call of ['update', 'read', 'getWallet'] as const) {
+    test(`(f) Codex r2 B2: a 429 AFTER the id is saved (${call}) is not an attempt; the retry reuses the saved agent`, async () => {
+      const h = harness(record());
+      // No wallet in the create/update answers, so provisioning needs the getWallet fallback.
+      h.setCreate(async () => cpAgent({ walletAddress: null }));
+      let fail = true;
+      const w = h.deps.writer;
+      const once = () => {
+        if (fail) { fail = false; throw new ClawPumpWriterError('rate_limited', 429); }
+      };
+      const writer: ArenaProvisionDeps['writer'] = {
+        ...w,
+        updateAgent: async (id, patch, arenaAgentId, priority) => {
+          if (call === 'update') once();
+          const result = await w.updateAgent(id, patch, arenaAgentId, priority);
+          return { ...result, walletAddress: null };
+        },
+        readAgent: async (id, priority) => { if (call === 'read') once(); return w.readAgent(id, priority); },
+        getWallet: async (id) => { if (call === 'getWallet') once(); return w.getWallet(id); },
+      };
+      const deps = { ...h.deps, writer };
+      expect(await provisionArenaAgent(AGENT_ID, deps)).toBe('throttled');
+      expect(h.rows.get(AGENT_ID)).toMatchObject({
+        provisionState: 'failed', provisionAttempts: 0, clawpumpAgentId: CP_ID, provisionError: 'clawpump_rate_limited_429',
+      });
+      expect(h.rows.get(AGENT_ID)!.provisionNextAt!.getTime()).toBe(NOW.getTime() + ARENA_PROVISION_THROTTLE_RETRY_MS);
+      expect(h.events).toEqual([]);
+      const later = { ...deps, now: () => new Date(NOW.getTime() + 30_000) };
+      expect(await provisionArenaAgent(AGENT_ID, later)).toBe('ready');
+      expect(h.created).toHaveLength(1);
+      expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 0, clawpumpAgentId: CP_ID });
+    });
+  }
 
   test('(d) a paused tick runs the x402 reconcile and no provisioning', async () => {
     const h = harness(record());
