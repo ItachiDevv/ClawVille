@@ -972,6 +972,30 @@ describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for opera
     expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'not_found_no_drop', txSignature: null });
   });
 
+  test('cross-row: a vendor-SUCCESS exact match 30 s before this row\'s own dispatch (other row needs_review, no signature) -> needs_review, not confirmed', async () => {
+    // Row B: same agent, destination and amount; its real transfer was never stored (needs_review is not an open state).
+    world.add(dispatched({ state: 'needs_review', errorCode: 'not_found_balance_drop', dispatchedAt: at(-21 * MIN), finalizedAt: at(-21 * MIN) }));
+    const rowA = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([
+      { signature: 'SIG_B_OK', tx: usdcTx({ blockTime: unix(at(-20 * MIN - 30_000)) }) },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    world.live = { ...world.live, usdcAtomic: 4_900_000n };
+    await tick(world);
+    expect(world.get(rowA.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
+    expect(world.transfers).toHaveLength(0);
+  });
+
+  test('a vendor-success exact match at the dispatch second + 5 s -> confirmed with that signature', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([
+      { signature: 'SIG_OWN', tx: usdcTx({ blockTime: unix(at(-20 * MIN)) + 5 }) },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_OWN', postBalanceAtomic: 4_900_000n });
+  });
+
   test('a vendor-failed exact match (conflict) plus one success exact match -> needs_review ambiguous_match, not confirmed', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
     listHistory([

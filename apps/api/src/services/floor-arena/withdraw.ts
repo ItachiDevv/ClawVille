@@ -612,19 +612,26 @@ interface HistoryScan {
    * start: then the list is a contiguous, resolved window back past dispatched_at - 60 s (Codex B3).
    */
   complete: boolean;
-  /** In-window vendor 'success' items with an unused signature and an exact finalized chain match. */
+  /**
+   * Vendor 'success' items with an unused signature, an exact finalized chain match, and a block time at or
+   * after the row's own dispatch second (its transfer is POSTed only after the CAS set dispatched_at).
+   */
   matches: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
   /**
    * Codex r2 B1: in-window items with an unused signature and an exact finalized chain match whose known
    * vendor status is NOT 'success' (e.g. 'failed'). The vendor and the chain disagree, and the item can belong
-   * to another, already-terminal row of the same agent. A conflict goes to operator review: it is never
+   * to another, already-terminal row of the same agent. Also (cross-row guard) every exact match whose block
+   * time is before the row's own dispatch second, whatever its vendor status: it can be the unstored transfer of
+   * an earlier row of the agent (e.g. one in needs_review). A conflict goes to operator review: it is never
    * confirmed and it never allows failed_no_send.
    */
   conflicts: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
 }
 
 async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, live: ClawPumpArenaWalletLive): Promise<HistoryScan> {
-  const windowStart = row.dispatchedAt ? Math.floor(row.dispatchedAt.getTime() / 1000) - WINDOW_SLACK_S : Number.NEGATIVE_INFINITY;
+  const dispatchSecond = row.dispatchedAt ? Math.floor(row.dispatchedAt.getTime() / 1000) : Number.NEGATIVE_INFINITY;
+  // Coverage reaches back 60 s before the dispatch; only the matches/conflicts split uses dispatchSecond.
+  const windowStart = dispatchSecond - WINDOW_SLACK_S;
   const matches: HistoryScan['matches'] = [];
   const conflicts: HistoryScan['conflicts'] = [];
   const seen = new Set<string>();
@@ -652,8 +659,11 @@ async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, 
     // be this row's transfer (so skipping it could let the balance rule book a sent transfer as failed_no_send)
     // or another terminal row's transfer (so confirming it could be false). A conflict -> operator review,
     // never confirmed, never failed_no_send. A chain error or an inexact delta is never a match.
+    // Cross-row guard: this row's own transfer is POSTed only after the CAS set dispatched_at, so an exact match
+    // from before the dispatch second is a conflict whatever its vendor status (another row's unstored
+    // transfer). A real own transfer whose block time reads early (clock skew) then goes to review: safe.
     if (matchWithdrawTransfer(tx, row) !== 'match') continue;
-    if (status === 'success') matches.push({ signature: item.signature, tx });
+    if (status === 'success' && tx.blockTime >= dispatchSecond) matches.push({ signature: item.signature, tx });
     else conflicts.push({ signature: item.signature, tx });
   }
   return { complete: previous !== null && previous <= windowStart, matches, conflicts };
