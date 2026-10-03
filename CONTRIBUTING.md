@@ -28,6 +28,7 @@ Read the four canonical docs below first. They document the load-bearing project
 | Trading Arena: `packages/shared/src/constants/floor-arena.ts`, `apps/api/src/routes/floor-arena.ts`, `apps/api/src/routes/admin-floor-arena.ts`, `apps/api/src/services/floor-arena/`, `apps/api/src/services/clawpump-writer.ts`, `apps/web/src/hooks/use-floor-arena.ts`, `apps/web/src/stores/floor-arena-ui.ts` | `GameFeatures.md` §17g.3, `ARCHITECTURE.md` (Trading Floor Arena section, §4, §8), `docs/trading-floor-arena.md`, `docs/clawpump-integration.md` |
 | `branding/**`, logos, fonts, outward graphics and copy | `branding/BRAND.md`, `docs/brand-language.md` |
 | Deploy runbook steps | `docs/DEPLOY-HETZNER.md` |
+| `scripts/film/**`, demo and promo video pipeline (rig, edit tools, deliveries) | `docs/video-production.md` |
 
 Bump the doc's "Last Audited" line with a one-line drift note. Most of this is enforced at review. Two CI gates also enforce parts of it: the coupling gates (`scripts/ci/run-coupling-gates.ts`) require the knowledge surfaces to change with gameplay code, and the doc path guard (`scripts/ci/check-doc-paths.ts`) fails when a canonical doc gains a reference to a repo path that does not exist. When you delete or rename a file, update every doc that names it in the same commit.
 
