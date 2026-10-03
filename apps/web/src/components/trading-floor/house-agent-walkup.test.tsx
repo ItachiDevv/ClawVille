@@ -40,6 +40,7 @@ let requests: string[] = [];
 type Reply = { status: number; body: unknown };
 let authReply: Reply = { status: 200, body: { user: { id: 'u1', isGuest: false } } };
 let meReply: Reply = { status: 200, body: { agent: null } };
+let avatarReply: Reply = { status: 200, body: { avatar: { id: 'a1' } } };
 let boardReply: Reply = { status: 200, body: {} };
 
 // A manual requestAnimationFrame, so a test can step the placement loop frame by frame.
@@ -230,6 +231,7 @@ beforeEach(() => {
   testWindow.sessionStorage.clear();
   authReply = { status: 200, body: { user: { id: 'u1', isGuest: false } } };
   meReply = { status: 200, body: { agent: null } };
+  avatarReply = { status: 200, body: { avatar: { id: 'a1' } } };
   boardReply = { status: 200, body: boardBody() };
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
@@ -241,6 +243,7 @@ beforeEach(() => {
         new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } });
       if (url.endsWith('/api/auth/me')) return json(authReply);
       if (url.endsWith('/api/floor/arena/me')) return json(meReply);
+      if (url.endsWith('/api/avatars/me')) return json(avatarReply);
       if (url.endsWith('/api/floor/arena/house-board')) return json(boardReply);
       if (url.includes('/leaderboard')) return json({ status: 200, body: { rows: [] } });
       if (url.includes('/templates')) return json({ status: 200, body: { houseAgents: [] } });
@@ -464,6 +467,31 @@ describe('phone width < 600: compact card', () => {
   });
 });
 
+// F3 + Codex E3: short landscape touch screens (happy-dom: width < 768 is touch).
+describe('short landscape touch: beside Back to World, 44 px tap targets', () => {
+  test.each([[667, 375], [640, 360], [568, 320]] as const)('%ix%i', async (width, height) => {
+    setViewport(width, height);
+    await render(createElement(HouseAgentWalkup));
+    await walkUp(1);
+    const element = panel()!;
+    expect(element.style.transform).toBe('translate3d(184px, 16px, 0px)');
+    expect(parseFloat(element.style.width)).toBeGreaterThanOrEqual(220);
+    expect(parseFloat(element.style.maxHeight)).toBeGreaterThan(0);
+    // The whole panel scrolls; the strategy text waits behind "Details".
+    expect(element.style.overflowY).toBe('auto');
+    const runner = FLOOR_ARENA_TEMPLATES[1]!;
+    expect(element.textContent).not.toContain(runner.thesis);
+    expect(byTestId('house-agent-walkup-details')).not.toBeNull();
+    const buttons = [...element.querySelectorAll('button')] as HTMLElement[];
+    expect(buttons.length).toBeGreaterThanOrEqual(4);
+    for (const button of buttons) {
+      expect(parseFloat(button.style.minHeight || button.style.height || '0')).toBeGreaterThanOrEqual(44);
+      // Nothing in a scrolling column may shrink a button below its min height.
+      expect(button.style.flexShrink === '' || button.style.flexShrink === '0' || button.style.flex === 'none').toBe(true);
+    }
+  });
+});
+
 describe('placement loop', () => {
   test('positions beside the anchor and rewrites transform only on a move of 0.5 px or more', async () => {
     await render(createElement(HouseAgentWalkup));
@@ -615,19 +643,21 @@ describe('button flow', () => {
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).toBeNull();
   });
 
-  // Plan §3 / §9: NOT VERIFIED what GET /me returns for a logged-in account with
-  // no active avatar. Read from code: requireAuthOrAgentSession throws 403
-  // "Active avatar required" for that account, and the arena section counts a
-  // 403 as "cannot own", so a REAL account sees the guest sign-up card. This
-  // pins the CURRENT behaviour (reported to the lead; not this task's files).
-  test('current behaviour: a real account whose GET /me is 403 (no avatar) is treated like a guest', async () => {
-    meReply = { status: 403, body: { error: 'Active avatar required' } };
+  // F2 (browser review 2026-10-02): requireAuthOrAgentSession answers a
+  // logged-in account with no active avatar with 403 and no typed code. The
+  // walk-up still keeps the choice and opens the launch panel, and the arena
+  // section now shows the avatar card ("Create your avatar"), not the guest
+  // sign-up card.
+  test('a real account whose GET /me is 403 (no avatar) gets the avatar card, not the sign-up card', async () => {
+    meReply = { status: 403, body: { error: 'Active avatar required', code: 403 } };
+    avatarReply = { status: 200, body: { avatar: null } };
     await render(createElement(HouseAgentWalkup), createElement(SectionHarness));
     await walkUp(0);
     await waitFor(() => useHouseAgentWalkupPanel.getState().viewer === 'cannot-own', 'the 403 verdict');
     await click(byTestId('house-agent-walkup-primary'));
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'genesis' });
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).not.toBeNull();
-    await waitFor(() => byTestId('arena-launch-guest') !== null, 'the sign-up card');
+    await waitFor(() => byTestId('arena-launch-needs-avatar') !== null, 'the avatar card');
+    expect(byTestId('arena-launch-guest')).toBeNull();
   });
 });

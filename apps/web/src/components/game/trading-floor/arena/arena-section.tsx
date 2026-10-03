@@ -7,9 +7,10 @@ import {
   FLOOR_ARENA_TEMPLATES,
 } from '@clawville/shared';
 
-import { ApiError } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { AUTH_ME_QUERY_KEY, fetchAuthMe } from '@/hooks/use-auth-me';
 import {
+  floorArenaErrorCode,
   useFloorArenaContest,
   useFloorArenaDiscovery,
   useFloorArenaLeaderboard,
@@ -33,6 +34,7 @@ import {
   signedUsd,
 } from './arena-format';
 import {
+  ArenaBackButton,
   ArenaMuted,
   ArenaPill,
   arenaButtonStyle,
@@ -59,6 +61,109 @@ const WINDOWS: ReadonlyArray<{ id: FloorArenaLeaderboardWindow; label: string }>
 ];
 
 const PLACE: Record<1 | 2 | 3, string> = { 1: '1st', 2: '2nd', 3: '3rd' };
+
+/** The existing avatar-creation path (the /game banner's "Finish creating your agent" goes here too). */
+export const ARENA_CREATE_AVATAR_HREF = '/create-agent';
+
+/**
+ * Whether this viewer can own an arena trader, from the auth tier, the GET /me
+ * refusal and (only for an untyped 403) the account's active avatar. Status,
+ * typed code and the avatar read only; never the message text.
+ * - 'guest': a guest, a logged-out visitor (401), or the typed 403
+ *   `guest_not_allowed`. The launch flow shows the sign-up card.
+ * - 'needs-avatar' (F2): a signed-in, non-guest account whose GET /me is a 403
+ *   with no typed code AND whose GET /api/avatars/me (same isActive filter as
+ *   requireAuthOrAgentSession) answers `{ avatar: null }`: a positive "no
+ *   active avatar" signal. The fix is an avatar, not an account.
+ * - 'checking': that untyped 403 while the avatar read is still loading.
+ * - 'blocked': any other 403 (a typed code, or an account that has an avatar,
+ *   or an avatar read that failed). A neutral card, no wrong instruction.
+ * - 'owner': anything else (loading, loaded, or a 5xx the panel retries).
+ */
+export type ArenaOwnerAccess = 'owner' | 'guest' | 'needs-avatar' | 'checking' | 'blocked';
+/** GET /api/avatars/me: `none` = a 200 with `avatar: null`. */
+export type ArenaAvatarRead = 'loading' | 'none' | 'present' | 'unknown';
+
+/** True for the one refusal that may mean "no active avatar": a 403 with no typed code. */
+export function arenaMeUntyped403(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403 && floorArenaErrorCode(error) === null;
+}
+
+export function arenaOwnerAccess(isGuest: boolean, error: unknown, avatar: ArenaAvatarRead): ArenaOwnerAccess {
+  if (isGuest) return 'guest';
+  if (!(error instanceof ApiError)) return 'owner';
+  if (error.status === 401) return 'guest';
+  if (error.status !== 403) return 'owner';
+  if (floorArenaErrorCode(error) === 'guest_not_allowed') return 'guest';
+  if (!arenaMeUntyped403(error)) return 'blocked';
+  if (avatar === 'none') return 'needs-avatar';
+  if (avatar === 'loading') return 'checking';
+  return 'blocked';
+}
+
+/**
+ * The signed-in account's active avatar, read only after an untyped 403. Its
+ * own query key (not `useAvatar()`'s ['avatar'], which folds a 401 or 404 into
+ * `avatar: null`), so only a 200 `{ avatar: null }` reads as "none"; any error
+ * reads 'unknown' (the neutral card), never "none".
+ */
+function useArenaAvatarRead(enabled: boolean): ArenaAvatarRead {
+  const query = useQuery({
+    queryKey: ['floor-arena', 'active-avatar'],
+    queryFn: () => api.getMyAvatar(),
+    enabled,
+    retry: false,
+    staleTime: 30_000,
+  });
+  if (!enabled || query.isError) return 'unknown';
+  if (query.data === undefined) return 'loading';
+  const avatar = (query.data as { avatar?: unknown } | null)?.avatar;
+  // Only an explicit `avatar: null` is "none"; a missing field is not a signal.
+  if (avatar === null) return 'none';
+  return typeof avatar === 'object' && avatar !== undefined ? 'present' : 'unknown';
+}
+
+function BlockedCard({ onBack }: { onBack: () => void }) {
+  return (
+    <section style={{ ...arenaCardStyle, display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="arena-launch-blocked">
+      <ArenaBackButton onClick={onBack} />
+      <h3 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 16 }}>Launch your trader</h3>
+      <ArenaMuted>
+        This account cannot launch an arena trader right now. You can still watch every trader in the arena.
+      </ArenaMuted>
+    </section>
+  );
+}
+
+function NeedsAvatarCard({ onBack }: { onBack: () => void }) {
+  return (
+    <section
+      style={{ ...arenaCardStyle, display: 'flex', flexDirection: 'column', gap: 10 }}
+      data-testid="arena-launch-needs-avatar"
+    >
+      <ArenaBackButton onClick={onBack} />
+      <h3 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 16 }}>Launch your trader</h3>
+      <ArenaMuted>
+        You are signed in, but this account has no active avatar yet. An arena trader needs one, so create your
+        avatar first, then come back here to launch.
+      </ArenaMuted>
+      <a
+        href={ARENA_CREATE_AVATAR_HREF}
+        data-testid="arena-create-avatar"
+        style={{
+          ...arenaPrimaryButtonStyle,
+          alignSelf: 'flex-start',
+          display: 'inline-flex',
+          alignItems: 'center',
+          boxSizing: 'border-box',
+          textDecoration: 'none',
+        }}
+      >
+        Create your avatar
+      </a>
+    </section>
+  );
+}
 
 function ContestBanner({ active, onRules }: { active: boolean; onRules: () => void }) {
   const nowMs = useArenaNow(active, 1_000);
@@ -455,9 +560,12 @@ export function FloorArenaSection({
     undefined;
   const me = useFloorArenaMe(active && authResolved && !isGuest);
   const myAgent = me.data?.agent ?? null;
-  // A 401 or 403 from GET /me means this viewer cannot own an arena agent,
-  // exactly like a guest: the launch flow then shows the sign-up card.
-  const cannotOwn = isGuest || (me.error instanceof ApiError && (me.error.status === 401 || me.error.status === 403));
+  // A 401 or 403 from GET /me means this viewer cannot own an arena agent yet.
+  // A guest or a logged-out visitor gets the sign-up card; a signed-in account
+  // with no active avatar gets the avatar card (F2, `arenaOwnerAccess`).
+  const avatarRead = useArenaAvatarRead(active && authResolved && !isGuest && arenaMeUntyped403(me.error));
+  const access = arenaOwnerAccess(isGuest, me.error, avatarRead);
+  const cannotOwn = access !== 'owner';
   const rootRef = useRef<HTMLDivElement | null>(null);
   const firstRender = useRef(true);
 
@@ -478,10 +586,12 @@ export function FloorArenaSection({
   };
   const openAgent = (agentId: string) => showPanel('profile', { agentId });
   const startLaunch = (templateId: string | null) => {
-    if (cannotOwn) {
+    if (access === 'guest') {
       onGuestBlocked();
       return;
     }
+    // 'needs-avatar', 'checking' and 'blocked' open the launch panel too, which
+    // then shows the avatar card, the wait, or the neutral card.
     showPanel('launch', { templateId });
   };
 
@@ -495,7 +605,13 @@ export function FloorArenaSection({
   } else if (panel === 'desk' || panel === 'launch') {
     // Until auth-me resolves, GET /me waits (disabled, so not "loading"); show
     // the same wait, never the launch form to a player who already owns one.
-    if (!cannotOwn && (!authResolved || me.isLoading)) {
+    if (access === 'needs-avatar') {
+      body = <NeedsAvatarCard onBack={toOverview} />;
+    } else if (access === 'blocked') {
+      body = <BlockedCard onBack={toOverview} />;
+    } else if (access === 'checking') {
+      body = <ArenaMuted>Loading your arena trader...</ArenaMuted>;
+    } else if (!cannotOwn && (!authResolved || me.isLoading)) {
       body = <ArenaMuted>Loading your arena trader...</ArenaMuted>;
     } else if (!cannotOwn && me.isError && !me.data) {
       body = (

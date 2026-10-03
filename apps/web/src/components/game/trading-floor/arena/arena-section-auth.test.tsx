@@ -24,6 +24,9 @@ let client: QueryClient | null = null;
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 let requests: string[] = [];
 let meBody: Record<string, unknown> = { agent: null };
+let meStatus = 200;
+let avatarBody: Record<string, unknown> = { avatar: { id: 'a1' } };
+let guestBlockedCalls = 0;
 let resolveAuth: (status: number, body: unknown) => void = () => undefined;
 let authAnswer: Promise<{ status: number; body: unknown }> = Promise.resolve({ status: 200, body: null });
 
@@ -69,7 +72,13 @@ async function waitFor(check: () => boolean, label: string): Promise<void> {
 /** The floor tab's wiring: isGuest from useIsGuest(), passed down. */
 function Harness() {
   const isGuest = useIsGuest();
-  return createElement(FloorArenaSection, { active: true, isGuest, onGuestBlocked: () => undefined });
+  return createElement(FloorArenaSection, {
+    active: true,
+    isGuest,
+    onGuestBlocked: () => {
+      guestBlockedCalls += 1;
+    },
+  });
 }
 
 async function render(element: ReturnType<typeof createElement>): Promise<HTMLElement> {
@@ -93,6 +102,9 @@ beforeAll(async () => {
 beforeEach(() => {
   requests = [];
   meBody = { agent: null };
+  meStatus = 200;
+  avatarBody = { avatar: { id: 'a1' } };
+  guestBlockedCalls = 0;
   authAnswer = new Promise((resolve) => {
     resolveAuth = (status, body) => resolve({ status, body });
   });
@@ -108,7 +120,8 @@ beforeEach(() => {
         const { status, body } = await authAnswer;
         return json(body, status);
       }
-      if (url.endsWith('/api/floor/arena/me')) return json(meBody);
+      if (url.endsWith('/api/floor/arena/me')) return json(meBody, meStatus);
+      if (url.endsWith('/api/avatars/me')) return json(avatarBody);
       if (url.includes('/leaderboard')) return json({ rows: [] });
       if (url.includes('/templates')) return json({ houseAgents: [] });
       if (url.includes('/addons')) return json({ addons: [], paymentsEnabled: false });
@@ -224,5 +237,107 @@ describe('Arena section: GET /me waits for resolved auth (no 401 for a guest)', 
     expect(arenaMeCalls()).toBe(1);
     expect(host.querySelector('[data-testid="arena-launch"]')).toBeNull();
     expect(host.textContent).toContain('My Genesis');
+  });
+});
+
+// F2 (browser review 2026-10-02) + Codex E3 B1: a signed-in account with NO
+// active avatar gets 403 from requireAuthOrAgentSession ({ error: <text>,
+// code: 403 }: a number, so the web ApiError has no string code). The avatar
+// card needs a POSITIVE signal: GET /api/avatars/me (the same isActive filter)
+// answers { avatar: null }. Any other 403 (typed, or untyped while the account
+// has an avatar) gets a neutral card, never "Create your avatar" and never the
+// guest sign-up card. The branch never reads the message text.
+describe('Arena section: a signed-in account without an avatar', () => {
+  const UNTYPED_403 = { error: 'Active avatar required (any text; the UI never reads it)', code: 403 };
+  const avatarCard = (host: HTMLElement) => host.querySelector('[data-testid="arena-launch-needs-avatar"]');
+  const blockedCard = (host: HTMLElement) => host.querySelector('[data-testid="arena-launch-blocked"]');
+
+  async function openLaunch(): Promise<HTMLElement> {
+    useFloorArenaUi.setState({ panel: 'launch' });
+    const host = await render(createElement(Harness));
+    await waitFor(() => authMeCalls() === 1, 'the auth-me request');
+    resolveAuth(200, { user: { id: 'u1', isGuest: false } });
+    return host;
+  }
+
+  test('no active avatar (untyped 403 + avatars/me null): avatar creation, not the sign-up card', async () => {
+    meStatus = 403;
+    meBody = UNTYPED_403;
+    avatarBody = { avatar: null };
+    const host = await openLaunch();
+    await waitFor(() => avatarCard(host) !== null, 'the avatar card');
+    const link = host.querySelector('[data-testid="arena-create-avatar"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('/create-agent');
+    // Tap target: at least 44 px tall.
+    expect(parseFloat(link!.style.minHeight)).toBeGreaterThanOrEqual(44);
+    expect(host.textContent).not.toContain('Create a free account');
+    expect(host.querySelector('[data-testid="arena-launch-guest"]')).toBeNull();
+    expect(host.textContent).not.toContain('could not be loaded');
+  });
+
+  test('an untyped 403 for an account WITH an avatar: neutral card, no avatar card, no sign-up', async () => {
+    meStatus = 403;
+    meBody = UNTYPED_403;
+    avatarBody = { avatar: { id: 'a1' } };
+    const host = await openLaunch();
+    await waitFor(() => blockedCard(host) !== null, 'the neutral card');
+    expect(avatarCard(host)).toBeNull();
+    expect(host.querySelector('[data-testid="arena-launch-guest"]')).toBeNull();
+    expect(host.textContent).not.toContain('Create your avatar');
+  });
+
+  test('a typed 403 (agent_session_not_ledger_authorized) never shows the avatar card, even with no avatar', async () => {
+    meStatus = 403;
+    meBody = { error: 'not ledger authorized', code: 'agent_session_not_ledger_authorized' };
+    avatarBody = { avatar: null };
+    const host = await openLaunch();
+    await waitFor(() => blockedCard(host) !== null, 'the neutral card');
+    expect(avatarCard(host)).toBeNull();
+    expect(host.querySelector('[data-testid="arena-launch-guest"]')).toBeNull();
+  });
+
+  test('"Launch your trader" opens the avatar card and never the guest sign-up', async () => {
+    meStatus = 403;
+    meBody = UNTYPED_403;
+    avatarBody = { avatar: null };
+    const host = await render(createElement(Harness));
+    await waitFor(() => authMeCalls() === 1, 'the auth-me request');
+    resolveAuth(200, { user: { id: 'u1', isGuest: false } });
+    await waitFor(() => arenaMeCalls() > 0, 'GET /me');
+    await settle(50);
+    const button = host.querySelector('[data-testid="arena-launch-button"]') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    await act(async () => {
+      button?.click();
+    });
+    await waitFor(() => avatarCard(host) !== null, 'the avatar card');
+    expect(guestBlockedCalls).toBe(0);
+  });
+
+  test('a 403 guest_not_allowed keeps the sign-up card', async () => {
+    meStatus = 403;
+    meBody = { error: 'Guests run a demo economy.', code: 'guest_not_allowed' };
+    const host = await openLaunch();
+    await waitFor(() => host.querySelector('[data-testid="arena-launch-guest"]') !== null, 'the sign-up card');
+    expect(host.textContent).toContain('Create a free account');
+    expect(avatarCard(host)).toBeNull();
+  });
+
+  test('a guest still gets the sign-up card and never asks for the avatar', async () => {
+    useFloorArenaUi.setState({ panel: 'launch' });
+    const host = await render(createElement(FloorArenaSection, { active: true, isGuest: true, onGuestBlocked: () => undefined }));
+    await settle(50);
+    expect(host.querySelector('[data-testid="arena-launch-guest"]')).not.toBeNull();
+    expect(avatarCard(host)).toBeNull();
+    expect(requests.filter((url) => url.endsWith('/api/avatars/me')).length).toBe(0);
+  });
+
+  test('an owner with a loaded GET /me never asks for the avatar', async () => {
+    const host = await openLaunch();
+    await waitFor(() => arenaMeCalls() > 0, 'GET /me');
+    await settle(50);
+    expect(host.textContent).not.toContain('Create your avatar');
+    expect(requests.filter((url) => url.endsWith('/api/avatars/me')).length).toBe(0);
   });
 });
