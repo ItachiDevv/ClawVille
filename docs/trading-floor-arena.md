@@ -902,6 +902,14 @@ with no amount makes add-ons refuse `withdraw_pending`. The add-on reservation s
   `failed` with `clawpump_budget_exhausted` says the setup waits for a free ClawPump slot and tries again in a few
   seconds (not a failed attempt); any other failure says the next try is 10 minutes after a failed attempt, up to five
   attempts. No route, manual text or PROTOCOL_VERSION change.
+  Codex E3 fixes (same branch): F2 shows the avatar card only on a positive signal, an untyped 403 from GET /me
+  AND `GET /api/avatars/me` answering `{ avatar: null }` (same isActive filter; read only after that 403, own query
+  key); a typed 403 or an untyped 403 for an account with an avatar gets a neutral card ("This account cannot launch
+  an arena trader right now."), never the avatar or sign-up card. F3 runs before the 600 px phone check, so 568x320
+  and 640x360 landscape take the short placement too (568x320 leaves 56 px of height; the panel scrolls); below 220
+  px of width beside Back to World the older placement applies. The failed-setup copy no longer promises a next try
+  (GET /me has no attempt count): "ClawVille tries the setup up to five times, 10 minutes apart. If all five fail,
+  paid add-ons stay off."
 
 ## 8. Punch list (tracked deferrals, rule E6)
 

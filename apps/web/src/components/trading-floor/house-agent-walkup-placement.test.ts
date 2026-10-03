@@ -261,6 +261,7 @@ describe('F3: short landscape touch places the panel beside Back to World', () =
     expect(L.shortTop).toBe(16);
     expect(L.shortMinSpace).toBe(160);
     expect(L.backButtonRight).toBe(176);
+    expect(L.shortMinWidth).toBe(220);
   });
 
   test('backButtonRight bounds the real Back to World button (trading-floor page styles)', () => {
@@ -275,7 +276,9 @@ describe('F3: short landscape touch places the panel beside Back to World', () =
     expect(16 + 44).toBeLessThan(L.topMin);
   });
 
-  const SHORT: Array<[number, number]> = [[844, 390], [667, 375], [932, 430]];
+  // 568x320 and 640x360 are narrower than the 600 px phone line: in landscape
+  // they still take the short placement (the compact card had 0 px there).
+  const SHORT: Array<[number, number]> = [[844, 390], [667, 375], [932, 430], [640, 360], [568, 320]];
   test.each(SHORT.flatMap(([w, h]) => [0, 34, 44].map((s) => [w, h, s] as const)))(
     '%ix%i touch, %i px safe area: top 16 beside Back to World, above the band, clear of USE',
     (width, height, safeArea) => {
@@ -299,7 +302,8 @@ describe('F3: short landscape touch places the panel beside Back to World', () =
             expect(p.mode).toBe('short');
             expect(p.top).toBe(16);
             expect(p.left).toBe(L.backButtonRight + L.touchGap);
-            expect(p.width).toBe(L.panelWidth);
+            expect(p.width).toBe(Math.min(L.panelWidth, use.left - L.touchGap - p.left));
+            expect(p.width).toBeGreaterThanOrEqual(L.shortMinWidth);
             expect(p.maxHeight).toBe(bandLimit - 16);
             const bottom = bottomOf(p, panelHeight);
             expect(bottom).toBeLessThanOrEqual(bandLimit + 1e-9);
@@ -321,5 +325,41 @@ describe('F3: short landscape touch places the panel beside Back to World', () =
       expect(placeHouseAgentWalkup(input({ viewportWidth: w, viewportHeight: h, touch: true })).mode).not.toBe('short');
     }
     expect(placeHouseAgentWalkup(input({ viewportWidth: 844, viewportHeight: 390, touch: false })).mode).toBe('beside');
+  });
+});
+
+describe('F3 fallback (Codex E3): a short panel never gets narrower than shortMinWidth', () => {
+  test('640x360 and 568x320: short, width >= 220, not the zero-height compact card', () => {
+    for (const [w, h] of [[640, 360], [568, 320]] as const) {
+      const p = placeHouseAgentWalkup(input({ viewportWidth: w, viewportHeight: h, touch: true, panelHeight: 1400 }));
+      expect(p.mode).toBe('short');
+      expect(p.width).toBeGreaterThanOrEqual(L.shortMinWidth);
+      expect(p.maxHeight).toBeGreaterThan(0);
+    }
+  });
+
+  test('a landscape screen too narrow for 220 px beside Back to World keeps the old placement', () => {
+    // 500 - 24 (USE right) - 76 (USE) - 8 (gap) - 184 (left) = 208 < 220.
+    for (const [w, h] of [[500, 300], [480, 320]] as const) {
+      const p = placeHouseAgentWalkup(input({ viewportWidth: w, viewportHeight: h, touch: true }));
+      expect(p.mode).not.toBe('short');
+      expect(p.width).toBeGreaterThan(0);
+    }
+  });
+
+  test('sweep: every short placement is at least shortMinWidth wide and clear of USE and Back to World', () => {
+    for (let w = 400; w <= 1000; w += 7) {
+      for (let h = 280; h < w; h += 9) {
+        for (const safe of [0, 34]) {
+          const p = placeHouseAgentWalkup(input({ viewportWidth: w, viewportHeight: h, touch: true, safeAreaBottom: safe }));
+          if (p.mode !== 'short') continue;
+          const use = useBox(w, h, safe);
+          expect(p.width).toBeGreaterThanOrEqual(L.shortMinWidth);
+          expect(p.left).toBeGreaterThanOrEqual(L.backButtonRight + L.touchGap);
+          expect(p.left + p.width).toBeLessThanOrEqual(use.left - L.touchGap + 1e-9);
+          expect(p.top + p.maxHeight).toBeLessThanOrEqual(use.bandTop - L.touchGap + 1e-9);
+        }
+      }
+    }
   });
 });

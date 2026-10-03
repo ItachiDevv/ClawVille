@@ -24,6 +24,9 @@
  *   to the right of "Back to World" (its right edge is at most
  *   `backButtonRight`, pinned against the page styles by the test), left of the
  *   USE column, its height capped above the band; its content scrolls inside.
+ *   This runs BEFORE the phone check, so a landscape phone narrower than 600
+ *   (568x320, 640x360) gets it too. When the room beside Back to World is
+ *   under `shortMinWidth`, the older placement applies.
  *
  * The panel's own frame loop calls `placeHouseAgentWalkup` with ONE reused
  * output record (no allocation per frame) and writes `transform` only when
@@ -56,6 +59,8 @@ export const HOUSE_AGENT_WALKUP_LAYOUT = Object.freeze({
   shortMinSpace: 160,
   /** Upper bound of the "Back to World" button's right edge (left 16, 14 px monospace, 18 px padding). */
   backButtonRight: 176,
+  /** Short landscape touch: narrower than this beside Back to World, keep the older placement. */
+  shortMinWidth: 220,
 });
 
 export type HouseAgentWalkupPlacementMode = 'beside' | 'docked' | 'compact' | 'short';
@@ -118,6 +123,21 @@ export function placeHouseAgentWalkup(
     useColumnLeft = vw - L.useRight - TOUCH_LAYOUT.useSize - L.touchGap;
   }
 
+  // Short landscape touch (F3): top 16 beside Back to World, left of USE.
+  if (input.touch && vw > vh && bandLimit - L.topMin < L.shortMinSpace) {
+    const left = L.backButtonRight + L.touchGap;
+    const shortWidth = Math.min(L.panelWidth, Math.min(vw - L.margin, useColumnLeft) - left);
+    if (shortWidth >= L.shortMinWidth) {
+      out.mode = 'short';
+      out.side = 'right';
+      out.left = left;
+      out.top = L.shortTop;
+      out.width = shortWidth;
+      out.maxHeight = Math.max(0, bandLimit - L.shortTop);
+      return out;
+    }
+  }
+
   if (vw < L.phoneMaxWidth) {
     const width = Math.min(vw * L.compactViewportFraction, L.compactMaxWidth);
     const left = (vw - width) / 2;
@@ -136,16 +156,6 @@ export function placeHouseAgentWalkup(
   // On touch the panel stays left of the USE column, so it only has to clear the band.
   const rightEdge = input.touch ? Math.min(vw - L.margin, useColumnLeft) : vw - L.margin;
 
-  if (input.touch && vw > vh && bandLimit - L.topMin < L.shortMinSpace) {
-    const left = L.backButtonRight + L.touchGap;
-    out.mode = 'short';
-    out.side = 'right';
-    out.left = left;
-    out.top = L.shortTop;
-    out.width = Math.max(0, Math.min(width, rightEdge - left));
-    out.maxHeight = Math.max(0, bandLimit - L.shortTop);
-    return out;
-  }
   const maxLeft = Math.max(L.margin, rightEdge - width);
   const maxHeight = Math.max(0, bandLimit - L.topMin);
   const shown = Math.min(panelHeight, maxHeight);

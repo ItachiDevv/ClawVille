@@ -19,12 +19,14 @@ describe('arena wallet: provisioning failed copy', () => {
   });
 
   test.each([null, 'clawpump_http_error_500', 'clawpump_rate_limited_429', 'wallet_missing', 'provision_error'])(
-    'a real failure (%p) says 10 minutes and five attempts',
+    'a real failure (%p) states the five-try rule and never promises another try',
     (code) => {
+      // GET /me has no attempt count or next-try time, so after the fifth
+      // failure (exhausted) a "tries again" promise would be false (Codex E3).
       const copy = arenaProvisionFailedCopy(code);
-      expect(copy).toContain('10 minutes');
-      expect(copy).toContain('up to five attempts');
-      expect(copy).not.toContain('every 10 minutes');
+      expect(copy).toContain('up to five times, 10 minutes apart');
+      expect(copy).toContain('If all five fail');
+      expect(copy).not.toMatch(/tries again|will try|next try/i);
       expect(copy).not.toMatch(/429/);
     },
   );

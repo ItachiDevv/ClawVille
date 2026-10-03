@@ -64,14 +64,15 @@ export type DeskStatus = 'trading' | 'waiting' | 'paused' | 'stopped';
  * ClawPump call-budget wait (`clawpump_budget_exhausted`) is not an attempt and
  * is due again about 25 s later. A real failure counts as an attempt: the next
  * try is 10 minutes later, up to 5 attempts (ARENA_PROVISION_RETRY_MS,
- * ARENA_PROVISION_MAX_ATTEMPTS). /me has no attempt count, so the copy states
- * the rule, not "attempt N of 5".
+ * ARENA_PROVISION_MAX_ATTEMPTS). /me has no attempt count or next-try time, so
+ * the copy states the rule and never promises another try (after the fifth
+ * failure there is none).
  */
 export function arenaProvisionFailedCopy(provisionError: string | null): string {
   if (provisionError === 'clawpump_budget_exhausted') {
     return 'The ClawPump agent setup is waiting for a free ClawPump slot and tries again in a few seconds. Paper trading works without it. This wait does not count as a failed attempt.';
   }
-  return 'The ClawPump agent setup did not finish yet. Paper trading works without it. After a failed attempt, ClawVille tries again 10 minutes later, up to five attempts in all.';
+  return 'The ClawPump agent setup did not finish. Paper trading works without it. ClawVille tries the setup up to five times, 10 minutes apart. If all five fail, paid add-ons stay off.';
 }
 
 /** One word for the desk: trading needs BOTH an active agent and a seat. */
