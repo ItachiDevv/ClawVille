@@ -538,6 +538,7 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 - **What (for the team, not players):** `docs/video-production.md` rewritten as the full runbook for demo and promo videos (standing brief with the owner's answers, quick start, claims rules, edit/QC/delivery, traps from the AnsemHack submission video); `scripts/film/` packaged for reuse (rig README, 32 step files, `SHOOT-arena.md`, `reshoot.sh`, `demo-accounts.mjs`, `shots-arena.json`); `scripts/film/edit/` (beats file tool, TTS, voice prep, music post-mix); the arena video sources in `brag-output-2026-09-30-arena/` (media git-ignored); one CONTRIBUTING row. No app code: no API or web behaviour change.
 - **What broke during the shoot (fixed elsewhere):** arena ClawPump provisioning failed with `clawpump_budget_exhausted` (our writer bucket starved by the x402 reconcile pass); tDesk2Main fixed it in `6b4f094d`.
+- **Deploy outcome (checked 12:24Z):** merged as `1ae1ad07` (PR #308, CI 4/4 green, deploy run 37104102093 green), but both Coolify deploys for `1ae1ad07` FAILED (queue 3959/3960, 06:48Z; cause not read). No retry was needed: the next push `db57bbbc` (07:06Z) contains `1ae1ad07` and is live on both containers (api 07:12:37Z, web 07:15:04Z), so the docs and `scripts/film` are in the running build. App behaviour unchanged.
 - SCHEMA: unchanged by this push.
 
 ### 2026-10-02 (session clawville-14) — bounty list shows bonus rewards; PROTOCOL 81 -> 82 (staging push)
