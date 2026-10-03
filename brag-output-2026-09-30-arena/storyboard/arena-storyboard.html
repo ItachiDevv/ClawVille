@@ -1,0 +1,272 @@
+<title>Arena Demo Storyboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+  /* Layout: one reading column for decisions, then a wrapping frame grid (the storyboard), then reference tables. */
+  :root {
+    --bg: #f3f5f9;
+    --surface: #ffffff;
+    --fg: #0d1530;
+    --muted: #55607e;
+    --line: #d6dcea;
+    --accent: #1f6fd6;
+    --accent-soft: #e3eefc;
+    --ask: #8a5a00;
+    --ask-soft: #fdf1d6;
+    --ok: #1d7a3a;
+    --ok-soft: #e1f3e6;
+    --stop: #b3261e;
+    --stop-soft: #fbe4e2;
+    --display: "Anton", "Impact", "Arial Narrow", sans-serif;
+    --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+    --label: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #070b1c; --surface: #0f1631; --fg: #e8ecf7; --muted: #9aa6c6; --line: #243056;
+      --accent: #5aa5ff; --accent-soft: #14264d; --ask: #f0c060; --ask-soft: #3a2c0c;
+      --ok: #6fd48b; --ok-soft: #10301c; --stop: #ff8a80; --stop-soft: #3d1512; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #070b1c; --surface: #0f1631; --fg: #e8ecf7; --muted: #9aa6c6; --line: #243056;
+    --accent: #5aa5ff; --accent-soft: #14264d; --ask: #f0c060; --ask-soft: #3a2c0c;
+    --ok: #6fd48b; --ok-soft: #10301c; --stop: #ff8a80; --stop-soft: #3d1512; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 16px; line-height: 1.55; padding-inline: 20px; padding-block: 28px 64px; }
+  .wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 44px; }
+  .read { max-width: 760px; }
+  h1, h2 { font-family: var(--display); font-weight: 400; letter-spacing: 0.01em; text-transform: uppercase; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(38px, 7vw, 64px); line-height: 1; }
+  h2 { font-size: clamp(26px, 4vw, 34px); line-height: 1.05; }
+  h3 { font-family: var(--label); font-size: 20px; letter-spacing: 0.04em; text-transform: uppercase; margin: 0; }
+  p { margin: 0; }
+  .eyebrow { font-family: var(--label); font-weight: 700; font-size: 15px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }
+  .lede { font-size: 19px; color: var(--muted); max-width: 64ch; }
+  header { display: grid; gap: 14px; }
+  .status { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-family: var(--label); font-weight: 700; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
+  .chip.ask { color: var(--ask); background: var(--ask-soft); border-color: transparent; }
+  .chip.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+  .chip.stop { color: var(--stop); background: var(--stop-soft); border-color: transparent; }
+  section { display: grid; gap: 18px; }
+  .sec-head { display: grid; gap: 6px; }
+  ol.asks { margin: 0; padding: 0; list-style: none; counter-reset: q; display: grid; gap: 12px; }
+  ol.asks > li { counter-increment: q; display: grid; grid-template-columns: 2.2em 1fr; gap: 12px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+  ol.asks > li::before { content: counter(q); font-family: var(--display); font-size: 26px; line-height: 1; color: var(--ask); }
+  ol.asks strong { display: block; margin-bottom: 2px; }
+  .asks .rec { color: var(--muted); font-size: 15px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 8px; min-width: 0; }
+  .panel dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+  .panel dt { font-family: var(--label); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-size: 14px; }
+  .panel dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  .frames { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  figure.fr { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; min-width: 0; }
+  figure.fr img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000010; }
+  figure.fr figcaption { padding: 12px 14px 14px; display: grid; gap: 6px; align-content: start; }
+  .fr .t { font-family: var(--mono); font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .fr .beat { font-family: var(--label); font-weight: 700; font-size: 19px; letter-spacing: 0.03em; text-transform: uppercase; line-height: 1.15; }
+  .fr .cap { font-size: 15px; }
+  .fr .src { font-size: 14px; color: var(--muted); }
+  .tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { font-family: var(--label); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-size: 14px; background: var(--bg); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-family: var(--mono); font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .note { font-size: 15px; color: var(--muted); max-width: 70ch; }
+  ul.plain { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; }
+  .hooks { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .hook { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 6px; }
+  .hook .line { font-family: var(--display); text-transform: uppercase; font-size: 24px; line-height: 1.05; }
+  .hook .btn { font-size: 15px; color: var(--muted); }
+  .hook.pick { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header class="read">
+    <div class="eyebrow">ClawVille · ClawPump hackathon · final submission video</div>
+    <h1>Arena Demo Storyboard</h1>
+    <p class="lede">Plan v1, 2 October 2026, 01:40 UTC. We film on staging, in the part 2 room with the five house agents at the big screen, as soon as you say go. Each frame below is the graphics layer over a labelled footage slot.</p>
+    <div class="status">
+      <span class="chip ask">Waiting for your go (part 2 + house agents)</span>
+      <span class="chip ask">Waiting for the music track</span>
+      <span class="chip ok">Film account ready, email verified</span>
+      <span class="chip ok">5 demo agents trading on staging</span>
+      <span class="chip stop">Desk figures not built</span>
+      <span class="chip stop">Deadline 2 Oct 05:00 UTC</span>
+      <span class="chip">~56 s · X 16:9 · 1080p30</span>
+    </div>
+  </header>
+
+  <section class="read" id="decided">
+    <div class="sec-head">
+      <div class="eyebrow">Your answers, 01:15 UTC</div>
+      <h2>Decided</h2>
+    </div>
+    <ul class="plain">
+      <li><strong>Box:</strong> staging only. The X post goes out tonight; production can follow tomorrow morning.</li>
+      <li><strong>Room:</strong> wait until the house agents are visible (P15) and the part 2 room is on staging. You give the go.</li>
+      <li><strong>Film account:</strong> a new account, "Reef Rookie", with the email marked verified, so no verify banner shows. It has no arena agent yet, so the launch happens on camera.</li>
+      <li><strong>Board:</strong> honest figures, minus signs kept, with more rows. Five real demo accounts now run real paper agents from the templates and sit at desks 2, 4, 6, 8 and 10.</li>
+      <li><strong>Length:</strong> about 56 s, done in one to two hours after the go.</li>
+    </ul>
+  </section>
+
+  <section class="read" id="blocking">
+    <div class="sec-head">
+      <div class="eyebrow">Still blocking capture</div>
+      <h2>Open items</h2>
+    </div>
+    <ol class="asks">
+      <li><div><strong>The music track.</strong><span class="rec">I pin every cut and caption to its beats when it arrives.</span></div></li>
+      <li><div><strong>Your go.</strong><span class="rec">After P15 (house agents at the big screen, walk-up template choice) and the v5 part 2 room reach staging.</span></div></li>
+      <li><div><strong>Figures at the occupied desks are not built.</strong><span class="rec">No build draws a figure at a desk for a seated arena agent: not staging, not P15, not v5 part 2. The demo agents trade and show on the board, but their desks look empty. A floor session must add it (each arena agent has public "seated" and "seatIndex" fields), or we film without desk figures.</span></div></li>
+      <li><div><strong>ClawPump agent setup failed for the demo agents.</strong><span class="rec">Error "clawpump_budget_exhausted": the arena's own limit on ClawPump calls (60 a minute, burst 10). It retries every 10 minutes. Paper trading continues. For the film launch I wait until no other launch ran for a few minutes; if setup still fails on camera, the line "ITS OWN CLAWPUMP AGENT." drops.</span></div></li>
+      <li><div><strong>Funding.</strong><span class="rec">A paper launch needs no money. Money is only for the optional paid data feeds (USDC sent to the agent's own payment address). The deposit and withdraw flow (P5) is still in build. Recommended: no paid feed on camera.</span></div></li>
+      <li><div><strong>Hook and button.</strong><span class="rec">Recommended: hook "FIVE TRADING AGENTS. ONE FLOOR.", button "PULL UP A CHAIR." The old button "NOW MAKE IT SIX." is false now, because the board has more rows.</span></div></li>
+    </ol>
+  </section>
+
+  <section id="live">
+    <div class="sec-head read">
+      <div class="eyebrow">Scope gate</div>
+      <h2>What is live where</h2>
+      <p class="note">Read on both boxes at 01:06 UTC on 2 October.</p>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>Staging (we film here)</h3>
+        <dl>
+          <dt>Commit</dt><dd><code>ed47c8e1</code>, room v5 part 1</dd>
+          <dt>House agents</dt><dd>All five active and seated, all paper (no live mode in the API)</dd>
+          <dt>Contest board</dt><dd>Runner +$27.24 · ParityAudit-324303 +$8.92 · Mid-Cap Climber −$1.26 · LandTest2 −$13.94 · LandTest1 −$55.08 · Late Bloomer −$85.68 · Dip Hunter −$109.66 · Genesis −$284.71</dd>
+          <dt>Next</dt><dd>P15 and v5 part 2 are in build now</dd>
+        </dl>
+      </div>
+      <div class="panel">
+        <h3>Production</h3>
+        <dl>
+          <dt>Commit</dt><dd><code>d69d4cbe</code>, room v4</dd>
+          <dt>Arena</dt><dd>Live for real users since 1 October 13:30 UTC, so "the Trading Floor is open" is true</dd>
+          <dt>Contest board</dt><dd>Runner +$17.44 · Mid-Cap Climber +$0.41 · Late Bloomer −$8.90 · Dip Hunter −$37.05 · Genesis −$119.68</dd>
+        </dl>
+      </div>
+      <div class="panel">
+        <h3>Demo players (staging)</h3>
+        <dl>
+          <dt>Kelp Capital</dt><dd>Genesis template, max hold 20 min, desk 2</dd>
+          <dt>Coral Quant</dt><dd>Dip Hunter template, desk 4</dd>
+          <dt>Tidepool Trader</dt><dd>Late Bloomer template, desk 6</dd>
+          <dt>Deep Blue Desk</dt><dd>Mid-Cap Climber template, desk 8</dd>
+          <dt>Brine Fund</dt><dd>Genesis template, max market cap $200k, desk 10</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section id="board">
+    <div class="sec-head read">
+      <div class="eyebrow">About 56 seconds, 14 beats</div>
+      <h2>Storyboard</h2>
+      <p class="note">Times assume 120 BPM until the real track arrives. Striped panels are footage slots. The frames are the v1 graphics over labelled footage slots (rendered 01:50 UTC).</p>
+    </div>
+    <div class="frames">
+      <figure class="fr"><img src="frames/v1-00.jpg" alt="Hook: five trading agents, one floor" loading="lazy"><figcaption><span class="t">0 – 4 s · drop A at 2.0</span><span class="beat">Hook</span><span class="cap">CLAWVILLE · THE TRADING FLOOR → FIVE TRADING AGENTS. / ONE FLOOR.</span><span class="src">S1 the building and its green claw, 0.4x to 1x on the drop</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-01.jpg" alt="The floor: every trade on the big board" loading="lazy"><figcaption><span class="t">4 – 9 s</span><span class="beat">The floor</span><span class="cap">EVERY TRADE ON THE BIG BOARD. · paper trades at live market quotes</span><span class="src">S2 spawn view of the part 2 room: the five house agents standing at the big screen</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-02.jpg" alt="The five: one name per card" loading="lazy"><figcaption><span class="t">9 – 16 s</span><span class="beat">The five</span><span class="cap">GENESIS · RUNNER · DIP HUNTER · MID-CAP CLIMBER · LATE BLOOMER, each with its served tagline, cut</span><span class="src">S5a a walk past the five standing house agents, 1.4 s each</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-03.jpg" alt="They review their trades" loading="lazy"><figcaption><span class="t">16 – 19 s</span><span class="beat">They review</span><span class="cap">EVERY 30 MINUTES / IT REVIEWS ITS TRADES.</span><span class="src">S6 "Latest 30-minute report" on a house profile. The tune line only with a real rule change on screen</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-04.jpg" alt="Pivot: use its template" loading="lazy"><figcaption><span class="t">19 – 22 s</span><span class="beat">Pivot</span><span class="cap">LIKE ONE? USE ITS TEMPLATE.</span><span class="src">S5b walk up to one house agent, its pop-up, its template button (P15). Frame after capture</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-05.jpg" alt="Edit any rule" loading="lazy"><figcaption><span class="t">22 – 25.6 s</span><span class="beat">The form</span><span class="cap">EDIT ANY RULE.</span><span class="src">S7 one field typed on camera, boxed</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-06.jpg" alt="Safety rules stay locked" loading="lazy"><figcaption><span class="t">25.6 – 28 s</span><span class="beat">Locked rules</span><span class="cap">SAFETY RULES STAY LOCKED.</span><span class="src">S7 the five hard rules: LP burned or locked, mint and freeze authority revoked, no risky Token-2022 extension, pool reserves present</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-07.jpg" alt="Paper only, for now" loading="lazy"><figcaption><span class="t">28 – 30 s</span><span class="beat">Mode</span><span class="cap">PAPER ONLY. FOR NOW.</span><span class="src">S7 "Paper" on, live "Coming later"</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-08.jpg" alt="Launched" loading="lazy"><figcaption><span class="t">30 – 34 s · drop B</span><span class="beat">Launch</span><span class="cap">LAUNCHED. (+ ITS OWN CLAWPUMP AGENT. only if setup reaches ready on camera)</span><span class="src">S7 the Launch click and the success frame</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-09.jpg" alt="It trades while it sits here" loading="lazy"><figcaption><span class="t">34 – 38 s</span><span class="beat">Take a seat</span><span class="cap">IT TRADES WHILE IT SITS HERE.</span><span class="src">S8 walk to a free desk, E, sit; "My trader" opens</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-10.jpg" alt="Every decision, live" loading="lazy"><figcaption><span class="t">38 – 42 s</span><span class="beat">The stream</span><span class="cap">EVERY DECISION, LIVE.</span><span class="src">S9 the film agent's "Decision stream", a box on one real skip reason</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-11.jpg" alt="You versus the house" loading="lazy"><figcaption><span class="t">42 – 46 s</span><span class="beat">On the board</span><span class="cap">YOU VS THE HOUSE.</span><span class="src">S10 the board: house rows, demo rows, the film agent's row</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-12.jpg" alt="The contest prizes" loading="lazy"><figcaption><span class="t">46 – 51 s</span><span class="beat">The contest</span><span class="cap">TRADING ARENA · WEEK 1 · TOP 3 BY PAPER P&amp;L WIN $CLAWVILLE · 1,000,000 / 500,000 / 250,000</span><span class="src">S11 contest panel; each figure matches the UI to the digit</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-13.jpg" alt="Button" loading="lazy"><figcaption><span class="t">51 – 53 s</span><span class="beat">Button</span><span class="cap">PULL UP A CHAIR.</span><span class="src">S3 board wide, dimmed</span></figcaption></figure>
+      <figure class="fr"><img src="frames/v1-14.jpg" alt="Brand card" loading="lazy"><figcaption><span class="t">53 – 56 s</span><span class="beat">Brand card</span><span class="cap">THE TRADING FLOOR / IS OPEN. · clawville.world</span><span class="src">Pirate mascot hero; black fade from 55.1 s</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section id="claims">
+    <div class="sec-head read">
+      <div class="eyebrow">Truth rules</div>
+      <h2>Claims and their proof</h2>
+      <p class="note">Each line is checked against the take's own frames and the staging API on the day of the take.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>#</th><th>Words on screen</th><th>Proof I must see</th><th>State</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td>FIVE TRADING AGENTS. ONE FLOOR.</td><td>Templates API lists five house agents (checked 01:06 UTC); the five stand in the frame</td><td>API yes, frame after capture</td></tr>
+          <tr><td class="num">2</td><td>EVERY TRADE ON THE BIG BOARD. · paper trades at live market quotes</td><td>The board and tape in the take; paper fills priced from quotes plus 2.5% buy and 1% sell costs (served paperCosts)</td><td>costs yes, frame after capture</td></tr>
+          <tr><td class="num">3</td><td>The five names and taglines</td><td>The served taglines, cut only (checked 01:06 UTC)</td><td>yes</td></tr>
+          <tr><td class="num">4</td><td>EVERY 30 MINUTES / IT REVIEWS ITS TRADES.</td><td>A real "Latest 30-minute report" on a house profile in the take</td><td>after capture</td></tr>
+          <tr><td class="num">5</td><td>LIKE ONE? USE ITS TEMPLATE.</td><td>The P15 pop-up's template button in the take</td><td>needs P15</td></tr>
+          <tr><td class="num">6</td><td>EDIT ANY RULE. · SAFETY RULES STAY LOCKED.</td><td>The typed field; the five hard rules read-only (served labels checked 01:06 UTC)</td><td>labels yes</td></tr>
+          <tr><td class="num">7</td><td>PAPER ONLY. FOR NOW.</td><td>"Coming later" on live; the server refuses live mode (code checked)</td><td>code yes</td></tr>
+          <tr><td class="num">8</td><td>LAUNCHED. · ITS OWN CLAWPUMP AGENT.</td><td>The success frame; provision state "ready" with a ClawPump agent id for the film agent</td><td>at risk (budget limit)</td></tr>
+          <tr><td class="num">9</td><td>IT TRADES WHILE IT SITS HERE.</td><td>The UI line about opening positions only while seated</td><td>after capture</td></tr>
+          <tr><td class="num">10</td><td>EVERY DECISION, LIVE.</td><td>The film agent's own decision stream in the take</td><td>after capture</td></tr>
+          <tr><td class="num">11</td><td>YOU VS THE HOUSE.</td><td>The board frame with the film row beside the house rows; every figure as shown</td><td>after capture</td></tr>
+          <tr><td class="num">12</td><td>Prizes 1,000,000 / 500,000 / 250,000 $CLAWVILLE</td><td>Contest API (checked 01:06 UTC: "Trading Arena Week 1", ends 5 Oct 03:59:59 UTC) and the contest panel in the take</td><td>API yes</td></tr>
+          <tr><td class="num">13</td><td>THE TRADING FLOOR IS OPEN.</td><td>The arena is live on production (checked 01:06 UTC, d69d4cbe)</td><td>yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="plain note">
+      <li>The demo accounts are ours. No caption says or suggests how many people trade.</li>
+      <li>Words I will not use: "AI traders", "profitable", "winning", "beats the market", "real trades", "casino". No em dashes. $CLAWVILLE is the token, vCLAW the in-game currency.</li>
+    </ul>
+  </section>
+
+  <section id="shots">
+    <div class="sec-head read">
+      <div class="eyebrow">Capture method</div>
+      <h2>How we record</h2>
+      <p class="note">A real Chrome window on the desktop (RTX 3080), recorded with ffmpeg gfxcapture at 60 fps, driven over the DevTools protocol by step scripts, with a timestamped rig log. The film account signs in once in the rig's own Chrome profile. Never the dev server.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Shot</th><th>What</th><th>Needs</th></tr></thead>
+        <tbody>
+          <tr><td class="num">S1</td><td>Exterior: the building with its green claw, the walk to the door</td><td>No other avatar at the door</td></tr>
+          <tr><td class="num">S2</td><td>Part 2 room spawn view: the five house agents at the big screen</td><td>P15 on staging</td></tr>
+          <tr><td class="num">S3</td><td>The big board, close and wide</td><td>Recorded at full resolution for zooms</td></tr>
+          <tr><td class="num">S5a</td><td>Walk past the five standing house agents</td><td>P15</td></tr>
+          <tr><td class="num">S5b</td><td>Walk up to one, the pop-up, its template button</td><td>P15</td></tr>
+          <tr><td class="num">S6</td><td>A house profile's 30-minute report</td><td>A recent report</td></tr>
+          <tr><td class="num">S7</td><td>The launch form, one field typed, the locked rules, paper mode, Launch</td><td>The film account; a full ClawPump call bucket</td></tr>
+          <tr><td class="num">S8</td><td>Walk to a free desk, sit, "My trader" opens</td><td>A free desk (1, 3, 5, 7 or 9)</td></tr>
+          <tr><td class="num">S9</td><td>The decision stream, 10 to 20 minutes seated</td><td>Runs while I edit</td></tr>
+          <tr><td class="num">S10</td><td>The board with the film agent's row</td><td>The film agent on the board</td></tr>
+          <tr><td class="num">S11</td><td>The contest panel</td><td>Contest live (ends 5 Oct 03:59:59 UTC)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="read" id="files">
+    <div class="sec-head">
+      <div class="eyebrow">Where the work is</div>
+      <h2>Files on the desktop</h2>
+    </div>
+    <ul class="plain">
+      <li>Brief, beat table v1 and claims: <code>ClawVille/.worktrees/video-production/brag-output-2026-09-30-arena/BRIEF.md</code></li>
+      <li>Runbook (standing brief, rig, traps): <code>…/docs/video-production.md</code></li>
+      <li>Demo and film accounts script: <code>…/scripts/film/demo-accounts.mjs</code> (secrets stay in the git-ignored <code>.film/</code> folder)</li>
+      <li>Composition (graphics built, footage slots empty): <code>…/brag-output-2026-09-30-arena/composition/index.html</code></li>
+    </ul>
+  </section>
+</div>
+
+</body></html>

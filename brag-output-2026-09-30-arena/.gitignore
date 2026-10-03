@@ -1,0 +1,13 @@
+# Sources are tracked; renders, clips, voice audio, music and review frames stay local (large, regenerable).
+*.mp4
+*.mp3
+*.wav
+*.jpg
+*.png
+*.bak.html
+composition/assets/
+composition/snapshots/
+qc-*/
+storyboard/frames/
+vo/trim/
+vo/v_m/

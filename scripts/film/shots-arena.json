@@ -1,0 +1,727 @@
+{
+  "generatedAt": "2026-10-02T01:55:00Z",
+  "sources": {
+    "refAliases": {
+      "stg": "16a18fdd (staging web, interior v5 part 1). Code read at 64f6166d; git diff 16a18fdd..64f6166d touches only FOUNDER-REVIEW.md, deploy-status.md, docs/trading-floor-arena.md, so line numbers are identical.",
+      "api": "ed47c8e1 (staging api). Route code read at 64f6166d; git diff ed47c8e1..64f6166d touches only deploy-status.md.",
+      "p2": "worktree .worktrees/tfx-v5, branch feat/tf-interior-v5, HEAD 46599129 (interior v5 part 2: 1.5x room, 10 desks, kiosk on door wall, ropes, water, sea floor).",
+      "p15int": "worktree .worktrees/p15-int, branch feat/p15-house-agents, HEAD 71f81b8e, based on 64f6166d (part 1). Has T1 API, T2 board, T3 figures GLB, T5 walk-up pop-up. Does NOT mount the figures or publish the walk-up index.",
+      "p15t4": "worktree .worktrees/p15-t4, HEAD c78aaf98 'P15 T4 house-agent figures at the big screen + walk-up', merges part 2 (5d610edd). Only branch where the walk-up pop-up can open."
+    },
+    "liveChecks": {
+      "note": "Read-only public GETs, 2026-10-02 01:44Z. No login, no writes.",
+      "originStagingTip": "origin/staging moved from 64f6166d to 46599129 (part 2) DURING this research. deploy-status.md at 46599129 says part 2 verification PENDING.",
+      "apiHealthCommit": "https://api-staging.clawville.world/health -> commit 46599129ded450e3991a736145e57b95fa7eda80",
+      "webCommit": "NOT verified (staging HTML carries no commit marker).",
+      "houseBoardRoute": "GET /api/floor/arena/house-board -> 404 (P15 not deployed).",
+      "contestLeaderboard": "13 rows. A fresh agent ($0, 0 trades) would sort 8th of 13 right now (after 'Tidepool Trader' and 'Deep Blue Desk', also $0/0 and older). Test names visible: 'ParityAudit-324303 bd17a5', 'LandTest1', 'LandTest2'.",
+      "addons": "GET /addons -> paymentsEnabled true, 2 add-ons: 'Nansen Token Screener (new Solana tokens by 1h volume)' $0.01/call every 600 s; 'Nansen Smart Money DEX Trades (Solana tokens under 1 day old)' $0.05/call every 900 s."
+    },
+    "files": [
+      "stg:apps/web/src/app/(world)/trading-floor/page.tsx",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-sit.ts",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-location.ts",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-data.ts",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-trade-tape.ts",
+      "stg:apps/web/src/lib/three/trading-floor/trading-floor-decor-layout.ts",
+      "stg:apps/web/src/lib/three/player/player-motion-policy.ts",
+      "stg:apps/web/src/lib/three/player/player-intent.ts",
+      "stg:apps/web/src/lib/three/player/player-input.ts",
+      "stg:apps/web/src/lib/three/player/player-capability-controller.tsx",
+      "stg:apps/web/src/lib/three/player/player-pointer-orbit.ts",
+      "stg:apps/web/src/components/three/world-stage/WorldStageRoot.tsx",
+      "stg:apps/web/src/components/three/world-stage/StageTransition.tsx",
+      "stg:apps/web/src/components/three/World3DCanvas.tsx",
+      "stg:apps/web/src/lib/three/arena-buildings.tsx",
+      "stg:apps/web/src/lib/three/player-avatar.tsx",
+      "stg:apps/web/src/lib/three/character-positions.ts",
+      "stg:apps/web/src/lib/three/collision/world-colliders.ts",
+      "stg:apps/web/src/lib/pixi/tilemap-data.ts",
+      "stg:apps/web/src/stores/game.ts",
+      "stg:apps/web/src/stores/floor-arena-ui.ts",
+      "stg:apps/web/src/hooks/use-floor-arena.ts",
+      "stg:apps/web/src/components/game/location-hud.tsx",
+      "stg:apps/web/src/components/game/location-prompt-text.ts",
+      "stg:apps/web/src/components/game/exchange-modal.tsx",
+      "stg:apps/web/src/components/game/trading-floor/trading-floor-tab.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/launch-trader.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/arena-params-form.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/addon-picker.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/my-trader.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/agent-profile.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/arena-kit.tsx",
+      "stg:apps/web/src/components/game/trading-floor/arena/contest-rules.tsx",
+      "stg:packages/shared/src/constants/floor-arena.ts",
+      "api:apps/api/src/routes/floor-arena.ts",
+      "api:apps/api/src/services/floor-arena/leaderboard.ts",
+      "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts",
+      "p2:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx",
+      "p2:apps/web/src/lib/three/trading-floor/trading-floor-trade-tape.ts",
+      "p15int:apps/web/src/components/trading-floor/house-agent-walkup.tsx",
+      "p15int:apps/web/src/stores/house-agent-walkup.ts",
+      "p15int:apps/web/src/app/(world)/trading-floor/page.tsx",
+      "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-house-agents-logic.ts",
+      "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-house-agents.tsx",
+      "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx",
+      "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts"
+    ],
+    "docsNotUsed": "3dStructure.md 9h and docs/trading-floor-arena.md were not needed; every value below comes from code."
+  },
+  "controls": {
+    "tradingFloorRoom": {
+      "phase": "both (TRADING_FLOOR_POLICY and slot capabilities unchanged in part 2 and P15)",
+      "walkWuPerSec": 520,
+      "sprintWuPerSec": 1053,
+      "sprintKey": "ShiftLeft or ShiftRight held with WASD (RUN_SPEED_MULT 2.025)",
+      "msPer100Wu": { "walk": 192, "sprint": 95 },
+      "moveKeys": "KeyW/KeyA/KeyS/KeyD, CAMERA-RELATIVE. At camera yaw 0 (arrival): W = -Z (toward board), S = +Z (toward door), A = -X, D = +X. After a 180 deg turn (yaw +-pi): W = +Z, D = -X.",
+      "keyIdentity": "event.code (KeyW etc.); CDP Input.dispatchKeyEvent must send 'code'.",
+      "keyTargetGuard": "keys typed in an editable element (the name input) never move the avatar",
+      "maxDeltaSeconds": "0.1: below 10 FPS the avatar covers LESS than hold x speed. Prefer DOM waitFor over pure timing.",
+      "cameraYaw": "ArrowLeft / ArrowRight at 1.25 rad/s. 90 deg = 1257 ms, 180 deg = 2513 ms. ArrowLeft decreases yaw.",
+      "cameraPitch": "ArrowUp / ArrowDown change camera HEIGHT offset at 180 wu/s, clamp -120..+150 (0 at arrival). It is a height offset, not an angle.",
+      "leftDragOrbit": "Left mouse drag on the canvas (slop 4 px). yaw rad = 2*pi*dx/canvasClientHeight (desktop speed 1). 180 deg = clientHeight/2 px; on a 1080-high canvas 540 px. Vertical drag raises/lowers the camera. Blocked while the Exchange modal is open.",
+      "chaseCamera": "fov 60, behind 520, above 260, lookY 180, lookAhead 140. Spring arm shortens against walls, desks, pillars, kiosk; claws only when camera y < 242. Arm grows back with rate 4/s. Camera yaw only changes from arrows/drag (no auto-follow); on sit it eases to face the desk.",
+      "E": "One ladder: stand > monitor > door > sit > (P15 only) house-agent walk-up. Ignored while the Exchange modal is open.",
+      "Escape": "Modal open: closes the modal and does NOT stand. Modal closed and seated: stands up. So two Escapes = close panel + stand.",
+      "seatedMove": "Any WASD while seated stands the player up on that frame.",
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:45",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:71-88",
+        "stg:apps/web/src/lib/three/player/player-input.ts:46",
+        "stg:apps/web/src/lib/three/player/player-input.ts:140-153",
+        "stg:apps/web/src/lib/three/player/player-intent.ts:110-215",
+        "stg:apps/web/src/lib/three/player/player-motion-policy.ts:60-82",
+        "stg:apps/web/src/components/three/world-stage/WorldStageRoot.tsx:712-744",
+        "stg:apps/web/src/lib/three/player/player-pointer-orbit.ts:4-12",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1204-1214",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1291-1338",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-sit.ts:43-47",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:1096-1114"
+      ]
+    },
+    "gameWorld": {
+      "phase": "both",
+      "walkWuPerSec": 550,
+      "sprintWuPerSec": 1114,
+      "moveKeys": "WASD camera-relative (same intent code as the room).",
+      "cameraOrbitKeys": "ArrowLeft/ArrowRight orbit at 1.5 rad/s (180 deg = 2094 ms); ArrowUp/ArrowDown tilt.",
+      "mouseOrbit": "drei OrbitControls, rotateSpeed 1: 180 deg = canvasClientHeight/2 px left-drag. Wheel zooms.",
+      "followCamera": "FPSFollowCamera keeps the orbit angle and a 240 wu radius. Fresh load: slot camera at [0,600,1300] relative to origin, so the camera sits SOUTH of the avatar looking NORTH. The Trading Floor is SOUTH, behind the camera.",
+      "E": "Opens Nori chat if near Nori; else enters nearLocation (Trading Floor door band -> walk-in). Disabled in Autonomous mode.",
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/player-avatar.tsx:83",
+        "stg:apps/web/src/lib/three/player-avatar.tsx:290-307",
+        "stg:apps/web/src/lib/three/player-avatar.tsx:382-395",
+        "stg:apps/web/src/components/three/World3DCanvas.tsx:362-384",
+        "stg:apps/web/src/components/three/World3DCanvas.tsx:518-595",
+        "stg:apps/web/src/components/three/World3DCanvas.tsx:2759-2771",
+        "stg:apps/web/src/components/three/world-stage/WorldStageRoot.tsx:619-627"
+      ]
+    }
+  },
+  "room": {
+    "staging-now": {
+      "units": "interior world units (wu); origin floor centre; +Z = door wall, -Z = board wall; avatar ~270 wu tall",
+      "hall": { "halfX": 1300, "halfZ": 1100, "height": 950 },
+      "spawn": { "x": 0, "z": 780, "facing": "-Z", "cameraYaw": 0, "cameraPitch": 0 },
+      "spawnCameraComputed": { "pos": [0, 260, 1088], "lookAt": [0, 180, 640], "note": "arm clipped to 308 by camera z max 1088; computed, not screenshotted" },
+      "door": { "x": 0, "z": 1100, "armRadius": 240, "hintRadius": 460, "label": "Exit / press E to leave", "playerZMax": 920 },
+      "kiosk": { "x": -300, "z": -980, "top": 300, "armRadius": 380, "hintRadius": 760, "solidHalf": [64.49, 50.45], "label": "Trading Monitor / press E to manage trades" },
+      "board": { "width": 1700, "height": 520, "bottomY": 360, "topY": 880, "planeZ": -1094, "canvas": [1024, 313], "maxRows": 8 },
+      "dais": { "centre": [0, -60], "solidHalf": [350, 346], "blockedBodyBox": "x -396..396, z -452..332", "clawTopY": 230 },
+      "desks": [
+        { "index": 0, "uiDesk": 1, "console": [-1120, -500], "seat": [-915, -500], "chair": [-795, -500] },
+        { "index": 1, "uiDesk": 2, "console": [-1120, 0], "seat": [-915, 0], "chair": [-795, 0] },
+        { "index": 2, "uiDesk": 3, "console": [-1120, 500], "seat": [-915, 500], "chair": [-795, 500] },
+        { "index": 3, "uiDesk": 4, "console": [1120, -500], "seat": [915, -500], "chair": [795, -500] },
+        { "index": 4, "uiDesk": 5, "console": [1120, 0], "seat": [915, 0], "chair": [795, 0] },
+        { "index": 5, "uiDesk": 6, "console": [1120, 500], "seat": [915, 500], "chair": [795, 500] }
+      ],
+      "seatRadii": { "arm": 200, "hint": 420, "labelY": 360 },
+      "seatedCamera": "left-wall seats face -X, right-wall seats face +X; camera eases to look at the desk",
+      "playerBounds": { "absXMax": 939, "zMin": -899.55, "zMax": 920 },
+      "cameraBounds": { "absXMax": 985, "zMin": -1054, "zMax": 1088 },
+      "tape": { "laneX": [-874, 874], "y": 420, "zFrom": -900, "zTo": 720, "lifetimeMs": 18000, "lanes": "entries left (-X), exits right (+X)" },
+      "ledRibbon": "y 790..860 on three walls, reads the arena tape",
+      "otherAgentsAtDesks": "none rendered; desks show decor monitor rigs only",
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:35-61",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:188-264",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:349-429",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:464-471",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:640-755",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:820-887",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1017",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:160",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-trade-tape.ts:54-108",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-decor-layout.ts:926-927"
+      ]
+    },
+    "part2": {
+      "source": "p2 (tfx-v5 = origin/staging 46599129). P15 extras from p15t4.",
+      "hall": { "halfX": 1950, "halfZ": 1650, "height": 1425 },
+      "spawn": { "x": 0, "z": 1170, "facing": "-Z", "cameraYaw": 0, "cameraPitch": 0 },
+      "spawnCameraComputed": { "pos": [0, 260, 1638], "lookAt": [0, 180, 1030], "note": "computed, not screenshotted" },
+      "door": { "x": 0, "z": 1650, "armRadius": 240, "hintRadius": 460, "playerZMax": 1470 },
+      "kiosk": { "x": -1000, "z": 1570, "faces": "-Z (into the room, on the DOOR wall)", "size": "480 x 360 x 140", "frontZ": 1500, "armRadius": 380, "hintRadius": 760, "label": "Trading Monitor / press E to manage trades" },
+      "board": { "width": 2550, "height": 780, "bottomY": 540, "topY": 1320, "planeZ": -1644 },
+      "dais": { "centre": [0, -90], "plinthHalf": [350, 346], "movementSolidHalf": [492, 488], "blockedBodyBox": "x -538..538, z -624..444", "note": "brass stanchions + red velvet ropes ring the plinth" },
+      "desks": [
+        { "index": 0, "uiDesk": 1, "console": [-1770, -500], "seat": [-1565, -500] },
+        { "index": 1, "uiDesk": 2, "console": [-1770, 0], "seat": [-1565, 0] },
+        { "index": 2, "uiDesk": 3, "console": [-1770, 500], "seat": [-1565, 500] },
+        { "index": 3, "uiDesk": 4, "console": [1770, -500], "seat": [1565, -500] },
+        { "index": 4, "uiDesk": 5, "console": [1770, 0], "seat": [1565, 0] },
+        { "index": 5, "uiDesk": 6, "console": [1770, 500], "seat": [1565, 500] },
+        { "index": 6, "uiDesk": 7, "console": [-1770, -1000], "seat": [-1565, -1000] },
+        { "index": 7, "uiDesk": 8, "console": [-1770, 1000], "seat": [-1565, 1000] },
+        { "index": 8, "uiDesk": 9, "console": [1770, -1000], "seat": [1565, -1000] },
+        { "index": 9, "uiDesk": 10, "console": [1770, 1000], "seat": [1565, 1000] }
+      ],
+      "playerBounds": { "absXMax": 1589, "zMin": -1470, "zMax": 1470 },
+      "cameraZMax": 1638,
+      "houseAgentStage": {
+        "spots": [
+          { "index": 0, "template": "genesis", "name": "Genesis", "x": -1020, "z": -1350 },
+          { "index": 1, "template": "runner", "name": "Runner", "x": -510, "z": -1350 },
+          { "index": 2, "template": "dip-hunter", "name": "Dip Hunter", "x": 0, "z": -1350 },
+          { "index": 3, "template": "midcap-climber", "name": "Mid-Cap Climber", "x": 510, "z": -1350 },
+          { "index": 4, "template": "late-bloomer", "name": "Late Bloomer", "x": 1020, "z": -1350 }
+        ],
+        "facing": "+Z (toward the room)",
+        "movementSolidHalf": [70, 76],
+        "bodyStopsAtZ": -1228,
+        "walkupOpenRadius": 250,
+        "walkupCloseRadius": 290,
+        "figuresDrawn": "only in p15t4 (GLB /models/trading-floor/trading-floor-house-agents.glb?v=1). In p2 alone the SOLIDS exist but nothing is drawn."
+      },
+      "tape": { "laneX": [-1311, 1311], "y": 480, "zFrom": -1350, "zTo": 1080 },
+      "water": "shallow plane at y 7, ripples flow door -> board",
+      "interiorGlb": "/models/trading-floor/trading-floor-interior-opt1-mo-ktx.glb?v=6",
+      "codeRefs": [
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:37-63",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:137-204",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:289-306",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:345-354",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:363-367",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:588-650",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:696-731",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-trade-tape.ts:75-86",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:181",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-house-agents-logic.ts:21-30"
+      ]
+    }
+  },
+  "shots": [
+    {
+      "id": "S1",
+      "title": "Exterior: /game spawn to the Trading Floor door, walk-in curtain",
+      "phase": "both",
+      "url": "https://staging.clawville.world/game",
+      "geometry": {
+        "gameSpawnWorld": "x 0 +-160 (random per load), z 540 +-160 (so z 380..700)",
+        "tradingFloorBuildingCentre": [0, 4160],
+        "buildingNorthFaceZ": 3412,
+        "bodyStopsAtZ": "3362 (humanoid half 50) or 3387 (chibi half 25)",
+        "pearl": { "pos": [0, 2860], "talkRadius": 260, "note": "Pearl wins the overlap; her prompt is 'Talk to Pearl'" },
+        "doorTarget": [0, 3360],
+        "doorPromptRadius": 400,
+        "usableEBandAtX0": "z 3121..3362 (above 3120 Pearl no longer wins)",
+        "exitLandsAt": [0, 2500],
+        "direction": "due SOUTH (+Z) of the spawn, ~2820 wu"
+      },
+      "steps": [
+        { "phase": "both", "do": "load", "detail": "Open the URL with a logged-in, non-guest account that has an avatar (it is promoted to Controlled mode).", "waitFor": "[role=progressbar][aria-label='Loading ClawVille'] gone", "ms": null },
+        { "phase": "both", "do": "dismiss overlays", "detail": "See overlays[]. Set localStorage before load; close the tutorial with Escape if it shows (it eats ArrowRight/Enter).", "waitFor": "no modal", "ms": null },
+        { "phase": "both", "do": "check mode", "detail": "The toggle (aria-label 'Control mode toggle') must show 'Controlled' active. Click 'Controlled' if 'Autonomous' is active; E is disabled in Autonomous.", "waitFor": null, "ms": null },
+        { "phase": "both", "do": "turn camera 180 deg", "detail": "Hold ArrowLeft 2094 ms (1.5 rad/s), or left-drag canvasClientHeight/2 px horizontally. Building then sits ahead.", "waitFor": "screenshot shows the Trading Floor building ahead", "ms": 2094 },
+        { "phase": "both", "do": "walk to the door", "detail": "Hold KeyW (forward now = +Z). 2710 wu from z 540 = 4927 ms walk; worst case from z 380 to the wall = 5422 ms. Shift+W sprint: about 2680 ms. Overshoot is safe: the building collider stops the body at z 3362 inside the band. Optional: hold KeyA 364 ms first to pass 200 wu beside Pearl instead of through her (after the turn A = +X).", "waitFor": "button[aria-label='Enter the Trading Floor'] exists", "ms": 5600 },
+        { "phase": "both", "do": "enter", "detail": "Press E (code KeyE) or click button[aria-label='Enter the Trading Floor']. Do NOT click the building mesh (no stable coordinates).", "waitFor": "[data-stage-transition] != 'idle'", "ms": 0 },
+        { "phase": "both", "do": "walk-in + curtain", "detail": "Avatar walks to (0,3360) until within 200 game-px or 1500 ms, then the curtain: fadingOut 250 ms -> awaiting (shows 'RIDING THE CURRENT…', lasts until the interior is ready; ready gate has a 1500 ms avatar fallback) -> fadingIn 250 ms -> idle. Cut from the first non-idle frame to the frame it returns to idle.", "waitFor": "[data-stage-transition='idle'] and location.pathname == '/trading-floor'", "ms": null }
+      ],
+      "expectTexts": [
+        "LocationHUD pill line 1: 'Press E · Trading Floor' (CSS uppercase: 'PRESS E · TRADING FLOOR')",
+        "LocationHUD pill line 2: '↗ Enter the Trading Floor' (aria-label 'Enter the Trading Floor')",
+        "Before the band: 'Press E · Pearl' / 'Talk to Pearl' near Pearl",
+        "Curtain: 'RIDING THE CURRENT…' on #02070d full screen (z 9999)"
+      ],
+      "traps": [
+        "Fresh load: camera looks NORTH, the building is BEHIND the camera. Turn 180 deg first.",
+        "E inside Pearl's radius (z 2600..3120 at x 0) opens Pearl's chat, not the door.",
+        "E near the spawn can open Nori's chat (Nori at world z 400).",
+        "The click/E walk-in fades after 1500 ms even if the avatar is still walking; from far away it is a short walk then a cut.",
+        "Explore mode skips the walk and cuts straight to the curtain; Autonomous mode disables E.",
+        "Avatar passes through Pearl if x is near 0 (NPCs have no collider in world-colliders.ts)."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/pixi/tilemap-data.ts:19-23",
+        "stg:apps/web/src/lib/pixi/tilemap-data.ts:136",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-location.ts:49-91",
+        "stg:apps/web/src/lib/three/character-positions.ts:56",
+        "stg:apps/web/src/lib/three/character-positions.ts:71-98",
+        "stg:apps/web/src/lib/three/character-positions.ts:148",
+        "stg:apps/web/src/lib/three/character-positions.ts:228-233",
+        "stg:apps/web/src/lib/three/collision/world-colliders.ts:154",
+        "stg:apps/web/src/lib/three/collision/world-colliders.ts:190",
+        "stg:apps/web/src/lib/three/collision/world-colliders.ts:268-277",
+        "stg:apps/web/src/stores/game.ts:27-36",
+        "stg:apps/web/src/lib/three/arena-buildings.tsx:108-110",
+        "stg:apps/web/src/lib/three/arena-buildings.tsx:197-272",
+        "stg:apps/web/src/lib/three/arena-buildings.tsx:465-466",
+        "stg:apps/web/src/lib/three/player-avatar.tsx:290-307",
+        "stg:apps/web/src/lib/three/player-avatar.tsx:382-395",
+        "stg:apps/web/src/components/game/location-hud.tsx:86-180",
+        "stg:apps/web/src/components/game/location-prompt-text.ts:44-80",
+        "stg:apps/web/src/components/three/world-stage/StageTransition.tsx:43-49",
+        "stg:apps/web/src/components/three/world-stage/StageTransition.tsx:248-285",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:580-624",
+        "stg:apps/web/src/components/game/control-mode-toggle.tsx:42-43"
+      ]
+    },
+    {
+      "id": "S2",
+      "title": "Spawn view inside the hall",
+      "phase": "both",
+      "url": "https://staging.clawville.world/trading-floor (direct navigation works; or arrive from S1)",
+      "steps": [
+        { "phase": "both", "do": "arrive", "detail": "Spawn resets on every entry: facing -Z, camera yaw 0, pitch 0, snap. Hold still 2-3 s for the arm and the board texture.", "waitFor": "[data-stage-transition='idle']", "ms": 3000 },
+        { "phase": "staging-now", "do": "frame", "detail": "Body (0,780). Camera ~(0,260,1088). In frame: big board centred on the far wall (top of frame), green twin plinth claws on the dais at (0,-60) mid-frame, three desks per side wall, kiosk left of board centre at (-300,-980), tape chips flying in lanes x +-874 at y 420, LED ribbon high on the walls. No prompt capsule at spawn (kiosk 1785 wu, nearest seat 957 wu, door 320 wu but the Exit hint needs the camera to face +Z).", "waitFor": null, "ms": null },
+        { "phase": "part2", "do": "frame", "detail": "Body (0,1170). Camera ~(0,260,1638). Board 2550 x 780 on the far wall; plinth claws with brass stanchions and red velvet ropes at (0,-90); five desks per side wall; shallow water with ripples flowing toward the board; sea floor props; tape lanes x +-1311 at y 480. P15 only (p15t4): five house agents stand under the board at z -1350, name capsules above heads. No prompt capsule at spawn (kiosk 1077 wu > 760, door 480 > 460).", "waitFor": null, "ms": null }
+      ],
+      "expectTexts": [
+        "Top-left button: 'Back to World'",
+        "Desktop hint strip: 'Trading Floor' + 'WASD to walk · E at the monitor to manage trades'",
+        "P15 only: name capsules 'Genesis', 'Runner', 'Dip Hunter', 'Mid-Cap Climber', 'Late Bloomer'"
+      ],
+      "traps": [
+        "The 'Back to World' button and the hint strip are always on screen on /trading-floor; no code switch hides them (CSS inject or crop).",
+        "First entry streams the interior GLB (?v=5 staging-now, ?v=6 part 2); the curtain holds until ready."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/app/(world)/trading-floor/page.tsx:120-183",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1257-1289",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:55-61",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:1069-1075",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:57-63",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-house-agents.tsx:107-172"
+      ]
+    },
+    {
+      "id": "S2b",
+      "title": "Walk down the left desk row",
+      "phase": "both",
+      "url": "continue from S2",
+      "steps": [
+        { "phase": "staging-now", "do": "strafe left", "detail": "Hold KeyA 1346 ms: (0,780) -> (-700,780). Path clear (dais box ends at x -396).", "waitFor": null, "ms": 1346 },
+        { "phase": "staging-now", "do": "walk the row", "detail": "Hold KeyW 2462 ms: (-700,780) -> (-700,-500). Seats at x -915 are 215 wu away: each 'Trading Desk' capsule appears (hint 420) without the press-E line (arm 200). Camera keeps yaw 0, so the row runs along the left of frame toward the board.", "waitFor": null, "ms": 2462 },
+        { "phase": "part2", "do": "strafe left", "detail": "Hold KeyA 2596 ms: (0,1170) -> (-1350,1170). Kiosk box (z 1454..1686) is behind this line.", "waitFor": null, "ms": 2596 },
+        { "phase": "part2", "do": "walk the row", "detail": "Hold KeyW 4365 ms: (-1350,1170) -> (-1350,-1100). Passes seats 7, 2, 1, 0, 6 (x -1565, 215 wu away). Stays 414 wu from the Genesis spot, so no P15 pop-up.", "waitFor": null, "ms": 4365 }
+      ],
+      "expectTexts": [ "'Trading Desk' capsule (DOM, in [data-world-labels]) moving desk to desk" ],
+      "traps": [
+        "Do not press E during the walk: within 200 wu of a seat it sits.",
+        "Timing assumes >=10 FPS; check position by a screenshot, the room exposes no window probe."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:640-663",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:697-716",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1004-1030",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1135-1170",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:588-611"
+      ]
+    },
+    {
+      "id": "S3",
+      "title": "Big board close-up",
+      "phase": "both",
+      "url": "continue in the room",
+      "boardContent": {
+        "staging-now": "Contest leaderboard board: header 'TRADING ARENA WEEK 1 · PAPER', 'ENDS IN nD nnH nnM', 'HH:MM UTC'; prize line 'PRIZES … $CLAWVILLE' + 'HOUSE AGENTS NOT ELIGIBLE'; captions '#', 'TRADER', 'TEMPLATE', 'REALISED P&L', 'TRADES', 'W/L', 'OPEN'; up to 8 rows (house rows tagged 'HOUSE', ineligible players 'NO PRIZE'); basis line 'PAPER TRADES · … PER POSITION · REALISED P&L AFTER … BUY + … SELL COSTS'; ticker row of tape items or 'ARENA TRADE TAPE STANDING BY'. Before data: 'CONNECTING TO THE ARENA' / 'ARENA DATA UNAVAILABLE'. All board text is uppercased.",
+        "part2-tfx-v5": "Same leaderboard board, drawn larger (2550 x 780).",
+        "part2-P15": "Five equal house-agent columns (x -1020..1020, one per agent spot): name, PAPER/LIVE pill + ACTIVE/PAUSED/STOPPED, strategy words ('BUSIEST YOUNG', 'BUYS THE DIP', 'STEADY CLIMB', 'WAKING UP', …), exit rule ('TP +10%' / 'SL -10%' / 'NO TP'), scan 'n/n OK', 'WATCH <SYM>' or 'SKIP <WORD>', 'OPEN n OF m', newest open trade, realised P&L, 'nW nL'. Header 'HOUSE AGENTS · PAPER'. NO player rows, NO prize line, NO tape row."
+      },
+      "steps": [
+        { "phase": "staging-now", "do": "full-board stand", "detail": "From spawn hold KeyW 808 ms -> body (0,360) (dais box starts at z 332). Computed camera (0,260,880), board ~42% of a 16:9 frame width, whole board above the avatar head and the claws.", "waitFor": "screenshot", "ms": 808 },
+        { "phase": "staging-now", "do": "closer stand (optional)", "detail": "KeyA 962 ms -> x -500; KeyW 2385 ms -> z -460; KeyD 962 ms -> (0,-460). Computed camera (0,260,60): board ~72% width but the top ~5 deg (header) is cut off at pitch 0. No pitch setting fixes it (low camera clips on the claws).", "waitFor": "screenshot", "ms": 4309 },
+        { "phase": "part2", "do": "full-board stand", "detail": "From spawn hold KeyW 1365 ms -> body (0,460) (dais/rope box ends at z 444). Computed camera (0,260,980): board ~47% width, top edge at ~29 deg of the 30 deg half-FOV (tight). P15 agents at z -1350 project below the board's bottom edge.", "waitFor": "screenshot", "ms": 1365 },
+        { "phase": "part2", "do": "P15 close pass (optional)", "detail": "Stay > 250 wu from every spot to keep the pop-up closed, e.g. body (-765,-1050) is 394 wu from Genesis and Runner.", "waitFor": "screenshot", "ms": null }
+      ],
+      "expectTexts": [
+        "staging-now: 'TRADING ARENA WEEK 1 · PAPER', 'TRADER', 'REALISED P&L', 'W/L'",
+        "P15: 'HOUSE AGENTS · PAPER'"
+      ],
+      "traps": [
+        "Legibility (staging-now): 16 px row font = ~11.7 screen px at 1920x1080 from the spawn (0.52 screen px per canvas px measured at 1366x768). Board redraws on data change plus a 30 s clock tick.",
+        "P15 code comment: a 22 px capital is ~6.5 screen px from the spawn (projection, not measured).",
+        "All framing numbers here are computed from the spring-arm code, not seen on screen.",
+        "Live board data polls every 15 s (leaderboard, tape); contest header every 60 s."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:640-659",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:737-985",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-data.ts:173-202",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-data.ts:352-366",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen.tsx:59-60",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen.tsx:107-109",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:40-48",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:255-264",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:820-848",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:195-204",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:1-55",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:610-656",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:1010-1014"
+      ]
+    },
+    {
+      "id": "S4",
+      "title": "Desks",
+      "phase": "both",
+      "url": "continue in the room",
+      "steps": [
+        { "phase": "staging-now", "do": "show desks", "detail": "6 desks, indices 0..5 (UI 'desk N' = index+1); coordinates in room.staging-now.desks. All are free for every player: the server has no occupancy check, and no other agent (house or player) is drawn at a desk.", "waitFor": null, "ms": null },
+        { "phase": "part2", "do": "show desks", "detail": "10 desks, indices 0..9; 0..5 keep their order, 6..9 are the new end desks (z +-1000). Coordinates in room.part2.desks. House agents stand at the board stage (P15), not at desks.", "waitFor": null, "ms": null }
+      ],
+      "expectTexts": [ "'Trading Desk' capsule; armed line 'press E to sit' (CSS uppercase)" ],
+      "traps": [
+        "API accepts seatIndex 0..9 on both phases (FLOOR_ARENA_DESK_COUNT 10); the staging-now room only offers 0..5.",
+        "A player's agent keeps its desk after the tab closes (no write on tab close); only stand / 'Leave the desk' frees it."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:349-360",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:640-663",
+        "stg:packages/shared/src/constants/floor-arena.ts:237-243",
+        "api:apps/api/src/routes/floor-arena.ts:244",
+        "api:apps/api/src/routes/floor-arena.ts:272-275",
+        "api:apps/api/src/routes/floor-arena.ts:859-887",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:854-877",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:289-306"
+      ]
+    },
+    {
+      "id": "S5",
+      "title": "House agent profiles + the template button",
+      "phase": "both",
+      "url": "continue in the room",
+      "steps": [
+        { "phase": "staging-now", "do": "walk to the kiosk", "detail": "From spawn: KeyA 962 ms -> (-500,780); KeyW 2846 ms -> (-500,-700). Kiosk is 344 wu away (arm 380).", "waitFor": "capsule text 'press E to manage trades' visible", "ms": 3808 },
+        { "phase": "part2", "do": "walk to the kiosk", "detail": "Kiosk is on the DOOR wall. From spawn: hold ArrowLeft 2513 ms (camera now faces +Z); KeyD 1923 ms -> (-1000,1170) (D = -X after the turn); KeyW 538 ms -> (-1000,1450). Kiosk 120 wu away.", "waitFor": "capsule text 'press E to manage trades' visible", "ms": 4974 },
+        { "phase": "both", "do": "open the Exchange", "detail": "Press E. Opens at once (no delay). Modal title 'Exchange', tab 'Trading Floor' active, arena section at the top.", "waitFor": "[data-testid='floor-arena-section']", "ms": 0 },
+        { "phase": "both", "do": "open a house profile", "detail": "Scroll to [data-testid='arena-templates'] ('The five arena house agents (paper)'). Click 'Watch' inside [data-testid='arena-template-runner'] (any of genesis, runner, dip-hunter, midcap-climber, late-bloomer). Or click a row [data-testid='arena-leaderboard-row'].", "waitFor": "[data-testid='arena-agent-profile']", "ms": null },
+        { "phase": "staging-now", "do": "template button", "detail": "The profile has NO template button on staging. Click 'Back to the arena', then 'Start from this template' inside the same template card (shown only when the account has no arena agent). It opens the launch flow at 'Step 2 of 4' / 'Set the rules' for that template. 'Launch your trader' instead starts at 'Step 1 of 4' with buttons 'Use <Name>'.", "waitFor": "[data-testid='arena-launch']", "ms": null },
+        { "phase": "part2", "do": "P15 walk-up (p15t4 only)", "detail": "From spawn: KeyA 1154 ms -> (-600,1170); hold KeyW (~4423 ms) toward Runner (-510,-1350). The body stops at z -1228; the pop-up opens within 250 wu (about z -1117). Exact path is clear of the rope box (x -538).", "waitFor": "[data-testid='house-agent-walkup']", "ms": 4423 },
+        { "phase": "part2", "do": "P15 template choice", "detail": "Click [data-testid='house-agent-walkup-primary'] ('Choose this trading style') or press E. No arena agent: opens the Exchange on launch 'Step 2 of 4' for that template. Has an agent: button reads 'Open my trader' and opens the desk panel. 'Watch its trades' ([data-testid='house-agent-walkup-watch']) opens the same profile as staging. Close: [data-testid='house-agent-walkup-close'] (aria-label 'Close', text '×').", "waitFor": "[data-testid='arena-launch']", "ms": null }
+      ],
+      "expectTexts": [
+        "Overview card title 'The five arena house agents (paper)'",
+        "Card: '<Name>: <tagline>', risk line, 'All time: … · n trades · n wins · n losses · n open', buttons 'Watch', 'Start from this template'",
+        "Genesis: 'Buys the busiest young coin and takes +10% fast.'",
+        "Runner: 'Buys a coin in its first 2 minutes on our radar when it is already up 680% in 6 hours but calm right now.'",
+        "Dip Hunter: 'Buys a proven coin after a one-hour pullback and sells the bounce at +8%.'",
+        "Mid-Cap Climber: 'Rides a $500k to $5M coin that climbs steadily, not spiking, and sells at +10%.'",
+        "Late Bloomer: 'Skips the launch chaos and buys a small coin that is waking up again after 6 hours.'",
+        "Profile header: name, pill 'House', status pill ('Trading' / 'Away from its desk' / 'Paused' / 'Stopped'), pill 'Paper trading', 'Template: <Name> · rules vN'",
+        "Profile blocks in order: 'Rules', 'Open positions', 'Decision stream', 'Latest 30-minute report', 'Recent trades', 'Rule changes'; back button 'Back to the arena'",
+        "P15 pop-up: 'House agent', <name>, 'PAPER' pill, 'Active', 'Profile', tagline, 'Contest: <P&L> realised P&L · n wins · n losses · n open trades', 'Trading strategy', thesis, 'Risk: …', 'You start with this exit rule: …', 'Choose this trading style', 'or press E', 'Watch its trades'"
+      ],
+      "traps": [
+        "The arena panel state persists inside the session: E at the kiosk reopens the LAST panel (profile, desk, launch), not the overview. Click 'Back to the arena' to reset.",
+        "Clicking the dark backdrop outside the modal closes it.",
+        "Modal open = room frozen: WASD, arrows, drag and E do nothing until Escape or the 'Close' button.",
+        "P15 pop-up never opens while the Exchange is open, while seated, or while a kiosk/door/seat prompt is armed.",
+        "P15 in p2 without p15t4: the five stage colliders exist but nothing is drawn (invisible blockers near z -1228..-1472)."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:360-364",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1158-1160",
+        "stg:apps/web/src/stores/game.ts:1371-1372",
+        "stg:apps/web/src/stores/floor-arena-ui.ts:78-89",
+        "stg:apps/web/src/components/game/exchange-modal.tsx:1497-1503",
+        "stg:apps/web/src/components/game/exchange-modal.tsx:1704-1728",
+        "stg:apps/web/src/components/game/trading-floor/trading-floor-tab.tsx:356-367",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx:298-370",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx:474-524",
+        "stg:apps/web/src/components/game/trading-floor/arena/agent-profile.tsx:23-126",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-kit.tsx:110-117",
+        "stg:packages/shared/src/constants/floor-arena.ts:498-582",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:137-156",
+        "p2:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:725-731",
+        "p15int:apps/web/src/components/trading-floor/house-agent-walkup.tsx:62-115",
+        "p15int:apps/web/src/components/trading-floor/house-agent-walkup.tsx:283-403",
+        "p15int:apps/web/src/stores/house-agent-walkup.ts:199-223",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-house-agents-logic.ts:81-134",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:456",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1946"
+      ]
+    },
+    {
+      "id": "S6",
+      "title": "30-minute report + rule changes on a house profile",
+      "phase": "both",
+      "url": "continue from S5 profile",
+      "steps": [
+        { "phase": "both", "do": "scroll the profile", "detail": "Scroll the modal body to the block titled 'Latest 30-minute report', then to 'Rule changes'.", "waitFor": "[data-testid='arena-report'] or the empty text", "ms": null }
+      ],
+      "expectTexts": [
+        "Block title 'Latest 30-minute report' (always shown for a house agent)",
+        "'Written <n> ago', summary paragraph, observation bullets",
+        "Suggestion box 'SUGGESTED CHANGE' + '<Rule>: <from> to <to>' + state ('Waiting for your answer' / 'Applied' / 'Dismissed' / 'Applied automatically' / 'Not applied: the rules changed or it was outside the limits')",
+        "Tuner line starting 'Tuner:' (e.g. 'Tuner: no change, needs more closed trades on these rules')",
+        "Empty: 'No report yet. The agent writes one every 30 minutes once it has activity.'",
+        "Block title 'Rule changes': '<House tuner|Owner|ClawVille team|30-minute report> · <n> ago · rules vN' + '<Rule>: <from> to <to>'",
+        "Empty: 'No rule changes yet.'"
+      ],
+      "traps": [ "Profile data polls every 15 s (server cache 5 s); events every 5 s (server cache 3 s)." ],
+      "codeRefs": [
+        "stg:apps/web/src/components/game/trading-floor/arena/agent-profile.tsx:113-123",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx:316-320",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx:372-404",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx:408-484",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:982-1015",
+        "api:apps/api/src/routes/floor-arena.ts:441-447"
+      ]
+    },
+    {
+      "id": "S7",
+      "title": "Launch flow (logged-in account with NO arena agent)",
+      "phase": "both",
+      "url": "Exchange modal, Trading Floor tab (kiosk E, or sit at a desk: the desk panel shows the launch flow when there is no agent)",
+      "steps": [
+        { "phase": "both", "do": "start", "detail": "Click [data-testid='arena-launch-button'] ('Launch your trader') -> Step 1. Or 'Start from this template' / P15 'Choose this trading style' -> Step 2 directly.", "waitFor": "[data-testid='arena-launch']", "ms": null },
+        { "phase": "both", "do": "Step 1 of 4 'Pick a template'", "detail": "Five cards [data-testid='arena-launch-template-<id>'], each with name, tagline, risk and button 'Use <Name>' ('Use Genesis', 'Use Runner', 'Use Dip Hunter', 'Use Mid-Cap Climber', 'Use Late Bloomer'). Click one.", "waitFor": "text 'Step 2 of 4'", "ms": null },
+        { "phase": "both", "do": "Step 2 of 4 'Set the rules'", "detail": "Text 'Starting from <Name>. Change any rule inside its limits. <thesis>'. Mode switch (radiogroup aria-label 'Trading mode'): 'Paper trading' (checked) and disabled 'Live trading' + 'Coming later'. Then [data-testid='arena-params-form']: locked hard rules card, collapsible 'Which coins it looks at', sections 'How it picks a coin', 'When it sells', 'Limits', and button 'Reset to the <Name> rules'. Optional on-camera edit: [data-testid='arena-field-limits.max_open'] input (1..5). Click 'Next'.", "waitFor": "text 'Step 3 of 4'", "ms": null },
+        { "phase": "both", "do": "Step 3 of 4 'Paid add-ons (optional)'", "detail": "Fetches GET /api/floor/arena/addons. Leave every checkbox OFF. Click 'Next'.", "waitFor": "text 'Step 4 of 4'", "ms": null },
+        { "phase": "both", "do": "Step 4 of 4 'Review and launch' - type the name on camera", "detail": "Click and type into [data-testid='arena-launch-review'] input (the only input there; maxLength 32). Use <=16 characters (board column cut), at least one letter, only letters, numbers, space . _ ' -; not a house name. Leaving it empty uses the avatar's name.", "waitFor": null, "ms": null },
+        { "phase": "both", "do": "launch", "detail": "Click the footer button 'Launch' (shows 'Launching...' while pending). Calls POST {NEXT_PUBLIC_API_URL}/api/floor/arena/me/launch with credentials, body {\"templateId\":\"<id>\",\"params\":<full FloorArenaParams>,\"mode\":\"paper\",\"addons\":[],\"name\":\"<typed>\"} (name omitted when empty; addons only enabled ones as {id,dailyCapUsd}). 201 -> {agent, paymentAddress:null}. Then GET /me every 3 s while provisioning (leader provisions on its 30 s tick), leaderboard refetch.", "waitFor": "[data-testid='arena-launch-success']", "ms": null },
+        { "phase": "both", "do": "success screen", "detail": "Shows '<name> is ready' + 'Paper trading', then 'Setting up your ClawPump agent...' until a wallet exists (then a copy field 'Your agent's wallet (pays for add-ons)' + warnings). Seat line, and button 'Open my trader'.", "waitFor": null, "ms": null }
+      ],
+      "expectTexts": [
+        "'Step 1 of 4' 'Pick a template' / 'Step 2 of 4' 'Set the rules' / 'Step 3 of 4' 'Paid add-ons (optional)' / 'Step 4 of 4' 'Review and launch'",
+        "Footer buttons: 'Back', 'Next', 'Launch' ('Launching...')",
+        "Back to overview: 'Back to the arena'",
+        "Mode: 'Paper trading', 'Live trading', 'Coming later'",
+        "Hard rules card 'Every arena agent follows these rules': 'LP burned or locked (95% or more)', 'Mint authority revoked', 'Freeze authority revoked', 'Token-2022: no transfer fee or risky extension', 'Pool reserves present', then 'No one can turn these off, and they apply before your own rules.' and 'Coins seen only by GeckoTerminal are shown in the feed but are not traded.'",
+        "Filter rows: 'Market cap', 'Liquidity', 'Pair age', '1-hour volume / market cap', '5-minute change', '1-hour change', '6-hour change', '24-hour change', 'Trades in 1 hour', 'Top-10 holders' (fields 'Min market cap (USD)', 'Max market cap (USD)', … each with 'On'/'Off' toggle, 'Not used' when off)",
+        "'How it picks a coin': 'Only coins first seen within (seconds)' (off label 'Any'), 'Count first sight from', 'Pick order when several coins pass', 'Buys per 15-second tick'",
+        "'When it sells': 'Take-profit legs (up to 3). Each leg sells a share of the ORIGINAL position when the price reaches its multiple. Shares add up to 100% or less.', 'Leg 1: sell at (x)', 'Share to sell (0 to 1)', 'Remove leg 1', 'Add a take-profit leg', 'Stop loss at (x)', 'Trailing stop from peak (0 to 1)', 'Arm the trailing stop at (x)' (off label 'At once'), 'Max hold time (seconds)'",
+        "'Limits': 'Position size' '$20 per position (fixed for everyone)', 'Max open positions', 'Wait before buying the same coin again (seconds)'",
+        "Add-ons step: 'Every arena agent reads one shared free discovery feed. A paid add-on is an extra feed only your agent sees.'; per add-on '<name> by Nansen', '$<price> per call · at most every <interval> · up to $<n> a day before your cap'; when ticked 'Daily cap for this add-on (USD)'; wallet warnings 'Your agent's wallet pays only for its own paid data add-ons, in USDC. ClawVille does not refund add-on spend.' and 'Send only USDC on Solana. You cannot withdraw USDC from this wallet in ClawVille, …'",
+        "Review: label 'Name your trader (optional, up to 32 characters with at least one letter, so it does not look like a number; offensive names are refused; empty uses your avatar's name)', 'Template: <Name>', 'Mode: Paper trading ($20 per position)', 'You kept the template rules as they are.' or 'You changed n rules:', 'Paid add-ons: none. Your agent reads the shared free feed.', 'Your agent opens new positions only while it sits at a Trading Floor desk. Exits always run.', 'Trading Arena Week 1: to be eligible for a prize, …'",
+        "Success: '<name> is ready', 'Setting up your ClawPump agent...', 'Go sit at a desk in the Trading Floor to start trading.' or 'You are at a desk, so your agent starts trading now.', 'Open my trader'"
+      ],
+      "traps": [
+        "ONE arena agent per account, forever (no delete or stop route for players). A second launch returns 409 'You already run an arena trader. Open it from the arena.' Rehearse on a throwaway account; the final take needs a fresh account.",
+        "Launch rate limit: 5 per minute per user (separate from the 30/min write limit). 429 copy: 'Too many requests. Wait a moment and try again.'",
+        "Add-on payments are ENABLED on staging (paymentsEnabled true). Keep every add-on unticked; a ticked add-on spends real USDC if the agent wallet is ever funded.",
+        "Name refusals: house names and look-alikes ('That name belongs to a house trader…'), no letter, offensive.",
+        "An invalid rule sends the flow back to Step 2 with '<n> rules need a fix before you continue. Each one is marked above.'",
+        "A guest or an account without an avatar sees 'Create a free account' instead of the flow."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx:526-543",
+        "stg:apps/web/src/components/game/trading-floor/arena/launch-trader.tsx:44-63",
+        "stg:apps/web/src/components/game/trading-floor/arena/launch-trader.tsx:66-99",
+        "stg:apps/web/src/components/game/trading-floor/arena/launch-trader.tsx:105-141",
+        "stg:apps/web/src/components/game/trading-floor/arena/launch-trader.tsx:227-430",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-params-form.tsx:40-55",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-params-form.tsx:125-209",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-params-form.tsx:256-318",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-params-form.tsx:347-545",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-format.ts:36-46",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-format.ts:165-191",
+        "stg:apps/web/src/components/game/trading-floor/arena/addon-picker.tsx:14-25",
+        "stg:apps/web/src/components/game/trading-floor/arena/addon-picker.tsx:101-195",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-kit.tsx:145-163",
+        "stg:packages/shared/src/constants/floor-arena.ts:278-336",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:729-754",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:766-792",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:1141-1155",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:1205-1231",
+        "api:apps/api/src/routes/floor-arena.ts:259-265",
+        "api:apps/api/src/routes/floor-arena.ts:426-428",
+        "api:apps/api/src/routes/floor-arena.ts:648-651",
+        "api:apps/api/src/routes/floor-arena.ts:738-812"
+      ]
+    },
+    {
+      "id": "S8",
+      "title": "Walk to a free desk, sit (E), 'My trader' opens",
+      "phase": "both",
+      "url": "continue in the room (modal closed)",
+      "steps": [
+        { "phase": "staging-now", "do": "walk to seat 2 (UI desk 3)", "detail": "From spawn: KeyA 1760 ms -> (-915,780) (clamp at -939 makes overshoot safe); KeyW 538 ms -> (-915,500).", "waitFor": "capsule 'Trading Desk' with 'press E to sit' visible", "ms": 2298 },
+        { "phase": "part2", "do": "walk to seat 2 (UI desk 3)", "detail": "From spawn: KeyA 3010 ms -> (-1565,1170) (clamp -1589); KeyW 1288 ms -> (-1565,500). On the way seat 7 (z 1000) arms briefly; do not press E there. Shorter option: seat 7 (UI desk 8) = KeyW 327 ms after the strafe.", "waitFor": "capsule 'Trading Desk' with 'press E to sit' visible", "ms": 4298 },
+        { "phase": "both", "do": "sit", "detail": "Press E once. Label flips to 'press E to stand'. Camera eases to look at the desk (-X on the left wall). VRM avatars play the sit clip (1.5 s).", "waitFor": null, "ms": 0 },
+        { "phase": "both", "do": "panel opens", "detail": "openArena('desk') fires when the sit clip ends (~1500 ms after E), on the next frame for GLB or manual-sit rigs (hermes, tekk, adinero, chibi), and at the latest after the 3000 ms fallback. Has agent -> 'My trader'. No agent -> the launch flow (Step 1).", "waitFor": "[data-testid='arena-my-trader'] or [data-testid='arena-launch']", "ms": 3000 },
+        { "phase": "both", "do": "seat API", "detail": "POST {API}/api/floor/arena/me/seat body {\"seated\":true,\"seatIndex\":2}. Sent at once only if GET /me already said the account has an agent; otherwise sent by the GET /me reconcile when the panel loads. Stand (WASD, E, or Escape with the modal closed) sends {\"seated\":false}.", "waitFor": "STATUS event 'Sat down at desk 3. New entries are on.' in the decision stream", "ms": null },
+        { "phase": "both", "do": "close and stand", "detail": "Escape (or the modal's aria-label 'Close' button) closes the panel and keeps the seat. A second Escape, any WASD or E stands up.", "waitFor": null, "ms": null }
+      ],
+      "expectTexts": [
+        "'Trading Desk' / 'press E to sit' then 'press E to stand' (CSS uppercase)",
+        "My trader: 'You sit at desk 3. Your agent opens new positions while it holds the desk. Stand up in the room to leave it.' (or 'Taking the desk for your agent...' until the server answers)",
+        "Status pill 'Trading' (seated + active) or 'Waiting for you to sit'",
+        "Decision stream STATUS row 'Sat down at desk 3. New entries are on.'; on stand 'Stood up. No new entries; open positions still exit on their rules.'"
+      ],
+      "traps": [
+        "Modal open freezes all room input; the room keeps rendering and the seated pose holds.",
+        "Two Escapes = close + stand. Use the modal 'Close' button if the take must stay seated.",
+        "Write limit 30/min per user across seat, params, status, add-ons, settings, suggestions.",
+        "The agent opens new positions only while seated; it keeps the desk after the tab closes."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:464-471",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-room.ts:1017-1049",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:314-320",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:414-437",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1164-1170",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1334-1353",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-sit.ts:5-8",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-sit.ts:38-47",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:807-877",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:894-922",
+        "api:apps/api/src/routes/floor-arena.ts:859-887",
+        "stg:apps/web/src/components/game/trading-floor/arena/my-trader.tsx:83-125"
+      ]
+    },
+    {
+      "id": "S9",
+      "title": "My trader panel sections",
+      "phase": "both",
+      "url": "Exchange modal, desk panel",
+      "steps": [
+        { "phase": "both", "do": "scroll the panel", "detail": "Order: back button, header card, then blocks 'Decision stream', 'Open positions', 'Latest 30-minute report', 'Rules', 'Closed trades (last 50)', 'Paid add-ons', 'Wallet'.", "waitFor": "[data-testid='arena-my-trader']", "ms": null }
+      ],
+      "polling": {
+        "decisionStream": "GET /api/floor/arena/me/events every 5000 ms (owner stream, not cached)",
+        "positionsAndProfile": "GET /api/floor/arena/agents/:id every 15000 ms (server cache 5000 ms)",
+        "me": "GET /api/floor/arena/me every 10000 ms, every 3000 ms while provisioning",
+        "relativeTimes": "re-render every 30000 ms",
+        "engineTick": "entries scan every 15 s ('Buys per 15-second tick'); first decisions can take a while"
+      },
+      "expectTexts": [
+        "Header: <name>, pill 'Trading' / 'Waiting for you to sit' / 'Paused' / 'Stopped', pill 'Paper trading', 'Template: <Name> · rules v1'",
+        "Stats lines 'Contest' and 'All time', each 'Realised P&L', 'Trades', 'Wins', 'Losses', 'Open' (CSS uppercase)",
+        "Buttons 'Pause trading' ('Resume trading'), 'Public profile'",
+        "Stream pills 'BUY', 'SELL', 'SKIP', 'PASS', 'SCAN', 'RULES', 'REPORT', 'STATUS', 'ADD-ON'; empty 'No decisions yet. The stream fills as the agent scans.'",
+        "'No open positions.' / 'No report yet. The agent writes one every 30 minutes once it has activity.' / 'No closed trades yet.' / 'No paid add-ons. Your agent reads the shared free discovery feed.'",
+        "Report actions 'Apply' / 'Dismiss'; checkbox 'Auto-apply suggestions (each one stays inside the limits, and every change is logged publicly)'",
+        "Wallet: 'Setting up your ClawPump agent...' or 'Your agent's wallet (pays for add-ons)' + 'USDC in the wallet: …'"
+      ],
+      "traps": [
+        "Exact heading is 'Closed trades (last 50)' on the desk panel; the public profile says 'Recent trades'.",
+        "A brand-new agent shows mostly empty states; plan the S9 take after the agent has traded for a while (realistic only on a pre-launched account)."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/components/game/trading-floor/arena/my-trader.tsx:60-72",
+        "stg:apps/web/src/components/game/trading-floor/arena/my-trader.tsx:331-504",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx:56-101",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx:122-189",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-parts.tsx:270",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:36-52",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:982-1036",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:1141-1155",
+        "api:apps/api/src/routes/floor-arena.ts:443-444"
+      ]
+    },
+    {
+      "id": "S10",
+      "title": "The board with the film agent's row",
+      "phase": "both",
+      "url": "continue in the room",
+      "steps": [
+        { "phase": "staging-now", "do": "frame the board", "detail": "Use the S3 full-board stand (0,360). The board lists the TOP 8 of the contest leaderboard (house + players) sorted by realised P&L desc, then trades desc, then oldest first. A fresh agent is $0 / 0 trades and carries the 'NO PRIZE' tag until a contest-window position closes.", "waitFor": "board redraw", "ms": 30000 },
+        { "phase": "part2", "do": "tfx-v5 only", "detail": "Same leaderboard board (bigger); use the part2 full-board stand (0,460).", "waitFor": "board redraw", "ms": 30000 },
+        { "phase": "part2", "do": "P15", "detail": "The P15 board shows ONLY the five house agents. The film agent is not on the wall. Use the Exchange 'Arena leaderboard' instead: its row has the 'You' pill and a highlight ([data-testid='arena-leaderboard-row']).", "waitFor": null, "ms": null }
+      ],
+      "expectTexts": [
+        "Board row: rank, NAME (uppercase, max 16 chars), 'NO PRIZE' tag, template, P&L, trades, 'W/L', open",
+        "Exchange leaderboard header 'Arena leaderboard', window buttons 'Contest', '24 hours', 'All time', columns 'Rank', 'Agent', 'Realised', 'Trades', 'Wins', 'Open', pills 'House', 'You', 'Eligible' / 'No contest trade'"
+      ],
+      "traps": [
+        "Top-8 cut: at 01:44Z a fresh $0 agent would rank 8th of 13. Any new agent at >= $0 pushes it off the wall. Check right before the take.",
+        "Appears within ~10-25 s of launch: client refetches on launch, server leaderboard cache is 10 s and is NOT cleared by launch, poll 15 s.",
+        "Staging test agents ('ParityAudit-324303 bd17a5', 'LandTest1', 'LandTest2') are on the same board.",
+        "Board name column cuts at 16 characters."
+      ],
+      "codeRefs": [
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:160",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:696",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:724-735",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-data.ts:243-244",
+        "stg:apps/web/src/lib/three/trading-floor/trading-floor-screen-data.ts:352-363",
+        "api:apps/api/src/services/floor-arena/leaderboard.ts:124-149",
+        "api:apps/api/src/services/floor-arena/leaderboard.ts:219-251",
+        "api:apps/api/src/routes/floor-arena.ts:442",
+        "api:apps/api/src/routes/floor-arena.ts:495-511",
+        "api:apps/api/src/routes/floor-arena.ts:661-665",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:1225-1229",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx:113-296",
+        "p15t4:apps/web/src/lib/three/trading-floor/trading-floor-screen-texture.ts:13-32"
+      ]
+    },
+    {
+      "id": "S11",
+      "title": "Contest panel",
+      "phase": "both",
+      "url": "Exchange modal, Trading Floor tab, top of the arena overview",
+      "steps": [
+        { "phase": "both", "do": "show the banner", "detail": "Overview panel (click 'Back to the arena' if another panel is open). Banner [data-testid='arena-contest-banner'] is the first card.", "waitFor": "[data-testid='arena-contest-banner']", "ms": null },
+        { "phase": "both", "do": "open the rules", "detail": "Click 'Contest rules'.", "waitFor": "[data-testid='arena-contest-rules']", "ms": null }
+      ],
+      "expectTexts": [
+        "Banner: 'Trading Arena Week 1', pill 'Paper trading only', countdown [data-testid='arena-countdown'] 'Ends in <d>d <hh>h <mm>m <ss>s' (live until 2026-10-05T03:59:59Z), '1st' '1,000,000 $CLAWVILLE', '2nd' '500,000 $CLAWVILLE', '3rd' '250,000 $CLAWVILLE' (place labels CSS uppercase), 'Five house agents trade here in public. Launch your own trader from any of their templates, change its rules, and sit at a desk to trade. Best realised paper P&L wins.', button 'Contest rules'",
+        "Under it: 'Pick a template, set its rules, and trade on paper. One trader per account.' + 'Launch your trader' (or '<name> is yours. Open it to watch its decisions and tune its rules.' + 'Open my trader')",
+        "Rules panel: 'Trading Arena Week 1: rules', 'Paper trading only', 'Starts <ET>. Ends <ET>.', nine rule bullets from FLOOR_ARENA_CONTEST.rules + 'Every paper buy costs 2.5% and every paper sell costs 1% on top of the live quote, which is what a real swap costs.'",
+        "Block 'Prizes': '1st: 1,000,000 $CLAWVILLE', '2nd: 500,000 $CLAWVILLE', '3rd: 250,000 $CLAWVILLE'",
+        "Hard rules card, then block 'Top 10 now' (while live) with rows '#n <name> <P&L>'; empty 'No eligible agent has closed a position opened in the contest window yet.'"
+      ],
+      "traps": [ "Contest endpoint polls every 60 s; countdown ticks every 1 s client-side." ],
+      "codeRefs": [
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx:63-111",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-section.tsx:526-543",
+        "stg:apps/web/src/components/game/trading-floor/arena/contest-rules.tsx:17-118",
+        "stg:apps/web/src/components/game/trading-floor/arena/arena-format.ts:97-107",
+        "stg:packages/shared/src/constants/floor-arena.ts:341",
+        "stg:packages/shared/src/constants/floor-arena.ts:353-374",
+        "stg:apps/web/src/hooks/use-floor-arena.ts:1065-1072"
+      ]
+    }
+  ],
+  "overlays": [
+    { "where": "/game", "item": "Sea loading screen", "selector": "[role=progressbar][aria-label='Loading ClawVille']", "hide": "wait until it is gone", "codeRefs": ["stg:apps/web/src/components/game/sea-loading-screen.tsx:761-765"] },
+    { "where": "/game", "item": "Tutorial overlay", "selector": "card + persistent button aria-label 'Open controls help'", "hide": "localStorage 'clawville-tutorial-seen' = 'true' before load; else Escape. While open it listens on document for ArrowRight/Enter/ArrowLeft/Escape, so it eats the camera-turn keys.", "codeRefs": ["stg:apps/web/src/components/game/tutorial-overlay.tsx:13", "stg:apps/web/src/components/game/tutorial-overlay.tsx:254-300"] },
+    { "where": "/game", "item": "Quest tracker intro", "selector": "toast 'Complete quests to learn the ropes!' (5 s) + expanded tracker", "hide": "localStorage 'clawville-quest-intro-seen' = 'true' (tracker itself shows once the tutorial is seen)", "codeRefs": ["stg:apps/web/src/components/game/quest-tracker.tsx:21-22", "stg:apps/web/src/components/game/quest-tracker.tsx:268-296"] },
+    { "where": "/game", "item": "Email verify banner", "selector": "button aria-label 'Dismiss email verification banner'", "hide": "localStorage 'cv:email-verify-dismissed-<userId>' = String(Date.now()) (7-day TTL), or click dismiss. Auto-hidden while the LocationHUD pill shows.", "codeRefs": ["stg:apps/web/src/components/game/email-verify-banner.tsx:87-125", "stg:apps/web/src/components/game/email-verify-banner.tsx:169"] },
+    { "where": "/game", "item": "Daily login modal", "selector": "button 'Collect & Continue'", "hide": "click it; shows once per day on the first claim", "codeRefs": ["stg:apps/web/src/components/game/daily-login-modal.tsx:17-41", "stg:apps/web/src/components/game/daily-login-modal.tsx:100-105"] },
+    { "where": "/game", "item": "First-time backup modal (SECRET KEYS)", "selector": "checkbox 'I've saved these keys. …' + button 'Enter ClawVille →'", "hide": "only after signup (sessionStorage 'clawville:firstTimeDisclosure'). NEVER record it; finish it in a rehearsal session.", "codeRefs": ["stg:apps/web/src/components/game/first-time-backup-modal.tsx:48-89"] },
+    { "where": "/game", "item": "Desktop sidebar", "selector": "aria-label 'Open game menu' / 'Open ClawVille sidebar menu'", "hide": "localStorage 'clawville-sidebar-collapsed' = 'true' collapses it", "codeRefs": ["stg:apps/web/src/components/game/sidebar-menu.tsx:1125-1148"] },
+    { "where": "/game", "item": "Agent chat bar", "selector": "button aria-label 'Collapse agent chat'", "hide": "click to collapse (state not persisted in code read)", "codeRefs": ["stg:apps/web/src/components/game/avatar-chat-bar.tsx:451"] },
+    { "where": "/game", "item": "Control mode toggle, minimap ('Open World Map'), Nori button, status bar ('Open wallet'), emote hotbar, language control, toasts", "selector": "various", "hide": "no code switch found; CSS injection over CDP or crop", "codeRefs": ["stg:apps/web/src/app/(world)/game/page.tsx:21-122"] },
+    { "where": "/game", "item": "LocationHUD pill", "selector": "button[aria-label='Enter the Trading Floor'] (bottom centre, z 45)", "hide": "part of S1; disappears outside the door band", "codeRefs": ["stg:apps/web/src/components/game/location-hud.tsx:105-193"] },
+    { "where": "/trading-floor", "item": "'Back to World' button", "selector": "button text 'Back to World' (top 16, left 16, z 50)", "hide": "no code switch; CSS inject or crop. Clicking it leaves the room (curtain) and lands at world (0,2500).", "codeRefs": ["stg:apps/web/src/app/(world)/trading-floor/page.tsx:120-140"] },
+    { "where": "/trading-floor", "item": "Desktop hint strip", "selector": "bottom centre, z 30, pointer-events none: 'Trading Floor' + 'WASD to walk · E at the monitor to manage trades'", "hide": "no code switch; CSS inject or crop", "codeRefs": ["stg:apps/web/src/app/(world)/trading-floor/page.tsx:147-183"] },
+    { "where": "/trading-floor", "item": "World prompt capsules", "selector": "[data-world-labels] divs, style.display toggles; texts 'Trading Monitor', 'Exit', 'Trading Desk' + armed line", "hide": "they appear only inside their bands", "codeRefs": ["stg:apps/web/src/lib/three/world-labels-overlay.tsx:216", "stg:apps/web/src/lib/three/world-labels-overlay.tsx:545", "stg:apps/web/src/lib/three/trading-floor/trading-floor-interior.tsx:1156-1172"] },
+    { "where": "/trading-floor", "item": "Exchange modal", "selector": "RpgModal title 'Exchange', close aria-label 'Close'", "hide": "Escape, the 'Close' button, or a backdrop click (backdrop click is a trap during takes)", "codeRefs": ["stg:apps/web/src/components/rpg/rpg-modal.tsx:83-92", "stg:apps/web/src/components/rpg/rpg-modal.tsx:147"] },
+    { "where": "/trading-floor (P15)", "item": "House-agent walk-up pop-up", "selector": "[data-testid='house-agent-walkup'] (z 45)", "hide": "[data-testid='house-agent-walkup-close'] dismisses it until you leave that agent's radius", "codeRefs": ["p15int:apps/web/src/components/trading-floor/house-agent-walkup.tsx:283-342"] },
+    { "where": "both", "item": "Stage curtain", "selector": "[data-stage-transition] (z 9999)", "hide": "cut while value != 'idle'", "codeRefs": ["stg:apps/web/src/components/three/world-stage/StageTransition.tsx:248-285"] }
+  ],
+  "openQuestions": [
+    "Which interior does staging WEB run right now? origin/staging moved to 46599129 (part 2) during this research and api /health reports 46599129 at 01:44Z, but the web container commit is not verified. All part-1 vs part-2 coordinates depend on it. Do not probe with the interior ?v=6 URL: a fetch before the web flip can pin stale bytes in the Cloudflare cache for a week.",
+    "P15 is not on staging (GET /house-board 404). p15-int lacks T4 (figures + walk-up detection); T4 lives in p15-t4 (c78aaf98, on top of part 2). Which branch will be pushed, and when?",
+    "If tfx-v5 ships without P15 T4, the five house-agent movement colliders exist with no figures (invisible blockers in front of the board). Intended?",
+    "/game camera heading after a fresh load is computed (slot camera [0,600,1300] -> looking north), not screenshotted. Confirm the 180 deg turn on one rehearsal take.",
+    "Which avatar does the film account use? VRM with sit clips: panel ~1.5 s after E. GLB or manual-sit rigs (hermes, tekk, adinero, chibi): panel on the next frame.",
+    "Every framing (camera position, % of frame width, header clipping) is computed from the spring-arm code, not seen. One screenshot per stand before the take.",
+    "Part-2 sea-floor props: colliders or not? Not verified in code read; the deploy log says spawn and door paths are kept clear.",
+    "Land parcels or player structures on the /game path from spawn to the Trading Floor door were not checked.",
+    "The film agent's board row depends on live standings (top 8 only). Check right before S10, or film S10 from the Exchange leaderboard.",
+    "Exact easternTime() output in 'Starts … Ends …' and the board prize/basis number formats were not captured.",
+    "Duration of the curtain 'awaiting' phase on first entry (GLB stream + compile) is not known; it is bounded only by a 45 s watchdog.",
+    "On-screen third-party names: CLAW TERMINAL panels print 'CHUM BUCKET', 'KRUSTY KRAB', 'PINEAPPLE', 'TREEDOME', 'PATRICKS ROCK', 'SALTY SPITOON'; residents are 'Pearl', 'Nori'. Founder call for a public hackathon film."
+  ]
+}

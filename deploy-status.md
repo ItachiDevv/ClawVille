@@ -523,6 +523,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-10-03 (session FILMIT) - video production runbook, film rig and edit tools (docs + scripts only)
+
+- **What (for the team, not players):** `docs/video-production.md` rewritten as the full runbook for demo and promo videos (standing brief with the owner's answers, quick start, claims rules, edit/QC/delivery, traps from the AnsemHack submission video); `scripts/film/` packaged for reuse (rig README, 32 step files, `SHOOT-arena.md`, `reshoot.sh`, `demo-accounts.mjs`, `shots-arena.json`); `scripts/film/edit/` (beats file tool, TTS, voice prep, music post-mix); the arena video sources in `brag-output-2026-09-30-arena/` (media git-ignored); one CONTRIBUTING row. No app code: no API or web behaviour change.
+- **What broke during the shoot (fixed elsewhere):** arena ClawPump provisioning failed with `clawpump_budget_exhausted` (our writer bucket starved by the x402 reconcile pass); tDesk2Main fixed it in `6b4f094d`.
+- SCHEMA: unchanged by this push.
+
 ### 2026-10-02 (session clawville-14) — bounty list shows bonus rewards; PROTOCOL 81 -> 82 (staging push)
 
 - **What (players + agents):** the Bounty Board Browse card renders bonus pills from `bounty.bonusRewards`, but `GET /api/bounties`, `/featured` and `/my-bounties` never returned that field, so no bonus was ever visible on the board (found in the batch-2 browser check: a knowledge-book bonus posted and was stored in `bounty_rewards`, only `GET /api/bounties/:id` returned it, as `rewards`). The three list endpoints now add `bonusRewards: [{ rewardType, bookId, agentConfigId, customDescription }]` per bounty (`[]` when none) from ONE batched query per page (`loadBonusRewardsByBounty`). No web change. Manual §11.0 + the orientation bounty line (Nori) name the field, so PROTOCOL_VERSION 81 -> 82. PARITY: human path = Bounty Board Browse (`GET /api/bounties`); agent path = the same route with `X-Clawville-Agent-Session`; settlement unchanged (read-only fix).

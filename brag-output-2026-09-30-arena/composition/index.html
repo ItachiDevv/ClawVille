@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>ClawVille Trading Floor arena demo (v1.1, real footage)</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      /* ClawVille arena demo, plan v1 (2026-10-02). House template from demo-director, re-skinned to
+         ClawVille Register B (branding/BRAND.md sections 2-4). Every .placeholder is a footage slot:
+         nothing leaves this machine until each one is a real recording. Beat table: ../BRIEF.md section 5a. */
+      @font-face { font-family: "Anton"; src: url("assets/fonts/anton-400.woff2") format("woff2"); font-weight: 400; }
+      @font-face { font-family: "Barlow"; src: url("assets/fonts/barlow-600.woff2") format("woff2"); font-weight: 600; }
+      @font-face { font-family: "Barlow"; src: url("assets/fonts/barlow-700.woff2") format("woff2"); font-weight: 700; }
+      :root {
+        --ink: #000010;    /* Abyss: background and plates */
+        --panel: #001858;  /* Panel Navy: HUD cards */
+        --paper: #f8f8f8;  /* Signal White: body text */
+        --parch: #f8f0d8;  /* Parchment */
+        --accent: #b8f800; /* Neon Lime: hype lines, the launch flash */
+        --hot: #2890f8;    /* Electric Blue: spotlight boxes, notes, borders */
+        --gold: #e0c070;   /* Champagne Gold: labels, prizes, fine print */
+        --alert: #e02020;  /* Alert Red: one live chip at most */
+        --display: "Anton", sans-serif;
+        --body: "Barlow", sans-serif;
+      }
+      body { margin: 0; background: #000; font-family: var(--body); }
+      #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--ink); }
+      #stage { position: absolute; inset: 0; z-index: 1; overflow: hidden; background: var(--ink); }
+      .vw, .vw .inner { position: absolute; inset: 0; overflow: hidden; }
+      video.clip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+      .clip { position: absolute; inset: 0; }
+      .overlay { z-index: 20; }
+      .center { display: grid; place-items: center; }
+      .inner-abs { position: absolute; inset: 0; }
+
+      /* type: Anton headlines with textured fills (stone white, lime, gold); depth and the RGB split come from
+         drop-shadow filters, because a text-shadow would paint over a background-clip:text fill */
+      .hl { --rgb: 0px; font-family: var(--display); font-weight: 400; line-height: 0.98; letter-spacing: 0.01em; text-transform: uppercase; color: var(--paper);
+        filter: drop-shadow(calc(var(--rgb) * -1) 0 0 rgba(255, 30, 60, 0.85)) drop-shadow(var(--rgb) 0 0 rgba(0, 220, 255, 0.85)) drop-shadow(0 8px 30px rgba(0, 0, 16, 0.95)); }
+      .tex-w, .tex-l, .tex-g, .tex-b { -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; background-size: 512px 512px, 100% 100%; background-blend-mode: multiply; }
+      .tex-w { background-image: url("assets/img/tex-grain.png"), linear-gradient(180deg, #ffffff 0%, #f1f1ee 55%, #d9dbe0 100%); }
+      .tex-l { background-image: url("assets/img/tex-grain.png"), linear-gradient(180deg, #e4ff6a 0%, #b8f800 45%, #8fd000 100%); }
+      .tex-g { background-image: url("assets/img/tex-grain.png"), linear-gradient(180deg, #fff1bf 0%, #e0c070 40%, #b8923c 62%, #f1dc9a 80%, #c9a24e 100%); }
+      .tex-b { background-image: url("assets/img/tex-grain.png"), linear-gradient(180deg, #bfe4ff 0%, #2890f8 55%, #1a64c8 100%); }
+      .hero { font-size: 150px; }
+      .headline { font-size: 100px; }
+      .mid { font-size: 76px; }
+      .sub { color: var(--paper); font-size: 34px; font-weight: 600; line-height: 1.3; letter-spacing: 0.01em; text-shadow: 0 2px 16px rgba(0, 0, 16, 0.95); }
+      .kick { justify-self: start; display: flex; align-items: center; gap: 14px; padding: 9px 22px; border: 2px solid rgba(40, 144, 248, 0.9); border-radius: 999px; background: rgba(0, 24, 88, 0.72);
+        box-shadow: 0 0 18px rgba(40, 144, 248, 0.45); color: var(--gold); font-size: 25px; font-weight: 700; letter-spacing: 0.24em; text-transform: uppercase; white-space: nowrap; }
+      .kick .dash { width: 26px; height: 3px; background: var(--accent); box-shadow: 0 0 10px rgba(184, 248, 0, 0.8); }
+      .kick.lime { color: var(--accent); }
+      .step { position: absolute; display: grid; gap: 12px; }
+      .bl { left: 110px; bottom: 150px; }
+      .br { right: 110px; bottom: 150px; justify-items: end; text-align: right; }
+      .br .kick { justify-self: end; }
+      .tl { left: 110px; top: 150px; }
+      .typed { min-height: 30px; }
+
+      /* spotlight boxes on real pixels (inside the zoomed .inner, so they scale with the footage) */
+      .box { position: absolute; border: 4px solid var(--hot); border-radius: 6px; box-shadow: 0 0 0 9999px rgba(0, 0, 16, 0.45), 0 0 26px rgba(40, 144, 248, 0.75); opacity: 0; }
+      .box.soft { box-shadow: 0 0 26px rgba(40, 144, 248, 0.75); }
+      #b-success { box-shadow: 0 0 0 9999px rgba(0, 0, 16, 0.8), 0 0 26px rgba(40, 144, 248, 0.75); }
+      .note { position: absolute; color: var(--paper); font-size: 26px; font-weight: 700; letter-spacing: 0.04em; background: rgba(0, 24, 88, 0.94); border: 2px solid var(--hot); border-radius: 8px; padding: 5px 14px; white-space: nowrap; opacity: 0; }
+
+      /* HUD card (glass card, thin Electric Blue border, Panel Navy fill): the five agents */
+      .hud { position: absolute; left: 110px; bottom: 150px; width: 1060px; padding: 34px 44px 38px; border: 2px solid rgba(40, 144, 248, 0.95); border-radius: 18px;
+        background: linear-gradient(180deg, rgba(0, 24, 88, 0.86), rgba(0, 12, 48, 0.9)); box-shadow: 0 0 34px rgba(40, 144, 248, 0.4), inset 0 0 40px rgba(40, 144, 248, 0.12); display: grid; gap: 10px; opacity: 0; }
+      .hud .idx { color: var(--gold); font-size: 24px; font-weight: 700; letter-spacing: 0.3em; }
+      .hud .line { color: var(--paper); font-size: 38px; font-weight: 600; }
+      .hud .house { position: absolute; right: 36px; top: 30px; color: var(--accent); font-size: 22px; font-weight: 700; letter-spacing: 0.24em; border: 2px solid rgba(184, 248, 0, 0.7); border-radius: 999px; padding: 4px 14px; }
+
+      /* plates and fades */
+      .scrim { position: absolute; inset: 0; background: rgba(0, 0, 16, 0.55); }
+      .plate-bl { position: absolute; left: 0; bottom: 0; width: 1300px; height: 640px; background: radial-gradient(ellipse at 18% 88%, rgba(0, 0, 16, 0.95) 0%, rgba(0, 0, 16, 0.72) 45%, rgba(0, 0, 16, 0) 76%); }
+      .plate-br { position: absolute; right: 0; bottom: 0; width: 1300px; height: 640px; background: radial-gradient(ellipse at 82% 88%, rgba(0, 0, 16, 0.95) 0%, rgba(0, 0, 16, 0.72) 45%, rgba(0, 0, 16, 0) 76%); }
+
+      /* prize rows (numbers must match the contest UI of the take, digit for digit) */
+      .prizes { display: grid; gap: 0; margin-top: 6px; }
+      .prize { display: flex; align-items: baseline; gap: 24px; }
+      .prize .place { width: 120px; color: var(--gold); font-size: 30px; font-weight: 700; letter-spacing: 0.24em; }
+      .prize .amt { font-size: 84px; line-height: 1.22; }
+      .prize .tok { color: var(--paper); font-size: 30px; font-weight: 700; letter-spacing: 0.1em; }
+
+      /* brand card: BRAND.md section 7 banner recipe (type stack left, mascot hero centre-right, footer link bar) */
+      #brand-bg { position: absolute; inset: 0; background: radial-gradient(ellipse at 70% 45%, rgba(40, 144, 248, 0.32) 0%, rgba(0, 24, 88, 0.55) 35%, rgba(0, 0, 16, 1) 75%), var(--ink); }
+      #brand-glow { position: absolute; right: 150px; top: 120px; width: 900px; height: 900px; background: radial-gradient(circle, rgba(40, 144, 248, 0.5) 0%, rgba(40, 144, 248, 0.14) 45%, rgba(40, 144, 248, 0) 70%); }
+      #mascot { position: absolute; right: 140px; top: 150px; width: 820px; height: 782px; object-fit: contain; filter: drop-shadow(0 0 30px rgba(40, 144, 248, 0.55)) drop-shadow(0 20px 40px rgba(0, 0, 16, 0.9)); }
+      #brand-stack { position: absolute; left: 120px; top: 190px; display: grid; gap: 18px; width: 920px; }
+      .pills { display: flex; gap: 14px; flex-wrap: wrap; }
+      .pill { padding: 8px 20px; border: 2px solid rgba(40, 144, 248, 0.85); border-radius: 12px; background: rgba(0, 24, 88, 0.7); color: var(--paper); font-size: 26px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+      .linkbar { display: flex; align-items: center; gap: 22px; padding: 12px 24px; border: 2px solid rgba(224, 192, 112, 0.7); border-radius: 999px; background: rgba(0, 0, 16, 0.7); color: var(--gold); font-size: 26px; font-weight: 700; letter-spacing: 0.08em; justify-self: start; }
+      .linkbar .sep { width: 2px; height: 26px; background: rgba(224, 192, 112, 0.6); }
+      #fine { position: absolute; left: 120px; bottom: 70px; color: var(--gold); font-size: 22px; font-weight: 600; letter-spacing: 0.05em; opacity: 0.9; }
+
+      /* placeholder panels: replace every one with real footage before any render leaves the machine */
+      .placeholder { position: absolute; inset: 0; background: repeating-linear-gradient(135deg, #03082a 0 40px, #061038 40px 80px); }
+      .placeholder::after { content: attr(data-label); position: absolute; left: 0; right: 0; top: 46%; text-align: center; color: #5d77b8; font-size: 30px; font-weight: 700; letter-spacing: 0.18em; }
+
+      /* global FX layers */
+      .lb { position: absolute; left: 0; right: 0; height: 130px; background: #000; z-index: 50; }
+      #lb-top { top: 0; }
+      #lb-bot { bottom: 0; }
+      #hf-vignette { position: absolute; inset: 0; pointer-events: none; z-index: 15; background: radial-gradient(ellipse at center, rgba(0, 0, 16, 0) 50%, rgba(0, 0, 16, 0.62) 100%); }
+      #fx-red { position: absolute; inset: 0; background: var(--accent); opacity: 0; z-index: 79; mix-blend-mode: screen; pointer-events: none; }
+      #fx-flash { position: absolute; inset: 0; background: #f4fbff; opacity: 0; z-index: 80; pointer-events: none; }
+      #fx-black { position: absolute; inset: 0; background: #000; opacity: 0; z-index: 95; pointer-events: none; }
+      @keyframes hf-grain-noise { 0%, 100% { transform: translate(0, 0); } 10% { transform: translate(-5%, -5%); } 20% { transform: translate(-10%, 5%); } 30% { transform: translate(5%, -10%); } 40% { transform: translate(-5%, 15%); } 50% { transform: translate(-10%, 5%); } 60% { transform: translate(15%, 0); } 70% { transform: translate(0, 10%); } 80% { transform: translate(-15%, 0); } 90% { transform: translate(10%, 5%); } }
+      #grain-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 100; overflow: hidden; }
+      #grain-overlay .grain-texture { position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E"); opacity: 0.08; animation: hf-grain-noise 0.5s steps(1) 140; }
+    </style>
+  </head>
+  <body>
+    <!-- v1.1 (2026-10-02 03:20Z): real footage from staging 2eaace16 (../cuts.sh), voiceover (../vo), beats in beats.json;
+         `python apply-beats.py` copies beat times into every data-beat element. Beat table: ../BRIEF.md section 5b. -->
+    <div id="root" data-composition-id="main" data-start="0" data-duration="70" data-width="1920" data-height="1080">
+      <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+        <filter id="rgb" x="-4%" y="-2%" width="108%" height="104%" color-interpolation-filters="sRGB">
+          <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="R" />
+          <feOffset id="rgb-r" in="R" dx="0" dy="0" result="Ro" />
+          <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="G" />
+          <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="B" />
+          <feOffset id="rgb-b" in="B" dx="0" dy="0" result="Bo" />
+          <feComposite in="Ro" in2="G" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="RG" />
+          <feComposite in="RG" in2="Bo" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" />
+        </filter>
+      </svg>
+
+      <!-- FOOTAGE: real takes only (cuts.sh). Box coordinates are in the cropped clip's 1920x1080 frame. -->
+      <div id="stage">
+        <div class="vw" style="z-index: 1"><div class="inner" id="s1-inner" style="transform-origin: 960px 400px">
+          <video id="v-hook" class="clip" src="assets/clips/hook.mp4" data-beat="hook" data-start="2.4" data-duration="3.3" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 2"><div class="inner" id="s2-inner" style="transform-origin: 960px 360px">
+          <video id="v-floor" class="clip" src="assets/clips/floor.mp4" data-beat="floor" data-start="5.7" data-duration="6" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 3"><div class="inner" id="s5a-inner" style="transform-origin: 960px 540px">
+          <video id="v-five" class="clip" src="assets/clips/five.mp4" data-beat="five" data-start="11.7" data-duration="7.3" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 4"><div class="inner" id="s6-inner" style="transform-origin: 960px 230px">
+          <video id="v-review" class="clip" src="assets/clips/review.mp4" data-beat="review" data-start="19" data-duration="3.8" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-review" class="box soft" style="left: 6px; top: 34px; width: 1908px; height: 388px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 5"><div class="inner" id="s5b-inner" style="transform-origin: 1386px 692px">
+          <video id="v-pivot" class="clip" src="assets/clips/pivot.mp4" data-beat="pivot" data-start="22.8" data-duration="4" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-choose" class="box soft" style="left: 1296px; top: 669px; width: 180px; height: 46px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 6"><div class="inner" id="s7a-inner" style="transform-origin: 960px 700px">
+          <video id="v-form" class="clip" src="assets/clips/form.mp4" data-beat="form" data-start="26.8" data-duration="3.3" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-edit" class="box soft" style="left: 662px; top: 658px; width: 596px; height: 84px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 7"><div class="inner" id="s7l-inner" style="transform-origin: 960px 560px">
+          <video id="v-lock" class="clip" src="assets/clips/lock.mp4" data-beat="lock" data-start="30.1" data-duration="2.9" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-lock" class="box soft" style="left: 32px; top: 386px; width: 1857px; height: 349px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 8"><div class="inner" id="s7b-inner" style="transform-origin: 0px 316px">
+          <video id="v-mode" class="clip" src="assets/clips/mode.mp4" data-beat="mode" data-start="33" data-duration="2" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-mode" class="box soft" style="left: 32px; top: 268px; width: 444px; height: 95px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 9"><div class="inner" id="s7c-inner" style="transform-origin: 1820px 990px">
+          <video id="v-launch" class="clip" src="assets/clips/launch.mp4" data-beat="launch" data-start="35" data-duration="2.24" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-launch" class="box soft" style="left: 1758px; top: 949px; width: 131px; height: 82px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 10"><div class="inner" id="s7d-inner" style="transform-origin: 960px 200px">
+          <video id="v-success" class="clip" src="assets/clips/success.mp4" data-beat="launchHit" data-start="37.24" data-duration="2.16" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-success" class="box" style="left: 6px; top: 47px; width: 1908px; height: 313px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 11"><div class="inner" id="s8-inner" style="transform-origin: 960px 600px">
+          <video id="v-seat" class="clip" src="assets/clips/seat.mp4" data-beat="seat" data-start="39.4" data-duration="3.6" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 12"><div class="inner" id="s9-inner" style="transform-origin: 960px 540px">
+          <video id="v-stream" class="clip" src="assets/clips/stream.mp4" data-beat="stream" data-start="43" data-duration="3.6" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-skip" class="box soft" style="left: 32px; top: 497px; width: 1857px; height: 62px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 13"><div class="inner" id="s3q-inner" style="transform-origin: 960px 300px">
+          <video id="v-quote" class="clip" src="assets/clips/quote.mp4" data-beat="quote" data-start="46.6" data-duration="6" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 14"><div class="inner" id="s10-inner" style="transform-origin: 0px 424px">
+          <video id="v-board" class="clip" src="assets/clips/board.mp4" data-beat="board" data-start="52.6" data-duration="2.9" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <div id="b-you" class="box soft" style="left: 32px; top: 391px; width: 1857px; height: 66px"></div>
+        </div></div>
+        <div class="vw" style="z-index: 15"><div class="inner" id="s11-inner" style="transform-origin: 960px 400px">
+          <video id="v-contest" class="clip" src="assets/clips/contest.mp4" data-beat="contest" data-start="55.5" data-duration="3.5" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 16"><div class="inner" id="s11r-inner" style="transform-origin: 960px 400px">
+          <video id="v-rules" class="clip" src="assets/clips/rules.mp4" data-beat="rules" data-start="59" data-duration="6.2" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+        <div class="vw" style="z-index: 17"><div class="inner" id="s3-inner" style="transform-origin: 960px 400px">
+          <video id="v-button" class="clip" src="assets/clips/button.mp4" data-beat="button" data-start="65.2" data-duration="1.4" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div></div>
+      </div>
+
+      <!-- STORY -->
+      <section id="s-intro" class="clip overlay" data-beat="intro" data-start="0" data-duration="2.4" data-track-index="4" style="z-index: 40">
+        <div id="intro-bg" style="position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 45%, rgba(40, 144, 248, 0.32) 0%, rgba(0, 24, 88, 0.6) 40%, rgba(0, 0, 16, 1) 78%), #000010"></div>
+        <div id="intro-stack" style="position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 22px; text-align: center">
+          <img id="intro-logo" src="assets/img/clawville-logo-official.png" alt="" style="width: 620px; height: auto; filter: drop-shadow(0 0 30px rgba(40, 144, 248, 0.55))" />
+          <div id="intro-l1" class="hl tex-l" style="font-size: 100px">ClawVille × AnsemHack</div>
+          <div id="intro-kick" class="kick" style="justify-self: center"><span class="dash"></span>THE CLAWPUMP HACKATHON</div>
+        </div>
+      </section>
+
+      <section id="s-hook" class="clip overlay" data-beat="hook" data-start="2.4" data-duration="3.3" data-track-index="2">
+        <div class="step tl" style="top: 170px">
+          <div class="kick"><span class="dash"></span><span id="hook-kick" class="typed" data-text="CLAWVILLE · THE TRADING FLOOR"></span></div>
+        </div>
+        <div id="hook-stack" style="position: absolute; left: 110px; top: 300px; display: grid; gap: 6px">
+          <div id="hook-l1" class="hl hero tex-w">Five house agents.</div>
+          <div id="hook-l2" class="hl tex-l" style="font-size: 190px">One floor.</div>
+        </div>
+      </section>
+
+      <section id="s-floor" class="clip overlay" data-beat="floor" data-start="5.7" data-duration="6" data-track-index="2">
+        <div class="plate-bl"></div>
+        <div id="floor-step" class="step bl">
+          <div class="kick"><span class="dash"></span>THE BIG BOARD</div>
+          <div class="hl headline tex-w">Every house agent</div>
+          <div class="hl headline tex-l">on the big board.</div>
+          <div id="floor-sub" class="sub">paper trades at live market quotes</div>
+        </div>
+      </section>
+
+      <section id="s-five" class="clip overlay" data-beat="five" data-start="11.7" data-duration="7.3" data-track-index="2">
+        <div class="plate-bl"></div>
+        <!-- lines = the served template taglines (GET /api/floor/arena/templates, staging, 2026-10-02 01:06Z), shortened only by cutting words -->
+        <div id="c1" class="hud"><div class="house">HOUSE</div><div class="idx">01 / 05</div><div class="hl mid tex-w">Genesis</div><div class="line">takes +10% fast</div></div>
+        <div id="c2" class="hud"><div class="house">HOUSE</div><div class="idx">02 / 05</div><div class="hl mid tex-w">Runner</div><div class="line">already up 680%</div></div>
+        <div id="c3" class="hud"><div class="house">HOUSE</div><div class="idx">03 / 05</div><div class="hl mid tex-w">Dip Hunter</div><div class="line">one-hour pullback</div></div>
+        <div id="c4" class="hud"><div class="house">HOUSE</div><div class="idx">04 / 05</div><div class="hl mid tex-w">Mid-Cap Climber</div><div class="line">climbs steadily</div></div>
+        <div id="c5" class="hud"><div class="house">HOUSE</div><div class="idx">05 / 05</div><div class="hl mid tex-w">Late Bloomer</div><div class="line">waking up again</div></div>
+      </section>
+
+      <section id="s-review" class="clip overlay" data-beat="review" data-start="19" data-duration="3.8" data-track-index="2">
+        <div class="plate-bl"></div>
+        <div id="review-step" class="step bl">
+          <div class="kick lime"><span class="dash"></span><span id="review-kick" class="typed" data-text="PAPER · EVERY 30 MINUTES"></span></div>
+          <div class="hl headline tex-w">It reviews</div>
+          <div class="hl headline tex-l">its trades.</div>
+        </div>
+      </section>
+
+      <section id="s-pivot" class="clip overlay" data-beat="pivot" data-start="22.8" data-duration="4" data-track-index="2">
+        <div class="plate-bl"></div>
+        <div id="pivot-stack" class="step bl">
+          <div id="pivot-l1" class="hl mid tex-w">Like one?</div>
+          <div id="pivot-l2" class="hl headline tex-l">Use its style.</div>
+        </div>
+      </section>
+
+      <section id="s-form" class="clip overlay" data-beat="form" data-beat-end="mode" data-start="26.8" data-duration="6.2" data-track-index="2">
+        <div class="plate-br"></div>
+        <div id="form-a" class="step br">
+          <div class="kick"><span class="dash"></span>THE TEMPLATE</div>
+          <div class="hl headline tex-l">Edit any rule.</div>
+          <div class="sub">inside its limits</div>
+        </div>
+        <div id="form-b" class="step br" style="opacity: 0; bottom: 60px">
+          <div class="kick"><span class="dash"></span>EVERY AGENT</div>
+          <div class="hl headline tex-w">Safety rules</div>
+          <div class="hl headline tex-b">stay locked.</div>
+        </div>
+      </section>
+
+      <section id="s-mode" class="clip overlay" data-beat="mode" data-start="33" data-duration="2" data-track-index="2">
+        <div class="plate-br"></div>
+        <div id="mode-b" class="step br">
+          <div class="hl headline tex-w">Paper only.</div>
+          <div class="hl headline tex-l">For now.</div>
+        </div>
+      </section>
+
+      <section id="s-launch" class="clip overlay center" data-beat="launchHit" data-start="37.24" data-duration="2.16" data-track-index="2">
+        <div id="launch-stack" style="position: relative; display: grid; gap: 14px; justify-items: center; text-align: center; margin-top: 360px">
+          <div id="launch-l1" class="hl tex-l" style="font-size: 230px">Launched.</div>
+        </div>
+      </section>
+
+      <section id="s-seat" class="clip overlay" data-beat="seat" data-start="39.4" data-duration="3.6" data-track-index="2">
+        <div class="plate-bl"></div>
+        <div id="seat-step" class="step bl">
+          <div class="kick"><span class="dash"></span>TAKE A SEAT</div>
+          <div class="hl headline tex-w">It trades</div>
+          <div class="hl headline tex-l">while it sits there.</div>
+        </div>
+      </section>
+
+      <section id="s-stream" class="clip overlay" data-beat="stream" data-start="43" data-duration="3.6" data-track-index="2">
+        <div id="stream-a" class="step tl" style="top: 110px">
+          <div class="kick"><span class="dash"></span>DECISION STREAM</div>
+          <div class="hl headline tex-w">Every decision,</div>
+          <div class="hl headline tex-l">live.</div>
+        </div>
+      </section>
+
+      <section id="s-quote" class="clip overlay" data-beat="quote" data-start="46.6" data-duration="6" data-track-index="2">
+        <div class="plate-bl"></div>
+        <div id="quote-step" class="step bl">
+          <div class="kick"><span class="dash"></span>EVERY PAPER BUY</div>
+          <div class="hl headline tex-w">Live ClawPump</div>
+          <div class="hl headline tex-l">swap quotes.</div>
+        </div>
+      </section>
+
+      <section id="s-board" class="clip overlay" data-beat="board" data-start="52.6" data-duration="2.9" data-track-index="2">
+        <div class="plate-bl"></div>
+        <div id="board-step" class="step bl">
+          <div class="hl hero tex-l">You</div>
+          <div class="hl headline tex-w">vs the house.</div>
+        </div>
+      </section>
+
+      <section id="s-contest" class="clip overlay" data-beat="contest" data-beat-end="button" data-start="55.5" data-duration="9.7" data-track-index="2">
+        <div class="plate-bl" style="width: 1500px; height: 760px"></div>
+        <div id="contest-scrim" style="position: absolute; inset: 0; opacity: 0; background: linear-gradient(90deg, rgba(0, 0, 16, 0.95) 0%, rgba(0, 0, 16, 0.9) 50%, rgba(0, 0, 16, 0.35) 78%, rgba(0, 0, 16, 0) 92%)"></div>
+        <div id="contest-step" class="step bl" style="bottom: 120px">
+          <div class="kick"><span class="dash"></span>TRADING ARENA · WEEK 1</div>
+          <div class="hl mid tex-w">Top 3 player agents</div>
+          <div class="hl mid tex-l">by paper P&amp;L win $CLAWVILLE.</div>
+          <div class="prizes">
+            <div id="p1" class="prize"><span class="place">1ST</span><span class="hl amt tex-g">1,000,000</span><span class="tok">$CLAWVILLE</span></div>
+            <div id="p2" class="prize"><span class="place">2ND</span><span class="hl amt tex-g">500,000</span><span class="tok">$CLAWVILLE</span></div>
+            <div id="p3" class="prize"><span class="place">3RD</span><span class="hl amt tex-g">250,000</span><span class="tok">$CLAWVILLE</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s-button" class="clip overlay center" data-beat="button" data-start="65.2" data-duration="1.4" data-track-index="3">
+        <div class="scrim" style="background: rgba(0, 0, 16, 0.72)"></div>
+        <div id="btn-stack" style="position: relative; display: grid; gap: 0; justify-items: center; text-align: center">
+          <div id="btn-l1" class="hl headline tex-w">Pull up</div>
+          <div id="btn-l2" class="hl tex-l" style="font-size: 260px">a chair.</div>
+        </div>
+      </section>
+
+      <section id="s-brand" class="clip overlay" data-beat="brand" data-start="66.6" data-duration="3.4" data-track-index="2">
+        <div id="brand-bg"></div>
+        <div id="brand-glow"></div>
+        <img id="mascot" src="assets/img/mascot-pirate-cutout.png" alt="" />
+        <div id="brand-stack">
+          <div class="kick"><span class="dash"></span>CLAWVILLE · CLAWPUMP HACKATHON</div>
+          <div id="brand-l1" class="hl tex-w" style="font-size: 112px">The Trading Floor</div>
+          <div id="brand-l3" class="hl tex-l" style="font-size: 168px; line-height: 1.16">is open.</div>
+          <div id="brand-pills" class="pills">
+            <div class="pill">5 house agents</div>
+            <div class="pill">5 templates</div>
+            <div class="pill">paper contest</div>
+          </div>
+          <div id="brand-links" class="linkbar"><span>clawville.world</span><span class="sep"></span><span>@Clawville_World</span></div>
+        </div>
+      </section>
+
+      <div id="lb-top" class="lb"></div>
+      <div id="lb-bot" class="lb"></div>
+      <div id="fx-red"></div>
+      <div id="fx-flash"></div>
+      <div id="hf-vignette"></div>
+      <div id="fx-black"></div>
+      <div id="grain-overlay"><div class="grain-texture"></div></div>
+
+      <!-- VOICEOVER (OpenAI TTS, ../vo/vo-lines.json, trimmed + 1.06x) -->
+      <audio id="vo-01" src="assets/vo/01-hook.wav" data-beat="hook" data-off="0.3" data-start="2.7" data-duration="2.69" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-02" src="assets/vo/02-floor.wav" data-beat="floor" data-off="0.15" data-start="5.85" data-duration="5.54" data-track-index="31" data-volume="1"></audio>
+      <audio id="vo-03" src="assets/vo/03-five.wav" data-beat="five" data-off="0" data-start="11.7" data-duration="7.08" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-04" src="assets/vo/04-review.wav" data-beat="review" data-off="0.15" data-start="19.15" data-duration="3.47" data-track-index="31" data-volume="1"></audio>
+      <audio id="vo-05" src="assets/vo/05-pivot.wav" data-beat="pivot" data-off="0.1" data-start="22.9" data-duration="3.76" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-06" src="assets/vo/06-form.wav" data-beat="form" data-off="0.1" data-start="26.9" data-duration="5.86" data-track-index="31" data-volume="1"></audio>
+      <audio id="vo-07" src="assets/vo/07-mode.wav" data-beat="mode" data-off="0.1" data-start="33.1" data-duration="1.7" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-08" src="assets/vo/08-launch.wav" data-beat="launch" data-off="1.6" data-start="36.6" data-duration="2.61" data-track-index="31" data-volume="1"></audio>
+      <audio id="vo-09" src="assets/vo/09-seat.wav" data-beat="seat" data-off="0.1" data-start="39.5" data-duration="3.11" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-10" src="assets/vo/10-stream.wav" data-beat="stream" data-off="0.1" data-start="43.1" data-duration="9.2" data-track-index="31" data-volume="1"></audio>
+      <audio id="vo-11" src="assets/vo/11-board.wav" data-beat="board" data-off="0.1" data-start="52.7" data-duration="2.5" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-12" src="assets/vo/12-contest.wav" data-beat="contest" data-off="0.1" data-start="55.6" data-duration="9.25" data-track-index="31" data-volume="1"></audio>
+      <audio id="vo-13" src="assets/vo/13-button.wav" data-beat="button" data-off="0.1" data-start="65.3" data-duration="0.92" data-track-index="30" data-volume="1"></audio>
+      <audio id="vo-14" src="assets/vo/14-brand.wav" data-beat="brand" data-off="0.2" data-start="66.8" data-duration="1.96" data-track-index="31" data-volume="1"></audio>
+
+      <!-- SFX from the kit (assets/sfx, licenses inside); quieter under the voice -->
+      <audio id="x-hook" src="assets/sfx/boom_1.wav" data-beat="hook" data-off="1.85" data-start="4.25" data-duration="3.35" data-track-index="11" data-volume="0.22"></audio>
+      <audio id="x-cut1" src="assets/sfx/glitch_1.wav" data-beat="floor" data-off="-0.05" data-start="5.65" data-duration="1.07" data-track-index="12" data-volume="0.18"></audio>
+      <audio id="x-launch" src="assets/sfx/boom_2.wav" data-beat="launchHit" data-off="0" data-start="37.24" data-duration="3" data-track-index="16" data-volume="0.1"></audio>
+      <audio id="x-bell" src="assets/sfx/bell_2.wav" data-beat="contest" data-off="0" data-start="55.5" data-duration="2.9" data-track-index="20" data-volume="0.14"></audio>
+      <audio id="x-button" src="assets/sfx/taiko_1.wav" data-beat="button" data-off="-0.15" data-start="65.05" data-duration="2" data-track-index="21" data-volume="0.35"></audio>
+      <audio id="x-gong" src="assets/sfx/bell_1.wav" data-beat="brand" data-off="2.2" data-start="68.8" data-duration="1.2" data-track-index="22" data-volume="0.22"></audio>
+    </div>
+
+    <script id="beats" type="application/json">{"intro": 0, "hook": 2.4, "dropA": 4.4, "floor": 5.7, "five": 11.7, "n1": 14.36, "n2": 15.21, "n3": 15.9, "n4": 16.8, "n5": 18.07, "review": 19.0, "pivot": 22.8, "pivotZoom": 25.7, "form": 26.8, "lock": 30.1, "mode": 33.0, "launch": 35.0, "launchHit": 37.24, "seat": 39.4, "stream": 43.0, "quote": 46.6, "quoteCap": 48.7, "board": 52.6, "contest": 55.5, "rules": 59.0, "p1": 60.16, "p2": 61.69, "p3": 63.28, "button": 65.2, "brand": 66.6, "end": 70.0}</script>
+    <script>
+      const T = JSON.parse(document.getElementById("beats").textContent);
+      // ---- effects kit: demo-director scripts/fx-helpers.js (unchanged copy) ----
+      const tl = gsap.timeline({ paused: true });
+      const rnd = (i) => {
+        const x = Math.sin(i * 127.1 + 311.7) * 43758.5453;
+        return x - Math.floor(x);
+      };
+      const inUp = (sel, at, d = 0.3) => tl.fromTo(sel, { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: d, ease: "power3.out" }, at);
+      const slam = (sel, at, from = 1.25) => {
+        tl.fromTo(sel, { opacity: 0, scale: from }, { opacity: 1, scale: 1, duration: 0.28, ease: "power4.out" }, at);
+        tl.fromTo(sel, { "--rgb": "16px" }, { "--rgb": "0px", duration: 0.45, ease: "power2.out" }, at);
+      };
+      const flash = (at, peak = 0.8, d = 0.28, sel = "#fx-flash") =>
+        tl.fromTo(sel, { opacity: peak }, { opacity: 0, duration: d, ease: "power2.out", immediateRender: false }, at);
+      const glitch = (at, dur = 0.24, amp = 34, seed = 1) => {
+        tl.set("#stage", { filter: "url(#rgb)" }, at);
+        const n = Math.max(3, Math.round(dur / 0.04));
+        for (let i = 0; i < n; i++) {
+          const k = 1 - i / n;
+          const dx = (rnd(seed * 50 + i) * 2 - 1) * amp * k;
+          tl.set("#rgb-r", { attr: { dx } }, at + i * 0.04);
+          tl.set("#rgb-b", { attr: { dx: -dx * 0.8, dy: (rnd(seed * 70 + i) - 0.5) * 8 * k } }, at + i * 0.04);
+          tl.set("#stage", { x: (rnd(seed * 90 + i) * 2 - 1) * amp * 0.45 * k }, at + i * 0.04);
+        }
+        tl.set("#rgb-r", { attr: { dx: 0 } }, at + dur);
+        tl.set("#rgb-b", { attr: { dx: 0, dy: 0 } }, at + dur);
+        tl.set("#stage", { x: 0, filter: "none" }, at + dur);
+      };
+      const shake = (sel, at, dur = 0.45, amp = 12, seed = 3) => {
+        const n = Math.round(dur / 0.033);
+        tl.set(sel, { scale: 1.04 }, at);
+        for (let i = 0; i < n; i++) {
+          const k = 1 - i / n;
+          tl.set(sel, { x: (rnd(seed * 31 + i) * 2 - 1) * amp * k, y: (rnd(seed * 57 + i) * 2 - 1) * amp * k }, at + i * 0.033);
+        }
+        tl.set(sel, { x: 0, y: 0, scale: 1 }, at + dur);
+      };
+      const typeLine = (sel, at, end, cps = 42, cursor = true) => {
+        const full = document.querySelector(sel).dataset.text;
+        const p = { t: 0 };
+        tl.fromTo(p, { t: 0 }, {
+          t: end - at, duration: end - at, ease: "none",
+          onUpdate() {
+            const el = document.querySelector(sel);
+            if (!el) return;
+            const n = Math.min(full.length, Math.floor(p.t * cps));
+            const on = n < full.length || Math.floor(p.t * 2.4) % 2 === 0;
+            el.textContent = full.slice(0, n) + (cursor ? (on ? "▌" : " ") : "");
+          },
+        }, at);
+      };
+      const show = (sels, a, b, d = 0.18) => {
+        tl.fromTo(sels, { opacity: 0 }, { opacity: 1, duration: d, immediateRender: false }, a);
+        tl.to(sels, { opacity: 0, duration: 0.12 }, b - 0.12);
+      };
+      const fadeToBlack = (at, dur = 0.87, sel = "#fx-black") =>
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: dur, ease: "power1.in", immediateRender: false }, at);
+      const card = (sel, at, d) => {
+        tl.fromTo(sel, { opacity: 0, x: -60 }, { opacity: 1, x: 0, duration: 0.22, ease: "power3.out", immediateRender: false }, at);
+        tl.fromTo(`${sel} .hl`, { "--rgb": "14px" }, { "--rgb": "0px", duration: 0.35, immediateRender: false }, at);
+        tl.to(sel, { opacity: 0, duration: 0.1 }, at + d - 0.1);
+      };
+      const swap = (outSel, inSel, at) => {
+        tl.to(outSel, { opacity: 0, duration: 0.12 }, at - 0.12);
+        tl.fromTo(inSel, { opacity: 0, y: 26 }, { opacity: 1, y: 0, duration: 0.3, ease: "power3.out", immediateRender: false }, at);
+        tl.fromTo(`${inSel} .hl`, { "--rgb": "12px" }, { "--rgb": "0px", duration: 0.4, immediateRender: false }, at);
+      };
+      const cutIn = (b, seed, peak = 0.3) => {
+        glitch(T[b] - 0.1, 0.22, 30, seed);
+        flash(T[b], peak, 0.14);
+      };
+
+      // ---- INTRO: ClawVille's AnsemHack entry ----
+      tl.fromTo("#intro-logo", { opacity: 0, scale: 1.2 }, { opacity: 1, scale: 1, duration: 0.35, ease: "power4.out" }, T.intro + 0.05);
+      slam("#intro-l1", T.intro + 0.45, 1.3);
+      inUp("#intro-kick", T.intro + 0.8);
+      tl.to("#s-intro", { opacity: 0, duration: 0.2 }, T.hook - 0.2);
+
+      // ---- HOOK: the kicker types; the statement slams on drop A ----
+      tl.fromTo("#v-hook", { filter: "brightness(0.6) blur(3px) saturate(0.9)" }, { filter: "brightness(0.75) blur(2px) saturate(0.9)", duration: T.dropA - 0.1, ease: "power1.in" }, T.hook);
+      tl.fromTo("#s1-inner", { scale: 1.1 }, { scale: 1.0, duration: T.floor - T.hook, ease: "none" }, T.hook);
+      typeLine("#hook-kick", T.hook, T.dropA - 0.6, 30, false);
+      slam("#hook-l1", T.dropA, 1.35);
+      slam("#hook-l2", T.dropA + 0.16, 1.3);
+      flash(T.dropA, 0.85, 0.3);
+      tl.to("#lb-top", { yPercent: -100, duration: 0.35, ease: "power3.out" }, T.dropA);
+      tl.to("#lb-bot", { yPercent: 100, duration: 0.35, ease: "power3.out" }, T.dropA);
+      shake("#stage", T.dropA, 0.4, 14, 1);
+
+      // ---- THE FLOOR: the room with the five house agents under the big board ----
+      glitch(T.floor - 0.1, 0.26, 40, 2);
+      flash(T.floor, 0.35, 0.12);
+      tl.fromTo("#s2-inner", { scale: 1.12 }, { scale: 1.0, duration: T.five - T.floor, ease: "power2.out" }, T.floor);
+      inUp("#floor-step .kick", T.floor + 0.3);
+      slam("#floor-step .hl", T.floor + 0.6, 1.2);
+      inUp("#floor-sub", T.floor + 2.4);
+
+      // ---- THE FIVE: one card per agent, on its spoken name ----
+      cutIn("five", 3);
+      const names = ["n1", "n2", "n3", "n4", "n5"];
+      ["#c1", "#c2", "#c3", "#c4", "#c5"].forEach((sel, i) => {
+        const at = T[names[i]];
+        const end = i < 4 ? T[names[i + 1]] : T.review;
+        flash(at, 0.18, 0.1);
+        card(sel, at, end - at);
+      });
+
+      // ---- THEY REVIEW: the 30-minute report ----
+      cutIn("review", 9);
+      tl.fromTo("#s6-inner", { scale: 1.0 }, { scale: 1.06, duration: T.pivot - T.review, ease: "none" }, T.review);
+      show("#b-review", T.review + 0.9, T.pivot);
+      typeLine("#review-kick", T.review + 0.1, T.review + 0.7, 30, false);
+      slam("#review-step .hl", T.review + 0.5, 1.2);
+
+      // ---- PIVOT: the walk-up card, then a push onto "Choose this trading style" ----
+      cutIn("pivot", 10);
+      slam("#pivot-l1", T.pivot + 0.3, 1.2);
+      slam("#pivot-l2", T.pivot + 0.5, 1.25);
+      tl.fromTo("#s5b-inner", { scale: 1.0 }, { scale: 1.45, duration: 0.5, ease: "power3.inOut", immediateRender: false }, T.pivotZoom);
+      show("#b-choose", T.pivotZoom + 0.4, T.form);
+
+      // ---- THE FORM: the edited field, then the locked hard rules ----
+      cutIn("form", 11);
+      slam("#form-a", T.form + 0.3, 1.2);
+      show("#b-edit", T.form + 0.4, T.lock);
+      glitch(T.lock - 0.08, 0.16, 22, 21);
+      swap("#form-a", "#form-b", T.lock);
+      show("#b-lock", T.lock + 0.2, T.mode);
+
+      // ---- MODE: paper only ----
+      glitch(T.mode - 0.1, 0.22, 30, 12);
+      slam("#mode-b .hl", T.mode + 0.1, 1.2);
+      tl.fromTo("#s7b-inner", { scale: 1.0 }, { scale: 1.3, duration: T.launch - T.mode, ease: "power1.inOut" }, T.mode);
+      show("#b-mode", T.mode + 0.3, T.launch);
+
+      // ---- LAUNCH: the name, the click, the headline on the success frame (drop B) ----
+      cutIn("launch", 13, 0.25);
+      tl.fromTo("#s7c-inner", { scale: 1.0 }, { scale: 1.04, duration: T.launchHit - T.launch, ease: "power1.in" }, T.launch);
+      show("#b-launch", T.launchHit - 0.7, T.launchHit);
+      flash(T.launchHit, 0.9, 0.35);
+      flash(T.launchHit, 0.5, 0.45, "#fx-red");
+      shake("#stage", T.launchHit, 0.45, 16, 13);
+      slam("#launch-l1", T.launchHit + 0.05, 1.5);
+      show("#b-success", T.launchHit + 0.3, T.seat);
+
+      // ---- TAKE A SEAT ----
+      cutIn("seat", 14);
+      tl.fromTo("#s8-inner", { scale: 1.02 }, { scale: 1.1, duration: T.stream - T.seat, ease: "none" }, T.seat);
+      inUp("#seat-step .kick", T.seat + 0.3);
+      slam("#seat-step .hl", T.seat + 0.6, 1.2);
+
+      // ---- THE STREAM: the film agent's own SCAN + STATUS rows ----
+      cutIn("stream", 15);
+      inUp("#stream-a .kick", T.stream + 0.2);
+      slam("#stream-a .hl", T.stream + 0.4, 1.2);
+      show("#b-skip", T.stream + 1.0, T.quote);
+
+      // ---- CLAWPUMP: the board footer (paper costs on top of the live quote) ----
+      cutIn("quote", 22);
+      tl.fromTo("#s3q-inner", { scale: 1.0 }, { scale: 1.1, duration: T.board - T.quote, ease: "none" }, T.quote);
+      inUp("#quote-step .kick", T.quoteCap);
+      slam("#quote-step .hl", T.quoteCap + 0.3, 1.2);
+
+      // ---- ON THE BOARD: hold wide, snap to the You row ----
+      cutIn("board", 16);
+      tl.fromTo("#s10-inner", { scale: 1.0 }, { scale: 1.45, duration: 0.2, ease: "power4.in", immediateRender: false }, T.board + 0.9);
+      flash(T.board + 0.9, 0.3, 0.14);
+      show("#b-you", T.board + 1.1, T.contest);
+      slam("#board-step .hl", T.board + 0.3, 1.25);
+
+      // ---- THE CONTEST: banner, then the rules; prize rows on the spoken amounts ----
+      cutIn("contest", 17, 0.35);
+      cutIn("rules", 23, 0.2);
+      tl.fromTo("#contest-scrim", { opacity: 0 }, { opacity: 1, duration: 0.25, immediateRender: false }, T.rules);
+      inUp("#contest-step .kick", T.contest + 0.1);
+      slam("#contest-step > .hl", T.contest + 1.4, 1.2);
+      slam("#p1", T.p1, 1.3);
+      slam("#p2", T.p2, 1.3);
+      slam("#p3", T.p3, 1.3);
+
+      // ---- BUTTON: answers the hook ----
+      tl.set("#v-button", { filter: "brightness(0.4) blur(5px) saturate(0.6)" }, T.button);
+      glitch(T.button - 0.1, 0.26, 44, 18);
+      slam("#btn-l1", T.button, 1.3);
+      slam("#btn-l2", T.button + 0.15, 1.5);
+      flash(T.button, 0.55, 0.22);
+      shake("#btn-stack", T.button + 0.15, 0.35, 12, 19);
+
+      // ---- BRAND CARD: banner recipe, a black layer ends it ----
+      flash(T.brand, 0.7, 0.3);
+      tl.fromTo("#mascot", { opacity: 0, scale: 1.25 }, { opacity: 1, scale: 1, duration: 0.3, ease: "power4.out", immediateRender: false }, T.brand);
+      shake("#mascot", T.brand + 0.2, 0.35, 12, 20);
+      inUp("#brand-stack .kick", T.brand + 0.2);
+      slam("#brand-l1", T.brand + 0.35, 1.2);
+      slam("#brand-l3", T.brand + 0.6, 1.3);
+      inUp("#brand-pills", T.brand + 1.0);
+      inUp("#brand-links", T.brand + 1.3);
+      fadeToBlack(T.end - 0.9);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
