@@ -612,7 +612,10 @@ interface HistoryScan {
    * start: then the list is a contiguous, resolved window back past dispatched_at - 60 s (Codex B3).
    */
   complete: boolean;
-  /** In-window 'success' items with an unused signature and an exact match. */
+  /**
+   * In-window items with an unused signature and an exact finalized chain match, whatever their known vendor
+   * status (Codex r2 B1: the chain decides; a vendor 'failed' item that moved the exact amount is a match).
+   */
   matches: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
 }
 
@@ -637,7 +640,10 @@ async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, 
     if (!tx || tx.blockTime === null) return { complete: false, matches };
     if (previous !== null && tx.blockTime > previous) return { complete: false, matches };
     previous = tx.blockTime;
-    if (status !== 'success' || tx.blockTime < windowStart) continue;
+    // Codex r2 B1: the finalized chain transaction decides, not the vendor status. A vendor 'failed' item can
+    // still be an exact transfer; skipping it would let the balance rule book a sent transfer as failed_no_send.
+    // A chain error or any inexact delta stays 'chain_error' / 'no_match' and is never a match.
+    if (tx.blockTime < windowStart) continue;
     if (await deps.signatureUsed(item.signature)) continue;
     if (matchWithdrawTransfer(tx, row) === 'match') matches.push({ signature: item.signature, tx });
   }

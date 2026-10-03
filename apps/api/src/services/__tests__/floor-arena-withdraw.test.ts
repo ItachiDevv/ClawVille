@@ -715,10 +715,10 @@ describe('reconcile an unknown row without a signature (history + exact match)',
     expect(world.get(row.id)).toMatchObject({ state: 'unknown', txSignature: null, checkCount: 1 });
   });
 
-  test('a failed history item and a match from before the window are not candidates', async () => {
+  test('a failed history item whose chain tx has a chain error and a match from before the window are not candidates', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
     history([
-      { signature: 'SIG_FAILED', status: 'failed', tx: usdcTx() },
+      { signature: 'SIG_FAILED', status: 'failed', tx: usdcTx({ err: { InstructionError: [0, 'Custom'] } }) },
       { signature: 'SIG_EARLY', tx: usdcTx({ blockTime: unix(at(-22 * MIN)) }) },
     ]);
     await tick(world);
@@ -903,5 +903,68 @@ describe('Codex money review blockers (B2, B3, B4)', () => {
 
   test('B4: the remote deadline constant is 20 s', () => {
     expect(ARENA_WITHDRAW_REMOTE_TIMEOUT_MS).toBe(20_000);
+  });
+});
+
+describe('Codex r2 B1: the finalized chain transfer wins over a vendor status', () => {
+  const OLD_DEPOSIT = (): ArenaWithdrawChainTx => usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) });
+  /** A deposit after the transfer that hides the transfer's balance drop (live balance = pre balance). */
+  const HIDING_DEPOSIT = (): ArenaWithdrawChainTx => usdcTx({ source: OTHER, dest: SOURCE, amount: 100_000n, blockTime: unix(at(-10 * MIN)) });
+
+  function listHistory(items: Array<{ signature: string; status?: string | null; tx?: ArenaWithdrawChainTx }>): void {
+    world.live = {
+      ...world.live,
+      transactions: items.map((item) => ({ signature: item.signature, status: item.status === undefined ? 'success' : item.status })),
+    };
+    for (const item of items) if (item.tx) world.txs.set(item.signature, item.tx);
+  }
+
+  test('unknown row: a vendor-failed item whose finalized tx matches exactly -> confirmed, even when a deposit hides the drop', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([
+      { signature: 'SIG_NEW_DEPOSIT', tx: HIDING_DEPOSIT() },
+      { signature: 'SIG_VF', status: 'failed', tx: usdcTx() },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    world.live = { ...world.live, usdcAtomic: 5_000_000n };
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_VF', postBalanceAtomic: 4_900_000n });
+    expect(world.transfers).toHaveLength(0);
+  });
+
+  test('sent row, signature gone after the give-up: a vendor-failed exact match -> never failed_no_send (undecided)', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-40 * MIN) }));
+    listHistory([
+      { signature: 'SIG_NEW_DEPOSIT', tx: HIDING_DEPOSIT() },
+      { signature: 'SIG_VF', status: 'failed', tx: usdcTx({ blockTime: unix(at(-39 * MIN)) }) },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    world.live = { ...world.live, usdcAtomic: 5_000_000n };
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'sent', txSignature: 'SIG_GONE', checkCount: 1 });
+    expect(world.transfers).toHaveLength(0);
+  });
+
+  test('a vendor-failed item whose chain tx has a chain error or does not match is still ignored', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([
+      { signature: 'SIG_VF_ERR', status: 'failed', tx: usdcTx({ err: { InstructionError: [0, 'Custom'] } }) },
+      { signature: 'SIG_VF_OTHER', status: 'failed', tx: usdcTx({ dest: OTHER }) },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    await tick(world);
+    // Complete window, no match, no balance drop: the balance rule decides as before.
+    expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'not_found_no_drop', txSignature: null });
+  });
+
+  test('a vendor-failed exact match plus a success exact match -> needs_review ambiguous_match', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([
+      { signature: 'SIG_OK', tx: usdcTx({ blockTime: unix(at(-18 * MIN)) }) },
+      { signature: 'SIG_VF', status: 'failed', tx: usdcTx() },
+      { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
+    ]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
   });
 });
