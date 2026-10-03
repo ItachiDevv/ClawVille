@@ -16,6 +16,9 @@
  *   POST /:slug/settle  (NAMED admin) — explicitly record event completion
  *   POST /:slug/cancel  (NAMED admin) — cancel before play (draft / signup_open,
  *                                   after the start recovery) + refund signups
+ *   GET  /:slug/sol-refunds (NAMED admin) — SOL refunds owed + paid (cancelled event)
+ *   POST /:slug/sol-refunds/:signupId/paid (NAMED admin) — record an operator SOL
+ *                                   payout after on-chain verification
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
  *   POST /:slug/signup  (AGENT-CAPABLE) — gate-evaluated signup (human XOR agent)
@@ -73,7 +76,8 @@ const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 /**
  * Named-admin gate for EVERY special-event admin mutation (security M3,
  * 2026-09-30): /create, /:slug/open, /:slug/start, /:slug/settle, and
- * /:slug/cancel (2026-10-03: it credits refunds). `adminOnly`
+ * /:slug/cancel (2026-10-03: it credits refunds), and the SOL refund routes
+ * /:slug/sol-refunds + /:slug/sol-refunds/:signupId/paid. `adminOnly`
  * also accepts the static shared `cv_dash` cookie, which is not tied to a user and
  * never rotates. /create sets the seed prize pool, /start pays it from the house
  * treasury, and /open + /settle move the event lifecycle, so all four also require
@@ -284,14 +288,65 @@ specialEventsRouter.post('/:slug/settle', adminOnly, requireNamedAdmin, async (c
 
 // ── POST /:slug/cancel (NAMED ADMIN — cancel before play + refund signups) ─────
 // Refunds every vCLAW entry to the signup's avatar (human or agent, same path)
-// and lists confirmed SOL entries in `solRefundsOwed` for an operator transfer.
-// A retry is a no-op. Refused (409) once play started or the event settled.
+// and records every SOL entry as an owed refund (durable row; `solRefundsOwed`
+// in the response) for an operator transfer. A retry moves no CT. Refused (409)
+// once play started or the event settled.
 specialEventsRouter.post('/:slug/cancel', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {
     const result = await specialEventManager.cancelEvent(parsed.data.slug);
     return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// ── SOL refunds of a cancelled event (NAMED ADMIN, Codex r1 2026-10-03) ───────
+// A SOL entry goes back by an operator transfer from the treasury. The cancel
+// records each one as 'owed' (special_event_sol_refunds, destination = the
+// sender proven by the entry transfer). These routes list them and record a
+// payout after the API verifies it on chain (finalized, ≥ owed lamports to the
+// recorded destination, signature never used before).
+const solRefundParamSchema = z.object({
+  slug: z.string().min(1).max(64),
+  signupId: z.string().uuid(),
+});
+const solRefundPaidSchema = z.object({
+  // A base58 Solana transaction signature (64 bytes → 64..88 chars).
+  txSignature: z.string().trim().regex(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
+});
+
+specialEventsRouter.get('/:slug/sol-refunds', adminOnly, requireNamedAdmin, async (c) => {
+  const parsed = slugParamSchema.safeParse(c.req.param());
+  if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
+  try {
+    const result = await specialEventManager.listSolRefunds(parsed.data.slug);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+specialEventsRouter.post('/:slug/sol-refunds/:signupId/paid', adminOnly, requireNamedAdmin, async (c) => {
+  const params = solRefundParamSchema.safeParse(c.req.param());
+  if (!params.success) throw new HTTPException(400, { message: 'invalid_params' });
+  const body = solRefundPaidSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) throw new HTTPException(400, { message: 'invalid_tx_signature' });
+  try {
+    const refund = await specialEventManager.markSolRefundPaid(
+      params.data.slug,
+      params.data.signupId,
+      body.data.txSignature,
+      c.get('user')?.id ?? null,
+    );
+    return c.json({ ok: true, refund });
   } catch (err) {
     if (err instanceof SpecialEventError) {
       throw new HTTPException(err.httpStatus as 400, { message: err.message });

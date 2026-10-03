@@ -18,6 +18,9 @@ process.env.FINGERPRINT_SECRET ??= '44'.repeat(32);
 process.env.ADMIN_USER_IDS = '11111111-1111-4111-8111-111111111111';
 
 const ADMIN_ID = '11111111-1111-4111-8111-111111111111';
+const SIGNUP_ID = '33333333-3333-4333-8333-333333333333';
+const GOOD_SIG = '5'.repeat(88);
+const REUSED_SIG = '4'.repeat(88);
 const OTHER_ID = '22222222-2222-4222-8222-222222222222';
 
 type Middleware = (c: any, next: () => Promise<void>) => unknown;
@@ -40,6 +43,8 @@ let startCalls: string[] = [];
 let openCalls: string[] = [];
 let settleCalls: string[] = [];
 let cancelCalls: string[] = [];
+let solListCalls: string[] = [];
+let paidCalls: Array<{ slug: string; signupId: string; txSignature: string; adminUserId: string | null }> = [];
 mock.module('../../services/special-event-manager', () => ({
   ...realManagerModule,
   specialEventManager: {
@@ -68,6 +73,22 @@ mock.module('../../services/special-event-manager', () => ({
         solRefundsOwed: [],
       };
     },
+    listSolRefunds: async (slug: string) => {
+      solListCalls.push(slug);
+      return { eventId: 'e-1', eventStatus: 'cancelled', owed: [], refunded: [], owedLamports: '0' };
+    },
+    markSolRefundPaid: async (
+      slug: string,
+      signupId: string,
+      txSignature: string,
+      adminUserId: string | null,
+    ) => {
+      paidCalls.push({ slug, signupId, txSignature, adminUserId });
+      if (txSignature === REUSED_SIG) {
+        throw new realManagerModule.SpecialEventError('refund_tx_reused', 409);
+      }
+      return { signupId, status: 'refunded', refundTxSig: txSignature };
+    },
   },
 }));
 
@@ -75,14 +96,18 @@ const { specialEventsRouter, createEventSchema } = await import('../special-even
 const { DASH_COOKIE_NAME, expectedDashCookie } = await import('../../middleware/admin-only');
 const app = new Hono().route('/api/events', specialEventsRouter);
 
-function post(path: string, opts: { user?: string; dash?: boolean; body?: unknown } = {}) {
+function post(
+  path: string,
+  opts: { user?: string; dash?: boolean; body?: unknown; method?: 'GET' | 'POST' } = {},
+) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.user) headers['x-test-user'] = opts.user;
   if (opts.dash) headers.Cookie = `${DASH_COOKIE_NAME}=${expectedDashCookie()}`;
+  const method = opts.method ?? 'POST';
   return app.request(`/api/events${path}`, {
-    method: 'POST',
+    method,
     headers,
-    body: JSON.stringify(opts.body ?? {}),
+    body: method === 'GET' ? undefined : JSON.stringify(opts.body ?? {}),
   });
 }
 
@@ -101,6 +126,8 @@ beforeEach(() => {
   openCalls = [];
   settleCalls = [];
   cancelCalls = [];
+  solListCalls = [];
+  paidCalls = [];
 });
 
 afterAll(() => {
@@ -116,6 +143,15 @@ describe('special events — named admin on every admin mutation (security M3)',
     ['/launch-champ/start', {}] as const,
     ['/launch-champ/settle', {}] as const,
     ['/launch-champ/cancel', {}] as const,
+    [`/launch-champ/sol-refunds/${SIGNUP_ID}/paid`, { txSignature: GOOD_SIG }] as const,
+  ];
+  const allCalls = () => [
+    ...startCalls,
+    ...openCalls,
+    ...settleCalls,
+    ...cancelCalls,
+    ...solListCalls,
+    ...paidCalls,
   ];
 
   test.each(mutations)('%s refuses the shared cv_dash cookie without a named admin session', async (path, body) => {
@@ -126,13 +162,21 @@ describe('special events — named admin on every admin mutation (security M3)',
     // The cookie plus a NON-admin Lucia user is still not a named admin.
     const withUser = await post(path, { dash: true, user: OTHER_ID, body });
     expect(withUser.status).toBe(403);
-    expect([...startCalls, ...openCalls, ...settleCalls, ...cancelCalls]).toHaveLength(0);
+    expect(allCalls()).toHaveLength(0);
   });
 
   test.each(mutations)('%s refuses no auth (401) and a non-admin user (403)', async (path, body) => {
     expect((await post(path, { body })).status).toBe(401);
     expect((await post(path, { user: OTHER_ID, body })).status).toBe(403);
-    expect([...startCalls, ...openCalls, ...settleCalls, ...cancelCalls]).toHaveLength(0);
+    expect(allCalls()).toHaveLength(0);
+  });
+
+  test('GET /:slug/sol-refunds needs the same named admin (401 / 403 / cv_dash 403)', async () => {
+    const path = '/launch-champ/sol-refunds';
+    expect((await post(path, { method: 'GET' })).status).toBe(401);
+    expect((await post(path, { method: 'GET', user: OTHER_ID })).status).toBe(403);
+    expect((await post(path, { method: 'GET', dash: true })).status).toBe(403);
+    expect(allCalls()).toHaveLength(0);
   });
 
   test('/open, /start and /settle run for a named admin session', async () => {
@@ -158,6 +202,49 @@ describe('special events — POST /:slug/cancel (security pass gap, 2026-10-03)'
     const res = await post('/already-live/cancel', { user: ADMIN_ID });
     expect(res.status).toBe(409);
     expect(await errorMessage(res)).toContain('event_already_started');
+  });
+});
+
+describe('special events — SOL refund routes (Codex r1, 2026-10-03)', () => {
+  test('a named admin lists SOL refunds', async () => {
+    const res = await post('/launch-champ/sol-refunds', { method: 'GET', user: ADMIN_ID });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, owed: [], refunded: [], owedLamports: '0' });
+    expect(solListCalls).toEqual(['launch-champ']);
+  });
+
+  test('a named admin records a payout; the admin user id is passed through', async () => {
+    const res = await post(`/launch-champ/sol-refunds/${SIGNUP_ID}/paid`, {
+      user: ADMIN_ID,
+      body: { txSignature: GOOD_SIG },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, refund: { status: 'refunded', refundTxSig: GOOD_SIG } });
+    expect(paidCalls).toEqual([
+      { slug: 'launch-champ', signupId: SIGNUP_ID, txSignature: GOOD_SIG, adminUserId: ADMIN_ID },
+    ]);
+  });
+
+  test('a bad signature or signup id is a 400 before the manager runs', async () => {
+    for (const body of [{}, { txSignature: 'short' }, { txSignature: '0'.repeat(88) }]) {
+      const res = await post(`/launch-champ/sol-refunds/${SIGNUP_ID}/paid`, { user: ADMIN_ID, body });
+      expect(res.status).toBe(400);
+    }
+    const badId = await post('/launch-champ/sol-refunds/not-a-uuid/paid', {
+      user: ADMIN_ID,
+      body: { txSignature: GOOD_SIG },
+    });
+    expect(badId.status).toBe(400);
+    expect(paidCalls).toHaveLength(0);
+  });
+
+  test('a manager refusal maps to its HTTP status and code', async () => {
+    const res = await post(`/launch-champ/sol-refunds/${SIGNUP_ID}/paid`, {
+      user: ADMIN_ID,
+      body: { txSignature: REUSED_SIG },
+    });
+    expect(res.status).toBe(409);
+    expect(await errorMessage(res)).toContain('refund_tx_reused');
   });
 });
 

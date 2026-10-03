@@ -113,13 +113,59 @@ class FakeDb {
     this.results.push(row);
   }
 
+  /** special_event_sol_refunds rows, by signup_id (UNIQUE signup_id). */
+  solRefunds = new Map<string, Row>();
+
   /** Open transactions right now (a TM cancel must run with none: lock order). */
   txDepth = 0;
 
+  /**
+   * Opt-in Postgres ROLLBACK model: a transaction that throws restores the
+   * events, signups, SOL refunds, ledger rows and every registered extra state
+   * (the FakeLedger) IN PLACE (tests keep references to rows). Off by default:
+   * concurrent fake transactions interleave, and a restore would clobber the
+   * other transaction's writes. Only the single-call rollback tests turn it on.
+   */
+  rollbackOnThrow = false;
+  rollbackParticipants: Array<() => () => void> = [];
+
+  private snapshot(): () => void {
+    const saveMap = (m: Map<string, Row>) => {
+      const saved = new Map([...m].map(([k, v]) => [k, { ...v }] as const));
+      return () => {
+        for (const k of [...m.keys()]) if (!saved.has(k)) m.delete(k);
+        for (const [k, v] of saved) {
+          const live = m.get(k);
+          if (live) {
+            for (const key of Object.keys(live)) delete live[key];
+            Object.assign(live, v);
+          } else {
+            m.set(k, v);
+          }
+        }
+      };
+    };
+    const restores = [
+      saveMap(this.events),
+      saveMap(this.signups),
+      saveMap(this.solRefunds),
+      (() => {
+        const rows = [...this.ledgerRows];
+        return () => void this.ledgerRows.splice(0, this.ledgerRows.length, ...rows);
+      })(),
+      ...this.rollbackParticipants.map((p) => p()),
+    ];
+    return () => restores.forEach((r) => r());
+  }
+
   async transaction<T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> {
+    const restore = this.rollbackOnThrow && this.txDepth === 0 ? this.snapshot() : null;
     this.txDepth += 1;
     try {
       return await fn(this);
+    } catch (err) {
+      restore?.();
+      throw err;
     } finally {
       this.txDepth -= 1;
     }
@@ -468,6 +514,96 @@ class FakeDb {
         .map((r) => ({ provenance: r.provenance ?? null, amount: -Number(r.amount) }));
     }
 
+    // ── special_event_sol_refunds (Codex r1, 2026-10-03) ─────────────────────────
+    const solSignupsWithoutRefund = (eventId: unknown) =>
+      [...this.signups.values()]
+        .filter(
+          (s) =>
+            s.event_id === eventId &&
+            s.entry_method === 'sol' &&
+            s.status !== 'refunded' &&
+            !this.solRefunds.has(String(s.id)),
+        )
+        .sort((a, b) => Number(a.created_at) - Number(b.created_at));
+    if (text === "SELECT s.id, s.entry_proof_json FROM special_event_signups s WHERE s.event_id = ? AND s.entry_method = 'sol' AND s.status <> 'refunded' AND NOT EXISTS (SELECT 1 FROM special_event_sol_refunds r WHERE r.signup_id = s.id)") {
+      return solSignupsWithoutRefund(p[0]).map((s) => ({ id: s.id, entry_proof_json: s.entry_proof_json }));
+    }
+    if (text === "SELECT s.id, s.avatar_id, s.entry_proof_json FROM special_event_signups s WHERE s.event_id = ? AND s.entry_method = 'sol' AND s.status <> 'refunded' AND NOT EXISTS (SELECT 1 FROM special_event_sol_refunds r WHERE r.signup_id = s.id) ORDER BY s.created_at ASC") {
+      return solSignupsWithoutRefund(p[0]).map((s) => ({
+        id: s.id,
+        avatar_id: s.avatar_id,
+        entry_proof_json: s.entry_proof_json,
+      }));
+    }
+    if (text === 'INSERT INTO special_event_sol_refunds (event_id, signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (signup_id) DO NOTHING') {
+      const signupId = String(p[1]);
+      if (this.solRefunds.has(signupId)) return [];
+      this.solRefunds.set(signupId, {
+        event_id: p[0],
+        signup_id: signupId,
+        avatar_id: p[2],
+        entry_tx_sig: p[3],
+        lamports: p[4],
+        destination_pubkey: p[5] ?? null,
+        status: 'owed',
+        refund_tx_sig: null,
+        refunded_at: null,
+        refunded_by: null,
+        created_at: ++this.seq,
+      });
+      return [];
+    }
+    const refundCols = (r: Row) => ({
+      signup_id: r.signup_id,
+      avatar_id: r.avatar_id,
+      entry_tx_sig: r.entry_tx_sig,
+      lamports: r.lamports,
+      destination_pubkey: r.destination_pubkey,
+      status: r.status,
+      refund_tx_sig: r.refund_tx_sig,
+      refunded_at: r.refunded_at,
+      refunded_by: r.refunded_by,
+    });
+    if (text === 'SELECT signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey, status, refund_tx_sig, refunded_at, refunded_by FROM special_event_sol_refunds WHERE event_id = ? ORDER BY created_at ASC, signup_id ASC') {
+      return [...this.solRefunds.values()]
+        .filter((r) => r.event_id === p[0])
+        .sort((a, b) => Number(a.created_at) - Number(b.created_at))
+        .map(refundCols);
+    }
+    if (text === 'SELECT entry_proof_json FROM special_event_signups WHERE id = ?') {
+      const s = this.signups.get(String(p[0]));
+      return s ? [{ entry_proof_json: s.entry_proof_json }] : [];
+    }
+    if (text === "UPDATE special_event_sol_refunds SET destination_pubkey = ? WHERE signup_id = ? AND status = 'owed' AND destination_pubkey IS NULL") {
+      const r = this.solRefunds.get(String(p[1]));
+      if (r && r.status === 'owed' && r.destination_pubkey == null) r.destination_pubkey = p[0];
+      return [];
+    }
+    if (text === "SELECT 1 AS hit FROM special_event_sol_refunds WHERE refund_tx_sig = ? UNION ALL SELECT 1 AS hit FROM special_event_signups WHERE entry_method = 'sol' AND entry_proof_json->>'txSig' = ? LIMIT 1") {
+      const hit =
+        [...this.solRefunds.values()].some((r) => r.refund_tx_sig === p[0]) ||
+        [...this.signups.values()].some(
+          (s) => s.entry_method === 'sol' && (s.entry_proof_json as { txSig?: string } | null)?.txSig === p[1],
+        );
+      return hit ? [{ hit: 1 }] : [];
+    }
+    if (text === "UPDATE special_event_sol_refunds SET status = 'refunded', refund_tx_sig = ?, refunded_at = ?::timestamptz, refunded_by = ? WHERE signup_id = ? AND event_id = ? AND status = 'owed' AND destination_pubkey = ? RETURNING signup_id, avatar_id, entry_tx_sig, lamports, destination_pubkey, status, refund_tx_sig, refunded_at, refunded_by") {
+      // Model the UNIQUE index special_event_sol_refunds_refund_tx_unique.
+      if ([...this.solRefunds.values()].some((r) => r.refund_tx_sig === p[0])) {
+        throw Object.assign(
+          new Error('duplicate key value violates unique constraint "special_event_sol_refunds_refund_tx_unique"'),
+          { code: '23505' },
+        );
+      }
+      const r = this.solRefunds.get(String(p[3]));
+      if (!r || r.event_id !== p[4] || r.status !== 'owed' || r.destination_pubkey !== p[5]) return [];
+      r.status = 'refunded';
+      r.refund_tx_sig = p[0];
+      r.refunded_at = p[1];
+      r.refunded_by = p[2] ?? null;
+      return [refundCols(r)];
+    }
+
     throw new Error(`FakeDb: unhandled SQL: ${text}`);
   }
 }
@@ -569,7 +705,14 @@ class FakeLedger {
 class FakeRpc implements EventRpc {
   supply = new Map<string, bigint>();
   balances = new Map<string, bigint>(); // key = `${mint}:${owner}`
-  txs = new Map<string, { lamportsToDest: bigint; success: boolean; dest: string }>();
+  txs = new Map<
+    string,
+    { lamportsToDest: bigint; success: boolean; dest: string; payer: string | null }
+  >();
+  /** The commitment each getSolTransfer call asked for ('confirmed' when omitted). */
+  commitments: string[] = [];
+  /** A sig whose lookup throws (an RPC outage). */
+  failing = new Set<string>();
 
   setSupply(mint: string, s: bigint): void {
     this.supply.set(mint, s);
@@ -577,8 +720,9 @@ class FakeRpc implements EventRpc {
   setBalance(mint: string, owner: string, b: bigint): void {
     this.balances.set(`${mint}:${owner}`, b);
   }
-  setTx(sig: string, dest: string, lamports: bigint, success = true): void {
-    this.txs.set(sig, { lamportsToDest: lamports, success, dest });
+  /** `payer` = the single proven transfer source (null = not provable). */
+  setTx(sig: string, dest: string, lamports: bigint, success = true, payer: string | null = null): void {
+    this.txs.set(sig, { lamportsToDest: lamports, success, dest, payer });
   }
 
   async getTokenSupply(mint: string): Promise<bigint> {
@@ -587,13 +731,21 @@ class FakeRpc implements EventRpc {
   async getTokenBalance(mint: string, owner: string): Promise<bigint> {
     return this.balances.get(`${mint}:${owner}`) ?? 0n;
   }
-  async getSolTransfer(sig: string, expectedDest: string) {
+  async getSolTransfer(
+    sig: string,
+    expectedDest: string,
+    opts?: { commitment?: 'confirmed' | 'finalized' },
+  ) {
+    this.commitments.push(opts?.commitment ?? 'confirmed');
+    if (this.failing.has(sig)) throw new Error('rpc unavailable');
     const tx = this.txs.get(sig);
     if (!tx) return null;
-    // Only credit lamports if the tx's recorded dest matches what we expect.
+    // Only credit lamports (and prove a payer) if the tx's dest matches.
+    const match = tx.dest === expectedDest;
     return {
-      lamportsToDest: tx.dest === expectedDest ? tx.lamportsToDest : 0n,
+      lamportsToDest: match ? tx.lamportsToDest : 0n,
       success: tx.success,
+      payerPubkey: match ? tx.payer : null,
     };
   }
 }
@@ -761,6 +913,21 @@ function makeManager() {
   const tm = new FakeTM();
   tm.db = db;
   ledger.rows = db.ledgerRows;
+  // The ledger state rolls back with the fake tx (when rollbackOnThrow is on).
+  db.rollbackParticipants.push(() => {
+    const balances = new Map(ledger.balances);
+    const credits = [...ledger.credits];
+    const debits = [...ledger.debits];
+    const tags = new Map([...ledger.tags].map(([k, v]) => [k, { ...v }] as const));
+    return () => {
+      ledger.balances.clear();
+      for (const [k, v] of balances) ledger.balances.set(k, v);
+      ledger.credits.splice(0, ledger.credits.length, ...credits);
+      ledger.debits.splice(0, ledger.debits.length, ...debits);
+      ledger.tags.clear();
+      for (const [k, v] of tags) ledger.tags.set(k, v);
+    };
+  });
   const clock = { t: 1_900_000_000_000, now() { return this.t; } };
   const mgr = new SpecialEventManager({
     db: db as never,
@@ -1721,9 +1888,12 @@ describe('SpecialEventManager — settleEvent (reads the linked tournament UP th
     const tid = randomUUID();
     db.seedTournament({ id: tid, status: 'running', special_event_id: ev.id, created_at: 1 });
 
-    // Recovery command called too early: it must not complete the parent.
-    const early = await mgr.settleEvent('late-finish');
-    expect(early.alreadySettled).toBe(false);
+    // Recovery command called too early: it must not complete the parent, and
+    // it reports the refusal (409), not ok (Codex r1, 2026-10-03).
+    await expect(mgr.settleEvent('late-finish')).rejects.toMatchObject({
+      message: 'event_not_settleable',
+      httpStatus: 409,
+    });
     expect(db.events.get(ev.id)!.status).toBe('live');
 
     // The authoritative tournament transition later invokes this exact-id path.
@@ -1769,6 +1939,7 @@ describe('SpecialEventManager — settleEvent (reads the linked tournament UP th
 describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026-10-03)', () => {
   const STALE = SPECIAL_EVENT_START_CLAIM_STALE_MS + 1_000;
   const TREASURY = 'house-treasury-avatar';
+  const PROVEN_PAYER = 'ProvenPayer1111111111111111111111111111111';
 
   /**
    * An open event (CT gate 50 + SOL fallback, seed 500) with a human CT signup,
@@ -1798,7 +1969,9 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
 
     const solSubj = human();
     const sig = `sig-${slug}-${'x'.repeat(40)}`;
-    h.rpc.setTx(sig, 'Treasury1111111111111111111111111111111111', 1_000_000n);
+    // The proven payer differs from the client-claimed walletPubkey on purpose:
+    // a refund must go to the sender the chain proves, never the claim.
+    h.rpc.setTx(sig, 'Treasury1111111111111111111111111111111111', 1_000_000n, true, PROVEN_PAYER);
     await h.mgr.signup(slug, solSubj, {
       entryMethod: 'sol',
       walletPubkey: 'Payer11111111111111111111111111111111111111',
@@ -1846,18 +2019,29 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
     // No treasury movement: a signup_open event holds no seed.
     expect(ledger.credits.some((c) => c.avatarId === TREASURY)).toBe(false);
 
-    // SOL: kept 'confirmed' (tx sig stays reserved) and listed for an operator transfer.
+    // SOL: kept 'confirmed' (tx sig stays reserved) and recorded as a durable
+    // owed refund to the PROVEN payer (not the client-claimed walletPubkey).
     const solRow = signupsOf(db, ev.id).find((s) => s.avatar_id === solSubj.avatarId)!;
     expect(solRow.status).toBe('confirmed');
-    expect(result.solRefundsOwed).toEqual([
-      {
-        signupId: String(solRow.id),
-        avatarId: solSubj.avatarId,
-        txSig: sig,
-        lamports: '1000000',
-        fromPubkey: 'Payer11111111111111111111111111111111111111',
-      },
-    ]);
+    const owed = {
+      signupId: String(solRow.id),
+      avatarId: solSubj.avatarId,
+      entryTxSig: sig,
+      lamports: '1000000',
+      destinationPubkey: PROVEN_PAYER,
+      status: 'owed' as const,
+      refundTxSig: null,
+      refundedAt: null,
+      refundedBy: null,
+    };
+    expect(result.solRefundsOwed).toEqual([owed]);
+    expect(db.solRefunds.size).toBe(1);
+    expect(db.solRefunds.get(String(solRow.id))).toMatchObject({
+      event_id: ev.id,
+      destination_pubkey: PROVEN_PAYER,
+      lamports: '1000000',
+      status: 'owed',
+    });
     const ctRows = signupsOf(db, ev.id).filter((s) => s.entry_method === 'ct');
     expect(ctRows.every((s) => s.status === 'refunded')).toBe(true);
   });
@@ -2011,10 +2195,11 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
     ]);
     expect(cancelA.status).toBe('fulfilled');
     expect(a.ev.status).toBe('cancelled');
-    if (settleA.status === 'fulfilled') {
-      expect(settleA.value.alreadySettled).toBe(false);
-    } else {
-      expect(String(settleA.reason)).toContain('event_cancelled');
+    // An open event never settles: refused before (event_not_settleable) or
+    // after (event_cancelled) the cancel.
+    expect(settleA.status).toBe('rejected');
+    if (settleA.status === 'rejected') {
+      expect(String(settleA.reason)).toMatch(/event_cancelled|event_not_settleable/);
     }
 
     // Live event whose tournament completed: settle wins, cancel is refused.
@@ -2050,5 +2235,322 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
       expect(ev.status).toBe('live');
       expect(refundTotal).toBe(0);
     }
+  });
+});
+
+// ── Codex r1 (2026-10-03): durable SOL refunds, all-or-nothing CT, settle 409 ──
+
+describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-10-03)', () => {
+  const TREASURY_PK = 'Treasury1111111111111111111111111111111111';
+  const HUMAN_PAYER = 'HumanPayer111111111111111111111111111111111';
+  const AGENT_PAYER = 'AgentPayer111111111111111111111111111111111';
+  const ADMIN = '11111111-1111-4111-8111-111111111111';
+
+  /** A SOL-gated open event with a human and an agent SOL signup (proven payers). */
+  async function solEvent(slug: string, opts: { agentPayer?: string | null } = {}) {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug, name: `Sol ${slug}`, gateSolLamports: 1_000_000 }, null);
+    await h.mgr.openSignup(slug);
+    const humanSubj = human();
+    const humanSig = `entry-h-${slug}`;
+    h.rpc.setTx(humanSig, TREASURY_PK, 1_000_000n, true, HUMAN_PAYER);
+    await h.mgr.signup(slug, humanSubj, {
+      entryMethod: 'sol',
+      walletPubkey: 'ClaimedButNotProven11111111111111111111111',
+      solTxSig: humanSig,
+    });
+    const agentSubj = agent();
+    const agentSig = `entry-a-${slug}`;
+    // The agent overpaid: the refund owes the verified amount, not the price.
+    const agentPayer = opts.agentPayer === undefined ? AGENT_PAYER : opts.agentPayer;
+    h.rpc.setTx(agentSig, TREASURY_PK, 1_500_000n, true, agentPayer);
+    await h.mgr.signup(slug, agentSubj, { entryMethod: 'sol', solTxSig: agentSig });
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    const signupOf = (avatarId: string) =>
+      [...h.db.signups.values()].find((s) => s.event_id === ev.id && s.avatar_id === avatarId)!;
+    return { ...h, ev, humanSubj, agentSubj, humanSig, agentSig, signupOf };
+  }
+
+  it('signup stores the PROVEN payer; cancel records each SOL entry as owed to it (human and agent alike)', async () => {
+    const { mgr, db, ev, humanSubj, agentSubj, signupOf } = await solEvent('sol-owed');
+    const hRow = signupOf(humanSubj.avatarId);
+    expect((hRow.entry_proof_json as Record<string, unknown>).payerPubkey).toBe(HUMAN_PAYER);
+    expect((hRow.entry_proof_json as Record<string, unknown>).fromPubkey).toBe(
+      'ClaimedButNotProven11111111111111111111111',
+    );
+
+    const r = await mgr.cancelEvent('sol-owed');
+    expect(ev.status).toBe('cancelled');
+    expect(r.refundedCt).toBe(0);
+    expect(r.solRefundsOwed.map((o) => [o.avatarId, o.destinationPubkey, o.lamports, o.status])).toEqual([
+      [humanSubj.avatarId, HUMAN_PAYER, '1000000', 'owed'],
+      [agentSubj.avatarId, AGENT_PAYER, '1500000', 'owed'],
+    ]);
+    // Signup rows stay 'confirmed' (entry sigs stay reserved); the refund state
+    // lives in special_event_sol_refunds, one row per signup.
+    expect(signupOf(humanSubj.avatarId).status).toBe('confirmed');
+    expect(signupOf(agentSubj.avatarId).status).toBe('confirmed');
+    expect(db.solRefunds.size).toBe(2);
+
+    // A retried cancel writes no second row and lists the same owed refunds.
+    const again = await mgr.cancelEvent('sol-owed');
+    expect(again.alreadyCancelled).toBe(true);
+    expect(again.solRefundsOwed).toEqual(r.solRefundsOwed);
+    expect(db.solRefunds.size).toBe(2);
+  });
+
+  it('an entry without a stored proven payer is re-verified on chain at cancel', async () => {
+    const { mgr, rpc, humanSubj, signupOf } = await solEvent('sol-legacy');
+    // A row written before 2026-10-03: no payerPubkey, only the client claim.
+    const row = signupOf(humanSubj.avatarId);
+    const proof = { ...(row.entry_proof_json as Record<string, unknown>) };
+    delete proof.payerPubkey;
+    row.entry_proof_json = proof;
+    rpc.commitments.length = 0;
+
+    const r = await mgr.cancelEvent('sol-legacy');
+    const owed = r.solRefundsOwed.find((o) => o.avatarId === humanSubj.avatarId)!;
+    expect(owed.destinationPubkey).toBe(HUMAN_PAYER);
+    // One re-verification, at the entry path's finality.
+    expect(rpc.commitments).toEqual(['confirmed']);
+  });
+
+  it('an unprovable payer is recorded with no destination; mark-paid resolves it from the entry tx', async () => {
+    const { mgr, rpc, db, agentSubj, agentSig, signupOf } = await solEvent('sol-unresolved', {
+      agentPayer: null,
+    });
+    const r = await mgr.cancelEvent('sol-unresolved');
+    const owed = r.solRefundsOwed.find((o) => o.avatarId === agentSubj.avatarId)!;
+    expect(owed.destinationPubkey).toBeNull();
+    const signupId = String(signupOf(agentSubj.avatarId).id);
+
+    // Still unprovable: refused, nothing recorded.
+    rpc.setTx('refund-x', AGENT_PAYER, 1_500_000n);
+    await expect(mgr.markSolRefundPaid('sol-unresolved', signupId, 'refund-x', ADMIN)).rejects.toMatchObject({
+      message: 'refund_destination_unresolved',
+      httpStatus: 409,
+    });
+    expect(db.solRefunds.get(signupId)!.status).toBe('owed');
+
+    // The chain now proves the payer: the destination is resolved, then paid.
+    rpc.setTx(agentSig, TREASURY_PK, 1_500_000n, true, AGENT_PAYER);
+    const paid = await mgr.markSolRefundPaid('sol-unresolved', signupId, 'refund-x', ADMIN);
+    expect(paid.status).toBe('refunded');
+    expect(paid.destinationPubkey).toBe(AGENT_PAYER);
+  });
+
+  it('mark-paid succeeds ONCE with a finalized tx paying the owed lamports to the proven payer', async () => {
+    const { mgr, rpc, db, humanSubj, signupOf } = await solEvent('sol-paid');
+    await mgr.cancelEvent('sol-paid');
+    const signupId = String(signupOf(humanSubj.avatarId).id);
+
+    rpc.setTx('refund-ok', HUMAN_PAYER, 1_000_000n);
+    rpc.commitments.length = 0;
+    const paid = await mgr.markSolRefundPaid('sol-paid', signupId, 'refund-ok', ADMIN);
+    expect(rpc.commitments).toEqual(['finalized']);
+    expect(paid).toMatchObject({
+      signupId,
+      status: 'refunded',
+      refundTxSig: 'refund-ok',
+      destinationPubkey: HUMAN_PAYER,
+      refundedBy: ADMIN,
+      refundedAt: new Date(1_900_000_000_000).toISOString(),
+    });
+    expect(db.solRefunds.get(signupId)!.status).toBe('refunded');
+
+    // A second mark-paid (even with another valid payout) is refused.
+    rpc.setTx('refund-ok-2', HUMAN_PAYER, 1_000_000n);
+    await expect(mgr.markSolRefundPaid('sol-paid', signupId, 'refund-ok-2', ADMIN)).rejects.toMatchObject({
+      message: 'refund_not_owed',
+      httpStatus: 409,
+    });
+
+    const list = await mgr.listSolRefunds('sol-paid');
+    expect(list.refunded.map((x) => x.signupId)).toEqual([signupId]);
+    expect(list.owed).toHaveLength(1);
+    expect(list.owedLamports).toBe('1500000');
+    expect(list.eventStatus).toBe('cancelled');
+  });
+
+  it('mark-paid refuses a reused signature, an entry signature, a wrong destination, a short amount and a failed tx', async () => {
+    const { mgr, rpc, db, humanSubj, agentSubj, humanSig, signupOf } = await solEvent('sol-bad');
+    await mgr.cancelEvent('sol-bad');
+    const hId = String(signupOf(humanSubj.avatarId).id);
+    const aId = String(signupOf(agentSubj.avatarId).id);
+
+    // Wrong destination: the tx pays someone else.
+    rpc.setTx('refund-elsewhere', 'SomeoneElse1111111111111111111111111111111', 1_500_000n);
+    await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-elsewhere', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+      httpStatus: 400,
+    });
+    // Short amount: 1 lamport below the owed 1,500,000.
+    rpc.setTx('refund-short', AGENT_PAYER, 1_499_999n);
+    await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-short', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+    });
+    // Failed or unknown tx.
+    rpc.setTx('refund-failed', AGENT_PAYER, 1_500_000n, false);
+    await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-failed', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+    });
+    await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-unknown', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_invalid',
+    });
+    // An RPC outage is a 503, never a success.
+    rpc.failing.add('refund-rpc-down');
+    await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-rpc-down', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_unverifiable',
+      httpStatus: 503,
+    });
+    // An entry payment signature can never count as a refund.
+    await expect(mgr.markSolRefundPaid('sol-bad', hId, humanSig, ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_reused',
+      httpStatus: 409,
+    });
+    expect(db.solRefunds.get(aId)!.status).toBe('owed');
+
+    // A signature already recorded for one refund cannot settle another, even
+    // if that tx also paid the other destination enough.
+    rpc.setTx('refund-h', HUMAN_PAYER, 1_000_000n);
+    await mgr.markSolRefundPaid('sol-bad', hId, 'refund-h', ADMIN);
+    rpc.setTx('refund-h', AGENT_PAYER, 1_500_000n);
+    await expect(mgr.markSolRefundPaid('sol-bad', aId, 'refund-h', ADMIN)).rejects.toMatchObject({
+      message: 'refund_tx_reused',
+      httpStatus: 409,
+    });
+    expect(db.solRefunds.get(aId)!.status).toBe('owed');
+  });
+
+  it('two concurrent mark-paid calls: exactly one succeeds', async () => {
+    const { mgr, rpc, db, humanSubj, signupOf } = await solEvent('sol-race');
+    await mgr.cancelEvent('sol-race');
+    const id = String(signupOf(humanSubj.avatarId).id);
+    rpc.setTx('refund-r1', HUMAN_PAYER, 1_000_000n);
+    rpc.setTx('refund-r2', HUMAN_PAYER, 1_000_000n);
+    const results = await Promise.allSettled([
+      mgr.markSolRefundPaid('sol-race', id, 'refund-r1', ADMIN),
+      mgr.markSolRefundPaid('sol-race', id, 'refund-r2', ADMIN),
+    ]);
+    expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((x) => x.status === 'rejected') as PromiseRejectedResult;
+    expect(String(rejected.reason)).toContain('refund_not_owed');
+    expect(db.solRefunds.get(id)!.status).toBe('refunded');
+  });
+
+  it('nothing is owed before a cancel, for an unknown signup, or for an unknown event', async () => {
+    const { mgr, rpc, humanSubj, signupOf } = await solEvent('sol-open');
+    const id = String(signupOf(humanSubj.avatarId).id);
+    rpc.setTx('refund-early', HUMAN_PAYER, 1_000_000n);
+    await expect(mgr.markSolRefundPaid('sol-open', id, 'refund-early', ADMIN)).rejects.toMatchObject({
+      message: 'refund_not_owed',
+      httpStatus: 409,
+    });
+    await expect(mgr.markSolRefundPaid('sol-open', randomUUID(), 'refund-early', ADMIN)).rejects.toMatchObject({
+      message: 'refund_not_owed',
+    });
+    await expect(mgr.markSolRefundPaid('no-such-event', id, 'refund-early', ADMIN)).rejects.toMatchObject({
+      message: 'event_not_found',
+      httpStatus: 404,
+    });
+    await expect(mgr.listSolRefunds('no-such-event')).rejects.toMatchObject({ httpStatus: 404 });
+  });
+});
+
+describe('SpecialEventManager — cancel is all-or-nothing on a bad CT proof (Codex r1, 2026-10-03)', () => {
+  /** Two CT signups (human first, agent second) + one SOL signup; rollback model on. */
+  async function ctEvent(slug: string) {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug, name: `Ct ${slug}`, gateCt: 50, gateSolLamports: 1_000_000 }, null);
+    await h.mgr.openSignup(slug);
+    const first = human();
+    h.ledger.setBalance(first.avatarId, 1_000);
+    await h.mgr.signup(slug, first, { entryMethod: 'ct' });
+    const second = agent();
+    h.ledger.setBalance(second.avatarId, 1_000);
+    await h.mgr.signup(slug, second, { entryMethod: 'ct' });
+    h.rpc.setTx(`sol-${slug}`, 'Treasury1111111111111111111111111111111111', 1_000_000n, true, 'P1');
+    await h.mgr.signup(slug, human(), { entryMethod: 'sol', solTxSig: `sol-${slug}` });
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    const rowOf = (avatarId: string) =>
+      [...h.db.signups.values()].find((s) => s.event_id === ev.id && s.avatar_id === avatarId)!;
+    h.db.rollbackOnThrow = true;
+    return { ...h, ev, first, second, rowOf };
+  }
+
+  const badProofs: Array<[string, string, unknown]> = [
+    ['missing amountCt', 'missing', {}],
+    ['zero amountCt', 'zero', { amountCt: 0 }],
+    ['mismatched amountCt', 'mismatch', { amountCt: 60 }],
+    ['invalid amountCt', 'invalid', { amountCt: 'abc' }],
+    ['negative amountCt', 'negative', { amountCt: -50 }],
+  ];
+
+  for (const [label, key, proof] of badProofs) {
+    it(`${label} with a recorded debit rolls the whole cancel back (no status change, no credits)`, async () => {
+      const { mgr, db, ledger, ev, first, second, rowOf } = await ctEvent(`ct-bad-${key}`);
+      // The SECOND signup is bad, so the first one's credit already ran.
+      rowOf(second.avatarId).entry_proof_json = proof;
+      const creditsBefore = ledger.credits.length;
+
+      await expect(mgr.cancelEvent(`ct-bad-${key}`)).rejects.toMatchObject({
+        message: 'entry_debit_ledger_mismatch',
+        httpStatus: 500,
+      });
+      expect(ev.status).toBe('signup_open');
+      expect(ledger.credits.length).toBe(creditsBefore);
+      expect(ledger.get(first.avatarId)).toBe(950);
+      expect(ledger.get(second.avatarId)).toBe(950);
+      expect(rowOf(first.avatarId).status).toBe('confirmed');
+      expect(rowOf(second.avatarId).status).toBe('confirmed');
+      expect(db.solRefunds.size).toBe(0);
+    });
+  }
+
+  it('a zero CT entry with no debit is a valid zero refund', async () => {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug: 'ct-zero', name: 'Zero', gateCt: 0 }, null);
+    await h.mgr.openSignup('ct-zero');
+    await h.mgr.signup('ct-zero', human(), { entryMethod: 'ct' });
+    h.db.rollbackOnThrow = true;
+    const r = await h.mgr.cancelEvent('ct-zero');
+    expect(r.refundedSignups).toBe(1);
+    expect(r.refundedCt).toBe(0);
+    expect(h.ledger.credits).toHaveLength(0);
+    expect([...h.db.signups.values()][0]!.status).toBe('refunded');
+  });
+
+  it('a proof that claims a payment with no debit row also rolls back', async () => {
+    const { mgr, db, ledger, ev, first, rowOf } = await ctEvent('ct-ghost');
+    // Remove the first signup's debit rows: the proof says 50, the ledger says 0.
+    for (let i = db.ledgerRows.length - 1; i >= 0; i--) {
+      if (db.ledgerRows[i]!.avatar_id === first.avatarId) db.ledgerRows.splice(i, 1);
+    }
+    await expect(mgr.cancelEvent('ct-ghost')).rejects.toMatchObject({
+      message: 'entry_debit_ledger_mismatch',
+    });
+    expect(ev.status).toBe('signup_open');
+    expect(ledger.credits).toHaveLength(0);
+    expect(rowOf(first.avatarId).status).toBe('confirmed');
+  });
+});
+
+describe('SpecialEventManager — settleEvent refuses an unsettled event (Codex r1, 2026-10-03)', () => {
+  it('an open event with no tournament and a live event with a running tournament both get 409', async () => {
+    const { mgr, db } = makeManager();
+    const open = await mgr.createEvent({ slug: 'settle-open', name: 'Open' }, null);
+    await mgr.openSignup('settle-open');
+    await expect(mgr.settleEvent('settle-open')).rejects.toMatchObject({
+      message: 'event_not_settleable',
+      httpStatus: 409,
+    });
+    expect(db.events.get(open.id)!.status).toBe('signup_open');
+
+    const live = await mgr.createEvent({ slug: 'settle-live', name: 'Live' }, null);
+    db.events.get(live.id)!.status = 'live';
+    db.seedTournament({ id: randomUUID(), status: 'running', special_event_id: live.id, created_at: 1 });
+    await expect(mgr.settleEvent('settle-live')).rejects.toMatchObject({ message: 'event_not_settleable' });
+    expect(db.events.get(live.id)!.status).toBe('live');
+    expect(db.events.get(live.id)!.completed_at).toBeNull();
   });
 });
