@@ -1457,6 +1457,22 @@ function claimFence(lease: Date): SQL {
   return sql`provision_state = 'creating' AND provision_next_at = ${lease.toISOString()}::timestamptz`;
 }
 
+/**
+ * Codex r2 B2 follow-up: counts the create attempt BEFORE the create request,
+ * fenced by the claim and the cap, so a process that dies after ClawPump made
+ * an agent still leaves the attempt counted. Returns the new count; null = the
+ * claim was lost or the cap is reached (the caller must send nothing).
+ */
+export async function countArenaCreateAttempt(agentId: string, lease: Date, maxAttempts: number): Promise<number | null> {
+  const updated = await rows(sql`
+    UPDATE floor_arena_agents
+    SET provision_attempts = provision_attempts + 1, updated_at = now()
+    WHERE id = ${agentId} AND kind = 'user' AND ${claimFence(lease)} AND provision_attempts < ${maxAttempts}
+    RETURNING provision_attempts
+  `);
+  return updated[0] ? num(updated[0].provision_attempts) : null;
+}
+
 /** Ready only for the current claim AND the ClawPump id the row holds. False = fenced out or re-pointed. */
 export async function markArenaProvisionReady(
   agentId: string,

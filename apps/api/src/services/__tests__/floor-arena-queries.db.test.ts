@@ -239,6 +239,29 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     });
   });
 
+  test('Codex r2 B2 follow-up: countArenaCreateAttempt counts only for the live claim and below the cap', async () => {
+    const q = await import('../floor-arena/queries');
+    const { db, sql } = await import('@clawville/database');
+    // offPending: a 'pending' user row with no attempts yet.
+    const now = new Date();
+    const claimed = await q.claimArenaProvision(ids.offPending, now, 5, 10 * 60_000);
+    expect(claimed).not.toBeNull();
+    const lease = claimed!.provisionNextAt!;
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBe(1);
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBe(2);
+    // A stale lease (the claim was lost) counts nothing.
+    expect(await q.countArenaCreateAttempt(ids.offPending, new Date(lease.getTime() - 1000), 5)).toBeNull();
+    // At the cap it counts nothing.
+    await db.execute(sql`UPDATE floor_arena_agents SET provision_attempts = 5 WHERE id = ${ids.offPending}`);
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBeNull();
+    expect((await q.readArenaAgent(ids.offPending))!.provisionAttempts).toBe(5);
+    // A row that is not 'creating' (released by markFailed) counts nothing.
+    await db.execute(sql`UPDATE floor_arena_agents SET provision_attempts = 1 WHERE id = ${ids.offPending}`);
+    expect(await q.markArenaProvisionFailed(ids.offPending, 'test', 1, null, lease)).toBe(true);
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBeNull();
+    expect(await q.readArenaAgent(ids.offPending)).toMatchObject({ provisionState: 'failed', provisionAttempts: 1 });
+  });
+
   test('O1 (2026-10-01): a row whose pay POST never left the process does not advance the dedupe rotation', async () => {
     const q = await import('../floor-arena/queries');
     const { db, sql } = await import('@clawville/database');

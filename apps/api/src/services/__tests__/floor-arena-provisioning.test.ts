@@ -10,6 +10,7 @@ import {
 import {
   ARENA_CLAWPUMP_PERSONA,
   ARENA_CLAWPUMP_SYSTEM_PROMPT,
+  ARENA_PROVISION_LEASE_MS,
   ARENA_PROVISION_MAX_ATTEMPTS,
   ARENA_PROVISION_RETRY_MS,
   ARENA_PROVISION_THROTTLE_RETRY_MS,
@@ -161,6 +162,19 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
         const stored = rows.get(id)!;
         return { clawpumpAgentId: stored.clawpumpAgentId, clawpumpWallet: stored.clawpumpWallet };
       },
+      // Mirrors countArenaCreateAttempt: the claim fence AND attempts < max, then attempts + 1.
+      countCreateAttempt: async (id, lease, maxAttempts) => {
+        const row = rows.get(id)!;
+        if (row.provisionState !== 'creating' || row.provisionNextAt?.getTime() !== lease.getTime()
+          || row.provisionAttempts >= maxAttempts) {
+          log.push('count fenced');
+          return null;
+        }
+        const attempts = row.provisionAttempts + 1;
+        log.push(`count ${attempts}`);
+        rows.set(id, { ...row, provisionAttempts: attempts });
+        return attempts;
+      },
       // Both writes mirror the SQL fence: provision_state 'creating' AND provision_next_at = the claim's lease.
       markReady: async (id, cpId, wallet, lease) => {
         const row = rows.get(id)!;
@@ -266,6 +280,8 @@ describe('provisionArenaAgent state machine', () => {
     expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('ready');
     expect(h.log).toEqual([
       'claim',
+      // Codex r2 B2 follow-up: the attempt is counted before the create request.
+      'count 1',
       'create [] public=false',
       `save ${CP_ID}`,
       `update ${CP_ID} {"accepting_bids":false,"is_public":false,"enabled_skills":[]}`,
@@ -355,7 +371,7 @@ describe('provisionArenaAgent state machine', () => {
     const h = harness(record({ addons: [{ id: 'feed', enabled: true, dailyCapUsd: 1 }] }));
     expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('ready');
     // Codex r17 #3: created with NO skill.
-    expect(h.log[1]).toBe('create [] public=false');
+    expect(h.log[2]).toBe('create [] public=false');
     expect(h.log.filter((line) => line.includes('x402'))).toEqual([]);
     expect(h.seq[0]).toBe('read');
     expect(h.skillsNow()).not.toContain('x402');
@@ -989,7 +1005,8 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
     const mid = harness(record());
     mid.setUpdate(async () => { throw new ClawPumpWriterError('rate_limited', 429); });
     expect(await provisionArenaAgent(AGENT_ID, mid.deps)).toBe('throttled');
-    expect(mid.rows.get(AGENT_ID)).toMatchObject({ provisionAttempts: 0, clawpumpAgentId: CP_ID });
+    // The create of this run stays counted (B2 follow-up); the 429 adds nothing.
+    expect(mid.rows.get(AGENT_ID)).toMatchObject({ provisionAttempts: 1, clawpumpAgentId: CP_ID });
     expect(mid.events).toEqual([]);
     mid.setUpdate(async () => cpAgent({ acceptingBids: false }));
     mid.log.length = 0;
@@ -1017,7 +1034,8 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
     budget = true;
     clock = NOW.getTime() + 6 * 30_000;
     await runArenaProvisioningTick(new Date(clock), deps);
-    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 0, clawpumpAgentId: CP_ID });
+    // The six refused creates gave their pre-count back; the one sent create stays counted.
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 1, clawpumpAgentId: CP_ID });
   });
 
   test('(b2) a throttle ends the tick\'s provisioning pass: the next due agent is not claimed (it stays pending)', async () => {
@@ -1042,7 +1060,7 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
     await runArenaProvisioningTick(NOW, b.deps);
     // Provisioning's calls (create, then the config sync) come first; the x402 pass follows.
     expect(b.order.slice(0, 4)).toEqual(['create', `read ${CP_ID}`, `patch ${CP_ID}`, `read ${CP_ID}`]);
-    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 0, clawpumpAgentId: CP_ID });
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 1, clawpumpAgentId: CP_ID });
     // Normal calls stop above the removal reserve, so the reconcile still removes x402 this tick.
     expect(h.perCp.get('cp-b0')!.skills).not.toContain('x402');
   });
@@ -1085,7 +1103,7 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
   });
 
   for (const call of ['update', 'read', 'getWallet'] as const) {
-    test(`(f) Codex r2 B2: a 429 AFTER the id is saved (${call}) is not an attempt; the retry reuses the saved agent`, async () => {
+    test(`(f) Codex r2 B2: a 429 AFTER the id is saved (${call}) adds no attempt; the retry reuses the saved agent`, async () => {
       const h = harness(record());
       // No wallet in the create/update answers, so provisioning needs the getWallet fallback.
       h.setCreate(async () => cpAgent({ walletAddress: null }));
@@ -1107,16 +1125,66 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
       const deps = { ...h.deps, writer };
       expect(await provisionArenaAgent(AGENT_ID, deps)).toBe('throttled');
       expect(h.rows.get(AGENT_ID)).toMatchObject({
-        provisionState: 'failed', provisionAttempts: 0, clawpumpAgentId: CP_ID, provisionError: 'clawpump_rate_limited_429',
+        // 1 = this run's create (counted before the request); the 429 adds nothing.
+        provisionState: 'failed', provisionAttempts: 1, clawpumpAgentId: CP_ID, provisionError: 'clawpump_rate_limited_429',
       });
       expect(h.rows.get(AGENT_ID)!.provisionNextAt!.getTime()).toBe(NOW.getTime() + ARENA_PROVISION_THROTTLE_RETRY_MS);
       expect(h.events).toEqual([]);
       const later = { ...deps, now: () => new Date(NOW.getTime() + 30_000) };
       expect(await provisionArenaAgent(AGENT_ID, later)).toBe('ready');
       expect(h.created).toHaveLength(1);
-      expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 0, clawpumpAgentId: CP_ID });
+      expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'ready', provisionAttempts: 1, clawpumpAgentId: CP_ID });
     });
   }
+
+  test('(g) Codex r2 B2 follow-up: the attempt is counted BEFORE the create, so a crash after the create still counts it; 5 -> no 6th create', async () => {
+    const h = harness(record());
+    // ClawPump made the agent, then the process "died": the create never returned and markFailed never ran.
+    h.setCreate(async () => { throw new Error('process died'); });
+    const deps: ArenaProvisionDeps = {
+      ...h.deps,
+      store: { ...h.deps.store, markFailed: async () => { throw new Error('process died'); } },
+    };
+    // Each run starts after the previous claim's lease ran out.
+    const at = (run: number) => ({ ...deps, now: () => new Date(NOW.getTime() + run * (ARENA_PROVISION_LEASE_MS + 60_000)) });
+    for (let run = 1; run <= ARENA_PROVISION_MAX_ATTEMPTS; run += 1) {
+      await expect(provisionArenaAgent(AGENT_ID, at(run))).rejects.toThrow('process died');
+      expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'creating', provisionAttempts: run, clawpumpAgentId: null });
+    }
+    expect(h.created).toHaveLength(ARENA_PROVISION_MAX_ATTEMPTS);
+    expect(await provisionArenaAgent(AGENT_ID, at(6))).toBe('exhausted');
+    await runArenaProvisioningTick(at(7).now(), at(7));
+    expect(h.created).toHaveLength(ARENA_PROVISION_MAX_ATTEMPTS);
+  });
+
+  test('(g2) a 429 on the saved agent after the 5th create is a counted failure: exhausted WITH the owner event', async () => {
+    const h = harness(record({ provisionState: 'failed', provisionAttempts: ARENA_PROVISION_MAX_ATTEMPTS - 1 }));
+    h.setUpdate(async () => { throw new ClawPumpWriterError('rate_limited', 429); });
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('failed');
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionAttempts: 5, provisionNextAt: null, clawpumpAgentId: CP_ID });
+    expect(h.events.at(-1)).toContain('after 5 attempts');
+  });
+
+  test('(h) Codex r2 B2 follow-up: our own budget refusal of the create gives the pre-counted attempt back', async () => {
+    const h = harness(record());
+    h.setCreate(async () => { throw new ClawPumpWriterError('budget_exhausted'); });
+    expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('throttled');
+    expect(h.log).toContain('count 1');
+    expect(h.rows.get(AGENT_ID)).toMatchObject({
+      provisionState: 'failed', provisionAttempts: 0, provisionError: 'clawpump_budget_exhausted',
+      provisionNextAt: new Date(NOW.getTime() + ARENA_PROVISION_THROTTLE_RETRY_MS),
+    });
+    expect(h.events).toEqual([]);
+  });
+
+  test('(i) Codex r2 B2 follow-up: a pre-count the claim fence refuses sends NO create', async () => {
+    const h = harness(record());
+    const deps: ArenaProvisionDeps = { ...h.deps, store: { ...h.deps.store, countCreateAttempt: async () => null } };
+    expect(await provisionArenaAgent(AGENT_ID, deps)).toBe('skipped');
+    expect(h.created).toEqual([]);
+    expect(h.log.some((line) => line.startsWith('create'))).toBe(false);
+    expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionAttempts: 0, clawpumpAgentId: null });
+  });
 
   test('(d) a paused tick runs the x402 reconcile and no provisioning', async () => {
     const h = harness(record());

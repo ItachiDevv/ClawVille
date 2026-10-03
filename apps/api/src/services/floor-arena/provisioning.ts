@@ -17,6 +17,7 @@ import {
 import {
   ArenaClawPumpOwnedError,
   claimArenaProvision,
+  countArenaCreateAttempt,
   insertArenaEvent,
   markArenaProvisionFailed,
   markArenaProvisionReady,
@@ -47,9 +48,17 @@ import {
  *     or ClawPump's 429 on a call against the SAVED ClawPump id (update, config
  *     sync, wallet read): a retry reuses that id and never creates a second one.
  *   Codex r2 B2: ClawPump's 429 on the CREATE (no saved id yet, the request was
- *     sent) is a normal failure (attempts + 1, 10 min): a 429 does not prove
+ *     sent) is a normal failure (counted, 10 min): a 429 does not prove
  *     nothing was created, so only the 5-attempt cap bounds hidden agents.
  *     Every 429 or budget refusal ends the tick's provisioning pass.
+ *   Codex r2 B2 follow-up: the create attempt is counted in the DB BEFORE the
+ *     create request (countCreateAttempt: fenced by the claim lease and
+ *     attempts < 5; refused = nothing is sent). A process that dies after
+ *     ClawPump made an agent therefore leaves the attempt counted, so at most
+ *     5 creates are ever sent per row. In a run that sent a create, a failure
+ *     writes that count (never + 1 again); only our own budget refusal of the
+ *     create gives it back (nothing was sent). markReady leaves the count as it
+ *     is, so a ready row shows the creates it took.
  *   failed with attempts >= 5 stays failed (no more retries).
  * Paper trading never waits for this (D8): the engine trades a pending agent.
  *
@@ -176,6 +185,11 @@ export interface ArenaProvisionStore {
     clawpumpAgentId: string,
     wallet: string | null,
   ): Promise<{ clawpumpAgentId: string | null; clawpumpWallet: string | null }>;
+  /**
+   * Codex r2 B2 follow-up: attempts + 1 BEFORE a create request, fenced by the
+   * claim lease and attempts < max. Returns the new count; null = send nothing.
+   */
+  countCreateAttempt(agentId: string, lease: Date, maxAttempts: number): Promise<number | null>;
   /** Fenced by the claim lease (Codex r3 #11). False when fenced out or the row holds another ClawPump id. */
   markReady(agentId: string, clawpumpAgentId: string, wallet: string, lease: Date): Promise<boolean>;
   /** Fenced by the claim lease. False when a newer claim owns the row. */
@@ -207,6 +221,7 @@ export const defaultArenaProvisionDeps: ArenaProvisionDeps = {
     listX402OffAgents: readArenaX402OffAgents,
     listX402SweepAgents: readArenaX402SweepAgents,
     saveClawPumpAgent: saveArenaClawPumpAgent,
+    countCreateAttempt: countArenaCreateAttempt,
     markReady: markArenaProvisionReady,
     markFailed: markArenaProvisionFailed,
     insertEvent: insertArenaEvent,
@@ -502,11 +517,20 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
   const name = arenaClawPumpAgentName(agent.name, agent.id, deps.env ?? process.env);
   // Codex r2 B2: true from the create request until its id is saved on the row.
   let createSent = false;
+  // Codex r2 B2 follow-up: the attempt count this run wrote BEFORE its create (null = no create this run).
+  let preCounted: number | null = null;
   try {
     let clawpumpAgentId = agent.clawpumpAgentId;
     let wallet = agent.clawpumpWallet;
     if (!clawpumpAgentId) {
       // Codex r18 #4: always a NEW agent, never an adopted one (see the header).
+      // Codex r2 B2 follow-up: count the attempt in the DB first (fenced by the
+      // claim and the cap), so a crash after the create still leaves it counted.
+      preCounted = await deps.store.countCreateAttempt(agent.id, lease, ARENA_PROVISION_MAX_ATTEMPTS);
+      if (preCounted === null) {
+        console.warn('[floor-arena] create not sent: the claim was lost or the attempts are used up');
+        return 'skipped';
+      }
       createSent = true;
       const created = await deps.writer.createAgent({
         name,
@@ -549,17 +573,31 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
     return 'ready';
   } catch (error) {
     const code = errorCode(error);
+    const writerCode = error instanceof ClawPumpWriterError ? error.code : null;
     // Codex r2 B2: a 429 does not prove ClawPump created nothing, so a 429 on the
     // CREATE counts as an attempt (the 5-attempt cap bounds hidden agents).
-    const createRateLimited = createSent && error instanceof ClawPumpWriterError && error.code === 'rate_limited';
-    if (isThrottled(error) && !createRateLimited) {
+    const createRateLimited = createSent && writerCode === 'rate_limited';
+    // The throttle release: the attempts to keep, or null = a counted failure.
+    let keep: number | null = null;
+    if (preCounted === null) {
+      // No create this run: a throttle is not an attempt (FX-PROV).
+      if (isThrottled(error)) keep = agent.provisionAttempts;
+    } else if (createSent) {
+      // Our own budget refusal of the create: nothing was sent, give the attempt back.
+      if (writerCode === 'budget_exhausted') keep = preCounted - 1;
+    } else if (isThrottled(error) && preCounted < ARENA_PROVISION_MAX_ATTEMPTS) {
+      // A throttle on the saved agent after this run's create: the create stays
+      // counted, nothing more is added. At the cap it is a counted failure (owner event).
+      keep = preCounted;
+    }
+    if (keep !== null) {
       // FX-PROV: our own budget refusal (nothing was sent), or ClawPump's 429 on
       // a call against the SAVED agent (a retry never creates a second one), is
       // NOT an attempt. The store has no plain lease release, so markFailed (the
-      // fenced claim release) keeps the SAME attempts and sets a short retry:
+      // fenced claim release) writes `keep` and sets a short retry:
       // the row is due on the next tick. No owner event (it is not a failure).
       const retryAt = new Date(deps.now().getTime() + ARENA_PROVISION_THROTTLE_RETRY_MS);
-      if (!(await deps.store.markFailed(agent.id, code, agent.provisionAttempts, retryAt, lease))) {
+      if (!(await deps.store.markFailed(agent.id, code, keep, retryAt, lease))) {
         console.warn('[floor-arena] provisioning failure dropped: the claim was lost');
         return 'skipped';
       }
@@ -569,7 +607,8 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
       }
       return 'throttled';
     }
-    const attempts = agent.provisionAttempts + 1;
+    // A pre-counted run already counted its attempt: never + 1 again.
+    const attempts = preCounted ?? agent.provisionAttempts + 1;
     const exhausted = attempts >= ARENA_PROVISION_MAX_ATTEMPTS;
     const nextAt = exhausted ? null : new Date(deps.now().getTime() + ARENA_PROVISION_RETRY_MS);
     if (!(await deps.store.markFailed(agent.id, code, attempts, nextAt, lease))) {
