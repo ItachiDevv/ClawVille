@@ -34,9 +34,12 @@
  *   remount of the figure requests the model again.
  * - `fallback` (optional): rendered INSTEAD of null after a model failure.
  *   The LOCAL player's own body uses it (default lobster GLB body via
- *   local-player-model-fallback.tsx), so the player is never invisible. A
- *   render bug still goes to the outer boundary, never to the fallback.
- *   Without `fallback` the behavior is unchanged.
+ *   local-player-model-fallback.tsx; if that body also fails, it renders
+ *   nothing and the world keeps running). A render bug still goes to the
+ *   outer boundary, never to the fallback. Without `fallback` the behavior
+ *   is unchanged.
+ * - `onModelFailed` (optional): called once per caught model failure, after
+ *   the cache clear (LocalPlayerFallback releases its boot claim with it).
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { isModelLoadError, type ModelLoadError } from './model-load-error';
