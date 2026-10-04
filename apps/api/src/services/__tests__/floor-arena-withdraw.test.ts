@@ -1135,4 +1135,26 @@ describe('Codex liveness: every row without proof reaches needs_review within 24
     await tick(world);
     expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_A' });
   });
+
+  /** A complete, resolved history with no match: the balance rule runs after the 15 min give-up. */
+  function coveredNoMatch(): void {
+    world.live = { ...world.live, transactions: [{ signature: 'SIG_X', status: 'success' }, { signature: 'SIG_OLD_DEPOSIT', status: 'success' }] };
+    world.txs.set('SIG_X', usdcTx({ dest: OTHER }));
+    world.txs.set('SIG_OLD_DEPOSIT', usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) }));
+  }
+
+  test('balance rule: an unread pre balance -> needs_review review_timeout, not a balance-drop claim', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN), preBalanceAtomic: null }));
+    coveredNoMatch();
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
+  });
+
+  test('balance rule: an unreadable add-on spend -> needs_review review_timeout, not a balance-drop claim', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    coveredNoMatch();
+    world.addonSpentUsd = Number.NaN;
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
+  });
 });

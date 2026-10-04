@@ -603,7 +603,9 @@ async function budgetShort(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, 
  * balance + (USDC) add-on spend since dispatched_at, as contract §4 step 4
  * writes it. Evidence only (DECISION INVARIANT): drop < amount -> needs_review
  * 'not_found_no_drop'; else needs_review 'not_found_balance_drop'. Never
- * failed_no_send: a deposit can hide the drop of a sent transfer.
+ * failed_no_send: a deposit can hide the drop of a sent transfer. An input that
+ * cannot be read (amount, pre balance, dispatched_at, add-on spend) -> needs_review
+ * 'review_timeout': no balance evidence was read, so no balance-drop claim.
  */
 async function applyBalanceRule(
   deps: ArenaWithdrawDeps,
@@ -612,11 +614,11 @@ async function applyBalanceRule(
 ): Promise<ArenaWithdrawReconcileResult> {
   const amount = row.amountAtomic;
   const pre = row.preBalanceAtomic;
-  if (amount === null || pre === null || row.dispatchedAt === null) return review(deps, row, 'not_found_balance_drop');
+  if (amount === null || pre === null || row.dispatchedAt === null) return review(deps, row, REVIEW_TIMEOUT_CODE);
   let addonAtomic = 0n;
   if (row.asset === 'USDC') {
     const spentUsd = await deps.addonSpentSince(row.agentId, row.dispatchedAt);
-    if (!Number.isFinite(spentUsd) || spentUsd < 0) return review(deps, row, 'not_found_balance_drop');
+    if (!Number.isFinite(spentUsd) || spentUsd < 0) return review(deps, row, REVIEW_TIMEOUT_CODE);
     addonAtomic = BigInt(Math.ceil(spentUsd * 1e6));
   }
   const liveBalance = row.asset === 'USDC' ? live.usdcAtomic : live.solLamports;
