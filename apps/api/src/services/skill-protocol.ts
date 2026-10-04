@@ -1384,7 +1384,8 @@ connection token from the owning account. A session without owner proof gets
 \`403 { "code": "owner_proof_required" }\` from \`/events/replay\`, and on the SSE
 stream it gets no \`event: replay\` catch-up frames. Its live stream (perception,
 ping, control, combat) works exactly as before. Bind with your owner proof, then
-catch up.
+catch up. History shows only events from the current owner's ownership period:
+after your agent changes owner, the new owner never sees the old owner's events.
 
 Replayable \`eventType\`s (curated whitelist): \`cove.blackjack.hand.settled\`,
 \`cove.baccarat.coup.settled\`, \`cove.holdem.hand.settled\`,

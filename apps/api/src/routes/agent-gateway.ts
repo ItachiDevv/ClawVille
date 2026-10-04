@@ -129,7 +129,7 @@ import {
   projectDurableEvent,
   computeNextCursor,
 } from '../services/agent-stream-config';
-import { queryDurableAgentEvents } from '../services/agent-event-query';
+import { queryDurableAgentEvents, type AgentHistoryScope } from '../services/agent-event-query';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
@@ -225,7 +225,8 @@ const CONNECT_ORIENTATION = Object.freeze({
 // Rate limiter for /connect — prevents unlimited bot registration spam.
 // Phase 3 — migrated to the shared `createRateLimiter` + `getClientIp`
 // helpers so this route gets Cloudflare-safe IP resolution (cf-connecting-ip
-// preferred, LAST XFF token as fallback) and the same periodic cleanup as
+// only when the Traefik peer x-real-ip is a Cloudflare edge, H2 2026-10-04;
+// else the peer; LAST XFF token as fallback) and the same periodic cleanup as
 // /export-character. Previous inline implementation used first-XFF-token
 // which was trivially spoofable.
 // ---------------------------------------------------------------------------
@@ -507,8 +508,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // lands at any later time refuses a credentialless registration (no expiry).
   const ownerBindSnapshotAtStart = ownerBindSnapshot();
 
-  // Rate limit by IP — getClientIp is Cloudflare-safe (cf-connecting-ip
-  // preferred, LAST XFF token as fallback so spoofed headers don't win).
+  // Rate limit by IP — getClientIp is Cloudflare-safe (cf-connecting-ip only
+  // from a Cloudflare peer, else the Traefik x-real-ip peer; spoofed headers
+  // don't win).
   const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
   if (!connectRateLimiter.check(ip)) {
     return c.json({ error: 'Too many connection attempts. Try again in 1 minute.' }, 429);
@@ -3495,10 +3497,19 @@ export const EVENT_HISTORY_OWNER_PROOF_REQUIRED_BODY = Object.freeze({
  * unowned row all resolve with `userId: null`, so they have no owner proof. Not
  * the ledger check: an owner-proven non-ledger session (a guest-owned agent, the
  * /enter keeper, a restored PUBLIC/BYO session) still reads its own history.
+ *
+ * Proof and scope come from ONE resolution (security pass 2026-10-04, Codex
+ * BLOCKING): the returned scope is the `agentId` + proven `userId` of that same
+ * `resolveAgentSession` call, or null (no owner proof). Every history query
+ * takes it, and its SQL re-checks that the row owner is still that user and
+ * returns only events from `openclaw_bots.owner_since` on (the current owner's
+ * period, migration 0079), so a new owner never reads a prior owner's events and
+ * an ownership change after this check returns zero rows.
  */
-async function sessionHasOwnerProof(sessionId: string): Promise<boolean> {
+async function resolveEventHistoryScope(sessionId: string): Promise<AgentHistoryScope | null> {
   const owner = await resolveAgentSession(sessionId);
-  return owner?.userId != null;
+  if (!owner?.userId) return null;
+  return { agentId: owner.agentId, ownerUserId: owner.userId };
 }
 
 agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
@@ -3513,24 +3524,21 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
-  // Protocol 83 owner-proof gate, BEFORE any history read.
-  if (!(await sessionHasOwnerProof(sessionId))) {
+  // Protocol 83 owner-proof gate, BEFORE any history read. The scope's agentId
+  // is the session config's agentId (getAgentBotConfig(sessionId).agentId, the
+  // same id the settle sites key their rows with); a session with no bot config
+  // has no owner proof and stops here.
+  const scope = await resolveEventHistoryScope(sessionId);
+  if (!scope) {
     return c.json(EVENT_HISTORY_OWNER_PROOF_REQUIRED_BODY, 403);
   }
-
-  // Resolve the agent identity the SAME way the settle sites key their rows
-  // (getAgentBotConfig(sessionId).agentId == cove subject.agentId). An
-  // A legacy session with no bot config has no agent-scoped history.
-  const botConfig = npcSimulation.getAgentBotConfig(sessionId);
-  const agentId = botConfig?.agentId ?? null;
-  if (!agentId) return c.json({ events: [], nextCursor: null });
 
   const parsed = parseReplayQuery(c.req.query());
   if (!parsed) {
     return c.json({ error: 'Invalid replay query', code: 'invalid_replay_query' }, 400);
   }
 
-  const rows = await queryDurableAgentEvents(agentId, parsed.afterId, parsed.limit);
+  const rows = await queryDurableAgentEvents(scope, parsed.afterId, parsed.limit);
   const events = rows.map(projectDurableEvent);
   return c.json({ events, nextCursor: computeNextCursor(events) });
 });
@@ -3984,17 +3992,18 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   // without owner proof gets NO durable catch-up. It is skipped (logged once per
   // connection, digest only) and the live stream below runs exactly as before;
   // the check runs only when a catch-up was requested, so a fresh connect adds
-  // no DB read and burns no limiter token.
-  let catchupAllowed = false;
+  // no DB read and burns no limiter token. The catch-up reads with the scope of
+  // that ONE owner-proof resolution (proven owner + owner period, see
+  // `resolveEventHistoryScope`); each page re-checks the owner in its SQL.
+  let catchupScope: AgentHistoryScope | null = null;
   if (replayAgentId != null && replayCursor != null) {
-    if (!(await sessionHasOwnerProof(sessionId))) {
+    const scope = await resolveEventHistoryScope(sessionId);
+    if (!scope) {
       console.info(
         `[AgentSSE] durable catch-up skipped: no owner proof (owner_proof_required) sess:${sessionDigest(sessionId)}`,
       );
-    } else {
-      catchupAllowed = sseCatchupRateLimiter.check(
-        getClientIp({ get: (n) => c.req.header(n) ?? null }),
-      );
+    } else if (sseCatchupRateLimiter.check(getClientIp({ get: (n) => c.req.header(n) ?? null }))) {
+      catchupScope = scope;
     }
   }
 
@@ -4006,10 +4015,10 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
     // capped; a gap larger than the cap falls back to the /events/replay
     // endpoint. Frames are labelled `event: replay` (durable catch-up) to
     // distinguish them from live frames; the inner `eventType` drives dispatch.
-    if (catchupAllowed && replayAgentId && replayCursor != null) {
+    if (catchupScope && replayCursor != null) {
       let cur = replayCursor;
       for (let page = 0; page < SSE_REPLAY_MAX_PAGES; page++) {
-        const rows = await queryDurableAgentEvents(replayAgentId, cur, REPLAY_LIMIT_MAX);
+        const rows = await queryDurableAgentEvents(catchupScope, cur, REPLAY_LIMIT_MAX);
         if (rows.length === 0) break;
         for (const row of rows) {
           const ev = projectDurableEvent(row);

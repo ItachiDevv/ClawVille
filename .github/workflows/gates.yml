@@ -382,6 +382,7 @@ jobs:
           cd apps/api
           bun test src/services/__tests__/agent-redemption-bind.db.test.ts
           bun test src/services/__tests__/session-ticket-identity-hash.db.test.ts
+          bun test src/services/__tests__/agent-owner-since.db.test.ts
 
       - name: Seed the canonical land parcel grid
         # land DB-contract tests pick real parcels; idempotent 56-row seed,

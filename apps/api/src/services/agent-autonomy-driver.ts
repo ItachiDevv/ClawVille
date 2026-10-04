@@ -85,7 +85,7 @@ import {
   type CurrentDirective,
   type DirectiveActedClaim,
 } from './agent-autonomy-state';
-import { queryDurableAgentEventsNewest } from './agent-event-query';
+import { queryDurableAgentEventsNewest, type AgentHistoryScope } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { resolveBuildingId } from './building-center';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
@@ -1985,7 +1985,16 @@ class AgentAutonomyDriver {
   private async seedFromCursorOnce(entry: HouseAgentEntry): Promise<void> {
     if (entry.cursorSeeded) return;
     entry.cursorSeeded = true;
-    const seed = await this.seedRead(entry.platformAgentId, entry.agentId);
+    // Owner-period scope (security pass 2026-10-04): the row owner this entry was
+    // enrolled under (house user for a house agent, the owner for a user agent).
+    // The query re-checks it against the row's CURRENT owner and returns only
+    // that owner's period (openclaw_bots.owner_since), so the agent a new owner
+    // talks to is never seeded with a prior owner's directives or settlements,
+    // and a stale entry whose row moved to another owner reads nothing.
+    const seed = await this.seedRead(entry.platformAgentId, {
+      agentId: entry.agentId,
+      ownerUserId: entry.houseUserId,
+    });
     if (seed) {
       entry.recentEventSummary = seed.summary;
       // Advance + persist the cursor so a restart resumes from here. Fail-soft:
@@ -2008,14 +2017,14 @@ class AgentAutonomyDriver {
    */
   private seedRead(
     platformAgentId: string,
-    agentId: string,
+    scope: AgentHistoryScope,
   ): Promise<{ summary: string; maxId: bigint } | null> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(null), SEED_FETCH_TIMEOUT_MS);
       (async () => {
         const cursor = await getAutonomyCursor(platformAgentId);
         const newestFirst = await queryDurableAgentEventsNewest(
-          agentId,
+          scope,
           cursor ?? 0n,
           SEED_EVENT_LIMIT,
         );

@@ -13,6 +13,16 @@ import { Hono } from 'hono';
 //     logged once), and the live stream still opens exactly as before.
 // Owner proof = `resolveAgentSession` returns the row owner (config
 // `boundUserId` equals the row's current `userId`, connect-sec C10/C12).
+//
+// Owner-period scope (security pass 2026-10-04, Codex BLOCKING): the proof and
+// the query scope come from ONE resolution. The route passes the proven
+// `{ agentId, ownerUserId }` to the shared query, whose SQL re-checks the row
+// owner and returns only events from `openclaw_bots.owner_since` on, never a
+// row attributed to another user. The query mock below mirrors those three SQL
+// clauses over an in-memory table (the real SQL is pinned by
+// services/__tests__/agent-event-query-scope.test.ts and run on Postgres by
+// services/__tests__/agent-owner-since.db.test.ts), so these tests prove the
+// ROUTES hand the proven owner to the query and deliver only what it returns.
 
 process.env.FINGERPRINT_SECRET ??= '45'.repeat(32);
 
@@ -20,15 +30,52 @@ const OWNER_ID = '91111111-1111-4111-8111-111111111111';
 const OTHER_ID = '92222222-2222-4222-8222-222222222222';
 const AVATAR_ID = '93333333-3333-4333-8333-333333333333';
 const BOT_ID = '94444444-4444-4444-8444-444444444444';
+const PRIOR_ID = '95555555-5555-4555-8555-555555555555';
 const DIRECTIVE_TEXT = 'owner directive: farm the reef at dawn';
+const PRIOR_DIRECTIVE = 'PRIOR owner directive: dump the wallet at noon';
+const OWNER_SINCE_DEFAULT = new Date('2026-10-03T00:00:00Z');
+const OWNER_SINCE_AFTER_MOVE = new Date('2026-10-04T00:00:30Z');
+
+interface HistoryQuery {
+  scope: { agentId: string; ownerUserId: string };
+  afterId: bigint;
+  limit: number;
+}
+
+interface HistoryRow {
+  id: bigint;
+  eventType: string;
+  ts: Date;
+  payload: Record<string, unknown>;
+  /** events.user_id (not selected by the real query; drives clause 3 only). */
+  userId: string | null;
+}
 
 let botRow: Record<string, unknown> | null = null;
-let historyQueries: Array<{ agentId: string; afterId: bigint; limit: number }> = [];
+let historyQueries: HistoryQuery[] = [];
+/** `db.query.agentBots.findFirst` calls in the current test (reset in beforeEach). */
+let rowReads = 0;
+let moveOwnerAfterRowReads: { reads: number; to: string } | null = null;
 
-const HISTORY_ROWS = [
-  { id: 11n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:00Z'), payload: { directive: DIRECTIVE_TEXT } },
-  { id: 12n, eventType: 'building.visited', ts: new Date('2026-10-04T00:01:00Z'), payload: { buildingId: 'cron-automation' } },
+const HISTORY_ROWS: HistoryRow[] = [
+  { id: 11n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:00Z'), payload: { directive: DIRECTIVE_TEXT }, userId: OWNER_ID },
+  { id: 12n, eventType: 'building.visited', ts: new Date('2026-10-04T00:01:00Z'), payload: { buildingId: 'cron-automation' }, userId: null },
 ];
+
+/**
+ * Ownership-change table: PRIOR owned the row until 00:00:30, then OWNER.
+ * 21-22 are PRIOR's period; 23 is a late PRIOR row whose insert landed inside
+ * OWNER's period; 24-25 are OWNER's own period.
+ */
+const MOVED_ROWS: HistoryRow[] = [
+  { id: 21n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:10Z'), payload: { directive: PRIOR_DIRECTIVE }, userId: PRIOR_ID },
+  { id: 22n, eventType: 'building.visited', ts: new Date('2026-10-04T00:00:20Z'), payload: { buildingId: 'prior-visit' }, userId: null },
+  { id: 23n, eventType: 'cove.blackjack.hand.settled', ts: new Date('2026-10-04T00:00:31Z'), payload: { net: 90, note: PRIOR_DIRECTIVE }, userId: PRIOR_ID },
+  { id: 24n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:40Z'), payload: { directive: DIRECTIVE_TEXT }, userId: OWNER_ID },
+  { id: 25n, eventType: 'building.visited', ts: new Date('2026-10-04T00:00:50Z'), payload: { buildingId: 'cron-automation' }, userId: null },
+];
+
+let historyTable: HistoryRow[] = HISTORY_ROWS;
 
 const realDatabase = await import('@clawville/database');
 const restoreModules: Array<[string, Record<string, unknown>]> = [['@clawville/database', { ...realDatabase }]];
@@ -38,7 +85,17 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
   get(_target, property) {
     if (property === 'query') {
       return {
-        agentBots: { findFirst: async () => (botRow ? { ...botRow } : undefined) },
+        agentBots: {
+          findFirst: async () => {
+            rowReads++;
+            const copy = botRow ? { ...botRow } : undefined;
+            // TOCTOU probe: move the row to another owner right after the Nth read.
+            if (botRow && moveOwnerAfterRowReads && rowReads === moveOwnerAfterRowReads.reads) {
+              botRow.userId = moveOwnerAfterRowReads.to;
+            }
+            return copy;
+          },
+        },
         users: { findFirst: async () => ({ isGuest: false }) },
         avatars: { findFirst: async () => ({ id: AVATAR_ID, userId: OWNER_ID, isActive: true }) },
       };
@@ -57,9 +114,23 @@ const realEventQuery = await import('../../services/agent-event-query');
 restoreModules.push(['../../services/agent-event-query', { ...realEventQuery }]);
 mock.module('../../services/agent-event-query', () => ({
   ...realEventQuery,
-  queryDurableAgentEvents: async (agentId: string, afterId: bigint, limit: number) => {
-    historyQueries.push({ agentId, afterId, limit });
-    return HISTORY_ROWS.filter((row) => row.id > afterId).map((row) => ({ ...row }));
+  queryDurableAgentEvents: async (
+    scope: { agentId: string; ownerUserId: string },
+    afterId: bigint,
+    limit: number,
+  ) => {
+    historyQueries.push({ scope: { ...scope }, afterId, limit });
+    // The three scope clauses of the real SQL, read at query time:
+    // (1) the row's CURRENT owner is the proven owner, (2) ts >= owner_since,
+    // (3) user_id IS NULL OR user_id = owner. Then the SAFE columns only.
+    if (!botRow || botRow.agentId !== scope.agentId || botRow.userId !== scope.ownerUserId) return [];
+    const ownerSince = botRow.ownerSince as Date;
+    return historyTable
+      .filter((row) => row.id > afterId)
+      .filter((row) => row.ts.getTime() >= ownerSince.getTime())
+      .filter((row) => row.userId === null || row.userId === botRow!.userId)
+      .slice(0, limit)
+      .map(({ id, eventType, ts, payload }) => ({ id, eventType, ts, payload }));
   },
 }));
 
@@ -124,6 +195,7 @@ function goLive(config: Registration, rowUserId: string | null): string {
     userId: rowUserId,
     sessionKeyHash: sha256Hex(config.sessionId),
     sessionExpiresAt: new Date(Date.now() + 60 * 60_000),
+    ownerSince: OWNER_SINCE_DEFAULT,
   };
   return config.sessionId;
 }
@@ -152,6 +224,17 @@ function connectOwner(tag: string): string {
   return goLive(avatarConfig({ agentId: `p83-owner-${tag}`, sessionId: `ag-p83-owner-${tag}`, ...proof }), OWNER_ID);
 }
 
+/**
+ * The row moved from PRIOR to OWNER (owner_since = the move), and OWNER connects
+ * with a real owner proof: the history table holds both owners' rows.
+ */
+function connectNewOwnerAfterMove(tag: string): string {
+  const sid = connectOwner(tag);
+  botRow!.ownerSince = OWNER_SINCE_AFTER_MOVE;
+  historyTable = MOVED_ROWS;
+  return sid;
+}
+
 function nextIp(): string {
   ipCounter++;
   return `198.51.100.${(ipCounter % 250) + 1}`;
@@ -161,7 +244,7 @@ async function replay(sessionId: string, query = 'after=0&limit=100') {
   const app = new Hono();
   app.route('/api/agent', agentGatewayRoutes);
   const response = await app.request(`/api/agent/${sessionId}/events/replay?${query}`, {
-    headers: { 'cf-connecting-ip': nextIp() },
+    headers: { 'x-real-ip': nextIp() },
   });
   return { status: response.status, text: await response.text() };
 }
@@ -169,7 +252,7 @@ async function replay(sessionId: string, query = 'after=0&limit=100') {
 async function openSse(sessionId: string, lastEventId: string | null) {
   const app = new Hono();
   app.route('/api/agent', agentGatewayRoutes);
-  const headers: Record<string, string> = { 'cf-connecting-ip': nextIp() };
+  const headers: Record<string, string> = { 'x-real-ip': nextIp() };
   if (lastEventId !== null) headers['Last-Event-ID'] = lastEventId;
   return app.request(`/api/agent/${sessionId}/events`, { headers });
 }
@@ -208,6 +291,9 @@ function sseSkipLogs(): string[] {
 beforeEach(() => {
   botRow = null;
   historyQueries = [];
+  historyTable = HISTORY_ROWS;
+  rowReads = 0;
+  moveOwnerAfterRowReads = null;
   infoSpy = spyOn(console, 'info');
 });
 
@@ -264,7 +350,9 @@ describe('GET /api/agent/:sessionId/events/replay owner proof (protocol 83)', ()
       ],
       nextCursor: '12',
     });
-    expect(historyQueries).toEqual([{ agentId: 'p83-owner-replay', afterId: 0n, limit: 100 }]);
+    expect(historyQueries).toEqual([
+      { scope: { agentId: 'p83-owner-replay', ownerUserId: OWNER_ID }, afterId: 0n, limit: 100 },
+    ]);
   });
 
   test('an owner-proven NON-ledger session (the /enter keeper) still reads its history (200)', async () => {
@@ -319,7 +407,7 @@ describe('GET /api/agent/:sessionId/events SSE catch-up owner proof (protocol 83
     const sid = anonymousOnUnownedRow('sse');
     const app = new Hono();
     app.route('/api/agent', agentGatewayRoutes);
-    const res = await app.request(`/api/agent/${sid}/events?after=0`, { headers: { 'cf-connecting-ip': nextIp() } });
+    const res = await app.request(`/api/agent/${sid}/events?after=0`, { headers: { 'x-real-ip': nextIp() } });
     expect(res.status).toBe(200);
     const text = await readFor(res, 150);
     expect(text).not.toContain('event: replay');
@@ -344,7 +432,102 @@ describe('GET /api/agent/:sessionId/events SSE catch-up owner proof (protocol 83
     expect(text).toContain('event: replay\nid: 11\n');
     expect(text).toContain('event: replay\nid: 12\n');
     expect(text).toContain(DIRECTIVE_TEXT);
-    expect(historyQueries[0]).toEqual({ agentId: 'p83-owner-sse', afterId: 10n, limit: 500 });
+    expect(historyQueries[0]).toEqual({
+      scope: { agentId: 'p83-owner-sse', ownerUserId: OWNER_ID }, afterId: 10n, limit: 500,
+    });
     expect(sseSkipLogs()).toHaveLength(0);
+  });
+});
+
+describe('owner-period scope after an ownership change (security pass 2026-10-04)', () => {
+  test('replay: the NEW owner never sees the prior owner directive, only its own period', async () => {
+    const sid = connectNewOwnerAfterMove('moved-replay');
+    const res = await replay(sid, 'after=0&limit=100');
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.text);
+    expect(body.events.map((event: { id: string }) => event.id)).toEqual(['24', '25']);
+    expect(body.events[0]).toEqual({
+      id: '24', eventType: 'agent.directive.set', ts: '2026-10-04T00:00:40.000Z', payload: { directive: DIRECTIVE_TEXT },
+    });
+    expect(body.nextCursor).toBe('25');
+    // Neither the prior period (21, 22) nor the late prior-owner row (23).
+    expect(res.text).not.toContain(PRIOR_DIRECTIVE);
+    expect(res.text).not.toContain('prior-visit');
+    // One owner-proof resolution feeds the scope: the proven owner, never unscoped.
+    expect(historyQueries).toEqual([
+      { scope: { agentId: 'p83-owner-moved-replay', ownerUserId: OWNER_ID }, afterId: 0n, limit: 100 },
+    ]);
+  });
+
+  test('replay: a cursor inside the prior period still returns only the new owner period', async () => {
+    const sid = connectNewOwnerAfterMove('moved-cursor');
+    const res = await replay(sid, 'after=20&limit=100');
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.text).events.map((event: { id: string }) => event.id)).toEqual(['24', '25']);
+    expect(res.text).not.toContain(PRIOR_DIRECTIVE);
+  });
+
+  test('SSE catch-up: the NEW owner gets only its own period as replay frames', async () => {
+    const sid = connectNewOwnerAfterMove('moved-sse');
+    const res = await openSse(sid, '0');
+    expect(res.status).toBe(200);
+    const text = await readFor(res, 1500, 'id: 25');
+    expect(text).toContain('event: replay\nid: 24\n');
+    expect(text).toContain('event: replay\nid: 25\n');
+    expect(text).toContain(DIRECTIVE_TEXT);
+    expect(text).not.toContain('id: 21\n');
+    expect(text).not.toContain('id: 22\n');
+    expect(text).not.toContain('id: 23\n');
+    expect(text).not.toContain(PRIOR_DIRECTIVE);
+    expect(historyQueries[0]).toEqual({
+      scope: { agentId: 'p83-owner-moved-sse', ownerUserId: OWNER_ID }, afterId: 0n, limit: 500,
+    });
+    expect(sseSkipLogs()).toHaveLength(0);
+  });
+
+  test('a session still proven for the PRIOR owner is refused on both surfaces after the move', async () => {
+    const sid = goLive(
+      avatarConfig({ agentId: 'p83-prior', sessionId: 'ag-p83-prior', ledgerCapable: false, boundUserId: PRIOR_ID }),
+      OWNER_ID,
+    );
+    botRow!.ownerSince = OWNER_SINCE_AFTER_MOVE;
+    historyTable = MOVED_ROWS;
+    const res = await replay(sid);
+    expect(res.status).toBe(403);
+    expect(JSON.parse(res.text).code).toBe('owner_proof_required');
+    const sse = await openSse(sid, '0');
+    const text = await readFor(sse, 150);
+    expect(text).not.toContain('event: replay');
+    expect(historyQueries).toHaveLength(0);
+  });
+
+  test('the row moves AFTER the proof: the query scope is the proven owner, so it reads nothing', async () => {
+    const sid = connectOwner('toctou');
+    // The route reads the row twice: the liveness check (resolveSession) and
+    // the ONE owner-proof resolution. Right after that second read the row
+    // moves to OTHER (OTHER's own event sits in the table). The scope still
+    // names OWNER, the query's owner re-check fails, and nothing leaks.
+    historyTable = [
+      ...HISTORY_ROWS,
+      { id: 13n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:02:00Z'), payload: { directive: 'OTHER directive' }, userId: OTHER_ID },
+    ];
+    moveOwnerAfterRowReads = { reads: 2, to: OTHER_ID };
+    const res = await replay(sid);
+    expect(rowReads).toBe(2);
+    expect(botRow!.userId).toBe(OTHER_ID);
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.text)).toEqual({ events: [], nextCursor: null });
+    expect(res.text).not.toContain('OTHER directive');
+    expect(historyQueries).toEqual([
+      { scope: { agentId: 'p83-owner-toctou', ownerUserId: OWNER_ID }, afterId: 0n, limit: 100 },
+    ]);
+  });
+
+  test('replay resolves owner proof once: one liveness read plus one proof read, then the query', async () => {
+    const sid = connectOwner('one-resolution');
+    const res = await replay(sid);
+    expect(res.status).toBe(200);
+    expect(rowReads).toBe(2);
+    expect(historyQueries).toHaveLength(1);
   });
 });
