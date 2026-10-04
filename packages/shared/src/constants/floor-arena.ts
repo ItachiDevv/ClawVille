@@ -963,7 +963,7 @@ export const FLOOR_ARENA_WITHDRAW_REQUEST_CODES = deepFreeze(['idempotency_confl
   'address_pending', 'withdrawal_open', 'cooldown', 'daily_count_cap', 'agent_daily_cap', 'invalid_amount', 'below_minimum'] as const);
 /** Reconcile results stored in error_code. Writer codes are `clawpump_<code>`; vendor codes are `vendor_<code>` (lower case). */
 export const FLOOR_ARENA_WITHDRAW_RECONCILE_CODES = deepFreeze(['dispatch_interrupted', 'chain_error', 'chain_mismatch',
-  'not_found_no_drop', 'not_found_balance_drop', 'ambiguous_match', 'tx_reused', 'reply_mismatch'] as const);
+  'not_found_no_drop', 'not_found_balance_drop', 'ambiguous_match', 'tx_reused', 'reply_mismatch', 'review_timeout'] as const);
 export const FLOOR_ARENA_WITHDRAW_LIMITS = deepFreeze({
   usdcDecimals: 6,
   solDecimals: 9,
