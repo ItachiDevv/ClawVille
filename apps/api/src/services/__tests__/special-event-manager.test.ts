@@ -104,6 +104,10 @@ class FakeDb {
   results: Row[] = []; // poker_tournament_results
   /** claw_token_transactions rows the FakeLedger writes (cancel reads the entry burns). */
   ledgerRows: Row[] = [];
+  /** earned_mint_lots by id; earned_lot_consumptions; earned_accounted_ledger (FakeLedger writes). */
+  earnedLots = new Map<string, Row>();
+  earnedConsumptions: Row[] = [];
+  earnedAccounted = new Map<string, string>();
 
   query = {};
   private seq = 0;
@@ -166,6 +170,16 @@ class FakeDb {
       (() => {
         const rows = [...this.ledgerRows];
         return () => void this.ledgerRows.splice(0, this.ledgerRows.length, ...rows);
+      })(),
+      saveMap(this.earnedLots),
+      (() => {
+        const rows = [...this.earnedConsumptions];
+        const accounted = new Map(this.earnedAccounted);
+        return () => {
+          this.earnedConsumptions.splice(0, this.earnedConsumptions.length, ...rows);
+          this.earnedAccounted.clear();
+          for (const [k, v] of accounted) this.earnedAccounted.set(k, v);
+        };
       })(),
       ...this.rollbackParticipants.map((p) => p()),
     ];
@@ -534,7 +548,7 @@ class FakeDb {
       s.status = 'refunded';
       return [{ id: s.id }];
     }
-    if (text === "SELECT provenance, (-amount)::int AS amount FROM claw_token_transactions WHERE avatar_id = ? AND reason = 'special_event_entry' AND amount < 0 AND metadata->>'eventId' = ?") {
+    if (text === "SELECT id, provenance, (-amount)::int AS amount FROM claw_token_transactions WHERE avatar_id = ? AND reason = 'special_event_entry' AND amount < 0 AND metadata->>'eventId' = ?") {
       return this.ledgerRows
         .filter(
           (r) =>
@@ -543,7 +557,19 @@ class FakeDb {
             Number(r.amount) < 0 &&
             (r.metadata as { eventId?: unknown } | null)?.eventId === p[1],
         )
-        .map((r) => ({ provenance: r.provenance ?? null, amount: -Number(r.amount) }));
+        .map((r) => ({ id: r.id, provenance: r.provenance ?? null, amount: -Number(r.amount) }));
+    }
+    // ── EARNED lot attribution (earned_lot_consumptions ⋈ earned_mint_lots) ─────
+    if (text === "SELECT l.backing_kind, c.vclaw_amount FROM earned_lot_consumptions c JOIN earned_mint_lots l ON l.id = c.mint_lot_id WHERE c.ledger_debit_id = ? AND c.kind = 'spend' AND l.avatar_id = ?") {
+      return this.earnedConsumptions
+        .filter((c) => c.ledger_debit_id === p[0] && c.kind === 'spend')
+        .map((c) => ({ c, lot: this.earnedLots.get(String(c.mint_lot_id)) }))
+        .filter(({ lot }) => lot?.avatar_id === p[1])
+        .map(({ c, lot }) => ({ backing_kind: lot!.backing_kind, vclaw_amount: c.vclaw_amount }));
+    }
+    if (text === 'SELECT kind FROM earned_accounted_ledger WHERE ledger_id = ?') {
+      const kind = this.earnedAccounted.get(String(p[0]));
+      return kind ? [{ kind }] : [];
     }
 
     // ── special_event_sol_refunds (Codex r1, 2026-10-03) ─────────────────────────
@@ -682,10 +708,83 @@ class FakeLedger {
   tags = new Map<string, Record<Tag, number>>();
   /** Shared with FakeDb.ledgerRows (claw_token_transactions). */
   rows: Row[] = [];
+  /** The FakeDb whose earned_mint_lots / consumptions / accounted tables this ledger writes. */
+  db: FakeDb | null = null;
+  /** Every mintEarned call (the cancel's EARNED restore). */
+  mints: Array<{
+    avatarId: string;
+    amount: number;
+    reason: string;
+    usdBasis: string;
+    backing: { kind: 'none' | 'backed'; mintRef: string; reason?: string };
+    metadata?: Record<string, unknown>;
+    ledgerId: string;
+  }> = [];
+  private lotSeq = 0;
 
+  /** Sets the tag split; an EARNED amount becomes ONE 'none' lot (agent-pay style). */
   setTags(a: string, t: Record<Tag, number>): void {
     this.tags.set(a, { ...t });
     this.balances.set(a, t.soft + t.bought + t.earned);
+    this.setEarnedLots(a, t.earned > 0 ? [{ kind: 'none', amount: t.earned }] : []);
+  }
+
+  /** Replaces the avatar's EARNED lots (their sum must equal tags.earned). */
+  setEarnedLots(a: string, lots: Array<{ kind: 'none' | 'backed'; amount: number }>): void {
+    const db = this.db!;
+    for (const [id, lot] of [...db.earnedLots]) if (lot.avatar_id === a) db.earnedLots.delete(id);
+    for (const l of lots) this.addLot(a, l.kind, l.amount, `seed:${randomUUID()}`);
+  }
+
+  private addLot(a: string, kind: 'none' | 'backed', amount: number, mintRef: string): string {
+    const id = randomUUID();
+    this.db!.earnedLots.set(id, {
+      id,
+      avatar_id: a,
+      backing_kind: kind,
+      mint_ref: mintRef,
+      original_vclaw: amount,
+      remaining_vclaw: amount,
+      seq: ++this.lotSeq,
+    });
+    return id;
+  }
+
+  /** Remaining EARNED units per backing kind (what every eligibility check reads). */
+  lotTotals(a: string): { none: number; backed: number } {
+    const out = { none: 0, backed: 0 };
+    for (const lot of this.db!.earnedLots.values()) {
+      if (lot.avatar_id !== a) continue;
+      out[lot.backing_kind as 'none' | 'backed'] += Number(lot.remaining_vclaw);
+    }
+    return out;
+  }
+
+  /** Same order as the real `consumeEarnedLots` spend: unbacked first, then backed. */
+  private consumeLots(a: string, amount: number, ledgerDebitId: string): void {
+    const db = this.db!;
+    const lots = [...db.earnedLots.values()]
+      .filter((l) => l.avatar_id === a && Number(l.remaining_vclaw) > 0)
+      .sort((x, y) =>
+        x.backing_kind === y.backing_kind
+          ? Number(x.seq) - Number(y.seq)
+          : x.backing_kind === 'none' ? -1 : 1,
+      );
+    let remaining = amount;
+    for (const lot of lots) {
+      if (remaining === 0) break;
+      const take = Math.min(Number(lot.remaining_vclaw), remaining);
+      lot.remaining_vclaw = Number(lot.remaining_vclaw) - take;
+      db.earnedConsumptions.push({
+        mint_lot_id: lot.id,
+        ledger_debit_id: ledgerDebitId,
+        kind: 'spend',
+        vclaw_amount: take,
+      });
+      remaining -= take;
+    }
+    if (remaining !== 0) throw new Error(`EARNED lot invariant: avatar ${a} is short ${remaining}`);
+    db.earnedAccounted.set(ledgerDebitId, 'spend');
   }
 
   setBalance(a: string, n: number): void {
@@ -717,6 +816,7 @@ class FakeLedger {
         provenance: tag,
         metadata: (input as { metadata?: unknown }).metadata ?? {},
       });
+      if (tag === 'earned') this.consumeLots(input.avatarId, take, ledgerId);
     }
     if (this.tags.has(input.avatarId)) this.tags.set(input.avatarId, tags);
     return { balanceAfter: bal - input.amount, ledgerId };
@@ -742,6 +842,48 @@ class FakeLedger {
       metadata: input.metadata ?? {},
     });
     return { balanceAfter: bal + input.amount, ledgerId: randomUUID() };
+  };
+  /** Same shape + guards as the real mintEarned: EARNED row, one lot, UNIQUE mint_ref. */
+  mintEarned = async (input: {
+    avatarId: string;
+    amount: number;
+    reason: string;
+    usdBasis: string;
+    backing: { kind: 'none' | 'backed'; mintRef: string; reason?: string };
+    metadata?: Record<string, unknown>;
+  }) => {
+    if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
+      throw new Error('mintEarned amount must be a positive safe integer');
+    }
+    if (typeof input.usdBasis !== 'string' || input.usdBasis.trim() === '') {
+      throw new Error('mintEarned requires a non-empty usdBasis string');
+    }
+    if (!input.backing?.mintRef?.trim()) throw new Error('mintEarned requires a mintRef');
+    const db = this.db!;
+    if ([...db.earnedLots.values()].some((l) => l.mint_ref === input.backing.mintRef)) {
+      throw Object.assign(
+        new Error('duplicate key value violates unique constraint "earned_mint_lots_ref_unique"'),
+        { code: '23505' },
+      );
+    }
+    const bal = this.get(input.avatarId);
+    this.balances.set(input.avatarId, bal + input.amount);
+    const t = this.tags.get(input.avatarId) ?? { soft: bal, bought: 0, earned: 0 };
+    t.earned += input.amount;
+    this.tags.set(input.avatarId, t);
+    const ledgerId = randomUUID();
+    this.rows.push({
+      id: ledgerId,
+      avatar_id: input.avatarId,
+      amount: input.amount,
+      reason: input.reason,
+      provenance: 'earned',
+      metadata: input.metadata ?? {},
+    });
+    this.addLot(input.avatarId, input.backing.kind, input.amount, input.backing.mintRef);
+    db.earnedAccounted.set(ledgerId, 'mint');
+    this.mints.push({ ...input, ledgerId });
+    return { balanceAfter: bal + input.amount, ledgerId };
   };
 }
 
@@ -982,17 +1124,20 @@ function makeManager() {
   const tm = new FakeTM();
   tm.db = db;
   ledger.rows = db.ledgerRows;
+  ledger.db = db;
   // The ledger state rolls back with the fake tx (when rollbackOnThrow is on).
   db.rollbackParticipants.push(() => {
     const balances = new Map(ledger.balances);
     const credits = [...ledger.credits];
     const debits = [...ledger.debits];
+    const mints = [...ledger.mints];
     const tags = new Map([...ledger.tags].map(([k, v]) => [k, { ...v }] as const));
     return () => {
       ledger.balances.clear();
       for (const [k, v] of balances) ledger.balances.set(k, v);
       ledger.credits.splice(0, ledger.credits.length, ...credits);
       ledger.debits.splice(0, ledger.debits.length, ...debits);
+      ledger.mints.splice(0, ledger.mints.length, ...mints);
       ledger.tags.clear();
       for (const [k, v] of tags) ledger.tags.set(k, v);
     };
@@ -2073,17 +2218,21 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
     expect(refunds.filter((c) => c.avatarId === humanCt.avatarId)).toEqual([
       expect.objectContaining({ amount: 50, provenance: 'soft' }),
     ]);
-    // SOFT → SOFT, BOUGHT → BOUGHT, EARNED → SOFT (EARNED is mintEarned-only).
+    // SOFT → SOFT, BOUGHT → BOUGHT (creditClawTokens), EARNED → EARNED
+    // (mintEarned, founder decision 2026-10-04 "restore_earned").
     const agentRefunds = refunds.filter((c) => c.avatarId === agentCt.avatarId);
     expect(agentRefunds.map((c) => [c.amount, c.provenance, c.metadata?.burnedProvenance])).toEqual([
       [20, 'soft', 'soft'],
       [10, 'bought', 'bought'],
-      [20, 'soft', 'earned'],
     ]);
-    expect(ledger.tags.get(agentCt.avatarId)).toEqual({ soft: 40, bought: 10, earned: 80 });
-    for (const c of refunds) {
+    expect(ledger.mints.map((m) => [m.avatarId, m.amount, m.reason, m.backing.kind])).toEqual([
+      [agentCt.avatarId, 20, 'special_event_entry_refund', 'none'],
+    ]);
+    expect(ledger.tags.get(agentCt.avatarId)).toEqual({ soft: 20, bought: 10, earned: 100 });
+    for (const c of [...refunds, ...ledger.mints]) {
       expect(c.metadata?.eventId).toBe(ev.id);
       expect(typeof c.metadata?.signupId).toBe('string');
+      expect(typeof c.metadata?.refundOfLedgerId).toBe('string');
     }
     // No treasury movement: a signup_open event holds no seed.
     expect(ledger.credits.some((c) => c.avatarId === TREASURY)).toBe(false);
@@ -2121,6 +2270,7 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
     const { mgr, ledger, humanCt, agentCt } = await paidEvent('cancel-twice');
     const first = await mgr.cancelEvent('cancel-twice');
     const creditsAfterFirst = ledger.credits.length;
+    expect(ledger.mints).toHaveLength(1);
 
     const second = await mgr.cancelEvent('cancel-twice');
     expect(second.alreadyCancelled).toBe(true);
@@ -2128,6 +2278,7 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
     expect(second.refundedCt).toBe(0);
     expect(second.solRefundsOwed).toEqual(first.solRefundsOwed);
     expect(ledger.credits.length).toBe(creditsAfterFirst);
+    expect(ledger.mints).toHaveLength(1);
     expect(ledger.get(humanCt.avatarId)).toBe(1_000);
     expect(ledger.get(agentCt.avatarId)).toBe(130);
   });
@@ -2140,7 +2291,9 @@ describe('SpecialEventManager — cancelEvent + refunds (security pass gap, 2026
     ]);
     const fresh = results.filter((r) => r.status === 'fulfilled' && !r.value.alreadyCancelled);
     expect(fresh).toHaveLength(1);
-    const refunds = ledger.credits.filter((c) => c.reason === 'special_event_entry_refund');
+    const refunds = [...ledger.credits, ...ledger.mints].filter(
+      (c) => c.reason === 'special_event_entry_refund',
+    );
     expect(refunds.reduce((n, c) => n + c.amount, 0)).toBe(100);
     expect(ledger.get(humanCt.avatarId)).toBe(1_000);
   });
@@ -2620,6 +2773,226 @@ describe('SpecialEventManager — cancel is all-or-nothing on a bad CT proof (Co
     expect(ev.status).toBe('signup_open');
     expect(ledger.credits).toHaveLength(0);
     expect(rowOf(first.avatarId).status).toBe('confirmed');
+  });
+});
+
+describe('SpecialEventManager — EARNED entry fees refund as EARNED (founder decision 2026-10-04, restore_earned)', () => {
+  /** An open CT-gated event (fee 50) and one subject per call with the given tags + lots. */
+  async function earnedEvent(slug: string) {
+    const h = makeManager();
+    await h.mgr.createEvent({ slug, name: `Earned ${slug}`, gateCt: 50 }, null);
+    await h.mgr.openSignup(slug);
+    const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+    const join = async (
+      subject: SignupSubject,
+      tags: Record<Tag, number>,
+      lots?: Array<{ kind: 'none' | 'backed'; amount: number }>,
+    ) => {
+      h.ledger.setTags(subject.avatarId, tags);
+      if (lots) h.ledger.setEarnedLots(subject.avatarId, lots);
+      const before = {
+        balance: h.ledger.get(subject.avatarId),
+        tags: { ...h.ledger.tags.get(subject.avatarId)! },
+        lots: h.ledger.lotTotals(subject.avatarId),
+      };
+      await h.mgr.signup(slug, subject, { entryMethod: 'ct' });
+      return before;
+    };
+    const debitRowsOf = (avatarId: string) =>
+      h.db.ledgerRows.filter((r) => r.avatar_id === avatarId && r.reason === 'special_event_entry');
+    const rowOf = (avatarId: string) =>
+      [...h.db.signups.values()].find((s) => s.event_id === ev.id && s.avatar_id === avatarId)!;
+    return { ...h, ev, join, debitRowsOf, rowOf };
+  }
+
+  it('an EARNED-funded signup (human and agent alike) is refunded as EARNED, tied to its original debit row', async () => {
+    const { mgr, ledger, join, debitRowsOf } = await earnedEvent('earned-only');
+    const h1 = human();
+    const a1 = agent();
+    const beforeHuman = await join(h1, { soft: 0, bought: 0, earned: 100 });
+    const beforeAgent = await join(a1, { soft: 0, bought: 0, earned: 100 });
+    expect(ledger.tags.get(h1.avatarId)).toEqual({ soft: 0, bought: 0, earned: 50 });
+    expect(ledger.lotTotals(a1.avatarId)).toEqual({ none: 50, backed: 0 });
+
+    const r = await mgr.cancelEvent('earned-only');
+    expect(r.refundedSignups).toBe(2);
+    expect(r.refundedCt).toBe(100);
+
+    // No SOFT/BOUGHT credit: the whole refund is one EARNED mint per debit row.
+    expect(ledger.credits.filter((c) => c.reason === 'special_event_entry_refund')).toEqual([]);
+    for (const [subject, before] of [[h1, beforeHuman], [a1, beforeAgent]] as const) {
+      const [debit] = debitRowsOf(subject.avatarId);
+      expect(debit).toMatchObject({ provenance: 'earned', amount: -50 });
+      const mints = ledger.mints.filter((m) => m.avatarId === subject.avatarId);
+      expect(mints).toHaveLength(1);
+      expect(mints[0]).toMatchObject({
+        amount: 50,
+        reason: 'special_event_entry_refund',
+        usdBasis: '0',
+        backing: { kind: 'none', mintRef: `special-event-refund:${debit!.id}` },
+      });
+      expect(mints[0]!.metadata).toMatchObject({
+        refundOfLedgerId: debit!.id,
+        burnedProvenance: 'earned',
+        agentId: subject.agentId,
+      });
+      // The refunded vCLAW counts exactly as the debited vCLAW did for every
+      // provenance read: the total, the per-tag split (spend order, cash-out
+      // tag), and the remaining units per backing kind (redemption eligibility).
+      expect(ledger.get(subject.avatarId)).toBe(before.balance);
+      expect(ledger.tags.get(subject.avatarId)).toEqual(before.tags);
+      expect(ledger.lotTotals(subject.avatarId)).toEqual(before.lots);
+    }
+  });
+
+  it('mixed provenance: each part comes back as its original kind, one refund per original debit row, never more', async () => {
+    const { mgr, ledger, join, debitRowsOf } = await earnedEvent('earned-mixed');
+    const a1 = agent();
+    // 10 SOFT + 15 BOUGHT + 100 EARNED over two unbacked lots: the 50 fee burns
+    // 10 soft, 15 bought, 25 earned (10 from the first lot, 15 from the second).
+    const before = await join(
+      a1,
+      { soft: 10, bought: 15, earned: 100 },
+      [{ kind: 'none', amount: 10 }, { kind: 'none', amount: 90 }],
+    );
+    const debits = debitRowsOf(a1.avatarId);
+    expect(debits.map((d) => [d.provenance, -Number(d.amount)])).toEqual([
+      ['soft', 10],
+      ['bought', 15],
+      ['earned', 25],
+    ]);
+
+    await mgr.cancelEvent('earned-mixed');
+
+    const refunds: Array<{ kind: unknown; amount: number; of: unknown }> = [
+      ...ledger.credits
+        .filter((c) => c.reason === 'special_event_entry_refund')
+        .map((c) => ({ kind: c.provenance, amount: c.amount, of: c.metadata?.refundOfLedgerId })),
+      ...ledger.mints.map((m) => ({ kind: 'earned', amount: m.amount, of: m.metadata?.refundOfLedgerId })),
+    ];
+    expect(refunds).toHaveLength(3);
+    // Every refund names a distinct original debit row, carries its kind and
+    // equals its amount; the total equals the fee (no refund exceeds its debit).
+    for (const d of debits) {
+      const matches = refunds.filter((x) => x.of === d.id);
+      expect(matches).toEqual([{ kind: d.provenance, amount: -Number(d.amount), of: d.id }]);
+    }
+    expect(refunds.reduce((n, x) => n + x.amount, 0)).toBe(50);
+    expect(ledger.get(a1.avatarId)).toBe(before.balance);
+    expect(ledger.tags.get(a1.avatarId)).toEqual(before.tags);
+    expect(ledger.lotTotals(a1.avatarId)).toEqual(before.lots);
+  });
+
+  for (const [label, lots] of [
+    ['fully backed', [{ kind: 'backed' as const, amount: 100 }]],
+    ['partly backed', [{ kind: 'none' as const, amount: 30 }, { kind: 'backed' as const, amount: 70 }]],
+  ] as const) {
+    it(`an EARNED burn from a ${label} lot fails the whole cancel closed (no silent loss of cash-out eligibility)`, async () => {
+      const { mgr, db, ledger, ev, join, rowOf } = await earnedEvent(`earned-${label.replace(' ', '-')}`);
+      const first = human();
+      await join(first, { soft: 1_000, bought: 0, earned: 0 });
+      const second = agent();
+      await join(second, { soft: 0, bought: 0, earned: 100 }, [...lots]);
+      db.rollbackOnThrow = true;
+      const creditsBefore = ledger.credits.length;
+
+      await expect(mgr.cancelEvent(ev.slug as string)).rejects.toMatchObject({
+        message: 'earned_refund_backed_lot_unsupported',
+        httpStatus: 500,
+      });
+      expect(ev.status).toBe('signup_open');
+      expect(ledger.credits.length).toBe(creditsBefore);
+      expect(ledger.mints).toHaveLength(0);
+      expect(rowOf(first.avatarId).status).toBe('confirmed');
+      expect(rowOf(second.avatarId).status).toBe('confirmed');
+      expect(ledger.get(first.avatarId)).toBe(950);
+      expect(ledger.get(second.avatarId)).toBe(50);
+    });
+  }
+
+  it('no double refund: a replayed cancel of an already-restored debit row is refused by the UNIQUE mint_ref and rolls back', async () => {
+    const { mgr, db, ledger, ev, join, rowOf } = await earnedEvent('earned-replay');
+    const a1 = agent();
+    await join(a1, { soft: 0, bought: 0, earned: 100 });
+    await mgr.cancelEvent('earned-replay');
+    expect(ledger.get(a1.avatarId)).toBe(100);
+    expect(ledger.mints).toHaveLength(1);
+
+    // Simulate a corrupted replay: the event and the signup row are put back as
+    // if the cancel never ran. The restore is still tied to the original debit
+    // row, so the second mint hits the UNIQUE index and nothing moves.
+    db.rollbackOnThrow = true;
+    ev.status = 'signup_open';
+    rowOf(a1.avatarId).status = 'confirmed';
+    await expect(mgr.cancelEvent('earned-replay')).rejects.toThrow(/earned_mint_lots_ref_unique/);
+    expect(ledger.mints).toHaveLength(1);
+    expect(ledger.get(a1.avatarId)).toBe(100);
+    expect(ledger.tags.get(a1.avatarId)).toEqual({ soft: 0, bought: 0, earned: 100 });
+    expect(rowOf(a1.avatarId).status).toBe('confirmed');
+  });
+
+  it('a lot attribution larger than the debit row rolls the cancel back (a refund never exceeds its debit)', async () => {
+    const { mgr, db, ledger, ev, join, debitRowsOf } = await earnedEvent('earned-over');
+    const a1 = agent();
+    await join(a1, { soft: 0, bought: 0, earned: 100 });
+    const [debit] = debitRowsOf(a1.avatarId);
+    const lotId = db.earnedConsumptions.find((c) => c.ledger_debit_id === debit!.id)!.mint_lot_id;
+    db.earnedConsumptions.push({ mint_lot_id: lotId, ledger_debit_id: debit!.id, kind: 'spend', vclaw_amount: 1 });
+    db.rollbackOnThrow = true;
+
+    await expect(mgr.cancelEvent('earned-over')).rejects.toMatchObject({
+      message: 'entry_debit_ledger_mismatch',
+    });
+    expect(ev.status).toBe('signup_open');
+    expect(ledger.mints).toHaveLength(0);
+    expect(ledger.get(a1.avatarId)).toBe(50);
+  });
+
+  it('an EARNED debit row with no lot attribution restores only when migration 0030b accounted it as legacy (unbacked)', async () => {
+    const legacy = await earnedEvent('earned-legacy');
+    const a1 = agent();
+    await legacy.join(a1, { soft: 0, bought: 0, earned: 100 });
+    const [debit] = legacy.debitRowsOf(a1.avatarId);
+    const strip = (db: FakeDb, id: unknown) => {
+      for (let i = db.earnedConsumptions.length - 1; i >= 0; i--) {
+        if (db.earnedConsumptions[i]!.ledger_debit_id === id) db.earnedConsumptions.splice(i, 1);
+      }
+    };
+    strip(legacy.db, debit!.id);
+    legacy.db.earnedAccounted.set(String(debit!.id), 'legacy');
+    await legacy.mgr.cancelEvent('earned-legacy');
+    expect(legacy.ledger.mints).toEqual([
+      expect.objectContaining({ amount: 50, backing: expect.objectContaining({ kind: 'none' }) }),
+    ]);
+    expect(legacy.ledger.tags.get(a1.avatarId)).toEqual({ soft: 0, bought: 0, earned: 100 });
+
+    // The same gap on a row that is NOT legacy (an unexplained debit) fails closed.
+    const gap = await earnedEvent('earned-gap');
+    const a2 = agent();
+    await gap.join(a2, { soft: 0, bought: 0, earned: 100 });
+    const [gapDebit] = gap.debitRowsOf(a2.avatarId);
+    strip(gap.db, gapDebit!.id);
+    gap.db.rollbackOnThrow = true;
+    await expect(gap.mgr.cancelEvent('earned-gap')).rejects.toMatchObject({
+      message: 'entry_debit_ledger_mismatch',
+    });
+    expect(gap.ev.status).toBe('signup_open');
+    expect(gap.ledger.mints).toHaveLength(0);
+    expect(gap.ledger.get(a2.avatarId)).toBe(50);
+  });
+
+  it('the EARNED restore runs only for a cancelled CT debit: free entries and a second cancel mint nothing', async () => {
+    const { mgr, ledger } = makeManager();
+    await mgr.createEvent({ slug: 'earned-free', name: 'Free' }, null);
+    await mgr.openSignup('earned-free');
+    const a1 = agent();
+    ledger.setTags(a1.avatarId, { soft: 0, bought: 0, earned: 100 });
+    await mgr.signup('earned-free', a1, { entryMethod: 'free' });
+    await mgr.cancelEvent('earned-free');
+    await mgr.cancelEvent('earned-free');
+    expect(ledger.mints).toHaveLength(0);
+    expect(ledger.credits).toHaveLength(0);
+    expect(ledger.tags.get(a1.avatarId)).toEqual({ soft: 0, bought: 0, earned: 100 });
   });
 });
 
