@@ -40,7 +40,12 @@
 /** Wait before retry 1 and retry 2. A third request failure is final. */
 export const GLB_FETCH_RETRY_DELAYS_MS: readonly number[] = [500, 2000];
 
-export type GlbLoadFailurePhase = 'fetch' | 'parse';
+/**
+ * 'fetch': the GLB request itself. 'parse': GLTFLoader parse / decoder /
+ * dependent resource. 'load-callback': the caller's own onLoad threw (R3F
+ * runs buildGraph there) after a successful load.
+ */
+export type GlbLoadFailurePhase = 'fetch' | 'parse' | 'load-callback';
 
 export interface GlbLoadFailure {
   readonly phase: GlbLoadFailurePhase;
@@ -115,8 +120,12 @@ export function getLastGlbLoadFailure(url: string): GlbLoadFailure | undefined {
  * instance. R3F keeps ONE GLTFLoader per constructor, so this covers every
  * useGLTF call on that instance once installed.
  *
- * Per load call: onLoad / onError fire at most once in total (late callbacks
- * are dropped). No retry is scheduled, and a pending retry is cancelled with
+ * Per load call there is exactly one terminal outcome: onLoad once, or
+ * onError once, and late callbacks are dropped. The one exception: if the
+ * caller's onLoad throws, that error reaches onError once (terminal, never
+ * retried), so the caller sees onLoad then onError, each at most once.
+ *
+ * No retry is scheduled, and a pending retry is cancelled with
  * the last error, when the loader's LoadingManager is aborted (the only
  * cancel the three loader API has; captured at call time because
  * LoadingManager.abort() replaces its controller). R3F and suspend-react
@@ -172,7 +181,18 @@ export function installGlbFetchRetry(
       settled = true;
       cleanup();
       LAST_FAILURE.delete(url);
-      onLoad(data);
+      try {
+        onLoad(data);
+      } catch (error) {
+        // The caller's own onLoad threw (R3F runs buildGraph before it
+        // resolves). Unwrapped, GLTFLoader's parser .catch(onError) would
+        // bring it back here, where `settled` drops it and R3F suspends
+        // forever. Deliver it once as the terminal error; never retried
+        // (it is not a request failure).
+        LAST_FAILURE.set(url, { phase: 'load-callback', error, attempts });
+        if (onError) onError(error);
+        else console.error(error);
+      }
     };
     function onAbort(): void {
       if (cancelPending) fail(lastError, 'fetch');
@@ -258,7 +278,9 @@ export function readOptionalGltf<T>(path: string, read: () => T): T | null {
         ? 'unknown-phase error'
         : failure.phase === 'fetch'
           ? `fetch error after ${failure.attempts} request(s)`
-          : 'parse/decode error';
+          : failure.phase === 'parse'
+            ? 'parse/decode error'
+            : 'load-callback error';
       const original = failure?.error ?? error;
       console.error(
         `[GLB] optional model skipped: ${path} (${kind}) ${describeError(original)}`,

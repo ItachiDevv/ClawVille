@@ -261,6 +261,43 @@ describe('installGlbFetchRetry', () => {
       expect(timers.pending()).toEqual([]);
       expect(captured.length).toBe(1);
     });
+    test("an exception thrown by the caller's onLoad reaches onError once, terminal, no retry", () => {
+      const { loader, captured } = capturingLoader();
+      const timers = manualSchedule();
+      installGlbFetchRetry(loader, { schedule: timers.schedule });
+      const boom = new Error('buildGraph failed');
+      const loads: unknown[] = [];
+      const errors: unknown[] = [];
+      loader.load(
+        '/onload-throws.glb',
+        (data) => {
+          loads.push(data);
+          throw boom;
+        },
+        undefined,
+        (error) => errors.push(error),
+      );
+
+      // three-stdlib GLTFLoader: parser.parse(...).then(onLoad).catch(onError)
+      try {
+        captured[0].onLoad('gltf');
+      } catch (error) {
+        captured[0].onError?.(error);
+      }
+      captured[0].onError?.(networkError()); // any later callback is dropped
+      captured[0].onLoad('late');
+
+      expect(loads).toEqual(['gltf']);
+      expect(errors).toEqual([boom]);
+      expect(timers.pending()).toEqual([]);
+      expect(captured.length).toBe(1);
+      expect(getLastGlbLoadFailure('/onload-throws.glb')).toEqual({
+        phase: 'load-callback',
+        error: boom,
+        attempts: 1,
+      });
+    });
+
     test('a duplicate or stale onError never schedules a second retry', () => {
       const { loader, captured } = capturingLoader();
       const timers = manualSchedule();

@@ -24,7 +24,41 @@ const VALID_GLTF = JSON.stringify({
   nodes: [{ name: 'deco-root' }],
 });
 
-type Reply = 'network-error' | number | 'valid' | 'garbage';
+// Well-formed glTF that REQUIRES EXT_meshopt_compression; the compressed
+// bufferView holds 16 bytes that are not a meshopt ATTRIBUTES stream, so the
+// real three-stdlib MeshoptDecoder (WASM, configured by drei useGLTF's
+// useMeshopt=true) fails with "Malformed buffer data" while decoding.
+const MESHOPT_BROKEN_GLTF = JSON.stringify({
+  asset: { version: '2.0' },
+  extensionsUsed: ['EXT_meshopt_compression'],
+  extensionsRequired: ['EXT_meshopt_compression'],
+  buffers: [
+    {
+      byteLength: 16,
+      uri: `data:application/octet-stream;base64,${Buffer.from(new Uint8Array(16).fill(0x07)).toString('base64')}`,
+    },
+  ],
+  bufferViews: [
+    {
+      buffer: 0,
+      byteOffset: 0,
+      byteLength: 48,
+      byteStride: 12,
+      extensions: {
+        EXT_meshopt_compression: { buffer: 0, byteOffset: 0, byteLength: 16, byteStride: 12, count: 4, mode: 'ATTRIBUTES' },
+      },
+    },
+  ],
+  accessors: [
+    { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 1] },
+  ],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 }, mode: 0 }] }],
+  nodes: [{ mesh: 0, name: 'meshopt-node' }],
+  scenes: [{ nodes: [0] }],
+  scene: 0,
+});
+
+type Reply = 'network-error' | number | 'valid' | 'garbage' | 'meshopt-broken';
 const plans = new Map<string, Reply[]>();
 const requests = new Map<string, number>();
 
@@ -36,13 +70,16 @@ function plan(url: string, replies: Reply[]): string {
 
 function mockFetch(input: RequestInfo | URL): Promise<Response> {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  // Embedded glTF buffers (data: URIs) are real fetches, not GLB requests.
+  if (url.startsWith('data:')) return originalFetch(url);
   requests.set(url, (requests.get(url) ?? 0) + 1);
   const reply = plans.get(url)?.shift() ?? 'valid';
   if (reply === 'network-error') return Promise.reject(new TypeError('Failed to fetch'));
   if (typeof reply === 'number') {
     return Promise.resolve(new Response('upstream error', { status: reply, statusText: `status ${reply}` }));
   }
-  const body = reply === 'valid' ? VALID_GLTF : 'this is not a GLB {';
+  const body =
+    reply === 'valid' ? VALID_GLTF : reply === 'meshopt-broken' ? MESHOPT_BROKEN_GLTF : 'this is not a GLB {';
   return Promise.resolve(new Response(new TextEncoder().encode(body), { status: 200 }));
 }
 
@@ -142,5 +179,22 @@ describe('real useGLTF -> R3F useLoader -> GLTFLoader -> FileLoader path', () =>
     const other = plan('http://localhost/models/it-ver.glb?v=8', ['valid']);
     const gltf = await readUntilSettled(() => useOptionalGLTFWithKTX2(other));
     expect(gltf?.scene.getObjectByName('deco-root')).toBeTruthy();
+  });
+
+  test('a real decoder failure (EXT_meshopt_compression, broken data): no retry; optional skip logs parse/decode once', async () => {
+    const url = plan('http://localhost/models/it-meshopt.glb?v=9', ['meshopt-broken', 'valid']);
+    const cap = captureConsoleError();
+    let optional: unknown;
+    try {
+      optional = await readUntilSettled(() => useOptionalGLTFWithKTX2(url));
+      expect(useOptionalGLTFWithKTX2(url)).toBeNull();
+    } finally {
+      cap.restore();
+    }
+    expect(optional).toBeNull();
+    expect(requests.get(url)).toBe(1);
+    const skipped = cap.logged.filter((args) => String(args[0]).includes('[GLB] optional model skipped'));
+    expect(skipped.length).toBe(1);
+    expect(String(skipped[0][0])).toContain(`${url} (parse/decode error) Error: Malformed buffer data`);
   });
 });
