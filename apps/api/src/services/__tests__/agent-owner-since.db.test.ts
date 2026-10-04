@@ -318,6 +318,43 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       await db.update(agentBots).set({ userId: PRIOR }).where(eq(agentBots.agentId, agentId));
       expect(await queryDurableAgentEvents({ agentId, ownerUserId: PRIOR }, 0n, 100)).toEqual([]);
     });
+
+    test('Hatcher stats recentInteractions read: current owner period only, every owner-attributed type, newest first', async () => {
+      const { db, agentBots, eq } = mod.database;
+      const { buildOwnerScopedRecentAgentEventsQuery } = mod.query;
+      const agentId = newAgentId('stats');
+      await insertRow(agentId, PRIOR);
+
+      await pause();
+      await insertEvent({ agentId, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: PRIOR_DIRECTIVE } });
+      await insertEvent({ agentId, eventType: 'agent.connected', userId: PRIOR, payload: { via: 'partner-register' } });
+      const priorView = await buildOwnerScopedRecentAgentEventsQuery({ agentId, ownerUserId: PRIOR }, 20);
+      // Not stream-whitelisted types too (agent.connected): the dashboard lists all of the owner's types.
+      expect(priorView.map((row) => row.eventType)).toEqual(['agent.connected', 'agent.directive.set']);
+
+      await pause();
+      await db.update(agentBots).set({ userId: NEXT, updatedAt: new Date() }).where(eq(agentBots.agentId, agentId));
+      await pause();
+      // Late prior-owner row and NULL-attributed rows inside the new period: hidden.
+      await insertEvent({ agentId, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: `${PRIOR_DIRECTIVE} (late)` } });
+      await insertEvent({ agentId, eventType: 'agent.connected', userId: null, payload: { via: 'null-attributed' } });
+      await insertEvent({ agentId, eventType: 'agent.connected', userId: NEXT, payload: { via: 'partner-register' } });
+      await insertEvent({ agentId, eventType: 'agent.directive.set', userId: NEXT, payload: { directive: NEXT_DIRECTIVE } });
+
+      const nextView = await buildOwnerScopedRecentAgentEventsQuery({ agentId, ownerUserId: NEXT }, 20);
+      expect(nextView.map((row) => [row.eventType, row.payload])).toEqual([
+        ['agent.directive.set', { directive: NEXT_DIRECTIVE }],
+        ['agent.connected', { via: 'partner-register' }],
+      ]);
+      expect(asJson(nextView)).not.toContain(PRIOR_DIRECTIVE);
+      expect(asJson(nextView)).not.toContain('null-attributed');
+      expect(Object.keys(nextView[0]!).sort()).toEqual(['buildingId', 'eventType', 'payload', 'ts']);
+      // The limit caps the newest rows.
+      expect((await buildOwnerScopedRecentAgentEventsQuery({ agentId, ownerUserId: NEXT }, 1)).map((row) => row.eventType))
+        .toEqual(['agent.directive.set']);
+      // Stale owner proof (the route read the row before the move): nothing.
+      expect(await buildOwnerScopedRecentAgentEventsQuery({ agentId, ownerUserId: PRIOR }, 20)).toEqual([]);
+    });
   });
 
   describe('owned event insert: the owner is resolved inside the INSERT under FOR SHARE (Codex round 4)', () => {

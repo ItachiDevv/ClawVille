@@ -19,7 +19,7 @@ import { join } from 'path';
 const priorDatabaseUrl = process.env.DATABASE_URL;
 process.env.DATABASE_URL ||= 'postgres://unit:unit@127.0.0.1:1/unit_no_connect';
 
-const { buildDurableAgentEventsQuery } = await import('../agent-event-query');
+const { buildDurableAgentEventsQuery, buildOwnerScopedRecentAgentEventsQuery } = await import('../agent-event-query');
 const { AGENT_STREAM_EVENT_TYPES } = await import('../agent-stream-config');
 
 const SCOPE = { agentId: 'scope-agent', ownerUserId: '96666666-6666-4666-8666-666666666666' };
@@ -78,6 +78,39 @@ describe('durable history query: owner-period scope in ONE statement', () => {
       expect(selectList).toBe('"events"."id", "events"."event_type", "events"."ts", "events"."payload"');
     });
   }
+});
+
+// Hatcher stats `recentInteractions` (security pass 2026-10-04): the
+// partner-signed dashboard read uses the SAME owner-period scope, all types.
+describe('Hatcher stats recent-events query: same owner-period scope, all types, newest first', () => {
+  function renderRecent() {
+    const { sql, params } = buildOwnerScopedRecentAgentEventsQuery(SCOPE, 20).toSQL();
+    return { sql: sql.replace(/\s+/g, ' '), params };
+  }
+
+  test('ONE statement: join, owner re-check, owner_since period and owner attribution', () => {
+    const { sql, params } = renderRecent();
+    expect(sql).toContain('from "events" inner join "openclaw_bots" on "openclaw_bots"."agent_id" = "events"."agent_id"');
+    expect(sql).toContain(
+      'where ("events"."agent_id" = $1 and "openclaw_bots"."user_id" = $2 and "events"."ts" >= "openclaw_bots"."owner_since" and "events"."user_id" = "openclaw_bots"."user_id")',
+    );
+    expect(sql).toContain('order by "events"."ts" desc limit $3');
+    expect(params).toEqual([SCOPE.agentId, SCOPE.ownerUserId, 20]);
+  });
+
+  test('fail closed: no NULL branch, no OR, and no event-type filter (all of the owner own types)', () => {
+    const { sql } = renderRecent();
+    expect(sql).not.toContain('is null');
+    expect(sql).not.toMatch(/\bor\b/);
+    expect(sql).not.toContain('"events"."event_type" in (');
+    expect(sql).not.toContain('"events"."id" >');
+  });
+
+  test('partner-dashboard columns only (no bot, user, fingerprint or session columns)', () => {
+    const { sql } = renderRecent();
+    const selectList = sql.slice('select '.length, sql.indexOf(' from '));
+    expect(selectList).toBe('"events"."event_type", "events"."ts", "events"."building_id", "events"."payload"');
+  });
 });
 
 describe('replay whitelist', () => {

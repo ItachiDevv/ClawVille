@@ -43,12 +43,11 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { randomBytes, createHash } from 'crypto';
-import { eq, and, desc, count, gte } from 'drizzle-orm';
+import { eq, and, count, gte } from 'drizzle-orm';
 import {
   db,
   agentBots,
   avatars,
-  events,
   questRewards,
   tutorialQuestClaims,
   sql,
@@ -89,6 +88,7 @@ import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { computeSessionExpiresAt } from '../services/agent-session-sweeper';
 import { notifyHatcherSessionEnded } from '../services/hatcher-session-webhook';
 import { logEvent } from '../services/event-logger';
+import { buildOwnerScopedRecentAgentEventsQuery } from '../services/agent-event-query';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
 import { withKeyedMutex } from '../services/keyed-mutex';
 import { protocolPointer, resolveApiBase } from '../services/skill-protocol';
@@ -243,6 +243,12 @@ interface StatsCacheEntry {
   expiresAt: number;
   // The fully-serialized public response body.
   body: Record<string, unknown>;
+  // The ownership period the body was built for (security pass 2026-10-04):
+  // a hit is served only while the row still has this owner and this
+  // `owner_since`, so a cached prior-owner `recentInteractions` / quest count
+  // never reaches the next owner's dashboard.
+  ownerUserId: string | null;
+  ownerSinceMs: number;
 }
 const statsCache = new Map<string, StatsCacheEntry>();
 
@@ -1927,6 +1933,9 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
       // block can emit `registeredAt`/`updatedAt` (parity with publicAgentRecord).
       createdAt: true,
       updatedAt: true,
+      // Start of the current owner's period (trigger-owned, migration 0079):
+      // the cache below is valid only for the period it was built in.
+      ownerSince: true,
     },
   });
   // 404 (opaque) on missing OR non-hatcher row — same cross-namespace guard as
@@ -1935,11 +1944,19 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
     return c.json({ error: 'not_found' }, 404);
   }
   const settlement = await resolveBoundAvatarSettlement(row.userId ?? null);
+  const ownerUserId = row.userId ?? null;
+  const ownerSinceMs = row.ownerSince.getTime();
 
   // Cache only non-wallet aggregates. The current persisted user binding and
-  // pure settlement resolver run after auth on every hit.
+  // pure settlement resolver run after auth on every hit. A hit is served only
+  // for the same ownership period (owner + owner_since) it was built in.
   const cached = statsCache.get(namespacedAgentId);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (
+    cached &&
+    cached.expiresAt > Date.now() &&
+    cached.ownerUserId === ownerUserId &&
+    cached.ownerSinceMs === ownerSinceMs
+  ) {
     return c.json(mergeHatcherStatsSettlement(cached.body, settlement));
   }
 
@@ -2042,6 +2059,14 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
   // the namespaced id, matching every register/connect/action log). Column-
   // pinned; payload is partner-safe (it never carries secrets — the cognition
   // token is encrypted at rest and never logged).
+  //
+  // OWNER PERIOD SCOPE (security pass 2026-10-04, founder rule protocol 83):
+  // only events recorded for the agent's CURRENT owner during its ownership
+  // period (`events.user_id` = owner AND `ts >= openclaw_bots.owner_since`),
+  // through the same shared scope as replay (`services/agent-event-query.ts`).
+  // The ONE statement re-checks `openclaw_bots.user_id = row.userId`, so an
+  // owner change after the row read above returns zero rows. A row with NO
+  // owner has no ownership period: `recentInteractions` is `[]`.
   let recentInteractions: Array<{
     type: string;
     ts: string;
@@ -2049,17 +2074,12 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
     payload: Record<string, unknown> | null;
   }> = [];
   try {
-    const rows = await db
-      .select({
-        eventType: events.eventType,
-        ts: events.ts,
-        buildingId: events.buildingId,
-        payload: events.payload,
-      })
-      .from(events)
-      .where(eq(events.agentId, namespacedAgentId))
-      .orderBy(desc(events.ts))
-      .limit(RECENT_INTERACTIONS_LIMIT);
+    const rows = boundUserId
+      ? await buildOwnerScopedRecentAgentEventsQuery(
+          { agentId: namespacedAgentId, ownerUserId: boundUserId },
+          RECENT_INTERACTIONS_LIMIT,
+        )
+      : [];
     recentInteractions = rows.map((r) => ({
       type: r.eventType,
       ts: (r.ts instanceof Date ? r.ts : new Date(r.ts as unknown as string)).toISOString(),
@@ -2108,7 +2128,12 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
     recentInteractions,
   };
 
-  statsCache.set(namespacedAgentId, { expiresAt: now + STATS_CACHE_TTL_MS, body });
+  statsCache.set(namespacedAgentId, {
+    expiresAt: now + STATS_CACHE_TTL_MS,
+    body,
+    ownerUserId,
+    ownerSinceMs,
+  });
 
   return c.json(mergeHatcherStatsSettlement(body, settlement));
 });

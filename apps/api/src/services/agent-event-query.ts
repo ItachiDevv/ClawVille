@@ -32,6 +32,8 @@
  * SAFE COLUMNS ONLY — selects id/eventType/ts/payload and nothing else (no
  * fp_hash / ip_prefix_hash / session_id / user_id / agent_id). Payloads were
  * sanitized WRITE-side by `event-logger.ts`; consumers never re-expose more.
+ * The Hatcher stats read (`buildOwnerScopedRecentAgentEventsQuery`) uses the
+ * same scope and selects eventType/ts/buildingId/payload.
  */
 
 import {
@@ -61,6 +63,24 @@ export interface AgentHistoryScope {
 }
 
 /**
+ * The owner-period scope (1)-(3) above as AND-ed conditions, shared by every
+ * history read in this file. The query MUST join
+ * `openclaw_bots ON openclaw_bots.agent_id = events.agent_id`.
+ */
+function agentHistoryScopeConditions(scope: AgentHistoryScope) {
+  return [
+    eq(eventsTable.agentId, scope.agentId),
+    // (1) the proven owner is STILL the row owner, in this same statement.
+    eq(agentBots.userId, scope.ownerUserId),
+    // (2) only the current owner's period.
+    gte(eventsTable.ts, agentBots.ownerSince),
+    // (3) owner attribution, every type: the row names the current owner.
+    // Never another user's row, never a NULL-attributed row (fail closed).
+    eq(eventsTable.userId, agentBots.userId),
+  ];
+}
+
+/**
  * The scoped read, shared by both orders. Exported for the SQL-shape unit test
  * (`.toSQL()` without a connection); callers use the two functions below.
  */
@@ -81,19 +101,47 @@ export function buildDurableAgentEventsQuery(
     .innerJoin(agentBots, eq(agentBots.agentId, eventsTable.agentId))
     .where(
       and(
-        eq(eventsTable.agentId, scope.agentId),
-        // (1) the proven owner is STILL the row owner, in this same statement.
-        eq(agentBots.userId, scope.ownerUserId),
-        // (2) only the current owner's period.
-        gte(eventsTable.ts, agentBots.ownerSince),
-        // (3) owner attribution, every type: the row names the current owner.
-        // Never another user's row, never a NULL-attributed row (fail closed).
-        eq(eventsTable.userId, agentBots.userId),
+        ...agentHistoryScopeConditions(scope),
         inArray(eventsTable.eventType, [...AGENT_STREAM_EVENT_TYPES]),
         gt(eventsTable.id, afterId),
       ),
     )
     .orderBy(order === 'asc' ? asc(eventsTable.id) : desc(eventsTable.id))
+    .limit(limit);
+}
+
+/**
+ * The newest `limit` events of the scope's agent in the proven owner's period,
+ * newest first (`ts DESC`), for the partner-signed Hatcher stats block
+ * (`GET /api/partner/hatcher/agents/:agentId/stats` `recentInteractions`,
+ * security pass 2026-10-04). Same ONE-statement scope (1)-(3) as replay, so an
+ * ownership change between the route's row read and this read returns zero
+ * rows, and the dashboard never shows a prior owner's events.
+ *
+ * ALL event types, not only `AGENT_STREAM_EVENT_TYPES`: the dashboard has always
+ * listed the agent's own register / connect / disconnect / avatar breadcrumbs,
+ * which the stream whitelist omits. The privacy boundary is the owner scope,
+ * not the type: every returned row names the current owner (`events.user_id`)
+ * and lies in its period, so it is that owner's own activity. The route drops
+ * secret-ish payload keys (`scrubEventPayload`) before the response.
+ *
+ * Partner-dashboard columns only: event_type / ts / building_id / payload.
+ */
+export function buildOwnerScopedRecentAgentEventsQuery(
+  scope: AgentHistoryScope,
+  limit: number,
+) {
+  return db
+    .select({
+      eventType: eventsTable.eventType,
+      ts: eventsTable.ts,
+      buildingId: eventsTable.buildingId,
+      payload: eventsTable.payload,
+    })
+    .from(eventsTable)
+    .innerJoin(agentBots, eq(agentBots.agentId, eventsTable.agentId))
+    .where(and(...agentHistoryScopeConditions(scope)))
+    .orderBy(desc(eventsTable.ts))
     .limit(limit);
 }
 
