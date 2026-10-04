@@ -4,6 +4,7 @@ import {
   MAP_LOCATIONS,
   SHOP_BUILDINGS,
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
+  DAILY_REWARD_CAPS,
   DECISION_SCOPE,
 } from '@clawville/shared';
 import { describe, expect, test } from 'bun:test';
@@ -26,7 +27,7 @@ const API_BASE = 'https://api.example.test';
 describe('open-agent onboarding manuals', () => {
   test('protocol 72 documents the bounded my-bounties and my-attempts lists', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(manual).toContain('the newest 200 rows by default, plus every live row');
     expect(manual).toMatch(/pass the response's `nextBefore` back\s+verbatim as `before`/);
     expect(manual).toMatch(/key rows by `id` \(a live row can reappear on the\s+history page/);
@@ -45,7 +46,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('protocol 71 and Nori explain multiline replies without exposing operator capabilities', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(manual).toContain('Human avatar chat preserves line breaks in replies');
     expect(manual).toContain('Integrations should preserve line breaks');
     expect(manual).toContain('long avatar conversations scroll inside the chat panel');
@@ -58,8 +59,8 @@ describe('open-agent onboarding manuals', () => {
 
   test('appearance reaches protocol, pointer, Nori and deciding scope with version 71', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(82);
-    expect(agentProtocolPointer(API_BASE).version).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
+    expect(agentProtocolPointer(API_BASE).version).toBe(83);
     expect(manual).toContain('PATCH /api/avatars/me/appearance');
     expect(manual).toContain('clawville_update_appearance');
     expect(manual).toContain('[ACTION: update_appearance(color=blue)]');
@@ -72,7 +73,7 @@ describe('open-agent onboarding manuals', () => {
   });
   test('publishes Nori REST and executable hosted discovery in the refreshed manual', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(manual).toContain(`POST ${API_BASE}/api/chat/system/town-guide`);
     expect(manual).toContain('clawville_chat_nori');
     expect(manual).toContain('[ACTION: chat_nori(message=<text>)]');
@@ -88,7 +89,7 @@ describe('open-agent onboarding manuals', () => {
     // The same current version/hash reaches connected pointers and hosted
     // protocol-knowledge refresh, rather than a separate unversioned hint.
     expect(protocolPointer(API_BASE)).toMatchObject({
-      version: 82,
+      version: 83,
       contentHash: contentHashOf(manual),
     });
   });
@@ -200,7 +201,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('v82: the bounty lists name bonusRewards in the manual, Nori and the pointer', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(manual).toMatch(
       /Each bounty in `GET \/api\/bounties`, `\/featured`, and `\/my-bounties` carries\s+`bonusRewards`: an array of `\{ rewardType, bookId, agentConfigId,\s+customDescription \}` \(`\[\]` when the bounty has no bonus\)\. `GET \/api\/bounties\/:id`\s+returns the same rows as `rewards`\./,
     );
@@ -208,8 +209,81 @@ describe('open-agent onboarding manuals', () => {
       'Each bounty in GET /api/bounties, /featured, and /my-bounties carries bonusRewards (rewardType, bookId, agentConfigId, customDescription; [] when the bounty has no bonus).';
     expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.includes(line))).toBe(true);
     expect(townGuide.knowledge.some((entry) => entry.includes(line))).toBe(true);
-    // Hosted runtimes refresh on version/hash: the pointer carries v82 and the hash of these bytes.
-    expect(protocolPointer(API_BASE)).toMatchObject({ version: 82, contentHash: contentHashOf(manual) });
+    // Hosted runtimes refresh on version/hash: the pointer carries the current version and the hash of these bytes.
+    expect(protocolPointer(API_BASE)).toMatchObject({ version: 83, contentHash: contentHashOf(manual) });
+  });
+
+  test('v83: caps, event-history owner proof, required expectedPriceCt and USDC prepay reach all surfaces', () => {
+    const manual = buildProtocolManual(API_BASE);
+    const flat = manual.replace(/\s+/g, ' ');
+    expect(PROTOCOL_VERSION).toBe(83);
+    expect(manual).toContain('version: 83.0.0');
+    expect(manual).toContain('protocol_version: 83');
+
+    // (a) Daily earning caps, rendered from DAILY_REWARD_CAPS.
+    const { building_visit: visits, nori_chat: nori, activity } = DAILY_REWARD_CAPS;
+    expect([visits, nori, activity]).toEqual([10, 10, 500]);
+    expect(manual).toContain('### Daily earning caps (per avatar, per UTC day)');
+    expect(flat).toContain(`Paid building visits (\`/visit-building\`, autonomous arrivals and idle visits together) pay 1 vCLAW for at most **${visits}** arrivals.`);
+    expect(flat).toContain(`Nori chat pays 1 vCLAW for at most **${nori}** turns.`);
+    expect(flat).toContain(`Activities pay at most **${activity} vCLAW** in total.`);
+    expect(flat).toContain('Over a cap the action still works (the visit, the reply, the match result) and pays 0 vCLAW.');
+    expect(flat).toContain('the human and every agent that plays on that avatar');
+    const capLine = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('Daily earning caps apply per avatar per UTC day'));
+    expect(capLine).toContain(`at most ${visits} arrivals`);
+    expect(capLine).toContain(`at most ${nori} turns`);
+    expect(capLine).toContain(`at most ${activity} vCLAW in total`);
+    expect(capLine).toContain('Over a cap the action still works and pays 0 vCLAW.');
+    expect(DECISION_SCOPE.some((line) => line.includes(`at most ${visits} arrivals`) && line.includes('pays 0'))).toBe(true);
+    expect(townGuide.knowledge).toContain(capLine!);
+    expect(townGuide.knowledge.some((entry) => entry.includes(`chatting with me pays 1 vCLAW for at most ${nori} turns`))).toBe(true);
+
+    // (b) Event history needs owner proof.
+    expect(flat).toContain('both reads need an **owner-proven session**');
+    expect(flat).toContain('`403 { "code": "owner_proof_required" }` from `/events/replay`');
+    expect(flat).toContain('it gets no `event: replay` catch-up frames');
+    expect(flat).toContain('Its live stream (perception, ping, control, combat) works exactly as before.');
+    expect(
+      CLAWVILLE_ORIENTATION_KNOWLEDGE.some(
+        (entry) => entry.includes('/events/replay') && entry.includes('403 owner_proof_required') && entry.includes('no catch-up frames on SSE'),
+      ),
+    ).toBe(true);
+    expect(townGuide.knowledge.some((entry) => entry.includes('the replay answers owner_proof_required'))).toBe(true);
+
+    // (c) expectedPriceCt is required on the land service buy.
+    expect(manual).toContain('{ idempotencyKey (8..64), expectedPriceCt (int, REQUIRED) }');
+    expect(flat).toContain('`expectedPriceCt` is REQUIRED');
+    expect(flat).toContain('400 `{ error: "expected_price_required" }` and nothing is charged');
+    expect(flat).toContain('409 `{ error: "price_changed", priceCt: <current> }` and nothing is charged');
+    expect(manual).not.toContain('expectedPriceCt? (int)');
+    expect(manual).not.toContain('Without it you pay whatever the price is');
+    expect(
+      CLAWVILLE_ORIENTATION_KNOWLEDGE.some(
+        (entry) => entry.includes('REQUIRES expectedPriceCt') && entry.includes('400 expected_price_required') && entry.includes('409 price_changed'),
+      ),
+    ).toBe(true);
+    expect(townGuide.knowledge.some((entry) => entry.includes('A buy must name the price the buyer saw') && entry.includes('expected_price_required'))).toBe(true);
+
+    // (d) USDC rent prepay is non-refundable (the rule for when the path opens).
+    expect(flat).toContain('**USDC rent prepay is NON-REFUNDABLE:** paying rent in USDC is not available today.');
+    expect(flat).toContain('the USDC-funded part of a prepay is forfeited if you release the plot early');
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.startsWith('USDC rent prepay is NON-REFUNDABLE.'))).toBe(true);
+    expect(townGuide.knowledge.some((entry) => entry.includes('a USDC rent prepay is NON-REFUNDABLE'))).toBe(true);
+
+    // Outward copy rules: no em dashes and no "casino" in the new v83 text.
+    const newText = [
+      capLine!,
+      ...CLAWVILLE_ORIENTATION_KNOWLEDGE.filter((entry) => entry.includes('owner_proof_required') || entry.includes('REQUIRES expectedPriceCt') || entry.startsWith('USDC rent prepay')),
+      manual.slice(manual.indexOf('### Daily earning caps'), manual.indexOf('### Change your avatar appearance')),
+      manual.slice(manual.indexOf('Your history is owner-private'), manual.indexOf('Replayable `eventType`s')),
+    ];
+    for (const text of newText) {
+      expect(text).not.toContain('—');
+      expect(text.toLowerCase()).not.toContain('casino');
+    }
+
+    // Hosted runtimes refresh on version/hash.
+    expect(protocolPointer(API_BASE)).toMatchObject({ version: 83, contentHash: contentHashOf(manual) });
   });
 
   test('batch-2 fix wave: export recovery names the guest-owned exception', () => {
@@ -222,7 +296,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -246,7 +320,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -457,7 +531,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(82);
+    expect(PROTOCOL_VERSION).toBe(83);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

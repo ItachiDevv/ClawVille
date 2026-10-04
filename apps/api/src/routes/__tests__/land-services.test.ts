@@ -108,9 +108,10 @@ const servicesPageQuerySchemaMirror = z
 const buyServiceBodySchemaMirror = z
   .object({
     idempotencyKey: z.string().min(8).max(64),
-    // Security M12 (2026-09-30): optional price binding; behavior is covered
-    // against the REAL schema + route in land-service-price-binding.test.ts.
-    expectedPriceCt: z.number().int().nonnegative().max(1_000_000).optional(),
+    // Security M12 (2026-09-30) price binding, REQUIRED since protocol 83;
+    // behavior is covered against the REAL schema + route in
+    // land-service-price-binding.test.ts.
+    expectedPriceCt: z.number().int().nonnegative().max(1_000_000),
   })
   .strict();
 
@@ -196,35 +197,45 @@ describe('land services — zod schema mirrors (deterministic, no DB)', () => {
   describe('buyServiceBodySchema', () => {
     it('requires idempotencyKey (missing body field)', () => {
       expect(buyServiceBodySchemaMirror.safeParse({}).success).toBe(false);
+      expect(buyServiceBodySchemaMirror.safeParse({ expectedPriceCt: 1 }).success).toBe(false);
     });
     it('rejects a key under 8 chars', () => {
-      expect(buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'short' }).success).toBe(false);
+      expect(
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'short', expectedPriceCt: 1 }).success,
+      ).toBe(false);
     });
     it('accepts a key at exactly 8 chars (boundary)', () => {
-      expect(buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(8) }).success).toBe(
-        true,
-      );
+      expect(
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(8), expectedPriceCt: 1 })
+          .success,
+      ).toBe(true);
     });
     it('rejects a key over 64 chars', () => {
-      expect(buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(65) }).success).toBe(
-        false,
-      );
+      expect(
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(65), expectedPriceCt: 1 })
+          .success,
+      ).toBe(false);
     });
     it('accepts a key at exactly 64 chars (boundary) and a fresh UUID', () => {
-      expect(buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(64) }).success).toBe(
-        true,
-      );
       expect(
-        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: crypto.randomUUID() }).success,
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(64), expectedPriceCt: 1 })
+          .success,
+      ).toBe(true);
+      expect(
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 1 })
+          .success,
       ).toBe(true);
     });
     it('rejects a stray key (.strict())', () => {
       expect(
-        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10), listingId: 'y' })
-          .success,
+        buyServiceBodySchemaMirror.safeParse({
+          idempotencyKey: 'x'.repeat(10),
+          expectedPriceCt: 1,
+          listingId: 'y',
+        }).success,
       ).toBe(false);
     });
-    it('accepts an optional integer expectedPriceCt (price binding, M12)', () => {
+    it('requires an integer expectedPriceCt (price binding, M12; required since protocol 83)', () => {
       expect(
         buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10), expectedPriceCt: 250 })
           .success,
@@ -233,6 +244,9 @@ describe('land services — zod schema mirrors (deterministic, no DB)', () => {
         buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10), expectedPriceCt: -1 })
           .success,
       ).toBe(false);
+      expect(buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10) }).success).toBe(
+        false,
+      );
     });
   });
 
@@ -317,7 +331,7 @@ describe('land services — routing integrity + pre-DB validation', () => {
     const res = await app.request(`/api/land/services/${crypto.randomUUID()}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idempotencyKey: 'x'.repeat(10) }),
+      body: JSON.stringify({ idempotencyKey: 'x'.repeat(10), expectedPriceCt: 1 }),
     });
     expect(res.status).toBe(401);
   });
@@ -583,7 +597,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${mainListingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey }),
+      body: JSON.stringify({ idempotencyKey, expectedPriceCt: 100 }),
     });
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
@@ -632,7 +646,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${mainListingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey }),
+      body: JSON.stringify({ idempotencyKey, expectedPriceCt: 100 }),
     });
     expect(res.status).toBe(200);
     const data = (await res.json()) as { cached: boolean; purchase: { createdAt: string } };
@@ -663,7 +677,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${mainListingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: sellerCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 100 }),
     });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error?: string }).error).toBe('self_purchase');
@@ -674,7 +688,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${mainListingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: pauperCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 100 }),
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error?: string }).error).toBe('insufficient_clawtokens');
@@ -685,7 +699,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${crypto.randomUUID()}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 100 }),
     });
     expect(res.status).toBe(404);
     expect(((await res.json()) as { error?: string }).error).toBe('listing_not_found');
@@ -711,7 +725,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const buyRes = await app.request(`/api/land/services/${throwawayId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 5 }),
     });
     expect(buyRes.status).toBe(409);
     expect(((await buyRes.json()) as { error?: string }).error).toBe('listing_not_active');
@@ -791,7 +805,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${listingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 50 }),
     });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error?: string }).error).toBe('structure_unavailable');
@@ -816,7 +830,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${listingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 50 }),
     });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error?: string }).error).toBe('structure_unavailable');
@@ -831,7 +845,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
     const res = await app.request(`/api/land/services/${listingId}/buy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: buyerCookie },
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), expectedPriceCt: 50 }),
     });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error?: string }).error).toBe('not_a_peer_listing');
