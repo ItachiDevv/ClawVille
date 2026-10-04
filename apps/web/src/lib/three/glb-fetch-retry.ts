@@ -123,26 +123,62 @@ export async function fetchArrayBufferWithRetry(
   url: string,
   options: {
     fetchImpl?: typeof fetch;
-    wait?: (ms: number) => Promise<void>;
+    wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
     httpErrorMessage?: (status: number) => string;
+    /** Abort stops further attempts and pending waits; rejects AbortError, never retried. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<ArrayBuffer> {
-  const doFetch = options.fetchImpl ?? ((input: RequestInfo | URL) => globalThis.fetch(input));
-  const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const { signal } = options;
+  const doFetch =
+    options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init));
+  const wait = options.wait ?? abortableDelay;
   for (let attempt = 0; ; attempt += 1) {
+    throwIfAborted(signal);
     try {
-      const response = await doFetch(url);
+      const response = await doFetch(url, signal ? { signal } : undefined);
       if (!response.ok) {
         const message = options.httpErrorMessage?.(response.status) ?? `fetch ${url} failed: ${response.status}`;
         throw Object.assign(new Error(message), { response });
       }
       return await response.arrayBuffer();
     } catch (error) {
+      throwIfAborted(signal);
       const delay = GLB_FETCH_RETRY_DELAYS_MS[attempt];
       if (delay === undefined || !isRetryableGlbFetchError(error)) throw error;
-      await wait(delay);
+      await wait(delay, signal);
     }
   }
+}
+
+function abortError(signal: AbortSignal): unknown {
+  const reason: unknown = signal.reason;
+  if (typeof reason === 'object' && reason !== null && (reason as { name?: unknown }).name === 'AbortError') {
+    return reason;
+  }
+  return Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(id);
+      reject(abortError(signal!));
+    };
+    const id = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /** The final failure recorded for `url` by a retry-wrapped loader, if any. */

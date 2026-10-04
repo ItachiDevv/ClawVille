@@ -39,6 +39,7 @@ import type { VRM } from '@pixiv/three-vrm';
 import { primeVrmHipsHeightCache } from './mixamo-retarget';
 import { isDecorativeReleased } from './decorative-release';
 import { fetchArrayBufferWithRetry } from './glb-fetch-retry';
+import { ModelLoadError } from './model-load-error';
 import { stampColdLoadPhase } from './cold-load-stamp';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
@@ -882,11 +883,41 @@ function fetchBytes(path: string): Promise<ArrayBuffer> {
     }).catch((err) => {
       // On error, evict so a future call can retry instead of replaying the rejection.
       VRM_BYTES.delete(path);
+      if (typeof err === 'object' && err !== null) VRM_FETCH_PHASE_ERRORS.add(err);
       throw err;
     });
     VRM_BYTES.set(path, p);
   }
   return p;
+}
+
+/** Errors that came from the bytes REQUEST (vs parse/normalise). */
+const VRM_FETCH_PHASE_ERRORS = new WeakSet<object>();
+
+/**
+ * Tag a failed instance load AT THE SOURCE (model-load-error.ts): the
+ * 'rejected' entry useVRMInstance rethrows into render is a ModelLoadError,
+ * so ModelLoadBoundary can tell it from a render bug. `clear()` evicts this
+ * exact rejected entry (identity-guarded) so the next mount loads again.
+ */
+function toInstanceLoadError(cacheKey: string, path: string, err: unknown): ModelLoadError {
+  const phase =
+    typeof err === 'object' && err !== null && VRM_FETCH_PHASE_ERRORS.has(err) ? 'fetch' : 'parse';
+  const message =
+    typeof err === 'object' && err !== null && 'message' in err
+      ? String((err as { message?: unknown }).message)
+      : String(err);
+  const tagged: ModelLoadError = new ModelLoadError({
+    url: path,
+    phase,
+    original: err,
+    message,
+    clear: () => {
+      const cur = VRM_INSTANCES.get(cacheKey);
+      if (cur && cur.status === 'rejected' && cur.error === tagged) VRM_INSTANCES.delete(cacheKey);
+    },
+  });
+  return tagged;
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,7 +1214,7 @@ export function useVRMInstance(path: string, instanceId: string): VRM {
       // entry. A stale catch (cancelled or clobbered by re-mount) must NOT
       // re-insert or overwrite the new pending entry.
       if (VRM_INSTANCES.get(cacheKey) === pendingEntry) {
-        VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+        VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: toInstanceLoadError(cacheKey, path, err) });
       }
       throw err;
     });
@@ -1227,7 +1258,7 @@ export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> 
     // entry. A stale catch (cancelled or clobbered by re-mount) must NOT
     // re-insert or overwrite the new pending entry.
     if (VRM_INSTANCES.get(cacheKey) === pendingEntry) {
-      VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+      VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: toInstanceLoadError(cacheKey, path, err) });
     }
     throw err;
   });

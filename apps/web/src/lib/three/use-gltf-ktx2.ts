@@ -32,7 +32,8 @@ import { extendLoaderWithKTX2 } from './ktx2-loader-setup';
 import { extendLoaderWithMeshopt } from './meshopt-loader-setup';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
-import { installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
+import { getLastGlbLoadFailure, installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
+import { isModelLoadError, ModelLoadError } from './model-load-error';
 
 type GLTFResult = GLTF & ObjectMap;
 const TEXTURE_CAP_LOADERS = new WeakSet<object>();
@@ -123,10 +124,45 @@ function extendLoaderForWorldTextures(
 export function useGLTFWithKTX2(path: string): GLTFResult;
 export function useGLTFWithKTX2(path: string[]): GLTFResult[];
 export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResult[] {
-  if (typeof path === 'string') {
+  try {
+    if (typeof path === 'string') {
+      return useGLTF(path, true, true, extendLoaderForWorldTextures);
+    }
     return useGLTF(path, true, true, extendLoaderForWorldTextures);
+  } catch (thrown) {
+    throw tagGltfLoadRejection(thrown, path);
   }
-  return useGLTF(path, true, true, extendLoaderForWorldTextures);
+}
+
+const TAGGED_REJECTIONS = new WeakMap<object, ModelLoadError>();
+
+/**
+ * R3F useLoader caches a failed load and rethrows it as
+ * `new Error("Could not load <input>: <message>")` (its loadingFn; no hook to tag
+ * it). This hook is the first code we own that sees it, so the tag is made
+ * HERE, for exactly the requested path: a ModelLoadError (same message,
+ * memoized per R3F error so re-renders keep one identity) carrying the
+ * original loader error + phase from glb-fetch-retry and a `clear()` that
+ * runs useGLTF.clear(url) so the next mount requests the model again.
+ * Thrown promises (Suspense) and any other error pass through unchanged.
+ */
+function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
+  if (!(thrown instanceof Error) || isModelLoadError(thrown)) return thrown;
+  const cached = TAGGED_REJECTIONS.get(thrown);
+  if (cached) return cached;
+  const paths = typeof path === 'string' ? [path] : path;
+  const url = paths.find((p) => thrown.message.startsWith(`Could not load ${p}: `));
+  if (url === undefined) return thrown;
+  const failure = getLastGlbLoadFailure(url);
+  const tagged = new ModelLoadError({
+    url,
+    phase: failure?.phase ?? 'unknown',
+    original: failure?.error ?? thrown,
+    message: thrown.message,
+    clear: () => useGLTF.clear(url),
+  });
+  TAGGED_REJECTIONS.set(thrown, tagged);
+  return tagged;
 }
 
 /**

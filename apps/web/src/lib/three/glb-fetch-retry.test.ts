@@ -489,3 +489,90 @@ describe('fetchArrayBufferWithRetry (raw-fetch loaders, e.g. vrm-loader bytes)',
     expect(waits).toEqual([]);
   });
 });
+
+describe('fetchArrayBufferWithRetry abort signal', () => {
+  test('abort during a retry wait stops: rejects AbortError, no further request', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    // A wait that never ends by itself: only the abort can finish it.
+    const wait = (_ms: number, signal?: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    const pending = fetchArrayBufferWithRetry('/avatars/abort.vrm', { fetchImpl, wait, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+    let thrown: unknown;
+    try {
+      await pending;
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(calls.length).toBe(1);
+  });
+
+  test('an already-aborted signal makes no request', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let called = 0;
+    const fetchImpl = (async () => {
+      called += 1;
+      return new Response(new Uint8Array([1]));
+    }) as unknown as typeof fetch;
+    let thrown: unknown;
+    try {
+      await fetchArrayBufferWithRetry('/avatars/pre-aborted.vrm', { fetchImpl, signal: controller.signal });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(called).toBe(0);
+  });
+
+  test('the signal is passed to fetch, and a fetch AbortError is never retried', async () => {
+    const controller = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    let calls = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      seen.push(init?.signal ?? undefined);
+      throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+    }) as unknown as typeof fetch;
+    let thrown: unknown;
+    try {
+      await fetchArrayBufferWithRetry('/avatars/fetch-abort.vrm', { fetchImpl, signal: controller.signal, wait: async () => {} });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(calls).toBe(1);
+    expect(seen[0]).toBe(controller.signal);
+  });
+
+  test('the default wait is abortable (no injected wait)', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    const started = Date.now();
+    const pending = fetchArrayBufferWithRetry('/avatars/default-wait.vrm', { fetchImpl, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    let thrown: unknown;
+    try {
+      await pending;
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(calls).toBe(1);
+    expect(Date.now() - started).toBeLessThan(GLB_FETCH_RETRY_DELAYS_MS[0]);
+  });
+});
