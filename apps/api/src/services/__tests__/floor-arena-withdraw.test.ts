@@ -669,14 +669,14 @@ describe('reconcile by signature', () => {
     expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 2 });
   });
 
-  test('not found: touched before the sent give-up; after it a covered, resolved history + the balance rule decide', async () => {
+  test('not found: touched before the sent give-up; after it a covered history + no drop -> needs_review not_found_no_drop (never failed_no_send)', async () => {
     const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-20 * MIN) }));
     world.live = { ...world.live, transactions: [{ signature: 'SIG_OLD_DEPOSIT', status: 'success' }] };
     world.txs.set('SIG_OLD_DEPOSIT', usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) }));
     await tick(world);
     expect(world.get(row.id)).toMatchObject({ state: 'sent', checkCount: 1 });
     await tick(world, 11 * MIN);
-    expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'not_found_no_drop' });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_no_drop', txSignature: 'SIG_GONE' });
     expect(world.transfers).toHaveLength(0);
   });
 });
@@ -690,12 +690,12 @@ describe('reconcile an unknown row without a signature (history + exact match)',
     for (const item of list) if (item.tx) world.txs.set(item.signature, item.tx);
   }
 
-  test('one history match -> confirmed with that signature', async () => {
+  test('one history match -> needs_review with the match evidence code; never attached, never confirmed', async () => {
     const row = world.add(dispatched());
     history([{ signature: 'SIG_M', tx: usdcTx() }, { signature: 'SIG_X', tx: usdcTx({ dest: OTHER }) }]);
     world.live = { ...world.live, usdcAtomic: 4_900_000n };
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_M', postBalanceAtomic: 4_900_000n });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
     expect(world.transfers).toHaveLength(0);
   });
 
@@ -748,11 +748,11 @@ describe('reconcile an unknown row without a signature (history + exact match)',
     expect(world.causes('withdraw:needs_review:not_found_balance_drop')[0]?.severity).toBe('critical');
   });
 
-  test('no match after 15 min with no balance drop -> failed_no_send not_found_no_drop', async () => {
+  test('no match after 15 min with no balance drop -> needs_review not_found_no_drop (never failed_no_send)', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
     history([{ signature: 'SIG_X', tx: usdcTx({ dest: OTHER }) }]);
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'not_found_no_drop' });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_no_drop' });
     expect(world.transfers).toHaveLength(0);
   });
 
@@ -829,14 +829,14 @@ describe('Codex money review blockers (B2, B3, B4)', () => {
     expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_balance_drop' });
   });
 
-  test('B3: one match + an unresolved other candidate -> not confirmed until it resolves', async () => {
+  test('B3: one match + an unresolved other candidate -> waits until it resolves, then needs_review (never confirmed)', async () => {
     const row = world.add(dispatched());
     listHistory([{ signature: 'SIG_M', tx: usdcTx() }, { signature: 'SIG_PENDING' }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
     await tick(world);
     expect(world.get(row.id)).toMatchObject({ state: 'unknown', txSignature: null, checkCount: 1 });
     world.txs.set('SIG_PENDING', usdcTx({ dest: OTHER, blockTime: unix(at(-19 * MIN)) }));
     await tick(world, 30_000);
-    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_M' });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
   });
 
   test('B3: an unresolved in-window candidate blocks a no-match decision (no failed_no_send)', async () => {
@@ -947,7 +947,7 @@ describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for opera
     expect(world.transfers).toHaveLength(0);
   });
 
-  test('sent row, signature gone after the give-up: a vendor-failed exact match -> never failed_no_send (undecided)', async () => {
+  test('sent row, signature gone after the give-up: a vendor-failed exact match -> needs_review ambiguous_match (never failed_no_send)', async () => {
     const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-40 * MIN) }));
     listHistory([
       { signature: 'SIG_NEW_DEPOSIT', tx: HIDING_DEPOSIT() },
@@ -956,7 +956,7 @@ describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for opera
     ]);
     world.live = { ...world.live, usdcAtomic: 5_000_000n };
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'sent', txSignature: 'SIG_GONE', checkCount: 1 });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: 'SIG_GONE' });
     expect(world.transfers).toHaveLength(0);
   });
 
@@ -968,8 +968,8 @@ describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for opera
       { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
     ]);
     await tick(world);
-    // Complete window, no match, no balance drop: the balance rule decides as before.
-    expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'not_found_no_drop', txSignature: null });
+    // Complete window, no match, no balance drop: the balance rule only picks the review code.
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_no_drop', txSignature: null });
   });
 
   test('cross-row: a vendor-SUCCESS exact match 30 s before this row\'s own dispatch (other row needs_review, no signature) -> needs_review, not confirmed', async () => {
@@ -986,14 +986,14 @@ describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for opera
     expect(world.transfers).toHaveLength(0);
   });
 
-  test('a vendor-success exact match at the dispatch second + 5 s -> confirmed with that signature', async () => {
+  test('a vendor-success exact match at the dispatch second + 5 s -> needs_review with the match evidence code, not confirmed', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
     listHistory([
       { signature: 'SIG_OWN', tx: usdcTx({ blockTime: unix(at(-20 * MIN)) + 5 }) },
       { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() },
     ]);
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_OWN', postBalanceAtomic: 4_900_000n });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
   });
 
   test('a vendor-failed exact match (conflict) plus one success exact match -> needs_review ambiguous_match, not confirmed', async () => {
@@ -1005,5 +1005,56 @@ describe('Codex r2 B1: a vendor-failed exact chain match is a conflict for opera
     ]);
     await tick(world);
     expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
+  });
+});
+
+describe('Codex final pass: the reconcile decides nothing without proof', () => {
+  const OLD_DEPOSIT = (): ArenaWithdrawChainTx => usdcTx({ source: OTHER, dest: SOURCE, amount: 5_000_000n, blockTime: unix(at(-2 * HOUR)) });
+
+  function listHistory(items: Array<{ signature: string; status?: string; tx?: ArenaWithdrawChainTx }>): void {
+    world.live = { ...world.live, transactions: items.map((item) => ({ signature: item.signature, status: item.status ?? 'success' })) };
+    for (const item of items) if (item.tx) world.txs.set(item.signature, item.tx);
+  }
+
+  test('(a) unknown row, one success exact match after the dispatch -> needs_review with the match evidence code, no attachSignature', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([{ signature: 'SIG_M', tx: usdcTx({ blockTime: unix(at(-19 * MIN)) }) }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    world.live = { ...world.live, usdcAtomic: 4_900_000n };
+    const deps = world.deps();
+    const attach = deps.attachSignature;
+    let attaches = 0;
+    deps.attachSignature = async (id, signature) => {
+      attaches += 1;
+      return attach(id, signature);
+    };
+    await runArenaWithdrawTick(NOW, deps);
+    expect(attaches).toBe(0);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'ambiguous_match', txSignature: null });
+    expect(world.causes('withdraw:needs_review:ambiguous_match')[0]?.severity).toBe('critical');
+    expect(world.transfers).toHaveLength(0);
+  });
+
+  test('(a2) the same match before the give-up time -> waits (touched), no decision', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-5 * MIN) }));
+    listHistory([{ signature: 'SIG_M', tx: usdcTx({ blockTime: unix(at(-4 * MIN)) }) }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'unknown', txSignature: null, checkCount: 1 });
+  });
+
+  test('(b) unknown row, complete window, no match, no drop -> needs_review not_found_no_drop, never failed_no_send', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-20 * MIN) }));
+    listHistory([{ signature: 'SIG_X', tx: usdcTx({ dest: OTHER }) }, { signature: 'SIG_OLD_DEPOSIT', tx: OLD_DEPOSIT() }]);
+    for (let i = 0; i < 3; i += 1) await tick(world, i * 30_000);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_no_drop', txSignature: null });
+    expect(world.causes('withdraw:needs_review:not_found_no_drop')[0]?.severity).toBe('critical');
+    expect(world.transfers).toHaveLength(0);
+  });
+
+  test("(c) the writer's proven no-send reply at dispatch still books failed_no_send", async () => {
+    const row = world.add(withdrawal());
+    world.transferImpl = async () => { throw new ClawPumpWriterError('http_error', 400); };
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'clawpump_http_error', txSignature: null });
+    expect(world.transfers).toHaveLength(1);
   });
 });
