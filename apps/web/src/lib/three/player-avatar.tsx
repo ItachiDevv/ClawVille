@@ -29,7 +29,7 @@ import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import {
   LOCAL_PLAYER_FALLBACK_MODEL_KEY,
-  onLocalPlayerModelFallback,
+  LocalPlayerFallback,
 } from '@/lib/three/local-player-model-fallback';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 import {
@@ -845,20 +845,24 @@ function PlayerAvatarGLBInner({ forcedModelKey }: { forcedModelKey?: string } = 
 // ---------------------------------------------------------------------------
 // Local-player fallback body (2026-10-04): rendered by ModelLoadBoundary when
 // the chosen VRM failed every request retry (404, or an outage longer than
-// ~2.5 s). Shows the default lobster GLB body, releases the boot-actor claim
-// so the reveal does not wait, and shows ONE notice. The boundary logs the
-// one console.error with the URL. Reload (or an avatar change, which changes
-// the boundary resetKey) tries the VRM again.
+// ~2.5 s). Shows the default lobster GLB body (nothing if that also fails),
+// releases the boot-actor claim once the body has committed, and shows ONE
+// notice (local-player-model-fallback.tsx). The boundary logs the one
+// console.error with the URL. Reload (or an avatar change, which changes the
+// boundary resetKey) tries the VRM again.
 // ---------------------------------------------------------------------------
 
 function LocalPlayerFallbackBody({ failedPath }: { failedPath: string }) {
-  useEffect(() => {
-    onLocalPlayerModelFallback('player-vrm', failedPath, useGameStore.getState().addToast);
-  }, [failedPath]);
   return (
-    <Suspense fallback={null}>
+    <LocalPlayerFallback
+      kind="player-vrm"
+      failedPath={failedPath}
+      fallbackUrl={MODEL_REGISTRY.lobster.path}
+      label="player-avatar"
+      addToast={useGameStore.getState().addToast}
+    >
       <PlayerAvatarGLBInner forcedModelKey={LOCAL_PLAYER_FALLBACK_MODEL_KEY} />
-    </Suspense>
+    </LocalPlayerFallback>
   );
 }
 

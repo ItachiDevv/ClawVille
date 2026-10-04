@@ -1,6 +1,6 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body).** Drift note: §9c gains the avatar-load-failure line.
+**Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body; if that also fails, no body and the world keeps running).** Drift note: §9c gains the avatar-load-failure line.
 
 **Prior Last Audited: 2026-10-03 23:03Z (special-event SOL refund destination + payout source; Codex r2; PROTOCOL_VERSION stays 82).** Drift note: §1e said the SOL refund goes to "the wallet that the entry transaction proves sent it", but the check named a wallet that sent any System transfer into the treasury, even 1 lamport next to a larger payment from another wallet, and a payout was accepted from any wallet. Now the destination is the single wallet whose own transfers pay the full entry (else a named admin sets it once), the payout must come from the wallet that received the entry, and one transaction signature can never be both an entry and a refund. Rule detail: the "SOL refund rule" in the §1e "Special-event cancel + refund" bullet. No signup, gate or payout amount changed; the agent manual does not cover special events.
 
@@ -1590,7 +1590,7 @@ Tested end-to-end 2026-04-12 — sign-up → create avatar → enter game works.
 | Milady VRM | `milady-official-1..8.vrm` | **No color tint** — MToon's toon-uniform system breaks under `.clone()`. Color customization disabled for VRM avatars. |
 | Hermes VRM | `hermes-female.vrm` ("Hermes"), `hermes-male.vrm` ("Tekk") | **No color tint** (same MToon constraint). Mixamo-style humanoid normalization; uses dedicated animation folders at `/avatars/animations/{hermes-female,tekk-male}/*.glb` rather than the generic Milady Mixamo set. |
 
-**Avatar load failure (2026-10-04):** if your VRM avatar fails to load after its request retries, in Player mode or in NPC mode, you are shown with the default lobster body and see one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." The world keeps running. Render-only: no state, economy or agent-surface change (PARITY n/a). Detail: `3dStructure.md` §9a.
+**Avatar load failure (2026-10-04):** if your VRM avatar fails to load after its request retries, in Player mode or in NPC mode, you are shown with the default lobster body and see one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." The world keeps running. If the default body also fails to load, your body is not shown, but the world keeps running. Render-only: no state, economy or agent-surface change (PARITY n/a). Detail: `3dStructure.md` §9a.
 
 ### 9d. Agent avatar picker (`/create-agent`)
 

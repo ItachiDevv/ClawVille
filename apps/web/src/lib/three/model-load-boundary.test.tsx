@@ -28,7 +28,7 @@ let ModelLoadBoundary: typeof import('./model-load-boundary').ModelLoadBoundary;
 let ModelLoadError: typeof import('./model-load-error').ModelLoadError;
 
 const VALID_GLTF = JSON.stringify({ asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ name: 'figure-root' }] });
-type Reply = number | 'valid';
+type Reply = number | 'valid' | 'valid-slow';
 const plans = new Map<string, Reply[]>();
 const requests = new Map<string, number>();
 
@@ -48,7 +48,8 @@ beforeAll(async () => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     requests.set(url, (requests.get(url) ?? 0) + 1);
     const reply = plans.get(url)?.shift() ?? 404;
-    if (reply === 'valid') return new Response(new TextEncoder().encode(VALID_GLTF), { status: 200 });
+    if (reply === 'valid-slow') await new Promise((resolve) => setTimeout(resolve, 150));
+    if (reply === 'valid' || reply === 'valid-slow') return new Response(new TextEncoder().encode(VALID_GLTF), { status: 200 });
     return new Response('missing', { status: reply });
   }) as typeof fetch;
   ({ createRoot } = await import('react-dom/client'));
@@ -378,6 +379,110 @@ describe('ModelLoadBoundary', () => {
     expect(container2.querySelector('#fallback-2')).toBeNull();
     expect(outer2.length).toBe(1);
     await act(async () => root2.unmount());
+  });
+
+  test('B2 (round 2): two GLB figures sharing one failed URL: both R3F reports cancelled; a third separate report of the same object is NOT', async () => {
+    const url = 'http://localhost/models/mlb-shared.glb?v=1';
+    const container = newContainer();
+    const reported: HappyErrorEvent[] = [];
+    const outer: unknown[] = [];
+    const root = r3fLikeRoot(container, reported);
+    const cap = captureConsoleError();
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            OuterBoundary,
+            { onCatch: (e) => outer.push(e) },
+            ...['g1', 'g2'].map((id) =>
+              createElement(
+                ModelLoadBoundary,
+                { key: id, assetUrl: url, label: `wanderer:${id}`, resetKey: id },
+                createElement(Suspense, { fallback: null }, createElement(GlbFigure, { path: url })),
+              ),
+            ),
+          ),
+        );
+      });
+      await settle();
+    } finally {
+      cap.restore();
+    }
+    expect(outer).toEqual([]);
+    expect(reported.length).toBe(2);
+    expect(reported.map((event) => event.defaultPrevented)).toEqual([true, true]);
+    for (const event of reported) {
+      const again = new testWindow.ErrorEvent('error', { error: event.error as Error, cancelable: true });
+      testWindow.dispatchEvent(again);
+      expect(again.defaultPrevented).toBe(false);
+    }
+    await act(async () => root.unmount());
+  });
+
+  test('B1 (round 2): an ARRAY GLB load that failed recovers on resetKey (cleared with the array key)', async () => {
+    const urlA = 'http://localhost/models/mlb-array-a.glb';
+    const urlB = 'http://localhost/models/mlb-array-b.glb';
+    plans.set(urlA, ['valid', 'valid']);
+    plans.set(urlB, [404, 'valid']);
+    function ArrayFigure() {
+      const [a, b] = useGLTFWithKTX2([urlA, urlB]);
+      return createElement('span', { 'data-array': a.scene && b.scene ? 'ok' : 'empty' });
+    }
+    const container = newContainer();
+    const root = r3fLikeRoot(container, []);
+    const cap = captureConsoleError();
+    try {
+      const tree = (resetKey: string) =>
+        createElement(
+          ModelLoadBoundary,
+          { assetUrl: urlB, label: 'remote:array', resetKey },
+          createElement(Suspense, { fallback: null }, createElement(ArrayFigure)),
+        );
+      await act(async () => root.render(tree('first')));
+      await settle();
+      expect(container.querySelector('[data-array]')).toBeNull();
+      await act(async () => root.render(tree('retry')));
+      await settle();
+    } finally {
+      cap.restore();
+    }
+    expect(requests.get(urlB)).toBe(2);
+    expect(container.querySelector('[data-array="ok"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  test('SHOULD-FIX: an OLD error.clear() never clears a newer pending load of the same URL', async () => {
+    const url = 'http://localhost/models/mlb-guard.glb?v=2';
+    plans.set(url, [404, 'valid-slow']);
+    const read = () => useGLTFWithKTX2(url);
+    let old: unknown;
+    try {
+      read();
+    } catch (thrown) {
+      await thrown;
+    }
+    try {
+      read();
+    } catch (thrown) {
+      old = thrown;
+    }
+    expect((old as Error).name).toBe('ModelLoadError');
+    // Another figure clears and starts a NEW load (pending, slow).
+    (old as { clear(): void }).clear();
+    let pending: unknown;
+    try {
+      read();
+    } catch (thrown) {
+      pending = thrown;
+    }
+    expect(pending).toBeInstanceOf(Promise);
+    expect(requests.get(url)).toBe(2);
+    // The OLD error clears again: it must not evict the newer pending load.
+    (old as { clear(): void }).clear();
+    await pending;
+    const gltf = read();
+    expect(gltf.scene.getObjectByName('figure-root')).toBeTruthy();
+    expect(requests.get(url)).toBe(2);
   });
 
   test('changing resetKey clears the failure and remounts the figure', async () => {

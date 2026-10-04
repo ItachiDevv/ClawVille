@@ -77,6 +77,8 @@ export interface RetryableGltfLoader {
 const RETRY_INSTALLED = new WeakSet<object>();
 const PARSE_PHASE_ERRORS = new WeakSet<object>();
 const LAST_FAILURE = new Map<string, GlbLoadFailure>();
+/** url -> token of the most recent wrapped load call for that url. */
+const CURRENT_LOAD = new Map<string, object>();
 const REPORTED_PATHS = new Set<string>();
 
 const defaultSchedule: GlbRetrySchedule = (run, ms) => {
@@ -181,6 +183,15 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Token of the most recent wrapped load call for `url` (a new object per
+ * load, shared by its retries). An error made from a failed load captures
+ * it; if the token changed, a newer load of the url has started since.
+ */
+export function getCurrentGlbLoadToken(url: string): object | undefined {
+  return CURRENT_LOAD.get(url);
+}
+
 /** The final failure recorded for `url` by a retry-wrapped loader, if any. */
 export function getLastGlbLoadFailure(url: string): GlbLoadFailure | undefined {
   return LAST_FAILURE.get(url);
@@ -228,6 +239,7 @@ export function installGlbFetchRetry(
 
   const baseLoad = loader.load.bind(loader);
   loader.load = (url, onLoad, onProgress, onError) => {
+    CURRENT_LOAD.set(url, {});
     const signal = loader.manager?.abortController?.signal;
     let settled = false;
     let attempts = 0;

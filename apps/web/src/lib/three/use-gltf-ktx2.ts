@@ -32,7 +32,7 @@ import { extendLoaderWithKTX2 } from './ktx2-loader-setup';
 import { extendLoaderWithMeshopt } from './meshopt-loader-setup';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
-import { getLastGlbLoadFailure, installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
+import { getCurrentGlbLoadToken, getLastGlbLoadFailure, installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
 import { isModelLoadError, ModelLoadError } from './model-load-error';
 
 type GLTFResult = GLTF & ObjectMap;
@@ -134,35 +134,38 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
   }
 }
 
-const TAGGED_REJECTIONS = new WeakMap<object, ModelLoadError>();
-
 /**
  * R3F useLoader caches a failed load and rethrows it as
- * `new Error("Could not load <input>: <message>")` (its loadingFn; no hook to tag
- * it). This hook is the first code we own that sees it, so the tag is made
- * HERE, for exactly the requested path: a ModelLoadError (same message,
- * memoized per R3F error so re-renders keep one identity) carrying the
- * original loader error + phase from glb-fetch-retry and a `clear()` that
- * runs useGLTF.clear(url) so the next mount requests the model again.
+ * `new Error("Could not load <input>: <message>")` (its loadingFn; no hook to
+ * tag it). This hook is the first code we own that sees it, so the tag is
+ * made HERE, for exactly the requested path(s): a ModelLoadError (same
+ * message) carrying the original loader error + phase from glb-fetch-retry.
+ *
+ * - A NEW ModelLoadError per throw: two figures reading one cached rejection
+ *   get two objects, so each boundary catch owns its own one-shot report
+ *   cancel (ModelLoadBoundary).
+ * - `clear()` evicts the cache entry with the SAME key the load used (the
+ *   string, or the whole array), and only while no newer load of those urls
+ *   has started (load tokens captured here), so an old error never evicts a
+ *   newer entry another figure awaits.
  * Thrown promises (Suspense) and any other error pass through unchanged.
  */
 function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
   if (!(thrown instanceof Error) || isModelLoadError(thrown)) return thrown;
-  const cached = TAGGED_REJECTIONS.get(thrown);
-  if (cached) return cached;
   const paths = typeof path === 'string' ? [path] : path;
   const url = paths.find((p) => thrown.message.startsWith(`Could not load ${p}: `));
   if (url === undefined) return thrown;
   const failure = getLastGlbLoadFailure(url);
-  const tagged = new ModelLoadError({
+  const tokens = paths.map((p) => getCurrentGlbLoadToken(p));
+  return new ModelLoadError({
     url,
     phase: failure?.phase ?? 'unknown',
     original: failure?.error ?? thrown,
     message: thrown.message,
-    clear: () => useGLTF.clear(url),
+    clear: () => {
+      if (paths.every((p, k) => getCurrentGlbLoadToken(p) === tokens[k])) useGLTF.clear(path);
+    },
   });
-  TAGGED_REJECTIONS.set(thrown, tagged);
-  return tagged;
 }
 
 /**

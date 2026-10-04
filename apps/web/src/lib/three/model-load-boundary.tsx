@@ -34,7 +34,7 @@
  *   remount of the figure requests the model again.
  * - `fallback` (optional): rendered INSTEAD of null after a model failure.
  *   The LOCAL player's own body uses it (default lobster GLB body via
- *   local-player-model-fallback.ts), so the player is never invisible. A
+ *   local-player-model-fallback.tsx), so the player is never invisible. A
  *   render bug still goes to the outer boundary, never to the fallback.
  *   Without `fallback` the behavior is unchanged.
  */
@@ -97,6 +97,8 @@ export interface ModelLoadBoundaryProps {
   readonly resetKey: string;
   /** Rendered instead of null after a MODEL failure (local player body). */
   readonly fallback?: ReactNode;
+  /** Called once per caught MODEL failure (after the cache clear). */
+  readonly onModelFailed?: () => void;
   readonly children?: ReactNode;
 }
 
@@ -132,6 +134,7 @@ export class ModelLoadBoundary extends Component<ModelLoadBoundaryProps, ModelLo
     // mark outlive it.
     PENDING_REPORT_CANCEL.delete(error);
     error.clear();
+    this.props.onModelFailed?.();
     const { label, fallback } = this.props;
     const outcome = fallback === undefined ? 'skipped' : 'replaced by fallback';
     if (!firstReport(error, `${outcome}|${error.url}`)) return;
