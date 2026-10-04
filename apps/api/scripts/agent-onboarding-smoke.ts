@@ -91,7 +91,7 @@ let failureReported = false;
 function apiBaseFromArgs(args: string[]): string {
   const apiFlag = args.indexOf('--api');
   const raw = apiFlag >= 0 ? args[apiFlag + 1] : undefined;
-  if (!raw) throw new SmokeFailure('usage: bun run scripts/agent-onboarding-smoke.ts --api <base>');
+  if (!raw) throw new SmokeFailure('usage: bun scripts/agent-onboarding-smoke.ts --api <base>');
 
   let url: URL;
   try {
@@ -393,7 +393,13 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.main) main().catch((error: unknown) => {
+// `bun run <file>` on Windows can lower-case the path in Bun.main, so import.meta.main is
+// false and the script silently exits 0 without running (2026-10-04). Also accept a
+// direct run whose argv[1] is this file, compared case-insensitively.
+const invokedDirectly =
+  import.meta.main ||
+  (process.argv[1] ?? '').replace(/\\/g, '/').toLowerCase() === import.meta.path.replace(/\\/g, '/').toLowerCase();
+if (invokedDirectly) main().catch((error: unknown) => {
   if (!failureReported) {
     const message = error instanceof SmokeFailure ? error.message : 'unexpected failure';
     console.error(`FAIL setup: ${message}`);

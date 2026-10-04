@@ -134,6 +134,12 @@ export async function runWalletUnificationBackfill(args: string[]): Promise<void
   }
 }
 
-if (import.meta.main) {
+// `bun run <file>` on Windows can lower-case the path in Bun.main, so import.meta.main is
+// false and the script silently exits 0 without running (2026-10-04). Also accept a
+// direct run whose argv[1] is this file, compared case-insensitively.
+const invokedDirectly =
+  import.meta.main ||
+  (process.argv[1] ?? '').replace(/\\/g, '/').toLowerCase() === import.meta.path.replace(/\\/g, '/').toLowerCase();
+if (invokedDirectly) {
   await runWalletUnificationBackfill(process.argv.slice(2));
 }
