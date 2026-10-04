@@ -111,8 +111,8 @@ function extendLoaderForWorldTextures(
 ): void {
   extendLoaderWithKTX2(loader);
   extendLoaderWithTextureDeviceCap(loader);
-  // R3F shares ONE GLTFLoader instance per constructor, so this retry also
-  // covers plain useGLTF calls once any world-texture load has run.
+  // R3F shares ONE GLTFLoader instance per constructor, so this request
+  // retry also covers plain useGLTF calls once any world-texture load ran.
   installGlbFetchRetry(loader);
 }
 
@@ -130,9 +130,12 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
 }
 
 /**
- * useGLTFWithKTX2 for an OPTIONAL model: returns null when the GLB failed to
- * load (after the loader's fetch retries), so the caller skips that model
- * instead of crashing the whole canvas. Still suspends while loading.
+ * useGLTFWithKTX2 for an OPTIONAL model. Returns null when THIS path failed
+ * for any reason (request failure after the loader's retries, or a parse /
+ * decode error), so the caller skips that model instead of crashing the
+ * whole canvas. Fails visible: one console.error per path with the original
+ * error class, message and phase. Still suspends while loading; any other
+ * error is rethrown. Required models must keep useGLTFWithKTX2.
  */
 export function useOptionalGLTFWithKTX2(path: string): GLTFResult | null {
   return readOptionalGltf(path, () => useGLTFWithKTX2(path));

@@ -428,8 +428,9 @@ interface MergedBucket {
 /** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks. */
 function MergedDecorationsInner() {
   // Fixed-count hook calls — one per unique model path. Order is stable (constant array).
-  // Optional reads: a GLB that still fails after the loader's fetch retries
-  // is null, so only that model's entries are skipped (not the whole world).
+  // Optional reads: a GLB whose own load fails (request failure after the
+  // loader's retries, or a corrupt file) is null and logged with
+  // console.error, so only that model's entries are skipped, not the world.
   const s0  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[0])?.scene ?? null;
   const s1  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[1])?.scene ?? null;
   const s2  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[2])?.scene ?? null;

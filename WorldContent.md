@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-10-04 (§5 ground decorations: rendered count corrected to 0, cluster count 24 → 12 and extent text corrected to match `generateDecorations`; failure-handling note added). No rendered object changed.
+**Last edit:** 2026-10-04 (§5 ground decorations: rendered count corrected to 0, cluster count 24 → 12 and extent text corrected to match `generateDecorations`; failure-handling note added; Codex E3 round 1: a corrupt optional GLB is skipped too, and every skip logs `console.error`). No rendered object changed.
 
 **Prior Last edit:** 2026-09-30 (Trading Floor **big board + trade tape show the TRADING ARENA paper contest**). §2a Big board and Trade tape rows rewritten: the board draws the arena leaderboard (contest header · PAPER, countdown, prize line, top 8 with HOUSE tags, basis line, tape row) instead of the two live house-trader cards, and the tape flies the arena's entries (left lane) and exits (right lane) with three-row chip faces. The Big board row also carried a stale "never profit and loss" line from before 2026-09-20; corrected. Same plane, canvas, draw calls. Browser appearance not yet verified.
 
@@ -165,7 +165,7 @@ Code: `lib/three/arena-terrain.tsx`.
 
 **Rendered count today: 0 (verified 2026-10-04).** With cluster centres spread over ±15770 wu, no seed-12345 sample lands in the 800–3800 wu band, so `generateDecorations()` returns no entries. The 12 GLBs below still load (`MergedDecorationsInner` fetches all 12), but the merged group has no meshes. Restoring the scatter (or dropping the 12 fetches) is a separate decision: it changes the world's look and draw calls.
 
-**Failure handling (2026-10-04):** the 12 GLBs load through `useOptionalGLTFWithKTX2`. A GLB that still fails after the shared loader's fetch retries is skipped. The rest of the world stays up (`3dStructure.md` §9a).
+**Failure handling (2026-10-04):** the 12 GLBs load through `useOptionalGLTFWithKTX2`. A GLB whose own load fails is skipped: a request failure after the shared loader's 2 retries, or a corrupt file (never retried). Each skip logs one `console.error` naming the phase. The rest of the world stays up (`3dStructure.md` §9a).
 
 Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 
