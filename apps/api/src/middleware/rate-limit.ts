@@ -106,7 +106,9 @@ export function createRateLimiter(options: RateLimiterOptions = {}): RateLimiter
  *      appended; the leading entries are client-set), ONLY when that entry
  *      is a valid IP (Codex round 2: a garbage token must not become a
  *      caller-chosen key). An invalid last entry gives no peer; the earlier,
- *      client-set entries are never tried. Without a proxy the caller
+ *      client-set entries are never tried. The last entry is the ACTUAL last
+ *      comma field (Codex round 3): an empty one (`198.51.100.8, `) gives no
+ *      peer, it is not skipped. Without a proxy the caller
  *      controls this header anyway, so step 3 adds no exposure here.
  *   3. If the peer is a Cloudflare edge (`lib/cloudflare-ips.ts`) and
  *      `cf-connecting-ip` is a valid IP, return `cf-connecting-ip`. This
@@ -173,10 +175,14 @@ function firstValidIp(value: string | null | undefined): string | null {
   return null;
 }
 
-/** The LAST `x-forwarded-for` entry when it is a valid IP, else null. */
+/**
+ * The LAST comma field of `x-forwarded-for` (trimmed) when it is a valid IP,
+ * else null. Empty fields are NOT skipped (Codex round 3): for
+ * `198.51.100.8, ` the last field is empty, so there is no peer; skipping it
+ * would key on the earlier, caller-set entry.
+ */
 function lastValidXffEntry(value: string | null | undefined): string | null {
   if (!value) return null;
-  const parts = value.split(',').map((p) => p.trim()).filter(Boolean);
-  const last = parts.length > 0 ? parts[parts.length - 1]! : null;
-  return last !== null && isValidIp(last) ? last : null;
+  const last = value.slice(value.lastIndexOf(',') + 1).trim();
+  return isValidIp(last) ? last : null;
 }

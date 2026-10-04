@@ -216,6 +216,27 @@ describe('getClientIp trust model (H2 2026-10-04)', () => {
     expect(getClientIp(plain({ 'x-forwarded-for': '2001:db8::17' }))).toBe('2001:db8::17');
   });
 
+  it('Codex round 3: an EMPTY last x-forwarded-for field is not skipped (unknown, never the earlier caller-set entry)', async () => {
+    // The old fallback dropped empty fields first, so a trailing comma made the
+    // caller-set entry the key.
+    expect(getClientIp(plain({ 'x-forwarded-for': '198.51.100.8, ' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': '198.51.100.8,' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': '198.51.100.8,,' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': '1.1.1.1, 198.51.100.8 ,   ' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': ',' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': '   ' }))).toBe('unknown');
+    // A Cloudflare-looking earlier entry plus a forged cf header cannot win either.
+    expect(
+      getClientIp(plain({ 'x-forwarded-for': '104.16.0.1, ', 'cf-connecting-ip': '203.0.113.11' })),
+    ).toBe('unknown');
+    // Through Hono's real Headers object as well.
+    expect((await captureIps({ 'x-forwarded-for': '198.51.100.8, ' })).fromHeaders).toBe('unknown');
+    // The actual last field still keys when it is a valid IP (trimmed), even
+    // after an empty middle field.
+    expect(getClientIp(plain({ 'x-forwarded-for': '198.51.100.8, , 198.51.100.24 ' }))).toBe('198.51.100.24');
+    expect(getClientIp(plain({ 'x-forwarded-for': ',198.51.100.25' }))).toBe('198.51.100.25');
+  });
+
   it('no test in apps/api/src keys on a non-IP x-forwarded-for literal', () => {
     // Every per-test rate-limit key must be a valid IP (x-real-ip preferred);
     // a non-IP x-forwarded-for now collapses into the shared 'unknown' bucket
@@ -230,7 +251,8 @@ describe('getClientIp trust model (H2 2026-10-04)', () => {
       const text = readFileSync(resolve(apiRoot, entry), 'utf8');
       for (const match of text.matchAll(literal)) {
         const value = match[2]!.replace(/\$\{[^}]*\}/g, '1');
-        const last = value.split(',').map((p) => p.trim()).filter(Boolean).pop() ?? '';
+        // Same rule as getClientIp: the ACTUAL last comma field, empty included.
+        const last = value.slice(value.lastIndexOf(',') + 1).trim();
         if (!isValidIp(last)) offenders.push(`${rel}: ${match[0]}`);
       }
     }

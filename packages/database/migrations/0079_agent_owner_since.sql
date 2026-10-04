@@ -39,6 +39,18 @@
 -- owner's directives. The cost is one-time: events written before this
 -- migration are hidden from replay, SSE catch-up and the wake-seed. Hiding
 -- history is acceptable; leaking it is not.
+--
+-- LOCKS (Codex round 3 hygiene): ADD COLUMN with a non-volatile default
+-- (now() is stable) is a metadata-only change, and the trigger drop + create
+-- needs a brief lock on "openclaw_bots". Each step still waits for its table
+-- lock behind live traffic, and a queued lock request blocks every later
+-- reader of the table. migrate-ci.ts sends the whole file as ONE simple-query message
+-- (postgres.js unsafe() with no parameters), which PostgreSQL runs as one
+-- implicit transaction, so SET LOCAL bounds every lock wait in this file to 5 s
+-- and ends with the file. A timeout fails the file, rolls it back whole, and
+-- the CI migrate job fails; a rerun is safe (every step is idempotent).
+
+SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE "openclaw_bots"
   ADD COLUMN IF NOT EXISTS "owner_since" timestamptz NOT NULL DEFAULT now();

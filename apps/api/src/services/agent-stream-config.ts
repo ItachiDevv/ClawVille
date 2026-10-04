@@ -35,23 +35,19 @@ import { z } from 'zod';
  * a 16-hex digest the replay's canonical `agentId` can NEVER equal, so it is
  * unmatched BY DESIGN — never mis-delivered to another agent, never leaked.
  *
- * OWNER ATTRIBUTION (security pass 2026-10-04, Codex round 2 BLOCKING A). The
- * whitelist is the union of two disjoint lists, and the history query
- * (`agent-event-query.ts`) applies a different attribution rule to each:
- *   - OWNER-PRIVATE: the payload carries the owner's own content (money,
- *     directive text, purchased knowledge, store sales). A row is returned
- *     only when `events.user_id` equals the current owner. A NULL `user_id`
- *     is NEVER admitted: `owner_since` cannot prove who owned a NULL row (a
- *     prior owner's fire-and-forget insert can land after an ownership change).
- *     Every emit site of these types writes the acting owner's `user_id`.
- *   - NON-PRIVATE: the payload carries only world facts (building id, activity
- *     label, teacher name, message LENGTH, CT figure) and no owner content.
- *     Some emit sites write no `user_id` (autonomous arrivals, gateway chat),
- *     so a NULL `user_id` is admitted inside the owner period.
- * A new type goes into OWNER-PRIVATE unless every emit site's payload is shown
- * to carry no owner content (fail closed).
+ * OWNER ATTRIBUTION (security pass 2026-10-04, Codex round 3 BLOCKING; founder
+ * rule: event history is owner-only). The history query
+ * (`agent-event-query.ts`) returns a row of ANY type here only when its
+ * `events.user_id` equals the current owner. A NULL `user_id` is never
+ * admitted: `owner_since` cannot prove who owned a NULL row (a prior owner's
+ * fire-and-forget insert can land after an ownership change), and even a
+ * "world fact" payload (chat target + message length) tells the new owner what
+ * the prior owner did. Since 2026-10-04 every emit site of these types records
+ * the proven owner; rows logged before that without attribution, or for an
+ * unproven session, are not replayed. Fail closed: a new type needs nothing
+ * extra, its rows replay only once they carry the acting owner's `user_id`.
  */
-export const AGENT_STREAM_OWNER_PRIVATE_EVENT_TYPES = [
+export const AGENT_STREAM_EVENT_TYPES = [
   // Cove settlement confirms — already durably logged with clean bet/payout/net
   // payloads (no secrets). The money-bearing catch-up events. Every emit site
   // (cove-blackjack/-baccarat/-holdem/-slots `logEvent*`) writes
@@ -78,26 +74,20 @@ export const AGENT_STREAM_OWNER_PRIVATE_EVENT_TYPES = [
   // The agentId comes from a join on `openclaw_bots.user_id = seller userId`,
   // so a row with an agentId always carries the seller's `userId`.
   'land.service.sold',
-] as const;
-
-export const AGENT_STREAM_NON_PRIVATE_EVENT_TYPES = [
   // World + teaching activity the agent itself performed (agent_id-keyed).
   // building.visited: gateway visit (`agent-gateway.ts`, payload
   // {ctAwarded, activity, knowledgeGained:0|1}, `userId` = proven owner or
   // NULL) and autonomous arrival (`world-teacher-chat.ts`, payload
-  // {isHouse, ctAwarded, via}, no `userId`).
+  // {isHouse, ctAwarded, via}, `userId` = the enrolled owner). Only
+  // owner-attributed rows replay.
   'building.visited',
-  // agent.chat.turn: gateway character/building chat (`agent-gateway.ts`,
-  // payload {chatType, targetNpcId|characterName, messageLength, ...}, no
-  // `userId`), autonomous teacher chat (`world-teacher-chat.ts`, no `userId`)
-  // and Nori chat (`system-agent-chat.ts`, `userId` = subject). No payload
-  // carries message text, only its length.
+  // agent.chat.turn: gateway character/building chat (`agent-gateway.ts` via
+  // `agent-event-owner.ts`, payload {chatType, targetNpcId|characterName,
+  // messageLength, ...}, `userId` = proven owner or NULL), autonomous teacher
+  // chat (`world-teacher-chat.ts`, `userId` = the enrolled owner) and Nori chat
+  // (`system-agent-chat.ts`, `userId` = subject). Only owner-attributed rows
+  // replay.
   'agent.chat.turn',
-] as const;
-
-export const AGENT_STREAM_EVENT_TYPES = [
-  ...AGENT_STREAM_OWNER_PRIVATE_EVENT_TYPES,
-  ...AGENT_STREAM_NON_PRIVATE_EVENT_TYPES,
 ] as const;
 
 export type AgentStreamEventType = (typeof AGENT_STREAM_EVENT_TYPES)[number];

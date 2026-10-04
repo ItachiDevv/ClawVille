@@ -17,8 +17,9 @@ import { Hono } from 'hono';
 // Owner-period scope (security pass 2026-10-04, Codex BLOCKING): the proof and
 // the query scope come from ONE resolution. The route passes the proven
 // `{ agentId, ownerUserId }` to the shared query, whose SQL re-checks the row
-// owner and returns only events from `openclaw_bots.owner_since` on, never a
-// row attributed to another user. The query mock below mirrors those three SQL
+// owner and returns only events from `openclaw_bots.owner_since` on that are
+// attributed to that owner (never another user's row, never a NULL-attributed
+// row: Codex round 3). The query mock below mirrors those three SQL
 // clauses over an in-memory table (the real SQL is pinned by
 // services/__tests__/agent-event-query-scope.test.ts and run on Postgres by
 // services/__tests__/agent-owner-since.db.test.ts), so these tests prove the
@@ -59,20 +60,22 @@ let moveOwnerAfterRowReads: { reads: number; to: string } | null = null;
 
 const HISTORY_ROWS: HistoryRow[] = [
   { id: 11n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:00Z'), payload: { directive: DIRECTIVE_TEXT }, userId: OWNER_ID },
-  { id: 12n, eventType: 'building.visited', ts: new Date('2026-10-04T00:01:00Z'), payload: { buildingId: 'cron-automation' }, userId: null },
+  { id: 12n, eventType: 'building.visited', ts: new Date('2026-10-04T00:01:00Z'), payload: { buildingId: 'cron-automation' }, userId: OWNER_ID },
 ];
 
 /**
  * Ownership-change table: PRIOR owned the row until 00:00:30, then OWNER.
  * 21-22 are PRIOR's period; 23 is a late PRIOR row whose insert landed inside
- * OWNER's period; 24-25 are OWNER's own period.
+ * OWNER's period; 24-25 are OWNER's own period; 26 is a NULL-attributed chat
+ * turn inside OWNER's period (never returned: Codex round 3).
  */
 const MOVED_ROWS: HistoryRow[] = [
   { id: 21n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:10Z'), payload: { directive: PRIOR_DIRECTIVE }, userId: PRIOR_ID },
   { id: 22n, eventType: 'building.visited', ts: new Date('2026-10-04T00:00:20Z'), payload: { buildingId: 'prior-visit' }, userId: null },
   { id: 23n, eventType: 'cove.blackjack.hand.settled', ts: new Date('2026-10-04T00:00:31Z'), payload: { net: 90, note: PRIOR_DIRECTIVE }, userId: PRIOR_ID },
   { id: 24n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T00:00:40Z'), payload: { directive: DIRECTIVE_TEXT }, userId: OWNER_ID },
-  { id: 25n, eventType: 'building.visited', ts: new Date('2026-10-04T00:00:50Z'), payload: { buildingId: 'cron-automation' }, userId: null },
+  { id: 25n, eventType: 'building.visited', ts: new Date('2026-10-04T00:00:50Z'), payload: { buildingId: 'cron-automation' }, userId: OWNER_ID },
+  { id: 26n, eventType: 'agent.chat.turn', ts: new Date('2026-10-04T00:00:55Z'), payload: { chatType: 'character', targetNpcId: 'late-null-chat', messageLength: 12 }, userId: null },
 ];
 
 let historyTable: HistoryRow[] = HISTORY_ROWS;
@@ -122,13 +125,14 @@ mock.module('../../services/agent-event-query', () => ({
     historyQueries.push({ scope: { ...scope }, afterId, limit });
     // The three scope clauses of the real SQL, read at query time:
     // (1) the row's CURRENT owner is the proven owner, (2) ts >= owner_since,
-    // (3) user_id IS NULL OR user_id = owner. Then the SAFE columns only.
+    // (3) user_id = owner (a NULL user_id is never admitted). Then the SAFE
+    // columns only.
     if (!botRow || botRow.agentId !== scope.agentId || botRow.userId !== scope.ownerUserId) return [];
     const ownerSince = botRow.ownerSince as Date;
     return historyTable
       .filter((row) => row.id > afterId)
       .filter((row) => row.ts.getTime() >= ownerSince.getTime())
-      .filter((row) => row.userId === null || row.userId === botRow!.userId)
+      .filter((row) => row.userId === botRow!.userId)
       .slice(0, limit)
       .map(({ id, eventType, ts, payload }) => ({ id, eventType, ts, payload }));
   },
@@ -450,9 +454,11 @@ describe('owner-period scope after an ownership change (security pass 2026-10-04
       id: '24', eventType: 'agent.directive.set', ts: '2026-10-04T00:00:40.000Z', payload: { directive: DIRECTIVE_TEXT },
     });
     expect(body.nextCursor).toBe('25');
-    // Neither the prior period (21, 22) nor the late prior-owner row (23).
+    // Neither the prior period (21, 22), the late prior-owner row (23), nor
+    // the NULL-attributed chat turn (26).
     expect(res.text).not.toContain(PRIOR_DIRECTIVE);
     expect(res.text).not.toContain('prior-visit');
+    expect(res.text).not.toContain('late-null-chat');
     // One owner-proof resolution feeds the scope: the proven owner, never unscoped.
     expect(historyQueries).toEqual([
       { scope: { agentId: 'p83-owner-moved-replay', ownerUserId: OWNER_ID }, afterId: 0n, limit: 100 },
@@ -478,6 +484,8 @@ describe('owner-period scope after an ownership change (security pass 2026-10-04
     expect(text).not.toContain('id: 21\n');
     expect(text).not.toContain('id: 22\n');
     expect(text).not.toContain('id: 23\n');
+    expect(text).not.toContain('id: 26\n');
+    expect(text).not.toContain('late-null-chat');
     expect(text).not.toContain(PRIOR_DIRECTIVE);
     expect(historyQueries[0]).toEqual({
       scope: { agentId: 'p83-owner-moved-sse', ownerUserId: OWNER_ID }, afterId: 0n, limit: 500,

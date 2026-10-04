@@ -130,6 +130,7 @@ import {
   computeNextCursor,
 } from '../services/agent-stream-config';
 import { queryDurableAgentEvents, type AgentHistoryScope } from '../services/agent-event-query';
+import { logGatewayAgentEvent } from '../services/agent-event-owner';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
@@ -2866,7 +2867,10 @@ agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
     }
   }
 
-  void logEventFromContext(c, {
+  // Owner attribution (security pass 2026-10-04): the agent event history is
+  // owner-only, so the row records this session's PROVEN owner (C10 owner proof,
+  // one indexed lookup, only for a session with a bound owner) or NULL.
+  void logGatewayAgentEvent(c, sessionId, {
     eventType: 'agent.chat.turn',
     agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
@@ -3034,12 +3038,15 @@ agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
     }
   }
 
-  void logEventFromContext(c, {
+  // Audit-fix 2026-04-29 — userId attribution lets the deep-explorer tutorial
+  // quest validator credit the proven human account for autonomous agent
+  // visits. Security pass 2026-10-04: the owner-only event history needs it too,
+  // so an owner-proven session that is not ledger-capable (restored after a
+  // deploy, the /enter keeper) records its proven owner as well (C10 owner
+  // proof, one indexed lookup; none when the reward subject already proved it).
+  // Ownership-unproven sessions still leave this null.
+  void logGatewayAgentEvent(c, sessionId, {
     eventType: 'building.visited',
-    // Audit-fix 2026-04-29 — userId attribution lets the deep-explorer
-    // tutorial quest validator credit the proven human account for autonomous
-    // agent visits. Ownership-unproven sessions deliberately leave this null.
-    userId: visitUserId,
     agentId: botConfig?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
     buildingId,
@@ -3053,7 +3060,7 @@ agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
       activity: picked,
       knowledgeGained: knowledgeGained ? 1 : 0,
     },
-  });
+  }, visitUserId);
 
   return c.json({
     success: true,
@@ -3292,7 +3299,11 @@ agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
     })();
   }
 
-  void logEventFromContext(c, {
+  // Owner attribution (security pass 2026-10-04): the owner-only event history
+  // needs the session's PROVEN owner. The reward subject already proved it for a
+  // ledger-capable session (no read); otherwise the C10 owner proof costs one
+  // indexed lookup for a session with a bound owner. Unproven sessions log NULL.
+  void logGatewayAgentEvent(c, sessionId, {
     eventType: 'agent.chat.turn',
     agentId: botConfig?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
@@ -3307,7 +3318,7 @@ agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
       ctAwarded: tokenAwarded,
       knowledgePersisted,
     },
-  });
+  }, chatKnowledgeSubject?.userId ?? null);
 
   return c.json({
     success: true,

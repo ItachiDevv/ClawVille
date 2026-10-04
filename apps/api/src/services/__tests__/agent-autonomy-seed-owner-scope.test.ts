@@ -11,9 +11,9 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 // move the cursor.
 //
 // The query mock mirrors the three SQL clauses (owner re-check, ts >=
-// owner_since, user attribution) over an in-memory table; the real SQL is pinned
-// by agent-event-query-scope.test.ts and run on Postgres by
-// agent-owner-since.db.test.ts.
+// owner_since, user_id = owner with NULL never admitted) over an in-memory
+// table; the real SQL is pinned by agent-event-query-scope.test.ts and run on
+// Postgres by agent-owner-since.db.test.ts.
 
 const AGENT = 'seed-scope-agent';
 const PRIOR = '97777777-7777-4777-8777-777777777777';
@@ -42,7 +42,9 @@ const ROWS: Row[] = [
   // Late prior-owner row: landed inside the new period, still the prior owner's.
   { id: 4n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T12:00:01Z'), payload: { buildingId: 'prior-late' }, userId: PRIOR },
   { id: 5n, eventType: 'agent.directive.set', ts: new Date('2026-10-04T12:05:00Z'), payload: { buildingId: 'owner-directive' }, userId: OWNER },
-  { id: 6n, eventType: 'building.visited', ts: new Date('2026-10-04T12:10:00Z'), payload: { buildingId: 'owner-visit' }, userId: null },
+  { id: 6n, eventType: 'building.visited', ts: new Date('2026-10-04T12:10:00Z'), payload: { buildingId: 'owner-visit' }, userId: OWNER },
+  // NULL-attributed row inside the new period: never returned (Codex round 3).
+  { id: 8n, eventType: 'agent.chat.turn', ts: new Date('2026-10-04T12:20:00Z'), payload: { buildingId: 'null-chat' }, userId: null },
 ];
 
 const realQuery = await import('../agent-event-query');
@@ -64,7 +66,7 @@ mock.module('../agent-event-query', () => ({
     return table
       .filter((r) => r.id > afterId)
       .filter((r) => r.ts.getTime() >= row.ownerSince.getTime())
-      .filter((r) => r.userId === null || r.userId === row.userId)
+      .filter((r) => r.userId === row.userId)
       .sort((a, b) => (a.id < b.id ? 1 : -1))
       .slice(0, limit)
       .map(({ id, eventType, ts, payload }) => ({ id, eventType, ts, payload }));
@@ -126,7 +128,7 @@ describe('autonomy driver wake-seed reads only the current owner period', () => 
     await driver.seedFromCursorOnce(entry);
     expect(scopes).toEqual([{ agentId: AGENT, ownerUserId: OWNER }]);
     expect(entry.recentEventSummary).toBe('agent.directive.set(owner-directive); building.visited(owner-visit)');
-    for (const prior of ['prior-directive', 'prior-visit', 'prior-late', 'net +77']) {
+    for (const prior of ['prior-directive', 'prior-visit', 'prior-late', 'net +77', 'null-chat']) {
       expect(entry.recentEventSummary).not.toContain(prior);
     }
     // The cursor advances to the newest row of the owner's period.
@@ -144,7 +146,8 @@ describe('autonomy driver wake-seed reads only the current owner period', () => 
   test('a house agent reads with its house user as the owner scope', async () => {
     row = { agentId: AGENT, userId: HOUSE_USER, ownerSince: new Date('2026-10-01T00:00:00Z') };
     table = [
-      { id: 7n, eventType: 'building.visited', ts: new Date('2026-10-04T13:00:00Z'), payload: { buildingId: 'house-visit' }, userId: null },
+      { id: 7n, eventType: 'building.visited', ts: new Date('2026-10-04T13:00:00Z'), payload: { buildingId: 'house-visit' }, userId: HOUSE_USER },
+      { id: 9n, eventType: 'building.visited', ts: new Date('2026-10-04T13:05:00Z'), payload: { buildingId: 'house-null' }, userId: null },
     ];
     agentAutonomyDriver.registerHouseAgent({
       agentId: AGENT,

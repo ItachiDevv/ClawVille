@@ -1189,6 +1189,9 @@ class AgentAutonomyDriver {
           agentId: entry.agentId,
           bodyId: entry.bodyId,
           avatarId: entry.avatarId,
+          // Owner attribution (security pass 2026-10-04): the enrolled owner of
+          // avatarId, the same id seedFromCursorOnce reads history with.
+          userId: entry.houseUserId,
           // P3 slice 3: the LEARNING agent's runtime — folds its prior lessons
           // into the teacher's context AND converges the new lesson onto ElizaOS.
           platformAgentId: entry.platformAgentId,
@@ -1547,6 +1550,7 @@ class AgentAutonomyDriver {
           agentId: entry.agentId,
           bodyId: entry.bodyId,
           avatarId: entry.avatarId,
+          userId: entry.houseUserId,
           buildingId: entry.targetBuildingId,
         }).catch((err) =>
           console.warn(

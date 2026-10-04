@@ -41,6 +41,21 @@
 -- every existing row: "0 >= 0", and the second CHECK's first arm is
 -- "deposit_usdc_funded_ct = 0". A rerun changes nothing: the column and both
 -- constraints are guarded by IF NOT EXISTS / pg_constraint lookups.
+--
+-- LOCKS + VALIDATION (Codex round 3 hygiene). migrate-ci.ts sends the whole
+-- file as ONE simple-query message (postgres.js unsafe() with no parameters),
+-- which PostgreSQL runs as one implicit transaction, so SET LOCAL bounds every
+-- lock wait in this file to 5 s and ends with the file. A timeout fails the
+-- file, rolls it back whole, and the CI migrate job fails; a rerun is safe.
+-- Each CHECK is added NOT VALID (no table scan under the ADD) and then
+-- VALIDATEd (scans land_parcels: about 56-74 rows on each box). Inside this one
+-- transaction the ADD COLUMN lock is held to the end anyway, so the lock
+-- timeout is the real bound; at this table size the scan is short. Each step has
+-- its own pg_constraint guard: the ADD runs only when the constraint is
+-- missing, the VALIDATE only while it is not yet validated. After the file
+-- both constraints are validated, and a rerun changes nothing.
+
+SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE "land_parcels"
   ADD COLUMN IF NOT EXISTS "deposit_usdc_funded_ct" integer NOT NULL DEFAULT 0;
@@ -54,7 +69,20 @@ BEGIN
   ) THEN
     ALTER TABLE "land_parcels"
       ADD CONSTRAINT "land_parcels_deposit_usdc_funded_nonneg"
-      CHECK ("deposit_usdc_funded_ct" >= 0);
+      CHECK ("deposit_usdc_funded_ct" >= 0) NOT VALID;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'land_parcels_deposit_usdc_funded_nonneg'
+      AND conrelid = 'land_parcels'::regclass
+      AND NOT convalidated
+  ) THEN
+    ALTER TABLE "land_parcels"
+      VALIDATE CONSTRAINT "land_parcels_deposit_usdc_funded_nonneg";
   END IF;
 END $$;
 
@@ -73,6 +101,19 @@ BEGIN
           "deposit_remaining_ct" IS NOT NULL
           AND "deposit_usdc_funded_ct" <= "deposit_remaining_ct"
         )
-      );
+      ) NOT VALID;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'land_parcels_deposit_usdc_funded_within_remaining'
+      AND conrelid = 'land_parcels'::regclass
+      AND NOT convalidated
+  ) THEN
+    ALTER TABLE "land_parcels"
+      VALIDATE CONSTRAINT "land_parcels_deposit_usdc_funded_within_remaining";
   END IF;
 END $$;

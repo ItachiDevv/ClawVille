@@ -1024,8 +1024,31 @@ describe('M8 bucket — structural pins', () => {
     expect(sqlOnly.split('IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint').length - 1).toBe(2);
     expect(sqlOnly).toContain("conname = 'land_parcels_deposit_usdc_funded_nonneg'");
     expect(sqlOnly).toContain("conname = 'land_parcels_deposit_usdc_funded_within_remaining'");
-    expect(sqlOnly).toContain('CHECK ("deposit_usdc_funded_ct" >= 0);');
+    expect(sqlOnly).toContain('CHECK ("deposit_usdc_funded_ct" >= 0) NOT VALID;');
     expect(sqlOnly).toMatch(/CHECK \(\s*"deposit_usdc_funded_ct" = 0\s*OR \(/);
     expect(sqlOnly.indexOf('ADD COLUMN IF NOT EXISTS')).toBeLessThan(sqlOnly.indexOf('ADD CONSTRAINT'));
+  });
+
+  it('migration 0078 bounds lock waits and adds each CHECK NOT VALID, then VALIDATEs it (Codex round 3)', () => {
+    const sqlOnly = migration.replace(/--[^\n]*/g, '');
+    // migrate-ci runs the file as ONE implicit transaction, so SET LOCAL is the
+    // first statement and lasts exactly for the file.
+    expect(sqlOnly.trim().startsWith("SET LOCAL lock_timeout = '5s';")).toBe(true);
+    expect(sqlOnly.split('lock_timeout').length - 1).toBe(1);
+    // Both CHECKs are added NOT VALID (no scan under the ADD) ...
+    expect(sqlOnly.split(') NOT VALID;').length - 1).toBe(2);
+    // ... and each is VALIDATEd after its ADD, behind its own guard that runs
+    // only while the constraint is not yet validated (a rerun is a no-op).
+    expect(sqlOnly.split('VALIDATE CONSTRAINT').length - 1).toBe(2);
+    expect(sqlOnly.split('AND NOT convalidated').length - 1).toBe(2);
+    for (const name of [
+      'land_parcels_deposit_usdc_funded_nonneg',
+      'land_parcels_deposit_usdc_funded_within_remaining',
+    ]) {
+      const add = sqlOnly.indexOf(`ADD CONSTRAINT "${name}"`);
+      const validate = sqlOnly.indexOf(`VALIDATE CONSTRAINT "${name}";`);
+      expect(add).toBeGreaterThan(-1);
+      expect(validate).toBeGreaterThan(add);
+    }
   });
 });

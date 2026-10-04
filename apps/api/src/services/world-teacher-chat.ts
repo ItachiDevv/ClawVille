@@ -89,6 +89,14 @@ export interface TeacherTurnInput {
   /** avatars.id the CT settles to (the dedicated house user's avatar). */
   avatarId: string;
   /**
+   * The owner the driver enrolled this agent under (`entry.houseUserId`: the
+   * dedicated house user for a house agent, the owner for a user-owned agent),
+   * i.e. the user that owns `avatarId`. Recorded as the event's `user_id` so the
+   * owner-only event history (`agent-event-query.ts`) and the driver's own
+   * wake-seed see the turn. null = no proven owner: the row stays hidden.
+   */
+  userId: string | null;
+  /**
    * P3 slice 3 — platform_agents.id whose warmed ElizaOS runtime backs the
    * LEARNING agent. Used to (a) fold this agent's OWN prior earned-skill lessons
    * for this building into the teacher's context and (b) converge the new lesson
@@ -182,7 +190,7 @@ async function foldPriorLessons(
 export async function conductTeacherTurn(
   input: TeacherTurnInput,
 ): Promise<TeacherTurnResult | null> {
-  const { agentId, bodyId, avatarId, buildingId, platformAgentId } = input;
+  const { agentId, bodyId, avatarId, buildingId, platformAgentId, userId } = input;
   const message = input.message.trim();
   if (!message) return null;
 
@@ -309,8 +317,10 @@ export async function conductTeacherTurn(
     // no-op for these rows — the isHouse carve-out (routes/leaderboard.ts) is
     // the SOLE gate keeping them off the public board. Any future change that
     // drops the carve-out silently exposes an uncapped scoring faucet here.
+    // userId = the enrolled owner of `avatarId` (owner-only event history).
     void logEvent({
       eventType: 'agent.chat.turn',
+      userId,
       agentId,
       avatarId,
       buildingId,
@@ -357,6 +367,8 @@ export interface BuildingArrivalInput {
   agentId: string;
   bodyId: string;
   avatarId: string;
+  /** Same as `TeacherTurnInput.userId`: the enrolled owner of `avatarId`, or null. */
+  userId: string | null;
   buildingId: string;
 }
 
@@ -368,7 +380,7 @@ export interface BuildingArrivalInput {
  * Never throws (fail-soft; the driver fires it fire-and-forget).
  */
 export async function settleBuildingArrival(input: BuildingArrivalInput): Promise<void> {
-  const { agentId, bodyId, avatarId, buildingId } = input;
+  const { agentId, bodyId, avatarId, buildingId, userId } = input;
   try {
     if (!proximityPassed(agentId, bodyId, buildingId, 'arrival settle')) return;
 
@@ -387,9 +399,10 @@ export async function settleBuildingArrival(input: BuildingArrivalInput): Promis
     }
 
     // Same caveat as 4b above: fp/ip null ⇒ the isHouse carve-out is the sole
-    // public-board gate for this row.
+    // public-board gate for this row. userId = the enrolled owner (see 4b).
     void logEvent({
       eventType: 'building.visited',
+      userId,
       agentId,
       avatarId,
       buildingId,

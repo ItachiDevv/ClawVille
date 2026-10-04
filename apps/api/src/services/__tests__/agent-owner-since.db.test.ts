@@ -15,10 +15,11 @@ import { randomUUID } from 'node:crypto';
  *     write to it;
  *   - the shared history query (replay, SSE catch-up and the driver wake-seed
  *     all call it) returns only the proven current owner's period, hides a late
- *     prior-owner row, hides a NULL-attributed OWNER-PRIVATE row (Codex round 2
- *     BLOCKING A) while it still returns a NULL-attributed non-private row, and
- *     returns nothing for a stale owner proof (the owner re-check runs in the
- *     same statement as the scope).
+ *     prior-owner row, hides EVERY NULL-attributed row whatever its type (Codex
+ *     round 3 BLOCKING, founder rule: event history is owner-only) while it
+ *     returns the owner-attributed rows of every type, and returns nothing for
+ *     a stale owner proof (the owner re-check runs in the same statement as
+ *     the scope).
  *
  * WRITES rows, so it needs DATABASE_URL on a LOCAL host AND an opt-in:
  * CI === 'true' (the gates.yml Postgres service, after migrate-ci applied 0079)
@@ -230,9 +231,10 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       await pause();
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: PRIOR_DIRECTIVE } });
       await insertEvent({ agentId, eventType: 'cove.blackjack.hand.settled', userId: PRIOR, payload: { net: 40 } });
-      await insertEvent({ agentId, eventType: 'building.visited', userId: null, payload: { buildingId: 'prior-visit' } });
-      // A NULL-attributed owner-private row is hidden even inside the owner's
-      // own period (only an owner-attributed private row is returned).
+      await insertEvent({ agentId, eventType: 'building.visited', userId: PRIOR, payload: { buildingId: 'prior-visit' } });
+      // NULL-attributed rows of ANY type are hidden even inside the owner's own
+      // period (Codex round 3): only owner-attributed rows are returned.
+      await insertEvent({ agentId, eventType: 'building.visited', userId: null, payload: { buildingId: 'prior-null-visit' } });
       await insertEvent({ agentId, eventType: 'land.service.sold', userId: null, payload: { priceCt: 7 } });
       // Not whitelisted, and another agent's directive: never returned.
       await insertEvent({ agentId, eventType: 'agent.connected', userId: PRIOR, payload: {} });
@@ -243,6 +245,8 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
         'agent.directive.set', 'cove.blackjack.hand.settled', 'building.visited',
       ]);
       expect(asJson(priorView)).toContain(PRIOR_DIRECTIVE);
+      expect(asJson(priorView)).toContain('prior-visit');
+      expect(asJson(priorView)).not.toContain('prior-null-visit');
 
       // Ownership moves to NEXT (owner_since advances to now).
       await pause();
@@ -252,23 +256,29 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       // A late prior-owner row: its fire-and-forget insert landed AFTER the
       // change (ts inside the new period) but it carries the prior owner's id.
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: `${PRIOR_DIRECTIVE} (late)` } });
-      // Codex round 2 BLOCKING A: a NULL-attributed OWNER-PRIVATE row inside the
-      // new period. owner_since cannot prove who owned it, so it is never
-      // returned (directive text and a cove settlement).
+      // Codex rounds 2 + 3: NULL-attributed rows inside the new period, of
+      // EVERY type. owner_since cannot prove who owned them (a late prior-owner
+      // insert looks the same), so none is returned: directive text, a cove
+      // settlement, a gateway chat turn (target + message length) and an
+      // autonomous arrival.
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: null, payload: { directive: `${PRIOR_DIRECTIVE} (null-attributed)` } });
       await insertEvent({ agentId, eventType: 'cove.slots.spin.executed', userId: null, payload: { winAmount: '999' } });
-      // The new owner's own period.
+      await insertEvent({ agentId, eventType: 'agent.chat.turn', userId: null, payload: { chatType: 'character', targetNpcId: 'null-chat-target', messageLength: 42 } });
+      await insertEvent({ agentId, eventType: 'building.visited', userId: null, payload: { buildingId: 'null-arrival' } });
+      // The new owner's own period: owner-attributed rows of both kinds.
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: NEXT, payload: { directive: NEXT_DIRECTIVE } });
-      await insertEvent({ agentId, eventType: 'agent.chat.turn', userId: null, payload: { chatType: 'building' } });
+      await insertEvent({ agentId, eventType: 'agent.chat.turn', userId: NEXT, payload: { chatType: 'system-agent' } });
 
       const nextView = await queryDurableAgentEvents({ agentId, ownerUserId: NEXT }, 0n, 100);
-      // The NULL-attributed non-private chat turn IS returned; the
-      // NULL-attributed private directive and slots rows are NOT.
+      // Only the two NEXT-attributed rows; no NULL-attributed row of any type.
       expect(nextView.map((row) => [row.eventType, row.payload])).toEqual([
         ['agent.directive.set', { directive: NEXT_DIRECTIVE }],
-        ['agent.chat.turn', { chatType: 'building' }],
+        ['agent.chat.turn', { chatType: 'system-agent' }],
       ]);
       expect(asJson(nextView)).not.toContain(PRIOR_DIRECTIVE);
+      expect(asJson(nextView)).not.toContain('null-chat-target');
+      expect(asJson(nextView)).not.toContain('null-arrival');
+      expect(asJson(nextView)).not.toContain('winAmount');
       // SAFE COLUMNS ONLY: exactly id/eventType/ts/payload.
       expect(Object.keys(nextView[0]!).sort()).toEqual(['eventType', 'id', 'payload', 'ts']);
       expect(typeof nextView[0]!.id).toBe('bigint');
