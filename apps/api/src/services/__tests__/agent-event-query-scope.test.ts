@@ -16,12 +16,20 @@ import { join } from 'path';
 // connection; the same SQL runs on PostgreSQL in agent-owner-since.db.test.ts.
 
 // `||=`, not `??=`: the isolated runner passes DATABASE_URL='' (empty string).
+const priorDatabaseUrl = process.env.DATABASE_URL;
 process.env.DATABASE_URL ||= 'postgres://unit:unit@127.0.0.1:1/unit_no_connect';
 
 const { buildDurableAgentEventsQuery } = await import('../agent-event-query');
 const { AGENT_STREAM_EVENT_TYPES } = await import('../agent-stream-config');
 
 const SCOPE = { agentId: 'scope-agent', ownerUserId: '96666666-6666-4666-8666-666666666666' };
+
+// Warm the lazy db singleton, then restore DATABASE_URL at once: CI runs many
+// files in ONE bun process, and a leaked fake URL makes later DB-gated suites
+// stop skipping and fail on 127.0.0.1:1.
+buildDurableAgentEventsQuery(SCOPE, 0n, 1, 'asc').toSQL();
+if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+else process.env.DATABASE_URL = priorDatabaseUrl;
 
 function render(order: 'asc' | 'desc') {
   const { sql, params } = buildDurableAgentEventsQuery(SCOPE, 41n, 25, order).toSQL();

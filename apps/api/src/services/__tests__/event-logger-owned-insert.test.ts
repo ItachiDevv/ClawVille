@@ -22,6 +22,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { is, SQL } from 'drizzle-orm';
 
 // `||=`, not `??=`: the isolated runner passes DATABASE_URL='' (empty string).
+const priorDatabaseUrl = process.env.DATABASE_URL;
 process.env.DATABASE_URL ||= 'postgres://unit:unit@127.0.0.1:1/unit_no_connect';
 
 const AGENT_ID = 'owned-insert-agent';
@@ -30,6 +31,12 @@ const ACTED_AT = '2026-10-04T12:00:00.000Z';
 
 const realDatabase = await import('@clawville/database');
 const realDb = realDatabase.db as unknown as Record<PropertyKey, unknown>;
+// Warm the lazy db singleton (first property read builds it), then restore
+// DATABASE_URL at once: CI runs many files in ONE bun process, and a leaked fake
+// URL makes later DB-gated suites stop skipping and fail on 127.0.0.1:1.
+void realDb.insert;
+if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+else process.env.DATABASE_URL = priorDatabaseUrl;
 
 type Insert = { table: unknown; values: Record<string, unknown>; returning: boolean };
 /** 'record' = fake inserts are captured; 'real' = delegate (for `.toSQL()`). */
