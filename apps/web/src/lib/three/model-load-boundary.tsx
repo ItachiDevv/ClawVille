@@ -32,6 +32,11 @@
  * - Retry: on catch the boundary calls `error.clear()` (GLB: useGLTF.clear;
  *   VRM: evicts the rejected instance entry), so a `resetKey` change or a
  *   remount of the figure requests the model again.
+ * - `fallback` (optional): rendered INSTEAD of null after a model failure.
+ *   The LOCAL player's own body uses it (default lobster GLB body via
+ *   local-player-model-fallback.ts), so the player is never invisible. A
+ *   render bug still goes to the outer boundary, never to the fallback.
+ *   Without `fallback` the behavior is unchanged.
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { isModelLoadError, type ModelLoadError } from './model-load-error';
@@ -90,6 +95,8 @@ export interface ModelLoadBoundaryProps {
   readonly label: string;
   /** Changing it clears the failed state and remounts the children. */
   readonly resetKey: string;
+  /** Rendered instead of null after a MODEL failure (local player body). */
+  readonly fallback?: ReactNode;
   readonly children?: ReactNode;
 }
 
@@ -125,17 +132,18 @@ export class ModelLoadBoundary extends Component<ModelLoadBoundaryProps, ModelLo
     // mark outlive it.
     PENDING_REPORT_CANCEL.delete(error);
     error.clear();
-    const { label } = this.props;
-    if (!firstReport(error, `skip|${error.url}`)) return;
+    const { label, fallback } = this.props;
+    const outcome = fallback === undefined ? 'skipped' : 'replaced by fallback';
+    if (!firstReport(error, `${outcome}|${error.url}`)) return;
     console.error(
-      `[3D] figure skipped (model load failed) (${error.phase}): ${label} ${error.url} ${describeError(error.original)}`,
+      `[3D] figure ${outcome} (model load failed) (${error.phase}): ${label} ${error.url} ${describeError(error.original)}`,
       error,
     );
   }
 
   render(): ReactNode {
     if (this.state.foreign) throw this.state.foreign.error;
-    if (this.state.failed) return null;
+    if (this.state.failed) return this.props.fallback ?? null;
     return this.props.children ?? null;
   }
 }

@@ -157,6 +157,7 @@ jobs:
           src/lib/three/glb-fetch-retry.test.ts
           src/lib/three/glb-fetch-retry.integration.test.ts
           src/lib/three/model-load-boundary.test.tsx
+          src/lib/three/local-player-model-fallback.test.ts
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process

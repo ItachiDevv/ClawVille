@@ -43,6 +43,10 @@ import {
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import {
+  LOCAL_PLAYER_FALLBACK_MODEL_KEY,
+  onLocalPlayerModelFallback,
+} from '@/lib/three/local-player-model-fallback';
+import {
   notifyBootActorCommitted,
   registerBootActorClaim,
   requiresDeferredAttach,
@@ -2048,9 +2052,31 @@ export function BootActorNpcBody() {
     PLAYER_NPC_ID,
   );
   if (controlMode !== 'npc' || !npc) return null;
+  // The possessed body is the LOCAL player's body: on a load failure it falls
+  // back to the default lobster GLB (never invisible), releases the npc-body
+  // boot claim and shows one notice (local-player-model-fallback.ts).
+  const bodyPath = isVrm ? vrmPathForSpecies(npc.species) : (regEntry?.path ?? npc.species);
+  return (
+    <ModelLoadBoundary
+      assetUrl={bodyPath}
+      label="possessed-npc-body"
+      resetKey={npc.species}
+      fallback={<PossessedBodyFallback npc={npc} failedPath={bodyPath} />}
+    >
+      <Suspense fallback={null}>
+        <BootActorNpcBodyInner key={npc.species} npc={npc} />
+      </Suspense>
+    </ModelLoadBoundary>
+  );
+}
+
+function PossessedBodyFallback({ npc, failedPath }: { npc: NpcSpriteState; failedPath: string }) {
+  useEffect(() => {
+    onLocalPlayerModelFallback('npc-body', failedPath, useGameStore.getState().addToast);
+  }, [failedPath]);
   return (
     <Suspense fallback={null}>
-      <BootActorNpcBodyInner key={npc.species} npc={npc} />
+      <GLBNpcMesh npc={{ ...npc, species: LOCAL_PLAYER_FALLBACK_MODEL_KEY }} />
     </Suspense>
   );
 }

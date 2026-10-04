@@ -321,6 +321,65 @@ describe('ModelLoadBoundary', () => {
     await act(async () => root.unmount());
   });
 
+  test('with a fallback (local player body): a failed model renders the fallback; one "replaced by fallback" line; a render bug still goes to the outer boundary', async () => {
+    const path = 'http://localhost/avatars/mlb-player-missing.vrm';
+    const container = newContainer();
+    const reported: HappyErrorEvent[] = [];
+    const outer: unknown[] = [];
+    const root = r3fLikeRoot(container, reported);
+    const cap = captureConsoleError();
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            OuterBoundary,
+            { onCatch: (e) => outer.push(e) },
+            createElement(
+              ModelLoadBoundary,
+              { assetUrl: path, label: 'player-avatar', resetKey: path, fallback: createElement('u', { id: 'fallback-body' }) },
+              createElement(Suspense, { fallback: null }, createElement(VrmFigure, { path, id: 'player-avatar' })),
+            ),
+          ),
+        );
+      });
+      await settle();
+    } finally {
+      cap.restore();
+    }
+    expect(container.querySelector('#fallback-body')).not.toBeNull();
+    expect(container.querySelectorAll('[data-figure]').length).toBe(0);
+    expect(outer).toEqual([]);
+    expect(cap.logged.length).toBe(1);
+    expect(String(cap.logged[0][0])).toContain(`[3D] figure replaced by fallback (model load failed) (fetch): player-avatar ${path}`);
+    expect(reported.every((event) => event.defaultPrevented)).toBe(true);
+    await act(async () => root.unmount());
+
+    // A render bug is never hidden behind the fallback.
+    function Buggy(): never {
+      throw new TypeError('render bug');
+    }
+    const container2 = newContainer();
+    const outer2: unknown[] = [];
+    const root2 = r3fLikeRoot(container2, []);
+    const cap2 = captureConsoleError();
+    try {
+      await act(async () => {
+        root2.render(
+          createElement(
+            OuterBoundary,
+            { onCatch: (e) => outer2.push(e) },
+            createElement(ModelLoadBoundary, { assetUrl: path, label: 'player-avatar', resetKey: 'x', fallback: createElement('u', { id: 'fallback-2' }) }, createElement(Buggy)),
+          ),
+        );
+      });
+    } finally {
+      cap2.restore();
+    }
+    expect(container2.querySelector('#fallback-2')).toBeNull();
+    expect(outer2.length).toBe(1);
+    await act(async () => root2.unmount());
+  });
+
   test('changing resetKey clears the failure and remounts the figure', async () => {
     let loadFails = true;
     function Flaky() {

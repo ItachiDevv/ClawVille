@@ -26,6 +26,11 @@ import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-l
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
+import {
+  LOCAL_PLAYER_FALLBACK_MODEL_KEY,
+  onLocalPlayerModelFallback,
+} from '@/lib/three/local-player-model-fallback';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 import {
   MODEL_REGISTRY,
@@ -628,7 +633,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   );
 }
 
-function PlayerAvatarGLBInner() {
+function PlayerAvatarGLBInner({ forcedModelKey }: { forcedModelKey?: string } = {}) {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
   const kelpPortalPrevXRef = useRef(0);
@@ -644,7 +649,10 @@ function PlayerAvatarGLBInner() {
   // Phase 2: resolve which GLB to load from the model registry.
   // avatarModelKey is set by game/page.tsx via setAvatarAppearance when the avatar
   // loads from the API. Falls back to 'lobster' if null / unknown key.
-  const avatarModelKey = useGameStore((s) => s.avatarModelKey);
+  // `forcedModelKey` (2026-10-04): the local-player fallback body after the
+  // chosen VRM failed every request retry (LocalPlayerFallbackBody below).
+  const storeModelKey = useGameStore((s) => s.avatarModelKey);
+  const avatarModelKey = forcedModelKey ?? storeModelKey;
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
@@ -835,6 +843,26 @@ function PlayerAvatarGLBInner() {
 }
 
 // ---------------------------------------------------------------------------
+// Local-player fallback body (2026-10-04): rendered by ModelLoadBoundary when
+// the chosen VRM failed every request retry (404, or an outage longer than
+// ~2.5 s). Shows the default lobster GLB body, releases the boot-actor claim
+// so the reveal does not wait, and shows ONE notice. The boundary logs the
+// one console.error with the URL. Reload (or an avatar change, which changes
+// the boundary resetKey) tries the VRM again.
+// ---------------------------------------------------------------------------
+
+function LocalPlayerFallbackBody({ failedPath }: { failedPath: string }) {
+  useEffect(() => {
+    onLocalPlayerModelFallback('player-vrm', failedPath, useGameStore.getState().addToast);
+  }, [failedPath]);
+  return (
+    <Suspense fallback={null}>
+      <PlayerAvatarGLBInner forcedModelKey={LOCAL_PLAYER_FALLBACK_MODEL_KEY} />
+    </Suspense>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Route to the correct inner component based on avatar_type
 // ---------------------------------------------------------------------------
 
@@ -860,14 +888,21 @@ function PlayerAvatarRouter() {
 
   if (reg.avatar_type === 'vrm') {
     return (
-      <Suspense fallback={null}>
-        {/* key={reg.path} (Codex round-2 finding 2): a VRM→VRM avatar swap
-            must REMOUNT the inner — an unkeyed instance would carry the
-            captured-once lateResolved decision and a stale ready=true
-            DeferredWarmAttachment across the path change, attaching the NEW
-            VRM without a warm pass (first-frame hitch). */}
-        <PlayerAvatarVRMInner key={reg.path} reg={reg} />
-      </Suspense>
+      <ModelLoadBoundary
+        assetUrl={reg.path}
+        label="player-avatar"
+        resetKey={reg.path}
+        fallback={<LocalPlayerFallbackBody failedPath={reg.path} />}
+      >
+        <Suspense fallback={null}>
+          {/* key={reg.path} (Codex round-2 finding 2): a VRM→VRM avatar swap
+              must REMOUNT the inner — an unkeyed instance would carry the
+              captured-once lateResolved decision and a stale ready=true
+              DeferredWarmAttachment across the path change, attaching the NEW
+              VRM without a warm pass (first-frame hitch). */}
+          <PlayerAvatarVRMInner key={reg.path} reg={reg} />
+        </Suspense>
+      </ModelLoadBoundary>
     );
   }
 
