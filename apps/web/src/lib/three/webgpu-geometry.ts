@@ -84,11 +84,44 @@ export function makeGeometryWebGPUSafe<T extends THREE.BufferGeometry>(geometry:
   return geometry;
 }
 
+/**
+ * three r185 WebGPU treats a texture with minFilter === magFilter === NearestFilter as
+ * "unfilterable": WGSLNodeBuilder drops its sampler binding (textureLoad path). Material
+ * maps go through ONE module-global MaterialReferenceNode per property, whose TextureNode
+ * `.value` is re-pointed at whatever material renders next. compileAsync() builds with
+ * buildAsync(), which yields between stages, so the sampler check at uniform registration
+ * (bind-group layout) and at WGSL generation can read different textures. The result is a
+ * layout without the sampler bindings while the shader declares them: "Binding doesn't exist
+ * in [BindGroupLayout]", and the pipeline-error mesh is never drawn (WebGPUBackend.draw skips it).
+ * Hit on prod by hermitcrab-ktx.glb (PaletteMaterial001); sea_horse-mo-ktx.glb has the same
+ * sampler. NearestMipmapNearestFilter keeps the nearest look and the identical GPU sampler
+ * (min/mag/mipmap all 'nearest'), but makes the texture filterable, so both checks agree.
+ * Textures without a mip chain get LinearFilter: a mipmap min filter on a single-level
+ * texture is incomplete (black) on the WebGL2 fallback.
+ */
+function makeMaterialTexturesFilterable(material: THREE.Material): void {
+  for (const value of Object.values(material)) {
+    const texture = value as THREE.Texture | null;
+    if (
+      texture?.isTexture &&
+      texture.minFilter === THREE.NearestFilter &&
+      texture.magFilter === THREE.NearestFilter
+    ) {
+      texture.minFilter =
+        (texture.mipmaps?.length ?? 0) > 1 ? THREE.NearestMipmapNearestFilter : THREE.LinearFilter;
+    }
+  }
+}
+
 export function makeObject3DWebGPUSafe(root: THREE.Object3D): void {
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (mesh.isMesh && mesh.geometry) {
       makeGeometryWebGPUSafe(mesh.geometry);
+    }
+    if (mesh.isMesh && mesh.material) {
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) makeMaterialTexturesFilterable(material);
     }
   });
 }
