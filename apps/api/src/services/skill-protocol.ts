@@ -2281,7 +2281,10 @@ settlement service and the same bound avatar:
   enters a **3-day grace** window before lapse.
 - **USDC rent prepay is NON-REFUNDABLE:** paying rent in USDC is not available
   today. When it opens, the USDC-funded part of a prepay is forfeited if you
-  release the plot early; only vCLAW escrow is refundable.
+  release the plot early; only vCLAW escrow is refundable. The release result
+  reports it as \`forfeitedUsdcPrepayCt\`. A plot with an older USDC prepay that
+  the server cannot prove returns 409 \`usdc_prepay_unproven\`: an operator must
+  settle that release.
 
 The server-derived Land targets block in hosted cognition lists only rendered
 available parcel codes and your bounded owned-parcel state. Copy \`parcelCode\`

@@ -18,12 +18,18 @@
  *   2. returns only events with `ts >= owner_since` (migration
  *      0079_agent_owner_since.sql: a trigger stamps it on every INSERT and every
  *      `user_id` change), so the new owner never sees the prior owner's period;
- *   3. drops any row attributed to a DIFFERENT user (`user_id IS NULL OR
- *      user_id = owner`). Every owner-private emit site writes the acting
+ *   3. requires owner ATTRIBUTION (Codex round 2 BLOCKING A): a row
+ *      attributed to a DIFFERENT user is never returned, and a row with a NULL
+ *      `user_id` is returned only for a NON-private type
+ *      (`AGENT_STREAM_NON_PRIVATE_EVENT_TYPES`: world facts, no owner
+ *      content). An OWNER-PRIVATE type (`AGENT_STREAM_OWNER_PRIVATE_EVENT_TYPES`:
+ *      directive text, cove settlements, store sales, purchased knowledge)
+ *      needs `user_id = owner`. The timestamp alone cannot prove who owned a
+ *      NULL row: a prior owner's fire-and-forget insert can land after the
+ *      ownership change. Every owner-private emit site writes the acting
  *      owner's `user_id` (directive: the setter; cove: the ledger user; store
- *      sale: the seller; knowledge: the reader), so a prior owner's row whose
- *      fire-and-forget insert lands just after the ownership change is still
- *      hidden.
+ *      sale: the seller; knowledge: the reader), so such a late prior-owner
+ *      row stays hidden either way.
  *
  * SAFE COLUMNS ONLY — selects id/eventType/ts/payload and nothing else (no
  * fp_hash / ip_prefix_hash / session_id / user_id / agent_id). Payloads were
@@ -44,7 +50,11 @@ import {
   isNull,
   or,
 } from '@clawville/database';
-import { AGENT_STREAM_EVENT_TYPES, type DurableEventRow } from './agent-stream-config';
+import {
+  AGENT_STREAM_EVENT_TYPES,
+  AGENT_STREAM_NON_PRIVATE_EVENT_TYPES,
+  type DurableEventRow,
+} from './agent-stream-config';
 
 /**
  * Whose history a read may return: ONE canonical `agentId` (openclaw_bots.agent_id,
@@ -84,8 +94,16 @@ export function buildDurableAgentEventsQuery(
         eq(agentBots.userId, scope.ownerUserId),
         // (2) only the current owner's period.
         gte(eventsTable.ts, agentBots.ownerSince),
-        // (3) never a row attributed to another user.
-        or(isNull(eventsTable.userId), eq(eventsTable.userId, agentBots.userId)),
+        // (3) owner attribution: a row attributed to the owner, or a NULL-
+        // attributed row of a NON-private type. Never another user's row, never
+        // a NULL-attributed owner-private row.
+        or(
+          eq(eventsTable.userId, agentBots.userId),
+          and(
+            isNull(eventsTable.userId),
+            inArray(eventsTable.eventType, [...AGENT_STREAM_NON_PRIVATE_EVENT_TYPES]),
+          ),
+        ),
         inArray(eventsTable.eventType, [...AGENT_STREAM_EVENT_TYPES]),
         gt(eventsTable.id, afterId),
       ),

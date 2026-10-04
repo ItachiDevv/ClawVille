@@ -15,8 +15,10 @@ import { randomUUID } from 'node:crypto';
  *     write to it;
  *   - the shared history query (replay, SSE catch-up and the driver wake-seed
  *     all call it) returns only the proven current owner's period, hides a late
- *     prior-owner row, and returns nothing for a stale owner proof (the owner
- *     re-check runs in the same statement as the scope).
+ *     prior-owner row, hides a NULL-attributed OWNER-PRIVATE row (Codex round 2
+ *     BLOCKING A) while it still returns a NULL-attributed non-private row, and
+ *     returns nothing for a stale owner proof (the owner re-check runs in the
+ *     same statement as the scope).
  *
  * WRITES rows, so it needs DATABASE_URL on a LOCAL host AND an opt-in:
  * CI === 'true' (the gates.yml Postgres service, after migrate-ci applied 0079)
@@ -229,6 +231,9 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: PRIOR_DIRECTIVE } });
       await insertEvent({ agentId, eventType: 'cove.blackjack.hand.settled', userId: PRIOR, payload: { net: 40 } });
       await insertEvent({ agentId, eventType: 'building.visited', userId: null, payload: { buildingId: 'prior-visit' } });
+      // A NULL-attributed owner-private row is hidden even inside the owner's
+      // own period (only an owner-attributed private row is returned).
+      await insertEvent({ agentId, eventType: 'land.service.sold', userId: null, payload: { priceCt: 7 } });
       // Not whitelisted, and another agent's directive: never returned.
       await insertEvent({ agentId, eventType: 'agent.connected', userId: PRIOR, payload: {} });
       await insertEvent({ agentId: other, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: 'other agent' } });
@@ -247,11 +252,18 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       // A late prior-owner row: its fire-and-forget insert landed AFTER the
       // change (ts inside the new period) but it carries the prior owner's id.
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: PRIOR, payload: { directive: `${PRIOR_DIRECTIVE} (late)` } });
+      // Codex round 2 BLOCKING A: a NULL-attributed OWNER-PRIVATE row inside the
+      // new period. owner_since cannot prove who owned it, so it is never
+      // returned (directive text and a cove settlement).
+      await insertEvent({ agentId, eventType: 'agent.directive.set', userId: null, payload: { directive: `${PRIOR_DIRECTIVE} (null-attributed)` } });
+      await insertEvent({ agentId, eventType: 'cove.slots.spin.executed', userId: null, payload: { winAmount: '999' } });
       // The new owner's own period.
       await insertEvent({ agentId, eventType: 'agent.directive.set', userId: NEXT, payload: { directive: NEXT_DIRECTIVE } });
       await insertEvent({ agentId, eventType: 'agent.chat.turn', userId: null, payload: { chatType: 'building' } });
 
       const nextView = await queryDurableAgentEvents({ agentId, ownerUserId: NEXT }, 0n, 100);
+      // The NULL-attributed non-private chat turn IS returned; the
+      // NULL-attributed private directive and slots rows are NOT.
       expect(nextView.map((row) => [row.eventType, row.payload])).toEqual([
         ['agent.directive.set', { directive: NEXT_DIRECTIVE }],
         ['agent.chat.turn', { chatType: 'building' }],

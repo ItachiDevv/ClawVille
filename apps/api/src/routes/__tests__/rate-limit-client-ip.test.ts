@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Hono } from 'hono';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { createRateLimiter, getClientIp } from '../../middleware/rate-limit';
+import { createRateLimiter, getClientIp, resetClientIpAnomalyWarningForTests } from '../../middleware/rate-limit';
 import {
   CLOUDFLARE_IPV4_RANGES,
   CLOUDFLARE_IPV6_RANGES,
@@ -152,11 +152,29 @@ describe('getClientIp trust model (H2 2026-10-04)', () => {
     expect(getClientIp(plain({ 'x-real-ip': '::ffff:104.16.0.1', 'cf-connecting-ip': '203.0.113.6' }))).toBe('203.0.113.6');
   });
 
-  it('keeps the peer when the Cloudflare peer sends no or an invalid CF-Connecting-IP', () => {
-    expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1' }))).toBe('104.16.0.1');
-    expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': 'garbage' }))).toBe('104.16.0.1');
-    expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': '1.2.3.4, 5.6.7.8' }))).toBe('104.16.0.1');
-    expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': '' }))).toBe('104.16.0.1');
+  it('keeps the peer when the Cloudflare peer sends no or an invalid CF-Connecting-IP, and warns ONCE per process', () => {
+    resetClientIpAnomalyWarningForTests();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1' }))).toBe('104.16.0.1');
+      expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': 'garbage' }))).toBe('104.16.0.1');
+      expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': '1.2.3.4, 5.6.7.8' }))).toBe('104.16.0.1');
+      expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': '' }))).toBe('104.16.0.1');
+      // Four anomalous requests, one log line (no per-request spam), and the
+      // line carries no caller-controlled header value.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('cf-connecting-ip');
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain('garbage');
+      // A normal Cloudflare request or a non-Cloudflare peer never warns.
+      warn.mockClear();
+      resetClientIpAnomalyWarningForTests();
+      expect(getClientIp(plain({ 'x-real-ip': '104.16.0.1', 'cf-connecting-ip': '203.0.113.5' }))).toBe('203.0.113.5');
+      expect(getClientIp(plain({ 'x-real-ip': '203.0.113.30' }))).toBe('203.0.113.30');
+      expect(warn).toHaveBeenCalledTimes(0);
+    } finally {
+      warn.mockRestore();
+      resetClientIpAnomalyWarningForTests();
+    }
   });
 
   it('trims a valid CF-Connecting-IP from a Cloudflare peer', () => {
@@ -179,6 +197,44 @@ describe('getClientIp trust model (H2 2026-10-04)', () => {
     expect(getClientIp(plain({ 'x-real-ip': 'not-an-ip', 'x-forwarded-for': '198.51.100.20' }))).toBe('198.51.100.20');
     expect(getClientIp(plain({ 'x-real-ip': 'not-an-ip' }))).toBe('unknown');
     expect(getClientIp(plain({}))).toBe('unknown');
+  });
+
+  it('Codex round 2: an invalid LAST x-forwarded-for entry is never a key (unknown, no earlier entry)', () => {
+    // A garbage token used to become a caller-chosen bucket key.
+    expect(getClientIp(plain({ 'x-forwarded-for': 'test-any-string' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-real-ip': 'not-an-ip', 'x-forwarded-for': 'garbage' }))).toBe('unknown');
+    // The leading entries are client-set: an invalid last entry does not fall
+    // back to them.
+    expect(getClientIp(plain({ 'x-forwarded-for': '198.51.100.21, garbage' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': '198.51.100.22:443' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': '[2001:db8::1]' }))).toBe('unknown');
+    expect(getClientIp(plain({ 'x-forwarded-for': ' , ' }))).toBe('unknown');
+    // A forged cf header cannot rescue an invalid fallback.
+    expect(getClientIp(plain({ 'x-forwarded-for': 'garbage', 'cf-connecting-ip': '203.0.113.9' }))).toBe('unknown');
+    // Valid v4 / v6 last entries still key, trimmed.
+    expect(getClientIp(plain({ 'x-forwarded-for': 'garbage, 198.51.100.23 ' }))).toBe('198.51.100.23');
+    expect(getClientIp(plain({ 'x-forwarded-for': '2001:db8::17' }))).toBe('2001:db8::17');
+  });
+
+  it('no test in apps/api/src keys on a non-IP x-forwarded-for literal', () => {
+    // Every per-test rate-limit key must be a valid IP (x-real-ip preferred);
+    // a non-IP x-forwarded-for now collapses into the shared 'unknown' bucket
+    // and CI signups would trip each other's limits.
+    const offenders: string[] = [];
+    const literal = /['"]x-forwarded-for['"]\s*:\s*(['"`])([^'"`]*)\1/gi;
+    for (const entry of readdirSync(apiRoot, { recursive: true }) as string[]) {
+      const rel = entry.replace(/\\/g, '/');
+      if (!/(^|\/)__tests__\/[^/]+\.ts$/.test(rel)) continue;
+      // This file feeds invalid values to getClientIp on purpose.
+      if (rel.endsWith('/rate-limit-client-ip.test.ts')) continue;
+      const text = readFileSync(resolve(apiRoot, entry), 'utf8');
+      for (const match of text.matchAll(literal)) {
+        const value = match[2]!.replace(/\$\{[^}]*\}/g, '1');
+        const last = value.split(',').map((p) => p.trim()).filter(Boolean).pop() ?? '';
+        if (!isValidIp(last)) offenders.push(`${rel}: ${match[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('a non-Cloudflare x-real-ip beats a Cloudflare-looking x-forwarded-for', () => {

@@ -310,7 +310,8 @@ describe('land services — routing integrity + pre-DB validation', () => {
     const app = buildRoutingApp();
     const res = await app.request(`/api/land/structures/${crypto.randomUUID()}/services`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': 'test-land-services-routing' },
+      // A distinct valid IP per test file (a non-IP key is the shared 'unknown' bucket).
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '2001:db8:5e7::1' },
       body: JSON.stringify({ title: 'x', priceCt: 1 }),
     });
     expect(res.status).toBe(401);
