@@ -37,10 +37,9 @@ Any feature that mutates user-facing state or economy (games, shops, quests, act
 
 Audits also check that an agent can *become* bound (identity-key bind, PROTOCOL_VERSION 19). Records: `ARCHITECTURE.md` §13, `docs/agent-onboarding-audit-2026-07-16.md`. A pre-existing human-only economy feature is a bug to FIX.
 
-### E6 — deferrals tracked; agent-facing knowledge lives in code (set 2026-07-16)
-1. **No comment-only deferrals.** Deferring load-bearing work ("FOLLOW-UP #N") MUST, same diff, add a `FEATURE_GATE` block or a tracked punch-list entry in the relevant audit/plan doc with owner condition + review deadline.
-2. **Agent-fetchable knowledge is code-generated** — from `buildProtocolManual` / `buildPlayManual` or a `packages/shared` constant, never hand-written into a DB row.
-3. **Release gates** (on staging before promotion): `apps/api/scripts/agent-onboarding-smoke.ts` for `/api/agent/connect`, identity issue/bind, session-authed skills, served manuals; `apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts` for `packages/agent-runtime/src/providers/**`, `eliza-runtime.ts` prompts, `building-skill-install.ts`, `skill-protocol.ts`, gateway-provider plugins.
+### E6 — agent-facing knowledge lives in code (set 2026-07-16)
+1. **Agent-fetchable knowledge is code-generated** — from `buildProtocolManual` / `buildPlayManual` or a `packages/shared` constant, never hand-written into a DB row.
+2. **Release gates** (on staging before promotion): `apps/api/scripts/agent-onboarding-smoke.ts` for `/api/agent/connect`, identity issue/bind, session-authed skills, served manuals; `apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts` for `packages/agent-runtime/src/providers/**`, `eliza-runtime.ts` prompts, `building-skill-install.ts`, `skill-protocol.ts`, gateway-provider plugins.
 
 ---
 
