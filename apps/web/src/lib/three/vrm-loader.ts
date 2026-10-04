@@ -38,6 +38,7 @@ import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
 import { primeVrmHipsHeightCache } from './mixamo-retarget';
 import { isDecorativeReleased } from './decorative-release';
+import { fetchArrayBufferWithRetry } from './glb-fetch-retry';
 import { stampColdLoadPhase } from './cold-load-stamp';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
@@ -873,9 +874,11 @@ function getLoader(): GLTFLoader {
 function fetchBytes(path: string): Promise<ArrayBuffer> {
   let p = VRM_BYTES.get(path);
   if (!p) {
-    p = fetch(path).then((r) => {
-      if (!r.ok) throw new Error(`[vrm-loader] fetch ${path} failed: ${r.status}`);
-      return r.arrayBuffer();
+    // Retries a failed request (network error, HTTP 408/429/5xx) before
+    // the rejection can reach useVRMInstance, which rethrows it raw into
+    // render (glb-fetch-retry.ts; staging 2026-10-04 world-canvas crash).
+    p = fetchArrayBufferWithRetry(path, {
+      httpErrorMessage: (status) => `[vrm-loader] fetch ${path} failed: ${status}`,
     }).catch((err) => {
       // On error, evict so a future call can retry instead of replaying the rejection.
       VRM_BYTES.delete(path);

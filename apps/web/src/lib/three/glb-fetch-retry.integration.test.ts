@@ -198,3 +198,22 @@ describe('real useGLTF -> R3F useLoader -> GLTFLoader -> FileLoader path', () =>
     expect(String(skipped[0][0])).toContain(`${url} (parse/decode error) Error: Malformed buffer data`);
   });
 });
+
+describe('real vrm-loader byte fetch (raw fetch, rethrown raw by useVRMInstance)', () => {
+  test('one failed VRM request is retried: preloadVRMBytes fetches twice and the bytes are cached', async () => {
+    const { preloadVRMBytes } = await import('./vrm-loader');
+    const url = plan('http://localhost/avatars/it-wanderer.vrm?v=3', ['network-error', 'valid']);
+    await preloadVRMBytes(url);
+    expect(requests.get(url)).toBe(2);
+    // Cached: a second preload makes no new request.
+    await preloadVRMBytes(url);
+    expect(requests.get(url)).toBe(2);
+  });
+
+  test('a VRM 404 is not retried', async () => {
+    const { preloadVRMBytes } = await import('./vrm-loader');
+    const url = plan('http://localhost/avatars/it-missing.vrm', [404]);
+    await preloadVRMBytes(url);
+    expect(requests.get(url)).toBe(1);
+  });
+});
