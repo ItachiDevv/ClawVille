@@ -9,7 +9,9 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-09-30 (Trading Floor **big board + trade tape show the TRADING ARENA paper contest**). §2a Big board and Trade tape rows rewritten: the board draws the arena leaderboard (contest header · PAPER, countdown, prize line, top 8 with HOUSE tags, basis line, tape row) instead of the two live house-trader cards, and the tape flies the arena's entries (left lane) and exits (right lane) with three-row chip faces. The Big board row also carried a stale "never profit and loss" line from before 2026-09-20; corrected. Same plane, canvas, draw calls. Browser appearance not yet verified.
+**Last edit:** 2026-10-04 (§5 ground decorations: rendered count corrected to 0, cluster count 24 → 12 and extent text corrected to match `generateDecorations`; failure-handling note added). No rendered object changed.
+
+**Prior Last edit:** 2026-09-30 (Trading Floor **big board + trade tape show the TRADING ARENA paper contest**). §2a Big board and Trade tape rows rewritten: the board draws the arena leaderboard (contest header · PAPER, countdown, prize line, top 8 with HOUSE tags, basis line, tape row) instead of the two live house-trader cards, and the tape flies the arena's entries (left lane) and exits (right lane) with three-row chip faces. The Big board row also carried a stale "never profit and loss" line from before 2026-09-20; corrected. Same plane, canvas, draw calls. Browser appearance not yet verified.
 
 **Prior Last edit:** 2026-09-20 (Trading Floor **TRADE TAPE** — the recent trades render as objects in the hall, not only as text on the back wall). §2a gains a Trade tape row; the draw-call line moves 24 → an expected 25 (+1, the tape is one mesh for all 12 slabs) and is flagged as a projection owed a live re-measurement. Founder order: "your job was supposed to be displaying the trades in 3d ... it's really just to showcase performance". No asset bytes, no GLB, no new route — it reuses the board's own `useHouseTraders` query. Source: `lib/three/trading-floor/trading-floor-trade-tape{,-mesh}.ts{,x}`.
 
@@ -155,11 +157,15 @@ Code: `lib/three/arena-terrain.tsx`.
 
 **Current state (Phase 6.2 2026-05-18):**
 - `TARGET_COUNT = 60`
-- `EXTENT_X = MAP_WIDTH * 1.4` half-range (scales with MAP_WIDTH; now 11520×1.4=16128wu half-range)
+- `EXTENT_X = MAP_WIDTH * 1.4` full range, so cluster centres land in ±`EXTENT_X / 2` (now `MAP_WIDTH` 22528 → ±15770 wu)
 - `MAX_VISIBLE_DIST = 3800` — hard distance gate
 - `DECO_INNER_EXCLUSION_R = 800wu` — reduced 1500→800 (Phase 6.2). The 1500wu clear area at center appeared as a "grey disc" of clean lighter sand. 800wu lets scatter fill the central plaza zone (town-center props are now at 800–1000wu radius so they coexist with decos). Ring buildings are at R=5120wu so decos at 800–3800wu band sit well inside the ring.
-- 24 cluster centres, 280wu triangular-distribution radius per cluster
+- 12 cluster centres (`N_CLUSTERS`), 280wu triangular-distribution radius per cluster
 - Stable seed (`12345`) — positions don't change between reloads
+
+**Rendered count today: 0 (verified 2026-10-04).** With cluster centres spread over ±15770 wu, no seed-12345 sample lands in the 800–3800 wu band, so `generateDecorations()` returns no entries. The 12 GLBs below still load (`MergedDecorationsInner` fetches all 12), but the merged group has no meshes. Restoring the scatter (or dropping the 12 fetches) is a separate decision: it changes the world's look and draw calls.
+
+**Failure handling (2026-10-04):** the 12 GLBs load through `useOptionalGLTFWithKTX2`. A GLB that still fails after the shared loader's fetch retries is skipped. The rest of the world stays up (`3dStructure.md` §9a).
 
 Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 
@@ -239,6 +245,7 @@ Tracked here so they don't get lost across sessions:
 
 Compact log. Single line per change.
 
+- 2026-10-04 — §5 decorations: docs now state the true rendered count (0 at `MAP_WIDTH` 22528) and the 12 cluster centres; the 12 decoration GLBs load through `useOptionalGLTFWithKTX2`, so one failed GLB skips only that model instead of crashing the world canvas (commit pending, branch `fix/deco-glb-fetch-retry`).
 - 2026-09-30 — Trading Floor **big board + trade tape → Trading Arena paper contest** (commit pending, branch `feat/trading-floor-arena`). Board: arena leaderboard with contest header, countdown, prize line, HOUSE tags, basis line and tape row. Tape: arena entries left / exits right, three-row chip faces. Same plane, canvas, meshes and draw calls. Browser check owed.
 - 2026-09-20 — Trading Floor **TRADE TAPE** (commit pending). The house traders' recent verified trades render as 12 emissive slabs flying the hall in two lanes (x ±890, y 520, z −900 → +720 over 18 s, then wrapping) — green gain, red loss, cyan buy, slate where there is no figure; face shows the token name or the venue, never a mint. ONE mesh + ONE atlas = **+1 draw call**; reuses the board's `useHouseTraders` query, so no route, no fetch, no poller. Lane x is pinned on both sides by test (desk face 985 outboard; board-unoccluded-from-spawn inboard, a 1.08x projection rather than a clearance) and mutation-verified. New §2a row; draw-call line 24 → expected 25. No asset bytes, no GLB, no `?v=` bump. Full numbers in `3dStructure.md` §9h.
 - 2026-09-19 — Trading Floor becomes the second enterable venue (commit pending). Exterior GLB swapped on slot 6 (`patty-building.glb` → `trading-floor-exterior-opt1-mo-ktx.glb?v=2`, `targetMaxDim` 2200 → 1950, collider 850×498 → 823×720 in the web AND shared tables). New `/trading-floor` stage slot mounts the authored interior hall with a walk-up monitor hotspot that opens the EXISTING Exchange modal on its Trading Floor tab — no second panel. New §2a; §1 gains the slot row; §2 row 6 rewritten.

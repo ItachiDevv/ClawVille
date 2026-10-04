@@ -7,7 +7,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
-import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { useOptionalGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 
@@ -428,24 +428,29 @@ interface MergedBucket {
 /** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks. */
 function MergedDecorationsInner() {
   // Fixed-count hook calls — one per unique model path. Order is stable (constant array).
-  const { scene: s0  } = useGLTFWithKTX2(DECO_MODEL_PATHS[0]);
-  const { scene: s1  } = useGLTFWithKTX2(DECO_MODEL_PATHS[1]);
-  const { scene: s2  } = useGLTFWithKTX2(DECO_MODEL_PATHS[2]);
-  const { scene: s3  } = useGLTFWithKTX2(DECO_MODEL_PATHS[3]);
-  const { scene: s4  } = useGLTFWithKTX2(DECO_MODEL_PATHS[4]);
-  const { scene: s5  } = useGLTFWithKTX2(DECO_MODEL_PATHS[5]);
-  const { scene: s6  } = useGLTFWithKTX2(DECO_MODEL_PATHS[6]);
-  const { scene: s7  } = useGLTFWithKTX2(DECO_MODEL_PATHS[7]);
-  const { scene: s8  } = useGLTFWithKTX2(DECO_MODEL_PATHS[8]);
-  const { scene: s9  } = useGLTFWithKTX2(DECO_MODEL_PATHS[9]);
-  const { scene: s10 } = useGLTFWithKTX2(DECO_MODEL_PATHS[10]);
-  const { scene: s11 } = useGLTFWithKTX2(DECO_MODEL_PATHS[11]);
+  // Optional reads: a GLB that still fails after the loader's fetch retries
+  // is null, so only that model's entries are skipped (not the whole world).
+  const s0  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[0])?.scene ?? null;
+  const s1  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[1])?.scene ?? null;
+  const s2  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[2])?.scene ?? null;
+  const s3  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[3])?.scene ?? null;
+  const s4  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[4])?.scene ?? null;
+  const s5  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[5])?.scene ?? null;
+  const s6  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[6])?.scene ?? null;
+  const s7  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[7])?.scene ?? null;
+  const s8  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[8])?.scene ?? null;
+  const s9  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[9])?.scene ?? null;
+  const s10 = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[10])?.scene ?? null;
+  const s11 = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[11])?.scene ?? null;
 
   // Build a lookup: model path → GLTF scene
   const sceneMap = useMemo<Map<string, THREE.Object3D>>(() => {
     const m = new Map<string, THREE.Object3D>();
     const scenes = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11];
-    DECO_MODEL_PATHS.forEach((p, i) => m.set(p, scenes[i]));
+    DECO_MODEL_PATHS.forEach((p, i) => {
+      const scene = scenes[i];
+      if (scene) m.set(p, scene);
+    });
     return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11]);
