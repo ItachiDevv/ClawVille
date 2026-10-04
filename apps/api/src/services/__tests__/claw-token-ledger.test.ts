@@ -21,12 +21,18 @@
  *
  * INVARIANTS PROVEN (mapping to the F1 spec):
  *   1. credit defaults to SOFT; passing provenance:'bought' tags BOUGHT.
- *   2. mintEarned is the ONLY path that writes provenance='earned' / moves
+ *   2. mintEarned is the ONLY path that writes NEW provenance='earned' / moves
  *      earned_balance — exhaustively, by exercising EVERY other exported writer.
+ *      The refund-only restoreEarnedSpendForRefund (security pass 2026-10-04) is
+ *      the second EARNED writer: it only returns the units of one prior EARNED
+ *      spend debit row and refuses without one.
  *   3. transferClawTokens credits the receiver SOFT regardless of the payer's tags.
  *   4. debit burns SOFT→BOUGHT→EARNED and emits ONE ledger row per tag burned.
  *   5. the per-tag sum always equals the total after every operation.
  *   6. the runtime chokepoint refuses a forced 'earned' through the credit path.
+ *   7. restoreEarnedSpendForRefund returns each consumed unit to its original lot
+ *      (a backed lot gets its released backing back), sends units of a released
+ *      lot to one new 'none' lot, credits exactly the debit amount, at most once.
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
@@ -74,13 +80,42 @@ interface EarnedLotRow {
   backing_kind: 'backed' | 'none';
   remaining_vclaw: number;
   created: number;
+  original_vclaw: number;
+  /** released_at IS NOT NULL (admin claw-back / payer rejection). */
+  released: boolean;
+  earn_event_id: string | null;
+  mint_ref: string;
+}
+
+/** earned_backing: micro-USDC, original = remaining + consumed + released (DB CHECK). */
+interface BackingRow {
+  mintLotId: string;
+  original: bigint;
+  remaining: bigint;
+  consumed: bigint;
+  released: bigint;
+}
+
+interface ConsumptionRow {
+  mintLotId: string;
+  ledgerDebitId: string;
+  kind: string;
+  vclawAmount: number;
+  usdcAtomic: string;
 }
 
 const store = {
   avatars: new Map<string, AvatarRow>(),
   ledger: [] as LedgerRow[],
   earnedLots: [] as EarnedLotRow[],
-  earnedAccounted: new Set<string>(),
+  /** earned_accounted_ledger: ledger id -> kind (PRIMARY KEY ledger_id). */
+  earnedAccounted: new Map<string, string>(),
+  backings: new Map<string, BackingRow>(),
+  consumptions: [] as ConsumptionRow[],
+  /** earn_events: closed = clawed back or payer rejected. */
+  earnEvents: new Map<string, { closed: boolean }>(),
+  /** treasury_wallets ids with purpose 'earned-backing'. */
+  custody: new Set<string>(),
   /** The avatar id locked by the most recent FOR-UPDATE select in this tx. */
   lockedId: null as string | null,
 };
@@ -90,7 +125,19 @@ function resetStore(): void {
   store.ledger = [];
   store.earnedLots = [];
   store.earnedAccounted.clear();
+  store.backings.clear();
+  store.consumptions = [];
+  store.earnEvents.clear();
+  store.custody.clear();
   store.lockedId = null;
+}
+
+/** The DB CHECK `earned_backing_conservation`, enforced on every fake write. */
+function assertBackingConservation(b: BackingRow): void {
+  if (b.remaining < 0n || b.consumed < 0n || b.released < 0n
+    || b.original !== b.remaining + b.consumed + b.released) {
+    throw new Error('earned_backing_conservation violated by stubbed UPDATE');
+  }
 }
 
 function seedAvatar(partial: Partial<AvatarRow> & { id?: string }): AvatarRow {
@@ -118,6 +165,10 @@ function seedAvatar(partial: Partial<AvatarRow> & { id?: string }): AvatarRow {
       backing_kind: 'none',
       remaining_vclaw: earned,
       created: store.earnedLots.length,
+      original_vclaw: earned,
+      released: false,
+      earn_event_id: null,
+      mint_ref: `seed:${id}`,
     });
   }
   return row;
@@ -155,6 +206,80 @@ function makeTx() {
       const { text, params } = renderSql(q);
       const avatarId = params.length > 0 ? String(params[0]) : null;
 
+      // ── restoreEarnedSpendForRefund (matched before the generic handlers) ──
+      if (text.includes('AS accounted_kind')) {
+        const [debitId, ownerId] = params.map(String);
+        const row = store.ledger.find((r) => r.id === debitId && r.avatarId === ownerId
+          && r.provenance === 'earned' && r.amount < 0);
+        return row
+          ? [{ id: row.id, amount: -row.amount, accounted_kind: store.earnedAccounted.get(row.id) ?? null }]
+          : [];
+      }
+      if (text.includes("metadata->>'refundOfLedgerId'")) {
+        const [ownerId, debitId] = params.map(String);
+        return store.ledger
+          .filter((r) => r.avatarId === ownerId && r.provenance === 'earned' && r.amount > 0
+            && r.metadata.refundOfLedgerId === debitId)
+          .slice(0, 1)
+          .map((r) => ({ id: r.id }));
+      }
+      if (text.includes('FROM earned_lot_consumptions c')) {
+        const debitId = String(params[0]);
+        return store.consumptions
+          .filter((c) => c.ledgerDebitId === debitId)
+          .map((c) => ({ c, lot: store.earnedLots.find((l) => l.id === c.mintLotId)! }))
+          .sort((x, y) => x.lot.created - y.lot.created)
+          .map(({ c, lot }) => {
+            const backing = store.backings.get(lot.id);
+            return {
+              consumption_kind: c.kind,
+              vclaw_amount: c.vclawAmount,
+              usdc_atomic: c.usdcAtomic,
+              lot_id: lot.id,
+              lot_avatar_id: lot.avatarId,
+              backing_kind: lot.backing_kind,
+              lot_released: lot.released,
+              event_closed: lot.earn_event_id ? (store.earnEvents.get(lot.earn_event_id)?.closed ?? false) : false,
+              backing_id: backing ? `backing-${lot.id}` : null,
+              backing_released: backing ? backing.released.toString() : null,
+            };
+          });
+      }
+      if (text.includes('UPDATE earned_mint_lots')
+        && text.includes('remaining_vclaw = remaining_vclaw +')) {
+        const units = Number(params[0]);
+        const lot = store.earnedLots.find((row) => row.id === String(params[1]));
+        if (!lot || lot.released || lot.remaining_vclaw + units > lot.original_vclaw) return [];
+        lot.remaining_vclaw += units;
+        return [{ id: lot.id }];
+      }
+      if (text.includes('UPDATE earned_backing')
+        && text.includes('remaining_usdc_atomic = remaining_usdc_atomic +')) {
+        const atomic = BigInt(String(params[0]));
+        const backing = store.backings.get(String(params[2]));
+        if (!backing || backing.released < atomic) return [];
+        backing.remaining += atomic;
+        backing.released -= atomic;
+        assertBackingConservation(backing);
+        return [{ id: `backing-${backing.mintLotId}` }];
+      }
+      // ── consumeEarnedLots backed-lot spend / redemption ──
+      if (text.includes('UPDATE earned_backing')
+        && text.includes('remaining_usdc_atomic = remaining_usdc_atomic -')) {
+        const atomic = BigInt(String(params[0]));
+        const kind = String(params[1]);
+        const backing = store.backings.get(String(params[5]));
+        if (!backing || backing.remaining < atomic) return [];
+        backing.remaining -= atomic;
+        if (kind === 'redemption') backing.consumed += atomic;
+        else backing.released += atomic;
+        assertBackingConservation(backing);
+        return [{ id: `backing-${backing.mintLotId}` }];
+      }
+      if (text.includes('FROM treasury_wallets')) {
+        return store.custody.has(String(params[0])) ? [{ id: String(params[0]) }] : [];
+      }
+
       if (text.includes('SELECT earned_balance FROM avatars')) {
         if (!avatarId) throw new Error('execute: missing avatarId for EARNED reconciliation');
         store.lockedId = avatarId;
@@ -186,9 +311,12 @@ function makeTx() {
         return [{ amount: String(amount) }];
       }
       if (text.includes('FROM earned_mint_lots l') && text.includes('FOR UPDATE OF l')) {
+        // Same order as the real spend: unbacked first, then backed, then age.
         return store.earnedLots
           .filter((lot) => lot.avatarId === avatarId && lot.remaining_vclaw > 0)
-          .sort((a, b) => a.created - b.created)
+          .sort((a, b) => (a.backing_kind === b.backing_kind
+            ? a.created - b.created
+            : a.backing_kind === 'none' ? -1 : 1))
           .map((lot) => ({
             id: lot.id,
             backing_kind: lot.backing_kind,
@@ -213,6 +341,10 @@ function makeTx() {
           backing_kind: 'none',
           remaining_vclaw: Number(params[4]),
           created: store.earnedLots.length,
+          original_vclaw: Number(params[3]),
+          released: false,
+          earn_event_id: null,
+          mint_ref: String(params[2]),
         });
         return [];
       }
@@ -268,6 +400,11 @@ function makeTx() {
               metadata: (v.metadata as Record<string, unknown>) ?? {},
             });
           } else if (table === realDatabase.earnedMintLots) {
+            const mintRef = String(v.mintRef);
+            // UNIQUE earned_mint_lots_ref_unique / earned_mint_lots_ledger_unique.
+            if (store.earnedLots.some((l) => l.mint_ref === mintRef || l.ledgerId === String(v.ledgerId))) {
+              throw new Error('duplicate key value violates unique constraint on earned_mint_lots');
+            }
             store.earnedLots.push({
               id,
               ledgerId: String(v.ledgerId),
@@ -275,9 +412,32 @@ function makeTx() {
               backing_kind: v.backingKind as 'backed' | 'none',
               remaining_vclaw: Number(v.remainingVclaw),
               created: store.earnedLots.length,
+              original_vclaw: Number(v.originalVclaw),
+              released: false,
+              earn_event_id: (v.earnEventId as string | null) ?? null,
+              mint_ref: mintRef,
+            });
+          } else if (table === realDatabase.earnedBackings) {
+            const original = BigInt(String(v.originalUsdcAtomic));
+            store.backings.set(String(v.mintLotId), {
+              mintLotId: String(v.mintLotId),
+              original,
+              remaining: BigInt(String(v.remainingUsdcAtomic)),
+              consumed: BigInt(String(v.consumedUsdcAtomic)),
+              released: BigInt(String(v.releasedUsdcAtomic)),
+            });
+          } else if (table === realDatabase.earnedLotConsumptions) {
+            store.consumptions.push({
+              mintLotId: String(v.mintLotId),
+              ledgerDebitId: String(v.ledgerDebitId),
+              kind: String(v.kind),
+              vclawAmount: Number(v.vclawAmount),
+              usdcAtomic: String(v.usdcAtomic),
             });
           } else if (table === realDatabase.earnedAccountedLedger) {
-            store.earnedAccounted.add(String(v.ledgerId));
+            // PRIMARY KEY ledger_id; the ledger only re-inserts via onConflictDoNothing.
+            const ledgerId = String(v.ledgerId);
+            if (!store.earnedAccounted.has(ledgerId)) store.earnedAccounted.set(ledgerId, String(v.kind));
           }
           return {
             async returning(_cols: unknown) {
@@ -316,6 +476,7 @@ const {
   debitClawTokens,
   transferClawTokens,
   mintEarned,
+  restoreEarnedSpendForRefund,
 } = await import('../claw-token-ledger');
 
 beforeEach(() => {
@@ -403,7 +564,7 @@ describe('claw-token-ledger F1 — credit provenance', () => {
 });
 
 describe('claw-token-ledger F1 — mintEarned chokepoint', () => {
-  it('mintEarned is the ONLY writer that produces an earned row / moves earned_balance', async () => {
+  it('mintEarned is the ONLY writer of new EARNED; the refund-only restore needs a prior EARNED debit', async () => {
     const a = seedAvatar({ claw_tokens: 1000, soft_balance: 1000 });
     const b = seedAvatar({ claw_tokens: 0, soft_balance: 0 });
 
@@ -412,10 +573,20 @@ describe('claw-token-ledger F1 — mintEarned chokepoint', () => {
     await creditClawTokens({
       avatarId: a.id, amount: 10, reason: 'bought', source: 'x402', provenance: 'bought',
     });
-    await debitClawTokens({ avatarId: a.id, amount: 5, reason: 'sink', source: 'api' });
+    const softDebit = await debitClawTokens({ avatarId: a.id, amount: 5, reason: 'sink', source: 'api' });
     await transferClawTokens({
       fromAvatarId: a.id, toAvatarId: b.id, amount: 20, reason: 'peer', source: 'exchange',
     });
+    // The refund-only restore refuses a SOFT debit row and an unknown row id:
+    // it can only give back EARNED that an EARNED debit row took.
+    for (const originalDebitLedgerId of [softDebit.ledgerId, randomUUID()]) {
+      await expect(
+        fakeDb.transaction((tx) => restoreEarnedSpendForRefund(
+          { avatarId: a.id, originalDebitLedgerId, reason: 'refund' },
+          tx as never,
+        )),
+      ).rejects.toThrow(/no EARNED debit row/);
+    }
     expect(earnedRows().length).toBe(0);
     expect(getAvatar(a.id).earned_balance).toBe(0);
     expect(getAvatar(b.id).earned_balance).toBe(0);
@@ -764,5 +935,227 @@ describe('claw-token-ledger T0 — fee routing conservation (debit player + cred
     expect(getAvatar(player.id).claw_tokens).toBe(1095); // exactly the raked payout
     expect(getAvatar(treasury.id).claw_tokens).toBe(rake);
     expect(ledgerFor(treasury.id)[0]!.provenance).toBe('soft');
+  });
+});
+
+describe('claw-token-ledger — restoreEarnedSpendForRefund (refund-only EARNED restore, security pass 2026-10-04)', () => {
+  const CUSTODY = 'earned-backing-custody';
+
+  /** A backed EARNED mint through the REAL mintEarned (lot + backing row). */
+  async function mintBacked(avatarId: string, amount: number): Promise<EarnedLotRow> {
+    const eventId = randomUUID();
+    store.custody.add(CUSTODY);
+    store.earnEvents.set(eventId, { closed: false });
+    await mintEarned({
+      avatarId,
+      amount,
+      reason: 'earn',
+      source: 'x402',
+      usdBasis: (amount / 100).toFixed(6),
+      backing: {
+        kind: 'backed',
+        mintRef: `earn:${eventId}`,
+        earnEventId: eventId,
+        custodyWalletId: CUSTODY,
+        sourceRef: `settlement:${eventId}`,
+        usdcAtomic: String(amount * 10_000),
+      },
+    });
+    return store.earnedLots.find((l) => l.earn_event_id === eventId)!;
+  }
+
+  async function mintNone(avatarId: string, amount: number): Promise<EarnedLotRow> {
+    const mintRef = `agent-pay:${randomUUID()}`;
+    await mintEarned({
+      avatarId, amount, reason: 'agent_pay', source: 'x402', usdBasis: '0',
+      backing: { kind: 'none', mintRef, reason: 'unit_test' },
+    });
+    return store.earnedLots.find((l) => l.mint_ref === mintRef)!;
+  }
+
+  /** An ordinary entry-fee spend; returns its EARNED debit row. */
+  async function spend(avatarId: string, amount: number): Promise<LedgerRow> {
+    await debitClawTokens({ avatarId, amount, reason: 'special_event_entry', source: 'api' });
+    return ledgerFor(avatarId).filter((r) => r.provenance === 'earned' && r.amount < 0).at(-1)!;
+  }
+
+  function restore(avatarId: string, debitId: string) {
+    return fakeDb.transaction((tx) => restoreEarnedSpendForRefund(
+      {
+        avatarId,
+        originalDebitLedgerId: debitId,
+        reason: 'special_event_entry_refund',
+        source: 'simulation',
+        metadata: { signupId: 'signup-1' },
+        actorKind: 'admin',
+      },
+      tx as never,
+    ));
+  }
+
+  const lotsOf = (avatarId: string) => store.earnedLots.filter((l) => l.avatarId === avatarId);
+  const lotSum = (avatarId: string) => lotsOf(avatarId).reduce((n, l) => n + l.remaining_vclaw, 0);
+
+  it('a backed lot gets its units AND its released backing back: same lot, still cash-out eligible', async () => {
+    const a = seedAvatar({});
+    const lot = await mintBacked(a.id, 100);
+    const debit = await spend(a.id, 40);
+    expect(lot.remaining_vclaw).toBe(60);
+    expect(store.backings.get(lot.id)).toMatchObject({ remaining: 600_000n, released: 400_000n });
+
+    const res = await restore(a.id, debit.id);
+
+    expect(res).toMatchObject({ amount: 40, restoredToLots: 40, restoredAsNone: 0 });
+    // Same lot, same backing kind, same earn event: no new lot was created.
+    expect(lotsOf(a.id)).toHaveLength(1);
+    expect(lot).toMatchObject({ backing_kind: 'backed', remaining_vclaw: 100, released: false });
+    // Backing is whole again and still matches remaining_vclaw * 10,000 (the
+    // earned-solvency integrity rule the redemption rail checks).
+    const backing = store.backings.get(lot.id)!;
+    expect(backing).toMatchObject({ original: 1_000_000n, remaining: 1_000_000n, consumed: 0n, released: 0n });
+    expect(backing.remaining).toBe(BigInt(lot.remaining_vclaw) * 10_000n);
+    // ONE EARNED credit, tied to the original debit, no new dollars.
+    const credit = ledgerFor(a.id).at(-1)!;
+    expect(credit).toMatchObject({
+      id: res.ledgerId,
+      amount: 40,
+      provenance: 'earned',
+      usdBasis: '0',
+      reason: 'special_event_entry_refund',
+      source: 'simulation',
+    });
+    expect(credit.metadata).toMatchObject({
+      signupId: 'signup-1',
+      refundOfLedgerId: debit.id,
+      earnedRestore: { restoredToLots: 40, restoredAsNone: 0 },
+    });
+    expect(store.earnedAccounted.get(res.ledgerId)).toBe('mint');
+    expect(getAvatar(a.id)).toMatchObject({ earned_balance: 100, claw_tokens: 100 });
+    expect(lotSum(a.id)).toBe(100);
+  });
+
+  it('an unbacked lot gets its units back unchanged (spendable, never cashable)', async () => {
+    const a = seedAvatar({});
+    const lot = await mintNone(a.id, 100);
+    const debit = await spend(a.id, 30);
+    const res = await restore(a.id, debit.id);
+    expect(res).toMatchObject({ amount: 30, restoredToLots: 30, restoredAsNone: 0 });
+    expect(lotsOf(a.id)).toHaveLength(1);
+    expect(lot).toMatchObject({ backing_kind: 'none', remaining_vclaw: 100 });
+    expect(store.backings.size).toBe(0);
+    expect(getAvatar(a.id).earned_balance).toBe(100);
+  });
+
+  it('mixed lots: each part goes back to the lot it came from', async () => {
+    const a = seedAvatar({});
+    const unbacked = await mintNone(a.id, 30);
+    const backed = await mintBacked(a.id, 70);
+    // Spend order is unbacked first: 30 from the none lot, 20 from the backed lot.
+    const debit = await spend(a.id, 50);
+    expect([unbacked.remaining_vclaw, backed.remaining_vclaw]).toEqual([0, 50]);
+
+    const res = await restore(a.id, debit.id);
+    expect(res).toMatchObject({ amount: 50, restoredToLots: 50, restoredAsNone: 0 });
+    expect([unbacked.remaining_vclaw, backed.remaining_vclaw]).toEqual([30, 70]);
+    expect(store.backings.get(backed.id)).toMatchObject({ remaining: 700_000n, released: 0n });
+    expect(lotsOf(a.id)).toHaveLength(2);
+    expect(getAvatar(a.id).earned_balance).toBe(100);
+  });
+
+  it('units of a lot released since the spend (admin claw-back) return as ONE new none lot: no new cashability', async () => {
+    const a = seedAvatar({});
+    const lot = await mintBacked(a.id, 100);
+    const debit = await spend(a.id, 40);
+    // Model clawBackEarnedMint: the 60 still on the lot are debited, the lot is
+    // released, its backing remainder moves to released, the event is closed.
+    const backing = store.backings.get(lot.id)!;
+    backing.released += backing.remaining;
+    backing.remaining = 0n;
+    lot.remaining_vclaw = 0;
+    lot.released = true;
+    store.earnEvents.set(lot.earn_event_id!, { closed: true });
+    const av = getAvatar(a.id);
+    store.avatars.set(a.id, { ...av, claw_tokens: av.claw_tokens - 60, earned_balance: av.earned_balance - 60 });
+
+    const res = await restore(a.id, debit.id);
+
+    expect(res).toMatchObject({ amount: 40, restoredToLots: 0, restoredAsNone: 40 });
+    expect(lot).toMatchObject({ remaining_vclaw: 0, released: true });
+    expect(store.backings.get(lot.id)).toMatchObject({ remaining: 0n, released: 1_000_000n });
+    const fresh = lotsOf(a.id).filter((l) => l.id !== lot.id);
+    expect(fresh).toEqual([
+      expect.objectContaining({
+        backing_kind: 'none',
+        original_vclaw: 40,
+        remaining_vclaw: 40,
+        ledgerId: res.ledgerId,
+        mint_ref: `earned-refund:${debit.id}`,
+        earn_event_id: null,
+      }),
+    ]);
+    expect(getAvatar(a.id).earned_balance).toBe(40);
+    expect(lotSum(a.id)).toBe(40);
+  });
+
+  it('a legacy debit row (no lot attribution, accounted legacy) restores wholly as one none lot', async () => {
+    const a = seedAvatar({ earned_balance: 50 });
+    const legacyDebitId = randomUUID();
+    store.ledger.push({
+      id: legacyDebitId, avatarId: a.id, userId: a.user_id, amount: -10, balanceAfter: 50,
+      reason: 'old_spend', source: 'api', provenance: 'earned', usdBasis: null,
+      fpHash: null, ipPrefixHash: null, metadata: {},
+    });
+    store.earnedAccounted.set(legacyDebitId, 'legacy');
+
+    const res = await restore(a.id, legacyDebitId);
+    expect(res).toMatchObject({ amount: 10, restoredToLots: 0, restoredAsNone: 10 });
+    expect(getAvatar(a.id).earned_balance).toBe(60);
+    expect(lotSum(a.id)).toBe(60);
+  });
+
+  it('no double restore: a second restore of the same debit row is refused and moves nothing', async () => {
+    const a = seedAvatar({});
+    const lot = await mintBacked(a.id, 100);
+    const debit = await spend(a.id, 40);
+    await restore(a.id, debit.id);
+    const balancesAfterFirst = { ...getAvatar(a.id) };
+    const ledgerRows = store.ledger.length;
+
+    await expect(restore(a.id, debit.id)).rejects.toThrow(/debit row already restored/);
+    expect(getAvatar(a.id)).toEqual(balancesAfterFirst);
+    expect(store.ledger.length).toBe(ledgerRows);
+    expect(lot.remaining_vclaw).toBe(100);
+    expect(store.backings.get(lot.id)).toMatchObject({ remaining: 1_000_000n, released: 0n });
+  });
+
+  it('a restore never exceeds its debit: an over-attributed debit, another avatar and a non-spend row are refused', async () => {
+    const a = seedAvatar({});
+    const lot = await mintNone(a.id, 100);
+    const debit = await spend(a.id, 40);
+    const before = { ...getAvatar(a.id) };
+
+    // One extra attributed unit: the restore would credit more than was spent.
+    store.consumptions.push({
+      mintLotId: lot.id, ledgerDebitId: debit.id, kind: 'spend', vclawAmount: 1, usdcAtomic: '0',
+    });
+    await expect(restore(a.id, debit.id)).rejects.toThrow(/does not match the debit row/);
+    store.consumptions.pop();
+
+    // Another avatar cannot restore this avatar's debit row.
+    const other = seedAvatar({});
+    await expect(restore(other.id, debit.id)).rejects.toThrow(/no EARNED debit row/);
+
+    // A redemption / claw-back debit is not an ordinary spend.
+    store.earnedAccounted.set(debit.id, 'clawback');
+    await expect(restore(a.id, debit.id)).rejects.toThrow(/not an ordinary spend/);
+    store.earnedAccounted.set(debit.id, 'spend');
+
+    expect(getAvatar(a.id)).toEqual(before);
+    expect(earnedRows().filter((r) => r.amount > 0 && r.metadata.refundOfLedgerId)).toHaveLength(0);
+
+    // The valid restore credits exactly the debit amount, never more.
+    const res = await restore(a.id, debit.id);
+    expect(res.amount).toBe(40);
+    expect(getAvatar(a.id).earned_balance).toBe(before.earned_balance + 40);
   });
 });

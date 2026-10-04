@@ -54,7 +54,7 @@ import * as ledgerModule from './claw-token-ledger';
 import type {
   creditClawTokens as CreditFn,
   debitClawTokens as DebitFn,
-  mintEarned as MintEarnedFn,
+  restoreEarnedSpendForRefund as RestoreEarnedFn,
   LedgerTx,
 } from './claw-token-ledger';
 import {
@@ -73,7 +73,7 @@ type LedgerLike = {
   debitClawTokens: typeof DebitFn;
   creditClawTokens: typeof CreditFn;
   /** Used ONLY by `cancelEvent` to restore an EARNED entry burn as EARNED. */
-  mintEarned: typeof MintEarnedFn;
+  restoreEarnedSpendForRefund: typeof RestoreEarnedFn;
 };
 
 /**
@@ -277,7 +277,7 @@ export class SpecialEventManager {
     this.ledger = deps.ledger ?? {
       debitClawTokens: (...args) => ledgerModule.debitClawTokens(...args),
       creditClawTokens: (...args) => ledgerModule.creditClawTokens(...args),
-      mintEarned: (...args) => ledgerModule.mintEarned(...args),
+      restoreEarnedSpendForRefund: (...args) => ledgerModule.restoreEarnedSpendForRefund(...args),
     };
     this.rpc = deps.rpc ?? defaultEventRpc();
     this.clock = deps.clock ?? REAL_CLOCK;
@@ -1496,21 +1496,20 @@ export class SpecialEventManager {
    *   - EARNED restore (`restoreEarnedBurn`): the ledger tracks EARNED per mint
    *     lot (`earned_mint_lots.backing_kind` 'none' | 'backed'), and every
    *     EARNED debit row records the lots it consumed in
-   *     `earned_lot_consumptions`. The refund reads that attribution BEFORE any
-   *     write. Units that came from 'none' lots (agent-pay and all legacy
-   *     EARNED: spendable, never cashable) are restored through `mintEarned`
-   *     with a 'none' backing declaration and mintRef
-   *     `special-event-refund:<original debit row id>`. The UNIQUE mint_ref index
-   *     makes a second restore of the same debit row impossible, and the amount
-   *     is exactly the debit row amount. A legacy debit row (accounted
-   *     'legacy' by migration 0030b, no consumption rows) is unbacked by
-   *     definition and restores the same way. Units that came from a 'backed'
-   *     lot fail the whole cancel (500 `earned_refund_backed_lot_unsupported`):
-   *     a new 'none' lot would drop their cash-out eligibility, and the ledger
-   *     has no primitive yet that returns units to their original backed lot.
-   *     Any other attribution gap (more or fewer attributed units than the
-   *     debit row, a non-legacy row with no consumption rows) fails with
-   *     `entry_debit_ledger_mismatch`.
+   *     `earned_lot_consumptions`. The refund checks that attribution BEFORE any
+   *     write (`assertEarnedBurnRestorable`), then calls the ledger's
+   *     refund-only `restoreEarnedSpendForRefund` (security pass, 2026-10-04):
+   *     each consumed unit goes back to its ORIGINAL lot, so a unit from a
+   *     'none' lot stays unbacked (spendable, never cashable) and a unit from a
+   *     live 'backed' lot gets its released backing back and stays
+   *     cash-out eligible. A unit whose lot was released since (admin claw-back
+   *     or payer rejection) comes back in one new 'none' lot (never cashable).
+   *     A legacy debit row (accounted 'legacy' by migration 0030b, no
+   *     consumption rows) is unbacked by definition and restores as 'none'.
+   *     The credit is exactly the debit row amount, and the ledger refuses a
+   *     second restore of the same debit row. Any attribution gap (more or
+   *     fewer attributed units than the debit row, a non-legacy row with no
+   *     consumption rows) fails with `entry_debit_ledger_mismatch`.
    *   - 'free' / 'hold': flipped to 'refunded'; nothing was paid.
    *   - 'sol': ONE `special_event_sol_refunds` row (UNIQUE signup_id, status
    *     'owed') with the verified entry lamports, the receiving wallet
@@ -1699,20 +1698,20 @@ export class SpecialEventManager {
   }
 
   /**
-   * Check that ONE EARNED entry-debit row can be restored as EARNED with the
-   * same eligibility it had: every unit it burned came from a 'none' lot of
-   * this avatar (or the row is a pre-lot legacy row, which migration 0030b
-   * accounted as 'legacy' and classed as unbacked). Throws
-   * `earned_refund_backed_lot_unsupported` (500) for a unit from a 'backed'
-   * lot, and `entry_debit_ledger_mismatch` (500) for any attribution gap.
+   * Check that ONE EARNED entry-debit row has a complete lot attribution
+   * before any write: the units it burned from this avatar's lots sum to the
+   * row amount (or the row is a pre-lot legacy row, which migration 0030b
+   * accounted as 'legacy' and classed as unbacked). 'none' and 'backed' lots
+   * are both restorable (`restoreEarnedSpendForRefund`). Throws
+   * `entry_debit_ledger_mismatch` (500) for any attribution gap.
    */
   private async assertEarnedBurnRestorable(
     tx: Pick<DbLike, 'execute'>,
     avatarId: string,
     burn: EntryBurn,
   ): Promise<void> {
-    const consumed = await tx.execute<{ backing_kind: string; vclaw_amount: number }>(
-      sql`SELECT l.backing_kind, c.vclaw_amount
+    const consumed = await tx.execute<{ vclaw_amount: number }>(
+      sql`SELECT c.vclaw_amount
           FROM earned_lot_consumptions c
           JOIN earned_mint_lots l ON l.id = c.mint_lot_id
           WHERE c.ledger_debit_id = ${burn.ledgerId} AND c.kind = 'spend'
@@ -1722,9 +1721,6 @@ export class SpecialEventManager {
     for (const c of consumed) {
       const units = Number(c.vclaw_amount);
       if (!Number.isSafeInteger(units) || units <= 0) throw entryDebitMismatch();
-      if (c.backing_kind !== 'none') {
-        throw new SpecialEventError('earned_refund_backed_lot_unsupported', 500);
-      }
       attributed += units;
     }
     if (attributed === burn.amount) return;
@@ -1740,13 +1736,11 @@ export class SpecialEventManager {
   /**
    * Restore ONE checked EARNED entry-debit row as EARNED (refund-only; called
    * by `cancelEvent` after the signup CAS, for a row `readCheckedEntryBurns`
-   * already checked). `mintEarned` with a 'none' declaration is the ledger's
-   * only EARNED write path; the burned units were unbacked, so a 'none' lot
-   * gives them the same eligibility (spendable, never cashable, same spend
-   * order). The mintRef names the original debit row: the UNIQUE
-   * `earned_mint_lots_ref_unique` index refuses a second restore of it, and
-   * the amount is that row's amount, never more. `usdBasis` '0': a refund
-   * returns units, it brings in no new dollars.
+   * already checked). The ledger's `restoreEarnedSpendForRefund` returns each
+   * consumed unit to its original lot (a backed unit keeps its backing and its
+   * cash-out eligibility), credits exactly the debit row's amount with
+   * `refundOfLedgerId` = that row, and refuses a second restore of the row.
+   * A credited amount that differs from the debit row rolls the cancel back.
    */
   private async restoreEarnedBurn(
     tx: LedgerTx,
@@ -1754,23 +1748,18 @@ export class SpecialEventManager {
     burn: EntryBurn,
     metadata: Record<string, unknown>,
   ): Promise<void> {
-    await this.ledger.mintEarned(
+    const restored = await this.ledger.restoreEarnedSpendForRefund(
       {
         avatarId,
-        amount: burn.amount,
+        originalDebitLedgerId: burn.ledgerId,
         reason: 'special_event_entry_refund',
         source: 'simulation',
-        usdBasis: '0',
-        backing: {
-          kind: 'none',
-          mintRef: `special-event-refund:${burn.ledgerId}`,
-          reason: 'special_event_entry_refund',
-        },
         metadata,
         actorKind: 'admin',
       },
       tx,
     );
+    if (restored.amount !== burn.amount) throw entryDebitMismatch();
   }
 
   /**

@@ -2,7 +2,8 @@
  * ClawToken (vCLAW) audit ledger helpers.
  *
  * Every write to `avatars.clawTokens` MUST go through `creditClawTokens()`,
- * `debitClawTokens()`, `transferClawTokens()`, or `mintEarned()`. These helpers
+ * `debitClawTokens()`, `transferClawTokens()`, `mintEarned()`, or the
+ * refund-only `restoreEarnedSpendForRefund()`. These helpers
  * atomically:
  *   1. SELECT the current avatars row FOR UPDATE (row lock — prevents races)
  *   2. Compute the new total balance + the new per-tag balances
@@ -25,16 +26,24 @@
  *              Unbacked EARNED remains spendable in-game but is not cashable.
  *
  * EARNED CHOKEPOINT (plan §3.1 — the laundering defense): `earned` is written in
- * EXACTLY ONE place, `mintEarned()`. It is ENFORCED, not by convention:
+ * EXACTLY TWO places. `mintEarned()` is the only path that creates NEW EARNED.
+ * `restoreEarnedSpendForRefund()` (security pass, 2026-10-04) is a refund-only
+ * second writer: it can only return the units of ONE existing EARNED spend debit
+ * row of the same avatar, at most once, for exactly that row's amount, to the
+ * lots that row consumed (a lot that can no longer take them gets a new
+ * `none` lot, which is never cashable). It cannot add EARNED that was not spent
+ * first. It is ENFORCED, not by convention:
  *   1. type-level — the public `creditClawTokens` provenance param is the union
  *      `'soft' | 'bought'`; `'earned'` is not representable in its input type, so
  *      no caller can even express it.
  *   2. runtime    — the single private `applyCreditInTx` requires an internal
- *      `__earnedToken` to write `earned`; only `mintEarned` holds that token. A
- *      runtime throw fires if `earned` is ever reached without it (belt-and-
- *      suspenders against a future refactor that widens the public type).
+ *      `__earnedToken` to write `earned`; only `mintEarned` and
+ *      `restoreEarnedSpendForRefund` hold that token. A runtime throw fires if
+ *      `earned` is ever reached without it (belt-and-suspenders against a future
+ *      refactor that widens the public type).
  *   3. test       — `claw-token-ledger.test.ts` proves no exported function other
- *      than `mintEarned` can produce an `earned` row or move `earned_balance`.
+ *      than those two can produce an `earned` row or move `earned_balance`, and
+ *      that the restore refuses without a prior EARNED spend debit row.
  *
  * Spend debit order: SOFT → BOUGHT → EARNED (burn non-cashable first; always
  * preserve the user's cashable balance). A debit spanning multiple tags emits ONE
@@ -111,9 +120,10 @@ interface TagBalances {
 
 /**
  * Internal capability token. `applyCreditInTx` requires this exact reference to
- * write an `earned` row / increment `earned_balance`. Only `mintEarned` closes
- * over it, so no other code path — present or future — can mint EARNED without
- * being routed through `mintEarned`. Module-private; never exported.
+ * write an `earned` row / increment `earned_balance`. Only `mintEarned` (new
+ * EARNED) and `restoreEarnedSpendForRefund` (refund of one prior EARNED spend
+ * debit row) close over it, so no other code path — present or future — can
+ * write EARNED. Module-private; never exported.
  */
 const EARNED_TOKEN: unique symbol = Symbol('mintEarned-only');
 type EarnedToken = typeof EARNED_TOKEN;
@@ -287,7 +297,8 @@ async function writeBalances(
 /**
  * THE SINGLE credit primitive. Adds `amount` to the given tag's balance and the
  * total, then inserts one ledger row stamped with that tag. `__earnedToken` is
- * required to mint `'earned'`; only `mintEarned` supplies it (the chokepoint).
+ * required to mint `'earned'`; only `mintEarned` and the refund-only
+ * `restoreEarnedSpendForRefund` supply it (the chokepoint).
  */
 async function applyCreditInTx(
   tx: LedgerTx,
@@ -1204,6 +1215,232 @@ export async function mintEarned(
 
   if (tx) return run(tx);
   return db.transaction((innerTx) => run(innerTx));
+}
+
+/** What `restoreEarnedSpendForRefund` returns. */
+export interface EarnedRefundRestoreResult extends LedgerResult {
+  /** EARNED units credited back: always exactly the original debit row's amount. */
+  amount: number;
+  /** Units put back on the lots the debit consumed (a backed lot gets its backing back). */
+  restoredToLots: number;
+  /** Units whose lot can no longer take them: they form ONE new `none` lot. */
+  restoredAsNone: number;
+}
+
+/**
+ * REFUND-ONLY EARNED restore (security pass, 2026-10-04). Returns the EARNED
+ * units of ONE prior ordinary spend debit row (`provenance='earned'`,
+ * amount < 0, accounted 'spend' or 'legacy') to the lots that row consumed, so
+ * a refund restores EARNED as EARNED with the same rights it had:
+ *   - a unit from a `none` lot goes back to that lot (spendable, never cashable);
+ *   - a unit from a still-live `backed` lot (not released, earn event not clawed
+ *     back or rejected) goes back to that lot, and the backing the spend
+ *     released (`consumeEarnedLots` kind 'spend' moved it remaining → released)
+ *     moves back released → remaining, so `remaining_usdc_atomic` stays
+ *     `remaining_vclaw * 10,000` and the unit keeps its cash-out eligibility;
+ *   - a unit whose lot can no longer take it (released by an admin claw-back or
+ *     a payer rejection) goes to ONE new `none` lot (mintRef
+ *     `earned-refund:<debit row id>`). A `none` lot can never be redeemed, so
+ *     this never creates cashability that did not exist.
+ * A 'legacy' debit row (accounted by migration 0030b, no lot attribution) is
+ * unbacked by definition and restores wholly as `none`.
+ *
+ * Lock order: avatar row first (as every ledger write), then the debit row,
+ * then its lots, then their backing rows. The credit is exactly the debit row's
+ * amount, never more, and carries `metadata.refundOfLedgerId` = that row's id.
+ * At most once per debit row: under the avatar row lock, an EARNED credit that
+ * already names the row as `refundOfLedgerId` refuses the restore. Throws on any
+ * attribution gap; the caller's transaction then rolls back.
+ */
+export async function restoreEarnedSpendForRefund(
+  input: {
+    avatarId: string;
+    /** The EARNED spend debit row (claw_token_transactions.id) being refunded. */
+    originalDebitLedgerId: string;
+    reason: string;
+    source?: ClawTokenSource;
+    metadata?: Record<string, unknown>;
+    actorKind?: CovenantActorKind | null;
+  },
+  tx: LedgerTx,
+): Promise<EarnedRefundRestoreResult> {
+  if (!tx) throw new Error('restoreEarnedSpendForRefund requires the caller transaction');
+  if (!input.avatarId || !input.originalDebitLedgerId || !input.reason?.trim()) {
+    throw new Error('restoreEarnedSpendForRefund requires avatar, original debit row and reason');
+  }
+
+  // 1. Avatar row lock first, then account any EARNED row an old writer left.
+  await readLockedBalances(tx, input.avatarId, 'credit');
+  await reconcileUnaccountedEarnedLedger(tx, input.avatarId);
+
+  // 2. The original EARNED spend debit row of THIS avatar, row-locked.
+  const [debit] = await tx.execute<{ id: string; amount: number; accounted_kind: string | null }>(
+    sql`SELECT t.id, (-t.amount)::int AS amount, a.kind::text AS accounted_kind
+        FROM claw_token_transactions t
+        LEFT JOIN earned_accounted_ledger a ON a.ledger_id = t.id
+        WHERE t.id = ${input.originalDebitLedgerId} AND t.avatar_id = ${input.avatarId}
+          AND t.provenance = 'earned' AND t.amount < 0
+        FOR UPDATE OF t`,
+  );
+  if (!debit) {
+    throw new Error('restoreEarnedSpendForRefund: no EARNED debit row of this avatar');
+  }
+  const debitId = String(debit.id);
+  const debitAmount = Number(debit.amount);
+  if (!Number.isSafeInteger(debitAmount) || debitAmount <= 0) {
+    throw new Error('restoreEarnedSpendForRefund: debit row amount is malformed');
+  }
+  if (debit.accounted_kind !== 'spend' && debit.accounted_kind !== 'legacy') {
+    throw new Error(
+      `restoreEarnedSpendForRefund: debit row is accounted '${debit.accounted_kind}', not an ordinary spend`,
+    );
+  }
+
+  // 3. At most one restore per debit row (serialized by the avatar row lock).
+  const [already] = await tx.execute<{ id: string }>(
+    sql`SELECT id FROM claw_token_transactions
+        WHERE avatar_id = ${input.avatarId} AND provenance = 'earned' AND amount > 0
+          AND metadata->>'refundOfLedgerId' = ${debitId}
+        LIMIT 1`,
+  );
+  if (already) throw new Error('restoreEarnedSpendForRefund: debit row already restored');
+
+  // 4. The lots the debit consumed, row-locked, with their current state.
+  const parts = await tx.execute<{
+    consumption_kind: string;
+    vclaw_amount: number;
+    usdc_atomic: string | null;
+    lot_id: string;
+    lot_avatar_id: string;
+    backing_kind: string;
+    lot_released: boolean;
+    event_closed: boolean;
+    backing_id: string | null;
+    backing_released: string | null;
+  }>(
+    sql`SELECT c.kind::text AS consumption_kind, c.vclaw_amount,
+               c.usdc_atomic::text AS usdc_atomic,
+               l.id AS lot_id, l.avatar_id AS lot_avatar_id,
+               l.backing_kind::text AS backing_kind,
+               (l.released_at IS NOT NULL) AS lot_released,
+               COALESCE(e.clawed_back_at IS NOT NULL
+                        OR e.payer_verification = 'rejected', false) AS event_closed,
+               b.id AS backing_id, b.released_usdc_atomic::text AS backing_released
+        FROM earned_lot_consumptions c
+        JOIN earned_mint_lots l ON l.id = c.mint_lot_id
+        LEFT JOIN earn_events e ON e.id = l.earn_event_id
+        LEFT JOIN earned_backing b ON b.mint_lot_id = l.id
+        WHERE c.ledger_debit_id = ${debitId}
+        ORDER BY l.created_at, l.id
+        FOR UPDATE OF l`,
+  );
+  let attributed = 0;
+  for (const p of parts) {
+    const units = Number(p.vclaw_amount);
+    if (
+      p.consumption_kind !== 'spend' ||
+      String(p.lot_avatar_id) !== input.avatarId ||
+      !Number.isSafeInteger(units) ||
+      units <= 0
+    ) {
+      throw new Error('restoreEarnedSpendForRefund: lot attribution of the debit row is malformed');
+    }
+    attributed += units;
+  }
+  const expectedAttributed = debit.accounted_kind === 'legacy' ? 0 : debitAmount;
+  if (attributed !== expectedAttributed) {
+    throw new Error(
+      `restoreEarnedSpendForRefund: lot attribution ${attributed} does not match the debit row (${expectedAttributed})`,
+    );
+  }
+
+  // 5. Put each consumed part back on its original lot when that lot can take it.
+  let restoredToLots = 0;
+  for (const p of parts) {
+    const units = Number(p.vclaw_amount);
+    const spendBacking = BigInt(p.usdc_atomic ?? '0');
+    const backed = p.backing_kind === 'backed';
+    const restorable =
+      !p.lot_released &&
+      (backed
+        ? !p.event_closed && p.backing_id != null
+        : p.backing_kind === 'none' && spendBacking === 0n);
+    if (!restorable) continue;
+
+    const atomic = backed ? BigInt(units) * 10_000n : 0n;
+    if (backed) {
+      // The spend released exactly this amount; it must still be in `released`.
+      if (spendBacking !== atomic || p.backing_released == null || BigInt(p.backing_released) < atomic) {
+        throw new Error(
+          `restoreEarnedSpendForRefund: backing of EARNED lot ${p.lot_id} does not hold the released amount`,
+        );
+      }
+    }
+    const [lot] = await tx.execute<{ id: string }>(
+      sql`UPDATE earned_mint_lots
+          SET remaining_vclaw = remaining_vclaw + ${units}, exhausted_at = NULL
+          WHERE id = ${p.lot_id} AND released_at IS NULL
+            AND remaining_vclaw + ${units} <= original_vclaw
+          RETURNING id`,
+    );
+    if (!lot) throw new Error(`restoreEarnedSpendForRefund: EARNED lot ${p.lot_id} cannot take ${units}`);
+    if (backed) {
+      const [backing] = await tx.execute<{ id: string }>(
+        sql`UPDATE earned_backing
+            SET remaining_usdc_atomic = remaining_usdc_atomic + ${atomic.toString()},
+                released_usdc_atomic = released_usdc_atomic - ${atomic.toString()},
+                updated_at = now()
+            WHERE mint_lot_id = ${p.lot_id}
+              AND released_usdc_atomic >= ${atomic.toString()}
+            RETURNING id`,
+      );
+      if (!backing) {
+        throw new Error(`restoreEarnedSpendForRefund: backing of EARNED lot ${p.lot_id} changed`);
+      }
+    }
+    restoredToLots += units;
+  }
+  const restoredAsNone = debitAmount - restoredToLots;
+
+  // 6. ONE EARNED credit of exactly the debit row's amount (usd_basis '0': a
+  //    refund returns units, it brings in no new dollars).
+  const credited = await applyCreditInTx(
+    tx,
+    {
+      avatarId: input.avatarId,
+      amount: debitAmount,
+      reason: input.reason,
+      source: input.source ?? 'system',
+      provenance: 'earned',
+      usdBasis: '0',
+      metadata: {
+        ...input.metadata,
+        refundOfLedgerId: debitId,
+        earnedRestore: { restoredToLots, restoredAsNone },
+      },
+      actorKind: input.actorKind ?? null,
+    },
+    EARNED_TOKEN,
+  );
+
+  // 7. Units no original lot could take: one new unbacked lot (never cashable).
+  if (restoredAsNone > 0) {
+    await tx.insert(earnedMintLots).values({
+      ledgerId: credited.ledgerId,
+      earnEventId: null,
+      avatarId: input.avatarId,
+      backingKind: 'none',
+      mintRef: `earned-refund:${debitId}`,
+      originalVclaw: restoredAsNone,
+      remainingVclaw: restoredAsNone,
+      metadata: { refundOfLedgerId: debitId, unbackedReason: 'refund_original_lot_closed' },
+    });
+  }
+  // Every EARNED ledger row is accounted exactly once, or the cutover replay
+  // would treat this credit as an old-writer mint and add a second lot for it.
+  await tx.insert(earnedAccountedLedger).values({ ledgerId: credited.ledgerId, kind: 'mint' });
+
+  return { ...credited, amount: debitAmount, restoredToLots, restoredAsNone };
 }
 
 /**
