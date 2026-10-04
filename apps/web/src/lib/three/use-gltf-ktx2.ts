@@ -32,6 +32,7 @@ import { extendLoaderWithKTX2 } from './ktx2-loader-setup';
 import { extendLoaderWithMeshopt } from './meshopt-loader-setup';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
+import { installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
 
 type GLTFResult = GLTF & ObjectMap;
 const TEXTURE_CAP_LOADERS = new WeakSet<object>();
@@ -102,6 +103,7 @@ export function extendLoaderWithMeshoptAndTextureDeviceCap(
 ): void {
   void extendLoaderWithMeshopt(loader);
   extendLoaderWithTextureDeviceCap(loader);
+  installGlbFetchRetry(loader);
 }
 
 function extendLoaderForWorldTextures(
@@ -109,6 +111,9 @@ function extendLoaderForWorldTextures(
 ): void {
   extendLoaderWithKTX2(loader);
   extendLoaderWithTextureDeviceCap(loader);
+  // R3F shares ONE GLTFLoader instance per constructor, so this request
+  // retry also covers plain useGLTF calls once any world-texture load ran.
+  installGlbFetchRetry(loader);
 }
 
 /**
@@ -122,6 +127,18 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
     return useGLTF(path, true, true, extendLoaderForWorldTextures);
   }
   return useGLTF(path, true, true, extendLoaderForWorldTextures);
+}
+
+/**
+ * useGLTFWithKTX2 for an OPTIONAL model. Returns null when THIS path failed
+ * for any reason (request failure after the loader's retries, or a parse /
+ * decode error), so the caller skips that model instead of crashing the
+ * whole canvas. Fails visible: one console.error per path with the original
+ * error class, message and phase. Still suspends while loading; any other
+ * error is rethrown. Required models must keep useGLTFWithKTX2.
+ */
+export function useOptionalGLTFWithKTX2(path: string): GLTFResult | null {
+  return readOptionalGltf(path, () => useGLTFWithKTX2(path));
 }
 
 /**
