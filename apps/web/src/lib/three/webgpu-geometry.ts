@@ -94,22 +94,52 @@ export function makeGeometryWebGPUSafe<T extends THREE.BufferGeometry>(geometry:
  * layout without the sampler bindings while the shader declares them: "Binding doesn't exist
  * in [BindGroupLayout]", and the pipeline-error mesh is never drawn (WebGPUBackend.draw skips it).
  * Hit on prod by hermitcrab-ktx.glb (PaletteMaterial001); sea_horse-mo-ktx.glb has the same
- * sampler. NearestMipmapNearestFilter keeps the nearest look and the identical GPU sampler
- * (min/mag/mipmap all 'nearest'), but makes the texture filterable, so both checks agree.
- * Textures without a mip chain get LinearFilter: a mipmap min filter on a single-level
- * texture is incomplete (black) on the WebGL2 fallback.
+ * sampler. Changing minFilter makes the texture filterable, so both checks agree.
+ *
+ * Visual effect: magnification is unchanged (magFilter stays NearestFilter). Minification changes:
+ * - mip chain present or generated: NearestMipmapNearestFilter, i.e. the nearest texel of the
+ *   nearest mip level. Far away this can read a coarser mip than plain Nearest (which always
+ *   reads level 0), so distant surfaces shimmer less and lose some fine texel detail.
+ * - single level: LinearFilter (bilinear when minified). A mipmap min filter is avoided here
+ *   because a mutable single-level WebGL2 texture would be incomplete (black).
+ * The mip test mirrors three r185 Textures.getMipLevels()/needsMipmaps(), which both backends use.
+ *
+ * Skipped: render-target, depth, cube, storage, framebuffer and video textures (not affected:
+ * cube always gets a sampler, depth must stay non-filtering, the rest are not plain image maps).
  */
+function hasMipChain(texture: THREE.Texture): boolean {
+  const defined = texture.mipmaps?.length ?? 0;
+  if (defined > 0) return defined > 1;
+  return texture.generateMipmaps === true && !(texture as THREE.CompressedTexture).isCompressedTexture;
+}
+
+function makeTextureFilterable(texture: THREE.Texture): void {
+  const t = texture as THREE.Texture & {
+    isRenderTargetTexture?: boolean;
+    isDepthTexture?: boolean;
+    isCubeTexture?: boolean;
+    isStorageTexture?: boolean;
+    isFramebufferTexture?: boolean;
+    isVideoTexture?: boolean;
+  };
+  if (
+    t.isRenderTargetTexture || t.isDepthTexture || t.isCubeTexture ||
+    t.isStorageTexture || t.isFramebufferTexture || t.isVideoTexture
+  ) return;
+  if (t.minFilter !== THREE.NearestFilter || t.magFilter !== THREE.NearestFilter) return;
+
+  t.minFilter = hasMipChain(t) ? THREE.NearestMipmapNearestFilter : THREE.LinearFilter;
+  // Both backends read filters only when texture.version changes (WebGPU: Sampler.update() ->
+  // updateSampler(); WebGL2: Textures.updateTexture() -> setTextureParameters()). version > 0
+  // means the data is ready (loaders set needsUpdate). A bump before the first upload still
+  // gives ONE upload; after an upload it refreshes the sampler/texParameteri once. Version 0
+  // (no data yet) is left alone so the texture is not marked ready too early.
+  if (t.version > 0) t.needsUpdate = true;
+}
+
 function makeMaterialTexturesFilterable(material: THREE.Material): void {
   for (const value of Object.values(material)) {
-    const texture = value as THREE.Texture | null;
-    if (
-      texture?.isTexture &&
-      texture.minFilter === THREE.NearestFilter &&
-      texture.magFilter === THREE.NearestFilter
-    ) {
-      texture.minFilter =
-        (texture.mipmaps?.length ?? 0) > 1 ? THREE.NearestMipmapNearestFilter : THREE.LinearFilter;
-    }
+    if ((value as THREE.Texture | null)?.isTexture) makeTextureFilterable(value as THREE.Texture);
   }
 }
 
@@ -119,9 +149,12 @@ export function makeObject3DWebGPUSafe(root: THREE.Object3D): void {
     if (mesh.isMesh && mesh.geometry) {
       makeGeometryWebGPUSafe(mesh.geometry);
     }
-    if (mesh.isMesh && mesh.material) {
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const material of materials) makeMaterialTexturesFilterable(material);
+    // Every Object3D with a material (Mesh, SkinnedMesh, Points, Line, Sprite, ...).
+    const material = (obj as THREE.Object3D & { material?: THREE.Material | THREE.Material[] }).material;
+    if (material) {
+      for (const m of Array.isArray(material) ? material : [material]) {
+        if (m) makeMaterialTexturesFilterable(m);
+      }
     }
   });
 }
