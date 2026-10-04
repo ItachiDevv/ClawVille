@@ -740,12 +740,12 @@ describe('reconcile an unknown row without a signature (history + exact match)',
     expect(world.get(row.id)).toMatchObject({ state: 'unknown', checkCount: 1 });
   });
 
-  test('window still not covered after 24 h -> needs_review not_found_balance_drop, critical', async () => {
+  test('window still not covered after 24 h -> needs_review review_timeout (no evidence), critical', async () => {
     const row = world.add(dispatched({ dispatchedAt: at(-25 * HOUR) }));
     history([{ signature: 'SIG_X', tx: usdcTx({ dest: OTHER, blockTime: unix(at(-HOUR)) }) }], false);
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_balance_drop' });
-    expect(world.causes('withdraw:needs_review:not_found_balance_drop')[0]?.severity).toBe('critical');
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
+    expect(world.causes('withdraw:needs_review:review_timeout')[0]?.severity).toBe('critical');
   });
 
   test('no match after 15 min with no balance drop -> needs_review not_found_no_drop (never failed_no_send)', async () => {
@@ -826,7 +826,7 @@ describe('Codex money review blockers (B2, B3, B4)', () => {
     const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(-25 * HOUR) }));
     world.liveError = new ClawPumpWriterError('timeout');
     await tick(world);
-    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_balance_drop' });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
   });
 
   test('B3: one match + an unresolved other candidate -> waits until it resolves, then needs_review (never confirmed)', async () => {
@@ -863,7 +863,7 @@ describe('Codex money review blockers (B2, B3, B4)', () => {
     const deps = world.deps();
     deps.getTransaction = async () => { throw new Error('rpc 503'); };
     await runArenaWithdrawTick(NOW, deps);
-    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'not_found_balance_drop' });
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
   });
 
   test('B3: history listed oldest-first cannot prove a contiguous window', async () => {
@@ -1056,5 +1056,83 @@ describe('Codex final pass: the reconcile decides nothing without proof', () => 
     await tick(world);
     expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'clawpump_http_error', txSignature: null });
     expect(world.transfers).toHaveLength(1);
+  });
+});
+
+describe('Codex liveness: every row without proof reaches needs_review within 24 h (review_timeout)', () => {
+  const PAST_24H = -(24 * HOUR + MIN);
+
+  test('B1: a signature never finalized for 24 h + 1 min -> needs_review review_timeout', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_A', errorCode: null, dispatchedAt: at(PAST_24H) }));
+    world.statuses.set('SIG_A', { finalized: false, err: null });
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout', txSignature: 'SIG_A' });
+    expect(world.causes('withdraw:needs_review:review_timeout')[0]?.severity).toBe('critical');
+  });
+
+  test('B1: finalized but no transaction body for 24 h + 1 min -> needs_review review_timeout', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_A', errorCode: null, dispatchedAt: at(PAST_24H) }));
+    world.statuses.set('SIG_A', { finalized: true, err: null });
+    await tick(world);
+    expect(world.calls.getTransaction).toBe(1);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout', txSignature: 'SIG_A' });
+  });
+
+  test('B1: before 24 h both waits stay touched (no decision)', async () => {
+    const a = world.add(dispatched({ state: 'sent', txSignature: 'SIG_A', errorCode: null, agentId: 'agent-a', dispatchedAt: at(-23 * HOUR) }));
+    const b = world.add(dispatched({ state: 'sent', txSignature: 'SIG_B', errorCode: null, agentId: 'agent-b', dispatchedAt: at(-23 * HOUR) }));
+    world.statuses.set('SIG_A', { finalized: false, err: null });
+    world.statuses.set('SIG_B', { finalized: true, err: null });
+    await tick(world);
+    expect(world.get(a.id)).toMatchObject({ state: 'sent', checkCount: 1 });
+    expect(world.get(b.id)).toMatchObject({ state: 'sent', checkCount: 1 });
+  });
+
+  test('B2: unknown row, budget short at 24 h + 1 min -> needs_review review_timeout, no remote read', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(PAST_24H) }));
+    world.budget = false;
+    await tick(world);
+    expect(world.calls.readWalletLive).toBe(0);
+    expect(world.calls.getTransaction).toBe(0);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout', txSignature: null });
+  });
+
+  test('B2: sent row whose signature is gone, budget short at 24 h + 1 min -> needs_review review_timeout, no ClawPump read', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_GONE', errorCode: null, dispatchedAt: at(PAST_24H) }));
+    world.budget = false;
+    await tick(world);
+    expect(world.calls.readWalletLive).toBe(0);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout', txSignature: 'SIG_GONE' });
+  });
+
+  test('B2: budget short before 24 h -> skipped, the row stays open and untouched', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(-23 * HOUR) }));
+    world.budget = false;
+    await tick(world);
+    expect(world.calls.readWalletLive).toBe(0);
+    expect(world.get(row.id)).toMatchObject({ state: 'unknown', checkCount: 0 });
+  });
+
+  test('undecided: a wrong live wallet at 24 h + 1 min -> needs_review review_timeout (not a balance-drop code)', async () => {
+    const row = world.add(dispatched({ dispatchedAt: at(PAST_24H) }));
+    world.live = { ...world.live, address: OTHER };
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
+  });
+
+  test('undecided: a signature-status read error at 24 h + 1 min -> needs_review review_timeout', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_A', errorCode: null, dispatchedAt: at(PAST_24H) }));
+    const deps = world.deps();
+    deps.getSignatureStatus = async () => { throw new Error('rpc 503'); };
+    await runArenaWithdrawTick(NOW, deps);
+    expect(world.get(row.id)).toMatchObject({ state: 'needs_review', errorCode: 'review_timeout' });
+  });
+
+  test('evidence still wins after 24 h: an own finalized exact signature confirms', async () => {
+    const row = world.add(dispatched({ state: 'sent', txSignature: 'SIG_A', errorCode: null, dispatchedAt: at(PAST_24H) }));
+    world.statuses.set('SIG_A', { finalized: true, err: null });
+    world.txs.set('SIG_A', usdcTx({ blockTime: unix(at(PAST_24H + MIN)) }));
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'confirmed', txSignature: 'SIG_A' });
   });
 });

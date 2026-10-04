@@ -48,6 +48,13 @@ import {
  * amount and destination do not identify a withdrawal, and a "complete" history
  * does not prove ClawPump listed every transfer. History and the balance rule
  * are evidence only; after the give-up time they pick the needs_review code.
+ *
+ * LIVENESS (Codex): an open row ('sent'/'unknown') blocks the agent's next
+ * withdrawal, so every wait (not finalized, no transaction body, read error,
+ * wrong wallet, uncovered history, ClawPump budget short) goes through the 24 h
+ * deadline: past ARENA_WITHDRAW_REVIEW_AFTER_MS it becomes needs_review with
+ * the neutral code 'review_timeout' (no evidence read). The budget check runs
+ * BEFORE the budget-dependent read, and the review write needs only the DB.
  * Each tick: reconcile first (also while paused), then stop if paused, then at
  * most 2 dispatches. Every DB write is its own short transaction (queries.ts);
  * the per-agent try-lock only keeps two leaders from repeating the same reads.
@@ -566,10 +573,29 @@ async function touch(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, now: D
   return 'touched';
 }
 
-/** No decision is possible yet (uncovered history window, wrong wallet): wait, and give it to an operator after 24 h. */
+/** The review code of a deadline-driven review with no evidence read (LIVENESS in the header). */
+const REVIEW_TIMEOUT_CODE = 'review_timeout';
+
+function pastReviewDeadline(row: ArenaWithdrawalRecord, now: Date): boolean {
+  return ageMs(row, now) > ARENA_WITHDRAW_REVIEW_AFTER_MS;
+}
+
+/**
+ * No decision is possible yet (not finalized, no transaction body, read error, wrong wallet, uncovered history):
+ * wait, and give it to an operator after 24 h with the neutral 'review_timeout' (no evidence was read).
+ */
 async function undecided(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, now: Date): Promise<ArenaWithdrawReconcileResult> {
-  if (ageMs(row, now) > ARENA_WITHDRAW_REVIEW_AFTER_MS) return review(deps, row, 'not_found_balance_drop');
+  if (pastReviewDeadline(row, now)) return review(deps, row, REVIEW_TIMEOUT_CODE);
   return touch(deps, row, now);
+}
+
+/**
+ * The ClawPump budget is short (readLiveForReconcile returned null before any remote read): skip this tick, but
+ * past the 24 h deadline go to an operator now. The review write needs only the DB, so a long budget shortage
+ * never keeps the row open.
+ */
+async function budgetShort(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, now: Date): Promise<ArenaWithdrawReconcileResult> {
+  return pastReviewDeadline(row, now) ? review(deps, row, REVIEW_TIMEOUT_CODE) : 'skipped';
 }
 
 /**
@@ -599,7 +625,7 @@ async function applyBalanceRule(
   return review(deps, row, 'not_found_balance_drop');
 }
 
-/** A live read for the balance rule or the history scan (with the remote deadline). Null = skip this row now (budget short). */
+/** A live read for the balance rule or the history scan (with the remote deadline). Null = budget short, no read (see budgetShort). */
 async function readLiveForReconcile(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord): Promise<ClawPumpArenaWalletLive | null> {
   if (!deps.budgetOk(1)) return null;
   return remote(deps, () => deps.readWalletLive(row.sourceClawpumpAgentId, row.agentId));
@@ -727,7 +753,7 @@ async function reconcileBySignature(
     if (ageMs(row, now) <= ARENA_WITHDRAW_SENT_GIVE_UP_MS) return touch(deps, row, now);
     // Codex B2 + final pass: a missing signature is never failed_no_send (a deposit can hide the drop). After
     // the give-up the history evidence picks the needs_review code. A history that lists the signature, a
-    // read error or a wrong wallet waits (24 h -> operator).
+    // read error, a wrong wallet or a short budget waits (24 h -> operator, 'review_timeout').
     let live: ClawPumpArenaWalletLive | null;
     try {
       live = await readLiveForReconcile(deps, row);
@@ -735,12 +761,13 @@ async function reconcileBySignature(
       noteReadError(deps, row, error);
       return undecided(deps, row, now);
     }
-    if (!live) return 'skipped';
+    if (!live) return budgetShort(deps, row, now);
     if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
     if (live.transactions.some((item) => item.signature === signature)) return undecided(deps, row, now);
     return reviewFromHistory(deps, row, now, live, await scanHistory(deps, row, live));
   }
-  if (!status.finalized) return touch(deps, row, now);
+  // Codex liveness B1: a signature that never finalizes, or a transaction body that never arrives, waits at most 24 h.
+  if (!status.finalized) return undecided(deps, row, now);
   if (status.err !== null && status.err !== undefined) return finish(deps, row, { state: 'failed', errorCode: 'chain_error' });
   let tx: ArenaWithdrawChainTx | null;
   try {
@@ -749,7 +776,7 @@ async function reconcileBySignature(
     noteReadError(deps, row, error);
     return undecided(deps, row, now);
   }
-  if (!tx || !tx.meta) return touch(deps, row, now);
+  if (!tx || !tx.meta) return undecided(deps, row, now);
   const verdict = matchWithdrawTransfer(tx, row);
   if (verdict === 'chain_error') return finish(deps, row, { state: 'failed', errorCode: 'chain_error' });
   if (verdict === 'no_match') return review(deps, row, 'chain_mismatch');
@@ -770,7 +797,7 @@ async function reconcileByHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalR
     noteReadError(deps, row, error);
     return undecided(deps, row, now);
   }
-  if (!live) return 'skipped';
+  if (!live) return budgetShort(deps, row, now);
   if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
   return reviewFromHistory(deps, row, now, live, await scanHistory(deps, row, live));
 }
