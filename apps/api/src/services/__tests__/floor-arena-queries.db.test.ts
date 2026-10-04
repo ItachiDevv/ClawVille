@@ -82,14 +82,14 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     const dayStart = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
     const reservation = await q.reserveArenaAddonCall({
       agentId: ids.seated, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp1,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     expect(reservation.reserved).toBe(true);
     const id = (reservation as { id: number }).id;
     // The standing agent cannot reserve at all.
     const refused = await q.reserveArenaAddonCall({
       agentId: ids.standing, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp2,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     expect(refused).toMatchObject({ reserved: false, check: { reason: 'agent_changed' } });
     // A pause releases; then (after a fresh reservation) a stand-up releases.
@@ -104,7 +104,7 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     expect(Number(released[0]!.price_usd)).toBe(0);
     const second = await q.reserveArenaAddonCall({
       agentId: ids.seated, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp1,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     const secondId = (second as { id: number }).id;
     await q.setArenaAgentSeat(ids.seated, false, null, 'Stood up');
@@ -114,7 +114,7 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     await q.setArenaAgentSeat(ids.seated, true, 0, 'Sat down');
     const third = await q.reserveArenaAddonCall({
       agentId: ids.seated, addonId: 'nansen-token-screener-sol', clawpumpAgentId: ids.cp1,
-      at, priceUsd: 0.01, dayStart, check: () => ({ ok: true }),
+      at, priceUsd: 0.01, dayStart, walletUsdc: 10, check: () => ({ ok: true }),
     });
     const thirdId = (third as { id: number }).id;
     expect(await q.confirmArenaAddonDispatch({
@@ -237,6 +237,29 @@ describeIfDb('floor arena money SQL on Postgres', () => {
     expect(await q.readArenaAgent(ids.standing)).toMatchObject({
       provisionState: 'pending', provisionAttempts: 0, provisionError: null, provisionNextAt: null,
     });
+  });
+
+  test('Codex r2 B2 follow-up: countArenaCreateAttempt counts only for the live claim and below the cap', async () => {
+    const q = await import('../floor-arena/queries');
+    const { db, sql } = await import('@clawville/database');
+    // offPending: a 'pending' user row with no attempts yet.
+    const now = new Date();
+    const claimed = await q.claimArenaProvision(ids.offPending, now, 5, 10 * 60_000);
+    expect(claimed).not.toBeNull();
+    const lease = claimed!.provisionNextAt!;
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBe(1);
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBe(2);
+    // A stale lease (the claim was lost) counts nothing.
+    expect(await q.countArenaCreateAttempt(ids.offPending, new Date(lease.getTime() - 1000), 5)).toBeNull();
+    // At the cap it counts nothing.
+    await db.execute(sql`UPDATE floor_arena_agents SET provision_attempts = 5 WHERE id = ${ids.offPending}`);
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBeNull();
+    expect((await q.readArenaAgent(ids.offPending))!.provisionAttempts).toBe(5);
+    // A row that is not 'creating' (released by markFailed) counts nothing.
+    await db.execute(sql`UPDATE floor_arena_agents SET provision_attempts = 1 WHERE id = ${ids.offPending}`);
+    expect(await q.markArenaProvisionFailed(ids.offPending, 'test', 1, null, lease)).toBe(true);
+    expect(await q.countArenaCreateAttempt(ids.offPending, lease, 5)).toBeNull();
+    expect(await q.readArenaAgent(ids.offPending)).toMatchObject({ provisionState: 'failed', provisionAttempts: 1 });
   });
 
   test('O1 (2026-10-01): a row whose pay POST never left the process does not advance the dedupe rotation', async () => {

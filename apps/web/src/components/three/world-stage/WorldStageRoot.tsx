@@ -740,6 +740,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           interact: true,
           clickPath: false,
           cameraOrbitKeys: true,
+          cameraOrbitDrag: true,
         },
         content: (
           <Suspense fallback={null}>

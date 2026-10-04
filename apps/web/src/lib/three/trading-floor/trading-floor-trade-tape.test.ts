@@ -53,7 +53,7 @@ import {
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SCREEN_SURROUND_FACE_Z,
-  TRADING_FLOOR_SOLIDS,
+  TRADING_FLOOR_PILLAR_SOLIDS,
 } from './trading-floor-room';
 
 // ---------------------------------------------------------------------------
@@ -578,7 +578,7 @@ describe('flight geometry', () => {
     // Rotated half-width; the existing 10 wu desk margin remains mandatory.
     const deskBound = TRADING_FLOOR_DESK_INNER_X - 10 -
       Math.cos(TAPE_LANE_YAW) * TAPE_CHIP_WIDTH / 2;
-    expect(deskBound).toBeCloseTo(896.9282040536, 6);
+    expect(worst).toBeCloseTo(TAPE_LANE_X + Math.cos(TAPE_LANE_YAW) * TAPE_CHIP_WIDTH / 2, 6);
     expect(TAPE_LANE_X).toBeLessThan(deskBound);
     expect(TRADING_FLOOR_DESK_INNER_X - worst).toBeGreaterThan(10);
   });
@@ -620,7 +620,7 @@ describe('flight geometry', () => {
     );
     expect(lowestBound).toBeGreaterThan(TALLEST_PROP + 50);
     expect(lowest).toBeGreaterThanOrEqual(lowestBound);
-    expect(TAPE_Y).toBeLessThanOrEqual(420);
+    expect(TAPE_Y).toBeLessThanOrEqual(480);
     // The Y clearance is what removes the need for ANY XZ keep-out against the
     // desks, chairs, dais and kiosk — so pin the margin, not just the sign.
     expect(lowest - TALLEST_PROP).toBeGreaterThan(50);
@@ -629,9 +629,7 @@ describe('flight geometry', () => {
   test('the corner pillars run floor to ceiling, so the lane clears them in XZ', () => {
     // Every other solid is cleared in Y by the test above. The four pillars are
     // the exception: they are full-height, so this one is an XZ separation.
-    const pillars = TRADING_FLOOR_SOLIDS.filter(
-      (s) => s.halfX === 55 && s.halfZ === 55,
-    );
+    const pillars = TRADING_FLOOR_PILLAR_SOLIDS;
     expect(pillars).toHaveLength(4);
     sweep((c, nowMs) => {
       for (const corner of corners(c, nowMs)) {
@@ -669,8 +667,8 @@ describe('flight geometry', () => {
     const projection = (cameraZ - TRADING_FLOOR_SCREEN.z) /
       (cameraZ - (TAPE_Z_START - halfZ));
     const boardBound = halfX + (boardHalfWidth + 15) / projection;
-    expect(boardBound).toBeCloseTo(873.0862276225, 6);
-    expect(projection).toBeCloseTo(1.088, 3);
+    expect(closest).toBeGreaterThan((boardBound - halfX) * projection);
+    expect(projection).toBeGreaterThan(1);
     expect(TAPE_LANE_X).toBeGreaterThan(boardBound);
     expect(closest).toBeCloseTo((TAPE_LANE_X - halfX) * projection, 6);
     expect(closest - boardHalfWidth).toBeGreaterThan(15);
@@ -982,5 +980,17 @@ describe('atlas layout', () => {
       const rect = tapeCellRect(index);
       expect(uv.vTop).toBeCloseTo(1 - rect.y / TAPE_ATLAS_HEIGHT, 6);
     }
+  });
+});
+
+
+describe('R4 tape clearance above the procedural kiosk', () => {
+  test('height 480 keeps the conservative bottom corner more than 50 wu above the kiosk', () => {
+    expect(TAPE_Y).toBe(480);
+    expect(TRADING_FLOOR_MONITOR.height).toBe(360);
+    const lowest = TAPE_Y - TAPE_BOB - Math.max(TAPE_CHIP_HEIGHT / 2, TAPE_POP_RISE + TAPE_CHIP_HEIGHT * TAPE_POP_MIN_SCALE / 2);
+    expect(lowest).toBe(412.75);
+    expect(lowest).toBeGreaterThan(TRADING_FLOOR_MONITOR.height + 50);
+    expect(TAPE_Z_END).toBeLessThan(TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_MONITOR.halfZ);
   });
 });

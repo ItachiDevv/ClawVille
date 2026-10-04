@@ -32,7 +32,20 @@ import {
   FLOOR_ARENA_SUGGESTION_STATES,
   FLOOR_ARENA_TEMPLATES,
   FLOOR_ARENA_VERSION,
+  FLOOR_ARENA_WITHDRAW_ADDRESS_PROOFS,
+  FLOOR_ARENA_WITHDRAW_AMOUNT_MODES,
+  FLOOR_ARENA_WITHDRAW_ASSETS,
+  FLOOR_ARENA_WITHDRAW_COUNTED_STATES,
+  FLOOR_ARENA_WITHDRAW_LIMITS,
+  FLOOR_ARENA_WITHDRAW_OPEN_STATES,
+  FLOOR_ARENA_WITHDRAW_RECONCILE_CODES,
+  FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
+  FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
+  FLOOR_ARENA_WITHDRAW_REVOKE_REASONS,
+  FLOOR_ARENA_WITHDRAW_STATES,
+  FLOOR_ARENA_WITHDRAW_SUBJECT_KINDS,
   applyFloorArenaParamChange,
+  buildFloorArenaWithdrawAddressMessage,
   cloneFloorArenaParams,
   diffFloorArenaParams,
   floorArenaTemplateById,
@@ -353,6 +366,7 @@ describe('floor arena static tables', () => {
       'report',
       'status',
       'addon',
+      'withdraw',
     ]);
     expect(FLOOR_ARENA_SUGGESTION_STATES).toEqual([
       'none',
@@ -364,6 +378,152 @@ describe('floor arena static tables', () => {
     ]);
     expect(FLOOR_ARENA_PARAM_CHANGE_SOURCES).toEqual(['user', 'house-tuner', 'admin', 'suggestion']);
     expect(FLOOR_ARENA_ADDON_CALL_STATES).toEqual(['reserved', 'done']);
+  });
+});
+
+/** P5 wallet withdraw (D34). Contract: ops/house-traders/arena-review/P5_CONTRACT_2026-10-02.md §2.3. */
+describe('floor arena withdraw constants', () => {
+  test('the withdraw value sets match migration 0074 and are frozen', () => {
+    expect(FLOOR_ARENA_WITHDRAW_ASSETS).toEqual(['USDC', 'SOL']);
+    expect(FLOOR_ARENA_WITHDRAW_AMOUNT_MODES).toEqual(['exact', 'max']);
+    expect(FLOOR_ARENA_WITHDRAW_STATES).toEqual([
+      'requested',
+      'dispatching',
+      'sent',
+      'confirmed',
+      'cancelled',
+      'refused',
+      'failed',
+      'unknown',
+      'failed_no_send',
+      'needs_review',
+    ]);
+    expect(FLOOR_ARENA_WITHDRAW_OPEN_STATES).toEqual(['requested', 'dispatching', 'sent', 'unknown']);
+    expect(FLOOR_ARENA_WITHDRAW_COUNTED_STATES).toEqual([
+      'requested',
+      'dispatching',
+      'sent',
+      'confirmed',
+      'unknown',
+      'needs_review',
+    ]);
+    expect(FLOOR_ARENA_WITHDRAW_ADDRESS_PROOFS).toEqual(['signed', 'linked_wallet']);
+    expect(FLOOR_ARENA_WITHDRAW_SUBJECT_KINDS).toEqual(['human', 'agent']);
+    expect(FLOOR_ARENA_WITHDRAW_REVOKE_REASONS).toEqual(['owner', 'replaced', 'admin']);
+    expect(FLOOR_ARENA_WITHDRAW_REFUSAL_CODES).toEqual([
+      'needs_sol',
+      'insufficient_balance',
+      'below_minimum',
+      'address_revoked',
+      'agent_changed',
+      'agent_daily_cap',
+      'source_mismatch',
+    ]);
+    expect(FLOOR_ARENA_WITHDRAW_REQUEST_CODES).toEqual([
+      'idempotency_conflict',
+      'wallet_not_ready',
+      'no_withdraw_address',
+      'address_pending',
+      'withdrawal_open',
+      'cooldown',
+      'daily_count_cap',
+      'agent_daily_cap',
+      'invalid_amount',
+      'below_minimum',
+    ]);
+    expect(FLOOR_ARENA_WITHDRAW_RECONCILE_CODES).toEqual([
+      'dispatch_interrupted',
+      'chain_error',
+      'chain_mismatch',
+      'not_found_no_drop',
+      'not_found_balance_drop',
+      'ambiguous_match',
+      'tx_reused',
+      'reply_mismatch',
+    ]);
+    for (const set of [
+      FLOOR_ARENA_WITHDRAW_ASSETS,
+      FLOOR_ARENA_WITHDRAW_AMOUNT_MODES,
+      FLOOR_ARENA_WITHDRAW_STATES,
+      FLOOR_ARENA_WITHDRAW_OPEN_STATES,
+      FLOOR_ARENA_WITHDRAW_COUNTED_STATES,
+      FLOOR_ARENA_WITHDRAW_ADDRESS_PROOFS,
+      FLOOR_ARENA_WITHDRAW_SUBJECT_KINDS,
+      FLOOR_ARENA_WITHDRAW_REVOKE_REASONS,
+      FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
+      FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
+      FLOOR_ARENA_WITHDRAW_RECONCILE_CODES,
+      FLOOR_ARENA_WITHDRAW_LIMITS,
+    ]) {
+      expect(Object.isFrozen(set)).toBe(true);
+    }
+  });
+
+  test('open and counted states are subsets of the states', () => {
+    const states: readonly string[] = FLOOR_ARENA_WITHDRAW_STATES;
+    for (const state of [...FLOOR_ARENA_WITHDRAW_OPEN_STATES, ...FLOOR_ARENA_WITHDRAW_COUNTED_STATES]) {
+      expect(states).toContain(state);
+    }
+  });
+
+  test('every stored code fits the floor_arena_withdrawals_codes_shape CHECK', () => {
+    for (const code of [
+      ...FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
+      ...FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
+      ...FLOOR_ARENA_WITHDRAW_RECONCILE_CODES,
+    ]) {
+      expect(/^[a-z0-9_.:-]{1,64}$/.test(code)).toBe(true);
+    }
+  });
+
+  test('the limits are the D34-f values', () => {
+    expect(FLOOR_ARENA_WITHDRAW_LIMITS).toEqual({
+      usdcDecimals: 6,
+      solDecimals: 9,
+      minUsdcAtomic: 100_000,
+      minSolLamports: 1_000_000,
+      agentDailyRequests: 3,
+      agentDailyUsdcAtomic: 500_000_000,
+      accountDailyUsdcAtomic: 2_000_000_000,
+      cooldownMs: 600_000,
+      addressDelayMs: 86_400_000,
+      challengeTtlMs: 600_000,
+      maxLiveChallengesPerAgent: 5,
+      feePrecheckLamports: 5_000_000,
+      ataRentLamports: 2_040_000,
+      solKeepLamports: 900_000,
+      recommendedSolText: '0.01',
+    });
+    // Solana rent rule: a system account must keep 0 or at least 890,880 lamports.
+    // The SOL minimum is a valid first deposit, and SOL max keeps the rent minimum plus a 5,000 fee.
+    expect(FLOOR_ARENA_WITHDRAW_LIMITS.minSolLamports).toBeGreaterThan(890_880);
+    expect(FLOOR_ARENA_WITHDRAW_LIMITS.solKeepLamports).toBeGreaterThanOrEqual(890_880 + 5_000);
+  });
+
+  test('the address message is the exact 7-line text, domain-separated from the wallet link', () => {
+    const message = buildFloorArenaWithdrawAddressMessage({
+      agentId: 'agent-1',
+      userId: 'user-1',
+      address: 'CQMkzDuaAddress',
+      nonce: 'nonce-1',
+      expiresAt: '2026-10-02T00:10:00.000Z',
+    });
+    expect(message).toBe(
+      'ClawVille arena withdraw address v1\n' +
+        'I approve this address to receive withdrawals from my ClawVille Trading Arena agent wallet.\n' +
+        'arena agent: agent-1\n' +
+        'account: user-1\n' +
+        'address: CQMkzDuaAddress\n' +
+        'nonce: nonce-1\n' +
+        'expires: 2026-10-02T00:10:00.000Z',
+    );
+    expect(message.split('\n')).toHaveLength(7);
+    // apps/api wallet-link-challenge.ts buildWalletLinkMessage starts with this line.
+    expect(message.split('\n')[0]).not.toBe('ClawVille wallet link');
+  });
+
+  test("'withdraw' is an event type", () => {
+    expect(FLOOR_ARENA_EVENT_TYPES).toContain('withdraw');
   });
 });
 

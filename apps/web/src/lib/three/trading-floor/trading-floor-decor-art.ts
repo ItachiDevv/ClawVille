@@ -38,6 +38,7 @@ import {
   DECOR_BANDS,
   DECOR_DEPTH_PANEL_COUNT,
   DECOR_DESK_HEADER_COUNT,
+  DECOR_PLATE_ALGAE_RECTS,
   DECOR_SWATCH_IDS,
   DECOR_TERMINAL_PANEL_COUNT,
   DECOR_WALL_HEADER_COUNT,
@@ -702,6 +703,35 @@ export function drawDecorAtlas(ctx: DecorContext): void {
     ctx.fillStyle = DECOR_SWATCH_COLORS[id];
     ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
   }
+  drawPlateAlgae(ctx);
+}
+
+/** Sparse olive rim, confined to the weighted plates' own atlas tiles. */
+export function drawPlateAlgae(ctx: DecorContext): void {
+  const alpha = ctx.globalAlpha;
+  for (const [face, rect] of Object.entries(DECOR_PLATE_ALGAE_RECTS)) {
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = DECOR_SWATCH_COLORS[face === 'top' ? 'brassTop' : face === 'front' ? 'brassFront' : 'brassSide'];
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    if (face === 'top') {
+      ctx.globalAlpha = .28;
+      ctx.strokeStyle = '#505433';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+    } else {
+      const fade = ctx.createLinearGradient(0, rect.y + rect.height, 0, rect.y + rect.height - 6);
+      fade.addColorStop(0, 'rgba(69,72,43,.48)');
+      fade.addColorStop(1, 'rgba(69,72,43,0)');
+      ctx.fillStyle = fade;
+      ctx.fillRect(rect.x, rect.y + rect.height - 6, rect.width, 6);
+    }
+    ctx.globalAlpha = .24;
+    ctx.fillStyle = '#59603a';
+    for (let x = 4; x < rect.width - 4; x += 17) {
+      ctx.fillRect(rect.x + x, rect.y + rect.height - 3, 3, 2);
+    }
+  }
+  ctx.globalAlpha = alpha;
 }
 
 // ---------------------------------------------------------------------------

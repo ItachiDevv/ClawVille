@@ -28,11 +28,57 @@ export interface CovenantActionRecordParams {
   payload: Record<string, unknown>;
 }
 
+/**
+ * Input for the ONE book-purchase charge of BUY_ITEM (security batch 2,
+ * 2026-10-02). The service decides the ledger rows (buyer debit + T0 treasury
+ * credit); the runtime supplies only the facts of the sale.
+ */
+export interface BookPurchaseChargeParams {
+  /** The buyer avatar (a guest is refused). */
+  avatarId: string;
+  /** A catalog book id (`getBookById`). */
+  bookId: string;
+  /** The book price: a positive safe integer equal to the catalog price, or the service throws. */
+  amount: number;
+}
+
+export interface BookPurchaseChargeResult {
+  /** The buyer's balance after the debit. */
+  balanceAfter: number;
+  /** The treasury avatar credited, or null when the treasury is unavailable (the price burned, logged). */
+  treasuryAvatarId: string | null;
+}
+
 export interface ClawvilleServices {
-  /** Credit ClawTokens to an avatar (returns new balance) */
-  creditClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
-  /** Debit ClawTokens from an avatar (returns new balance) */
-  debitClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
+  /**
+   * Credit ClawTokens to an avatar (returns new balance). Pass the enclosing
+   * drizzle `tx` to make the credit atomic with the action's other writes.
+   */
+  creditClawTokens: (params: ClawTokenServiceParams, tx?: any) => Promise<{ balanceAfter: number }>;
+  /**
+   * Debit ClawTokens from an avatar (returns new balance). Pass the enclosing
+   * drizzle `tx` to make the debit atomic with the action's other writes (BUY_ITEM
+   * debits and grants the book in ONE transaction, security Codex round 2).
+   */
+  debitClawTokens: (params: ClawTokenServiceParams, tx?: any) => Promise<{ balanceAfter: number }>;
+  /**
+   * The ONE book-purchase charge for BUY_ITEM (security batch 2, 2026-10-02).
+   * Inside the caller's `tx` (REQUIRED) it refuses a guest buyer, debits the
+   * buyer (reason `Purchased book: <name>`, the surface's actor kind), then
+   * credits the house treasury with the SAME ledger row the REST shop writes
+   * (`routes/items.ts` step 1b: reason 'house_fee_book_purchase', source
+   * 'system', actor 'system', metadata { bookId, buyerAvatarId }). A null
+   * treasury logs and burns the price (the REST pre-T0 fallback). It THROWS on an
+   * amount that is not a positive safe integer or not the catalog price. There
+   * is deliberately NO standalone treasury-credit service: the credit cannot
+   * happen without the matching debit. OPTIONAL so bespoke service constructors
+   * keep compiling; BUY_ITEM refuses BEFORE any read or debit when it is absent
+   * (fail closed).
+   */
+  chargeBookPurchase?: (
+    params: BookPurchaseChargeParams,
+    tx: any,
+  ) => Promise<BookPurchaseChargeResult>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
   /**

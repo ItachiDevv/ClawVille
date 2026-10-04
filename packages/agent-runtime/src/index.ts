@@ -65,6 +65,8 @@ export type {
   LearnBookErrorCode,
   LearnBookResult,
 } from './actions/learn-book-transaction';
+export { grantInventoryItem, takeInventoryItem } from './actions/inventory-mutations';
+export type { InventoryDatabase, InventoryItemRef } from './actions/inventory-mutations';
 export {
   knowledgeEntriesFrom,
   mergeKnowledgeCustomization,

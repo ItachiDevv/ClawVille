@@ -108,6 +108,9 @@ const servicesPageQuerySchemaMirror = z
 const buyServiceBodySchemaMirror = z
   .object({
     idempotencyKey: z.string().min(8).max(64),
+    // Security M12 (2026-09-30): optional price binding; behavior is covered
+    // against the REAL schema + route in land-service-price-binding.test.ts.
+    expectedPriceCt: z.number().int().nonnegative().max(1_000_000).optional(),
   })
   .strict();
 
@@ -218,6 +221,16 @@ describe('land services — zod schema mirrors (deterministic, no DB)', () => {
     it('rejects a stray key (.strict())', () => {
       expect(
         buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10), listingId: 'y' })
+          .success,
+      ).toBe(false);
+    });
+    it('accepts an optional integer expectedPriceCt (price binding, M12)', () => {
+      expect(
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10), expectedPriceCt: 250 })
+          .success,
+      ).toBe(true);
+      expect(
+        buyServiceBodySchemaMirror.safeParse({ idempotencyKey: 'x'.repeat(10), expectedPriceCt: -1 })
           .success,
       ).toBe(false);
     });

@@ -511,6 +511,17 @@ async function capNotice(
   dayMs: number,
 ): Promise<void> {
   if (check.reason === 'interval' || check.reason === 'agent_changed') return;
+  // P5 D34-i: refusals of the locked reservation against open withdrawals. They can repeat every
+  // pass, so they are throttled like the other skip notices. 'underfunded' shares its key with the
+  // pre-check underfunded notice: one underfunded line per interval, whichever check found it.
+  if (check.reason === 'withdraw_pending' || check.reason === 'underfunded') {
+    await notice(deps, `${agentId}:${item.id}:${check.reason}`, nowMs, NOTICE_INTERVAL_MS, agentId,
+      check.reason === 'withdraw_pending'
+        ? `${item.name}: skipped while a withdrawal of all USDC is open.`
+        : `${item.name}: underfunded after open withdrawals.`,
+      { addonId: item.id, reason: check.reason });
+    return;
+  }
   await notice(deps, `${agentId}:${item.id}:cap:${dayMs}`, nowMs, Number.POSITIVE_INFINITY, agentId,
     check.reason === 'agent_cap'
       ? `${item.name}: the agent's add-on cap is reached (${usd(check.spentUsd)} of ${usd(check.capUsd)} today). Next call after 00:00 UTC.`
@@ -626,6 +637,10 @@ export async function runArenaAddonAgent(
       at: reserveAt,
       priceUsd: price,
       dayStart: utcDayStart(reserveAt),
+      // P5 D34-i: the balance read above. Under the lock the reservation subtracts open withdrawals and
+      // open reservations from it. Residual: this summary is cached up to 60 s, so a confirmed withdrawal
+      // can still look unspent; that pay then fails at ClawPump and moves no USDC (the chain is the guard).
+      walletUsdc: balance,
       // Codex r3 #10: the cap is the one on the agent row NOW, read under the lock.
       check: (locked, currentCapUsd) => checkAddonCall({
         ...checkInput, nowMs: reserveAt.getTime(), addonCapUsd: currentCapUsd, stats: locked,

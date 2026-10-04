@@ -96,6 +96,7 @@ const EVENT_LOOK: Record<FloorArenaEventView['type'], { label: string; tone: str
   report: { label: 'REPORT', tone: ARENA_TONE.report },
   status: { label: 'STATUS', tone: FLOOR_TEXT.warning },
   addon: { label: 'ADD-ON', tone: FLOOR_TEXT.accent },
+  withdraw: { label: 'WITHDRAW', tone: FLOOR_TEXT.accent },
   other: { label: 'EVENT', tone: FLOOR_TEXT.faint },
 };
 

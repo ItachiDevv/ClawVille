@@ -54,8 +54,26 @@ import {
   useArenaNow,
 } from './arena-kit';
 import { ArenaParamsForm } from './arena-params-form';
+import { ArenaWalletSolLine, ArenaWithdrawPanel } from './withdraw-panel';
 
 export type DeskStatus = 'trading' | 'waiting' | 'paused' | 'stopped';
+
+/**
+ * The Wallet block's copy while provisionState is 'failed' (lead rule
+ * 2026-10-03; apps/api/src/services/floor-arena/provisioning.ts). Our own
+ * ClawPump call-budget wait (`clawpump_budget_exhausted`) is not an attempt and
+ * is due again about 25 s later. A real failure counts as an attempt: the next
+ * try is 10 minutes later, up to 5 attempts (ARENA_PROVISION_RETRY_MS,
+ * ARENA_PROVISION_MAX_ATTEMPTS). /me has no attempt count or next-try time, so
+ * the copy states the rule and never promises another try (after the fifth
+ * failure there is none).
+ */
+export function arenaProvisionFailedCopy(provisionError: string | null): string {
+  if (provisionError === 'clawpump_budget_exhausted') {
+    return 'The ClawPump agent setup is waiting for a free ClawPump slot and tries again in a few seconds. Paper trading works without it. This wait does not count as a failed attempt.';
+  }
+  return 'The ClawPump agent setup did not finish. Paper trading works without it. ClawVille tries the setup up to five times, 10 minutes apart. If all five fail, paid add-ons stay off.';
+}
 
 /** One word for the desk: trading needs BOTH an active agent and a seat. */
 export function deskStatus(agent: Pick<FloorArenaMyAgent, 'status' | 'seated'>): DeskStatus {
@@ -487,12 +505,11 @@ export function MyTrader({
             <ArenaMuted size={11}>
               USDC in the wallet: {me.walletUsdc === null ? 'not known right now' : `$${me.walletUsdc.toFixed(2)}`}
             </ArenaMuted>
+            <ArenaWalletSolLine />
+            <ArenaWithdrawPanel compact={compact} />
           </>
         ) : me.provisionState === 'failed' ? (
-          <ArenaMuted>
-            The ClawPump agent setup did not finish yet. Paper trading works without it. ClawVille retries the
-            setup every 10 minutes, up to five times.
-          </ArenaMuted>
+          <ArenaMuted>{arenaProvisionFailedCopy(me.provisionError)}</ArenaMuted>
         ) : floorArenaProvisionInProgress(me.provisionState) ? (
           <ArenaMuted>Setting up your ClawPump agent...</ArenaMuted>
         ) : (

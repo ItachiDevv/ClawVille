@@ -1,6 +1,7 @@
 import { KNOWLEDGE_BOOKS, getBookById } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
 import { hasServices, getMessageText, getParam , getDbModule } from './types';
+import { grantInventoryItem } from './inventory-mutations';
 
 /**
  * BUY_ITEM — purchase a knowledge book from the current building's shop.
@@ -60,7 +61,15 @@ export const buyItemAction: Action = {
       }
 
       const { avatarId, services } = state;
-      const { db, debitClawTokens, creditClawTokens } = services;
+      const { db, chargeBookPurchase } = services;
+
+      // T0 fee routing (security batch 2, 2026-10-02): the price moves buyer ->
+      // house treasury, exactly like the REST shop, through ONE service op that
+      // writes the debit and the treasury credit together. Without it the price
+      // would silently burn, so refuse before any read or debit.
+      if (typeof chargeBookPurchase !== 'function') {
+        return { success: false, text: 'Book purchases through chat are unavailable right now. Use the building shop.' };
+      }
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -90,77 +99,70 @@ export const buyItemAction: Action = {
         return { success: false, text: `Book "${itemId}" not found.` };
       }
 
-      // Check current balance
-      const { avatars, eq } = await getDbModule();
+      // Price guard (security batch 2, Codex): only a positive safe integer is a
+      // valid price. A fractional price would fail the treasury credit (the price
+      // burns), and a string price would pass the balance comparison below by JS
+      // coercion. Refuse BEFORE any read, debit or credit.
+      const price: unknown = book.price;
+      if (typeof price !== 'number' || !Number.isSafeInteger(price) || price <= 0) {
+        return {
+          success: false,
+          text: `"${book.name}" has no valid price right now, so it cannot be bought through chat. Nothing was charged.`,
+        };
+      }
+
+      // Check current balance + the canonical guest gate (security M9, 2026-09-30;
+      // mirrors ACCEPT_QUEST). A guest runs a DEMO economy that settles off the
+      // ledger (`items.ts /buy` demo branch). This action spends REAL vCLAW through
+      // the injected ledger, so a guest-owned avatar must never reach the debit.
+      const { avatars, users, eq } = await getDbModule();
 
       const [avatar] = await db
-        .select({ clawTokens: avatars.clawTokens })
+        .select({ clawTokens: avatars.clawTokens, isGuest: users.isGuest })
         .from(avatars)
+        .innerJoin(users, eq(users.id, avatars.userId))
         .where(eq(avatars.id, avatarId))
         .limit(1);
 
       if (!avatar) {
         return { success: false, text: 'Avatar not found.' };
       }
-
-      if (avatar.clawTokens < book.price) {
+      if (avatar.isGuest) {
         return {
           success: false,
-          text: `Not enough vCLAW. You have ${avatar.clawTokens} vCLAW but "${book.name}" costs ${book.price} vCLAW.`,
+          text: 'Guests run a demo economy: buy books in the building shop with demo vCLAW. Buying through chat spends real vCLAW, so it needs a full account.',
         };
       }
 
-      // Check if avatar already owns this book
-      const { avatarInventory, and } = await getDbModule();
-
-      const [existing] = await db
-        .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
-        .from(avatarInventory)
-        .where(and(eq(avatarInventory.avatarId, avatarId), eq(avatarInventory.itemId, itemId)))
-        .limit(1);
-
-      // Debit ClawTokens
-      const { balanceAfter } = await debitClawTokens({
-        avatarId,
-        amount: book.price,
-        reason: `Purchased book: ${book.name}`,
-        source: 'shop',
-        metadata: { bookId: book.id, buildingId: book.building },
-      });
-
-      // Add or increment inventory — compensating credit on failure
-      try {
-        if (existing) {
-          await db
-            .update(avatarInventory)
-            .set({ quantity: existing.quantity + 1 })
-            .where(eq(avatarInventory.id, existing.id));
-        } else {
-          await db.insert(avatarInventory).values({
-            avatarId,
-            itemId,
-            quantity: 1,
-          });
-        }
-      } catch (invErr: any) {
-        // Compensating credit — refund the debit so the avatar doesn't lose tokens
-        await creditClawTokens({
-          avatarId,
-          amount: book.price,
-          reason: 'buy_item_refund',
-          source: 'api',
-          metadata: { bookId: book.id, error: invErr.message },
-        }).catch(() => {});
-        return { success: false, text: `Purchase failed after payment — tokens refunded. Error: ${invErr.message}` };
+      if (avatar.clawTokens < price) {
+        return {
+          success: false,
+          text: `Not enough vCLAW. You have ${avatar.clawTokens} vCLAW but "${book.name}" costs ${price} vCLAW.`,
+        };
       }
+
+      // Charge (buyer debit + treasury credit, one service op) + grant in ONE
+      // transaction: if the grant fails, the debit and the credit roll back with
+      // it, so no path mints or loses vCLAW. The old debit-then-grant with a
+      // best-effort refund could lose the buyer's vCLAW when the refund also
+      // failed (security, Codex round 2). The grant is one atomic upsert
+      // (security M10).
+      const balanceAfter = await db.transaction(async (tx: any) => {
+        const charge = await chargeBookPurchase(
+          { avatarId, bookId: book.id, amount: price },
+          tx,
+        );
+        await grantInventoryItem(tx, { avatarId, itemId });
+        return charge.balanceAfter;
+      });
 
       return {
         success: true,
-        text: `${book.icon} Purchased **${book.name}** for ${book.price} vCLAW. New balance: ${balanceAfter} vCLAW. Use "learn" or "read" to absorb its knowledge.`,
+        text: `${book.icon} Purchased **${book.name}** for ${price} vCLAW. New balance: ${balanceAfter} vCLAW. Use "learn" or "read" to absorb its knowledge.`,
         data: {
           bookId: book.id,
           bookName: book.name,
-          price: book.price,
+          price,
           balanceAfter,
         },
       };

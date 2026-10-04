@@ -60,6 +60,8 @@ mock.module('../../../middleware/require-auth-or-agent', () => ({
         avatarId: 'av-2',
         agentId: 'oc-bot-2',
         sessionId: 'valid-agent-2',
+        // A proven-owner session: the hub refuses non-ledger agents (A11).
+        ledgerCapable: true,
       };
     }
     return null;

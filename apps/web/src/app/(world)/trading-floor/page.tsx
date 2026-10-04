@@ -17,6 +17,7 @@ import { useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import TradingFloorMobileControls from '@/components/trading-floor/TradingFloorMobileControls';
+import HouseAgentWalkup from '@/components/trading-floor/house-agent-walkup';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/lib/pixi/tilemap-data';
@@ -143,6 +144,8 @@ export default function TradingFloorPage() {
       <ExchangeModal />
 
       <TradingFloorMobileControls />
+
+      <HouseAgentWalkup />
 
       {/* Desktop hint strip. Hidden on touch so it never sits over the
           joystick zones, which meet at bottom-centre. */}

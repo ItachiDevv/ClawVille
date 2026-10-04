@@ -16,25 +16,30 @@ export const ADDON_WALLET_WARNING =
 
 /**
  * Shown under the agent's wallet address wherever a player can copy it. The
- * wallet is a ClawPump agent under ClawVille's own account (spec D8) and no
- * route moves funds back out of it, so unspent USDC stays there: the player
- * must hear that BEFORE sending (audit-money M3). Mirrored in manual §17c.
+ * wallet is a ClawPump agent under ClawVille's own account (spec D8). The
+ * owner can withdraw USDC or SOL from it to an address the owner proves (P5,
+ * D34), and each withdrawal pays its network fee in SOL, so the player must
+ * read the SOL rule BEFORE sending. Replaces the old no-withdraw note
+ * (audit-money M3, D34-k). Mirrored in manual §17c. The 0.01 SOL is the fixed
+ * text of contract §7: this note also shows before the agent exists (launch
+ * step 3), where the withdraw `limits` payload is not available.
  */
-export const ARENA_WALLET_NO_WITHDRAW =
-  `Send only USDC on Solana. You cannot withdraw USDC from this wallet in ClawVille, so send only what your ` +
-  `add-ons will spend (at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day).`;
+export const ARENA_WALLET_FUNDING_NOTE =
+  `Send only USDC or SOL on Solana to this wallet. Keep at least 0.01 SOL in it, because each withdrawal pays its ` +
+  `network fee in SOL. You can withdraw to an address that you prove is yours. Add-ons spend at most ` +
+  `$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day from it.`;
 
 /**
- * Both wallet warnings together: what the USDC is for and that it cannot come
- * back out. Rendered wherever the wallet address or the add-on funding shows
- * (launch step 3, the launch success screen, the desk's add-on editor and its
- * Wallet block), so the player reads them before sending anything.
+ * Both wallet notes together: what to send and how to withdraw, and what the
+ * add-ons spend. Rendered wherever the wallet address or the add-on funding
+ * shows (launch step 3, the launch success screen, the desk's add-on editor
+ * and its Wallet block), so the player reads them before sending anything.
  */
 export function ArenaWalletWarnings() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} data-testid="arena-wallet-warnings">
-      <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }} data-testid="arena-wallet-no-withdraw">
-        {ARENA_WALLET_NO_WITHDRAW}
+      <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }} data-testid="arena-wallet-funding-note">
+        {ARENA_WALLET_FUNDING_NOTE}
       </div>
       <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }}>{ADDON_WALLET_WARNING}</div>
     </div>

@@ -20,7 +20,11 @@
  * here; it remains withheld in the engine's reduced player payout. ZERO CT is
  * ever minted INTO it by this seeder, and in T0 it NEVER pays players (no
  * faucet). Contrast the cash-house bank, which deliberately mints a one-time
- * bankroll.
+ * bankroll. ONE sanctioned outflow since security M3 (2026-09-30): a special
+ * event's seed prize pool (created by a named admin, capped at 100000) is
+ * DEBITED from this treasury by `TournamentManager.createTournament`
+ * (`special_event_seed_prize_pool`) instead of being minted, and credited back
+ * if that tournament is cancelled (`special_event_seed_refund`).
  *
  * MONEY DISCIPLINE: this file performs NO ClawToken balance write at all. The
  * only writes are the system user row, the avatar row (created AT 0), and the
@@ -190,7 +194,8 @@ class HouseTreasurySeederService {
         notes:
           'T0 house-fee sink — receives every routed fee credit (cove rakes, MTT rake, ' +
           'cosmetics/books, land sale/upgrade/rent). Baccarat commission stays withheld ' +
-          'in the reduced player payout. Never funded, never pays players.',
+          'in the reduced player payout. Never funded; its only outflow is a named ' +
+          "admin's special-event seed prize pool (refunded if that tournament is cancelled).",
       })
       .onConflictDoNothing({ target: treasurySubjects.purpose });
     const registered = await db.query.treasurySubjects.findFirst({

@@ -908,6 +908,7 @@ export const FLOOR_ARENA_EVENT_TYPES = deepFreeze([
   'report',
   'status',
   'addon',
+  'withdraw',
 ] as const);
 export type FloorArenaEventType = (typeof FLOOR_ARENA_EVENT_TYPES)[number];
 
@@ -932,6 +933,69 @@ export type FloorArenaParamChangeSource = (typeof FLOOR_ARENA_PARAM_CHANGE_SOURC
  *  payment and counts against the daily cap; it becomes `done` with the charged amount. */
 export const FLOOR_ARENA_ADDON_CALL_STATES = deepFreeze(['reserved', 'done'] as const);
 export type FloorArenaAddonCallState = (typeof FLOOR_ARENA_ADDON_CALL_STATES)[number];
+
+// ── Wallet withdraw (P5, D34) ───────────────────────────────────────────────
+// REAL USDC and SOL leave the agent's own ClawPump wallet. Migration 0074 copies these value sets
+// into its CHECKs. Contract: ops/house-traders/arena-review/P5_CONTRACT_2026-10-02.md §2.3.
+
+export const FLOOR_ARENA_WITHDRAW_ASSETS = deepFreeze(['USDC', 'SOL'] as const);
+export type FloorArenaWithdrawAsset = (typeof FLOOR_ARENA_WITHDRAW_ASSETS)[number];
+export const FLOOR_ARENA_WITHDRAW_AMOUNT_MODES = deepFreeze(['exact', 'max'] as const);
+export type FloorArenaWithdrawAmountMode = (typeof FLOOR_ARENA_WITHDRAW_AMOUNT_MODES)[number];
+export const FLOOR_ARENA_WITHDRAW_STATES = deepFreeze(['requested', 'dispatching', 'sent', 'confirmed', 'cancelled',
+  'refused', 'failed', 'unknown', 'failed_no_send', 'needs_review'] as const);
+export type FloorArenaWithdrawState = (typeof FLOOR_ARENA_WITHDRAW_STATES)[number];
+/** At most ONE row per agent in these states (partial unique index). Add-on holds subtract them. */
+export const FLOOR_ARENA_WITHDRAW_OPEN_STATES = deepFreeze(['requested', 'dispatching', 'sent', 'unknown'] as const);
+/** Rows that moved money or still can: they count toward the caps and the cooldown. */
+export const FLOOR_ARENA_WITHDRAW_COUNTED_STATES = deepFreeze(['requested', 'dispatching', 'sent', 'confirmed', 'unknown', 'needs_review'] as const);
+export const FLOOR_ARENA_WITHDRAW_ADDRESS_PROOFS = deepFreeze(['signed', 'linked_wallet'] as const);
+export type FloorArenaWithdrawAddressProof = (typeof FLOOR_ARENA_WITHDRAW_ADDRESS_PROOFS)[number];
+export const FLOOR_ARENA_WITHDRAW_SUBJECT_KINDS = deepFreeze(['human', 'agent'] as const);
+export type FloorArenaWithdrawSubjectKind = (typeof FLOOR_ARENA_WITHDRAW_SUBJECT_KINDS)[number];
+export const FLOOR_ARENA_WITHDRAW_REVOKE_REASONS = deepFreeze(['owner', 'replaced', 'admin'] as const);
+export type FloorArenaWithdrawRevokeReason = (typeof FLOOR_ARENA_WITHDRAW_REVOKE_REASONS)[number];
+/** Admission refusals (row state 'refused'). */
+export const FLOOR_ARENA_WITHDRAW_REFUSAL_CODES = deepFreeze(['needs_sol', 'insufficient_balance', 'below_minimum',
+  'address_revoked', 'agent_changed', 'agent_daily_cap', 'source_mismatch'] as const);
+/** Request-route refusals (no row written). */
+export const FLOOR_ARENA_WITHDRAW_REQUEST_CODES = deepFreeze(['idempotency_conflict', 'wallet_not_ready', 'no_withdraw_address',
+  'address_pending', 'withdrawal_open', 'cooldown', 'daily_count_cap', 'agent_daily_cap', 'invalid_amount', 'below_minimum'] as const);
+/** Reconcile results stored in error_code. Writer codes are `clawpump_<code>`; vendor codes are `vendor_<code>` (lower case). */
+export const FLOOR_ARENA_WITHDRAW_RECONCILE_CODES = deepFreeze(['dispatch_interrupted', 'chain_error', 'chain_mismatch',
+  'not_found_no_drop', 'not_found_balance_drop', 'ambiguous_match', 'tx_reused', 'reply_mismatch'] as const);
+export const FLOOR_ARENA_WITHDRAW_LIMITS = deepFreeze({
+  usdcDecimals: 6,
+  solDecimals: 9,
+  minUsdcAtomic: 100_000,               // 0.10 USDC
+  minSolLamports: 1_000_000,            // 0.001 SOL; above the 890,880 rent minimum, so a new destination is valid
+  agentDailyRequests: 3,
+  agentDailyUsdcAtomic: 500_000_000,    // 500 USDC per agent per UTC day (requested_at day)
+  accountDailyUsdcAtomic: 2_000_000_000, // 2,000 USDC per UTC day, all arena agents (dispatched_at day)
+  cooldownMs: 10 * 60_000,
+  addressDelayMs: 24 * 60 * 60_000,
+  challengeTtlMs: 10 * 60_000,
+  maxLiveChallengesPerAgent: 5,
+  feePrecheckLamports: 5_000_000,       // ClawPump refuses a transfer below 0.005 SOL (Run 2)
+  ataRentLamports: 2_040_000,           // a new USDC token account (about 0.00204 SOL)
+  solKeepLamports: 900_000,             // SOL max leaves this (D34-f)
+  recommendedSolText: '0.01',           // UI and manual: keep at least 0.01 SOL
+} as const);
+
+/** The EXACT UTF-8 text the DESTINATION key signs. First line differs from buildWalletLinkMessage (domain separation). */
+export function buildFloorArenaWithdrawAddressMessage(input: {
+  agentId: string; userId: string; address: string; nonce: string; expiresAt: string;
+}): string {
+  return [
+    'ClawVille arena withdraw address v1',
+    'I approve this address to receive withdrawals from my ClawVille Trading Arena agent wallet.',
+    `arena agent: ${input.agentId}`,
+    `account: ${input.userId}`,
+    `address: ${input.address}`,
+    `nonce: ${input.nonce}`,
+    `expires: ${input.expiresAt}`,
+  ].join('\n');
+}
 
 /** `floor_arena_positions.exit_run`: the engine's record of a failing exit (D4). Times are ISO strings.
  *  `firstFailureAt` = first failure of the whole exit history (the 30-minute `unresolved` clock; a

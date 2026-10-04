@@ -147,6 +147,12 @@ import { readEarnedSkillLessons, recordEarnedSkillLesson } from '../services/ear
 import { syncHostedAgentKnowledge } from '../services/hosted-agent-knowledge';
 import { installBuildingSkillIntoAgent } from '../services/building-skill-install';
 import {
+  AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY,
+  botKnowledgeAccessible,
+  botKnowledgeAppend,
+  botKnowledgeWriteOwnerCondition,
+} from '../services/agent-bot-knowledge';
+import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
   BUILDING_TOOLS,
@@ -1621,7 +1627,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
     uuid,
     isReturning,
     totalSessions,
-    knowledge,
+    // Security C5 (batch 2): a bound row's learned knowledge is owner-private.
+    // Only a session whose proven `boundUserId` equals the persisted owner reads
+    // it (connect-sec's use-time owner proof, ledger flag not needed; the
+    // GET /:sessionId/knowledge rule); else an empty array.
+    knowledge: botKnowledgeAccessible(
+      { boundUserId },
+      persistedLiveUserId ?? existingBoundUserId,
+    )
+      ? knowledge
+      : [],
     ownedSkills,
     gameTools: gameToolsBundle,
     protocol: agentProtocolPointer(resolveApiBase(), storedProtocolAck),
@@ -2973,7 +2988,11 @@ agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
     metadata: { buildingId, activity: picked },
   }).catch(() => {});
 
-  // Keep openclaw_bots continuity for every live session. Mirror into the
+  // Keep openclaw_bots continuity for an unbound row or an ownership-proven
+  // session (`boundUserId` === row `user_id`, ledger flag not needed; security
+  // C4, batch 2: an unproven session must not write into an
+  // owned row's knowledge, which later enters the owner's prompts; the UPDATE
+  // re-checks the owner condition atomically). Mirror into the
   // active avatar + hosted ElizaOS agent only when this exact bearer proved
   // ledger ownership; a bare-agentId reconnect must not poison a victim brain.
   if (botConfig && knowledgeGained) {
@@ -2981,13 +3000,13 @@ agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
       const bot = await db.query.agentBots.findFirst({
         where: eq(agentBots.agentId, botConfig.agentId),
       });
-      if (bot) {
+      if (bot && botKnowledgeAccessible(botConfig, bot.userId ?? null)) {
         const current: string[] = bot.knowledge ?? [];
         if (!current.includes(knowledgeGained)) {
           await db.update(agentBots).set({
-            knowledge: [...current, knowledgeGained],
+            knowledge: botKnowledgeAppend([knowledgeGained]),
             updatedAt: new Date(),
-          }).where(eq(agentBots.id, bot.id));
+          }).where(and(eq(agentBots.id, bot.id), botKnowledgeWriteOwnerCondition(botConfig)));
         }
       }
       if (visitKnowledgeSubject) {
@@ -3163,15 +3182,20 @@ agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
       });
       if (bot) {
         // Summarise the exchange into a single knowledge line so we don't
-        // blow up the bot's knowledge array with raw transcript
+        // blow up the bot's knowledge array with raw transcript. Security C4
+        // (batch 2): the line carries caller text, so an owned row only accepts
+        // it from an ownership-proven session (it later enters the owner's
+        // prompts). The UPDATE re-checks that owner condition; zero rows means
+        // not written.
         const entry = `[${buildingId}] Q: ${parsed.data.message.slice(0, 160)} | A: ${responseContent.slice(0, 400)}`;
         const current: string[] = bot.knowledge ?? [];
-        if (!current.includes(entry)) {
-          await db
+        if (botKnowledgeAccessible(botConfig, bot.userId ?? null) && !current.includes(entry)) {
+          const written = await db
             .update(agentBots)
-            .set({ knowledge: [...current, entry], updatedAt: new Date() })
-            .where(eq(agentBots.id, bot.id));
-          knowledgePersisted = true;
+            .set({ knowledge: botKnowledgeAppend([entry]), updatedAt: new Date() })
+            .where(and(eq(agentBots.id, bot.id), botKnowledgeWriteOwnerCondition(botConfig)))
+            .returning({ id: agentBots.id });
+          knowledgePersisted = written.length > 0;
         }
         // Award +1 ClawToken only when THIS bearer proved ledger ownership.
         // `validateLiveAgentSession` above proves liveness, but reconnecting to a
@@ -3180,8 +3204,10 @@ agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
         // spend-time gate and use its exact ACTIVE avatar id; never re-derive from
         // bot.userId (which could target the row owner's avatar from an
         // ownership-unproven session, or select a historical inactive avatar).
-        // A non-ledger session still receives the successful chat response and
-        // knowledge persistence, but tokenAwarded remains 0.
+        // A non-ledger session still receives the successful chat response,
+        // but tokenAwarded remains 0. Knowledge persistence above follows the
+        // owner proof alone (an owner-proven non-ledger session still writes its
+        // own row; a session without owner proof leaves an owned row untouched).
         const rewardSubject = await resolveAgentSession(sessionId);
         const rewardAvatarId = agentBuildingChatRewardAvatarId(rewardSubject);
         if (rewardAvatarId && rewardSubject?.userId) {
@@ -3360,6 +3386,11 @@ agentGatewayRoutes.get('/:sessionId/knowledge', async (c) => {
     const bot = await db.query.agentBots.findFirst({
       where: eq(agentBots.agentId, botConfig.agentId),
     });
+    // Security C5 (batch 2): an owned row's learned knowledge is owner-private
+    // (the same data the /connect response withholds from an unproven session).
+    if (bot && !botKnowledgeAccessible(botConfig, bot.userId ?? null)) {
+      return c.json(AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY, 403);
+    }
     return c.json({ knowledge: bot?.knowledge ?? [] });
   } catch {
     return c.json({ knowledge: [] });
@@ -3384,7 +3415,11 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
       const bot = await db.query.agentBots.findFirst({
         where: eq(agentBots.agentId, botConfig.agentId),
       });
-      if (bot) {
+      // Security C5 (batch 2): an owned row's counters and knowledge are
+      // owner-private; an unproven session keeps the shape with 0 / [] (the
+      // body's own kills/level/xp below are the same sim values /perception
+      // returns).
+      if (bot && botKnowledgeAccessible(botConfig, bot.userId ?? null)) {
         totalMessages = bot.totalMessages;
         knowledgeLearned = bot.knowledge ?? [];
       }

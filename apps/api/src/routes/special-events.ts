@@ -9,11 +9,18 @@
  * event lifecycle; the dependent tournament is created + seated by the manager.
  *
  * Surfaces:
- *   POST /create        (admin)  — create an event (status 'draft')
- *   POST /:slug/open    (admin)  — open it for signups (draft → signup_open)
- *   POST /:slug/start   (admin)  — close signups + create/seat the dependent
- *                                   tournament (→ live)
- *   POST /:slug/settle  (admin)  — explicitly record event completion
+ *   POST /create        (NAMED admin) — create an event (status 'draft')
+ *   POST /:slug/open    (NAMED admin) — open it for signups (draft → signup_open)
+ *   POST /:slug/start   (NAMED admin) — close signups + create/seat the dependent
+ *                                   tournament (signup_open → starting → live)
+ *   POST /:slug/settle  (NAMED admin) — explicitly record event completion
+ *   POST /:slug/cancel  (NAMED admin) — cancel before play (draft / signup_open,
+ *                                   after the start recovery) + refund signups
+ *   GET  /:slug/sol-refunds (NAMED admin) — SOL refunds owed + paid (cancelled event)
+ *   POST /:slug/sol-refunds/:signupId/paid (NAMED admin) — record an operator SOL
+ *                                   payout after on-chain verification
+ *   POST /:slug/sol-refunds/:signupId/destination (NAMED admin) — set the refund
+ *                                   destination once when the chain proves no payer
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
  *   POST /:slug/signup  (AGENT-CAPABLE) — gate-evaluated signup (human XOR agent)
@@ -38,6 +45,7 @@
  */
 
 import { Hono } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
@@ -50,6 +58,7 @@ import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import {
   specialEventManager,
   SpecialEventError,
+  SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT,
   type SignupSubject,
   type EntryChoice,
   type CreateEventConfig,
@@ -65,6 +74,26 @@ specialEventsRouter.use('*', fingerprintMiddleware);
 specialEventsRouter.use('*', sessionMiddleware);
 
 const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
+
+/**
+ * Named-admin gate for EVERY special-event admin mutation (security M3,
+ * 2026-09-30): /create, /:slug/open, /:slug/start, /:slug/settle, and
+ * /:slug/cancel (2026-10-03: it credits refunds), and the SOL refund routes
+ * /:slug/sol-refunds + /:slug/sol-refunds/:signupId/paid + /destination. `adminOnly`
+ * also accepts the static shared `cv_dash` cookie, which is not tied to a user and
+ * never rotates. /create sets the seed prize pool, /start pays it from the house
+ * treasury, and /open + /settle move the event lifecycle, so all four also require
+ * a Lucia session whose user id is in ADMIN_USER_IDS — the same rule as
+ * tokenomics-earn `requireNamedAdmin`. Signup is a player route (unchanged).
+ */
+const requireNamedAdmin = createMiddleware<AppContext>(async (c, next) => {
+  const user = c.get('user');
+  const ids = (process.env.ADMIN_USER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+  if (!user || !ids.includes(user.id)) {
+    throw new HTTPException(403, { message: 'named_admin_required' });
+  }
+  await next();
+});
 
 /**
  * Resolve the request subject for a signup. Precedence: Lucia human → agent
@@ -118,7 +147,19 @@ async function resolveSignupSubject(c: {
 const slugParamSchema = z.object({ slug: z.string().min(1).max(64) });
 
 // ── Admin create-event schema (gate config validated) ─────────────────────────
-const createEventSchema = z
+// The seed prize pool is paid from the house treasury at start (M3), so it is
+// bounded here (integer or digit string, 0..SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT).
+// Other prize keys pass through; the TournamentManager validates them at start.
+const prizeConfigSchema = z
+  .object({
+    seedPrizePoolCt: z
+      .union([z.number(), z.string().trim().regex(/^\d{1,16}$/).transform(Number)])
+      .pipe(z.number().int().min(0).max(SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT))
+      .optional(),
+  })
+  .passthrough();
+
+export const createEventSchema = z
   .object({
     slug: z
       .string()
@@ -132,7 +173,7 @@ const createEventSchema = z
     gateSolLamports: z.number().int().positive().optional(),
     gateCt: z.number().int().min(0).optional(),
     venueConfigJson: z.record(z.unknown()).optional(),
-    prizeConfigJson: z.record(z.unknown()).optional(),
+    prizeConfigJson: prizeConfigSchema.optional(),
     maxParticipants: z.number().int().min(1).optional(),
     registrationOpensAt: z.string().datetime().optional(),
     registrationClosesAt: z.string().datetime().optional(),
@@ -152,7 +193,7 @@ const signupSchema = z.object({
 });
 
 // ── POST /create (ADMIN) ──────────────────────────────────────────────────────
-specialEventsRouter.post('/create', adminOnly, async (c) => {
+specialEventsRouter.post('/create', adminOnly, requireNamedAdmin, async (c) => {
   let body: z.infer<typeof createEventSchema>;
   try {
     body = createEventSchema.parse(await c.req.json());
@@ -202,8 +243,8 @@ specialEventsRouter.post('/create', adminOnly, async (c) => {
   }
 });
 
-// ── POST /:slug/open (ADMIN) ──────────────────────────────────────────────────
-specialEventsRouter.post('/:slug/open', adminOnly, async (c) => {
+// ── POST /:slug/open (NAMED ADMIN) ────────────────────────────────────────────
+specialEventsRouter.post('/:slug/open', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {
@@ -217,8 +258,8 @@ specialEventsRouter.post('/:slug/open', adminOnly, async (c) => {
   }
 });
 
-// ── POST /:slug/start (ADMIN — close signups + create/seat the tournament) ─────
-specialEventsRouter.post('/:slug/start', adminOnly, async (c) => {
+// ── POST /:slug/start (NAMED ADMIN — close signups + create/seat the tournament) ─
+specialEventsRouter.post('/:slug/start', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {
@@ -233,12 +274,110 @@ specialEventsRouter.post('/:slug/start', adminOnly, async (c) => {
 });
 
 // Explicit command: public GET status routes must remain read-only.
-specialEventsRouter.post('/:slug/settle', adminOnly, async (c) => {
+specialEventsRouter.post('/:slug/settle', adminOnly, requireNamedAdmin, async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
   try {
     const result = await specialEventManager.settleEvent(parsed.data.slug);
     return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// ── POST /:slug/cancel (NAMED ADMIN — cancel before play + refund signups) ─────
+// Refunds every vCLAW entry to the signup's avatar (human or agent, same path)
+// and records every SOL entry as an owed refund (durable row; `solRefundsOwed`
+// in the response) for an operator transfer. A retry moves no CT. Refused (409)
+// once play started or the event settled.
+specialEventsRouter.post('/:slug/cancel', adminOnly, requireNamedAdmin, async (c) => {
+  const parsed = slugParamSchema.safeParse(c.req.param());
+  if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
+  try {
+    const result = await specialEventManager.cancelEvent(parsed.data.slug);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// ── SOL refunds of a cancelled event (NAMED ADMIN, Codex r1 2026-10-03) ───────
+// A SOL entry goes back by an operator transfer from the treasury. The cancel
+// records each one as 'owed' (special_event_sol_refunds, destination = the
+// sender proven by the entry transfer). These routes list them and record a
+// payout after the API verifies it on chain (finalized, ≥ owed lamports to the
+// recorded destination, signature never used before).
+const solRefundParamSchema = z.object({
+  slug: z.string().min(1).max(64),
+  signupId: z.string().uuid(),
+});
+const solRefundPaidSchema = z.object({
+  // A base58 Solana transaction signature (64 bytes → 64..88 chars).
+  txSignature: z.string().trim().regex(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
+});
+
+specialEventsRouter.get('/:slug/sol-refunds', adminOnly, requireNamedAdmin, async (c) => {
+  const parsed = slugParamSchema.safeParse(c.req.param());
+  if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
+  try {
+    const result = await specialEventManager.listSolRefunds(parsed.data.slug);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+specialEventsRouter.post('/:slug/sol-refunds/:signupId/paid', adminOnly, requireNamedAdmin, async (c) => {
+  const params = solRefundParamSchema.safeParse(c.req.param());
+  if (!params.success) throw new HTTPException(400, { message: 'invalid_params' });
+  const body = solRefundPaidSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) throw new HTTPException(400, { message: 'invalid_tx_signature' });
+  try {
+    const refund = await specialEventManager.markSolRefundPaid(
+      params.data.slug,
+      params.data.signupId,
+      body.data.txSignature,
+      c.get('user')?.id ?? null,
+    );
+    return c.json({ ok: true, refund });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
+// Set the destination of an owed refund whose entry payer the chain cannot prove
+// (Codex r2 2026-10-03): only while the row is 'owed' with NO destination, once.
+// The destination must be a base58 32-byte public key (the manager decodes it)
+// and not the receiving wallet. The admin user id is recorded on the row.
+const solRefundDestinationSchema = z.object({
+  destination: z.string().trim().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/),
+});
+
+specialEventsRouter.post('/:slug/sol-refunds/:signupId/destination', adminOnly, requireNamedAdmin, async (c) => {
+  const params = solRefundParamSchema.safeParse(c.req.param());
+  if (!params.success) throw new HTTPException(400, { message: 'invalid_params' });
+  const body = solRefundDestinationSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) throw new HTTPException(400, { message: 'invalid_destination' });
+  try {
+    const refund = await specialEventManager.resolveSolRefundDestination(
+      params.data.slug,
+      params.data.signupId,
+      body.data.destination,
+      c.get('user')?.id ?? null,
+    );
+    return c.json({ ok: true, refund });
   } catch (err) {
     if (err instanceof SpecialEventError) {
       throw new HTTPException(err.httpStatus as 400, { message: err.message });

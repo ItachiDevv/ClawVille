@@ -38,8 +38,9 @@
  * Entry settlement at the EVENT layer is one of: nothing (free/hold), a verified
  * SOL transfer to the treasury, or a CT debit via `claw-token-ledger`. The event
  * funds the dependent poker tournament's PRIZE POOL directly (the tournament is
- * created in PREPAID mode with `seedPrizePoolCt`), so the per-entrant tournament
- * buy-in debit is SKIPPED — entry was already settled here. CT amounts are
+ * created in PREPAID mode with `seedPrizePoolCt`, debited from the HOUSE TREASURY
+ * in the tournament-create tx since security M3, 2026-09-30), so the per-entrant
+ * tournament buy-in debit is SKIPPED — entry was already settled here. CT amounts are
  * TEXT-stringified atomic integers (mirroring poker.ts / cove-events.ts); SOL is
  * a stringified lamport bigint.
  */
@@ -94,6 +95,9 @@ export const specialEvents = pgTable(
      * Lifecycle:
      *   'draft'        → created, not yet open for signups
      *   'signup_open'  → accepting signups (gate-evaluated)
+     *   'starting'     → a start claimed the event (signups closed) and is creating
+     *                    + seating the dependent tournament; → 'live' on success,
+     *                    back to 'signup_open' on failure (security M4, 2026-09-30)
      *   'live'         → signups closed, the dependent tournament(s) seated + running
      *   'completed'    → settled (prizes paid from the linked tournament results)
      *   'cancelled'    → called off
@@ -139,13 +143,21 @@ export const specialEvents = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }),
     /** When the event settled (status → completed). */
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    /**
+     * The in-flight start's claim (security M4, 2026-09-30): set with status
+     * 'starting' and cleared by every exit from it. Every write of that start
+     * CASes on the token; a claim older than SPECIAL_EVENT_START_CLAIM_STALE_MS
+     * belongs to a crashed start and is reconciled (special-event-manager.ts).
+     */
+    startClaimId: uuid('start_claim_id'),
+    startClaimedAt: timestamp('start_claimed_at', { withTimezone: true }),
   },
   (table) => ({
     slugUnique: uniqueIndex('special_events_slug_unique').on(table.slug),
     statusIdx: index('special_events_status_idx').on(table.status),
     statusCheck: check(
       'special_events_status_check',
-      sql`status in ('draft','signup_open','live','completed','cancelled')`,
+      sql`status in ('draft','signup_open','starting','live','completed','cancelled')`,
     ),
     // gate_hold_bps, when present, is a basis-points fraction of supply (1..10000).
     gateHoldBpsCheck: check(
@@ -187,7 +199,10 @@ export const specialEventSignups = pgTable(
     /**
      * Proof/snapshot of how entry was satisfied. Shape depends on entryMethod:
      *   'hold' → { mint, walletPubkey, balance, supply, thresholdBps, requiredAtomic }
-     *   'sol'  → { txSig, lamports, fromPubkey?, toPubkey }
+     *   'sol'  → { txSig, lamports, fromPubkey?, toPubkey, payerPubkey? }
+     *            (`fromPubkey` is the CLIENT-CLAIMED wallet and is never trusted;
+     *            `payerPubkey`, written since 2026-10-03, is the sender PROVEN by
+     *            the on-chain verification — the SOL refund destination)
      *   'ct'   → { amountCt, ledgerId }
      *   'free' → {} / null
      */
@@ -243,9 +258,107 @@ export const specialEventSignups = pgTable(
   }),
 );
 
+/**
+ * SOL entry refunds owed by a cancelled event (2026-10-03, migration 0076).
+ *
+ * `cancelEvent` writes ONE row per SOL signup (UNIQUE `signup_id`) in the same
+ * transaction as the event's `cancelled` CAS, so a cancelled event can never
+ * leave a SOL payment without a durable record. The SOL signup row itself stays
+ * 'confirmed' so its entry tx sig stays reserved by
+ * `special_event_signups_sol_txsig_global_unique` (a 'refunded' signup would
+ * free that sig for reuse as another entry).
+ *
+ *   'owed'     → the treasury still owes `lamports` to `destination_pubkey`
+ *   'refunded' → a named admin recorded the payout (`refund_tx_sig`, verified on
+ *                chain to pay ≥ `lamports` to `destination_pubkey`, with System
+ *                transfers FROM `receiving_pubkey` TO it summing to ≥ `lamports`)
+ *
+ * `receiving_pubkey` is the wallet that received the entry (the treasury); the
+ * payout must come from it (Codex r2). `destination_pubkey` is the single source
+ * whose OWN System transfers into the receiving wallet cover the full credited
+ * entry (Codex r2), never the client-claimed wallet. It is null when the chain
+ * proves no such source; mark-paid re-verifies the entry tx, or a named admin
+ * sets it once (`destination_set_by` / `destination_set_at`; both null for a
+ * chain-proven destination). `refund_tx_sig` is globally unique: one on-chain
+ * payout settles one refund. No FK on `signup_id` / `avatar_id`: the obligation
+ * must outlive an avatar delete (the signup row cascades with its avatar).
+ */
+export const specialEventSolRefunds = pgTable(
+  'special_event_sol_refunds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => specialEvents.id),
+    signupId: uuid('signup_id').notNull(),
+    /** The paying signup's avatar (human or agent), for audit. */
+    avatarId: uuid('avatar_id').notNull(),
+    /** The verified entry payment signature. */
+    entryTxSig: text('entry_tx_sig').notNull(),
+    /** Lamports owed back (stringified bigint) = the verified entry amount. */
+    lamports: text('lamports').notNull(),
+    /** The wallet that received the entry (base58); the refund must come FROM it. */
+    receivingPubkey: text('receiving_pubkey').notNull(),
+    /** Proven (or admin-set) entry sender (base58); the only allowed refund destination. */
+    destinationPubkey: text('destination_pubkey'),
+    /** Lucia user id of the named admin who set the destination by hand (null = chain-proven). */
+    destinationSetBy: uuid('destination_set_by'),
+    destinationSetAt: timestamp('destination_set_at', { withTimezone: true }),
+    status: text('status').notNull().default('owed'),
+    refundTxSig: text('refund_tx_sig'),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
+    /** Lucia user id of the named admin who recorded the payout. */
+    refundedBy: uuid('refunded_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    signupUnique: uniqueIndex('special_event_sol_refunds_signup_unique').on(table.signupId),
+    refundTxUnique: uniqueIndex('special_event_sol_refunds_refund_tx_unique')
+      .on(table.refundTxSig)
+      .where(sql`refund_tx_sig IS NOT NULL`),
+    eventIdx: index('special_event_sol_refunds_event_idx').on(table.eventId),
+    statusCheck: check(
+      'special_event_sol_refunds_status_check',
+      sql`status in ('owed','refunded')`,
+    ),
+    paidCheck: check(
+      'special_event_sol_refunds_paid_check',
+      sql`status = 'owed' OR (refund_tx_sig IS NOT NULL AND refunded_at IS NOT NULL AND destination_pubkey IS NOT NULL)`,
+    ),
+  }),
+);
+
+/**
+ * Every transaction signature a special event consumed (2026-10-03, Codex r2,
+ * migration 0076): a SOL entry ('entry') or a SOL refund payout ('refund').
+ * PRIMARY KEY `tx_sig`: the signup and the refund mark-paid paths insert into it
+ * in the same transaction as their own write, so one signature can never serve
+ * as both an entry and a refund, even when two requests race.
+ */
+export const specialEventUsedTxSigs = pgTable(
+  'special_event_used_tx_sigs',
+  {
+    txSig: text('tx_sig').primaryKey(),
+    /** 'entry' | 'refund'. */
+    useKind: text('use_kind').notNull(),
+    /** The signup the signature paid for (entry) or refunded (refund). */
+    signupId: uuid('signup_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  () => ({
+    useKindCheck: check(
+      'special_event_used_tx_sigs_use_kind_check',
+      sql`use_kind in ('entry','refund')`,
+    ),
+  }),
+);
+
 // ── $inferSelect / $inferInsert exports (mirror poker.ts style) ───────────────
 
 export type SpecialEvent = typeof specialEvents.$inferSelect;
 export type NewSpecialEvent = typeof specialEvents.$inferInsert;
 export type SpecialEventSignup = typeof specialEventSignups.$inferSelect;
 export type NewSpecialEventSignup = typeof specialEventSignups.$inferInsert;
+export type SpecialEventSolRefund = typeof specialEventSolRefunds.$inferSelect;
+export type NewSpecialEventSolRefund = typeof specialEventSolRefunds.$inferInsert;
+export type SpecialEventUsedTxSig = typeof specialEventUsedTxSigs.$inferSelect;

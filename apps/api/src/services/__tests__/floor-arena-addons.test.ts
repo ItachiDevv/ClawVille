@@ -995,6 +995,43 @@ describe('dedupe rotation', () => {
   });
 });
 
+describe('P5 D34-i: add-on reservations and open withdrawals (conservation)', () => {
+  test('the tick passes the wallet USDC it read to the locked reservation', async () => {
+    const seen: number[] = [];
+    const h = harness({ balance: 3.25 });
+    const reserve = h.deps.reserveCall;
+    h.deps.reserveCall = async (input) => {
+      seen.push(input.walletUsdc);
+      return reserve(input);
+    };
+    await runArenaAddonsTick(NOW, h.deps);
+    expect(seen).toEqual([3.25]);
+    expect(h.pays).toHaveLength(1);
+  });
+
+  for (const [reason, text] of [
+    ['withdraw_pending', 'Feed A: skipped while a withdrawal of all USDC is open.'],
+    ['underfunded', 'Feed A: underfunded after open withdrawals.'],
+  ] as const) {
+    test(`a '${reason}' refusal pays nothing and its notice is throttled to one per hour`, async () => {
+      let at = NOW;
+      const h = harness({ clock: () => at });
+      h.deps.reserveCall = async () => ({ reserved: false, check: { ok: false, reason, spentUsd: 0, capUsd: 0 } });
+      for (const minutes of [0, 1, 30, 59]) {
+        at = new Date(NOW.getTime() + minutes * 60_000);
+        await runArenaAddonsTick(at, h.deps);
+      }
+      expect(h.pays).toHaveLength(0);
+      expect(h.calls).toHaveLength(0);
+      expect(h.events).toEqual([text]);
+      at = new Date(NOW.getTime() + 61 * 60_000);
+      await runArenaAddonsTick(at, h.deps);
+      expect(h.events).toEqual([text, text]);
+      expect(h.pays).toHaveLength(0);
+    });
+  }
+});
+
 describe('helpers', () => {
   test('ambiguous errors count as charged; refusals do not', () => {
     expect(mayHaveCharged(new ClawPumpWriterError('timeout'))).toBe(true);

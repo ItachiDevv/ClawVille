@@ -6,7 +6,9 @@ import {
   activateTradingFloorSeat,
   activateTradingFloorUse,
   openTradingFloorMonitor,
+  readTradingFloorPlayer,
   readTradingFloorProximity,
+  tradingFloorPlayerPositionRef,
   tradingFloorInteractionsFrozen,
 } from './trading-floor-interior';
 import {
@@ -16,8 +18,10 @@ import {
   resolveTradingFloorInteraction,
   tradingFloorDistanceSq,
   tradingFloorHitsSolid,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
   TRADING_FLOOR_DOOR,
   TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   TRADING_FLOOR_PLAYER_RADIUS,
   TRADING_FLOOR_PLAYER_SPAWN,
   TRADING_FLOOR_ROOM,
@@ -28,6 +32,26 @@ import {
 
 beforeEach(() => {
   useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+});
+
+test('the arena player reader retains one record at the movement-collider centre', () => {
+  const player = readTradingFloorPlayer();
+  expect(readTradingFloorPlayer()).toBe(player);
+  expect(tradingFloorPlayerPositionRef).toBe(player);
+  expect(player).toEqual({
+    x: TRADING_FLOOR_PLAYER_SPAWN.x,
+    z: TRADING_FLOOR_PLAYER_SPAWN.z,
+    seated: false,
+    otherInteractionArmed: false,
+  });
+  const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+  const frame = source.slice(source.indexOf('useSceneFrame((_, rawDelta) => {'));
+  expect(frame).toContain('tradingFloorPlayerPositionRef.x = posX.current;');
+  expect(frame).toContain('tradingFloorPlayerPositionRef.z = posZ.current;');
+  expect(frame).toContain('_player.seated = _seatedIndex >= 0;');
+  expect(frame).toContain('_arming.monitorArmed || _arming.doorArmed || _arming.seatArmedIndex >= 0;');
+  expect(frame).not.toContain('tradingFloorPlayerPositionRef.x = bodyX;');
+  expect(frame).not.toContain('tradingFloorPlayerPositionRef.z = bodyZ;');
 });
 
 describe('Trading Floor monitor hotspot', () => {
@@ -80,21 +104,22 @@ describe('Trading Floor monitor hotspot', () => {
   });
 });
 
-describe('Trading Floor monitor placement (v2)', () => {
+describe('Trading Floor monitor placement (v5)', () => {
   // v2 moved the kiosk off the centre line so it stops hiding the big board.
   // Both of its constraints are geometric, so both are pinned here rather than
   // left to a screenshot.
-  test('sits clear of the board centre but still in front of the board', () => {
+  test('sits at the door wall, clear of the door and house-agent stage', () => {
     // Off the room's centre line, so the board's middle is unobstructed.
     expect(Math.abs(TRADING_FLOOR_MONITOR.x)).toBeGreaterThan(200);
     // Still inside the board's width, so it reads as the board's podium.
     expect(Math.abs(TRADING_FLOOR_MONITOR.x)).toBeLessThan(
       TRADING_FLOOR_SCREEN.width / 2,
     );
-    // In front of the board, never through it.
-    expect(TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_MONITOR.halfZ).toBeGreaterThan(
-      TRADING_FLOOR_SCREEN.z,
-    );
+    expect(TRADING_FLOOR_MONITOR.rotY).toBe(Math.PI);
+    expect(TRADING_FLOOR_ROOM.halfZ - (TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ)).toBeGreaterThan(0);
+    expect(Math.hypot(TRADING_FLOOR_MONITOR.x - TRADING_FLOOR_DOOR.x,
+      TRADING_FLOOR_MONITOR.z - TRADING_FLOOR_DOOR.z)).toBeGreaterThan(620);
+    expect(TRADING_FLOOR_MONITOR_FRONT_Z).toBeGreaterThan(-1100);
   });
 
   // E must never be ambiguous. `onInteractEdge` resolves ties by priority, but
@@ -118,7 +143,7 @@ describe('Trading Floor monitor placement (v2)', () => {
   // The approach point is the nearest square a player can occupy head-on.
   test('a player can stand at the kiosk face and arm it', () => {
     const approachZ =
-      TRADING_FLOOR_MONITOR.z + TRADING_FLOOR_MONITOR.halfZ + TRADING_FLOOR_PLAYER_RADIUS + 20;
+      TRADING_FLOOR_MONITOR_FRONT_Z - TRADING_FLOOR_PLAYER_RADIUS - 20;
     const approachX = TRADING_FLOOR_MONITOR.x;
 
     // Inside the walls.
@@ -361,7 +386,7 @@ describe('Trading Floor interact — the Exchange panel freezes everything', () 
     arming.monitorArmed = true;
     arming.doorArmed = true;
     arming.seatArmedIndex = 2;
-    for (const seated of [-1, 0, 5]) {
+    for (const seated of [-1, 0, TRADING_FLOOR_SEATS.length - 1]) {
       expect(resolveTradingFloorInteraction(arming, seated, true)).toBe('none');
     }
   });
@@ -453,5 +478,26 @@ describe('Trading Floor frame loop allocates nothing', () => {
           !line.includes('new THREE.InstancedMesh'),
       );
     expect(offenders).toEqual([]);
+  });
+});
+
+
+describe('R4 terminal size and derived interaction volumes', () => {
+  test('the procedural footprint and height derive the label, click volume and camera solid', () => {
+    const monitor = TRADING_FLOOR_MONITOR;
+    expect(monitor).toEqual({x: -1000, z: 1570, rotY: Math.PI, halfX: 240, halfZ: 70,
+      height: 360, screenY: 259, interactRadius: 380, nearHintRadius: 760});
+    expect(TRADING_FLOOR_MONITOR_FRONT_Z).toBe(1500);
+    expect([monitor.x, monitor.height + 20, monitor.z]).toEqual([-1000, 380, 1570]);
+    expect([monitor.x, monitor.height / 2, TRADING_FLOOR_MONITOR_FRONT_Z]).toEqual([-1000, 180, 1500]);
+    expect([monitor.halfX * 2 + 120, monitor.height, monitor.halfZ * 2 + 160]).toEqual([600, 360, 300]);
+    expect(TRADING_FLOOR_CAMERA_KIOSK_SOLID).toEqual({centerX: -1000, centerZ: 2287.5, halfX: 240, halfZ: 787.5});
+    const arming = createTradingFloorArming();
+    computeTradingFloorArming(-1000, 1434, arming);
+    expect(tradingFloorHitsSolid(-1000, 1434)).toBe(false);
+    expect(arming.monitorArmed).toBe(true);
+    expect(arming.doorArmed).toBe(false);
+    computeTradingFloorArming(TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z, arming);
+    expect(arming.monitorHint).toBe(false);
   });
 });

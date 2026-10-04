@@ -972,6 +972,8 @@ function serviceBuyErrorMessage(code: string | undefined, status: number | undef
       return 'This listing was paused or removed.';
     case 'insufficient_clawtokens':
       return `Not enough vCLAW. You need ${priceCt.toLocaleString()} and have ${have.toLocaleString()}.`;
+    case 'price_changed':
+      return 'The seller changed the price. Nothing was charged. Close this and reopen the listing to see the new price.';
     case 'idempotency_key_conflict':
       return 'That purchase is already processing. Give it a moment.';
     case 'listing_not_found':
@@ -1039,8 +1041,9 @@ function BuyServiceModal({
   // ONE fresh key per modal instance (a genuine retry of THIS click reuses it
   // via component state; a new buy click mounts a new modal with a new key).
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const queryClient = useQueryClient();
   const mutation = useMutation({
-    mutationFn: () => api.buyService(listing.id, idempotencyKey),
+    mutationFn: () => api.buyService(listing.id, idempotencyKey, listing.priceCt),
     onSuccess: (res) => {
       addToast('🛍️', `Bought "${listing.title}" for ${res.priceCt.toLocaleString()} vCLAW!`);
       onBought();
@@ -1048,6 +1051,10 @@ function BuyServiceModal({
     onError: (err) => {
       const { code, status } = errCode(err);
       setError(serviceBuyErrorMessage(code, status, listing.priceCt, clawTokens));
+      // The listing the buyer saw is stale; refetch so reopening shows the new price.
+      if (code === 'price_changed') {
+        queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'landServices' });
+      }
     },
   });
 

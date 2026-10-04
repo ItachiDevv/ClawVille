@@ -1,12 +1,27 @@
 import { describe, expect, test } from 'bun:test';
+import { FLOOR_ARENA_DESK_COUNT } from '@clawville/shared';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
-import { clampCameraToRoom } from '@/lib/three/room-camera';
+import type { RootState } from '@react-three/fiber';
+import { useGameStore } from '@/stores/game';
+import { DEFAULT_PLAYER_CAPABILITIES } from '@/lib/three/player/player-capability-mask';
+import { createPlayerPointerOrbitState, pointerOrbitYawEaseAllowed } from '@/lib/three/player/player-pointer-orbit';
+import { createPlayerControllerTestRuntime, runPlayerControllerFrameForTests, type PlayerCapabilityControllerConfig } from '@/lib/three/player/player-capability-controller';
+import { playerKeyState, resetPlayerKeys } from '@/lib/three/player/player-input';
+import { TRADING_FLOOR_POLICY } from '@/lib/three/player/player-motion-policy';
+import {
+  tradingFloorStandRequested, tradingFloorManualSit, tradingFloorPinBlend, tradingFloorArmWeight,
+  tradingFloorSeatedBodyPoint, TRADING_FLOOR_SIT_SECONDS, TRADING_FLOOR_EXIT_SECONDS,
+  TRADING_FLOOR_MOVE_FADE_SECONDS,
+} from './trading-floor-sit';
+
 import {
   activateTradingFloorSeat,
   tradingFloorSitClips,
-  TRADING_FLOOR_CAMERA_BOUNDS,
+  attachTradingFloorPointerOrbit,
+  drainTradingFloorPointerOrbit,
+  updateTradingFloorSeatedYaw,
 } from './trading-floor-interior';
 import {
   clampTradingFloorMovement2D,
@@ -14,7 +29,22 @@ import {
   computeTradingFloorArming,
   consoleHalfExtents,
   createTradingFloorArming,
-  pushCameraOutOfSolids,
+  placeTradingFloorChaseCamera,
+  smoothTradingFloorCameraArm,
+  smoothTradingFloorCameraBoom,
+  tradingFloorCameraBoom,
+  TRADING_FLOOR_CAMERA_BOUNDS,
+  TRADING_FLOOR_CAMERA_ARM,
+  TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
+  TRADING_FLOOR_CAMERA_SOLIDS_LOW,
+  TRADING_FLOOR_CLAW_EXTENTS,
+  TRADING_FLOOR_DAIS,
+  TRADING_FLOOR_DAIS_SOLID,
+  TRADING_FLOOR_SIDE_APPROACH_X,
+  TRADING_FLOOR_BOARD_APPROACH_Z,
+  TRADING_FLOOR_MONITOR,
+  TRADING_FLOOR_MONITOR_FRONT_Z,
   tradingFloorDoorPromptVisible,
   tradingFloorDistanceSq,
   validateAuthoredProp,
@@ -39,12 +69,135 @@ import {
   TRADING_FLOOR_SCREEN,
   TRADING_FLOOR_SCREEN_SURROUND_FACE_Z,
   TRADING_FLOOR_PLAYER_RADIUS,
+  TRADING_FLOOR_PILLAR_INSET_X,
   TRADING_FLOOR_PLAYER_SPAWN,
   TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
   TRADING_FLOOR_ROOM,
   TRADING_FLOOR_SEATS,
   TRADING_FLOOR_SOLIDS,
 } from './trading-floor-room';
+
+
+describe('Trading Floor pointer orbit interaction guards', () => {
+  test('seated yaw ease yields to a drag even between pointer moves', () => {
+    expect(pointerOrbitYawEaseAllowed(0, false, 0)).toBe(true);
+    expect(pointerOrbitYawEaseAllowed(0, true, 0)).toBe(false);
+    expect(pointerOrbitYawEaseAllowed(0, false, 0.1)).toBe(false);
+    expect(pointerOrbitYawEaseAllowed(1, false, 0)).toBe(false);
+  });
+
+  for (const input of ['drag', 'arrow']) {
+    test(`seated ${input} yaw stays after release and a new sit restores desk framing`, () => {
+      const yaw = { current: 0.75 };
+      const override = { current: false };
+      const generation = { current: 1 };
+      updateTradingFloorSeatedYaw(yaw, override, generation, 1, 0,
+        input === 'arrow' ? 1 : 0, input === 'drag', input === 'drag' ? 0.1 : 0, 1 / 60);
+      expect(override.current).toBe(true);
+      for (let frame = 0; frame < 30; frame++) {
+        updateTradingFloorSeatedYaw(yaw, override, generation, 1, 0, 0, false, 0, 1 / 60);
+      }
+      expect(yaw.current).toBe(0.75);
+      updateTradingFloorSeatedYaw(yaw, override, generation, 2, -1, 0, false, 0, 1 / 60);
+      expect(override.current).toBe(false);
+      updateTradingFloorSeatedYaw(yaw, override, generation, 3, 0, 0, false, 0, 0.5);
+      const deskYaw = tradingFloorSeatedCameraYaw(TRADING_FLOOR_SEATS[0]!.facing);
+      expect(yaw.current).toBeCloseTo(0.75 + wrapTradingFloorAngle(deskYaw - 0.75) * (1 - Math.exp(-3)));
+    });
+  }
+
+  test('changing directly to another seat clears the yaw override', () => {
+    const yaw = { current: 0.75 };
+    const override = { current: true };
+    const generation = { current: 1 };
+    updateTradingFloorSeatedYaw(yaw, override, generation, 2, 1, 0, false, 0, 0.5);
+    expect(override.current).toBe(false);
+    expect(yaw.current).not.toBe(0.75);
+  });
+
+  test('pointer drain uses current arm plus look-ahead and clears both accumulators', () => {
+    const state = createPlayerPointerOrbitState();
+    state.yawRad = 0.25;
+    state.pitchRad = 0.1;
+    const yaw = { current: 1 };
+    const pitch = { current: 10 };
+    expect(drainTradingFloorPointerOrbit(state, yaw, pitch, 100)).toBe(0.25);
+    expect(yaw.current).toBe(1.25);
+    expect(pitch.current).toBeCloseTo(10 + 0.1 * (100 + TRADING_FLOOR_CAMERA.lookAhead));
+    expect(state.yawRad).toBe(0);
+    expect(state.pitchRad).toBe(0);
+    const drainedPitch = pitch.current;
+    expect(drainTradingFloorPointerOrbit(state, yaw, pitch, 520)).toBe(0);
+    expect(yaw.current).toBe(1.25);
+    expect(pitch.current).toBe(drainedPitch);
+    state.pitchRad = 0.1;
+    drainTradingFloorPointerOrbit(state, yaw, pitch, 520);
+    expect(pitch.current - drainedPitch).toBeCloseTo(0.1 * (520 + TRADING_FLOOR_CAMERA.lookAhead));
+  });
+
+  test('pointer drain clamps pitch at both limits', () => {
+    const state = createPlayerPointerOrbitState();
+    const yaw = { current: 0 };
+    const pitch = { current: 0 };
+    for (const sign of [1, -1]) {
+      state.yawRad = sign * 0.1;
+      state.pitchRad = sign * 10;
+      drainTradingFloorPointerOrbit(state, yaw, pitch, 100);
+      expect(pitch.current).toBe(sign > 0 ? TRADING_FLOOR_CAMERA.pitchMax : TRADING_FLOOR_CAMERA.pitchMin);
+      expect(state.yawRad).toBe(0);
+      expect(state.pitchRad).toBe(0);
+    }
+  });
+
+  test('opening the Exchange resets the actual orbit subscription and prevents stale input', () => {
+    const previousExchangeOpen = useGameStore.getState().exchangeOpen;
+    useGameStore.setState({ exchangeOpen: false });
+    const capture = { pointerId: null as number | null };
+    const element = Object.assign(new EventTarget(), {
+      style: { touchAction: 'pan-y' }, clientHeight: 600,
+      setPointerCapture: (id: number) => { capture.pointerId = id; },
+      hasPointerCapture: (id: number) => capture.pointerId === id,
+      releasePointerCapture: () => { capture.pointerId = null; },
+    });
+    const windowTarget = new EventTarget();
+    const state = createPlayerPointerOrbitState();
+    const orbit = attachTradingFloorPointerOrbit(element as unknown as HTMLElement, state, {
+      windowTarget, isBlocked: () => useGameStore.getState().exchangeOpen,
+    });
+    const dispatch = (type: string, x: number) => {
+      const event = Object.assign(new Event(type), {
+        pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1, clientX: x, clientY: x,
+      });
+      (type === 'pointerdown' ? element : windowTarget).dispatchEvent(event);
+    };
+    try {
+      dispatch('pointerdown', 0);
+      dispatch('pointermove', 20);
+      expect(state.dragging).toBe(true);
+      expect(state.clickSuppressed).toBe(true);
+      expect(state.yawRad).not.toBe(0);
+      expect(capture.pointerId).toBe(1);
+      useGameStore.setState({ exchangeOpen: true });
+      expect(state).toEqual(createPlayerPointerOrbitState());
+      expect(capture.pointerId).toBeNull();
+      dispatch('pointermove', 40);
+      expect(state).toEqual(createPlayerPointerOrbitState());
+      useGameStore.setState({ exchangeOpen: false });
+      dispatch('pointermove', 60);
+      expect(state).toEqual(createPlayerPointerOrbitState());
+      dispatch('pointerdown', 60);
+      dispatch('pointermove', 80);
+      expect(state.dragging).toBe(true);
+    } finally {
+      orbit.detach();
+      useGameStore.setState({ exchangeOpen: previousExchangeOpen });
+    }
+    state.yawRad = 1;
+    useGameStore.setState({ exchangeOpen: !previousExchangeOpen });
+    useGameStore.setState({ exchangeOpen: previousExchangeOpen });
+    expect(state.yawRad).toBe(1); // Detached Exchange subscription cannot reset this state.
+  });
+});
 
 /**
  * trading-floor-seats.test.ts
@@ -67,6 +220,180 @@ import {
 /** One frame of held input at full walk speed — the real step size. */
 const FRAME_SECONDS = 1 / 60;
 const FRAME_STEP = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
+
+describe('Trading Floor stand intent', () => {
+  test('manual-seat cushion pin snaps with the legs on sit and every stand path', () => {
+    for (const id of ['hermes-female', 'hermes-male', 'tekk', 'adinero', 'chibi']) {
+      const clipOwner = !tradingFloorManualSit(id);
+      expect(clipOwner).toBe(false);
+      expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, clipOwner, false)).toBe(1);
+      for (const fastStand of [false, true]) {
+        expect(tradingFloorPinBlend(1, 0, FRAME_SECONDS, clipOwner, fastStand)).toBe(0);
+      }
+    }
+    expect(tradingFloorPinBlend(0, 1, FRAME_SECONDS, true, false)).toBeLessThan(0.02);
+    expect(tradingFloorPinBlend(1, 0, FRAME_SECONDS, true, false)).toBeGreaterThan(0.98);
+  });
+
+  test('arm override follows the 0.3 second clip fades and the 0.2 second movement stand', () => {
+    expect(tradingFloorArmWeight(0, true, FRAME_SECONDS, false)).toBeCloseTo(1 / 18);
+    expect(tradingFloorArmWeight(0, true, 0.3, false)).toBe(1);
+    expect(tradingFloorArmWeight(1, false, 0.2, false)).toBeCloseTo(1 / 3);
+    expect(tradingFloorArmWeight(1, false, 0.3, false)).toBe(0);
+    expect(tradingFloorArmWeight(1, false, 0.2, true)).toBe(0);
+  });
+  test('full seated/movement/Escape/previous-freeze truth table', () => {
+    for (const seat of [-1, ...TRADING_FLOOR_SEATS.map((seat) => seat.index)]) {
+      for (const moving of [false, true]) for (const escape of [false, true]) for (const frozenPrev of [false, true]) {
+        expect(tradingFloorStandRequested(seat, moving, escape, frozenPrev))
+          .toBe(seat >= 0 && (moving || (escape && !frozenPrev)));
+      }
+    }
+  });
+
+  test('Escape after a modal frozen frame cannot stand the avatar', () => {
+    resetPlayerKeys();
+    const oldExchangeOpen = useGameStore.getState().exchangeOpen;
+    let seated = 0;
+    let frozenLast = false;
+    let frozenPrev = false;
+    let afterMove = 0;
+    const config: PlayerCapabilityControllerConfig = {
+      sceneId: 'trading-floor', capabilities: DEFAULT_PLAYER_CAPABILITIES,
+      motion: TRADING_FLOOR_POLICY.motion, input: TRADING_FLOOR_POLICY.input,
+      isDriving: () => true, isFrozen: () => useGameStore.getState().exchangeOpen,
+      onFrameStart: () => { frozenPrev = frozenLast; frozenLast = useGameStore.getState().exchangeOpen; },
+      space: {
+        speedPerSec: 1, readPosition: (out) => { out.x = 0; out.z = 0; },
+        clampMovement: (_px, _pz, x, z, out) => { out.x = x; out.z = z; out.groundY = 0; },
+        commitPosition: () => {},
+      },
+      onAfterMove: (state) => {
+        afterMove++;
+        if (tradingFloorStandRequested(seated, state.intent.move.moving, state.intent.escapeEdge, frozenPrev)) seated = -1;
+      },
+    };
+    const runtime = createPlayerControllerTestRuntime(config.motion);
+    const state = { camera: new THREE.PerspectiveCamera(), clock: { elapsedTime: 0 } } as RootState;
+    try {
+      useGameStore.setState({ exchangeOpen: true });
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+      expect(afterMove).toBe(0);
+      // Modal keydown closes the store before the next controller frame.
+      useGameStore.getState().closeExchange();
+      playerKeyState.escape = true;
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+      expect(afterMove).toBe(1);
+      expect(seated).toBe(0);
+    } finally {
+      resetPlayerKeys();
+      useGameStore.setState({ exchangeOpen: oldExchangeOpen });
+    }
+  });
+
+  test('all five hold’em fallback rigs use manual seats; Milady retains the enter clip', () => {
+    for (const id of ['hermes-female', 'hermes-male', 'tekk', 'adinero', 'chibi']) {
+      expect(tradingFloorManualSit(id)).toBe(true);
+      expect(tradingFloorSitClips('vrm', id)).toBeNull();
+    }
+    expect(tradingFloorSitClips('vrm', 'vrm-milady')?.enter).toBe('sit_stand_to_sit');
+  });
+});
+
+describe('Trading Floor visible seated body travel', () => {
+  test('the same output reaches both endpoints and moves monotonically between them', () => {
+    const out = { x: NaN, z: NaN };
+    for (const seat of TRADING_FLOOR_SEATS) {
+      const direction = Math.sign(seat.sitX - seat.x);
+      let previousX = seat.x;
+      for (let step = 0; step <= 100; step++) {
+        const travel = step / 100;
+        tradingFloorSeatedBodyPoint(seat, travel, out);
+        expect((out.x - previousX) * direction).toBeGreaterThanOrEqual(0);
+        expect(out.x).toBeCloseTo(seat.x + (seat.sitX - seat.x) * travel);
+        expect(out.z).toBeCloseTo(seat.z + (seat.sitZ - seat.z) * travel);
+        if (step === 0) expect(out).toEqual({ x: seat.x, z: seat.z });
+        if (step === 100) expect(out).toEqual({ x: seat.sitX, z: seat.sitZ });
+        previousX = out.x;
+      }
+    }
+  });
+
+  test('clip travel starts at zero, reaches one, and returns to zero on both stand paths', () => {
+    const out = { x: 0, z: 0 };
+    for (const id of ['vrm-milady', 'biggie', 'ansem']) {
+      const clipOwner = !tradingFloorManualSit(id);
+      expect(clipOwner).toBe(true);
+      for (const seat of TRADING_FLOOR_SEATS) for (const fastStand of [false, true]) {
+        let blend = tradingFloorPinBlend(0, 1, 0, clipOwner, false);
+        expect(blend).toBe(0);
+        for (let frame = 0; frame <= Math.ceil(TRADING_FLOOR_SIT_SECONDS / FRAME_SECONDS); frame++) {
+          const previous = blend;
+          blend = tradingFloorPinBlend(blend, 1, FRAME_SECONDS, clipOwner, false);
+          expect(blend).toBeGreaterThanOrEqual(previous);
+          tradingFloorSeatedBodyPoint(seat, blend, out);
+          expect((out.x - seat.x) / (seat.sitX - seat.x)).toBeCloseTo(blend);
+        }
+        expect(blend).toBe(1);
+        expect(out).toEqual({ x: seat.sitX, z: seat.sitZ });
+        const seconds = fastStand ? TRADING_FLOOR_MOVE_FADE_SECONDS : TRADING_FLOOR_EXIT_SECONDS;
+        for (let frame = 0; frame <= Math.ceil(seconds / FRAME_SECONDS); frame++) {
+          const previous = blend;
+          blend = tradingFloorPinBlend(blend, 0, FRAME_SECONDS, clipOwner, fastStand);
+          expect(blend).toBeLessThanOrEqual(previous);
+          tradingFloorSeatedBodyPoint(seat, blend, out);
+          expect((out.x - seat.x) / (seat.sitX - seat.x)).toBeCloseTo(blend);
+        }
+        expect(blend).toBe(0);
+        expect(out).toEqual({ x: seat.x, z: seat.z });
+      }
+    }
+  });
+
+  test('arming stays at the stand point throughout travel and hides the nearest cushion monitor hint', () => {
+    const body = { x: 0, z: 0 };
+    const position = { x: 0, z: 0 };
+    const arming = createTradingFloorArming();
+    for (const seat of TRADING_FLOOR_SEATS) for (const travel of [0, 0.25, 0.5, 0.75, 1]) {
+      clampTradingFloorMovementSeated(seat.index, seat.x, seat.z, seat.sitX, seat.sitZ, position);
+      tradingFloorSeatedBodyPoint(seat, travel, body);
+      computeTradingFloorArming(position.x, position.z, arming);
+      expect(position).toEqual({ x: seat.x, z: seat.z });
+      expect(arming.seatArmedIndex).toBe(seat.index);
+      expect(arming.monitorHint).toBe(false);
+    }
+    // The door-wall kiosk hints at seat 7's cushion, but never at its stand point.
+    computeTradingFloorArming(TRADING_FLOOR_SEATS[7]!.sitX, TRADING_FLOOR_SEATS[7]!.sitZ, arming);
+    expect(arming.monitorHint).toBe(true);
+  });
+
+  test('VRM travel uses the pin blend before body/camera frames, including frozen frames', () => {
+    const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+    const motion = source.slice(source.indexOf('function TradingFloorAvatarMotion'), source.indexOf('type AvatarMountCallback'));
+    const vrm = source.slice(source.indexOf('function TradingFloorVRMPlayer'), source.indexOf('const _glbBoundsScratch'));
+    expect(vrm).toContain('_sitClipOwner = !manualSeat;');
+    expect(vrm).toContain('_sitTravel = sitBlendRef.current;');
+    expect(vrm).toContain('if (_sitShownIndex >= 0) _sitTravelSeat = _sitShownIndex;');
+    expect(vrm).toContain('if (_sitTravel === 0) _sitTravelSeat = -1;');
+    expect(vrm.indexOf('_sitTravel = sitBlendRef.current;')).toBeLessThan(vrm.indexOf('if (sitBlendRef.current <= 0)'));
+    expect(vrm).toContain('}, -50);');
+    expect(vrm).toContain("if ((armWeightRef.current > 0 && reg.animatorId !== 'chibi') || snapSeat)");
+    const visual = motion.slice(motion.indexOf('  useSceneFrame((_, rawDelta) => {'));
+    expect(visual).toContain('}, -40);');
+    expect(visual).not.toContain('exchangeOpen');
+    expect(visual).not.toContain('return;');
+    expect(visual).toContain('posX.current = seated.x;');
+    expect(visual).toContain('posZ.current = seated.z;');
+    expect(visual).toContain('computeTradingFloorArming(posX.current, posZ.current, _arming);');
+    expect(visual).toContain('_sitTravel > 0 ? TRADING_FLOOR_SEATS[_sitTravelSeat]');
+    expect(visual).toContain('tradingFloorSeatedBodyPoint(travelSeat, _sitTravel, _bodyScratch)');
+    expect(visual).toContain('group.position.set(bodyX, baseY, bodyZ);');
+    expect(visual).toContain('travelSeat ? travelSeat.facing');
+    expect(visual).toContain('bodyX, bodyZ, cameraYaw.current, cameraPitch.current, _cameraScratch');
+    expect(visual).not.toContain('new THREE.');
+    expect(motion).not.toContain('bodySeatRef');
+  });
+});
 
 /** Eight compass directions, so no single lucky axis carries a test. */
 const DIRECTIONS: readonly (readonly [number, number])[] = [
@@ -174,7 +501,7 @@ describe('Trading Floor seats — standing up lands somewhere legal', () => {
     for (const seat of TRADING_FLOOR_SEATS) {
       expect(tradingFloorHitsSolid(seat.x, seat.z)).toBe(false);
       expect(Math.abs(seat.x)).toBeLessThanOrEqual(
-        TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS,
+        TRADING_FLOOR_SIDE_APPROACH_X,
       );
       expect(Math.abs(seat.z)).toBeLessThanOrEqual(
         TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS,
@@ -319,7 +646,7 @@ describe('Trading Floor seats — the chase camera clears the wall-side desks', 
   test('the same bound also clears the four corner pillars', () => {
     const pillars = TRADING_FLOOR_SOLIDS.filter(
       (solid) =>
-        Math.abs(Math.abs(solid.centerX) - (TRADING_FLOOR_ROOM.halfX - 190)) < 1,
+        Math.abs(Math.abs(solid.centerX) - (TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PILLAR_INSET_X)) < 1,
     );
     expect(pillars.length).toBe(4);
     for (const pillar of pillars) {
@@ -357,7 +684,7 @@ describe('Trading Floor seats — sit clips', () => {
   });
 
   // GLB avatars (the lobster) have no humanoid rig and no animator, so there is
-  // nothing to retarget onto. They keep the snap-only behaviour.
+  // nothing to retarget onto. They stay at the stand point with zero body travel.
   test('a GLB avatar gets no clips at all', () => {
     expect(tradingFloorSitClips('glb')).toBeNull();
   });
@@ -393,6 +720,17 @@ describe('Trading Floor seats — sit clips', () => {
     const body = source.slice(start, end);
     expect(body).not.toContain('playOneShot');
     expect(body).not.toContain('TRADING_FLOOR_SIT_CLIPS');
+    expect(body).not.toContain('_sitTravel');
+    expect(source).toContain('let _sitTravel = 0;');
+    expect(source).toContain('GLB avatars have no sit pose or hip pin. They stay at the stand point:');
+    const vrm = source.slice(source.indexOf('function TradingFloorVRMPlayer'), start);
+    // Avatar replacement must clear travel before the GLB takes over.
+    expect(vrm).toContain('_sitClipOwner = false;\n      _sitTravel = 0;\n      _sitTravelSeat = -1;');
+    const out = { x: NaN, z: NaN };
+    for (const seat of TRADING_FLOOR_SEATS) {
+      tradingFloorSeatedBodyPoint(seat, 0, out);
+      expect(out).toEqual({ x: seat.x, z: seat.z });
+    }
   });
 
   // The cushion pin is what makes the seat Y agree with the chair. The clips
@@ -447,11 +785,12 @@ describe('Trading Floor seats — clicking a chair', () => {
 describe('Trading Floor seats — the authored-prop assert', () => {
   /**
    * The SHIPPED numbers, read with `scripts/trading-floor/inspect-glb.mjs`
-   * against `trading-floor-interior-opt1-mo-ktx.glb` (350,128 bytes, v4).
+   * against `trading-floor-interior-opt1-mo-ktx.glb` (340,820 bytes, ?v=5).
    * `KHR_mesh_quantization` normalises each mesh
    * into [-1, 1] and pushes the real size onto the node scale, which is why the
    * bounds below are fractions and the scale is ~87 to ~182.
    */
+  // R1 must re-measure these decoded prop scales and accessor bounds.
   const SHIPPED_CONSOLE = {
     scaleX: 182,
     scaleY: 182,
@@ -462,8 +801,8 @@ describe('Trading Floor seats — the authored-prop assert', () => {
     maxZ: 0.7417828913235878,
     expectedHalfX: TRADING_FLOOR_CONSOLE_HALF_X,
     expectedHalfZ: TRADING_FLOOR_CONSOLE_HALF_Z,
-    nodeX: -1120,
-    nodeZ: -500,
+    nodeX: TRADING_FLOOR_CONSOLE_ROW[0]!.x,
+    nodeZ: TRADING_FLOOR_CONSOLE_ROW[0]!.z,
     expectedNodeX: TRADING_FLOOR_CONSOLE_ROW[0]!.x,
     expectedNodeZ: TRADING_FLOOR_CONSOLE_ROW[0]!.z,
   };
@@ -499,9 +838,9 @@ describe('Trading Floor seats — the authored-prop assert', () => {
   // so the expectation must stay tied to the row rather than to a literal.
   test('the expected console anchor is slot 0 of the row, not a literal', () => {
     expect([SHIPPED_CONSOLE.expectedNodeX, SHIPPED_CONSOLE.expectedNodeZ]).toEqual([
-      -1120, -500,
+      TRADING_FLOOR_CONSOLE_ROW[0]!.x, TRADING_FLOOR_CONSOLE_ROW[0]!.z,
     ]);
-    expect(TRADING_FLOOR_CONSOLE_ROW[0]!.x).toBe(-1120);
+    expect(SHIPPED_CONSOLE.nodeX).toBe(SHIPPED_CONSOLE.expectedNodeX);
   });
 
   // The console Z half-extent measures 135.0045 against a stated 135. The tolerance has to
@@ -533,12 +872,12 @@ describe('Trading Floor seats — the authored-prop assert', () => {
   // the detectable quantity is the NODE translation against the anchor the build
   // script used.
   test('a moved authored node is FATAL and drops the row', () => {
-    const movedX = validateAuthoredProp('c', { ...SHIPPED_CONSOLE, nodeX: -1090 });
+    const movedX = validateAuthoredProp('c', { ...SHIPPED_CONSOLE, nodeX: TRADING_FLOOR_CONSOLE_ROW[0]!.x + 30 });
     expect(movedX.fatal).toBe(true);
     expect(movedX.problems.join(' ')).toContain('authored node is at');
     expect(movedX.problems.join(' ')).toContain('DROPPED');
 
-    const movedZ = validateAuthoredProp('c', { ...SHIPPED_CONSOLE, nodeZ: -460 });
+    const movedZ = validateAuthoredProp('c', { ...SHIPPED_CONSOLE, nodeZ: TRADING_FLOOR_CONSOLE_ROW[0]!.z + 40 });
     expect(movedZ.fatal).toBe(true);
 
     // The chair is anchored at the origin, so the same rule applies there.
@@ -657,12 +996,14 @@ describe('Trading Floor camera — the rig never inverts at a wall', () => {
     expect(anchorZ).toBeLessThan(TRADING_FLOOR_CAMERA_Z_MAX);
   });
 
-  // The X bound is tangent by design and the player is stopped short of it, so
-  // X is the one axis where an arm is not required. Pinned so the asymmetry
-  // reads as deliberate rather than as the same bug half-fixed.
-  test('X needs no arm because the player never reaches its bound', () => {
-    const playerMaxXAtADesk = cameraMaxX - TRADING_FLOOR_PLAYER_RADIUS;
-    expect(playerMaxXAtADesk).toBeLessThan(cameraMaxX);
+  test('both side clamps leave an arm even between desks and past the row', () => {
+    const out = { x: 0, z: 0 };
+    const betweenDesksZ = (TRADING_FLOOR_CONSOLE_ROW[0]!.z + TRADING_FLOOR_CONSOLE_ROW[1]!.z) / 2;
+    for (const z of [betweenDesksZ, TRADING_FLOOR_DOOR_APPROACH_Z]) for (const sign of [-1, 1]) {
+      clampTradingFloorMovement2D(0, z, sign * TRADING_FLOOR_ROOM.halfX, z, out);
+      expect(out).toEqual({ x: sign * TRADING_FLOOR_SIDE_APPROACH_X, z });
+      expect(cameraMaxX - Math.abs(out.x)).toBe(TRADING_FLOOR_PLAYER_RADIUS);
+    }
   });
 });
 
@@ -674,6 +1015,12 @@ describe('Trading Floor camera — the door approach leaves a real arm', () => {
 
   test('the camera keeps at least 100 wu behind the player at the door', () => {
     expect(TRADING_FLOOR_CAMERA_Z_MAX - playerMaxZ).toBeGreaterThanOrEqual(100);
+    const camera = { x: 0, y: 0, z: 0 };
+    for (let deg = 0; deg < 360; deg += 3)
+      for (const pitch of [TRADING_FLOOR_CAMERA.pitchMin, 0, TRADING_FLOOR_CAMERA.pitchMax]) {
+        const arm = placeTradingFloorChaseCamera(TRADING_FLOOR_DOOR.x, playerMaxZ, deg * Math.PI / 180, pitch, camera);
+        expect(arm).toBeGreaterThanOrEqual(100);
+      }
   });
 
   test('the door still arms at the player closest legal approach', () => {
@@ -694,9 +1041,10 @@ describe('Trading Floor camera — the door approach leaves a real arm', () => {
     const out = { x: 0, z: 0 };
     clampTradingFloorMovement2D(0, 900, 0, 99_999, out);
     expect(out.z).toBe(TRADING_FLOOR_DOOR_APPROACH_Z);
-    // The board end is UNCHANGED — you can still walk up and read the board.
-    clampTradingFloorMovement2D(0, -900, 0, -99_999, out);
-    expect(out.z).toBe(-(TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS));
+    // Walk through the gap between house agents to reach the board standoff.
+    clampTradingFloorMovement2D(-765, -900, -765, -99_999, out);
+    expect(out.x).toBe(-765);
+    expect(out.z).toBe(TRADING_FLOOR_BOARD_APPROACH_Z);
   });
 
   test('the spawn is unaffected and still short of the limit', () => {
@@ -739,8 +1087,9 @@ describe('Trading Floor camera — the exit prompt is actually on screen', () =>
 
   /** Angle between the camera's view axis and the anchor, in degrees. */
   function offAxisDeg(bodyZ: number, pitch: number): number {
-    const camY = TRADING_FLOOR_CAMERA.above + pitch;
-    const camZ = Math.min(bodyZ + TRADING_FLOOR_CAMERA.behind, TRADING_FLOOR_CAMERA_Z_MAX);
+    const cam = { x: 0, y: 0, z: 0 };
+    placeTradingFloorChaseCamera(TRADING_FLOOR_DOOR.x, bodyZ, 0, pitch, cam);
+    const camY = cam.y, camZ = cam.z;
     // The scene looks at (bodyZ - lookAhead) at height lookY, yaw 0 at the door.
     const axisY = TRADING_FLOOR_CAMERA.lookY - camY;
     const axisZ = bodyZ - TRADING_FLOOR_CAMERA.lookAhead - camZ;
@@ -793,10 +1142,10 @@ describe('Trading Floor camera — the exit prompt is actually on screen', () =>
       return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI;
     };
     // (DOOR.height - 40, DOOR.z - 40) — the original, off the top edge.
-    expect(historical(460, 1060)).toBeGreaterThan(HALF_FOV_DEG);
+    expect(historical(TRADING_FLOOR_DOOR.height - 40, TRADING_FLOOR_DOOR.z - 40)).toBeGreaterThan(HALF_FOV_DEG);
     // The first replacement proposed from an elevation figure that ignored the
     // camera's own downward pitch. Still off-screen.
-    expect(historical(300, 980)).toBeGreaterThan(HALF_FOV_DEG);
+    expect(historical(300, TRADING_FLOOR_DOOR.z - 120)).toBeGreaterThan(HALF_FOV_DEG);
   });
 });
 
@@ -821,10 +1170,10 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
     expect(tradingFloorDoorPromptVisible(false, false, 1)).toBe(false);
   });
 
-  test('on arrival (spawn, camera facing the board) the hint is on and the capsule is hidden', () => {
+  test('on arrival (spawn, camera facing the board) the hint is off and the capsule is hidden', () => {
     const arming = createTradingFloorArming();
     computeTradingFloorArming(TRADING_FLOOR_PLAYER_SPAWN.x, TRADING_FLOOR_PLAYER_SPAWN.z, arming);
-    expect(arming.doorHint).toBe(true);
+    expect(arming.doorHint).toBe(false);
     expect(arming.doorArmed).toBe(false);
     // Yaw 0 is the spawn yaw: forward = (sin 0, 0, -cos 0).
     expect(tradingFloorDoorPromptVisible(arming.doorArmed, arming.doorHint, -Math.cos(0))).toBe(
@@ -834,8 +1183,7 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
 
   /**
    * THE PROJECTION PIN. The camera is placed exactly as the frame loop places
-   * it (orbit, `TRADING_FLOOR_CAMERA_BOUNDS` clamp, solid push-out, look-ahead
-   * target), the capsule's screen rectangle is sampled, and a ray from the
+   * it (the shared spring-arm placement and look-ahead target), the capsule's screen rectangle is sampled, and a ray from the
    * camera through each sample is tested against the board's rectangle in the
    * world. A ray test rather than projecting the board's corners, because a
    * board partly behind the camera has no meaningful projected outline.
@@ -910,13 +1258,7 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
   function placeCamera(bodyX: number, bodyZ: number, yaw: number, pitch: number): void {
     const sin = Math.sin(yaw);
     const cos = Math.cos(yaw);
-    camPos.set(
-      bodyX - sin * TRADING_FLOOR_CAMERA.behind,
-      TRADING_FLOOR_CAMERA.above + pitch,
-      bodyZ + cos * TRADING_FLOOR_CAMERA.behind,
-    );
-    clampCameraToRoom(camPos, TRADING_FLOOR_CAMERA_BOUNDS);
-    pushCameraOutOfSolids(camPos, TRADING_FLOOR_SOLIDS, TRADING_FLOOR_CAMERA_SOLID_CLEARANCE);
+    placeTradingFloorChaseCamera(bodyX, bodyZ, yaw, pitch, camPos);
     look.set(
       bodyX + sin * TRADING_FLOOR_CAMERA.lookAhead,
       TRADING_FLOOR_CAMERA.lookY,
@@ -938,7 +1280,7 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
     for (const [width, height] of VIEWPORTS) {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      for (let bodyX = -900; bodyX <= 900; bodyX += 100) {
+      for (let bodyX = -Math.floor(TRADING_FLOOR_SIDE_APPROACH_X / 100) * 100; bodyX <= TRADING_FLOOR_SIDE_APPROACH_X; bodyX += 100) {
         for (let bodyZ = TRADING_FLOOR_DOOR.z - TRADING_FLOOR_DOOR.nearHintRadius; bodyZ <= TRADING_FLOOR_DOOR_APPROACH_Z; bodyZ += 40) {
           if (tradingFloorHitsSolid(bodyX, bodyZ)) continue;
           computeTradingFloorArming(bodyX, bodyZ, arming);
@@ -966,6 +1308,7 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
     // Non-vacuous: many hints are ON SCREEN (in front of the camera, anchor
     // inside the viewport) in this sweep, and the sweep DOES detect the defect
     // under the shipped rule.
+    console.log(`exit capsule: old overlaps=${oldRuleOverlaps}, armed overlaps=${armedOverlaps}, visible hints=${hintsOnScreen}, hint overlaps=${hintOverlaps}`);
     expect(hintsOnScreen).toBeGreaterThan(1000);
     expect(oldRuleOverlaps).toBeGreaterThan(0);
     // The fix: no visible hint over the board, on screen or partly off it.
@@ -981,87 +1324,13 @@ describe('Trading Floor exit capsule — never a hint over the big board', () =>
     const source = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
     expect(source).toContain('_cameraForwardZ = _forwardScratch.z;');
     expect(source).toContain('tradingFloorDoorPromptVisible(');
-    expect(source).toContain('clampCameraToRoom(_cameraScratch, TRADING_FLOOR_CAMERA_BOUNDS);');
+    expect(source).toContain('const rawArm = placeTradingFloorChaseCamera(');
+    expect(source).toContain('cameraArm.current = smoothTradingFloorCameraArm(');
+    expect(source).not.toContain('pushCameraOutOfSolids');
+    expect(source).not.toContain('clampCameraToRoom');
+    expect(source).not.toContain('camera.position.lerp(');
     // The old rule, visibility straight off the hint, must not come back.
     expect(source).not.toContain('setDoorVisible(_arming.doorHint)');
-  });
-});
-
-describe('Trading Floor camera — push-out of solids', () => {
-  const CLEAR = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
-  const dais = TRADING_FLOOR_SOLIDS.find((s) => s.halfX === 350)!;
-
-  function isInside(x: number, z: number): boolean {
-    return TRADING_FLOOR_SOLIDS.some(
-      (s) =>
-        Math.abs(x - s.centerX) < s.halfX + CLEAR &&
-        Math.abs(z - s.centerZ) < s.halfZ + CLEAR,
-    );
-  }
-
-  // The reported symptom: player on the far side of the ring, pitched down, and
-  // the camera ends up INSIDE the dais with dark geometry across the frame.
-  test('a camera inside the dais comes out along the shortest axis', () => {
-    // Nearer the dais Z face than its X face, so Z is the shortest way out.
-    const pos = { x: dais.centerX, z: dais.centerZ + dais.halfZ - 5 };
-    pushCameraOutOfSolids(pos, TRADING_FLOOR_SOLIDS, CLEAR);
-    expect(pos.x).toBe(dais.centerX);
-    expect(pos.z).toBeCloseTo(dais.centerZ + dais.halfZ + CLEAR, 6);
-    expect(isInside(pos.x, pos.z)).toBe(false);
-  });
-
-  test('dead centre of a solid still resolves, and does not stay put', () => {
-    // Math.sign(0) is 0, so a naive push would "resolve" this by not moving.
-    const pos = { x: dais.centerX, z: dais.centerZ };
-    pushCameraOutOfSolids(pos, TRADING_FLOOR_SOLIDS, CLEAR);
-    expect(isInside(pos.x, pos.z)).toBe(false);
-  });
-
-  test('a camera already outside is left exactly alone', () => {
-    for (const point of [
-      { x: 0, z: 900 },
-      { x: 600, z: 800 },
-      { x: -985, z: 200 },
-    ]) {
-      const pos = { ...point };
-      pushCameraOutOfSolids(pos, TRADING_FLOOR_SOLIDS, CLEAR);
-      expect(pos).toEqual(point);
-    }
-  });
-
-  // Resolving one solid can push the point into a neighbour, so the contract is
-  // the POSTCONDITION, not a single pass.
-  test('every point in the hall ends up outside every solid', () => {
-    const pos = { x: 0, z: 0 };
-    let worst: string | null = null;
-    for (let x = -1300; x <= 1300; x += 37) {
-      for (let z = -1100; z <= 1100; z += 37) {
-        pos.x = x;
-        pos.z = z;
-        pushCameraOutOfSolids(pos, TRADING_FLOOR_SOLIDS, CLEAR);
-        if (isInside(pos.x, pos.z)) worst = `(${x}, ${z})`;
-      }
-    }
-    expect(worst).toBeNull();
-  });
-
-  test('a corner of the dais resolves out of the box on both axes', () => {
-    const pos = {
-      x: dais.centerX + dais.halfX - 2,
-      z: dais.centerZ + dais.halfZ - 2,
-    };
-    pushCameraOutOfSolids(pos, TRADING_FLOOR_SOLIDS, CLEAR);
-    expect(isInside(pos.x, pos.z)).toBe(false);
-  });
-
-  // The clearance is deliberately NOT roomMargin. At 60 the desks would shove
-  // the camera from the desk face at 985 out to 925, costing another 60 wu of
-  // framing at the side walls where it is already tight.
-  test('the clearance is small enough not to eat the desk-face bound', () => {
-    expect(CLEAR).toBeLessThan(TRADING_FLOOR_CAMERA.roomMargin);
-    const pos = { x: TRADING_FLOOR_DESK_INNER_X, z: -500 };
-    pushCameraOutOfSolids(pos, TRADING_FLOOR_SOLIDS, CLEAR);
-    expect(TRADING_FLOOR_DESK_INNER_X - Math.abs(pos.x)).toBeLessThanOrEqual(CLEAR);
   });
 });
 
@@ -1078,11 +1347,11 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
   const STEP = 10;
 
   function floodFillFromSpawn(): Set<string> {
-    const maxX = TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS;
-    const maxZ = TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS;
+    const maxX = TRADING_FLOOR_SIDE_APPROACH_X;
+    const minZ = TRADING_FLOOR_BOARD_APPROACH_Z, maxZ = TRADING_FLOOR_DOOR_APPROACH_Z;
     const key = (cx: number, cz: number) => `${cx},${cz}`;
     const inBounds = (x: number, z: number) =>
-      Math.abs(x) <= maxX && Math.abs(z) <= maxZ;
+      Math.abs(x) <= maxX && z >= minZ && z <= maxZ;
 
     const startX = Math.round(TRADING_FLOOR_PLAYER_SPAWN.x / STEP) * STEP;
     const startZ = Math.round(TRADING_FLOOR_PLAYER_SPAWN.z / STEP) * STEP;
@@ -1103,7 +1372,9 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
         if (!inBounds(nx, nz)) continue;
         const cell = key(nx, nz);
         if (visited.has(cell)) continue;
-        if (tradingFloorHitsSolid(nx, nz)) continue;
+        const step = { x: 0, z: 0 };
+        clampTradingFloorMovement2D(x, z, nx, nz, step);
+        if (step.x !== nx || step.z !== nz) continue;
         visited.add(cell);
         queue.push(nx, nz);
       }
@@ -1133,6 +1404,12 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
         closest = Math.min(closest, Math.hypot(cx - seat.x, cz - seat.z));
         if (closest <= STEP) break;
       }
+      const arming = createTradingFloorArming();
+      computeTradingFloorArming(seat.x, seat.z, arming);
+      expect(arming.seatArmedIndex).toBe(seat.index);
+      const exact = { x: 0, z: 0 };
+      clampTradingFloorMovement2D(seat.x - Math.sign(seat.x) * STEP, seat.z, seat.x, seat.z, exact);
+      expect(exact).toEqual({ x: seat.x, z: seat.z });
       expect({ seat: seat.index, withinOneStep: closest <= STEP }).toEqual({
         seat: seat.index,
         withinOneStep: true,
@@ -1140,11 +1417,34 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
     }
   });
 
+  test('the kiosk and door approaches connect to spawn and arm their hotspots', () => {
+    const kioskZ = TRADING_FLOOR_MONITOR_FRONT_Z -
+      TRADING_FLOOR_PLAYER_RADIUS - TRADING_FLOOR_CAMERA_ARM.originInset;
+    for (const [x, z, hotspot] of [
+      [TRADING_FLOOR_MONITOR.x, kioskZ, 'monitor'],
+      [TRADING_FLOOR_DOOR.x, TRADING_FLOOR_DOOR_APPROACH_Z, 'door'],
+    ] as const) {
+      let nearestX = 0, nearestZ = 0, nearest = Infinity;
+      for (const cell of reachable) {
+        const [cx, cz] = cell.split(',').map(Number) as [number, number];
+        const distance = Math.hypot(cx - x, cz - z);
+        if (distance < nearest) { nearest = distance; nearestX = cx; nearestZ = cz; }
+      }
+      expect(nearest).toBeLessThanOrEqual(STEP);
+      const out = { x: 0, z: 0 };
+      clampTradingFloorMovement2D(nearestX, nearestZ, x, z, out);
+      expect(out).toEqual({ x, z });
+      const arming = createTradingFloorArming();
+      computeTradingFloorArming(out.x, out.z, arming);
+      expect(hotspot === 'monitor' ? arming.monitorArmed : arming.doorArmed).toBe(true);
+    }
+  });
+
   // Both walls, so a mirroring mistake cannot hide behind one reachable side.
-  test('three seats line each side wall and they mirror in Z', () => {
+  test('equal seat counts line each side wall and they mirror in Z', () => {
     const left = TRADING_FLOOR_SEATS.filter((seat) => seat.x < 0);
     const right = TRADING_FLOOR_SEATS.filter((seat) => seat.x > 0);
-    expect([left.length, right.length]).toEqual([3, 3]);
+    expect([left.length, right.length]).toEqual([TRADING_FLOOR_SEATS.length / 2, TRADING_FLOOR_SEATS.length / 2]);
     const leftZ = left.map((seat) => seat.z).sort((a, b) => a - b);
     const rightZ = right.map((seat) => seat.z).sort((a, b) => a - b);
     expect(leftZ).toEqual(rightZ);
@@ -1152,4 +1452,307 @@ describe('Trading Floor seats — an agent can walk to every one of them', () =>
       expect(left[index]!.x).toBe(-right[index]!.x);
     }
   });
+});
+
+
+/** Mirror the scene's single cast, scalar arm retraction and boom-only ease. */
+function drawSpringArm(
+  x: number, z: number, yaw: number, pitch: number,
+  state: { arm: number; boom: number }, out: { x: number; y: number; z: number }, snap = false,
+): void {
+  const raw = placeTradingFloorChaseCamera(x, z, yaw, pitch, out,
+    TRADING_FLOOR_CAMERA.behind, snap ? Infinity : state.boom);
+  state.arm = smoothTradingFloorCameraArm(state.arm, raw, FRAME_SECONDS, snap);
+  out.x += Math.sin(yaw) * (raw - state.arm);
+  out.z -= Math.cos(yaw) * (raw - state.arm);
+  state.boom = smoothTradingFloorCameraBoom(state.boom,
+    tradingFloorCameraBoom(pitch, state.arm), FRAME_SECONDS, snap);
+  out.y = TRADING_FLOOR_CAMERA.above + pitch + state.boom;
+}
+
+describe('Trading Floor camera - spring arm', () => {
+  test('positive pitch fades the corner boom without changing default or downward pitch', () => {
+    const arm = 60;
+    const fullBoom = (TRADING_FLOOR_CAMERA_ARM.boomStart - arm) * TRADING_FLOOR_CAMERA_ARM.boomRise;
+    expect(tradingFloorCameraBoom(0, arm)).toBe(fullBoom);
+    expect(tradingFloorCameraBoom(TRADING_FLOOR_CAMERA.pitchMin, arm)).toBe(fullBoom);
+    expect(tradingFloorCameraBoom(TRADING_FLOOR_CAMERA.pitchMax / 2, arm)).toBe(fullBoom / 2);
+    expect(tradingFloorCameraBoom(TRADING_FLOOR_CAMERA.pitchMax, arm)).toBe(0);
+  });
+  test('kiosk graze around the door-wall tangent never shrinks more than two walk steps', () => {
+    const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
+    let worstShrink = 0, kioskHits = 0;
+    const step = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
+    const tangent = Math.floor(Math.acos((TRADING_FLOOR_MONITOR_FRONT_Z -
+      TRADING_FLOOR_CAMERA_SOLID_CLEARANCE - TRADING_FLOOR_DOOR_APPROACH_Z) /
+      TRADING_FLOOR_CAMERA.behind) * 180 / Math.PI);
+    for (let deg = tangent - 7; deg <= tangent + 3; deg++) {
+      const yaw = deg * Math.PI / 180;
+      let x = TRADING_FLOOR_MONITOR.x + 600, z = TRADING_FLOOR_DOOR_APPROACH_Z;
+      let arm = placeTradingFloorChaseCamera(x, z, yaw, 0, camera);
+      for (let frame = 0; frame < 120; frame++) {
+        clampTradingFloorMovement2D(x, z, x - Math.sin(yaw) * step, z, out);
+        x = out.x; z = out.z;
+        const raw = placeTradingFloorChaseCamera(x, z, yaw, 0, camera);
+        const kiosk = TRADING_FLOOR_CAMERA_KIOSK_SOLID;
+        if (Math.abs(camera.x - kiosk.centerX) <= kiosk.halfX + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE + 1e-5 &&
+          Math.abs(camera.z - kiosk.centerZ) <= kiosk.halfZ + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE + 1e-5) kioskHits++;
+        const next = smoothTradingFloorCameraArm(arm, raw, FRAME_SECONDS);
+        worstShrink = Math.max(worstShrink, arm - next);
+        arm = next;
+      }
+    }
+    console.log(`kiosk graze: worst shrink=${worstShrink.toFixed(6)} wu/frame; kiosk hits=${kioskHits}`);
+    expect(kioskHits).toBeGreaterThan(0);
+    expect(worstShrink).toBeLessThanOrEqual(2 * step);
+  });
+
+  test('boom lag uses LOW blockers and pitch input has no height lag', () => {
+    const camera = { x: 0, y: 0, z: 0 };
+    const high = placeTradingFloorChaseCamera(0, 400, Math.PI, -30, camera, 50);
+    const low = placeTradingFloorChaseCamera(0, 400, Math.PI, -30, camera, 50, 0);
+    expect(low).toBeLessThan(high);
+    const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+    drawSpringArm(0, 0, 0, 0, state, camera, true);
+    const previousY = camera.y;
+    drawSpringArm(0, 0, 0, 3, state, camera);
+    expect(camera.y - previousY).toBe(3);
+    expect(smoothTradingFloorCameraBoom(100, 0, FRAME_SECONDS)).toBeGreaterThan(0);
+    expect(smoothTradingFloorCameraBoom(100, 0, FRAME_SECONDS, true)).toBe(0);
+  });
+
+  test('6000 constant-yaw random walks bound each 3D view step to 22.25 degrees', () => {
+    let seed = 11;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+    const camera = { x: 0, y: 0, z: 0 }, out = { x: 0, z: 0 };
+    const pitches = [TRADING_FLOOR_CAMERA.pitchMin, -60, 0, 75, TRADING_FLOOR_CAMERA.pitchMax];
+    const direction = new THREE.Vector3(), previous = new THREE.Vector3();
+    let worst = 0, frames = 0, gt05 = 0, gt5 = 0, gt10 = 0, inversions = 0, inside = 0;
+    for (let run = 0; run < 6000; run++) {
+      let x = 0, z = 0;
+      do {
+        x = (rnd() * 2 - 1) * TRADING_FLOOR_SIDE_APPROACH_X;
+        z = TRADING_FLOOR_BOARD_APPROACH_Z + rnd() *
+          (TRADING_FLOOR_DOOR_APPROACH_Z - TRADING_FLOOR_BOARD_APPROACH_Z);
+      } while (tradingFloorHitsSolid(x, z));
+      const yaw = rnd() * Math.PI * 2, pitch = pitches[Math.floor(rnd() * pitches.length)]!;
+      const move = rnd() * Math.PI * 2;
+      const step = TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC * FRAME_SECONDS;
+      const vx = Math.sin(move) * step, vz = Math.cos(move) * step;
+      const fx = Math.sin(yaw), fz = -Math.cos(yaw);
+      const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+      drawSpringArm(x, z, yaw, pitch, state, camera, true);
+      for (let frame = 0; frame < 120; frame++) {
+        clampTradingFloorMovement2D(x, z, x + vx, z + vz, out);
+        x = out.x; z = out.z;
+        drawSpringArm(x, z, yaw, pitch, state, camera);
+        direction.set(x + fx * TRADING_FLOOR_CAMERA.lookAhead - camera.x,
+          TRADING_FLOOR_CAMERA.lookY - camera.y,
+          z + fz * TRADING_FLOOR_CAMERA.lookAhead - camera.z).normalize();
+        if (frame > 0) {
+          const angle = previous.angleTo(direction) * 180 / Math.PI;
+          frames++; worst = Math.max(worst, angle);
+          if (angle > 0.5) gt05++;
+          if (angle > 5) gt5++;
+          if (angle > 10) gt10++;
+        }
+        previous.copy(direction);
+        if ((x - camera.x) * fx + (z - camera.z) * fz < -1e-8) inversions++;
+        const solids = camera.y < TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE ?
+          TRADING_FLOOR_CAMERA_SOLIDS_LOW : TRADING_FLOOR_CAMERA_SOLIDS_HIGH;
+        if (solids.some((s) => Math.abs(camera.x - s.centerX) < s.halfX + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE &&
+          Math.abs(camera.z - s.centerZ) < s.halfZ + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE)) inside++;
+      }
+    }
+    console.log(`spring-arm random walks: frames=${frames}, worst=${worst.toFixed(3)} deg, >0.5=${(100 * gt05 / frames).toFixed(3)}%, >5=${(100 * gt5 / frames).toFixed(3)}%, >10=${(100 * gt10 / frames).toFixed(3)}%, inversions=${inversions}, camera-in-solid=${inside}`);
+    // Immediate collision shrink changes the elevation angle at a box corner.
+    // Merged room: 22.130 degrees measured; 22.25 adds a 0.120-degree margin.
+    expect(frames).toBe(714_000);
+    expect(worst).toBeLessThanOrEqual(22.25);
+    expect(inversions).toBe(0);
+    expect(inside).toBe(0);
+  }, 30_000);
+
+  test('a full turn at the relative founder point stays below 1.5 degrees per frame', () => {
+    const bodyX = TRADING_FLOOR_DAIS.x - 330;
+    // Nearest legal point in the same back gap, one wu beyond the rope collider.
+    const bodyZ = TRADING_FLOOR_DAIS_SOLID.centerZ -
+      TRADING_FLOOR_DAIS_SOLID.halfZ - TRADING_FLOOR_PLAYER_RADIUS - 1;
+    const camera = { x: 0, y: 0, z: 0 };
+    const direction = new THREE.Vector3(), previous = new THREE.Vector3();
+    const state = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+    expect(tradingFloorHitsSolid(bodyX, bodyZ)).toBe(false);
+    let worst = 0;
+    const yawStep = TRADING_FLOOR_CAMERA.yawSpeed * FRAME_SECONDS;
+    for (let frame = 0; frame <= Math.ceil(2 * Math.PI / yawStep); frame++) {
+      const yaw = frame * yawStep;
+      drawSpringArm(bodyX, bodyZ, yaw, 0, state, camera, frame === 0);
+      direction.set(bodyX + Math.sin(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.x,
+        TRADING_FLOOR_CAMERA.lookY - camera.y,
+        bodyZ - Math.cos(yaw) * TRADING_FLOOR_CAMERA.lookAhead - camera.z).normalize();
+      if (frame > 0) worst = Math.max(worst, previous.angleTo(direction) * 180 / Math.PI);
+      previous.copy(direction);
+    }
+    console.log(`founder turn: worst=${worst.toFixed(3)} deg/frame; pure yaw=${(yawStep * 180 / Math.PI).toFixed(3)} deg/frame`);
+    expect(worst).toBeLessThanOrEqual(1.5);
+  });
+
+  test('all legal floor poses keep the camera behind, on the ray and outside blockers', () => {
+    const camera = { x: 0, y: 0, z: 0 };
+    let poses = 0, inversions = 0, inside = 0, envelopeErrors = 0, armErrors = 0;
+    let maxViewError = 0, maxRayError = 0;
+    // XZ view heading is the WASD basis. Pitch and boom intentionally affect Y.
+    for (let x = -TRADING_FLOOR_SIDE_APPROACH_X; x <= TRADING_FLOOR_SIDE_APPROACH_X; x += 20)
+      for (let z = TRADING_FLOOR_BOARD_APPROACH_Z; z <= TRADING_FLOOR_DOOR_APPROACH_Z; z += 20) {
+        if (tradingFloorHitsSolid(x, z)) continue;
+        for (let deg = 0; deg < 360; deg += 3) {
+          const yaw = deg * Math.PI / 180, fx = Math.sin(yaw), fz = -Math.cos(yaw);
+          for (const pitch of [TRADING_FLOOR_CAMERA.pitchMin, 0, TRADING_FLOOR_CAMERA.pitchMax]) {
+            const arm = placeTradingFloorChaseCamera(x, z, yaw, pitch, camera);
+            poses++;
+            if (arm < 0 || arm > TRADING_FLOOR_CAMERA.behind) armErrors++;
+            const bx = x - camera.x, bz = z - camera.z;
+            if (bx * fx + bz * fz < -1e-8) inversions++;
+            maxRayError = Math.max(maxRayError, Math.abs(bx * fz - bz * fx));
+            const vx = bx + fx * TRADING_FLOOR_CAMERA.lookAhead;
+            const vz = bz + fz * TRADING_FLOOR_CAMERA.lookAhead;
+            const error = Math.acos(Math.max(-1, Math.min(1,
+              (vx * fx + vz * fz) / Math.hypot(vx, vz)))) * 180 / Math.PI;
+            maxViewError = Math.max(maxViewError, error);
+            const w = TRADING_FLOOR_CAMERA_BOUNDS;
+            if (Math.abs(camera.x) > w.halfX - w.margin + 1e-8 ||
+                camera.z < w.zMin + w.margin - 1e-8 || camera.z > w.zMax - w.margin + 1e-8 ||
+                camera.y < TRADING_FLOOR_CAMERA.above + TRADING_FLOOR_CAMERA.pitchMin ||
+                camera.y > TRADING_FLOOR_ROOM.height - TRADING_FLOOR_CAMERA_SOLID_CLEARANCE) envelopeErrors++;
+            const solids = camera.y < TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE ?
+              TRADING_FLOOR_CAMERA_SOLIDS_LOW : TRADING_FLOOR_CAMERA_SOLIDS_HIGH;
+            for (const solid of solids) if (
+              Math.abs(camera.x - solid.centerX) < solid.halfX + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE &&
+              Math.abs(camera.z - solid.centerZ) < solid.halfZ + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE) inside++;
+          }
+        }
+      }
+    console.log(`spring-arm sweep: poses=${poses}, inversions=${inversions}, max view error=${maxViewError.toFixed(6)} deg, camera-in-solid=${inside}`);
+    expect(poses).toBeGreaterThan(1_000_000);
+    expect(inversions).toBe(0);
+    expect(inside).toBe(0);
+    expect(armErrors).toBe(0);
+    expect(envelopeErrors).toBe(0);
+    expect(maxViewError).toBeLessThanOrEqual(2);
+    expect(maxRayError).toBeLessThan(1e-8);
+  }, 30_000);
+
+  test('arm shrink is immediate and extension is monotonic and never exceeds raw', () => {
+    let arm: number = TRADING_FLOOR_CAMERA.behind;
+    const short = TRADING_FLOOR_PLAYER_RADIUS;
+    arm = smoothTradingFloorCameraArm(arm, short, FRAME_SECONDS);
+    expect(arm).toBe(short);
+    for (let frame = 0; frame < 300; frame++) {
+      const previous = arm;
+      arm = smoothTradingFloorCameraArm(arm, TRADING_FLOOR_CAMERA.behind, FRAME_SECONDS);
+      expect(arm).toBeGreaterThanOrEqual(previous);
+      expect(arm).toBeLessThanOrEqual(TRADING_FLOOR_CAMERA.behind);
+    }
+    expect(smoothTradingFloorCameraArm(arm, short, FRAME_SECONDS, true)).toBe(short);
+  });
+
+  test('shorter drawn arms use the same ray, boom and safe solids', () => {
+    const cam = { x: 0, y: 0, z: 0 };
+    for (const seat of TRADING_FLOOR_SEATS) for (let deg = 0; deg < 360; deg += 3)
+      for (const pitch of [TRADING_FLOOR_CAMERA.pitchMin, 0, TRADING_FLOOR_CAMERA.pitchMax]) {
+        const yaw = deg * Math.PI / 180;
+        const raw = placeTradingFloorChaseCamera(seat.x, seat.z, yaw, pitch, cam);
+        for (const length of [0, raw / 2, raw]) {
+          expect(placeTradingFloorChaseCamera(seat.x, seat.z, yaw, pitch, cam, length)).toBe(raw);
+          expect(Math.hypot(cam.x - seat.x, cam.z - seat.z)).toBeCloseTo(length, 6);
+          const solids = cam.y < TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE ?
+            TRADING_FLOOR_CAMERA_SOLIDS_LOW : TRADING_FLOOR_CAMERA_SOLIDS_HIGH;
+          expect(solids.some((s) => Math.abs(cam.x - s.centerX) < s.halfX + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE &&
+            Math.abs(cam.z - s.centerZ) < s.halfZ + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE)).toBe(false);
+        }
+      }
+  });
+
+  test('origin inset keeps a snapped body on an envelope plane safe', () => {
+    const cam = { x: 0, y: 0, z: 0 };
+    placeTradingFloorChaseCamera(TRADING_FLOOR_DESK_INNER_X, TRADING_FLOOR_DOOR_APPROACH_Z,
+      -Math.PI / 2, 0, cam, 0);
+    expect(cam.x).toBe(TRADING_FLOOR_DESK_INNER_X - TRADING_FLOOR_CAMERA_ARM.originInset);
+  });
+
+  test('controller feedback preserves held-key direction at side gaps and behind the plinth', () => {
+    let maxHeadingStep = 0, maxMoveStep = 0, maxFullViewStep = 0;
+    const dais = TRADING_FLOOR_SOLIDS[TRADING_FLOOR_CONSOLE_ROW.length]!;
+    const gapZ = (TRADING_FLOOR_CONSOLE_ROW[0]!.z + TRADING_FLOOR_CONSOLE_ROW[1]!.z) / 2;
+    const trials = [
+      ...[-1, 1].flatMap((sign) => ['s', 'w'].map((key) => ({
+        x: sign * TRADING_FLOOR_SIDE_APPROACH_X, z: gapZ,
+        yaw: -sign * Math.PI / 2, keys: [key] as string[],
+      }))),
+      { x: -dais.halfX - TRADING_FLOOR_PLAYER_RADIUS, z: dais.centerZ - dais.halfZ - TRADING_FLOOR_PLAYER_RADIUS,
+        yaw: 0, keys: ['a', 'd'] },
+    ];
+    try {
+      for (const trial of trials) {
+        const position = { x: trial.x, z: trial.z };
+        const camera = new THREE.PerspectiveCamera();
+        const scratch = new THREE.Vector3(), look = new THREE.Vector3(), direction = new THREE.Vector3();
+        const previousDirection = new THREE.Vector3();
+        const cameraState = { arm: TRADING_FLOOR_CAMERA.behind as number, boom: 0 };
+        const draw = (snap: boolean) => {
+          drawSpringArm(position.x, position.z, trial.yaw, 0, cameraState, scratch, snap);
+          camera.position.copy(scratch);
+          look.set(position.x + Math.sin(trial.yaw) * TRADING_FLOOR_CAMERA.lookAhead,
+            TRADING_FLOOR_CAMERA.lookY, position.z - Math.cos(trial.yaw) * TRADING_FLOOR_CAMERA.lookAhead);
+          camera.lookAt(look); camera.updateMatrixWorld(true);
+          camera.getWorldDirection(direction);
+          return Math.atan2(direction.x, -direction.z);
+        };
+        let previousHeading = draw(true), previousMove = 0, frameInKey = 0;
+        previousDirection.copy(direction);
+        const config: PlayerCapabilityControllerConfig = {
+          sceneId: 'trading-floor', capabilities: DEFAULT_PLAYER_CAPABILITIES,
+          motion: TRADING_FLOOR_POLICY.motion, input: TRADING_FLOOR_POLICY.input,
+          isDriving: () => true,
+          space: {
+            speedPerSec: TRADING_FLOOR_PLAYER_SPEED_WU_PER_SEC,
+            readPosition: (out) => { out.x = position.x; out.z = position.z; },
+            clampMovement: (px, pz, x, z, out) => { clampTradingFloorMovement2D(px, pz, x, z, out); out.groundY = 0; },
+            commitPosition: (result) => { position.x = result.x; position.z = result.z; },
+          },
+          onAfterMove: (state) => {
+            const heading = draw(false);
+            maxFullViewStep = Math.max(maxFullViewStep, previousDirection.angleTo(direction) * 180 / Math.PI);
+            previousDirection.copy(direction);
+            maxHeadingStep = Math.max(maxHeadingStep, Math.abs(wrapTradingFloorAngle(heading - previousHeading)) * 180 / Math.PI);
+            previousHeading = heading;
+            const move = Math.atan2(state.intent.move.worldVx, state.intent.move.worldVz);
+            if (frameInKey > 0) maxMoveStep = Math.max(maxMoveStep,
+              Math.abs(wrapTradingFloorAngle(move - previousMove)) * 180 / Math.PI);
+            previousMove = move;
+          },
+        };
+        const runtime = createPlayerControllerTestRuntime(config.motion);
+        const root = { camera, clock: { elapsedTime: 0 } } as RootState;
+        for (const key of trial.keys) {
+          resetPlayerKeys();
+          playerKeyState[key as 'w' | 's' | 'a' | 'd'] = true;
+          for (frameInKey = 0; frameInKey < 180; frameInKey++)
+            runPlayerControllerFrameForTests(config, runtime, root, FRAME_SECONDS);
+        }
+      }
+    } finally { resetPlayerKeys(); }
+    console.log(`spring-arm controller: max horizontal view step=${maxHeadingStep.toFixed(6)} deg, max held-key direction step=${maxMoveStep.toFixed(6)} deg, max full 3D view step=${maxFullViewStep.toFixed(6)} deg`);
+    expect(maxHeadingStep).toBeLessThanOrEqual(0.5);
+    expect(maxMoveStep).toBeLessThanOrEqual(0.5);
+  });
+});
+
+
+test('seat count and stable index order match the shared arena contract', () => {
+  expect(TRADING_FLOOR_SEATS.length).toBe(FLOOR_ARENA_DESK_COUNT);
+  expect(TRADING_FLOOR_CONSOLE_ROW.map((s) => [Math.sign(s.x), s.z])).toEqual([
+    [-1, -500], [-1, 0], [-1, 500], [1, -500], [1, 0], [1, 500],
+    [-1, -1000], [-1, 1000], [1, -1000], [1, 1000],
+  ]);
 });

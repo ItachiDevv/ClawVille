@@ -33,9 +33,9 @@
 - **Landscape check:** a staged 844x390 check exposed a clipped header. The follow-up limits message height and keeps input and Close accessible in world and table chat. Review a long menu on a phone in landscape.
 
 
-### Welcome tutorial on phones and tablets: bigger buttons, card fits landscape (staging, 2026-10-01)
+### Welcome tutorial on phones and tablets: bigger buttons, card fits landscape (prod `d69d4cbe`, 2026-10-01)
 
-- **Where:** staging `https://staging.clawville.world/game` on a phone or iPad, as a fresh visitor (private window), portrait AND landscape.
+- **Where:** prod `https://clawville.world/game` (or staging) on a phone or iPad, as a fresh visitor (private window), portrait AND landscape.
 - **Look at:** the 10-card welcome tutorial. Close, Previous and Next are at least 44 px. In landscape, card 3 "Run and Jump" shows the Jump row (scroll inside the card) and the Next button. No HUD button covers the card; Log In and Sign Up work after you close it.
 - **Also:** a logged-out visitor no longer sends a tutorial reward claim (one 401 per `/game` load before). The Trading Floor wallet note now says "You can watch the house traders below." (it said they were live while they are paused).
 - **Feedback wanted:** does the card feel right on your phone, and does a real iPad show it clear of the Safari bars (emulation cannot show safe areas)?
@@ -70,58 +70,82 @@
 
 ---
 
+## SECURITY
+
+### SECURITY PASS batch 2 (2026-10-02, staging, NOT on prod): decisions need your eyes
+
+- **Session:** clawville-14, 2026-10-02.
+- **DECISION 1 (special-event seeds):** the house treasury now funds special-event seed prize pools (cap 100,000 vCLAW per event, refunded to the treasury on cancel). Create, open, start and settle need a named admin in `ADMIN_USER_IDS`; the `cv_dash` cookie alone gets 403. Keep this, or use a separate prize wallet, or set seeds to 0?
+- **DECISION 2 (event history privacy):** event replay and the SSE catch-up still send an agent's history, including its directive text, to a session without owner proof. Gate it (privacy), or keep it (continuity for restored BYO agents)?
+- **DECISION 3 (land service price):** `expectedPriceCt` on a land service buy is optional today (a changed price gets 409 `price_changed` only when the buyer sends it). Make it required at a later protocol bump?
+- **DECISION 4 (M8, dark path):** the USDC rent-prepay refund tag needs a product decision before that path opens.
+- **DECISION 5 (M5/M6/M7 faucets):** the faucet caps need values from you.
+- **Special-event cancel + refund (gap closed on branch `sec/event-cancel-refund`, NOT yet on staging, 2026-10-03):** named-admin `POST /api/events/:slug/cancel` cancels an event before play and refunds each vCLAW entry fee once to the signup's avatar (an EARNED share comes back as SOFT). SOL refunds are tracked as owed (`special_event_sol_refunds`, migration 0076) to the one wallet whose own transfers paid the full entry, until an admin records the payout with `POST /api/events/:slug/sol-refunds/:signupId/paid` (checked on chain, once per refund; the payout must come from the treasury wallet that received the entry). When no single wallet paid the full entry, an admin sets the destination once with `POST /api/events/:slug/sol-refunds/:signupId/destination`. Your decision is still open on automatic SOL payouts; today an operator sends them from the treasury by hand.
+- **LOOK AT (UI):** staging `https://staging.clawville.world/game`, then Bounty Board, then Create, with a knowledge-book bonus. The form used to send the wrong shape (every bounty with a bonus failed); the "Skill" bonus option is gone. Session clawville-14 posted one on staging at 21:44Z (200, bonus stored, then cancelled). The Browse card never showed a bonus because the list API left it out; the bounty-list push (PROTOCOL 82) adds it, so each Browse card now shows the bonus pill (you must own the book to post it). Feedback wanted: does the book bonus row and the pill read clearly?
+- **KNOWN BEHAVIOR CHANGE:** a public or BYO agent restored after a deploy (owner-proven, not ledger-capable) gets 403 `agent_session_not_ledger_authorized` on top-up, MoonPay, the partner storefront, activity queue and party, and on the knowledge and memory exports. The match WebSocket closes its connection with code 4001 and the reason `agent_session_not_ledger_authorized` (a socket gets no 403). The agent gets access again when it runs the signed `/reconnect`, and its own knowledge reads and writes keep working the whole time. A guest-owned agent gets the same refusals and stays refused: a reconnect does not help it. A restored Hatcher session is not affected.
+
 ## TRADING FLOOR
+
+### Trading Floor small fixes: house-agent walk-up on a phone in landscape, name pills, no-avatar card (session tradeProd, 2026-10-03, STAGING)
+- **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, walk up to a house agent under the big board.
+- **On a real phone turned sideways:** the "Choose this trading style" panel now sits at the top, right of "Back to World", and scrolls inside itself. Do both joysticks stay free? Can you reach and tap its buttons? (Browser tests cannot show the phone's safe area.)
+- **On a laptop (1440x900):** the five house-agent name pills ("Mid-Cap Climber", "Late Bloomer", ...) wrap to two lines and no longer touch. Do they read well?
+- **Feedback wanted:** is the landscape panel usable, or do you prefer a strip at the bottom?
+
+### Trading Floor: P5 wallet withdraw + P15 house agents (session tDesk2Main, 2026-10-02, STAGING)
+- Look at: `https://staging.clawville.world/trading-floor`. Walk to the back wall: five house agents stand under the big screen, one board column above each. Walk up to one; the panel shows its strategy; press "Choose this trading style". Then My Trader > Wallet: the Withdraw panel (add an address, withdraw USDC or SOL).
+- Feedback wanted: the figure looks (Q1 default: Milady official 2-6, still figures); the board without the player leaderboard (Q2); "Open my trader" for a player who has a trader (Q3); the withdraw limits (0.10 USDC min, 3 a day, 500 USDC a day, 24 h address delay) and who pays the SOL fee (default: the player).
+- Phone landscape: the walk-up panel has little height on short phones; a real-phone look is wanted.
 
 ### Hate slurs hidden on the public arena board and feed; clearer Exchange labels (staging, 2026-10-01)
 
 - **What to look at:** staging `/trading-floor` -> Exchange. The live trader block now says "Live traders (real money, paused)" and the arena section says "The five arena house agents (paper)". The discovery card has a "Show coins" control.
 - **Why:** the prod feed showed a coin whose symbol contained a racial slur. Hate slurs in coin names and trader names now show as `***` everywhere public; a trader name with a slur is refused at launch.
-- **Decision wanted:** the mask hides HATE SLURS only. General swear words and sexual words still show (for example a coin named SCAT, and stock tokens like Cummins). Do you want swear words hidden too?
+- **Decided 2026-10-01 (founder):** hate slurs only, final; swear words and sexual words stay visible; no new terms are added. Recorded in `docs/trading-floor-arena.md` §8 P12. On prod since PR #306.
 - Session tradeDeskMain, 2026-10-01.
 
-### Arena house agents now change rules rarely, and every report says why (staging, 2026-10-01)
+### Trading Floor INTERIOR v5 part 2: bigger room, 10 desks, big Trading Monitor, ropes, flood + sea life (staging, 2026-10-02)
+- **What:** (1) the hall is 1.5x larger each way (3900 x 3300, higher ceiling) with 10 desks (5 per side wall; desks 0..5
+  keep their positions in the order, 6..9 are the new end desks); the board grew with it (2550 x 780) so its text stays as
+  sharp as before; (2) the **Trading Monitor** is now a large walnut-and-brass trading terminal with a 3 x 2 screen bank,
+  on the door wall LEFT of the door, facing into the room (the floor in front of the big screen is kept free for the five
+  house agents, the arena lead's P15 build); (3) brass stanchions with red velvet ropes round the plinth (your choice: it
+  stays blocked); (4) the shallow flood: a thin water sheet over the floor (clear near you, glossier further away) whose
+  ripples now FLOW from the door toward the big screen (your note "the water should flow"); a SEA FLOOR spread across the
+  open floor (your note "spread it out, not crammed in corners"): 86 low pieces (seaweed tufts, kelp, coral, starfish) in
+  singles and small clusters, the coral now standing UP (your note "the coral is on its side"); the seal letters, the house
+  agent stage, the desks, the kiosk and the door path stay clear; you walk through the plants; light algae at the bottom of
+  the desks and on the monitor stand bases.
+- **Where:** staging `https://staging.clawville.world/trading-floor`. Walk the room, sit at a new end desk (front or back of
+  a side wall), turn left near the door to see the Trading Monitor, watch the floor for the flowing ripples and the sea floor.
+- **Feedback wanted:** (1) room size: right, or still too small/big? (2) the Trading Monitor at the door wall: it is not in
+  the arrival view (you see it when you turn round); OK, or should it move? (3) the water: too pale / too strong, flow too fast / too slow? (4) the
+  sea floor amount (more, fewer, bigger?) and the algae strength (the algae is subtle: say if it should be stronger); (5) FPS on your laptop.
+- **Session:** coolerDesk3, 2026-10-02.
 
-- **What to look at:** on staging, `/trading-floor` -> Exchange -> Arena -> a house agent's reports. Each report has one line such as "Tuner: no change, next check at 40 trades on these rules (has 27)".
-- **What changed:** the old tuner never changed anything since 09-30 (the AI model never proposed). The new code tuner tests one filter change only at 20, 40, 80, 160, 200, 400 and 800 closed trades on the current rules, and needs real evidence (p 0.01 or less at the early checks). On random data it changes 4% of agents, not 53%. So "tuned every 30 minutes" now means "reviewed every 30 minutes, changed rarely".
-- **Also:** a guest no longer gets console errors on the floor, the welcome tour no longer tells a guest it "created an agent", and a trader name needs at least one letter.
-- **Feedback wanted:** is "changes rarely, always says why" the behaviour you want for the house agents? A looser rule changes more often but mostly on noise.
-- Session tradeDeskMain, 2026-10-01.
-
-### Trading Floor INTERIOR v4: solid claws, real trading desks, monitor stands, brass door (prod + staging, 2026-10-01)
-- **What:** the second visual pass on the inside of the Trading Floor (v3 "The Claw Exchange" reached prod in PR #305; v4
-  reached prod in PR #306, 18:24Z). Nothing moved: same desks, seats, kiosk, board, door position and trade tape. Changes from v3:
-  (1) the twin **Golden Claws** are now SOLID 3D claws (the same claw as on the roof outside), amber gold with soft shading, on a
-  lighter marble plinth with thin glowing gold lines on each step; (2) the teal sci-fi consoles are now **walnut-and-brass trading
-  desks** with drawers, a keyboard, a mouse, a desk phone and a brass nameplate; (3) the box chairs are now rounded **oxblood
-  leather executive chairs**; (4) each 3 x 2 monitor bank stands on a real stand with arms, the monitors have depth and a status
-  light, and some screens are amber **CLAW TERMINAL** screens that list town buildings (decoration only: no prices or numbers);
-  (5) the door is a **brass portal with smoked-glass double doors** and a "TO CLAWVILLE" sign.
-- **Where:** prod `https://clawville.world/trading-floor` or staging `https://staging.clawville.world/trading-floor` (or walk into the Trading Floor from `/game`). Look from the
-  spawn first, then walk down a desk row, sit at a desk (E), and turn round to the door.
-- **Feedback wanted:** (1) overall: is v4 cooler than v3? (2) the solid claws: right size, or bigger (they must stay under the
-  board's bottom edge seen from the door, so taller means wider and lower)? (3) the desks and chairs: right style? (4) the CLAW
-  TERMINAL screens: keep, or charts only? (5) the brass door. (6) still open from v3: the gold floor lines, the ticker legibility
-  at your display scaling, the warm light, and FPS on your Iris Xe laptop inside the room (every number so far is from an RTX 3080).
-- **Session:** coolerDesk2, 2026-10-01 (v3: coolerTrading).
-
-### Floor TV board redesign P6: larger text, 5 rows per page (design approved by the lead, 2026-10-01; you can veto)
-
-- **Session:** tradeDeskMain (team `trading-floor-arena`), arena-board (3da), 2026-10-01. Punch list P6 in `docs/trading-floor-arena.md` §8, review deadline 2026-10-04.
-- **Why:** from the `/trading-floor` spawn point the TV is shrunk to about half size on screen (0.52 screen pixels per board pixel at 1366 x 768), so a capital letter is only about 5 screen pixels tall. At that size some letters change: staging showed "GENZSIS" and "LATZ BLOOMER", and a mipmap fix tried the same night changed other cells instead ("LANDTKST1", "NO PRIZR") and was taken out. The current build draws all board text bold, which is the best state we have, but it is still at the limit.
-- **The redesign (not built yet; it goes into the next build after the current one is committed):** same TV, same cost on the GPU. Larger text: 22 px rows (capitals about 6.5 screen pixels from the spawn), 20 px for the prize line, captions, method line and tape. **5 rows per page:** rows 1-5, then rows 6-10 on the next 15-second refresh, with "1-5 OF N" in the corner; with 5 agents or fewer there is no paging. Column 2 is now "TYPE": a HOUSE or NO PRIZE badge, or the player's template. Shorter copy: "HOUSE: NO PRIZE" beside the prizes, and "PAPER TRADES · $20 EACH · P&L AFTER 2.5% BUY + 1% SELL COSTS".
-- **Look at now:** the mock `C:\Users\itachi\Documents\Crypto\ClawVille\ops\house-traders\arena-review\p6-board-design\p6-spawn-view-current-vs-proposed.png` (the current board and the proposed board, both as a player sees them from the spawn; a simulation, not a screenshot). The full-size proposed board is `p6-proposed-board-full-res.png` in the same folder.
-- **Look at after deploy:** staging `/trading-floor`, stand at the spawn point without moving, and read every row and the tape from there. Wait 15 seconds to see the page change when more than 5 agents are on the board.
-- **Feedback wanted:** paging (5 rows at a time) or top 5 only; the shorter copy ("HOUSE: NO PRIZE", "$20 EACH"); the "TYPE" caption.
-
-### Arena ClawPump account isolation (audit-money M4, 2026-10-01)
-
-- **Session:** tradeDeskMain (team `trading-floor-arena`), audit-money finding M4, 2026-10-01. A DECISION, not a playtest.
-- **What:** the staging api's `CLAWPUMP_API_KEY` is your enterprise ClawPump account. That account also holds the live Genesis (about 37 USDC), Runner (about 61 USDC) and Clawville_World agents (balances as reported by the audit). Every arena create, PATCH and x402 payment (`apps/api/src/services/clawpump-writer.ts`) uses that same key. The guard between the arena and those live agents is code only (updated by Codex r17): on every update and payment the writer refuses the live traders' ClawPump ids outright, requires the ClawPump id to be the one stored on that player's arena row, and requires the arena name prefix plus that row's id suffix. It is the same key and the same account, so a bug in that guard is the remaining risk.
-- **Growth:** every arena launch adds one agent to that account, including launches from free accounts that a sybil can create in bulk. The writer reads the account-wide wallet summary (`GET /wallets/summary`) with a parse limit of 5,000 agents; past that, wallet balances read as unknown, so paid add-ons stop paying (they skip a call when the balance is unknown).
-- **Recommendation:** a SEPARATE ClawPump account and key for arena agents, set up before the prod promotion, so that no arena path can reach the live traders even if the name guard had a bug.
-- **Decision wanted:** approve a separate account for arena agents, OR accept the shared account with the name guard.
-- **Related decision (punch list P5, `docs/trading-floor-arena.md` §8):** no path returns unspent USDC from a player's arena wallet. Until you decide on a refund or withdraw path (or a cap on what the UI asks a player to send), the UI tells players: send only USDC on Solana, add-on spend only, not withdrawable through ClawVille. Review deadline 2026-10-05, before the prod promotion.
-- **Where:** no screen; the setting is the staging api's `CLAWPUMP_API_KEY` and, at promotion, the prod one.
+### Trading Floor INTERIOR v5 part 1: green claws, the desk sit, the camera, mouse drag (staging, 2026-10-01)
+- **Your v4 verdict is absorbed** (2026-10-01 ~19:20Z: "It honestly looks great ... You nailed the theme."): recorded in
+  3dStructure.md §9i "Interior v5" and GameFeatures.md §17g.2. Your v5 asks, in two parts. Part 2 comes next: the room
+  1.5x larger each way with 10 desks, a big Trading Monitor, velvet ropes round the plinth (your choice: it stays blocked),
+  a shallow water layer with coral, seaweed, starfish and light algae on the desks.
+- **What (part 1):** (1) the two claws on the plinth now use the SAME green material as the claw on the roof outside;
+  (2) the desk sit is rebuilt: E at a desk plays the sit-down at once (no arms-up T-pose), the label changes when the
+  animation starts, the avatar sits ON the chair cushion (before it floated in front of the chair, also on prod), the
+  "My trader" panel opens when the avatar has sat down (about 1.5 s), the avatar stays seated while the panel is open,
+  closing the panel (Escape or X) keeps you seated, E stands you up with the stand-up animation, and walking away cancels
+  the sit pose at once (no walking in a sitting pose); (3) the camera no longer flips 180 degrees: it stays on a line
+  behind you and moves closer to you when a wall, desk, pillar or the Trading Monitor is in the way (it ignores the
+  plinth), and you can no longer walk into the narrow gaps behind the desk line where it used to flip; (4) left-drag
+  with the mouse turns the view like in the open world (drag right = turn right, drag up/down = camera height); on a
+  touch screen a one-finger drag above the joysticks does the same.
+- **Where:** staging `https://staging.clawville.world/trading-floor` (or walk in from `/game`). Sit at a desk and close
+  the panel; walk to the gap between the Trading Monitor and the plinth near the back wall and turn round with the arrow
+  keys and with a mouse drag.
+- **Feedback wanted:** (1) do the claws now match the roof claw (the inside light is warmer, so the green can look a
+  little lighter inside)? (2) does the sit feel right, and is ~1.5 s to sit down too fast or too slow? (3) does the camera
+  still flip or jump anywhere? (4) is the drag speed right (it is the same as the open world)? (5) on your phone: does a
+  one-finger drag turn the view, and do the joysticks still work?
+- **Session:** coolerDesk3, 2026-10-01 (v4: coolerDesk2, v3: coolerTrading).
 
 ### TRADING FLOOR ARENA (2026-09-30): paper contest, five house agents, launch your own trader
 

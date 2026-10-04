@@ -26,7 +26,7 @@ const API_BASE = 'https://api.example.test';
 describe('open-agent onboarding manuals', () => {
   test('protocol 72 documents the bounded my-bounties and my-attempts lists', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
     expect(manual).toContain('the newest 200 rows by default, plus every live row');
     expect(manual).toMatch(/pass the response's `nextBefore` back\s+verbatim as `before`/);
     expect(manual).toMatch(/key rows by `id` \(a live row can reappear on the\s+history page/);
@@ -45,7 +45,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('protocol 71 and Nori explain multiline replies without exposing operator capabilities', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
     expect(manual).toContain('Human avatar chat preserves line breaks in replies');
     expect(manual).toContain('Integrations should preserve line breaks');
     expect(manual).toContain('long avatar conversations scroll inside the chat panel');
@@ -58,8 +58,8 @@ describe('open-agent onboarding manuals', () => {
 
   test('appearance reaches protocol, pointer, Nori and deciding scope with version 71', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(79);
-    expect(agentProtocolPointer(API_BASE).version).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
+    expect(agentProtocolPointer(API_BASE).version).toBe(82);
     expect(manual).toContain('PATCH /api/avatars/me/appearance');
     expect(manual).toContain('clawville_update_appearance');
     expect(manual).toContain('[ACTION: update_appearance(color=blue)]');
@@ -72,7 +72,7 @@ describe('open-agent onboarding manuals', () => {
   });
   test('publishes Nori REST and executable hosted discovery in the refreshed manual', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
     expect(manual).toContain(`POST ${API_BASE}/api/chat/system/town-guide`);
     expect(manual).toContain('clawville_chat_nori');
     expect(manual).toContain('[ACTION: chat_nori(message=<text>)]');
@@ -88,7 +88,7 @@ describe('open-agent onboarding manuals', () => {
     // The same current version/hash reaches connected pointers and hosted
     // protocol-knowledge refresh, rather than a separate unversioned hint.
     expect(protocolPointer(API_BASE)).toMatchObject({
-      version: 79,
+      version: 82,
       contentHash: contentHashOf(manual),
     });
   });
@@ -131,9 +131,98 @@ describe('open-agent onboarding manuals', () => {
     expect(guideKnowledge).not.toContain('hands out five ClawPump trader templates you can copy');
   });
 
+  test('party play, queue and the activity WebSocket document the ledger gate on all three surfaces', () => {
+    // Security A11/A12 (2026-09-30): a non-ledger agent session gets 403 on the
+    // queue/party routes and a 4001 close on the activity WebSocket auth frame.
+    const manual = buildProtocolManual(API_BASE);
+    const party = manual.slice(manual.indexOf('### Party play'), manual.indexOf('### Leaving a match'));
+    expect(party).toContain('POST /api/activities/:id/leave-queue');
+    expect(party).toContain('GET /api/activities/:id/queue-status');
+    expect(party).toContain('needs a **ledger-capable** session');
+    // v81: the two refusals are exact. No owner proof → requireAuthOrAgentSession's
+    // "not bound" 403 (WebSocket: 4001 `invalid session`); owner-proven but not
+    // ledger-capable → requireLedgerCapableIdentity's agent_session_not_ledger_authorized.
+    expect(party).toMatch(/with no owner proof gets 403 with an `error` that starts with\s+`Agent session is not bound to an active avatar`/);
+    expect(party).toContain('code 4001 and the reason `invalid session`');
+    expect(party).toMatch(/owner-proven session that is not\s+ledger-capable/);
+    expect(party).toContain('starts with `agent_session_not_ledger_authorized`');
+    expect(party).toMatch(/closes with code 4001 and the reason\s+`agent_session_not_ledger_authorized`/);
+    expect(party).toMatch(/Both recover with the signed\s+`\/reconnect` \(or a reconnect with your identityKey\)\./);
+    expect(party).not.toMatch(/restored, or otherwise unproven session receives/);
+    // Batch-2 fix wave: only a PUBLIC/BYO restored session is non-ledger (a restored
+    // Hatcher session keeps ledgerCapable), and a guest-owned agent never recovers.
+    expect(party).toMatch(/a public or BYO session restored after a deploy/);
+    expect(party).toMatch(/restored Hatcher\s+session stays ledger-capable/);
+    expect(party).toMatch(/guest-owned agent is the\s+exception: it stays non-ledger/);
+    expect(party).not.toMatch(/\(one restored after a deploy/);
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Party play works'));
+    expect(nori).toBeDefined();
+    expect(nori).toContain('403 "Agent session is not bound to an active avatar"');
+    expect(nori).toContain('403 agent_session_not_ledger_authorized');
+    // The match socket refuses with a 4001 close, never an HTTP 403.
+    expect(nori).toContain('the match WebSocket closes 4001 invalid session');
+    expect(nori).toContain('the match WebSocket closes 4001 agent_session_not_ledger_authorized');
+    expect(nori).toContain('a public or BYO session restored after a deploy');
+    expect(nori).toContain('except a guest-owned agent, which stays non-ledger');
+    const scope = DECISION_SCOPE.find((line) => line.includes('activity queue, party and match WebSocket'));
+    expect(scope).toBeDefined();
+    expect(scope).toContain('403 "Agent session is not bound to an active avatar"');
+    expect(scope).toContain('agent_session_not_ledger_authorized');
+    expect(scope).toContain('the match WebSocket closes 4001 invalid session');
+    expect(scope).toContain('the match WebSocket closes 4001 agent_session_not_ledger_authorized');
+    expect(scope).toContain('a public or BYO session restored after a deploy');
+    expect(scope).toContain('except a guest-owned agent, which stays non-ledger');
+    // A8/A13/A14 routes the v81 note calls agent-visible are named on the decide path.
+    expect(scope).toContain('buying vCLAW (/api/ct/topup quote + settle)');
+    expect(scope).toContain('a MoonPay funding URL (/api/moonpay/widget-url)');
+    expect(scope).toContain('partner storefront buys');
+  });
+
+  test('v81: the value-route paragraph names both exact refusals', () => {
+    const play = buildPlayManual(API_BASE);
+    const at = play.indexOf('These value routes');
+    expect(at).toBeGreaterThan(-1);
+    const para = play.slice(at, play.indexOf('\n\n', at));
+    expect(para).toMatch(/no owner proof[\s\S]*starts with `Agent session is not bound to an active avatar`/);
+    expect(para).toMatch(/owner-proven\s+session that is not ledger-capable[\s\S]*`agent_session_not_ledger_authorized`/);
+    expect(para).toMatch(/Both recover with the signed `\/reconnect`/);
+    expect(para).not.toMatch(/restored, or\s+otherwise unproven session receives/);
+    // Batch-2 fix wave: the paragraph names every A8/A13/A14 route, qualifies the
+    // restored session as public/BYO, and says a guest-owned agent never recovers.
+    expect(para).toMatch(/buying\s+vCLAW with USDC \(the top-up quote \+ settle routes\)/);
+    expect(para).toMatch(/a MoonPay funding URL\s+\(`\/api\/moonpay\/widget-url`\)/);
+    expect(para).toMatch(/partner storefront buys/);
+    expect(para).toMatch(/a public or BYO session restored after a\s+deploy/);
+    expect(para).toMatch(/restored\s+Hatcher session stays ledger-capable/);
+    expect(para).toMatch(/except a guest-owned agent: it stays non-ledger, and no reconnect changes that/);
+    expect(para).not.toMatch(/\(one restored after a deploy/);
+  });
+
+  test('v82: the bounty lists name bonusRewards in the manual, Nori and the pointer', () => {
+    const manual = buildProtocolManual(API_BASE);
+    expect(PROTOCOL_VERSION).toBe(82);
+    expect(manual).toMatch(
+      /Each bounty in `GET \/api\/bounties`, `\/featured`, and `\/my-bounties` carries\s+`bonusRewards`: an array of `\{ rewardType, bookId, agentConfigId,\s+customDescription \}` \(`\[\]` when the bounty has no bonus\)\. `GET \/api\/bounties\/:id`\s+returns the same rows as `rewards`\./,
+    );
+    const line =
+      'Each bounty in GET /api/bounties, /featured, and /my-bounties carries bonusRewards (rewardType, bookId, agentConfigId, customDescription; [] when the bounty has no bonus).';
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.includes(line))).toBe(true);
+    expect(townGuide.knowledge.some((entry) => entry.includes(line))).toBe(true);
+    // Hosted runtimes refresh on version/hash: the pointer carries v82 and the hash of these bytes.
+    expect(protocolPointer(API_BASE)).toMatchObject({ version: 82, contentHash: contentHashOf(manual) });
+  });
+
+  test('batch-2 fix wave: export recovery names the guest-owned exception', () => {
+    const manual = buildProtocolManual(API_BASE);
+    const at = manual.indexOf('### Owner-private knowledge and exports');
+    expect(at).toBeGreaterThan(-1);
+    const section = manual.slice(at, manual.indexOf('## 5. Stay alive', at));
+    expect(section).toMatch(/to regain access; a guest-owned agent stays non-ledger and cannot\./);
+  });
+
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -157,7 +246,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -368,7 +457,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(79);
+    expect(PROTOCOL_VERSION).toBe(82);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

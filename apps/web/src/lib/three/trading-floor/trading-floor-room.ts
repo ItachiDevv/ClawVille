@@ -3,7 +3,7 @@
  *
  * Pure geometry + camera constants for the Trading Floor INTERIOR.
  *
- * Deliberately dependency-free (no `three`, no React, no tilemap): the stage
+ * Renderer-independent (no `three`, no React, no tilemap): the stage
  * root imports `TRADING_FLOOR_CAMERA_FAR` / `TRADING_FLOOR_FOG` eagerly to
  * build its slot definition, and must not drag the interior chunk into the
  * boot bundle for a handful of numbers. Cove solved the same problem by
@@ -17,9 +17,11 @@
  *
  * Scale reference: a VRM avatar renders at ~270 wu tall
  * (`AVATAR_TARGET_HEIGHT` in kelp-realm-player / computeVRMAvatarFit), so the
- * hall's 950 wu ceiling is ~3.5x avatar height — a trading hall, not a
+ * hall's 1425 wu ceiling is ~5.3x avatar height — a trading hall, not a
  * crawlspace.
  */
+
+import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
 
 /** Stage slot id. Must equal `TRADING_FLOOR_SCENE_ID` in stage-scene-id.ts. */
 export const TRADING_FLOOR_SCENE_ID = 'trading-floor';
@@ -29,13 +31,13 @@ export const TRADING_FLOOR_SCENE_ID = 'trading-floor';
  *
  * That GLB is authored at 1 unit = 1 wu and is ALREADY at final scale, so it
  * is mounted with no auto-fit (3dStructure.md §9g). These numbers mirror it:
- * hall 2600 (X) x 950 (Y) x 2200 (Z), wall thickness 60, doorway on the +Z
+ * hall 3900 (X) x 1425 (Y) x 3300 (Z), wall thickness 60, doorway on the +Z
  * wall. Walls sit OUTSIDE these half-extents (inner face = halfX / halfZ).
  */
 export const TRADING_FLOOR_ROOM = Object.freeze({
-  halfX: 1300,
-  halfZ: 1100,
-  height: 950,
+  halfX: 1950,
+  halfZ: 1650,
+  height: 1425,
   wallThickness: 60,
 });
 
@@ -57,7 +59,7 @@ export const TRADING_FLOOR_PLAYER_SPAWN: {
   readonly z: number;
 } = Object.freeze({
   x: 0,
-  z: TRADING_FLOOR_ROOM.halfZ - 320,
+  z: TRADING_FLOOR_ROOM.halfZ - 480,
 });
 
 /**
@@ -80,10 +82,9 @@ export const TRADING_FLOOR_CAMERA = Object.freeze({
   pitchMin: -120,
   pitchMax: 150,
   /**
-   * Inward margin for clampCameraToRoom so the camera never clips a wall.
-   * Small on purpose: in a 2600 x 2200 hall the chase arm is longer than the
-   * room's half-depth, so the camera lives clamped against the back wall most
-   * of the time and every wu of margin costs framing distance.
+   * Shared envelope margin. TRADING_FLOOR_CAMERA_BOUNDS pre-expands X/Z;
+   * spring-arm placement subtracts this same margin on each axis.
+   * This value does not change the effective wall limits.
    */
   roomMargin: 60,
 });
@@ -127,79 +128,32 @@ export const TRADING_FLOOR_FOG = Object.freeze({
 });
 
 /**
- * The walk-up MONITOR — the founder's "a monitor almost to walk up to and
- * manage trades". `TradingFloorMonitorStation` in the interior GLB: a
- * 129 x 300 x 101 kiosk seated on the floor against the -Z wall. E (or a click)
- * opens the existing Exchange modal on its Trading Floor tab. It was authored at
- * 202 x 470 x 158 and rescaled by a uniform 300/470 in v3 — see below.
- *
- * Every number below is read off the GLB's own node transform
- * (`scripts/trading-floor/inspect-glb.mjs`), so the hotspot cannot drift away
- * from the prop it belongs to.
- *
- * The big board fills the middle of the -Z wall from y 360 up. The kiosk was
- * 470 wu and parked dead centre, which hid the board's lower band from a chase
- * camera at y 260; v2 moved it off-centre to x -300 and v3 cut it to 300 wu, so
- * its occlusion shadow on the board plane falls to 339 against a 360 sill and it
- * no longer covers the board at all. The off-centre x still earns its keep: it
- * keeps the kiosk's interact band disjoint from every seat band.
- *
- * v3 SHRANK it and pushed it back: 470 -> 300 wu tall at z -900 -> -980. Moving
- * it sideways was tried first and cannot work — the integrator measured that the
- * seat-band rule wants |kiosk x| < 639 while clearing the board's x-span from
- * the spawn wants |kiosk x| > 751, and those windows do not intersect. So the
- * kiosk got shorter instead. Its occlusion shadow on the board plane is
- * `cy + (470 - cy) * t`; at 300 wu and z -980 the worst case (the dais ring's
- * far side at full pitch-down) drops to 339, which is what let the board's
- * bottom edge come down to 360 and clear by 21 wu.
- *
- * EVERY NUMBER HERE IS THE ASSET'S OWN, not a product of that reasoning. The
- * GLB publishes its contract in the scene root's `extras.kiosk`, and these
- * constants are asserted EXACTLY against it by `trading-floor-asset.test.ts`.
- *
- * Note the two legitimately different half-X values, because the difference is
- * a trap rather than an error: `extras` says 64.49, computed from the build
- * script's pre-quantization float geometry, while measuring the shipped mesh
- * through dequantized accessors gives 64.478. The 0.01 is the
- * `KHR_mesh_quantization` round-trip. The AUTHORED number is the one that
- * belongs here, so extras-vs-constants is asserted exact and
- * extras-vs-measured-mesh gets a tolerance — an exact assert there would go red
- * on quantizer noise rather than on a defect.
- *
- * `screenY` is the old 330 carried through the same `MONITOR_SCALE = 300/470`
- * the build script applies to the whole prop. The node is
- * `t=[-300, 150, -980] s=150`; the 300/470 is baked into the POSITION stream
- * rather than the node scale, deliberately, so `authored.scale.x` keeps meaning
- * exactly one thing for `buildInstancedRow`.
- *
- * The second constraint on the position is the SEAT bands: every seat band must
- * stay disjoint from this one, so E is never ambiguous between "sit" and
- * "manage trades".
- *
- * NO WORKED EXAMPLE HERE ON PURPOSE. This sentence carried a hand-typed
- * "nearest seat is (x, z), N wu away" twice, and both times the literal was a
- * fossil of an earlier `TRADING_FLOOR_SEAT_OFFSET` (713 wu at offset 230, 738 wu
- * at offset 200) that nobody recomputed when the offset shipped at 205. A
- * comment that rots on every tuning pass is worse than no comment.
- * `trading-floor-monitor.test.ts` asserts the disjointness by COMPUTING
- * `interactRadius + TRADING_FLOOR_SEAT_INTERACT_RADIUS` from these constants, so
- * moving the kiosk or retuning a radius re-derives the bound instead of
- * invalidating a sentence.
+ * Walk-up Trading Monitor: procedural 480 x 360 x 140 wu desk-family terminal.
+ * Its six-screen bank faces -Z from the door wall. E or a click opens the
+ * Exchange modal on its Trading Floor tab. The GLB publishes its measured
+ * authored bounds and yaw in extras.kiosk; decoded geometry allows quantization.
+ * Interaction radii remain avatar-scale and disjoint from all seat bands.
  */
 export const TRADING_FLOOR_MONITOR = Object.freeze({
-  x: -300,
-  z: -980,
-  halfX: 64.49,
-  halfZ: 50.45,
+  x: -1000,
+  z: 1570,
+  /** Screens face into the room, toward -Z. */
+  rotY: Math.PI,
+  halfX: 240,
+  halfZ: 70,
   /** Top of the kiosk. */
-  height: 300,
+  height: 360,
   /** Label / screen-centre height. */
-  screenY: 211,
+  screenY: 259,
   /** E arms inside this XZ radius of (x, z). */
   interactRadius: 380,
   /** The floating label appears inside this XZ radius. */
   nearHintRadius: 760,
 });
+
+/** Kiosk screen-side face, including its authored yaw. */
+export const TRADING_FLOOR_MONITOR_FRONT_Z = TRADING_FLOOR_MONITOR.z +
+  Math.cos(TRADING_FLOOR_MONITOR.rotY) * TRADING_FLOOR_MONITOR.halfZ;
 
 /**
  * The DOOR back to the world — the authored 360 x 500 opening in the +Z wall.
@@ -224,25 +178,10 @@ export const TRADING_FLOOR_DOOR = Object.freeze({
  * `SCREEN_*` constants in `scripts/trading-floor/build-interior.mjs` must agree
  * or the plane floats inside its own frame.
  *
- * 2026-09-19, FINAL after three revisions (650 at y 250 → 540 at y 340 → 520 at
- * y 360). The board keeps its full 1700 width; what moved is the height and the
- * sill. The kiosk was shortened from 470 to 300 wu — it was 1.74x a 270 wu
- * avatar, about 2.95 m — which drops its occlusion shadow on the board plane
- * from 595 to 339. A sill at 360 therefore clears the kiosk's shadow by 21 wu
- * and the layout needs no keep-out zone in its lower-left.
- *
- * What is actually true for the centre statue (v3 twin Golden Claws, top
- * 226.96 wu, cap 230; measured, swept and pinned in
- * `trading-floor-asset.test.ts`): the board is clear of it from the SPAWN at
- * any yaw and any camera pitch, and from ANYWHERE in the hall at the default
- * camera height. A camera lowered to its floor right next to the plinth can
- * look up past it at the board's bottom edge; that was already true of the old
- * 206 wu dais (it reached y 510 from that pose), so the older sentence here,
- * "no longer occluded from any ground viewpoint", was never literally true.
- *
- * The ceiling sets the ceiling: the surround's top edge is
- * `bottomY + height + 68` against a 950 inner face, so `bottomY + height <= 882`
- * and 360 + 520 = 880 spends all but 2 wu of it.
+ * The v5 board scales with the shell: 2550 x 780 wu, sill at y 540.
+ * The surround spends 102 wu above the screen, ending at 1422 below the
+ * 1425 ceiling. The 230 wu claw cap remains avatar-scale and clears the
+ * board from spawn at every pitch and from reachable default-height poses.
  *
  * `canvasWidth` / `canvasHeight` are the LOGICAL drawing space, and
  * `FLOOR_SCREEN_CANVAS` in `trading-floor-screen-texture.ts` is DERIVED from
@@ -251,13 +190,13 @@ export const TRADING_FLOOR_DOOR = Object.freeze({
  * mid-round); deriving is what makes a fourth impossible. `SCREEN_*` in
  * `scripts/trading-floor/build-interior.mjs` is the one copy that CANNOT be
  * derived, because it runs in the asset pipeline: it must be re-exported to
- * frame a 520-tall rect at y 360 or the plane will not sit in its surround.
+ * frame a 780-tall rect at y 540 or the plane will not sit in its surround.
  */
 export const TRADING_FLOOR_SCREEN = Object.freeze({
-  width: 1700,
-  height: 520,
-  bottomY: 360,
-  centerY: 360 + 520 / 2,
+  width: 2550,
+  height: 780,
+  bottomY: 540,
+  centerY: 540 + 780 / 2,
   /** 6 wu clear of the wall's inner face — enough to beat z-fighting. */
   z: -TRADING_FLOOR_ROOM.halfZ + 6,
   canvasWidth: 1024,
@@ -268,7 +207,7 @@ export const TRADING_FLOOR_SCREEN = Object.freeze({
  * The trading-desk row.
  *
  * The interior GLB ships ONE `TradingFloorConsoleModule` (364 × 166 × 270).
- * The scene extracts it and draws the row as a single `InstancedMesh` — six
+ * The scene extracts it and draws the row as a single `InstancedMesh` — ten
  * desks for ONE draw call. Never an `InstancedMesh` with a `ShaderMaterial`:
  * that is a silent WebGPU crash on an Iris Xe, so the row keeps the GLB's own
  * `MeshStandardMaterial`.
@@ -287,8 +226,8 @@ export const TRADING_FLOOR_SCREEN = Object.freeze({
  * revision's comment warned that a ±π/2 yaw "would silently make every collider
  * wrong", and deriving them is the only way that warning cannot come true.
  *
- * `CONSOLE_WALL_X` is `halfX(1300) − pilaster depth(40) − desk halfX(135) − 5`.
- * The trailing 5 is a real gap, not rounding: at 1125 the desk's bbox face and
+ * `CONSOLE_WALL_X` is `halfX(1950) − pilaster depth(40) − desk halfX(135) − 5`.
+ * The trailing 5 is a real gap, not rounding: at 1775 the desk's bbox face and
  * the rib face would be exactly coplanar, and two coplanar faces z-fight.
  */
 export interface TradingFloorConsoleSlot {
@@ -347,7 +286,7 @@ export function consoleHalfExtents(rotY: number): {
   };
 }
 
-const CONSOLE_WALL_X = 1120;
+const CONSOLE_WALL_X = TRADING_FLOOR_ROOM.halfX - 40 - TRADING_FLOOR_CONSOLE_HALF_Z - 5;
 const CONSOLE_ROW_Z = [-500, 0, 500] as const;
 
 export const TRADING_FLOOR_CONSOLE_ROW: readonly TradingFloorConsoleSlot[] =
@@ -356,6 +295,12 @@ export const TRADING_FLOOR_CONSOLE_ROW: readonly TradingFloorConsoleSlot[] =
       Object.freeze({ x: -CONSOLE_WALL_X, z, rotY: Math.PI / 2 }),
     ),
     ...CONSOLE_ROW_Z.map((z) =>
+      Object.freeze({ x: CONSOLE_WALL_X, z, rotY: -Math.PI / 2 }),
+    ),
+    ...[-1000, 1000].map((z) =>
+      Object.freeze({ x: -CONSOLE_WALL_X, z, rotY: Math.PI / 2 }),
+    ),
+    ...[-1000, 1000].map((z) =>
       Object.freeze({ x: CONSOLE_WALL_X, z, rotY: -Math.PI / 2 }),
     ),
   ]);
@@ -383,82 +328,62 @@ export const TRADING_FLOOR_DESK_INNER_X = Math.min(
  *
  * `build-interior.mjs` places the frame boxes at `-hz + FRAME_INSET` with
  * `FRAME_DEPTH` 44, so the face nearest the room is
- * `-1100 + 12 + 44/2 = -1066`. It protrudes 28 wu in front of the board plane
+ * `-1650 + 12 + 44/2 = -1616`. It protrudes 28 wu in front of the board plane
  * at `TRADING_FLOOR_SCREEN.z`, and it is the thing the chase camera must not
  * reverse into at the back wall.
  */
-export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -1066;
+export const TRADING_FLOOR_SCREEN_SURROUND_FACE_Z = -TRADING_FLOOR_ROOM.halfZ + 34;
 
-/**
- * The chase camera's OWN Z limits — deliberately NOT the room's walls, and
- * deliberately ASYMMETRIC.
- *
- * THE BUG THIS FIXES. `clampCameraToRoom` permits `zMax - margin`, so a bound of
- * `halfZ` gave the camera ±1040 while the movement clamp lets the PLAYER reach
- * `halfZ - PLAYER_RADIUS` = ±1054. The camera therefore ended up 14 wu IN FRONT
- * of the avatar at either end wall: the rig inverts, the view faces away from
- * the wall the player walked to, and the avatar smears across the near plane.
- *
- * At the door that had a second, worse symptom. The exit label's anchor sits at
- * `DOOR.z - 40` = 1060, and the overlay culls any anchor at or behind the camera
- * plane in view space. With the camera pinned at 1040 the anchor was behind it
- * at EVERY distance, so the Exit prompt was never visible — not merely when
- * armed. The exit itself always worked, which is exactly why this survived: the
- * feature was reachable, only its prompt was gone, and an earlier label reader
- * matched hidden `display:none` DOM and reported it present.
- *
- * The general invariant, worth keeping when either number moves: **the camera's
- * Z bound must leave an arm BEHIND the player's own Z bound.** Same class as the
- * `halfX` desk-face bound, on the other axis, with a worse symptom.
- *
- * The two ends differ because the walls carry different things:
- *  - **+Z, the door wall.** Nothing protrudes, so the camera may run to 12 wu off
- *    the wall and sit 34 wu behind a player pressed into the doorway.
- *  - **-Z, the board wall.** The screen surround protrudes to
- *    `TRADING_FLOOR_SCREEN_SURROUND_FACE_Z`, so the camera stops at the player's
- *    own limit, which clears that face by 12 wu. That is zero arm rather than a
- *    negative one: it removes the inversion without reversing into the bezel.
- *    The real fix for the back wall is a collider on the surround so the player
- *    stops before it, which is an asset-side change and not in this diff.
- */
-/**
- * How close to the door wall the PLAYER may walk.
- *
- * The camera-side bound above stops the rig inverting, but 34 wu of arm is not a
- * chase shot — the avatar fills the near plane. The honest fix is on the player
- * side: stop them 180 wu short of the door and the camera gets a real arm
- * (168 wu with the bound above) without any of it being taken from the room.
- *
- * 180 is chosen against `TRADING_FLOOR_DOOR.interactRadius` (240): the player's
- * closest legal approach is INSIDE the arm band, so E still fires at the wall.
- * The spawn at `halfZ - 320` = 780 is well short of this and is unchanged, and
- * the exit spawn and the walk-in path are world-side, so neither is touched.
- *
- * Only the +Z end moves. The board wall keeps the full `halfZ - PLAYER_RADIUS`
- * so the player can still walk up and read the board.
- */
-export const TRADING_FLOOR_DOOR_APPROACH_Z = TRADING_FLOOR_ROOM.halfZ - 180;
+/** Brass surround width scales with the board rectangle. */
+export const TRADING_FLOOR_SCREEN_FRAME_WIDTH = TRADING_FLOOR_SCREEN.width / 25;
 
-/**
- * Standoff used when pushing the camera out of a prop.
- *
- * DELIBERATELY NOT `roomMargin` (60), and this is a change from what was asked.
- * The push-out exists to stop the camera being INSIDE geometry, which with
- * `near = 1` needs only a few world units. At 60 the desks would shove the
- * camera from the desk face at 985 out to 925, taking another 60 wu of framing
- * at the side walls — where the integrator has already flagged the framing as
- * tight and a founder call. 12 achieves the same visual result and costs 12.
- * The value is a parameter of `pushCameraOutOfSolids`, so raising it is a
- * one-line change if the founder wants more standoff.
- */
+/** Avatar-scale approach tuning, independent of the camera look target. */
+export const TRADING_FLOOR_END_STANDOFF = 180;
+/** Camera near-plane standoff; movement retains the larger player radius. */
 export const TRADING_FLOOR_CAMERA_SOLID_CLEARANCE = 12;
+/** The door remains armed within its 240 wu interaction radius. */
+export const TRADING_FLOOR_DOOR_APPROACH_Z = Math.min(
+  TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_END_STANDOFF,
+  TRADING_FLOOR_MONITOR_FRONT_Z - 2.5 * TRADING_FLOOR_CAMERA_SOLID_CLEARANCE,
+);
+/** Board approach remains independent of the door-wall kiosk. */
+export const TRADING_FLOOR_BOARD_APPROACH_Z =
+  -(TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_END_STANDOFF);
+/** All side gaps obey the same approach limit as a desk face. */
+export const TRADING_FLOOR_SIDE_APPROACH_X =
+  TRADING_FLOOR_DESK_INNER_X - TRADING_FLOOR_PLAYER_RADIUS;
 
-const CAMERA_WALL_CLEARANCE = 12;
+/**
+ * Door-wall clearance and board-surround clearance use separate Z limits.
+ * The camera Z bound must leave an arm behind the player Z bound at both ends.
+ * The spring-arm envelope preserves these limits. The approach clamps leave
+ * positive arms at both ends instead of placing the camera ahead of the body.
+ */
+const CAMERA_WALL_CLEARANCE = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
 export const TRADING_FLOOR_CAMERA_Z_MAX =
   TRADING_FLOOR_ROOM.halfZ - CAMERA_WALL_CLEARANCE;
 export const TRADING_FLOOR_CAMERA_Z_MIN = -(
   TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS
 );
+
+/** Shared envelope. The margin cancels the pre-expansion on each axis. */
+export const TRADING_FLOOR_CAMERA_BOUNDS = Object.freeze({
+  halfX: TRADING_FLOOR_DESK_INNER_X + TRADING_FLOOR_CAMERA.roomMargin,
+  zMin: TRADING_FLOOR_CAMERA_Z_MIN - TRADING_FLOOR_CAMERA.roomMargin,
+  zMax: TRADING_FLOOR_CAMERA_Z_MAX + TRADING_FLOOR_CAMERA.roomMargin,
+  yMin: TRADING_FLOOR_CAMERA.roomMargin,
+  yMax: TRADING_FLOOR_ROOM.height + TRADING_FLOOR_CAMERA.above,
+  margin: TRADING_FLOOR_CAMERA.roomMargin,
+});
+
+/** Arm tuning is avatar-scale; shell resizing does not scale the avatar. */
+export const TRADING_FLOOR_CAMERA_ARM = Object.freeze({
+  originInset: TRADING_FLOOR_CAMERA_SOLID_CLEARANCE / 3,
+  outRate: 4,
+  boomStart: 160,
+  boomRise: 1.2,
+  boomRate: 6,
+});
 
 /**
  * One seat per desk: where the avatar stands when it takes the seat, where the
@@ -501,6 +426,9 @@ export interface TradingFloorSeat {
   /** Where the CHAIR prop is drawn — 120 wu further out, behind the avatar. */
   readonly chairX: number;
   readonly chairZ: number;
+  /** Seated body over the measured cushion centre, separate from the stand point. */
+  readonly sitX: number;
+  readonly sitZ: number;
   /** Avatar yaw while seated — looks at the desk. */
   readonly facing: number;
   /** Yaw of the chair prop. Same value: the chair model seats a +Z occupant. */
@@ -662,36 +590,98 @@ export const TRADING_FLOOR_SEATS: readonly TradingFloorSeat[] = Object.freeze(
     const facing = wrapTradingFloorAngle(slot.rotY + Math.PI);
     const alongX = Math.sin(slot.rotY);
     const alongZ = Math.cos(slot.rotY);
+    const chairX = Math.round(slot.x + alongX * TRADING_FLOOR_CHAIR_OFFSET);
+    const chairZ = Math.round(slot.z + alongZ * TRADING_FLOOR_CHAIR_OFFSET);
+    // Decoded TradingFloorChairModule cushion top: X +/-46.0024,
+    // Z [-39.0009, 47.0008], Y 85.0034 wu (node Y/scale 87).
+    // The backrest ends at local Z -30; the exposed cushion spans [-30, 47].
+    // Its centre is (0, 8.5) wu; rotate it by the chair yaw.
     return Object.freeze({
       index,
       x: Math.round(slot.x + alongX * TRADING_FLOOR_SEAT_OFFSET),
       z: Math.round(slot.z + alongZ * TRADING_FLOOR_SEAT_OFFSET),
-      chairX: Math.round(slot.x + alongX * TRADING_FLOOR_CHAIR_OFFSET),
-      chairZ: Math.round(slot.z + alongZ * TRADING_FLOOR_CHAIR_OFFSET),
+      chairX,
+      chairZ,
+      sitX: chairX + Math.sin(facing) * 8.5,
+      sitZ: chairZ + Math.cos(facing) * 8.5,
       facing,
       chairRotY: facing,
     });
   }),
 );
 
+/** P15 stage: board half-width + 25 wu per side; 370 wu from the board approach. */
+const HOUSE_AGENT_STAGE_BOARD_MARGIN = 25;
+const HOUSE_AGENT_STAGE_DEPTH = 370;
+const HOUSE_AGENT_WALL_STANDOFF = 300;
+const HOUSE_AGENT_Z = -(TRADING_FLOOR_ROOM.halfZ - HOUSE_AGENT_WALL_STANDOFF);
+const HOUSE_AGENT_STAGE_HALF_X = TRADING_FLOOR_SCREEN.width / 2 + HOUSE_AGENT_STAGE_BOARD_MARGIN;
+export const TRADING_FLOOR_HOUSE_AGENT_STAGE = Object.freeze({
+  minX: -HOUSE_AGENT_STAGE_HALF_X,
+  maxX: HOUSE_AGENT_STAGE_HALF_X,
+  minZ: TRADING_FLOOR_BOARD_APPROACH_Z,
+  maxZ: TRADING_FLOOR_BOARD_APPROACH_Z + HOUSE_AGENT_STAGE_DEPTH,
+});
+
+/** Template order, centred at (count - 1)/2 with board width/count spacing. Facing 0 is +Z. */
+export const TRADING_FLOOR_HOUSE_AGENT_SPOTS: readonly {
+  readonly index: number; readonly x: number; readonly z: number; readonly facing: number;
+}[] = Object.freeze(FLOOR_ARENA_TEMPLATES.map((_, index) => Object.freeze({
+  index,
+  x: (index - (FLOOR_ARENA_TEMPLATES.length - 1) / 2) *
+    TRADING_FLOOR_SCREEN.width / FLOOR_ARENA_TEMPLATES.length,
+  z: HOUSE_AGENT_Z,
+  facing: 0,
+})));
+export const TRADING_FLOOR_HOUSE_AGENT_WALKUP_RADIUS = 250;
+export const TRADING_FLOOR_HOUSE_AGENT_HEIGHT = 270;
+export const TRADING_FLOOR_HOUSE_AGENT_LABEL_Y = 345;
+export const TRADING_FLOOR_HOUSE_AGENT_HALF_X = 70;
+/** Close the rear strip: spot Z - board approach - player radius + 2 wu. */
+export const TRADING_FLOOR_HOUSE_AGENT_HALF_Z = HOUSE_AGENT_Z -
+  TRADING_FLOOR_BOARD_APPROACH_Z - TRADING_FLOOR_PLAYER_RADIUS + 2;
+/** Movement only: camera blockers here caused 9,516 near-stage jumps in the spec sweep. */
+export const TRADING_FLOOR_HOUSE_AGENT_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
+  TRADING_FLOOR_HOUSE_AGENT_SPOTS.map((spot) => Object.freeze({
+    centerX: spot.x, centerZ: spot.z,
+    halfX: TRADING_FLOOR_HOUSE_AGENT_HALF_X, halfZ: TRADING_FLOOR_HOUSE_AGENT_HALF_Z,
+  })),
+);
+
+/** Hide the mesh near the camera or across the camera-to-body sightline. Zero allocation. */
+export function tradingFloorHouseAgentHidden(
+  index: number, camX: number, camY: number, camZ: number, bodyX: number, bodyZ: number,
+): boolean {
+  const spot = TRADING_FLOOR_HOUSE_AGENT_SPOTS[index];
+  if (!spot) return false;
+  const dx = spot.x - camX, dz = spot.z - camZ;
+  const clearance = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
+  if (Math.abs(dx) < TRADING_FLOOR_HOUSE_AGENT_HALF_X + clearance &&
+      Math.abs(dz) < TRADING_FLOOR_HOUSE_AGENT_HALF_Z + clearance &&
+      camY < TRADING_FLOOR_HOUSE_AGENT_HEIGHT + clearance) return true;
+
+  const segmentX = bodyX - camX, segmentZ = bodyZ - camZ;
+  const lengthSq = segmentX * segmentX + segmentZ * segmentZ;
+  // Restrict the segment to heights <= the agent, then find its closest XZ point.
+  const minT = camY > TRADING_FLOOR_HOUSE_AGENT_HEIGHT ?
+    (camY - TRADING_FLOOR_HOUSE_AGENT_HEIGHT) / (camY - TRADING_FLOOR_CAMERA.lookY) : 0;
+  const t = Math.max(minT, Math.min(1,
+    lengthSq > 0 ? (dx * segmentX + dz * segmentZ) / lengthSq : 0));
+  const offsetX = dx - segmentX * t, offsetZ = dz - segmentZ * t;
+  return offsetX * offsetX + offsetZ * offsetZ <= 45 * 45;
+}
+
 /**
  * Axis-aligned solid volumes the player cannot walk through. Taken from the
  * GLB's placed props; the wall clamp is handled separately by the room bounds.
  *
- * The wall PILASTERS are deliberately absent. They are 40 wu deep, and the wall
- * clamp already stops the player's CENTRE at halfX − 46 = 1254, which is 6 wu
- * short of the rib's inner face at 1260 — so a rib can never block or trap
- * anyone, and giving each of the ten its own AABB would only add per-frame work
- * for a volume nobody can enter. Be precise about what that does and does not
- * buy: the 46 wu collision circle still overlaps the rib, so an avatar's
- * shoulders can visually clip one along either side wall. That is a render
- * artefact at the room's extreme edge, not a movement bug, and no collider
- * fixes it — only a wall margin wider than the player radius would.
+ * Wall pilasters are absent: the side approach stops the body at the desk
+ * face minus its radius, well inside the wall ribs, including between desks.
  *
- * The six CHAIRS are absent too, and on purpose: a chair collider would block
+ * The ten CHAIRS are absent too, and on purpose: a chair collider would block
  * its own seat, which is the one place the player has to be able to stand.
  *
- * The four corner PILLARS are present — they stand 190 wu clear of the walls,
+ * The four corner PILLARS are present — their insets follow the shell resize,
  * so without a collider the player walks through them, which was a real
  * (pre-v2) defect rather than a v2 addition.
  */
@@ -702,92 +692,177 @@ export interface TradingFloorAABB {
   readonly halfZ: number;
 }
 
-/** Corner pillars: `boxGeo(±(halfX − 190), …, ±(halfZ − 190), 110, RH, 110)`. */
-const PILLAR_INSET = 190;
-const PILLAR_HALF = 55;
+/** Corner pillars: 165 wu wide, with the shell-relative insets below. */
+export const TRADING_FLOOR_PILLAR_INSET_X = 217.5;
+export const TRADING_FLOOR_PILLAR_INSET_Z = 285;
+export const TRADING_FLOOR_PILLAR_HALF = 82.5;
 
+/** Plinth footprint, independent of any larger movement collider. */
+export const TRADING_FLOOR_DAIS = Object.freeze({ x: 0, z: -90, halfX: 350, halfZ: 346 });
+
+/** Desk boxes share the rendered row's rotated footprints. */
+export const TRADING_FLOOR_DESK_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
+  TRADING_FLOOR_CONSOLE_ROW.map((slot) => Object.freeze({
+    centerX: slot.x, centerZ: slot.z, ...consoleHalfExtents(slot.rotY),
+  })),
+);
+/** TradingFloorHoloDais: node (0, -90), 700 x 692 footprint. */
+export const TRADING_FLOOR_DAIS_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_DAIS.x, centerZ: TRADING_FLOOR_DAIS.z,
+  halfX: 492, halfZ: 488,
+});
+export const TRADING_FLOOR_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_MONITOR.x, centerZ: TRADING_FLOOR_MONITOR.z,
+  halfX: TRADING_FLOOR_MONITOR.halfX, halfZ: TRADING_FLOOR_MONITOR.halfZ,
+});
+export const TRADING_FLOOR_PILLAR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze(
+  [-1, 1].flatMap((sx) => [-1, 1].map((sz) => Object.freeze({
+    centerX: sx * (TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PILLAR_INSET_X),
+    centerZ: sz * (TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PILLAR_INSET_Z),
+    halfX: TRADING_FLOOR_PILLAR_HALF, halfZ: TRADING_FLOOR_PILLAR_HALF,
+  }))),
+);
 export const TRADING_FLOOR_SOLIDS: readonly TradingFloorAABB[] = Object.freeze([
-  // The instanced console row — same source array the renderer uses, with the
-  // footprint derived from each slot's own yaw.
-  ...TRADING_FLOOR_CONSOLE_ROW.map((slot) => {
-    const { halfX, halfZ } = consoleHalfExtents(slot.rotY);
-    return Object.freeze({
-      centerX: slot.x,
-      centerZ: slot.z,
-      halfX,
-      halfZ,
-    });
-  }),
-  // TradingFloorHoloDais — node (0, -60), 700 x 692 footprint. Since v3 it is
-  // the stepped granite plinth under the twin Golden Claws (top 226.96 wu).
-  Object.freeze({ centerX: 0, centerZ: -60, halfX: 350, halfZ: 346 }),
-  // TradingFloorMonitorStation — node (-300, -980), 129 x 101 footprint (v3).
-  Object.freeze({
-    centerX: TRADING_FLOOR_MONITOR.x,
-    centerZ: TRADING_FLOOR_MONITOR.z,
-    halfX: TRADING_FLOOR_MONITOR.halfX,
-    halfZ: TRADING_FLOOR_MONITOR.halfZ,
-  }),
-  // Four corner pillars.
-  ...[-1, 1].flatMap((sx) =>
-    [-1, 1].map((sz) =>
-      Object.freeze({
-        centerX: sx * (TRADING_FLOOR_ROOM.halfX - PILLAR_INSET),
-        centerZ: sz * (TRADING_FLOOR_ROOM.halfZ - PILLAR_INSET),
-        halfX: PILLAR_HALF,
-        halfZ: PILLAR_HALF,
-      }),
-    ),
-  ),
+  ...TRADING_FLOOR_DESK_SOLIDS,
+  TRADING_FLOOR_DAIS_SOLID,
+  TRADING_FLOOR_KIOSK_SOLID,
+  ...TRADING_FLOOR_PILLAR_SOLIDS,
+  ...TRADING_FLOOR_HOUSE_AGENT_SOLIDS,
+]);
+
+/** Extend the wall-backed kiosk through the door wall; exclude the low plinth. */
+const CAMERA_KIOSK_FRONT_Z = TRADING_FLOOR_MONITOR_FRONT_Z;
+const CAMERA_KIOSK_BACK_Z = TRADING_FLOOR_ROOM.halfZ + TRADING_FLOOR_ROOM.height;
+export const TRADING_FLOOR_CAMERA_KIOSK_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_MONITOR.x,
+  centerZ: (CAMERA_KIOSK_FRONT_Z + CAMERA_KIOSK_BACK_Z) / 2,
+  halfX: TRADING_FLOOR_MONITOR.halfX,
+  halfZ: (CAMERA_KIOSK_BACK_Z - CAMERA_KIOSK_FRONT_Z) / 2,
+});
+// Chairs stay outside camera lists: they shorten the seated arm to about 47 wu,
+// while camera overlap occurs only at extreme downward pitch (<= -87).
+export const TRADING_FLOOR_CAMERA_SOLIDS_HIGH: readonly TradingFloorAABB[] = Object.freeze([
+  ...TRADING_FLOOR_DESK_SOLIDS,
+  ...TRADING_FLOOR_PILLAR_SOLIDS,
+  TRADING_FLOOR_CAMERA_KIOSK_SOLID,
 ]);
 
 /**
- * Push a camera position out of any solid it has ended up inside, along the
- * axis of least penetration.
- *
- * `clampCameraToRoom` only knows the room's AABB, so it happily parks the chase
- * camera inside a prop: a player on the far side of the holo dais, pitched down,
- * put the camera INSIDE the dais mesh and dark geometry smeared across the whole
- * frame. This is the local fix. The shared `room-camera.ts` is NOT touched — the
- * cove and kelp use it and a per-solid push-out there would be their change too.
- *
- * Axis of least penetration is the right rule for an AABB: it moves the camera
- * the shortest distance that resolves the overlap, so the view shifts as little
- * as possible. Up to three passes, because resolving one solid can push the
- * point into a neighbour; the postcondition the tests assert is "outside every
- * solid", not "one pass happened".
- *
- * Zero allocation, scalar only — the caller owns `pos` and it is mutated in
- * place, so this is safe to call every frame.
+ * MEASURED v5 claws in room space: |x| 177.14..263.60, z -146.85..-32.41.
+ * Round outwards around the dais centre (0, -90); extras.statue top is 228.
+ * The 230 wu cap encloses the measured top; these extents do not scale with the avatar or room.
  */
-export function pushCameraOutOfSolids(
-  pos: { x: number; z: number },
+export const TRADING_FLOOR_CLAW_EXTENTS = Object.freeze({
+  halfX: 264,
+  halfZ: 58,
+  offsetZ: 0.35,
+  topY: 230,
+});
+export const TRADING_FLOOR_CAMERA_CLAW_SOLID: TradingFloorAABB = Object.freeze({
+  centerX: TRADING_FLOOR_DAIS.x,
+  centerZ: TRADING_FLOOR_DAIS.z + TRADING_FLOOR_CLAW_EXTENTS.offsetZ,
+  halfX: TRADING_FLOOR_CLAW_EXTENTS.halfX,
+  halfZ: TRADING_FLOOR_CLAW_EXTENTS.halfZ,
+});
+export const TRADING_FLOOR_CAMERA_SOLIDS_LOW: readonly TradingFloorAABB[] = Object.freeze([
+  ...TRADING_FLOOR_CAMERA_SOLIDS_HIGH,
+  TRADING_FLOOR_CAMERA_CLAW_SOLID,
+]);
+
+/** Shrink immediately; only unobstructed extension receives exponential ease. */
+export function smoothTradingFloorCameraArm(
+  current: number, raw: number, delta: number, snap = false,
+): number {
+  return snap || raw < current ? raw :
+    current + (raw - current) * (1 - Math.exp(-TRADING_FLOOR_CAMERA_ARM.outRate * delta));
+}
+
+/** The boom alone receives ease; live pitch remains an immediate height offset. */
+export function tradingFloorCameraBoom(pitch: number, arm: number): number {
+  return Math.min(
+    TRADING_FLOOR_ROOM.height - TRADING_FLOOR_CAMERA_SOLID_CLEARANCE -
+      TRADING_FLOOR_CAMERA.above - pitch,
+    // Positive pitch already raises the camera. Fade the extra corner boom
+    // to zero at maximum pitch so a kiosk-corner retraction keeps its view step.
+    Math.max(0, TRADING_FLOOR_CAMERA_ARM.boomStart - arm) * TRADING_FLOOR_CAMERA_ARM.boomRise *
+      (1 - Math.max(0, pitch) / TRADING_FLOOR_CAMERA.pitchMax),
+  );
+}
+
+export function smoothTradingFloorCameraBoom(
+  current: number, target: number, delta: number, snap = false,
+): number {
+  return snap ? target : current + (target - current) *
+    (1 - Math.exp(-TRADING_FLOOR_CAMERA_ARM.boomRate * delta));
+}
+
+/** First slab entry along the backward arm, with no objects or vectors allocated. */
+function clipTradingFloorCameraArm(
+  ox: number, oz: number, dx: number, dz: number, arm: number,
   solids: readonly TradingFloorAABB[],
-  clearance: number,
-): void {
-  for (let pass = 0; pass < 3; pass++) {
-    let moved = false;
-    for (let index = 0; index < solids.length; index++) {
-      const solid = solids[index]!;
-      const halfX = solid.halfX + clearance;
-      const halfZ = solid.halfZ + clearance;
-      const dx = pos.x - solid.centerX;
-      const dz = pos.z - solid.centerZ;
-      const penX = halfX - Math.abs(dx);
-      const penZ = halfZ - Math.abs(dz);
-      // Outside on either axis means outside the box.
-      if (penX <= 0 || penZ <= 0) continue;
-      if (penX <= penZ) {
-        // `dx || 1` matters: dead centre gives dx = 0 and Math.sign(0) = 0,
-        // which would "resolve" the overlap by leaving the camera inside.
-        pos.x = solid.centerX + Math.sign(dx || 1) * halfX;
-      } else {
-        pos.z = solid.centerZ + Math.sign(dz || 1) * halfZ;
-      }
-      moved = true;
+): number {
+  const c = TRADING_FLOOR_CAMERA_SOLID_CLEARANCE;
+  for (let index = 0; index < solids.length; index++) {
+    const s = solids[index]!;
+    const minX = s.centerX - s.halfX - c, maxX = s.centerX + s.halfX + c;
+    const minZ = s.centerZ - s.halfZ - c, maxZ = s.centerZ + s.halfZ + c;
+    let entry = -Infinity, exit = Infinity;
+    if (Math.abs(dx) < 1e-9) {
+      if (ox <= minX || ox >= maxX) continue;
+    } else {
+      const a = (minX - ox) / dx, b = (maxX - ox) / dx;
+      entry = Math.max(entry, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
     }
-    if (!moved) return;
+    if (Math.abs(dz) < 1e-9) {
+      if (oz <= minZ || oz >= maxZ) continue;
+    } else {
+      const a = (minZ - oz) / dz, b = (maxZ - oz) / dz;
+      entry = Math.max(entry, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
+    }
+    if (exit <= 0 || entry > exit || entry < 0) continue;
+    // Stay just before the face, including floating-point roundoff.
+    arm = Math.min(arm, Math.max(0, entry - TRADING_FLOOR_CAMERA.near * 1e-6));
   }
+  return arm;
+}
+
+/**
+ * Cast the backward arm against the envelope and expanded camera solids.
+ * Return the full raw limit. Optional armLength draws a shorter, smoothed arm
+ * through the same placement path. Legal body positions need no origin inset.
+ * boomFloor is the previously drawn boom; LOW blockers protect its height lag.
+ * The inset protects a spawn/snap at an envelope plane without a sideways push.
+ */
+export function placeTradingFloorChaseCamera(
+  bodyX: number, bodyZ: number, yaw: number, pitch: number,
+  out: { x: number; y: number; z: number },
+  armLength: number = TRADING_FLOOR_CAMERA.behind,
+  boomFloor: number = Infinity,
+): number {
+  const w = TRADING_FLOOR_CAMERA_BOUNDS, inset = TRADING_FLOOR_CAMERA_ARM.originInset;
+  const minX = -w.halfX + w.margin, maxX = w.halfX - w.margin;
+  const minZ = w.zMin + w.margin, maxZ = w.zMax - w.margin;
+  const ox = Math.max(minX + inset, Math.min(maxX - inset, bodyX));
+  const oz = Math.max(minZ + inset, Math.min(maxZ - inset, bodyZ));
+  const dx = -Math.sin(yaw), dz = Math.cos(yaw);
+  let raw: number = TRADING_FLOOR_CAMERA.behind;
+  if (dx > 1e-9) raw = Math.min(raw, (maxX - ox) / dx);
+  else if (dx < -1e-9) raw = Math.min(raw, (minX - ox) / dx);
+  if (dz > 1e-9) raw = Math.min(raw, (maxZ - oz) / dz);
+  else if (dz < -1e-9) raw = Math.min(raw, (minZ - oz) / dz);
+  raw = clipTradingFloorCameraArm(ox, oz, dx, dz, raw, TRADING_FLOOR_CAMERA_SOLIDS_HIGH);
+  const boomTarget = tradingFloorCameraBoom(pitch, Math.min(raw, armLength));
+  if (TRADING_FLOOR_CAMERA.above + pitch + Math.min(boomFloor, boomTarget) <
+      TRADING_FLOOR_CLAW_EXTENTS.topY + TRADING_FLOOR_CAMERA_SOLID_CLEARANCE) {
+    raw = clipTradingFloorCameraArm(ox, oz, dx, dz, raw, TRADING_FLOOR_CAMERA_SOLIDS_LOW);
+  }
+  const length = Math.max(0, Math.min(raw, armLength));
+  out.x = ox + dx * length;
+  out.y = TRADING_FLOOR_CAMERA.above + pitch + tradingFloorCameraBoom(pitch, length);
+  out.z = oz + dz * length;
+  return raw;
 }
 
 /** True when (x, z) is inside any solid, expanded by the player radius. */
@@ -818,12 +893,11 @@ export function clampTradingFloorMovement2D(
   desiredZ: number,
   out: { x: number; z: number },
 ): void {
-  const maxX = TRADING_FLOOR_ROOM.halfX - TRADING_FLOOR_PLAYER_RADIUS;
+  const maxX = TRADING_FLOOR_SIDE_APPROACH_X;
   const nextX = Math.max(-maxX, Math.min(maxX, desiredX));
-  // Z is ASYMMETRIC: the door end stops early so the chase camera keeps a real
-  // arm behind the player. See TRADING_FLOOR_DOOR_APPROACH_Z.
+  // Both end approaches preserve an arm behind the body.
   const nextZ = Math.max(
-    -(TRADING_FLOOR_ROOM.halfZ - TRADING_FLOOR_PLAYER_RADIUS),
+    TRADING_FLOOR_BOARD_APPROACH_Z,
     Math.min(TRADING_FLOOR_DOOR_APPROACH_Z, desiredZ),
   );
   out.x = tradingFloorHitsSolid(nextX, currentZ) ? currentX : nextX;

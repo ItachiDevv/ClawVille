@@ -172,6 +172,7 @@ import { walletWithdrawRoutes } from './routes/wallet-withdraw';
 import { tradingFloorRoutes } from './routes/trading-floor';
 import { adminTradingRoutes } from './routes/admin-trading';
 import { floorArenaRoutes } from './routes/floor-arena';
+import { floorArenaHouseBoardRoutes } from './routes/floor-arena-house-board';
 import { adminFloorArenaRoutes } from './routes/admin-floor-arena';
 import { assertTradingLimitsWithinCode } from '@clawville/shared';
 import { registerTradeVerifiedCallback } from './services/trade-observer';
@@ -509,6 +510,8 @@ app.route('/api/admin/floor-arena', adminFloorArenaRoutes);
 // registers `use('*', sessionMiddleware)` at '/api/floor/*', which also matches
 // '/api/floor/arena/*'. Registered first, the arena's public GETs answer before
 // that middleware can append a Set-Cookie to a `Cache-Control: public` body.
+// P15 T1: the public house-board GET uses the same rule (before '/api/floor').
+app.route('/api/floor/arena', floorArenaHouseBoardRoutes);
 app.route('/api/floor/arena', floorArenaRoutes);
 app.route('/api/floor', tradingFloorRoutes);
 app.route('/api/doordash', doordashRoutes);

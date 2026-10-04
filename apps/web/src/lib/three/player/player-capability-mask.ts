@@ -8,6 +8,7 @@ export interface PlayerCapabilityMask {
   readonly interact: boolean;
   readonly clickPath: boolean;
   readonly cameraOrbitKeys: boolean;
+  readonly cameraOrbitDrag: boolean;
 }
 
 export const DEFAULT_PLAYER_CAPABILITIES: PlayerCapabilityMask = Object.freeze({
@@ -19,6 +20,7 @@ export const DEFAULT_PLAYER_CAPABILITIES: PlayerCapabilityMask = Object.freeze({
   interact: true,
   clickPath: true,
   cameraOrbitKeys: true,
+  cameraOrbitDrag: false,
 });
 
 export function resolvePlayerCapabilities(

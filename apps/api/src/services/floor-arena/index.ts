@@ -8,15 +8,18 @@ import { pruneArenaEvents } from './events';
 import { createPgLeaderLock, LeaderElector } from './leader';
 import { clawpumpQuoteBreakerState, currentSolPriceUsd, dexscreenerCallsLastMinute } from './pricing';
 import { runArenaProvisioningTick, startArenaX402LeaderTerm } from './provisioning';
+import { ARENA_WITHDRAW_TICK_MS, runArenaWithdrawTick } from './withdraw';
 
 /**
  * Trading Floor Arena engine wiring (docs/trading-floor-arena.md §6). `startFloorArena()` is called from
  * apps/api/src/index.ts; only the leader (advisory lock) runs the loops:
  *   discovery pollers (one per source, 30-60 s, jittered backoff on failure), enrichment 20 s, chain checks 20 s,
- *   entries 15 s, exits 10 s, provisioning + x402 reconcile 30 s, analysis / add-ons 60 s, discovery expiry 5 min,
- *   event prune 1 h. Only the leader writes to ClawPump (single writer, Codex r19).
+ *   entries 15 s, exits 10 s, provisioning + x402 reconcile 30 s, wallet withdrawals 30 s (withdraw.ts),
+ *   analysis / add-ons 60 s, discovery expiry 5 min, event prune 1 h. Only the leader writes to ClawPump
+ *   (single writer, Codex r19); the withdrawals loop is the only caller of the transfer POST (P5 I4).
  * Kill switch: FLOOR_ARENA_ENGINE_ENABLED='false'. Admin pause stops new entries, paid add-on calls, ClawPump
- * creates and config writes, and x402 adds; exits and x402 removals keep running.
+ * creates and config writes, x402 adds, and withdrawal admission (no new transfer); exits, x402 removals and
+ * withdrawal reconcile keep running.
  */
 
 const MAX_BACKOFF_MS = 10 * 60_000;
@@ -140,6 +143,8 @@ function buildLoops(): ArenaLoop[] {
     new ArenaLoop('addons', 60_000, (now) => runArenaAddonsTick(now), { initialDelayMs: 40_000 }),
     // Codex r19 single writer: also applies every player's x402 change, so a short interval bounds that latency.
     new ArenaLoop('provisioning', 30_000, (now) => runArenaProvisioningTick(now), { initialDelayMs: 25_000 }),
+    // P5 D34-g: dispatch each withdrawal ONCE (admission CAS) and reconcile by chain; reconcile also runs while paused.
+    new ArenaLoop('withdrawals', ARENA_WITHDRAW_TICK_MS, (now) => runArenaWithdrawTick(now), { initialDelayMs: 35_000 }),
     new ArenaLoop('discovery-expiry', 5 * 60_000, runDiscoveryExpiryTick, { initialDelayMs: 60_000 }),
     new ArenaLoop('event-prune', 60 * 60_000, pruneArenaEvents, { initialDelayMs: 120_000 }),
     // D27: house params follow template changes (also run once right after election, below).

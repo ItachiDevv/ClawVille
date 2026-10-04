@@ -1484,7 +1484,11 @@ async function settleHand(
       const tableLock = tableRows[0];
       if (!tableLock) throw new HTTPException(404, { message: 'table_not_found' });
 
-      const hand = await tx.query.holdemHands.findFirst({ where: eq(holdemHands.id, handId) });
+      // Load the hand by (id, tableId) so a settle can never pair the locked table
+      // with another table's hand, whatever the caller passed (security H1).
+      const hand = await tx.query.holdemHands.findFirst({
+        where: and(eq(holdemHands.id, handId), eq(holdemHands.tableId, tableId)),
+      });
       if (!hand) throw new HTTPException(404, { message: 'hand_not_found' });
       if (hand.fixtureRunId !== tableLock.fixture_run_id) {
         throw new HTTPException(409, { message: 'fixture_resource_mismatch' });

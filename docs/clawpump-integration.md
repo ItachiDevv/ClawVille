@@ -1,5 +1,7 @@
 # ClawPump integration
 
+**Last Audited: 2026-10-02 01:25Z (Trading Arena P5 wallet withdraw: the transfer and history endpoints).** Drift note: ClawVille now SENDS money through ClawPump: `POST /wallets/{id}/transfer` from a player's own arena agent wallet, and it reads live balances from `GET /wallets/{id}/history`. New subsection "Wallet transfer and history (P5 withdraw, 2026-10-02)" records the Run 2 probe facts (2026-10-01): ClawPump does NOT enforce the per-agent whitelist on the REST transfer; 0.005 SOL is a pre-check, not a floor; the fee is 5,000 lamports, paid by the agent wallet; `/wallets/summary` is cached and history is live; the USDC and SOL reply shapes; the outcome code table. The 2026-09-18 research line "Whitelist = allowed transfer destinations" is corrected for the REST transfer.
+
 **Last Audited: 2026-10-01 (Trading Arena single ClawPump writer, Codex r19 money; in the consolidated build).** Drift note: only the arena engine leader writes to ClawPump now; launch, add-on changes and the admin reprovision write only the database row, and the leader applies them on its 30 s provisioning tick (design v8b: x402 removals first, R1 fresh OFFs with no cap on a database-time watermark, R2 a fair 6-per-tick cursor, R3 retries with backoff, then 4 re-checks; a per-agent try-lock in a bounded transaction). D32: x402 removal is hygiene, not a money control; the payment gates are the reservation, `confirmDispatch` and the writer's last read. Only the add-on tick adds x402, right before a payment, at most 8 a tick; provisioning never adds it. The arena writer now allows 60 ClawPump calls a minute per process, burst 10, the last 5 reserved for removals (new section "Call budget and quota"). The immediate x402 removal on the last add-on off and the 60 s removal sweep are gone.
 
 **Last Audited: 2026-09-30 (Trading Arena follow-ups: sticky default skills D24, D18 confirmed, D25 tradeable sources; protocol 75).** Drift note: ClawPump's six default skills cannot be removed by a PATCH, so they are allowed and every other trading or spending skill is denied and verified by read-back; the REST x402 wrapper is confirmed by one real $0.01 Nansen call on staging; a shared-feed coin is tradeable only after a DexScreener or ClawPump (`clawpump:` signals and anomalies) sighting, so ClawPump's discovery feeds now gate what the arena can buy.
@@ -99,7 +101,7 @@ Founder direction (09:45Z): stop the four-coin USDC rebalancer; trade Solana mem
 
 Sources: https://clawpump.tech/docs and its subpages, https://clawpump.tech/developers, https://clawpump.tech/guide, https://clawpump.tech/ansemhack, the public runtime github.com/Clawpump/claw-agent (a Hermes fork; the hosted platform server is private), and the MCP tool contracts. Nothing was spent or changed.
 
-- **Whitelist = allowed transfer destinations.** `wallet_transfer` sends only to an address on the agent's whitelist and needs `confirm_transfer=true`. Genesis's whitelist is empty, so `wallet_transfer` cannot send anywhere. Swaps do not use the whitelist. OPEN: the always-on `private-transfers` skill (MagicBlock) has its own route; no source says it checks the whitelist. Ask ClawPump.
+- **Whitelist = allowed transfer destinations.** `wallet_transfer` sends only to an address on the agent's whitelist and needs `confirm_transfer=true`. Genesis's whitelist is empty, so `wallet_transfer` cannot send anywhere. Swaps do not use the whitelist. OPEN: the always-on `private-transfers` skill (MagicBlock) has its own route; no source says it checks the whitelist. Ask ClawPump. CORRECTED 2026-10-02 (withdraw probes Run 2, 2026-10-01 23:32Z): the REST `POST /wallets/{id}/transfer` with our enterprise key does NOT check the whitelist: a transfer to an address that was not on the agent's (empty) whitelist moved 0.01 USDC on chain. The whitelist is no destination control for our key. See "Wallet transfer and history (P5 withdraw, 2026-10-02)".
 - **Forced skills.** `private-transfers`, `self-learning` and `skill-management` are re-added on every `update_agent`. Founder decision 2026-09-18: keep them. The dashboard describes self-learning as a daily digest, suggested skill changes that the owner approves, and advisory trade ideas. Its billing is UNKNOWN.
 - **Hosting fee.** Hosting is free while launch spots remain, then 0.1 SOL per agent per month from credits (402 `HOSTING_PAYMENT_REQUIRED`). Whether our account is inside the free offer is UNKNOWN.
 - **Start and stop.** Only the v1 API starts an agent: `POST https://clawpump.tech/api/v1/agents/{id}/start` and `/stop`. There is no MCP tool for it. Genesis is `stopped`. The instant run failure (`[object Object]`) has three candidate causes: 0 credits, the stopped agent, or the hosting fee. UNKNOWN which.
@@ -482,7 +484,8 @@ It is the first ClawVille feature that WRITES to ClawPump.
   Management" account above) that serves only that player's agent (D8). Client:
   `apps/api/src/services/clawpump-writer.ts` (`POST /agents`, `PATCH
   /agents/{id}`, `GET /agents/{id}`, `GET /wallets/summary`, the two x402
-  routes), same host allowlist and `CLAWPUMP_API_KEY` as the read client,
+  routes, and since P5 `GET /wallets/{id}/history` and `POST
+  /wallets/{id}/transfer`), same host allowlist and `CLAWPUMP_API_KEY` as the read client,
   no logging, no retry of a create or a pay. Job:
   `apps/api/src/services/floor-arena/provisioning.ts`.
 - **Single writer (Codex r19, lead design, 2026-10-01).** Only the arena
@@ -563,8 +566,8 @@ It is the first ClawVille feature that WRITES to ClawPump.
   `clawpump_denied_skill_present` if one survives. The agent stays stopped and
   only ClawVille's API drives it. Persona and system prompt say it is an execution wallet that
   does not trade on its own. Paper trading never uses it and never waits for
-  it: it exists for paid add-ons now, and for a later live mode (punch list
-  P2, founder go only).
+  it: it exists for paid add-ons and wallet withdrawals (P5) now, and for a
+  later live mode (punch list P2, founder go only).
 - **Idempotency.** Only one API container may talk to ClawPump for an arena
   agent at a time: an atomic claim moves the row to `creating` with a
   10-minute lease, and a claimer that dies leaves the row due again when the
@@ -646,6 +649,100 @@ It is the first ClawVille feature that WRITES to ClawPump.
   used. The ClawPump
   `/intelligence/signals` and `/signals/anomalies` discovery feeds are polled
   once a minute each for all agents together.
+
+### Wallet transfer and history (P5 withdraw, 2026-10-02)
+
+The arena wallet withdraw (P5) sends USDC or SOL from a player's OWN arena
+ClawPump agent wallet to an address the owner proved. Design and decisions:
+`docs/trading-floor-arena.md` D34-a to D34-k, §4-§6. Code:
+`apps/api/src/services/clawpump-writer.ts` (`readArenaWalletLive`,
+`transferFromArenaWallet`) and `apps/api/src/services/floor-arena/withdraw.ts`
+(the leader loop, the ONLY caller of the transfer). Facts below come from the
+withdraw probes of 2026-10-01 (Run 1 22:47Z inside the staging api container,
+Run 2 23:32-23:34Z with the same enterprise key; operator workspace file
+ops/house-traders/arena-review/WITHDRAW_PROBES_2026-10-01.md, not in git; every
+destination was our own wallet; net team cost 0.004 SOL).
+
+- **Errors are HTTP 200 with `ok: false` and a `code`.** Branch on `ok` and
+  `code`, never on the HTTP status alone.
+- **No whitelist enforcement on the REST transfer.** Run 2 P3: with the agent's
+  whitelist EMPTY, `POST /wallets/{id}/transfer` sent 0.01 USDC to the team
+  rescue wallet (verified on chain). P2 with the address whitelisted: the same
+  result. The whitelist REST calls work with our key (`POST
+  /whitelist/{agentId}` `{address, label}`, `DELETE
+  /whitelist/{agentId}/{address}`; an entry carries `added_by` and
+  `created_at`), but they give no control against our own key. The withdraw
+  path makes NO whitelist call (D34-a); the destination control is ClawVille's
+  proved address.
+- **Network fee.** ClawPump checks for at least 0.005 SOL in the SOURCE wallet
+  BEFORE a transfer (`insufficient_fee_balance`, "need at least 0.005 SOL").
+  It is a pre-check, not a floor that must stay: the real fee is 5,000
+  lamports (0.000005 SOL), paid by the agent wallet, not sponsored. Run 2 P4a:
+  a wallet with 0.00599 SOL sent 0.002 SOL and kept 0.003985 SOL, below 0.005;
+  it can send nothing more until a top-up. ClawVille refuses `needs_sol` below
+  5,000,000 lamports, plus 2,040,000 when a USDC destination has no token
+  account (D34-b). Not probed: who pays the rent of a new USDC token account
+  (the Run 2 destination already had one; ClawVille assumes the source wallet),
+  and the pre-check on a SOL transfer below 0.005 SOL.
+- **Cached summary, live history.** `GET /wallets/summary` is CACHED: its row
+  `{agent_id, wallet_address, sol_balance, usdc_balance, ansem_balance,
+  updated_at}` kept `updated_at` 23:33:04Z and still showed 0.02 USDC after
+  both sends. `GET /wallets/{id}/history?limit=N` returns the LIVE balances:
+  `{address, solBalance, usdcBalance, solPrice, totalValueUsd, transactions:
+  [{signature, timestamp, date, status, memo}]}`; it listed the transfer
+  signature with `status: "success"` within 4 s. The withdraw path reads only
+  history (`limit` 50) and never the summary (D34-c). The add-on path still
+  reads the cached summary (a known residual: an add-on pay can fail at
+  ClawPump after a withdrawal; that failure moves no USDC). Not verified: the
+  order of `transactions`, the timestamp unit, and whether balances come as
+  numbers or strings (the writer accepts both).
+- **Request.** `POST /wallets/{id}/transfer` with `{ to, amount, token }`;
+  `token` is the USDC mint or `'SOL'`. ClawVille sends `amount` as an exact
+  decimal STRING (`formatAtomicAmount`, for example `"0.1"`), sent ONCE, never
+  retried, with a 45 s timeout and `redirect: 'error'`. The probe file does not
+  record whether the probes sent a number or a string, so the staging
+  micro-withdraw (arena §8 P5) is the first check of the string form.
+- **Reply shapes (Run 2).** USDC (P3): `{"ok":true,"status":"sent","from",
+  "to","amount":0.01,"token":"USDC","mint","txHash","explorerUrl",
+  "recipientTokenAccount","destinationType":"wallet",
+  "createdRecipientTokenAccount":false,"tokenProgramId",
+  "usedTransferHook":false,"memoIncluded":false}`. SOL (P4a):
+  `{"ok":true,"status":"sent","from","to","amount":0.002,"token":"SOL",
+  "txHash","explorerUrl"}`, with no `mint`, no `recipientTokenAccount` and no
+  `createdRecipientTokenAccount`. Refusals (Run 1): HTTP 200
+  `{"ok":false,"code":"insufficient_live_balance","error":"..."}` and
+  `{"ok":false,"code":"insufficient_fee_balance","error":"..."}`. ClawPump
+  added no memo. The writer reads the body for ANY HTTP status (up to 1 MB) to
+  find a `txHash`; whether a ClawPump 4xx transfer reply can carry one is not
+  known (the swap route did).
+- **One key, every wallet.** The one enterprise key controls every player
+  arena wallet. ClawVille's caps (2,000 USDC a day for all arena wallets) limit
+  a code bug, not a key leak. The ask for an IP allowlist and a per-key
+  transfer cap is arena §8 P20.
+
+Outcome classes of `transferFromArenaWallet` and the row state the leader
+books (the reply alone never makes a row `confirmed`: that needs a finalized
+transaction with exact owner, mint and amount deltas):
+
+| Class | When | Stored code | Row state |
+|---|---|---|---|
+| `sent` | 2xx, `ok: true`, `status: "sent"`, a base58 `txHash`, `from` = the source wallet, `to` = the destination, `amount` = the requested atomic amount, and the USDC `mint` (USDC) or `token` `SOL` in any case (SOL) | none (`tx_signature` stored) | `sent`, then `confirmed` by chain |
+| `rejected` (proved nothing sent) | HTTP 200, `ok: false`, code `insufficient_live_balance` or `insufficient_fee_balance` (`CLAWPUMP_TRANSFER_NO_SEND_VENDOR_CODES`), no `txHash` | `vendor_insufficient_live_balance`, `vendor_insufficient_fee_balance` | `failed` |
+| `rejected` | HTTP 401, 403 or 429 with a read body and no `txHash` | `http_401`, `http_403`, `http_429` | `failed` |
+| `unknown` (may have sent) | timeout or network error | `timeout`, `network_error` | `unknown` |
+| `unknown` | any other HTTP status (or 401, 403, 429 with a `txHash` or an unread body) | `http_<status>` | `unknown` |
+| `unknown` | unreadable body; `ok` not a boolean; `ok: true` with a `txHash` but a missing `from`, `to`, `amount` or `mint` / `token` | `reply_unparsed` | `unknown` |
+| `unknown` | `ok: false` with any other code, or with a `txHash` | `vendor_<code>` (`vendor_error` when the code has other characters) | `unknown` |
+| `unknown` | `ok: true` without a valid `txHash` | `no_tx_hash` | `unknown` |
+| `unknown` | `ok: true`, every field matches, `status` other than `sent` (lead decision 2026-10-02) | `vendor_status_<status>` (`vendor_status_other`) | `unknown`, then confirmed by the signature |
+| `mismatch` | `ok: true` with `from`, `to`, `amount` or `mint` / `token` present but different | `reply_mismatch` | `needs_review` |
+| writer throw (always BEFORE the POST) | a guard refuses: agent id, input, house id, DB ownership, name prefix or id suffix, status not `stopped`, wallet not the row's source (`wallet_mismatch`, new), call budget, configuration | `clawpump_<code>` (for example `clawpump_wallet_mismatch`, `clawpump_budget_exhausted`, `clawpump_not_arena_agent`, `clawpump_agent_running`) | `failed_no_send` |
+
+Stored codes match `[a-z0-9_.:-]{1,64}`; vendor `error` text, a request body
+and the key are never stored or logged. Each dispatch uses 3 normal tokens of
+the writer's 60-a-minute bucket (history GET, guard GET, POST); the removal
+reserve stays free. An `unknown` row is reconciled by signature, or by history
+plus an exact chain match, and is never sent again (D34-h).
 
 ## Trader templates (2026-09-19)
 

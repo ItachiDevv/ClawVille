@@ -105,6 +105,8 @@ beforeEach(() => {
   claimStatus = 401;
   meImpl = () => Promise.resolve(null);
   testWindow.localStorage.clear();
+  // The store remembers a server refusal in sessionStorage; no test inherits one.
+  testWindow.sessionStorage.clear();
   useQuestStore.setState({ ownerUserId: null, serverClaimed: {} });
 });
 
@@ -123,6 +125,7 @@ afterAll(() => {
   // Hand the shared store back clean: default state, no sync dedup marker.
   useQuestStore.getState().resetQuestStore();
   testWindow.localStorage.clear();
+  testWindow.sessionStorage.clear();
   storageTarget = null;
   for (const [name, descriptor] of previous) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -190,9 +193,16 @@ describe('QuestTracker reward sweep runs only for a viewer who can claim', () =>
     await setAuthMe(queryClient, { user: { id: 'acc-1', isGuest: false } });
     expect(claims()).toHaveLength(firstSweep);
 
-    // Signed out, then signed in again: that is a new sign-in.
+    // Signed out, then signed in again: that is a new sign-in. In the app the
+    // sign-out runs clearIdentityState -> resetQuestStore, which also forgets
+    // the 400 refusals the first sweep remembered; the watcher then stamps the
+    // owner again. Neither is mounted here, so the test does both by hand.
     await setAuthMe(queryClient, null);
     expect(claims()).toHaveLength(firstSweep);
+    await act(async () => {
+      useQuestStore.getState().resetQuestStore();
+      useQuestStore.getState().setQuestOwner('acc-1');
+    });
     await setAuthMe(queryClient, { user: { id: 'acc-1', isGuest: false } });
     expect(claims()).toHaveLength(firstSweep * 2);
   });
