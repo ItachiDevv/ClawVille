@@ -39,6 +39,15 @@ import {
  * 'unknown' never reaches the writer again (I2). Reconcile reads the chain and
  * ClawPump history only: 'confirmed' needs a finalized transaction with exact
  * owner + mint + amount deltas (I7), and an amount-only match never confirms.
+ *
+ * DECISION INVARIANT (Codex final pass): automatic 'confirmed' comes ONLY from
+ * the row's OWN stored signature (reconcileBySignature: finalized + exact
+ * deltas). Automatic 'failed_no_send' comes ONLY from the writer's proven
+ * no-send reply at dispatch (recordTransferOutcome). The reconcile NEVER writes
+ * 'confirmed' from ClawPump history and NEVER writes 'failed_no_send': time,
+ * amount and destination do not identify a withdrawal, and a "complete" history
+ * does not prove ClawPump listed every transfer. History and the balance rule
+ * are evidence only; after the give-up time they pick the needs_review code.
  * Each tick: reconcile first (also while paused), then stop if paused, then at
  * most 2 dispatches. Every DB write is its own short transaction (queries.ts);
  * the per-agent try-lock only keeps two leaders from repeating the same reads.
@@ -526,7 +535,7 @@ async function bookTxReused(
 // ─── Reconcile ─────────────────────────────────────────────────────────────
 
 export type ArenaWithdrawReconcileResult =
-  | 'skipped' | 'interrupted' | 'touched' | 'confirmed' | 'failed' | 'failed_no_send' | 'needs_review' | 'cas_lost';
+  | 'skipped' | 'interrupted' | 'touched' | 'confirmed' | 'failed' | 'needs_review' | 'cas_lost';
 
 function ageMs(row: ArenaWithdrawalRecord, now: Date): number {
   return row.dispatchedAt ? now.getTime() - row.dispatchedAt.getTime() : Number.POSITIVE_INFINITY;
@@ -566,8 +575,9 @@ async function undecided(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, no
 /**
  * Balance rule (give-up time passed, no chain match): drop = pre balance - live
  * balance + (USDC) add-on spend since dispatched_at, as contract §4 step 4
- * writes it (the add-on term only makes the rule stricter). drop < amount ->
- * failed_no_send; else needs_review.
+ * writes it. Evidence only (DECISION INVARIANT): drop < amount -> needs_review
+ * 'not_found_no_drop'; else needs_review 'not_found_balance_drop'. Never
+ * failed_no_send: a deposit can hide the drop of a sent transfer.
  */
 async function applyBalanceRule(
   deps: ArenaWithdrawDeps,
@@ -585,7 +595,7 @@ async function applyBalanceRule(
   }
   const liveBalance = row.asset === 'USDC' ? live.usdcAtomic : live.solLamports;
   const drop = pre - liveBalance + addonAtomic;
-  if (drop < amount) return finish(deps, row, { state: 'failed_no_send', errorCode: 'not_found_no_drop' });
+  if (drop < amount) return review(deps, row, 'not_found_no_drop');
   return review(deps, row, 'not_found_balance_drop');
 }
 
@@ -615,6 +625,7 @@ interface HistoryScan {
   /**
    * Vendor 'success' items with an unused signature, an exact finalized chain match, and a block time at or
    * after the row's own dispatch second (its transfer is POSTed only after the CAS set dispatched_at).
+   * Evidence only: a match never confirms the row (DECISION INVARIANT); it picks the review code.
    */
   matches: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
   /**
@@ -622,8 +633,7 @@ interface HistoryScan {
    * vendor status is NOT 'success' (e.g. 'failed'). The vendor and the chain disagree, and the item can belong
    * to another, already-terminal row of the same agent. Also (cross-row guard) every exact match whose block
    * time is before the row's own dispatch second, whatever its vendor status: it can be the unstored transfer of
-   * an earlier row of the agent (e.g. one in needs_review). A conflict goes to operator review: it is never
-   * confirmed and it never allows failed_no_send.
+   * an earlier row of the agent (e.g. one in needs_review). A conflict -> needs_review 'ambiguous_match'.
    */
   conflicts: Array<{ signature: string; tx: ArenaWithdrawChainTx }>;
 }
@@ -656,9 +666,8 @@ async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, 
     if (await deps.signatureUsed(item.signature)) continue;
     // Codex r2 B1: every resolved in-window item gets the chain match, whatever its vendor status. A vendor
     // 'success' exact match is a match. A vendor 'failed' (any non-'success') exact match is a CONFLICT: it can
-    // be this row's transfer (so skipping it could let the balance rule book a sent transfer as failed_no_send)
-    // or another terminal row's transfer (so confirming it could be false). A conflict -> operator review,
-    // never confirmed, never failed_no_send. A chain error or an inexact delta is never a match.
+    // be this row's transfer or another terminal row's transfer. Both only pick the review code (DECISION
+    // INVARIANT). A chain error or an inexact delta is never a match.
     // Cross-row guard: this row's own transfer is POSTed only after the CAS set dispatched_at, so an exact match
     // from before the dispatch second is a conflict whatever its vendor status (another row's unstored
     // transfer). A real own transfer whose block time reads early (clock skew) then goes to review: safe.
@@ -667,6 +676,30 @@ async function scanHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, 
     else conflicts.push({ signature: item.signature, tx });
   }
   return { complete: previous !== null && previous <= windowStart, matches, conflicts };
+}
+
+/**
+ * The review code for one exact match. 'history_match' would be clearer, but FLOOR_ARENA_WITHDRAW_RECONCILE_CODES
+ * (packages/shared) is a typed, test-pinned list without it, so the existing 'ambiguous_match' stands in.
+ */
+const HISTORY_MATCH_REVIEW_CODE = 'ambiguous_match';
+
+/**
+ * Give-up time passed: the history evidence picks the needs_review code (DECISION INVARIANT: never confirmed,
+ * never failed_no_send). Several matches or any conflict -> 'ambiguous_match' at once. Otherwise the window must
+ * be complete (else wait; 24 h -> operator): one match -> HISTORY_MATCH_REVIEW_CODE; none -> the balance rule.
+ */
+async function reviewFromHistory(
+  deps: ArenaWithdrawDeps,
+  row: ArenaWithdrawalRecord,
+  now: Date,
+  live: ClawPumpArenaWalletLive,
+  scan: HistoryScan,
+): Promise<ArenaWithdrawReconcileResult> {
+  if (scan.conflicts.length > 0 || scan.matches.length > 1) return review(deps, row, 'ambiguous_match');
+  if (!scan.complete) return undecided(deps, row, now);
+  if (scan.matches.length === 1) return review(deps, row, HISTORY_MATCH_REVIEW_CODE);
+  return applyBalanceRule(deps, row, live);
 }
 
 function liveIsSource(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, live: ClawPumpArenaWalletLive): boolean {
@@ -692,9 +725,9 @@ async function reconcileBySignature(
   }
   if (status === null) {
     if (ageMs(row, now) <= ARENA_WITHDRAW_SENT_GIVE_UP_MS) return touch(deps, row, now);
-    // Codex B2: a missing signature plus "no balance drop" is not enough (a deposit can hide the drop).
-    // The balance rule runs only when the ClawPump history does not list the signature AND the history is a
-    // complete, resolved window back past dispatched_at - 60 s with no exact match. Anything else waits.
+    // Codex B2 + final pass: a missing signature is never failed_no_send (a deposit can hide the drop). After
+    // the give-up the history evidence picks the needs_review code. A history that lists the signature, a
+    // read error or a wrong wallet waits (24 h -> operator).
     let live: ClawPumpArenaWalletLive | null;
     try {
       live = await readLiveForReconcile(deps, row);
@@ -705,10 +738,7 @@ async function reconcileBySignature(
     if (!live) return 'skipped';
     if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
     if (live.transactions.some((item) => item.signature === signature)) return undecided(deps, row, now);
-    const scan = await scanHistory(deps, row, live);
-    // Codex r2 B1: a conflict (vendor non-success + exact chain match) blocks the balance rule like a match.
-    if (!scan.complete || scan.matches.length + scan.conflicts.length > 0) return undecided(deps, row, now);
-    return applyBalanceRule(deps, row, live);
+    return reviewFromHistory(deps, row, now, live, await scanHistory(deps, row, live));
   }
   if (!status.finalized) return touch(deps, row, now);
   if (status.err !== null && status.err !== undefined) return finish(deps, row, { state: 'failed', errorCode: 'chain_error' });
@@ -726,7 +756,13 @@ async function reconcileBySignature(
   return finish(deps, row, { state: 'confirmed', postBalanceAtomic: sourcePostBalance(tx, row) });
 }
 
+/**
+ * An 'unknown' row without a signature (DECISION INVARIANT): never attached, never confirmed, never
+ * failed_no_send. It waits until the give-up time (no read before: nothing can be decided), then the history
+ * evidence picks the needs_review code.
+ */
 async function reconcileByHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalRecord, now: Date): Promise<ArenaWithdrawReconcileResult> {
+  if (ageMs(row, now) <= ARENA_WITHDRAW_UNKNOWN_GIVE_UP_MS) return touch(deps, row, now);
   let live: ClawPumpArenaWalletLive | null;
   try {
     live = await readLiveForReconcile(deps, row);
@@ -736,33 +772,15 @@ async function reconcileByHistory(deps: ArenaWithdrawDeps, row: ArenaWithdrawalR
   }
   if (!live) return 'skipped';
   if (!liveIsSource(deps, row, live)) return undecided(deps, row, now);
-  const { complete, matches, conflicts } = await scanHistory(deps, row, live);
-  // Codex r2 B1: a conflict never confirms and never allows failed_no_send: an operator decides.
-  if (conflicts.length > 0) return review(deps, row, 'ambiguous_match');
-  if (matches.length > 1) return review(deps, row, 'ambiguous_match');
-  // Codex B3: no decision (match or no match) unless the window is complete and every item resolved.
-  if (!complete) return undecided(deps, row, now);
-  if (matches.length === 1) {
-    const match = matches[0]!;
-    try {
-      if (!(await deps.attachSignature(row.id, match.signature))) return 'cas_lost';
-    } catch (error) {
-      if (!(error instanceof ArenaWithdrawTxReusedError)) throw error;
-      return review(deps, row, 'tx_reused');
-    }
-    const saved = await deps.finalize(row.id, ['unknown'], { state: 'confirmed', postBalanceAtomic: sourcePostBalance(match.tx, row) },
-      eventFor(row, 'confirmed', null, match.signature));
-    return saved ? 'confirmed' : 'cas_lost';
-  }
-  // No match over a complete, resolved window.
-  if (ageMs(row, now) <= ARENA_WITHDRAW_UNKNOWN_GIVE_UP_MS) return touch(deps, row, now);
-  return applyBalanceRule(deps, row, live);
+  return reviewFromHistory(deps, row, now, live, await scanHistory(deps, row, live));
 }
 
 /**
  * Reconciles one row (inside the per-agent try-lock). It NEVER calls transfer:
  * stale 'dispatching' -> 'unknown'; a known signature -> chain status and exact
- * deltas; 'unknown' without one -> ClawPump history + exact match + balance rule.
+ * deltas (the only automatic 'confirmed'); 'unknown' without one -> after the
+ * give-up, ClawPump history + balance rule pick a needs_review code (never
+ * 'confirmed', never 'failed_no_send': DECISION INVARIANT in the header).
  */
 export async function reconcileArenaWithdrawal(
   deps: ArenaWithdrawDeps,
