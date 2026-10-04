@@ -142,6 +142,9 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
   // Kind-specific SERVER-SIDE pricing + eligibility. Every refusal answers
   // BEFORE a row or requirement exists.
   let priceVclaw: number;
+  // M8 (2026-10-04): the rent item's non-refundable terms, disclosed in the
+  // 402 body BEFORE the buyer pays. Stays null for every other item kind.
+  let rentTerms: { refundable: false; terms: string } | null = null;
   if (parsed.data.itemKind === 'cosmetic_purchase') {
     const item = await resolveCosmeticCheckoutItem(subject.avatarId, parsed.data.itemRef);
     if (!item.ok) {
@@ -178,6 +181,7 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
       return c.json({ error: item.code, code: item.code }, status);
     }
     priceVclaw = item.priceVclaw;
+    rentTerms = { refundable: item.refundable, terms: item.terms };
   }
 
   const quote = await createCheckoutQuote({
@@ -213,6 +217,7 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
       network: quote.network,
       accepts: quote.quote.accepts,
       x402Version: quote.quote.x402Version,
+      ...(rentTerms ?? {}),
     },
     402,
   );

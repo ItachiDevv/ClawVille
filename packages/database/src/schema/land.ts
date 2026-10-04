@@ -284,8 +284,11 @@ export const landParcels = pgTable(
      * remainder with NO avatar debit — the backing is the settled x402 USDC
      * payment recorded on the SAME-tx `x402_checkouts` row + stamped as
      * `usd_basis` in the land_transactions metadata. A later draw of that CT
-     * into the treasury is therefore a BACKED emission (real dollars entered),
-     * and a refund/forfeit of it conserves exactly like a debited top-up. Any
+     * into the treasury is therefore a BACKED emission (real dollars entered).
+     * USDC-funded escrow is FORFEITED on release with NO ledger credit (M8,
+     * 2026-10-04: USDC rent prepay is non-refundable; only the vCLAW-funded
+     * part refunds). Conservation still closes:
+     *   Σ draws + refund + forfeit == claim + Σ top-ups + Σ USDC prepays. Any
      * escrow credit WITHOUT (an avatar debit XOR a settled-USDC usd_basis) is
      * a conservation bug.
      */

@@ -24,9 +24,20 @@
  * `debit_ledger_tx_id` (there is no ledger debit to point at — that absence
  * IS the marker of a USDC-backed credit). A later sweeper draw of this CT
  * into the treasury is therefore a BACKED emission (real dollars entered
- * underneath); refund/forfeit conserve exactly like a debited top-up:
+ * underneath). Conservation still closes exactly:
  *
  *     Σ draws + refund + forfeit == claim + Σ CT top-ups + Σ USDC prepays.
+ *
+ * M8 — USDC RENT PREPAY IS NON-REFUNDABLE (founder decision 2026-10-04).
+ * On a voluntary release, the USDC-funded part of the remainder is FORFEITED:
+ * no vCLAW refund, no USDC refund, and no ledger credit anywhere (it is NOT
+ * minted to the treasury either — the dollars already left via the same-tx
+ * `enqueueClvBuy`). Only the vCLAW-funded part refunds. The release path
+ * (`settleTenureRelease` in land-tenure-settlement.ts) derives the split from
+ * the tenancy's land_transactions; this fulfiller stamps the provenance it
+ * needs: `refundable:false` + `nonRefundableReason` + `tenancyAcquiredAt`
+ * (the parcel's `acquired_at` read under the row lock, which binds the
+ * prepay to exactly one tenancy without trusting row timestamps).
  *
  * The sweeper is NOT modified: `decideDepositSweep` (land-rent-sweeper.ts,
  * the single draw-math authority) is reused strictly READ-ONLY below to
@@ -67,8 +78,20 @@ export type RentPrepayRefusal =
   | 'not_deposit_tenure'
   | 'invalid_escrow_state';
 
+/**
+ * M8 reason tag stamped on every USDC prepay row and echoed by the release
+ * path when it forfeits. `land-tenure-settlement.ts` carries the same literal
+ * (`USDC_RENT_PREPAY_FORFEIT_REASON`); a unit test pins the two together.
+ */
+export const USDC_RENT_PREPAY_NON_REFUNDABLE_REASON = 'usdc_rent_prepay_non_refundable' as const;
+
+/** Plain-language checkout disclosure (M8). Returned with the quote item and
+ *  the fulfillment detail so every surface can show the same words. */
+export const USDC_RENT_PREPAY_TERMS =
+  'USDC rent prepay is non-refundable. If you release the plot early, the USDC-funded rent is not returned.';
+
 export type RentPrepayCheckoutItem =
-  | { ok: true; priceVclaw: number; parcelCode: string }
+  | { ok: true; priceVclaw: number; parcelCode: string; refundable: false; terms: string }
   | { ok: false; code: RentPrepayRefusal };
 
 /** The columns every check/mutation here reads (PG wire types — coerce!). */
@@ -76,6 +99,7 @@ type PrepayParcelRow = {
   id: string;
   parcel_code: string;
   owner_avatar_id: string | null;
+  acquired_at: string | Date | null;
   tenure: string | null;
   deposit_remaining_ct: number | string | null;
   rent_ct_weekly: number | string | null;
@@ -112,12 +136,18 @@ export async function resolveRentPrepayCheckoutItem(
   amountVclaw: number,
 ): Promise<RentPrepayCheckoutItem> {
   const rows = await db.execute<PrepayParcelRow>(
-    sql`SELECT id, parcel_code, owner_avatar_id, tenure, deposit_remaining_ct, rent_ct_weekly, grace_until
+    sql`SELECT id, parcel_code, owner_avatar_id, acquired_at, tenure, deposit_remaining_ct, rent_ct_weekly, grace_until
         FROM land_parcels WHERE id = ${parcelId}`,
   );
   const guarded = guardParcel(rows[0], avatarId);
   if (!guarded.ok) return { ok: false, code: guarded.code };
-  return { ok: true, priceVclaw: amountVclaw, parcelCode: guarded.parcel.parcel_code };
+  return {
+    ok: true,
+    priceVclaw: amountVclaw,
+    parcelCode: guarded.parcel.parcel_code,
+    refundable: false,
+    terms: USDC_RENT_PREPAY_TERMS,
+  };
 }
 
 /** Settle-time READ-ONLY preflight — same guards, just before the facilitator
@@ -135,7 +165,7 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
   // Per-owner advisory lock OUTER, parcel row INNER — the land lock order.
   await ctx.tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
   const rows = await ctx.tx.execute<PrepayParcelRow>(
-    sql`SELECT id, parcel_code, owner_avatar_id, tenure, deposit_remaining_ct, rent_ct_weekly, grace_until
+    sql`SELECT id, parcel_code, owner_avatar_id, acquired_at, tenure, deposit_remaining_ct, rent_ct_weekly, grace_until
         FROM land_parcels
         WHERE id = ${ctx.itemRef}
         FOR UPDATE`,
@@ -180,12 +210,17 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
 
   // Land-domain audit row: the NEW distinct kind. NO debit_ledger_tx_id — the
   // backing is the settled USDC (usdBasis + txSignature + checkoutId below),
-  // not a ledger debit. `refundable:true` mirrors deposit-topup: the escrow
-  // remainder refunds/forfeits identically regardless of which rail funded it.
+  // not a ledger debit. M8 (2026-10-04): `refundable:false` — the USDC-funded
+  // part of the escrow FORFEITS on release (see the header). The release path
+  // matches this row to the tenancy by `tenancyAcquiredAt`.
+  const tenancyAcquiredAt =
+    p.acquired_at == null ? null : new Date(p.acquired_at).toISOString();
   const meta = JSON.stringify({
     newRemaining,
     graceCleared,
-    refundable: true,
+    refundable: false,
+    nonRefundableReason: USDC_RENT_PREPAY_NON_REFUNDABLE_REASON,
+    tenancyAcquiredAt,
     usdBasis: ctx.usdBasis,
     usdCents: ctx.usdCents,
     txSignature: ctx.txSignature,
@@ -221,6 +256,8 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
       parcelCode: p.parcel_code,
       depositRemainingCt: newRemaining,
       graceCleared,
+      refundable: false,
+      terms: USDC_RENT_PREPAY_TERMS,
     },
   };
 };

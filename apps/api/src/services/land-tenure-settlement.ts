@@ -1041,10 +1041,158 @@ export async function settleRentPrepay(
   });
 }
 
+// ─── M8: USDC rent prepay is NON-REFUNDABLE (founder decision 2026-10-04) ───
+//
+// A deposit escrow can be funded by vCLAW (claim escrow, CT top-ups: both are
+// avatar ledger debits) or by USDC (the x402 rent-prepay checkout fulfiller:
+// `land_deposit_prepay_usdc`, NO avatar debit). On a voluntary release ONLY the
+// vCLAW-funded part of the remainder refunds. The USDC-funded part FORFEITS:
+// no vCLAW refund, no USDC refund, and no ledger credit anywhere (the dollars
+// already left via the fulfiller's same-tx `enqueueClvBuy`; crediting the
+// treasury would mint vCLAW out of USDC, which is the M8 defect itself).
+//
+// PROVENANCE = the tenancy's own land_transactions rows, replayed in order:
+//   vCLAW in : 'land_deposit_escrow', 'land_deposit_topup'
+//   USDC in  : 'land_deposit_prepay_usdc' (bound to the tenancy by its stamped
+//              `tenancyAcquiredAt`; legacy rows without the stamp fall back to
+//              `created_at >= acquired_at`)
+//   draw out : sweeper escrow draws — 'rent_payment' with NO debit ledger id
+//              and metadata.tenure='deposit' (the claim's first-week rent row
+//              carries a debit id, so it is not an escrow draw)
+// Draws consume the USDC-funded part FIRST: prepaid rent pays rent before the
+// refundable vCLAW deposit is touched, so nobody pays a week twice.
+//
+// SAFETY: every USDC escrow credit writes its row in the same tx, so the USDC
+// bucket is never under-counted. If the replay does not reconcile with the
+// live remainder, the forfeit is still min(remainder, replayed USDC), which
+// can only forfeit MORE, never refund USDC-funded value as vCLAW. Hence:
+//   refundedCt + forfeitedUsdcPrepayCt == remainder, and
+//   refundedCt <= remainder − (USDC-funded part still in escrow).
+
+/** Same literal as the fulfiller's `USDC_RENT_PREPAY_NON_REFUNDABLE_REASON`
+ *  (checkout-fulfillers/rent-prepay.ts); a unit test pins them together. */
+export const USDC_RENT_PREPAY_FORFEIT_REASON = 'usdc_rent_prepay_non_refundable' as const;
+
+export type DepositEscrowEvent = {
+  source: 'vclaw' | 'usdc' | 'draw';
+  amountCt: number;
+};
+
+export type DepositEscrowSplit = {
+  /** Refunded to the claimant as vCLAW. */
+  refundableVclawCt: number;
+  /** Forfeited, never refunded or credited (M8). */
+  forfeitedUsdcCt: number;
+  /** The replayed ledger buckets, kept for the audit row. */
+  replayedVclawCt: number;
+  replayedUsdcCt: number;
+  /** True when replayedVclawCt + replayedUsdcCt equals the live remainder. */
+  reconciled: boolean;
+};
+
+/** Pure split of a deposit remainder into its refundable (vCLAW) and forfeited
+ *  (USDC) parts. `events` MUST be in ledger order. */
+export function splitDepositEscrowByFunding(
+  events: readonly DepositEscrowEvent[],
+  remainingCt: number,
+): DepositEscrowSplit {
+  let vclaw = 0;
+  let usdc = 0;
+  for (const event of events) {
+    const amount = Number.isFinite(event.amountCt) ? Math.max(0, Math.floor(event.amountCt)) : 0;
+    if (event.source === 'vclaw') {
+      vclaw += amount;
+    } else if (event.source === 'usdc') {
+      usdc += amount;
+    } else {
+      const fromUsdc = Math.min(usdc, amount);
+      usdc -= fromUsdc;
+      vclaw = Math.max(0, vclaw - (amount - fromUsdc));
+    }
+  }
+  const remaining = Number.isFinite(remainingCt) ? Math.max(0, Math.floor(remainingCt)) : 0;
+  const forfeitedUsdcCt = Math.min(remaining, usdc);
+  return {
+    refundableVclawCt: remaining - forfeitedUsdcCt,
+    forfeitedUsdcCt,
+    replayedVclawCt: vclaw,
+    replayedUsdcCt: usdc,
+    reconciled: vclaw + usdc === remaining,
+  };
+}
+
+export type DepositEscrowLedgerRow = {
+  kind: string;
+  amount_ct: number | string;
+  has_debit: boolean | string | null;
+  meta_tenure: string | null;
+  tenancy_acquired_at: string | null;
+  created_at: string | Date;
+};
+
+/** Pure classification of the candidate land_transactions rows into this
+ *  tenancy's escrow events (order preserved). */
+export function depositEscrowEventsForTenancy(
+  rows: readonly DepositEscrowLedgerRow[],
+  acquiredAtIso: string,
+): DepositEscrowEvent[] {
+  const acquiredMs = Date.parse(acquiredAtIso);
+  const events: DepositEscrowEvent[] = [];
+  for (const row of rows) {
+    const createdMs = new Date(row.created_at).getTime();
+    const inWindow = Number.isFinite(createdMs) && createdMs >= acquiredMs;
+    const amountCt = Number(row.amount_ct);
+    const hasDebit = row.has_debit === true || row.has_debit === 't' || row.has_debit === 'true';
+    if (row.kind === 'land_deposit_prepay_usdc') {
+      const bound =
+        row.tenancy_acquired_at != null
+          ? row.tenancy_acquired_at === acquiredAtIso
+          : inWindow;
+      if (bound) events.push({ source: 'usdc', amountCt });
+    } else if (!inWindow) {
+      continue;
+    } else if (row.kind === 'land_deposit_escrow' || row.kind === 'land_deposit_topup') {
+      events.push({ source: 'vclaw', amountCt });
+    } else if (row.kind === 'rent_payment' && !hasDebit && row.meta_tenure === 'deposit') {
+      events.push({ source: 'draw', amountCt });
+    }
+  }
+  return events;
+}
+
+async function readDepositEscrowLedger(
+  tx: LandTx,
+  parcelId: string,
+  acquiredAtIso: string,
+): Promise<DepositEscrowLedgerRow[]> {
+  // Every USDC prepay row for the parcel (tenancy binding is checked in JS by
+  // its stamp), plus vCLAW inflows and escrow draws inside this tenancy.
+  const rows = await tx.execute<DepositEscrowLedgerRow>(
+    sql`SELECT kind::text AS kind, amount_ct,
+               (debit_ledger_tx_id IS NOT NULL) AS has_debit,
+               metadata ->> 'tenure' AS meta_tenure,
+               metadata ->> 'tenancyAcquiredAt' AS tenancy_acquired_at,
+               created_at
+        FROM land_transactions
+        WHERE parcel_id = ${parcelId}
+          AND (
+            kind = 'land_deposit_prepay_usdc'
+            OR (kind IN ('land_deposit_escrow', 'land_deposit_topup', 'rent_payment')
+                AND created_at >= ${acquiredAtIso}::timestamptz)
+          )
+        ORDER BY created_at ASC, id ASC`,
+  );
+  return Array.from(rows);
+}
+
 export type TenureReleaseResult = {
   fresh: boolean;
   released: true;
   refundedCt: number;
+  /** M8: USDC-funded escrow that was NOT returned (0 when none). */
+  forfeitedUsdcPrepayCt: number;
+  /** Present only when forfeitedUsdcPrepayCt > 0. */
+  forfeitReason?: typeof USDC_RENT_PREPAY_FORFEIT_REASON;
   parcel: TenureParcelDTO;
   /** Persisted only to bind the idempotency key to this exact tenancy. */
   tenancyAcquiredAt: string;
@@ -1088,7 +1236,13 @@ export async function settleTenureRelease(input: CommonInput): Promise<TenureRel
           ) {
             throw new LandTenureSettlementError('idempotency_key_conflict', 409);
           }
-          return { ...priorResponse, fresh: false };
+          // Responses persisted before M8 carry no forfeit field: nothing was
+          // forfeited then, so the replay reports 0.
+          return {
+            ...priorResponse,
+            forfeitedUsdcPrepayCt: priorResponse.forfeitedUsdcPrepayCt ?? 0,
+            fresh: false,
+          };
         }
 
         const parcel = await lockParcel(tx, input.parcelCode);
@@ -1110,11 +1264,30 @@ export async function settleTenureRelease(input: CommonInput): Promise<TenureRel
           acquiredAt: acquiredAtIso,
         });
         let refundedCt = 0;
+        let forfeitedUsdcPrepayCt = 0;
         if (parcel.tenure === 'deposit') {
           if (parcel.deposit_remaining_ct == null) {
             throw new LandTenureSettlementError('invalid_escrow_state', 409);
           }
-          refundedCt = Number(parcel.deposit_remaining_ct);
+          const remainingCt = Number(parcel.deposit_remaining_ct);
+          // M8: split the remainder by funding rail (see the block above
+          // splitDepositEscrowByFunding). Only the vCLAW-funded part refunds.
+          const split = splitDepositEscrowByFunding(
+            depositEscrowEventsForTenancy(
+              await readDepositEscrowLedger(tx, parcel.id, acquiredAtIso),
+              acquiredAtIso,
+            ),
+            remainingCt,
+          );
+          refundedCt = split.refundableVclawCt;
+          forfeitedUsdcPrepayCt = split.forfeitedUsdcCt;
+          if (!split.reconciled) {
+            console.warn(
+              `[land-tenure] release escrow replay did not reconcile for ${parcel.parcel_code}: ` +
+                `remaining=${remainingCt} replayedVclaw=${split.replayedVclawCt} ` +
+                `replayedUsdc=${split.replayedUsdcCt}; forfeiting ${forfeitedUsdcPrepayCt} (USDC first)`,
+            );
+          }
           let creditId: string | null = null;
           if (refundedCt > 0) {
             const credit = await creditClawTokens(
@@ -1126,6 +1299,12 @@ export async function settleTenureRelease(input: CommonInput): Promise<TenureRel
                 metadata: {
                   parcelId: parcel.id,
                   parcelCode: parcel.parcel_code,
+                  ...(forfeitedUsdcPrepayCt > 0
+                    ? {
+                        forfeitedUsdcPrepayCt,
+                        forfeitReason: USDC_RENT_PREPAY_FORFEIT_REASON,
+                      }
+                    : {}),
                 },
                 actorKind: actorKind(input.identity),
               },
@@ -1137,6 +1316,16 @@ export async function settleTenureRelease(input: CommonInput): Promise<TenureRel
             reason: 'voluntary_release',
             tenure: 'deposit',
             refundedCt,
+            escrowRemainingCt: remainingCt,
+            forfeitedUsdcPrepayCt,
+            ...(forfeitedUsdcPrepayCt > 0
+              ? { forfeitReason: USDC_RENT_PREPAY_FORFEIT_REASON }
+              : {}),
+            escrowFunding: {
+              replayedVclawCt: split.replayedVclawCt,
+              replayedUsdcCt: split.replayedUsdcCt,
+              reconciled: split.reconciled,
+            },
           });
           await tx.execute(
             sql`INSERT INTO land_transactions
@@ -1172,6 +1361,8 @@ export async function settleTenureRelease(input: CommonInput): Promise<TenureRel
           fresh: true,
           released: true,
           refundedCt,
+          forfeitedUsdcPrepayCt,
+          ...(forfeitedUsdcPrepayCt > 0 ? { forfeitReason: USDC_RENT_PREPAY_FORFEIT_REASON } : {}),
           tenancyAcquiredAt: acquiredAtIso,
           parcel: parcelDto(parcel, {
             status: 'available',
