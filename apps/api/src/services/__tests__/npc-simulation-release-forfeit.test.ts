@@ -35,12 +35,14 @@ type ReleaseResult = Awaited<ReturnType<typeof realSettlement.settleTenureReleas
 
 let releaseCalls: ReleaseInput[] = [];
 let nextRelease: ReleaseResult | null = null;
+let nextReleaseError: Error | null = null;
 
 mock.module('../land-tenure-settlement', () => ({
   ...realSettlement,
   settleTenureRelease: async (input: ReleaseInput) => {
     if (!intercept) return REAL_release(input);
     releaseCalls.push(input);
+    if (nextReleaseError) throw nextReleaseError;
     if (!nextRelease) throw new Error('test: nextRelease not set');
     return nextRelease;
   },
@@ -78,6 +80,7 @@ function settlementResult(over: Partial<ReleaseResult>): ReleaseResult {
 beforeEach(() => {
   releaseCalls = [];
   nextRelease = null;
+  nextReleaseError = null;
 });
 
 describe('agent release_parcel result carries the M8 forfeit disclosure', () => {
@@ -133,5 +136,38 @@ describe('agent release_parcel result carries the M8 forfeit disclosure', () => 
       forfeitedUsdcPrepayCt: 0,
     });
     expect('forfeitReason' in out).toBe(false);
+  });
+
+  it('passes the 409 usdc_prepay_unproven refusal through unchanged (no result, no mapping)', async () => {
+    // Codex round 2: a legacy unmarked USDC prepay row refuses the release.
+    // The agent seam must not swallow or remap it; settleAutonomousLandAction
+    // logs `err.message` (the code) and moves nothing, like every refusal.
+    nextReleaseError = new realSettlement.LandTenureSettlementError(
+      realSettlement.USDC_PREPAY_UNPROVEN_CODE,
+      409,
+      { error: realSettlement.USDC_PREPAY_UNPROVEN_MESSAGE },
+    );
+
+    const err = await npcSimulation
+      .autonomousLandSettle({
+        operation: { verb: 'release_parcel', parcelCode: PARCEL_CODE },
+        identity,
+        idempotencyKey: 'idem-unproven-1',
+      })
+      .then(
+        () => {
+          throw new Error('autonomousLandSettle should have rejected');
+        },
+        (e: unknown) => e,
+      );
+
+    expect(err).toBe(nextReleaseError);
+    expect(err).toMatchObject({
+      code: 'usdc_prepay_unproven',
+      status: 409,
+      message: 'usdc_prepay_unproven',
+      details: { error: realSettlement.USDC_PREPAY_UNPROVEN_MESSAGE },
+    });
+    expect(releaseCalls).toHaveLength(1);
   });
 });

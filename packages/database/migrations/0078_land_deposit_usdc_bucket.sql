@@ -1,10 +1,9 @@
 -- 0078_land_deposit_usdc_bucket.sql — security pass 2026-10-04 (M8, Codex review).
 --
--- ADDITIVE + IDEMPOTENT. Adds one column and two named CHECKs to land_parcels,
--- and backfills the column for live deposit tenancies. It drops, renames or
--- rewrites no existing column, index, constraint or row value other than the
--- new column. The file runs as one implicit transaction, so a failure applies
--- nothing. NEVER apply via drizzle-kit push.
+-- ADDITIVE + IDEMPOTENT. Adds one column and two named CHECKs to land_parcels.
+-- It drops, renames or rewrites no existing column, index, constraint or row
+-- value, and it backfills nothing. The file runs as one implicit transaction,
+-- so a failure applies nothing. NEVER apply via drizzle-kit push.
 --
 -- WHY: founder decision M8 (2026-10-04): USDC rent prepay is NON-REFUNDABLE.
 -- On a voluntary release the USDC-funded part of the deposit escrow is
@@ -22,19 +21,26 @@
 --   tenure claim         deposit_usdc_funded_ct = 0 (new tenancy)
 --   release/lapse/deed   deposit_usdc_funded_ct = 0 (escrow closed)
 -- Release forfeits LEAST(deposit_usdc_funded_ct, deposit_remaining_ct) and
--- refunds the rest. Nothing reads land_transactions to decide the split.
+-- refunds the rest. The split never reads land_transactions.
 --
--- BACKFILL (conservative: it may forfeit more, never less). For each live
--- deposit tenancy: LEAST(deposit_remaining_ct, SUM(amount_ct) of the
--- land_deposit_prepay_usdc rows of the CURRENT tenancy). A row belongs to the
--- current tenancy when its metadata.tenancyAcquiredAt equals the parcel's
--- acquired_at (1 ms tolerance: the stamp is a JavaScript ISO string with
--- millisecond precision, acquired_at has microseconds), or, for a row with no
--- parseable stamp, when created_at >= acquired_at. Draws used USDC first, so
--- the true bucket is <= SUM(prepays), and the result is >= the true bucket.
--- Measured 2026-10-04: prod 0 land_deposit_prepay_usdc rows (no-op), staging
--- 3 (test data). Only rows where the new column is still 0 change, and the
--- migration runner applies a file once, so a rerun cannot double count.
+-- NO BACKFILL (Codex round 2, 2026-10-04). A backfill from old
+-- land_deposit_prepay_usdc rows is wrong in both directions: it cannot know
+-- which part of an old prepay a later rent draw consumed (100 vCLAW + 100 USDC
+-- in escrow, a 100 draw takes the USDC, a backfill then marks the remaining
+-- 100 vCLAW as USDC-funded and release forfeits vCLAW), and a rerun refills a
+-- bucket that a valid draw emptied. Instead every existing row starts at 0,
+-- and the rent-prepay fulfiller stamps each NEW land_deposit_prepay_usdc row
+-- with metadata usdcBucketed = true. A release whose current tenancy has a
+-- prepay row WITHOUT that marker (a pre-bucket row: split unprovable) refuses
+-- with 409 usdc_prepay_unproven, and an operator settles it.
+-- Measured 2026-10-04: prod has 0 land_deposit_prepay_usdc rows, staging 3
+-- (test data). The USDC prepay path is dark, so no new unmarked row can appear
+-- before this ships.
+--
+-- EXISTING ROWS: the column arrives as 0 on every row, so both CHECKs hold for
+-- every existing row: "0 >= 0", and the second CHECK's first arm is
+-- "deposit_usdc_funded_ct = 0". A rerun changes nothing: the column and both
+-- constraints are guarded by IF NOT EXISTS / pg_constraint lookups.
 
 ALTER TABLE "land_parcels"
   ADD COLUMN IF NOT EXISTS "deposit_usdc_funded_ct" integer NOT NULL DEFAULT 0;
@@ -51,32 +57,6 @@ BEGIN
       CHECK ("deposit_usdc_funded_ct" >= 0);
   END IF;
 END $$;
-
-UPDATE "land_parcels" AS p
-   SET "deposit_usdc_funded_ct" = LEAST(p."deposit_remaining_ct"::bigint, s.usdc_ct)::integer
-  FROM (
-    SELECT t."parcel_id", SUM(t."amount_ct")::bigint AS usdc_ct
-      FROM "land_transactions" t
-      JOIN "land_parcels" lp ON lp."id" = t."parcel_id"
-     WHERE t."kind" = 'land_deposit_prepay_usdc'
-       AND lp."tenure" = 'deposit'
-       AND lp."acquired_at" IS NOT NULL
-       AND (
-         CASE
-           WHEN (t."metadata" ->> 'tenancyAcquiredAt') ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$'
-             THEN (t."metadata" ->> 'tenancyAcquiredAt')::timestamptz
-                    BETWEEN lp."acquired_at" - interval '1 millisecond'
-                        AND lp."acquired_at" + interval '1 millisecond'
-           ELSE t."created_at" >= lp."acquired_at"
-         END
-       )
-     GROUP BY t."parcel_id"
-  ) AS s
- WHERE p."id" = s."parcel_id"
-   AND p."tenure" = 'deposit'
-   AND p."deposit_remaining_ct" IS NOT NULL
-   AND p."deposit_usdc_funded_ct" = 0
-   AND s.usdc_ct > 0;
 
 DO $$
 BEGIN

@@ -19,9 +19,16 @@
  *
  * Codex findings covered:
  *   1. ordering race: a draw before or after a prepay leaves the bucket right;
- *      nothing reads created_at (release never reads land_transactions at all).
- *   2. missing / odd audit rows: release ignores land_transactions, so a
+ *      the split never reads created_at or land_transactions.
+ *   2. missing / odd audit rows: the split ignores land_transactions, so a
  *      missing or misclassified USDC row cannot become a vCLAW refund.
+ * Codex round 2 (migration 0078 has NO backfill):
+ *   3. the fulfiller stamps every new prepay row `usdcBucketed: true`; a
+ *      release whose CURRENT tenancy has an unmarked (pre-bucket) prepay row
+ *      refuses 409 `usdc_prepay_unproven` and moves nothing. The fake records
+ *      every land_transactions INSERT and answers the release guard query with
+ *      a JS copy of its SQL predicate; the structural pins below hold the SQL
+ *      text that the copy mirrors.
  */
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { readFileSync } from 'fs';
@@ -100,8 +107,12 @@ type ParcelState = {
   graceElapsed: boolean;
 };
 let parcel: ParcelState;
-/** Adversarial audit rows: returned if ANY code reads land_transactions. */
+/** Adversarial / legacy audit rows: shape { kind, metadata?, created_at }.
+ *  Returned raw if code reads land_transactions OUTSIDE the release guard;
+ *  fed through the guard predicate for the guard query. */
 let auditRows: Row[] = [];
+/** Every land_transactions row the real code paths INSERT (same shape). */
+let ledgerRows: Row[] = [];
 const executed: Captured[] = [];
 const credits: realLedger.LedgerCreditInput[] = [];
 const debits: realLedger.LedgerDebitInput[] = [];
@@ -209,6 +220,43 @@ function parcelRow(): Row {
   };
 }
 
+/** Mirrors the release guard's ISO stamp regex (land-tenure-settlement.ts). */
+const ISO_STAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;
+
+/** JS copy of `currentTenancyHasUnprovenUsdcPrepay`'s WHERE clause. */
+function legacyGuardHits(): Row[] {
+  if (!parcel.acquiredAt) return [];
+  const acquired = parcel.acquiredAt.getTime();
+  const hit = [...ledgerRows, ...auditRows].some((r) => {
+    if (r.kind !== 'land_deposit_prepay_usdc') return false;
+    const meta = (r.metadata ?? {}) as Row;
+    if (meta.usdcBucketed === true) return false; // strict JSON boolean true
+    const stamp = meta.tenancyAcquiredAt;
+    if (typeof stamp === 'string' && ISO_STAMP.test(stamp) && !Number.isNaN(Date.parse(stamp))) {
+      return Math.abs(Date.parse(stamp) - acquired) <= 1;
+    }
+    return (r.created_at as Date).getTime() >= acquired;
+  });
+  return hit ? [{ hit: 1 }] : [];
+}
+
+function isLegacyGuardQuery(t: string): boolean {
+  return t.includes('FROM land_transactions') && t.includes("'usdcBucketed'");
+}
+
+function recordLandTransaction(flat: Captured): void {
+  const kind = flat.text.match(/VALUES \('([a-z_]+)'/)?.[1];
+  const metaParam = [...flat.params]
+    .reverse()
+    .find((p) => typeof p === 'string' && p.startsWith('{'));
+  ledgerRows.push({
+    kind,
+    metadata: metaParam ? (JSON.parse(metaParam as string) as Row) : {},
+    created_at: new Date(),
+  });
+}
+
 function route(q: unknown): Row[] {
   const flat = flattenSql(q);
   executed.push(flat);
@@ -217,8 +265,12 @@ function route(q: unknown): Row[] {
   if (t.includes('FROM avatars') && t.includes('FOR UPDATE')) return [{ user_id: USER }];
   if (t.includes('land_tenure_settlements')) return [];
   if (t.includes('market_deed_locks')) return [];
+  if (isLegacyGuardQuery(t)) return legacyGuardHits();
   if (t.includes('FROM land_transactions')) return auditRows;
-  if (t.includes('INSERT INTO land_transactions')) return [];
+  if (t.includes('INSERT INTO land_transactions')) {
+    recordLandTransaction(flat);
+    return [];
+  }
   if (t.includes('UPDATE land_structures')) return [];
   if (t.includes('UPDATE land_parcels')) {
     applyParcelUpdate(flat);
@@ -276,10 +328,18 @@ mock.module('../clv-swap-executor', () => ({
 }));
 
 const settlement = await import('../land-tenure-settlement');
-const { settleTenureRelease, settleRentPrepay, USDC_RENT_PREPAY_FORFEIT_REASON } = settlement;
+const {
+  settleTenureRelease,
+  settleRentPrepay,
+  USDC_RENT_PREPAY_FORFEIT_REASON,
+  USDC_PREPAY_BUCKETED_MARKER,
+  USDC_PREPAY_UNPROVEN_CODE,
+  USDC_PREPAY_UNPROVEN_MESSAGE,
+  LandTenureSettlementError,
+} = settlement;
 const { processDueParcel } = await import('../land-rent-sweeper');
 const checkout = await import('../x402-checkout');
-await import('../checkout-fulfillers/rent-prepay');
+const rentPrepay = await import('../checkout-fulfillers/rent-prepay');
 
 if (!DB_URL_WAS_SET) delete process.env.DATABASE_URL;
 
@@ -352,6 +412,7 @@ beforeEach(() => {
   enqueued.length = 0;
   snapshots.length = 0;
   auditRows = [];
+  ledgerRows = [];
   startTenancy(2000);
 });
 
@@ -364,8 +425,14 @@ function expectInvariantHeldEveryStep(): void {
   }
 }
 
+/** True when any land_transactions read OTHER than the legacy guard ran (the
+ *  guard can only refuse; it never feeds the split). */
 function releaseReadAuditRows(): boolean {
-  return executed.some((q) => q.text.includes('FROM land_transactions'));
+  return executed.some((q) => q.text.includes('FROM land_transactions') && !isLegacyGuardQuery(q.text));
+}
+
+function legacyGuardRan(): boolean {
+  return executed.some((q) => isLegacyGuardQuery(q.text));
 }
 
 function refundRowMeta(): Row {
@@ -487,13 +554,20 @@ describe('M8 bucket — ordering race (Codex finding 1)', () => {
     // Adversarial audit rows: the prepay "created_at" sorts BEFORE the draw
     // (transaction start time). The old replay would have paid the draw from
     // USDC and refunded the prepay as vCLAW. Release must not care.
+    // (Marked like every row the fulfiller writes since Codex round 2.)
     auditRows = [
-      { kind: 'land_deposit_prepay_usdc', amount_ct: 1000, created_at: new Date('2026-09-07T23:59:59Z') },
+      {
+        kind: 'land_deposit_prepay_usdc',
+        amount_ct: 1000,
+        metadata: { usdcBucketed: true, tenancyAcquiredAt: ACQUIRED },
+        created_at: new Date('2026-09-07T23:59:59Z'),
+      },
       { kind: 'rent_payment', amount_ct: 1000, created_at: new Date('2026-09-08T00:00:00Z') },
     ];
     const out = await release();
     expect(out).toMatchObject({ refundedCt: 1000, forfeitedUsdcPrepayCt: 1000 });
     expect(releaseReadAuditRows()).toBe(false);
+    expect(legacyGuardRan()).toBe(true);
     expectInvariantHeldEveryStep();
   });
 
@@ -503,7 +577,12 @@ describe('M8 bucket — ordering race (Codex finding 1)', () => {
     expect(parcel).toMatchObject({ remaining: 2000, usdc: 0 });
     auditRows = [
       { kind: 'rent_payment', amount_ct: 1000, created_at: new Date('2026-09-07T00:00:00Z') },
-      { kind: 'land_deposit_prepay_usdc', amount_ct: 1000, created_at: new Date('2026-09-08T00:00:00Z') },
+      {
+        kind: 'land_deposit_prepay_usdc',
+        amount_ct: 1000,
+        metadata: { usdcBucketed: true, tenancyAcquiredAt: ACQUIRED },
+        created_at: new Date('2026-09-08T00:00:00Z'),
+      },
     ];
     const out = await release();
     expect(out).toMatchObject({ refundedCt: 2000, forfeitedUsdcPrepayCt: 0 });
@@ -526,7 +605,9 @@ describe('M8 bucket — missing or odd audit rows (Codex finding 2)', () => {
     expect(credits[0]).toMatchObject({ avatarId: AVATAR, amount: 2000, reason: 'land_deposit_refund' });
   });
 
-  it('an ODD audit row (wrong tenancy stamp, bad metadata) changes nothing', async () => {
+  it('an ODD audit row (prior-tenancy date, misplaced stamp key) changes nothing', async () => {
+    // The first row is unmarked but dated 2020 (before acquired_at), so it is
+    // a prior-tenancy row and the legacy guard does not refuse.
     await usdcPrepay(700);
     auditRows = [
       {
@@ -601,6 +682,9 @@ describe('M8 settleTenureRelease — outcomes', () => {
     expect((refunds[0]!.metadata as Row).forfeitedUsdcPrepayCt).toBeUndefined();
     expect(refundRowMeta()).toMatchObject({ refundedCt: 1300, forfeitedUsdcPrepayCt: 0, escrowUsdcFundedCt: 0 });
     expect(refundRowMeta().forfeitReason).toBeUndefined();
+    // No USDC rows at all: the legacy guard runs, finds nothing, never refuses.
+    expect(legacyGuardRan()).toBe(true);
+    expect(ledgerRows.some((r) => r.kind === 'land_deposit_prepay_usdc')).toBe(false);
   });
 
   it('mixed escrow refunds only the vCLAW part and forfeits the USDC part', async () => {
@@ -626,6 +710,130 @@ describe('M8 settleTenureRelease — outcomes', () => {
     });
     const insert = executed.find((q) => q.text.includes('land_deposit_refund') && q.text.includes('INSERT'));
     expect(insert!.params).toContain(2000);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4b. Codex round 2 — no backfill; legacy unmarked USDC rows refuse release
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('M8 legacy guard — unmarked USDC prepay rows (Codex round 2)', () => {
+  /** A pre-bucket fulfiller row: no usdcBucketed marker. */
+  function legacyRow(metadata: Row, createdAt = '2026-09-02T00:00:00Z'): Row {
+    return {
+      kind: 'land_deposit_prepay_usdc',
+      amount_ct: 100,
+      metadata: { usdBasis: '1.00', usdCents: 100, ...metadata },
+      created_at: new Date(createdAt),
+    };
+  }
+
+  /** Runs a release that must refuse, and proves nothing moved. */
+  async function expectUnprovenRefusal(): Promise<void> {
+    const before = { ...parcel };
+    const snapshotCount = snapshots.length;
+    executed.length = 0;
+    credits.length = 0;
+    debits.length = 0;
+    const err = await release().then(
+      () => {
+        throw new Error('release should have refused');
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(LandTenureSettlementError);
+    expect(err).toMatchObject({
+      code: 'usdc_prepay_unproven',
+      status: 409,
+      details: { error: USDC_PREPAY_UNPROVEN_MESSAGE },
+    });
+    // The REST mapper (routes/land.ts settlementError) builds
+    // { error: code, code, ...details }: the body is { code, error: <text> }.
+    const e = err as InstanceType<typeof LandTenureSettlementError>;
+    expect({ error: e.code, code: e.code, ...e.details }).toEqual({
+      code: 'usdc_prepay_unproven',
+      error: USDC_PREPAY_UNPROVEN_MESSAGE,
+    });
+    expect(USDC_PREPAY_UNPROVEN_MESSAGE).toContain('An operator must settle this release.');
+    expect(USDC_PREPAY_UNPROVEN_MESSAGE).not.toContain('—');
+    // Nothing moved: no ledger write, no parcel write, no audit or settlement row.
+    expect(credits).toEqual([]);
+    expect(debits).toEqual([]);
+    expect(parcel).toEqual(before);
+    expect(snapshots.length).toBe(snapshotCount);
+    expect(executed.some((q) => /\bUPDATE\s+land_/.test(q.text))).toBe(false);
+    expect(executed.some((q) => q.text.includes('INSERT INTO'))).toBe(false);
+    expect(legacyGuardRan()).toBe(true);
+  }
+
+  it('the fulfiller stamps usdcBucketed: true on every new prepay row', async () => {
+    await usdcPrepay(250);
+    await usdcPrepay(50);
+    const prepays = ledgerRows.filter((r) => r.kind === 'land_deposit_prepay_usdc');
+    expect(prepays).toHaveLength(2);
+    for (const r of prepays) {
+      expect(r.metadata).toMatchObject({
+        usdcBucketed: true,
+        refundable: false,
+        nonRefundableReason: USDC_RENT_PREPAY_FORFEIT_REASON,
+        tenancyAcquiredAt: ACQUIRED,
+      });
+    }
+    expect(rentPrepay.USDC_PREPAY_BUCKETED_MARKER).toBe(USDC_PREPAY_BUCKETED_MARKER);
+  });
+
+  it('marked rows only: normal M8 split (forfeit the bucket, refund the rest)', async () => {
+    await usdcPrepay(1500);
+    await draw();
+    const out = await release();
+    expect(out).toMatchObject({ refundedCt: 2000, forfeitedUsdcPrepayCt: 500 });
+    expect(legacyGuardRan()).toBe(true);
+  });
+
+  it('an unmarked row of the current tenancy WITHOUT a stamp (created after acquired_at) -> 409', async () => {
+    await usdcPrepay(400); // marked; the legacy row below still blocks
+    auditRows = [legacyRow({ refundable: false })];
+    await expectUnprovenRefusal();
+  });
+
+  it('the Codex example (scaled to one week): vCLAW + legacy USDC, one draw, release -> 409, no vCLAW forfeit', async () => {
+    startTenancy(WEEKLY);
+    auditRows = [{ ...legacyRow({}), amount_ct: WEEKLY }]; // legacy prepay, not in the bucket
+    parcel.remaining = 2 * WEEKLY; // the legacy prepay grew the remainder only
+    await draw(); // 2W -> W; the bucket stays 0 (no backfill)
+    expect(parcel).toMatchObject({ remaining: WEEKLY, usdc: 0 });
+    await expectUnprovenRefusal();
+  });
+
+  it('an unmarked row stamped with the current tenancy -> 409', async () => {
+    auditRows = [legacyRow({ tenancyAcquiredAt: ACQUIRED })];
+    await expectUnprovenRefusal();
+  });
+
+  it('the marker must be the JSON boolean true (string "true" or false is unmarked) -> 409', async () => {
+    auditRows = [legacyRow({ usdcBucketed: 'true', tenancyAcquiredAt: ACQUIRED })];
+    await expectUnprovenRefusal();
+    auditRows = [legacyRow({ usdcBucketed: false, tenancyAcquiredAt: ACQUIRED })];
+    await expectUnprovenRefusal();
+  });
+
+  it('prior-tenancy unmarked rows do not block a new tenancy', async () => {
+    await usdcPrepay(300);
+    auditRows = [
+      // Stamped with an OLD tenancy: the stamp wins even though created_at is
+      // after the current acquired_at.
+      legacyRow({ tenancyAcquiredAt: '2026-08-01T00:00:00.000Z' }, '2026-09-05T00:00:00Z'),
+      // No stamp, created before the current acquired_at.
+      legacyRow({}, '2026-08-15T00:00:00Z'),
+    ];
+    const out = await release();
+    expect(out).toMatchObject({ refundedCt: 2000, forfeitedUsdcPrepayCt: 300 });
+    expect(legacyGuardRan()).toBe(true);
+  });
+
+  it('an unparseable stamp falls back to created_at (current tenancy -> 409)', async () => {
+    auditRows = [legacyRow({ tenancyAcquiredAt: 'not-a-date' }, '2026-09-03T00:00:00Z')];
+    await expectUnprovenRefusal();
   });
 });
 
@@ -690,12 +898,62 @@ describe('M8 bucket — structural pins', () => {
   const schema = read(ROOT, 'packages', 'database', 'src', 'schema', 'land.ts');
   const migration = read(ROOT, 'packages', 'database', 'migrations', '0078_land_deposit_usdc_bucket.sql');
 
-  it('the replay split is gone; release reads no land_transactions', () => {
+  it('the replay split is gone; the ONLY land_transactions read is the legacy guard', () => {
     expect(service).not.toContain('splitDepositEscrowByFunding');
     expect(service).not.toContain('depositEscrowEventsForTenancy');
     expect(service).not.toContain('readDepositEscrowLedger');
-    expect(service).not.toContain('FROM land_transactions');
+    expect(service.split('FROM land_transactions').length - 1).toBe(1);
+    const guardStart = service.indexOf('async function currentTenancyHasUnprovenUsdcPrepay(');
+    const guardEnd = service.indexOf('return rows.length > 0;', guardStart);
+    const read = service.indexOf('FROM land_transactions');
+    expect(guardStart).toBeGreaterThan(0);
+    expect(read).toBeGreaterThan(guardStart);
+    expect(read).toBeLessThan(guardEnd);
     expect(service).toContain('forfeitedUsdcPrepayCt = Math.min(usdcFundedCt, remainingCt);');
+  });
+
+  it('the legacy guard SQL: current tenancy, strict marker, acquired_at from the locked row', () => {
+    const guard = service.slice(
+      service.indexOf('async function currentTenancyHasUnprovenUsdcPrepay('),
+      service.indexOf('return rows.length > 0;'),
+    );
+    // The JS copy in this file (legacyGuardHits) mirrors exactly these clauses.
+    expect(guard).toContain("AND t.kind = 'land_deposit_prepay_usdc'");
+    expect(guard).toContain("AND (t.metadata -> 'usdcBucketed') IS DISTINCT FROM 'true'::jsonb");
+    expect(guard).toContain('JOIN land_parcels p ON p.id = t.parcel_id');
+    expect(guard).toContain('WHERE t.parcel_id = ${parcelId}');
+    expect(guard).toContain(
+      "WHEN (t.metadata ->> 'tenancyAcquiredAt') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'",
+    );
+    expect(guard).toContain("AND pg_input_is_valid(t.metadata ->> 'tenancyAcquiredAt', 'timestamptz')");
+    expect(guard).toContain("BETWEEN p.acquired_at - interval '1 millisecond'");
+    expect(guard).toContain("AND p.acquired_at + interval '1 millisecond'");
+    expect(guard).toContain('ELSE t.created_at >= p.acquired_at');
+    expect(ISO_STAMP.source).toBe(
+      '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$',
+    );
+    // The guard runs inside the deposit branch BEFORE the split and the credit.
+    const call = service.indexOf('if (await currentTenancyHasUnprovenUsdcPrepay(tx, parcel.id)) {');
+    expect(call).toBeGreaterThan(0);
+    expect(call).toBeLessThan(service.indexOf('forfeitedUsdcPrepayCt = Math.min(usdcFundedCt, remainingCt);'));
+    const releaseFn = service.indexOf('export async function settleTenureRelease(');
+    expect(releaseFn).toBeGreaterThan(0);
+    expect(call).toBeGreaterThan(releaseFn);
+    expect(service.split('currentTenancyHasUnprovenUsdcPrepay(tx, parcel.id)').length - 1).toBe(1);
+    expect(service).toContain(`USDC_PREPAY_BUCKETED_MARKER = '${USDC_PREPAY_BUCKETED_MARKER}'`);
+    expect(USDC_PREPAY_UNPROVEN_CODE).toBe('usdc_prepay_unproven');
+  });
+
+  it('the REST release maps the 409 through settlementError with the clear text', () => {
+    expect(routes).toContain(
+      "return c.json(\n    { error: err.code, code: err.code, ...err.details },\n    err.status as 400 | 403 | 404 | 409 | 429 | 503,\n  );",
+    );
+    const handler = routes.slice(
+      routes.indexOf("landRoutes.post('/parcels/:parcelId/release'"),
+      routes.indexOf('\nif (false) {', routes.indexOf("landRoutes.post('/parcels/:parcelId/release'")),
+    );
+    expect(handler).toContain('const released = await settleTenureRelease(');
+    expect(handler).toContain('} catch (err) {\n    return settlementError(c, err);\n  }');
   });
 
   it('both sweeper draw statements consume the bucket first; the pool revert zeroes it', () => {
@@ -727,6 +985,8 @@ describe('M8 bucket — structural pins', () => {
     );
     expect(fulfiller).toContain('refundable: false,');
     expect(fulfiller).toContain('tenancyAcquiredAt,');
+    expect(fulfiller).toContain(`USDC_PREPAY_BUCKETED_MARKER = '${USDC_PREPAY_BUCKETED_MARKER}'`);
+    expect(fulfiller).toContain('[USDC_PREPAY_BUCKETED_MARKER]: true,');
     expect(fulfiller).not.toContain('refundable: true');
     const terms =
       'USDC rent prepay is non-refundable. If you release the plot early, the USDC-funded rent is not returned.';
@@ -744,27 +1004,28 @@ describe('M8 bucket — structural pins', () => {
     expect(schema).toContain("'land_parcels_deposit_usdc_funded_within_remaining'");
   });
 
-  it('migration 0078 is additive, idempotent, conservative, and checks AFTER the backfill', () => {
-    expect(migration).toContain(
+  it('migration 0078 is additive and idempotent, with NO backfill (Codex round 2)', () => {
+    const sqlOnly = migration.replace(/--[^\n]*/g, '');
+    expect(sqlOnly).toContain(
       'ADD COLUMN IF NOT EXISTS "deposit_usdc_funded_ct" integer NOT NULL DEFAULT 0;',
     );
-    expect(migration).not.toMatch(/\bDROP\b/);
-    expect(migration).not.toMatch(/ALTER TYPE/);
-    // Backfill: current tenancy USDC rows only, capped by the remainder.
-    expect(migration).toContain('LEAST(p."deposit_remaining_ct"::bigint, s.usdc_ct)');
-    expect(migration).toContain("t.\"kind\" = 'land_deposit_prepay_usdc'");
-    expect(migration).toContain("(t.\"metadata\" ->> 'tenancyAcquiredAt')::timestamptz");
-    expect(migration).toContain('ELSE t."created_at" >= lp."acquired_at"');
-    expect(migration).toContain('AND p."deposit_usdc_funded_ct" = 0');
-    expect(migration).toContain('AND p."tenure" = \'deposit\'');
-    // Named CHECKs behind pg_constraint guards; the bucket<=remainder CHECK
-    // comes after the backfill UPDATE so existing rows already satisfy it.
-    expect(migration).toContain("conname = 'land_parcels_deposit_usdc_funded_nonneg'");
-    expect(migration).toContain("conname = 'land_parcels_deposit_usdc_funded_within_remaining'");
-    const update = migration.indexOf('UPDATE "land_parcels"');
-    expect(update).toBeGreaterThan(migration.indexOf('ADD COLUMN IF NOT EXISTS'));
-    expect(migration.indexOf('ADD CONSTRAINT "land_parcels_deposit_usdc_funded_within_remaining"')).toBeGreaterThan(
-      update,
-    );
+    expect(sqlOnly).not.toMatch(/\bDROP\b/i);
+    expect(sqlOnly).not.toMatch(/ALTER TYPE/i);
+    // No backfill of any kind: no row writes, no read of the audit table.
+    expect(sqlOnly).not.toMatch(/\bUPDATE\b/i);
+    expect(sqlOnly).not.toMatch(/\bINSERT\b/i);
+    expect(sqlOnly).not.toMatch(/\bDELETE\b/i);
+    expect(sqlOnly).not.toContain('land_transactions');
+    expect(sqlOnly).not.toContain('tenancyAcquiredAt');
+    // Every ADD CONSTRAINT sits behind its own pg_constraint guard, so a rerun
+    // is a no-op. Both CHECKs hold at the column default 0 for existing rows:
+    // "0 >= 0", and the second CHECK's first arm is "= 0".
+    expect(sqlOnly.split('ADD CONSTRAINT').length - 1).toBe(2);
+    expect(sqlOnly.split('IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint').length - 1).toBe(2);
+    expect(sqlOnly).toContain("conname = 'land_parcels_deposit_usdc_funded_nonneg'");
+    expect(sqlOnly).toContain("conname = 'land_parcels_deposit_usdc_funded_within_remaining'");
+    expect(sqlOnly).toContain('CHECK ("deposit_usdc_funded_ct" >= 0);');
+    expect(sqlOnly).toMatch(/CHECK \(\s*"deposit_usdc_funded_ct" = 0\s*OR \(/);
+    expect(sqlOnly.indexOf('ADD COLUMN IF NOT EXISTS')).toBeLessThan(sqlOnly.indexOf('ADD CONSTRAINT'));
   });
 });

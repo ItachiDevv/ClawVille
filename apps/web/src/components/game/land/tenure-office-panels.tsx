@@ -109,6 +109,7 @@ function tenureErrorForCode(code: string | undefined): string {
     case 'not_parcel_owner': return 'This parcel is no longer owned by your active avatar.';
     case 'not_deposit_tenure': return 'Only rent-door parcels can receive prepaid rent.';
     case 'deed_locked_by_listing': return 'Remove the live deed listing before releasing this parcel.';
+    case 'usdc_prepay_unproven': return 'This plot has an older USDC rent prepay. An operator must settle this release. Contact support.';
     case 'idempotency_key_conflict': return 'This action key belongs to an earlier parcel state. Reopen the Land Office and try again.';
     case 'autonomous_daily_cap': return 'This agent reached its autonomous daily land-spend limit.';
     // ── Hold-wallet ownership proof ─────────────────────────────────────────

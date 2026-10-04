@@ -37,9 +37,12 @@
  * same UPDATE (and row lock) that adds it to `deposit_remaining_ct`; sweeper
  * draws consume that bucket first; the release path (`settleTenureRelease` in
  * land-tenure-settlement.ts) forfeits LEAST(bucket, remainder) and reads no
- * land_transactions. The audit row still stamps `refundable:false` +
+ * land_transactions for the split. The audit row stamps `refundable:false` +
  * `nonRefundableReason` + `tenancyAcquiredAt` (the parcel's `acquired_at` read
- * under the row lock) for audit and for the migration 0078 backfill.
+ * under the row lock) + `usdcBucketed:true` (this amount is in the bucket).
+ * Migration 0078 has NO backfill (Codex round 2): release refuses with 409
+ * `usdc_prepay_unproven` when the current tenancy has a prepay row without
+ * the `usdcBucketed` marker (a pre-bucket row whose split is unprovable).
  *
  * The sweeper is NOT modified: `decideDepositSweep` (land-rent-sweeper.ts,
  * the single draw-math authority) is reused strictly READ-ONLY below to
@@ -86,6 +89,17 @@ export type RentPrepayRefusal =
  * (`USDC_RENT_PREPAY_FORFEIT_REASON`); a unit test pins the two together.
  */
 export const USDC_RENT_PREPAY_NON_REFUNDABLE_REASON = 'usdc_rent_prepay_non_refundable' as const;
+
+/**
+ * Codex round 2 (2026-10-04): metadata key stamped `true` on every prepay row
+ * this fulfiller writes, in the SAME tx that adds the amount to
+ * `deposit_usdc_funded_ct`. Migration 0078 has no backfill, so a prepay row of
+ * the current tenancy WITHOUT this marker predates the bucket; the release
+ * path refuses it with 409 `usdc_prepay_unproven`. `land-tenure-settlement.ts`
+ * carries the same literal (`USDC_PREPAY_BUCKETED_MARKER`); a unit test pins
+ * the two together.
+ */
+export const USDC_PREPAY_BUCKETED_MARKER = 'usdcBucketed' as const;
 
 /** Plain-language checkout disclosure (M8). Returned with the quote item and
  *  the fulfillment detail so every surface can show the same words. */
@@ -217,7 +231,8 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
   // backing is the settled USDC (usdBasis + txSignature + checkoutId below),
   // not a ledger debit. M8 (2026-10-04): `refundable:false` — the USDC-funded
   // part of the escrow FORFEITS on release (see the header). The release path
-  // reads the row's `deposit_usdc_funded_ct`, never this audit row.
+  // takes the split from the row's `deposit_usdc_funded_ct`; it reads these
+  // audit rows only to refuse a pre-bucket row that lacks the marker.
   const tenancyAcquiredAt =
     p.acquired_at == null ? null : new Date(p.acquired_at).toISOString();
   const meta = JSON.stringify({
@@ -226,6 +241,7 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
     refundable: false,
     nonRefundableReason: USDC_RENT_PREPAY_NON_REFUNDABLE_REASON,
     tenancyAcquiredAt,
+    [USDC_PREPAY_BUCKETED_MARKER]: true,
     usdBasis: ctx.usdBasis,
     usdCents: ctx.usdCents,
     txSignature: ctx.txSignature,
