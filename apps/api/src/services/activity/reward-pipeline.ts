@@ -18,7 +18,11 @@
  *      All four steps execute inside ONE composed DB transaction so a
  *      crash leaves no half-credited rows.
  *   3. Inserts the `activity_results` row + credits via `creditClawTokens`
- *      composed in the same `tx`.
+ *      composed in the same `tx`. The credit is clamped to the avatar's
+ *      remaining daily activity allowance (`claimDailyRewardCap`,
+ *      DAILY_REWARD_CAPS.activity vCLAW per UTC day, security pass
+ *      2026-10-04) and the row is rewritten to the clamped amount, so
+ *      `tokensAwarded` always equals the ledger credit.
  *   4. Bots: insert `activity_results` with `tokensAwarded=0` +
  *      `leaderboardPoints=0` and DO NOT call `creditClawTokens` — bot
  *      avatarIds belong to the system user; crediting them inflates the
@@ -42,6 +46,7 @@ import {
   type ActivityRewardConfig,
 } from '@clawville/database';
 import { creditClawTokens } from '../claw-token-ledger';
+import { claimDailyRewardCap } from '../daily-reward-cap';
 import { logEvent, ACTIVITY_EVENT_TYPES } from '../event-logger';
 import type { ActivityMatchPlacedPayload } from '../event-logger';
 import {
@@ -199,6 +204,12 @@ export interface RewardBreakdown {
    */
   perfectStreakBonus: number;
   focusBonus: number;
+  /**
+   * Security pass 2026-10-04 — vCLAW withheld by the daily activity cap
+   * (DAILY_REWARD_CAPS.activity per avatar per UTC day). Present only when the
+   * award was clamped; the lines above minus this equal `tokensAwarded`.
+   */
+  dailyCapReduction?: number;
   /** Set true when the participant is a bot (no credit, no breakdown line) */
   bot: boolean;
 }
@@ -550,13 +561,37 @@ export async function issueRewardsForRoom(
       // emit another placement event, or re-deliver a reward preview.
       if (!resultRow) continue;
 
-      // Credit tokens for non-bots only. Compose into the same tx so a
-      // ledger failure rolls back the result row too.
+      // Daily activity faucet cap (security pass, founder decision 2026-10-04):
+      // at most DAILY_REWARD_CAPS.activity vCLAW per avatar per UTC day across
+      // ALL activities, human and agent alike (keyed by avatars.id). Claimed
+      // only AFTER this room's result row won its unique insert, so a duplicate
+      // never consumes allowance. The award is clamped to the remainder and the
+      // row is rewritten to the clamped value, so `activity_results.
+      // tokens_awarded` always equals what the ledger credited. Leaderboard
+      // points, XP and personal bests are NOT capped.
+      let tokensCredited = tokensAwarded;
       if (!isBot && tokensAwarded > 0) {
+        tokensCredited = await claimDailyRewardCap(tx, {
+          avatarId: sim.avatarId,
+          kind: 'activity',
+          amount: tokensAwarded,
+        });
+        if (tokensCredited !== tokensAwarded) {
+          breakdown.dailyCapReduction = tokensAwarded - tokensCredited;
+          await tx
+            .update(activityResults)
+            .set({ tokensAwarded: tokensCredited })
+            .where(eq(activityResults.id, resultRow.id));
+        }
+      }
+
+      // Credit tokens for non-bots only. Compose into the same tx so a
+      // ledger failure rolls back the result row and the cap claim too.
+      if (!isBot && tokensCredited > 0) {
         await creditClawTokens(
           {
             avatarId: sim.avatarId,
-            amount: tokensAwarded,
+            amount: tokensCredited,
             reason: 'activity_match_placed',
             source: 'simulation',
             actorKind: participant.subjectType === 'agent' ? 'agent' : 'human',
@@ -570,6 +605,9 @@ export async function issueRewardsForRoom(
                 personalBestBonus: breakdown.personalBestBonus,
                 perfectStreakBonus: breakdown.perfectStreakBonus,
                 focusBonus: breakdown.focusBonus,
+                ...(breakdown.dailyCapReduction
+                  ? { dailyCapReduction: breakdown.dailyCapReduction }
+                  : {}),
               },
             },
           },
@@ -602,7 +640,7 @@ export async function issueRewardsForRoom(
         placement: sim.placement,
         score,
         scoreMs,
-        tokensAwarded,
+        tokensAwarded: tokensCredited,
         leaderboardPoints,
         isPersonalBest,
         breakdown,

@@ -23,6 +23,12 @@
  * This is intentionally light — the heavier ledger (`claw-token-ledger.ts`)
  * still records every transaction with balanceAfter, so if two rewards do
  * slip through a pod restart the audit trail shows them.
+ *
+ * NOT THE DAILY LIMIT (security pass 2026-10-04): this cooldown only spaces
+ * turns. The hard limit is the DURABLE per-avatar cap of
+ * `DAILY_REWARD_CAPS.nori_chat` paid turns per UTC day, claimed in the same
+ * transaction as the ledger credit (`daily-reward-cap.ts`, table
+ * `daily_reward_caps`). A restart clears this Map but never the daily cap.
  */
 
 const COOLDOWN_MS = 60_000;

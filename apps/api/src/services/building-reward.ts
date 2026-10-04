@@ -27,6 +27,7 @@ import {
   creditClawTokens,
   type LedgerCreditInput,
 } from './claw-token-ledger';
+import { claimDailyRewardCap } from './daily-reward-cap';
 
 // ---------------------------------------------------------------------------
 // resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
@@ -127,6 +128,9 @@ export function humanBuildingChatRewardAvatarId(
 // the second then observes the committed row and returns false (NO double-credit).
 // NO legit-visit regression: a DIFFERENT building or a NEW UTC day is a fresh key,
 // so distinct visits/chats still each pay once. Returns true iff it credited 1 CT.
+// 'building_visit' credits ALSO claim the per-avatar daily paid-visit cap
+// (daily-reward-cap.ts) in the same tx, so false means "already rewarded for
+// this building today" OR "daily paid-visit cap reached".
 export async function creditBuildingRewardOncePerDay(
   opts: {
     avatarId: string;
@@ -163,6 +167,22 @@ export async function creditBuildingRewardOncePerDay(
         AND created_at >= ${startOfUtcDayIso}
       LIMIT 1`);
     if (existing) return false; // already rewarded for this (avatar, building, reason) today
+    // Security pass 2026-10-04: a paid building VISIT also draws from the
+    // per-avatar daily paid-visit cap (DAILY_REWARD_CAPS.building_visit),
+    // shared with the idle-avatar simulation. Over the cap: no credit.
+    // claimDailyRewardCap re-locks the SAME avatars row FOR UPDATE; this tx
+    // already holds that lock, so the second lock is a no-op (a row lock held
+    // by the current transaction never blocks it), and the order stays
+    // avatar -> counter. The claim shares this tx, so a credit failure below
+    // rolls the claim back.
+    if (opts.reason === 'building_visit') {
+      const granted = await claimDailyRewardCap(tx, {
+        avatarId: opts.avatarId,
+        kind: 'building_visit',
+        amount: 1,
+      });
+      if (granted < 1) return false;
+    }
     await deps.credit(
       {
         avatarId: opts.avatarId,

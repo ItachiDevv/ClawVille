@@ -3,6 +3,12 @@
  * No timers or sleep-based races: deferred gates choose the exact winner.
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+
+const dialect = new PgDialect();
+/** Committed daily_reward_caps counters, keyed `${avatarId}:${kind}`. */
+const capUsed = new Map<string, number>();
 
 function deferred() {
   let resolve!: () => void;
@@ -118,6 +124,7 @@ const dbMock = {
   },
   async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
     const localResults = new Map(results);
+    const localCap = new Map(capUsed);
     const pendingCredits: Array<{ roomId: string; amount: number }> = [];
     const tx = {
       pendingCredits,
@@ -149,13 +156,30 @@ const dbMock = {
           },
         };
       },
-      execute() {
+      execute(q: unknown) {
+        // Daily activity cap claim (security pass 2026-10-04): model the
+        // counter row inside this tx so a rolled-back reward releases it.
+        const { sql: text, params } = dialect.sqlToQuery(q as SQL);
+        if (text.includes('INSERT INTO daily_reward_caps')) {
+          const [avatarId, , kind, want, cap] = params as [string, string, string, number, number];
+          const key = `${avatarId}:${kind}`;
+          const used = localCap.get(key) ?? 0;
+          if (used >= cap) return Promise.resolve([]);
+          const granted = Math.min(want, cap - used);
+          localCap.set(key, used + granted);
+          return Promise.resolve([{ granted }]);
+        }
+        if (text.includes('FROM avatars WHERE id')) {
+          return Promise.resolve([{ present: 1 }]);
+        }
         return Promise.resolve([{ user_id: 'user-1', claw_tokens: 100 }]);
       },
     };
     const value = await fn(tx);
     results.clear();
     for (const [key, row] of localResults) results.set(key, row);
+    capUsed.clear();
+    for (const [key, used] of localCap) capUsed.set(key, used);
     credits.push(...pendingCredits);
     resultCommitted.resolve();
     return value;
@@ -330,6 +354,7 @@ function settle(roomId: string, bestLapMs: number) {
 beforeEach(() => {
   claims.clear();
   results.clear();
+  capUsed.clear();
   credits.length = 0;
   failCreditOnce.clear();
   duplicateMode = false;
@@ -376,6 +401,8 @@ describe('durable PB reward ownership', () => {
     );
     expect(results.has(claimKey(roomA, AVATAR_ID))).toBe(false);
     expect(claims.has(claimKey(roomA, AVATAR_ID))).toBe(true);
+    // The failed credit rolled the daily-cap claim back with its tx.
+    expect(capUsed.size).toBe(0);
 
     const settledB = await settle(roomB, 12_000);
     expect(settledB[0].breakdown.personalBestBonus).toBe(10);
@@ -389,5 +416,7 @@ describe('durable PB reward ownership', () => {
       { roomId: roomB, amount: 25 },
       { roomId: roomA, amount: 25 },
     ]);
+    // Only the two committed credits consumed daily allowance.
+    expect(capUsed.get(`${AVATAR_ID}:activity`)).toBe(50);
   });
 });

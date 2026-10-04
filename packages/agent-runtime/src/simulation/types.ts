@@ -48,7 +48,11 @@ export type ActivityEmojis = Record<NpcActivity, string>;
  * agent-runtime doesn't depend on @clawville/database directly.
  */
 export interface AvatarDbHooks {
-  awardToken: (avatarId: string) => Promise<void>;
+  /**
+   * Pay one idle building visit. Resolves to the vCLAW actually credited:
+   * 0 once the avatar's daily paid-visit cap is reached.
+   */
+  awardToken: (avatarId: string) => Promise<number>;
   logActivity: (
     avatarId: string,
     activityType: string,
