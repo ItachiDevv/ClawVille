@@ -17,7 +17,9 @@
  *     escrow-conservation invariant). Full-week draw → advance + clear grace.
  *     Partial/zero draw (remainder short) → open grace, do NOT advance. Grace
  *     elapsed → LAPSE: any remainder FORFEITS to the treasury (nothing refunds
- *     on lapse), parcel reverts to the pool, structure archives.
+ *     on lapse), parcel reverts to the pool, structure archives. M8: each
+ *     draw also consumes the USDC-funded bucket (`deposit_usdc_funded_ct`)
+ *     FIRST in the same UPDATE; the lapse revert zeroes it.
  *   - `hold` (Phase B2 hold-to-keep): unless grandfathered, RE-CHECK the
  *     subject's CLV against the stacked thresholds of the owner's holds WITH
  *     THE SAME `hold_subject` — 'user' holds back the linked self-custody
@@ -190,6 +192,8 @@ type LockedParcelRow = {
   tenure: SweepableTenure;
   tenure_terms_version: number | string | null;
   deposit_remaining_ct: number | string | null;
+  /** M8: USDC-funded part of the remainder (migration 0078; NOT NULL). */
+  deposit_usdc_funded_ct: number | string | null;
   hold_subject: 'user' | 'agent' | null;
   grandfathered: unknown;
   rent_due: unknown;
@@ -217,6 +221,7 @@ async function revertParcelToPool(tx: LandTx, parcelId: string): Promise<void> {
             grace_until = NULL,
             deposit_ct = NULL,
             deposit_remaining_ct = NULL,
+            deposit_usdc_funded_ct = 0,
             hold_threshold_ct = NULL,
             hold_subject = NULL,
             grandfathered = false,
@@ -386,6 +391,12 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
 async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
   const ownerAvatarId = p.owner_avatar_id;
   const remaining = p.deposit_remaining_ct == null ? 0 : Number(p.deposit_remaining_ct);
+  // M8: USDC-funded part of the remainder, read under the row lock. Used ONLY
+  // for audit metadata here; the bucket math itself runs inside the UPDATE.
+  const usdcFunded = Math.min(
+    remaining,
+    Math.max(0, Number(p.deposit_usdc_funded_ct ?? 0) || 0),
+  );
   const rentCt = p.rent_ct_weekly == null ? 0 : Number(p.rent_ct_weekly);
 
   const decision = decideDepositSweep({
@@ -426,6 +437,12 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
       // (conservation: draws + forfeit close the escrow at exactly what was
       // paid in). A null treasury degrades to a burn (pre-T0 behavior) — the
       // eviction itself is never blocked.
+      // M8 NOTE (2026-10-04, unchanged lapse behavior): the forfeit includes
+      // any USDC-funded part still in escrow (`usdcFunded`); it reaches the
+      // treasury like a weekly draw of USDC-funded escrow does (a backed
+      // emission). The tenant gets nothing back on lapse, vCLAW or USDC. The
+      // amount is recorded on the eviction row; revertParcelToPool zeroes the
+      // bucket with the remainder.
       let creditLedgerId: string | null = null;
       if (decision.forfeitCt > 0) {
         const treasuryId = await getHouseTreasuryAvatarId();
@@ -460,6 +477,7 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
         reason: 'deposit_exhausted',
         tenure: 'deposit',
         forfeitedCt: decision.forfeitCt,
+        forfeitedUsdcFundedCt: Math.min(usdcFunded, decision.forfeitCt),
         tier: p.tier,
         parcelCode: p.parcel_code,
       });
@@ -514,11 +532,17 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
         );
       }
 
+      // M8 (2026-10-04): every escrow draw consumes the USDC-funded bucket
+      // FIRST, in the same UPDATE as the remainder (prepaid rent pays rent
+      // before the refundable vCLAW deposit). Postgres evaluates every SET
+      // expression against the pre-update row, so both columns move from the
+      // same locked snapshot and 0 <= bucket <= remainder holds afterwards.
       if (decision.fullWeek) {
         // Full week covered — decrement the remainder, advance, clear grace.
         await tx.execute(
           sql`UPDATE land_parcels
               SET deposit_remaining_ct = deposit_remaining_ct - ${decision.drawnCt},
+                  deposit_usdc_funded_ct = deposit_usdc_funded_ct - LEAST(${decision.drawnCt}, deposit_usdc_funded_ct),
                   rent_paid_through = now() + make_interval(days => ${RENT_PERIOD_DAYS}),
                   grace_until = NULL,
                   updated_at = now()
@@ -533,6 +557,7 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
         await tx.execute(
           sql`UPDATE land_parcels
               SET deposit_remaining_ct = deposit_remaining_ct - ${decision.drawnCt},
+                  deposit_usdc_funded_ct = deposit_usdc_funded_ct - LEAST(${decision.drawnCt}, deposit_usdc_funded_ct),
                   grace_until = COALESCE(grace_until, now() + make_interval(days => ${RENT_GRACE_DAYS})),
                   updated_at = now()
               WHERE id = ${p.id}`,
@@ -545,6 +570,7 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
         parcelCode: p.parcel_code,
         period: 'weekly',
         drawnCt: decision.drawnCt,
+        usdcFundedDrawnCt: Math.min(usdcFunded, decision.drawnCt),
         fullWeek: decision.fullWeek,
         remainingAfter: remaining - decision.drawnCt,
       });
@@ -1014,7 +1040,7 @@ export async function processDueParcel(parcelId: string): Promise<SweepAction> {
       const rows = await tx.execute<LockedParcelRow>(
         sql`SELECT id, parcel_code, tier, owner_avatar_id, rent_ct_weekly, tenure,
                  tenure_terms_version,
-                 deposit_remaining_ct, hold_subject, grandfathered,
+                 deposit_remaining_ct, deposit_usdc_funded_ct, hold_subject, grandfathered,
                  (rent_paid_through IS NOT NULL AND rent_paid_through <= now()) AS rent_due,
                  (grace_until IS NOT NULL) AS has_grace,
                  (grace_until IS NOT NULL AND grace_until <= now()) AS grace_elapsed

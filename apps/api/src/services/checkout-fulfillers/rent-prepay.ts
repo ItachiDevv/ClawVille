@@ -32,12 +32,14 @@
  * On a voluntary release, the USDC-funded part of the remainder is FORFEITED:
  * no vCLAW refund, no USDC refund, and no ledger credit anywhere (it is NOT
  * minted to the treasury either — the dollars already left via the same-tx
- * `enqueueClvBuy`). Only the vCLAW-funded part refunds. The release path
- * (`settleTenureRelease` in land-tenure-settlement.ts) derives the split from
- * the tenancy's land_transactions; this fulfiller stamps the provenance it
- * needs: `refundable:false` + `nonRefundableReason` + `tenancyAcquiredAt`
- * (the parcel's `acquired_at` read under the row lock, which binds the
- * prepay to exactly one tenancy without trusting row timestamps).
+ * `enqueueClvBuy`). Only the vCLAW-funded part refunds. The split lives ON THE
+ * PARCEL ROW: this fulfiller adds the amount to `deposit_usdc_funded_ct` in the
+ * same UPDATE (and row lock) that adds it to `deposit_remaining_ct`; sweeper
+ * draws consume that bucket first; the release path (`settleTenureRelease` in
+ * land-tenure-settlement.ts) forfeits LEAST(bucket, remainder) and reads no
+ * land_transactions. The audit row still stamps `refundable:false` +
+ * `nonRefundableReason` + `tenancyAcquiredAt` (the parcel's `acquired_at` read
+ * under the row lock) for audit and for the migration 0078 backfill.
  *
  * The sweeper is NOT modified: `decideDepositSweep` (land-rent-sweeper.ts,
  * the single draw-math authority) is reused strictly READ-ONLY below to
@@ -199,10 +201,13 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
 
   // ESCROW CREDIT — NO avatar debit (see the invariant-extension header). The
   // in-DB `deposit_remaining_ct + amount` form matches deposit-topup so the
-  // nonneg CHECK + concurrent-safety shape stay identical.
+  // nonneg CHECK + concurrent-safety shape stay identical. M8: the SAME
+  // statement grows the USDC-funded bucket by the same amount, under the row
+  // lock taken above, so the bucket can never drift from the remainder.
   await ctx.tx.execute(
     sql`UPDATE land_parcels
         SET deposit_remaining_ct = COALESCE(deposit_remaining_ct, 0) + ${amountCt},
+            deposit_usdc_funded_ct = deposit_usdc_funded_ct + ${amountCt},
             grace_until = CASE WHEN ${coversWeek} THEN NULL ELSE grace_until END,
             updated_at = now()
         WHERE id = ${p.id}`,
@@ -212,7 +217,7 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
   // backing is the settled USDC (usdBasis + txSignature + checkoutId below),
   // not a ledger debit. M8 (2026-10-04): `refundable:false` — the USDC-funded
   // part of the escrow FORFEITS on release (see the header). The release path
-  // matches this row to the tenancy by `tenancyAcquiredAt`.
+  // reads the row's `deposit_usdc_funded_ct`, never this audit row.
   const tenancyAcquiredAt =
     p.acquired_at == null ? null : new Date(p.acquired_at).toISOString();
   const meta = JSON.stringify({

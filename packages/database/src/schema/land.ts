@@ -294,6 +294,21 @@ export const landParcels = pgTable(
      */
     depositRemainingCt: integer('deposit_remaining_ct'),
     /**
+     * M8 (2026-10-04, migration 0078): the USDC-funded part of
+     * `deposit_remaining_ct` (units). It is a running balance on the row,
+     * changed ONLY in the same UPDATE that changes `deposit_remaining_ct`,
+     * under the parcel row lock:
+     *   - USDC prepay (rent-prepay fulfiller): += amount (both columns);
+     *   - sweeper draw: -= LEAST(draw, deposit_usdc_funded_ct) (USDC first);
+     *   - claim (new tenancy): set to 0;
+     *   - release / lapse / deed flip (escrow closed): set to 0.
+     * vCLAW top-ups do not change it. On release the forfeit is
+     * LEAST(deposit_usdc_funded_ct, deposit_remaining_ct) and only the rest
+     * refunds as vCLAW. No other source (no ledger replay, no row timestamps)
+     * decides the split. CHECKs: >= 0, and 0 or <= deposit_remaining_ct.
+     */
+    depositUsdcFundedCt: integer('deposit_usdc_funded_ct').notNull().default(0),
+    /**
      * B2: the CLV hold threshold STAMPED at claim time from
      * `LAND_HOLD_THRESHOLDS_CLV` — in CLV **uiAmount** (human token count),
      * despite the `_ct` suffix the land columns share. The sweeper re-checks
@@ -354,6 +369,23 @@ export const landParcels = pgTable(
     depositRemainingNonNeg: check(
       'land_parcels_deposit_remaining_nonneg',
       sql`${t.depositRemainingCt} IS NULL OR ${t.depositRemainingCt} >= 0`,
+    ),
+    /** M8 (migration 0078): the USDC-funded bucket is never negative. */
+    depositUsdcFundedNonNeg: check(
+      'land_parcels_deposit_usdc_funded_nonneg',
+      sql`${t.depositUsdcFundedCt} >= 0`,
+    ),
+    /**
+     * M8 (migration 0078): the USDC-funded bucket is part of the escrow, so it
+     * is 0 when there is no escrow and never above the remainder. Every
+     * mutation path keeps this in ONE statement (see `depositUsdcFundedCt`).
+     */
+    depositUsdcFundedWithinRemaining: check(
+      'land_parcels_deposit_usdc_funded_within_remaining',
+      sql`${t.depositUsdcFundedCt} = 0 OR (
+        ${t.depositRemainingCt} IS NOT NULL
+        AND ${t.depositUsdcFundedCt} <= ${t.depositRemainingCt}
+      )`,
     ),
     tenureEscrowShape: check(
       'land_parcels_tenure_escrow_shape',

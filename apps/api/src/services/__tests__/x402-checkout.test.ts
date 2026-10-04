@@ -1081,6 +1081,11 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
     // Escrow increment shape matches deposit-topup (in-DB addition; COALESCE
     // hardening landed with the P2 tenure change, cede5d2a).
     expect(texts[2]).toContain('deposit_remaining_ct = COALESCE(deposit_remaining_ct, 0) +');
+    // M8 bucket (migration 0078): the SAME statement grows the USDC-funded
+    // bucket by the same amount, so release can forfeit it without a replay.
+    expect(texts[2]).toContain('deposit_usdc_funded_ct = deposit_usdc_funded_ct +');
+    const escrowParams = flattenSql(executeCalls[2]).params;
+    expect(escrowParams.filter((p) => p === 500)).toHaveLength(2);
     // The NEW audit kind, usd_basis-stamped, NO debit_ledger_tx_id column.
     expect(texts[3]).toContain('land_deposit_prepay_usdc');
     expect(texts[3]).not.toContain('debit_ledger_tx_id');
@@ -1095,8 +1100,8 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
       checkoutId: 'checkout-77',
       newRemaining: 540,
       graceCleared: true,
-      // M8 (2026-10-04): USDC rent prepay is non-refundable; the release path
-      // binds this row to the tenancy by tenancyAcquiredAt.
+      // M8 (2026-10-04): USDC rent prepay is non-refundable. The release path
+      // reads the row's deposit_usdc_funded_ct; this stamp is audit only.
       refundable: false,
       nonRefundableReason: 'usdc_rent_prepay_non_refundable',
       tenancyAcquiredAt: '2026-07-01T00:00:00.000Z',
