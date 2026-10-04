@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-04 10:54 UTC (session tradeProd, arena lead). **PROD = `a41eea7c` (PROMOTION #2, PR #310 merged 10:41:29Z), VERIFIED:** both prod containers `a41eea7c` healthy (api 10:49:22Z, web 10:50:26Z), /health 4/4, `protocol_version: 82`, house board 200, `review_timeout` in the running api, `ALLOW_TEST_PARTNER_PUBKEY` absent, 0 uncaught errors in the api log; headless prod /game 1440x900 loaded in about 15 s and rendered (console: only the two guest 401s; the older `PaletteMaterial001` pipeline error did NOT appear this run, it is intermittent, 3da is on it). Deploy run 37196180035 green on attempt 1. **Staging = `e622e90a`** (api 10:37:31Z, web flipped before 10:41Z, both healthy; same app code as prod). SCHEMA: `synced`.
+Last Audited: 2026-10-04 13:36 UTC (session tradeProd, arena lead). **Staging is receiving ONE web/3D fix** on top of `bbbb7182` (branch `fix/webgpu-palette-binding`, 3da, Codex E3 APPROVE after one fix round): `makeObject3DWebGPUSafe` makes every Nearest/Nearest material texture filterable (NearestMipmapNearest with mips, else Linear; `needsUpdate` once when already uploaded). Root cause: three r185 gives an unfilterable texture no sampler, and `compileAsync` can build the bind-group layout and the WGSL against different textures through the shared MaterialNode cache, so `renderPipeline_PaletteMaterial001` fails and the hermit crabs stay invisible for the session (3 of 7 cold prod loads). Local: 0 errors in 16 WebGPU loads (3 of 8 before). No API change, no migration, PROTOCOL_VERSION stays 82, no GLB or `?v=` change. Verification PENDING; founder eyes in FOUNDER-REVIEW (WORLD / 3D). **PROD = `a41eea7c`** (verified, see Prior). SCHEMA: `synced`.
+
+Prior — Last Audited: 2026-10-04 10:54 UTC (session tradeProd, arena lead). **PROD = `a41eea7c` (PROMOTION #2, PR #310 merged 10:41:29Z), VERIFIED:** both prod containers `a41eea7c` healthy (api 10:49:22Z, web 10:50:26Z), /health 4/4, `protocol_version: 82`, house board 200, `review_timeout` in the running api, `ALLOW_TEST_PARTNER_PUBKEY` absent, 0 uncaught errors in the api log; headless prod /game 1440x900 loaded in about 15 s and rendered (console: only the two guest 401s; the older `PaletteMaterial001` pipeline error did NOT appear this run, it is intermittent, 3da is on it). Deploy run 37196180035 green on attempt 1. **Staging = `e622e90a`** (api 10:37:31Z, web flipped before 10:41Z, both healthy; same app code as prod). SCHEMA: `synced`.
 
 Prior — Last Audited: 2026-10-04 10:24 UTC (session tradeProd, arena lead). **Staging is receiving the P5 withdraw LIVENESS fix** on top of `c11d2064` (`aa348d79` + `374b3b72`): every withdrawal without its own proof reaches `needs_review` within 24 h (a signature that never finalizes, a missing transaction body, repeated read errors, or a short ClawPump call budget no longer keep the row open and block the player's next withdrawal); new neutral reconcile code `review_timeout`. Found by the Codex check of the prod code `82d6921a`. No migration (the code list is app-side; the DB CHECK allows the code), PROTOCOL_VERSION stays 82. Prod has 0 withdrawals and 0 addresses (read 10:22Z). Verification PENDING; then promotion #2 under the founder's go. **PROD = `b179498a`** (verified, see Prior). SCHEMA: `synced`.
 
@@ -534,6 +536,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-04 (session tradeProd, 3da fix) - hermit crabs no longer go invisible on WebGPU (PaletteMaterial001)
+
+- **What (players):** on WebGPU the hermit crab NPCs could stay invisible for a whole session (prod console: `Async render pipeline creation failed (renderPipeline_PaletteMaterial001_...): Binding doesn't exist ... @group(1) @binding(7)`). The fix changes the filter of Nearest/Nearest material textures at load (crabs; the wandering seahorse has the same trap). Up close unchanged; far away slightly softer.
+- **Root cause (3da, GPU hook on prod):** three r185 treats a Nearest/Nearest texture as unfilterable (no sampler); `compileAsync` yields 6 times inside `buildAsync()`, and the shared `MaterialNode.getCache` node can point at another material's texture between yields, so the layout (6 entries) and the WGSL (8 entries) disagree; the failed pipeline is skipped and its cache key ignores the layout. Intermittent by load order (3/7 cold prod loads; 0 on a warm cache).
+- **Review:** Codex E3 on `84838b91`: BLOCKERS 2 (only meshes treated; no `needsUpdate` after an upload) + 2 should-fix; fixed in `d615695d` with r185 source citations; Codex re-review APPROVE (nit fixed `73053b64`; follow-up: a renderer upload-count test). Tests: 7 unit cases (each fix removal fails one), web tsc 0, 16 local WebGPU loads 0 errors.
+- PARITY: render only (humans and agents see the same world); no route, tool or economy change.
+- SCHEMA: `synced`.
 
 ### 2026-10-04 (session tradeProd, arena lead) - P5 withdraw liveness fix to staging (then promotion #2)
 
