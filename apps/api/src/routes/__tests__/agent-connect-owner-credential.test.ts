@@ -213,7 +213,7 @@ async function connect(body: Record<string, unknown>) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'cf-connecting-ip': `198.51.100.${(ipCounter % 250) + 1}`,
+      'x-real-ip': `198.51.100.${(ipCounter % 250) + 1}`,
     },
     body: JSON.stringify(body),
   });
@@ -982,7 +982,7 @@ describe('reserved derived identityKey on public routes', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'cf-connecting-ip': `192.0.2.${(ipCounter % 250) + 1}`,
+        'x-real-ip': `192.0.2.${(ipCounter % 250) + 1}`,
       },
       body: JSON.stringify(body),
     });

@@ -235,7 +235,7 @@ async function call(method: 'GET' | 'POST', path: string, init: { body?: unknown
     method,
     headers: {
       'Content-Type': 'application/json',
-      'cf-connecting-ip': `203.0.113.${requestCounter}`,
+      'x-real-ip': `203.0.113.${requestCounter}`,
       ...init.headers,
     },
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),

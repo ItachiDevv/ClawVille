@@ -247,7 +247,7 @@ describeIfMarketDb('deed-lock guard E2E (requires DATABASE_URL + migration 0017)
     // Seller account + avatar (mirrors the phase-b harness signup flow).
     const signup = await app.request('/api/auth/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': `test-${TEST_TAG}` },
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': `test-${TEST_TAG}` },
       body: JSON.stringify({ email: SELLER_EMAIL, password: PASSWORD, name: 'DeedLock Tester' }),
     });
     expect(signup.status).toBe(200);

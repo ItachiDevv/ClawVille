@@ -384,7 +384,7 @@ describe('phase B — routing integrity (no DB touch)', () => {
     const app = buildRoutingApp();
     const res = await app.request(`/api/land/parcels/${crypto.randomUUID()}/buy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': 'test-phaseb-routing' },
+      headers: { 'Content-Type': 'application/json', 'x-forwarded-for': 'test-phaseb-routing' },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(409);

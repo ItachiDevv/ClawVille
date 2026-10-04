@@ -196,7 +196,7 @@ async function mint(app = buildApp(), ip = '203.0.113.8') {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'cf-connecting-ip': ip,
+      'x-real-ip': ip,
       'x-test-fp': 'fp-browser-a',
     },
     body: JSON.stringify({ learningFocus: '  Solana signing  ' }),
@@ -311,7 +311,7 @@ describe('logged-out front-door agent connect', () => {
     const token = String(minted.body.token);
     const response = await app.request('/api/agent/connect', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '198.51.100.4' },
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.4' },
       body: JSON.stringify({ connectionToken: token, agentId: 'frontdoor-no-key' }),
     });
     expect(response.status).toBe(400);
@@ -329,7 +329,7 @@ describe('logged-out front-door agent connect', () => {
 
     const response = await app.request('/api/agent/connect', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '198.51.100.44' },
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.44' },
       body: JSON.stringify({
         connectionToken: token,
         agentId: 'frontdoor-owned-agent',
@@ -385,7 +385,7 @@ describe('logged-out front-door agent connect', () => {
 
       const connectPromise = app.request('/api/agent/connect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '198.51.100.88' },
+        headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.88' },
         body: JSON.stringify({
           connectionToken: token,
           agentId: 'frontdoor-expiry-race-agent',
@@ -405,7 +405,7 @@ describe('logged-out front-door agent connect', () => {
 
       const duplicateClaim = await app.request('/api/agent/connect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '198.51.100.89' },
+        headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.89' },
         body: JSON.stringify({
           connectionToken: token,
           agentId: 'frontdoor-expiry-race-agent-duplicate',
@@ -458,7 +458,7 @@ describe('logged-out front-door agent connect', () => {
 
     const connectResponse = await app.request('/api/agent/connect', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '198.51.100.5' },
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.5' },
       body: JSON.stringify({
         connectionToken: token,
         agentId: 'frontdoor-real-agent',

@@ -127,7 +127,7 @@ async function register(agentId: string) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'cf-connecting-ip': `203.0.113.${(ipCounter % 250) + 1}`,
+      'x-real-ip': `203.0.113.${(ipCounter % 250) + 1}`,
     },
     body: JSON.stringify({
       mode: 'avatar',
