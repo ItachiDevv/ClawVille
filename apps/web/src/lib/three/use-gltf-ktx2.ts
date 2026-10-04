@@ -32,7 +32,7 @@ import { extendLoaderWithKTX2 } from './ktx2-loader-setup';
 import { extendLoaderWithMeshopt } from './meshopt-loader-setup';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
-import { getCurrentGlbLoadToken, getLastGlbLoadFailure, installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
+import { getLastGlbLoadFailure, installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
 import { isModelLoadError, ModelLoadError } from './model-load-error';
 
 type GLTFResult = GLTF & ObjectMap;
@@ -130,8 +130,24 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
     }
     return useGLTF(path, true, true, extendLoaderForWorldTextures);
   } catch (thrown) {
+    // suspend-react throws the cache ENTRY's promise while it loads; a new
+    // entry for the key throws a new promise. That promise is the entry token.
+    if (thrown instanceof Promise) ENTRY_TOKEN.set(cacheKeyOf(path), thrown);
     throw tagGltfLoadRejection(thrown, path);
   }
+}
+
+/**
+ * Cache key -> token (pending promise) of the latest cache entry seen for it.
+ * R3F keys `useLoader(GLTFLoader, input)` as [loader, ...paths] (a string is
+ * one path), so the key is the JSON of the path list: a string and a
+ * one-element array share it; an array is ONE entry, independent of
+ * single-URL loads of its members.
+ */
+const ENTRY_TOKEN = new Map<string, object>();
+
+function cacheKeyOf(path: string | string[]): string {
+  return JSON.stringify(typeof path === 'string' ? [path] : path);
 }
 
 /**
@@ -145,9 +161,10 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
  *   get two objects, so each boundary catch owns its own one-shot report
  *   cancel (ModelLoadBoundary).
  * - `clear()` evicts the cache entry with the SAME key the load used (the
- *   string, or the whole array), and only while no newer load of those urls
- *   has started (load tokens captured here), so an old error never evicts a
- *   newer entry another figure awaits.
+ *   string, or the whole array), and only while no newer entry for that
+ *   KEY has been seen (ENTRY_TOKEN), so an old error never evicts a newer
+ *   entry another figure awaits, and a single-URL load of an array member
+ *   never blocks the array's own clear.
  * Thrown promises (Suspense) and any other error pass through unchanged.
  */
 function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
@@ -156,14 +173,15 @@ function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown
   const url = paths.find((p) => thrown.message.startsWith(`Could not load ${p}: `));
   if (url === undefined) return thrown;
   const failure = getLastGlbLoadFailure(url);
-  const tokens = paths.map((p) => getCurrentGlbLoadToken(p));
+  const key = cacheKeyOf(path);
+  const token = ENTRY_TOKEN.get(key);
   return new ModelLoadError({
     url,
     phase: failure?.phase ?? 'unknown',
     original: failure?.error ?? thrown,
     message: thrown.message,
     clear: () => {
-      if (paths.every((p, k) => getCurrentGlbLoadToken(p) === tokens[k])) useGLTF.clear(path);
+      if (ENTRY_TOKEN.get(key) === token) useGLTF.clear(path);
     },
   });
 }

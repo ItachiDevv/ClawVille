@@ -451,6 +451,44 @@ describe('ModelLoadBoundary', () => {
     await act(async () => root.unmount());
   });
 
+  test('B1 (round 4): [A,B] fails, a separate load of A starts, the array error still clears its own entry and the array recovers', async () => {
+    const urlA = 'http://localhost/models/mlb-overlap-a.glb';
+    const urlB = 'http://localhost/models/mlb-overlap-b.glb';
+    plans.set(urlA, ['valid', 'valid', 'valid']);
+    plans.set(urlB, [404, 'valid']);
+    const readArray = () => useGLTFWithKTX2([urlA, urlB]);
+    let arrayError: unknown;
+    try {
+      readArray();
+    } catch (thrown) {
+      await thrown;
+    }
+    try {
+      readArray();
+    } catch (thrown) {
+      arrayError = thrown;
+    }
+    expect((arrayError as Error).name).toBe('ModelLoadError');
+    // An unrelated single-URL load of A starts (its own cache key).
+    try {
+      useGLTFWithKTX2(urlA);
+    } catch (thrown) {
+      await thrown;
+    }
+    (arrayError as { clear(): void }).clear();
+    let recovered: unknown;
+    for (let i = 0; i < 3 && recovered === undefined; i += 1) {
+      try {
+        recovered = readArray();
+      } catch (thrown) {
+        if (!(thrown instanceof Promise)) throw thrown;
+        await thrown;
+      }
+    }
+    expect(Array.isArray(recovered)).toBe(true);
+    expect(requests.get(urlB)).toBe(2);
+  });
+
   test('SHOULD-FIX: an OLD error.clear() never clears a newer pending load of the same URL', async () => {
     const url = 'http://localhost/models/mlb-guard.glb?v=2';
     plans.set(url, [404, 'valid-slow']);

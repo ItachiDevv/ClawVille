@@ -13,12 +13,15 @@
  *    player is invisible) instead of crashing the world canvas.
  * 2. Releases the failed boot-actor claim exactly once (per epoch claim
  *    token) and only when the lobster body has COMMITTED (a sibling effect
- *    inside the same Suspense, which runs only after every child resolved)
- *    or when the lobster itself failed. The reveal therefore never happens
- *    with no body while the lobster is still loading.
- * 3. Shows ONE notice per session through the existing game toast.
+ *    inside the same Suspense, which runs only after every child resolved),
+ *    when the lobster itself failed, or when this fallback unmounts before
+ *    either (deferred one tick so a StrictMode simulated unmount + re-mount
+ *    does not release early). The reveal never runs with no body while the
+ *    lobster is still loading, and never waits for the 8 s deadline.
+ * 3. Shows ONE notice per session through the existing game toast, with the
+ *    text that matches the outcome (lobster shown, or no body at all).
  */
-import { Suspense, useCallback, useEffect, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import {
   notifyBootActorCommitted,
   registerBootActorClaim,
@@ -33,6 +36,11 @@ export const LOCAL_PLAYER_FALLBACK_MODEL_KEY = 'lobster';
 /** Player-facing copy (GameFeatures.md §9c). Plain words, no dashes. */
 export const LOCAL_PLAYER_MODEL_FALLBACK_NOTICE =
   'Your avatar could not load. You are shown with the default body. Reload to try again.';
+/** When the default body could not load either. */
+export const LOCAL_PLAYER_MODEL_NO_BODY_NOTICE =
+  'Your avatar could not load. Reload to try again.';
+
+export type FallbackOutcome = 'body' | 'none';
 
 const NOTICE_ICON = '⚠️';
 const NOTICE_DURATION_MS = 8_000;
@@ -44,10 +52,11 @@ let noticeShown = false;
 const RELEASED_CLAIMS = new WeakSet<BootActorClaimToken>();
 let releaseCount = 0;
 
-export function showLocalPlayerFallbackNotice(addToast: AddToast): void {
+export function showLocalPlayerFallbackNotice(addToast: AddToast, outcome: FallbackOutcome): void {
   if (noticeShown) return;
   noticeShown = true;
-  addToast(NOTICE_ICON, LOCAL_PLAYER_MODEL_FALLBACK_NOTICE, NOTICE_DURATION_MS);
+  const text = outcome === 'body' ? LOCAL_PLAYER_MODEL_FALLBACK_NOTICE : LOCAL_PLAYER_MODEL_NO_BODY_NOTICE;
+  addToast(NOTICE_ICON, text, NOTICE_DURATION_MS);
 }
 
 /** Commit the failed body claim once (registerBootActorClaim returns the
@@ -85,20 +94,46 @@ export function LocalPlayerFallback({
   /** The fallback body (lobster GLB). */
   children?: ReactNode;
 }) {
-  const release = useCallback(() => releaseFailedBodyClaim(kind, failedPath), [kind, failedPath]);
+  const onBodyCommitted = useCallback(() => {
+    releaseFailedBodyClaim(kind, failedPath);
+    showLocalPlayerFallbackNotice(addToast, 'body');
+  }, [kind, failedPath, addToast]);
+  const onBodyFailed = useCallback(() => {
+    releaseFailedBodyClaim(kind, failedPath);
+    showLocalPlayerFallbackNotice(addToast, 'none');
+  }, [kind, failedPath, addToast]);
+
+  // Unmount before any outcome: release the claim anyway (once; the token
+  // guard makes it a no-op after an outcome). Deferred one tick and
+  // cancelled by a re-mount for the SAME claim (StrictMode simulated
+  // unmount), so it never releases while the body is still loading.
+  const pendingUnmountRelease = useRef<{ timer: ReturnType<typeof setTimeout>; claim: string } | null>(null);
   useEffect(() => {
-    showLocalPlayerFallbackNotice(addToast);
-  }, [addToast]);
+    const claim = `${kind}|${failedPath}`;
+    const pending = pendingUnmountRelease.current;
+    if (pending && pending.claim === claim) {
+      clearTimeout(pending.timer);
+      pendingUnmountRelease.current = null;
+    }
+    return () => {
+      const timer = setTimeout(() => {
+        if (pendingUnmountRelease.current?.timer === timer) pendingUnmountRelease.current = null;
+        releaseFailedBodyClaim(kind, failedPath);
+      }, 0);
+      pendingUnmountRelease.current = { timer, claim };
+    };
+  }, [kind, failedPath]);
+
   return (
     <ModelLoadBoundary
       assetUrl={fallbackUrl}
       label={`${label}-fallback`}
       resetKey={fallbackUrl}
-      onModelFailed={release}
+      onModelFailed={onBodyFailed}
     >
       <Suspense fallback={null}>
         {children}
-        <CommitSignal onCommit={release} />
+        <CommitSignal onCommit={onBodyCommitted} />
       </Suspense>
     </ModelLoadBoundary>
   );

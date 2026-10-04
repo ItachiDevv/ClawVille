@@ -148,13 +148,14 @@ describe('LocalPlayerFallback', () => {
     expect(container.querySelector('#lobster')).toBeNull();
     expect(bootActor.getBootActorStamps().readyAt).toBeNull();
     expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
-    expect(toasts).toEqual([fallbackModule.LOCAL_PLAYER_MODEL_FALLBACK_NOTICE]);
+    expect(toasts).toEqual([]); // outcome unknown yet: no notice yet
 
     openGate();
     await settle();
     expect(container.querySelector('#lobster')?.getAttribute('data-node')).toBe('ok');
     expect(bootActor.getBootActorStamps().readyAt).not.toBeNull();
     expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+    expect(toasts).toEqual([fallbackModule.LOCAL_PLAYER_MODEL_FALLBACK_NOTICE]);
 
     await act(async () => root.render(tree())); // re-render: no second commit, no second notice
     await settle(3);
@@ -163,13 +164,14 @@ describe('LocalPlayerFallback', () => {
     await act(async () => root.unmount());
   });
 
-  test('B3: the fallback lobster itself fails: renders nothing, no crash to the outer boundary, claim released once, one console.error', async () => {
+  test('B3 + SF2: the fallback lobster itself fails: renders nothing, no crash, claim released once, one console.error, the NO-BODY notice', async () => {
     const failedPath = '/avatars/lpf-player-2.vrm';
     const lobsterUrl = 'http://localhost/models/lpf-lobster-missing.glb?v=1';
     replies.set(lobsterUrl, 404);
     bootActor.resolveBootActor('player-vrm', failedPath);
     const outer: unknown[] = [];
     const reported: HappyErrorEvent[] = [];
+    const toasts: string[] = [];
     const container = newContainer();
     const root = r3fLikeRoot(container, reported);
     const cap = captureConsoleError();
@@ -181,7 +183,7 @@ describe('LocalPlayerFallback', () => {
             { onCatch: (e) => outer.push(e) },
             createElement(
               fallbackModule.LocalPlayerFallback,
-              { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+              { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: (_i: string, m: string) => toasts.push(m) },
               createElement(LobsterBody, { url: lobsterUrl }),
             ),
           ),
@@ -201,7 +203,36 @@ describe('LocalPlayerFallback', () => {
     expect(lines.length).toBe(1);
     expect(String(lines[0][0])).toContain(`player-avatar-fallback ${lobsterUrl}`);
     expect(reported.every((event) => event.defaultPrevented)).toBe(true);
+    expect(toasts).toEqual(['Your avatar could not load. Reload to try again.']);
+    expect(toasts[0]).toBe(fallbackModule.LOCAL_PLAYER_MODEL_NO_BODY_NOTICE);
     await act(async () => root.unmount());
+  });
+
+  test('SF1: the fallback unmounts while the lobster is still loading: the claim is released once anyway', async () => {
+    const failedPath = '/avatars/lpf-player-unmount.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-unmount.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const container = newContainer();
+    const root = r3fLikeRoot(container, []);
+    await act(async () =>
+      root.render(
+        createElement(
+          fallbackModule.LocalPlayerFallback,
+          { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+          createElement(LobsterBody, { url: lobsterUrl }),
+        ),
+      ),
+    );
+    await settle(3);
+    expect(bootActor.getBootActorStamps().readyAt).toBeNull();
+    await act(async () => root.unmount());
+    await settle(3);
+    expect(bootActor.getBootActorStamps().readyAt).not.toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+    openGate();
+    await settle(3);
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
   });
 
   test('npc-body claim (possessed NPC) is released the same way', async () => {
@@ -228,10 +259,14 @@ describe('LocalPlayerFallback', () => {
 
   test('one plain-words notice per session, no dashes; the fallback body is the registry default lobster', () => {
     const toasts: string[] = [];
-    fallbackModule.showLocalPlayerFallbackNotice((_i, m) => toasts.push(m));
-    fallbackModule.showLocalPlayerFallbackNotice((_i, m) => toasts.push(m));
+    fallbackModule.showLocalPlayerFallbackNotice((_i, m) => toasts.push(m), 'body');
+    fallbackModule.showLocalPlayerFallbackNotice((_i, m) => toasts.push(m), 'none');
     expect(toasts).toEqual(['Your avatar could not load. You are shown with the default body. Reload to try again.']);
-    expect(fallbackModule.LOCAL_PLAYER_MODEL_FALLBACK_NOTICE).not.toMatch(/[–—]/);
+    // En and em dash as code-point data (never raw characters in source).
+    const dashes = [0x2013, 0x2014].map((code) => String.fromCharCode(code));
+    for (const text of [fallbackModule.LOCAL_PLAYER_MODEL_FALLBACK_NOTICE, fallbackModule.LOCAL_PLAYER_MODEL_NO_BODY_NOTICE]) {
+      expect(dashes.some((dash) => text.includes(dash))).toBe(false);
+    }
     expect(fallbackModule.LOCAL_PLAYER_FALLBACK_MODEL_KEY).toBe('lobster');
   });
 });
