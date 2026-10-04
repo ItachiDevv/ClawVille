@@ -131,7 +131,7 @@ function makeTextureFilterable(texture: THREE.Texture): void {
   t.minFilter = hasMipChain(t) ? THREE.NearestMipmapNearestFilter : THREE.LinearFilter;
   // Both backends read filters only when texture.version changes (WebGPU: Sampler.update() ->
   // updateSampler(); WebGL2: Textures.updateTexture() -> setTextureParameters()). version > 0
-  // means the data is ready (loaders set needsUpdate). A bump before the first upload still
+  // means an update was requested (loaders set needsUpdate once the data is ready). A bump before the first upload still
   // gives ONE upload; after an upload it refreshes the sampler/texParameteri once. Version 0
   // (no data yet) is left alone so the texture is not marked ready too early.
   if (t.version > 0) t.needsUpdate = true;
