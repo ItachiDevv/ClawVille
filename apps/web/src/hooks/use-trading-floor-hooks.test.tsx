@@ -47,6 +47,47 @@ let fetchCount = 0;
 const queryClients = new Set<QueryClient>();
 let previousDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
+// query-core snapshots isServer at module load, before beforeAll installs
+// window; see "House trader polling" below. Tests that need a polling
+// interval override it, and the shared afterEach puts this value back.
+const ORIGINAL_IS_SERVER = environmentManager.isServer();
+const restoreEnvironment = () =>
+  environmentManager.setIsServer(() => ORIGINAL_IS_SERVER);
+
+/**
+ * THE CI FLAKE (2026-10-02..04, runs 36959793747, 36964280639, 37104931394,
+ * 37191658763): bun 1.3.11 (pinned in gates.yml) compares the per-test and
+ * per-hook timeout deadline, which is on the REAL monotonic clock (time since
+ * boot), against the MOCKED clock while fake timers are on. The mocked clock
+ * starts near 0 and `advanceTimersByTime` moves it. When a test advances past
+ * `uptime + timeout`, bun declares a timeout the test never had, moves on, and
+ * the abandoned body keeps running: overlapping act() scopes, a tree that is
+ * never unmounted, fake timers left on. A fresh CI VM has a few minutes of
+ * uptime, so the feed test (120 s of fake time) crossed it on some first
+ * attempts; a workstation has days, so it never reproduced locally. Measured
+ * under bun 1.3.11 on Linux: advance = uptime + 8 s fails 3 of 3 with the
+ * default 5 s timeout and passes 3 of 3 with a timeout above the advance.
+ * Upstream fix: oven-sh/bun#30599 / #33896.
+ *
+ * So every test that advances the fake clock declares a timeout ABOVE its own
+ * total advance. The deadline is then `uptime + advance + margin`, which the
+ * mocked clock cannot reach whatever the uptime is.
+ */
+function fakeClockTimeout(totalAdvanceMs: number): number {
+  return totalAdvanceMs + 30_000;
+}
+
+/** Real event-loop turns (setImmediate is not faked by bun) until no query of
+ *  this client is in flight. Bounded, so a stuck fetch fails loudly here. */
+async function settleFetches(client: QueryClient): Promise<void> {
+  for (let turn = 0; turn < 50 && client.isFetching() > 0; turn += 1) {
+    await act(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+  }
+  expect(client.isFetching()).toBe(0);
+}
+
 function rememberDom(): void {
   previousDescriptors = new Map(
     installedNames.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
@@ -141,29 +182,45 @@ beforeEach(() => {
   resetFloorClockForTest();
 });
 
+/**
+ * ONE teardown for every test, so it runs even when the test body throws.
+ *
+ * Real timers come back FIRST and synchronously, before any await: under fake
+ * timers bun 1.3.11 measures this hook's own timeout against the mocked clock
+ * (see fakeClockTimeout). Callbacks still parked on the fake heap never fire
+ * after that; anything cancel/clear/unmount queues lands on the real heap and
+ * the final setTimeout(0) drains it while window still exists.
+ *
+ * Focus and isServer are restored AFTER the unmount (no client is subscribed
+ * any more, so the focus change cannot trigger a refetch) and in a finally, so
+ * a failed unmount cannot leak `isServer: false` into the next test.
+ */
 afterEach(async () => {
-  // Real timers BEFORE cancelQueries: a query still in flight under fake timers
-  // can wait on a timer that never fires, so the hook timed out on CI (2026-10-02).
   jest.useRealTimers();
-  await act(async () => {
-    for (const client of queryClients) {
-      await client.cancelQueries();
-      client.clear();
-    }
+  try {
+    await act(async () => {
+      for (const client of queryClients) {
+        await client.cancelQueries();
+        client.clear();
+      }
+    });
+    if (root) await act(async () => root?.unmount());
+  } finally {
     queryClients.clear();
-  });
-  if (root) await act(async () => root?.unmount());
-  container?.remove();
-  root = null;
-  container = null;
-  resetFloorClockForTest();
-  jest.useRealTimers();
+    container?.remove();
+    root = null;
+    container = null;
+    resetFloorClockForTest();
+    focusManager.setFocused(undefined);
+    restoreEnvironment();
+  }
   // Query notifications use a timer, not only a promise microtask. Drain that
   // queue while window still exists, including callbacks queued before unmount.
   await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
 });
 
 afterAll(() => {
+  restoreEnvironment();
   restoreDom();
   testWindow.close();
 });
@@ -200,50 +257,39 @@ describe('Trading Floor reconnect feed', () => {
 
   // A cold /trading-floor load never opens the world stream, so the poll is
   // the floor's only refresh there; with a live stream (/game) it stays off.
+  // Teardown (real timers, unmount, focus, isServer) is the shared afterEach.
   test('the feed polls while the stream is not live and stops once it is', async () => {
     jest.useFakeTimers();
     focusManager.setFocused(true);
-    const originalIsServer = environmentManager.isServer();
     // See "House trader polling" below: query-core snapshots isServer at
     // module load, before this harness installs window.
     environmentManager.setIsServer(() => false);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
     queryClients.add(client);
-    try {
-      await mount(createElement(QueryClientProvider, { client }, createElement(Feed)));
-      await flush();
-      expect(fetchCount).toBe(1);
+    await mount(createElement(QueryClientProvider, { client }, createElement(Feed)));
+    await flush();
+    // The interval tick dedupes into a fetch still in flight, so the first
+    // read must have landed before the clock moves.
+    await settleFetches(client);
+    expect(fetchCount).toBe(1);
 
-      await act(async () => {
-        jest.advanceTimersByTime(FLOOR_FEED_POLL_MS + 100);
-      });
-      await flush();
-      expect(fetchCount).toBe(2);
+    await act(async () => {
+      jest.advanceTimersByTime(FLOOR_FEED_POLL_MS + 100);
+    });
+    await flush();
+    await settleFetches(client);
+    expect(fetchCount).toBe(2);
 
-      // The first live: no reconnect refetch (hasOpened only), and no poll.
-      await act(async () => useWorldStreamStore.getState().setStreamState('live'));
-      await flush();
-      const whenLive = fetchCount;
-      await act(async () => {
-        jest.advanceTimersByTime(FLOOR_FEED_POLL_MS * 3);
-      });
-      await flush();
-      expect(fetchCount).toBe(whenLive);
-    } finally {
-      await act(async () => {
-        await client.cancelQueries();
-        client.clear();
-        await Promise.resolve();
-      });
-      if (root) await act(async () => root?.unmount());
-      container?.remove();
-      root = null;
-      container = null;
-      focusManager.setFocused(undefined);
-      environmentManager.setIsServer(() => originalIsServer);
-      jest.useRealTimers();
-    }
-  });
+    // The first live: no reconnect refetch (hasOpened only), and no poll.
+    await act(async () => useWorldStreamStore.getState().setStreamState('live'));
+    await flush();
+    const whenLive = fetchCount;
+    await act(async () => {
+      jest.advanceTimersByTime(FLOOR_FEED_POLL_MS * 3);
+    });
+    await flush();
+    expect(fetchCount).toBe(whenLive);
+  }, fakeClockTimeout(FLOOR_FEED_POLL_MS + 100 + FLOOR_FEED_POLL_MS * 3));
 
   test('disabled feed ignores reconnect generations', async () => {
     await mount(feedTree(false));
@@ -276,7 +322,7 @@ describe('Trading Floor shared clock', () => {
     expect(useTradeTickerStore.getState().consumers).toBe(0);
     jest.advanceTimersByTime(60_000);
     expect(getFloorClockDiagnosticsForTest().subscribers).toBe(0);
-  });
+  }, fakeClockTimeout(60_000));
 
   test('hiding the visible surface releases its consumer and clock', async () => {
     jest.useFakeTimers();
@@ -296,16 +342,11 @@ describe('Trading Floor shared clock', () => {
 // server-side, the edge cache could drop to a second, and the open board would
 // still show the snapshot it fetched on arrival. Found by tfs-audit.
 describe('House trader polling', () => {
-  /** Published to the teardown below, which has to drain THIS client before
-   *  the fake timers come out. */
-  let pollClient: QueryClient | null = null;
-
   function houseTree(enabled = true) {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
     });
     queryClients.add(client);
-    pollClient = client;
     return {
       client,
       node: createElement(
@@ -335,81 +376,42 @@ describe('House trader polling', () => {
   // A BROWSER HAS `window`, so `isServer` is false there and this gate does not
   // exist in production. The override restores the browser's answer; it does
   // not paper over a real condition. `setIsServer` is exported for exactly this
-  // and is GLOBAL to the module, so it is restored in a `finally` AND an
-  // `afterAll` — leaking `false` would make sibling suites start polling.
-  const ORIGINAL_IS_SERVER = environmentManager.isServer();
-  const restoreEnvironment = () =>
-    environmentManager.setIsServer(() => ORIGINAL_IS_SERVER);
-
-  /**
-   * DRAIN BEFORE TEARING DOWN, and the ORDER is the whole fix.
-   *
-   * These tests install fake timers and then hand react-query a live interval.
-   * The shared teardown unmounts and calls `useRealTimers()`, and if a
-   * react-query notification is still queued at that moment it lands in an
-   * unmounted tree after the file has finished, which bun surfaces as the
-   * baffling `Cannot call describe() after the test run has completed`. It
-   * reproduced 2 times in 12 before this hook existed, which is exactly the
-   * cadence that gets a flake blamed on CI.
-   *
-   * So: cancel in flight work and clear the cache FIRST, so no observer is left
-   * to notify; unmount SECOND, inside `act`, so React drains its own queue; and
-   * only then let the real timers back in. `restoreEnvironment` runs last and
-   * unconditionally, because `setIsServer` is global to the module and a leak
-   * would make sibling files start polling.
-   *
-   * This hook runs BEFORE the file-level one (innermost first), so it finds the
-   * root still mounted and leaves it null for the outer hook.
-   */
-  afterEach(async () => {
-    if (pollClient) {
-      const client = pollClient;
-      await act(async () => {
-        await client.cancelQueries();
-        client.clear();
-        await Promise.resolve();
-      });
-    }
-    if (root) await act(async () => root?.unmount());
-    container?.remove();
-    root = null;
-    container = null;
-    pollClient = null;
-    focusManager.setFocused(undefined);
-    restoreEnvironment();
-    jest.useRealTimers();
-  });
-  afterAll(restoreEnvironment);
+  // and is GLOBAL to the module, so the file-level afterEach AND afterAll
+  // restore it (`restoreEnvironment`) — leaking `false` would make sibling
+  // suites start polling.
+  //
+  // Teardown for these tests is the file-level afterEach: real timers first,
+  // then cancel + clear + unmount inside act, then a real setTimeout(0) drain,
+  // so no react-query notification lands after the file has finished (the old
+  // `Cannot call describe() after the test run has completed`).
 
   test('an untouched FOCUSED surface keeps re-reading the route on the interval', async () => {
     jest.useFakeTimers();
     focusManager.setFocused(true);
     environmentManager.setIsServer(() => false);
-    try {
-      const { node } = houseTree();
-      await mount(node);
-      await flush();
-      expect(fetchCount).toBe(1);
+    const { client, node } = houseTree();
+    await mount(node);
+    await flush();
+    await settleFetches(client);
+    expect(fetchCount).toBe(1);
 
-      // Nothing happens here but time. No remount, no focus change, no
-      // reconnect — the exact situation of a player standing in the room
-      // watching the board, which fetched once and never again before the
-      // interval landed.
-      await act(async () => {
-        jest.advanceTimersByTime(HOUSE_TRADERS_POLL_MS + 100);
-      });
-      await flush();
-      expect(fetchCount).toBe(2);
+    // Nothing happens here but time. No remount, no focus change, no
+    // reconnect — the exact situation of a player standing in the room
+    // watching the board, which fetched once and never again before the
+    // interval landed.
+    await act(async () => {
+      jest.advanceTimersByTime(HOUSE_TRADERS_POLL_MS + 100);
+    });
+    await flush();
+    await settleFetches(client);
+    expect(fetchCount).toBe(2);
 
-      await act(async () => {
-        jest.advanceTimersByTime(HOUSE_TRADERS_POLL_MS + 100);
-      });
-      await flush();
-      expect(fetchCount).toBe(3);
-    } finally {
-      restoreEnvironment();
-    }
-  });
+    await act(async () => {
+      jest.advanceTimersByTime(HOUSE_TRADERS_POLL_MS + 100);
+    });
+    await flush();
+    expect(fetchCount).toBe(3);
+  }, fakeClockTimeout((HOUSE_TRADERS_POLL_MS + 100) * 2));
 
   // The other half of `refetchIntervalInBackground: false`, and it MEANS
   // something now: with `isServer` false the interval genuinely ticks, so an
@@ -420,20 +422,16 @@ describe('House trader polling', () => {
     jest.useFakeTimers();
     focusManager.setFocused(false);
     environmentManager.setIsServer(() => false);
-    try {
-      const { node } = houseTree();
-      await mount(node);
-      await flush();
-      const afterMount = fetchCount;
-      await act(async () => {
-        jest.advanceTimersByTime(HOUSE_TRADERS_POLL_MS * 4);
-      });
-      await flush();
-      expect(fetchCount).toBe(afterMount);
-    } finally {
-      restoreEnvironment();
-    }
-  });
+    const { node } = houseTree();
+    await mount(node);
+    await flush();
+    const afterMount = fetchCount;
+    await act(async () => {
+      jest.advanceTimersByTime(HOUSE_TRADERS_POLL_MS * 4);
+    });
+    await flush();
+    expect(fetchCount).toBe(afterMount);
+  }, fakeClockTimeout(HOUSE_TRADERS_POLL_MS * 4));
 
   test('a disabled surface does not fetch at all', async () => {
     jest.useFakeTimers();
@@ -446,7 +444,7 @@ describe('House trader polling', () => {
     });
     await flush();
     expect(fetchCount).toBe(0);
-  });
+  }, fakeClockTimeout(HOUSE_TRADERS_POLL_MS * 4));
 
   // The OPTIONS react-query actually received, read off the cache rather than
   // re-typed here. `staleTime` must not exceed the interval: a longer one

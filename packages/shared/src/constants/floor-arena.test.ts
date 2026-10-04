@@ -440,6 +440,7 @@ describe('floor arena withdraw constants', () => {
       'ambiguous_match',
       'tx_reused',
       'reply_mismatch',
+      'review_timeout',
     ]);
     for (const set of [
       FLOOR_ARENA_WITHDRAW_ASSETS,
