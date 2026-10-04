@@ -760,6 +760,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
+### Hermit crabs always visible; crab + seahorse texture filter (session tradeProd, 2026-10-04, STAGING)
+- **Look at:** `https://staging.clawville.world/game` (WebGPU browser). Walk up close to a hermit crab and to the wandering seahorse, then view them from far away.
+- **What changed:** on WebGPU the hermit crabs could stay INVISIBLE for a whole session (3 of 7 cold prod loads, a three.js r185 shader race on their pixel textures). The fix changes only their texture filter.
+- **Feedback wanted:** up close they should look unchanged (crisp pixel texture); far away they may look slightly softer and shimmer less. Are the crabs always there now? Is the far look fine?
+
 ### Kelp camera fix (staging `fd99d61d`)
 - **What:** cross-scene default-camera writers root-caused + fixed; kelp scene
   framing should be stable now.
