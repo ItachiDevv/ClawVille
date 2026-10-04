@@ -2869,7 +2869,8 @@ agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
 
   // Owner attribution (security pass 2026-10-04): the agent event history is
   // owner-only, so the row records this session's PROVEN owner (C10 owner proof,
-  // one indexed lookup, only for a session with a bound owner) or NULL.
+  // checked inside the event INSERT under FOR SHARE, Codex round 4; only for a
+  // session with a bound owner) or NULL.
   void logGatewayAgentEvent(c, sessionId, {
     eventType: 'agent.chat.turn',
     agentId: npcSimulation.getAgentBotConfig(sessionId)?.agentId ?? sessionDigest(sessionId),
@@ -3042,9 +3043,10 @@ agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
   // quest validator credit the proven human account for autonomous agent
   // visits. Security pass 2026-10-04: the owner-only event history needs it too,
   // so an owner-proven session that is not ledger-capable (restored after a
-  // deploy, the /enter keeper) records its proven owner as well (C10 owner
-  // proof, one indexed lookup; none when the reward subject already proved it).
-  // Ownership-unproven sessions still leave this null.
+  // deploy, the /enter keeper) records its proven owner as well (the reward
+  // subject's owner, else the C10 bound owner; Codex round 4: the claim is
+  // checked inside the event INSERT under FOR SHARE, so a changed owner logs
+  // null). Ownership-unproven sessions still leave this null.
   void logGatewayAgentEvent(c, sessionId, {
     eventType: 'building.visited',
     agentId: botConfig?.agentId ?? sessionDigest(sessionId),
@@ -3300,9 +3302,10 @@ agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
   }
 
   // Owner attribution (security pass 2026-10-04): the owner-only event history
-  // needs the session's PROVEN owner. The reward subject already proved it for a
-  // ledger-capable session (no read); otherwise the C10 owner proof costs one
-  // indexed lookup for a session with a bound owner. Unproven sessions log NULL.
+  // needs the session's PROVEN owner: the reward subject's owner for a
+  // ledger-capable session, otherwise the C10 bound owner. Codex round 4: the
+  // claim is checked inside the event INSERT under FOR SHARE (no separate read).
+  // Unproven sessions log NULL.
   void logGatewayAgentEvent(c, sessionId, {
     eventType: 'agent.chat.turn',
     agentId: botConfig?.agentId ?? sessionDigest(sessionId),

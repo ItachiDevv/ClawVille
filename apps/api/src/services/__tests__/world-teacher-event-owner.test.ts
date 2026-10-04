@@ -4,10 +4,17 @@
  * The durable agent event history and the driver's own wake-seed
  * (`agent-event-query.ts`) return a row only when `events.user_id` equals the
  * agent row's current owner. `conductTeacherTurn` (agent.chat.turn) and
- * `settleBuildingArrival` (building.visited) therefore log the `userId` the
+ * `settleBuildingArrival` (building.visited) therefore CLAIM the `userId` the
  * driver enrolled the agent under (`entry.houseUserId`: the house user for a
  * house agent, the owner for a user-owned agent; the driver side is pinned in
- * `world-teacher-settle.test.ts`), and NULL when the caller has no owner.
+ * `world-teacher-settle.test.ts`), and claim nobody when the caller has no owner.
+ *
+ * Codex round 4: the claim is checked INSIDE the event INSERT (the owned
+ * variant `logOwnedAgentEvent`; SQL pinned in `event-logger-owned-insert.test.ts`,
+ * proven on PostgreSQL in `agent-owner-since.db.test.ts`), with `actedAt` = the
+ * start of the turn / arrival settle, so an owner change during the turn (even
+ * a complete A -> B -> A round trip) leaves the row NULL. Both emits must use
+ * the owned variant, never the plain `logEvent` with a pre-resolved user id.
  *
  * No DB / LLM: the teacher seeder, orchestrator, reward ledger, lesson memory
  * and event logger are mocked; the body is a real npc-simulation entry standing
@@ -20,7 +27,10 @@ const TARGET = 'api-integrations';
 const OWNER = '71111111-1111-4111-8111-111111111111';
 const HOUSE_USER = '72222222-2222-4222-8222-222222222222';
 
+/** Captured `logOwnedAgentEvent` inputs. */
 let logged: Array<Record<string, unknown>>;
+/** Captured plain `logEvent` inputs (must hold no chat turn / visit). */
+let loggedPlain: Array<Record<string, unknown>>;
 
 const realSeeder = await import('../system-npc-seeder');
 mock.module('../system-npc-seeder', () => ({
@@ -60,6 +70,9 @@ const realEventLogger = await import('../event-logger');
 mock.module('../event-logger', () => ({
   ...realEventLogger,
   logEvent: async (input: Record<string, unknown>) => {
+    loggedPlain.push(input);
+  },
+  logOwnedAgentEvent: async (input: Record<string, unknown>) => {
     logged.push(input);
   },
 }));
@@ -89,8 +102,20 @@ function registerNearBody(bodyId: string): void {
   });
 }
 
-function eventsOf(type: string) {
-  return logged.filter((e) => e.eventType === type);
+/** The one owned emit of `type`: a claim (no userId) and an ISO actedAt in [before, now]. */
+function ownedEventOf(type: string, before: number): Record<string, unknown> {
+  expect(loggedPlain.filter((e) => e.eventType === type)).toEqual([]);
+  const rows = logged.filter((e) => e.eventType === type);
+  expect(rows.length).toBe(1);
+  const row = rows[0]!;
+  expect('userId' in row).toBe(false);
+  expect('claimedOwnerUserId' in row).toBe(true);
+  expect(typeof row.actedAt).toBe('string');
+  const actedAtMs = Date.parse(row.actedAt as string);
+  expect(new Date(actedAtMs).toISOString()).toBe(row.actedAt as string);
+  expect(actedAtMs).toBeGreaterThanOrEqual(before);
+  expect(actedAtMs).toBeLessThanOrEqual(Date.now());
+  return row;
 }
 
 beforeEach(() => {
@@ -99,65 +124,62 @@ beforeEach(() => {
   asSim().agentBotSessions.clear();
   asSim().npcOverrides.clear();
   logged = [];
+  loggedPlain = [];
 });
 
-describe('conductTeacherTurn — agent.chat.turn carries the enrolled owner', () => {
+describe('conductTeacherTurn — agent.chat.turn claims the enrolled owner (checked in the insert)', () => {
   test.each([
     ['a user-owned autonomous agent (its owner)', OWNER],
     ['a house agent (the dedicated house user)', HOUSE_USER],
   ] as const)('%s', async (_label, userId) => {
     const bodyId = `ocb-wt-turn-${userId.slice(0, 2)}`;
     registerNearBody(bodyId);
+    const before = Date.now();
     const result = await conductTeacherTurn({
       agentId: `agent-${bodyId}`, bodyId, avatarId: `av-${bodyId}`, userId,
       buildingId: TARGET, message: 'teach me webhooks',
     });
     expect(result).not.toBeNull();
-    const chat = eventsOf('agent.chat.turn');
-    expect(chat.length).toBe(1);
-    expect(chat[0]).toMatchObject({
-      userId, agentId: `agent-${bodyId}`, avatarId: `av-${bodyId}`, buildingId: TARGET,
+    expect(ownedEventOf('agent.chat.turn', before)).toMatchObject({
+      claimedOwnerUserId: userId, agentId: `agent-${bodyId}`, avatarId: `av-${bodyId}`, buildingId: TARGET,
     });
   });
 
-  test('no owner (null) logs a NULL user_id (stays hidden from history)', async () => {
+  test('no owner (null) claims nobody (NULL user_id, stays hidden from history)', async () => {
     const bodyId = 'ocb-wt-turn-null';
     registerNearBody(bodyId);
+    const before = Date.now();
     await conductTeacherTurn({
       agentId: `agent-${bodyId}`, bodyId, avatarId: `av-${bodyId}`, userId: null,
       buildingId: TARGET, message: 'teach me webhooks',
     });
-    const chat = eventsOf('agent.chat.turn');
-    expect(chat.length).toBe(1);
-    expect(chat[0]!.userId).toBeNull();
+    expect(ownedEventOf('agent.chat.turn', before).claimedOwnerUserId).toBeNull();
   });
 });
 
-describe('settleBuildingArrival — building.visited carries the enrolled owner', () => {
+describe('settleBuildingArrival — building.visited claims the enrolled owner (checked in the insert)', () => {
   test.each([
     ['a user-owned autonomous agent (its owner)', OWNER],
     ['a house agent (the dedicated house user)', HOUSE_USER],
   ] as const)('%s', async (_label, userId) => {
     const bodyId = `ocb-wt-visit-${userId.slice(0, 2)}`;
     registerNearBody(bodyId);
+    const before = Date.now();
     await settleBuildingArrival({
       agentId: `agent-${bodyId}`, bodyId, avatarId: `av-${bodyId}`, userId, buildingId: TARGET,
     });
-    const visits = eventsOf('building.visited');
-    expect(visits.length).toBe(1);
-    expect(visits[0]).toMatchObject({
-      userId, agentId: `agent-${bodyId}`, avatarId: `av-${bodyId}`, buildingId: TARGET,
+    expect(ownedEventOf('building.visited', before)).toMatchObject({
+      claimedOwnerUserId: userId, agentId: `agent-${bodyId}`, avatarId: `av-${bodyId}`, buildingId: TARGET,
     });
   });
 
-  test('no owner (null) logs a NULL user_id', async () => {
+  test('no owner (null) claims nobody', async () => {
     const bodyId = 'ocb-wt-visit-null';
     registerNearBody(bodyId);
+    const before = Date.now();
     await settleBuildingArrival({
       agentId: `agent-${bodyId}`, bodyId, avatarId: `av-${bodyId}`, userId: null, buildingId: TARGET,
     });
-    const visits = eventsOf('building.visited');
-    expect(visits.length).toBe(1);
-    expect(visits[0]!.userId).toBeNull();
+    expect(ownedEventOf('building.visited', before).claimedOwnerUserId).toBeNull();
   });
 });

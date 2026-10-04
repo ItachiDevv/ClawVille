@@ -27,8 +27,8 @@
  *         keyed by avatar + building + UTC day across human, connected, and
  *         autonomous paths. DEFAULT (soft) provenance via
  *         creditClawTokens — NEVER mintEarned (external-USDC only).
- *      b. Leaderboard — direct `logEvent` (the documented no-HTTP path, fp/ip
- *         null) with the EXISTING 'agent.chat.turn' event type (weight 10, cap
+ *      b. Leaderboard — direct `logOwnedAgentEvent` (the documented no-HTTP
+ *         path, fp/ip null; the owner is resolved inside the insert) with the EXISTING 'agent.chat.turn' event type (weight 10, cap
  *         50/day — no new event type, no new CTE column). payload.isHouse=true
  *         is what the public-board carve-out (leaderboard.ts) keys on.
  *      c. Memory — an EARNED-SKILL lesson (teacher + buildingId + a short lesson
@@ -59,7 +59,7 @@ import {
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { getSystemNpcAgent } from './system-npc-seeder';
-import { logEvent } from './event-logger';
+import { logOwnedAgentEvent } from './event-logger';
 import {
   creditBuildingChatRewardOncePerDay,
   creditBuildingRewardOncePerDay,
@@ -91,9 +91,12 @@ export interface TeacherTurnInput {
   /**
    * The owner the driver enrolled this agent under (`entry.houseUserId`: the
    * dedicated house user for a house agent, the owner for a user-owned agent),
-   * i.e. the user that owns `avatarId`. Recorded as the event's `user_id` so the
-   * owner-only event history (`agent-event-query.ts`) and the driver's own
-   * wake-seed see the turn. null = no proven owner: the row stays hidden.
+   * i.e. the user that owns `avatarId`. It is the event's owner CLAIM: the
+   * event logger records it as `user_id` only if, inside the insert and under
+   * FOR SHARE, it still owns `agentId` and has owned it since the turn began
+   * (`logOwnedAgentEvent`), so the owner-only event history
+   * (`agent-event-query.ts`) and the driver's own wake-seed see the turn.
+   * null = no proven owner: the row stays hidden.
    */
   userId: string | null;
   /**
@@ -191,6 +194,8 @@ export async function conductTeacherTurn(
   input: TeacherTurnInput,
 ): Promise<TeacherTurnResult | null> {
   const { agentId, bodyId, avatarId, buildingId, platformAgentId, userId } = input;
+  // The turn's start: the claimed owner must have owned the agent since then.
+  const actedAt = new Date().toISOString();
   const message = input.message.trim();
   if (!message) return null;
 
@@ -317,10 +322,12 @@ export async function conductTeacherTurn(
     // no-op for these rows — the isHouse carve-out (routes/leaderboard.ts) is
     // the SOLE gate keeping them off the public board. Any future change that
     // drops the carve-out silently exposes an uncapped scoring faucet here.
-    // userId = the enrolled owner of `avatarId` (owner-only event history).
-    void logEvent({
+    // Owner claim = the enrolled owner of `avatarId`, checked inside the insert
+    // (owner-only event history; security pass 2026-10-04, Codex round 4).
+    void logOwnedAgentEvent({
       eventType: 'agent.chat.turn',
-      userId,
+      claimedOwnerUserId: userId,
+      actedAt,
       agentId,
       avatarId,
       buildingId,
@@ -381,6 +388,8 @@ export interface BuildingArrivalInput {
  */
 export async function settleBuildingArrival(input: BuildingArrivalInput): Promise<void> {
   const { agentId, bodyId, avatarId, buildingId, userId } = input;
+  // The arrival settle's start: the claimed owner must have owned the agent since then.
+  const actedAt = new Date().toISOString();
   try {
     if (!proximityPassed(agentId, bodyId, buildingId, 'arrival settle')) return;
 
@@ -399,10 +408,12 @@ export async function settleBuildingArrival(input: BuildingArrivalInput): Promis
     }
 
     // Same caveat as 4b above: fp/ip null ⇒ the isHouse carve-out is the sole
-    // public-board gate for this row. userId = the enrolled owner (see 4b).
-    void logEvent({
+    // public-board gate for this row. Owner claim = the enrolled owner, checked
+    // inside the insert (see 4b).
+    void logOwnedAgentEvent({
       eventType: 'building.visited',
-      userId,
+      claimedOwnerUserId: userId,
+      actedAt,
       agentId,
       avatarId,
       buildingId,

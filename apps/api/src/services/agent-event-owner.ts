@@ -5,71 +5,66 @@
  * The durable agent event history (replay, SSE catch-up, autonomy wake-seed;
  * `agent-event-query.ts`) returns a row only when `events.user_id` equals the
  * agent row's CURRENT owner, inside that owner's period. A row with a NULL
- * `user_id` is never returned. So a gateway emit records the owner that THIS
- * session proved, or NULL:
+ * `user_id` is never returned. So a gateway emit CLAIMS the owner this session
+ * proved, and the event logger resolves the claim inside the INSERT:
  *   - `provenUserId` given: the handler already resolved the session's owner
- *     through `resolveAgentSession` (for example the CT reward subject). It is
- *     used as is, with no read.
+ *     through `resolveAgentSession` (for example the CT reward subject);
  *   - otherwise connect-sec's use-time owner proof (C10, the rule that
  *     `resolveAgentSession` and `botKnowledgeAccessible` apply): the session
- *     config's `boundUserId` must equal the row's current `user_id`. A session
- *     with no `boundUserId` (unproven, the house agent) costs no read and logs
- *     NULL. A session with one costs one indexed `openclaw_bots.agent_id`
- *     lookup (unique index).
+ *     config's `boundUserId` is the claim, and it counts only while it equals
+ *     the row's current `user_id`;
+ *   - a session with neither (unproven, the house agent) claims nobody and
+ *     logs NULL with no subquery and no lock.
  *
- * Why this never attributes a row to the wrong owner: the `user_id` written is
- * always a user this session proved. If the row is rebound before the insert
- * lands, the new owner does not see it (`user_id` mismatch) and the prior owner
- * does not either (no longer the owner; a later re-bind moves `owner_since`
- * past the row). Never throws: a failed owner lookup logs the event with NULL,
- * which stays hidden (fail closed).
+ * Codex round 4: the owner check and the insert are ONE statement
+ * (`logOwnedAgentEventFromContext` in `event-logger.ts`: `user_id` = a
+ * subquery on `openclaw_bots` with the claimed owner, `owner_since <= actedAt`,
+ * FOR SHARE). There is no separate owner read before the insert, so an
+ * ownership change can never slip between the check and the write: a change
+ * that commits first makes the row NULL, a concurrent change waits for the
+ * insert to commit (its owner_since then follows the row's ts), and a complete
+ * A -> B -> A round trip after `actedAt` also yields NULL. Never throws: an
+ * insert failure goes to event_write_failures.
  */
-import { agentBots, db, eq } from '@clawville/database';
 import { npcSimulation } from './npc-simulation';
-import { logEventFromContext, type EventInput } from './event-logger';
+import { logOwnedAgentEventFromContext, type EventInput } from './event-logger';
 
-type EventContext = Parameters<typeof logEventFromContext>[0];
+type EventContext = Parameters<typeof logOwnedAgentEventFromContext>[0];
 
-/** The two session-config fields the owner proof reads. */
+/** The two session-config fields the owner claim reads. */
 export type GatewaySessionOwnerConfig = { agentId: string; boundUserId?: string | null };
 
 /**
- * The owner to record on a gateway event: `provenUserId` when the handler
- * already proved it, else the C10 owner proof against the live row, else null.
+ * The owner a gateway event claims: `provenUserId` when the handler already
+ * proved it, else the session config's `boundUserId`, else null. Pure (no
+ * read); the claim is checked against the live row inside the event INSERT.
  */
-export async function resolveGatewayEventOwner(
+export function gatewayEventOwnerClaim(
   config: GatewaySessionOwnerConfig | null | undefined,
   provenUserId: string | null = null,
-): Promise<string | null> {
+): string | null {
   if (provenUserId) return provenUserId;
-  const boundUserId = config?.boundUserId ?? null;
-  if (!config || !boundUserId) return null;
-  try {
-    const row = await db.query.agentBots.findFirst({
-      where: eq(agentBots.agentId, config.agentId),
-      columns: { userId: true },
-    });
-    return row?.userId === boundUserId ? boundUserId : null;
-  } catch {
-    return null;
-  }
+  return config?.boundUserId ?? null;
 }
 
 /**
- * `logEventFromContext` for a gateway agent event, with `userId` set to the
- * session's proven owner (see the module comment). The session config is read
- * NOW (synchronously), so a session that ends while the owner lookup runs
- * still resolves against the config that performed the action. Same
- * never-throws contract as `logEventFromContext`; callers fire and forget.
+ * Log a gateway agent event with the session's owner claim (see the module
+ * comment). The session config and `actedAt` are read NOW (synchronously), so
+ * a session that ends before the insert still claims the owner of the config
+ * that performed the action. Same never-throws contract as
+ * `logEventFromContext`; callers fire and forget.
  */
 export function logGatewayAgentEvent(
   c: EventContext,
   sessionId: string,
-  input: Omit<EventInput, 'userId'>,
+  input: Omit<EventInput, 'userId' | 'agentId'> & { agentId: string },
   provenUserId: string | null = null,
 ): Promise<void> {
+  const actedAt = new Date().toISOString();
   const config = npcSimulation.getAgentBotConfig(sessionId);
-  return resolveGatewayEventOwner(config, provenUserId).then((userId) =>
-    logEventFromContext(c, { ...input, userId }),
-  );
+  return logOwnedAgentEventFromContext(c, {
+    ...input,
+    claimedOwnerUserId: gatewayEventOwnerClaim(config, provenUserId),
+    actedAt,
+  });
 }

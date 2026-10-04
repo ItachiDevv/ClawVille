@@ -19,7 +19,15 @@ import { randomUUID } from 'node:crypto';
  *     round 3 BLOCKING, founder rule: event history is owner-only) while it
  *     returns the owner-attributed rows of every type, and returns nothing for
  *     a stale owner proof (the owner re-check runs in the same statement as
- *     the scope).
+ *     the scope);
+ *   - Codex round 4: the owned event insert (`event-logger.ts`
+ *     `logOwnedAgentEvent`) resolves `user_id` inside the INSERT under FOR
+ *     SHARE: the claimed owner only while it owns the row and has owned it
+ *     since `actedAt` (else NULL, the row is still written); a concurrent owner
+ *     change WAITS for the event insert to commit and stamps owner_since after
+ *     the event ts; an owner change in flight makes the event insert wait and
+ *     then yield NULL (or the owner, when the change rolls back). The
+ *     concurrency cases need a pool of 3+ connections (the default is 10).
  *
  * WRITES rows, so it needs DATABASE_URL on a LOCAL host AND an opt-in:
  * CI === 'true' (the gates.yml Postgres service, after migrate-ci applied 0079)
@@ -48,6 +56,7 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
     database: typeof import('@clawville/database');
     query: typeof import('../agent-event-query');
     bind: typeof import('../agent-redemption-bind');
+    logger: typeof import('../event-logger');
   };
 
   beforeAll(async () => {
@@ -55,6 +64,7 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       database: await import('@clawville/database'),
       query: await import('../agent-event-query'),
       bind: await import('../agent-redemption-bind'),
+      logger: await import('../event-logger'),
     };
     const { db, sql } = mod.database;
     // users_has_auth_method needs email + password_hash (the CI schema restores that CHECK).
@@ -308,5 +318,166 @@ describeIfDb('openclaw_bots.owner_since trigger + owner-period history scope (Po
       await db.update(agentBots).set({ userId: PRIOR }).where(eq(agentBots.agentId, agentId));
       expect(await queryDurableAgentEvents({ agentId, ownerUserId: PRIOR }, 0n, 100)).toEqual([]);
     });
+  });
+
+  describe('owned event insert: the owner is resolved inside the INSERT under FOR SHARE (Codex round 4)', () => {
+    const poolMax = Number(process.env.DB_POOL_MAX) > 0 ? Number(process.env.DB_POOL_MAX) : 10;
+    // holder/changer transaction + the other statement + the pg_stat_activity poll.
+    const testIfPool = poolMax >= 3 ? test : test.skip;
+
+    /** The real fire-and-forget writer, awaited (it resolves after the INSERT). */
+    function owned(agentId: string, claimedOwnerUserId: string | null, actedAt: string, tag: string): Promise<void> {
+      return mod.logger.logOwnedAgentEvent({ eventType: 'agent.chat.turn', agentId, claimedOwnerUserId, actedAt, payload: { tag } });
+    }
+
+    /** tag -> user_id of every event row of the agent, in insert order. */
+    async function ownersByTag(agentId: string): Promise<Array<[unknown, string | null]>> {
+      const { db, events, eq } = mod.database;
+      const rows = await db
+        .select({ payload: events.payload, userId: events.userId })
+        .from(events)
+        .where(eq(events.agentId, agentId))
+        .orderBy(events.id);
+      return rows.map((row) => [(row.payload as { tag?: string } | null)?.tag ?? null, row.userId]);
+    }
+
+    /** True once another backend of this database waits on a lock running `fragment`. */
+    async function waitUntilLockWait(fragment: string): Promise<boolean> {
+      const { db, sql } = mod.database;
+      for (let i = 0; i < 250; i++) {
+        const rows = (await db.execute(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock' AND query LIKE ${`%${fragment}%`}
+        `)) as unknown as Array<{ n: number }>;
+        if (Number(rows[0]?.n ?? 0) > 0) return true;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return false;
+    }
+
+    /** A promise plus its resolver. */
+    function signal(): { promise: Promise<void>; fire: () => void } {
+      let fire!: () => void;
+      const promise = new Promise<void>((resolve) => { fire = resolve; });
+      return { promise, fire };
+    }
+
+    test('sequential: the claim is recorded only while it owns the row and has owned it since actedAt', async () => {
+      const { db, agentBots, eq } = mod.database;
+      const agentId = newAgentId('owned-seq');
+      await insertRow(agentId, PRIOR);
+      await pause();
+      const t1 = new Date().toISOString();
+      await owned(agentId, PRIOR, t1, 'match');
+      await owned(agentId, null, t1, 'no-claim');
+      await owned(agentId, NEXT, t1, 'not-owner');
+      await owned(agentId, PRIOR, '2001-01-01T00:00:00.000Z', 'acted-before-period');
+      // PRIOR -> NEXT committed before the insert: a late PRIOR claim is NULL.
+      await pause();
+      await db.update(agentBots).set({ userId: NEXT }).where(eq(agentBots.agentId, agentId));
+      await pause();
+      await owned(agentId, PRIOR, t1, 'late-prior');
+      // NEXT -> PRIOR: a complete A -> B -> A round trip after t1. The row
+      // names PRIOR again, but owner_since is after t1, so still NULL; an
+      // action that began in the new period is recorded.
+      await db.update(agentBots).set({ userId: PRIOR }).where(eq(agentBots.agentId, agentId));
+      await pause();
+      await owned(agentId, PRIOR, t1, 'round-trip');
+      const t2 = new Date().toISOString();
+      await owned(agentId, PRIOR, t2, 'new-period');
+
+      expect(await ownersByTag(agentId)).toEqual([
+        ['match', PRIOR],
+        ['no-claim', null],
+        ['not-owner', null],
+        ['acted-before-period', null],
+        ['late-prior', null],
+        ['round-trip', null],
+        ['new-period', PRIOR],
+      ]);
+      // History in PRIOR's new period: only the row of an action that began in it.
+      const view = await mod.query.queryDurableAgentEvents({ agentId, ownerUserId: PRIOR }, 0n, 100);
+      expect(view.map((row) => row.payload)).toEqual([{ tag: 'new-period' }]);
+    }, 30_000);
+
+    testIfPool('a concurrent owner change WAITS for the owned insert to commit; its owner_since follows the event ts', async () => {
+      const { db, sql, events, agentBots, eq } = mod.database;
+      const agentId = newAgentId('owned-hold');
+      await insertRow(agentId, PRIOR);
+      await pause();
+      const actedAt = new Date().toISOString();
+      const inserted = signal();
+      const release = signal();
+      // The owned INSERT (same user_id expression as logOwnedAgentEvent), held
+      // open so its FOR SHARE row lock is held.
+      const holder = db.transaction(async (tx) => {
+        await tx.insert(events).values({
+          eventType: 'agent.chat.turn',
+          agentId,
+          userId: mod.logger.ownedEventUserIdSql(agentId, { claimedOwnerUserId: PRIOR, actedAt }),
+          payload: { tag: 'held' },
+        });
+        inserted.fire();
+        await release.promise;
+      });
+      await inserted.promise;
+      let moved = false;
+      const mover = db.update(agentBots).set({ userId: NEXT }).where(eq(agentBots.agentId, agentId))
+        .then(() => { moved = true; });
+      try {
+        expect(await waitUntilLockWait('update "openclaw_bots"')).toBe(true);
+        expect(moved).toBe(false);
+      } finally {
+        release.fire();
+      }
+      await holder;
+      await mover;
+      expect(moved).toBe(true);
+
+      const rows = await db
+        .select({ userId: events.userId, beforePeriod: sql<boolean>`${events.ts} < ${agentBots.ownerSince}` })
+        .from(events)
+        .innerJoin(agentBots, eq(agentBots.agentId, events.agentId))
+        .where(eq(events.agentId, agentId));
+      expect(rows).toEqual([{ userId: PRIOR, beforePeriod: true }]);
+      expect((await readStamp(agentId)).userId).toBe(NEXT);
+      // NEXT never sees it; PRIOR no longer owns the row.
+      expect(await mod.query.queryDurableAgentEvents({ agentId, ownerUserId: NEXT }, 0n, 100)).toEqual([]);
+      expect(await mod.query.queryDurableAgentEvents({ agentId, ownerUserId: PRIOR }, 0n, 100)).toEqual([]);
+    }, 30_000);
+
+    for (const outcome of ['commit', 'rollback'] as const) {
+      testIfPool(`an owner change in flight makes the owned insert WAIT, then ${outcome === 'commit' ? 'NULL' : 'the owner'} (${outcome})`, async () => {
+        const { db, agentBots, eq } = mod.database;
+        const agentId = newAgentId(`owned-inflight-${outcome}`);
+        await insertRow(agentId, PRIOR);
+        await pause();
+        const actedAt = new Date().toISOString();
+        const updated = signal();
+        const release = signal();
+        const changer = db.transaction(async (tx) => {
+          await tx.update(agentBots).set({ userId: NEXT }).where(eq(agentBots.agentId, agentId));
+          updated.fire();
+          await release.promise;
+          if (outcome === 'rollback') throw new Error('roll back the owner change');
+        }).catch((err: unknown) => {
+          if (outcome !== 'rollback') throw err;
+        });
+        await updated.promise;
+        let logged = false;
+        const logging = owned(agentId, PRIOR, actedAt, 'in-flight').then(() => { logged = true; });
+        try {
+          expect(await waitUntilLockWait('FOR SHARE')).toBe(true);
+          expect(logged).toBe(false);
+        } finally {
+          release.fire();
+        }
+        await changer;
+        await logging;
+        expect(await ownersByTag(agentId)).toEqual([['in-flight', outcome === 'commit' ? null : PRIOR]]);
+        expect((await readStamp(agentId)).userId).toBe(outcome === 'commit' ? NEXT : PRIOR);
+      }, 30_000);
+    }
   });
 });

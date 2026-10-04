@@ -6,17 +6,22 @@
  * emit sites of history types (`/chat` and `/building/:id/chat` ->
  * `agent.chat.turn`, `/visit-building` -> `building.visited`) must therefore
  * record the owner THIS session proved (connect-sec C10: config `boundUserId`
- * === row `user_id`), and NULL for a session without that proof:
- *   - proven: ledger-capable owner session (the reward subject proves the owner,
- *     so visit/building chat need no extra owner lookup);
+ * === row `user_id`), and NULL for a session without that proof.
+ *
+ * Codex round 4: the owner check runs INSIDE the event INSERT (the owned
+ * variant `logOwnedAgentEventFromContext`, SQL pinned in
+ * `services/__tests__/event-logger-owned-insert.test.ts` and proven on
+ * PostgreSQL in `agent-owner-since.db.test.ts`). So every emit site here passes
+ * a CLAIM and the gateway does NO owner read before the insert:
+ *   - proven: ledger-capable owner session: claims the reward subject's owner;
  *   - restored: owner-proven but NOT ledger-capable (restored after a deploy,
- *     the /enter keeper): still the owner, one indexed lookup;
- *   - stray: no `boundUserId` on an owned row: NULL, no lookup;
- *   - other: proven for a different user than the row owner: NULL;
- *   - unbound row: NULL.
+ *     the /enter keeper): claims its `boundUserId`;
+ *   - stray: no `boundUserId`: claims nobody (plain NULL row, no subquery);
+ *   - other / unbound row: claims its `boundUserId`; the in-insert check
+ *     against the live row yields NULL (not decided here any more).
  *
  * Sessions are REAL npc-simulation registrations (nanoclaw wire, no network);
- * the DB is a small fake. `logEventFromContext` is captured.
+ * the DB is a small fake. The logger entry points are captured.
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { Hono } from 'hono';
@@ -38,8 +43,10 @@ let rowOwner: string | null;
 let ownerLookups: number;
 /** When true the owner-proof lookup throws (DB failure). */
 let ownerLookupThrows: boolean;
-/** Captured `logEventFromContext` inputs. */
+/** Captured `logOwnedAgentEventFromContext` inputs (the owned variant). */
 let logged: Array<Record<string, unknown>>;
+/** Captured plain `logEventFromContext` inputs (must stay empty for these emits). */
+let loggedPlain: Array<Record<string, unknown>>;
 
 const realDatabase = await import('@clawville/database');
 const delegateDb = realDatabase.db as unknown as Record<PropertyKey, unknown>;
@@ -153,6 +160,9 @@ mock.module('../../services/event-logger', () => ({
   ...realEventLogger,
   logEvent: async () => undefined,
   logEventFromContext: async (_c: unknown, input: Record<string, unknown>) => {
+    loggedPlain.push(input);
+  },
+  logOwnedAgentEventFromContext: async (_c: unknown, input: Record<string, unknown>) => {
     logged.push(input);
   },
 }));
@@ -161,7 +171,7 @@ const { agentGatewayRoutes } = await import('../agent-gateway');
 const { npcSimulation } = await import('../../services/npc-simulation');
 const { buildAvatarSessionConfig } = await import('../../services/agent-session-config');
 const { resolveBuildingCenter } = await import('../../services/building-center');
-const { resolveGatewayEventOwner } = await import('../../services/agent-event-owner');
+const { gatewayEventOwnerClaim } = await import('../../services/agent-event-owner');
 
 function buildApp() {
   const app = new Hono<{ Variables: { fpHash: string; ipPrefixHash: string } }>();
@@ -231,6 +241,7 @@ const ROUTES = {
 /** POST the route, then wait for the fire-and-forget owner-attributed emit. */
 async function emitFor(route: keyof typeof ROUTES, sessionId: string): Promise<Record<string, unknown>> {
   const spec = ROUTES[route];
+  const before = Date.now();
   const response = await buildApp().request(spec.path(sessionId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -239,9 +250,21 @@ async function emitFor(route: keyof typeof ROUTES, sessionId: string): Promise<R
   expect(response.status).toBe(200);
   for (let i = 0; i < 50 && logged.length === 0; i++) await new Promise((r) => setTimeout(r, 2));
   expect(logged.length).toBe(1);
+  expect(loggedPlain.length).toBe(0);
   const event = logged[0]!;
   expect(event.eventType).toBe(spec.eventType);
   expect(event.agentId).toBe(AGENT_ID);
+  // The owned variant takes a claim, never a pre-resolved user id.
+  expect('userId' in event).toBe(false);
+  expect('claimedOwnerUserId' in event).toBe(true);
+  // actedAt: an ISO string (never a JS Date) taken during this request.
+  expect(typeof event.actedAt).toBe('string');
+  const actedAtMs = Date.parse(event.actedAt as string);
+  expect(new Date(actedAtMs).toISOString()).toBe(event.actedAt as string);
+  expect(actedAtMs).toBeGreaterThanOrEqual(before);
+  expect(actedAtMs).toBeLessThanOrEqual(Date.now());
+  // No owner read before the insert: the check runs inside the INSERT.
+  expect(ownerLookups).toBe(0);
   return event;
 }
 
@@ -251,6 +274,7 @@ beforeEach(() => {
   ownerLookups = 0;
   ownerLookupThrows = false;
   logged = [];
+  loggedPlain = [];
 });
 
 afterEach(() => {
@@ -259,72 +283,56 @@ afterEach(() => {
   }
 });
 
-describe('gateway agent events record the session-proven owner', () => {
+describe('gateway agent events claim the session-proven owner (checked inside the insert)', () => {
   for (const route of ['chat', 'visit', 'buildingChat'] as const) {
-    test(`${route}: a ledger-capable owner session records the owner`, async () => {
+    test(`${route}: a ledger-capable owner session claims the owner`, async () => {
       const event = await emitFor(route, proven());
-      expect(event.userId).toBe(OWNER);
+      expect(event.claimedOwnerUserId).toBe(OWNER);
     });
 
-    test(`${route}: an owner-proven NON-ledger session (restored) still records the owner`, async () => {
+    test(`${route}: an owner-proven NON-ledger session (restored) claims its bound owner`, async () => {
       const event = await emitFor(route, restored());
-      expect(event.userId).toBe(OWNER);
+      expect(event.claimedOwnerUserId).toBe(OWNER);
     });
 
-    test(`${route}: a stray session (no boundUserId) on an owned row records NULL with no owner lookup`, async () => {
+    test(`${route}: a stray session (no boundUserId) claims nobody (plain NULL row)`, async () => {
       const event = await emitFor(route, stray());
-      expect(event.userId).toBeNull();
-      expect(ownerLookups).toBe(0);
+      expect(event.claimedOwnerUserId).toBeNull();
     });
 
-    test(`${route}: a session proven for a different user records NULL`, async () => {
+    test(`${route}: a session proven for a different user claims that user; the insert, not the gateway, decides`, async () => {
       const event = await emitFor(route, other());
-      expect(event.userId).toBeNull();
+      expect(event.claimedOwnerUserId).toBe(OTHER_OWNER);
     });
 
-    test(`${route}: an unbound row records NULL even for a session with a boundUserId`, async () => {
+    test(`${route}: an unbound row still gets only the claim (the in-insert check yields NULL)`, async () => {
       rowOwner = null;
       const event = await emitFor(route, restored());
-      expect(event.userId).toBeNull();
+      expect(event.claimedOwnerUserId).toBe(OWNER);
     });
   }
 
-  test('visit + building chat reuse the reward subject: no extra owner lookup for a ledger owner', async () => {
-    await emitFor('visit', proven());
-    logged = [];
-    await emitFor('buildingChat', proven());
-    expect(ownerLookups).toBe(0);
-  });
-
-  test('a restored session costs exactly ONE owner lookup per event', async () => {
-    await emitFor('chat', restored());
-    expect(ownerLookups).toBe(1);
+  test('a failing owner read cannot matter: there is no owner read before the insert', async () => {
+    ownerLookupThrows = true;
+    const event = await emitFor('chat', restored());
+    expect(event.claimedOwnerUserId).toBe(OWNER);
   });
 });
 
-describe('resolveGatewayEventOwner — unit', () => {
-  test('a handler-proven owner is returned without a read', async () => {
-    expect(await resolveGatewayEventOwner({ agentId: AGENT_ID, boundUserId: null }, OWNER)).toBe(OWNER);
+describe('gatewayEventOwnerClaim — unit (pure, no read)', () => {
+  test('a handler-proven owner wins over the config', () => {
+    expect(gatewayEventOwnerClaim({ agentId: AGENT_ID, boundUserId: null }, OWNER)).toBe(OWNER);
+    expect(gatewayEventOwnerClaim({ agentId: AGENT_ID, boundUserId: OTHER_OWNER }, OWNER)).toBe(OWNER);
+  });
+
+  test('no config, or no boundUserId, claims nobody', () => {
+    expect(gatewayEventOwnerClaim(null)).toBeNull();
+    expect(gatewayEventOwnerClaim(undefined)).toBeNull();
+    expect(gatewayEventOwnerClaim({ agentId: AGENT_ID })).toBeNull();
+  });
+
+  test('otherwise the config boundUserId is the claim, with no DB read', () => {
+    expect(gatewayEventOwnerClaim({ agentId: AGENT_ID, boundUserId: OWNER })).toBe(OWNER);
     expect(ownerLookups).toBe(0);
-  });
-
-  test('no config, or no boundUserId, is NULL without a read', async () => {
-    expect(await resolveGatewayEventOwner(null)).toBeNull();
-    expect(await resolveGatewayEventOwner({ agentId: AGENT_ID })).toBeNull();
-    expect(ownerLookups).toBe(0);
-  });
-
-  test('boundUserId must equal the live row owner', async () => {
-    expect(await resolveGatewayEventOwner({ agentId: AGENT_ID, boundUserId: OWNER })).toBe(OWNER);
-    rowOwner = OTHER_OWNER;
-    expect(await resolveGatewayEventOwner({ agentId: AGENT_ID, boundUserId: OWNER })).toBeNull();
-    expect(ownerLookups).toBe(2);
-  });
-
-  test('a failed owner lookup is NULL (fail closed) and the event is still logged', async () => {
-    ownerLookupThrows = true;
-    expect(await resolveGatewayEventOwner({ agentId: AGENT_ID, boundUserId: OWNER })).toBeNull();
-    const event = await emitFor('chat', restored());
-    expect(event.userId).toBeNull();
   });
 });
