@@ -41,6 +41,11 @@ import {
   onDecorativeReleaseStaggered,
 } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
+import {
+  LOCAL_PLAYER_FALLBACK_MODEL_KEY,
+  LocalPlayerFallback,
+} from '@/lib/three/local-player-model-fallback';
 import {
   notifyBootActorCommitted,
   registerBootActorClaim,
@@ -1910,7 +1915,8 @@ const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
   const { released, priority } = useAmbientBodyRelease(npc.x, npc.y, false);
   const isVrm = regEntry?.avatar_type === 'vrm';
-  useVRMOrphanCancel(isVrm ? vrmPathForSpecies(npc.species) : null, npc.id);
+  const vrmPath = isVrm ? vrmPathForSpecies(npc.species) : null;
+  useVRMOrphanCancel(vrmPath, npc.id);
 
   // Slice D [R2-F4]: the possessed/demo player body (PLAYER_NPC_ID) no
   // longer renders here — it moved to BootActorNpcBody below, mounted under
@@ -1918,29 +1924,40 @@ const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   // hiding/compiling decisions on `perf:wandering-npcs` can never touch the
   // boot actor.
   if (!released) return null;
+  // ModelLoadBoundary (2026-10-04): a wanderer whose model fails to load
+  // (VRM rejected after its request retries, or a GLB error) renders nothing
+  // and logs once, instead of crashing the whole world canvas. Below the
+  // orphan-cancel hook, so an unmount still disposes (and evicts) the
+  // rejected entry; a remount retries. Keyed reset on species change.
   return (
-    <Suspense fallback={null}>
-      {/* key={npc.species} (Codex round-3 finding 2): warm state must be
-          scoped to the MODEL RESOURCE, not the entity id — a species change
-          under a stable NPC id would otherwise re-suspend under an already
-          ready=true attachment and attach the new model without a warm pass
-          (the exact stale-ready failure fixed for the local player with
-          key={reg.path}). The species→path mapping is deterministic, so the
-          species string is the resource key. */}
-      <DeferredWarmAttachment
-        key={npc.species}
-        label={`wanderer:${npc.id}`}
-        priority={priority}
-      >
-        {(warmReady) =>
-          isVrm ? (
-            <VRMNpcMesh npc={npc} attachmentVisible={warmReady} />
-          ) : (
-            <GLBNpcMesh npc={npc} attachmentVisible={warmReady} />
-          )
-        }
-      </DeferredWarmAttachment>
-    </Suspense>
+    <ModelLoadBoundary
+      assetUrl={vrmPath ?? regEntry?.path ?? npc.species}
+      label={`wanderer:${npc.id}`}
+      resetKey={npc.species}
+    >
+      <Suspense fallback={null}>
+        {/* key={npc.species} (Codex round-3 finding 2): warm state must be
+            scoped to the MODEL RESOURCE, not the entity id — a species change
+            under a stable NPC id would otherwise re-suspend under an already
+            ready=true attachment and attach the new model without a warm pass
+            (the exact stale-ready failure fixed for the local player with
+            key={reg.path}). The species→path mapping is deterministic, so the
+            species string is the resource key. */}
+        <DeferredWarmAttachment
+          key={npc.species}
+          label={`wanderer:${npc.id}`}
+          priority={priority}
+        >
+          {(warmReady) =>
+            isVrm ? (
+              <VRMNpcMesh npc={npc} attachmentVisible={warmReady} />
+            ) : (
+              <GLBNpcMesh npc={npc} attachmentVisible={warmReady} />
+            )
+          }
+        </DeferredWarmAttachment>
+      </Suspense>
+    </ModelLoadBoundary>
   );
 });
 
@@ -2035,9 +2052,35 @@ export function BootActorNpcBody() {
     PLAYER_NPC_ID,
   );
   if (controlMode !== 'npc' || !npc) return null;
+  // The possessed body is the LOCAL player's body: on a load failure it falls
+  // back to the default lobster GLB (never invisible), releases the npc-body
+  // boot claim once that body committed and shows one notice
+  // (local-player-model-fallback.tsx).
+  const bodyPath = isVrm ? vrmPathForSpecies(npc.species) : (regEntry?.path ?? npc.species);
   return (
-    <Suspense fallback={null}>
-      <BootActorNpcBodyInner key={npc.species} npc={npc} />
-    </Suspense>
+    <ModelLoadBoundary
+      assetUrl={bodyPath}
+      label="possessed-npc-body"
+      resetKey={npc.species}
+      fallback={<PossessedBodyFallback npc={npc} failedPath={bodyPath} />}
+    >
+      <Suspense fallback={null}>
+        <BootActorNpcBodyInner key={npc.species} npc={npc} />
+      </Suspense>
+    </ModelLoadBoundary>
+  );
+}
+
+function PossessedBodyFallback({ npc, failedPath }: { npc: NpcSpriteState; failedPath: string }) {
+  return (
+    <LocalPlayerFallback
+      kind="npc-body"
+      failedPath={failedPath}
+      fallbackUrl={SPECIES_MODEL[LOCAL_PLAYER_FALLBACK_MODEL_KEY].path}
+      label="possessed-npc-body"
+      addToast={useGameStore.getState().addToast}
+    >
+      <GLBNpcMesh npc={{ ...npc, species: LOCAL_PLAYER_FALLBACK_MODEL_KEY }} />
+    </LocalPlayerFallback>
   );
 }

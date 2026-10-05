@@ -110,6 +110,77 @@ export function isRetryableGlbFetchError(error: unknown): boolean {
   return (error as { name?: unknown }).name === 'TypeError';
 }
 
+/**
+ * The same request-retry policy for loaders that call fetch() themselves
+ * (vrm-loader byte fetch): retry a TypeError (fetch rejected / body broke)
+ * or HTTP 408 / 429 / 5xx after each GLB_FETCH_RETRY_DELAYS_MS delay; 4xx
+ * and anything else are final. A non-OK response throws an Error with
+ * `response` attached (so the status is classifiable) and the caller's
+ * message. Staging 2026-10-04: one failed VRM byte fetch was rethrown raw
+ * by useVRMInstance and tore down the world canvas.
+ */
+export async function fetchArrayBufferWithRetry(
+  url: string,
+  options: {
+    fetchImpl?: typeof fetch;
+    wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
+    httpErrorMessage?: (status: number) => string;
+    /** Abort stops further attempts and pending waits; rejects AbortError, never retried. */
+    signal?: AbortSignal;
+  } = {},
+): Promise<ArrayBuffer> {
+  const { signal } = options;
+  const doFetch =
+    options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init));
+  const wait = options.wait ?? abortableDelay;
+  for (let attempt = 0; ; attempt += 1) {
+    throwIfAborted(signal);
+    try {
+      const response = await doFetch(url, signal ? { signal } : undefined);
+      if (!response.ok) {
+        const message = options.httpErrorMessage?.(response.status) ?? `fetch ${url} failed: ${response.status}`;
+        throw Object.assign(new Error(message), { response });
+      }
+      return await response.arrayBuffer();
+    } catch (error) {
+      throwIfAborted(signal);
+      const delay = GLB_FETCH_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isRetryableGlbFetchError(error)) throw error;
+      await wait(delay, signal);
+    }
+  }
+}
+
+function abortError(signal: AbortSignal): unknown {
+  const reason: unknown = signal.reason;
+  if (typeof reason === 'object' && reason !== null && (reason as { name?: unknown }).name === 'AbortError') {
+    return reason;
+  }
+  return Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(id);
+      reject(abortError(signal!));
+    };
+    const id = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 /** The final failure recorded for `url` by a retry-wrapped loader, if any. */
 export function getLastGlbLoadFailure(url: string): GlbLoadFailure | undefined {
   return LAST_FAILURE.get(url);

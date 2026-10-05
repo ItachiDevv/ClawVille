@@ -16,6 +16,7 @@ import {
   useVRMOrphanCancel,
 } from '@/lib/three/arena-npcs';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 import { preloadVRMBytes } from '@/lib/three/vrm-loader';
 
@@ -177,10 +178,8 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({
 function DeferredRemoteBody({ player }: { player: RemotePlayerState }) {
   const { released, priority } = useAmbientBodyRelease(player.x, player.y, false);
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
-  useVRMOrphanCancel(
-    regEntry?.avatar_type === 'vrm' ? regEntry.path : null,
-    player.id,
-  );
+  const vrmPath = regEntry?.avatar_type === 'vrm' ? regEntry.path : null;
+  useVRMOrphanCancel(vrmPath, player.id);
   if (!released) return null;
   // The Suspense boundary must live INSIDE this component, BELOW the
   // cancellation hook (Codex round-2 finding 1): a post-release join renders
@@ -189,22 +188,31 @@ function DeferredRemoteBody({ player }: { player: RemotePlayerState }) {
   // held un-committed — the orphan-cancel effect would never install, and a
   // player leaving before resolution would leak the parse. With the inner
   // boundary, only the subtree below it suspends; this component commits.
+  // ModelLoadBoundary (2026-10-04): a remote player whose model fails to load
+  // renders nothing and logs once instead of crashing the whole world canvas;
+  // below the orphan-cancel hook so a remount retries (see the component).
   return (
-    <Suspense fallback={null}>
-      {/* key={player.species} (Codex round-3 finding 2): remote players can
-          switch avatars under a stable id — the warm state is scoped to the
-          model resource so the replacement gets its own warm pass instead of
-          attaching unwarmed under a stale ready=true attachment. */}
-      <DeferredWarmAttachment
-        key={player.species}
-        label={`remote:${player.id}`}
-        priority={priority}
-      >
-        {(warmReady) => (
-          <RemotePlayerEntry player={player} attachmentVisible={warmReady} />
-        )}
-      </DeferredWarmAttachment>
-    </Suspense>
+    <ModelLoadBoundary
+      assetUrl={vrmPath ?? regEntry?.path ?? player.species}
+      label={`remote:${player.id}`}
+      resetKey={player.species}
+    >
+      <Suspense fallback={null}>
+        {/* key={player.species} (Codex round-3 finding 2): remote players can
+            switch avatars under a stable id — the warm state is scoped to the
+            model resource so the replacement gets its own warm pass instead of
+            attaching unwarmed under a stale ready=true attachment. */}
+        <DeferredWarmAttachment
+          key={player.species}
+          label={`remote:${player.id}`}
+          priority={priority}
+        >
+          {(warmReady) => (
+            <RemotePlayerEntry player={player} attachmentVisible={warmReady} />
+          )}
+        </DeferredWarmAttachment>
+      </Suspense>
+    </ModelLoadBoundary>
   );
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   GLB_FETCH_RETRY_DELAYS_MS,
+  fetchArrayBufferWithRetry,
   getLastGlbLoadFailure,
   installGlbFetchRetry,
   isRetryableGlbFetchError,
@@ -429,5 +430,149 @@ describe('readOptionalGltf', () => {
         throw bug;
       }),
     ).toThrow(bug);
+  });
+});
+
+describe('fetchArrayBufferWithRetry (raw-fetch loaders, e.g. vrm-loader bytes)', () => {
+  function scriptedFetch(replies: Array<'network' | 'body-broken' | number | 'ok'>) {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      const reply = replies[calls.length - 1] ?? 'ok';
+      if (reply === 'network') throw new TypeError('Failed to fetch');
+      if (typeof reply === 'number') return new Response('x', { status: reply });
+      if (reply === 'body-broken') {
+        return { ok: true, status: 200, arrayBuffer: async () => { throw new TypeError('network error'); } } as unknown as Response;
+      }
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }) as typeof fetch;
+    return { calls, fetchImpl };
+  }
+  const waits: number[] = [];
+  const wait = async (ms: number) => {
+    waits.push(ms);
+  };
+
+  test('a failed request is retried and the bytes arrive (the staging VRM case)', async () => {
+    waits.length = 0;
+    const { calls, fetchImpl } = scriptedFetch(['network', 'ok']);
+    const bytes = await fetchArrayBufferWithRetry('/avatars/a.vrm', { fetchImpl, wait });
+    expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3]));
+    expect(calls).toEqual(['/avatars/a.vrm', '/avatars/a.vrm']);
+    expect(waits).toEqual([GLB_FETCH_RETRY_DELAYS_MS[0]]);
+  });
+
+  test('HTTP 503 and a broken body stream are retried; the third failure is final', async () => {
+    waits.length = 0;
+    const { calls, fetchImpl } = scriptedFetch([503, 'body-broken', 'network']);
+    await expect(fetchArrayBufferWithRetry('/avatars/b.vrm', { fetchImpl, wait })).rejects.toThrow('Failed to fetch');
+    expect(calls.length).toBe(GLB_FETCH_RETRY_DELAYS_MS.length + 1);
+    expect(waits).toEqual([...GLB_FETCH_RETRY_DELAYS_MS]);
+  });
+
+  test('HTTP 404 is final at once and keeps the caller message + response status', async () => {
+    waits.length = 0;
+    const { calls, fetchImpl } = scriptedFetch([404]);
+    let thrown: unknown;
+    try {
+      await fetchArrayBufferWithRetry('/avatars/c.vrm', {
+        fetchImpl,
+        wait,
+        httpErrorMessage: (status) => `[vrm-loader] fetch /avatars/c.vrm failed: ${status}`,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error).message).toBe('[vrm-loader] fetch /avatars/c.vrm failed: 404');
+    expect((thrown as { response?: { status?: number } }).response?.status).toBe(404);
+    expect(calls.length).toBe(1);
+    expect(waits).toEqual([]);
+  });
+});
+
+describe('fetchArrayBufferWithRetry abort signal', () => {
+  test('abort during a retry wait stops: rejects AbortError, no further request', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    // A wait that never ends by itself: only the abort can finish it.
+    const wait = (_ms: number, signal?: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    const pending = fetchArrayBufferWithRetry('/avatars/abort.vrm', { fetchImpl, wait, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+    let thrown: unknown;
+    try {
+      await pending;
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(calls.length).toBe(1);
+  });
+
+  test('an already-aborted signal makes no request', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let called = 0;
+    const fetchImpl = (async () => {
+      called += 1;
+      return new Response(new Uint8Array([1]));
+    }) as unknown as typeof fetch;
+    let thrown: unknown;
+    try {
+      await fetchArrayBufferWithRetry('/avatars/pre-aborted.vrm', { fetchImpl, signal: controller.signal });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(called).toBe(0);
+  });
+
+  test('the signal is passed to fetch, and a fetch AbortError is never retried', async () => {
+    const controller = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    let calls = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      seen.push(init?.signal ?? undefined);
+      throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+    }) as unknown as typeof fetch;
+    let thrown: unknown;
+    try {
+      await fetchArrayBufferWithRetry('/avatars/fetch-abort.vrm', { fetchImpl, signal: controller.signal, wait: async () => {} });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(calls).toBe(1);
+    expect(seen[0]).toBe(controller.signal);
+  });
+
+  test('the default wait is abortable (no injected wait)', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    const started = Date.now();
+    const pending = fetchArrayBufferWithRetry('/avatars/default-wait.vrm', { fetchImpl, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    let thrown: unknown;
+    try {
+      await pending;
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { name?: string }).name).toBe('AbortError');
+    expect(calls).toBe(1);
+    expect(Date.now() - started).toBeLessThan(GLB_FETCH_RETRY_DELAYS_MS[0]);
   });
 });
