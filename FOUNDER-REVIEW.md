@@ -763,7 +763,12 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
-### Hermit crabs always visible; crab + seahorse texture filter (session tradeProd, 2026-10-04, STAGING)
+### One failed 3D model no longer kills the whole world (session tradeProd, 2026-10-05, STAGING)
+- **What changed:** before, ONE failed model download (a seabed prop, an NPC avatar, your own avatar) replaced the whole world with "This browser couldn't start the 3D view ... Reload". Now a failed download retries twice; if it still fails, only that prop or figure is missing and the world keeps running.
+- **Your own avatar:** if it cannot load you are shown as the default lobster body with one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." (if even the lobster fails: "Your avatar could not load. Reload to try again.", and you are invisible until reload).
+- **Feedback wanted:** is that notice text and the lobster fallback OK? You only see it on a bad network; the normal game looks the same.
+
+### Hermit crabs always visible; crab + seahorse texture filter (session tradeProd, 2026-10-04, ON PROD `71c1213b`)
 - **Look at:** `https://staging.clawville.world/game` (WebGPU browser). Walk up close to a hermit crab and to the wandering seahorse, then view them from far away.
 - **What changed:** on WebGPU the hermit crabs could stay INVISIBLE for a whole session (3 of 7 cold prod loads, a three.js r185 shader race on their pixel textures). The fix changes only their texture filter.
 - **Feedback wanted:** up close they should look unchanged (crisp pixel texture); far away they may look slightly softer and shimmer less. Are the crabs always there now? Is the far look fine?
