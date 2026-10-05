@@ -518,8 +518,19 @@ describe('ModelLoadBoundary', () => {
     expect(requests.get(url)).toBe(2);
     // Let the preload entry RESOLVE first: three's FileLoader dedupes an
     // in-flight request, so only a settled entry shows an eviction as a 3rd
-    // request.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // request. Reading the key now throws the PRELOAD entry's own promise
+    // (no new entry); await it, then a read must return the loaded value.
+    let preloadPending: unknown;
+    try {
+      read();
+    } catch (thrown) {
+      preloadPending = thrown;
+    }
+    expect(preloadPending).toBeInstanceOf(Promise);
+    await preloadPending;
+    const preloaded = read();
+    expect(preloaded.scene.getObjectByName('figure-root')).toBeTruthy();
+    expect(requests.get(url)).toBe(2);
     (second as { clear(): void }).clear();
     let gltf: ReturnType<typeof read> | undefined;
     for (let i = 0; i < 3 && gltf === undefined; i += 1) {
