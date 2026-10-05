@@ -270,6 +270,65 @@ describe('LocalPlayerFallback', () => {
     expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
   });
 
+  test('stale unmount timer: the boot state is reset (new epoch) before the old timer fires -> no release in the new state', async () => {
+    const failedPath = '/avatars/lpf-player-stale.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-stale.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const element = () =>
+      createElement(
+        fallbackModule.LocalPlayerFallback,
+        { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+        createElement(LobsterBody, { url: lobsterUrl }),
+      );
+    const rootA = r3fLikeRoot(newContainer(), []);
+    await act(async () => rootA.render(element()));
+    await settle(3);
+    // Unmount (deferred release armed), then the boot state starts over
+    // BEFORE that timer fires: a new resolution, and a NEW fallback for the
+    // same kind + path registers its own claim (claim ids restart at 1).
+    const containerB = newContainer();
+    const rootB = r3fLikeRoot(containerB, []);
+    await act(async () => {
+      rootA.unmount();
+      bootActor.__resetBootActorForTests();
+      bootActor.resolveBootActor('player-vrm', failedPath);
+      rootB.render(element());
+    });
+    await settle(5); // the old timer has fired by now
+    expect(bootActor.getBootActorStamps().readyAt).toBeNull();
+
+    openGate();
+    await settle();
+    expect(containerB.querySelector('#lobster')).not.toBeNull();
+    expect(bootActor.getBootActorStamps().readyAt).not.toBeNull();
+    await act(async () => rootB.unmount());
+  });
+
+  test('the test reset cancels pending unmount releases', async () => {
+    const failedPath = '/avatars/lpf-player-reset.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-reset.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const root = r3fLikeRoot(newContainer(), []);
+    await act(async () =>
+      root.render(
+        createElement(
+          fallbackModule.LocalPlayerFallback,
+          { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+          createElement(LobsterBody, { url: lobsterUrl }),
+        ),
+      ),
+    );
+    await settle(3);
+    await act(async () => {
+      root.unmount();
+      fallbackModule.__resetLocalPlayerFallbackForTests();
+    });
+    await settle(5);
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+  });
+
   test('npc-body claim (possessed NPC) is released the same way', async () => {
     const failedPath = '/avatars/lpf-npc.vrm';
     const lobsterUrl = 'http://localhost/models/lpf-lobster-npc.glb?v=1';

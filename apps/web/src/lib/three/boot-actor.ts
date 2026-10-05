@@ -285,7 +285,10 @@ export function registerBootActorClaim(
  * fetch reporter [I1-F3]). Closes body coverage when registration already
  * froze the matching tuple [I1-F1]. */
 export function notifyBootActorCommitted(token: BootActorClaimToken): void {
-  if (!claims.has(token.id) || commitTimes.has(token.id)) return;
+  // Identity, not just id: ids restart after a state reset, so a token kept
+  // from before (e.g. a deferred release) must never commit a newer claim
+  // that reuses its id.
+  if (claims.get(token.id) !== token || commitTimes.has(token.id)) return;
   const at = nowMs();
   commitTimes.set(token.id, at);
   fetchSettledTokenIds.add(token.id);
@@ -307,7 +310,7 @@ export function notifyBootActorCommitted(token: BootActorClaimToken): void {
 /** Mark the actor's byte fetch settled (progress unit; success OR failure —
  * terminal accounting, the bar never stalls on a failed dep [R3-F6]). */
 export function notifyBootActorFetchSettled(token: BootActorClaimToken): void {
-  if (!claims.has(token.id) || fetchSettledTokenIds.has(token.id)) return;
+  if (claims.get(token.id) !== token || fetchSettledTokenIds.has(token.id)) return;
   fetchSettledTokenIds.add(token.id);
   notifySubscribers();
 }
