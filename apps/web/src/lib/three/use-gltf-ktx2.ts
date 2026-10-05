@@ -130,25 +130,23 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
     }
     return useGLTF(path, true, true, extendLoaderForWorldTextures);
   } catch (thrown) {
-    // suspend-react throws the cache ENTRY's promise while it loads; a new
-    // entry for the key throws a new promise. That promise is the entry token.
-    if (thrown instanceof Promise) ENTRY_TOKEN.set(cacheKeyOf(path), thrown);
     throw tagGltfLoadRejection(thrown, path);
   }
 }
 
 /**
- * Cache key -> token (pending promise) of the latest cache entry seen for it.
- * R3F keys `useLoader(GLTFLoader, input)` as [loader, ...paths] (a string is
- * one path), so the key is the JSON of the path list: a string and a
- * one-element array share it; an array is ONE entry, independent of
- * single-URL loads of its members.
+ * R3F rejection errors whose cache entry was already evicted. suspend-react
+ * stores ONE Error per failed entry and rethrows that same object on every
+ * read, so the object identifies the entry. Only the FIRST clear() for it
+ * evicts; a later clear() of any error from the same entry is a no-op, so a
+ * NEWER entry for the key (a remount, useGLTF.preload, or any other caller)
+ * is never evicted by a stale error. Sound because ModelLoadError.clear() is
+ * the only code in apps/web that evicts GLB cache entries (the unused
+ * useGLTFWithKTX2.clear export was deleted so it stays that way): when the
+ * first clear() runs, the failed entry is still the cached one. A new
+ * useGLTF.clear caller must keep this invariant.
  */
-const ENTRY_TOKEN = new Map<string, object>();
-
-function cacheKeyOf(path: string | string[]): string {
-  return JSON.stringify(typeof path === 'string' ? [path] : path);
-}
+const EVICTED_REJECTIONS = new WeakSet<Error>();
 
 /**
  * R3F useLoader caches a failed load and rethrows it as
@@ -161,10 +159,8 @@ function cacheKeyOf(path: string | string[]): string {
  *   get two objects, so each boundary catch owns its own one-shot report
  *   cancel (ModelLoadBoundary).
  * - `clear()` evicts the cache entry with the SAME key the load used (the
- *   string, or the whole array), and only while no newer entry for that
- *   KEY has been seen (ENTRY_TOKEN), so an old error never evicts a newer
- *   entry another figure awaits, and a single-URL load of an array member
- *   never blocks the array's own clear.
+ *   string, or the whole array), once per failed entry (EVICTED_REJECTIONS),
+ *   so an old error never evicts a newer entry another figure awaits.
  * Thrown promises (Suspense) and any other error pass through unchanged.
  */
 function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
@@ -173,15 +169,15 @@ function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown
   const url = paths.find((p) => thrown.message.startsWith(`Could not load ${p}: `));
   if (url === undefined) return thrown;
   const failure = getLastGlbLoadFailure(url);
-  const key = cacheKeyOf(path);
-  const token = ENTRY_TOKEN.get(key);
   return new ModelLoadError({
     url,
     phase: failure?.phase ?? 'unknown',
     original: failure?.error ?? thrown,
     message: thrown.message,
     clear: () => {
-      if (ENTRY_TOKEN.get(key) === token) useGLTF.clear(path);
+      if (EVICTED_REJECTIONS.has(thrown)) return;
+      EVICTED_REJECTIONS.add(thrown);
+      useGLTF.clear(path);
     },
   });
 }
@@ -220,9 +216,3 @@ export function preloadKTX2Bytes(path: string): Promise<void> {
   );
 }
 
-/**
- * Clear a GLB from the loader cache.
- */
-useGLTFWithKTX2.clear = (path: string | string[]) => {
-  useGLTF.clear(path);
-};

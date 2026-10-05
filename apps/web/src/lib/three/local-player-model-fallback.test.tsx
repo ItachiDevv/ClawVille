@@ -235,6 +235,41 @@ describe('LocalPlayerFallback', () => {
     expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
   });
 
+  test('B2 (round 5): unmount + immediate remount for the SAME claim while the lobster loads: no early release; one release after the new body commits', async () => {
+    const failedPath = '/avatars/lpf-player-remount.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-remount.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const element = () =>
+      createElement(
+        fallbackModule.LocalPlayerFallback,
+        { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+        createElement(LobsterBody, { url: lobsterUrl }),
+      );
+    const rootA = r3fLikeRoot(newContainer(), []);
+    await act(async () => rootA.render(element()));
+    await settle(3);
+    // A NEW instance mounts for the same claim as the old one unmounts.
+    const containerB = newContainer();
+    const rootB = r3fLikeRoot(containerB, []);
+    await act(async () => {
+      rootA.unmount();
+      rootB.render(element());
+    });
+    await settle(5);
+    expect(bootActor.getBootActorStamps().readyAt).toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+
+    openGate();
+    await settle();
+    expect(containerB.querySelector('#lobster')).not.toBeNull();
+    expect(bootActor.getBootActorStamps().readyAt).not.toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+    await act(async () => rootB.unmount());
+    await settle(3);
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+  });
+
   test('npc-body claim (possessed NPC) is released the same way', async () => {
     const failedPath = '/avatars/lpf-npc.vrm';
     const lobsterUrl = 'http://localhost/models/lpf-lobster-npc.glb?v=1';

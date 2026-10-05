@@ -489,6 +489,51 @@ describe('ModelLoadBoundary', () => {
     expect(requests.get(urlB)).toBe(2);
   });
 
+  test('B1 (round 5): after one clear, useGLTF.preload creates a NEW entry outside the hook; a second old error must NOT evict it', async () => {
+    const url = 'http://localhost/models/mlb-preload.glb?v=3';
+    plans.set(url, [404, 'valid-slow']);
+    const read = () => useGLTFWithKTX2(url);
+    try {
+      read();
+    } catch (thrown) {
+      await thrown;
+    }
+    // Two figures read the same cached rejection: two error objects.
+    let first: unknown;
+    let second: unknown;
+    try {
+      read();
+    } catch (thrown) {
+      first = thrown;
+    }
+    try {
+      read();
+    } catch (thrown) {
+      second = thrown;
+    }
+    expect(first).not.toBe(second);
+    (first as { clear(): void }).clear();
+    // A NEW entry made without the hook (drei preload, same loader extension).
+    useGLTFWithKTX2.preload(url);
+    expect(requests.get(url)).toBe(2);
+    // Let the preload entry RESOLVE first: three's FileLoader dedupes an
+    // in-flight request, so only a settled entry shows an eviction as a 3rd
+    // request.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    (second as { clear(): void }).clear();
+    let gltf: ReturnType<typeof read> | undefined;
+    for (let i = 0; i < 3 && gltf === undefined; i += 1) {
+      try {
+        gltf = read();
+      } catch (thrown) {
+        if (!(thrown instanceof Promise)) throw thrown;
+        await thrown;
+      }
+    }
+    expect(gltf?.scene.getObjectByName('figure-root')).toBeTruthy();
+    expect(requests.get(url)).toBe(2); // the preload entry was kept, no 3rd request
+  });
+
   test('SHOULD-FIX: an OLD error.clear() never clears a newer pending load of the same URL', async () => {
     const url = 'http://localhost/models/mlb-guard.glb?v=2';
     plans.set(url, [404, 'valid-slow']);
@@ -515,9 +560,11 @@ describe('ModelLoadBoundary', () => {
     }
     expect(pending).toBeInstanceOf(Promise);
     expect(requests.get(url)).toBe(2);
-    // The OLD error clears again: it must not evict the newer pending load.
-    (old as { clear(): void }).clear();
+    // Let the newer entry RESOLVE (FileLoader dedupes in-flight requests, so
+    // only a settled entry shows an eviction as a 3rd request), then the OLD
+    // error clears again: it must not evict the newer entry.
     await pending;
+    (old as { clear(): void }).clear();
     const gltf = read();
     expect(gltf.scene.getObjectByName('figure-root')).toBeTruthy();
     expect(requests.get(url)).toBe(2);

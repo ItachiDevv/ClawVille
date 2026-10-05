@@ -21,7 +21,7 @@
  * 3. Shows ONE notice per session through the existing game toast, with the
  *    text that matches the outcome (lobster shown, or no body at all).
  */
-import { Suspense, useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, type ReactNode } from 'react';
 import {
   notifyBootActorCommitted,
   registerBootActorClaim,
@@ -50,6 +50,10 @@ export type LocalBodyKind = Extract<BootActorKind, 'player-vrm' | 'npc-body'>;
 
 let noticeShown = false;
 const RELEASED_CLAIMS = new WeakSet<BootActorClaimToken>();
+/** claim token -> deferred unmount release; a mount for the SAME claim (a
+ * StrictMode re-mount or a new instance) cancels it. Module scope, so a NEW
+ * component instance sees the old instance's pending release. */
+const PENDING_UNMOUNT_RELEASE = new Map<BootActorClaimToken, ReturnType<typeof setTimeout>>();
 let releaseCount = 0;
 
 export function showLocalPlayerFallbackNotice(addToast: AddToast, outcome: FallbackOutcome): void {
@@ -104,23 +108,24 @@ export function LocalPlayerFallback({
   }, [kind, failedPath, addToast]);
 
   // Unmount before any outcome: release the claim anyway (once; the token
-  // guard makes it a no-op after an outcome). Deferred one tick and
-  // cancelled by a re-mount for the SAME claim (StrictMode simulated
-  // unmount), so it never releases while the body is still loading.
-  const pendingUnmountRelease = useRef<{ timer: ReturnType<typeof setTimeout>; claim: string } | null>(null);
+  // guard makes it a no-op after an outcome). Deferred one tick in MODULE
+  // scope keyed by the claim token, and cancelled by any mount for the same
+  // claim (a StrictMode re-mount or a new instance), so it never releases
+  // while a fallback body for that claim is still loading.
   useEffect(() => {
-    const claim = `${kind}|${failedPath}`;
-    const pending = pendingUnmountRelease.current;
-    if (pending && pending.claim === claim) {
-      clearTimeout(pending.timer);
-      pendingUnmountRelease.current = null;
+    const token = registerBootActorClaim(kind, failedPath);
+    const pending = PENDING_UNMOUNT_RELEASE.get(token);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      PENDING_UNMOUNT_RELEASE.delete(token);
     }
     return () => {
       const timer = setTimeout(() => {
-        if (pendingUnmountRelease.current?.timer === timer) pendingUnmountRelease.current = null;
+        if (PENDING_UNMOUNT_RELEASE.get(token) !== timer) return;
+        PENDING_UNMOUNT_RELEASE.delete(token);
         releaseFailedBodyClaim(kind, failedPath);
       }, 0);
-      pendingUnmountRelease.current = { timer, claim };
+      PENDING_UNMOUNT_RELEASE.set(token, timer);
     };
   }, [kind, failedPath]);
 
