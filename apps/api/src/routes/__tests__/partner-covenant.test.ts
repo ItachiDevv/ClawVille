@@ -10,7 +10,9 @@
  *   - configured + missing signature → 401
  *   - configured + wrong IP → 403
  *   - configured + valid signature from an allowed IP → passes to the handler
- *   - getClientIp prefers cf-connecting-ip (the CF-authoritative header)
+ *   - getClientIp uses cf-connecting-ip only when the Traefik peer
+ *     (x-real-ip) is a Cloudflare edge; a forged header from any other peer
+ *     cannot pass the IP allowlist (H2, 2026-10-04)
  *   - COVENANT_ALLOWED_IPS parsing (whitespace tolerance)
  *
  * DB-dependent response-shape tests are intentionally omitted (the local
@@ -37,6 +39,13 @@ import {
 import { getClientIp } from '../../middleware/rate-limit';
 
 const ALLOWED_IP = '62.242.144.246';
+/** A Cloudflare edge address (104.16.0.0/13), as Traefik sets it in x-real-ip. */
+const CF_EDGE_PEER = '104.16.0.1';
+
+/** Headers of a request from `clientIp` that arrived through Cloudflare. */
+function viaCloudflare(clientIp: string): Record<string, string> {
+  return { 'x-real-ip': CF_EDGE_PEER, 'cf-connecting-ip': clientIp };
+}
 
 // A stable test ed25519 keypair (NOT any real partner key). We register its
 // public key as PARTNER_PUBKEYS.covenant and sign the canonical GET challenge.
@@ -179,7 +188,7 @@ if (!DB_URL_WAS_SET) delete process.env.DATABASE_URL;
 function covenantHeaders(path: string): Record<string, string> {
   const tsMs = String(Date.now());
   return {
-    'cf-connecting-ip': ALLOWED_IP,
+    ...viaCloudflare(ALLOWED_IP),
     [COVENANT_PUBKEY_HEADER]: TEST_PUBKEY_B58,
     [COVENANT_SIGNATURE_HEADER]: signGet('GET', path, tsMs),
     [COVENANT_TIMESTAMP_HEADER]: tsMs,
@@ -233,18 +242,27 @@ describe('covenant config gate', () => {
 });
 
 describe('getClientIp (CF-aware extraction reused by the gate)', () => {
-  it('prefers cf-connecting-ip over x-forwarded-for', () => {
+  it('uses cf-connecting-ip when the Traefik peer (x-real-ip) is a Cloudflare edge', () => {
     const ip = getClientIp({
       get: (n) =>
         n === 'cf-connecting-ip'
           ? '9.9.9.9'
-          : n === 'x-forwarded-for'
-            ? '1.1.1.1, 2.2.2.2'
-            : null,
+          : n === 'x-real-ip'
+            ? CF_EDGE_PEER
+            : n === 'x-forwarded-for'
+              ? CF_EDGE_PEER
+              : null,
     });
     expect(ip).toBe('9.9.9.9');
   });
-  it('falls back to the LAST x-forwarded-for entry when no cf header', () => {
+  it('ignores cf-connecting-ip from a non-Cloudflare peer (H2 2026-10-04)', () => {
+    const ip = getClientIp({
+      get: (n) =>
+        n === 'cf-connecting-ip' ? ALLOWED_IP : n === 'x-real-ip' ? '100.83.49.44' : null,
+    });
+    expect(ip).toBe('100.83.49.44');
+  });
+  it('falls back to the LAST x-forwarded-for entry when no x-real-ip', () => {
     const ip = getClientIp({
       get: (n) => (n === 'x-forwarded-for' ? '1.1.1.1, 2.2.2.2' : null),
     });
@@ -257,7 +275,7 @@ describe('requireCovenantPartner middleware', () => {
     delete process.env.PARTNER_PUBKEYS;
     delete process.env.COVENANT_ALLOWED_IPS;
     const res = await makeApp().request('/probe', {
-      headers: { 'cf-connecting-ip': ALLOWED_IP },
+      headers: viaCloudflare(ALLOWED_IP),
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'partner_not_configured' });
@@ -267,7 +285,7 @@ describe('requireCovenantPartner middleware', () => {
     process.env.PARTNER_PUBKEYS = JSON.stringify({ covenant: TEST_PUBKEY_B58 });
     delete process.env.COVENANT_ALLOWED_IPS;
     const res = await makeApp().request('/probe', {
-      headers: { 'cf-connecting-ip': ALLOWED_IP },
+      headers: viaCloudflare(ALLOWED_IP),
     });
     expect(res.status).toBe(503);
   });
@@ -275,7 +293,26 @@ describe('requireCovenantPartner middleware', () => {
   it('403 when configured but the client IP is not allowlisted', async () => {
     configureCovenant();
     const res = await makeApp().request('/probe', {
-      headers: { 'cf-connecting-ip': '5.5.5.5' },
+      headers: viaCloudflare('5.5.5.5'),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'forbidden' });
+  });
+
+  it('403 when a non-Cloudflare peer forges CF-Connecting-IP = an allowlisted IP (H2 2026-10-04)', async () => {
+    configureCovenant();
+    const tsMs = String(Date.now());
+    // A direct-to-origin caller: Traefik sets x-real-ip to the real peer and
+    // passes the forged Cloudflare header through. The allowlist must key on
+    // the peer, so even a valid signature does not get past the IP layer.
+    const res = await makeApp().request('/probe', {
+      headers: {
+        'x-real-ip': '100.83.49.44',
+        'cf-connecting-ip': ALLOWED_IP,
+        [COVENANT_PUBKEY_HEADER]: TEST_PUBKEY_B58,
+        [COVENANT_SIGNATURE_HEADER]: signGet('GET', '/probe', tsMs),
+        [COVENANT_TIMESTAMP_HEADER]: tsMs,
+      },
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'forbidden' });
@@ -284,7 +321,7 @@ describe('requireCovenantPartner middleware', () => {
   it('401 when the IP is allowed but the signature is missing', async () => {
     configureCovenant();
     const res = await makeApp().request('/probe', {
-      headers: { 'cf-connecting-ip': ALLOWED_IP },
+      headers: viaCloudflare(ALLOWED_IP),
     });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'unauthorized' });
@@ -299,7 +336,7 @@ describe('requireCovenantPartner middleware', () => {
     const forged = bs58.encode(nacl.sign.detached(new Uint8Array(digest), otherKp.secretKey));
     const res = await makeApp().request('/probe', {
       headers: {
-        'cf-connecting-ip': ALLOWED_IP,
+        ...viaCloudflare(ALLOWED_IP),
         [COVENANT_PUBKEY_HEADER]: TEST_PUBKEY_B58, // claims the real key…
         [COVENANT_SIGNATURE_HEADER]: forged, // …but signed with another
         [COVENANT_TIMESTAMP_HEADER]: tsMs,
@@ -313,7 +350,7 @@ describe('requireCovenantPartner middleware', () => {
     const staleTs = String(Date.now() - 6 * 60_000);
     const res = await makeApp().request('/probe', {
       headers: {
-        'cf-connecting-ip': ALLOWED_IP,
+        ...viaCloudflare(ALLOWED_IP),
         [COVENANT_PUBKEY_HEADER]: TEST_PUBKEY_B58,
         [COVENANT_SIGNATURE_HEADER]: signGet('GET', '/probe', staleTs),
         [COVENANT_TIMESTAMP_HEADER]: staleTs,
@@ -327,7 +364,7 @@ describe('requireCovenantPartner middleware', () => {
     const tsMs = String(Date.now());
     const res = await makeApp().request('/probe', {
       headers: {
-        'cf-connecting-ip': ALLOWED_IP,
+        ...viaCloudflare(ALLOWED_IP),
         [COVENANT_PUBKEY_HEADER]: TEST_PUBKEY_B58,
         [COVENANT_SIGNATURE_HEADER]: signGet('GET', '/probe', tsMs),
         [COVENANT_TIMESTAMP_HEADER]: tsMs,

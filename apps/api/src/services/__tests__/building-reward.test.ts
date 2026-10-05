@@ -18,6 +18,9 @@
  *      once; see the comment inside the helper).
  *   4. KEY COMPOSITION — the probe binds the caller's avatarId + reason +
  *      buildingId, so a different building / reason / day is a fresh key.
+ *   5. DAILY PAID-VISIT CAP (security pass 2026-10-04) — a 'building_visit'
+ *      credit claims DAILY_REWARD_CAPS.building_visit in the SAME tx after the
+ *      probe; a refused claim pays 0; other reasons never claim the cap.
  */
 
 import { describe, expect, it, beforeEach } from 'bun:test';
@@ -31,6 +34,7 @@ import {
   type BuildingRewardDeps,
   type BuildingRewardTx,
 } from '../building-reward';
+import { DAILY_REWARD_CAPS } from '../daily-reward-cap';
 
 describe('building-chat reward subject decisions', () => {
   it.each([
@@ -96,6 +100,7 @@ function sqlParams(q: unknown): unknown[] {
   for (const ch of (q as { queryChunks?: unknown[] }).queryChunks ?? []) {
     const cn = (ch as { constructor?: { name?: string } })?.constructor?.name;
     if (cn === 'String') out.push(String(ch));
+    else if (cn === 'Number') out.push(Number(ch));
     else if (cn === 'Param') out.push((ch as { value: unknown }).value);
   }
   return out;
@@ -105,6 +110,8 @@ function sqlParams(q: unknown): unknown[] {
 interface ExecutedQuery {
   text: string;
   params: unknown[];
+  /** The tx object the statement ran on (same-tx assertions). */
+  tx: BuildingRewardTx;
 }
 
 interface Harness {
@@ -113,6 +120,13 @@ interface Harness {
   credits: Array<{ avatarId: string; amount: number; reason: string; metadata: unknown }>;
   /** What the claw_token_transactions probe returns (empty = no reward today). */
   probeRows: Array<{ present: number }>;
+  /**
+   * In-memory daily_reward_caps counter for (this avatar, today,
+   * 'building_visit'): the cap upsert grants 1 while capUsed < capLimit and
+   * returns no row once the cap is reached (the ON CONFLICT ... WHERE refused).
+   */
+  capUsed: number;
+  capLimit: number;
   /** What INSERT ... ON CONFLICT RETURNING yields for the chat claim. */
   claimRows: Array<{ id: string }>;
   claimValues: Array<Record<string, unknown>>;
@@ -127,6 +141,8 @@ function makeHarness(probeRows: Array<{ present: number }> = []): Harness {
     executed: [],
     credits: [],
     probeRows,
+    capUsed: 0,
+    capLimit: DAILY_REWARD_CAPS.building_visit,
     claimRows: [{ id: 'claim-1' }],
     claimValues: [],
     claimConflictTargets: [],
@@ -135,13 +151,21 @@ function makeHarness(probeRows: Array<{ present: number }> = []): Harness {
     creditTxs: [],
     deps: {
       transaction: async <T>(fn: (tx: BuildingRewardTx) => Promise<T>): Promise<T> => {
-        const tx = {
+        const tx: BuildingRewardTx = {
           execute: async (q: unknown) => {
             const text = sqlText(q);
-            harness.executed.push({ text, params: sqlParams(q) });
-            // The FOR-UPDATE avatar lock returns an (ignored) row list; the
-            // claw_token_transactions probe returns the scripted rows.
+            harness.executed.push({ text, params: sqlParams(q), tx });
+            // The claw_token_transactions probe returns the scripted rows.
             if (text.includes('claw_token_transactions')) return harness.probeRows as never;
+            // The daily-cap upsert grants 1 under the cap, no row at the cap.
+            if (text.includes('INSERT INTO daily_reward_caps')) {
+              if (harness.capUsed >= harness.capLimit) return [] as never;
+              harness.capUsed += 1;
+              return [{ granted: 1 }] as never;
+            }
+            // Avatar FOR-UPDATE locks: the row exists (the once-per-day lock
+            // ignores the result; claimDailyRewardCap requires the row).
+            if (text.includes('FROM avatars WHERE id')) return [{ present: 1 }] as never;
             return [] as never;
           },
           insert: () => ({
@@ -255,6 +279,120 @@ describe('creditBuildingRewardOncePerDay (extracted, behavior-identical)', () =>
     h.executed = [];
     await creditBuildingRewardOncePerDay({ ...OPTS, reason: 'building_visit' }, h.deps);
     expect(h.executed[1].params).toContain('building_visit');
+  });
+});
+
+// Security pass 2026-10-04: a paid 'building_visit' credit also claims the
+// per-avatar daily paid-visit cap (DAILY_REWARD_CAPS.building_visit, shared with
+// the idle-avatar simulation) inside the SAME tx, after the once-per-day probe.
+describe('creditBuildingRewardOncePerDay — daily paid-visit cap (building_visit only)', () => {
+  const VISIT = {
+    avatarId: 'av-coralia',
+    buildingId: 'api-integrations',
+    reason: 'building_visit' as const,
+    metadata: { buildingId: 'api-integrations', via: 'world-autonomous' },
+  };
+
+  let h: Harness;
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  const capStatements = () => h.executed.filter((q) => q.text.includes('daily_reward_caps'));
+
+  it('pays 1 vCLAW while under the cap and claims exactly 1 of the allowance', async () => {
+    const credited = await creditBuildingRewardOncePerDay(VISIT, h.deps);
+
+    expect(credited).toBe(true);
+    expect(h.credits).toHaveLength(1);
+    expect(h.credits[0]).toMatchObject({ avatarId: 'av-coralia', amount: 1, reason: 'building_visit' });
+    expect(h.capUsed).toBe(1);
+    const [claim] = capStatements();
+    expect(claim).toBeDefined();
+    expect(claim.params).toContain('av-coralia');
+    expect(claim.params).toContain('building_visit');
+    expect(claim.params).toContain(1);
+    expect(claim.params).toContain(DAILY_REWARD_CAPS.building_visit);
+  });
+
+  it('pays 0 and never touches the ledger when the cap claim grants 0', async () => {
+    h.capUsed = h.capLimit; // today's paid-visit allowance is already spent
+
+    const credited = await creditBuildingRewardOncePerDay(VISIT, h.deps);
+
+    expect(credited).toBe(false);
+    expect(h.credits).toHaveLength(0);
+    expect(capStatements()).toHaveLength(1); // the claim ran and was refused
+    expect(h.capUsed).toBe(h.capLimit);
+  });
+
+  it(`distinct buildings pay only the first ${DAILY_REWARD_CAPS.building_visit} visits of the day`, async () => {
+    const results: boolean[] = [];
+    for (let i = 0; i < DAILY_REWARD_CAPS.building_visit + 2; i++) {
+      results.push(await creditBuildingRewardOncePerDay(
+        { ...VISIT, buildingId: `building-${i}`, metadata: { buildingId: `building-${i}` } },
+        h.deps,
+      ));
+    }
+
+    expect(results.filter(Boolean)).toHaveLength(DAILY_REWARD_CAPS.building_visit);
+    expect(results.slice(-2)).toEqual([false, false]);
+    expect(h.credits).toHaveLength(DAILY_REWARD_CAPS.building_visit);
+  });
+
+  it('a same-day repeat visit to the same building does not burn the allowance (probe runs first)', async () => {
+    h.probeRows = [{ present: 1 }];
+
+    const credited = await creditBuildingRewardOncePerDay(VISIT, h.deps);
+
+    expect(credited).toBe(false);
+    expect(capStatements()).toHaveLength(0);
+    expect(h.capUsed).toBe(0);
+    expect(h.credits).toHaveLength(0);
+  });
+
+  it('non-visit reasons never claim the cap', async () => {
+    const credited = await creditBuildingRewardOncePerDay(
+      { ...VISIT, reason: 'building_chat_teaching' },
+      h.deps,
+    );
+
+    expect(credited).toBe(true);
+    expect(h.credits).toHaveLength(1);
+    expect(capStatements()).toHaveLength(0);
+    expect(h.capUsed).toBe(0);
+    // Only the original two statements: the avatar lock and the probe.
+    expect(h.executed).toHaveLength(2);
+  });
+
+  it('claims inside the SAME tx as the credit, in order lock -> probe -> claim -> credit', async () => {
+    await creditBuildingRewardOncePerDay(VISIT, h.deps);
+
+    expect(h.transactionTxs).toHaveLength(1);
+    const tx = h.transactionTxs[0];
+    for (const q of h.executed) expect(q.tx).toBe(tx);
+    expect(h.creditTxs).toEqual([tx]);
+
+    const texts = h.executed.map((q) => q.text);
+    expect(texts).toHaveLength(4);
+    expect(texts[0]).toContain('FROM avatars WHERE id');
+    expect(texts[0]).toContain('FOR UPDATE');
+    expect(texts[1]).toContain('claw_token_transactions');
+    // claimDailyRewardCap re-locks the same avatar row (re-entrant in one tx),
+    // then runs the atomic upsert.
+    expect(texts[2]).toContain('FROM avatars WHERE id');
+    expect(texts[2]).toContain('FOR UPDATE');
+    expect(texts[3]).toContain('INSERT INTO daily_reward_caps');
+    expect(texts[3]).toContain('WHERE c.used <');
+  });
+
+  it('a ledger failure after the claim propagates (db.transaction rolls the claim back)', async () => {
+    h.deps.credit = (async () => {
+      throw new Error('ledger down');
+    }) as BuildingRewardDeps['credit'];
+
+    await expect(creditBuildingRewardOncePerDay(VISIT, h.deps)).rejects.toThrow('ledger down');
+    expect(capStatements()).toHaveLength(1);
   });
 });
 

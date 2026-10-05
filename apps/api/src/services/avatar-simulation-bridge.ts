@@ -49,9 +49,29 @@ const BUILDING_LABELS: Record<string, string> = Object.fromEntries(
 import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
-import { creditClawTokens } from './claw-token-ledger';
+import { creditWithDailyRewardCap } from './daily-reward-cap';
 import { buildRuntimeServices } from './runtime-services-adapter';
 import { getAgentDirectiveForAvatar, formatDirectiveContext } from './agent-autonomy-state';
+
+/**
+ * Idle-avatar visit reward: 1 vCLAW per arrival, capped per avatar per UTC day
+ * (DAILY_REWARD_CAPS.building_visit = 10, founder decision 2026-10-04). The
+ * counter is shared with the connected-agent and autonomous-driver building
+ * visit rewards for the same avatar. Claim + ledger credit commit in ONE tx.
+ * Resolves to the vCLAW actually credited (0 over the cap).
+ */
+export async function awardIdleVisitToken(avatarId: string): Promise<number> {
+  return creditWithDailyRewardCap({
+    kind: 'building_visit',
+    credit: {
+      avatarId,
+      amount: 1,
+      reason: 'autonomous_visit',
+      source: 'simulation',
+      actorKind: 'system',
+    },
+  });
+}
 
 const VISIT_CHAT_COOLDOWN_MS = 30_000;
 const IDLE_UNREGISTER_MS = 30 * 60 * 1000; // 30 min — auto-cleanup abandoned avatars
@@ -82,16 +102,8 @@ export class AvatarSimulationBridge {
       activityEmojis: ACTIVITY_EMOJIS,
       pathfind: findPath,
       dbHooks: {
-        awardToken: async (avatarId: string) => {
-          // Credit via ledger — atomic + audited (source: 'simulation')
-          await creditClawTokens({
-            avatarId,
-            amount: 1,
-            reason: 'autonomous_visit',
-            source: 'simulation',
-            actorKind: 'system',
-          });
-        },
+        // Resolves to the vCLAW credited (0 over the daily paid-visit cap).
+        awardToken: awardIdleVisitToken,
         logActivity: async (
           avatarId: string,
           activityType: string,

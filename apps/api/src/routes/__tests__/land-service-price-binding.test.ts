@@ -2,10 +2,11 @@
  * Security M12 (2026-09-30) — land service purchase price binding.
  *
  * The buy body carried only an idempotency key, so a seller could PATCH
- * `priceCt` between the buyer's read and the debit. OPTIONAL `expectedPriceCt`
- * now binds the buy: when present and different from the price read under the
- * listing lock, the route returns 409 `price_changed` with the current price and
- * charges nothing. Omitted ⇒ the old behavior (server price, no binding).
+ * `priceCt` between the buyer's read and the debit. `expectedPriceCt` now binds
+ * the buy: when it differs from the price read under the listing lock, the route
+ * returns 409 `price_changed` with the current price and charges nothing.
+ * Protocol 83 made it REQUIRED: omitted ⇒ 400 `expected_price_required`, before
+ * any DB touch (the old unbound buy is gone).
  *
  * The DB is a SQL-text fake of the buy transaction up to the debit. The ledger
  * debit is a spy that throws InsufficientTokensError, so reaching it shows up as
@@ -94,7 +95,7 @@ mock.module('../../services/claw-token-ledger', () => ({
   },
 }));
 
-const { landRoutes, buyServiceBodySchema } = await import('../land');
+const { landRoutes, buyServiceBodySchema, EXPECTED_PRICE_REQUIRED_BODY } = await import('../land');
 const app = new Hono().route('/api/land', landRoutes);
 
 function buy(body: Record<string, unknown>) {
@@ -134,17 +135,58 @@ describe('POST /api/land/services/:listingId/buy — expectedPriceCt binding (se
     expect(debitCalls).toEqual([{ avatarId: BUYER, amount: 250 }]);
   });
 
-  test('no expectedPriceCt keeps the unbound behavior (backward compatible)', async () => {
+  test('protocol 83: no expectedPriceCt → 400 expected_price_required, no transaction, nothing charged', async () => {
     listingPriceCt = 400;
-    const res = await buy({ idempotencyKey: 'key-no-binding-1' });
-    expect(res.status).toBe(400);
-    expect(debitCalls).toEqual([{ avatarId: BUYER, amount: 400 }]);
+    let txStarted = false;
+    const original = fakeTx.execute;
+    fakeTx.execute = async (query: SQL) => {
+      txStarted = true;
+      return original(query);
+    };
+    try {
+      const res = await buy({ idempotencyKey: 'key-no-binding-1' });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe('expected_price_required');
+      expect(body).toEqual({ ...EXPECTED_PRICE_REQUIRED_BODY });
+      // The message tells the caller exactly what to send.
+      expect(body.message).toContain('expectedPriceCt');
+      expect(body.message).toContain('priceCt');
+      expect(body.message).toContain('price_changed');
+    } finally {
+      fakeTx.execute = original;
+    }
+    expect(txStarted).toBe(false);
+    expect(debitCalls).toHaveLength(0);
   });
 
-  test('schema: expectedPriceCt is an optional integer in 0..1_000_000', () => {
+  test('protocol 83: an empty object body also gets expected_price_required', async () => {
+    const res = await buy({});
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('expected_price_required');
+    expect(debitCalls).toHaveLength(0);
+  });
+
+  test('a present but invalid expectedPriceCt stays the generic invalid_body', async () => {
+    for (const bad of [null, '250', -1, 1.5, 1_000_001]) {
+      const res = await buy({ idempotencyKey: 'key-bad-price-1', expectedPriceCt: bad });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_body' });
+    }
+    expect(debitCalls).toHaveLength(0);
+  });
+
+  test('a free listing (priceCt 0) binds with expectedPriceCt 0', async () => {
+    listingPriceCt = 0;
+    const res = await buy({ idempotencyKey: 'key-free-mismatch', expectedPriceCt: 5 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'price_changed', priceCt: 0 });
+  });
+
+  test('schema: expectedPriceCt is a REQUIRED integer in 0..1_000_000', () => {
     const ok = (v: unknown) =>
       buyServiceBodySchema.safeParse({ idempotencyKey: 'abcdefgh', expectedPriceCt: v }).success;
-    expect(buyServiceBodySchema.safeParse({ idempotencyKey: 'abcdefgh' }).success).toBe(true);
+    expect(buyServiceBodySchema.safeParse({ idempotencyKey: 'abcdefgh' }).success).toBe(false);
     expect(ok(0)).toBe(true);
     expect(ok(1_000_000)).toBe(true);
     expect(ok(-1)).toBe(false);

@@ -25,8 +25,10 @@
  *   2. IP allowlist (DEFENSE-IN-DEPTH) — env `COVENANT_ALLOWED_IPS`
  *      (comma-separated exact IPs; ops sets `62.242.144.246`). The client IP is
  *      taken from the SAME Cloudflare-aware extraction the rate limiters use
- *      (`getClientIp`: `cf-connecting-ip` first, then the trusted-proxy XFF
- *      tail) — the raw socket IP is WRONG behind Cloudflare.
+ *      (`getClientIp`: the Traefik-set `x-real-ip` peer, swapped for
+ *      `cf-connecting-ip` ONLY when that peer is a Cloudflare edge; H2
+ *      2026-10-04) — the raw socket IP is WRONG behind Cloudflare, and a
+ *      forged `CF-Connecting-IP` from a non-Cloudflare peer cannot pass.
  *
  * FAIL-CLOSED CONFIG GATE: if `PARTNER_PUBKEYS.covenant` is absent OR
  * `COVENANT_ALLOWED_IPS` is empty, every route returns 503

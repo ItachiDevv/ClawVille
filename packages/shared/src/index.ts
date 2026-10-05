@@ -57,6 +57,8 @@ export * from './constants/orientation-skill';
 export * from './constants/hatcher-actions';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';
+// Security pass 2026-10-04 — per-avatar daily faucet caps (visits / Nori / activities).
+export * from './constants/daily-reward-caps';
 // `agent-models` uses type + value dual exports; explicit re-exports
 // guarantee every symbol is public (the earlier `export *` worked but
 // made the surface less obvious during Phase 2 audits).

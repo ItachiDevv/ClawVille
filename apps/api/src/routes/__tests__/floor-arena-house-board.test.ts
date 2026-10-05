@@ -47,7 +47,7 @@ function makeDeps(options: { failFirst?: boolean } = {}) {
   return { deps, hits, advance: (ms: number) => { clock += ms; } };
 }
 
-const IP = { 'cf-connecting-ip': '203.0.113.7' };
+const IP = { 'x-real-ip': '203.0.113.7' };
 
 describe('GET /house-board', () => {
   test('200, public cache header, five agents, no Set-Cookie even with a cookie present', async () => {
@@ -73,7 +73,7 @@ describe('GET /house-board', () => {
     expect(limited.status).toBe(429);
     expect(await limited.json()).toMatchObject({ code: 'rate_limited' });
     expect(limited.headers.get('cache-control')).toBeNull();
-    expect((await routes.request('/house-board', { headers: { 'cf-connecting-ip': '198.51.100.9' } })).status).toBe(200);
+    expect((await routes.request('/house-board', { headers: { 'x-real-ip': '198.51.100.9' } })).status).toBe(200);
   });
 
   test('two calls inside 10 s hit the deps once; a call after 10 s reads again', async () => {

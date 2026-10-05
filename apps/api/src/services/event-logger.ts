@@ -21,7 +21,7 @@
  */
 
 import { db, events, eventWriteFailures, users, avatars, agentBots } from '@clawville/database';
-import { eq, sql } from 'drizzle-orm';
+import { eq, sql, type SQL } from 'drizzle-orm';
 import { alertError } from './alert-error';
 import { sessionDigest } from './session-digest';
 import { resolveTradeMultiplierTier, TRADE_TIER_MULTIPLIER } from '@clawville/shared';
@@ -519,13 +519,101 @@ async function buildEventRow(input: EventInput) {
   };
 }
 
+// ─── Owner-attributed agent events (security pass 2026-10-04, Codex round 4) ──
+//
+// The durable agent event history (`agent-event-query.ts`: replay, SSE catch-up,
+// autonomy wake-seed) returns a row only when `events.user_id` equals the agent
+// row's CURRENT owner and `events.ts >= openclaw_bots.owner_since` (migration
+// 0079: a trigger stamps owner_since with clock_timestamp() on every user_id
+// change). An emit site that checks the owner BEFORE the insert (an earlier
+// proof, the enrollment, a separate read) races an ownership change: the row
+// then names a prior owner, and after a full A -> B -> A round trip the late
+// row lands inside A's NEW period. So the owned variant resolves `user_id` IN
+// THE INSERT STATEMENT, under a row lock on the agent's `openclaw_bots` row:
+//
+//   user_id = (SELECT b.user_id FROM openclaw_bots b
+//              WHERE b.agent_id = $agentId AND b.user_id = $claimedOwner::uuid
+//                AND b.owner_since <= $actedAt::timestamptz
+//              FOR SHARE)
+//
+//   - Claimed owner still the owner, and owner since before the action: the row
+//     names that owner. FOR SHARE holds the agent row until the insert commits,
+//     so a concurrent owner change (UPDATE of user_id takes a conflicting row
+//     lock, BEFORE its trigger runs) waits; its trigger then stamps owner_since
+//     after this commit, so after this row's `ts`. The row stays in the old
+//     period and the new owner never sees it.
+//   - The owner changed and committed first: the subquery sees the new row
+//     version (READ COMMITTED re-check after the lock wait) and yields NULL.
+//     The event row is still written, with NULL user_id (hidden from history).
+//   - A complete A -> B -> A round trip between the action and the insert: the
+//     row names A again, but owner_since is now after `actedAt`, so NULL. An
+//     action from A's earlier period never enters A's new period.
+//
+// `events.ts` keeps its column default now() (the transaction start; this
+// insert runs as one autocommit statement, so it is the statement start). That
+// is before the lock wait, so any owner change that waits on the lock stamps
+// owner_since after it. clock_timestamp() would not change the ordering, so the
+// column default stays. `actedAt` is an app-clock instant (an ISO string param,
+// never a JS Date); the app and its Postgres share the host clock, and a skew
+// can only hide an event (fail closed) or narrow the round-trip bound by the
+// skew. Proven in PostgreSQL by `__tests__/agent-owner-since.db.test.ts`.
+//
+// Deadlock note: the FK checks on events.user_id / events.avatar_id run after
+// the subquery. An account deletion that locks the users row and then cascades
+// ON DELETE SET NULL to this agent row can meet this insert in the opposite
+// order; Postgres detects the deadlock and aborts one side. If the event side
+// aborts, writeEvent records it in event_write_failures (never thrown).
+
+/** The owner an emit site claims for an agent-scoped event. */
+export interface AgentEventOwnerClaim {
+  /** users.id the caller believes owns the agent (session proof, enrollment). */
+  claimedOwnerUserId: string;
+  /**
+   * ISO-8601 instant when the action began (app clock). The owner's period
+   * must have started at or before it.
+   */
+  actedAt: string;
+}
+
+/**
+ * The `user_id` value of an owned event row: the claimed owner when, at insert
+ * time and under FOR SHARE, it still owns `agentId` and has owned it since
+ * `actedAt`; else NULL. Exported for the SQL-shape test.
+ */
+export function ownedEventUserIdSql(agentId: string, claim: AgentEventOwnerClaim): SQL {
+  return sql`(SELECT b.user_id FROM openclaw_bots b WHERE b.agent_id = ${agentId} AND b.user_id = ${claim.claimedOwnerUserId}::uuid AND b.owner_since <= ${claim.actedAt}::timestamptz FOR SHARE)`;
+}
+
+/**
+ * The owned INSERT for a built event row. `user_id` comes from
+ * `ownedEventUserIdSql` in the same statement; every other column is the row's
+ * value. Exported for the SQL-shape test (`.toSQL()` needs no connection).
+ */
+export function buildOwnedAgentEventInsert(
+  row: Awaited<ReturnType<typeof buildEventRow>>,
+  agentId: string,
+  claim: AgentEventOwnerClaim,
+) {
+  return db
+    .insert(events)
+    .values({ ...row, userId: ownedEventUserIdSql(agentId, claim) })
+    .returning({ id: events.id });
+}
+
 /**
  * Insert core shared by `logEvent` (void) and `logEventReturningId` (id). Same
  * never-throws contract, same sanitization, same three-tier fallback. Returns
  * the inserted `events.id` on the happy path, or `null` when the row was
  * coalesced away (agent.connected dedupe) or BOTH inserts failed.
+ *
+ * With `ownerClaim` (the owned variant, `logOwnedAgentEvent`), `input.userId`
+ * is ignored and `user_id` is resolved inside the INSERT (see the block above).
+ * The guest stamp resolves against the claimed owner and the agent.
  */
-async function writeEvent(input: EventInput): Promise<bigint | null> {
+async function writeEvent(
+  input: EventInput,
+  ownerClaim: AgentEventOwnerClaim | null = null,
+): Promise<bigint | null> {
   // Fix B — coalesce rapid-reconnect agent.connected duplicates BEFORE any
   // insert. Subject precedence agentId → avatarId → userId; key includes the
   // fingerprint so distinct browsers stay independent. When no subject can be
@@ -554,19 +642,27 @@ async function writeEvent(input: EventInput): Promise<bigint | null> {
   // events.agent_id, and a client could put a raw `ag-/oc-/hat-` bearer there.
   // Freeze the subject's guest-ness on the row (durable leaderboard exclusion —
   // see resolveSubjectWasGuest). Best-effort + never throws.
-  const row = await buildEventRow(input);
+  const row = await buildEventRow(
+    ownerClaim ? { ...input, userId: ownerClaim.claimedOwnerUserId } : input,
+  );
+  // The owned path matches the agent row by the SAME agent_id the event row
+  // stores (after bearer redaction), the key the history query joins on.
+  const ownedAgentId = ownerClaim ? row.agentId : null;
 
   try {
     // RETURNING id so callers that need the durable cursor (P3 slice 1 — the
     // live settlement-confirm push cites this as the SSE `id:`) can capture it;
     // `logEvent` discards it, so existing call sites are unaffected.
-    const inserted = await db.insert(events).values(row).returning({ id: events.id });
+    const inserted = ownerClaim && ownedAgentId
+      ? await buildOwnedAgentEventInsert(row, ownedAgentId, ownerClaim)
+      : await db.insert(events).values(ownerClaim ? { ...row, userId: null } : row).returning({ id: events.id });
     return inserted[0]?.id ?? null;
   } catch (primaryErr) {
     try {
       await db.insert(eventWriteFailures).values({
         attemptedEventType: input.eventType,
-        attemptedRow: row,
+        // An owned row's user_id was never resolved: record NULL plus the claim.
+        attemptedRow: ownerClaim ? { ...row, userId: null, ownerClaim } : row,
         errorMessage: String(primaryErr),
         errorStack: (primaryErr as Error)?.stack,
       });
@@ -698,6 +794,53 @@ export async function logEventFromContextReturningId(
   const fpHash = c.get('fpHash');
   const ipPrefixHash = c.get('ipPrefixHash');
   return logEventReturningId({
+    ...input,
+    fpHash:
+      input.fpHash ?? (typeof fpHash === 'string' ? fpHash : null),
+    ipPrefixHash:
+      input.ipPrefixHash ?? (typeof ipPrefixHash === 'string' ? ipPrefixHash : null),
+  });
+}
+
+/** Input of the owned variant: the claim replaces `userId`. */
+export interface OwnedAgentEventInput extends Omit<EventInput, 'userId' | 'agentId'> {
+  /** Canonical agent handle (openclaw_bots.agent_id); also the events.agent_id. */
+  agentId: string;
+  /**
+   * The owner the emit site claims, or null when it has none. null writes a
+   * plain row with NULL user_id (no subquery, no lock).
+   */
+  claimedOwnerUserId: string | null;
+  /** ISO-8601 instant when the action began (see `AgentEventOwnerClaim`). */
+  actedAt: string;
+}
+
+/**
+ * `logEvent` for an agent-scoped event that names an owner (security pass
+ * 2026-10-04, Codex round 4). `user_id` is resolved inside the INSERT under
+ * FOR SHARE on the agent's openclaw_bots row (see `ownedEventUserIdSql`): the
+ * claimed owner when it still owns the agent and has owned it since `actedAt`,
+ * else NULL. Same sanitization, same columns, same never-throws contract.
+ */
+export async function logOwnedAgentEvent(input: OwnedAgentEventInput): Promise<void> {
+  const { claimedOwnerUserId, actedAt, ...rest } = input;
+  await writeEvent(
+    { ...rest, userId: null },
+    claimedOwnerUserId ? { claimedOwnerUserId, actedAt } : null,
+  );
+}
+
+/**
+ * `logOwnedAgentEvent` with fpHash + ipPrefixHash taken from the request
+ * context, exactly as `logEventFromContext` takes them.
+ */
+export async function logOwnedAgentEventFromContext(
+  c: FingerprintedContext,
+  input: OwnedAgentEventInput,
+): Promise<void> {
+  const fpHash = c.get('fpHash');
+  const ipPrefixHash = c.get('ipPrefixHash');
+  await logOwnedAgentEvent({
     ...input,
     fpHash:
       input.fpHash ?? (typeof fpHash === 'string' ? fpHash : null),

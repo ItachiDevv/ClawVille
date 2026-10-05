@@ -355,6 +355,10 @@ export interface RentPrepayResponse {
 export interface ReleaseParcelResponse {
   released: true;
   refundedCt: number;
+  /** M8 (2026-10-04): USDC-funded rent escrow NOT returned on release (USDC rent prepay is non-refundable). */
+  forfeitedUsdcPrepayCt?: number;
+  /** Present only when forfeitedUsdcPrepayCt > 0 ('usdc_rent_prepay_non_refundable'). */
+  forfeitReason?: string;
   parcel: LandParcelDTO;
   idempotencyReplay?: boolean;
 }

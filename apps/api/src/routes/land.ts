@@ -833,16 +833,27 @@ const servicesPageQuerySchema = z
 
 // buy: a REQUIRED idempotency key (same Codex BLOCK-HIGH rationale as
 // /upgrade — a keyless retry would double-charge). The price is always
-// server-read from the locked listing row. OPTIONAL `expectedPriceCt` binds the
-// buy to the price the buyer saw: a mismatch → 409 price_changed with the current
+// server-read from the locked listing row. `expectedPriceCt` binds the buy to
+// the price the buyer saw: a mismatch → 409 price_changed with the current
 // price, and nothing is charged (security M12, 2026-09-30 — the seller can
-// PATCH priceCt between the buyer's read and the debit).
+// PATCH priceCt between the buyer's read and the debit). REQUIRED since
+// protocol 83 (founder: "required at the next bump"); a body without it gets
+// 400 `expected_price_required` (EXPECTED_PRICE_REQUIRED_BODY).
 export const buyServiceBodySchema = z
   .object({
     idempotencyKey: z.string().min(8).max(64),
-    expectedPriceCt: z.number().int().nonnegative().max(1_000_000).optional(),
+    expectedPriceCt: z.number().int().nonnegative().max(1_000_000),
   })
   .strict();
+
+/** 400 body for a service buy that omits `expectedPriceCt` (protocol 83). */
+export const EXPECTED_PRICE_REQUIRED_BODY = Object.freeze({
+  error: 'expected_price_required',
+  message:
+    'Send expectedPriceCt with the buy: read priceCt from the listing (GET /api/land/services or '
+    + 'GET /api/land/structures/:structureId/services) and send that number. If the seller changed the '
+    + 'price since, the buy is refused with 409 price_changed and nothing is charged.',
+} as const);
 
 // spawn-preference (town-fast-travel, 2026-06-19): the avatar's re-spawn target.
 // `mode='town'` clears any home; `mode='home'` REQUIRES a `parcelId` the caller
@@ -2848,8 +2859,10 @@ landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, r
 // Voluntary release back to the pool. tenure='deposit' → the escrow REMAINDER
 // is refunded to the claimant (credited SOFT — the ledger's receiver rule, so
 // escrow can never launder into a cashable tag); everything already drawn as
-// rent stays with the treasury. tenure='hold' → nothing was escrowed, nothing
-// refunds. Both revert the parcel (status='available', every tenure field
+// rent stays with the treasury. M8 (2026-10-04): only the vCLAW-funded part of
+// the remainder refunds; the USDC-funded part (x402 rent prepay) is forfeited
+// and reported as `forfeitedUsdcPrepayCt`. tenure='hold' → nothing was
+// escrowed, nothing refunds. Both revert the parcel (status='available', every tenure field
 // cleared) and archive the active structure (restored on a same-avatar
 // re-acquire, purged on a re-lease — the eviction convention).
 }
@@ -2874,9 +2887,13 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
       bustPublicPiecesCache();
       broadcastLandEvent({ parcelCode, status: 'available', ownerAvatarId: null });
     }
+    // M8 (2026-10-04): USDC-funded escrow is non-refundable. The forfeited
+    // part is reported, never refunded (see settleTenureRelease).
     return c.json({
       released: true,
       refundedCt: released.refundedCt,
+      forfeitedUsdcPrepayCt: released.forfeitedUsdcPrepayCt,
+      ...(released.forfeitReason ? { forfeitReason: released.forfeitReason } : {}),
       parcel: released.parcel,
       idempotencyReplay: !released.fresh || undefined,
     });
@@ -4406,16 +4423,17 @@ landRoutes.get('/services', async (c) => {
 
 // ─── 17. POST /services/:listingId/buy  (AUTH, PARITY-BOUND, atomic, priced) ─
 //
-//   body: { idempotencyKey: string (8..64) REQUIRED, expectedPriceCt?: int 0..1_000_000 } (.strict())
+//   body: { idempotencyKey: string (8..64) REQUIRED, expectedPriceCt: int 0..1_000_000 REQUIRED (protocol 83) } (.strict())
 //   200 → { purchase: ServicePurchaseDTO, priceCt: number, cached: boolean }
 //   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
+//         | { error: 'expected_price_required', message } (body has no expectedPriceCt)
 //   401/403 as elsewhere
 //   404 → { error: 'listing_not_found' }
 //   409 → { error: 'listing_not_active' | 'listing_suspended' | 'not_a_peer_listing' | 'structure_unavailable'
 //                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
 //         | { error: 'price_changed', priceCt: number }
-//     price_changed        = `expectedPriceCt` was sent and the listing's current
-//                            price (returned) differs — nothing was charged;
+//     price_changed        = the listing's current price (returned) differs from
+//                            `expectedPriceCt` — nothing was charged;
 //     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
 //     structure_unavailable = the seller's shop was archived/evicted or the parcel
 //                             changed hands after the listing was created;
@@ -4443,6 +4461,17 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
   const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
   if (rawBody === PARSE_FAILED) {
     return c.json({ error: 'invalid_body' }, 400);
+  }
+  // Protocol 83: the price binding is REQUIRED. An object body without
+  // `expectedPriceCt` gets its own code so an older client learns exactly what
+  // to send; any other malformed body stays the generic invalid_body below.
+  if (
+    typeof rawBody === 'object'
+    && rawBody !== null
+    && !Array.isArray(rawBody)
+    && (rawBody as Record<string, unknown>).expectedPriceCt === undefined
+  ) {
+    return c.json(EXPECTED_PRICE_REQUIRED_BODY, 400);
   }
   const bodyParsed = buyServiceBodySchema.safeParse(rawBody);
   if (!bodyParsed.success) {
@@ -4590,7 +4619,7 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
 
       // (4b) Price binding (security M12) — the price is read under the listing
       // lock, so a seller PATCH cannot slip in between this check and the debit.
-      if (expectedPriceCt !== undefined && expectedPriceCt !== priceCt) {
+      if (expectedPriceCt !== priceCt) {
         throw new ServicePriceChangedError(priceCt);
       }
 

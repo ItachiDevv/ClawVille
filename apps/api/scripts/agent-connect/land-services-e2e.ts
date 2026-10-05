@@ -144,7 +144,7 @@ async function main() {
   const sellerBefore = (await myAvatar(sellerCk))?.clawTokens;
   const buyerBefore = (await myAvatar(buyerCk))?.clawTokens;
   const key1 = uuid();
-  const buy1 = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: key1 }, { cookie: buyerCk });
+  const buy1 = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: key1, expectedPriceCt: 5 }, { cookie: buyerCk });
   ok(buy1.status === 200 && buy1.json?.purchase?.id, 'HUMAN BUY 200 + purchase row', `status=${buy1.status}`);
   const sellerAfter = (await myAvatar(sellerCk))?.clawTokens;
   const buyerAfter = (await myAvatar(buyerCk))?.clawTokens;
@@ -153,14 +153,25 @@ async function main() {
     `buyer ${buyerBefore}->${buyerAfter} seller ${sellerBefore}->${sellerAfter}`);
 
   // idempotent replay: same key → cached, no second charge
-  const buy1b = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: key1 }, { cookie: buyerCk });
+  const buy1b = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: key1, expectedPriceCt: 5 }, { cookie: buyerCk });
   const buyerAfter2 = (await myAvatar(buyerCk))?.clawTokens;
   ok(buy1b.status === 200 && buy1b.json?.cached === true && buyerAfter2 === buyerAfter,
     'IDEMPOTENT replay: cached:true, single charge', `cached=${buy1b.json?.cached} balance=${buyerAfter2}`);
 
   // self-buy rejected
-  const selfBuy = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: uuid() }, { cookie: sellerCk });
+  const selfBuy = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: uuid(), expectedPriceCt: 5 }, { cookie: sellerCk });
   ok(selfBuy.status === 409 && (selfBuy.json?.error === 'self_purchase'), 'SELF-BUY -> 409 self_purchase', `status=${selfBuy.status} err=${selfBuy.json?.error}`);
+
+  // protocol 83: expectedPriceCt is REQUIRED; a buy without it charges nothing
+  const unbound = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: uuid() }, { cookie: buyerCk });
+  const buyerAfter3 = (await myAvatar(buyerCk))?.clawTokens;
+  ok(unbound.status === 400 && unbound.json?.error === 'expected_price_required' && buyerAfter3 === buyerAfter2,
+    'NO expectedPriceCt -> 400 expected_price_required, no charge', `status=${unbound.status} err=${unbound.json?.error}`);
+
+  // a stale expectedPriceCt -> 409 price_changed with the current price, no charge
+  const stale = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: uuid(), expectedPriceCt: 4 }, { cookie: buyerCk });
+  ok(stale.status === 409 && stale.json?.error === 'price_changed' && stale.json?.priceCt === 5,
+    'STALE expectedPriceCt -> 409 price_changed (priceCt 5)', `status=${stale.status} body=${JSON.stringify(stale.json)?.slice(0, 120)}`);
 
   // ── agent-session buy (E5 parity) ──────────────────────────────────────────
   const su = await req('POST', '/api/auth/signup', { email: `p3s4-${RUN}@staging.clawville.test`, password: FRESH_PASSWORD, name: `Store${RUN}`.slice(0, 14) });
@@ -185,7 +196,7 @@ async function main() {
   if (agentSid) {
     const freshBefore = (await myAvatar(freshCk))?.clawTokens;
     const sellerB2 = (await myAvatar(sellerCk))?.clawTokens;
-    const buyA = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: uuid() }, { agent: agentSid });
+    const buyA = await req('POST', `/api/land/services/${listingId}/buy`, { idempotencyKey: uuid(), expectedPriceCt: 5 }, { agent: agentSid });
     const freshAfter = (await myAvatar(freshCk))?.clawTokens;
     const sellerA2 = (await myAvatar(sellerCk))?.clawTokens;
     ok(buyA.status === 200 && buyA.json?.purchase?.buyerAvatarId === freshAvId,
@@ -198,11 +209,11 @@ async function main() {
 
   // ── insufficient funds ─────────────────────────────────────────────────────
   const bigList = await req('POST', `/api/land/structures/${shop.structureId}/services`, {
-    title: `Yacht ${RUN}`, description: 'Slightly used.', priceCt: 100000000,
+    title: `Yacht ${RUN}`, description: 'Slightly used.', priceCt: 1000000,
   }, { cookie: sellerCk });
   const bigId = bigList.json?.listing?.id ?? bigList.json?.id;
   if (bigId && agentSid) {
-    const poorBuy = await req('POST', `/api/land/services/${bigId}/buy`, { idempotencyKey: uuid() }, { agent: agentSid });
+    const poorBuy = await req('POST', `/api/land/services/${bigId}/buy`, { idempotencyKey: uuid(), expectedPriceCt: 1000000 }, { agent: agentSid });
     ok(poorBuy.status === 400 && poorBuy.json?.error === 'insufficient_clawtokens', 'INSUFFICIENT funds -> 400', `status=${poorBuy.status} err=${poorBuy.json?.error}`);
   }
 

@@ -302,11 +302,56 @@ mock.module('../clv-swap-executor', () => ({
   },
 }));
 
+// ── route middleware passthrough (route-level quote tests only). Injects a
+//    ledger-capable agent identity; leak-guarded like every mock above, so
+//    sibling route tests in a shared bun process keep their REAL auth. ───────
+type Mw = (c: any, next: any) => unknown;
+const realAuthMw = await import('../../middleware/auth');
+const realAoaMw = await import('../../middleware/require-auth-or-agent');
+const realNgMw = await import('../../middleware/require-non-guest');
+const REAL_sessionMiddleware = realAuthMw.sessionMiddleware as Mw;
+const REAL_requireAuth = realAuthMw.requireAuth as Mw;
+const REAL_requireAoa = realAoaMw.requireAuthOrAgentSession as Mw;
+const REAL_requireNonGuestIdentity = realNgMw.requireNonGuestIdentity as Mw;
+const REAL_requireNonGuestUser = realNgMw.requireNonGuestUser as Mw;
+const guardMw = (mockFn: Mw, realFn: Mw): Mw => (c, next) =>
+  intercept ? mockFn(c, next) : realFn(c, next);
+const ROUTE_IDENTITY = {
+  kind: 'agent' as const,
+  userId: 'user-1',
+  avatarId: 'avatar-1',
+  agentId: 'agent-1',
+  sessionId: 'session-1',
+  ledgerCapable: true,
+};
+const passIdentity: Mw = async (c, next) => {
+  (c as { set: (k: string, v: unknown) => void }).set('identity', ROUTE_IDENTITY);
+  await next();
+};
+const passthrough: Mw = async (_c, next) => {
+  await next();
+};
+mock.module('../../middleware/auth', () => ({
+  ...realAuthMw,
+  sessionMiddleware: guardMw(passthrough, REAL_sessionMiddleware),
+  requireAuth: guardMw(passthrough, REAL_requireAuth),
+}));
+mock.module('../../middleware/require-auth-or-agent', () => ({
+  ...realAoaMw,
+  requireAuthOrAgentSession: guardMw(passIdentity, REAL_requireAoa),
+}));
+mock.module('../../middleware/require-non-guest', () => ({
+  ...realNgMw,
+  requireNonGuestIdentity: guardMw(passthrough, REAL_requireNonGuestIdentity),
+  requireNonGuestUser: guardMw(passthrough, REAL_requireNonGuestUser),
+}));
+
 // Import AFTER the mocks are registered. The fulfiller imports are the
 // side-effect registrations the route relies on — same mechanism under test.
 const checkout = await import('../x402-checkout');
 const cosmeticFulfillerModule = await import('../checkout-fulfillers/cosmetic-purchase');
 await import('../checkout-fulfillers/rent-prepay');
+const { x402CheckoutRoutes } = await import('../../routes/x402-checkout');
 
 // Route chain loaded — drop the module-init DATABASE_URL placeholder.
 if (!DB_URL_WAS_SET) {
@@ -999,6 +1044,7 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
       id: PARCEL,
       parcel_code: 'C-042',
       owner_avatar_id: 'avatar-1',
+      acquired_at: '2026-07-01T00:00:00Z',
       tenure: 'deposit',
       deposit_remaining_ct: 40,
       rent_ct_weekly: 100,
@@ -1035,6 +1081,11 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
     // Escrow increment shape matches deposit-topup (in-DB addition; COALESCE
     // hardening landed with the P2 tenure change, cede5d2a).
     expect(texts[2]).toContain('deposit_remaining_ct = COALESCE(deposit_remaining_ct, 0) +');
+    // M8 bucket (migration 0078): the SAME statement grows the USDC-funded
+    // bucket by the same amount, so release can forfeit it without a replay.
+    expect(texts[2]).toContain('deposit_usdc_funded_ct = deposit_usdc_funded_ct +');
+    const escrowParams = flattenSql(executeCalls[2]).params;
+    expect(escrowParams.filter((p) => p === 500)).toHaveLength(2);
     // The NEW audit kind, usd_basis-stamped, NO debit_ledger_tx_id column.
     expect(texts[3]).toContain('land_deposit_prepay_usdc');
     expect(texts[3]).not.toContain('debit_ledger_tx_id');
@@ -1049,7 +1100,16 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
       checkoutId: 'checkout-77',
       newRemaining: 540,
       graceCleared: true,
-      refundable: true,
+      // M8 (2026-10-04): USDC rent prepay is non-refundable. The release path
+      // reads the row's deposit_usdc_funded_ct; this stamp is audit only.
+      refundable: false,
+      nonRefundableReason: 'usdc_rent_prepay_non_refundable',
+      tenancyAcquiredAt: '2026-07-01T00:00:00.000Z',
+    });
+    expect(out.detail).toMatchObject({
+      refundable: false,
+      terms:
+        'USDC rent prepay is non-refundable. If you release the plot early, the USDC-funded rent is not returned.',
     });
 
     // No captured SQL ever touches the avatars balance (ledger-only trap).
@@ -1093,5 +1153,86 @@ describe('rent_payment fulfiller — backed escrow emission', () => {
     executeQueue = [[], [parcelRow({ rent_ct_weekly: 1000 })], [], []];
     const out = await fulfiller(rentCtx());
     expect(out.detail).toMatchObject({ graceCleared: false });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Route: the 402 quote body discloses the M8 rent terms (2026-10-04)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('POST /api/x402/checkout/quote — M8 non-refundable rent disclosure', () => {
+  const PARCEL = 'a1a1a1a1-0000-4000-8000-000000000001';
+  const SKU = 'b6e7c1de-0000-4000-8000-000000000001';
+  const M8_TERMS =
+    'USDC rent prepay is non-refundable. If you release the plot early, the USDC-funded rent is not returned.';
+
+  async function quote(body: Record<string, unknown>) {
+    return x402CheckoutRoutes.request('/quote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('rent_payment 402 carries refundable:false + the plain-language terms BEFORE payment', async () => {
+    executeQueue = [
+      [
+        {
+          id: PARCEL,
+          parcel_code: 'C-042',
+          owner_avatar_id: 'avatar-1',
+          acquired_at: '2026-07-01T00:00:00Z',
+          tenure: 'deposit',
+          deposit_remaining_ct: 40,
+          rent_ct_weekly: 100,
+          grace_until: null,
+        },
+      ],
+    ];
+    const res = await quote({ itemKind: 'rent_payment', itemRef: PARCEL, amountVclaw: 500 });
+    expect(res.status).toBe(402);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json).toMatchObject({
+      checkoutId: 'checkout-1',
+      itemKind: 'rent_payment',
+      itemRef: PARCEL,
+      priceVclaw: 500,
+      usdCents: 500,
+      refundable: false,
+      terms: M8_TERMS,
+    });
+    expect(res.headers.get('PAYMENT-REQUIRED')).toBeTruthy();
+    // The pending row was created only after the disclosure-bearing resolve.
+    expect(insertCalls.length).toBe(1);
+    expect(ledgerCalls).toEqual([]);
+  });
+
+  it('cosmetic_purchase 402 is unchanged: no refundable/terms keys', async () => {
+    // Same SKU-stub convention as the cosmetic resolver tests above.
+    const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
+    q.cosmeticSkus = {
+      findFirst: async () => ({
+        id: SKU,
+        slug: 'test-skin',
+        priceCt: 500,
+        exclusiveCurrency: null,
+        availableFrom: null,
+        availableUntil: null,
+        supplyCap: null,
+        soldCount: 0,
+      }),
+    };
+    selectReturnRows = []; // not owned
+    const res = await quote({ itemKind: 'cosmetic_purchase', itemRef: SKU });
+    expect(res.status).toBe(402);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json).toMatchObject({
+      checkoutId: 'checkout-1',
+      itemKind: 'cosmetic_purchase',
+      itemRef: SKU,
+      priceVclaw: 500,
+    });
+    expect('refundable' in json).toBe(false);
+    expect('terms' in json).toBe(false);
   });
 });

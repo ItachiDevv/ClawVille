@@ -284,12 +284,30 @@ export const landParcels = pgTable(
      * remainder with NO avatar debit — the backing is the settled x402 USDC
      * payment recorded on the SAME-tx `x402_checkouts` row + stamped as
      * `usd_basis` in the land_transactions metadata. A later draw of that CT
-     * into the treasury is therefore a BACKED emission (real dollars entered),
-     * and a refund/forfeit of it conserves exactly like a debited top-up. Any
+     * into the treasury is therefore a BACKED emission (real dollars entered).
+     * USDC-funded escrow is FORFEITED on release with NO ledger credit (M8,
+     * 2026-10-04: USDC rent prepay is non-refundable; only the vCLAW-funded
+     * part refunds). Conservation still closes:
+     *   Σ draws + refund + forfeit == claim + Σ top-ups + Σ USDC prepays. Any
      * escrow credit WITHOUT (an avatar debit XOR a settled-USDC usd_basis) is
      * a conservation bug.
      */
     depositRemainingCt: integer('deposit_remaining_ct'),
+    /**
+     * M8 (2026-10-04, migration 0078): the USDC-funded part of
+     * `deposit_remaining_ct` (units). It is a running balance on the row,
+     * changed ONLY in the same UPDATE that changes `deposit_remaining_ct`,
+     * under the parcel row lock:
+     *   - USDC prepay (rent-prepay fulfiller): += amount (both columns);
+     *   - sweeper draw: -= LEAST(draw, deposit_usdc_funded_ct) (USDC first);
+     *   - claim (new tenancy): set to 0;
+     *   - release / lapse / deed flip (escrow closed): set to 0.
+     * vCLAW top-ups do not change it. On release the forfeit is
+     * LEAST(deposit_usdc_funded_ct, deposit_remaining_ct) and only the rest
+     * refunds as vCLAW. No other source (no ledger replay, no row timestamps)
+     * decides the split. CHECKs: >= 0, and 0 or <= deposit_remaining_ct.
+     */
+    depositUsdcFundedCt: integer('deposit_usdc_funded_ct').notNull().default(0),
     /**
      * B2: the CLV hold threshold STAMPED at claim time from
      * `LAND_HOLD_THRESHOLDS_CLV` — in CLV **uiAmount** (human token count),
@@ -351,6 +369,23 @@ export const landParcels = pgTable(
     depositRemainingNonNeg: check(
       'land_parcels_deposit_remaining_nonneg',
       sql`${t.depositRemainingCt} IS NULL OR ${t.depositRemainingCt} >= 0`,
+    ),
+    /** M8 (migration 0078): the USDC-funded bucket is never negative. */
+    depositUsdcFundedNonNeg: check(
+      'land_parcels_deposit_usdc_funded_nonneg',
+      sql`${t.depositUsdcFundedCt} >= 0`,
+    ),
+    /**
+     * M8 (migration 0078): the USDC-funded bucket is part of the escrow, so it
+     * is 0 when there is no escrow and never above the remainder. Every
+     * mutation path keeps this in ONE statement (see `depositUsdcFundedCt`).
+     */
+    depositUsdcFundedWithinRemaining: check(
+      'land_parcels_deposit_usdc_funded_within_remaining',
+      sql`${t.depositUsdcFundedCt} = 0 OR (
+        ${t.depositRemainingCt} IS NOT NULL
+        AND ${t.depositUsdcFundedCt} <= ${t.depositRemainingCt}
+      )`,
     ),
     tenureEscrowShape: check(
       'land_parcels_tenure_escrow_shape',

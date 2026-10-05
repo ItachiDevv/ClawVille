@@ -34,10 +34,26 @@ import { z } from 'zod';
  * written by the `sessionDigest(sessionId)` fallback (no live bot config) carries
  * a 16-hex digest the replay's canonical `agentId` can NEVER equal, so it is
  * unmatched BY DESIGN — never mis-delivered to another agent, never leaked.
+ *
+ * OWNER ATTRIBUTION (security pass 2026-10-04, Codex round 3 BLOCKING; founder
+ * rule: event history is owner-only). The history query
+ * (`agent-event-query.ts`) returns a row of ANY type here only when its
+ * `events.user_id` equals the current owner. A NULL `user_id` is never
+ * admitted: `owner_since` cannot prove who owned a NULL row (a prior owner's
+ * fire-and-forget insert can land after an ownership change), and even a
+ * "world fact" payload (chat target + message length) tells the new owner what
+ * the prior owner did. Since 2026-10-04 every emit site of these types records
+ * the proven owner; rows logged before that without attribution, or for an
+ * unproven session, are not replayed. Fail closed: a new type needs nothing
+ * extra, its rows replay only once they carry the acting owner's `user_id`.
  */
 export const AGENT_STREAM_EVENT_TYPES = [
   // Cove settlement confirms — already durably logged with clean bet/payout/net
-  // payloads (no secrets). The money-bearing catch-up events.
+  // payloads (no secrets). The money-bearing catch-up events. Every emit site
+  // (cove-blackjack/-baccarat/-holdem/-slots `logEvent*`) writes
+  // `userId: ledgerUserId(subject)` (the agent's owner; null only for a guest,
+  // whose row carries no agentId) or, for autonomous blackjack, the resolved
+  // owner `userId`.
   'cove.blackjack.hand.settled',
   'cove.baccarat.coup.settled',
   'cove.holdem.hand.settled',
@@ -45,19 +61,33 @@ export const AGENT_STREAM_EVENT_TYPES = [
   // Knowledge/skill — the agent-scoped, BEARER-FREE durable knowledge event
   // written alongside the RAM `knowledge_added` push (`items.ts`). Distinct from
   // the human-scoped `book.read` analytics row (which carries no `agent_id`).
+  // Payload = the book's knowledge entries the owner read; `userId` = the reader.
   'agent.knowledge_added',
-  // World + teaching activity the agent itself performed (agent_id-keyed).
-  'building.visited',
-  'agent.chat.turn',
-  // Reserved for slice 2 (chat-bar directive -> goal stream). Listed now so the
-  // whitelist is stable before the emitter lands; a not-yet-emitted type simply
-  // returns no rows.
+  // Chat-bar directive -> goal stream (slice 2, `avatars.ts` POST
+  // /api/avatars/me/directive). Payload = the owner's directive TEXT;
+  // `userId` = the authenticated setter.
   'agent.directive.set',
   // Run-a-store (P3 slice 4) — the seller's settlement-confirm for a peer
   // service sale (land.ts `POST /api/land/services/:listingId/buy`). Emitted
   // with the SELLER as the explicit subject (agentId/avatarId/userId), so an
   // agent running a shop can replay its own sale confirmations from history.
+  // The agentId comes from a join on `openclaw_bots.user_id = seller userId`,
+  // so a row with an agentId always carries the seller's `userId`.
   'land.service.sold',
+  // World + teaching activity the agent itself performed (agent_id-keyed).
+  // building.visited: gateway visit (`agent-gateway.ts`, payload
+  // {ctAwarded, activity, knowledgeGained:0|1}, `userId` = proven owner or
+  // NULL) and autonomous arrival (`world-teacher-chat.ts`, payload
+  // {isHouse, ctAwarded, via}, `userId` = the enrolled owner). Only
+  // owner-attributed rows replay.
+  'building.visited',
+  // agent.chat.turn: gateway character/building chat (`agent-gateway.ts` via
+  // `agent-event-owner.ts`, payload {chatType, targetNpcId|characterName,
+  // messageLength, ...}, `userId` = proven owner or NULL), autonomous teacher
+  // chat (`world-teacher-chat.ts`, `userId` = the enrolled owner) and Nori chat
+  // (`system-agent-chat.ts`, `userId` = subject). Only owner-attributed rows
+  // replay.
+  'agent.chat.turn',
 ] as const;
 
 export type AgentStreamEventType = (typeof AGENT_STREAM_EVENT_TYPES)[number];

@@ -67,16 +67,16 @@ describe('fingerprintMiddleware — guest fpHash stability (cove hotfix 2026-06-
   it('tier-2 fallback is STABLE across IP changes within the same /24 (the fix)', async () => {
     // Same UA, no X-CV-Fingerprint, two different IPs in the SAME /24 block —
     // the exact dynamic-IP-guest scenario. Must hash to the SAME bucket.
-    const a = await fpFor(app, { 'User-Agent': UA, 'cf-connecting-ip': '203.0.113.7' });
-    const b = await fpFor(app, { 'User-Agent': UA, 'cf-connecting-ip': '203.0.113.222' });
+    const a = await fpFor(app, { 'User-Agent': UA, 'x-real-ip': '203.0.113.7' });
+    const b = await fpFor(app, { 'User-Agent': UA, 'x-real-ip': '203.0.113.222' });
     expect(a).toBe(b);
   });
 
   it('tier-2 fallback STILL separates different /24 blocks', async () => {
     // A different ISP block (different /24) must still produce a different
     // bucket — the fix widens collisions only WITHIN a /24, not across blocks.
-    const a = await fpFor(app, { 'User-Agent': UA, 'cf-connecting-ip': '203.0.113.7' });
-    const c = await fpFor(app, { 'User-Agent': UA, 'cf-connecting-ip': '198.51.100.7' });
+    const a = await fpFor(app, { 'User-Agent': UA, 'x-real-ip': '203.0.113.7' });
+    const c = await fpFor(app, { 'User-Agent': UA, 'x-real-ip': '198.51.100.7' });
     expect(a).not.toBe(c);
   });
 
@@ -88,12 +88,12 @@ describe('fingerprintMiddleware — guest fpHash stability (cove hotfix 2026-06-
     const a = await fpFor(app, {
       'User-Agent': UA,
       'X-CV-Fingerprint': fp,
-      'cf-connecting-ip': '203.0.113.7',
+      'x-real-ip': '203.0.113.7',
     });
     const b = await fpFor(app, {
       'User-Agent': 'a-totally-different-ua',
       'X-CV-Fingerprint': fp,
-      'cf-connecting-ip': '198.51.100.250',
+      'x-real-ip': '198.51.100.250',
     });
     expect(a).toBe(b);
   });
@@ -104,9 +104,29 @@ describe('fingerprintMiddleware — guest fpHash stability (cove hotfix 2026-06-
     const withFp = await fpFor(app, {
       'User-Agent': UA,
       'X-CV-Fingerprint': 'stable-browser-visitor-id-abc123',
-      'cf-connecting-ip': '203.0.113.7',
+      'x-real-ip': '203.0.113.7',
     });
-    const withoutFp = await fpFor(app, { 'User-Agent': UA, 'cf-connecting-ip': '203.0.113.7' });
+    const withoutFp = await fpFor(app, { 'User-Agent': UA, 'x-real-ip': '203.0.113.7' });
     expect(withFp).not.toBe(withoutFp);
+  });
+
+  it('ignores a spoofed CF-Connecting-IP from a non-Cloudflare peer (H2 2026-10-04)', async () => {
+    // A direct-to-origin caller cannot move its ip-prefix key by forging the
+    // Cloudflare header: the key stays on the Traefik-set peer address.
+    const honest = await fpFor(app, { 'User-Agent': UA, 'x-real-ip': '203.0.113.7' });
+    const spoofed = await fpFor(app, {
+      'User-Agent': UA,
+      'x-real-ip': '203.0.113.7',
+      'cf-connecting-ip': '198.51.100.7',
+    });
+    expect(spoofed).toBe(honest);
+    // Through a real Cloudflare edge peer, the true client address is used,
+    // so a client in the same /24 lands in the same bucket.
+    const viaEdge = await fpFor(app, {
+      'User-Agent': UA,
+      'x-real-ip': '104.16.0.1',
+      'cf-connecting-ip': '203.0.113.99',
+    });
+    expect(viaEdge).toBe(honest);
   });
 });

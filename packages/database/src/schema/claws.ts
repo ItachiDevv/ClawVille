@@ -180,6 +180,19 @@ export const agentBots = pgTable('openclaw_bots', {
    * Only ever true on a hosted-avatar (is_house=false, milady) session row.
    */
   autonomyEnrolled: boolean('autonomy_enrolled').default(false).notNull(),
+  /**
+   * Security pass 2026-10-04 (migration 0079_agent_owner_since.sql): start of
+   * the CURRENT owner's period. TRIGGER-OWNED: the `openclaw_bots_owner_since`
+   * trigger sets it to clock_timestamp() on INSERT and whenever `user_id`
+   * changes (owner -> other, NULL -> owner, owner -> NULL, including the users
+   * FK ON DELETE SET NULL), and keeps the old value on every other UPDATE, so an
+   * application write to it is ignored. Never set it from app code.
+   * `services/agent-event-query.ts` returns only events with `ts >= owner_since`
+   * for the proven current owner, so a new owner never reads a prior owner's
+   * directives, settlements or sales. Rows that existed at the migration got
+   * the migration time (no ownership history could prove a single owner).
+   */
+  ownerSince: timestamp('owner_since', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

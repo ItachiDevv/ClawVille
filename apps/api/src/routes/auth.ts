@@ -1027,9 +1027,10 @@ authRoutes.get('/enter', async (c) => {
 
 authRoutes.post('/milady-session-exchange', async (c) => {
   // Rate limit: 5 attempts per minute per IP.
-  // FIX-18: route through getClientIp (cf-connecting-ip → last-XFF-entry) instead
-  // of a hand-rolled resolver that trusted the spoofable FIRST XFF entry / x-real-ip
-  // and let a caller rotate the rate-limit key to defeat this 5/min cap off-CF.
+  // FIX-18: route through getClientIp instead of a hand-rolled resolver that
+  // trusted the spoofable FIRST XFF entry and let a caller rotate the rate-limit
+  // key to defeat this 5/min cap off-CF. getClientIp trust model (H2 2026-10-04):
+  // Traefik peer `x-real-ip`, swapped for `cf-connecting-ip` only from a CF edge.
   const ip = getClientIp(c.req.raw.headers);
 
   if (!checkMiladyRateLimit(ip)) {

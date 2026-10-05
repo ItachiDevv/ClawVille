@@ -36,6 +36,7 @@ import type {
   LandHoldWalletVerification,
   LandHoldWalletVerificationMethod,
   LandParcelDTO,
+  ReleaseParcelResponse,
 } from './types';
 
 const HOLD_WALLET_KEY = ['land-hold-wallet'] as const;
@@ -108,6 +109,7 @@ function tenureErrorForCode(code: string | undefined): string {
     case 'not_parcel_owner': return 'This parcel is no longer owned by your active avatar.';
     case 'not_deposit_tenure': return 'Only rent-door parcels can receive prepaid rent.';
     case 'deed_locked_by_listing': return 'Remove the live deed listing before releasing this parcel.';
+    case 'usdc_prepay_unproven': return 'This plot has an older USDC rent prepay. An operator must settle this release. Contact support.';
     case 'idempotency_key_conflict': return 'This action key belongs to an earlier parcel state. Reopen the Land Office and try again.';
     case 'autonomous_daily_cap': return 'This agent reached its autonomous daily land-spend limit.';
     // ── Hold-wallet ownership proof ─────────────────────────────────────────
@@ -136,6 +138,23 @@ function tenureErrorForCode(code: string | undefined): string {
 
 function tenureError(error: unknown): string {
   return tenureErrorForCode(codeOf(error));
+}
+
+/**
+ * Release toast copy. M8 (2026-10-04): USDC rent prepay is non-refundable, so
+ * when the server reports a forfeited USDC-funded remainder the toast says so
+ * in plain words after the usual refund sentence. Exported for its unit test.
+ */
+export function releaseParcelToastMessage(
+  parcelName: string,
+  result: Pick<ReleaseParcelResponse, 'refundedCt' | 'forfeitedUsdcPrepayCt'>,
+): string {
+  const base = result.refundedCt > 0
+    ? `Released ${parcelName}; ${result.refundedCt.toLocaleString()} vCLAW escrow returned.`
+    : `Released ${parcelName}.`;
+  const forfeited = result.forfeitedUsdcPrepayCt ?? 0;
+  if (forfeited <= 0) return base;
+  return `${base} ${forfeited.toLocaleString()} vCLAW of USDC-funded rent was not returned (USDC rent prepay is non-refundable).`;
 }
 
 /**
@@ -1560,9 +1579,7 @@ export function OwnedTenureControls({
       const result = await api.releaseLandParcel(parcel.id, idempotencyKey);
       confirmed = true;
       settleLandOperation(subject, parcel.parcelCode, operation, 'confirmed');
-      addToast('↩️', result.refundedCt > 0
-        ? `Released ${parcelDisplayName(parcel.parcelCode, parcel.tier)}; ${result.refundedCt.toLocaleString()} vCLAW escrow returned.`
-        : `Released ${parcelDisplayName(parcel.parcelCode, parcel.tier)}.`);
+      addToast('↩️', releaseParcelToastMessage(parcelDisplayName(parcel.parcelCode, parcel.tier), result));
       setConfirmRelease(false);
     } catch (error) {
       addToast('⚠️', tenureError(error), 5000);

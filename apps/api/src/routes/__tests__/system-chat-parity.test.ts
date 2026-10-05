@@ -19,12 +19,18 @@ const turns: Array<{ content: string; context: any }> = [];
 const credits: any[] = [], xp: unknown[][] = [], events: any[] = [], lessons: any[] = [];
 const resolutions: string[] = [];
 const clauses: unknown[] = [];
+// Durable Nori daily cap (security pass 2026-10-04): the reward tx locks the
+// avatar, then claims a daily_reward_caps row. Below the cap it grants 1.
+let capGrants = 1;
+const fakeTx = { execute: async (q: string) =>
+  q.includes('INSERT INTO daily_reward_caps') ? (capGrants > 0 ? [{ granted: capGrants }] : [])
+    : q.includes('FROM avatars WHERE id') ? [{ present: 1 }] : [] };
 const fakeDb = { query: {
   avatars: { findFirst: async (query: any) => { clauses.push(query.where); return avatar; } },
   avatarInventory: { findMany: async () => [] },
-} };
+}, transaction: async (fn: (tx: typeof fakeTx) => Promise<unknown>) => fn(fakeTx) };
 mock.module('@clawville/database', () => ({ db: fakeDb, avatars: { id: 'id', userId: 'userId', isActive: 'isActive' }, avatarInventory: { avatarId: 'avatarId' }, locationAgents: {} }));
-mock.module('drizzle-orm', () => ({ eq: (a: unknown, b: unknown) => [a, b], and: (...args: unknown[]) => args, sql: () => '' }));
+mock.module('drizzle-orm', () => ({ eq: (a: unknown, b: unknown) => [a, b], and: (...args: unknown[]) => args, sql: (strings: TemplateStringsArray) => strings.join('?') }));
 mock.module('@clawville/agent-runtime', () => ({ characterRoomId: (slug: string, owner: string) => `${slug}:${owner}` }));
 mock.module('../../middleware/require-auth-or-agent', () => ({ AGENT_SESSION_HEADER: 'X-Clawville-Agent-Session', resolveAgentSession: async (id: string) => { resolutions.push(id); return resolved; } }));
 mock.module('../../middleware/require-non-guest', () => ({ isGuestUser: async () => guest }));
@@ -52,7 +58,7 @@ function request(headers: Record<string, string> = {}) {
 }
 const agentHeaders = { 'X-Clawville-Agent-Session': 'test-agent-session' };
 beforeEach(() => {
-  guest = false; creditFails = false; afterReply = null;
+  guest = false; creditFails = false; afterReply = null; capGrants = 1;
   avatar = { id: 'avatar', userId: 'owner', isActive: true, platformAgentId: 'own-runtime', characterConfig: {} };
   resolved = { userId: 'owner', avatarId: 'avatar', agentId: 'agent', ledgerCapable: true };
   for (const list of [turns, credits, xp, events, lessons, resolutions, clauses]) list.length = 0;
@@ -107,5 +113,14 @@ describe('system chat bound-agent parity', () => {
     creditFails = true;
     expect((await request(agentHeaders)).status).toBe(200);
     expect(events[0].payload.tokenAwarded).toBe(0); expect(xp).toHaveLength(0);
+  });
+  test('daily cap reached: agent and human still chat, no vCLAW, tokenAwarded 0', async () => {
+    capGrants = 0;
+    expect((await request(agentHeaders)).status).toBe(200);
+    systemAgentRewardLimiter._resetForTests();
+    expect((await request({ Cookie: 'human=1' })).status).toBe(200);
+    expect(turns).toHaveLength(2);
+    expect(credits).toHaveLength(0);
+    expect(events.map((e) => e.payload.tokenAwarded)).toEqual([0, 0]);
   });
 });

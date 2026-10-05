@@ -384,7 +384,8 @@ describe('phase B — routing integrity (no DB touch)', () => {
     const app = buildRoutingApp();
     const res = await app.request(`/api/land/parcels/${crypto.randomUUID()}/buy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': 'test-phaseb-routing' },
+      // A distinct valid IP per test file (a non-IP key is the shared 'unknown' bucket).
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '2001:db8:b0b::1' },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(409);

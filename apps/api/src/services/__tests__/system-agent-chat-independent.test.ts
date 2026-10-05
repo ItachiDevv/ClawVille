@@ -12,14 +12,32 @@ const credits: unknown[] = [], lessons: { lesson: string }[] = [], states: Recor
 const events: unknown[] = [];
 const columns = { id: 'id', userId: 'userId', isActive: 'isActive' };
 type Predicate = (row: Record<string, unknown>) => boolean;
+// Durable Nori daily cap (security pass 2026-10-04): the claim runs raw SQL in
+// the reward tx. `sql` records text + params; the fake tx models the counter
+// row per (avatar, kind) and refuses at the cap like the ON CONFLICT WHERE.
+type FakeSql = { text: string; params: unknown[] };
+const capUsed = new Map<string, number>();
+const capKeys: string[] = [];
+const fakeTx = { execute: async (q: FakeSql) => {
+  if (q.text.includes('INSERT INTO daily_reward_caps')) {
+    const [avatarId, , kind, want, cap] = q.params as [string, string, string, number, number];
+    const key = `${avatarId}:${kind}`; capKeys.push(key);
+    const used = capUsed.get(key) ?? 0;
+    if (used >= cap) return [];
+    const granted = Math.min(want, cap - used); capUsed.set(key, used + granted);
+    return [{ granted }];
+  }
+  return q.text.includes('FROM avatars WHERE id') ? [{ present: 1 }] : [];
+} };
 mock.module('drizzle-orm', () => ({
   eq: (column: string, value: unknown): Predicate => (row) => row[column] === value,
   and: (...clauses: Predicate[]): Predicate => (row) => clauses.every((clause) => clause(row)),
+  sql: (strings: TemplateStringsArray, ...params: unknown[]): FakeSql => ({ text: strings.join('?'), params }),
 }));
 mock.module('@clawville/database', () => ({ avatars: columns, avatarInventory: { avatarId: 'avatarId' }, db: { query: {
   avatars: { findFirst: async ({ where }: { where: Predicate }) => avatar && where(avatar) ? { ...avatar } : null },
   avatarInventory: { findMany: async () => [] },
-} } }));
+}, transaction: async <T,>(fn: (tx: typeof fakeTx) => Promise<T>) => fn(fakeTx) } }));
 mock.module('@clawville/agent-runtime', () => ({ characterRoomId: (slug: string, owner: string) => `${slug}:${owner}` }));
 mock.module('../../middleware/require-auth-or-agent', () => ({ resolveAgentSession: async () => {
   const result = subject && { ...subject }; afterResolve?.(); return result;
@@ -48,7 +66,8 @@ beforeEach(() => {
   subject = { userId: 'owner', avatarId: 'avatar', agentId: 'agent', ledgerCapable: true };
   avatar = { id: 'avatar', userId: 'owner', isActive: true, platformAgentId: 'own-runtime' };
   guest = false; afterReply = undefined; afterModeration = undefined; afterCredit = undefined; afterResolve = undefined;
-  for (const list of [credits, lessons, states, events]) list.length = 0;
+  for (const list of [credits, lessons, states, events, capKeys]) list.length = 0;
+  capUsed.clear();
   systemAgentRewardLimiter._resetForTests();
 });
 const turn = (kind: 'human' | 'agent') => conductSystemAgentChat({
@@ -101,4 +120,25 @@ test('hosted body replacement inside session resolution refuses before cognition
     isCurrent: () => current,
   })).rejects.toMatchObject({ status: 403 });
   expect(states).toHaveLength(0); expect(credits).toHaveLength(0); expect(lessons).toHaveLength(0);
+});
+test('Nori pays at most 10 turns per avatar per UTC day; human and agent share one durable counter', async () => {
+  for (let i = 0; i < 12; i++) {
+    // An API restart clears the in-memory 60 s cooldown; the durable cap stays.
+    systemAgentRewardLimiter._resetForTests();
+    const result = await turn(i % 2 === 0 ? 'human' : 'agent');
+    // Over the cap Nori still replies.
+    expect(result.message.content).toBe('Ask the teacher.');
+  }
+  expect(credits).toHaveLength(10);
+  expect(credits.every((c) => (c as { amount: number }).amount === 1)).toBe(true);
+  expect(capUsed.get('avatar:nori_chat')).toBe(10);
+  expect(new Set(capKeys)).toEqual(new Set(['avatar:nori_chat']));
+  const paid = events.map((e) => (e as { payload: { tokenAwarded: number } }).payload.tokenAwarded);
+  expect(paid).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]);
+});
+test('the 60 s cooldown still blocks a second paid turn before the cap is reached', async () => {
+  await turn('human');
+  await turn('agent');
+  expect(credits).toHaveLength(1);
+  expect(capUsed.get('avatar:nori_chat')).toBe(1);
 });

@@ -32,6 +32,8 @@ import { extendLoaderWithKTX2 } from './ktx2-loader-setup';
 import { extendLoaderWithMeshopt } from './meshopt-loader-setup';
 import { CURRENT_WORLD_DEVICE_PROFILE } from './device-class';
 import { downscaleTextureForDevice } from './downscale-texture-for-device';
+import { getLastGlbLoadFailure, installGlbFetchRetry, readOptionalGltf } from './glb-fetch-retry';
+import { isModelLoadError, ModelLoadError } from './model-load-error';
 
 type GLTFResult = GLTF & ObjectMap;
 const TEXTURE_CAP_LOADERS = new WeakSet<object>();
@@ -102,6 +104,7 @@ export function extendLoaderWithMeshoptAndTextureDeviceCap(
 ): void {
   void extendLoaderWithMeshopt(loader);
   extendLoaderWithTextureDeviceCap(loader);
+  installGlbFetchRetry(loader);
 }
 
 function extendLoaderForWorldTextures(
@@ -109,6 +112,9 @@ function extendLoaderForWorldTextures(
 ): void {
   extendLoaderWithKTX2(loader);
   extendLoaderWithTextureDeviceCap(loader);
+  // R3F shares ONE GLTFLoader instance per constructor, so this request
+  // retry also covers plain useGLTF calls once any world-texture load ran.
+  installGlbFetchRetry(loader);
 }
 
 /**
@@ -118,10 +124,74 @@ function extendLoaderForWorldTextures(
 export function useGLTFWithKTX2(path: string): GLTFResult;
 export function useGLTFWithKTX2(path: string[]): GLTFResult[];
 export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResult[] {
-  if (typeof path === 'string') {
+  try {
+    if (typeof path === 'string') {
+      return useGLTF(path, true, true, extendLoaderForWorldTextures);
+    }
     return useGLTF(path, true, true, extendLoaderForWorldTextures);
+  } catch (thrown) {
+    throw tagGltfLoadRejection(thrown, path);
   }
-  return useGLTF(path, true, true, extendLoaderForWorldTextures);
+}
+
+/**
+ * R3F rejection errors whose cache entry was already evicted. suspend-react
+ * stores ONE Error per failed entry and rethrows that same object on every
+ * read, so the object identifies the entry. Only the FIRST clear() for it
+ * evicts; a later clear() of any error from the same entry is a no-op, so a
+ * NEWER entry for the key (a remount, useGLTF.preload, or any other caller)
+ * is never evicted by a stale error. Sound because ModelLoadError.clear() is
+ * the only code in apps/web that evicts GLB cache entries (the unused
+ * useGLTFWithKTX2.clear export was deleted so it stays that way): when the
+ * first clear() runs, the failed entry is still the cached one. A new
+ * useGLTF.clear caller must keep this invariant.
+ */
+const EVICTED_REJECTIONS = new WeakSet<Error>();
+
+/**
+ * R3F useLoader caches a failed load and rethrows it as
+ * `new Error("Could not load <input>: <message>")` (its loadingFn; no hook to
+ * tag it). This hook is the first code we own that sees it, so the tag is
+ * made HERE, for exactly the requested path(s): a ModelLoadError (same
+ * message) carrying the original loader error + phase from glb-fetch-retry.
+ *
+ * - A NEW ModelLoadError per throw: two figures reading one cached rejection
+ *   get two objects, so each boundary catch owns its own one-shot report
+ *   cancel (ModelLoadBoundary).
+ * - `clear()` evicts the cache entry with the SAME key the load used (the
+ *   string, or the whole array), once per failed entry (EVICTED_REJECTIONS),
+ *   so an old error never evicts a newer entry another figure awaits.
+ * Thrown promises (Suspense) and any other error pass through unchanged.
+ */
+function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
+  if (!(thrown instanceof Error) || isModelLoadError(thrown)) return thrown;
+  const paths = typeof path === 'string' ? [path] : path;
+  const url = paths.find((p) => thrown.message.startsWith(`Could not load ${p}: `));
+  if (url === undefined) return thrown;
+  const failure = getLastGlbLoadFailure(url);
+  return new ModelLoadError({
+    url,
+    phase: failure?.phase ?? 'unknown',
+    original: failure?.error ?? thrown,
+    message: thrown.message,
+    clear: () => {
+      if (EVICTED_REJECTIONS.has(thrown)) return;
+      EVICTED_REJECTIONS.add(thrown);
+      useGLTF.clear(path);
+    },
+  });
+}
+
+/**
+ * useGLTFWithKTX2 for an OPTIONAL model. Returns null when THIS path failed
+ * for any reason (request failure after the loader's retries, or a parse /
+ * decode error), so the caller skips that model instead of crashing the
+ * whole canvas. Fails visible: one console.error per path with the original
+ * error class, message and phase. Still suspends while loading; any other
+ * error is rethrown. Required models must keep useGLTFWithKTX2.
+ */
+export function useOptionalGLTFWithKTX2(path: string): GLTFResult | null {
+  return readOptionalGltf(path, () => useGLTFWithKTX2(path));
 }
 
 /**
@@ -146,9 +216,3 @@ export function preloadKTX2Bytes(path: string): Promise<void> {
   );
 }
 
-/**
- * Clear a GLB from the loader cache.
- */
-useGLTFWithKTX2.clear = (path: string | string[]) => {
-  useGLTF.clear(path);
-};

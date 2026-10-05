@@ -7,7 +7,7 @@ import { isGuestUser } from '../middleware/require-non-guest';
 import { agentOrchestrator } from './agent-orchestrator';
 import { getSystemAgent } from './system-npc-seeder';
 import { systemAgentRewardLimiter } from './system-agent-reward-limiter';
-import { creditClawTokens } from './claw-token-ledger';
+import { creditWithDailyRewardCap } from './daily-reward-cap';
 import { awardXp } from './xp-service';
 import { logEvent } from './event-logger';
 import { recordEarnedSkillLesson } from './earned-skill-memory';
@@ -101,11 +101,18 @@ export async function conductSystemAgentChat(input: {
       (input.actor.kind === 'agent' && (!rewardAvatar || rewardAvatar.id !== subject.avatarId || rewardGuest))) {
     throw new HTTPException(403, { message: 'Agent binding changed before Nori reward' });
   }
+  // Two gates: the in-memory 60 s spam cooldown, then the DURABLE per-avatar
+  // daily cap (DAILY_REWARD_CAPS.nori_chat paid turns per UTC day, founder
+  // decision 2026-10-04). The cap row is keyed by avatars.id, so the human and
+  // agent surfaces of one avatar share one counter. Over the cap Nori still
+  // replies and XP keeps its pre-cap behavior (awarded when the reward
+  // transaction commits); only the vCLAW is 0.
   if (rewardAvatar && !rewardGuest && systemAgentRewardLimiter.tryConsume(subject.userId, input.slug)) {
     try {
-      await creditClawTokens({ avatarId: rewardAvatar.id, amount: 1, reason: 'system_agent_chat',
-        source: 'api', metadata: { slug: input.slug }, actorKind: input.actor.kind });
-      tokenAwarded = 1;
+      const credited = await creditWithDailyRewardCap({ kind: 'nori_chat', credit: {
+        avatarId: rewardAvatar.id, amount: 1, reason: 'system_agent_chat',
+        source: 'api', metadata: { slug: input.slug }, actorKind: input.actor.kind } });
+      tokenAwarded = credited > 0 ? 1 : 0;
       void awardXp(rewardAvatar.id, 5, 'npc-chat').catch(() => console.error('[chat/system] XP award failed'));
     } catch { console.error('[chat/system] credit failed'); }
   }

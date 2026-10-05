@@ -300,6 +300,10 @@ type AutonomousLandSettlementResult =
       fresh: boolean;
       parcel: { parcelCode: string; tier: 'starter' | 'c' | 'b' | 'a' | 'founder' };
       refundedCt: number;
+      /** M8 (2026-10-04): USDC-funded escrow NOT returned on release (0 when none). */
+      forfeitedUsdcPrepayCt: number;
+      /** Present only when forfeitedUsdcPrepayCt > 0 ('usdc_rent_prepay_non_refundable'). */
+      forfeitReason?: string;
     }
   | {
       kind: 'kit_piece';
@@ -931,6 +935,10 @@ class NpcSimulation {
       fresh: result.fresh,
       parcel: result.parcel,
       refundedCt: result.refundedCt,
+      // M8 parity with the REST release response: the agent result carries the
+      // same non-refundable USDC prepay disclosure the human path shows.
+      forfeitedUsdcPrepayCt: result.forfeitedUsdcPrepayCt,
+      ...(result.forfeitReason ? { forfeitReason: result.forfeitReason } : {}),
     };
   };
   /** Test seam; production emits the same post-commit cache/event/world effects as REST. */

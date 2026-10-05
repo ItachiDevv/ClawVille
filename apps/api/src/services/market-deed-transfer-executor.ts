@@ -296,6 +296,9 @@ function makeTxApi(tx: DrizzleTx): DeedTransferTx {
       // refuses `hold_transfer_not_supported` at list time in
       // market-listings.ts), so this reset can never strip a live CLV-hold
       // obligation (see module header — the earlier tenure FLAG is resolved).
+      // M8 (migration 0078): the USDC-funded escrow bucket closes with the
+      // escrow (it is already 0: step 5 refuses a positive remainder and the
+      // DB CHECK keeps the bucket <= the remainder).
       const rows = await tx.execute<{ id: string }>(
         sql`UPDATE land_parcels
             SET owner_avatar_id = ${buyerAvatarId},
@@ -304,6 +307,7 @@ function makeTxApi(tx: DrizzleTx): DeedTransferTx {
                 acquired_at = now(),
                 deposit_ct = NULL,
                 deposit_remaining_ct = NULL,
+                deposit_usdc_funded_ct = 0,
                 rent_paid_through = NULL,
                 grace_until = NULL,
                 hold_threshold_ct = NULL,

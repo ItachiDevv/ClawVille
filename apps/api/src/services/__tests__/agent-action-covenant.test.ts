@@ -304,7 +304,7 @@ describe('in-world executor covenant hooks', () => {
       if (input.operation.verb === 'place_kit_piece') {
         return { kind: 'kit_piece', fresh: true, parcelCode: input.operation.parcelCode, pieceKey: input.operation.pieceKey, costMaterials: 8 };
       }
-      return { kind: 'release', fresh: true, parcel: { parcelCode: input.operation.parcelCode, tier: 'starter' }, refundedCt: 2_000 };
+      return { kind: 'release', fresh: true, parcel: { parcelCode: input.operation.parcelCode, tier: 'starter' }, refundedCt: 2_000, forfeitedUsdcPrepayCt: 0 };
     };
     npcSimulation.autonomousLandEffects = async (input) => { effects.push(input); };
 
@@ -352,6 +352,7 @@ describe('in-world executor covenant hooks', () => {
         fresh: true,
         parcel: { parcelCode: 'parcel-starter-01', tier: 'starter' },
         refundedCt: 0,
+        forfeitedUsdcPrepayCt: 0,
       };
     };
 

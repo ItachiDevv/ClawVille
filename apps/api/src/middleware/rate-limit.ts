@@ -12,6 +12,8 @@
  * `/export-character` or vice versa.
  */
 
+import { isCloudflareIp, isValidIp } from '../lib/cloudflare-ips';
+
 export interface RateLimiterOptions {
   /** Max requests per IP per window. Default: 10. */
   maxPerWindow?: number;
@@ -83,67 +85,104 @@ export function createRateLimiter(options: RateLimiterOptions = {}): RateLimiter
 }
 
 /**
- * Best-effort IP resolver — checks trusted proxy headers before falling
- * back to `'unknown'`.
+ * Client IP resolver for every per-IP control (rate limits, fingerprint
+ * ip-prefix keys, guest caps, ws upgrade caps, the Covenant IP allowlist).
  *
- * Preference order (Phase 3 audit C3 — defeats X-Forwarded-For spoofing;
- * FIX-18/SEC-6 — drop spoofable `x-real-ip`):
+ * Trust model (H2, security pass 2026-10-04). The deploy chain is
+ * Cloudflare -> Traefik -> Hono. A staging probe on the Traefik -> api
+ * docker network (2026-10-04) showed:
+ *   - Traefik REWRITES `x-real-ip` and `x-forwarded-for` to the TCP peer,
+ *     whatever the client sent. So `x-real-ip` is the true peer address.
+ *   - Traefik passes `cf-connecting-ip` through UNCHANGED. A caller that
+ *     reaches the origin without Cloudflare can send any value and pick
+ *     its own rate-limit key.
+ *   - Through Cloudflare, the peer is a Cloudflare edge address and
+ *     `cf-connecting-ip` holds the true client (Cloudflare overwrites it).
  *
- *   1. `cf-connecting-ip` — authoritative inside a Cloudflare-proxied
- *      deployment. Cloudflare strips any client-set value at the edge
- *      and injects its own, so this header is not user-controllable
- *      inside the proxy chain. ClawVille's prod traffic goes through
- *      Cloudflare → Traefik → Hono, so this is the correct primary and
- *      is ALWAYS present on the documented prod/staging paths.
+ * Order:
+ *   1. peer = first valid IP in `x-real-ip` (set by Traefik).
+ *   2. No valid `x-real-ip` (local dev, tests, no proxy): peer = LAST
+ *      `x-forwarded-for` entry (Phase 3 audit C3: the entry a proxy
+ *      appended; the leading entries are client-set), ONLY when that entry
+ *      is a valid IP (Codex round 2: a garbage token must not become a
+ *      caller-chosen key). An invalid last entry gives no peer; the earlier,
+ *      client-set entries are never tried. The last entry is the ACTUAL last
+ *      comma field (Codex round 3): an empty one (`198.51.100.8, `) gives no
+ *      peer, it is not skipped. Without a proxy the caller
+ *      controls this header anyway, so step 3 adds no exposure here.
+ *   3. If the peer is a Cloudflare edge (`lib/cloudflare-ips.ts`) and
+ *      `cf-connecting-ip` is a valid IP, return `cf-connecting-ip`. This
+ *      keeps real users on their own key, never on a shared edge address.
+ *      A Cloudflare peer with a missing or invalid `cf-connecting-ip` is an
+ *      anomaly (Cloudflare always sets it): the peer is returned and ONE
+ *      warning is logged per process (no per-request log spam).
+ *   4. Else return the peer. `cf-connecting-ip` is NEVER used unless the
+ *      peer is Cloudflare.
+ *   5. No peer at all -> `'unknown'` (one shared, collectively limited
+ *      bucket, the safe default).
  *
- *   2. `x-forwarded-for` — take the LAST entry (the one the trusted
- *      proxy appended), not the first. Trusting the first comma-
- *      separated value lets any caller forge the IP by simply setting
- *      `X-Forwarded-For: 1.2.3.4` on the outbound request; the trusted
- *      proxy then appends the real client IP AFTER the forged value,
- *      making the tail authoritative on a direct-to-proxy deployment.
+ * History: FIX-18 (2026-06-13) dropped `x-real-ip` on the belief that
+ * Traefik passes a client value through; the 2026-10-04 probe showed the
+ * reverse (Traefik overwrites `x-real-ip`, passes `cf-connecting-ip`).
+ * The box firewalls also drop non-Cloudflare 80/443 (staging 2026-10-04,
+ * prod scheduled next); this check is defense in depth. A different edge
+ * must re-audit which headers it sets and overwrites before this function
+ * is trusted behind it.
  *
- *   3. Fallback to `'unknown'` — every request without any of the above
- *      shares the same rate-limit bucket, which is the correct safe
- *      default (collectively limited rather than individually
- *      unlimited).
- *
- * FIX-18 (SEC-6) NOTE — `x-real-ip` was REMOVED from the trust order.
- * It used to sit ABOVE `x-forwarded-for`, but unlike `cf-connecting-ip`
- * (which Cloudflare overwrites at the edge) and unlike the LAST XFF entry
- * (which the trusted proxy appends), a client-set `X-Real-IP` is NOT
- * stripped/overwritten by Traefik's defaults — so on ANY path that
- * reaches the API without Cloudflare in front (direct-to-Traefik, a
- * misconfigured route, a staging hostname without the CF proxy), a caller
- * could forge `X-Real-IP` and trivially rotate the rate-limit key to
- * defeat the per-IP limiters (e.g. the partner register/stats caps). On
- * the documented prod path `cf-connecting-ip` is always present, so this
- * header was unreachable there anyway — dropping it costs nothing on prod
- * and closes the spoofable gap on any non-CF path. If a future edge
- * legitimately sets `x-real-ip` and overwrites any client value, re-add
- * it ONLY behind a documented single-trusted-edge assumption (the edge
- * must guarantee it overwrites, never passes through, a client value).
- *
- * Anyone fronting ClawVille with a different edge must audit which header
- * their edge sets and extend this function if neither CF nor Traefik
- * conventions fit.
+ * Accepts any `{ get(name) }`: a `Headers` object (`c.req.raw.headers`) or
+ * a wrapper such as `{ get: (n) => c.req.header(n) ?? null }`.
  */
 export function getClientIp(headers: {
   get(name: string): string | null | undefined;
 }): string {
-  // 1. Cloudflare-authoritative, not user-settable inside the chain.
-  const cf = headers.get('cf-connecting-ip');
-  if (cf) return cf.trim();
+  const peer = firstValidIp(headers.get('x-real-ip')) ?? lastValidXffEntry(headers.get('x-forwarded-for'));
+  if (!peer) return 'unknown';
 
-  // 2. XFF — LAST entry is the one the trusted proxy appended. The
-  //    leading entries are whatever the client sent; they're attacker-
-  //    controlled in the general case. (FIX-18: `x-real-ip` deliberately
-  //    NOT consulted here — it is client-spoofable on any non-CF path.)
-  const xff = headers.get('x-forwarded-for');
-  if (xff) {
-    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
+  if (isCloudflareIp(peer)) {
+    const cf = headers.get('cf-connecting-ip')?.trim();
+    if (cf && isValidIp(cf)) return cf;
+    warnCloudflarePeerWithoutClientIpOnce();
   }
+  return peer;
+}
 
-  return 'unknown';
+let cloudflarePeerAnomalyWarned = false;
+
+/**
+ * One warning per process when a Cloudflare peer arrives without a valid
+ * `cf-connecting-ip`. Logs no header values (the caller controls them).
+ */
+function warnCloudflarePeerWithoutClientIpOnce(): void {
+  if (cloudflarePeerAnomalyWarned) return;
+  cloudflarePeerAnomalyWarned = true;
+  console.warn(
+    '[rate-limit] Cloudflare peer without a valid cf-connecting-ip; keying on the edge address. '
+      + 'Logged once per process.',
+  );
+}
+
+/** Test hook: re-arm the once-per-process anomaly warning. */
+export function resetClientIpAnomalyWarningForTests(): void {
+  cloudflarePeerAnomalyWarned = false;
+}
+
+function firstValidIp(value: string | null | undefined): string | null {
+  if (!value) return null;
+  for (const part of value.split(',')) {
+    const candidate = part.trim();
+    if (isValidIp(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * The LAST comma field of `x-forwarded-for` (trimmed) when it is a valid IP,
+ * else null. Empty fields are NOT skipped (Codex round 3): for
+ * `198.51.100.8, ` the last field is empty, so there is no peer; skipping it
+ * would key on the earlier, caller-set entry.
+ */
+function lastValidXffEntry(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const last = value.slice(value.lastIndexOf(',') + 1).trim();
+  return isValidIp(last) ? last : null;
 }

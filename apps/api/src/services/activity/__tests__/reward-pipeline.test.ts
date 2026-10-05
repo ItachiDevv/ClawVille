@@ -14,11 +14,41 @@
  */
 
 import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────
 
 const txCalls: Array<{ op: string; args: unknown[] }> = [];
 const duplicateResultAvatarIds = new Set<string>();
+
+// Daily activity cap (security pass 2026-10-04). The claim helper runs raw SQL
+// through tx.execute; render it and model the counter row like Postgres would:
+// `used` per (avatar, kind), refuse at the cap, grant min(want, cap - used).
+const dialect = new PgDialect();
+const capUsed = new Map<string, number>();
+const capClaims: Array<{ avatarId: string; kind: string; want: number; granted: number }> = [];
+function executeMock(q: unknown) {
+  const { sql: text, params } = dialect.sqlToQuery(q as SQL);
+  if (text.includes('INSERT INTO daily_reward_caps')) {
+    const [avatarId, , kind, want, cap] = params as [string, string, string, number, number];
+    const key = `${avatarId}:${kind}`;
+    const used = capUsed.get(key) ?? 0;
+    if (used >= cap) {
+      capClaims.push({ avatarId, kind, want, granted: 0 });
+      return Promise.resolve([]);
+    }
+    const granted = Math.min(want, cap - used);
+    capUsed.set(key, used + granted);
+    capClaims.push({ avatarId, kind, want, granted });
+    return Promise.resolve([{ granted }]);
+  }
+  if (text.includes('FROM avatars WHERE id')) {
+    return Promise.resolve([{ present: 1 }]);
+  }
+  // creditClawTokens does a SELECT FOR UPDATE → return a row.
+  return Promise.resolve([{ user_id: 'user-1', claw_tokens: 100 }]);
+}
 
 function makeTxThenable<T>(value: T) {
   return {
@@ -29,7 +59,8 @@ function makeTxThenable<T>(value: T) {
       txCalls.push({ op: 'tx.insert.values', args: [v] });
       return makeReturning(v);
     },
-    set() {
+    set(v: unknown) {
+      txCalls.push({ op: 'tx.update.set', args: [v] });
       return makeTxThenable(value);
     },
     where() {
@@ -70,9 +101,8 @@ const dbMock = {
         txCalls.push({ op: 'tx.update', args: [_table] });
         return makeTxThenable(undefined);
       },
-      execute(_q: unknown) {
-        // creditClawTokens does a SELECT FOR UPDATE → return a row.
-        return Promise.resolve([{ user_id: 'user-1', claw_tokens: 100 }]);
+      execute(q: unknown) {
+        return executeMock(q);
       },
     };
     return fn(tx);
@@ -225,6 +255,8 @@ beforeEach(() => {
   txCalls.length = 0;
   creditCalls.length = 0;
   duplicateResultAvatarIds.clear();
+  capUsed.clear();
+  capClaims.length = 0;
 });
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────
@@ -626,5 +658,76 @@ describe('issueRewardsForRoom', () => {
     expect(conflictCalls[0].args[0]).toEqual({
       target: ['room_id', 'avatar_id'],
     });
+    // A conflict loser never consumes daily allowance.
+    expect(capClaims).toHaveLength(0);
+  });
+
+  // ─── Daily activity cap (500 vCLAW per avatar per UTC day) ─────────────
+
+  const winRoom = () =>
+    issueRewardsForRoom({
+      room: buildRoom(),
+      simResults: [
+        { avatarId: 'avatar-human-1', placement: 1, score: 4 },
+        { avatarId: 'avatar-bot-1', placement: 2, score: 2 },
+      ],
+    });
+
+  it('claims allowance only for the paying non-bot, for the full award under the cap', async () => {
+    const issued = await winRoom();
+    expect(capClaims).toEqual([
+      { avatarId: 'avatar-human-1', kind: 'activity', want: 60, granted: 60 },
+    ]);
+    const humanRow = issued.find((r) => r.avatarId === 'avatar-human-1')!;
+    expect(humanRow.tokensAwarded).toBe(60);
+    expect(humanRow.breakdown.dailyCapReduction).toBeUndefined();
+    // No clamp → no rewrite of the result row.
+    expect(txCalls.filter((c) => c.op === 'tx.update.set')).toHaveLength(0);
+  });
+
+  it('clamps the credit to the remaining allowance and rewrites tokensAwarded to match', async () => {
+    capUsed.set('avatar-human-1:activity', 470);
+    const issued = await winRoom();
+    const humanRow = issued.find((r) => r.avatarId === 'avatar-human-1')!;
+    expect(humanRow.tokensAwarded).toBe(30);
+    expect(humanRow.breakdown.dailyCapReduction).toBe(30);
+    // Leaderboard points are NOT capped.
+    expect(humanRow.leaderboardPoints).toBe(30);
+    expect(creditCalls).toHaveLength(1);
+    expect(creditCalls[0].amount).toBe(30);
+    expect(
+      (creditCalls[0].metadata.breakdown as Record<string, unknown>).dailyCapReduction,
+    ).toBe(30);
+    // activity_results.tokens_awarded is rewritten to the credited amount.
+    expect(txCalls.filter((c) => c.op === 'tx.update.set').map((c) => c.args[0])).toEqual([
+      { tokensAwarded: 30 },
+    ]);
+    expect(capUsed.get('avatar-human-1:activity')).toBe(500);
+  });
+
+  it('pays 0 at the cap but still records the result row and leaderboard points', async () => {
+    capUsed.set('avatar-human-1:activity', 500);
+    const issued = await winRoom();
+    expect(issued).toHaveLength(2);
+    const humanRow = issued.find((r) => r.avatarId === 'avatar-human-1')!;
+    expect(humanRow.tokensAwarded).toBe(0);
+    expect(humanRow.leaderboardPoints).toBe(30);
+    expect(humanRow.breakdown.dailyCapReduction).toBe(60);
+    expect(creditCalls).toHaveLength(0);
+    expect(txCalls.filter((c) => c.op === 'tx.insert')).toHaveLength(2);
+    expect(txCalls.filter((c) => c.op === 'tx.update.set').map((c) => c.args[0])).toEqual([
+      { tokensAwarded: 0 },
+    ]);
+  });
+
+  it('accumulates across matches: 500 vCLAW total, then 0', async () => {
+    const paid: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      const issued = await winRoom();
+      paid.push(issued.find((r) => r.avatarId === 'avatar-human-1')!.tokensAwarded);
+    }
+    // 8 × 60 = 480, the 9th match gets the 20 left, the 10th gets 0.
+    expect(paid).toEqual([60, 60, 60, 60, 60, 60, 60, 60, 20, 0]);
+    expect(creditCalls.reduce((sum, c) => sum + c.amount, 0)).toBe(500);
   });
 });

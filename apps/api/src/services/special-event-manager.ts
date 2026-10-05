@@ -54,6 +54,8 @@ import * as ledgerModule from './claw-token-ledger';
 import type {
   creditClawTokens as CreditFn,
   debitClawTokens as DebitFn,
+  restoreEarnedSpendForRefund as RestoreEarnedFn,
+  LedgerTx,
 } from './claw-token-ledger';
 import {
   tournamentManager as realTournamentManager,
@@ -70,6 +72,8 @@ type DbLike = typeof realDb;
 type LedgerLike = {
   debitClawTokens: typeof DebitFn;
   creditClawTokens: typeof CreditFn;
+  /** Used ONLY by `cancelEvent` to restore an EARNED entry burn as EARNED. */
+  restoreEarnedSpendForRefund: typeof RestoreEarnedFn;
 };
 
 /**
@@ -273,6 +277,7 @@ export class SpecialEventManager {
     this.ledger = deps.ledger ?? {
       debitClawTokens: (...args) => ledgerModule.debitClawTokens(...args),
       creditClawTokens: (...args) => ledgerModule.creditClawTokens(...args),
+      restoreEarnedSpendForRefund: (...args) => ledgerModule.restoreEarnedSpendForRefund(...args),
     };
     this.rpc = deps.rpc ?? defaultEventRpc();
     this.clock = deps.clock ?? REAL_CLOCK;
@@ -1481,10 +1486,30 @@ export class SpecialEventManager {
    *     `entry_debit_ledger_mismatch` (500) and the whole cancel rolls back, so
    *     no entry can be marked refunded without its credit. Then the signup row
    *     CAS (`status <> 'refunded'` → 'refunded') and the credit run in the same
-   *     tx: a SOFT burn comes back SOFT, a BOUGHT burn comes back BOUGHT (no
-   *     usd_basis: no new dollars), an EARNED burn comes back SOFT (EARNED is
-   *     `mintEarned`-only). Reason 'special_event_entry_refund', metadata
-   *     carries the signup id.
+   *     tx. Each refund credit is derived from ONE original debit row (its id,
+   *     amount and provenance; never the caller's input or the current balance)
+   *     and carries `metadata.refundOfLedgerId` = that row's id: a SOFT burn
+   *     comes back SOFT, a BOUGHT burn comes back BOUGHT (no usd_basis: no new
+   *     dollars), and an EARNED burn comes back EARNED (founder decision
+   *     2026-10-04, "restore_earned"). Reason 'special_event_entry_refund',
+   *     metadata carries the signup id.
+   *   - EARNED restore (`restoreEarnedBurn`): the ledger tracks EARNED per mint
+   *     lot (`earned_mint_lots.backing_kind` 'none' | 'backed'), and every
+   *     EARNED debit row records the lots it consumed in
+   *     `earned_lot_consumptions`. The refund checks that attribution BEFORE any
+   *     write (`assertEarnedBurnRestorable`), then calls the ledger's
+   *     refund-only `restoreEarnedSpendForRefund` (security pass, 2026-10-04):
+   *     each consumed unit goes back to its ORIGINAL lot, so a unit from a
+   *     'none' lot stays unbacked (spendable, never cashable) and a unit from a
+   *     live 'backed' lot gets its released backing back and stays
+   *     cash-out eligible. A unit whose lot was released since (admin claw-back
+   *     or payer rejection) comes back in one new 'none' lot (never cashable).
+   *     A legacy debit row (accounted 'legacy' by migration 0030b, no
+   *     consumption rows) is unbacked by definition and restores as 'none'.
+   *     The credit is exactly the debit row amount, and the ledger refuses a
+   *     second restore of the same debit row. Any attribution gap (more or
+   *     fewer attributed units than the debit row, a non-legacy row with no
+   *     consumption rows) fails with `entry_debit_ledger_mismatch`.
    *   - 'free' / 'hold': flipped to 'refunded'; nothing was paid.
    *   - 'sol': ONE `special_event_sol_refunds` row (UNIQUE signup_id, status
    *     'owed') with the verified entry lamports, the receiving wallet
@@ -1591,24 +1616,30 @@ export class SpecialEventManager {
 
         for (const b of burns) {
           const original = b.provenance ?? 'soft';
-          await this.ledger.creditClawTokens(
-            {
-              avatarId: s.avatar_id,
-              amount: b.amount,
-              reason: 'special_event_entry_refund',
-              source: 'simulation',
-              provenance: original === 'bought' ? 'bought' : 'soft',
-              metadata: {
-                eventId: e.id,
-                slug,
-                signupId: s.id,
-                agentId: s.agent_id,
-                burnedProvenance: original,
+          const metadata = {
+            eventId: e.id,
+            slug,
+            signupId: s.id,
+            agentId: s.agent_id,
+            burnedProvenance: original,
+            refundOfLedgerId: b.ledgerId,
+          };
+          if (original === 'earned') {
+            await this.restoreEarnedBurn(tx, s.avatar_id, b, metadata);
+          } else {
+            await this.ledger.creditClawTokens(
+              {
+                avatarId: s.avatar_id,
+                amount: b.amount,
+                reason: 'special_event_entry_refund',
+                source: 'simulation',
+                provenance: original === 'bought' ? 'bought' : 'soft',
+                metadata,
+                actorKind: 'admin',
               },
-              actorKind: 'admin',
-            },
-            tx,
-          );
+              tx,
+            );
+          }
           refundedCt += b.amount;
         }
       }
@@ -1634,27 +1665,101 @@ export class SpecialEventManager {
     tx: Pick<DbLike, 'execute'>,
     eventId: string,
     s: { avatar_id: string; entry_proof_json: unknown },
-  ): Promise<Array<{ provenance: string | null; amount: number }>> {
-    const rows = await tx.execute<{ provenance: string | null; amount: number }>(
-      sql`SELECT provenance, (-amount)::int AS amount
+  ): Promise<EntryBurn[]> {
+    const rows = await tx.execute<{ id: string; provenance: string | null; amount: number }>(
+      sql`SELECT id, provenance, (-amount)::int AS amount
           FROM claw_token_transactions
           WHERE avatar_id = ${s.avatar_id} AND reason = 'special_event_entry'
             AND amount < 0 AND metadata->>'eventId' = ${eventId}`,
     );
-    const burns = rows.map((b) => ({ provenance: b.provenance, amount: Number(b.amount) }));
-    const mismatch = () => new SpecialEventError('entry_debit_ledger_mismatch', 500);
-    if (burns.some((b) => !Number.isSafeInteger(b.amount) || b.amount <= 0)) throw mismatch();
+    const burns = rows.map((b) => ({
+      ledgerId: String(b.id),
+      provenance: b.provenance,
+      amount: Number(b.amount),
+    }));
+    if (burns.some((b) => !Number.isSafeInteger(b.amount) || b.amount <= 0)) {
+      throw entryDebitMismatch();
+    }
 
     const declared = readDeclaredAmountCt(s.entry_proof_json);
     // No debit recorded for the signup: only a missing or zero amountCt agrees.
     if (declared === null || declared === 0) {
-      if (burns.length > 0) throw mismatch();
+      if (burns.length > 0) throw entryDebitMismatch();
       return [];
     }
-    if (Number.isNaN(declared)) throw mismatch();
+    if (Number.isNaN(declared)) throw entryDebitMismatch();
     const burned = burns.reduce((sum, b) => sum + b.amount, 0);
-    if (burned !== declared) throw mismatch();
+    if (burned !== declared) throw entryDebitMismatch();
+    // An EARNED burn's lot attribution is checked here too, BEFORE any write.
+    for (const b of burns) {
+      if (b.provenance === 'earned') await this.assertEarnedBurnRestorable(tx, s.avatar_id, b);
+    }
     return burns;
+  }
+
+  /**
+   * Check that ONE EARNED entry-debit row has a complete lot attribution
+   * before any write: the units it burned from this avatar's lots sum to the
+   * row amount (or the row is a pre-lot legacy row, which migration 0030b
+   * accounted as 'legacy' and classed as unbacked). 'none' and 'backed' lots
+   * are both restorable (`restoreEarnedSpendForRefund`). Throws
+   * `entry_debit_ledger_mismatch` (500) for any attribution gap.
+   */
+  private async assertEarnedBurnRestorable(
+    tx: Pick<DbLike, 'execute'>,
+    avatarId: string,
+    burn: EntryBurn,
+  ): Promise<void> {
+    const consumed = await tx.execute<{ vclaw_amount: number }>(
+      sql`SELECT c.vclaw_amount
+          FROM earned_lot_consumptions c
+          JOIN earned_mint_lots l ON l.id = c.mint_lot_id
+          WHERE c.ledger_debit_id = ${burn.ledgerId} AND c.kind = 'spend'
+            AND l.avatar_id = ${avatarId}`,
+    );
+    let attributed = 0;
+    for (const c of consumed) {
+      const units = Number(c.vclaw_amount);
+      if (!Number.isSafeInteger(units) || units <= 0) throw entryDebitMismatch();
+      attributed += units;
+    }
+    if (attributed === burn.amount) return;
+    if (attributed === 0) {
+      const accounted = await tx.execute<{ kind: string }>(
+        sql`SELECT kind FROM earned_accounted_ledger WHERE ledger_id = ${burn.ledgerId}`,
+      );
+      if (accounted[0]?.kind === 'legacy') return;
+    }
+    throw entryDebitMismatch();
+  }
+
+  /**
+   * Restore ONE checked EARNED entry-debit row as EARNED (refund-only; called
+   * by `cancelEvent` after the signup CAS, for a row `readCheckedEntryBurns`
+   * already checked). The ledger's `restoreEarnedSpendForRefund` returns each
+   * consumed unit to its original lot (a backed unit keeps its backing and its
+   * cash-out eligibility), credits exactly the debit row's amount with
+   * `refundOfLedgerId` = that row, and refuses a second restore of the row.
+   * A credited amount that differs from the debit row rolls the cancel back.
+   */
+  private async restoreEarnedBurn(
+    tx: LedgerTx,
+    avatarId: string,
+    burn: EntryBurn,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const restored = await this.ledger.restoreEarnedSpendForRefund(
+      {
+        avatarId,
+        originalDebitLedgerId: burn.ledgerId,
+        reason: 'special_event_entry_refund',
+        source: 'simulation',
+        metadata,
+        actorKind: 'admin',
+      },
+      tx,
+    );
+    if (restored.amount !== burn.amount) throw entryDebitMismatch();
   }
 
   /**
@@ -2063,6 +2168,14 @@ function readDeclaredAmountCt(raw: unknown): number | null {
   if (v === undefined || v === null) return null;
   const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : NaN;
   return Number.isSafeInteger(n) && n >= 0 ? n : NaN;
+}
+
+/** One entry-debit ledger row of a 'ct' signup; its refund is tied to `ledgerId`. */
+type EntryBurn = { ledgerId: string; provenance: string | null; amount: number };
+
+/** Every inconsistency between a 'ct' signup, its debit rows and their lot attribution. */
+function entryDebitMismatch(): SpecialEventError {
+  return new SpecialEventError('entry_debit_ledger_mismatch', 500);
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────

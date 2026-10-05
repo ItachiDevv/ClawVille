@@ -1450,7 +1450,13 @@ async function main(): Promise<void> {
   console.log(`ALL PASS (${assertionNumber} checks)`);
 }
 
-if (import.meta.main) main().catch((error: unknown) => {
+// `bun run <file>` on Windows can lower-case the path in Bun.main, so import.meta.main is
+// false and the script silently exits 0 without running (2026-10-04). Also accept a
+// direct run whose argv[1] is this file, compared case-insensitively.
+const invokedDirectly =
+  import.meta.main ||
+  (process.argv[1] ?? '').replace(/\\/g, '/').toLowerCase() === import.meta.path.replace(/\\/g, '/').toLowerCase();
+if (invokedDirectly) main().catch((error: unknown) => {
   if (error instanceof ProbeFailure) console.error(error.message);
   else console.error('FAIL unexpected probe error (details suppressed)');
   process.exitCode = 1;

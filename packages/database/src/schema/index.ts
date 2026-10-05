@@ -24,6 +24,9 @@ export * from './bounty-usdc-holds';
 export * from './covenant-action-records';
 export * from './building-skills';
 export * from './building-chat-reward-claims';
+// Security pass 2026-10-04 — durable per-avatar daily faucet counters
+// (building visits / Nori chat / activity vCLAW). Migration 0077.
+export * from './daily-reward-caps';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';

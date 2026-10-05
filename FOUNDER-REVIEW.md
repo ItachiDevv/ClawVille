@@ -72,14 +72,17 @@
 
 ## SECURITY
 
+### SECURITY PASS answers a-d + protocol 83 + staging origin lock (session sec, 2026-10-04, STAGING)
+
+- **Where:** staging `https://staging.clawville.world/game` (after the 2026-10-04 staging push of `sec/answers-abcd`).
+- **Look at:** (1) daily caps: visit buildings, chat with Nori and play activities past the caps (10 visits, 10 Nori turns, 500 vCLAW from activities per UTC day); the action still works and the payout is 0. (2) The Land Office service buy still works (the web already sends the price). (3) The staging Coolify panel now opens only over Tailscale: `http://100.83.49.44:8000`.
+- **Feedback wanted:** do the caps feel right in play; should the client say "daily cap reached" when a payout is 0 (today it only shows 0)?
+- **Known behavior changes:** an agent's event replay now shows only events recorded for its current owner since that owner took it; events logged before 2026-10-04 without an owner are hidden once. An agent with no human owner gets 403 `owner_proof_required` on replay (your "gate" answer); say if anonymous agents should keep their own history.
+
 ### SECURITY PASS batch 2 (2026-10-02, staging, NOT on prod): decisions need your eyes
 
 - **Session:** clawville-14, 2026-10-02.
-- **DECISION 1 (special-event seeds):** the house treasury now funds special-event seed prize pools (cap 100,000 vCLAW per event, refunded to the treasury on cancel). Create, open, start and settle need a named admin in `ADMIN_USER_IDS`; the `cv_dash` cookie alone gets 403. Keep this, or use a separate prize wallet, or set seeds to 0?
-- **DECISION 2 (event history privacy):** event replay and the SSE catch-up still send an agent's history, including its directive text, to a session without owner proof. Gate it (privacy), or keep it (continuity for restored BYO agents)?
-- **DECISION 3 (land service price):** `expectedPriceCt` on a land service buy is optional today (a changed price gets 409 `price_changed` only when the buyer sends it). Make it required at a later protocol bump?
-- **DECISION 4 (M8, dark path):** the USDC rent-prepay refund tag needs a product decision before that path opens.
-- **DECISION 5 (M5/M6/M7 faucets):** the faucet caps need values from you.
+- **DECISIONS 1-5 ANSWERED (2026-10-03/04, answers page):** seeds from a separate prize wallet with on-chain $Clawville prizes (design `plans/prize-wallet-design-2026-10-04.md`, build with the payout engine); event history gated; `expectedPriceCt` required (protocol 83); M8 USDC rent prepay non-refundable; caps 10 visits / 10 Nori turns / 500 vCLAW activities. Built on branch `sec/answers-abcd` (see the entry above) except the prize wallet.
 - **Special-event cancel + refund (gap closed on branch `sec/event-cancel-refund`, NOT yet on staging, 2026-10-03):** named-admin `POST /api/events/:slug/cancel` cancels an event before play and refunds each vCLAW entry fee once to the signup's avatar (an EARNED share comes back as SOFT). SOL refunds are tracked as owed (`special_event_sol_refunds`, migration 0076) to the one wallet whose own transfers paid the full entry, until an admin records the payout with `POST /api/events/:slug/sol-refunds/:signupId/paid` (checked on chain, once per refund; the payout must come from the treasury wallet that received the entry). When no single wallet paid the full entry, an admin sets the destination once with `POST /api/events/:slug/sol-refunds/:signupId/destination`. Your decision is still open on automatic SOL payouts; today an operator sends them from the treasury by hand.
 - **LOOK AT (UI):** staging `https://staging.clawville.world/game`, then Bounty Board, then Create, with a knowledge-book bonus. The form used to send the wrong shape (every bounty with a bonus failed); the "Skill" bonus option is gone. Session clawville-14 posted one on staging at 21:44Z (200, bonus stored, then cancelled). The Browse card never showed a bonus because the list API left it out; the bounty-list push (PROTOCOL 82) adds it, so each Browse card now shows the bonus pill (you must own the book to post it). Feedback wanted: does the book bonus row and the pill read clearly?
 - **KNOWN BEHAVIOR CHANGE:** a public or BYO agent restored after a deploy (owner-proven, not ledger-capable) gets 403 `agent_session_not_ledger_authorized` on top-up, MoonPay, the partner storefront, activity queue and party, and on the knowledge and memory exports. The match WebSocket closes its connection with code 4001 and the reason `agent_session_not_ledger_authorized` (a socket gets no 403). The agent gets access again when it runs the signed `/reconnect`, and its own knowledge reads and writes keep working the whole time. A guest-owned agent gets the same refusals and stays refused: a reconnect does not help it. A restored Hatcher session is not affected.
@@ -760,7 +763,12 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
-### Hermit crabs always visible; crab + seahorse texture filter (session tradeProd, 2026-10-04, STAGING)
+### One failed 3D model no longer kills the whole world (session tradeProd, 2026-10-05, STAGING)
+- **What changed:** before, ONE failed model download (a seabed prop, an NPC avatar, your own avatar) replaced the whole world with "This browser couldn't start the 3D view ... Reload". Now a failed download retries twice; if it still fails, only that prop or figure is missing and the world keeps running.
+- **Your own avatar:** if it cannot load you are shown as the default lobster body with one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." (if even the lobster fails: "Your avatar could not load. Reload to try again.", and you are invisible until reload).
+- **Feedback wanted:** is that notice text and the lobster fallback OK? You only see it on a bad network; the normal game looks the same.
+
+### Hermit crabs always visible; crab + seahorse texture filter (session tradeProd, 2026-10-04, ON PROD `71c1213b`)
 - **Look at:** `https://staging.clawville.world/game` (WebGPU browser). Walk up close to a hermit crab and to the wandering seahorse, then view them from far away.
 - **What changed:** on WebGPU the hermit crabs could stay INVISIBLE for a whole session (3 of 7 cold prod loads, a three.js r185 shader race on their pixel textures). The fix changes only their texture filter.
 - **Feedback wanted:** up close they should look unchanged (crisp pixel texture); far away they may look slightly softer and shimmer less. Are the crabs always there now? Is the far look fine?

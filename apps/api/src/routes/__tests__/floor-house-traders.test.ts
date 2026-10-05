@@ -298,7 +298,7 @@ describe('GET /api/floor/house-traders', () => {
       loadCandidates: async () => { throw new Error('read failed'); },
     })) as never);
     const response = await app.request('/house-traders', {
-      headers: { 'cf-connecting-ip': '203.0.113.77' },
+      headers: { 'x-real-ip': '203.0.113.77' },
     });
     expect(response.status).toBe(500);
     expect(response.headers.get('cache-control')).toBeNull();
@@ -344,7 +344,7 @@ describe('GET /api/floor/house-traders', () => {
   it('rate limits one address after 60 calls in the window', async () => {
     // Driven through the seam, but the limiter it checks is the REAL
     // module-level `houseTradersLimiter` the mounted route uses.
-    const headers = { 'cf-connecting-ip': '203.0.113.44' };
+    const headers = { 'x-real-ip': '203.0.113.44' };
     const app = new Hono();
     app.get('/house-traders', createHouseTradersHandler(deps()) as never);
     let last = await app.request('/house-traders', { headers });
@@ -418,7 +418,7 @@ describe('POST /api/floor/house-traders/status', () => {
     token: string | null = TOKEN,
     contentType: string | null = 'application/json',
   ): Promise<Response> {
-    const headers: Record<string, string> = { 'cf-connecting-ip': ip };
+    const headers: Record<string, string> = { 'x-real-ip': ip };
     if (contentType !== null) headers['content-type'] = contentType;
     if (token !== null) headers.authorization = `Bearer ${token}`;
     return await app.request('/house-traders/status', {
@@ -429,7 +429,7 @@ describe('POST /api/floor/house-traders/status', () => {
   }
 
   async function riskFor(app: Hono, ip: string): Promise<Record<string, unknown> | null> {
-    const response = await app.request('/house-traders', { headers: { 'cf-connecting-ip': ip } });
+    const response = await app.request('/house-traders', { headers: { 'x-real-ip': ip } });
     const parsed = (await response.json()) as {
       slots: Array<{ objective: string; risk: Record<string, unknown> | null }>;
     };
@@ -656,7 +656,7 @@ describe('POST /api/floor/house-traders/status', () => {
     const { app, clock } = feed();
     await post(app, '198.51.100.18', body(clock));
     const response = await app.request('/house-traders', {
-      headers: { 'cf-connecting-ip': '198.51.100.18' },
+      headers: { 'x-real-ip': '198.51.100.18' },
     });
     const parsed = (await response.json()) as {
       slots: Array<{ objective: string; risk: unknown }>;
@@ -755,7 +755,7 @@ describe('POST /api/floor/house-traders/status', () => {
     const accepted = await post(app, '198.51.100.19', body(clock));
     expect(accepted.status).toBe(200);
     const response = await app.request('/house-traders', {
-      headers: { 'cf-connecting-ip': '198.51.100.19' },
+      headers: { 'x-real-ip': '198.51.100.19' },
     });
     const parsed = (await response.json()) as {
       slots: Array<{ objective: string; status: string; risk: unknown }>;
@@ -769,7 +769,7 @@ describe('POST /api/floor/house-traders/status', () => {
     const { app, clock } = feed();
     await post(app, '198.51.100.11', body(clock));
     const response = await app.request('/house-traders', {
-      headers: { 'cf-connecting-ip': '198.51.100.11' },
+      headers: { 'x-real-ip': '198.51.100.11' },
     });
     const raw = await response.text();
     expect(raw).toContain('"state":"paused"');
@@ -804,7 +804,7 @@ describe('POST /api/floor/house-traders/status', () => {
     // The state is published; only the note is gone.
     expect(risk).toMatchObject({ state: 'paused', reason: 'daily_loss_floor', detail: null });
     const raw = await (await app.request('/house-traders', {
-      headers: { 'cf-connecting-ip': '198.51.100.23' },
+      headers: { 'x-real-ip': '198.51.100.23' },
     })).text();
     expect(raw).not.toContain('7xKXtg2CW87d97TXJSDp');
   });

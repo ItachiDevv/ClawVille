@@ -1,0 +1,13 @@
+[Unit]
+Description=ClawVille origin lock (DOCKER-USER CV-ORIGIN chain)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/cv-origin-lock.sh
+
+[Install]
+WantedBy=multi-user.target docker.service

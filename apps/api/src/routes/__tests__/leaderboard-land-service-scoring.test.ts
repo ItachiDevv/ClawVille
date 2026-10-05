@@ -130,7 +130,9 @@ describeIfDb('land.service.sold — scoring CTE (requires DATABASE_URL)', () => 
     // explicit create if the fail-soft provisioning didn't return one.
     const signup = await app.request('/api/auth/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': `test-${TEST_TAG}` },
+      // A distinct valid IP per test file: a non-IP key collapses into the
+      // shared 'unknown' signup bucket (rate-limit.ts getClientIp).
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '2001:db8:1b5::1' },
       body: JSON.stringify({ email, password: PASSWORD, name: 'LB Svc Tester' }),
     });
     expect(signup.status).toBe(200);

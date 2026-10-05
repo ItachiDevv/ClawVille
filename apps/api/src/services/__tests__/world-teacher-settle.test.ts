@@ -146,6 +146,8 @@ describe('slice 4 — driver conducts + settles the teacher turn', () => {
       agentId: bodyId,
       bodyId,
       avatarId: `av-${bodyId}`,
+      // Owner attribution: the house user the entry was enrolled under.
+      userId: `hu-${bodyId}`,
       buildingId: TARGET,
       message: 'teach me about webhooks',
     });
@@ -233,8 +235,51 @@ describe('slice 4 — driver conducts + settles the teacher turn', () => {
       agentId: bodyId,
       bodyId,
       avatarId: `av-${bodyId}`,
+      userId: `hu-${bodyId}`,
       buildingId: TARGET,
     });
+  });
+
+  it('a USER-OWNED agent passes its OWNER as the settle userId (turn + arrival)', async () => {
+    const bodyId = 'ocb-s4-user';
+    const owner = 'owner-user-s4';
+    const center = NPC_BUILDING_CENTERS[TARGET];
+    registerBody(bodyId, 'oc-s4-user', center.x + 100, center.y);
+    const registered = agentAutonomyDriver.registerUserAgent({
+      agentId: bodyId,
+      bodyId,
+      platformAgentId: `pa-${bodyId}`,
+      systemUserId: owner,
+      houseUserId: owner,
+      avatarId: `av-${bodyId}`,
+    });
+    expect(registered.ok).toBe(true);
+    const entry = (agentAutonomyDriver as unknown as { userAgents: Map<string, any> }).userAgents.get(bodyId);
+    try {
+      const settles: BuildingArrivalInput[] = [];
+      asDriver().arrivalSettle = async (input) => {
+        settles.push(input);
+      };
+      entry.phase = 'walking';
+      entry.targetBuildingId = TARGET;
+      await agentAutonomyDriver.driveOnce(bodyId, async () => '');
+      expect(settles[0]).toMatchObject({ agentId: bodyId, avatarId: `av-${bodyId}`, userId: owner });
+
+      const turns: TeacherTurnInput[] = [];
+      asDriver().teacherTurn = async (input) => {
+        turns.push(input);
+        return null;
+      };
+      entry.phase = 'arrived';
+      entry.targetBuildingId = TARGET;
+      await agentAutonomyDriver.driveOnce(
+        bodyId,
+        async () => `[ACTION: talk_to_npc(buildingId=${TARGET}, message=teach me)]`,
+      );
+      expect(turns[0]).toMatchObject({ agentId: bodyId, avatarId: `av-${bodyId}`, userId: owner });
+    } finally {
+      agentAutonomyDriver.unregisterUserAgent(bodyId);
+    }
   });
 });
 
@@ -269,6 +314,7 @@ describe('world-teacher-chat — fail-closed proximity (no walk → no reward)',
       agentId: bodyId,
       bodyId,
       avatarId: 'av-far',
+      userId: 'hu-far',
       buildingId: TARGET,
       message: 'teach me',
     });
@@ -281,6 +327,7 @@ describe('world-teacher-chat — fail-closed proximity (no walk → no reward)',
         agentId: 'ghost',
         bodyId: 'ocb-not-in-world',
         avatarId: 'av-x',
+        userId: null,
         buildingId: TARGET,
         message: 'hi',
       }),
@@ -294,6 +341,7 @@ describe('world-teacher-chat — fail-closed proximity (no walk → no reward)',
         agentId: bodyId,
         bodyId,
         avatarId: 'av-x',
+        userId: null,
         buildingId: 'constructor', // inherited prototype key — must never resolve
         message: 'hi',
       }),
@@ -309,6 +357,7 @@ describe('world-teacher-chat — fail-closed proximity (no walk → no reward)',
       agentId: bodyId,
       bodyId,
       avatarId: 'av-x',
+      userId: null,
       buildingId: TARGET,
     });
   });
