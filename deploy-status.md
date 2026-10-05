@@ -545,6 +545,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-10-05 06:19Z (session sec, security pass lead) - staging box reboot (kernel 6.8.0-142), no code change
+
+- **What:** the staging box rebooted from 6.8.0-90 into 6.8.0-142 (plus the pending libc6), after the house-trader helper (tDesk2Helper) sent GO with all trader positions flat; the reboot waited for Coolify deployment 3995 (api, same commit `b100c2ed`, queued 06:14:57Z by another session) to finish at 06:19:34Z.
+- **Verified 06:20-06:22Z:** SSH back 06:20:40Z (boot 06:20:08Z), `/var/run/reboot-required` gone; api + web containers healthy on `b100c2ed`, /health 4/4, `/game` 200 through Cloudflare; `cv-origin-lock` active after boot (direct origin times out, tailnet panel 200); hermes-local + openclaw-local back by their attach timers 06:21:59Z. The helper restarts its six trader processes.
+- SCHEMA: unchanged.
+
 ### 2026-10-04 (session sec, security pass lead) - founder answers a-d, protocol 83, origin lock on staging
 
 - **What (players):** (a) daily earning caps per avatar per UTC day, shared by the human and every agent on that avatar: paid building visits 10 x 1 vCLAW (idle, autonomous and `/visit-building` together), Nori chat 10 x 1 vCLAW, activities 500 vCLAW total; over a cap the action still works and pays 0 (table `daily_reward_caps`, 0077). (b) PROTOCOL_VERSION 83: event replay + SSE catch-up need owner proof and return only events recorded for the current owner during its ownership period (`openclaw_bots.owner_since`, 0079; every emit site records the proven owner inside the insert under `FOR SHARE`); land service buy requires `expectedPriceCt` (400 `expected_price_required`). (c) M8: USDC rent prepay is non-refundable (USDC-funded escrow kept in `deposit_usdc_funded_ct`, 0078, no backfill; legacy unmarked USDC prepay -> 409 `usdc_prepay_unproven`; path still dark). (d) special-event refunds restore EARNED as EARNED (backed-lot EARNED fails closed, E6 gap, deadline 2026-10-18). Plus H2: `cf-connecting-ip` trusted only from a Cloudflare peer (staging probe: Traefik rewrites `x-real-ip`, passes `cf-connecting-ip` through).
