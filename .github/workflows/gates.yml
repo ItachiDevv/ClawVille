@@ -176,6 +176,8 @@ jobs:
           src/lib/three/activity-indicators.test.tsx
           src/lib/three/npc-speech-bubbles.test.tsx
           src/lib/three/stream-commit-budget.test.tsx
+          src/lib/three/remote-players.test.tsx
+          src/stores/__tests__/players-local-identity.test.ts
           src/lib/three/deferred-warm.test.ts
           src/lib/__tests__/fingerprint-cache.test.ts
           SUITES
