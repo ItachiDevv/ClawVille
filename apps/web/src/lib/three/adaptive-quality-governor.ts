@@ -17,7 +17,7 @@
  * recovery plus one more dip latched tier 1 for the session. The gate opens
  * once the loader is dismissed AND the caller's post-load work signal stays
  * quiet for QUALITY_POST_LOAD_SETTLE_MS, or QUALITY_POST_LOAD_CEILING_MS after
- * the dismissal (so post-load work that never goes quiet cannot disable the
+ * the loader's own dismissal time (so post-load work that never goes quiet cannot disable the
  * governor). The gate opens once per governor; later stage visits only
  * restart the warmup.
  *
@@ -42,8 +42,8 @@ export const QUALITY_POST_LOAD_SETTLE_MS = 3000;
 export const QUALITY_POST_LOAD_CEILING_MS = 30_000;
 
 export interface QualityGovernorSignals {
-  /** True once the loading screen was dismissed (any reason). */
-  isLoadingDismissed(): boolean;
+  /** The loader's own dismissal time (performance.now() timeline), or null while it is up. */
+  getLoadingDismissedAt(): number | null;
   /** True while no post-load work (stream members, GPU warm jobs) is pending. */
   isPostLoadQuiet(): boolean;
 }
@@ -78,8 +78,12 @@ export function createQualityGovernor(
   const gateOpen = (now: number): boolean => {
     if (armed) return true;
     if (dismissedAt === null) {
-      if (!signals.isLoadingDismissed()) return false;
-      dismissedAt = now;
+      // The ceiling counts from the LOADER's dismissal time, not from the
+      // first frame that observes it: when the world scene was inactive at
+      // dismissal (a stage visit), the first frame can come much later
+      // (Codex E3 on 9ec8bd50).
+      dismissedAt = signals.getLoadingDismissedAt();
+      if (dismissedAt === null) return false;
     }
     if (!signals.isPostLoadQuiet()) {
       quietSince = null;
@@ -144,5 +148,28 @@ export function createQualityGovernor(
       if (fps < QUALITY_FPS_UP) stableHighSamples = 0;
       return null;
     },
+  };
+}
+
+/** The world's post-load work sources (World3DCanvas passes the real ones). */
+export interface PostLoadWorkProbes {
+  /** decorative-release getLoadingDismissedAt(). */
+  loadingDismissedAt(): number | null;
+  /** Every boot stream cohort member terminal (getStreamSettledAt() !== null). */
+  streamSettled(): boolean;
+  /** No deferred GPU warm job queued or running (isDeferredWarmQueueIdle()). */
+  warmQueueIdle(): boolean;
+  /** The seabed decoration GLB warm read (fetch + parse outside React) has not
+   * finished: the decorations are not in the stream cohort and enqueue their
+   * GPU warm only after it (Codex E3 on 9ec8bd50). */
+  decorationWarmReadPending(): boolean;
+}
+
+/** Combine the probes into the governor's signals. Allocates once. */
+export function worldQualitySignals(p: PostLoadWorkProbes): QualityGovernorSignals {
+  return {
+    getLoadingDismissedAt: p.loadingDismissedAt,
+    isPostLoadQuiet: () =>
+      p.streamSettled() && p.warmQueueIdle() && !p.decorationWarmReadPending(),
   };
 }

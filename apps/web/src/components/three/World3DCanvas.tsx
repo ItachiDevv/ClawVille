@@ -6,7 +6,7 @@ import {
   armDecorativeDeadline,
   armDecorativeReleaseOnFirstPaint,
   ensureWorldBootEpoch,
-  getLoadingDismissReason,
+  getLoadingDismissedAt,
   getWorldBootEpoch,
   notifyBootBuildingsScenePresented,
   notifyBootCoreScenePresented,
@@ -29,6 +29,7 @@ import { getStreamSettledAt } from '@/lib/three/boot-stream-cohort';
 import {
   QUALITY_MAX_TIER,
   createQualityGovernor,
+  worldQualitySignals,
   type QualityGovernor,
   type QualityGovernorSignals,
 } from '@/lib/three/adaptive-quality-governor';
@@ -54,7 +55,7 @@ declare module '@react-three/fiber' {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
 extend(THREE as any);
-import ArenaTerrain from '@/lib/three/arena-terrain';
+import ArenaTerrain, { isDecorationWarmReadPending } from '@/lib/three/arena-terrain';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
 import ArenaBuildings, { ArenaBuildingsStreamed, DeclareBuildingsMode } from '@/lib/three/arena-buildings';
@@ -200,12 +201,16 @@ const WORLD_DPR_RANGE: [number, number] = [
 ];
 // Adaptive quality governor inputs (web-load T8): no frame counts until the
 // loader is dismissed AND post-load work is quiet (every boot stream member
-// terminal + the deferred GPU warm queue empty) for the settle window. One
-// module-level object: the per-frame gate check allocates nothing.
-const QUALITY_GOVERNOR_SIGNALS: QualityGovernorSignals = {
-  isLoadingDismissed: () => getLoadingDismissReason() !== null,
-  isPostLoadQuiet: () => getStreamSettledAt() !== null && isDeferredWarmQueueIdle(),
-};
+// terminal + the deferred GPU warm queue empty + no seabed decoration warm
+// read pending) for the settle window; the ceiling counts from the loader's
+// own dismissal time. One module-level object: the per-frame gate check
+// allocates nothing.
+const QUALITY_GOVERNOR_SIGNALS: QualityGovernorSignals = worldQualitySignals({
+  loadingDismissedAt: getLoadingDismissedAt,
+  streamSettled: () => getStreamSettledAt() !== null,
+  warmQueueIdle: isDeferredWarmQueueIdle,
+  decorationWarmReadPending: isDecorationWarmReadPending,
+});
 
 export type WorldMode = 'game' | 'arena';
 

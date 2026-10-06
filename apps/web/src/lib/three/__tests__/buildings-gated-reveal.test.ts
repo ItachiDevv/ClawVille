@@ -25,6 +25,7 @@ import {
   getBootRendererGeneration,
   getBootRevealRequiredIds,
   getLoadingDismissReason,
+  getLoadingDismissedAt,
   isBootBuildingsPresented,
   isBootBuildingsRevealLegSatisfied,
   isBootBuildingsStreamEligible,
@@ -487,6 +488,21 @@ describe('dismissal stamp', () => {
     expect(phases.loadingDismissReason).toBe('milestone-fallback');
     expect(typeof phases.loadingDismissedAt).toBe('number');
     expect(typeof phases.loadingDismissGen).toBe('number');
+  });
+
+  // web-load T8 (Codex E3 on 9ec8bd50): the quality governor's 30 s ceiling
+  // counts from this time, so it must be the FIRST dismissal's time, on the
+  // performance.now() timeline (the rAF timestamp timeline), and null before.
+  test('getLoadingDismissedAt: null before, the first dismissal time after, never moved by a later stamp', () => {
+    expect(getLoadingDismissedAt()).toBeNull();
+    const before = performance.now();
+    expect(stampLoadingDismiss('composite')).toBe(true);
+    const at = getLoadingDismissedAt();
+    expect(at).not.toBeNull();
+    expect(at!).toBeGreaterThanOrEqual(before);
+    expect(at!).toBeLessThanOrEqual(performance.now());
+    expect(stampLoadingDismiss('visibility-fuse')).toBe(false);
+    expect(getLoadingDismissedAt()).toBe(at);
   });
 });
 

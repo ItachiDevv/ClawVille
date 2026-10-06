@@ -394,6 +394,20 @@ function MergedDecorationsInner({ visible }: { visible: boolean }) {
  * render's optional reader then skips that model with its one console.error.
  * Pinned by arena-terrain-decorations-warm-read.test.tsx.
  */
+/**
+ * Mounted UnderwaterDecorations instances whose warm read has not finished
+ * (counted from mount, so the wait for the stagger release counts too). The
+ * adaptive quality governor treats this as post-load work: the decorations are
+ * not in the boot stream cohort and enqueue their GPU warm only after the
+ * read, so without it the gate could open while the 11 GLBs still load and
+ * parse (Codex E3 on 9ec8bd50).
+ */
+let decorationWarmReadsPending = 0;
+
+export function isDecorationWarmReadPending(): boolean {
+  return decorationWarmReadsPending > 0;
+}
+
 function warmDecorationModels(): Promise<void> {
   return Promise.all(
     DECO_MODEL_PATHS.map((path) => warmSuspenseRead(() => readGLTFWithKTX2(path))),
@@ -428,6 +442,16 @@ function UnderwaterDecorations({ visible }: { visible: boolean }) {
       Number.POSITIVE_INFINITY,
     );
   }, [released]);
+  // Pending from mount until warmed; an unmount releases the count. The
+  // cleanup that runs when `warmed` flips shares one passive-effect flush
+  // with the merged group's warm-queue enqueue, so no frame sees a gap.
+  useEffect(() => {
+    if (warmed) return undefined;
+    decorationWarmReadsPending += 1;
+    return () => {
+      decorationWarmReadsPending -= 1;
+    };
+  }, [warmed]);
   useEffect(() => {
     if (!released || warmed) return undefined;
     let cancelled = false;

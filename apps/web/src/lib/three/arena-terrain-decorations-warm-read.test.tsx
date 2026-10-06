@@ -116,6 +116,7 @@ mock.module('./deferred-warm-attachment', () => ({
 type R3F = typeof import('@react-three/fiber');
 let r3f: R3F;
 let ArenaTerrain: (props: { decorationsMounted: boolean; decorationsVisible: boolean }) => ReactNode;
+let isDecorationWarmReadPending: () => boolean;
 const consoleErrors: string[] = [];
 const originalConsoleError = console.error;
 
@@ -148,7 +149,9 @@ beforeAll(async () => {
   }));
   r3f = await import('@react-three/fiber');
   r3f.extend(threeCjs as never);
-  ArenaTerrain = (await import('./arena-terrain')).default as never;
+  const terrain = await import('./arena-terrain');
+  ArenaTerrain = terrain.default as never;
+  isDecorationWarmReadPending = terrain.isDecorationWarmReadPending;
 });
 
 afterAll(async () => {
@@ -197,9 +200,14 @@ describe('seabed decoration warm reads match the production render reads', () =>
         frameloop: 'never',
       });
       let store!: ReturnType<typeof root.render>;
+      // Codex E3 on 9ec8bd50: the quality governor's quiet signal must see the
+      // decoration warm read (fetch + parse) as pending work.
+      expect(isDecorationWarmReadPending()).toBe(false);
       await r3f.act(async () => {
         store = root.render(createElement(ArenaTerrain, { decorationsMounted: true, decorationsVisible: true }));
       });
+      // Committed, warm read in flight (the recorder resolves after 5 ms).
+      expect(isDecorationWarmReadPending()).toBe(true);
       const decoMeshes = () => {
         let n = 0;
         store.getState().scene.traverse((o) => {
@@ -239,8 +247,28 @@ describe('seabed decoration warm reads match the production render reads', () =>
       const failLogs = consoleErrors.filter((m) => m.includes('optional model skipped') && m.includes(FAILING_PATH));
       expect(failLogs.length).toBe(1);
       expect(decoMeshes()).toBeGreaterThan(0);
+      // Warm read finished (10 resolved + 1 failed): no longer pending.
+      expect(isDecorationWarmReadPending()).toBe(false);
 
       await r3f.act(async () => root.unmount());
+      expect(isDecorationWarmReadPending()).toBe(false);
+
+      // A mount that unmounts before its warm read resolves must not leak a
+      // pending count (the governor gate would stay closed until the ceiling).
+      const root2 = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+      await root2.configure({
+        gl: fakeRenderer(canvas) as never,
+        size: { width: 320, height: 200, top: 0, left: 0 },
+        frameloop: 'never',
+      });
+      cache.clear();
+      loading.clear();
+      await r3f.act(async () => {
+        root2.render(createElement(ArenaTerrain, { decorationsMounted: true, decorationsVisible: true }));
+      });
+      expect(isDecorationWarmReadPending()).toBe(true);
+      await r3f.act(async () => root2.unmount());
+      expect(isDecorationWarmReadPending()).toBe(false);
     },
     30_000,
   );

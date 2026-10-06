@@ -19,17 +19,19 @@ import {
   QUALITY_SAMPLE_MS,
   QUALITY_WARMUP_MS,
   createQualityGovernor,
+  worldQualitySignals,
   type QualityGovernorSignals,
 } from './adaptive-quality-governor';
 
-type Signals = QualityGovernorSignals & { dismissed: boolean; quiet: boolean };
+/** `dismissedAt`: the loader's own dismissal time (null while the loader is up). */
+type Signals = QualityGovernorSignals & { dismissedAt: number | null; quiet: boolean };
 
 function signals(dismissed = false, quiet = false): Signals {
   return {
-    dismissed,
+    dismissedAt: dismissed ? 0 : null,
     quiet,
-    isLoadingDismissed() {
-      return this.dismissed;
+    getLoadingDismissedAt() {
+      return this.dismissedAt;
     },
     isPostLoadQuiet() {
       return this.quiet;
@@ -78,7 +80,7 @@ describe('adaptive quality governor: load-time frames never count', () => {
     gov.resume(0);
     // Loader up 0-6 s, post-load work busy 6-17 s: both at 30 FPS.
     const loading = drive(gov, 0, 17_000, 30, (now) => {
-      s.dismissed = now >= 6_000;
+      s.dismissedAt = now >= 6_000 ? 6_000 : null;
     });
     expect(loading).toEqual([]);
     // Work goes quiet at 17 s; frames stay at 60 FPS through the settle window.
@@ -122,11 +124,72 @@ describe('adaptive quality governor: load-time frames never count', () => {
     gov.resume(0);
     const dismissAt = 6_000;
     const changes = drive(gov, 0, dismissAt + QUALITY_POST_LOAD_CEILING_MS + 3 * QUALITY_SAMPLE_MS, 30, (now) => {
-      s.dismissed = now >= dismissAt;
+      s.dismissedAt = now >= dismissAt ? dismissAt : null;
     });
     expect(changes.length).toBe(1);
     expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
     expect(changes[0]![0]).toBeGreaterThanOrEqual(dismissAt + QUALITY_POST_LOAD_CEILING_MS);
+  });
+});
+
+describe('adaptive quality governor: ceiling origin and quiet signal (Codex E3 on 9ec8bd50)', () => {
+  test('the ceiling counts from the LOADER dismissal time, not from the first frame that sees it', () => {
+    // The loader was dismissed at 6 s while the world scene was inactive (a
+    // stage visit): the governor's first frame runs at 40 s. Post-load work
+    // never goes quiet. The ceiling (dismissal + 30 s = 36 s) has already
+    // passed, so the gate opens at once; only the 5 s warmup remains.
+    const s = signals(false, false);
+    s.dismissedAt = 6_000;
+    const gov = createQualityGovernor(0, s);
+    const start = 40_000;
+    gov.resume(start);
+    const changes = drive(gov, start, start + 20_000, 30);
+    expect(changes.length).toBe(1);
+    expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
+    expect(changes[0]![0]).toBeLessThanOrEqual(start + QUALITY_WARMUP_MS + QUALITY_SAMPLE_MS + 50);
+  });
+
+  test('worldQualitySignals: quiet only when stream settled, warm queue idle AND no decoration warm read pending', () => {
+    const probe = { dismissedAt: 1234 as number | null, settled: true, idle: true, decoPending: false };
+    const sig = worldQualitySignals({
+      loadingDismissedAt: () => probe.dismissedAt,
+      streamSettled: () => probe.settled,
+      warmQueueIdle: () => probe.idle,
+      decorationWarmReadPending: () => probe.decoPending,
+    });
+    expect(sig.getLoadingDismissedAt()).toBe(1234);
+    expect(sig.isPostLoadQuiet()).toBe(true);
+    probe.decoPending = true; // the 11 decoration GLBs are still loading / parsing
+    expect(sig.isPostLoadQuiet()).toBe(false);
+    probe.decoPending = false;
+    probe.idle = false;
+    expect(sig.isPostLoadQuiet()).toBe(false);
+    probe.idle = true;
+    probe.settled = false;
+    expect(sig.isPostLoadQuiet()).toBe(false);
+    probe.dismissedAt = null;
+    expect(sig.getLoadingDismissedAt()).toBeNull();
+  });
+
+  test('a decoration warm read pending past the settle keeps the gate closed; it opens 3 s after it ends', () => {
+    const probe = { decoPending: true };
+    const gov = createQualityGovernor(
+      0,
+      worldQualitySignals({
+        loadingDismissedAt: () => 0,
+        streamSettled: () => true,
+        warmQueueIdle: () => true,
+        decorationWarmReadPending: () => probe.decoPending,
+      }),
+    );
+    gov.resume(0);
+    expect(drive(gov, 0, 12_000, 30)).toEqual([]);
+    expect(gov.armed).toBe(false);
+    probe.decoPending = false;
+    expect(drive(gov, 12_000, 12_000 + QUALITY_POST_LOAD_SETTLE_MS - 100, 60)).toEqual([]);
+    expect(gov.armed).toBe(false);
+    drive(gov, 12_000 + QUALITY_POST_LOAD_SETTLE_MS - 100, 12_000 + QUALITY_POST_LOAD_SETTLE_MS + 100, 60);
+    expect(gov.armed).toBe(true);
   });
 });
 
@@ -173,7 +236,7 @@ describe('adaptive quality governor: gameplay rules unchanged once armed', () =>
     const gov = createQualityGovernor(1, s);
     gov.resume(0);
     expect(drive(gov, 0, 20_000, 60)).toEqual([]);
-    s.dismissed = true;
+    s.dismissedAt = 20_000;
     s.quiet = true;
     const r = drive(gov, 20_000, 20_000 + QUALITY_POST_LOAD_SETTLE_MS + 4 * QUALITY_SAMPLE_MS + 100, 60);
     expect(r.map(([, v]) => v)).toEqual([0]);
