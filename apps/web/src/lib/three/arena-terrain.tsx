@@ -15,7 +15,8 @@ import {
 } from '@/lib/three/arena-terrain-decorations';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
-import { useOptionalGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { readGLTFWithKTX2, useOptionalGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { warmSuspenseRead } from '@/lib/three/suspense-cache-warm';
 import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 
@@ -384,6 +385,21 @@ function MergedDecorationsInner({ visible }: { visible: boolean }) {
   );
 }
 
+/**
+ * Resolve the 11 decoration cache entries OUTSIDE React (web-load T8, the T7
+ * pattern in suspense-cache-warm.ts). `readGLTFWithKTX2` is the same drei call
+ * (same cache key, same loader extender) that MergedDecorationsInner's
+ * useOptionalGLTFWithKTX2 reads, so the render after this resolves never
+ * suspends. Never rejects: a failed GLB leaves its cached Error, and the
+ * render's optional reader then skips that model with its one console.error.
+ * Pinned by arena-terrain-decorations-warm-read.test.tsx.
+ */
+function warmDecorationModels(): Promise<void> {
+  return Promise.all(
+    DECO_MODEL_PATHS.map((path) => warmSuspenseRead(() => readGLTFWithKTX2(path))),
+  ).then(() => undefined);
+}
+
 function UnderwaterDecorations({ visible }: { visible: boolean }) {
   // Rung-3 Lever 3: the parent stops BEFORE the child that calls
   // useGLTFWithKTX2, so its 11 GLB fetches begin on this consumer's stagger
@@ -393,6 +409,13 @@ function UnderwaterDecorations({ visible }: { visible: boolean }) {
   // bulk decorations take POSITIVE_INFINITY priority so visible NPC slots
   // drain from the stagger queue first.
   const [released, setReleased] = useState(isDecorativeReleased);
+  // web-load T8: MergedDecorationsInner mounts only after its 11 GLB entries
+  // resolved outside React. Mounted earlier, it suspended and could reveal
+  // only through a Suspense retry lane; the 5 Hz world-stream SyncLane renders
+  // discard retry work, so under CPU 4x on staging 1342805d the decorations
+  // never mounted in the 90 s after load (GLBs 200 by 40-42 s, a retry lane
+  // pending 76-96 s).
+  const [warmed, setWarmed] = useState(false);
   useEffect(() => {
     // Subscribe on LOCAL state only: re-checking the global here loses the
     // release fired between render and effect (returning without subscribing
@@ -405,7 +428,18 @@ function UnderwaterDecorations({ visible }: { visible: boolean }) {
       Number.POSITIVE_INFINITY,
     );
   }, [released]);
-  if (!released) return null;
+  useEffect(() => {
+    if (!released || warmed) return undefined;
+    let cancelled = false;
+    void warmDecorationModels().then(() => {
+      // An unmount before the warm resolved cancels the flip.
+      if (!cancelled) setWarmed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [released, warmed]);
+  if (!released || !warmed) return null;
   return (
     <Suspense fallback={null}>
       <MergedDecorationsInner visible={visible} />

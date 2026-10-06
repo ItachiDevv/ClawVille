@@ -167,6 +167,10 @@ jobs:
           src/lib/three/suspense-cache-warm.test.ts
           src/lib/three/boot-critical-no-retry-mount.test.tsx
           src/lib/three/boot-critical-warm-read-parity.test.tsx
+          src/lib/three/adaptive-quality-governor.test.ts
+          src/lib/three/world-ground-cover-mount.test.tsx
+          src/lib/three/arena-terrain-decorations-warm-read.test.tsx
+          src/lib/three/deferred-warm.test.ts
           src/lib/__tests__/fingerprint-cache.test.ts
           SUITES
 

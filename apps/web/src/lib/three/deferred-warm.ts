@@ -285,13 +285,23 @@ export function createDeferredWarmQueue(
     };
   };
 
-  return { enqueue };
+  /** True when no job is queued, scheduled or running. A cancelled job that
+   * is still running counts as busy: its compile owns the renderer until it
+   * returns. */
+  const isIdle = (): boolean => activeEntry === undefined && queue.length === 0;
+
+  return { enqueue, isIdle };
 }
 
 const globalDeferredWarmQueue = createDeferredWarmQueue();
 
 export function enqueueDeferredWarm(job: DeferredWarmJob): () => void {
   return globalDeferredWarmQueue.enqueue(job);
+}
+
+/** web-load T8: the quality governor's post-load quiet signal reads this. */
+export function isDeferredWarmQueueIdle(): boolean {
+  return globalDeferredWarmQueue.isIdle();
 }
 
 export type DeferredWarmRenderer = {

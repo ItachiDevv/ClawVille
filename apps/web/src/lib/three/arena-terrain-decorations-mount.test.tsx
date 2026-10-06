@@ -68,6 +68,13 @@ mock.module('./use-gltf-ktx2', () => ({
     demands.push(path);
     return cachedGltf(path);
   },
+  // web-load T8: the out-of-render warm read before MergedDecorationsInner
+  // mounts. Recorded as a demand too, so the profile-off case still proves
+  // that nothing is read or fetched when the gate is off.
+  readGLTFWithKTX2: (path: string) => {
+    demands.push(path);
+    return cachedGltf(path);
+  },
 }));
 mock.module('./decorative-release', () => ({
   isDecorativeReleased: () => true,
