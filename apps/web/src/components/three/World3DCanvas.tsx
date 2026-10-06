@@ -47,7 +47,6 @@ declare module '@react-three/fiber' {
 }
 extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
-import { seabedDecorationsEnabled } from '@/lib/three/arena-terrain-decorations';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
 import ArenaBuildings, { ArenaBuildingsStreamed, DeclareBuildingsMode } from '@/lib/three/arena-buildings';
@@ -2837,7 +2836,12 @@ export const WorldSceneContents = memo(function WorldSceneContents({
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
-        <ArenaTerrain showDecorations={seabedDecorationsEnabled(showGroundCover, CURRENT_WORLD_DEVICE_PROFILE)} />
+        {/* Seabed scatter: mounts per device profile (phones/tablets never);
+            the governor's groundCover tier only toggles its visibility. */}
+        <ArenaTerrain
+          decorationsMounted={CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover}
+          decorationsVisible={showGroundCover}
+        />
       </group>
       {/* Land state hydrator — headless, no geometry, returns null.
           Fetches all parcel ownership statuses from the public API

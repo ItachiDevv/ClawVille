@@ -82,37 +82,57 @@ export const DECO_TYPES = [
   // Shipwrecks and submarines are FIXED LANDMARKS in arena-terrain.tsx (disabled).
 ];
 
+/** Largest target size in the table (wu). */
+export const DECO_MAX_SIZE = Math.max(...DECO_TYPES.map((t) => t.maxSize));
+
 /**
- * The seabed decorations follow the same switch as the other ground cover
- * (MergedSeaweed, the NE kelp forest): `showGroundCover` (the `groundCover`
- * perf flag, which the adaptive governor clears at tier 1) AND the device
- * profile's `ambientGroundCover` (false on phones and tablets). When false,
- * the decoration subtree is not mounted: the scatter demands none of its 12
- * GLBs (pinned by arena-terrain-decorations-mount.test.tsx). The bytes can
- * still arrive from other users of the same paths: land-ring-decorations.tsx
- * (ungated) loads 8 of them, and crayfish-ktx is also an NPC species model.
+ * Horizontal reach of the biggest prop from its centre: its XZ box side is at
+ * most DECO_MAX_SIZE, so a corner is at most DECO_MAX_SIZE / √2 from the centre
+ * at any rotation. The band check keeps the whole footprint inside the band;
+ * the other clearances (≥ 200 wu) already exceed it.
  */
-export function seabedDecorationsEnabled(
-  showGroundCover: boolean,
-  profile: { readonly ambientGroundCover: boolean },
-): boolean {
-  return showGroundCover && profile.ambientGroundCover;
+export const DECO_MAX_REACH = DECO_MAX_SIZE * Math.SQRT1_2;
+
+/** Native (glTF-unit) world bounding box of a decoration GLB scene. */
+export interface DecoNativeBounds {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
 }
 
 /**
- * Uniform scale + world Y that render a model at `size` wu max-dimension with
- * its lowest point on the sand baseline. `nativeMaxDim` / `nativeMinY` come
- * from the GLB scene's world bounding box. Returns null for a degenerate box.
+ * Translation + uniform scale for one placed prop, for the renderer's matrix
+ * T(x, y, z) · Ry(entry.rotY) · S(scale) applied to the GLB scene:
+ * - scale renders the native max-dimension at `entry.size` wu;
+ * - x / z put the native box's X/Z CENTRE on the tested site (kelp.glb's mesh
+ *   sits at native x ≈ −44.5, so without this a kelp prop landed 945–2363 wu
+ *   away from its site; staging ac36e4e1);
+ * - y puts the lowest point on the sand.
+ * Returns null for a degenerate box.
  */
-export function decorationTransform(
-  size: number,
-  nativeMaxDim: number,
-  nativeMinY: number,
+export function decorationPlacement(
+  entry: { x: number; z: number; size: number; rotY: number },
+  b: DecoNativeBounds,
   floorY = -2,
-): { scale: number; y: number } | null {
-  if (!(nativeMaxDim > 0) || !Number.isFinite(nativeMaxDim) || !Number.isFinite(nativeMinY)) return null;
-  const scale = size / nativeMaxDim;
-  return { scale, y: floorY - nativeMinY * scale };
+): { scale: number; x: number; y: number; z: number } | null {
+  const values = [b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ];
+  if (!values.every(Number.isFinite)) return null;
+  const maxDim = Math.max(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ);
+  if (!(maxDim > 0)) return null;
+  const scale = entry.size / maxDim;
+  const cx = (b.minX + b.maxX) / 2;
+  const cz = (b.minZ + b.maxZ) / 2;
+  const cos = Math.cos(entry.rotY);
+  const sin = Math.sin(entry.rotY);
+  return {
+    scale,
+    x: entry.x - scale * (cos * cx + sin * cz),
+    y: floorY - b.minY * scale,
+    z: entry.z - scale * (-sin * cx + cos * cz),
+  };
 }
 
 // Building exclusion circles (world coords) — radius 2 × zone side (896 wu) around
@@ -197,8 +217,10 @@ export function isDecorationSiteClear(x: number, z: number): boolean {
   const dcx = x - VILLAGE_CX;
   const dcz = z - VILLAGE_CZ;
   const rSq = dcx * dcx + dcz * dcz;
-  if (rSq < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) return false;
-  if (rSq > DECO_OUTER_R * DECO_OUTER_R) return false;
+  // Band test on the site, widened by the largest prop's reach so the whole
+  // footprint stays inside the band.
+  if (rSq < (DECO_INNER_EXCLUSION_R + DECO_MAX_REACH) ** 2) return false;
+  if (rSq > (DECO_OUTER_R - DECO_MAX_REACH) ** 2) return false;
   if (Math.hypot(x - SPAWN_WORLD_X, z - SPAWN_WORLD_Z) < DECO_INNER_EXCLUSION_R) return false;
   if (isNearBuilding(x, z)) return false;
 

@@ -161,6 +161,7 @@ jobs:
           src/lib/three/cove-figure-model-load.test.tsx
           src/lib/three/arena-terrain-decorations.test.ts
           src/lib/three/arena-terrain-decorations-mount.test.tsx
+          src/lib/three/arena-terrain-decorations-bounds.test.ts
           src/lib/three/deferred-warm-priority.test.ts
           src/lib/three/basis-transcoder-prefetch.test.ts
           src/lib/__tests__/fingerprint-cache.test.ts

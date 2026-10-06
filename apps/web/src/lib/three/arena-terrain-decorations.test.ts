@@ -15,7 +15,6 @@ import { getAllColliders } from './collision/world-colliders';
 import { WORLD_DEVICE_PROFILE } from './device-class';
 import { DEFAULT_WORLD_PERF_FLAGS } from './PerfAudit';
 import ArenaTerrain from './arena-terrain';
-import * as decoModule from './arena-terrain-decorations';
 import {
   CHARACTER_POSITIONS,
   COVE_EXIT_WORLD_X,
@@ -29,7 +28,7 @@ import {
 import {
   DECO_TYPES,
   DECO_INNER_EXCLUSION_R,
-  decorationTransform,
+  decorationPlacement,
   generateDecorations,
   isNearBuilding,
 } from './arena-terrain-decorations';
@@ -187,85 +186,72 @@ describe('seabed decoration scatter', () => {
   });
 });
 
-describe('decorationTransform', () => {
+describe('decorationPlacement', () => {
+  const box = (minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number) =>
+    ({ minX, minY, minZ, maxX, maxY, maxZ });
+
   it('scales by the native max-dimension and grounds the lowest point on the sand', () => {
     // building-chest.glb: native max-dim 0.43 — the old raw scale 3-12 gave 1-5 wu.
-    const chest = decorationTransform(30, 0.43, -0.2);
+    const chest = decorationPlacement({ x: 0, z: 0, size: 30, rotY: 0 }, box(-0.2, -0.2, -0.2, 0.23, 0.1, 0.1));
     expect(chest).not.toBeNull();
     expect(chest!.scale * 0.43).toBeCloseTo(30, 6);
     expect(chest!.y + -0.2 * chest!.scale).toBeCloseTo(-2, 6);
-    // crayfish-ktx.glb: native max-dim 85.98 — the old raw scale 3-10 gave 258-860 wu.
-    const crayfish = decorationTransform(100, 85.98, 0);
-    expect(crayfish!.scale * 85.98).toBeCloseTo(100, 6);
-    expect(crayfish!.y).toBe(-2);
+  });
+
+  it('puts the rotated native X/Z centre on the site (kelp sits at native x -44.5)', () => {
+    const kelp = box(-45.509, -15.891, -0.136, -43.507, -13.066, 2.175);
+    for (const rotY of [0, 0.7, Math.PI / 2, 2.9, -1.3]) {
+      const p = decorationPlacement({ x: 1500, z: -2200, size: 100, rotY }, kelp)!;
+      const cx = (kelp.minX + kelp.maxX) / 2;
+      const cz = (kelp.minZ + kelp.maxZ) / 2;
+      const c = Math.cos(rotY);
+      const s = Math.sin(rotY);
+      expect(p.scale * (c * cx + s * cz) + p.x).toBeCloseTo(1500, 6);
+      expect(p.scale * (-s * cx + c * cz) + p.z).toBeCloseTo(-2200, 6);
+    }
   });
 
   it('rejects a degenerate bounding box', () => {
-    expect(decorationTransform(50, 0, 0)).toBeNull();
-    expect(decorationTransform(50, Number.NaN, 0)).toBeNull();
-    expect(decorationTransform(50, 1, Number.POSITIVE_INFINITY)).toBeNull();
+    const e = { x: 0, z: 0, size: 50, rotY: 0 };
+    expect(decorationPlacement(e, box(0, 0, 0, 0, 0, 0))).toBeNull();
+    expect(decorationPlacement(e, box(Number.NaN, 0, 0, 1, 1, 1))).toBeNull();
+    expect(decorationPlacement(e, box(0, 0, 0, 1, Number.POSITIVE_INFINITY, 1))).toBeNull();
   });
 });
 
-// Lead decision 2026-10-06: the seabed decorations follow the SAME switch as the
-// other ground cover (seaweed, NE kelp forest): the `groundCover` quality flag
-// (governor tier 1 hides it) AND the device profile's `ambientGroundCover`
-// (false on phones and tablets). 3dStructure.md "Adaptive quality governor".
+// Lead decisions 2026-10-06: the seabed decorations follow the ground-cover
+// switch. The device profile's `ambientGroundCover` (false on phones and
+// tablets) decides whether they MOUNT; the `groundCover` flag (governor tier 1
+// clears it) only toggles VISIBILITY, so a tier change never re-merges.
 describe('seabed decorations follow the groundCover switch', () => {
-  const gate = (decoModule as Record<string, unknown>).seabedDecorationsEnabled as
-    | ((showGroundCover: boolean, profile: { ambientGroundCover: boolean }) => boolean)
-    | undefined;
-
-  it('exports the gate', () => {
-    expect(typeof gate).toBe('function');
-  });
-
-  it('shows the decorations on desktop at full quality', () => {
+  it('mounts on desktop profiles only', () => {
+    for (const cls of ['desktop-low', 'desktop-capable'] as const) expect(WORLD_DEVICE_PROFILE[cls].ambientGroundCover).toBe(true);
+    for (const cls of ['phone', 'tablet'] as const) expect(WORLD_DEVICE_PROFILE[cls].ambientGroundCover).toBe(false);
     expect(DEFAULT_WORLD_PERF_FLAGS.groundCover).toBe(true);
-    for (const cls of ['desktop-low', 'desktop-capable'] as const) {
-      expect(gate!(DEFAULT_WORLD_PERF_FLAGS.groundCover, WORLD_DEVICE_PROFILE[cls])).toBe(true);
-    }
   });
 
-  it('hides them when the governor drops to tier 1 (groundCover false)', () => {
-    for (const cls of ['desktop-low', 'desktop-capable'] as const) {
-      expect(gate!(false, WORLD_DEVICE_PROFILE[cls])).toBe(false);
-    }
-  });
-
-  it('hides them on phones and tablets even at tier 0', () => {
-    for (const cls of ['phone', 'tablet'] as const) {
-      expect(WORLD_DEVICE_PROFILE[cls].ambientGroundCover).toBe(false);
-      expect(gate!(true, WORLD_DEVICE_PROFILE[cls])).toBe(false);
-    }
-  });
-
-  it('ArenaTerrain renders the decoration subtree only when told to', () => {
-    const terrain = ArenaTerrain as unknown as (props: { showDecorations: boolean }) => ReactElement;
-    const childNames = (el: ReactElement): string[] => {
-      const kids: ReactNode[] = [];
+  it('ArenaTerrain mounts the scatter per profile and passes visibility down', () => {
+    const terrain = ArenaTerrain as unknown as (props: { decorationsMounted: boolean; decorationsVisible: boolean }) => ReactElement;
+    const children = (el: ReactElement): ReactElement[] => {
+      const out: ReactElement[] = [];
       const walk = (n: ReactNode) => {
         if (Array.isArray(n)) n.forEach(walk);
-        else if (isValidElement(n)) kids.push(n);
+        else if (isValidElement(n)) out.push(n);
       };
       walk((el.props as { children?: ReactNode }).children);
-      return kids.map((k) => {
-        const t = (k as ReactElement).type as { name?: string } | string;
-        return typeof t === 'string' ? t : t.name ?? '';
-      });
+      return out;
     };
-    const on = childNames(terrain({ showDecorations: true }));
-    const off = childNames(terrain({ showDecorations: false }));
-    expect(on).toContain('SandFloor');
-    expect(on).toContain('UnderwaterDecorations');
-    expect(off).toContain('SandFloor');
-    expect(off).not.toContain('UnderwaterDecorations');
+    const nameOf = (k: ReactElement) => ((k.type as { name?: string }).name ?? String(k.type));
+    const deco = (el: ReactElement) => children(el).find((k) => nameOf(k) === 'UnderwaterDecorations');
+    expect(children(terrain({ decorationsMounted: false, decorationsVisible: true })).map(nameOf)).toEqual(['SandFloor']);
+    expect((deco(terrain({ decorationsMounted: true, decorationsVisible: false }))!.props as { visible: boolean }).visible).toBe(false);
+    expect((deco(terrain({ decorationsMounted: true, decorationsVisible: true }))!.props as { visible: boolean }).visible).toBe(true);
   });
 
-  it('World3DCanvas wires showGroundCover + ambientGroundCover into ArenaTerrain', () => {
+  it('World3DCanvas wires the profile to mount and showGroundCover to visibility', () => {
     const src = readFileSync(join(import.meta.dir, '../../components/three/World3DCanvas.tsx'), 'utf8');
     expect(src).toMatch(
-      /<ArenaTerrain\s+showDecorations=\{seabedDecorationsEnabled\(\s*showGroundCover,\s*CURRENT_WORLD_DEVICE_PROFILE\s*\)\}\s*\/>/,
+      /<ArenaTerrain\s+decorationsMounted=\{CURRENT_WORLD_DEVICE_PROFILE\.ambientGroundCover\}\s+decorationsVisible=\{showGroundCover\}\s*\/>/,
     );
     // showGroundCover must still be the governor-driven flag.
     expect(src).toMatch(/const showGroundCover = flags\.groundCover && !staticOnly;/);

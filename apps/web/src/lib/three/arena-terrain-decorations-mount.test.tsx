@@ -2,9 +2,12 @@
  * Mounted check of the seabed decoration gate (Codex E3 SHOULD-FIX 2026-10-06):
  * (a) with the gate OFF, ArenaTerrain makes no demand and no fetch for any of
  *     the 12 decoration GLB paths;
- * (b) on -> off cycles (the adaptive governor toggling tier 0/1) dispose every
- *     merged decoration geometry, so GPU memory cannot grow per toggle, and
- *     never dispose the shared GLB materials (land-ring-decorations reuses them).
+ * (b) governor toggles (tier 0/1, `decorationsVisible`) only flip visibility:
+ *     0 new merged geometries, 0 disposals (staging ac36e4e1: a remount per
+ *     recovery cost a merge + upload spike that latched tier 1 for the session);
+ * (c) a REAL unmount (`decorationsMounted` false) disposes every merged
+ *     geometry and never the shared GLB materials (land-ring-decorations reuses
+ *     them).
  *
  * Real R3F root (fake renderer, frameloop 'never') like
  * cove-figure-model-load.test.tsx. Three stand-ins only: the optional GLB hook
@@ -80,7 +83,7 @@ mock.module('./deferred-warm-attachment', () => ({
 
 type R3F = typeof import('@react-three/fiber');
 let r3f: R3F;
-let ArenaTerrain: (props: { showDecorations: boolean }) => ReactNode;
+let ArenaTerrain: (props: { decorationsMounted: boolean; decorationsVisible: boolean }) => ReactNode;
 
 beforeAll(async () => {
   for (const name of globalNames) {
@@ -151,9 +154,15 @@ function meshes(scene: THREE.Object3D, name?: string): THREE.Mesh[] {
   return out;
 }
 
+/** True when the mesh and every ancestor are visible (what the renderer draws). */
+function drawn(mesh: THREE.Object3D): boolean {
+  for (let o: THREE.Object3D | null = mesh; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+
 describe('ArenaTerrain decoration gate, mounted', () => {
   test(
-    'off: no decoration demand or fetch; on -> off cycles dispose every merged geometry',
+    'profile off: no demand; governor toggles flip visibility only; real unmount disposes',
     async () => {
       const canvas = testWindow.document.createElement('canvas');
       testWindow.document.body.appendChild(canvas);
@@ -164,49 +173,57 @@ describe('ArenaTerrain decoration gate, mounted', () => {
         frameloop: 'never',
       });
       let store!: ReturnType<typeof root.render>;
-      const render = async (showDecorations: boolean) => {
+      const render = async (decorationsMounted: boolean, decorationsVisible: boolean) => {
         await r3f.act(async () => {
-          store = root.render(createElement(ArenaTerrain, { showDecorations }));
+          store = root.render(createElement(ArenaTerrain, { decorationsMounted, decorationsVisible }));
         });
       };
       const decoMeshes = () => meshes(store.getState().scene, 'arena-terrain-decoration');
+      const decoDemands = () => demands.filter((p) => DECO_PATHS.has(p));
 
-      // (a) Gate OFF: the sand floor mounts, nothing decoration-related is demanded.
-      await render(false);
+      // (a) Device profile OFF (phones / tablets): sand only, no demand, no fetch,
+      // whatever the governor says.
+      await render(false, true);
       await waitFor(() => meshes(store.getState().scene).length > 0, 'sand floor mounted');
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(decoMeshes().length).toBe(0);
-      expect(demands.filter((p) => DECO_PATHS.has(p))).toEqual([]);
+      expect(decoDemands()).toEqual([]);
       expect(decoFetches).toEqual([]);
 
-      // (b) Three on -> off cycles.
+      // Desktop profile, governor at tier 1 during load: mount ONCE, hidden.
+      await render(true, false);
+      await waitFor(() => decoMeshes().length > 0, 'decorations mounted hidden');
+      expect(new Set(decoDemands())).toEqual(DECO_PATHS);
+      const first = decoMeshes();
+      expect(first.some(drawn)).toBe(false);
+      const geoIds = new Set(first.map((m) => m.geometry.uuid));
       const disposed = new Map<string, number>();
-      const seen = new Set<string>();
-      for (let cycle = 0; cycle < 3; cycle++) {
-        await render(true);
-        await waitFor(() => decoMeshes().length > 0, `cycle ${cycle}: decorations mounted`);
-        const geos = decoMeshes().map((m) => m.geometry);
-        // Every mount builds NEW merged geometry (no stale one reused).
-        for (const g of geos) {
-          expect(seen.has(g.uuid)).toBe(false);
-          seen.add(g.uuid);
-          const original = g.dispose.bind(g);
-          g.dispose = () => {
-            disposed.set(g.uuid, (disposed.get(g.uuid) ?? 0) + 1);
-            original();
-          };
-        }
-        // Each mount demands all 12 paths (and only through the hook).
-        expect(new Set(demands.filter((p) => DECO_PATHS.has(p)))).toEqual(DECO_PATHS);
-
-        await render(false);
-        await waitFor(() => decoMeshes().length === 0, `cycle ${cycle}: decorations unmounted`);
-        for (const g of geos) expect(disposed.get(g.uuid) ?? 0).toBeGreaterThanOrEqual(1);
+      for (const m of first) {
+        const g = m.geometry;
+        const original = g.dispose.bind(g);
+        g.dispose = () => {
+          disposed.set(g.uuid, (disposed.get(g.uuid) ?? 0) + 1);
+          original();
+        };
       }
-      // Live merged geometry after the last OFF: zero (created == disposed).
-      expect(seen.size).toBeGreaterThan(0);
-      expect([...seen].filter((id) => !disposed.has(id))).toEqual([]);
-      // The shared GLB materials survive every cycle.
+      const cacheEntriesAfterMount = cache.size;
+
+      // (b) Governor tier toggles: 0 -> 1 -> 0 -> 1 -> 0.
+      for (const visible of [true, false, true, false, true]) {
+        await render(true, visible);
+        await waitFor(() => decoMeshes().length > 0 && decoMeshes().every((m) => drawn(m) === visible), `visible=${visible}`);
+        const now = decoMeshes();
+        expect(new Set(now.map((m) => m.geometry.uuid))).toEqual(geoIds); // 0 new geometries
+        expect(disposed.size).toBe(0); // 0 disposals
+      }
+      // A re-render re-runs the GLB hook (a cached read), never a new load.
+      expect(cache.size).toBe(cacheEntriesAfterMount);
+      expect(decoFetches).toEqual([]);
+
+      // (c) Real unmount: every merged geometry disposed once; shared materials kept.
+      await render(false, true);
+      await waitFor(() => decoMeshes().length === 0, 'decorations unmounted');
+      expect([...geoIds].filter((id) => (disposed.get(id) ?? 0) < 1)).toEqual([]);
       expect([...materialDisposes.values()].reduce((a, b) => a + b, 0)).toBe(0);
       expect(decoFetches).toEqual([]);
 

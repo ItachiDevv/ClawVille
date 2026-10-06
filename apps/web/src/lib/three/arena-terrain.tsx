@@ -6,10 +6,11 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import {
-  decorationTransform,
+  decorationPlacement,
   generateDecorations,
   seededRandom,
   type DecoEntry,
+  type DecoNativeBounds,
 } from '@/lib/three/arena-terrain-decorations';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
@@ -228,15 +229,16 @@ function decoGridCell(worldX: number, worldZ: number): number {
 // Module-scope to avoid GC allocations inside the useMemo.
 const _decoMatrix = new THREE.Matrix4();
 const _decoBox = new THREE.Box3();
-const _decoSize = new THREE.Vector3();
 
 interface MergedBucket {
   geometry: THREE.BufferGeometry;
   material: THREE.Material;
 }
 
-/** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks. */
-function MergedDecorationsInner() {
+/** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks.
+ *  `visible` is the governor tier switch: it flips an ancestor group only, so a
+ *  tier toggle never re-merges, re-uploads or disposes. */
+function MergedDecorationsInner({ visible }: { visible: boolean }) {
   // Fixed-count hook calls — one per unique model path. Order is stable (constant array).
   // Optional reads: a GLB whose own load fails (request failure after the
   // loader's retries, or a corrupt file) is null and logged with
@@ -272,8 +274,9 @@ function MergedDecorationsInner() {
     const bucketMap = new Map<string, { geometries: THREE.BufferGeometry[]; material: THREE.Material }>();
     const tempGeos: THREE.BufferGeometry[] = [];
     // Native world bounds per GLB scene, measured once: entry.size is a target
-    // max-dimension in wu, so the scale depends on the model's own units.
-    const nativeBounds = new Map<THREE.Object3D, { maxDim: number; minY: number }>();
+    // max-dimension in wu and the box centre goes on the site, so both depend
+    // on the model's own units and origin.
+    const nativeBounds = new Map<THREE.Object3D, DecoNativeBounds>();
 
     for (const entry of DECORATIONS) {
       const sourceScene = sceneMap.get(entry.model);
@@ -288,11 +291,13 @@ function MergedDecorationsInner() {
       let bounds = nativeBounds.get(sourceScene);
       if (!bounds) {
         _decoBox.setFromObject(sourceScene);
-        _decoBox.getSize(_decoSize);
-        bounds = { maxDim: Math.max(_decoSize.x, _decoSize.y, _decoSize.z), minY: _decoBox.min.y };
+        bounds = {
+          minX: _decoBox.min.x, minY: _decoBox.min.y, minZ: _decoBox.min.z,
+          maxX: _decoBox.max.x, maxY: _decoBox.max.y, maxZ: _decoBox.max.z,
+        };
         nativeBounds.set(sourceScene, bounds);
       }
-      const placement = decorationTransform(entry.size, bounds.maxDim, bounds.minY);
+      const placement = decorationPlacement(entry, bounds);
       if (!placement) continue;
 
       sourceScene.traverse((child) => {
@@ -311,7 +316,7 @@ function MergedDecorationsInner() {
         const cosY = Math.cos(entry.rotY);
         const sinY = Math.sin(entry.rotY);
         const s = placement.scale;
-        const ex = entry.x, ey = placement.y, ez = entry.z;
+        const ex = placement.x, ey = placement.y, ez = placement.z;
         // prettier-ignore
         _decoMatrix.set(
           s * cosY,  0, s * sinY, ex,
@@ -367,29 +372,33 @@ function MergedDecorationsInner() {
     };
   }, [buckets]);
 
+  // The visibility group sits OUTSIDE the warm attachment: compileAsync starts
+  // at the attachment root, so the GPU warm completes even while hidden.
   return (
-    <DeferredWarmAttachment
-      label="arena-terrain:merged-decorations"
-      priority={Number.POSITIVE_INFINITY}
-    >
-      {buckets.map(({ geometry, material }, i) => (
-        <mesh
-          key={i}
-          name="arena-terrain-decoration"
-          geometry={geometry}
-          material={material}
-          // matrixAutoUpdate=false: merged meshes sit at world origin with identity
-          // matrix — all transforms were baked into vertex positions.
-          // frustumCulled: default true — each chunk has a tight cell-local AABB
-          // computed above, so off-screen chunks are correctly skipped by the renderer.
-          matrixAutoUpdate={false}
-        />
-      ))}
-    </DeferredWarmAttachment>
+    <group visible={visible}>
+      <DeferredWarmAttachment
+        label="arena-terrain:merged-decorations"
+        priority={Number.POSITIVE_INFINITY}
+      >
+        {buckets.map(({ geometry, material }, i) => (
+          <mesh
+            key={i}
+            name="arena-terrain-decoration"
+            geometry={geometry}
+            material={material}
+            // matrixAutoUpdate=false: merged meshes sit at world origin with identity
+            // matrix — all transforms were baked into vertex positions.
+            // frustumCulled: default true — each chunk has a tight cell-local AABB
+            // computed above, so off-screen chunks are correctly skipped by the renderer.
+            matrixAutoUpdate={false}
+          />
+        ))}
+      </DeferredWarmAttachment>
+    </group>
   );
 }
 
-function UnderwaterDecorations() {
+function UnderwaterDecorations({ visible }: { visible: boolean }) {
   // Rung-3 Lever 3: the parent stops BEFORE the child that calls
   // useGLTFWithKTX2, so its 12 GLB fetches begin on this consumer's stagger
   // tick. MergedDecorationsInner then commits hidden and joins the one-at-a-
@@ -413,7 +422,7 @@ function UnderwaterDecorations() {
   if (!released) return null;
   return (
     <Suspense fallback={null}>
-      <MergedDecorationsInner />
+      <MergedDecorationsInner visible={visible} />
     </Suspense>
   );
 }
@@ -493,16 +502,29 @@ function FixedLandmarks() {
 }
 
 /**
- * `showDecorations` — pass `seabedDecorationsEnabled(showGroundCover, profile)`:
- * the scatter follows the ground-cover switch (governor tier 1, phones and
- * tablets hide it). The sand floor always renders.
+ * The seabed scatter follows the ground-cover switch, in two parts:
+ * - `decorationsMounted` = the device profile's `ambientGroundCover` (false on
+ *   phones and tablets): when false the scatter never mounts and demands none
+ *   of its 12 GLBs;
+ * - `decorationsVisible` = `showGroundCover` (the adaptive governor clears it
+ *   at tier 1): it only flips visibility. The scatter mounts once, keeps its
+ *   merged meshes, and disposes them only on a real unmount, so a tier toggle
+ *   costs no merge, upload or dispose (staging ac36e4e1: a remount on recovery
+ *   spiked the frame and latched tier 1 for the session).
+ * The sand floor always renders.
  */
-export default function ArenaTerrain({ showDecorations }: { showDecorations: boolean }) {
+export default function ArenaTerrain({
+  decorationsMounted,
+  decorationsVisible,
+}: {
+  decorationsMounted: boolean;
+  decorationsVisible: boolean;
+}) {
   return (
     <Suspense fallback={null}>
       <SandFloor />
       {/* Procedurally scattered individual GLB decorations */}
-      {showDecorations && <UnderwaterDecorations />}
+      {decorationsMounted && <UnderwaterDecorations visible={decorationsVisible} />}
       {/*
         REMOVED 2026-04-16: `UnderwaterDecorationsGlb` (underwater-decorations.glb @ scale 8)
         and `FixedLandmarks` (submarine @ scale 2.0 + shipwreck @ scale 2.5). All three were

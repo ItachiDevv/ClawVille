@@ -9,7 +9,9 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-10-06 (§5 decoration sizes: `DECO_TYPES` ranges are now target world sizes 20–150 wu, normalized per GLB and grounded; the asset table shows native and old rendered sizes).
+**Last edit:** 2026-10-06 (§5 decorations after the ac36e4e1 staging check: props centred on their sites (kelp was 945–2363 wu off), footprint kept inside the band; the device profile mounts the scatter and the governor only toggles visibility; layout and mesh counts updated).
+
+**Prior Last edit:** 2026-10-06 (§5 decoration sizes: `DECO_TYPES` ranges are now target world sizes 20–150 wu, normalized per GLB and grounded; the asset table shows native and old rendered sizes).
 
 **Prior Last edit:** 2026-10-06 (§5 ground decorations RESTORED: 60 props rendered again inside the 800–3800 wu band, new placement rule that keeps buildings, approach lanes, residents, entrances, spawn, town props and land parcels clear; render-strategy line gains measured mesh and triangle counts; §9 audit script replaced by the unit test). Drift fixed in passing: §1 fog row (was 4500→9000) and §4 sand-floor row (was 15360², "TSL shader") now match the code.
 
@@ -164,9 +166,10 @@ Code: `lib/three/arena-terrain.tsx`.
 - Band: `DECO_INNER_EXCLUSION_R = 800` to `DECO_OUTER_R = 3800` wu from the world origin. The building ring is at R=4160 wu; the band stays inside fog-free distance (fog near 5000).
 - 12 cluster centres (`N_CLUSTERS`), polar sample inside the band: radius area-uniform in [1080, 3520] wu, angle uniform; a centre is redrawn until its site is clear. 280 wu triangular spread per cluster, 35 wu minimum spacing.
 - Stable seed (`12345`) — positions don't change between reloads or between clients.
-- **Visibility (2026-10-06):** the decorations follow the ground-cover switch, like the seaweed: `seabedDecorationsEnabled(showGroundCover, CURRENT_WORLD_DEVICE_PROFILE)` in `World3DCanvas.tsx` → `<ArenaTerrain showDecorations>`. Hidden at governor tier 1 and on phones and tablets (`ambientGroundCover` false); then the scatter demands none of its 12 GLBs and disposes its merged geometry on each hide (mounted test `apps/web/src/lib/three/arena-terrain-decorations-mount.test.tsx`). The bytes still arrive for the 8 paths that `land-ring-decorations.tsx` (not gated) shares, and for `crayfish-ktx` when a crayfish NPC is present. The sand floor always renders.
+- **Visibility (2026-10-06, revised after the ac36e4e1 staging check):** two switches, like the other ground cover. The device profile's `ambientGroundCover` decides whether the scatter MOUNTS (`<ArenaTerrain decorationsMounted>`): phones and tablets never mount it and the scatter demands none of its 12 GLBs (8 of the paths still load through the ungated `land-ring-decorations.tsx`; `crayfish-ktx` is also an NPC model). On desktop it mounts once and keeps its merged meshes; the governor's `groundCover` tier only flips an ancestor group's `visible` (`decorationsVisible`), so a tier change costs no merge, upload or dispose (a remount on tier recovery had spiked the frame and latched tier 1 for the session). Merged geometry is disposed only on a real unmount. Pinned by `apps/web/src/lib/three/arena-terrain-decorations-mount.test.tsx`. The sand floor always renders.
+- **Placement centre (2026-10-06):** each prop's native bounding-box X/Z centre (rotated, scaled) is placed on its tested site and its lowest point on the sand (`decorationPlacement`). kelp.glb's mesh sits at native x −44.5, so before this every kelp prop rendered 945–2363 wu off its site (two at ~4840 / ~5040 wu from the plaza, past the band and the ring). The band check keeps the whole footprint inside: sites need r in [800 + 107, 3800 − 107] (107 = 150 wu × √½, the largest prop's reach). Pinned by `apps/web/src/lib/three/arena-terrain-decorations-bounds.test.ts` (native bounds table checked against the 12 GLB files).
 - **Placement rule** (`isDecorationSiteClear` in `arena-terrain-decorations.ts`): a prop must be inside the band, ≥800 wu from the spawn point, outside every building exclusion circle (`isNearBuilding`, 896 wu), outside every client collider AABB + 200 wu (all 12 buildings + the town props: sign, bazaar, marketplace, pavilion, quest NPC, Nori), outside every land-parcel square + 200 wu, outside the 400 wu half-width approach lane from the plaza to each of the 12 buildings, ≥460 wu from each building resident, and clear of the entrance prompt bands + 200 wu (kelp portal 360, Trading Floor door 400, cove tunnel exit 500).
-- Result with seed 12345: 60 props at r 1838–3798 wu, in 9 of the 12 wedges between the approach lanes; the plaza inside r ~1800 wu stays clear because the lanes converge there.
+- Result with seed 12345: 60 props, sites at r 1838–3610 wu (live merged vertices r 1814–3660, y −2 to 141), in the wedges between the approach lanes; the plaza inside r ~1800 wu stays clear because the lanes converge there.
 
 The 12 GLBs load through `MergedDecorationsInner` after the decorative release; the merged group joins the warm queue last (priority ∞), so the props appear after the rest of the deferred world: measured locally 2026-10-06 about 18 s after the loader is gone (with web-load T6; 52 s before T6).
 
@@ -190,7 +193,7 @@ Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 | crayfish-ktx.glb | 3 | 30–100 | 85.98 | 258–860 |
 | building-tower2.glb | 2 | 40–140 | 14.60 | 58–204 |
 
-**Render strategy:** all entries → bucketed by `(3×3 grid cell, material UUID)` → `mergeGeometries` per bucket → one Mesh per bucket. Static, `matrixAutoUpdate=false`, default frustum-cull (tight per-bucket AABB). With seed 12345: **57 merged meshes, 145,810 triangles in total** (36 of the 60 props fall in the centre cell). At the spawn view 25 of them (61,960 triangles) are in the frustum, mostly behind the town sign; a view of the whole band draws up to 57.
+**Render strategy:** all entries → bucketed by `(3×3 grid cell, material UUID)` → `mergeGeometries` per bucket → one Mesh per bucket. Static, `matrixAutoUpdate=false`, default frustum-cull (tight per-bucket AABB). With seed 12345: **54 merged meshes (live), about 142,000 triangles in total** (36 of the 60 props fall in the centre cell). At the spawn view 25 of them (61,960 triangles) are in the frustum, mostly behind the town sign; a view of the whole band draws up to 57.
 
 ---
 
