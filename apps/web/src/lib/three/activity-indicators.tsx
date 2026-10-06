@@ -9,6 +9,7 @@ import {
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState, type NpcStoreState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { getNpcRenderGroup } from '@/lib/three/arena-npcs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -145,12 +146,13 @@ const NpcIndicator = memo(function NpcIndicator({
 }: NpcIndicatorProps) {
   const groupRef = useRef<THREE.Group>(null);
   const scaleRef = useRef(1);
-  // The NPC store MUTATES position in place on the same object
-  // (stores/npc.ts updateFromSnapshot / moveNpc), so the indicator follows its
-  // NPC from the frame loop and never needs a React render to move (web-load
-  // T10). The object is looked up again only when the store's npcs ARRAY
-  // changes (one id scan per store write): an identity change (conversation
-  // flip, rename, species swap) replaces the object.
+  // The indicator follows its NPC from the frame loop and never needs a React
+  // render to move (web-load T10). First choice: the NPC's rendered body
+  // group (getNpcRenderGroup, the smoothed position the mesh draws at).
+  // Fallback: the store object, whose position the store MUTATES in place
+  // (stores/npc.ts updateFromSnapshot / moveNpc); it is looked up again only
+  // when the store's npcs ARRAY changes (one id scan per store write), since
+  // an identity change (conversation flip, rename, species swap) replaces it.
   const npcsSeenRef = useRef<readonly NpcSpriteState[] | null>(null);
   const npcRef = useRef<NpcSpriteState | null>(null);
 
@@ -166,15 +168,23 @@ const NpcIndicator = memo(function NpcIndicator({
     const group = groupRef.current;
     if (!group) return;
 
-    const npcs = useNpcStore.getState().npcs;
-    if (npcs !== npcsSeenRef.current) {
-      npcsSeenRef.current = npcs;
-      npcRef.current = findNpcById(npcs, npcId);
-    }
-    const npc = npcRef.current;
-    if (npc) {
-      group.position.x = npc.x - HALF_W;
-      group.position.z = npc.y - HALF_H;
+    // Follow the rendered (smoothed) body when it is mounted; else the raw
+    // store position (body not mounted yet, or its model failed).
+    const body = getNpcRenderGroup(npcId);
+    if (body) {
+      group.position.x = body.position.x;
+      group.position.z = body.position.z;
+    } else {
+      const npcs = useNpcStore.getState().npcs;
+      if (npcs !== npcsSeenRef.current) {
+        npcsSeenRef.current = npcs;
+        npcRef.current = findNpcById(npcs, npcId);
+      }
+      const npc = npcRef.current;
+      if (npc) {
+        group.position.x = npc.x - HALF_W;
+        group.position.z = npc.y - HALF_H;
+      }
     }
 
     const elapsed = state.clock.elapsedTime;

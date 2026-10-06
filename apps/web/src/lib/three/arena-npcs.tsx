@@ -422,6 +422,23 @@ function computeLocalMinY(scene: THREE.Object3D): number {
 // Allocated once — never inside useFrame to avoid GC pressure.
 const _renderedBbox = new THREE.Box3();
 
+/** Rendered (smoothed) body group per NPC id. Overlays read it from their
+ * frame loops without React state (web-load T10-A). */
+const npcRenderGroups = new Map<string, THREE.Object3D>();
+export function getNpcRenderGroup(id: string): THREE.Object3D | undefined {
+  return npcRenderGroups.get(id);
+}
+function useRegisterNpcRenderGroup(id: string, groupRef: { current: THREE.Group | null }): void {
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    npcRenderGroups.set(id, group);
+    return () => {
+      if (npcRenderGroups.get(id) === group) npcRenderGroups.delete(id);
+    };
+  }, [id, groupRef]);
+}
+
 // PERF FIX (2026-06-15, prod-trace-confirmed ~57% JS CPU):
 // Previous implementations used either:
 //   - intersectObjects(scene.children, true)  — O(NPCs × 4549 objects)
@@ -611,6 +628,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({
   attachmentVisible?: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null!);
+  useRegisterNpcRenderGroup(npc.id, groupRef);
   const animGroupRef = useRef<THREE.Group>(null!);
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
   // Catches any NPC that slips through computeNpcScale with a wrong pivot offset.
@@ -1151,6 +1169,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
   attachmentVisible?: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null!);
+  useRegisterNpcRenderGroup(npc.id, groupRef);
   const { scene: threeScene } = useThree();
   const npcRef = useRef(npc);
   npcRef.current = npc;

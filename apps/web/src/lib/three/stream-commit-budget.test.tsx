@@ -35,7 +35,7 @@
  * Runs in its own process (mock.module is process-global).
  */
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
-import { Fragment, Profiler, createElement, type ReactNode } from 'react';
+import { Fragment, Profiler, Suspense, createElement, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import type * as THREE from 'three';
 import type { PlayerSnapshot } from '@clawville/shared';
@@ -93,6 +93,8 @@ let NpcSpeechBubbles: () => ReactNode;
 let ActivityIndicators: () => ReactNode;
 let RemotePlayers: () => ReactNode;
 let vrmPathForSpecies: (species: string) => string;
+let getNpcRenderGroup: (id: string) => THREE.Object3D | undefined;
+let HALF_W = 0;
 let useNpcStore: typeof import('@/stores/npc').useNpcStore;
 let usePlayerStore: typeof import('@/stores/players').usePlayerStore;
 
@@ -157,6 +159,8 @@ beforeAll(async () => {
   const npcs = await import('./arena-npcs');
   ArenaNpcs = npcs.default as unknown as () => ReactNode;
   vrmPathForSpecies = npcs.vrmPathForSpecies;
+  getNpcRenderGroup = npcs.getNpcRenderGroup;
+  HALF_W = (await import('@/lib/pixi/tilemap-data')).MAP_WIDTH / 2;
   NpcSpeechBubbles = (await import('./npc-speech-bubbles')).default as unknown as () => ReactNode;
   ActivityIndicators = (await import('./activity-indicators')).default as unknown as () => ReactNode;
   RemotePlayers = (await import('./remote-players')).default as unknown as () => ReactNode;
@@ -445,6 +449,118 @@ describe('stream commit budget (web-load T10)', () => {
       });
       expect(counts.players).toBeGreaterThan(0);
       expect(reported).toEqual([]);
+    },
+    30_000,
+  );
+
+  test(
+    'indicators + bubbles follow the RENDERED (smoothed) body from getNpcRenderGroup, with 0 commits',
+    async () => {
+      const { root, store } = await settledWorld(false);
+      const body = getNpcRenderGroup('t10-talker-a');
+      expect(body).toBeDefined();
+      expect(body!.getObjectByName(`fake-vrm:${vrmPathForSpecies('milady_official_2')}`)).toBeDefined();
+      const scene = store.getState().scene;
+      const indicatorGroup = () => {
+        let found: THREE.Object3D | undefined;
+        scene.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (found || !mesh.isMesh) return;
+          if ((mesh.material as THREE.MeshBasicMaterial).color?.getHex() === 0x00e5ff) found = mesh.parent!;
+        });
+        return found!; // the first indicator = talker-a (store order)
+      };
+      const bubbleAnchor = () => {
+        let found: THREE.Object3D | undefined;
+        scene.traverse((o) => {
+          if (!found && (o as THREE.Group).isGroup && o.position.y === 150) found = o;
+        });
+        return found!;
+      };
+      const frame = async () => {
+        await r3f.act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 16));
+          r3f.advance(performance.now(), true, store.getState());
+        });
+      };
+      await frame(); // seeds the body at its confirmed target
+
+      // A confirmed move far east, written the way updateFromSnapshot does
+      // (in place, no store write): the body DAMPS toward it over frames.
+      resetCommits();
+      const talker = useNpcStore.getState().npcs.find((n) => n.id === 't10-talker-a')!;
+      talker.prevX = talker.x;
+      talker.x += 2_000;
+      talker.ts = Date.now();
+      talker.tsDelta = 200;
+      const rawX = talker.x - HALF_W;
+      for (let i = 0; i < 3; i += 1) {
+        await frame();
+        const before = body!.position.x;
+        await frame();
+        const after = body!.position.x;
+        // The overlays read the body in the same frame loop (before or after
+        // the body's own callback): never the raw store position.
+        expect([before, after]).toContain(indicatorGroup().position.x);
+        expect([before, after]).toContain(bubbleAnchor().position.x);
+        expect(after).not.toBe(rawX);
+        expect(indicatorGroup().position.x).not.toBe(rawX);
+      }
+      expect(snapshotCommits()).toEqual({ npcs: 0, bubbles: 0, indicators: 0, players: 0 });
+      expect(reported).toEqual([]);
+      await teardown(root);
+      // Unmount removes every entry.
+      expect(getNpcRenderGroup('t10-talker-a')).toBeUndefined();
+      expect(getNpcRenderGroup('t10-walker-a')).toBeUndefined();
+    },
+    30_000,
+  );
+
+  test(
+    'registry: a newer same-id body stays registered when the older one unmounts; its own unmount removes it',
+    async () => {
+      const { root } = await settledWorld(false);
+      const older = getNpcRenderGroup('t10-talker-a');
+      expect(older).toBeDefined();
+
+      // A second body with the SAME id (a fallback / remount) in its own root;
+      // another species, so it is its own VRM instance.
+      const talker = useNpcStore.getState().npcs.find((n) => n.id === 't10-talker-a')!;
+      const { VRMNpcMesh } = await import('./arena-npcs');
+      const canvas = testWindow.document.createElement('canvas');
+      testWindow.document.body.appendChild(canvas);
+      const root2 = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+      await root2.configure({
+        gl: fakeRenderer(canvas) as never,
+        size: { width: 320, height: 200, top: 0, left: 0 },
+        frameloop: 'never',
+      });
+      await r3f.act(async () => {
+        root2.render(
+          createElement(
+            Suspense,
+            { fallback: null },
+            createElement(VRMNpcMesh, { npc: { ...talker, species: 'milady_official_1' } }),
+          ),
+        );
+      });
+      await waitFor(() => getNpcRenderGroup('t10-talker-a') !== older, 'the newer same-id body registered');
+      const newer = getNpcRenderGroup('t10-talker-a')!;
+      expect(newer.getObjectByName(`fake-vrm:${vrmPathForSpecies('milady_official_1')}`)).toBeDefined();
+
+      // The OLDER body unmounts (the NPC leaves the store): the live entry stays.
+      await r3f.act(async () => {
+        useNpcStore.setState({ npcs: useNpcStore.getState().npcs.filter((n) => n.id !== 't10-talker-a') });
+      });
+      await settle(50);
+      expect(older!.parent).toBeNull();
+      expect(getNpcRenderGroup('t10-talker-a')).toBe(newer);
+
+      // The newer body's own unmount removes it.
+      await r3f.act(async () => root2.unmount());
+      expect(getNpcRenderGroup('t10-talker-a')).toBeUndefined();
+      expect(reported).toEqual([]);
+      await teardown(root);
     },
     30_000,
   );

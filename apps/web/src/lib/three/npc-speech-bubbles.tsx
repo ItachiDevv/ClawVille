@@ -10,6 +10,7 @@ import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import { useNpcStore, PLAYER_NPC_ID, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
 import { useShallow } from 'zustand/react/shallow';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { getNpcRenderGroup } from '@/lib/three/arena-npcs';
 
 // ---------------------------------------------------------------------------
 // NPC Speech Bubbles — Dom overlay speech bubbles for wandering NPCs
@@ -64,10 +65,12 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
   // camera.matrixWorldInverse viewZ calculation needed.
   const groupRef = useRef<THREE.Group>(null);
 
-  // The NPC store mutates position in place on the SAME npc object
-  // (stores/npc.ts updateFromSnapshot), and this memo bails while that object
-  // and the bubble keep their identity. The frame reads the object itself, so
-  // the bubble follows a walking speaker without a React render (web-load T10).
+  // The bubble follows a walking speaker from the frame loop, without a React
+  // render (web-load T10). First choice: the speaker's rendered body group
+  // (getNpcRenderGroup, the smoothed position the mesh draws at). Fallback:
+  // the npc object, whose position the store mutates in place
+  // (stores/npc.ts updateFromSnapshot); this memo bails while that object and
+  // the bubble keep their identity.
   const npcRef = useRef(npc);
   npcRef.current = npc;
 
@@ -100,8 +103,14 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
   useSceneFrame(() => {
     const g = groupRef.current;
     if (!g) return;
-    g.position.x = npcRef.current.x - HALF_W;
-    g.position.z = npcRef.current.y - HALF_H;
+    const body = getNpcRenderGroup(npcRef.current.id);
+    if (body) {
+      g.position.x = body.position.x;
+      g.position.z = body.position.z;
+    } else {
+      g.position.x = npcRef.current.x - HALF_W;
+      g.position.z = npcRef.current.y - HALF_H;
+    }
   });
 
   return (

@@ -522,10 +522,10 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       // change. The NPC's useFrame still reads fresh x/y because npcRef.current
       // points at the same (now-mutated) object.
       //
-      // Speech bubbles + activity indicators also read x/y from this mutated
-      // object in their frame loops (web-load T10-A), so they follow the NPC
-      // with no React render. They read the RAW snapshot x/y (5 Hz steps),
-      // not the smoothed position the NPC mesh renders.
+      // Speech bubbles + activity indicators follow the NPC from their frame
+      // loops with no React render (web-load T10-A): they read the rendered
+      // (smoothed) body group (arena-npcs.tsx getNpcRenderGroup) and fall
+      // back to this mutated object's raw x/y while no body is mounted.
       if (prev && npcFieldsEqual(prev, candidate)) {
         // Mutate every non-identity field on prev. Only conversation flip,
         // rename, species swap, or color change ever invalidate identity in
