@@ -132,8 +132,10 @@ export function useBootBuildingsStreamRelease(
           return;
         }
         void warmSuspenseRead(warmRead).then(() => {
+          // No phase for a member that unmounted before its warm resolved.
+          if (cancelled) return;
           stampBgrPhase(`bgrParsed:${memberId}`);
-          if (!cancelled) setReleased(true);
+          setReleased(true);
         });
       },
       priority,

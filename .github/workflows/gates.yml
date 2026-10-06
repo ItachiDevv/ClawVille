@@ -166,6 +166,7 @@ jobs:
           src/lib/three/basis-transcoder-prefetch.test.ts
           src/lib/three/suspense-cache-warm.test.ts
           src/lib/three/boot-critical-no-retry-mount.test.tsx
+          src/lib/three/boot-critical-warm-read-parity.test.tsx
           src/lib/__tests__/fingerprint-cache.test.ts
           SUITES
 
