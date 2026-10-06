@@ -107,7 +107,7 @@ jobs:
         with:
           # Pinned to the version the runner was authored + verified against, so a
           # future Bun release can't silently change migration execution semantics.
-          bun-version: 1.3.11
+          bun-version: 1.4.2
 
       - name: Install dependencies
         if: steps.guard.outputs.skip != 'true'
