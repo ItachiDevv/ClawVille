@@ -13,6 +13,7 @@ import {
 } from '@clawville/shared';
 
 import { readContest, readEvent, readPosition } from '@/hooks/use-floor-arena';
+import { FINGERPRINT_STORAGE_KEY } from '@/lib/fingerprint';
 import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 import { useGameStore } from '@/stores/game';
 import { FLOOR_TEXT } from '../tokens';
@@ -164,6 +165,14 @@ function myAgentBody(overrides: Record<string, unknown> = {}) {
 
 beforeAll(async () => {
   installDom();
+  // GET /api/auth/me waits for getFingerprint() before its fetch (lib/api.ts).
+  // With no cached visitorId, that runs FingerprintJS, which can take longer
+  // than a test. The query function of a cleared, unmounted tree cannot be
+  // cancelled, so its fetch then lands in a LATER test (CI run 37532238618: a
+  // /me request inside the guest test). A cached visitorId, as a returning
+  // browser has (lib/fingerprint.ts), makes the header ready at once, so each
+  // request settles inside its own test.
+  testWindow.localStorage.setItem(FINGERPRINT_STORAGE_KEY, '0123456789abcdef0123456789abcdef');
   ({ createRoot } = await import('react-dom/client'));
   ({ FloorArenaSection } = await import('./arena-section'));
   ({ TradingFloorTab } = await import('../trading-floor-tab'));

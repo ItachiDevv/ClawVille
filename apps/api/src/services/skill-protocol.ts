@@ -839,6 +839,9 @@ import {
 // deferred compile priority, seabed decorations; the only apps/api change is a comment in
 // routes/cove-history.ts naming the `cv:fp:v1` key): manual and Nori orientation reviewed, no version
 // change. Client rendering and header caching only; agents never read them.
+// 2026-10-06 (CI-2: test isolation in arena-panels.test.tsx, which now seeds the cached browser
+// fingerprint so an earlier test's GET /api/auth/me cannot land in the guest test): manual and Nori
+// orientation reviewed, no version change. Test-only; no product code, route or agent surface changed.
 export const PROTOCOL_VERSION = 83;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body

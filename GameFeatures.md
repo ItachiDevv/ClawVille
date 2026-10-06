@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-06 07:48Z (§18a cove guest history trap note: browser fingerprint storage key).** Drift note: the trap note said the raw fingerprint was stored in localStorage as `cv-fp`, but no code wrote any key; the web client now stores it as `cv:fp:v1` (web-load T4, load-path cache, `ARCHITECTURE.md` §Anti-farm).
+**Last Audited: 2026-10-06 21:48Z (CI-2: Trading Floor arena panel test isolation; no gameplay change).** Drift note: none in gameplay. `apps/web/src/components/game/trading-floor/arena/arena-panels.test.tsx` now seeds the cached browser fingerprint (`cv:fp:v1`), so a GET /api/auth/me from an earlier test cannot land in the guest test. The guest arena flow (no GET /me, sign-up prompt on Launch) is unchanged.
+
+Prior — **Last Audited: 2026-10-06 07:48Z (§18a cove guest history trap note: browser fingerprint storage key).** Drift note: the trap note said the raw fingerprint was stored in localStorage as `cv-fp`, but no code wrote any key; the web client now stores it as `cv:fp:v1` (web-load T4, load-path cache, `ARCHITECTURE.md` §Anti-farm).
 
 Prior — **Last Audited: 2026-10-06 01:55Z (§9c: the avatar load failure fallback also covers the Cove body; a failed dealer or seated table figure is skipped).** Drift note: §9c avatar-load-failure line extended to the Cove and the table rooms.
 
