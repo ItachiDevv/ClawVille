@@ -58,12 +58,19 @@ function createFakeEventLoop() {
     clearTimeout: globalThis.clearTimeout.bind(globalThis),
   };
 
+  // Every posted task's signal, so tests can assert an abort.
+  const postTaskSignals: Array<AbortSignal | undefined> = [];
   const scheduler = {
-    postTask: (callback: () => unknown, options?: { priority?: Priority }) => {
+    postTask: (
+      callback: () => unknown,
+      options?: { priority?: Priority; signal?: AbortSignal },
+    ) => {
       const priority = options?.priority ?? 'user-visible';
+      const signal = options?.signal;
       postTaskPriorities.push(priority);
+      postTaskSignals.push(signal);
       return new Promise<unknown>((resolve, reject) => {
-        tasks.push({
+        const task: FakeTask = {
           kind: 'postTask',
           priority,
           run: () => {
@@ -73,7 +80,23 @@ function createFakeEventLoop() {
               reject(error);
             }
           },
-        });
+        };
+        // Spec behaviour: an aborted task leaves the queue and its promise
+        // rejects with an AbortError.
+        if (signal?.aborted) {
+          reject(new DOMException('aborted', 'AbortError'));
+          return;
+        }
+        signal?.addEventListener(
+          'abort',
+          () => {
+            const index = tasks.indexOf(task);
+            if (index >= 0) tasks.splice(index, 1);
+            reject(new DOMException('aborted', 'AbortError'));
+          },
+          { once: true },
+        );
+        tasks.push(task);
       });
     },
   };
@@ -104,6 +127,7 @@ function createFakeEventLoop() {
     scheduler,
     tasks,
     postTaskPriorities,
+    postTaskSignals,
     currentPriority: () => current,
     runOne,
     runUntil,
@@ -257,58 +281,174 @@ describe('deferred warm task priority (web-load T6)', () => {
     expect(loop.tasks).toHaveLength(0);
   });
 
-  test('a compile front that has not started when the 20 s escape fires never starts later', async () => {
-    const loop = createFakeEventLoop();
+
+  // Shared fixture for the 20 s escape tests: captures the compile escape
+  // timer (fired by hand), returns a renderer whose compileAsync behaviour
+  // the test chooses.
+  function setupEscapeFixture(loop: ReturnType<typeof createFakeEventLoop>) {
     g.window = loop.window;
     g.scheduler = loop.scheduler;
-
-    // Capture only the compile escape timer; it is fired by hand.
-    let fireEscape: (() => void) | undefined;
+    const escapes: Array<() => void> = [];
     const realSetTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((handler: () => void, ms?: number) => {
       if (ms === DEFERRED_WARM_COMPILE_TIMEOUT_MS) {
-        fireEscape = handler;
+        escapes.push(handler);
         return 0 as unknown as ReturnType<typeof setTimeout>;
       }
       return realSetTimeout(handler, ms);
     }) as typeof globalThis.setTimeout;
 
     const camera = new THREE.PerspectiveCamera();
-    const object = new THREE.Group();
-    object.visible = false;
     const scene = new THREE.Scene();
-    scene.add(object);
-    let compileCalls = 0;
+    const makeObject = () => {
+      const object = new THREE.Group();
+      object.visible = false;
+      scene.add(object);
+      return object;
+    };
+    const compiled: THREE.Object3D[] = [];
+    let hang = false;
+    const renders: string[] = [];
     const renderer: DeferredWarmRenderer = {
       initialized: true,
       initTexture: () => {},
-      compileAsync: async () => {
-        compileCalls += 1;
+      compileAsync: (root) => {
+        compiled.push(root);
+        return hang ? new Promise<void>(() => {}) : Promise.resolve();
       },
-      render: () => {},
+      render: () => {
+        renders.push('render');
+      },
       getScissor: (target) => target.set(0, 0, 1, 1),
       getScissorTest: () => false,
       setScissor: () => {},
       setScissorTest: () => {},
     };
-
-    const warming = warmDeferredObject({
-      renderer,
-      scene,
+    return {
+      escapes,
       camera,
-      object,
+      scene,
+      makeObject,
+      compiled,
+      renders,
+      renderer,
+      setHang: (value: boolean) => {
+        hang = value;
+      },
+    };
+  }
+
+  test('escape BEFORE the compile task ran: task aborted, renderer NOT poisoned, the next job compiles', async () => {
+    const loop = createFakeEventLoop();
+    const fx = setupEscapeFixture(loop);
+
+    const first = fx.makeObject();
+    const warming = warmDeferredObject({
+      renderer: fx.renderer,
+      scene: fx.scene,
+      camera: fx.camera,
+      object: first,
       isCancelled: () => false,
-      label: 'building:cove',
+      label: 'npc:town-guide',
     });
     for (let j = 0; j < 60; j += 1) await Promise.resolve();
     expect(loop.tasks.map((t) => t.kind)).toEqual(['postTask']);
-    expect(fireEscape).toBeDefined();
+    expect(fx.escapes).toHaveLength(1);
 
-    fireEscape!();
+    fx.escapes[0]!();
     expect(await warming).toBe('failopen');
-    expect(isRendererCompileTimedOut(renderer)).toBe(true);
+    // No compile ran, so the renderer must stay usable.
+    expect(isRendererCompileTimedOut(fx.renderer)).toBe(false);
+    expect(fx.compiled).toHaveLength(0);
+    // This job still fails open through the zero-scissor direct warm.
+    expect(fx.renders).toEqual(['render']);
 
-    await loop.runOne(); // the late front
-    expect(compileCalls).toBe(0);
+    // The NEXT job compiles normally (the original symptom: it did not).
+    const second = fx.makeObject();
+    const next = warmDeferredObject({
+      renderer: fx.renderer,
+      scene: fx.scene,
+      camera: fx.camera,
+      object: second,
+      isCancelled: () => false,
+      label: 'building:cove',
+    });
+    await loop.runUntil(() => fx.compiled.length > 0);
+    expect(await next).toBe('warmed');
+    expect(fx.compiled).toEqual([second]);
+
+    // The first job's queued task was dropped at the escape, not left
+    // queued holding the object and renderer.
+    expect(loop.postTaskSignals[0]?.aborted).toBe(true);
+    expect(loop.tasks).toHaveLength(0);
+  });
+
+  test('escape AFTER the compile started still poisons the renderer (orphan tail)', async () => {
+    const loop = createFakeEventLoop();
+    const fx = setupEscapeFixture(loop);
+    fx.setHang(true);
+
+    const warming = warmDeferredObject({
+      renderer: fx.renderer,
+      scene: fx.scene,
+      camera: fx.camera,
+      object: fx.makeObject(),
+      isCancelled: () => false,
+      label: 'npc:town-guide',
+    });
+    await loop.runUntil(() => fx.compiled.length > 0);
+    expect(fx.compiled).toHaveLength(1);
+
+    fx.escapes[0]!();
+    expect(await warming).toBe('failopen');
+    expect(isRendererCompileTimedOut(fx.renderer)).toBe(true);
+
+    // A later job skips compile on the poisoned renderer.
+    fx.setHang(false);
+    const later = await warmDeferredObject({
+      renderer: fx.renderer,
+      scene: fx.scene,
+      camera: fx.camera,
+      object: fx.makeObject(),
+      isCancelled: () => false,
+      label: 'building:cove',
+    });
+    expect(later).toBe('failopen');
+    expect(fx.compiled).toHaveLength(1);
+  });
+
+  test('cancelling the job (unmount) aborts its queued compile task', async () => {
+    const loop = createFakeEventLoop();
+    const fx = setupEscapeFixture(loop);
+
+    const queue = createDeferredWarmQueue();
+    let result: string | undefined;
+    const cancel = queue.enqueue({
+      warm: async (isCancelled) => {
+        result = await warmDeferredObject({
+          renderer: fx.renderer,
+          scene: fx.scene,
+          camera: fx.camera,
+          object: fx.makeObject(),
+          isCancelled,
+          label: 'building:mcp-tool-use',
+        });
+      },
+    });
+
+    // Run the queue's idle start; the job then posts its compile task.
+    await loop.runUntil(() => loop.tasks.some((t) => t.kind === 'postTask'));
+    expect(loop.postTaskSignals).toHaveLength(1);
+    expect(loop.postTaskSignals[0]?.aborted).toBe(false);
+
+    cancel();
+    for (let j = 0; j < 60; j += 1) await Promise.resolve();
+
+    expect(loop.postTaskSignals[0]?.aborted).toBe(true);
+    expect(loop.tasks.filter((t) => t.kind === 'postTask')).toHaveLength(0);
+    await loop.runUntil(() => result !== undefined);
+    expect(result).toBe('failopen');
+    expect(fx.compiled).toHaveLength(0);
+    expect(isRendererCompileTimedOut(fx.renderer)).toBe(false);
   });
 });

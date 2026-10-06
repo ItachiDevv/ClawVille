@@ -42,9 +42,19 @@ export const TEXTURE_SLOTS = [
 
 export type DeferredWarmState = 'queued' | 'warming' | 'ready' | 'cancelled';
 
+/**
+ * Cancellation check handed to a warm job. The queue's check also carries
+ * `signal`, aborted when the job is cancelled, so a queued compile task can be
+ * dropped at once (the attachment passes this same function through to
+ * warmDeferredObject). A plain `() => boolean` is accepted too.
+ */
+export type DeferredWarmCancelCheck = (() => boolean) & {
+  readonly signal?: AbortSignal;
+};
+
 export type DeferredWarmJob = {
   priority?: number;
-  warm: (isCancelled: () => boolean) => Promise<void>;
+  warm: (isCancelled: DeferredWarmCancelCheck) => Promise<void>;
   onStateChange?: (state: DeferredWarmState) => void;
   onError?: (error: unknown) => void;
 };
@@ -53,6 +63,7 @@ export type DeferredWarmQueueSchedule = (callback: () => void) => () => void;
 
 type QueueEntry = {
   active: boolean;
+  abort: AbortController;
   job: DeferredWarmJob;
   priority: number;
   sequence: number;
@@ -78,7 +89,10 @@ type QueueEntry = {
 type PostTaskScheduler = {
   postTask: (
     callback: () => unknown,
-    options?: { priority?: 'user-blocking' | 'user-visible' | 'background' },
+    options?: {
+      priority?: 'user-blocking' | 'user-visible' | 'background';
+      signal?: AbortSignal;
+    },
   ) => Promise<unknown>;
 };
 
@@ -96,11 +110,16 @@ function getPostTaskScheduler(): PostTaskScheduler | undefined {
  * `scheduler.yield` either (no shipping browser has one without the other),
  * so three's yieldToMain uses requestAnimationFrame, which carries no
  * priority; `front` then runs synchronously, exactly as before T6.
+ * `signal` aborts the queued task (its promise rejects; nothing stays queued
+ * holding the object and renderer). The synchronous path queues nothing.
  */
-function runInUserVisibleTask(front: () => unknown): Promise<unknown> {
+function runInUserVisibleTask(
+  front: () => unknown,
+  signal?: AbortSignal,
+): Promise<unknown> {
   const scheduler = getPostTaskScheduler();
   if (scheduler) {
-    return scheduler.postTask(front, { priority: 'user-visible' });
+    return scheduler.postTask(front, { priority: 'user-visible', signal });
   }
   try {
     return Promise.resolve(front());
@@ -221,8 +240,12 @@ export function createDeferredWarmQueue(
       activeEntry = entry;
       emit(entry, 'warming');
 
+      const isCancelled: DeferredWarmCancelCheck = Object.assign(
+        () => !entry.active,
+        { signal: entry.abort.signal },
+      );
       void entry.job
-        .warm(() => !entry.active)
+        .warm(isCancelled)
         .catch((error: unknown) => {
           try {
             entry.job.onError?.(error);
@@ -241,6 +264,7 @@ export function createDeferredWarmQueue(
   const enqueue = (job: DeferredWarmJob): (() => void) => {
     const entry: QueueEntry = {
       active: true,
+      abort: new AbortController(),
       job,
       priority: job.priority ?? 0,
       sequence: sequence++,
@@ -252,6 +276,7 @@ export function createDeferredWarmQueue(
     return () => {
       if (!entry.active) return;
       entry.active = false;
+      entry.abort.abort();
       emit(entry, 'cancelled');
       const index = queue.indexOf(entry);
       if (index >= 0) queue.splice(index, 1);
@@ -292,7 +317,7 @@ type WarmObjectOptions = {
   scene: THREE.Scene;
   camera: THREE.Camera;
   object: THREE.Object3D;
-  isCancelled: () => boolean;
+  isCancelled: DeferredWarmCancelCheck;
   label?: string;
 };
 
@@ -630,27 +655,49 @@ async function compileDeferredObject({
   // that task: once the 20 s escape fired (or the job was cancelled) a late
   // front must never start a compile, because the FIFO has already released
   // and a second same-renderer compile would overlap (the r185 race class).
+  // `taskAbort` drops the queued task in the same cases (job cancel via the
+  // queue's signal, or the escape before the front ran), so it does not stay
+  // queued holding the object and renderer.
   let abandoned = false;
   let started = false;
-  const result = await withDeferredFrustumCullingDisabled(object, async () =>
-    settleCompile(
-      runInUserVisibleTask(() => {
-        if (abandoned || isCancelled()) return undefined;
-        started = true;
-        object.updateWorldMatrix(true, true);
-        const wasVisible = object.visible;
-        object.visible = true;
-        try {
-          return renderer.compileAsync!(object, camera, scene);
-        } finally {
-          object.visible = wasVisible;
-        }
-      }),
-    ),
-  );
-  abandoned = true;
+  const taskAbort = new AbortController();
+  const jobSignal = isCancelled.signal;
+  const onJobAbort = () => taskAbort.abort();
+  jobSignal?.addEventListener('abort', onJobAbort, { once: true });
+  let result: CompileResult;
+  try {
+    result = await withDeferredFrustumCullingDisabled(object, async () =>
+      settleCompile(
+        runInUserVisibleTask(() => {
+          if (abandoned || isCancelled()) return undefined;
+          started = true;
+          object.updateWorldMatrix(true, true);
+          const wasVisible = object.visible;
+          object.visible = true;
+          try {
+            return renderer.compileAsync!(object, camera, scene);
+          } finally {
+            object.visible = wasVisible;
+          }
+        }, taskAbort.signal),
+      ),
+    );
+  } finally {
+    abandoned = true;
+    jobSignal?.removeEventListener('abort', onJobAbort);
+    if (!started) taskAbort.abort();
+  }
 
-  if (!started && result.status !== 'timed-out') return false;
+  if (!started) {
+    // No compile ran on this renderer, so it is NOT poisoned: only this job
+    // gives up its compile (fail-open), the next job compiles normally.
+    if (result.status === 'timed-out') {
+      console.warn(
+        `[DeferredWarm] ${label ?? 'object'}: compile task did not start within 20s; skipping compile for this object only`,
+      );
+    }
+    return false;
+  }
   if (result.status === 'rejected') {
     console.warn(
       `[DeferredWarm] ${label ?? 'object'}: compileAsync failed; continuing to direct warm:`,
