@@ -4,7 +4,8 @@ import { Suspense, useEffect, useRef, useMemo, useState, type ReactElement } fro
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { generateDecorations, seededRandom, type DecoEntry } from '@/lib/three/arena-terrain-decorations';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
 import { useOptionalGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
@@ -31,15 +32,6 @@ const SAND_HIGH   = new THREE.Color(0xe8d0a8); // Warm sand
 const SAND_MID    = new THREE.Color(0xc4a878); // Golden mid-tone
 const SAND_VALLEY = new THREE.Color(0x8a7050); // Dark moody valleys
 const SAND_DEEP   = new THREE.Color(0x5c4a32); // Deep brown-black troughs
-
-/** Seeded PRNG for deterministic terrain */
-function seededRandom(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s = (s * 16807 + 0) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-}
 
 /** Build subdivided sand plane with LARGE visible dunes and strong per-vertex colors */
 function createSandGeometry(): THREE.PlaneGeometry {
@@ -146,192 +138,6 @@ function SandFloor() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Procedural decoration placement across the full map
-// Uses seeded RNG for deterministic placement, avoids building zones
-// ---------------------------------------------------------------------------
-interface DecoEntry {
-  model: string;
-  x: number;
-  z: number;
-  scale: number;
-  rotY: number;
-}
-
-// Decoration models — scale ranges capped to keep max dimension ≤ 150 world units.
-// Rationale: at perspective from origin, a 600-unit wide coral cluster at distance
-// 3000-5000 dominates the view even though it's outside the village ring.
-// Coral/kelp native bboxes are ~5-10 units wide/tall; cap at 15 → max ~150 wu.
-// Shell/seashell native bboxes ~3-5 units; cap at 15 → max ~75 wu.
-// Small props (anchor, barrel, chest, lantern, tower2) already safe at their caps.
-const DECO_TYPES = [
-  // Coral — moderate presence, capped at 15 to prevent 500+ wu wide clusters
-  { model: '/models/coral-reef1-ktx.glb?v=2', weight: 3, minScale: 4,   maxScale: 15  },
-  { model: '/models/coral-reef2-ktx.glb?v=2', weight: 3, minScale: 3,   maxScale: 13  },
-  { model: '/models/coral-reef3-ktx.glb?v=2', weight: 3, minScale: 3,   maxScale: 12  },
-  // Kelp — tall accent, capped at 15 (was 30; was producing 600+ wu wide blades)
-  { model: '/models/kelp.glb',        weight: 3, minScale: 6,   maxScale: 15  },
-  // Shells — clusters of tiny to medium (was maxScale 18-20, now 12)
-  { model: '/models/building-shell-ktx.glb?v=2',    weight: 5, minScale: 2,   maxScale: 12  },
-  { model: '/models/building-seashell-ktx.glb?v=2', weight: 5, minScale: 2,   maxScale: 12  },
-  // Anchors — scattered singles, small to moderate
-  { model: '/models/building-anchor.glb', weight: 4, minScale: 3,   maxScale: 14  },
-  // Barrels — common ocean-floor clutter
-  { model: '/models/building-barrel.glb', weight: 4, minScale: 3,   maxScale: 10  },
-  // Chests — treasure accents
-  { model: '/models/building-chest.glb',  weight: 4, minScale: 3,   maxScale: 12  },
-  // Lanterns — ambient glow props, small to medium
-  { model: '/models/building-lantern-ktx.glb?v=2', weight: 3, minScale: 4,  maxScale: 12  },
-  // Crayfish — scattered critters, small
-  { model: '/models/crayfish-ktx.glb?v=2',         weight: 3, minScale: 3,  maxScale: 10  },
-  // Tower2 — distinctive landmark towers, rare
-  { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
-  // Shipwrecks and submarines are placed as FIXED LANDMARKS below (not scattered)
-  // so they always appear in visually meaningful spots rather than random.
-];
-
-// All decoration preloads have been moved to DeferredTerrainPreloads() below.
-
-// Building exclusion zones (world coords) — no decorations within 80px of building center
-const HALF_MW = MAP_WIDTH / 2;
-const HALF_MH = MAP_HEIGHT / 2;
-// Derive exclusion zones from canonical tilemap-data buildingZones (single source of truth)
-const BUILDING_ZONES = buildingZones.map(z => ({
-  cx: -HALF_MW + (z.x + z.width / 2) * TILE_SIZE,
-  cz: -HALF_MH + (z.y + z.height / 2) * TILE_SIZE,
-  radius: Math.max(z.width, z.height) * TILE_SIZE * 2.0,
-}));
-
-function isNearBuilding(x: number, z: number): boolean {
-  for (const b of BUILDING_ZONES) {
-    const dx = x - b.cx;
-    const dz = z - b.cz;
-    if (dx * dx + dz * dz < b.radius * b.radius) return true;
-  }
-  return false;
-}
-
-// Village center world coordinates: center tile (120, 120) in 240×240 grid (Phase 6.1)
-// worldX = -HALF_MW + 120*TILE_SIZE = -3840 + 3840 = 0
-// worldZ = -HALF_MH + 120*TILE_SIZE = -3840 + 3840 = 0
-const VILLAGE_CX = 0;
-const VILLAGE_CZ = 0;
-// No decorations within this radius — keeps the immediate town plaza clear.
-// Phase 6.2 (2026-05-18): reduced from 1500 to 800 now that props (bazaar stall,
-// marketplace stall, auction dome) are spread to 800-1000wu from center. Decorations
-// in the 800-3000wu band give the plaza natural context; inside 800wu stays clear for
-// the NPC/guide/stall cluster. Building ring is now at R=5120wu so the old 1500wu
-// exclusion was unnecessarily tight (props were already spread beyond that radius).
-const DECO_INNER_EXCLUSION_R = 800;
-
-/** Generate all decorations with cluster-based organic scatter.
- *
- *  Algorithm (mirrors the merged-seaweed multivariant pattern):
- *  1. Generate N_CLUSTERS cluster centres spread across the full map extents.
- *  2. For each decoration attempt, pick a random cluster centre.
- *  3. Sample distance from that centre using a triangular distribution
- *     (rng() + rng()) * CLUSTER_RADIUS — biases placements toward the centre,
- *     producing Gaussian-like falloff without an actual Gaussian.
- *  4. Reject if inside the inner village exclusion zone or a building zone.
- *
- *  This creates natural dense patches with sparse gaps between them instead of
- *  the uniform "salt-and-pepper" look of pure random placement.
- */
-function generateDecorations(): DecoEntry[] {
-  const rng = seededRandom(12345);
-  const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
-  const entries: DecoEntry[] = [];
-  // 2026-05-13: bumped 30 → 60. With DECO_INNER_EXCLUSION_R reduced to 1500
-  // the visible annulus is now ~1500–3800wu (3300wu band) instead of the old
-  // 2700–4500wu (1800wu band) — close to 2× the visible area, so 2× props.
-  // Update WorldContent.md §5 when you change.
-  const TARGET_COUNT = 60;
-
-  // Hard distance cap — any prop beyond this radius from world origin is
-  // rejected. 3800wu chosen so decorations sit fully inside the fog-free zone
-  // (fog.near=4500wu). Lateral placement at +1300 Z camera still lands ≤5100wu
-  // from camera — below the 22% fog factor threshold at 5493wu far-ring.
-  const MAX_VISIBLE_DIST = 3800;
-  const MAX_VISIBLE_DIST_SQ = MAX_VISIBLE_DIST * MAX_VISIBLE_DIST;
-
-  // Map extents — narrowed further (1.76 → 1.4) on 2026-05-13 so cluster
-  // centres land inside the new closer visible annulus (1500–3800wu) rather
-  // than the old 2700–4500wu band.
-  const EXTENT_X = MAP_WIDTH  * 1.4;
-  const EXTENT_Z = MAP_HEIGHT * 1.4;
-
-  // ---- Cluster centres ----
-  // 12 clusters (down from 24) — fewer entries to spread across, so fewer
-  // cluster centres keeps each cluster meaningfully dense.
-  const N_CLUSTERS    = 12;
-  const CLUSTER_RADIUS = 280; // world-space units; controls patch spread
-  const clusters: Array<{ x: number; z: number }> = [];
-  for (let i = 0; i < N_CLUSTERS; i++) {
-    clusters.push({
-      x: (rng() - 0.5) * EXTENT_X,
-      z: (rng() - 0.5) * EXTENT_Z,
-    });
-  }
-
-  // Pick a model based on weighted random
-  function pickModel() {
-    let r = rng() * totalWeight;
-    for (const dt of DECO_TYPES) {
-      r -= dt.weight;
-      if (r <= 0) return dt;
-    }
-    return DECO_TYPES[0];
-  }
-
-  // Minimum spacing between decorations — tighter than before for denser look
-  const MIN_SPACING_SQ = 35 * 35;
-
-  let attempts = 0;
-  while (entries.length < TARGET_COUNT && attempts < 1200) {
-    attempts++;
-
-    // Pick a random cluster centre
-    const cluster = clusters[Math.floor(rng() * N_CLUSTERS)];
-
-    // Triangular distribution for distance: (rng()+rng()) biases toward 0
-    const dist  = (rng() + rng()) * CLUSTER_RADIUS;
-    const angle = rng() * Math.PI * 2;
-    const x = cluster.x + Math.cos(angle) * dist;
-    const z = cluster.z + Math.sin(angle) * dist;
-
-    // Clamp to map extents so nothing spawns off the sand plane
-    if (Math.abs(x) > EXTENT_X * 0.5 || Math.abs(z) > EXTENT_Z * 0.5) continue;
-
-    // Skip if inside the inner village plaza — keep the town center clear
-    const dcx = x - VILLAGE_CX;
-    const dcz = z - VILLAGE_CZ;
-    const radiusSq = dcx * dcx + dcz * dcz;
-    if (radiusSq < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) continue;
-
-    // 2026-05-12: hard cap on outer distance. Anything past MAX_VISIBLE_DIST is
-    // above the fog.near=4500wu threshold (Phase 6.2.1). Audited via
-    // scripts/audit-decorations.mjs.
-    if (radiusSq > MAX_VISIBLE_DIST_SQ) continue;
-
-    // Skip if inside a building exclusion zone
-    if (isNearBuilding(x, z)) continue;
-
-    // Minimum spacing check
-    const tooClose = entries.some(e => {
-      const dx = e.x - x;
-      const dz = e.z - z;
-      return dx * dx + dz * dz < MIN_SPACING_SQ;
-    });
-    if (tooClose) continue;
-
-    const dt    = pickModel();
-    const scale = dt.minScale + rng() * (dt.maxScale - dt.minScale);
-    entries.push({ model: dt.model, x, z, scale, rotY: rng() * Math.PI * 2 });
-  }
-
-  return entries;
-}
-
 const DECORATIONS: DecoEntry[] = generateDecorations();
 
 /** Recursively dispose all geometries and materials in a cloned THREE.Object3D tree. */
@@ -368,11 +174,9 @@ function disposeClone(root: THREE.Object3D): void {
 //      the AABB spanned the whole scene and Three.js would have wrongly culled it
 //      based on the spectator cam direction).
 //
-// Grid: 3×3 = 9 cells covering ±DECO_GRID_HALF (set to 8000wu, generously wrapping
-// the scatter extent of MAP_WIDTH * 2.4 = 12288wu half = 6144wu). Each cell is
-// ~5333wu wide. With 80 decorations / 9 cells ≈ 9 per cell → ~9×(materials/cell)
-// merged meshes total. Spectator cam facing town center: back 4-5 cells are culled,
-// leaving only ~40-50 meshes to draw rather than all 80 worth.
+// Grid: 3×3 = 9 cells covering ±DECO_GRID_HALF (8000wu). The scatter lives in the
+// 800–3800wu band (arena-terrain-decorations.ts), so most of the 60 entries fall in
+// the centre cell (|x|,|z| < 2667wu).
 //
 // Constraints respected:
 //   - No SkinnedMesh (decoration GLBs are all static)
@@ -400,8 +204,7 @@ const DECO_MODEL_PATHS = [
 ] as const;
 
 // 3×3 spatial grid for chunk-merged frustum culling.
-// Half-extent covers the full decoration scatter area: MAP_WIDTH * 2.4 / 2 = 6144wu.
-// We use 8000 to give a small margin beyond the scatter boundary.
+// Half-extent 8000wu wraps the 3800wu scatter band with margin.
 const DECO_GRID_CELLS = 3;
 const DECO_GRID_HALF  = 8000; // ±8000wu total 16000wu; each cell = 16000/3 ≈ 5333wu
 
@@ -552,6 +355,7 @@ function MergedDecorationsInner() {
       {buckets.map(({ geometry, material }, i) => (
         <mesh
           key={i}
+          name="arena-terrain-decoration"
           geometry={geometry}
           material={material}
           // matrixAutoUpdate=false: merged meshes sit at world origin with identity
