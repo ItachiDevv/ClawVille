@@ -242,7 +242,8 @@ describe('seabed decorations follow the groundCover switch', () => {
       return out;
     };
     const nameOf = (k: ReactElement) => ((k.type as { name?: string }).name ?? String(k.type));
-    const deco = (el: ReactElement) => children(el).find((k) => nameOf(k) === 'UnderwaterDecorations');
+    // web-load T11: the scatter sits behind the first-show latch component.
+    const deco = (el: ReactElement) => children(el).find((k) => nameOf(k) === 'SeabedDecorationsOnFirstShow');
     expect(children(terrain({ decorationsMounted: false, decorationsVisible: true })).map(nameOf)).toEqual(['SandFloor']);
     expect((deco(terrain({ decorationsMounted: true, decorationsVisible: false }))!.props as { visible: boolean }).visible).toBe(false);
     expect((deco(terrain({ decorationsMounted: true, decorationsVisible: true }))!.props as { visible: boolean }).visible).toBe(true);

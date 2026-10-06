@@ -13,6 +13,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  QUALITY_BUSY_SKIP_MAX_MS,
+  QUALITY_DEGRADE_SAMPLES,
+  QUALITY_FPS_DOWN,
   QUALITY_MAX_TIER,
   QUALITY_POST_LOAD_CEILING_MS,
   QUALITY_POST_LOAD_SETTLE_MS,
@@ -86,8 +89,8 @@ describe('adaptive quality governor: load-time frames never count', () => {
     // Work goes quiet at 17 s; frames stay at 60 FPS through the settle window.
     s.quiet = true;
     expect(drive(gov, 17_000, 17_000 + QUALITY_POST_LOAD_SETTLE_MS, 60)).toEqual([]);
-    // A real gameplay drop after arming degrades within one sample window
-    // (plus the window that straddles the drop).
+    // A real gameplay drop after arming degrades after 2 consecutive low
+    // windows (web-load T11).
     const armedAt = 17_000 + QUALITY_POST_LOAD_SETTLE_MS;
     const drop = drive(gov, armedAt, armedAt + 3 * QUALITY_SAMPLE_MS, 30);
     expect(drop.length).toBe(1);
@@ -210,11 +213,20 @@ describe('adaptive quality governor: gameplay rules unchanged once armed', () =>
     expect(gov.tier).toBe(1);
   });
 
-  test('one hitch degrades once and does not latch', () => {
+  test('(f) the second degrade still latches; a later stable 60 FPS never recovers', () => {
     const { gov, t } = armed();
-    const hitch = drive(gov, t, t + QUALITY_SAMPLE_MS + 10, 40);
-    expect(hitch.map(([, v]) => v)).toEqual([1]);
+    // degrade 1 (2 low windows) -> recovery (3 high windows) -> degrade 2.
+    const d1 = drive(gov, t, t + 2 * QUALITY_SAMPLE_MS + 100, 40);
+    expect(d1.map(([, v]) => v)).toEqual([1]);
     expect(gov.latched).toBe(false);
+    const t1 = t + 2 * QUALITY_SAMPLE_MS + 100;
+    expect(drive(gov, t1, t1 + 4 * QUALITY_SAMPLE_MS + 100, 60).map(([, v]) => v)).toEqual([0]);
+    const t2 = t1 + 4 * QUALITY_SAMPLE_MS + 100;
+    expect(drive(gov, t2, t2 + 2 * QUALITY_SAMPLE_MS + 100, 40).map(([, v]) => v)).toEqual([1]);
+    expect(gov.latched).toBe(true);
+    const t3 = t2 + 2 * QUALITY_SAMPLE_MS + 100;
+    expect(drive(gov, t3, t3 + 120_000, 60)).toEqual([]);
+    expect(gov.tier).toBe(QUALITY_MAX_TIER);
   });
 
   test('resume() keeps the tier and the latch; only the warmup restarts', () => {
@@ -240,5 +252,143 @@ describe('adaptive quality governor: gameplay rules unchanged once armed', () =>
     s.quiet = true;
     const r = drive(gov, 20_000, 20_000 + QUALITY_POST_LOAD_SETTLE_MS + 4 * QUALITY_SAMPLE_MS + 100, 60);
     expect(r.map(([, v]) => v)).toEqual([0]);
+  });
+});
+
+/**
+ * web-load T11 (staging 4fe13447, headless, runs v4-A1..A5 / L1..L3 / B1..B5):
+ * one 2.5 s window below 58 FPS degraded, and at 60 Hz that is only 5 missed
+ * frames. 9 of 13 trigger windows lost <= 9 frames (one short bucket or
+ * scattered one-frame losses), and tier 1 did not lower the dip rate (2.5 s
+ * windows < 58: 7.4% at tier 0, 11.8% at tier 1). The old rule latched in
+ * 5/5 phase offsets on A2-A5, L2 and L3. New rule: 2 CONSECUTIVE counted windows
+ * below 55 FPS; a window that overlapped post-load work is not counted.
+ */
+describe('adaptive quality governor: 2 consecutive low windows (web-load T11)', () => {
+  /** Frames at `fps`, with one stall of `stallMs` (no frames) starting at `stallAt`. */
+  function driveWithStall(
+    gov: ReturnType<typeof createQualityGovernor>,
+    from: number,
+    to: number,
+    fps: number,
+    stallAt: number,
+    stallMs: number,
+  ): Array<[number, number]> {
+    const changes: Array<[number, number]> = [];
+    const step = 1000 / fps;
+    for (let now = from; now < to; now += step) {
+      if (now >= stallAt && now < stallAt + stallMs) continue;
+      const next = gov.frame(now);
+      if (next !== null) changes.push([Math.round(now), next]);
+    }
+    return changes;
+  }
+
+  test('the down threshold is 55 FPS and 2 consecutive windows are needed', () => {
+    expect(QUALITY_FPS_DOWN).toBe(55);
+    expect(QUALITY_DEGRADE_SAMPLES).toBe(2);
+  });
+
+  test('(a) one short dip window never degrades (a 400 ms stall, then a whole 40 FPS window)', () => {
+    const { gov, t } = armed();
+    // A 400 ms task inside one window: ~24 lost frames, the window reads ~50 FPS.
+    expect(driveWithStall(gov, t, t + 30_000, 60, t + 6_000, 400)).toEqual([]);
+    // One whole window at 40 FPS between 60 FPS stretches.
+    const t1 = t + 30_000;
+    expect(drive(gov, t1, t1 + QUALITY_SAMPLE_MS + 10, 40)).toEqual([]);
+    expect(drive(gov, t1 + QUALITY_SAMPLE_MS + 10, t1 + 40_000, 60)).toEqual([]);
+    expect(gov.tier).toBe(0);
+  });
+
+  test('(b) two consecutive windows below 55 degrade at the end of the second', () => {
+    const { gov, t } = armed();
+    // 60 FPS until a window boundary, then 50 FPS.
+    expect(drive(gov, t, t + 10_000, 60)).toEqual([]);
+    const lowFrom = t + 10_000;
+    const changes = drive(gov, lowFrom, lowFrom + 4 * QUALITY_SAMPLE_MS, 50);
+    expect(changes.length).toBe(1);
+    expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
+    // The window that straddles the drop may read >= 55; at most 3 windows.
+    expect(changes[0]![0]).toBeGreaterThanOrEqual(lowFrom + QUALITY_SAMPLE_MS + 50);
+    expect(changes[0]![0]).toBeLessThanOrEqual(lowFrom + 3 * QUALITY_SAMPLE_MS + 50);
+  });
+
+  test('(c) a window below 55 followed by a window >= 55 resets the run', () => {
+    const { gov, t } = armed();
+    // Alternate whole windows: 50 FPS, then 56 FPS (>= 55 but < 59), x6.
+    let now = t;
+    for (let i = 0; i < 6; i++) {
+      const lowEnd = now + QUALITY_SAMPLE_MS + 10;
+      expect(drive(gov, now, lowEnd, 50)).toEqual([]);
+      const highEnd = lowEnd + QUALITY_SAMPLE_MS + 10;
+      expect(drive(gov, lowEnd, highEnd, 56)).toEqual([]);
+      now = highEnd;
+    }
+    expect(gov.tier).toBe(0);
+  });
+
+  test('(d) a window that overlapped post-load work is skipped: not counted, run kept', () => {
+    const { gov, s, t } = armed();
+    expect(drive(gov, t, t + 10_000, 60)).toEqual([]);
+    // One low window while a post-load job runs for 300 ms (e.g. a wanderer
+    // warm read): skipped, so this low window alone and the next low window
+    // cannot form a run with it.
+    const w1 = t + 10_000;
+    const busyFrom = w1 + 1_000;
+    const w1Changes = drive(gov, w1, w1 + 2 * QUALITY_SAMPLE_MS + 10, 40, (now) => {
+      s.quiet = !(now >= busyFrom && now < busyFrom + 300);
+    });
+    // Window A (busy, skipped) + window B (low, counted: run 1): no degrade.
+    expect(w1Changes).toEqual([]);
+    s.quiet = true;
+    // Back to 60 FPS: the run resets.
+    const w2 = w1 + 2 * QUALITY_SAMPLE_MS + 10;
+    expect(drive(gov, w2, w2 + 10_000, 60)).toEqual([]);
+    // low (counted) -> low + busy (skipped) -> low (counted) = 2 consecutive counted.
+    const w3 = w2 + 10_000;
+    const changes = drive(gov, w3, w3 + 4 * QUALITY_SAMPLE_MS, 40, (now) => {
+      const busyAt = w3 + QUALITY_SAMPLE_MS + 1_000;
+      s.quiet = !(now >= busyAt && now < busyAt + 300);
+    });
+    expect(changes.length).toBe(1);
+    expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
+    // Counting the busy window would have degraded one window earlier.
+    expect(changes[0]![0]).toBeGreaterThanOrEqual(w3 + 2 * QUALITY_SAMPLE_MS + QUALITY_SAMPLE_MS / 2);
+  });
+
+  test('(d2) post-load work that never ends cannot disable the governor', () => {
+    const { gov, s, t } = armed();
+    // A stuck busy signal (a job that never settles) at 30 FPS: windows are
+    // skipped for at most QUALITY_BUSY_SKIP_MAX_MS, then count again.
+    s.quiet = false;
+    const changes = drive(gov, t, t + QUALITY_BUSY_SKIP_MAX_MS + 3 * QUALITY_SAMPLE_MS + 100, 30);
+    expect(changes.length).toBe(1);
+    expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
+    expect(changes[0]![0]).toBeGreaterThanOrEqual(t + QUALITY_BUSY_SKIP_MAX_MS);
+  });
+
+  test('(e) a slow series (5-20 FPS) degrades within 2 windows of arming', () => {
+    const s = signals(true, false);
+    const gov = createQualityGovernor(0, s);
+    gov.resume(0);
+    // Busy until 20 s at 8 FPS (load), then quiet: arms at 23 s.
+    expect(drive(gov, 0, 20_000, 8)).toEqual([]);
+    s.quiet = true;
+    const changes: Array<[number, number]> = [];
+    let now = 20_000;
+    let i = 0;
+    const fpsCycle = [5, 12, 20, 9, 15, 7];
+    while (now < 40_000) {
+      const fps = fpsCycle[i++ % fpsCycle.length]!;
+      const end = now + 1_000;
+      changes.push(...drive(gov, now, end, fps));
+      now = end;
+    }
+    expect(gov.armed).toBe(true);
+    expect(changes.length).toBe(1);
+    expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
+    const armedAt = 20_000 + QUALITY_POST_LOAD_SETTLE_MS;
+    // 2 windows + one 5 FPS frame step.
+    expect(changes[0]![0]).toBeLessThanOrEqual(armedAt + 2 * QUALITY_SAMPLE_MS + 200 + 200);
   });
 });

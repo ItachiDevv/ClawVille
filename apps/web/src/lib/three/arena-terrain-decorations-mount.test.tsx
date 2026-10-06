@@ -2,6 +2,11 @@
  * Mounted check of the seabed decoration gate (Codex E3 SHOULD-FIX 2026-10-06):
  * (a) with the gate OFF, ArenaTerrain makes no demand and no fetch for any of
  *     the 11 decoration GLB paths;
+ * (a2) web-load T11: a profile that starts at tier 1 (`decorationsVisible`
+ *     false) demands and fetches none of the 11 GLBs until the first show
+ *     (staging 4fe13447, desktop-low at CPU 4x: 10 GLB requests + parse with
+ *     0.89-1.79 s long tasks and a 52-mesh warm compile of 1.07-2.0 s, for
+ *     decorations that never showed); the first show mounts them once;
  * (b) governor toggles (tier 0/1, `decorationsVisible`) only flip visibility:
  *     0 new merged geometries, 0 disposals (staging ac36e4e1: a remount per
  *     recovery cost a merge + upload spike that latched tier 1 for the session);
@@ -197,12 +202,22 @@ describe('ArenaTerrain decoration gate, mounted', () => {
       expect(decoDemands()).toEqual([]);
       expect(decoFetches).toEqual([]);
 
-      // Desktop profile, governor at tier 1 during load: mount ONCE, hidden.
+      // (a2) Desktop profile that starts at tier 1 (desktop-low): nothing is
+      // demanded, fetched or mounted while the decorations were never shown.
       await render(true, false);
-      await waitFor(() => decoMeshes().length > 0, 'decorations mounted hidden');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await render(true, false);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(decoMeshes().length).toBe(0);
+      expect(decoDemands()).toEqual([]);
+      expect(decoFetches).toEqual([]);
+
+      // First show (the governor reaches tier 0): mount ONCE, visible.
+      await render(true, true);
+      await waitFor(() => decoMeshes().length > 0, 'decorations mounted on first show');
       expect(new Set(decoDemands())).toEqual(DECO_PATHS);
       const first = decoMeshes();
-      expect(first.some(drawn)).toBe(false);
+      expect(first.every(drawn)).toBe(true);
       const geoIds = new Set(first.map((m) => m.geometry.uuid));
       const disposed = new Map<string, number>();
       for (const m of first) {
@@ -215,8 +230,9 @@ describe('ArenaTerrain decoration gate, mounted', () => {
       }
       const cacheEntriesAfterMount = cache.size;
 
-      // (b) Governor tier toggles: 0 -> 1 -> 0 -> 1 -> 0.
-      for (const visible of [true, false, true, false, true]) {
+      // (b) Governor tier toggles after the first show: 0 -> 1 -> 0 -> 1 -> 0.
+      // Hiding never unmounts (the first-show latch holds).
+      for (const visible of [false, true, false, true, false, true]) {
         await render(true, visible);
         await waitFor(() => decoMeshes().length > 0 && decoMeshes().every((m) => drawn(m) === visible), `visible=${visible}`);
         const now = decoMeshes();

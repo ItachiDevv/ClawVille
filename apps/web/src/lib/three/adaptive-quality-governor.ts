@@ -4,10 +4,26 @@
  * Tier 0 = full quality; tier 1 = groundCover hidden (seaweed, kelp forest,
  * seabed decorations). The governor never touches activityFx or labels.
  *
- * Sampling: one rAF frame count per QUALITY_SAMPLE_MS window. A window below
- * QUALITY_FPS_DOWN degrades to tier 1; QUALITY_RECOVER_SAMPLES consecutive
- * windows at or above QUALITY_FPS_UP recover one tier. The SECOND degrade of
- * a session latches tier 1 (anti-flap).
+ * Sampling: one rAF frame count per QUALITY_SAMPLE_MS window.
+ * QUALITY_DEGRADE_SAMPLES consecutive counted windows below QUALITY_FPS_DOWN
+ * degrade to tier 1 (a window at or above it resets the run);
+ * QUALITY_RECOVER_SAMPLES consecutive windows at or above QUALITY_FPS_UP
+ * recover one tier. The SECOND degrade of a session latches tier 1 (anti-flap).
+ *
+ * Why 2 windows below 55 (web-load T11, staging 4fe13447, headless runs
+ * v4-A1..A5 / L1..L3 / B1..B5): the old rule (one window below 58) degraded on
+ * 5 missed frames at 60 Hz. 9 of 13 trigger windows lost <= 9 frames, and
+ * tier 1 did not lower the dip rate (windows < 58: 7.4% at tier 0, 11.8% at
+ * tier 1), so the rule latched in 5/5 phase offsets on A2-A5, L2 and L3. Replayed
+ * with 2 consecutive windows < 55, only A2 (heavy pollers) latched; the 4x
+ * slow runs (windows at 4.8-19.2 FPS) still degraded 5/5.
+ *
+ * Post-load work after arming (web-load T11): a window during which the
+ * caller's post-load work signal was busy is SKIPPED (not counted: the low
+ * run, the high run and the tier stay as they were). A busy run that started
+ * after arming skips windows for at most QUALITY_BUSY_SKIP_MAX_MS; a busy run
+ * that was still going when the ceiling armed the gate never skips. So
+ * post-load work that never goes quiet cannot disable the governor.
  *
  * Post-load gate (web-load T8): no frame counts until the world has finished
  * LOADING. Local prod build at 1342805d (RTX 3080, 3/3 cold loads): the
@@ -27,7 +43,9 @@
 
 export const QUALITY_SAMPLE_MS = 2500;
 export const QUALITY_WARMUP_MS = 5000;
-export const QUALITY_FPS_DOWN = 58;
+export const QUALITY_FPS_DOWN = 55;
+/** Consecutive counted windows below QUALITY_FPS_DOWN before a degrade. */
+export const QUALITY_DEGRADE_SAMPLES = 2;
 // Recovery threshold: 59 FPS is reachable on a 60 Hz display (vsync permits it).
 // The old 90 threshold was unreachable at vsync, creating a one-way ratchet.
 export const QUALITY_FPS_UP = 59;
@@ -40,11 +58,15 @@ export const QUALITY_RECOVER_SAMPLES = 3;
 export const QUALITY_POST_LOAD_SETTLE_MS = 3000;
 /** After the loader dismissal, the gate opens at the latest after this long. */
 export const QUALITY_POST_LOAD_CEILING_MS = 30_000;
+/** After arming, one busy run of post-load work skips windows at most this long. */
+export const QUALITY_BUSY_SKIP_MAX_MS = 30_000;
 
 export interface QualityGovernorSignals {
   /** The loader's own dismissal time (performance.now() timeline), or null while it is up. */
   getLoadingDismissedAt(): number | null;
-  /** True while no post-load work (stream members, GPU warm jobs) is pending. */
+  /** True while no post-load work (stream members, GPU warm jobs) is pending.
+   * Read every frame: before arming for the settle gate, after arming to skip
+   * windows that overlapped post-load work. Must not allocate. */
   isPostLoadQuiet(): boolean;
 }
 
@@ -67,12 +89,19 @@ export function createQualityGovernor(
   let degradeCount = 0;
   let latched = false;
   let stableHighSamples = 0;
+  let lowSamples = 0;
   let frames = 0;
   let sampleStart = 0;
   let startedAt = 0;
   let armed = false;
   let dismissedAt: number | null = null;
   let quietSince: number | null = null;
+  // After arming: start of the current busy run of post-load work (null while
+  // quiet; -Infinity for a run that was already going when the ceiling armed
+  // the gate: it never skips), and whether the open window saw a skip-eligible
+  // busy frame.
+  let busySince: number | null = null;
+  let windowBusy = false;
 
   /** Post-load gate. While closed, the sample window restarts every frame. */
   const gateOpen = (now: number): boolean => {
@@ -93,7 +122,18 @@ export function createQualityGovernor(
     const settled = quietSince !== null && now - quietSince >= QUALITY_POST_LOAD_SETTLE_MS;
     if (!settled && now - dismissedAt < QUALITY_POST_LOAD_CEILING_MS) return false;
     armed = true;
+    busySince = quietSince !== null ? null : Number.NEGATIVE_INFINITY;
     return true;
+  };
+
+  /** After arming: mark the open window busy while post-load work runs. */
+  const noteBusy = (now: number): void => {
+    if (signals.isPostLoadQuiet()) {
+      busySince = null;
+      return;
+    }
+    if (busySince === null) busySince = now;
+    if (now - busySince < QUALITY_BUSY_SKIP_MAX_MS) windowBusy = true;
   };
 
   return {
@@ -111,9 +151,13 @@ export function createQualityGovernor(
       sampleStart = now;
       startedAt = now;
       stableHighSamples = 0;
+      lowSamples = 0;
+      windowBusy = false;
     },
     frame(now: number): number | null {
-      if (!gateOpen(now)) {
+      if (armed) {
+        noteBusy(now);
+      } else if (!gateOpen(now)) {
         // Load-time frames never enter a sample: the first counted window
         // starts at the first frame after the gate opened.
         frames = 0;
@@ -125,12 +169,18 @@ export function createQualityGovernor(
       if (elapsed < QUALITY_SAMPLE_MS) return null;
       const fps = (frames * 1000) / elapsed;
       const warmed = now - startedAt >= QUALITY_WARMUP_MS;
+      const skipped = windowBusy;
       frames = 0;
       sampleStart = now;
+      windowBusy = false;
+      // A window that overlapped post-load work is not counted at all.
+      if (skipped) return null;
 
-      if (!latched && warmed && fps < QUALITY_FPS_DOWN && tier < QUALITY_MAX_TIER) {
+      if (!latched && warmed) lowSamples = fps < QUALITY_FPS_DOWN ? lowSamples + 1 : 0;
+      if (!latched && warmed && lowSamples >= QUALITY_DEGRADE_SAMPLES && tier < QUALITY_MAX_TIER) {
         tier = QUALITY_MAX_TIER;
         stableHighSamples = 0;
+        lowSamples = 0;
         degradeCount += 1;
         // Second degrade in the same session: lock tier for the rest of the session.
         if (degradeCount >= 2) latched = true;
@@ -141,6 +191,7 @@ export function createQualityGovernor(
         if (stableHighSamples >= QUALITY_RECOVER_SAMPLES) {
           tier -= 1;
           stableHighSamples = 0;
+          lowSamples = 0;
           return tier;
         }
         return null;

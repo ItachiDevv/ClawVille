@@ -203,8 +203,9 @@ const WORLD_DPR_RANGE: [number, number] = [
 // loader is dismissed AND post-load work is quiet (every boot stream member
 // terminal + the deferred GPU warm queue empty + no seabed decoration warm
 // read pending) for the settle window; the ceiling counts from the loader's
-// own dismissal time. One module-level object: the per-frame gate check
-// allocates nothing.
+// own dismissal time. After arming, the same check runs every frame and a
+// 2.5 s window that overlapped busy post-load work is not counted (web-load
+// T11). One module-level object: the per-frame check allocates nothing.
 const QUALITY_GOVERNOR_SIGNALS: QualityGovernorSignals = worldQualitySignals({
   loadingDismissedAt: getLoadingDismissedAt,
   streamSettled: () => getStreamSettledAt() !== null,
@@ -2830,8 +2831,10 @@ export const WorldSceneContents = memo(function WorldSceneContents({
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
-        {/* Seabed scatter: mounts per device profile (phones/tablets never);
-            the governor's groundCover tier only toggles its visibility. */}
+        {/* Seabed scatter: device profile gate (phones/tablets never); it
+            mounts on the first groundCover show (a tier-1 start loads none of
+            its 11 GLBs until tier 0, web-load T11), then the governor's tier
+            only toggles its visibility. */}
         <ArenaTerrain
           decorationsMounted={CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover}
           decorationsVisible={showGroundCover}

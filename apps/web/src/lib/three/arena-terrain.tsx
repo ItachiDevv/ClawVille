@@ -546,15 +546,37 @@ function FixedLandmarks() {
 }
 
 /**
+ * Mount the seabed scatter on its FIRST SHOW, then only toggle visibility
+ * (web-load T11; the WorldGroundCover everShown pattern).
+ *
+ * Why: staging 4fe13447, desktop-low profile at CPU 4x (initial tier 1): the
+ * decorations never showed, yet they cost 10 GLB requests + parse (long tasks
+ * 0.89-1.79 s) and a 52-mesh warm compile of 1.07-2.0 s at 4-18 FPS. Now a
+ * profile that starts at tier 1 demands none of the 11 GLBs until the
+ * governor first reaches tier 0. After the first show, a tier change only
+ * flips `visible` (staging ac36e4e1: a remount on recovery spiked the frame
+ * and latched tier 1 for the session). The latch resets only on a real
+ * unmount (the profile gate or the world teardown).
+ */
+function SeabedDecorationsOnFirstShow({ visible }: { visible: boolean }) {
+  // Monotonic latch. A render-phase update of this component's own state is
+  // React's derived-state pattern: React re-renders at once, before commit.
+  const [everShown, setEverShown] = useState(visible);
+  if (visible && !everShown) setEverShown(true);
+  if (!everShown && !visible) return null;
+  return <UnderwaterDecorations visible={visible} />;
+}
+
+/**
  * The seabed scatter follows the ground-cover switch, in two parts:
  * - `decorationsMounted` = the device profile's `ambientGroundCover` (false on
  *   phones and tablets): when false the scatter never mounts and demands none
  *   of its 11 GLBs;
  * - `decorationsVisible` = `showGroundCover` (the adaptive governor clears it
- *   at tier 1): it only flips visibility. The scatter mounts once, keeps its
- *   merged meshes, and disposes them only on a real unmount, so a tier toggle
- *   costs no merge, upload or dispose (staging ac36e4e1: a remount on recovery
- *   spiked the frame and latched tier 1 for the session).
+ *   at tier 1): the scatter mounts on its first show (never while the world
+ *   has only been at tier 1), then this only flips visibility. It keeps its
+ *   merged meshes and disposes them only on a real unmount, so a tier toggle
+ *   costs no merge, upload or dispose.
  * The sand floor always renders.
  */
 export default function ArenaTerrain({
@@ -568,7 +590,7 @@ export default function ArenaTerrain({
     <Suspense fallback={null}>
       <SandFloor />
       {/* Procedurally scattered individual GLB decorations */}
-      {decorationsMounted && <UnderwaterDecorations visible={decorationsVisible} />}
+      {decorationsMounted && <SeabedDecorationsOnFirstShow visible={decorationsVisible} />}
       {/*
         REMOVED 2026-04-16: `UnderwaterDecorationsGlb` (underwater-decorations.glb @ scale 8)
         and `FixedLandmarks` (submarine @ scale 2.0 + shipwreck @ scale 2.5). All three were
