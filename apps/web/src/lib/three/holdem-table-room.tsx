@@ -8,6 +8,7 @@ import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { preloadClips, VRMCharacterAnimator, type AnimName } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelKey, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
@@ -202,6 +203,7 @@ const FORCE_PEEK_CARDS = (() => {
     && new URLSearchParams(window.location.search).get('seatCards') === '1';
 })();
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
+const DEALER_PATH = (MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry).path;
 
 interface HandPoseSample {
   left: readonly [number, number, number];
@@ -864,7 +866,7 @@ interface ResolvedCashFigureSeat {
   avatarId: string;
 }
 
-function HoldemTableRoomScene({
+export function HoldemTableRoomScene({
   instanceId,
   liveTable,
 }: {
@@ -1144,6 +1146,7 @@ function HoldemTableRoomScene({
           ? seat.engineSeatIndex
           : undefined;
         const figureVisible = !liveTable || Boolean(resolvedSeat);
+        const figureId = `holdem-room-seat-${seat.engineSeatIndex}-${resolvedSeat?.avatarId ?? modelKey}`;
         return (
           <group
             key={`holdem-seat-${seat.engineSeatIndex}`}
@@ -1153,31 +1156,46 @@ function HoldemTableRoomScene({
             <group position={[seat.chairX, 0, seat.chairZ]} rotation={[0, seat.faceYaw, 0]}>
               <primitive object={chairs[index]!} />
             </group>
-            {figureVisible && (reg.avatar_type === 'glb' ? (
-              <RiglessPerchFigure
-                reg={reg}
-                modelKey={modelKey}
-                position={[seat.x, 0, seat.z]}
-                yaw={seat.faceYaw}
-              />
-            ) : (
-              <FrozenFigure
-                reg={reg}
-                instanceId={`holdem-room-seat-${seat.engineSeatIndex}-${resolvedSeat?.avatarId ?? modelKey}`}
-                pose={usesChibiSitFallback
-                  ? 'idle'
-                  : usesScale100SitFallback ? 'sit_idle_m' : TABLE_POSE_BY_BOT[index]!}
-                position={[seat.x, 0, seat.z]}
-                yaw={seat.faceYaw}
-                targetHeight={usesChibiSitFallback ? CHIBI_TARGET_HEIGHT : BOT_TARGET_HEIGHT}
-                cushionY={CHAIR_CUSHION_Y}
-                sampleAt={usesManualSit ? 0.2 : TABLE_POSE_SAMPLE_AT}
-                manualSeat={usesManualSit}
-                relaxManualUpperBody={usesScale100SitFallback}
-                handSampleSeat={handSampleSeat}
-                onHandSample={onHandSample}
-              />
-            ))}
+            {/* Optional figure: a seat model (VRM or rigless GLB) that fails
+                every retry is skipped with one console.error. The chair,
+                cards, badges and seat actions keep running; a failed peek
+                seat drops its hand sample so its cards return to the felt. */}
+            {figureVisible && (
+              <ModelLoadBoundary
+                assetUrl={reg.path}
+                label={`holdem-seat:${seat.engineSeatIndex}`}
+                resetKey={figureId}
+                onModelFailed={handSampleSeat === undefined
+                  ? undefined
+                  : () => onHandSample(handSampleSeat, null)}
+              >
+                {reg.avatar_type === 'glb' ? (
+                  <RiglessPerchFigure
+                    reg={reg}
+                    modelKey={modelKey}
+                    position={[seat.x, 0, seat.z]}
+                    yaw={seat.faceYaw}
+                  />
+                ) : (
+                  <FrozenFigure
+                    reg={reg}
+                    instanceId={figureId}
+                    pose={usesChibiSitFallback
+                      ? 'idle'
+                      : usesScale100SitFallback ? 'sit_idle_m' : TABLE_POSE_BY_BOT[index]!}
+                    position={[seat.x, 0, seat.z]}
+                    yaw={seat.faceYaw}
+                    targetHeight={usesChibiSitFallback ? CHIBI_TARGET_HEIGHT : BOT_TARGET_HEIGHT}
+                    cushionY={CHAIR_CUSHION_Y}
+                    sampleAt={usesManualSit ? 0.2 : TABLE_POSE_SAMPLE_AT}
+                    manualSeat={usesManualSit}
+                    relaxManualUpperBody={usesScale100SitFallback}
+                    handSampleSeat={handSampleSeat}
+                    onHandSample={onHandSample}
+                  />
+                )}
+              </ModelLoadBoundary>
+            )}
           </group>
         );
       })}
@@ -1193,14 +1211,16 @@ function HoldemTableRoomScene({
       {/* Dealer STANDS at the MEASURED flat edge (+Z, the 251wu straight
           side), facing the player at the arc (-Z ⇒ yaw π). */}
       <group visible={!POSE_AUDIT_VIEW}>
-        <FrozenFigure
-          reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
-          instanceId="holdem-room-dealer"
-          pose="idle"
-          position={[0, 0, 78 * TABLE_FOOTPRINT_SCALE]}
-          yaw={Math.PI}
-          targetHeight={DEALER_TARGET_HEIGHT}
-        />
+        <ModelLoadBoundary assetUrl={DEALER_PATH} label="holdem-dealer" resetKey={DEALER_PATH}>
+          <FrozenFigure
+            reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
+            instanceId="holdem-room-dealer"
+            pose="idle"
+            position={[0, 0, 78 * TABLE_FOOTPRINT_SCALE]}
+            yaw={Math.PI}
+            targetHeight={DEALER_TARGET_HEIGHT}
+          />
+        </ModelLoadBoundary>
         <DealerPlate position={[0, DEALER_TARGET_HEIGHT + 18, 78 * TABLE_FOOTPRINT_SCALE]} />
       </group>
 

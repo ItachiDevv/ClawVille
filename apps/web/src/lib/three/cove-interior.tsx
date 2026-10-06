@@ -34,7 +34,7 @@
  *   - Draw calls < 140 (room ~21 + cabinets 12 + avatar ~2-4 + hotspot 4)
  */
 
-import { Suspense, useRef, useEffect, useMemo, useState, type RefObject, type MutableRefObject } from 'react';
+import { Suspense, useCallback, useRef, useEffect, useMemo, useState, type RefObject, type MutableRefObject } from 'react';
 import { useThree, type ThreeEvent } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -46,6 +46,8 @@ import { useAvatar } from '@/hooks/use-avatar';
 // Phase 6.4.0 — blackjack table hotspot uses the store action openBlackjackTable
 import { useGameStore } from '@/stores/game';
 import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
+import { showLocalPlayerFallbackNotice } from '@/lib/three/local-player-model-fallback';
 import {
   VRMCharacterAnimator,
   preloadClips,
@@ -82,6 +84,9 @@ import { filterCoveSignHits, shouldYieldToFartherHotspot } from '@/lib/three/cov
 const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-mo-ktx.glb?v=3';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
+/** The cove's default (lobster) player body: the GLB branch, and the body
+ *  shown when the player's VRM fails every request retry. */
+const COVE_LOBSTER_GLB = '/models/lobster-ktx.glb?v=2';
 const NOOP = (): void => {};
 
 /** Emergency rollback for the Meshy sit flow; false restores the prior
@@ -516,7 +521,7 @@ const extendWithDraco = (loader: unknown) => {
 if (typeof window !== 'undefined') {
   preloadKTX2Bytes(INTERIOR_GLB);
   useGLTF.preload(FALLBACK_GLB);
-  preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
+  preloadKTX2Bytes(COVE_LOBSTER_GLB);
   _dracoLoader.preload();
 }
 
@@ -2072,17 +2077,21 @@ function TableSeatedBustInner({ reg, seat, seatIndex, instanceId, targetHeight }
   );
 }
 
-function TableSeatedBust(props: {
+export function TableSeatedBust(props: {
   reg: ModelRegistryEntry;
   seat: TableSeat;
   seatIndex: number;
   instanceId: string;
   targetHeight: number;
 }) {
+  // Optional figure: a bust whose VRM fails every retry is skipped (one
+  // console.error); the other seats and the room keep running.
   return (
-    <Suspense fallback={null}>
-      <TableSeatedBustInner {...props} />
-    </Suspense>
+    <ModelLoadBoundary assetUrl={props.reg.path} label={`cove-seat:${props.seatIndex}`} resetKey={props.instanceId}>
+      <Suspense fallback={null}>
+        <TableSeatedBustInner {...props} />
+      </Suspense>
+    </ModelLoadBoundary>
   );
 }
 
@@ -2665,7 +2674,7 @@ function CoveGLBAvatarInner() {
     _coveArrowPitchOffset = 0;
   }, []);
 
-  const { scene } = useGLTFWithKTX2('/models/lobster-ktx.glb?v=2');
+  const { scene } = useGLTFWithKTX2(COVE_LOBSTER_GLB);
 
   const { cloned, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
@@ -2830,22 +2839,80 @@ function CoveGLBAvatarInner() {
 }
 
 // ---------------------------------------------------------------------------
+// Local player body when a model fails every request retry (3da I2,
+// 2026-10-06). The cove does not use the main world's boot-actor claim, so
+// it does not use LocalPlayerFallback (that registers a world boot claim).
+// It reuses its OWN lobster branch instead: CoveGLBAvatarInner carries the
+// same WASD, E-key, sit proximity and follow camera as the VRM branch, so
+// the player can still walk to every game. Same one-per-session notice as
+// the main world (GameFeatures.md §9c copy). If the lobster also fails, the
+// body renders nothing and the room, hotspots and banners keep running.
+// ---------------------------------------------------------------------------
+function useNoBodyNotice(): () => void {
+  const addToast = useGameStore((s) => s.addToast);
+  return useCallback(() => showLocalPlayerFallbackNotice(addToast, 'none'), [addToast]);
+}
+
+/** Effect sibling inside the fallback's Suspense: runs only once the lobster committed. */
+function CoveFallbackBodyNotice() {
+  const addToast = useGameStore((s) => s.addToast);
+  useEffect(() => {
+    showLocalPlayerFallbackNotice(addToast, 'body');
+  }, [addToast]);
+  return null;
+}
+
+function CovePlayerFallbackBody() {
+  const onNoBody = useNoBodyNotice();
+  return (
+    <ModelLoadBoundary
+      assetUrl={COVE_LOBSTER_GLB}
+      label="cove-player-fallback"
+      resetKey={COVE_LOBSTER_GLB}
+      onModelFailed={onNoBody}
+    >
+      <Suspense fallback={null}>
+        <CoveGLBAvatarInner />
+        <CoveFallbackBodyNotice />
+      </Suspense>
+    </ModelLoadBoundary>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // CovePlayerAvatar — routes to VRM or GLB based on avatarModelKey
 // ---------------------------------------------------------------------------
-function CovePlayerAvatar() {
+export function CovePlayerAvatar() {
   const avatarModelKey = useGameStore((s) => s.avatarModelKey);
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
+  const onNoBody = useNoBodyNotice();
 
   if (reg.avatar_type === 'vrm') {
     return (
-      <Suspense fallback={null}>
-        <CoveVRMAvatarInner reg={reg} />
-      </Suspense>
+      <ModelLoadBoundary
+        assetUrl={reg.path}
+        label="cove-player"
+        resetKey={reg.path}
+        fallback={<CovePlayerFallbackBody />}
+      >
+        <Suspense fallback={null}>
+          <CoveVRMAvatarInner reg={reg} />
+        </Suspense>
+      </ModelLoadBoundary>
     );
   }
 
-  return <CoveGLBAvatarInner />;
+  return (
+    <ModelLoadBoundary
+      assetUrl={COVE_LOBSTER_GLB}
+      label="cove-player"
+      resetKey={COVE_LOBSTER_GLB}
+      onModelFailed={onNoBody}
+    >
+      <CoveGLBAvatarInner />
+    </ModelLoadBoundary>
+  );
 }
 
 // ---------------------------------------------------------------------------

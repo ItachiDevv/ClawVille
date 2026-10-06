@@ -6,6 +6,7 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { preloadClips, VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import {
@@ -22,6 +23,7 @@ import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
+const DEALER_PATH = (MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry).path;
 const DEALER_POSE_SAMPLE_AT = 0.0001;
 preloadClips(['idle']);
 
@@ -420,7 +422,7 @@ function Precompile() {
   return null;
 }
 
-function BaccaratTableRoomScene({
+export function BaccaratTableRoomScene({
   instanceId,
   view,
 }: {
@@ -457,7 +459,11 @@ function BaccaratTableRoomScene({
       <group position={[0, TABLE_VISUAL_Y, 0]}>
         <primitive object={table} />
       </group>
-      <DealerFigure instanceId={`${instanceId}-baccarat-dealer`} />
+      {/* Optional figure: a dealer VRM that fails every retry is skipped
+          (one console.error); the room, cards and bets keep running. */}
+      <ModelLoadBoundary assetUrl={DEALER_PATH} label="baccarat-dealer" resetKey={DEALER_PATH}>
+        <DealerFigure instanceId={`${instanceId}-baccarat-dealer`} />
+      </ModelLoadBoundary>
       <DealerPlate />
       <BaccaratBetZones selected={selected} />
       <BaccaratTableCards3D
