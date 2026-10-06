@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-06 01:55Z (§9c: the avatar load failure fallback also covers the Cove body; a failed dealer or seated table figure is skipped).** Drift note: §9c avatar-load-failure line extended to the Cove and the table rooms.
+**Last Audited: 2026-10-06 07:48Z (§18a cove guest history trap note: browser fingerprint storage key).** Drift note: the trap note said the raw fingerprint was stored in localStorage as `cv-fp`, but no code wrote any key; the web client now stores it as `cv:fp:v1` (web-load T4, load-path cache, `ARCHITECTURE.md` §Anti-farm).
+
+Prior — **Last Audited: 2026-10-06 01:55Z (§9c: the avatar load failure fallback also covers the Cove body; a failed dealer or seated table figure is skipped).** Drift note: §9c avatar-load-failure line extended to the Cove and the table rooms.
 
 Prior — **Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body; if that also fails, no body, the world keeps running, and the notice says so).** Drift note: §9c gains the avatar-load-failure line.
 
@@ -2752,7 +2754,7 @@ Player avatar (VRM or GLB) mounts inside the casino interior scene. Fully self-c
 
 **Anti-farm note:** the `(fp_hash, ip_prefix_hash)` daily cap rules (chat=50, building=10) apply to leaderboard events — `cove_game_events` is a history table, not a leaderboard source. No new abuse surface for /dash budgets. Guest session creation IS subject to a per-fp rate limit (10 sessions/hour/fp) added in §1 to bound row-creation cost.
 
-**Adversarial trap (documented, accepted):** an authed user can technically claim another browser's guest rows if they obtain that browser's raw `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv-fp`). This is the same risk surface as session hijack — XSS-equivalent, not a new vector. Documented in the route docstring. The server-side salted hash means no off-platform attacker can forge a fingerprint.
+**Adversarial trap (documented, accepted):** an authed user can technically claim another browser's guest rows if they obtain that browser's raw `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv:fp:v1` since 2026-10-06; before that it lived only in page memory, and same-origin script could compute it with FingerprintJS anyway). This is the same risk surface as session hijack — XSS-equivalent, not a new vector. Documented in the route docstring. The server-side salted hash means no off-platform attacker can forge a fingerprint.
 
 **Revert:** §8 of the plan — re-enable `requireAuth` on the read paths, re-add `.notNull()` on the schema, `DELETE FROM cove_game_events WHERE guest_fp_hash IS NOT NULL` (safe because no real CT was moved). Signup-claim hook is a tiny client-side `try/catch` — removing the file is a no-op for everything else.
 
