@@ -439,18 +439,23 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const walkableYRef = useRef(-2);
   const { scene: threeScene } = useThree();
 
+  // Slice D boot-actor claim [R4-F1]: render-time legal (replayable epoch
+  // state, idempotent per (epoch, kind, resource)). Registered BEFORE the
+  // useVRMInstance suspend point, so a retry of the same path re-registers
+  // the claim at once and cancels a pending LocalPlayerFallback unmount
+  // release (boot-actor deferBootActorClaimRelease); otherwise that release
+  // could commit the claim while this body still loads (early reveal).
+  const actorToken = registerBootActorClaim('player-vrm', reg.path);
+
   // Load a fresh VRM instance for the player. Stable instanceId 'player-avatar'
   // since only one player avatar ever exists at a time. Per-instance loading
   // means the player's VRM is fully disjoint from any wandering NPC sharing
   // the same path — no scene reparenting wars (Codex Critical #1).
   const vrm = useVRMInstance(reg.path, 'player-avatar');
 
-  // Slice D boot-actor claim + commit [R4-F1]: the claim is render-time
-  // legal (replayable epoch state, idempotent per (epoch, kind, resource));
-  // the COMMIT fires from a passive effect — this line only executes after
-  // the useVRMInstance suspend point resolved, so the effect commit proves
-  // the body subtree is real.
-  const actorToken = registerBootActorClaim('player-vrm', reg.path);
+  // The COMMIT fires from a passive effect: effects run only after the
+  // useVRMInstance suspend point resolved and this subtree committed, so the
+  // commit proves the body is real.
   useEffect(() => {
     notifyBootActorCommitted(actorToken);
   }, [actorToken]);
@@ -656,14 +661,18 @@ function PlayerAvatarGLBInner({ forcedModelKey }: { forcedModelKey?: string } = 
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
-  const { scene } = useGLTFWithKTX2(reg.path);
-
   // Slice D boot-actor claim + commit [R2-F2 gap closed]: the GLB-species
   // player (drei/LoadingManager-routed) was covered implicitly by the old
   // global barrier; the explicit gate needs the same commit proof the VRM
-  // path has. This line runs only after the useGLTFWithKTX2 suspend
-  // resolved; the passive effect below is the commit.
+  // path has. The claim is render-time legal and idempotent, and registered
+  // BEFORE the useGLTFWithKTX2 suspend point (same reason as the VRM inner:
+  // a re-registration cancels a pending fallback unmount release).
   const actorToken = registerBootActorClaim('player-glb', reg.path);
+
+  const { scene } = useGLTFWithKTX2(reg.path);
+
+  // The commit: a passive effect runs only after the useGLTFWithKTX2 suspend
+  // resolved and this subtree committed.
   useEffect(() => {
     notifyBootActorCommitted(actorToken);
   }, [actorToken]);

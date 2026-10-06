@@ -12,6 +12,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { Component, StrictMode, Suspense, act, createElement, useEffect, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Root } from 'react-dom/client';
 
 const testWindow = new Window({ url: 'http://localhost/game' });
@@ -103,6 +105,32 @@ function ClaimingBody({ kind, path, url }: { kind: 'player-vrm' | 'npc-body'; pa
     bootActor.notifyBootActorCommitted(token);
   }, [token]);
   return createElement('span', { id: 'body', 'data-node': gltf.scene.getObjectByName('lobster-root') ? 'ok' : 'empty' });
+}
+
+/** Minimal stand-in for PlayerAvatarVRMInner's ORDER (the real inner needs
+ * an R3F canvas): it suspends by THROWING a pending promise (like
+ * useVRMInstance) until `bodyReady`, registers its claim either before
+ * (current order) or after (pre-fix order) that suspend point, and commits
+ * from a passive effect. */
+let bodyReady = false;
+let bodyPending: Promise<void> = Promise.resolve();
+function SuspendingBody({ path, registerBeforeSuspend }: { path: string; registerBeforeSuspend: boolean }) {
+  const early = registerBeforeSuspend ? bootActor.registerBootActorClaim('player-vrm', path) : null;
+  if (!bodyReady) throw bodyPending;
+  const token = early ?? bootActor.registerBootActorClaim('player-vrm', path);
+  useEffect(() => {
+    bootActor.notifyBootActorCommitted(token);
+  }, [token]);
+  return createElement('span', { id: 'suspending-body' });
+}
+
+/** Source text of one top-level function in a sibling file. */
+function functionSource(file: string, name: string): string {
+  const text = readFileSync(join(import.meta.dir, file), 'utf8');
+  const start = text.indexOf(`function ${name}(`);
+  expect(start).toBeGreaterThan(-1);
+  const next = text.slice(start + 1).search(/\n(?:export )?(?:default )?function /);
+  return next === -1 ? text.slice(start) : text.slice(start, start + 1 + next);
 }
 
 type HappyErrorEvent = InstanceType<typeof testWindow.ErrorEvent>;
@@ -387,6 +415,71 @@ describe('LocalPlayerFallback', () => {
     await act(async () => rootB.unmount());
     await settle(3);
     expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+  });
+
+  test('Codex E3 (53a5f9fa): a body that SUSPENDS on its load right after registering (the PlayerAvatarVRMInner order) cancels the stale unmount release', async () => {
+    const failedPath = '/avatars/lpf-player-suspend-first.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-suspend-first.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    bodyReady = false;
+    bodyPending = gate.then(() => {
+      bodyReady = true;
+    });
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const rootA = r3fLikeRoot(newContainer(), []);
+    await act(async () =>
+      rootA.render(
+        createElement(
+          fallbackModule.LocalPlayerFallback,
+          { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+          createElement(LobsterBody, { url: lobsterUrl }),
+        ),
+      ),
+    );
+    await settle(3);
+    // The fallback unmounts and the body for the same path retries in the
+    // same commit; the body suspends on its (pending) load.
+    const containerB = newContainer();
+    const rootB = r3fLikeRoot(containerB, []);
+    await act(async () => {
+      rootA.unmount();
+      rootB.render(
+        createElement(
+          Suspense,
+          { fallback: null },
+          createElement(SuspendingBody, { path: failedPath, registerBeforeSuspend: true }),
+        ),
+      );
+    });
+    await settle(5); // the old deferred release would have fired by now
+    expect(containerB.querySelector('#suspending-body')).toBeNull();
+    expect(bootActor.getBootActorStamps().readyAt).toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+
+    const openedAt = Math.round(performance.now());
+    openGate();
+    await settle();
+    expect(containerB.querySelector('#suspending-body')).not.toBeNull();
+    expect(bootActor.getBootActorStamps().readyAt!).toBeGreaterThanOrEqual(openedAt);
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+    await act(async () => rootB.unmount());
+  });
+
+  test('source order: every local body registers its boot claim BEFORE its suspend point', () => {
+    const vrmInner = functionSource('player-avatar.tsx', 'PlayerAvatarVRMInner');
+    const vrmRegister = vrmInner.indexOf("registerBootActorClaim('player-vrm', reg.path)");
+    expect(vrmRegister).toBeGreaterThan(-1);
+    expect(vrmRegister).toBeLessThan(vrmInner.indexOf('useVRMInstance('));
+
+    const glbInner = functionSource('player-avatar.tsx', 'PlayerAvatarGLBInner');
+    const glbRegister = glbInner.indexOf("registerBootActorClaim('player-glb', reg.path)");
+    expect(glbRegister).toBeGreaterThan(-1);
+    expect(glbRegister).toBeLessThan(glbInner.indexOf('useGLTFWithKTX2('));
+
+    // The possessed NPC body loads only in its child meshes (below the claim).
+    const npcInner = functionSource('arena-npcs.tsx', 'BootActorNpcBodyInner');
+    expect(npcInner).toContain("registerBootActorClaim('npc-body', path)");
+    expect(npcInner).not.toMatch(/useVRMInstance\(|useGLTFWithKTX2\(|useGLTF\(|useLoader\(/);
   });
 
   test('StrictMode simulated unmount + re-mount does not release while the lobster loads', async () => {
