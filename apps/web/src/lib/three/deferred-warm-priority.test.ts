@@ -27,11 +27,18 @@ import {
 } from './deferred-warm';
 
 type Priority = 'background' | 'user-visible' | 'user-blocking';
-type FakeTask = { kind: 'idle' | 'postTask'; priority: Priority; run: () => void };
+type FakeTask = {
+  kind: 'idle' | 'postTask' | 'yield';
+  priority: Priority;
+  run: () => void;
+};
 
 function createFakeEventLoop() {
   const tasks: FakeTask[] = [];
   let current: Priority | null = null;
+  // The signal of the postTask callback running right now (spec: a yield()
+  // called inside the task inherits it).
+  let currentSignal: AbortSignal | undefined;
   let idleHandle = 0;
   const cancelledIdle = new Set<number>();
   const postTaskPriorities: string[] = [];
@@ -74,10 +81,13 @@ function createFakeEventLoop() {
           kind: 'postTask',
           priority,
           run: () => {
+            currentSignal = signal;
             try {
               resolve(callback());
             } catch (error) {
               reject(error);
+            } finally {
+              currentSignal = undefined;
             }
           },
         };
@@ -100,6 +110,27 @@ function createFakeEventLoop() {
       });
     },
   };
+
+  /** A scheduler.yield() continuation that inherited `signal`: aborting the
+   * signal rejects the pending yield with an AbortError (spec behaviour). */
+  const yieldWith = (signal: AbortSignal | undefined) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('aborted', 'AbortError'));
+        return;
+      }
+      const task: FakeTask = { kind: 'yield', priority: 'user-visible', run: () => resolve() };
+      signal?.addEventListener(
+        'abort',
+        () => {
+          const index = tasks.indexOf(task);
+          if (index >= 0) tasks.splice(index, 1);
+          reject(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true },
+      );
+      tasks.push(task);
+    });
 
   const drainMicrotasks = async () => {
     for (let i = 0; i < 60; i += 1) await Promise.resolve();
@@ -129,6 +160,8 @@ function createFakeEventLoop() {
     postTaskPriorities,
     postTaskSignals,
     currentPriority: () => current,
+    currentSignal: () => currentSignal,
+    yieldWith,
     runOne,
     runUntil,
   };
@@ -338,7 +371,7 @@ describe('deferred warm task priority (web-load T6)', () => {
     };
   }
 
-  test('escape BEFORE the compile task ran: task aborted, renderer NOT poisoned, the next job compiles', async () => {
+  test('escape BEFORE the compile task ran: renderer NOT poisoned, the late task does not compile, the next job compiles', async () => {
     const loop = createFakeEventLoop();
     const fx = setupEscapeFixture(loop);
 
@@ -375,12 +408,12 @@ describe('deferred warm task priority (web-load T6)', () => {
     });
     await loop.runUntil(() => fx.compiled.length > 0);
     expect(await next).toBe('warmed');
+    // The first job's late task ran first and did NOT compile `first`.
     expect(fx.compiled).toEqual([second]);
-
-    // The first job's queued task was dropped at the escape, not left
-    // queued holding the object and renderer.
-    expect(loop.postTaskSignals[0]?.aborted).toBe(true);
     expect(loop.tasks).toHaveLength(0);
+    // No AbortSignal is ever handed to postTask (it would become the
+    // signal three's yields inherit).
+    expect(loop.postTaskSignals.every((signal) => signal === undefined)).toBe(true);
   });
 
   test('escape AFTER the compile started still poisons the renderer (orphan tail)', async () => {
@@ -417,7 +450,7 @@ describe('deferred warm task priority (web-load T6)', () => {
     expect(fx.compiled).toHaveLength(1);
   });
 
-  test('cancelling the job (unmount) aborts its queued compile task', async () => {
+  test('cancelling the job BEFORE its compile task runs: the task does not compile and holds no abortable signal', async () => {
     const loop = createFakeEventLoop();
     const fx = setupEscapeFixture(loop);
 
@@ -438,17 +471,98 @@ describe('deferred warm task priority (web-load T6)', () => {
 
     // Run the queue's idle start; the job then posts its compile task.
     await loop.runUntil(() => loop.tasks.some((t) => t.kind === 'postTask'));
-    expect(loop.postTaskSignals).toHaveLength(1);
-    expect(loop.postTaskSignals[0]?.aborted).toBe(false);
+    expect(loop.postTaskSignals).toEqual([undefined]);
 
     cancel();
-    for (let j = 0; j < 60; j += 1) await Promise.resolve();
-
-    expect(loop.postTaskSignals[0]?.aborted).toBe(true);
-    expect(loop.tasks.filter((t) => t.kind === 'postTask')).toHaveLength(0);
     await loop.runUntil(() => result !== undefined);
     expect(result).toBe('failopen');
     expect(fx.compiled).toHaveLength(0);
+    expect(fx.renders).toHaveLength(0); // cancelled: no recovery render
     expect(isRendererCompileTimedOut(fx.renderer)).toBe(false);
+  });
+
+  test('cancelling the job DURING its compile lets the compile finish; the next job waits for it', async () => {
+    const loop = createFakeEventLoop();
+    g.window = loop.window;
+    g.scheduler = loop.scheduler;
+
+    const camera = new THREE.PerspectiveCamera();
+    const scene = new THREE.Scene();
+    const makeObject = (name: string) => {
+      const object = new THREE.Group();
+      object.name = name;
+      object.visible = false;
+      scene.add(object);
+      return object;
+    };
+    // compileAsync modelled on three r185: yields (scheduler.yield, which
+    // inherits the running postTask's signal) between pipeline stages.
+    let releaseGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const log: string[] = [];
+    const renderer: DeferredWarmRenderer = {
+      initialized: true,
+      initTexture: () => {},
+      compileAsync: async (root) => {
+        const inherited = loop.currentSignal();
+        log.push(`start:${root.name}`);
+        try {
+          await loop.yieldWith(inherited);
+          if (root.name === 'nori') await gate;
+          await loop.yieldWith(inherited);
+          log.push(`end:${root.name}`);
+        } catch (error) {
+          log.push(`rejected:${root.name}:${(error as Error).name}`);
+          throw error;
+        }
+      },
+      render: () => {
+        log.push('render');
+      },
+      getScissor: (target) => target.set(0, 0, 1, 1),
+      getScissorTest: () => false,
+      setScissor: () => {},
+      setScissorTest: () => {},
+    };
+
+    const queue = createDeferredWarmQueue();
+    const results: string[] = [];
+    const add = (name: string) =>
+      queue.enqueue({
+        warm: async (isCancelled) => {
+          results.push(
+            `${name}:${await warmDeferredObject({
+              renderer,
+              scene,
+              camera,
+              object: makeObject(name),
+              isCancelled,
+              label: name,
+            })}`,
+          );
+        },
+      });
+    const cancelNori = add('nori');
+    add('cove');
+
+    await loop.runUntil(() => log.includes('start:nori'));
+    // Cancel while the compile is mid-flight with a yield pending.
+    expect(loop.tasks.map((t) => t.kind)).toEqual(['yield']);
+    cancelNori();
+    // Pump everything that is runnable while the compile waits on the gate.
+    for (let i = 0; i < 10; i += 1) await loop.runOne();
+
+    // Not aborted, and the next job has NOT started its compile.
+    expect(log).toEqual(['start:nori']);
+
+    releaseGate!();
+    await loop.runUntil(() => log.includes('end:cove'));
+
+    expect(log).toEqual(['start:nori', 'end:nori', 'start:cove', 'end:cove']);
+    expect(log.some((entry) => entry.startsWith('rejected'))).toBe(false);
+    expect(results).toEqual(['nori:warmed', 'cove:warmed']);
+    expect(isRendererCompileTimedOut(renderer)).toBe(false);
   });
 });

@@ -44,9 +44,10 @@ export type DeferredWarmState = 'queued' | 'warming' | 'ready' | 'cancelled';
 
 /**
  * Cancellation check handed to a warm job. The queue's check also carries
- * `signal`, aborted when the job is cancelled, so a queued compile task can be
- * dropped at once (the attachment passes this same function through to
- * warmDeferredObject). A plain `() => boolean` is accepted too.
+ * `signal`, aborted when the job is cancelled, so a not-yet-run compile task
+ * releases its references at once (the attachment passes this same function
+ * through to warmDeferredObject). The signal is never handed to postTask (see
+ * runInUserVisibleTask). A plain `() => boolean` is accepted too.
  */
 export type DeferredWarmCancelCheck = (() => boolean) & {
   readonly signal?: AbortSignal;
@@ -89,10 +90,7 @@ type QueueEntry = {
 type PostTaskScheduler = {
   postTask: (
     callback: () => unknown,
-    options?: {
-      priority?: 'user-blocking' | 'user-visible' | 'background';
-      signal?: AbortSignal;
-    },
+    options?: { priority?: 'user-blocking' | 'user-visible' | 'background' },
   ) => Promise<unknown>;
 };
 
@@ -110,16 +108,16 @@ function getPostTaskScheduler(): PostTaskScheduler | undefined {
  * `scheduler.yield` either (no shipping browser has one without the other),
  * so three's yieldToMain uses requestAnimationFrame, which carries no
  * priority; `front` then runs synchronously, exactly as before T6.
- * `signal` aborts the queued task (its promise rejects; nothing stays queued
- * holding the object and renderer). The synchronous path queues nothing.
+ *
+ * NO AbortSignal is passed on purpose: a postTask signal becomes the task's
+ * signal and `scheduler.yield()` inside the task inherits it, so aborting it
+ * after the compile started would make three's internal yields reject and
+ * the compile fail midway. Callers cancel with a flag read at task start.
  */
-function runInUserVisibleTask(
-  front: () => unknown,
-  signal?: AbortSignal,
-): Promise<unknown> {
+function runInUserVisibleTask(front: () => unknown): Promise<unknown> {
   const scheduler = getPostTaskScheduler();
   if (scheduler) {
-    return scheduler.postTask(front, { priority: 'user-visible', signal });
+    return scheduler.postTask(front, { priority: 'user-visible' });
   }
   try {
     return Promise.resolve(front());
@@ -625,6 +623,59 @@ async function settleCompile(
   return result;
 }
 
+type CompileFrontHolder = {
+  live: boolean;
+  started: boolean;
+  renderer: DeferredWarmRenderer | null;
+  object: THREE.Object3D | null;
+  camera: THREE.Camera | null;
+  scene: THREE.Scene | null;
+  isCancelled: (() => boolean) | null;
+};
+
+/** Drops the holder's references; a not-yet-run front then does nothing.
+ * Harmless after the front ran (the compile already has its arguments). */
+function releaseCompileFront(front: CompileFrontHolder): void {
+  front.live = false;
+  front.renderer = null;
+  front.object = null;
+  front.camera = null;
+  front.scene = null;
+  front.isCancelled = null;
+}
+
+/** Posts the compile front. Module-level on purpose: the posted closure
+ * captures only `front`, not the caller's scope (V8 shares one context per
+ * scope, so a closure built inside compileDeferredObject could keep the
+ * object and renderer alive while the task waits). */
+function postCompileFront(front: CompileFrontHolder): Promise<unknown> {
+  return runInUserVisibleTask(() => runCompileFront(front));
+}
+
+function runCompileFront(front: CompileFrontHolder): unknown {
+  const { renderer, object, camera, scene, isCancelled } = front;
+  if (
+    !front.live ||
+    !renderer ||
+    !object ||
+    !camera ||
+    !scene ||
+    !isCancelled ||
+    isCancelled()
+  ) {
+    return undefined;
+  }
+  front.started = true;
+  object.updateWorldMatrix(true, true);
+  const wasVisible = object.visible;
+  object.visible = true;
+  try {
+    return renderer.compileAsync!(object, camera, scene);
+  } finally {
+    object.visible = wasVisible;
+  }
+}
+
 async function compileDeferredObject({
   renderer,
   object,
@@ -651,42 +702,36 @@ async function compileDeferredObject({
 
   // [T6] The compile front runs at the START of a fresh user-visible task,
   // never inside the idle-callback continuation that reached this point (see
-  // runInUserVisibleTask). `abandoned` closes the gap between dispatch and
-  // that task: once the 20 s escape fired (or the job was cancelled) a late
-  // front must never start a compile, because the FIFO has already released
-  // and a second same-renderer compile would overlap (the r185 race class).
-  // `taskAbort` drops the queued task in the same cases (job cancel via the
-  // queue's signal, or the escape before the front ran), so it does not stay
-  // queued holding the object and renderer.
-  let abandoned = false;
-  let started = false;
-  const taskAbort = new AbortController();
+  // runInUserVisibleTask). The queued task reads ONLY `front` (a per-job
+  // holder). A job cancel (the queue's `isCancelled.signal`) or the 20 s
+  // escape before the task ran sets `front.live = false` and drops its
+  // object/renderer references, so a late task neither compiles (the FIFO
+  // has released by then; a second same-renderer compile would overlap, the
+  // r185 race class) nor holds anything heavy while it waits. Once the
+  // compile has STARTED nothing aborts it: a cancel lets it finish, then the
+  // job ends without the recovery render, as before T6.
+  const front: CompileFrontHolder = {
+    live: true,
+    started: false,
+    renderer,
+    object,
+    camera,
+    scene,
+    isCancelled,
+  };
+  const releaseFront = () => releaseCompileFront(front);
   const jobSignal = isCancelled.signal;
-  const onJobAbort = () => taskAbort.abort();
-  jobSignal?.addEventListener('abort', onJobAbort, { once: true });
+  jobSignal?.addEventListener('abort', releaseFront, { once: true });
   let result: CompileResult;
   try {
-    result = await withDeferredFrustumCullingDisabled(object, async () =>
-      settleCompile(
-        runInUserVisibleTask(() => {
-          if (abandoned || isCancelled()) return undefined;
-          started = true;
-          object.updateWorldMatrix(true, true);
-          const wasVisible = object.visible;
-          object.visible = true;
-          try {
-            return renderer.compileAsync!(object, camera, scene);
-          } finally {
-            object.visible = wasVisible;
-          }
-        }, taskAbort.signal),
-      ),
+    result = await withDeferredFrustumCullingDisabled(object, () =>
+      settleCompile(postCompileFront(front)),
     );
   } finally {
-    abandoned = true;
-    jobSignal?.removeEventListener('abort', onJobAbort);
-    if (!started) taskAbort.abort();
+    jobSignal?.removeEventListener('abort', releaseFront);
+    releaseCompileFront(front);
   }
+  const started = front.started;
 
   if (!started) {
     // No compile ran on this renderer, so it is NOT poisoned: only this job
@@ -708,6 +753,9 @@ async function compileDeferredObject({
   if (result.status === 'timed-out') {
     // compileAsync cannot be cancelled. Never start a second compile on this
     // renderer after a timeout; jobs still fail open through direct warm/attach.
+    // The direct warm then renders on this renderer while the orphan compile
+    // may still run: that is the normal state, the main frame loop renders on
+    // the same renderer during every compileAsync.
     // Shared registry [impl-B1]: the boot whitelist sweep and stage warms
     // honor this too, so the FIFO release below cannot enable a
     // same-renderer overlap with the orphan tail.
