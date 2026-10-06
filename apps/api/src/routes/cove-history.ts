@@ -21,7 +21,7 @@
  *
  * Adversarial note (plan §6 adversarial #2): an authed user can technically
  * claim another browser's guest rows if they obtain that browser's raw
- * `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv-fp`).
+ * `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv:fp:v1`).
  * This is the same risk surface as session hijack. Server enforces the
  * salted hash; the raw fp never leaves the requesting browser unless the
  * attacker has same-origin JS access.

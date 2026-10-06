@@ -45,6 +45,10 @@ interface FakeWindow {
   store: Map<string, string>;
   timers: Array<() => void>;
   idle: Array<() => void>;
+  /** Every delay passed to setTimeout, in call order. */
+  timerDelays: Array<number | undefined>;
+  /** Every `timeout` option passed to requestIdleCallback, in call order. */
+  idleTimeouts: Array<number | undefined>;
   setItemCalls: number;
 }
 
@@ -53,7 +57,14 @@ const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
 const originalWarn = console.warn;
 
 function installWindow(mode: StorageMode = 'ok', initial?: string): FakeWindow {
-  const state: FakeWindow = { store: new Map(), timers: [], idle: [], setItemCalls: 0 };
+  const state: FakeWindow = {
+    store: new Map(),
+    timers: [],
+    idle: [],
+    timerDelays: [],
+    idleTimeouts: [],
+    setItemCalls: 0,
+  };
   if (initial !== undefined) state.store.set(STORAGE_KEY, initial);
   const storage = {
     getItem(key: string): string | null {
@@ -70,13 +81,15 @@ function installWindow(mode: StorageMode = 'ok', initial?: string): FakeWindow {
     },
   };
   const win: Record<string, unknown> = {
-    setTimeout: (fn: () => void) => {
+    setTimeout: (fn: () => void, delay?: number) => {
       state.timers.push(fn);
+      state.timerDelays.push(delay);
       return state.timers.length;
     },
     clearTimeout: () => undefined,
-    requestIdleCallback: (fn: () => void) => {
+    requestIdleCallback: (fn: () => void, options?: { timeout?: number }) => {
       state.idle.push(fn);
+      state.idleTimeouts.push(options?.timeout);
       return state.idle.length;
     },
   };
@@ -94,6 +107,15 @@ function installWindow(mode: StorageMode = 'ok', initial?: string): FakeWindow {
   return state;
 }
 
+/**
+ * Drain the microtask queue. The mocked FingerprintJS resolves through
+ * promises only (no timers), so a bounded microtask flush settles the
+ * refresh chain without a wall-clock sleep.
+ */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 50; i += 1) await Promise.resolve();
+}
+
 /** Fire every queued timer, then every queued idle callback, then settle. */
 async function runBackground(state: FakeWindow): Promise<void> {
   while (state.timers.length > 0 || state.idle.length > 0) {
@@ -101,9 +123,8 @@ async function runBackground(state: FakeWindow): Promise<void> {
     for (const fn of timers) fn();
     const idle = state.idle.splice(0);
     for (const fn of idle) fn();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushMicrotasks();
   }
-  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 beforeEach(() => {
@@ -143,8 +164,12 @@ describe('getFingerprint visitor-ID cache', () => {
     // Exactly one deferred refresh is queued, even after several calls.
     await first.getFingerprint();
     expect(fake.timers.length).toBe(1);
+    // The refresh waits 30 s, past the measured cold loader (7.7-8.5 s
+    // desktop, 23 s on the 4x-CPU proxy), then an idle slot capped at 30 s.
+    expect(fake.timerDelays).toEqual([30_000]);
 
     await runBackground(fake);
+    expect(fake.idleTimeouts).toEqual([30_000]);
     expect(loadMock).toHaveBeenCalledTimes(1);
     expect(fake.store.get(STORAGE_KEY)).toBe(VALID_B);
     // Same page keeps one identity: no mid-session header switch.

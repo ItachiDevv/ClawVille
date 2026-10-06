@@ -24,6 +24,12 @@
  * mid-session header switch that would orphan a guest's fp-keyed state).
  * A first visit (no valid cache) keeps the old behavior: compute on the
  * first call, shared by concurrent callers.
+ * Two tabs with no cache compute in parallel and the last storage write wins
+ * for the next load. Tabs on one display get the same visitorId; FingerprintJS
+ * hashes `screen` (screenResolution, screenFrame), so windows on displays
+ * with different sizes can get different values. Each tab also computed its
+ * own value before this cache, so this is not a regression; after the write,
+ * every tab of the browser sends one value.
  *
  * Failure modes:
  *   - SSR / non-browser: returns '' (server middleware falls back to UA+IP)
