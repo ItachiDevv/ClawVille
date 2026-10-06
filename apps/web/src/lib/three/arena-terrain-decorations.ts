@@ -44,40 +44,59 @@ export interface DecoEntry {
   model: string;
   x: number;
   z: number;
-  scale: number;
+  /** Target world max-dimension in wu (see DECO_TYPES). */
+  size: number;
   rotY: number;
 }
 
-// Decoration models — scale ranges capped to keep max dimension ≤ 150 world units.
-// Rationale: at perspective from origin, a 600-unit wide coral cluster at distance
-// 3000-5000 dominates the view even though it's outside the village ring.
-// Coral/kelp native bboxes are ~5-10 units wide/tall; cap at 15 → max ~150 wu.
-// Shell/seashell native bboxes ~3-5 units; cap at 15 → max ~75 wu.
-// Small props (anchor, barrel, chest, lantern, tower2) already safe at their caps.
+// Decoration models — minSize/maxSize are the TARGET world max-dimension in wu.
+// arena-terrain.tsx divides by each GLB's measured native max-dimension, so a
+// model renders at this size whatever unit its author used.
+// 2026-10-06: the old table held raw scale factors (2-15) and assumed native
+// sizes of ~5-10 units; the measured native max-dims are 0.43 (chest) to 86
+// (crayfish), so props rendered 1-860 wu. Ranges = old scale range × 10 wu
+// (the reference the old comment used: coral cap 15 → 150 wu), capped at the
+// documented 150 wu. For scale: a VRM avatar is 179 wu tall.
 export const DECO_TYPES = [
-  // Coral — moderate presence, capped at 15 to prevent 500+ wu wide clusters
-  { model: '/models/coral-reef1-ktx.glb?v=2', weight: 3, minScale: 4,   maxScale: 15  },
-  { model: '/models/coral-reef2-ktx.glb?v=2', weight: 3, minScale: 3,   maxScale: 13  },
-  { model: '/models/coral-reef3-ktx.glb?v=2', weight: 3, minScale: 3,   maxScale: 12  },
-  // Kelp — tall accent, capped at 15 (was 30; was producing 600+ wu wide blades)
-  { model: '/models/kelp.glb',        weight: 3, minScale: 6,   maxScale: 15  },
-  // Shells — clusters of tiny to medium (was maxScale 18-20, now 12)
-  { model: '/models/building-shell-ktx.glb?v=2',    weight: 5, minScale: 2,   maxScale: 12  },
-  { model: '/models/building-seashell-ktx.glb?v=2', weight: 5, minScale: 2,   maxScale: 12  },
-  // Anchors — scattered singles, small to moderate
-  { model: '/models/building-anchor.glb', weight: 4, minScale: 3,   maxScale: 14  },
+  // Coral — moderate presence
+  { model: '/models/coral-reef1-ktx.glb?v=2', weight: 3, minSize: 40, maxSize: 150 },
+  { model: '/models/coral-reef2-ktx.glb?v=2', weight: 3, minSize: 30, maxSize: 130 },
+  { model: '/models/coral-reef3-ktx.glb?v=2', weight: 3, minSize: 30, maxSize: 120 },
+  // Kelp — tall accent
+  { model: '/models/kelp.glb',                weight: 3, minSize: 60, maxSize: 150 },
+  // Shells — clusters of small to medium
+  { model: '/models/building-shell-ktx.glb?v=2',    weight: 5, minSize: 20, maxSize: 120 },
+  { model: '/models/building-seashell-ktx.glb?v=2', weight: 5, minSize: 20, maxSize: 120 },
+  // Anchors — scattered singles
+  { model: '/models/building-anchor.glb',     weight: 4, minSize: 30, maxSize: 140 },
   // Barrels — common ocean-floor clutter
-  { model: '/models/building-barrel.glb', weight: 4, minScale: 3,   maxScale: 10  },
+  { model: '/models/building-barrel.glb',     weight: 4, minSize: 30, maxSize: 100 },
   // Chests — treasure accents
-  { model: '/models/building-chest.glb',  weight: 4, minScale: 3,   maxScale: 12  },
-  // Lanterns — ambient glow props, small to medium
-  { model: '/models/building-lantern-ktx.glb?v=2', weight: 3, minScale: 4,  maxScale: 12  },
-  // Crayfish — scattered critters, small
-  { model: '/models/crayfish-ktx.glb?v=2',         weight: 3, minScale: 3,  maxScale: 10  },
-  // Tower2 — distinctive landmark towers, rare
-  { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
+  { model: '/models/building-chest.glb',      weight: 4, minSize: 30, maxSize: 120 },
+  // Lanterns — ambient props
+  { model: '/models/building-lantern-ktx.glb?v=2', weight: 3, minSize: 40, maxSize: 120 },
+  // Crayfish — scattered critters
+  { model: '/models/crayfish-ktx.glb?v=2',    weight: 3, minSize: 30, maxSize: 100 },
+  // Tower2 — distinctive small towers, rare
+  { model: '/models/building-tower2.glb',     weight: 2, minSize: 40, maxSize: 140 },
   // Shipwrecks and submarines are FIXED LANDMARKS in arena-terrain.tsx (disabled).
 ];
+
+/**
+ * Uniform scale + world Y that render a model at `size` wu max-dimension with
+ * its lowest point on the sand baseline. `nativeMaxDim` / `nativeMinY` come
+ * from the GLB scene's world bounding box. Returns null for a degenerate box.
+ */
+export function decorationTransform(
+  size: number,
+  nativeMaxDim: number,
+  nativeMinY: number,
+  floorY = -2,
+): { scale: number; y: number } | null {
+  if (!(nativeMaxDim > 0) || !Number.isFinite(nativeMaxDim) || !Number.isFinite(nativeMinY)) return null;
+  const scale = size / nativeMaxDim;
+  return { scale, y: floorY - nativeMinY * scale };
+}
 
 // Building exclusion circles (world coords) — radius 2 × zone side (896 wu) around
 // each building centre. The collider and lane checks below are the tighter rules.
@@ -268,9 +287,9 @@ export function generateDecorations(): DecoEntry[] {
     });
     if (tooClose) continue;
 
-    const dt    = pickModel();
-    const scale = dt.minScale + rng() * (dt.maxScale - dt.minScale);
-    entries.push({ model: dt.model, x, z, scale, rotY: rng() * Math.PI * 2 });
+    const dt   = pickModel();
+    const size = dt.minSize + rng() * (dt.maxSize - dt.minSize);
+    entries.push({ model: dt.model, x, z, size, rotY: rng() * Math.PI * 2 });
   }
 
   return entries;

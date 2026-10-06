@@ -5,7 +5,12 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
-import { generateDecorations, seededRandom, type DecoEntry } from '@/lib/three/arena-terrain-decorations';
+import {
+  decorationTransform,
+  generateDecorations,
+  seededRandom,
+  type DecoEntry,
+} from '@/lib/three/arena-terrain-decorations';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
 import { useOptionalGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
@@ -161,10 +166,10 @@ function disposeClone(root: THREE.Object3D): void {
 //
 // Strategy:
 //   1. Load all 12 unique decoration models (fixed hook calls — count never changes).
-//   2. For each of the 80 DECORATIONS entries, determine its 3×3 spatial grid cell
+//   2. For each of the 60 DECORATIONS entries, determine its 3×3 spatial grid cell
 //      based on world-space X/Z position.
 //   3. For each mesh in that entry's source scene, apply the combined world transform
-//      (entry position/scale/rotY × GLB-internal matrixWorld) into a geometry clone.
+//      (entry position, size-derived scale + ground lift, rotY × GLB-internal matrixWorld) into a geometry clone.
 //   4. Bucket by `${cellIndex}_${materialUUID}`.
 //   5. mergeGeometries() per bucket → one Mesh per (cell, material).
 //   6. frustumCulled stays at THREE default (true) — each chunk has a tight AABB
@@ -222,6 +227,8 @@ function decoGridCell(worldX: number, worldZ: number): number {
 // Scratch matrix for baking world transforms into geometry vertices.
 // Module-scope to avoid GC allocations inside the useMemo.
 const _decoMatrix = new THREE.Matrix4();
+const _decoBox = new THREE.Box3();
+const _decoSize = new THREE.Vector3();
 
 interface MergedBucket {
   geometry: THREE.BufferGeometry;
@@ -264,6 +271,9 @@ function MergedDecorationsInner() {
     // key = `${cellIndex}_${materialUUID}` → { geometries, material }
     const bucketMap = new Map<string, { geometries: THREE.BufferGeometry[]; material: THREE.Material }>();
     const tempGeos: THREE.BufferGeometry[] = [];
+    // Native world bounds per GLB scene, measured once: entry.size is a target
+    // max-dimension in wu, so the scale depends on the model's own units.
+    const nativeBounds = new Map<THREE.Object3D, { maxDim: number; minY: number }>();
 
     for (const entry of DECORATIONS) {
       const sourceScene = sceneMap.get(entry.model);
@@ -274,6 +284,16 @@ function MergedDecorationsInner() {
 
       // Update world matrices of the source scene for correct mesh.matrixWorld
       sourceScene.updateMatrixWorld(true);
+
+      let bounds = nativeBounds.get(sourceScene);
+      if (!bounds) {
+        _decoBox.setFromObject(sourceScene);
+        _decoBox.getSize(_decoSize);
+        bounds = { maxDim: Math.max(_decoSize.x, _decoSize.y, _decoSize.z), minY: _decoBox.min.y };
+        nativeBounds.set(sourceScene, bounds);
+      }
+      const placement = decorationTransform(entry.size, bounds.maxDim, bounds.minY);
+      if (!placement) continue;
 
       sourceScene.traverse((child) => {
         const mesh = child as THREE.Mesh;
@@ -290,8 +310,8 @@ function MergedDecorationsInner() {
         // Build entry's world transform matrix: T(ex,ey,ez) * Ry(rotY) * S(s)
         const cosY = Math.cos(entry.rotY);
         const sinY = Math.sin(entry.rotY);
-        const s = entry.scale;
-        const ex = entry.x, ey = -2, ez = entry.z;
+        const s = placement.scale;
+        const ex = entry.x, ey = placement.y, ez = entry.z;
         // prettier-ignore
         _decoMatrix.set(
           s * cosY,  0, s * sinY, ex,

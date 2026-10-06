@@ -22,6 +22,7 @@ import {
 import {
   DECO_TYPES,
   DECO_INNER_EXCLUSION_R,
+  decorationTransform,
   generateDecorations,
   isNearBuilding,
 } from './arena-terrain-decorations';
@@ -163,13 +164,38 @@ describe('seabed decoration scatter', () => {
     }
   });
 
-  it('uses only known models with in-range scales', () => {
+  it('sizes every prop between 20 and 150 wu (avatars are 179 wu tall)', () => {
+    for (const t of DECO_TYPES) {
+      expect(t.minSize).toBeGreaterThanOrEqual(20);
+      expect(t.maxSize).toBeLessThanOrEqual(150);
+      expect(t.minSize).toBeLessThan(t.maxSize);
+    }
     const byModel = new Map(DECO_TYPES.map((t) => [t.model, t]));
     for (const d of decorations) {
       const t = byModel.get(d.model);
       expect(t).toBeDefined();
-      expect(d.scale).toBeGreaterThanOrEqual(t!.minScale);
-      expect(d.scale).toBeLessThanOrEqual(t!.maxScale);
+      expect(d.size).toBeGreaterThanOrEqual(t!.minSize);
+      expect(d.size).toBeLessThanOrEqual(t!.maxSize);
     }
+  });
+});
+
+describe('decorationTransform', () => {
+  it('scales by the native max-dimension and grounds the lowest point on the sand', () => {
+    // building-chest.glb: native max-dim 0.43 — the old raw scale 3-12 gave 1-5 wu.
+    const chest = decorationTransform(30, 0.43, -0.2);
+    expect(chest).not.toBeNull();
+    expect(chest!.scale * 0.43).toBeCloseTo(30, 6);
+    expect(chest!.y + -0.2 * chest!.scale).toBeCloseTo(-2, 6);
+    // crayfish-ktx.glb: native max-dim 85.98 — the old raw scale 3-10 gave 258-860 wu.
+    const crayfish = decorationTransform(100, 85.98, 0);
+    expect(crayfish!.scale * 85.98).toBeCloseTo(100, 6);
+    expect(crayfish!.y).toBe(-2);
+  });
+
+  it('rejects a degenerate bounding box', () => {
+    expect(decorationTransform(50, 0, 0)).toBeNull();
+    expect(decorationTransform(50, Number.NaN, 0)).toBeNull();
+    expect(decorationTransform(50, 1, Number.POSITIVE_INFINITY)).toBeNull();
   });
 });
