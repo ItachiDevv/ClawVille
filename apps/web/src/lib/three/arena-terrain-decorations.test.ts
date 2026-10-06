@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import {
   KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
   KELP_FOREST_PORTAL_WORLD_CENTER,
@@ -9,6 +12,10 @@ import {
 } from '@clawville/shared';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
 import { getAllColliders } from './collision/world-colliders';
+import { WORLD_DEVICE_PROFILE } from './device-class';
+import { DEFAULT_WORLD_PERF_FLAGS } from './PerfAudit';
+import ArenaTerrain from './arena-terrain';
+import * as decoModule from './arena-terrain-decorations';
 import {
   CHARACTER_POSITIONS,
   COVE_EXIT_WORLD_X,
@@ -197,5 +204,70 @@ describe('decorationTransform', () => {
     expect(decorationTransform(50, 0, 0)).toBeNull();
     expect(decorationTransform(50, Number.NaN, 0)).toBeNull();
     expect(decorationTransform(50, 1, Number.POSITIVE_INFINITY)).toBeNull();
+  });
+});
+
+// Lead decision 2026-10-06: the seabed decorations follow the SAME switch as the
+// other ground cover (seaweed, NE kelp forest): the `groundCover` quality flag
+// (governor tier 1 hides it) AND the device profile's `ambientGroundCover`
+// (false on phones and tablets). 3dStructure.md "Adaptive quality governor".
+describe('seabed decorations follow the groundCover switch', () => {
+  const gate = (decoModule as Record<string, unknown>).seabedDecorationsEnabled as
+    | ((showGroundCover: boolean, profile: { ambientGroundCover: boolean }) => boolean)
+    | undefined;
+
+  it('exports the gate', () => {
+    expect(typeof gate).toBe('function');
+  });
+
+  it('shows the decorations on desktop at full quality', () => {
+    expect(DEFAULT_WORLD_PERF_FLAGS.groundCover).toBe(true);
+    for (const cls of ['desktop-low', 'desktop-capable'] as const) {
+      expect(gate!(DEFAULT_WORLD_PERF_FLAGS.groundCover, WORLD_DEVICE_PROFILE[cls])).toBe(true);
+    }
+  });
+
+  it('hides them when the governor drops to tier 1 (groundCover false)', () => {
+    for (const cls of ['desktop-low', 'desktop-capable'] as const) {
+      expect(gate!(false, WORLD_DEVICE_PROFILE[cls])).toBe(false);
+    }
+  });
+
+  it('hides them on phones and tablets even at tier 0', () => {
+    for (const cls of ['phone', 'tablet'] as const) {
+      expect(WORLD_DEVICE_PROFILE[cls].ambientGroundCover).toBe(false);
+      expect(gate!(true, WORLD_DEVICE_PROFILE[cls])).toBe(false);
+    }
+  });
+
+  it('ArenaTerrain renders the decoration subtree only when told to', () => {
+    const terrain = ArenaTerrain as unknown as (props: { showDecorations: boolean }) => ReactElement;
+    const childNames = (el: ReactElement): string[] => {
+      const kids: ReactNode[] = [];
+      const walk = (n: ReactNode) => {
+        if (Array.isArray(n)) n.forEach(walk);
+        else if (isValidElement(n)) kids.push(n);
+      };
+      walk((el.props as { children?: ReactNode }).children);
+      return kids.map((k) => {
+        const t = (k as ReactElement).type as { name?: string } | string;
+        return typeof t === 'string' ? t : t.name ?? '';
+      });
+    };
+    const on = childNames(terrain({ showDecorations: true }));
+    const off = childNames(terrain({ showDecorations: false }));
+    expect(on).toContain('SandFloor');
+    expect(on).toContain('UnderwaterDecorations');
+    expect(off).toContain('SandFloor');
+    expect(off).not.toContain('UnderwaterDecorations');
+  });
+
+  it('World3DCanvas wires showGroundCover + ambientGroundCover into ArenaTerrain', () => {
+    const src = readFileSync(join(import.meta.dir, '../../components/three/World3DCanvas.tsx'), 'utf8');
+    expect(src).toMatch(
+      /<ArenaTerrain\s+showDecorations=\{seabedDecorationsEnabled\(\s*showGroundCover,\s*CURRENT_WORLD_DEVICE_PROFILE\s*\)\}\s*\/>/,
+    );
+    // showGroundCover must still be the governor-driven flag.
+    expect(src).toMatch(/const showGroundCover = flags\.groundCover && !staticOnly;/);
   });
 });

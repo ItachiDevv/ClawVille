@@ -83,6 +83,20 @@ export const DECO_TYPES = [
 ];
 
 /**
+ * The seabed decorations follow the same switch as the other ground cover
+ * (MergedSeaweed, the NE kelp forest): `showGroundCover` (the `groundCover`
+ * perf flag, which the adaptive governor clears at tier 1) AND the device
+ * profile's `ambientGroundCover` (false on phones and tablets). When false,
+ * the decoration subtree is not mounted, so its 12 GLBs are not fetched.
+ */
+export function seabedDecorationsEnabled(
+  showGroundCover: boolean,
+  profile: { readonly ambientGroundCover: boolean },
+): boolean {
+  return showGroundCover && profile.ambientGroundCover;
+}
+
+/**
  * Uniform scale + world Y that render a model at `size` wu max-dimension with
  * its lowest point on the sand baseline. `nativeMaxDim` / `nativeMinY` come
  * from the GLB scene's world bounding box. Returns null for a degenerate box.

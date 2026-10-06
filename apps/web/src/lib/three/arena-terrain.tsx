@@ -492,12 +492,17 @@ function FixedLandmarks() {
   );
 }
 
-export default function ArenaTerrain() {
+/**
+ * `showDecorations` — pass `seabedDecorationsEnabled(showGroundCover, profile)`:
+ * the scatter follows the ground-cover switch (governor tier 1, phones and
+ * tablets hide it). The sand floor always renders.
+ */
+export default function ArenaTerrain({ showDecorations }: { showDecorations: boolean }) {
   return (
     <Suspense fallback={null}>
       <SandFloor />
       {/* Procedurally scattered individual GLB decorations */}
-      <UnderwaterDecorations />
+      {showDecorations && <UnderwaterDecorations />}
       {/*
         REMOVED 2026-04-16: `UnderwaterDecorationsGlb` (underwater-decorations.glb @ scale 8)
         and `FixedLandmarks` (submarine @ scale 2.0 + shipwreck @ scale 2.5). All three were
